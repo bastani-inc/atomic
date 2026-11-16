@@ -94,10 +94,37 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 			try {
 				graph.handleInput("z");
 				assert.match(hint(graph), /Press z again within 3s to stop A/);
+				assert.doesNotMatch(
+					hint(graph).split("\n")[1],
+					/esc\/z stop/,
+					"Esc is never advertised as a stage stop key",
+				);
 				assert.equal(stop.mock.calls.length, 0);
 				graph.handleInput("z");
 				await settle();
 				assert.equal(stop.mock.calls.length, 1);
+			} finally {
+				graph.dispose();
+			}
+		},
+	);
+
+	it.each(["running", "completed"])(
+		"h hide is not advertised when the stop binding consumes h on a %s stage (#5234)",
+		(status) => {
+			const onHide = vi.fn();
+			const graph = view([stage("A", status)], {
+				onHide,
+				stageActions: { stop: async () => ({ ok: true, message: "stopped" }) },
+				piKeybindings: {
+					matches: (data, action) => data === "h" && action === APP_ACTION.listStop,
+					getKeys: (action) => (action === APP_ACTION.listStop ? ["h"] : []),
+				},
+			});
+			try {
+				assert.doesNotMatch(hint(graph), /h hide/);
+				graph.handleInput("h");
+				assert.equal(onHide.mock.calls.length, 0);
 			} finally {
 				graph.dispose();
 			}
@@ -270,6 +297,87 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		graph.handleInput(ENTER);
 		assert.equal(fork.mock.calls.length, 0);
 		graph.dispose();
+	});
+
+	it("recovering a scrolled failure reveals its focused node before and after resize (#5234)", () => {
+		const stages = Array.from({ length: 30 }, (_, index) =>
+			stage(
+				`stage-${index}`,
+				index === 29 ? "failed" : "completed",
+				index === 29
+					? {
+							name: "selected-29",
+							error: Array.from({ length: 400 }, (_, line) => `log-entry-${line}`).join("\n"),
+						}
+					: {},
+				index === 0 ? [] : [`stage-${index - 1}`],
+			),
+		);
+		const snap = makeSnap(stages);
+		let notify = () => {};
+		const store = {
+			...makeStore(snap),
+			subscribeInvalidation: (listener) => {
+				notify = listener;
+				return () => {};
+			},
+		};
+		const terminal = { rows: 14 };
+		const graph = view([], { store, piTui: { terminal }, initialFocusedStageId: "stage-29" });
+		try {
+			graph.render(80);
+			graph.handleInput(ENTER);
+			graph.handleInput("l");
+			graph.render(80);
+			for (let page = 0; page < 20; page++) graph.handleInput("\x1b[6~");
+			graph.render(80);
+			assert.ok(graph._graphScrollOffset > 0);
+			snap.runs[0].stages[29] = { ...stages[29], status: "running", error: undefined };
+			snap.version++;
+			notify();
+			const recovered = stripAnsi(graph.render(80).join("\n"));
+			assert.match(recovered, /selected-29/);
+			assert.doesNotMatch(recovered, /log-entry-/);
+			terminal.rows = 22;
+			assert.match(stripAnsi(graph.render(160).join("\n")), /selected-29/);
+		} finally {
+			graph.dispose();
+		}
+	});
+
+	it("removing the selected run cancels its failure detail and armed fork (#5234)", async () => {
+		const snap = makeSnap([stage("verify", "failed", { error: "boom" })]);
+		let notify = () => {};
+		const store = {
+			...makeStore(snap),
+			subscribeInvalidation: (listener) => {
+				notify = listener;
+				return () => {};
+			},
+		};
+		const fork = vi.fn(async () => ({ ok: true, message: "forked" }));
+		const graph = view([], {
+			store,
+			stageActions: {
+				fork,
+				forkTarget: async () => ({ ok: true, stagePath: "verify", rerunToolSteps: 0, live: false }),
+			},
+		});
+		try {
+			graph.handleInput(ENTER);
+			graph.handleInput("f");
+			await settle();
+			assert.match(hint(graph), /enter fork/);
+			snap.runs = [];
+			snap.version++;
+			notify();
+			graph.render(160);
+			graph.handleInput(ENTER);
+			assert.equal(fork.mock.calls.length, 0);
+			assert.doesNotMatch(hint(graph), /enter fork|retry in place/);
+		} finally {
+			graph.dispose();
+		}
 	});
 
 	it("a late fork lookup cannot confirm after closing and reopening the same stage (#5234)", async () => {
@@ -648,6 +756,34 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		assert.equal(dimmed("stopped"), plain, "stopped matches the paused stage, so it is drawn as usual");
 		for (const filter of ["running", "completed", "failed"]) assert.notEqual(dimmed(filter), plain, filter);
 		graph.dispose();
+	});
+
+	it.each(["x", "h"])("a remapped %s stop stays visible under narrow-width pressure (#5234)", (stopKey) => {
+		const defaults = makeFakeKeybindings();
+		const graph = view(
+			[stage("A", "completed"), stage("B", "running", {}, ["A"]), stage("C", "running", {}, ["A"])],
+			{
+				onHide: () => {},
+				stageActions: { stop: async () => ({ ok: true, message: "" }) },
+				piKeybindings: {
+					matches: (data, action) =>
+						action === APP_ACTION.listStop
+							? data === stopKey
+							: action === APP_ACTION.keysHelp
+								? data === "?"
+								: defaults.matches(data, action),
+					getKeys: (action) =>
+						action === APP_ACTION.listStop ? [stopKey] : action === APP_ACTION.keysHelp ? ["?"] : [],
+				},
+			},
+		);
+		try {
+			graph.handleInput(DOWN);
+			assert.match(hint(graph, 80), new RegExp(`${stopKey} stop\\b`));
+			assert.match(hint(graph, 80), /\? keys/);
+		} finally {
+			graph.dispose();
+		}
 	});
 
 	it("at 80 columns the hint keeps the keys that act on this stage ahead of / stages and h hide, and lists each arrow once", () => {

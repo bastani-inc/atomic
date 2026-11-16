@@ -33,6 +33,7 @@ import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
+import { boundedToolTitleText, TOOL_PAYLOAD_VALUE_LIMIT } from "../shared/tool-payload-bounds.js";
 import type { FlatBandBadge } from "./chat-surface.js";
 import { ELLIPSIS, renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
@@ -222,10 +223,11 @@ function activeToolNodes(run: RunSnapshot): NonNullable<RunSnapshot["toolNodes"]
 	return run.toolNodes.filter((node) => node.status === "pending" || node.status === "running");
 }
 
-function activeToolLabel(run: RunSnapshot): string | undefined {
+function activeToolLabel(run: RunSnapshot, width: number): string | undefined {
 	const nodes = activeToolNodes(run);
 	if (nodes.length === 0) return undefined;
-	const details = nodes.map((node) => `${node.name} · ${node.status}`).join(", ");
+	const limit = Number.isFinite(width) ? width * 4 : TOOL_PAYLOAD_VALUE_LIMIT;
+	const details = nodes.map((node) => `${boundedToolTitleText(node.name, limit)} · ${node.status}`).join(", ");
 	return nodes.length === 1 ? details : `${nodes.length} tools · ${details}`;
 }
 const MAX_PENDING_WIDGET_ITEMS = 2;
@@ -280,7 +282,7 @@ function metaLine(
 	const prog = progressLabel(stages);
 	if (prog) prefix.push(prog);
 	const suffix: string[] = [];
-	const tools = activeToolLabel(run);
+	const tools = activeToolLabel(run, width);
 	if (tools) suffix.push(tools);
 	const elapsed = elapsedLabel(run, now);
 	if (elapsed) suffix.push(elapsed);

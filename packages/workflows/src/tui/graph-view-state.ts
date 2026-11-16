@@ -288,6 +288,7 @@ export abstract class GraphViewState {
 			this.lastGraphViewport = null;
 			this.pendingEnsureFocusedVisible = true;
 			this.toolDetail = null;
+			this._closeStageDetail();
 			this.hasAnimatingStages = false;
 			this.lastBuiltSnapshotVersion = version;
 			return;

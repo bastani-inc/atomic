@@ -1,6 +1,7 @@
 import type { SerializedError } from "../shared/error-codec.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
+import { boundedToolTitleText, sanitizeToolDisplayText, sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration } from "./status-helpers.js";
@@ -24,7 +25,9 @@ export function stageFailureReason(stage: Pick<StageSnapshot, "error" | "failure
 
 function serializedErrorLines(error: SerializedError, depth: number): string[] {
 	const indent = "  ".repeat(depth);
-	const lines = [`${indent}${error.name}${error.code ? ` (${error.code})` : ""}: ${error.message}`];
+	const name = sanitizeToolTitleText(error.name);
+	const code = error.code ? sanitizeToolTitleText(error.code) : undefined;
+	const lines = [`${indent}${name}${code ? ` (${code})` : ""}: ${error.message}`];
 	if (error.hint) lines.push(`${indent}hint: ${error.hint}`);
 	if (error.cause) lines.push(`${indent}caused by:`, ...serializedErrorLines(error.cause, depth + 1));
 	if (error.cleanupCause)
@@ -54,10 +57,12 @@ export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageF
 	const after = elapsed === undefined ? "" : ` after ${fmtDuration(elapsed)}`;
 	const indent = "  ";
 	const room = Math.max(1, width - indent.length);
-	const title = `${indent}${error}${BOLD}✗ ${stage.name}${RESET}${muted} · failed${after}${RESET}`;
+	const title = `${indent}${error}${BOLD}✗ ${boundedToolTitleText(stage.name, width * 4)}${RESET}${muted} · failed${after}${RESET}`;
 	if (opts.logs) {
 		const body = stageFailureLogLines(stage).flatMap((line) =>
-			line.length === 0 ? [""] : wrapPlainText(line, room),
+			line
+				.split(/\r?\n/)
+				.flatMap((part) => (part.length === 0 ? [""] : wrapPlainText(sanitizeToolDisplayText(part), room))),
 		);
 		return [
 			truncateToWidth(title, width),
@@ -68,7 +73,7 @@ export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageF
 	}
 	const label = "Reason";
 	const reasonRoom = Math.max(1, room - label.length - 3);
-	const reason = wrapPlainText(stageFailureReason(stage), reasonRoom);
+	const reason = wrapPlainText(sanitizeToolTitleText(stageFailureReason(stage)), reasonRoom);
 	return [
 		truncateToWidth(title, width),
 		"",

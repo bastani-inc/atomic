@@ -28,6 +28,7 @@ import { describeStagePredictions } from "../shared/possible-stage-prediction.js
 import { pooledStageStartingStep, stageDisplayStatus } from "../shared/stage-display-status.js";
 import type { StageSnapshot, ToolNodeSnapshot, ToolNodeStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
+import { boundedToolText, boundedToolTitleText } from "../shared/tool-payload-bounds.js";
 import type { FlatBandBadge } from "./chat-surface.js";
 import { renderRoundedBox } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
@@ -272,7 +273,11 @@ function stageLinePlain(stage: StageSnapshot, now: number, width: number): strin
 	const icon = statusIcon(status);
 	const dur = stageDurationString(stage, now);
 	const activity = pooledStageStartingStep(stage) ?? stageActivityString(stage, now);
-	const name = truncateToWidth(`${icon} ${stage.name}`, STAGE_NAME_COL + 2, "…");
+	const name = truncateToWidth(
+		`${icon} ${boundedToolTitleText(stage.name, STAGE_NAME_COL * 4)}`,
+		STAGE_NAME_COL + 2,
+		"…",
+	);
 	const activityText = activity ? truncateToWidth(activity, 16, "…") : undefined;
 	const parts = [pad(name, STAGE_NAME_COL + 2), pad(status, 10)];
 	if (activityText) parts.push(pad(activityText, 16));
@@ -293,7 +298,7 @@ function stageLineThemed(stage: StageSnapshot, now: number, theme: GraphTheme, w
 	const activity = pooledStageStartingStep(stage) ?? stageActivityString(stage, now);
 	const dur = stageDurationString(stage, now);
 
-	const nameText = truncateToWidth(stage.name, STAGE_NAME_COL, "…");
+	const nameText = truncateToWidth(boundedToolTitleText(stage.name, STAGE_NAME_COL * 4), STAGE_NAME_COL, "…");
 	const namePad = pad(nameText, STAGE_NAME_COL);
 	const statePad = pad(status, 10);
 	const activityText = activity ? truncateToWidth(activity, 16, "…") : undefined;
@@ -363,7 +368,7 @@ function renderStageRowsPlain(
 		),
 	];
 	if (stage.error) {
-		rows.push(`   error  ${truncateToWidth(stage.error.split("\n")[0] ?? "", Math.max(1, width - 10), "…")} `);
+		rows.push(`   error  ${truncateToWidth(errorDisplayLine(stage.error, width), Math.max(1, width - 10), "…")} `);
 	}
 	if (stage.readinessDecision) {
 		rows.push(
@@ -400,7 +405,7 @@ function renderStageRowsThemed(
 	if (stage.error) {
 		const errFg = hexToAnsi(theme.error);
 		rows.push(
-			`   ${hexToAnsi(theme.textMuted)}error${RESET}  ${errFg}${truncateToWidth(stage.error.split("\n")[0] ?? "", Math.max(1, width - 12), "…")}${RESET} `,
+			`   ${hexToAnsi(theme.textMuted)}error${RESET}  ${errFg}${truncateToWidth(errorDisplayLine(stage.error, width), Math.max(1, width - 12), "…")}${RESET} `,
 		);
 	}
 	if (stage.readinessDecision) {
@@ -410,6 +415,11 @@ function renderStageRowsThemed(
 	}
 	return rows;
 }
+function errorDisplayLine(value: string, width: number): string {
+	const head = boundedToolText(value, width * 4).split(/\r?\n/, 1)[0] ?? "";
+	return boundedToolTitleText(head, width * 4);
+}
+
 function toolDisplayStatus(status: ToolNodeStatus): "pending" | "running" | "completed" | "failed" | "cancelled" {
 	return status === "cached" ? "completed" : status;
 }
@@ -422,10 +432,10 @@ function toolDurationString(tool: ToolNodeSnapshot, now: number): string | undef
 function renderToolRowsPlain(tool: ToolNodeSnapshot, now: number, width: number): string[] {
 	const icon = statusIcon(toolDisplayStatus(tool.status));
 	const duration = toolDurationString(tool, now);
-	const line = ` ${pad(`${icon} ${tool.name}`, STAGE_NAME_COL + 2)}${pad(tool.status, 10)}${duration ?? ""} `;
+	const line = ` ${pad(`${icon} ${boundedToolTitleText(tool.name, width * 4)}`, STAGE_NAME_COL + 2)}${pad(tool.status, 10)}${duration ?? ""} `;
 	const rows = [truncateToWidth(line, width, "…")];
 	if (tool.error)
-		rows.push(`   error  ${truncateToWidth(tool.error.split("\n")[0] ?? "", Math.max(1, width - 10), "…")} `);
+		rows.push(`   error  ${truncateToWidth(errorDisplayLine(tool.error, width), Math.max(1, width - 10), "…")} `);
 	return rows;
 }
 
@@ -435,11 +445,11 @@ function renderToolRowsThemed(tool: ToolNodeSnapshot, now: number, theme: GraphT
 	const text = hexToAnsi(theme.text);
 	const dim = hexToAnsi(theme.dim);
 	const duration = toolDurationString(tool, now);
-	const line = ` ${stateFg}${statusIcon(displayStatus)}${RESET} ${text}${pad(tool.name, STAGE_NAME_COL)}${RESET}  ${stateFg}${pad(tool.status, 10)}${RESET}${duration ? `${dim}${duration}${RESET}` : ""} `;
+	const line = ` ${stateFg}${statusIcon(displayStatus)}${RESET} ${text}${pad(boundedToolTitleText(tool.name, width * 4), STAGE_NAME_COL)}${RESET}  ${stateFg}${pad(tool.status, 10)}${RESET}${duration ? `${dim}${duration}${RESET}` : ""} `;
 	const rows = [truncateToWidth(line, width, "…")];
 	if (tool.error)
 		rows.push(
-			`   ${hexToAnsi(theme.textMuted)}error${RESET}  ${hexToAnsi(theme.error)}${truncateToWidth(tool.error.split("\n")[0] ?? "", Math.max(1, width - 12), "…")}${RESET} `,
+			`   ${hexToAnsi(theme.textMuted)}error${RESET}  ${hexToAnsi(theme.error)}${truncateToWidth(errorDisplayLine(tool.error, width), Math.max(1, width - 12), "…")}${RESET} `,
 		);
 	return rows;
 }

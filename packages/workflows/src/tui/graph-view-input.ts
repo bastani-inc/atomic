@@ -1,5 +1,6 @@
 import { TwoPressConfirm } from "@bastani/atomic";
 import type { KeyId } from "@bastani/atomic-tui";
+import { unknownErrorMessage } from "../runs/foreground/executor-abort.js";
 import { GRAPH_SCROLL_STEP_COLS } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
 import { GRAPH_STATUS_FILTERS } from "./graph-view-state.js";
@@ -126,12 +127,13 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	private _handleStageDetailInput(data: string): boolean {
 		const detail = this.stageDetail;
 		if (detail === null) return false;
+		const actions = this.stageActions;
 		const confirm = this.forkConfirm;
 		if (confirm !== null) {
-			if (matchesKey(data, Key.enter) && this.stageActions?.fork) {
+			if (matchesKey(data, Key.enter) && actions?.fork) {
 				this.forkConfirm = null;
 				this._runStageAction(
-					this.stageActions.fork(confirm.rootRunId, confirm.stageId),
+					() => actions.fork!(confirm.rootRunId, confirm.stageId),
 					`Forking from ${confirm.name}\u2026`,
 					{
 						focusStageId: detail.stageId,
@@ -164,9 +166,9 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		const name = stage?.name ?? detail.stageId;
 
 		if ((matchesKey(data, "r") || matchesKey(data, "f")) && this.stageActionInFlight) return true;
-		if (matchesKey(data, "r") && this.stageActions?.retry) {
+		if (matchesKey(data, "r") && actions?.retry) {
 			const failedAt = stage?.endedAt;
-			this._runStageAction(this.stageActions.retry(detail.runId, detail.stageId), `Retrying ${name}\u2026`, {
+			this._runStageAction(() => actions.retry!(detail.runId, detail.stageId), `Retrying ${name}\u2026`, {
 				focusStageId: detail.stageId,
 				onSameRun: () => {
 					this.retryWatch = { nodeId: detail.nodeId, failedAt, sawRetry: false };
@@ -195,15 +197,23 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return true;
 	}
 
+	private _invokeStageAction<T>(action: () => Promise<T>): Promise<T> {
+		try {
+			return Promise.resolve(action());
+		} catch (error) {
+			return Promise.reject(error);
+		}
+	}
+
 	private _runStageAction(
-		result: Promise<GraphStageActionResult>,
+		action: () => Promise<GraphStageActionResult>,
 		progress: string,
 		options: { readonly focusStageId?: string; readonly onSameRun?: () => void } = {},
 	): void {
 		this.graphNotice = { text: progress, tone: "info", until: Date.now() + 60_000 };
 		this.stageActionInFlight = true;
 		this.requestRender?.();
-		void result.then(
+		void this._invokeStageAction(action).then(
 			(outcome) => {
 				if (this.disposed) return;
 				this.stageActionInFlight = false;
@@ -221,7 +231,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 				if (this.disposed) return;
 				this.stageActionInFlight = false;
 				this.graphNotice = {
-					text: error instanceof Error ? error.message : String(error),
+					text: unknownErrorMessage(error),
 					tone: "error",
 					until: Date.now() + GRAPH_NOTICE_MS,
 				};
@@ -239,8 +249,8 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	private _askForkConfirmation(stageId: string, name: string): void {
 		const rootRunId = this.runId;
 		const detail = this.stageDetail;
-		const lookup = this.stageActions?.forkTarget;
-		if (rootRunId === null || lookup === undefined) return;
+		const actions = this.stageActions;
+		if (rootRunId === null || actions?.forkTarget === undefined) return;
 		this.stageActionInFlight = true;
 		const notice = {
 			text: `Checking where a fork from ${name} starts\u2026`,
@@ -249,7 +259,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		};
 		this.graphNotice = notice;
 		this.requestRender?.();
-		void lookup(rootRunId, stageId).then(
+		void this._invokeStageAction(() => actions.forkTarget!(rootRunId, stageId)).then(
 			(target) => {
 				if (this.disposed) return;
 				this.stageActionInFlight = false;
@@ -282,7 +292,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 					if (this.graphNotice === notice) this.graphNotice = null;
 				} else {
 					this.graphNotice = {
-						text: error instanceof Error ? error.message : String(error),
+						text: unknownErrorMessage(error),
 						tone: "error",
 						until: Date.now() + GRAPH_NOTICE_MS,
 					};
@@ -310,8 +320,9 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			return true;
 		}
 		this.graphNotice = null;
-		const stop = this.stageActions?.stop;
-		if (stop) this._runStageAction(stop(target.runId, target.stageId), `Stopping ${stage.name}\u2026`);
+		const actions = this.stageActions;
+		if (actions?.stop)
+			this._runStageAction(() => actions.stop!(target.runId, target.stageId), `Stopping ${stage.name}\u2026`);
 		return true;
 	}
 

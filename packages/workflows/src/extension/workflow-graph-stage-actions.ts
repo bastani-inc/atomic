@@ -3,7 +3,8 @@ import { hasActiveLiveRun } from "../durable/run-claims.js";
 import { availableStoreDurableBackend } from "../durable/store-backend.js";
 import { type QuitRunResult, quitRun } from "../runs/background/quit.js";
 import { pauseRun } from "../runs/background/status.js";
-import type { GraphStageActionResult, GraphStageActions } from "../tui/graph-view-types.js";
+import { unknownErrorMessage } from "../runs/foreground/executor-abort.js";
+import type { GraphStageActions } from "../tui/graph-view-types.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
@@ -29,8 +30,8 @@ function quitRefusal(result: Extract<QuitRunResult, { ok: false }>): string {
 	return "message" in result && typeof result.message === "string" ? result.message : result.reason;
 }
 
-function failure(error: unknown): GraphStageActionResult {
-	return { ok: false, message: error instanceof Error ? error.message : String(error) };
+function failure(error: unknown): { readonly ok: false; readonly message: string } {
+	return { ok: false, message: unknownErrorMessage(error) };
 }
 
 export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageActions {
@@ -49,9 +50,9 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 			}
 		},
 		async retry(runId, stageId) {
-			const runtime = deps.runtime();
-			if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 			try {
+				const runtime = deps.runtime();
+				if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 				const policy = workflowPolicyFromContext(deps.context());
 				const result = await runtime.resumeFailedRun(runId, stageId, { policy, actor: "user" });
 				return result.ok
@@ -62,9 +63,9 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 			}
 		},
 		async forkTarget(rootRunId, stageId) {
-			const backend = availableStoreDurableBackend(owner.store, rootRunId);
-			if (backend === undefined) return { ok: false, message: "This run keeps no durable record to fork from." };
 			try {
+				const backend = availableStoreDurableBackend(owner.store, rootRunId);
+				if (backend === undefined) return { ok: false, message: "This run keeps no durable record to fork from." };
 				const target = await durableForkTarget(backend, rootRunId, stageId);
 				if (target === undefined)
 					return { ok: false, message: "A fork can't start at this stage: it is still running or never ran." };
@@ -75,13 +76,13 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 					live: hasActiveLiveRun(owner.store, rootRunId),
 				};
 			} catch (error) {
-				return { ok: false, message: error instanceof Error ? error.message : String(error) };
+				return failure(error);
 			}
 		},
 		async fork(rootRunId, stageId) {
-			const runtime = deps.runtime();
-			if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 			try {
+				const runtime = deps.runtime();
+				if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 				if (hasActiveLiveRun(owner.store, rootRunId)) {
 					const quit = await quitRun(rootRunId, { ...owner, awaitSettlement: true, actor: "user" });
 					if (!quit.ok) return { ok: false, message: `Could not stop the run to fork it: ${quitRefusal(quit)}` };

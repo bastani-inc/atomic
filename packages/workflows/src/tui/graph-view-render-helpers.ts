@@ -1,4 +1,5 @@
-import { type NavKey, type NavKeybindings, type NavKeyStyle, navEntryKeys } from "@bastani/atomic";
+import { type NavKey, type NavKeybindings, type NavKeyStyle, navEntryKeys, sliceHead } from "@bastani/atomic";
+import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { BOLD, DEFAULT_BG, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphCanvas } from "./graph-canvas.js";
 import { MODE_PILL_LABEL } from "./graph-view-constants.js";
@@ -10,6 +11,30 @@ import { BoundedTextCache, sliceColumns, truncateToWidth, visibleWidth } from ".
 import { OVERLAY_HIDDEN_STATUS_KEYS, WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 
 const slicedColumnSegments = new BoundedTextCache(1024);
+const GRAPH_STOP_PRIORITY_KEYS = new Set([
+	"escape",
+	"esc",
+	"up",
+	"down",
+	"left",
+	"right",
+	"enter",
+	"return",
+	"j",
+	"k",
+	"g",
+	"/",
+	"f",
+]);
+
+function displayedBinding(key: string): string {
+	return navEntryKeys({ matches: () => false, getKeys: () => [key] }, { action: APP_ACTION.listStop, label: "" });
+}
+
+function noticeDisplayText(value: string, width: number): string {
+	const head = sliceHead(value, Math.max(0, width + 1));
+	return sanitizeToolTitleText(head) + (head.length < value.length ? "…" : "");
+}
 
 export function toolExpandKey(piKeybindings: unknown): string {
 	const keybindings = isKeybindingsLike(piKeybindings) ? piKeybindings : undefined;
@@ -61,6 +86,17 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 
 	protected _actionKey(action: string, fallback: string, label: string): NavKey {
 		return this._navKeybindings()?.getKeys ? { action, label } : { keys: fallback, label };
+	}
+
+	private _stopNavKey(label: string): NavKey {
+		const keybindings = this._navKeybindings();
+		const keys = keybindings?.getKeys?.(APP_ACTION.listStop);
+		if (keys === undefined) return { keys: "x", label };
+		const helpKeys = (keybindings?.getKeys?.(APP_ACTION.keysHelp) ?? []).map(displayedBinding);
+		const available = keys.filter(
+			(key) => !GRAPH_STOP_PRIORITY_KEYS.has(key.toLowerCase()) && !helpKeys.includes(displayedBinding(key)),
+		);
+		return { keys: available.map(displayedBinding).join("/"), label };
 	}
 
 	protected _focusedStageStoppable(): boolean {
@@ -118,17 +154,19 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const open: NavKey[] = openLabel ? [{ keys: "\u21b5", label: compact ? "open" : openLabel }] : [];
 		const move: NavKey[] = moveKeys ? [{ keys: moveKeys, label: "move" }] : [];
 
-		const stop = this._focusedStageStoppable()
-			? [this._actionKey(APP_ACTION.listStop, "x", compact ? "stop" : "stop stage")]
-			: [];
+		const stop = this._focusedStageStoppable() ? [this._stopNavKey(compact ? "stop" : "stop stage")] : [];
 		const stateful = [...stop, ...(filtered ? [filter] : [])];
+		const keybindings = this._navKeybindings();
+		const hideShadowed =
+			keybindings?.matches("h", APP_ACTION.listStop) === true ||
+			keybindings?.matches("h", APP_ACTION.keysHelp) === true;
 		return [
 			back,
 			...(compact ? [...stateful, ...open, ...move] : [...open, ...move, ...stateful]),
 			{ keys: "/", label: "stages" },
 			...(filtered ? [] : [filter]),
 			help,
-			...(this.onHide ? [{ keys: "h", label: "hide" }] : []),
+			...(this.onHide && !hideShadowed ? [{ keys: "h", label: "hide" }] : []),
 		];
 	}
 
@@ -163,7 +201,9 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			const taken = new Set<string>();
 			const kept = entries.filter(
 				(entry) =>
-					entry.keys !== "/" && entry.keys !== "h" && !(entry.keys === "f" && entry.label === "filter: all"),
+					entry.keys !== "/" &&
+					!(entry.keys === "h" && entry.label === "hide") &&
+					!(entry.keys === "f" && entry.label === "filter: all"),
 			);
 			const texts = kept.flatMap((entry) => {
 				const keys = navEntryKeys(keybindings, entry, taken);
@@ -198,7 +238,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const acrossWidth = Math.max(0, width - leftEdgePad - pillW);
 		const blankAcross = " ".repeat(acrossWidth);
 		const toastBudget = Math.max(0, acrossWidth - rightEdgePad);
-		const toast = toastText ? truncateToWidth(toastText, toastBudget, "\u2026") : "";
+		const toast = toastText ? truncateToWidth(noticeDisplayText(toastText, toastBudget), toastBudget, "\u2026") : "";
 		const toastRow = toast
 			? `${chromeBg}${" ".repeat(Math.max(0, toastBudget - visibleWidth(toast)))}${toastColor}${toast}${RESET}${chromeBg}${" ".repeat(rightEdgePad)}`
 			: blankAcross;
