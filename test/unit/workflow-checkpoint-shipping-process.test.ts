@@ -49,7 +49,7 @@ interface ShardSuccessResponse {
 	readonly pid?: number;
 	readonly receipt?: { readonly localSeq: number; readonly accepted: boolean };
 	readonly events?: readonly ShipEvent[];
-	readonly items?: readonly { readonly lease: AttemptLease; readonly pending: number }[];
+	readonly items?: readonly { readonly lease: AttemptLease }[];
 	readonly batch?: ShipBatchRows | null;
 }
 
@@ -174,7 +174,7 @@ test("refuses concurrent cross-process ShipShard open and recovers persisted che
 	assert.equal(thirdOpen.ok, true);
 	const leftover = await third.call({ action: "leftover" });
 	assert.equal(leftover.ok, true);
-	assert.deepEqual(leftover.items, [{ lease: G1, pending: 1 }]);
+	assert.deepEqual(leftover.items, [{ lease: G1 }]);
 	const pendingG1 = await third.call({ action: "pending", lease: G1 });
 	assert.equal(pendingG1.ok, true);
 	assert.deepEqual(

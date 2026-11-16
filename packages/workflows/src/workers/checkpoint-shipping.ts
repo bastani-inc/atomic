@@ -86,6 +86,7 @@ export interface ShippingStatus {
 
 class DeliveryTiming {
 	private ewmaMs: number | undefined;
+	private ewmaSize: number | undefined;
 	private readonly samples: number[] = [];
 	private p95Ms = 0;
 
@@ -97,8 +98,14 @@ class DeliveryTiming {
 		return this.ewmaMs === undefined ? undefined : Math.max(this.ewmaMs, this.p95Ms);
 	}
 
-	note(ms: number): void {
+	get averageSize(): number | undefined {
+		return this.ewmaSize;
+	}
+
+	note(ms: number, size: number): void {
 		this.ewmaMs = this.ewmaMs === undefined ? ms : this.ewmaMs + DELIVERY_EWMA_WEIGHT * (ms - this.ewmaMs);
+		this.ewmaSize =
+			this.ewmaSize === undefined ? size : this.ewmaSize + DELIVERY_EWMA_WEIGHT * (size - this.ewmaSize);
 		this.samples.push(ms);
 		if (this.samples.length > DELIVERY_SAMPLES) this.samples.shift();
 		const sorted = [...this.samples].sort((left, right) => left - right);
@@ -117,6 +124,7 @@ interface Attempt {
 	accepted: { readonly localSeq: number; readonly at: number }[];
 	/** The attempt's shipping, one batch at a time. */
 	chain: Promise<void>;
+	recovered?: boolean;
 	/** Why the attempt can ship no more: the shared journal refused it, so its next commit is refused too. */
 	fenced?: Error;
 	/** How many shipments of the attempt are queued or running. */
@@ -148,7 +156,6 @@ export class CheckpointShipping {
 	private deadlines: ReturnType<typeof setInterval> | undefined;
 	private readonly normalTiming = new DeliveryTiming();
 	private readonly urgentTiming = new DeliveryTiming();
-	private readonly urgentPerCheckpointTiming = new DeliveryTiming();
 	private lastError: Error | undefined;
 	private recovery: Promise<void> | undefined;
 	private recoveryScan: Promise<readonly AttemptLease[]> | undefined;
@@ -204,7 +211,6 @@ export class CheckpointShipping {
 			this.syncOnly.delete(lease.id);
 		}
 		const known = this.attempts.get(lease.id);
-		if (known !== undefined && known.lease.generation > lease.generation) return;
 		if (known === undefined || known.lease.generation !== lease.generation)
 			this.attempts.set(lease.id, {
 				lease: { ...lease },
@@ -212,12 +218,14 @@ export class CheckpointShipping {
 				accepted: [],
 				chain: Promise.resolve(),
 			});
-		else known.lease = { ...lease };
+		else {
+			known.lease = { ...lease };
+			known.recovered = undefined;
+		}
 		if (recoveryFailure !== undefined) this.fallBack(lease, recoveryFailure);
 		try {
 			await this.shard.hold(lease, leaseMs);
 		} catch (error) {
-			if (error instanceof StaleWorkLeaseError) throw error;
 			this.fallBack(lease, error as Error);
 		}
 	}
@@ -297,8 +305,15 @@ export class CheckpointShipping {
 		if (attempt === undefined || attempt.lease.generation !== lease.generation) return;
 		for (;;) {
 			if (this.closed) throw new Error("Checkpoint shipping stopped");
-			if (attempt.fenced !== undefined) throw attempt.fenced;
-			if ((await this.shard.pendingCount(attempt.lease)) === 0) return;
+			if (attempt.fenced !== undefined) {
+				await this.retireRecovered(attempt);
+				throw attempt.fenced;
+			}
+			if (this.attempts.get(lease.id) !== attempt) return;
+			if ((await this.shard.pendingCount(attempt.lease)) === 0) {
+				await this.retireRecovered(attempt);
+				return;
+			}
 			await this.ship(attempt, cap);
 		}
 	}
@@ -334,16 +349,19 @@ export class CheckpointShipping {
 		const pending = Math.max(1, attempt?.accepted.length ?? 0);
 		const catchUpSize = Math.min(pending, URGENT_BATCH_CAP);
 		const initialGuess = normal * Math.ceil(catchUpSize / this.options.maxBatch);
-		const timedUrgent = Math.max(
-			this.urgentTiming.estimate() ?? 0,
-			(this.urgentPerCheckpointTiming.estimate() ?? 0) * catchUpSize,
-		);
+		const urgentEstimate = this.urgentTiming.estimate();
+		const normalSize = this.normalTiming.averageSize ?? 1;
+		const urgentSize = this.urgentTiming.averageSize;
+		const marginalMs =
+			urgentEstimate !== undefined && urgentSize !== undefined && urgentSize > normalSize
+				? Math.max(0, (urgentEstimate - normal) / (urgentSize - normalSize))
+				: 0;
 		const catchUpEstimate =
 			catchUpSize <= this.options.maxBatch
 				? normal
 				: this.urgentTiming.count < 2
-					? Math.max(timedUrgent, initialGuess)
-					: timedUrgent;
+					? Math.max(urgentEstimate ?? 0, initialGuess)
+					: normal + marginalMs * Math.max(0, catchUpSize - normalSize);
 		const remainingMs = Math.ceil(pending / URGENT_BATCH_CAP) * catchUpEstimate;
 		return Math.max(0, this.options.maxLagMs - normal - remainingMs - SCHEDULING_MARGIN_MS);
 	}
@@ -463,6 +481,7 @@ export class CheckpointShipping {
 				shippedThrough: 0,
 				accepted: held.map((localSeq) => ({ localSeq, at: now })),
 				chain: Promise.resolve(),
+				recovered: true,
 			});
 			recovered.push(lease);
 		}
@@ -492,11 +511,35 @@ export class CheckpointShipping {
 		const next = attempt.chain
 			.catch(() => {})
 			.then(() => this.shipOne(attempt, cap))
-			.finally(() => {
+			.finally(async () => {
 				attempt.shipping = (attempt.shipping ?? 1) - 1;
+				await this.retireRecovered(attempt);
 			});
 		attempt.chain = next;
 		return next;
+	}
+
+	private async retireRecovered(attempt: Attempt): Promise<void> {
+		if (!attempt.recovered || this.closed || (attempt.shipping ?? 0) > 0) return;
+		if (this.attempts.get(attempt.lease.id) !== attempt) return;
+		if (attempt.fenced === undefined) {
+			if (attempt.accepted.length > 0) return;
+			try {
+				if ((await this.shard.pendingCount(attempt.lease)) > 0) return;
+			} catch {
+				return;
+			}
+		}
+		if (
+			!attempt.recovered ||
+			this.closed ||
+			(attempt.shipping ?? 0) > 0 ||
+			this.attempts.get(attempt.lease.id) !== attempt ||
+			(attempt.fenced === undefined && attempt.accepted.length > 0)
+		)
+			return;
+		this.attempts.delete(attempt.lease.id);
+		this.shard.release(attempt.lease);
 	}
 
 	private async shipOne(attempt: Attempt, cap: number): Promise<void> {
@@ -516,10 +559,8 @@ export class CheckpointShipping {
 		try {
 			await this.options.deliver(lease, batch);
 			const elapsedMs = this.now() - began;
-			if (sealed.events.length > this.options.maxBatch) {
-				this.urgentTiming.note(elapsedMs);
-				this.urgentPerCheckpointTiming.note(elapsedMs / sealed.events.length);
-			} else this.normalTiming.note(elapsedMs);
+			const timing = sealed.events.length > this.options.maxBatch ? this.urgentTiming : this.normalTiming;
+			timing.note(elapsedMs, sealed.events.length);
 		} catch (error) {
 			const fenced = await this.fence(attempt, lease, error as Error);
 			if (fenced === undefined) this.lastError = error as Error;

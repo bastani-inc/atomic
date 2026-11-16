@@ -1,11 +1,38 @@
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
+import { realpath, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
 import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
 import type { AdvisoryLock } from "@bastani/atomic-natives";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
+
+const DIRECTORY_LOCK_WAIT_MS = 30_000;
+const DIRECTORY_LOCK_RETRY_MS = 5;
+
+async function withDirectoryLock<T>(
+	path: string,
+	callback: (tryAdvisoryLock: typeof import("@bastani/atomic-natives").tryAdvisoryLock) => Promise<T> | T,
+): Promise<T> {
+	const { tryAdvisoryLock } = await import("@bastani/atomic-natives");
+	const lockPath = join(dirname(path), ".lock");
+	const deadline = performance.now() + DIRECTORY_LOCK_WAIT_MS;
+	let directoryLock: AdvisoryLock | null = null;
+	for (;;) {
+		directoryLock = tryAdvisoryLock(lockPath, 0);
+		if (directoryLock !== null) break;
+		if (performance.now() >= deadline) {
+			throw new Error(`Checkpoint shard directory is busy: ${dirname(path)}`);
+		}
+		await new Promise<void>((resolve) => setTimeout(resolve, DIRECTORY_LOCK_RETRY_MS));
+	}
+	try {
+		return await callback(tryAdvisoryLock);
+	} finally {
+		directoryLock.release();
+	}
+}
 
 export function shipShardPath(stateDirectory: string, journalIdentity: string, root: string): string {
 	const journal = createHash("sha256").update(journalIdentity).digest("hex").slice(0, 24);
@@ -107,13 +134,16 @@ export class ShipShard {
 		private readonly database: SqliteDatabase,
 		readonly root: string,
 		private readonly lock: AdvisoryLock | undefined,
+		private readonly path: string,
 		private readonly now: () => number = () => performance.now(),
 	) {}
 
 	static async open(path: string, root: string, now?: () => number): Promise<ShipShard> {
-		mkdirSync(dirname(path), { recursive: true });
+		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
 		const lock =
-			path === ":memory:" ? undefined : (await import("@bastani/atomic-natives")).tryAdvisoryLock(`${path}.lock`, 0);
+			path === ":memory:"
+				? undefined
+				: await withDirectoryLock(path, (tryAdvisoryLock) => tryAdvisoryLock(`${path}.lock`, 0));
 		if (lock === null) throw new Error(`Checkpoint shard is already open by another process: ${path}`);
 		let database: SqliteDatabase | undefined;
 		try {
@@ -144,7 +174,7 @@ export class ShipShard {
 			await database.run(
 				`DELETE FROM ship_events WHERE NOT EXISTS (SELECT 1 FROM ship_lease l WHERE l.work = ship_events.work AND l.generation = ship_events.generation)`,
 			);
-			return new ShipShard(database, root, lock, now);
+			return new ShipShard(database, root, lock, path, now);
 		} catch (error) {
 			try {
 				await database?.close();
@@ -304,17 +334,15 @@ export class ShipShard {
 	 * The attempts with checkpoints left to ship, with the work lease each was accepted under, as a host that stopped
 	 * left them: what it ships, or drops as fenced, when it starts again (#4768).
 	 */
-	async leftover(): Promise<{ readonly lease: AttemptLease; readonly pending: number }[]> {
+	async leftover(): Promise<{ readonly lease: AttemptLease }[]> {
 		const rows = await this.database.all<
-			SqliteRow & { work: string; generation: number; worker: string; epoch: number; pending: number }
+			SqliteRow & { work: string; generation: number; worker: string; epoch: number }
 		>(
-			`SELECT l.work, l.generation, l.worker, l.epoch,
-				(SELECT COUNT(*) FROM ship_events e WHERE e.work = l.work AND e.generation = l.generation) AS pending
+			`SELECT l.work, l.generation, l.worker, l.epoch
 			FROM ship_lease l WHERE EXISTS (SELECT 1 FROM ship_events e WHERE e.work = l.work AND e.generation = l.generation)`,
 		);
 		return rows.map((row) => ({
 			lease: { id: row.work, generation: Number(row.generation), worker: row.worker, epoch: Number(row.epoch) },
-			pending: Number(row.pending),
 		}));
 	}
 
@@ -384,10 +412,29 @@ export class ShipShard {
 		if (this.closed) return;
 		this.closed = true;
 		this.leases.clear();
+		const retire = this.path !== ":memory:" && (await this.holdsNothing());
+		const location = retire ? await realpath(this.path).catch(() => this.path) : undefined;
 		try {
 			await this.database.close();
+			if (location !== undefined) {
+				await withDirectoryLock(this.path, async () => {
+					if (await removeUnusedShardFiles(location)) {
+						this.lock?.release();
+						rmSync(`${this.path}.lock`, { force: true });
+						if (location !== this.path) rmSync(`${location}.lock`, { force: true });
+					}
+				});
+			}
 		} finally {
 			this.lock?.release();
+		}
+	}
+
+	private async holdsNothing(): Promise<boolean> {
+		try {
+			return (await this.database.get(`SELECT 1 AS present FROM ship_events LIMIT 1`)) === undefined;
+		} catch {
+			return false;
 		}
 	}
 
@@ -429,4 +476,35 @@ export class ShipShard {
 			throw this.staleError(root, lease, "missing");
 		}
 	}
+}
+
+function processAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+function usedByLiveConnection(location: string): boolean {
+	let names: string[];
+	try {
+		names = readdirSync(`${location}-holders`);
+	} catch {
+		return false;
+	}
+	return names.some((name) => {
+		const pid = Number(/^(\d+)-/.exec(name)?.[1] ?? Number.NaN);
+		return Number.isSafeInteger(pid) && pid > 0 && processAlive(pid);
+	});
+}
+
+async function removeUnusedShardFiles(location: string): Promise<boolean> {
+	if (usedByLiveConnection(location)) return false;
+	for (const suffix of ["-wal", "-shm", "-journal", ""])
+		await rm(`${location}${suffix}`, { force: true }).catch(() => {});
+	for (const suffix of ["-holders", "-writers", "-wakes"])
+		await rm(`${location}${suffix}`, { recursive: true, force: true }).catch(() => {});
+	return true;
 }

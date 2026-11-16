@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
-import { ShipShard, shipShardPath } from "../../packages/workflows/src/workers/ship-shard.js";
+import { SHIP_SHARD_SCHEMA, ShipShard, shipShardPath } from "../../packages/workflows/src/workers/ship-shard.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const ROOT = "root-4768";
@@ -83,10 +83,8 @@ test("a reopened shard preserves the stored replacement lease and refuses old-ge
 
 test("opening an existing shard file migrates legacy UNIQUE(work, event_key) tables (#4768)", async () => {
 	const path = createShardPath();
-	const { shard: initial } = await openShard(path);
-	await initial.close();
-
 	const raw = await openNodeSqliteDatabase(path);
+	await raw.exec(SHIP_SHARD_SCHEMA);
 	await raw.exec(`
 		DROP TABLE ship_events;
 		CREATE TABLE ship_events(

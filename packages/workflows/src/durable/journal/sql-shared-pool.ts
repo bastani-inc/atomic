@@ -68,7 +68,6 @@ export interface SharedPoolConfig {
 	readonly stageStartMaxLoadPerCpu?: number;
 	readonly maxWorkerRssBytes?: number;
 	readonly claimWindowMs: number;
-	/** How hosts record the children's checkpoints; absent: each one commits to the shared journal (#4768). */
 	readonly checkpointShipping?: ResolvedCheckpointShipping;
 	/** Children raise `ctx.ui` prompts for the root to answer, on whichever host runs them. */
 	readonly promptNodes?: boolean;
