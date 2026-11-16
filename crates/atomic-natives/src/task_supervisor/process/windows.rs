@@ -11,10 +11,11 @@ use windows_sys::Win32::{
 	Security::SECURITY_ATTRIBUTES,
 	System::{
 		JobObjects::{
-			AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-			JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-			JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
-			QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+			AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT,
+			JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+			JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+			JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+			TerminateJobObject,
 		},
 		Pipes::{CreatePipe, PeekNamedPipe},
 		Threading::{
@@ -35,12 +36,16 @@ impl ContainmentJob {
 		if job.is_null() {
 			return Err(io::Error::last_os_error());
 		}
-		let job = unsafe { OwnedHandle::from_raw_handle(job) };
+		let job = Self(unsafe { OwnedHandle::from_raw_handle(job) });
+		job.limit(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)?;
+		Ok(job)
+	}
+	fn limit(&self, flags: JOB_OBJECT_LIMIT) -> io::Result<()> {
 		let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-		limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+		limits.BasicLimitInformation.LimitFlags = flags;
 		if unsafe {
 			SetInformationJobObject(
-				raw(&job),
+				raw(&self.0),
 				JobObjectExtendedLimitInformation,
 				(&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
 				std::mem::size_of_val(&limits) as u32,
@@ -49,7 +54,10 @@ impl ContainmentJob {
 		{
 			return Err(io::Error::last_os_error());
 		}
-		Ok(Self(job))
+		Ok(())
+	}
+	pub(super) fn release(self) -> io::Result<()> {
+		self.limit(0)
 	}
 	pub(super) fn assign(&self, process: HANDLE) -> io::Result<()> {
 		if unsafe { AssignProcessToJobObject(raw(&self.0), process) } == 0 {

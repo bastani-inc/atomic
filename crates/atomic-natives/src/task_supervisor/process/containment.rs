@@ -32,6 +32,15 @@ impl ProcessTreeContainment {
 	}
 
 	#[napi]
+	pub fn release(&mut self) -> bool {
+		#[cfg(windows)]
+		if let Some(job) = self.job.take() {
+			return job.release().is_ok();
+		}
+		false
+	}
+
+	#[napi]
 	pub fn close(&mut self) {
 		#[cfg(windows)]
 		drop(self.job.take());
