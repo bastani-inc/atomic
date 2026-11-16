@@ -102,6 +102,11 @@ class DeliveryTiming {
 		return this.ewmaSize;
 	}
 
+	/** The running average of delivery times: the time of a delivery of {@link averageSize} checkpoints. */
+	get averageMs(): number | undefined {
+		return this.ewmaMs;
+	}
+
 	note(ms: number, size: number): void {
 		this.ewmaMs = this.ewmaMs === undefined ? ms : this.ewmaMs + DELIVERY_EWMA_WEIGHT * (ms - this.ewmaMs);
 		this.ewmaSize =
@@ -336,18 +341,12 @@ export class CheckpointShipping {
 		const catchUpSize = Math.min(pending, URGENT_BATCH_CAP);
 		const initialGuess = normal * Math.ceil(catchUpSize / this.options.maxBatch);
 		const urgentEstimate = urgentTiming?.estimate();
-		const normalSize = normalTiming.averageSize ?? 1;
-		const urgentSize = urgentTiming?.averageSize;
-		const marginalMs =
-			urgentEstimate !== undefined && urgentSize !== undefined && urgentSize > normalSize
-				? Math.max(0, (urgentEstimate - normal) / (urgentSize - normalSize))
-				: 0;
 		const catchUpEstimate =
 			catchUpSize <= this.options.maxBatch
 				? normal
-				: (urgentTiming?.count ?? 0) < 2
+				: urgentTiming === undefined || urgentTiming.count < 2
 					? Math.max(urgentEstimate ?? 0, initialGuess)
-					: normal + marginalMs * Math.max(0, catchUpSize - normalSize);
+					: timedCatchUpMs(normal, normalTiming, urgentTiming, catchUpSize);
 		const remainingMs = Math.ceil(pending / URGENT_BATCH_CAP) * catchUpEstimate;
 		return Math.max(0, this.options.maxLagMs - normal - remainingMs - SCHEDULING_MARGIN_MS);
 	}
@@ -606,4 +605,22 @@ export class CheckpointShipping {
 function payloadOf(checkpoint: unknown) {
 	assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
 	return checkpoint;
+}
+
+/**
+ * How long a catch-up of `size` checkpoints takes once two catch-ups are timed (#5194): the normal estimate, plus each
+ * checkpoint past a normal batch at the cost per checkpoint between the average normal and the average catch-up
+ * delivery. Each average time goes with its average size, so batches of varying size still give a steady store's own
+ * cost per checkpoint. With no normal delivery timed, a catch-up costs what timed catch-ups cost per checkpoint, and at
+ * least their estimate.
+ */
+function timedCatchUpMs(normal: number, normalTiming: DeliveryTiming, urgentTiming: DeliveryTiming, size: number) {
+	const urgentMs = urgentTiming.averageMs!;
+	const urgentSize = urgentTiming.averageSize!;
+	const normalMs = normalTiming.averageMs;
+	const normalSize = normalTiming.averageSize;
+	if (normalMs === undefined || normalSize === undefined)
+		return Math.max(urgentTiming.estimate()!, (urgentMs / urgentSize) * size);
+	const marginalMs = urgentSize > normalSize ? Math.max(0, (urgentMs - normalMs) / (urgentSize - normalSize)) : 0;
+	return normal + marginalMs * Math.max(0, size - normalSize);
 }
