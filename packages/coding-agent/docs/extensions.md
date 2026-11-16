@@ -134,7 +134,7 @@ Use `ctx.ui.hostSessionPicker(request)` for a session-style picker with responsi
 
 The returned handle provides `result`, `update(rows)`, `error(message)`, and `close()`. `result` resolves to the selected `path`, or `undefined` on cancel. Your `onDelete(path)` callback owns deletion; the row remains until you call `update` or `error`. The API works in both interactive modes and is absent in print and headless RPC. See [Host-native session picker](/tui/reference#host-native-session-picker).
 
-For structured forms, use `ctx.ui.hostInputForm(request)`. Supply JSON-safe descriptors of type `string`, `text`, `number`, `integer`, `boolean`, or `select`, each with a raw `initialValue`. It resolves to a raw string record or `undefined` on cancellation. Editing, navigation, validation, and configured keybindings work locally in both interactive modes. Print and headless RPC omit this optional API. See [Host-native input form](/tui/reference#host-native-input-form).
+For structured forms, use `ctx.ui.hostInputForm(request)`. Supply JSON-safe descriptors of type `string`, `text`, `number`, `integer`, `boolean`, or `select`, each with a raw `initialValue`. Optional constraints (`const`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `minLength`, `maxLength`, `pattern`, `format`, and a JSON Schema `schema`) decide whether each field shows as ready. It resolves to a raw string record or `undefined` on cancellation. Editing, navigation, validation, and configured keybindings work locally in both interactive modes. Print and headless RPC omit this optional API. See [Host-native input form](/tui/reference#host-native-input-form).
 
 ## Quick Start
 

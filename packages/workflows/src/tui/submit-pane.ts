@@ -57,7 +57,7 @@ export function renderAskChoiceRows(
 
 export function renderSubmitReview(opts: SubmitPaneRenderOpts): string[] {
 	const { workflowName, fields, rawText, theme, width } = opts;
-	const out: string[] = [paint("Review your inputs", theme.accent, { bold: true }), ""];
+	const out: string[] = [truncateToWidth(paint("Review your inputs", theme.accent, { bold: true }), width, "…"), ""];
 	out.push(
 		truncateToWidth(
 			paint("/workflow ", theme.dim) + paint(sanitizeToolTitleText(workflowName), theme.text),

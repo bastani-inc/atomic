@@ -251,7 +251,6 @@ export function renderInputsPicker(opts: InputsPickerRenderOpts): string[] {
 	for (let i = 0; i < fields.length; i += 1) {
 		const field = fields[i]!;
 		const raw = state.rawText[field.name] ?? "";
-		// Every field says from the start whether it is ready: ✓, or ✗ with the reason.
 		const invalid = invalidForField(field, raw, i);
 		lines.push(...renderInputField(field, raw, state.caret, cursorOn, invalid, state.focusedIdx === i, theme, width));
 		lines.push("");

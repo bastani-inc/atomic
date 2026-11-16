@@ -311,7 +311,6 @@ export class InlineFormEditor implements PiEditorComponent {
 	private handleSelect(data: string, field: WorkflowInputEntry, state: InlineFormState): boolean {
 		const choices = field.choices ?? [];
 		if (choices.length === 0) return false;
-		// An unchosen select (no default) moves onto the first choice going down and the last going up.
 		const i = choices.indexOf(state.rawText[field.name] ?? "");
 		if (
 			matchesAction(this.kb, data, TUI_ACTION.selectUp) ||

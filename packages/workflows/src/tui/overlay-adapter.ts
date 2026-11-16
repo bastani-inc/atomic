@@ -68,6 +68,10 @@ export interface OverlayPiSurface {
 	ui?: OverlayUISurface;
 }
 
+export interface GraphOverlayOpenOptions {
+	readonly onReturn?: () => void;
+}
+
 /**
  * Port exposed to the extension factory.
  * `open(runId)`  — bring the pane to front (creating it if needed).
@@ -78,15 +82,6 @@ export interface OverlayPiSurface {
  * that exact stage-chat node — used by `/workflow attach <runId> <stageId>`
  * and the picker overlay's connect-to-stage flow.
  */
-/** How a caller opens the graph: where Esc at the graph's top goes back to. */
-export interface GraphOverlayOpenOptions {
-	/**
-	 * Called after the graph hides when Esc (or ← with nothing to the left) pops the graph itself, so the view that
-	 * opened it, such as a workflow list, can show again. Without it the graph returns to main chat.
-	 */
-	readonly onReturn?: () => void;
-}
-
 export interface GraphOverlayPort {
 	open(
 		runId: string | null,

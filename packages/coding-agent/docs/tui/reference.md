@@ -341,8 +341,21 @@ const values = await ctx.ui.hostInputForm?.({
 if (values === undefined) return; // Escape, Ctrl+C, teardown, or close
 ```
 
-Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. Initial and returned values are raw strings; the caller owns domain coercion. Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
+Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. Initial and returned values are raw strings; the caller owns domain coercion.
 
-Each field's header shows whether its value is ready: `✓`, or `✗` with the reason (`required`, `choose one`, `choose on or off`, `must be a whole number`, `must be a number`, `must be on or off`). Enter on the submit button runs only when every field is ready. A boolean accepts `true`, `false`, `on`, `off`, `1` or `0`; anything else is refused rather than read as off.
+A field can also carry constraints, which decide whether its value is ready:
+
+| Field | Applies to | Checks |
+|---|---|---|
+| `const` | all but `select` | the value equals it (a `boolean` compares on or off) |
+| `minimum`, `maximum` | `number`, `integer` | inclusive bounds |
+| `exclusiveMinimum`, `exclusiveMaximum` | `number`, `integer` | exclusive bounds |
+| `multipleOf` | `number`, `integer` | the value is a multiple of it |
+| `minLength`, `maxLength` | `string`, `text` | length in characters |
+| `pattern` | `string`, `text` | a regular expression, compiled with the `u` flag |
+| `format` | `string`, `text` | a JSON Schema format such as `email`, `uuid` or `date-time` |
+| `schema` | any | a JSON Schema the value must match: the text is read as JSON when it parses, else as the string itself | Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
+
+Each field's header shows whether its value is ready: `✓`, or `✗` with the reason (`required`, `choose one`, `choose on or off`, `must be a whole number`, `must be a number`, `must be on or off`, `not in choices`, `must equal <value>`, the broken constraint such as `must be >= 1` or `must not have more than 100 characters (maxLength 100)`, or `invalid pattern in the workflow schema` when a `pattern` does not compile). Enter on the submit button runs only when every field is ready. A boolean accepts `true`, `false`, `on`, `off`, `1` or `0`; anything else is refused rather than read as off.
 
 `/workflow <name>` uses this input form.

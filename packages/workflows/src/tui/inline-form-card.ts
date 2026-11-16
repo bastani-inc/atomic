@@ -37,7 +37,7 @@ import { paint } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { renderCompactBandHeader } from "./header.js";
 import type { InlineFormState } from "./inline-form-store.js";
-import { computeInvalid, invalidForField } from "./inputs-picker.js";
+import { coerceValues, computeInvalid, invalidForField } from "./inputs-picker.js";
 import { parseBooleanInput } from "./inputs-picker-types.js";
 import { renderAskChoiceRows, renderSubmitControls } from "./submit-pane.js";
 import { truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
@@ -369,12 +369,10 @@ function renderSubmittedLine(state: InlineFormState, theme: GraphTheme): string 
 
 function composeCommand(state: InlineFormState): string {
 	const parts: string[] = [`/workflow ${sanitizeToolTitleText(state.workflowName)}`];
-	for (const f of state.fields) {
-		const v = state.rawText[f.name] ?? "";
-		if (v === "" && !f.required) continue;
-		const safeName = sanitizeToolTitleText(f.name);
-		const safeValue = sanitizeToolTitleText(v);
-		const needsQuotes = /\s|=/.test(safeValue);
+	for (const [name, value] of Object.entries(coerceValues(state.fields, state.rawText))) {
+		const safeName = sanitizeToolTitleText(name);
+		const safeValue = sanitizeToolTitleText(typeof value === "string" ? value : JSON.stringify(value));
+		const needsQuotes = typeof value === "string" && (safeValue === "" || /\s|=/.test(safeValue));
 		parts.push(`${safeName}=${needsQuotes ? `"${safeValue}"` : safeValue}`);
 	}
 	return parts.join(" ");

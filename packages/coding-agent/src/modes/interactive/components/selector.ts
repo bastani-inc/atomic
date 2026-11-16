@@ -445,12 +445,6 @@ export class Selector<T> implements Component, Focusable {
 		this.options.onSelectionChange?.(this.state.getSelected());
 	}
 
-	setMaxVisible(maxVisible: number): void {
-		this.state.setMaxVisible(maxVisible);
-		this.rowLines.clear();
-		this.mousePressed = undefined;
-	}
-
 	/** Set the search text as if typed. */
 	setQuery(query: string): void {
 		this.input?.setValue(query);

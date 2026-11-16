@@ -149,6 +149,38 @@ function schemaConstraintReason(field: HostInputFormField, value: number | strin
 	return checkSchema(schema, value, "text");
 }
 
+function rawColumn(line: string, displayColumn: number): number {
+	let column = 0;
+	let shown = 0;
+	for (const char of line) {
+		const next = sanitizeSingleLine(line.slice(0, column + char.length)).length;
+		if (next > displayColumn) return displayColumn - shown <= next - displayColumn ? column : column + char.length;
+		column += char.length;
+		shown = next;
+	}
+	return column;
+}
+
+function withDisplayLines<T>(editor: Editor, action: () => T, keepCursor: boolean): T {
+	const state = Reflect.get(editor, "state") as { lines: string[]; cursorLine: number; cursorCol: number };
+	const savedLines = [...state.lines];
+	const savedLine = state.cursorLine;
+	const savedCol = state.cursorCol;
+	const currentLineText = savedLines[savedLine] ?? "";
+	const clampedCol = Math.max(0, Math.min(savedCol, currentLineText.length));
+	state.lines = savedLines.map((line) => sanitizeSingleLine(line));
+	state.cursorCol = sanitizeSingleLine(currentLineText.slice(0, clampedCol)).length;
+	try {
+		return action();
+	} finally {
+		const movedLine = state.cursorLine;
+		const movedCol = state.cursorCol;
+		state.lines = savedLines;
+		state.cursorLine = keepCursor ? movedLine : savedLine;
+		state.cursorCol = keepCursor ? rawColumn(savedLines[movedLine] ?? "", movedCol) : savedCol;
+	}
+}
+
 /** Host-owned form: all key handling and mutable editing state stay in the terminal process. */
 export class HostInputFormComponent implements Component, Focusable {
 	private readonly title: string;
@@ -341,22 +373,8 @@ export class HostInputFormComponent implements Component, Focusable {
 				Reflect.set(editor, "cursor", rawCursor);
 			}
 		}
-		const state = Reflect.get(editor, "state") as { lines: string[]; cursorLine: number; cursorCol: number };
-		const savedLines = [...state.lines];
-		const savedLine = state.cursorLine;
-		const savedCol = state.cursorCol;
-		const currentLineText = savedLines[savedLine] ?? "";
-		const clampedCol = Math.max(0, Math.min(savedCol, currentLineText.length));
-		state.lines = savedLines.map((line) => sanitizeSingleLine(line));
-		state.cursorCol = sanitizeSingleLine(currentLineText.slice(0, clampedCol)).length;
-		try {
-			const rendered = editor.render(width);
-			return rendered.length > 0 ? rendered : [""];
-		} finally {
-			state.lines = savedLines;
-			state.cursorLine = savedLine;
-			state.cursorCol = savedCol;
-		}
+		const rendered = withDisplayLines(editor, () => editor.render(width), false);
+		return rendered.length > 0 ? rendered : [""];
 	}
 
 	private handleEditable(data: string, field: HostInputFormField): void {
@@ -374,7 +392,7 @@ export class HostInputFormComponent implements Component, Focusable {
 				return;
 			}
 			const before = editor.getCursor();
-			editor.handleInput(data);
+			withDisplayLines(editor, () => editor.handleInput(data), true);
 			const after = editor.getCursor();
 			if (after.line === before.line && after.col === before.col) this.moveFocus(verticalDirection);
 			return;
@@ -397,7 +415,6 @@ export class HostInputFormComponent implements Component, Focusable {
 	private handleSelect(data: string, field: HostInputFormField): void {
 		const choices = field.choices ?? [];
 		if (choices.length === 0) return;
-		// An unchosen select moves onto the first choice going down and the last going up.
 		const current = choices.indexOf(this.currentValue(this.focusedIndex));
 		if (this.keybindings.matches(data, "tui.select.up") || this.keybindings.matches(data, "tui.editor.cursorLeft"))
 			this.values[this.focusedIndex] =
