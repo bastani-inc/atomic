@@ -264,3 +264,31 @@ test("a source's change repaints /tasks, and its rows render at 80 and 160 colum
 		await h.dispose();
 	}
 });
+
+test("a finished run with no current stage reads its stage count, the filter box has no prompt mark, and a sent notice clears on the next key (#5224)", async () => {
+	const finished: AgentPanelItem = {
+		id: "run:done",
+		kind: "workflow",
+		state: "done",
+		name: "approve-demo",
+		task: "",
+		progress: { done: 1, total: 1 },
+		elapsedMs: 10_000,
+	};
+	const h = await harness([waitingRun, finished]);
+	try {
+		assert.match(h.text(), /✓ approve-demo +stage 1\/1 +done · 10s/);
+		assert.doesNotMatch(h.text(), /approve-demo +·/, "no separator before an empty task");
+		h.inspector.handleInput(SPACE);
+		h.inspector.handleInput("1");
+		h.inspector.handleInput(ENTER);
+		await flush();
+		assert.match(h.text(), /Sent to ralph/);
+		h.inspector.handleInput("/");
+		assert.doesNotMatch(h.text(), /Sent to ralph/, "the notice lasts until the next key");
+		for (const ch of "demo") h.inspector.handleInput(ch);
+		assert.match(h.text(), /^ ⌕ demo/m, "the filter box shows only the typed text");
+	} finally {
+		await h.dispose();
+	}
+});

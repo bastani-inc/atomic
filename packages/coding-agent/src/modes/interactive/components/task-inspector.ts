@@ -580,6 +580,8 @@ export class TaskInspector implements Component {
 	 */
 	private handleBoardInput(data: string): boolean {
 		const keys = getKeybindings();
+		// A one-off notice, such as "Sent to …", lasts until the next key.
+		this.status = "";
 		if (this.filtering) {
 			if (matchesKey(data, "escape")) {
 				this.filtering = false;
@@ -899,7 +901,7 @@ export class TaskInspector implements Component {
 		const edge = theme.fg("borderMuted", "▔".repeat(Math.max(1, width)));
 		const header = ` ${theme.bold("Tasks")}${counts ? `  ${theme.fg("muted", counts)}` : ""}`;
 		const filterRow = this.filtering
-			? [` ${theme.fg("accent", "⌕")} ${this.filterInput.render(Math.max(1, width - 4))[0] ?? ""}`]
+			? [` ${theme.fg("accent", "⌕")} ${(this.filterInput.render(Math.max(1, width - 2))[0] ?? "").replace(/^> /, "")}`]
 			: this.filter
 				? [theme.fg("muted", ` ⌕ ${taskDisplayText(this.filter)}`)]
 				: [];
