@@ -130,9 +130,10 @@ export async function confirmStartupQuestion(
 	},
 ): Promise<boolean> {
 	return withEarlyInputHeldForStartupDialog(
-		() =>
+		({ hasUnfinishedInput }) =>
 			new Promise((resolve) => {
 				const decoder = new StringDecoder("utf8");
+				let requiresExplicitAnswer = hasUnfinishedInput;
 				let buffer = "";
 				let skipLeadingLf = false;
 				const ask = (prefix: string) => {
@@ -165,7 +166,7 @@ export async function confirmStartupQuestion(
 						if (
 							normalized === "y" ||
 							normalized === "yes" ||
-							normalized === "" ||
+							(normalized === "" && !requiresExplicitAnswer) ||
 							normalized === "n" ||
 							normalized === "no"
 						) {
@@ -176,6 +177,7 @@ export async function confirmStartupQuestion(
 							resolve(normalized === "y" || normalized === "yes");
 							return;
 						}
+						requiresExplicitAnswer = true;
 						keepStartupDialogDraft(answer);
 						ask("Answer y or n; your text is kept as a draft.\n");
 					}

@@ -1,5 +1,16 @@
 import { existsSync } from "node:fs";
-import { ProcessTerminal, setCapabilityOverrides, setKeybindings, type TUI, TuiMainScreen } from "@bastani/atomic-tui";
+import {
+	Container,
+	decodePrintableKey,
+	type Focusable,
+	getKeybindings,
+	ProcessTerminal,
+	setCapabilityOverrides,
+	setKeybindings,
+	Text,
+	type TUI,
+	TuiMainScreen,
+} from "@bastani/atomic-tui";
 import { ENV_AGENT_DIR, getAgentDir, getEnvValue, getSettingsPath } from "../config.js";
 import type { ExtensionUIDialogOptions } from "../core/extensions/index.js";
 import { KeybindingsManager } from "../core/keybindings.ts";
@@ -12,6 +23,7 @@ import {
 	type FirstTimeSetupResult,
 } from "../modes/interactive/components/first-time-setup.ts";
 import {
+	type GuardedDecision,
 	isTrustDecision,
 	STARTUP_DECISION_TYPED_TEXT_NOTICE,
 	safeTrustChoiceIndex,
@@ -22,7 +34,52 @@ import {
 	initTheme,
 	setTheme,
 	type TerminalTheme,
+	theme,
 } from "../modes/interactive/theme/theme.js";
+
+export class StartupDialogInputGuard extends Container implements Focusable {
+	private enterArmed: boolean;
+	private readonly notice = new Text("", 1, 0);
+	private readonly decision: GuardedDecision & Focusable;
+
+	constructor(decision: GuardedDecision & Focusable, hasUnfinishedInput: boolean) {
+		super();
+		this.decision = decision;
+		this.enterArmed = !hasUnfinishedInput;
+		if (!this.enterArmed) this.notice.setText(theme.fg("warning", STARTUP_DECISION_TYPED_TEXT_NOTICE));
+		this.addChild(decision);
+		this.addChild(this.notice);
+	}
+
+	get focused(): boolean {
+		return this.decision.focused;
+	}
+
+	set focused(value: boolean) {
+		this.decision.focused = value;
+	}
+
+	get capturesViewportInput(): boolean {
+		return this.decision.capturesViewportInput ?? false;
+	}
+
+	handleInput(data: string): boolean {
+		if (!this.enterArmed) {
+			const keybindings = getKeybindings();
+			if (keybindings.matches(data, "tui.select.confirm") || data === "\n") return true;
+			const typed =
+				decodePrintableKey(data) !== undefined ||
+				/^[^\x00-\x1f\x7f]+$/.test(data) ||
+				(data.startsWith("\x1b[200~") && data.length > "\x1b[200~\x1b[201~".length);
+			if (typed || keybindings.matches(data, "tui.select.up") || keybindings.matches(data, "tui.select.down")) {
+				this.enterArmed = true;
+				this.notice.setText("");
+			}
+		}
+		this.decision.handleInput(data);
+		return true;
+	}
+}
 
 function createStartupTui(settingsManager: SettingsManager): TUI {
 	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
@@ -172,14 +229,15 @@ export async function showStartupInput(
 	placeholder?: string,
 	dialogOptions?: ExtensionUIDialogOptions,
 ): Promise<string | undefined> {
-	return withEarlyInputHeldForStartupDialog(() =>
-		openStartupInput(settingsManager, title, placeholder, dialogOptions),
+	return withEarlyInputHeldForStartupDialog(({ hasUnfinishedInput }) =>
+		openStartupInput(settingsManager, title, hasUnfinishedInput, placeholder, dialogOptions),
 	);
 }
 
 function openStartupInput(
 	settingsManager: SettingsManager,
 	title: string,
+	hasUnfinishedInput: boolean,
 	placeholder?: string,
 	dialogOptions?: ExtensionUIDialogOptions,
 ): Promise<string | undefined> {
@@ -219,8 +277,9 @@ function openStartupInput(
 			() => void finish(undefined),
 			{ tui: ui, timeout: dialogOptions?.timeout },
 		);
-		ui.addChild(input);
-		ui.setFocus(input);
+		const guardedInput = new StartupDialogInputGuard(input, hasUnfinishedInput);
+		ui.addChild(guardedInput);
+		ui.setFocus(guardedInput);
 		ui.start();
 	});
 }

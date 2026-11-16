@@ -316,24 +316,16 @@ test("aborting or timing out an RPC dialog request cancels the exact host mount 
 	const engineUi = bridge.wrap(rawEngineUi, presentationInput);
 
 	const abortOne = new AbortController();
-	const selectResult = assert.rejects(engineUi.select("DIALOG-ONE", ["a", "b"], { signal: abortOne.signal }), {
-		code: "HumanInputCancelled",
-	});
-	const timedInput = assert.rejects(engineUi.input("DIALOG-TIMED", undefined, { timeout: 10 }), {
-		code: "HumanInputCancelled",
-	});
+	const selectResult = engineUi.select("DIALOG-ONE", ["a", "b"], { signal: abortOne.signal });
+	const timedInput = engineUi.input("DIALOG-TIMED", undefined, { timeout: 10 });
 	const abortEditor = new AbortController();
-	const editorResult = assert.rejects(engineUi.editor("DIALOG-EDITOR", "draft", { signal: abortEditor.signal }), {
-		code: "HumanInputCancelled",
-	});
+	const editorResult = engineUi.editor("DIALOG-EDITOR", "draft", { signal: abortEditor.signal });
 	await sleep(0);
 	assert.equal(h.mounts.length, 3);
 
 	abortOne.abort();
 	abortEditor.abort();
-	await selectResult;
-	await timedInput;
-	await editorResult;
+	assert.deepEqual(await Promise.all([selectResult, timedInput, editorResult]), [undefined, undefined, undefined]);
 	await sleep(0);
 
 	assert.equal(h.mounts[0]!.aborted, true);

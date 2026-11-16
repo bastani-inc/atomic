@@ -1,25 +1,38 @@
 import assert from "node:assert/strict";
 import type { Component } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import type { SessionInfo } from "../src/core/session-manager.ts";
 import type { SettingsManager } from "../src/core/settings-manager.ts";
 
 const screens = vi.hoisted(() => ({
-	created: [] as Array<{ setFocus: (component: unknown) => void }>,
+	created: [] as Array<{ setFocus: (component: Component) => void; sendChunk: (data: string) => void }>,
 	detectTheme: vi.fn<() => Promise<"dark">>(async () => "dark"),
 }));
 
 vi.mock("@bastani/atomic-tui", async (importOriginal) => {
 	const original = await importOriginal<typeof import("@bastani/atomic-tui")>();
 	class FakeMainScreen extends original.Container {
-		start = vi.fn();
-		stop = vi.fn();
+		private running = false;
+		private readonly buffer = new original.StdinBuffer();
+		start = vi.fn(() => {
+			this.running = true;
+		});
+		stop = vi.fn(() => {
+			this.running = false;
+		});
 		clear = vi.fn();
 		requestRender = vi.fn();
-		setFocus = vi.fn();
+		setFocus = vi.fn<(component: Component) => void>();
 		setClearOnShrink = vi.fn();
 		constructor() {
 			super();
+			this.buffer.on("data", (sequence) => {
+				if (this.running) this.setFocus.mock.calls.at(-1)?.[0].handleInput?.(sequence);
+			});
 			screens.created.push(this);
+		}
+		sendChunk(data: string): void {
+			this.buffer.process(data);
 		}
 	}
 	return { ...original, ProcessTerminal: class {}, TuiMainScreen: FakeMainScreen };
@@ -41,6 +54,7 @@ const { showStartupInput } = await import("../src/cli/startup-ui.ts");
 const { showDeprecationWarnings } = await import("../src/migrations.ts");
 const { confirmStartupQuestion, promptForDirtyCheckout } = await import("../src/main-session.ts");
 const { selectSession } = await import("../src/cli/session-picker.ts");
+const { initTheme } = await import("../src/modes/interactive/theme/theme.js");
 
 const ENTER = "\r";
 const DOWN = "\x1b[B";
@@ -133,6 +147,7 @@ function settled<T>(promise: Promise<T>): Promise<boolean> {
 }
 
 beforeEach(() => {
+	initTheme("dark");
 	screens.created.length = 0;
 	screens.detectTheme.mockReset().mockResolvedValue("dark");
 });
@@ -174,6 +189,18 @@ test.each(["setup", "selector"])("keeps keys typed while a startup %s closes (#5
 	await press(ENTER, "XYZ");
 	await answer;
 	assert.equal(consumeStartupInput(capture).text, "XYZ");
+});
+
+test("an unfinished startup prompt cannot submit an empty input dialog (#5241)", async () => {
+	const stdin = new FakeStdin();
+	const capture = startCapture(stdin);
+	stdin.emit("hello");
+	const answer = showStartupInput(settingsManager, "Reason");
+	const notice = (await focused()).render(160).join("\n");
+	await press(ENTER, "answer", ENTER);
+	assert.equal(await answer, "answer");
+	assert.ok(notice.includes("Answer with ↑↓ and Enter;"));
+	assert.equal(consumeStartupInput(capture).text, "hello");
 });
 
 test("keeps keys typed after submitting a standalone startup input (#5241)", async () => {
@@ -246,6 +273,50 @@ test("the dirty-checkout question keeps type-ahead, explains how to answer, and 
 		submissions: [],
 		heldForStartupDecision: true,
 	});
+});
+
+const pickerSessions: SessionInfo[] = ["first", "second"].map((name) => ({
+	path: `/tmp/sess-${name}.jsonl`,
+	id: `sess-${name}`,
+	cwd: "/tmp",
+	created: new Date(0),
+	modified: new Date(0),
+	messageCount: 1,
+	firstMessage: name,
+	allMessagesText: name,
+}));
+
+test.each(["navigation", "filter"])(
+	"an unfinished startup prompt cannot pick a session before %s input (#5241)",
+	async (kind) => {
+		const stdin = new FakeStdin();
+		const capture = startCapture(stdin);
+		stdin.emit("hello");
+		const picked = selectSession(
+			async () => pickerSessions,
+			async () => pickerSessions,
+			settingsManager,
+		);
+		const notice = (await focused()).render(160).join("\n");
+		await press(ENTER, kind === "navigation" ? DOWN : "second", ENTER);
+		assert.equal((await picked)?.id, "sess-second");
+		assert.ok(notice.includes("Answer with ↑↓ and Enter;"));
+		assert.equal(consumeStartupInput(capture).text, "hello");
+	},
+);
+
+test.each(["select", "cancel"])("keeps keys in the same stdin chunk after picker %s (#5241)", async (kind) => {
+	const stdin = new FakeStdin();
+	const capture = startCapture(stdin);
+	const picked = selectSession(
+		async () => pickerSessions,
+		async () => pickerSessions,
+		settingsManager,
+	);
+	await press(DOWN);
+	screens.created.at(-1)!.sendChunk(`${kind === "select" ? ENTER : "\x1b[27u"}XYZ`);
+	assert.equal((await picked)?.id ?? null, kind === "select" ? "sess-second" : null);
+	assert.equal(consumeStartupInput(capture).text, "XYZ");
 });
 
 test("the resume picker keeps type-ahead as a draft instead of filtering or picking with it", async () => {

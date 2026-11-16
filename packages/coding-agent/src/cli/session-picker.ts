@@ -7,8 +7,13 @@ import { getAgentDir } from "../config.js";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SessionInfo, SessionListProgress } from "../core/session-manager.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
-import { withEarlyInputHeldForStartupDialog } from "../main-early-input.ts";
+import { keepStartupDialogDraft, withEarlyInputHeldForStartupDialog } from "../main-early-input.ts";
 import { SessionSelectorComponent } from "../modes/interactive/components/session-selector.ts";
+import {
+	STARTUP_DECISION_TYPED_TEXT_NOTICE,
+	TrustDecisionSelector,
+} from "../modes/interactive/components/trust-decision-selector.ts";
+import { StartupDialogInputGuard } from "./startup-ui.ts";
 
 type SessionsLoader = (onProgress?: SessionListProgress) => Promise<SessionInfo[]>;
 
@@ -19,8 +24,8 @@ export async function selectSession(
 	settingsManager: SettingsManager,
 	deleteSession?: (sessionId: string) => Promise<void>,
 ): Promise<SessionInfo | null> {
-	return withEarlyInputHeldForStartupDialog(() =>
-		openSessionPicker(currentSessionsLoader, allSessionsLoader, settingsManager, deleteSession),
+	return withEarlyInputHeldForStartupDialog(({ hasUnfinishedInput }) =>
+		openSessionPicker(currentSessionsLoader, allSessionsLoader, settingsManager, hasUnfinishedInput, deleteSession),
 	);
 }
 
@@ -28,6 +33,7 @@ function openSessionPicker(
 	currentSessionsLoader: SessionsLoader,
 	allSessionsLoader: SessionsLoader,
 	settingsManager: SettingsManager,
+	hasUnfinishedInput: boolean,
 	deleteSession?: (sessionId: string) => Promise<void>,
 ): Promise<SessionInfo | null> {
 	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
@@ -36,26 +42,27 @@ function openSessionPicker(
 		const keybindings = KeybindingsManager.create();
 		setKeybindings(keybindings);
 		let resolved = false;
+		const finish = async (result: SessionInfo | null) => {
+			if (resolved) return;
+			resolved = true;
+			selector.dispose();
+			const trailingInput = new TrustDecisionSelector(
+				{ render: () => [], invalidate: () => {}, handleInput: () => {} },
+				keepStartupDialogDraft,
+				STARTUP_DECISION_TYPED_TEXT_NOTICE,
+			);
+			ui.setFocus(trailingInput);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			ui.stop();
+			trailingInput.dispose();
+			resolve(result);
+		};
 
 		const selector = new SessionSelectorComponent(
 			currentSessionsLoader,
 			allSessionsLoader,
-			(session) => {
-				if (!resolved) {
-					resolved = true;
-					selector.dispose();
-					ui.stop();
-					resolve(session);
-				}
-			},
-			() => {
-				if (!resolved) {
-					resolved = true;
-					selector.dispose();
-					ui.stop();
-					resolve(null);
-				}
-			},
+			(session) => void finish(session),
+			() => void finish(null),
 			() => {
 				selector.dispose();
 				ui.stop();
@@ -65,8 +72,9 @@ function openSessionPicker(
 			{ showRenameHint: false, keybindings, deleteSession },
 		);
 
-		ui.addChild(selector);
-		ui.setFocus(selector.getSessionList());
+		const guardedSelector = new StartupDialogInputGuard(selector, hasUnfinishedInput);
+		ui.addChild(guardedSelector);
+		ui.setFocus(guardedSelector);
 		ui.start();
 	});
 }
