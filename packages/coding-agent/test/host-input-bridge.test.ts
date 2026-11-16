@@ -64,6 +64,33 @@ for (const { method, invoke, expected } of dialogs) {
 			bridge.close();
 		});
 	}
+
+	for (const boundary of ["signal", "pre-aborted"] as const) {
+		test(`${method} returns its cancellation default when caller and owner share a ${boundary} abort (#5241)`, async () => {
+			for (const wrapSignal of [
+				(signal: AbortSignal) => signal,
+				(signal: AbortSignal) => AbortSignal.any([signal]),
+			]) {
+				const { host, requests } = pendingHost();
+				const owner = new AbortController();
+				const bridge = new HostInputBridge(
+					() => "session-1",
+					() => owner.signal,
+				);
+				bridge.bind(host);
+				const signal = wrapSignal(owner.signal);
+				if (boundary === "pre-aborted") owner.abort();
+				const result = invoke(bridge.wrap(noOpUIContext, host), { signal });
+				if (boundary === "signal") owner.abort();
+				assert.equal(await result, expected);
+				assert.equal(requests.length, boundary === "pre-aborted" ? 0 : 1);
+				if (requests[0]) {
+					assert.equal(requests[0].signal.aborted, true);
+				}
+				bridge.close();
+			}
+		});
+	}
 }
 
 for (const boundary of ["cancel", "close", "rebind", "owner"] as const) {

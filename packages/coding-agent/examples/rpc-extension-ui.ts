@@ -56,6 +56,12 @@ interface ExtensionUIRequest {
 	text?: string;
 }
 
+interface QueuedDialog {
+	dialog: Component;
+	id: string | null;
+	focus: Component;
+}
+
 // ============================================================================
 // Output log: accumulates styled lines, renders the tail that fits
 // ============================================================================
@@ -124,27 +130,38 @@ async function main() {
 
 	let activeDialog: Component | null = null;
 	let activeDialogId: string | null = null;
+	const dialogQueue: QueuedDialog[] = [];
 
-	function setBottomComponent(component: Component): void {
+	function setBottomComponent(component: Component, focus: Component = component): void {
 		root.clear();
 		root.addChild(outputLog);
 		if (isStreaming) root.addChild(loadingIndicator);
 		root.addChild(component);
-		tui.setFocus(component);
+		tui.setFocus(focus);
 		tui.requestRender();
 	}
 
 	function showPrompt(): void {
+		const next = dialogQueue.shift();
+		if (next) {
+			activeDialog = next.dialog;
+			activeDialogId = next.id;
+			setBottomComponent(next.dialog, next.focus);
+			return;
+		}
 		activeDialog = null;
 		activeDialogId = null;
-		setBottomComponent(promptInput);
-		tui.setFocus(promptInput.input);
+		setBottomComponent(promptInput, promptInput.input);
 	}
 
-	function showDialog(dialog: Component, id: string | null = null): void {
+	function showDialog(dialog: Component, id: string | null = null, focus: Component = dialog): void {
+		if (activeDialog) {
+			dialogQueue.push({ dialog, id, focus });
+			return;
+		}
 		activeDialog = dialog;
 		activeDialogId = id;
-		setBottomComponent(dialog);
+		setBottomComponent(dialog, focus);
 	}
 
 	function showLoading(): void {
@@ -210,8 +227,7 @@ async function main() {
 			onDone?.(undefined);
 		};
 		dialog.onCtrlD = exit;
-		showDialog(dialog, id);
-		tui.setFocus(dialog.inputComponent);
+		showDialog(dialog, id, dialog.inputComponent);
 	}
 
 	function handleExtensionUI(req: ExtensionUIRequest): void {
@@ -282,11 +298,19 @@ async function main() {
 				break;
 			}
 
-			case "cancel":
-				if (activeDialog && activeDialogId === id) {
-					showPrompt();
+			case "cancel": {
+				if (typeof id === "string" && id.length > 0) {
+					if (activeDialog && activeDialogId === id) {
+						showPrompt();
+						break;
+					}
+					const queuedIndex = dialogQueue.findIndex((entry) => entry.id === id);
+					if (queuedIndex !== -1) {
+						dialogQueue.splice(queuedIndex, 1);
+					}
 				}
 				break;
+			}
 
 			// Fire-and-forget methods: display as notification
 			case "notify": {

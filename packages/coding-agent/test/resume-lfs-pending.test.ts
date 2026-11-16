@@ -1,16 +1,37 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { resolve } from "node:path";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { thisProcess } from "../src/core/worktree-snapshot/process-holder.ts";
 import { pendingLfsDownload } from "../src/core/worktree-snapshot/restore.ts";
+
+const statHook = vi.hoisted(() => ({ removeBeforeStat: undefined as string | undefined }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	return {
+		...actual,
+		stat: (async (...args: Parameters<typeof actual.stat>) => {
+			if (statHook.removeBeforeStat !== undefined && String(args[0]) === statHook.removeBeforeStat) {
+				const target = statHook.removeBeforeStat;
+				statHook.removeBeforeStat = undefined;
+				rmSync(target);
+			}
+			return actual.stat(...args);
+		}) as typeof actual.stat,
+	};
+});
 
 let sandbox: GitSandbox;
 beforeEach(() => {
 	sandbox = new GitSandbox();
 });
-afterEach(() => sandbox.dispose());
+afterEach(() => {
+	statHook.removeBeforeStat = undefined;
+	sandbox.dispose();
+});
 
 /** A clone with one commit: its HEAD, its tree, and where a pending mark and Git's locks go in its Git directory. */
 async function checkout() {
@@ -91,6 +112,18 @@ describe("an LFS download an interrupted resume left pending (#5099)", () => {
 		assert.equal(done, false, "it waits while that process downloads");
 		rmSync(mark);
 		assert.deepEqual(await waiting, []);
+	});
+
+	test("a mark removed right after it is read and before its holder is checked finishes cleanly (#5099)", async () => {
+		const { clone, remote, head, tree, mark } = await checkout();
+		const parent = { host: thisProcess().host, pid: process.ppid };
+		writeFileSync(mark, JSON.stringify({ head, tree, remotes: [remote], holder: parent }));
+		const pull = await pendingLfsDownload(clone);
+		assert.ok(pull);
+		statHook.removeBeforeStat = resolve(mark);
+		assert.deepEqual(await pull(), []);
+		assert.equal(statHook.removeBeforeStat, undefined);
+		assert.equal(existsSync(mark), false);
 	});
 
 	test("a download whose holder stops while it is waited for is taken over (#5099)", async () => {

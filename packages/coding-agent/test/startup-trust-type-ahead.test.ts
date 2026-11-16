@@ -124,6 +124,7 @@ test("type-ahead submitted before the startup trust prompt comes back as a draft
 
 	stdin.emit("reply with PONG\r");
 	const answer = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
+	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(stdin.listeners.length, 0);
 	press(UP, UP, ENTER);
 	assert.equal((await answer)?.label, "Trust (this session only)");
@@ -143,10 +144,12 @@ test("keeps text typed before, during and after startup questions in order (#524
 
 	stdin.emit("first\rsecond");
 	const firstAnswer = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
+	await new Promise((resolve) => setImmediate(resolve));
 	press("third", DOWN, UP, ENTER);
 	await firstAnswer;
 	stdin.emit("fourth\rfifth");
 	const secondAnswer = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
+	await new Promise((resolve) => setImmediate(resolve));
 	press("sixth", DOWN, UP, ENTER);
 	await secondAnswer;
 	stdin.emit("seventh");
@@ -164,6 +167,7 @@ test("an unfinished captured prompt cannot answer a newly opened question (#5241
 	assert.ok(capture);
 	stdin.emit("hello");
 	const answer = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
+	await new Promise((resolve) => setImmediate(resolve));
 	const notice = dialog().render(120).join("\n");
 	press(ENTER);
 	await new Promise((resolve) => setTimeout(resolve, 40));
@@ -182,6 +186,7 @@ test("concurrent startup questions take turns reading keys and keep each charact
 	stdin.emit("a1\r");
 	const first = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
 	const second = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
+	await new Promise((resolve) => setImmediate(resolve));
 	const openedTogether = screens.created.length;
 	const dispatch = (...keys: string[]) => {
 		for (const key of keys) {
@@ -193,6 +198,7 @@ test("concurrent startup questions take turns reading keys and keep each charact
 	};
 	dispatch("k7", DOWN, UP, ENTER);
 	await first;
+	await new Promise((resolve) => setImmediate(resolve));
 	const secondAnswered = await settled(second);
 	const captureReaders = stdin.listeners.length;
 	dispatch(DOWN, UP, ENTER);

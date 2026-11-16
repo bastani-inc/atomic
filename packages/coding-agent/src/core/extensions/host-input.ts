@@ -194,7 +194,10 @@ export class HostInputBridge {
 		const controller = new AbortController();
 		const ownerSignal = this.signal();
 		let callerCancelled = false;
-		const abort = () => controller.abort();
+		const abort = () => {
+			if (!controller.signal.aborted && options?.signal?.aborted) callerCancelled = true;
+			controller.abort();
+		};
 		const cancelCaller = () => {
 			if (controller.signal.aborted) return;
 			callerCancelled = true;
@@ -213,9 +216,9 @@ export class HostInputBridge {
 			if (onAbort) controller.signal.removeEventListener("abort", onAbort);
 			this.pending.delete(controller);
 		};
-		if (ownerSignal?.aborted || options?.signal?.aborted) {
-			if (ownerSignal?.aborted) abort();
-			else cancelCaller();
+		if (options?.signal?.aborted || ownerSignal?.aborted) {
+			if (options?.signal?.aborted) cancelCaller();
+			else abort();
 			cleanup();
 			return callerCancelled && onCallerCancel
 				? Promise.resolve(onCallerCancel())

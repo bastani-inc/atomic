@@ -9,6 +9,22 @@ import { initTheme } from "../src/modes/interactive/theme/theme.js";
 beforeAll(() => initTheme("dark"));
 beforeEach(() => setKeybindings(new KeybindingsManager()));
 
+test("keeps line breaks within a guarded startup draft without trailing separators (#5241)", () => {
+	const drafts: string[] = [];
+	const selector = new TrustDecisionSelector(
+		new ExtensionSelectorComponent(
+			"Choice",
+			["No"],
+			() => {},
+			() => {},
+		),
+		(draft) => drafts.push(draft),
+	);
+	for (const key of ["abc", "\r", "def", "\n", "\r"]) selector.handleInput(key);
+	selector.dispose();
+	assert.deepEqual(drafts, ["abc\ndef"]);
+});
+
 test.each([
 	["draftx", "draft"],
 	["draft🦊", "draft"],

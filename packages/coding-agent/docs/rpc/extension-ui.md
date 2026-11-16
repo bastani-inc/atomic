@@ -30,7 +30,7 @@ Note: `ctx.mode` is `"rpc"` and `ctx.hasUI` is `true` in RPC mode because the di
 
 ### Extension UI Requests (stdout)
 
-All requests have `type: "extension_ui_request"`, an `id`, and a `method` field. Each dialog has a unique `id`; a later `cancel` request repeats that dialog's `id`.
+All requests have `type: "extension_ui_request"`, an `id`, and a `method` field. Each dialog has a unique `id`; a later `cancel` request repeats that dialog's `id`. Requests can overlap. If your client displays one dialog at a time, queue later requests instead of replacing the current dialog. Remove a queued dialog on a matching `cancel` without showing it or sending a response.
 
 #### select
 

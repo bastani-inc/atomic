@@ -96,6 +96,7 @@ test.each(["y", "n"] as const)(
 			},
 		};
 		const answer = confirmStartupQuestion("Fork this session into current directory?", { input, output });
+		await new Promise((resolve) => setImmediate(resolve));
 		try {
 			input.emit("\r");
 			assert.equal(await settled(answer), false);
@@ -151,6 +152,7 @@ test("confirmStartupQuestion retains invalid answers and CRLF suffix in typing o
 	};
 
 	const answer = confirmStartupQuestion("Fork this session into current directory?", { input, output });
+	await new Promise((resolve) => setImmediate(resolve));
 	input.emit("first invalid\r\n");
 	assert.equal(await settled(answer), false);
 

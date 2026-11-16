@@ -42,11 +42,15 @@ export class StartupDialogInputGuard extends Container implements Focusable {
 	private readonly notice = new Text("", 1, 0);
 	private readonly decision: GuardedDecision & Focusable;
 
-	constructor(decision: GuardedDecision & Focusable, hasUnfinishedInput: boolean) {
+	constructor(
+		decision: GuardedDecision & Focusable,
+		hasUnfinishedInput: boolean,
+		noticeText: string = STARTUP_DECISION_TYPED_TEXT_NOTICE,
+	) {
 		super();
 		this.decision = decision;
 		this.enterArmed = !hasUnfinishedInput;
-		if (!this.enterArmed) this.notice.setText(theme.fg("warning", STARTUP_DECISION_TYPED_TEXT_NOTICE));
+		if (!this.enterArmed) this.notice.setText(theme.fg("warning", noticeText));
 		this.addChild(decision);
 		this.addChild(this.notice);
 	}
@@ -66,7 +70,12 @@ export class StartupDialogInputGuard extends Container implements Focusable {
 	handleInput(data: string): boolean {
 		if (!this.enterArmed) {
 			const keybindings = getKeybindings();
-			if (keybindings.matches(data, "tui.select.confirm") || data === "\n") return true;
+			if (
+				keybindings.matches(data, "tui.select.confirm") ||
+				keybindings.matches(data, "tui.input.submit") ||
+				data === "\n"
+			)
+				return true;
 			const typed =
 				decodePrintableKey(data) !== undefined ||
 				/^[^\x00-\x1f\x7f]+$/.test(data) ||
@@ -255,6 +264,7 @@ function openStartupInput(
 			}
 			settled = true;
 			dialogOptions?.signal?.removeEventListener("abort", abandon);
+			if (result === undefined) keepStartupDialogDraft(input.getValue());
 			input.dispose();
 			const trailingInput = new TrustDecisionSelector(
 				{ render: () => [], invalidate: () => {}, handleInput: () => {} },
@@ -277,7 +287,11 @@ function openStartupInput(
 			() => void finish(undefined),
 			{ tui: ui, timeout: dialogOptions?.timeout },
 		);
-		const guardedInput = new StartupDialogInputGuard(input, hasUnfinishedInput);
+		const guardedInput = new StartupDialogInputGuard(
+			input,
+			hasUnfinishedInput,
+			"Type your answer and press Enter; your earlier text is kept as a draft.",
+		);
 		ui.addChild(guardedInput);
 		ui.setFocus(guardedInput);
 		ui.start();

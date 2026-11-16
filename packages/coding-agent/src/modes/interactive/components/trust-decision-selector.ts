@@ -92,6 +92,7 @@ export class TrustDecisionSelector extends Container {
 			this.enterArmed = true;
 			this.notice.setText("");
 		} else if (!this.enterArmed && (keybindings.matches(data, "tui.select.confirm") || data === "\n")) {
+			if (this.draft.length > 0 && !this.draft.endsWith("\n")) this.draft += "\n";
 			this.showNotice();
 			return true;
 		}
@@ -100,7 +101,7 @@ export class TrustDecisionSelector extends Container {
 	}
 
 	dispose(): void {
-		const draft = this.draft;
+		const draft = this.draft.replace(/\n+$/, "");
 		this.draft = "";
 		if (draft.length > 0) this.keepDraft(draft);
 		this.selector.dispose?.();

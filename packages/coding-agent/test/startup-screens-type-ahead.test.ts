@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { Component } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionInfo } from "../src/core/session-manager.ts";
 import type { SettingsManager } from "../src/core/settings-manager.ts";
 
@@ -199,8 +200,76 @@ test("an unfinished startup prompt cannot submit an empty input dialog (#5241)",
 	const notice = (await focused()).render(160).join("\n");
 	await press(ENTER, "answer", ENTER);
 	assert.equal(await answer, "answer");
-	assert.ok(notice.includes("Answer with ↑↓ and Enter;"));
+	assert.ok(notice.includes("Type your answer and press Enter; your earlier text is kept as a draft."));
 	assert.equal(consumeStartupInput(capture).text, "hello");
+});
+
+test.each(["timeout", "abort", "escape"])(
+	"keeps startup input text after %s and guards the next question (#5241)",
+	async (ending) => {
+		const stdin = new FakeStdin();
+		const capture = startCapture(stdin);
+		const controller = new AbortController();
+		const answer = showStartupInput(settingsManager, "Reason", undefined, {
+			timeout: ending === "timeout" ? 100 : undefined,
+			signal: controller.signal,
+		});
+		const choice = promptForDirtyCheckout(
+			{ checkout: "/a", recordedRoot: "/b", snapshotId: "0123456789abcdef" },
+			settingsManager,
+		);
+		await press("hello");
+		if (ending === "abort") controller.abort();
+		if (ending === "escape") await press("\x1b[27u");
+		assert.equal(await answer, undefined);
+		await press(ENTER);
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		const answeredByPromptEnter = await settled(choice);
+		await press(DOWN, ENTER);
+		await choice;
+		assert.equal(answeredByPromptEnter, false);
+		assert.equal(consumeStartupInput(capture).text, "hello");
+	},
+);
+
+test("keeps line breaks typed into a startup choice (#5241)", async () => {
+	const stdin = new FakeStdin();
+	const capture = startCapture(stdin);
+	const choice = promptForDirtyCheckout(
+		{ checkout: "/a", recordedRoot: "/b", snapshotId: "0123456789abcdef" },
+		settingsManager,
+	);
+	await press("fix bug", ENTER, "add tests", DOWN, ENTER);
+	assert.equal(await choice, "use");
+	assert.equal(consumeStartupInput(capture).text, "fix bug\nadd tests");
+});
+
+test.each(["picker", "input"])("keeps unread type-ahead out of the startup %s (#5241)", async (kind) => {
+	const stdin = new FakeStdin();
+	const capture = startCapture(stdin);
+	const text = kind === "picker" ? "second" : "hello";
+	setImmediate(() => {
+		if (stdin.listeners.length > 0) stdin.emit(`${text}\r`);
+		else screens.created.at(-1)!.sendChunk(`${text}\r`);
+	});
+	const answer =
+		kind === "picker"
+			? selectSession(
+					async () => pickerSessions,
+					async () => pickerSessions,
+					settingsManager,
+				)
+			: showStartupInput(settingsManager, "Reason");
+	await focused();
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	const answeredByTypeAhead = await settled(answer);
+	if (kind === "picker") await press(DOWN, ENTER);
+	else await press("reply", ENTER);
+	const result = await answer;
+	const draft = consumeStartupInput(capture).text;
+	assert.equal(answeredByTypeAhead, false);
+	assert.equal(typeof result === "string" ? result : result?.id, kind === "picker" ? "sess-second" : "reply");
+	assert.equal(draft, text);
 });
 
 test("keeps keys typed after submitting a standalone startup input (#5241)", async () => {
@@ -239,6 +308,7 @@ test("the deprecation notice keeps type-ahead and the key that closes it as a dr
 	const log = vi.spyOn(console, "log").mockImplementation(() => {});
 	try {
 		const notice = showDeprecationWarnings(["Old extension path"], stdin);
+		await new Promise((resolve) => setImmediate(resolve));
 		stdin.emit("and more");
 		await notice;
 	} finally {
@@ -302,6 +372,37 @@ test.each(["navigation", "filter"])(
 		assert.equal((await picked)?.id, "sess-second");
 		assert.ok(notice.includes("Answer with ↑↓ and Enter;"));
 		assert.equal(consumeStartupInput(capture).text, "hello");
+	},
+);
+
+test.each(["\x1b[13;5u", "\x1b[27;5;13~"])(
+	"guards a custom prompt-submit key %j in the startup picker (#5241)",
+	async (submitKey) => {
+		const bindings = vi.spyOn(KeybindingsManager, "create").mockReturnValue(
+			new KeybindingsManager({
+				"tui.input.submit": ["enter", "ctrl+enter"],
+			}),
+		);
+		const stdin = new FakeStdin();
+		const capture = startCapture(stdin);
+		try {
+			stdin.emit("hello");
+			const picked = selectSession(
+				async () => pickerSessions,
+				async () => pickerSessions,
+				settingsManager,
+			);
+			await press(submitKey);
+			await new Promise((resolve) => setTimeout(resolve, 40));
+			const answeredByPromptSubmit = await settled(picked);
+			await press(DOWN, ENTER);
+			await picked;
+			assert.equal(answeredByPromptSubmit, false);
+			assert.equal(consumeStartupInput(capture).text, "hello");
+		} finally {
+			bindings.mockRestore();
+			consumeStartupInput(capture);
+		}
 	},
 );
 
