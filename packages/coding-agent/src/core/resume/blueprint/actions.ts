@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { accessSync, constants, statSync, writeSync } from "node:fs";
-import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { parse } from "yaml";
 import { isBunBinary, isBunRuntime } from "../../../config.js";
 import { getPowerShellConfig, getShellConfig, type ShellConfig } from "../../../utils/shell.ts";
+import { renameWithRetry } from "../../rename-retry.ts";
 import { isWorkspaceGitError } from "../../workspace/errors.ts";
 import { redactUrlCredentials, runGit } from "../../worktree-snapshot/git.ts";
 import {
@@ -549,7 +550,7 @@ async function ensureRepository(
 			signal: context.options.signal,
 		});
 		try {
-			await rename(staging, repositoryDirectory);
+			await renameWithRetry(staging, repositoryDirectory, { signal: context.options.signal });
 		} catch (error) {
 			if (!(await isDirectory(repositoryDirectory))) throw error;
 		}

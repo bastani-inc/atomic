@@ -39,9 +39,10 @@ import {
 	reassertChatSessionExternalPromptLifecycle,
 	settleChatSessionPromptLifecycle,
 	startChatSessionExternalPromptLifecycle,
+	stopChatSessionWorkingLifecycle,
 	syncChatSessionAnimationTick,
 } from "./chat-session-host-runtime.ts";
-import { ChatSessionHostState } from "./chat-session-host-state.ts";
+import { ChatSessionHostState, countableTranscriptLength } from "./chat-session-host-state.ts";
 import type {
 	AgentSnapshotMessage,
 	ChatSessionHostEntry,
@@ -153,14 +154,34 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	/** Earlier history, shown above every entry while a reader scrolled away from the end keeps their place. */
 	prependMessages(messages: readonly AgentSnapshotMessage[]): void {
+		const previousCount = countableTranscriptLength(this.state);
 		this.state.liveChat.prependMessages(messages);
+		this.state.newMessages.historyPrepended(countableTranscriptLength(this.state) - previousCount);
 		this.state.requestRender?.();
 	}
 
 	/** Replaces the conversation with `messages`, keeping the host's own extra entries. */
 	replaceMessages(messages: readonly AgentSnapshotMessage[]): void {
 		this.state.liveChat.replaceMessages(messages, this.state.extraEntries);
+		this.state.newMessages.replaced(countableTranscriptLength(this.state));
 		this.state.requestRender?.();
+	}
+
+	resetFollowedSession(): void {
+		this.state.workingRunMeter.stop();
+		this.state.manualCompactionTakeoverPending = false;
+		this.state.compacting = false;
+		this.state.compactionStartedAt = undefined;
+		this.state.sdkBusy = false;
+		this.state.workingMessage = undefined;
+		if (this.state.statusMessage !== this.state.lastWarningMessage) this.state.statusMessage = "";
+		this.state.pendingSteeringMessages = [];
+		this.state.pendingFollowUpMessages = [];
+		this.state.unconfirmedQueuedMessages = [];
+		this.state.liveChat.clearPendingTools();
+		this.state.newMessages.reset();
+		stopChatSessionWorkingLifecycle(this.state, false);
+		syncChatSessionAnimationTick(this.state);
 	}
 	/**
 	 * Adopt the assistant message a live session is part-way through streaming.
@@ -192,7 +213,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			return true;
 		let messages: readonly AgentSnapshotMessage[];
 		try {
-			const manager = await SessionManager.open(store, sessionId);
+			const manager = await SessionManager.open(store, sessionId, undefined, { history: "tail" });
 			messages = repairOrphanToolResults(manager.buildSessionContext().messages, {
 				repairTrailing: true,
 				...(inFlightToolCallIds === undefined ? {} : { inFlightToolCallIds }),
@@ -203,9 +224,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (this.state.disposed) return false;
 		if (this.historyHydrated || this.state.transcript.length > this.state.extraEntries.length) return true;
 		this.historyHydrated = true;
+		const previousCount = countableTranscriptLength(this.state);
 		const extras = this.state.transcript.splice(0);
 		this.state.liveChat.appendMessages(messages);
 		this.state.transcript.push(...extras);
+		this.state.newMessages.historyPrepended(countableTranscriptLength(this.state) - previousCount);
 		this.state.requestRender?.();
 		return true;
 	}
@@ -272,14 +295,21 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 * no-op unless this host is actively showing a compaction label, so unrelated
 	 * workflow delivery busy state is preserved.
 	 */
-	hydrateCompactionStatus(reason: CompactionReason | undefined): void {
+	hydrateCompactionStatus(reason: CompactionReason | undefined, startedAt?: number): void {
 		const compactionReason = reason === "branchSummary" ? undefined : reason;
 		if (compactionReason === undefined) {
+			this.state.manualCompactionTakeoverPending = false;
+			this.state.compactionStartedAt = undefined;
 			if (!this.state.compacting) return;
 			this.state.compacting = false;
 			this.state.statusMessage = "";
 		} else {
 			this.state.compacting = true;
+			this.state.compactionStartedAt =
+				startedAt ??
+				this.state.getAgentSession?.()?.compactionStartedAt ??
+				this.state.getChatBoxSession?.()?.compactionStartedAt ??
+				Date.now();
 			this.state.sdkBusy = true;
 			this.state.statusMessage = compactionStatusMessage(compactionReason);
 		}

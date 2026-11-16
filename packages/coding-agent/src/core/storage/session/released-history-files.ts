@@ -383,6 +383,21 @@ function historyDirectory(path: string): SessionHistoryDirectory {
 			}
 		},
 		read: (file) => readFile(fileAt(file)),
+		async readRange(file, position, length) {
+			const handle = await open(fileAt(file), "r");
+			try {
+				const size = (await handle.stat()).size;
+				const bytes = new Uint8Array(Math.max(0, Math.min(length, size - position)));
+				for (let read = 0; read < bytes.byteLength; ) {
+					const { bytesRead } = await handle.read(bytes, read, bytes.byteLength - read, position + read);
+					if (bytesRead === 0) return { bytes: bytes.subarray(0, read), size };
+					read += bytesRead;
+				}
+				return { bytes, size };
+			} finally {
+				await handle.close();
+			}
+		},
 		async removeFile(file) {
 			await rm(fileAt(file), { force: true });
 		},

@@ -172,9 +172,10 @@ InteractiveModeBase.prototype.showModelSelector = function (
 			this.settingsManager,
 			this.session.modelRuntime,
 			this.session.scopedModels,
-			async (model) => {
+			async (model, thinkingLevel) => {
 				try {
 					await this.session.setModel(model, { persist: true });
+					if (thinkingLevel !== undefined) await this.session.setThinkingLevel(thinkingLevel, { persist: true });
 					await this.updateAvailableProviderCount();
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
@@ -340,6 +341,7 @@ InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveMo
 
 InteractiveModeBase.prototype.showUserMessageSelector = async function (this: InteractiveModeBase): Promise<void> {
 	await this.ensureDeferredStartupComplete();
+	await this.session.sessionManager?.loadFullHistory?.();
 	const userMessages = this.session.getUserMessagesForForking();
 
 	if (userMessages.length === 0) {

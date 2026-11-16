@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Usage } from "@bastani/atomic-ai/compat";
-import { type Component, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { type Component, replaceControlCharacters, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { SessionStats } from "../../../core/agent-session-types.js";
 import { isDebugEnabled } from "../../../core/debug.ts";
@@ -10,9 +10,15 @@ import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provi
 import { formatModelLabel } from "../../../core/model-label.ts";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
-import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
+import {
+	addHistoryUsageToTotals,
+	addUsageToTotals,
+	createUsageTotals,
+	type UsageTotals,
+} from "../../../core/usage-totals.ts";
 import { getEngineSessionStats } from "../../interactive-engine/engine-session-stats.js";
 import { theme } from "../theme/theme.js";
+import { keyText } from "./keybinding-hints.js";
 import { renderTaskFooter } from "./task-list.js";
 
 export interface FooterRenderStyle {
@@ -107,12 +113,19 @@ function summarizeEngineUsage(stats: SessionStats): UsageSummary {
 function summarizeEntryUsage(session: ChatBoxSession): UsageSummary {
 	// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
 	const totals = createUsageTotals();
-	let latestCacheHitRate: number | undefined;
+	const omitted = session.sessionManager.getOmittedHistoryTotals?.();
+	addHistoryUsageToTotals(totals, omitted);
+	let latestCacheHitRate = omitted?.latestAssistantUsage ? getCacheHitRate(omitted.latestAssistantUsage) : undefined;
+	let latestAssistantSeq = omitted?.latestAssistantSeq ?? -1;
 
 	for (const entry of session.sessionManager.getEntries()) {
 		if (entry.type === "message" && entry.message.role === "assistant") {
 			addUsageToTotals(totals, entry.message.usage);
-			latestCacheHitRate = getCacheHitRate(entry.message.usage);
+			const seq = session.sessionManager.getEntrySeq?.(entry.id) ?? Number.MAX_SAFE_INTEGER;
+			if (seq >= latestAssistantSeq) {
+				latestCacheHitRate = getCacheHitRate(entry.message.usage);
+				latestAssistantSeq = seq;
+			}
 		} else if (
 			(entry.type === "branch_summary" || entry.type === "session_summary" || entry.type === "compaction") &&
 			entry.usage
@@ -253,17 +266,17 @@ export function isChatSessionWorking(session: ChatBoxSession): boolean {
 	return session.isStreaming || session.isCompacting || session.isRetrying || session.isBashRunning;
 }
 
-/**
- * Sparse statusline below the composer: model + cwd only while the chat's agent is idle, and "esc to interrupt"
- * while it works in a chat that can interrupt it. Main, workflow stage and subagent chats all render it, so they
- * follow one rule.
- */
+function sanitizeFooterSegment(text: string): string {
+	return replaceControlCharacters(text).replace(/\s+/g, " ").trim();
+}
+
 export class FooterComponent implements Component {
 	private declare session: ChatBoxSession;
 	private declare footerData: ReadonlyFooterDataProvider;
 	private declare readonly renderStyle: FooterRenderStyle;
 	private readonly navigationActive: () => boolean;
 	private readonly backgroundTasks: (() => readonly TaskRecord[]) | undefined;
+	private readonly hintSegments: (() => readonly string[]) | undefined;
 	private branchCwd: string | undefined;
 	private releaseBranch: (() => void) | undefined;
 	private disposed = false;
@@ -275,12 +288,14 @@ export class FooterComponent implements Component {
 		renderStyle: FooterRenderStyle = defaultFooterRenderStyle,
 		navigationActive: () => boolean = () => false,
 		backgroundTasks?: () => readonly TaskRecord[],
+		hintSegments?: () => readonly string[],
 	) {
 		this.session = session;
 		this.footerData = footerData;
 		this.renderStyle = renderStyle;
 		this.navigationActive = navigationActive;
 		this.backgroundTasks = backgroundTasks;
+		this.hintSegments = hintSegments;
 	}
 
 	setSession(session: ChatBoxSession): void {
@@ -324,30 +339,57 @@ export class FooterComponent implements Component {
 		let pwd = replaceHome(cwd);
 		const branch = this.footerData.getGitBranch(cwd);
 		if (branch) pwd += ` (${branch})`;
-		const sessionName =
+		pwd = sanitizeFooterSegment(pwd);
+		const rawSessionName =
 			typeof this.session.sessionManager.getSessionName === "function"
 				? this.session.sessionManager.getSessionName()
 				: undefined;
-		if (sessionName) pwd += ` • ${sessionName}`;
+		const sessionName = rawSessionName ? sanitizeFooterSegment(rawSessionName) : "";
+		if (sessionName && !this.hintSegments) pwd += ` • ${sessionName}`;
 
 		const modelLabel = state.model
-			? formatModelLabel(state.model, {
-					thinkingLevel: state.thinkingLevel || "off",
-					omitProvider: this.footerData.getAvailableProviderCount() <= 1,
-				})
+			? formatModelLabel(
+					{
+						...state.model,
+						provider: sanitizeFooterSegment(state.model.provider),
+						id: sanitizeFooterSegment(state.model.id),
+					},
+					{
+						thinkingLevel: sanitizeFooterSegment(state.thinkingLevel || "off"),
+						omitProvider: this.footerData.getAvailableProviderCount() <= 1,
+					},
+				)
 			: "no-model";
 
-		// The model line is idle information. While the agent works, a chat that can interrupt it from the composer
-		// offers to; a chat under navigation, or one that shows a session it does not own, shows no status line.
 		const working = isChatSessionWorking(this.session);
 		const lines: string[] = [];
 		if (!working || !this.navigationActive()) {
+			const interruptKey = working ? keyText("app.interrupt") : "";
 			let statusText = working
-				? this.renderStyle.muted("esc to interrupt")
+				? interruptKey
+					? this.renderStyle.muted(`${interruptKey} to interrupt`)
+					: ""
 				: `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
-			if (areExperimentalFeaturesEnabled()) statusText += ` ${this.renderStyle.warning("xp")}`;
-			if (isDebugEnabled()) statusText += ` ${this.renderStyle.warning("debug")}`;
-			lines.push(truncateToWidth(statusText, width, this.renderStyle.dim("...")));
+			if (areExperimentalFeaturesEnabled()) {
+				statusText += `${statusText ? " " : ""}${this.renderStyle.warning("xp")}`;
+			}
+			if (isDebugEnabled()) {
+				statusText += `${statusText ? " " : ""}${this.renderStyle.warning("debug")}`;
+			}
+			const hintItems = (this.hintSegments?.() ?? []).map((segment) => this.renderStyle.muted(segment));
+			const hintSeparator = this.renderStyle.dim(" · ");
+			const hints = hintItems.length > 0 ? `${statusText ? hintSeparator : ""}${hintItems.join(hintSeparator)}` : "";
+			if (statusText && hints) {
+				const hintWidth = visibleWidth(hints);
+				const room = width - hintWidth;
+				lines.push(
+					room >= 12
+						? `${truncateToWidth(statusText, room, this.renderStyle.dim("..."))}${hints}`
+						: truncateToWidth(statusText + hints, width, this.renderStyle.dim("...")),
+				);
+			} else if (statusText || hints) {
+				lines.push(truncateToWidth(statusText || hints, width, this.renderStyle.dim("...")));
+			}
 		}
 		const statusRow = renderExtensionStatusRow(this.footerData.getExtensionStatuses(), width, this.renderStyle);
 		if (statusRow !== undefined) lines.push(statusRow);

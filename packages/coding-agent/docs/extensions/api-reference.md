@@ -61,6 +61,8 @@ ctx.sessionManager.getBranch()        // Current branch
 ctx.sessionManager.getLeafId()        // Current leaf entry ID
 ```
 
+A resumed compacted session starts from its latest compaction. Before an extension that Atomic does not bundle starts, Atomic reads the session's whole history, so `getEntries()` and `getTree()` return every entry. `ctx.sessionManager.hasFullHistory()` tells whether every entry is held, and `await ctx.sessionManager.loadFullHistory()` reads the rest when it is not.
+
 ### ctx.modelRegistry / ctx.model / ctx.scopedModels
 
 Access models, auth state, and provider-aware requests.

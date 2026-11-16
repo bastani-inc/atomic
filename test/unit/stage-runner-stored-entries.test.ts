@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import {
 	storedAssistantMessageSince,
 	storedEntryCount,
 } from "../../packages/workflows/src/runs/foreground/stage-runner-reopen.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /** What the stage runner takes for an `AgentSession`: a runtime with a session manager beside the agent's own state. */
 function agentSessionOver(sessionManager: object): StageSessionRuntime {
@@ -70,5 +74,48 @@ describe("a position in the stage session's store that a compaction leaves valid
 
 	test("sees nothing in a runtime that is not a session of the SDK (#4580)", () => {
 		assert.equal(storedAssistantMessageSince({ messages: [assistant] } as unknown as StageSessionRuntime, 0), false);
+	});
+
+	test("keeps its position in a session resumed from its latest compaction that reads its history (#5249)", async () => {
+		const directory = makeTempDirectory("atomic-stage-stored-");
+		const database = await openNodeSqliteDatabase(join(directory, "sessions.sqlite"));
+		const store = await SqlSessionStore.open(database);
+		try {
+			const writer = await SessionManager.create(store, "/project");
+			for (let turn = 0; turn < 4; turn++) {
+				await writer.appendMessage({ role: "user", content: `turn ${turn}`, timestamp: turn });
+				await writer.appendMessage(assistant);
+			}
+			const kept = await writer.appendMessage({ role: "user", content: "kept", timestamp: 9 });
+			await writer.appendCompaction("compacted", kept, 10, {
+				strategy: "verbatim-lines",
+				promptVersion: 6,
+				parameters: { compression_ratio: 0.5, preserve_recent: 1, query: "" },
+				stats: {
+					linesBefore: 2,
+					linesDeleted: 1,
+					linesKept: 1,
+					rangeCount: 1,
+					tokensBefore: 10,
+					tokensAfter: 5,
+					percentReduction: 50,
+				},
+				rung: "planned",
+			});
+			const manager = await SessionManager.open(store, writer.getSessionId(), undefined, { history: "tail" });
+			assert.equal(manager.hasFullHistory(), false);
+			const session = agentSessionOver(manager);
+			const mark = storedEntryCount(session);
+			assert.equal(mark, (await store.load(writer.getSessionId())).lastSeq);
+			await manager.loadFullHistory();
+			assert.equal(storedEntryCount(session), mark);
+			assert.equal(storedAssistantMessageSince(session, mark), false);
+			await manager.appendMessage(assistant);
+			assert.equal(storedAssistantMessageSince(session, mark), true);
+		} finally {
+			await store.close();
+			await database.close();
+			removeTempDirectory(directory);
+		}
 	});
 });

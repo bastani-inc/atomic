@@ -1,12 +1,14 @@
 import { stripVTControlCharacters } from "node:util";
 import { Container, Text } from "@bastani/atomic-tui";
 import { describe, expect, it, vi } from "vitest";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 
 type WorkingLoader = Text & { stop: () => void };
 
 type PromptTurnContext = {
+	workingRunMeter: WorkingRunMeter;
 	statusContainer: Container;
 	startupNoticesContainer: Container;
 	loadingAnimation: WorkingLoader | undefined;
@@ -73,6 +75,7 @@ function createContext(overrides: {
 }): PromptTurnContext {
 	const loaders: WorkingLoader[] = [];
 	const context = {
+		workingRunMeter: new WorkingRunMeter(),
 		statusContainer: new Container(),
 		startupNoticesContainer: new Container(),
 		loadingAnimation: undefined,

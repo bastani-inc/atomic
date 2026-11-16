@@ -17,7 +17,7 @@ import {
 	ForkSessionNotFoundError,
 	ForkSourceBusyError,
 } from "../../packages/workflows/src/durable/fork-errors.js";
-import { durableForkPoints, forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
+import { durableForkPoints, durableForkTarget, forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
 import type { RunJournalSeedEvent } from "../../packages/workflows/src/durable/journal/types.js";
 import { claimsOf, pendingForks } from "../../packages/workflows/src/durable/run-claims.js";
 import type {
@@ -26,6 +26,12 @@ import type {
 	DurableToolCheckpoint,
 	DurableWorkflowHandle,
 } from "../../packages/workflows/src/durable/types.js";
+import { run } from "../../packages/workflows/src/engine/run.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { createGraphStageActions } from "../../packages/workflows/src/extension/workflow-graph-stage-actions.js";
+import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { PendingStageMessage } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
 import {
@@ -234,6 +240,288 @@ test("a fork keeps the checkpoints that completed before the fork point and the 
 	]);
 	assert.equal((await copiedIds(backend, sourceId, {})).length, 11, "a whole-run fork copies every checkpoint");
 	assert.deepEqual(opened.stores, [], "no session store is opened when no session is copied");
+});
+
+function topo(stageId: string, status: string) {
+	return { topology: { version: 1, stageId, parentIds: [], status } } as unknown as Partial<DurableStageCheckpoint>;
+}
+
+test("a fork from a failed stage reruns it and everything after it from scratch, and replays the stages completed before it (#5224)", async () => {
+	const backend = await createMemoryTestBackend();
+	const sourceId = testRunId("fork-failed");
+	await register(backend, sourceId, { status: "failed" });
+	await commit(backend, [
+		tool(sourceId, "tool:before"),
+		stage(sourceId, "stage:plan", "plan", "stage:plan:1", { output: "plan", ...topo("plan-id", "completed") }),
+		stage(sourceId, "stage-session:verify", "verify", "stage:verify:1", topo("verify-id", "running")),
+		tool(sourceId, "tool:inside", {
+			topology: { version: 1, nodeId: "tool:inside", parentIds: [], ordinal: 1, order: 1 },
+		}),
+		stage(sourceId, "stage-meta:verify", "verify", "stage:verify:1", topo("verify-id", "failed")),
+	]);
+	assert.deepEqual(await pointPaths(backend, sourceId), ["plan"], "listForkPoints still lists completed stages only");
+	assert.deepEqual(
+		await copiedIds(backend, sourceId, { fromStage: "verify" }),
+		["tool:before", "stage:plan", "stage:verify:1:fork-point-topology"],
+		"the failed stage's records and the completed tool step inside it are left out, so both run again; only its place in the graph is kept",
+	);
+	assert.deepEqual(await durableForkTarget(backend, sourceId, "verify-id"), {
+		stagePath: "verify",
+		completed: false,
+		rerunToolSteps: 1,
+	});
+	assert.deepEqual(await durableForkTarget(backend, sourceId, "plan-id"), {
+		stagePath: "plan",
+		completed: true,
+		rerunToolSteps: 1,
+	});
+});
+
+test("the graph fork confirmation counts tool calls once across replay and excludes run metadata (#5234)", async () => {
+	const backend = await createMemoryTestBackend();
+	const store = createStore();
+	const sourceId = testRunId("fork-tool-count");
+	let writes = 0;
+	const definition = workflow({
+		name: "fork-tool-count",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("plan").complete("ok");
+			await ctx.tool("write", {}, async () => ++writes);
+			await ctx.stage("verify").prompt("verify");
+			return {};
+		},
+	});
+	const adapters = {
+		complete: { complete: async (text: string) => text },
+		prompt: {
+			prompt: async () => {
+				throw new Error("planned failure");
+			},
+		},
+	};
+	await run(definition, {}, { runId: sourceId, store, durableBackend: backend, adapters });
+	const plan = store.run(sourceId)!.stages[0]!;
+	await run(definition, {}, { runId: sourceId, store: createStore(), durableBackend: backend, adapters });
+	assert.equal(writes, 1, "the second attempt replays the tool call");
+	assert.deepEqual(await durableForkTarget(backend, sourceId, plan.id), {
+		stagePath: "plan",
+		completed: true,
+		rerunToolSteps: 1,
+	});
+});
+
+test("a loaded graph fork lookup reads only new journal events and keeps record order across clock changes (#5234)", async () => {
+	const backend = await createMemoryTestBackend();
+	const sourceId = testRunId("fork-lookup-tail");
+	await register(backend, sourceId, { status: "failed" });
+	await commit(backend, [
+		stage(sourceId, "plan", "plan", "plan:1", { output: "ok", completedAt: 100, ...topo("plan-id", "completed") }),
+		stage(sourceId, "verify-start", "verify", "verify:1", { completedAt: 5, ...topo("verify-id", "running") }),
+		tool(sourceId, "inside", {
+			completedAt: 3,
+			topology: { version: 1, nodeId: "tool:inside", parentIds: [], ordinal: 1, order: 1 },
+		}),
+		stage(sourceId, "verify-failed", "verify", "verify:1", { completedAt: 1, ...topo("verify-id", "failed") }),
+	]);
+	const reads = vi.spyOn(backend.journal, "read");
+	assert.deepEqual(await durableForkTarget(backend, sourceId, "verify-id"), {
+		stagePath: "verify",
+		completed: false,
+		rerunToolSteps: 1,
+	});
+	assert.ok(
+		reads.mock.calls.every(([, fromSeq]) => (fromSeq ?? 1) > 1),
+		"a loaded lookup never replays the journal from its start",
+	);
+	await backend.retainCheckpoints(sourceId, { ids: [], prefixes: [] });
+	reads.mockClear();
+	assert.deepEqual(await durableForkTarget(backend, sourceId, "verify-id"), {
+		stagePath: "verify",
+		completed: false,
+		rerunToolSteps: 1,
+	});
+	assert.ok(
+		reads.mock.calls.some(([, fromSeq]) => (fromSeq ?? 1) === 1),
+		"a narrowed view loads the missing records instead of using an incomplete projection",
+	);
+});
+
+test("a failed nested workflow boundary is a fork target in the graph (#5234)", async () => {
+	const backend = await createMemoryTestBackend();
+	const store = createStore();
+	const sourceId = testRunId("fork-failed-child");
+	const child = workflow({
+		name: "child",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("verify").prompt("verify");
+			return {};
+		},
+	});
+	const parent = workflow({
+		name: "parent",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.workflow(child, {});
+			return {};
+		},
+	});
+	await run(
+		parent,
+		{},
+		{
+			runId: sourceId,
+			store,
+			durableBackend: backend,
+			adapters: {
+				prompt: {
+					prompt: async () => {
+						throw new Error("planned failure");
+					},
+				},
+			},
+		},
+	);
+	const failedBoundary = store.run(sourceId)!.stages[0]!;
+	assert.equal(failedBoundary.status, "failed");
+	const target = await durableForkTarget(backend, sourceId, failedBoundary.id);
+	assert.equal(target?.stagePath, "workflow:child");
+	assert.equal(target?.completed, false);
+	assert.equal(target?.rerunToolSteps, 0);
+	const fork = await forkDurableRun(backend, {
+		...request(sourceId),
+		definition: parent,
+		fromStage: target!.stagePath,
+	});
+	assert.deepEqual(backend.getWorkflow(fork.runId)?.forkedFrom, { runId: sourceId, stagePath: target!.stagePath });
+});
+
+test("confirming a fork still targets the failed stage after a same-named sibling completes (#5234)", async () => {
+	const backend = await createMemoryTestBackend();
+	const store = createStore();
+	const sourceId = testRunId("fork-confirm-stage-identity");
+	const failed = Promise.withResolvers<void>();
+	const waiting = Promise.withResolvers<void>();
+	const finish = Promise.withResolvers<void>();
+	const definition = workflow({
+		name: "fork-confirm-stage-identity",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await Promise.allSettled([
+				ctx
+					.stage("review")
+					.prompt("fail")
+					.finally(() => failed.resolve()),
+				ctx.stage("review").prompt("wait"),
+			]);
+			return {};
+		},
+	});
+	const adapters = {
+		prompt: {
+			prompt: async (text: string) => {
+				if (text === "fail") throw new Error("planned failure");
+				waiting.resolve();
+				await finish.promise;
+				return text;
+			},
+		},
+	};
+	const running = run(
+		definition,
+		{},
+		{ runId: sourceId, store, durableBackend: backend, adapters, cwd: process.cwd() },
+	);
+	await Promise.all([failed.promise, waiting.promise]);
+	const jobs = createJobTracker();
+	const runtime = createExtensionRuntime({ definitions: [definition], store, jobs, adapters, cwd: process.cwd() });
+	const actions = createGraphStageActions({
+		owner: { ...captureWorkflowOwnerResources(), store, jobs },
+		runtime: () => runtime,
+		context: () => ({ hasUI: true }),
+	});
+	const selected = store.run(sourceId)!.stages.find((stage) => stage.status === "failed")!;
+	const confirmation = await actions.forkTarget!(sourceId, selected.id);
+	assert.equal(confirmation.ok, true);
+	finish.resolve();
+	await running;
+	const latest = await durableForkTarget(backend, sourceId, selected.id);
+	assert.notEqual(latest?.stagePath, confirmation.stagePath);
+	await assert.rejects(
+		forkDurableRun(backend, {
+			...request(sourceId),
+			definition,
+			fromStage: confirmation.stagePath,
+			expectedStageId: selected.id,
+		}),
+		{ name: "ForkTargetNotFoundError" },
+	);
+	const outcome = await actions.fork!(sourceId, selected.id);
+	assert.ok(outcome.ok, outcome.message);
+	assert.ok(outcome.runId);
+	await jobs.get(outcome.runId)?.promise;
+	assert.equal(backend.getWorkflow(outcome.runId)?.forkedFrom?.stagePath, latest?.stagePath);
+});
+
+test("an unknown fork target lists eligible unfinished stages as well as completed ones (#5234)", async () => {
+	const backend = await createMemoryTestBackend();
+	const sourceId = testRunId("fork-valid-unfinished");
+	await register(backend, sourceId, { status: "failed" });
+	await commit(backend, [
+		stage(sourceId, "plan", "plan", "plan:1", { output: "ok", ...topo("plan", "completed") }),
+		stage(sourceId, "verify", "verify", "verify:1", topo("verify", "failed")),
+	]);
+	await assert.rejects(forkDurableRun(backend, { ...request(sourceId), fromStage: "missing" }), {
+		name: "ForkTargetNotFoundError",
+		validStagePaths: ["plan", "verify"],
+		totalValidStagePaths: 2,
+	});
+});
+
+test("a fork from a completed stage is unchanged by unfinished-stage targets (#5224)", async () => {
+	const backend = await createMemoryTestBackend();
+	const sourceId = testRunId("fork-completed-same");
+	await register(backend, sourceId, { status: "failed" });
+	await commit(backend, [
+		stage(sourceId, "stage:a", "a", "stage:a:1", { output: "a", ...topo("a-id", "completed") }),
+		tool(sourceId, "tool:t"),
+		stage(sourceId, "stage:b", "b", "stage:b:1", { output: "b", ...topo("b-id", "completed") }),
+		stage(sourceId, "stage-meta:c", "c", "stage:c:1", topo("c-id", "failed")),
+	]);
+	assert.deepEqual(await copiedIds(backend, sourceId, { fromStage: "b" }), [
+		"stage:a",
+		"tool:t",
+		"stage:b:1:fork-point-topology",
+	]);
+});
+
+test("a stage still running is not a fork target, and a repeated failed stage name continues the occurrence numbering (#5224)", async () => {
+	const backend = await createMemoryTestBackend();
+	const sourceId = testRunId("fork-running");
+	await register(backend, sourceId, { status: "failed" });
+	await commit(backend, [
+		stage(sourceId, "stage:review", "review", "stage:review:1", { output: "r", ...topo("review-1", "completed") }),
+		stage(sourceId, "stage-meta:review2", "review", "stage:review:2", topo("review-2", "failed")),
+		stage(sourceId, "stage-session:other", "other", "stage:other:1", topo("other-id", "running")),
+	]);
+	await assert.rejects(forkDurableRun(backend, { ...request(sourceId), fromStage: "other" }), {
+		name: "ForkTargetNotFoundError",
+	});
+	assert.equal(await durableForkTarget(backend, sourceId, "other-id"), undefined);
+	assert.equal((await durableForkTarget(backend, sourceId, "review-2"))?.stagePath, "review#2");
+	assert.deepEqual(await copiedIds(backend, sourceId, { fromStage: "review#2" }), [
+		"stage:review",
+		"stage:review:2:fork-point-topology",
+	]);
 });
 
 test("a fork keeps the records of a prompt answered before the fork point, and not those of a stage that did not complete (#4879)", async () => {

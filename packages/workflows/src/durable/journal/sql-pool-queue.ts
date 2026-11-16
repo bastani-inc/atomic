@@ -48,7 +48,12 @@ import {
 	sqlPoolStorage,
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
-import { PoolCheckpointIndex, type PoolCheckpointRead, type PoolCheckpointSource } from "./pool-checkpoint-index.js";
+import {
+	PoolCheckpointIndex,
+	type PoolCheckpointRead,
+	type PoolCheckpointSource,
+	withRecorded,
+} from "./pool-checkpoint-index.js";
 import { guardedPoolWrite, poolFenceSchema, poolWriteBatch } from "./pool-guarded-write.js";
 import {
 	applyPoolSession,
@@ -65,6 +70,7 @@ import {
 	isSameCheckpointValue,
 	type PoolRemoteJournal,
 } from "./pool-remote-journal.js";
+import { poolSchemaPresent } from "./pool-schema-probe.js";
 import {
 	poolCheckpointUsage,
 	poolUsageSchema,
@@ -103,6 +109,18 @@ const POOL_SCHEMA_VERSION_UNCHUNKED = 2;
  * every change to what {@link SqlPoolQueue.open} creates, so a schema an earlier build set up is set up again.
  */
 const POOL_SCHEMA_REVISION = 1;
+const POOL_READY_SCHEMA_REVISION = 2;
+
+/** The statements that set up a pool's tables (`SqlPoolQueue.schema`). */
+interface PoolSchemaStatements {
+	readonly meta: string;
+	readonly tables: readonly string[];
+	readonly chunks: string;
+	readonly outbox: string;
+	readonly ship: string;
+	/** The per-root ready mark and the work-table triggers that advance it, on a store without row locks (#5230). */
+	readonly ready: readonly string[];
+}
 /** Work whose inputs a work row holds only as a stub, by the work this queue read: how many chunks hold them. */
 const chunkedInputs = new WeakMap<PoolWork, number>();
 /**
@@ -301,6 +319,18 @@ type OutboxRow = SqliteRow & {
 	payload: string;
 	last_seq: number | null;
 };
+/**
+ * What a shipped batch's plan validates and fences against: the attempt's work row, the root's latest sequence and the
+ * events past it the view holds already, that view, and the payloads its keys recorded already (#4768).
+ */
+interface ShipPlan {
+	readonly row: WorkRow;
+	readonly now: number;
+	readonly head: number;
+	readonly own: readonly number[];
+	readonly source: PoolCheckpointSource;
+	readonly existing?: ReadonlyMap<string, string>;
+}
 /** A commit's fences and writes, as its plan gathers them. */
 interface CommitWrite {
 	readonly fences: SqliteStatement[];
@@ -329,6 +359,24 @@ export interface PoolCommitReceipt {
 	readonly seq?: number;
 	readonly at: number;
 	readonly lastSeq?: number;
+	/**
+	 * The checkpoint is recorded in the host's local journal and not yet in the root's (#4768): the attempt reads it from
+	 * its own view until it is shipped.
+	 */
+	readonly local?: true;
+}
+/** Checkpoints of one attempt that a worker host ships to the root's journal in one request (#4768). */
+export interface PoolShipBatch {
+	/** The batch's content address: the same checkpoints of the same attempt are always the same batch. */
+	readonly id: string;
+	/** The host that ships it, as the ledger and the attempt's watermark record it. */
+	readonly host: string;
+	readonly events: readonly {
+		readonly localSeq: number;
+		readonly key: string;
+		/** The checkpoint's JSON, as the host accepted it. */
+		readonly payload: string;
+	}[];
 }
 /**
  * The audited fenced paths of the pool's hot writes (#5102): on PostgreSQL each runs as one fenced transaction whose
@@ -444,10 +492,13 @@ export class SqlPoolQueue {
 	 * database, and every commit is one transaction in it.
 	 */
 	static async open(storage: SqlPoolStorage, remote?: PoolRemoteJournal): Promise<SqlPoolQueue> {
-		const journal = storage.tables;
 		const pool = new SqlPoolQueue(storage, remote);
 		const { dialect } = storage;
-		const { int } = dialect.types;
+		const schema = pool.schema();
+		// A SQLite schema records no ledger, so its idempotent setup would run, under the write lock, at every open: every
+		// pooled child's worker opens the queue, and on a server many hosts share each open held the lock for a dozen
+		// round trips while every other writer waited (#4768). A schema that is current opens with reads alone.
+		if (await pool.openedWithoutLock(schema)) return pool;
 		await storage.transaction(async (tx) => {
 			const foreignKeys = dialect.foreignKeysCheck;
 			if (Number((await tx.get(foreignKeys.sql, ...foreignKeys.params))?.foreign_keys) !== 1)
@@ -461,53 +512,16 @@ export class SqlPoolQueue {
 				{ ledger, domain: "pool-queue", revision: POOL_SCHEMA_REVISION },
 				async () => {
 					setUp = true;
-					await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.meta}(version ${int} NOT NULL)`);
+					await tx.exec(schema.meta);
 					const versions = await tx.all(`SELECT version FROM ${pool.meta}`);
 					if (versions.length > 1) throw new Error("Corrupt pool schema metadata");
 					const version = versions[0]?.version;
 					if (version === undefined) await tx.run(`INSERT INTO ${pool.meta} VALUES (?)`, POOL_SCHEMA_VERSION);
 					else if (version !== 1 && version !== POOL_SCHEMA_VERSION_UNCHUNKED)
 						assertStorageSchemaVersion("journal", version, POOL_SCHEMA_VERSION);
-					await tx.exec(`
-				CREATE TABLE IF NOT EXISTS ${pool.roots}(root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE, timeout ${int} NOT NULL);
-				CREATE TABLE IF NOT EXISTS ${pool.work}(
-					id TEXT PRIMARY KEY, root TEXT NOT NULL REFERENCES ${pool.roots}(root) ON DELETE CASCADE,
-					boundary TEXT NOT NULL, descriptor TEXT NOT NULL, fingerprint TEXT NOT NULL,
-					state TEXT NOT NULL DEFAULT 'ready', generation ${int} NOT NULL DEFAULT 0,
-					worker TEXT, epoch ${int} NOT NULL DEFAULT 0, expires_at ${int} NOT NULL DEFAULT 0,
-					renewed_at ${int} NOT NULL DEFAULT 0,
-					ready_at ${int} NOT NULL, UNIQUE(root, boundary)${dialect.rowOrderColumn}
-				);
-				CREATE INDEX IF NOT EXISTS ${pool.work}_ready ON ${pool.work}(root, state, ready_at);
-				CREATE INDEX IF NOT EXISTS ${pool.work}_expiry ON ${pool.work}(state, expires_at);
-				CREATE TABLE IF NOT EXISTS ${poolSessionPrefix(storage)}session_owners(
-					session TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE, replay_key TEXT NOT NULL
-				);
-				CREATE UNIQUE INDEX IF NOT EXISTS ${pool.work}_scope ON ${pool.work}(root, ${dialect.jsonIndexText("descriptor", "scope")});
-				CREATE UNIQUE INDEX IF NOT EXISTS ${pool.work}_child ON ${pool.work}(root, ${dialect.jsonIndexText("descriptor", "childRunId")});
-				CREATE TABLE IF NOT EXISTS ${pool.operations}(
-					work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE,
-					generation ${int} NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(work, generation, operation)
-				);
-				CREATE TABLE IF NOT EXISTS ${pool.work}_results(
-					work TEXT PRIMARY KEY REFERENCES ${pool.work}(id) ON DELETE CASCADE, result TEXT NOT NULL
-				);
-			`);
-					await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.roots}_control(
-				root TEXT PRIMARY KEY REFERENCES ${pool.roots}(root) ON DELETE CASCADE,
-				state TEXT NOT NULL DEFAULT 'running', revision ${int} NOT NULL DEFAULT 0
-			)`);
-					await tx.exec(poolUsageSchema(journal.runs, dialect));
-					await tx.exec(poolFenceSchema(journal.runs, dialect));
-					// A worker host's claims check the drains a fleet controller asked for (#5072).
-					await tx.exec(fleetDrainsSchema(journal.runs, dialect));
-					// Keyed by the run, not the pool row: a root records its binding's snapshot before it queues anything.
-					await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.rootSnapshots}(
-				root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE,
-				epoch ${int} NOT NULL, snapshot TEXT NOT NULL${dialect.rowOrderColumn}
-			)`);
+					for (const statements of schema.tables) await tx.exec(statements);
 					if (version === 1) await pool.migrateFromVersion1(tx);
-					await pool.addChunks(tx);
+					await pool.addChunks(tx, schema.chunks);
 				},
 			);
 			// Set up by an earlier open: the version is read all the same, so a newer schema is refused (#4965).
@@ -518,33 +532,80 @@ export class SqlPoolQueue {
 			}
 			if (remote) {
 				await ensureStorageSchema(tx, dialect, { ledger, domain: "pool-outbox", revision: 1 }, () =>
-					tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.outbox}(
-					work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE,
-					generation ${int} NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL,
-					event_key TEXT NOT NULL, payload TEXT NOT NULL, last_seq ${int},
-					PRIMARY KEY(work, generation, operation)${dialect.rowOrderColumn}
-				)`),
+					tx.exec(schema.outbox),
 				);
 				pool.outboxPending = (await tx.get(`SELECT 1 AS held FROM ${pool.outbox} LIMIT 1`)) !== undefined;
 			}
+			if (!pool.rowLocks) {
+				await ensureStorageSchema(
+					tx,
+					dialect,
+					{ ledger, domain: "pool-ready", revision: POOL_READY_SCHEMA_REVISION },
+					async () => {
+						for (const statement of schema.ready) await tx.exec(statement);
+					},
+				);
+			}
+			// The ledger and watermarks a shipping root's hosts write (#4768): a domain of their own, so a pool set up before
+			// them gets them once, and a current one runs no DDL.
+			await ensureStorageSchema(tx, dialect, { ledger, domain: "pool-ship", revision: 1 }, () =>
+				tx.exec(schema.ship),
+			);
 		});
 		return pool;
 	}
 	/**
-	 * Large inputs and results in chunks (#4965): each table's chunk count column, 0 for every row written before it, the
-	 * chunk tables, deleted with their work or result, and the pool meta at version 3. Idempotent.
+	 * The statements that set up the pool's tables, in order: the meta table, then the tables, indexes and triggers in
+	 * groups, each sent as one `exec`; the chunk tables that `addChunks` creates; the shipping ledger and watermarks;
+	 * and the outbox of a pool whose journal is in another database.
 	 */
-	private async addChunks(tx: SqliteExecutor): Promise<void> {
-		const { int, blob } = this.dialect.types;
-		const has = async (table: string, column: string) => {
-			const probe = this.dialect.columnExists(table, column);
-			return (await tx.get(probe.sql, ...probe.params)) !== undefined;
-		};
-		if (!(await has(this.work, "inputs_chunks")))
-			await tx.exec(`ALTER TABLE ${this.work} ADD COLUMN inputs_chunks ${int} NOT NULL DEFAULT 0`);
-		if (!(await has(`${this.work}_results`, "chunks")))
-			await tx.exec(`ALTER TABLE ${this.work}_results ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
-		await tx.exec(`
+	private schema(): PoolSchemaStatements {
+		const journal = this.storage.tables;
+		const { dialect } = this;
+		const { int, blob } = dialect.types;
+		return {
+			meta: `CREATE TABLE IF NOT EXISTS ${this.meta}(version ${int} NOT NULL)`,
+			tables: [
+				`
+				CREATE TABLE IF NOT EXISTS ${this.roots}(root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE, timeout ${int} NOT NULL);
+				CREATE TABLE IF NOT EXISTS ${this.work}(
+					id TEXT PRIMARY KEY, root TEXT NOT NULL REFERENCES ${this.roots}(root) ON DELETE CASCADE,
+					boundary TEXT NOT NULL, descriptor TEXT NOT NULL, fingerprint TEXT NOT NULL,
+					state TEXT NOT NULL DEFAULT 'ready', generation ${int} NOT NULL DEFAULT 0,
+					worker TEXT, epoch ${int} NOT NULL DEFAULT 0, expires_at ${int} NOT NULL DEFAULT 0,
+					renewed_at ${int} NOT NULL DEFAULT 0,
+					ready_at ${int} NOT NULL, UNIQUE(root, boundary)${dialect.rowOrderColumn}
+				);
+				CREATE INDEX IF NOT EXISTS ${this.work}_ready ON ${this.work}(root, state, ready_at);
+				CREATE INDEX IF NOT EXISTS ${this.work}_expiry ON ${this.work}(state, expires_at);
+				CREATE TABLE IF NOT EXISTS ${poolSessionPrefix(this.storage)}session_owners(
+					session TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE, replay_key TEXT NOT NULL
+				);
+				CREATE UNIQUE INDEX IF NOT EXISTS ${this.work}_scope ON ${this.work}(root, ${dialect.jsonIndexText("descriptor", "scope")});
+				CREATE UNIQUE INDEX IF NOT EXISTS ${this.work}_child ON ${this.work}(root, ${dialect.jsonIndexText("descriptor", "childRunId")});
+				CREATE TABLE IF NOT EXISTS ${this.operations}(
+					work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE,
+					generation ${int} NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(work, generation, operation)
+				);
+				CREATE TABLE IF NOT EXISTS ${this.work}_results(
+					work TEXT PRIMARY KEY REFERENCES ${this.work}(id) ON DELETE CASCADE, result TEXT NOT NULL
+				);
+			`,
+				`CREATE TABLE IF NOT EXISTS ${this.roots}_control(
+				root TEXT PRIMARY KEY REFERENCES ${this.roots}(root) ON DELETE CASCADE,
+				state TEXT NOT NULL DEFAULT 'running', revision ${int} NOT NULL DEFAULT 0
+			)`,
+				poolUsageSchema(journal.runs, dialect),
+				poolFenceSchema(journal.runs, dialect),
+				// A worker host's claims check the drains a fleet controller asked for (#5072).
+				fleetDrainsSchema(journal.runs, dialect),
+				// Keyed by the run, not the pool row: a root records its binding's snapshot before it queues anything.
+				`CREATE TABLE IF NOT EXISTS ${this.rootSnapshots}(
+				root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE,
+				epoch ${int} NOT NULL, snapshot TEXT NOT NULL${dialect.rowOrderColumn}
+			)`,
+			],
+			chunks: `
 			CREATE TABLE IF NOT EXISTS ${this.work}_input_chunks(
 				work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE, idx ${int} NOT NULL, data ${blob} NOT NULL,
 				PRIMARY KEY(work, idx)
@@ -553,7 +614,93 @@ export class SqlPoolQueue {
 				work TEXT NOT NULL REFERENCES ${this.work}_results(work) ON DELETE CASCADE, idx ${int} NOT NULL, data ${blob} NOT NULL,
 				PRIMARY KEY(work, idx)
 			);
-		`);
+		`,
+			ship: `
+			CREATE TABLE IF NOT EXISTS ${journal.runs}_ship_batches(
+				batch TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE,
+				generation ${int} NOT NULL, worker TEXT, epoch ${int} NOT NULL, host TEXT NOT NULL,
+				first_local_seq ${int} NOT NULL, last_local_seq ${int} NOT NULL, events ${int} NOT NULL,
+				shipped_at ${int} NOT NULL${dialect.rowOrderColumn}
+			);
+			CREATE INDEX IF NOT EXISTS ${journal.runs}_ship_batches_work ON ${journal.runs}_ship_batches(work, generation);
+			CREATE TABLE IF NOT EXISTS ${journal.runs}_ship_watermarks(
+				work TEXT PRIMARY KEY REFERENCES ${this.work}(id) ON DELETE CASCADE, generation ${int} NOT NULL,
+				host TEXT NOT NULL, last_local_seq ${int} NOT NULL, last_event_key TEXT NOT NULL,
+				shipped_at ${int} NOT NULL${dialect.rowOrderColumn}
+			);
+			`,
+			outbox: `CREATE TABLE IF NOT EXISTS ${this.outbox}(
+					work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE,
+					generation ${int} NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL,
+					event_key TEXT NOT NULL, payload TEXT NOT NULL, last_seq ${int},
+					PRIMARY KEY(work, generation, operation)${dialect.rowOrderColumn}
+				)`,
+			ready: [
+				`CREATE TABLE IF NOT EXISTS ${this.roots}_ready(
+					root TEXT PRIMARY KEY REFERENCES ${this.roots}(root) ON DELETE CASCADE,
+					revision ${int} NOT NULL DEFAULT 0
+				)`,
+				...["INSERT", "UPDATE"].map(
+					(
+						event,
+					) => `CREATE TRIGGER IF NOT EXISTS ${this.roots}_ready_${event.toLowerCase()} AFTER ${event} ON ${this.work}
+					WHEN NEW.state = 'ready'
+					BEGIN
+						INSERT INTO ${this.roots}_ready(root, revision) VALUES (NEW.root, 1)
+						ON CONFLICT(root) DO UPDATE SET revision = revision + 1;
+					END`,
+				),
+			],
+		};
+	}
+	/**
+	 * Opens a pool on a libSQL database whose schema is this build's already with reads alone, which never take the write
+	 * lock: every table, index and trigger `schema` creates exists, so do the columns `addChunks` adds, the meta holds
+	 * this build's version, and the connection enforces foreign keys. False, having changed nothing, when any of that does
+	 * not hold. A database that sends no batches, as a local node:sqlite journal, holds its write lock for no network
+	 * round trip and sets up under it as before; a database with versioned migrations checks its ledger under its lock.
+	 */
+	private async openedWithoutLock(schema: PoolSchemaStatements): Promise<boolean> {
+		const { dialect } = this;
+		const statements = [
+			schema.meta,
+			...schema.tables,
+			schema.chunks,
+			schema.ship,
+			...(this.remote ? [schema.outbox] : []),
+			...(this.rowLocks ? [] : schema.ready),
+		];
+		const columns = [
+			[this.work, "inputs_chunks"],
+			[`${this.work}_results`, "chunks"],
+		] as const;
+		if (!(await poolSchemaPresent(this.storage, statements, columns))) return false;
+		return this.storage.read(async (read) => {
+			const foreignKeys = dialect.foreignKeysCheck;
+			if (Number((await read.get(foreignKeys.sql, ...foreignKeys.params))?.foreign_keys) !== 1) return false;
+			const versions = await read.all(`SELECT version FROM ${this.meta}`);
+			if (versions.length !== 1 || versions[0]!.version !== POOL_SCHEMA_VERSION) return false;
+			if (this.remote)
+				this.outboxPending = (await read.get(`SELECT 1 AS held FROM ${this.outbox} LIMIT 1`)) !== undefined;
+			return true;
+		});
+	}
+
+	/**
+	 * Large inputs and results in chunks (#4965): each table's chunk count column, 0 for every row written before it, the
+	 * chunk tables, deleted with their work or result, and the pool meta at version 3. Idempotent.
+	 */
+	private async addChunks(tx: SqliteExecutor, chunks: string): Promise<void> {
+		const { int } = this.dialect.types;
+		const has = async (table: string, column: string) => {
+			const probe = this.dialect.columnExists(table, column);
+			return (await tx.get(probe.sql, ...probe.params)) !== undefined;
+		};
+		if (!(await has(this.work, "inputs_chunks")))
+			await tx.exec(`ALTER TABLE ${this.work} ADD COLUMN inputs_chunks ${int} NOT NULL DEFAULT 0`);
+		if (!(await has(`${this.work}_results`, "chunks")))
+			await tx.exec(`ALTER TABLE ${this.work}_results ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
+		await tx.exec(chunks);
 		await tx.run(`UPDATE ${this.meta} SET version = ? WHERE version < ?`, POOL_SCHEMA_VERSION, POOL_SCHEMA_VERSION);
 	}
 	/**
@@ -955,6 +1102,7 @@ export class SqlPoolQueue {
 				state,
 			);
 			const row = (await tx.get(`SELECT revision FROM ${this.roots}_control WHERE root = ?`, lease.runId))!;
+			if (state === "running") await this.notifyReady(tx, lease.runId);
 			return { state, revision: Number(row.revision) };
 		});
 	}
@@ -1053,9 +1201,12 @@ export class SqlPoolQueue {
 		// A journal in another database takes the boundary's start first, as its own idempotent write: a crash before the
 		// work row below leaves a start with no work, which the root's resume enqueues again and finds already recorded.
 		if (this.remote) await this.recordBoundaryStart(lease, key, boundary);
+		const matching = `root = ? AND (boundary = ? OR ${this.dialect.jsonIndexText("descriptor", "scope")} = ? OR ${this.dialect.jsonIndexText("descriptor", "childRunId")} = ?)`;
+		// New work in a libSQL database is queued in one request, which holds the write lock for that request only (#4768).
+		const queued = await this.enqueueInOneRequest(lease, descriptor, matching, fingerprint, payload, key, options);
+		if (queued !== undefined) return queued;
 		return this.transaction(async (tx) => {
 			const { now } = await this.authority(tx, lease);
-			const matching = `root = ? AND (boundary = ? OR ${this.dialect.jsonIndexText("descriptor", "scope")} = ? OR ${this.dialect.jsonIndexText("descriptor", "childRunId")} = ?)`;
 			await this.lockRows(tx, this.work, matching, lease.runId, boundaryId, scope, childRunId);
 			// Work carries its root's snapshot only while every blob of it is stored (#5077): the child of work queued
 			// without one restores as for a capture that was unavailable, never from a snapshot it cannot restore.
@@ -1146,6 +1297,101 @@ export class SqlPoolQueue {
 				inputs: descriptor.inputs,
 			};
 		});
+	}
+	/**
+	 * {@link enqueue} of new work as one request on a database that sends batches (libSQL), planned from a read outside
+	 * the write lock: fences repeat everything the plan decided on (the root's lease, no work of the boundary, scope or
+	 * child yet, no overlapping scope, the snapshot's blobs stored, and the boundary's event not recorded yet), so the
+	 * batch writes exactly what the transaction would, or nothing, and is planned again. Undefined, having written
+	 * nothing, for work the transaction handles: work the root queued before (rebound or made claimable again), sessions
+	 * to claim, inputs or a descriptor stored in chunks, a pool whose journal is in another database, or a database
+	 * without batches.
+	 */
+	private async enqueueInOneRequest(
+		lease: Lease,
+		descriptor: PoolWorkDescriptor,
+		matching: string,
+		fingerprint: string,
+		payload: string,
+		key: string,
+		options: PoolEnqueueOptions,
+	): Promise<PoolWork | undefined> {
+		if (
+			this.storage.batch === undefined ||
+			this.remote !== undefined ||
+			this.rowLocks ||
+			(options.claimSessions !== undefined && options.claimSessions.length > 0)
+		)
+			return undefined;
+		const { boundaryId, childRunId, scope } = descriptor;
+		const root = lease.runId;
+		const scopeOf = this.dialect.jsonIndexText("descriptor", "scope");
+		const handled = Symbol("handled by the transaction");
+		const queued = await guardedPoolWrite<PoolWork | typeof handled>(this.storage, async (read) => {
+			const { now } = await this.authority(read, lease);
+			if (
+				await read.get(`SELECT 1 AS held FROM ${this.work} WHERE ${matching}`, root, boundaryId, scope, childRunId)
+			)
+				return { done: handled };
+			const siblings = await read.all<SqliteRow & { scope: string }>(
+				`SELECT ${scopeOf} AS scope FROM ${this.work} WHERE root = ?`,
+				root,
+			);
+			if (siblings.some((item) => scope.startsWith(`${item.scope}:`) || item.scope.startsWith(`${scope}:`)))
+				throw new Error("Pool work scopes overlap");
+			const withSnapshot = await this.withStoredSnapshot(read, descriptor);
+			const json = serializeJson({ ...withSnapshot });
+			const whole = await this.keepsWhole(read, json, payload);
+			const stored = storedDescriptor(json, whole);
+			if (stored.chunks.length > 0) return { done: handled };
+			const existing = await this.eventPayload(read, root, key);
+			if (existing !== undefined && existing !== payload) throw new Error("Pool boundary identity conflict");
+			const head = await read.get<SqliteRow & { seq: number }>(
+				`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${this.journal.events} WHERE run_id = ?`,
+				root,
+			);
+			// The sequence is taken in SQL as the batch runs; one past the limit fails here, as the transaction fails.
+			journalCounter(root, "seq", Number(head?.seq ?? 0) + 1, "overflow");
+			const snapshot = withSnapshot.execution.workspaceSnapshot as unknown as WorktreeSnapshot | undefined;
+			const blobsFence = snapshot === undefined ? undefined : this.blobs?.storedFence([snapshot]);
+			const notice = this.readyNotice(root);
+			const id = randomUUID();
+			return {
+				fences: [
+					this.rootFence(lease),
+					{
+						sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.work} WHERE ${matching})`,
+						params: [root, boundaryId, scope, childRunId],
+					},
+					{
+						sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.work} WHERE root = ? AND (substr(?, 1, length(${scopeOf}) + 1) = ${scopeOf} || ':' OR substr(${scopeOf}, 1, length(?) + 1) = ? || ':'))`,
+						params: [root, scope, scope, scope],
+					},
+					...(blobsFence === undefined ? [] : [blobsFence]),
+					...(existing === undefined
+						? [
+								{
+									sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.journal.events} WHERE run_id = ? AND key = ?)`,
+									params: [root, key],
+								},
+							]
+						: []),
+				],
+				writes: [
+					{
+						sql: `INSERT INTO ${this.work}(id, root, boundary, descriptor, fingerprint, epoch, ready_at, inputs_chunks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+						params: [id, root, boundaryId, stored.descriptor, fingerprint, lease.epoch, now, 0],
+					},
+					...(existing === undefined
+						? this.eventWrites(root, undefined, lease.epoch, key, payload, "?", [now], undefined, whole)
+						: []),
+					...(notice === undefined ? [] : [notice]),
+				],
+				reads: [{ sql: `SELECT * FROM ${this.work} WHERE id = ?`, params: [id] }],
+				result: ([[row]]) => ({ ...fromRow(row as WorkRow), inputs: descriptor.inputs }),
+			};
+		});
+		return queued === handled ? undefined : queued;
 	}
 	/**
 	 * `work` without the worktree snapshot it carries, which its row no longer carries either: for work a root queued in
@@ -1316,6 +1562,7 @@ export class SqlPoolQueue {
 		definitions: readonly Pick<PoolWorkDescriptor, "definition" | "digest">[],
 		durationMs: number,
 		placement?: PoolClaimPlacement,
+		outboxBlocked?: (error: unknown) => void,
 	): Promise<PoolWork | undefined> {
 		positive(durationMs);
 		lease = snapshotLease(lease);
@@ -1323,15 +1570,22 @@ export class SqlPoolQueue {
 		validateText("holderId", worker);
 		const compatible = compatibleClause(this.dialect, definitions.length);
 		if (this.remote) {
+			try {
+				while (this.outboxPending || this.draining !== undefined) await this.drainOutbox(lease);
+			} catch (error) {
+				if (error instanceof StaleLeaseError) {
+					await this.remote.fresh(lease);
+					throw error;
+				}
+				outboxBlocked?.(error);
+				return undefined;
+			}
 			await this.remote.fresh(lease);
-			// No work is handed out while an event this root's workers were told is committed is missing from the
-			// journal: a replacement attempt replays the journal, so it must find that event there. A delivery in
-			// flight counts as missing events too, since it clears the pending flag when it starts, not when it ends;
-			// and a commit can stage another row after the pass this claim joined has read its rows, so ask again.
 			try {
 				while (this.outboxPending || this.draining !== undefined) await this.drainOutbox(lease);
 			} catch (error) {
 				if (error instanceof StaleLeaseError) throw error;
+				outboxBlocked?.(error);
 				return undefined;
 			}
 		}
@@ -1405,7 +1659,7 @@ export class SqlPoolQueue {
 					// re-enqueued since resuming, so an earlier incarnation's released work waits for its enqueue (#3979).
 					reads: [
 						{
-							sql: `UPDATE ${this.work} SET state = 'leased', generation = generation + 1, worker = ?, epoch = ?, expires_at = ${this.now} + ?, renewed_at = ${this.now}
+							sql: `WITH clock AS (SELECT ${this.now} AS now) UPDATE ${this.work} SET state = 'leased', generation = generation + 1, worker = ?, epoch = ?, expires_at = (SELECT now FROM clock) + ?, renewed_at = (SELECT now FROM clock)
 						WHERE id = (SELECT id FROM ${this.work} WHERE root = ? AND state = 'ready' AND epoch = ? AND ready_at <= ${this.now} AND (${compatible}) ${placed.clause} ORDER BY ready_at, ${this.dialect.rowOrder()} LIMIT 1${this.dialect.lockClause("update-skip-locked")})
 						RETURNING *`,
 							params: [
@@ -1457,6 +1711,64 @@ export class SqlPoolQueue {
 			generation: Number(row.generation),
 			...(row.workspace === null ? {} : { workspace: JSON.parse(String(row.workspace)) as WorkspaceBinding }),
 		}));
+	}
+	async acceptsClaim(
+		lease: Lease,
+		host: { readonly id: string; readonly providerId?: string },
+	): Promise<"accepted" | "control" | "drain"> {
+		lease = snapshotLease(lease);
+		const requested = { ...host };
+		await this.remote?.fresh(lease);
+		return this.storage.read(async (read) => {
+			const available = this.dialect.flag(
+				`NOT EXISTS (SELECT 1 FROM ${this.journal.runs}_fleet_drains WHERE host = CAST(? AS TEXT) OR provider_id = CAST(? AS TEXT))`,
+			);
+			const row = await read.get<
+				NonNullable<Awaited<ReturnType<SqlPoolQueue["leaseRow"]>>> & {
+					control: string | null;
+					host_available: number | bigint;
+				}
+			>(
+				`SELECT l.*, r.status, p.timeout, ${this.now} AS now,
+				(SELECT state FROM ${this.roots}_control WHERE root = l.run_id) AS control,
+				${available} AS host_available
+				FROM ${this.journal.leases} l JOIN ${this.journal.runs} r ON r.run_id = l.run_id
+				LEFT JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ?`,
+				requested.id,
+				requested.providerId ?? null,
+				lease.runId,
+			);
+			const { status } = this.authorityOf(row, lease);
+			if (status !== "running" || (row!.control !== null && row!.control !== "running")) return "control";
+			return Number(row!.host_available) === 1 ? "accepted" : "drain";
+		});
+	}
+
+	async readyMark(root: string): Promise<string | undefined> {
+		const readiness = this.rowLocks
+			? "bit_xor(hash_record_extended(ROW(xmin, ctid), 0))"
+			: `(SELECT revision FROM ${this.roots}_ready WHERE root = ?)`;
+		const row = await (this.storage.peek ?? this.storage.read)((executor) =>
+			executor.get<
+				SqliteRow & {
+					ready: number | bigint;
+					latest: number | bigint | null;
+					readiness: number | bigint | string | null;
+					revision: number | bigint | null;
+				}
+			>(
+				`SELECT COUNT(*) AS ready, MAX(ready_at) AS latest,
+				${readiness} AS readiness,
+				(SELECT revision FROM ${this.roots}_control WHERE root = ?) AS revision
+				FROM ${this.work} WHERE root = ? AND state = 'ready' AND ready_at <= (SELECT ${this.now})`,
+				...(this.rowLocks ? [] : [root]),
+				root,
+				root,
+			),
+		);
+		return row === undefined || Number(row.ready) === 0
+			? undefined
+			: `${row.ready}:${row.latest}:${row.readiness ?? 0}:${row.revision ?? 0}`;
 	}
 	/**
 	 * Fails ready work of this root incarnation that no worker may take, as bound work no capable host claimed within
@@ -1680,6 +1992,252 @@ export class SqlPoolQueue {
 		if (recorded !== undefined)
 			this.checkpoints.recordOwn(lease.runId, recorded.seq, recorded.key, recorded.checkpoint);
 		return receipt;
+	}
+	/**
+	 * Records an attempt's batch of checkpoints, which its host accepted in its local journal, in the root's journal
+	 * (#4768), as one request: on SQLite and libSQL one batch, on PostgreSQL one fenced transaction. Its fences are those
+	 * of a commit, checked once for the whole batch (the root's lease, the attempt's work lease, the root's status, no
+	 * checkpoint of the attempt's scope recorded since the view validation used, none of the batch's keys recorded
+	 * already), and its events go in with one multi-row insert that takes the run's next sequences under the run row.
+	 * Each checkpoint is validated against the root's checkpoints and those before it in the batch.
+	 *
+	 * Its first plan reads nothing: it validates against the checkpoints this queue knows of the root, as a commit's
+	 * first plan does, and a fence that no longer holds plans it again from one read. A batch is delivered once: its id
+	 * in the ledger means it was, so a retry after a lost answer writes nothing. A checkpoint the root holds already
+	 * with the same payload is not recorded again; with another payload it is an identity conflict. Refused with
+	 * {@link StaleWorkLeaseError}, writing nothing, once another attempt owns the work.
+	 */
+	async shipBatch(lease: Lease, token: WorkLease, batch: PoolShipBatch): Promise<void> {
+		lease = snapshotLease(lease);
+		token = { ...token };
+		if (batch.events.length === 0) return;
+		if (this.remote) throw new Error("A pool whose root journal is in another database does not ship checkpoints");
+		validateText("key", batch.id);
+		const runs = this.journal.runs;
+		const parsed = batch.events.map((event) => ({
+			...event,
+			checkpoint: JSON.parse(event.payload) as DurableCheckpoint,
+		}));
+		for (const event of parsed)
+			if (checkpointKey(event.checkpoint) !== event.key) throw new Error("Pool checkpoint identity conflict");
+		const checkpoints = this.checkpoints.begin(lease.runId);
+		const shipped = { sql: `SELECT 1 FROM ${runs}_ship_batches WHERE batch = ?`, params: [batch.id] };
+		let recorded: { readonly seq: number; readonly key: string; readonly checkpoint: DurableCheckpoint }[] = [];
+		const seqs = await guardedPoolWrite<ReadonlyMap<string, number>>(
+			this.storage,
+			async (read, optimistic) => {
+				/** A plan from what `read` sees; undefined when the batch is shipped already. */
+				const fromRead = async (): Promise<ShipPlan | undefined> => {
+					const state = await this.attemptState(read, lease, token, `ship:${batch.id}`, undefined, checkpoints);
+					if ((await read.get(shipped.sql, ...shipped.params)) !== undefined) return undefined;
+					const { now, status } = state;
+					const row = this.currentOf(state.work, lease, token);
+					if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
+					if (row.expires_at < now) throw staleWork(lease, token, "expired");
+					if (status !== "running" && !(status === "paused" && state.control === "paused"))
+						throw staleWork(lease, token, "root-not-running");
+					return {
+						row,
+						now,
+						head: state.recorded.head,
+						own: [],
+						source: checkpoints,
+						existing: await this.recordedPayloads(
+							read,
+							lease.runId,
+							parsed.map((event) => event.key),
+						),
+					};
+				};
+				/** Each checkpoint of the batch validated against `plan`, with how it is stored. */
+				const validated = async (plan: ShipPlan) => {
+					recorded = [];
+					const work = fromRow(plan.row);
+					// The root's checkpoints, read once for the whole batch: each checkpoint validates against them and those
+					// before it in the batch.
+					const view = await plan.source.read(read, this.journal.events);
+					const source: PoolCheckpointSource = { read: async () => view };
+					const rows: { key: string; payload: string; chunks: readonly Uint8Array[] }[] = [];
+					for (const event of parsed) {
+						const checkpoint = event.checkpoint;
+						const existing = plan.existing?.get(event.key);
+						if (existing !== undefined) {
+							if (!isRecordedCheckpoint(existing, event.payload))
+								throw new Error("Pool checkpoint identity conflict");
+							continue;
+						}
+						await validatePoolMutation(
+							read,
+							this.storage,
+							lease.runId,
+							work,
+							{ kind: "checkpoint", checkpoint },
+							recorded.length === 0 ? source : withRecorded(source, recorded),
+						);
+						if (checkpoint.completedAt > Math.max(plan.now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
+							throw new Error("Pool checkpoint timestamp is in the future");
+						assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
+						if (poolCheckpointUsage(checkpoint) !== undefined)
+							throw new Error("A pool checkpoint that bills usage is committed, not shipped");
+						// Positions past the head, in order: what validation of the next checkpoint in the batch sees.
+						recorded.push({ seq: plan.head + recorded.length + 1, key: event.key, checkpoint });
+						const stored = (await this.keepsWhole(read, event.payload))
+							? { payload: event.payload, chunks: [] }
+							: storedJournalPayload(event.payload, checkpoint);
+						rows.push({ key: event.key, payload: stored.payload, chunks: stored.chunks });
+					}
+					return { work, rows };
+				};
+				let plan: ShipPlan | undefined;
+				const cached = this.attempts.get(token.id);
+				const known = this.checkpoints.known(lease.runId);
+				if (
+					optimistic &&
+					known !== undefined &&
+					cached?.state === "leased" &&
+					Number(cached.generation) === token.generation &&
+					cached.worker === token.worker &&
+					Number(cached.epoch) === token.epoch &&
+					Number(cached.epoch) === lease.epoch
+				)
+					// Every check it skips, a fence repeats: a batch shipped already, or one of its keys recorded, breaks one, and
+					// the plan that follows reads why.
+					plan = { row: cached, now: Date.now(), head: known.from, own: known.own, source: known.source };
+				// A plan without a read validates against the cached view of the root, which may predate what the batch
+				// depends on, such as the start of a child the root began since this queue last read it (#4768): only a plan
+				// from a read may refuse the batch.
+				const checked = plan === undefined ? undefined : await validated(plan).catch(() => undefined);
+				if (checked === undefined) plan = await fromRead();
+				if (plan === undefined) return { done: new Map() };
+				const { work, rows } = checked ?? (await validated(plan));
+				const keys = rows.map((row) => row.key);
+				const first = batch.events[0]!;
+				const last = batch.events.at(-1)!;
+				const write: CommitWrite = {
+					fences: [
+						this.rootFence(lease),
+						this.attemptFence(lease, token, true),
+						...this.admitsFences(lease, "update"),
+						{ sql: `SELECT 1 WHERE NOT EXISTS (${shipped.sql})`, params: shipped.params },
+					],
+					writes: [],
+				};
+				if (rows.length > 0) {
+					journalCounter(lease.runId, "seq", plan.head + rows.length, "overflow");
+					write.fences.push(
+						{
+							sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.journal.events} WHERE run_id = ? AND key IN (${keys.map(() => "?").join(", ")}))`,
+							params: [lease.runId, ...keys],
+						},
+						this.scopeFence(lease, work.scope, plan.head, plan.own),
+					);
+					write.writes.push(...this.shippedEventWrites(lease, rows));
+				}
+				write.writes.push(
+					{
+						sql: `INSERT INTO ${runs}_ship_batches(batch, work, generation, worker, epoch, host, first_local_seq, last_local_seq, events, shipped_at)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${this.now})`,
+						params: [
+							batch.id,
+							token.id,
+							token.generation,
+							token.worker,
+							token.epoch,
+							batch.host,
+							first.localSeq,
+							last.localSeq,
+							batch.events.length,
+						],
+					},
+					{
+						sql: `INSERT INTO ${runs}_ship_watermarks(work, generation, host, last_local_seq, last_event_key, shipped_at)
+						VALUES (?, ?, ?, ?, ?, ${this.now})
+						ON CONFLICT(work) DO UPDATE SET generation = excluded.generation, host = excluded.host,
+							last_local_seq = excluded.last_local_seq, last_event_key = excluded.last_event_key,
+							shipped_at = excluded.shipped_at`,
+						params: [token.id, token.generation, batch.host, last.localSeq, last.key],
+					},
+				);
+				return {
+					...write,
+					// The sequences the batch's events took, so the next batch validates against them without a read.
+					reads:
+						rows.length === 0
+							? []
+							: [
+									{
+										sql: `SELECT key, seq FROM ${this.journal.events} WHERE run_id = ? AND key IN (${keys.map(() => "?").join(", ")})`,
+										params: [lease.runId, ...keys],
+									},
+								],
+					result: (read) => new Map((read[0] ?? []).map((row) => [String(row.key), Number(row.seq)] as const)),
+				};
+			},
+			COMMIT,
+		);
+		// Only now has the write committed what validation read; a write that never committed never reaches the index.
+		checkpoints.commit();
+		for (const entry of recorded) {
+			const seq = seqs.get(entry.key);
+			if (seq !== undefined) this.checkpoints.recordOwn(lease.runId, seq, entry.key, entry.checkpoint);
+		}
+	}
+	/**
+	 * A shipped batch's events, as one multi-row insert that numbers them from the run's next sequence in the order
+	 * given, and the chunks of those stored in chunks (#4965).
+	 */
+	private shippedEventWrites(
+		lease: Lease,
+		rows: readonly { readonly key: string; readonly payload: string; readonly chunks: readonly Uint8Array[] }[],
+	): SqliteStatement[] {
+		const { events, eventChunks } = this.journal;
+		const int = this.dialect.types.int;
+		const values = rows
+			.map((_, index) =>
+				index === 0 ? `(CAST(? AS ${int}), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS ${int}))` : "(?, ?, ?, ?)",
+			)
+			.join(", ");
+		const insert: SqliteStatement = {
+			sql: `INSERT INTO ${events} (run_id, seq, epoch, key, type, payload, at, chunks)
+			SELECT ?, (SELECT COALESCE(MAX(seq), 0) FROM ${events} WHERE run_id = ?) + v.n, ?, v.k, ?, v.p, ${this.now}, v.c
+			FROM (WITH batch(n, k, p, c) AS (VALUES ${values}) SELECT * FROM batch) AS v ORDER BY v.n`,
+			params: [
+				lease.runId,
+				lease.runId,
+				lease.epoch,
+				RUN_EVENT_TYPES.checkpointRecorded,
+				...rows.flatMap((row, index) => [index + 1, row.key, row.payload, row.chunks.length]),
+			],
+		};
+		const chunked = rows.filter((row) => row.chunks.length > 0);
+		return [
+			insert,
+			...chunked.flatMap((row) => [
+				{
+					sql: `DELETE FROM ${eventChunks} WHERE run_id = ? AND seq = (SELECT seq FROM ${events} WHERE run_id = ? AND key = ?)`,
+					params: [lease.runId, lease.runId, row.key],
+				},
+				...row.chunks.map((data, index) => ({
+					sql: `INSERT INTO ${eventChunks} (run_id, seq, idx, data) SELECT ?, seq, ?, ? FROM ${events} WHERE run_id = ? AND key = ?`,
+					params: [lease.runId, index, data, lease.runId, row.key],
+				})),
+			]),
+		];
+	}
+	/** The payloads the root's journal records under any of `keys`, whole, by key. */
+	private async recordedPayloads(
+		read: SqliteExecutor,
+		runId: string,
+		keys: readonly string[],
+	): Promise<ReadonlyMap<string, string>> {
+		const found = await read.all<SqliteRow & { key: string; chunks: number }>(
+			`SELECT key, chunks FROM ${this.journal.events} WHERE run_id = ? AND key IN (${keys.map(() => "?").join(", ")})`,
+			runId,
+			...keys,
+		);
+		const payloads = new Map<string, string>();
+		for (const row of found) payloads.set(String(row.key), (await this.eventPayload(read, runId, String(row.key)))!);
+		return payloads;
 	}
 	/**
 	 * A checkpoint commit planned without a read, for a batched write's first try: from the attempt's work row as this
@@ -2494,7 +3052,7 @@ export class SqlPoolQueue {
 			fences: [this.rootFence(lease), this.attemptFence(lease, token, unexpired)],
 			writes: [
 				{
-					sql: `UPDATE ${this.work} SET expires_at = ${this.dialect.greatest("expires_at", `${this.now} + ?`)}, renewed_at = ${this.now} WHERE id = ?`,
+					sql: `WITH clock AS (SELECT ${this.now} AS now) UPDATE ${this.work} SET expires_at = ${this.dialect.greatest("expires_at", "(SELECT now FROM clock) + ?")}, renewed_at = (SELECT now FROM clock) WHERE id = ?`,
 					params: [durationMs, token.id],
 				},
 			],
@@ -2687,7 +3245,7 @@ export class SqlPoolQueue {
 }
 
 /** The journal key a checkpoint's event is recorded under. */
-function checkpointKey(checkpoint: DurableCheckpoint): string {
+export function checkpointKey(checkpoint: DurableCheckpoint): string {
 	return JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
 }
 

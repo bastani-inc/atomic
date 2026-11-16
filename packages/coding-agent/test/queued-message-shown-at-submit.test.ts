@@ -66,9 +66,17 @@ describe.each(["local", "isolated"] as const)("a message sent while the agent wo
 			fauxAssistantMessage("answered"),
 			fauxAssistantMessage("answered again"),
 		]);
+		const turnSeen = new Promise<void>((resolve) => {
+			const unsubscribe = rig.host.session.subscribe((event) => {
+				if (event.type === "message_end") {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
 		await rig.host.defaultEditor.onSubmit?.("first");
 		await toolHold.entered.promise;
-		await waitFor("the host to see the running turn", () => rig.host.session.isStreaming);
+		await turnSeen;
 		return { rig, finishTurn: () => toolHold.release.resolve() };
 	}
 

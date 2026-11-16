@@ -62,7 +62,10 @@ async function registerIsolatedTests(): Promise<void> {
 	} = await import("../../packages/coding-agent/src/modes/interactive/components/input-label.js");
 	// Pending-input labels cut long prompts with the shared surrogate-safe slice (#5097).
 	const { sliceHead } = await import("../../packages/coding-agent/src/core/tools/truncate.js");
+
+	const navKeys = await import("../../packages/coding-agent/src/modes/interactive/components/nav-keys.js");
 	mock.module("@bastani/atomic", () => ({
+		...navKeys,
 		sliceHead,
 		ChatSessionHost: TestComponent,
 		formatModelLabel,
@@ -158,7 +161,10 @@ async function registerIsolatedTests(): Promise<void> {
 		remoteAutowrap: boolean[];
 	}
 
-	function buildRemoteHarness(platform: NodeJS.Platform = "win32"): RemoteHarness {
+	function buildRemoteHarness(
+		platform: NodeJS.Platform = "win32",
+		mode: "regular" | "fullscreen" = "regular",
+	): RemoteHarness {
 		const localWrites: string[] = [];
 		const remoteAutowrap: boolean[] = [];
 		let hidden = false;
@@ -186,6 +192,7 @@ async function registerIsolatedTests(): Promise<void> {
 					// Isolated host: the factory TUI terminal exposes the remote-control
 					// capability instead of a writable local process.stdout.
 					const tui: PiCustomOverlayFactoryTui = {
+						mode,
 						requestRender: () => undefined,
 						terminal: {
 							rows: 24,
@@ -229,6 +236,18 @@ async function registerIsolatedTests(): Promise<void> {
 
 			assert.deepEqual(localWrites, []);
 			assert.deepEqual(remoteAutowrap, [false, true], "autowrap restored on close");
+		});
+
+		test("routes autowrap through the host capability when the isolated host is fullscreen", () => {
+			// The engine reports the host's mode; the host, not the overlay, decides whether fullscreen holds it.
+			const { adapter, localWrites, remoteAutowrap } = buildRemoteHarness("win32", "fullscreen");
+
+			adapter.open(null);
+			adapter.toggle(null);
+			adapter.close();
+
+			assert.deepEqual(localWrites, []);
+			assert.deepEqual(remoteAutowrap, [false, true]);
 		});
 
 		test("skips autowrap on non-Windows hosts", () => {

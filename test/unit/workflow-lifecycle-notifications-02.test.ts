@@ -254,7 +254,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		});
 
 		assert.match(text, /Workflow "release \\"canary\\"" needs input/);
-		assert.match(text, /Respond: \/workflow connect/);
+		assert.match(text, /Respond: \/workflows/);
 		assert.match(text, /workflow\(\{ action: "answer"/);
 		assert.ok(text.includes(`runId: ${JSON.stringify(runId)}`));
 		assert.ok(text.includes(`stageId: ${JSON.stringify(stageId)}`));
@@ -605,5 +605,30 @@ describe("installWorkflowLifecycleNotifications", () => {
 		const narrow = render({ ...base, toolName: "" }, 24);
 		assert.match(narrow.join("\n"), /tool[\s\S]*tool:failure/);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
+	});
+
+	test("failed lifecycle notice fallback at width 9 keeps combining-mark errors within width (#5234)", () => {
+		const registered: RegisteredRenderer[] = [];
+		registerLifecycleNoticeRenderer({
+			rendererHost: {},
+			registerMessageRenderer(event, renderer) {
+				registered.push({ event, renderer: renderer as (payload: unknown) => unknown });
+			},
+		});
+		const renderer = registered[0]?.renderer;
+		assert.ok(renderer);
+		const details: WorkflowLifecycleNoticeDetails = {
+			kind: "failed",
+			scope: "run",
+			runId: "r1",
+			workflowName: "w",
+			status: "failed",
+			createdAt: 1,
+			error: "🏻 \u0301\u093f😀 Ａ",
+		};
+		const lines = (renderer({ details }) as CardComponent).render(9);
+		for (const line of lines) {
+			assert.ok(visibleWidth(line) <= 9, `line exceeds width 9: ${JSON.stringify(line)} (w=${visibleWidth(line)})`);
+		}
 	});
 });

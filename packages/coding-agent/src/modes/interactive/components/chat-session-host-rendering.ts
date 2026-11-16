@@ -13,6 +13,7 @@ import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { FooterComponent, UsageMeterComponent } from "./footer.ts";
+import { compactionMeta } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
 export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -73,10 +74,16 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	const useCallerStyling =
 		!palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
 	if (state.compacting) {
-		const cancelHint = `(${state.getActionKeyDisplay?.("app.interrupt") ?? "esc"} Cancel)`;
+		const startedAt =
+			state.compactionStartedAt ??
+			state.getAgentSession?.()?.compactionStartedAt ??
+			state.getChatBoxSession?.()?.compactionStartedAt ??
+			Date.now();
 		return new WorkingStatusComponent({
 			frame: state.workingFrame,
-			message: `${state.statusMessage || "Compacting context..."} ${cancelHint}`,
+			logo: true,
+			message: state.statusMessage || "Compacting context...",
+			meta: compactionMeta(startedAt, state.getActionKeyDisplay?.("app.interrupt") ?? "esc"),
 			palette,
 			spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
 			spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
@@ -87,6 +94,7 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	return new WorkingStatusComponent({
 		frame: state.workingFrame,
 		message: state.workingMessage ?? "Working...",
+		meta: state.workingRunMeter.snapshot(),
 		palette,
 		spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
 		spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
@@ -141,8 +149,6 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	if (state.disposed) return [];
 	const agentSession = state.getAgentSession?.();
 	const session = agentSession ?? state.getChatBoxSession?.();
-	// A chat that does not own its session cannot interrupt it, so its footer never offers "esc to interrupt".
-	// It still hides the model line while that session works.
 	state.footerNavigationActive = navigationActive || agentSession === undefined;
 	if (session && state.footerData) {
 		state.footer ??= new FooterComponent(

@@ -802,6 +802,7 @@ await live.prompt("Here is the CI result you were waiting for.");
 await live.release();
 ```
 
+- `rehydrate(sessionId)` reads the session's whole history. Pass `{ history: "tail" }` to read a compacted session from its latest compaction instead; `await live.sessionManager.loadFullHistory()` reads the rest when you need it.
 - `release()` refuses with a retryable `session-busy` error while a run, compaction, shell command, queued message (a steering or follow-up message, or one sent with `deliverAs: "nextTurn"`) or background task is active. Background tasks keep running: wait until they finish (or cancel them) and for `agent_settled`, then call it again. Calling it on a released session returns the same result.
 - Subscribers get a `session_released` event before the session closes. After that, the instance behaves like a disposed session; use `runtime.rehydrate()` for a live one.
 - `runtime.rehydrate(sessionId)` builds the session with the runtime's factory and passes the runtime's `services` to it as `options.services` when the cwd matches, so rehydrated sessions can share one resource loader, model runtime and settings. A factory that ignores `services` still works; it just builds its own. The rehydrated session runs beside `runtime.session` without replacing it. A session that is already live is returned as it is, concurrent calls for one id share one rehydration, and `runtime.dispose()` closes every session it rehydrated.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, readdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { bunExecutable, sleep } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { SessionManager } from "../src/core/session-manager.js";
 import { releaseSessionWorktrees, resumeSessionWorktree } from "../src/core/session-worktree-snapshots.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
@@ -63,7 +64,7 @@ async function idleSlot(): Promise<{ snapshot: WorktreeSnapshot; root: string; p
 	const capture = await captureWorktreeSnapshot(clone, { settings, blobs: store.snapshotBlobs });
 	if (capture.status !== "captured") throw new Error(`capture ${capture.status}`);
 	const snapshot = capture.snapshot;
-	renameSync(clone, sandbox.path("repo-away"));
+	await renameWithRetry(clone, sandbox.path("repo-away"));
 	const manager = await SessionManager.create(store, clone);
 	await manager.appendWorktreeSnapshot(clone, snapshot.id, snapshot);
 	const resumed = await resumeSessionWorktree(manager, {

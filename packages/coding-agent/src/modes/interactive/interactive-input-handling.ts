@@ -18,7 +18,9 @@ import {
 import { agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { agentPanelBoardSource, showTaskInspector } from "../rpc/task-ui-bridge.js";
+import { isChatSessionWorking } from "./components/footer.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
+import { MainComposerKeyOverlay } from "./components/main-composer-keys.ts";
 import { NAV_CONFIRM_WINDOW_MS } from "./components/nav-keys.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
@@ -217,6 +219,16 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 		})();
 	});
 	this.defaultEditor.onAction("app.tools.expand", () => this.toggleToolOutputExpansion());
+	this.defaultEditor.onAction("app.keys.help", () => {
+		void this.showExtensionCustom<void>(
+			(_tui, _theme, keybindings, done) =>
+				new MainComposerKeyOverlay(
+					keybindings,
+					() => ({ working: isChatSessionWorking(this.session) }),
+					() => done(),
+				),
+		);
+	});
 	this.defaultEditor.onAction("app.thinking.toggle", () => this.toggleThinkingBlockVisibility());
 	this.defaultEditor.onAction("app.editor.external", () => {
 		void this.openExternalEditor();
@@ -408,7 +420,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				return;
 			}
 			if (bare("session")) {
-				this.handleSessionCommand();
+				await this.handleSessionCommand();
 				this.editor.setText("");
 				return;
 			}

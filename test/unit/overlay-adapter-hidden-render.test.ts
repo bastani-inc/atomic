@@ -1,17 +1,3 @@
-/**
- * Hidden-overlay render gating (#1856).
- *
- * While the workflow graph/stage overlay is hidden (Ctrl+X back to main
- * chat), background store updates must NOT ask the host TUI to render:
- * every such request became terminal writes that flickered the main-chat
- * tail and could snap native terminal scrollback back to the live bottom.
- * The retained view is still invalidated so the hidden→visible flip
- * repaints from the current snapshot.
- *
- * Runs in a subprocess because it uses `mock.module` for pi-tui seams,
- * mirroring overlay-adapter-autowrap.test.ts.
- */
-
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -20,14 +6,14 @@ import type { PiCustomOverlayFactoryTui, PiOverlayHandle } from "../../packages/
 import type { Store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { GraphOverlayPort, OverlayPiSurface } from "../../packages/workflows/src/tui/overlay-adapter.js";
-import { bunExecutable } from "../helpers/runtime.js";
+import { bunExecutable, sleep } from "../helpers/runtime.js";
 
 const ISOLATED_PROCESS_ENV = "ATOMIC_OVERLAY_HIDDEN_RENDER_ISOLATED";
 
 async function registerIsolatedTests(): Promise<void> {
 	// Only ever reached inside the `bun test` child spawned below, where
 	// `bun:test`'s module registry is the real one. vitest has no equivalent.
-	const { mock } = await import("bun:test");
+	const { mock, spyOn } = await import("bun:test");
 	const { stripTerminalSequences } = await import("@bastani/atomic-tui/dist/utils.js");
 	class TestComponent {}
 	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
@@ -78,7 +64,10 @@ async function registerIsolatedTests(): Promise<void> {
 	} = await import("../../packages/coding-agent/src/modes/interactive/components/input-label.js");
 	// Pending-input labels cut long prompts with the shared surrogate-safe slice (#5097).
 	const { sliceHead } = await import("../../packages/coding-agent/src/core/tools/truncate.js");
+
+	const navKeys = await import("../../packages/coding-agent/src/modes/interactive/components/nav-keys.js");
 	mock.module("@bastani/atomic", () => ({
+		...navKeys,
 		sliceHead,
 		ChatSessionHost: TestComponent,
 		formatModelLabel,
@@ -175,14 +164,30 @@ async function registerIsolatedTests(): Promise<void> {
 	}
 
 	describe("workflow overlay hidden render gating (#1856)", () => {
-		test("visible overlay requests a host render on store updates", () => {
+		test("visible overlay coalesces a status burst into one frame (#5234)", async () => {
 			const { adapter, store, renderRequests } = buildHarness();
 			adapter.open(null);
-
-			const before = renderRequests.count;
-			store.recordRunStart(makeRun("r1"));
-
-			assert.ok(renderRequests.count > before, "a visible overlay must repaint on store updates");
+			const snapshotSpies = [
+				spyOn(store, "graphSnapshot"),
+				spyOn(store, "snapshot"),
+				spyOn(store, "inspectionSnapshot"),
+			];
+			try {
+				const before = renderRequests.count;
+				for (let update = 0; update < 50; update++) store.recordRunStart(makeRun(`r${update}`));
+				for (const snapshotSpy of snapshotSpies) {
+					assert.equal(snapshotSpy.mock.calls.length, 0, "focused burst performs zero snapshot reads");
+				}
+				assert.equal(renderRequests.count, before, "status events schedule a frame without painting inline");
+				await sleep(32);
+				for (const snapshotSpy of snapshotSpies) {
+					assert.equal(snapshotSpy.mock.calls.length, 0, "coalesced frame performs zero snapshot reads");
+				}
+				assert.equal(renderRequests.count - before, 1, "one frame paints the entire burst");
+			} finally {
+				for (const snapshotSpy of snapshotSpies) snapshotSpy.mockRestore();
+				adapter.close();
+			}
 		});
 
 		test("hidden overlay store updates never call host requestRender", () => {

@@ -35,6 +35,11 @@ const FIRST_TWO_TURNS = [
 	"user: Reply with exactly: beta",
 	"assistant: beta",
 ];
+/**
+ * Saved sessions write each turn's user and assistant entries to SQLite on disk, and the host refreshes its stats over
+ * the RPC pipe after the turn; under parallel shard load a turn can exceed `vi.waitFor`'s 1 s default.
+ */
+const ENGINE_TURN_SETTLE_TIMEOUT_MS = 10_000;
 
 /** What the chat shows after `/tree`: the host session's context entries, as role/text pairs. */
 function transcript(manager: Pick<SessionManager, "buildContextEntries">): string[] {
@@ -54,7 +59,9 @@ function messageTranscript(session: AgentSession): string[] {
 
 async function sendTurn(current: EngineHostPair, text: string): Promise<void> {
 	await current.runtime.session.prompt(text);
-	await vi.waitFor(() => assert.equal(current.engine.session.isStreaming, false));
+	await vi.waitFor(() => assert.equal(current.engine.session.isStreaming, false), {
+		timeout: ENGINE_TURN_SETTLE_TIMEOUT_MS,
+	});
 	await current.drain();
 }
 
@@ -98,11 +105,13 @@ async function assertHostFollowsBranch(current: EngineHostPair, expected: string
 	assert.deepEqual(transcript(host.sessionManager), expected);
 	assert.deepEqual(messageTranscript(host), messageTranscript(current.engine.session));
 	assert.equal(host.sessionManager.getLeafId(), leafId, "the tree cursor and /clone use the selected entry");
-	await vi.waitFor(() =>
-		assert.deepEqual(
-			getEngineSessionStats(host)?.contextUsage,
-			JSON.parse(JSON.stringify(current.engine.session.getSessionStats().contextUsage)),
-		),
+	await vi.waitFor(
+		() =>
+			assert.deepEqual(
+				getEngineSessionStats(host)?.contextUsage,
+				JSON.parse(JSON.stringify(current.engine.session.getSessionStats().contextUsage)),
+			),
+		{ timeout: ENGINE_TURN_SETTLE_TIMEOUT_MS },
 	);
 }
 
@@ -215,7 +224,7 @@ test("Escape while /tree summarizes cancels the summary in the engine and keeps 
 		pi.on("session_before_tree", async (event) => {
 			summarizing();
 			await new Promise<void>((resolve) => {
-				const fallback = setTimeout(resolve, 2_000);
+				const fallback = setTimeout(resolve, ENGINE_TURN_SETTLE_TIMEOUT_MS);
 				event.signal.addEventListener("abort", () => {
 					clearTimeout(fallback);
 					resolve();

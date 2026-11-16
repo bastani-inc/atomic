@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
@@ -15,6 +15,7 @@ import {
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { ExtensionFactory } from "../src/core/extensions/index.js";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import type { SessionEntry, WorktreeSnapshotEntry } from "../src/core/session-manager.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { resumeSessionWorktree } from "../src/core/session-worktree-snapshots.ts";
@@ -276,7 +277,7 @@ describe("resumeSessionWorktree", () => {
 		const denied = await sandbox.commitAll(clone, "unpushed key");
 		const manager = await SessionManager.create(await sqlStore("sessions"), clone);
 		await writeTurn(await harnessFor(manager), join(clone, "a.txt"), "a\n");
-		renameSync(clone, sandbox.path("moved-away"));
+		await renameWithRetry(clone, sandbox.path("moved-away"));
 		const result = await resumeSessionWorktree(manager, { settings, storeDir: sandbox.path("host") });
 		assert.equal(result.status, "restored");
 		if (result.status !== "restored") return;
@@ -359,7 +360,7 @@ describe("cross-machine session resume", () => {
 		await writeTurn(recorder, join(clone, "untracked", "u.txt"), "written by the agent\n");
 		const exported = await recorder.session.exportToJsonl(sandbox.path("moved.jsonl"));
 		const expected = filesUnder(clone);
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		await renameWithRetry(clone, sandbox.path("machine-a-gone"));
 
 		vi.stubEnv(ENV_AGENT_DIR, sandbox.path("machine-b", "agent"));
 		const storeB = await sqlStore("machine-b");

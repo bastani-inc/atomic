@@ -4,6 +4,7 @@ import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "n
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "vitest";
+import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { type BudgetedProcess, expectExitedCleanly, spawnWithinBudget } from "../helpers/budgeted-process.js";
 import { startFakeLibsqlServer } from "../helpers/fake-libsql-server.js";
 import { startOutageProxy } from "../helpers/outage-proxy.js";
@@ -36,6 +37,18 @@ const TAKEOVER_BUDGET = poolTestBudgetMs(3);
 const TAKEOVER_LEASE_MS = 4_000;
 /** How long each child of the outage scenario works: the outage, its retries and the recovery fit inside it. */
 const OUTAGE_WORK_MS = 45_000;
+/**
+ * How long the outage scenario's server keeps an idle stream. A stream whose client lost it keeps its open transaction,
+ * and the write lock it holds, this long: about as long as sqld takes to free such a lock for a writer that waits.
+ */
+const OUTAGE_STREAM_TTL_MS = 5_000;
+/**
+ * How soon after the database is back a node that lost it reports recovered: the transaction the outage cut keeps the
+ * write lock for its stream's lifetime at most, then the node's next poll waits out its backoff.
+ */
+const OUTAGE_RECOVERY_BOUND_MS = OUTAGE_STREAM_TTL_MS + 20_000;
+/** The header that tells the server the outage scenario's neighbour connection from node B's own. */
+const NEIGHBOUR_HEADER = "x-worker-cli-neighbour";
 
 interface Scenario {
 	readonly directory: string;
@@ -320,11 +333,113 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
+	"with checkpoint shipping, a killed node's shipped steps do not rerun and its accepted unshipped step runs again (#4768)",
+	async () => {
+		const s = scenario("worker-cli-shipping", TAKEOVER_BUDGET.waitMs);
+		const markers = { SHARED_POOL_WORK_MARKERS: s.directory, SHARED_POOL_REPLAY_MARKERS: s.directory };
+		let nodeB: Node | undefined;
+		let nodeC: Node | undefined;
+		let root: BudgetedProcess | undefined;
+		try {
+			nodeB = startNode(s, "B", 1, { ...markers, SHARED_POOL_REPLAY_GATE: s.directory });
+			await until("node B to be ready", s, () => nodeB!.stdout.length > 0, [nodeB.process]);
+			root = startRoot(s, 3, 20_000, {
+				...markers,
+				SHARED_POOL_LEASE_MS: String(TAKEOVER_LEASE_MS),
+				SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 60_000, maxBatch: 1_000, maxLagMs: 600_000 }),
+			});
+			await until(
+				"node B to ship its stage and wait before its local-only checkpoint",
+				s,
+				() => readdirSync(s.directory).some((name) => name.startsWith("ready-B-")),
+				[nodeB.process, root],
+			);
+			nodeC = startNode(s, "C", 2, markers);
+			await until(
+				"node C to be ready before blocking journal writes",
+				s,
+				() => nodeC!.stdout.some((line) => line.startsWith("ready ")),
+				[nodeB.process, nodeC.process, root],
+			);
+			const index = readdirSync(s.directory)
+				.find((name) => name.startsWith("ready-B-"))!
+				.split("-")
+				.at(-1)!;
+			const beforeKill = await openLibsqlDatabase({ url: s.url });
+			try {
+				await beforeKill.transaction(async (tx) => {
+					await tx.run(`UPDATE ${PREFIX}wf_runs_ship_batches SET host = host WHERE host = ?`, "B");
+					writeFileSync(join(s.directory, `accept-B-${index}`), "");
+					await until(
+						"node B to acknowledge its local-only checkpoint",
+						s,
+						() => readdirSync(s.directory).includes(`working-B-${index}`),
+						[nodeB!.process, nodeC!.process, root!],
+					);
+					assert.ok(readdirSync(s.directory).includes(`unshipped-B-${index}`));
+					killGroup(nodeB!.process);
+					await nodeB!.process.process.exited;
+					assert.deepEqual(
+						await tx.all(
+							`SELECT key FROM ${PREFIX}wf_events WHERE json_extract(payload, '$.name') = 'unshipped' AND json_extract(payload, '$.output') = 'B'`,
+						),
+						[],
+					);
+				});
+			} finally {
+				await beforeKill.close();
+			}
+			await expectExitedCleanly(root);
+			const executions = readdirSync(s.directory).filter(
+				(name) => name.startsWith("unshipped-") && name.endsWith(`-${index}`),
+			);
+			assert.equal(executions.length, 2, `the locally accepted step ran again: ${JSON.stringify(executions)}`);
+			assert.ok(executions.some((name) => !name.startsWith("unshipped-B-")));
+			const outcome = await readJson<Outcome>(join(s.directory, "outcome-start.json"));
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+			for (const child of outcome.children) assert.equal(child.status, "completed", JSON.stringify(child));
+			// The child's first step ran on node B and was shipped before its stage: node C replayed it from the journal.
+			assert.ok(
+				outcome.children.some((child) => child.firstHost === "B" && child.finalHost !== "B"),
+				`a child node B started finished elsewhere from node B's shipped steps: ${JSON.stringify(outcome)}`,
+			);
+			const database = await openLibsqlDatabase({ url: s.url });
+			try {
+				assert.deepEqual(
+					await database.all(
+						`SELECT key FROM ${PREFIX}wf_events WHERE key IS NOT NULL GROUP BY run_id, key HAVING COUNT(*) > 1`,
+					),
+					[],
+				);
+				const shippedBy = await database.all<{ host: string }>(
+					`SELECT DISTINCT host FROM ${PREFIX}wf_runs_ship_batches`,
+				);
+				assert.ok(
+					shippedBy.some((row) => row.host === "B"),
+					`node B shipped batches before it died: ${JSON.stringify(shippedBy)}`,
+				);
+			} finally {
+				await database.close();
+			}
+			nodeC.process.process.kill("SIGTERM");
+			await expectExitedCleanly(nodeC.process);
+		} finally {
+			killGroup(nodeB?.process);
+			killGroup(nodeC?.process);
+			killGroup(root);
+			removeTempDirectory(s.directory);
+		}
+	},
+	TAKEOVER_BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
 	"a node that loses the database reports degraded, retries with backoff, recovers, and its running child still completes there (#4768)",
 	async () => {
 		const s = scenario("worker-cli-outage", SERVE_BUDGET.waitMs);
-		const database = await startFakeLibsqlServer({ streamTtlMs: 60_000 });
+		const database = await startFakeLibsqlServer({ streamTtlMs: OUTAGE_STREAM_TTL_MS });
 		const proxy = await startOutageProxy(new URL(database.url));
+		const neighbour = await openLibsqlDatabase({ url: proxy.url, headers: { [NEIGHBOUR_HEADER]: "1" } });
 		let node: Node | undefined;
 		let root: BudgetedProcess | undefined;
 		try {
@@ -340,7 +455,17 @@ test.skipIf(process.platform === "win32")(
 				() => readdirSync(s.directory).some((name) => name.startsWith("working-B-")),
 				[node.process, root],
 			);
-			proxy.cut();
+			// The database goes away while a connection on node B's side of the proxy, such as one of its workers' journals, is
+			// in a transaction: the server ran the request that began it, and the answer is lost with the connection. The
+			// client never gets the stream's baton and cannot close it, so the server keeps the transaction, and the write
+			// lock, until the stream expires, just as it keeps one of node B's own whose answer the outage cuts. Every writer
+			// waits for the lock meanwhile, node B's and the root's.
+			database.onOpenTransaction((pipeline) => {
+				if (pipeline.headers[NEIGHBOUR_HEADER] === undefined) return;
+				database.onOpenTransaction(undefined);
+				proxy.cut();
+			});
+			await assert.rejects(neighbour.transaction((tx) => tx.run("SELECT 1")));
 			await until(
 				"node B to report three failed polls",
 				s,
@@ -348,10 +473,13 @@ test.skipIf(process.platform === "win32")(
 				[node.process, root],
 			);
 			proxy.restore();
-			await until("node B to recover", s, () => node!.stdout.some((line) => line.startsWith("recovered ")), [
-				node.process,
-				root,
-			]);
+			const recovery = { ...s, deadline: Math.min(s.deadline, Date.now() + OUTAGE_RECOVERY_BOUND_MS) };
+			await until(
+				`node B to recover within ${OUTAGE_RECOVERY_BOUND_MS} ms of the database coming back`,
+				recovery,
+				() => node!.stdout.some((line) => line.startsWith("recovered ")),
+				[node.process, root],
+			);
 			await expectExitedCleanly(root);
 			const outcome = await readJson<Outcome>(join(s.directory, "outcome-start.json"));
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
@@ -372,6 +500,7 @@ test.skipIf(process.platform === "win32")(
 		} finally {
 			killGroup(node?.process);
 			killGroup(root);
+			await neighbour.close();
 			await proxy.close();
 			await database.close();
 			removeTempDirectory(s.directory);

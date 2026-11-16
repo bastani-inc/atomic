@@ -40,4 +40,25 @@ describe("composer rule (#5224)", () => {
 		const rule = renderComposerRule(50, { color: colour, label: { plain: "title", styled: "[title]" } });
 		assert.ok(rule.endsWith("[title]< ─>"), rule);
 	});
+
+	test("sanitizes control characters and collapses whitespace in rule labels (#5243)", () => {
+		const newlineRule = renderComposerRule(60, { color: plain, label: "my\nsession" });
+		assert.ok(!newlineRule.includes("\n"), newlineRule);
+		assert.equal(visibleWidth(newlineRule), 60);
+		assert.ok(newlineRule.endsWith(" my session ─"), newlineRule);
+
+		for (const raw of ["a\x1b]52;c;SGVsbG8=\x07b", "x\x1b]0;PWNED\x07y", "\x1b[2J\x1b[Hboom"]) {
+			const rule = renderComposerRule(60, { color: plain, label: raw });
+			assert.doesNotMatch(rule, /[\u0000-\u001f\u007f-\u009f]/);
+			assert.equal(visibleWidth(rule), 60);
+		}
+
+		const unsafeStyled = renderComposerRule(60, {
+			color: plain,
+			label: { plain: "my\nsession", styled: "\x1b[31mmy\nsession\x1b[39m" },
+		});
+		assert.doesNotMatch(unsafeStyled, /[\u0000-\u001f\u007f-\u009f]/);
+		assert.equal(visibleWidth(unsafeStyled), 60);
+		assert.ok(unsafeStyled.endsWith(" my session ─"), unsafeStyled);
+	});
 });

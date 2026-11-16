@@ -63,7 +63,11 @@ const START_LOOP_TURN_BOUND = 200;
 /** The fs requests a child's start makes up to its first provider request: 861 before #4319. */
 const START_FS_OPERATION_BOUND = 200;
 
-/** A start budget a fixture child under no load comfortably starts within, so only the injected stall exhausts it. */
+/**
+ * The start budget of a child launched against an injected stall. It runs only once the child reaches its stall (see
+ * {@link holdStartBudget}), so however long a loaded host takes to bring the child there, the budget runs out while
+ * the stall holds it.
+ */
 const STALL_START_BUDGET_MS = 2_500;
 /** How long an injected stall holds its step: past the start budget, then released so cleanup completes. */
 const STALL_MS = 2 * STALL_START_BUDGET_MS;
@@ -131,6 +135,45 @@ class DelayedAdmission implements ResourceAdmission {
 		if (this.granted++ > 0) await sleep(this.delayMs);
 		return async () => undefined;
 	}
+}
+
+/** The longest delay a timer holds: one that stands in for a held deadline never fires. */
+const NEVER_MS = 2 ** 31 - 1;
+
+/**
+ * Holds the start budget of the launch about to begin until `reached` settles. A start budget arms one timer for its
+ * whole timeout as the start begins: the first timer of exactly `budgetMs` armed from here on is that deadline, and it
+ * is armed for its whole budget once the child reaches its stall instead. However long a loaded host takes to bring the
+ * child there, its budget then runs out while the stall holds it; a budget that ends before is never armed.
+ */
+function holdStartBudget(budgetMs: number, reached: Promise<void>): void {
+	const realSetTimeout = globalThis.setTimeout;
+	const realClearTimeout = globalThis.clearTimeout;
+	type HeldDeadline = { readonly standIn: NodeJS.Timeout; armed?: NodeJS.Timeout; ended: boolean };
+	let deadline: HeldDeadline | undefined;
+	const end = () => {
+		if (deadline === undefined) return;
+		deadline.ended = true;
+		realClearTimeout(deadline.armed);
+	};
+	globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+		if (deadline !== undefined || args[1] !== budgetMs) return realSetTimeout(...args);
+		const held: HeldDeadline = { standIn: realSetTimeout(() => undefined, NEVER_MS).unref(), ended: false };
+		deadline = held;
+		void reached.then(() => {
+			if (!held.ended) held.armed = realSetTimeout(...args);
+		});
+		return held.standIn;
+	}) as typeof setTimeout;
+	globalThis.clearTimeout = ((timer?: NodeJS.Timeout) => {
+		if (timer !== undefined && timer === deadline?.standIn) end();
+		realClearTimeout(timer);
+	}) as typeof clearTimeout;
+	cleanups.push(() => {
+		globalThis.setTimeout = realSetTimeout;
+		globalThis.clearTimeout = realClearTimeout;
+		end();
+	});
 }
 
 async function startFixture(options: { readonly parentAdmission?: ResourceAdmission } = {}) {
@@ -211,8 +254,9 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		runId: string,
 		sessionStartTimeoutMs?: number,
 		options: Partial<RunSyncOptions> = {},
-	): Promise<SingleResult> =>
-		runSingleInProcess(cwd, agent, "reply done", {
+	): Promise<SingleResult> => {
+		if (stalled !== undefined && sessionStartTimeoutMs !== undefined) holdStartBudget(sessionStartTimeoutMs, stalled);
+		return runSingleInProcess(cwd, agent, "reply done", {
 			cwd,
 			...(sessionStartTimeoutMs === undefined ? {} : { sessionStartTimeoutMs }),
 			runId,
@@ -228,16 +272,22 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 			getChildSessionOptions: parent.extensionRunner.createContext().getChildSessionOptions,
 			...options,
 		});
+	};
+	/** Settles once the child reaches the point an armed stall holds. */
+	let stalled: Promise<void> | undefined;
 	/** A child-only extension, written after the parent loaded its own, that holds `point` until released. */
 	const stallChildAt = (
 		point: StallPoint,
 		releaseAfterMs?: number,
 	): {
 		readonly reached: () => boolean;
+		readonly held: Promise<void>;
 		readonly release: () => void;
 		readonly shutdown: Promise<void>;
 	} => {
 		let reached = false;
+		const holding = Promise.withResolvers<void>();
+		stalled = holding.promise;
 		let shutdownVisited: () => void = () => undefined;
 		const shutdown = new Promise<void>((resolve) => {
 			shutdownVisited = () => resolve();
@@ -251,6 +301,7 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 			if (at === "session_shutdown") shutdownVisited();
 			if (at !== point) return undefined;
 			reached = true;
+			holding.resolve();
 			if (releaseAfterMs !== undefined && timer === undefined) timer = setTimeout(release, releaseAfterMs);
 			return held;
 		};
@@ -273,7 +324,7 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 				"}",
 			].join("\n"),
 		);
-		return { reached: () => reached, release, shutdown };
+		return { reached: () => reached, held: holding.promise, release, shutdown };
 	};
 	return {
 		cwd,
@@ -406,8 +457,11 @@ for (const point of ["input", "before_agent_start"] as const) {
 		async () => {
 			const fixture = await startFixture();
 			const stall = fixture.stallChildAt(point);
+			const launched = fixture.launch(`start-never-settles-${point}`, STALL_START_BUDGET_MS);
+			// Its budget runs from the stall, so the launch has that long and the grace to settle from there.
+			await Promise.race([stall.held, launched]);
 			const outcome = await Promise.race([
-				fixture.launch(`start-never-settles-${point}`, STALL_START_BUDGET_MS),
+				launched,
 				sleep(STALL_START_BUDGET_MS + TIMEOUT_REPORT_GRACE_MS).then(() => "hung" as const),
 			]);
 

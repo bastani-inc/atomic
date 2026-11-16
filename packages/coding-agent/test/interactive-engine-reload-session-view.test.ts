@@ -52,9 +52,17 @@ function transcript(session: AgentSession): string[] {
 		);
 }
 
+/**
+ * Saved sessions write each turn's user and assistant entries to SQLite on disk, and the host refreshes its stats over
+ * the RPC pipe after the turn; under parallel shard load a turn can exceed `vi.waitFor`'s 1 s default.
+ */
+const ENGINE_TURN_SETTLE_TIMEOUT_MS = 10_000;
+
 async function sendTurn(current: EngineHostPair, text: string): Promise<void> {
 	await current.runtime.session.prompt(text);
-	await vi.waitFor(() => assert.equal(current.engine.session.isStreaming, false));
+	await vi.waitFor(() => assert.equal(current.engine.session.isStreaming, false), {
+		timeout: ENGINE_TURN_SETTLE_TIMEOUT_MS,
+	});
 	await current.drain();
 }
 
@@ -115,7 +123,9 @@ test("a turn after /reload of a --no-session session shows the full history once
 
 	assert.deepEqual(transcript(host), [...TWO_TURNS, "user: What was the second word?", "assistant: beta again"]);
 	assert.equal(host.messages.length, pair.engine.session.messages.length);
-	await vi.waitFor(() => assert.equal(getEngineSessionStats(host)?.userMessages, 3));
+	await vi.waitFor(() => assert.equal(getEngineSessionStats(host)?.userMessages, 3), {
+		timeout: ENGINE_TURN_SETTLE_TIMEOUT_MS,
+	});
 });
 
 test("/reload keeps the transcript of a saved session (#4703)", async () => {

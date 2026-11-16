@@ -164,13 +164,13 @@ for (const wiring of ["local", "isolated"] as const) {
 
 				const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
 				await submit("first prompt");
-				await submit("/workflow connect");
+				await submit("/workflow status");
 				await submit("/settings");
 				await submit("/workflow status");
 				await submit("second prompt");
 
 				assert.equal(rig.host.session.isCompacting, true, "compaction must still be running");
-				assert.deepEqual(invocations, ["connect", "status"]);
+				assert.deepEqual(invocations, ["status", "status"]);
 				assert.equal(settingsOpened, 1);
 				// The extension command took the message typed before it into the session's hold, in order.
 				assert.deepEqual(rig.host.compactionQueuedMessages, [{ text: "second prompt", mode: "steer" }]);
@@ -337,7 +337,7 @@ for (const wiring of ["local", "isolated"] as const) {
 
 			const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
 			await submit("typed first");
-			await submit("/workflow connect");
+			await submit("/workflow status");
 			await waitFor("the session to hold the handed-off message", () =>
 				isDeepEqual(rig.engine.session.getSteeringMessages(), ["typed first"]),
 			);
@@ -387,7 +387,7 @@ describe("isolated host hand-off during manual compaction", () => {
 		const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
 		await submit("typed A");
 		await submit("typed B");
-		await submit("/workflow connect");
+		await submit("/workflow status");
 		await waitFor("Alt+Up between the engine's queue updates", () => restoring !== undefined);
 		assert.equal(await restoring, 2);
 		const restored = rig.host.editor.getText();
@@ -568,12 +568,12 @@ describe("engine command catalog", () => {
 			{ name: "fix-tests", source: "prompt", sourceInfo },
 		]);
 
-		assert.equal(isExtensionCommand.call(host, "/workflow connect"), true);
+		assert.equal(isExtensionCommand.call(host, "/workflow status"), true);
 		assert.equal(isExtensionCommand.call(host, "/workflow"), true);
 		assert.equal(isExtensionCommand.call(host, "/skill:review the diff"), false);
 		assert.equal(isExtensionCommand.call(host, "/fix-tests"), false);
 		assert.equal(isExtensionCommand.call(host, "/unknown"), false);
-		assert.equal(isExtensionCommand.call(host, "workflow connect"), false);
+		assert.equal(isExtensionCommand.call(host, "workflow status"), false);
 	});
 });
 

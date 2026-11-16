@@ -41,7 +41,7 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 	[
 		"nowMs",
 		(d) => d.nowMs,
-		"CAST(unixepoch('subsec') * 1000 AS INTEGER)",
+		"CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER)",
 		"(floor(extract(epoch from clock_timestamp()) * 1000))::bigint",
 	],
 	["nowSeconds", (d) => d.nowSeconds, "unixepoch()", "(floor(extract(epoch from clock_timestamp())))::bigint"],

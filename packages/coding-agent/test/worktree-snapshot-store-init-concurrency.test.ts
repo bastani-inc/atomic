@@ -13,16 +13,43 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { MemorySnapshotBlobStore } from "../src/core/worktree-snapshot/blob-store.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
 import { isWorkspaceRestoreError } from "../src/core/worktree-snapshot/errors.js";
-import { objectStorePath, restoreWorktree } from "../src/core/worktree-snapshot/restore.js";
+import { objectStorePath, REPOSITORY_LOCK_REFUSED_MS, restoreWorktree } from "../src/core/worktree-snapshot/restore.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
+
+/**
+ * How many more times creating a repository lock directory (`<store>.lock`) is refused with EPERM, as Windows refuses a
+ * directory of that name while another process's removal of it is pending; and how many times it was.
+ */
+const lockRefusals = vi.hoisted(() => ({ remaining: 0, refused: 0 }));
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	const mkdir = ((path: import("node:fs").PathLike, ...rest: unknown[]) => {
+		if (String(path).endsWith(".git.lock") && lockRefusals.remaining > 0) {
+			lockRefusals.remaining--;
+			lockRefusals.refused++;
+			const callback = rest.at(-1) as (error: NodeJS.ErrnoException) => void;
+			const error = Object.assign(new Error(`EPERM: operation not permitted, mkdir '${String(path)}'`), {
+				code: "EPERM",
+				errno: -4048,
+				syscall: "mkdir",
+				path: String(path),
+			});
+			process.nextTick(() => callback(error));
+			return;
+		}
+		return (actual.mkdir as (...args: unknown[]) => void)(path, ...rest);
+	}) as typeof actual.mkdir;
+	return { ...actual, default: { ...actual, mkdir }, mkdir };
+});
 
 useTemporaryAgentDir();
 
@@ -231,6 +258,55 @@ describe("the shared store's cross-process lock and initialisation (#4951)", () 
 		setTimeout(() => controller.abort(reason), LOCK_HELD_MS);
 		await assert.rejects(restoreWorktree(snapshot, { storeDir, signal: controller.signal }), reason);
 		assert.equal(existsSync(store), false);
+	});
+
+	describe("on Windows, where creating a lock directory another process is removing fails with EPERM", () => {
+		const platform = process.platform;
+		const setPlatform = (value: NodeJS.Platform) =>
+			Object.defineProperty(process, "platform", { value, configurable: true });
+		afterEach(() => {
+			setPlatform(platform);
+			lockRefusals.remaining = 0;
+			lockRefusals.refused = 0;
+		});
+
+		test("a restore whose repository lock is refused for a moment waits for it, then restores", async () => {
+			const { snapshot, storeDir, store } = await oneSnapshot();
+			setPlatform("win32");
+			lockRefusals.remaining = 3;
+			const { path } = await restoreWorktree(snapshot, { storeDir });
+			setPlatform(platform);
+			assert.equal(lockRefusals.refused, 3);
+			assert.equal(await headOf(path), snapshot.head);
+			assert.deepEqual(readdirSync(dirname(store)), [basename(store)]);
+		});
+
+		test(
+			"a repository lock refused for 10 seconds on end is an unwritable-path failure",
+			async () => {
+				const { snapshot, storeDir, store } = await oneSnapshot();
+				setPlatform("win32");
+				lockRefusals.remaining = Number.POSITIVE_INFINITY;
+				const started = Date.now();
+				await assert.rejects(restoreWorktree(snapshot, { storeDir }), (error: unknown) => {
+					assert.ok(isWorkspaceRestoreError(error));
+					assert.equal(error.code, "unwritable-path");
+					assert.equal(error.target, `${store}.lock`);
+					return true;
+				});
+				assert.ok(Date.now() - started >= REPOSITORY_LOCK_REFUSED_MS, "it was tried again for the whole budget");
+				assert.ok(lockRefusals.refused > 1, "it was tried again");
+				assert.equal(existsSync(store), false);
+			},
+			REPOSITORY_LOCK_REFUSED_MS * 3,
+		);
+
+		test.skipIf(process.platform === "win32")("elsewhere a refused repository lock fails at once", async () => {
+			const { snapshot, storeDir } = await oneSnapshot();
+			lockRefusals.remaining = Number.POSITIVE_INFINITY;
+			await assert.rejects(restoreWorktree(snapshot, { storeDir }), { code: "unwritable-path" });
+			assert.equal(lockRefusals.refused, 1);
+		});
 	});
 
 	test.skipIf(process.platform === "win32")(

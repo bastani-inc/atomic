@@ -1,42 +1,47 @@
-import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { replaceControlCharacters, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { INPUT_LABEL_MIN_COLUMNS } from "./input-label.ts";
 
-/** A rule's label: its plain text, for measuring, and its styled text. A plain string is used as both. */
 export interface ComposerRuleLabel {
 	readonly plain: string;
 	readonly styled: string;
 }
 
 export interface ComposerRuleOptions {
-	/** Text right-aligned inside the rule, followed by exactly one rule glyph. */
 	readonly label?: ComposerRuleLabel | string;
-	/** Colours the rule glyphs: the composer's own border colour for the main chat, the accent when attached. */
 	readonly color: (text: string) => string;
-	/** Draws `━` instead of `─`. */
 	readonly heavy?: boolean;
 }
 
-/** The glyph a composer rule is drawn with. */
+export function sanitizeRuleLabel(value: string): string {
+	return replaceControlCharacters(value).replace(/\s+/g, " ").trim();
+}
+
+function normalizeComposerRuleLabel(label: ComposerRuleLabel | string | undefined): ComposerRuleLabel | undefined {
+	if (label === undefined) return undefined;
+	if (typeof label === "string") {
+		const clean = sanitizeRuleLabel(label);
+		return { plain: clean, styled: clean };
+	}
+	const cleanPlain = sanitizeRuleLabel(label.plain);
+	const styled = label.plain === cleanPlain ? label.styled : cleanPlain;
+	return { plain: cleanPlain, styled };
+}
+
 export function composerRuleGlyph(heavy: boolean | undefined): string {
 	return heavy ? "━" : "─";
 }
 
-/**
- * One full-width composer rule. With a label, the label sits right-aligned with a space on each side and exactly
- * one rule glyph after it, as `─── title ─`; a label too long for the rule is shortened with `…`, and a rule narrower
- * than {@link INPUT_LABEL_MIN_COLUMNS} carries no label at all, so a narrow terminal keeps a plain rule.
- */
 export function renderComposerRule(width: number, options: ComposerRuleOptions): string {
 	const columns = Math.max(0, Math.floor(width));
 	if (columns === 0) return "";
 	const glyph = composerRuleGlyph(options.heavy);
-	const label = typeof options.label === "string" ? { plain: options.label, styled: options.label } : options.label;
-	const plain = label?.plain.trim() ?? "";
+	const label = normalizeComposerRuleLabel(options.label);
+	const plain = label?.plain ?? "";
 	if (!label || plain.length === 0 || columns < INPUT_LABEL_MIN_COLUMNS) return options.color(glyph.repeat(columns));
 	const room = columns - 5;
-	const fits = visibleWidth(label.plain) <= room;
-	const shown = fits ? label.styled : truncateToWidth(label.styled, room, "…");
-	const shownWidth = fits ? visibleWidth(label.plain) : visibleWidth(shown);
+	const fits = visibleWidth(plain) <= room;
+	const shown = fits ? label.styled : truncateToWidth(plain, room, "…");
+	const shownWidth = fits ? visibleWidth(plain) : visibleWidth(shown);
 	const before = columns - shownWidth - 3;
 	return `${options.color(`${glyph.repeat(before)} `)}${shown}${options.color(` ${glyph}`)}`;
 }

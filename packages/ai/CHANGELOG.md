@@ -4,6 +4,36 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.9.88] - 2026-11-16
+
+### Added
+
+- Added `buildModelsDevChatModels()` and `finalizeChatModels()` in `@bastani/atomic-ai/utils/models-dev-catalog`, the transform from models.dev's `api.json` to the built-in chat catalog ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
+
+### Changed
+
+- Renamed the package from `@bastani/pi-ai` to `@bastani/atomic-ai`. It now depends on Atomic's forks `@bastani/atomic-schema` and `@bastani/atomic-telemetry` instead of pi's packages. Atomic's extension loader still resolves `@bastani/pi-ai`, `@earendil-works/pi-ai` and `@mariozechner/pi-ai` imports to it ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
+- Requests now identify as Atomic by default: the default `User-Agent` is `atomic/<version>` (short form `atomic`), and the new `ATOMIC_ATTRIBUTION` attributes requests to Atomic for OpenRouter, NVIDIA and OpenCode. `PI_ATTRIBUTION` is deprecated and now equals `ATOMIC_ATTRIBUTION`. `ATOMIC_CACHE_RETENTION` and `ATOMIC_OAUTH_CALLBACK_HOST` replace `PI_CACHE_RETENTION` and `PI_OAUTH_CALLBACK_HOST`, which keep working as legacy names ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
+- OpenAI Codex requests and the Codex browser sign-in send `originator: atomic`, xAI OAuth sends `referrer: atomic`, and Bedrock's user-agent pair is `atomic/<version>`, all instead of `pi`. The OAuth client IDs are unchanged; if Codex or xAI sign-in or requests start failing, these identifiers are the change to revert ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
+
+### Fixed
+
+- Google Gemini, Google Vertex, Anthropic, OpenAI Completions, OpenAI Responses, OpenAI Codex, Azure OpenAI Responses and Mistral failures now record the HTTP status, and Google's provider status such as `UNAVAILABLE`, in a `provider_response_failure` diagnostic on the failed message, so retry and fallback can decide on the status rather than the message text ([#4994](https://github.com/bastani-inc/atomic/issues/4994))
+- Fixed requests failing when the conversation holds an image in a format providers do not accept inline, such as `image/svg+xml`: every provider now sends a text placeholder naming the type instead of the image, and Bedrock no longer throws "Unknown image type" ([#4908](https://github.com/bastani-inc/atomic/issues/4908)).
+- Fixed Google Gemini, Google Vertex, Amazon Bedrock and Azure OpenAI Responses streams ignoring `streamDeadlineMs`: a stream that stalls after its first event is now cut at the deadline, closes its connection, and fails with the retryable "stream deadline exceeded" error so retry and model fallback run instead of the turn hanging ([#4904](https://github.com/bastani-inc/atomic/issues/4904))
+- Fixed Anthropic, Mistral, OpenAI Codex, and pi-messages streams failing or losing events when a CRLF line ending, a multibyte character, or a `data:` prefix is split across network chunks. Every stream now parses the same way however it is chunked, and the OpenAI Codex and pi-messages streams accept CRLF and CR line endings ([#4899](https://github.com/bastani-inc/atomic/issues/4899))
+- Fixed OpenAI-compatible streams merging parallel tool calls that a server sends with the same `index` into one call with malformed arguments; a named tool call delta with a new `id` now starts its own call ([#4899](https://github.com/bastani-inc/atomic/issues/4899))
+- Fixed Anthropic tool calls losing their input when a server sends it complete in `content_block_start` with no `input_json_delta` events; the call now keeps that input ([#4899](https://github.com/bastani-inc/atomic/issues/4899))
+- Fixed Anthropic, OpenAI Codex, OpenAI ChatGPT, Kimi Code, and Radius sign-ins asking you to run `/login` again after a token refresh whose response carries no new refresh token, which servers that don't rotate refresh tokens may send. The refresh now keeps the existing refresh token, and a response without `expires_in` takes its expiry from the access token's JWT `exp` claim or assumes one hour, instead of refreshing on every request ([#4959](https://github.com/bastani-inc/atomic/issues/4959))
+- Fixed Gemini 2.x on Google and Vertex rejecting a parallel tool batch when a result other than the last one contains an image: every function response of the batch now stays in one turn, in call order, and the image turns follow it ([#5048](https://github.com/bastani-inc/atomic/issues/5048))
+- Fixed `retryAssistantCall()` and `failureRetryDelayMs()` capping a server retry hint at `RetryPolicy.maxAgentDelayMs` when `maxRetryDelayMs` is not set. An unset `maxRetryDelayMs` now caps the hint at the documented 60 seconds, so a lower agent backoff cap no longer cuts a server's requested wait short; `maxRetryDelayMs: 0` still caps it at `maxAgentDelayMs`
+
+### Removed
+
+- Removed the `radius` provider, its OAuth flow and models, and the build-time fetch of its catalog from radius.pi.dev. The generic `pi-messages` API stays available for custom providers ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
+
+## [0.9.88-alpha.1] - 2026-11-16
+
 ### Changed
 
 - Renamed the package from `@bastani/pi-ai` to `@bastani/atomic-ai`. It now depends on Atomic's forks `@bastani/atomic-schema` and `@bastani/atomic-telemetry` instead of pi's packages. Atomic's extension loader still resolves `@bastani/pi-ai`, `@earendil-works/pi-ai` and `@mariozechner/pi-ai` imports to it ([#5174](https://github.com/bastani-inc/atomic/issues/5174))

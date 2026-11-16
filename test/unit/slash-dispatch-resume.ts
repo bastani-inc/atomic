@@ -1,6 +1,5 @@
 // @ts-nocheck
-import { describe, test, vi } from "vitest";
-import { openCompletedDurableWorkflow } from "../../packages/workflows/src/durable/completed-inspection.js";
+import { describe, test } from "vitest";
 import { testRunId } from "../helpers/run-id.js";
 // InMemoryDurableBackend is already bound at line 46. Bun tolerated the repeated
 // binding; every standards-conforming parser rejects it, and vitest's did.
@@ -20,7 +19,6 @@ import {
 	installSlashDispatchTestHooks,
 	makeInflightRun,
 	registerTestStageHandle,
-	stageControlRegistry,
 	store,
 	WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
 } from "./slash-dispatch-utils.js";
@@ -28,7 +26,7 @@ import {
 installSlashDispatchTestHooks();
 
 describe("/workflow resume <runId> — active run is refused", () => {
-	test.sequential("resuming an already-running run refuses and points at /workflow connect", async () => {
+	test.sequential("resuming an already-running run refuses and points at /workflows (#5224)", async () => {
 		const runId = testRunId(`resume-slash-overlay-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
 
@@ -65,11 +63,11 @@ describe("/workflow resume <runId> — active run is refused", () => {
 		await workflowCmd.options.handler(`resume ${runId}`, ctx);
 
 		// Active workflows must not be re-resumed: no overlay opens and the
-		// user is steered toward `/workflow connect`.
+		// user is steered toward `/workflows`.
 		assert.equal(openCalls.length, 0);
 		const joined = msgs.join("\n");
 		assert.match(joined, /already running/);
-		assert.match(joined, /\/workflow connect/);
+		assert.match(joined, /\/workflows /);
 		assert.equal(refreshCalls, 0, "exact active runs must bypass durable preparation and discovery");
 	});
 
@@ -237,246 +235,6 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 
 		assert.ok(backend.completedCatalogCalls > 0, "nested child must continue through the top-level resolver");
 		assert.equal(store.runs().find((run) => run.id === runId)?.stages[0]?.status, "paused");
-	});
-});
-
-describe("/workflow attach <rootRunId> <nestedStageId>", () => {
-	test.sequential("routes an explicit nested stage through the root graph overlay", async () => {
-		let overlayOpens = 0;
-		let attachedOwner: string | undefined;
-		const notifications: string[] = [];
-		const { pi, commands } = buildMockPi();
-		addFactoryStubs(pi);
-		pi.ui = {
-			notify: (message: string) => {
-				notifications.push(message);
-			},
-			setWidget: () => {},
-			custom: async (factory) => {
-				overlayOpens += 1;
-				const component = factory(
-					{ requestRender: () => {}, terminal: { rows: 32, columns: 96 } },
-					{},
-					{},
-					() => {},
-				);
-				await vi.waitFor(() =>
-					assert.ok(
-						store
-							.runs()
-							.some((run) => run.stages.some((stage) => stage.id === "review" && stage.attached === true)),
-					),
-				);
-				attachedOwner = store
-					.runs()
-					.find((run) => run.stages.some((stage) => stage.id === "review" && stage.attached === true))?.id;
-				component.dispose?.();
-				return undefined;
-			},
-		};
-		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
-		factoryModule.default(pi);
-		const handler = commands.find((command) => command.name === "workflow")!.options.handler;
-
-		const rootRunId = testRunId(`attach-root-${Date.now()}`);
-		const childOneRunId = testRunId(`attach-child-one-${Date.now()}`);
-		const childTwoRunId = testRunId(`attach-child-two-${Date.now()}`);
-		const nestedStageId = "review";
-		const boundary = (id: string, childRunId: string) => ({
-			id,
-			name: id,
-			status: "completed" as const,
-			parentIds: [],
-			startedAt: Date.now(),
-			endedAt: Date.now(),
-			toolEvents: [],
-			workflowChild: {
-				alias: id,
-				workflow: "child-workflow",
-				runId: childRunId,
-				status: "completed" as const,
-				outputs: {},
-			},
-		});
-		store.recordRunStart({
-			...makeInflightRun(rootRunId),
-			stages: [boundary("child-one", childOneRunId), boundary("child-two", childTwoRunId)],
-		});
-		for (const [childRunId, parentStageId] of [
-			[childOneRunId, "child-one"],
-			[childTwoRunId, "child-two"],
-		] as const) {
-			store.recordRunStart({
-				...makeInflightRun(childRunId),
-				parentRunId: rootRunId,
-				parentStageId,
-				rootRunId,
-				stages: [
-					{
-						id: nestedStageId,
-						name: "review",
-						status: "completed",
-						parentIds: [],
-						startedAt: Date.now(),
-						endedAt: Date.now(),
-						toolEvents: [],
-						sessionFile: `/tmp/${childRunId}.jsonl`,
-						sessionId: childRunId,
-					},
-				],
-			});
-		}
-
-		await handler(`attach ${rootRunId} ${childTwoRunId}:${nestedStageId}`, { hasUI: true, ui: pi.ui });
-
-		assert.equal(overlayOpens, 1);
-		await vi.waitFor(() => assert.equal(attachedOwner, childTwoRunId));
-		const content = notifications.join("\n");
-		assert.match(content, /Attached to .* stage review/);
-		assert.doesNotMatch(content, /Stage not found/);
-	});
-
-	test.sequential("routes /workflow attach through an actually hydrated durable child owner", async () => {
-		const rootRunId = testRunId(`attach-hydrated-root-${Date.now()}`);
-		const childRunId = testRunId(`attach-hydrated-child-${Date.now()}`);
-		const boundaryId = "hydrated-boundary";
-		const stageId = "hydrated-review";
-		const replayKey = "workflow:hydrated-child:1";
-		const backend = await createMemoryTestBackend();
-		const child = {
-			runId: childRunId,
-			runName: "hydrated-child",
-			parentRunId: rootRunId,
-			parentStageId: boundaryId,
-			rootRunId: rootRunId,
-		};
-		const identity = {
-			version: 1 as const,
-			replayScope: replayKey,
-			alias: "hydrated-child",
-			workflow: "hydrated-child",
-			invocationFingerprint: "hydrated-fixture-fingerprint",
-			child,
-		};
-		await backend.commitWorkflowRegistration({
-			workflowId: rootRunId,
-			name: "hydrated-root",
-			inputs: {},
-			createdAt: 1,
-			updatedAt: 5,
-			status: "completed",
-		});
-		await backend.commitCheckpoint({
-			kind: "stage",
-			workflowId: rootRunId,
-			checkpointId: "hydrated-start",
-			name: "workflow:hydrated-child",
-			replayKey,
-			completedAt: 1,
-			topology: {
-				version: 1,
-				stageId: boundaryId,
-				parentIds: [],
-				sourceOrder: 0,
-				status: "running",
-				run: { runId: rootRunId, runName: "hydrated-root" },
-				boundary: { ...identity, event: "start", status: "running" },
-			},
-		});
-		await backend.commitCheckpoint({
-			kind: "stage",
-			workflowId: rootRunId,
-			checkpointId: `${replayKey}:review`,
-			name: "hydrated-review",
-			replayKey: `${replayKey}:stage:review:1`,
-			output: "reviewed",
-			completedAt: 3,
-			endedAt: 3,
-			topology: {
-				version: 1,
-				stageId,
-				parentIds: [],
-				sourceOrder: 0,
-				status: "completed",
-				run: child,
-			},
-		});
-		await backend.commitCheckpoint({
-			kind: "stage",
-			workflowId: rootRunId,
-			checkpointId: "hydrated-terminal",
-			name: "workflow:hydrated-child",
-			replayKey,
-			completedAt: 4,
-			endedAt: 4,
-			output: {
-				workflow: "hydrated-child",
-				runId: childRunId,
-				status: "completed",
-				exited: false,
-				outputs: {},
-			},
-			topology: {
-				version: 1,
-				stageId: boundaryId,
-				parentIds: [],
-				sourceOrder: 0,
-				status: "completed",
-				run: { runId: rootRunId, runName: "hydrated-root" },
-				boundary: { ...identity, event: "terminal", status: "completed" },
-			},
-		});
-		assert.equal(
-			(
-				await openCompletedDurableWorkflow(rootRunId, {
-					durableBackend: backend,
-					store,
-					stageControlRegistry,
-				})
-			).ok,
-			true,
-		);
-
-		let overlayOpens = 0;
-		let attachedOwner: string | undefined;
-		const notifications: string[] = [];
-		const { pi, commands } = buildMockPi();
-		addFactoryStubs(pi);
-		pi.ui = {
-			notify: (message: string) => {
-				notifications.push(message);
-			},
-			setWidget: () => {},
-			custom: async (factory) => {
-				overlayOpens += 1;
-				const component = factory(
-					{ requestRender: () => {}, terminal: { rows: 32, columns: 96 } },
-					{},
-					{},
-					() => {},
-				);
-				await vi.waitFor(() =>
-					assert.ok(
-						store
-							.runs()
-							.some((run) => run.stages.some((stage) => stage.id === stageId && stage.attached === true)),
-					),
-				);
-				attachedOwner = store
-					.runs()
-					.find((run) => run.stages.some((stage) => stage.id === stageId && stage.attached === true))?.id;
-				component.dispose?.();
-				return undefined;
-			},
-		};
-		const factoryModule = await import("../../packages/workflows/src/extension/index.js");
-		factoryModule.default(pi);
-		const handler = commands.find((command) => command.name === "workflow")!.options.handler;
-		await handler(`attach ${rootRunId} ${childRunId}:${stageId}`, { hasUI: true, ui: pi.ui });
-
-		assert.equal(overlayOpens, 1);
-		await vi.waitFor(() => assert.equal(attachedOwner, childRunId));
-		assert.match(notifications.join("\n"), /Attached to .* stage hydrated-review\./);
 	});
 });
 

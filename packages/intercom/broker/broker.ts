@@ -31,7 +31,7 @@ import {
 	workflowSendPredictionFields,
 } from "../workflow-prediction-fields.js";
 import { isSocketAnswering } from "./socket-liveness.js";
-import { acquireSocketReplacementLock } from "./socket-replacement-lock.js";
+import { acquireSocketReplacementLock, type SocketReplacementLock } from "./socket-replacement-lock.js";
 import { type BrokerWatchdog, startBrokerWatchdog } from "./watchdog.js";
 import { retractBrokerStartAnnouncement } from "./start-announcement.js";
 import {
@@ -197,11 +197,11 @@ function socketPathInode(): number | undefined {
 }
 
 /** The socket lock, or undefined when a starting broker still holds it after `budgetMs`. */
-async function acquireSocketLockWithin(budgetMs: number): Promise<(() => void) | undefined> {
+async function acquireSocketLockWithin(budgetMs: number): Promise<SocketReplacementLock | undefined> {
   // A lock taken after the budget is never released by hand: the broker exits at once, and a lock whose holder is dead
   // is taken over.
   return Promise.race([
-    acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH),
+    acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH).catch(() => undefined),
     new Promise<undefined>((resolve) => setTimeout(resolve, budgetMs).unref()),
   ]);
 }
@@ -535,6 +535,7 @@ class IntercomBroker {
   private shuttingDown = false;
   /** Held from before this broker writes its pid file until it listens or gives up starting. */
   private releaseStartupLock: () => void = () => {};
+  private holdsStartupLock: () => boolean = () => false;
 
   constructor() {
     mkdirSync(INTERCOM_DIR, { recursive: true, mode: 0o700 });
@@ -577,9 +578,17 @@ class IntercomBroker {
    * it (#4409). Brokers start one at a time under the socket lock, so one that yields never claims the pid file.
    */
   async start(): Promise<void> {
-    this.releaseStartupLock = await acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH, {
-      onWait: () => console.error(`Intercom broker waiting for another broker starting on ${SOCKET_PATH}`),
-    });
+    let startupLock: SocketReplacementLock;
+    try {
+      startupLock = await acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH, {
+        onWait: () => console.error(`Intercom broker waiting for another broker starting on ${SOCKET_PATH}`),
+      });
+    } catch (error) {
+      console.error(`Intercom broker not started: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+    this.releaseStartupLock = startupLock;
+    this.holdsStartupLock = startupLock.held;
     // Read again under the lock: a broker that started meanwhile may have recorded a socket of its own.
     SOCKET_PATH = getBrokerSocketPath();
     if (await isSocketAnswering(SOCKET_PATH)) {
@@ -597,6 +606,10 @@ class IntercomBroker {
   }
 
   private listen(attempt: number): void {
+    if (!this.holdsStartupLock()) {
+      this.exitHavingLostStartupLock();
+      return;
+    }
     const onError = (error: NodeJS.ErrnoException) => {
       void this.recoverFromListenError(error, attempt);
     };
@@ -627,6 +640,10 @@ class IntercomBroker {
    * bound the path since; the server is closed while nothing is there for its close to unlink, and bound again.
    */
   private rebindVanishedSocket(attempt: number): void {
+    if (!this.holdsStartupLock()) {
+      this.exitHavingLostStartupLock();
+      return;
+    }
     this.server.close();
     if (attempt >= LISTEN_ATTEMPTS) {
       console.error(`Intercom broker could not listen on ${SOCKET_PATH}: the socket vanished after it was bound`);
@@ -672,7 +689,10 @@ class IntercomBroker {
       this.listen(attempt + 1);
       return;
     }
-    // The startup lock is still held, so no other broker has bound the stale socket since it was probed.
+    if (!this.holdsStartupLock()) {
+      this.exitHavingLostStartupLock();
+      return;
+    }
     try {
       unlinkSync(SOCKET_PATH);
     } catch {
@@ -688,6 +708,12 @@ class IntercomBroker {
     } catch (error) {
       console.error(`Intercom broker could not record its socket path ${SOCKET_PATH}:`, error);
     }
+  }
+
+  private exitHavingLostStartupLock(): void {
+    console.error(`Intercom broker not started: it lost the socket lock for ${SOCKET_PATH} while starting`);
+    this.abandonStart();
+    process.exit(1);
   }
 
   /** A broker that does not start leaves no pid file of its own and lets the next starting broker go ahead. */
@@ -3856,7 +3882,7 @@ class IntercomBroker {
     const release = await acquireSocketLockWithin(SHUTDOWN_CLOSE_BOUND_MS);
     const ownsRuntime = this.readPidFile() === process.pid;
     this.unlinkRuntimeFilesIfOwned();
-    if (release !== undefined && ownsRuntime && this.ownsSocketPath()) this.server.close();
+    if (release?.held() === true && ownsRuntime && this.ownsSocketPath()) this.server.close();
     release?.();
     process.exit(0);
   }

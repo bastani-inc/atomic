@@ -1408,6 +1408,17 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	listCheckpoints(runId: string) {
 		return this.projection.listCheckpoints(runId);
 	}
+	async readCheckpointSequence(runId: string): Promise<readonly DurableCheckpoint[] | undefined> {
+		if (
+			this.projection.getWorkflow(runId) === undefined ||
+			this.summarized.has(runId) ||
+			this.lacksChildCheckpoints(runId) ||
+			this.checkpointSelections.has(runId)
+		)
+			return undefined;
+		await this.catchUpWorkflow(runId);
+		return this.projection.recordedCheckpoints(runId);
+	}
 	/** One stage checkpoint by id, for callers that would otherwise scan `listCheckpoints` per lookup. */
 	getStageCheckpoint(runId: string, checkpointId: string) {
 		return this.projection.getStageCheckpoint(runId, checkpointId);
@@ -1497,6 +1508,15 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	/** Whether a workflow execution of this process holds `runId` (`withWorkflowLease`). */
 	hasWorkflowExecution(runId: string): boolean {
 		return this.executions.has(runId);
+	}
+	/**
+	 * Notes a checkpoint the run recorded through another journal that this backend's journal does not hold yet: a pooled
+	 * worker's checkpoint its host accepted and will ship to the root's journal (#4768). Reads find it from now on, as if
+	 * it were folded; the event, once shipped and folded, is the same checkpoint and changes nothing.
+	 */
+	noteRecordedCheckpoint(checkpoint: DurableCheckpoint): void {
+		validateCheckpointInvocationFingerprint(checkpoint);
+		if (this.keepsCheckpoint(checkpoint.workflowId, checkpoint)) this.projection.recordCheckpoint(checkpoint);
 	}
 	async catchUpWorkflow(runId: string): Promise<void> {
 		await this.serialize(runId, () => this.extend(runId), false);

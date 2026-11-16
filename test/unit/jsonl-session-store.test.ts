@@ -935,7 +935,7 @@ for (const id of ["文".repeat(32), "x".repeat(200)]) {
 	it(`round-trips a permitted ${id.length}-character identity without filename limits`, async () => {
 		await withStore(async (store, directory) => {
 			const input = { ...header, id };
-			assert.deepEqual(await store.create(input, [entry]), { lastSeq: 1 });
+			assert.equal((await store.create(input, [entry])).lastSeq, 1);
 			const reopened = await JsonlSessionStore.open(directory);
 			try {
 				assert.deepEqual(await reopened.load(id), { header: input, entries: [entry], lastSeq: 1 });
