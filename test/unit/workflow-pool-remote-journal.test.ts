@@ -15,6 +15,11 @@ import {
 	StaleLeaseError,
 } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableStageCheckpoint, DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import {
+	IdleClaimBackoff,
+	IdleClaimWaits,
+	IdleReadyProbe,
+} from "../../packages/workflows/src/workers/pool-wake-ups.js";
 import { staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
@@ -574,6 +579,120 @@ test("a slow journal read does not make the pool's copy of the lease look newer 
 		// The lease was sampled before the 400 ms wait, so the copy is at least that old, never fresher.
 		assert.ok(Number(copy!.age) >= 380, `the copy of the lease is ${copy!.age} ms old, 400 ms after it was read`);
 	} finally {
+		await f.close();
+	}
+});
+
+test("a recovered remote journal claim passes a coalesced wake to another long-idle worker (#5230)", async () => {
+	const f = await fixture();
+	const first = poolWorkFixture("first");
+	const second = poolWorkFixture("second");
+	const waits = new IdleClaimWaits();
+	let running = true;
+	let checkedEmpty = 0;
+	let refused = 0;
+	const claimed: string[] = [];
+	const workers = ["worker-first", "worker-second"].map(async (worker) => {
+		const backoff = new IdleClaimBackoff(() => 0);
+		for (let index = 0; index < 8; index++) backoff.next();
+		while (running) {
+			const taken = await waits.claim(backoff, async () => {
+				const result = await f.pool.claim(f.lease, worker, [first.work], 60_000, undefined, () => {
+					refused++;
+					backoff.reset();
+				});
+				if (result === undefined) checkedEmpty++;
+				return result;
+			});
+			if (taken !== undefined) {
+				claimed.push(taken.id);
+				return;
+			}
+		}
+	});
+	try {
+		while (checkedEmpty < 2) await sleep(1);
+		await f.pool.enqueue(f.lease, first.work, first.boundary);
+		await f.pool.enqueue(f.lease, second.work, second.boundary);
+		const outage = vi.spyOn(f.durable, "append").mockRejectedValue(new Error("journal unavailable"));
+		await assert.rejects(f.pool.commit(f.lease, f.attempt, "create", sessionMutation), /journal unavailable/);
+		waits.wakeOne();
+		while (refused < 2) await sleep(1);
+		outage.mockRestore();
+		const RECOVERY_BOUND_MS = 300;
+		const recoveredAt = performance.now();
+		while (claimed.length < 2 && performance.now() - recoveredAt < RECOVERY_BOUND_MS) await sleep(5);
+		assert.equal(
+			claimed.length,
+			2,
+			"both idle workers claim after one readiness notice and repeated delivery refusals",
+		);
+		assert.equal(new Set(claimed).size, 2);
+	} finally {
+		running = false;
+		vi.restoreAllMocks();
+		waits.wakeAll();
+		await Promise.all(workers);
+		await f.close();
+	}
+});
+
+test("a claim held back by undelivered remote journal events resets its idle pause so recovery claims promptly (#5230)", async () => {
+	const f = await fixture();
+	const other = poolWorkFixture("other");
+	const waits = new IdleClaimWaits();
+	let probeTimer: NodeJS.Timeout | undefined;
+	try {
+		await f.pool.enqueue(f.lease, other.work, other.boundary);
+		const outage = vi.spyOn(f.durable, "append").mockRejectedValue(new Error("journal unavailable"));
+		await assert.rejects(f.pool.commit(f.lease, f.attempt, "create", sessionMutation), /journal unavailable/);
+		const probe = new IdleReadyProbe({
+			waits,
+			notified: async () => false,
+			mark: () => f.pool.readyMark("root"),
+		});
+		probeTimer = setInterval(() => void probe.tick(), 250);
+		const backoff = new IdleClaimBackoff();
+		for (let index = 0; index < 8; index++) backoff.next();
+		let blocked = 0;
+		let refused = 0;
+		const claimed: { at: number; id: string }[] = [];
+		const worker = (async () => {
+			for (;;) {
+				const taken = await waits.claim(backoff, () =>
+					f.pool.claim(f.lease, "worker-other", [other.work], 60_000, undefined, () => {
+						blocked++;
+						backoff.reset();
+					}),
+				);
+				if (taken !== undefined) {
+					claimed.push({ at: performance.now(), id: taken.id });
+					return;
+				}
+				refused++;
+			}
+		})();
+		await sleep(300);
+		const recoveredAt = performance.now();
+		outage.mockRestore();
+		await worker;
+		assert.ok(blocked > 0);
+		assert.ok(refused > 0);
+		assert.ok(
+			claimed[0]!.at - recoveredAt < 300,
+			`ready work waited ${Math.round(claimed[0]!.at - recoveredAt)} ms after the journal recovered`,
+		);
+		const blockedAfterDrain = blocked;
+		assert.equal(
+			await f.pool.claim(f.lease, "worker-none", [other.work], 60_000, undefined, () => {
+				blocked++;
+			}),
+			undefined,
+		);
+		assert.equal(blocked, blockedAfterDrain);
+	} finally {
+		clearInterval(probeTimer);
+		vi.restoreAllMocks();
 		await f.close();
 	}
 });

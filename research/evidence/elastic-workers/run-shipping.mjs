@@ -42,9 +42,6 @@ const RUN_TIMEOUT_MS = Number(args["run-timeout-ms"] ?? 900_000);
 // --profile 1: what the store spent its time on, by statement (PostgreSQL's pg_stat_statements; for sqld, a proxy that
 // records every request).
 const profile = args.profile === "1";
-// --idle-probe N (#5230): after the fan-out, every worker idles for --idle-settle-ms (store CPU per second idle), then the
-// root runs N one-step children one at a time, and each one's claim latency (enqueue to start) is recorded. The fan-out's
-// figures (CPU, profile) stop where the idle phase begins.
 const idleProbe = Number(args["idle-probe"] ?? 0);
 const idleSettleMs = Number(args["idle-settle-ms"] ?? 10_000);
 // The classes below need more of each statement than the trace keeps by default.
@@ -174,7 +171,6 @@ async function openStore(work) {
 			: undefined;
 	return {
 		url: traced === undefined ? url : `http://${listen ?? "127.0.0.1"}:${traced.port}`,
-		/** Requests the trace proxy saw so far; null when nothing traces them. */
 		requests: () => (traced === undefined ? null : traced.records.length),
 		/** Starts counting what the store does from now. */
 		resetProfile: () => {
@@ -196,8 +192,6 @@ async function openStore(work) {
 					});
 				return { classes: classTotals(statements.map((row) => ({ sql: row.sql, calls: row.calls, statements: row.calls, ms: row.ms }))), top: statements.slice(0, 40) };
 			}
-			// A request counts toward the class of its first statement past transaction control and the libSQL adapter's
-			// stream probe, which rides in front of the statement it checks for; the probes are counted apart.
 			return {
 				requests: traced.records.length,
 				streamProbes: traced.records.filter((record) => record.sql.some((sql) => /sqlite_schema LIMIT 0/.test(sql))).length,
@@ -427,7 +421,6 @@ async function trial(hosts, shipping) {
 						killed = busiestHost(work, hosts - remoteHosts);
 						killTree(processes[killed].pid);
 					}, killAfter);
-		// With --idle-probe, the fan-out's figures are taken where the idle phase begins, and the idle phase's CPU apart.
 		const phases = {};
 		let mainCpuMs;
 		let mainProfile;
@@ -445,7 +438,6 @@ async function trial(hosts, shipping) {
 						mainCpuMs = phases[name].cpuMs;
 						mainProfile = shared.profile();
 						mainRequests = phases[name].requests;
-						// What the store does while every worker idles, apart.
 						shared.resetProfile();
 					}
 					if (name === "probe-start") idleProfile = shared.profile();
@@ -541,7 +533,6 @@ async function trial(hosts, shipping) {
 						const latencies = probes.map((probe) => probe.startedAt - probe.enqueuedAt);
 						const byPlacement = {};
 						for (const probe of probes) {
-							// h0–h3 run on the store's VM; the root's own worker is "root"; other hosts are on other VMs.
 							const placement =
 								probe.host === "root" ? "root host" : Number(probe.host?.slice(1)) < 100 ? "store VM" : "other VMs";
 							(byPlacement[placement] ??= []).push(probe.startedAt - probe.enqueuedAt);
@@ -574,7 +565,6 @@ async function trial(hosts, shipping) {
 			},
 			sharedStoreCpuMs: Math.round(cpuMs),
 			mainWallMs,
-			/** The store's CPU time per second of the fan-out. */
 			storeCpuMsPerSec: Math.round(cpuMs / (mainWallMs / 1000)),
 			storeRequests: mainRequests ?? shared.requests(),
 			idle,

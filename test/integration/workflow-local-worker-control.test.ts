@@ -46,7 +46,6 @@ interface WorkerScenario {
 	readonly heartbeatMs: number;
 	/** Whether the child may finish as soon as it starts. */
 	readonly released?: boolean;
-	/** Every claim finds no work, and its answer waits out this long idle pause, as the coordinator's does (#5230). */
 	readonly idlePauseMs?: number;
 	/** The test's answer to a request, now or later; undefined answers as a plain coordinator would. */
 	readonly answer?: (request: WorkerRequest, requests: readonly WorkerRequest[]) => Answer | Promise<Answer>;
@@ -159,7 +158,6 @@ async function realWorker(scenario: WorkerScenario, workerEntry: string, directo
 		requests,
 		count,
 		exited,
-		/** Hides the root's journal events, so any catch-up the worker makes fails it. */
 		alive: () => worker.exitCode === null && worker.signalCode === null,
 		hideEvents: () => database.exec("ALTER TABLE wf_events RENAME TO wf_events_hidden"),
 		stderr: () => stderr,
@@ -169,11 +167,9 @@ async function realWorker(scenario: WorkerScenario, workerEntry: string, directo
 			control = next;
 			worker.send({ kind: "pool-control", control: next });
 		},
-		/** Commits `next` without pushing it: the push was lost. */
 		commitUnpushed(next: PoolControl) {
 			control = next;
 		},
-		/** The next claim is given the child again. */
 		requeue() {
 			claimed = false;
 		},
@@ -270,7 +266,6 @@ test(
 	REAL_WORKER_TEST_TIMEOUT_MS,
 );
 
-/** How long a control pushed to an idle worker may take to be acknowledged, while its claim waits in its coordinator. */
 const IDLE_CONTROL_BOUND_MS = 500;
 
 test(

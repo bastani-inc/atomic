@@ -18,10 +18,8 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-/** A backoff whose pauses are their base, without jitter: 25, 50, 100, ... ms. */
 const steady = () => new IdleClaimBackoff(() => 0);
 
-/** Starts an idle claim that finds no work, at its backoff's first pause, and reports whether its pause has ended. */
 function paused(pauses: IdleClaimWaits) {
 	let ended = false;
 	void pauses
@@ -162,13 +160,8 @@ test("a host's wake-ups are spaced by the real clock when none is given (#5103)"
 	assert.equal(polls, 2);
 });
 
-/** How long a worker of {@link idlePool} runs a child it claimed: busy for the rest of any test. */
 const CHILD_RUN_MS = 3_600_000;
 
-/**
- * A queue of ready children over the fake clock, and idle workers that ask it for one in a loop, each with its own
- * backoff, as a coordinator's claims do (#5230). A child queued at `at` is ready from then on.
- */
 function idlePool(workers: number) {
 	const waits = new IdleClaimWaits();
 	const queue: number[] = [];
@@ -184,7 +177,6 @@ function idlePool(workers: number) {
 			});
 			if (child === undefined) continue;
 			claimed.push({ child, at: Date.now() });
-			// The worker runs its child, far longer than any test looks.
 			await new Promise((resolve) => setTimeout(resolve, CHILD_RUN_MS));
 		}
 	});
@@ -193,7 +185,6 @@ function idlePool(workers: number) {
 		claimed,
 		checks: () => checks,
 		queued: () => queue,
-		/** Queues children; `wake` sends the one wake-up their transaction would. */
 		ready(children: readonly number[], wake: boolean) {
 			queue.push(...children);
 			if (wake) waits.wake("root", "root");
@@ -258,7 +249,6 @@ test("a wake-up that arrives while a claim checks the store, before it pauses, i
 		.then(() => {
 			ended = true;
 		});
-	// The child becomes ready, and its wake-up arrives, after the check read the queue and before it answered.
 	waits.wake("root", "root");
 	checked();
 	await vi.advanceTimersByTimeAsync(0);
@@ -276,7 +266,6 @@ test("with every wake-up lost, a child queued after a long idle spell is claimed
 		[1, 2],
 	);
 	for (const { at } of pool.claimed) assert.ok(at - queuedAt <= IDLE_CLAIM_FALLBACK_MS);
-	// Idle at the bound, the workers left ask once per fallback bound each, rather than every 25-50 ms.
 	const checks = pool.checks();
 	await vi.advanceTimersByTimeAsync(10 * IDLE_CLAIM_FALLBACK_MS);
 	assert.ok(pool.checks() - checks <= 4 * 11, `${pool.checks() - checks} checks in 10 bounds`);
@@ -285,7 +274,6 @@ test("with every wake-up lost, a child queued after a long idle spell is claimed
 
 test("one wake-up for several ready children reaches as many idle workers, each passing it on (#5230)", async () => {
 	const pool = idlePool(3);
-	// Part way through the workers' longest pauses, so none ends on its own now.
 	await vi.advanceTimersByTimeAsync(60_500);
 	const queuedAt = Date.now();
 	pool.ready([1, 2, 3], true);
@@ -311,13 +299,11 @@ test("a dropped listening connection leaves idle workers on the fallback poll, a
 		recover: () => {},
 	});
 	await vi.advanceTimersByTimeAsync(60_000);
-	// The listener is down: the queue's wake-up never arrives, and the fallback poll claims the child.
 	let queuedAt = Date.now();
 	pool.ready([1], false);
 	await vi.advanceTimersByTimeAsync(IDLE_CLAIM_FALLBACK_MS);
 	assert.equal(pool.claimed.length, 1);
 	assert.ok(pool.claimed[0]!.at - queuedAt <= IDLE_CLAIM_FALLBACK_MS);
-	// It listens again: what was missed meanwhile is announced as a wake-up naming no root, which every pause ends on.
 	await vi.advanceTimersByTimeAsync(5_000);
 	queuedAt = Date.now();
 	pool.ready([2, 3], false);
@@ -327,7 +313,6 @@ test("a dropped listening connection leaves idle workers on the fallback poll, a
 		[2, 0],
 		[3, 0],
 	]);
-	// And wake-ups reach it again.
 	queuedAt = Date.now();
 	await vi.advanceTimersByTimeAsync(5_000);
 	queuedAt = Date.now();
@@ -445,18 +430,15 @@ test("a host without wake-ups reads its root's ready mark while a worker idles, 
 	});
 	const timer = setInterval(() => void probe.tick(), IDLE_READY_PROBE_MS);
 	await vi.advanceTimersByTimeAsync(60_500);
-	// Another host queues a child: no wake-up comes, and the probe's next read finds it.
 	let queuedAt = Date.now();
 	pool.ready([1], false);
 	await vi.advanceTimersByTimeAsync(IDLE_READY_PROBE_MS);
 	assert.equal(pool.claimed.length, 1);
 	assert.ok(pool.claimed[0]!.at - queuedAt <= IDLE_READY_PROBE_MS);
-	// While wake-ups arrive, the probe reads nothing.
 	notified = true;
 	const before = reads;
 	await vi.advanceTimersByTimeAsync(5_000);
 	assert.equal(reads, before);
-	// Without them again, the next child is found by the probe too.
 	notified = false;
 	await vi.advanceTimersByTimeAsync(250);
 	queuedAt = Date.now();
@@ -464,7 +446,6 @@ test("a host without wake-ups reads its root's ready mark while a worker idles, 
 	await vi.advanceTimersByTimeAsync(IDLE_READY_PROBE_MS);
 	assert.deepEqual(pool.claimed.at(-1)?.child, 2);
 	assert.ok(pool.claimed.at(-1)!.at - queuedAt <= IDLE_READY_PROBE_MS);
-	// With every worker busy, nothing is read.
 	const busy = reads;
 	await vi.advanceTimersByTimeAsync(5_000);
 	assert.equal(reads, busy);
@@ -487,10 +468,154 @@ test("a ready mark that does not change, as for work this host cannot take, wake
 	const probe = new IdleReadyProbe({ waits, notified: async () => false, mark: async () => "1:5" });
 	const timer = setInterval(() => void probe.tick(), IDLE_READY_PROBE_MS);
 	await vi.advanceTimersByTimeAsync(10 * IDLE_CLAIM_FALLBACK_MS);
-	// Its own pauses (8 to reach the bound, then one per bound) and the one wake-up of the first read.
 	assert.ok(checks <= 8 + 10 + 2, `${checks} checks`);
 	clearInterval(timer);
 	running = false;
 	waits.wakeAll();
 	await loop;
+});
+
+test("a committed claim passes its wake-up on before slow workspace preparation completes (#5230)", async () => {
+	const waits = new IdleClaimWaits();
+	const firstBackoff = steady();
+	const firstPause = waits.claim(firstBackoff, async () => undefined);
+	const secondBackoff = steady();
+	for (let index = 0; index < 8; index++) secondBackoff.next();
+	let secondEnded = false;
+	const second = waits
+		.claim(secondBackoff, async () => undefined)
+		.then(() => {
+			secondEnded = true;
+		});
+	await vi.advanceTimersByTimeAsync(0);
+	waits.wakeOne();
+	await firstPause;
+	let finishRestore!: () => void;
+	const restoring = new Promise<void>((resolve) => {
+		finishRestore = resolve;
+	});
+	const claim = waits.claim(firstBackoff, async (found) => {
+		found();
+		await restoring;
+		return "child";
+	});
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(secondEnded, true, "the second idle claim wakes before the committed claim finishes restoring");
+	finishRestore();
+	assert.equal(await claim, "child");
+	await second;
+});
+
+test("a carried wake survives repeated outbox refusals and reaches a long-idle sibling after recovery (#5230)", async () => {
+	const waits = new IdleClaimWaits();
+	let available = 0;
+	let gated = false;
+	let running = true;
+	const claimed: number[] = [];
+	const workers = [0, 1].map(async (worker) => {
+		const backoff = steady();
+		while (running) {
+			const work = await waits.claim(backoff, async () => {
+				if (available === 0) return undefined;
+				if (gated) {
+					backoff.reset();
+					return undefined;
+				}
+				return --available;
+			});
+			if (work !== undefined) {
+				claimed.push(worker);
+				return;
+			}
+		}
+	});
+	try {
+		await vi.advanceTimersByTimeAsync(60_500);
+		available = 2;
+		gated = true;
+		waits.wakeOne();
+		await vi.advanceTimersByTimeAsync(100);
+		gated = false;
+		await vi.advanceTimersByTimeAsync(100);
+		assert.equal(claimed.length, 2, "one recovered claim passes the original wake to the other idle worker");
+	} finally {
+		running = false;
+		waits.wakeAll();
+		await Promise.all(workers);
+	}
+});
+
+test("a failed preparation after a committed claim registers again for later wake-ups (#5230)", async () => {
+	const waits = new IdleClaimWaits();
+	let finishPreparation!: () => void;
+	const preparing = new Promise<void>((resolve) => {
+		finishPreparation = resolve;
+	});
+	const claim = waits.claim(steady(), async (found) => {
+		found();
+		await preparing;
+		return undefined;
+	});
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(waits.pausing, false);
+	finishPreparation();
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(waits.pausing, true, "the worker whose restore failed listens while waiting to try again");
+	waits.wakeOne();
+	await claim;
+	assert.equal(waits.pausing, false);
+});
+
+test("a worker exiting after its committed claim passed a wake-up on does not pass it twice (#5230)", async () => {
+	const waits = new IdleClaimWaits();
+	const backoff = steady();
+	const exited = new AbortController();
+	const first = waits.claim(backoff, async () => undefined, exited.signal);
+	const next = paused(waits);
+	const last = paused(waits);
+	await vi.advanceTimersByTimeAsync(0);
+	waits.wakeOne();
+	await first;
+	let finishPreparation!: () => void;
+	const preparing = new Promise<void>((resolve) => {
+		finishPreparation = resolve;
+	});
+	const claim = waits.claim(
+		backoff,
+		async (found) => {
+			found();
+			await preparing;
+			return "child";
+		},
+		exited.signal,
+	);
+	await vi.advanceTimersByTimeAsync(0);
+	assert.deepEqual([next(), last()], [true, false]);
+	exited.abort();
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(last(), false, "the committed claim no longer owns the wake-up");
+	finishPreparation();
+	await claim;
+	await vi.advanceTimersByTimeAsync(IDLE_CLAIM_FIRST_PAUSE_MS);
+});
+
+test("a failed notification-state read falls back to the ready mark without rejecting (#5230)", async () => {
+	const waits = new IdleClaimWaits();
+	const ended = paused(waits);
+	await vi.advanceTimersByTimeAsync(0);
+	let reads = 0;
+	const probe = new IdleReadyProbe({
+		waits,
+		notified: async () => {
+			throw new Error("listen state unavailable");
+		},
+		mark: async () => {
+			reads++;
+			return "ready:1";
+		},
+	});
+	await probe.tick();
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(reads, 1);
+	assert.equal(ended(), true, "a new ready mark wakes the idle claim despite the notification-state failure");
 });

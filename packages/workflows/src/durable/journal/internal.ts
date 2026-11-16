@@ -148,11 +148,6 @@ export interface SqlPoolStorage {
 	 * statements of one read may see different commits.
 	 */
 	read<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T>;
-	/**
-	 * A read like {@link read} whose answer is only a hint, so no schema-version check precedes it (#5230): an idle host's
-	 * ready mark, read four times a second. A journal a later build upgraded can only make it wake a worker for nothing,
-	 * or fail, which the caller takes as no news; the claim that follows checks the version.
-	 */
 	readonly peek?: <T>(body: (executor: SqliteExecutor) => Promise<T>) => Promise<T>;
 	withAppendGuard<T>(guard: JournalAppendGuard, action: () => Promise<T>): Promise<T>;
 	readonly tables: Readonly<{

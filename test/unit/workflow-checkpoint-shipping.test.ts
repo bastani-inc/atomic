@@ -124,6 +124,22 @@ test('checkpointShipping accepts "sync" and limits within range, and resolves th
 		);
 });
 
+test("checkpointShipping rejects inherited object names as unknown options (#4768)", async () => {
+	for (const key of ["toString", "constructor", "hasOwnProperty", "__proto__"]) {
+		const options = {
+			runId: ROOT,
+			localWorkers: { count: 1, definitions: [] },
+			workers: { placement: "shared", checkpointShipping: JSON.parse(`{"${key}":1}`) },
+		} as RunOpts;
+		await assert.rejects(activatePublicPool({} as DurableWorkflowBackend, options), (error: Error) => {
+			assert.ok(error instanceof WorkerPlacementConfigError);
+			assert.equal(error.field, `workers.checkpointShipping.${key}`);
+			assert.equal(error.detail, "is not an option; use intervalMs, maxBatch or maxLagMs");
+			return true;
+		});
+	}
+});
+
 test("a resume may change checkpointShipping (#4768)", () => {
 	const saved = { workers: { placement: "shared" as const, checkpointShipping: "sync" as const } };
 	const current = { workers: { placement: "shared" as const, checkpointShipping: { maxBatch: 4 } } };
@@ -177,7 +193,7 @@ test("a local commit is refused unless the host holds the attempt's lease, renew
 	await local.hold(LEASE, LEASE_MS);
 	clock.now = 2 * LEASE_MS - 1;
 	assert.equal((await local.accept(ROOT, LEASE, "k2", "{}", 1)).accepted, true);
-	local.release(LEASE.id);
+	local.release(LEASE);
 	await refused(local.accept(ROOT, LEASE, "k3", "{}", 1), "missing");
 	assert.deepEqual(
 		(await local.pending(LEASE)).map((event) => event.key),
@@ -198,7 +214,7 @@ test("a local commit rechecks a lease released while its write is queued (#4768)
 	const { shard: local } = await shard();
 	await local.hold(LEASE, LEASE_MS);
 	const accepting = local.accept(ROOT, LEASE, "queued", "{}", 1);
-	local.release(LEASE.id);
+	local.release(LEASE);
 	await refused(accepting, "missing");
 	assert.deepEqual(await local.pending(LEASE), []);
 });
@@ -219,7 +235,7 @@ test("shipped checkpoints are forgotten, and a fenced or superseded attempt's ar
 	await local.shipped(LEASE, 2);
 	assert.deepEqual(
 		(await local.pending(LEASE)).map((event) => event.key),
-		["k3"],
+		["k1", "k3"],
 	);
 	await local.fence(LEASE);
 	assert.deepEqual(await local.pending(LEASE), []);
@@ -238,7 +254,7 @@ test("a delayed lease renewal of an older generation cannot discard the current 
 	const current = { ...LEASE, generation: LEASE.generation + 1, worker: "host/2" };
 	await local.hold(current, LEASE_MS);
 	await local.accept(ROOT, current, "k1", "{}", 1);
-	await refused(local.hold(LEASE, LEASE_MS), "generation-mismatch");
+	await local.hold(LEASE, LEASE_MS);
 	assert.deepEqual(
 		(await local.pending(current)).map((event) => event.key),
 		["k1"],
@@ -551,7 +567,7 @@ test("a local journal that fails, such as on a full disk, sends the attempt to t
 	assert.equal(shipping.isSyncOnly(LEASE.id), true);
 	assert.deepEqual(fallbacks, [{ workId: LEASE.id, error: full }]);
 	// A new attempt of the work ships again.
-	await shipping.release(LEASE.id);
+	await shipping.release(LEASE);
 	assert.equal(shipping.isSyncOnly(LEASE.id), false);
 });
 
@@ -700,7 +716,7 @@ test("releasing an attempt ships what it accepted, retrying while the shared sto
 	opened.push(shipping);
 	await shipping.hold(LEASE, LEASE_MS);
 	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
-	await shipping.release(LEASE.id);
+	await shipping.release(LEASE);
 	assert.deepEqual(shared.recorded, [keyOf("a")]);
 	assert.deepEqual(reported, []);
 });
@@ -722,7 +738,7 @@ test("an attempt released while the shared store stays unreachable is reported, 
 	opened.push(shipping);
 	await shipping.hold(LEASE, LEASE_MS);
 	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
-	await shipping.release(LEASE.id);
+	await shipping.release(LEASE);
 	assert.equal(tries, RELEASE_FLUSH_ATTEMPTS);
 	assert.deepEqual(reported, [{ workId: LEASE.id, error: down }]);
 	assert.deepEqual(

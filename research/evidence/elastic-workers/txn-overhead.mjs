@@ -1,11 +1,4 @@
 #!/usr/bin/env node
-// What the per-transaction checks cost the shared store, each on its own (#5230):
-//   node research/evidence/elastic-workers/txn-overhead.mjs --store pg|sqld [--n 20000] [--clients 8] [--rounds 3]
-// PostgreSQL 16: a one-row read in a transaction, as the pool's journal sends it, with and without the
-// `SET LOCAL lock_timeout/statement_timeout` its BEGIN carries and the schema-version read before its first statement.
-// sqld: a one-row read on a kept stream, with and without the `SELECT 1 FROM sqlite_schema LIMIT 0` the libSQL adapter
-// sends first in the same request (#5151). Each variant runs `--n` times over `--clients` connections against a store
-// in Docker, and reports the store container's CPU microseconds per operation, the median of `--rounds` rounds.
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 
@@ -43,7 +36,6 @@ else
 const cpuUs = () =>
 	Number(/usage_usec (\d+)/.exec(spawnSync("docker", ["exec", name, "cat", "/sys/fs/cgroup/cpu.stat"]).stdout.toString())?.[1] ?? 0);
 
-/** Runs `operation` `n` times split over the connections, and returns the store's CPU microseconds per operation. */
 async function measure(connections, operation) {
 	const before = cpuUs();
 	const started = performance.now();
@@ -57,7 +49,6 @@ async function measure(connections, operation) {
 		}),
 	);
 	const wallMs = performance.now() - started;
-	// cgroup accounting lags the last requests slightly.
 	await sleep(200);
 	return { cpuUsPerOp: (cpuUs() - before) / n, opsPerSec: Math.round(n / (wallMs / 1000)) };
 }
@@ -90,7 +81,6 @@ try {
 				return client;
 			}),
 		);
-		// As the adapter sends them: BEGIN and its SET LOCALs in one simple query, each statement on its own.
 		const variants = {
 			"read only": async (c, i) => {
 				await c.query("BEGIN");
@@ -146,7 +136,6 @@ try {
 			"read only": async ({ stream }, i) => {
 				await stream.query(read(i));
 			},
-			// As the adapter sends it: the check first, in the same request (one pipeline), on a kept stream.
 			"+ schema check (today)": async ({ stream }, i) => {
 				const checked = stream.query(new hrana.Stmt("SELECT 1 FROM sqlite_schema LIMIT 0"));
 				checked.catch(() => {});

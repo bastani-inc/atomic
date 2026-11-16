@@ -1,15 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	renameSync,
-	utimesSync,
-	writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
@@ -17,6 +8,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import {
 	continueSessionWhereItWorked,
 	type PreparedSessionResume,
@@ -89,7 +81,7 @@ async function recordedSnapshot(): Promise<{ snapshot: WorktreeSnapshot; clone: 
 	const capture = await captureWorktreeSnapshot(clone, { settings, blobs: store.snapshotBlobs });
 	assert.equal(capture.status, "captured");
 	if (capture.status !== "captured") throw new Error("unreachable");
-	renameSync(clone, sandbox.path(`away-${Date.now()}`));
+	await renameWithRetry(clone, sandbox.path(`away-${Date.now()}`));
 	return { snapshot: capture.snapshot, clone };
 }
 
@@ -407,8 +399,8 @@ describe("worktree pool ownership on resume (#4748)", () => {
 			if (capture.status !== "captured") return;
 			await x.appendWorktreeSnapshot(root, capture.snapshot.id, capture.snapshot);
 		}
-		renameSync(a, sandbox.path("a-away"));
-		renameSync(b, sandbox.path("b-away"));
+		await renameWithRetry(a, sandbox.path("a-away"));
+		await renameWithRetry(b, sandbox.path("b-away"));
 		const first = await prepareSessionResume(x, prepareOptions({ pool: { maxIdlePerRepository: 0 } }));
 		assert.equal(first.status, "ready");
 		if (first.status !== "ready") return;
@@ -563,7 +555,7 @@ describe("worktree pool eviction (#4748)", () => {
 		assert.equal(capture.status, "captured");
 		if (capture.status !== "captured") return;
 		const snapshot = capture.snapshot;
-		renameSync(clone, sandbox.path("ignoring-away"));
+		await renameWithRetry(clone, sandbox.path("ignoring-away"));
 		const sessions = await Promise.all([1, 2, 3].map(() => sessionOf(clone, snapshot)));
 		for (const session of sessions.slice(0, 2)) await restoredRoot(session, 0);
 		for (const session of sessions.slice(0, 2)) await releaseSessionWorktrees(session);

@@ -187,6 +187,12 @@
 	},
 	{
 		"type": "table",
+		"name": "team_wf_runs_pool_ready",
+		"tbl_name": "team_wf_runs_pool_ready",
+		"sql": "CREATE TABLE team_wf_runs_pool_ready(\n\t\t\t\t\troot TEXT PRIMARY KEY REFERENCES team_wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\t\trevision INTEGER NOT NULL DEFAULT 0\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
 		"name": "team_wf_runs_pool_restore_backoffs",
 		"tbl_name": "team_wf_runs_pool_restore_backoffs",
 		"sql": "CREATE TABLE team_wf_runs_pool_restore_backoffs(\n\t\t\t\t\thost TEXT NOT NULL, binding TEXT NOT NULL, until INTEGER NOT NULL, failure TEXT NOT NULL,\n\t\t\t\t\trecorded_at INTEGER NOT NULL, PRIMARY KEY(host, binding)\n\t\t\t\t)"
@@ -358,6 +364,12 @@
 		"name": "wf_runs_pool_outbox",
 		"tbl_name": "wf_runs_pool_outbox",
 		"sql": "CREATE TABLE wf_runs_pool_outbox(\n\t\t\t\t\twork TEXT NOT NULL REFERENCES wf_runs_work(id) ON DELETE CASCADE,\n\t\t\t\t\tgeneration INTEGER NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL,\n\t\t\t\t\tevent_key TEXT NOT NULL, payload TEXT NOT NULL, last_seq INTEGER,\n\t\t\t\t\tPRIMARY KEY(work, generation, operation)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_ready",
+		"tbl_name": "wf_runs_pool_ready",
+		"sql": "CREATE TABLE wf_runs_pool_ready(\n\t\t\t\t\troot TEXT PRIMARY KEY REFERENCES wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\t\trevision INTEGER NOT NULL DEFAULT 0\n\t\t\t\t)"
 	},
 	{
 		"type": "table",

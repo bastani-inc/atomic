@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, parse } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
@@ -213,7 +213,15 @@ describe("resuming a session builds its blueprints and never fails on them (#458
 		assert.match(prepared.blueprintContext ?? "", /NOT YET RUN on this machine: the project is not trusted/);
 		assert.match(prepared.blueprintContext ?? "", /npm ci/);
 		assert.match(prepared.blueprintContext ?? "", /npm run lint/);
-		assert.equal(existsSync(sandbox.path("host", "blueprint-builds")), false);
+		// Nothing of a build is written: only the empty file whose advisory lock keeps two processes from building it at once.
+		const builds = sandbox.path("host", "blueprint-builds");
+		const written = existsSync(builds)
+			? readdirSync(builds, { recursive: true, withFileTypes: true }).filter((entry) => !entry.isDirectory())
+			: [];
+		assert.deepEqual(
+			written.filter((entry) => !entry.name.endsWith(".json.takeover.lock")).map((entry) => entry.name),
+			[],
+		);
 	});
 
 	test("a project without a blueprint resumes with no notice and no context (#4588)", async () => {

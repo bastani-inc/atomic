@@ -1023,7 +1023,6 @@ export class SqlPoolQueue {
 				state,
 			);
 			const row = (await tx.get(`SELECT revision FROM ${this.roots}_control WHERE root = ?`, lease.runId))!;
-			// A resume makes the root's ready work claimable again: idle workers of every host ask for it at once (#5230).
 			if (state === "running") await this.notifyReady(tx, lease.runId);
 			return { state, revision: Number(row.revision) };
 		});
@@ -1386,6 +1385,7 @@ export class SqlPoolQueue {
 		definitions: readonly Pick<PoolWorkDescriptor, "definition" | "digest">[],
 		durationMs: number,
 		placement?: PoolClaimPlacement,
+		outboxBlocked?: () => void,
 	): Promise<PoolWork | undefined> {
 		positive(durationMs);
 		lease = snapshotLease(lease);
@@ -1402,6 +1402,7 @@ export class SqlPoolQueue {
 				while (this.outboxPending || this.draining !== undefined) await this.drainOutbox(lease);
 			} catch (error) {
 				if (error instanceof StaleLeaseError) throw error;
+				outboxBlocked?.();
 				return undefined;
 			}
 		}
@@ -2989,13 +2990,21 @@ export class SqlPoolQueue {
 		return this.storage.notifications?.notify(poolReadyChannel(this.storage), root);
 	}
 	private async notifyReady(tx: SqliteExecutor, root: string): Promise<void> {
-		await tx.run(
-			`INSERT INTO ${this.roots}_ready(root, revision) VALUES (?, 1)
-			ON CONFLICT(root) DO UPDATE SET revision = ${this.roots}_ready.revision + 1`,
-			root,
-		);
 		const notice = this.readyNotice(root);
-		if (notice !== undefined) await tx.run(notice.sql, ...notice.params);
+		const advance = `INSERT INTO ${this.roots}_ready(root, revision) VALUES (?, 1)
+			ON CONFLICT(root) DO UPDATE SET revision = ${this.roots}_ready.revision + 1`;
+		if (this.rowLocks && notice !== undefined) {
+			await tx.run(
+				`WITH pool_ready_revision AS (${advance} RETURNING revision) ${notice.sql}`,
+				root,
+				...notice.params,
+			);
+			return;
+		}
+		await Promise.all([
+			tx.run(advance, root),
+			...(notice === undefined ? [] : [tx.run(notice.sql, ...notice.params)]),
+		]);
 	}
 	/** Every work item of `root`. A read: each coordinator's recovery asks every half second. */
 	async inspect(root: string): Promise<readonly PoolWork[]> {

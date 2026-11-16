@@ -179,7 +179,6 @@ test("pool control is pushed to ready workers once per revision and reconciled i
 		while (idle.killedWith === undefined) await delay(5);
 		assert.equal(idle.killedWith, "SIGKILL", "a worker the push cannot reach is stopped and replaced");
 		while (forked.length < 3) await delay(5);
-		// The replacement, which no longer reads pool control before it claims, is pushed it as it becomes ready (#5230).
 		const replacement = forked[2]!;
 		await replacement.request({ kind: "ready" });
 		assert.deepEqual(replacement.pushed, [{ kind: "pool-control", control: { state: "running", revision: 3 } }]);
@@ -253,7 +252,6 @@ test("a budget notice holds claims until the root lifts it (#4313)", async () =>
 	}
 });
 
-/** How soon after its gate opens a claim that waits out its idle pause answers, so that its worker asks again. */
 const GATE_WAKE_BOUND_MS = 250;
 
 test("a claim the budget held back answers as soon as the budget lifts, not at the end of its idle pause (#5230)", async () => {
@@ -261,7 +259,6 @@ test("a claim the budget held back answers as soon as the budget lifts, not at t
 	try {
 		const [worker] = f.workers as [FakeWorker];
 		f.notice({ kind: "budget", blocked: true });
-		// Held back again and again, the worker's pauses grow toward IDLE_CLAIM_FALLBACK_MS.
 		for (let index = 0; index < 6; index++) assert.equal((await worker.request({ kind: "claim" })).value, undefined);
 		const held = worker.request({ kind: "claim" });
 		await delay(50);

@@ -34,10 +34,6 @@ const BUDGET = poolTestBudgetMs(1);
 const STEP_DEADLINE_MS = 20_000;
 /** How long a test watches for a worker the pool should not start, after the step that would start one. */
 const NO_MORE_WORKERS_WINDOW_MS = 2_000;
-/**
- * How soon after the attempt it was started for ends an extra worker is retired, however long it idled first: well
- * under its idle pause of IDLE_CLAIM_FALLBACK_MS (#5230).
- */
 const RETIRE_BOUND_MS = 500;
 
 interface Step {
@@ -51,7 +47,6 @@ interface Step {
 		| "retired";
 	readonly pid: number;
 	readonly index?: number;
-	/** When the stub recorded it, by `Date.now()`. */
 	readonly at: number;
 }
 
@@ -211,7 +206,6 @@ test.skipIf(process.platform === "win32")(
 				seen.othersFirst = await p.until(
 					(steps) => completed(steps, 1) && completed(steps, 2) && !completed(steps, 0),
 				);
-				// The extra worker idles long enough for its pauses to reach their bound before it is no longer needed.
 				await sleep(IDLE_CLAIM_FALLBACK_MS * 2);
 				gate.open();
 				for (const outcome of await Promise.all([waiting, ...others]))

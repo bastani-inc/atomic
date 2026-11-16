@@ -506,7 +506,6 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				inbox: () => remoteInbox,
 			},
 		);
-		/** Ends the idle wait for new control, once control a push or reply carried is applied or refused. */
 		let controlChanged: (() => void) | undefined;
 		/** Applies control a heartbeat reply or a push carried; a failure ends the attempt it would have controlled. */
 		const offerControl = (next: PoolControl) =>
@@ -519,22 +518,12 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				.finally(() => controlChanged?.());
 		receiveControl = offerControl;
 		const observeControl = async () => control.offer((await request({ kind: "control" })) as PoolControl);
-		/**
-		 * Whether this worker's coordinator pushes it every change of pool control: the root's own host does. A worker on
-		 * another host learns control only from its claims, which the pool refuses while it is not running (#5230).
-		 */
 		const controlPushed = start.shared === undefined || start.shared.routes;
 		await request({ kind: "ready" });
 		for (;;) {
 			if (controlFailure) throw controlFailure;
 			let work: PoolWork | undefined;
 			try {
-				// An idle worker only asks for work (#5230): the claim is fenced by pool control in the store, and its answer
-				// waits out the worker's idle pause in the coordinator, which wake-ups end early. Neither control nor the
-				// journal is read before it: control arrives pushed or with the claim's attempt, and the journal is caught up
-				// once the claim found work. A paused or quit worker of the root's host waits for the push that changes it.
-				// Once per IDLE_CLAIM_FALLBACK_MS it reads control again, in case a push was missed, and asks for work, refused
-				// while the pool does not run, so the pool can still retire it.
 				if (controlPushed && control.state !== "running") {
 					const waited = await new Promise<boolean>((resolve) => {
 						const timer = setTimeout(() => resolve(true), IDLE_CLAIM_FALLBACK_MS);

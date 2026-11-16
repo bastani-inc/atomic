@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import type { SqliteDatabase, StorageNotificationEvent, StorageNotifications } from "@bastani/atomic/storage";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	StorageNotificationEvent,
+	StorageNotifications,
+} from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
@@ -299,5 +304,63 @@ test("a pool's ready mark shows claimable work, and changes as work becomes read
 		assert.equal(await f.pool.readyMark("another root"), undefined);
 	} finally {
 		await f.close();
+	}
+});
+
+test("notifyReady starts the readiness revision upsert and notification before the first statement settles (#5230)", async () => {
+	const directory = makeTempDirectory("pool-ready-pipelined-");
+	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+	await database.exec("CREATE TABLE notices(id INTEGER PRIMARY KEY, channel TEXT NOT NULL, payload TEXT NOT NULL)");
+	const recording = recordingNotifications();
+	let events: string[] = [];
+	const pipelined: SqliteDatabase = new Proxy(withNotifications(database, recording.notifications), {
+		get(target, key) {
+			if (key !== "transaction") return Reflect.get(target, key);
+			return <T>(body: (tx: SqliteExecutor) => Promise<T>) =>
+				target.transaction((tx) => {
+					const wrapped: SqliteExecutor = {
+						exec: (sql) => tx.exec(sql),
+						get: (sql, ...params) => tx.get(sql, ...params),
+						all: (sql, ...params) => tx.all(sql, ...params),
+						async run(sql, ...params) {
+							if (sql.includes("wf_runs_pool_ready") && sql.startsWith("INSERT")) {
+								events.push("start:ready");
+								await new Promise((resolve) => setImmediate(resolve));
+								const result = await tx.run(sql, ...params);
+								events.push("settle:ready");
+								return result;
+							}
+							if (sql.includes("INSERT INTO notices")) {
+								events.push("start:notice");
+								const result = await tx.run(sql, ...params);
+								events.push("settle:notice");
+								return result;
+							}
+							return tx.run(sql, ...params);
+						},
+					};
+					return body(wrapped);
+				});
+		},
+	});
+	const journal = await SqlRunJournal.open(pipelined);
+	try {
+		await journal.createRun(header);
+		const acquired = await journal.acquire("root", "coordinator");
+		assert.equal(acquired.status, "acquired");
+		const lease = (acquired as { lease: Lease }).lease;
+		const pool = await openSqlPoolQueue(journal);
+		await pool.initialize(lease, 60_000);
+		events = [];
+		await pool.enqueue(lease, work, boundary);
+		assert.deepEqual(events.slice(0, 2), ["start:ready", "start:notice"]);
+		const held = (await pool.claim(lease, "worker", [work], 60_000))!;
+		events = [];
+		assert.equal(await pool.releaseExited(lease, held), true);
+		assert.deepEqual(events.slice(0, 2), ["start:ready", "start:notice"]);
+	} finally {
+		await journal.close();
+		await database.close();
+		removeTempDirectory(directory);
 	}
 });

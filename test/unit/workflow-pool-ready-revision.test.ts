@@ -11,7 +11,7 @@ const actions = ["enqueue", "claim", "unplaced", "exited", "expire", "resume"] a
 type Action = (typeof actions)[number];
 
 for (const seed of [7, 41, 97]) {
-	test(`ready marks stay fresh across mixed queue transitions with seed ${seed} (#5236)`, async () => {
+	test(`ready marks stay fresh across mixed queue transitions with seed ${seed} (#5230)`, async () => {
 		const directory = makeTempDirectory("pool-ready-revision-");
 		const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
 		const journal = await SqlRunJournal.open(database);
@@ -82,7 +82,11 @@ for (const seed of [7, 41, 97]) {
 				} else if (action === "expire") {
 					const claim = await take(1);
 					if (claim === undefined) continue;
-					await sleep(2);
+					while (
+						Number((await database.get("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS now"))!.now) <=
+						claim.expiresAt
+					)
+						await sleep(1);
 					assert.equal(await pool.expire(lease, claim), true);
 					ready.set(claim.id, claim);
 					await record(action);
@@ -101,7 +105,7 @@ for (const seed of [7, 41, 97]) {
 	});
 }
 
-test("an existing pool gains ready tracking without changing legacy initialization or attempt accounting (#5236)", async () => {
+test("an existing pool gains ready tracking without changing legacy initialization or attempt accounting (#5230)", async () => {
 	const directory = makeTempDirectory("pool-ready-upgrade-");
 	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
 	const journal = await SqlRunJournal.open(database);
