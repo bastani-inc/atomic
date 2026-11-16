@@ -1,3 +1,4 @@
+import { normalizeProviderId } from "@bastani/atomic-ai";
 import type { KeyId } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
@@ -58,11 +59,12 @@ interface RpcCommandHandlerOptions {
 
 function persistedModelDefaults(session: AgentSession, persist?: boolean): RpcPersistedModelDefaults | undefined {
 	if (!persist) return undefined;
-	const provider = session.settingsManager.getDefaultProvider();
-	const modelId = session.settingsManager.getDefaultModel();
-	const defaultThinkingLevel = session.settingsManager.getDefaultThinkingLevel();
+	const settings = session.settingsManager.getGlobalSettings();
+	const provider = settings.defaultProvider;
+	const modelId = settings.defaultModel;
+	const defaultThinkingLevel = settings.defaultThinkingLevel;
 	if (!provider || !modelId || defaultThinkingLevel === undefined) return undefined;
-	const thinkingLevel = session.settingsManager.getModelThinkingLevel(provider, modelId);
+	const thinkingLevel = settings.modelThinkingLevels?.[`${normalizeProviderId(provider)}/${modelId}`];
 	if (thinkingLevel === undefined) return undefined;
 	return { provider, modelId, thinkingLevel, defaultThinkingLevel };
 }

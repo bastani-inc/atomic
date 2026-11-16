@@ -120,7 +120,7 @@ function addPersistedDefaultToNonEmptyScope(session: AgentSession, model: Model<
 	if (session._scopedModels.some((scoped) => modelsAreEqual(scoped.model, model))) return;
 
 	session._scopedModels = [...session._scopedModels, { model }];
-	const enabledModels = session.settingsManager.getEnabledModels();
+	const enabledModels = session.settingsManager.getGlobalSettings().enabledModels;
 	if (!enabledModels?.length) return;
 
 	const modelReference = `${model.provider}/${model.id}`;

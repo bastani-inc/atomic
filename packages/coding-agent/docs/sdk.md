@@ -609,7 +609,7 @@ interface AgentSession {
 }
 ```
 
-Pass `thinkingLevel` to `session.setModel(model, { thinkingLevel: "high" })` to choose a model and its reasoning level together. Unsupported levels are clamped to the model's supported levels. Add `persist: true` to save the model and reasoning preferences.
+Pass `thinkingLevel` to `session.setModel(model, { thinkingLevel: "high" })` to choose a model and its reasoning level together. Unsupported levels are clamped to the model's supported levels. Add `persist: true` to save the model and reasoning preferences to global settings. Project overrides stay in the project settings file and still take precedence when a session starts.
 
 Always `await session.dispose()` in `finally`. Disposal immediately refuses new work, cancels and drains owned operations, settles questions, shuts down extensions and releases session leases. Repeated calls await the same outcome.
 

@@ -296,7 +296,7 @@ Response contains the full [Model](/rpc/protocol#model) object:
 }
 ```
 
-When `persist` is true, the model object also includes `persistedDefaults` with `provider`, `modelId`, `thinkingLevel` and `defaultThinkingLevel`. These fields report the saved startup model, its saved reasoning preference and the global reasoning default. They can differ from the live session if an extension makes a session-only change during model selection. Use `get_state` to read the live model and reasoning level.
+When `persist` is true, the model object also includes `persistedDefaults` with `provider`, `modelId`, `thinkingLevel` and `defaultThinkingLevel`. These fields report the startup model, its reasoning preference and the reasoning default saved to the global settings file, without project overrides. They can differ from the live session if an extension makes a session-only change during model selection. Use `get_state` to read the live model and reasoning level.
 
 #### cycle_model
 
