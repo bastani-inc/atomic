@@ -134,16 +134,7 @@ async function orphanedChildren(steps: readonly LockedProcess[]): Promise<Locked
 	if (!steps.some((step) => step.start !== undefined && step.at !== undefined)) return [];
 	const script =
 		"Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }";
-	const systemRoot = process.env.SystemRoot || "C:\\Windows";
-	const shell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-	const listed = await new Promise<string | undefined>((resolve) => {
-		execFile(
-			shell,
-			["-NoProfile", "-NonInteractive", "-Command", script],
-			{ cwd: systemRoot, encoding: "utf8", timeout: 30_000, windowsHide: true },
-			(error, stdout) => resolve(error === null ? stdout : undefined),
-		);
-	});
+	const listed = await powershellOutput(script);
 	if (listed === undefined) return [];
 	const processes = listed
 		.split(/\r?\n/)
@@ -166,6 +157,19 @@ async function orphanedChildren(steps: readonly LockedProcess[]): Promise<Locked
 		}
 	}
 	return found;
+}
+
+function powershellOutput(script: string): Promise<string | undefined> {
+	const systemRoot = process.env.SystemRoot || "C:\\Windows";
+	const shell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+	return new Promise((resolve) => {
+		execFile(
+			shell,
+			["-NoProfile", "-NonInteractive", "-Command", script],
+			{ cwd: systemRoot, encoding: "utf8", timeout: 30_000, windowsHide: true },
+			(error, stdout) => resolve(error === null ? stdout : undefined),
+		);
+	});
 }
 
 function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
@@ -375,6 +379,17 @@ export async function settleOtherBuilds(
 	return { warnings, release };
 }
 
+function recordStep(steps: Map<number, LockedProcess>, pid: number, write: () => void): void {
+	const step: LockedProcess = { ...locked(pid, processStartToken(pid)), at: Date.now() };
+	steps.set(pid, step);
+	if (step.start !== undefined) return;
+	void readProcessStartToken(pid).then((start) => {
+		if (start === undefined || steps.get(pid) !== step) return;
+		steps.set(pid, { pid, start, at: step.at });
+		write();
+	});
+}
+
 /**
  * Runs `build` of the worktrees at `roots` under their build locks: from the first step process `build` starts until it
  * settles, records this process and the step processes that run. Callers settle other processes' builds of them first
@@ -401,20 +416,9 @@ export async function withBuildLocks<T>(
 	};
 	// Written once a step starts a process, so a build that runs nothing, as for an untrusted worktree, writes nothing.
 	const watch = (pid: number, running: boolean) => {
-		if (!running) {
-			steps.delete(pid);
-			write();
-			return;
-		}
-		const step: LockedProcess = { ...locked(pid, processStartToken(pid)), at: Date.now() };
-		steps.set(pid, step);
+		if (running) recordStep(steps, pid, write);
+		else steps.delete(pid);
 		write();
-		if (step.start !== undefined) return;
-		void readProcessStartToken(pid).then((start) => {
-			if (start === undefined || steps.get(pid) !== step) return;
-			steps.set(pid, { pid, start, at: step.at });
-			write();
-		});
 	};
 	try {
 		return await stepProcessWatcher.run(watch, build);
