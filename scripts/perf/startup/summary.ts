@@ -14,6 +14,8 @@ export interface StartupSample {
 	readonly metricsMs?: Readonly<Record<string, number>>;
 	/** The tools the first provider request carried. */
 	readonly toolNames?: readonly string[];
+	/** The product's startup trace in milliseconds after launch, keyed `<process depth>:<mark>`. */
+	readonly traceMs?: Readonly<Record<string, number>>;
 	readonly failures: readonly string[];
 }
 
@@ -97,6 +99,32 @@ export function formatSummaryTable(summaries: readonly MetricSummary[]): string 
 		lines.push(
 			`| ${row.mode} | ${row.metric} | ${row.profile} | ${row.target} | ${row.count} | ${row.median.toFixed(0)} | ${row.p95.toFixed(0)} | ${row.min.toFixed(0)} | ${row.failures} |`,
 		);
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Median milliseconds after launch of each product trace mark, per target, profile and mode, in the order the marks
+ * happen: where a start spent its time.
+ */
+export function formatTraceTable(samples: readonly StartupSample[]): string {
+	const groups = new Map<string, Map<string, number[]>>();
+	for (const sample of samples) {
+		if (!sample.recorded || sample.state !== "success" || !sample.traceMs) continue;
+		const key = `${sample.mode} | ${sample.profile} | ${sample.target}`;
+		const marks = groups.get(key) ?? new Map<string, number[]>();
+		for (const [mark, value] of Object.entries(sample.traceMs)) marks.set(mark, [...(marks.get(mark) ?? []), value]);
+		groups.set(key, marks);
+	}
+	const lines = [
+		"| Mode | Profile | Target | Mark | n | Median ms after launch |",
+		"| --- | --- | --- | --- | ---: | ---: |",
+	];
+	for (const [key, marks] of [...groups].sort(([left], [right]) => left.localeCompare(right))) {
+		const rows = [...marks].map(([mark, values]) => ({ mark, values, median: summarizeDistribution(values).median }));
+		for (const row of rows.sort((left, right) => left.median - right.median)) {
+			lines.push(`| ${key} | ${row.mark} | ${row.values.length} | ${row.median.toFixed(0)} |`);
+		}
 	}
 	return lines.join("\n");
 }

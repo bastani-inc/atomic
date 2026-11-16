@@ -1,8 +1,13 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	installLifecycleTimingSink,
+	installLifecycleTraceFromEnv,
 	isLifecycleTimingEnabled,
 	type LifecycleTimingRecord,
+	type LifecycleTraceLine,
 	markLifecycleTiming,
 } from "../src/core/lifecycle-timings.ts";
 
@@ -37,5 +42,34 @@ describe("lifecycle timing seams", () => {
 			restore();
 		}
 		expect(isLifecycleTimingEnabled()).toBe(false);
+	});
+
+	it("appends the process start and each mark to the ATOMIC_STARTUP_TRACE file in wall-clock time", () => {
+		const directory = mkdtempSync(join(tmpdir(), "atomic-startup-trace-"));
+		const file = join(directory, "trace.jsonl");
+		const before = Date.now();
+		const restore = installLifecycleTraceFromEnv({ ATOMIC_STARTUP_TRACE: file });
+		try {
+			expect(isLifecycleTimingEnabled()).toBe(true);
+			// A second installer (the compiled binary's loader, then its app) keeps the first trace.
+			expect(installLifecycleTraceFromEnv({ ATOMIC_STARTUP_TRACE: join(directory, "other.jsonl") })).toBeUndefined();
+			markLifecycleTiming("process-entry");
+			markLifecycleTiming("tui-start");
+			markLifecycleTiming("tui-start");
+			const lines = readFileSync(file, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as LifecycleTraceLine);
+			expect(lines.map((line) => line.label)).toEqual(["process-start", "process-entry", "tui-start"]);
+			expect(lines.every((line) => line.pid === process.pid && line.ppid === process.ppid)).toBe(true);
+			expect(lines[0]!.epochMs).toBeLessThanOrEqual(before);
+			expect(lines[1]!.epochMs).toBeGreaterThanOrEqual(before);
+			expect(lines[2]!.epochMs).toBeGreaterThanOrEqual(lines[1]!.epochMs);
+		} finally {
+			restore?.();
+			rmSync(directory, { recursive: true, force: true });
+		}
+		expect(isLifecycleTimingEnabled()).toBe(false);
+		expect(installLifecycleTraceFromEnv({})).toBeUndefined();
 	});
 });

@@ -5,14 +5,20 @@
  */
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFile, cp, mkdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { LoopbackProviderCollector, type ProviderRequestRecord } from "../windows-startup/collector.js";
 import { benchmarkEnvironment, createAgentTemplate } from "../windows-startup/fixtures.js";
 import { type ScreenSnapshot, StartupScreenTracker } from "../windows-startup/screen.js";
 import { type PtyProcess, startPty } from "./pty.js";
-import { formatSummaryTable, type StartupSample, summarizeStartupSamples, toolSetDisagreements } from "./summary.js";
+import {
+	formatSummaryTable,
+	formatTraceTable,
+	type StartupSample,
+	summarizeStartupSamples,
+	toolSetDisagreements,
+} from "./summary.js";
 
 export const STARTUP_MODES = ["interactive", "typeahead", "version", "print", "rpc"] as const;
 export type StartupMode = (typeof STARTUP_MODES)[number];
@@ -122,6 +128,18 @@ function validRequest(request: ProviderRequestRecord): readonly string[] {
 	return request.toolNames;
 }
 
+/** The last user message a provider request carried, to tell a duplicate from a different request. */
+function describeRequest(request: ProviderRequestRecord): string {
+	try {
+		const body = JSON.parse(request.body) as { messages?: { role?: string; content?: unknown }[] };
+		const user = body.messages?.filter((message) => message.role === "user").at(-1);
+		const content = typeof user?.content === "string" ? user.content : JSON.stringify(user?.content ?? null);
+		return `${body.messages?.length ?? 0} messages, last user: ${content.slice(0, 160)}`;
+	} catch {
+		return `unparsed body of ${request.body.length} bytes`;
+	}
+}
+
 function dropPageCache(): boolean {
 	if (process.platform !== "linux") return false;
 	const result = spawnSync("sudo", ["-n", "sh", "-c", "sync && echo 3 > /proc/sys/vm/drop_caches"], {
@@ -137,6 +155,8 @@ interface SampleContext {
 	readonly sessionDir: string;
 	readonly collector: LoopbackProviderCollector;
 	readonly nonce: string;
+	/** Records the launch on both clocks: monotonic for metrics, wall-clock to align the product's own trace. */
+	launched(): bigint;
 }
 
 async function stopPty(child: PtyProcess, tracker: StartupScreenTracker | undefined): Promise<void> {
@@ -173,7 +193,7 @@ async function runInteractive(context: SampleContext, typeAhead: boolean): Promi
 	let responded = false;
 	let queue = Promise.resolve();
 	const waiters = new Set<() => void>();
-	const launch = process.hrtime.bigint();
+	const launch = context.launched();
 	const child = startPty({
 		command: ptyCommandLine(["--session-dir", sessionDir, ...PROVIDER]),
 		cwd: options.cwd,
@@ -268,7 +288,7 @@ function collectOutput(child: ChildProcess): Promise<{ stdout: string; stderr: s
 }
 
 async function runVersion(context: SampleContext): Promise<Record<string, number>> {
-	const launch = process.hrtime.bigint();
+	const launch = context.launched();
 	const child = spawnAtomic(context, ["--version"], "ignore");
 	const output = collectOutput(child);
 	const code = await withTimeout(exitOf(child), context.options.timeoutMs, "--version exit");
@@ -282,7 +302,7 @@ async function runVersion(context: SampleContext): Promise<Record<string, number
 
 async function runPrint(context: SampleContext): Promise<Record<string, number>> {
 	const { collector, nonce, sessionDir, options } = context;
-	const launch = process.hrtime.bigint();
+	const launch = context.launched();
 	const child = spawnAtomic(context, ["-p", nonce, "--session-dir", sessionDir, ...PROVIDER], "ignore");
 	const output = collectOutput(child);
 	const exited = exitOf(child);
@@ -312,7 +332,7 @@ async function runPrint(context: SampleContext): Promise<Record<string, number>>
 
 async function runRpc(context: SampleContext): Promise<Record<string, number>> {
 	const { collector, nonce, sessionDir, options } = context;
-	const launch = process.hrtime.bigint();
+	const launch = context.launched();
 	const child = spawnAtomic(context, ["--mode", "rpc", "--session-dir", sessionDir, ...PROVIDER], "pipe");
 	const exited = exitOf(child);
 	let ready: bigint | undefined;
@@ -396,6 +416,9 @@ async function runSample(
 	else await cp(template, agentDir, { recursive: true, force: false, errorOnExist: false });
 	const collector = new LoopbackProviderCollector(nonce, { port: options.port });
 	const startedAt = new Date().toISOString();
+	const traceFile = join(runRoot, "trace.jsonl");
+	let launchEpochMs: number | undefined;
+	let traceMs: Record<string, number> | undefined;
 	let metricsMs: Record<string, number> | undefined;
 	const failures: string[] = [];
 	const pageCacheDropped = profile === "cold" && options.dropCaches ? dropPageCache() : false;
@@ -404,10 +427,14 @@ async function runSample(
 		const context: SampleContext = {
 			options,
 			target,
-			env: environmentFor(target, agentDir, cacheDir, home),
+			env: { ...environmentFor(target, agentDir, cacheDir, home), ATOMIC_STARTUP_TRACE: traceFile },
 			sessionDir,
 			collector,
 			nonce,
+			launched: () => {
+				launchEpochMs = performance.timeOrigin + performance.now();
+				return process.hrtime.bigint();
+			},
 		};
 		if (mode === "interactive" || mode === "typeahead")
 			metricsMs = await runInteractive(context, mode === "typeahead");
@@ -415,13 +442,16 @@ async function runSample(
 		else if (mode === "print") metricsMs = await runPrint(context);
 		else metricsMs = await runRpc(context);
 		if (mode !== "version" && collector.requests.length !== 1) {
-			throw new Error(`expected one provider request, received ${collector.requests.length}`);
+			throw new Error(
+				`expected one provider request, received ${collector.requests.length}: ${collector.requests.map(describeRequest).join(" | ")}`,
+			);
 		}
 	} catch (error) {
 		failures.push(error instanceof Error ? error.message : String(error));
 		metricsMs = undefined;
 	} finally {
 		await collector.stop().catch(() => undefined);
+		if (launchEpochMs !== undefined) traceMs = await readTrace(traceFile, launchEpochMs);
 		await rm(runRoot, { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
 	}
 	return {
@@ -436,8 +466,41 @@ async function runSample(
 		pageCacheDropped,
 		...(metricsMs ? { metricsMs } : {}),
 		...(collector.requests[0] ? { toolNames: collector.requests[0].toolNames } : {}),
+		...(traceMs ? { traceMs } : {}),
 		failures,
 	};
+}
+
+/**
+ * The product's own startup trace (`ATOMIC_STARTUP_TRACE`), as milliseconds after launch. Each mark is keyed by its
+ * process's depth below the launched process (`0:` the launched process, `1:` a child it started, such as the
+ * interactive engine or a headless run relaunched with a larger heap). Builds without the trace yield nothing.
+ */
+async function readTrace(file: string, launchEpochMs: number): Promise<Record<string, number> | undefined> {
+	let text: string;
+	try {
+		text = await readFile(file, "utf8");
+	} catch {
+		return undefined;
+	}
+	const lines = text
+		.split("\n")
+		.filter((line) => line.trim() !== "")
+		.map((line) => JSON.parse(line) as { label: string; epochMs: number; pid: number; ppid: number });
+	const parents = new Map(lines.map((line) => [line.pid, line.ppid]));
+	const depth = (pid: number): number => {
+		let level = 0;
+		for (let parent = parents.get(pid); parent !== undefined && parents.has(parent); parent = parents.get(parent)) {
+			level += 1;
+		}
+		return level;
+	};
+	const marks: Record<string, number> = {};
+	for (const line of lines) {
+		const key = `${depth(line.pid)}:${line.label}`;
+		marks[key] ??= line.epochMs - launchEpochMs;
+	}
+	return marks;
 }
 
 /** Alternates the target order every round so neither target always runs first. */
@@ -535,7 +598,7 @@ if (import.meta.main) {
 	const samples = await runBenchmark(options);
 	const summary = summarizeStartupSamples(samples);
 	await writeFile(join(options.output, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
-	const table = formatSummaryTable(summary);
+	const table = `${formatSummaryTable(summary)}\n\n${formatTraceTable(samples)}`;
 	await writeFile(join(options.output, "summary.md"), `${table}\n`);
 	process.stdout.write(`\n${table}\n`);
 	const disagreements = toolSetDisagreements(samples);
