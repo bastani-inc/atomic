@@ -35,6 +35,7 @@ afterEach(() => {
 });
 
 const SHIPPING = { intervalMs: 2_000, maxBatch: 64, maxLagMs: 30_000 } as const;
+const EXTEND = SqlPoolQueue.prototype.extend;
 const HEARTBEAT = SqlPoolQueue.prototype.heartbeat;
 const LEASE = { id: "work-1", generation: 1, worker: "host/1", epoch: 1 } as const;
 
@@ -251,4 +252,82 @@ async function exitWithHeartbeatInFlight(heartbeatInFlight: boolean): Promise<nu
 test("a worker that exits with its heartbeat in flight reports its attempt's local journal failure once (#4768)", async () => {
 	assert.equal(await exitWithHeartbeatInFlight(false), 1);
 	assert.equal(await exitWithHeartbeatInFlight(true), 1);
+}, 60_000);
+
+async function exitWithExtendInFlight(extendInFlight: boolean): Promise<number> {
+	const directory = makeTempDirectory("shipping-exit-extend-");
+	const stateDirectory = join(directory, "state");
+	mkdirSync(stateDirectory);
+	const { journal, host } = await prepareRoot(directory, stateDirectory);
+	let releaseExtend!: () => void;
+	const extendGate = new Promise<void>((resolve) => {
+		releaseExtend = resolve;
+	});
+	let extendWritten!: () => void;
+	const written = new Promise<void>((resolve) => {
+		extendWritten = resolve;
+	});
+	try {
+		const shipping = (host.coordinator as unknown as { shipping: CheckpointShipping }).shipping;
+		const database = (shipping as unknown as { shard: { database: SqliteDatabase } }).shard.database;
+		const transaction = database.transaction.bind(database);
+		let diskFull = false;
+		database.transaction = ((
+			callback: Parameters<typeof transaction>[0],
+			options?: Parameters<typeof transaction>[1],
+		) =>
+			diskFull
+				? Promise.reject(new Error("database or disk is full"))
+				: transaction(callback, options)) as typeof database.transaction;
+		const before = forked.length;
+		const starting = host.command({ kind: "start", sources: [SOURCE], cwd: directory, publish: false });
+		while (forked.length === before) await sleep(5);
+		const worker = forked[before]!;
+		await worker.request({ kind: "ready" });
+		await starting;
+		const { work, boundary } = poolWorkFixture();
+		await host.command({
+			kind: "enqueue",
+			descriptor: { ...work, definition: `${SOURCE.path}#${SOURCE.exportName}`, digest: SOURCE.digest },
+			boundary,
+		});
+		diskFull = true;
+		const claim = await worker.request({ kind: "claim" });
+		assert.equal(claim.error, undefined);
+		assert.ok(claim.value as PoolWork);
+		const realNow = Date.now.bind(Date);
+		vi.spyOn(Date, "now").mockImplementation(() => realNow() + 16_000);
+		vi.spyOn(SqlPoolQueue.prototype, "extend").mockImplementation(async function (
+			this: SqlPoolQueue,
+			...args: Parameters<SqlPoolQueue["extend"]>
+		) {
+			const result = await EXTEND.apply(this, args);
+			extendWritten();
+			await extendGate;
+			return result;
+		});
+		if (extendInFlight) {
+			worker.ask({ kind: "activity", runs: [] });
+			await written;
+		}
+		worker.exit(1);
+		await sleep(500);
+		releaseExtend();
+		await sleep(500);
+		return host.events.filter(
+			(event) => event.kind === "health" && /local journal failed for work/.test(event.message),
+		).length;
+	} finally {
+		releaseExtend();
+		vi.restoreAllMocks();
+		await host.command({ kind: "close" }).catch(() => {});
+		await host.coordinator.shutdown();
+		await journal.close();
+		removeTempDirectory(directory);
+	}
+}
+
+test("a worker that exits with its overdue lease extension in flight reports its attempt's local journal failure once (#4768)", async () => {
+	assert.equal(await exitWithExtendInFlight(false), 1);
+	assert.equal(await exitWithExtendInFlight(true), 1);
 }, 60_000);

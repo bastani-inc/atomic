@@ -2436,7 +2436,7 @@ export class PoolCoordinator {
 		const lanes = new WorkerRequestLanes();
 		const extensions = new AttemptLeaseExtensions(slot, async (attempt) => {
 			const work = await this.queue!.extend(this.lease!, attempt, options.leaseMs);
-			await this.shipping?.hold(work, options.leaseMs);
+			await this.holdShipping(slot, work, options.leaseMs);
 			return work;
 		});
 		const logPath = join(this.logDirectory!, `${id}.log`);

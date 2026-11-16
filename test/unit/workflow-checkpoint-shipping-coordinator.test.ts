@@ -605,3 +605,71 @@ test("closing a root pool while prepare opens its local checkpoint journal close
 		removeTempDirectory(directory);
 	}
 });
+
+test("closing a host ships checkpoints its running workers committed locally (#4768)", async () => {
+	const directory = makeTempDirectory("shipping-close-flush-");
+	const stateDirectory = join(directory, "state");
+	mkdirSync(stateDirectory);
+	const journal = await resolveRunJournal({ journal: { path: join(directory, "shared.sqlite") } });
+	const host = openCoordinator();
+	try {
+		await journal.createRun({ runId: "root", name: "root", cwd: directory, createdAt: 0, status: "running" });
+		const acquired = await journal.acquire("root", "holder");
+		assert.equal(acquired.status, "acquired");
+		if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
+		await host.command({
+			kind: "prepare",
+			root: "root",
+			lease: acquired.lease,
+			options: {
+				durable: poolDurableJournal(journal),
+				shared: {
+					stateDirectory,
+					host: "host-a",
+					claimWindowMs: 60_000,
+					checkpointShipping: { intervalMs: 60_000, maxBatch: 64, maxLagMs: 600_000 },
+				},
+				workers: 1,
+				leaseMs: 60_000,
+				heartbeatMs: 15_000,
+				startupTimeoutMs: 30_000,
+				workerEntry: "fake-worker",
+			},
+		});
+		const starting = host.command({ kind: "start", sources: [SOURCE], cwd: directory, publish: false });
+		while (forked.length === 0) await sleep(5);
+		const worker = forked[0]!;
+		await worker.request({ kind: "ready" });
+		await starting;
+		const { work, boundary } = poolWorkFixture();
+		const child = boundary.topology!.boundary!.child;
+		await host.command({
+			kind: "enqueue",
+			descriptor: { ...work, definition: `${SOURCE.path}#${SOURCE.exportName}`, digest: SOURCE.digest },
+			boundary,
+		});
+		const claim = await worker.request({ kind: "claim" });
+		assert.equal(claim.error, undefined);
+		const held = claim.value as PoolWork;
+		const checkpoints = ["c0", "c1", "c2"].map((suffix, index) => toolCheckpoint(held, child, suffix, index));
+		for (const [index, checkpoint] of checkpoints.entries()) {
+			const committed = await worker.request({
+				kind: "commit",
+				operation: `commit-${index}`,
+				mutation: { kind: "checkpoint", checkpoint },
+			});
+			assert.equal(committed.error, undefined);
+			assert.equal((committed.value as { local?: boolean }).local, true);
+			assert.equal(await journal.readKey("root", checkpointKey(checkpoint)), undefined);
+		}
+		await host.command({ kind: "close" });
+		for (const checkpoint of checkpoints) {
+			assert.ok(await journal.readKey("root", checkpointKey(checkpoint)));
+		}
+	} finally {
+		await host.command({ kind: "close" }).catch(() => {});
+		await host.coordinator.shutdown();
+		await journal.close();
+		removeTempDirectory(directory);
+	}
+});

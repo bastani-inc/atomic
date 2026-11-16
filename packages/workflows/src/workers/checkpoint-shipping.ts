@@ -133,6 +133,8 @@ interface Attempt {
 	/** After a deadline shipment failed: when the next may start, by the monotonic clock, and how many failed in a row. */
 	retryAt?: number;
 	failures?: number;
+	normalTiming?: DeliveryTiming;
+	urgentTiming?: DeliveryTiming;
 }
 
 /**
@@ -320,15 +322,22 @@ export class CheckpointShipping {
 		}
 	}
 
-	backpressurePointMs(attempt?: { readonly accepted: readonly unknown[] }): number {
-		const normal = this.normalTiming.estimate() ?? this.urgentTiming.estimate();
+	backpressurePointMs(attempt?: {
+		readonly accepted: readonly unknown[];
+		readonly normalTiming?: DeliveryTiming;
+		readonly urgentTiming?: DeliveryTiming;
+	}): number {
+		const useAttempt = (attempt?.normalTiming?.count ?? 0) > 0;
+		const normalTiming = useAttempt ? attempt!.normalTiming! : this.normalTiming;
+		const urgentTiming = useAttempt ? attempt?.urgentTiming : this.urgentTiming;
+		const normal = normalTiming.estimate() ?? urgentTiming?.estimate();
 		if (normal === undefined) return this.options.maxLagMs * BACKPRESSURE_SHARE;
 		const pending = Math.max(1, attempt?.accepted.length ?? 0);
 		const catchUpSize = Math.min(pending, URGENT_BATCH_CAP);
 		const initialGuess = normal * Math.ceil(catchUpSize / this.options.maxBatch);
-		const urgentEstimate = this.urgentTiming.estimate();
-		const normalSize = this.normalTiming.averageSize ?? 1;
-		const urgentSize = this.urgentTiming.averageSize;
+		const urgentEstimate = urgentTiming?.estimate();
+		const normalSize = normalTiming.averageSize ?? 1;
+		const urgentSize = urgentTiming?.averageSize;
 		const marginalMs =
 			urgentEstimate !== undefined && urgentSize !== undefined && urgentSize > normalSize
 				? Math.max(0, (urgentEstimate - normal) / (urgentSize - normalSize))
@@ -336,7 +345,7 @@ export class CheckpointShipping {
 		const catchUpEstimate =
 			catchUpSize <= this.options.maxBatch
 				? normal
-				: this.urgentTiming.count < 2
+				: (urgentTiming?.count ?? 0) < 2
 					? Math.max(urgentEstimate ?? 0, initialGuess)
 					: normal + marginalMs * Math.max(0, catchUpSize - normalSize);
 		const remainingMs = Math.ceil(pending / URGENT_BATCH_CAP) * catchUpEstimate;
@@ -469,8 +478,16 @@ export class CheckpointShipping {
 		try {
 			await this.options.deliver(lease, batch);
 			const elapsedMs = this.now() - began;
-			const timing = sealed.events.length > this.options.maxBatch ? this.urgentTiming : this.normalTiming;
+			const isUrgent = sealed.events.length > this.options.maxBatch;
+			const timing = isUrgent ? this.urgentTiming : this.normalTiming;
 			timing.note(elapsedMs, sealed.events.length);
+			if (isUrgent) {
+				attempt.urgentTiming ??= new DeliveryTiming();
+				attempt.urgentTiming.note(elapsedMs, sealed.events.length);
+			} else {
+				attempt.normalTiming ??= new DeliveryTiming();
+				attempt.normalTiming.note(elapsedMs, sealed.events.length);
+			}
 		} catch (error) {
 			const fenced = await this.fence(attempt, lease, error as Error);
 			if (fenced === undefined) this.lastError = error as Error;
