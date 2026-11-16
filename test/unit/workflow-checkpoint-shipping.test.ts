@@ -776,3 +776,30 @@ test("a delivery the shared journal refuses fails the held-back step instead of 
 		"the refused step was not acknowledged",
 	);
 });
+
+test("a host ships the attempt holding the oldest checkpoint first (#4768)", async () => {
+	const { shard: local, clock } = await shard();
+	const order: string[] = [];
+	const shipping = new CheckpointShipping(local, {
+		intervalMs: 50,
+		maxBatch: 1_000,
+		maxLagMs: 60_000,
+		host: "host",
+		deliver: async (attempt) => {
+			order.push(attempt.id);
+			await sleep(20);
+		},
+		now: () => clock.now,
+	});
+	opened.push(shipping);
+	// Held in order work-0 … work-4, accepted newest first: work-4's checkpoint is the oldest.
+	const leases = Array.from({ length: 5 }, (_, index) => ({ ...LEASE, id: `work-${index}` }));
+	for (const lease of leases) await shipping.hold(lease, LEASE_MS);
+	for (const lease of [...leases].reverse()) {
+		await shipping.commit(lease, checkpoint(lease.id), sharedCommit().commit);
+		clock.now += 100;
+	}
+	shipping.start();
+	for (let waited = 0; order.length < 5 && waited < 5_000; waited += 10) await sleep(10);
+	assert.deepEqual(order, ["work-4", "work-3", "work-2", "work-1", "work-0"]);
+});

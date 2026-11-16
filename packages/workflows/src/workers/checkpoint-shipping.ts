@@ -291,13 +291,15 @@ export class CheckpointShipping {
 	}
 
 	/**
-	 * Ships each attempt's next batch, at most {@link SHIP_CONCURRENCY} deliveries at a time, so a host's shipping adds
-	 * few requests to the store's concurrent ones however many attempts it runs.
+	 * Ships each attempt's next batch, the attempt holding the oldest checkpoint first, at most
+	 * {@link SHIP_CONCURRENCY} deliveries at a time, so a host's shipping adds few requests to the store's concurrent
+	 * ones however many attempts it runs.
 	 */
 	private async shipAll(): Promise<void> {
-		const waiting = [...this.attempts.values()].filter(
-			(attempt) => attempt.accepted.length > 0 && attempt.fenced === undefined,
-		);
+		// Oldest checkpoint first: with deliveries slower than the interval, the attempt nearest its lag bound goes first.
+		const waiting = [...this.attempts.values()]
+			.filter((attempt) => attempt.accepted.length > 0 && attempt.fenced === undefined)
+			.sort((left, right) => left.accepted[0]!.at - right.accepted[0]!.at);
 		const lane = async () => {
 			for (let attempt = waiting.shift(); attempt !== undefined; attempt = waiting.shift())
 				await this.ship(attempt).catch(() => {});
