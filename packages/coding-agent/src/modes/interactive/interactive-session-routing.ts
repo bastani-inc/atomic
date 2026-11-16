@@ -4,8 +4,7 @@ import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts
 import { canonicalizePath } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
-import type { NewMessageCounter } from "./components/jump-to-latest.ts";
-import { InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
+import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	APP_NAME,
 	type ExtensionCommandContext,
@@ -23,6 +22,7 @@ import {
 } from "./interactive-mode-deps.ts";
 import type { MissingCwdForkSource } from "./interactive-mode-surface.ts";
 import { showQueueRestoreFailure } from "./interactive-queueing.ts";
+import { clearChatForRerender } from "./interactive-render-chat.ts";
 import { showSessionNotices } from "./session-notices.ts";
 
 InteractiveModeBase.prototype.handleCloneCommand = async function (this: InteractiveModeBase): Promise<void> {
@@ -230,14 +230,7 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 					}
 
 					// Update UI
-					const renderer = this.ui as { isFollowingOutput?: boolean; newMessages?: NewMessageCounter };
-					if (renderer.isFollowingOutput === false && this.chatContainer.children.length > 0) {
-						renderer.newMessages?.observe(
-							false,
-							this.chatContainer.children.filter(isChatMessageComponent).length,
-						);
-					}
-					this.chatContainer.clear();
+					clearChatForRerender(this);
 					this.renderInitialMessages();
 					if (result.editorText && !this.editor.getText().trim()) {
 						this.editor.setText(result.editorText);

@@ -335,6 +335,76 @@ test("compaction_end in the same frame as unpainted arrivals preserves the unrea
 	}
 });
 
+test("compaction_end that refreshes to a longer transcript while scrolled up does not count history as new (#5243)", () => {
+	initTheme("dark");
+	const stats = {
+		linesBefore: 50,
+		linesDeleted: 45,
+		linesKept: 5,
+		rangeCount: 1,
+		tokensBefore: 4000,
+		tokensAfter: 500,
+		percentReduction: 87.5,
+	};
+	const parameters = { compression_ratio: 0.5, preserve_recent: 2, query: "" };
+	const compactionResult = {
+		compactedText: "Compacted earlier context",
+		firstKeptEntryId: null,
+		tokensBefore: 4000,
+		rung: "planned" as const,
+		promptVersion: 6 as const,
+		parameters,
+		stats,
+	};
+	// The host showed only part of the conversation; the compacted session holds all of it, so the refresh grows.
+	const shown = longConversation.slice(0, 20);
+	const compactedSnapshot = [
+		createVerbatimCompactionMessage("Compacted earlier context", 4000, new Date(103).toISOString(), {
+			strategy: "verbatim-lines",
+			promptVersion: 6,
+			parameters,
+			rung: "planned",
+			stats,
+		}),
+		...longConversation,
+	];
+
+	for (const mode of ["agentSession", "sessionMessages"] as const) {
+		let compactedMessages: Array<Parameters<ChatSessionHost["replaceMessages"]>[0][number]> = [...shown];
+		const host = new ChatSessionHost(
+			hostOptions(
+				mode === "agentSession"
+					? {
+							getCwd: () => BOX_CWD,
+							getAgentSession: () => ({ messages: compactedMessages }) as never,
+						}
+					: { getSessionMessages: () => compactedMessages },
+			),
+		);
+		try {
+			host.replaceMessages(shown);
+			host.renderBody(80, 10);
+			host.handleInput("\x1b[1;5H");
+			assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/, mode);
+
+			compactedMessages = compactedSnapshot;
+			host.applyAgentEvent({
+				type: "compaction_end",
+				reason: "threshold",
+				aborted: false,
+				willRetry: false,
+				result: compactionResult,
+			});
+
+			const rows = text(host.renderBody(80, 10));
+			assert.match(rows.split("\n").at(-1) ?? "", /jump to bottom/, mode);
+			assert.doesNotMatch(rows, /new message/, mode);
+		} finally {
+			host.dispose();
+		}
+	}
+});
+
 test("replaceMessages with a longer transcript while scrolled up does not count replaced history as new arrivals (#5243)", () => {
 	initTheme("dark");
 	const host = new ChatSessionHost(hostOptions());

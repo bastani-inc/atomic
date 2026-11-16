@@ -141,11 +141,20 @@ InteractiveModeBase.prototype.showStatus = function (
 	this.ui.requestRender();
 };
 
+/**
+ * The read epoch of the jump-to-latest counter each echo was shown in. Transcript order is not arrival order: messages
+ * go in before a streaming reply, and a re-render shows pending echoes last. So an echo is unread when its epoch is still
+ * the counter's, wherever it sits, and a re-render keeps the epoch it was first shown in (#5243).
+ */
+const echoReadEpochs = new WeakMap<Component[], number>();
+
 InteractiveModeBase.prototype.renderDeferredUserInput = function (this: InteractiveModeBase, text: string): void {
 	this.deferredRenderedUserInputs.push(text);
 	const startIndex = this.chatContainer.children.length;
 	this.addMessageToChat({ role: "user", content: text } as AgentMessage);
 	const renderedComponents = this.chatContainer.children.slice(startIndex);
+	const epoch = (this.ui as AltScreenMessageCounterHost).newMessages?.epoch;
+	if (epoch !== undefined) echoReadEpochs.set(renderedComponents, epoch);
 	const trackedComponents = this.deferredRenderedUserInputComponents.get(text) ?? [];
 	trackedComponents.push(renderedComponents);
 	this.deferredRenderedUserInputComponents.set(text, trackedComponents);
@@ -169,40 +178,69 @@ InteractiveModeBase.prototype.consumeDeferredRenderedUserInput = function (
 	return true;
 };
 
+/** Drop the oldest echo of `text` from the books and return its components, which stay in the transcript. */
+function forgetDeferredEcho(mode: InteractiveModeBase, text: string): Component[] | undefined {
+	const index = mode.deferredRenderedUserInputs.indexOf(text);
+	if (index !== -1) {
+		mode.deferredRenderedUserInputs.splice(index, 1);
+		if (mode.startedDeferredUserInput === text) mode.startedDeferredUserInput = undefined;
+	}
+	const trackedComponents = mode.deferredRenderedUserInputComponents.get(text);
+	const components = trackedComponents?.shift();
+	if (trackedComponents && trackedComponents.length === 0) {
+		mode.deferredRenderedUserInputComponents.delete(text);
+	}
+	return components;
+}
+
+/** Take every pending echo off the books before a re-render, with the read epoch it was shown in. */
+function takeDeferredEchoes(mode: InteractiveModeBase): Array<{ text: string; epoch: number | undefined }> {
+	const occurrences = new Map<string, number>();
+	const echoes = mode.deferredRenderedUserInputs.map((text) => {
+		const occurrence = occurrences.get(text) ?? 0;
+		occurrences.set(text, occurrence + 1);
+		const components = mode.deferredRenderedUserInputComponents.get(text)?.[occurrence];
+		return { text, epoch: components ? echoReadEpochs.get(components) : undefined };
+	});
+	mode.deferredRenderedUserInputs = [];
+	mode.deferredRenderedUserInputComponents.clear();
+	return echoes;
+}
+
+/** Show the echoes a re-render took again, each as read or unread as it was before. */
+function restoreDeferredEchoes(
+	mode: InteractiveModeBase,
+	echoes: ReadonlyArray<{ text: string; epoch: number | undefined }>,
+): void {
+	for (const { text, epoch } of echoes) {
+		mode.renderDeferredUserInput(text);
+		const tracked = mode.deferredRenderedUserInputComponents.get(text);
+		const components = tracked?.[tracked.length - 1];
+		if (components && epoch !== undefined) echoReadEpochs.set(components, epoch);
+	}
+}
+
 InteractiveModeBase.prototype.discardDeferredRenderedUserInput = function (
 	this: InteractiveModeBase,
 	text: string,
 ): void {
-	const index = this.deferredRenderedUserInputs.indexOf(text);
-	if (index !== -1) {
-		this.deferredRenderedUserInputs.splice(index, 1);
-		if (this.startedDeferredUserInput === text) this.startedDeferredUserInput = undefined;
-	}
-	const trackedComponents = this.deferredRenderedUserInputComponents.get(text);
-	const componentsToRemove = trackedComponents?.shift();
-	if (trackedComponents && trackedComponents.length === 0) {
-		this.deferredRenderedUserInputComponents.delete(text);
-	}
+	const componentsToRemove = forgetDeferredEcho(this, text);
 	if (!componentsToRemove) return;
 	const renderer = this.ui as AltScreenMessageCounterHost;
+	const following = renderer.isFollowingOutput !== false;
 	const messages = this.chatContainer.children.filter(isChatMessageComponent);
-	if (renderer.isFollowingOutput === false) {
-		renderer.newMessages?.observe(false, messages.length);
-	}
-	const unreadCount = renderer.isFollowingOutput === false ? (renderer.newMessages?.count ?? 0) : 0;
-	const firstUnreadMessage = Math.max(0, messages.length - unreadCount);
+	// Count arrivals not painted yet first, so that removing the echo cannot hide them.
+	if (!following) renderer.newMessages?.observe(false, messages.length);
 	let removedMessages = 0;
-	let removedUnreadMessages = 0;
 	for (const component of componentsToRemove) {
-		const messageIndex = messages.indexOf(component);
+		if (messages.includes(component)) removedMessages += 1;
 		this.chatContainer.removeChild(component);
-		if (messageIndex >= 0) {
-			removedMessages += 1;
-			if (messageIndex >= firstUnreadMessage) removedUnreadMessages += 1;
-		}
 	}
-	renderer.newMessages?.retract(removedUnreadMessages);
-	renderer.newMessages?.observe(renderer.isFollowingOutput !== false, messages.length - removedMessages);
+	const counter = renderer.newMessages;
+	if (!following && counter && echoReadEpochs.get(componentsToRemove) === counter.epoch) {
+		counter.retract(removedMessages);
+	}
+	counter?.observe(following, messages.length - removedMessages);
 	this.updatePendingMessagesDisplay();
 	this.ui.requestRender();
 };
@@ -230,9 +268,18 @@ InteractiveModeBase.prototype.showSessionUserMessage = function (this: Interacti
 	if (this.consumeDeferredRenderedUserInput(this.getUserMessageText(message))) return;
 	const started = this.startedDeferredUserInput;
 	if (started !== undefined) {
-		const echo = this.deferredRenderedUserInputComponents.get(started)?.[0];
+		// The message takes the echo's place as read or unread as the echo was: count arrivals not painted yet, then
+		// swap it in without counting it or retracting the echo (#5243).
+		const renderer = this.ui as AltScreenMessageCounterHost;
+		if (renderer.isFollowingOutput === false) {
+			renderer.newMessages?.observe(false, this.chatContainer.children.filter(isChatMessageComponent).length);
+		}
+		const echo = forgetDeferredEcho(this, started);
 		appendNewChildrenBeforeAttachedChild(this.chatContainer, echo?.[0], () => this.addMessageToChat(message));
-		this.discardDeferredRenderedUserInput(started);
+		for (const component of echo ?? []) this.chatContainer.removeChild(component);
+		renderer.newMessages?.replaced(this.chatContainer.children.filter(isChatMessageComponent).length);
+		this.updatePendingMessagesDisplay();
+		this.ui.requestRender();
 		return;
 	}
 	this.userMessagesShownBySession += 1;
@@ -528,9 +575,7 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 	options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 ): void {
 	this.pendingTools.clear();
-	const pendingDeferredInputs = [...this.deferredRenderedUserInputs];
-	this.deferredRenderedUserInputs = [];
-	this.deferredRenderedUserInputComponents.clear();
+	const pendingEchoes = takeDeferredEchoes(this);
 
 	if (options.updateFooter) {
 		this.footer.invalidate();
@@ -548,9 +593,7 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 		}
 	}
 
-	for (const input of pendingDeferredInputs) {
-		this.renderDeferredUserInput(input);
-	}
+	restoreDeferredEchoes(this, pendingEchoes);
 
 	this.ui.requestRender();
 };
@@ -566,9 +609,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 ): void {
 	this.resetTranscriptSelection();
 	this.pendingTools.clear();
-	const deferredInputs = [...this.deferredRenderedUserInputs];
-	this.deferredRenderedUserInputs = [];
-	this.deferredRenderedUserInputComponents.clear();
+	const pendingEchoes = takeDeferredEchoes(this);
 	if (options.updateFooter) {
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
@@ -625,7 +666,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 			this.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
 		}
 	}
-	for (const input of deferredInputs) this.renderDeferredUserInput(input);
+	restoreDeferredEchoes(this, pendingEchoes);
 	this.ui.requestRender();
 };
 
@@ -649,16 +690,24 @@ InteractiveModeBase.prototype.attachStartupNoticesContainer = function (
 
 const renderedSessionIds = new WeakMap<InteractiveModeBase, string>();
 
+/**
+ * Clear the transcript to render it again. While the reader is scrolled up, arrivals not painted yet are counted first,
+ * so that the re-render, which keeps the unread count, keeps them unread.
+ */
+export function clearChatForRerender(mode: InteractiveModeBase): void {
+	const renderer = mode.ui as AltScreenMessageCounterHost;
+	if (renderer.isFollowingOutput === false && mode.chatContainer.children.length > 0) {
+		renderer.newMessages?.observe(false, mode.chatContainer.children.filter(isChatMessageComponent).length);
+	}
+	mode.chatContainer.clear();
+}
+
 InteractiveModeBase.prototype.renderInitialMessages = function (this: InteractiveModeBase): void {
 	const sessionId = this.sessionManager.getSessionId();
 	const previousSessionId = renderedSessionIds.get(this);
 	renderedSessionIds.set(this, sessionId);
 	const renderer = this.ui as AltScreenMessageCounterHost;
-	if (previousSessionId !== sessionId) {
-		renderer.newMessages?.reset();
-	} else if (renderer.isFollowingOutput === false && this.chatContainer.children.length > 0) {
-		renderer.newMessages?.observe(false, this.chatContainer.children.filter(isChatMessageComponent).length);
-	}
+	if (previousSessionId !== sessionId) renderer.newMessages?.reset();
 	this.attachStartupNoticesContainer({ resetDetached: true });
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { updateFooter: true, populateHistory: true });
@@ -743,13 +792,10 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	// this transcript. Full session replacements invalidate their generation in
 	// renderCurrentSessionState() before rebuilding the replacement transcript.
 	const renderer = this.ui as AltScreenMessageCounterHost;
-	if (this.chatContainer.children.length > 0 && renderer.isFollowingOutput === false) {
-		renderer.newMessages?.observe(false, this.chatContainer.children.filter(isChatMessageComponent).length);
-	}
 	this.managedToolStatusStarted = false;
 	this.lastStatusSpacer = undefined;
 	this.lastStatusText = undefined;
-	this.chatContainer.clear();
+	clearChatForRerender(this);
 	if (options.resetStartupDisclosure) this.resourceDisclosureContainer.clear();
 	this.attachStartupNoticesContainer();
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());

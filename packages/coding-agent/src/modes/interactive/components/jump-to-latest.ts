@@ -5,11 +5,22 @@ import { USER_PROMPT_ZONE_START } from "./user-message.ts";
 export class NewMessageCounter {
 	private baseline: number | undefined;
 	private latest = 0;
+	private readEpoch = 0;
+
+	/**
+	 * Changes whenever everything shown so far counts as read: a frame painted while following the end, the first frame
+	 * after a reset, or the reset itself. A message shown while it still matches is unread, wherever it sits in the
+	 * transcript.
+	 */
+	get epoch(): number {
+		return this.readEpoch;
+	}
 
 	observe(following: boolean, count: number): void {
 		if (following || this.baseline === undefined) {
 			this.baseline = count;
 			this.latest = count;
+			this.readEpoch += 1;
 			return;
 		}
 		if (count < this.latest) {
@@ -45,6 +56,7 @@ export class NewMessageCounter {
 	reset(): void {
 		this.baseline = undefined;
 		this.latest = 0;
+		this.readEpoch += 1;
 	}
 
 	get count(): number {
