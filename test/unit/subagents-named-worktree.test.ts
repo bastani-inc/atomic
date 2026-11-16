@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -45,7 +46,6 @@ function git(cwd: string, ...args: string[]): string {
 	return result.stdout.toString("utf8").trim();
 }
 
-/** A repository on `main` with one commit, in a directory of its own. */
 function makeRepo(): string {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "atomic-named-worktree-")));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -59,6 +59,14 @@ function makeRepo(): string {
 	git(repo, "add", "README.md");
 	git(repo, "commit", "-q", "-m", "init");
 	return repo;
+}
+
+function namedWorktreePathLock(repo: string, branch: string): string {
+	const dir = join(repo, ".git", "worktrees", ".atomic-named-worktree-locks");
+	mkdirSync(dir, { recursive: true });
+	const target = join(repo, ".atomic", "worktrees", branch.replaceAll("/", "+"));
+	const key = process.platform === "win32" ? target.toLowerCase() : target;
+	return join(dir, `path-${createHash("sha256").update(key).digest("hex")}.lock`);
 }
 
 const agent: AgentConfig = {
@@ -441,8 +449,6 @@ test("a launch waits out another launch's worktree add rather than show git fail
 	const repo = makeRepo();
 	const expected = join(repo, ".atomic", "worktrees", "feat+busy");
 	git(repo, "worktree", "add", "-q", "-b", "feat/busy", expected);
-	// Mid-add, git has a `locked` marker another git command can find and then fail to read: a directory fails the
-	// same read on every platform, until the other add is done and it vanishes.
 	const marker = join(repo, ".git", "worktrees", "feat+busy", "locked");
 	mkdirSync(marker);
 	const otherAdd = spawnProcess(
@@ -466,11 +472,10 @@ test("a launch that finds another launch's worktree add of its branch half done 
 	const repo = makeRepo();
 	const expected = join(repo, ".atomic", "worktrees", "feat+half");
 	git(repo, "worktree", "add", "-q", "-b", "feat/half", expected);
-	// As git leaves it mid-add: locked, HEAD not yet on the branch, nothing checked out yet.
 	const admin = join(repo, ".git", "worktrees", "feat+half");
 	writeFileSync(join(admin, "locked"), "initializing");
 	writeFileSync(join(admin, "HEAD"), `${git(repo, "rev-parse", "HEAD")}\n`);
-	renameSync(join(admin, "index"), join(admin, "index.done"));
+	renameSync(join(admin, "index"), join(admin, "index.lock"));
 	const otherAdd = spawnProcess(
 		[
 			bunExecutable(),
@@ -478,7 +483,7 @@ test("a launch that finds another launch's worktree add of its branch half done 
 			`const fs = require("node:fs"), path = require("node:path"), admin = ${JSON.stringify(admin)};
 setTimeout(() => {
 	fs.writeFileSync(path.join(admin, "HEAD"), "ref: refs/heads/feat/half\\n");
-	fs.renameSync(path.join(admin, "index.done"), path.join(admin, "index"));
+	fs.renameSync(path.join(admin, "index.lock"), path.join(admin, "index"));
 	fs.rmSync(path.join(admin, "locked"));
 }, 1500);`,
 		],
@@ -537,7 +542,7 @@ try {
 
 test("a live named-worktree creation lock is not stolen when its file is old (#5202)", async () => {
 	const repo = makeRepo();
-	const lockPath = join(repo, ".git", "atomic-named-worktree.lock");
+	const lockPath = namedWorktreePathLock(repo, "feat/held");
 	const lock = tryAdvisoryLock(lockPath, 0);
 	assert.ok(lock);
 	const old = new Date(Date.now() - 11 * 60_000);
@@ -583,7 +588,7 @@ test("waiting for named-worktree creation lets the session event loop release th
 		[
 			bunExecutable(),
 			join(moduleDir(import.meta.url), "../fixtures/named-worktree-lock-holder.ts"),
-			join(repo, ".git", "atomic-named-worktree.lock"),
+			namedWorktreePathLock(repo, "responsive"),
 		],
 		{ cwd: repo, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: createGitEnvironment() },
 	);
@@ -611,9 +616,9 @@ test("waiting for named-worktree creation lets the session event loop release th
 	assert.equal(result.isError, undefined, text(result));
 });
 
-test("a named-worktree creation lock times out without stealing its holder (#5202)", () => {
+test("a checkout hook cannot synchronously reacquire its parent's target lock (#5202)", () => {
 	const repo = makeRepo();
-	const lockPath = join(repo, ".git", "atomic-named-worktree.lock");
+	const lockPath = namedWorktreePathLock(repo, "timeout");
 	const lock = tryAdvisoryLock(lockPath, 0);
 	assert.ok(lock);
 	try {
@@ -627,8 +632,6 @@ test("a named-worktree creation lock times out without stealing its holder (#520
 				"-e",
 				`const [modulePath, repo] = process.argv.slice(1);
 const { ensureNamedWorktree } = await import(modulePath);
-let now = 0;
-Object.defineProperty(performance, "now", { value: () => now += 60_000 });
 try {
 	await ensureNamedWorktree(repo, { branch: "timeout" });
 	process.exit(1);
@@ -638,10 +641,17 @@ try {
 				modulePath,
 				repo,
 			],
-			{ cwd: repo, env: createGitEnvironment(), timeout: LOCK_TIMEOUT_PROCESS_BUDGET_MS },
+			{
+				cwd: repo,
+				env: createGitEnvironment({ ATOMIC_NAMED_WORKTREE_LOCKS: JSON.stringify([lockPath]) }),
+				timeout: LOCK_TIMEOUT_PROCESS_BUDGET_MS,
+			},
 		);
 		assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
-		assert.match(result.stdout.toString(), /^worktree: timed out waiting for named-worktree creation/);
+		assert.match(
+			result.stdout.toString(),
+			/^worktree: a checkout hook cannot synchronously create another named worktree/,
+		);
 		assert.equal(existsSync(join(repo, ".atomic", "worktrees", "timeout")), false);
 		assert.equal(tryAdvisoryLock(lockPath, 0), null, "the original holder keeps ownership after a timeout");
 	} finally {
@@ -649,7 +659,6 @@ try {
 	}
 });
 
-/** Several processes, each checking out the same new branches at once; spawning a process is the structural cost. */
 const CONCURRENT_LAUNCHES_TIMEOUT_MS = 120_000;
 const RACE_ROUNDS = 8;
 const RACE_ROUND_GAP_MS = 400;

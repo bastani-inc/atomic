@@ -86,10 +86,10 @@ const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
  */
 const GIT_OUTPUT_MAX_BUFFER = 512 * 1024 * 1024;
 const HOOK_OUTPUT_MAX_BUFFER = 64 * 1024 * 1024;
-export function runGit(cwd: string, args: string[]): GitResult {
+export function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): GitResult {
 	const result = spawnSync("git", ["-C", cwd, ...args], {
 		encoding: "utf-8",
-		env: createGitEnvironment({}, createChildProcessEnvironment()),
+		env: createGitEnvironment({ ...env, LC_ALL: "C", LANGUAGE: "C" }, createChildProcessEnvironment()),
 		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
 	});
 	return {

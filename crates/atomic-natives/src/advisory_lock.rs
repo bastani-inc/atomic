@@ -113,9 +113,7 @@ fn platform_rename_no_replace(_from: &Path, _to: &Path) -> io::Result<()> {
 }
 
 fn napi_error(error: io::Error) -> napi::Error {
-	let code =
-		error.raw_os_error().map_or_else(|| format!("{:?}", error.kind()), |code| code.to_string());
-	napi::Error::new(napi::Status::GenericFailure, format!("{error} (os error {code})"))
+	napi::Error::new(napi::Status::GenericFailure, error.to_string())
 }
 
 /// An exclusive advisory lock this process holds on an open file (#5193), released by {@link AdvisoryLock.release},

@@ -927,14 +927,15 @@ export async function restoreSubagentChild(
 		// Every sender, not only this session, is told the child is gone, for as long as this session is connected.
 		await hold?.gone(reason);
 	};
+	const worktreeResume = resumeRunWorktree(
+		record,
+		deps.config.worktreeSetupHook
+			? { hookPath: deps.config.worktreeSetupHook, timeoutMs: deps.config.worktreeSetupHookTimeoutMs }
+			: undefined,
+	);
 	let releaseWorktree: (() => void) | undefined;
 	const restoration: Promise<SubagentChildRestoreOutcome> = (async () => {
-		releaseWorktree = await resumeRunWorktree(
-			record,
-			deps.config.worktreeSetupHook
-				? { hookPath: deps.config.worktreeSetupHook, timeoutMs: deps.config.worktreeSetupHookTimeoutMs }
-				: undefined,
-		);
+		releaseWorktree = await worktreeResume;
 		// Hold sends to the child before anything can fail, so no sender is told `Session not found` meanwhile.
 		// When the session already holds them since it started, that hold carries on under the same capability:
 		// what it holds stays held, and no moment passes without a hold.
