@@ -57,13 +57,13 @@ test("provider configuration is cached per lifecycle owner and survives reporter
 		};
 		const readVideo = () => [isYouTubeEnabled(), videoEnabled()];
 		assert.deepEqual(context.run(reporter(scope), readVideo), [false, false]);
-		const read = () => [
+		const read = async () => [
 			isPerplexityAvailable(),
 			hasExaApiKey(),
 			getChromeProfileFromConfig(),
-			loadGitHubConfig().maxRepoSizeMB,
+			(await loadGitHubConfig()).maxRepoSizeMB,
 		];
-		assert.deepEqual(context.run(reporter(scope), read), [true, true, "first-profile", 100]);
+		assert.deepEqual(await context.run(reporter(scope), read), [true, true, "first-profile", 100]);
 		assert.equal(context.run(reporter(scope), getApiKey), "first-key");
 		const urls: string[] = [];
 		vi.stubGlobal("fetch", async (url: string) => {
@@ -78,9 +78,9 @@ test("provider configuration is cached per lifecycle owner and survives reporter
 			JSON.stringify({ searchModel: "second-model", geminiApiKey: "second-key" }),
 		);
 		assert.equal(context.run(reporter({}), getApiKey), "second-key");
-		assert.deepEqual(context.run(reporter({}), read), [false, false, undefined, 350]);
+		assert.deepEqual(await context.run(reporter({}), read), [false, false, undefined, 350]);
 		context.run(reporter({}), resetGitHubConfig);
-		assert.deepEqual(context.run(reporter(scope), read), [true, true, "first-profile", 100]);
+		assert.deepEqual(await context.run(reporter(scope), read), [true, true, "first-profile", 100]);
 		assert.equal(context.run(reporter(scope), getApiKey), "first-key");
 		assert.deepEqual(context.run(reporter({}), readVideo), [true, true]);
 		assert.deepEqual(context.run(reporter(scope), readVideo), [false, false]);

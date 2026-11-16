@@ -56,13 +56,13 @@ export function refuseSubagentChildDelegation(
 	};
 }
 
-export function prepareExecutionContext(input: {
+export async function prepareExecutionContext(input: {
 	params: SubagentParamsLike;
 	ctx: ExtensionContext;
 	signal: AbortSignal;
 	onUpdate?: (r: SubagentToolResult) => void;
 	deps: ResolvedExecutorDeps;
-}): ExecutionContextBuildResult {
+}): Promise<ExecutionContextBuildResult> {
 	const { params, ctx, signal, onUpdate, deps } = input;
 	const stageCloseSignal = ctx.orchestrationContext?.messageAdmission?.boundary.closeSignal;
 	const executionSignal = stageCloseSignal === undefined ? signal : AbortSignal.any([signal, stageCloseSignal]);
@@ -151,7 +151,7 @@ export function prepareExecutionContext(input: {
 		...DEFAULT_ARTIFACT_CONFIG,
 		enabled: effectiveParams.artifacts !== false,
 	};
-	const artifactsDir = getArtifactsDir(parentSessionFile);
+	const artifactsDir = await getArtifactsDir(parentSessionFile);
 
 	let sessionRoot: string;
 	if (effectiveParams.sessionDir) {

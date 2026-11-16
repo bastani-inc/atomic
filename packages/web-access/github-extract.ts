@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createOwnerState } from "./owner-state.js";
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath, sep as pathSep } from "node:path";
-import { assertPrivateDirectory, createChildProcessEnvironment } from "@bastani/atomic";
+import { assertPrivateDirectoryAsync, createChildProcessEnvironment } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
 import { flattenTruncatedString } from "./flat-string.js";
@@ -77,13 +77,15 @@ function removeOwnedClone(paths: ClonePaths): boolean {
 }
 
 /** Creates a fresh, marked clone directory inside the clone root, or refuses. */
-function prepareCloneDirectory(paths: ClonePaths): boolean {
+async function prepareCloneDirectory(paths: ClonePaths): Promise<boolean> {
 	const { root, directory } = paths;
 	try {
 		// The default cache must still be a directory only this account owns;
 		// one swapped or opened up since it was chosen is refused, not used.
 		const privateRoot = chosenDefaultGitHubClonePath();
-		if (privateRoot && (root === privateRoot || dirname(root) === privateRoot)) assertPrivateDirectory(privateRoot);
+		if (privateRoot && (root === privateRoot || dirname(root) === privateRoot)) {
+			await assertPrivateDirectoryAsync(privateRoot);
+		}
 		mkdirSync(root, { recursive: true });
 		if (!isConfined(root, directory) || !removeOwnedClone(paths)) return false;
 		mkdirSync(directory, { recursive: true });
@@ -121,7 +123,7 @@ async function cloneRepo(
 	config: GitHubCloneConfig,
 	signal?: AbortSignal,
 ): Promise<string | null> {
-	if (!prepareCloneDirectory(paths)) return null;
+	if (!(await prepareCloneDirectory(paths))) return null;
 	const localPath = paths.checkout;
 
 	const timeoutMs = config.cloneTimeoutSeconds * 1000;
@@ -447,7 +449,7 @@ export async function extractGitHub(
 
 	const state = cloneState();
 	const cloneCache = state.cache;
-	const loadedConfig = loadGitHubConfig();
+	const loadedConfig = await loadGitHubConfig();
 	const config = { ...loadedConfig, clonePath: join(loadedConfig.clonePath, state.directory) };
 	if (!config.enabled) return null;
 

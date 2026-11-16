@@ -27,12 +27,14 @@ import { getGitInstallPath, getNpmInstallRoot } from "../src/core/package-manage
 import type { PackageLocationContext } from "../src/core/package-manager-types.ts";
 import {
 	assertPrivateDirectory,
+	assertPrivateDirectoryAsync,
 	ensurePrivateTempDir,
+	ensurePrivateTempDirAsync,
 	getTempRootDir,
 	resetSessionTempDirStateForTesting,
 } from "../src/core/tools/session-temp-dir.ts";
 import {
-	readWindowsDirectorySecurity,
+	readWindowsDirectorySecurityAsync,
 	setWindowsDirectorySecurityReaderForTesting,
 } from "../src/core/tools/windows-directory-security.ts";
 import { isPathInside } from "../src/utils/path-inside.js";
@@ -99,51 +101,51 @@ function plantAgentCacheLink(): string {
 }
 
 describe("temporary extension install directories", () => {
-	it.skipIf(!isPosix)("temporary extension installs prefer the per-user runtime directory", () => {
+	it.skipIf(!isPosix)("temporary extension installs prefer the per-user runtime directory", async () => {
 		const runtime = mkdtempSync(join(sandbox, "run-"));
 		process.env.XDG_RUNTIME_DIR = runtime;
 
-		const root = getNpmInstallRoot(context, "temporary", true);
+		const root = await getNpmInstallRoot(context, "temporary", true);
 
 		assert.ok(isPathInside(runtime, root), `${root} is inside the runtime directory`);
 		assertPrivateChain(root, runtime);
 	});
 
-	it("without a runtime directory, temporary extension installs use the agent cache", () => {
-		const root = getNpmInstallRoot(context, "temporary", true);
+	it("without a runtime directory, temporary extension installs use the agent cache", async () => {
+		const root = await getNpmInstallRoot(context, "temporary", true);
 
 		assert.ok(isPathInside(join(agentDir, "cache", "tmp"), root), `${root} is inside the agent cache`);
 		assertPrivateChain(root, agentDir);
 	});
 
-	it("temporary git checkouts share the same per-user directory", () => {
-		const npm = getNpmInstallRoot(context, "temporary", true);
-		const checkout = getGitInstallPath(context, { host: "github.com", path: "owner/repo" }, "temporary");
+	it("temporary git checkouts share the same per-user directory", async () => {
+		const npm = await getNpmInstallRoot(context, "temporary", true);
+		const checkout = await getGitInstallPath(context, { host: "github.com", path: "owner/repo" }, "temporary");
 		assert.equal(dirname(dirname(dirname(dirname(checkout)))), dirname(dirname(npm)));
 	});
 
-	it.skipIf(!isPosix)("a shared runtime directory is not used", () => {
+	it.skipIf(!isPosix)("a shared runtime directory is not used", async () => {
 		const runtime = mkdtempSync(join(sandbox, "run-"));
 		chmodSync(runtime, 0o777);
 		process.env.XDG_RUNTIME_DIR = runtime;
 
-		const root = getNpmInstallRoot(context, "temporary", true);
+		const root = await getNpmInstallRoot(context, "temporary", true);
 
 		assert.ok(!isPathInside(runtime, root));
 		assert.deepEqual(readdirSync(runtime), [], "nothing is created in it");
 	});
 
-	it.skipIf(!isPosix)("the shared temp directory is used when the agent cache is unusable", () => {
+	it.skipIf(!isPosix)("the shared temp directory is used when the agent cache is unusable", async () => {
 		const elsewhere = plantAgentCacheLink();
 
-		const root = getNpmInstallRoot(context, "temporary", true);
+		const root = await getNpmInstallRoot(context, "temporary", true);
 
 		assert.ok(isPathInside(getTempRootDir(), root), `${root} is inside the per-user temp root`);
 		assertPrivateChain(root, shared);
 		assert.deepEqual(readdirSync(elsewhere), [], "nothing is created through the planted link");
 	});
 
-	it.skipIf(!isPosix)("a pre-existing directory owned by another account is neither used nor blocking", () => {
+	it.skipIf(!isPosix)("a pre-existing directory owned by another account is neither used nor blocking", async () => {
 		plantAgentCacheLink();
 		const realUid = process.getuid!();
 		vi.spyOn(process, "getuid").mockReturnValue(realUid + 1);
@@ -152,7 +154,7 @@ describe("temporary extension install directories", () => {
 		const planted = getTempRootDir();
 		mkdirSync(planted, { mode: 0o700 });
 
-		const root = getNpmInstallRoot(context, "temporary", true);
+		const root = await getNpmInstallRoot(context, "temporary", true);
 
 		assert.ok(!isPathInside(planted, root), `${root} is not inside the planted directory`);
 		assert.ok(isPathInside(shared, root));
@@ -163,24 +165,27 @@ describe("temporary extension install directories", () => {
 		assert.ok(!isPathInside(planted, nested));
 	});
 
-	it.skipIf(!isPosix)("a symbolic link in place of the per-user directory is neither followed nor blocking", () => {
-		plantAgentCacheLink();
-		const elsewhere = mkdtempSync(join(sandbox, "planted-"));
-		symlinkSync(elsewhere, getTempRootDir(), "dir");
+	it.skipIf(!isPosix)(
+		"a symbolic link in place of the per-user directory is neither followed nor blocking",
+		async () => {
+			plantAgentCacheLink();
+			const elsewhere = mkdtempSync(join(sandbox, "planted-"));
+			symlinkSync(elsewhere, getTempRootDir(), "dir");
 
-		const root = getNpmInstallRoot(context, "temporary", true);
+			const root = await getNpmInstallRoot(context, "temporary", true);
 
-		assert.ok(!isPathInside(getTempRootDir(), root));
-		assertPrivateChain(root, shared);
-		assert.deepEqual(readdirSync(elsewhere), [], "nothing is created through the planted link");
-	});
+			assert.ok(!isPathInside(getTempRootDir(), root));
+			assertPrivateChain(root, shared);
+			assert.deepEqual(readdirSync(elsewhere), [], "nothing is created through the planted link");
+		},
+	);
 
-	it.skipIf(!isPosix)("a group-writable directory is neither repaired nor blocking", () => {
+	it.skipIf(!isPosix)("a group-writable directory is neither repaired nor blocking", async () => {
 		plantAgentCacheLink();
 		mkdirSync(getTempRootDir(), { mode: 0o700 });
 		chmodSync(getTempRootDir(), 0o770);
 
-		const root = getNpmInstallRoot(context, "temporary", true);
+		const root = await getNpmInstallRoot(context, "temporary", true);
 
 		assert.ok(!isPathInside(getTempRootDir(), root));
 		assertPrivateChain(root, shared);
@@ -188,13 +193,13 @@ describe("temporary extension install directories", () => {
 		assert.deepEqual(readdirSync(getTempRootDir()), []);
 	});
 
-	it.runIf(process.platform === "win32")("uses a directory inside the account's own profile on Windows", () => {
-		const root = getNpmInstallRoot(context, "temporary", true);
+	it.runIf(process.platform === "win32")("uses a directory inside the account's own profile on Windows", async () => {
+		const root = await getNpmInstallRoot(context, "temporary", true);
 		assert.ok(isPathInside(agentDir, root) || isPathInside(tmpdir(), root), root);
 		assert.ok(statSync(dirname(dirname(root))).isDirectory());
 	});
 
-	it.skipIf(!isPosix)("a runtime directory that is a link, a file or another account's is not used", () => {
+	it.skipIf(!isPosix)("a runtime directory that is a link, a file or another account's is not used", async () => {
 		const real = mkdtempSync(join(sandbox, "run-real-"));
 		const link = join(sandbox, `run-link-${Date.now()}`);
 		symlinkSync(real, link, "dir");
@@ -202,7 +207,7 @@ describe("temporary extension install directories", () => {
 		writeFileSync(file, "");
 		for (const runtime of [link, file]) {
 			process.env.XDG_RUNTIME_DIR = runtime;
-			const root = getNpmInstallRoot(context, "temporary", true);
+			const root = await getNpmInstallRoot(context, "temporary", true);
 			assert.ok(isPathInside(agentDir, root), `${runtime}: ${root} falls back to the agent cache`);
 		}
 		assert.deepEqual(readdirSync(real), [], "nothing is created through the linked runtime directory");
@@ -210,19 +215,21 @@ describe("temporary extension install directories", () => {
 		process.env.XDG_RUNTIME_DIR = real;
 		vi.spyOn(process, "getuid").mockReturnValue(process.getuid!() + 1);
 		resetSessionTempDirStateForTesting();
-		const root = getNpmInstallRoot(context, "temporary", true);
+		const root = await getNpmInstallRoot(context, "temporary", true);
 		assert.ok(!isPathInside(real, root), `${root} avoids a runtime directory owned by another account`);
 		assert.deepEqual(readdirSync(real), []);
 	});
 
-	it("only plain relative names are accepted below the private directory", () => {
+	it("only plain relative names are accepted below the private directory", async () => {
 		for (const segment of ["..", ".", "", "a//b", "a/../b"]) {
 			assert.throws(() => ensurePrivateTempDir(segment), /not a plain relative path/, JSON.stringify(segment));
+			await assert.rejects(ensurePrivateTempDirAsync(segment), /not a plain relative path/, JSON.stringify(segment));
 		}
+		assert.ok((await ensurePrivateTempDirAsync("a/b")).endsWith(join("a", "b")));
 		assert.ok(ensurePrivateTempDir("a/b").endsWith(join("a", "b")));
 	});
 
-	it("reports clearly when no private directory can be created", () => {
+	it("reports clearly when no private directory can be created", async () => {
 		const file = join(sandbox, `not-a-dir-${Date.now()}`);
 		writeFileSync(file, "");
 		for (const key of ["TMPDIR", "TEMP", "TMP"]) process.env[key] = join(file, "tmp");
@@ -230,9 +237,13 @@ describe("temporary extension install directories", () => {
 		resetSessionTempDirStateForTesting();
 
 		assert.throws(() => ensurePrivateTempDir("extensions"), /no directory private to this account could be created/);
+		await assert.rejects(
+			ensurePrivateTempDirAsync("extensions"),
+			/no directory private to this account could be created/,
+		);
 	});
 
-	it.skipIf(!isPosix)("a directory is private only when it is this account's own real directory", () => {
+	it.skipIf(!isPosix)("a directory is private only when it is this account's own real directory", async () => {
 		const own = mkdtempSync(join(sandbox, "own-"));
 		assert.doesNotThrow(() => assertPrivateDirectory(own));
 
@@ -250,27 +261,29 @@ describe("temporary extension install directories", () => {
 
 		vi.spyOn(process, "getuid").mockReturnValue(process.getuid!() + 1);
 		assert.throws(() => assertPrivateDirectory(own), /owned by another account/);
+		await assert.rejects(assertPrivateDirectoryAsync(own), /owned by another account/);
 	});
 
 	it.runIf(process.platform === "win32")(
 		"a directory already in use is not re-read from its security descriptor on every call",
-		() => {
+		async () => {
 			let reads = 0;
 			setWindowsDirectorySecurityReaderForTesting((path) => {
 				reads++;
-				return readWindowsDirectorySecurity(path);
+				return readWindowsDirectorySecurityAsync(path);
 			});
-			const dir = ensurePrivateTempDir("extensions");
+			const dir = await ensurePrivateTempDirAsync("extensions");
 			writeFileSync(join(dir, "in-use.txt"), "");
 			const firstReads = reads;
 			assert.ok(firstReads > 0);
 
-			for (let call = 0; call < 5; call++) assert.equal(ensurePrivateTempDir("extensions"), dir);
+			for (let call = 0; call < 5; call++) assert.equal(await ensurePrivateTempDirAsync("extensions"), dir);
+			assert.equal(ensurePrivateTempDir("extensions"), dir, "a synchronous caller finds it verified");
 			assert.equal(reads, firstReads, "repeat calls cost no PowerShell security reads");
 		},
 	);
 
-	it.skipIf(!isPosix)("a directory already in use is checked again on every call", () => {
+	it.skipIf(!isPosix)("a directory already in use is checked again on every call", async () => {
 		const dir = ensurePrivateTempDir("extensions");
 		chmodSync(dir, 0o770);
 		const reopened = ensurePrivateTempDir("extensions");

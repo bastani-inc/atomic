@@ -108,7 +108,7 @@ export function createSubagentStartupMaintenance(
 			schedule(() => {
 				swallowCleanup(() => cleanupOldSubagentRuntimeDirs(options.artifactCleanupDays));
 				scheduleDelayed(() => {
-					swallowCleanup(() => cleanupAllArtifactDirs(options.artifactCleanupDays, contextSessionsRoots));
+					void cleanupAllArtifactDirs(options.artifactCleanupDays, contextSessionsRoots).catch(() => undefined);
 					onDone?.();
 				}, STARTUP_ARTIFACT_SCAN_DELAY_MS);
 			});
@@ -123,7 +123,9 @@ export function createSubagentStartupMaintenance(
 			}
 			if (!sessionFile) return;
 			schedule(() =>
-				swallowCleanup(() => cleanupOldArtifacts(getArtifactsDir(sessionFile), options.artifactCleanupDays)),
+				getArtifactsDir(sessionFile)
+					.then((dir) => cleanupOldArtifacts(dir, options.artifactCleanupDays))
+					.catch(() => undefined),
 			);
 		},
 		stop() {

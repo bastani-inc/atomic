@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ensurePrivateTempDirAsync()` and `assertPrivateDirectoryAsync()` for extensions and SDK integrations: they create or check a directory private to the current account without blocking, waiting for the Windows owner and access-list check ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
+
+### Changed
+
+- On Windows, `ensurePrivateTempDir()` and `assertPrivateDirectory()` no longer read a directory's owner and access list on the main thread. They accept a directory already checked in the process; otherwise they start the check in the background, and `assertPrivateDirectory()` throws `TempDirRefusedError` ("its ownership is still being verified") while `ensurePrivateTempDir()` returns another private directory. Use the asynchronous forms to wait for the check ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
+
+### Fixed
+
+- On Windows, Atomic no longer freezes while it checks that a temp directory is private. The PowerShell read of each private root's owner and access list held the main thread, for a quarter to half a second on an idle machine and for seconds on a busy one, and timers, hooks and the interface stalled with it. The read now runs in the background and starts when a session starts. Bash spill files, saved tool results, temporary extension installs, subagent artifacts, the GitHub clone cache and design workflow artifacts wait for it without blocking. Every directory refused before is still refused ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
+
 ## [0.9.88] - 2026-11-16
 
 Atomic runs on its own libraries, workflows scale out to worker fleets on libSQL or PostgreSQL, and every screen shares one set of keys.

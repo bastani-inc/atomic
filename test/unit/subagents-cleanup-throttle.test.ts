@@ -64,21 +64,21 @@ afterEach(() => {
 });
 
 describe("session artifact cleanup throttling", () => {
-	test("scans once, records a root marker, and skips rescans within the interval", () => {
+	test("scans once, records a root marker, and skips rescans within the interval", async () => {
 		const { sessionsRoot } = makeIsolatedSessionsRoot();
 		const staleFile = makeStaleSessionArtifacts(sessionsRoot, "session-a");
 
-		cleanupAllArtifactDirs(1);
+		await cleanupAllArtifactDirs(1);
 
 		assert.equal(fs.existsSync(staleFile), false, "first scan must remove stale artifacts");
 		assert.equal(fs.existsSync(join(sessionsRoot, ".last-cleanup")), true, "scan must record a root marker");
 
 		const staleAgain = makeStaleSessionArtifacts(sessionsRoot, "session-b");
-		cleanupAllArtifactDirs(1);
+		await cleanupAllArtifactDirs(1);
 		assert.equal(fs.existsSync(staleAgain), true, "a fresh root marker must skip the rescan");
 	});
 
-	test("rescans when the root marker is older than the cleanup interval", () => {
+	test("rescans when the root marker is older than the cleanup interval", async () => {
 		const { sessionsRoot } = makeIsolatedSessionsRoot();
 		const markerPath = join(sessionsRoot, ".last-cleanup");
 		fs.writeFileSync(markerPath, "0");
@@ -86,18 +86,18 @@ describe("session artifact cleanup throttling", () => {
 		fs.utimesSync(markerPath, old, old);
 		const staleFile = makeStaleSessionArtifacts(sessionsRoot, "session-a");
 
-		cleanupAllArtifactDirs(1);
+		await cleanupAllArtifactDirs(1);
 
 		assert.equal(fs.existsSync(staleFile), false, "an expired marker must allow the rescan");
 	});
 
-	test("skips the scan while another activation holds the cleanup lock", () => {
+	test("skips the scan while another activation holds the cleanup lock", async () => {
 		const { sessionsRoot } = makeIsolatedSessionsRoot();
 		const lockPath = join(sessionsRoot, ".cleanup.lock");
 		fs.writeFileSync(lockPath, String(Date.now()));
 		const staleFile = makeStaleSessionArtifacts(sessionsRoot, "session-a");
 
-		cleanupAllArtifactDirs(1);
+		await cleanupAllArtifactDirs(1);
 
 		assert.equal(fs.existsSync(staleFile), true, "a held lock must skip the concurrent scan");
 		assert.equal(fs.existsSync(lockPath), true, "the other holder's lock must remain in place");
@@ -108,7 +108,7 @@ describe("session artifact cleanup throttling", () => {
 		);
 	});
 
-	test("breaks a stale lock left behind by a crashed process", () => {
+	test("breaks a stale lock left behind by a crashed process", async () => {
 		const { sessionsRoot } = makeIsolatedSessionsRoot();
 		const lockPath = join(sessionsRoot, ".cleanup.lock");
 		fs.writeFileSync(lockPath, "0");
@@ -116,7 +116,7 @@ describe("session artifact cleanup throttling", () => {
 		fs.utimesSync(lockPath, old, old);
 		const staleFile = makeStaleSessionArtifacts(sessionsRoot, "session-a");
 
-		cleanupAllArtifactDirs(1);
+		await cleanupAllArtifactDirs(1);
 
 		assert.equal(fs.existsSync(staleFile), false, "a stale lock must be broken so cleanup can proceed");
 		assert.equal(fs.existsSync(lockPath), false, "the broken lock must be released after the scan");
