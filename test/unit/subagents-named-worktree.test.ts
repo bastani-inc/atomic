@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -450,6 +450,38 @@ test("a launch waits out another launch's worktree add rather than show git fail
 
 	assert.equal(result.isError, undefined, text(result));
 	assert.equal(harness.launches[0]?.cwd, expected, "the other launch's worktree is reused");
+});
+
+test("a launch that finds another launch's worktree add of its branch half done at its path waits and reuses it (#5202)", async () => {
+	const repo = makeRepo();
+	const expected = join(repo, ".atomic", "worktrees", "feat+half");
+	git(repo, "worktree", "add", "-q", "-b", "feat/half", expected);
+	// As git leaves it mid-add: locked, HEAD not yet on the branch, nothing checked out yet.
+	const admin = join(repo, ".git", "worktrees", "feat+half");
+	writeFileSync(join(admin, "locked"), "initializing");
+	writeFileSync(join(admin, "HEAD"), `${git(repo, "rev-parse", "HEAD")}\n`);
+	renameSync(join(admin, "index"), join(admin, "index.done"));
+	const otherAdd = spawnProcess(
+		[
+			bunExecutable(),
+			"-e",
+			`const fs = require("node:fs"), path = require("node:path"), admin = ${JSON.stringify(admin)};
+setTimeout(() => {
+	fs.writeFileSync(path.join(admin, "HEAD"), "ref: refs/heads/feat/half\\n");
+	fs.renameSync(path.join(admin, "index.done"), path.join(admin, "index"));
+	fs.rmSync(path.join(admin, "locked"));
+}, 1500);`,
+		],
+		{ cwd: repo, stdout: "ignore", stderr: "ignore" },
+	);
+	const harness = makeHarness(repo);
+
+	const result = await harness.execute({ agent: "worker", task: "t", worktree: { branch: "feat/half" } });
+	await otherAdd.exited;
+
+	assert.equal(result.isError, undefined, text(result));
+	assert.equal(harness.launches[0]?.cwd, expected, "the other launch's worktree is reused, not refused");
+	assert.equal(git(expected, "rev-parse", "--abbrev-ref", "HEAD"), "feat/half");
 });
 
 /** Several processes, each checking out the same new branches at once; spawning a process is the structural cost. */

@@ -28,9 +28,14 @@ interface ListedWorktree {
 	readonly locked: boolean;
 }
 
-/** How long a launch waits for another launch's `git worktree add` to finish before deciding with what is there. */
+/** How long a launch tries again a git failure that looks like another git command's lock. */
 const CONCURRENT_ADD_WAIT_MS = 30_000;
 const CONCURRENT_ADD_POLL_MS = 100;
+/**
+ * How old the `locked` marker of a `git worktree add` can be and still be an add in progress, waited for however long
+ * this launch has taken so far. An older one is left by a git that did not finish, and is decided on as it is.
+ */
+const ADD_IN_PROGRESS_MAX_AGE_MS = 10 * 60_000;
 
 /**
  * A git failure a concurrent `git worktree add` causes: its `locked` marker read as it vanishes, an index.lock, or a
@@ -52,7 +57,10 @@ function sleepSync(ms: number): void {
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Whether a `git worktree add` is mid-way in `repo`: its `locked` marker is there, and its checkout not yet done. */
+/**
+ * Whether a `git worktree add` is mid-way in `repo`: its `locked` marker is there, recent, and its checkout not yet
+ * done.
+ */
 function worktreeAddInProgress(repo: string): boolean {
 	const admin = path.join(repo, ".git", "worktrees");
 	let ids: string[];
@@ -61,9 +69,16 @@ function worktreeAddInProgress(repo: string): boolean {
 	} catch {
 		return false;
 	}
-	return ids.some(
-		(id) => fs.existsSync(path.join(admin, id, "locked")) && !fs.existsSync(path.join(admin, id, "index")),
-	);
+	return ids.some((id) => {
+		try {
+			const locked = fs.statSync(path.join(admin, id, "locked"));
+			return (
+				Date.now() - locked.mtimeMs < ADD_IN_PROGRESS_MAX_AGE_MS && !fs.existsSync(path.join(admin, id, "index"))
+			);
+		} catch {
+			return false;
+		}
+	});
 }
 
 function comparablePath(value: string): string {
@@ -110,9 +125,9 @@ function withAgentCwd(worktreePath: string, cwdRelative: string): string {
  * there; a new branch starts at `request.base`, else HEAD's upstream, else HEAD; an existing branch is checked out as
  * it is. Throws, creating nothing, when the branch is checked out elsewhere or the path holds something else.
  *
- * Concurrent launches of one branch are expected: while another launch's `git worktree add` is in progress, a git
- * failure it causes is tried again and the decision to reuse, refuse or create is made again once it is done. Any git
- * failure left is reported as a `worktree: …` error with git's message as its cause.
+ * Concurrent launches of one branch are expected: while another launch's `git worktree add` is in progress, however
+ * long it takes, a git failure it causes is tried again and the decision to reuse, refuse or create is made again once
+ * it is done. Any git failure left is reported as a `worktree: …` error with git's message as its cause.
  */
 export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest): NamedWorktree {
 	const branch = request.branch;
@@ -121,6 +136,10 @@ export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest):
 	if (formatted.status !== 0 || formatted.stdout.trim() !== branch || branch.includes("@{"))
 		throw new Error(`worktree.branch "${request.branch}" is not a valid branch name.`);
 	const deadline = Date.now() + CONCURRENT_ADD_WAIT_MS;
+	let repoOfAdds: string | undefined;
+	/** Whether a failure may yet clear: briefly, and for as long as another launch's worktree add is in progress. */
+	const waiting = (): boolean =>
+		Date.now() < deadline || (repoOfAdds !== undefined && worktreeAddInProgress(repoOfAdds));
 	const failed = (what: string, error: unknown): Error => {
 		if (!(error instanceof GitFailure) && error instanceof Error && error.message.startsWith("worktree"))
 			return error;
@@ -135,8 +154,7 @@ export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest):
 			} catch (error) {
 				const wrapped = failed(what, error);
 				// A refusal of this module's own is final; a failure of git's, or of a file another launch holds, may not be.
-				if (wrapped === error || Date.now() >= deadline || !CONCURRENT_GIT_FAILURE.test(wrapped.message))
-					throw wrapped;
+				if (wrapped === error || !CONCURRENT_GIT_FAILURE.test(wrapped.message) || !waiting()) throw wrapped;
 				sleepSync(CONCURRENT_ADD_POLL_MS);
 			}
 		}
@@ -148,6 +166,7 @@ export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest):
 		if (repo === undefined) throw new Error(`unable to resolve canonical main Git repository root from ${toplevel}`);
 		return { cwdRelative, repo };
 	});
+	repoOfAdds = repo;
 	const defaultPath = request.path === undefined;
 	const worktreePath = defaultPath
 		? path.join(repo, ".atomic", "worktrees", branch.replaceAll("/", "+"))
@@ -162,15 +181,14 @@ export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest):
 	});
 	let addFailure: string | undefined;
 	for (;;) {
-		const waiting = Date.now() < deadline;
-		const decision = retried(checkingOut, () => decideWorktree(repo, branch, worktreePath, waiting));
+		const decision = retried(checkingOut, () => decideWorktree(repo, branch, worktreePath));
 		if (decision === "reuse") return ready();
 		if (decision === "wait") {
 			sleepSync(CONCURRENT_ADD_POLL_MS);
 			continue;
 		}
 		// Nothing changed since this launch's own add failed, and nothing suggests another git command caused it.
-		if (addFailure !== undefined && (!waiting || !CONCURRENT_GIT_FAILURE.test(addFailure)))
+		if (addFailure !== undefined && (!CONCURRENT_GIT_FAILURE.test(addFailure) || !waiting()))
 			throw failed(checkingOut, new GitFailure(addFailure));
 		if (defaultPath) retried(checkingOut, () => ensureWorktreeIgnore(repo));
 		const branchExists = runGit(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
@@ -183,25 +201,20 @@ export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest):
 		if (added.status === 0) return ready();
 		// Another launch may be checking the branch out there meanwhile: decide again.
 		addFailure = added.stderr.trim() || added.stdout.trim() || "git worktree add failed";
-		if (!waiting) throw failed(checkingOut, new GitFailure(addFailure));
+		if (!waiting()) throw failed(checkingOut, new GitFailure(addFailure));
 	}
 }
 
 /**
- * Whether `branch` is already checked out at `worktreePath`, to be reused, or still to be created. While `waiting`, an
- * add another launch has in progress is waited for rather than reused half-done or refused. Throws when the branch is
- * checked out elsewhere, or the path holds something else.
+ * Whether `branch` is already checked out at `worktreePath`, to be reused, or still to be created. An add another
+ * launch has in progress is waited for rather than reused half-done or refused. Throws when the branch is checked out
+ * elsewhere, or the path holds something else.
  */
-function decideWorktree(
-	repo: string,
-	branch: string,
-	worktreePath: string,
-	waiting: boolean,
-): "reuse" | "create" | "wait" {
+function decideWorktree(repo: string, branch: string, worktreePath: string): "reuse" | "create" | "wait" {
 	const target = comparablePath(worktreePath);
 	const worktrees = listWorktrees(repo);
 	const atPath = worktrees.find((worktree) => comparablePath(worktree.path) === target);
-	const inProgress = waiting && worktreeAddInProgress(repo);
+	const inProgress = worktreeAddInProgress(repo);
 	if (atPath?.branch === branch) return atPath.locked && inProgress ? "wait" : "reuse";
 	const elsewhere = worktrees.find((worktree) => worktree.branch === branch);
 	if (elsewhere)
