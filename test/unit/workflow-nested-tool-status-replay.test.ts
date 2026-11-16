@@ -4,7 +4,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { completedWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { buildWorkflowStatusListing } from "../../packages/workflows/src/extension/workflow-status-summary.js";
-import { topLevelExpandedSnapshots } from "../../packages/workflows/src/extension/workflow-targets.js";
+import { prepareTopLevelExpandedSnapshots } from "../../packages/workflows/src/extension/workflow-targets.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -49,7 +49,7 @@ describe("nested ctx.tool status replay", () => {
 		);
 
 		await entered.promise;
-		const listing = buildWorkflowStatusListing(topLevelExpandedSnapshots(), "all");
+		const listing = buildWorkflowStatusListing(await prepareTopLevelExpandedSnapshots(), "all");
 		assert.equal(listing.snapshots.length, 1);
 		assert.deepEqual(listing.snapshots[0]?.stages, []);
 		assert.deepEqual(
@@ -96,7 +96,7 @@ describe("nested ctx.tool status replay", () => {
 		const first = await run(parent, {}, { runId, store, durableBackend: backend });
 		assert.equal(first.status, "completed");
 		assert.equal(callbackCalls, 1);
-		let listing = buildWorkflowStatusListing(topLevelExpandedSnapshots(), "all");
+		let listing = buildWorkflowStatusListing(await prepareTopLevelExpandedSnapshots(), "all");
 		assert.deepEqual(
 			listing.runs[0]?.tools?.map((tool) => [tool.name, tool.status, tool.depth]),
 			[["nested-publish", "completed", 1]],
@@ -106,7 +106,7 @@ describe("nested ctx.tool status replay", () => {
 		const replay = await run(parent, {}, { runId, store, durableBackend: backend });
 		assert.equal(replay.status, "completed");
 		assert.equal(callbackCalls, 1, "durable replay must not repeat the child callback");
-		listing = buildWorkflowStatusListing(topLevelExpandedSnapshots(), "all");
+		listing = buildWorkflowStatusListing(await prepareTopLevelExpandedSnapshots(), "all");
 		const replayTools = listing.runs[0]?.tools ?? [];
 		assert.equal(replayTools.length, 1);
 		assert.equal(replayTools[0]?.name, "nested-publish");
@@ -120,7 +120,7 @@ describe("nested ctx.tool status replay", () => {
 		const restored = await completedWorkflowRunSnapshots(backend, entry);
 		store.clear();
 		for (const snapshot of restored) store.recordRunStart(snapshot);
-		listing = buildWorkflowStatusListing(topLevelExpandedSnapshots(), "all");
+		listing = buildWorkflowStatusListing(await prepareTopLevelExpandedSnapshots(), "all");
 		assert.deepEqual(
 			listing.runs[0]?.tools?.map((tool) => ({
 				name: tool.name,

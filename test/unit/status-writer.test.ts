@@ -13,10 +13,10 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { join, relative } from "node:path";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
 	atomicWriteJson,
 	createStatusWriter,
@@ -24,6 +24,28 @@ import {
 } from "../../packages/workflows/src/extension/status-writer.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowRuntimeConfig } from "../../packages/workflows/src/shared/types.js";
+
+let renameInterceptor:
+	| ((oldPath: string, newPath: string, originalRename: typeof import("node:fs/promises").rename) => Promise<void>)
+	| undefined;
+let onWriteFile: ((path: string) => void) | undefined;
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const fs = await importOriginal<typeof import("node:fs/promises")>();
+	return {
+		...fs,
+		writeFile: async (...args: Parameters<typeof fs.writeFile>) => {
+			onWriteFile?.(String(args[0]));
+			return fs.writeFile(...args);
+		},
+		rename: async (oldPath: string, newPath: string) => {
+			if (renameInterceptor) {
+				return renameInterceptor(oldPath, newPath, fs.rename);
+			}
+			return fs.rename(oldPath, newPath);
+		},
+	};
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,6 +106,7 @@ describe("atomicWriteJson", () => {
 	});
 
 	afterEach(async () => {
+		renameInterceptor = undefined;
 		await rm(tmpDir, { recursive: true, force: true });
 	});
 
@@ -114,6 +137,49 @@ describe("atomicWriteJson", () => {
 		const content = await readFile(path, "utf8");
 		assert.equal(content, '"second"');
 	});
+
+	test.each(["identical", "relative and absolute"])(
+		"serializes concurrent chunked writes using %s paths (#5234)",
+		async (paths) => {
+			const path = join(tmpDir, "concurrent-status.json");
+			const firstChunks = [
+				'{"writer":1,"items":[',
+				...Array.from({ length: 200 }, (_, index) => `${index > 0 ? "," : ""}"${"a".repeat(2_000)}"`),
+				"]}",
+			];
+			const secondChunks = ['{"writer":2,"items":["final"]}'];
+			const replacementPath = paths === "identical" ? path : relative(process.cwd(), path);
+			await Promise.all([atomicWriteJson(path, firstChunks), atomicWriteJson(replacementPath, secondChunks)]);
+			await assert.rejects(stat(`${path}.tmp`));
+			const parsed = JSON.parse(await readFile(path, "utf8")) as { writer: number; items: string[] };
+			assert.deepEqual(parsed, { writer: 2, items: ["final"] });
+		},
+	);
+	test.each(["EPERM", "EACCES", "EBUSY"])(
+		"retries rename on transient %s and removes tmp on final failure (#5234)",
+		async (code) => {
+			const path = join(tmpDir, `retry-${code}.json`);
+			let attempts = 0;
+			renameInterceptor = async (oldPath, newPath, originalRename) => {
+				attempts++;
+				if (attempts === 1) {
+					throw Object.assign(new Error(`${code}: rename refused '${oldPath}' -> '${newPath}'`), { code });
+				}
+				return originalRename(oldPath, newPath);
+			};
+			await atomicWriteJson(path, '{"retried":true}');
+			assert.equal(attempts, 2);
+			assert.equal(await readFile(path, "utf8"), '{"retried":true}');
+			await assert.rejects(stat(`${path}.tmp`));
+
+			const failingPath = join(tmpDir, `fail-${code}.json`);
+			renameInterceptor = async (oldPath, newPath) => {
+				throw Object.assign(new Error(`EXDEV: cross-device link '${oldPath}' -> '${newPath}'`), { code: "EXDEV" });
+			};
+			await assert.rejects(atomicWriteJson(failingPath, '{"failed":true}'), /EXDEV/);
+			await assert.rejects(stat(`${failingPath}.tmp`));
+		},
+	);
 });
 
 // ---------------------------------------------------------------------------
@@ -169,7 +235,107 @@ describe("createStatusWriter — statusFile:true", () => {
 	});
 
 	afterEach(async () => {
+		renameInterceptor = undefined;
+		onWriteFile = undefined;
 		await rm(tmpDir, { recursive: true, force: true });
+	});
+
+	test("coalesces full status serialization off the mutation path without dropping raw fields (#5234)", async () => {
+		const filePath = join(tmpDir, "coalesced.json");
+		const store = createStore();
+		const snapshots = vi.spyOn(store, "snapshot");
+		const inspectionReads = vi.fn(() => store.inspectionSnapshot!());
+		const serializations = vi.spyOn(JSON, "stringify");
+		const writer = createStatusWriter(
+			{ ...store, inspectionSnapshot: inspectionReads },
+			makeConfig({ statusFilePath: filePath }),
+		);
+		try {
+			for (let update = 0; update < 50; update++) {
+				store.recordRunStart({
+					id: `run-${update}`,
+					name: "cost",
+					inputs: { raw: "input" },
+					status: "running",
+					startedAt: 1,
+					toolNodes: [],
+					stages: [],
+				});
+			}
+			assert.equal(snapshots.mock.calls.length, 0);
+			assert.equal(inspectionReads.mock.calls.length, 0, "mutations only schedule serialization");
+			assert.equal(serializations.mock.calls.length, 0, "mutations never serialize the status payload");
+			await writer.flush();
+			assert.equal(snapshots.mock.calls.length, 0);
+			assert.equal(inspectionReads.mock.calls.length, 1, "one full view serves the whole burst");
+			const content = JSON.parse(await readFile(filePath, "utf8"));
+			assert.equal(content.runs.length, 50);
+			assert.deepEqual(content.runs[0].inputs, { raw: "input" });
+			serializations.mockClear();
+			store.recordRunEnd("run-0", "completed", { ok: true });
+			await writer.flush();
+			const runSerializations = serializations.mock.calls.filter(
+				([value]) => value !== null && typeof value === "object" && !Array.isArray(value) && "stages" in value,
+			);
+			assert.equal(runSerializations.length, 1, "unchanged frozen runs reuse their cached JSON text");
+			const updated = JSON.parse(await readFile(filePath, "utf8"));
+			assert.equal(updated.runs[0].status, "completed");
+		} finally {
+			await writer.flush();
+			writer.unsubscribe();
+			snapshots.mockRestore();
+			serializations.mockRestore();
+		}
+	});
+
+	test("preserves the final pending update when replaced (#5234)", async () => {
+		const filePath = join(tmpDir, "replaced.json");
+		const store = createStore();
+		const writer = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		store.recordRunStart({
+			id: "run-final",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
+		await writer.flush();
+		store.recordRunEnd("run-final", "completed", { done: true });
+		writer.unsubscribe();
+		const replacement = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		await replacement.flush();
+		replacement.unsubscribe();
+		const fromReplacement = JSON.parse(await readFile(filePath, "utf8")) as {
+			runs: Array<{ id: string; status: string }>;
+		};
+		assert.equal(fromReplacement.runs[0]?.status, "completed");
+	});
+
+	test("overwrites stale runs when replaced after the store becomes empty (#5234)", async () => {
+		const filePath = join(tmpDir, "replaced-empty.json");
+		const store = createStore();
+		const writer = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		store.recordRunStart({
+			id: "run-stale",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
+		await writer.flush();
+		store.clear();
+		writer.unsubscribe();
+		const replacement = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		await replacement.flush();
+		replacement.unsubscribe();
+		const fromReplacement = JSON.parse(await readFile(filePath, "utf8")) as {
+			runs: Array<{ id: string }>;
+		};
+		assert.deepEqual(fromReplacement.runs, []);
 	});
 
 	test("creates status file on store update", async () => {
@@ -275,7 +441,7 @@ describe("createStatusWriter — statusFile:true", () => {
 			startedAt: Date.now(),
 		});
 
-		await sleep(100);
+		await writer.flush();
 		writer.unsubscribe();
 
 		const notices = s.notices();
@@ -333,5 +499,78 @@ describe("createStatusWriter — statusFile:true", () => {
 
 		const raw = await readFile(expectedPath, "utf8");
 		assert.ok(JSON.parse(raw));
+	});
+
+	test("retries a rename failing once with EPERM so the file becomes current without another store change and no tmp remains (#5234)", async () => {
+		const filePath = join(tmpDir, "eperm-once.json");
+		const store = createStore();
+		let renameCalls = 0;
+		renameInterceptor = async (oldPath, newPath, originalRename) => {
+			renameCalls++;
+			if (renameCalls === 1) {
+				throw Object.assign(new Error(`EPERM: operation not permitted, rename '${oldPath}' -> '${newPath}'`), {
+					code: "EPERM",
+				});
+			}
+			return originalRename(oldPath, newPath);
+		};
+		const writer = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		store.recordRunStart({
+			id: "r-eperm",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1000,
+		});
+
+		await writer.flush();
+		writer.unsubscribe();
+
+		assert.ok(renameCalls >= 2);
+		const parsed = JSON.parse(await readFile(filePath, "utf8")) as {
+			runs: Array<{ id: string; status: string }>;
+		};
+		assert.equal(parsed.runs[0]?.id, "r-eperm");
+		assert.equal(parsed.runs[0]?.status, "running");
+		assert.equal(store.notices().filter((n) => n.message.includes("status file write failed")).length, 0);
+		await assert.rejects(stat(`${filePath}.tmp`));
+	});
+
+	test("backs off when the target path is a directory and the store stays idle (#5234)", async () => {
+		const filePath = join(tmpDir, "status-dir.json");
+		await mkdir(filePath);
+		const tmpPath = `${filePath}.tmp`;
+		let writeAttempts = 0;
+		onWriteFile = (path) => {
+			if (path === tmpPath) writeAttempts++;
+		};
+		const store = createStore();
+		store.recordRunStart({
+			id: "r-dir",
+			name: "wf",
+			inputs: {},
+			status: "completed",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1000,
+		});
+		const writer = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		try {
+			await sleep(3_000);
+			assert.ok(writeAttempts >= 2, `expected initial retry attempts, got ${writeAttempts}`);
+			assert.ok(writeAttempts <= 4, `expected at most 4 write attempts in 3s, got ${writeAttempts}`);
+			assert.equal(store.notices().filter((n) => n.message.includes("status file write failed")).length, 1);
+
+			await rm(filePath, { recursive: true, force: true });
+			await writer.flush();
+			const parsed = JSON.parse(await readFile(filePath, "utf8")) as {
+				runs: Array<{ id: string; status: string }>;
+			};
+			assert.equal(parsed.runs[0]?.id, "r-dir");
+		} finally {
+			writer.unsubscribe();
+		}
 	});
 });

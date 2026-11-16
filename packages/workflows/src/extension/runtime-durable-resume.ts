@@ -56,6 +56,7 @@ export type ForkDurableWorkflowResult =
 export interface ForkDurableWorkflowOptions {
 	readonly source: ForkConfigSource;
 	readonly fromStage?: string;
+	readonly expectedStageId?: string;
 	readonly inputs?: WorkflowInputValues;
 	readonly carryMessages?: ForkCarryMessages;
 	readonly policy?: WorkflowExecutionPolicy;
@@ -201,6 +202,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					cwd: deps.runtimeCwd,
 					carryMessages: options.carryMessages ?? "before",
 					fromStage: options.fromStage,
+					...(options.expectedStageId === undefined ? {} : { expectedStageId: options.expectedStageId }),
 					inputs: options.inputs,
 					resolveDefinition: definitionResolver(options.confirmProjectTrust),
 					sessionStore: deps.adapters?.sessionStore,

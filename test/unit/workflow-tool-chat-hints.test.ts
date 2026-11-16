@@ -9,11 +9,14 @@ import type { StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/s
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { defaultTheme, visibleText } from "./overlay-graph-helpers.js";
 
-const STAGE_FOOTER = "esc/← back  ·  ↵ open stage chat  ·  ↑↓←→ move  ·  / stages";
+const STAGE_FOOTER = "esc back  ·  ↵ open stage chat  ·  / stages";
 /** A focused tool node activates its read-only detail with the same key. */
-const TOOL_FOOTER = "esc/← back  ·  ↵ open tool detail  ·  ↑↓←→ move  ·  / stages";
+const TOOL_FOOTER = "esc back  ·  ↵ open tool detail  ·  / stages";
 /** Nothing focused can be activated: the `↵` segment drops out entirely. */
-const NO_ACTIVATION_FOOTER = "esc/← back  ·  ↑↓←→ move  ·  / stages";
+const NO_ACTIVATION_FOOTER = "esc back  ·  / stages";
+
+const CHAIN_TOOL_FOOTER = "esc back  ·  ↵ open tool detail  ·  ↓ move  ·  / stages";
+const CHAIN_STAGE_FOOTER = "esc back  ·  ↵ open stage chat  ·  ↑ move  ·  / stages";
 const STAGE_SWITCHER = "↑↓ select · ↵ open stage chat · esc close";
 /** Enter opens the read-only detail from the switcher exactly as it does in the graph. */
 const TOOL_SWITCHER = "↑↓ select · ↵ open tool detail · esc close";
@@ -100,12 +103,12 @@ describe("tool graph chat hints", () => {
 		const view = viewFor([stageNode], [toolNode]);
 
 		const toolFocused = visibleText(view.render(120));
-		assert.ok(toolFocused.includes(TOOL_FOOTER));
+		assert.ok(toolFocused.includes(CHAIN_TOOL_FOOTER));
 		assert.doesNotMatch(toolFocused, /↵ open stage chat/);
 
 		view.handleInput("\x1b[B");
 		const stageFocused = visibleText(view.render(120));
-		assert.ok(stageFocused.includes(STAGE_FOOTER));
+		assert.ok(stageFocused.includes(CHAIN_STAGE_FOOTER));
 		view.dispose();
 	});
 

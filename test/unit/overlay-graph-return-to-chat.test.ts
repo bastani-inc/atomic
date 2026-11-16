@@ -12,7 +12,7 @@ const { makeStage, makeSnap, makeStore, makeRun, defaultTheme, visibleText, make
 const CTRL_X_VARIANTS = ["\x18", "\x1b[120;5u", "\x1b[120;5:1u", "\x1b[27;5;120~"];
 
 describe("GraphView return to main chat", () => {
-	it("← on a node with nothing to its left returns to main chat; elsewhere it moves between siblings (#5224)", () => {
+	it("← only moves between siblings and never leaves the graph, including at the leftmost node (#5234)", () => {
 		const onDetach = vi.fn(() => {});
 		const view = new GraphView({
 			piKeybindings: s5aKeybindings(),
@@ -26,14 +26,18 @@ describe("GraphView return to main chat", () => {
 		view.handleInput("\x1b[C");
 		const sibling = view._focusedIndex;
 		const hint = () => stripAnsi(view.render(140).join("\n"));
-		assert.match(hint(), /esc back/, "with a sibling to the left, ← moves, so the hint does not offer it");
+		assert.match(hint(), /esc back/);
 		assert.doesNotMatch(hint(), /esc\/← back/);
 		view.handleInput("\x1b[D");
-		assert.match(hint(), /esc\/← back/, "with nothing to the left, ← leaves, and the hint says so");
+		assert.match(hint(), /esc back/);
 		assert.notEqual(view._focusedIndex, sibling, "← moves to the sibling on the left");
 		assert.equal(onDetach.mock.calls.length, 0);
+		const leftmost = view._focusedIndex;
 		view.handleInput("\x1b[D");
-		assert.equal(onDetach.mock.calls.length, 1, "← with no sibling to the left returns to main chat");
+		assert.equal(view._focusedIndex, leftmost);
+		assert.equal(onDetach.mock.calls.length, 0, "← at the leftmost node does nothing");
+		view.handleInput("\x1b");
+		assert.equal(onDetach.mock.calls.length, 1, "only Esc leaves the graph");
 		view.dispose();
 	});
 
