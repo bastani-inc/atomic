@@ -131,6 +131,28 @@ test("type-ahead submitted before the startup trust prompt comes back as a draft
 	});
 });
 
+test("keeps text typed before, during and after startup questions in order (#5241)", async () => {
+	const stdin = new FakeStdin();
+	const capture = startEarlyInputCapture({ enabled: true, stdin, process: fakeProcess });
+	assert.ok(capture);
+
+	stdin.emit("first\rsecond");
+	const firstAnswer = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
+	press("third", DOWN, UP, ENTER);
+	await firstAnswer;
+	stdin.emit("fourth\rfifth");
+	const secondAnswer = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
+	press("sixth", DOWN, UP, ENTER);
+	await secondAnswer;
+	stdin.emit("seventh");
+
+	assert.deepEqual(consumeStartupInput(capture), {
+		text: "first\nsecond\nthird\nfourth\nfifth\nsixth\nseventh",
+		submissions: [],
+		heldForStartupDecision: true,
+	});
+});
+
 test("text typed into the startup trust prompt is kept and its Enter grants nothing", async () => {
 	const answer = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
 

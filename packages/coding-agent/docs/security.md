@@ -15,6 +15,8 @@ Atomic considers a project to have trust inputs when it finds any of these from 
 
 When an interactive session starts in a project with configs in `.atomic`/`.pi`, project-local context files, or `.agents/skills` and no saved decision for the current directory or a parent directory, Atomic follows `defaultProjectTrust` from global settings. The default value is `"ask"`, which asks whether to trust the project when UI is available. Saved decisions are stored by canonical directory in `~/.atomic/agent/trust.json`, and the closest saved decision on the current or parent path applies before the global default.
 
+The trust question starts on **Do not trust (this session only)**. Use the arrow keys to choose, then press Enter. If you type prompt text while the question is open, Atomic keeps it as a draft and ignores Enter until you navigate with ↑ or ↓. Text typed before the question also waits in the prompt as a draft. After answering, review the draft and press Enter to send it. Without a startup question, Enter during startup still submits your prompt.
+
 Trusting a project allows Atomic to load trust-gated project inputs, including:
 
 - `.atomic/settings.json` (or legacy `.pi/settings.json`)

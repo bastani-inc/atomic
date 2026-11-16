@@ -8,7 +8,14 @@
  * the user is answering the question.
  */
 
-import { type Component, Container, getKeybindings, Text } from "@bastani/atomic-tui";
+import {
+	type Component,
+	Container,
+	decodePrintableKey,
+	getKeybindings,
+	normalizePastedText,
+	Text,
+} from "@bastani/atomic-tui";
 import { PROJECT_TRUST_DISTRUST_LABEL, PROJECT_TRUST_SESSION_DISTRUST_LABEL } from "../../../core/trust-manager.ts";
 import { theme } from "../theme/theme.js";
 
@@ -40,10 +47,10 @@ const BRACKETED_PASTE_END = "\x1b[201~";
 /** The text a key press or paste types, or undefined for a key that types nothing (arrows, Enter, Esc, Ctrl+…). */
 function typedText(data: string): string | undefined {
 	const pasted = data.startsWith(BRACKETED_PASTE_START)
-		? data.slice(BRACKETED_PASTE_START.length).replace(BRACKETED_PASTE_END, "")
+		? normalizePastedText(data.slice(BRACKETED_PASTE_START.length).replace(BRACKETED_PASTE_END, ""))
 		: undefined;
-	const text = pasted ?? data;
-	if (pasted === undefined && Array.from(text).some((char) => char.charCodeAt(0) < 0x20 || char === "\x7f")) {
+	const text = pasted ?? decodePrintableKey(data) ?? data;
+	if (pasted === undefined && /[\x00-\x1f\x7f]/.test(text)) {
 		return undefined;
 	}
 	return text.length > 0 ? text : undefined;
@@ -81,7 +88,10 @@ export class TrustDecisionSelector extends Container {
 			return true;
 		}
 		if ((data === "\x7f" || data === "\b") && this.draft.length > 0) {
-			this.draft = Array.from(this.draft).slice(0, -1).join("");
+			const last = this.draft.charCodeAt(this.draft.length - 1);
+			const previous = this.draft.charCodeAt(this.draft.length - 2);
+			const codeUnits = last >= 0xdc00 && last <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff ? 2 : 1;
+			this.draft = this.draft.slice(0, -codeUnits);
 			return true;
 		}
 		if (keybindings.matches(data, "tui.select.up") || keybindings.matches(data, "tui.select.down")) {

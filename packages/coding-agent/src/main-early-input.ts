@@ -23,6 +23,7 @@ export interface EarlyInputCapture {
 interface ActiveEarlyInputCapture {
 	pause(): void;
 	resume(): void;
+	keepDraft(text: string): void;
 }
 
 /** The capture reading the terminal now, which a standalone startup dialog takes the terminal from. */
@@ -47,7 +48,9 @@ export async function withEarlyInputHeldForStartupDialog<T>(run: () => Promise<T
 
 /** Keep text typed into a standalone startup dialog that the dialog did not use, for the prompt's draft. */
 export function keepStartupDialogDraft(text: string): void {
-	if (text.length > 0) startupDialogDrafts.push(text);
+	if (text.length === 0) return;
+	if (activeCapture) activeCapture.keepDraft(text);
+	else startupDialogDrafts.push(text);
 }
 
 /**
@@ -170,6 +173,7 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 	if (!options.enabled || stdin.isTTY !== true || !stdin.setRawMode) return undefined;
 
 	const state: EarlyInputState = { text: "", submissions: [] };
+	const draftParts: string[] = [];
 	const wasRaw = stdin.isRaw === true;
 	let consumed = false;
 	let paused = false;
@@ -225,6 +229,13 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 			stdin.on("data", onData);
 			stdin.resume();
 		},
+		keepDraft(text) {
+			heldForStartupDecision = true;
+			for (const submission of state.submissions) draftParts.push(submission);
+			draftParts.push(state.text, text);
+			state.submissions = [];
+			state.text = "";
+		},
 	};
 	const forwardSignal = (signal: NodeJS.Signals) => {
 		cleanup();
@@ -270,7 +281,15 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 		consume() {
 			cleanup();
 			state.pendingEscape = undefined;
-			const snapshot: EarlyInputSnapshot = { text: state.text, submissions: [...state.submissions] };
+			const snapshot: EarlyInputSnapshot =
+				draftParts.length > 0
+					? {
+							text: [...draftParts, ...state.submissions, state.text]
+								.filter((part) => part.length > 0)
+								.join("\n"),
+							submissions: [],
+						}
+					: { text: state.text, submissions: [...state.submissions] };
 			if (heldForStartupDecision) snapshot.heldForStartupDecision = true;
 			return snapshot;
 		},

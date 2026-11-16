@@ -97,6 +97,7 @@ export {
 // Keyboard input handling
 export {
 	decodeKittyPrintable,
+	decodePrintableKey,
 	isKeyRelease,
 	isKeyRepeat,
 	isKittyProtocolActive,
@@ -112,6 +113,7 @@ export { type RenderLatexOptions, renderLatex } from "./latex.ts";
 // Native platform integration
 export { getNativeClipboard, type NativeClipboard } from "./native-platform.ts";
 export { oklabToOkhslLightness } from "./oklab.ts";
+export { normalizePastedText } from "./paste.ts";
 // Program status reporting (OSC 7501)
 export { formatProgramStatus, type ProgramStatus } from "./program-status.ts";
 // Input buffering for batch splitting

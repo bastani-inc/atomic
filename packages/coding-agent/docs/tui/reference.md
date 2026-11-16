@@ -127,6 +127,10 @@ handleInput(data: string): boolean {
 - With modifiers: `Key.ctrl("c")`, `Key.shift("tab")`, `Key.alt("left")`, `Key.ctrlShift("p")`
 - String format also works: `"enter"`, `"ctrl+c"`, `"shift+tab"`, `"ctrl+shift+p"`
 
+For custom text inputs, use `decodePrintableKey(data)` from `@bastani/atomic-tui` to decode printable Kitty CSI-u and modifyOtherKeys sequences. It returns `undefined` for plain text and non-text keys, so handle ordinary printable text separately.
+
+For bracketed paste, remove the paste markers and pass the content to `normalizePastedText(content)` from the same package. It restores tmux-encoded control bytes, normalizes CRLF and CR to newlines, expands tabs to four spaces, and removes C0 control bytes other than newlines.
+
 ## Line Width
 
 **Critical:** Each line from `render()` must not exceed the `width` parameter.

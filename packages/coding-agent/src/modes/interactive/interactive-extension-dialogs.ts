@@ -64,7 +64,7 @@ InteractiveModeBase.prototype.showExtensionSelector = function (
 		// Keys meant for the prompt must neither answer a trust decision nor be lost: typed text joins the draft.
 		const dialog = trustDecision
 			? new TrustDecisionSelector(selector, (text) => {
-					const current = this.editor.getText();
+					const current = this.editor.getExpandedText?.() ?? this.editor.getText();
 					this.editor.setText(current.length > 0 ? `${current}\n${text}` : text);
 				})
 			: selector;

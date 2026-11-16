@@ -9,11 +9,14 @@ import {
 	setCapabilities,
 	setKeybindings,
 	stripTerminalSequences,
+	TuiMainScreen,
 } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { KeybindingsManager } from "../src/core/keybindings.js";
+import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
-import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { getEditorTheme, initTheme } from "../src/modes/interactive/theme/theme.js";
 
 const startup = vi.hoisted(() => ({
 	trustSettled: vi.fn(async () => {}),
@@ -396,6 +399,25 @@ test("a trust prompt in the interface keeps typed text as a draft and its Enter 
 	dialog.handleInput("\r");
 	assert.equal(await answer, "Do not trust");
 	assert.equal((mode as unknown as { editor: { getText(): string } }).editor.getText(), "reply with PONG");
+});
+
+test("keeps earlier large pastes when trust-dialog text joins the editor draft (#5241)", async () => {
+	const { mode, editorContainer, keybindings } = createMode({ holdTuiForStartupTrust: false });
+	await mode.init();
+	const editor = new CustomEditor(new TuiMainScreen(new VirtualTerminal(100, 30)), getEditorTheme(), keybindings);
+	mode.editor = editor;
+	const earlierText = "a line of the earlier prompt\n".repeat(12);
+	editor.handleInput(`\x1b[200~${earlierText}\x1b[201~`);
+	assert.notEqual(editor.getText(), earlierText);
+	assert.equal(editor.getExpandedText(), earlierText);
+
+	const answer = mode.showExtensionSelector(TRUST_PROMPT, TRUST_OPTIONS);
+	const dialog = editorContainer.children.at(-1) as { handleInput(data: string): void };
+	dialog.handleInput("more prompt text");
+	dialog.handleInput("\x1b");
+	assert.equal(await answer, undefined);
+
+	assert.equal(editor.getExpandedText(), `${earlierText}\nmore prompt text`);
 });
 
 test("a trust prompt in the interface opens on the choice that trusts and saves nothing", async () => {
