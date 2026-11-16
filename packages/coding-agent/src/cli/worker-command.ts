@@ -498,13 +498,18 @@ export interface WorkerHostModule {
 	}): Promise<WorkerFleet>;
 	/** The fleet as status lines, the same lines `/workflow status` shows of it. */
 	workflowWorkerFleetLines(fleet: WorkerFleet): string[];
+	/** Sets up or upgrades the shared journal's and worker pools' tables, as `atomic storage migrate` does (#5218). */
+	migrateWorkflowStorage?(options: {
+		readonly journal?: WorkerJournalSelection;
+		readonly agentDir: string;
+	}): Promise<void>;
 }
 
 /**
  * Loads the bundled workflows package's public entry (its `main`: the source in a checkout, the shipped bundle in a
  * build), as extensions see the host's modules.
  */
-async function loadWorkerHostModule(): Promise<WorkerHostModule> {
+export async function loadWorkerHostModule(): Promise<WorkerHostModule> {
 	const workflows = getBuiltinPackageLocations().find(({ distDirName }) => distDirName === "workflows");
 	if (workflows === undefined) throw new Error("The bundled workflows package was not found.");
 	const manifest = JSON.parse(readFileSync(join(workflows.packageDir, "package.json"), "utf8")) as { main: string };

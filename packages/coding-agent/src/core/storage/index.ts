@@ -38,6 +38,7 @@ export {
 	POSTGRES_POOL_SESSION_PREFIX,
 	POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
 	renderStorageIdentifiers,
+	storageMigrationTable,
 	validateStoragePrefix,
 } from "./prefix.js";
 export * from "./provider.js";
