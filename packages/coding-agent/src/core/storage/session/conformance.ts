@@ -975,6 +975,52 @@ export function registerSessionStoreConformance(
 				},
 			);
 
+			check("reads entry ranges with maxChars and skipTypes (#5250)", async (store, reload) => {
+				assert.equal(typeof store.readEntryRange, "function");
+				const custom: SessionEntry = {
+					type: "custom",
+					id: "c2",
+					parentId: "e1",
+					timestamp: createdAt,
+					customType: "note",
+					data: { value: "skipped" },
+				};
+				const entries = [message("e1", "first"), custom, message("e3", "third"), message("e4", "fourth")];
+				await store.create(header(), entries);
+				store = await reload(store);
+				const page = await store.readEntryRange!("session", { fromSeq: 2, toSeq: 4 });
+				assert.equal(page.lastSeq, 4);
+				assert.equal(page.throughSeq, 4);
+				assert.deepEqual(
+					page.entries.map((item) => [item.seq, item.entry]),
+					[
+						[2, custom],
+						[3, entries[2]],
+						[4, entries[3]],
+					],
+				);
+				const filtered = await store.readEntryRange!("session", {
+					fromSeq: 1,
+					toSeq: 4,
+					skipTypes: ["custom"],
+				});
+				assert.equal(filtered.throughSeq, 4);
+				assert.deepEqual(
+					filtered.entries.map((item) => item.seq),
+					[1, 3, 4],
+				);
+				const capped = await store.readEntryRange!("session", { fromSeq: 1, toSeq: 4, maxChars: 1 });
+				assert.equal(capped.throughSeq, 1);
+				assert.deepEqual(
+					capped.entries.map((item) => item.seq),
+					[1],
+				);
+				const empty = await store.readEntryRange!("session", { fromSeq: 5, toSeq: 8 });
+				assert.equal(empty.lastSeq, 4);
+				assert.deepEqual(empty.entries, []);
+				await assert.rejects(store.readEntryRange!("missing", { fromSeq: 1, toSeq: 1 }), notFound("missing"));
+			});
+
 			check("rejects every operation after close, including repeated close", async (store, reload) => {
 				await store.create(header(), []);
 				store = await reload(store);
@@ -993,6 +1039,8 @@ export function registerSessionStoreConformance(
 				await assert.rejects(store.append("session", [], { expectSeq: 0 }), isClosed);
 				await assert.rejects(store.replace("session", header(), [], { expectSeq: 0 }), isClosed);
 				await assert.rejects(store.load("session"), isClosed);
+				if (store.readEntryRange !== undefined)
+					await assert.rejects(store.readEntryRange("session", { fromSeq: 1, toSeq: 1 }), isClosed);
 				await assert.rejects(store.readHeader("session"), isClosed);
 				await assert.rejects(store.delete("session"), isClosed);
 				await assert.rejects(store.findMostRecent({ cwd: "/project" }), isClosed);

@@ -38,7 +38,13 @@ import {
 	upgradeLegacySessionEntries,
 	upgradeLegacySessionHeader,
 } from "./legacy-format.js";
-import { summarizeSession } from "./session-summary.js";
+import { summarizeLegacySession } from "./legacy-session-summary.js";
+import {
+	applySessionSummaryEntries,
+	materializeSessionSummaryMetadata,
+	type SessionSummaryState,
+	summarizeSession,
+} from "./session-summary.js";
 import type {
 	SessionEntriesPage,
 	SessionEntriesQuery,
@@ -66,6 +72,7 @@ interface SessionFileState {
 	readonly terminated: boolean;
 	/** The file goes on past `size` with the start of a line its writer never finished, which the next append removes. */
 	readonly torn: boolean;
+	readonly summaryState?: SessionSummaryState;
 }
 
 type JsonValue = SessionJsonValue;
@@ -89,6 +96,13 @@ function parseUnterminated(line: string): SessionEntry | undefined {
 }
 
 const RANGE_MARK_EVERY = 256;
+const STUB_ENTRY: SessionEntry = {
+	type: "custom",
+	id: "",
+	parentId: null,
+	timestamp: "1970-01-01T00:00:00.000Z",
+	customType: "",
+};
 
 interface RangeIndex {
 	readonly identity: string;
@@ -105,6 +119,11 @@ function isBlankLine(line: Buffer): boolean {
 	return true;
 }
 
+function isBlankParts(parts: readonly Buffer[]): boolean {
+	for (const part of parts) if (!isBlankLine(part)) return false;
+	return true;
+}
+
 interface RangeCursor {
 	readonly offset: number;
 	readonly seq: number;
@@ -117,27 +136,34 @@ async function scanSessionLines(
 	from: RangeCursor,
 	index: RangeIndex,
 	signal: AbortSignal | undefined,
-	onEntry: (seq: number, text: string, parsed: SessionEntry | undefined) => boolean,
+	onEntry: (seq: number, parts: readonly Buffer[], byteLength: number, terminated: boolean) => boolean,
 ): Promise<RangeCursor> {
 	if (from.offset >= size) return from;
 	let { seq, header } = from;
 	let offset = from.offset;
-	let carry: Buffer = Buffer.alloc(0);
+	let lineOffset = from.offset;
+	let pieces: Buffer[] = [];
+	let piecesBytes = 0;
 	const input = createReadStream(path, { start: from.offset, end: size - 1 });
 	try {
 		for await (const chunk of input) {
 			signal?.throwIfAborted();
-			const bytes = carry.length === 0 ? (chunk as Buffer) : Buffer.concat([carry, chunk as Buffer]);
+			const bytes = typeof chunk === "string" ? Buffer.from(chunk) : (chunk as Buffer);
 			let lineStart = 0;
 			for (let newline = bytes.indexOf(10); newline !== -1; newline = bytes.indexOf(10, lineStart)) {
-				const line = bytes.subarray(lineStart, newline);
-				const at = offset + lineStart;
+				const slice = bytes.subarray(lineStart, newline);
+				const parts = pieces.length === 0 ? [slice] : [...pieces, slice];
+				const byteLength = piecesBytes + slice.length;
+				const at = pieces.length === 0 ? offset + lineStart : lineOffset;
 				lineStart = newline + 1;
+				pieces = [];
+				piecesBytes = 0;
+				lineOffset = offset + lineStart;
 				if (header) {
 					header = false;
 					continue;
 				}
-				if (isBlankLine(line)) continue;
+				if (isBlankParts(parts)) continue;
 				seq++;
 				if (seq % RANGE_MARK_EVERY === 1 && !index.marks.some((candidate) => candidate.seq === seq)) {
 					index.marks.push({ seq, offset: at });
@@ -147,22 +173,21 @@ async function scanSessionLines(
 					index.completeCount = seq;
 					index.completeEnd = offset + lineStart;
 				}
-				if (onEntry(seq, line.toString("utf8"), undefined))
-					return { offset: offset + lineStart, seq, header: false };
+				if (onEntry(seq, parts, byteLength, true)) return { offset: offset + lineStart, seq, header: false };
 			}
-			carry = bytes.subarray(lineStart);
-			offset += lineStart;
+			if (lineStart < bytes.length) {
+				if (pieces.length === 0) lineOffset = offset + lineStart;
+				const tail = bytes.subarray(lineStart);
+				pieces.push(tail);
+				piecesBytes += tail.length;
+			}
+			offset += bytes.length;
 		}
 	} finally {
 		input.destroy();
 	}
-	if (carry.length > 0 && !header && !isBlankLine(carry)) {
-		const text = carry.toString("utf8");
-		const parsed = parseUnterminated(text);
-		if (parsed !== undefined) {
-			seq++;
-			onEntry(seq, text, parsed);
-		}
+	if (piecesBytes > 0 && !header && !isBlankParts(pieces)) {
+		if (onEntry(seq + 1, pieces, piecesBytes, false)) seq++;
 	}
 	return { offset: size, seq, header: false };
 }
@@ -369,6 +394,9 @@ export class JsonlSessionStore implements SessionStore {
 				terminated: true,
 				torn: false,
 				witness: witnessOf(Buffer.concat([state.witness, Buffer.from(payload)])),
+				...(state.summaryState === undefined
+					? {}
+					: { summaryState: applySessionSummaryEntries(state.summaryState, entries).state }),
 			});
 			return { lastSeq };
 		});
@@ -447,23 +475,54 @@ export class JsonlSessionStore implements SessionStore {
 			const mark = index.marks.findLast((candidate) => candidate.seq <= fromSeq);
 			if (mark) cursor = { offset: mark.offset, seq: mark.seq - 1, header: false };
 		}
+		const skipped = (query.skipTypes ?? []).map((type) => `{"type":${JSON.stringify(type)},`);
+		const isSkipped = (head: string): boolean => skipped.some((prefix) => head.startsWith(prefix));
+		const acceptUnterminated = (parts: readonly Buffer[]): SessionEntry | undefined => {
+			const text = (parts.length === 1 ? parts[0]! : Buffer.concat(parts)).toString("utf8");
+			return parseUnterminated(text);
+		};
 		if (fromSeq <= query.toSeq)
-			cursor = await scanSessionLines(path, size, cursor, index, query.signal, (seq, text, parsed) => {
-				if (seq < fromSeq) return false;
-				if (seq > query.toSeq) return true;
-				entries.push({ seq, entry: parsed ?? (JSON.parse(text) as SessionEntry) });
-				chars += text.length;
-				if (query.maxChars !== undefined && chars >= query.maxChars && seq < query.toSeq) {
-					stopped = seq;
-					return true;
-				}
-				return seq >= query.toSeq;
-			});
+			cursor = await scanSessionLines(
+				path,
+				size,
+				cursor,
+				index,
+				query.signal,
+				(seq, parts, byteLength, terminated) => {
+					if (!terminated && acceptUnterminated(parts) === undefined) return false;
+					if (seq < fromSeq) return !terminated;
+					if (seq > query.toSeq) return true;
+					const head = parts[0]!.subarray(0, Math.min(parts[0]!.length, 64)).toString("utf8");
+					if (!isSkipped(head)) {
+						if (query.largeEntryBytes !== undefined && byteLength > query.largeEntryBytes) {
+							entries.push({ seq, entry: STUB_ENTRY, rawChunks: parts });
+						} else {
+							const text = (parts.length === 1 ? parts[0]! : Buffer.concat(parts)).toString("utf8");
+							const parsed = JSON.parse(text) as SessionEntry;
+							if (!(query.skipTypes ?? []).includes(parsed.type)) entries.push({ seq, entry: parsed });
+						}
+						chars += byteLength;
+						if (query.maxChars !== undefined && chars >= query.maxChars && seq < query.toSeq) {
+							stopped = seq;
+							return true;
+						}
+					}
+					return !terminated || seq >= query.toSeq;
+				},
+			);
 		const counted =
 			cursor.offset >= index.completeEnd
 				? cursor
 				: { offset: index.completeEnd, seq: index.completeCount, header: index.completeEnd === 0 };
-		const lastSeq = (await scanSessionLines(path, size, counted, index, query.signal, () => false)).seq;
+		const scanned = await scanSessionLines(
+			path,
+			size,
+			counted,
+			index,
+			query.signal,
+			(_seq, parts, _len, terminated) => (!terminated ? acceptUnterminated(parts) !== undefined : false),
+		);
+		const lastSeq = scanned.seq;
 		const throughSeq = stopped ?? Math.min(query.toSeq, lastSeq);
 		return { lastSeq, entries, throughSeq: Math.max(throughSeq, fromSeq - 1) };
 	}
@@ -511,11 +570,29 @@ export class JsonlSessionStore implements SessionStore {
 				async () => {
 					this.checkAbort(query.signal);
 					try {
-						const header = await this.readHeaderAt(path);
+						const stored = await this.readFirstLine(path);
+						const header = await this.readHeaderAt(path, stored);
 						if (!matchesSessionIdPrefix(header.id, query.idPrefix)) return undefined;
 						if (matchesCwd && !matchesCwd(header.cwd)) return undefined;
 						if (!query.includeInternal && header.internal) return undefined;
-						return { ...summarizeSession(await this.readSnapshot(path)), location: path };
+						if (query.withoutSearchText && isCurrentSessionHeader(stored)) {
+							const stats = await stat(path, { bigint: true });
+							const cached = this.fileStates.get(path);
+							if (cached?.summaryState !== undefined && cached.stamp === this.stamp(stats)) {
+								return {
+									...materializeSessionSummaryMetadata(header, cached.summaryState),
+									searchText: "",
+									location: path,
+								};
+							}
+							const summarized = await summarizeLegacySession(
+								{ location: path, header, read: () => this.readSnapshot(path, stored) },
+								Number(stats.size),
+								Number(stats.mtimeMs),
+							);
+							return { ...summarized, searchText: "", location: path };
+						}
+						return { ...summarizeSession(await this.readSnapshot(path, stored)), location: path };
 					} catch (cause) {
 						const error = cause as NodeJS.ErrnoException;
 						if (error.path === path && (error.code === "ENOENT" || error.code === "ENOTDIR")) return undefined;
@@ -878,6 +955,7 @@ export class JsonlSessionStore implements SessionStore {
 				witness,
 				terminated,
 				torn,
+				summaryState: applySessionSummaryEntries(undefined, entries).state,
 			},
 			torn ? size : undefined,
 		);
@@ -954,6 +1032,7 @@ export class JsonlSessionStore implements SessionStore {
 			terminated: content.endsWith("\n"),
 			torn: false,
 			witness: witnessOf(Buffer.from(content)),
+			summaryState: applySessionSummaryEntries(undefined, entries).state,
 		};
 	}
 

@@ -193,6 +193,13 @@ const LISTING_SIZE =
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
 export const LISTING_FETCH_BATCH = 500;
 const LISTING_CWD_PAGE = 2_000;
+const STUB_ENTRY: SessionEntry = {
+	type: "custom",
+	id: "",
+	parentId: null,
+	timestamp: "1970-01-01T00:00:00.000Z",
+	customType: "",
+};
 
 /** Listing scopes (visibility and project) kept at once; the picker uses two. */
 const LISTING_SCOPES = 8;
@@ -510,14 +517,21 @@ export class SqlSessionStore implements SessionStore {
 		const toSeq = Math.min(query.toSeq, lastSeq);
 		if (fromSeq > toSeq) return { lastSeq, entries: [], throughSeq: Math.max(toSeq, fromSeq - 1) };
 		const skipped = (query.skipTypes ?? []).map((type) => `{"type":${JSON.stringify(type)},`);
+		const largeBytes = query.largeEntryBytes ?? 0x7fffffff;
 		const rows = await this.database.all<
-			SqliteRow & { seq: number | bigint; entry_json: string; chunks: number | bigint; remaining: number | bigint }
+			SqliteRow & {
+				seq: number | bigint;
+				entry_json: string | null;
+				chunks: number | bigint;
+				remaining: number | bigint;
+			}
 		>(
-			`SELECT seq, entry_json, chunks, remaining FROM (
-				SELECT seq, entry_json, chunks, count(*) OVER () AS remaining,
-					sum(length(entry_json) + chunks * ?) OVER (ORDER BY seq) - (length(entry_json) + chunks * ?) AS before_chars
+			`SELECT seq, CASE WHEN chunks = 0 AND raw_bytes <= ? THEN entry_json END AS entry_json, chunks, remaining FROM (
+				SELECT seq, entry_json, chunks, octet_length(entry_json) AS raw_bytes, count(*) OVER () AS remaining,
+					sum(octet_length(entry_json) + chunks * ?) OVER (ORDER BY seq) - (octet_length(entry_json) + chunks * ?) AS before_chars
 				FROM ${this.tables.entries} WHERE session_id = ? AND seq >= ? AND seq <= ?${skipped.map(() => " AND substr(entry_json, 1, ?) <> ?").join("")}
 			) AS page WHERE before_chars < ? ORDER BY seq`,
+			largeBytes,
 			SESSION_ENTRY_CHUNK_BYTES,
 			SESSION_ENTRY_CHUNK_BYTES,
 			sessionId,
@@ -528,10 +542,20 @@ export class SqlSessionStore implements SessionStore {
 		);
 		const entries: SessionEntryAt[] = [];
 		for (const row of rows) {
+			query.signal?.throwIfAborted();
 			const seq = Number(row.seq);
 			const chunks = Number(row.chunks);
-			const json = chunks === 0 ? row.entry_json : await this.readEntryChunks(this.database, sessionId, seq, chunks);
-			entries.push({ seq, entry: JSON.parse(json) as SessionEntry });
+			if (chunks > 0 && query.largeEntryBytes !== undefined) {
+				const rawChunks = await this.readRawEntryChunks(this.database, sessionId, seq, chunks, query.signal);
+				entries.push({ seq, entry: STUB_ENTRY, rawChunks });
+			} else if (row.entry_json === null) {
+				const rawChunks = await this.readInlineEntryBytes(sessionId, seq);
+				entries.push({ seq, entry: STUB_ENTRY, rawChunks });
+			} else {
+				const json =
+					chunks === 0 ? row.entry_json : await this.readEntryChunks(this.database, sessionId, seq, chunks);
+				entries.push({ seq, entry: JSON.parse(json) as SessionEntry });
+			}
 		}
 		const last = rows.at(-1);
 		const throughSeq = last !== undefined && rows.length < Number(last.remaining) ? Number(last.seq) : toSeq;
@@ -689,7 +713,7 @@ export class SqlSessionStore implements SessionStore {
 		// Validate the original query before binding only matching stored spellings below.
 		if (query.cwd?.includes("\0")) throw new StorageInvalidTextError(0);
 		if (query.withoutSearchText) {
-			for (const summary of await this.listWithoutSearchText(query)) {
+			for await (const summary of this.listWithoutSearchText(query)) {
 				this.assertListing(query);
 				yield summary;
 			}
@@ -782,7 +806,7 @@ export class SqlSessionStore implements SessionStore {
 		return JSON.stringify(Object.values(row ?? {}).map(String));
 	}
 
-	private async listWithoutSearchText(query: SessionListQuery): Promise<readonly SessionSummary[]> {
+	private async *listWithoutSearchText(query: SessionListQuery): AsyncIterable<SessionSummary> {
 		await assertStoredSchemaVersion(
 			this.database,
 			{ sql: `SELECT schema_version FROM ${this.tables.meta}` },
@@ -790,13 +814,12 @@ export class SqlSessionStore implements SessionStore {
 			SESSION_SCHEMA_VERSION,
 		);
 		const scope = await this.scopeOf(query, true);
-		if (scope === undefined) return [];
+		if (scope === undefined) return;
 		const order = this.dialect.rowOrder();
 		const bound = await this.database.get<SqliteRow & { last: number | bigint | null }>(
 			`SELECT max(${order}) AS last FROM ${this.tables.sessions}`,
 		);
 		const last = Number(bound?.last ?? 0);
-		const summaries: SessionSummary[] = [];
 		for (let after = 0; after < last; after += LISTING_CWD_PAGE) {
 			this.assertListing(query);
 			const rows = await this.database.all<ListingRow>(
@@ -806,15 +829,13 @@ export class SqlSessionStore implements SessionStore {
 				after,
 				after + LISTING_CWD_PAGE,
 			);
-			for (const row of rows)
-				if (scope.inScope(row)) summaries.push(summaryFromRow({ ...row, search_texts_json: "[]" }));
+			for (const row of rows) if (scope.inScope(row)) yield summaryFromRow({ ...row, search_texts_json: "[]" });
 			await yieldTurn();
 		}
 		this.assertListing(query);
-		return summaries;
 	}
 
-	private async distinctCwds(paced: boolean): Promise<string[]> {
+	private async distinctCwds(paced: boolean, query: SessionListQuery): Promise<string[]> {
 		if (!paced)
 			return (
 				await this.database.all<SqliteRow & { cwd: string }>(`SELECT DISTINCT cwd FROM ${this.tables.sessions}`)
@@ -822,6 +843,7 @@ export class SqlSessionStore implements SessionStore {
 		const order = this.dialect.rowOrder();
 		const cwds = new Set<string>();
 		for (let after = 0; ; ) {
+			this.assertListing(query);
 			const rows = await this.database.all<SqliteRow & { ord: number | bigint; cwd: string }>(
 				`SELECT ${order} AS ord, cwd FROM ${this.tables.sessions} WHERE ${order} > ? ORDER BY ${order} LIMIT ?`,
 				after,
@@ -847,7 +869,7 @@ export class SqlSessionStore implements SessionStore {
 				: (this.cwdMatcher?.(query.cwd) ?? ((candidate: string | undefined) => candidate === query.cwd));
 		let projectCwds: string[] | undefined;
 		if (matchesCwd) {
-			projectCwds = (await this.distinctCwds(paced)).filter(matchesCwd);
+			projectCwds = (await this.distinctCwds(paced, query)).filter(matchesCwd);
 			this.assertListing(query);
 			if (projectCwds.length === 0) return undefined;
 		}
@@ -1041,8 +1063,19 @@ export class SqlSessionStore implements SessionStore {
 
 	/** The JSON of a long entry, from its chunks, one statement each. */
 	private async readEntryChunks(tx: SqliteExecutor, sessionId: string, seq: number, count: number): Promise<string> {
+		return Buffer.concat(await this.readRawEntryChunks(tx, sessionId, seq, count)).toString("utf8");
+	}
+
+	private async readRawEntryChunks(
+		tx: SqliteExecutor,
+		sessionId: string,
+		seq: number,
+		count: number,
+		signal?: AbortSignal,
+	): Promise<Uint8Array[]> {
 		const chunks: Uint8Array[] = [];
 		for (let index = 0; index < count; index++) {
+			signal?.throwIfAborted();
 			const chunk = await tx.get<SqliteRow & { data: Uint8Array }>(
 				`SELECT data FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ? AND idx = ?`,
 				sessionId,
@@ -1053,8 +1086,26 @@ export class SqlSessionStore implements SessionStore {
 				throw new StorageError(`Session ${sessionId} entry ${seq} is missing chunk ${index} of ${count}`);
 			}
 			chunks.push(chunk.data);
+			if (signal !== undefined && index + 1 < count) await yieldTurn();
 		}
-		return Buffer.concat(chunks).toString("utf8");
+		return chunks;
+	}
+
+	private async readInlineEntryBytes(sessionId: string, seq: number): Promise<Uint8Array[]> {
+		if (this.dialect.name === "sqlite") {
+			const row = await this.database.get<SqliteRow & { data: Uint8Array }>(
+				`SELECT CAST(entry_json AS BLOB) AS data FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
+				sessionId,
+				seq,
+			);
+			return row ? [row.data] : [];
+		}
+		const row = await this.database.get<SqliteRow & { entry_json: string }>(
+			`SELECT entry_json FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
+			sessionId,
+			seq,
+		);
+		return row ? [new TextEncoder().encode(row.entry_json)] : [];
 	}
 
 	private forWrite(

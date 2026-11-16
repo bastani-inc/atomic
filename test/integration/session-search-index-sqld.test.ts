@@ -86,6 +86,7 @@ for (const backend of storageBackends) {
 				);
 				assert.deepEqual(await index.candidates("long", [[longLiteral]], 1, 2, 10), [2]);
 				assert.deepEqual(await index.candidates("long", [["tail-needle"]], 1, 2, 10), [2]);
+				assert.deepEqual(await index.candidates("long", [["aaaa", "tail-needle"]], 1, 2, 10), [2]);
 				assert.deepEqual(await index.candidates("long", [["short"], ["aaaa"]], 1, 2, 10), [1, 2]);
 				assert.deepEqual(await index.candidates("long", [["absent-needle"]], 1, 2, 10), []);
 			} finally {
@@ -96,7 +97,8 @@ for (const backend of storageBackends) {
 		run("forgets a session's text when the session is rewritten or deleted (#5250)", async () => {
 			const scope = await backend.openScope();
 			try {
-				const store = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
+				const database = await scope.connect();
+				const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
 				const index = store.searchIndex!;
 				await store.create(header("s"), entries);
 				assert.equal(await index.extend("s", FORMAT, 0, 5, texts), true);
@@ -104,6 +106,9 @@ for (const backend of storageBackends) {
 				assert.deepEqual(await index.coverage("s", FORMAT), { indexedSeq: 0, lastSeq: 2 });
 				assert.deepEqual(await index.candidates("s", [["needle"]], 1, 5, 10), []);
 				assert.equal(await index.extend("s", FORMAT, 0, 2, texts.slice(0, 2)), true);
+				await database.run(`DELETE FROM ${scope.prefix}session_entries WHERE session_id = ?`, "s");
+				assert.deepEqual(await index.coverage("s", FORMAT), { indexedSeq: 0, lastSeq: 2 });
+				assert.deepEqual(await index.candidates("s", [["needle"]], 1, 5, 10), []);
 				await store.delete("s");
 				assert.equal(await index.coverage("s", FORMAT), undefined);
 				await store.create(header("s"), entries.slice(0, 1));

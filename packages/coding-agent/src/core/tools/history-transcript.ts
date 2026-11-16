@@ -52,35 +52,35 @@ function contentLines(content: unknown): string[] {
 }
 
 export function entryLines(entry: SessionEntry): string[] {
-	const heading = (label: string): string => `## ${timestamp(entry.timestamp)} ${label}`;
+	const heading = (label: string): string[] => textLines(`## ${timestamp(entry.timestamp)} ${label}`);
 	switch (entry.type) {
 		case "message": {
 			const message = entry.message;
 			switch (message.role) {
 				case "user":
-					return [heading("user"), ...contentLines(message.content)];
+					return [...heading("user"), ...contentLines(message.content)];
 				case "assistant":
-					return [heading("assistant"), ...contentLines(message.content)];
+					return [...heading("assistant"), ...contentLines(message.content)];
 				case "toolResult":
-					return [heading(`tool result ${message.toolName}`), ...contentLines(message.content)];
+					return [...heading(`tool result ${message.toolName}`), ...contentLines(message.content)];
 				case "bashExecution":
-					return [heading("bash"), ...textLines(`$ ${message.command}`), ...textLines(message.output)];
+					return [...heading("bash"), ...textLines(`$ ${message.command}`), ...textLines(message.output)];
 				case "custom":
-					return [heading(`custom ${message.customType}`), ...contentLines(message.content)];
+					return [...heading(`custom ${message.customType}`), ...contentLines(message.content)];
 				case "branchSummary":
-					return [heading("branch summary"), ...textLines(message.summary)];
+					return [...heading("branch summary"), ...textLines(message.summary)];
 				default:
 					return [];
 			}
 		}
 		case "custom_message":
-			return [heading(`custom ${entry.customType}`), ...contentLines(entry.content)];
+			return [...heading(`custom ${entry.customType}`), ...contentLines(entry.content)];
 		case "compaction":
 		case "branch_summary":
 		case "session_summary":
-			return [heading(entry.type.replace("_", " ")), ...textLines(entry.summary)];
+			return [...heading(entry.type.replace("_", " ")), ...textLines(entry.summary)];
 		case "session_info":
-			return entry.name ? [heading(`session name: ${entry.name}`)] : [];
+			return entry.name ? heading(`session name: ${entry.name}`) : [];
 		default:
 			return [];
 	}

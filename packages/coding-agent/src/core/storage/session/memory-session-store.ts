@@ -10,12 +10,18 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import { summarizeSession } from "./session-summary.js";
+import {
+	applySessionSummaryEntries,
+	materializeSessionSummaryMetadata,
+	type SessionSummaryState,
+	summarizeSession,
+} from "./session-summary.js";
 import type {
 	SessionBlob,
 	SessionCwdMatcher,
 	SessionEntriesPage,
 	SessionEntriesQuery,
+	SessionEntryAt,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionSnapshot,
@@ -31,12 +37,22 @@ const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder();
 const COMMA = 0x2c;
 const NO_ENTRIES = new Uint8Array(0);
+const RAW_CHUNK_BYTES = 1024 * 1024;
+const STUB_ENTRY: SessionEntry = {
+	type: "custom",
+	id: "",
+	parentId: null,
+	timestamp: "1970-01-01T00:00:00.000Z",
+	customType: "",
+};
 
 interface StoredSession {
 	readonly header: Uint8Array;
 	/** The entries held in memory: everything after the bytes its spill file holds. */
 	entries: Uint8Array[];
+	entryOffsets: number[];
 	entryBytes: number[];
+	summaryState: SessionSummaryState;
 	lastSeq: number;
 	/** The directory its file is in, from the first release that wrote one. */
 	directory: SessionHistoryDirectory | undefined;
@@ -73,6 +89,11 @@ export interface SessionHistoryDirectory {
 	write(file: number, data: Uint8Array, previous?: { readonly file: number; readonly bytes: number }): Promise<void>;
 	/** The whole content of the file. */
 	read(file: number): Promise<Uint8Array>;
+	readRange(
+		file: number,
+		position: number,
+		length: number,
+	): Promise<{ readonly data: Uint8Array; readonly totalBytes: number }>;
 	/** Removes the file; a file already gone is not a failure. */
 	removeFile(file: number): Promise<void>;
 	/** Removes the directory and every file in it; a directory already gone is not a failure. */
@@ -229,7 +250,8 @@ export class MemorySessionStore implements SessionStore {
 		if (entries.length > 0) {
 			const encoded = this.encodeEntries(entries);
 			this.addChunk(record.entries, encoded.bytes);
-			for (const length of encoded.lengths) record.entryBytes.push(length);
+			appendEntrySpans(record.entryOffsets, record.entryBytes, encoded.lengths);
+			record.summaryState = applySessionSummaryEntries(record.summaryState, entries).state;
 		}
 		record.lastSeq += entries.length;
 		return { lastSeq: record.lastSeq };
@@ -271,45 +293,71 @@ export class MemorySessionStore implements SessionStore {
 			const record = this.stored(sessionId);
 			if (!record) throw new SessionNotFoundError(sessionId);
 			while (record.spilling !== undefined) await settled(record.spilling);
-			const { lastSeq, entryBytes, directory, file, spilledBytes } = record;
+			const { lastSeq, entryOffsets, entryBytes, entries: heldChunks, directory, file, spilledBytes } = record;
 			const fromSeq = Math.max(1, query.fromSeq);
 			let throughSeq = Math.min(query.toSeq, lastSeq);
 			if (fromSeq > throughSeq) return { lastSeq, entries: [], throughSeq: Math.max(throughSeq, fromSeq - 1) };
-			let start = 0;
-			for (let seq = 1; seq < fromSeq; seq++) start += (entryBytes[seq - 1] as number) + 1;
-			let end = start;
+			const start = entryOffsets[fromSeq - 1] as number;
+			let chars = 0;
 			for (let seq = fromSeq; seq <= throughSeq; seq++) {
-				end += (entryBytes[seq - 1] as number) + (seq > fromSeq ? 1 : 0);
-				if (query.maxChars !== undefined && end - start >= query.maxChars) throughSeq = seq;
+				chars += (entryBytes[seq - 1] as number) + (seq > fromSeq ? 1 : 0);
+				if (query.maxChars !== undefined && chars >= query.maxChars) {
+					throughSeq = seq;
+					break;
+				}
 			}
-			const held = joinEntries(record);
-			const heldStart = spilledBytes === 0 ? 0 : spilledBytes + 1;
+			const end = (entryOffsets[throughSeq - 1] as number) + (entryBytes[throughSeq - 1] as number);
 			let spilled: Uint8Array = NO_ENTRIES;
-			if (start < spilledBytes && directory !== undefined) {
+			const spillStart = Math.min(start, spilledBytes);
+			if (spillStart < spilledBytes && directory !== undefined) {
+				const spillEnd = Math.min(end, spilledBytes);
 				try {
-					spilled = await readSpillFile(directory, file, sessionId, spilledBytes);
+					spilled = await readSpillRange(
+						directory,
+						file,
+						sessionId,
+						spilledBytes,
+						spillStart,
+						spillEnd - spillStart,
+					);
 				} catch (error) {
 					this.assertOpen();
 					if (this.records.get(sessionId) !== record || record.file !== file) continue;
 					throw error;
 				}
 			}
-			const bytes = new Uint8Array(end - start);
-			for (let at = start; at < end; ) {
-				if (at < spilledBytes) {
-					const to = Math.min(end, spilledBytes);
-					bytes.set(spilled.subarray(at, to), at - start);
-					at = to;
-				} else if (at < heldStart) {
-					bytes[at - start] = COMMA;
-					at = heldStart;
-				} else {
-					bytes.set(held.subarray(at - heldStart, end - heldStart), at - start);
-					at = end;
+			const heldStart = spilledBytes === 0 ? 0 : spilledBytes + 1;
+			const sliceRange = (from: number, to: number): Uint8Array =>
+				copyEntrySlice(from, to, spillStart, spilledBytes, spilled, heldStart, heldChunks);
+			const skipped = query.skipTypes === undefined ? undefined : new Set(query.skipTypes);
+			const result: SessionEntryAt[] = [];
+			for (let seq = fromSeq; seq <= throughSeq; seq++) {
+				const entryStart = entryOffsets[seq - 1] as number;
+				const entryLength = entryBytes[seq - 1] as number;
+				if (query.largeEntryBytes !== undefined && entryLength > query.largeEntryBytes) {
+					const rawChunks: Uint8Array[] = [];
+					for (let offset = 0; offset < entryLength; offset += RAW_CHUNK_BYTES) {
+						const piece = Math.min(RAW_CHUNK_BYTES, entryLength - offset);
+						rawChunks.push(sliceRange(entryStart + offset, entryStart + offset + piece));
+					}
+					result.push({ seq, entry: STUB_ENTRY, rawChunks });
+					continue;
 				}
+				const raw = sliceRange(entryStart, entryStart + entryLength);
+				let parsed: SessionEntry;
+				try {
+					parsed = JSON.parse(utf8Decoder.decode(raw)) as SessionEntry;
+				} catch (cause) {
+					if (!(cause instanceof SyntaxError) || directory === undefined) throw cause;
+					throw new SessionSpillError(
+						"spill-corrupt",
+						{ directory: directory.path, sessionId, bytes: spilledBytes },
+						{ cause },
+					);
+				}
+				if (!skipped?.has(parsed.type)) result.push({ seq, entry: parsed });
 			}
-			const entries = parseEntries(bytes);
-			return { lastSeq, entries: entries.map((entry, index) => ({ seq: fromSeq + index, entry })), throughSeq };
+			return { lastSeq, entries: result, throughSeq };
 		}
 	}
 
@@ -401,6 +449,10 @@ export class MemorySessionStore implements SessionStore {
 			const header = decodeHeader(record);
 			if (matchesCwd && !matchesCwd(header.cwd)) continue;
 			if (!query.includeInternal && header.internal) continue;
+			if (query.withoutSearchText) {
+				yield { ...materializeSessionSummaryMetadata(header, record.summaryState), searchText: "" };
+				continue;
+			}
 			let snapshot: SessionSnapshot | undefined;
 			try {
 				snapshot = await this.decode(sessionId, record);
@@ -548,10 +600,15 @@ export class MemorySessionStore implements SessionStore {
 	private encodeSession(header: SessionRecordHeader, entries: readonly SessionEntry[]): StoredSession {
 		const encodedHeader = this.encode(() => JSON.stringify(header));
 		const encoded = this.encodeEntries(entries);
+		const entryOffsets: number[] = [];
+		const entryBytes: number[] = [];
+		appendEntrySpans(entryOffsets, entryBytes, encoded.lengths);
 		return {
 			header: encodedHeader,
 			entries: entries.length === 0 ? [] : [encoded.bytes],
-			entryBytes: encoded.lengths,
+			entryOffsets,
+			entryBytes,
+			summaryState: applySessionSummaryEntries(undefined, entries).state,
 			lastSeq: entries.length,
 			directory: undefined,
 			file: 0,
@@ -623,6 +680,77 @@ async function readSpillFile(
 			foundBytes: data.byteLength,
 		});
 	return data;
+}
+
+async function readSpillRange(
+	directory: SessionHistoryDirectory,
+	file: number,
+	sessionId: string,
+	bytes: number,
+	position: number,
+	length: number,
+): Promise<Uint8Array> {
+	let result: { readonly data: Uint8Array; readonly totalBytes: number };
+	try {
+		result = await directory.readRange(file, position, length);
+	} catch (cause) {
+		const errno = getErrnoCode(cause);
+		throw new SessionSpillError(
+			errno === "ENOENT" ? "spill-missing" : "spill-read-failed",
+			{ directory: directory.path, sessionId, bytes, errno },
+			{ cause },
+		);
+	}
+	if (result.totalBytes !== bytes || result.data.byteLength !== length)
+		throw new SessionSpillError(result.totalBytes < bytes ? "spill-missing" : "spill-corrupt", {
+			directory: directory.path,
+			sessionId,
+			bytes,
+			foundBytes: result.totalBytes,
+		});
+	return result.data;
+}
+
+function appendEntrySpans(offsets: number[], lengths: number[], added: readonly number[]): void {
+	for (const length of added) {
+		const next = offsets.length === 0 ? 0 : (offsets.at(-1) as number) + (lengths.at(-1) as number) + 1;
+		offsets.push(next);
+		lengths.push(length);
+	}
+}
+
+function copyEntrySlice(
+	from: number,
+	to: number,
+	spillStart: number,
+	spilledBytes: number,
+	spilled: Uint8Array,
+	heldStart: number,
+	heldChunks: readonly Uint8Array[],
+): Uint8Array {
+	const out = new Uint8Array(to - from);
+	if (from < spilledBytes) {
+		const end = Math.min(to, spilledBytes);
+		out.set(spilled.subarray(from - spillStart, end - spillStart), 0);
+	}
+	if (from <= spilledBytes && to > spilledBytes && spilledBytes > 0) out[spilledBytes - from] = COMMA;
+	if (to <= heldStart) return out;
+	let pos = heldStart;
+	for (const [index, chunk] of heldChunks.entries()) {
+		if (index > 0) {
+			if (pos >= from && pos < to) out[pos - from] = COMMA;
+			pos += 1;
+		}
+		const chunkEnd = pos + chunk.byteLength;
+		if (chunkEnd > from && pos < to) {
+			const sliceStart = Math.max(from, pos);
+			const sliceEnd = Math.min(to, chunkEnd);
+			out.set(chunk.subarray(sliceStart - pos, sliceEnd - pos), sliceStart - from);
+		}
+		pos = chunkEnd;
+		if (pos >= to) break;
+	}
+	return out;
 }
 
 /**

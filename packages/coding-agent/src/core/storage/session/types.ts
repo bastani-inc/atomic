@@ -101,12 +101,14 @@ export interface SessionOpenMarkerStore {
 export interface SessionEntryAt {
 	readonly seq: number;
 	readonly entry: SessionEntry;
+	readonly rawChunks?: readonly Uint8Array[];
 }
 
 export interface SessionEntriesQuery {
 	readonly fromSeq: number;
 	readonly toSeq: number;
 	readonly maxChars?: number;
+	readonly largeEntryBytes?: number;
 	readonly skipTypes?: readonly string[];
 	readonly signal?: AbortSignal;
 }
@@ -119,7 +121,8 @@ export interface SessionEntriesPage {
 
 export interface SessionSearchText {
 	readonly seq: number;
-	readonly text: string;
+	readonly text?: string;
+	readonly parts?: readonly string[];
 }
 
 export interface SessionSearchCoverage {

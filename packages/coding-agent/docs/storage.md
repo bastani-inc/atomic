@@ -814,7 +814,7 @@ The database stores sessions, the oversized tool results of agents released whil
 
 [Local workflow workers](/workflows/operations#local-workflow-workers) work on a shared journal: by default the workers run on the machine that runs the root and open the same database, and the pool keeps its work queue and leases in a SQLite file on that machine, so a pooled run resumes on the machine where it started. A root started with `workers: { placement: "shared" }` keeps its pool in the shared journal instead, runs its children on worker hosts on other machines too, and resumes on any machine; see [Workers on other hosts](/workflows/operations#workers-on-other-hosts).
 
-Scale by running more workflows, not by splitting one: a single run and a single session each have one writer. Atomic's stores use SQLite SQL, or PostgreSQL through `@bastani/atomic-storage-postgres`, so other `openDatabase` adapters need a SQLite-compatible driver. For another kind of database, implement `openRunJournal` and `openSessionStore` and validate them with the conformance suites below.
+Scale by running more workflows, not by splitting one: a single run and a single session each have one writer. Atomic's stores use SQLite SQL, or PostgreSQL through `@bastani/atomic-storage-postgres`, so other `openDatabase` adapters need a SQLite-compatible driver. For another kind of database, implement `openRunJournal` and `openSessionStore` (including `readEntryRange(sessionId, query)` so `history://` reads and searches stay bounded without calling `load(sessionId)`) and validate them with the conformance suites below.
 
 ## Locks in the agent directory
 

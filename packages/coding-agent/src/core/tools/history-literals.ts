@@ -5,6 +5,20 @@ export type LiteralQuery = readonly (readonly string[])[];
 const MIN_LITERAL_CHARS = 3;
 const MAX_SETS = 16;
 const MAX_LITERALS_PER_SET = 8;
+const MULTILINE_ESCAPE = /\\(?:n|x0*[aA]|u0*00[aA]|u\{0*[aA]\}|c[jJ])/;
+const INLINE_MULTILINE_FLAG = /\(\?[imsUx-]*[ms]/;
+
+export function isMultilineSearchPattern(pattern: string, ignoreCase: boolean, literal: boolean): boolean {
+	if (literal) return pattern.includes("\n");
+	const normalized = normalizeSearchPattern(pattern, ignoreCase);
+	return (
+		normalized.flags.includes("m") ||
+		normalized.flags.includes("s") ||
+		pattern.includes("\n") ||
+		MULTILINE_ESCAPE.test(pattern) ||
+		INLINE_MULTILINE_FLAG.test(pattern)
+	);
+}
 
 type Requirement = string[][] | undefined;
 

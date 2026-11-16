@@ -17,6 +17,8 @@ import { summarizeSession } from "../src/core/storage/session/session-summary.js
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import {
 	SESSION_FORMAT_VERSION,
+	type SessionEntriesPage,
+	type SessionEntriesQuery,
 	type SessionRecordHeader,
 	type SessionSnapshot,
 	type SessionStore,
@@ -79,6 +81,19 @@ class CustomSessionStore implements SessionStore {
 		const found = this.sessions.get(sessionId);
 		if (!found) throw new Error(`no such session ${sessionId}`);
 		return found;
+	}
+	async readEntryRange(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
+		const found = this.sessions.get(sessionId);
+		if (!found) throw new Error(`no such session ${sessionId}`);
+		const from = Math.max(1, query.fromSeq);
+		const through = Math.min(query.toSeq, found.entries.length);
+		return {
+			lastSeq: found.entries.length,
+			entries: found.entries
+				.slice(from - 1, Math.max(from - 1, through))
+				.map((item, index) => ({ seq: from + index, entry: item })),
+			throughSeq: Math.max(through, from - 1),
+		};
 	}
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
 		return this.sessions.get(sessionId)?.header;

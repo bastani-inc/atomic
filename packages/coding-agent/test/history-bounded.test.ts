@@ -9,11 +9,15 @@ import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { releasedHistoryFiles } from "../src/core/storage/session/released-history-files.js";
+import { summarizeSession } from "../src/core/storage/session/session-summary.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import {
 	SESSION_FORMAT_VERSION,
 	type SessionRecordHeader,
+	type SessionSnapshot,
 	type SessionStore,
+	type SessionSummary,
 } from "../src/core/storage/session/types.js";
 import {
 	createHistoryRouter,
@@ -231,7 +235,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 				);
 				const { router, read, request } = historyOver(withoutWholeLoads(store));
 				assert.ok((await read("history://sessions/big:2499-2501")).includes("the buried needle"));
-				assert.match(await read("history://sessions/big"), /1500 user turns/);
+				assert.match(await read("history://sessions/big"), /3000 entries[\s\S]*\d+ user turns/);
 				const found = (await router.search?.("history://sessions/big", request("buried needle"))) ?? "";
 				assert.match(found, /^history:\/\/sessions\/big:2500: the buried needle/m);
 			} finally {
@@ -529,6 +533,492 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		const found = await search("alpha", "history://sessions/big");
 		for (const line of ["alpha one", "alpha two", "alpha three"])
 			assert.ok(found.includes(`history://sessions/big:1: ${line}`), found);
+	});
+
+	it("matches literals that fall in different index parts of the same entry (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			const prefix = Array.from({ length: 40 }, (_, i) => `intro line ${i} ${"p".repeat(50)}`).join("\n");
+			const straddlingLine = `alpha-token ${"m".repeat(3200)} omega-token`;
+			await store.create(header("big"), [
+				message("e1", "user", `${prefix}\n${straddlingLine}`, BASE),
+				...numbered(20, (seq) => `filler ${seq}`),
+			]);
+			const { router, request } = historyOver(store);
+			const cold = (await router.search?.("history://sessions/big", request("alpha-token.*omega-token"))) ?? "";
+			assert.match(cold, /^history:\/\/sessions\/big:1: alpha-token/m);
+			const warm = (await router.search?.("history://sessions/big", request("alpha-token.*omega-token"))) ?? "";
+			assert.equal(warm, cold);
+		} finally {
+			await close();
+		}
+	});
+
+	it("invalidates the search index when a session is rewritten with the same entry ids (#5250)", async () => {
+		const dbPath = join(dir, "rewrite.sqlite");
+		const database = await openNodeSqliteDatabase(dbPath);
+		const store = await SqlSessionStore.open(database);
+		try {
+			await store.create(header("big"), [
+				message("e1", "user", "oldneedle-value", BASE),
+				message("e2", "assistant", "unchanged-tail", BASE + 1000),
+			]);
+			const { router, request } = historyOver(store);
+			assert.match(
+				(await router.search?.("history://sessions/big", request("oldneedle-value"))) ?? "",
+				/big:1: oldneedle-value/,
+			);
+			const replaced = message("e1", "user", "newneedle-value", BASE);
+			const tail = message("e2", "assistant", "unchanged-tail", BASE + 1000);
+			await database.transaction(async (tx) => {
+				await tx.run("DELETE FROM session_entries WHERE session_id = 'big'");
+				await tx.run(
+					"INSERT INTO session_entries (session_id, seq, entry_id, entry_json, chunks) VALUES ('big', 1, 'e1', ?, 0), ('big', 2, 'e2', ?, 0)",
+					JSON.stringify(replaced),
+					JSON.stringify(tail),
+				);
+				await tx.run("UPDATE session_sessions SET revision = 'rewritten-by-older-build' WHERE id = 'big'");
+			});
+			assert.equal(await router.search?.("history://sessions/big", request("oldneedle-value")), "");
+			assert.match(
+				(await router.search?.("history://sessions/big", request("newneedle-value"))) ?? "",
+				/^history:\/\/sessions\/big:1: newneedle-value$/m,
+			);
+		} finally {
+			await store.close();
+			await database.close();
+		}
+	});
+
+	it("matches multi-line patterns across entries identically whether cold or indexed (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			await store.create(header("big"), [
+				message("e1", "user", "alpha-start", BASE),
+				message("e2", "user", "omega-end", BASE + 1000),
+			]);
+			const { router, request } = historyOver(store);
+			const pattern = "alpha-start\\n## [^\\n]* user\\nomega-end";
+			const cold = (await router.search?.("history://sessions/big", request(pattern))) ?? "";
+			assert.match(cold, /^history:\/\/sessions\/big:1: alpha-start$/m);
+			assert.match(cold, /^history:\/\/sessions\/big-2- omega-end$/m);
+			await router.search?.("history://sessions/big", request("alpha-start"));
+			const warm = (await router.search?.("history://sessions/big", request(pattern))) ?? "";
+			assert.equal(warm, cold);
+		} finally {
+			await close();
+		}
+	});
+
+	it("includes context lines from neighbouring entries in both cold and indexed searches (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			await store.create(header("big"), [
+				message("e1", "user", "first-turn-context", BASE),
+				message("e2", "assistant", "target-match-line", BASE + 1000),
+				message("e3", "user", "third-turn-context", BASE + 2000),
+			]);
+			const { router } = historyOver(store);
+			const req: InternalSearchRequest = {
+				pattern: "target-match-line",
+				ignoreCase: false,
+				literal: false,
+				contextBefore: 2,
+				contextAfter: 2,
+			};
+			const cold = (await router.search?.("history://sessions/big", req)) ?? "";
+			assert.match(cold, /^history:\/\/sessions\/big-1- first-turn-context$/m);
+			assert.match(cold, /^history:\/\/sessions\/big:2: target-match-line$/m);
+			assert.match(cold, /^history:\/\/sessions\/big-3- third-turn-context$/m);
+			const warm = (await router.search?.("history://sessions/big", req)) ?? "";
+			assert.equal(warm, cold);
+		} finally {
+			await close();
+		}
+	});
+
+	it("advances through intra-entry matches via the +N more continuation cursor (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			const text = Array.from({ length: 25 }, (_, i) => `intra-hit-${i + 1}`).join("\n");
+			await store.create(header("big"), [message("e1", "user", text, BASE)]);
+			const { router, request } = historyOver(store);
+			const collected: string[] = [];
+			let url: string | undefined = "history://sessions/big";
+			for (let calls = 0; url !== undefined && calls < 10; calls++) {
+				const out = (await router.search?.(url, request("intra-hit-\\d+"))) ?? "";
+				for (const match of out.matchAll(/^history:\/\/sessions\/big:1: (intra-hit-\d+)$/gm)) {
+					collected.push(match[1]!);
+				}
+				url = /search (history:\/\/\S+) for them\]$/m.exec(out)?.[1];
+			}
+			assert.equal(url, undefined);
+			assert.deepEqual(
+				collected,
+				Array.from({ length: 25 }, (_, i) => `intra-hit-${i + 1}`),
+			);
+		} finally {
+			await close();
+		}
+	});
+
+	it("makes forward progress when the first entry's matches exceed the byte budget (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			const text = Array.from({ length: 8 }, (_, i) => `budget-hit-${i + 1} ${"x".repeat(180)}`).join("\n");
+			await store.create(header("big"), [message("e1", "user", text, BASE)]);
+			const { router, request } = historyOver(store, { bytes: 900 });
+			const collected: string[] = [];
+			let url: string | undefined = "history://sessions/big";
+			for (let calls = 0; url !== undefined && calls < 20; calls++) {
+				const out = (await router.search?.(url, request("budget-hit-\\d+"))) ?? "";
+				for (const match of out.matchAll(/^history:\/\/sessions\/big:1: (budget-hit-\d+)/gm)) {
+					collected.push(match[1]!);
+				}
+				url = continuation(out);
+			}
+			assert.equal(url, undefined);
+			assert.deepEqual(
+				collected,
+				Array.from({ length: 8 }, (_, i) => `budget-hit-${i + 1}`),
+			);
+		} finally {
+			await close();
+		}
+	});
+
+	it("preserves :N-M range bounds and reports accurate coverage on ranged search continuations (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			await store.create(
+				header("big"),
+				numbered(50, (seq) => `ranged-needle at ${seq}`),
+			);
+			const { router, request } = historyOver(store, { rows: 4 });
+			const matchedSeqs: number[] = [];
+			let url: string | undefined = "history://sessions/big:10-18";
+			for (let calls = 0; url !== undefined && calls < 20; calls++) {
+				const out = (await router.search?.(url, request("ranged-needle"))) ?? "";
+				for (const match of out.matchAll(/^history:\/\/sessions\/big:(\d+): /gm)) {
+					const seq = Number(match[1]);
+					if (seq > 0) matchedSeqs.push(seq);
+				}
+				const cov = /^history:\/\/sessions\/big:0: \[searched entries (\d+)-(\d+) of 50/m.exec(out);
+				if (cov) {
+					assert.ok(Number(cov[1]) >= 10, `coverage start ${cov[1]} must be >= 10:\n${out}`);
+					assert.ok(Number(cov[2]) <= 18, `coverage end ${cov[2]} must be <= 18:\n${out}`);
+				}
+				url = continuation(out);
+			}
+			assert.equal(url, undefined);
+			assert.deepEqual(matchedSeqs, [10, 11, 12, 13, 14, 15, 16, 17, 18]);
+		} finally {
+			await close();
+		}
+	});
+
+	it("wraps oversized headings and cuts lines to fit small byte budgets (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			const hugeName = `name-${"N".repeat(150_000)}-end`;
+			await store.create(header("big"), [
+				{
+					type: "session_info",
+					id: "info1",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					name: hugeName,
+				} as SessionEntry,
+			]);
+			const { read } = historyOver(store);
+			const firstPage = await read("history://sessions/big");
+			assert.ok(firstPage.length < READ_TOOL_LIMIT_CHARS);
+			assert.ok(!firstPage.includes("File read blocked"));
+
+			const { read: tinyRead } = historyOver(store, { bytes: 800 });
+			let url: string | undefined = "history://sessions/big:1-1:raw";
+			const pieces: string[] = [];
+			for (let calls = 0; url !== undefined && calls < 400; calls++) {
+				const page = await tinyRead(url);
+				assert.ok(Buffer.byteLength(page, "utf8") <= 900, `page was ${Buffer.byteLength(page, "utf8")} bytes`);
+				const lines = page.split("\n");
+				const last = lines.at(-1) ?? "";
+				const body = last.startsWith("[read ") ? lines.slice(0, -1).join("") : lines.join("");
+				pieces.push(body);
+				url = continuation(page);
+			}
+			assert.equal(url, undefined);
+			assert.ok(pieces.join("").includes(hugeName));
+		} finally {
+			await close();
+		}
+	});
+
+	it(
+		"reads, outlines and searches a 25 MB entry without blocking the event loop (#5250)",
+		async () => {
+			const { store, close } = await openSql(dir);
+			try {
+				const hugeText = `${Array.from({ length: 400_000 }, (_, i) => `row-${i} ${"x".repeat(52)}`).join("\n")}\n25mb-tail-needle`;
+				await store.create(header("big"), [
+					{
+						type: "message",
+						id: "m1",
+						parentId: null,
+						timestamp: new Date(BASE).toISOString(),
+						message: {
+							role: "toolResult",
+							toolCallId: "c1",
+							toolName: "bash",
+							content: [{ type: "text", text: hugeText }],
+							isError: false,
+							timestamp: BASE,
+						},
+					} as unknown as SessionEntry,
+				]);
+				const { router, read, request } = historyOver(store);
+				let longest = 0;
+				let last = performance.now();
+				let lastCpu = process.cpuUsage();
+				const gap = () => {
+					const now = performance.now();
+					const used = process.cpuUsage(lastCpu);
+					longest = Math.max(longest, Math.min(now - last, (used.user + used.system) / 1000));
+					last = now;
+					lastCpu = process.cpuUsage();
+				};
+				const ticker = setInterval(gap, 1);
+				try {
+					const page = await read("history://sessions/big:1-1");
+					assert.ok(page.includes("row-0 "));
+					assert.ok(continuation(page));
+					const outline = await read("history://sessions/big");
+					assert.match(outline, /1 tool result/);
+					const found = (await router.search?.("history://sessions/big", request("25mb-tail-needle"))) ?? "";
+					assert.match(found, /^history:\/\/sessions\/big:1: 25mb-tail-needle$/m);
+				} finally {
+					clearInterval(ticker);
+					gap();
+				}
+				assert.ok(
+					longest < EVENT_LOOP_CPU_LIMIT_MS,
+					`the event loop was busy for ${Math.round(longest)} ms at once on a 25 MB entry`,
+				);
+			} finally {
+				await close();
+			}
+		},
+		LARGE_SESSION_TIMEOUT_MS,
+	);
+
+	it("honours row and time budgets on bare reads of small sessions (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			await store.create(
+				header("small"),
+				numbered(30, (seq) => `small-entry-${seq}`),
+			);
+			const byRows = await historyOver(store, { rows: 5 }).read("history://sessions/small");
+			assert.match(byRows, /the row budget ran out; continue with history:\/\/sessions\/small:6-30/);
+			const rest = await historyOver(store).read(continuation(byRows)!);
+			assert.ok(rest.includes("small-entry-30"));
+
+			const byTime = await historyOver(store, { timeMs: 0 }).read("history://sessions/small");
+			assert.match(byTime, /the time budget ran out; continue with history:\/\/sessions\/small:2-30/);
+		} finally {
+			await close();
+		}
+	});
+
+	it("streams large session outlines in linear entry reads across pages (#5250)", async () => {
+		const { store, entryRows, close } = await openSql(dir);
+		try {
+			await store.create(
+				header("big"),
+				numbered(600, (seq) => `turn-entry-${seq}`),
+			);
+			const { read } = historyOver(store, { bytes: 2_500 });
+			const before = entryRows();
+			let url: string | undefined = "history://sessions/big";
+			const seenTurns: number[] = [];
+			for (let calls = 0; url !== undefined && calls < 60; calls++) {
+				const page = await read(url);
+				for (const match of page.matchAll(/user: turn-entry-(\d+)$/gm)) {
+					seenTurns.push(Number(match[1]));
+				}
+				url = continuation(page);
+			}
+			const totalRead = entryRows() - before;
+			assert.equal(url, undefined);
+			assert.equal(seenTurns.length, 300);
+			assert.ok(totalRead <= 1_400, `streaming outline read ${totalRead} entries for 600 entries`);
+		} finally {
+			await close();
+		}
+	});
+
+	it("refuses a store without readEntryRange instead of loading the whole session (#5250)", async () => {
+		let loadCalls = 0;
+		const snapshot: SessionSnapshot = {
+			header: header("s1"),
+			entries: [message("e1", "user", "hello", BASE)],
+			lastSeq: 1,
+		};
+		const legacyOnlyStore: SessionStore = {
+			descriptor: { adapter: "no-range-double", location: "memory" },
+			create: async () => ({ lastSeq: 1 }),
+			append: async () => ({ lastSeq: 1 }),
+			replace: async () => ({ lastSeq: 1 }),
+			load: async () => {
+				loadCalls++;
+				throw new Error("whole load must not be called");
+			},
+			readHeader: async (id) => (id === "s1" ? snapshot.header : undefined),
+			delete: async () => {},
+			async *list(): AsyncIterable<SessionSummary> {
+				yield summarizeSession(snapshot);
+			},
+			findMostRecent: async () => undefined,
+			close: async () => {},
+		};
+		const { read, search } = historyOver(legacyOnlyStore);
+		assert.match(await read("history://sessions"), /history:\/\/sessions\/s1/);
+		await assert.rejects(read("history://sessions/s1"), /does not implement SessionStore\.readEntryRange/);
+		await assert.rejects(read("history://sessions/s1:1-1"), /does not implement SessionStore\.readEntryRange/);
+		await assert.rejects(search("hello", "history://sessions/s1"), /does not implement SessionStore\.readEntryRange/);
+		assert.match(await search("hello", "history://sessions"), /1 unreadable/);
+		assert.equal(loadCalls, 0);
+	});
+
+	it("reads only the requested slice of a spilled MemorySessionStore session (#5250)", async () => {
+		const baseFiles = releasedHistoryFiles(dir);
+		let fullReads = 0;
+		let rangeBytesRead = 0;
+		const store = new MemorySessionStore(undefined, {
+			report: (err) => baseFiles.report(err),
+			async createDirectory() {
+				const created = await baseFiles.createDirectory();
+				if ("code" in created) return created;
+				return {
+					...created,
+					async read(file) {
+						fullReads++;
+						return created.read(file);
+					},
+					async readRange(file, position, length) {
+						rangeBytesRead += length;
+						return created.readRange(file, position, length);
+					},
+				};
+			},
+		});
+		try {
+			await store.create(
+				header("spilled"),
+				numbered(500, (seq) => `spilled-entry-${seq} ${"z".repeat(200)}`),
+			);
+			await store.releaseSession("spilled");
+			await store.append("spilled", [message("e501", "user", "tail-501", BASE + 501_000)], { expectSeq: 500 });
+			const { read } = historyOver(store);
+			assert.match(await read("history://sessions"), /history:\/\/sessions\/spilled/);
+			assert.equal(fullReads, 0, "listing without search text must not read the spill file");
+			const slice = await read("history://sessions/spilled:250-251");
+			assert.ok(slice.includes("spilled-entry-250"));
+			assert.ok(slice.includes("spilled-entry-251"));
+			assert.equal(fullReads, 0, "ranged read must not read the whole spill file");
+			assert.ok(rangeBytesRead > 0 && rangeBytesRead < 2_000, `read ${rangeBytesRead} spilled bytes`);
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("budgets and aborts session discovery, resuming across calls and preserving query parameters (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			for (let i = 1; i <= 40; i++) {
+				const at = BASE + i * 60_000;
+				await store.create(
+					{ id: `s-${i}`, version: SESSION_FORMAT_VERSION, createdAt: new Date(at).toISOString(), cwd: PROJECT },
+					[message(`m-${i}`, "user", `session ${i} first message`, at)],
+				);
+			}
+			const { read } = historyOver(store, { rows: 15 });
+			let url: string | undefined = "history://sessions?limit=10&offset=5";
+			let finalListing = "";
+			let calls = 0;
+			while (url !== undefined && calls < 10) {
+				const out = await read(url);
+				calls++;
+				if (out.includes("sessions so far")) {
+					url = continuation(out);
+					assert.ok(url?.includes("limit=10"), url);
+					assert.ok(url?.includes("offset=5"), url);
+				} else {
+					finalListing = out;
+					break;
+				}
+			}
+			assert.ok(calls >= 3, `expected parked discovery across calls, took ${calls}`);
+			assert.match(finalListing, /# sessions 6-15 of 40/);
+
+			const bytePaged = historyOver(store, { bytes: 500 });
+			const firstLines = await bytePaged.read("history://sessions?project=all&limit=10&offset=2");
+			const cont = continuation(firstLines);
+			assert.ok(cont, firstLines);
+			assert.ok(cont.includes("project=all"), cont);
+			assert.ok(cont.includes("limit=10"), cont);
+			assert.ok(cont.includes("offset=2"), cont);
+			const nextLines = await bytePaged.read(cont);
+			assert.match(nextLines, /history:\/\/sessions\/s-\d+\?project=all/);
+
+			const controller = new AbortController();
+			controller.abort(new Error("abort listing"));
+			await assert.rejects(
+				Promise.resolve(
+					historyOver(store).router.readSelected?.("history://sessions", { signal: controller.signal }),
+				),
+				/abort listing/i,
+			);
+		} finally {
+			await close();
+		}
+	});
+
+	it("aborts and bounds catastrophic backtracking regexes without blocking the event loop (#5250)", async () => {
+		const store = new MemorySessionStore();
+		await store.create(header("redos"), [
+			message("e1", "user", `${"a".repeat(28)}!`, BASE),
+			message("e2", "assistant", "safe-tail", BASE + 1000),
+		]);
+		let longest = 0;
+		let last = performance.now();
+		let lastCpu = process.cpuUsage();
+		const gap = () => {
+			const now = performance.now();
+			const used = process.cpuUsage(lastCpu);
+			longest = Math.max(longest, Math.min(now - last, (used.user + used.system) / 1000));
+			last = now;
+			lastCpu = process.cpuUsage();
+		};
+		const ticker = setInterval(gap, 1);
+		try {
+			const controller = new AbortController();
+			const { router, request } = historyOver(store, { timeMs: 10_000 });
+			const started = performance.now();
+			const searching = router.search?.("history://sessions/redos", request("(?=a)(a+)+b", controller.signal));
+			setTimeout(() => controller.abort(new Error("abort redos")), 20);
+			await assert.rejects(Promise.resolve(searching), /abort redos/i);
+			assert.ok(performance.now() - started < 1_000, "catastrophic regex aborted promptly");
+
+			const timed = historyOver(store, { timeMs: 30 });
+			const out = (await timed.router.search?.("history://sessions/redos", timed.request("(?=a)(a+)+b"))) ?? "";
+			assert.match(out, /time budget/);
+			assert.ok(continuation(out)?.includes("cursor=2"), out);
+		} finally {
+			clearInterval(ticker);
+			gap();
+		}
+		assert.ok(longest < EVENT_LOOP_CPU_LIMIT_MS, `the event loop was busy for ${Math.round(longest)} ms`);
 	});
 
 	it(

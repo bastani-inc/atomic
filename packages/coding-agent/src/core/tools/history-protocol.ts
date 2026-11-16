@@ -22,13 +22,17 @@ import { resolvePath } from "../../utils/paths.ts";
 import type { WorkflowRunControl, WorkflowRunDetail, WorkflowRunSummary } from "../extensions/workflow-run-control.js";
 import type { SessionEntry } from "../session-manager-types.ts";
 import type { SessionRecordHeader, SessionStore, SessionSummary } from "../storage/session/types.js";
-import { indexLiterals, type LiteralQuery } from "./history-literals.ts";
+import { indexLiterals, isMultilineSearchPattern, type LiteralQuery } from "./history-literals.ts";
+import { matchLinesInWorker, matchMultilineInWorker } from "./history-regex-worker.ts";
 import {
 	type BudgetStop,
+	cutTextToUtf8Bytes,
 	DEFAULT_HISTORY_BUDGET,
+	formatSearchCursor,
 	type HistoryBudget,
 	HistoryCallBudget,
 	lineBytes,
+	mergeSeqRanges,
 	oneLine,
 	outlineSession,
 	rangeText,
@@ -41,13 +45,16 @@ import {
 	stopText,
 } from "./history-session.ts";
 import { entryLines, textLines, timestamp, transcriptHeaderLines, wrapLine } from "./history-transcript.ts";
-import { selectExactReadRanges, selectReadRanges } from "./read-selectors.ts";
+import { selectExactReadRanges, selectReadRanges, splitReadLineSelector } from "./read-selectors.ts";
 import {
+	formatSearchTextLine,
 	type InternalReadSelection,
 	type InternalResourceRouter,
 	type InternalSearchRequest,
-	searchTextSelectorLines,
+	normalizeSearchPattern,
 } from "./resource-selectors.ts";
+import { filterSearchOutputByLineRange, splitLineRangeSelector } from "./search-line-ranges.ts";
+import { loadNativeSearchBinding } from "./search-native.ts";
 
 export type { HistoryBudget } from "./history-session.ts";
 
@@ -80,12 +87,13 @@ const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 200;
 const LABEL_LIMIT = 120;
 const WHOLE_SESSION_ENTRY_LIMIT = 2_000;
+const DISCOVERY_TTL_MS = 60_000;
 const QUERY_KEYS: Readonly<Record<"sessions" | "workflows" | "root", readonly string[]>> = {
 	sessions: ["limit", "offset", "project", "cursor"],
 	workflows: ["limit", "offset", "cursor"],
 	root: ["limit", "offset", "project", "cursor"],
 };
-const CURSOR = /^(\d+)(?:\.(\d+))?$/;
+const CURSOR = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?$/;
 
 type Domain = "sessions" | "workflows";
 interface HistoryTarget {
@@ -95,8 +103,16 @@ interface HistoryTarget {
 	readonly offset: number;
 	/** `undefined` selects the current project, `"all"` every project, anything else is a project directory. */
 	readonly project?: string;
-	readonly cursor?: { readonly first: number; readonly second: number };
+	readonly cursor?: { readonly first: number; readonly second: number; readonly third: number };
 }
+
+interface ParkedDiscovery {
+	readonly iterator: AsyncIterator<SessionSummary>;
+	readonly items: { readonly summary: SessionSummary; readonly modifiedMs: number }[];
+	updatedAt: number;
+}
+
+const parkedDiscoveries = new WeakMap<SessionStore, Map<string, ParkedDiscovery>>();
 
 const HISTORY_URL = /^history:\/\/([^/?#]*)(?:\/([^?#]*))?(?:\?([^#]*))?$/;
 
@@ -108,9 +124,10 @@ export const HISTORY_HELP = [
 	"  history://workflows                 recent workflow runs, newest first (?limit=N, ?offset=N)",
 	"  history://workflows/<runId>[:N-M]   one run: inputs, stages with their sessions, result",
 	'Search any of them with the search tool, e.g. paths "history://sessions" or "history://" (both); a session match',
-	"is labelled with its URL and entry number, which reads back with :N-N. A search of workflow runs also searches",
-	"their stages' transcripts. A search covers one page of records (25 by default) and shows at most 10 matches per",
-	"session; a read or search that stops early says what it covered and the URL that continues it.",
+	"is labelled with its URL and entry number, which reads back with :N-N, and context lines may cross neighbouring",
+	"entries. A search of workflow runs also searches their stages' transcripts. A search covers one page of records",
+	"(25 by default) and shows at most 10 matches per session; a read or search that stops early says what it covered",
+	"and the ?cursor= URL that continues it.",
 	"Sessions of other projects appear only with ?project=all or ?project=<dir>; use that only when the user asks.",
 ].join("\n");
 
@@ -139,14 +156,24 @@ function parseTarget(url: string): HistoryTarget {
 	const cursorText = params.get("cursor");
 	const cursorMatch = cursorText === null ? undefined : CURSOR.exec(cursorText);
 	if (cursorText !== null && !cursorMatch)
-		throw new Error(`history cursor must be N or N.M, as a read or search that stopped early gave it: ${cursorText}`);
+		throw new Error(
+			`history cursor must be N, N.M or N.M.K, as a read or search that stopped early gave it: ${cursorText}`,
+		);
 	return {
 		domain,
 		...(idText ? { id: decodeURIComponent(idText) } : {}),
 		limit,
 		offset,
 		...(project === undefined ? {} : { project }),
-		...(cursorMatch ? { cursor: { first: Number(cursorMatch[1]), second: Number(cursorMatch[2] ?? 0) } } : {}),
+		...(cursorMatch
+			? {
+					cursor: {
+						first: Number(cursorMatch[1]),
+						second: Number(cursorMatch[2] ?? 0),
+						third: Number(cursorMatch[3] ?? 0),
+					},
+				}
+			: {}),
 	};
 }
 
@@ -176,26 +203,44 @@ function sessionUrl(id: string, target: HistoryTarget, cursor?: string, ranges?:
 	);
 }
 
-function pageUrl(domain: Domain, target: HistoryTarget, offset: number, cursor?: string): string {
+function pageUrl(
+	domain: Domain,
+	target: HistoryTarget,
+	offset: number,
+	cursor?: string,
+	ranges?: readonly SeqRange[],
+): string {
 	const params = new URLSearchParams();
 	if (offset > 0) params.set("offset", String(offset));
 	if (target.limit !== DEFAULT_LIMIT) params.set("limit", String(target.limit));
 	if (domain === "sessions" && target.project !== undefined) params.set("project", target.project);
 	if (cursor !== undefined) params.set("cursor", cursor);
 	const query = params.toString();
-	return `history://${domain}${query ? `?${query}` : ""}`;
+	return `history://${domain}${query ? `?${query}` : ""}${ranges && ranges.length > 0 ? `:${rangeText(ranges)}` : ""}`;
 }
 
 function windowText(total: number, offset: number, shown: number): string {
 	return shown === 0 ? `none of ${total}` : `${offset + 1}-${offset + shown} of ${total}`;
 }
 
+function urlWithCursor(url: string, cursor: string | undefined): string {
+	const match = HISTORY_URL.exec(url);
+	if (!match) return url;
+	const [, domainText = "", idText, queryText] = match;
+	const params = new URLSearchParams(queryText ?? "");
+	if (cursor === undefined) params.delete("cursor");
+	else params.set("cursor", cursor);
+	const query = params.toString();
+	return `history://${domainText}${idText ? `/${idText}` : ""}${query ? `?${query}` : ""}`;
+}
+
 function selectLines(
 	url: string,
 	lines: readonly string[],
 	selection: InternalReadSelection,
+	cursor: { readonly line: number; readonly char: number } | undefined,
 	budget: HistoryCallBudget,
-) {
+): string {
 	const all = [...lines];
 	let picked: { lines: string[]; numbers: number[] };
 	if (selection.ranges !== undefined && selection.ranges.length > 0) {
@@ -205,8 +250,8 @@ function selectLines(
 		if (picked.lines.length === 0)
 			return `Requested line ${ranges[0]!.start} is beyond end of resource (${all.length} lines total).`;
 	} else {
-		const start = Math.max(1, selection.offset ?? 1);
-		if (start > all.length && selection.offset !== undefined)
+		const start = Math.max(1, cursor?.line ?? selection.offset ?? 1);
+		if (start > all.length && (selection.offset !== undefined || cursor !== undefined))
 			return `Requested line ${start} is beyond end of resource (${all.length} lines total).`;
 		const end = selection.limit === undefined ? all.length : Math.min(all.length, start + selection.limit - 1);
 		picked = {
@@ -215,23 +260,186 @@ function selectLines(
 		};
 	}
 	const out: string[] = [];
-	for (const [index, line] of picked.lines.entries()) {
-		const size = lineBytes(line);
-		if (!budget.fits(size) && out.length > 0) {
-			const from = picked.numbers[index]!;
-			out.push(
-				`[read lines ${picked.numbers[0]}-${from - 1} of ${all.length}; ${stopText("byte")}; continue with ${url}:${from}-${picked.numbers.at(-1)}]`,
-			);
+	const firstNumber = picked.numbers[0] ?? 1;
+	const lastNumber = picked.numbers.at(-1) ?? all.length;
+	for (const [index, fullLine] of picked.lines.entries()) {
+		const lineNum = picked.numbers[index]!;
+		if (cursor !== undefined && lineNum < cursor.line) continue;
+		const charOffset = cursor !== undefined && lineNum === cursor.line ? cursor.char : 0;
+		const text = charOffset > 0 ? fullLine.slice(charOffset) : fullLine;
+		const size = lineBytes(text);
+		if (!budget.fits(size)) {
+			if (out.length > 0) {
+				const contUrl = urlWithCursor(url, charOffset > 0 ? `${lineNum}.${charOffset}` : undefined);
+				out.push(
+					`[read lines ${firstNumber}-${Math.max(firstNumber, lineNum - 1)} of ${all.length}; ${stopText("byte")}; continue with ${contUrl}:${lineNum}-${lastNumber}]`,
+				);
+				break;
+			}
+			const piece = cutTextToUtf8Bytes(text, Math.max(1, budget.bytesAvailable()));
+			out.push(piece);
+			budget.spend(lineBytes(piece));
+			const nextChar = charOffset + piece.length;
+			if (nextChar < fullLine.length) {
+				const contUrl = urlWithCursor(url, `${lineNum}.${nextChar}`);
+				out.push(
+					`[read line ${lineNum} of ${all.length}; ${stopText("byte")}; continue with ${contUrl}:${lineNum}-${lastNumber}]`,
+				);
+				break;
+			}
+			if (lineNum < lastNumber) {
+				const contUrl = urlWithCursor(url, undefined);
+				out.push(
+					`[read lines ${firstNumber}-${lineNum} of ${all.length}; ${stopText("byte")}; continue with ${contUrl}:${lineNum + 1}-${lastNumber}]`,
+				);
+			}
 			break;
 		}
-		out.push(line);
+		out.push(text);
 		budget.spend(size);
 	}
 	return out.join("\n");
 }
 
-function baseUrl(url: string): string {
-	return url.replace(/[?#].*$/, "");
+function normalizeInlineReadSelection(
+	url: string,
+	selection: InternalReadSelection,
+): { readonly url: string; readonly selection: InternalReadSelection } {
+	if (selection.ranges !== undefined || selection.offset !== undefined || selection.raw) return { url, selection };
+	const split = splitReadLineSelector(url);
+	if (split.path === url && !split.raw) return { url, selection };
+	return {
+		url: split.path,
+		selection: {
+			...selection,
+			...(split.ranges === undefined ? {} : { ranges: split.ranges }),
+			...(split.offset === undefined ? {} : { offset: split.offset }),
+			...(split.limit === undefined ? {} : { limit: split.limit }),
+			...(split.raw ? { raw: true } : {}),
+		},
+	};
+}
+
+function normalizeInlineSearchRequest(
+	url: string,
+	request: InternalSearchRequest,
+): { readonly url: string; readonly request: InternalSearchRequest } {
+	if (request.ranges !== undefined) return { url, request };
+	const split = splitLineRangeSelector(url);
+	if (split.lineRanges === undefined) return { url, request };
+	return { url: split.path, request: { ...request, ranges: split.lineRanges } };
+}
+
+async function searchLinesBounded(
+	label: string,
+	lines: readonly string[],
+	request: InternalSearchRequest,
+	budget: HistoryCallBudget,
+): Promise<{ readonly rows: string[]; readonly timedOut: boolean }> {
+	const normalized = normalizeSearchPattern(request.pattern, request.ignoreCase);
+	if (!request.literal) new RegExp(normalized.pattern, normalized.flags);
+	const ignoreCase = normalized.flags.includes("i");
+	const multiline = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal);
+	const text = lines.join("\n");
+
+	if (!request.literal && !multiline && !text.includes("\0")) {
+		try {
+			const native = loadNativeSearchBinding()?.search?.(text, {
+				pattern: normalized.pattern,
+				ignoreCase,
+				multiline: false,
+				contextBefore: request.contextBefore,
+				contextAfter: request.contextAfter,
+			});
+			if (native && !native.error) {
+				const rows = native.matches.flatMap((match) => [
+					...(match.contextBefore ?? []).map((line) =>
+						formatSearchTextLine(label, line.lineNumber, line.line, false),
+					),
+					formatSearchTextLine(label, match.lineNumber, match.line, true),
+					...(match.contextAfter ?? []).map((line) =>
+						formatSearchTextLine(label, line.lineNumber, line.line, false),
+					),
+				]);
+				return {
+					rows:
+						request.ranges !== undefined
+							? filterSearchOutputByLineRange(
+									rows.join("\n"),
+									request.ranges,
+									request.contextBefore,
+									request.contextAfter,
+								)
+									.split("\n")
+									.filter((line) => line !== "" && line !== "No matches found")
+							: rows,
+					timedOut: false,
+				};
+			}
+		} catch {}
+	}
+
+	const matchLines = new Set<number>();
+	const contextLines = new Set<number>();
+	if (multiline) {
+		const res = await matchMultilineInWorker(
+			text,
+			text.length + 1,
+			normalized.pattern,
+			normalized.flags,
+			ignoreCase,
+			request.literal,
+			budget.remainingMs(),
+			budget.signal,
+		);
+		if (res.timedOut) return { rows: [], timedOut: true };
+		for (const span of res.matches) {
+			matchLines.add(span.startLine + 1);
+			for (
+				let n = Math.max(1, span.startLine + 1 - request.contextBefore);
+				n <= Math.min(lines.length, span.endLine + 1 + request.contextAfter);
+				n++
+			) {
+				contextLines.add(n);
+			}
+		}
+	} else {
+		const res = await matchLinesInWorker(
+			lines,
+			normalized.pattern,
+			normalized.flags,
+			ignoreCase,
+			request.literal,
+			budget.remainingMs(),
+			budget.signal,
+		);
+		if (res.timedOut) return { rows: [], timedOut: true };
+		for (const idx of res.matchedIndices) {
+			const lineNum = idx + 1;
+			matchLines.add(lineNum);
+			for (
+				let n = Math.max(1, lineNum - request.contextBefore);
+				n <= Math.min(lines.length, lineNum + request.contextAfter);
+				n++
+			) {
+				contextLines.add(n);
+			}
+		}
+	}
+	const rows = [...contextLines]
+		.sort((a, b) => a - b)
+		.map((line) => formatSearchTextLine(label, line, lines[line - 1] ?? "", matchLines.has(line)));
+	if (request.ranges === undefined) return { rows, timedOut: false };
+	const filtered = filterSearchOutputByLineRange(
+		rows.join("\n"),
+		request.ranges,
+		request.contextBefore,
+		request.contextAfter,
+	);
+	return {
+		rows: filtered === "No matches found" ? [] : filtered.split("\n").filter((line) => line !== ""),
+		timedOut: false,
+	};
 }
 
 export function createHistoryRouter(sources: HistorySources): InternalResourceRouter {
@@ -265,70 +473,142 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		urlWith: (query, ranges) => sessionUrl(id, target, query.cursor, ranges),
 	});
 
-	async function recentSessions(target: HistoryTarget): Promise<SessionSummary[]> {
-		const found: SessionSummary[] = [];
-		for await (const summary of requireStore().list({ ...projectScope(target), withoutSearchText: true }))
-			found.push(summary);
-		return found.sort(
-			(a, b) => Date.parse(b.modifiedAt) - Date.parse(a.modifiedAt) || b.createdAt.localeCompare(a.createdAt),
+	async function discoverSessions(
+		target: HistoryTarget,
+		budget: HistoryCallBudget,
+	): Promise<
+		| { readonly sessions: SessionSummary[]; readonly stopped?: undefined }
+		| { readonly sessions?: undefined; readonly stopped: { readonly reason: BudgetStop; readonly scanned: number } }
+	> {
+		const store = requireStore();
+		const scope = projectScope(target);
+		const scopeKey = JSON.stringify([scope.cwd ?? null]);
+		let byScope = parkedDiscoveries.get(store);
+		if (!byScope) {
+			byScope = new Map<string, ParkedDiscovery>();
+			parkedDiscoveries.set(store, byScope);
+		}
+		const now = Date.now();
+		for (const [key, entry] of byScope) {
+			if (now - entry.updatedAt > DISCOVERY_TTL_MS) {
+				void entry.iterator.return?.();
+				byScope.delete(key);
+			}
+		}
+		const isContinuation = target.cursor !== undefined && target.cursor.first === 0 && target.cursor.second > 0;
+		let parked = isContinuation ? byScope.get(scopeKey) : undefined;
+		if (!parked) {
+			const existing = byScope.get(scopeKey);
+			if (existing) {
+				void existing.iterator.return?.();
+				byScope.delete(scopeKey);
+			}
+			const iterable = store.list({ ...scope, withoutSearchText: true });
+			parked = { iterator: iterable[Symbol.asyncIterator](), items: [], updatedAt: now };
+		}
+		let progressed = false;
+		try {
+			for (;;) {
+				const reason = budget.spent();
+				if (reason && progressed) {
+					parked.updatedAt = Date.now();
+					byScope.set(scopeKey, parked);
+					return { stopped: { reason, scanned: parked.items.length } };
+				}
+				const next = await budget.race(parked.iterator.next());
+				progressed = true;
+				if (next.done) break;
+				const summary = next.value;
+				const modifiedMs = Date.parse(summary.modifiedAt);
+				parked.items.push({ summary, modifiedMs: Number.isNaN(modifiedMs) ? 0 : modifiedMs });
+				budget.takeRows(1);
+				if (parked.items.length % 64 === 0) await budget.pace();
+			}
+		} catch (error) {
+			void parked.iterator.return?.();
+			byScope.delete(scopeKey);
+			throw error;
+		}
+		byScope.delete(scopeKey);
+		await budget.pace();
+		parked.items.sort(
+			(a, b) => b.modifiedMs - a.modifiedMs || b.summary.createdAt.localeCompare(a.summary.createdAt),
 		);
+		return { sessions: parked.items.map((item) => item.summary) };
 	}
 
-	async function recentRuns(): Promise<WorkflowRunSummary[]> {
+	async function recentRuns(budget: HistoryCallBudget): Promise<WorkflowRunSummary[]> {
 		const control = requireWorkflows();
-		const runs = await (control.listProjectRuns?.() ?? control.listRuns({ includeDurable: true }));
+		const runs = await budget.race(control.listProjectRuns?.() ?? control.listRuns({ includeDurable: true }));
 		return [...runs].sort((a, b) => b.startedAt - a.startedAt);
 	}
 
-	async function belongsToProjectRun(runId: string): Promise<boolean> {
+	async function belongsToProjectRun(runId: string, budget: HistoryCallBudget): Promise<boolean> {
 		try {
-			return (await recentRuns()).some((run) => run.runId === runId);
-		} catch {
+			return (await recentRuns(budget)).some((run) => run.runId === runId);
+		} catch (error) {
+			if (budget.signal?.aborted) throw error;
 			return false;
 		}
 	}
 
-	async function authorizedSession(target: HistoryTarget): Promise<{ id: string; header: SessionRecordHeader }> {
+	async function authorizedSession(
+		target: HistoryTarget,
+		budget: HistoryCallBudget,
+	): Promise<{ id: string; header: SessionRecordHeader }> {
 		const id = target.id ?? "";
-		const header = await requireStore(id).readHeader(id);
+		const header = await budget.race(requireStore(id).readHeader(id));
 		if (!header) throw new Error(`Session not found: ${id}`);
 		if (id === sources.currentSessionId) return { id, header };
 		const { cwd } = projectScope(target);
 		if (cwd === undefined || createSessionCwdMatcher(cwd)(header.cwd)) return { id, header };
 		// A stage session can run in its own directory or worktree; the project's run vouches for it.
-		if (target.project === undefined && header.workflow && (await belongsToProjectRun(header.workflow.runId)))
+		if (target.project === undefined && header.workflow && (await belongsToProjectRun(header.workflow.runId, budget)))
 			return { id, header };
 		throw new Error(
 			`Session ${id} belongs to another project. History is limited to the current project unless the user asks for other projects.`,
 		);
 	}
 
-	async function listSessions(target: HistoryTarget): Promise<string> {
-		const sessions = await recentSessions(target);
-		const shown = sessions.slice(target.offset, target.offset + target.limit);
+	async function listSessions(
+		target: HistoryTarget,
+		budget: HistoryCallBudget,
+	): Promise<{ readonly text: string; readonly preselected?: true }> {
 		const scope =
 			target.project === "all" ? "all projects" : target.project === undefined ? "this project" : target.project;
+		const discovered = await discoverSessions(target, budget);
+		if (discovered.stopped !== undefined) {
+			const contUrl = pageUrl("sessions", target, target.offset, `0.${discovered.stopped.scanned}`);
+			return {
+				text: `# sessions in ${scope}\n[scanned ${discovered.stopped.scanned} sessions so far; ${stopText(discovered.stopped.reason)}; continue with ${contUrl}]`,
+				preselected: true,
+			};
+		}
+		const sessions = discovered.sessions;
+		const shown = sessions.slice(target.offset, target.offset + target.limit);
 		const next = target.offset + shown.length;
-		return [
-			`# sessions ${windowText(sessions.length, target.offset, shown.length)} in ${scope}, newest first${next < sessions.length ? `; next page: ${pageUrl("sessions", target, next)}` : ""}`,
-			...shown.map((summary) =>
-				[
-					sessionUrl(summary.id, target),
-					timestamp(summary.modifiedAt),
-					`${summary.messageCount} messages`,
-					...(summary.id === sources.currentSessionId ? ["current session"] : []),
-					...(summary.workflow
-						? [`workflow stage ${summary.workflow.stageName} (run ${summary.workflow.runId})`]
-						: []),
-					...(target.project === undefined ? [] : [summary.cwd]),
-					sessionLabel(summary),
-				].join(" | "),
-			),
-		].join("\n");
+		return {
+			text: [
+				`# sessions ${windowText(sessions.length, target.offset, shown.length)} in ${scope}, newest first${next < sessions.length ? `; next page: ${pageUrl("sessions", target, next)}` : ""}`,
+				...shown.map((summary) =>
+					[
+						sessionUrl(summary.id, target),
+						timestamp(summary.modifiedAt),
+						`${summary.messageCount} messages`,
+						...(summary.id === sources.currentSessionId ? ["current session"] : []),
+						...(summary.workflow
+							? [`workflow stage ${summary.workflow.stageName} (run ${summary.workflow.runId})`]
+							: []),
+						...(target.project === undefined ? [] : [summary.cwd]),
+						sessionLabel(summary),
+					].join(" | "),
+				),
+			].join("\n"),
+		};
 	}
 
-	async function listWorkflows(target: HistoryTarget): Promise<string> {
-		const runs = await recentRuns();
+	async function listWorkflows(target: HistoryTarget, budget: HistoryCallBudget): Promise<string> {
+		const runs = await recentRuns(budget);
 		const shown = runs.slice(target.offset, target.offset + target.limit);
 		const next = target.offset + shown.length;
 		return [
@@ -369,8 +649,8 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		];
 	}
 
-	async function authorizedRunId(id: string): Promise<string> {
-		const runs = await recentRuns();
+	async function authorizedRunId(id: string, budget: HistoryCallBudget): Promise<string> {
+		const runs = await recentRuns(budget);
 		const exact = runs.find((run) => run.runId === id);
 		if (exact) return exact.runId;
 		const prefixed = runs.filter((run) => run.runId.startsWith(id));
@@ -382,8 +662,9 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		);
 	}
 
-	async function readRun(id: string): Promise<string[]> {
-		return runLines(await requireWorkflows().getRun(await authorizedRunId(id)));
+	async function readRun(id: string, budget: HistoryCallBudget): Promise<string[]> {
+		const runId = await authorizedRunId(id, budget);
+		return runLines(await budget.race(requireWorkflows().getRun(runId)));
 	}
 
 	async function readSession(
@@ -391,13 +672,17 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		selection: InternalReadSelection,
 		budget: HistoryCallBudget,
 	): Promise<string> {
-		const { id, header } = await authorizedSession(target);
+		const { id, header } = await authorizedSession(target, budget);
 		const place = placeOf(id, requireStore(id), target);
 		const headerLines = transcriptHeaderLines(header, target.project === undefined);
 		const cursor: SeqCursor | undefined =
 			target.cursor === undefined
 				? undefined
-				: { seq: Math.max(1, target.cursor.first), line: target.cursor.second };
+				: {
+						seq: Math.max(1, target.cursor.first),
+						line: target.cursor.second,
+						char: target.cursor.third,
+					};
 		const ranges: SeqRange[] | undefined =
 			selection.ranges !== undefined && selection.ranges.length > 0
 				? selection.ranges.map((range) => ({ start: range.start, end: range.end ?? Number.MAX_SAFE_INTEGER }))
@@ -413,7 +698,18 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 						]
 					: undefined;
 		if (ranges !== undefined) return readSessionRanges(place, ranges, selection.raw === true, cursor, budget);
-		if (cursor !== undefined) return outlineSession(place, headerLines, cursor.seq, budget);
+		if (cursor !== undefined) {
+			if (cursor.line > 0 || cursor.char > 0) {
+				return readSessionRanges(
+					place,
+					[{ start: cursor.seq, end: Number.MAX_SAFE_INTEGER }],
+					selection.raw === true,
+					cursor,
+					budget,
+				);
+			}
+			return outlineSession(place, headerLines, cursor.seq, budget);
+		}
 		return readWholeOrOutline(place, headerLines, budget, WHOLE_SESSION_ENTRY_LIMIT);
 	}
 
@@ -424,11 +720,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		total: number,
 		shown: number,
 		unreadable: number,
+		ranges?: readonly SeqRange[],
 	): string[] {
 		const end = target.offset + shown;
 		if (target.offset === 0 && end >= total && unreadable === 0) return [];
 		return [
-			`${pageUrl(domain, target, target.offset)}:0: [searched ${domain} ${windowText(total, target.offset, shown)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}${end < total ? `; continue with ${pageUrl(domain, target, end)}` : ""}]`,
+			`${pageUrl(domain, target, target.offset)}:0: [searched ${domain} ${windowText(total, target.offset, shown)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}${end < total ? `; continue with ${pageUrl(domain, target, end, undefined, ranges)}` : ""}]`,
 		];
 	}
 
@@ -456,6 +753,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		request: InternalSearchRequest,
 		prefilter: LiteralQuery | undefined,
 		fromSeq: number,
+		fromMatchIndex: number,
 		budget: HistoryCallBudget,
 		store = requireStore(id),
 	) {
@@ -466,6 +764,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			request,
 			prefilter,
 			fromSeq,
+			fromMatchIndex,
 			ranges: request.ranges,
 			budget,
 		});
@@ -478,18 +777,42 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		budget: HistoryCallBudget,
 	): Promise<string[]> {
 		if (target.id !== undefined) {
-			const { id } = await authorizedSession(target);
+			const { id } = await authorizedSession(target, budget);
 			const fromSeq = Math.max(1, target.cursor?.first ?? 1);
-			const result = await searchOneSession(id, target, request, prefilter, fromSeq, budget);
+			const fromMatchIndex = target.cursor?.second ?? 0;
+			const result = await searchOneSession(id, target, request, prefilter, fromSeq, fromMatchIndex, budget);
 			if (!result.stopped) return result.lines;
 			const label = sessionUrl(id, target);
+			const resume = result.stopped.resume;
+			const coveredEnd = Math.max(
+				result.coveredFromSeq,
+				resume.matchIndex > 0 ? resume.seq : Math.min(result.lastSeq, resume.seq - 1),
+			);
+			const remainingRanges =
+				request.ranges === undefined
+					? undefined
+					: mergeSeqRanges(request.ranges)
+							.filter((range) => range.end >= resume.seq)
+							.map((range) => ({
+								start: Math.max(range.start, resume.seq),
+								end: Math.min(range.end, result.lastSeq),
+							}))
+							.filter((range) => range.start <= range.end);
+			const cursor = formatSearchCursor(resume);
 			return [
-				`${label}:0: [searched entries ${fromSeq}-${result.stopped.resumeSeq - 1} of ${result.lastSeq}; ${stopText(result.stopped.reason)}; continue with ${sessionUrl(id, target, String(result.stopped.resumeSeq))}]`,
+				`${label}:0: [searched entries ${result.coveredFromSeq}-${coveredEnd} of ${result.lastSeq}; ${stopText(result.stopped.reason)}; continue with ${sessionUrl(id, target, cursor, remainingRanges)}]`,
 				...result.lines,
 			];
 		}
+		const discovered = await discoverSessions(target, budget);
+		if (discovered.stopped !== undefined) {
+			const contUrl = pageUrl("sessions", target, target.offset, `0.${discovered.stopped.scanned}`, request.ranges);
+			return [
+				`${pageUrl("sessions", target, target.offset)}:0: [searched sessions 0 of ${discovered.stopped.scanned}+; ${stopText(discovered.stopped.reason)} after scanning ${discovered.stopped.scanned} sessions; continue with ${contUrl}]`,
+			];
+		}
 		const store = requireStore();
-		const candidates = (await recentSessions(target)).filter((summary) => summary.id !== sources.currentSessionId);
+		const candidates = discovered.sessions.filter((summary) => summary.id !== sources.currentSessionId);
 		const window = candidates.slice(target.offset, target.offset + target.limit);
 		const out: string[] = [];
 		let unreadable = 0;
@@ -505,16 +828,27 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 						index,
 						unreadable,
 						spent,
-						pageUrl("sessions", target, target.offset + index),
+						pageUrl("sessions", target, target.offset + index, undefined, request.ranges),
 						"",
 					),
 					...out,
 				];
-			const fromSeq = index === 0 ? Math.max(1, target.cursor?.first ?? 1) : 1;
+			const fromSeq = index === 0 && target.cursor && target.cursor.first > 0 ? target.cursor.first : 1;
+			const fromMatchIndex = index === 0 && target.cursor && target.cursor.first > 0 ? target.cursor.second : 0;
 			try {
-				const result = await searchOneSession(summary.id, target, request, prefilter, fromSeq, budget, store);
+				const result = await searchOneSession(
+					summary.id,
+					target,
+					request,
+					prefilter,
+					fromSeq,
+					fromMatchIndex,
+					budget,
+					store,
+				);
 				out.push(...result.lines);
-				if (result.stopped)
+				if (result.stopped) {
+					const cursor = formatSearchCursor(result.stopped.resume);
 					return [
 						stoppedCoverage(
 							"sessions",
@@ -524,17 +858,18 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 							index + 1,
 							unreadable,
 							result.stopped.reason,
-							pageUrl("sessions", target, target.offset + index, String(result.stopped.resumeSeq)),
-							` at entry ${result.stopped.resumeSeq} of ${result.lastSeq} in ${sessionUrl(summary.id, target)}`,
+							pageUrl("sessions", target, target.offset + index, cursor, request.ranges),
+							` at entry ${result.stopped.resume.seq} of ${result.lastSeq} in ${sessionUrl(summary.id, target)}`,
 						),
 						...out,
 					];
+				}
 			} catch (error) {
 				rethrowAbort(budget, error);
 				unreadable++;
 			}
 		}
-		return [...coverage("sessions", target, candidates.length, window.length, unreadable), ...out];
+		return [...coverage("sessions", target, candidates.length, window.length, unreadable, request.ranges), ...out];
 	}
 
 	/**
@@ -545,23 +880,45 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		runId: string,
 		request: InternalSearchRequest,
 		prefilter: LiteralQuery | undefined,
-		start: { readonly stage: number; readonly seq: number } | undefined,
+		start: { readonly stage: number; readonly seq: number; readonly matchIndex: number } | undefined,
 		budget: HistoryCallBudget,
 	): Promise<{
 		readonly lines: string[];
 		readonly unreadable: number;
 		readonly stopped?: { readonly reason: BudgetStop; readonly cursor: string };
 	}> {
-		const detail = await requireWorkflows().getRun(runId);
+		const detail = await budget.race(requireWorkflows().getRun(runId));
 		const lines: string[] = [];
 		if (start === undefined || start.stage === 0) {
 			const skipped = start?.seq ?? 0;
-			const own = searchLines(`history://workflows/${runId}`, runLines(detail), request).slice(skipped);
+			const evaluated = await searchLinesBounded(`history://workflows/${runId}`, runLines(detail), request, budget);
+			if (evaluated.timedOut) {
+				return { lines, unreadable: 0, stopped: { reason: "time", cursor: `0.${skipped}` } };
+			}
+			const own = evaluated.rows.slice(skipped);
 			for (const [index, line] of own.entries()) {
-				if (!budget.fits(lineBytes(line)))
+				const size = lineBytes(line);
+				if (!budget.fits(size)) {
+					if (lines.length === 0) {
+						const cut = cutTextToUtf8Bytes(line, Math.max(32, budget.bytesAvailable()));
+						lines.push(cut);
+						budget.spend(lineBytes(cut));
+						if (index + 1 < own.length || detail.stages.length > 0) {
+							return {
+								lines,
+								unreadable: 0,
+								stopped: {
+									reason: "byte",
+									cursor: index + 1 < own.length ? `0.${skipped + index + 1}` : "1.1",
+								},
+							};
+						}
+						break;
+					}
 					return { lines, unreadable: 0, stopped: { reason: "byte", cursor: `0.${skipped + index}` } };
+				}
 				lines.push(line);
-				budget.spend(lineBytes(line));
+				budget.spend(size);
 			}
 		}
 		const store = projectStore();
@@ -574,24 +931,32 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			if (spent && (lines.length > 0 || stageNumber > (start?.stage ?? 1)))
 				return { lines, unreadable, stopped: { reason: spent, cursor: `${stageNumber}.1` } };
 			try {
-				if (!(await store.readHeader(stage.sessionId))) continue;
+				if (!(await budget.race(store.readHeader(stage.sessionId)))) continue;
 				const fromSeq = start !== undefined && stageNumber === start.stage ? Math.max(1, start.seq) : 1;
+				const fromMatchIndex = start !== undefined && stageNumber === start.stage ? start.matchIndex : 0;
 				const result = await searchSession({
 					place: placeOf(stage.sessionId, store, { limit: DEFAULT_LIMIT, offset: 0 }),
 					label: `history://sessions/${stage.sessionId}`,
 					request: { ...request, ranges: undefined },
 					prefilter,
 					fromSeq,
+					fromMatchIndex,
 					ranges: undefined,
 					budget,
 				});
 				lines.push(...result.lines);
-				if (result.stopped)
+				if (result.stopped) {
+					const resume = result.stopped.resume;
+					const cursor =
+						resume.matchIndex > 0
+							? `${stageNumber}.${resume.seq}.${resume.matchIndex}`
+							: `${stageNumber}.${resume.seq}`;
 					return {
 						lines,
 						unreadable,
-						stopped: { reason: result.stopped.reason, cursor: `${stageNumber}.${result.stopped.resumeSeq}` },
+						stopped: { reason: result.stopped.reason, cursor },
 					};
+				}
 			} catch (error) {
 				rethrowAbort(budget, error);
 				unreadable++;
@@ -600,17 +965,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		return { lines, unreadable };
 	}
 
-	const searchLines = (label: string, lines: string[], request: InternalSearchRequest): string[] =>
-		searchTextSelectorLines(
-			label,
-			lines.join("\n"),
-			request.pattern,
-			request.ignoreCase,
-			request.literal,
-			request.contextBefore,
-			request.contextAfter,
-		);
-
 	async function searchWorkflows(
 		target: HistoryTarget,
 		request: InternalSearchRequest,
@@ -618,21 +972,24 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		budget: HistoryCallBudget,
 	): Promise<string[]> {
 		requireWorkflows();
-		const start = target.cursor === undefined ? undefined : { stage: target.cursor.first, seq: target.cursor.second };
+		const start =
+			target.cursor === undefined
+				? undefined
+				: { stage: target.cursor.first, seq: target.cursor.second, matchIndex: target.cursor.third };
 		if (target.id !== undefined) {
-			const runId = await authorizedRunId(target.id);
+			const runId = await authorizedRunId(target.id, budget);
 			const { lines, unreadable, stopped } = await searchRun(runId, request, prefilter, start, budget);
 			return [
 				...(unreadable > 0 ? [`history://workflows/${runId}:0: [${unreadable} stage transcripts unreadable]`] : []),
 				...(stopped
 					? [
-							`history://workflows/${runId}:0: [${stopText(stopped.reason)}; continue with history://workflows/${runId}?cursor=${stopped.cursor}]`,
+							`history://workflows/${runId}:0: [${stopText(stopped.reason)}; continue with history://workflows/${runId}?cursor=${stopped.cursor}${request.ranges ? `:${rangeText(request.ranges)}` : ""}]`,
 						]
 					: []),
 				...lines,
 			];
 		}
-		const runs = await recentRuns();
+		const runs = await recentRuns(budget);
 		const window = runs.slice(target.offset, target.offset + target.limit);
 		const out: string[] = [];
 		let unreadable = 0;
@@ -648,7 +1005,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 						index,
 						unreadable,
 						spent,
-						pageUrl("workflows", target, target.offset + index),
+						pageUrl("workflows", target, target.offset + index, undefined, request.ranges),
 						"",
 					),
 					...out,
@@ -667,7 +1024,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 							index + 1,
 							unreadable,
 							found.stopped.reason,
-							pageUrl("workflows", target, target.offset + index, found.stopped.cursor),
+							pageUrl("workflows", target, target.offset + index, found.stopped.cursor, request.ranges),
 							` in history://workflows/${run.runId}`,
 						),
 						...out,
@@ -677,32 +1034,49 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				unreadable++;
 			}
 		}
-		return [...coverage("workflows", target, runs.length, window.length, unreadable), ...out];
+		return [...coverage("workflows", target, runs.length, window.length, unreadable, request.ranges), ...out];
 	}
 
-	async function readSelected(url: string, selection: InternalReadSelection): Promise<string | undefined> {
-		if (!url.startsWith("history://")) return undefined;
+	async function readSelected(rawUrl: string, rawSelection: InternalReadSelection): Promise<string | undefined> {
+		if (!rawUrl.startsWith("history://")) return undefined;
+		const { url, selection } = normalizeInlineReadSelection(rawUrl, rawSelection);
 		const target = parseTarget(url);
 		if (target.domain === undefined) return HISTORY_HELP;
 		const budget = newBudget(selection.signal);
 		if (target.domain === "sessions" && target.id !== undefined) return readSession(target, selection, budget);
+		if (target.domain === "sessions") {
+			const listed = await listSessions(target, budget);
+			if (listed.preselected) return listed.text;
+			const lineCursor =
+				target.cursor && target.cursor.first > 0
+					? { line: target.cursor.first, char: target.cursor.second }
+					: undefined;
+			return selectLines(url, listed.text.split("\n"), selection, lineCursor, budget);
+		}
 		const text =
-			target.domain === "sessions"
-				? await listSessions(target)
-				: target.id === undefined
-					? await listWorkflows(target)
-					: (await readRun(target.id)).join("\n");
-		return selectLines(baseUrl(url), text.split("\n"), selection, budget);
+			target.id === undefined ? await listWorkflows(target, budget) : (await readRun(target.id, budget)).join("\n");
+		const lineCursor =
+			target.cursor && target.cursor.first > 0
+				? { line: target.cursor.first, char: target.cursor.second }
+				: undefined;
+		return selectLines(url, text.split("\n"), selection, lineCursor, budget);
 	}
 
 	return {
 		read: (url) => readSelected(url, {}),
 		readSelected,
-		search: async (url, request) => {
-			if (!url.startsWith("history://")) return undefined;
+		search: async (rawUrl, rawRequest) => {
+			if (!rawUrl.startsWith("history://")) return undefined;
+			const { url, request } = normalizeInlineSearchRequest(rawUrl, rawRequest);
 			const target = parseTarget(url);
 			const budget = newBudget(request.signal);
-			const prefilter = indexLiterals(request.pattern, request.ignoreCase, request.literal);
+			if (!request.literal) {
+				const normalized = normalizeSearchPattern(request.pattern, request.ignoreCase);
+				new RegExp(normalized.pattern, normalized.flags);
+			}
+			const prefilter = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal)
+				? undefined
+				: indexLiterals(request.pattern, request.ignoreCase, request.literal);
 			if (target.domain === "sessions") return (await searchSessions(target, request, prefilter, budget)).join("\n");
 			if (target.domain === "workflows")
 				return (await searchWorkflows(target, request, prefilter, budget)).join("\n");

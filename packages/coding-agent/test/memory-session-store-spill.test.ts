@@ -1554,6 +1554,7 @@ function releasingAfterWrites(store: MemorySessionStore): SessionStore {
 			return result;
 		},
 		load: (sessionId) => store.load(sessionId),
+		readEntryRange: (sessionId, query) => store.readEntryRange(sessionId, query),
 		readHeader: (sessionId) => store.readHeader(sessionId),
 		delete: (sessionId) => store.delete(sessionId),
 		list: (query) => store.list(query),
