@@ -465,6 +465,49 @@ test("a batch planned from a read reads as much for many checkpoints as for one,
 	}
 });
 
+test("a host's batch for a child the root started after the host's last read is recorded, not refused (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const first = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(first);
+		await f.pool.shipBatch(f.lease, first, shipBatchOf("first", 1, 2));
+		// The root starts a second child through its own queue: the host's view of the root's checkpoints predates it.
+		const second = poolWorkFixture("second");
+		const root = await openSqlPoolQueue(f.journal);
+		await root.enqueue(f.lease, second.work, second.boundary);
+		const attempt = await f.pool.claim(f.lease, "host/w2", [second.work], 60_000);
+		assert.ok(attempt);
+		const secondRun = { ...second.boundary.topology!.boundary!.child };
+		const step: DurableToolCheckpoint = {
+			kind: "tool",
+			workflowId: "root",
+			checkpointId: `${second.work.scope}:tool:1`,
+			name: "tool",
+			argsHash: `${second.work.scope}:args:1`,
+			output: { index: 101 },
+			completedAt: 1,
+			topology: { version: 1, nodeId: "tool-1", parentIds: [], ordinal: 1, order: 1, run: secondRun },
+		};
+		await f.pool.shipBatch(f.lease, attempt, {
+			id: "second",
+			host: "host",
+			events: [
+				{
+					localSeq: 1,
+					key: JSON.stringify(["CheckpointRecorded", "tool", step.checkpointId]),
+					payload: JSON.stringify(step),
+				},
+			],
+		});
+		assert.deepEqual(
+			(await recordedTools(f)).map((entry) => entry.index),
+			[1, 2, 101],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
 test("a batch planned without a read is refused when another writer recorded a checkpoint in its scope that it did not see (#4768)", async () => {
 	const f = await fixture();
 	try {

@@ -6,6 +6,7 @@ import { StaleLeaseError } from "../durable/journal/types.js";
 import { serializeJson } from "../durable/journal/values.js";
 import { assertWorkflowSerializableObject } from "../shared/serializable.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
+import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.js";
 import type { ResolvedCheckpointShipping } from "./public-options.js";
 import { ShipIdentityConflictError, type ShipShard } from "./ship-shard.js";
 
@@ -227,8 +228,9 @@ export class CheckpointShipping {
 
 	/**
 	 * Backpressure: an attempt whose oldest unshipped checkpoint waited {@link BACKPRESSURE_SHARE} of `maxLagMs`
-	 * acknowledges no new step until everything it holds is shipped, retrying a delivery that fails, so the steps a
-	 * host's death leaves to run again stay within that window. Rejects once the attempt is fenced or the host stops.
+	 * acknowledges no new step until everything it holds is shipped, retrying a delivery the store did not take, so
+	 * the steps a host's death leaves to run again stay within that window. Rejects once the attempt is fenced, the host
+	 * stops, or the shared journal refuses the delivery: retrying a refusal would hold the step back for good.
 	 */
 	private async catchUp(lease: AttemptLease): Promise<void> {
 		for (let tries = 0; ; tries++) {
@@ -240,8 +242,9 @@ export class CheckpointShipping {
 			try {
 				await this.flush(lease);
 				return;
-			} catch {
+			} catch (error) {
 				if (attempt.fenced !== undefined) throw attempt.fenced;
+				if (infrastructureFaultOf(error) !== "storage_unavailable") throw error;
 				await sleep(Math.min(BACKPRESSURE_RETRY_MAX_MS, BACKPRESSURE_RETRY_MS * 2 ** Math.min(tries, 10)));
 			}
 		}
