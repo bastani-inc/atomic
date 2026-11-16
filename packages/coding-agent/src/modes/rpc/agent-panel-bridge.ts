@@ -1,7 +1,14 @@
 import { matchesKey, truncateToWidth } from "@bastani/atomic-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
-import type { WorkflowPanelRun, WorkflowRunControl } from "../../core/extensions/workflow-run-control.js";
-import { getOwnerTaskStore, watchOwnerTaskStoreBinding } from "../../core/tasks/owner-store.js";
+import {
+	type AgentPanelSession,
+	agentPanelItems,
+	dismissedAgentPanelItems,
+	openAgentPanelItem,
+	stopAgentPanelItem,
+	subscribeAgentPanel,
+} from "../../core/tasks/agent-panel-source.ts";
+import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
 import {
 	AgentPanelFocus,
@@ -9,11 +16,9 @@ import {
 	type AgentPanelRow,
 	type AgentPanelStyle,
 	agentPanelKeys,
-	panelRunId,
 	panelTaskId,
 	renderAgentPanelHint,
 	renderAgentPanelRows,
-	taskPanelRows,
 } from "../interactive/components/agent-panel.ts";
 import { atomicWorkingFrame } from "../interactive/components/atomic-working-status.ts";
 import { renderNavKeyOverlay } from "../interactive/components/nav-keys.ts";
@@ -22,16 +27,11 @@ import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { theme } from "../interactive/theme/theme.js";
 import { showTaskInspector, type TaskInspectorUi } from "./task-ui-bridge.js";
 
-/** What the panel reads of a session: its task store (by identity) and its workflow runs. */
-export interface AgentPanelSession {
-	readonly workflows?: Pick<WorkflowRunControl, "panelRuns" | "subscribePanelRuns" | "openRun" | "quit">;
-}
-
 /** Per-session panel state that outlives one mount: when rows finished, viewed and dismissed runs. */
 interface PanelState {
 	readonly model: AgentPanelModel;
-	readonly viewedRuns: Set<string>;
-	readonly dismissedRuns: Set<string>;
+	/** Workflow-run rows opened at least once: a finished run stays until it has been viewed. */
+	readonly viewed: Set<string>;
 	/** Hides the unfocused panel while the focused one owns the same rows. */
 	setVisible?: (visible: boolean) => void;
 }
@@ -41,7 +41,7 @@ const states = new WeakMap<object, PanelState>();
 function panelState(session: object): PanelState {
 	let state = states.get(session);
 	if (state === undefined) {
-		state = { model: new AgentPanelModel(), viewedRuns: new Set(), dismissedRuns: new Set() };
+		state = { model: new AgentPanelModel(), viewed: new Set() };
 		states.set(session, state);
 	}
 	return state;
@@ -62,58 +62,14 @@ export function themedAgentPanelStyle(): AgentPanelStyle {
 	};
 }
 
-/** A workflow run as a panel row: its name, the stage it is on or what it waits for, and its stage progress. */
-export function workflowPanelRow(run: WorkflowPanelRun): AgentPanelRow {
-	const live = run.endedAt === undefined;
-	const state: AgentPanelRow["state"] = run.awaitingInput
-		? "input"
-		: run.status === "completed" || run.status === "skipped"
-			? "done"
-			: run.status === "failed" || run.status === "killed"
-				? "failed"
-				: run.status === "cancelled"
-					? "stopped"
-					: run.status === "paused" || run.status === "blocked"
-						? "paused"
-						: live
-							? "running"
-							: "stopped";
-	const task =
-		state === "input"
-			? (run.question ?? (run.currentStage === undefined ? "waiting for input" : `stage ${run.currentStage}`))
-			: state === "failed"
-				? (run.reason ?? "failed")
-				: run.currentStage === undefined
-					? ""
-					: `stage ${run.currentStage}`;
-	return {
-		id: `run:${run.runId}`,
-		kind: "workflow",
-		state,
-		name: run.name,
-		task,
-		elapsedMs: run.elapsedMs,
-		...(state === "running" || state === "paused" || state === "done"
-			? { progress: { done: run.stagesDone, total: run.stagesTotal } }
-			: {}),
-	};
-}
-
 /** The rows the panel shows now: workflow runs, then subagents and shells, newest first, with finished rows aging out. */
 export function agentPanelRows(session: AgentPanelSession & object): AgentPanelRow[] {
 	const state = panelState(session);
-	const store = getOwnerTaskStore(session);
-	const source = store === undefined ? undefined : ownerTaskViewSource(store);
-	const tasks = source === undefined ? [] : taskPanelRows(source, dismissedTasks(source)).reverse();
-	const runs = (session.workflows?.panelRuns?.() ?? [])
-		.filter((run) => !state.dismissedRuns.has(run.runId))
-		.map(workflowPanelRow)
-		.reverse();
+	const items = agentPanelItems(session);
+	const runs = items.filter((item) => item.kind === "workflow").reverse();
+	const tasks = items.filter((item) => item.kind !== "workflow").reverse();
 	// A finished run stays until it has been viewed; a finished task ages out.
-	return state.model.rows([...runs, ...tasks], (row) => {
-		const runId = panelRunId(row);
-		return runId !== undefined && !state.viewedRuns.has(runId);
-	});
+	return state.model.rows([...runs, ...tasks], (row) => row.kind === "workflow" && !state.viewed.has(row.id));
 }
 
 const WIDGET_KEY = "atomic.agent-panel";
@@ -132,7 +88,7 @@ export function bindAgentPanel(
 	let visible = true;
 	let disposed = false;
 	let timer: ReturnType<typeof setInterval> | undefined;
-	let unsubscribeStore = () => {};
+
 	const stopTimer = () => {
 		if (timer !== undefined) clearInterval(timer);
 		timer = undefined;
@@ -167,13 +123,7 @@ export function bindAgentPanel(
 		timer.unref?.();
 		ui.requestRender();
 	};
-	const connect = () => {
-		unsubscribeStore();
-		unsubscribeStore = getOwnerTaskStore(session)?.subscribe(update) ?? (() => {});
-		update();
-	};
-	const unwatchStore = watchOwnerTaskStoreBinding(session, connect);
-	const unsubscribeRuns = session.workflows?.subscribePanelRuns?.(update) ?? (() => {});
+	const unsubscribe = subscribeAgentPanel(session, update);
 	const unwatchRelease = ui.onWidgetRelease?.(WIDGET_KEY, () => {
 		mounted = false;
 	});
@@ -181,14 +131,12 @@ export function bindAgentPanel(
 		visible = value;
 		update();
 	};
-	connect();
+	update();
 	return () => {
 		disposed = true;
 		stopTimer();
 		state.setVisible = undefined;
-		unwatchStore();
-		unsubscribeStore();
-		unsubscribeRuns();
+		unsubscribe();
 		unwatchRelease?.();
 		if (mounted) ui.setWidget(WIDGET_KEY, undefined);
 	};
@@ -201,7 +149,6 @@ export function bindAgentPanel(
 export async function showAgentPanel(session: AgentPanelSession & object, ui: TaskInspectorUi): Promise<void> {
 	const state = panelState(session);
 	const store = getOwnerTaskStore(session);
-	const source = store === undefined ? undefined : ownerTaskViewSource(store);
 	const style = themedAgentPanelStyle();
 	if (agentPanelRows(session).length === 0) return;
 	let next: (() => Promise<void>) | undefined;
@@ -216,27 +163,29 @@ export async function showAgentPanel(session: AgentPanelSession & object, ui: Ta
 				const focus = new AgentPanelFocus(keys, {
 					open(row) {
 						const taskId = panelTaskId(row);
-						const runId = panelRunId(row);
 						if (taskId !== undefined && store !== undefined)
 							next = () => showTaskInspector(ui, store, taskId, { chat: true });
-						if (runId !== undefined) {
-							state.viewedRuns.add(runId);
-							next = async () => session.workflows?.openRun?.(runId);
+						else {
+							state.viewed.add(row.id);
+							next = async () => {
+								openAgentPanelItem(session, row.id);
+							};
 						}
 						finish();
 					},
 					stop(row) {
-						const taskId = panelTaskId(row);
-						const runId = panelRunId(row);
-						if (taskId !== undefined) void source?.cancelTask(taskId).then(() => tui.requestRender());
-						if (runId !== undefined) void session.workflows?.quit(runId).catch(() => undefined);
+						void stopAgentPanelItem(session, row.id).then((result) => {
+							if (!result.ok) ui.notify?.(`Could not stop ${row.name}: ${result.reason}`, "warning");
+							tui.requestRender();
+						});
 						tui.requestRender();
 					},
 					dismiss(row) {
+						dismissedAgentPanelItems(session).add(row.id);
 						const taskId = panelTaskId(row);
-						const runId = panelRunId(row);
-						if (taskId !== undefined && source !== undefined) dismissedTasks(source).add(taskId);
-						if (runId !== undefined) state.dismissedRuns.add(runId);
+						// /tasks hides a dismissed task too.
+						if (taskId !== undefined && store !== undefined)
+							dismissedTasks(ownerTaskViewSource(store)).add(taskId);
 						focus.update(agentPanelRows(session));
 						if (agentPanelRows(session).length === 0) finish();
 						tui.requestRender();
@@ -245,11 +194,7 @@ export async function showAgentPanel(session: AgentPanelSession & object, ui: Ta
 				});
 				focus.update(agentPanelRows(session));
 				focus.enter();
-				const unsubscribe = store?.subscribe(() => {
-					focus.update(agentPanelRows(session));
-					tui.requestRender();
-				});
-				const unsubscribeRuns = session.workflows?.subscribePanelRuns?.(() => {
+				const unsubscribe = subscribeAgentPanel(session, () => {
 					focus.update(agentPanelRows(session));
 					tui.requestRender();
 				});
@@ -292,8 +237,7 @@ export async function showAgentPanel(session: AgentPanelSession & object, ui: Ta
 					},
 					dispose() {
 						clearInterval(tick);
-						unsubscribe?.();
-						unsubscribeRuns?.();
+						unsubscribe();
 					},
 				};
 			},

@@ -5,7 +5,6 @@ import type {
 } from "./workflow-events.js";
 import {
 	type SessionWorkflows,
-	type WorkflowPanelRun,
 	type WorkflowRunAllTarget,
 	type WorkflowRunControl,
 	type WorkflowRunControlOutcome,
@@ -175,19 +174,5 @@ export class SessionWorkflowsHandle implements SessionWorkflows {
 
 	async waitForSettled(runId: string): Promise<void> {
 		return this.control().waitForSettled(runId);
-	}
-
-	/** No runs when the workflows extension is not loaded or does not list them. */
-	panelRuns(): readonly WorkflowPanelRun[] {
-		return this.resolve()?.panelRuns?.() ?? [];
-	}
-
-	/** Follows the current extension generation: a reload re-subscribes on the next change it reports. */
-	subscribePanelRuns(listener: () => void): () => void {
-		return this.resolve()?.subscribePanelRuns?.(listener) ?? (() => {});
-	}
-
-	openRun(runId: string): void {
-		this.resolve()?.openRun?.(runId);
 	}
 }

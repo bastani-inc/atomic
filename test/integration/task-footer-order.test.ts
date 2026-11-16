@@ -77,7 +77,7 @@ test.each(["stage", "engine"] as const)(
 			const shown = taskRows(screen);
 			assert.ok(mcp >= 0, screen);
 			assert.equal(shown.length, expected.length, screen);
-			shown.forEach((row, index) => assert.match(row, expected[index]!));
+			for (const [index, row] of shown.entries()) assert.match(row, expected[index]!);
 			assert.ok(rows.indexOf(shown[0]!) > mcp, `Task rows must follow MCP:\n${screen}`);
 		};
 		try {

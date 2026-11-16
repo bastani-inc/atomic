@@ -1,7 +1,8 @@
 import type { Component } from "@bastani/atomic-tui";
+import { taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { theme } from "../theme/theme.js";
-import { renderAgentPanelRows, taskPanelRows } from "./agent-panel.ts";
+import { renderAgentPanelRows } from "./agent-panel.ts";
 import { TaskRow, taskLabel, taskTitle } from "./task-row.js";
 
 /** Complete projection; viewport owners, not this list, decide how much to mount. */
@@ -65,7 +66,7 @@ export function isActiveBackgroundTask(task: TaskRecord): boolean {
  */
 export function renderTaskFooter(tasks: readonly TaskRecord[], width: number): string[] {
 	const active = tasks.filter(isActiveBackgroundTask);
-	return renderAgentPanelRows(taskPanelRows({ backgroundTasks: active }, new Set()).reverse(), width, {
+	return renderAgentPanelRows(taskPanelItems({ backgroundTasks: active }, new Set()).reverse(), width, {
 		dim: (text) => theme.fg("dim", text),
 		text: (text) => theme.fg("text", text),
 		muted: (text) => theme.fg("muted", text),

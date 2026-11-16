@@ -5,32 +5,15 @@
  */
 
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
-import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
-import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import type { AgentPanelItem, AgentPanelState } from "../../../core/tasks/agent-panel-source.ts";
+import type { TaskId } from "../../../core/tasks/contracts.js";
 import { atomicWorkingGlyph } from "./atomic-working-status.ts";
 import { type NavKey, type NavKeybindings, type NavKeyStyle, renderNavHintLine, TwoPressConfirm } from "./nav-keys.ts";
-import { dismissedTasks } from "./task-dismissal.ts";
-import { taskDisplayText, taskState } from "./task-row.js";
+import { taskDisplayText } from "./task-row.js";
 
-/** What a row's glyph and state word say about it. */
-export type AgentPanelState = "running" | "queued" | "input" | "paused" | "stopping" | "done" | "failed" | "stopped";
-
-export interface AgentPanelRow {
-	/** `task:<id>` or `run:<id>`. */
-	readonly id: string;
-	readonly kind: "agent" | "shell" | "workflow";
-	readonly state: AgentPanelState;
-	/** Agent name, `shell`, or the workflow's name. */
-	readonly name: string;
-	/** What it works on: the task's title, the shell's command, the run's current stage. */
-	readonly task: string;
-	readonly elapsedMs?: number;
-	readonly tokens?: number;
-	/** Stages finished and in total, for a workflow run. */
-	readonly progress?: { readonly done: number; readonly total: number };
-	/** Messages typed to the agent that it has not taken yet. */
-	readonly queued?: number;
-}
+/** A panel row: one item of the session's agent panel. */
+export type AgentPanelRow = AgentPanelItem;
+export type { AgentPanelState };
 
 /** A finished row reads dim after this long, and leaves the panel after {@link AGENT_PANEL_DROP_MS}. */
 export const AGENT_PANEL_FADE_MS = 30_000;
@@ -53,33 +36,6 @@ const FINISHED: ReadonlySet<AgentPanelState> = new Set(["done", "failed", "stopp
 
 export function isFinishedPanelRow(row: Pick<AgentPanelRow, "state">): boolean {
 	return FINISHED.has(row.state);
-}
-
-function taskPanelState(task: TaskRecord): AgentPanelState {
-	if (task.execution.kind === "queued") return "queued";
-	if (task.execution.kind === "cancelling") return "stopping";
-	if (task.execution.kind === "running") return task.attention.kind === "none" ? "running" : "input";
-	const state = taskState(task);
-	if (state === "completed") return "done";
-	if (state === "failed") return "failed";
-	return "stopped";
-}
-
-/** The panel rows of a session's background tasks, newest first within running and then finished work. */
-export function taskPanelRows(source: Pick<TaskViewSource, "backgroundTasks">, dismissed: ReadonlySet<TaskId>) {
-	return source.backgroundTasks
-		.filter((task) => !dismissed.has(task.ref.taskId) && task.parentTaskId === undefined)
-		.map(
-			(task): AgentPanelRow => ({
-				id: `task:${task.ref.taskId}`,
-				kind: task.kind === "agent" ? "agent" : "shell",
-				state: taskPanelState(task),
-				name: taskDisplayText(task.kind === "agent" ? (task.agentName ?? "agent") : "shell"),
-				task: taskDisplayText(task.title || ""),
-				...(task.metrics?.elapsedMs === undefined ? {} : { elapsedMs: task.metrics.elapsedMs }),
-				...(task.metrics?.tokenCount === undefined ? {} : { tokens: task.metrics.tokenCount }),
-			}),
-		);
 }
 
 /** `41m`, `1h 31m`, `9s`: elapsed time as the panel shows it. */
@@ -274,7 +230,9 @@ export function renderAgentPanelRows(
 	}
 	const visible = focused ? rows.slice(options.scroll ?? 0, (options.scroll ?? 0) + AGENT_PANEL_FOCUSED_ROWS) : rows;
 	const shown = focused ? visible : visible.slice(0, AGENT_PANEL_IDLE_ROWS);
-	for (const row of shown) {
+	for (const raw of shown) {
+		// Names and tasks come from models and commands: control sequences never reach the terminal.
+		const row = { ...raw, name: taskDisplayText(raw.name), task: taskDisplayText(raw.task) };
 		const dim = options.faded?.(row) === true;
 		const queued = row.queued ? ` · ${row.queued} queued` : undefined;
 		line(
@@ -437,14 +395,4 @@ export function renderAgentPanelHint(
 /** Task ids a panel's rows name, for a caller that acts on tasks. */
 export function panelTaskId(row: Pick<AgentPanelRow, "id">): TaskId | undefined {
 	return row.id.startsWith("task:") ? (row.id.slice(5) as TaskId) : undefined;
-}
-
-/** Workflow run ids a panel's rows name. */
-export function panelRunId(row: Pick<AgentPanelRow, "id">): string | undefined {
-	return row.id.startsWith("run:") ? row.id.slice(4) : undefined;
-}
-
-/** Dismissed task rows of `source`, shared with `/tasks`. */
-export function panelDismissedTasks(source: object): Set<TaskId> {
-	return dismissedTasks(source);
 }

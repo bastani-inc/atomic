@@ -1,17 +1,19 @@
 /**
- * The session's top-level workflow runs as the host's agent panel and `/tasks` list them: one row per run with its
- * status, stage progress, current stage and elapsed time, read from the live store.
+ * The session's top-level workflow runs as items of the host's agent panel and `/tasks`: one item per run with its
+ * state, stage progress, current stage, waiting question and elapsed time, read from the live store (#5224).
  */
 
-import type { WorkflowPanelRun } from "@bastani/atomic";
+import type { AgentPanelItem, AgentPanelState } from "@bastani/atomic";
 import { settledStageCount } from "../shared/expanded-workflow-graph.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { createRunIndicatorStatusResolver } from "../shared/run-indicator-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
-import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import type { PendingPrompt, RunSnapshot, RunStatus, StageSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 
 const REASON_WIDTH = 120;
+/** The id prefix of a run's item. */
+export const PANEL_RUN_PREFIX = "run:";
 
 function oneLine(text: string | undefined): string | undefined {
 	const line = text
@@ -30,30 +32,56 @@ function currentStage(stages: readonly StageSnapshot[]): StageSnapshot | undefin
 	);
 }
 
-/** One {@link WorkflowPanelRun} per top-level run in `runs`, in launch order. */
-export function panelRunsFromSnapshot(runs: readonly RunSnapshot[], now = Date.now()): WorkflowPanelRun[] {
+function panelState(status: RunStatus, awaiting: boolean, live: boolean): AgentPanelState {
+	if (awaiting) return "input";
+	if (status === "completed" || status === "skipped") return "done";
+	if (status === "failed" || status === "killed") return "failed";
+	if (status === "cancelled") return "stopped";
+	if (status === "paused" || status === "blocked") return "paused";
+	return live ? "running" : "stopped";
+}
+
+/** The run id an item names, for a run's item. */
+export function panelRunId(id: string): string | undefined {
+	return id.startsWith(PANEL_RUN_PREFIX) ? id.slice(PANEL_RUN_PREFIX.length) : undefined;
+}
+
+/** One panel item per top-level run in `runs`, in launch order. */
+export function panelItemsFromSnapshot(runs: readonly RunSnapshot[], now = Date.now()): AgentPanelItem[] {
 	const indicator = createRunIndicatorStatusResolver(runs);
-	return topLevelWorkflowRuns(runs).map((run): WorkflowPanelRun => {
+	return topLevelWorkflowRuns(runs).map((run): AgentPanelItem => {
 		const stage = currentStage(run.stages);
-		const awaiting = indicator(run) === "awaiting_input";
-		const question = stage?.pendingPrompt?.message ?? run.pendingPrompt?.message;
 		const status = effectiveRunStatus(run);
-		const failed = status === "failed" || status === "killed";
-		const reason = failed
-			? oneLine(run.error ?? run.stages.find((candidate) => candidate.status === "failed")?.error ?? run.exitReason)
-			: undefined;
+		const state = panelState(status, indicator(run) === "awaiting_input", run.endedAt === undefined);
+		const prompt: PendingPrompt | undefined = stage?.pendingPrompt ?? run.pendingPrompt;
+		const question = state === "input" ? oneLine(prompt?.message) : undefined;
+		const reason =
+			state === "failed"
+				? oneLine(
+						run.error ?? run.stages.find((candidate) => candidate.status === "failed")?.error ?? run.exitReason,
+					)
+				: undefined;
+		const task =
+			state === "input"
+				? (question ?? (stage === undefined ? "waiting for input" : `stage ${stage.name}`))
+				: state === "failed"
+					? (reason ?? "failed")
+					: stage === undefined
+						? ""
+						: `stage ${stage.name}`;
+		const showProgress = state === "running" || state === "paused" || state === "done";
 		return {
-			runId: run.id,
+			id: `${PANEL_RUN_PREFIX}${run.id}`,
+			kind: "workflow",
+			state,
 			name: run.name,
-			status,
-			awaitingInput: awaiting,
-			...(awaiting && question !== undefined ? { question: oneLine(question) } : {}),
+			task,
 			elapsedMs: elapsedRunMs(run, run.endedAt ?? now),
-			...(run.endedAt === undefined ? {} : { endedAt: run.endedAt }),
-			stagesDone: settledStageCount(run.stages),
-			stagesTotal: run.stages.length,
-			...(stage === undefined ? {} : { currentStage: stage.name }),
+			...(showProgress ? { progress: { done: settledStageCount(run.stages), total: run.stages.length } } : {}),
+			...(question === undefined ? {} : { question }),
+			...(state === "input" && prompt?.choices?.length ? { choices: [...prompt.choices] } : {}),
 			...(reason === undefined ? {} : { reason }),
+			...(run.endedAt === undefined ? {} : { endedAt: run.endedAt }),
 		};
 	});
 }

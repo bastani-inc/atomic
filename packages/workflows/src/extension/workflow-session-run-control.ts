@@ -26,7 +26,6 @@ import { describeErrorWithCauses } from "../shared/error-with-causes.js";
 import { isRunIdPrefix, resolveRunIdTarget } from "../shared/run-id.js";
 import type { Store } from "../shared/store.js";
 import { workflowIdentity } from "../shared/workflow-identity.js";
-import { panelRunsFromSnapshot } from "../tui/panel-runs.js";
 import type { PiEventContext, PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import { classifyControlError, type WorkflowControlFailureCode } from "./workflow-control-failure.js";
@@ -49,10 +48,8 @@ export interface SessionRunControlHost {
 	) => Promise<WorkflowToolResult>;
 	/** The owning session's most recent event context, or `undefined` before it started. */
 	readonly context: () => PiEventContext | undefined;
-	readonly store: Pick<Store, "runs"> & Partial<Pick<Store, "subscribeInvalidation">>;
+	readonly store: Pick<Store, "runs">;
 	readonly catalog?: () => Promise<DurableWorkflowCatalogEntries>;
-	/** Opens a run's graph in the session's interactive UI; absent where the session has none. */
-	readonly openRun?: (runId: string) => void;
 	/** The owning session's executors; defaults to the current session's. */
 	readonly jobs?: Pick<JobTracker, "get">;
 }
@@ -299,9 +296,6 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 				throw failure(code, `Run ${runId} did not settle cleanly: ${describeErrorWithCauses(error)}`, runId, cause);
 			}
 		},
-		panelRuns: () => panelRunsFromSnapshot(host.store.runs()),
-		subscribePanelRuns: (listener) => host.store.subscribeInvalidation?.(listener) ?? (() => {}),
-		...(host.openRun === undefined ? {} : { openRun: host.openRun }),
 		async resume(runId, options) {
 			return controlOutcome(
 				await request({

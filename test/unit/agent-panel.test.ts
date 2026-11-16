@@ -2,8 +2,13 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { matchesKey, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
-import type { WorkflowPanelRun } from "../../packages/coding-agent/src/core/extensions/workflow-run-control.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import {
+	type AgentPanelItem,
+	AgentPanelSourceHub,
+	dismissedAgentPanelItems,
+	openAgentPanelItem,
+} from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
 	AGENT_PANEL_DROP_MS,
@@ -20,7 +25,7 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { applyAttachedComposer } from "../../packages/coding-agent/src/modes/interactive/components/input-label.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { agentPanelRows, workflowPanelRow } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import { agentPanelRows } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
 const plain: AgentPanelStyle = {
@@ -212,59 +217,36 @@ test("panel time and token formats (#5224)", () => {
 	assert.equal(formatPanelTokens(1_250_000), "1.3M");
 });
 
-const RUN: WorkflowPanelRun = {
-	runId: "r1",
-	name: "ralph",
-	status: "running",
-	awaitingInput: false,
-	elapsedMs: 720_000,
-	stagesDone: 3,
-	stagesTotal: 5,
-	currentStage: "implement",
-};
-
-test("workflow runs map to panel rows by state, question and progress (#5224)", () => {
-	assert.deepEqual(workflowPanelRow(RUN), {
-		id: "run:r1",
-		kind: "workflow",
-		state: "running",
-		name: "ralph",
-		task: "stage implement",
-		elapsedMs: 720_000,
-		progress: { done: 3, total: 5 },
-	});
-	assert.equal(
-		workflowPanelRow({ ...RUN, awaitingInput: true, question: "approve the plan?" }).task,
-		"approve the plan?",
-	);
-	assert.equal(workflowPanelRow({ ...RUN, awaitingInput: true }).state, "input");
-	assert.equal(
-		workflowPanelRow({ ...RUN, status: "failed", endedAt: 1, reason: "tests failed" }).task,
-		"tests failed",
-	);
-	assert.equal(workflowPanelRow({ ...RUN, status: "completed", endedAt: 1 }).state, "done");
-	assert.equal(workflowPanelRow({ ...RUN, status: "paused" }).state, "paused");
-	assert.equal(workflowPanelRow({ ...RUN, status: "cancelled", endedAt: 1 }).state, "stopped");
-});
-
-test("the panel lists a session's workflow runs and background tasks together, newest first (#5224)", async () => {
+test("the panel lists a session's extension items and background tasks together, newest first (#5224)", async () => {
 	initTheme("dark");
 	const fixture = taskFixture();
 	try {
 		await fixture.start("first task");
 		await fixture.start("second task");
-		const session = {
-			workflows: {
-				panelRuns: () => [RUN],
-				subscribePanelRuns: () => () => {},
-				openRun: () => {},
-				quit: async () => ({ action: "quit" as const, runId: "r1", status: "ok" as const, message: "" }),
-			},
+		const hub = new AgentPanelSourceHub();
+		const run: AgentPanelItem = {
+			id: "run:r1",
+			kind: "workflow",
+			state: "running",
+			name: "ralph",
+			task: "stage implement",
+			progress: { done: 3, total: 5 },
 		};
+		const opened: string[] = [];
+		hub.register({ items: () => [run], subscribe: () => () => {}, open: (id) => opened.push(id) });
+		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 		bindOwnerTaskStore(session, fixture.store);
 		assert.deepEqual(
 			agentPanelRows(session).map((row) => `${row.name}:${row.task}`),
 			["ralph:stage implement", "worker:second task", "worker:first task"],
+		);
+		assert.equal(openAgentPanelItem(session, "run:r1"), true);
+		assert.deepEqual(opened, ["run:r1"]);
+		dismissedAgentPanelItems(session).add("run:r1");
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => row.name),
+			["worker", "worker"],
+			"a dismissed item leaves the panel",
 		);
 	} finally {
 		await fixture.dispose();

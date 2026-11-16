@@ -7,7 +7,7 @@ import { afterEach, test } from "vitest";
 import { workflowAnswerAction } from "../../packages/workflows/src/extension/workflow-tool-answer.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { panelRunsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
+import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 import { testRunId } from "../helpers/run-id.js";
 
 const runIds = new Set<string>();
@@ -32,7 +32,7 @@ function prompt(id: string, message: string): PendingPrompt {
 }
 
 function row(runId: string) {
-	return panelRunsFromSnapshot(store.runs()).find((run) => run.runId === runId);
+	return panelItemsFromSnapshot(store.runs()).find((item) => item.id === `run:${runId}`);
 }
 
 test("a run's row names its current stage and counts its settled stages (#5224)", () => {
@@ -42,25 +42,24 @@ test("a run's row names its current stage and counts its settled stages (#5224)"
 		stage("review", "pending", ["implement"]),
 	]);
 	const run = row(runId);
+	assert.equal(run?.kind, "workflow");
 	assert.equal(run?.name, "ralph");
-	assert.equal(run?.status, "running");
-	assert.equal(run?.awaitingInput, false);
-	assert.equal(run?.currentStage, "implement");
-	assert.equal(run?.stagesDone, 1);
-	assert.equal(run?.stagesTotal, 3);
+	assert.equal(run?.state, "running");
+	assert.equal(run?.task, "stage implement");
+	assert.deepEqual(run?.progress, { done: 1, total: 3 });
 	assert.ok((run?.elapsedMs ?? -1) >= 0);
 });
 
 test("a waiting question shows on the run's row until it is answered (#5224)", async () => {
 	const runId = makeRun("panel-question", "answerable", [stage("ask", "running")]);
 	assert.equal(store.recordStagePendingPrompt(runId, "ask", prompt("answer-prompt", "Approve the plan?")), true);
-	assert.equal(row(runId)?.awaitingInput, true);
+	assert.equal(row(runId)?.state, "input");
 	assert.equal(row(runId)?.question, "Approve the plan?");
-	assert.equal(row(runId)?.currentStage, "ask");
+	assert.equal(row(runId)?.task, "Approve the plan?");
 
 	const result = await workflowAnswerAction({ runId, text: "ship it" });
 	assert.equal(result.status, "ok");
-	assert.equal(row(runId)?.awaitingInput, false);
+	assert.equal(row(runId)?.state, "running");
 	assert.equal(row(runId)?.question, undefined);
 });
 
@@ -72,7 +71,8 @@ test("a failed run's row carries a one-line reason (#5224)", () => {
 	} as StageSnapshot);
 	store.recordRunEnd(runId, "failed", undefined, "stage build failed");
 	const run = row(runId);
-	assert.equal(run?.status, "failed");
+	assert.equal(run?.state, "failed");
 	assert.ok(run?.endedAt !== undefined);
 	assert.ok(run?.reason !== undefined && !run.reason.includes("\n"), "the reason is one line");
+	assert.equal(run?.task, run?.reason);
 });

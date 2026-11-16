@@ -1,4 +1,6 @@
 import type {
+	AgentPanelSource,
+	AgentPanelSourceRegistration,
 	CreateAgentSessionOptions,
 	DefaultResourceLoaderInheritanceSnapshot,
 	ModelRegistry,
@@ -191,6 +193,8 @@ export interface ExtensionAPI {
 	readonly lifecycleScope?: object;
 	registerWorkflowActivityPublisher?: () => WorkflowActivityPublisher;
 	registerWorkflowRunControl?: (control: WorkflowRunControl) => WorkflowRunControlRegistration;
+	/** Lists this extension's runs in the host's agent panel and `/tasks` (#5224). */
+	registerAgentPanelSource?: (source: AgentPanelSource) => AgentPanelSourceRegistration;
 	/** Present only when this extension instance belongs to an admitted in-process subagent child. */
 	readonly subagentPolicy?: CreateAgentSessionOptions["subagentPolicy"];
 	registerTool?: <TArgs, TResult>(opts: PiToolOpts<TArgs, TResult>) => void;
