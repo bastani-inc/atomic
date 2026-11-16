@@ -50,6 +50,7 @@ import {
 	worktreeAdderRecord,
 } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
 import { classifyRepository } from "../../packages/coding-agent/src/core/workspace/spec.ts";
+import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 import {
 	commitFile,
 	countGitCommands,
@@ -489,7 +490,7 @@ describe("workspace resolution details (#3109)", () => {
 		} finally {
 			if (previous === undefined) delete process.env.TMPDIR;
 			else process.env.TMPDIR = previous;
-			rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+			removeTestDirectory(scratch, { retries: 10, retryDelayMs: 100 });
 		}
 	});
 

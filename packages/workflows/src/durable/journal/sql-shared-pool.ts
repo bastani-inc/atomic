@@ -8,6 +8,7 @@ import {
 } from "@bastani/atomic/storage";
 import type { SerializedError } from "../../shared/error-codec.js";
 import { StaleStageLeaseError } from "../../workers/placement-errors.js";
+import type { ResolvedCheckpointShipping } from "../../workers/public-options.js";
 import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
 import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage, sqlPoolWrites } from "./internal.js";
 import { guardedPoolWrite } from "./pool-guarded-write.js";
@@ -68,6 +69,7 @@ export interface SharedPoolConfig {
 	readonly stageStartMaxLoadPerCpu?: number;
 	readonly maxWorkerRssBytes?: number;
 	readonly claimWindowMs: number;
+	readonly checkpointShipping?: ResolvedCheckpointShipping;
 	/** Children raise `ctx.ui` prompts for the root to answer, on whichever host runs them. */
 	readonly promptNodes?: boolean;
 	/** Fleet-wide model rate limits by provider or `provider/model` (#4768). */
