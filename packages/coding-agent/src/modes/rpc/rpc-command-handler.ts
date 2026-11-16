@@ -8,6 +8,7 @@ import { KeybindingsManager } from "../../core/keybindings.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
 import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
+import { STOP_ALL_STATUS_KEY } from "../interactive/interactive-stop-all.ts";
 import { showAgentPanel } from "./agent-panel-bridge.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
 import { outputExtensionLoadErrors } from "./rpc-extension-load-errors.ts";
@@ -136,6 +137,11 @@ export function createRpcCommandHandler({
 				void showAgentPanel(session, engineTaskInspectorUi(ui, taskInspectorUi)).catch((error: Error) =>
 					ui.notify(error.message, "error"),
 				);
+				return createRpcSuccessResponse(id, command.type);
+			}
+			case "set_stop_all_notice": {
+				// The host's Ctrl+X Ctrl+K notice, shown as an engine status so engine views (the workflow graph) show it.
+				session.extensionRunner.getUIContext().setStatus(STOP_ALL_STATUS_KEY, command.text);
 				return createRpcSuccessResponse(id, command.type);
 			}
 			case "stop_all_background": {

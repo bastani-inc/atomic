@@ -794,10 +794,11 @@ export class TaskInspector implements Component {
 		return this.navigation.focus.kind === "detail" || this.navigation.focus.kind === "stdin";
 	}
 	/** The waiting first press of `x`, as the line under the list shows it. */
-	/** A running task's elapsed time advances between its own reports, from when this view first saw it running. */
+	/** A running task's elapsed time advances between its own reports, on the clock every view shares. */
 	private withLiveElapsed(task: TaskRecord): TaskRecord {
 		const elapsedMs = liveElapsedMs(task.ref.taskId, task.metrics?.elapsedMs, task.execution.kind === "running");
-		return elapsedMs === task.metrics?.elapsedMs ? task : { ...task, metrics: { ...task.metrics, elapsedMs } };
+		if (elapsedMs === undefined) return task;
+		return { ...task, metrics: { ...task.metrics, elapsedMs } };
 	}
 	private stopNotice(): string {
 		if (this.itemFinishedWhileArmed !== undefined) {

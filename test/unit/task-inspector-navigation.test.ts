@@ -330,3 +330,35 @@ test("a chat opened from the agent panel goes back there with ← or ↓, and it
 		}
 	}
 });
+
+test("Esc in a waiting subagent's chat never leaves it, and its question stays pending (#5224)", async () => {
+	const h = await harness();
+	try {
+		await withTranscript(h, "Asking task");
+		h.fixture.runners[0]!.context.reportActivity({
+			reportId: "question",
+			change: {
+				kind: "attention-set",
+				attention: {
+					kind: "input-needed",
+					requestId: "q",
+					prompt: "Ship it?",
+					route: { sessionId: "fixture", promptId: "q" },
+				},
+			},
+		});
+		h.fixture.store.drain();
+		const id = h.fixture.store.tasks[0]!.ref.taskId;
+		h.inspector.openChat(id, "agents");
+		await flush();
+		assert.match(h.text(), /needs input/, "the composer names the wait");
+		h.inspector.handleInput(ESC);
+		h.inspector.handleInput(ESC);
+		await flush();
+		assert.equal(h.closed(), 0, "Esc does not leave the chat");
+		assert.equal(h.fixture.store.tasks[0]!.attention.kind, "input-needed", "the question is still pending");
+		assert.match(h.text(), /Answer worker…/, "the prompt says it answers the question");
+	} finally {
+		await h.dispose();
+	}
+});
