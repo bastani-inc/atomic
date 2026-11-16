@@ -24,7 +24,7 @@ import { mainComposerHintSegments } from "./components/main-composer-keys.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
 import { WidgetContainer } from "./components/scroll-widget.js";
-import { isActiveBackgroundTask } from "./components/task-list.ts";
+import { isActiveBackgroundTask } from "./components/task-list.js";
 import { WorkingRunMeter } from "./components/working-run-meter.ts";
 import {
 	type AgentSession,

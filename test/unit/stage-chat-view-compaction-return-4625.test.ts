@@ -29,9 +29,9 @@ function mountStageChat(handle: ReturnType<typeof makeHandle>["handle"]): StageC
 }
 
 const labels: ReadonlyArray<readonly [CompactionReason, RegExp]> = [
-	["manual", /Compacting context\.\.\. \(esc Cancel\)/],
-	["threshold", /Auto-compacting\.\.\. \(esc Cancel\)/],
-	["overflow", /Context overflow detected\. Auto-compacting\.\.\. \(esc Cancel\)/],
+	["manual", /Compacting context\.\.\. \(\d+s · esc to cancel\)/],
+	["threshold", /Auto-compacting\.\.\. \(\d+s · esc to cancel\)/],
+	["overflow", /Context overflow detected\. Auto-compacting\.\.\. \(\d+s · esc to cancel\)/],
 ];
 
 test("#4625: a stage chat reopened from another view mid-compaction shows the indicator and cancel hint", () => {
@@ -74,7 +74,7 @@ test("#4625: a stage chat reopened after its compaction ended in another view sh
 	const reopened = mountStageChat(handle);
 
 	const rendered = stripAnsi(reopened.render(96).join("\n"));
-	assert.doesNotMatch(rendered, /ompacting|\(esc Cancel\)/);
+	assert.doesNotMatch(rendered, /ompacting|to cancel\)/);
 	assert.match(rendered, /Working\.\.\./);
 	reopened.dispose();
 });

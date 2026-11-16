@@ -171,7 +171,8 @@ export class AtomicWorkingStatusComponent implements Component {
 		const styledMessage = noColorRequested()
 			? message
 			: (this.options.messageColor ?? ((text: string) => theme.fg("muted", text)))(message);
-		const meta = this.options.meta ? ` (${formatWorkingMeta(this.options.meta)})` : "";
+		const metaText = this.options.meta ? formatWorkingMeta(this.options.meta) : "";
+		const meta = metaText ? ` (${metaText})` : "";
 		const metaColor = this.options.messageColor ?? ((text: string) => theme.fg("dim", text));
 		const styledMeta = meta && !noColorRequested() ? metaColor(meta) : meta;
 		return ["", ...new Text(`${icon} ${styledMessage}${styledMeta}`, 1, 0).render(width)];

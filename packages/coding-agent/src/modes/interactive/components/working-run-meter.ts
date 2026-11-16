@@ -105,6 +105,8 @@ export function formatWorkingTokens(tokens: number): string {
 
 /** The parenthesised part of a working line: `2m 14s · ↓ 18.4k tokens`, or only the time before any token. */
 export function formatWorkingMeta(snapshot: WorkingRunSnapshot): string {
+	// A run that has just started has nothing to report yet.
+	if (snapshot.elapsedMs < 1000 && snapshot.outputTokens <= 0 && !snapshot.note) return "";
 	const parts = [formatWorkingElapsed(snapshot.elapsedMs)];
 	if (snapshot.outputTokens > 0) parts.push(`↓ ${formatWorkingTokens(snapshot.outputTokens)} tokens`);
 	if (snapshot.note) parts.push(snapshot.note);
