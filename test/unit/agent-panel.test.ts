@@ -25,7 +25,7 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { applyAttachedComposer } from "../../packages/coding-agent/src/modes/interactive/components/input-label.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { agentPanelRows } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import { agentPanelRows, bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
 const plain: AgentPanelStyle = {
@@ -301,4 +301,85 @@ test("a workflow row opens through its source with a way back to the panel (#522
 	opened[0]?.onReturn?.();
 	assert.equal(returned, 1);
 	assert.equal(openAgentPanelItem(session, "run:missing"), false);
+});
+
+test("a burst of source changes rebuilds the mounted panel's rows once, then follows the next change (#4009, #5224)", async () => {
+	initTheme("dark");
+	const hub = new AgentPanelSourceHub();
+	const listeners = new Set<() => void>();
+	let reads = 0;
+	let items: AgentPanelItem[] = [{ id: "run:r", kind: "workflow", state: "running", name: "ralph", task: "" }];
+	hub.register({
+		items: () => {
+			reads++;
+			return items;
+		},
+		subscribe: (listener) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	let mounts = 0;
+	let widget: { render(width: number): string[] } | undefined;
+	const dispose = bindAgentPanel(session, {
+		setWidget(_key: string, content: unknown) {
+			if (typeof content === "function") {
+				mounts++;
+				widget = content({} as never, {} as never) as never;
+			} else widget = undefined;
+		},
+		requestRender() {},
+	} as never);
+	try {
+		assert.equal(mounts, 1);
+		reads = 0;
+		for (let change = 0; change < 200; change++) for (const listener of listeners) listener();
+		assert.equal(reads, 0, "nothing is rebuilt inside the burst");
+		await Promise.resolve();
+		assert.ok(reads <= 2, `one rebuild for the burst, read ${reads} times`);
+		items = [];
+		for (const listener of listeners) listener();
+		await Promise.resolve();
+		assert.equal(widget, undefined, "the next change still reaches the panel");
+	} finally {
+		dispose();
+	}
+});
+
+test("the focused panel scrolls to keep the selection in view and keeps every row reachable (#5224)", () => {
+	const many: AgentPanelRow[] = Array.from({ length: 12 }, (_, index) => ({
+		...ROWS[0]!,
+		id: `task:${index}`,
+		name: `w${index}`,
+	}));
+	const focus = new AgentPanelFocus(new KeybindingsManager(), {
+		open() {},
+		stop() {},
+		dismiss() {},
+		close() {},
+	});
+	focus.update(many);
+	focus.enter();
+	const press = (data: string) => focus.handleInput(data, (input, key) => matchesKey(input, key as "up"));
+	const shown = () =>
+		renderAgentPanelRows(many, 80, plain, { selectedId: focus.selectedId, scroll: focus.scroll }).map((line) =>
+			line.trimEnd(),
+		);
+	for (let step = 0; step < 11; step++) press("\x1b[B");
+	assert.equal(focus.selectedId, "task:11");
+	assert.ok(
+		shown().some((line) => line.startsWith("❯ ∀ w11")),
+		"the last row is reachable and shown",
+	);
+	assert.ok(shown().length <= 1 + 8 + 1, "main, eight rows and the fold line at most");
+	press("\x1b[H");
+	assert.equal(focus.selectedId, "main");
+	assert.ok(
+		shown().some((line) => line.startsWith("  ∀ w0")),
+		"Home scrolls back to the top",
+	);
+	focus.selectedId = "task:5";
+	focus.update(many.filter((row) => row.id !== "task:5"));
+	assert.equal(focus.selectedId, "task:0", "a row that leaves moves the selection to the first row");
 });

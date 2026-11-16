@@ -40,6 +40,13 @@ export function isFinishedPanelRow(row: Pick<AgentPanelRow, "state">): boolean {
 	return FINISHED.has(row.state);
 }
 
+/** One safe display line: no terminal controls, unpaired surrogates, or invisible and bidi-override characters. */
+function panelText(text: string): string {
+	return taskDisplayText(text)
+		.toWellFormed()
+		.replace(/\p{Default_Ignorable_Code_Point}/gu, "");
+}
+
 /** `41m`, `1h 31m`, `9s`: elapsed time as the panel shows it. */
 export function formatPanelElapsed(ms: number): string {
 	const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -232,7 +239,7 @@ export function renderAgentPanelRows(
 	const shown = focused ? visible : visible.slice(0, AGENT_PANEL_IDLE_ROWS);
 	for (const raw of shown) {
 		// Names and tasks come from models and commands: control sequences never reach the terminal.
-		const row = { ...raw, name: taskDisplayText(raw.name), task: taskDisplayText(raw.task) };
+		const row = { ...raw, name: panelText(raw.name), task: panelText(raw.task) };
 		const dim = options.faded?.(row) === true;
 		const queued = row.queued ? ` · ${row.queued} queued` : undefined;
 		line(

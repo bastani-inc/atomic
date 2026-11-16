@@ -10,6 +10,7 @@ import { createRunIndicatorStatusResolver } from "../shared/run-indicator-status
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { PendingPrompt, RunSnapshot, RunStatus, StageSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
+import { pendingInputAffordance } from "./pending-input-affordance.js";
 
 const REASON_WIDTH = 120;
 /** The id prefix of a run's item. */
@@ -41,6 +42,17 @@ function panelState(status: RunStatus, awaiting: boolean, live: boolean): AgentP
 	return live ? "running" : "stopped";
 }
 
+/** The raw prompt a displayed question came from, for its choices. */
+function promptOf(
+	runs: readonly RunSnapshot[],
+	[ownerRunId, stageId, promptId]: readonly [string, string | null, string],
+): PendingPrompt | undefined {
+	const owner = runs.find((candidate) => candidate.id === ownerRunId);
+	const prompt =
+		stageId === null ? owner?.pendingPrompt : owner?.stages.find((stage) => stage.id === stageId)?.pendingPrompt;
+	return prompt?.id === promptId ? prompt : undefined;
+}
+
 /** The run id an item names, for a run's item. */
 export function panelRunId(id: string): string | undefined {
 	return id.startsWith(PANEL_RUN_PREFIX) ? id.slice(PANEL_RUN_PREFIX.length) : undefined;
@@ -52,9 +64,14 @@ export function panelItemsFromSnapshot(runs: readonly RunSnapshot[], now = Date.
 	return topLevelWorkflowRuns(runs).map((run): AgentPanelItem => {
 		const stage = currentStage(run.stages);
 		const status = effectiveRunStatus(run);
-		const state = panelState(status, indicator(run) === "awaiting_input", run.endedAt === undefined);
-		const prompt: PendingPrompt | undefined = stage?.pendingPrompt ?? run.pendingPrompt;
-		const question = state === "input" ? oneLine(prompt?.message) : undefined;
+		// A quit run waits for `resume`, not for an answer: it reads paused even with a question pending.
+		const quit = run.exitReason === "quit" || run.quitAt !== undefined;
+		const state = panelState(status, !quit && indicator(run) === "awaiting_input", run.endedAt === undefined);
+		// The one question the run waits on, sanitised for display; several questions (or none known) show none (#5224).
+		const affordance = state === "input" ? pendingInputAffordance(run, runs) : undefined;
+		const question = affordance?.message;
+		const prompt: PendingPrompt | undefined =
+			affordance === undefined ? undefined : promptOf(runs, affordance.identity);
 		const reason =
 			state === "failed"
 				? oneLine(

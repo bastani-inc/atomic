@@ -123,7 +123,17 @@ export function bindAgentPanel(
 		timer.unref?.();
 		ui.requestRender();
 	};
-	const unsubscribe = subscribeAgentPanel(session, update);
+	// A burst of task or run changes (a workflow fan-out, a reload) rebuilds the rows once, not once per change (#4009).
+	let scheduled = false;
+	const scheduleUpdate = () => {
+		if (scheduled) return;
+		scheduled = true;
+		queueMicrotask(() => {
+			scheduled = false;
+			update();
+		});
+	};
+	const unsubscribe = subscribeAgentPanel(session, scheduleUpdate);
 	const unwatchRelease = ui.onWidgetRelease?.(WIDGET_KEY, () => {
 		mounted = false;
 	});
