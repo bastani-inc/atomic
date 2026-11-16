@@ -414,7 +414,7 @@ test(
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			assert.equal(settled, false, "Esc during preparation leaves the child waiting for another message");
 			assert.equal(source!.isRunning?.(), false);
-			assert.equal(session.getLastAssistantText(), "");
+			assert.equal(session.getLastAssistantText(), undefined);
 			env.faux.setResponses([fauxAssistantMessage("finished after the preparation interrupt")]);
 			await session.sendCustomMessage(
 				{ customType: "intercom", content: "finish the task", display: true },
