@@ -197,12 +197,14 @@ export class ShipShard {
 		this.assertHeld(root, lease);
 		const digest = shipDigest(payload);
 		return this.database.transaction(async (tx) => {
+			this.assertHeld(root, lease);
 			const existing = await tx.get<SqliteRow & { local_seq: number; digest: string }>(
 				`SELECT local_seq, digest FROM ship_events WHERE work = ? AND event_key = ?`,
 				lease.id,
 				key,
 			);
 			if (existing !== undefined) {
+				this.assertHeld(root, lease);
 				if (existing.digest !== digest) throw new ShipIdentityConflictError();
 				return { localSeq: Number(existing.local_seq), accepted: false };
 			}
@@ -217,6 +219,7 @@ export class ShipShard {
 				digest,
 				at,
 			);
+			this.assertHeld(root, lease);
 			return { localSeq: Number(inserted!.local_seq), accepted: true };
 		});
 	}

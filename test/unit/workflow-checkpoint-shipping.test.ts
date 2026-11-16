@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { basename, dirname, join } from "node:path";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import type { PoolMutation } from "../../packages/workflows/src/durable/journal/pool-mutations.js";
 import type { PoolCommitReceipt } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
@@ -183,6 +183,24 @@ test("a local commit is refused unless the host holds the attempt's lease, renew
 		(await local.pending(LEASE)).map((event) => event.key),
 		["k1", "k2"],
 	);
+});
+
+test("a local commit rechecks a lease that expires while its write is queued (#4768)", async () => {
+	const { shard: local, clock } = await shard();
+	await local.hold(LEASE, LEASE_MS);
+	const accepting = local.accept(ROOT, LEASE, "queued", "{}", 1);
+	clock.now = LEASE_MS;
+	await refused(accepting, "expired");
+	assert.deepEqual(await local.pending(LEASE), []);
+});
+
+test("a local commit rechecks a lease released while its write is queued (#4768)", async () => {
+	const { shard: local } = await shard();
+	await local.hold(LEASE, LEASE_MS);
+	const accepting = local.accept(ROOT, LEASE, "queued", "{}", 1);
+	local.release(LEASE.id);
+	await refused(accepting, "missing");
+	assert.deepEqual(await local.pending(LEASE), []);
 });
 
 test("a key accepted again is the same checkpoint with its payload, and an identity conflict without (#4768)", async () => {
@@ -456,6 +474,24 @@ test("a delivery that fails is retried while commits go on, and a host held back
 	assert.deepEqual(shared.recorded, ["a", "b"].map(keyOf));
 	assert.deepEqual(shipping.status(), { pending: 0, lagMs: 0 });
 	assert.equal(shipping.lagging(), false);
+});
+
+test("a shared refusal of a direct session commit fences the attempt's pending checkpoints (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shipping = shippingOf(local, async () => {});
+	await shipping.hold(LEASE, LEASE_MS);
+	await local.accept(ROOT, LEASE, "pending", "{}", 1);
+	const stale = new StaleWorkLeaseError({ root: ROOT, workId: LEASE.id, generation: 1, reason: "superseded" });
+	await assert.rejects(
+		shipping.commit(
+			LEASE,
+			{ kind: "session-append", sessionId: "s", entries: [], expectSeq: 0 },
+			sharedCommit({ failure: stale }).commit,
+		),
+		stale,
+	);
+	assert.deepEqual(await local.pending(LEASE), []);
+	await refused(local.accept(ROOT, LEASE, "late", "{}", 1), "missing");
 });
 
 test("a local journal that fails, such as on a full disk, sends the attempt to the shared journal and says so once (#4768)", async () => {
@@ -927,4 +963,48 @@ test("a host ships the attempt holding the oldest checkpoint first (#4768)", asy
 	shipping.start();
 	for (let waited = 0; order.length < 5 && waited < 5_000; waited += 10) await sleep(10);
 	assert.deepEqual(order, ["work-4", "work-3", "work-2", "work-1", "work-0"]);
+});
+
+test("closing during a deadline flush stops even when another batch remains pending (#4768)", async () => {
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+	let release!: () => void;
+	let entered!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	try {
+		const { shard: local, clock } = await shard();
+		let deliveries = 0;
+		const shipping = new CheckpointShipping(local, {
+			host: "host",
+			intervalMs: 2_000,
+			maxBatch: 1_000,
+			maxLagMs: 1_000,
+			now: () => clock.now,
+			deliver: async () => {
+				deliveries++;
+				entered();
+				await gate;
+			},
+		});
+		opened.push(shipping);
+		await shipping.hold(LEASE, LEASE_MS);
+		for (let index = 0; index < 1_001; index++) {
+			await shipping.commit(LEASE, checkpoint(String(index)), sharedCommit().commit);
+			if (index === 999) await started;
+		}
+		shipping.start();
+		clock.now = BACKPRESSURE_MS;
+		await vi.advanceTimersByTimeAsync(25);
+		const closing = shipping.close();
+		release();
+		await closing;
+		assert.equal(deliveries, 1);
+	} finally {
+		release();
+		vi.useRealTimers();
+	}
 });
