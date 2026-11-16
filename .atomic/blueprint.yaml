@@ -31,6 +31,8 @@ knowledge:
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
       suites load the built packages. Validate named-worktree permissions with a private default umask:
       `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.
+      Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
+      require installed locales or a Git build with gettext support.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run
