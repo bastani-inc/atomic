@@ -333,6 +333,7 @@ test("inline /tasks picker pins the reply line, Sending… and bottom border wit
 		);
 		inspector.setBoardSource(source);
 		inspector.handleInput(SPACE);
+		inspector.renderPicker(100, 30);
 		for (const ch of "typed") inspector.handleInput(ch);
 		const picker = inspector.renderPicker(100, 40).map((line) => stripVTControlCharacters(line).trimEnd());
 		assert.equal(picker.length, 12);

@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- A reply sent from a workflow's `/tasks` card is refused if the pending question changed after the card was drawn, so text intended for an earlier question cannot answer its replacement ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- A reply sent from a workflow's `/tasks` card is refused if the pending question changed after typing began. SDK replies must include the captured prompt identity, so identical question text cannot direct an old reply to a replacement question ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Removed
 

@@ -498,6 +498,49 @@ test("extension agent and shell items share one session clock across the agent p
 	}
 });
 
+test.each(["agent", "shell"] as const)(
+	"an extension %s entering the panel window keeps time from its first listing (#5233)",
+	async (kind) => {
+		initTheme("dark");
+		let now = 100_000;
+		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+		const fixture = taskFixture();
+		const hub = new AgentPanelSourceHub();
+		let items: AgentPanelItem[] = Array.from({ length: 5 }, (_, index) => ({
+			id: `ext:${index}`,
+			kind,
+			state: "running",
+			name: `helper-${index}`,
+			task: "check",
+			elapsedMs: 1_000,
+		}));
+		hub.register({ items: () => items, subscribe: () => () => {} });
+		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+		const release = bindAgentPanel(session, { setWidget() {}, requestRender() {} });
+		try {
+			now += 60_000;
+			items = items.slice(0, 4);
+			const rows = agentPanelRows(session);
+			assert.equal(rows.find((row) => row.id === "ext:0")?.elapsedMs, 61_000);
+			const inspector = new TaskInspector(
+				fixture.store,
+				() => {},
+				() => {},
+			);
+			try {
+				inspector.setBoardSource(agentPanelBoardSource(session));
+				assert.match(inspector.renderViewport(120, 20).join("\n"), /helper-0.*1m 1s/);
+			} finally {
+				inspector.dispose();
+			}
+		} finally {
+			release();
+			clock.mockRestore();
+			await fixture.dispose();
+		}
+	},
+);
+
 test("bindAgentPanel and showAgentPanel project and clock only the drawn rows and keep hidden counts (#5224)", async () => {
 	initTheme("dark");
 	const now = 50_000;

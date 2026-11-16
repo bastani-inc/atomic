@@ -7,7 +7,7 @@
 import { sanitizeTerminalText } from "../../utils/terminal-text.ts";
 import type { ExtensionError } from "../extensions/runtime-types.ts";
 import type { TaskId, TaskRecord } from "./contracts.js";
-import { bindTaskClock, TaskElapsedClocks, taskClockOf } from "./live-elapsed.ts";
+import { bindTaskClock, TaskElapsedClocks, taskClockOf, taskClockRunning } from "./live-elapsed.ts";
 import { getOwnerTaskStore, watchOwnerTaskStoreBinding } from "./owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "./task-view-source.js";
 
@@ -484,8 +484,10 @@ export function agentPanelExtensionItems(session: AgentPanelSession & object): A
 	const clockIds = new Set<string>();
 	for (const item of all) {
 		if (item.kind !== "workflow" && item.state !== "queued") {
-			clockIds.add(agentPanelTaskId(item.id) ?? item.id);
+			const id = agentPanelTaskId(item.id) ?? item.id;
+			clockIds.add(id);
 			bindTaskClock(item, clocks);
+			clocks.elapsedMs(id, item.elapsedMs, taskClockRunning(item.state));
 		}
 	}
 	clocks.prune(clockIds);

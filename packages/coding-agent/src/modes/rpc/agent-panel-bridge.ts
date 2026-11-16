@@ -38,10 +38,10 @@ import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { theme } from "../interactive/theme/theme.js";
 import { showTaskInspector, type TaskInspectorUi } from "./task-ui-bridge.js";
 
-/** Per-session panel state that outlives one mount: when rows finished, viewed and dismissed runs. */
 type PanelRankCache = {
 	readonly store: OwnerTaskStore | undefined;
 	readonly revision: number;
+	readonly finishedRevision: number;
 	readonly extensions: string;
 	readonly dismissed: ReadonlySet<string>;
 	readonly expiresAt: number;
@@ -50,6 +50,7 @@ type PanelRankCache = {
 	readonly extensionSlots: readonly { readonly index: number; readonly id: string }[];
 };
 
+/** Per-session panel state that outlives one mount: when rows finished, viewed and dismissed runs. */
 interface PanelState {
 	readonly model: AgentPanelModel;
 	rankCaches?: Map<number, PanelRankCache>;
@@ -133,6 +134,7 @@ function rankPanelSession(
 		cached !== undefined &&
 		cached.store === store &&
 		cached.revision === revision &&
+		cached.finishedRevision === state.model.finishedRevision &&
 		cached.extensions === extensions &&
 		cached.expiresAt > Date.now() &&
 		cached.dismissed.size === dismissed.size &&
@@ -164,25 +166,29 @@ function rankPanelSession(
 	const finishedRows: AgentPanelRow[] = [];
 	let total = 0;
 
+	const extensionEntries: { group: AgentPanelRow[]; index: number; id: string }[] = [];
 	const pushItem = (item: AgentPanelRow, keep: boolean) => {
 		const finished = isFinishedPanelRow(item);
 		if (finished) {
 			if (!state.model.keepFinished(item.id, keep, now, pass)) return;
 			if (!keep) expiresAt = Math.min(expiresAt, state.model.finishedSince(item.id)! + AGENT_PANEL_DROP_MS);
-			total++;
-			if (inputRows.length + runningRows.length + otherRows.length + finishedRows.length < cap) {
-				finishedRows.push(item);
-			}
-		} else if (item.state === "input") {
-			total++;
-			if (inputRows.length < cap) inputRows.push(item);
-		} else if (item.state === "running") {
-			total++;
-			if (inputRows.length + runningRows.length < cap) runningRows.push(item);
-		} else {
-			total++;
-			if (inputRows.length + runningRows.length + otherRows.length < cap) otherRows.push(item);
 		}
+		total++;
+		const group = finished
+			? finishedRows
+			: item.state === "input"
+				? inputRows
+				: item.state === "running"
+					? runningRows
+					: otherRows;
+		const preceding =
+			group === inputRows
+				? 0
+				: inputRows.length +
+					(group === runningRows ? 0 : runningRows.length + (group === otherRows ? 0 : otherRows.length));
+		if (preceding + group.length >= cap) return;
+		extensionEntries.push({ group, index: group.length, id: item.id });
+		group.push(item);
 	};
 
 	for (let i = extItems.length - 1; i >= 0; i--) {
@@ -202,9 +208,9 @@ function rankPanelSession(
 			if (dismissed.size > 0 && dismissed.has(`task:${task.ref.taskId}`)) continue;
 			const rowState = taskPanelState(task);
 			if (rowState === "done" || rowState === "failed" || rowState === "stopped") {
-				const id = `task:${task.ref.taskId}`;
-				if (!state.model.keepFinished(id, false, now, pass)) continue;
-				expiresAt = Math.min(expiresAt, state.model.finishedSince(id)! + AGENT_PANEL_DROP_MS);
+				const id = task.ref.taskId;
+				if (!state.model.keepFinished(id, false, now, pass, true)) continue;
+				expiresAt = Math.min(expiresAt, state.model.finishedSince(id, true)! + AGENT_PANEL_DROP_MS);
 				total++;
 				if (inputRows.length + runningRows.length + otherRows.length + finishedRows.length < cap) {
 					finishedRows.push(lazyTaskPanelItem(task, sourceClocks));
@@ -241,12 +247,21 @@ function rankPanelSession(
 	}
 	state.rankCaches ??= new Map();
 	const extensionSlots: { index: number; id: string }[] = [];
-	for (let index = 0; index < rows.length; index++) {
-		if (panelTaskId(rows[index]!) === undefined) extensionSlots.push({ index, id: rows[index]!.id });
+	for (const slot of extensionEntries) {
+		const offset =
+			slot.group === inputRows
+				? 0
+				: inputRows.length +
+					(slot.group === runningRows
+						? 0
+						: runningRows.length + (slot.group === otherRows ? 0 : otherRows.length));
+		const index = offset + slot.index;
+		if (index < rows.length) extensionSlots.push({ index, id: slot.id });
 	}
 	state.rankCaches.set(cap, {
 		store,
 		revision,
+		finishedRevision: state.model.finishedRevision,
 		extensions,
 		dismissed: new Set(dismissed),
 		expiresAt,
@@ -261,8 +276,8 @@ function rankPanelSession(
 export function agentPanelRows(
 	session: AgentPanelSession & object,
 	window?: { readonly start?: number; readonly limit?: number },
-): AgentPanelRow[] {
-	return [...rankPanelSession(session, window).rows];
+): readonly AgentPanelRow[] {
+	return rankPanelSession(session, window).rows;
 }
 
 const WIDGET_KEY = "atomic.agent-panel";

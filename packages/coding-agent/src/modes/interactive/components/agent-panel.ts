@@ -63,7 +63,12 @@ export function panelProgressBar(done: number, total: number, cells = 16): strin
  */
 export class AgentPanelModel {
 	private readonly finishedAt = new Map<string, { since: number; pass: number }>();
+	private readonly finishedTaskAt = new Map<string, { since: number; pass: number }>();
 	private pass = 0;
+	private finishedGeneration = 0;
+	get finishedRevision(): number {
+		return this.finishedGeneration;
+	}
 	private passMatchedFinished = 0;
 	private hasLocalClocks = false;
 	private readonly elapsedClocks = new TaskElapsedClocks();
@@ -72,18 +77,20 @@ export class AgentPanelModel {
 		this.now = now;
 	}
 	/** When the row was first seen finished, if it is. */
-	finishedSince(id: string): number | undefined {
-		return this.finishedAt.get(id)?.since;
+	finishedSince(id: string, native = false): number | undefined {
+		return (native ? this.finishedTaskAt : this.finishedAt).get(id)?.since;
 	}
 	beginPass(): { readonly now: number; readonly pass: number } {
 		this.passMatchedFinished = 0;
 		return { now: this.now(), pass: ++this.pass };
 	}
-	keepFinished(id: string, keep: boolean, now: number, pass: number): boolean {
-		let entry = this.finishedAt.get(id);
+	keepFinished(id: string, keep: boolean, now: number, pass: number, native = false): boolean {
+		const table = native ? this.finishedTaskAt : this.finishedAt;
+		let entry = table.get(id);
 		if (entry === undefined) {
 			entry = { since: now, pass };
-			this.finishedAt.set(id, entry);
+			table.set(id, entry);
+			this.finishedGeneration++;
 			this.passMatchedFinished++;
 		} else if (entry.pass !== pass) {
 			entry.pass = pass;
@@ -92,10 +99,13 @@ export class AgentPanelModel {
 		return keep || now - entry.since < AGENT_PANEL_DROP_MS;
 	}
 	endPass(pass: number): void {
-		if (this.passMatchedFinished === this.finishedAt.size) return;
-		for (const [id, entry] of this.finishedAt) {
-			if (entry.pass !== pass) {
-				this.finishedAt.delete(id);
+		if (this.passMatchedFinished === this.finishedAt.size + this.finishedTaskAt.size) return;
+		for (const table of [this.finishedAt, this.finishedTaskAt]) {
+			for (const [id, entry] of table) {
+				if (entry.pass !== pass) {
+					table.delete(id);
+					this.finishedGeneration++;
+				}
 			}
 		}
 	}
@@ -152,7 +162,10 @@ export class AgentPanelModel {
 	}
 	/** Whether a finished row has been finished long enough to read dim. */
 	faded(row: Pick<AgentPanelRow, "id">): boolean {
-		const since = this.finishedAt.get(row.id)?.since;
+		const taskId = agentPanelTaskId(row.id);
+		const since =
+			(taskId === undefined ? undefined : this.finishedTaskAt.get(taskId)?.since) ??
+			this.finishedAt.get(row.id)?.since;
 		return since !== undefined && this.now() - since >= AGENT_PANEL_FADE_MS;
 	}
 }

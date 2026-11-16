@@ -344,11 +344,6 @@ export class TaskInspector implements Component {
 		});
 		const rows = this.boardRows();
 		this.refreshOrder(rows);
-		for (const row of rows) {
-			if (row.kind !== "item") continue;
-			const prompt = promptAnswerOptionsOf(row.item);
-			if (prompt !== undefined) this.paintedPrompts.set(row.id, prompt);
-		}
 		// Until the reader picks a row, the list starts on its first row, which may now be another source's waiting run.
 		const first = rows[0];
 		if (!this.selectionChosen && first !== undefined) this.navigation.select(first.id);
@@ -621,7 +616,11 @@ export class TaskInspector implements Component {
 			return true;
 		}
 		if (this.transcript) return this.handleTranscriptInput(data, this.transcript);
-		if (this.navigation.focus.kind !== "stdin" && isNavHelpKey(getKeybindings(), data)) {
+		const peekRow = this.peekId === undefined ? undefined : this.selectedRow();
+		const editingBoard =
+			this.navigation.focus.kind === "tasks" &&
+			(this.filtering || (peekRow !== undefined && peekRow.id === this.peekId && this.peekReplies(peekRow)));
+		if (!editingBoard && this.navigation.focus.kind !== "stdin" && isNavHelpKey(getKeybindings(), data)) {
 			this.helpOpen = true;
 			this.requestRender();
 			return true;
@@ -765,8 +764,7 @@ export class TaskInspector implements Component {
 		if (matchesKey(data, "enter") && Date.now() - this.sentAt < REPLY_ENTER_GUARD_MS) return true;
 		const row = this.selectedRow();
 		if (this.peekId !== undefined && row?.id === this.peekId) {
-			const replying =
-				this.peekReplies(row) || (this.replyTargets.has(row.id) && this.boardSource?.answer !== undefined);
+			const replying = this.peekReplies(row);
 			if (matchesKey(data, "escape")) {
 				this.closePeek();
 				return true;
@@ -792,11 +790,11 @@ export class TaskInspector implements Component {
 					(row.kind === "item" ? (row.item.choices?.length ?? 0) > 0 : false)
 				) {
 					const choice = this.drawnChoices?.[Number(data) - 1];
-					if (choice !== undefined) for (const char of choice) this.reply.handleInput(char);
+					if (choice !== undefined) for (const char of choice) this.handleReplyInput(row.id, char);
 					return true;
 				}
 				if (!matchesKey(data, "up") && !matchesKey(data, "down")) {
-					this.reply.handleInput(data);
+					this.handleReplyInput(row.id, data);
 					return true;
 				}
 			}
@@ -813,12 +811,7 @@ export class TaskInspector implements Component {
 			this.reply.setValue("");
 			const draft = this.replyDrafts.get(row.id) ?? "";
 			for (const char of draft) this.reply.handleInput(char);
-			if (!draft || !this.replyTargets.has(row.id)) {
-				const target =
-					this.paintedPrompts.get(row.id) ?? (row.kind === "item" ? promptAnswerOptionsOf(row.item) : undefined);
-				if (target !== undefined) this.replyTargets.set(row.id, target);
-				else this.replyTargets.delete(row.id);
-			}
+			if (!draft) this.replyTargets.delete(row.id);
 			return true;
 		}
 		if (row?.kind !== "item") return false;
@@ -855,6 +848,14 @@ export class TaskInspector implements Component {
 			return true;
 		}
 		return false;
+	}
+	private handleReplyInput(rowId: string, data: string): void {
+		const empty = this.reply.getValue() === "";
+		const target = empty ? this.paintedPrompts.get(rowId) : this.replyTargets.get(rowId);
+		if (empty && target === undefined) return;
+		this.reply.handleInput(data);
+		if (this.reply.getValue() === "") this.replyTargets.delete(rowId);
+		else if (empty && target !== undefined) this.replyTargets.set(rowId, target);
 	}
 	/** Space peeks in a card under another source's row; a task's peek is its detail page. */
 	private peeksInCard(row: TaskBoardRow): boolean {
@@ -909,10 +910,8 @@ export class TaskInspector implements Component {
 		if (!text || !this.boardSource?.answer) return;
 		const rowId = row.id;
 		const id = row.kind === "item" ? row.id : `task:${row.task.ref.taskId}`;
-		const expected =
-			this.replyTargets.get(rowId) ??
-			this.paintedPrompts.get(rowId) ??
-			(row.kind === "item" ? promptAnswerOptionsOf(row.item) : undefined);
+		const expected = this.replyTargets.get(rowId);
+		if (expected === undefined) return;
 		const environment = this.transcriptEnvironment();
 		this.sending = true;
 		this.requestRender();
@@ -1211,10 +1210,6 @@ export class TaskInspector implements Component {
 					if (detail) body.push(theme.fg("dim", `      ${detail}`));
 				}
 				if (isSelected && this.peekId === row.id) {
-					if (row.kind === "item" && !this.replyTargets.has(row.id)) {
-						const prompt = promptAnswerOptionsOf(row.item);
-						if (prompt !== undefined) this.replyTargets.set(row.id, prompt);
-					}
 					const replyLines = this.sending
 						? [theme.fg("muted", "Sending…")]
 						: this.peekReplies(row)

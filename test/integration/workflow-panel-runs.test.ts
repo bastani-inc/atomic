@@ -187,6 +187,30 @@ test("nested child prompts surface on the root row and answer the child's exact 
 	assert.equal(missingIdentityAttempt.ok, false);
 });
 
+test("a panel answer without an identity reports what is missing, not a changed question (#5233)", async () => {
+	const { source } = registeredWorkflowPanelSource();
+	const runId = makeRun("panel-missing-identity", "deploy", [stage("ask", "running")]);
+	store.recordStagePendingPrompt(runId, "ask", prompt("p1", "Deploy to staging?"));
+	const result = await source.answer!(`run:${runId}`, "yes");
+	assert.deepEqual(result, { ok: false, reason: "This answer does not say which question it answers." });
+	assert.equal(store.run(runId)?.stages[0]?.pendingPrompt?.id, "p1");
+});
+
+test("question text alone cannot answer a replacement with identical text (#5233)", async () => {
+	const { source } = registeredWorkflowPanelSource();
+	const runId = makeRun("panel-question-only", "deploy", [stage("ask", "running")]);
+	store.recordStagePendingPrompt(runId, "ask", prompt("p1", "Deploy to staging?"));
+	const displayed = source.items().find((item) => item.id === `run:${runId}`);
+	assert.ok(displayed?.question);
+	store.resolveStagePendingPrompt(runId, "ask", "p1", "done");
+	store.recordStagePendingPrompt(runId, "ask", prompt("p2", displayed.question));
+	const result = await source.answer!(`run:${runId}`, "yes", { question: displayed.question });
+	assert.equal(result.ok, false);
+	assert.equal(store.run(runId)?.stages[0]?.pendingPrompt?.id, "p2");
+	const current = source.items().find((item) => item.id === `run:${runId}`);
+	assert.deepEqual(await source.answer!(`run:${runId}`, "no", { promptId: current?.promptId }), { ok: true });
+});
+
 test("parallel prompts and custom-UI prompts omit single-prompt question and choices (#5224)", async () => {
 	const { source } = registeredWorkflowPanelSource();
 	const parallelId = makeRun("panel-parallel", "parallel-wf", [

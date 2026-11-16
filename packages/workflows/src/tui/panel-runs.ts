@@ -291,20 +291,19 @@ export async function answerPanelRun(
 	if (run === undefined) return { ok: false, reason: `Run ${runId} not found.` };
 	const affordance = visibleRootPendingInput(run, runs).affordance;
 	const currentChoices = affordanceChoices(runs, affordance);
-	const hasExpectedOptions = options?.promptId !== undefined || options?.question !== undefined;
-	if (!hasExpectedOptions) {
+	if (options?.promptId === undefined) {
 		return {
 			ok: false,
 			reason:
 				affordance === undefined
 					? "This workflow run does not have a single answerable prompt."
-					: "The pending prompt changed before the answer was sent.",
+					: "This answer does not say which question it answers.",
 		};
 	}
 	const currentPromptId = affordance === undefined ? undefined : serializePromptIdentity(affordance.identity);
 	if (
 		affordance === undefined ||
-		(options?.promptId !== undefined && options.promptId !== currentPromptId) ||
+		options.promptId !== currentPromptId ||
 		(options?.question !== undefined && options.question !== affordance.message) ||
 		!sameChoices(options?.choices, currentChoices)
 	) {

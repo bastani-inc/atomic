@@ -199,6 +199,7 @@ test("in a 1-row or 2-row picker, a replying card shows the reply and Sending li
 	try {
 		inspector.setBoardSource(source);
 		inspector.handleInput(SPACE);
+		inspector.renderPicker(100, 30);
 		for (const ch of "Ship") inspector.handleInput(ch);
 
 		for (const rows of [1, 2]) {
@@ -248,6 +249,7 @@ test("a typed answer is restored as a draft when its row leaves and returns duri
 	try {
 		inspector.setBoardSource(source);
 		inspector.handleInput(SPACE);
+		inspector.renderPicker(100, 30);
 		for (const ch of "Ship it") inspector.handleInput(ch);
 		inspector.handleInput(ENTER);
 
@@ -586,6 +588,7 @@ test("answer and stop failures after /tasks is disposed report through the host 
 		);
 		inspector.setBoardSource(source);
 		inspector.handleInput(SPACE);
+		inspector.renderPicker(100, 30);
 		for (const ch of "yes") inspector.handleInput(ch);
 		inspector.handleInput(ENTER);
 		inspector.dispose();
@@ -603,6 +606,7 @@ test("answer and stop failures after /tasks is disposed report through the host 
 		);
 		throwReplyInspector.setBoardSource(source);
 		throwReplyInspector.handleInput(SPACE);
+		throwReplyInspector.renderPicker(100, 30);
 		for (const ch of "yes") throwReplyInspector.handleInput(ch);
 		throwReplyInspector.handleInput(ENTER);
 		throwReplyInspector.dispose();

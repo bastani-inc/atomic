@@ -151,6 +151,14 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	const session = agentSession ?? state.getChatBoxSession?.();
 	state.footerNavigationActive = navigationActive || agentSession === undefined;
 	if (session && state.footerData) {
+		const taskSource = () => {
+			const currentAgent = state.getAgentSession?.();
+			const currentSession = currentAgent ?? state.getChatBoxSession?.();
+			return (
+				(currentAgent === undefined ? state.getTaskSource?.() : undefined) ??
+				(currentSession ? getOwnerTaskStore(currentSession) : undefined)
+			);
+		};
 		state.footer ??= new FooterComponent(
 			session,
 			state.footerData,
@@ -162,15 +170,11 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 			() => state.footerNavigationActive,
 			// A stage or subagent chat lists its own active tasks below its prompt; the main chat has its agent panel.
 			// A task's session has no task store of its own: its footer lists the tasks the host shows for it.
+			() => taskSource()?.backgroundTasks ?? [],
+			undefined,
 			() => {
-				const currentAgent = state.getAgentSession?.();
-				const currentSession = currentAgent ?? state.getChatBoxSession?.();
-				const source =
-					(currentAgent === undefined ? state.getTaskSource?.() : undefined) ??
-					(currentSession ? getOwnerTaskStore(currentSession) : undefined);
-				if (source === undefined) return [];
-				taskClocksFor(source);
-				return source.backgroundTasks;
+				const source = taskSource();
+				return source === undefined ? undefined : taskClocksFor(source);
 			},
 		);
 		state.footer.setSession(session);

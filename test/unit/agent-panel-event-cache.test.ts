@@ -1,9 +1,71 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { test, vi } from "vitest";
+import {
+	type AgentPanelItem,
+	AgentPanelSourceHub,
+} from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import { AGENT_PANEL_DROP_MS } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { agentPanelRows, bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import {
+	agentPanelHasRows,
+	agentPanelRows,
+	bindAgentPanel,
+} from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
+
+test.each(["running", "missing"])(
+	"a focused pass that observes a finished extension row %s invalidates the has-rows cache (#5233)",
+	(change) => {
+		let now = 10_000;
+		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+		const hub = new AgentPanelSourceHub();
+		const finished: AgentPanelItem = {
+			id: "ext:helper",
+			kind: "agent",
+			name: "helper",
+			task: "check",
+			state: "done",
+		};
+		let items = [finished];
+		hub.register({ items: () => items, subscribe: () => () => {} });
+		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+		try {
+			assert.equal(agentPanelHasRows(session), true);
+			now += AGENT_PANEL_DROP_MS + 1;
+			assert.equal(agentPanelHasRows(session), false);
+			items = change === "running" ? [{ ...finished, state: "running" }] : [];
+			agentPanelRows(session);
+			items = [finished];
+			assert.deepEqual(
+				agentPanelRows(session).map((row) => row.id),
+				[finished.id],
+			);
+			assert.equal(
+				agentPanelHasRows(session),
+				true,
+				"the idle panel and its focus key agree with the focused panel",
+			);
+		} finally {
+			clock.mockRestore();
+		}
+	},
+);
+
+test("unchanged focused panel reads reuse the ranked row collection rather than copying all tasks (#5233)", async () => {
+	const fixture = taskFixture();
+	const session = {};
+	try {
+		await fixture.start("Background worker");
+		bindOwnerTaskStore(session, fixture.store);
+		const first = agentPanelRows(session);
+		const second = agentPanelRows(session);
+		assert.equal(second, first);
+		assert.equal(second[0]?.task, "Background worker");
+	} finally {
+		await fixture.dispose();
+	}
+});
 
 test("agent panel reuses ranked task metadata across activity updates and refreshes after settlement (#5224)", async () => {
 	initTheme("dark");

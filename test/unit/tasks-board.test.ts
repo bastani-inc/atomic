@@ -181,6 +181,7 @@ test("Esc closes a peek without leaving /tasks, and typed reply text is answered
 	const h = await harness([waitingRun]);
 	try {
 		h.inspector.handleInput(SPACE);
+		h.inspector.renderPicker(100, 30);
 		for (const ch of "go ahead") h.inspector.handleInput(ch);
 		h.inspector.handleInput(ESC);
 		assert.doesNotMatch(h.text(), /╭─ ralph/);
@@ -505,6 +506,7 @@ test("a peek card keeps its typed reply when closed, and ← at its start closes
 	const h = await harness([waitingRun]);
 	try {
 		h.inspector.handleInput(SPACE);
+		h.inspector.renderPicker(100, 30);
 		for (const ch of "go") h.inspector.handleInput(ch);
 		h.inspector.handleInput(ESC);
 		assert.doesNotMatch(h.text(), /╭─ ralph/);

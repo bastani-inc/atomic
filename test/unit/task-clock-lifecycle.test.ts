@@ -344,7 +344,7 @@ test("reconcile keeps unchanged task references and prototype-wrapped views shar
 			},
 		};
 		taskClocksFor(unmanaged);
-		assert.equal(unmanagedTasksReads, 1);
+		assert.equal(unmanagedTasksReads, 0);
 		assert.equal(unmanagedBackgroundReads, 0);
 	} finally {
 		await fixture.dispose();
@@ -459,10 +459,14 @@ test("two stage chat hosts with the same pooled task id keep independent footer 
 			() => {},
 		);
 		assert.match(text(unboundInspector), /Unbound worker.*2s/);
-		const bound1 = stripVTControlCharacters(renderTaskFooter(unboundPool.backgroundTasks, 100).join("\n"));
+		const bound1 = stripVTControlCharacters(
+			renderTaskFooter(unboundPool.backgroundTasks, 100, taskClocksFor(unboundPool)).join("\n"),
+		);
 		assert.match(bound1, /Unbound worker.*2s/);
 		now += 10_000;
-		const bound2 = stripVTControlCharacters(renderTaskFooter(unboundPool.backgroundTasks, 100).join("\n"));
+		const bound2 = stripVTControlCharacters(
+			renderTaskFooter(unboundPool.backgroundTasks, 100, taskClocksFor(unboundPool)).join("\n"),
+		);
 		assert.match(bound2, /Unbound worker.*12s/);
 		assert.match(text(unboundInspector), /Unbound worker.*12s/);
 	} finally {
@@ -473,7 +477,102 @@ test("two stage chat hosts with the same pooled task id keep independent footer 
 	}
 });
 
-test("taskClocksFor syncs an unmanaged source only on initial subscription and renderTaskFooter projects only drawn rows (#5224)", () => {
+test("unmanaged source updates inspect only previously clocked task slots after warmup (#5233)", () => {
+	initTheme("dark");
+	let reads = 0;
+	let notify = () => {};
+	const records = Array.from({ length: 1_000 }, (_, index) => {
+		const task = taskRecord(`source-task-${index}`);
+		return Object.defineProperty({ ...task }, "ref", {
+			get() {
+				reads++;
+				return task.ref;
+			},
+		});
+	});
+	const source = {
+		tasks: records,
+		subscribe(listener: () => void) {
+			notify = listener;
+			return () => {};
+		},
+	};
+	const clocks = taskClocksFor(source);
+	renderTaskFooter(records, 100, clocks);
+	notify();
+	reads = 0;
+	for (let index = 0; index < 10; index++) notify();
+	assert.ok(reads <= AGENT_PANEL_IDLE_ROWS * 10, `source changes read ${reads} task identities for four clocks`);
+});
+
+test("a delayed unmanaged settlement freezes the last display or final report without adding the observation gap (#5233)", () => {
+	let now = 100_000;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const running = taskRecord("late-settlement");
+	let records = [running];
+	let notify = () => {};
+	const source = {
+		get tasks() {
+			return records;
+		},
+		subscribe(listener: () => void) {
+			notify = listener;
+			return () => {};
+		},
+	};
+	try {
+		const clocks = taskClocksFor(source);
+		assert.equal(clocks.elapsedMs(running.ref.taskId, 1_000, true), 1_000);
+		now += 5_000;
+		assert.equal(clocks.elapsedMs(running.ref.taskId, 1_000, true), 6_000);
+		now += 600_000;
+		records = [
+			{
+				...running,
+				metrics: { elapsedMs: 7_000 },
+				execution: { kind: "settled", result: { kind: "completed", output: running.output } },
+			},
+		];
+		notify();
+		assert.equal(clocks.elapsedMs(running.ref.taskId, 7_000, false), 7_000);
+	} finally {
+		clock.mockRestore();
+	}
+});
+
+test("reordering many clocked tasks resolves moved slots in one scan and evicts missing clocks (#5233)", () => {
+	let reads = 0;
+	let notify = () => {};
+	const records = Array.from({ length: 1_000 }, (_, index) => {
+		const task = taskRecord(`moving-${index}`);
+		return Object.defineProperty({ ...task }, "ref", {
+			get() {
+				reads++;
+				return task.ref;
+			},
+		});
+	});
+	const source = {
+		tasks: records,
+		subscribe(listener: () => void) {
+			notify = listener;
+			return () => {};
+		},
+	};
+	const clocks = taskClocksFor(source);
+	for (let index = 0; index < records.length; index++) clocks.elapsedMs(`moving-${index}`, index * 1_000, true);
+	notify();
+	records.reverse();
+	reads = 0;
+	notify();
+	assert.ok(reads <= records.length * 3, `reordering read ${reads} identities`);
+	records.splice(500);
+	notify();
+	assert.equal(clocks.has("moving-0"), false);
+	assert.equal(clocks.has("moving-999"), true);
+});
+
+test("taskClocksFor syncs only retained clocks on source updates and renderTaskFooter projects only drawn rows (#5224)", () => {
 	initTheme("dark");
 	let notify: (() => void) | undefined;
 	let taskReads = 0;
@@ -490,23 +589,26 @@ test("taskClocksFor syncs an unmanaged source only on initial subscription and r
 			};
 		},
 	};
+	const sourceClocks = taskClocksFor(source);
 	taskClocksFor(source);
 	taskClocksFor(source);
+	assert.equal(taskReads, 0);
+	notify?.();
+	assert.equal(taskReads, 0);
+	renderTaskFooter(records, 100, sourceClocks);
+	notify?.();
+	assert.equal(taskReads, 1);
 	taskClocksFor(source);
 	assert.equal(taskReads, 1);
-	notify?.();
-	assert.equal(taskReads, 2);
-	taskClocksFor(source);
-	assert.equal(taskReads, 2);
 
 	const unsubscribedTasks = [taskRecord("plain-1")];
 	const unsubscribedSource = { tasks: unsubscribedTasks };
 	const unsubscribedClocks = taskClocksFor(unsubscribedSource);
-	assert.equal(taskClockOf(unsubscribedTasks[0]!), unsubscribedClocks);
+	assert.equal(taskClockOf(unsubscribedTasks[0]!), undefined);
 	const addedTask = taskRecord("plain-2");
 	unsubscribedTasks.push(addedTask);
-	taskClocksFor(unsubscribedSource);
-	assert.equal(taskClockOf(addedTask), unsubscribedClocks);
+	assert.equal(taskClocksFor(unsubscribedSource), unsubscribedClocks);
+	assert.equal(taskClockOf(addedTask), undefined);
 
 	const projectedIds = new Set<string>();
 	const manyTasks = Array.from({ length: 20 }, (_, index) => {

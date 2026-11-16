@@ -16,7 +16,7 @@
 ### Fixed
 
 - Fixed slow navigation in `/tasks` when a session has many background tasks, including task detail and chat pages receiving streaming updates, while keeping task updates and elapsed times live. The agent panel and attached-chat task footers also stay responsive with large task lists ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-- `/tasks` refuses a workflow reply if its question changed after the card was drawn, reports reply and stop failures even after the list closes, and keeps elapsed times consistent with the agent panel and each chat's own task source. Failed workflow opens no longer mark a run as viewed ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- `/tasks` binds each workflow reply to the question shown when typing starts, refuses replies to changed or never-shown questions, and stops capturing reply text when the question disappears. It reports reply and stop failures even after the list closes and keeps elapsed times consistent with the agent panel and each chat's own task source, including extension rows first shown after other rows finish. Failed workflow opens no longer mark a run as viewed ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Removed
 

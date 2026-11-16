@@ -56,6 +56,7 @@ export function liveElapsedMs(
 export class TaskElapsedClocks {
 	private readonly table: Map<string, WeakRef<ElapsedClock>>;
 	private readonly retained = new Map<string, ElapsedClock>();
+	private readonly sourceSlots = new Map<string, number>();
 
 	constructor(table: Map<string, WeakRef<ElapsedClock>> = new Map()) {
 		this.table = table;
@@ -83,7 +84,30 @@ export class TaskElapsedClocks {
 		this.retained.set(taskId, entry);
 	}
 
+	syncTasks(tasks: readonly TaskRecord[]): void {
+		let missing: Set<string> | undefined;
+		for (const id of this.retained.keys()) {
+			const slot = this.sourceSlots.get(id);
+			const task = slot === undefined ? undefined : tasks[slot];
+			if (task?.ref.taskId !== id) {
+				missing ??= new Set();
+				missing.add(id);
+			} else if (task.execution.kind === "settled") this.elapsedMs(id, task.metrics?.elapsedMs, false);
+		}
+		if (missing === undefined) return;
+		for (let index = 0; index < tasks.length; index++) {
+			const task = tasks[index]!;
+			const id = task.ref.taskId;
+			if (!missing.delete(id)) continue;
+			this.sourceSlots.set(id, index);
+			if (task.execution.kind === "settled") this.elapsedMs(id, task.metrics?.elapsedMs, false);
+			if (missing.size === 0) return;
+		}
+		for (const id of missing) this.delete(id);
+	}
+
 	delete(taskId: string): void {
+		this.sourceSlots.delete(taskId);
 		this.retained.delete(taskId);
 		this.table.delete(taskId);
 	}
@@ -91,8 +115,7 @@ export class TaskElapsedClocks {
 	prune(taskIds: ReadonlySet<string>): void {
 		for (const id of this.retained.keys()) {
 			if (!taskIds.has(id)) {
-				this.retained.delete(id);
-				this.table.delete(id);
+				this.delete(id);
 			}
 		}
 		for (const id of this.table.keys()) if (!taskIds.has(id)) this.table.delete(id);
@@ -100,6 +123,7 @@ export class TaskElapsedClocks {
 
 	clear(): void {
 		this.retained.clear();
+		this.sourceSlots.clear();
 		this.table.clear();
 	}
 }
@@ -164,18 +188,10 @@ export function taskClockOf(target: object): TaskElapsedClocks | undefined {
 }
 
 function syncSourceClocks(root: ClockSourceLike & object, clocks: TaskElapsedClocks): void {
+	if (!clocks.hasEntries()) return;
 	const tasks = root.tasks;
 	const list = Array.isArray(tasks) ? tasks : root.backgroundTasks;
-	if (!Array.isArray(list)) return;
-	const live = clocks.hasEntries() ? new Set<string>() : undefined;
-	for (const task of list) {
-		if (clocksByTarget.get(task) !== clocks) bindTaskClock(task, clocks);
-		if (live !== undefined && clocks.has(task.ref.taskId)) {
-			live.add(task.ref.taskId);
-			if (task.execution.kind === "settled") clocks.settle(task.ref.taskId, task.metrics?.elapsedMs);
-		}
-	}
-	if (live !== undefined) clocks.prune(live);
+	if (Array.isArray(list)) clocks.syncTasks(list);
 }
 
 export function taskClocksFor(source: object): TaskElapsedClocks {
