@@ -118,7 +118,7 @@ import {
 	validateImportFlags,
 	validateSessionIdFlags,
 } from "./main-session.ts";
-import { buildSessionOptions } from "./main-session-options.ts";
+import { buildSessionOptions, unresolvedFallbackModelDiagnostics } from "./main-session-options.ts";
 import {
 	isStartupBenchmarkError,
 	measureInteractiveStartup,
@@ -960,6 +960,7 @@ export async function main(argv: string[], options?: MainOptions) {
 				options: sessionOptions,
 				cliThinkingFromModel,
 				diagnostics: sessionOptionDiagnostics,
+				fallbackDiagnostics,
 			} = buildSessionOptions(
 				sessionArgs,
 				scopedModels,
@@ -968,6 +969,7 @@ export async function main(argv: string[], options?: MainOptions) {
 				settingsManager,
 			);
 			if (!deferStartupTrust) diagnostics.push(...sessionOptionDiagnostics);
+			if (!deferModelScopeDiagnostics && !isolateInteractiveHost) diagnostics.push(...fallbackDiagnostics);
 
 			if (parsed.apiKey && !isolateInteractiveHost && !deferStartupTrust) {
 				if (!sessionOptions.model) {
@@ -1033,7 +1035,7 @@ export async function main(argv: string[], options?: MainOptions) {
 							modelRuntime,
 							settingsManager,
 						);
-						finalServices.diagnostics.push(...finalSelection.diagnostics);
+						finalServices.diagnostics.push(...finalSelection.diagnostics, ...finalSelection.fallbackDiagnostics);
 						const finalModel = await resolveDeferredStartupModel({
 							selected: finalSelection.options.model,
 							isContinuing: existingSession.messages.length > 0,
@@ -1182,12 +1184,21 @@ export async function main(argv: string[], options?: MainOptions) {
 			deferInteractiveEngineResources: deferredExtensionLoad,
 			onStartupReload: deferredExtensionLoad
 				? async (reloadedSession) => {
+						const fallbackDiagnostics = unresolvedFallbackModelDiagnostics(
+							parsed,
+							reloadedSession.settingsManager,
+							reloadedSession.modelRuntime,
+							reloadedSession.model?.provider ?? reloadedSession.settingsManager.getDefaultProvider(),
+						);
 						const patterns = parsed.models ?? reloadedSession.settingsManager.getEnabledModels();
-						if (!patterns || patterns.length === 0) return;
+						if (!patterns || patterns.length === 0) {
+							reportDiagnostics(fallbackDiagnostics);
+							return;
+						}
 						const { scopedModels: deferredScope, diagnostics: deferredScopeDiagnostics } =
 							await resolveModelScopeWithDiagnostics(patterns, reloadedSession.modelRuntime);
 						reloadedSession.setScopedModels(deferredScope);
-						reportDiagnostics(deduplicateDiagnostics(deferredScopeDiagnostics));
+						reportDiagnostics(deduplicateDiagnostics([...deferredScopeDiagnostics, ...fallbackDiagnostics]));
 					}
 				: undefined,
 		});
@@ -1228,6 +1239,16 @@ export async function main(argv: string[], options?: MainOptions) {
 				? (parsed.models ?? settingsManager.getEnabledModels())
 				: undefined,
 			deferredModelScopePreserveThinking: parsed.thinking !== undefined,
+			deferredFallbackModelCheck:
+				deferredExtensionLoad && !isolateInteractiveHost
+					? (session) =>
+							unresolvedFallbackModelDiagnostics(
+								parsed,
+								session.settingsManager,
+								session.modelRuntime,
+								session.model?.provider ?? session.settingsManager.getDefaultProvider(),
+							)
+					: undefined,
 			terminal: options?.internalInteractiveHarness?.terminal,
 		});
 		options?.internalInteractiveHarness?.onMode?.(interactiveMode);

@@ -133,8 +133,14 @@ async function runSession(
 			fallbackModels: [`${SETTINGS_CHAIN.provider}/${SETTINGS_CHAIN.id}`],
 			retry: { enabled: true, maxRetries: MAX_RETRIES, baseDelayMs: 1, maxAgentDelayMs: 1 },
 		});
-	const { options, diagnostics } = buildSessionOptions(parseArgs(args), [], false, runtime, settingsManager);
-	assert.deepEqual(diagnostics, []);
+	const { options, diagnostics, fallbackDiagnostics } = buildSessionOptions(
+		parseArgs(args),
+		[],
+		false,
+		runtime,
+		settingsManager,
+	);
+	assert.deepEqual([...diagnostics, ...fallbackDiagnostics], []);
 	const sessionManager = SessionManager.inMemory();
 	const { session } = await createAgentSession({
 		...options,

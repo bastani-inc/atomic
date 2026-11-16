@@ -1,4 +1,5 @@
 import type { Component, Terminal } from "@bastani/atomic-tui";
+import type { AgentSession } from "../../core/agent-session.ts";
 import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.ts";
 import type { EarlyInputCapture } from "../../main-early-input.ts";
 import type { ImageContent } from "./interactive-mode-deps.ts";
@@ -52,6 +53,10 @@ export interface InteractiveModeOptions {
 	deferredModelScopePatterns?: string[];
 	/** Preserve an explicit CLI thinking level when applying deferred model-scope suffixes. */
 	deferredModelScopePreserveThinking?: boolean;
+	/** Fallback chain entries checked again after deferred extension load registers providers. */
+	deferredFallbackModelCheck?: (
+		session: Pick<AgentSession, "settingsManager" | "modelRuntime" | "model">,
+	) => AgentSessionRuntimeDiagnostic[];
 	/** Raw terminal input capture active until the TUI prompt is ready to take over stdin. */
 	startupInputCapture?: EarlyInputCapture;
 	/** Internal deterministic terminal seam used by default-main integration tests. */

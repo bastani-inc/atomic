@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { Container, stripTerminalSequences } from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { parseArgs } from "../src/cli/args.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { buildSessionOptions, unresolvedFallbackModelDiagnostics } from "../src/main-session-options.js";
 import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.js";
@@ -88,6 +90,45 @@ describe("applyDeferredModelScope", () => {
 
 		expect(mode.session.setModel).toHaveBeenCalledWith(claudeModel);
 		expect(setThinkingLevel).not.toHaveBeenCalled();
+	});
+
+	it("checks fallbackModels entries only after deferred extension providers register", async () => {
+		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
+		const modelRuntime = getModelRuntime(registry);
+		const settingsManager = SettingsManager.inMemory({
+			fallbackModels: ["extension-provider/extension-model", "nowhere/no-model"],
+		});
+		const parsed = parseArgs([]);
+
+		const startup = buildSessionOptions(parsed, [], false, modelRuntime, settingsManager);
+		assert.deepEqual(
+			startup.fallbackDiagnostics.map((diagnostic) => diagnostic.message.match(/"([^"]+)"/)?.[1]),
+			["extension-provider/extension-model", "nowhere/no-model"],
+		);
+		assert.deepEqual(startup.diagnostics, []);
+
+		registerExtensionModel(registry, "extension-provider", "extension-model");
+		const showWarning = vi.fn();
+		const mode = {
+			options: {
+				deferredFallbackModelCheck: (session: {
+					settingsManager: SettingsManager;
+					modelRuntime: typeof modelRuntime;
+				}) => unresolvedFallbackModelDiagnostics(parsed, session.settingsManager, session.modelRuntime, undefined),
+			},
+			session: { model: undefined, modelRuntime, settingsManager },
+			sessionManager: { buildSessionContext: () => ({ messages: [] }) },
+			settingsManager,
+			showWarning,
+		};
+
+		await applyDeferredModelScope(mode as never);
+
+		assert.deepEqual(showWarning.mock.calls, [
+			[
+				'fallbackModels setting entry "nowhere/no-model" does not match a model with configured credentials, so model fallback skips it. Use --list-models to see available models.',
+			],
+		]);
 	});
 
 	it("deduplicates repeated unmatched model-scope patterns (#4694)", async () => {

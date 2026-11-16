@@ -7,13 +7,32 @@ import type { ModelRuntime } from "./core/model-runtime.js";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import type { SettingsManager } from "./core/settings-manager.ts";
 
-/** One warning per distinct fallback entry that names no model with configured credentials; the chain skips it. */
-function unresolvedFallbackDiagnostics(
-	entries: readonly string[],
-	source: string,
+/**
+ * The fallback chain the CLI arguments give a session: `[]` for none, the `--fallback-models` list, or `undefined` to
+ * follow the `fallbackModels` setting. A model named with --model runs as named: it falls back only to the models
+ * --fallback-models names, never to the settings fallbackModels, user or project, as a subagent launched on a named
+ * model does (#4223). --no-fallback turns fallback off for any session. Child sessions inherit this chain.
+ */
+export function cliFallbackChain(parsed: Args): string[] | undefined {
+	if (parsed.noFallback) return [];
+	if (parsed.fallbackModels !== undefined) return [...parsed.fallbackModels];
+	if (parsed.model !== undefined) return [];
+	return undefined;
+}
+
+/**
+ * One warning per distinct entry of the session's fallback chain that names no model with configured credentials;
+ * the chain skips it. Run it only once extensions have registered their providers, or an extension's model is
+ * reported as missing.
+ */
+export function unresolvedFallbackModelDiagnostics(
+	parsed: Args,
+	settingsManager: SettingsManager,
 	modelRuntime: ModelRuntime,
 	preferredProvider: string | undefined,
 ): AgentSessionRuntimeDiagnostic[] {
+	const entries = cliFallbackChain(parsed) ?? settingsManager.getFallbackModels();
+	const source = parsed.fallbackModels !== undefined ? "--fallback-models" : "fallbackModels setting";
 	return [...new Set(entries)]
 		.filter((entry) => !resolveFallbackModel(entry, modelRuntime, preferredProvider))
 		.map((entry) => ({
@@ -32,6 +51,8 @@ export function buildSessionOptions(
 	options: CreateAgentSessionOptions;
 	cliThinkingFromModel: boolean;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
+	/** Fallback entries that resolve to no usable model; meaningful only once extension providers are registered. */
+	fallbackDiagnostics: AgentSessionRuntimeDiagnostic[];
 } {
 	const options: CreateAgentSessionOptions = {};
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
@@ -97,23 +118,15 @@ export function buildSessionOptions(
 		options.thinkingLevel = parsed.thinking;
 	}
 
-	// Fallback chain. A model named with --model runs as named: it falls back only to the models --fallback-models
-	// names, never to the settings fallbackModels, user or project, as a subagent launched on a named model does
-	// (#4223). --no-fallback turns fallback off for any session. Child sessions inherit this chain.
-	if (parsed.noFallback) {
-		options.fallbackModels = [];
-	} else if (parsed.fallbackModels !== undefined) {
-		options.fallbackModels = [...parsed.fallbackModels];
-	} else if (parsed.model !== undefined) {
-		options.fallbackModels = [];
+	const fallbackChain = cliFallbackChain(parsed);
+	if (fallbackChain !== undefined) {
+		options.fallbackModels = fallbackChain;
 	}
-	diagnostics.push(
-		...unresolvedFallbackDiagnostics(
-			options.fallbackModels ?? settingsManager.getFallbackModels(),
-			parsed.fallbackModels !== undefined ? "--fallback-models" : "fallbackModels setting",
-			modelRuntime,
-			options.model?.provider ?? settingsManager.getDefaultProvider(),
-		),
+	const fallbackDiagnostics = unresolvedFallbackModelDiagnostics(
+		parsed,
+		settingsManager,
+		modelRuntime,
+		options.model?.provider ?? settingsManager.getDefaultProvider(),
 	);
 
 	// Scoped models for CTRL+P cycling
@@ -142,5 +155,5 @@ export function buildSessionOptions(
 		options.excludedTools = [...parsed.excludeTools];
 	}
 
-	return { options, cliThinkingFromModel, diagnostics };
+	return { options, cliThinkingFromModel, diagnostics, fallbackDiagnostics };
 }

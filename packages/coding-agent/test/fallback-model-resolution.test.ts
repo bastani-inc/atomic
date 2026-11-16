@@ -80,7 +80,13 @@ describe("fallbackModels resolution (#4902)", () => {
 	test("the startup check prefers the default provider for an ambiguous bare id (#4902)", () => {
 		const settingsManager = SettingsManager.inMemory({ defaultProvider: "openai", fallbackModels: ["shared-model"] });
 
-		const { diagnostics } = buildSessionOptions(parseArgs([]), [], false, runtime(), settingsManager);
+		const { fallbackDiagnostics: diagnostics } = buildSessionOptions(
+			parseArgs([]),
+			[],
+			false,
+			runtime(),
+			settingsManager,
+		);
 
 		assert.deepEqual(diagnostics, []);
 	});
@@ -94,7 +100,13 @@ describe("fallbackModels resolution (#4902)", () => {
 			fallbackModels: ["nowhere/no-model", "openai/gpt-4o", "nowhere/no-model"],
 		});
 
-		const { diagnostics } = buildSessionOptions(parseArgs([]), [], false, runtime(), settingsManager);
+		const { fallbackDiagnostics: diagnostics } = buildSessionOptions(
+			parseArgs([]),
+			[],
+			false,
+			runtime(),
+			settingsManager,
+		);
 
 		assert.deepEqual(diagnostics, [
 			{
@@ -108,7 +120,7 @@ describe("fallbackModels resolution (#4902)", () => {
 	test("--fallback-models entries are checked in place of the setting (#4902)", () => {
 		const settingsManager = SettingsManager.inMemory({ fallbackModels: ["nowhere/no-model"] });
 
-		const { diagnostics } = buildSessionOptions(
+		const { fallbackDiagnostics: diagnostics } = buildSessionOptions(
 			parseArgs(["--fallback-models", "openai/gpt-4o,ghost/model"]),
 			[],
 			false,
@@ -126,7 +138,13 @@ describe("fallbackModels resolution (#4902)", () => {
 			fallbackModels: ["Anthropic/Claude-Sonnet-4-5", "qwen/qwen3-coder:exacto"],
 		});
 
-		const { diagnostics } = buildSessionOptions(parseArgs([]), [], false, runtime(), settingsManager);
+		const { fallbackDiagnostics: diagnostics } = buildSessionOptions(
+			parseArgs([]),
+			[],
+			false,
+			runtime(),
+			settingsManager,
+		);
 
 		assert.deepEqual(diagnostics, []);
 	});
