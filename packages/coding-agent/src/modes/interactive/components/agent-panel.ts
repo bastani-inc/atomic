@@ -1,8 +1,20 @@
+import {
+	type AgentPanelItem,
+	type AgentPanelState,
+	agentPanelItemReadAt,
+	agentPanelTaskId,
+} from "../../../core/tasks/agent-panel-source.ts";
+import { isRunningTaskClock, liveElapsedMs } from "../../../core/tasks/live-elapsed.js";
+/**
+ * The agent panel below the main chat's prompt: one row per running or recent subagent, workflow run and background
+ * shell. Unfocused it is a quiet status block; ↓ on an empty prompt focuses it, and then it is a list like every other
+ * list: ↑↓ select, Enter or → open, `x` stops (twice) or dismisses, Esc returns to the prompt.
+ */
+
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
-import { type AgentPanelItem, type AgentPanelState, agentPanelTaskId } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
-import { atomicWorkingGlyph } from "./atomic-working-status.ts";
+import { getGlobalTheme } from "../theme/global-theme.ts";
+import { ATOMIC_WORKING_FRAMES, atomicWorkingGlyph } from "./atomic-working-status.ts";
 import { type NavKey, type NavKeybindings, type NavKeyStyle, renderNavHintLine, TwoPressConfirm } from "./nav-keys.ts";
 import { taskDisplayText } from "./task-row.js";
 
@@ -28,9 +40,84 @@ export interface AgentPanelStyle extends NavKeyStyle {
 }
 
 const FINISHED: ReadonlySet<AgentPanelState> = new Set(["done", "failed", "stopped"]);
+const NON_PRINTABLE_ASCII = /[^\x20-\x7e]/;
+const NON_SINGLE_CELL = /[^\x20-\x7e\u00b7\u25b0\u25b1\u2193]/;
+const NON_SINGLE_CELL_LINE = /[^\x20-\x7e·▰▱↓∀◆‖○◼✓✗●❯]/;
+const SGR_SEQUENCE = /\x1b\[[\d;:]*m/g;
+const MAX_CACHED_LINE_WIDTHS = 512;
+const singleCellLineWidths = new Map<string, number>();
+const BARS_16 = Array.from({ length: 17 }, (_, filled) => "▰".repeat(filled) + "▱".repeat(16 - filled));
+let glyphThemeRef: ReturnType<typeof getGlobalTheme>;
+let glyphNoColor: string | undefined;
+let glyphReducedMotion: string | undefined;
+const glyphCache: Array<string | undefined> = new Array(ATOMIC_WORKING_FRAMES.length);
+
+function cachedWorkingGlyph(frame: number): string {
+	const themeRef = getGlobalTheme();
+	const noColor = process.env.NO_COLOR;
+	const reduced = process.env.ATOMIC_REDUCED_MOTION;
+	if (themeRef !== glyphThemeRef || noColor !== glyphNoColor || reduced !== glyphReducedMotion) {
+		glyphThemeRef = themeRef;
+		glyphNoColor = noColor;
+		glyphReducedMotion = reduced;
+		glyphCache.fill(undefined);
+	}
+	const count = ATOMIC_WORKING_FRAMES.length;
+	const index = reduced === "1" ? 3 : ((frame % count) + count) % count;
+	let cached = glyphCache[index];
+	if (cached === undefined) {
+		cached = atomicWorkingGlyph(index);
+		glyphCache[index] = cached;
+	}
+	return cached;
+}
 
 export function isFinishedPanelRow(row: Pick<AgentPanelRow, "state">): boolean {
 	return FINISHED.has(row.state);
+}
+
+/** One safe display line: no terminal controls, unpaired surrogates, or invisible and bidi-override characters. */
+function panelText(text: string): string {
+	if (!NON_PRINTABLE_ASCII.test(text)) return text;
+	return taskDisplayText(text)
+		.toWellFormed()
+		.replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+		.replace(/(?:^|(?<=\s))\p{M}+/gu, "");
+}
+
+function cellWidth(text: string): number {
+	return NON_SINGLE_CELL.test(text) ? visibleWidth(text) : text.length;
+}
+
+function fitToWidth(text: string, maxWidth: number): { readonly text: string; readonly width: number } {
+	if (!NON_SINGLE_CELL.test(text) && text.length <= maxWidth) {
+		return { text, width: text.length };
+	}
+	const truncated = truncateToWidth(text, maxWidth);
+	return { text: truncated, width: cellWidth(truncated) };
+}
+
+function clampLine(line: string, maxWidth: number): string {
+	if (maxWidth <= 0) return "";
+	const cachedWidth = singleCellLineWidths.get(line);
+	if (cachedWidth !== undefined) {
+		if (cachedWidth <= maxWidth) return line;
+	} else {
+		const plain = line.replace(SGR_SEQUENCE, "");
+		if (!NON_SINGLE_CELL_LINE.test(plain) && plain.length <= maxWidth) {
+			if (singleCellLineWidths.size >= MAX_CACHED_LINE_WIDTHS) {
+				const oldest = singleCellLineWidths.keys().next().value;
+				if (oldest !== undefined) singleCellLineWidths.delete(oldest);
+			}
+			singleCellLineWidths.set(line, plain.length);
+			return line;
+		}
+	}
+	let clamped = line;
+	for (let limit = maxWidth; visibleWidth(clamped) > maxWidth && limit > 0; limit--) {
+		clamped = truncateToWidth(line, limit);
+	}
+	return visibleWidth(clamped) <= maxWidth ? clamped : "";
 }
 
 /** `41m`, `1h 31m`, `9s`: elapsed time as the panel shows it. */
@@ -44,16 +131,27 @@ export function formatPanelElapsed(ms: number): string {
 
 /** `96.1k`, `1.2M`, `812`: a token count as the panel shows it. */
 export function formatPanelTokens(tokens: number): string {
-	if (tokens >= 999_950_000) return `${(tokens / 1_000_000_000).toFixed(1)}B`;
-	if (tokens >= 999_950) return `${(tokens / 1_000_000).toFixed(1)}M`;
-	if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
-	return String(tokens);
+	if (!Number.isFinite(tokens) || tokens < 0) return "0";
+	const rounded = Math.round(tokens);
+	if (rounded < 1000) return String(rounded);
+	const units = ["k", "M", "B", "T", "Q"];
+	let amount = tokens / 1000;
+	let unit = 0;
+	while (Math.round(amount * 10) >= 10_000 && unit < units.length - 1) {
+		amount /= 1000;
+		unit++;
+	}
+	return `${amount.toFixed(1)}${units[unit]}`;
 }
 
 /** A run's stage progress as a 16-cell bar: `▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱`. */
 export function panelProgressBar(done: number, total: number, cells = 16): string {
-	const filled = total <= 0 ? 0 : Math.round((Math.min(done, total) / total) * cells);
-	return "▰".repeat(filled) + "▱".repeat(cells - filled);
+	const ratio = Number.isFinite(done) && Number.isFinite(total) && total > 0 ? done / total : 0;
+	const clamped = Math.max(0, Math.min(1, ratio));
+	if (cells === 16) return BARS_16[Math.round(clamped * 16)]!;
+	const size = Number.isFinite(cells) ? Math.max(0, Math.min(1024, Math.floor(cells))) : 0;
+	const filled = Math.round(clamped * size);
+	return "▰".repeat(filled) + "▱".repeat(size - filled);
 }
 
 /**
@@ -62,110 +160,75 @@ export function panelProgressBar(done: number, total: number, cells = 16): strin
  * that has not been viewed yet).
  */
 export class AgentPanelModel {
-	private readonly finishedAt = new Map<string, { since: number; pass: number }>();
-	private readonly finishedTaskAt = new Map<string, { since: number; pass: number }>();
-	private pass = 0;
-	private finishedGeneration = 0;
-	get finishedRevision(): number {
-		return this.finishedGeneration;
-	}
-	private passMatchedFinished = 0;
-	private hasLocalClocks = false;
-	private readonly elapsedClocks = new TaskElapsedClocks();
+	private readonly finishedAt = new Map<string, number>();
+	private readonly readAt = new WeakMap<AgentPanelRow, number>();
 	private readonly now: () => number;
 	constructor(now: () => number = Date.now) {
 		this.now = now;
 	}
 	/** When the row was first seen finished, if it is. */
-	finishedSince(id: string, native = false): number | undefined {
-		return (native ? this.finishedTaskAt : this.finishedAt).get(id)?.since;
+	finishedSince(id: string): number | undefined {
+		return this.finishedAt.get(id);
 	}
-	beginPass(): { readonly now: number; readonly pass: number } {
-		this.passMatchedFinished = 0;
-		return { now: this.now(), pass: ++this.pass };
-	}
-	keepFinished(id: string, keep: boolean, now: number, pass: number, native = false): boolean {
-		const table = native ? this.finishedTaskAt : this.finishedAt;
-		let entry = table.get(id);
-		if (entry === undefined) {
-			entry = { since: now, pass };
-			table.set(id, entry);
-			this.finishedGeneration++;
-			this.passMatchedFinished++;
-		} else if (entry.pass !== pass) {
-			entry.pass = pass;
-			this.passMatchedFinished++;
+	rows(rows: readonly AgentPanelRow[], keep: (row: AgentPanelRow) => boolean = () => false): AgentPanelRow[] {
+		if (rows.length === 0) {
+			this.finishedAt.clear();
+			return [];
 		}
-		return keep || now - entry.since < AGENT_PANEL_DROP_MS;
-	}
-	endPass(pass: number): void {
-		if (this.passMatchedFinished === this.finishedAt.size + this.finishedTaskAt.size) return;
-		for (const table of [this.finishedAt, this.finishedTaskAt]) {
-			for (const [id, entry] of table) {
-				if (entry.pass !== pass) {
-					table.delete(id);
-					this.finishedGeneration++;
+		const now = this.now();
+		const hadFinished = this.finishedAt.size > 0;
+		const live = hadFinished ? new Set<string>() : undefined;
+		const g0: AgentPanelRow[] = [];
+		const g1: AgentPanelRow[] = [];
+		const g2: AgentPanelRow[] = [];
+		const g3: AgentPanelRow[] = [];
+		for (let i = 0; i < rows.length; i++) {
+			const row = rows[i]!;
+			live?.add(row.id);
+			const state = row.state;
+			const finished = FINISHED.has(state);
+			if (!finished) {
+				if (hadFinished) this.finishedAt.delete(row.id);
+			} else {
+				let finishedSince = this.finishedAt.get(row.id);
+				if (finishedSince === undefined) {
+					finishedSince = now;
+					this.finishedAt.set(row.id, now);
+				}
+				if (!keep(row) && now - finishedSince >= AGENT_PANEL_DROP_MS) continue;
+			}
+			let item = row;
+			if (state !== "queued") {
+				const taskId = agentPanelTaskId(row.id);
+				const running = isRunningTaskClock(state);
+				if (taskId !== undefined) {
+					const elapsedMs = liveElapsedMs(taskId, row.elapsedMs, running, now);
+					if (elapsedMs !== undefined && elapsedMs !== row.elapsedMs) item = { ...row, elapsedMs };
+				} else if (running && row.elapsedMs !== undefined) {
+					let since = agentPanelItemReadAt(row) ?? this.readAt.get(row);
+					if (since === undefined) {
+						since = now;
+						this.readAt.set(row, since);
+					}
+					const elapsedMs = row.elapsedMs + Math.max(0, now - since);
+					if (elapsedMs !== row.elapsedMs) item = { ...row, elapsedMs };
 				}
 			}
+			if (state === "input") g0.push(item);
+			else if (state === "running") g1.push(item);
+			else if (finished) g3.push(item);
+			else g2.push(item);
 		}
-	}
-	withElapsed(row: AgentPanelRow, now = this.now()): AgentPanelRow {
-		if (row.kind === "workflow" || row.state === "queued") return row;
-		const taskId = agentPanelTaskId(row.id) ?? row.id;
-		const sourceClocks = taskClockOf(row);
-		if (sourceClocks === undefined) this.hasLocalClocks = true;
-		const elapsedMs = (sourceClocks ?? this.elapsedClocks).elapsedMs(
-			taskId,
-			row.elapsedMs,
-			taskClockRunning(row.state),
-			now,
-		);
-		return elapsedMs === undefined || elapsedMs === row.elapsedMs ? row : { ...row, elapsedMs };
-	}
-	rows(
-		rows: readonly AgentPanelRow[],
-		keep: (row: AgentPanelRow) => boolean = () => false,
-		window?: { readonly start?: number; readonly limit?: number },
-	): AgentPanelRow[] {
-		const { now, pass } = this.beginPass();
-		const inputRows: AgentPanelRow[] = [];
-		const runningRows: AgentPanelRow[] = [];
-		const otherRows: AgentPanelRow[] = [];
-		const finishedRows: AgentPanelRow[] = [];
-		for (const row of rows) {
-			const finished = isFinishedPanelRow(row);
-			if (finished) {
-				if (!this.keepFinished(row.id, keep(row), now, pass)) continue;
-				finishedRows.push(row);
-			} else if (row.state === "input") inputRows.push(row);
-			else if (row.state === "running") runningRows.push(row);
-			else otherRows.push(row);
+		if (live !== undefined && this.finishedAt.size > 0) {
+			for (const id of this.finishedAt.keys()) if (!live.has(id)) this.finishedAt.delete(id);
 		}
-		this.endPass(pass);
-		const ordered = [...inputRows, ...runningRows, ...otherRows, ...finishedRows];
-		const start = Math.max(0, window?.start ?? 0);
-		const limit = Math.max(0, window?.limit ?? AGENT_PANEL_IDLE_ROWS);
-		const end = Math.min(ordered.length, start + limit);
-		for (let index = start; index < end; index++) {
-			ordered[index] = this.withElapsed(ordered[index]!, now);
-		}
-		if (this.hasLocalClocks) {
-			const localClockIds = new Set<string>();
-			for (const row of ordered) {
-				if (row.kind === "workflow" || row.state === "queued") continue;
-				if (taskClockOf(row) === undefined) localClockIds.add(agentPanelTaskId(row.id) ?? row.id);
-			}
-			this.elapsedClocks.prune(localClockIds);
-			if (localClockIds.size === 0) this.hasLocalClocks = false;
-		}
-		return ordered;
+		if (g0.length === 0 && g2.length === 0 && g3.length === 0) return g1;
+		if (g0.length === 0 && g1.length === 0 && g2.length === 0) return g3;
+		return g0.concat(g1, g2, g3);
 	}
 	/** Whether a finished row has been finished long enough to read dim. */
-	faded(row: Pick<AgentPanelRow, "id">): boolean {
-		const taskId = agentPanelTaskId(row.id);
-		const since =
-			(taskId === undefined ? undefined : this.finishedTaskAt.get(taskId)?.since) ??
-			this.finishedAt.get(row.id)?.since;
+	faded(row: AgentPanelRow): boolean {
+		const since = this.finishedAt.get(row.id);
 		return since !== undefined && this.now() - since >= AGENT_PANEL_FADE_MS;
 	}
 }
@@ -173,7 +236,7 @@ export class AgentPanelModel {
 function glyph(row: AgentPanelRow, style: AgentPanelStyle, frame: number | undefined): string {
 	switch (row.state) {
 		case "running":
-			return frame === undefined ? style.accent("∀") : atomicWorkingGlyph(frame);
+			return frame === undefined ? style.accent("∀") : cachedWorkingGlyph(frame);
 		case "input":
 			return style.warning("◆");
 		case "paused":
@@ -215,19 +278,23 @@ function stateWord(row: AgentPanelRow): string {
 /** The right-hand column: `18m · ↓ 87.4k tokens`, `done · 6m`, `needs input · 3m`. Narrow panels drop tokens. */
 function rightColumn(row: AgentPanelRow, width: number): string {
 	const elapsed = row.elapsedMs === undefined ? "" : formatPanelElapsed(row.elapsedMs);
-	const tokens = row.tokens === undefined || width < 70 ? "" : `↓ ${formatPanelTokens(row.tokens)} tokens`;
-	if (row.state === "running") return [elapsed, tokens].filter(Boolean).join(" · ") || "running";
-	return [stateWord(row), elapsed].filter(Boolean).join(" · ");
+	if (row.state === "running") {
+		const tokens = row.tokens === undefined || width < 70 ? "" : `↓ ${formatPanelTokens(row.tokens)} tokens`;
+		if (elapsed.length > 0 && tokens.length > 0) return `${elapsed} · ${tokens}`;
+		return elapsed || tokens || "running";
+	}
+	const word = stateWord(row);
+	return elapsed.length > 0 ? `${word} · ${elapsed}` : word;
 }
 
 /** The middle column: the task, or a workflow run's stage bar and `n/m stages`. */
-function taskColumn(row: AgentPanelRow, width: number): string {
+function taskColumn(row: AgentPanelRow, cleanTask: string, width: number): string {
 	if (row.kind === "workflow" && row.progress !== undefined && width >= 60) {
 		const counts = `${row.progress.done}/${row.progress.total} stages`;
-		const stage = row.task.startsWith("stage ") ? ` · ${row.task.slice(6)}` : "";
+		const stage = cleanTask.startsWith("stage ") ? ` · ${cleanTask.slice(6)}` : "";
 		return `${panelProgressBar(row.progress.done, row.progress.total)}  ${counts}${stage}`;
 	}
-	return row.task;
+	return cleanTask;
 }
 
 export interface AgentPanelRenderOptions {
@@ -238,8 +305,6 @@ export interface AgentPanelRenderOptions {
 	readonly faded?: (row: AgentPanelRow) => boolean;
 	/** First row to show when focused, so the selection stays in view. */
 	readonly scroll?: number;
-	readonly hiddenAbove?: number;
-	readonly hiddenBelow?: number;
 }
 
 /**
@@ -254,19 +319,29 @@ export function renderAgentPanelRows(
 ): string[] {
 	if (rows.length === 0) return [];
 	const focused = options.selectedId !== undefined;
-	const preSliced = options.hiddenAbove !== undefined || options.hiddenBelow !== undefined;
-	const start = focused && !preSliced ? Math.max(0, options.scroll ?? 0) : 0;
-	const visible = focused ? rows.slice(start, start + AGENT_PANEL_FOCUSED_ROWS) : rows;
-	const shown = focused ? visible : visible.slice(0, AGENT_PANEL_IDLE_ROWS);
+	const visible = focused ? rows.slice(options.scroll ?? 0, (options.scroll ?? 0) + AGENT_PANEL_FOCUSED_ROWS) : rows;
+	const shown = focused
+		? visible
+		: visible.length <= AGENT_PANEL_IDLE_ROWS
+			? visible
+			: visible.slice(0, AGENT_PANEL_IDLE_ROWS);
+	const count = shown.length;
+	const names = new Array<string>(count);
+	const nameWidths = new Array<number>(count);
 	let nameWidth = 4;
-	for (const row of shown) {
-		nameWidth = Math.min(14, Math.max(nameWidth, visibleWidth(taskDisplayText(row.name))));
+	for (let i = 0; i < count; i++) {
+		const cleanName = panelText(shown[i]!.name);
+		const w = cellWidth(cleanName);
+		names[i] = cleanName;
+		nameWidths[i] = w;
+		if (w > nameWidth) nameWidth = w < 14 ? w : 14;
 	}
 	const lines: string[] = [];
 	const line = (
 		id: string,
 		glyphText: string,
 		name: string,
+		knownNameWidth: number,
 		task: string,
 		right: string,
 		dim: boolean,
@@ -275,48 +350,52 @@ export function renderAgentPanelRows(
 		const selected = options.selectedId === id;
 		const cursor = selected ? style.accent(style.bold("❯ ")) : "  ";
 		const paint = (text: string) => (dim ? style.dim(text) : selected ? style.text(text) : style.muted(text));
-		const rightPlain = right + (queued ?? "");
-		const shownName = truncateToWidth(name, nameWidth);
-		const head = `${shownName}${" ".repeat(Math.max(0, nameWidth - visibleWidth(shownName)))}`;
-		const fixed = 2 + 2 + visibleWidth(head) + 2;
 		if (width < 40) {
-			const short = `${cursor}${glyphText} ${paint(truncateToWidth(name, Math.max(1, width - 5)))}`;
-			return lines.push(truncateToWidth(short, width));
+			const shortName = fitToWidth(name, Math.max(1, width - 5)).text;
+			const short = `${cursor}${glyphText} ${paint(shortName)}`;
+			return lines.push(clampLine(short, width));
 		}
-		const rightWidth = visibleWidth(rightPlain);
+		const fittedName =
+			knownNameWidth <= nameWidth ? { text: name, width: knownNameWidth } : fitToWidth(name, nameWidth);
+		const head =
+			fittedName.width < nameWidth
+				? `${fittedName.text}${" ".repeat(nameWidth - fittedName.width)}`
+				: fittedName.text;
+		const headWidth = fittedName.width < nameWidth ? nameWidth : fittedName.width;
+		const fixed = 6 + headWidth;
+		const rightPlain = queued === undefined ? right : right + queued;
+		const rightWidth = cellWidth(rightPlain);
 		const taskRoom = Math.max(0, width - fixed - rightWidth - 2);
-		const shownTask = taskRoom >= 4 ? truncateToWidth(task, taskRoom) : "";
-		const pad = Math.max(1, width - fixed - visibleWidth(shownTask) - rightWidth);
+		const fittedTask = taskRoom >= 4 && task.length > 0 ? fitToWidth(task, taskRoom) : { text: "", width: 0 };
+		const pad = Math.max(1, width - fixed - fittedTask.width - rightWidth);
 		const nameText = selected ? style.bold(style.text(head)) : paint(head);
 		const rightText = paint(right) + (queued === undefined ? "" : style.warning(queued));
-		lines.push(
-			truncateToWidth(`${cursor}${glyphText} ${nameText}  ${paint(shownTask)}${" ".repeat(pad)}${rightText}`, width),
-		);
+		const full = `${cursor}${glyphText} ${nameText}  ${paint(fittedTask.text)}${" ".repeat(pad)}${rightText}`;
+		lines.push(clampLine(full, width));
 	};
 	if (focused) {
 		const selected = options.selectedId === AGENT_PANEL_MAIN_ID;
-		line(AGENT_PANEL_MAIN_ID, selected ? style.accent("●") : style.text("●"), "main", "", "", false);
+		line(AGENT_PANEL_MAIN_ID, selected ? style.accent("●") : style.text("●"), "main", 4, "", "", false);
 	}
-	const hiddenAbove = options.hiddenAbove ?? (focused ? Math.min(start, rows.length) : 0);
-	if (hiddenAbove > 0) lines.push(style.dim(truncateToWidth(`  ↑ ${hiddenAbove} more`, width)));
-	for (const raw of shown) {
-		// Names and tasks come from models and commands: control sequences never reach the terminal.
-		const row = { ...raw, name: taskDisplayText(raw.name), task: taskDisplayText(raw.task) };
-		const dim = options.faded?.(row) === true;
-		const queued = row.queued ? ` · ${row.queued} queued` : undefined;
+	for (let i = 0; i < count; i++) {
+		const raw = shown[i]!;
+		const cleanName = names[i]!;
+		const cleanTask = panelText(raw.task);
+		const dim = options.faded?.(raw) === true;
+		const queued = Number.isSafeInteger(raw.queued) && (raw.queued ?? 0) > 0 ? ` · ${raw.queued} queued` : undefined;
 		line(
-			row.id,
-			dim ? style.dim(glyph(row, style, undefined)) : glyph(row, style, options.frame),
-			row.name,
-			taskColumn(row, width),
-			rightColumn(row, width),
+			raw.id,
+			dim ? style.dim(glyph(raw, style, undefined)) : glyph(raw, style, options.frame),
+			cleanName,
+			nameWidths[i]!,
+			taskColumn(raw, cleanTask, width),
+			rightColumn(raw, width),
 			dim,
 			queued,
 		);
 	}
-	const hiddenBelow =
-		options.hiddenBelow ?? (focused ? Math.max(0, rows.length - (start + shown.length)) : rows.length - shown.length);
-	if (hiddenBelow > 0) lines.push(style.dim(truncateToWidth(`  +${hiddenBelow} more`, width)));
+	const hidden = focused ? rows.length - visible.length : rows.length - shown.length;
+	if (hidden > 0) lines.push(style.dim(truncateToWidth(`  +${hidden} more`, width)));
 	return lines;
 }
 
@@ -352,7 +431,6 @@ export class AgentPanelFocus {
 	selectedId: string = AGENT_PANEL_MAIN_ID;
 	scroll = 0;
 	helpOpen = false;
-	finishedWhileArmed?: AgentPanelRow;
 	readonly stopConfirm: TwoPressConfirm;
 	private rows: readonly AgentPanelRow[] = [];
 	private readonly keys: NavKeybindings;
@@ -362,37 +440,36 @@ export class AgentPanelFocus {
 		this.actions = actions;
 		this.stopConfirm = new TwoPressConfirm(now);
 	}
+	/**
+	 * A row that finished while its stop waited for the second `x`: the wait ends, and the next `x` on it only
+	 * acknowledges this, so a row is never dismissed by a press aimed at a running item.
+	 */
+	finishedWhileArmed?: AgentPanelRow;
+	private finishedAcknowledged = false;
 	update(rows: readonly AgentPanelRow[]): void {
-		this.rows = rows;
+		const ids = new Set([AGENT_PANEL_MAIN_ID]);
+		this.rows = rows.filter((row) => {
+			if (ids.has(row.id)) return false;
+			ids.add(row.id);
+			return true;
+		});
 		const armed = this.stopConfirm.pending();
-		const settled = armed === undefined ? undefined : rows.find((row) => row.id === armed && isFinishedPanelRow(row));
+		const settled = rows.find((row) => row.id === armed && isFinishedPanelRow(row));
 		if (settled !== undefined) {
 			this.stopConfirm.reset();
 			this.finishedWhileArmed = settled;
-		} else if (
-			this.finishedWhileArmed !== undefined &&
-			!rows.some((row) => row.id === this.finishedWhileArmed?.id && isFinishedPanelRow(row))
-		) {
-			this.finishedWhileArmed = undefined;
+			this.finishedAcknowledged = false;
 		}
-		if (this.selectedId === AGENT_PANEL_MAIN_ID) return;
-		let index = rows.findIndex((row) => row.id === this.selectedId);
-		if (index < 0) {
+		if (this.selectedId !== AGENT_PANEL_MAIN_ID && !rows.some((row) => row.id === this.selectedId))
 			this.selectedId = rows[0]?.id ?? AGENT_PANEL_MAIN_ID;
-			index = rows.length > 0 ? 0 : -1;
-		}
-		this.keepIndexInView(index);
+		this.keepInView();
 	}
 	/** Focus starts on the first row below `main`, as ↓ from the prompt moves one step. */
 	enter(selectId?: string): void {
-		const index = selectId === undefined ? -1 : this.rows.findIndex((row) => row.id === selectId);
-		if (index >= 0) {
-			this.selectedId = selectId!;
-			this.keepIndexInView(index);
-			return;
-		}
-		this.selectedId = this.rows[0]?.id ?? AGENT_PANEL_MAIN_ID;
-		this.keepIndexInView(this.rows.length > 0 ? 0 : -1);
+		this.selectedId = this.rows.some((row) => row.id === selectId)
+			? (selectId as string)
+			: (this.rows[0]?.id ?? AGENT_PANEL_MAIN_ID);
+		this.keepInView();
 	}
 	selected(): AgentPanelRow | undefined {
 		return this.rows.find((row) => row.id === this.selectedId);
@@ -402,22 +479,23 @@ export class AgentPanelFocus {
 		const id = this.stopConfirm.pending();
 		return id === undefined ? undefined : this.rows.find((row) => row.id === id);
 	}
-	private keepIndexInView(index: number): void {
-		if (index < 0) return;
+	private ids(): string[] {
+		return [AGENT_PANEL_MAIN_ID, ...this.rows.map((row) => row.id)];
+	}
+	private keepInView(): void {
+		const index = this.rows.findIndex((row) => row.id === this.selectedId);
+		if (index < 0) {
+			this.scroll = 0;
+			return;
+		}
 		if (index < this.scroll) this.scroll = index;
 		if (index >= this.scroll + AGENT_PANEL_FOCUSED_ROWS) this.scroll = index - AGENT_PANEL_FOCUSED_ROWS + 1;
 		this.scroll = Math.max(0, Math.min(this.scroll, Math.max(0, this.rows.length - AGENT_PANEL_FOCUSED_ROWS)));
 	}
-	private keepInView(): void {
-		this.keepIndexInView(this.rows.findIndex((row) => row.id === this.selectedId));
-	}
 	private move(delta: number): void {
-		const current =
-			this.selectedId === AGENT_PANEL_MAIN_ID
-				? 0
-				: Math.max(0, this.rows.findIndex((row) => row.id === this.selectedId) + 1);
-		const next = Math.max(0, Math.min(this.rows.length, current + delta));
-		this.selectedId = next === 0 ? AGENT_PANEL_MAIN_ID : (this.rows[next - 1]?.id ?? AGENT_PANEL_MAIN_ID);
+		const ids = this.ids();
+		const index = Math.max(0, ids.indexOf(this.selectedId));
+		this.selectedId = ids[Math.max(0, Math.min(ids.length - 1, index + delta))] ?? AGENT_PANEL_MAIN_ID;
 		this.keepInView();
 	}
 	/** Every key belongs to the focused panel; returns whether it changed anything worth a repaint. */
@@ -468,8 +546,8 @@ export class AgentPanelFocus {
 		if (stopKey) {
 			if (row === undefined) return true;
 			if (isFinishedPanelRow(row)) {
-				if (this.finishedWhileArmed?.id === row.id) {
-					this.finishedWhileArmed = undefined;
+				if (this.finishedWhileArmed?.id === row.id && !this.finishedAcknowledged) {
+					this.finishedAcknowledged = true;
 					return true;
 				}
 				this.finishedWhileArmed = undefined;
@@ -491,14 +569,12 @@ export function renderAgentPanelHint(
 	const finished = focus.finishedWhileArmed;
 	if (finished !== undefined) {
 		const key = keybindings?.getKeys?.("app.list.stop")?.[0] ?? "x";
-		return style.warning(truncateToWidth(`  ${taskDisplayText(finished.name)} finished · ${key} to dismiss`, width));
+		return style.warning(truncateToWidth(`  ${panelText(finished.name)} finished · ${key} to dismiss`, width));
 	}
 	const pending = focus.pendingStop();
 	if (pending !== undefined) {
 		const key = keybindings?.getKeys?.("app.list.stop")?.[0] ?? "x";
-		return style.warning(
-			truncateToWidth(`  Press ${key} again within 3s to stop ${taskDisplayText(pending.name)}`, width),
-		);
+		return style.warning(truncateToWidth(`  Press ${key} again within 3s to stop ${panelText(pending.name)}`, width));
 	}
 	return renderNavHintLine(agentPanelKeys(focus.selected()), width, style, keybindings);
 }

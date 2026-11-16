@@ -7,6 +7,7 @@ import { setDebugSetting } from "../../core/debug-setting.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
+import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
 import { STOP_ALL_STATUS_KEY } from "../interactive/interactive-stop-all.ts";
 import { showAgentPanel } from "./agent-panel-bridge.ts";
@@ -126,7 +127,7 @@ export function createRpcCommandHandler({
 					return createRpcErrorResponse(id, command.type, "Task inspection requires an interactive host");
 				const ui = session.extensionRunner.getUIContext();
 				void showEngineTaskInspector(session, engineTaskInspectorUi(ui, taskInspectorUi), command.taskId).catch(
-					(error: Error) => ui.notify(error.message, "error"),
+					(error: unknown) => ui.notify(sourceError(error).message, "error"),
 				);
 				return createRpcSuccessResponse(id, command.type);
 			}
@@ -134,8 +135,8 @@ export function createRpcCommandHandler({
 				if (!keybindings || !taskInspectorUi)
 					return createRpcErrorResponse(id, command.type, "The agent panel requires an interactive host");
 				const ui = session.extensionRunner.getUIContext();
-				void showAgentPanel(session, engineTaskInspectorUi(ui, taskInspectorUi)).catch((error: Error) =>
-					ui.notify(error.message, "error"),
+				void showAgentPanel(session, engineTaskInspectorUi(ui, taskInspectorUi)).catch((error: unknown) =>
+					ui.notify(sourceError(error).message, "error"),
 				);
 				return createRpcSuccessResponse(id, command.type);
 			}

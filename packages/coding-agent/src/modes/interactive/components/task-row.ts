@@ -4,6 +4,7 @@ import { formatModelLabel } from "../../../core/model-label.ts";
 import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
 import { isResumableStop, releasedWaitingOn } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
+import { isRunningTaskClock, liveElapsedMs } from "../../../core/tasks/live-elapsed.js";
 import type { TaskActivity } from "../../../core/tasks/owner-store.js";
 import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
@@ -87,8 +88,12 @@ export function taskStatusAppearance(task: TaskRecord): {
 
 export function taskMetricsText(task: TaskRecord): string {
 	const metrics = task.metrics;
+	const elapsedMs =
+		metrics?.elapsedMs === undefined
+			? undefined
+			: liveElapsedMs(task.ref.taskId, metrics.elapsedMs, isRunningTaskClock(task.execution.kind));
 	return [
-		metrics?.elapsedMs === undefined ? "" : taskDuration(metrics.elapsedMs),
+		elapsedMs === undefined ? "" : taskDuration(elapsedMs),
 		metrics?.tokenCount === undefined ? "" : `${metrics.tokenCount.toLocaleString("en-US")} tokens`,
 		metrics?.toolCount === undefined ? "" : `${metrics.toolCount} ${metrics.toolCount === 1 ? "tool" : "tools"}`,
 	]

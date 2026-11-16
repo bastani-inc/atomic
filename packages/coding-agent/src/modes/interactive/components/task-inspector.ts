@@ -1043,7 +1043,7 @@ export class TaskInspector implements Component {
 				? []
 				: [
 						theme.bold(`Transcript · ${task ? taskDisplayText(taskLabel(task)) : "Task"}`),
-						task ? taskDetailSummary(task) : "",
+						task ? taskDetailSummary(this.withLiveElapsed(task)) : "",
 						theme.fg("borderMuted", "─".repeat(Math.max(0, width))),
 					].map(fitWidth);
 		const notes = [transcript.status, this.status].filter(Boolean).join(" · ");
@@ -1100,7 +1100,8 @@ export class TaskInspector implements Component {
 		const action = actions[this.actionIndex];
 		const actionRow = action ? [theme.fg("accent", `› ${taskDetailLabels[action]}`)] : [];
 		const rows = this.renderAll(inner);
-		const compactSummary = !framed && detail && current && budget >= 4 ? [taskDetailSummary(current)] : [];
+		const compactSummary =
+			!framed && detail && current && budget >= 4 ? [taskDetailSummary(this.withLiveElapsed(current))] : [];
 		const statusRows = this.taskStatusRows(width);
 		const height = Math.max(
 			0,
@@ -1147,7 +1148,7 @@ export class TaskInspector implements Component {
 			border("╭─") + theme.bold(heading) + border(`${"─".repeat(Math.max(0, width - visibleWidth(heading) - 3))}╮`),
 			frameRow(
 				detail && current
-					? taskDetailSummary(current)
+					? taskDetailSummary(this.withLiveElapsed(current))
 					: theme.fg("muted", `${live} active · ${this.store.backgroundTasks.length} total`),
 			),
 			...view.map(frameRow),

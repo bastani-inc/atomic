@@ -10,9 +10,7 @@ import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { registerInlineFormRenderer } from "../tui/inline-form-overlay.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { buildGraphOverlayAdapter } from "../tui/overlay-adapter.js";
-import { answerPanelRun, panelItemsFromSnapshot, panelRunId } from "../tui/panel-runs.js";
 import { installToolExecutionHooks } from "../tui/tool-execution-hooks.js";
-import { markWorkflowRunViewed, viewedWorkflowRuns } from "../tui/viewed-runs.js";
 import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-types.js";
 import { adoptWorkflowSessionRunState } from "./adopt-session-run-state.js";
 import { registerCompletedStageIntercomAskRouter } from "./completed-stage-intercom-ask.js";
@@ -32,6 +30,7 @@ import { installInputInterceptor, type WorkflowCommandHandler } from "./workflow
 import { createGraphStageActions, type GraphStageActionDeps } from "./workflow-graph-stage-actions.js";
 import { createWorkflowObservation } from "./workflow-observation.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
+import { workflowPanelSource } from "./workflow-panel-source.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { createSessionRunControl } from "./workflow-session-run-control.js";
 import { overlaySurfaceFromContext } from "./workflow-targets.js";
@@ -204,33 +203,16 @@ function factory(pi: ExtensionAPI): void {
 		},
 	});
 	pi.registerWorkflowRunControl?.(sessionRunControl);
-	const viewedRuns = viewedWorkflowRuns(owner.store);
-	pi.registerAgentPanelSource?.({
-		items: () => panelItemsFromSnapshot(owner.store.graphSnapshot().runs, Date.now(), viewedRuns),
-		subscribe: (listener) => owner.store.subscribeInvalidation(listener),
-		open: (id, options) => {
-			const runId = panelRunId(id);
-			if (runId === undefined) return;
-			markWorkflowRunViewed(runId, owner.store);
-			overlay.open(runId, overlaySurfaceFromContext(sessionContext), undefined, undefined, {
-				...(options?.onReturn === undefined ? {} : { onReturn: options.onReturn }),
-			});
-		},
-		stop: async (id) => {
-			const runId = panelRunId(id);
-			if (runId === undefined) return { ok: false, reason: "not a workflow run" };
-			try {
-				const outcome = await sessionRunControl.quit(runId);
-				// A quit run is paused and resumable: that is the stop the panel asked for. Only a partial quit failed.
-				return outcome.status === "partial" || outcome.status === "running"
-					? { ok: false, reason: outcome.message }
-					: { ok: true };
-			} catch (error) {
-				return { ok: false, reason: error instanceof Error ? error.message : String(error) };
-			}
-		},
-		answer: async (id, text, options) => answerPanelRun(id, text, owner, options),
-	});
+	// Each run is a row of the agent panel and /tasks; Enter opens its graph, x x quits it resumably (#5224).
+	pi.registerAgentPanelSource?.(
+		workflowPanelSource(owner, {
+			open: (runId, options) =>
+				overlay.open(runId, overlaySurfaceFromContext(sessionContext), undefined, undefined, {
+					...(options?.onReturn === undefined ? {} : { onReturn: options.onReturn }),
+				}),
+			quit: (runId) => sessionRunControl.quit(runId),
+		}),
+	);
 	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx, signal, onRunAccepted) => {
 		const result = await executeWorkflowTool(args, ctx, signal, onRunAccepted);
 		if (

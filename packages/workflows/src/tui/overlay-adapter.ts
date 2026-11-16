@@ -42,7 +42,6 @@ import type { StoreSnapshot } from "../shared/store-types.js";
 import { deriveGraphThemeFromPiTheme } from "./graph-theme.js";
 import type { OverlayTerminalOutput } from "./overlay-terminal-modes.js";
 import { remoteTerminalControlFrom, setTerminalAutowrap } from "./overlay-terminal-modes.js";
-import { markWorkflowRunViewed } from "./viewed-runs.js";
 import { WorkflowAttachPane } from "./workflow-attach-pane.js";
 import type { PostMortemHandleResolution } from "./workflow-attach-pane-types.js";
 import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
@@ -336,14 +335,6 @@ export function buildGraphOverlayAdapter(
 		openOptions?: GraphOverlayOpenOptions,
 	): void {
 		returnTo = openOptions?.onReturn;
-		const markViewed = (): void => {
-			const targetRunId = runId ?? store.activeRunId() ?? store.runs().at(-1)?.id;
-			if (targetRunId === undefined) return;
-			markWorkflowRunViewed(targetRunId, store);
-			const rootRunId = store.run(targetRunId)?.rootRunId;
-			if (rootRunId) markWorkflowRunViewed(rootRunId, store);
-		};
-		markViewed();
 		const ui = surface?.ui ?? pi.ui;
 		observeHostCustomUi(ui);
 
@@ -390,7 +381,6 @@ export function buildGraphOverlayAdapter(
 			const finish = (): void => {
 				if (settled) return;
 				settled = true;
-				returnTo = undefined;
 				observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
 				currentView?.dispose();
 				currentView = null;

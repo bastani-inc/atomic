@@ -42,6 +42,10 @@ Going back from what you opened returns to the panel with the same row selected:
 
 A workflow stage chat or a subagent's chat lists its own active agents and shells below its prompt in the same row format.
 
+If the panel warns that an extension source failed, its invalid rows are hidden while the other rows and chat remain usable. A source that cannot list its rows is hidden entirely. The warning appears once per source, including during startup. Fix or update the extension, then use `/reload` to register it again; new rows continue updating without reopening the panel. If a reload closes the focused panel, press ↓ on the empty prompt to open it again. A failed stop or answer reports the source's error without closing the chat.
+
+Extension authors can add rows with [`pi.registerAgentPanelSource()`](/extensions/api-reference#pi-registeragentpanelsource-source).
+
 ### Open the task inspector
 
 Run `/tasks` to inspect work without stopping it:
