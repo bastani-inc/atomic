@@ -39,7 +39,7 @@ vi.mock(
 /** Wide enough for the side-by-side preview layout. */
 const WIDE = 120;
 /** Below `PREVIEW_MIN_WIDTH`, so previews stack under the options. */
-const NARROW = 80;
+const NARROW = 60;
 
 beforeAll(() => {
 	initTheme("dark");

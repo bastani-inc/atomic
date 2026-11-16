@@ -1,4 +1,4 @@
-import { type Component, Container, type Input, Spacer, Text } from "@bastani/atomic-tui";
+import { type Component, Container, type Input, Spacer, Text, truncateToWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
 import { fieldTone, styleFieldTone } from "../state/selectors/field-tone.ts";
 import { formatAnswerScalar } from "../tool/format-answer.ts";
@@ -11,6 +11,7 @@ import {
 	HINT_PART_ENTER,
 	HINT_PART_NAV,
 	HINT_PART_NOTES,
+	HINT_PART_REVIEW_TAB,
 	HINT_PART_TAB,
 	HINT_PART_TOGGLE,
 	INCOMPLETE_WARNING_PREFIX,
@@ -29,7 +30,10 @@ const NOTES_HEADER = "Notes:";
  * plus `footerRowCount`.
  */
 export interface TabContentStrategy {
-	/** Total RENDERED footer rows — MUST equal what `footerRows()` actually emits. Drives residual math. */
+	/**
+	 * Total RENDERED footer rows: what `footerRows()` emits inside the frame plus the hint line under it. Drives
+	 * residual math.
+	 */
 	readonly footerRowCount: number;
 
 	/** Variable rows above the body, after top chrome (border + tabBar + Spacer). */
@@ -41,8 +45,11 @@ export interface TabContentStrategy {
 	/** Optional rows between body's trailing Spacer and the bottom border. */
 	midRows(state: DialogState): Component[];
 
-	/** Footer rows below the bottom border. Rendered row count MUST equal `footerRowCount`. */
+	/** Footer rows inside the frame, below the rule. With the hint line they MUST render `footerRowCount` rows. */
 	footerRows(state: DialogState): Component[];
+
+	/** The one hint line under the frame: exactly the keys that work on this step. */
+	hintText(state: DialogState): string;
 }
 
 export interface QuestionTabStrategyConfig {
@@ -56,8 +63,8 @@ export interface QuestionTabStrategyConfig {
 }
 
 export class QuestionTabStrategy implements TabContentStrategy {
-	/** Spacer(1) + chatRow(1) + Spacer(1) + Text(hint, 1) = 4 rendered rows. */
-	readonly footerRowCount = 4;
+	/** chatRow(1) inside the frame + the hint line (1) = 2 rendered rows. */
+	readonly footerRowCount = 2;
 
 	private declare readonly config: QuestionTabStrategyConfig;
 
@@ -70,11 +77,11 @@ export class QuestionTabStrategy implements TabContentStrategy {
 		const question = this.config.questions[state.currentTab];
 		// In multi-question mode the tab bar already shows the header; suppress the inline badge.
 		if (!this.config.isMulti && question?.header && question.header.length > 0) {
-			out.push(new Text(this.config.theme.bg("selectedBg", ` ${question.header} `), 1, 0));
+			out.push(new Text(this.config.theme.bg("selectedBg", ` ${question.header} `), 0, 0));
 			out.push(new Spacer(1));
 		}
 		if (question) {
-			out.push(new Text(this.config.theme.bold(question.question), 1, 0));
+			out.push(new Text(this.config.theme.bold(question.question), 0, 0));
 			out.push(new Spacer(1));
 		}
 		return out;
@@ -96,17 +103,15 @@ export class QuestionTabStrategy implements TabContentStrategy {
 			render: (width) => notesInput.render(width).map((line) => styleFieldTone(theme, tone, line)),
 			invalidate: () => notesInput.invalidate(),
 		};
-		return [new Text(theme.fg("muted", NOTES_HEADER), 1, 0), notesField, new Spacer(1)];
+		return [new Text(theme.fg("muted", NOTES_HEADER), 0, 0), notesField, new Spacer(1)];
 	}
 
-	footerRows(state: DialogState): Component[] {
-		const question = this.config.questions[state.currentTab];
-		return [
-			new Spacer(1),
-			this.config.chatRow,
-			new Spacer(1),
-			new Text(this.config.theme.fg("dim", buildHintText(question, this.config.isMulti, state)), 1, 0),
-		];
+	footerRows(_state: DialogState): Component[] {
+		return [this.config.chatRow];
+	}
+
+	hintText(state: DialogState): string {
+		return buildHintText(this.config.questions[state.currentTab], this.config.isMulti, state);
 	}
 }
 
@@ -117,8 +122,11 @@ export interface SubmitTabStrategyConfig {
 }
 
 export class SubmitTabStrategy implements TabContentStrategy {
-	/** Spacer(1) + Text(prompt, 1) + Spacer(1) + submitPicker(2) = 5 rendered rows. Fallback path lands at 5 via 2 trailing Spacer(1)s. */
-	readonly footerRowCount = 5;
+	/**
+	 * Spacer(1) + Text(prompt, 1) + Spacer(1) + submitPicker(2) = 5 rendered rows inside the frame, plus the hint line.
+	 * The fallback path lands at 5 via 2 trailing Spacer(1)s.
+	 */
+	readonly footerRowCount = 6;
 
 	private declare readonly config: SubmitTabStrategyConfig;
 
@@ -127,7 +135,7 @@ export class SubmitTabStrategy implements TabContentStrategy {
 	}
 
 	headingRows(_state: DialogState): Component[] {
-		return [new Text(this.config.theme.bold(this.config.theme.fg("accent", REVIEW_HEADING)), 1, 0), new Spacer(1)];
+		return [new Text(this.config.theme.bold(this.config.theme.fg("accent", REVIEW_HEADING)), 0, 0), new Spacer(1)];
 	}
 
 	bodyComponent(state: DialogState): Component {
@@ -166,7 +174,9 @@ export class SubmitTabStrategy implements TabContentStrategy {
 			missing.length === 0
 				? this.config.theme.fg("muted", READY_PROMPT)
 				: this.config.theme.fg("warning", `${INCOMPLETE_WARNING_PREFIX} ${missing.join(", ")}`);
-		const out: Component[] = [new Spacer(1), new Text(promptText, 1, 0), new Spacer(1)];
+		// One line, so the footer keeps its fixed height however many questions are left.
+		const prompt: Component = { render: (width) => [truncateToWidth(promptText, width, "…")], invalidate: () => {} };
+		const out: Component[] = [new Spacer(1), prompt, new Spacer(1)];
 		if (this.config.submitPicker) {
 			out.push(this.config.submitPicker);
 		} else {
@@ -176,16 +186,18 @@ export class SubmitTabStrategy implements TabContentStrategy {
 		}
 		return out;
 	}
+
+	hintText(_state: DialogState): string {
+		return [HINT_PART_NAV, HINT_PART_ENTER, HINT_PART_REVIEW_TAB, HINT_PART_CANCEL].join(" · ");
+	}
 }
 
 /**
- * Build the controls hint line. Order is fixed so `HINT_SINGLE` / `HINT_MULTI`
- * remain contiguous substrings of the result:
- *   Enter · ↑/↓ [· Space toggle] [· n notes] [· Tab switch] · Esc
+ * Build the controls hint line: exactly the keys that work on this question, in the shared hint order
+ *   ↑↓ select · enter choose | enter/space toggle [· n add notes] [· tab next question] · esc cancel
  */
 export function buildHintText(question: QuestionData | undefined, isMulti: boolean, state: DialogState): string {
-	const parts: string[] = [HINT_PART_ENTER, HINT_PART_NAV];
-	if (question?.multiSelect === true) parts.push(HINT_PART_TOGGLE);
+	const parts: string[] = [HINT_PART_NAV, question?.multiSelect === true ? HINT_PART_TOGGLE : HINT_PART_ENTER];
 	if (question && question.multiSelect !== true && state.focusedOptionHasPreview && !state.notesVisible) {
 		parts.push(HINT_PART_NOTES);
 	}

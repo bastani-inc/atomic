@@ -12,9 +12,6 @@ const CHECKED = "[✔]";
 const UNCHECKED = "[ ]";
 const NUMBER_SEPARATOR = ". ";
 const BOX_LABEL_GAP = " ";
-// CC parity: description continuation indents to col 2 (past the pointer slot), NOT to the
-// full prefix column. Wrap width still uses prefixVisibleWidth so naturalHeight matches render.
-const CONTINUATION_INDENT = "  ";
 
 export const MULTI_SUBMIT_LABEL = "Submit";
 
@@ -62,7 +59,10 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 		const lines: string[] = [];
 		const prefixWidth = this.prefixVisibleWidth();
 		const contentWidth = Math.max(1, width - prefixWidth);
-		const numberWidth = String(Math.max(1, this.question.options.length)).length;
+		// The Next row is numbered after the options, so it sets the number column's width.
+		const numberWidth = String(this.question.options.length + 1).length;
+		// Descriptions sit under the label, past the pointer, number and checkbox.
+		const descriptionIndent = " ".repeat(prefixWidth);
 		for (let i = 0; i < this.question.options.length; i++) {
 			const opt = this.question.options[i];
 			const row = this.props.rows[i];
@@ -81,7 +81,7 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 			if (opt.description) {
 				const wrapped = wrapTextWithAnsi(opt.description, contentWidth);
 				for (const segment of wrapped) {
-					lines.push(CONTINUATION_INDENT + this.theme.fg("muted", segment));
+					lines.push(descriptionIndent + this.theme.fg("muted", segment));
 				}
 			}
 		}
@@ -89,7 +89,8 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 		const nextLabel = this.props.nextActive
 			? styleFieldTone(this.theme, "editing", this.props.nextLabel)
 			: this.props.nextLabel;
-		const rendered = truncateToWidth(`${nextPointer}${nextLabel}`, width, "");
+		const nextNumber = String(this.question.options.length + 1).padStart(numberWidth, " ");
+		const rendered = truncateToWidth(`${nextPointer}${nextNumber}${NUMBER_SEPARATOR}${nextLabel}`, width, "");
 		lines.push(`${rendered}${this.props.nextActive ? OVERLAY_ACTIVE_ROW_MARKER : ""}`);
 		return lines;
 	}
@@ -118,7 +119,7 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 		// visibleWidth, CHECKED/UNCHECKED share visibleWidth, and numberWidth is constant per question.
 		// The Next sentinel uses a bare `pointer + "Next"` shape — its width never exceeds this prefix
 		// at any reasonable terminal width, so it's safe to leave it out of the canonical computation.
-		const numberWidth = String(Math.max(1, this.question.options.length)).length;
+		const numberWidth = String(this.question.options.length + 1).length;
 		return (
 			visibleWidth(INACTIVE_POINTER) + numberWidth + visibleWidth(`${NUMBER_SEPARATOR}${UNCHECKED}${BOX_LABEL_GAP}`)
 		);

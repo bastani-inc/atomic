@@ -56,8 +56,8 @@ const BOX_CHARS = new Set(["╭", "╮", "╰", "╯", "│", "─", "┌", "┐
 const SIDE_BY_SIDE_TERMINAL_WIDTH = 140;
 const SIDE_BY_SIDE_PANE_WIDTH = 120;
 /** Below `PREVIEW_MIN_WIDTH`, so `decideLayout` falls back to stacked. */
-const STACKED_TERMINAL_WIDTH = 80;
-const STACKED_PANE_WIDTH = 70;
+const STACKED_TERMINAL_WIDTH = 60;
+const STACKED_PANE_WIDTH = 56;
 
 function previewQuestion(): QuestionData {
 	return {

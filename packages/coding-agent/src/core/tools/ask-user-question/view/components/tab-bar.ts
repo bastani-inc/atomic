@@ -1,4 +1,4 @@
-import { truncateToWidth } from "@bastani/atomic-tui";
+import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
 import type { StatefulView } from "../stateful-view.ts";
 
@@ -34,27 +34,23 @@ export class TabBar implements StatefulView<TabBarProps> {
 
 	invalidate(): void {}
 
+	/**
+	 * The steps of the dialog on one line: each question's header, then Review, joined by `──`, the current step as a
+	 * filled chip and answered steps in the success colour; the current question's `n/m` sits at the right edge.
+	 */
 	render(width: number): string[] {
-		const pieces: string[] = [" ← "];
-
-		for (const tab of this.props.tabs) {
-			const box = tab.answered ? "■" : "□";
-			const rawSeg = ` ${box} ${tab.label} `;
-			const styled = tab.active
-				? this.theme.bg("selectedBg", this.theme.fg("text", rawSeg))
-				: this.theme.fg(tab.answered ? "success" : "muted", rawSeg);
-			pieces.push(styled);
-			pieces.push(" ");
-		}
-
-		const submitText = " ✓ Submit ";
-		const submitStyled = this.props.submit.active
-			? this.theme.bg("selectedBg", this.theme.fg("text", submitText))
-			: this.theme.fg(this.props.submit.allAnswered ? "success" : "dim", submitText);
-		pieces.push(submitStyled);
-		pieces.push(" →");
-
-		const tabLine = truncateToWidth(pieces.join(""), width, "");
-		return [tabLine, ""];
+		const { theme } = this;
+		const step = (label: string, active: boolean, done: boolean): string =>
+			active ? theme.bg("selectedBg", theme.fg("text", label)) : theme.fg(done ? "success" : "muted", label);
+		const steps = [
+			...this.props.tabs.map((tab) => step(tab.label, tab.active, tab.answered)),
+			step("Review", this.props.submit.active, this.props.submit.allAnswered),
+		].join(theme.fg("dim", " ── "));
+		const activeIndex = this.props.tabs.findIndex((tab) => tab.active);
+		const count = activeIndex >= 0 ? `${activeIndex + 1}/${this.props.tabs.length}` : "Review";
+		const room = width - visibleWidth(count) - 2;
+		const left = truncateToWidth(steps, Math.max(1, room), "…");
+		const gap = Math.max(2, width - visibleWidth(left) - visibleWidth(count));
+		return [truncateToWidth(left + " ".repeat(gap) + theme.fg("muted", count), width, "")];
 	}
 }

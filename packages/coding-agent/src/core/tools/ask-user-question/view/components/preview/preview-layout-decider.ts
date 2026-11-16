@@ -3,8 +3,8 @@ import type { QuestionData } from "../../../tool/types.js";
 import type { WrappingSelectItem } from "../wrapping-select.ts";
 import { BORDER_HORIZONTAL_OVERHEAD, BORDER_INNER_PADDING_HORIZONTAL } from "./preview-box-renderer.ts";
 
-/** Min terminal/pane width for the side-by-side layout to engage. */
-export const PREVIEW_MIN_WIDTH = 100;
+/** Min terminal/pane width for the side-by-side layout to engage: an 80-column terminal stays side by side. */
+export const PREVIEW_MIN_WIDTH = 64;
 /** Visual gap between options column and preview column in side-by-side. */
 export const PREVIEW_COLUMN_GAP = 2;
 /** 1 col padding inside the preview column (between gap and `│`). */
@@ -17,7 +17,7 @@ export const MIN_LEFT = 30;
 /** Ceiling ratio: left column never exceeds this fraction of pane width. */
 export const MAX_LEFT_RATIO = 0.5;
 /** Floor for the preview column width — prevents right-side collapse on narrow terminals. */
-export const MIN_PREVIEW_WIDTH = 45;
+export const MIN_PREVIEW_WIDTH = 30;
 /** visibleWidth(" ✔") = 2 (space + ✔ codepoint). Reserved on the longest-label measurement
  *  so a confirmed row never gets truncated when MIN_LEFT clamps the column. */
 export const CONFIRMED_OVERHEAD = 2;
