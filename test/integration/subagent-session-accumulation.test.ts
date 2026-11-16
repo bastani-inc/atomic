@@ -3,7 +3,7 @@
  * finished a few. The main session is a real `createAgentSession` with the bundled subagents and Intercom extensions; it
  * launches background children in batches through the `subagent` tool on a scripted model, as a supervisor does, and
  * each child reads a file twice and answers. Between 50 and 200 finished children, the heap a finished child leaves
- * behind, the timers it leaves pending and the work a new child's start takes must not grow with them.
+ * behind, the timers it leaves pending and the copying a new child costs the session must not grow with them.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -19,6 +19,7 @@ import {
 import { afterAll, beforeAll, describe, test, vi } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import { getOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import { TaskSupervisor } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
 	type AgentSession,
@@ -26,6 +27,7 @@ import {
 	createAgentSession,
 	getAgentDir,
 	ModelRuntime,
+	SessionManager,
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
@@ -50,20 +52,17 @@ const RETAINED_BYTES_PER_FINISHED_CHILD = 48 * 1024;
 /** Timers the 150 children finished between the two measurements may leave pending; before the fix, one each. */
 const PENDING_TIMERS_GROWTH = 16;
 /**
- * How much more work a new child's start may take with 200 finished children than with 50. A start's work is the CPU
- * time this process spends from its launch to its first model request, in units of a fixed reference computation timed
- * just before and after it: on a busy machine wall time measures the machine, and CPU time stretches too, on Windows
- * by up to 1.8× when other processes share a core, while the reference stretches with it. What remains is the work a
- * start does, which is what grows with every child the session launched. Its own conversation still grows with each
- * batch it launches, by about 1.2× here, so the bound allows twice the work: it catches a start that scales with the
- * children launched, as one did at 500 children before #5186 (6× the start time it had at 48).
+ * How much more of the work that can grow with a session's history one new child may cost the supervising session
+ * with 200 finished children than with 50, counted, not timed: task records copied out of the owner's snapshot of every
+ * task it keeps, and the session's own entries copied into a preview of its context. Before #5186 a child's launch,
+ * settlement and completion each copied the record of every task the owner kept, and every turn copied the session's
+ * whole history once per boundary handler, so this work grew with every child the session had launched. A count does
+ * not depend on how busy the machine is.
  */
-const START_WORK_GROWTH_FACTOR = 2;
-/** Absorbs CPU accounting granularity, about 16 ms on Windows, and the noise of a few probes, in reference units. */
-const START_WORK_SLACK = 1;
-/** Records the reference computation sorts and serializes: about 50 ms of CPU on an idle farm machine. */
-const REFERENCE_RECORDS = 40_000;
-/** New children launched, one at a time, at each measurement; the median of their start work is compared. */
+const CHILD_WORK_GROWTH_FACTOR = 1.5;
+/** Absorbs the few records and entries a probe's own turns copy whatever the history. */
+const CHILD_WORK_SLACK = 50;
+/** New children launched, one at a time, at each measurement; the median of what each cost is compared. */
 const PROBES = 5;
 /** Collections whose least heap in use is taken as the heap a measurement holds. */
 const HEAP_SAMPLES = 5;
@@ -72,17 +71,14 @@ const RESUME_MESSAGE = "RESUMED-5186";
 interface Measurement {
 	readonly heapBytes: number;
 	readonly pendingTimers: number;
-	/** The median work a new child's start took, from its launch to its first model request, in reference units. */
-	readonly childStartWork: number;
-	/** The median CPU time of the same starts and of the reference computation, reported but never asserted. */
-	readonly childStartCpuMs: number;
-	readonly referenceCpuMs: number;
-	/** The median wall time of the same starts, reported but never asserted. */
+	/** The median count of task records and session entries one new child made the session copy. */
+	readonly childWork: number;
+	/** The median wall time from a new child's launch to its first model request, reported but never asserted. */
 	readonly childStartMs: number;
 }
 
-/** Each child's first model request: when it came and the CPU time this process had used by then. */
-const childStarts = new Map<string, { readonly at: number; readonly cpuMs: number }>();
+/** When each child made its first model request. */
+const childStarts = new Map<string, number>();
 const childFinished = new Set<string>();
 const resumedRequests: string[] = [];
 /** Each launched child's id, as resume names it, and task id, by its task number. */
@@ -102,7 +98,7 @@ const respond: FauxResponseFactory = (context, _options, _state, model) => {
 			resumedRequests.push(text);
 			return fauxAssistantMessage(`resumed ${task}`);
 		}
-		if (!childStarts.has(task)) childStarts.set(task, { at: performance.now(), cpuMs: cpuMs() });
+		if (!childStarts.has(task)) childStarts.set(task, performance.now());
 		if (messages.filter((message) => message.role === "toolResult").length < 2)
 			return fauxAssistantMessage([fauxToolCall("read", { path: "fixture.txt" })], { stopReason: "toolUse" });
 		childFinished.add(task);
@@ -155,7 +151,8 @@ let cwd: string;
 let session: AgentSession;
 let unregister: () => void;
 let launched = 0;
-let lastLaunch = { at: 0, cpuMs: 0 };
+let stopCounting: (() => void) | undefined;
+let lastLaunchAt = 0;
 const measured = new Map<number, Measurement>();
 
 async function supervisor(): Promise<AgentSession> {
@@ -196,8 +193,7 @@ async function supervisor(): Promise<AgentSession> {
 		builtins: { mcp: false, "web-access": false },
 	});
 	session.subscribe((event) => {
-		if (event.type === "tool_execution_start" && event.toolName === "subagent")
-			lastLaunch = { at: performance.now(), cpuMs: cpuMs() };
+		if (event.type === "tool_execution_start" && event.toolName === "subagent") lastLaunchAt = performance.now();
 		if (event.type !== "tool_execution_end" || event.toolName !== "subagent") return;
 		const details = (event.result as { details?: { taskRecords?: Array<Record<string, unknown>> } }).details;
 		for (const record of details?.taskRecords ?? []) {
@@ -223,60 +219,52 @@ async function launchAndFinish(count: number): Promise<void> {
 	);
 }
 
-/** The CPU time, user and system, this process has used so far. */
-function cpuMs(): number {
-	const { user, system } = process.cpuUsage();
-	return (user + system) / 1_000;
-}
-
 function median(values: readonly number[]): number {
 	return [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
 }
 
-/** A fixed computation of the kind a start does, allocating, serializing and sorting records; its CPU time in ms. */
-function referenceCpuMs(): number {
-	const started = cpuMs();
-	const records = Array.from({ length: REFERENCE_RECORDS }, (_, index) => ({
-		id: `record-${(index * 7919) % REFERENCE_RECORDS}`,
-		index,
-		tags: [index % 3, index % 5, index % 7],
-	}));
-	const parsed = JSON.parse(JSON.stringify(records)) as typeof records;
-	parsed.sort((a, b) => a.id.localeCompare(b.id));
-	const byId = new Map(parsed.map((record) => [record.id, record]));
-	if (byId.size === 0) throw new Error("the reference computation kept no record");
-	return cpuMs() - started;
+/** Task records and session entries copied so far, counted by {@link countCopies}. */
+let copied = 0;
+
+/** Counts the task records each owner snapshot copies and the entries each in-memory session is built from. */
+function countCopies(): () => void {
+	const watch = TaskSupervisor.prototype.watchOwnerTasks;
+	const watched = vi.spyOn(TaskSupervisor.prototype, "watchOwnerTasks").mockImplementation(function (
+		this: TaskSupervisor,
+		...args: Parameters<TaskSupervisor["watchOwnerTasks"]>
+	) {
+		const result = watch.apply(this, args);
+		if (result.ok) copied += result.value.snapshot.tasks.length;
+		return result;
+	});
+	const inMemory = SessionManager.inMemory;
+	const previews = vi.spyOn(SessionManager, "inMemory").mockImplementation((...args) => {
+		copied += args[2]?.length ?? 0;
+		return inMemory.apply(SessionManager, args);
+	});
+	return () => {
+		watched.mockRestore();
+		previews.mockRestore();
+	};
 }
 
 /**
- * The work and time a new child takes from its launch to its first model request, as medians of a few launches. Each
- * launch's CPU time is divided by the reference computation's, timed just before and just after it, so the load the
- * machine was under during that launch cancels out.
+ * What one new child costs the supervising session, as medians of a few children launched one at a time: the task
+ * records and session entries it made the session copy, from its launch until the session is idle after its completion,
+ * and the wall time to its first model request, which is reported but never asserted.
  */
-async function childStart(): Promise<{
-	readonly work: number;
-	readonly cpuMs: number;
-	readonly referenceMs: number;
-	readonly ms: number;
-}> {
+async function childCost(): Promise<{ readonly work: number; readonly ms: number }> {
 	const work: number[] = [];
-	const cpu: number[] = [];
-	const reference: number[] = [];
 	const wall: number[] = [];
 	for (let probe = 0; probe < PROBES; probe++) {
 		const task = String(launched);
-		const before = referenceCpuMs();
+		const before = copied;
 		await launchAndFinish(1);
-		const after = referenceCpuMs();
-		const started = childStarts.get(task);
-		const startCpu = started === undefined ? Number.NaN : started.cpuMs - lastLaunch.cpuMs;
-		const unit = Math.max((before + after) / 2, 1);
-		work.push(startCpu / unit);
-		cpu.push(startCpu);
-		reference.push(unit);
-		wall.push(started === undefined ? Number.NaN : started.at - lastLaunch.at);
+		await vi.waitFor(() => assert.equal(session.isStreaming, false), { timeout: 60_000, interval: 20 });
+		work.push(copied - before);
+		wall.push((childStarts.get(task) ?? Number.NaN) - lastLaunchAt);
 	}
-	return { work: median(work), cpuMs: median(cpu), referenceMs: median(reference), ms: median(wall) };
+	return { work: median(work), ms: median(wall) };
 }
 
 /**
@@ -295,16 +283,14 @@ async function settledHeapBytes(): Promise<number> {
 }
 
 async function measure(): Promise<Measurement> {
-	const start = await childStart();
+	const cost = await childCost();
 	// Let the children's sessions finish closing and their completions reach the main session.
 	await new Promise((resolve) => setTimeout(resolve, 1_500));
 	return {
 		heapBytes: await settledHeapBytes(),
 		pendingTimers: v8.queryObjects(TimeoutClass, { format: "count" }) as number,
-		childStartWork: start.work,
-		childStartCpuMs: start.cpuMs,
-		referenceCpuMs: start.referenceMs,
-		childStartMs: start.ms,
+		childWork: cost.work,
+		childStartMs: cost.ms,
 	};
 }
 
@@ -321,6 +307,7 @@ describe("a long supervising session as its children accumulate (#5186)", () => 
 			`---\nname: worker-5186\ndescription: Reads a fixture and answers\ntools: read\nmodel: ${PROVIDER}/${CHILD_MODEL}\n---\n\nRead the fixture, then answer.\n`,
 		);
 		session = await supervisor();
+		stopCounting = countCopies();
 		while (childFinished.size < FEW_FINISHED) await launchAndFinish(BATCH);
 		measured.set(FEW_FINISHED, await measure());
 		while (childFinished.size < MANY_FINISHED) await launchAndFinish(BATCH);
@@ -328,6 +315,7 @@ describe("a long supervising session as its children accumulate (#5186)", () => 
 	}, ACCUMULATION_TIMEOUT_MS);
 
 	afterAll(async () => {
+		stopCounting?.();
 		await session?.dispose();
 		unregister?.();
 		clearSubagentControls();
@@ -335,7 +323,7 @@ describe("a long supervising session as its children accumulate (#5186)", () => 
 		if (cwd) removeTempDirectory(cwd);
 	});
 
-	test("a finished child leaves no history, skill text or timer behind, and a new child's start does no more work with 200 finished than with 50 (#5186)", () => {
+	test("a finished child leaves no history, skill text or timer behind (#5186)", () => {
 		const few = measured.get(FEW_FINISHED)!;
 		const many = measured.get(MANY_FINISHED)!;
 		const children = childFinished.size - FEW_FINISHED - PROBES;
@@ -343,9 +331,14 @@ describe("a long supervising session as its children accumulate (#5186)", () => 
 		const report = JSON.stringify({ few, many, children, retainedPerChild });
 		assert.ok(retainedPerChild <= RETAINED_BYTES_PER_FINISHED_CHILD, `retained heap per finished child: ${report}`);
 		assert.ok(many.pendingTimers - few.pendingTimers <= PENDING_TIMERS_GROWTH, `pending timers: ${report}`);
+	});
+
+	test("a new child costs the session no more copying with 200 finished children than with 50 (#5186)", () => {
+		const few = measured.get(FEW_FINISHED)!;
+		const many = measured.get(MANY_FINISHED)!;
 		assert.ok(
-			many.childStartWork <= few.childStartWork * START_WORK_GROWTH_FACTOR + START_WORK_SLACK,
-			`new child start work: ${report}`,
+			many.childWork <= few.childWork * CHILD_WORK_GROWTH_FACTOR + CHILD_WORK_SLACK,
+			`records and entries a new child made the session copy: ${JSON.stringify({ few, many })}`,
 		);
 	});
 
