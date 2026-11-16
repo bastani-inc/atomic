@@ -1759,6 +1759,120 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		await assert.rejects(Promise.resolve(router.search?.("history://sessions/dialect", request("[unclosed"))));
 	});
 
+	it("a one-row or zero-time search on a warm index advances one candidate per call (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			const needles = new Set([3, 9, 15, 21, 27]);
+			await store.create(
+				header("warm"),
+				numbered(30, (seq) => (needles.has(seq) ? `warm needle ${seq}` : `filler ${seq}`)),
+			);
+			const warm = historyOver(store);
+			const all = (await warm.router.search?.("history://sessions/warm", warm.request("warm needle"))) ?? "";
+			assert.equal(all.match(/^history:\/\/sessions\/warm:\d+: warm needle/gm)?.length, needles.size, all);
+			for (const budget of [{ rows: 1 }, { timeMs: 0 }]) {
+				const { router, request } = historyOver(store, budget);
+				const found: number[] = [];
+				const cursors: number[] = [];
+				let url: string | undefined = "history://sessions/warm";
+				for (let calls = 0; url !== undefined && calls < 40; calls++) {
+					const out = (await router.search?.(url, request("warm needle"))) ?? "";
+					for (const match of out.matchAll(/^history:\/\/sessions\/warm:(\d+): warm needle/gm))
+						found.push(Number(match[1]));
+					url = continuation(out);
+					const cursor = url === undefined ? undefined : /[?&]cursor=(\d+)/.exec(url)?.[1];
+					if (cursor !== undefined) cursors.push(Number(cursor));
+				}
+				assert.equal(url, undefined, `${JSON.stringify(budget)} never finished`);
+				assert.deepEqual(found, [...needles], JSON.stringify(budget));
+				for (let i = 1; i < cursors.length; i++)
+					assert.ok(cursors[i]! > cursors[i - 1]!, `${JSON.stringify(budget)} repeated cursor ${cursors[i]}`);
+			}
+		} finally {
+			await close();
+		}
+	});
+
+	it("multi-line lookahead and span reads are charged to the row budget (#5250)", async () => {
+		const store = new MemorySessionStore();
+		const between = (count: number) => Array.from({ length: count }, (_, i) => custom(`c${i + 1}`, BASE + i + 1));
+		await store.create(header("far"), [
+			message("b", "user", "BEGIN", BASE),
+			...between(5000),
+			message("z", "user", "END", BASE + 6000),
+		]);
+		await store.create(header("near"), [
+			message("b", "user", "BEGIN", BASE),
+			...between(200),
+			message("z", "user", "END", BASE + 6000),
+		]);
+		let calls = 0;
+		let rows = 0;
+		const counted = new Proxy(store, {
+			get(target, key) {
+				if (key === "readEntryRange")
+					return async (sessionId: string, query: Parameters<MemorySessionStore["readEntryRange"]>[1]) => {
+						const page = await target.readEntryRange(sessionId, query);
+						calls++;
+						rows += Math.max(0, page.throughSeq - query.fromSeq + 1);
+						return page;
+					};
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const pattern = "BEGIN\\n(?:.*\\n){0,4}END";
+		const oneRow = historyOver(counted, { rows: 1 });
+		const first = (await oneRow.router.search?.("history://sessions/far", oneRow.request(pattern))) ?? "";
+		assert.ok(calls <= 16, `one row-limited call made ${calls} store reads`);
+		assert.ok(rows <= 400, `one row-limited call read ${rows} entries`);
+		const firstUrl = continuation(first);
+		assert.match(firstUrl ?? "", /cursor=2$/, first);
+		calls = 0;
+		rows = 0;
+		const second = (await oneRow.router.search?.(firstUrl!, oneRow.request(pattern))) ?? "";
+		assert.ok(calls <= 16 && rows <= 400, `the next call made ${calls} reads over ${rows} entries`);
+		assert.match(continuation(second) ?? "", /cursor=3$/, second);
+
+		calls = 0;
+		rows = 0;
+		const whole = historyOver(counted);
+		const near = (await whole.router.search?.("history://sessions/near", whole.request(pattern))) ?? "";
+		assert.match(near, /^history:\/\/sessions\/near:1: BEGIN$/m);
+		assert.match(near, /^history:\/\/sessions\/near-202- END$/m);
+		assert.ok(calls <= 24, `a match across 200 skipped entries made ${calls} store reads`);
+	});
+
+	it("finds a lookbehind match across a 64 KiB slice boundary once (#5250)", async () => {
+		const text = `${"x\n".repeat(32748)}PREFIX\nTARGET\nEND`;
+		for (const open of [openSql, openJsonl, async () => openMemory()]) {
+			const { store, close } = await open(dir);
+			try {
+				await store.create(header("behind"), [message("e1", "user", text, BASE)]);
+				const { router, request } = historyOver(store);
+				const out =
+					(await router.search?.("history://sessions/behind", request("(?<=PREFIX\\n)TARGET\\nEND"))) ?? "";
+				assert.equal(out.match(/^history:\/\/sessions\/behind:1: TARGET$/gm)?.length, 1, out);
+				assert.match(out, /^history:\/\/sessions\/behind-1- END$/m);
+			} finally {
+				await close();
+			}
+		}
+	});
+
+	it("finds a lookbehind match that needs the previous entry's last line (#5250)", async () => {
+		const store = new MemorySessionStore();
+		await store.create(header("prev"), [
+			message("e1", "user", "alpha\nPREFIX", BASE),
+			message("e2", "assistant", "TARGET\nEND", BASE + 1000),
+		]);
+		const { router, request } = historyOver(store);
+		const out =
+			(await router.search?.("history://sessions/prev", request("(?<=PREFIX\\n)## \\S+ assistant\\nTARGET"))) ?? "";
+		assert.match(out, /^history:\/\/sessions\/prev:2: ## \S+ assistant$/m);
+		assert.match(out, /^history:\/\/sessions\/prev-2- TARGET$/m);
+	});
+
 	it(
 		"never blocks the event loop for long while searching a large session (#5250)",
 		async () => {

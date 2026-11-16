@@ -402,6 +402,7 @@ async function searchLinesBounded(
 				: await (async () => {
 						const res = await matchMultilineInWorker(
 							text,
+							0,
 							text.length + 1,
 							normalized.pattern,
 							normalized.flags,

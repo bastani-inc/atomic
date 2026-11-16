@@ -195,7 +195,7 @@ parentPort.on("message", (msg) => {
 				const haystack = msg.ignoreCase ? text.toLowerCase() : text;
 				const needle = msg.ignoreCase ? msg.pattern.toLowerCase() : msg.pattern;
 				if (needle.length > 0) {
-					for (let at = haystack.indexOf(needle); at !== -1 && at < msg.firstEntryChars; at = haystack.indexOf(needle, at + 1)) {
+					for (let at = haystack.indexOf(needle, msg.ownedFrom); at !== -1 && at < msg.ownedTo; at = haystack.indexOf(needle, at + 1)) {
 						const endIdx = Math.max(at, at + needle.length - 1);
 						matches.push({ startLine: lineNumberAt(newlines, at), endLine: lineNumberAt(newlines, endIdx) });
 					}
@@ -203,8 +203,9 @@ parentPort.on("message", (msg) => {
 			} else {
 				const flags = msg.flags.includes("g") ? msg.flags : msg.flags + "g";
 				const re = new RegExp(msg.pattern, flags);
+				re.lastIndex = msg.ownedFrom;
 				for (let match = re.exec(text); match !== null; match = re.exec(text)) {
-					if (match.index >= msg.firstEntryChars) break;
+					if (match.index >= msg.ownedTo) break;
 					const length = match[0].length;
 					const endIdx = length > 0 ? match.index + length - 1 : match.index;
 					matches.push({ startLine: lineNumberAt(newlines, match.index), endLine: lineNumberAt(newlines, endIdx) });
@@ -380,7 +381,8 @@ export async function matchLinesInWorker(
 
 export async function matchMultilineInWorker(
 	text: string,
-	firstEntryChars: number,
+	ownedFrom: number,
+	ownedTo: number,
 	pattern: string,
 	flags: string,
 	ignoreCase: boolean,
@@ -389,7 +391,7 @@ export async function matchMultilineInWorker(
 	signal?: AbortSignal,
 ): Promise<{ readonly matches: readonly MultilineSpan[]; readonly timedOut: boolean }> {
 	const result = await runWorkerTask<{ matches: MultilineSpan[] }>(
-		{ op: "multiline", text, firstEntryChars, pattern, flags, ignoreCase, literal },
+		{ op: "multiline", text, ownedFrom, ownedTo, pattern, flags, ignoreCase, literal },
 		timeoutMs,
 		signal,
 	);
