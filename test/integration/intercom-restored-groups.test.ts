@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import net from "node:net";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -20,6 +19,8 @@ type Client = InstanceType<typeof IntercomClient>;
 
 /** Spawning the broker child is the structural cost of this real-broker suite. */
 const REAL_BROKER_TEST_TIMEOUT_MS = 60_000;
+const BROKER_START_WAIT_MS = 90_000;
+const BROKER_START_HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 5_000;
 
 type Handler = (event: object, ctx: object) => unknown;
 type EventHandler = (payload: object) => void;
@@ -131,28 +132,10 @@ function spawnBroker(): ChildProcess {
 	return broker;
 }
 
-async function waitForBroker(assertRunning: () => void): Promise<void> {
-	await vi.waitFor(
-		async () => {
-			assertRunning();
-			const connected = await new Promise<boolean>((resolveConnected) => {
-				const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
-				socket.once("connect", () => {
-					socket.destroy();
-					resolveConnected(true);
-				});
-				socket.once("error", () => resolveConnected(false));
-			});
-			assert.ok(connected);
-		},
-		{ timeout: 10_000, interval: 20 },
-	);
-}
-
 beforeAll(async () => {
 	brokerFixture.trackBroker(spawnBroker());
-	await waitForBroker(() => brokerFixture.assertRunning());
-});
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, brokerFixture.agentDir), BROKER_START_WAIT_MS);
+}, BROKER_START_HOOK_TIMEOUT_MS);
 afterAll(() => brokerFixture.cleanup());
 
 test.each(["startup", "resume"] as const)(

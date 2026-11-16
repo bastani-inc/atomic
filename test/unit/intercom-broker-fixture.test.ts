@@ -225,3 +225,22 @@ test("a real failed spawn closes and can be cleaned without an unhandled error",
 		await fixture.cleanup();
 	}
 });
+
+test("cleanup stops a detached successor broker recorded at broker.pid after the tracked broker retired", async () => {
+	vi.useRealTimers();
+	const { agentDir, fixture, child } = resources();
+	Object.assign(child, { exitCode: 0 });
+	child.emit("exit", 0, null);
+	child.emit("close", 0, null);
+	const successor = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+	assert.ok(successor.pid !== undefined);
+	writeFileSync(join(agentDir, "intercom", "broker.pid"), `${successor.pid}\n`);
+	try {
+		await fixture.cleanup();
+		assert.throws(() => process.kill(successor.pid!, 0), { code: "ESRCH" });
+		assert.equal(existsSync(agentDir), false);
+	} finally {
+		if (successor.exitCode === null && successor.signalCode === null) successor.kill("SIGKILL");
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
