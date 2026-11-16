@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- When another process on Windows holds `.atomic/workflows/status.json` open for a long read, the status writer now waits out the reader across its retry backoff instead of recording a `status file write failed` warning notice on each attempt. A failure that outlasts the retry backoff still records one warning. When Atomic exits, the final status write waits at most about a second for the reader, then records the warning, so shutdown is no longer delayed ([#5322](https://github.com/bastani-inc/atomic/issues/5322))
+
 ## [0.9.88] - 2026-11-16
 
 ### Breaking Changes
