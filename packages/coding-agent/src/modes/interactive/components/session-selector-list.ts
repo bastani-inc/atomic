@@ -612,8 +612,7 @@ export class SessionList implements Component, Focusable {
 		// Only triggers deletion when the query is empty; otherwise it is forwarded to the input
 		if (kb.matches(keyData, "app.session.deleteNoninvasive")) {
 			if (this.searchInput.getValue().length > 0) {
-				this.searchInput.handleInput(keyData);
-				this.filterSessions(this.searchInput.getValue());
+				this.editSearch(keyData);
 				return true;
 			}
 
@@ -659,9 +658,24 @@ export class SessionList implements Component, Focusable {
 		}
 		// Pass everything else to search input
 		else {
-			this.searchInput.handleInput(keyData);
-			this.filterSessions(this.searchInput.getValue());
+			this.editSearch(keyData);
 		}
 		return true;
+	}
+
+	/** A new search selects its best match; emptying it returns to the row that was selected, as in every picker. */
+	private editSearch(keyData: string): void {
+		const before = this.searchInput.getValue().trim();
+		const previousPath = this.getSelectedSessionPath();
+		this.searchInput.handleInput(keyData);
+		const query = this.searchInput.getValue();
+		this.filterSessions(query);
+		if (query.trim() === before) return;
+		if (query.trim()) {
+			this.selectedIndex = 0;
+			return;
+		}
+		const kept = this.filteredSessions.findIndex((node) => node.session.path === previousPath);
+		this.selectedIndex = kept >= 0 ? kept : 0;
 	}
 }

@@ -148,7 +148,7 @@ Each session is a two-line row: its name or first message, then its age, message
 In the picker you can:
 
 - resume the selected session with Enter, or with → while the search is empty
-- search by typing; Esc clears the search, and a second Esc closes the picker
+- search by typing; the best match is selected as you type. Esc clears the search and keeps the selected session selected, and a second Esc closes the picker
 - preview the selected session with Space (on an empty search), and close the preview with Space or Esc. A search that matches nothing closes the preview
 - switch between this folder and all folders with Tab
 - toggle path display with CTRL+P

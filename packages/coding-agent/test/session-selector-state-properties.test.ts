@@ -91,6 +91,7 @@ describe("resume picker: selection, search, preview and leaving stay consistent 
 			for (let step = 0; step < 60; step++) {
 				const key = KEYS[Math.floor(random() * KEYS.length)]!;
 				const before = list.getSelectedSessionPath();
+				const queryBefore = model.query;
 				picker.handleInput(key);
 
 				// Advance the model by what the key means, not by how the picker implements it.
@@ -109,6 +110,7 @@ describe("resume picker: selection, search, preview and leaving stay consistent 
 				}
 				const expected = filterAndSortSessions(sessions, model.query, "relevance");
 				if (expected.length === 0) model.preview = false;
+				const queryChanged = model.query.trim() !== queryBefore.trim();
 
 				const selected = list.getSelectedSessionPath();
 				const lines = picker.render(120).map(strip);
@@ -125,6 +127,9 @@ describe("resume picker: selection, search, preview and leaving stay consistent 
 					);
 					assert.equal(lines.filter((line) => line.includes("❯ ")).length, 1, where);
 				}
+				// A changed search selects its best match; emptying it returns to the row selected before.
+				if (queryChanged && model.query.trim()) assert.equal(selected, expected[0]?.path, where);
+				if (queryChanged && !model.query.trim() && before !== undefined) assert.equal(selected, before, where);
 				// The preview is open exactly when the model says so, and only shows with a selected row.
 				assert.equal(list.isPreviewOpen(), model.preview, where);
 				const previewBoxes = lines.filter((line) => line.trimStart().startsWith("╭")).length - 1;
@@ -138,7 +143,7 @@ describe("resume picker: selection, search, preview and leaving stay consistent 
 				assert.equal(hint.includes("enter resume"), selected !== undefined, where);
 				const esc = model.preview ? "esc close" : model.query ? "esc clear" : "esc cancel";
 				assert.ok(hint.includes(esc), `${esc} missing from ${hint}: ${where}`);
-				checks += 9;
+				checks += 10;
 				visited.add(`${model.preview}/${model.query === ""}/${expected.length === 0}`);
 			}
 		}
