@@ -23,6 +23,10 @@ const race = vi.hoisted(() => ({
 	beforePutBack: undefined as (() => void) | undefined,
 	/** The error a hard link to the lock's path fails with, as on a file system without hard links. */
 	linkError: undefined as string | undefined,
+	/** How often `/proc` was listed, as a scan of other processes' open files does. */
+	procListings: 0,
+	/** A user id reported for the lock instead of its own, as for a lock another user left. */
+	foreignUid: undefined as number | undefined,
 }));
 
 function once(take: () => (() => void) | undefined, clear: () => void): void {
@@ -69,12 +73,62 @@ vi.mock("fs", async (importOriginal) => {
 		}
 		actual.linkSync(existing, path);
 	}) as typeof actual.linkSync;
-	return { ...actual, default: { ...actual, renameSync, linkSync }, renameSync, linkSync };
+	const readdirSync = ((path: import("fs").PathLike, options?: unknown) => {
+		if (String(path) === "/proc" || String(path).startsWith("/proc/")) race.procListings++;
+		return (actual.readdirSync as (path: import("fs").PathLike, options?: unknown) => unknown)(path, options);
+	}) as typeof actual.readdirSync;
+	const statSync = ((path, options) => {
+		const stats = actual.statSync(path, options);
+		if (race.foreignUid === undefined || String(path) !== race.lockPath || stats === undefined) return stats;
+		return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { uid: race.foreignUid });
+	}) as typeof actual.statSync;
+	return {
+		...actual,
+		default: { ...actual, renameSync, linkSync, readdirSync, statSync },
+		renameSync,
+		linkSync,
+		readdirSync,
+		statSync,
+	};
 });
 
 const { acquireSpawnLock, BROKER_SPAWN_LOCK_MAX_AGE_MS, renewSpawnLock } = await import(
 	"../../packages/intercom/broker/spawn.js"
 );
+const staleLockFile: Record<string, unknown> = await import("../../packages/intercom/broker/stale-lock-file.js");
+const { statSync: realStat } = await vi.importActual<typeof import("node:fs")>("node:fs");
+
+/** This host as the lock files record it; absent from versions that did not record it. */
+const ownHost = () => (staleLockFile.hostIdentity as (() => string) | undefined)?.() ?? "unknown-host";
+
+/**
+ * The intent marker a writer creates before the first byte of a lock it cannot link into place whole: its name holds the
+ * lock's file identity and the writer's pid, start and host (#5220).
+ */
+function writingMarker(path: string, pid: number, host = ownHost()): string {
+	const marker = `${path}.writing.${realStat(path, { bigint: true }).ino}.${pid}.x.${host}`;
+	writeTextSync(marker, "");
+	return marker;
+}
+
+/** The warnings this process emitted while `act` ran. */
+function warningsDuring(act: () => void): string[] {
+	const warnings: string[] = [];
+	const spy = vi.spyOn(process, "emitWarning").mockImplementation((warning) => {
+		warnings.push(String(warning));
+	});
+	try {
+		act();
+	} finally {
+		spy.mockRestore();
+	}
+	return warnings;
+}
+
+/** The wait on a holder that cannot be checked, shortened for a test where this version has one. */
+function shortenUnknownHolderWait(): void {
+	(staleLockFile.setUnknownHolderWaitForTesting as ((ms: number | undefined) => void) | undefined)?.(0);
+}
 
 const tempDir = makeTempDirectory("ic5220-holder-");
 afterAll(() => removeTempDirectory(tempDir));
@@ -84,6 +138,9 @@ afterEach(() => {
 	race.beforeRenameAway = undefined;
 	race.beforePutBack = undefined;
 	race.linkError = undefined;
+	race.procListings = 0;
+	race.foreignUid = undefined;
+	(staleLockFile.setUnknownHolderWaitForTesting as ((ms: number | undefined) => void) | undefined)?.(undefined);
 });
 
 let lockCount = 0;
@@ -186,6 +243,7 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 		// grace. FAT keeps times to two seconds, so the lock can look two seconds old as it is created.
 		const writer = openSync(path, "wx");
 		try {
+			writingMarker(path, process.pid);
 			writeSync(writer, `${process.pid}\n17`);
 			const coarse = new Date(Math.floor((Date.now() - 2_000) / 2_000) * 2_000);
 			utimesSync(path, coarse, coarse);
@@ -198,12 +256,56 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 		}
 	});
 
-	test("a lock left part-written by a spawner killed while writing it is replaced once it stays unchanged (#5220)", () => {
+	test("a lock left part-written by a spawner killed while writing it is replaced (#5220)", () => {
 		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
 		writeTextSync(path, "2147483646\n17");
+		writingMarker(path, 2147483646);
 
 		const owner = acquireSpawnLock(path);
 		assert.ok(owner !== undefined, "the spawner takes the abandoned lock");
 		assert.ok(readTextSync(path, "utf8").startsWith(owner));
+	});
+
+	test("judging a part-written lock never scans other processes' open files (#5220)", () => {
+		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
+		writeTextSync(path, `${process.pid}\n17`);
+		writingMarker(path, process.pid);
+
+		for (let attempt = 0; attempt < 5; attempt++) assert.equal(acquireSpawnLock(path), undefined);
+		assert.equal(race.procListings, 0, "no process's descriptors were listed");
+	});
+
+	test("a lock being written in another container or on another host is never taken, and is refused with advice (#5220)", () => {
+		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
+		// Written part-way by a process this one cannot see: its pid here is no process at all.
+		writeTextSync(path, "2147483646\n17");
+		writingMarker(path, 2147483646, "0123456789ab");
+		shortenUnknownHolderWait();
+
+		const warnings = warningsDuring(() => {
+			for (let attempt = 0; attempt < 3; attempt++) assert.equal(acquireSpawnLock(path), undefined, "never taken");
+		});
+		assert.equal(readTextSync(path, "utf8"), "2147483646\n17", "the lock is left to its writer");
+		assert.ok(
+			warnings.some((warning) => warning.includes(path) && warning.includes("remove")),
+			`the refusal names the lock and the fix: ${warnings.join(" | ")}`,
+		);
+	});
+
+	test("a part-written lock another user left is refused with advice instead of waited on forever (#5220)", () => {
+		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
+		// Left part-written by a process of another user, as a broker run under sudo killed mid-write.
+		writeTextSync(path, "2147483646\n17");
+		race.lockPath = path;
+		race.foreignUid = 0;
+		shortenUnknownHolderWait();
+
+		const warnings = warningsDuring(() => {
+			for (let attempt = 0; attempt < 3; attempt++) assert.equal(acquireSpawnLock(path), undefined, "never taken");
+		});
+		assert.ok(
+			warnings.some((warning) => warning.includes(path) && warning.includes("chown")),
+			`the refusal names the lock and the fix: ${warnings.join(" | ")}`,
+		);
 	});
 });

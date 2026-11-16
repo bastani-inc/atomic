@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
 import { isSocketAnswering } from "../../packages/intercom/broker/socket-liveness.js";
 import { acquireSocketReplacementLock } from "../../packages/intercom/broker/socket-replacement-lock.js";
+import * as staleLockFile from "../../packages/intercom/broker/stale-lock-file.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import {
 	type ByteStream,
@@ -529,6 +530,14 @@ describe("spawn lock staleness (#3505)", () => {
 	});
 });
 
+/** This host as lock files record it, and the wait on an unknown holder, where this version has them (#5220). */
+const lockFileSeams = staleLockFile as Partial<{
+	hostIdentity: () => string;
+	setUnknownHolderWaitForTesting: (ms: number | undefined) => void;
+}>;
+const hostIdentity = () => lockFileSeams.hostIdentity?.() ?? "unknown-host";
+const setUnknownHolderWaitForTesting = (ms: number | undefined) => lockFileSeams.setUnknownHolderWaitForTesting?.(ms);
+
 describe("socket replacement lock (#3505)", () => {
 	let lockCount = 0;
 	const lockPath = () => join(agentDir, `replace-lock-${lockCount++}`);
@@ -604,13 +613,32 @@ describe("socket replacement lock (#3505)", () => {
 		release();
 	});
 
-	test("an unreadable lock left by a crashed broker is recovered (#5132)", async () => {
+	test("an unreadable lock left by a broker killed while writing it is recovered (#5132, #5220)", async () => {
 		const path = lockPath();
 		writeTextSync(path, "");
+		// The marker a broker creates before writing a lock it cannot link into place whole names it: here, a dead one.
+		const marker = `${path}.writing.${statSync(path, { bigint: true }).ino}.${await deadPid()}.x.${hostIdentity()}`;
+		writeTextSync(marker, "");
 
 		const release = await acquireSocketReplacementLock(path);
 		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), process.pid, "the lock names this broker");
 		release();
+	});
+
+	test("an unreadable lock whose writer cannot be checked is refused with advice, never taken (#5220)", async () => {
+		const path = lockPath();
+		// Left empty by a broker of an earlier version or of another user: no marker names its writer.
+		writeTextSync(path, "");
+		setUnknownHolderWaitForTesting(0);
+		try {
+			await assert.rejects(
+				() => acquireSocketReplacementLock(path),
+				(error: Error) => error.message.includes(path) && error.message.includes("remove"),
+			);
+		} finally {
+			setUnknownHolderWaitForTesting(undefined);
+		}
+		assert.equal(readTextSync(path, "utf8"), "", "the lock is left as it was");
 	});
 
 	test("parked copies of the socket lock are removed by the next holder only when their holder is gone (#5220)", async () => {
