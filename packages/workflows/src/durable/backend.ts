@@ -677,6 +677,7 @@ function stageIdentity(checkpoint: DurableStageCheckpoint): string {
 interface JournalWorkflowRecord {
 	handle: DurableWorkflowHandle;
 	checkpoints: Map<string, DurableCheckpoint>;
+	sortedCheckpoints?: readonly DurableCheckpoint[];
 	toolByHash: Map<string, DurableToolCheckpoint>;
 	uiByHash: Map<string, DurableUiCheckpoint>;
 	stageOutputByReplayKey: Map<string, DurableStageCheckpoint>;
@@ -963,6 +964,7 @@ class JournalProjection {
 		if (!rec) return;
 		rec.released += rec.checkpoints.size;
 		rec.checkpoints.clear();
+		rec.sortedCheckpoints = undefined;
 		rec.toolByHash.clear();
 		rec.uiByHash.clear();
 		rec.stageOutputByReplayKey.clear();
@@ -984,6 +986,7 @@ class JournalProjection {
 			const checkpoint = rec.checkpoints.get(key);
 			if (checkpoint === undefined) continue;
 			rec.checkpoints.delete(key);
+			rec.sortedCheckpoints = undefined;
 			rec.released++;
 			if (checkpoint.kind === "tool") rec.toolByHash.delete(checkpoint.argsHash);
 			else if (checkpoint.kind === "ui") rec.uiByHash.delete(checkpoint.promptHash);
@@ -1009,6 +1012,7 @@ class JournalProjection {
 		const key = checkpointKey(currentCheckpoint);
 		if (rec.checkpoints.has(key)) return undefined;
 		rec.checkpoints.set(key, currentCheckpoint);
+		rec.sortedCheckpoints = undefined;
 		rec.attempt = Math.max(rec.attempt, workflowAttemptOf(currentCheckpoint) ?? 0);
 		rec.nestedSnapshotVersion.record(currentCheckpoint);
 		if (currentCheckpoint.kind === "tool") {
@@ -1077,10 +1081,21 @@ class JournalProjection {
 		};
 	}
 
+	recordedCheckpoints(workflowId: string): readonly DurableCheckpoint[] | undefined {
+		const rec = this.workflows.get(workflowId);
+		if (rec === undefined || rec.released > 0) return undefined;
+		return [...rec.checkpoints.values()];
+	}
+
 	listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return [];
-		return [...rec.checkpoints.values()].sort((a, b) => a.completedAt - b.completedAt);
+		if (rec.sortedCheckpoints === undefined) {
+			rec.sortedCheckpoints = Object.freeze(
+				[...rec.checkpoints.values()].sort((a, b) => a.completedAt - b.completedAt),
+			);
+		}
+		return rec.sortedCheckpoints;
 	}
 
 	/** The checkpoint kept under `checkpointKey(checkpoint)`, if any. */

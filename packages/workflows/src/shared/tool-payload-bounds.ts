@@ -417,6 +417,13 @@ function writeChunk(state: SerializeState, chunk: string): boolean {
 	return true;
 }
 
+function quoteDisplayJsonString(value: string): string {
+	return JSON.stringify(value).replace(
+		/[\u007f-\u009f]/g,
+		(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
+}
+
 function writeString(state: SerializeState, value: string): boolean {
 	const remaining = state.limit - state.length;
 	if (remaining <= 0) {
@@ -427,10 +434,10 @@ function writeString(state: SerializeState, value: string): boolean {
 	// rather than its own length.
 	if (value.length > remaining) {
 		state.truncated = true;
-		writeChunk(state, JSON.stringify(sliceHead(value, remaining)));
+		writeChunk(state, quoteDisplayJsonString(sliceHead(value, remaining)));
 		return false;
 	}
-	return writeChunk(state, JSON.stringify(value));
+	return writeChunk(state, quoteDisplayJsonString(value));
 }
 function writeObjectLike(state: SerializeState, value: ToolPayloadObject | ToolPayloadArray): boolean {
 	if (state.seen.has(value)) return writeChunk(state, JSON.stringify(TOOL_PAYLOAD_CYCLE_PLACEHOLDER));
@@ -459,7 +466,7 @@ function writeObjectLike(state: SerializeState, value: ToolPayloadObject | ToolP
 			if (isOmittedJsonValue(child)) continue;
 			if (!first && !writeChunk(state, ",")) return false;
 			first = false;
-			if (!writeChunk(state, `${JSON.stringify(key)}:`)) return false;
+			if (!writeString(state, key) || !writeChunk(state, ":")) return false;
 			if (!writeValue(state, child)) return false;
 		}
 		if (scan.stoppedByLimit()) {
@@ -535,7 +542,6 @@ export const TOOL_TEXT_TAB_WIDTH = 4;
 /**
  * Make author-supplied text safe to paint inside a bordered box.
  *
- * Serialized fields are JSON-quoted, which escapes control bytes for free.
  * Source text is deliberately *not* quoted — it stays readable as source — so
  * it needs the same protection applied directly: tabs become spaces, because
  * the width model counts a tab as one grapheme while a terminal advances to
@@ -574,4 +580,8 @@ export function sanitizeToolDisplayText(value: string, tabWidth = TOOL_TEXT_TAB_
 /** Single-line variant for chrome such as a box title. */
 export function sanitizeToolTitleText(value: string): string {
 	return sanitizeToolDisplayText(value).replace(/\n/g, " ");
+}
+
+export function boundedToolTitleText(value: string, limit = TOOL_PAYLOAD_VALUE_LIMIT): string {
+	return boundedToolText(sanitizeToolTitleText(boundedToolText(value, limit)), limit);
 }

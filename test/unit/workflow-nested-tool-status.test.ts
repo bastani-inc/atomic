@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { buildWorkflowStatusListing } from "../../packages/workflows/src/extension/workflow-status-summary.js";
-import { topLevelExpandedSnapshots } from "../../packages/workflows/src/extension/workflow-targets.js";
+import { prepareTopLevelExpandedSnapshots } from "../../packages/workflows/src/extension/workflow-targets.js";
 import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
@@ -10,7 +10,7 @@ beforeEach(() => store.clear());
 afterEach(() => store.clear());
 
 describe("nested ctx.tool status projection", () => {
-	test("no-target status includes a tool-only child with explicit ownership", () => {
+	test("no-target status includes a tool-only child with explicit ownership", async () => {
 		store.recordRunStart({
 			id: "status-root",
 			name: "root workflow",
@@ -63,7 +63,7 @@ describe("nested ctx.tool status projection", () => {
 			],
 		});
 
-		const snapshots = topLevelExpandedSnapshots();
+		const snapshots = await prepareTopLevelExpandedSnapshots();
 		const listing = buildWorkflowStatusListing(snapshots, "all", 10);
 		const tool = listing.runs[0]?.tools?.[0];
 		assert.equal(snapshots.length, 1);
@@ -96,7 +96,7 @@ describe("nested ctx.tool status projection", () => {
 		);
 	});
 
-	test("mixed root and child tools keep expanded order and rewritten parents", () => {
+	test("mixed root and child tools keep expanded order and rewritten parents", async () => {
 		store.recordRunStart({
 			id: "mixed-root",
 			name: "mixed root",
@@ -173,7 +173,7 @@ describe("nested ctx.tool status projection", () => {
 		});
 
 		const graph = expandWorkflowGraph(store.snapshot(), "mixed-root");
-		const [snapshot] = topLevelExpandedSnapshots();
+		const [snapshot] = await prepareTopLevelExpandedSnapshots();
 		assert.deepEqual(
 			snapshot?.toolNodes?.map((tool) => [tool.name, tool.id, tool.parentIds, tool.status]),
 			[
@@ -190,7 +190,7 @@ describe("nested ctx.tool status projection", () => {
 		);
 	});
 
-	test("sibling child tools retain virtual identity and explicit ownership without chat targets", () => {
+	test("sibling child tools retain virtual identity and explicit ownership without chat targets", async () => {
 		store.recordRunStart({
 			id: "sibling-root",
 			name: "sibling root",
@@ -264,7 +264,7 @@ describe("nested ctx.tool status projection", () => {
 		}
 
 		const graph = expandWorkflowGraph(store.snapshot(), "sibling-root");
-		const listing = buildWorkflowStatusListing(topLevelExpandedSnapshots(), "all", 10);
+		const listing = buildWorkflowStatusListing(await prepareTopLevelExpandedSnapshots(), "all", 10);
 		assert.deepEqual(
 			listing.runs[0]?.tools?.map(({ id, runId, runName, depth, attachable }) => ({
 				id,

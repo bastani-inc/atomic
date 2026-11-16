@@ -37,6 +37,18 @@ const TAKEOVER_BUDGET = poolTestBudgetMs(3);
 const TAKEOVER_LEASE_MS = 4_000;
 /** How long each child of the outage scenario works: the outage, its retries and the recovery fit inside it. */
 const OUTAGE_WORK_MS = 45_000;
+/**
+ * How long the outage scenario's server keeps an idle stream. A stream whose client lost it keeps its open transaction,
+ * and the write lock it holds, this long: about as long as sqld takes to free such a lock for a writer that waits.
+ */
+const OUTAGE_STREAM_TTL_MS = 5_000;
+/**
+ * How soon after the database is back a node that lost it reports recovered: the transaction the outage cut keeps the
+ * write lock for its stream's lifetime at most, then the node's next poll waits out its backoff.
+ */
+const OUTAGE_RECOVERY_BOUND_MS = OUTAGE_STREAM_TTL_MS + 20_000;
+/** The header that tells the server the outage scenario's neighbour connection from node B's own. */
+const NEIGHBOUR_HEADER = "x-worker-cli-neighbour";
 
 interface Scenario {
 	readonly directory: string;
@@ -431,8 +443,9 @@ test.skipIf(process.platform === "win32")(
 	"a node that loses the database reports degraded, retries with backoff, recovers, and its running child still completes there (#4768)",
 	async () => {
 		const s = scenario("worker-cli-outage", SERVE_BUDGET.waitMs);
-		const database = await startFakeLibsqlServer({ streamTtlMs: 5_000 });
+		const database = await startFakeLibsqlServer({ streamTtlMs: OUTAGE_STREAM_TTL_MS });
 		const proxy = await startOutageProxy(new URL(database.url));
+		const neighbour = await openLibsqlDatabase({ url: proxy.url, headers: { [NEIGHBOUR_HEADER]: "1" } });
 		let node: Node | undefined;
 		let root: BudgetedProcess | undefined;
 		try {
@@ -448,7 +461,17 @@ test.skipIf(process.platform === "win32")(
 				() => readdirSync(s.directory).some((name) => name.startsWith("working-B-")),
 				[node.process, root],
 			);
-			proxy.cut();
+			// The database goes away while a connection on node B's side of the proxy, such as one of its workers' journals, is
+			// in a transaction: the server ran the request that began it, and the answer is lost with the connection. The
+			// client never gets the stream's baton and cannot close it, so the server keeps the transaction, and the write
+			// lock, until the stream expires, just as it keeps one of node B's own whose answer the outage cuts. Every writer
+			// waits for the lock meanwhile, node B's and the root's.
+			database.onOpenTransaction((pipeline) => {
+				if (pipeline.headers[NEIGHBOUR_HEADER] === undefined) return;
+				database.onOpenTransaction(undefined);
+				proxy.cut();
+			});
+			await assert.rejects(neighbour.transaction((tx) => tx.run("SELECT 1")));
 			await until(
 				"node B to report three failed polls",
 				s,
@@ -456,10 +479,13 @@ test.skipIf(process.platform === "win32")(
 				[node.process, root],
 			);
 			proxy.restore();
-			await until("node B to recover", s, () => node!.stdout.some((line) => line.startsWith("recovered ")), [
-				node.process,
-				root,
-			]);
+			const recovery = { ...s, deadline: Math.min(s.deadline, Date.now() + OUTAGE_RECOVERY_BOUND_MS) };
+			await until(
+				`node B to recover within ${OUTAGE_RECOVERY_BOUND_MS} ms of the database coming back`,
+				recovery,
+				() => node!.stdout.some((line) => line.startsWith("recovered ")),
+				[node.process, root],
+			);
 			await expectExitedCleanly(root);
 			const outcome = await readJson<Outcome>(join(s.directory, "outcome-start.json"));
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
@@ -480,6 +506,7 @@ test.skipIf(process.platform === "win32")(
 		} finally {
 			killGroup(node?.process);
 			killGroup(root);
+			await neighbour.close();
 			await proxy.close();
 			await database.close();
 			removeTempDirectory(s.directory);
