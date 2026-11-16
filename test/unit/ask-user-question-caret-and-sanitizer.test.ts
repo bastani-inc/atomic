@@ -16,6 +16,7 @@ import type { QuestionParams } from "../../packages/coding-agent/src/core/tools/
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
 	escapeBidiControls,
+	graphemeAt,
 	MAX_CONTROL_STRING_LENGTH,
 	TerminalTextSanitizer,
 	terminalDisplayText,
@@ -451,5 +452,46 @@ describe("ask_user_question sanitizer and editor caret regressions (#5244)", () 
 		session.component.handleInput(HOME);
 		session.component.handleInput("e");
 		await assertCaret(session, "", "e\u0301", "typed base before a pasted accent");
+	});
+
+	test("graphemeAt returns Intl.Segmenter's containing() cluster at every offset next to printable ASCII (#5224)", () => {
+		const pieces = [
+			...["a", "x", " ", "#", "*", "1", "~", "\x7f", "\t"],
+			// Below U+0300: precomposed letter, soft hyphen (a control), copyright sign (pictographic), last code unit before marks.
+			...["é", "\u00ad", "©", "\u02ff"],
+			...["\u0300", "\u0301"],
+			// Prepend, then SpacingMark.
+			...["\u0600", "\u0d4e", "\u0903", "\u093f", "\u0e33"],
+			...["\r", "\n"],
+			// Keycap pieces, ZWJ, emoji, skin tone and regional indicators.
+			...["\ufe0f", "\u20e3", "\u200d", "👩", "💻", "🏽", "🇺", "🇸"],
+			// Hangul L, V, T, LV and LVT.
+			...["\u1100", "\u1161", "\u11a8", "\uac00", "\uac01"],
+			// Devanagari consonants and virama, which form conjuncts.
+			...["\u0915", "\u094d", "\u0937"],
+		];
+		const texts = ["1\ufe0f\u20e3x", "#\u20e3", "a\r\nb", "x\u0915\u094d\u0937y", "🇺🇸🇺🇸a", "a👩\u200d💻b"];
+		for (const first of pieces) {
+			texts.push(first);
+			for (const second of pieces) {
+				texts.push(first + second);
+				for (const third of pieces) texts.push(first + second + third);
+			}
+		}
+		const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+		for (const text of texts) {
+			const segments = segmenter.segment(text);
+			for (let cursor = -1; cursor <= text.length; cursor++) {
+				const expected = segments.containing(cursor);
+				const actual = graphemeAt(text, cursor);
+				if (actual?.index !== expected?.index || actual?.segment !== expected?.segment) {
+					assert.deepEqual(
+						actual,
+						expected && { index: expected.index, segment: expected.segment },
+						`${JSON.stringify(text)} at ${cursor}`,
+					);
+				}
+			}
+		}
 	});
 });
