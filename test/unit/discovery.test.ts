@@ -288,6 +288,28 @@ describe("bundled workflow discovery is done once per process (#5319)", () => {
 		assert.deepEqual(second.sources, sources);
 		assert.deepEqual(second.errors, errors);
 	});
+
+	test("a caller that replaces its registry's methods leaves later discoveries whole (#5319)", async () => {
+		const empty = makeTempDir("registry-owned");
+		const first = discoverStartupWorkflowsSync();
+		const names = first.registry.names();
+		const all = first.registry.all;
+		first.registry.all = () => all.call(first.registry).filter((definition) => definition.normalizedName !== "goal");
+		try {
+			const startup = discoverStartupWorkflowsSync();
+			const full = await discoverWorkflows({ cwd: empty, homeDir: empty, agentDirs: [] });
+			assert.deepEqual(
+				startup.registry.all().map((definition) => definition.normalizedName),
+				names,
+			);
+			assert.deepEqual(
+				full.registry.all().map((definition) => definition.normalizedName),
+				names,
+			);
+		} finally {
+			first.registry.all = all;
+		}
+	});
 });
 
 // ===========================================================================

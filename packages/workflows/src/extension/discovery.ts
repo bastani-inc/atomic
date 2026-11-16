@@ -462,18 +462,24 @@ export function discoverStartupWorkflowsSync(): DiscoveryResult {
 	return discoverBundledManifest();
 }
 
-let bundledDiscovery: DiscoveryResult | undefined;
+interface ValidatedBundledManifest {
+	readonly definitions: readonly WorkflowDefinition[];
+	readonly sources: readonly DiscoverySource[];
+	readonly errors: readonly DiscoveryDiagnostic[];
+}
+
+let validatedBundledManifest: ValidatedBundledManifest | undefined;
 
 function discoverBundledManifest(): DiscoveryResult {
-	bundledDiscovery ??= validateBundledManifest();
+	validatedBundledManifest ??= validateBundledManifest();
 	return {
-		registry: bundledDiscovery.registry,
-		sources: [...bundledDiscovery.sources],
-		errors: [...bundledDiscovery.errors],
+		registry: createRegistry([...validatedBundledManifest.definitions]),
+		sources: [...validatedBundledManifest.sources],
+		errors: [...validatedBundledManifest.errors],
 	};
 }
 
-function validateBundledManifest(): DiscoveryResult {
+function validateBundledManifest(): ValidatedBundledManifest {
 	const manifest = bundledManifest as Record<string, unknown>;
 	const diagnostics: DiscoveryDiagnostic[] = [];
 	const sources: DiscoverySource[] = [];
@@ -487,7 +493,7 @@ function validateBundledManifest(): DiscoveryResult {
 
 	registry = applyBatchShapeOnly(candidates, registry, sources, diagnostics);
 
-	return { registry, sources, errors: diagnostics };
+	return { definitions: registry.all(), sources, errors: diagnostics };
 }
 
 // ---------------------------------------------------------------------------
