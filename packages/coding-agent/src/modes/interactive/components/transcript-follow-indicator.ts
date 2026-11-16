@@ -1,5 +1,6 @@
 import { type Component, hyperlink, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
+import { jumpToLatestLabel } from "./jump-to-latest.ts";
 
 export const TRANSCRIPT_JUMP_TO_END_URL = "atomic-ui://transcript/jump-to-end";
 const FULL_RESET = "\x1b[0m";
@@ -7,6 +8,7 @@ const FULL_RESET = "\x1b[0m";
 export interface TranscriptFollowIndicatorOptions {
 	isFollowing: () => boolean;
 	keyLabel: () => string;
+	newCount?: () => number;
 }
 
 /** Shows the clickable affordance for a transcript that is detached from its live end. */
@@ -25,7 +27,7 @@ export class TranscriptFollowIndicator implements Component {
 		if (viewportWidth === 0) return [""];
 
 		const keyLabel = this.options.keyLabel();
-		const label = keyLabel.length > 0 ? `↓ Jump to latest message · ${keyLabel}` : "↓ Jump to latest message";
+		const label = jumpToLatestLabel(this.options.newCount?.() ?? 0, keyLabel);
 
 		// The highlight is the box: one padding column on each side, dropped when the
 		// viewport cannot afford both columns and a visible character.

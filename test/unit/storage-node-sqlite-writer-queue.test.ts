@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test, vi } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
+import { sqliteDialect } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import {
 	findStorageWriteLockTimeoutError,
 	isRetryableStorageError,
@@ -1070,7 +1071,7 @@ function countDatabaseClockReads(): { readonly reads: number } {
 	const counted = { reads: 0 };
 	const prepare = DatabaseSync.prototype.prepare;
 	DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
-		if (sql.includes("unixepoch(")) counted.reads += 1;
+		if (sql === `SELECT ${sqliteDialect.nowMs} AS now`) counted.reads += 1;
 		return prepare.call(this, sql);
 	} as typeof prepare;
 	cleanups.push(() => {

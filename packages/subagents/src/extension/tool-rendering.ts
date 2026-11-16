@@ -139,9 +139,13 @@ export function renderSubagentToolCall(args: SubagentParamsLike, theme: Theme, c
 			context.state,
 		);
 	}
-	// Truncation adds full ANSI resets even to plain text; remove them before styling so the host background survives.
+	const firstLine =
+		displayText(args.task ?? "")
+			.split("\n")
+			.find((line) => line.trim())
+			?.trim() ?? "";
 	return new Text(
-		`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", displayText(args.agent || "?"))}${args.task ? `\n${theme.fg("muted", displayText(truncateToWidth(displayText(args.task), 100)))}` : ""}`,
+		`${theme.fg("toolTitle", theme.bold("Agent"))}(${theme.fg("accent", displayText(args.agent || "?"))}${firstLine ? theme.fg("muted", ` · ${displayText(truncateToWidth(firstLine, 100))}`) : ""})`,
 		0,
 		0,
 	);

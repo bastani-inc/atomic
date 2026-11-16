@@ -24,12 +24,15 @@ export async function inheritedPipes(mode: "abort" | "timeout" | "overflow"): Pr
 	const ready = join(root, "ready.json");
 	const controller = new AbortController();
 	// The grandchild outlives the direct child and keeps both descriptors open.
+	// The ready file appears by rename, never by writeFileSync: that creates the file empty before writing it, so a
+	// loaded host could show this test an empty ready file and abort the child before it records the pids.
 	const script = `
 		const { spawn } = require('node:child_process');
-		const { writeFileSync } = require('node:fs');
+		const { renameSync, writeFileSync } = require('node:fs');
 		const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 1, 2] });
 		child.on('spawn', () => {
-			writeFileSync(${JSON.stringify(ready)}, JSON.stringify([process.pid, child.pid]));
+			writeFileSync(${JSON.stringify(`${ready}.partial`)}, JSON.stringify([process.pid, child.pid]));
+			renameSync(${JSON.stringify(`${ready}.partial`)}, ${JSON.stringify(ready)});
 			${mode === "overflow" ? "process.stdout.write('x'.repeat(2048));" : ""}
 		});
 		setInterval(() => {}, 1000);

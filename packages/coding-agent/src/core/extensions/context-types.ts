@@ -170,6 +170,11 @@ export interface SubagentChildPolicy {
 	/** Host-owned signal fired when this noninteractive execution ends, before disposal. */
 	readonly executionEnded?: AbortSignal;
 	readonly onTurnDrained?: () => void;
+	/**
+	 * Host-owned: whether the execution has yet to give the session its task. A settled turn keeps message admission
+	 * open while it has, so the task is answered; the execution ending seals admission.
+	 */
+	readonly taskPending?: () => boolean;
 	/** SDK-owned inbound lifetime; closing drains admitted messages without reopening the task. */
 	readonly messageAdmission?: {
 		isOpen(): boolean;

@@ -9,9 +9,11 @@ import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/s
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
-import type { RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
+import { RUN_EVENT_TYPES, type RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
+import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { openPoolSessions } from "../../packages/workflows/src/workers/pool-session-store.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
+import { poolWorkFixture } from "../helpers/pool-journal.js";
 
 /**
  * A pooled child starts in a fresh worker, and the worker opens the pool's queue and its session store over the journal
@@ -72,6 +74,57 @@ test("a worker opens the pool's queue without a write transaction once its table
 	const again = await openSqlPoolQueue(journal);
 	assert.equal(await again.initialized("no-such-root"), false, "the queue reads its tables");
 	assert.equal(writes(), 0, "opening and reading the queue took the write lock");
+});
+
+test("a queue created before background shipping can ship after reopening (#4768)", async () => {
+	const journal = await sharedJournal();
+	await openSqlPoolQueue(journal);
+	await sqlPoolStorage(journal)!.transaction(async (tx) => {
+		await tx.exec("DROP TABLE acme_wf_runs_ship_batches; DROP TABLE acme_wf_runs_ship_watermarks");
+	});
+	const queue = await openSqlPoolQueue(journal);
+	await journal.createRun({ runId: "root", name: "root", cwd: "/repo", createdAt: 1, status: "running" });
+	const acquired = await journal.acquire("root", "holder");
+	assert.equal(acquired.status, "acquired");
+	const lease = acquired.lease;
+	await queue.initialize(lease, 60_000);
+	const { work, boundary } = poolWorkFixture();
+	await queue.enqueue(lease, work, boundary);
+	const attempt = await queue.claim(lease, "worker", [work], 60_000);
+	assert.ok(attempt);
+	const checkpoint: DurableToolCheckpoint = {
+		kind: "tool",
+		workflowId: "root",
+		checkpointId: `${work.scope}:tool:1`,
+		name: "tool",
+		argsHash: `${work.scope}:args:1`,
+		output: { saved: true },
+		completedAt: 1,
+		topology: {
+			version: 1,
+			nodeId: "tool-1",
+			parentIds: [],
+			ordinal: 1,
+			order: 1,
+			run: boundary.topology!.boundary!.child,
+		},
+	};
+	await queue.shipBatch(lease, attempt, {
+		id: "batch-1",
+		host: "host-A",
+		events: [
+			{
+				localSeq: 1,
+				key: JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "tool", checkpoint.checkpointId]),
+				payload: JSON.stringify(checkpoint),
+			},
+		],
+	});
+	const recorded = [];
+	for await (const entry of journal.read("root"))
+		if (entry.event.type === RUN_EVENT_TYPES.checkpointRecorded && entry.event.payload.kind === "tool")
+			recorded.push(entry.event.payload);
+	assert.deepEqual(recorded, [checkpoint]);
 });
 
 test("a host opens the shared pool's registry, fleet, rate buckets and usage without a write transaction once their tables exist (#4768)", async () => {

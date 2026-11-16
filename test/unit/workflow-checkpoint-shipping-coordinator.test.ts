@@ -6,7 +6,7 @@ import { afterEach, test, vi } from "vitest";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { checkpointKey, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
-import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import type { DurableStageCheckpoint, DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
 import { ShipShard } from "../../packages/workflows/src/workers/ship-shard.js";
@@ -143,6 +143,46 @@ function toolCheckpoint(
 	};
 }
 
+function billedStageCheckpoint(
+	held: PoolWork,
+	child: NonNullable<NonNullable<ReturnType<typeof poolWorkFixture>["boundary"]["topology"]>["boundary"]>["child"],
+	suffix: string,
+	ordinal: number,
+): DurableStageCheckpoint {
+	return {
+		kind: "stage",
+		name: `stage-${suffix}`,
+		output: "done",
+		workflowId: "root",
+		checkpointId: `${held.scope}:stage-${suffix}`,
+		replayKey: `${held.scope}:stage-${suffix}`,
+		startedAt: ordinal,
+		completedAt: ordinal + 1,
+		modelAttempts: [
+			{
+				model: "m",
+				success: true,
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: 0,
+				},
+			},
+		],
+		topology: {
+			version: 1,
+			stageId: `${held.scope}:stage-${suffix}`,
+			parentIds: [],
+			sourceOrder: ordinal,
+			status: "completed",
+			run: child,
+		},
+	};
+}
+
 test("renewing an attempt after a late root lease renewal refreshes its local checkpoint lease (#4768)", async () => {
 	const directory = makeTempDirectory("shipping-late-root-");
 	const stateDirectory = join(directory, "state");
@@ -165,7 +205,8 @@ test("renewing an attempt after a late root lease renewal refreshes its local ch
 					stateDirectory,
 					host: "host-a",
 					claimWindowMs: 60_000,
-					checkpointShipping: { intervalMs: 2_000, maxBatch: 64, maxLagMs: 30_000 },
+					// No shipping tick within the test: what a commit accepted locally stays unshipped until the flush below.
+					checkpointShipping: { intervalMs: 60_000, maxBatch: 64, maxLagMs: 600_000 },
 				},
 				workers: 1,
 				leaseMs,
@@ -195,13 +236,14 @@ test("renewing an attempt after a late root lease renewal refreshes its local ch
 			mutation: { kind: "checkpoint", checkpoint: toolCheckpoint(held, child, "c0", 0) },
 		});
 		assert.equal(c0.error, undefined);
+		assert.equal((c0.value as { local?: boolean }).local, true);
 		await sqlPoolStorage(journal)!.transaction((tx) =>
 			tx.run("UPDATE wf_leases SET renewed_at = renewed_at - 200000 WHERE run_id = ?", "root"),
 		);
 		const pendingC1 = worker.request({
 			kind: "commit",
 			operation: "commit-c1",
-			mutation: { kind: "checkpoint", checkpoint: toolCheckpoint(held, child, "c1", 1) },
+			mutation: { kind: "checkpoint", checkpoint: billedStageCheckpoint(held, child, "c1", 1) },
 		});
 		await sleep(leaseMs + 600);
 		await journal.renew(acquired.lease);
@@ -213,6 +255,12 @@ test("renewing an attempt after a late root lease renewal refreshes its local ch
 			mutation: { kind: "checkpoint", checkpoint: toolCheckpoint(held, child, "c2", 2) },
 		});
 		assert.equal(c2.error, undefined);
+		assert.equal((c2.value as { local?: boolean }).local, true);
+		assert.equal(await journal.readKey("root", checkpointKey(toolCheckpoint(held, child, "c2", 2))), undefined);
+		const flushed = await worker.request({ kind: "controlled", revision: 0 });
+		assert.equal(flushed.error, undefined);
+		assert.ok(await journal.readKey("root", checkpointKey(toolCheckpoint(held, child, "c0", 0))));
+		assert.ok(await journal.readKey("root", checkpointKey(billedStageCheckpoint(held, child, "c1", 1))));
 		assert.ok(await journal.readKey("root", checkpointKey(toolCheckpoint(held, child, "c2", 2))));
 	} finally {
 		await host.command({ kind: "close" });
@@ -228,7 +276,12 @@ test("a shippable checkpoint whose local lease expired while the attempt still o
 	mkdirSync(stateDirectory);
 	const journal = await resolveRunJournal({ journal: { path: join(directory, "shared.sqlite") } });
 	const host = openCoordinator();
-	const leaseMs = 2_000;
+	const leaseMs = 60_000;
+	let localNow = 1_000;
+	const originalOpen = ShipShard.open.bind(ShipShard);
+	const openSpy = vi
+		.spyOn(ShipShard, "open")
+		.mockImplementation((path, root) => originalOpen(path, root, () => localNow));
 	try {
 		await journal.createRun({ runId: "root", name: "root", cwd: directory, createdAt: 0, status: "running" });
 		const acquired = await journal.acquire("root", "holder");
@@ -244,7 +297,8 @@ test("a shippable checkpoint whose local lease expired while the attempt still o
 					stateDirectory,
 					host: "host-a",
 					claimWindowMs: 60_000,
-					checkpointShipping: { intervalMs: 2_000, maxBatch: 64, maxLagMs: 30_000 },
+					// No shipping tick within the test: what a commit accepted locally stays unshipped until the flush below.
+					checkpointShipping: { intervalMs: 60_000, maxBatch: 64, maxLagMs: 600_000 },
 				},
 				workers: 1,
 				leaseMs,
@@ -268,21 +322,20 @@ test("a shippable checkpoint whose local lease expired while the attempt still o
 		const claim = await worker.request({ kind: "claim" });
 		assert.equal(claim.error, undefined);
 		const held = claim.value as PoolWork;
-		const pinnedWallClock = Date.now();
-		await sleep(leaseMs + 200);
-		const dateSpy = vi.spyOn(Date, "now").mockReturnValue(pinnedWallClock);
-		try {
-			const c0 = await worker.request({
-				kind: "commit",
-				operation: "commit-c0",
-				mutation: { kind: "checkpoint", checkpoint: toolCheckpoint(held, child, "c0", 0) },
-			});
-			assert.equal(c0.error, undefined);
-		} finally {
-			dateSpy.mockRestore();
-		}
+		localNow += leaseMs + 200;
+		const c0 = await worker.request({
+			kind: "commit",
+			operation: "commit-c0",
+			mutation: { kind: "checkpoint", checkpoint: toolCheckpoint(held, child, "c0", 0) },
+		});
+		assert.equal(c0.error, undefined);
+		assert.equal((c0.value as { local?: boolean }).local, true);
+		assert.equal(await journal.readKey("root", checkpointKey(toolCheckpoint(held, child, "c0", 0))), undefined);
+		const flushed = await worker.request({ kind: "controlled", revision: 0 });
+		assert.equal(flushed.error, undefined);
 		assert.ok(await journal.readKey("root", checkpointKey(toolCheckpoint(held, child, "c0", 0))));
 	} finally {
+		openSpy.mockRestore();
 		await host.command({ kind: "close" });
 		await host.coordinator.shutdown();
 		await journal.close();
@@ -549,6 +602,74 @@ test("closing a root pool while prepare opens its local checkpoint journal close
 	} finally {
 		releaseOpen();
 		openSpy.mockRestore();
+		await host.coordinator.shutdown();
+		await journal.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("closing a host ships checkpoints its running workers committed locally (#4768)", async () => {
+	const directory = makeTempDirectory("shipping-close-flush-");
+	const stateDirectory = join(directory, "state");
+	mkdirSync(stateDirectory);
+	const journal = await resolveRunJournal({ journal: { path: join(directory, "shared.sqlite") } });
+	const host = openCoordinator();
+	try {
+		await journal.createRun({ runId: "root", name: "root", cwd: directory, createdAt: 0, status: "running" });
+		const acquired = await journal.acquire("root", "holder");
+		assert.equal(acquired.status, "acquired");
+		if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
+		await host.command({
+			kind: "prepare",
+			root: "root",
+			lease: acquired.lease,
+			options: {
+				durable: poolDurableJournal(journal),
+				shared: {
+					stateDirectory,
+					host: "host-a",
+					claimWindowMs: 60_000,
+					checkpointShipping: { intervalMs: 60_000, maxBatch: 64, maxLagMs: 600_000 },
+				},
+				workers: 1,
+				leaseMs: 60_000,
+				heartbeatMs: 15_000,
+				startupTimeoutMs: 30_000,
+				workerEntry: "fake-worker",
+			},
+		});
+		const starting = host.command({ kind: "start", sources: [SOURCE], cwd: directory, publish: false });
+		while (forked.length === 0) await sleep(5);
+		const worker = forked[0]!;
+		await worker.request({ kind: "ready" });
+		await starting;
+		const { work, boundary } = poolWorkFixture();
+		const child = boundary.topology!.boundary!.child;
+		await host.command({
+			kind: "enqueue",
+			descriptor: { ...work, definition: `${SOURCE.path}#${SOURCE.exportName}`, digest: SOURCE.digest },
+			boundary,
+		});
+		const claim = await worker.request({ kind: "claim" });
+		assert.equal(claim.error, undefined);
+		const held = claim.value as PoolWork;
+		const checkpoints = ["c0", "c1", "c2"].map((suffix, index) => toolCheckpoint(held, child, suffix, index));
+		for (const [index, checkpoint] of checkpoints.entries()) {
+			const committed = await worker.request({
+				kind: "commit",
+				operation: `commit-${index}`,
+				mutation: { kind: "checkpoint", checkpoint },
+			});
+			assert.equal(committed.error, undefined);
+			assert.equal((committed.value as { local?: boolean }).local, true);
+			assert.equal(await journal.readKey("root", checkpointKey(checkpoint)), undefined);
+		}
+		await host.command({ kind: "close" });
+		for (const checkpoint of checkpoints) {
+			assert.ok(await journal.readKey("root", checkpointKey(checkpoint)));
+		}
+	} finally {
+		await host.command({ kind: "close" }).catch(() => {});
 		await host.coordinator.shutdown();
 		await journal.close();
 		removeTempDirectory(directory);

@@ -6,8 +6,9 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { renameWithRetry } from "../../rename-retry.ts";
 import { MemorySnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
 import { captureWorktreeSnapshot, readRepositoryConfig } from "../../worktree-snapshot/capture.ts";
 import { nulFields, runGit } from "../../worktree-snapshot/git.ts";
@@ -143,7 +144,7 @@ export async function prebuildRepository(root: string, options: PrebuildReposito
 				const declared = (keys.entries.find((entry) => entry.name === "build")?.paths ?? [])
 					.map((path) => relative(seeds, path).split(sep).join("/"))
 					.filter((path) => seedPathSegments(path) !== undefined);
-				outcome.parked.push(...(await parkBuildOutput(storeDir, lease.path, declared, snapshot)));
+				outcome.parked.push(...(await parkBuildOutput(storeDir, lease.path, declared, snapshot, signal)));
 				parkMs = Math.floor(performance.now() - started);
 			}
 		} finally {
@@ -186,6 +187,7 @@ async function parkBuildOutput(
 	worktree: string,
 	declared: readonly string[],
 	snapshot: WorktreeSnapshot,
+	signal?: AbortSignal,
 ): Promise<string[]> {
 	const repository = prebuiltRepositoryOf(snapshot);
 	const target = seedDirectory(storeDir, repository);
@@ -209,14 +211,14 @@ async function parkBuildOutput(
 					if (parts === undefined) continue;
 					const to = join(staging, ...parts);
 					await mkdir(dirname(to), { recursive: true });
-					await rename(join(worktree, ...parts), to);
+					await renameWithRetry(join(worktree, ...parts), to, { signal });
 					parked.push(untracked);
 				}
 			}
 		} catch (error) {
 			for (const path of [...parked].reverse()) {
 				const segments = seedPathSegments(path)!;
-				await rename(join(staging, ...segments), join(worktree, ...segments)).catch(() => {});
+				await renameWithRetry(join(staging, ...segments), join(worktree, ...segments)).catch(() => {});
 			}
 			throw error;
 		}
@@ -224,7 +226,7 @@ async function parkBuildOutput(
 			await rm(seedManifestPath(storeDir, repository), { force: true });
 			await rm(target, { recursive: true, force: true });
 			if (parked.length === 0) return;
-			await rename(staging, target);
+			await renameWithRetry(staging, target, { signal });
 			await writeSeedManifest(storeDir, {
 				version: 1,
 				repository,
