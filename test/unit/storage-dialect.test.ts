@@ -233,7 +233,7 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 			params: ["team_runs"],
 		}),
 		JSON.stringify({
-			sql: "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?",
+			sql: "SELECT c.relname AS name FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND c.relname = ?",
 			params: ["team_runs"],
 		}),
 	],
@@ -282,7 +282,7 @@ test("a Postgres name longer than an identifier ends in a hash of the whole name
 	const long = `${"n".repeat(60)}_insert`;
 	const shortened = postgresDialect.identifier(long);
 	assert.equal(shortened.length, 63);
-	assert.match(shortened, /^n{54}_[0-9a-f]{8}$/);
+	assert.match(shortened, /^n{46}_[0-9a-f]{16}$/);
 	assert.notEqual(
 		shortened,
 		postgresDialect.identifier(`${"n".repeat(60)}_update`),
@@ -291,7 +291,10 @@ test("a Postgres name longer than an identifier ends in a hash of the whole name
 	const rendered = postgresDialect.renderTrigger({ ...trigger, name: long });
 	assert.ok(rendered.includes(`TRIGGER ${shortened} AFTER`));
 	assert.ok(rendered.includes(`FUNCTION ${postgresDialect.identifier(`${long}_fn`)}()`));
-	assert.equal(postgresDialect.dropTrigger(long, "t"), `DROP TRIGGER IF EXISTS ${shortened} ON t`);
+	assert.match(
+		postgresDialect.dropTrigger(long, "t"),
+		new RegExp(`^DROP TRIGGER IF EXISTS ${shortened} ON t;\nDROP TRIGGER IF EXISTS n{54}_[0-9a-f]{8} ON t$`),
+	);
 	assert.deepEqual(postgresDialect.tableExists(long).params, [shortened]);
 	assert.deepEqual(postgresDialect.columnExists(long, "c").params, [shortened, "c"]);
 	const probe = postgresDialect.schemaObjects(["a", long]);

@@ -48,3 +48,5 @@ Lead with the outcome. Keep the facts, decisions, caveats, and next steps; drop 
 ## Stop rule
 
 Finish only after the in-scope edit and feasible validation are complete, or an explicit blocker has been escalated. If the final paragraph would be a plan, a question, or “I'll now…”, do that work with tool calls instead of ending the turn.
+
+A long conversation is never a reason to stop or to hand work to a fresh run; Atomic compacts context automatically. If only a supervisor decision blocks you, ask through `contact_supervisor` and continue any work the decision does not block.

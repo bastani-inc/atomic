@@ -80,11 +80,11 @@ test("workflow compact picker retains exact owner context through empty, live an
 		assert.match(empty, /Background agents and shells will appear here\./);
 		assert.doesNotMatch(empty, /hidden parent chrome|Main chat needs input — exit graph to answer\./);
 		Object.defineProperty(session, "isStreaming", { value: true, configurable: true });
-		// The identity line is idle information (#4690): a running owner shows that it works, never an interrupt
+		// The identity line is idle information (#4690): a running owner shows no status line, never an interrupt
 		// offer that Escape (which closes the navigation) would not honor, and keeps its other footer rows.
 		const streaming = render();
 		assert.ok(!streaming.includes(context), "a streaming owner hides its identity line during task navigation");
-		assert.match(streaming, /^working\b/m);
+		assert.doesNotMatch(streaming, /^working\b/m);
 		assert.ok(streaming.includes("MCP: 0/1 servers"), streaming);
 		assert.doesNotMatch(streaming, /esc to interrupt/i);
 		Object.defineProperty(session, "isStreaming", { value: false, configurable: true });
