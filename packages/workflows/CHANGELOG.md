@@ -16,7 +16,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added GitHub App auth to the command provisioner: `auth.githubApp` (`appId`, `installationId`, `privateKeyFile`, `repository`, and `host` or `apiUrl` for GitHub Enterprise Server, each also read from an `ATOMIC_GITHUB_*` variable) mints installation tokens with `@octokit/auth-app`, narrowed to `actions: write` on one repository, reuses each until 5 minutes before it expires, and passes it to each command as `GH_TOKEN` (`GH_ENTERPRISE_TOKEN` with `GH_HOST` for GitHub Enterprise Server) in that command's environment only. The private key must be readable by its owner only and never reaches an error, a log or the journal. A refused app rejects with `auth`; an unreachable API, a rate limit or a server error with the new `unavailable` code ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 - Worker pools run on PostgreSQL: a root with shared placement on a `@bastani/atomic-storage-postgres` journal keeps its work queue, leases, resource admission, pooled-stage transcripts and usage there, and worker hosts and the fleet controller serve it as they serve a libSQL one. Fleet safety (live-lease checks, boot holds and drains) works there too. The pool's writes take turns across machines, as on libSQL ([#4793](https://github.com/bastani-inc/atomic/issues/4793))
 - On PostgreSQL, a shared pool's worker hosts and root wake as soon as work is queued, released or completed: an idle worker claims a queued child at once instead of after its half-second pause, a host attaches to a new root at once instead of at its next poll, and the root sees a child another host finished at once. The polls stay as the fallback ([#5103](https://github.com/bastani-inc/atomic/issues/5103))
-
 - Added fleet-wide model rate limits for shared placement: `workers.rateLimits` meters model calls of a provider or `provider/model` across every worker host through one token bucket in the shared journal, and `workers.shareCooldowns` holds every host back after a 429 any of them gets. A host whose journal does not answer within a second meters locally at its share of the rate and reports `rateLimit: "local-fallback"` ([#4768](https://github.com/bastani-inc/atomic/issues/4768)).
 
 ### Changed
@@ -29,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A reply sent from a workflow's `/tasks` card is refused if the pending question changed after the card was drawn, so text intended for an earlier question cannot answer its replacement ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Worker pool stores (queue, usage, shared placement, fleet, rate limits, resource admission) run no DDL when their schema is current on PostgreSQL, so worker hosts, roots and their child workers run with a runtime role that has only DML privileges, and a starting host no longer blocks running hosts' pool writes. `migrateWorkflowStorage` sets them up, as `atomic storage migrate` does ([#5218](https://github.com/bastani-inc/atomic/issues/5218))
 - The shared-journal setup hint, as `atomic worker status` prints it, names `atomic storage join <postgres-url> --password-file <path>` for PostgreSQL beside the libSQL command, instead of only `atomic team join`, which refuses PostgreSQL ([#5218](https://github.com/bastani-inc/atomic/issues/5218))
 - Fixed a worker pool write on PostgreSQL committing against a journal a later build had just upgraded: the write checked the schema version without locking it, so the upgrade could commit between that check and the write. The check now holds the version until the write commits, so the upgrade waits for it. SQLite and libSQL pools already wrote under the lock the upgrade takes ([#5219](https://github.com/bastani-inc/atomic/issues/5219))
@@ -99,10 +99,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed the workflow session picker showing no selected row when the selected run left the list and the list got shorter. The selection now moves to the nearest remaining run, so Enter acts on it without first moving the cursor.
 - Fixed `/workflow` commands whose arguments start after a tab or on a new line not being run ([#5192](https://github.com/bastani-inc/atomic/issues/5192))
 
-
 ### Removed
 
-- The below-editor `BACKGROUND` workflow list and its Alt+K/J scrolling. Each run now has a row in the main chat's agent panel with its stage progress, current stage and any waiting question; Enter on it opens the graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- The below-editor `BACKGROUND` workflow list and its Alt+K/J scrolling. Each run now has a row in the main chat's agent panel with its stage progress, current stage and any waiting input; Enter on it opens the graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ## [0.9.86] - 2026-11-14
 

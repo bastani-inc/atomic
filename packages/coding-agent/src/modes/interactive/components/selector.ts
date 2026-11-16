@@ -1,27 +1,10 @@
-/**
- * The one picker every selector shares: a title, an optional type-to-search box, a list of one- or two-line rows with
- * dim descriptions and right-aligned tags, scroll indicators, an empty state, and one hint line that lists exactly the
- * keys that work right now.
- *
- * Keys, the same in every picker:
- * - ↑↓ move (wrapping), pgup/pgdn move a page, home/end jump to the ends when the list is not searchable.
- * - enter (or →) chooses the selected row; in a multi-select it confirms the checked rows.
- * - space toggles a row in a multi-select, or opens the picker's preview when it has one; otherwise it is typed.
- * - typing goes to the search box when the picker is searchable; backspace and the editing keys edit it.
- * - esc clears a non-empty search first, then cancels; ctrl+c always cancels.
- * - 1–9 choose a row directly in a numbered picker without a search box.
- * - `?` shows the keys of a picker without a search box.
- *
- * The rendering is a pure function of {@link SelectorState}, so a picker can be tested by driving the state and reading
- * the lines it renders.
- */
-
 import {
 	type Component,
 	type Focusable,
 	fuzzyFilter,
 	getKeybindings,
 	Input,
+	matchesKey,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 	truncateToWidth,
@@ -219,19 +202,29 @@ export class SelectorState<T> {
 				)
 			: [...this.items];
 		const kept = previous === undefined ? -1 : this.visible.findIndex((item) => item.id === previous);
-		// A new query highlights its best match; clearing it returns to the row that was selected.
 		this.selected = query ? this.firstEnabled(0, 1) : kept >= 0 ? kept : this.firstEnabled(0, 1);
 		this.top = 0;
 		this.scrollToSelected();
 	}
 
-	/** Move by `delta` rows, wrapping at the ends and skipping disabled rows. */
-	move(delta: number): void {
+	/** Move by `delta` rows, wrapping at the ends unless `wrap` is false, and skipping disabled rows. */
+	move(delta: number, wrap = true): void {
 		const count = this.visible.length;
-		if (count === 0) return;
+		if (count === 0 || delta === 0) return;
+		const step = Math.sign(delta) as -1 | 1;
+		if (!wrap) {
+			for (let index = this.selected + step; index >= 0 && index < count; index += step) {
+				if (!this.visible[index]?.disabled) {
+					this.selected = index;
+					this.scrollToSelected();
+					return;
+				}
+			}
+			return;
+		}
 		let index = this.selected;
-		for (let step = 0; step < count; step++) {
-			index = (index + Math.sign(delta) + count) % count;
+		for (let stepIndex = 0; stepIndex < count; stepIndex++) {
+			index = (index + step + count) % count;
 			if (!this.visible[index]?.disabled) break;
 		}
 		this.selected = index;
@@ -425,8 +418,8 @@ export class Selector<T> implements Component, Focusable {
 		else if (kb.matches(data, "tui.select.down")) this.state.move(1);
 		else if (kb.matches(data, "tui.select.pageUp")) this.state.page(-1);
 		else if (kb.matches(data, "tui.select.pageDown")) this.state.page(1);
-		else if (!this.input && data === "\x1b[H") this.state.edge("first");
-		else if (!this.input && data === "\x1b[F") this.state.edge("last");
+		else if (!this.input && matchesKey(data, "home")) this.state.edge("first");
+		else if (!this.input && matchesKey(data, "end")) this.state.edge("last");
 		else if (kb.matches(data, "tui.select.cancel")) {
 			if (this.state.getQuery() && !isCtrlC(data)) this.setQuery("");
 			else this.options.onCancel?.();
@@ -435,7 +428,6 @@ export class Selector<T> implements Component, Focusable {
 			return;
 		} else if (
 			kb.matches(data, "tui.select.confirm") ||
-			// → opens too, except while it moves the cursor through search text.
 			(kb.matches(data, "app.list.open") && !this.state.getQuery())
 		) {
 			this.confirm();
@@ -462,7 +454,7 @@ export class Selector<T> implements Component, Focusable {
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (event.type === "wheel" && event.wheelDelta) {
 			const before = this.state.getSelectedIndex();
-			this.state.move(event.wheelDelta < 0 ? -1 : 1);
+			this.state.move(event.wheelDelta < 0 ? -1 : 1, false);
 			const changed = this.state.getSelectedIndex() !== before;
 			if (changed) this.options.onSelectionChange?.(this.state.getSelected());
 			return { handled: true, render: changed };
@@ -470,15 +462,24 @@ export class Selector<T> implements Component, Focusable {
 		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
 		const index = [...this.rowLines.entries()].find(([, line]) => line === event.y)?.[0];
 		if (index === undefined) return undefined;
+		const visible = this.state.getVisible();
+		if (visible[index]?.disabled) {
+			this.mousePressed = undefined;
+			return { handled: true };
+		}
 		if (event.type === "press") {
 			this.mousePressed = index;
+			const before = this.state.getSelectedIndex();
 			this.state.select(index);
-			this.options.onSelectionChange?.(this.state.getSelected());
+			if (this.state.getSelectedIndex() !== before) this.options.onSelectionChange?.(this.state.getSelected());
 			return { handled: true, focus: true };
 		}
 		const clicked = this.mousePressed ?? index;
 		this.mousePressed = undefined;
+		if (visible[clicked]?.disabled) return { handled: true };
+		const before = this.state.getSelectedIndex();
 		this.state.select(clicked);
+		if (this.state.getSelectedIndex() !== before) this.options.onSelectionChange?.(this.state.getSelected());
 		if (this.state.mode === "multi") {
 			const item = this.state.getSelected();
 			if (item) this.state.toggle(item.id);

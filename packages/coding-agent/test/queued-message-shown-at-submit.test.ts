@@ -113,9 +113,22 @@ describe.each(["local", "isolated"] as const)("a message sent while the agent wo
 	test("lists a confirmed message once while the session's answer is still on its way (#4696)", async () => {
 		const { rig, finishTurn } = await startBusyTurn();
 		// The engine's queue_update reaches the host on its own, ahead of the answer to the prompt.
-		rig.pair?.holdHostTrafficFrom((record) => record.type === "response");
+		const message = "typed while busy";
+		rig.pair?.holdHostTrafficFrom((record) => {
+			const promptId = rig.pair?.commandsReceived.findLast(
+				(command) => command.type === "prompt" && command.message === message,
+			)?.id;
+			return promptId !== undefined && record.type === "response" && record.id === promptId;
+		});
+		rig.pair?.engineOutput({
+			type: "response",
+			id: "earlier-stats-response",
+			command: "get_session_stats",
+			success: true,
+			data: rig.engine.session.getSessionStats(),
+		});
 
-		const submitted = rig.host.defaultEditor.onSubmit?.("typed while busy");
+		const submitted = rig.host.defaultEditor.onSubmit?.(message);
 		await waitFor("the host to hear the session queued it", () =>
 			rig.host.session.getSteeringMessages().includes("typed while busy"),
 		);

@@ -5,12 +5,16 @@ import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
 import { isResumableStop, releasedWaitingOn } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import type { TaskActivity } from "../../../core/tasks/owner-store.js";
+import { sanitizeTerminalText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
 
 /** Control removal and truncation apply only to terminal display, never task identity. */
 export function taskDisplayText(text: string): string {
-	return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+	if (!/[\x00-\x1f\x7f-\x9f\p{Default_Ignorable_Code_Point}\u2028\u2029]/u.test(text)) return text;
+	return sanitizeTerminalText(text)
+		.replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+		.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, " ");
 }
 export function taskState(task: TaskRecord): string {
 	if (

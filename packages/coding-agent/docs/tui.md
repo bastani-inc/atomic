@@ -410,7 +410,7 @@ These patterns cover the most common UI needs in extensions. **Copy these patter
 
 ### Pattern 1: Selection Dialog (Selector)
 
-For letting users pick from a list, use `Selector` from `@bastani/atomic`. It is the picker Atomic's own selectors use, so your dialog looks and behaves like `/model`, `/resume` and the rest: a title, an optional type-to-search box, one- or two-line rows with dim descriptions and right-aligned tags, `↑ N more` / `↓ N more` scroll indicators, an empty state, and one hint line that lists exactly the keys that work.
+For letting users pick from a list, use `Selector` from `@bastani/atomic`. It follows Atomic's list keys and hint line, and gives you a title, an optional type-to-search box, one- or two-line rows with dim descriptions and right-aligned tags, `↑ N more` / `↓ N more` scroll indicators, an empty state, and one hint line that lists exactly the keys that work.
 
 ```typescript
 import { DynamicBorder, Selector } from "@bastani/atomic";
@@ -438,7 +438,7 @@ const choice = await ctx.ui.custom<string | null>((tui, _theme, _kb, done) => {
 });
 ```
 
-Keys are the same in every picker: ↑↓ select (wrapping), pgup/pgdn page, enter or → choose, esc clears the search before it cancels, and ctrl+c always cancels. Options worth knowing:
+Keys: ↑↓ select (wrapping), pgup/pgdn page, home/end jump to the ends when there is no search box, enter or → choose, esc clears the search before it cancels, and ctrl+c always cancels. With mouse reporting, a click chooses a row (toggles it in a multi-select) and the wheel moves the selection, stopping at the ends. Options worth knowing:
 
 | Option | Effect |
 | --- | --- |
@@ -448,9 +448,11 @@ Keys are the same in every picker: ↑↓ select (wrapping), pgup/pgdn page, ent
 | `onPreview` | Space previews the selected row; the hint shows `space preview`. |
 | `extraKeys` | Keys of your own, each with a hint and an `enabled(item)` check, so a key that does nothing for the selected row is not shown. |
 | `group` on items | Rows with the same group are listed under a section label (hidden while searching). |
-| `disabled` on items | Drawn dim and skipped by ↑↓. |
+| `disabled` on items | Drawn dim, skipped by ↑↓ and the wheel, and refused by enter and clicks. |
 
 Without a search box, `?` shows the picker's keys. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
+
+`SelectorState` holds a picker's search, selection and checked rows without drawing anything, and `selectorHintEntries(state, options)` returns the keys its hint line lists, so you can test a picker's behaviour without rendering it. `themeSelectorStyle()` returns the active theme's picker colours; pass `style: PLAIN_SELECTOR_STYLE` for output without colour.
 
 ### Pattern 1b: Selection Dialog (SelectList)
 
@@ -828,6 +830,45 @@ export default function (pi: ExtensionAPI) {
 - **Pass `undefined`** to restore the default editor: `ctx.ui.setEditorComponent(undefined)`
 
 **Examples:** [modal-editor.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/modal-editor.ts)
+
+### Pattern 7b: Attached Composer
+
+A chat that talks to something other than the main agent should not look like the main chat. `applyAttachedComposer(style, label, placeholder, lines)` takes an editor's rendered lines and returns them in the form Atomic uses for subagent and workflow stage chats: heavy accent rules above and below the prompt, the top rule ending in a bold `label`, and a dim `placeholder` after the cursor while nothing is typed.
+
+```typescript
+import { applyAttachedComposer, CustomEditor, type ExtensionAPI, type Theme } from "@bastani/atomic";
+
+class ReviewerEditor extends CustomEditor {
+  appTheme?: Theme;
+
+  render(width: number): string[] {
+    const theme = this.appTheme;
+    if (theme === undefined) return super.render(width);
+    return applyAttachedComposer(
+      {
+        accent: (text) => theme.fg("accent", text),
+        text: (text) => theme.fg("text", text),
+        dim: (text) => theme.fg("dim", text),
+      },
+      "reviewer · checking the diff · 2m",
+      "Message reviewer…",
+      super.render(width),
+    );
+  }
+}
+
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", (_event, ctx) => {
+    ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
+      const editor = new ReviewerEditor(tui, editorTheme, keybindings);
+      editor.appTheme = ctx.ui.theme;
+      return editor;
+    });
+  });
+}
+```
+
+It replaces only a plain or scrolled editor rule: a first or last line that is not a rule, such as one your editor draws itself, is left as it is. A long label is cut with `…` to fit. Below `INPUT_LABEL_MIN_COLUMNS` (40) columns, the rules stay heavy without the label. Pass `undefined` for `label` or `placeholder` to leave either out.
 
 ## Key Rules
 

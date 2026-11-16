@@ -51,6 +51,7 @@ function runSource(items: AgentPanelItem[]) {
 		open: (id, options) => {
 			calls.opened.push(id);
 			if (options?.onReturn) calls.returns.push(options.onReturn);
+			return true;
 		},
 		stop: async (id) => {
 			calls.stopped.push(id);
@@ -284,6 +285,7 @@ test("a finished run with no current stage reads its stage count, the filter box
 		assert.match(h.text(), /✓ approve-demo +stage 1\/1 +done · 10s/);
 		assert.doesNotMatch(h.text(), /approve-demo +·/, "no separator before an empty task");
 		h.inspector.handleInput(SPACE);
+		h.text();
 		h.inspector.handleInput("1");
 		h.inspector.handleInput(ENTER);
 		await flush();
@@ -302,9 +304,9 @@ test("/tasks opens on its first row, a waiting run above a working subagent, and
 	try {
 		await fixture.start("Spawn lock fix");
 		const runs = runSource([waitingRun]);
-		const { liveElapsedMs } = await import("../../packages/coding-agent/src/core/tasks/live-elapsed.js");
+		const { taskClocksFor } = await import("../../packages/coding-agent/src/core/tasks/live-elapsed.js");
 		const taskId = fixture.store.tasks[0]?.ref.taskId ?? "";
-		const seenEarlier = liveElapsedMs(taskId, 0, true, Date.now() - 60_000);
+		const seenEarlier = taskClocksFor(fixture.store).elapsedMs(taskId, 0, true, Date.now() - 60_000);
 		assert.equal(seenEarlier, 0);
 		const inspector = new TaskInspector(
 			ownerTaskViewSource(fixture.store),
@@ -320,6 +322,116 @@ test("/tasks opens on its first row, a waiting run above a working subagent, and
 		assert.match(text, /∀ worker +Spawn lock fix +1m 0s/, "/tasks counts from when another view first saw the task");
 		inspector.dispose();
 	} finally {
+		await fixture.dispose();
+	}
+});
+
+test("/tasks formats only visible rows when navigating a large board (#5224)", async () => {
+	let taskReads = 0;
+	const items: AgentPanelItem[] = Array.from({ length: 1_000 }, (_, index) => ({
+		id: `run:${index}`,
+		kind: "workflow",
+		state: "running",
+		name: `run-${index}`,
+		get task() {
+			taskReads++;
+			return `stage ${index}`;
+		},
+	}));
+	const h = await harness(items);
+	try {
+		const viewportRows = 12;
+		taskReads = 0;
+		assert.match(h.text(100, viewportRows), /❯ ∀ run-0/);
+		h.inspector.handleInput("\x1b[F");
+		const last = h.text(100, viewportRows);
+		assert.match(last, /❯ ∀ run-999/);
+		assert.ok(last.split("\n").length <= viewportRows);
+		assert.ok(taskReads <= viewportRows * 2, `two paints read ${taskReads} task descriptions`);
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("/tasks reads a live board source once per paint, not again for each navigation key (#5224)", async () => {
+	const h = await harness([waitingRun, failedRun]);
+	let reads = 0;
+	let elapsedMs = 180_000;
+	h.runs.source.items = () => {
+		reads++;
+		return [{ ...waitingRun, elapsedMs }, failedRun];
+	};
+	try {
+		h.inspector.handleInput(DOWN);
+		assert.match(h.text(), /❯ ✗ review-pr/);
+		assert.ok(reads <= 1, `one key and paint read the source ${reads} times`);
+		reads = 0;
+		elapsedMs = 181_000;
+		assert.match(h.text(), /waiting 3m 1s/, "a repaint reads the source's live clock without a store event");
+		assert.ok(reads <= 1);
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("/tasks reuses task snapshots while navigating and follows the next store event (#5224)", async () => {
+	const fixture = taskFixture();
+	await fixture.start("First snapshot");
+	const source = ownerTaskViewSource(fixture.store);
+	let reads = 0;
+	const inspector = new TaskInspector(
+		{
+			...source,
+			get backgroundTasks() {
+				reads++;
+				return source.backgroundTasks;
+			},
+		},
+		() => {},
+		() => {},
+	);
+	const text = () => inspector.renderViewport(100, 12).map(stripVTControlCharacters).join("\n");
+	try {
+		reads = 0;
+		for (const key of [DOWN, "\x1b[A", "x"]) {
+			inspector.handleInput(key);
+			assert.match(text(), /First snapshot/);
+		}
+		assert.equal(reads, 0, "navigation and paint do not reread unchanged task snapshots");
+		await fixture.start("Second snapshot");
+		assert.match(text(), /2 working/);
+		assert.match(text(), /Second snapshot/);
+		await fixture.settle(0);
+		assert.match(text(), /1 working · 1 done/);
+		assert.match(text(), /First snapshot finished · x to dismiss/);
+	} finally {
+		inspector.dispose();
+		await fixture.dispose();
+	}
+});
+
+test("/tasks sees a dismissal from another inspector without a task store event (#5224)", async () => {
+	const fixture = taskFixture();
+	await fixture.start("Shared finished task");
+	await fixture.settle();
+	const source = ownerTaskViewSource(fixture.store);
+	const inspectors = Array.from(
+		{ length: 2 },
+		() =>
+			new TaskInspector(
+				source,
+				() => {},
+				() => {},
+			),
+	);
+	const text = () => inspectors[0]!.renderViewport(100, 12).map(stripVTControlCharacters).join("\n");
+	try {
+		assert.match(text(), /Shared finished task/);
+		inspectors[1]!.handleInput("x");
+		assert.doesNotMatch(text(), /Shared finished task/);
+		assert.match(text(), /No background work/);
+	} finally {
+		for (const inspector of inspectors) inspector.dispose();
 		await fixture.dispose();
 	}
 });
@@ -421,6 +533,7 @@ test("Enter while a reply is being sent sends it once and never reaches the list
 	};
 	try {
 		h.inspector.handleInput(SPACE);
+		h.text();
 		h.inspector.handleInput("1");
 		h.inspector.handleInput(ENTER);
 		h.inspector.handleInput(ENTER);
@@ -440,6 +553,7 @@ test("an Enter just after a reply is sent is swallowed, so a double Enter never 
 	const h = await harness([waitingRun]);
 	try {
 		h.inspector.handleInput(SPACE);
+		h.text();
 		h.inspector.handleInput("1");
 		h.inspector.handleInput(ENTER);
 		await flush();
