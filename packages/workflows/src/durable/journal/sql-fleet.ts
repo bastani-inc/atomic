@@ -112,13 +112,16 @@ async function tableExists(executor: SqliteExecutor, dialect: StorageDialect, na
 /** The queue of each running or paused shared root, as the fleet's policy counts it. */
 async function rootDemand(executor: SqliteExecutor, storage: SqlPoolStorage): Promise<FleetRootRow[]> {
 	const runs = storage.tables.runs;
+	// One reading of the clock: a root counted as running counts its children its own lease keeps live at that instant.
+	const now = "(SELECT now FROM clock)";
 	const rows = await executor.all<
 		SqliteRow & { root: string; config: string; blocked: number; ready: number; leased: number }
 	>(
-		`SELECT s.root, s.config,
-		(s.budget_blocked = 1 OR r.status != 'running' OR ${storage.dialect.nowMs} - l.renewed_at > p.timeout) AS blocked,
+		`WITH clock AS (SELECT ${storage.dialect.nowMs} AS now)
+		SELECT s.root, s.config,
+		(s.budget_blocked = 1 OR r.status != 'running' OR ${now} - l.renewed_at > p.timeout) AS blocked,
 		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'ready') AS ready,
-		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'leased' AND ${liveLease(storage.dialect.nowMs)}) AS leased
+		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'leased' AND ${liveLease(now)}) AS leased
 		FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root
 		JOIN ${storage.tables.leases} l ON l.run_id = s.root AND l.epoch = s.epoch
 		JOIN ${runs}_pool p ON p.root = s.root
