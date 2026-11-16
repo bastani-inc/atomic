@@ -269,15 +269,26 @@ InteractiveModeBase.prototype.showSessionUserMessage = function (this: Interacti
 	const started = this.startedDeferredUserInput;
 	if (started !== undefined) {
 		// The message takes the echo's place as read or unread as the echo was: count arrivals not painted yet, then
-		// swap it in without counting it or retracting the echo (#5243).
+		// swap it in without counting it or retracting the echo (#5243). A rewrite that shows nothing, such as empty
+		// text, leaves an unread echo's count behind, so that part is retracted.
 		const renderer = this.ui as AltScreenMessageCounterHost;
-		if (renderer.isFollowingOutput === false) {
-			renderer.newMessages?.observe(false, this.chatContainer.children.filter(isChatMessageComponent).length);
-		}
+		const following = renderer.isFollowingOutput !== false;
+		const countedMessages = (): number => this.chatContainer.children.filter(isChatMessageComponent).length;
+		if (!following) renderer.newMessages?.observe(false, countedMessages());
 		const echo = forgetDeferredEcho(this, started);
+		const countedBefore = countedMessages();
 		appendNewChildrenBeforeAttachedChild(this.chatContainer, echo?.[0], () => this.addMessageToChat(message));
-		for (const component of echo ?? []) this.chatContainer.removeChild(component);
-		renderer.newMessages?.replaced(this.chatContainer.children.filter(isChatMessageComponent).length);
+		const shownMessages = countedMessages() - countedBefore;
+		let removedMessages = 0;
+		for (const component of echo ?? []) {
+			if (isChatMessageComponent(component) && this.chatContainer.children.includes(component)) removedMessages += 1;
+			this.chatContainer.removeChild(component);
+		}
+		const counter = renderer.newMessages;
+		if (!following && counter && echo && echoReadEpochs.get(echo) === counter.epoch) {
+			counter.retract(removedMessages - shownMessages);
+		}
+		counter?.replaced(countedMessages());
 		this.updatePendingMessagesDisplay();
 		this.ui.requestRender();
 		return;

@@ -526,6 +526,42 @@ test("a rewritten prompt that replaces an unread echo stays counted once (#5243)
 	});
 });
 
+test("an empty rewrite that replaces an unread echo retracts the echo's count (#5243)", async () => {
+	await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
+		scrollUp();
+		mode.renderDeferredUserInput("Original prompt");
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+
+		mode.expectStartedUserInput("Original prompt", mode.userMessagesShownBySession);
+		mode.showSessionUserMessage({ role: "user", content: "", timestamp: 70 });
+		paint();
+		assert.equal(pill(), "↓ jump to bottom · ctrl+end");
+		const transcript = mode.chatContainer.children.flatMap((child) => child.render(80)).join("\n");
+		assert.doesNotMatch(transcript, /Original prompt/);
+	});
+});
+
+test("an empty rewrite that replaces a read echo leaves the count unchanged (#5243)", async () => {
+	await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
+		mode.renderDeferredUserInput("Original prompt");
+		paint();
+		scrollUp();
+		const notice = { role: "user" as const, content: "Background job finished", timestamp: 60 };
+		await mode.sessionManager.appendMessage(notice);
+		mode.addMessageToChat(notice);
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+
+		mode.expectStartedUserInput("Original prompt", mode.userMessagesShownBySession);
+		mode.showSessionUserMessage({ role: "user", content: "", timestamp: 70 });
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+		const transcript = mode.chatContainer.children.flatMap((child) => child.render(80)).join("\n");
+		assert.doesNotMatch(transcript, /Original prompt/);
+	});
+});
+
 test("a growing rebuild while scrolled up does not count history as new (#5243)", async () => {
 	await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
 		scrollUp();
