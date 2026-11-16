@@ -61,7 +61,7 @@ export function renderSingleCompact(
 		const elapsedMs = displayProgressDurationMs(r.progress, now);
 		const running = statJoin(theme, [
 			`Running${contextBadge}`,
-			elapsedMs > 0 ? formatDuration(elapsedMs) : "",
+			elapsedMs >= 1000 ? formatDuration(elapsedMs) : "",
 			r.progress.tokens > 0 ? `↓ ${formatTokens(r.progress.tokens)} tokens` : "",
 		]);
 		const hint = keyHintIfBound("app.tools.expand", "for live detail");
