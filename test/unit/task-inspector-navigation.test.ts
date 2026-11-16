@@ -220,7 +220,7 @@ test("shell input: Esc keeps it and its text, ← on empty input returns to the 
 		assert.match(h.text(), /Input to /, "← inside the text moves the cursor");
 		h.inspector.handleInput("\x1b[H");
 		h.inspector.handleInput(LEFT);
-		assert.match(h.text(), /Background tasks/, "← at the start of a draft leaves, as in a chat");
+		assert.match(h.text(), /^ Tasks\b/m, "← at the start of a draft leaves, as in a chat");
 		h.inspector.handleInput(SPACE);
 		await flush();
 		h.inspector.handleInput("\x1b[B");
