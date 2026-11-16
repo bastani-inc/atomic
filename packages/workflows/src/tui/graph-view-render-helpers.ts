@@ -1,12 +1,7 @@
+import { type NavKey, type NavKeybindings, type NavKeyStyle, navEntryKeys } from "@bastani/atomic";
 import { BOLD, DEFAULT_BG, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphCanvas } from "./graph-canvas.js";
-import {
-	COMPACT_HINT_KEYS,
-	COMPACT_TOOL_DETAIL_HINT_KEYS,
-	HINT_KEYS,
-	MODE_PILL_LABEL,
-	TOOL_DETAIL_HINT_KEYS,
-} from "./graph-view-constants.js";
+import { MODE_PILL_LABEL } from "./graph-view-constants.js";
 import { GraphViewState } from "./graph-view-state.js";
 import { renderOutlinePill } from "./header.js";
 import { APP_ACTION, isKeybindingsLike } from "./keybindings-adapter.js";
@@ -58,6 +53,105 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 	}
 	private _siblingBeforeMemo?: { layout: unknown; focusedIndex: number; value: boolean };
 
+	/** Keybindings manager the hint line and `?` overlay resolve action keys through. */
+	protected _navKeybindings(): NavKeybindings | undefined {
+		return isKeybindingsLike(this.piKeybindings) ? (this.piKeybindings as NavKeybindings) : undefined;
+	}
+
+	/** The graph theme as the shared hint line and key overlay paint it. */
+	protected _navKeyStyle(): NavKeyStyle {
+		const t = this.graphTheme;
+		return {
+			dim: (text) => `${hexToAnsi(t.dim)}${text}${RESET}`,
+			text: (text) => `${hexToAnsi(t.text)}${text}${RESET}`,
+			muted: (text) => `${hexToAnsi(t.textMuted)}${text}${RESET}`,
+			border: (text) => `${hexToAnsi(t.borderActive)}${text}${RESET}`,
+			bold: (text) => `${hexToAnsi(t.text)}${BOLD}${text}${RESET}`,
+		};
+	}
+
+	/**
+	 * A remappable key: named by its action when the host's manager can resolve keys, otherwise by its default, which is
+	 * what the graph matches without a manager.
+	 */
+	protected _actionKey(action: string, fallback: string, label: string): NavKey {
+		return this._navKeybindings()?.getKeys ? { action, label } : { keys: fallback, label };
+	}
+
+	/** Whether `x x` can stop the focused stage: a host stop action and a stage that is still working. */
+	protected _focusedStageStoppable(): boolean {
+		if (this.stageActions?.stop === undefined) return false;
+		const stage = this.cachedLayout[this.focusedIndex]?.stage;
+		if (stage === undefined || this._stageChatTarget(stage) === undefined) return false;
+		return (
+			stage.status === "running" ||
+			stage.status === "awaiting_input" ||
+			stage.status === "blocked" ||
+			stage.status === "suspended"
+		);
+	}
+
+	/**
+	 * Every key the graph's current state answers to, in the order the hint line keeps them under width pressure: the
+	 * way back first. The `?` overlay lists all of them; the hint line drops entries from the end until it fits.
+	 */
+	protected _graphKeys(): NavKey[] {
+		const help = this._actionKey(APP_ACTION.keysHelp, "?", "keys");
+		if (this.toolDetail !== null) {
+			const expandKey = toolExpandKey(this.piKeybindings);
+			return [
+				{ keys: "esc/\u2190", label: "back to graph" },
+				{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" },
+				...(expandKey.length > 0
+					? [{ keys: expandKey, label: this.toolDetailExpanded ? "collapse" : "expand" }]
+					: []),
+				help,
+			];
+		}
+		if (this.stageDetail !== null) {
+			const actions = this.stageActions;
+			return [
+				{ keys: "esc/\u2190", label: "back to graph" },
+				...(actions?.retry ? [{ keys: "r", label: "retry stage" }] : []),
+				...(actions?.fork ? [{ keys: "f", label: "fork run" }] : []),
+				...(this.onStageAttach ? [{ keys: "t", label: "transcript" }] : []),
+				{ keys: "l", label: this.stageDetail.logs ? "summary" : "logs" },
+				...(this.stageDetail.logs ? [{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" }] : []),
+				help,
+			];
+		}
+		const focused = this.cachedLayout[this.focusedIndex]?.stage;
+		const openLabel =
+			focused?.nodeKind === "tool"
+				? "open tool detail"
+				: focused?.status === "failed" && this._focusedStageChatTarget() !== undefined
+					? "open failure detail"
+					: this.onStageAttach !== undefined && this._focusedStageChatTarget() !== undefined
+						? "open stage chat"
+						: undefined;
+		return [
+			{ keys: this._hasSiblingBefore() ? "esc" : "esc/\u2190", label: "back" },
+			...(openLabel ? [{ keys: "\u21b5", label: openLabel }] : []),
+			{ keys: "\u2191\u2193\u2190\u2192", label: "move" },
+			{ keys: "/", label: "stages" },
+			{ keys: "f", label: `filter: ${this.statusFilter}` },
+			...(this._focusedStageStoppable() ? [this._actionKey(APP_ACTION.listStop, "x", "stop stage")] : []),
+			help,
+			...(this.onHide ? [{ keys: "h", label: "hide" }] : []),
+		];
+	}
+
+	/** The hint line's transient message, while it lasts. */
+	protected _activeGraphNotice(): { text: string; tone: "info" | "error" } | null {
+		const notice = this.graphNotice;
+		if (notice === null) return null;
+		if (Date.now() > notice.until) {
+			this.graphNotice = null;
+			return null;
+		}
+		return notice;
+	}
+
 	protected _renderStatusline(width: number): string[] {
 		const t = this.graphTheme;
 		const chromeBg = hexBg(t.backgroundPanel);
@@ -67,70 +161,30 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const accent = hexToAnsi(t.accent);
 
 		const { top, mid, bot, visibleWidth: pillW } = renderOutlinePill(MODE_PILL_LABEL, t.accent, chromeBg);
-		// Hints use `<key> <label>` segments. Keep the hierarchy transition first,
-		// followed by extension status and secondary graph controls, so width
-		// pressure never hides the way back to main chat.
-		const sep = `${chromeBg}  ${dim}·${RESET}${chromeBg}  `;
+		// Hints use `<key> <label>` segments. The way back comes first, then a transient notice or extension status,
+		// then the graph's other keys, dropped from the end under width pressure.
+		const sep = `${chromeBg}  ${dim}\u00b7${RESET}${chromeBg}  `;
 		const leftEdgePad = 1;
 		const rightEdgePad = 2;
 		const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
-		// ← leaves too when the focused node has nothing to its left, and the hint says so only then.
-		const backKey = this._hasSiblingBefore() ? "esc" : "esc/←";
-		const withBack = (keys: ReadonlyArray<{ key: string; label: string }>) =>
-			keys.map((hint) => (hint.key === "esc" && hint.label === "back" ? { ...hint, key: backKey } : hint));
-		const fullHierarchyHint = `${backKey} back`;
-		// A focused tool node has no stage chat, but Enter now opens its read-only
-		// detail, so it keeps an activation hint of its own instead of losing the
-		// `↵` affordance entirely the way an unfocusable node does. Both lookups
-		// resolve once per frame: the two hint lists below are built eagerly, and
-		// re-resolving focus inside each would double this frame's layout reads.
-		const chatTarget = this.toolDetail === null ? this._focusedStageChatTarget() : undefined;
-		const focusedToolNode = this.toolDetail === null && this._focusedTool() !== undefined;
-		const relabelActivation = (
-			keys: ReadonlyArray<{ key: string; label: string }>,
-			label: string,
-		): Array<{ key: string; label: string }> =>
-			keys.map((hint) => (hint.key === "↵" ? { key: hint.key, label } : hint));
-		const toolDetailExpandKey = toolExpandKey(this.piKeybindings);
-		const expandHint =
-			toolDetailExpandKey.length > 0
-				? [{ key: toolDetailExpandKey, label: this.toolDetailExpanded ? "collapse" : "expand" }]
-				: [];
-		const toolDetailHintKeys = this.toolDetail === null ? [] : [...TOOL_DETAIL_HINT_KEYS, ...expandHint];
-		const compactToolDetailHintKeys =
-			this.toolDetail === null ? [] : [...COMPACT_TOOL_DETAIL_HINT_KEYS, ...expandHint];
-		const availableHintKeys =
-			this.toolDetail !== null
-				? toolDetailHintKeys
-				: focusedToolNode
-					? relabelActivation(HINT_KEYS, "open tool detail")
-					: chatTarget === undefined
-						? HINT_KEYS.filter(({ key }) => key !== "↵")
-						: HINT_KEYS;
-		const availableCompactHintKeys =
-			this.toolDetail !== null
-				? compactToolDetailHintKeys
-				: focusedToolNode
-					? relabelActivation(COMPACT_HINT_KEYS, "tool detail")
-					: chatTarget === undefined
-						? COMPACT_HINT_KEYS.filter(({ key }) => key !== "↵")
-						: COMPACT_HINT_KEYS;
-		const fullHintWidth =
-			this.toolDetail !== null
-				? toolDetailHintKeys.map(({ key, label }) => `${key} ${label}`).join("  ·  ")
-				: fullHierarchyHint;
-		const hintKeys = withBack(
-			hintsBudget >= visibleWidth(fullHintWidth) ? availableHintKeys : availableCompactHintKeys,
-		);
+		const keybindings = this._navKeybindings();
+		const taken = new Set<string>();
+		const segments = this._graphKeys().flatMap((entry) => {
+			const keys = navEntryKeys(keybindings, entry, taken);
+			return keys ? [`${text}${BOLD}${keys}${RESET}${chromeBg} ${muted}${entry.label}${RESET}${chromeBg}`] : [];
+		});
+		const notice = this._activeGraphNotice();
 		const statusText = this._externalStatusText();
-		const statusSegment = statusText ? [`${accent}${statusText}${RESET}${chromeBg}`] : [];
-		const hintSegments = hintKeys.map(
-			({ key, label }) => `${text}${BOLD}${key}${RESET}${chromeBg} ${muted}${label}${RESET}${chromeBg}`,
+		const middle = notice
+			? [`${hexToAnsi(notice.tone === "error" ? t.error : t.accent)}${notice.text}${RESET}${chromeBg}`]
+			: statusText
+				? [`${accent}${statusText}${RESET}${chromeBg}`]
+				: [];
+		const parts = [segments[0], ...middle, ...segments.slice(1)].filter(
+			(segment): segment is string => segment !== undefined,
 		);
-		const hintsStyledRaw = [hintSegments[0], ...statusSegment, ...hintSegments.slice(1)]
-			.filter((segment): segment is string => segment !== undefined)
-			.join(sep);
-		const hintsStyled = truncateToWidth(hintsStyledRaw, hintsBudget, "");
+		while (parts.length > 1 && visibleWidth(parts.join(sep)) > hintsBudget) parts.pop();
+		const hintsStyled = truncateToWidth(parts.join(sep), hintsBudget, "");
 		const hintsVisibleLen = visibleWidth(hintsStyled);
 		const fillerVisible = Math.max(0, hintsBudget - hintsVisibleLen);
 		const filler = " ".repeat(fillerVisible);

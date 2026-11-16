@@ -398,8 +398,7 @@ export class TaskInspector implements Component {
 		if (focus.kind === "stdin") {
 			// Shell input is a prompt: Esc cancels nothing and keeps the text; ← on an empty input returns to the list.
 			if (matchesKey(data, "escape")) return true;
-			// ← on an empty input, or at its start (the draft is kept for the return), goes back to the list.
-			if (getKeybindings().matches(data, "app.nav.back") && this.input.getCursor() === 0) {
+			if (getKeybindings().matches(data, "app.nav.back") && this.input.getValue() === "") {
 				this.navigation.focus = { kind: "tasks" };
 				this.requestRender();
 				return true;

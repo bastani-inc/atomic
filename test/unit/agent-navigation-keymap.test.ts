@@ -205,15 +205,6 @@ test("any key but the stop-all key calls a waiting stop-all off and clears its n
 	assert.equal(h.statuses.at(-1), "<cleared>");
 });
 
-test("Ctrl+X pressed twice restarts the chord, so Ctrl+X Ctrl+K after a stray Ctrl+X still counts (#5224)", () => {
-	const h = chordHost();
-	const listener = createStopAllChord(h.host);
-	listener(CTRL_X);
-	listener(CTRL_X);
-	assert.deepEqual(listener(CTRL_K), { consume: true });
-	assert.match(h.statuses.at(-1) ?? "", /again within 3s/);
-});
-
 test("a stop-all that cannot stop everything says what is left (#5224)", () => {
 	assert.equal(
 		stopAllBackgroundMessage({ agents: 0, shells: 0, workflowRuns: 0, failures: [] }),

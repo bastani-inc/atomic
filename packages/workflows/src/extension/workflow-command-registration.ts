@@ -2,7 +2,6 @@ import { ForkConfigError } from "../durable/fork-errors.js";
 import { inspectRun } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { resolveRunIndicatorStatuses } from "../shared/run-indicator-status.js";
-import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { schemaIsRequired } from "../shared/schema-introspection.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import { emitChatSurface } from "../tui/chat-surface-message.js";
@@ -34,6 +33,7 @@ import {
 	type WorkflowCommandHandler,
 	type WorkflowCommandOutputDetails,
 } from "./workflow-command-utils.js";
+import { handleWorkflowsCommand } from "./workflow-open-run.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { projectTrustConfirmation } from "./workflow-project-trust.js";
@@ -82,16 +82,13 @@ export function registerWorkflowSlashCommand(
 		pi,
 		"workflows",
 		{
-			description: "Browse running and completed workflows. Usage: /workflows [run-id]",
-			handler: (args, ctx) => {
-				// The session's workflows view: a run's graph, or the run picker when there is more than one. Never the
-				// durable resume picker, which `/workflow resume` keeps (#5224).
-				const target = args.trim();
+			description: "Browse workflow runs and definitions. Usage: /workflows [run-id]",
+			handler: async (args, ctx) => {
+				// The session's workflows view: a run's graph, or a list when there are several. Never the durable resume
+				// picker, which `/workflow resume` keeps (#5224).
 				const owner = deps.owner ?? captureWorkflowOwnerResources();
-				const runs = topLevelWorkflowRuns(owner.store.runs());
-				const only = target.length === 0 && runs.length === 1 ? runs[0]?.id : undefined;
-				const run = target.length > 0 ? target : only;
-				return workflowSlashHandler(run === undefined ? "attach" : `attach ${run}`, ctx, pi, deps);
+				const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);
+				await handleWorkflowsCommand(args, ctx, reporter, { overlay: deps.runControl.overlay, store: owner.store });
 			},
 		},
 		workflowCommands,

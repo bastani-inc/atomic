@@ -480,7 +480,7 @@ describe("renderStatusList — populated", () => {
 		});
 		const out = renderStatusList([run], { theme: deriveGraphTheme({}), now, width: 120 });
 		const plain = stripAnsi(out);
-		assert.match(plain, /⊘ killed/);
+		assert.match(plain, /◼ killed/);
 		assert.match(plain, /failed at partition/);
 	});
 
