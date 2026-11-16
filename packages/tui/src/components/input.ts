@@ -59,6 +59,11 @@ export class Input implements Component, Focusable {
 		this.placeholderStyle = options.placeholderStyle ?? ((text) => text);
 	}
 
+	/** The cursor's position in the value, in UTF-16 code units. */
+	getCursor(): number {
+		return this.cursor;
+	}
+
 	getValue(): string {
 		return this.value;
 	}

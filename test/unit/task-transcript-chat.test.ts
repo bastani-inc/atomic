@@ -101,7 +101,7 @@ async function openTranscript(transcript: TaskTranscriptSource, options: OpenTra
 	);
 	await fixture.start("Inspect the shared stack");
 	fixture.runners[0].context.bindTranscript(transcript);
-	inspector.handleInput("\r");
+	inspector.handleInput(" ");
 	await flush();
 	inspector.handleInput("\r");
 	await flush();
@@ -306,10 +306,13 @@ test("Home, End, Up, Down and x are composer keys in a task transcript, and x st
 		host.inspector.handleInput("\x1b[D");
 		assert.match(host.text(), /^Transcript/, "Left edits a draft rather than leaving");
 		host.inspector.handleInput("\x1b");
-		assert.match(host.text(), /Inspect transcript/, "Escape leaves the transcript, draft or not");
+		assert.match(host.text(), /^Transcript/, "Escape never leaves a task's chat (#5224)");
+		host.inspector.handleInput("\x1b[F");
+		host.inspector.handleInput("\x15");
+		host.inspector.handleInput("\x1b[D");
+		assert.match(host.text(), /Inspect transcript/, "Left on an empty prompt goes back one level");
 		host.inspector.handleInput("x");
-		assert.match(host.text(), /confirm/, "x still stops from the detail page");
-		host.inspector.handleInput("n");
+		assert.match(host.text(), /again within 3s to stop/, "x still stops from the detail page");
 	} finally {
 		await host.dispose();
 	}
@@ -539,7 +542,7 @@ test("a message that fails after the reader left its transcript is shown on the 
 		await host.type("late note");
 		host.inspector.handleInput("\r");
 		await flush();
-		host.inspector.handleInput("\x1b");
+		host.inspector.handleInput("\x1b[D");
 		assert.match(host.text(), /Inspect transcript/, "the reader left for the task's detail page");
 		answer.reject(new TaskMessageError("delivery-refused", { taskId: "task" as TaskId, target: "worker-1" }));
 		await flush();
@@ -550,7 +553,9 @@ test("a message that fails after the reader left its transcript is shown on the 
 		const reopened = host.text();
 		assert.match(reopened, /late note/, "the text is back in the transcript's prompt");
 		assert.match(reopened, /Intercom did not deliver the message/);
-		host.inspector.handleInput("\x1b");
+		host.inspector.handleInput("\x1b[F");
+		host.inspector.handleInput("\x15");
+		host.inspector.handleInput("\x1b[D");
 		host.inspector.handleInput("\r");
 		await flush();
 		assert.doesNotMatch(host.text(), /late note/, "it comes back once");
@@ -597,6 +602,47 @@ test("a transcript whose source cannot message tasks is read-only (#4521)", asyn
 		await flush();
 		assert.doesNotMatch(host.text(), /Enter messages the agent/, "the footer only offers what works");
 		assert.match(host.text(), /This task cannot receive messages: .* \(messages-unsupported\)/);
+	} finally {
+		await host.dispose();
+	}
+});
+
+test("Esc interrupts a running subagent's turn from its chat and never leaves; ← on an empty prompt returns (#5224)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "fix the picker", timestamp: 0 });
+	let running = true;
+	let interrupts = 0;
+	const transcript: TaskTranscriptSource = Object.assign(session, {
+		subscribe: () => () => {},
+		isRunning: () => running,
+		async interruptTurn() {
+			interrupts++;
+			running = false;
+		},
+	});
+	const host = await openTranscript(transcript);
+	try {
+		assert.match(host.text(), /← task · esc interrupt · pgup\/pgdn scroll · ctrl\+o expand · \? keys/);
+		host.inspector.handleInput("\x1b");
+		await flush();
+		assert.equal(interrupts, 1, "Esc interrupted the subagent's current turn");
+		assert.match(host.text(), /^Transcript/, "Esc never leaves the chat");
+		assert.equal(host.fixture.runners[0].context.signal.aborted, false, "the subagent keeps running");
+		assert.doesNotMatch(host.text(), /esc interrupt/, "an idle subagent has no turn to interrupt");
+		host.inspector.handleInput("\x1b");
+		assert.equal(interrupts, 1, "Esc on an idle subagent does nothing");
+		await host.type("?");
+		assert.match(host.text(), /keys · task chat/, "? on an empty prompt lists the chat's keys");
+		host.inspector.handleInput("\x1b");
+		assert.match(host.text(), /^Transcript/);
+		await host.type("draft?");
+		assert.match(host.text(), /draft\?/, "? after text is typed");
+		host.inspector.handleInput("\x1b[D");
+		assert.match(host.text(), /^Transcript/, "← with a draft edits it");
+		host.inspector.handleInput("\x1b[F");
+		host.inspector.handleInput("\x15");
+		host.inspector.handleInput("\x1b[D");
+		assert.match(host.text(), /Inspect transcript/, "← on an empty prompt goes back one level");
 	} finally {
 		await host.dispose();
 	}

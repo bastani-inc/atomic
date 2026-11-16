@@ -82,3 +82,5 @@ Lead with the outcome. Keep the facts, decisions, caveats, and next steps; drop 
 ## Stop rule
 
 Stop when in-scope internal doors are simpler and honest, public doors remain unchanged, behavior evidence is complete, and every unsafe or ambiguous finding is deferred or clarified.
+
+A long conversation is never a reason to stop or to hand work to a fresh run; Atomic compacts context automatically.

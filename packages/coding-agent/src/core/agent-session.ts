@@ -27,6 +27,7 @@ import { agentSessionExtensionBindingsMethods } from "./agent-session-extension-
 import { agentSessionMessageQueueMethods } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface, AgentSessionPublicSurface } from "./agent-session-methods.ts";
 import { agentSessionModelsMethods } from "./agent-session-models.ts";
+import { agentSessionPersistenceFailureMethods } from "./agent-session-persistence-failures.ts";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import { agentSessionPostToolCompactionMethods } from "./agent-session-post-tool-compaction.ts";
 import { agentSessionPromptMethods } from "./agent-session-prompt.ts";
@@ -187,6 +188,8 @@ class AgentSessionBase {
 	protected _terminatingToolCallIds = new Set<string>();
 	/** A positive stop callback keeps queued work pending until an explicit new run. */
 	protected _stopAfterTurnBlockedContinuation = false;
+	protected _turnInterruptedByUser = false;
+	protected _awaitingMessageAfterInterrupt = false;
 	protected _disposed = false;
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
 	/** Settles after the currently active branch-summary navigation finishes cleanup. */
@@ -544,4 +547,5 @@ Object.assign(
 	agentSessionExportMethods,
 	agentSessionSummaryMethods,
 	agentSessionTaskMethods,
+	agentSessionPersistenceFailureMethods,
 );

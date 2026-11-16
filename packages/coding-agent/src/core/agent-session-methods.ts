@@ -16,6 +16,7 @@ import type {
 	ForegroundBackgroundCompaction,
 } from "./agent-session-background-compaction.ts";
 import type { DetachedToolCall, DetachedToolResult, ToolDetachmentPolicy } from "./agent-session-detached-tools.ts";
+import type { PersistenceFailure } from "./agent-session-persistence-failures.ts";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import type { RecordedToolLoadout } from "./agent-session-state.ts";
 import type {
@@ -307,6 +308,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	getSteeringMessages(): readonly string[];
 	getFollowUpMessages(): readonly string[];
 	abort(options?: SessionAbortOptions): Promise<void>;
+	/** Ends the current turn without closing the session to further messages, as Esc does in a subagent's chat. */
+	interruptTurn(): Promise<void>;
 	setSteeringMode(mode: "all" | "one-at-a-time"): void;
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void;
 
@@ -474,6 +477,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	closeWorkflowStageGeneration(): Promise<void>;
 	transferWorkflowStageDeliveriesTo(target: object): void;
 	hasExtensionHandlers(eventType: string): boolean;
+	getPersistenceFailure(): PersistenceFailure | undefined;
 }
 
 export interface AgentSessionPublicSurface
@@ -534,6 +538,7 @@ export interface AgentSessionPublicSurface
 		| "getSteeringMessages"
 		| "getFollowUpMessages"
 		| "abort"
+		| "interruptTurn"
 		| "setModel"
 		| "cycleModel"
 		| "setThinkingLevel"
@@ -578,6 +583,7 @@ export interface AgentSessionPublicSurface
 		| "getLastAssistantText"
 		| "createReplacedSessionContext"
 		| "hasExtensionHandlers"
+		| "getPersistenceFailure"
 	> {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
@@ -611,6 +617,10 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_backgroundCompaction: BackgroundCompactionRuntime;
 	_terminatingToolCallIds: Set<string>;
 	_stopAfterTurnBlockedContinuation: boolean;
+	/** The current turn was ended by {@link interruptTurn}: a child's message admission stays open after it. */
+	_turnInterruptedByUser: boolean;
+	/** A child whose turn the user interrupted waits here: the next message it receives starts its next turn. */
+	_awaitingMessageAfterInterrupt: boolean;
 	_pendingInterruptDeliveries: number;
 	_priorityInterruptPending: boolean;
 	_activePromptCount: number;

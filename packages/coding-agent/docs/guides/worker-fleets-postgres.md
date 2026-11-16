@@ -8,14 +8,14 @@ description: "Run worker hosts and the fleet controller on Amazon RDS or Aurora,
 
 A [worker fleet](/guides/worker-hosts) keeps its work queue, leases, admission and fleet controller in one shared database. This guide puts that database on a managed PostgreSQL service and connects every machine to it: the machines that start roots, the worker hosts, and the fleet controller. For the database options themselves, see [PostgreSQL](/storage#postgresql).
 
-In this release a fleet's pool writes on PostgreSQL take turns, one at a time across every machine that shares the database, whatever its prefix, as they do on libSQL. Hosts that wait for work poll the database.
+On PostgreSQL, worker hosts claim children, send heartbeats, record checkpoints and complete children in parallel: each of these writes locks only the rows it changes. Hosts that wait for work are woken through `LISTEN`/`NOTIFY` as soon as a child is queued, and still check the database on their own as a fallback. See [What works on PostgreSQL](/storage#what-works-on-postgresql) and [Wake-ups](/storage#wake-ups).
 
 ## What you need
 
 - **Atomic 0.9.88 or later on every machine** that opens the database. Upgrading an existing fleet? Read [Upgrade a fleet](/guides/worker-hosts#upgrade-a-fleet) first.
 - **PostgreSQL 16 or later.**
 - **The adapter on every machine**, installed as the user that runs Atomic: `atomic install npm:@bastani/atomic-storage-postgres`. It is published on npm from Atomic 0.9.88. Container images and cloud-init install it in the same way.
-- **A role and a database it owns.** Atomic creates its tables the first time it uses the database. The role needs `CONNECT` on the database and `USAGE, CREATE` on the schema; owning the database gives it both.
+- **An owner role and a runtime role**, as [Set up the database](/storage#set-up-the-database) describes: the owner role owns the database and runs `atomic storage migrate`, which creates Atomic's tables in the `atomic` schema; hosts, roots and the controller connect with the runtime role, which only reads and writes rows. One role that owns the database works too: Atomic then sets up the schema the first time it opens it.
 - **One credential per machine:** a password file, a token file that another process keeps fresh, or the machine's cloud identity. See [Choose a credential](#choose-a-credential).
 
 ## Connect every machine
@@ -25,20 +25,26 @@ Each kind of machine connects in its own way. All of them name the same URL and,
 ```bash
 # Machines that start roots: select the database for sessions, workflow runs and Intercom
 atomic install npm:@bastani/atomic-storage-postgres
-atomic storage join 'postgresql://atomic@db.example.com:5432/atomic' --password-file ~/atomic-db-password
+atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
 atomic intercom restart
 
 # Worker hosts: serve the pool, for this process only
-atomic worker start --db 'postgresql://atomic@db.example.com:5432/atomic' --password-file /etc/atomic/db-password
+atomic worker start --db 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file /etc/atomic/db-password
 
 # The fleet controller, and the scaling signal for KEDA or Prometheus
-atomic worker controller --provisioner ./fleet.json --db 'postgresql://atomic@db.example.com:5432/atomic' \
+atomic worker controller --provisioner ./fleet.json --db 'postgresql://atomic_runtime@db.example.com:5432/atomic' \
   --password-file /etc/atomic/db-password --max-hosts 20 --workers-per-host 4
-atomic worker metrics --listen 0.0.0.0:9464 --db 'postgresql://atomic@db.example.com:5432/atomic' \
+atomic worker metrics --listen 0.0.0.0:9464 --db 'postgresql://atomic_runtime@db.example.com:5432/atomic' \
   --password-file /etc/atomic/db-password --max-hosts 20 --workers-per-host 4
 ```
 
 Roots also need `"workflows": { "workers": { "placement": "shared" } }` in their settings, as [Start roots with shared placement](/guides/worker-hosts#start-roots-with-shared-placement) explains. `atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL.
+
+Before the first host starts, and after each Atomic upgrade, run `atomic storage migrate` once as the owner role, from any machine with the adapter:
+
+```bash
+atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomic' --password-file ~/atomic-owner-password
+```
 
 Put the user name in the URL and never the password: a URL with a password, or with a `password=` parameter, is refused. Quote the URL in a shell, because a query string such as `?sslmode=verify-ca&sslrootcert=…` holds a `&`.
 
@@ -97,19 +103,12 @@ What to check:
 
 A `prefix` keeps several teams or projects apart in one database: pass the same `--prefix` to `atomic storage join` and every `atomic worker` command. On PostgreSQL a prefix can be at most 24 characters, because PostgreSQL shortens table and index names longer than 63 bytes. A longer prefix is refused with `StoragePrefixError` reason `"too-long"` before Atomic creates anything. A prefix holds ASCII letters, digits and underscores and starts with a letter or underscore.
 
-Hosts serve only the roots of their own prefix, and each prefix has its own fleet: its own controller, metrics and hosts. Pool writes take turns across every prefix in the database, so give a large fleet its own database rather than a prefix.
+Hosts serve only the roots of their own prefix, and each prefix has its own fleet: its own controller, metrics and hosts. A prefix that has uppercase letters is refused (`"uppercase"`), because PostgreSQL folds names to lowercase. Queueing work and admission take turns across every prefix in the database, so give a large fleet its own database rather than a prefix.
 
 ## Amazon RDS and Aurora PostgreSQL
 
 1. Create an RDS for PostgreSQL instance or an Aurora PostgreSQL cluster, version 16 or later, in the hosts' VPC. Allow port 5432 from the hosts' security group.
-2. Create the database and a role, connected as the master user:
-
-   ```sql
-   CREATE ROLE atomic LOGIN PASSWORD '<password>';
-   CREATE DATABASE atomic OWNER atomic;
-   ```
-
-   On PostgreSQL 15 and later, a role that does not own the database also needs `GRANT CREATE ON SCHEMA public TO atomic`.
+2. Create the owner and runtime roles and the database, connected as the master user, and grant the runtime role, as in [Set up the database](/storage#set-up-the-database). The master user is no superuser: run `GRANT atomic_owner TO <master user>;` before `CREATE DATABASE atomic OWNER atomic_owner;`.
 3. Download your region's certificate bundle to every machine, for example to `/etc/atomic/rds-ca.pem`:
 
    ```bash
@@ -120,7 +119,7 @@ Hosts serve only the roots of their own prefix, and each prefix has its own flee
 
    ```bash
    atomic worker start \
-     --db 'postgresql://atomic@atomic.abc123.us-east-1.rds.amazonaws.com:5432/atomic?sslrootcert=/etc/atomic/rds-ca.pem' \
+     --db 'postgresql://atomic_runtime@atomic.abc123.us-east-1.rds.amazonaws.com:5432/atomic?sslrootcert=/etc/atomic/rds-ca.pem' \
      --password-file /etc/atomic/db-password
    ```
 
@@ -132,8 +131,9 @@ Read the password from Secrets Manager at boot with the instance profile, as the
 CREATE USER atomic_hosts;
 GRANT rds_iam TO atomic_hosts;
 GRANT CONNECT ON DATABASE atomic TO atomic_hosts;
-GRANT USAGE, CREATE ON SCHEMA public TO atomic_hosts;
 ```
+
+Then, as `atomic_owner` after `atomic storage migrate`, give `atomic_hosts` the runtime role's grants from [Set up the database](/storage#set-up-the-database) (`GRANT USAGE ON SCHEMA atomic TO atomic_hosts;` and the rest).
 
 Allow the hosts' role, and the controller's, only `rds-db:connect` on `arn:aws:rds-db:<region>:<account-id>:dbuser:<DbiResourceId or cluster resource id>/atomic_hosts`, install the SDK, and connect with `--auth aws`:
 
@@ -142,7 +142,7 @@ atomic install npm:@aws-sdk/rds-signer
 atomic worker start --db 'postgresql://atomic_hosts@atomic.abc123.us-east-1.rds.amazonaws.com:5432/atomic?sslrootcert=/etc/atomic/rds-ca.pem' --auth aws
 ```
 
-The token is signed for the URL's host and port, so name the endpoint you connect to. The region comes from an RDS host name, or otherwise from `AWS_REGION` or the AWS profile. Once the first machine has created the tables, `CREATE` on the schema is no longer needed.
+The token is signed for the URL's host and port, so name the endpoint you connect to. The region comes from an RDS host name, or otherwise from `AWS_REGION` or the AWS profile. The hosts never need `CREATE`: `atomic storage migrate`, as the owner role, creates and upgrades the tables.
 
 ## Google Cloud SQL for PostgreSQL
 
@@ -154,7 +154,7 @@ The token is signed for the URL's host and port, so name the endpoint you connec
    gcloud sql databases create atomic --instance=atomic-pool
    ```
 
-   A user created this way belongs to `cloudsqlsuperuser`, which owns the databases `gcloud` creates, so it can create Atomic's tables.
+   A user created this way belongs to `cloudsqlsuperuser`, which owns the databases `gcloud` creates, so it can be the owner role: run `atomic storage migrate` as it. Create a runtime role with the grants in [Set up the database](/storage#set-up-the-database) for the hosts.
 3. Save the instance's server CA certificate on every machine:
 
    ```bash
@@ -165,7 +165,7 @@ The token is signed for the URL's host and port, so name the endpoint you connec
 
    ```bash
    atomic worker start \
-     --db 'postgresql://atomic@10.20.0.3:5432/atomic?sslmode=verify-ca&sslrootcert=/etc/atomic/cloudsql-ca.pem' \
+     --db 'postgresql://atomic_runtime@10.20.0.3:5432/atomic?sslmode=verify-ca&sslrootcert=/etc/atomic/cloudsql-ca.pem' \
      --password-file /etc/atomic/db-password
    ```
 
@@ -177,7 +177,7 @@ gcloud projects add-iam-policy-binding my-project \
   --member=serviceAccount:atomic-workers@my-project.iam.gserviceaccount.com --role=roles/cloudsql.instanceUser
 ```
 
-As the `atomic` user, grant the IAM user `CONNECT` on the database and, connected to `atomic`, `USAGE, CREATE` on the `public` schema. Its name is the service account's email without `.gserviceaccount.com`; in the URL, write its `@` as `%40`:
+As the `atomic` user, grant the IAM user `CONNECT` on the database and, connected to `atomic` after `atomic storage migrate`, the runtime role's grants from [Set up the database](/storage#set-up-the-database). Its name is the service account's email without `.gserviceaccount.com`; in the URL, write its `@` as `%40`:
 
 ```bash
 atomic install npm:google-auth-library
@@ -191,17 +191,12 @@ A Compute Engine VM needs the `cloud-platform` access scope; GKE pods use Worklo
 ## Azure Database for PostgreSQL
 
 1. Create a flexible server, PostgreSQL 16 or later, with private access in the hosts' virtual network, or public access limited to their addresses.
-2. Create the database and a role as the administrator:
-
-   ```sql
-   CREATE ROLE atomic LOGIN PASSWORD '<password>';
-   CREATE DATABASE atomic OWNER atomic;
-   ```
+2. As the server's administrator, a member of `azure_pg_admin`, create the owner and runtime roles and the database, then run `atomic storage migrate` as the owner role and grant the runtime role, as in [Set up the database](/storage#set-up-the-database). The administrator is no superuser: run `GRANT atomic_owner TO <administrator>;` before `CREATE DATABASE atomic OWNER atomic_owner;`. Azure's `public` schema belongs to `azure_pg_admin`, which is why Atomic keeps its tables in its own `atomic` schema, which the owner role creates.
 
 3. Connect. Azure's certificates chain to roots that Node.js trusts, so no CA file is needed:
 
    ```bash
-   atomic worker start --db 'postgresql://atomic@atomic-pool.postgres.database.azure.com:5432/atomic' \
+   atomic worker start --db 'postgresql://atomic_runtime@atomic-pool.postgres.database.azure.com:5432/atomic' \
      --password-file /etc/atomic/db-password
    ```
 
@@ -214,7 +209,7 @@ SELECT * FROM pgaadauth_create_principal('atomic-workers', false, false);
 GRANT CONNECT ON DATABASE atomic TO "atomic-workers";
 ```
 
-Connected to `atomic`, run `GRANT USAGE, CREATE ON SCHEMA public TO "atomic-workers"`. The identity needs no Azure RBAC role for the database. Then:
+Connected to `atomic` as the owner role, after `atomic storage migrate`, give `"atomic-workers"` the runtime role's grants from [Set up the database](/storage#set-up-the-database), such as `GRANT USAGE ON SCHEMA atomic TO "atomic-workers";`. The identity needs no Azure RBAC role for the database. Then:
 
 ```bash
 atomic install npm:@azure/identity
@@ -222,6 +217,8 @@ atomic worker start --db 'postgresql://atomic-workers@atomic-pool.postgres.datab
 ```
 
 `AZURE_CLIENT_ID` selects a user-assigned identity on a VM; AKS pods use workload identity. To pool, enable the server's built-in PgBouncer and connect to port 6432.
+
+Set the server parameter `idle_in_transaction_session_timeout` (for example to `60000`, one minute) on a managed server. A host that vanishes in the middle of a transaction otherwise holds its locks until the server notices the dead connection, which can take minutes on Azure. Atomic's own schema changes give up on such a lock after a second and try again, so they never queue the fleet's writes behind it, but the stale transaction still holds the rows it locked.
 
 ## Neon
 
@@ -290,9 +287,10 @@ The package's `examples/worker-fleet` directory has the files the [worker hosts 
 - **`too many connections`** (`53300`), or `remaining connection slots are reserved`: the fleet has outgrown `max_connections`. Use a [pooler](#connection-poolers), raise `max_connections` (on managed services, a larger instance), or run fewer slots per host.
 - **`password authentication failed`** (`28P01`) with `--auth`: the token was refused. Check that the role exists with the identity's exact name, that RDS has `rds_iam` granted and IAM authentication enabled, or that Cloud SQL's `cloudsql.iam_authentication` flag is on. An RDS token is signed for one host and port, so connect to the host it names.
 - **`auth-unavailable`**: the cloud's SDK is not installed for the user that runs Atomic, or the machine has no identity. Install the package the message names.
-- **`permission denied for schema public`** (`42501`) on the first start: the role cannot create tables. Grant `USAGE, CREATE ON SCHEMA public`, or make the role the database's owner.
+- **`missing-privilege`** (`42501`): the message names the privilege. A runtime role missing `USAGE` on the schema or DML on a table needs the grants in [Set up the database](/storage#set-up-the-database); "must be owner of" or a refused `CREATE` means the schema is behind this version of Atomic: run `atomic storage migrate` as the owner role.
+- **`28000`, "The access token has invalid format"** (Azure): the password is not a valid Entra token, such as a token for another resource or an empty token file. Use `--auth azure`, or a token for `https://ossrdbms-aad.database.windows.net`.
 - **`Invalid storage prefix: too-long`** (`StoragePrefixError`): shorten the prefix to 24 characters or fewer.
-- **`StorageSchemaVersionError`** on an older machine: a machine of this release has upgraded the database. Upgrade that machine to 0.9.88 or later; see [Upgrade a fleet](/guides/worker-hosts#upgrade-a-fleet).
+- **`StorageSchemaVersionError`** on an older machine: a machine of this release has upgraded the database, or `atomic storage migrate` moved its tables from `public` to the `atomic` schema. Upgrade that machine to 0.9.88 or later; see [Upgrade a fleet](/guides/worker-hosts#upgrade-a-fleet).
 - **Hosts register but never claim**: they serve another prefix or database than the roots, or lack the roots' worker definitions. Compare `atomic worker status` with the roots' `atomic storage status`.
 
 See [Troubleshooting PostgreSQL](/storage#troubleshooting-postgresql) for the other errors.

@@ -79,6 +79,7 @@ for (const outcome of ["completed", "failed", "interrupted", "cancelled"] as con
 					release.resolve();
 				},
 				getLastAssistantText: () => "result",
+				getPersistenceFailure: () => undefined,
 				getSteeringMessages: () => [],
 				getFollowUpMessages: () => [],
 				dispose: () => {

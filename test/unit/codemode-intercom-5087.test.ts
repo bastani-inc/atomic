@@ -275,9 +275,12 @@ test("codemode describes the intercom script subset instead of a model-only hint
 test("a direct intercom call still sends to a glob (#5087)", async () => {
 	const { harness, sent } = await intercomHarness();
 	harness.setResponses([
-		fauxAssistantMessage([fauxToolCall("intercom", { action: "send", to: "worker-*", message: "status?" })], {
-			stopReason: "toolUse",
-		}),
+		fauxAssistantMessage(
+			[fauxToolCall("intercom", { action: "send", to: "worker-*", message: "status?", broadcast: true })],
+			{
+				stopReason: "toolUse",
+			},
+		),
 		fauxAssistantMessage("done"),
 	]);
 	await harness.session.prompt("ask the workers");

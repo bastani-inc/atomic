@@ -52,9 +52,9 @@ describe("StageChatView", () => {
 		assert.match(visible, /Nebula/);
 		const visibleLines = visible.split("\n");
 		const responseLineIndex = visibleLines.findIndex((line) => line.includes("Nebula"));
-		const footerLineIndex = visibleLines.findIndex((line) => line.includes("esc to close"));
+		const footerLineIndex = visibleLines.findIndex((line) => line.includes("ctrl+c to close"));
 		assert.equal(footerLineIndex, visibleLines.length - 1);
-		assert.match(visibleLines[footerLineIndex] ?? "", /esc to close\s+ctrl\+x return to graph$/);
+		assert.match(visibleLines[footerLineIndex] ?? "", /ctrl\+c to close\s+← return to graph$/);
 		assert.ok(footerLineIndex > responseLineIndex);
 		assert.doesNotMatch(visible, /READ-ONLY SESSION/);
 		assert.equal(JSON.stringify(store.snapshot()).includes("Nebula"), false);

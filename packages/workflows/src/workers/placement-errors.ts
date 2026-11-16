@@ -10,6 +10,7 @@ import {
 	isPostgresUrl,
 	LIBSQL_ADAPTER_PACKAGE,
 	POSTGRES_ADAPTER_PACKAGE,
+	POSTGRES_STORAGE_JOIN_HINT,
 	SHARED_STORAGE_JOIN_HINT,
 } from "@bastani/atomic/storage";
 import type { PooledStageInputKind } from "./stage-input-kind.js";
@@ -224,13 +225,19 @@ export function gitInstallCommand(platform: NodeJS.Platform = process.platform):
 	return "sudo apt-get install -y git";
 }
 
+/**
+ * How to give a node a shared journal: the join command of each backend, PostgreSQL's first because `atomic team join`
+ * refuses it (#5218), or `--db`, or an adapter selection.
+ */
+export const SHARED_JOURNAL_HINT = `Join this node to the shared database with \`${POSTGRES_STORAGE_JOIN_HINT}\` for PostgreSQL or \`${SHARED_STORAGE_JOIN_HINT}\` for libSQL / Turso, or pass the database to \`atomic worker\` with --db; an SDK caller selects the journal through a storage adapter every host opens, such as { adapter: "@bastani/atomic-storage-postgres", options: { url } } or { adapter: "@bastani/atomic-storage-libsql", options: { url } }.`;
+
 /** The shared pool problems a setup check finds, one per missing piece. */
 export const sharedPoolProblems = {
 	sharedJournalRequired(selection: string, location: string | undefined): SharedPoolSetupProblem {
 		return {
 			code: "shared-journal-required",
 			subject: `a shared journal (this node's journal is ${selection}${location === undefined ? "" : ` at ${location}`}, which other hosts cannot open)`,
-			hint: `Join this node to the shared storage with \`${SHARED_STORAGE_JOIN_HINT}\`, or select the journal through a storage adapter every host opens, such as { adapter: "@bastani/atomic-storage-libsql", options: { url } }.`,
+			hint: SHARED_JOURNAL_HINT,
 			fields: { selection, ...(location === undefined ? {} : { location }) },
 		};
 	},

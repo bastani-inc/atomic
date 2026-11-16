@@ -111,6 +111,15 @@ export function closeSessionNames(
 		.map(({ name }) => name);
 }
 
+/**
+ * Why a name glob that matches several sessions sent nothing (#5202): the sender must pick one, or pass `broadcast: true`
+ * to reach every match.
+ */
+export function multipleMatchesRefusal(pattern: string, recipients: readonly { readonly label: string }[]): string {
+	const names = recipients.map((recipient) => `- ${recipient.label}`).join("\n");
+	return `"${pattern}" matches ${recipients.length} sessions, and a name glob reaches more than one only with \`broadcast: true\`. Nothing was sent. Send to one of them by its exact name, or repeat the send with \`broadcast: true\` to reach all of them:\n${names}`;
+}
+
 /** The children Subagents reports for this session; none when no Subagents extension answers. */
 export async function listIntercomChildren(
 	events: { emit(eventName: string, payload: unknown): void } | undefined,

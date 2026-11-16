@@ -112,6 +112,8 @@ export interface TestSessionOptions {
 	readonly promptGate?: Promise<void>;
 	/** Match AgentSession.abort() settling an active prompt without throwing. */
 	readonly abortResolvesPrompt?: boolean;
+	/** An abort that settles a prompt ends only that turn: the session takes another prompt, as after Esc. */
+	readonly abortEndsTurnOnly?: boolean;
 	/** Emit a fallback event for tests that exercise live model metadata. */
 	readonly fallbackModel?: string;
 	/** Emit the effective thinking level applied to the fallback candidate. */
@@ -569,6 +571,32 @@ export function inProcessChildResourceLoaderOptions(input: {
 	};
 }
 
+/**
+ * Resolves once `session` has started another turn and become idle again, as a message delivered to an interrupted
+ * child starts one, or once any of `stops` aborts. A child that is never messaged again waits here until it is stopped.
+ */
+export function nextTurnSettled(
+	session: Pick<AgentSession, "subscribe" | "isStreaming">,
+	stops: readonly AbortSignal[],
+): Promise<void> {
+	return new Promise<void>((resolve) => {
+		let started = session.isStreaming;
+		let unsubscribe = () => {};
+		const finish = () => {
+			unsubscribe();
+			for (const stop of stops) stop.removeEventListener("abort", finish);
+			resolve();
+		};
+		if (stops.some((stop) => stop.aborted)) return resolve();
+		for (const stop of stops) stop.addEventListener("abort", finish, { once: true });
+		unsubscribe = session.subscribe((event) => {
+			if (event.type === "agent_start") started = true;
+			else if (event.type === "agent_end" && started)
+				queueMicrotask(() => (session.isStreaming ? undefined : finish()));
+		});
+	});
+}
+
 function createTestSession(sessionManager: SessionManager, spec: ChildSpec): AgentSession {
 	const listeners = new Set<AgentSessionEventListener>();
 	const testOptions = typeof spec.testSession === "object" ? spec.testSession : {};
@@ -583,6 +611,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 	})();
 	let lastAssistantText = "";
 	let aborted = false;
+	let streaming = false;
 	let settlePromptAbort: (() => void) | undefined;
 	const messages: Array<{
 		role: string;
@@ -624,7 +653,14 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		model: sessionModel,
 		thinkingLevel: testOptions.sessionThinkingLevel,
 		messages,
+		get isStreaming() {
+			return streaming;
+		},
 		abort: async () => {
+			aborted = true;
+			settlePromptAbort?.();
+		},
+		interruptTurn: async () => {
 			aborted = true;
 			settlePromptAbort?.();
 		},
@@ -659,43 +695,58 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			};
 			for (const listener of listeners) listener({ type: "agent_start" } as AgentSessionEvent);
 			if (aborted) throw new Error("aborted");
-			if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
-			await sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
-			userMessages += 1;
-			if (testOptions.seededAssistantText) {
-				lastAssistantText = testOptions.seededAssistantText;
-				await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
-			}
-			if (testOptions.fallbackBeforeGate) emitFallback();
-			for (const event of testOptions.beforeGateEvents ?? []) for (const listener of listeners) listener(event);
-			if (testOptions.promptGate) {
-				const gateResult = await Promise.race([
-					testOptions.promptGate.then(() => "released" as const),
-					new Promise<"aborted">((resolve, reject) => {
-						settlePromptAbort = () => {
-							if (testOptions.abortResolvesPrompt) resolve("aborted");
-							else reject(new DOMException("aborted", "AbortError"));
-						};
-						if (aborted) settlePromptAbort();
-					}),
-				]);
-				if (gateResult === "aborted") {
-					if (testOptions.thinkingOnlyOnAbort) {
-						lastAssistantText = "";
-						await appendAssistant([{ type: "thinking", thinking: "aborted mid-thought" }], "aborted");
-					}
-					for (const event of testOptions.events ?? []) for (const listener of listeners) listener(event);
-					return "";
+			streaming = true;
+			try {
+				if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
+				await sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+				userMessages += 1;
+				if (testOptions.seededAssistantText) {
+					lastAssistantText = testOptions.seededAssistantText;
+					await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
 				}
+				if (testOptions.fallbackBeforeGate) emitFallback();
+				for (const event of testOptions.beforeGateEvents ?? []) for (const listener of listeners) listener(event);
+				if (testOptions.promptGate) {
+					const gateResult = await Promise.race([
+						testOptions.promptGate.then(() => "released" as const),
+						new Promise<"aborted">((resolve, reject) => {
+							settlePromptAbort = () => {
+								if (testOptions.abortResolvesPrompt) resolve("aborted");
+								else reject(new DOMException("aborted", "AbortError"));
+							};
+							if (aborted) settlePromptAbort();
+						}),
+					]);
+					if (gateResult === "aborted") {
+						if (testOptions.thinkingOnlyOnAbort) {
+							lastAssistantText = "";
+							await appendAssistant([{ type: "thinking", thinking: "aborted mid-thought" }], "aborted");
+						}
+						for (const event of testOptions.events ?? []) for (const listener of listeners) listener(event);
+						if (testOptions.abortEndsTurnOnly) {
+							aborted = false;
+							settlePromptAbort = undefined;
+							await appendAssistant([], "aborted");
+						}
+						return "";
+					}
+				}
+				for (const event of testOptions.events ?? []) {
+					for (const listener of listeners) listener(event);
+				}
+				if (!testOptions.fallbackBeforeGate) emitFallback();
+				lastAssistantText = testOptions.output ?? "done";
+				await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
+				const next = steering.shift() ?? followUps.shift();
+				if (next === undefined) return lastAssistantText;
+				streaming = false;
+				return await session.prompt(next);
+			} finally {
+				streaming = false;
+				// A turn that can be interrupted alone ends as a real session's does, so a waiting viewer sees it end.
+				if (testOptions.abortEndsTurnOnly)
+					for (const listener of listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
 			}
-			for (const event of testOptions.events ?? []) {
-				for (const listener of listeners) listener(event);
-			}
-			if (!testOptions.fallbackBeforeGate) emitFallback();
-			lastAssistantText = testOptions.output ?? "done";
-			await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
-			const next = steering.shift() ?? followUps.shift();
-			return next === undefined ? lastAssistantText : session.prompt(next);
 		},
 		steer: async (text: string) => {
 			steering.push(text);
@@ -734,6 +785,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		// A scripted session runs no tools, so none of its calls ever detaches.
 		setToolDetachment: () => {},
 		takeDetachedToolCalls: () => [],
+		getPersistenceFailure: () => undefined,
 		dispose: testOptions.dispose ?? (() => {}),
 	} as unknown as AgentSession;
 	testOptions.onSession?.({
@@ -742,6 +794,9 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		},
 		followUp: async (text) => {
 			await session.followUp(text);
+		},
+		prompt: async (text) => {
+			await session.prompt(text);
 		},
 	});
 	return session;
@@ -814,6 +869,28 @@ async function readSessionFileEntries(file: string, sessionId: string): Promise<
 	return entries;
 }
 
+/** The entry a task view shows for a final answer its child's session could not save (#5210). */
+function unsavedAnswerEntry(manager: SessionManager, answer: AssistantMessage): SessionEntry {
+	return {
+		type: "message",
+		id: `unsaved-${randomUUID()}`,
+		parentId: manager.getLeafId(),
+		timestamp: new Date(answer.timestamp).toISOString(),
+		message: answer,
+	};
+}
+
+/**
+ * `entries` with the unsaved final answer after them, unless their last message already is that answer: the write
+ * that reported failing landed after all (#5210).
+ */
+function withUnsavedAnswer(entries: SessionEntry[], unsaved: SessionEntry | undefined): SessionEntry[] {
+	if (unsaved?.type !== "message") return entries;
+	const last = entries.findLast((entry) => entry.type === "message");
+	if (last?.type === "message" && JSON.stringify(last.message) === JSON.stringify(unsaved.message)) return entries;
+	return [...entries, unsaved];
+}
+
 /**
  * What a settled child keeps for task inspection: its session id, its own prompt and answer, and the commands it had
  * when it settled, with no reference back to the disposed session. The task owner holds the last bound source for as
@@ -824,16 +901,21 @@ function settledTranscript(
 	manager: SessionManager,
 	commands: TranscriptCommands | undefined,
 	inherited: number,
+	unsavedAnswer: AssistantMessage | undefined,
 ): TranscriptSource {
 	const sessionId = manager.getSessionId();
 	const sessionFile = manager.getSessionFile();
-	const kept = promptAndAnswer(manager, inherited);
+	// #5210: a final answer its session could not save is still shown, after what it saved, unless the session holds it.
+	const unsaved = unsavedAnswer === undefined ? undefined : unsavedAnswerEntry(manager, unsavedAnswer);
+	const kept = withUnsavedAnswer(promptAndAnswer(manager, inherited), unsaved);
 	// A child's own session file is read through a store opened for the read, so a finished child keeps no store of its
 	// own in memory; a session in a shared store, as a forked or resumed child's, is read from that store.
 	const store = sessionFile === undefined ? manager.getSessionStore() : undefined;
 	const read = async (): Promise<SessionEntry[]> => {
-		if (store) return [...(await store.load(sessionId)).entries];
-		return readSessionFileEntries(sessionFile!, sessionId);
+		const entries = store
+			? [...(await store.load(sessionId)).entries]
+			: await readSessionFileEntries(sessionFile!, sessionId);
+		return withUnsavedAnswer(entries, unsaved);
 	};
 	return {
 		getSessionId: () => sessionId,
@@ -951,6 +1033,41 @@ function messagesSinceLaunch(manager: SessionManager, launchLeafId: string | nul
 	const launchIndex = launchLeafId === null ? -1 : branch.findIndex((entry) => entry.id === launchLeafId);
 	if (launchLeafId !== null && launchIndex === -1) return [];
 	return branch.slice(launchIndex + 1).flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+}
+
+/**
+ * #5210: final answers children's sessions could not save, by child session id, held until the session is opened again
+ * to resume and saves them. Only a storage failure adds one, and each child holds at most its last.
+ */
+const unsavedAnswers = new Map<string, AssistantMessage>();
+
+/**
+ * Saves the final answer the session's last run could not, before the resumed child runs, so it continues after its
+ * answer, once. A session whose save did land after all already ends with it and gets no second copy.
+ */
+async function restoreUnsavedAnswer(manager: SessionManager): Promise<void> {
+	const sessionId = manager.getSessionId();
+	const answer = unsavedAnswers.get(sessionId);
+	if (answer === undefined) return;
+	const last = manager.getBranch().findLast((entry) => entry.type === "message");
+	if (last?.type !== "message" || JSON.stringify(last.message) !== JSON.stringify(answer))
+		await manager.appendMessage(answer);
+	unsavedAnswers.delete(sessionId);
+}
+
+/** The run's final answer among messages its session could not save: an assistant reply that ended its turn. */
+function finalAnswerOf(messages: readonly unknown[]): AssistantMessage | undefined {
+	const last = (messages as readonly TranscriptMessage[]).findLast((message) => message.role === "assistant") as
+		| AssistantMessage
+		| undefined;
+	return last?.stopReason === "stop" ? last : undefined;
+}
+
+/** Why a child whose session could not save its work failed, naming the storage error (#5210). */
+function unsavedWorkCause(error: string, keptAnswer: boolean): string {
+	return keptAnswer
+		? `The child's final answer could not be saved to its session (${error}). Its answer is kept in its result, but its session file does not hold it.`
+		: `The child's session could not save its work (${error}).`;
 }
 
 function outputFor(ownMessages: readonly TranscriptMessage[]): string {
@@ -1458,6 +1575,7 @@ export class SubagentControlRuntime {
 		// How many entries the child's session held when it opened: a forked child's inherited history, not its own.
 		let openedEntryCount = 0;
 		let releasedAttempt = false;
+		let unsavedAnswer: AssistantMessage | undefined;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
 		let statusesOpen = true;
 		let attemptedModels: string[] = candidateModelId ? [candidateModelId] : [];
@@ -1552,6 +1670,8 @@ export class SubagentControlRuntime {
 		const executionEnded = new AbortController();
 
 		let termination: TerminationCauseName | undefined;
+		// The user interrupted the child's turn from its chat: it waits for their next message instead of ending.
+		let turnInterruptedByUser = false;
 		// The task and resume follow-ups the session has not been given yet; a stop before then keeps them for resume.
 		const unsent: UnsentInput = { task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] };
 		let terminating: Promise<void> | undefined;
@@ -1721,6 +1841,8 @@ export class SubagentControlRuntime {
 				}
 			}
 			const sessionManager = await beforeStartDeadline(opening);
+			// #5210: a child resumed in this process continues after the final answer its last run could not save.
+			await beforeStartDeadline(restoreUnsavedAnswer(sessionManager));
 			transcriptManager = sessionManager;
 			openedEntryCount = sessionManager.getEntries().length;
 			taskHooks?.bindTranscript?.(sessionManager);
@@ -1807,6 +1929,11 @@ export class SubagentControlRuntime {
 				});
 			}
 			const transcriptSession = session;
+			const interruptTurn = async (): Promise<void> => {
+				if (!transcriptSession.isStreaming || termination !== undefined) return;
+				turnInterruptedByUser = true;
+				await transcriptSession.interruptTurn();
+			};
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
 			let observedStreamingMessage: AssistantMessage | undefined;
 			taskHooks?.bindTranscript?.({
@@ -1818,6 +1945,7 @@ export class SubagentControlRuntime {
 				chatSession: transcriptSession,
 				commands: () => sessionCommands(transcriptSession, sessionManager.getCwd()),
 				isRunning: () => transcriptSession.isStreaming,
+				interruptTurn,
 				getQueuedMessages: () => ({
 					steering: transcriptSession.getSteeringMessages(),
 					followUp: transcriptSession.getFollowUpMessages(),
@@ -2003,6 +2131,10 @@ export class SubagentControlRuntime {
 					}
 				}
 			}
+			while (turnInterruptedByUser && termination === undefined) {
+				turnInterruptedByUser = false;
+				await nextTurnSettled(session, [signals.abort, signals.interrupt]);
+			}
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;
@@ -2042,20 +2174,28 @@ export class SubagentControlRuntime {
 					...skillReport,
 				};
 			}
+			// #5210: what the session could not save it still holds in memory; the child's answer is among it.
+			const unsaved = termination === undefined ? session.getPersistenceFailure() : undefined;
+			unsavedAnswer = unsaved === undefined ? undefined : finalAnswerOf(unsaved.unsavedMessages);
+			if (unsavedAnswer !== undefined) unsavedAnswers.set(sessionManager.getSessionId(), unsavedAnswer);
 			const producedMessages = ownMessages();
-			const output = outputFor(producedMessages);
+			const output = outputFor(
+				unsavedAnswer === undefined ? producedMessages : [...producedMessages, unsavedAnswer],
+			);
 			// A child that settled without a stop failed when its last turn failed or it completed no successful turn of
 			// its own (#3987, #4188). A named model's failure says that no other model ran in its place.
 			const failure = termination === undefined ? failedChildCause(producedMessages) : undefined;
 			const noOutput =
-				failure?.modelError !== undefined && admitted.spec.namedModel !== undefined
-					? namedModelFailureCause(
-							admitted.spec.namedModel,
-							namedModelId(admitted.spec),
-							attemptedModels,
-							failure.modelError,
-						)
-					: failure?.cause;
+				unsaved !== undefined
+					? unsavedWorkCause(unsaved.error, unsavedAnswer !== undefined)
+					: failure?.modelError !== undefined && admitted.spec.namedModel !== undefined
+						? namedModelFailureCause(
+								admitted.spec.namedModel,
+								namedModelId(admitted.spec),
+								attemptedModels,
+								failure.modelError,
+							)
+						: failure?.cause;
 			const status = noOutput === undefined ? attemptStatus(termination) : "error";
 			this.native.publishChildStatus(admitted.identity.path, nativeStatus(status));
 			this.native.finishChildAttempt(token, nativeStatus(status));
@@ -2180,7 +2320,7 @@ export class SubagentControlRuntime {
 				taskHooks?.bindTranscript?.(
 					releasedAttempt
 						? releasedTranscript(transcriptManager.getSessionId(), keptCommands)
-						: settledTranscript(transcriptManager, keptCommands, openedEntryCount),
+						: settledTranscript(transcriptManager, keptCommands, openedEntryCount, unsavedAnswer),
 				);
 			};
 			const disposal = (async (): Promise<SessionDisposal> => {

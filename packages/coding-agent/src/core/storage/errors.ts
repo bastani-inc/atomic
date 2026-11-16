@@ -74,18 +74,28 @@ export class StorageSchemaVersionError extends StorageError {
 	}
 }
 
+/** Why a storage prefix is refused. */
+export type StoragePrefixErrorReason = "pattern" | "reserved" | "too-long" | "identifier-collision" | "uppercase";
+
 export class StoragePrefixError extends StorageError {
 	readonly prefix: string;
-	readonly reason: "pattern" | "reserved" | "too-long";
+	/**
+	 * `uppercase`: PostgreSQL folds unquoted names to lowercase, so a prefix with uppercase letters would name the same
+	 * tables as its lowercase form while Atomic's catalog probes looked for the unfolded names (#5218).
+	 */
+	readonly reason: StoragePrefixErrorReason;
 	/** With `too-long`: the longest prefix the selected backend takes (#5067). */
 	declare readonly maxLength?: number;
-	constructor(prefix: string, reason: "pattern" | "reserved" | "too-long", maxLength?: number) {
+	/** With `identifier-collision`: the name PostgreSQL would know two of the prefix's names by (#5219). */
+	declare readonly identifier?: string;
+	constructor(prefix: string, reason: StoragePrefixErrorReason, maxLength?: number, identifier?: string) {
 		super(
-			`Invalid storage prefix: ${reason}${maxLength === undefined ? "" : ` (PostgreSQL allows at most ${maxLength} characters)`}`,
+			`Invalid storage prefix: ${reason}${maxLength === undefined ? "" : ` (PostgreSQL allows at most ${maxLength} characters)`}${identifier === undefined ? "" : ` (two names under it would both be PostgreSQL's ${identifier}; choose another prefix)`}${reason === "uppercase" ? ` (PostgreSQL folds names to lowercase: use ${prefix.toLowerCase()})` : ""}`,
 		);
 		this.prefix = prefix;
 		this.reason = reason;
 		if (maxLength !== undefined) this.maxLength = maxLength;
+		if (identifier !== undefined) this.identifier = identifier;
 	}
 }
 
@@ -900,6 +910,8 @@ export interface JournalCatalogErrorInit {
 
 /** The command that joins this machine to the team's shared storage; error hints across Atomic name it. */
 export const SHARED_STORAGE_JOIN_HINT = "atomic team join <url> --token-file <path>";
+/** The command that joins a machine to a shared PostgreSQL database, which `atomic team join` refuses (#5218). */
+export const POSTGRES_STORAGE_JOIN_HINT = "atomic storage join <postgres-url> --password-file <path>";
 /** The command that registers an older journal file in the journal store. */
 export const JOURNAL_ADOPT_COMMAND = "atomic storage adopt <path>";
 
@@ -1374,8 +1386,9 @@ function knownStorageError(
 			const reason = field<string>(serialized, "reason", "string");
 			return new StoragePrefixError(
 				field<string>(serialized, "prefix", "string") ?? "",
-				reason === "reserved" || reason === "too-long" ? reason : "pattern",
+				reason === "reserved" || reason === "too-long" || reason === "identifier-collision" ? reason : "pattern",
 				field<number>(serialized, "maxLength", "number"),
+				field<string>(serialized, "identifier", "string"),
 			);
 		}
 		case "StorageAdapterLoadError":
@@ -1441,6 +1454,7 @@ export type TeamProfileErrorCode =
 	| "adapter-not-installed"
 	| "connection-failed"
 	| "connection-timeout"
+	| "auth-unavailable"
 	| "token-write-failed"
 	| "settings-write-failed"
 	| "settings-locked"
@@ -1473,6 +1487,7 @@ export const TEAM_PROFILE_ERROR_CODES: ReadonlySet<TeamProfileErrorCode> = new S
 	"adapter-not-installed",
 	"connection-failed",
 	"connection-timeout",
+	"auth-unavailable",
 	"token-write-failed",
 	"settings-write-failed",
 	"settings-locked",
@@ -1519,8 +1534,9 @@ const RETRYABLE_CODES: ReadonlySet<TeamProfileErrorCode> = new Set<TeamProfileEr
 const SUMMARIES: Readonly<Record<TeamProfileErrorCode, string>> = {
 	"settings-unreadable": "Cannot update the global settings",
 	"adapter-not-installed": "The storage adapter is not installed",
-	"connection-failed": "Could not connect to the team database",
-	"connection-timeout": "The team database did not answer in time",
+	"connection-failed": "Could not connect to the shared database",
+	"connection-timeout": "The shared database did not answer in time",
+	"auth-unavailable": "Could not sign in to the shared database",
 	"token-write-failed": "Could not store the database token",
 	"settings-write-failed": "Could not write the global settings",
 	"settings-locked": "Another process is writing the settings",

@@ -86,7 +86,7 @@ const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
  */
 const GIT_OUTPUT_MAX_BUFFER = 512 * 1024 * 1024;
 const HOOK_OUTPUT_MAX_BUFFER = 64 * 1024 * 1024;
-function runGit(cwd: string, args: string[]): GitResult {
+export function runGit(cwd: string, args: string[]): GitResult {
 	const result = spawnSync("git", ["-C", cwd, ...args], {
 		encoding: "utf-8",
 		env: createGitEnvironment({}, createChildProcessEnvironment()),
@@ -98,7 +98,7 @@ function runGit(cwd: string, args: string[]): GitResult {
 		status: result.status,
 	};
 }
-function runGitChecked(cwd: string, args: string[]): string {
+export function runGitChecked(cwd: string, args: string[]): string {
 	const result = runGit(cwd, args);
 	if (result.status !== 0) {
 		const command = `git -C ${cwd} ${args.join(" ")}`;
@@ -207,12 +207,12 @@ function buildWorktreeBranch(runId: string, index: number): string {
 function buildWorktreePath(mainRoot: string, runId: string, index: number): string {
 	return path.join(mainRoot, ".atomic", "worktrees", flattenedWorktreeName(runId, index));
 }
-function ensureWorktreeIgnore(mainRoot: string): void {
+export function ensureWorktreeIgnore(mainRoot: string): void {
 	const root = path.join(mainRoot, ".atomic", "worktrees");
 	fs.mkdirSync(root, { recursive: true });
 	fs.writeFileSync(path.join(root, ".gitignore"), "*\n", "utf8");
 }
-function resolveRepoCwdRelative(cwd: string): string {
+export function resolveRepoCwdRelative(cwd: string): string {
 	const repoCheck = runGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
 	if (repoCheck.status !== 0 || repoCheck.stdout.trim() !== "true") {
 		throw new Error("worktree isolation requires a git repository");

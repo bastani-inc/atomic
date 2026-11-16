@@ -10,12 +10,16 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { APP_NAME } from "../config.js";
+import { getBuiltinPackageLocations } from "../core/builtin-packages.ts";
 import type { IntercomBrokerControl } from "../core/intercom-broker-control.js";
 import { resolveSessionStore, selectSessionStorage } from "../core/session-storage.js";
 import { exportSessions } from "../core/session-transfer.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import { openAdapterSelectionDatabase } from "../core/storage/adapter-open.js";
+import type { SqliteDatabase, SqliteRow } from "../core/storage/database.js";
+import { dialectOf } from "../core/storage/dialect.js";
 import { isJournalStoreError, isTeamProfileConfigError, isTeamProfileError } from "../core/storage/errors.js";
 import {
 	adoptJournals,
@@ -27,6 +31,11 @@ import {
 	WORKFLOW_RUN_EXPORT_VERSION,
 	type WorkflowRunTransferStorage,
 } from "../core/storage/journal-transfer.js";
+import {
+	movePostgresStorageToSchema,
+	POSTGRES_ATOMIC_SCHEMA,
+	strayPostgresStorageTables,
+} from "../core/storage/postgres-schema.js";
 import { StorageProvider, type StorageSelection } from "../core/storage/provider.js";
 import {
 	checkSharedDatabaseArguments,
@@ -58,15 +67,25 @@ import {
 	type TransferredIds,
 } from "../core/storage/transfer-files.js";
 import { importStorage, sessionsTransferDirectory, workflowsTransferDirectory } from "../core/storage-transfer.ts";
+import {
+	loadWorkerHostModule,
+	type WorkerDatabase,
+	type WorkerHostModule,
+	workerJournalSelection,
+} from "./worker-command.js";
 
 export { LIBSQL_ADAPTER_PACKAGE, STORAGE_TOKEN_FILE };
 
 const JOIN_USAGE = `${APP_NAME} storage join <url> [--token-file <path> | --password-file <path> | --auth azure|aws|gcp]
                             [--prefix <prefix>]`;
 
+const MIGRATE_USAGE = `${APP_NAME} storage migrate [--db <url> [--password-file <path> | --token-file <path> | --auth azure|aws|gcp]]
+                            [--prefix <prefix>]`;
+
 const HELP = `Usage:
   ${APP_NAME} storage status [--json]
   ${JOIN_USAGE}
+  ${MIGRATE_USAGE}
   ${APP_NAME} storage adopt <path>... [--no-discover]
   ${APP_NAME} storage consolidate
   ${APP_NAME} storage export <dir> [--sessions] [--workflows] [--run <id>]... [--unfinished]
@@ -88,6 +107,12 @@ Commands:
            for every new connection. Settings hold a file reference, never a password or token.
            Reports environment variables and settings that override it. Creates no tables; Atomic
            creates them on first use.
+  migrate  Create or upgrade Atomic's tables in a shared database (the journal this machine selects, or
+           --db): sessions, workflow runs, worker pools and Intercom. Run it as the database's owner role
+           after joining and after each Atomic upgrade, so worker hosts and roots that connect with a
+           runtime role (DML privileges only) run no DDL. On PostgreSQL the tables live in schema atomic;
+           tables an earlier release created in public are moved there, and processes of that release
+           still using public are refused. Running it again on a current schema changes nothing.
   adopt    Register existing workflow journal files in the journal store in place, without copying,
            so their runs resolve by ID for status, resume, attach, fork and history://. Each <path>
            is a journal .sqlite file or a directory holding journal.sqlite. Every path is checked
@@ -158,6 +183,11 @@ export type StorageCommand =
 			/** Postgres only. */
 			readonly auth?: PostgresAuth;
 			readonly prefix?: string;
+	  }
+	| {
+			readonly kind: "migrate";
+			/** `--db` and its credential; the journal this machine selects without it. */
+			readonly database?: WorkerDatabase;
 	  }
 	| { readonly kind: "adopt"; readonly paths: readonly string[]; readonly discover: boolean }
 	| { readonly kind: "consolidate" }
@@ -231,8 +261,9 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 			continue;
 		}
 		if (
-			(command === "join" &&
+			((command === "join" || command === "migrate") &&
 				(arg === "--token-file" || arg === "--password-file" || arg === "--auth" || arg === "--prefix")) ||
+			(command === "migrate" && arg === "--db") ||
 			(command === "export" && (arg === "--limit" || arg === "--since")) ||
 			((command === "export" || command === "import") && (arg === "--storage" || arg === "--storage-file"))
 		) {
@@ -261,6 +292,33 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 		if (!isPostgresUrl(url) && checked.tokenFile === undefined && !isFileUrl(url)) throw missingTeamToken(url, "cli");
 		const prefix = values.get("--prefix");
 		return { kind: "join", ...checked, ...(prefix === undefined ? {} : { prefix }) };
+	}
+	if (command === "migrate") {
+		if (positional.length > 0) throw new StorageCommandError(`Usage: ${MIGRATE_USAGE}`);
+		const url = values.get("--db");
+		if (url === undefined) {
+			for (const option of ["--token-file", "--password-file", "--auth", "--prefix"])
+				if (values.has(option))
+					throw new StorageCommandError(`${option} qualifies --db; pass the database URL with --db too.`);
+			return { kind: "migrate" };
+		}
+		const checked = checkSharedDatabaseArguments({
+			url,
+			tokenFile: values.get("--token-file"),
+			passwordFile: values.get("--password-file"),
+			auth: values.get("--auth"),
+		});
+		const prefix = values.get("--prefix");
+		return {
+			kind: "migrate",
+			database: {
+				url,
+				...(checked.tokenFile === undefined ? {} : { tokenFile: checked.tokenFile }),
+				...(checked.passwordFile === undefined ? {} : { passwordFile: checked.passwordFile }),
+				...(checked.auth === undefined ? {} : { auth: checked.auth }),
+				...(prefix === undefined ? {} : { prefix }),
+			},
+		};
 	}
 	if (command === "adopt") {
 		if (positional.length === 0)
@@ -373,6 +431,10 @@ export interface StorageCommandOptions {
 	readonly error?: (line: string) => void;
 	/** Defaults to the bundled Intercom package's broker control. */
 	readonly loadControl?: () => Promise<IntercomBrokerControl>;
+	/** `migrate`: defaults to the bundled workflows package's public entry. */
+	readonly loadWorkerModule?: () => Promise<Pick<WorkerHostModule, "migrateWorkflowStorage">>;
+	/** `migrate`: defaults to the bundled Intercom package's broker state opener. */
+	readonly loadBrokerState?: () => Promise<BrokerStateModule>;
 }
 
 const errorText = describeStorageError;
@@ -562,6 +624,7 @@ export async function runStorageCommand(args: readonly string[], options: Storag
 		if (command.kind === "status") return await status(command.json, options, log);
 		if (command.kind === "adopt") return await adopt(command, options, log);
 		if (command.kind === "consolidate") return await consolidate(options, log);
+		if (command.kind === "migrate") return await migrate(command, options, log);
 		if (command.kind === "export") return await exportRuns(command, options, log, error);
 		if (command.kind === "import") return await importRuns(command, options, log, error);
 		return await joinStorage(command, options, (...lines) => {
@@ -583,6 +646,104 @@ export async function runStorageCommand(args: readonly string[], options: Storag
 		);
 		return 1;
 	}
+}
+
+/** Intercom's broker state opener, as the bundled Intercom package's `broker/open-broker-state` module exports it. */
+interface BrokerStateModule {
+	openIntercomBrokerState(source: {
+		readonly prefix?: string;
+		readonly openDatabase: () => Promise<SqliteDatabase>;
+	}): Promise<{ readonly state: { close(): Promise<void> }; readonly bus: { close(): Promise<void> } }>;
+}
+
+/** Loads the bundled Intercom package's broker state opener, as extensions see the host's modules. */
+async function loadBrokerStateModule(): Promise<BrokerStateModule> {
+	const intercom = getBuiltinPackageLocations().find(({ distDirName }) => distDirName === "intercom");
+	if (intercom === undefined) throw new Error("The bundled Intercom package was not found.");
+	const modulePath = ["broker/open-broker-state.ts", "broker/open-broker-state.js"]
+		.map((path) => join(intercom.packageDir, path))
+		.find((path) => existsSync(path));
+	if (modulePath === undefined) throw new Error("The bundled Intercom package has no broker state module.");
+	const [{ createHostModuleJiti }, { getVirtualModules }] = await Promise.all([
+		import("../core/extensions/loader-virtual-modules.js"),
+		import("../core/extensions/loader-host-modules.js"),
+	]);
+	const loader = await createHostModuleJiti(pathToFileURL(modulePath).href, await getVirtualModules());
+	return loader.import<BrokerStateModule>(modulePath);
+}
+
+/**
+ * `atomic storage migrate` (#5218): sets up or upgrades every store's tables in the shared database, as its owner role.
+ * On PostgreSQL, tables an earlier release created in `public` move to schema `atomic` first.
+ */
+async function migrate(
+	command: Extract<StorageCommand, { kind: "migrate" }>,
+	options: StorageCommandOptions,
+	log: (line: string) => void,
+): Promise<number> {
+	const { agentDir, cwd } = options;
+	const database = command.database === undefined ? undefined : { ...command.database };
+	if (database?.tokenFile !== undefined) database.tokenFile = resolve(cwd, database.tokenFile);
+	if (database?.passwordFile !== undefined) database.passwordFile = resolve(cwd, database.passwordFile);
+	const settings = database === undefined ? undefined : workerJournalSelection(database);
+	const selection =
+		settings === undefined
+			? effectiveJournalSelection(cwd, agentDir)
+			: selectStorage(settings as StorageSettingsSelection, "cli", "--db", "");
+	if (selection.kind !== "adapter") {
+		log(
+			`Workflow runs here use ${describeStorageSelection(selection)}, which sets itself up on first use; there is nothing to migrate.`,
+		);
+		return 0;
+	}
+	const open = (domain: "journal" | "intercom") => openAdapterSelectionDatabase(selection, { agentDir, domain });
+	const opened = await open("journal");
+	try {
+		const explicitSchema = (selection.options as { schema?: unknown }).schema !== undefined;
+		if (dialectOf(opened).name === "postgres" && !explicitSchema) {
+			const row = await opened.get<SqliteRow & { schema: string | null }>("SELECT current_schema() AS schema");
+			if (row?.schema === "public") {
+				const moved = await movePostgresStorageToSchema(opened);
+				log(
+					moved.skipped
+						? `Another \`${APP_NAME} storage migrate\` moved the tables to schema ${POSTGRES_ATOMIC_SCHEMA} first.`
+						: `Moved ${moved.tables.length} table${moved.tables.length === 1 ? "" : "s"} and ${moved.functions.length} trigger function${moved.functions.length === 1 ? "" : "s"} from schema public to schema ${POSTGRES_ATOMIC_SCHEMA}; processes of an earlier Atomic still using public are refused until they are upgraded.`,
+				);
+			}
+		}
+	} finally {
+		await opened.close();
+	}
+	await (await new StorageProvider().openSessionStore(selection, { agentDir, domain: "sessions" })).close();
+	const workflows = await (options.loadWorkerModule ?? loadWorkerHostModule)();
+	if (workflows.migrateWorkflowStorage === undefined)
+		throw new Error("The bundled workflows package cannot migrate storage; reinstall Atomic.");
+	await workflows.migrateWorkflowStorage({ ...(settings === undefined ? {} : { journal: settings }), agentDir });
+	const intercom = await (options.loadBrokerState ?? loadBrokerStateModule)();
+	const broker = await intercom.openIntercomBrokerState({
+		...(selection.prefix === undefined ? {} : { prefix: selection.prefix }),
+		openDatabase: () => open("intercom"),
+	});
+	await broker.bus.close();
+	await broker.state.close();
+	// Tables created in public after the move hold state the moved ones do not (#5218).
+	const checked = await open("journal");
+	let strays: string[];
+	try {
+		strays = await strayPostgresStorageTables(checked);
+	} finally {
+		await checked.close();
+	}
+	if (strays.length > 0) {
+		log(
+			`Found ${strays.length} of Atomic's table${strays.length === 1 ? "" : "s"} in schema public that a process created after the move to schema ${POSTGRES_ATOMIC_SCHEMA}: ${strays.join(", ")}. A process of an earlier Atomic, or one started before the move, still uses public, and what it wrote there is not in schema ${POSTGRES_ATOMIC_SCHEMA}. Stop or upgrade it, then drop those tables, or copy what you need into schema ${POSTGRES_ATOMIC_SCHEMA} first.`,
+		);
+		return 1;
+	}
+	log(
+		`Atomic's tables in ${describeStorageSelection(selection)} are set up for this version: sessions, workflow runs, worker pools and Intercom.`,
+	);
+	return 0;
 }
 
 /** A note when this directory's workflow runs use another journal than the journal store `adopt` writes to. */
