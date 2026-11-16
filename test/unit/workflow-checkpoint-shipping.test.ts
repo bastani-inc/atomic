@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { basename, dirname, join } from "node:path";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import type { PoolMutation } from "../../packages/workflows/src/durable/journal/pool-mutations.js";
 import type { PoolCommitReceipt } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
@@ -905,4 +905,48 @@ test("a host ships the attempt holding the oldest checkpoint first (#4768)", asy
 	shipping.start();
 	for (let waited = 0; order.length < 5 && waited < 5_000; waited += 10) await sleep(10);
 	assert.deepEqual(order, ["work-4", "work-3", "work-2", "work-1", "work-0"]);
+});
+
+test("closing during a deadline flush stops even when another batch remains pending (#4768)", async () => {
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+	let release!: () => void;
+	let entered!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	try {
+		const { shard: local, clock } = await shard();
+		let deliveries = 0;
+		const shipping = new CheckpointShipping(local, {
+			host: "host",
+			intervalMs: 2_000,
+			maxBatch: 1_000,
+			maxLagMs: 1_000,
+			now: () => clock.now,
+			deliver: async () => {
+				deliveries++;
+				entered();
+				await gate;
+			},
+		});
+		opened.push(shipping);
+		await shipping.hold(LEASE, LEASE_MS);
+		for (let index = 0; index < 1_001; index++) {
+			await shipping.commit(LEASE, checkpoint(String(index)), sharedCommit().commit);
+			if (index === 999) await started;
+		}
+		shipping.start();
+		clock.now = BACKPRESSURE_MS;
+		await vi.advanceTimersByTimeAsync(25);
+		const closing = shipping.close();
+		release();
+		await closing;
+		assert.equal(deliveries, 1);
+	} finally {
+		release();
+		vi.useRealTimers();
+	}
 });

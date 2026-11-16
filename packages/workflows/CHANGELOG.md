@@ -99,6 +99,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed the workflow session picker showing no selected row when the selected run left the list and the list got shorter. The selection now moves to the nearest remaining run, so Enter acts on it without first moving the cursor.
 - Fixed `/workflow` commands whose arguments start after a tab or on a new line not being run ([#5192](https://github.com/bastani-inc/atomic/issues/5192))
 - Fixed checkpoint shipping acknowledging more steps locally after a direct shared-journal commit lost its work or root lease. The refusal now fences that attempt without fencing a replacement generation ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+- Fixed a worker host hanging during shutdown when a deadline-triggered checkpoint flush still had another batch pending ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 
 
 ## [0.9.86] - 2026-11-14

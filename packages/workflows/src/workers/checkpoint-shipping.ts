@@ -245,6 +245,7 @@ export class CheckpointShipping {
 		const attempt = this.attempts.get(lease.id);
 		if (attempt === undefined || attempt.lease.generation !== lease.generation) return;
 		for (;;) {
+			if (this.closed) throw new Error("Checkpoint shipping stopped");
 			if (attempt.fenced !== undefined) throw attempt.fenced;
 			if ((await this.shard.pendingCount(attempt.lease)) === 0) return;
 			await this.ship(attempt, cap);
