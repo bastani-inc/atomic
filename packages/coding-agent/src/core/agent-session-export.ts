@@ -27,7 +27,7 @@ import { attachCleanupCause } from "./storage/cleanup.js";
 import { addHistoryUsageToTotals, addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
 export function getSessionStats(this: AgentSession): SessionStats {
-	const omitted = this.sessionManager.getOmittedHistoryTotals();
+	const omitted = this.sessionManager.getOmittedHistoryTotals?.();
 	let userMessages = omitted?.userMessages ?? 0;
 	let assistantMessages = omitted?.assistantMessages ?? 0;
 	let toolResults = omitted?.toolResults ?? 0;

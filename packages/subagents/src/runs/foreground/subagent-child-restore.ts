@@ -527,7 +527,6 @@ async function relaunchChild(
 		...(ctx.thinkingLevel ? { thinkingLevel: ctx.thinkingLevel } : {}),
 	};
 	const resolveCandidateModel = createCandidateModelResolver(ctx.modelRegistry, inherited.modelProvider);
-	// A child compacted since its launch may hold its launch leaf only in the history before its latest compaction (#5249).
 	if (
 		!fresh &&
 		sessionManager &&

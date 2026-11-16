@@ -235,8 +235,6 @@ function startExtensions(
 			});
 			try {
 				if (session._extensionProviderIds.size > 0) await session.refreshCurrentModelFromRegistry();
-				// An extension Atomic does not bundle may read any entry: a session opened from its latest compaction
-				// reads the rest of its history before one starts (#5249).
 				if (
 					loader
 						.getExtensions()

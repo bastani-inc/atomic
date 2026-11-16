@@ -94,9 +94,10 @@ import {
 } from "./storage/session/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
-import { readSessionRange } from "./storage/session/session-resume.js";
+import { readSessionRange, sessionCompactionOf, sessionTailOf } from "./storage/session/session-resume.js";
 import type {
 	SessionBlob,
+	SessionCompactionPoint,
 	SessionHistoryTotals,
 	SessionRecordHeader,
 	SessionSnapshot,
@@ -133,27 +134,37 @@ async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 type OpenedSession = { readonly snapshot: SessionSnapshot } | { readonly tail: SessionTail };
 
 /**
- * Reads `sessionId` as `options` asks. A tail read starts at the retained start of the latest compaction boundary on
- * the session's branch, or at the last entry that boundary covers when that comes first, so that the context the
- * session replays is all held. A session that changed between the two reads is read whole.
+ * The first seq a tail read holds for `point`: the boundary's retained start, or the last entry it covers when that
+ * comes first, so that the context the session replays is all held.
+ */
+function tailStartSeq(point: SessionCompactionPoint | undefined): number {
+	return point === undefined ? 1 : Math.min(point.retainedStartSeq, point.coveredThroughSeq ?? point.retainedStartSeq);
+}
+
+/**
+ * Reads `sessionId` as `options` asks. A store that reads a tail without its history is asked for the latest
+ * compaction and the tail from it, and a session that changed between the two reads is read whole. A store that holds
+ * whole sessions, as JSONL files or in memory, is read once and its tail taken from that read.
  */
 async function readStoredSession(
 	store: SessionStore,
 	sessionId: string,
 	options: SessionOpenOptions | undefined,
 ): Promise<OpenedSession> {
+	if (options?.history !== "tail") return { snapshot: await store.load(sessionId) };
 	if (
-		options?.history !== "tail" ||
+		store instanceof JsonlSessionStore ||
+		store instanceof MemorySessionStore ||
 		store.readTail === undefined ||
 		store.readRange === undefined ||
 		store.findLatestCompaction === undefined
 	) {
-		return { snapshot: await store.load(sessionId) };
+		const snapshot = await store.load(sessionId);
+		const fromSeq = tailStartSeq(sessionCompactionOf(snapshot.entries));
+		return fromSeq <= 1 ? { snapshot } : { tail: sessionTailOf(snapshot.header, snapshot.entries, fromSeq) };
 	}
 	const point = await store.findLatestCompaction(sessionId);
-	const fromSeq =
-		point === undefined ? 1 : Math.min(point.retainedStartSeq, point.coveredThroughSeq ?? point.retainedStartSeq);
-	const tail = await store.readTail(sessionId, fromSeq);
+	const tail = await store.readTail(sessionId, tailStartSeq(point));
 	if (point !== undefined && tail.lastSeq !== point.lastSeq) return { snapshot: await store.load(sessionId) };
 	return { tail };
 }
@@ -647,7 +658,6 @@ export class SessionManager {
 		for (const entry of entries) this.unconfirmed.add(entry.id);
 		let read: { readonly entries: readonly SessionEntry[]; readonly lastSeq: number };
 		try {
-			// From the last entry held, so a read shows whether the store's history still extends this manager's (#5249).
 			read = await readSessionRange(this.store, this.sessionId, Math.max(1, this.lastSeq), Number.MAX_SAFE_INTEGER);
 		} catch {
 			// Still unreadable: the next append, at the same `lastSeq`, finds out whether these entries were saved.

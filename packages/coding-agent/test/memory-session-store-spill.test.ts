@@ -1527,6 +1527,9 @@ function releasingAfterWrites(store: MemorySessionStore): SessionStore {
 			return result;
 		},
 		load: (sessionId) => store.load(sessionId),
+		readTail: (sessionId, fromSeq) => store.readTail(sessionId, fromSeq),
+		readRange: (sessionId, startSeq, endSeq) => store.readRange(sessionId, startSeq, endSeq),
+		findLatestCompaction: (sessionId, leafId) => store.findLatestCompaction(sessionId, leafId),
 		readHeader: (sessionId) => store.readHeader(sessionId),
 		delete: (sessionId) => store.delete(sessionId),
 		list: (query) => store.list(query),

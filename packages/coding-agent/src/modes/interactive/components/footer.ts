@@ -113,7 +113,7 @@ function summarizeEngineUsage(stats: SessionStats): UsageSummary {
 function summarizeEntryUsage(session: ChatBoxSession): UsageSummary {
 	// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
 	const totals = createUsageTotals();
-	const omitted = session.sessionManager.getOmittedHistoryTotals();
+	const omitted = session.sessionManager.getOmittedHistoryTotals?.();
 	addHistoryUsageToTotals(totals, omitted);
 	let latestCacheHitRate = omitted?.latestAssistantUsage ? getCacheHitRate(omitted.latestAssistantUsage) : undefined;
 

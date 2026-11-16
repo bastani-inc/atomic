@@ -78,7 +78,8 @@ describe("a position in the stage session's store that a compaction leaves valid
 
 	test("keeps its position in a session resumed from its latest compaction that reads its history (#5249)", async () => {
 		const directory = makeTempDirectory("atomic-stage-stored-");
-		const store = await SqlSessionStore.open(await openNodeSqliteDatabase(join(directory, "sessions.sqlite")));
+		const database = await openNodeSqliteDatabase(join(directory, "sessions.sqlite"));
+		const store = await SqlSessionStore.open(database);
 		try {
 			const writer = await SessionManager.create(store, "/project");
 			for (let turn = 0; turn < 4; turn++) {
@@ -113,6 +114,7 @@ describe("a position in the stage session's store that a compaction leaves valid
 			assert.equal(storedAssistantMessageSince(session, mark), true);
 		} finally {
 			await store.close();
+			await database.close();
 			removeTempDirectory(directory);
 		}
 	});

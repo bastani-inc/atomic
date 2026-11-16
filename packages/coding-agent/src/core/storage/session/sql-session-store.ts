@@ -1035,20 +1035,21 @@ export class SqlSessionStore implements SessionStore {
 		if (source.entries === undefined) return;
 		const { row, index } = source;
 		const state = { ...(JSON.parse(row.summary_state) as StoredSummaryState), resume: index };
-		try {
-			const { changes } = await this.database.run(
+		const changes = await this.database
+			.run(
 				`UPDATE ${this.tables.sessions} SET summary_state = ? WHERE id = ? AND revision = ? AND last_seq = ?`,
 				this.encode(state),
 				sessionId,
 				row.revision,
 				row.last_seq,
+			)
+			.then(
+				(result) => result.changes,
+				() => 0,
 			);
-			if (changes > 0) {
-				this.resumeIndexes.delete(sessionId);
-				return;
-			}
-		} catch {
-			// The index is an optimization: a session it cannot be saved for is read whole again next time.
+		if (changes > 0) {
+			this.resumeIndexes.delete(sessionId);
+			return;
 		}
 		this.resumeIndexes.delete(sessionId);
 		this.resumeIndexes.set(sessionId, { revision: row.revision, index });

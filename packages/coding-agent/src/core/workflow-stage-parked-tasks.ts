@@ -43,7 +43,6 @@ export async function recordTasksInterruptedByRestart(
 		Partial<Pick<SessionManager, "loadFullHistory">>,
 	attemptId: string | undefined,
 ): Promise<number> {
-	// The intents that notified a release's shells may be settled ones a session resumed from its compaction left out.
 	const releasedEarlier = (entry: SessionEntry) =>
 		entry.type === "custom" &&
 		entry.customType === PARKED_STAGE_TASKS_TYPE &&

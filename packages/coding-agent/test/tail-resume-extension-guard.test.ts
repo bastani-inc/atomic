@@ -35,8 +35,12 @@ afterEach(async () => {
 async function resumedFromCompaction(): Promise<SessionManager> {
 	const directory = mkdtempSync(join(tmpdir(), "atomic-tail-guard-"));
 	cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
-	const store: SessionStore = await SqlSessionStore.open(await openNodeSqliteDatabase(join(directory, "s.sqlite")));
-	cleanups.push(() => store.close());
+	const database = await openNodeSqliteDatabase(join(directory, "s.sqlite"));
+	const store: SessionStore = await SqlSessionStore.open(database);
+	cleanups.push(async () => {
+		await store.close();
+		await database.close();
+	});
 	const writer = await SessionManager.create(store, directory);
 	for (let turn = 0; turn < 3; turn++)
 		await writer.appendMessage({ role: "user", content: `turn ${turn}`, timestamp: 1 });

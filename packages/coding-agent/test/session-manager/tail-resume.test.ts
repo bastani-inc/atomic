@@ -56,18 +56,22 @@ function assistant(text: string, tokens: number): AssistantMessage {
 }
 
 const directories: string[] = [];
-const stores: SessionStore[] = [];
+const closers: (() => Promise<void>)[] = [];
 
 afterEach(async () => {
-	for (const store of stores.splice(0)) await store.close().catch(() => {});
+	for (const close of closers.splice(0)) await close();
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
 async function sqlStore(): Promise<SessionStore> {
 	const directory = mkdtempSync(join(tmpdir(), "atomic-tail-resume-"));
 	directories.push(directory);
-	const store = await SqlSessionStore.open(await openNodeSqliteDatabase(join(directory, "sessions.sqlite")));
-	stores.push(store);
+	const database = await openNodeSqliteDatabase(join(directory, "sessions.sqlite"));
+	const store = await SqlSessionStore.open(database);
+	closers.push(async () => {
+		await store.close();
+		await database.close();
+	});
 	return store;
 }
 

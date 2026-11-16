@@ -116,7 +116,7 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 	initialSelectedId?: string,
 ): Promise<void> {
 	await this.ensureDeferredStartupComplete();
-	await this.sessionManager.loadFullHistory();
+	await this.sessionManager.loadFullHistory?.();
 	const tree = this.sessionManager.getTree();
 	const realLeafId = this.sessionManager.getLeafId();
 	const initialFilterMode = this.settingsManager.getTreeFilterMode();

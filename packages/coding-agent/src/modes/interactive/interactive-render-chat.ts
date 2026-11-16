@@ -5,7 +5,7 @@ import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { stripVerbatimCompactionPrefix } from "../../core/messages.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
-import { type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
+import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
@@ -612,7 +612,7 @@ InteractiveModeBase.prototype.attachStartupNoticesContainer = function (
 
 InteractiveModeBase.prototype.renderInitialMessages = function (this: InteractiveModeBase): void {
 	this.attachStartupNoticesContainer({ resetDetached: true });
-	const entries = this.sessionManager.buildContextEntries();
+	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { updateFooter: true, populateHistory: true });
 	renderProjectTrustWarningIfNeeded(this);
 	refreshInteractiveTasks(this);
@@ -697,7 +697,7 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	this.chatContainer.clear();
 	if (options.resetStartupDisclosure) this.resourceDisclosureContainer.clear();
 	this.attachStartupNoticesContainer();
-	const entries = this.sessionManager.buildContextEntries();
+	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { suppressCompactionBoundary: options.suppressCompactionBoundary });
 };
 

@@ -128,7 +128,7 @@ InteractiveModeBase.prototype.handleCompactCommand = async function (this: Inter
 	const entries = this.sessionManager.getEntries();
 	const messageCount =
 		entries.filter((e) => e.type === "message").length +
-		(this.sessionManager.getOmittedHistoryTotals()?.totalMessages ?? 0);
+		(this.sessionManager.getOmittedHistoryTotals?.()?.totalMessages ?? 0);
 
 	if (messageCount < 2) {
 		this.showWarning("Nothing to compact (no messages yet)");

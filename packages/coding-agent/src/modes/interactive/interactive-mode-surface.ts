@@ -397,7 +397,7 @@ declare module "./interactive-mode-base.ts" {
 		handleShareCommand(): Promise<void>;
 		handleCopyCommand(): Promise<void>;
 		handleNameCommand(text: string): Promise<void>;
-		handleSessionCommand(): Promise<void>;
+		handleSessionCommand(): void | Promise<void>;
 		handleSessionSnapshotCommand(): Promise<void>;
 		handleToolsCommand(): Promise<void>;
 		handleChangelogCommand(): void;

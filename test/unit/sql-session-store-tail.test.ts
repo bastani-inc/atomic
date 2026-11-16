@@ -102,6 +102,17 @@ function databasePath(): string {
 	return join(directory, "sessions.sqlite");
 }
 
+async function writeSession(path: string, entries: readonly SessionEntry[]): Promise<void> {
+	const database = await openNodeSqliteDatabase(path);
+	const store = await SqlSessionStore.open(database);
+	try {
+		await store.create(header, entries);
+	} finally {
+		await store.close();
+		await database.close();
+	}
+}
+
 async function dropResumeIndex(path: string): Promise<void> {
 	const database = await openNodeSqliteDatabase(path);
 	try {
@@ -137,9 +148,7 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 	it("reads a compacted session's tail without the history rows before it (#5249)", async () => {
 		for (const history of [40, 400]) {
 			const path = databasePath();
-			const writer = await SqlSessionStore.open(await openNodeSqliteDatabase(path));
-			await writer.create(header, compactedEntries(history));
-			await writer.close();
+			await writeSession(path, compactedEntries(history));
 			const { database, rows } = countingRows(await openNodeSqliteDatabase(path));
 			const store = await SqlSessionStore.open(database);
 			try {
@@ -162,18 +171,18 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 	it("indexes a session an earlier build wrote on its first resume, then reads only its tail (#5249)", async () => {
 		const path = databasePath();
 		const entries = compactedEntries(40);
-		const writer = await SqlSessionStore.open(await openNodeSqliteDatabase(path));
-		await writer.create(header, entries);
-		await writer.close();
+		await writeSession(path, entries);
 		await dropResumeIndex(path);
 		assert.equal(await hasResumeIndex(path), false);
 
-		const store = await SqlSessionStore.open(await openNodeSqliteDatabase(path));
+		const writable = await openNodeSqliteDatabase(path);
+		const store = await SqlSessionStore.open(writable);
 		try {
 			assert.deepEqual(await store.findLatestCompaction("session"), sessionCompactionOf(entries));
 			assert.deepEqual(await store.readTail("session", 39), sessionTailOf(header, entries, 39));
 		} finally {
 			await store.close();
+			await writable.close();
 		}
 		assert.equal(await hasResumeIndex(path), true);
 
@@ -191,9 +200,7 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 	it("remembers the index of a session it cannot save it for, while the session is unchanged (#5249)", async () => {
 		const path = databasePath();
 		const entries = compactedEntries(40);
-		const writer = await SqlSessionStore.open(await openNodeSqliteDatabase(path));
-		await writer.create(header, entries);
-		await writer.close();
+		await writeSession(path, entries);
 		await dropResumeIndex(path);
 
 		const { database, rows } = countingRows(await openNodeSqliteDatabase(path, { readOnly: true }));
@@ -214,7 +221,8 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 	it("rebuilds the index after an earlier build appends without it (#5249)", async () => {
 		const path = databasePath();
 		const entries = compactedEntries(40);
-		const store = await SqlSessionStore.open(await openNodeSqliteDatabase(path));
+		const database = await openNodeSqliteDatabase(path);
+		const store = await SqlSessionStore.open(database);
 		try {
 			await store.create(header, entries.slice(0, 30));
 			await dropResumeIndex(path);

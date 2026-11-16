@@ -340,7 +340,7 @@ InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveMo
 
 InteractiveModeBase.prototype.showUserMessageSelector = async function (this: InteractiveModeBase): Promise<void> {
 	await this.ensureDeferredStartupComplete();
-	await this.sessionManager.loadFullHistory();
+	await this.session.sessionManager?.loadFullHistory?.();
 	const userMessages = this.session.getUserMessagesForForking();
 
 	if (userMessages.length === 0) {

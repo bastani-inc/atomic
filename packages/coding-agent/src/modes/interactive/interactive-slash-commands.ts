@@ -449,8 +449,14 @@ InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (thi
 	this.ui.requestRender();
 };
 
-InteractiveModeBase.prototype.handleSessionCommand = async function (this: InteractiveModeBase): Promise<void> {
-	await this.sessionManager.loadFullHistory();
+InteractiveModeBase.prototype.handleSessionCommand = function (this: InteractiveModeBase): void | Promise<void> {
+	if (this.sessionManager.hasFullHistory?.() === false) {
+		return this.sessionManager.loadFullHistory().then(() => showSessionInfo.call(this));
+	}
+	showSessionInfo.call(this);
+};
+
+function showSessionInfo(this: InteractiveModeBase): void {
 	const engineStats = getEngineSessionStats(this.session);
 	const stats = engineStats ?? this.session.getSessionStats();
 	const sessionName = this.session.sessionName;
@@ -526,7 +532,7 @@ InteractiveModeBase.prototype.handleSessionCommand = async function (this: Inter
 	this.chatContainer.addChild(new Spacer(1));
 	this.chatContainer.addChild(new Text(info, 1, 0));
 	this.ui.requestRender();
-};
+}
 
 InteractiveModeBase.prototype.handleChangelogCommand = function (this: InteractiveModeBase): void {
 	const changelogPath = getChangelogPath();
