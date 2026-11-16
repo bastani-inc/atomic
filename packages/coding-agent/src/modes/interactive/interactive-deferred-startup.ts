@@ -80,10 +80,8 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 			await applyDeferredModelScope(this);
 		}
 		await this.retryDeferredModelRestore(this.startupNoticesContainer);
-		if (!completedStartupTrust) {
-			for (const diagnostic of this.options.deferredFallbackModelCheck?.(this.session) ?? []) {
-				this.showWarning(diagnostic.message);
-			}
+		for (const diagnostic of this.options.deferredFallbackModelCheck?.(this.session) ?? []) {
+			this.showWarning(diagnostic.message);
 		}
 		this.showLoadedResources({
 			force: true,

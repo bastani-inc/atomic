@@ -1063,14 +1063,16 @@ export async function main(argv: string[], options?: MainOptions) {
 							);
 						}
 						await created.session.completeStartupResources(finalServices.resourceLoader);
-						finalServices.diagnostics.push(
-							...unresolvedFallbackModelDiagnostics(
-								parsed,
-								settingsManager,
-								modelRuntime,
-								created.session.model?.provider ?? settingsManager.getDefaultProvider(),
-							),
-						);
+						if (appMode !== "interactive") {
+							finalServices.diagnostics.push(
+								...unresolvedFallbackModelDiagnostics(
+									parsed,
+									settingsManager,
+									modelRuntime,
+									created.session.model?.provider ?? settingsManager.getDefaultProvider(),
+								),
+							);
+						}
 						const completedDiagnostics = deduplicateDiagnostics(finalServices.diagnostics);
 						services.diagnostics = completedDiagnostics;
 						if (appMode !== "interactive") {

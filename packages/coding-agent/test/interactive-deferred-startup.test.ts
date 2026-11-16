@@ -4,7 +4,9 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
+import { findInitialModel } from "../src/core/model-resolver.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { resolveDeferredStartupModel } from "../src/main-deferred-startup.js";
 import { buildSessionOptions, unresolvedFallbackModelDiagnostics } from "../src/main-session-options.js";
 import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
@@ -217,6 +219,74 @@ describe("applyDeferredModelScope", () => {
 			assert.deepEqual(showWarning.mock.calls, []);
 		});
 	}
+
+	it("checks fallback entries after trust completion restores an empty session's saved Copilot model (#5247)", async () => {
+		const credentials = AuthStorage.inMemory({
+			"github-copilot": { type: "api_key", key: "test-key" },
+			openai: { type: "api_key", key: "test-key" },
+		});
+		const registry = await createInMemoryModelRegistry(credentials);
+		const modelRuntime = getModelRuntime(registry);
+		const savedModel = registry.find("github-copilot", "gpt-5.3-codex");
+		assert.ok(savedModel);
+		const saved = { provider: savedModel.provider, modelId: savedModel.id };
+		const settingsManager = SettingsManager.inMemory({
+			defaultProvider: "github-copilot",
+			defaultModel: "not-in-copilot-cache",
+			fallbackModels: ["gpt-5.3-codex", "ghost/no-model"],
+		});
+		const parsed = parseArgs([]);
+		const initial = await findInitialModel({
+			scopedModels: [],
+			isContinuing: false,
+			defaultProvider: settingsManager.getDefaultProvider(),
+			defaultModelId: settingsManager.getDefaultModel(),
+			modelRuntime,
+		});
+		assert.equal(initial.model, undefined);
+		assert.ok(initial.fallbackMessage);
+		assert.equal(
+			await resolveDeferredStartupModel({
+				selected: undefined,
+				isContinuing: false,
+				savedModel: saved,
+				settingsManager,
+				modelRuntime,
+			}),
+			undefined,
+		);
+		const session = {
+			model: { ...savedModel, provider: "unknown", id: "unknown" },
+			modelRuntime,
+			settingsManager,
+			setModel: async (model: typeof savedModel) => {
+				session.model = model;
+			},
+		};
+		const deferredFallbackModelCheck = vi.fn((activeSession: Pick<typeof session, "model">) =>
+			unresolvedFallbackModelDiagnostics(parsed, settingsManager, modelRuntime, activeSession.model.provider),
+		);
+		assert.equal(deferredFallbackModelCheck(session).length, 2);
+		deferredFallbackModelCheck.mockClear();
+		const showWarning = vi.fn();
+		const mode = {
+			options: { modelFallbackMessage: initial.fallbackMessage, deferredFallbackModelCheck },
+			runtimeHost: { completeStartup: async () => true, services: { diagnostics: [] } },
+			session,
+			sessionManager: { buildSessionContext: () => ({ messages: [], model: saved }) },
+			settingsManager,
+			showWarning,
+		};
+
+		await completeDeferredStartup(mode);
+
+		assert.deepEqual(session.model, savedModel);
+		assert.deepEqual(
+			showWarning.mock.calls.map(([message]) => message.match(/entry "([^"]+)"/)?.[1]),
+			["ghost/no-model"],
+		);
+		assert.equal(deferredFallbackModelCheck.mock.calls.length, 1);
+	});
 
 	it("deduplicates repeated unmatched model-scope patterns (#4694)", async () => {
 		const showWarning = vi.fn();
