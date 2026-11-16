@@ -874,6 +874,69 @@ describe("Editor component", () => {
 		});
 	});
 
+	describe("Grapheme clusters wider than the editor", () => {
+		// One grapheme cluster 201 columns wide: a consonant and 200 spacing vowel signs.
+		const wideCluster = `\u0915${"\u093e".repeat(200)}`;
+		const widths = [201, 80, 1];
+
+		it("wraps a cluster wider than the width onto a line of its own, clipped between code points", () => {
+			assert.strictEqual(visibleWidth(wideCluster), 201);
+			for (const width of widths) {
+				const chunks = wordWrapLine(wideCluster, width);
+				assert.deepStrictEqual(chunks, [
+					{ text: wideCluster.slice(0, width), startIndex: 0, endIndex: wideCluster.length },
+				]);
+			}
+		});
+
+		it("keeps the text around a too-wide cluster on lines of their own", () => {
+			const line = `ab ${wideCluster} cd`;
+			const chunks = wordWrapLine(line, 10);
+			assert.deepStrictEqual(
+				chunks.map((chunk) => chunk.text),
+				["ab ", wideCluster.slice(0, 10), " cd"],
+			);
+			const covered = chunks.map((chunk) => line.slice(chunk.startIndex, chunk.endIndex)).join("");
+			assert.strictEqual(covered, line, "the chunks still cover the whole logical line");
+		});
+
+		it("never splits a surrogate pair when clipping a cluster", () => {
+			// A Brahmi consonant and 30 spacing visarga signs, each code point a surrogate pair: 31 columns.
+			const cluster = `\u{11013}${"\u{11002}".repeat(30)}`;
+			assert.deepStrictEqual(wordWrapLine(cluster, 4), [
+				{ text: cluster.slice(0, 8), startIndex: 0, endIndex: cluster.length },
+			]);
+		});
+
+		it("renders the cluster in the editor within the width", () => {
+			for (const width of widths) {
+				const editor = new Editor(createTestTUI(width), defaultEditorTheme);
+				editor.setText(wideCluster);
+				// At width 1 a line with the cursor after its last character is two columns wide, whatever its text.
+				if (width === 1) editor.handleInput("\x01");
+				for (const line of editor.render(width)) {
+					assert.ok(visibleWidth(line) <= width, `width ${width}: ${JSON.stringify(line)}`);
+				}
+			}
+		});
+
+		it("renders the cluster on the main screen without exceeding the terminal width", () => {
+			for (const width of widths) {
+				const tui = new TuiMainScreen(new VirtualTerminal(width, 10));
+				const editor = new Editor(tui, defaultEditorTheme);
+				tui.addChild(editor);
+				tui.setFocus(editor);
+				editor.setText(wideCluster);
+				if (width === 1) editor.handleInput("\x01");
+				try {
+					assert.doesNotThrow(() => tui.renderNow(), `width ${width}`);
+				} finally {
+					tui.stop();
+				}
+			}
+		});
+	});
+
 	describe("Word wrapping", () => {
 		it("wraps at word boundaries instead of mid-word", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
