@@ -27,6 +27,7 @@ import { statSync } from "node:fs";
 import type { Socket } from "node:net";
 import { dirname } from "node:path";
 import type { Readable } from "node:stream";
+import { clearTimeout, setTimeout } from "node:timers";
 
 /** One DACL entry with its trustee resolved to a literal SID. */
 export interface WindowsAccessRule {
@@ -162,10 +163,21 @@ export const VERIFICATION_PENDING_REASON = "its ownership is still being verifie
  * `powershell.exe`/`pwsh.exe` the environment resolves. */
 export function powershellCandidates(): string[] {
 	const candidates: string[] = [];
-	const systemRoot = process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
-	candidates.push(`${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`);
+	candidates.push(`${windowsDirectory()}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`);
 	candidates.push("powershell.exe", "pwsh.exe");
 	return candidates;
+}
+
+function windowsDirectory(): string {
+	return process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
+}
+
+function neutralWorkingDirectory(): string | undefined {
+	try {
+		return statSync(windowsDirectory()).isDirectory() ? windowsDirectory() : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 let lastReadFailure: string | undefined;
@@ -204,7 +216,11 @@ class SharedSecurityRead {
 		});
 	}
 
-	join(deadline: AbortSignal, background: boolean): Promise<WindowsDirectorySecurity | undefined> {
+	join(
+		timeoutMs: number,
+		signal: AbortSignal | undefined,
+		background: boolean,
+	): Promise<WindowsDirectorySecurity | undefined> {
 		this.waiters += 1;
 		if (!background) this.foregroundWaiters += 1;
 		this.applyKeepAlive();
@@ -213,15 +229,18 @@ class SharedSecurityRead {
 			const leave = (security: WindowsDirectorySecurity | undefined) => {
 				if (left) return;
 				left = true;
-				deadline.removeEventListener("abort", onDeadline);
+				clearTimeout(deadline);
+				signal?.removeEventListener("abort", stopWaiting);
 				this.waiters -= 1;
 				if (!background) this.foregroundWaiters -= 1;
 				if (this.waiters === 0) this.cancel();
 				else this.applyKeepAlive();
 				resolve(security);
 			};
-			const onDeadline = () => leave(undefined);
-			deadline.addEventListener("abort", onDeadline, { once: true });
+			const stopWaiting = () => leave(undefined);
+			const deadline = setTimeout(stopWaiting, timeoutMs);
+			if (background) deadline.unref();
+			signal?.addEventListener("abort", stopWaiting, { once: true });
 			void this.result.then(leave, () => leave(undefined));
 		});
 	}
@@ -249,6 +268,7 @@ class SharedSecurityRead {
 			let child: ChildProcess;
 			try {
 				child = spawn(executable, ["-NoProfile", "-NonInteractive", "-Command", READ_SECURITY_SCRIPT], {
+					cwd: neutralWorkingDirectory(),
 					env: { ...process.env, ATOMIC_SECURITY_QUERY_PATH: this.path },
 					stdio: ["ignore", "pipe", "pipe"],
 					windowsHide: true,
@@ -327,15 +347,13 @@ export function readWindowsDirectorySecurityAsync(
 	path: string,
 	options: ReadWindowsDirectorySecurityOptions = {},
 ): Promise<WindowsDirectorySecurity | undefined> {
-	const timeout = AbortSignal.timeout(options.timeoutMs ?? READ_SECURITY_TIMEOUT_MS);
-	const deadline = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-	if (deadline.aborted) return Promise.resolve(undefined);
+	if (options.signal?.aborted) return Promise.resolve(undefined);
 	let read = sharedReads.get(path);
 	if (read === undefined) {
 		read = new SharedSecurityRead(path);
 		sharedReads.set(path, read);
 	}
-	return read.join(deadline, options.background ?? false);
+	return read.join(options.timeoutMs ?? READ_SECURITY_TIMEOUT_MS, options.signal, options.background ?? false);
 }
 
 function parseSecurityOutput(stdout: string): WindowsDirectorySecurity | undefined {
@@ -466,6 +484,10 @@ export function verifyWindowsDirectorySecurity(
 		});
 	}
 	return VERIFICATION_PENDING_REASON;
+}
+
+export async function waitForWindowsDirectorySecurityReadsForTesting(): Promise<void> {
+	await Promise.all([...sharedReads.values()].map((read) => read.result));
 }
 
 /** Test seam: substitute the descriptor reader; pass `undefined` to restore. */
