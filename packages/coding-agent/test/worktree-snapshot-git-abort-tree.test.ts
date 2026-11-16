@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { afterEach, beforeEach, test } from "vitest";
 import { sleep } from "../../../test/helpers/runtime.js";
 import { GitSandbox, gitConfigPath } from "../../../test/helpers/worktree-snapshot.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { runGit } from "../src/core/worktree-snapshot/git.ts";
 
 let sandbox: GitSandbox;
@@ -48,7 +49,7 @@ test.skipIf(process.platform !== "win32")(
 			controller.abort(new Error("stopped"));
 			await assert.rejects(running, /stopped/);
 			assert.throws(() => process.kill(held, 0), "the process left holding a file in the checkout has ended");
-			renameSync(checkout, sandbox.path("checkout-moved"));
+			await renameWithRetry(checkout, sandbox.path("checkout-moved"), { budgetMs: 10_000 });
 		} finally {
 			try {
 				process.kill(held);

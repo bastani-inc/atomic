@@ -3,7 +3,7 @@ import { readdirSync } from "node:fs";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
-import { ShipShard, shipShardPath } from "../../packages/workflows/src/workers/ship-shard.js";
+import { SHIP_SHARD_SCHEMA, ShipShard, shipShardPath } from "../../packages/workflows/src/workers/ship-shard.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const ROOT = "root-4768";
@@ -79,36 +79,36 @@ test("holding an older generation ignores it and preserves the newer generation 
 	await assertRefused(shard.accept(ROOT, LEASE_G1, "k3", '{"step":3}', 3), "generation-mismatch");
 });
 
-test("shared shard file across instances fences a displaced generation via ship_lease and qualifies event keys by generation (#4768)", async () => {
+test("a reopened shard preserves the stored replacement lease and refuses old-generation checkpoint keys (#4768)", async () => {
 	const path = createShardPath();
 	const { shard: firstHost } = await openShard(path);
+	await firstHost.hold(LEASE_G1, LEASE_MS);
+	await firstHost.accept(ROOT, LEASE_G1, "k1", '{"gen":1}', 1);
+	await firstHost.close();
+
 	const { shard: secondHost } = await openShard(path);
-
-	await firstHost.hold(LEASE_G1, LEASE_MS);
-	await secondHost.hold(LEASE_G1, LEASE_MS);
-	await firstHost.fence(LEASE_G1);
-	await assertRefused(secondHost.accept(ROOT, LEASE_G1, "k0", '{"gen":1}', 1), "missing");
-
-	await firstHost.hold(LEASE_G1, LEASE_MS);
 	await secondHost.hold(LEASE_G2, LEASE_MS);
-	const acceptedG2 = await secondHost.accept(ROOT, LEASE_G2, "k1", '{"gen":2}', 1);
-	assert.deepEqual(acceptedG2, { localSeq: 1, accepted: true });
-
-	await assertRefused(firstHost.accept(ROOT, LEASE_G1, "k1", '{"gen":1}', 2), "generation-mismatch");
-	await assertRefused(firstHost.accept(ROOT, LEASE_G1, "k1", '{"gen":2}', 2), "generation-mismatch");
+	const acceptedG2 = await secondHost.accept(ROOT, LEASE_G2, "k1", '{"gen":2}', 2);
+	assert.equal(acceptedG2.accepted, true);
+	await secondHost.close();
 
 	const { shard: lateHost } = await openShard(path);
 	await lateHost.hold(LEASE_G1, LEASE_MS);
-	assert.equal((await secondHost.pending(LEASE_G2)).length, 1);
+	assert.equal((await lateHost.pending(LEASE_G2)).length, 1);
 	await assertRefused(lateHost.accept(ROOT, LEASE_G1, "k1", '{"gen":1}', 3), "generation-mismatch");
+	await assertRefused(lateHost.accept(ROOT, LEASE_G1, "k1", '{"gen":2}', 3), "generation-mismatch");
+	await lateHost.fence(LEASE_G1);
+	await lateHost.hold(LEASE_G2, LEASE_MS);
+	assert.deepEqual(await lateHost.accept(ROOT, LEASE_G2, "k1", '{"gen":2}', 4), {
+		localSeq: acceptedG2.localSeq,
+		accepted: false,
+	});
 });
 
 test("opening an existing shard file migrates legacy UNIQUE(work, event_key) tables (#4768)", async () => {
 	const path = createShardPath();
-	const { shard: initial } = await openShard(path);
-	await initial.close();
-
 	const raw = await openNodeSqliteDatabase(path);
+	await raw.exec(SHIP_SHARD_SCHEMA);
 	await raw.exec(`
 		DROP TABLE ship_events;
 		CREATE TABLE ship_events(
@@ -120,6 +120,7 @@ test("opening an existing shard file migrates legacy UNIQUE(work, event_key) tab
 		);
 		INSERT INTO ship_events(local_seq, work, generation, epoch, event_key, payload, digest, at)
 		VALUES (1, 'work-1', 1, 1, 'shared-key', '{"g":1}', 'd1', 1);
+		INSERT INTO ship_lease(work, generation, worker, epoch) VALUES ('work-1', 1, 'host/1', 1);
 	`);
 	await raw.close();
 

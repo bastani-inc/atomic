@@ -6,9 +6,11 @@
 import { createServer, request as httpRequest } from "node:http";
 import { gunzipSync } from "node:zlib";
 
-/** First two words of each statement a pipeline request carries; `store_sql` registers text that later steps name by id. */
+/** Each statement keeps its first `TRACE_WORDS` words, 3 by default. */
+
+/** First words of each statement a pipeline request carries; `store_sql` registers text that later steps name by id. */
 function statementsOf(parsed, stored) {
-	const words = (text) => String(text ?? "").trim().split(/\s+/).slice(0, 3).join(" ");
+	const words = (text) => String(text ?? "").trim().split(/\s+/).slice(0, Number(process.env.TRACE_WORDS ?? 3)).join(" ");
 	const out = [];
 	for (const request of parsed?.requests ?? []) {
 		if (request.type === "store_sql") stored.set(request.sql_id, request.sql);
@@ -19,7 +21,8 @@ function statementsOf(parsed, stored) {
 	return out;
 }
 
-export function startTraceProxy(targetPort) {
+/** `listen`: where the proxy listens, by default a free port on loopback. */
+export function startTraceProxy(targetPort, listen = { host: "127.0.0.1", port: 0 }) {
 	const records = [];
 	/** Requests sent on to sqld and not answered yet: what a stalled store is waiting on. */
 	const pending = new Set();
@@ -71,7 +74,7 @@ export function startTraceProxy(targetPort) {
 		});
 	});
 	return new Promise((resolve) =>
-		server.listen(0, "127.0.0.1", () =>
+		server.listen(listen.port, listen.host, () =>
 			resolve({
 				port: server.address().port,
 				records,

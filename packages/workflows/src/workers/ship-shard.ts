@@ -4,8 +4,15 @@ import { realpath, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
 import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
+import type { AdvisoryLock } from "@bastani/atomic-natives";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
+
+/** The root's own lock, held while its shard is open: one process at a time opens a root's local journal. */
+async function tryRootLock(path: string): Promise<AdvisoryLock | null> {
+	const { tryAdvisoryLock } = await import("@bastani/atomic-natives");
+	return tryAdvisoryLock(`${path}.lock`, 0);
+}
 
 export function shipShardPath(stateDirectory: string, journalIdentity: string, root: string): string {
 	const journal = createHash("sha256").update(journalIdentity).digest("hex").slice(0, 24);
@@ -106,6 +113,7 @@ export class ShipShard {
 	private constructor(
 		private readonly database: SqliteDatabase,
 		readonly root: string,
+		private readonly lock: AdvisoryLock | undefined,
 		private readonly path: string,
 		private readonly now: () => number = () => performance.now(),
 	) {}
@@ -116,8 +124,11 @@ export class ShipShard {
 
 	private static async openUnlocked(path: string, root: string, now?: () => number): Promise<ShipShard> {
 		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-		const database = await openNodeSqliteDatabase(path);
+		const lock = path === ":memory:" ? undefined : await tryRootLock(path);
+		if (lock === null) throw new Error(`Checkpoint shard is already open by another process: ${path}`);
+		let database: SqliteDatabase | undefined;
 		try {
+			database = await openNodeSqliteDatabase(path);
 			await database.exec(SHIP_SHARD_SCHEMA);
 			const table = await database.get<SqliteRow & { sql: string | null }>(
 				`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ship_events'`,
@@ -141,11 +152,18 @@ export class ShipShard {
 					await tx.run(`DROP TABLE ship_events_legacy`);
 				});
 			}
+			await database.run(
+				`DELETE FROM ship_events WHERE NOT EXISTS (SELECT 1 FROM ship_lease l WHERE l.work = ship_events.work AND l.generation = ship_events.generation)`,
+			);
+			return new ShipShard(database, root, lock, path, now);
 		} catch (error) {
-			await database.close();
+			try {
+				await database?.close();
+			} finally {
+				lock?.release();
+			}
 			throw error;
 		}
-		return new ShipShard(database, root, path, now);
 	}
 
 	async hold(lease: AttemptLease, leaseMs: number): Promise<void> {
@@ -247,6 +265,15 @@ export class ShipShard {
 		);
 	}
 
+	async pendingSeqs(lease: Pick<AttemptLease, "id" | "generation">): Promise<number[]> {
+		const rows = await this.database.all<SqliteRow & { local_seq: number }>(
+			`SELECT local_seq FROM ship_events WHERE work = ? AND generation = ? ORDER BY local_seq`,
+			lease.id,
+			lease.generation,
+		);
+		return rows.map((row) => Number(row.local_seq));
+	}
+
 	async seal(lease: Pick<AttemptLease, "id" | "generation">, maxBatch: number): Promise<ShipBatchRows | undefined> {
 		return this.database.transaction(async (tx) => {
 			const sealed = await tx.get<SqliteRow & { batch: string }>(
@@ -286,6 +313,22 @@ export class ShipShard {
 			lease.generation,
 		);
 		return Number(row?.n ?? 0);
+	}
+
+	/**
+	 * The attempts with checkpoints left to ship, with the work lease each was accepted under, as a host that stopped
+	 * left them: what it ships, or drops as fenced, when it starts again (#4768).
+	 */
+	async leftover(): Promise<{ readonly lease: AttemptLease }[]> {
+		const rows = await this.database.all<
+			SqliteRow & { work: string; generation: number; worker: string; epoch: number }
+		>(
+			`SELECT l.work, l.generation, l.worker, l.epoch
+			FROM ship_lease l WHERE EXISTS (SELECT 1 FROM ship_events e WHERE e.work = l.work AND e.generation = l.generation)`,
+		);
+		return rows.map((row) => ({
+			lease: { id: row.work, generation: Number(row.generation), worker: row.worker, epoch: Number(row.epoch) },
+		}));
 	}
 
 	private async rows(
@@ -358,7 +401,11 @@ export class ShipShard {
 			if (options.retire === true && this.path !== ":memory:")
 				await underJournalLock(this.path, () => this.retire());
 		} finally {
-			await this.database.close();
+			try {
+				await this.database.close();
+			} finally {
+				this.lock?.release();
+			}
 		}
 	}
 
@@ -366,7 +413,9 @@ export class ShipShard {
 		const unused = (await this.onlyConnection()) && (await this.holdsNothing());
 		const location = unused ? await realpath(this.path).catch(() => undefined) : undefined;
 		await this.database.close();
-		if (location !== undefined) await removeShardFiles(location);
+		if (location === undefined) return;
+		this.lock?.release();
+		await removeShardFiles(location, this.path);
 	}
 
 	private async onlyConnection(): Promise<boolean> {
@@ -437,10 +486,11 @@ async function underJournalLock<T>(path: string, operation: () => Promise<T>): P
 	}
 }
 
-async function removeShardFiles(location: string): Promise<void> {
+async function removeShardFiles(location: string, path: string): Promise<void> {
 	for (const suffix of ["", "-journal", "-wal", "-shm"])
 		await rm(`${location}${suffix}`, { force: true }).catch(() => {});
 	for (const suffix of ["-holders", "-writers", "-wakes"])
 		await rm(`${location}${suffix}`, { recursive: true, force: true }).catch(() => {});
+	for (const lock of new Set([`${location}.lock`, `${path}.lock`])) await rm(lock, { force: true }).catch(() => {});
 	await rmdir(dirname(location)).catch(() => {});
 }

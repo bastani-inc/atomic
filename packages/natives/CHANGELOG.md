@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.88-alpha.1] - 2026-11-16
+
 ### Added
 
 - Added `tryAdvisoryLock(path, waitMs)`: takes the exclusive operating-system advisory lock of a file (`flock` on Unix, `LockFileEx` on Windows), created when missing and never removed, waiting up to `waitMs` while another holder keeps it, and returns an `AdvisoryLock` whose `release()` gives it up, or `null`. The kernel releases it when its holder dies. On Unix, new lock files are readable and writable only by their owner. Added `renameNoReplace(from, to)`, a rename that returns `false` and moves nothing when anything is at `to` ([#5193](https://github.com/bastani-inc/atomic/issues/5193)).
