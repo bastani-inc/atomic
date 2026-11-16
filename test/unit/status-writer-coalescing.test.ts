@@ -363,12 +363,10 @@ test.each(["EPERM", "EACCES", "EBUSY"])(
 			assert.equal(writeAttempts, 1);
 			assert.equal(store.notices().length, 0);
 
-			store.recordRunSummary!("live", "step-1", 1);
 			await vi.advanceTimersByTimeAsync(250 + 160);
 			assert.equal(writeAttempts, 2);
 			assert.equal(store.notices().length, 0);
 
-			store.recordRunSummary!("live", "step-2", 2);
 			await vi.advanceTimersByTimeAsync(1_000 + 160);
 			assert.equal(writeAttempts, 3);
 			assert.equal(store.notices().length, 0);
@@ -393,10 +391,9 @@ test.each(["EPERM", "EACCES", "EBUSY"])(
 			await vi.advanceTimersByTimeAsync(260);
 			assert.equal(writeAttempts, 6);
 			const published = JSON.parse(publishedByPath.get(targetPath) ?? "{}") as {
-				runs: Array<{ id: string; status: string; summary?: string }>;
+				runs: Array<{ id: string; status: string }>;
 			};
 			assert.equal(published.runs[0]?.status, "completed");
-			assert.equal(published.runs[0]?.summary, "step-2");
 		} finally {
 			writer.unsubscribe();
 			await vi.runAllTimersAsync();
@@ -407,6 +404,127 @@ test.each(["EPERM", "EACCES", "EBUSY"])(
 		}
 	},
 );
+
+test("a store change after a reader releases status.json republishes within one write interval (#5322)", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+	vi.resetModules();
+	const { createStatusWriter } = await import("../../packages/workflows/src/extension/status-writer.js");
+	const store = createStore();
+	store.recordRunStart({ ...makeRun([makeStage("stage")]), id: "live", status: "running" });
+	const stagedByPath = new Map<string, string>();
+	const publishedByPath = new Map<string, string>();
+	let failRename = true;
+	let writeAttempts = 0;
+	writeFileHook = async (path, content) => {
+		writeAttempts++;
+		const text = typeof content === "string" ? content : Array.from(content).join("");
+		stagedByPath.set(path, text);
+	};
+	renameHook = async (oldPath, newPath) => {
+		if (failRename) {
+			throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+		}
+		const staged = stagedByPath.get(oldPath);
+		assert.notEqual(staged, undefined);
+		stagedByPath.delete(oldPath);
+		publishedByPath.set(newPath, staged!);
+	};
+	unlinkHook = async (path) => {
+		stagedByPath.delete(path);
+	};
+	const targetPath = resolve("status-store-change-reset.json");
+	const writer = createStatusWriter(store, {
+		maxDepth: 4,
+		defaultConcurrency: 4,
+		persistRuns: true,
+		resumeInFlight: "ask",
+		statusFile: true,
+		statusFilePath: "status-store-change-reset.json",
+	});
+	try {
+		for (let step = 1; step <= 40; step++) {
+			store.recordRunSummary!("live", `step-${step}`, step);
+			await vi.advanceTimersByTimeAsync(300);
+		}
+		assert.ok(writeAttempts >= 25, `expected store changes to keep waking retries during hold, got ${writeAttempts}`);
+		assert.equal(store.notices().length, 0);
+
+		failRename = false;
+		store.recordRunSummary!("live", "after-release", 41);
+		await vi.advanceTimersByTimeAsync(500);
+		assert.equal(store.notices().length, 0);
+		const published = JSON.parse(publishedByPath.get(targetPath) ?? "{}") as {
+			runs: Array<{ id: string; summary?: string }>;
+		};
+		assert.equal(published.runs[0]?.summary, "after-release");
+	} finally {
+		writer.unsubscribe();
+		await vi.runAllTimersAsync();
+		writeFileHook = undefined;
+		renameHook = undefined;
+		unlinkHook = undefined;
+		vi.useRealTimers();
+	}
+});
+
+test("a persistent reader hold under ongoing store changes records exactly one warning after the hold budget (#5322)", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+	vi.resetModules();
+	const { createStatusWriter } = await import("../../packages/workflows/src/extension/status-writer.js");
+	const store = createStore();
+	store.recordRunStart({ ...makeRun([makeStage("stage")]), id: "live", status: "running" });
+	const stagedByPath = new Map<string, string>();
+	let writeAttempts = 0;
+	writeFileHook = async (path, content) => {
+		writeAttempts++;
+		const text = typeof content === "string" ? content : Array.from(content).join("");
+		stagedByPath.set(path, text);
+	};
+	renameHook = async () => {
+		throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+	};
+	unlinkHook = async (path) => {
+		stagedByPath.delete(path);
+	};
+	const writer = createStatusWriter(store, {
+		maxDepth: 4,
+		defaultConcurrency: 4,
+		persistRuns: true,
+		resumeInFlight: "ask",
+		statusFile: true,
+		statusFilePath: "status-active-persistent-hold.json",
+	});
+	try {
+		for (let step = 1; step <= 70; step++) {
+			store.recordRunSummary!("live", `step-${step}`, step);
+			await vi.advanceTimersByTimeAsync(300);
+		}
+		assert.equal(store.notices().length, 0);
+
+		for (let step = 71; step <= 75; step++) {
+			store.recordRunSummary!("live", `step-${step}`, step);
+			await vi.advanceTimersByTimeAsync(300);
+		}
+		const noticesAtBudget = store.notices().filter((notice) => notice.message.includes("status file write failed"));
+		assert.equal(noticesAtBudget.length, 1);
+		assert.equal(noticesAtBudget[0]?.level, "warning");
+		assert.match(noticesAtBudget[0]?.message ?? "", /EPERM/);
+
+		for (let step = 76; step <= 200; step++) {
+			store.recordRunSummary!("live", `step-${step}`, step);
+			await vi.advanceTimersByTimeAsync(300);
+		}
+		assert.equal(store.notices().filter((notice) => notice.message.includes("status file write failed")).length, 1);
+		assert.ok(writeAttempts > 40, `expected > 40 write attempts under ongoing changes, got ${writeAttempts}`);
+	} finally {
+		writer.unsubscribe();
+		await vi.runAllTimersAsync();
+		writeFileHook = undefined;
+		renameHook = undefined;
+		unlinkHook = undefined;
+		vi.useRealTimers();
+	}
+});
 
 test("flush waits out a transient reader hold across several retries without recording a failure notice (#5322)", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });

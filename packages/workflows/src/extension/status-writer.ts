@@ -10,6 +10,7 @@ import { StatusSnapshotSerializer } from "./status-snapshot-serializer.js";
 const DEFAULT_STATUS_SUBPATH = join(CONFIG_DIR_NAME, "workflows", "status.json");
 const STATUS_WRITE_INTERVAL_MS = 250;
 const STATUS_WRITE_RETRY_DELAYS_MS = [STATUS_WRITE_INTERVAL_MS, 1_000, 4_000, 16_000];
+const PERSISTENT_HOLD_MS = STATUS_WRITE_RETRY_DELAYS_MS.reduce((sum, delayMs) => sum + delayMs, 0);
 const STATUS_FLUSH_HOLD_BUDGET_MS = 1_000;
 const RENAME_RETRY_DELAYS_MS = [5, 10, 20, 40, 80];
 const RETRYABLE_RENAME_CODES: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EBUSY"]);
@@ -127,13 +128,13 @@ export function createStatusWriter(
 	const filePath = resolveStatusFilePath(config, opts);
 	let lastErrorMessage: string | null = null;
 	let lastHoldError: unknown = null;
+	let holdStartedAt: number | null = null;
 	let active = true;
 	let writing = false;
 	let initialWrite = true;
 	let pending = initialWrite;
 	let changeSeq = 0;
 	let unchangedFailures = 0;
-	let pendingTransientHold = false;
 	let recordingOwnNotice = false;
 	let cancelDrainSleep: (() => void) | null = null;
 	let cancelFlushSleep: (() => void) | null = null;
@@ -182,7 +183,7 @@ export function createStatusWriter(
 	}
 
 	function recordPersistentHoldError(err: unknown): void {
-		pendingTransientHold = false;
+		holdStartedAt = null;
 		lastHoldError = null;
 		recordingOwnNotice = true;
 		try {
@@ -195,18 +196,17 @@ export function createStatusWriter(
 	function handleWriteFailure(err: unknown, seqBefore: number): void {
 		pending = true;
 		if (!isTransientRenameHold(err)) {
-			pendingTransientHold = false;
+			holdStartedAt = null;
 			lastHoldError = null;
 			recordWriteError(err);
 			unchangedFailures = changeSeq === seqBefore ? unchangedFailures + 1 : 0;
 			return;
 		}
 		lastHoldError = err;
-		unchangedFailures = pendingTransientHold ? unchangedFailures + 1 : 1;
-		if (unchangedFailures > STATUS_WRITE_RETRY_DELAYS_MS.length) {
+		holdStartedAt ??= Date.now();
+		unchangedFailures = changeSeq === seqBefore ? unchangedFailures + 1 : 0;
+		if (unchangedFailures > STATUS_WRITE_RETRY_DELAYS_MS.length || Date.now() - holdStartedAt >= PERSISTENT_HOLD_MS) {
 			recordPersistentHoldError(err);
-		} else {
-			pendingTransientHold = true;
 		}
 	}
 
@@ -224,8 +224,8 @@ export function createStatusWriter(
 			await atomicWriteJson(filePath, content);
 			lastErrorMessage = null;
 			lastHoldError = null;
+			holdStartedAt = null;
 			unchangedFailures = 0;
-			pendingTransientHold = false;
 			return true;
 		} catch (err: unknown) {
 			if (active) {
@@ -288,13 +288,11 @@ export function createStatusWriter(
 	const unsubscribeStore = store.subscribeInvalidation(() => {
 		if (recordingOwnNotice) return;
 		changeSeq++;
+		const hadBackoff = unchangedFailures > 0;
+		unchangedFailures = 0;
 		pending = true;
-		if (!pendingTransientHold) {
-			const hadBackoff = unchangedFailures > 0;
-			unchangedFailures = 0;
-			if (hadBackoff) {
-				cancelDrainSleep?.();
-			}
+		if (hadBackoff) {
+			cancelDrainSleep?.();
 		}
 		void ensureDrain();
 	});
@@ -322,7 +320,7 @@ export function createStatusWriter(
 					continue;
 				}
 				failedAttempts++;
-				if (pendingTransientHold) {
+				if (holdStartedAt !== null) {
 					const remainingMs = deadline - Date.now();
 					if (remainingMs <= 0) {
 						recordPersistentHoldError(lastHoldError);
@@ -342,7 +340,7 @@ export function createStatusWriter(
 		unsubscribe() {
 			active = false;
 			pending = false;
-			pendingTransientHold = false;
+			holdStartedAt = null;
 			lastHoldError = null;
 			cancelDrainSleep?.();
 			cancelFlushSleep?.();
