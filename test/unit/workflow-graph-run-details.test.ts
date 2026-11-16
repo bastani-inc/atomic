@@ -209,7 +209,6 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 			],
 			{ name: `wf ${evil}`, status: "failed", error: `boom ${evil}`, result: { [`k${evil}`]: `v ${evil}` } },
 		);
-		graph.handleInput("o");
 		const check = (lines) => {
 			for (const line of lines) {
 				assert.doesNotMatch(line, /\x1b\]/, "no OSC sequence reaches the terminal");
@@ -218,7 +217,14 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 			}
 		};
 		check(graph.render(160));
+		graph.handleInput("o");
+		check(graph.render(160));
 		assert.match(screen(graph), /<U\+202E>/, "the bidi override is shown, not obeyed");
+		graph.handleInput("l");
+		check(graph.render(160));
+		graph.handleInput(ESC);
+		graph.handleInput(ENTER);
+		check(graph.render(160));
 		graph.handleInput("l");
 		check(graph.render(160));
 	});

@@ -81,6 +81,8 @@ describe("workflow definition errors before launch (#5224)", () => {
 		assert.doesNotMatch(text, /at importWorkflow/);
 		// The selector lists Definitions by name: deploy, greet, ralph.
 		component.handleInput("\x1b[B");
+		// Enter acts on the row the screen shows, so the moved selection is painted first.
+		component.render(120);
 		component.handleInput("\r");
 		await pending;
 		assert.deepEqual(t.started, [], "a broken definition never starts");

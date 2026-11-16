@@ -35,6 +35,7 @@ import {
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
 import { BOLD, DEFAULT_BG, hexToAnsi, lerpColor, paint, RESET } from "./color-utils.js";
+import { inertDisplayLine } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { NODE_H, NODE_W } from "./layout.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
@@ -119,7 +120,7 @@ function blockedBadgeText(stage: StageSnapshot, stages: readonly StageSnapshot[]
 	const blockedBy = stage.blockedByStageId;
 	if (!blockedBy) return base;
 
-	const upstream = stages?.find((s) => s.id === blockedBy)?.name ?? blockedBy;
+	const upstream = inertDisplayLine(stages?.find((s) => s.id === blockedBy)?.name ?? blockedBy);
 	const withUpstream = `${base} by ${upstream}`;
 	if (visibleWidth(withUpstream) <= width) return withUpstream;
 	return base;
@@ -334,7 +335,7 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 	// identity remains visible without changing the fixed card geometry.
 	const child = stage.workflowChild ?? stage.workflowChildRun;
 	const { slot: titleSlot, visibleWidth: titleVisibleWidth } = buildTitleSlot(
-		child === undefined ? stage.name : `↳ ${child.workflow}`,
+		inertDisplayLine(child === undefined ? stage.name : `↳ ${child.workflow}`),
 		innerWidth,
 		focused,
 		theme,

@@ -282,8 +282,9 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 				},
 			),
 		);
-		const strings = JSON.stringify(outcome);
-		assert.doesNotMatch(strings, /\\u001b/, "no escape character survives anywhere in the outcome");
+		// Every shown string; node ids only look nodes up and are never shown.
+		const strings = JSON.stringify(outcome, (key, value) => (key === "id" || key === "runId" ? undefined : value));
+		assert.doesNotMatch(strings, /\\u001b/, "no escape character survives anywhere the outcome shows");
 		assert.doesNotMatch(strings, /\u202e/, "no bidi override survives");
 		assert.match(outcome.name, /<U\+202E>/);
 	});

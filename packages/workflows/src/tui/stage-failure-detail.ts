@@ -7,6 +7,7 @@ import type { SerializedError } from "../shared/error-codec.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
+import { inertDisplayLine } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration } from "./status-helpers.js";
 import { truncateToWidth, wrapPlainText } from "./text-helpers.js";
@@ -25,7 +26,7 @@ export function stageFailureReason(stage: Pick<StageSnapshot, "error" | "failure
 		.split(/\r?\n/)
 		.map((part) => part.trim())
 		.find((part) => part.length > 0);
-	return line ?? "No reason was recorded.";
+	return line === undefined ? "No reason was recorded." : inertDisplayLine(line);
 }
 
 function serializedErrorLines(error: SerializedError, depth: number): string[] {
@@ -48,7 +49,8 @@ export function stageFailureLogLines(
 	if (message) lines.push(...message.split(/\r?\n/));
 	if (stage.failureDetail) lines.push("", ...serializedErrorLines(stage.failureDetail, 0));
 	if (lines.length === 0) lines.push("No log was recorded for this stage.");
-	return lines;
+	// Errors quote tool output and model text: they are shown, never obeyed by the terminal.
+	return lines.map((line) => inertDisplayLine(line));
 }
 
 /** The detail's body rows, already styled and cut to `width`. */
@@ -62,7 +64,7 @@ export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageF
 	const after = elapsed === undefined ? "" : ` after ${fmtDuration(elapsed)}`;
 	const indent = "  ";
 	const room = Math.max(1, width - indent.length);
-	const title = `${indent}${error}${BOLD}✗ ${stage.name}${RESET}${muted} · failed${after}${RESET}`;
+	const title = `${indent}${error}${BOLD}✗ ${inertDisplayLine(stage.name)}${RESET}${muted} · failed${after}${RESET}`;
 	if (opts.logs) {
 		const body = stageFailureLogLines(stage).flatMap((line) =>
 			line.length === 0 ? [""] : wrapPlainText(line, room),
