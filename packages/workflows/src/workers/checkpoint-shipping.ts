@@ -213,10 +213,7 @@ export class CheckpointShipping {
 	): Promise<PoolCommitReceipt> {
 		const fenced = this.attempts.get(lease.id)?.fenced;
 		if (fenced !== undefined && this.attempts.get(lease.id)?.lease.generation === lease.generation) throw fenced;
-		if (!shippableCheckpoint(mutation) || this.syncOnly.has(lease.id)) {
-			await this.flush(lease);
-			return commitShared();
-		}
+		if (!shippableCheckpoint(mutation) || this.syncOnly.has(lease.id)) return this.commitDirect(lease, commitShared);
 		const checkpoint = mutation.checkpoint;
 		await this.catchUp(lease);
 		try {
@@ -231,8 +228,7 @@ export class CheckpointShipping {
 		} catch (error) {
 			if (error instanceof StaleWorkLeaseError || error instanceof ShipIdentityConflictError) throw error;
 			this.fallBack(lease.id, error as Error);
-			await this.flush(lease);
-			return commitShared();
+			return this.commitDirect(lease, commitShared);
 		}
 		const attempt = this.attempts.get(lease.id);
 		// A full batch ships at once, unless a shipment is queued already: it takes what has come since when it runs.
@@ -437,23 +433,45 @@ export class CheckpointShipping {
 			await this.options.deliver(lease, batch);
 			this.noteDelivery(this.now() - began);
 		} catch (error) {
-			if (error instanceof StaleWorkLeaseError || error instanceof StaleLeaseError) {
-				attempt.fenced =
-					error instanceof StaleWorkLeaseError
-						? error
-						: new StaleWorkLeaseError(
-								{ root: this.shard.root, workId: lease.id, generation: lease.generation, reason: "fenced" },
-								{ cause: error },
-							);
-				attempt.accepted = [];
-				await this.shard.fence(lease);
-			} else this.lastError = error as Error;
-			throw attempt.fenced ?? error;
+			const fenced = await this.fence(attempt, lease, error as Error);
+			if (fenced === undefined) this.lastError = error as Error;
+			throw fenced ?? error;
 		}
 		this.lastError = undefined;
 		await this.shard.shipped(lease, sealed.events.at(-1)!.localSeq);
 		const last = sealed.events.at(-1)!.localSeq;
 		attempt.accepted = attempt.accepted.filter((entry) => entry.localSeq > last);
+	}
+
+	private async commitDirect(
+		lease: AttemptLease,
+		commitShared: () => Promise<PoolCommitReceipt>,
+	): Promise<PoolCommitReceipt> {
+		const attempt = this.attempts.get(lease.id);
+		await this.flush(lease);
+		try {
+			return await commitShared();
+		} catch (error) {
+			const fenced =
+				attempt?.lease.generation === lease.generation
+					? await this.fence(attempt, lease, error as Error)
+					: undefined;
+			throw fenced ?? error;
+		}
+	}
+
+	private async fence(attempt: Attempt, lease: AttemptLease, error: Error): Promise<Error | undefined> {
+		if (!(error instanceof StaleWorkLeaseError || error instanceof StaleLeaseError)) return undefined;
+		attempt.fenced =
+			error instanceof StaleWorkLeaseError
+				? error
+				: new StaleWorkLeaseError(
+						{ root: this.shard.root, workId: lease.id, generation: lease.generation, reason: "fenced" },
+						{ cause: error },
+					);
+		attempt.accepted = [];
+		await this.shard.fence(lease);
+		return attempt.fenced;
 	}
 
 	private noteAccepted(lease: AttemptLease, localSeq: number): void {
