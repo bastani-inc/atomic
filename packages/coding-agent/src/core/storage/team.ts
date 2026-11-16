@@ -29,6 +29,7 @@ import { openAdapterSelectionDatabase } from "./adapter-open.js";
 import {
 	describeStorageError,
 	StorageAdapterLoadError,
+	StorageConfigError,
 	StorageError,
 	TeamProfileError,
 	TeamProfileTimeoutError,
@@ -252,6 +253,16 @@ async function checkConnection(target: JoinTarget, agentDir: string): Promise<vo
 	}
 }
 
+/** The `StorageConfigError` `error` is, or was caused by, if any. */
+function storageConfigCause(error: unknown): StorageConfigError | undefined {
+	let current = error;
+	for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+		if (current instanceof StorageConfigError) return current;
+		current = current.cause;
+	}
+	return undefined;
+}
+
 /** How long a join waits for the team database to load its adapter, connect and answer `SELECT 1`. */
 export const TEAM_CONNECTION_TIMEOUT_MS = 15_000;
 
@@ -273,6 +284,17 @@ async function checkConnectionWithin(target: JoinTarget, agentDir: string, timeo
 	try {
 		outcome = await Promise.race([check, deadline]);
 	} catch (error) {
+		// A cloud identity that cannot sign in, such as one whose SDK is not installed, is no connection failure that
+		// passes: it fails at once and says what to install or change (#5218).
+		const config = storageConfigCause(error);
+		if (config?.reason === "auth-unavailable")
+			throw new TeamProfileError("auth-unavailable", {
+				subject: url,
+				detail: "auth-unavailable",
+				hint: `Nothing was changed. ${config.hint ?? "Check the cloud identity's sign-in"}`,
+				cause: error as Error,
+			});
+		if (config !== undefined) throw config;
 		throw new TeamProfileError("connection-failed", {
 			subject: url,
 			detail: describeStorageError(error as Error),
