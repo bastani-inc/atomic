@@ -136,14 +136,20 @@ test("named-worktree ownership files survive Git maintenance without appearing a
 test("a checkout hook's nested launch has a typed refusal naming the requested path (#5202)", async () => {
 	const repo = makeRepo();
 	const { pathLock, target } = locks(repo, "feat/nested");
-	vi.stubEnv("ATOMIC_NAMED_WORKTREE_LOCKS", JSON.stringify([pathLock]));
-	await assert.rejects(ensureNamedWorktree(repo, { branch: "feat/nested" }), (error: Error) => {
-		assert.ok(error instanceof WorktreeReentryError);
-		assert.ok(error.message.includes(target));
-		assert.match(error.message, /retry outside the hook/);
-		return true;
-	});
-	assert.equal(existsSync(target), false);
+	const holder = tryAdvisoryLock(pathLock, 0);
+	assert.ok(holder);
+	try {
+		vi.stubEnv("ATOMIC_NAMED_WORKTREE_LOCKS", JSON.stringify([pathLock]));
+		await assert.rejects(ensureNamedWorktree(repo, { branch: "feat/nested" }), (error: Error) => {
+			assert.ok(error instanceof WorktreeReentryError);
+			assert.ok(error.message.includes(target));
+			assert.match(error.message, /retry outside the hook/);
+			return true;
+		});
+		assert.equal(existsSync(target), false);
+	} finally {
+		holder.release();
+	}
 });
 
 const CHECKOUT_CANCELLATION_PROCESS_TIMEOUT_MS = 60_000;

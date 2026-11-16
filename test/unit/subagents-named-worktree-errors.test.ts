@@ -143,7 +143,7 @@ test("reftable reference contention is retried before creating a named worktree 
 	assert.equal(git(result.path, "branch", "--show-current"), "feat/reftable");
 });
 
-for (const missingDetail of ["No error", "No such file or directory"]) {
+for (const missingDetail of ["No error", "No such file or directory", "Success"]) {
 	test(`an add retries another worktree's missing commondir (${missingDetail}) without recreating that worktree (#5202)`, async () => {
 		const repo = makeRepo();
 		const realAdd = namedWorktreeGit.addNamedWorktree;
@@ -163,6 +163,50 @@ for (const missingDetail of ["No error", "No such file or directory"]) {
 		assert.equal(git(created.path, "status", "--porcelain"), "");
 	});
 }
+
+test.skipIf(process.platform === "win32")(
+	"an empty sibling commondir is retried until its external registration finishes (#5202)",
+	async () => {
+		const repo = makeRepo();
+		const sibling = join(repo, "external-sibling");
+		git(repo, "worktree", "add", "-b", "feat/external-sibling", sibling);
+		const commondir = join(repo, ".git", "worktrees", "external-sibling", "commondir");
+		const original = readFileSync(commondir, "utf8");
+		const realAdd = namedWorktreeGit.addNamedWorktree;
+		const realRunGit = worktreeGit.runGit;
+		let attempts = 0;
+		let observedListingRace = false;
+		let restore: ReturnType<typeof setTimeout> | undefined;
+		vi.spyOn(worktreeGit, "runGit").mockImplementation((cwd, args, env) => {
+			const result = realRunGit(cwd, args, env);
+			if (attempts === 1 && args[0] === "worktree" && args[1] === "list" && result.status !== 0) {
+				assert.match(result.stderr, /commondir/);
+				observedListingRace = true;
+				restore ??= setTimeout(() => writeFileSync(commondir, original), 10);
+			}
+			return result;
+		});
+		vi.spyOn(namedWorktreeGit, "addNamedWorktree").mockImplementation(async (cwd, args, env, signal) => {
+			if (++attempts === 1) writeFileSync(commondir, "");
+			const result = await realAdd(cwd, args, env, signal);
+			if (attempts === 1) {
+				assert.notEqual(result.status, 0);
+				assert.match(result.stderr || result.stdout, /commondir/);
+			}
+			return result;
+		});
+		try {
+			const created = await ensureNamedWorktree(repo, { branch: "feat/empty-commondir" });
+			assert.ok(attempts > 1 && attempts <= 5);
+			assert.equal(observedListingRace, true);
+			assert.equal(git(created.path, "status", "--porcelain"), "");
+			assert.equal(readFileSync(commondir, "utf8"), original);
+		} finally {
+			clearTimeout(restore);
+			writeFileSync(commondir, original);
+		}
+	},
+);
 
 test("a persistent sibling commondir error stops within five adds and never retries a populated target (#5202)", async () => {
 	const repo = makeRepo();

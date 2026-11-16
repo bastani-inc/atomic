@@ -218,20 +218,7 @@ impl WindowsProcess {
 		let _ = unsafe { WaitForSingleObject(raw(&self.process), timeout.as_millis() as u32) };
 	}
 	fn disarm_kill_on_close(&self) -> io::Result<()> {
-		let limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-		if unsafe {
-			SetInformationJobObject(
-				raw(&self.job),
-				JobObjectExtendedLimitInformation,
-				(&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-				std::mem::size_of_val(&limits) as u32,
-			)
-		} == 0
-		{
-			Err(io::Error::last_os_error())
-		} else {
-			Ok(())
-		}
+		self.job.limit(0)
 	}
 	fn exit_code(&self) -> io::Result<u32> {
 		let mut code = 0;
@@ -678,8 +665,12 @@ impl Actor {
 		{
 			failure = Some(error);
 		}
-		drop(stdout);
-		drop(stderr);
+		if preserved_background && failure.is_none() {
+			detach_background_output(stdout, stdout_eof, stderr, stderr_eof);
+		} else {
+			drop(stdout);
+			drop(stderr);
+		}
 		if let Some(message) = failure {
 			FAILED_WINDOWS.lock().unwrap().push(RetainedWindows { resource, writer });
 			let _ = self.runner_outcome(

@@ -28,12 +28,18 @@ function git(repo: string, ...args: string[]): string {
 	return result.stdout.toString().trim();
 }
 
-function makeRepo(shared = false): { root: string; repo: string } {
+function makeRepo(shared = false, umask?: "002"): { root: string; repo: string } {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "named-worktree-locks-")));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 	const repo = join(root, "repo");
 	mkdirSync(repo);
-	if (shared) git(repo, "init", "-q", "-b", "main", "--shared=group");
+	if (umask !== undefined) {
+		const result = spawnSyncCollect(
+			["sh", "-c", 'umask "$1"; shift; exec "$@"', "sh", umask, "git", "-C", repo, "init", "-q", "-b", "main"],
+			{ env: createGitEnvironment() },
+		);
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+	} else if (shared) git(repo, "init", "-q", "-b", "main", "--shared=group");
 	else git(repo, "init", "-q", "-b", "main");
 	git(repo, "config", "user.name", "Test");
 	git(repo, "config", "user.email", "test@example.com");
@@ -82,38 +88,54 @@ test("malformed ATOMIC_NAMED_WORKTREE_LOCKS values are treated as empty so launc
 	}
 });
 
-test("a checkout hook can create an unrelated named worktree in the same repository while refusing same-branch or same-path reentry (#5202)", async () => {
+test("a checkout hook can create an unrelated named worktree while refusing active same-target reentry and allowing delayed background launches after the hook returns (#5202)", async () => {
 	const { root, repo } = makeRepo();
 	const outerLocks = targetLockPaths(repo, "feat/outer");
+	mkdirSync(outerLocks.dir, { recursive: true });
+	const heldOuterPath = tryAdvisoryLock(outerLocks.pathLock, 0);
+	const heldOuterBranch = tryAdvisoryLock(outerLocks.branchLock, 0);
+	assert.ok(heldOuterPath);
+	assert.ok(heldOuterBranch);
 	vi.stubEnv("ATOMIC_NAMED_WORKTREE_LOCKS", JSON.stringify([outerLocks.pathLock, outerLocks.branchLock]));
+	try {
+		const unrelated = await ensureNamedWorktree(repo, {
+			branch: "feat/unrelated-nested",
+			path: join(root, "unrelated-nested"),
+		});
+		assert.equal(git(unrelated.path, "branch", "--show-current"), "feat/unrelated-nested");
 
-	const unrelated = await ensureNamedWorktree(repo, {
-		branch: "feat/unrelated-nested",
-		path: join(root, "unrelated-nested"),
-	});
-	assert.equal(git(unrelated.path, "branch", "--show-current"), "feat/unrelated-nested");
+		await assert.rejects(
+			ensureNamedWorktree(repo, { branch: "feat/outer", path: join(root, "same-branch-nested") }),
+			(error: Error) => {
+				assert.ok(error instanceof WorktreeReentryError);
+				assert.ok(error.message.includes(join(root, "same-branch-nested")));
+				return true;
+			},
+		);
 
-	await assert.rejects(
-		ensureNamedWorktree(repo, { branch: "feat/outer", path: join(root, "same-branch-nested") }),
-		(error: Error) => {
-			assert.ok(error instanceof WorktreeReentryError);
-			assert.ok(error.message.includes(join(root, "same-branch-nested")));
-			return true;
-		},
-	);
+		await assert.rejects(
+			ensureNamedWorktree(repo, { branch: "feat/same-path-nested", path: outerLocks.target }),
+			(error: Error) => {
+				assert.ok(error instanceof WorktreeReentryError);
+				assert.ok(error.message.includes(outerLocks.target));
+				return true;
+			},
+		);
+	} finally {
+		heldOuterBranch.release();
+		heldOuterPath.release();
+	}
 
-	await assert.rejects(
-		ensureNamedWorktree(repo, { branch: "feat/same-path-nested", path: outerLocks.target }),
-		(error: Error) => {
-			assert.ok(error instanceof WorktreeReentryError);
-			assert.ok(error.message.includes(outerLocks.target));
-			return true;
-		},
-	);
+	const afterOuterRelease = await ensureNamedWorktree(repo, { branch: "feat/outer" });
+	assert.equal(afterOuterRelease.path, outerLocks.target);
+	assert.equal(git(afterOuterRelease.path, "branch", "--show-current"), "feat/outer");
 
 	vi.unstubAllEnvs();
 	const hookResultFile = join(root, "hook-nested-result.json");
+	const outerReturnedFile = join(root, "hook-outer-returned");
+	const bgResultFile = join(root, "hook-bg-result.json");
 	const hookScript = join(root, "hook-nested.mjs");
+	const bgScript = join(root, "hook-bg.mjs");
 	const moduleUrl = pathToFileURL(
 		join(moduleDir(import.meta.url), "../../packages/subagents/src/runs/shared/named-worktree.ts"),
 	).href;
@@ -132,17 +154,44 @@ try {
 writeFileSync(outFile, JSON.stringify({ createdPath: created.path, refused }));
 `,
 	);
+	writeFileSync(
+		bgScript,
+		`import { existsSync, renameSync, writeFileSync } from "node:fs";
+const [moduleUrl, repo, readyFile, outFile] = process.argv.slice(2);
+const { ensureNamedWorktree } = await import(moduleUrl);
+const deadline = Date.now() + 10_000;
+while (!existsSync(readyFile) && Date.now() < deadline) {
+	await new Promise((resolve) => setTimeout(resolve, 25));
+}
+let payload;
+try {
+	const reused = await ensureNamedWorktree(repo, { branch: "feat/hook-outer" });
+	payload = { ok: true, reusedPath: reused.path, pid: process.pid };
+} catch (error) {
+	payload = {
+		ok: false,
+		name: error instanceof Error ? error.name : "Error",
+		message: error instanceof Error ? error.message : String(error),
+		pid: process.pid,
+	};
+}
+const tempFile = \`\${outFile}.tmp\`;
+writeFileSync(tempFile, JSON.stringify(payload));
+renameSync(tempFile, outFile);
+`,
+	);
 	const hooksDir = join(repo, ".git", "hooks");
 	mkdirSync(hooksDir, { recursive: true });
 	const postCheckout = join(hooksDir, "post-checkout");
 	const marker = join(root, "hook-ran");
 	writeFileSync(
 		postCheckout,
-		`#!/bin/sh\n[ -e "${posixPath(marker)}" ] && exit 0\necho 1 > "${posixPath(marker)}"\n"${posixPath(bunExecutable())}" "${posixPath(hookScript)}" "${moduleUrl}" "${posixPath(repo)}" "${posixPath(join(root, "from-hook"))}" "${posixPath(join(root, "hook-conflict"))}" "${posixPath(hookResultFile)}"\n`,
+		`#!/bin/sh\n[ -e "${posixPath(marker)}" ] && exit 0\necho 1 > "${posixPath(marker)}"\ncd "${posixPath(tmpdir())}" || exit 1\n"${posixPath(bunExecutable())}" "${posixPath(hookScript)}" "${moduleUrl}" "${posixPath(repo)}" "${posixPath(join(root, "from-hook"))}" "${posixPath(join(root, "hook-conflict"))}" "${posixPath(hookResultFile)}"\n"${posixPath(bunExecutable())}" "${posixPath(bgScript)}" "${moduleUrl}" "${posixPath(repo)}" "${posixPath(outerReturnedFile)}" "${posixPath(bgResultFile)}" >/dev/null 2>&1 &\n`,
 	);
 	chmodSync(postCheckout, 0o755);
 
 	const outer = await ensureNamedWorktree(repo, { branch: "feat/hook-outer" });
+	writeFileSync(outerReturnedFile, "1");
 	assert.equal(git(outer.path, "branch", "--show-current"), "feat/hook-outer");
 	const hookOutcome = JSON.parse(fs.readFileSync(hookResultFile, "utf8")) as {
 		createdPath: string;
@@ -151,6 +200,30 @@ writeFileSync(outFile, JSON.stringify({ createdPath: created.path, refused }));
 	assert.equal(hookOutcome.createdPath, join(root, "from-hook"));
 	assert.equal(git(hookOutcome.createdPath, "branch", "--show-current"), "feat/from-hook");
 	assert.equal(hookOutcome.refused, true);
+
+	const BG_LAUNCH_WAIT_MS = 10_000;
+	const bgDeadline = performance.now() + BG_LAUNCH_WAIT_MS;
+	while (!fs.existsSync(bgResultFile) && performance.now() < bgDeadline) {
+		await sleep(25);
+	}
+	assert.equal(fs.existsSync(bgResultFile), true, "expected background launch from post-checkout hook to finish");
+	const bgOutcome = JSON.parse(fs.readFileSync(bgResultFile, "utf8")) as {
+		ok: boolean;
+		reusedPath?: string;
+		name?: string;
+		message?: string;
+		pid: number;
+	};
+	for (let attempt = 0; attempt < 100; attempt++) {
+		try {
+			process.kill(bgOutcome.pid, 0);
+			await sleep(25);
+		} catch {
+			break;
+		}
+	}
+	assert.equal(bgOutcome.ok, true, `background launch failed: ${bgOutcome.name}: ${bgOutcome.message}`);
+	assert.equal(bgOutcome.reusedPath, outer.path);
 });
 
 test("a launch waiting on a busy branch lock releases its path lock so an unrelated branch at that path proceeds without waiting (#5202)", async () => {
@@ -240,15 +313,54 @@ test.skipIf(process.platform === "win32")(
 		}
 
 		const { root: rootAll, repo: repoAll } = makeRepo();
-		git(repoAll, "config", "core.sharedRepository", "all");
+		git(repoAll, "init", "-q", "--shared=all");
 		await ensureNamedWorktree(repoAll, { branch: "feat/shared-all", path: join(rootAll, "shared-all") });
 		const lockDirAll = join(repoAll, ".git", "objects", "info", "atomic-named-worktree-locks");
-		assert.equal(statSync(lockDirAll).mode & 0o2777, 0o2775);
+		assert.equal(statSync(lockDirAll).mode & 0o2777, 0o2770);
 		for (const file of readdirSync(lockDirAll).filter((name) => name.endsWith(".lock"))) {
-			assert.equal(statSync(join(lockDirAll, file)).mode & 0o777, 0o664, file);
+			assert.equal(statSync(join(lockDirAll, file)).mode & 0o777, 0o660, file);
 		}
 	},
 );
+
+for (const [setting, expectedDirMode, expectedFileMode] of [
+	["0001", 0o2770, 0o660],
+	["0606", 0o707, 0o606],
+] as const) {
+	test.skipIf(process.platform === "win32")(
+		`Git sharing setting ${setting} keeps the same writers on checkout locks (#5202)`,
+		async () => {
+			const { root, repo } = makeRepo();
+			git(repo, "init", "-q", `--shared=${setting}`);
+			git(repo, "config", "core.sharedRepository", setting);
+			await ensureNamedWorktree(repo, { branch: "feat/shared-setting", path: join(root, "shared-setting") });
+			const lockDir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
+			assert.equal(statSync(lockDir).mode & 0o2777, expectedDirMode);
+			assert.equal(statSync(lockDir).gid, statSync(join(repo, ".git", "objects", "info")).gid);
+			for (const file of readdirSync(lockDir).filter((name) => name.endsWith(".lock"))) {
+				assert.equal(statSync(join(lockDir, file)).mode & 0o777, expectedFileMode);
+			}
+		},
+	);
+}
+
+for (const setting of [undefined, "umask"]) {
+	test.skipIf(process.platform === "win32")(
+		`a repository initialized with umask 002 shares checkout locks with core.sharedRepository ${setting ?? "unset"} (#5202)`,
+		async () => {
+			const { root, repo } = makeRepo(false, "002");
+			assert.equal(statSync(join(repo, ".git", "objects", "info")).mode & 0o777, 0o775);
+			if (setting !== undefined) git(repo, "config", "core.sharedRepository", setting);
+			await ensureNamedWorktree(repo, { branch: "feat/shared-umask", path: join(root, "shared-umask") });
+			const lockDir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
+			assert.equal(statSync(lockDir).mode & 0o2777, 0o2770);
+			assert.equal(statSync(lockDir).gid, statSync(join(repo, ".git", "objects", "info")).gid);
+			for (const file of readdirSync(lockDir).filter((name) => name.endsWith(".lock"))) {
+				assert.equal(statSync(join(lockDir, file)).mode & 0o777, 0o660);
+			}
+		},
+	);
+}
 
 test.skipIf(process.platform === "win32")(
 	"read-only objects/info or objects directories fall back to a writable lock directory outside worktrees, and unreadable lock files name the lock path (#5202)",

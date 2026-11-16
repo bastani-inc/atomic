@@ -39,7 +39,28 @@ const commonDirectories = new Map<string, string>();
 const CONCURRENT_GIT_FAILURE =
 	/(?:^|\n)(?:(?:fatal|error): )?(?:failed to read ['"][^\n]*[/\\]locked['"]|(?:Unable to create|cannot lock ref)[^\n]*\.lock['"]?: File exists|another git process seems to be running|cannot lock references)/i;
 const SIBLING_REGISTRATION_FAILURE =
-	/^fatal: failed to read ['"]?([^\r\n]+?[/\\]worktrees[/\\][^/\\\r\n]+[/\\]commondir)['"]?: (?:No such file or directory|No error)\r?$/m;
+	/^fatal: failed to read ['"]?([^\r\n]+?[/\\]worktrees[/\\][^/\\\r\n]+[/\\]commondir)['"]?: [^\r\n]*\r?$/m;
+const OWNED_ADD_LOCK_PREFIX = "atomic-named-worktree-add:";
+const INITIALIZING_LOCK_REASONS = new Set([
+	"initializing",
+	"inisialiseer",
+	"инициализация",
+	"s'està inicialitzant",
+	"inicialització en curs",
+	"initialisiere",
+	"inicializando",
+	"initialisation",
+	"a thionscnamh",
+	"menginisialisasi",
+	"inicjowanie",
+	"iniciando",
+	"initierar",
+	"ilklendiriliyor",
+	"ініціалізація",
+	"khởi tạo",
+	"初始化",
+	"正在初始化",
+]);
 const SIBLING_REGISTRATION_ATTEMPTS = 5;
 const SIBLING_REGISTRATION_WAIT_MS = 1_000;
 const CONCURRENT_ADD_FAILURE = /already exists|already checked out|already used by worktree|is a missing but/i;
@@ -56,14 +77,15 @@ export class WorktreeReentryError extends Error {
 }
 
 export class WorktreeBusyError extends Error {
-	constructor(worktreePath: string, indexLock: string | null, interrupted = false) {
+	constructor(worktreePath: string, indexLock: string | null, interrupted = false, referenceLocks: string[] = []) {
 		const state = interrupted
 			? "an interrupted named-worktree checkout left an incomplete worktree"
 			: "another git process seems to be running";
 		const lock = indexLock === null ? "" : ` Git's checkout lock is ${indexLock}.`;
 		const wait = interrupted ? "" : " Wait for it to finish and retry.";
+		const locations = referenceLocks.length ? ` Reference lock locations: ${referenceLocks.join(", ")}.` : "";
 		super(
-			`worktree: ${state} at ${worktreePath}.${lock}${wait} If no Git process is using this worktree, inspect and save any files you need, then run git worktree remove --force --force ${JSON.stringify(worktreePath)} and launch again. Do not repair a partial checkout by deleting only index.lock.`,
+			`worktree: ${state} at ${worktreePath}.${lock}${wait} Once no Git process is using this worktree or repository, inspect and save any files you need. Run git worktree unlock ${JSON.stringify(worktreePath)}, remove the worktree directory, then run git worktree prune. Remove any stale HEAD.lock and branch reference .lock files before launching again.${locations} If its metadata is intact, git worktree remove --force --force ${JSON.stringify(worktreePath)} also removes the worktree. Do not repair a partial checkout by deleting only index.lock.`,
 		);
 		this.name = "WorktreeBusyError";
 	}
@@ -106,22 +128,40 @@ function commonGitDirectory(repo: string): string {
 	return commonDir;
 }
 
-function checkoutBlocker(gitDir: string, ownedAdd: boolean): string | null | undefined {
-	const indexLock = path.join(gitDir, "index.lock");
-	if (fs.existsSync(indexLock)) return indexLock;
-	if (/^(?:0{40}|0{64})$/.test(fs.readFileSync(path.join(gitDir, "HEAD"), "utf8").trim())) return null;
-	if (!fs.existsSync(path.join(gitDir, "index"))) {
-		if (ownedAdd) return null;
-		try {
-			if (fs.readFileSync(path.join(gitDir, "locked"), "utf8").trim() === "initializing") return null;
-		} catch {}
-	}
-	return undefined;
+interface CheckoutState {
+	readonly gitDir: string;
+	readonly ownedAdd: boolean;
+	readonly blocker: string | null | undefined;
 }
 
-function targetCheckoutBlocker(commonDir: string, worktreePath: string, ownedAdd = false): string | null | undefined {
+function checkoutState(gitDir: string, commonDir: string, branch: string): CheckoutState {
+	let reason = "";
+	try {
+		reason = fs.readFileSync(path.join(gitDir, "locked"), "utf8").trim();
+	} catch {}
+	const ownedAdd = reason.startsWith(OWNED_ADD_LOCK_PREFIX);
+	const initializing = ownedAdd || INITIALIZING_LOCK_REASONS.has(reason);
+	const indexLock = path.join(gitDir, "index.lock");
+	if (fs.existsSync(indexLock)) return { gitDir, ownedAdd, blocker: indexLock };
+	if (initializing) {
+		for (const lock of [path.join(gitDir, "HEAD.lock"), path.join(commonDir, "refs", "heads", `${branch}.lock`)]) {
+			if (fs.existsSync(lock)) return { gitDir, ownedAdd, blocker: lock };
+		}
+	}
+	let head: string;
+	try {
+		head = fs.readFileSync(path.join(gitDir, "HEAD"), "utf8").trim();
+	} catch {
+		return { gitDir, ownedAdd, blocker: initializing ? null : undefined };
+	}
+	if (/^(?:0{40}|0{64})$/.test(head) || (initializing && !fs.existsSync(path.join(gitDir, "index"))))
+		return { gitDir, ownedAdd, blocker: null };
+	return { gitDir, ownedAdd, blocker: undefined };
+}
+
+function targetCheckoutState(commonDir: string, worktreePath: string, branch: string): CheckoutState | undefined {
 	const gitFile = path.join(worktreePath, ".git");
-	if (comparablePath(gitFile) === comparablePath(commonDir)) return checkoutBlocker(commonDir, ownedAdd);
+	if (comparablePath(gitFile) === comparablePath(commonDir)) return checkoutState(commonDir, commonDir, branch);
 	try {
 		const pointer = fs.readFileSync(gitFile, "utf8");
 		if (!pointer.startsWith("gitdir:")) return undefined;
@@ -129,95 +169,23 @@ function targetCheckoutBlocker(commonDir: string, worktreePath: string, ownedAdd
 		if (comparablePath(path.dirname(entry)) !== comparablePath(path.join(commonDir, "worktrees"))) return undefined;
 		const back = fs.readFileSync(path.join(entry, "gitdir"), "utf8").trim();
 		if (comparablePath(path.resolve(entry, back)) !== comparablePath(gitFile)) return undefined;
-		return checkoutBlocker(entry, ownedAdd);
+		return checkoutState(entry, commonDir, branch);
 	} catch {
 		return undefined;
 	}
 }
 
-function parseCoreSharedRepository(configText: string): string | undefined {
-	let inCore = false;
-	let value: string | undefined;
-	for (const rawLine of configText.split(/\r?\n/)) {
-		const line = rawLine.replace(/^\s+/, "");
-		if (!line || line.startsWith("#") || line.startsWith(";")) continue;
-		const section = line.match(/^\[([^\]]+)\]/);
-		if (section) {
-			inCore = section[1]!.trim().toLowerCase() === "core";
-			continue;
-		}
-		if (!inCore) continue;
-		const match = line.match(/^sharedrepository(?:\s*=\s*(.*?))?\s*(?:[#;].*)?$/i);
-		if (!match) continue;
-		value = (match[1] ?? "true")
-			.trim()
-			.replace(/^"(.*)"$/, "$1")
-			.toLowerCase();
-	}
-	return value;
-}
-
 function repositoryLockModes(commonDir: string): { dirMode: number; gid: number | undefined } {
 	if (process.platform === "win32") return { dirMode: 0o700, gid: undefined };
-	let gid: number | undefined;
-	let hasSetgid = false;
-	try {
-		const commonStat = fs.statSync(commonDir);
-		gid = commonStat.gid;
-		hasSetgid = (commonStat.mode & 0o2000) !== 0;
-	} catch {}
-	try {
-		const infoStat = fs.statSync(path.join(commonDir, "objects", "info"));
-		gid ??= infoStat.gid;
-		hasSetgid ||= (infoStat.mode & 0o2000) !== 0;
-	} catch {}
-	let configured: string | undefined;
-	try {
-		const configText = fs.readFileSync(path.join(commonDir, "config"), "utf8");
-		if (
-			!/\[\s*include(?:if)?\b/i.test(configText) &&
-			!process.env.GIT_CONFIG_PARAMETERS &&
-			!process.env.GIT_CONFIG_COUNT &&
-			!process.env.GIT_CONFIG &&
-			!process.env.GIT_CONFIG_GLOBAL
-		) {
-			configured = parseCoreSharedRepository(configText);
-		}
-	} catch {}
-	if (configured === undefined) {
-		const queried = runGit(commonDir, ["config", "--get", "core.sharedRepository"], {
-			LC_ALL: "C",
-			LANGUAGE: "C",
-		});
-		if (queried.status === 0) configured = queried.stdout.trim().toLowerCase();
+	for (const directory of [path.join(commonDir, "objects", "info"), path.join(commonDir, "worktrees"), commonDir]) {
+		try {
+			const stat = fs.statSync(directory);
+			const groupMode = (stat.mode & 0o020) !== 0 ? 0o2070 : 0;
+			const otherMode = (stat.mode & 0o002) !== 0 ? 0o007 : 0;
+			return { dirMode: 0o700 | (stat.mode & 0o2000) | groupMode | otherMode, gid: stat.gid };
+		} catch {}
 	}
-	if (
-		configured === "false" ||
-		configured === "no" ||
-		configured === "off" ||
-		configured === "0" ||
-		configured === "umask"
-	)
-		return { dirMode: 0o700, gid: undefined };
-	if (
-		configured === "true" ||
-		configured === "yes" ||
-		configured === "on" ||
-		configured === "1" ||
-		configured === "group"
-	)
-		return { dirMode: 0o2770, gid };
-	if (configured === "all" || configured === "world" || configured === "everybody" || configured === "2")
-		return { dirMode: 0o2775, gid };
-	if (configured && /^[0-7]{3,4}$/.test(configured)) {
-		const mask = Number.parseInt(configured, 8) & 0o777;
-		if ((mask & 0o020) !== 0) {
-			const otherBits = (mask & 0o006) === 0o006 ? 0o007 : (mask & 0o004) !== 0 ? 0o005 : 0;
-			return { dirMode: 0o2770 | otherBits, gid };
-		}
-		return { dirMode: 0o700, gid: undefined };
-	}
-	return hasSetgid ? { dirMode: 0o2770, gid } : { dirMode: 0o700, gid: undefined };
+	return { dirMode: 0o700, gid: undefined };
 }
 
 function isReadonlyLocationError(error: unknown): boolean {
@@ -316,11 +284,7 @@ function inheritedLocks(): string[] {
 function lockFileMode(lockDir: string): number {
 	if (process.platform === "win32") return 0o600;
 	try {
-		const mode = fs.statSync(lockDir).mode;
-		if ((mode & 0o060) === 0o060) {
-			const otherBits = (mode & 0o006) === 0o006 ? 0o006 : (mode & 0o004) !== 0 ? 0o004 : 0;
-			return 0o660 | otherBits;
-		}
+		return 0o600 | (fs.statSync(lockDir).mode & 0o066);
 	} catch {}
 	return 0o600;
 }
@@ -360,9 +324,7 @@ async function withTargetLocks<T>(
 	create: (env: NodeJS.ProcessEnv) => Promise<T>,
 ): Promise<T> {
 	const inherited = inheritedLocks();
-	const targetSet = new Set(paths.map(comparablePath));
-	if (inherited.some((lockPath) => targetSet.has(comparablePath(lockPath))))
-		throw new WorktreeReentryError(worktreePath);
+	const inheritedSet = new Set(inherited.map(comparablePath));
 	const fileMode = lockFileMode(path.dirname(paths[0]!));
 	const held: NonNullable<ReturnType<typeof tryAdvisoryLock>>[] = [];
 	try {
@@ -372,6 +334,13 @@ async function withTargetLocks<T>(
 				const lock = acquireTargetLock(lockPath, fileMode);
 				if (lock === null) {
 					for (const acquired of held.splice(0).reverse()) acquired.release();
+					if (inheritedSet.has(comparablePath(lockPath))) throw new WorktreeReentryError(worktreePath);
+					for (const otherPath of paths) {
+						if (otherPath === lockPath || !inheritedSet.has(comparablePath(otherPath))) continue;
+						const probe = acquireTargetLock(otherPath, fileMode);
+						if (probe === null) throw new WorktreeReentryError(worktreePath);
+						probe.release();
+					}
 					break;
 				}
 				held.push(lock);
@@ -381,7 +350,7 @@ async function withTargetLocks<T>(
 			await sleep(CONCURRENT_ADD_POLL_MS, options.signal);
 		}
 		options.signal?.throwIfAborted();
-		return await create({ [INHERITED_LOCKS_ENV]: JSON.stringify([...inherited, ...paths]) });
+		return await create({ [INHERITED_LOCKS_ENV]: JSON.stringify([...new Set([...inherited, ...paths])]) });
 	} finally {
 		for (const lock of held.splice(0).reverse()) lock.release();
 	}
@@ -402,6 +371,13 @@ function listWorktrees(repo: string): ListedWorktree[] {
 function defaultBase(cwd: string): string {
 	const upstream = runGit(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
 	return upstream.status === 0 ? upstream.stdout.trim() : "HEAD";
+}
+
+function resolveCommitRevision(cwd: string, revision: string): string {
+	const target = revision.startsWith(":/")
+		? gitChecked(cwd, ["rev-parse", "--verify", "--end-of-options", revision]).trim()
+		: revision;
+	return gitChecked(cwd, ["rev-parse", "--verify", "--end-of-options", `${target}^{commit}`]).trim();
 }
 
 function isEmptyDirectory(target: string): boolean {
@@ -503,7 +479,6 @@ export async function ensureNamedWorktree(
 	};
 	try {
 		const targetLocks = lockPaths(commonDir, branch, worktreePath);
-		const addingMarker = `${targetLocks[0]}.adding`;
 		return await withTargetLocks(targetLocks, worktreePath, options, notifyWaiting, async (env) => {
 			deadline = performance.now() + CONCURRENT_ADD_WAIT_MS;
 			const ready = async (): Promise<NamedWorktree> => ({
@@ -529,19 +504,40 @@ export async function ensureNamedWorktree(
 			let siblingDeadline = Number.POSITIVE_INFINITY;
 			for (;;) {
 				options.signal?.throwIfAborted();
-				if (fs.existsSync(addingMarker)) {
-					const incomplete = targetCheckoutBlocker(commonDir, worktreePath, true);
-					if (incomplete !== undefined) throw new WorktreeBusyError(worktreePath, incomplete, true);
-					fs.rmSync(addingMarker, { force: true });
+				const previous = targetCheckoutState(commonDir, worktreePath, branch);
+				if (previous?.ownedAdd) {
+					if (previous.blocker !== undefined)
+						throw new WorktreeBusyError(worktreePath, previous.blocker, true, [
+							path.join(previous.gitDir, "HEAD.lock"),
+							path.join(commonDir, "refs", "heads", `${branch}.lock`),
+						]);
+					fs.rmSync(path.join(previous.gitDir, "locked"));
 				}
 				if (
 					addFailure?.retrySibling === false ||
 					(addFailure?.retrySibling === true && performance.now() >= siblingDeadline)
 				)
 					throw failed(checkingOut, new GitFailure(addFailure.message));
-				let decision = await retried(checkingOut, () => decideWorktree(repo, commonDir, branch, worktreePath));
-				if (decision.kind === "wait" && !waiting())
+				let decision: WorktreeDecision;
+				try {
 					decision = await retried(checkingOut, () => decideWorktree(repo, commonDir, branch, worktreePath));
+					if (decision.kind === "wait" && !waiting())
+						decision = await retried(checkingOut, () => decideWorktree(repo, commonDir, branch, worktreePath));
+				} catch (error) {
+					const cause = error instanceof Error ? error.cause : undefined;
+					const siblingEntry =
+						cause instanceof GitFailure
+							? siblingRegistrationEntry(repo, commonDir, worktreePath, cause.message)
+							: undefined;
+					if (siblingEntry === undefined || !addWasCleanedUp(commonDir, worktreePath, siblingEntry)) throw error;
+					if (siblingFailures === 0) siblingDeadline = performance.now() + SIBLING_REGISTRATION_WAIT_MS;
+					siblingFailures++;
+					const backoff = Math.min(20 * 2 ** (siblingFailures - 1), 200);
+					if (siblingFailures >= SIBLING_REGISTRATION_ATTEMPTS || performance.now() + backoff >= siblingDeadline)
+						throw error;
+					await sleep(backoff, options.signal);
+					continue;
+				}
 				if (decision.kind === "wait") {
 					if (!waiting()) throw new WorktreeBusyError(worktreePath, decision.indexLock);
 					notifyWaiting();
@@ -560,17 +556,10 @@ export async function ensureNamedWorktree(
 				)
 					throw failed(checkingOut, new GitFailure(addFailure.message));
 				if (!branchExists && startPoint === undefined) {
-					startPoint =
-						request.base === undefined
-							? defaultBase(cwd)
-							: await retried(`${checkingOut}: invalid reference: ${request.base}`, () =>
-									gitChecked(repo, [
-										"rev-parse",
-										"--verify",
-										"--end-of-options",
-										`${request.base}^{commit}`,
-									]).trim(),
-								);
+					const baseRevision = request.base ?? defaultBase(cwd);
+					startPoint = await retried(`${checkingOut}: invalid reference: ${baseRevision}`, () =>
+						resolveCommitRevision(cwd, baseRevision),
+					);
 				}
 				if (defaultPath) await retried(checkingOut, () => ensureWorktreeIgnore(repo));
 				if (
@@ -579,25 +568,20 @@ export async function ensureNamedWorktree(
 						!addWasCleanedUp(commonDir, worktreePath, addFailure.siblingEntry ?? ""))
 				)
 					throw failed(checkingOut, new GitFailure(addFailure.message));
-				fs.writeFileSync(addingMarker, "", { mode: 0o600 });
-				let added: Awaited<ReturnType<typeof addNamedWorktree>>;
-				try {
-					added = await addNamedWorktree(
-						repo,
-						branchExists
-							? ["worktree", "add", worktreePath, branch]
-							: ["worktree", "add", "--no-track", "-b", branch, worktreePath, startPoint!],
-						env,
-						options.signal,
-					);
-				} finally {
-					if (targetCheckoutBlocker(commonDir, worktreePath, true) === undefined)
-						fs.rmSync(addingMarker, { force: true });
-				}
-				if (added.status === 0) {
-					fs.rmSync(addingMarker, { force: true });
-					return ready();
-				}
+				const lockReason = `${OWNED_ADD_LOCK_PREFIX}${process.pid}`;
+				const addArgs = ["worktree", "add", "--lock", "--reason", lockReason];
+				const added = await addNamedWorktree(
+					repo,
+					branchExists
+						? [...addArgs, worktreePath, branch]
+						: [...addArgs, "--no-track", "-b", branch, worktreePath, startPoint!],
+					env,
+					options.signal,
+				);
+				const completed = targetCheckoutState(commonDir, worktreePath, branch);
+				if (completed?.ownedAdd && completed.blocker === undefined)
+					fs.rmSync(path.join(completed.gitDir, "locked"));
+				if (added.status === 0) return ready();
 				const message = added.stderr.trim() || added.stdout.trim() || "git worktree add failed";
 				const diagnostic = [worktreePath, repo].reduce(
 					(text, operand) => text.replaceAll(operand.replaceAll("\\", "/"), "<path>"),
@@ -631,11 +615,11 @@ export async function ensureNamedWorktree(
 type WorktreeDecision = { kind: "reuse" | "create" } | { kind: "wait"; indexLock: string | null };
 
 function decideWorktree(repo: string, commonDir: string, branch: string, worktreePath: string): WorktreeDecision {
-	const before = targetCheckoutBlocker(commonDir, worktreePath);
+	const before = targetCheckoutState(commonDir, worktreePath, branch)?.blocker;
 	if (before !== undefined) return { kind: "wait", indexLock: before };
 	const target = comparablePath(worktreePath);
 	const worktrees = listWorktrees(repo);
-	const after = targetCheckoutBlocker(commonDir, worktreePath);
+	const after = targetCheckoutState(commonDir, worktreePath, branch)?.blocker;
 	if (after !== undefined) return { kind: "wait", indexLock: after };
 	const atPath = worktrees.find((worktree) => comparablePath(worktree.path) === target);
 	if (atPath?.branch === branch) return { kind: "reuse" };

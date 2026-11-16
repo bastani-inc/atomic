@@ -652,6 +652,7 @@ impl Actor {
 		// Quarantine has no deadline until the owner closes or the task is stopped (#4338).
 		let mut expires: Option<Instant> = None;
 		let mut group_gone = false;
+		let mut preserved_background = false;
 		loop {
 			#[cfg(test)]
 			command.loop_iterations.fetch_add(1, Ordering::AcqRel);
@@ -750,8 +751,11 @@ impl Actor {
 							break;
 						}
 					}
-					group.forget();
-					break;
+					if read_failure.is_none() {
+						preserved_background = true;
+						group.forget();
+						break;
+					}
 				}
 			}
 			if stopping.is_none() && (cancelling || exited || read_failure.is_some()) {
@@ -878,6 +882,7 @@ impl Actor {
 			}
 		}
 		command.input.lock().unwrap().close();
+		drop(stdin);
 		if let Some(message) = cleanup_failure {
 			command.retain_failed(runner.cap.reference(), child, (stdout, stderr), message.clone());
 			if !quarantined {
@@ -905,6 +910,12 @@ impl Actor {
 				command.setup_result(Err(TaskFailure { code: "CleanupFailed".into(), message }));
 			}
 			return;
+		}
+		if preserved_background {
+			detach_background_output(stdout, stdout_eof, stderr, stderr_eof);
+		} else {
+			drop(stdout);
+			drop(stderr);
 		}
 		if !quarantined {
 			let status = status.expect("group confirmed only after direct child reaped");
@@ -1189,6 +1200,43 @@ fn make_nonblocking(fd: &impl std::os::fd::AsRawFd) -> io::Result<()> {
 }
 fn drain_pipe(reader: &mut impl Read, command: &CommandTask, eof: &mut bool) -> io::Result<()> {
 	read_pipe(reader, command, eof, true)
+}
+pub(super) fn detach_background_output(
+	stdout: ProcessReader,
+	stdout_eof: bool,
+	stderr: ProcessReader,
+	stderr_eof: bool,
+) {
+	let mut stdout = (!stdout_eof).then_some(stdout);
+	let mut stderr = (!stderr_eof).then_some(stderr);
+	if stdout.is_none() && stderr.is_none() {
+		return;
+	}
+	let _ = std::thread::Builder::new().name("task-bg-output".into()).spawn(move || {
+		let mut buffer = [0u8; 8192];
+		while stdout.is_some() || stderr.is_some() {
+			let mut progressed = false;
+			for slot in [&mut stdout, &mut stderr] {
+				let Some(reader) = slot.as_mut() else {
+					continue;
+				};
+				match reader.read(&mut buffer) {
+					Ok(0) => {
+						*slot = None;
+					},
+					Ok(_) => progressed = true,
+					Err(error) if error.kind() == io::ErrorKind::WouldBlock => {},
+					Err(error) if error.kind() == io::ErrorKind::Interrupted => progressed = true,
+					Err(_) => {
+						*slot = None;
+					},
+				}
+			}
+			if (stdout.is_some() || stderr.is_some()) && !progressed {
+				std::thread::sleep(PROCESS_POLL);
+			}
+		}
+	});
 }
 /// Reads what the pipe holds; with `keep` false the bytes are discarded, as output after a settled result is.
 fn read_pipe(

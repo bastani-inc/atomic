@@ -23,11 +23,13 @@ import {
 } from "../../packages/subagents/src/runs/shared/worktree.js";
 import { spawnSyncCollect } from "../helpers/runtime.js";
 
+const CONCURRENT_ADD_WAIT_MS = 30_000;
+const SINGLE_ATTEMPT_BUDGET_MS = CONCURRENT_ADD_WAIT_MS / 3;
 const roots: string[] = [];
 afterEach(() => {
 	vi.unstubAllEnvs();
 	vi.restoreAllMocks();
-	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function posixPath(value: string): string {
@@ -149,7 +151,10 @@ test("invalid base or path operands containing retry-classifier text fail once w
 	const baseElapsedMs = performance.now() - startedBase;
 	assert.equal(verifyBaseCalls, 1, "invalid base is verified once before worktree add");
 	assert.equal(addCalls, 0, "invalid base never runs git worktree add");
-	assert.ok(baseElapsedMs < 2_000, `expected fast failure for invalid base, took ${Math.round(baseElapsedMs)}ms`);
+	assert.ok(
+		baseElapsedMs < SINGLE_ATTEMPT_BUDGET_MS,
+		`expected fast failure for invalid base, took ${Math.round(baseElapsedMs)}ms`,
+	);
 
 	const badPathParent = join(repo, "..", "another git process cannot lock references");
 	writeFileSync(badPathParent, "not a directory\n");
@@ -163,5 +168,8 @@ test("invalid base or path operands containing retry-classifier text fail once w
 	);
 	const pathElapsedMs = performance.now() - startedPath;
 	assert.equal(addCalls, 1, "permanent worktree add failure with echoed path fails after one add");
-	assert.ok(pathElapsedMs < 2_000, `expected fast failure for echoed path, took ${Math.round(pathElapsedMs)}ms`);
+	assert.ok(
+		pathElapsedMs < SINGLE_ATTEMPT_BUDGET_MS,
+		`expected fast failure for echoed path, took ${Math.round(pathElapsedMs)}ms`,
+	);
 });

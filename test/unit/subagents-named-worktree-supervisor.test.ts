@@ -54,7 +54,7 @@ function makeRepo(): { root: string; repo: string } {
 
 async function waitForFile(target: string, timeoutMs = 8_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
-	while (!existsSync(target)) {
+	while (!existsSync(target) || readFileSync(target, "utf8").trim().length === 0) {
 		assert.ok(Date.now() < deadline, `timed out waiting for ${target}`);
 		await sleep(50);
 	}
@@ -84,6 +84,7 @@ setTimeout(() => {
 	writeFileSync(
 		hookPath,
 		`#!/bin/sh
+cd "${posixPath(tmpdir())}" || exit 1
 ("${nodeBin}" "${scriptPath}" "${posixPath(redirectedMarker)}" "redirected" 1500) >/dev/null 2>&1 &
 nohup "${nodeBin}" "${scriptPath}" "${posixPath(nohupMarker)}" "nohup" 1500 >/dev/null 2>&1 &
 ("${nodeBin}" "${scriptPath}" "${posixPath(unredirectedMarker)}" "unredirected" 1500) &
@@ -103,33 +104,64 @@ exit 0
 	assert.equal(readFileSync(unredirectedMarker, "utf8").trim(), "unredirected");
 });
 
+test("late stdout and stderr writes from a background post-checkout hook succeed after git exits (#5202)", async () => {
+	const { root, repo } = makeRepo();
+	const stdoutMarker = join(root, "late-stdout-done.txt");
+	const stderrMarker = join(root, "late-stderr-done.txt");
+	const hooksDir = join(repo, ".git", "hooks");
+	mkdirSync(hooksDir, { recursive: true });
+	const hookPath = join(hooksDir, "post-checkout");
+	writeFileSync(
+		hookPath,
+		`#!/bin/sh
+cd "${posixPath(tmpdir())}" || exit 1
+(sleep 2; echo late; echo done > "${posixPath(stdoutMarker)}") &
+(sleep 2; echo late >&2; echo done > "${posixPath(stderrMarker)}") &
+exit 0
+`,
+	);
+	chmodSync(hookPath, 0o755);
+
+	const created = await ensureNamedWorktree(repo, { branch: "feat/late-stdio-hook" });
+	assert.equal(created.branch, "feat/late-stdio-hook");
+
+	await waitForFile(stdoutMarker);
+	await waitForFile(stderrMarker);
+	assert.equal(readFileSync(stdoutMarker, "utf8").trim(), "done");
+	assert.equal(readFileSync(stderrMarker, "utf8").trim(), "done");
+});
+
 test("addNamedWorktree captures large hook diagnostics and settles boundedly when a background child keeps writing (#5202)", async () => {
 	const { root, repo } = makeRepo();
+	const readyMarker = join(root, "chatter-ready.txt");
 	const doneMarker = join(root, "chatter-done.txt");
 	const hookScript = join(root, "large-hook.mjs");
 	writeFileSync(
 		hookScript,
-		`import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
-const [mode, doneFile] = process.argv.slice(2);
+		`import { existsSync, writeFileSync } from "node:fs";
+const [mode, readyFile, doneFile] = process.argv.slice(2);
 if (mode === "child") {
 	process.stderr.on("error", () => {});
 	try {
 		process.on("SIGPIPE", () => {});
 	} catch {}
+	let startedAt = 0;
 	const timer = setInterval(() => {
+		if (!existsSync(readyFile)) return;
+		if (startedAt === 0) startedAt = Date.now();
 		try {
 			process.stderr.write("background-chatter\\n");
 		} catch {}
+		if (Date.now() - startedAt >= 1500) {
+			clearInterval(timer);
+			writeFileSync(doneFile, "done\\n");
+			process.exit(0);
+		}
 	}, 10);
-	setTimeout(() => {
-		clearInterval(timer);
-		writeFileSync(doneFile, "done\\n");
-		process.exit(0);
-	}, 1500);
 } else {
 	const payload = "HEADER:" + "x".repeat(120_000) + ":TRAILER\\n";
 	process.stderr.write(payload, () => {
+		writeFileSync(readyFile, "ready\\n");
 		process.exit(0);
 	});
 }
@@ -141,8 +173,9 @@ if (mode === "child") {
 	writeFileSync(
 		hookPath,
 		`#!/bin/sh
-("${posixPath(process.execPath)}" "${posixPath(hookScript)}" "child" "${posixPath(doneMarker)}") &
-exec "${posixPath(process.execPath)}" "${posixPath(hookScript)}" "leader" "${posixPath(doneMarker)}"
+cd "${posixPath(tmpdir())}" || exit 1
+("${posixPath(process.execPath)}" "${posixPath(hookScript)}" "child" "${posixPath(readyMarker)}" "${posixPath(doneMarker)}") &
+exec "${posixPath(process.execPath)}" "${posixPath(hookScript)}" "leader" "${posixPath(readyMarker)}" "${posixPath(doneMarker)}"
 `,
 	);
 	chmodSync(hookPath, 0o755);
@@ -177,6 +210,7 @@ setTimeout(() => {
 	writeFileSync(
 		hookPath,
 		`#!/bin/sh
+cd "${posixPath(tmpdir())}" || exit 1
 "${posixPath(process.execPath)}" "${posixPath(writerScript)}" "${posixPath(startedMarker)}" "${posixPath(lateMarker)}" >/dev/null 2>&1 &
 sleep 10
 `,
