@@ -7,10 +7,24 @@ import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { thisProcess } from "../src/core/worktree-snapshot/process-holder.ts";
 import { pendingLfsDownload } from "../src/core/worktree-snapshot/restore.ts";
 
-const statHook = vi.hoisted(() => ({ removeBeforeStat: undefined as string | undefined }));
+const statHook = vi.hoisted(() => ({
+	removeBeforeStat: undefined as string | undefined,
+	/** Runs before the next `stat` of `path`, which waits for it. */
+	before: undefined as { readonly path: string; readonly run: () => Promise<void> } | undefined,
+}));
+const readHook = vi.hoisted(() => ({ path: undefined as string | undefined, reads: 0 }));
+/** Runs in each write of a mark naming this process once the file written is truncated; the write ends after it. */
+const writeHook = vi.hoisted(() => ({ midway: undefined as (() => Promise<void>) | undefined }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const namesThisProcess = (data: unknown) => {
+		try {
+			return JSON.parse(String(data))?.holder?.pid === process.pid;
+		} catch {
+			return false;
+		}
+	};
 	return {
 		...actual,
 		stat: (async (...args: Parameters<typeof actual.stat>) => {
@@ -19,10 +33,37 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 				statHook.removeBeforeStat = undefined;
 				rmSync(target);
 			}
+			const before = statHook.before;
+			if (before !== undefined && String(args[0]) === before.path) {
+				statHook.before = undefined;
+				await before.run();
+			}
 			return actual.stat(...args);
 		}) as typeof actual.stat,
+		readFile: (async (...args: Parameters<typeof actual.readFile>) => {
+			if (readHook.path !== undefined && String(args[0]) === readHook.path) readHook.reads++;
+			return actual.readFile(...args);
+		}) as typeof actual.readFile,
+		writeFile: (async (...args: Parameters<typeof actual.writeFile>) => {
+			const midway = writeHook.midway;
+			if (midway !== undefined && namesThisProcess(args[1])) {
+				// A write truncates the file before it writes the data: until then, the file is empty.
+				await actual.writeFile(args[0], "");
+				await midway();
+			}
+			return actual.writeFile(...args);
+		}) as typeof actual.writeFile,
 	};
 });
+
+/** A promise and the function that resolves it. */
+function signal(): { readonly reached: Promise<void>; readonly reach: () => void } {
+	let reach!: () => void;
+	const reached = new Promise<void>((resolve) => {
+		reach = resolve;
+	});
+	return { reached, reach };
+}
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -30,6 +71,9 @@ beforeEach(() => {
 });
 afterEach(() => {
 	statHook.removeBeforeStat = undefined;
+	statHook.before = undefined;
+	readHook.path = undefined;
+	writeHook.midway = undefined;
 	sandbox.dispose();
 });
 
@@ -124,6 +168,56 @@ describe("an LFS download an interrupted resume left pending (#5099)", () => {
 		assert.deepEqual(await pull(), []);
 		assert.equal(statHook.removeBeforeStat, undefined);
 		assert.equal(existsSync(mark), false);
+	});
+
+	test("a resume that judged a stopped holder never finds the mark half-written by the resume that took over (#5099)", async () => {
+		const { clone, remote, head, tree, mark } = await checkout();
+		const stopped = { ...thisProcess(), pid: exitedPid() };
+		writeFileSync(mark, JSON.stringify({ head, tree, remotes: [remote], holder: stopped }));
+
+		// The late resume read the mark naming the stopped holder and is held while it judges that holder.
+		const judging = signal();
+		const judged = signal();
+		statHook.before = {
+			path: resolve(mark),
+			run: async () => {
+				judging.reach();
+				await judged.reached;
+			},
+		};
+		let lateSettled = false;
+		const late = (await pendingLfsDownload(clone))!()
+			.catch((error: unknown) => String((error as Error).message))
+			.finally(() => {
+				lateSettled = true;
+			});
+		await judging.reached;
+
+		// The first resume takes the download over. Its writes naming itself are held midway, the second one, made
+		// once the takeover mutex is released, until the late resume went on.
+		let writes = 0;
+		const rewriting = signal();
+		const rewritten = signal();
+		writeHook.midway = async () => {
+			if (++writes !== 2) return;
+			rewriting.reach();
+			await rewritten.reached;
+		};
+		const first = (await pendingLfsDownload(clone))!();
+		await rewriting.reached;
+
+		readHook.path = resolve(mark);
+		judged.reach();
+		// It either settles or reads the mark under the takeover mutex and again once it waited.
+		const deadline = Date.now() + 30_000;
+		while (!lateSettled && readHook.reads < 2) {
+			assert.ok(Date.now() < deadline, "the late resume went on");
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		rewritten.reach();
+
+		assert.deepEqual(await Promise.all([first, late]), [[], []]);
+		assert.equal(existsSync(mark), false, "nothing is pending once the download finished");
 	});
 
 	test("a download whose holder stops while it is waited for is taken over (#5099)", async () => {

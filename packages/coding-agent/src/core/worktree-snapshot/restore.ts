@@ -1098,16 +1098,31 @@ async function markLfsPending(worktree: GitRunOptions, pending: PendingLfs, snap
 	await writing(marker, snapshotId, () => writeFile(marker, JSON.stringify(pending)));
 }
 
+/**
+ * Replaces the mark of a worktree that other processes may read at once: written beside it and renamed over it, so a
+ * reader finds the old mark or the new one, never one a write has truncated, which reads as unusable and is removed.
+ */
+async function rewritePendingMark(marker: string, pending: PendingLfs): Promise<void> {
+	const partial = `${marker}.${randomUUID()}.partial`;
+	try {
+		await writeFile(partial, JSON.stringify(pending));
+		await renameWithRetry(partial, marker);
+	} catch (error) {
+		await rm(partial, { force: true });
+		throw error;
+	}
+}
+
 /** {@link pullLfsObjects} into a worktree marked pending, clearing the mark once no LFS file holds a pointer. */
 async function pullPendingLfs(worktree: GitRunOptions, pending: PendingLfs): Promise<string[]> {
 	const marker = await pendingLfsPath(worktree);
 	const waiting: PendingLfs = { head: pending.head, tree: pending.tree, remotes: pending.remotes };
 	pullingHere.add(marker);
 	try {
-		await writeFile(marker, JSON.stringify({ ...waiting, holder: thisProcess() }));
+		await rewritePendingMark(marker, { ...waiting, holder: thisProcess() });
 		const pointers = await pullLfsObjects(worktree, pending.head, pending.tree, pending.remotes);
 		if (pointers.length === 0) await rm(marker, { force: true });
-		else await writeFile(marker, JSON.stringify(waiting));
+		else await rewritePendingMark(marker, waiting);
 		return pointers;
 	} finally {
 		pullingHere.delete(marker);
@@ -1231,7 +1246,7 @@ async function claimPendingLfs(git: GitRunOptions, marker: string): Promise<LfsC
 		if (pending?.holder !== undefined) for (const lock of locks) await rm(lock, { force: true });
 		if (pending !== undefined) {
 			const { head, tree, remotes } = pending;
-			await writeFile(marker, JSON.stringify({ head, tree, remotes, holder: thisProcess() }));
+			await rewritePendingMark(marker, { head, tree, remotes, holder: thisProcess() });
 			pullingHere.add(marker);
 		}
 		return { kind: "claimed", pending };
