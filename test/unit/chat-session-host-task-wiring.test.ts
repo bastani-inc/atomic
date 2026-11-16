@@ -261,6 +261,145 @@ test("compaction refresh while scrolled up preserves counted arrivals in a chat 
 	}
 });
 
+test("compaction_end in the same frame as unpainted arrivals preserves the unread count (#5243)", () => {
+	initTheme("dark");
+	const stats = {
+		linesBefore: 50,
+		linesDeleted: 45,
+		linesKept: 5,
+		rangeCount: 1,
+		tokensBefore: 4000,
+		tokensAfter: 500,
+		percentReduction: 87.5,
+	};
+	const parameters = {
+		compression_ratio: 0.5,
+		preserve_recent: 2,
+		query: "",
+	};
+	const compactionResult = {
+		compactedText: "Compacted earlier context",
+		firstKeptEntryId: null,
+		tokensBefore: 4000,
+		rung: "planned" as const,
+		promptVersion: 6 as const,
+		parameters,
+		stats,
+	};
+	const compactedSnapshot = [
+		createVerbatimCompactionMessage("Compacted earlier context", 4000, new Date(103).toISOString(), {
+			strategy: "verbatim-lines",
+			promptVersion: 6,
+			parameters,
+			rung: "planned",
+			stats,
+		}),
+		...longConversation.slice(-15),
+	];
+
+	for (const mode of ["agentSession", "sessionMessages"] as const) {
+		let compactedMessages: Array<Parameters<ChatSessionHost["replaceMessages"]>[0][number]> = [...longConversation];
+		const host = new ChatSessionHost(
+			hostOptions(
+				mode === "agentSession"
+					? {
+							getCwd: () => BOX_CWD,
+							getAgentSession: () => ({ messages: compactedMessages }) as never,
+						}
+					: { getSessionMessages: () => compactedMessages },
+			),
+		);
+		try {
+			host.replaceMessages(longConversation);
+			host.renderBody(80, 10);
+			host.handleInput("\x1b[1;5H");
+			assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/);
+
+			host.appendMessages([
+				{ role: "user", content: "SAME-FRAME-1", timestamp: 101 },
+				{ role: "user", content: "SAME-FRAME-2", timestamp: 102 },
+			]);
+			compactedMessages = compactedSnapshot;
+			host.applyAgentEvent({
+				type: "compaction_end",
+				reason: "threshold",
+				aborted: false,
+				willRetry: false,
+				result: compactionResult,
+			});
+
+			assert.match(text(host.renderBody(80, 10).slice(-1)), /2 new messages ·/);
+		} finally {
+			host.dispose();
+		}
+	}
+});
+
+test("replaceMessages with a longer transcript while scrolled up does not count replaced history as new arrivals (#5243)", () => {
+	initTheme("dark");
+	const host = new ChatSessionHost(hostOptions());
+	try {
+		host.replaceMessages(longConversation);
+		host.renderBody(80, 10);
+		host.handleInput(PAGE_UP);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/);
+
+		const longerTranscript = [
+			...longConversation,
+			...Array.from({ length: 5 }, (_, i) => ({
+				role: "user" as const,
+				content: `REPLACED-EXTRA-${i}`,
+				timestamp: 200 + i,
+			})),
+		];
+		host.replaceMessages(longerTranscript);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/);
+		assert.doesNotMatch(text(host.renderBody(80, 10)), /new message/);
+
+		host.appendMessages([{ role: "user", content: "LIVE-ARRIVAL", timestamp: 300 }]);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /1 new message ·/);
+	} finally {
+		host.dispose();
+	}
+});
+
+test("transient task rows attaching and detaching while scrolled up do not count as unread messages (#5243)", async () => {
+	initTheme("dark");
+	const fixture = taskFixture();
+	const source = ownerTaskViewSource(fixture.store);
+	let activeSource: ReturnType<typeof ownerTaskViewSource> | undefined;
+	const host = new ChatSessionHost(hostOptions({ getTaskSource: () => activeSource }));
+	try {
+		host.replaceMessages(longConversation);
+		host.renderBody(80, 10);
+		host.handleInput(PAGE_UP);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/);
+
+		await fixture.start("Transient background task");
+		activeSource = source;
+		host.refreshTaskStore();
+		assert.equal(
+			host.entries().some((entry) => "kind" in entry && entry.kind === "task"),
+			true,
+		);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/);
+
+		activeSource = undefined;
+		host.refreshTaskStore();
+		assert.equal(
+			host.entries().some((entry) => "kind" in entry && entry.kind === "task"),
+			false,
+		);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/);
+
+		host.appendMessages([{ role: "user", content: "REAL-ARRIVAL", timestamp: 100 }]);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /1 new message ·/);
+	} finally {
+		host.dispose();
+		await fixture.dispose();
+	}
+});
+
 test("an auto scrollbar hides again through the host's repaint hook (#4521)", () => {
 	vi.useFakeTimers();
 	initTheme("dark");

@@ -468,7 +468,6 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				// `result` and `errorMessage` are independent: a committed boundary stays visible when a
 				// later step failed, such as foreground compaction after a background result (#4977).
 				if (event.result) {
-					this.chatContainer.clear();
 					this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
 					this.addCompactionBoundaryToChat(event.result);
 					if (event.result.usage) this.addCompactionCostNotice("compaction", event.result.usage);

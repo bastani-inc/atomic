@@ -4,7 +4,8 @@ import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts
 import { canonicalizePath } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
-import { InteractiveModeBase } from "./interactive-mode-base.ts";
+import type { NewMessageCounter } from "./components/jump-to-latest.ts";
+import { InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
 import {
 	APP_NAME,
 	type ExtensionCommandContext,
@@ -229,6 +230,13 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 					}
 
 					// Update UI
+					const renderer = this.ui as { isFollowingOutput?: boolean; newMessages?: NewMessageCounter };
+					if (renderer.isFollowingOutput === false && this.chatContainer.children.length > 0) {
+						renderer.newMessages?.observe(
+							false,
+							this.chatContainer.children.filter(isChatMessageComponent).length,
+						);
+					}
 					this.chatContainer.clear();
 					this.renderInitialMessages();
 					if (result.editorText && !this.editor.getText().trim()) {

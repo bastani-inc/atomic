@@ -184,9 +184,19 @@ InteractiveModeBase.prototype.discardDeferredRenderedUserInput = function (
 		this.deferredRenderedUserInputComponents.delete(text);
 	}
 	if (!componentsToRemove) return;
-	for (const component of componentsToRemove) {
-		this.chatContainer.removeChild(component);
+	const renderer = this.ui as AltScreenMessageCounterHost;
+	if (renderer.isFollowingOutput === false && this.chatContainer.children.length > 0) {
+		renderer.newMessages?.observe(false, this.chatContainer.children.filter(isChatMessageComponent).length);
 	}
+	let removedMessages = 0;
+	for (const component of componentsToRemove) {
+		const attached = this.chatContainer.children.includes(component);
+		this.chatContainer.removeChild(component);
+		if (attached && isChatMessageComponent(component)) {
+			removedMessages += 1;
+		}
+	}
+	renderer.newMessages?.retract(removedMessages);
 	this.updatePendingMessagesDisplay();
 	this.ui.requestRender();
 };
@@ -640,6 +650,8 @@ InteractiveModeBase.prototype.renderInitialMessages = function (this: Interactiv
 	const renderer = this.ui as AltScreenMessageCounterHost;
 	if (previousSessionId !== sessionId) {
 		renderer.newMessages?.reset();
+	} else if (renderer.isFollowingOutput === false && this.chatContainer.children.length > 0) {
+		renderer.newMessages?.observe(false, this.chatContainer.children.filter(isChatMessageComponent).length);
 	}
 	this.attachStartupNoticesContainer({ resetDetached: true });
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());

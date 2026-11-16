@@ -39,7 +39,14 @@ describe("working line time and tokens (#5224)", () => {
 		assert.equal(formatWorkingTokens(99_949_999), "99.9M");
 		assert.equal(formatWorkingTokens(99_950_000), "100M");
 		assert.equal(formatWorkingTokens(999_499_999), "999M");
-		assert.equal(formatWorkingTokens(999_950_000), "1000M");
+	});
+
+	test("formatWorkingTokens switches from M to B at 999,500,000 without overflowing to 1000M (#5243)", () => {
+		assert.equal(formatWorkingTokens(999_499_999), "999M");
+		assert.equal(formatWorkingTokens(999_500_000), "1.0B");
+		assert.equal(formatWorkingTokens(999_949_999), "1.0B");
+		assert.equal(formatWorkingTokens(999_950_000), "1.0B");
+		assert.equal(formatWorkingTokens(1_000_000_000), "1.0B");
 	});
 
 	test("the meta shows only the time until a token arrives", () => {
@@ -79,7 +86,7 @@ describe("working line time and tokens (#5224)", () => {
 		assert.equal(meter.snapshot()?.outputTokens, 200);
 	});
 
-	test("streaming defers argument serialization to painted snapshots, caches completed arguments, and refreshes mutated streaming arguments (#5243)", () => {
+	test("streaming defers argument serialization to painted snapshots, caches argument objects, and refreshes replaced streaming arguments (#5243)", () => {
 		const meter = new WorkingRunMeter(() => 1_000);
 		meter.start();
 		const completedArgs = { path: "first.ts", content: "a".repeat(400) };
@@ -100,47 +107,90 @@ describe("working line time and tokens (#5224)", () => {
 			assert.ok((firstSnapshot?.outputTokens ?? 0) > 200);
 			assert.equal(stringifySpy.mock.calls.length, 2);
 
-			const mutableStreamingArgs: { content: string; nested?: { detail: string } } = {
+			const initialStreamingArgs = {
 				content: "c".repeat(40),
 				nested: { detail: "d".repeat(40) },
 			};
-			const mutableMessage = {
+			meter.streaming({
 				role: "assistant",
 				content: [
 					{ type: "toolCall", id: "call-1", name: "write", arguments: completedArgs },
-					{ type: "toolCall", id: "call-2", name: "write", arguments: mutableStreamingArgs },
+					{ type: "toolCall", id: "call-2", name: "write", arguments: initialStreamingArgs },
 				],
-			};
-			meter.streaming(mutableMessage);
-			const beforeMutation = meter.snapshot()?.outputTokens ?? 0;
-			const callsAfterBeforeMutation = stringifySpy.mock.calls.length;
+			});
+			const beforeReplacement = meter.snapshot()?.outputTokens ?? 0;
+			const callsAfterInitialSnapshot = stringifySpy.mock.calls.length;
 			assert.equal(stringifySpy.mock.calls.filter(([value]) => value === completedArgs).length, 1);
 
-			mutableStreamingArgs.content = "c".repeat(400);
-			mutableStreamingArgs.nested!.detail = "d".repeat(400);
-			meter.streaming(mutableMessage);
-			const afterMutation = meter.snapshot()?.outputTokens ?? 0;
-			assert.ok(afterMutation > beforeMutation);
-			assert.ok(stringifySpy.mock.calls.length > callsAfterBeforeMutation);
+			const nextStreamingArgs = {
+				content: "c".repeat(400),
+				nested: { detail: "d".repeat(400) },
+			};
+			meter.streaming({
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "call-1", name: "write", arguments: completedArgs },
+					{ type: "toolCall", id: "call-2", name: "write", arguments: nextStreamingArgs },
+				],
+			});
+			const afterReplacement = meter.snapshot()?.outputTokens ?? 0;
+			assert.ok(afterReplacement > beforeReplacement);
+			assert.ok(stringifySpy.mock.calls.length > callsAfterInitialSnapshot);
 			assert.equal(stringifySpy.mock.calls.filter(([value]) => value === completedArgs).length, 1);
+			assert.equal(stringifySpy.mock.calls.filter(([value]) => value === nextStreamingArgs).length, 1);
 
 			meter.settled({
 				role: "assistant",
 				content: [
 					{ type: "toolCall", id: "call-1", name: "write", arguments: completedArgs },
-					{ type: "toolCall", id: "call-2", name: "write", arguments: mutableStreamingArgs },
+					{ type: "toolCall", id: "call-2", name: "write", arguments: nextStreamingArgs },
 				],
 			});
 			assert.equal(stringifySpy.mock.calls.filter(([value]) => value === completedArgs).length, 1);
+			assert.equal(stringifySpy.mock.calls.filter(([value]) => value === nextStreamingArgs).length, 1);
 			const callsAfterSettled = stringifySpy.mock.calls.length;
 			meter.settled({
 				role: "assistant",
 				content: [
 					{ type: "toolCall", id: "call-1", name: "write", arguments: completedArgs },
-					{ type: "toolCall", id: "call-2", name: "write", arguments: mutableStreamingArgs },
+					{ type: "toolCall", id: "call-2", name: "write", arguments: nextStreamingArgs },
 				],
 			});
 			assert.equal(stringifySpy.mock.calls.length, callsAfterSettled);
+		} finally {
+			stringifySpy.mockRestore();
+		}
+	});
+
+	test("two snapshot() calls with no streaming() between them do not call JSON.stringify on the second call (#5243)", () => {
+		let now = 1_000;
+		const meter = new WorkingRunMeter(() => now);
+		meter.start();
+		const firstArgs = { path: "first.ts", content: "a".repeat(800) };
+		const secondArgs = { path: "second.ts", content: "b".repeat(800) };
+		meter.streaming({
+			role: "assistant",
+			content: [
+				{ type: "toolCall", id: "call-1", name: "write", arguments: firstArgs },
+				{ type: "toolCall", id: "call-2", name: "write", arguments: secondArgs },
+			],
+		});
+		const stringifySpy = vi.spyOn(JSON, "stringify");
+		try {
+			now = 2_000;
+			const first = meter.snapshot();
+			assert.ok((first?.outputTokens ?? 0) > 400);
+			const callsAfterFirstSnapshot = stringifySpy.mock.calls.length;
+			assert.equal(callsAfterFirstSnapshot, 2);
+
+			stringifySpy.mockClear();
+			now = 3_000;
+			const second = meter.snapshot();
+			assert.deepEqual(second, {
+				elapsedMs: 2_000,
+				outputTokens: first?.outputTokens ?? 0,
+			});
+			assert.equal(stringifySpy.mock.calls.length, 0);
 		} finally {
 			stringifySpy.mockRestore();
 		}

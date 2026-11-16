@@ -37,9 +37,7 @@ const keybindings = () => new KeybindingsManager();
 
 describe("main composer keys (#5224)", () => {
 	test("the footer names the keys help shortcut without advertising an unhandled agent-focus key (#5243)", () => {
-		assert.deepEqual(mainComposerHintSegments(keybindings(), { agentRows: 3 }), ["? keys"]);
-		assert.deepEqual(mainComposerHintSegments(keybindings(), { agentRows: 1 }), ["? keys"]);
-		assert.deepEqual(mainComposerHintSegments(keybindings(), { agentRows: 0 }), ["? keys"]);
+		assert.deepEqual(mainComposerHintSegments(keybindings()), ["? keys"]);
 	});
 
 	test("an unbound action is left out of the footer, so it never names a dead key", () => {
@@ -47,14 +45,14 @@ describe("main composer keys (#5224)", () => {
 			matches: () => false,
 			getKeys: (action: string) => (action === "app.keys.help" ? [] : ["down"]),
 		};
-		assert.deepEqual(mainComposerHintSegments(unbound, { agentRows: 2 }), []);
+		assert.deepEqual(mainComposerHintSegments(unbound), []);
 	});
 
 	test("the overlay lists interrupt only while working and never lists an unhandled agent-focus key (#5243)", () => {
-		const idle = mainComposerKeys({ agentRows: 0, working: false }).map((key) => key.action ?? key.keys);
+		const idle = mainComposerKeys({ working: false }).map((key) => key.action ?? key.keys);
 		assert.ok(!idle.includes("app.interrupt"));
 		assert.ok(!idle.includes("app.agents.focus"));
-		const busy = mainComposerKeys({ agentRows: 2, working: true }).map((key) => key.action ?? key.keys);
+		const busy = mainComposerKeys({ working: true }).map((key) => key.action ?? key.keys);
 		assert.ok(busy.includes("app.interrupt"));
 		assert.ok(!busy.includes("app.agents.focus"));
 	});
@@ -64,7 +62,7 @@ describe("main composer keys (#5224)", () => {
 			let closed = 0;
 			const overlay = new MainComposerKeyOverlay(
 				keybindings(),
-				() => ({ agentRows: 2, working: true }),
+				() => ({ working: true }),
 				() => {
 					closed += 1;
 				},
@@ -84,7 +82,7 @@ describe("main composer keys (#5224)", () => {
 	test("a narrow terminal drops the overlay's frame and keeps the rows", () => {
 		const overlay = new MainComposerKeyOverlay(
 			keybindings(),
-			() => ({ agentRows: 0, working: false }),
+			() => ({ working: false }),
 			() => {},
 		);
 		const lines = overlay.render(20).map(stripTerminalSequences);

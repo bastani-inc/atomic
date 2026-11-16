@@ -1077,13 +1077,26 @@ describe("compaction boundary component", () => {
 			stats: { ...result.stats, tokensBefore: 480, tokensAfter: 240, percentReduction: 50 },
 		};
 		const component = new CompactionBoundaryMessageComponent(divergent);
+		component.setExpanded(true);
+		const text = stripVTControlCharacters(component.render(200).join("\n"));
+		expect(text).toContain("Compacted from 1,200 tokens");
+		expect(text).not.toContain("Compacted from 480 tokens");
+	});
+
+	it("shows the message-token reduction in the header and labels the expanded whole-context count (#5243)", () => {
+		const divergent: VerbatimCompactionResult = {
+			...result,
+			tokensBefore: 1_200,
+			stats: { ...result.stats, tokensBefore: 480, tokensAfter: 240, percentReduction: 50 },
+		};
+		const component = new CompactionBoundaryMessageComponent(divergent);
 		const collapsed = stripVTControlCharacters(component.render(200).join("\n"));
 		expect(collapsed).toContain("480 → 240 tokens");
 		expect(collapsed).not.toContain("1.2k → 240 tokens");
 		component.setExpanded(true);
 		const text = stripVTControlCharacters(component.render(200).join("\n"));
 		expect(text).toContain("480 → 240 tokens");
-		expect(text).toContain("Compacted from 1,200 tokens");
+		expect(text).toContain("Compacted from 1,200 tokens (including the system prompt and tools)");
 		expect(text).not.toContain("Compacted from 480 tokens");
 	});
 

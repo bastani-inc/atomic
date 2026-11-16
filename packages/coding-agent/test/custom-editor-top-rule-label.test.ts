@@ -92,12 +92,16 @@ describe("main composer top rule (#5224)", () => {
 	});
 
 	test("scans 100k characters of repeated unterminated OSC and DCS introducers in linear time (#5243)", () => {
+		const LINEAR_SCAN_BUDGET_MS = 100;
 		const input = "\x1b]\x1bP".repeat(25_000);
 		assert.equal(input.length, 100_000);
 		const start = performance.now();
 		const actual = stripEditorAnsi(input);
 		const elapsedMs = performance.now() - start;
 		assert.equal(actual, input);
-		assert.ok(elapsedMs < 100, `expected < 100ms for 100k unterminated introducers, took ${elapsedMs.toFixed(1)}ms`);
+		assert.ok(
+			elapsedMs < LINEAR_SCAN_BUDGET_MS,
+			`expected < ${LINEAR_SCAN_BUDGET_MS}ms for 100k unterminated introducers, took ${elapsedMs.toFixed(1)}ms`,
+		);
 	});
 });

@@ -101,7 +101,16 @@ export class CompactionBoundaryMessageComponent extends Box {
 		if (this.expanded) {
 			content.addChild(new Spacer(1));
 			content.addChild(
-				new Text(theme.bold(theme.fg("customMessageText", `Compacted from ${tokenStr} tokens`)), 0, 0),
+				new Text(
+					theme.bold(
+						theme.fg(
+							"customMessageText",
+							`Compacted from ${tokenStr} tokens (including the system prompt and tools)`,
+						),
+					),
+					0,
+					0,
+				),
 			);
 			content.addChild(new Spacer(1));
 			const rendered = this.view.text

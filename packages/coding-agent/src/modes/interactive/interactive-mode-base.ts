@@ -13,7 +13,6 @@ import {
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
 import type { FullscreenExitOutput, MermaidRenderingMode } from "../../core/settings-manager.ts";
-import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { readClipboardText } from "../../utils/clipboard.js";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
@@ -25,7 +24,6 @@ import { mainComposerHintSegments } from "./components/main-composer-keys.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
 import { WidgetContainer } from "./components/scroll-widget.js";
-import { isActiveBackgroundTask } from "./components/task-list.js";
 import { WorkingRunMeter } from "./components/working-run-meter.ts";
 import {
 	type AgentSession,
@@ -542,10 +540,6 @@ export class InteractiveModeBase {
 		return this.runtimeHost.session as AgentSession & AgentSessionQueuePauseControl;
 	}
 
-	mainComposerAgentRows(): number {
-		return (getOwnerTaskStore(this.session)?.backgroundTasks ?? []).filter(isActiveBackgroundTask).length;
-	}
-
 	/** Includes the short handoff window that an isolated engine cannot mirror. */
 	get compactionActive(): boolean {
 		return this.session.isCompacting || this.manualCompactionTakeoverPending;
@@ -762,7 +756,7 @@ export class InteractiveModeBase {
 			undefined,
 			() => this.navigationInlineCustomUiDepth > 0,
 			undefined,
-			() => mainComposerHintSegments(this.keybindings, { agentRows: this.mainComposerAgentRows() }),
+			() => mainComposerHintSegments(this.keybindings),
 		);
 		this.footerContainer = new Container();
 		this.footerContainer.addChild(this.footer);

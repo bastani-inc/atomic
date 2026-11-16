@@ -5,7 +5,8 @@ import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
 import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.js";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
-import { InteractiveModeBase } from "./interactive-mode-base.ts";
+import type { NewMessageCounter } from "./components/jump-to-latest.ts";
+import { InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
 import { setRegisteredThemes, stopThemeWatcher, Text, theme } from "./interactive-mode-deps.ts";
 import { exitOnRefusedDecisionSetting } from "./refused-decision-setting.ts";
 
@@ -61,6 +62,10 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 					return { cancelled: true };
 				}
 
+				const renderer = this.ui as { isFollowingOutput?: boolean; newMessages?: NewMessageCounter };
+				if (renderer.isFollowingOutput === false && this.chatContainer.children.length > 0) {
+					renderer.newMessages?.observe(false, this.chatContainer.children.filter(isChatMessageComponent).length);
+				}
 				this.chatContainer.clear();
 				this.renderInitialMessages();
 				if (result.editorText && !this.editor.getText().trim()) {
@@ -191,6 +196,10 @@ InteractiveModeBase.prototype.renderCurrentSessionState = function (this: Intera
 	this.managedToolStatusStarted = false;
 	this.lastStatusSpacer = undefined;
 	this.lastStatusText = undefined;
+	const renderer = this.ui as { isFollowingOutput?: boolean; newMessages?: NewMessageCounter };
+	if (renderer.isFollowingOutput === false && this.chatContainer.children.length > 0) {
+		renderer.newMessages?.observe(false, this.chatContainer.children.filter(isChatMessageComponent).length);
+	}
 	this.chatContainer.clear();
 	this.pendingMessagesContainer.clear();
 	this.pendingBashComponents = [];

@@ -77,13 +77,6 @@ async function assertFullBackground(lines: string[], width: number, background: 
 
 test("single background launch shades every terminal cell after truncating a long task", async () => {
 	initTheme("dark");
-	const callHeading =
-		renderSubagentToolCall({ agent: "worker", task: longTask }, theme, {
-			toolCallId: "heading-fixture",
-			state: {},
-			invalidate() {},
-		}).render(140)[0] ?? "";
-	assert.doesNotMatch(callHeading, /\x1b\[0m\.\.\.\x1b\[0m/);
 	const card = createCard({ agent: "worker", task: longTask });
 	try {
 		const result = taskToolResult({
@@ -105,6 +98,17 @@ test("single background launch shades every terminal cell after truncating a lon
 	} finally {
 		card.dispose();
 	}
+});
+
+test("subagent tool call heading truncates a long task with a styled ellipsis (#5243)", () => {
+	initTheme("dark");
+	const callHeading =
+		renderSubagentToolCall({ agent: "worker", task: longTask }, theme, {
+			toolCallId: "heading-fixture",
+			state: {},
+			invalidate() {},
+		}).render(140)[0] ?? "";
+	assert.doesNotMatch(callHeading, /\x1b\[0m\.\.\.\x1b\[0m/);
 });
 
 for (const themeName of ["dark", "light"] as const) {

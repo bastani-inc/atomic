@@ -196,7 +196,7 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			(_tui, _theme, keybindings, done) =>
 				new MainComposerKeyOverlay(
 					keybindings,
-					() => ({ agentRows: this.mainComposerAgentRows(), working: isChatSessionWorking(this.session) }),
+					() => ({ working: isChatSessionWorking(this.session) }),
 					() => done(),
 				),
 		);

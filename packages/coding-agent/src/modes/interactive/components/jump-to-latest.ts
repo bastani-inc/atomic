@@ -34,6 +34,14 @@ export class NewMessageCounter {
 		this.replaced(count);
 	}
 
+	retract(count: number): void {
+		if (count <= 0) return;
+		this.latest = Math.max(0, this.latest - count);
+		if (this.baseline !== undefined && this.baseline > this.latest) {
+			this.baseline = this.latest;
+		}
+	}
+
 	reset(): void {
 		this.baseline = undefined;
 		this.latest = 0;

@@ -3,14 +3,10 @@ import { theme } from "../theme/theme.js";
 import { isNavHelpKey, type NavKey, type NavKeybindings, navActionText, renderNavKeyOverlay } from "./nav-keys.ts";
 
 export interface MainComposerKeyState {
-	readonly agentRows?: number;
 	readonly working: boolean;
 }
 
-export function mainComposerHintSegments(
-	keybindings: NavKeybindings | undefined,
-	_state?: Pick<MainComposerKeyState, "agentRows">,
-): string[] {
+export function mainComposerHintSegments(keybindings: NavKeybindings | undefined): string[] {
 	const segments: string[] = [];
 	const help = navActionText(keybindings, "app.keys.help");
 	if (help) segments.push(`${help} keys`);

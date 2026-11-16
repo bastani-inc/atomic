@@ -1,7 +1,7 @@
 import { splitFallbackModel } from "../fallback-models.ts";
 import { formatModelLabel, formatModelReferenceLabel } from "../model-label.ts";
 import type { SessionManager } from "../session-manager.ts";
-import { sliceTail } from "../tools/truncate.js";
+import { sliceTail } from "../tools/truncate.ts";
 import { cancelReasonText, formatTimeoutSeconds, longerRunAdvice } from "./cancel-reason.js";
 import { taskOutcomeStatus } from "./command-output.js";
 import type { OwnerId, Sequence, SettlementReceipt, TaskId, TaskRecord, TaskResult } from "./contracts.js";

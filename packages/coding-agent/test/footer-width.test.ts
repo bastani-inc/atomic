@@ -23,6 +23,7 @@ type AssistantUsage = {
 
 function createSession(options: {
 	sessionName: string;
+	cwd?: string;
 	modelId?: string;
 	provider?: string;
 	reasoning?: boolean;
@@ -90,7 +91,7 @@ function createSession(options: {
 			getSessionId: () => "test",
 			getLeafId: () => "leaf",
 			getSessionName: () => options.sessionName,
-			getCwd: () => "/tmp/project",
+			getCwd: () => options.cwd ?? "/tmp/project",
 		},
 		getContextUsage: () => ({
 			contextWindow: options.contextWindow ?? 200_000,
@@ -217,7 +218,7 @@ describe("FooterComponent composer hints (#5224)", () => {
 		assert.match(line, /shipping fix-first/);
 	});
 
-	it("sanitizes newlines and terminal escape sequences in the footer session name (#5243)", () => {
+	it("sanitizes newlines and terminal escape sequences in the footer session name, working directory and model label (#5243)", () => {
 		for (const [raw, expected] of [
 			["my\nsession", "my session"],
 			["a\x1b]52;c;SGVsbG8=\x07b", "a ]52;c;SGVsbG8= b"],
@@ -228,6 +229,25 @@ describe("FooterComponent composer hints (#5224)", () => {
 			const rawLine = new FooterComponent(s, createFooterData(1)).render(200)[0] ?? "";
 			assert.doesNotMatch(rawLine, /[\r\n\t\x07]|\x1b\]|\x1b\[2J|\x1b\[H/);
 			assert.ok(stripAnsi(rawLine).endsWith(` • ${expected}`), stripAnsi(rawLine));
+		}
+		for (const [rawCwd, expectedPwd] of [
+			["/tmp/a\x1b]52;c;SGVsbG8=\x07b", "/tmp/a ]52;c;SGVsbG8= b (main)"],
+			["/tmp/x\ny", "/tmp/x y (main)"],
+		] as const) {
+			const s = createSession({ sessionName: "", cwd: rawCwd, provider: "anthropic", modelId: "claude-sonnet-4-5" });
+			const rawLine = new FooterComponent(s, createFooterData(1)).render(200)[0] ?? "";
+			assert.doesNotMatch(rawLine, /[\r\n\t\x07]|\x1b\]|\x1b\[2J|\x1b\[H/);
+			assert.ok(stripAnsi(rawLine).endsWith(` • ${expectedPwd}`), stripAnsi(rawLine));
+		}
+		for (const [rawModelId, expectedModel] of [
+			["m\x1b]0;PWNED\x07x", "m ]0;PWNED x"],
+			["m\x1b[2J\x1b[Hx", "m [2J [Hx"],
+			["m\nx", "m x"],
+		] as const) {
+			const s = createSession({ sessionName: "", provider: "anthropic", modelId: rawModelId });
+			const rawLine = new FooterComponent(s, createFooterData(1)).render(200)[0] ?? "";
+			assert.doesNotMatch(rawLine, /[\r\n\t\x07]|\x1b\]|\x1b\[2J|\x1b\[H/);
+			assert.ok(stripAnsi(rawLine).startsWith(`${expectedModel} • `), stripAnsi(rawLine));
 		}
 	});
 });

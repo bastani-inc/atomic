@@ -185,5 +185,8 @@ export function countableTranscriptLength<TExtraEntry extends ChatTranscriptEntr
 	for (const entry of state.extraEntries) {
 		if (!extraEntryCountsAsMessage(state, entry)) excluded += 1;
 	}
+	for (const entry of state.transcript) {
+		if ("kind" in entry && entry.kind === "task") excluded += 1;
+	}
 	return Math.max(0, state.transcript.length - excluded);
 }

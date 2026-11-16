@@ -13,10 +13,12 @@ import { DefaultResourceLoader, type ResourceLoader } from "../src/core/resource
 import { createAgentSession, createUnstartedAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 
 type PromptTurnHarness = {
+	workingRunMeter: WorkingRunMeter;
 	deferredStartupPending: boolean;
 	deferredStartupPromise?: Promise<void>;
 	compactionQueuedMessages: Array<{ text: string; mode: "steer" | "followUp" }>;
@@ -194,6 +196,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 			let observedBaseUrl: string | undefined;
 			const order: string[] = [];
 			const harness: PromptTurnHarness = {
+				workingRunMeter: new WorkingRunMeter(),
 				deferredStartupPending: true,
 				deferredStartupPromise: undefined,
 				compactionQueuedMessages: [],

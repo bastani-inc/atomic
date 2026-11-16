@@ -255,11 +255,10 @@ export function isChatSessionWorking(session: ChatBoxSession): boolean {
 	return session.isStreaming || session.isCompacting || session.isRetrying || session.isBashRunning;
 }
 
-/**
- * Sparse statusline below the composer: model + cwd only while the chat's agent is idle, and "esc to interrupt"
- * while it works in a chat that can interrupt it. Main, workflow stage and subagent chats all render it, so they
- * follow one rule.
- */
+function sanitizeFooterSegment(text: string): string {
+	return replaceControlCharacters(text).replace(/\s+/g, " ").trim();
+}
+
 export class FooterComponent implements Component {
 	private declare session: ChatBoxSession;
 	private declare footerData: ReadonlyFooterDataProvider;
@@ -329,18 +328,26 @@ export class FooterComponent implements Component {
 		let pwd = replaceHome(cwd);
 		const branch = this.footerData.getGitBranch(cwd);
 		if (branch) pwd += ` (${branch})`;
+		pwd = sanitizeFooterSegment(pwd);
 		const rawSessionName =
 			typeof this.session.sessionManager.getSessionName === "function"
 				? this.session.sessionManager.getSessionName()
 				: undefined;
-		const sessionName = rawSessionName ? replaceControlCharacters(rawSessionName).replace(/\s+/g, " ").trim() : "";
+		const sessionName = rawSessionName ? sanitizeFooterSegment(rawSessionName) : "";
 		if (sessionName && !this.hintSegments) pwd += ` • ${sessionName}`;
 
 		const modelLabel = state.model
-			? formatModelLabel(state.model, {
-					thinkingLevel: state.thinkingLevel || "off",
-					omitProvider: this.footerData.getAvailableProviderCount() <= 1,
-				})
+			? formatModelLabel(
+					{
+						...state.model,
+						provider: sanitizeFooterSegment(state.model.provider),
+						id: sanitizeFooterSegment(state.model.id),
+					},
+					{
+						thinkingLevel: sanitizeFooterSegment(state.thinkingLevel || "off"),
+						omitProvider: this.footerData.getAvailableProviderCount() <= 1,
+					},
+				)
 			: "no-model";
 
 		const working = isChatSessionWorking(this.session);

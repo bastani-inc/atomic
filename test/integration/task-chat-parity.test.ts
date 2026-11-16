@@ -408,7 +408,7 @@ test("main projection remounts after transcript clear", async () => {
 		toolOutputExpanded: false,
 		ui: { requestRender() {} },
 		attachStartupNoticesContainer() {},
-		sessionManager: { getEntries: () => [], getLeafId: () => null },
+		sessionManager: { getSessionId: () => "session-1", getEntries: () => [], getLeafId: () => null },
 		settingsManager: { isProjectTrusted: () => true },
 		renderSessionEntries() {},
 	};

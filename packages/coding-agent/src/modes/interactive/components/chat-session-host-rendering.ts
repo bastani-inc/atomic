@@ -147,8 +147,6 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	if (state.disposed) return [];
 	const agentSession = state.getAgentSession?.();
 	const session = agentSession ?? state.getChatBoxSession?.();
-	// A chat that does not own its session cannot interrupt it, so its footer never offers "esc to interrupt".
-	// It still hides the model line while that session works.
 	state.footerNavigationActive = navigationActive || agentSession === undefined;
 	if (session && state.footerData) {
 		state.footer ??= new FooterComponent(
