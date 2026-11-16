@@ -24,6 +24,20 @@ import {
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
 import {
+	type PeekContent,
+	renderBoardRow,
+	renderPeekCard,
+	rowFinished,
+	rowMatches,
+	rowName,
+	rowState,
+	rowTask,
+	type TaskBoardItem,
+	type TaskBoardRow,
+	taskBoardCounts,
+	taskBoardGroups,
+} from "./task-board.ts";
+import {
 	TaskDetail,
 	type TaskDetailContent,
 	taskDetailActions,
@@ -61,13 +75,22 @@ function escAndBack(): string {
 function listKeys(): NavKey[] {
 	return [
 		{ keys: "↑↓", label: "select" },
-		{ action: "app.list.open", label: "open" },
 		{ action: "app.list.peek", label: "peek" },
+		{ action: "app.list.open", label: "open" },
 		{ action: "app.list.stop", label: "stop" },
+		{ action: "app.list.filter", label: "filter" },
 		{ keys: escAndBack(), label: "back" },
 		{ action: "app.keys.help", label: "keys" },
 	];
 }
+/** Another source's rows in /tasks, such as workflow runs, with what its keys do to them. */
+export type TaskBoardSource = {
+	items(): readonly TaskBoardItem[];
+	subscribe(listener: () => void): () => void;
+	open?(id: string): void;
+	stop?(id: string): Promise<{ ok: true } | { ok: false; reason: string }>;
+	answer?(id: string, text: string): Promise<{ ok: true } | { ok: false; reason: string }>;
+};
 function detailKeys(): NavKey[] {
 	return [
 		{ keys: "↑↓", label: "actions" },
@@ -132,6 +155,18 @@ export class TaskInspector implements Component {
 	private disposed = false;
 	private statusWatch?: { taskId: TaskId; release: () => void };
 	private readonly input = new Input();
+	/** The selected row's peek card is open (Space), with a reply input when the row waits on an answer. */
+	private peekId?: string;
+	private readonly reply = new Input();
+	/** `/` filter text, and whether keys are typing into it. */
+	private filter = "";
+	private filtering = false;
+	private readonly filterInput = new Input();
+	/** Rows other sources list, such as workflow runs, and what their keys do. */
+	private boardSource?: TaskBoardSource;
+	private releaseBoardSource?: () => void;
+	/** Items dismissed with `x` after they finished, so the list leaves them out. */
+	private readonly dismissedItems = new Set<string>();
 	private readonly unsubscribe: () => void;
 	private readonly transcriptEnvironment: () => TaskTranscriptEnvironment | undefined;
 	constructor(
@@ -172,7 +207,7 @@ export class TaskInspector implements Component {
 			},
 			dismiss: (task) => {
 				dismissedTasks(this.store).add(task.ref.taskId);
-				this.navigation.update(this.orderedSections().flatMap((section) => section.tasks));
+				this.refreshOrder();
 				if (this.navigation.focus.kind === "detail") this.navigation.focus = { kind: "tasks" };
 				this.requestRender();
 			},
@@ -195,12 +230,12 @@ export class TaskInspector implements Component {
 			},
 		});
 		this.unsubscribe = this.store.subscribe(() => {
-			this.navigation.update(this.orderedSections().flatMap((section) => section.tasks));
+			this.refreshOrder();
 			if (this.transcript) this.transcript.refresh();
 			else if (this.navigation.focus.kind === "detail") void this.loadDetail();
 			this.requestRender();
 		});
-		this.navigation.update(this.orderedSections().flatMap((section) => section.tasks));
+		this.refreshOrder();
 		this.navigation.open();
 		this.input.onSubmit = (text) => {
 			void this.sendInput(text);
@@ -224,6 +259,60 @@ export class TaskInspector implements Component {
 		this.navigation.focus = { kind: "detail" };
 		this.openTranscript();
 	}
+	/**
+	 * Lists another source's rows, such as workflow runs, beside the task store's. Its changes repaint the list. Returns
+	 * a disposer.
+	 */
+	setBoardSource(source: TaskBoardSource | undefined): () => void {
+		this.releaseBoardSource?.();
+		this.boardSource = source;
+		this.releaseBoardSource = source?.subscribe(() => {
+			this.refreshOrder();
+			this.requestRender();
+		});
+		this.refreshOrder();
+		this.requestRender();
+		return () => {
+			if (this.boardSource !== source) return;
+			this.releaseBoardSource?.();
+			this.releaseBoardSource = undefined;
+			this.boardSource = undefined;
+			this.refreshOrder();
+		};
+	}
+	/** Every row /tasks lists, before grouping: the store's tasks, then other sources' items, less dismissed ones. */
+	private allRows(): TaskBoardRow[] {
+		const tasks: TaskBoardRow[] = this.orderedSections()
+			.flatMap((section) => section.tasks)
+			.map((task) => ({ id: task.ref.taskId, kind: "task", task: this.withLiveElapsed(task) }));
+		const items: TaskBoardRow[] = (this.boardSource?.items() ?? [])
+			.filter((item) => !this.dismissedItems.has(item.id))
+			.map((item) => ({ id: item.id, kind: "item", item }));
+		return [...tasks, ...items];
+	}
+	/** The rows the list shows, grouped Needs input, Working, Done, after the `/` filter. */
+	private boardRows(): TaskBoardRow[] {
+		return taskBoardGroups(this.allRows().filter((row) => rowMatches(row, this.filter))).flatMap(
+			(group) => group.rows,
+		);
+	}
+	private refreshOrder(): void {
+		const rows = this.boardRows();
+		const tasks = this.orderedSections().flatMap((section) => section.tasks);
+		this.navigation.update(
+			tasks,
+			rows.map((row) => row.id),
+		);
+		if (this.peekId !== undefined && !rows.some((row) => row.id === this.peekId)) this.closePeek();
+	}
+	private selectedRow(): TaskBoardRow | undefined {
+		const id = this.navigation.selectedId;
+		return this.boardRows().find((row) => row.id === id);
+	}
+	private closePeek(): void {
+		this.peekId = undefined;
+		this.reply.setValue("");
+	}
 	private orderedSections(): TaskListSection[] {
 		const dismissed = dismissedTasks(this.store);
 		return taskListSections(
@@ -233,6 +322,7 @@ export class TaskInspector implements Component {
 	}
 	dispose(): void {
 		this.disposed = true;
+		this.releaseBoardSource?.();
 		this.releaseStatusWatch();
 		this.closeTranscript();
 		this.unsubscribe();
@@ -408,6 +498,10 @@ export class TaskInspector implements Component {
 			this.requestRender();
 			return true;
 		}
+		if (focus.kind === "tasks" && this.handleBoardInput(data)) {
+			this.requestRender();
+			return true;
+		}
 		if (
 			matchesKey(data, "escape") ||
 			(getKeybindings().matches(data, "app.nav.back") && !this.configuredTaskKey(data))
@@ -475,6 +569,168 @@ export class TaskInspector implements Component {
 		}
 		return transcript.handleInput(data);
 	}
+	/**
+	 * The list's own keys: the `/` filter, the Space peek card and its reply, and the keys of rows other sources list.
+	 * Returns false for keys the task navigation handles.
+	 */
+	private handleBoardInput(data: string): boolean {
+		const keys = getKeybindings();
+		if (this.filtering) {
+			if (matchesKey(data, "escape")) {
+				this.filtering = false;
+				this.filter = "";
+				this.filterInput.setValue("");
+			} else if (matchesKey(data, "enter") || matchesKey(data, "down") || matchesKey(data, "up")) {
+				this.filtering = false;
+				if (matchesKey(data, "up") || matchesKey(data, "down")) this.navigation.handleInput(data, "tasks");
+			} else if (matchesKey(data, "backspace") && this.filterInput.getValue() === "") {
+				this.filtering = false;
+			} else {
+				this.filterInput.handleInput(data);
+				this.filter = this.filterInput.getValue();
+			}
+			this.refreshOrder();
+			return true;
+		}
+		const row = this.selectedRow();
+		if (this.peekId !== undefined && row?.id === this.peekId) {
+			const replying = this.peekReplies(row);
+			if (matchesKey(data, "escape")) {
+				this.closePeek();
+				return true;
+			}
+			// Space on an open peek opens the task's full detail page, with its actions; an item's peek closes.
+			if (keys.matches(data, "app.list.peek") && !replying) {
+				this.closePeek();
+				if (row.kind !== "task") return true;
+				this.navigation.focus = { kind: "detail" };
+				this.actionIndex = 0;
+				this.scroll = 0;
+				void this.loadDetail();
+				return true;
+			}
+			if (replying) {
+				if (keys.matches(data, "app.nav.back") && this.reply.getValue() === "") {
+					this.closePeek();
+					return true;
+				}
+				if (matchesKey(data, "enter")) {
+					void this.sendReply(row);
+					return true;
+				}
+				const choice =
+					/^[1-9]$/.test(data) && this.reply.getValue() === ""
+						? this.peekChoices(row)[Number(data) - 1]
+						: undefined;
+				if (choice !== undefined) {
+					this.reply.setValue(choice);
+					return true;
+				}
+				if (!matchesKey(data, "up") && !matchesKey(data, "down")) {
+					this.reply.handleInput(data);
+					return true;
+				}
+			}
+			if (matchesKey(data, "up") || matchesKey(data, "down")) this.closePeek();
+		}
+		if (keys.matches(data, "app.list.filter")) {
+			this.filtering = true;
+			this.filterInput.setValue(this.filter);
+			return true;
+		}
+		if (keys.matches(data, "app.list.peek")) {
+			if (row !== undefined) {
+				this.peekId = row.id;
+				this.reply.setValue("");
+				if (row.kind === "task") void this.loadPeek(row.task);
+			}
+			return true;
+		}
+		if (row?.kind !== "item") return false;
+		if (keys.matches(data, "app.list.open")) {
+			if (this.boardSource?.open) {
+				this.close();
+				this.boardSource.open(row.id);
+			} else this.status = "This item can't be opened from here.";
+			return true;
+		}
+		if (keys.matches(data, "app.list.stop")) {
+			if (rowFinished(row)) {
+				this.dismissedItems.add(row.id);
+				this.refreshOrder();
+			} else if (this.navigation.stopConfirm.press(row.id as TaskId)) void this.stopItem(row);
+			else {
+				this.requestRender();
+				const timer = setTimeout(() => this.requestRender(), NAV_CONFIRM_WINDOW_MS + 50);
+				timer.unref?.();
+			}
+			return true;
+		}
+		return false;
+	}
+	/** A peek card takes a reply when its row waits on an answer this view can send. */
+	private peekReplies(row: TaskBoardRow): boolean {
+		return row.kind === "item" && row.item.state === "input" && this.boardSource?.answer !== undefined;
+	}
+	private peekChoices(row: TaskBoardRow): readonly string[] {
+		return row.kind === "item" ? (row.item.choices ?? []) : [];
+	}
+	private async sendReply(row: TaskBoardRow): Promise<void> {
+		const text = this.reply.getValue().trim();
+		if (!text || row.kind !== "item" || !this.boardSource?.answer) return;
+		const result = await this.boardSource.answer(row.id, text);
+		if (result.ok) {
+			this.closePeek();
+			this.status = `Sent to ${rowName(row)}`;
+		} else this.failureNotice = `Could not send the answer: ${result.reason}`;
+		this.requestRender();
+	}
+	private async stopItem(row: Extract<TaskBoardRow, { kind: "item" }>): Promise<void> {
+		if (!this.boardSource?.stop) {
+			this.failureNotice = "This item can't be stopped from here.";
+			this.requestRender();
+			return;
+		}
+		const result = await this.boardSource.stop(row.id);
+		this.failureNotice = result.ok ? "" : `Could not stop ${rowName(row)}: ${result.reason}`;
+		this.requestRender();
+	}
+	/** A task's peek: its prompt and result, as its detail page reads them. */
+	private peekText = new Map<string, readonly string[]>();
+	private async loadPeek(task: TaskRecord): Promise<void> {
+		const read = this.store.taskDetailText(task.ref.taskId);
+		const own = read instanceof Promise ? await read : read;
+		const lines = (own.output ?? own.prompt ?? "")
+			.split("\n")
+			.map((line) => line.trimEnd())
+			.filter(Boolean)
+			.slice(-6);
+		this.peekText.set(task.ref.taskId, lines);
+		this.requestRender();
+	}
+	private peekContent(row: TaskBoardRow): PeekContent {
+		const state = rowState(row);
+		if (row.kind === "item") {
+			if (state === "input")
+				return { question: row.item.question ?? rowTask(row), choices: row.item.choices, lines: [] };
+			const lines = [
+				...(row.item.progress ? [`stage ${row.item.progress.done}/${row.item.progress.total}`] : []),
+				...(row.item.reason ? [row.item.reason] : []),
+				row.item.task,
+			];
+			return { lines };
+		}
+		const task = row.task;
+		if (task.attention.kind === "input-needed") return { question: task.attention.prompt, lines: [] };
+		const action =
+			task.execution.kind !== "settled" && task.currentAction
+				? [`${task.currentAction.tool} ${task.currentAction.text}`]
+				: [];
+		const metrics = taskMetricsText(task);
+		return {
+			lines: [...action, ...(this.peekText.get(task.ref.taskId) ?? []), ...(metrics ? [metrics] : [])],
+		};
+	}
 	private async interruptTranscript(transcript: TaskTranscriptPage): Promise<void> {
 		const result = await transcript.interrupt();
 		if (!result.ok) this.failureNotice = result.error.message;
@@ -509,9 +765,11 @@ export class TaskInspector implements Component {
 		}
 		const pending = this.navigation.stopConfirm.pending();
 		if (pending === undefined) return "";
+		const row = this.allRows().find((candidate) => candidate.id === pending);
 		const task = this.store.backgroundTasks.find((candidate) => candidate.ref.taskId === pending);
 		const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
-		return `Press ${key} again within 3s to stop ${task ? taskDisplayText(task.title || taskLabel(task)) : "the task"}`;
+		const name = task ? taskDisplayText(task.title || taskLabel(task)) : row ? rowName(row) : "the task";
+		return `Press ${key} again within 3s to stop ${name}`;
 	}
 	renderPicker(width: number, availableRows: number): string[] {
 		return this.renderViewport(width, Math.max(1, Math.min(12, availableRows)));
@@ -564,6 +822,7 @@ export class TaskInspector implements Component {
 				getKeybindings(),
 			).slice(-Math.max(1, budget));
 		}
+		if (this.navigation.focus.kind === "tasks") return this.renderBoard(width, budget);
 		const framed = width >= 20 && budget >= 7;
 		const inner = Math.max(1, width - (framed ? 4 : 0));
 		const current = this.selected();
@@ -633,6 +892,88 @@ export class TaskInspector implements Component {
 			...failure,
 			...statusRows,
 		].map((line) => truncateToWidth(line, width));
+	}
+	/**
+	 * The /tasks sheet: a `▔` top edge, `Tasks` with its counts, the Needs input, Working and Done groups, the selected
+	 * row's peek card under it, and one hint line with the list's live keys.
+	 */
+	private renderBoard(width: number, budget: number): string[] {
+		const style = themedNavKeyStyle();
+		const clip = (line: string) => truncateToWidth(line, Math.max(1, width));
+		const all = this.allRows();
+		const rows = this.boardRows();
+		const selected = this.selectedRow();
+		const counts = taskBoardCounts(all);
+		const edge = theme.fg("borderMuted", "▔".repeat(Math.max(1, width)));
+		const header = ` ${theme.bold("Tasks")}${counts ? `  ${theme.fg("muted", counts)}` : ""}`;
+		const filterRow = this.filtering
+			? [` ${theme.fg("accent", "⌕")} ${this.filterInput.render(Math.max(1, width - 4))[0] ?? ""}`]
+			: this.filter
+				? [theme.fg("muted", ` ⌕ ${taskDisplayText(this.filter)}`)]
+				: [];
+		const body: string[] = [];
+		let selectedLine = -1;
+		if (!all.length)
+			body.push(theme.fg("muted", "   No background work. Subagents, shells and workflow runs appear here."));
+		else if (!rows.length) body.push(theme.fg("muted", `   Nothing matches "${taskDisplayText(this.filter)}".`));
+		for (const group of taskBoardGroups(rows)) {
+			body.push(theme.fg("muted", theme.bold(`   ${group.title}`)));
+			for (const row of group.rows) {
+				const isSelected = row.id === selected?.id;
+				if (isSelected) selectedLine = body.length;
+				body.push(renderBoardRow(row, isSelected, width - 1).replace(/^/, " "));
+				if (isSelected && this.peekId === row.id) {
+					const replyLines = this.peekReplies(row)
+						? [`${theme.fg("accent", "❯")} ${this.reply.render(Math.max(1, width - 10))[0] ?? ""}`]
+						: [];
+					body.push(
+						...renderPeekCard(rowName(row), this.peekContent(row), replyLines, Math.max(10, width - 3)).map(
+							(line) => `   ${line}`,
+						),
+					);
+				}
+			}
+		}
+		const peekOpen = this.peekId !== undefined && this.peekId === selected?.id;
+		const replying = peekOpen && selected !== undefined && this.peekReplies(selected);
+		const keys: NavKey[] = this.filtering
+			? [
+					{ keys: "type", label: "filter" },
+					{ keys: "enter", label: "done" },
+					{ keys: "esc", label: "clear" },
+				]
+			: replying
+				? [
+						...(this.peekChoices(selected).length
+							? [{ keys: `1-${this.peekChoices(selected).length}`, label: "choose" }]
+							: []),
+						{ keys: "enter", label: "send" },
+						{ keys: "esc", label: "close" },
+					]
+				: listKeys()
+						.filter(
+							(key) =>
+								selected !== undefined ||
+								key.keys?.startsWith("esc") === true ||
+								key.action === "app.keys.help" ||
+								(key.action === "app.list.filter" && this.filter !== ""),
+						)
+						.map((key) =>
+							key.action === "app.list.stop"
+								? { ...key, label: selected && rowFinished(selected) ? "dismiss" : "stop" }
+								: key.action === "app.list.peek" && peekOpen
+									? { ...key, label: selected?.kind === "task" ? "details" : "close peek" }
+									: key.keys?.startsWith("esc") === true && peekOpen
+										? { keys: "esc", label: "close peek" }
+										: key,
+						);
+		const hint = renderNavHintLine(keys, width, style, getKeybindings());
+		const notice = this.failureNotice || this.stopNotice() || this.status;
+		const footer = [...(notice ? [theme.fg("warning", clip(notice))] : []), hint];
+		const head = [edge, clip(header), ...filterRow.map(clip)];
+		const room = Math.max(1, budget - head.length - footer.length);
+		const start = selectedLine < 0 ? 0 : Math.max(0, Math.min(selectedLine - 1, body.length - room));
+		return [...head, ...body.slice(start, start + room).map(clip), ...footer];
 	}
 	private renderAll(width: number): string[] {
 		const task = this.selected();
