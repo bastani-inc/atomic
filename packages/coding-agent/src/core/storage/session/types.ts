@@ -53,6 +53,7 @@ export interface SessionListQuery {
 	/** Only sessions whose id starts with this text, compared case-insensitively. */
 	readonly idPrefix?: string;
 	readonly includeInternal?: boolean;
+	readonly withoutSearchText?: boolean;
 	readonly signal?: AbortSignal;
 }
 
@@ -97,6 +98,53 @@ export interface SessionOpenMarkerStore {
 	list(sessionId: string): Promise<readonly SessionOpenMarkerAge[]>;
 }
 
+export interface SessionEntryAt {
+	readonly seq: number;
+	readonly entry: SessionEntry;
+}
+
+export interface SessionEntriesQuery {
+	readonly fromSeq: number;
+	readonly toSeq: number;
+	readonly maxChars?: number;
+	readonly skipTypes?: readonly string[];
+	readonly signal?: AbortSignal;
+}
+
+export interface SessionEntriesPage {
+	readonly lastSeq: number;
+	readonly entries: readonly SessionEntryAt[];
+	readonly throughSeq: number;
+}
+
+export interface SessionSearchText {
+	readonly seq: number;
+	readonly text: string;
+}
+
+export interface SessionSearchCoverage {
+	readonly indexedSeq: number;
+	readonly lastSeq: number;
+}
+
+export interface SessionSearchIndex {
+	coverage(sessionId: string, format: number): Promise<SessionSearchCoverage | undefined>;
+	extend(
+		sessionId: string,
+		format: number,
+		afterSeq: number,
+		throughSeq: number,
+		texts: readonly SessionSearchText[],
+	): Promise<boolean>;
+	candidates(
+		sessionId: string,
+		anyOf: readonly (readonly string[])[],
+		fromSeq: number,
+		toSeq: number,
+		limit: number,
+	): Promise<readonly number[]>;
+}
+
 export interface SessionStore {
 	readonly descriptor: StorageDescriptor;
 	/**
@@ -130,6 +178,8 @@ export interface SessionStore {
 		options: SessionWriteOptions,
 	): Promise<{ readonly lastSeq: number }>;
 	load(sessionId: string): Promise<SessionSnapshot>;
+	readEntryRange?(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage>;
+	readonly searchIndex?: SessionSearchIndex;
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined>;
 	delete(sessionId: string): Promise<void>;
 	list(query: SessionListQuery): AsyncIterable<SessionSummary>;

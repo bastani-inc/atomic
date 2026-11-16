@@ -188,7 +188,10 @@ function contiguousRuns(rows: readonly SearchRow[], keep: (row: SearchRow) => bo
 			continue;
 		}
 		const previous = current[current.length - 1];
-		if (previous && (previous.source !== row.source || previous.line + 1 !== row.line)) {
+		if (
+			previous &&
+			(previous.source !== row.source || (previous.line !== row.line && previous.line + 1 !== row.line))
+		) {
 			runs.push(current);
 			current = [];
 		}
@@ -279,19 +282,32 @@ function selectWithinBudget(
 	return added === 0 ? undefined : section.join("\n");
 }
 
-async function untilInterrupted<T>(work: Promise<T>, timeLimitMs: number, signal: AbortSignal | undefined): Promise<T> {
+async function untilInterrupted<T>(
+	work: (signal: AbortSignal) => Promise<T>,
+	timeLimitMs: number,
+	signal: AbortSignal | undefined,
+): Promise<T> {
+	const controller = new AbortController();
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let onAbort: (() => void) | undefined;
 	const interrupted = new Promise<never>((_resolve, reject) => {
-		timer = setTimeout(() => reject(new Error("History recall timed out")), timeLimitMs);
+		timer = setTimeout(() => {
+			const reason = new Error("History recall timed out");
+			controller.abort(reason);
+			reject(reason);
+		}, timeLimitMs);
 		if (signal) {
-			onAbort = () => reject(new Error("History recall cancelled"));
+			onAbort = () => {
+				const reason = new Error("History recall cancelled");
+				controller.abort(reason);
+				reject(reason);
+			};
 			signal.addEventListener("abort", onAbort, { once: true });
 			if (signal.aborted) onAbort();
 		}
 	});
 	try {
-		return await Promise.race([work, interrupted]);
+		return await Promise.race([work(controller.signal), interrupted]);
 	} finally {
 		clearTimeout(timer);
 		if (onAbort) signal?.removeEventListener("abort", onAbort);
@@ -317,7 +333,11 @@ export async function recallHistory(request: HistoryRecallRequest): Promise<stri
 	const startedAt = performance.now();
 	try {
 		const [own, others] = await untilInterrupted(
-			Promise.all([search(ownSource, searchRequestForTerms), search("history://", searchRequestForTerms)]),
+			(signal) =>
+				Promise.all([
+					search(ownSource, { ...searchRequestForTerms, signal }),
+					search("history://", { ...searchRequestForTerms, signal }),
+				]),
 			timeLimitMs,
 			request.signal,
 		);

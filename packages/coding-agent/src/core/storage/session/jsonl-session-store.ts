@@ -40,6 +40,9 @@ import {
 } from "./legacy-format.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
+	SessionEntriesPage,
+	SessionEntriesQuery,
+	SessionEntryAt,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionSnapshot,
@@ -83,6 +86,97 @@ function parseUnterminated(line: string): SessionEntry | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+const RANGE_MARK_EVERY = 256;
+
+interface RangeIndex {
+	readonly identity: string;
+	readonly marks: { readonly seq: number; readonly offset: number }[];
+	completeEnd: number;
+	completeCount: number;
+}
+
+function isBlankLine(line: Buffer): boolean {
+	for (const byte of line) {
+		if (byte > 0x20 && byte < 0x80) return false;
+		if (byte >= 0x80) return line.toString("utf8").trim() === "";
+	}
+	return true;
+}
+
+interface RangeCursor {
+	readonly offset: number;
+	readonly seq: number;
+	readonly header: boolean;
+}
+
+async function scanSessionLines(
+	path: string,
+	size: number,
+	from: RangeCursor,
+	index: RangeIndex,
+	signal: AbortSignal | undefined,
+	onEntry: (seq: number, text: string, parsed: SessionEntry | undefined) => boolean,
+): Promise<RangeCursor> {
+	if (from.offset >= size) return from;
+	let { seq, header } = from;
+	let offset = from.offset;
+	let carry: Buffer = Buffer.alloc(0);
+	const input = createReadStream(path, { start: from.offset, end: size - 1 });
+	try {
+		for await (const chunk of input) {
+			signal?.throwIfAborted();
+			const bytes = carry.length === 0 ? (chunk as Buffer) : Buffer.concat([carry, chunk as Buffer]);
+			let lineStart = 0;
+			for (let newline = bytes.indexOf(10); newline !== -1; newline = bytes.indexOf(10, lineStart)) {
+				const line = bytes.subarray(lineStart, newline);
+				const at = offset + lineStart;
+				lineStart = newline + 1;
+				if (header) {
+					header = false;
+					continue;
+				}
+				if (isBlankLine(line)) continue;
+				seq++;
+				if (seq % RANGE_MARK_EVERY === 1 && !index.marks.some((candidate) => candidate.seq === seq)) {
+					index.marks.push({ seq, offset: at });
+					index.marks.sort((a, b) => a.seq - b.seq);
+				}
+				if (seq > index.completeCount) {
+					index.completeCount = seq;
+					index.completeEnd = offset + lineStart;
+				}
+				if (onEntry(seq, line.toString("utf8"), undefined))
+					return { offset: offset + lineStart, seq, header: false };
+			}
+			carry = bytes.subarray(lineStart);
+			offset += lineStart;
+		}
+	} finally {
+		input.destroy();
+	}
+	if (carry.length > 0 && !header && !isBlankLine(carry)) {
+		const text = carry.toString("utf8");
+		const parsed = parseUnterminated(text);
+		if (parsed !== undefined) {
+			seq++;
+			onEntry(seq, text, parsed);
+		}
+	}
+	return { offset: size, seq, header: false };
+}
+
+function entriesPage(entries: readonly SessionEntry[], query: SessionEntriesQuery): SessionEntriesPage {
+	const from = Math.max(1, query.fromSeq);
+	const through = Math.min(query.toSeq, entries.length);
+	return {
+		lastSeq: entries.length,
+		entries: entries
+			.slice(from - 1, Math.max(from - 1, through))
+			.map((entry, index) => ({ seq: from + index, entry })),
+		throughSeq: Math.max(through, from - 1),
+	};
 }
 
 /** Session files whose torn last line this process has already reported. */
@@ -155,6 +249,7 @@ export class JsonlSessionStore implements SessionStore {
 	private poisoned: JsonlStoragePoisonedError | StorageUnavailableError | undefined;
 	private readonly directory: string;
 	private readonly fileStates = new Map<string, SessionFileState>();
+	private readonly rangeIndexes = new Map<string, RangeIndex>();
 
 	private readonly exactDirectory: boolean;
 	private readonly lockFs: SessionLockFs | undefined;
@@ -315,6 +410,62 @@ export class JsonlSessionStore implements SessionStore {
 			if (!located) throw new SessionNotFoundError(sessionId);
 			return this.readPersisted(located.path, located.stored);
 		});
+	}
+
+	readEntryRange(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
+		return this.run(
+			async () => {
+				query.signal?.throwIfAborted();
+				const located = await this.locate(sessionId);
+				if (!located) throw new SessionNotFoundError(sessionId);
+				if (!isCurrentSessionHeader(located.stored))
+					return entriesPage((await this.readPersisted(located.path, located.stored)).entries, query);
+				return this.readRangeOf(located.path, query);
+			},
+			false,
+			query.signal,
+		);
+	}
+
+	private async readRangeOf(path: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
+		const stats = await stat(path, { bigint: true });
+		const identity = `${stats.dev}:${stats.ino}`;
+		const size = Number(stats.size);
+		let index = this.rangeIndexes.get(path);
+		if (index === undefined || index.identity !== identity || index.completeEnd > size) {
+			index = { identity, marks: [], completeEnd: 0, completeCount: 0 };
+			this.rangeIndexes.set(path, index);
+		}
+		const fromSeq = Math.max(1, query.fromSeq);
+		const entries: SessionEntryAt[] = [];
+		let chars = 0;
+		let stopped: number | undefined;
+		let cursor: RangeCursor = { offset: 0, seq: 0, header: true };
+		if (fromSeq > index.completeCount && index.completeEnd > 0)
+			cursor = { offset: index.completeEnd, seq: index.completeCount, header: false };
+		else {
+			const mark = index.marks.findLast((candidate) => candidate.seq <= fromSeq);
+			if (mark) cursor = { offset: mark.offset, seq: mark.seq - 1, header: false };
+		}
+		if (fromSeq <= query.toSeq)
+			cursor = await scanSessionLines(path, size, cursor, index, query.signal, (seq, text, parsed) => {
+				if (seq < fromSeq) return false;
+				if (seq > query.toSeq) return true;
+				entries.push({ seq, entry: parsed ?? (JSON.parse(text) as SessionEntry) });
+				chars += text.length;
+				if (query.maxChars !== undefined && chars >= query.maxChars && seq < query.toSeq) {
+					stopped = seq;
+					return true;
+				}
+				return seq >= query.toSeq;
+			});
+		const counted =
+			cursor.offset >= index.completeEnd
+				? cursor
+				: { offset: index.completeEnd, seq: index.completeCount, header: index.completeEnd === 0 };
+		const lastSeq = (await scanSessionLines(path, size, counted, index, query.signal, () => false)).seq;
+		const throughSeq = stopped ?? Math.min(query.toSeq, lastSeq);
+		return { lastSeq, entries, throughSeq: Math.max(throughSeq, fromSeq - 1) };
 	}
 
 	loadFile(path: string): Promise<SessionSnapshot> {

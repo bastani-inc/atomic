@@ -24,7 +24,7 @@ import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-sto
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import type { SessionStore } from "../src/core/storage/session/types.js";
 import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
-import { renderHistoryTranscript } from "../src/core/tools/history-transcript.js";
+import { historyEntryRanges } from "../src/core/tools/history-transcript.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext } from "../src/core/tools/resource-selectors.js";
 import { createSearchToolDefinition } from "../src/core/tools/search.js";
@@ -513,8 +513,7 @@ describe("truncation markers locate the full output in session history (#4568)",
 	}
 
 	function historyOf(manager: SessionManager) {
-		const { entryRanges } = renderHistoryTranscript(manager.getHeader()!, manager.getEntries(), true);
-		return { history: { sessionId: manager.getSessionId(), entryRanges } };
+		return { history: { sessionId: manager.getSessionId(), entryRanges: historyEntryRanges(manager.getEntries()) } };
 	}
 
 	it("uses the fallback marker when no session history is known (#4568)", async () => {

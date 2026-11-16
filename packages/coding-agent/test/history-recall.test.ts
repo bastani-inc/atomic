@@ -144,9 +144,9 @@ describe("recallHistory output (#4568)", () => {
 			workflows: () => undefined,
 		});
 		const section = sectionLines(await recallHistory(request(router)));
-		assert.ok(section.includes(`${OWN}:4-4`), section.join("\n"));
+		assert.ok(section.includes(`${OWN}:1-1`), section.join("\n"));
 		assert.ok(section.includes(`> ${FINDING}`));
-		assert.ok(section.includes(`${OTHER}:6-6`), section.join("\n"));
+		assert.ok(section.includes(`${OTHER}:2-2`), section.join("\n"));
 		assert.ok(section.includes(`> ${OTHER_FINDING}`));
 	});
 
@@ -161,6 +161,32 @@ describe("recallHistory output (#4568)", () => {
 		const lines = sectionLines(await recallHistory(request(router)));
 		assert.ok(lines.includes(`${OWN}:20-21`), lines.join("\n"));
 		assert.ok(lines.includes(`${OWN}:40-40`), lines.join("\n"));
+	});
+
+	it("recalls the lines of one entry as one range of that entry (#5250)", async () => {
+		const router = fakeRouter({
+			[OWN]: [row(OWN, 12, "first zebra_cache_eviction note"), row(OWN, 12, "second ttl_sweeper_v2 note")].join(
+				"\n",
+			),
+		});
+		const lines = sectionLines(await recallHistory(request(router)));
+		assert.deepEqual(
+			lines.filter((line) => line.startsWith("history://")),
+			[`${OWN}:12-12`],
+		);
+	});
+
+	it("stops its searches when the time limit passes (#5250)", async () => {
+		const signals: AbortSignal[] = [];
+		const router: InternalResourceRouter = {
+			search: (_url, searchRequest) => {
+				if (searchRequest.signal) signals.push(searchRequest.signal);
+				return new Promise<string>(() => {});
+			},
+		};
+		assert.equal(await recallHistory(request(router, { timeLimitMs: 20 })), undefined);
+		assert.equal(signals.length, 2);
+		assert.ok(signals.every((signal) => signal.aborted));
 	});
 
 	it("leaves out weak matches, headings, tool calls and its own earlier sections (#4568)", async () => {

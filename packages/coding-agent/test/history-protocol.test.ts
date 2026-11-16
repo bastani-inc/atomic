@@ -216,17 +216,16 @@ describe("history:// sessions through any SessionStore (#4252)", () => {
 			}
 		});
 
-		it("reads a session transcript, narrowed to a line range", async () => {
+		it("reads a session transcript, narrowed to an entry range", async () => {
 			const { read, close } = await seeded();
 			try {
 				const whole = await read("history://sessions/recent-session");
 				assertIncludes(whole, "investigate the flaky websocket reconnect test");
 				assertIncludes(whole, "the reconnect backoff resets too early");
-				const lines = whole.split("\n");
-				const line = lines.findIndex((value) => value.includes("backoff resets")) + 1;
-				const narrow = await read(`history://sessions/recent-session:${line}-${line}`);
+				const narrow = await read("history://sessions/recent-session:2-2");
 				assertIncludes(narrow, "the reconnect backoff resets too early");
-				assert.ok(narrow.split("\n").length < lines.length);
+				assertExcludes(narrow, "investigate the flaky websocket reconnect test");
+				assertExcludes(narrow, "patch the backoff");
 				assertExcludes(narrow, "billing");
 			} finally {
 				await close();
@@ -545,8 +544,7 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 			};
 			assert.equal(bodyOf(" user"), user);
 			assert.equal(bodyOf(" assistant"), assistant);
-			const last = lines.findIndex((line) => line.includes("END-ASSISTANT")) + 1;
-			assertIncludes(await read(`history://sessions/long:${last}-${last}`), "END-ASSISTANT");
+			assertIncludes(await read("history://sessions/long:2-2"), "END-ASSISTANT");
 		} finally {
 			await close();
 		}
@@ -604,10 +602,10 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 			}
 			const continuation = "searched sessions 1-25 of 26; continue with history://sessions?offset=25";
 			assertIncludes(await search("needle", "history://sessions:1-5"), continuation);
-			const matched = await search("record", "history://sessions:4-4");
+			const matched = await search("record", "history://sessions:1-1");
 			assertIncludes(matched, continuation);
-			assert.match(matched, /history:\/\/sessions\/ranged-25:4:/);
-			assertIncludes(await search("needle", "history://sessions?offset=25:1-5"), "history://sessions/ranged-0:4:");
+			assert.match(matched, /history:\/\/sessions\/ranged-25:1:/);
+			assertIncludes(await search("needle", "history://sessions?offset=25:1-5"), "history://sessions/ranged-0:1:");
 		} finally {
 			await close();
 		}
@@ -628,7 +626,7 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 				assert.ok(row, `listing row for ${query}`);
 				assertIncludes(row, query);
 				assertIncludes(await read(row), "secret roadmap");
-				assertIncludes(await read(`${row}:2-3`), "secret roadmap");
+				assertIncludes(await read(`${row}:1-2`), "secret roadmap");
 				const label = (await search("roadmap", `history://sessions${query}`)).match(
 					/(history:\/\/sessions\/beta-session\?project=[^:\s]+):(\d+):/,
 				);

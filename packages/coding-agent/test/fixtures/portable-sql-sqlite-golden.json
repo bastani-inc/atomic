@@ -122,6 +122,42 @@
 		},
 		{
 			"type": "table",
+			"name": "session_search_fts",
+			"tbl_name": "session_search_fts",
+			"sql": "CREATE VIRTUAL TABLE session_search_fts USING fts5(body, content='', contentless_delete=1, tokenize='trigram', detail='none')"
+		},
+		{
+			"type": "table",
+			"name": "session_search_fts_config",
+			"tbl_name": "session_search_fts_config",
+			"sql": "CREATE TABLE 'session_search_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "session_search_fts_data",
+			"tbl_name": "session_search_fts_data",
+			"sql": "CREATE TABLE 'session_search_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+		},
+		{
+			"type": "table",
+			"name": "session_search_fts_docsize",
+			"tbl_name": "session_search_fts_docsize",
+			"sql": "CREATE TABLE 'session_search_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB, origin INTEGER)"
+		},
+		{
+			"type": "table",
+			"name": "session_search_fts_idx",
+			"tbl_name": "session_search_fts_idx",
+			"sql": "CREATE TABLE 'session_search_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "session_search_state",
+			"tbl_name": "session_search_state",
+			"sql": "CREATE TABLE session_search_state (sid INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL UNIQUE, format INTEGER NOT NULL, indexed_seq INTEGER NOT NULL, revision TEXT NOT NULL, entry_id TEXT NOT NULL) STRICT"
+		},
+		{
+			"type": "table",
 			"name": "session_search_texts",
 			"tbl_name": "session_search_texts",
 			"sql": "CREATE TABLE session_search_texts (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL,\n\t\t\t\t\ttext_json TEXT NOT NULL CHECK(json_valid(text_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
@@ -227,6 +263,42 @@
 			"name": "team_session_open",
 			"tbl_name": "team_session_open",
 			"sql": "CREATE TABLE team_session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, schema_version INTEGER, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_session_search_fts",
+			"tbl_name": "team_session_search_fts",
+			"sql": "CREATE VIRTUAL TABLE team_session_search_fts USING fts5(body, content='', contentless_delete=1, tokenize='trigram', detail='none')"
+		},
+		{
+			"type": "table",
+			"name": "team_session_search_fts_config",
+			"tbl_name": "team_session_search_fts_config",
+			"sql": "CREATE TABLE 'team_session_search_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "team_session_search_fts_data",
+			"tbl_name": "team_session_search_fts_data",
+			"sql": "CREATE TABLE 'team_session_search_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+		},
+		{
+			"type": "table",
+			"name": "team_session_search_fts_docsize",
+			"tbl_name": "team_session_search_fts_docsize",
+			"sql": "CREATE TABLE 'team_session_search_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB, origin INTEGER)"
+		},
+		{
+			"type": "table",
+			"name": "team_session_search_fts_idx",
+			"tbl_name": "team_session_search_fts_idx",
+			"sql": "CREATE TABLE 'team_session_search_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "team_session_search_state",
+			"tbl_name": "team_session_search_state",
+			"sql": "CREATE TABLE team_session_search_state (sid INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL UNIQUE, format INTEGER NOT NULL, indexed_seq INTEGER NOT NULL, revision TEXT NOT NULL, entry_id TEXT NOT NULL) STRICT"
 		},
 		{
 			"type": "table",
@@ -595,6 +667,42 @@
 			"name": "session_open",
 			"tbl_name": "session_open",
 			"sql": "CREATE TABLE session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, schema_version INTEGER, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_search_fts",
+			"tbl_name": "session_search_fts",
+			"sql": "CREATE VIRTUAL TABLE session_search_fts USING fts5(body, content='', contentless_delete=1, tokenize='trigram', detail='none')"
+		},
+		{
+			"type": "table",
+			"name": "session_search_fts_config",
+			"tbl_name": "session_search_fts_config",
+			"sql": "CREATE TABLE 'session_search_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "session_search_fts_data",
+			"tbl_name": "session_search_fts_data",
+			"sql": "CREATE TABLE 'session_search_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+		},
+		{
+			"type": "table",
+			"name": "session_search_fts_docsize",
+			"tbl_name": "session_search_fts_docsize",
+			"sql": "CREATE TABLE 'session_search_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB, origin INTEGER)"
+		},
+		{
+			"type": "table",
+			"name": "session_search_fts_idx",
+			"tbl_name": "session_search_fts_idx",
+			"sql": "CREATE TABLE 'session_search_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "session_search_state",
+			"tbl_name": "session_search_state",
+			"sql": "CREATE TABLE session_search_state (sid INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL UNIQUE, format INTEGER NOT NULL, indexed_seq INTEGER NOT NULL, revision TEXT NOT NULL, entry_id TEXT NOT NULL) STRICT"
 		},
 		{
 			"type": "table",

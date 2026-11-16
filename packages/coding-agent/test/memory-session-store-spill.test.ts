@@ -593,6 +593,33 @@ describe("a released session's history leaves process memory (#4502)", () => {
 		assert.deepEqual((await store.load("s")).entries, entries("e", 20));
 	});
 
+	test("reads a range of entries across released history and the entries appended after it (#5250)", async () => {
+		const store = newStore();
+		const first = entries("a", 10);
+		await created(store, "s", first);
+		await store.releaseSession("s");
+		const later = entries("b", 10);
+		await store.append("s", later, { expectSeq: 10 });
+		const page = await store.readEntryRange("s", { fromSeq: 8, toSeq: 13 });
+		assert.deepEqual(
+			page.entries.map((at) => at.seq),
+			[8, 9, 10, 11, 12, 13],
+		);
+		assert.deepEqual(
+			page.entries.map((at) => at.entry),
+			[...first.slice(7), ...later.slice(0, 3)],
+		);
+		assert.equal(page.lastSeq, 20);
+		assert.equal(page.throughSeq, 13);
+		const capped = await store.readEntryRange("s", { fromSeq: 9, toSeq: 20, maxChars: 1 });
+		assert.deepEqual(
+			capped.entries.map((at) => at.seq),
+			[9],
+		);
+		assert.equal(capped.throughSeq, 9);
+		assert.deepEqual((await store.readEntryRange("s", { fromSeq: 21, toSeq: 30 })).entries, []);
+	});
+
 	test("a write the filesystem takes in parts still writes the whole history, and the file is closed once", async () => {
 		const store = newStore();
 		const first = entries("a", 10);

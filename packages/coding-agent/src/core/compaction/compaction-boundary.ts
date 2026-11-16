@@ -11,7 +11,7 @@ import {
 import { normalizeDerivedSessionEntries } from "../session-entry-normalization.ts";
 import { applyContextEdit, buildSessionProjection, collectContextEdits } from "../session-manager-history.ts";
 import type { CompactionEntry, ContextEditEntry, SessionEntry } from "../session-manager-types.ts";
-import type { HistoryLineRange } from "../tools/history-transcript.ts";
+import type { HistoryEntryRange } from "../tools/history-transcript.ts";
 import { type CompactionSettings, estimateProjectedContextTokens, estimateTokens } from "./compaction.ts";
 import {
 	COMPACTION_AUTO_QUERY,
@@ -216,7 +216,7 @@ export interface CompactionBoundaryControl {
 	 */
 	history?: {
 		sessionId: string;
-		entryRanges: ReadonlyMap<string, HistoryLineRange>;
+		entryRanges: ReadonlyMap<string, HistoryEntryRange>;
 	};
 }
 

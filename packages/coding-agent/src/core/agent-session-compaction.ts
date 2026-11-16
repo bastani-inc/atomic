@@ -42,15 +42,13 @@ import { assertSessionOpen as assertCompactionOpen, trackSessionWork } from "./s
 import type { CompactionEntry, SessionEntry } from "./session-manager.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 import { createHistoryRouter, transcriptEntryLines } from "./tools/history-protocol.ts";
-import { renderHistoryTranscript } from "./tools/history-transcript.ts";
+import { historyEntryRanges } from "./tools/history-transcript.ts";
 
 /** This session's own history layout, or undefined when it has no history a `read` could open. */
 function historyLocation(session: AgentSession): CompactionBoundaryControl["history"] {
 	const manager = session.sessionManager;
-	const header = manager.getHeader();
-	if (!header || !manager.isPersisted()) return undefined;
-	const { entryRanges } = renderHistoryTranscript(header, manager.getEntries(), true);
-	return { sessionId: manager.getSessionId(), entryRanges };
+	if (!manager.getHeader() || !manager.isPersisted()) return undefined;
+	return { sessionId: manager.getSessionId(), entryRanges: historyEntryRanges(manager.getEntries()) };
 }
 
 function frozenCollectionMutation(): never {

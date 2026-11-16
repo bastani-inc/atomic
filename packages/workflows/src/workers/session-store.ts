@@ -78,6 +78,13 @@ export function workerSessionStore(input: {
 				}
 			: {}),
 		load: (id) => input.reader.load(id),
+		...(input.reader.readEntryRange !== undefined
+			? {
+					readEntryRange: (id: string, query: Parameters<NonNullable<SessionStore["readEntryRange"]>>[1]) =>
+						input.reader.readEntryRange!(id, query),
+				}
+			: {}),
+		...(input.reader.searchIndex !== undefined ? { searchIndex: input.reader.searchIndex } : {}),
 		readHeader: (id) => input.reader.readHeader(id),
 		list: (query) => input.reader.list(query),
 		findMostRecent: (query) => input.reader.findMostRecent(query),

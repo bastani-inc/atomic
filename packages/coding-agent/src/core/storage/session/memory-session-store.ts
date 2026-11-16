@@ -14,6 +14,8 @@ import { summarizeSession } from "./session-summary.js";
 import type {
 	SessionBlob,
 	SessionCwdMatcher,
+	SessionEntriesPage,
+	SessionEntriesQuery,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionSnapshot,
@@ -34,6 +36,7 @@ interface StoredSession {
 	readonly header: Uint8Array;
 	/** The entries held in memory: everything after the bytes its spill file holds. */
 	entries: Uint8Array[];
+	entryBytes: number[];
 	lastSeq: number;
 	/** The directory its file is in, from the first release that wrote one. */
 	directory: SessionHistoryDirectory | undefined;
@@ -223,7 +226,11 @@ export class MemorySessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		const record = this.forWrite(sessionId, options);
 		validateSessionEntries(entries);
-		if (entries.length > 0) this.addChunk(record.entries, this.encodeEntries(entries));
+		if (entries.length > 0) {
+			const encoded = this.encodeEntries(entries);
+			this.addChunk(record.entries, encoded.bytes);
+			for (const length of encoded.lengths) record.entryBytes.push(length);
+		}
 		record.lastSeq += entries.length;
 		return { lastSeq: record.lastSeq };
 	}
@@ -256,6 +263,54 @@ export class MemorySessionStore implements SessionStore {
 		const record = this.stored(sessionId);
 		if (!record) throw new SessionNotFoundError(sessionId);
 		return (await this.decode(sessionId, record)) ?? this.load(sessionId);
+	}
+
+	async readEntryRange(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
+		for (;;) {
+			query.signal?.throwIfAborted();
+			const record = this.stored(sessionId);
+			if (!record) throw new SessionNotFoundError(sessionId);
+			while (record.spilling !== undefined) await settled(record.spilling);
+			const { lastSeq, entryBytes, directory, file, spilledBytes } = record;
+			const fromSeq = Math.max(1, query.fromSeq);
+			let throughSeq = Math.min(query.toSeq, lastSeq);
+			if (fromSeq > throughSeq) return { lastSeq, entries: [], throughSeq: Math.max(throughSeq, fromSeq - 1) };
+			let start = 0;
+			for (let seq = 1; seq < fromSeq; seq++) start += (entryBytes[seq - 1] as number) + 1;
+			let end = start;
+			for (let seq = fromSeq; seq <= throughSeq; seq++) {
+				end += (entryBytes[seq - 1] as number) + (seq > fromSeq ? 1 : 0);
+				if (query.maxChars !== undefined && end - start >= query.maxChars) throughSeq = seq;
+			}
+			const held = joinEntries(record);
+			const heldStart = spilledBytes === 0 ? 0 : spilledBytes + 1;
+			let spilled: Uint8Array = NO_ENTRIES;
+			if (start < spilledBytes && directory !== undefined) {
+				try {
+					spilled = await readSpillFile(directory, file, sessionId, spilledBytes);
+				} catch (error) {
+					this.assertOpen();
+					if (this.records.get(sessionId) !== record || record.file !== file) continue;
+					throw error;
+				}
+			}
+			const bytes = new Uint8Array(end - start);
+			for (let at = start; at < end; ) {
+				if (at < spilledBytes) {
+					const to = Math.min(end, spilledBytes);
+					bytes.set(spilled.subarray(at, to), at - start);
+					at = to;
+				} else if (at < heldStart) {
+					bytes[at - start] = COMMA;
+					at = heldStart;
+				} else {
+					bytes.set(held.subarray(at - heldStart, end - heldStart), at - start);
+					at = end;
+				}
+			}
+			const entries = parseEntries(bytes);
+			return { lastSeq, entries: entries.map((entry, index) => ({ seq: fromSeq + index, entry })), throughSeq };
+		}
 	}
 
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
@@ -491,9 +546,12 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	private encodeSession(header: SessionRecordHeader, entries: readonly SessionEntry[]): StoredSession {
+		const encodedHeader = this.encode(() => JSON.stringify(header));
+		const encoded = this.encodeEntries(entries);
 		return {
-			header: this.encode(() => JSON.stringify(header)),
-			entries: entries.length === 0 ? [] : [this.encodeEntries(entries)],
+			header: encodedHeader,
+			entries: entries.length === 0 ? [] : [encoded.bytes],
+			entryBytes: encoded.lengths,
 			lastSeq: entries.length,
 			directory: undefined,
 			file: 0,
@@ -503,8 +561,13 @@ export class MemorySessionStore implements SessionStore {
 		};
 	}
 
-	private encodeEntries(entries: readonly SessionEntry[]): Uint8Array {
-		return this.encode(() => JSON.stringify(entries).slice(1, -1));
+	private encodeEntries(entries: readonly SessionEntry[]): { bytes: Uint8Array; lengths: number[] } {
+		const parts: string[] = [];
+		const bytes = this.encode(() => {
+			for (const entry of entries) parts.push(JSON.stringify(entry));
+			return parts.join(",");
+		});
+		return { bytes, lengths: parts.map((part) => Buffer.byteLength(part, "utf8")) };
 	}
 
 	private encode(text: () => string): Uint8Array {

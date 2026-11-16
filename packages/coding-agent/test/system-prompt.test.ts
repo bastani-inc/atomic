@@ -501,7 +501,10 @@ describe("buildSystemPrompt", () => {
 			assert.ok(readOnly[2]!.endsWith("The listing can include the current session."), readOnly[2]);
 			assert.ok(readOnly[3]!.startsWith("  - Only as a fallback"), readOnly[3]);
 			assert.equal(withSearch.length, 5);
-			assert.ok(withSearch[2]!.endsWith("labels each match with a URL and line to read."), withSearch[2]);
+			assert.ok(
+				withSearch[2]!.endsWith("labels each match with a URL and the entry or line to read."),
+				withSearch[2],
+			);
 			assert.equal(withShell.length, 6);
 			assert.ok(withShell[3]!.startsWith("  - With a shell, also search"), withShell[3]);
 			assert.ok(withShell[4]!.startsWith("  - Only as a fallback"), withShell[4]);

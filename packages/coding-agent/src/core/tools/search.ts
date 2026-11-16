@@ -459,7 +459,7 @@ function dedupeRenderedSearchOutput(content: string): string {
 			sawCapHint = true;
 		}
 		const row = line.match(/^(.+?)(?::(\d+): |-(\d+)- )/);
-		const key = row ? `${row[1]}:${row[2] ?? row[3]}` : "";
+		const key = row ? `${row[1]}:${row[2] ?? row[3]}:${line.slice(row[0].length)}` : "";
 		if (key && seen.has(key)) continue;
 		if (key) seen.add(key);
 		out.push(line);
@@ -553,6 +553,10 @@ export function createSearchToolDefinition(
 									resourceCtx,
 									contextBefore,
 									contextAfter,
+									{
+										...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
+										...(signal === undefined ? {} : { signal }),
+									},
 								);
 					return (
 						groupSearchOutput(filterSearchOutputByLineRange(text, target.lineRanges, contextBefore, contextAfter))
@@ -621,6 +625,10 @@ export function createSearchToolDefinition(
 									resourceCtx,
 									contextBefore,
 									contextAfter,
+									{
+										...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
+										...(signal === undefined ? {} : { signal }),
+									},
 								);
 					if (archive && target.archive) text = text.split(archive.archivePath).join(target.archive.archivePath);
 					if (target.sqlite)

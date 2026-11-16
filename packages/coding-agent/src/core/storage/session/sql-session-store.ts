@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
@@ -16,6 +17,7 @@ import {
 	StoreClosedError,
 } from "./errors.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
+import { SqlSessionSearchIndex } from "./session-search-index.ts";
 import {
 	applySessionSummaryEntries,
 	materializeSessionSummaryMetadata,
@@ -25,6 +27,9 @@ import {
 import type {
 	SessionBlob,
 	SessionCwdMatcher,
+	SessionEntriesPage,
+	SessionEntriesQuery,
+	SessionEntryAt,
 	SessionListQuery,
 	SessionOpenMarker,
 	SessionOpenMarkerAge,
@@ -188,6 +193,12 @@ const LISTING_SIZE =
 	"length(header_json) + length(first_message) + COALESCE(length(name), 0) + COALESCE(length(summary), 0) + 256";
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
 export const LISTING_FETCH_BATCH = 500;
+const LISTING_CWD_PAGE = 2_000;
+
+function yieldTurn(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
+}
+
 /** Listing scopes (visibility and project) kept at once; the picker uses two. */
 const LISTING_SCOPES = 8;
 /**
@@ -239,6 +250,7 @@ export class SqlSessionStore implements SessionStore {
 	private readonly blobTable: SqlSnapshotBlobStore;
 	/** Set by `open`, once the store exists (#4971). */
 	openMarkers!: SqlSessionOpenMarkers;
+	readonly searchIndex?: SqlSessionSearchIndex;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
 	private readonly scopes = new Map<string, { readonly token: string | undefined; readonly ids: readonly string[] }>();
 	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
@@ -256,6 +268,7 @@ export class SqlSessionStore implements SessionStore {
 		cwdMatcher: SessionCwdMatcher | undefined,
 		snapshotBlobs: SqlSnapshotBlobStore,
 		legacyBlobData: boolean,
+		searchIndex: SqlSessionSearchIndex | undefined,
 	) {
 		this.database = database;
 		this.dialect = dialectOf(database);
@@ -265,6 +278,7 @@ export class SqlSessionStore implements SessionStore {
 		this.snapshotBlobs = snapshotBlobs;
 		this.blobTable = snapshotBlobs;
 		this.legacyBlobData = legacyBlobData;
+		if (searchIndex !== undefined) this.searchIndex = searchIndex;
 	}
 
 	static async open(
@@ -374,7 +388,16 @@ export class SqlSessionStore implements SessionStore {
 			{ table: storageMigrationTable(options.prefix), acceptNewer: true },
 		);
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
-		const store = new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs, legacyBlobData);
+		const searchIndex = await SqlSessionSearchIndex.open(database, tables, options.prefix);
+		const store = new SqlSessionStore(
+			database,
+			tables,
+			options.prefix,
+			options.cwdMatcher,
+			blobs,
+			legacyBlobData,
+			searchIndex,
+		);
 		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
 		return store;
 	}
@@ -455,6 +478,7 @@ export class SqlSessionStore implements SessionStore {
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
 			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
+			await this.searchIndex?.forgetWithin(tx, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
@@ -477,6 +501,48 @@ export class SqlSessionStore implements SessionStore {
 		return this.transaction((tx) => this.read(tx, sessionId), SESSION_TRANSACTION);
 	}
 
+	async readEntryRange(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		query.signal?.throwIfAborted();
+		const session = await this.database.get<SqliteRow & { last_seq: number | bigint }>(
+			`SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?`,
+			sessionId,
+		);
+		if (!session) throw new SessionNotFoundError(sessionId);
+		const lastSeq = Number(session.last_seq);
+		const fromSeq = Math.max(1, query.fromSeq);
+		const toSeq = Math.min(query.toSeq, lastSeq);
+		if (fromSeq > toSeq) return { lastSeq, entries: [], throughSeq: Math.max(toSeq, fromSeq - 1) };
+		const skipped = (query.skipTypes ?? []).map((type) => `{"type":${JSON.stringify(type)},`);
+		const rows = await this.database.all<
+			SqliteRow & { seq: number | bigint; entry_json: string; chunks: number | bigint; remaining: number | bigint }
+		>(
+			`SELECT seq, entry_json, chunks, remaining FROM (
+				SELECT seq, entry_json, chunks, count(*) OVER () AS remaining,
+					sum(length(entry_json) + chunks * ?) OVER (ORDER BY seq) - (length(entry_json) + chunks * ?) AS before_chars
+				FROM ${this.tables.entries} WHERE session_id = ? AND seq >= ? AND seq <= ?${skipped.map(() => " AND substr(entry_json, 1, ?) <> ?").join("")}
+			) AS page WHERE before_chars < ? ORDER BY seq`,
+			SESSION_ENTRY_CHUNK_BYTES,
+			SESSION_ENTRY_CHUNK_BYTES,
+			sessionId,
+			fromSeq,
+			toSeq,
+			...skipped.flatMap((prefix) => [prefix.length, prefix]),
+			query.maxChars ?? Number.MAX_SAFE_INTEGER,
+		);
+		const entries: SessionEntryAt[] = [];
+		for (const row of rows) {
+			const seq = Number(row.seq);
+			const chunks = Number(row.chunks);
+			const json = chunks === 0 ? row.entry_json : await this.readEntryChunks(this.database, sessionId, seq, chunks);
+			entries.push({ seq, entry: JSON.parse(json) as SessionEntry });
+		}
+		const last = rows.at(-1);
+		const throughSeq = last !== undefined && rows.length < Number(last.remaining) ? Number(last.seq) : toSeq;
+		return { lastSeq, entries, throughSeq };
+	}
+
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
@@ -491,6 +557,7 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		await this.transaction(async (tx) => {
+			await this.searchIndex?.forgetWithin(tx, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.blobChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.blobs} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
@@ -626,6 +693,14 @@ export class SqlSessionStore implements SessionStore {
 		this.assertListing(query);
 		// Validate the original query before binding only matching stored spellings below.
 		if (query.cwd?.includes("\0")) throw new StorageInvalidTextError(0);
+		if (query.withoutSearchText) {
+			for (const summary of await this.listWithoutSearchText(query)) {
+				this.assertListing(query);
+				yield summary;
+			}
+			this.assertListing(query);
+			return;
+		}
 		const listed = this.listing.then(() => this.listScope(query));
 		this.listing = listed.then(
 			() => {},
@@ -712,29 +787,92 @@ export class SqlSessionStore implements SessionStore {
 		return JSON.stringify(Object.values(row ?? {}).map(String));
 	}
 
-	/** The scope's session ids in store order, with a current summary cached for each. */
-	private async readScope(query: SessionListQuery, listedBefore: boolean): Promise<readonly string[]> {
+	private async listWithoutSearchText(query: SessionListQuery): Promise<readonly SessionSummary[]> {
+		await assertStoredSchemaVersion(
+			this.database,
+			{ sql: `SELECT schema_version FROM ${this.tables.meta}` },
+			"sessions",
+			SESSION_SCHEMA_VERSION,
+		);
+		const scope = await this.scopeOf(query, true);
+		if (scope === undefined) return [];
+		const order = this.dialect.rowOrder();
+		const bound = await this.database.get<SqliteRow & { last: number | bigint | null }>(
+			`SELECT max(${order}) AS last FROM ${this.tables.sessions}`,
+		);
+		const last = Number(bound?.last ?? 0);
+		const summaries: SessionSummary[] = [];
+		for (let after = 0; after < last; after += LISTING_CWD_PAGE) {
+			this.assertListing(query);
+			const rows = await this.database.all<ListingRow>(
+				`SELECT ${LISTING_COLUMNS} FROM ${this.tables.sessions}
+				WHERE (${scope.where}) AND ${order} > ? AND ${order} <= ? ORDER BY ${order}`,
+				...scope.params,
+				after,
+				after + LISTING_CWD_PAGE,
+			);
+			for (const row of rows)
+				if (scope.inScope(row)) summaries.push(summaryFromRow({ ...row, search_texts_json: "[]" }));
+			await yieldTurn();
+		}
+		this.assertListing(query);
+		return summaries;
+	}
+
+	private async distinctCwds(paced: boolean): Promise<string[]> {
+		if (!paced)
+			return (
+				await this.database.all<SqliteRow & { cwd: string }>(`SELECT DISTINCT cwd FROM ${this.tables.sessions}`)
+			).map((project) => project.cwd);
+		const order = this.dialect.rowOrder();
+		const cwds = new Set<string>();
+		for (let after = 0; ; ) {
+			const rows = await this.database.all<SqliteRow & { ord: number | bigint; cwd: string }>(
+				`SELECT ${order} AS ord, cwd FROM ${this.tables.sessions} WHERE ${order} > ? ORDER BY ${order} LIMIT ?`,
+				after,
+				LISTING_CWD_PAGE,
+			);
+			for (const row of rows) cwds.add(row.cwd);
+			if (rows.length < LISTING_CWD_PAGE) return [...cwds];
+			after = Number(rows.at(-1)!.ord);
+			await yieldTurn();
+		}
+	}
+
+	private async scopeOf(
+		query: SessionListQuery,
+		paced: boolean,
+	): Promise<
+		| { readonly where: string; readonly params: SqliteValue[]; readonly inScope: (row: ListingRow) => boolean }
+		| undefined
+	> {
 		const matchesCwd =
 			query.cwd === undefined
 				? undefined
 				: (this.cwdMatcher?.(query.cwd) ?? ((candidate: string | undefined) => candidate === query.cwd));
 		let projectCwds: string[] | undefined;
 		if (matchesCwd) {
-			const projects = await this.database.all<SqliteRow & { cwd: string }>(
-				`SELECT DISTINCT cwd FROM ${this.tables.sessions}`,
-			);
-			projectCwds = projects.map((project) => project.cwd).filter(matchesCwd);
+			projectCwds = (await this.distinctCwds(paced)).filter(matchesCwd);
 			this.assertListing(query);
-			if (projectCwds.length === 0) return [];
+			if (projectCwds.length === 0) return undefined;
 		}
 		const idPrefix = query.idPrefix?.toLowerCase();
-		const scope = `(? = 1 OR internal = 0)${projectCwds ? ` AND cwd IN (${projectCwds.map(() => "?").join(", ")})` : ""}${idPrefix === undefined ? "" : " AND substr(lower(id), 1, ?) = ?"}`;
-		const params = [
-			query.includeInternal ? 1 : 0,
-			...(projectCwds ?? []),
-			...(idPrefix === undefined ? [] : [idPrefix.length, idPrefix]),
-		];
-		const inScope = (row: ListingRow) => !matchesCwd || matchesCwd(row.cwd);
+		return {
+			where: `(? = 1 OR internal = 0)${projectCwds ? ` AND cwd IN (${projectCwds.map(() => "?").join(", ")})` : ""}${idPrefix === undefined ? "" : " AND substr(lower(id), 1, ?) = ?"}`,
+			params: [
+				query.includeInternal ? 1 : 0,
+				...(projectCwds ?? []),
+				...(idPrefix === undefined ? [] : [idPrefix.length, idPrefix]),
+			],
+			inScope: (row: ListingRow) => !matchesCwd || matchesCwd(row.cwd),
+		};
+	}
+
+	/** The scope's session ids in store order, with a current summary cached for each. */
+	private async readScope(query: SessionListQuery, listedBefore: boolean): Promise<readonly string[]> {
+		const resolved = await this.scopeOf(query, false);
+		if (resolved === undefined) return [];
+		const { where: scope, params, inScope } = resolved;
 		if (listedBefore) {
 			const rows = (await this.readListingRows(scope, params)).filter(inScope);
 			this.assertListing(query);

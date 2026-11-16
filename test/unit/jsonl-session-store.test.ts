@@ -628,6 +628,54 @@ it("accepts another process's append after a last record without a newline only 
 	});
 });
 
+it("reads any range of entries as a whole load does, through appends, blank lines and an unfinished last line (#5250)", async () => {
+	await withStore(async (store) => {
+		const named = (id: string) => ({ ...entry, id });
+		await store.create(
+			header,
+			Array.from({ length: 700 }, (_, index) => named(`e${index + 1}`)),
+		);
+		const path = await location(store);
+		const agree = async () => {
+			const whole = (await store.load(header.id)).entries;
+			for (const [fromSeq, toSeq] of [
+				[1, 3],
+				[255, 260],
+				[512, 514],
+				[690, 800],
+				[whole.length, whole.length],
+				[whole.length + 1, whole.length + 5],
+			] as const) {
+				const page = await store.readEntryRange(header.id, { fromSeq, toSeq });
+				assert.equal(page.lastSeq, whole.length);
+				assert.deepEqual(
+					page.entries.map((at) => [at.seq, at.entry]),
+					whole.slice(fromSeq - 1, toSeq).map((at, index) => [fromSeq + index, at]),
+				);
+				assert.equal(page.throughSeq, Math.max(fromSeq - 1, Math.min(toSeq, whole.length)));
+			}
+		};
+		await agree();
+		await store.append(header.id, [named("appended")], { expectSeq: 700 });
+		await agree();
+		await appendFile(path, ` \n${JSON.stringify(named("foreign"))}\n\n${JSON.stringify(named("unterminated"))}`);
+		await agree();
+		await appendFile(path, `\n${JSON.stringify(named("torn")).slice(0, 12)}`);
+		const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			await agree();
+		} finally {
+			warnings.mockRestore();
+		}
+		const capped = await store.readEntryRange(header.id, { fromSeq: 10, toSeq: 20, maxChars: 1 });
+		assert.deepEqual(
+			capped.entries.map((at) => at.seq),
+			[10],
+		);
+		assert.equal(capped.throughSeq, 10);
+	});
+});
+
 it("skips blank lines and reports nothing for a session without a torn line (#4993)", async () => {
 	await withStore(async (store, directory) => {
 		const path = join(directory, "blank.jsonl");

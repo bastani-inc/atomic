@@ -86,33 +86,13 @@ export function entryLines(entry: SessionEntry): string[] {
 	}
 }
 
-/** The lines of one entry in a rendered transcript, counted from 1 and inclusive at both ends. */
-export interface HistoryLineRange {
+export interface HistoryEntryRange {
 	readonly start: number;
 	readonly end: number;
 }
 
-export interface HistoryTranscript {
-	readonly lines: string[];
-	/** Where each entry that renders at least one line sits in `lines`, by entry id. */
-	readonly entryRanges: ReadonlyMap<string, HistoryLineRange>;
-}
-
-function physicalLineCount(line: string): number {
-	return line.split("\n").length;
-}
-
-/**
- * The transcript `history://sessions/<id>` reads: a header, then each entry's lines. This is the only place the line
- * layout is defined, so a range computed from `entryRanges` addresses exactly the lines a `read` slices.
- * `linkRun` is false for a cross-project view, whose workflow history is not reachable from here.
- */
-export function renderHistoryTranscript(
-	header: SessionRecordHeader,
-	entries: readonly SessionEntry[],
-	linkRun: boolean,
-): HistoryTranscript {
-	const lines = [
+export function transcriptHeaderLines(header: SessionRecordHeader, linkRun: boolean): string[] {
+	return [
 		`# session ${header.id}`,
 		`created: ${timestamp(header.createdAt)}`,
 		...(header.workflow
@@ -121,15 +101,8 @@ export function renderHistoryTranscript(
 				]
 			: []),
 	];
-	const entryRanges = new Map<string, HistoryLineRange>();
-	let next = lines.reduce((count, line) => count + physicalLineCount(line), 1);
-	for (const entry of entries) {
-		const rendered = entryLines(entry);
-		if (rendered.length === 0) continue;
-		const count = rendered.reduce((sum, line) => sum + physicalLineCount(line), 0);
-		entryRanges.set(entry.id, { start: next, end: next + count - 1 });
-		next += count;
-		lines.push(...rendered);
-	}
-	return { lines, entryRanges };
+}
+
+export function historyEntryRanges(entries: readonly SessionEntry[]): ReadonlyMap<string, HistoryEntryRange> {
+	return new Map(entries.map((entry, index) => [entry.id, { start: index + 1, end: index + 1 }]));
 }

@@ -11,8 +11,11 @@ import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-sessio
 import { summarizeSession } from "./session-summary.js";
 import type {
 	SessionBlob,
+	SessionEntriesPage,
+	SessionEntriesQuery,
 	SessionListQuery,
 	SessionRecordHeader,
+	SessionSearchIndex,
 	SessionSnapshot,
 	SessionStore,
 	SessionSummary,
@@ -45,6 +48,8 @@ export class LegacySessionStore implements SessionStore {
 	/** The wrapped store's blobs; a legacy session is converted before it stores one. */
 	readonly putBlob?: (sessionId: string, data: Uint8Array) => Promise<SessionBlob>;
 	readonly getBlob?: (sessionId: string, hash: string) => Promise<Uint8Array | undefined>;
+	readonly readEntryRange?: (sessionId: string, query: SessionEntriesQuery) => Promise<SessionEntriesPage>;
+	readonly searchIndex?: SessionSearchIndex;
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
@@ -58,6 +63,13 @@ export class LegacySessionStore implements SessionStore {
 			};
 			this.getBlob = (sessionId, hash) => getBlob.call(inner, sessionId, hash);
 		}
+		const { readEntryRange, searchIndex } = inner;
+		if (readEntryRange !== undefined)
+			this.readEntryRange = async (sessionId, query) => {
+				await this.convert(sessionId);
+				return readEntryRange.call(inner, sessionId, query);
+			};
+		if (searchIndex !== undefined) this.searchIndex = searchIndex;
 	}
 
 	get descriptor(): StorageDescriptor {
