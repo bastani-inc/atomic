@@ -68,6 +68,28 @@ test("invalid selection and movement numbers leave the highlighted row unchanged
 		state.move(index);
 		assert.equal(state.getSelected()?.id, "b");
 	}
+
+	const fractionalPage = new SelectorState({
+		items: ["a", "b", "c", "d"].map((id) => ({ id, value: id, label: id })),
+		maxVisible: 1.5,
+	});
+	assert.equal(fractionalPage.maxVisible, 1);
+	fractionalPage.page(1);
+	assert.equal(fractionalPage.getSelectedIndex(), 1);
+	assert.equal(fractionalPage.getSelected()?.id, "b");
+	assert.equal(fractionalPage.getTop(), 1);
+
+	for (const maxVisible of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+		const nonFinitePage = new SelectorState({
+			items: ["a", "b", "c", "d"].map((id) => ({ id, value: id, label: id })),
+			maxVisible,
+		});
+		assert.equal(nonFinitePage.maxVisible, 10);
+		nonFinitePage.page(1);
+		assert.equal(nonFinitePage.getSelectedIndex(), 3);
+		assert.equal(nonFinitePage.getSelected()?.id, "d");
+		assert.equal(nonFinitePage.getTop(), 0);
+	}
 });
 
 test("cached selector metadata and item lists cannot be changed outside state updates (#5237)", () => {
@@ -85,10 +107,21 @@ test("cached selector metadata and item lists cannot be changed outside state up
 		["a"],
 	);
 	assert.equal(Reflect.set(state.items, "0", { id: "c", value: "c", label: "c" }), false);
+	assert.equal(Object.isFrozen(state.getVisible()), true);
+	assert.equal(Reflect.set(state.getVisible(), "1", { id: "c", value: "c", label: "c" }), false);
+	assert.equal(state.getVisible().length, 1);
+	assert.equal(state.getVisibleStats().enabledCount, 1);
 	state.setItems(rows);
 	assert.ok(state.getRevision() > revision);
 	assert.deepEqual(
 		state.items.map((row) => row.id),
 		["a", "b"],
 	);
+	assert.equal(Object.isFrozen(state.getVisible()), true);
+	state.setQuery("a");
+	assert.equal(Object.isFrozen(state.getVisible()), true);
+	state.setItems(rows);
+	assert.equal(Object.isFrozen(state.getVisible()), true);
+	state.setQuery("");
+	assert.equal(Object.isFrozen(state.getVisible()), true);
 });

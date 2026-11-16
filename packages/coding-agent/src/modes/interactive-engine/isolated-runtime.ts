@@ -917,14 +917,22 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			setModel: {
 				configurable: true,
-				value: async (model: Model<Api>, options?: ModelMutationOptions) => {
+				value: async (
+					model: Model<Api>,
+					options?: ModelMutationOptions & { thinkingLevel?: AgentSession["thinkingLevel"] },
+				) => {
 					return serializeSessionMutation(session, async () => {
 						await this.settleEngineResync();
 						const selected = await this.client.setModel(model.provider, model.id, options);
 						const nextModel = session.modelRuntime.getModel(selected.provider, selected.id) ?? model;
 						session.agent.state.model = nextModel;
 						this.resolveModelFallback();
-						if (options?.persist === true) await this.syncPersistedModelCatalog(session, nextModel);
+						const epoch = ++this.thinkingEpoch;
+						const state =
+							options?.persist === true
+								? await this.syncPersistedModelCatalog(session, nextModel)
+								: await this.client.getState();
+						this.applyThinkingAck(session, epoch, { level: state.thinkingLevel }, false);
 					});
 				},
 			},
@@ -1203,7 +1211,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 	}
 
-	private async syncPersistedModelCatalog(session: AgentSession, model: Model<Api>): Promise<void> {
+	private async syncPersistedModelCatalog(session: AgentSession, model: Model<Api>): Promise<RpcSessionState> {
 		const alreadyInScope = session.scopedModels.some(
 			(scoped) => scoped.model.provider === model.provider && scoped.model.id === model.id,
 		);
@@ -1214,6 +1222,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (state.model?.provider === model.provider && state.model.id === model.id) {
 			applyPersistedThinkingDefault(session, state.thinkingLevel, { provider: model.provider, modelId: model.id });
 		}
+		return state;
 	}
 
 	private async refreshSessionView(): Promise<void> {

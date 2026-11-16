@@ -118,7 +118,14 @@ export type RpcCommand =
 	| { id?: string; type: "stop_all_background" }
 
 	// Model
-	| { id?: string; type: "set_model"; provider: string; modelId: string; persist?: boolean }
+	| {
+			id?: string;
+			type: "set_model";
+			provider: string;
+			modelId: string;
+			persist?: boolean;
+			thinkingLevel?: ThinkingLevel;
+	  }
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward"; persist?: boolean }
 	| { id?: string; type: "get_available_models"; allowPartialResources?: boolean }
 	| { id?: string; type: "login_provider"; provider: string; authType?: "api_key" | "oauth"; loginId?: string }

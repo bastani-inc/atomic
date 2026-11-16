@@ -168,7 +168,7 @@ export class SelectorState<T> {
 	readonly mode: "single" | "multi";
 	readonly maxVisible: number;
 	private query = "";
-	private visible: SelectorItem<T>[];
+	private visible: readonly SelectorItem<T>[];
 	private selected = 0;
 	private top = 0;
 	private readonly checked = new Set<string>();
@@ -182,8 +182,9 @@ export class SelectorState<T> {
 	constructor(options: Pick<SelectorOptions<T>, "items" | "mode" | "maxVisible" | "initialId" | "initialChecked">) {
 		this._items = Object.freeze([...options.items]);
 		this.mode = options.mode ?? "single";
-		this.maxVisible = Math.max(1, options.maxVisible ?? DEFAULT_MAX_VISIBLE);
-		this.visible = [...this.items];
+		const maxVisible = options.maxVisible ?? DEFAULT_MAX_VISIBLE;
+		this.maxVisible = Number.isFinite(maxVisible) ? Math.max(1, Math.floor(maxVisible)) : DEFAULT_MAX_VISIBLE;
+		this.visible = Object.freeze([...this.items]);
 		for (const id of options.initialChecked ?? []) this.checked.add(id);
 		const initial =
 			options.initialId !== undefined
@@ -256,7 +257,7 @@ export class SelectorState<T> {
 		const browsed = this.visible[this.selected]?.id;
 		const position = this.selected;
 		this._items = Object.freeze([...items]);
-		this.visible = this.query ? this.filter(this.query) : [...this.items];
+		this.visible = Object.freeze(this.query ? this.filter(this.query) : [...this.items]);
 		const find = (id: string | undefined) =>
 			id === undefined ? -1 : this.visible.findIndex((item) => item.id === id && !item.disabled);
 		const browsedIndex = find(browsed);
@@ -273,7 +274,7 @@ export class SelectorState<T> {
 		this.revision++;
 		const previous = this.visible[this.selected]?.id;
 		this.query = query;
-		this.visible = query ? this.filter(query) : [...this.items];
+		this.visible = Object.freeze(query ? this.filter(query) : [...this.items]);
 		const kept =
 			previous === undefined ? -1 : this.visible.findIndex((item) => item.id === previous && !item.disabled);
 		// A new query highlights its best match; clearing it returns to the row that was selected.
@@ -439,10 +440,11 @@ export function fitHintEntries(
 		(entry.role === "confirm" || entry.role === "cancel" || entry.action === "tui.select.confirm");
 	while (kept.length > 1 && width() > room) {
 		const byOrder = HINT_DROP_ORDER.map((label) =>
-			kept.findIndex((entry) => !essential(entry) && entry.label === label),
+			kept.findIndex((entry) => !essential(entry) && entry.role !== "extra" && entry.label === label),
 		).find((index) => index >= 0);
-		// A picker's own keys go last first, so the first ones it lists stay longest.
-		const other = kept.findLastIndex((entry) => !essential(entry) && !HINT_DROP_ORDER.includes(entry.label));
+		const other = kept.findLastIndex(
+			(entry) => !essential(entry) && (entry.role === "extra" || !HINT_DROP_ORDER.includes(entry.label)),
+		);
 		const nonEssential = kept.findIndex((entry) => !essential(entry));
 		const drop =
 			byOrder ??
@@ -479,8 +481,7 @@ export class Selector<T> implements Component, Focusable {
 	private title?: string;
 	private subtitle?: string;
 	private notice?: { text: string; tone: SelectorTone };
-	/** Rendered line index of each visible row, from the last render, for mouse hits. */
-	private rowLines = new Map<number, number>();
+	private rowLines = new Map<number, string>();
 	private rowLinesWidth?: number;
 	private mousePressed?: string;
 	private closed = false;
@@ -495,6 +496,7 @@ export class Selector<T> implements Component, Focusable {
 		inputValue?: string;
 		inputCursor?: number;
 		inputFocused?: boolean;
+		rowLines: Map<number, string>;
 		lines: string[];
 	};
 
@@ -646,7 +648,6 @@ export class Selector<T> implements Component, Focusable {
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.closed || this.showingHelp) return { handled: true };
-		if (this.rowLinesWidth !== event.width) this.render(event.width);
 		if (event.type === "wheel" && event.wheelDelta) {
 			const before = this.state.getSelected()?.id;
 			this.state.move(event.wheelDelta < 0 ? -1 : 1);
@@ -654,11 +655,21 @@ export class Selector<T> implements Component, Focusable {
 			return { handled: true, render: this.state.getSelected()?.id !== before };
 		}
 		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
-		const index = [...this.rowLines.entries()].find(([, line]) => line === event.y)?.[0];
-		const item = index === undefined ? undefined : this.state.getVisible()[index];
-		if (!item || item.disabled || index === undefined) {
+		if (this.rowLinesWidth !== event.width) {
 			this.mousePressed = undefined;
-			return index === undefined ? undefined : { handled: true };
+			return { handled: true };
+		}
+		const id = this.rowLines.get(event.y);
+		if (id === undefined) {
+			this.mousePressed = undefined;
+			return undefined;
+		}
+		const visible = this.state.getVisible();
+		const index = visible.findIndex((entry) => entry.id === id);
+		const item = index < 0 ? undefined : visible[index];
+		if (!item || item.disabled) {
+			this.mousePressed = undefined;
+			return { handled: true };
 		}
 		if (event.type === "press") {
 			this.mousePressed = item.id;
@@ -708,6 +719,8 @@ export class Selector<T> implements Component, Focusable {
 			cached.inputCursor === inputCursor &&
 			cached.inputFocused === inputFocused
 		) {
+			this.rowLines = cached.rowLines;
+			this.rowLinesWidth = width;
 			return cached.lines;
 		}
 		this.rowLinesWidth = width;
@@ -758,6 +771,7 @@ export class Selector<T> implements Component, Focusable {
 			inputValue,
 			inputCursor,
 			inputFocused,
+			rowLines: new Map(this.rowLines),
 			lines: rendered,
 		};
 		return rendered;
@@ -852,16 +866,18 @@ export class Selector<T> implements Component, Focusable {
 			}
 			lastGroup = item.group;
 			const isSelected = index === this.state.getSelectedIndex() && !item.disabled;
-			this.rowLines.set(index, firstLine + lines.length);
+			this.rowLines.set(firstLine + lines.length, item.id);
 			const parts = this.rowParts(item, index, isSelected, numbered, numberWidth, hasMarks, multi);
 			const indent = visibleWidth(parts.lead);
 			const labelRoom = Math.max(1, width - indent - 1);
 			const label = visibleWidth(item.label) > labelRoom ? truncateToWidth(item.label, labelRoom) : item.label;
 			const tagRoom = Math.max(0, width - indent - visibleWidth(label) - 3);
 			const tagText = item.tag
-				? visibleWidth(item.tag) > tagRoom
-					? truncateToWidth(item.tag, tagRoom)
-					: item.tag
+				? visibleWidth(item.tag) <= tagRoom
+					? item.tag
+					: tagRoom >= 4
+						? truncateToWidth(item.tag, tagRoom)
+						: ""
 				: "";
 			const tag = tagText ? this.style.tone(item.tagTone ?? "muted", tagText) : "";
 			const tagWidth = tagText ? visibleWidth(tagText) + 2 : 0;

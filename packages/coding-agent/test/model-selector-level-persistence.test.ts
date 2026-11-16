@@ -7,6 +7,7 @@ import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-b
 import "../src/modes/interactive/interactive-model-routing.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
+import { createEngineHostPair, type EngineHostPair } from "./helpers/in-process-engine-pair.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 const DOWN = "\x1b[B";
@@ -58,10 +59,13 @@ function openModelPicker(harness: Harness) {
 
 describe("/model ←→ reasoning level (#5224)", () => {
 	let harness: Harness | undefined;
+	let pair: EngineHostPair | undefined;
 
 	beforeAll(() => initTheme("dark"));
 	beforeEach(() => setKeybindings(new KeybindingsManager()));
-	afterEach(() => {
+	afterEach(async () => {
+		await pair?.cleanup();
+		pair = undefined;
 		harness?.cleanup();
 		harness = undefined;
 	});
@@ -190,5 +194,45 @@ describe("/model ←→ reasoning level (#5224)", () => {
 		assert.equal(harness.session.model?.id, "other-model");
 		assert.equal(harness.session.thinkingLevel, "high");
 		assert.equal(harness.settingsManager.getModelThinkingLevel(provider, "other-model"), "high");
+	});
+
+	it("applies and persists the /model ←→ level through the isolated interactive runtime (#5237)", async () => {
+		pair = await createEngineHostPair({
+			models: [
+				{ id: "current-model", name: "Current Model", reasoning: true },
+				{ id: "other-model", name: "Other Model", reasoning: true },
+			],
+		});
+		await pair.engine.session.bindExtensions({ shutdownHandler: () => {} });
+		await pair.runtime.session.bindExtensions({ shutdownHandler: () => {} });
+		await pair.runtime.initializeFromEngine();
+
+		const current = pair.engine.getModel("current-model")!;
+		await pair.runtime.session.setModel(current);
+		await pair.runtime.session.setThinkingLevel("low");
+		await pair.drain();
+
+		const isolatedView = {
+			...pair.hostHarness,
+			session: pair.runtime.session,
+		} as Harness;
+		const picker = openModelPicker(isolatedView);
+		picker.picker.handleInput(DOWN);
+		assert.match(picker.row("other-model") ?? "", /other-model +low\b/);
+		picker.picker.handleInput(RIGHT);
+		assert.match(picker.row("other-model") ?? "", /other-model +medium\b/);
+		picker.picker.handleInput(ENTER);
+		await vi.waitFor(() => assert.equal(picker.isClosed(), true));
+
+		assert.deepEqual(picker.errors, []);
+		assert.equal(pair.runtime.session.model?.id, "other-model");
+		assert.equal(pair.runtime.session.thinkingLevel, "medium");
+		assert.equal(pair.engine.session.model?.id, "other-model");
+		assert.equal(pair.engine.session.thinkingLevel, "medium");
+		assert.equal(pair.engine.settingsManager.getModelThinkingLevel(current.provider, "other-model"), "medium");
+		assert.equal(pair.hostHarness.settingsManager.getModelThinkingLevel(current.provider, "other-model"), "medium");
+		assert.equal(pair.engine.settingsManager.getDefaultThinkingLevel(), "medium");
+		assert.equal(pair.hostHarness.settingsManager.getDefaultThinkingLevel(), "medium");
+		assert.ok(picker.status.some((line) => line.includes("other-model") && line.includes("medium")));
 	});
 });

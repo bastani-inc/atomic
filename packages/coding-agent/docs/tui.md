@@ -443,7 +443,8 @@ Keys are the same in every picker: ↑↓ select (wrapping), pgup/pgdn page, ent
 | Option | Effect |
 | --- | --- |
 | `layout: "two-line"` | Each description goes on the line under its label, for rows like sessions or runs. |
-| `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. |
+| `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. Confirming always stops the picker, whatever `closeOnSelect` says. |
+| `closeOnSelect: false` | Single-select only. Choosing a row calls `onSelect` and leaves the picker live, so enter or a click can choose again, for a picker that applies each choice and stays open. Default `true`. |
 | `numbered: true` | Rows are numbered; without a search box, digits choose a row directly. |
 | `onPreview` | Space previews the selected row; the hint shows `space preview`. |
 | `onSelectionChange` | Reports the selected row when navigation or filtering changes its identity, or `undefined` when no enabled row matches. |
@@ -452,9 +453,13 @@ Keys are the same in every picker: ↑↓ select (wrapping), pgup/pgdn page, ent
 | `disabled` on items | Drawn dim, skipped by ↑↓ and never chosen by enter or a mouse click. |
 | `mark` on items | `"on"`/`"off"` draw `●`/`○` for the current value; `"checked"`/`"unchecked"` draw `[✓]`/`[ ]` for a row enter switches on and off. |
 | `labelStyle` on items | Paints the label yourself, told whether the row is selected. |
+| `searchText` on items | Extra text that type-to-search matches. By default it is matched with the label, description and tag. |
+| `searchTextMode: "replace"` on items | Search matches only the item's `searchText`, not its label, description or tag. Use it when the shown text holds words a search should not find, such as a reasoning level. The default is `"extend"`. |
 | `subtitle` | Dim text under the title; each `\n` starts a line and long lines wrap. |
 
 Without a search box, `?` shows the picker's keys and `j`/`k` move like ↓/↑. Mouse input does not change or choose a row while this help is open. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
+
+A picker stops taking keys and mouse input once it calls `onCancel`, once it calls `onConfirm`, and once it calls `onSelect` unless `closeOnSelect` is `false`. Repeated enter presses and clicks therefore reach your callback once, and a picker you keep on screen after that ignores every key, esc and ctrl+c included. If your callback can fail, for example while it saves the choice, call `selector.retrySelection()` when it does: the picker takes input again, so the user can choose again or press esc. Pair it with `setNotice()` to show the error.
 
 Use `setItems()` to replace row data. When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
 

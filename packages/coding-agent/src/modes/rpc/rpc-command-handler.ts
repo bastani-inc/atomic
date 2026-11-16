@@ -1,6 +1,7 @@
 import type { KeyId } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { THINKING_LEVELS } from "../../core/agent-session-types.js";
 import { runCallback } from "../../core/callback-activity.ts";
 import { serializeBackgroundCompactionState } from "../../core/compaction/background-compaction.ts";
 import { setDebugSetting } from "../../core/debug-setting.ts";
@@ -266,6 +267,13 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_state", state);
 			}
 			case "set_model": {
+				if (command.thinkingLevel !== undefined && !THINKING_LEVELS.includes(command.thinkingLevel)) {
+					return createRpcErrorResponse(
+						id,
+						"set_model",
+						`Invalid thinkingLevel: expected one of ${THINKING_LEVELS.join(", ")}`,
+					);
+				}
 				const models = await session.modelRuntime.getAvailableSnapshot();
 				const model = models.find(
 					(candidate) => candidate.provider === command.provider && candidate.id === command.modelId,
@@ -277,7 +285,10 @@ export function createRpcCommandHandler({
 						`Model not found: ${command.provider}/${command.modelId}`,
 					);
 				}
-				await session.setModel(model, command.persist === true ? { persist: true } : {});
+				await session.setModel(model, {
+					...(command.persist === true ? { persist: true } : {}),
+					...(command.thinkingLevel !== undefined ? { thinkingLevel: command.thinkingLevel } : {}),
+				});
 				runtimeHost.resolveModelFallback();
 				return createRpcSuccessResponse(id, "set_model", session.model ?? model);
 			}

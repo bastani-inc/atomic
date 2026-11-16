@@ -289,6 +289,60 @@ describe("scoped models selector", () => {
 		assert.ok(!refreshed.includes("Original custom title"), refreshed);
 	});
 
+	it("resolves row labels and metadata lazily for visible rows on open and toggle (#5237)", async () => {
+		const modelSpecs = Array.from({ length: 20 }, (_, index) => ({
+			id: `model-${String(index).padStart(2, "0")}`,
+			name: `Distinct Title ${index}`,
+			reasoning: true,
+		}));
+		harness = await createHarness({ models: modelSpecs });
+		const nameReads = new Set<string>();
+		const levelReads = new Set<string>();
+		const trackedModels = harness.models.map((baseModel, index) => ({
+			...baseModel,
+			get name() {
+				nameReads.add(baseModel.id);
+				return `Distinct Title ${index}`;
+			},
+		}));
+
+		const selector = new ScopedModelsSelectorComponent(
+			{
+				allModels: trackedModels,
+				enabledModelIds: null,
+				thinkingLevelFor: (model) => {
+					levelReads.add(model.id);
+					return "high";
+				},
+			},
+			{ onChange: () => {}, onCancel: () => {} },
+		);
+
+		assert.equal(nameReads.size, 0);
+		assert.equal(levelReads.size, 0);
+
+		selector.render(120);
+		assert.equal(nameReads.size, 8);
+		assert.equal(levelReads.size, 8);
+		assert.equal(nameReads.has("model-19"), false);
+		assert.equal(levelReads.has("model-19"), false);
+
+		nameReads.clear();
+		levelReads.clear();
+		selector.handleInput("\r");
+		selector.render(120);
+		assert.deepEqual([...nameReads], ["model-08"]);
+		assert.equal(levelReads.size, 8);
+		assert.equal(levelReads.has("model-00"), false);
+		assert.equal(levelReads.has("model-19"), false);
+
+		selector.handleInput("Distinct Title 19");
+		const searched = stripAnsi(selector.render(120).join("\n"));
+		assert.ok(nameReads.has("model-19"));
+		assert.ok(levelReads.has("model-19"));
+		assert.ok(searched.includes("model-19  high  Distinct Title 19"), searched);
+	});
+
 	it("clears the search before esc closes it", async () => {
 		let cancellations = 0;
 		harness = await createHarness({ models: [{ id: "model-a", name: "Model A" }] });

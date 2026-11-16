@@ -104,7 +104,7 @@ export abstract class RpcClientApi {
 	async setModel(
 		provider: string,
 		modelId: string,
-		options?: { persist?: boolean },
+		options?: { persist?: boolean; thinkingLevel?: ThinkingLevel },
 	): Promise<{ provider: string; id: string }> {
 		return this.data(
 			await this.request({
@@ -112,6 +112,7 @@ export abstract class RpcClientApi {
 				provider,
 				modelId,
 				...(options?.persist === true ? { persist: true } : {}),
+				...(options?.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}),
 			}),
 		);
 	}

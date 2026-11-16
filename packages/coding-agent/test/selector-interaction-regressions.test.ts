@@ -164,6 +164,34 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 				`missing confirm action in help for ${confirmLabel}`,
 			);
 		}
+
+		for (const extraLabel of ["to search", "keys", "pick", "preview", "select"]) {
+			const withCollision = new Selector<string>({
+				items: makeItems(["a", "b"]),
+				search: true,
+				confirmLabel: "toggle",
+				style: PLAIN_SELECTOR_STYLE,
+				extraKeys: [
+					{ hint: { keys: "ctrl+a", label: extraLabel }, run: noop },
+					{ hint: { keys: "ctrl+p", label: "provider" }, run: noop },
+				],
+			});
+			const roomForOneExtra = `enter toggle · ctrl+a ${extraLabel} · esc cancel`.length + 2;
+			assert.equal(hint(withCollision.render(roomForOneExtra)), `enter toggle · ctrl+a ${extraLabel} · esc cancel`);
+
+			const trailingCollision = new Selector<string>({
+				items: makeItems(["a", "b"]),
+				search: true,
+				confirmLabel: "toggle",
+				style: PLAIN_SELECTOR_STYLE,
+				extraKeys: [
+					{ hint: { keys: "ctrl+a", label: "all" }, run: noop },
+					{ hint: { keys: "ctrl+p", label: extraLabel }, run: noop },
+				],
+			});
+			const roomForFirstExtra = "enter toggle · ctrl+a all · esc cancel".length + 2;
+			assert.equal(hint(trailingCollision.render(roomForFirstExtra)), "enter toggle · ctrl+a all · esc cancel");
+		}
 	});
 
 	test("ignores a mouse release when the pressed row shifted or disappeared during the hold (#5237)", () => {
@@ -218,7 +246,77 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 		assert.deepEqual(selected, []);
 	});
 
-	test("re-renders row hit targets at the mouse event width after a container re-measures at another width (#5237)", () => {
+	test("resolves mouse press and click against the row id painted on the last frame when items change before re-render (#5237)", () => {
+		const chosen: string[] = [];
+		const selector = new Selector<string>({
+			items: makeItems(["openai/gpt-4o", "anthropic/claude-sonnet-4-5"]),
+			maxVisible: 5,
+			style: PLAIN_SELECTOR_STYLE,
+			closeOnSelect: false,
+			onSelect: (item) => chosen.push(item.id),
+		});
+
+		let lines = selector.render(80);
+		let paintedY = lines.findIndex((line) => plain(line).includes("openai/gpt-4o"));
+		assert.ok(paintedY >= 0);
+
+		selector.setItems(
+			makeItems(["openai/gpt-4.1-mini", "openai/gpt-4.1", "openai/gpt-4o", "anthropic/claude-sonnet-4-5"]),
+		);
+		selector.handleMouse(mouseEvent("press", paintedY, 80, lines.length));
+		selector.handleMouse(mouseEvent("click", paintedY, 80, lines.length));
+		assert.deepEqual(chosen, ["openai/gpt-4o"]);
+
+		lines = selector.render(80);
+		paintedY = lines.findIndex((line) => plain(line).includes("openai/gpt-4o"));
+		assert.ok(paintedY >= 0);
+		selector.setItems(
+			makeItems([
+				"anthropic/claude-haiku-4-5-20251001",
+				"m2",
+				"m3",
+				"m4",
+				"m5",
+				"m6",
+				"m7",
+				"m8",
+				"m9",
+				"m10",
+				"m11",
+				"m12",
+				"openai/gpt-4o",
+			]),
+		);
+		selector.handleMouse(mouseEvent("press", paintedY, 80, lines.length));
+		selector.handleMouse(mouseEvent("click", paintedY, 80, lines.length));
+		assert.deepEqual(chosen, ["openai/gpt-4o", "openai/gpt-4o"]);
+
+		lines = selector.render(80);
+		paintedY = lines.findIndex((line) => plain(line).includes("openai/gpt-4o"));
+		assert.ok(paintedY >= 0);
+		selector.setItems(makeItems(["openai/gpt-4o-2024-05-13", "anthropic/claude-sonnet-4-5"]));
+		selector.handleMouse(mouseEvent("press", paintedY, 80, lines.length));
+		selector.handleMouse(mouseEvent("click", paintedY, 80, lines.length));
+		assert.deepEqual(chosen, ["openai/gpt-4o", "openai/gpt-4o"]);
+
+		selector.setItems(makeItems(["openai/gpt-4o", "anthropic/claude-sonnet-4-5"]));
+		lines = selector.render(80);
+		paintedY = lines.findIndex((line) => plain(line).includes("openai/gpt-4o"));
+		assert.ok(paintedY >= 0);
+		selector.setItems([
+			{ id: "openai/gpt-4o", value: "openai/gpt-4o", label: "openai/gpt-4o", disabled: true },
+			{
+				id: "anthropic/claude-sonnet-4-5",
+				value: "anthropic/claude-sonnet-4-5",
+				label: "anthropic/claude-sonnet-4-5",
+			},
+		]);
+		selector.handleMouse(mouseEvent("press", paintedY, 80, lines.length));
+		selector.handleMouse(mouseEvent("click", paintedY, 80, lines.length));
+		assert.deepEqual(chosen, ["openai/gpt-4o", "openai/gpt-4o"]);
+	});
+
+	test("ignores mouse press and click when the painted width differs from the mouse event width until re-rendered (#5237)", () => {
 		const chosen: string[] = [];
 		const selector = new Selector<string>({
 			title: "Pick",
@@ -234,11 +332,49 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 		const targetY = painted.findIndex((line) => plain(line).includes("item") || plain(line).endsWith(" e"));
 		assert.ok(targetY >= 0);
 
+		container.handleMouse(mouseEvent("press", targetY, 80, painted.length));
+		selector.setItems(makeItems(["x", "y", "a", "b", "c", "d", "e"]));
 		container.handleMouse(mouseEvent("wheel", 0, 30, painted.length, { wheelDelta: 1 }));
 
 		container.handleMouse(mouseEvent("press", targetY, 80, painted.length));
 		container.handleMouse(mouseEvent("click", targetY, 80, painted.length));
+		assert.deepEqual(chosen, []);
+
+		const repainted = container.render(80);
+		const repaintedY = repainted.findIndex((line) => plain(line).endsWith(" e"));
+		assert.ok(repaintedY >= 0);
+		container.handleMouse(mouseEvent("click", repaintedY, 80, repainted.length));
+		assert.deepEqual(chosen, []);
+		container.handleMouse(mouseEvent("press", repaintedY, 80, repainted.length));
+		container.handleMouse(mouseEvent("click", repaintedY, 80, repainted.length));
 		assert.deepEqual(chosen, ["e"]);
+	});
+
+	test("drops narrow tags that would render as a bare ellipsis while keeping short whole tags and 4-column prefixes (#5237)", () => {
+		const loginLike = new Selector<string>({
+			items: [{ id: "anthropic", value: "anthropic", label: "Anthropic · subscription", tag: "subscription" }],
+			style: PLAIN_SELECTOR_STYLE,
+		});
+		for (const width of [31, 32, 33]) {
+			assert.equal(plain(loginLike.render(width)[0] ?? "").trimEnd(), " ❯ Anthropic · subscription");
+		}
+		assert.equal(plain(loginLike.render(34)[0] ?? "").trimEnd(), " ❯ Anthropic · subscription  s...");
+
+		const modelLike = new Selector<string>({
+			items: [{ id: "gpt-4o", value: "gpt-4o", label: "openai/gpt-4o", mark: "on", tag: "current" }],
+			style: PLAIN_SELECTOR_STYLE,
+		});
+		for (const width of [22, 23, 24]) {
+			assert.equal(plain(modelLike.render(width)[0] ?? "").trimEnd(), " ❯ ● openai/gpt-4o");
+		}
+		assert.equal(plain(modelLike.render(25)[0] ?? "").trimEnd(), " ❯ ● openai/gpt-4o  c...");
+
+		const shortTag = new Selector<string>({
+			items: [{ id: "gpt-4o", value: "gpt-4o", label: "openai/gpt-4o", tag: "on" }],
+			style: PLAIN_SELECTOR_STYLE,
+		});
+		assert.equal(plain(shortTag.render(20)[0] ?? "").trimEnd(), " ❯ openai/gpt-4o");
+		assert.equal(plain(shortTag.render(21)[0] ?? "").trimEnd(), " ❯ openai/gpt-4o  on");
 	});
 
 	test("notifies onSelectionChange only when the selected row id changes across all input paths (#5237)", () => {
