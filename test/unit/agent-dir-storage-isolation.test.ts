@@ -1562,3 +1562,170 @@ test("an empty <agentDir>/sessions directory does not block adoption of a popula
 	writeFileSync(join(ownCatalogAgent, "settings.json"), JSON.stringify(settings));
 	assert.equal(storageHomeDir(ownCatalogAgent, settings), ownCatalogAgent);
 });
+
+test("the Intercom broker's storage-only lookup never claims a parent store that the agent directory's own settings keep local (#5242)", async () => {
+	const parent = join(root, "broker-partial-settings");
+	const agent = join(parent, "a1");
+	const legacySibling = join(parent, "a2");
+	const settings = { storage: {}, sessions: { storage: { dir: "sessions" } } };
+	mkdirSync(join(agent, "sessions"), { recursive: true });
+	writeFileSync(join(agent, "sessions", "own-history.jsonl"), "{}\n");
+	writeFileSync(join(agent, "settings.json"), JSON.stringify(settings));
+	mkdirSync(join(parent, "workflows"), { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	mkdirSync(legacySibling, { recursive: true });
+	writeFileSync(join(legacySibling, "settings.json"), JSON.stringify({ defaultModel: "example" }));
+
+	assert.equal(storageHomeDir(agent, settings), agent);
+
+	resetStorageHomeCacheForTests();
+	const broker = await resolveBrokerStateSource({}, agent);
+	assert.equal(broker.status, "shared");
+	if (broker.status === "shared") {
+		const db = await broker.source.openDatabase();
+		try {
+			assert.equal(db.descriptor.location, join(agent, "storage.sqlite"));
+		} finally {
+			await db.close();
+		}
+	}
+	assert.equal(existsSync(join(parent, "workflows", ".adopted-by")), false);
+
+	resetStorageHomeCacheForTests();
+	assert.equal(storageHomeDir(agent, settings), agent);
+	assert.equal(storageHomeDir(legacySibling), parent);
+});
+
+test("sibling directories keep their existing parent-relative session directories after one of them adopts the parent (#5242)", () => {
+	const parent = join(root, "relative-sibling-targets");
+	const selections = new Map<string, { sessions: { storage: { dir: string } } }>();
+	for (const name of ["a1", "a2"]) {
+		const agent = join(parent, name);
+		const settings = { sessions: { storage: { dir: `${name}/sessions` } } };
+		selections.set(name, settings);
+		mkdirSync(join(agent, "sessions"), { recursive: true });
+		writeFileSync(join(agent, "sessions", `${name}-history.jsonl`), "{}\n");
+		writeFileSync(join(agent, "settings.json"), JSON.stringify(settings));
+	}
+
+	for (const name of ["a1", "a2"]) {
+		const agent = join(parent, name);
+		const selection = selectSessionStorage(project, { agentDir: agent, settings: selections.get(name) });
+		assert.deepEqual(selection, { kind: "jsonl", dir: join(agent, "sessions") });
+		assert.deepEqual(readdirSync(join(agent, "sessions")), [`${name}-history.jsonl`]);
+	}
+});
+
+test("a worker host-id claim naming a deleted agent directory does not keep the parent store from the remaining directory (#5242, #5219)", () => {
+	const parent = join(root, "stale-host-id-owner");
+	const remaining = join(parent, "current");
+	mkdirSync(join(parent, "workflows", "pool"), { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	writeFileSync(join(parent, "workflows", "pool", "host-id"), "legacy-host\n");
+	writeFileSync(join(parent, "workflows", "pool", "host-id.adopted-by"), `${join(parent, "deleted")}\n`);
+	mkdirSync(remaining, { recursive: true });
+	writeFileSync(join(remaining, "settings.json"), JSON.stringify({ defaultModel: "example" }));
+
+	assert.equal(storageHomeDir(remaining), parent);
+	assert.equal(defaultSessionDatabasePath(remaining), join(parent, "workflows", "journal.sqlite"));
+});
+
+test.skipIf(process.platform === "win32")(
+	"an agent directory whose name ends in a carriage return adopts the parent store it claimed, and a sibling without it does not (#5242)",
+	() => {
+		const parent = join(root, "carriage-return-name");
+		const claimant = join(parent, "a\r");
+		const sibling = join(parent, "a");
+		mkdirSync(join(parent, "workflows"), { recursive: true });
+		writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+		mkdirSync(claimant, { recursive: true });
+		writeFileSync(join(claimant, "settings.json"), JSON.stringify({ defaultModel: "example" }));
+
+		assert.equal(storageHomeDir(claimant), parent);
+		assert.equal(readClaimFile(join(parent, "workflows", ".adopted-by")), claimant);
+
+		mkdirSync(sibling, { recursive: true });
+		resetStorageHomeCacheForTests();
+		assert.equal(storageHomeDir(sibling), sibling);
+		assert.equal(storageHomeDir(claimant), parent);
+	},
+);
+
+test("an explicit absolute sessions selection does not adopt the parent through an inactive relative target in the agent directory's settings file (#5242)", () => {
+	const parent = join(root, "explicit-absolute-override");
+	const agent = join(parent, "a1");
+	const elsewhere = join(root, "elsewhere", "sessions");
+	mkdirSync(join(parent, "sessions"), { recursive: true });
+	writeFileSync(join(parent, "sessions", "legacy.jsonl"), "{}\n");
+	mkdirSync(agent, { recursive: true });
+	writeFileSync(join(agent, "settings.json"), JSON.stringify({ sessions: { storage: { dir: "sessions" } } }));
+	const override = { sessions: { storage: { dir: elsewhere } } };
+
+	assert.equal(storageHomeDir(agent, override), agent);
+	assert.deepEqual(selectSessionStorage(project, { agentDir: agent, settings: override }), {
+		kind: "jsonl",
+		dir: elsewhere,
+	});
+	assert.equal(existsSync(join(parent, "workflows", ".adopted-by")), false);
+});
+
+test("siblings that both select a relative sessions directory never share the legacy parent directory after one adopts it (#5242)", () => {
+	const parent = join(root, "shared-relative-sessions");
+	const settings = { sessions: { storage: { dir: "sessions" } } };
+	mkdirSync(join(parent, "sessions"), { recursive: true });
+	writeFileSync(join(parent, "sessions", "legacy.jsonl"), "{}\n");
+	for (const name of ["a1", "a2"]) {
+		mkdirSync(join(parent, name), { recursive: true });
+		writeFileSync(join(parent, name, "settings.json"), JSON.stringify(settings));
+	}
+
+	assert.deepEqual(selectSessionStorage(project, { agentDir: join(parent, "a1"), settings }), {
+		kind: "jsonl",
+		dir: join(parent, "sessions"),
+	});
+	assert.deepEqual(selectSessionStorage(project, { agentDir: join(parent, "a2"), settings }), {
+		kind: "jsonl",
+		dir: join(parent, "a2", "sessions"),
+	});
+});
+
+test("a sibling holding Atomic credentials or model configuration still outranks an empty directory for the legacy parent store (#5242)", () => {
+	for (const [file, contents] of [
+		["auth.json", JSON.stringify({ anthropic: { type: "api_key", key: "test-key" } })],
+		["models.json", JSON.stringify({ providers: { custom: { baseUrl: "https://example.com" } } })],
+	] as const) {
+		const parent = join(root, `atomic-configuration-${file}`);
+		const fresh = join(parent, "fresh");
+		const used = join(parent, "work");
+		mkdirSync(join(parent, "workflows"), { recursive: true });
+		writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+		mkdirSync(fresh, { recursive: true });
+		mkdirSync(used, { recursive: true });
+		writeFileSync(join(used, file), contents);
+
+		assert.equal(storageHomeDir(fresh), fresh);
+		assert.equal(existsSync(join(parent, "workflows", ".adopted-by")), false);
+		resetStorageHomeCacheForTests();
+		assert.equal(storageHomeDir(used), parent);
+	}
+});
+
+test("an agent directory beside non-Atomic tool directories adopts the legacy store it used (#5242)", () => {
+	for (const [label, directory, file, contents] of [
+		["claude", ".claude", "settings.json", JSON.stringify({ permissions: {} })],
+		["gemini", ".gemini", "settings.json", JSON.stringify({ theme: "x" })],
+		["codex", ".codex", "auth.json", JSON.stringify({ OPENAI_API_KEY: null })],
+		["generic-models", ".other", "models.json", JSON.stringify({ models: [] })],
+		["vscode", ".vscode", "settings.json", JSON.stringify({ "editor.tabSize": 2 })],
+	] as const) {
+		const parent = join(root, `non-atomic-${label}`);
+		const agent = join(parent, "myagent");
+		mkdirSync(join(parent, "workflows"), { recursive: true });
+		writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+		mkdirSync(join(agent, "extensions"), { recursive: true });
+		mkdirSync(join(parent, directory), { recursive: true });
+		writeFileSync(join(parent, directory, file), contents);
+		resetStorageHomeCacheForTests();
+		assert.equal(storageHomeDir(agent), parent, label);
+	}
+});

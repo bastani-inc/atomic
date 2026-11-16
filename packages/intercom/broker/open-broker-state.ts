@@ -12,7 +12,7 @@ import {
 	type StorageSettingsSelection,
 	StorageUnavailableError,
 	selectStorage,
-	storageHomeDir,
+	storagePathBaseDir,
 	validateStoragePrefix,
 } from "@bastani/atomic/storage";
 import { type DatabaseWakeUpBusOptions, openDatabaseWakeUpBus } from "./database-wake-up-bus.js";
@@ -61,7 +61,7 @@ function resolveSettingsPath(
 	if (path.startsWith("~/") || (process.platform === "win32" && path.startsWith("~\\"))) {
 		return join(homedir(), path.slice(2));
 	}
-	return isAbsolute(path) ? path : resolve(storageHomeDir(agentDir, { storage }), path);
+	return isAbsolute(path) ? path : resolve(storagePathBaseDir(path, agentDir, { storage }), path);
 }
 
 /**

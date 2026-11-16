@@ -19,7 +19,7 @@ import {
 import {
 	defaultSessionDatabasePath,
 	defaultSharedStoragePath,
-	storageHomeDir,
+	storagePathBaseDir,
 	takeStorageAdoptionNotice,
 } from "./file-identity.js";
 import { defaultJournalStoreDirectory } from "./journal-adoption.js";
@@ -489,7 +489,7 @@ export function selectJournal(agentDir: string, settings: Settings): StorageSele
 			: defaultSharedStoragePath(agentDir, settings),
 	);
 	return selection.kind === "sqlite" && !isAbsolute(selection.path)
-		? { ...selection, path: join(storageHomeDir(agentDir, settings), selection.path) }
+		? { ...selection, path: join(storagePathBaseDir(selection.path, agentDir, settings), selection.path) }
 		: selection;
 }
 
@@ -523,7 +523,7 @@ export function selectIntercomStorage(
 	);
 	if (selection.kind === "memory" || (selection.kind === "sqlite" && selection.path === ":memory:")) return undefined;
 	return selection.kind === "sqlite" && !isAbsolute(selection.path)
-		? { ...selection, path: resolvePath(selection.path, storageHomeDir(agentDir, settings)) }
+		? { ...selection, path: resolvePath(selection.path, storagePathBaseDir(selection.path, agentDir, settings)) }
 		: selection;
 }
 

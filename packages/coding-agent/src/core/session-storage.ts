@@ -10,7 +10,7 @@ import {
 	defaultSessionDatabasePath,
 	defaultSharedStoragePath,
 	type StorageHomeSettings,
-	storageHomeDir,
+	storagePathBaseDir,
 } from "./storage/file-identity.js";
 import { selectProcessStorage } from "./storage/process-selection.js";
 import { StorageProvider, type StorageSelection } from "./storage/provider.js";
@@ -170,7 +170,12 @@ export function selectSessionSetting(
 	if ("dir" in value)
 		return {
 			kind: "jsonl",
-			dir: resolveStoragePath(value.dir, storageHomeDir(agentDir, effectiveSettings), "settings", field),
+			dir: resolveStoragePath(
+				value.dir,
+				storagePathBaseDir(value.dir, agentDir, effectiveSettings),
+				"settings",
+				field,
+			),
 		};
 	const selection = selectStorage(value, "settings", field, () =>
 		field === "storage"
@@ -180,7 +185,12 @@ export function selectSessionSetting(
 	if (selection.kind === "sqlite" && !isAbsolute(selection.path)) {
 		return {
 			...selection,
-			path: resolveStoragePath(selection.path, storageHomeDir(agentDir, effectiveSettings), "settings", field),
+			path: resolveStoragePath(
+				selection.path,
+				storagePathBaseDir(selection.path, agentDir, effectiveSettings),
+				"settings",
+				field,
+			),
 		};
 	}
 	return selection;

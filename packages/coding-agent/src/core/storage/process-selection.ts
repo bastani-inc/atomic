@@ -10,7 +10,7 @@ import {
 	defaultSessionDatabasePath,
 	defaultSharedStoragePath,
 	type StorageHomeSettings,
-	storageHomeDir,
+	storagePathBaseDir,
 } from "./file-identity.js";
 import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { validateStoragePrefix } from "./prefix.js";
@@ -65,12 +65,12 @@ function choose(
 	value: DomainSelection,
 	source: "cli" | "env",
 	field: string,
-	baseDir: () => string,
+	baseDir: (path: string) => string,
 	defaultPath: () => string,
 ): ProcessStorageChoice {
 	const resolve = (path: string): string => {
 		try {
-			return resolvePath(path, baseDir());
+			return resolvePath(path, baseDir(path));
 		} catch {
 			throw new StorageConfigError(source, field, "invalid-path");
 		}
@@ -116,7 +116,7 @@ export function setCliStorageSelection(argument: StorageFlagArgument | undefined
 
 /** Every set storage variable, parsed and checked even when another selection outranks it. */
 function environmentChoices(agentDir: string, settleStorageHome = true) {
-	const baseDir = () => (settleStorageHome ? storageHomeDir(agentDir) : agentDir);
+	const baseDir = (path: string) => (settleStorageHome ? storagePathBaseDir(path, agentDir) : agentDir);
 	const domainDefault = () => (settleStorageHome ? defaultSessionDatabasePath(agentDir) : agentDir);
 	const sharedDefault = () => (settleStorageHome ? defaultSharedStoragePath(agentDir) : agentDir);
 	const journalDefault = () => (settleStorageHome ? defaultJournalStoreDirectory(agentDir) : agentDir);
@@ -171,7 +171,7 @@ export function selectProcessStorage(
 		}
 		return typeof settings === "function" ? resolvedSettings : settings;
 	};
-	const baseDir = () => storageHomeDir(agentDir, getSettings());
+	const baseDir = (path: string) => storagePathBaseDir(path, agentDir, getSettings());
 	const domainDefault = () => defaultSessionDatabasePath(agentDir, getSettings());
 	const sharedDefault = () => defaultSharedStoragePath(agentDir, getSettings());
 	const journalDefault = () => defaultJournalStoreDirectory(agentDir, getSettings());

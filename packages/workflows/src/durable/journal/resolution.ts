@@ -11,7 +11,7 @@ import {
 	type StorageSettingsSelection,
 	selectStorage,
 	selectsDefaultJournalStore,
-	storageHomeDir,
+	storagePathBaseDir,
 } from "@bastani/atomic/storage";
 import { MemoryRunJournal } from "./memory-run-journal.js";
 import { SqlRunJournal } from "./sql-run-journal.js";
@@ -120,7 +120,7 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 	);
 	const resolved =
 		selection.kind === "sqlite" && !isAbsolute(selection.path)
-			? { ...selection, path: join(storageHomeDir(agentDir, options.settings), selection.path) }
+			? { ...selection, path: join(storagePathBaseDir(selection.path, agentDir, options.settings), selection.path) }
 			: selection;
 	origins.set(resolved, { source: "settings" });
 	return resolved;

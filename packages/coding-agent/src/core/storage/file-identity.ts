@@ -11,7 +11,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, normalize, parse, posix, resolve, win32 } from "node:path";
+import { dirname, isAbsolute, join, normalize, parse, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const CONFIG_DIR_NAME = ".atomic";
@@ -43,8 +43,6 @@ const ATOMIC_SETTING_KEYS: ReadonlySet<string> = new Set([
 	"workflows",
 ]);
 const AGENT_DIR_STATE_ENTRIES: ReadonlySet<string> = new Set([
-	"auth.json",
-	"models.json",
 	"trust.json",
 	"pool-host-id",
 	"atomic-debug.log",
@@ -178,7 +176,7 @@ function createStorageHomeEntry(
 export function readClaimFile(file: string): string | undefined {
 	try {
 		const raw = readFileSync(file, "utf8");
-		const line = raw.endsWith("\r\n") ? raw.slice(0, -2) : raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+		const line = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
 		return line.length > 0 ? line : undefined;
 	} catch {
 		return undefined;
@@ -279,18 +277,26 @@ function configuredRelativeTargets(agentPath: string, home: string, settings?: S
 			pushSelectionTargets(targets, JSON.parse(raw), home, envName === "ATOMIC_STORAGE");
 		} catch {}
 	}
-	if (settings !== undefined) {
-		pushSettingsTargets(targets, settings, home);
-		return [...targets];
-	}
+	let fileSettings: StorageHomeSettings | undefined;
 	const settingsPath = join(agentPath, "settings.json");
 	if (existsSync(settingsPath)) {
 		try {
 			const raw = readFileSync(settingsPath, "utf8");
 			const parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw) as StorageHomeSettings | null;
-			pushSettingsTargets(targets, parsed, home);
+			if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) fileSettings = parsed;
 		} catch {}
 	}
+	pushSettingsTargets(
+		targets,
+		settings === undefined
+			? fileSettings
+			: {
+					storage: settings.storage === undefined ? fileSettings?.storage : settings.storage,
+					sessions: settings.sessions === undefined ? fileSettings?.sessions : settings.sessions,
+					workflows: settings.workflows === undefined ? fileSettings?.workflows : settings.workflows,
+				},
+		home,
+	);
 	return [...targets];
 }
 
@@ -365,19 +371,44 @@ function hasParentStoreEntries(parent: string, agentPath: string, relativeTarget
 	return hasRelativeTargetEntries(parent, agentPath, relativeTargets, true);
 }
 
-function hasAtomicSettings(path: string): boolean {
+function readConfigurationObject(path: string): object | undefined {
 	try {
 		const raw = readFileSync(path, "utf8");
-		const settings: object | null = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
-		return (
-			settings !== null &&
-			typeof settings === "object" &&
-			!Array.isArray(settings) &&
-			Object.keys(settings).some((key) => ATOMIC_SETTING_KEYS.has(key))
-		);
+		const value: object | null = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
+		return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 	} catch {
-		return false;
+		return undefined;
 	}
+}
+
+function hasAtomicConfiguration(path: string, name: string): boolean {
+	const value = readConfigurationObject(path);
+	if (value === undefined) return false;
+	if (name === "settings.json") return Object.keys(value).some((key) => ATOMIC_SETTING_KEYS.has(key));
+	if (name === "models.json") {
+		return (
+			"providers" in value &&
+			value.providers !== null &&
+			typeof value.providers === "object" &&
+			!Array.isArray(value.providers)
+		);
+	}
+	const credentials = value as Readonly<Record<string, object | null>>;
+	return Object.keys(credentials).some((provider) => {
+		const credential = credentials[provider];
+		if (credential === null || typeof credential !== "object" || Array.isArray(credential)) return false;
+		if (!("type" in credential)) return false;
+		if (credential.type === "api_key") return true;
+		return (
+			credential.type === "oauth" &&
+			"access" in credential &&
+			typeof credential.access === "string" &&
+			"refresh" in credential &&
+			typeof credential.refresh === "string" &&
+			"expires" in credential &&
+			typeof credential.expires === "number"
+		);
+	});
 }
 
 function agentDirectoryPriorUseTier(dirPath: string): 0 | 1 | 2 {
@@ -391,7 +422,8 @@ function agentDirectoryPriorUseTier(dirPath: string): 0 | 1 | 2 {
 			if (
 				AGENT_DIR_STATE_ENTRIES.has(entry.name) ||
 				entry.name.startsWith("storage-token.") ||
-				(entry.name === "settings.json" && hasAtomicSettings(join(dirPath, entry.name)))
+				(["settings.json", "auth.json", "models.json"].includes(entry.name) &&
+					hasAtomicConfiguration(join(dirPath, entry.name), entry.name))
 			) {
 				return 2;
 			}
@@ -542,6 +574,7 @@ function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettin
 		: undefined;
 	const validHostIdOwner =
 		hostIdOwner !== undefined &&
+		isDirectory(hostIdOwner) &&
 		!hasOwnStoreEntries(hostIdOwner, dirname(hostIdOwner), configuredRelativeTargets(hostIdOwner, rawHome))
 			? hostIdOwner
 			: undefined;
@@ -586,6 +619,7 @@ export function coLocatesWorkflowStore(agentDir: string, settings?: StorageHomeS
 		: undefined;
 	if (
 		hostIdOwner !== undefined &&
+		isDirectory(hostIdOwner) &&
 		!hasOwnStoreEntries(hostIdOwner, dirname(hostIdOwner), configuredRelativeTargets(hostIdOwner, rawHome))
 	) {
 		return !sameDirectory(hostIdOwner, agentPath);
@@ -595,6 +629,21 @@ export function coLocatesWorkflowStore(agentDir: string, settings?: StorageHomeS
 
 export function storageHomeDir(agentDir?: string, settings?: StorageHomeSettings): string {
 	return resolveStorageHomeEntry(agentDir, settings).home;
+}
+
+export function storagePathBaseDir(path: string, agentDir: string, settings?: StorageHomeSettings): string {
+	const home = storageHomeDir(agentDir, settings);
+	const target = normalizeRelativeTarget(path, getHomeDir());
+	if (target === undefined) return home;
+	const agentPath = normalizeAgentDirPath(agentDir);
+	const parent = dirname(agentPath);
+	if (pathsEqual(home, parent) || existsSync(resolve(home, target))) return home;
+	const legacy = resolve(parent, target);
+	try {
+		const inside = relative(realpathSync.native(agentPath), realpathSync.native(legacy));
+		if (inside !== "" && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside)) return parent;
+	} catch {}
+	return home;
 }
 
 export function workflowsStorageDir(agentDir?: string, settings?: StorageHomeSettings): string {

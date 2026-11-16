@@ -28,6 +28,7 @@ export {
 	type StorageHomeSettings,
 	sameDirectory,
 	storageHomeDir,
+	storagePathBaseDir,
 	workflowsStorageDir,
 } from "./file-identity.js";
 export * from "./journal-adoption.js";
