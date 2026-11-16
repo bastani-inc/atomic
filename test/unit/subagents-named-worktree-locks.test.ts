@@ -28,7 +28,7 @@ function git(repo: string, ...args: string[]): string {
 	return result.stdout.toString().trim();
 }
 
-function makeRepo(shared = false, umask?: "002"): { root: string; repo: string } {
+function makeRepo(shared: boolean | "0001" | "0606" = false, umask?: "002"): { root: string; repo: string } {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "named-worktree-locks-")));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 	const repo = join(root, "repo");
@@ -39,7 +39,7 @@ function makeRepo(shared = false, umask?: "002"): { root: string; repo: string }
 			{ env: createGitEnvironment() },
 		);
 		assert.equal(result.exitCode, 0, result.stderr.toString());
-	} else if (shared) git(repo, "init", "-q", "-b", "main", "--shared=group");
+	} else if (shared) git(repo, "init", "-q", "-b", "main", `--shared=${shared === true ? "group" : shared}`);
 	else git(repo, "init", "-q", "-b", "main");
 	git(repo, "config", "user.name", "Test");
 	git(repo, "config", "user.email", "test@example.com");
@@ -330,8 +330,7 @@ for (const [setting, expectedDirMode, expectedFileMode] of [
 	test.skipIf(process.platform === "win32")(
 		`Git sharing setting ${setting} keeps the same writers on checkout locks (#5202)`,
 		async () => {
-			const { root, repo } = makeRepo();
-			git(repo, "init", "-q", `--shared=${setting}`);
+			const { root, repo } = makeRepo(setting);
 			git(repo, "config", "core.sharedRepository", setting);
 			await ensureNamedWorktree(repo, { branch: "feat/shared-setting", path: join(root, "shared-setting") });
 			const lockDir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");

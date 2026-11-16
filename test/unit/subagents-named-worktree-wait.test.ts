@@ -102,6 +102,7 @@ test("a queued named-worktree launch reports progress and aborts without retaini
 
 test("named-worktree ownership files survive Git maintenance without appearing as worktrees and stay private (#5202)", async () => {
 	const repo = makeRepo();
+	if (process.platform !== "win32") chmodSync(join(repo, ".git", "objects", "info"), 0o755);
 	const { path: target } = await ensureNamedWorktree(repo, { branch: "feat/pruned" });
 	const dir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
 	const before = readdirSync(dir).sort();
