@@ -816,7 +816,19 @@ The database stores sessions, the oversized tool results of agents released whil
 
 Scale by running more workflows, not by splitting one: a single run and a single session each have one writer. Atomic's stores use SQLite SQL, or PostgreSQL through `@bastani/atomic-storage-postgres`, so other `openDatabase` adapters need a SQLite-compatible driver. For another kind of database, implement `openRunJournal` and `openSessionStore` and validate them with the conformance suites below.
 
-A session store from `openSessionStore` that implements `readTail(sessionId, fromSeq)`, `readRange(sessionId, startSeq, endSeq)` and `findLatestCompaction(sessionId, leafId?)` lets Atomic resume its compacted sessions from their latest compaction instead of reading them whole; a store without them keeps working and resumes sessions whole. Seqs count a session's entries from 1. `readTail` returns the header, the entries from `fromSeq` on, the earlier entries that hold the session's state with whether each is on the branch the session continues from, and the usage and message counts of the earlier entries it leaves out. `findLatestCompaction` returns the latest verbatim compaction boundary on a branch with the seq its context starts at. Atomic's SQL store keeps what these reads need in each session's summary row, with no schema change; a session written by an earlier version is read whole on its first resume and indexed then.
+A custom `SessionStore` can implement these optional methods to avoid loading whole sessions:
+
+| Method | Result |
+|---|---|
+| `readTail(id, fromSeq)` | The header and entries from `fromSeq` on, in store order, plus earlier live state and omitted usage totals. |
+| `readRange(id, startSeq, endSeq)` | Entries in that inclusive sequence range, in store order, with `seqs`, `lastSeq` and `epoch`. |
+| `findLatestCompaction(id, leafId?)` | The latest verbatim compaction on the selected branch, its sequence and retained start. |
+| `readResume(id, leafId?)` | One consistent snapshot containing the header, selected branch from its compaction boundary, live state, omitted totals, recovery ids, `lastSeq`, `lastEntryId`, `leafId` and `epoch`. |
+| `findEntrySeq(id, entryId)` | The entry's sequence, or `undefined` if it is absent. |
+
+Sequences count entries from 1. `readResume.branch` contains `{ seq, entry }` records; `state` also records `onBranch`. Returned entries keep their original content, ids and parent ids. `epoch` identifies a session generation: keep it unchanged on append, change it on replacement or recreation, and return it from every range read. Writes with an `epoch` must reject a different generation with `SessionConflictError`, even when the sequence count matches. Atomic also rejects a range hydration from a different generation instead of merging two histories. `SessionResume`, `SessionRecoveryState` and the range and compaction types are exported from `@bastani/atomic/storage`.
+
+Atomic uses `readResume` when available. A custom store without it keeps working and resumes sessions whole. First-party stores implement all five methods. An older SQL session needs one lazy, paged metadata scan to build its index; a read-only store remembers the result for that process. JSONL stores save a checksummed `.idx` sidecar with an atomic rename and rebuild it when the session file changes.
 
 ## Locks in the agent directory
 

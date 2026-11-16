@@ -538,8 +538,12 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `appendContextEdit(targetId, replacement)` - Append a branch-local context edit (`null` omits the target; `{ content }` replaces only its content)
 - `getEntries()` - All entries (excluding header). A manager opened with `{ history: "tail" }` holds the entries that keep the session's state and the branch from its latest compaction on until `loadFullHistory()` reads the rest
 - `hasFullHistory()` - Whether every entry is held
-- `loadFullHistory()` - Read the entries a `{ history: "tail" }` open left out; resolves at once when every entry is held
+- `loadFullHistory()` - Read missing sequence ranges and merge them in store order; resolves at once when every entry is held. Rejects with `SessionConflictError` if the session was replaced or recreated after it was opened
 - `getOmittedHistoryTotals()` - Usage and message counts of the entries a `{ history: "tail" }` open left out, or `undefined` when every entry is held
+- `getLastSeq()` - The session's last stored sequence, including entries not in memory
+- `getEntrySeq(id)` - A held entry's sequence, or `undefined` when it is not held
+- `findEntrySeq(id)` - Look up an entry's sequence in the store without loading the earlier transcript
+- `getSessionRecoveryState()` - Persisted admission keys and delivered Intercom message ids used to prevent duplicate deliveries after resume
 - `getHeader()` - Session header metadata
 - `getSessionName()` - Get display name from latest session_info entry (`undefined` when cleared or never named)
 - `getSessionNameState()` - Get the name state: `{ hasName: false }` when never named, `{ hasName: true }` when the latest entry cleared it, `{ hasName: true, name }` when currently named

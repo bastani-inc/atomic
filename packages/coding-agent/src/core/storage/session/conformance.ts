@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type { Usage } from "@bastani/atomic-ai/compat";
+import { buildSessionProjection, getSessionLeafId } from "../../session-manager-history.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import {
 	SessionConflictError,
@@ -189,7 +190,7 @@ function compactedSession(): SessionEntry[] {
 		tailEntry.assistant("a1", 128),
 		tailEntry.label("l1", "u1"),
 		tailEntry.name("n1", "first"),
-		tailEntry.custom("x1", "workspace_binding", { n: 1 }),
+		tailEntry.custom("x1", "workspace_binding", { kind: "bound-workspace", worktree: "/p" }),
 		tailEntry.custom("i1", "task-completion-intent", { completionId: "settled" }),
 		tailEntry.custom("k1", "task-completion-ack", { completionId: "settled" }),
 		tailEntry.custom("i2", "task-completion-intent", { completionId: "open" }),
@@ -1294,6 +1295,65 @@ export function registerSessionStoreConformance(
 					],
 				);
 			});
+
+			check(
+				"resumes one branch consistently and changes generation only on replacement (#5249)",
+				async (store, reload) => {
+					const entries = chained([
+						tailEntry.model("model"),
+						tailEntry.user("root"),
+						tailEntry.assistant("reply", 128),
+						tailEntry.user("kept"),
+						tailEntry.compaction("boundary", "kept"),
+						tailEntry.user("a"),
+						tailEntry.user("b", "other", "root"),
+						tailEntry.custom("move", "atomic.leaf", undefined, "a"),
+					]);
+					await store.create(header(), entries);
+					store = await reload(store);
+					assert.ok(store.readResume && store.readRange && store.findEntrySeq);
+					const resumed = await store.readResume("session");
+					assert.equal(resumed.leafId, "a");
+					assert.equal(resumed.lastEntryId, "move");
+					assert.equal(resumed.lastSeq, entries.length);
+					assert.equal(
+						resumed.branch.some(({ entry }) => entry.id === "b"),
+						false,
+					);
+					const held = [...resumed.state, ...resumed.branch].sort((a, b) => a.seq - b.seq);
+					const branch = held
+						.filter(
+							(item) =>
+								resumed.branch.some((other) => other.seq === item.seq) ||
+								resumed.state.some((other) => other.seq === item.seq && other.onBranch),
+						)
+						.map((item) => item.entry);
+					const expected = buildSessionProjection(entries, getSessionLeafId(entries));
+					const actual = buildSessionProjection(
+						held.map((item) => item.entry),
+						resumed.leafId,
+						undefined,
+						undefined,
+						branch,
+					);
+					assert.deepEqual(actual.messages, expected.messages);
+					assert.deepEqual(actual.model, expected.model);
+					assert.equal(actual.thinkingLevel, expected.thinkingLevel);
+					assert.equal(await store.findEntrySeq("session", "root"), 2);
+					assert.equal(await store.findEntrySeq("session", "missing"), undefined);
+					assert.equal((await store.readRange("session", 1, 2)).epoch, resumed.epoch);
+					await store.append("session", [{ ...message("later", "later"), parentId: "a" }], {
+						expectSeq: entries.length,
+					});
+					assert.equal((await store.readResume("session")).epoch, resumed.epoch);
+					await store.replace("session", header(), entries, { expectSeq: entries.length + 1 });
+					const replacement = await store.readResume("session");
+					assert.notEqual(replacement.epoch, resumed.epoch);
+					await store.delete("session");
+					await store.create(header(), entries);
+					assert.notEqual((await store.readResume("session")).epoch, replacement.epoch);
+				},
+			);
 
 			check("rejects every operation after close, including repeated close", async (store, reload) => {
 				await store.create(header(), []);

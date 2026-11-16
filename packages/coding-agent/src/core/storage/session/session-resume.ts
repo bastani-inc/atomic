@@ -31,6 +31,7 @@ export interface SessionResumeIndex {
 	readonly assistants: readonly number[];
 	readonly admissions: readonly string[];
 	readonly delivered: readonly string[];
+	readonly settled: readonly string[];
 	readonly pending: Readonly<Record<string, number>>;
 	readonly parks: Readonly<
 		Record<
@@ -100,7 +101,11 @@ export function addEntryToHistoryTotals(
 		const usage = countedUsage(entry.usage);
 		return usage ? { ...totals, summaries: addUsage(totals.summaries, usage, sign) } : totals;
 	}
-	if (entry.type !== "message" || entry.message === null || typeof entry.message !== "object") return totals;
+	return messageHistoryTotals(totals, entry, sign);
+}
+function messageHistoryTotals(totals: SessionHistoryTotals, entry: SessionEntry, sign: 1 | -1): SessionHistoryTotals {
+	if (entry.type !== "message") return totals;
+	if (entry.message === null || typeof entry.message !== "object") return totals;
 	const message = entry.message;
 	const counted = { ...totals, totalMessages: totals.totalMessages + sign };
 	if (message.role === "user") return { ...counted, userMessages: counted.userMessages + sign };
@@ -140,22 +145,19 @@ function completionIdOf(entry: SessionEntry): string | undefined {
 	return typeof completionId === "string" ? completionId : undefined;
 }
 
+const SESSION_STATE_TYPES = new Set(["model_change", "thinking_level_change", "worktree_snapshot"]);
+const BRANCH_CUSTOM_STATE_TYPES = new Set([
+	"atomic.tool-deactivation",
+	"codemode-store",
+	"event_subscription",
+	"event_subscription_processed",
+	"event_subscription_child",
+	"intercom_released_reply_wait",
+]);
 export function isSessionHistoryEntry(entry: SessionEntry): boolean {
-	return !(
-		entry.type === "model_change" ||
-		entry.type === "thinking_level_change" ||
-		entry.type === "worktree_snapshot" ||
-		(entry.type === "message" && entry.message?.role === "system") ||
-		(entry.type === "custom" &&
-			[
-				"atomic.tool-deactivation",
-				"codemode-store",
-				"event_subscription",
-				"event_subscription_processed",
-				"event_subscription_child",
-				"intercom_released_reply_wait",
-			].includes(entry.customType))
-	);
+	if (entry.type === "message") return entry.message?.role !== "system";
+	if (entry.type === "custom") return !BRANCH_CUSTOM_STATE_TYPES.has(entry.customType);
+	return !SESSION_STATE_TYPES.has(entry.type);
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -183,6 +185,219 @@ export function foreignResumeIds(previous: SessionResumeIndex, entries: readonly
 	return [...foreign];
 }
 
+function isLatestProtocol(kind: string, data: Record<string, unknown>, active: boolean): boolean {
+	let valid = false;
+	switch (kind) {
+		case "intercom_session_identity":
+			valid =
+				typeof data.sessionId === "string" &&
+				typeof data.intercomSessionId === "string" &&
+				data.intercomSessionId.length > 0;
+			break;
+		case "intercom_session_memberships":
+			valid =
+				["sessionId", "homeGroup"].every((key) => typeof data[key] === "string") &&
+				(data.groups === null ||
+					(Array.isArray(data.groups) && data.groups.every((group) => typeof group === "string")));
+			break;
+		case "workspace_binding":
+			valid = data.kind === "bound-workspace" && typeof data.worktree === "string";
+			break;
+		case "web-search-results": {
+			const payload = data.type === "search" ? data.queries : data.type === "fetch" ? data.urls : undefined;
+			valid =
+				active &&
+				typeof data.id === "string" &&
+				data.id.length > 0 &&
+				typeof data.timestamp === "number" &&
+				Array.isArray(payload);
+			break;
+		}
+		case "subagent-slash-final-snapshot":
+		case "resume_timings":
+			valid = active;
+			break;
+	}
+	return valid;
+}
+function isChildState(data: Record<string, unknown>): boolean {
+	return (
+		data.version === 1 &&
+		["childId", "runId", "agent", "cwd"].every((key) => typeof data[key] === "string") &&
+		typeof data.index === "number" &&
+		["running", "terminal"].includes(String(data.state))
+	);
+}
+type ResumeProtocolIndex = Pick<
+	SessionResumeIndex,
+	"latest" | "fields" | "admissions" | "delivered" | "settled" | "pending" | "parks" | "intents"
+>;
+class ResumeProtocols {
+	readonly latest: Record<string, readonly number[]>;
+	readonly fields: Record<string, readonly (readonly [number, readonly string[]])[]>;
+	readonly admissions: Set<string>;
+	readonly delivered: Set<string>;
+	readonly settled: Set<string>;
+	readonly pending: Record<string, number>;
+	readonly parks: Record<string, { seq: number; remaining: readonly string[]; notified: readonly number[] }>;
+	readonly intents: Map<string, number>;
+	constructor(previous?: ResumeProtocolIndex) {
+		this.latest = { ...previous?.latest };
+		this.fields = { ...previous?.fields };
+		this.admissions = new Set(previous?.admissions ?? []);
+		this.delivered = new Set(previous?.delivered ?? []);
+		this.settled = new Set(previous?.settled ?? []);
+		this.pending = { ...previous?.pending };
+		this.parks = { ...previous?.parks };
+		this.intents = new Map(previous?.intents ?? []);
+	}
+	keepLatest(key: string, seq: number): void {
+		this.latest[key] = [seq];
+	}
+	private keepPending(key: string, seq: number): void {
+		if (this.settled.has(key)) return;
+		this.latest[`pending:${key}`] = [...(this.latest[`pending:${key}`] ?? []), seq];
+		this.pending[key] = seq;
+	}
+	private settle(key: string): void {
+		if (!key.startsWith("notice:")) this.settled.add(key);
+		delete this.latest[`pending:${key}`];
+		delete this.pending[key];
+	}
+	private completion(entry: SessionEntry, seq: number, data: Record<string, unknown>): void {
+		const completionId = completionIdOf(entry);
+		if (completionId === undefined || entry.type !== "custom") return;
+		if (entry.customType === TASK_COMPLETION_ACK_TYPE) {
+			this.intents.delete(completionId);
+			this.settle(`notice:${completionId}`);
+		}
+		if (entry.customType !== TASK_COMPLETION_INTENT_TYPE) return;
+		this.intents.set(completionId, seq);
+		this.settled.delete(`notice:${completionId}`);
+		const task = `${text(data.ownerId) ?? ""}/${text(data.taskId) ?? ""}`;
+		for (const [key, park] of Object.entries(this.parks)) {
+			if (!park.remaining.includes(task)) continue;
+			const remaining = park.remaining.filter((id) => id !== task);
+			if (remaining.length === 0) delete this.parks[key];
+			else this.parks[key] = { ...park, remaining, notified: [...park.notified, seq] };
+		}
+	}
+	private custom(
+		entry: Extract<SessionEntry, { type: "custom" }>,
+		seq: number,
+		data: Record<string, unknown>,
+		branchActive: boolean,
+	): void {
+		const kind = entry.customType;
+		if (branchActive && ["intercom_inbox", "intercom_received"].includes(kind)) {
+			const message = record(data.message);
+			if (message.expectsReply !== true && typeof message.replyTo === "string")
+				this.keepPending(`reply:${message.replyTo}`, seq);
+		}
+		if (kind === "intercom_session_identity" && !this.latest[`identity-first:${text(data.sessionId) ?? ""}`])
+			this.keepLatest(`identity-first:${text(data.sessionId) ?? ""}`, seq);
+		const validLatest = isLatestProtocol(kind, data, branchActive);
+		if (validLatest) this.keepLatest(`${kind}:${text(data.sessionId) ?? text(data.id) ?? ""}`, seq);
+		if (kind === "subagent-child" && isChildState(data)) this.child(data, seq);
+
+		if (branchActive && kind === "intercom_inbox" && typeof record(data.message).id === "string") {
+			const id = String(record(data.message).id);
+			if (!this.delivered.has(id)) this.keepPending(`inbox:${id}`, seq);
+		}
+		if (branchActive && (kind === "intercom_received" || kind === "intercom_inbox_handled")) {
+			const id = text(data.messageId);
+			if (id) this.settle(`inbox:${id}`);
+		}
+		if (branchActive && kind === "intercom_ask" && typeof data.askId === "string")
+			this.keepPending(`ask:${data.askId}`, seq);
+		if (branchActive && kind === "intercom_ask_settled" && typeof data.askId === "string") {
+			this.settle(`ask:${data.askId}`);
+			this.settle(`reply:${data.askId}`);
+		}
+		if (branchActive && kind === "intercom_sent" && typeof record(data.message).replyTo === "string")
+			this.settle(`inbound:${record(data.message).replyTo}`);
+		if (
+			(kind === "workflow.run.start" || kind === "workflow.stage.start" || kind === "workflow.stage.end") &&
+			typeof data.runId === "string"
+		) {
+			const key = `run:${data.runId}`;
+			this.latest[key] = [...(this.latest[key] ?? []), seq];
+		}
+		if (kind === "workflow.run.end" && typeof data.runId === "string") delete this.latest[`run:${data.runId}`];
+		if (branchActive && kind === "intercom_reply_wait" && typeof data.toolCallId === "string")
+			this.keepPending(`wait:${data.toolCallId}`, seq);
+		if (kind === "workflow-stage-parked-tasks" && Array.isArray(data.tasks)) {
+			const remaining = data.tasks.map((task) => {
+				const held = record(task);
+				return `${text(held.ownerId) ?? ""}/${text(held.taskId) ?? ""}`;
+			});
+			if (remaining.length > 0) this.parks[entry.id] = { seq, remaining, notified: [] };
+		}
+	}
+	private child(data: Record<string, unknown>, seq: number): void {
+		const key = `${text(record(data.owner).sessionId) ?? ""}:${data.childId}`;
+		const seen = new Set(Object.keys(data));
+		const kept: (readonly [number, readonly string[]])[] = [[seq, [...seen]]];
+		for (const [at, keys] of [...(this.fields[key] ?? [])].reverse()) {
+			if (keys.some((k) => !seen.has(k))) {
+				kept.push([at, keys]);
+				for (const k of keys) seen.add(k);
+			}
+		}
+		this.fields[key] = kept.reverse();
+	}
+	private card(
+		entry: Extract<SessionEntry, { type: "custom_message" }>,
+		seq: number,
+		data: Record<string, unknown>,
+		branchActive: boolean,
+	): void {
+		if (branchActive && entry.stageAdmissionKey) this.admissions.add(entry.stageAdmissionKey);
+		const reconciled = text(data.protectedReconciliationOf);
+		if (branchActive && reconciled) this.settle(`protected:${reconciled}`);
+		if (branchActive && entry.protectedReconciliation) this.keepPending(`protected:${entry.id}`, seq);
+		if (entry.stageAdmissionKey && this.intents.has(entry.stageAdmissionKey))
+			this.keepPending(`notice:${entry.stageAdmissionKey}`, seq);
+		if (branchActive && entry.customType === "blueprint-context") this.keepLatest("blueprint-context", seq);
+		if (entry.customType === "subagent-slash-result")
+			this.keepLatest(`slash:${text(data.requestId) ?? entry.id}`, seq);
+		if (branchActive && entry.customType === "intercom_message") {
+			const message = record(data.message);
+			const id = text(message.id);
+			if (id) {
+				this.delivered.add(id);
+				this.settle(`inbox:${id}`);
+				if (message.expectsReply === true && data.historyOnly !== true) this.keepPending(`inbound:${id}`, seq);
+			}
+			if (message.expectsReply !== true && typeof message.replyTo === "string")
+				this.keepPending(`reply:${message.replyTo}`, seq);
+		}
+	}
+	apply(entry: SessionEntry, seq: number, branchActive: boolean): void {
+		const data = record(
+			entry.type === "custom" ? entry.data : entry.type === "custom_message" ? entry.details : undefined,
+		);
+		if (branchActive && entry.type === "message" && entry.message?.role === "toolResult")
+			this.settle(`wait:${entry.message.toolCallId}`);
+		this.completion(entry, seq, data);
+		if (entry.type === "label") this.keepLatest(`label:${entry.targetId}`, seq);
+		if (entry.type === "custom") this.custom(entry, seq, data, branchActive);
+		if (entry.type === "custom_message") this.card(entry, seq, data, branchActive);
+	}
+	serialize(): ResumeProtocolIndex {
+		return {
+			latest: this.latest,
+			fields: this.fields,
+			admissions: [...this.admissions],
+			delivered: [...this.delivered],
+			settled: [...this.settled],
+			pending: this.pending,
+			parks: this.parks,
+			intents: [...this.intents],
+		};
+	}
+}
+
 export function foldSessionResume(
 	previous: SessionResumeIndex | undefined,
 	entries: readonly SessionEntry[],
@@ -202,16 +417,9 @@ export function foldSessionResume(
 		}
 		activeSeq = (seq) => active.has(seq);
 	}
-	const latest: Record<string, readonly number[]> = { ...previous?.latest };
-	const fields: Record<string, readonly (readonly [number, readonly string[]])[]> = { ...previous?.fields };
+	const protocols = new ResumeProtocols(previous);
 	const models = [...(previous?.models ?? [])];
 	const assistants = [...(previous?.assistants ?? [])];
-	const admissions = new Set(previous?.admissions ?? []);
-	const delivered = new Set(previous?.delivered ?? []);
-	const pending: Record<string, number> = { ...previous?.pending };
-	const parks: Record<string, { seq: number; remaining: readonly string[]; notified: readonly number[] }> = {
-		...previous?.parks,
-	};
 	let seq = previous?.seq ?? 0;
 	let lastId = previous?.lastId ?? null;
 	let leafSeq = previous?.leafSeq ?? 0;
@@ -219,7 +427,6 @@ export function foldSessionResume(
 	const compactions = [...(previous?.compactions ?? [])];
 	let nameSeq = previous?.nameSeq;
 	let summarySeq = previous?.summarySeq;
-	const intents = new Map(previous?.intents ?? []);
 	const universal = [...(previous?.universal ?? [])];
 	let state = previous?.state ?? "";
 	let lastStateSeq = previous?.lastStateSeq ?? 0;
@@ -229,16 +436,7 @@ export function foldSessionResume(
 	const own = new Map<string, number>(lastId === null ? [] : [[lastId, seq]]);
 	const resolve = (id: string | null | undefined): number =>
 		typeof id === "string" ? (own.get(id) ?? seqOf(id) ?? -1) : -1;
-	const keepLatest = (key: string, at: number) => {
-		latest[key] = [at];
-	};
-	const settle = (key: string) => {
-		delete pending[key];
-	};
 	for (const entry of entries) {
-		const data = record(
-			entry.type === "custom" ? entry.data : entry.type === "custom_message" ? entry.details : undefined,
-		);
 		const parentSeq = entry.parentId === null ? 0 : resolve(entry.parentId);
 		seq++;
 		if (parentSeq !== seq - 1) {
@@ -260,21 +458,6 @@ export function foldSessionResume(
 		else if (entry.type === "session_summary") summarySeq = seq;
 		else if (entry.type === "branch_summary") summarySeq = undefined;
 		const branchActive = activeSeq?.(seq) ?? true;
-		if (branchActive && entry.type === "message" && entry.message?.role === "toolResult")
-			settle(`wait:${entry.message.toolCallId}`);
-		const completionId = completionIdOf(entry);
-		if (completionId !== undefined && entry.type === "custom") {
-			if (entry.customType === TASK_COMPLETION_INTENT_TYPE) {
-				intents.set(completionId, seq);
-				const task = `${text(data.ownerId) ?? ""}/${text(data.taskId) ?? ""}`;
-				for (const [key, park] of Object.entries(parks))
-					if (park.remaining.includes(task)) {
-						const remaining = park.remaining.filter((id) => id !== task);
-						if (remaining.length === 0) delete parks[key];
-						else parks[key] = { ...park, remaining, notified: [...park.notified, seq] };
-					}
-			} else if (entry.customType === TASK_COMPLETION_ACK_TYPE) intents.delete(completionId);
-		}
 		if (entry.type === "model_change") models.push([seq, `${entry.provider}/${entry.modelId}`]);
 		if (entry.type === "message" && entry.message?.role === "assistant") {
 			const key = `${entry.message.provider}/${entry.message.model}`;
@@ -282,109 +465,11 @@ export function foldSessionResume(
 			const effective = models.findLast(([at]) => onBranch(ranges, at));
 			if (effective?.[1] !== key) {
 				models.push([seq, key]);
-				keepLatest(`model-transition:${seq}`, seq);
+				protocols.keepLatest(`model-transition:${seq}`, seq);
 			}
 			if (branchActive) assistants.splice(0, assistants.length, seq);
 		}
-		if (entry.type === "label") keepLatest(`label:${entry.targetId}`, seq);
-		if (entry.type === "custom") {
-			const kind = entry.customType;
-			if (branchActive && ["intercom_inbox", "intercom_received"].includes(kind)) {
-				const message = record(data.message);
-				if (message.expectsReply !== true && typeof message.replyTo === "string")
-					pending[`reply:${message.replyTo}`] = seq;
-			}
-			if (kind === "intercom_session_identity" && !latest[`identity-first:${text(data.sessionId) ?? ""}`])
-				keepLatest(`identity-first:${text(data.sessionId) ?? ""}`, seq);
-			if (
-				[
-					"intercom_session_identity",
-					"intercom_session_memberships",
-					"workspace_binding",
-					"subagent-slash-final-snapshot",
-					"resume_timings",
-					"web-search-results",
-				].includes(kind)
-			)
-				keepLatest(`${kind}:${text(data.sessionId) ?? text(data.id) ?? ""}`, seq);
-			if (
-				kind === "subagent-child" &&
-				data.version === 1 &&
-				typeof data.childId === "string" &&
-				typeof data.runId === "string" &&
-				typeof data.index === "number" &&
-				typeof data.agent === "string" &&
-				typeof data.cwd === "string" &&
-				(data.state === "running" || data.state === "terminal")
-			) {
-				const key = `${text(record(data.owner).sessionId) ?? ""}:${data.childId}`;
-				const seen = new Set(Object.keys(data));
-				const kept: (readonly [number, readonly string[]])[] = [[seq, [...seen]]];
-				for (const [at, keys] of [...(fields[key] ?? [])].reverse()) {
-					if (keys.some((k) => !seen.has(k))) {
-						kept.push([at, keys]);
-						for (const k of keys) seen.add(k);
-					}
-				}
-				fields[key] = kept.reverse();
-			}
-			if (branchActive && kind === "intercom_inbox" && typeof record(data.message).id === "string") {
-				const id = String(record(data.message).id);
-				if (!delivered.has(id)) pending[`inbox:${id}`] = seq;
-			}
-			if (branchActive && (kind === "intercom_received" || kind === "intercom_inbox_handled")) {
-				const id = text(data.messageId) ?? text(record(data.message).id);
-				if (id) settle(`inbox:${id}`);
-			}
-			if (branchActive && kind === "intercom_ask" && typeof data.askId === "string")
-				pending[`ask:${data.askId}`] = seq;
-			if (branchActive && kind === "intercom_ask_settled" && typeof data.askId === "string") {
-				settle(`ask:${data.askId}`);
-				settle(`reply:${data.askId}`);
-			}
-			if (branchActive && kind === "intercom_sent" && typeof record(data.message).replyTo === "string")
-				settle(`inbound:${record(data.message).replyTo}`);
-			if (
-				(kind === "workflow.run.start" || kind === "workflow.stage.start" || kind === "workflow.stage.end") &&
-				typeof data.runId === "string"
-			) {
-				const key = `run:${data.runId}`;
-				latest[key] = [...(latest[key] ?? []), seq];
-			}
-			if (kind === "workflow.run.end" && typeof data.runId === "string") delete latest[`run:${data.runId}`];
-			if (branchActive && kind === "intercom_reply_wait" && typeof data.toolCallId === "string")
-				pending[`wait:${data.toolCallId}`] = seq;
-			if (kind === "workflow-stage-parked-tasks" && Array.isArray(data.tasks)) {
-				const remaining = data.tasks.map((task) => {
-					const held = record(task);
-					return `${text(held.ownerId) ?? ""}/${text(held.taskId) ?? ""}`;
-				});
-				if (remaining.length > 0) parks[entry.id] = { seq, remaining, notified: [] };
-			}
-		}
-		if (entry.type === "custom_message") {
-			if (branchActive && entry.stageAdmissionKey) admissions.add(entry.stageAdmissionKey);
-			const reconciled = text(data.protectedReconciliationOf);
-			if (branchActive && reconciled) settle(`protected:${reconciled}`);
-			if (branchActive && entry.protectedReconciliation) pending[`protected:${entry.id}`] = seq;
-			if (entry.stageAdmissionKey && intents.has(entry.stageAdmissionKey))
-				pending[`notice:${entry.stageAdmissionKey}`] = seq;
-			if (branchActive && entry.customType === "blueprint-context") keepLatest("blueprint-context", seq);
-			if (entry.customType === "subagent-slash-result") keepLatest(`slash:${text(data.requestId) ?? entry.id}`, seq);
-			if (branchActive && entry.customType === "intercom_message") {
-				const message = record(data.message);
-				const id = text(message.id);
-				if (id) {
-					delivered.add(id);
-					settle(`inbox:${id}`);
-					if (message.expectsReply === true && data.historyOnly !== true) pending[`inbound:${id}`] = seq;
-				}
-				if (message.expectsReply !== true && typeof message.replyTo === "string")
-					pending[`reply:${message.replyTo}`] = seq;
-			}
-		}
-		if (entry.type === "custom" && entry.customType === TASK_COMPLETION_ACK_TYPE && completionId)
-			settle(`notice:${completionId}`);
+		protocols.apply(entry, seq, branchActive);
 		if (!isSessionHistoryEntry(entry)) {
 			if (
 				(entry.type === "worktree_snapshot" && entry.snapshot !== undefined) ||
@@ -406,14 +491,9 @@ export function foldSessionResume(
 		version: 2,
 		...(needsBranchRebuild ? { needsBranchRebuild: true } : {}),
 		epoch: previous?.epoch ?? crypto.randomUUID(),
-		latest,
-		fields,
+		...protocols.serialize(),
 		models,
 		assistants,
-		admissions: [...admissions],
-		delivered: [...delivered],
-		pending,
-		parks,
 		seq,
 		lastId,
 		leafSeq,
@@ -421,7 +501,6 @@ export function foldSessionResume(
 		compactions,
 		...(nameSeq !== undefined ? { nameSeq } : {}),
 		...(summarySeq !== undefined ? { summarySeq } : {}),
-		intents: [...intents],
 		state,
 		universal,
 		lastStateSeq,

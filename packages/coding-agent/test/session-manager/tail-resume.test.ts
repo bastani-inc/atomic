@@ -82,7 +82,7 @@ async function compactedSession(store: SessionStore, history = 4): Promise<{ id:
 	const firstPreTail = await manager.appendMessage({ role: "user", content: "first", timestamp: 1 });
 	await manager.appendLabelChange(firstPreTail, "start");
 	await manager.appendSessionInfo("named");
-	await manager.appendCustomEntry("workspace_binding", { step: 1 });
+	await manager.appendCustomEntry("workspace_binding", { kind: "bound-workspace", worktree: "/p" });
 	await manager.appendCustomEntry("task-completion-intent", { completionId: "settled" });
 	await manager.appendCustomEntry("task-completion-ack", { completionId: "settled" });
 	await manager.appendCustomEntry("task-completion-intent", { completionId: "open" });

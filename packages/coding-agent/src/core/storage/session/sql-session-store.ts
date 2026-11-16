@@ -1051,6 +1051,12 @@ export class SqlSessionStore implements SessionStore {
 				"agent",
 				"cwd",
 				"state",
+				"intercomSessionId",
+				"homeGroup",
+				"kind",
+				"worktree",
+				"type",
+				"timestamp",
 				"completionId",
 				"sessionId",
 				"askId",
@@ -1066,7 +1072,15 @@ export class SqlSessionStore implements SessionStore {
 				"taskId",
 			];
 			const dataExpr = this.dialect.jsonObject([
-				...dataKeys.map((key) => [key, j("data", key)] as const),
+				...dataKeys.map(
+					(key) =>
+						[
+							key,
+							["version", "index", "timestamp"].includes(key)
+								? `CASE WHEN ${this.dialect.jsonType("entry_json", "data", key)} IN ('integer','real') THEN CAST(${j("data", key)} AS ${this.dialect.types.real}) END`
+								: j("data", key),
+						] as const,
+				),
 				[
 					"message",
 					this.dialect.jsonObject(
@@ -1075,6 +1089,14 @@ export class SqlSessionStore implements SessionStore {
 				],
 				["owner", j("data", "owner")],
 				["tasks", j("data", "tasks")],
+				["groups", j("data", "groups")],
+				...["queries", "urls"].map(
+					(key) =>
+						[
+							key,
+							`CASE WHEN ${this.dialect.jsonHasType("array", "entry_json", "data", key)} THEN '[]' ELSE NULL END`,
+						] as const,
+				),
 			]);
 			const detailsExpr = this.dialect.jsonObject([
 				...dataKeys.map((key) => [key, j("details", key)] as const),
@@ -1090,7 +1112,7 @@ export class SqlSessionStore implements SessionStore {
 					? `(SELECT COALESCE(json_group_array(key),'[]') FROM json_each(entry_json,'$.data'))`
 					: `(SELECT COALESCE(json_agg(key)::text,'[]') FROM jsonb_object_keys(CASE WHEN jsonb_typeof(entry_json::jsonb->'data')='object' THEN entry_json::jsonb->'data' ELSE '{}'::jsonb END) AS key)`;
 			const columns = [
-				["dataFields", `CASE WHEN ${j("customType")} = 'subagent-child' THEN ${dataFieldNames} ELSE '[]' END`],
+				["dataFields", `CASE WHEN ${j("type")} = 'custom' THEN ${dataFieldNames} ELSE '[]' END`],
 				...projected,
 				["message", this.dialect.jsonObject(messageKeys.map((key) => [key, j("message", key)] as const))],
 				["data", dataExpr],
@@ -1108,7 +1130,7 @@ export class SqlSessionStore implements SessionStore {
 				],
 			];
 			const select = columns
-				.map(([key, expr]) => `${expr} AS ${this.dialect.identifier(`resume_${key}`)}`)
+				.map(([key, expr]) => `${expr} AS ${this.dialect.identifier(`resume_${key.toLowerCase()}`)}`)
 				.join(", ");
 			let topology: readonly (readonly [number, number])[] | undefined;
 			for (let pass = 0; pass < 2; pass++) {
@@ -1138,7 +1160,20 @@ export class SqlSessionStore implements SessionStore {
 							typeof value === "string" && (value.startsWith("{") || value.startsWith("["))
 								? JSON.parse(value)
 								: value;
-						for (const [key] of columns) parsed[key] = decode(projected[`resume_${key}`]);
+						for (const [key] of columns) {
+							const value = projected[`resume_${key.toLowerCase()}`];
+							parsed[key] = [
+								"dataFields",
+								"message",
+								"data",
+								"details",
+								"usage",
+								"snapshot",
+								"protectedReconciliation",
+							].includes(key)
+								? decode(value)
+								: value;
+						}
 						const message = parsed.message as Record<string, unknown>;
 						if (message && typeof message === "object") {
 							message.usage = decode(message.usage as SqliteValue);
@@ -1148,7 +1183,7 @@ export class SqlSessionStore implements SessionStore {
 						}
 						if (parsed.snapshot === null) delete parsed.snapshot;
 						if (parsed.type === "compaction") parsed.details = { strategy: parsed.compactionDetails };
-						if (parsed.type === "custom" && parsed.customType === "subagent-child") {
+						if (parsed.type === "custom") {
 							const data = parsed.data as Record<string, unknown>;
 							const keys = (parsed.dataFields as string[]) ?? [];
 							for (const key of Object.keys(data)) if (!keys.includes(key)) delete data[key];
@@ -1160,13 +1195,22 @@ export class SqlSessionStore implements SessionStore {
 								data.message = decode(data.message as SqliteValue);
 								data.owner = decode(data.owner as SqliteValue);
 								data.tasks = decode(data.tasks as SqliteValue);
+								for (const field of ["groups", "queries", "urls"])
+									if (field in data) data[field] = decode(data[field] as SqliteValue);
+								if (
+									data.timestamp !== null &&
+									data.timestamp !== undefined &&
+									typeof data.timestamp === "string"
+								)
+									data.timestamp = Number(data.timestamp);
 								if (parsed.type === "custom" && parsed.customType === "subagent-child") {
 									if (data.version !== null && data.version !== undefined) data.version = Number(data.version);
 									if (data.index !== null && data.index !== undefined) data.index = Number(data.index);
 								}
 								const message = data.message as Record<string, unknown>;
-								if (message?.expectsReply === 1) message.expectsReply = true;
-								if (data.historyOnly === 1) data.historyOnly = true;
+								if (message?.expectsReply === 1 || message?.expectsReply === "true")
+									message.expectsReply = true;
+								if (data.historyOnly === 1 || data.historyOnly === "true") data.historyOnly = true;
 							}
 						}
 						batch.push(parsed as unknown as SessionEntry);

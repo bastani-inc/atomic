@@ -47,7 +47,7 @@ function compactedEntries(history: number): SessionEntry[] {
 				? ({
 						type: "custom",
 						customType: "workspace_binding",
-						data: { kept: true },
+						data: { kind: "bound-workspace", worktree: "/p" },
 						id: `e${index}`,
 						parentId: `e${index - 1}`,
 						timestamp: new Date(Date.parse(createdAt) + index).toISOString(),
