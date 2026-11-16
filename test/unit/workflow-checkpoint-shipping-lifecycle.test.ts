@@ -5,7 +5,12 @@ import { basename, dirname, join } from "node:path";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
-import { type PoolWork, SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import {
+	type PoolControl,
+	type PoolWork,
+	SqlPoolQueue,
+} from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import type { CheckpointShipping } from "../../packages/workflows/src/workers/checkpoint-shipping.js";
 import { poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
 import { ShipShard, shipShardPath } from "../../packages/workflows/src/workers/ship-shard.js";
@@ -35,7 +40,6 @@ afterEach(() => {
 });
 
 const SHIPPING = { intervalMs: 2_000, maxBatch: 64, maxLagMs: 30_000 } as const;
-const HEARTBEAT = SqlPoolQueue.prototype.heartbeat;
 const LEASE = { id: "work-1", generation: 1, worker: "host/1", epoch: 1 } as const;
 
 function filesUnder(directory: string): string[] {
@@ -103,12 +107,17 @@ test("a local checkpoint journal is kept when it still holds a checkpoint, anoth
 	}
 });
 
-async function prepareRoot(directory: string, stateDirectory: string) {
+async function prepareRoot(
+	directory: string,
+	stateDirectory: string,
+	settings: { readonly control?: PoolControl["state"]; readonly leaseMs?: number } = {},
+) {
 	const journal = await resolveRunJournal({ journal: { path: join(directory, "shared.sqlite") } });
 	const host = openCoordinator();
 	await journal.createRun({ runId: "root", name: "root", cwd: directory, createdAt: 0, status: "running" });
 	const acquired = await journal.acquire("root", "holder");
 	if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
+	const leaseMs = settings.leaseMs ?? 30_000;
 	await host.command({
 		kind: "prepare",
 		root: "root",
@@ -117,11 +126,12 @@ async function prepareRoot(directory: string, stateDirectory: string) {
 			durable: poolDurableJournal(journal),
 			shared: { stateDirectory, host: "host-a", claimWindowMs: 60_000, checkpointShipping: SHIPPING },
 			workers: 1,
-			leaseMs: 30_000,
-			heartbeatMs: 10_000,
+			leaseMs,
+			heartbeatMs: Math.min(10_000, leaseMs / 4),
 			startupTimeoutMs: 30_000,
 			workerEntry: "fake-worker",
 		},
+		...(settings.control === undefined ? {} : { control: settings.control }),
 	});
 	return { journal, host, lease: acquired.lease };
 }
@@ -139,6 +149,26 @@ test("a root pool that closes after its run ends removes its local checkpoint jo
 		await host.coordinator.shutdown();
 		await journal.close();
 		removeTempDirectory(directory);
+	}
+});
+
+test("a root pool that closes paused or quitting keeps its local checkpoint journal for the run's resume (#4768)", async () => {
+	for (const control of ["paused", "quit"] as const) {
+		const directory = makeTempDirectory("shipping-root-keep-");
+		const stateDirectory = join(directory, "state");
+		mkdirSync(stateDirectory);
+		const { journal, host } = await prepareRoot(directory, stateDirectory, { control });
+		try {
+			const journals = () =>
+				shardFilesUnder(join(stateDirectory, "ship")).filter((file) => file.endsWith(".sqlite"));
+			assert.equal(journals().length, 1);
+			await host.command({ kind: "close" });
+			assert.equal(journals().length, 1, `a ${control} root keeps it`);
+		} finally {
+			await host.coordinator.shutdown();
+			await journal.close();
+			removeTempDirectory(directory);
+		}
 	}
 });
 
@@ -187,19 +217,47 @@ test("a worker host removes its local checkpoint journal only when its root's ru
 	}
 });
 
-async function exitWithHeartbeatInFlight(heartbeatInFlight: boolean): Promise<number> {
-	const directory = makeTempDirectory("shipping-exit-heartbeat-");
+/** What a worker has waiting on the journal when it exits: the request whose late hold must not count. */
+type InFlight = "nothing" | "heartbeat" | "claim" | "overdue renewal" | "refused renewal";
+
+/** A work lease short enough that a request soon finds its attempt overdue and renews it on the way. */
+const OVERDUE_LEASE_MS = 2_000;
+
+/**
+ * How many times a root pool reports its local journal failing for work, when every local write fails and its worker
+ * exits while `inFlight` waits on the journal.
+ */
+async function reportsAfterExit(inFlight: InFlight): Promise<number> {
+	const directory = makeTempDirectory("shipping-exit-in-flight-");
 	const stateDirectory = join(directory, "state");
 	mkdirSync(stateDirectory);
-	const { journal, host } = await prepareRoot(directory, stateDirectory);
-	let releaseHeartbeat!: () => void;
-	const heartbeatGate = new Promise<void>((resolve) => {
-		releaseHeartbeat = resolve;
+	const { journal, host } = await prepareRoot(directory, stateDirectory, {
+		leaseMs: inFlight === "overdue renewal" ? OVERDUE_LEASE_MS : 30_000,
 	});
-	let heartbeatWritten!: () => void;
+	let releaseRequest!: () => void;
+	const requestGate = new Promise<void>((resolve) => {
+		releaseRequest = resolve;
+	});
+	let requestWritten!: () => void;
 	const written = new Promise<void>((resolve) => {
-		heartbeatWritten = resolve;
+		requestWritten = resolve;
 	});
+	/** Lets `method`'s next call write to the journal, then holds its answer until the worker exited. */
+	const holdAnswer = (method: "claim" | "heartbeat" | "extend") => {
+		const original = SqlPoolQueue.prototype[method] as (...args: unknown[]) => Promise<unknown>;
+		let held = false;
+		vi.spyOn(SqlPoolQueue.prototype, method).mockImplementation(async function (
+			this: SqlPoolQueue,
+			...args: unknown[]
+		) {
+			const result = await original.apply(this, args);
+			if (held) return result;
+			held = true;
+			requestWritten();
+			await requestGate;
+			return result;
+		} as never);
+	};
 	try {
 		const shipping = (host.coordinator as unknown as { shipping: CheckpointShipping }).shipping;
 		const database = (shipping as unknown as { shard: { database: SqliteDatabase } }).shard.database;
@@ -225,31 +283,45 @@ async function exitWithHeartbeatInFlight(heartbeatInFlight: boolean): Promise<nu
 			boundary,
 		});
 		diskFull = true;
-		const claim = await worker.request({ kind: "claim" });
-		assert.equal(claim.error, undefined);
-		assert.ok(claim.value as PoolWork);
-		vi.spyOn(SqlPoolQueue.prototype, "heartbeat").mockImplementation(async function (
-			this: SqlPoolQueue,
-			...args: Parameters<SqlPoolQueue["heartbeat"]>
-		) {
-			const result = await HEARTBEAT.apply(this, args);
-			heartbeatWritten();
-			await heartbeatGate;
-			return result;
-		});
-		if (heartbeatInFlight) {
-			worker.ask({ kind: "heartbeat", reports: [] });
-			await written;
+		if (inFlight === "claim") {
+			holdAnswer("claim");
+			worker.ask({ kind: "claim" });
+		} else {
+			const claim = await worker.request({ kind: "claim" });
+			assert.equal(claim.error, undefined);
+			assert.ok(claim.value as PoolWork);
+			if (inFlight === "heartbeat") {
+				holdAnswer("heartbeat");
+				worker.ask({ kind: "heartbeat", reports: [] });
+			} else if (inFlight === "overdue renewal") {
+				await sleep(OVERDUE_LEASE_MS / 2 + 200);
+				holdAnswer("extend");
+				worker.ask({ kind: "activity", runs: [] });
+			} else if (inFlight === "refused renewal") {
+				const claimed = claim.value as PoolWork;
+				vi.spyOn(SqlPoolQueue.prototype, "heartbeat").mockRejectedValueOnce(
+					new StaleWorkLeaseError({
+						root: "root",
+						workId: claimed.id,
+						generation: claimed.generation,
+						reason: "expired",
+					}),
+				);
+				holdAnswer("extend");
+				worker.ask({ kind: "heartbeat", reports: [] });
+			} else requestWritten();
 		}
+		await written;
 		worker.exit(1);
 		await sleep(500);
-		releaseHeartbeat();
+		releaseRequest();
 		await sleep(500);
 		return host.events.filter(
 			(event) => event.kind === "health" && /local journal failed for work/.test(event.message),
 		).length;
 	} finally {
-		releaseHeartbeat();
+		releaseRequest();
+		vi.restoreAllMocks();
 		await host.command({ kind: "close" }).catch(() => {});
 		await host.coordinator.shutdown();
 		await journal.close();
@@ -258,6 +330,22 @@ async function exitWithHeartbeatInFlight(heartbeatInFlight: boolean): Promise<nu
 }
 
 test("a worker that exits with its heartbeat in flight reports its attempt's local journal failure once (#4768)", async () => {
-	assert.equal(await exitWithHeartbeatInFlight(false), 1);
-	assert.equal(await exitWithHeartbeatInFlight(true), 1);
+	assert.equal(await reportsAfterExit("nothing"), 1);
+	assert.equal(await reportsAfterExit("heartbeat"), 1);
+}, 60_000);
+
+test("a worker that exits with its claim in flight never holds the claimed attempt locally (#4768)", async () => {
+	assert.equal(
+		await reportsAfterExit("claim"),
+		0,
+		"no local journal is reported failing for an attempt that never ran",
+	);
+}, 60_000);
+
+test("a worker that exits while a request renews its overdue attempt reports its local journal failure once (#4768)", async () => {
+	assert.equal(await reportsAfterExit("overdue renewal"), 1);
+}, 60_000);
+
+test("a worker that exits while it renews an attempt the journal refused reports its local journal failure once (#4768)", async () => {
+	assert.equal(await reportsAfterExit("refused renewal"), 1);
 }, 60_000);
