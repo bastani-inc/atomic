@@ -27,6 +27,8 @@ const race = vi.hoisted(() => ({
 	procListings: 0,
 	/** A user id reported for the lock instead of its own, as for a lock another user left. */
 	foreignUid: undefined as number | undefined,
+	/** Runs once just after this process creates the lock's file, before it has written anything into it. */
+	afterCreating: undefined as (() => void) | undefined,
 }));
 
 function once(take: () => (() => void) | undefined, clear: () => void): void {
@@ -73,6 +75,15 @@ vi.mock("fs", async (importOriginal) => {
 		}
 		actual.linkSync(existing, path);
 	}) as typeof actual.linkSync;
+	const openSync = ((path: import("fs").PathLike, flags?: import("fs").OpenMode, mode?: import("fs").Mode | null) => {
+		const fd = (actual.openSync as (...args: unknown[]) => number)(path, flags, mode);
+		if (flags === "wx" && race.lockPath !== undefined && String(path) === race.lockPath) {
+			const hook = race.afterCreating;
+			race.afterCreating = undefined;
+			hook?.();
+		}
+		return fd;
+	}) as typeof actual.openSync;
 	const readdirSync = ((path: import("fs").PathLike, options?: unknown) => {
 		if (String(path) === "/proc" || String(path).startsWith("/proc/")) race.procListings++;
 		return (actual.readdirSync as (path: import("fs").PathLike, options?: unknown) => unknown)(path, options);
@@ -84,7 +95,8 @@ vi.mock("fs", async (importOriginal) => {
 	}) as typeof actual.statSync;
 	return {
 		...actual,
-		default: { ...actual, renameSync, linkSync, readdirSync, statSync },
+		default: { ...actual, renameSync, linkSync, readdirSync, statSync, openSync },
+		openSync,
 		renameSync,
 		linkSync,
 		readdirSync,
@@ -102,11 +114,29 @@ const { statSync: realStat } = await vi.importActual<typeof import("node:fs")>("
 const ownHost = () => (staleLockFile.hostIdentity as (() => string) | undefined)?.() ?? "unknown-host";
 
 /**
- * The intent marker a writer creates before the first byte of a lock it cannot link into place whole: its name holds the
- * lock's file identity and the writer's pid, start and host (#5220).
+ * The marker a writer creates, before the file, for a lock it cannot link into place whole: its name holds the writer's
+ * pid, start and host and a nonce of its own, and, once the file exists, the file's identity (#5220).
  */
-function writingMarker(path: string, pid: number, host = ownHost()): string {
-	const marker = `${path}.writing.${realStat(path, { bigint: true }).ino}.${pid}.x.${host}`;
+function writingMarker(path: string, pid: number, host = ownHost(), file = fileIdentity(path)): string {
+	const nonce = Math.random().toString(16).slice(2, 10).padEnd(8, "0");
+	const marker = `${path}.writing.${pid}.x.${host}.${nonce}${file === undefined ? "" : `.${file}`}`;
+	writeTextSync(marker, "");
+	return marker;
+}
+
+/** The identity a writing marker binds to: the file's inode and when it was created. */
+function fileIdentity(path: string): string | undefined {
+	try {
+		const stats = realStat(path, { bigint: true });
+		return `${stats.ino}-${stats.birthtimeNs}`;
+	} catch {
+		return undefined;
+	}
+}
+
+/** The marker an earlier build of this pull request created after the file, named by the file's inode. */
+function inodeWritingMarker(path: string, pid: number): string {
+	const marker = `${path}.writing.${realStat(path, { bigint: true }).ino}.${pid}.x.${ownHost()}`;
 	writeTextSync(marker, "");
 	return marker;
 }
@@ -140,6 +170,7 @@ afterEach(() => {
 	race.linkError = undefined;
 	race.procListings = 0;
 	race.foreignUid = undefined;
+	race.afterCreating = undefined;
 	(staleLockFile.setUnknownHolderWaitForTesting as ((ms: number | undefined) => void) | undefined)?.(undefined);
 });
 
@@ -306,6 +337,49 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 		assert.ok(
 			warnings.some((warning) => warning.includes(path) && warning.includes("chown")),
 			`the refusal names the lock and the fix: ${warnings.join(" | ")}`,
+		);
+	});
+
+	test("a dead writer's marker is never taken for a live spawner's, even on a reused inode: one owner (#5220)", () => {
+		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
+		race.lockPath = path;
+		race.linkError = "EPERM";
+		let other: string | undefined;
+		race.afterCreating = () => {
+			// The file this spawner just created has the inode of a file a writer killed earlier left, whose marker stays,
+			// in the form of each build: by inode, and bound to the file's identity.
+			inodeWritingMarker(path, 2147483646);
+			writingMarker(path, 2147483646);
+			other = acquireSpawnLock(path);
+		};
+
+		const owner = acquireSpawnLock(path);
+		const owners = [owner, other].filter((held) => held !== undefined);
+		assert.equal(owners.length, 1, `exactly one spawner owns the lock: ${JSON.stringify([owner, other])}`);
+	});
+
+	test("an empty lock whose only marker names a writer killed before writing it is taken (#5220)", () => {
+		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
+		// The writer made its marker and the file, bound the marker to it, and was killed before writing anything.
+		writeTextSync(path, "");
+		writingMarker(path, 2147483646);
+
+		const owner = acquireSpawnLock(path);
+		assert.ok(owner !== undefined, "the spawner takes the abandoned lock");
+		assert.ok(readTextSync(path, "utf8").startsWith(owner));
+	});
+
+	test("an empty lock with no marker is refused with advice that names an earlier version (#5220)", () => {
+		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
+		writeTextSync(path, "");
+		shortenUnknownHolderWait();
+
+		const warnings = warningsDuring(() => {
+			for (let attempt = 0; attempt < 3; attempt++) assert.equal(acquireSpawnLock(path), undefined, "never taken");
+		});
+		assert.ok(
+			warnings.some((warning) => warning.includes(path) && warning.includes("earlier version")),
+			`the refusal names the likely cause: ${warnings.join(" | ")}`,
 		);
 	});
 });

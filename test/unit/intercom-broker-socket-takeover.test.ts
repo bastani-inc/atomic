@@ -616,8 +616,9 @@ describe("socket replacement lock (#3505)", () => {
 	test("an unreadable lock left by a broker killed while writing it is recovered (#5132, #5220)", async () => {
 		const path = lockPath();
 		writeTextSync(path, "");
-		// The marker a broker creates before writing a lock it cannot link into place whole names it: here, a dead one.
-		const marker = `${path}.writing.${statSync(path, { bigint: true }).ino}.${await deadPid()}.x.${hostIdentity()}`;
+		// The marker a broker creates for a lock it cannot link into place whole, bound to the file: here, a dead one's.
+		const file = statSync(path, { bigint: true });
+		const marker = `${path}.writing.${await deadPid()}.x.${hostIdentity()}.0badc0de.${file.ino}-${file.birthtimeNs}`;
 		writeTextSync(marker, "");
 
 		const release = await acquireSocketReplacementLock(path);

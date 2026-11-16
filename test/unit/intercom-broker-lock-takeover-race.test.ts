@@ -85,8 +85,10 @@ while (Date.now() < end && !lost) {
 	if (!own()) { lost = true; log("lost"); }
 	await new Promise((resolve) => setTimeout(resolve, 50));
 }
-lock();
+// It stops acting before it gives the lock up: logged after, another broker taking the freed lock at once would seem
+// to overlap it, as a broker of the previous version did on a loaded Windows runner.
 log("released");
+lock();
 `;
 }
 
