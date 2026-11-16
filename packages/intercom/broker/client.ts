@@ -175,6 +175,8 @@ export interface SendOptions {
   delivery?: IntercomDeliveryMode;
   replyError?: string;
   messageId?: string;
+  /** The id every copy of one pattern send shares (`Message.broadcastId`). */
+  broadcastId?: string;
   /** Internal caller-issued target identity; transport still uses the `to` argument. */
   logicalTarget?: string;
   /** Public reply must use the broker's exact pending reverse question route. */
@@ -2189,6 +2191,7 @@ export class IntercomClient extends EventEmitter {
       expectsReply: options.expectsReply,
       ...(options.delivery === undefined || options.delivery === "steer" ? {} : { delivery: options.delivery }),
       replyError: options.replyError,
+      ...(options.broadcastId === undefined ? {} : { broadcastId: options.broadcastId }),
       source: this._messageSource,
       content: { text: options.text, attachments: options.attachments },
     };
