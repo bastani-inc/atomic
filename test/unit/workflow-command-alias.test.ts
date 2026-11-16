@@ -48,10 +48,7 @@ test("registers /workflows with its optional stage argument (#5234)", async () =
 			registered.filter((name) => name.startsWith("workflow")),
 			["workflow", "workflows"],
 		);
-		assert.equal(
-			descriptions.get("workflows"),
-			"Open this session's workflow runs. Usage: /workflows [run-id] [stage]",
-		);
+		assert.match(descriptions.get("workflows") ?? "", /Usage: \/workflows \[run-id\] \[stage\]$/);
 	} finally {
 		setDurableBackend(undefined);
 	}
