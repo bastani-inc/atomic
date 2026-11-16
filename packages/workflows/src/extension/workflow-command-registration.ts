@@ -32,6 +32,7 @@ import {
 	tokenizeWorkflowArgs,
 	type WorkflowCommandHandler,
 	type WorkflowCommandOutputDetails,
+	type WorkflowCommandReporter,
 } from "./workflow-command-utils.js";
 import { handleWorkflowsCommand } from "./workflow-open-run.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
@@ -97,12 +98,47 @@ export function registerWorkflowSlashCommand(
 					overlay: deps.runControl.overlay,
 					store: owner.store,
 					definitions: () => deps.runtimeProxy.registry.all(),
-					startDefinition: (name) => workflowSlashHandler(name, ctx, pi, deps),
+					startDefinition: (name) => runWorkflowCommandTarget(name, [], ctx, pi, deps),
 				});
 			},
 		},
 		workflowCommands,
 	);
+}
+
+async function ensureWorkflowResourcesVisible(ctx: PiCommandContext, deps: WorkflowSlashCommandDeps): Promise<void> {
+	try {
+		await deps.ensureWorkflowResourcesLoaded();
+	} catch (error) {
+		ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
+	}
+}
+
+async function showWorkflowInputs(
+	workflowName: string,
+	ctx: PiCommandContext,
+	pi: ExtensionAPI,
+	deps: WorkflowSlashCommandDeps,
+	policy: WorkflowExecutionPolicy,
+	reporter: WorkflowCommandReporter,
+	command: WorkflowCommandOutputDetails["command"] = "inputs",
+): Promise<void> {
+	await ensureWorkflowResourcesVisible(ctx, deps);
+	const result = await deps
+		.runtimeForContext(ctx)
+		.dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
+	if (result.action !== "inputs" || !("inputs" in result)) return;
+	const inputResult = result as Extract<WorkflowToolResult, { action: "inputs" }>;
+	if (inputResult.error) {
+		reporter.error(
+			`${inputResult.error}\nAvailable: ${formatAvailableWorkflowNames(deps.runtimeProxy.registry.names())}`,
+		);
+		return;
+	}
+	const schemaText = renderInputsSchema(workflowName, inputResult.inputs, { theme: deriveGraphTheme({}) });
+	if (ctx.hasUI === false || policy.mode === "non_interactive")
+		emitWorkflowCommandOutput(pi, schemaText, { command, workflowName });
+	else reporter.info(schemaText);
 }
 
 async function workflowSlashHandler(
@@ -119,32 +155,6 @@ async function workflowSlashHandler(
 	const fail = (msg: string): void => reporter.error(msg);
 	const withImplicitYesFlag = (tokens: string[]): string[] =>
 		tokens.some((t) => t === "--yes" || t === "-y") ? tokens : [...tokens, "-y"];
-	const ensureWorkflowResourcesVisible = async (): Promise<void> => {
-		try {
-			await deps.ensureWorkflowResourcesLoaded();
-		} catch (error) {
-			ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
-		}
-	};
-	const showWorkflowInputs = async (
-		workflowName: string,
-		command: WorkflowCommandOutputDetails["command"] = "inputs",
-	): Promise<void> => {
-		await ensureWorkflowResourcesVisible();
-		const result = await deps
-			.runtimeForContext(ctx)
-			.dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
-		if (result.action !== "inputs" || !("inputs" in result)) return;
-		const inputResult = result as Extract<WorkflowToolResult, { action: "inputs" }>;
-		if (inputResult.error) {
-			fail(`${inputResult.error}\nAvailable: ${formatAvailableWorkflowNames(deps.runtimeProxy.registry.names())}`);
-			return;
-		}
-		const schemaText = renderInputsSchema(workflowName, inputResult.inputs, { theme: deriveGraphTheme({}) });
-		if (ctx.hasUI === false || policy.mode === "non_interactive")
-			emitWorkflowCommandOutput(pi, schemaText, { command, workflowName });
-		else print(schemaText);
-	};
 
 	const parts = tokenizeWorkflowArgs(args);
 	const subcommand = parts[0] ?? "";
@@ -159,7 +169,7 @@ async function workflowSlashHandler(
 		return;
 	}
 	if (!subcommand || subcommand === "list") {
-		await ensureWorkflowResourcesVisible();
+		await ensureWorkflowResourcesVisible(ctx, deps);
 		const items = deps.runtimeProxy.registry.all().map((def) => ({
 			name: def.normalizedName,
 			description: def.description,
@@ -222,7 +232,7 @@ async function workflowSlashHandler(
 	if (subcommand === "fork") {
 		const parsed = parseWorkflowForkArgs(parts.slice(1));
 		if (parsed instanceof ForkConfigError) return fail(parsed.message);
-		await ensureWorkflowResourcesVisible();
+		await ensureWorkflowResourcesVisible(ctx, deps);
 		const result = await workflowForkAction(
 			{ runId: parsed.runId, fromStage: parsed.fromStage },
 			{
@@ -239,14 +249,26 @@ async function workflowSlashHandler(
 	if (subcommand === "inputs") {
 		const workflowName = parts[1] ?? "";
 		if (!workflowName) return fail("Usage: /workflow inputs <name>");
-		await showWorkflowInputs(workflowName);
+		await showWorkflowInputs(workflowName, ctx, pi, deps, policy, reporter);
 		return;
 	}
 
-	const workflowName = subcommand;
-	const inputTokens = parts.slice(1);
+	await runWorkflowCommandTarget(subcommand, parts.slice(1), ctx, pi, deps);
+}
+
+async function runWorkflowCommandTarget(
+	workflowName: string,
+	inputTokens: string[],
+	ctx: PiCommandContext,
+	pi: ExtensionAPI,
+	deps: WorkflowSlashCommandDeps,
+): Promise<void> {
+	const owner = deps.owner ?? captureWorkflowOwnerResources();
+	const policy = workflowPolicyFromContext(ctx);
+	const reporter = createWorkflowCommandReporter(ctx, policy, pi);
+	const fail = (msg: string): void => reporter.error(msg);
 	if (inputTokens.includes("--help")) {
-		await showWorkflowInputs(workflowName, "help");
+		await showWorkflowInputs(workflowName, ctx, pi, deps, policy, reporter, "help");
 		return;
 	}
 	const inputs = parseWorkflowArgs(inputTokens);
@@ -260,7 +282,7 @@ async function workflowSlashHandler(
 			typeof ctx.ui?.setEditorComponent === "function" ||
 			typeof ctx.ui?.custom === "function");
 	if (canOpenPicker) {
-		await ensureWorkflowResourcesVisible();
+		await ensureWorkflowResourcesVisible(ctx, deps);
 		const schemaResult = await deps
 			.runtimeForContext(ctx)
 			.dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
@@ -303,7 +325,7 @@ async function workflowSlashHandler(
 		}
 	}
 
-	await ensureWorkflowResourcesVisible();
+	await ensureWorkflowResourcesVisible(ctx, deps);
 	const result = await deps.runWithLifecycleSuppressedForPolicy(policy, () =>
 		deps
 			.runtimeForContext(ctx)

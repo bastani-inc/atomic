@@ -3,8 +3,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
+import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { registerWorkflowSlashCommand } from "../../packages/workflows/src/extension/workflow-command-registration.js";
 import { handleWorkflowsCommand, openWorkflowRun } from "../../packages/workflows/src/extension/workflow-open-run.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { workflow } from "../../packages/workflows/src/sdk-surface.js";
+import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import * as h from "./overlay-graph-helpers.js";
 
 const { makeStage, makeRun, makeStore } = h;
@@ -183,5 +192,96 @@ it("does not start a zero-input definition when the painted runs disappear (#524
 		assert.deepEqual(started, ["deploy"]);
 	} finally {
 		component.dispose?.();
+	}
+});
+
+it("starts a definition named status from the /workflows sheet instead of running /workflow status (#5245)", async () => {
+	const t = harness();
+	const store = createStore();
+	const backend = await createMemoryTestBackend();
+	bindStoreDurableBackend(store, backend);
+	const owner = {
+		store,
+		jobs: createJobTracker(),
+		stageControlRegistry: createStageControlRegistry(),
+		toolControlRegistry: createToolControlRegistry(),
+		stageUiBroker: new StageUiBroker(store),
+	};
+	let ran = 0;
+	const statusDefinition = workflow({
+		name: "status",
+		description: "Check service health",
+		inputs: {},
+		outputs: {},
+		async run() {
+			ran++;
+			return {};
+		},
+	});
+	const runtime = createExtensionRuntime({ ...owner, definitions: [statusDefinition] });
+	const dispatches = [];
+	const originalDispatch = runtime.dispatch.bind(runtime);
+	runtime.dispatch = (args, opts) => {
+		dispatches.push(args);
+		return originalDispatch(args, opts);
+	};
+	const surfaces = [];
+	const handlers = new Map();
+	const graphOverlay = { open: t.overlay.open, toggle() {}, close() {} };
+	const pi = {
+		registerCommand() {},
+		sendMessage(msg) {
+			if (msg?.details) surfaces.push(msg.details);
+		},
+	};
+	registerWorkflowSlashCommand(pi, handlers, {
+		runtimeProxy: runtime,
+		runtimeForContext: () => runtime,
+		overlay: graphOverlay,
+		owner,
+		reloadWorkflowResources: () => undefined,
+		ensureWorkflowResourcesLoaded: () => undefined,
+		runWithLifecycleSuppressedForPolicy: (_policy, action) => action(),
+		runControl: {
+			pi,
+			overlay: graphOverlay,
+			runtimeForContext: () => runtime,
+			ensureWorkflowResourcesLoaded: () => undefined,
+			owner,
+		},
+	});
+	const ctx = {
+		...t.ctx,
+		cwd: process.cwd(),
+		ui: {
+			...t.ctx.ui,
+			notify: (m) => t.messages.info.push(m),
+		},
+	};
+	const pending = handlers.get("workflows")("", ctx);
+	await Promise.resolve();
+	assert.equal(t.pickers.length, 1);
+	const component = t.pickers[0](
+		{ requestRender() {}, terminal: { rows: 40, columns: 100 } },
+		undefined,
+		undefined,
+		() => {},
+	);
+	try {
+		assert.match(component.render(100).join("\n"), /status/);
+		component.handleInput("\r");
+		await pending;
+		await Promise.all(owner.jobs.runIds().map((id) => owner.jobs.get(id)?.promise));
+		assert.equal(
+			dispatches.some((entry) => entry.action === "run" && entry.workflow === "status"),
+			true,
+		);
+		assert.equal(surfaces.length, 1);
+		assert.equal(surfaces[0].kind, "dispatch");
+		assert.equal(surfaces[0].workflowName, "status");
+		assert.equal(ran, 1);
+	} finally {
+		component.dispose?.();
+		await backend.close?.();
 	}
 });

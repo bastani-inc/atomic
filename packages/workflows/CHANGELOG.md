@@ -108,6 +108,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed paused runs in `/workflows` counting the current pause toward elapsed time ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
 - Fixed boolean workflow inputs such as `on`, `1` and `TRUE` displaying or toggling inconsistently with their submitted value in the picker and inline form ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
 - Fixed repeated retry or fork keys in a failed stage's detail starting duplicate actions while the first action is still pending ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
+- Fixed `/workflows` dropping Enter after typing a search or moving the selection before the next frame, and confirming a row the user moved away from while runs changed. The sheet also keeps its search box visible on short terminals ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
+- Fixed whitespace-only optional numeric and select workflow inputs being submitted as zero or an invalid choice instead of left out ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
+- Fixed definitions named like `/workflow` subcommands, such as `status` or `list`, invoking the subcommand instead of starting when selected in `/workflows` ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
 
 
 ### Removed

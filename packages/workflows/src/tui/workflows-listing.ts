@@ -239,10 +239,16 @@ export function openWorkflowsListing(
 				if (settle(target)) done(undefined);
 			};
 			const items = () => workflowsListingItems(source.runs(), source.definitions());
+			const reportedRows = tui.terminal?.rows;
+			const terminalRows =
+				typeof reportedRows === "number" && Number.isFinite(reportedRows) && reportedRows > 0
+					? Math.floor(reportedRows)
+					: 24;
 			const selector = new Selector<WorkflowsListingTarget>({
 				title: "Workflows",
 				items: items(),
 				layout: "two-line",
+				maxVisible: Math.max(3, Math.floor((terminalRows - 12) / 2)),
 				search: true,
 				searchPlaceholder: "Search…",
 				emptyText: "No workflows in this session.",
@@ -252,11 +258,14 @@ export function openWorkflowsListing(
 				onCancel: () => finish(undefined),
 			});
 			let paintedSelectionId: string | undefined;
+			let refreshedSincePaint = true;
+			let movedSincePaint = false;
 			let itemsStale = false;
 			const refreshItems = (): void => {
 				if (!itemsStale) return;
 				itemsStale = false;
 				selector.setItems(items());
+				refreshedSincePaint = true;
 			};
 			release = source.subscribe?.(() => {
 				itemsStale = true;
@@ -267,6 +276,8 @@ export function openWorkflowsListing(
 					refreshItems();
 					const lines = selector.render(width);
 					paintedSelectionId = selector.getSelected()?.id;
+					refreshedSincePaint = false;
+					movedSincePaint = false;
 					return lines;
 				},
 				handleInput: (data: string) => {
@@ -275,7 +286,15 @@ export function openWorkflowsListing(
 					const confirms =
 						keys.matches(data, "tui.select.confirm") ||
 						(keys.matches(data, "app.list.open") && !selector.state.getQuery());
-					if (!confirms || selector.getSelected()?.id === paintedSelectionId) selector.handleInput(data);
+					if (!confirms) {
+						selector.handleInput(data);
+						movedSincePaint = true;
+					} else if (
+						!refreshedSincePaint ||
+						(!movedSincePaint && selector.getSelected()?.id === paintedSelectionId)
+					) {
+						selector.handleInput(data);
+					}
 					tui.requestRender?.();
 					return true;
 				},

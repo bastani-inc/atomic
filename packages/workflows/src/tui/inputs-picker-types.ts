@@ -91,6 +91,7 @@ export function coerceValues(fields: readonly WorkflowInputEntry[], raw: Record<
 		switch (f.type) {
 			case "number":
 			case "integer": {
+				if (!f.required && v.trim() === "") break;
 				const n = Number(v);
 				if (Number.isFinite(n)) out[f.name] = n;
 				break;
@@ -101,6 +102,7 @@ export function coerceValues(fields: readonly WorkflowInputEntry[], raw: Record<
 				break;
 			}
 			case "select":
+				if (!f.required && v.trim() === "") break;
 				out[f.name] = v;
 				break;
 			default: {

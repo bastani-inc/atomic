@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, StdinBuffer, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -277,6 +277,26 @@ async function liveListing(initialRuns: RunSnapshot[], definitions: WorkflowsLis
 	};
 }
 
+for (const confirm of ["\r", "\x1b[C"]) {
+	test(`/workflows honors Down followed by ${JSON.stringify(confirm)} before another frame (#5245)`, async () => {
+		const fixture = await liveListing([
+			run({ id: "alpha", status: "running", startedAt: NOW }),
+			run({ id: "beta", status: "running", startedAt: NOW - 1 }),
+		]);
+		const stdin = new StdinBuffer();
+		stdin.on("data", (key) => fixture.component.handleInput?.(key));
+		try {
+			assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ ralph · alpha/);
+			stdin.process(`\x1b[B${confirm}`);
+			assert.equal(fixture.closeCalls, 1);
+			assert.deepEqual(await fixture.result, { kind: "run", runId: "beta" });
+		} finally {
+			stdin.destroy();
+			fixture.component.dispose?.();
+		}
+	});
+}
+
 for (const key of ["\r", "\x1b[C"]) {
 	test(`/workflows paints a replacement before confirming it with ${JSON.stringify(key)} (#5245/#5224)`, async () => {
 		const fixture = await liveListing(
@@ -302,6 +322,93 @@ for (const key of ["\r", "\x1b[C"]) {
 		}
 	});
 }
+
+test("/workflows honors a typed search and Enter before another frame (#5245)", async () => {
+	const fixture = await liveListing(
+		[run({ id: "alpha", status: "running" })],
+		[definition("deploy", "Deploy without inputs")],
+	);
+	const stdin = new StdinBuffer();
+	stdin.on("data", (key) => fixture.component.handleInput?.(key));
+	try {
+		fixture.component.render(120);
+		stdin.process("deploy\r");
+		assert.equal(fixture.closeCalls, 1);
+		assert.deepEqual(await fixture.result, { kind: "definition", name: "deploy" });
+	} finally {
+		stdin.destroy();
+		fixture.component.dispose?.();
+	}
+});
+
+for (const chunk of ["\r", "\x1b[B\r"]) {
+	test(`/workflows waits for its first frame before confirming ${JSON.stringify(chunk)} (#5245)`, async () => {
+		const fixture = await liveListing([
+			run({ id: "alpha", status: "running", startedAt: NOW }),
+			run({ id: "beta", status: "running", startedAt: NOW - 1 }),
+		]);
+		const stdin = new StdinBuffer();
+		stdin.on("data", (key) => fixture.component.handleInput?.(key));
+		try {
+			stdin.process(chunk);
+			assert.equal(fixture.closeCalls, 0);
+			fixture.component.render(120);
+			stdin.process("\r");
+			assert.equal(fixture.closeCalls, 1);
+			assert.deepEqual(await fixture.result, {
+				kind: "run",
+				runId: chunk.startsWith("\x1b") ? "beta" : "alpha",
+			});
+		} finally {
+			stdin.destroy();
+			fixture.component.dispose?.();
+		}
+	});
+}
+
+for (const confirm of ["\r", "\x1b[C"]) {
+	test(`/workflows waits for a refreshed frame after moving off a definition with ${JSON.stringify(confirm)} (#5245)`, async () => {
+		const fixture = await liveListing(
+			[run({ id: "alpha", status: "running" })],
+			[definition("deploy", "Deploy without inputs")],
+		);
+		const stdin = new StdinBuffer();
+		stdin.on("data", (key) => fixture.component.handleInput?.(key));
+		try {
+			fixture.component.handleInput?.("\x1b[B");
+			assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ deploy/);
+			fixture.update([]);
+			stdin.process(`\x1b[A${confirm}`);
+			assert.equal(fixture.closeCalls, 0, "Up must not start the definition it tried to leave");
+			fixture.component.render(120);
+			stdin.process(confirm);
+			assert.equal(fixture.closeCalls, 1);
+			assert.deepEqual(await fixture.result, { kind: "definition", name: "deploy" });
+		} finally {
+			stdin.destroy();
+			fixture.component.dispose?.();
+		}
+	});
+}
+
+test("/workflows waits for a refreshed frame after navigation before a store change (#5245)", async () => {
+	const alpha = run({ id: "alpha", status: "running", startedAt: NOW - 1 });
+	const beta = run({ id: "beta", status: "running", startedAt: NOW });
+	const fixture = await liveListing([alpha, beta], [definition("deploy", "Deploy without inputs")]);
+	try {
+		assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ ralph · beta/);
+		fixture.component.handleInput?.("\x1b[B");
+		fixture.update([beta]);
+		fixture.component.handleInput?.("\r");
+		assert.equal(fixture.closeCalls, 0, "the refresh must not replace the row chosen by Down");
+		fixture.component.render(120);
+		fixture.component.handleInput?.("\r");
+		assert.equal(fixture.closeCalls, 1);
+		assert.deepEqual(await fixture.result, { kind: "run", runId: "beta" });
+	} finally {
+		fixture.component.dispose?.();
+	}
+});
 
 test("/workflows does not confirm a search replacement before painting, even after cursor input (#5245/#5224)", async () => {
 	const selected = run({ id: "bbbbbbbb", status: "running", startedAt: NOW });
