@@ -332,13 +332,13 @@ describe("a slow-starting broker beside a live one", { timeout: BROKER_TEST_TIME
 	unixOnly("(#3505) a spawn succeeds when its broker exits cleanly because a live broker answers", async () => {
 		const handoffGate = join(gateDir, "handoff");
 		const childRunning = join(gateDir, "running");
-		const exitsOnGate = `const fs = require("fs"); fs.writeFileSync(${JSON.stringify(childRunning)}, ""); setInterval(() => { if (fs.existsSync(${JSON.stringify(handoffGate)})) process.exit(0); }, 2);`;
+		const exitsOnGate = `const fs = require("fs"); fs.writeFileSync(process.argv[1], ""); setInterval(() => { if (fs.existsSync(process.argv[2])) process.exit(0); }, 2);`;
 		for (let attempt = 0; attempt < YIELD_ATTEMPTS; attempt++) {
 			removePathSync(handoffGate, { force: true });
 			removePathSync(childRunning, { force: true });
 			const spawned = spawnModule.spawnBrokerIfNeeded(
 				process.execPath,
-				["-e", exitsOnGate],
+				["-e", exitsOnGate, childRunning, handoffGate],
 				LATER_SPAWN_READY_TIMEOUT_MS,
 			);
 			// The socket the child yields to starts answering only once the child runs.
