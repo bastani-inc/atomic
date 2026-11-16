@@ -359,6 +359,7 @@ function renderCompactListing(
 export function openWorkflowsListing(
 	ui: WorkflowsListingUi,
 	source: {
+		readonly selectRunId?: string;
 		readonly runs: () => readonly RunSnapshot[];
 		readonly definitions: () => readonly WorkflowsListingDefinition[];
 		/** Definitions discovery could not load, listed with the others as `✗`. */
@@ -399,6 +400,7 @@ export function openWorkflowsListing(
 			const search = new Input({ prompt: "⌕ ", placeholder: "Search…", placeholderStyle: style.dim });
 			const selector = new SelectorState<WorkflowsListingTarget>({
 				items,
+				initialId: source.selectRunId === undefined ? undefined : `run:${source.selectRunId}`,
 				maxVisible: Math.max(1, Math.floor((listingAvailableRows(tui) - 2) / 2)),
 			});
 			const handleSelectionInput = (data: string): void => {

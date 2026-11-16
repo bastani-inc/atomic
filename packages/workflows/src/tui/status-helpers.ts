@@ -23,7 +23,6 @@ export function statusColor(status: StageDisplayStatus | RunStatus, theme: Graph
 		case "failed":
 			return theme.error;
 		case "killed":
-			// Stopped is not failed: a stopped run or stage reads muted, never in the error colour.
 			return theme.textMuted;
 		case "blocked":
 			return theme.dim;
@@ -53,7 +52,6 @@ export function statusIcon(status: StageDisplayStatus | RunStatus): string {
 		case "skipped":
 			return "⊘";
 		case "cancelled":
-			// Stopped (◼) and failed (✗) never share a glyph.
 			return "◼";
 		case "running":
 			return "●";

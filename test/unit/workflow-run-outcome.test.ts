@@ -102,6 +102,16 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 		assert.match(lines, /diff\s+\/repo\/\.atomic\/artifacts\/impl\.patch · 3 files · \+40 −2/);
 	});
 
+	it("uses a stage's recorded failure message when the run has no error text (#5255)", () => {
+		for (const failedStageId of [undefined, "verify"]) {
+			const outcome = buildRunOutcome(
+				run("failed", [stage("verify", "failed", { failureMessage: STACK })], { failedStageId }),
+			);
+			assert.equal(outcome.reason, "verify gate failed: 2 jobs");
+			assert.equal(outcome.reason, outcome.blockers[0].reason);
+		}
+	});
+
 	it("a failed run names the failed stage with a short reason and the next actions, never a stack trace", () => {
 		const r = run(
 			"failed",

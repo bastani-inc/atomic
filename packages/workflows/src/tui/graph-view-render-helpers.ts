@@ -1,5 +1,7 @@
-import { type NavKey, type NavKeybindings, type NavKeyStyle, navEntryKeys } from "@bastani/atomic";
+import { type NavKey, type NavKeybindings, type NavKeyStyle, navEntryKeys, sliceHead } from "@bastani/atomic";
+import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { BOLD, DEFAULT_BG, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
+import { inertDisplayLine } from "./display-text.js";
 import type { GraphCanvas } from "./graph-canvas.js";
 import { MODE_PILL_LABEL } from "./graph-view-constants.js";
 import { GraphViewState } from "./graph-view-state.js";
@@ -10,6 +12,30 @@ import { BoundedTextCache, sliceColumns, truncateToWidth, visibleWidth } from ".
 import { OVERLAY_HIDDEN_STATUS_KEYS, WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 
 const slicedColumnSegments = new BoundedTextCache(1024);
+const GRAPH_STOP_PRIORITY_KEYS = new Set([
+	"escape",
+	"esc",
+	"up",
+	"down",
+	"left",
+	"right",
+	"enter",
+	"return",
+	"j",
+	"k",
+	"g",
+	"/",
+	"f",
+]);
+
+function displayedBinding(key: string): string {
+	return navEntryKeys({ matches: () => false, getKeys: () => [key] }, { action: APP_ACTION.listStop, label: "" });
+}
+
+function noticeDisplayText(value: string, width: number): string {
+	const head = sliceHead(value, Math.max(0, width + 1));
+	return inertDisplayLine(sanitizeToolTitleText(head)) + (head.length < value.length ? "…" : "");
+}
 
 export function toolExpandKey(piKeybindings: unknown): string {
 	const keybindings = isKeybindingsLike(piKeybindings) ? piKeybindings : undefined;
@@ -40,25 +66,14 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		return entries.map(([, value]) => value.trim()).join(" · ");
 	}
 
-	/** Whether the focused node has a sibling to its left, which ← moves to; otherwise ← leaves the graph. */
-	protected _hasSiblingBefore(): boolean {
-		// Rendered every frame: answered once per layout and focus, so a frame reads the layout only for what it shows.
-		const memo = this._siblingBeforeMemo;
-		const layout = this.lastBuiltSnapshotVersion ?? this.cachedLayout;
-		if (memo !== undefined && memo.layout === layout && memo.focusedIndex === this.focusedIndex) return memo.value;
-		const cur = this.cachedLayout[this.focusedIndex];
-		const value = cur !== undefined && this.cachedLayout.some((node) => node.col === cur.col && node.row < cur.row);
-		this._siblingBeforeMemo = { layout, focusedIndex: this.focusedIndex, value };
-		return value;
+	protected _movableArrows(): string {
+		return this.cachedNavigation[this.focusedIndex]?.arrows ?? "";
 	}
-	private _siblingBeforeMemo?: { layout: unknown; focusedIndex: number; value: boolean };
 
-	/** Keybindings manager the hint line and `?` overlay resolve action keys through. */
 	protected _navKeybindings(): NavKeybindings | undefined {
 		return isKeybindingsLike(this.piKeybindings) ? (this.piKeybindings as NavKeybindings) : undefined;
 	}
 
-	/** The graph theme as the shared hint line and key overlay paint it. */
 	protected _navKeyStyle(): NavKeyStyle {
 		const t = this.graphTheme;
 		return {
@@ -70,37 +85,34 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		};
 	}
 
-	/**
-	 * A remappable key: named by its action when the host's manager can resolve keys, otherwise by its default, which is
-	 * what the graph matches without a manager.
-	 */
 	protected _actionKey(action: string, fallback: string, label: string): NavKey {
 		return this._navKeybindings()?.getKeys ? { action, label } : { keys: fallback, label };
 	}
 
-	/** Whether `x x` can stop the focused stage: a host stop action and a stage that is still working. */
+	private _stopNavKey(label: string): NavKey {
+		const keybindings = this._navKeybindings();
+		const keys = keybindings?.getKeys?.(APP_ACTION.listStop);
+		if (keys === undefined) return { keys: "x", label };
+		const helpKeys = (keybindings?.getKeys?.(APP_ACTION.keysHelp) ?? []).map(displayedBinding);
+		const available = keys.filter(
+			(key) => !GRAPH_STOP_PRIORITY_KEYS.has(key.toLowerCase()) && !helpKeys.includes(displayedBinding(key)),
+		);
+		return { keys: available.map(displayedBinding).join("/"), label };
+	}
+
 	protected _focusedStageStoppable(): boolean {
 		if (this.stageActions?.stop === undefined) return false;
 		const stage = this.cachedLayout[this.focusedIndex]?.stage;
 		if (stage === undefined || this._stageChatTarget(stage) === undefined) return false;
-		return (
-			stage.status === "running" ||
-			stage.status === "awaiting_input" ||
-			stage.status === "blocked" ||
-			stage.status === "suspended"
-		);
+		return stage.status === "running";
 	}
 
-	/**
-	 * Every key the graph's current state answers to, in the order the hint line keeps them under width pressure: the
-	 * way back first. The `?` overlay lists all of them; the hint line drops entries from the end until it fits.
-	 */
-	protected _graphKeys(): NavKey[] {
+	protected _graphKeys(compact = false): NavKey[] {
 		const help = this._actionKey(APP_ACTION.keysHelp, "?", "keys");
 		if (this.toolDetail !== null) {
 			const expandKey = toolExpandKey(this.piKeybindings);
 			return [
-				{ keys: "esc/\u2190", label: "back to graph" },
+				{ keys: "esc", label: "back to graph" },
 				{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" },
 				...(expandKey.length > 0
 					? [{ keys: expandKey, label: this.toolDetailExpanded ? "collapse" : "expand" }]
@@ -108,12 +120,19 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				help,
 			];
 		}
+		if (this.stageDetail !== null && this.forkConfirm !== null) {
+			return [
+				{ keys: "enter", label: "fork" },
+				{ keys: "esc", label: "cancel" },
+			];
+		}
 		if (this.stageDetail !== null) {
 			const actions = this.stageActions;
+			const canFork = actions?.fork !== undefined && actions.forkTarget !== undefined && this.runId !== null;
 			return [
-				{ keys: "esc/\u2190", label: "back to graph" },
-				...(actions?.retry ? [{ keys: "r", label: "retry stage" }] : []),
-				...(actions?.fork ? [{ keys: "f", label: "fork run" }] : []),
+				{ keys: "esc", label: "back to graph" },
+				...(actions?.retry ? [{ keys: "r", label: compact ? "retry" : "retry in place" }] : []),
+				...(canFork ? [{ keys: "f", label: compact ? "fork from here" : "fork from this stage (reruns it)" }] : []),
 				...(this.onStageAttach ? [{ keys: "t", label: "transcript" }] : []),
 				{ keys: "l", label: this.stageDetail.logs ? "summary" : "logs" },
 				...(this.stageDetail.logs ? [{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" }] : []),
@@ -132,6 +151,9 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			];
 		}
 		const focused = this.cachedLayout[this.focusedIndex]?.stage;
+		const moveKeys = this._movableArrows();
+		const filter: NavKey = { keys: "f", label: `filter: ${this.statusFilter}` };
+		const filtered = this.statusFilter !== "all";
 		const openLabel =
 			focused?.nodeKind === "tool"
 				? "open tool detail"
@@ -140,20 +162,27 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 					: this._focusedStageChatTarget() !== undefined
 						? "open stage chat"
 						: undefined;
+		const back: NavKey = { keys: "esc", label: "back" };
+		const open: NavKey[] = openLabel ? [{ keys: "\u21b5", label: compact ? "open" : openLabel }] : [];
+		const move: NavKey[] = moveKeys ? [{ keys: moveKeys, label: "move" }] : [];
+
+		const stop = this._focusedStageStoppable() ? [this._stopNavKey(compact ? "stop" : "stop stage")] : [];
+		const stateful = [...stop, ...(filtered ? [filter] : [])];
+		const keybindings = this._navKeybindings();
+		const hideShadowed =
+			keybindings?.matches("h", APP_ACTION.listStop) === true ||
+			keybindings?.matches("h", APP_ACTION.keysHelp) === true;
 		return [
-			{ keys: this._hasSiblingBefore() ? "esc" : "esc/\u2190", label: "back" },
-			...(openLabel ? [{ keys: "\u21b5", label: openLabel }] : []),
-			{ keys: "\u2191\u2193\u2190\u2192", label: "move" },
+			back,
+			...(compact ? [...stateful, ...open, ...move] : [...open, ...move, ...stateful]),
 			{ keys: "/", label: "stages" },
-			{ keys: "f", label: `filter: ${this.statusFilter}` },
+			...(filtered ? [] : [filter]),
 			{ keys: "o", label: "run details" },
-			...(this._focusedStageStoppable() ? [this._actionKey(APP_ACTION.listStop, "x", "stop stage")] : []),
 			help,
-			...(this.onHide ? [{ keys: "h", label: "hide" }] : []),
+			...(this.onHide && !hideShadowed ? [{ keys: "h", label: "hide" }] : []),
 		];
 	}
 
-	/** The hint line's transient message, while it lasts. */
 	protected _activeGraphNotice(): { text: string; tone: "info" | "error" } | null {
 		const notice = this.graphNotice;
 		if (notice === null) return null;
@@ -173,16 +202,32 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const accent = hexToAnsi(t.accent);
 
 		const { top, mid, bot, visibleWidth: pillW } = renderOutlinePill(MODE_PILL_LABEL, t.accent, chromeBg);
-		// Hints use `<key> <label>` segments: the way back first and `? keys` last, which stay; under width pressure the
-		// keys between them drop from the end, and `?` lists them all.
+
 		const sep = `${chromeBg}  ${dim}\u00b7${RESET}${chromeBg}  `;
 		const leftEdgePad = 1;
 		const rightEdgePad = 2;
 		const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
 		const keybindings = this._navKeybindings();
 		const taken = new Set<string>();
+
+		const fits = (entries: readonly NavKey[]): boolean => {
+			const taken = new Set<string>();
+			const kept = entries.filter(
+				(entry) =>
+					entry.keys !== "/" &&
+					!(entry.keys === "h" && entry.label === "hide") &&
+					!(entry.keys === "f" && entry.label === "filter: all"),
+			);
+			const texts = kept.flatMap((entry) => {
+				const keys = navEntryKeys(keybindings, entry, taken);
+				return keys ? [`${keys} ${entry.label}`] : [];
+			});
+			return visibleWidth(texts.join("  \u00b7  ")) <= hintsBudget;
+		};
+		const full = this._graphKeys();
+		const entries = fits(full) ? full : this._graphKeys(true);
 		let helpSegment: string | undefined;
-		const segments = this._graphKeys().flatMap((entry) => {
+		const segments = entries.flatMap((entry) => {
 			const keys = navEntryKeys(keybindings, entry, taken);
 			if (!keys) return [];
 			const segment = `${text}${BOLD}${keys}${RESET}${chromeBg} ${muted}${entry.label}${RESET}${chromeBg}`;
@@ -195,8 +240,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const withHelp = (): string[] => (helpSegment ? [...segments, helpSegment] : segments);
 		const notice = this._activeGraphNotice();
 		const statusText = this._externalStatusText();
-		// A notice (the first `x`, an action's result, a stop-all prompt or an extension status) gets its own row above
-		// the hint line, so the hint line keeps every key it can fit at any width.
+
 		const toastText = notice?.text ?? statusText;
 		const toastColor = notice ? hexToAnsi(notice.tone === "error" ? t.error : t.accent) : accent;
 		while (segments.length > 1 && visibleWidth(withHelp().join(sep)) > hintsBudget) segments.pop();
@@ -207,7 +251,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const acrossWidth = Math.max(0, width - leftEdgePad - pillW);
 		const blankAcross = " ".repeat(acrossWidth);
 		const toastBudget = Math.max(0, acrossWidth - rightEdgePad);
-		const toast = toastText ? truncateToWidth(toastText, toastBudget, "\u2026") : "";
+		const toast = toastText ? truncateToWidth(noticeDisplayText(toastText, toastBudget), toastBudget, "\u2026") : "";
 		const toastRow = toast
 			? `${chromeBg}${" ".repeat(Math.max(0, toastBudget - visibleWidth(toast)))}${toastColor}${toast}${RESET}${chromeBg}${" ".repeat(rightEdgePad)}`
 			: blankAcross;

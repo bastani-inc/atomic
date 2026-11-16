@@ -274,12 +274,14 @@ function eventsOf(run: RunSnapshot, state: RunOutcomeState): RunOutcomeEvent[] {
 /** Everything the run detail shows, from the run's snapshot alone. */
 export function buildRunOutcome(run: RunSnapshot, now = Date.now()): RunOutcome {
 	const state = outcomeState(run);
-	// A run that returned a failed or blocked status says why in its own result; a recoverable block carries its error.
+	const failedStage =
+		run.stages.find((stage) => stage.id === run.failedStageId) ??
+		run.stages.find((stage) => stage.status === "failed");
 	const failureText =
 		run.error ??
 		run.failureMessage ??
-		run.stages.find((stage) => stage.id === run.failedStageId)?.error ??
-		run.stages.find((stage) => stage.status === "failed")?.error ??
+		failedStage?.error ??
+		failedStage?.failureMessage ??
 		structuredRecoverableWorkflowFailure(run)?.error ??
 		actionableReturnedStatusText(run.result);
 	const reason = state === "failed" || state === "blocked" ? summarizeFailureText(failureText).reason : undefined;

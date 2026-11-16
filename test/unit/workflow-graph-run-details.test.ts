@@ -117,7 +117,7 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 		assert.match(hint(graph), /o run details/, "esc goes back to the graph");
 	});
 
-	it("enter on a failed blocker opens that stage's failure detail; esc from there returns to the graph", () => {
+	it("enter on a failed blocker opens that stage's failure detail with retry", () => {
 		const graph = view(
 			[stage("plan", "completed"), stage("verify", "failed", { error: STACK }, ["plan"])],
 			{ status: "failed", error: STACK },
@@ -127,7 +127,7 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 		assert.equal(graph.handleInput(ENTER), true);
 		const shown = screen(graph);
 		assert.match(shown, /✗ verify · failed/);
-		assert.match(hint(graph), /r retry stage/);
+		assert.match(hint(graph), /r retry in place/);
 	});
 
 	it("the selected blocker stays in view when the terminal is short", () => {
