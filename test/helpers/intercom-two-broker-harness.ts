@@ -34,11 +34,11 @@ const extensionDir = join(repoRoot, "packages/intercom");
 const storageAdapterModule = join(repoRoot, "test/fixtures/storage-adapter.ts");
 const BROKER_READY_TIMEOUT_MS = 10_000;
 /**
- * Structural: one broker start. The child compiles its TypeScript through jiti, answers on its socket, registers the
- * harness's keeper and opens multi-node routing. That takes a second or two on an idle machine and took longer than
- * 10 s on a loaded Windows host (#5252).
+ * Structural: one broker start. The child compiles its TypeScript through jiti, reads its host's identity, answers on
+ * its socket, registers the harness's keeper and opens multi-node routing. That takes a second or two on an idle
+ * machine; with every suite's brokers starting at once on a loaded Windows host it took longer than 45 s (#5252).
  */
-export const BROKER_START_ALLOWANCE_MS = 45_000;
+export const BROKER_START_ALLOWANCE_MS = 90_000;
 /** How long a client waits for a loaded broker to answer its registration; the client's own default is 10 s. */
 const CLIENT_REGISTRATION_TIMEOUT_MS = 30_000;
 /** Generously more database calls than a broker's shared storage opening makes (its tables, columns and indexes). */

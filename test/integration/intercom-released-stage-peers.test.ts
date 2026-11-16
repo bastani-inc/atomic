@@ -23,7 +23,7 @@ import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
  * Structural: the broker child compiles its TypeScript through jiti before it reports that it started. A second or two
  * on an idle machine; longer than 10 s on a loaded Windows host (#5252).
  */
-const BROKER_STARTUP_TIMEOUT_MS = 45_000;
+const BROKER_STARTUP_TIMEOUT_MS = 90_000;
 /** The start-up hook waits for that report, then has room to fail with its own message. */
 const BROKER_STARTUP_HOOK_TIMEOUT_MS = BROKER_STARTUP_TIMEOUT_MS + 5_000;
 /**

@@ -27,7 +27,7 @@ const WAIT = { timeout: 10_000, interval: 20 };
  * Structural: the broker child compiles its TypeScript through jiti before it answers, which took longer than
  * {@link WAIT} on a loaded Windows host (#5252).
  */
-const BROKER_START_WAIT_MS = 40_000;
+const BROKER_START_WAIT_MS = 90_000;
 /** Starting the broker waits for it, then has room to fail with its own message. */
 const BROKER_START_HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 5_000;
 /** Long enough for a frame the broker wrote to arrive, so its absence means none was written. */
