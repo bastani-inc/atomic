@@ -188,14 +188,6 @@ export function terminalDisplayCursor(text: string, cursor: number): number {
 
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-/**
- * The grapheme cluster of `text` that contains the UTF-16 offset `cursor`, or undefined when `cursor` is outside the
- * text. An editor caret highlights this whole cluster, so it never shows part of an emoji or a letter's accent.
- *
- * Printable ASCII between code units below U+0300 is a cluster on its own: no combining mark, joiner, Prepend,
- * SpacingMark, Hangul jamo or regional indicator is that low, and the controls there break clusters. That case, the
- * caret in ordinary typing, skips the segmenter.
- */
 export function graphemeAt(text: string, cursor: number): { index: number; segment: string } | undefined {
 	const code = text.charCodeAt(cursor);
 	if (

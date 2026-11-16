@@ -152,7 +152,6 @@ export class DialogView implements StatefulView<DialogProps> {
 		return lines;
 	}
 
-	/** The tallest heading of any step at `width`. */
 	private maxHeadingRows(width: number): number {
 		if (this.headingMeasurement?.width === width) return this.headingMeasurement.rows;
 		const state = this.liveProps.state;
@@ -171,7 +170,6 @@ export class DialogView implements StatefulView<DialogProps> {
 	private buildLines(strategy: TabContentStrategy, width: number): string[] {
 		const { theme, isMulti, tabBar } = this.config;
 		const state = this.liveProps.state;
-		// The frame takes `│ ` and ` │` from each side.
 		const innerWidth = Math.max(1, width - 4);
 		if (this.chrome?.width !== width) {
 			this.chrome = {
@@ -212,8 +210,6 @@ export class DialogView implements StatefulView<DialogProps> {
 		const hintLine = `  ${theme.fg("dim", hint)}`;
 		lines.push(visibleWidth(hintLine) > width ? truncateToWidth(hintLine, width, "") : hintLine);
 
-		// Residual rows equalize total height across tabs and strategies; rendered AFTER the hint line. Headings count
-		// too: a question that wraps onto more lines than another must not change the dialog's height.
 		const maxHeight =
 			this.config.getBodyHeight(innerWidth) + this.maxFooterRowCount + this.maxHeadingRows(innerWidth);
 		const used = heading.length + body.length + strategy.footerRowCount;

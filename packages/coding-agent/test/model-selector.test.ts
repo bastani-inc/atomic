@@ -13,12 +13,10 @@ function createFakeTui(): TUI {
 	return { requestRender: () => {} } as unknown as TUI;
 }
 
-/** A rendered row without its right-aligned `current`/`default` tag. */
 function untagged(line: string): string {
 	return line.trimEnd().replace(/\s{2,}(current|default)$/, "");
 }
 
-/** Rendered row text after the five-column lead (` ❯ ● `): the label and its dim column. */
 function rowBody(line: string): string {
 	return untagged(line).slice(5);
 }
@@ -50,7 +48,6 @@ describe("model selector", () => {
 		harness = undefined;
 	});
 
-	// Upstream pi #8900: the current model keeps its "●" mark while the cursor browses away.
 	// Adapted for Atomic's constructor, which takes a SettingsManager before the ModelRuntime.
 	it("keeps the current model marked while browsing", async () => {
 		harness = await createHarness({

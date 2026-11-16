@@ -4,7 +4,6 @@ import type { QuestionData } from "../../../tool/types.js";
 import type { WrappingSelectItem } from "../wrapping-select.ts";
 import { BORDER_HORIZONTAL_OVERHEAD, BORDER_INNER_PADDING_HORIZONTAL } from "./preview-box-renderer.ts";
 
-/** Min terminal/pane width for the side-by-side layout to engage: an 80-column terminal stays side by side. */
 export const PREVIEW_MIN_WIDTH = 64;
 /** Visual gap between options column and preview column in side-by-side. */
 export const PREVIEW_COLUMN_GAP = 2;

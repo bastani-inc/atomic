@@ -45,7 +45,6 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 	private readonly tui: TUI;
 	private scopedModels: ReadonlyArray<ScopedModelItem>;
 	private scope: ModelScope;
-	/** Levels the user picked with ←→ for a row; rows without one use the level selecting them applies. */
 	private readonly chosenLevels = new Map<string, ThinkingLevel>();
 	private readonly refreshAbortController = new AbortController();
 	private closed = false;
@@ -128,7 +127,6 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 	}
 
 	override handleInput(data: string): void {
-		// ←→ step the level of the selected reasoning model; the selector's extra key only reserves them.
 		if (data === LEFT || data === RIGHT) {
 			const item = this.selector.getSelected();
 			if (item) this.stepLevel(item.value, data === RIGHT ? 1 : -1);
@@ -143,7 +141,6 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 		this.refreshAbortController.abort();
 	}
 
-	/** Levels ←→ step through for `model`: none for a model that does not reason. */
 	levelsFor(model: Model<Api>): ThinkingLevel[] {
 		if (!model.reasoning) return [];
 		return getSupportedThinkingLevels(model) as ThinkingLevel[];
@@ -173,7 +170,6 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 		this.scopedModelList = this.scopedModels.map((scoped) => scoped.model);
 	}
 
-	/** Current model first, the saved default second, then by provider. */
 	private sortModels(models: Model<Api>[]): Model<Api>[] {
 		return models.sort((a, b) => {
 			const aIsCurrent = modelsAreEqual(this.currentModel, a);
@@ -244,7 +240,6 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 			notice = error ? { text: error, tone: "error" } : { text: "Model catalogs refreshed.", tone: "success" };
 		}
 		this.selector.setNotice(notice);
-		// The browsed row stays selected when it is still listed; otherwise the current model, else the same position.
 		this.loadModelsFromSnapshot();
 		this.rebuild(this.currentModel ? modelKey(this.currentModel) : undefined);
 		this.tui.requestRender();

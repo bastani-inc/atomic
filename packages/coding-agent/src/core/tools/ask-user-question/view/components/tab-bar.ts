@@ -35,10 +35,6 @@ export class TabBar implements StatefulView<TabBarProps> {
 
 	invalidate(): void {}
 
-	/**
-	 * The steps of the dialog on one line: each question's header, then Review, joined by `──`, the current step as a
-	 * filled chip and answered steps in the success colour; the current question's `n/m` (on Review, how many are answered) sits at the right edge.
-	 */
 	render(width: number): string[] {
 		const { theme } = this;
 		const step = (label: string, active: boolean, done: boolean): string =>

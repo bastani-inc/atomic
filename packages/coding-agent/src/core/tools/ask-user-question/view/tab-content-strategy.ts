@@ -38,10 +38,6 @@ const NOTES_HEADER = "Notes:";
  * plus `footerRowCount`.
  */
 export interface TabContentStrategy {
-	/**
-	 * Total RENDERED footer rows: what `footerRows()` emits inside the frame plus the hint line under it. Drives
-	 * residual math.
-	 */
 	readonly footerRowCount: number;
 
 	/** Variable rows above the body, after top chrome (border + tabBar + Spacer). */
@@ -53,10 +49,8 @@ export interface TabContentStrategy {
 	/** Optional rows between body's trailing Spacer and the bottom border. */
 	midRows(state: DialogState): Component[];
 
-	/** Footer rows inside the frame, below the rule. With the hint line they MUST render `footerRowCount` rows. */
 	footerRows(state: DialogState): Component[];
 
-	/** The one hint line under the frame: exactly the keys that work on this step. */
 	hintText(state: DialogState): string;
 }
 
@@ -73,7 +67,6 @@ export interface QuestionTabStrategyConfig {
 export class QuestionTabStrategy implements TabContentStrategy {
 	private readonly notesDisplayInput = new Input();
 	private readonly headings = new Map<number, Component[]>();
-	/** chatRow(1) inside the frame + the hint line (1) = 2 rendered rows. */
 	readonly footerRowCount = 2;
 
 	private declare readonly config: QuestionTabStrategyConfig;
@@ -122,8 +115,6 @@ export class QuestionTabStrategy implements TabContentStrategy {
 				const safe = terminalDisplayText(raw);
 				const rawCursor = notesInput.getCursor();
 				let cursor = safe === raw ? rawCursor : Math.min(terminalDisplayCursor(raw, rawCursor), safe.length);
-				// Removed controls can join characters around the caret, and a paste can leave it inside a cluster: start the
-				// caret at the cluster so it covers the whole character.
 				if (cursor < safe.length) cursor = graphemeAt(safe, cursor)?.index ?? cursor;
 				let display = notesInput;
 				if (safe !== raw || cursor !== rawCursor) {
@@ -155,10 +146,6 @@ export interface SubmitTabStrategyConfig {
 }
 
 export class SubmitTabStrategy implements TabContentStrategy {
-	/**
-	 * Spacer(1) + Text(prompt, 1) + Spacer(1) + submitPicker(2) = 5 rendered rows inside the frame, plus the hint line.
-	 * The fallback path lands at 5 via 2 trailing Spacer(1)s.
-	 */
 	readonly footerRowCount = 6;
 
 	private declare readonly config: SubmitTabStrategyConfig;
@@ -211,7 +198,6 @@ export class SubmitTabStrategy implements TabContentStrategy {
 			missing.length === 0
 				? this.config.theme.fg("muted", READY_PROMPT)
 				: this.config.theme.fg("warning", `${INCOMPLETE_WARNING_PREFIX} ${missing.join(", ")}`);
-		// One line, so the footer keeps its fixed height however many questions are left.
 		const prompt: Component = { render: (width) => [truncateToWidth(promptText, width, "…")], invalidate: () => {} };
 		const out: Component[] = [new Spacer(1), prompt, new Spacer(1)];
 		if (this.config.submitPicker) {
@@ -228,12 +214,7 @@ export class SubmitTabStrategy implements TabContentStrategy {
 	}
 }
 
-/**
- * Build the controls hint line: exactly the keys that work on this question, in the shared hint order
- *   ↑↓ select · enter choose | enter/space toggle [· n add notes] [· tab next question] · esc cancel
- */
 export function buildHintText(question: QuestionData | undefined, isMulti: boolean, state: DialogState): string {
-	// While the notes field is open, enter and esc both close it and keep the note.
 	if (state.notesVisible) return [HINT_PART_NOTES_TYPE, HINT_PART_NOTES_CLOSE].join(" · ");
 	const onOption = question !== undefined && !state.chatFocused && state.optionIndex < question.options.length;
 	const parts: string[] = [HINT_PART_NAV];

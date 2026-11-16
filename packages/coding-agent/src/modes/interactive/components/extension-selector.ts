@@ -1,7 +1,3 @@
-/**
- * Generic selector component for extensions: a list of string options in the shared selector look.
- */
-
 import type { TUI } from "@bastani/atomic-tui";
 import { CountdownTimer } from "./countdown-timer.ts";
 import { FramedSelector, type SelectorExtraKey } from "./selector.ts";
@@ -10,7 +6,6 @@ export interface ExtensionSelectorOptions {
 	tui?: TUI;
 	timeout?: number;
 	onToggleToolsExpanded?: () => void;
-	/** Number the options so a digit chooses one, as permission prompts do. */
 	numbered?: boolean;
 }
 

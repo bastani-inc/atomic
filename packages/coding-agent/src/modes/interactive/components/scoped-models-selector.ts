@@ -75,10 +75,6 @@ export interface ModelsCallbacks {
 	onCancel: () => void;
 }
 
-/**
- * The `/scoped-models` picker: which models Ctrl+P cycles through, and in what order. Enter switches the selected
- * model on or off; changes are saved automatically by the caller.
- */
 export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 	private modelsById: Map<string, Model<Api>> = new Map();
 	private readonly modelMetadata = new Map<string, { description?: string; searchText: string }>();
@@ -89,7 +85,6 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 
 	constructor(config: ModelsConfig, callbacks: ModelsCallbacks) {
 		const kb = getKeybindings();
-		// Set by the reorder key's matcher, read by its action: which way the pressed key moves the model.
 		let reorderDelta = 0;
 		const self = (): ScopedModelsSelectorComponent => this;
 		const extraKeys: SelectorExtraKey<string>[] = [
@@ -155,7 +150,6 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 	}
 
 	override handleInput(data: string): void {
-		// Ctrl+C clears a search before it closes the picker, as it always has here.
 		if (data === "\x03" && this.selector.state.getQuery()) {
 			this.selector.clearSearch();
 			return;
@@ -180,8 +174,6 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 
 	private buildItems(): SelectorItem<string>[] {
 		const enabledIds = this.enabledIds === null ? undefined : new Set(this.enabledIds);
-		// Rows show the raw ID and level, exactly what `enabledModels` and `--models` take (#4269); a display name that
-		// adds words the ID lacks follows in a dim column.
 		return getSortedIds(this.enabledIds, this.allIds).map((id) => {
 			const model = this.modelsById.get(id);
 			const enabled = enabledIds === undefined || enabledIds.has(id);
@@ -208,7 +200,6 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 		return `${enabledCount}/${this.allIds.length} enabled${unavailableCount ? ` · ${unavailableCount} unavailable` : ""}`;
 	}
 
-	/** Rebuild the rows; the browsed model stays selected unless `keepPosition` keeps the row position instead. */
 	private refresh(keepPosition = false): void {
 		const position = this.selector.state.getSelectedIndex();
 		this.selector.setItems(this.buildItems());
@@ -226,7 +217,6 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 		this.change(toggle(this.enabledIds, this.allIds, id), true);
 	}
 
-	/** Enable or clear every model, or only the matching ones while searching. */
 	private setAll(enable: boolean): void {
 		const targetIds = this.selector.state.getQuery()
 			? this.selector.state.getVisible().map((item) => item.value)
@@ -255,7 +245,6 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 	private reorder(id: string, delta: number): void {
 		if (this.enabledIds === null) return;
 		const newIndex = this.enabledIds.indexOf(id) + delta;
-		// Only move within the enabled list.
 		if (newIndex < 0 || newIndex >= this.enabledIds.length) return;
 		this.change(move(this.enabledIds, id, delta));
 	}

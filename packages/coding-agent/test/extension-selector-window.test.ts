@@ -21,7 +21,6 @@ function visibleOptions(output: string): string[] {
 		.map((line) => line.trim().replace(/^❯ /, ""));
 }
 
-/** The hint is the last line inside the sheet's closing rule. */
 function hint(selector: ExtensionSelectorComponent, width = 80): string {
 	return lines(selector, width).at(-2)?.trim() ?? "";
 }

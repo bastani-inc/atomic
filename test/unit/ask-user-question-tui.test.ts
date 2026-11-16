@@ -226,7 +226,6 @@ test("ask_user_question chat and custom inline drafts stay isolated when focus m
 	const rows = () => {
 		const lines = stripAnsi(session.component.render(100).join("\n")).split("\n");
 		return {
-			// Rows inside the dialog's frame, without its `│ ` side.
 			custom: (lines.find((line) => /^│ . 3\. /.test(line)) ?? "").slice(2),
 			chat: (lines.find((line) => /^│ . 4\. /.test(line)) ?? "").slice(2),
 		};

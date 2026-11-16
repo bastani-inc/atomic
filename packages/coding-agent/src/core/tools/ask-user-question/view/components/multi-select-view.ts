@@ -67,9 +67,7 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 		const lines: string[] = [];
 		const prefixWidth = this.prefixVisibleWidth();
 		const contentWidth = Math.max(1, width - prefixWidth);
-		// The Next row is numbered after the options, so it sets the number column's width.
 		const numberWidth = String(this.question.options.length + 1).length;
-		// Descriptions sit under the label, past the pointer, number and checkbox.
 		const descriptionIndent = " ".repeat(prefixWidth);
 		for (let i = 0; i < this.question.options.length; i++) {
 			const opt = this.question.options[i];

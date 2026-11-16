@@ -36,7 +36,6 @@ const stripAllowedAnsi = (text: string): string => text.replace(ALLOWED_ANSI, ""
 const sanitizedPrefix = (raw: string): string => escapeBidiControls(new TerminalTextSanitizer().write(raw));
 const [FAKE_CURSOR_START, FAKE_CURSOR_END] = renderFakeCursor("\0").split("\0") as [string, string];
 
-/** Draw one frame through the main-screen TUI into an xterm and return the screen's non-empty rows. */
 async function screenRows(render: (width: number) => string[], columns: number, rows: number): Promise<string[]> {
 	const xterm = new XtermTerminal({ cols: columns, rows, allowProposedApi: true });
 	const terminal: Terminal = {
@@ -438,7 +437,6 @@ describe("ask_user_question sanitizer and editor caret regressions (#5244)", () 
 			await assertCaret(session, `${cluster}x`, " ", `${JSON.stringify(pasted)} at end`);
 			session.component.handleInput(LEFT);
 			await assertCaret(session, cluster, "x", `${JSON.stringify(pasted)} on x`);
-			// Walk every raw position inside the joined cluster, then once more at the start of the text.
 			const rawGraphemes = [...segmenter.segment(pasted)].length;
 			for (let lefts = 2; lefts <= rawGraphemes + 1; lefts++) {
 				session.component.handleInput(LEFT);
@@ -446,7 +444,6 @@ describe("ask_user_question sanitizer and editor caret regressions (#5244)", () 
 			}
 		}
 
-		// No control is removed here: typing the base letter in front of a pasted accent leaves the caret inside "é".
 		const session = openNotes();
 		session.component.handleInput(paste("\u0301x"));
 		session.component.handleInput(HOME);
@@ -457,17 +454,12 @@ describe("ask_user_question sanitizer and editor caret regressions (#5244)", () 
 	test("graphemeAt returns Intl.Segmenter's containing() cluster at every offset next to printable ASCII (#5224)", () => {
 		const pieces = [
 			...["a", "x", " ", "#", "*", "1", "~", "\x7f", "\t"],
-			// Below U+0300: precomposed letter, soft hyphen (a control), copyright sign (pictographic), last code unit before marks.
 			...["é", "\u00ad", "©", "\u02ff"],
 			...["\u0300", "\u0301"],
-			// Prepend, then SpacingMark.
 			...["\u0600", "\u0d4e", "\u0903", "\u093f", "\u0e33"],
 			...["\r", "\n"],
-			// Keycap pieces, ZWJ, emoji, skin tone and regional indicators.
 			...["\ufe0f", "\u20e3", "\u200d", "👩", "💻", "🏽", "🇺", "🇸"],
-			// Hangul L, V, T, LV and LVT.
 			...["\u1100", "\u1161", "\u11a8", "\uac00", "\uac01"],
-			// Devanagari consonants and virama, which form conjuncts.
 			...["\u0915", "\u094d", "\u0937"],
 		];
 		const texts = ["1\ufe0f\u20e3x", "#\u20e3", "a\r\nb", "x\u0915\u094d\u0937y", "🇺🇸🇺🇸a", "a👩\u200d💻b"];

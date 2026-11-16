@@ -410,7 +410,7 @@ These patterns cover the most common UI needs in extensions. **Copy these patter
 
 ### Pattern 1: Selection Dialog (Selector)
 
-For letting users pick from a list, use `Selector` from `@bastani/atomic`. It is the picker Atomic's own selectors use, so your dialog looks and behaves like `/model`, `/resume` and the rest: a title, an optional type-to-search box, one- or two-line rows with dim descriptions and right-aligned tags, `↑ N more` / `↓ N more` scroll indicators, an empty state, and one hint line that lists exactly the keys that work.
+For letting users pick from a list, use `Selector` from `@bastani/atomic`. It is the picker Atomic's own selectors use, so your dialog looks and behaves like `/model`, `/login` and the other built-in pickers: a title, an optional type-to-search box, one- or two-line rows with dim descriptions and right-aligned tags, `↑ N more` / `↓ N more` scroll indicators, an empty state, and one hint line that lists exactly the keys that work.
 
 ```typescript
 import { DynamicBorder, Selector } from "@bastani/atomic";
@@ -438,7 +438,7 @@ const choice = await ctx.ui.custom<string | null>((tui, _theme, _kb, done) => {
 });
 ```
 
-Keys are the same in every picker: ↑↓ select (wrapping), pgup/pgdn page, enter or → choose, esc clears the search before it cancels, and ctrl+c always cancels. Options worth knowing:
+Selector uses ↑↓ to select (wrapping) and pgup/pgdn to page. Enter chooses, and → chooses when the search is empty. Esc clears the search before it cancels, and ctrl+c always cancels. Options worth knowing:
 
 | Option | Effect |
 | --- | --- |

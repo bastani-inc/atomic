@@ -16,7 +16,6 @@ const ENTER = "\r";
 
 type SelectorFactory = (done: () => void) => { component: ModelSelectorComponent; dispose?: () => void };
 
-/** The interactive mode around `/model`: the real routing, with the screen replaced by a captured picker. */
 function openModelPicker(harness: Harness) {
 	let picker: ModelSelectorComponent | undefined;
 	let closed = false;
@@ -96,7 +95,6 @@ describe("/model ←→ reasoning level (#5224)", () => {
 		assert.equal(harness.settingsManager.getDefaultThinkingLevel(), "medium");
 		assert.ok(first.status.some((line) => line.includes("other-model") && line.includes("medium")));
 
-		// The saved level survives: a fresh picker labels the model with it, and a model switch back applies it.
 		const second = openModelPicker(harness);
 		assert.match(second.row("other-model") ?? "", /other-model +medium\b/);
 		second.picker.dispose();

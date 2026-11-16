@@ -1,21 +1,3 @@
-/**
- * The one picker every selector shares: a title, an optional type-to-search box, a list of one- or two-line rows with
- * dim descriptions and right-aligned tags, scroll indicators, an empty state, and one hint line that lists exactly the
- * keys that work right now.
- *
- * Keys, the same in every picker:
- * - ↑↓ move (wrapping), pgup/pgdn move a page, home/end jump to the ends when the list is not searchable.
- * - enter (or →) chooses the selected row; in a multi-select it confirms the checked rows.
- * - space toggles a row in a multi-select, or opens the picker's preview when it has one; otherwise it is typed.
- * - typing goes to the search box when the picker is searchable; backspace and the editing keys edit it.
- * - esc clears a non-empty search first, then cancels; ctrl+c always cancels.
- * - 1–9 choose a row directly in a numbered picker without a search box.
- * - `?` shows the keys of a picker without a search box.
- *
- * The rendering is a pure function of {@link SelectorState}, so a picker can be tested by driving the state and reading
- * the lines it renders.
- */
-
 import {
 	type Component,
 	type Focusable,
@@ -39,7 +21,7 @@ import {
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
 
-/** A status colour a row's tag or marker can carry. */
+/** A status colour a row's tag or notice can carry. */
 export type SelectorTone = "accent" | "success" | "warning" | "error" | "muted" | "dim";
 
 /** One row of a picker. */
@@ -65,13 +47,13 @@ export interface SelectorItem<T> {
 	readonly disabled?: boolean;
 	/** Rows with the same group are listed under a section label. Items should already be ordered by group. */
 	readonly group?: string;
-	/** Extra text type-to-search matches against, beside the label and description. */
+	/** Extra text type-to-search matches against, beside the label, description and tag. */
 	readonly searchText?: string;
 }
 
 /** A key a particular picker adds, such as ←→ for the reasoning effort in the model picker. */
 export interface SelectorExtraKey<T> {
-	/** Hint entry. Its keybinding action (or fixed keys) also decides whether a key press is this key. */
+	/** Hint entry. When `matches` is omitted, `hint.action` decides whether a key press triggers this key. */
 	readonly hint: NavKey;
 	/** Whether the key does something for this row; a key that does nothing is left out of the hint. */
 	readonly enabled?: (item: SelectorItem<T> | undefined) => boolean;
@@ -97,7 +79,7 @@ export interface SelectorOptions<T> {
 	readonly maxVisible?: number;
 	/** Shown when there are no rows at all. */
 	readonly emptyText?: string;
-	/** Number the rows `1.` `2.`; digits then choose a row when there is no search box. */
+	/** Number the rows `1.` `2.`; digits 1–9 choose or toggle a row when there is no search box. */
 	readonly numbered?: boolean;
 	/** The row selected first. Defaults to the first row marked `on`, else the first enabled row. */
 	readonly initialId?: string;
@@ -251,7 +233,6 @@ export class SelectorState<T> {
 			id === undefined ? -1 : this.visible.findIndex((item) => item.id === id && !item.disabled);
 		const browsedIndex = find(browsed);
 		const preferIndex = find(preferId);
-		// The browsed row stays selected; if it is gone, the preferred row, else the same position.
 		const index = browsedIndex >= 0 ? browsedIndex : preferIndex;
 		this.selected =
 			index >= 0 ? index : this.firstEnabled(Math.max(0, Math.min(position, this.visible.length - 1)), 1);
@@ -265,13 +246,12 @@ export class SelectorState<T> {
 		this.query = query;
 		this.visible = query ? this.filter(query) : [...this.items];
 		const kept = previous === undefined ? -1 : this.visible.findIndex((item) => item.id === previous);
-		// A new query highlights its best match; clearing it returns to the row that was selected.
 		this.selected = query ? this.firstEnabled(0, 1) : kept >= 0 ? kept : this.firstEnabled(0, 1);
 		this.top = 0;
 		this.scrollToSelected();
 	}
 
-	/** Move by `delta` rows, wrapping at the ends and skipping disabled rows. */
+	/** Move one enabled row in the direction of `delta`, wrapping at the ends and skipping disabled rows. */
 	move(delta: number): void {
 		const count = this.visible.length;
 		if (count === 0) return;
@@ -389,27 +369,19 @@ export function selectorHintEntries<T>(
 	return entries;
 }
 
-/**
- * Labels in the order a narrow hint gives them up: the search and help reminders first, cancel and choose last, so a
- * picker never hides how to leave it or how to choose. Labels not listed (a picker's own keys) go after `select`,
- * last first.
- */
 const HINT_DROP_ORDER = ["to search", "keys", "pick", "preview", "select"];
 
-/** Drop hint entries, least needed first, until the line fits `room` columns. */
 export function fitHintEntries(entries: readonly NavKey[], room: number, keybindings: NavKeybindings): NavKey[] {
 	const text = (entry: NavKey) =>
 		`${entry.action !== undefined ? navActionText(keybindings, entry.action) : (entry.keys ?? "")} ${entry.label}`;
 	const kept = [...entries];
 	const width = () => visibleWidth(kept.map(text).join(" · "));
-	// How to choose and how to leave stay, whatever label the picker gives enter.
 	const essential = (entry: NavKey) =>
 		entry.action === "tui.select.confirm" || ["cancel", "clear", "choose", "confirm"].includes(entry.label);
 	while (kept.length > 1 && width() > room) {
 		const byOrder = HINT_DROP_ORDER.map((label) => kept.findIndex((entry) => entry.label === label)).find(
 			(index) => index >= 0,
 		);
-		// A picker's own keys go last first, so the first ones it lists stay longest.
 		const other = kept.findLastIndex((entry) => !essential(entry) && !HINT_DROP_ORDER.includes(entry.label));
 		const drop = byOrder ?? (other >= 0 ? other : kept.findIndex((entry) => entry.label !== "cancel"));
 		if (drop < 0) break;
@@ -434,7 +406,6 @@ export class Selector<T> implements Component, Focusable {
 	private title?: string;
 	private subtitle?: string;
 	private notice?: { text: string; tone: SelectorTone };
-	/** Rendered line index of each visible row, from the last render, for mouse hits. */
 	private rowLines = new Map<number, number>();
 	private mousePressed?: number;
 	private _focused = false;
@@ -558,7 +529,6 @@ export class Selector<T> implements Component, Focusable {
 			return;
 		} else if (
 			kb.matches(data, "tui.select.confirm") ||
-			// → opens too, except while it moves the cursor through search text.
 			(kb.matches(data, "app.list.open") && !this.state.getQuery())
 		) {
 			this.confirm();
@@ -839,10 +809,6 @@ export class Selector<T> implements Component, Focusable {
 	}
 }
 
-/**
- * A {@link Selector} between the rules a picker that replaces the editor sits between, so it reads as one sheet. The
- * picker classes that keep their own constructor signatures extend this.
- */
 export class FramedSelector<T> implements Component, Focusable {
 	readonly capturesViewportInput = true;
 	readonly selector: Selector<T>;
