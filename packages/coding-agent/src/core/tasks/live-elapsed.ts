@@ -61,6 +61,14 @@ export class TaskElapsedClocks {
 		this.table = table;
 	}
 
+	has(taskId: string): boolean {
+		return this.retained.has(taskId) || this.table.has(taskId);
+	}
+
+	hasEntries(): boolean {
+		return this.retained.size > 0 || this.table.size > 0;
+	}
+
 	elapsedMs(taskId: string, reportedMs: number | undefined, running: boolean, now = Date.now()): number | undefined {
 		const { elapsedMs, clock } = readClock(this.table, taskId, reportedMs, running, now);
 		if (clock !== undefined) this.retained.set(taskId, clock);
@@ -159,13 +167,15 @@ function syncSourceClocks(root: ClockSourceLike & object, clocks: TaskElapsedClo
 	const tasks = root.tasks;
 	const list = Array.isArray(tasks) ? tasks : root.backgroundTasks;
 	if (!Array.isArray(list)) return;
-	const live = new Set<string>();
+	const live = clocks.hasEntries() ? new Set<string>() : undefined;
 	for (const task of list) {
-		live.add(task.ref.taskId);
 		if (clocksByTarget.get(task) !== clocks) bindTaskClock(task, clocks);
-		if (task.execution.kind === "settled") clocks.settle(task.ref.taskId, task.metrics?.elapsedMs);
+		if (live !== undefined && clocks.has(task.ref.taskId)) {
+			live.add(task.ref.taskId);
+			if (task.execution.kind === "settled") clocks.settle(task.ref.taskId, task.metrics?.elapsedMs);
+		}
 	}
-	clocks.prune(live);
+	if (live !== undefined) clocks.prune(live);
 }
 
 export function taskClocksFor(source: object): TaskElapsedClocks {
@@ -177,9 +187,9 @@ export function taskClocksFor(source: object): TaskElapsedClocks {
 		clocks = new TaskElapsedClocks();
 		clocksBySource.set(root, clocks);
 	}
-	if (!managedSources.has(root)) {
+	if (!managedSources.has(root) && !subscribedSources.has(root)) {
 		const candidate = root as ClockSourceLike & object;
-		if (!subscribedSources.has(root) && typeof candidate.subscribe === "function") {
+		if (typeof candidate.subscribe === "function") {
 			subscribedSources.add(root);
 			const weakRoot = new WeakRef(candidate);
 			candidate.subscribe(() => {

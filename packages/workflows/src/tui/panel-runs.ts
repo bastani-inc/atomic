@@ -1,4 +1,10 @@
-import type { AgentPanelActionResult, AgentPanelItem, AgentPanelState } from "@bastani/atomic";
+import {
+	type AgentPanelActionResult,
+	type AgentPanelAnswerOptions,
+	type AgentPanelItem,
+	type AgentPanelState,
+	sliceHead,
+} from "@bastani/atomic";
 import type { WorkflowOwnerResources } from "../extension/workflow-owner-resources.js";
 import { workflowAnswerAction } from "../extension/workflow-tool-answer.js";
 import {
@@ -11,7 +17,6 @@ import { createRunIndicatorStatusResolver } from "../shared/run-indicator-status
 import { runStageIndex } from "../shared/run-stage-index.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { store as defaultStore } from "../shared/store.js";
-import { currentWorkflowStore } from "../shared/store-factory.js";
 import type { RunSnapshot, RunStatus, StageSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import {
@@ -25,46 +30,22 @@ import {
 	sanitizePromptDisplay,
 	visibleRootPendingInput,
 } from "./pending-input-affordance.js";
+import { markWorkflowRunViewed, resolveViewedWorkflowRuns, viewedWorkflowRuns } from "./viewed-runs.js";
+
+export { markWorkflowRunViewed, viewedWorkflowRuns };
 
 const REASON_WIDTH = 120;
 export const PANEL_RUN_PREFIX = "run:";
 
 type PromptIdentity = readonly [ownerRunId: string, stageId: string | null, promptId: string];
 
-const viewedRunsByStore = new WeakMap<object, Set<string>>();
-const displayedPromptTargetsByScope = new WeakMap<object, Map<string, PromptIdentity>>();
 const frozenProgressByRuns = new WeakMap<
 	readonly RunSnapshot[],
 	Map<string, { readonly done: number; readonly total: number }>
 >();
 
-export function viewedWorkflowRuns(store: object = defaultStore): Set<string> {
-	const key = store === defaultStore ? currentWorkflowStore() : store;
-	let viewed = viewedRunsByStore.get(key);
-	if (viewed === undefined) {
-		viewed = new Set();
-		viewedRunsByStore.set(key, viewed);
-	}
-	return viewed;
-}
-
-function resolveViewedSet(scope?: Set<string> | object): Set<string> {
-	if (scope instanceof Set) return scope;
-	return viewedWorkflowRuns(scope ?? defaultStore);
-}
-
-function displayedPromptTargetsFor(scope: object): Map<string, PromptIdentity> {
-	let targets = displayedPromptTargetsByScope.get(scope);
-	if (targets === undefined) {
-		targets = new Map();
-		displayedPromptTargetsByScope.set(scope, targets);
-	}
-	return targets;
-}
-
-export function markWorkflowRunViewed(runId: string | null | undefined, store: object = defaultStore): void {
-	if (!runId) return;
-	viewedWorkflowRuns(store).add(runId);
+function serializePromptIdentity(identity: PromptIdentity): string {
+	return JSON.stringify(identity);
 }
 
 function oneLine(text: string | undefined): string | undefined {
@@ -74,7 +55,7 @@ function oneLine(text: string | undefined): string | undefined {
 		.map((part) => sanitizePromptDisplay(part))
 		.find((part) => part.length > 0);
 	if (line === undefined) return undefined;
-	return line.length > REASON_WIDTH ? `${line.slice(0, REASON_WIDTH - 1)}…` : line;
+	return line.length > REASON_WIDTH ? `${sliceHead(line, REASON_WIDTH - 1)}…` : line;
 }
 
 function currentStage(stages: readonly StageSnapshot[]): StageSnapshot | undefined {
@@ -224,14 +205,10 @@ export function panelItemsFromSnapshot(
 	now = Date.now(),
 	scope: Set<string> | object = defaultStore,
 ): AgentPanelItem[] {
-	const viewed = resolveViewedSet(scope);
-	const displayedPromptTargets = displayedPromptTargetsFor(viewed);
+	const viewed = resolveViewedWorkflowRuns(scope);
 	const liveRunIds = new Set(runs.map((run) => run.id));
 	for (const id of viewed) {
 		if (!liveRunIds.has(id)) viewed.delete(id);
-	}
-	for (const id of displayedPromptTargets.keys()) {
-		if (!liveRunIds.has(id)) displayedPromptTargets.delete(id);
 	}
 
 	let childrenByParent: Map<string, RunSnapshot[]> | undefined;
@@ -254,8 +231,7 @@ export function panelItemsFromSnapshot(
 		const status = effectiveRunStatus(run);
 		const state = panelState(status, indicator(run) === "awaiting_input", run.endedAt === undefined);
 		const affordance = state === "input" ? visibleRootPendingInput(run, runs).affordance : undefined;
-		if (affordance !== undefined) displayedPromptTargets.set(run.id, affordance.identity);
-		else displayedPromptTargets.delete(run.id);
+		const promptId = affordance === undefined ? undefined : serializePromptIdentity(affordance.identity);
 		const question = affordance?.message;
 		const choices = affordanceChoices(runs, affordance);
 		const failedStageError =
@@ -288,6 +264,7 @@ export function panelItemsFromSnapshot(
 			...(showProgress ? { progress: expandedRunProgress(run, runs, childrenByParent, runById) } : {}),
 			...(question === undefined ? {} : { question }),
 			...(choices === undefined ? {} : { choices }),
+			...(promptId === undefined ? {} : { promptId }),
 			...(reason === undefined ? {} : { reason }),
 			...(run.endedAt === undefined ? {} : { endedAt: run.endedAt }),
 			...(isViewed ? { viewed: true } : {}),
@@ -295,25 +272,41 @@ export function panelItemsFromSnapshot(
 	});
 }
 
+function sameChoices(expected: readonly string[] | undefined, actual: readonly string[] | undefined): boolean {
+	if (expected === undefined) return true;
+	const current = actual ?? [];
+	return expected.length === current.length && expected.every((choice, index) => choice === current[index]);
+}
+
 export async function answerPanelRun(
 	id: string,
 	text: string,
 	owner: WorkflowOwnerResources,
+	options?: AgentPanelAnswerOptions,
 ): Promise<AgentPanelActionResult> {
 	const runId = panelRunId(id);
 	if (runId === undefined) return { ok: false, reason: "not a workflow run" };
 	const runs = owner.store.graphSnapshot().runs;
 	const run = findSnapshotRun(runs, runId);
 	if (run === undefined) return { ok: false, reason: `Run ${runId} not found.` };
-	const displayedPromptTargets = displayedPromptTargetsFor(viewedWorkflowRuns(owner.store));
 	const affordance = visibleRootPendingInput(run, runs).affordance;
-	const displayed = displayedPromptTargets.get(runId);
+	const currentChoices = affordanceChoices(runs, affordance);
+	const hasExpectedOptions = options?.promptId !== undefined || options?.question !== undefined;
+	if (!hasExpectedOptions) {
+		return {
+			ok: false,
+			reason:
+				affordance === undefined
+					? "This workflow run does not have a single answerable prompt."
+					: "The pending prompt changed before the answer was sent.",
+		};
+	}
+	const currentPromptId = affordance === undefined ? undefined : serializePromptIdentity(affordance.identity);
 	if (
-		displayed !== undefined &&
-		(affordance === undefined ||
-			affordance.identity[0] !== displayed[0] ||
-			affordance.identity[1] !== displayed[1] ||
-			affordance.identity[2] !== displayed[2])
+		affordance === undefined ||
+		(options?.promptId !== undefined && options.promptId !== currentPromptId) ||
+		(options?.question !== undefined && options.question !== affordance.message) ||
+		!sameChoices(options?.choices, currentChoices)
 	) {
 		return {
 			ok: false,
@@ -322,9 +315,6 @@ export async function answerPanelRun(
 					? "No unique pending prompt matches the displayed question."
 					: "The pending prompt changed before the answer was sent.",
 		};
-	}
-	if (affordance === undefined) {
-		return { ok: false, reason: "This workflow run does not have a single answerable prompt." };
 	}
 	const [ownerRunId, stageId, promptId] = affordance.identity;
 	if (stageId === null) {
@@ -338,15 +328,12 @@ export async function answerPanelRun(
 				return { ok: false, reason: primitivePromptAnswerRejection(promptId, pending) };
 			}
 			const ok = owner.store.resolvePendingPrompt(ownerRunId, promptId, coerced.value);
-			if (ok) displayedPromptTargets.delete(runId);
 			return ok ? { ok: true } : { ok: false, reason: `No matching pending prompt ${promptId}.` };
 		}
 		const ok = owner.store.resolvePendingPrompt(ownerRunId, promptId, text);
-		if (ok) displayedPromptTargets.delete(runId);
 		return ok ? { ok: true } : { ok: false, reason: `No matching pending prompt ${promptId}.` };
 	}
 	const stageTarget = ownerRunId === runId ? stageId : `${ownerRunId}:${stageId}`;
 	const result = await workflowAnswerAction({ action: "answer", runId, stageId: stageTarget, promptId, text }, owner);
-	if (result.status === "ok") displayedPromptTargets.delete(runId);
 	return result.status === "ok" ? { ok: true } : { ok: false, reason: result.message ?? result.status };
 }

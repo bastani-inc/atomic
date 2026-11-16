@@ -3,11 +3,18 @@ import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { taskPanelItems } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
-import { taskClocksFor } from "../../packages/coding-agent/src/core/tasks/live-elapsed.js";
+import { taskClockOf, taskClocksFor } from "../../packages/coding-agent/src/core/tasks/live-elapsed.js";
 import { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import type { ChatBoxSession } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
-import { AgentPanelModel } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import {
+	AGENT_PANEL_IDLE_ROWS,
+	AgentPanelModel,
+} from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
+import type { ChatSessionHostOpts } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-types.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { renderTaskFooter } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -342,4 +349,179 @@ test("reconcile keeps unchanged task references and prototype-wrapped views shar
 	} finally {
 		await fixture.dispose();
 	}
+});
+
+const identity = (value: string): string => value;
+
+function stageHostOptions(overrides: Partial<ChatSessionHostOpts> = {}): ChatSessionHostOpts {
+	const model = { provider: "faux", id: "stage-model", reasoning: false, contextWindow: 1000 };
+	const session = {
+		state: { model, thinkingLevel: "off" },
+		model,
+		sessionManager: SessionManager.inMemory("/work"),
+		getContextUsage: () => undefined,
+		modelRuntime: { isUsingOAuth: () => false },
+		isStreaming: false,
+	} as unknown as ChatBoxSession;
+	return {
+		style: {
+			dim: identity,
+			text: identity,
+			textMuted: identity,
+			accent: identity,
+			accentBold: identity,
+			rule: (_hex, line) => line,
+			cursor: () => "",
+			blank: (width) => " ".repeat(width),
+			editorRuleColor: () => "#ffffff",
+		},
+		editorTheme: {
+			borderColor: identity,
+			selectList: {
+				selectedPrefix: identity,
+				selectedText: identity,
+				description: identity,
+				scrollInfo: identity,
+				noMatch: identity,
+			},
+		},
+		footerData: {
+			getGitBranch: () => null,
+			getExtensionStatuses: () => new Map<string, string>(),
+			getAvailableProviderCount: () => 1,
+			onBranchChange: () => () => {},
+		},
+		getChatBoxSession: () => session,
+		...overrides,
+	};
+}
+
+test("two stage chat hosts with the same pooled task id keep independent footer clocks and unbound records do not tick (#5224)", () => {
+	initTheme("dark");
+	let now = 700_000;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const sharedId = taskRecord("task-1-0-0").ref.taskId;
+	const poolA = new PooledStageTaskSource(async () => ({ kind: "detail", detail: {} }));
+	const poolB = new PooledStageTaskSource(async () => ({ kind: "detail", detail: {} }));
+	poolA.apply({
+		tasks: [{ ...taskRecord(sharedId), title: "Worker A", metrics: { elapsedMs: 3_600_000 } }],
+		background: [sharedId],
+		settlement: [],
+		activity: [],
+		stdin: [],
+		statuses: [],
+	});
+	poolB.apply({
+		tasks: [{ ...taskRecord(sharedId), title: "Worker B", metrics: { elapsedMs: 5000 } }],
+		background: [sharedId],
+		settlement: [],
+		activity: [],
+		stdin: [],
+		statuses: [],
+	});
+	const hostA = new ChatSessionHost(stageHostOptions({ getTaskSource: () => poolA }));
+	const hostB = new ChatSessionHost(stageHostOptions({ getTaskSource: () => poolB }));
+	const unboundPool = new PooledStageTaskSource(async () => ({ kind: "detail", detail: {} }));
+	unboundPool.apply({
+		tasks: [{ ...taskRecord(sharedId), title: "Unbound worker", metrics: { elapsedMs: 2000 } }],
+		background: [sharedId],
+		settlement: [],
+		activity: [],
+		stdin: [],
+		statuses: [],
+	});
+	let unboundInspector: TaskInspector | undefined;
+	try {
+		const frameA1 = stripVTControlCharacters(hostA.renderFooter(120).join("\n"));
+		hostA.renderTaskFooter(120);
+		assert.match(frameA1, /Worker A.*1h 0m/);
+
+		const frameB1 = stripVTControlCharacters(hostB.renderFooter(120).join("\n"));
+		hostB.renderTaskFooter(120);
+		assert.match(frameB1, /Worker B.*5s/);
+		assert.doesNotMatch(frameB1, /1h/);
+
+		now += 1000;
+		const frameB2 = stripVTControlCharacters(hostB.renderFooter(120).join("\n"));
+		hostB.renderTaskFooter(120);
+		assert.match(frameB2, /Worker B.*6s/);
+
+		const unbound1 = stripVTControlCharacters(renderTaskFooter(unboundPool.backgroundTasks, 100).join("\n"));
+		assert.match(unbound1, /Unbound worker.*2s/);
+		now += 60_000;
+		const unbound2 = stripVTControlCharacters(renderTaskFooter(unboundPool.backgroundTasks, 100).join("\n"));
+		assert.match(unbound2, /Unbound worker.*2s/);
+		assert.doesNotMatch(unbound2, /1m/);
+
+		unboundInspector = new TaskInspector(
+			unboundPool,
+			() => {},
+			() => {},
+		);
+		assert.match(text(unboundInspector), /Unbound worker.*2s/);
+		const bound1 = stripVTControlCharacters(renderTaskFooter(unboundPool.backgroundTasks, 100).join("\n"));
+		assert.match(bound1, /Unbound worker.*2s/);
+		now += 10_000;
+		const bound2 = stripVTControlCharacters(renderTaskFooter(unboundPool.backgroundTasks, 100).join("\n"));
+		assert.match(bound2, /Unbound worker.*12s/);
+		assert.match(text(unboundInspector), /Unbound worker.*12s/);
+	} finally {
+		unboundInspector?.dispose();
+		hostA.dispose();
+		hostB.dispose();
+		clock.mockRestore();
+	}
+});
+
+test("taskClocksFor syncs an unmanaged source only on initial subscription and renderTaskFooter projects only drawn rows (#5224)", () => {
+	initTheme("dark");
+	let notify: (() => void) | undefined;
+	let taskReads = 0;
+	const records = [taskRecord("t-1"), taskRecord("t-2")];
+	const source = {
+		get tasks() {
+			taskReads++;
+			return records;
+		},
+		subscribe(listener: () => void) {
+			notify = listener;
+			return () => {
+				notify = undefined;
+			};
+		},
+	};
+	taskClocksFor(source);
+	taskClocksFor(source);
+	taskClocksFor(source);
+	assert.equal(taskReads, 1);
+	notify?.();
+	assert.equal(taskReads, 2);
+	taskClocksFor(source);
+	assert.equal(taskReads, 2);
+
+	const unsubscribedTasks = [taskRecord("plain-1")];
+	const unsubscribedSource = { tasks: unsubscribedTasks };
+	const unsubscribedClocks = taskClocksFor(unsubscribedSource);
+	assert.equal(taskClockOf(unsubscribedTasks[0]!), unsubscribedClocks);
+	const addedTask = taskRecord("plain-2");
+	unsubscribedTasks.push(addedTask);
+	taskClocksFor(unsubscribedSource);
+	assert.equal(taskClockOf(addedTask), unsubscribedClocks);
+
+	const projectedIds = new Set<string>();
+	const manyTasks = Array.from({ length: 20 }, (_, index) => {
+		const base = taskRecord(`footer-task-${index}`);
+		const metrics = { elapsedMs: (index + 1) * 1000 };
+		return Object.defineProperty({ ...base, title: `Task ${index}` }, "metrics", {
+			enumerable: true,
+			get() {
+				projectedIds.add(base.ref.taskId);
+				return metrics;
+			},
+		});
+	});
+	const lines = renderTaskFooter(manyTasks, 100).map((line) => stripVTControlCharacters(line));
+	assert.equal(projectedIds.size, AGENT_PANEL_IDLE_ROWS);
+	assert.equal(lines.length, AGENT_PANEL_IDLE_ROWS + 1);
+	assert.match(lines.at(-1) ?? "", /\+16 more/);
 });

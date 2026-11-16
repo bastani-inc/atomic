@@ -63,6 +63,10 @@ export function panelProgressBar(done: number, total: number, cells = 16): strin
  */
 export class AgentPanelModel {
 	private readonly finishedAt = new Map<string, number>();
+	private readonly finishedPass = new Map<string, number>();
+	private pass = 0;
+	private passMatchedFinished = 0;
+	private hasLocalClocks = false;
 	private readonly elapsedClocks = new TaskElapsedClocks();
 	private readonly now: () => number;
 	constructor(now: () => number = Date.now) {
@@ -72,52 +76,84 @@ export class AgentPanelModel {
 	finishedSince(id: string): number | undefined {
 		return this.finishedAt.get(id);
 	}
-	rows(rows: readonly AgentPanelRow[], keep: (row: AgentPanelRow) => boolean = () => false): AgentPanelRow[] {
-		const now = this.now();
-		const live = new Set<string>();
-		const localClockIds = new Set<string>();
+	beginPass(): { readonly now: number; readonly pass: number } {
+		this.passMatchedFinished = 0;
+		return { now: this.now(), pass: ++this.pass };
+	}
+	keepFinished(id: string, keep: boolean, now: number, pass: number): boolean {
+		let since = this.finishedAt.get(id);
+		if (since === undefined) {
+			since = now;
+			this.finishedAt.set(id, now);
+		}
+		if (this.finishedPass.get(id) !== pass) {
+			this.finishedPass.set(id, pass);
+			this.passMatchedFinished++;
+		}
+		return keep || now - since < AGENT_PANEL_DROP_MS;
+	}
+	endPass(pass: number): void {
+		if (this.passMatchedFinished === this.finishedAt.size) return;
+		for (const [id, seenPass] of this.finishedPass) {
+			if (seenPass !== pass) {
+				this.finishedPass.delete(id);
+				this.finishedAt.delete(id);
+			}
+		}
+	}
+	withElapsed(row: AgentPanelRow, now = this.now()): AgentPanelRow {
+		if (row.kind === "workflow" || row.state === "queued") return row;
+		const taskId = agentPanelTaskId(row.id) ?? row.id;
+		const sourceClocks = taskClockOf(row);
+		if (sourceClocks === undefined) this.hasLocalClocks = true;
+		const elapsedMs = (sourceClocks ?? this.elapsedClocks).elapsedMs(
+			taskId,
+			row.elapsedMs,
+			taskClockRunning(row.state),
+			now,
+		);
+		return elapsedMs === undefined || elapsedMs === row.elapsedMs ? row : { ...row, elapsedMs };
+	}
+	rows(
+		rows: readonly AgentPanelRow[],
+		keep: (row: AgentPanelRow) => boolean = () => false,
+		window?: { readonly start?: number; readonly limit?: number },
+	): AgentPanelRow[] {
+		const { now, pass } = this.beginPass();
 		const inputRows: AgentPanelRow[] = [];
 		const runningRows: AgentPanelRow[] = [];
 		const otherRows: AgentPanelRow[] = [];
 		const finishedRows: AgentPanelRow[] = [];
 		for (const row of rows) {
-			live.add(row.id);
 			const finished = isFinishedPanelRow(row);
-			const trackedClock = row.kind !== "workflow" && row.state !== "queued";
-			const taskId = trackedClock ? (agentPanelTaskId(row.id) ?? row.id) : undefined;
-			const sourceClocks = trackedClock ? taskClockOf(row) : undefined;
-			if (taskId !== undefined && sourceClocks === undefined) localClockIds.add(taskId);
-			if (!finished) {
-				this.finishedAt.delete(row.id);
-			} else {
-				let since = this.finishedAt.get(row.id);
-				if (since === undefined) {
-					since = now;
-					this.finishedAt.set(row.id, now);
-				}
-				if (!keep(row) && now - since >= AGENT_PANEL_DROP_MS) continue;
-			}
-			let item = row;
-			if (taskId !== undefined) {
-				const elapsedMs = (sourceClocks ?? this.elapsedClocks).elapsedMs(
-					taskId,
-					row.elapsedMs,
-					taskClockRunning(row.state),
-					now,
-				);
-				if (elapsedMs !== undefined && elapsedMs !== row.elapsedMs) item = { ...row, elapsedMs };
-			}
-			if (row.state === "input") inputRows.push(item);
-			else if (row.state === "running") runningRows.push(item);
-			else if (finished) finishedRows.push(item);
-			else otherRows.push(item);
+			if (finished) {
+				if (!this.keepFinished(row.id, keep(row), now, pass)) continue;
+				finishedRows.push(row);
+			} else if (row.state === "input") inputRows.push(row);
+			else if (row.state === "running") runningRows.push(row);
+			else otherRows.push(row);
 		}
-		this.elapsedClocks.prune(localClockIds);
-		for (const id of this.finishedAt.keys()) if (!live.has(id)) this.finishedAt.delete(id);
-		return [...inputRows, ...runningRows, ...otherRows, ...finishedRows];
+		this.endPass(pass);
+		const ordered = [...inputRows, ...runningRows, ...otherRows, ...finishedRows];
+		const start = Math.max(0, window?.start ?? 0);
+		const limit = Math.max(0, window?.limit ?? AGENT_PANEL_IDLE_ROWS);
+		const end = Math.min(ordered.length, start + limit);
+		for (let index = start; index < end; index++) {
+			ordered[index] = this.withElapsed(ordered[index]!, now);
+		}
+		if (this.hasLocalClocks) {
+			const localClockIds = new Set<string>();
+			for (const row of ordered) {
+				if (row.kind === "workflow" || row.state === "queued") continue;
+				if (taskClockOf(row) === undefined) localClockIds.add(agentPanelTaskId(row.id) ?? row.id);
+			}
+			this.elapsedClocks.prune(localClockIds);
+			if (localClockIds.size === 0) this.hasLocalClocks = false;
+		}
+		return ordered;
 	}
 	/** Whether a finished row has been finished long enough to read dim. */
-	faded(row: AgentPanelRow): boolean {
+	faded(row: Pick<AgentPanelRow, "id">): boolean {
 		const since = this.finishedAt.get(row.id);
 		return since !== undefined && this.now() - since >= AGENT_PANEL_FADE_MS;
 	}
@@ -191,6 +227,8 @@ export interface AgentPanelRenderOptions {
 	readonly faded?: (row: AgentPanelRow) => boolean;
 	/** First row to show when focused, so the selection stays in view. */
 	readonly scroll?: number;
+	readonly hiddenAbove?: number;
+	readonly hiddenBelow?: number;
 }
 
 /**
@@ -205,7 +243,8 @@ export function renderAgentPanelRows(
 ): string[] {
 	if (rows.length === 0) return [];
 	const focused = options.selectedId !== undefined;
-	const start = focused ? Math.max(0, options.scroll ?? 0) : 0;
+	const preSliced = options.hiddenAbove !== undefined || options.hiddenBelow !== undefined;
+	const start = focused && !preSliced ? Math.max(0, options.scroll ?? 0) : 0;
 	const visible = focused ? rows.slice(start, start + AGENT_PANEL_FOCUSED_ROWS) : rows;
 	const shown = focused ? visible : visible.slice(0, AGENT_PANEL_IDLE_ROWS);
 	let nameWidth = 4;
@@ -247,7 +286,7 @@ export function renderAgentPanelRows(
 		const selected = options.selectedId === AGENT_PANEL_MAIN_ID;
 		line(AGENT_PANEL_MAIN_ID, selected ? style.accent("●") : style.text("●"), "main", "", "", false);
 	}
-	const hiddenAbove = focused ? Math.min(start, rows.length) : 0;
+	const hiddenAbove = options.hiddenAbove ?? (focused ? Math.min(start, rows.length) : 0);
 	if (hiddenAbove > 0) lines.push(style.dim(truncateToWidth(`  ↑ ${hiddenAbove} more`, width)));
 	for (const raw of shown) {
 		// Names and tasks come from models and commands: control sequences never reach the terminal.
@@ -264,7 +303,8 @@ export function renderAgentPanelRows(
 			queued,
 		);
 	}
-	const hiddenBelow = focused ? Math.max(0, rows.length - (start + shown.length)) : rows.length - shown.length;
+	const hiddenBelow =
+		options.hiddenBelow ?? (focused ? Math.max(0, rows.length - (start + shown.length)) : rows.length - shown.length);
 	if (hiddenBelow > 0) lines.push(style.dim(truncateToWidth(`  +${hiddenBelow} more`, width)));
 	return lines;
 }
@@ -318,7 +358,10 @@ export class AgentPanelFocus {
 		if (settled !== undefined) {
 			this.stopConfirm.reset();
 			this.finishedWhileArmed = settled;
-		} else if (this.finishedWhileArmed !== undefined && !rows.some((row) => row.id === this.finishedWhileArmed?.id)) {
+		} else if (
+			this.finishedWhileArmed !== undefined &&
+			!rows.some((row) => row.id === this.finishedWhileArmed?.id && isFinishedPanelRow(row))
+		) {
 			this.finishedWhileArmed = undefined;
 		}
 		if (this.selectedId !== AGENT_PANEL_MAIN_ID && !rows.some((row) => row.id === this.selectedId))
@@ -340,9 +383,6 @@ export class AgentPanelFocus {
 		const id = this.stopConfirm.pending();
 		return id === undefined ? undefined : this.rows.find((row) => row.id === id);
 	}
-	private ids(): string[] {
-		return [AGENT_PANEL_MAIN_ID, ...this.rows.map((row) => row.id)];
-	}
 	private keepInView(): void {
 		const index = this.rows.findIndex((row) => row.id === this.selectedId);
 		if (index < 0) return;
@@ -351,9 +391,12 @@ export class AgentPanelFocus {
 		this.scroll = Math.max(0, Math.min(this.scroll, Math.max(0, this.rows.length - AGENT_PANEL_FOCUSED_ROWS)));
 	}
 	private move(delta: number): void {
-		const ids = this.ids();
-		const index = Math.max(0, ids.indexOf(this.selectedId));
-		this.selectedId = ids[Math.max(0, Math.min(ids.length - 1, index + delta))] ?? AGENT_PANEL_MAIN_ID;
+		const current =
+			this.selectedId === AGENT_PANEL_MAIN_ID
+				? 0
+				: Math.max(0, this.rows.findIndex((row) => row.id === this.selectedId) + 1);
+		const next = Math.max(0, Math.min(this.rows.length, current + delta));
+		this.selectedId = next === 0 ? AGENT_PANEL_MAIN_ID : (this.rows[next - 1]?.id ?? AGENT_PANEL_MAIN_ID);
 		this.keepInView();
 	}
 	/** Every key belongs to the focused panel; returns whether it changed anything worth a repaint. */

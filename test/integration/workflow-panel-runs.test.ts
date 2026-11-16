@@ -146,8 +146,13 @@ test("nested child prompts surface on the root row and answer the child's exact 
 	assert.equal(rootRow?.question, "Delete the production database?");
 	assert.equal(rootRow?.task, "Delete the production database?");
 	assert.deepEqual(rootRow?.choices, ["no", "yes"]);
+	assert.equal(typeof rootRow?.promptId, "string");
 
-	const res = await source.answer!(`run:${rootId}`, "no");
+	const res = await source.answer!(`run:${rootId}`, "no", {
+		promptId: rootRow?.promptId,
+		question: rootRow?.question,
+		choices: rootRow?.choices,
+	});
 	assert.deepEqual(res, { ok: true });
 	assert.equal(row(rootId)?.state, "running");
 
@@ -160,7 +165,8 @@ test("nested child prompts surface on the root row and answer the child's exact 
 		}),
 		true,
 	);
-	assert.equal(source.items().find((item) => item.id === `run:${rootId}`)?.question, "First question?");
+	const firstRow = source.items().find((item) => item.id === `run:${rootId}`);
+	assert.equal(firstRow?.question, "First question?");
 	store.resolveStagePendingPrompt("nested-child-ask", "confirm-db", "child-prompt-1", "done");
 	assert.equal(
 		store.recordStagePendingPrompt("nested-child-ask", "confirm-db", {
@@ -171,8 +177,14 @@ test("nested child prompts surface on the root row and answer the child's exact 
 		}),
 		true,
 	);
-	const staleAttempt = await source.answer!(`run:${rootId}`, "blind answer");
+	source.items();
+	const staleAttempt = await source.answer!(`run:${rootId}`, "blind answer", {
+		promptId: firstRow?.promptId,
+		question: firstRow?.question,
+	});
 	assert.equal(staleAttempt.ok, false);
+	const missingIdentityAttempt = await source.answer!(`run:${rootId}`, "blind answer");
+	assert.equal(missingIdentityAttempt.ok, false);
 });
 
 test("parallel prompts and custom-UI prompts omit single-prompt question and choices (#5224)", async () => {
@@ -247,6 +259,17 @@ test("panel rows strip bidi overrides and OSC sequences from questions, choices 
 	});
 	store.recordRunEnd(failId, "failed", undefined, "\u202efatal \x1b]0;pwned\x07error");
 	assert.equal(row(failId)?.reason, "fatal error");
+
+	const surrogateReasonId = makeRun("panel-surrogate-reason", "surrogate-fail", [stage("build", "running")]);
+	const boundaryError = `${"x".repeat(118)}🚀 tail`;
+	store.recordStageEnd(surrogateReasonId, {
+		...stage("build", "failed"),
+		error: boundaryError,
+	});
+	store.recordRunEnd(surrogateReasonId, "failed", undefined, boundaryError);
+	const truncatedReason = row(surrogateReasonId)?.reason;
+	assert.equal(truncatedReason, `${"x".repeat(118)}…`);
+	assert.equal(truncatedReason?.isWellFormed(), true);
 
 	const controlNameId = makeRun("panel-sanitize-name", "\u202e\x1b[2J\x1b]0;pwned\x07", [stage("build", "running")]);
 	assert.equal(row(controlNameId)?.name, "workflow");

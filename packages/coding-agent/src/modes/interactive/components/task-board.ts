@@ -1,6 +1,7 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentPanelItem } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import { taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
 import { theme } from "../theme/theme.js";
 import { taskDisplayText, taskDuration, taskLabel, taskState } from "./task-row.js";
 
@@ -129,7 +130,14 @@ export function compactTokens(tokens: number): string {
 }
 
 function rowElapsed(row: TaskBoardRow): number | undefined {
-	return row.kind === "task" ? row.task.metrics?.elapsedMs : row.item.elapsedMs;
+	if (row.kind === "task") return row.task.metrics?.elapsedMs;
+	if (row.item.kind !== "workflow" && row.item.state !== "queued") {
+		const clocks = taskClockOf(row.item);
+		if (clocks !== undefined) {
+			return clocks.elapsedMs(row.item.id, row.item.elapsedMs, taskClockRunning(row.item.state));
+		}
+	}
+	return row.item.elapsedMs;
 }
 function rowTokens(row: TaskBoardRow): number | undefined {
 	return row.kind === "task" ? row.task.metrics?.tokenCount : row.item.tokens;

@@ -962,9 +962,10 @@ Here `showDeploy` stands for your extension's own view of an item. `items()` ret
 | `kind` | `"agent"`, `"shell"` or `"workflow"`. It decides the row's layout. |
 | `state` | `running`, `queued`, `input` (waits for an answer), `paused`, `stopping`, `done`, `failed` or `stopped`. It decides the glyph, the state word, the `/tasks` group and whether `x` stops or dismisses. |
 | `name`, `task` | The name and what it works on, for example `stage build`. |
-| `elapsedMs`, `tokens` | Shown on the right. Between your updates, the panel advances the time of a running or paused agent or shell item. |
+| `elapsedMs`, `tokens` | Shown on the right. Between your updates, the panel and `/tasks` share the advancing time of a running or paused agent or shell item. |
 | `progress` | `{ done, total }` stages, drawn as a bar. |
 | `question`, `choices` | What an `input` item asks, and its numbered choices. |
+| `promptId` | Optional opaque identity of that pending question. Change it for each new question, even when its text and choices repeat. |
 | `reason` | A failed item's one-line reason. |
 | `queued` | Messages typed to it that it has not taken yet. |
 | `endedAt` | When a finished item finished. |
@@ -974,13 +975,13 @@ Atomic strips terminal control sequences from the text fields before drawing the
 
 The actions are optional:
 
-- `open(id, options)` runs on Enter or → on the row. Return `false` (or throw) when the item cannot be opened. `/tasks` then stays open and shows `Could not open <name>`, and a throw is also reported as an extension error. When the view you opened goes back one level, call `options.onReturn()`, so the panel or `/tasks` the user came from shows again.
+- `open(id, options)` runs on Enter or → on the row. Return `false` (or throw) when the item cannot be opened. `/tasks` then stays open and shows `Could not open <name>`. The focused agent panel reports the same failure as a warning. A failed open does not mark the item viewed, and a throw is also reported as an extension error. When the view you opened goes back one level, call `options.onReturn()`, so the panel or `/tasks` the user came from shows again.
 - `stop(id)` runs on the second `x` for an unfinished item. A finished item is dismissed by the host instead, with no call to your source.
-- `answer(id, text)` sends the reply typed in an `input` item's `/tasks` peek card. Offer `question` and `answer` only for questions that typed text can answer.
+- `answer(id, text, options)` sends the reply typed in an `input` item's `/tasks` peek card. Offer `question` and `answer` only for questions that typed text can answer. `options` carries the `promptId`, `question` and `choices` shown when the reply was started. Compare its `promptId` with the current pending question before delivering the reply, and return `{ ok: false, reason }` if they differ. This prevents a reply to an earlier question from answering its replacement.
 
 `stop` and `answer` resolve to `{ ok: true }`, or to `{ ok: false, reason }` to show `reason` to the user.
 
-The types are exported from `@bastani/atomic`: `AgentPanelSource`, `AgentPanelItem`, `AgentPanelState`, `AgentPanelActionResult`, `AgentPanelOpenOptions`, `AgentPanelSourceRegistration` and `AgentPanelSession`. The same rows are available outside extensions. `agentPanelItems(session)` returns the session's tasks and every source's items, `subscribeAgentPanel(session, listener)` notifies on any change, including after a reload, and `openAgentPanelItem`, `stopAgentPanelItem` and `answerAgentPanelItem` run the actions by item id. `dismissedAgentPanelItems(session)` is the session's set of dismissed ids, and `agentPanelTaskId(id)` returns the task id of a `task:` item.
+The types are exported from `@bastani/atomic`: `AgentPanelSource`, `AgentPanelItem`, `AgentPanelState`, `AgentPanelActionResult`, `AgentPanelOpenOptions`, `AgentPanelAnswerOptions`, `AgentPanelSourceRegistration` and `AgentPanelSession`. The same rows are available outside extensions. `agentPanelItems(session)` returns the session's tasks and every source's items, `subscribeAgentPanel(session, listener)` notifies on any change, including after a reload, and `openAgentPanelItem`, `stopAgentPanelItem` and `answerAgentPanelItem` run the actions by item id. Obtain the item through `agentPanelItems(session)` before calling these helpers. When calling `answerAgentPanelItem(session, id, text, options)`, pass the question's captured `AgentPanelAnswerOptions` rather than reading a new item immediately before sending. `dismissedAgentPanelItems(session)` is the session's set of dismissed ids, and `agentPanelTaskId(id)` returns the task id of a `task:` item.
 
 ### pi.getWorkflowHostModules()
 

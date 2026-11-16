@@ -7,7 +7,7 @@
 import { sanitizeTerminalText } from "../../utils/terminal-text.ts";
 import type { ExtensionError } from "../extensions/runtime-types.ts";
 import type { TaskId, TaskRecord } from "./contracts.js";
-import { bindTaskClock, type TaskElapsedClocks, taskClockOf } from "./live-elapsed.ts";
+import { bindTaskClock, TaskElapsedClocks, taskClockOf } from "./live-elapsed.ts";
 import { getOwnerTaskStore, watchOwnerTaskStoreBinding } from "./owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "./task-view-source.js";
 
@@ -32,6 +32,7 @@ export interface AgentPanelItem {
 	readonly question?: string;
 	/** Its numbered choices, when it asks to pick one. */
 	readonly choices?: readonly string[];
+	readonly promptId?: string;
 	/** A failed item's one-line reason. */
 	readonly reason?: string;
 	/** Messages typed to it that it has not taken yet. */
@@ -43,6 +44,12 @@ export interface AgentPanelItem {
 
 export interface AgentPanelOpenOptions {
 	readonly onReturn?: () => void;
+}
+
+export interface AgentPanelAnswerOptions {
+	readonly promptId?: string;
+	readonly question?: string;
+	readonly choices?: readonly string[];
 }
 
 export type AgentPanelActionResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
@@ -62,7 +69,7 @@ export interface AgentPanelSource {
 	/** Stops a running item, after the second `x`. */
 	stop?(id: string): Promise<AgentPanelActionResult>;
 	/** Answers a waiting item's question with `text`. */
-	answer?(id: string, text: string): Promise<AgentPanelActionResult>;
+	answer?(id: string, text: string, options?: AgentPanelAnswerOptions): Promise<AgentPanelActionResult>;
 }
 
 /** The registration `pi.registerAgentPanelSource()` returns; disposed with its extension generation. */
@@ -71,6 +78,11 @@ export interface AgentPanelSourceRegistration {
 }
 
 const subscribeErrors = new WeakMap<AgentPanelSource, Error>();
+const itemIdsBySource = new WeakMap<AgentPanelSource, Set<string>>();
+
+function clearSourceRouteCache(source: AgentPanelSource): void {
+	itemIdsBySource.delete(source);
+}
 
 export class AgentPanelSourceHub {
 	private readonly sources = new Map<AgentPanelSource, () => void>();
@@ -84,6 +96,7 @@ export class AgentPanelSourceHub {
 			});
 			if (typeof sub === "function") unsubscribe = sub;
 			else throw new Error("Invalid agent panel source subscription.");
+			subscribeErrors.delete(source);
 		} catch (error) {
 			const err = sourceError(error);
 			subscribeErrors.set(source, err);
@@ -97,6 +110,7 @@ export class AgentPanelSourceHub {
 			dispose: () => {
 				if (this.sources.get(source) !== cleanup) return;
 				this.sources.delete(source);
+				clearSourceRouteCache(source);
 				cleanup();
 				this.notify();
 			},
@@ -120,8 +134,10 @@ export class AgentPanelSourceHub {
 		};
 	}
 	dispose(): void {
+		const registeredSources = [...this.sources.keys()];
 		const cleanups = [...this.sources.values()];
 		this.sources.clear();
+		for (const source of registeredSources) clearSourceRouteCache(source);
 		for (const cleanup of cleanups) cleanup();
 		this.notify();
 		this.listeners.clear();
@@ -146,7 +162,7 @@ function hubOf(session: AgentPanelSession): AgentPanelSourceHub | undefined {
 
 const taskPrefix = "task:";
 
-function taskState(task: TaskRecord): AgentPanelState {
+export function taskPanelState(task: TaskRecord): AgentPanelState {
 	switch (task.execution.kind) {
 		case "queued":
 			return "queued";
@@ -168,6 +184,83 @@ const cachedTaskItems = new WeakMap<
 	TaskRecord,
 	{ readonly taskId: string; readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
 >();
+const lazyTaskItems = new WeakMap<
+	TaskRecord,
+	{ readonly state: AgentPanelState; readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
+>();
+const lazyTaskRecords = new WeakMap<
+	AgentPanelItem,
+	{ readonly task: TaskRecord; readonly clocks: TaskElapsedClocks | undefined }
+>();
+
+export function taskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
+	const clocks = sourceClocks ?? taskClockOf(task);
+	const cached = cachedTaskItems.get(task);
+	const state = taskPanelState(task);
+	const question = task.attention.kind === "input-needed" ? task.attention.prompt || undefined : undefined;
+	const kind = task.kind === "agent" ? "agent" : "shell";
+	const name = task.kind === "agent" ? (task.agentName ?? "agent") : "shell";
+	const title = task.title || "";
+	const reason =
+		state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed"
+			? (task.execution.result.message.split("\n")[0] ?? "")
+			: undefined;
+	if (
+		cached !== undefined &&
+		cached.clocks === clocks &&
+		cached.taskId === task.ref.taskId &&
+		cached.item.kind === kind &&
+		cached.item.state === state &&
+		cached.item.name === name &&
+		cached.item.task === title &&
+		cached.item.elapsedMs === task.metrics?.elapsedMs &&
+		cached.item.tokens === task.metrics?.tokenCount &&
+		cached.item.question === question &&
+		cached.item.reason === reason
+	)
+		return cached.item;
+	const item: AgentPanelItem = {
+		id: `${taskPrefix}${task.ref.taskId}`,
+		kind,
+		state,
+		name,
+		task: title,
+		...(task.metrics?.elapsedMs === undefined ? {} : { elapsedMs: task.metrics.elapsedMs }),
+		...(task.metrics?.tokenCount === undefined ? {} : { tokens: task.metrics.tokenCount }),
+		...(question ? { question } : {}),
+		...(reason === undefined ? {} : { reason }),
+	};
+	if (clocks !== undefined) bindTaskClock(item, clocks);
+	cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, item });
+	return item;
+}
+
+export function lazyTaskPanelItem(task: TaskRecord, sourceClocks?: TaskElapsedClocks): AgentPanelItem {
+	const state = taskPanelState(task);
+	const cached = lazyTaskItems.get(task);
+	if (cached !== undefined && cached.state === state && cached.clocks === sourceClocks) {
+		return cached.item;
+	}
+	const item: AgentPanelItem = {
+		id: `${taskPrefix}${task.ref.taskId}`,
+		kind: task.kind === "agent" ? "agent" : "shell",
+		state,
+		get name() {
+			return taskPanelItem(task, sourceClocks).name;
+		},
+		get task() {
+			return taskPanelItem(task, sourceClocks).task;
+		},
+	};
+	lazyTaskItems.set(task, { state, clocks: sourceClocks, item });
+	lazyTaskRecords.set(item, { task, clocks: sourceClocks });
+	return item;
+}
+
+export function materializePanelItem(item: AgentPanelItem): AgentPanelItem {
+	const entry = lazyTaskRecords.get(item);
+	return entry === undefined ? item : taskPanelItem(entry.task, entry.clocks);
+}
 
 /**
  * One panel item per background task of `source` that is not in `dismissed`, in admission order. The main chat's panel
@@ -182,47 +275,7 @@ export function taskPanelItems(
 	const sourceClocks = taskClockOf(source);
 	return source.backgroundTasks
 		.filter((task) => !dismissed.has(task.ref.taskId) && (!topLevelOnly || task.parentTaskId === undefined))
-		.map((task): AgentPanelItem => {
-			const clocks = sourceClocks ?? taskClockOf(task);
-			const cached = cachedTaskItems.get(task);
-			const state = taskState(task);
-			const question = task.attention.kind === "input-needed" ? task.attention.prompt || undefined : undefined;
-			const kind = task.kind === "agent" ? "agent" : "shell";
-			const name = task.kind === "agent" ? (task.agentName ?? "agent") : "shell";
-			const title = task.title || "";
-			const reason =
-				state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed"
-					? (task.execution.result.message.split("\n")[0] ?? "")
-					: undefined;
-			if (
-				cached !== undefined &&
-				cached.clocks === clocks &&
-				cached.taskId === task.ref.taskId &&
-				cached.item.kind === kind &&
-				cached.item.state === state &&
-				cached.item.name === name &&
-				cached.item.task === title &&
-				cached.item.elapsedMs === task.metrics?.elapsedMs &&
-				cached.item.tokens === task.metrics?.tokenCount &&
-				cached.item.question === question &&
-				cached.item.reason === reason
-			)
-				return cached.item;
-			const item: AgentPanelItem = {
-				id: `${taskPrefix}${task.ref.taskId}`,
-				kind,
-				state,
-				name,
-				task: title,
-				...(task.metrics?.elapsedMs === undefined ? {} : { elapsedMs: task.metrics.elapsedMs }),
-				...(task.metrics?.tokenCount === undefined ? {} : { tokens: task.metrics.tokenCount }),
-				...(question ? { question } : {}),
-				...(reason === undefined ? {} : { reason }),
-			};
-			if (clocks !== undefined) bindTaskClock(item, clocks);
-			cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, item });
-			return item;
-		});
+		.map((task): AgentPanelItem => taskPanelItem(task, sourceClocks));
 }
 
 const reportedSources = new WeakSet<AgentPanelSource>();
@@ -285,10 +338,20 @@ function isPanelItem(item: AgentPanelItem): boolean {
 		optionalNumber(item.endedAt) &&
 		optionalBoolean(item.viewed) &&
 		optionalString(item.question) &&
+		optionalString(item.promptId) &&
 		optionalString(item.reason) &&
 		(item.choices === undefined || item.choices.every((choice) => typeof choice === "string")) &&
 		(p === undefined || (optionalNumber(p.done) && optionalNumber(p.total) && p.done >= 0 && p.total >= 0))
 	);
+}
+
+export function promptAnswerOptionsOf(item: AgentPanelItem): AgentPanelAnswerOptions | undefined {
+	if (item.state !== "input" || !item.question) return undefined;
+	return {
+		...(item.promptId === undefined ? {} : { promptId: item.promptId }),
+		question: item.question,
+		...(item.choices === undefined ? {} : { choices: [...item.choices] }),
+	};
 }
 
 function sourceItems(source: AgentPanelSource, onError?: (error: Error) => void): readonly AgentPanelItem[] {
@@ -318,6 +381,7 @@ function sourceItems(source: AgentPanelSource, onError?: (error: Error) => void)
 					progress: progress === undefined ? undefined : { done: progress.done, total: progress.total },
 					question: item.question,
 					choices: choices === undefined ? undefined : Array.from(choices),
+					...(item.promptId === undefined ? {} : { promptId: item.promptId }),
 					reason: item.reason,
 					queued: item.queued,
 					endedAt: item.endedAt,
@@ -332,6 +396,7 @@ function sourceItems(source: AgentPanelSource, onError?: (error: Error) => void)
 	} catch (error) {
 		report(error);
 	}
+	itemIdsBySource.set(source, new Set(items.map((item) => item.id)));
 	return items;
 }
 
@@ -399,11 +464,31 @@ function sourceErrorReporter(session: AgentPanelSession): ((error: Error) => voi
 		);
 }
 
+const extensionClocksBySession = new WeakMap<object, TaskElapsedClocks>();
+
+function sessionExtensionClocks(session: object): TaskElapsedClocks {
+	let clocks = extensionClocksBySession.get(session);
+	if (clocks === undefined) {
+		clocks = new TaskElapsedClocks();
+		extensionClocksBySession.set(session, clocks);
+	}
+	return clocks;
+}
+
 export function agentPanelExtensionItems(session: AgentPanelSession & object): AgentPanelItem[] {
 	const dismissed = dismissedAgentPanelItems(session);
 	const viewed = viewedBySession.get(session);
 	const onSourceError = sourceErrorReporter(session);
+	const clocks = sessionExtensionClocks(session);
 	const all = (hubOf(session)?.all() ?? []).flatMap((source) => sourceItems(source, onSourceError));
+	const clockIds = new Set<string>();
+	for (const item of all) {
+		if (item.kind !== "workflow" && item.state !== "queued") {
+			clockIds.add(agentPanelTaskId(item.id) ?? item.id);
+			bindTaskClock(item, clocks);
+		}
+	}
+	clocks.prune(clockIds);
 	if (viewed !== undefined && viewed.size > 0) {
 		const liveIds = new Set(all.map((item) => item.id));
 		for (const id of [...viewed]) {
@@ -468,9 +553,15 @@ export function subscribeAgentPanel(session: AgentPanelSession & object, listene
 }
 
 function sourceOf(session: AgentPanelSession, id: string): AgentPanelSource | undefined {
-	return hubOf(session)
-		?.all()
-		.find((source) => sourceItems(source).some((item) => item.id === id));
+	if (typeof id !== "string") return undefined;
+	const sources = hubOf(session)?.all() ?? [];
+	for (const source of sources) {
+		const cached = itemIdsBySource.get(source);
+		if (cached !== undefined ? cached.has(id) : sourceItems(source).some((item) => item.id === id)) {
+			return source;
+		}
+	}
+	return undefined;
 }
 
 export function openAgentPanelItem(session: AgentPanelSession, id: string, options?: AgentPanelOpenOptions): boolean {
@@ -516,11 +607,12 @@ export async function answerAgentPanelItem(
 	session: AgentPanelSession,
 	id: string,
 	text: string,
+	options?: AgentPanelAnswerOptions,
 ): Promise<AgentPanelActionResult> {
 	try {
 		const source = sourceOf(session, id);
 		if (source?.answer === undefined) return { ok: false, reason: "This item cannot be answered from here." };
-		const result = await source.answer(id, text);
+		const result = await source.answer(id, text, options);
 		return result.ok ? { ok: true } : { ok: false, reason: reasonText(result.reason) };
 	} catch (error) {
 		return { ok: false, reason: sourceError(error).message };

@@ -9,8 +9,14 @@ import {
 	visibleWidth,
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
+import { type AgentPanelAnswerOptions, promptAnswerOptionsOf } from "../../../core/tasks/agent-panel-source.ts";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
-import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
+import {
+	type TaskElapsedClocks,
+	taskClockOf,
+	taskClockRunning,
+	taskClocksFor,
+} from "../../../core/tasks/live-elapsed.ts";
 import { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
@@ -98,7 +104,11 @@ export type TaskBoardSource = {
 		| ((id: string, options?: { readonly onReturn?: () => void }) => boolean)
 		| ((id: string, options?: { readonly onReturn?: () => void }) => void);
 	stop?(id: string): Promise<{ ok: true } | { ok: false; reason: string }>;
-	answer?(id: string, text: string): Promise<{ ok: true } | { ok: false; reason: string }>;
+	answer?(
+		id: string,
+		text: string,
+		options?: AgentPanelAnswerOptions,
+	): Promise<{ ok: true } | { ok: false; reason: string }>;
 	/** Records an `x` dismissal of a finished row (`task:<id>` for a task), so every view of the source leaves it out. */
 	dismiss?(id: string): void;
 };
@@ -180,6 +190,8 @@ export class TaskInspector implements Component {
 	private readonly dismissedItems = new Set<string>();
 	/** Typed peek-card replies per row, kept when the card closes and restored when it reopens. */
 	private readonly replyDrafts = new Map<string, string>();
+	private readonly paintedPrompts = new Map<string, AgentPanelAnswerOptions>();
+	private readonly replyTargets = new Map<string, AgentPanelAnswerOptions>();
 	/** A reply being sent: list keys are ignored until it finishes. */
 	private sending = false;
 	/** When the last reply was sent; an Enter within {@link REPLY_ENTER_GUARD_MS} of it reaches nothing. */
@@ -244,12 +256,21 @@ export class TaskInspector implements Component {
 				this.requestRender();
 			},
 			cancel: (task) => {
-				void this.store.cancelTask(task.ref.taskId).then((result) => {
-					this.failureNotice = result.ok
-						? ""
-						: `Could not stop the task: ${taskDisplayText(result.error.message)}`;
-					this.requestRender();
-				});
+				const environment = this.transcriptEnvironment();
+				void this.store
+					.cancelTask(task.ref.taskId)
+					.then((result) => {
+						if (result.ok) {
+							this.failureNotice = "";
+							this.requestRender();
+						} else {
+							this.reportLate(`Could not stop the task: ${taskDisplayText(result.error.message)}`, environment);
+						}
+					})
+					.catch((error) => {
+						const message = error instanceof Error ? error.message : String(error);
+						this.reportLate(`Could not stop the task: ${taskDisplayText(message)}`, environment);
+					});
 			},
 			stdinAvailable: (task) => this.store.stdinAvailable(task.ref.taskId),
 			input: (task) => {
@@ -266,7 +287,9 @@ export class TaskInspector implements Component {
 			this.taskSections = undefined;
 			this.boardStale = true;
 			if (this.navigation.focus.kind === "tasks") {
-				this.refreshOrder();
+				if (this.navigation.selectedId === undefined || this.navigationOrder.length === 0) {
+					this.refreshOrder();
+				}
 			} else {
 				const dismissed = dismissedTasks(this.store);
 				this.navigation.update(
@@ -313,13 +336,21 @@ export class TaskInspector implements Component {
 	setBoardSource(source: TaskBoardSource | undefined): () => void {
 		this.releaseBoardSource?.();
 		this.boardSource = source;
+		this.paintedPrompts.clear();
+		this.replyTargets.clear();
 		this.releaseBoardSource = source?.subscribe(() => {
 			this.boardStale = true;
 			this.requestRender();
 		});
-		this.refreshOrder();
+		const rows = this.boardRows();
+		this.refreshOrder(rows);
+		for (const row of rows) {
+			if (row.kind !== "item") continue;
+			const prompt = promptAnswerOptionsOf(row.item);
+			if (prompt !== undefined) this.paintedPrompts.set(row.id, prompt);
+		}
 		// Until the reader picks a row, the list starts on its first row, which may now be another source's waiting run.
-		const first = this.boardRows()[0];
+		const first = rows[0];
 		if (!this.selectionChosen && first !== undefined) this.navigation.select(first.id);
 		this.requestRender();
 		return () => {
@@ -327,6 +358,8 @@ export class TaskInspector implements Component {
 			this.releaseBoardSource?.();
 			this.releaseBoardSource = undefined;
 			this.boardSource = undefined;
+			this.paintedPrompts.clear();
+			this.replyTargets.clear();
 			this.refreshOrder();
 		};
 	}
@@ -359,6 +392,21 @@ export class TaskInspector implements Component {
 		if (finished !== undefined) {
 			this.navigation.stopConfirm.reset();
 			this.itemFinishedWhileArmed = { id: finished.id, name: rowName(finished) };
+		} else if (
+			this.itemFinishedWhileArmed !== undefined &&
+			!rows.some((row) => row.id === this.itemFinishedWhileArmed?.id && rowFinished(row))
+		) {
+			this.itemFinishedWhileArmed = undefined;
+		}
+		if (
+			this.navigation.finishedWhileArmed !== undefined &&
+			!tasks.some(
+				(task) =>
+					task.ref.taskId === this.navigation.finishedWhileArmed?.ref.taskId && task.execution.kind === "settled",
+			)
+		) {
+			this.navigation.finishedWhileArmed = undefined;
+			this.navigation.finishedAcknowledged = false;
 		}
 	}
 	private selectedRow(): TaskBoardRow | undefined {
@@ -371,7 +419,10 @@ export class TaskInspector implements Component {
 		if (this.peekId !== undefined) {
 			const draft = this.reply.getValue();
 			if (draft && !sent && !this.sending) this.replyDrafts.set(this.peekId, draft);
-			else this.replyDrafts.delete(this.peekId);
+			else {
+				this.replyDrafts.delete(this.peekId);
+				if (!this.sending) this.replyTargets.delete(this.peekId);
+			}
 		}
 		this.peekId = undefined;
 		this.drawnChoices = undefined;
@@ -483,10 +534,13 @@ export class TaskInspector implements Component {
 		void this.transcript.load();
 	}
 	/** A transcript's message failed after the reader left it: on the task pages if they are open, else through the host. */
-	private reportLate(reason: string, environment: TaskTranscriptEnvironment): void {
+	private reportLate(
+		reason: string,
+		environment: TaskTranscriptEnvironment | undefined = this.transcriptEnvironment(),
+	): void {
 		const clean = taskDisplayText(reason);
 		if (this.disposed) {
-			environment.notify?.(clean);
+			(environment ?? this.transcriptEnvironment())?.notify?.(clean);
 			return;
 		}
 		this.failureNotice = clean;
@@ -539,7 +593,16 @@ export class TaskInspector implements Component {
 	}
 	/** Every key belongs to the inspector except the host's thinking toggle when it leaves that alone. */
 	handleInput(data: string): boolean {
-		if (this.boardStale && this.navigation.focus.kind === "tasks") this.refreshOrder();
+		if (
+			this.boardStale &&
+			this.navigation.focus.kind === "tasks" &&
+			(this.peekId === undefined ||
+				matchesKey(data, "up") ||
+				matchesKey(data, "down") ||
+				parseWheelReport(data) !== undefined)
+		) {
+			this.refreshOrder();
+		}
 		this.selectionChosen = true;
 		return this.route(data) || !isHostThinkingToggle(data);
 	}
@@ -702,7 +765,8 @@ export class TaskInspector implements Component {
 		if (matchesKey(data, "enter") && Date.now() - this.sentAt < REPLY_ENTER_GUARD_MS) return true;
 		const row = this.selectedRow();
 		if (this.peekId !== undefined && row?.id === this.peekId) {
-			const replying = this.peekReplies(row);
+			const replying =
+				this.peekReplies(row) || (this.replyTargets.has(row.id) && this.boardSource?.answer !== undefined);
 			if (matchesKey(data, "escape")) {
 				this.closePeek();
 				return true;
@@ -747,7 +811,14 @@ export class TaskInspector implements Component {
 			this.peekId = row.id;
 			this.drawnChoices = undefined;
 			this.reply.setValue("");
-			for (const char of this.replyDrafts.get(row.id) ?? "") this.reply.handleInput(char);
+			const draft = this.replyDrafts.get(row.id) ?? "";
+			for (const char of draft) this.reply.handleInput(char);
+			if (!draft || !this.replyTargets.has(row.id)) {
+				const target =
+					this.paintedPrompts.get(row.id) ?? (row.kind === "item" ? promptAnswerOptionsOf(row.item) : undefined);
+				if (target !== undefined) this.replyTargets.set(row.id, target);
+				else this.replyTargets.delete(row.id);
+			}
 			return true;
 		}
 		if (row?.kind !== "item") return false;
@@ -838,42 +909,52 @@ export class TaskInspector implements Component {
 		if (!text || !this.boardSource?.answer) return;
 		const rowId = row.id;
 		const id = row.kind === "item" ? row.id : `task:${row.task.ref.taskId}`;
+		const expected =
+			this.replyTargets.get(rowId) ??
+			this.paintedPrompts.get(rowId) ??
+			(row.kind === "item" ? promptAnswerOptionsOf(row.item) : undefined);
+		const environment = this.transcriptEnvironment();
 		this.sending = true;
 		this.requestRender();
 		try {
-			const result = await this.boardSource.answer(id, text);
+			const result = await this.boardSource.answer(id, text, expected);
 			if (result.ok) {
 				this.sentAt = Date.now();
 				this.replyDrafts.delete(rowId);
+				this.replyTargets.delete(rowId);
 				if (this.peekId === rowId) this.closePeek(true);
 				this.status = `Sent to ${rowName(row)}`;
 			} else {
 				if (this.peekId !== rowId) this.replyDrafts.set(rowId, typed);
-				this.failureNotice = `Could not send the answer: ${taskDisplayText(result.reason)}`;
+				this.reportLate(`Could not send the answer: ${taskDisplayText(result.reason)}`, environment);
 			}
 		} catch (error) {
 			if (this.peekId !== rowId) this.replyDrafts.set(rowId, typed);
 			const message = error instanceof Error ? error.message : String(error);
-			this.failureNotice = `Could not send the answer: ${taskDisplayText(message)}`;
+			this.reportLate(`Could not send the answer: ${taskDisplayText(message)}`, environment);
 		} finally {
 			this.sending = false;
 			this.requestRender();
 		}
 	}
 	private async stopItem(row: Extract<TaskBoardRow, { kind: "item" }>): Promise<void> {
+		const environment = this.transcriptEnvironment();
 		if (!this.boardSource?.stop) {
-			this.failureNotice = "This item can't be stopped from here.";
-			this.requestRender();
+			this.reportLate("This item can't be stopped from here.", environment);
 			return;
 		}
 		try {
 			const result = await this.boardSource.stop(row.id);
-			this.failureNotice = result.ok ? "" : `Could not stop ${rowName(row)}: ${taskDisplayText(result.reason)}`;
+			if (result.ok) {
+				this.failureNotice = "";
+				this.requestRender();
+			} else {
+				this.reportLate(`Could not stop ${rowName(row)}: ${taskDisplayText(result.reason)}`, environment);
+			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			this.failureNotice = `Could not stop ${rowName(row)}: ${taskDisplayText(message)}`;
+			this.reportLate(`Could not stop ${rowName(row)}: ${taskDisplayText(message)}`, environment);
 		}
-		this.requestRender();
 	}
 	private peekContent(row: TaskBoardRow): PeekContent {
 		const state = rowState(row);
@@ -921,7 +1002,13 @@ export class TaskInspector implements Component {
 		return { ...task, metrics: { ...task.metrics, elapsedMs } };
 	}
 	private withBoardElapsed(row: TaskBoardRow): TaskBoardRow {
-		return row.kind === "task" ? { ...row, task: this.withLiveElapsed(row.task) } : row;
+		if (row.kind === "task") return { ...row, task: this.withLiveElapsed(row.task) };
+		if (row.item.kind === "workflow" || row.item.state === "queued") return row;
+		const clocks = taskClockOf(row.item);
+		if (clocks === undefined) return row;
+		const elapsedMs = clocks.elapsedMs(row.item.id, row.item.elapsedMs, taskClockRunning(row.item.state));
+		if (elapsedMs === undefined || elapsedMs === row.item.elapsedMs) return row;
+		return { ...row, item: { ...row.item, elapsedMs } };
 	}
 	/** The waiting first press of `x`, as the line under the list shows it. */
 	private stopNotice(): string {
@@ -1105,6 +1192,11 @@ export class TaskInspector implements Component {
 			body.push(theme.fg("muted", theme.bold(`   ${group.title}`)));
 			for (const sourceRow of group.rows) {
 				const row = selected && sourceRow.id === selected.id ? selected : sourceRow;
+				if (row.kind === "item") {
+					const prompt = promptAnswerOptionsOf(row.item);
+					if (prompt !== undefined) this.paintedPrompts.set(row.id, prompt);
+					else this.paintedPrompts.delete(row.id);
+				}
 				const isSelected = row.id === selected?.id;
 				if (isSelected) selectedLine = body.length;
 				body.push(row);
@@ -1119,6 +1211,10 @@ export class TaskInspector implements Component {
 					if (detail) body.push(theme.fg("dim", `      ${detail}`));
 				}
 				if (isSelected && this.peekId === row.id) {
+					if (row.kind === "item" && !this.replyTargets.has(row.id)) {
+						const prompt = promptAnswerOptionsOf(row.item);
+						if (prompt !== undefined) this.replyTargets.set(row.id, prompt);
+					}
 					const replyLines = this.sending
 						? [theme.fg("muted", "Sending…")]
 						: this.peekReplies(row)

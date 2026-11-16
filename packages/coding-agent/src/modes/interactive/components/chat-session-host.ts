@@ -4,7 +4,7 @@ import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import type { SessionStore } from "../../../core/storage/session/types.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { TaskElapsedClocks, taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
+import { taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import {
@@ -70,7 +70,6 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	private taskStore?: OwnerTaskStore;
 	/** What `/tasks` and the task footer show: the session's task store, or the host's own task source. */
 	private taskSource?: TaskViewSource;
-	private readonly footerClocks = new TaskElapsedClocks();
 	private readonly taskRowsInChat: boolean;
 	private unsubscribeTasks?: () => void;
 	private taskSession?: object;
@@ -238,7 +237,6 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (store === this.taskStore && source === this.taskSource) return;
 		this.closeTasks();
 		this.unsubscribeTasks?.();
-		this.footerClocks.clear();
 		this.taskStore = store;
 		this.taskSource = source;
 		this.unsubscribeTasks = undefined;
@@ -246,6 +244,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.transcriptComponent.invalidate();
 		this.state.requestRender?.();
 		if (!source) return;
+		taskClocksFor(source);
 		const update = () => {
 			// Without task rows the transcript shows nothing of the tasks; only the footer repaints.
 			if (this.taskRowsInChat) {
@@ -359,8 +358,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	renderTaskFooter(width: number): string[] {
-		const clocks = this.taskSource === undefined ? this.footerClocks : taskClocksFor(this.taskSource);
-		return renderTaskFooter(this.taskSource?.backgroundTasks ?? [], width, clocks);
+		if (this.taskSource === undefined) return [];
+		return renderTaskFooter(this.taskSource.backgroundTasks, width, taskClocksFor(this.taskSource));
 	}
 	renderFooter(width: number): string[] {
 		const footer = renderChatSessionFooter(this.state, width, this.hasTaskInspector && !this.taskInspectorFullscreen);
@@ -488,7 +487,6 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.taskInspector?.dispose();
 		this.unsubscribeTasks?.();
 		this.unsubscribeTaskBinding?.();
-		this.footerClocks.clear();
 		disposeChatSession(this.state);
 	}
 

@@ -10,14 +10,9 @@ import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { registerInlineFormRenderer } from "../tui/inline-form-overlay.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { buildGraphOverlayAdapter } from "../tui/overlay-adapter.js";
-import {
-	answerPanelRun,
-	markWorkflowRunViewed,
-	panelItemsFromSnapshot,
-	panelRunId,
-	viewedWorkflowRuns,
-} from "../tui/panel-runs.js";
+import { answerPanelRun, panelItemsFromSnapshot, panelRunId } from "../tui/panel-runs.js";
 import { installToolExecutionHooks } from "../tui/tool-execution-hooks.js";
+import { markWorkflowRunViewed, viewedWorkflowRuns } from "../tui/viewed-runs.js";
 import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-types.js";
 import { adoptWorkflowSessionRunState } from "./adopt-session-run-state.js";
 import { registerCompletedStageIntercomAskRouter } from "./completed-stage-intercom-ask.js";
@@ -227,7 +222,7 @@ function factory(pi: ExtensionAPI): void {
 				return { ok: false, reason: error instanceof Error ? error.message : String(error) };
 			}
 		},
-		answer: async (id, text) => answerPanelRun(id, text, owner),
+		answer: async (id, text, options) => answerPanelRun(id, text, owner, options),
 	});
 	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx, signal, onRunAccepted) => {
 		const result = await executeWorkflowTool(args, ctx, signal, onRunAccepted);

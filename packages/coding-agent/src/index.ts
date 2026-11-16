@@ -62,6 +62,7 @@ export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js
 export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory } from "./core/tasks/agent-adapter.js";
 export {
 	type AgentPanelActionResult,
+	type AgentPanelAnswerOptions,
 	type AgentPanelItem,
 	type AgentPanelOpenOptions,
 	type AgentPanelSession,

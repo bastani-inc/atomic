@@ -1,7 +1,7 @@
 import type { Component } from "@bastani/atomic-tui";
 import { agentPanelTaskId, taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
-import { TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
+import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_IDLE_ROWS, renderAgentPanelRows } from "./agent-panel.ts";
 import { TaskRow, taskLabel, taskTitle } from "./task-row.js";
@@ -61,7 +61,6 @@ export function taskListSections(
 export function isActiveBackgroundTask(task: TaskRecord): boolean {
 	return task.observation.kind === "background" && task.execution.kind !== "settled";
 }
-const defaultFooterClocks = new TaskElapsedClocks();
 
 /**
  * The rows of a chat's active background agents and shells, as the agent panel draws them: a stage or subagent chat
@@ -71,45 +70,48 @@ export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, cl
 	const input: TaskRecord[] = [];
 	const running: TaskRecord[] = [];
 	const other: TaskRecord[] = [];
+	let total = 0;
 	for (let index = tasks.length - 1; index >= 0; index--) {
 		const task = tasks[index]!;
 		if (!isActiveBackgroundTask(task)) continue;
+		total++;
 		if (task.execution.kind === "running") {
-			if (task.attention.kind === "none") running.push(task);
-			else input.push(task);
-		} else {
+			if (task.attention.kind === "none") {
+				if (input.length + running.length < AGENT_PANEL_IDLE_ROWS) running.push(task);
+			} else if (input.length < AGENT_PANEL_IDLE_ROWS) {
+				input.push(task);
+			}
+		} else if (input.length + running.length + other.length < AGENT_PANEL_IDLE_ROWS) {
 			other.push(task);
 		}
 	}
-	const ordered = [...input, ...running, ...other];
-	if (ordered.length === 0) {
-		if (clocks === undefined) defaultFooterClocks.prune(new Set());
-		return [];
-	}
+	if (total === 0) return [];
+	const shownTasks = [...input, ...running, ...other].slice(0, AGENT_PANEL_IDLE_ROWS);
 	const now = Date.now();
-	const localIds = new Set<string>();
-	const fallback = clocks ?? defaultFooterClocks;
-	const items = taskPanelItems({ backgroundTasks: ordered }, new Set(), { topLevelOnly: false }).map((row, index) => {
+	const items = taskPanelItems({ backgroundTasks: shownTasks }, new Set(), { topLevelOnly: false }).map((row) => {
 		if (row.state === "queued") return row;
+		const itemClocks = taskClockOf(row) ?? clocks;
+		if (itemClocks === undefined) return row;
 		const taskId = agentPanelTaskId(row.id) ?? row.id;
-		const sourceClocks = taskClockOf(row);
-		if (sourceClocks === undefined && clocks === undefined) localIds.add(taskId);
-		if (sourceClocks !== undefined && index >= AGENT_PANEL_IDLE_ROWS) return row;
-		const elapsedMs = (sourceClocks ?? fallback).elapsedMs(taskId, row.elapsedMs, taskClockRunning(row.state), now);
+		const elapsedMs = itemClocks.elapsedMs(taskId, row.elapsedMs, taskClockRunning(row.state), now);
 		return elapsedMs === undefined || elapsedMs === row.elapsedMs || (row.elapsedMs === undefined && elapsedMs < 1000)
 			? row
 			: { ...row, elapsedMs };
 	});
-	if (clocks === undefined) defaultFooterClocks.prune(localIds);
-	return renderAgentPanelRows(items, width, {
-		dim: (text) => theme.fg("dim", text),
-		text: (text) => theme.fg("text", text),
-		muted: (text) => theme.fg("muted", text),
-		border: (text) => theme.fg("borderMuted", text),
-		bold: (text) => theme.bold(text),
-		accent: (text) => theme.fg("accent", text),
-		success: (text) => theme.fg("success", text),
-		error: (text) => theme.fg("error", text),
-		warning: (text) => theme.fg("warning", text),
-	});
+	return renderAgentPanelRows(
+		items,
+		width,
+		{
+			dim: (text) => theme.fg("dim", text),
+			text: (text) => theme.fg("text", text),
+			muted: (text) => theme.fg("muted", text),
+			border: (text) => theme.fg("borderMuted", text),
+			bold: (text) => theme.bold(text),
+			accent: (text) => theme.fg("accent", text),
+			success: (text) => theme.fg("success", text),
+			error: (text) => theme.fg("error", text),
+			warning: (text) => theme.fg("warning", text),
+		},
+		{ hiddenBelow: total - items.length },
+	);
 }

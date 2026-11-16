@@ -67,7 +67,7 @@ export function agentPanelBoardSource(session: AgentPanelSession & object): Task
 		subscribe: (listener) => subscribeAgentPanelExtensions(session, listener),
 		open: (id, options) => openAgentPanelItem(session, id, options),
 		stop: (id) => stopAgentPanelItem(session, id),
-		answer: (id, text) => answerAgentPanelItem(session, id, text),
+		answer: (id, text, options) => answerAgentPanelItem(session, id, text, options),
 		dismiss: (id) => {
 			dismissedAgentPanelItems(session).add(id);
 		},

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
@@ -12,13 +13,20 @@ import {
 	subscribeAgentPanel,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { bindOwnerTaskStore, type OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
-import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import {
+	AGENT_PANEL_DROP_MS,
+	AGENT_PANEL_FOCUSED_ROWS,
+	AGENT_PANEL_IDLE_ROWS,
+} from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	AGENT_PANEL_REFRESH_BUDGET_MS,
-	AGENT_PANEL_REFRESH_BURST,
 	AGENT_PANEL_REFRESH_WINDOW_MS,
+	agentPanelRows,
 	bindAgentPanel,
 	setAgentPanelVisible,
+	showAgentPanel,
 } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { agentPanelBoardSource } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -234,7 +242,7 @@ test("bindAgentPanel skips row projection while hidden and budgets burst refresh
 			}
 			const immediate = sourceReads - before;
 			assert.ok(
-				immediate <= Math.max(AGENT_PANEL_REFRESH_BURST, Math.ceil(AGENT_PANEL_REFRESH_BUDGET_MS / costMs) + 1),
+				immediate <= Math.ceil(AGENT_PANEL_REFRESH_BUDGET_MS / costMs),
 				`expected bounded immediate refreshes in burst, got ${immediate}`,
 			);
 			assert.equal(vi.getTimerCount(), 2, "one panel tick and one coalesced trailing refresh");
@@ -347,4 +355,227 @@ test("extension panel sources validate malformed items and isolate throwing sour
 	const answered = await answerAgentPanelItem(session, "run:ok", "Yes");
 	assert.equal(answered.ok, false);
 	if (!answered.ok) assert.equal(typeof answered.reason, "string");
+});
+
+test("showAgentPanel does not mark a workflow row viewed when open returns false or throws and notifies on false (#5224)", async () => {
+	initTheme("dark");
+	let now = 10_000;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	try {
+		const hub = new AgentPanelSourceHub();
+		const errors: string[] = [];
+		const notices: string[] = [];
+		hub.register({
+			items: () => [
+				{ id: "run:false", kind: "workflow", state: "done", name: "refused-wf", task: "stage 1" },
+				{ id: "run:throw", kind: "workflow", state: "done", name: "throwing-wf", task: "stage 1" },
+			],
+			subscribe: () => () => {},
+			open: (id) => {
+				if (id === "run:false") return false;
+				throw new Error("graph boom");
+			},
+		});
+		const session = {
+			extensionRunner: {
+				getAgentPanelSourceHub: () => hub,
+				emitError: (err: { error: string }) => {
+					errors.push(err.error);
+				},
+			},
+		};
+		const openRow = async (selectId: string) => {
+			await showAgentPanel(
+				session,
+				{
+					notify: (msg) => notices.push(msg),
+					custom: async (factory) => {
+						let finish = () => {};
+						const finished = new Promise<void>((resolve) => {
+							finish = resolve;
+						});
+						const component = await factory(
+							{ requestRender() {} } as never,
+							theme,
+							new KeybindingsManager(),
+							finish,
+						);
+						setImmediate(() => component.handleInput?.("\r"));
+						await finished;
+						component.dispose?.();
+						return undefined as never;
+					},
+				},
+				selectId,
+			);
+		};
+
+		await openRow("run:false");
+		assert.deepEqual(notices, ["Could not open refused-wf."]);
+		assert.deepEqual(errors, []);
+
+		await openRow("run:throw");
+		assert.deepEqual(notices, ["Could not open refused-wf.", "Could not open throwing-wf."]);
+		assert.equal(errors.length, 1);
+
+		now += AGENT_PANEL_DROP_MS + 1;
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => row.id),
+			["run:throw", "run:false"],
+			"finished workflow rows whose open failed or threw remain unviewed and do not age out",
+		);
+	} finally {
+		clock.mockRestore();
+	}
+});
+
+test("extension agent and shell items share one session clock across the agent panel and /tasks (#5224)", async () => {
+	initTheme("dark");
+	let now = 100_000;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const fixture = taskFixture();
+	try {
+		await fixture.start("native worker");
+		const hub = new AgentPanelSourceHub();
+		let state: "running" | "stopped" = "running";
+		let reportedMs = 1_000;
+		hub.register({
+			items: () => [
+				{
+					id: "run:wf-1",
+					kind: "workflow",
+					state: "running",
+					name: "wf",
+					task: "stage 1",
+				},
+				{
+					id: "ext:agent-shared",
+					kind: "agent",
+					state,
+					name: "ext-helper",
+					task: "check cluster",
+					elapsedMs: reportedMs,
+				},
+			],
+			subscribe: () => () => {},
+		});
+		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+		bindOwnerTaskStore(session, fixture.store);
+
+		const initialRows = agentPanelRows(session);
+		assert.deepEqual(
+			initialRows.map((row) => row.id),
+			["run:wf-1", `task:${fixture.store.backgroundTasks[0]!.ref.taskId}`, "ext:agent-shared"],
+		);
+		assert.equal(initialRows[2]?.elapsedMs, 1_000);
+		now += 60_000;
+		assert.equal(agentPanelRows(session)[2]?.elapsedMs, 61_000);
+
+		const inspector = new TaskInspector(
+			fixture.store,
+			() => {},
+			() => {},
+		);
+		inspector.setBoardSource(agentPanelBoardSource(session));
+		inspector.open();
+		try {
+			const rendered = inspector.renderViewport(120, 20).join("\n");
+			assert.match(rendered, /1m 1s/, "opening /tasks must not jump the extension item's elapsed time back to 1s");
+			assert.equal(agentPanelRows(session)[2]?.elapsedMs, 61_000);
+
+			state = "stopped";
+			assert.equal(agentPanelRows(session)[2]?.elapsedMs, 61_000);
+			now += 30_000;
+			state = "running";
+			reportedMs = 2_000;
+			assert.equal(agentPanelRows(session)[2]?.elapsedMs, 2_000, "restarted extension item starts a fresh clock");
+		} finally {
+			inspector.dispose();
+		}
+	} finally {
+		clock.mockRestore();
+		await fixture.dispose();
+	}
+});
+
+test("bindAgentPanel and showAgentPanel project and clock only the drawn rows and keep hidden counts (#5224)", async () => {
+	initTheme("dark");
+	const now = 50_000;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const fixture = taskFixture();
+	try {
+		for (let i = 0; i < 20; i++) {
+			await fixture.start(`Task ${i}`);
+		}
+		let hiddenTitleReads = 0;
+		let hiddenMetricsReads = 0;
+		const rawTasks = fixture.store.backgroundTasks;
+		const guardedTasks = rawTasks.map((task, index) => {
+			if (index >= rawTasks.length - AGENT_PANEL_FOCUSED_ROWS) return task;
+			const copy = { ...task };
+			Object.defineProperty(copy, "title", {
+				enumerable: true,
+				get() {
+					hiddenTitleReads++;
+					return task.title;
+				},
+			});
+			Object.defineProperty(copy, "metrics", {
+				enumerable: true,
+				get() {
+					hiddenMetricsReads++;
+					return task.metrics;
+				},
+			});
+			return copy;
+		});
+		vi.spyOn(fixture.store, "backgroundTasks", "get").mockReturnValue(guardedTasks);
+
+		const session = {};
+		bindOwnerTaskStore(session, fixture.store);
+		let widget: { render(width: number): string[] } | undefined;
+		const dispose = bindAgentPanel(session, {
+			setWidget(_key, factory) {
+				widget = typeof factory === "function" ? (factory({} as never, {} as never) as never) : undefined;
+			},
+			requestRender() {},
+		});
+		try {
+			assert.ok(widget);
+			const idleLines = widget.render(100);
+			assert.equal(idleLines.length, AGENT_PANEL_IDLE_ROWS + 1);
+			assert.match(idleLines.at(-1)!, new RegExp(`\\+${20 - AGENT_PANEL_IDLE_ROWS} more`));
+			assert.equal(hiddenTitleReads, 0, "unfocused panel must not project titles of hidden native tasks");
+			assert.equal(hiddenMetricsReads, 0, "unfocused panel must not read metrics/clocks of hidden native tasks");
+
+			await showAgentPanel(session, {
+				custom: async (factory) => {
+					let finish = () => {};
+					const finished = new Promise<void>((resolve) => {
+						finish = resolve;
+					});
+					const component = await factory(
+						{ requestRender() {} } as never,
+						theme,
+						new KeybindingsManager(),
+						finish,
+					);
+					const focusedLines = component.render(100);
+					assert.equal(focusedLines.length, 1 + AGENT_PANEL_FOCUSED_ROWS + 1 + 1);
+					assert.match(focusedLines.at(-2)!, new RegExp(`\\+${20 - AGENT_PANEL_FOCUSED_ROWS} more`));
+					assert.equal(hiddenTitleReads, 0, "focused panel at top must not project hidden native tasks");
+					assert.equal(hiddenMetricsReads, 0, "focused panel at top must not clock hidden native tasks");
+					setImmediate(() => finish());
+					await finished;
+					component.dispose?.();
+					return undefined as never;
+				},
+			});
+		} finally {
+			dispose();
+		}
+	} finally {
+		clock.mockRestore();
+		await fixture.dispose();
+	}
 });
