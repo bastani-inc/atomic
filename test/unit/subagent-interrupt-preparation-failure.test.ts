@@ -147,10 +147,10 @@ test.each(["with Esc during preparation", "without a second Esc"] as const)(
 			await until(() => settled);
 			const answered = assistantTexts(session).slice(textsBefore);
 			assert.ok(!answered.includes(""), "no turn after the failed preparation is aborted by the earlier Esc");
-			assert.deepEqual(answered, ["answered the next message"]);
+			assert.deepEqual(answered, ["answered the next message", "answered the message after that"]);
 			const result = await run;
 			assert.equal(result.status, "ok");
-			assert.equal(result.finalOutput, "answered the next message");
+			assert.equal(result.finalOutput, "answered the message after that");
 			assert.equal(source!.getSessionId(), sessionId);
 		} finally {
 			releasePreparation.resolve();
