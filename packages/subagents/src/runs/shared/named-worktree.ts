@@ -43,6 +43,12 @@ const ADD_IN_PROGRESS_MAX_AGE_MS = 10 * 60_000;
  */
 const CONCURRENT_GIT_FAILURE = /locked|\.lock\b|unable to lock|cannot lock|another git process/i;
 
+/**
+ * A `git worktree add` failure another launch's add of the same branch or path causes: the branch it just created, or
+ * the worktree it is creating, found by this add. Deciding again sees what that launch made.
+ */
+const CONCURRENT_ADD_FAILURE = /already exists|already checked out|already used by worktree|is a missing but/i;
+
 /** A git command that failed, with git's own message. */
 class GitFailure extends Error {}
 
@@ -187,8 +193,11 @@ export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest):
 			sleepSync(CONCURRENT_ADD_POLL_MS);
 			continue;
 		}
-		// Nothing changed since this launch's own add failed, and nothing suggests another git command caused it.
-		if (addFailure !== undefined && (!CONCURRENT_GIT_FAILURE.test(addFailure) || !waiting()))
+		// Nothing changed since this launch's own add failed, and nothing suggests another launch caused it.
+		if (
+			addFailure !== undefined &&
+			(!(CONCURRENT_GIT_FAILURE.test(addFailure) || CONCURRENT_ADD_FAILURE.test(addFailure)) || !waiting())
+		)
 			throw failed(checkingOut, new GitFailure(addFailure));
 		if (defaultPath) retried(checkingOut, () => ensureWorktreeIgnore(repo));
 		const branchExists = runGit(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
@@ -212,9 +221,11 @@ export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest):
  */
 function decideWorktree(repo: string, branch: string, worktreePath: string): "reuse" | "create" | "wait" {
 	const target = comparablePath(worktreePath);
+	// Checked before the listing too: an add that finishes between the two leaves a listing older than the check.
+	const inProgressBefore = worktreeAddInProgress(repo);
 	const worktrees = listWorktrees(repo);
 	const atPath = worktrees.find((worktree) => comparablePath(worktree.path) === target);
-	const inProgress = worktreeAddInProgress(repo);
+	const inProgress = inProgressBefore || worktreeAddInProgress(repo);
 	if (atPath?.branch === branch) return atPath.locked && inProgress ? "wait" : "reuse";
 	const elsewhere = worktrees.find((worktree) => worktree.branch === branch);
 	if (elsewhere)
@@ -223,6 +234,9 @@ function decideWorktree(repo: string, branch: string, worktreePath: string): "re
 		);
 	if (atPath || (fs.existsSync(worktreePath) && !isEmptyDirectory(worktreePath))) {
 		if (inProgress) return "wait";
+		// The path is refused only when a listing taken after no add was in progress still shows it on another branch.
+		const again = listWorktrees(repo).find((worktree) => comparablePath(worktree.path) === target);
+		if (again?.branch !== atPath?.branch || again?.locked !== atPath?.locked) return "wait";
 		throw new Error(
 			`worktree: ${worktreePath} already exists and is not the worktree of branch "${branch}". Choose another worktree.path or branch.`,
 		);
