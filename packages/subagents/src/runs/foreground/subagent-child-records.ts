@@ -896,8 +896,15 @@ export async function clearSubagentChildHeldToolResults(
 				...(waitingOn === undefined ? {} : { waitingOn }),
 			}),
 		);
-	}).catch((error: ReleasedChildError) => {
-		observeChildRecordFailure(ownerSessionId, error);
+	}).catch((error: Error) => {
+		// Nothing awaits some of these: a failure that is not a ReleasedChildError, such as a store that fails a read, is
+		// counted like any other, never thrown again from here.
+		observeChildRecordFailure(
+			ownerSessionId,
+			isReleasedChildError(error)
+				? error
+				: new ReleasedChildError("record-append-failed", { ownerSessionId, childId }, { cause: error }),
+		);
 	});
 }
 
