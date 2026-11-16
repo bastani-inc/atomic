@@ -291,6 +291,25 @@ test("a shippable checkpoint is acknowledged from the local journal and reaches 
 	assert.deepEqual(shipping.status(), { pending: 0, lagMs: 0 });
 });
 
+test("a claim overlapping a failed recovery scan falls back to shared commits instead of failing the child (#4768)", async () => {
+	const { shard: local } = await shard();
+	const failure = new Error("local journal I/O failure");
+	const scan = Promise.withResolvers<never>();
+	local.leftover = () => scan.promise;
+	const reported: ShippingFallback[] = [];
+	const shipping = shippingOf(local, async () => {}, { onFallback: (entry) => reported.push(entry) });
+	const recovering = shipping.recover();
+	const holding = shipping.hold(LEASE, LEASE_MS);
+	scan.reject(failure);
+	await Promise.all([assert.rejects(recovering, failure), assert.doesNotReject(holding)]);
+	assert.equal(shipping.isSyncOnly(LEASE.id), true);
+	assert.deepEqual(reported, [{ workId: LEASE.id, error: failure }]);
+	const shared = sharedCommit();
+	await shipping.commit(LEASE, checkpoint("after-scan-failure"), shared.commit);
+	assert.equal(shared.calls.length, 1);
+	assert.deepEqual(await local.pending(LEASE), []);
+});
+
 test("a batch ships once maxBatch checkpoints wait, in the order they were accepted (#4768)", async () => {
 	const { shard: local } = await shard();
 	const shared = fakeShared();
