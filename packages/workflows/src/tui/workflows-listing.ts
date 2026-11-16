@@ -45,6 +45,13 @@ function definitionNameFromSource(source: string | undefined, code: string): str
 	return base.replace(/\.(?:[cm]?[jt]s|tsx)$/, "") || source;
 }
 
+/** `Failed to import "<file>": ParseError: …` reads as `ParseError: …` beside a row that already names the file. */
+function withoutSourcePrefix(reason: string, source: string | undefined): string {
+	if (source === undefined) return reason;
+	const prefix = `Failed to import "${source}": `;
+	return reason.startsWith(prefix) && reason.length > prefix.length ? reason.slice(prefix.length) : reason;
+}
+
 /** The definitions discovery could not load, from its diagnostics. */
 export function invalidDefinitionsFromDiagnostics(
 	diagnostics: readonly {
@@ -60,7 +67,7 @@ export function invalidDefinitionsFromDiagnostics(
 			name: definitionNameFromSource(diagnostic.source, diagnostic.code),
 			...(diagnostic.source === undefined ? {} : { source: diagnostic.source }),
 			code: diagnostic.code,
-			reason: summarizeFailureText(diagnostic.message).reason,
+			reason: withoutSourcePrefix(summarizeFailureText(diagnostic.message).reason, diagnostic.source),
 			message: diagnostic.message,
 		}));
 }

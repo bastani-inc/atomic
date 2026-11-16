@@ -78,13 +78,26 @@ describe("workflow definition errors before launch (#5224)", () => {
 		component.handleInput("\r");
 		await pending;
 		assert.deepEqual(t.started, [], "a broken definition never starts");
-		const shown = t.messages.error.join("\n");
+		assert.deepEqual(t.messages.error, [], "the ✗ line says it failed; no extra Error: prefix");
+		const shown = t.messages.info.join("\n");
 		assert.match(shown, /✗ Workflow "greet" could not be loaded/);
 		assert.match(shown, /file\s+\/repo\/\.atomic\/workflows\/greet\.ts/);
 		assert.match(shown, /reason\s+Workflow file failed to import: Unexpected token '\)' \(12:4\)/);
 		assert.match(shown, /Fix the file, then run \/workflow reload/);
 		assert.doesNotMatch(shown, /at importWorkflow/, "no stack frame, even in the details");
 		assert.match(shown, /2 stack frames hidden/);
+	});
+
+	it('drops discovery\'s `Failed to import "<file>":` prefix from the reason, since the row names the file', () => {
+		const [entry] = invalidDefinitionsFromDiagnostics([
+			{
+				level: "error",
+				code: "IMPORT_FAILED",
+				source: "/p/greet.ts",
+				message: 'Failed to import "/p/greet.ts": ParseError: Unexpected token, expected ","\n  /p/greet.ts:8:36',
+			},
+		]);
+		assert.equal(entry.reason, 'ParseError: Unexpected token, expected ","');
 	});
 
 	it("opens the sheet when the only definitions are broken, instead of saying there are no workflows", async () => {

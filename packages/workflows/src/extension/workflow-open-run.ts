@@ -116,5 +116,5 @@ export async function handleWorkflowsCommand(
 	});
 	if (picked?.kind === "run") openWorkflowRun(picked.runId, ctx, deps, { onReturn: reopen });
 	else if (picked?.kind === "definition") await deps.startDefinition?.(picked.name);
-	else if (picked?.kind === "invalid-definition") reporter.error(formatInvalidDefinitionDetails(picked.definition));
+	else if (picked?.kind === "invalid-definition") reporter.info(formatInvalidDefinitionDetails(picked.definition));
 }
