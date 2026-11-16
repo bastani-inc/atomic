@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { performance } from "node:perf_hooks";
-import { describe, it } from "node:test";
+import { before, describe, it } from "node:test";
 import { Editor } from "../src/components/editor.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { truncateToWidth, visibleWidth } from "../src/utils.ts";
@@ -14,8 +14,11 @@ import { VirtualTerminal } from "./virtual-terminal.ts";
 const LONG_TEXT_LENGTH = 40_000;
 /** Marks in one grapheme cluster. Matching it with a backtracking pattern takes seconds; a linear match, microseconds. */
 const LONG_CLUSTER_MARKS = 28;
-/** How long one measurement, truncation or editor render may take: linear scanning takes milliseconds. */
-const LINEAR_BUDGET_MS = 400;
+/**
+ * How long one measurement, truncation or editor render may take. Linear scanning takes tens of milliseconds even on a
+ * loaded machine; quadratic scanning took one to two seconds over LONG_TEXT_LENGTH characters.
+ */
+const LINEAR_BUDGET_MS = 500;
 
 /**
  * `length` characters of CSI and OSC introducers in turn, starting with `first`. Tests start differently because
@@ -32,6 +35,16 @@ function timed<T>(run: () => T): { value: T; elapsed: number } {
 }
 
 describe("escape-laden text scaling", () => {
+	// Compile the code under test on short text first, so a timing does not include its first compilation.
+	before(() => {
+		const sample = unterminatedIntroducers(400, "csi");
+		visibleWidth(sample);
+		truncateToWidth(sample, 120);
+		const editor = new Editor(new TuiMainScreen(new VirtualTerminal(120, 40)), defaultEditorTheme);
+		editor.setText(sample);
+		editor.render(120);
+	});
+
 	it("measures 40k characters of unterminated introducers in linear time", () => {
 		const { value: width, elapsed } = timed(() => visibleWidth(unterminatedIntroducers(LONG_TEXT_LENGTH, "csi")));
 		assert.strictEqual(width, LONG_TEXT_LENGTH / 2, "each ESC is zero-width and each bracket is one column");
