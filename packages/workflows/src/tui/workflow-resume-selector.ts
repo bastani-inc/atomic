@@ -118,7 +118,7 @@ function shortReason(text: string | undefined): string | undefined {
 		text
 			.split("\n")
 			.map((line) => line.trim())
-			.find((line) => line.length > 0 && !/^at\s/.test(line)) ?? "";
+			.find((line) => line.length > 0 && !/^at\s+.+(?::\d+:\d+\)?|\((?:native|<anonymous>)\))$/.test(line)) ?? "";
 	const clean = first.replace(/^(Error|[A-Z][A-Za-z]*Error):\s*/, "");
 	if (!clean) return undefined;
 	return clean.length > 60 ? `${sliceHead(clean, 59)}…` : clean;

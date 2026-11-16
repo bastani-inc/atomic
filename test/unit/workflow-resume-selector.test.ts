@@ -368,6 +368,25 @@ describe("workflow resume picker rows: a title and one detail line (#5224)", () 
 		assert.equal(byId.get("bad-run")?.detail, "failed · 2 checkpoints · 1m ago · ✗ gate failed: 2 jobs");
 	});
 
+	test.each(["at least one reviewer rejected the change", "at capacity: the provider is overloaded"])(
+		"keeps literal failure reasons beginning with 'at': %s (#5256)",
+		(reason) => {
+			for (const field of ["error", "exitReason"] as const) {
+				for (const prefix of ["", "    at run (runner.ts:1:2)\n", "    at runner.ts:1:2\n"]) {
+					const [item] = workflowResumeSelectorItems(
+						[],
+						[{ ...entry("literal-reason", "failed"), [field]: prefix + reason }],
+						[],
+						undefined,
+						undefined,
+						NOW,
+					);
+					assert.ok(item?.session.detail?.endsWith(`✗ ${reason}`), `${field}: ${prefix + reason}`);
+				}
+			}
+		},
+	);
+
 	test("keeps Unicode intact when shortening a workflow failure reason (#5256)", () => {
 		const prefix = "x".repeat(58);
 		const [item] = workflowResumeSelectorItems(
