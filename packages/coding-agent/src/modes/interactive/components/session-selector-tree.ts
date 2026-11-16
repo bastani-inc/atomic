@@ -16,7 +16,6 @@ export interface FlatSessionNode {
 	ancestorContinues: boolean[];
 }
 
-/** A session file's comparison key, cached per session: canonicalizing follows symlinks and touches the disk. */
 const pathKeys = new WeakMap<SessionInfo, { path: string; key: string }>();
 
 function sessionPathKey(session: SessionInfo): string {
@@ -30,10 +29,6 @@ function sessionPathKey(session: SessionInfo): string {
 /**
  * Build a tree structure from sessions based on parentSessionPath.
  * Returns root nodes sorted by modified date (descending).
- *
- * A parent is found by its exact path first; only a parent path that matches no session exactly (another spelling of
- * the same file, such as through a symlink or in another case on Windows) needs the canonical comparison keys, which
- * are then computed once per session and cached.
  */
 export function buildSessionTree(sessions: SessionInfo[]): SessionTreeNode[] {
 	const nodes = sessions.map((session): SessionTreeNode => ({ session, children: [] }));

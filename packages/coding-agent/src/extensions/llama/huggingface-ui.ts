@@ -134,12 +134,10 @@ export class HuggingFaceSearch extends Container implements Focusable {
 		};
 	}
 
-	/** The query when it already names a repository, which enter downloads as typed. */
 	private exactQuery(): string | undefined {
 		return /^[^/\s]+\/[^:\s]+(?::[^\s:]+)?$/u.test(this.query) ? this.query : undefined;
 	}
 
-	/** Exactly the keys that do something right now. */
 	private hintEntries(): NavKey[] {
 		const entries: NavKey[] = [];
 		if (this.filteredResults.length > 1) {

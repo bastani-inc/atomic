@@ -34,12 +34,20 @@ const HINT_STYLE: NavKeyStyle = {
 	bold: (text) => theme.bold(text),
 };
 
+const CLEAN_TEXT_CACHE_SIZE = 4096;
+const cleanTextCache = new Map<string, string>();
+
 /** Control characters out and whitespace collapsed, so one row stays one line. */
 function cleanText(text: string): string {
-	return text
+	const cached = cleanTextCache.get(text);
+	if (cached !== undefined) return cached;
+	const cleaned = text
 		.replace(/[\x00-\x1f\x7f]/g, " ")
 		.replace(/\s+/g, " ")
 		.trim();
+	if (cleanTextCache.size >= CLEAN_TEXT_CACHE_SIZE) cleanTextCache.clear();
+	cleanTextCache.set(text, cleaned);
+	return cleaned;
 }
 
 /** `2h ago`, `just now`. */
@@ -234,7 +242,6 @@ export class SessionList implements Component, Focusable {
 			}));
 		}
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredSessions.length - 1));
-		// A preview shows the selected row; with no rows left there is nothing to preview.
 		if (this.filteredSessions.length === 0) this.previewOpen = false;
 	}
 
@@ -612,7 +619,7 @@ export class SessionList implements Component, Focusable {
 				Math.min(this.filteredSessions.length - 1, this.selectedIndex + this.maxVisible),
 			);
 		}
-		// Enter, or → while it does not move the cursor through search text
+		// Enter
 		else if (
 			kb.matches(keyData, "tui.select.confirm") ||
 			(kb.matches(keyData, "app.list.open") && !this.searchInput.getValue())

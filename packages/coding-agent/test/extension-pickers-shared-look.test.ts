@@ -15,7 +15,9 @@ const DOWN = "\x1b[B";
 const ESCAPE = "\x1b";
 
 function lines(view: Component, width = 100): string[] {
-	return stripAnsi(view.render(width).join("\n")).split("\n");
+	return stripAnsi(view.render(width).join("\n"))
+		.replace(/\x1b_[^\x07]*\x07/g, "")
+		.split("\n");
 }
 
 function hint(view: Component, width = 100): string {
