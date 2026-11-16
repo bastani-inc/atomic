@@ -578,22 +578,40 @@ export function inProcessChildResourceLoaderOptions(input: {
 export function nextTurnSettled(
 	session: Pick<AgentSession, "subscribe" | "isStreaming">,
 	stops: readonly AbortSignal[],
+	options: {
+		readonly waitForStart?: boolean;
+		readonly skipStarts?: number;
+		readonly skipStart?: () => boolean;
+		readonly subscribeDrained?: (listener: () => void) => () => void;
+	} = {},
 ): Promise<void> {
 	return new Promise<void>((resolve) => {
-		let started = session.isStreaming;
+		let started = !options.waitForStart && session.isStreaming;
+		let startsToSkip = options.skipStarts ?? 0;
 		let unsubscribe = () => {};
+		let unsubscribeDrained = () => {};
 		const finish = () => {
 			unsubscribe();
+			unsubscribeDrained();
 			for (const stop of stops) stop.removeEventListener("abort", finish);
 			resolve();
 		};
 		if (stops.some((stop) => stop.aborted)) return resolve();
 		for (const stop of stops) stop.addEventListener("abort", finish, { once: true });
 		unsubscribe = session.subscribe((event) => {
-			if (event.type === "agent_start") started = true;
-			else if (event.type === "agent_end" && started)
-				queueMicrotask(() => (session.isStreaming ? undefined : finish()));
+			if (event.type === "agent_start") {
+				if (startsToSkip > 0) startsToSkip -= 1;
+				else if (options.skipStart?.() !== true) started = true;
+			} else if (options.subscribeDrained === undefined) {
+				if (event.type === "agent_settled" && started && !session.isStreaming) finish();
+				else if (event.type === "agent_end" && started)
+					queueMicrotask(() => (session.isStreaming ? undefined : finish()));
+			}
 		});
+		unsubscribeDrained =
+			options.subscribeDrained?.(() => {
+				if (started && !session.isStreaming) finish();
+			}) ?? (() => {});
 	});
 }
 
@@ -1675,10 +1693,10 @@ export class SubagentControlRuntime {
 		// Messages this attempt produced; a forked child's inherited history is never among them.
 		let ownMessages: () => TranscriptMessage[] = () => [];
 		const executionEnded = new AbortController();
+		const turnDrainedListeners = new Set<() => void>();
 
 		let termination: TerminationCauseName | undefined;
-		// The user interrupted the child's turn from its chat: it waits for their next message instead of ending.
-		let turnInterruptedByUser = false;
+		let interruptedTurnSettlement: Promise<void> | undefined;
 		// The task and resume follow-ups the session has not been given yet; a stop before then keeps them for resume.
 		const unsent: UnsentInput = { task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] };
 		let terminating: Promise<void> | undefined;
@@ -1903,6 +1921,9 @@ export class SubagentControlRuntime {
 						subagentPolicy: {
 							...admitted.policy,
 							executionEnded: executionEnded.signal,
+							onTurnDrained: () => {
+								for (const listener of turnDrainedListeners) listener();
+							},
 							...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
 						},
 						settingsManager,
@@ -1938,7 +1959,23 @@ export class SubagentControlRuntime {
 			const transcriptSession = session;
 			const interruptTurn = async (): Promise<void> => {
 				if (!transcriptSession.isStreaming || termination !== undefined) return;
-				turnInterruptedByUser = true;
+				interruptedTurnSettlement = nextTurnSettled(
+					transcriptSession,
+					[signals.abort, signals.interrupt, executionEnded.signal],
+					{
+						waitForStart: true,
+						skipStarts: transcriptSession._undeliveredAgentStarts ?? 0,
+						skipStart: () => transcriptSession._startAbortedForInterrupt === true,
+						...(prepared === undefined
+							? {}
+							: {
+									subscribeDrained: (listener: () => void) => {
+										turnDrainedListeners.add(listener);
+										return () => turnDrainedListeners.delete(listener);
+									},
+								}),
+					},
+				);
 				await transcriptSession.interruptTurn();
 			};
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
@@ -2019,8 +2056,13 @@ export class SubagentControlRuntime {
 			const taskDispatched = new Promise<void>((resolve) => {
 				markTaskDispatched = () => resolve();
 			});
+			let artifactJsonlPath = admitted.spec.artifactJsonlPath;
 			unsubscribe = session.subscribe((event) => {
-				writeEvent(admitted.spec.artifactJsonlPath, event);
+				try {
+					writeEvent(artifactJsonlPath, event);
+				} catch {
+					artifactJsonlPath = undefined;
+				}
 				if (event.type === "message_start" && event.message.role === "assistant")
 					observedStreamingMessage = beginStreamingAssistantMessage(event.message);
 				else if (event.type === "message_update" && observedStreamingMessage)
@@ -2138,9 +2180,10 @@ export class SubagentControlRuntime {
 					}
 				}
 			}
-			while (turnInterruptedByUser && termination === undefined) {
-				turnInterruptedByUser = false;
-				await nextTurnSettled(session, [signals.abort, signals.interrupt]);
+			while (interruptedTurnSettlement !== undefined && termination === undefined) {
+				const settlement = interruptedTurnSettlement;
+				interruptedTurnSettlement = undefined;
+				await settlement;
 			}
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
