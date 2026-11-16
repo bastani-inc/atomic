@@ -8,6 +8,7 @@ import { StatusSnapshotSerializer } from "./status-snapshot-serializer.js";
 
 const DEFAULT_STATUS_SUBPATH = join(CONFIG_DIR_NAME, "workflows", "status.json");
 const STATUS_WRITE_INTERVAL_MS = 250;
+const STATUS_WRITE_RETRY_DELAYS_MS = [STATUS_WRITE_INTERVAL_MS, 1_000, 4_000, 16_000];
 const RENAME_RETRY_DELAYS_MS = [5, 10, 20, 40, 80];
 const RETRYABLE_RENAME_CODES: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EBUSY"]);
 const STATUS_WRITE_QUEUE_KEY = Symbol.for("atomic-workflows/status-write-queue@1");
@@ -99,6 +100,8 @@ export function createStatusWriter(
 	let initialWrite = true;
 	let pending = initialWrite;
 	let changeSeq = 0;
+	let unchangedFailures = 0;
+	let cancelDrainSleep: (() => void) | null = null;
 	let drainPromise: Promise<void> | null = null;
 	let inFlightWrite: Promise<boolean> | null = null;
 	const serializer = new StatusSnapshotSerializer();
@@ -115,7 +118,22 @@ export function createStatusWriter(
 		});
 	}
 
+	function sleepDrain(delayMs: number): Promise<void> {
+		return new Promise<void>((resolve) => {
+			const timer = setTimeout(() => {
+				cancelDrainSleep = null;
+				resolve();
+			}, delayMs);
+			cancelDrainSleep = () => {
+				clearTimeout(timer);
+				cancelDrainSleep = null;
+				resolve();
+			};
+		});
+	}
+
 	async function writeOnce(): Promise<boolean> {
+		const seqBefore = changeSeq;
 		pending = false;
 		try {
 			await mkdir(dirname(filePath), { recursive: true });
@@ -127,11 +145,13 @@ export function createStatusWriter(
 			if (!active) return false;
 			await atomicWriteJson(filePath, content);
 			lastErrorMessage = null;
+			unchangedFailures = 0;
 			return true;
 		} catch (err: unknown) {
 			if (active) {
 				pending = true;
 				recordWriteError(err);
+				unchangedFailures = changeSeq === seqBefore ? unchangedFailures + 1 : 0;
 			}
 			return false;
 		}
@@ -144,13 +164,27 @@ export function createStatusWriter(
 		return inFlightWrite;
 	}
 
+	function canScheduleDrain(): boolean {
+		return active && pending && unchangedFailures <= STATUS_WRITE_RETRY_DELAYS_MS.length;
+	}
+
 	async function drainWrites(): Promise<void> {
 		if (writing) return;
 		writing = true;
 		try {
 			while (active && pending) {
 				if (!initialWrite) {
-					await new Promise<void>((resolve) => setTimeout(resolve, STATUS_WRITE_INTERVAL_MS));
+					const delayMs =
+						unchangedFailures === 0
+							? STATUS_WRITE_INTERVAL_MS
+							: STATUS_WRITE_RETRY_DELAYS_MS[unchangedFailures - 1];
+					if (delayMs === undefined) break;
+					const failuresBeforeSleep = unchangedFailures;
+					await sleepDrain(delayMs);
+					if (!active || !pending) break;
+					if (failuresBeforeSleep > 0 && unchangedFailures === 0) {
+						continue;
+					}
 				}
 				initialWrite = false;
 				if (inFlightWrite !== null) await inFlightWrite;
@@ -163,16 +197,22 @@ export function createStatusWriter(
 	}
 
 	function ensureDrain(): Promise<void> {
+		if (!canScheduleDrain()) return Promise.resolve();
 		drainPromise ??= drainWrites().finally(() => {
 			drainPromise = null;
-			if (active && pending) void ensureDrain();
+			if (canScheduleDrain()) void ensureDrain();
 		});
 		return drainPromise;
 	}
 
 	const unsubscribeStore = store.subscribeInvalidation(() => {
 		changeSeq++;
+		const hadBackoff = unchangedFailures > 0;
+		unchangedFailures = 0;
 		pending = true;
+		if (hadBackoff) {
+			cancelDrainSleep?.();
+		}
 		void ensureDrain();
 	});
 
@@ -197,13 +237,14 @@ export function createStatusWriter(
 					break;
 				}
 			}
-			if (active && pending) {
+			if (canScheduleDrain()) {
 				void ensureDrain();
 			}
 		},
 		unsubscribe() {
 			active = false;
 			pending = false;
+			cancelDrainSleep?.();
 			unsubscribeStore();
 			serializer.close();
 		},

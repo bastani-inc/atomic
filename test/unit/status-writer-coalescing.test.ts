@@ -289,6 +289,82 @@ test("keeps pending after deduplicated EPERM failures, cleans up tmp, and rewrit
 	}
 });
 
+test("retries persistent write failures with growing delays, stops after four backoff attempts, and resets on store change (#5234)", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+	vi.resetModules();
+	const { createStatusWriter } = await import("../../packages/workflows/src/extension/status-writer.js");
+	const store = createStore();
+	store.recordRunStart({ ...makeRun([makeStage("stage")]), id: "live", status: "running" });
+	const stagedByPath = new Map<string, string>();
+	const publishedByPath = new Map<string, string>();
+	let failRename = true;
+	let writeAttempts = 0;
+	writeFileHook = async (path, content) => {
+		writeAttempts++;
+		const text = typeof content === "string" ? content : Array.from(content).join("");
+		stagedByPath.set(path, text);
+	};
+	renameHook = async (oldPath, newPath) => {
+		if (failRename) {
+			throw Object.assign(new Error("EISDIR: illegal operation on a directory, rename"), { code: "EISDIR" });
+		}
+		const staged = stagedByPath.get(oldPath);
+		assert.notEqual(staged, undefined);
+		stagedByPath.delete(oldPath);
+		publishedByPath.set(newPath, staged!);
+	};
+	unlinkHook = async (path) => {
+		stagedByPath.delete(path);
+	};
+	const targetPath = resolve("status-persistent-backoff.json");
+	const writer = createStatusWriter(store, {
+		maxDepth: 4,
+		defaultConcurrency: 4,
+		persistRuns: true,
+		resumeInFlight: "ask",
+		statusFile: true,
+		statusFilePath: "status-persistent-backoff.json",
+	});
+	try {
+		await vi.advanceTimersByTimeAsync(10);
+		assert.equal(writeAttempts, 1);
+
+		await vi.advanceTimersByTimeAsync(250);
+		assert.equal(writeAttempts, 2);
+
+		await vi.advanceTimersByTimeAsync(250);
+		assert.equal(writeAttempts, 3);
+
+		await vi.advanceTimersByTimeAsync(1_000);
+		assert.equal(writeAttempts, 4);
+
+		await vi.advanceTimersByTimeAsync(4_000);
+		assert.equal(writeAttempts, 5);
+
+		await vi.advanceTimersByTimeAsync(16_000);
+		assert.equal(writeAttempts, 6);
+
+		await vi.advanceTimersByTimeAsync(60_000);
+		assert.equal(writeAttempts, 6, "stops retrying after the 4 backoff delays");
+
+		failRename = false;
+		store.recordRunEnd("live", "completed", { ok: true });
+		await vi.advanceTimersByTimeAsync(260);
+		assert.equal(writeAttempts, 7);
+		const published = JSON.parse(publishedByPath.get(targetPath) ?? "{}") as {
+			runs: Array<{ id: string; status: string }>;
+		};
+		assert.equal(published.runs[0]?.status, "completed");
+	} finally {
+		writer.unsubscribe();
+		await vi.runAllTimersAsync();
+		writeFileHook = undefined;
+		renameHook = undefined;
+		unlinkHook = undefined;
+		vi.useRealTimers();
+	}
+});
+
 test("runs a status write queued behind a failed write for the same path (#5234)", async () => {
 	vi.resetModules();
 	const { atomicWriteJson } = await import("../../packages/workflows/src/extension/status-writer.js");

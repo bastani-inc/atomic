@@ -13,7 +13,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -28,11 +28,16 @@ import type { WorkflowRuntimeConfig } from "../../packages/workflows/src/shared/
 let renameInterceptor:
 	| ((oldPath: string, newPath: string, originalRename: typeof import("node:fs/promises").rename) => Promise<void>)
 	| undefined;
+let onWriteFile: ((path: string) => void) | undefined;
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs/promises")>();
 	return {
 		...fs,
+		writeFile: async (...args: Parameters<typeof fs.writeFile>) => {
+			onWriteFile?.(String(args[0]));
+			return fs.writeFile(...args);
+		},
 		rename: async (oldPath: string, newPath: string) => {
 			if (renameInterceptor) {
 				return renameInterceptor(oldPath, newPath, fs.rename);
@@ -231,6 +236,7 @@ describe("createStatusWriter — statusFile:true", () => {
 
 	afterEach(async () => {
 		renameInterceptor = undefined;
+		onWriteFile = undefined;
 		await rm(tmpDir, { recursive: true, force: true });
 	});
 
@@ -530,5 +536,41 @@ describe("createStatusWriter — statusFile:true", () => {
 		assert.equal(parsed.runs[0]?.status, "running");
 		assert.equal(store.notices().filter((n) => n.message.includes("status file write failed")).length, 0);
 		await assert.rejects(stat(`${filePath}.tmp`));
+	});
+
+	test("backs off when the target path is a directory and the store stays idle (#5234)", async () => {
+		const filePath = join(tmpDir, "status-dir.json");
+		await mkdir(filePath);
+		const tmpPath = `${filePath}.tmp`;
+		let writeAttempts = 0;
+		onWriteFile = (path) => {
+			if (path === tmpPath) writeAttempts++;
+		};
+		const store = createStore();
+		store.recordRunStart({
+			id: "r-dir",
+			name: "wf",
+			inputs: {},
+			status: "completed",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1000,
+		});
+		const writer = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		try {
+			await sleep(3_000);
+			assert.ok(writeAttempts >= 2, `expected initial retry attempts, got ${writeAttempts}`);
+			assert.ok(writeAttempts <= 4, `expected at most 4 write attempts in 3s, got ${writeAttempts}`);
+			assert.equal(store.notices().filter((n) => n.message.includes("status file write failed")).length, 1);
+
+			await rm(filePath, { recursive: true, force: true });
+			await writer.flush();
+			const parsed = JSON.parse(await readFile(filePath, "utf8")) as {
+				runs: Array<{ id: string; status: string }>;
+			};
+			assert.equal(parsed.runs[0]?.id, "r-dir");
+		} finally {
+			writer.unsubscribe();
+		}
 	});
 });
