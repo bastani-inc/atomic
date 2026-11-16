@@ -2,6 +2,9 @@ import { isKeyRelease } from "@bastani/atomic-tui";
 import { type StopAllBackgroundOutcome, stopAllBackgroundMessage } from "../../core/tasks/stop-all.ts";
 import { type NavKeybindings, navActionText, TwoPressConfirm } from "./components/nav-keys.ts";
 
+/** The footer status key the chord's notices show under, so they are seen over overlays too. */
+export const STOP_ALL_STATUS_KEY = "atomic.stop-all";
+
 /** What the chord needs of the main chat. */
 export interface StopAllChordHost {
 	readonly keybindings: NavKeybindings;
@@ -43,7 +46,9 @@ export function createStopAllChord(
 		if (chordOpen) {
 			chordOpen = false;
 			if (!host.keybindings.matches(data, "app.agents.stopAll")) {
-				cancelPending();
+				// Another chord key starts the chord over; any other key calls a waiting stop-all off.
+				if (host.keybindings.matches(data, "app.agents.chord")) chordOpen = true;
+				else cancelPending();
 				return undefined;
 			}
 			if (!confirm.press("stop-all")) {
