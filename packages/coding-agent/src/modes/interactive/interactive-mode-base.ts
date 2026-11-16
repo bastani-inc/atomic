@@ -102,6 +102,14 @@ export function isChatMessageComponent(child: Component): boolean {
 	);
 }
 
+export function countChatMessages(chat: Container | undefined): number {
+	if (!chat) return 0;
+	if (chat instanceof StartupChatContainer) return chat.countedChildren();
+	let count = 0;
+	for (const child of chat.children) if (isChatMessageComponent(child)) count += 1;
+	return count;
+}
+
 export function isFullscreenViewportAction(data: string, keybindings: KeybindingsManager): boolean {
 	return FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
 }
@@ -711,7 +719,7 @@ export class InteractiveModeBase {
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,
 			onOverlayInternalUiAction: this.onOverlayInternalUiAction,
-			messageCount: () => this.chatContainer?.children.filter(isChatMessageComponent).length ?? 0,
+			messageCount: () => countChatMessages(this.chatContainer),
 			onInternalUiAction: () => {
 				this.jumpToTranscriptEnd();
 				return undefined;
@@ -722,7 +730,7 @@ export class InteractiveModeBase {
 		this.headerContainer = new Container();
 		this.documentContainer = new Container();
 		this.documentContainer.addChild(this.headerContainer);
-		this.chatContainer = new StartupChatContainer();
+		this.chatContainer = new StartupChatContainer(isChatMessageComponent);
 		this.documentContainer.addChild(this.chatContainer);
 		this.resourceDisclosureContainer = new Container();
 		this.startupNoticesContainer = new Container();

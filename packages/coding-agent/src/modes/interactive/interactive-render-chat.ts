@@ -18,7 +18,7 @@ import { createMarkdownTransform } from "./components/markdown-transform.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ThemedText } from "./components/themed-text.js";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
-import { InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
+import { countChatMessages, InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type AgentMessage,
 	APP_NAME,
@@ -141,11 +141,6 @@ InteractiveModeBase.prototype.showStatus = function (
 	this.ui.requestRender();
 };
 
-/**
- * The read epoch of the jump-to-latest counter each echo was shown in. Transcript order is not arrival order: messages
- * go in before a streaming reply, and a re-render shows pending echoes last. So an echo is unread when its epoch is still
- * the counter's, wherever it sits, and a re-render keeps the epoch it was first shown in (#5243).
- */
 const echoReadEpochs = new WeakMap<Component[], number>();
 
 InteractiveModeBase.prototype.renderDeferredUserInput = function (this: InteractiveModeBase, text: string): void {
@@ -178,7 +173,6 @@ InteractiveModeBase.prototype.consumeDeferredRenderedUserInput = function (
 	return true;
 };
 
-/** Drop the oldest echo of `text` from the books and return its components, which stay in the transcript. */
 function forgetDeferredEcho(mode: InteractiveModeBase, text: string): Component[] | undefined {
 	const index = mode.deferredRenderedUserInputs.indexOf(text);
 	if (index !== -1) {
@@ -193,7 +187,6 @@ function forgetDeferredEcho(mode: InteractiveModeBase, text: string): Component[
 	return components;
 }
 
-/** Take every pending echo off the books before a re-render, with the read epoch it was shown in. */
 function takeDeferredEchoes(mode: InteractiveModeBase): Array<{ text: string; epoch: number | undefined }> {
 	const occurrences = new Map<string, number>();
 	const echoes = mode.deferredRenderedUserInputs.map((text) => {
@@ -207,7 +200,6 @@ function takeDeferredEchoes(mode: InteractiveModeBase): Array<{ text: string; ep
 	return echoes;
 }
 
-/** Show the echoes a re-render took again, each as read or unread as it was before. */
 function restoreDeferredEchoes(
 	mode: InteractiveModeBase,
 	echoes: ReadonlyArray<{ text: string; epoch: number | undefined }>,
@@ -228,19 +220,15 @@ InteractiveModeBase.prototype.discardDeferredRenderedUserInput = function (
 	if (!componentsToRemove) return;
 	const renderer = this.ui as AltScreenMessageCounterHost;
 	const following = renderer.isFollowingOutput !== false;
-	const messages = this.chatContainer.children.filter(isChatMessageComponent);
-	// Count arrivals not painted yet first, so that removing the echo cannot hide them.
-	if (!following) renderer.newMessages?.observe(false, messages.length);
-	let removedMessages = 0;
-	for (const component of componentsToRemove) {
-		if (messages.includes(component)) removedMessages += 1;
-		this.chatContainer.removeChild(component);
-	}
+	const countedBefore = countChatMessages(this.chatContainer);
+	if (!following) renderer.newMessages?.observe(false, countedBefore);
+	for (const component of componentsToRemove) this.chatContainer.removeChild(component);
+	const counted = countChatMessages(this.chatContainer);
 	const counter = renderer.newMessages;
 	if (!following && counter && echoReadEpochs.get(componentsToRemove) === counter.epoch) {
-		counter.retract(removedMessages);
+		counter.retract(countedBefore - counted);
 	}
-	counter?.observe(following, messages.length - removedMessages);
+	counter?.observe(following, counted);
 	this.updatePendingMessagesDisplay();
 	this.ui.requestRender();
 };
@@ -268,27 +256,19 @@ InteractiveModeBase.prototype.showSessionUserMessage = function (this: Interacti
 	if (this.consumeDeferredRenderedUserInput(this.getUserMessageText(message))) return;
 	const started = this.startedDeferredUserInput;
 	if (started !== undefined) {
-		// The message takes the echo's place as read or unread as the echo was: count arrivals not painted yet, then
-		// swap it in without counting it or retracting the echo (#5243). A rewrite that shows nothing, such as empty
-		// text, leaves an unread echo's count behind, so that part is retracted.
 		const renderer = this.ui as AltScreenMessageCounterHost;
 		const following = renderer.isFollowingOutput !== false;
-		const countedMessages = (): number => this.chatContainer.children.filter(isChatMessageComponent).length;
-		if (!following) renderer.newMessages?.observe(false, countedMessages());
+		const countedBefore = countChatMessages(this.chatContainer);
+		renderer.newMessages?.observe(following, countedBefore);
 		const echo = forgetDeferredEcho(this, started);
-		const countedBefore = countedMessages();
 		appendNewChildrenBeforeAttachedChild(this.chatContainer, echo?.[0], () => this.addMessageToChat(message));
-		const shownMessages = countedMessages() - countedBefore;
-		let removedMessages = 0;
-		for (const component of echo ?? []) {
-			if (isChatMessageComponent(component) && this.chatContainer.children.includes(component)) removedMessages += 1;
-			this.chatContainer.removeChild(component);
-		}
+		for (const component of echo ?? []) this.chatContainer.removeChild(component);
+		const counted = countChatMessages(this.chatContainer);
 		const counter = renderer.newMessages;
 		if (!following && counter && echo && echoReadEpochs.get(echo) === counter.epoch) {
-			counter.retract(removedMessages - shownMessages);
+			counter.retract(countedBefore - counted);
 		}
-		counter?.replaced(countedMessages());
+		counter?.replaced(counted);
 		this.updatePendingMessagesDisplay();
 		this.ui.requestRender();
 		return;
@@ -524,6 +504,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 						markdownTransformers,
 					);
 					component.setExpanded(this.toolOutputExpanded);
+					if (!skillBlock.userMessage) messageComponents.add(component);
 					this.chatContainer.addChild(component);
 					// Render user message separately if present
 					if (skillBlock.userMessage) {
@@ -536,8 +517,6 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 						);
 						messageComponents.add(userComponent);
 						this.chatContainer.addChild(userComponent);
-					} else {
-						messageComponents.add(component);
 					}
 				} else {
 					const userComponent = new UserMessageComponent(
@@ -701,14 +680,10 @@ InteractiveModeBase.prototype.attachStartupNoticesContainer = function (
 
 const renderedSessionIds = new WeakMap<InteractiveModeBase, string>();
 
-/**
- * Clear the transcript to render it again. While the reader is scrolled up, arrivals not painted yet are counted first,
- * so that the re-render, which keeps the unread count, keeps them unread.
- */
 export function clearChatForRerender(mode: InteractiveModeBase): void {
 	const renderer = mode.ui as AltScreenMessageCounterHost;
-	if (renderer.isFollowingOutput === false && mode.chatContainer.children.length > 0) {
-		renderer.newMessages?.observe(false, mode.chatContainer.children.filter(isChatMessageComponent).length);
+	if (mode.chatContainer.children.length > 0) {
+		renderer.newMessages?.observe(renderer.isFollowingOutput !== false, countChatMessages(mode.chatContainer));
 	}
 	mode.chatContainer.clear();
 }
@@ -725,7 +700,7 @@ InteractiveModeBase.prototype.renderInitialMessages = function (this: Interactiv
 	renderProjectTrustWarningIfNeeded(this);
 	refreshInteractiveTasks(this);
 	if (previousSessionId === sessionId) {
-		renderer.newMessages?.replaced(this.chatContainer.children.filter(isChatMessageComponent).length);
+		renderer.newMessages?.replaced(countChatMessages(this.chatContainer));
 	}
 };
 
@@ -811,7 +786,7 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	this.attachStartupNoticesContainer();
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { suppressCompactionBoundary: options.suppressCompactionBoundary });
-	renderer.newMessages?.replaced(this.chatContainer.children.filter(isChatMessageComponent).length);
+	renderer.newMessages?.replaced(countChatMessages(this.chatContainer));
 };
 
 function isSynthesizedCompactionBoundary(message: AgentMessage | undefined, result: VerbatimCompactionResult): boolean {
