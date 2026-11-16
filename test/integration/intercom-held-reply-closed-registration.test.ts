@@ -25,6 +25,8 @@ type Message = import("../../packages/intercom/types.js").Message;
 /** Spawning the real broker child is the structural cost of this suite. */
 const REAL_BROKER_TEST_TIMEOUT_MS = 60_000;
 const WAIT = { timeout: 10_000, interval: 20 };
+const BROKER_START_WAIT_MS = 90_000;
+const BROKER_START_HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 5_000;
 /** Long enough for a frame the broker wrote to arrive, so its absence means none was written. */
 const SETTLE_MS = 300;
 /** The fixture broker closes the socket of a session registering under this name right after writing `registered`. */
@@ -94,19 +96,8 @@ beforeAll(async () => {
 		{ env: { ...process.env, ATOMIC_CODING_AGENT_DIR: brokerFixture.agentDir }, stdio: "ignore" },
 	);
 	brokerFixture.trackBroker(broker);
-	await vi.waitFor(async () => {
-		brokerFixture.assertRunning();
-		const connected = await new Promise<boolean>((resolveConnected) => {
-			const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
-			socket.once("connect", () => {
-				socket.destroy();
-				resolveConnected(true);
-			});
-			socket.once("error", () => resolveConnected(false));
-		});
-		assert.ok(connected);
-	}, WAIT);
-}, REAL_BROKER_TEST_TIMEOUT_MS);
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, brokerFixture.agentDir), BROKER_START_WAIT_MS);
+}, BROKER_START_HOOK_TIMEOUT_MS);
 afterAll(() => brokerFixture.cleanup());
 
 test(

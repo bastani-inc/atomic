@@ -33,26 +33,32 @@ export function createProjectTrustContext(options: {
 		mode: options.mode === "interactive" ? "tui" : options.mode,
 		hasUI: options.hasUI,
 		ui: {
-			select: async (title, selectOptions) => {
+			select: async (title, selectOptions, dialogOptions) => {
 				if (!options.hasUI || options.mode !== "interactive") return undefined;
 				return showStartupSelector(
 					options.settingsManager,
 					title,
 					selectOptions.map((option) => ({ label: option, value: option })),
+					dialogOptions,
 				);
 			},
-			confirm: async (title, message) => {
+			confirm: async (title, message, dialogOptions) => {
 				if (!options.hasUI || options.mode !== "interactive") return false;
 				return (
-					(await showStartupSelector(options.settingsManager, `${title}\n${message}`, [
-						{ label: "Yes", value: true },
-						{ label: "No", value: false },
-					])) ?? false
+					(await showStartupSelector(
+						options.settingsManager,
+						`${title}\n${message}`,
+						[
+							{ label: "Yes", value: true },
+							{ label: "No", value: false },
+						],
+						dialogOptions,
+					)) ?? false
 				);
 			},
-			input: async (title, placeholder) => {
+			input: async (title, placeholder, dialogOptions) => {
 				if (!options.hasUI || options.mode !== "interactive") return undefined;
-				return showStartupInput(options.settingsManager, title, placeholder);
+				return showStartupInput(options.settingsManager, title, placeholder, dialogOptions);
 			},
 			notify: (message, type = "info") => {
 				if (options.mode !== "interactive") {

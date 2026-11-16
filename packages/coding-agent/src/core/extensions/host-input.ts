@@ -20,6 +20,7 @@ export interface HostInputOptions {
 	signal: AbortSignal;
 	requestId: string;
 	sessionId: string;
+	timeout?: number;
 	workflowRunId?: string;
 	workflowStageId?: string;
 }
@@ -104,32 +105,52 @@ export class HostInputBridge {
 	}
 
 	wrap(ui: ExtensionUIContext, presentationHost?: HostInput, scope: WorkflowIdentity = {}): ExtensionUIContext {
+		const hostOptions = (
+			host: HostInput,
+			identity: HostInputOptions,
+			options: ExtensionUIDialogOptions | undefined,
+		): HostInputOptions =>
+			host === presentationHost && options?.timeout !== undefined
+				? { ...identity, timeout: options.timeout }
+				: identity;
 		const wrapped: ExtensionUIContext = {
 			...ui,
 			confirm: (title, message, options) =>
 				this.request(
-					(host, identity) => host.confirm(title, message, identity),
+					(host, identity) => host.confirm(title, message, hostOptions(host, identity, options)),
 					(value) => typeof value === "boolean",
 					{ ...options, ...scope, sessionId: scope.sessionId },
+					() => false,
 				),
 			select: (title, choices, options) =>
 				this.request(
-					(host, identity) => host.select(title, choices, identity),
+					(host, identity) => host.select(title, choices, hostOptions(host, identity, options)),
 					(value) => value === undefined || (typeof value === "string" && choices.includes(value)),
 					{ ...options, ...scope, sessionId: scope.sessionId },
+					() => undefined,
 				),
 			input: (title, placeholder, options) =>
-				this.request((host, identity) => host.input(title, placeholder, identity), validText, {
-					...options,
-					...scope,
-					sessionId: scope.sessionId,
-				}),
+				this.request(
+					(host, identity) => host.input(title, placeholder, hostOptions(host, identity, options)),
+					validText,
+					{
+						...options,
+						...scope,
+						sessionId: scope.sessionId,
+					},
+					() => undefined,
+				),
 			editor: (title, initial, options) =>
-				this.request((host, identity) => host.editor(title, initial, identity), validText, {
-					...options,
-					...scope,
-					sessionId: scope.sessionId,
-				}),
+				this.request(
+					(host, identity) => host.editor(title, initial, hostOptions(host, identity, options)),
+					validText,
+					{
+						...options,
+						...scope,
+						sessionId: scope.sessionId,
+					},
+					() => undefined,
+				),
 		};
 		questionnaires.set(wrapped, (params, signal, present) =>
 			this.request(
@@ -165,28 +186,43 @@ export class HostInputBridge {
 		invoke: (host: HostInput, identity: HostInputOptions) => Promise<T>,
 		valid: (value: T) => boolean,
 		options?: ExtensionUIDialogOptions & WorkflowIdentity,
+		onCallerCancel?: () => T,
 	): Promise<T> {
 		if (this.closed) return Promise.reject(hostInputError("SessionClosed"));
 		const host = this.adapter;
 		if (!host) return Promise.reject(hostInputError("HumanInputUnavailable"));
 		const controller = new AbortController();
-		const signals = [options?.signal, this.signal()].filter((signal): signal is AbortSignal => signal !== undefined);
-		const abort = () => controller.abort();
-		for (const signal of signals) signal.addEventListener("abort", abort, { once: true });
+		const ownerSignal = this.signal();
+		let callerCancelled = false;
+		const abort = () => {
+			if (!controller.signal.aborted && options?.signal?.aborted) callerCancelled = true;
+			controller.abort();
+		};
+		const cancelCaller = () => {
+			if (controller.signal.aborted) return;
+			callerCancelled = true;
+			abort();
+		};
+		options?.signal?.addEventListener("abort", cancelCaller, { once: true });
+		ownerSignal?.addEventListener("abort", abort, { once: true });
 		this.pending.add(controller);
 		let timer: ReturnType<typeof setTimeout> | undefined;
-		if (options?.timeout !== undefined) timer = setTimeout(abort, options.timeout);
+		if (options?.timeout !== undefined) timer = setTimeout(cancelCaller, options.timeout);
 		let onAbort: (() => void) | undefined;
 		const cleanup = () => {
 			if (timer !== undefined) clearTimeout(timer);
-			for (const signal of signals) signal.removeEventListener("abort", abort);
+			options?.signal?.removeEventListener("abort", cancelCaller);
+			ownerSignal?.removeEventListener("abort", abort);
 			if (onAbort) controller.signal.removeEventListener("abort", onAbort);
 			this.pending.delete(controller);
 		};
-		if (signals.some((signal) => signal.aborted)) {
-			abort();
+		if (options?.signal?.aborted || ownerSignal?.aborted) {
+			if (options?.signal?.aborted) cancelCaller();
+			else abort();
 			cleanup();
-			return Promise.reject(hostInputError("HumanInputCancelled"));
+			return callerCancelled && onCallerCancel
+				? Promise.resolve(onCallerCancel())
+				: Promise.reject(hostInputError("HumanInputCancelled"));
 		}
 		let response: Promise<T>;
 		try {
@@ -204,7 +240,10 @@ export class HostInputBridge {
 			throw error;
 		}
 		const result = new Promise<T>((resolve, reject) => {
-			onAbort = () => reject(hostInputError("HumanInputCancelled"));
+			onAbort = () => {
+				if (callerCancelled && onCallerCancel) resolve(onCallerCancel());
+				else reject(hostInputError("HumanInputCancelled"));
+			};
 			controller.signal.addEventListener("abort", onAbort, { once: true });
 			if (controller.signal.aborted) onAbort();
 			response.then((value) => {

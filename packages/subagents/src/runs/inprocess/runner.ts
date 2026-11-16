@@ -914,8 +914,12 @@ function sessionCommands(session: AgentSession, cwd: string): TranscriptCommands
  * The entries of a child's own prompt and final answer, after the `inherited` entries its session opened with: what a
  * task view still shows of a finished child whose saved history is gone.
  */
-function promptAndAnswer(manager: SessionManager, inherited: number): SessionEntry[] {
-	const own = manager.getEntries().slice(inherited);
+function promptAndAnswer(manager: SessionManager, inheritedThroughId: string | null): SessionEntry[] {
+	const entries = manager.getEntries();
+	const own =
+		inheritedThroughId === null
+			? entries
+			: entries.slice(entries.findLastIndex((entry) => entry.id === inheritedThroughId) + 1);
 	const prompt = own.find((entry) => entry.type === "message" && entry.message.role === "user");
 	const answer = own.findLast(
 		(entry) =>
@@ -994,7 +998,7 @@ function withUnsavedAnswer(entries: SessionEntry[], unsaved: SessionEntry | unde
 function settledTranscript(
 	manager: SessionManager,
 	commands: TranscriptCommands | undefined,
-	inherited: number,
+	inherited: string | null,
 	unsavedAnswer: AssistantMessage | undefined,
 ): TranscriptSource {
 	const sessionId = manager.getSessionId();
@@ -1666,8 +1670,8 @@ export class SubagentControlRuntime {
 		let effectiveModelId = candidateModelId;
 		let effectiveThinking = initialThinkingForAttempt(candidateModelId, configuredThinking);
 		let transcriptManager: SessionManager | undefined;
-		// How many entries the child's session held when it opened: a forked child's inherited history, not its own.
-		let openedEntryCount = 0;
+
+		let openedThroughId: string | null = null;
 		let releasedAttempt = false;
 		let unsavedAnswer: AssistantMessage | undefined;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
@@ -1841,6 +1845,7 @@ export class SubagentControlRuntime {
 						admitted.sessionManager.getSessionStore(),
 						admitted.sessionManager.getSessionId(),
 						admitted.policy.cwd,
+						{ history: "tail" },
 					)
 				: SessionManager.create(
 						admitted.policy.cwd,
@@ -1940,7 +1945,7 @@ export class SubagentControlRuntime {
 			// #5210: a child resumed in this process continues after the final answer its last run could not save.
 			await beforeStartDeadline(restoreUnsavedAnswer(sessionManager));
 			transcriptManager = sessionManager;
-			openedEntryCount = sessionManager.getEntries().length;
+			openedThroughId = sessionManager.getEntries().at(-1)?.id ?? null;
 			taskHooks?.bindTranscript?.(sessionManager);
 			const childSession = {
 				sessionId: sessionManager.getSessionId(),
@@ -2055,6 +2060,7 @@ export class SubagentControlRuntime {
 			taskHooks?.bindTranscript?.({
 				getSessionId: () => sessionManager.getSessionId(),
 				getEntries: () => sessionManager.getEntries(),
+				loadFullHistory: () => sessionManager.loadFullHistory(),
 				subscribe: (listener) => transcriptSession.subscribe(listener),
 				getStreamingMessage: () => observedStreamingMessage,
 				getCompactionReason: compactionReasonReader(transcriptSession),
@@ -2077,6 +2083,7 @@ export class SubagentControlRuntime {
 				model: effectiveModelId === undefined ? undefined : splitKnownThinkingSuffix(effectiveModelId).baseModel,
 				thinking: effectiveThinking,
 				leafId: sessionManager.getLeafId(),
+				leafSeq: sessionManager.getLeafId() === null ? 0 : sessionManager.getEntrySeq(sessionManager.getLeafId()!),
 			};
 			taskHooks?.bindChildLaunch?.(childLaunch);
 			admitted.spec.onChildLaunch?.(childLaunch);
@@ -2460,7 +2467,7 @@ export class SubagentControlRuntime {
 				taskHooks?.bindTranscript?.(
 					releasedAttempt
 						? releasedTranscript(transcriptManager.getSessionId(), keptCommands)
-						: settledTranscript(transcriptManager, keptCommands, openedEntryCount, unsavedAnswer),
+						: settledTranscript(transcriptManager, keptCommands, openedThroughId, unsavedAnswer),
 				);
 			};
 			const disposal = (async (): Promise<SessionDisposal> => {

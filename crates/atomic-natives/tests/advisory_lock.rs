@@ -10,7 +10,9 @@ use std::{
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use atomic_natives::advisory_lock::{rename_no_replace, try_lock_file};
+use atomic_natives::advisory_lock::{
+	rename_no_replace, rename_no_replace_napi, try_advisory_lock, try_lock_file,
+};
 
 /// Set in the child process that takes the lock at this path and holds it until it is killed.
 const HOLD_ENV: &str = "ATOMIC_ADVISORY_LOCK_TEST_HOLD";
@@ -34,6 +36,11 @@ fn acquires_a_lock_and_creates_its_file_5193() {
 	let held = try_lock_file(&path, Duration::ZERO).unwrap();
 	assert!(held.is_some(), "a free lock is taken at once");
 	assert!(path.is_file());
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+	}
 	drop(held);
 	fs::remove_dir_all(dir).unwrap();
 }
@@ -77,7 +84,24 @@ fn closing_the_file_releases_the_lock_and_a_waiting_taker_gets_it_5193() {
 #[test]
 fn a_lock_in_a_missing_directory_is_an_error_not_contention_5193() {
 	let dir = scratch();
-	assert!(try_lock_file(&dir.join("missing").join("x.lock"), Duration::ZERO).is_err());
+	let missing = dir.join("missing").join("x.lock");
+	let io_err = try_lock_file(&missing, Duration::ZERO).unwrap_err();
+	let code = io_err.raw_os_error().expect("os error code");
+	let suffix = format!("(os error {code})");
+	let napi_err = try_advisory_lock(missing.to_string_lossy().into_owned(), 0)
+		.err()
+		.expect("missing dir fails");
+	assert_eq!(napi_err.reason, io_err.to_string());
+	assert_eq!(napi_err.reason.matches(&suffix).count(), 1);
+	let from = dir.join("missing");
+	let to = dir.join("elsewhere");
+	let rename_io_err = rename_no_replace(&from, &to).unwrap_err();
+	let rename_err = rename_no_replace_napi(
+		from.to_string_lossy().into_owned(),
+		to.to_string_lossy().into_owned(),
+	)
+	.unwrap_err();
+	assert_eq!(rename_err.reason, rename_io_err.to_string());
 	fs::remove_dir_all(dir).unwrap();
 }
 

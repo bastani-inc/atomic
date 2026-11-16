@@ -187,6 +187,32 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			assert.equal((await recovered.inspect("root"))[0]?.id, queued.id);
 		});
 
+		test("another host discovers exited and unplaced releases without notifications (#5230)", async (f) => {
+			await f.pool.enqueue(f.lease, work, boundary);
+			const peer = await openSqlPoolQueue(await f.peer());
+			const marks = new Set<string>();
+			const first = await peer.readyMark("root");
+			assert.ok(first !== undefined);
+			marks.add(first);
+			for (const kind of ["exited", "unplaced", "exited", "unplaced"] as const) {
+				const claim = await f.pool.claim(f.lease, "worker", [definition], 60_000);
+				assert.ok(claim);
+				assert.equal(await peer.readyMark("root"), undefined);
+				assert.equal(
+					await (kind === "exited"
+						? f.pool.releaseExited(f.lease, claim)
+						: f.pool.releaseUnplaced(f.lease, claim)),
+					true,
+				);
+				const released = await peer.readyMark("root");
+				assert.ok(released !== undefined);
+				assert.equal(marks.has(released), false, `${kind} release must change the other host's ready mark`);
+				marks.add(released);
+				assert.equal(await peer.readyMark("root"), released);
+			}
+			assert.deepEqual(await peer.control(f.lease), { state: "running", revision: 0 });
+		});
+
 		test("work is enqueued once, by boundary, scope or child, and a conflicting identity is refused", async (f) => {
 			const first = await f.pool.enqueue(f.lease, work, boundary);
 			assert.deepEqual(await f.pool.enqueue(f.lease, work, boundary), first);

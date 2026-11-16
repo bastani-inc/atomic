@@ -27,7 +27,13 @@ function cwdOf(tag: string, characters: number): string {
 	return resolve(`/${tag}/${"é".repeat(characters)}`);
 }
 
-function writer(directory: string, tag: string, cwdCharacters: number, sessions?: number): SpawnedProcess {
+function writer(
+	directory: string,
+	tag: string,
+	cwdCharacters: number,
+	sessions?: number,
+	stdin: "pipe" | "ignore" = "ignore",
+): SpawnedProcess {
 	return spawnProcess(
 		[
 			bunExecutable(),
@@ -37,7 +43,7 @@ function writer(directory: string, tag: string, cwdCharacters: number, sessions?
 			String(cwdCharacters),
 			...(sessions === undefined ? [] : [String(sessions)]),
 		],
-		{ stdout: "pipe", stderr: "pipe" },
+		{ stdin, stdout: "pipe", stderr: "pipe" },
 	);
 }
 
@@ -155,7 +161,7 @@ test.skipIf(process.platform === "win32")(
 		const writers: SpawnedProcess[] = [];
 		const suspender = await createProcessSuspender();
 		try {
-			const child = writer(directory, "stopped", 300, 40);
+			const child = writer(directory, "stopped", 300, 40, "pipe");
 			writers.push(child);
 			assert.equal(await readLine(child), "ready");
 			const pid = child.pid;
@@ -166,6 +172,8 @@ test.skipIf(process.platform === "win32")(
 				await suspender.resume(pid);
 				await sleep(20);
 			}
+			assert.ok(child.stdin);
+			child.stdin.end();
 			assert.match(await readLine(child), /^done 40$/);
 			assert.equal(await child.exited, 0, await readStreamText(child.stderr));
 			assert.equal((await assertSessionsIntact(directory, ["stopped"], 300)).get("stopped"), 40);

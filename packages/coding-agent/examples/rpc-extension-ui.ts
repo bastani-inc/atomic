@@ -18,7 +18,7 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
-import { type Component, Container, ProcessTerminal, TUI } from "@bastani/atomic-tui";
+import { type Component, Container, ProcessTerminal, TuiMainScreen } from "@bastani/atomic-tui";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -56,6 +56,12 @@ interface ExtensionUIRequest {
 	text?: string;
 }
 
+interface QueuedDialog {
+	dialog: Component;
+	id: string | null;
+	focus: Component;
+}
+
 // ============================================================================
 // Output log: accumulates styled lines, renders the tail that fits
 // ============================================================================
@@ -90,7 +96,7 @@ async function main() {
 	// -- TUI setup --
 
 	const terminal = new ProcessTerminal();
-	const tui = new TUI(terminal);
+	const tui = new TuiMainScreen(terminal);
 
 	const outputLog = new OutputLog();
 	const loadingIndicator = new LoadingIndicator();
@@ -123,25 +129,39 @@ async function main() {
 	// These helpers swap between them.
 
 	let activeDialog: Component | null = null;
+	let activeDialogId: string | null = null;
+	const dialogQueue: QueuedDialog[] = [];
 
-	function setBottomComponent(component: Component): void {
+	function setBottomComponent(component: Component, focus: Component = component): void {
 		root.clear();
 		root.addChild(outputLog);
 		if (isStreaming) root.addChild(loadingIndicator);
 		root.addChild(component);
-		tui.setFocus(component);
+		tui.setFocus(focus);
 		tui.requestRender();
 	}
 
 	function showPrompt(): void {
+		const next = dialogQueue.shift();
+		if (next) {
+			activeDialog = next.dialog;
+			activeDialogId = next.id;
+			setBottomComponent(next.dialog, next.focus);
+			return;
+		}
 		activeDialog = null;
-		setBottomComponent(promptInput);
-		tui.setFocus(promptInput.input);
+		activeDialogId = null;
+		setBottomComponent(promptInput, promptInput.input);
 	}
 
-	function showDialog(dialog: Component): void {
+	function showDialog(dialog: Component, id: string | null = null, focus: Component = dialog): void {
+		if (activeDialog) {
+			dialogQueue.push({ dialog, id, focus });
+			return;
+		}
 		activeDialog = dialog;
-		setBottomComponent(dialog);
+		activeDialogId = id;
+		setBottomComponent(dialog, focus);
 	}
 
 	function showLoading(): void {
@@ -169,32 +189,45 @@ async function main() {
 
 	// -- Extension UI dialog handling --
 
-	function showSelectDialog(title: string, options: string[], onDone: (value: string | undefined) => void): void {
+	function showSelectDialog(
+		title: string,
+		options: string[],
+		onDone: (value: string | undefined) => void,
+		id: string | null = null,
+	): void {
 		const dialog = new SelectDialog(title, options);
 		dialog.onSelect = (value) => {
+			if (activeDialog !== dialog) return;
 			showPrompt();
 			onDone(value);
 		};
 		dialog.onCancel = () => {
+			if (activeDialog !== dialog) return;
 			showPrompt();
 			onDone(undefined);
 		};
-		showDialog(dialog);
+		showDialog(dialog, id);
 	}
 
-	function showInputDialog(title: string, prefill?: string, onDone?: (value: string | undefined) => void): void {
+	function showInputDialog(
+		title: string,
+		prefill?: string,
+		onDone?: (value: string | undefined) => void,
+		id: string | null = null,
+	): void {
 		const dialog = new InputDialog(title, prefill);
 		dialog.onSubmit = (value) => {
+			if (activeDialog !== dialog) return;
 			showPrompt();
 			onDone?.(value.trim() || undefined);
 		};
 		dialog.onEscape = () => {
+			if (activeDialog !== dialog) return;
 			showPrompt();
 			onDone?.(undefined);
 		};
 		dialog.onCtrlD = exit;
-		showDialog(dialog);
-		tui.setFocus(dialog.inputComponent);
+		showDialog(dialog, id, dialog.inputComponent);
 	}
 
 	function handleExtensionUI(req: ExtensionUIRequest): void {
@@ -203,45 +236,79 @@ async function main() {
 		switch (method) {
 			// Dialog methods: replace prompt with interactive component
 			case "select": {
-				showSelectDialog(req.title ?? "Select", req.options ?? [], (value) => {
-					if (value !== undefined) {
-						send({ type: "extension_ui_response", id, value });
-					} else {
-						send({ type: "extension_ui_response", id, cancelled: true });
-					}
-				});
+				showSelectDialog(
+					req.title ?? "Select",
+					req.options ?? [],
+					(value) => {
+						if (value !== undefined) {
+							send({ type: "extension_ui_response", id, value });
+						} else {
+							send({ type: "extension_ui_response", id, cancelled: true });
+						}
+					},
+					id,
+				);
 				break;
 			}
 
 			case "confirm": {
 				const title = req.message ? `${req.title}: ${req.message}` : (req.title ?? "Confirm");
-				showSelectDialog(title, ["Yes", "No"], (value) => {
-					send({ type: "extension_ui_response", id, confirmed: value === "Yes" });
-				});
+				showSelectDialog(
+					title,
+					["Yes", "No"],
+					(value) => {
+						send({ type: "extension_ui_response", id, confirmed: value === "Yes" });
+					},
+					id,
+				);
 				break;
 			}
 
 			case "input": {
 				const title = req.placeholder ? `${req.title} (${req.placeholder})` : (req.title ?? "Input");
-				showInputDialog(title, undefined, (value) => {
-					if (value !== undefined) {
-						send({ type: "extension_ui_response", id, value });
-					} else {
-						send({ type: "extension_ui_response", id, cancelled: true });
-					}
-				});
+				showInputDialog(
+					title,
+					undefined,
+					(value) => {
+						if (value !== undefined) {
+							send({ type: "extension_ui_response", id, value });
+						} else {
+							send({ type: "extension_ui_response", id, cancelled: true });
+						}
+					},
+					id,
+				);
 				break;
 			}
 
 			case "editor": {
 				const prefill = req.prefill?.replace(/\n/g, " ");
-				showInputDialog(req.title ?? "Editor", prefill, (value) => {
-					if (value !== undefined) {
-						send({ type: "extension_ui_response", id, value });
-					} else {
-						send({ type: "extension_ui_response", id, cancelled: true });
+				showInputDialog(
+					req.title ?? "Editor",
+					prefill,
+					(value) => {
+						if (value !== undefined) {
+							send({ type: "extension_ui_response", id, value });
+						} else {
+							send({ type: "extension_ui_response", id, cancelled: true });
+						}
+					},
+					id,
+				);
+				break;
+			}
+
+			case "cancel": {
+				if (typeof id === "string" && id.length > 0) {
+					if (activeDialog && activeDialogId === id) {
+						showPrompt();
+						break;
 					}
-				});
+					const queuedIndex = dialogQueue.findIndex((entry) => entry.id === id);
+					if (queuedIndex !== -1) {
+						dialogQueue.splice(queuedIndex, 1);
+					}
+				}
 				break;
 			}
 

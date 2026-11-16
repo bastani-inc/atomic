@@ -420,7 +420,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				return;
 			}
 			if (bare("session")) {
-				this.handleSessionCommand();
+				await this.handleSessionCommand();
 				this.editor.setText("");
 				return;
 			}

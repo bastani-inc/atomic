@@ -10,7 +10,12 @@ import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provi
 import { formatModelLabel } from "../../../core/model-label.ts";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
-import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
+import {
+	addHistoryUsageToTotals,
+	addUsageToTotals,
+	createUsageTotals,
+	type UsageTotals,
+} from "../../../core/usage-totals.ts";
 import { getEngineSessionStats } from "../../interactive-engine/engine-session-stats.js";
 import { theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
@@ -108,12 +113,19 @@ function summarizeEngineUsage(stats: SessionStats): UsageSummary {
 function summarizeEntryUsage(session: ChatBoxSession): UsageSummary {
 	// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
 	const totals = createUsageTotals();
-	let latestCacheHitRate: number | undefined;
+	const omitted = session.sessionManager.getOmittedHistoryTotals?.();
+	addHistoryUsageToTotals(totals, omitted);
+	let latestCacheHitRate = omitted?.latestAssistantUsage ? getCacheHitRate(omitted.latestAssistantUsage) : undefined;
+	let latestAssistantSeq = omitted?.latestAssistantSeq ?? -1;
 
 	for (const entry of session.sessionManager.getEntries()) {
 		if (entry.type === "message" && entry.message.role === "assistant") {
 			addUsageToTotals(totals, entry.message.usage);
-			latestCacheHitRate = getCacheHitRate(entry.message.usage);
+			const seq = session.sessionManager.getEntrySeq?.(entry.id) ?? Number.MAX_SAFE_INTEGER;
+			if (seq >= latestAssistantSeq) {
+				latestCacheHitRate = getCacheHitRate(entry.message.usage);
+				latestAssistantSeq = seq;
+			}
 		} else if (
 			(entry.type === "branch_summary" || entry.type === "session_summary" || entry.type === "compaction") &&
 			entry.usage

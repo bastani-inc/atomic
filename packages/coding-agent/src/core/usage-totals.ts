@@ -1,5 +1,6 @@
 import type { Usage } from "@bastani/atomic-ai/compat";
 import type { SessionEntry } from "./session-manager.ts";
+import type { SessionHistoryTotals } from "./storage/session/types.js";
 
 export interface UsageTotals {
 	input: number;
@@ -19,6 +20,26 @@ export function addUsageToTotals(totals: UsageTotals, usage: Usage): void {
 	totals.cacheRead += usage.cacheRead;
 	totals.cacheWrite += usage.cacheWrite;
 	totals.cost += usage.cost.total;
+}
+
+export function addHistoryUsageToTotals(
+	totals: UsageTotals,
+	history: SessionHistoryTotals | undefined,
+	includeAuxiliary = false,
+): void {
+	if (history === undefined) return;
+	for (const part of [
+		history.assistant,
+		history.toolResult,
+		history.summaries,
+		...(includeAuxiliary && history.auxiliary ? [history.auxiliary] : []),
+	]) {
+		totals.input += part.input;
+		totals.output += part.output;
+		totals.cacheRead += part.cacheRead;
+		totals.cacheWrite += part.cacheWrite;
+		totals.cost += part.cost;
+	}
 }
 
 /** Sum nested/classifier usage without losing optional token splits. */

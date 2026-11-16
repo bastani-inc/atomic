@@ -158,7 +158,12 @@ export interface RunSyncOptions {
 	/** Told the child's own session once it is created, for a launch no task host records (an SDK session). */
 	onChildSession?: (session: { sessionId: string; sessionFile: string | undefined }) => void;
 	/** Told the model and thinking level the child's session started on, and its leaf entry then, as `onChildSession`. */
-	onChildLaunch?: (launch: { model: string | undefined; thinking: string | undefined; leafId: string | null }) => void;
+	onChildLaunch?: (launch: {
+		model: string | undefined;
+		thinking: string | undefined;
+		leafId: string | null;
+		leafSeq?: number;
+	}) => void;
 	share?: boolean;
 	outputPath?: string;
 	outputMode?: OutputMode;

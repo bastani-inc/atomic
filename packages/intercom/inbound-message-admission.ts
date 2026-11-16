@@ -33,8 +33,9 @@ export class InboundMessageAdmission {
   private readonly pending = new Map<string, PendingInboundMessage>();
   private readonly persistentlyDelivered = new Set<string>();
 
-  restore(entries: Iterable<unknown>): void {
+  restore(entries: Iterable<unknown>, delivered: Iterable<string> = []): void {
     this.persistentlyDelivered.clear();
+ for(const id of delivered)this.persistentlyDelivered.add(id);
     for (const value of entries) {
       if (typeof value !== "object" || value === null) continue;
       const entry = value as PersistedInboundMessageEntry;

@@ -1,5 +1,5 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
-import { SqlSnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
+import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
 import { dialectOf, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
@@ -17,6 +17,19 @@ import {
 } from "./errors.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
 import {
+	branchRanges,
+	foldSessionResume,
+	foreignResumeIds,
+	isSessionResumeIndex,
+	latestCompactionOf,
+	type SessionResumeIndex,
+	sessionResumeFrom,
+	sessionResumeOf,
+	sessionResumePlan,
+	sessionTailFrom,
+	stateSeqsBefore,
+} from "./session-resume.js";
+import {
 	applySessionSummaryEntries,
 	materializeSessionSummaryMetadata,
 	type SessionSummaryState,
@@ -24,16 +37,22 @@ import {
 } from "./session-summary.js";
 import type {
 	SessionBlob,
+	SessionCompactionPoint,
 	SessionCwdMatcher,
+	SessionEntryRange,
 	SessionListQuery,
 	SessionOpenMarker,
 	SessionOpenMarkerAge,
 	SessionOpenMarkerStore,
 	SessionRecordHeader,
+	SessionResume,
 	SessionSnapshot,
 	SessionStore,
+	SessionStoredEntry,
 	SessionSummary,
+	SessionTail,
 	SessionWriteOptions,
+	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
@@ -89,6 +108,17 @@ export const SESSION_PRESENCE_TABLES = Object.freeze({ open: "open" });
 type Tables = Readonly<Record<keyof typeof SESSION_TABLES, string>>;
 type HeaderRow = SqliteRow & { header_json: string; last_seq: number };
 type SummaryStateRow = HeaderRow & { summary_state: string };
+type ResumeRow = SummaryStateRow & { revision: string };
+
+type StoredSummaryState = SessionSummaryState & { readonly resume?: SessionResumeIndex; readonly epoch?: string };
+
+interface ResumeSource {
+	readonly header: SessionRecordHeader;
+	readonly index: SessionResumeIndex;
+}
+
+const SEQ_BATCH = 500;
+
 type ListingRow = HeaderRow & {
 	id: string;
 	cwd: string;
@@ -277,6 +307,11 @@ export class SqlSessionStore implements SessionStore {
 	 * pruning never drops summaries that another has fetched but not yet recorded under its scope.
 	 */
 	private listing: Promise<void> = Promise.resolve();
+
+	private readonly resumeIndexes = new Map<
+		string,
+		{ readonly revision: string; readonly index: SessionResumeIndex }
+	>();
 
 	private constructor(
 		database: SqliteDatabase,
@@ -509,7 +544,7 @@ export class SqlSessionStore implements SessionStore {
 		return { ...this.database.descriptor, ...(this.prefix === "" ? {} : { prefix: this.prefix }) };
 	}
 
-	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<{ readonly lastSeq: number }> {
+	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
@@ -517,9 +552,9 @@ export class SqlSessionStore implements SessionStore {
 			if (await tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id = ?`, header.id)) {
 				throw new SessionExistsError(header.id);
 			}
-			const texts = await this.saveSummary(tx, header.id, { header, entries, lastSeq: entries.length });
+			const { texts, epoch } = await this.saveSummary(tx, header.id, { header, entries, lastSeq: entries.length });
 			await this.insertEntries(tx, header.id, entries, 0, texts);
-			return { lastSeq: entries.length };
+			return { lastSeq: entries.length, epoch };
 		}, SESSION_TRANSACTION);
 	}
 
@@ -531,7 +566,7 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		return this.transaction(async (tx) => {
-			const previous = await this.forWrite(tx, sessionId, options, true);
+			const { row: previous, state: summaryState } = await this.forWrite(tx, sessionId, options, true);
 			validateSessionEntries(entries);
 			// A new snapshot record is written only while every blob it references is still stored (#5077).
 			await this.blobTable.assertStored(
@@ -541,11 +576,12 @@ export class SqlSessionStore implements SessionStore {
 				),
 			);
 			const lastSeq = previous.last_seq + entries.length;
-			const texts = await this.saveSummary(
+			const { texts } = await this.saveSummary(
 				tx,
 				sessionId,
 				{ header: JSON.parse(previous.header_json) as SessionRecordHeader, entries, lastSeq },
-				JSON.parse(previous.summary_state) as SessionSummaryState,
+				summaryState,
+				await this.appendedResume(tx, sessionId, summaryState.resume, previous.last_seq, entries),
 			);
 			await this.insertEntries(tx, sessionId, entries, previous.last_seq, texts);
 			return { lastSeq };
@@ -557,7 +593,7 @@ export class SqlSessionStore implements SessionStore {
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
-	): Promise<{ readonly lastSeq: number }> {
+	): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		return this.transaction(async (tx) => {
@@ -568,9 +604,9 @@ export class SqlSessionStore implements SessionStore {
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
-			const texts = await this.saveSummary(tx, sessionId, { header, entries, lastSeq: entries.length });
+			const { texts, epoch } = await this.saveSummary(tx, sessionId, { header, entries, lastSeq: entries.length });
 			await this.insertEntries(tx, sessionId, entries, 0, texts);
-			return { lastSeq: entries.length };
+			return { lastSeq: entries.length, epoch };
 		}, SESSION_TRANSACTION);
 	}
 
@@ -986,20 +1022,30 @@ export class SqlSessionStore implements SessionStore {
 
 	private async read(tx: SqliteExecutor, sessionId: string): Promise<SessionSnapshot> {
 		const row = await tx.get<HeaderRow>(
-			`SELECT header_json, last_seq FROM ${this.tables.sessions} WHERE id = ?`,
+			`SELECT header_json, last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
-		// One statement for every entry would return the whole session at once, more than a libSQL server's response
-		// limit for a long one. Each statement fetches the next batch of entries by `seq` and returns those whose
-		// cumulative text fits in a page, the first always; all of them run in this transaction.
-		const entries: SessionEntry[] = [];
+		return {
+			header: JSON.parse(row.header_json) as SessionRecordHeader,
+			entries: (await this.readRows(tx, sessionId)).map(({ entry }) => entry),
+			lastSeq: row.last_seq,
+		};
+	}
+
+	private async readRows(
+		tx: SqliteExecutor,
+		sessionId: string,
+		filter = "",
+		params: readonly SqliteValue[] = [],
+	): Promise<SessionStoredEntry[]> {
+		const entries: SessionStoredEntry[] = [];
 		for (let after = 0, limit: number = SESSION_READ_FETCH.first; ; ) {
 			const rows = await tx.all<SqliteRow & FetchRow & { seq: number; entry_json: string; chunks: number }>(
 				`WITH sized AS MATERIALIZED (
 					SELECT seq, chunks, length(entry_json) AS size,
 						CASE WHEN ${this.dialect.textByteLength("entry_json")} <= ? THEN entry_json END AS inline_json
-					FROM ${this.tables.entries} WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT ?
+					FROM ${this.tables.entries} WHERE session_id = ? AND seq > ?${filter === "" ? "" : ` AND ${filter}`} ORDER BY seq LIMIT ?
 				), batch AS MATERIALIZED (
 					SELECT count(*) AS fetched, COALESCE(sum(size), 0) AS chars FROM sized
 				), page AS (
@@ -1019,6 +1065,7 @@ export class SqlSessionStore implements SessionStore {
 				SESSION_READ_INLINE_BYTES,
 				sessionId,
 				after,
+				...params,
 				limit + 1,
 				limit,
 				SESSION_READ_PAGE_CHARS,
@@ -1030,18 +1077,395 @@ export class SqlSessionStore implements SessionStore {
 			for (const entry of rows) {
 				const chunks = Number(entry.chunks);
 				const json = chunks === 0 ? entry.entry_json : await this.readEntryChunks(tx, sessionId, entry.seq, chunks);
-				entries.push(JSON.parse(json) as SessionEntry);
+				entries.push({ seq: Number(entry.seq), entry: JSON.parse(json) as SessionEntry });
 			}
 			const next = nextFetch(limit, rows);
-			if (!next.more) break;
+			if (!next.more) return entries;
 			after = Number(rows.at(-1)!.seq);
 			limit = next.limit;
 		}
-		return {
-			header: JSON.parse(row.header_json) as SessionRecordHeader,
-			entries,
-			lastSeq: row.last_seq,
-		};
+	}
+
+	private async readSeqs(
+		tx: SqliteExecutor,
+		sessionId: string,
+		seqs: readonly number[],
+	): Promise<SessionStoredEntry[]> {
+		const entries: SessionStoredEntry[] = [];
+		for (let start = 0; start < seqs.length; start += SEQ_BATCH) {
+			const batch = seqs.slice(start, start + SEQ_BATCH);
+			entries.push(...(await this.readRows(tx, sessionId, `seq IN (${batch.map(() => "?").join(", ")})`, batch)));
+		}
+		return entries;
+	}
+
+	private async resumeSource(
+		tx: SqliteExecutor,
+		sessionId: string,
+	): Promise<ResumeSource & { readonly row: ResumeRow }> {
+		const row = await tx.get<ResumeRow>(
+			`SELECT header_json,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?${this.dialect.lockClause("share")}`,
+			sessionId,
+		);
+		if (!row) throw new SessionNotFoundError(sessionId);
+		const stored = (JSON.parse(row.summary_state) as StoredSummaryState).resume;
+		const remembered = this.resumeIndexes.get(sessionId);
+		const index = isSessionResumeIndex(stored, Number(row.last_seq))
+			? stored
+			: remembered?.revision === row.revision
+				? remembered.index
+				: undefined;
+		if (!index || !isSessionResumeIndex(index, Number(row.last_seq)))
+			throw new SessionConflictError(sessionId, Number(row.last_seq), Number(row.last_seq));
+		return { header: JSON.parse(row.header_json) as SessionRecordHeader, index, row };
+	}
+
+	private async prepareResume(sessionId: string): Promise<void> {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const row = await this.database.get<ResumeRow>(
+				`SELECT header_json,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
+				sessionId,
+			);
+			if (!row) throw new SessionNotFoundError(sessionId);
+			const state = JSON.parse(row.summary_state) as StoredSummaryState;
+			if (isSessionResumeIndex(state.resume, Number(row.last_seq))) return;
+			const remembered = this.resumeIndexes.get(sessionId);
+			if (remembered?.revision === row.revision && isSessionResumeIndex(remembered.index, Number(row.last_seq)))
+				return;
+			let index: SessionResumeIndex | undefined;
+			const j = (...path: string[]) => this.dialect.jsonText("entry_json", ...path);
+			const projected = [
+				"type",
+				"parentId",
+				"timestamp",
+				"customType",
+				"firstKeptEntryId",
+				"coveredThroughEntryId",
+				"provider",
+				"modelId",
+				"thinkingLevel",
+				"targetId",
+				"label",
+				"stageAdmissionKey",
+			].map((key) => [key, j(key)] as const);
+			const messageKeys = ["role", "provider", "model", "usage", "toolCallId"];
+			const dataKeys = [
+				"childId",
+				"version",
+				"index",
+				"agent",
+				"cwd",
+				"state",
+				"intercomSessionId",
+				"homeGroup",
+				"kind",
+				"worktree",
+				"type",
+				"timestamp",
+				"completionId",
+				"sessionId",
+				"askId",
+				"messageId",
+				"attemptId",
+				"runId",
+				"requestId",
+				"id",
+				"protectedReconciliationOf",
+				"historyOnly",
+				"toolCallId",
+				"ownerId",
+				"taskId",
+			];
+			const dataExpr = this.dialect.jsonObject([
+				...dataKeys.map(
+					(key) =>
+						[
+							key,
+							["version", "index", "timestamp"].includes(key)
+								? `CASE WHEN ${this.dialect.jsonType("entry_json", "data", key)} IN ('integer','real') THEN CAST(${j("data", key)} AS ${this.dialect.types.real}) END`
+								: j("data", key),
+						] as const,
+				),
+				[
+					"message",
+					this.dialect.jsonObject(
+						["id", "replyTo", "expectsReply"].map((key) => [key, j("data", "message", key)] as const),
+					),
+				],
+				[
+					"op",
+					`CASE WHEN ${this.dialect.jsonHasType("text", "entry_json", "data", "op")} THEN ${j("data", "op")} END`,
+				],
+				["owner", j("data", "owner")],
+				["tasks", j("data", "tasks")],
+				["groups", j("data", "groups")],
+				...["queries", "urls"].map(
+					(key) =>
+						[
+							key,
+							`CASE WHEN ${this.dialect.jsonHasType("array", "entry_json", "data", key)} THEN '[]' ELSE NULL END`,
+						] as const,
+				),
+			]);
+			const detailsExpr = this.dialect.jsonObject([
+				...dataKeys.map((key) => [key, j("details", key)] as const),
+				[
+					"message",
+					this.dialect.jsonObject(
+						["id", "replyTo", "expectsReply"].map((key) => [key, j("details", "message", key)] as const),
+					),
+				],
+			]);
+			const dataFieldNames =
+				this.dialect.name === "sqlite"
+					? `(SELECT COALESCE(json_group_array(key),'[]') FROM json_each(entry_json,'$.data'))`
+					: `(SELECT COALESCE(json_agg(key)::text,'[]') FROM jsonb_object_keys(CASE WHEN jsonb_typeof(entry_json::jsonb->'data')='object' THEN entry_json::jsonb->'data' ELSE '{}'::jsonb END) AS key)`;
+			const columns = [
+				["dataFields", `CASE WHEN ${j("type")} = 'custom' THEN ${dataFieldNames} ELSE '[]' END`],
+				...projected,
+				["message", this.dialect.jsonObject(messageKeys.map((key) => [key, j("message", key)] as const))],
+				["data", dataExpr],
+				["details", detailsExpr],
+				["usage", j("usage")],
+				["protectedReconciliation", j("protectedReconciliation")],
+				[
+					"snapshot",
+					`CASE WHEN ${this.dialect.jsonHasType("object", "entry_json", "snapshot")} THEN '{}' ELSE NULL END`,
+				],
+				["compactionDetails", j("details", "strategy")],
+				[
+					"toolCalls",
+					`(SELECT count(*) FROM ${this.dialect.jsonValues(`CASE WHEN ${this.dialect.jsonHasType("array", "entry_json", "message", "content")} THEN ${j("message", "content")} ELSE '[]' END`)} WHERE ${this.dialect.jsonText("value", "type")} = 'toolCall')`,
+				],
+			];
+			const select = columns
+				.map(([key, expr]) => `${expr} AS ${this.dialect.identifier(`resume_${key.toLowerCase()}`)}`)
+				.join(", ");
+			let topology: readonly (readonly [number, number])[] | undefined;
+			for (let pass = 0; pass < 2; pass++) {
+				index = undefined;
+				for (let after = 0; after < Number(row.last_seq); ) {
+					const rows = await this.database.all<SqliteRow & { seq: number; entry_id: string; chunks: number }>(
+						`WITH encoded AS MATERIALIZED (
+ SELECT seq,entry_id,chunks,entry_json FROM ${this.tables.entries} WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT 512
+ ), payloads AS MATERIALIZED (
+ SELECT seq,entry_id,chunks,CASE WHEN chunks=0 THEN entry_json ELSE ${this.dialect.name === "sqlite" ? `(SELECT group_concat(text, '') FROM (SELECT CAST(data AS TEXT) AS text FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq=encoded.seq ORDER BY idx))` : `(SELECT convert_from(string_agg(data, ''::bytea ORDER BY idx),'UTF8') FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq=encoded.seq)`} END AS entry_json FROM encoded
+ ) SELECT seq,entry_id,chunks,${select} FROM payloads ORDER BY seq`,
+						sessionId,
+						after,
+						row.last_seq,
+						sessionId,
+					);
+					if (rows.length === 0) break;
+					const batch: SessionEntry[] = [];
+					for (const projected of rows) {
+						const parsed: Record<string, unknown> = { id: projected.entry_id };
+						const decode = (value: SqliteValue | undefined) =>
+							typeof value === "string" && (value.startsWith("{") || value.startsWith("["))
+								? JSON.parse(value)
+								: value;
+						for (const [key] of columns) {
+							const value = projected[`resume_${key.toLowerCase()}`];
+							parsed[key] = [
+								"dataFields",
+								"message",
+								"data",
+								"details",
+								"usage",
+								"snapshot",
+								"protectedReconciliation",
+							].includes(key)
+								? decode(value)
+								: value;
+						}
+						const message = parsed.message as Record<string, unknown>;
+						if (message && typeof message === "object") {
+							message.usage = decode(message.usage as SqliteValue);
+							message.content = Array.from({ length: Number(parsed.toolCalls ?? 0) }, () => ({
+								type: "toolCall",
+							}));
+						}
+						if (parsed.snapshot === null) delete parsed.snapshot;
+						if (parsed.type === "compaction") parsed.details = { strategy: parsed.compactionDetails };
+						if (parsed.type === "custom") {
+							const data = parsed.data as Record<string, unknown>;
+							const keys = (parsed.dataFields as string[]) ?? [];
+							for (const key of Object.keys(data)) if (!keys.includes(key)) delete data[key];
+							for (const key of keys) if (!(key in data)) data[key] = null;
+						}
+						for (const key of ["data", "details"]) {
+							const data = parsed[key] as Record<string, unknown>;
+							if (data && typeof data === "object") {
+								data.message = decode(data.message as SqliteValue);
+								data.owner = decode(data.owner as SqliteValue);
+								data.tasks = decode(data.tasks as SqliteValue);
+								for (const field of ["groups", "queries", "urls"])
+									if (field in data) data[field] = decode(data[field] as SqliteValue);
+								if (
+									data.timestamp !== null &&
+									data.timestamp !== undefined &&
+									typeof data.timestamp === "string"
+								)
+									data.timestamp = Number(data.timestamp);
+								if (parsed.type === "custom" && parsed.customType === "subagent-child") {
+									if (data.version !== null && data.version !== undefined) data.version = Number(data.version);
+									if (data.index !== null && data.index !== undefined) data.index = Number(data.index);
+								}
+								const message = data.message as Record<string, unknown>;
+								if (message?.expectsReply === 1 || message?.expectsReply === "true")
+									message.expectsReply = true;
+								if (data.historyOnly === 1 || data.historyOnly === "true") data.historyOnly = true;
+							}
+						}
+						batch.push(parsed as unknown as SessionEntry);
+					}
+					const old = index ?? foldSessionResume(undefined, []);
+					const seqs = new Map<string, number>();
+					for (const id of foreignResumeIds(old, batch)) {
+						const seq = await this.seqOfEntry(this.database, sessionId, id);
+						if (seq !== undefined) seqs.set(id, seq);
+					}
+					index = foldSessionResume(
+						index,
+						batch,
+						(id) => seqs.get(id),
+						(seq) => topology === undefined || topology.some(([a, b]) => seq >= a && seq <= b),
+					);
+					after = Number(rows.at(-1)!.seq);
+				}
+				if (pass === 0 && index && index.jumps.length > 0) topology = branchRanges(index, index.leafSeq);
+				else break;
+			}
+			index = { ...(index ?? foldSessionResume(undefined, [])), epoch: state.epoch ?? row.revision };
+			const current = await this.database.get<ResumeRow>(
+				`SELECT revision,last_seq FROM ${this.tables.sessions} WHERE id = ?`,
+				sessionId,
+			);
+			if (current?.revision !== row.revision || Number(current.last_seq) !== Number(row.last_seq)) continue;
+			this.resumeIndexes.set(sessionId, { revision: row.revision, index });
+			while (this.resumeIndexes.size > 16) this.resumeIndexes.delete(this.resumeIndexes.keys().next().value!);
+			await this.database
+				.run(
+					`UPDATE ${this.tables.sessions} SET summary_state = ? WHERE id = ? AND revision = ? AND last_seq = ?`,
+					JSON.stringify({ ...state, resume: index, epoch: index.epoch }),
+					sessionId,
+					row.revision,
+					row.last_seq,
+				)
+				.catch(() => ({ changes: 0 }));
+			return;
+		}
+		throw new SessionConflictError(sessionId, 0, 0);
+	}
+
+	async readTail(sessionId: string, fromSeq: number): Promise<SessionTail> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		await this.prepareResume(sessionId);
+		const start = Math.max(1, fromSeq);
+		const { tail } = await this.transaction(async (tx) => {
+			const source = await this.resumeSource(tx, sessionId);
+			const stateSeqs = stateSeqsBefore(source.index, start);
+			if (hasHistoryLoadObserver())
+				announceHistoryLoad(stateSeqs.length + Math.max(0, source.index.seq - start + 1));
+			const state = await this.readSeqs(tx, sessionId, stateSeqs);
+			const entries = (await this.readRows(tx, sessionId, "seq >= ?", [start])).map(({ entry }) => entry);
+			return { tail: sessionTailFrom(source.index, source.header, start, state, entries), source };
+		}, SESSION_TRANSACTION);
+
+		return tail;
+	}
+
+	async readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const start = Math.max(1, startSeq);
+		return this.transaction(async (tx) => {
+			const row = await tx.get<HeaderRow>(
+				`SELECT last_seq, summary_state, revision FROM ${this.tables.sessions} WHERE id = ?${this.dialect.lockClause("share")}`,
+				sessionId,
+			);
+			if (!row) throw new SessionNotFoundError(sessionId);
+			const entries =
+				endSeq < start ? [] : await this.readRows(tx, sessionId, "seq >= ? AND seq <= ?", [start, endSeq]);
+			const meta = JSON.parse(String(row.summary_state)) as StoredSummaryState;
+			return {
+				startSeq: start,
+				entries: entries.map(({ entry }) => entry),
+				seqs: entries.map(({ seq }) => seq),
+				lastSeq: Number(row.last_seq),
+				epoch: meta.epoch ?? meta.resume?.epoch ?? String(row.revision),
+			};
+		}, SESSION_TRANSACTION);
+	}
+
+	async findEntrySeq(sessionId: string, entryId: string): Promise<number | undefined> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		validateSessionText("entry.id", entryId);
+		if (!(await this.readHeader(sessionId))) throw new SessionNotFoundError(sessionId);
+		return this.seqOfEntry(this.database, sessionId, entryId);
+	}
+	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		if (leafId !== undefined) validateSessionText("entry.id", leafId);
+		await this.prepareResume(sessionId);
+		return this.transaction(async (tx) => {
+			const source = await this.resumeSource(tx, sessionId);
+			const leafSeq =
+				leafId === undefined ? source.index.leafSeq : ((await this.seqOfEntry(tx, sessionId, leafId)) ?? 0);
+			if (leafSeq !== source.index.leafSeq) {
+				const all = (await this.readRows(tx, sessionId)).map((held) => held.entry);
+				return sessionResumeOf(source.header, all, leafId, { ...source.index, leafSeq: source.index.leafSeq });
+			}
+			const index = { ...source.index, leafSeq };
+			const plan = sessionResumePlan(index);
+			announceHistoryLoad(plan.state.length + plan.branch.reduce((sum, [a, b]) => sum + b - a + 1, 0));
+			const branch: SessionStoredEntry[] = [];
+			for (const [start, end] of plan.branch)
+				branch.push(...(await this.readRows(tx, sessionId, "seq >= ? AND seq <= ?", [start, end])));
+			const state = await this.readSeqs(tx, sessionId, plan.state);
+			const leaf =
+				leafSeq <= 0
+					? undefined
+					: await tx.get<SqliteRow & { entry_id: string }>(
+							`SELECT entry_id FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
+							sessionId,
+							leafSeq,
+						);
+			return sessionResumeFrom(index, source.header, branch, state, leaf?.entry_id ?? null);
+		}, SESSION_TRANSACTION);
+	}
+
+	async findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		if (leafId !== undefined) validateSessionText("entry.id", leafId);
+		await this.prepareResume(sessionId);
+		const { point } = await this.transaction(async (tx) => {
+			const source = await this.resumeSource(tx, sessionId);
+			const { index } = source;
+			const leafSeq = leafId === undefined ? index.leafSeq : ((await this.seqOfEntry(tx, sessionId, leafId)) ?? -1);
+			const found = latestCompactionOf(index, leafSeq);
+			if (found === undefined) return { point: undefined, source };
+			const [boundary] = await this.readSeqs(tx, sessionId, [found.seq]);
+			const leaf = await tx.get<SqliteRow & { entry_id: string }>(
+				`SELECT entry_id FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
+				sessionId,
+				leafSeq,
+			);
+			if (boundary === undefined || leaf === undefined) return { point: undefined, source };
+			const point: SessionCompactionPoint = {
+				...found,
+				entry: boundary.entry as SessionCompactionPoint["entry"],
+				leafId: leaf.entry_id,
+				lastSeq: index.seq,
+			};
+			return { point, source };
+		}, SESSION_TRANSACTION);
+
+		return point;
 	}
 
 	/** The JSON of a long entry, from its chunks, one statement each. */
@@ -1067,29 +1491,68 @@ export class SqlSessionStore implements SessionStore {
 		sessionId: string,
 		options: SessionWriteOptions,
 		includeSummaryState: true,
-	): Promise<SummaryStateRow>;
+	): Promise<{ readonly row: SummaryStateRow; readonly state: StoredSummaryState }>;
 	private forWrite(
 		tx: SqliteExecutor,
 		sessionId: string,
 		options: SessionWriteOptions,
 		includeSummaryState?: false,
-	): Promise<HeaderRow>;
+	): Promise<{ readonly row: HeaderRow; readonly state?: StoredSummaryState }>;
 	private async forWrite(
 		tx: SqliteExecutor,
 		sessionId: string,
 		options: SessionWriteOptions,
 		includeSummaryState = false,
-	): Promise<HeaderRow> {
+	): Promise<{ readonly row: HeaderRow; readonly state?: StoredSummaryState }> {
 		const row = await tx.get<HeaderRow>(
-			`SELECT header_json, last_seq${includeSummaryState ? ", summary_state" : ""}
+			`SELECT header_json, last_seq${includeSummaryState || options.epoch !== undefined ? ", summary_state" : ""}
 			 FROM ${this.tables.sessions} WHERE id = ?`,
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
-		if (row.last_seq !== options.expectSeq) {
+		const state =
+			row.summary_state === undefined ? undefined : (JSON.parse(String(row.summary_state)) as StoredSummaryState);
+		if (row.last_seq !== options.expectSeq || (options.epoch !== undefined && state?.epoch !== options.epoch)) {
 			throw new SessionConflictError(sessionId, options.expectSeq, row.last_seq);
 		}
-		return row;
+		return { row, state };
+	}
+
+	private async appendedResume(
+		tx: SqliteExecutor,
+		sessionId: string,
+		previous: SessionResumeIndex | undefined,
+		lastSeq: number,
+		entries: readonly SessionEntry[],
+	): Promise<SessionResumeIndex | undefined> {
+		if (!isSessionResumeIndex(previous, lastSeq)) return undefined;
+		const seqs = new Map<string, number>();
+		for (const id of foreignResumeIds(previous, entries)) {
+			const seq = await this.seqOfEntry(tx, sessionId, id);
+			if (seq !== undefined) seqs.set(id, seq);
+		}
+		return foldSessionResume(previous, entries, (id) => seqs.get(id));
+	}
+
+	private async seqOfEntry(executor: SqliteExecutor, sessionId: string, entryId: string): Promise<number | undefined> {
+		const tables = snapshotIndexTables(this.prefix);
+		const source = await executor.get<SqliteRow & { complete: number }>(
+			`SELECT CASE WHEN backfilled_through >= watermark THEN 1 ELSE 0 END AS complete FROM ${tables.sources} WHERE source = 'session-entries'`,
+		);
+		if (Number(source?.complete) === 1) {
+			const linked = await executor.get<SqliteRow & { seq: number }>(
+				`SELECT seq FROM ${tables.sessionLinks} WHERE session_id = ? AND entry_id = ? ORDER BY seq DESC LIMIT 1`,
+				sessionId,
+				entryId,
+			);
+			return linked === undefined ? undefined : Number(linked.seq);
+		}
+		const row = await executor.get<SqliteRow & { seq: number }>(
+			`SELECT seq FROM ${this.tables.entries} WHERE session_id = ? AND entry_id = ? ORDER BY seq DESC LIMIT 1`,
+			sessionId,
+			entryId,
+		);
+		return row === undefined ? undefined : Number(row.seq);
 	}
 
 	private async saveSummary(
@@ -1097,9 +1560,13 @@ export class SqlSessionStore implements SessionStore {
 		sessionId: string,
 		snapshot: SessionSnapshot,
 		previous?: SessionSummaryState,
-	): Promise<readonly SessionSummaryText[]> {
+		appendedResume?: SessionResumeIndex,
+	): Promise<{ readonly texts: readonly SessionSummaryText[]; readonly epoch: string }> {
 		const { header, lastSeq } = snapshot;
-		const { state, texts } = applySessionSummaryEntries(previous, snapshot.entries);
+		const { state: listed, texts } = applySessionSummaryEntries(previous, snapshot.entries);
+		const resume = previous === undefined ? foldSessionResume(undefined, snapshot.entries) : appendedResume;
+		const epoch = resume?.epoch ?? (previous as StoredSummaryState | undefined)?.epoch ?? newRevision();
+		const state: StoredSummaryState = resume === undefined ? { ...listed, epoch } : { ...listed, resume, epoch };
 		const summary = materializeSessionSummaryMetadata(header, state);
 		await tx.run(
 			`INSERT INTO ${this.tables.sessions}
@@ -1129,7 +1596,7 @@ export class SqlSessionStore implements SessionStore {
 			this.encode(state),
 			newRevision(),
 		);
-		return texts;
+		return { texts, epoch };
 	}
 
 	private async insertEntries(
@@ -1184,7 +1651,7 @@ export class SqlSessionStore implements SessionStore {
 		}
 	}
 
-	private encode(value: SessionRecordHeader | SessionEntry | SessionSummaryState | string): string {
+	private encode(value: SessionRecordHeader | SessionEntry | StoredSummaryState | string): string {
 		try {
 			return JSON.stringify(value);
 		} catch (cause) {

@@ -33,7 +33,9 @@ export async function reopenChildSession(
 		if (record.childSessionFile && !existsSync(record.childSessionFile))
 			return { reason: `its session file is missing: ${record.childSessionFile}` };
 		if (record.childSessionFile) {
-			const sessionManager = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+			const sessionManager = await SessionManager.open(record.childSessionFile, undefined, record.cwd, {
+				history: "tail",
+			});
 			return record.childSessionId !== undefined && sessionManager.getSessionId() !== record.childSessionId
 				? { reason: "its session file now belongs to a different session" }
 				: { sessionManager };
@@ -44,6 +46,7 @@ export async function reopenChildSession(
 				ctx.sessionManager.getSessionStore(),
 				record.childSessionId,
 				record.cwd,
+				{ history: "tail" },
 			),
 		};
 	} catch (error) {

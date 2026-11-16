@@ -5,6 +5,7 @@ export {
 	SessionAlreadyOpenError,
 	SessionDeletedError,
 	SessionEntryError,
+	SessionHistoryNotLoadedError,
 	SessionIdError,
 	SessionOpenElsewhereError,
 } from "./session-manager-errors.js";
@@ -48,6 +49,7 @@ export type {
 	SessionListProgress,
 	SessionMessageEntry,
 	SessionNameState,
+	SessionOpenOptions,
 	SessionProjection,
 	SessionSummaryEntry,
 	SessionTreeNode,

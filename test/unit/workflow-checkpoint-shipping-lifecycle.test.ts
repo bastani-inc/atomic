@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { ForkOptions } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { openNodeSqliteDatabase } from "@bastani/atomic";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -64,10 +65,12 @@ async function shipOnce(shard: ShipShard, key: string): Promise<void> {
 test("a retired local checkpoint journal whose checkpoints all shipped leaves no files behind (#4768)", async () => {
 	const directory = makeTempDirectory("ship-shard-retire-");
 	try {
-		for (let index = 0; index < 20; index++) {
+		// A few roots sharing the journal's directory, each with a few shipped checkpoints, show what one retire leaves.
+		// Each checkpoint is two synced commits, about 4 ms apiece on Windows: 20 roots of 50 took 10 to 48 s there.
+		for (let index = 0; index < 3; index++) {
 			const root = `root-${index}`;
 			const shard = await ShipShard.open(shipShardPath(directory, "journal", root), root);
-			for (let checkpoint = 0; checkpoint < 50; checkpoint++) await shipOnce(shard, `key-${checkpoint}`);
+			for (let checkpoint = 0; checkpoint < 3; checkpoint++) await shipOnce(shard, `key-${checkpoint}`);
 			await shard.close({ retire: true });
 		}
 		assert.deepEqual(
@@ -92,10 +95,13 @@ test("a local checkpoint journal is kept when it still holds a checkpoint, anoth
 
 		const sharedPath = shipShardPath(directory, "journal", "shared");
 		const first = await ShipShard.open(sharedPath, "shared");
-		const second = await ShipShard.open(sharedPath, "shared");
+		await assert.rejects(ShipShard.open(sharedPath, "shared"), /already open/);
+		const second = await openNodeSqliteDatabase(sharedPath);
 		await first.close({ retire: true });
 		assert.ok(existsSync(sharedPath), "a connection still open keeps the file");
-		await second.close({ retire: true });
+		await second.close();
+		const reopened = await ShipShard.open(sharedPath, "shared");
+		await reopened.close({ retire: true });
 		assert.ok(!existsSync(sharedPath), "the last connection removes it");
 
 		const keptPath = shipShardPath(directory, "journal", "kept");

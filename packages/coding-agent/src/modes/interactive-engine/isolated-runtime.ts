@@ -317,6 +317,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			) {
 				await super.switchSession(state.sessionId, {
 					sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+					history: "tail",
 				});
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
@@ -658,6 +659,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			await super.switchSession(sessionId, {
 				cwdOverride: options?.cwdOverride,
 				sessionDirectory: options?.sessionDirectory,
+				history: options?.history ?? "full",
 			});
 			await this.initializeFromEngine();
 			if (options?.withSession) await options.withSession(this.session.createReplacedSessionContext());
@@ -672,6 +674,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+				history: "tail",
 			});
 		else await this.resetUnpersistedSessionView();
 		await this.initializeFromEngine();
@@ -691,6 +694,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			await super.switchSession(state.sessionId, {
 				cwdOverride,
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+				history: "tail",
 			});
 		await this.initializeFromEngine();
 		return { cancelled: false };
@@ -714,6 +718,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+				history: "tail",
 			});
 		await this.initializeFromEngine();
 		return { cancelled: false, selectedText };
@@ -1233,13 +1238,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private async refreshSessionView(): Promise<void> {
 		const session = super.session;
 		const currentManager = session.sessionManager;
-		const refreshed = currentManager.isPersisted()
-			? await SessionManager.open(
-					currentManager.getSessionStore(),
-					currentManager.getSessionId(),
-					currentManager.getCwd(),
-				)
-			: await this.openUnpersistedSessionView(currentManager);
+		const unchanged =
+			currentManager.isPersisted() &&
+			typeof currentManager.refreshFromStore === "function" &&
+			(await currentManager.refreshFromStore());
+		const refreshed = unchanged
+			? currentManager
+			: currentManager.isPersisted()
+				? await SessionManager.open(
+						currentManager.getSessionStore(),
+						currentManager.getSessionId(),
+						currentManager.getCwd(),
+						{ history: "tail" },
+					)
+				: await this.openUnpersistedSessionView(currentManager);
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: refreshed });
 		this.patchSessionManager(refreshed);
 		session.agent.state.messages = refreshed.buildSessionContext().messages;

@@ -102,6 +102,10 @@ function physicalLineCount(line: string): number {
 	return line.split("\n").length;
 }
 
+export function historyEntryLineCount(entry: SessionEntry): number {
+	return entryLines(entry).reduce((sum, line) => sum + physicalLineCount(line), 0);
+}
+
 /**
  * The transcript `history://sessions/<id>` reads: a header, then each entry's lines. This is the only place the line
  * layout is defined, so a range computed from `entryRanges` addresses exactly the lines a `read` slices.

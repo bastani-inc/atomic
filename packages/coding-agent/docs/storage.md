@@ -188,7 +188,7 @@ Atomic sets nothing on a server connection outside a transaction: the schema (`S
 
 On PostgreSQL, worker hosts and Intercom brokers learn about new work at once through `LISTEN`/`NOTIFY`. A host's idle workers claim a queued child right away, the root sees a finished child right away, and an Intercom message reaches a broker on another machine without waiting for its next check. Each Atomic process holds one extra connection for this, outside `maxConnections`.
 
-Wake-ups only make Atomic faster. Hosts and brokers keep checking the database as often as they would without them, so no work is lost or delayed beyond that when wake-ups stop arriving. That happens when the connection drops or the URL goes through a transaction pooler. Atomic checks the connection every 30 seconds and opens it again when it drops or stops delivering. When it finds a transaction pooler, it stops trying until the process restarts, so it leaves nothing behind on the pooler's server connections.
+Wake-ups make Atomic faster and lighter on the database. An idle worker does not poll for work: it waits for a wake-up and checks the database on its own only every 2 seconds. While wake-ups do not arrive, each host instead checks for ready work about every 250 ms while any of its workers is idle, so no work is lost and a queued child is still claimed promptly. That happens when the connection drops or the URL goes through a transaction pooler, and always on SQLite and libSQL / sqld, which have no wake-ups. Atomic checks the connection every 30 seconds and opens it again when it drops or stops delivering. When it finds a transaction pooler, it stops trying until the process restarts, so it leaves nothing behind on the pooler's server connections.
 
 `atomic storage status` shows whether wake-ups arrive:
 
@@ -817,6 +817,22 @@ The database stores sessions, the oversized tool results of agents released whil
 [Local workflow workers](/workflows/operations#local-workflow-workers) work on a shared journal: by default the workers run on the machine that runs the root and open the same database, and the pool keeps its work queue and leases in a SQLite file on that machine, so a pooled run resumes on the machine where it started. A root started with `workers: { placement: "shared" }` keeps its pool in the shared journal instead, runs its children on worker hosts on other machines too, and resumes on any machine; see [Workers on other hosts](/workflows/operations#workers-on-other-hosts).
 
 Scale by running more workflows, not by splitting one: a single run and a single session each have one writer. Atomic's stores use SQLite SQL, or PostgreSQL through `@bastani/atomic-storage-postgres`, so other `openDatabase` adapters need a SQLite-compatible driver. For another kind of database, implement `openRunJournal` and `openSessionStore` and validate them with the conformance suites below.
+
+A custom `SessionStore` can implement these optional methods to avoid loading whole sessions:
+
+| Method | Result |
+|---|---|
+| `readTail(id, fromSeq)` | The header and entries from `fromSeq` on, in store order, plus earlier live state and omitted usage totals. |
+| `readRange(id, startSeq, endSeq)` | Entries in that inclusive sequence range, in store order, with `seqs`, `lastSeq` and `epoch`. |
+| `findLatestCompaction(id, leafId?)` | The latest verbatim compaction on the selected branch, its sequence and retained start. |
+| `readResume(id, leafId?)` | One consistent snapshot containing the header, selected branch from its compaction boundary, live state, omitted totals, recovery ids, `lastSeq`, `lastEntryId`, `leafId` and `epoch`. |
+| `findEntrySeq(id, entryId)` | The entry's sequence, or `undefined` if it is absent. |
+
+Adapters may mark a read-only database facade with `readOnly: true` so Atomic avoids optional cleanup writes.
+
+Sequences count entries from 1. `readResume.branch` contains `{ seq, entry }` records; `state` also records `onBranch`. Returned entries keep their original content, ids and parent ids. `epoch` identifies a session generation: keep it unchanged on append, change it on replacement or recreation, return it from every range read, and resolve `create` and `replace` with `{ lastSeq, epoch }`. Writes with an `epoch` must reject a different generation with `SessionConflictError`, even when the sequence count matches. A store that resolves `create` or `replace` without an `epoch` keeps working; Atomic then sends no `epoch` with that session's later writes. `SessionRecoveryState.deliveryOpIds` lists the `data.op` of every `atomic-pooled-delivery-op` entry, so a resumed workflow stage does not take a delivery twice. Atomic also rejects a range hydration from a different generation instead of merging two histories. `SessionResume`, `SessionRecoveryState` and the range and compaction types are exported from `@bastani/atomic/storage`.
+
+Atomic uses `readResume` when available. A custom store without it keeps working and resumes sessions whole. First-party stores implement all five methods. An older SQL session needs one lazy, paged metadata scan to build its index; a read-only store remembers the result for that process. JSONL stores save a checksummed `.idx` sidecar with an atomic rename and rebuild it when the session file changes.
 
 ## Locks in the agent directory
 

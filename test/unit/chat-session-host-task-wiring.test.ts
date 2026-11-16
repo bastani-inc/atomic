@@ -356,7 +356,6 @@ test("compaction_end that refreshes to a longer transcript while scrolled up doe
 		parameters,
 		stats,
 	};
-	// The host showed only part of the conversation; the compacted session holds all of it, so the refresh grows.
 	const shown = longConversation.slice(0, 20);
 	const compactedSnapshot = [
 		createVerbatimCompactionMessage("Compacted earlier context", 4000, new Date(103).toISOString(), {
