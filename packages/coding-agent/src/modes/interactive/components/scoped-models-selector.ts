@@ -81,6 +81,7 @@ export interface ModelsCallbacks {
  */
 export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 	private modelsById: Map<string, Model<Api>> = new Map();
+	private readonly modelMetadata = new Map<string, { description?: string; searchText: string }>();
 	private allIds: string[] = [];
 	private enabledIds: EnabledIds = null;
 	private readonly callbacks: ModelsCallbacks;
@@ -164,28 +165,34 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 
 	private setModels(models: readonly Model<Api>[]): void {
 		this.modelsById.clear();
+		this.modelMetadata.clear();
 		this.allIds = [];
 		for (const model of models) {
 			const fullId = `${model.provider}/${model.id}`;
 			this.modelsById.set(fullId, model);
+			this.modelMetadata.set(fullId, {
+				description: getDistinctModelName(model),
+				searchText: getModelSearchText(model),
+			});
 			this.allIds.push(fullId);
 		}
 	}
 
 	private buildItems(): SelectorItem<string>[] {
+		const enabledIds = this.enabledIds === null ? undefined : new Set(this.enabledIds);
 		// Rows show the raw ID and level, exactly what `enabledModels` and `--models` take (#4269); a display name that
 		// adds words the ID lacks follows in a dim column.
 		return getSortedIds(this.enabledIds, this.allIds).map((id) => {
 			const model = this.modelsById.get(id);
-			const enabled = model !== undefined && isEnabled(this.enabledIds, id);
+			const enabled = enabledIds === undefined || enabledIds.has(id);
 			return {
 				id,
 				value: id,
 				label: model ? formatModelLabel(model, { thinkingLevel: this.thinkingLevelFor?.(model) }) : id,
-				description: model ? getDistinctModelName(model) : undefined,
-				mark: enabled || (!model && isEnabled(this.enabledIds, id)) ? "checked" : "unchecked",
+				description: this.modelMetadata.get(id)?.description,
+				mark: enabled ? "checked" : "unchecked",
 				tag: model ? undefined : "unavailable",
-				searchText: model ? getModelSearchText({ id: model.id, provider: model.provider, name: model.name }) : id,
+				searchText: this.modelMetadata.get(id)?.searchText ?? id,
 				labelStyle: model
 					? undefined
 					: (text, selected) =>

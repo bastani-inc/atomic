@@ -105,29 +105,34 @@ describe("issue #3217 scoped model ordering", () => {
 		expect(orderedIds).toEqual([modelTwo.id, modelOne.id, modelThree.id]);
 	});
 
-	it("keeps unavailable scoped IDs visible and removable", async () => {
-		const harness = await createHarness({ models: [{ id: "available", name: "Available", reasoning: false }] });
-		harnesses.push(harness);
-		const availableId = `${harness.models[0]!.provider}/${harness.models[0]!.id}`;
-		const unavailableId = `${harness.models[0]!.provider}/retired[free]`;
-		const changes: Array<string[] | null> = [];
-		const selector = new ScopedModelsSelectorComponent(
-			{ allModels: [...harness.models], enabledModelIds: [unavailableId, availableId] },
-			{
-				onChange: (enabledModelIds) => {
-					changes.push(enabledModelIds);
+	it.each(["retired[free]", String.raw`retired\free`, "retired.*(free)+$?^|{}"])(
+		"keeps unavailable scoped ID %s visible and removable (#3217)",
+		async (modelId) => {
+			const harness = await createHarness({ models: [{ id: "available", name: "Available", reasoning: false }] });
+			harnesses.push(harness);
+			const availableId = `${harness.models[0]!.provider}/${harness.models[0]!.id}`;
+			const unavailableId = `${harness.models[0]!.provider}/${modelId}`;
+			const changes: Array<string[] | null> = [];
+			const selector = new ScopedModelsSelectorComponent(
+				{ allModels: [...harness.models], enabledModelIds: [unavailableId, availableId] },
+				{
+					onChange: (enabledModelIds) => {
+						changes.push(enabledModelIds);
+					},
+					onCancel: () => {},
 				},
-				onCancel: () => {},
-			},
-		);
+			);
 
-		const rendered = selector.render(120).join("\n");
-		expect(stripAnsi(rendered)).toMatch(new RegExp(`${unavailableId.replace(/[[\]/]/g, "\\$&")} +unavailable`));
-		// Upstream pi #8900 replaced the trailing " ✗" on unavailable scoped models with a
-		// strikethrough on the id. Atomic never carried upstream's `6949-unavailable-scoped-model`
-		// baseline, so that presentation assertion is folded in here instead.
-		expect(rendered).toContain(theme.strikethrough(unavailableId));
-		selector.handleInput("\r");
-		expect(changes.at(-1)).toEqual([availableId]);
-	});
+			const rendered = selector.render(120).join("\n");
+			expect(stripAnsi(rendered)).toMatch(
+				new RegExp(`${unavailableId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +unavailable`),
+			);
+			// Upstream pi #8900 replaced the trailing " ✗" on unavailable scoped models with a
+			// strikethrough on the id. Atomic never carried upstream's `6949-unavailable-scoped-model`
+			// baseline, so that presentation assertion is folded in here instead.
+			expect(rendered).toContain(theme.strikethrough(unavailableId));
+			selector.handleInput("\r");
+			expect(changes.at(-1)).toEqual([availableId]);
+		},
+	);
 });
