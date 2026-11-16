@@ -14,7 +14,7 @@ const overlay: GraphOverlayPort = {
 	close: () => {},
 };
 
-test("registers /workflows with its optional stage argument (#5234)", async () => {
+test("registers /workflows for runs and definitions with its optional stage argument (#5234, #5245)", async () => {
 	setDurableBackend(await createMemoryTestBackend());
 	try {
 		const handlers = new Map<string, WorkflowCommandHandler>();
@@ -48,10 +48,9 @@ test("registers /workflows with its optional stage argument (#5234)", async () =
 			registered.filter((name) => name.startsWith("workflow")),
 			["workflow", "workflows"],
 		);
-		assert.equal(
-			descriptions.get("workflows"),
-			"Open this session's workflow runs. Usage: /workflows [run-id] [stage]",
-		);
+		const description = descriptions.get("workflows") ?? "";
+		assert.match(description, /runs and definitions/);
+		assert.match(description, /Usage: \/workflows \[run-id\] \[stage\]/);
 	} finally {
 		setDurableBackend(undefined);
 	}
