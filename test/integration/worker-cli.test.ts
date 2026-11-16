@@ -336,13 +336,13 @@ test.skipIf(process.platform === "win32")(
 				SHARED_POOL_LEASE_MS: String(TAKEOVER_LEASE_MS),
 				SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 60_000, maxBatch: 1_000, maxLagMs: 600_000 }),
 			});
-			nodeC = startNode(s, "C", 2, markers);
 			await until(
 				"node B to ship its stage and wait before its local-only checkpoint",
 				s,
 				() => readdirSync(s.directory).some((name) => name.startsWith("ready-B-")),
-				[nodeB.process, nodeC.process, root],
+				[nodeB.process, root],
 			);
+			nodeC = startNode(s, "C", 2, markers);
 			const index = readdirSync(s.directory)
 				.find((name) => name.startsWith("ready-B-"))!
 				.split("-")
