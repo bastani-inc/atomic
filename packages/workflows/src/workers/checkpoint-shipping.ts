@@ -6,11 +6,6 @@ import { assertWorkflowSerializableObject } from "../shared/serializable.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
 import { ShipIdentityConflictError, type ShipShard } from "./ship-shard.js";
 
-/**
- * Whether a host may keep `mutation` in its local journal and ship it later (#4768): a plain checkpoint, with no
- * session to write and no worktree snapshot whose blobs the shared store must check as it records it. Every other
- * mutation commits to the shared journal before the step returns, as without shipping.
- */
 export function shippableCheckpoint(
 	mutation: PoolMutation,
 ): mutation is Extract<PoolCheckpointMutation, { kind: "checkpoint" }> {
@@ -21,108 +16,168 @@ export function shippableCheckpoint(
 	return !(Array.isArray(snapshots) && snapshots.length > 0);
 }
 
-/** A local journal failure that sent an attempt back to committing every checkpoint to the shared journal. */
 export interface ShippingFallback {
 	readonly workId: string;
 	readonly error: Error;
 }
 
-/**
- * How a host commits its attempts' checkpoints when their root ships checkpoints (#4768). A shippable checkpoint is
- * accepted into the host's local journal under the attempt's lease, then shipped. An attempt whose local journal
- * fails (a full disk, a corrupt file) commits to the shared journal from then on, and the failure is reported once.
- *
- * Until the background shipper exists, every accepted checkpoint is shipped before the commit returns: the shared
- * commit is its delivery, with the same operation, so the receipt is the shared journal's and nothing else changes.
- */
 export class CheckpointShipping {
-	private readonly syncOnly = new Set<string>();
+	private readonly syncOnly = new Map<string, number>();
+	private readonly generations = new Map<string, number>();
 
 	constructor(
 		private readonly shard: ShipShard,
 		private readonly onFallback: (fallback: ShippingFallback) => void = () => {},
 	) {}
 
-	/** The attempt holds its work's lease as of now: at its claim and at each renewal. */
 	async hold(lease: AttemptLease, leaseMs: number): Promise<void> {
+		const current = this.generations.get(lease.id);
+		if (current !== undefined && lease.generation > current) {
+			this.syncOnly.delete(lease.id);
+		}
+		if (current === undefined || lease.generation > current) {
+			this.generations.set(lease.id, lease.generation);
+		}
 		try {
 			await this.shard.hold(lease, leaseMs);
 		} catch (error) {
-			this.fallBack(lease.id, error as Error);
+			this.fallBack(lease, error as Error);
 		}
 	}
 
-	/** The attempt ended or lost its work: the host accepts nothing more for it. */
-	release(workId: string): void {
-		this.shard.release(workId);
-		this.syncOnly.delete(workId);
+	release(work: string | Pick<AttemptLease, "id" | "generation">): void {
+		this.shard.release(work);
+		if (typeof work === "string") {
+			this.generations.delete(work);
+			this.syncOnly.delete(work);
+			return;
+		}
+		const current = this.generations.get(work.id);
+		if (current !== undefined && work.generation < current) return;
+		this.generations.delete(work.id);
+		if ((this.syncOnly.get(work.id) ?? 0) <= work.generation) {
+			this.syncOnly.delete(work.id);
+		}
 	}
 
-	/** Whether the attempt commits every checkpoint to the shared journal, after its local journal failed. */
-	isSyncOnly(workId: string): boolean {
-		return this.syncOnly.has(workId);
+	isSyncOnly(work: string | Pick<AttemptLease, "id" | "generation">): boolean {
+		if (typeof work === "string") {
+			const generation = this.generations.get(work);
+			return generation !== undefined && this.syncOnly.get(work) === generation;
+		}
+		return this.syncOnly.get(work.id) === work.generation;
 	}
 
-	/**
-	 * Commits `mutation` for the attempt `lease`. `commitShared` commits it to the shared journal, under the shared
-	 * store's own fences; it is also how an accepted checkpoint is delivered.
-	 */
 	async commit(
 		lease: AttemptLease,
 		mutation: PoolMutation,
 		commitShared: () => Promise<PoolCommitReceipt>,
+		renewAttempt?: () => Promise<void>,
 	): Promise<PoolCommitReceipt> {
-		if (!shippableCheckpoint(mutation) || this.syncOnly.has(lease.id)) return this.deliver(lease, commitShared);
+		if (!shippableCheckpoint(mutation) || this.isSyncOnly(lease)) return this.deliver(lease, commitShared);
 		const checkpoint = mutation.checkpoint;
-		let localSeq: number;
-		try {
-			({ localSeq } = await this.shard.accept(
-				this.shard.root,
-				lease,
-				checkpointKey(checkpoint),
-				serializeJson(payloadOf(checkpoint)),
-				checkpoint.completedAt,
-			));
-		} catch (error) {
-			if (error instanceof StaleWorkLeaseError || error instanceof ShipIdentityConflictError) throw error;
-			this.fallBack(lease.id, error as Error);
-			return this.deliver(lease, commitShared);
-		}
-		const receipt = await this.deliver(lease, commitShared);
+		const key = checkpointKey(checkpoint);
+		const payload = serializeJson(payloadOf(checkpoint));
+		const localSeq = await this.acceptWithRenewal(lease, key, payload, checkpoint.completedAt, renewAttempt);
+		if (localSeq === undefined) return this.deliver(lease, commitShared);
+		const receipt = await this.deliver(lease, commitShared, localSeq);
 		try {
 			await this.shard.shipped(lease, localSeq);
 		} catch (error) {
-			// The shared journal holds the checkpoint; the local journal only failed to forget it.
-			this.fallBack(lease.id, error as Error);
+			this.fallBack(lease, error as Error);
 		}
 		return receipt;
 	}
 
 	close(): Promise<void> {
 		this.syncOnly.clear();
+		this.generations.clear();
 		return this.shard.close();
+	}
+
+	private async acceptWithRenewal(
+		lease: AttemptLease,
+		key: string,
+		payload: string,
+		at: number,
+		renewAttempt?: () => Promise<void>,
+	): Promise<number | undefined> {
+		try {
+			const { localSeq } = await this.shard.accept(this.shard.root, lease, key, payload, at);
+			return localSeq;
+		} catch (error) {
+			if (error instanceof StaleWorkLeaseError && error.reason === "expired" && renewAttempt !== undefined) {
+				try {
+					await renewAttempt();
+				} catch (renewError) {
+					if (renewError instanceof StaleWorkLeaseError) await this.fenceAttempt(lease);
+					throw renewError;
+				}
+				if (this.isSyncOnly(lease)) return undefined;
+				try {
+					const { localSeq } = await this.shard.accept(this.shard.root, lease, key, payload, at);
+					return localSeq;
+				} catch (retryError) {
+					if (retryError instanceof StaleWorkLeaseError || retryError instanceof ShipIdentityConflictError)
+						throw retryError;
+					this.fallBack(lease, retryError as Error);
+					return undefined;
+				}
+			}
+			if (error instanceof StaleWorkLeaseError || error instanceof ShipIdentityConflictError) throw error;
+			this.fallBack(lease, error as Error);
+			return undefined;
+		}
 	}
 
 	private async deliver(
 		lease: AttemptLease,
 		commitShared: () => Promise<PoolCommitReceipt>,
+		localSeq?: number,
 	): Promise<PoolCommitReceipt> {
 		try {
 			return await commitShared();
 		} catch (error) {
-			if (error instanceof StaleWorkLeaseError) await this.shard.fence(lease).catch(() => {});
+			if (error instanceof StaleWorkLeaseError) {
+				await this.fenceAttempt(lease);
+			} else if (localSeq !== undefined) {
+				try {
+					await this.shard.discard(lease, localSeq);
+				} catch (discardError) {
+					this.fallBack(lease, discardError as Error);
+				}
+			}
 			throw error;
 		}
 	}
 
-	private fallBack(workId: string, error: Error): void {
-		if (this.syncOnly.has(workId)) return;
-		this.syncOnly.add(workId);
-		this.onFallback({ workId, error });
+	private async fenceAttempt(lease: AttemptLease): Promise<void> {
+		try {
+			await this.shard.fence(lease);
+		} catch (fenceError) {
+			this.fallBack(lease, fenceError as Error);
+			return;
+		}
+		if (this.syncOnly.get(lease.id) === lease.generation) {
+			this.syncOnly.delete(lease.id);
+		}
+		if (this.generations.get(lease.id) === lease.generation) {
+			this.generations.delete(lease.id);
+		}
+	}
+
+	private fallBack(lease: Pick<AttemptLease, "id" | "generation">, error: Error): void {
+		const current = this.generations.get(lease.id);
+		if (current !== undefined && lease.generation < current) return;
+		if (current === undefined || lease.generation > current) {
+			this.generations.set(lease.id, lease.generation);
+		}
+		if (this.syncOnly.get(lease.id) === lease.generation) return;
+		this.syncOnly.set(lease.id, lease.generation);
+		this.onFallback({ workId: lease.id, error });
 	}
 }
 
-/** The checkpoint as the JSON value the shared journal records, checked serializable as the shared commit checks it. */
 function payloadOf(checkpoint: unknown) {
 	assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
 	return checkpoint;

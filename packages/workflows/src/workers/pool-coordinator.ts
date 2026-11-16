@@ -715,6 +715,7 @@ export class PoolCoordinator {
 	private budgetBlocked = false;
 	/** The root's checkpoint shipping on this host, when the root ships its children's checkpoints (#4768). */
 	private shipping: CheckpointShipping | undefined;
+	private openingShipping?: Promise<CheckpointShipping | undefined>;
 	private desiredControl?: PoolControl["state"];
 	private root?: string;
 	private lease?: Lease;
@@ -1038,8 +1039,14 @@ export class PoolCoordinator {
 			this.sharedPool ??= await SqlSharedPool.open(this.journal, queue);
 			await this.startFleetRates();
 		}
-		if (options.shared !== undefined)
-			this.shipping ??= await this.openShipping(root, options.durable, options.shared);
+		if (options.shared !== undefined && this.shipping === undefined) {
+			const shipping = await this.openShipping(root, options.durable, options.shared);
+			if (this.closed) {
+				await shipping?.close().catch(() => {});
+				throw new Error("Local worker pool is closed");
+			}
+			this.shipping = shipping;
+		}
 		// Events an earlier incarnation of this root accepted and never delivered reach the journal before any attempt runs.
 		await this.whileRootLate(queue, () => queue.drainOutbox(lease));
 		if (this.remote !== undefined) {
@@ -1237,12 +1244,24 @@ export class PoolCoordinator {
 	 * The host's local journal of the root's checkpoints, when the root ships them (#4768). A pool whose root journal is in
 	 * another database already stages its checkpoints locally and delivers them itself, so it never ships them too.
 	 */
-	private async openShipping(
+	private openShipping(
 		root: string,
 		durable: PoolDurableJournal | undefined,
 		shared: SharedPoolCoordination,
 	): Promise<CheckpointShipping | undefined> {
-		if (shared.checkpointShipping === undefined || durable === undefined) return undefined;
+		const opening = this.openRootShipping(root, durable, shared);
+		this.openingShipping = opening;
+		return opening.finally(() => {
+			if (this.openingShipping === opening) this.openingShipping = undefined;
+		});
+	}
+
+	private async openRootShipping(
+		root: string,
+		durable: PoolDurableJournal | undefined,
+		shared: SharedPoolCoordination,
+	): Promise<CheckpointShipping | undefined> {
+		if (this.closed || shared.checkpointShipping === undefined || durable === undefined) return undefined;
 		if (this.remote !== undefined)
 			throw new WorkerPlacementConfigError(
 				"sdk",
@@ -1257,16 +1276,21 @@ export class PoolCoordinator {
 				root,
 			);
 		} catch (error) {
-			this.port.send({
-				kind: "health",
-				message: `checkpoint shipping: the local journal could not open for root ${root}, which commits every checkpoint to the shared journal on this host from now on: ${(error as Error).message}`,
-			});
+			if (!this.closed)
+				this.port.send({
+					kind: "health",
+					message: `checkpoint shipping: the local journal could not open for root ${root}, which commits every checkpoint to the shared journal on this host from now on: ${(error as Error).message}`,
+				});
+			return undefined;
+		}
+		if (this.closed) {
+			await shard.close().catch(() => {});
 			return undefined;
 		}
 		return new CheckpointShipping(shard, ({ workId, error }) =>
 			this.port.send({
 				kind: "health",
-				message: `checkpoint shipping: the local journal failed for work ${workId}, which commits every checkpoint to the shared journal from now on: ${error.message}`,
+				message: `checkpoint shipping: the local journal failed for work ${workId}, which commits every checkpoint to the shared journal for the rest of this attempt: ${error.message}`,
 			}),
 		);
 	}
@@ -1377,7 +1401,12 @@ export class PoolCoordinator {
 		this.usageTotal = await this.usageLedger.total(root);
 		const queue = await openSqlPoolQueue(journal);
 		this.sharedPool = await SqlSharedPool.open(journal, queue);
-		this.shipping = await this.openShipping(root, attachment.durable, this.options.shared!);
+		const shipping = await this.openShipping(root, attachment.durable, this.options.shared!);
+		if (this.closed) {
+			await shipping?.close().catch(() => {});
+			return;
+		}
+		this.shipping = shipping;
 		this.queue = queue;
 		await this.startFleetRates();
 		this.sources = attachment.sources;
@@ -2330,6 +2359,7 @@ export class PoolCoordinator {
 	}
 
 	private fence(work: PoolWork): void {
+		this.shipping?.release(work);
 		this.endStageWatches(
 			(watch) => watch.attempt.workId === work.id && watch.attempt.generation <= work.generation,
 			"attempt_fenced",
@@ -2541,6 +2571,7 @@ export class PoolCoordinator {
 									? queue.failExited(lease, attempt)
 									: queue.releaseExited(lease, attempt, unconfirmedClaim ? { delayMs: 0 } : undefined),
 							));
+						if (attempt !== undefined) this.shipping?.release(attempt);
 						// An exit whose attempt another one already replaced is not that child's failure: its owner keeps it.
 						const superseded = work !== undefined && !settled && (await this.superseded(work));
 						if (work !== undefined && exhausted && !superseded)
@@ -2626,7 +2657,11 @@ export class PoolCoordinator {
 					// While the root renews late, the worker's request waits for the renewal rather than ending its attempt.
 					// The worker's own renewals wait for it too, so the wait can outlast the attempt's work lease: it is
 					// renewed before the request runs again, which fences the request only if another attempt replaced it.
-					const renewAttempt = () => extensions.extendHeld();
+					const renewAttempt = async () => {
+						await extensions.extendHeld();
+						if (this.shipping !== undefined && slot.work !== undefined)
+							await this.shipping.hold(slot.work, options.leaseMs);
+					};
 					// A request from this worker shows it is alive, so a work lease that only lapsed while the request waited
 					// (this process starved of CPU, the journal's write lock held by other writers) does not fence it: the
 					// lease is extended and the request runs again. `extend` checks the attempt's identity, so an attempt that
@@ -2655,6 +2690,7 @@ export class PoolCoordinator {
 						// handoff never recorded (#4768).
 						const end = () => {
 							if (slot.work !== fenced) return;
+							if (fenced !== undefined) this.shipping?.release(fenced);
 							slot.work = undefined;
 							slot.worktree = undefined;
 							this.places.end(slot);
@@ -2849,7 +2885,9 @@ export class PoolCoordinator {
 						const receipt =
 							this.shipping === undefined
 								? await commitShared()
-								: await this.shipping.commit(work, message.mutation, commitShared);
+								: await this.shipping.commit(work, message.mutation, commitShared, () =>
+										this.whileRootLate(queue, renewAttempt),
+									);
 						// #3983: a session append bills no usage, so its receipt does not wait on another transaction.
 						if (message.mutation.kind !== "session-append") this.noteUsage(await this.usageLedger!.total(root));
 						return receipt;
@@ -2861,7 +2899,7 @@ export class PoolCoordinator {
 					}
 					if (message.kind !== "complete") throw new Error("Invalid worker operation");
 					await leased(() => queue.complete(lease, work, message.result as unknown as WorkflowSerializableObject));
-					this.shipping?.release(work.id);
+					this.shipping?.release(work);
 					this.endStageWatches((watch) => watch.slot === slot, "stage_finished");
 					this.replacements = 0;
 					slot.work = undefined;
@@ -3219,9 +3257,14 @@ export class PoolCoordinator {
 					// worker lived, its child would never run. It goes back to the queue instead, and the worker, busy or idle, is
 					// left alone. No worker ever ran that generation, so it goes back as a handoff, which counts as none of the
 					// child's attempts (#4768).
-					if (this.slotHolds(work.worker, work))
-						await queue.extend(lease, work, leaseMs).catch(ignoreStaleWorkLease);
-					else await queue.releaseExited(lease, work, { delayMs: 0 });
+					if (this.slotHolds(work.worker, work)) {
+						const renewed = await queue.extend(lease, work, leaseMs).catch(ignoreStaleWorkLease);
+						if (renewed !== undefined && this.shipping !== undefined && this.slotHolds(work.worker, renewed))
+							await this.shipping.hold(renewed, leaseMs);
+					} else {
+						await queue.releaseExited(lease, work, { delayMs: 0 });
+						this.shipping?.release(work);
+					}
 					continue;
 				}
 				// A worker that outlives SIGKILL is retired without waiting for its exit: its child replays on a replacement
@@ -3237,10 +3280,12 @@ export class PoolCoordinator {
 				// failed the whole pool, and so every unfinished child of the pool at once. An attempt whose worker never
 				// confirmed its claim, as when the claim's answer was lost before the worker died, goes back as a handoff: no
 				// worker ever ran it, so it counts as none of the child's attempts (#5034).
-				else
+				else {
 					await queue
 						.expire(lease, work, { handOffUnconfirmed: this.handoffs(work) < MAX_CHILD_HANDOFFS })
 						.catch(ignoreStaleWorkLease);
+					this.shipping?.release(work);
+				}
 			}
 			if (this.satellite === undefined && this.sharedPool !== undefined)
 				await this.settleShared(queue, lease, this.sharedPool, rows);
@@ -3477,7 +3522,8 @@ export class PoolCoordinator {
 			stopping = [...this.children].map((child) => ({ child, log: this.logs.get(child) }));
 			confirmed = await Promise.all(stopping.map(({ child }) => this.stop(child)));
 			// Every worker is stopped: none commits through the host's local journal any more.
-			const shipping = this.shipping;
+			const opened = await this.openingShipping?.catch(() => undefined);
+			const shipping = this.shipping ?? opened;
 			this.shipping = undefined;
 			await shipping?.close().catch(() => {});
 			// A worker still running after SIGKILL is retired: the pool closes without it and reports it.
@@ -3535,6 +3581,8 @@ export class PoolCoordinator {
 			await this.queue!.releaseExited(this.lease!, work);
 		} catch (error) {
 			if (!isStaleLeaseError(error)) throw error;
+		} finally {
+			this.shipping?.release(work);
 		}
 	}
 }

@@ -119,6 +119,22 @@ test('checkpointShipping accepts "sync" and limits within range, and resolves th
 		);
 });
 
+test("checkpointShipping rejects inherited object names as unknown options (#4768)", async () => {
+	for (const key of ["toString", "constructor", "hasOwnProperty", "__proto__"]) {
+		const options = {
+			runId: ROOT,
+			localWorkers: { count: 1, definitions: [] },
+			workers: { placement: "shared", checkpointShipping: JSON.parse(`{"${key}":1}`) },
+		} as RunOpts;
+		await assert.rejects(activatePublicPool({} as DurableWorkflowBackend, options), (error: Error) => {
+			assert.ok(error instanceof WorkerPlacementConfigError);
+			assert.equal(error.field, `workers.checkpointShipping.${key}`);
+			assert.equal(error.detail, "is not an option; use intervalMs, maxBatch or maxLagMs");
+			return true;
+		});
+	}
+});
+
 test("a resume may change checkpointShipping (#4768)", () => {
 	const saved = { workers: { placement: "shared" as const, checkpointShipping: "sync" as const } };
 	const current = { workers: { placement: "shared" as const, checkpointShipping: { maxBatch: 4 } } };
@@ -214,7 +230,7 @@ test("shipped checkpoints are forgotten, and a fenced or superseded attempt's ar
 	await local.shipped(LEASE, 2);
 	assert.deepEqual(
 		(await local.pending(LEASE)).map((event) => event.key),
-		["k3"],
+		["k1", "k3"],
 	);
 	await local.fence(LEASE);
 	assert.deepEqual(await local.pending(LEASE), []);
@@ -383,7 +399,7 @@ test("a host whose local journal cannot take an attempt's lease commits that att
 	await shipping.close();
 });
 
-test("a stage checkpoint with a session never ships, and a failed shared commit leaves the attempt's journal as it was (#4768)", async () => {
+test("a stage checkpoint with a session never ships, and a rejected shared commit removes its local row (#4768)", async () => {
 	const { shard: local } = await shard();
 	const shipping = new CheckpointShipping(local);
 	await shipping.hold(LEASE, LEASE_MS);
@@ -400,6 +416,6 @@ test("a stage checkpoint with a session never ships, and a failed shared commit 
 		shipping.commit(LEASE, checkpoint("a"), sharedCommit({ failure: unreachable }).commit),
 		unreachable,
 	);
-	assert.equal((await local.pending(LEASE)).length, 1, "the accepted checkpoint stays for a retry");
+	assert.equal((await local.pending(LEASE)).length, 0, "the rejected checkpoint does not reserve its key");
 	assert.equal((await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit)).seq, 7);
 });

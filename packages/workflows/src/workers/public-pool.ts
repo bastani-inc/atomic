@@ -353,7 +353,7 @@ function checkCheckpointShipping(option: unknown): void {
 			'must be "sync" or { intervalMs?, maxBatch?, maxLagMs? }',
 		);
 	for (const key of Object.keys(option))
-		if (!(key in CHECKPOINT_SHIPPING_LIMITS))
+		if (!Object.hasOwn(CHECKPOINT_SHIPPING_LIMITS, key))
 			throw new WorkerPlacementConfigError(
 				"sdk",
 				`workers.checkpointShipping.${key}`,
