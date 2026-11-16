@@ -36,6 +36,8 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 const REAL_RUN_TIMEOUT_MS = 90_000;
 /** How long the woken chat's one `echo` gets to finish; a command waiting for a permit it never receives does not. */
 const WOKEN_COMMAND_BUDGET_MS = 30_000;
+/** How long the chat gets to settle having read every card it was shown; a card it is never given a turn for is not. */
+const READ_BUDGET_MS = 30_000;
 const PERMIT_POLL_MS = 50;
 const ECHOED = "turn-admission-echo";
 /**
@@ -157,18 +159,18 @@ test.skipIf(process.platform === "win32")(
 		// The chat is torn down only once it was shown the run's completion and has read every card it was shown: a notice
 		// still queued for its next turn keeps the session from being disposed, by design.
 		const readEverything = Promise.withResolvers<void>();
-		let shown = 0;
+		const shown: string[] = [];
 		let read = 0;
 		let completionShown = false;
 		parent.subscribe((event) => {
 			if (event.type === "tool_execution_end") commandOutput.resolve(JSON.stringify(event.result));
 			if (event.type === "message_start" && event.message.role === "custom") {
 				if (event.message.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE) read++;
-				else if (READ_CARD_TYPES.has(event.message.customType)) shown++;
+				else if (READ_CARD_TYPES.has(event.message.customType)) shown.push(event.message.customType);
 				const details = event.message.details as { scope?: string; status?: string } | undefined;
 				if (details?.scope === "run" && details.status === "completed") completionShown = true;
 			}
-			if (event.type === "agent_settled" && completionShown && read >= shown) readEverything.resolve();
+			if (event.type === "agent_settled" && completionShown && read >= shown.length) readEverything.resolve();
 		});
 		const backend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
 		const permits = await openNodeSqliteDatabase(journalPath);
@@ -232,7 +234,14 @@ test.skipIf(process.platform === "win32")(
 				{ kind: "ran", ran: true },
 				"the chat's command runs at once and never waits on the workflow's process permit",
 			);
-			await readEverything.promise;
+			const readAll = await Promise.race([
+				readEverything.promise.then(() => true),
+				new Promise<false>((resolve) => setTimeout(() => resolve(false), READ_BUDGET_MS)),
+			]);
+			assert.ok(
+				readAll,
+				`the chat settles having read every card it was shown; shown ${shown.join(", ")}, read ${read}, run completion shown ${completionShown}`,
+			);
 		} finally {
 			polling = false;
 			notices.setNotificationsActive(false);
