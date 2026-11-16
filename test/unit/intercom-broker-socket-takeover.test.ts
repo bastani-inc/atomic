@@ -483,10 +483,6 @@ describe("spawn lock staleness (#3505)", () => {
 		return path;
 	}
 
-	/**
-	 * The pid of a process that exited. A lock names its holder by pid alone, and a later process given that pid would
-	 * hold it, so none is given it until the test ends.
-	 */
 	async function deadPid(): Promise<number> {
 		const exited = await keptExitedPid();
 		onTestFinished(() => exited.release());
@@ -543,10 +539,6 @@ describe("socket replacement lock (#3505)", () => {
 	let lockCount = 0;
 	const lockPath = () => join(agentDir, `replace-lock-${lockCount++}`);
 
-	/**
-	 * The pid of a process that exited. A lock names its holder by pid alone, and a later process given that pid would
-	 * hold it, so none is given it until the test ends.
-	 */
 	async function deadPid(): Promise<number> {
 		const exited = await keptExitedPid();
 		onTestFinished(() => exited.release());

@@ -8,7 +8,6 @@ describe("isWindowsProcessAlive", () => {
 	});
 
 	it("reports an exited child as gone", async () => {
-		// A later process given the pid would run under it, so none is given it until this is checked.
 		const exited = await keptExitedPid();
 		try {
 			expect(isWindowsProcessAlive(exited.pid)).toBe(false);

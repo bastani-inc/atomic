@@ -223,11 +223,6 @@ export function interruptedWorktree(
 	return adminDir;
 }
 
-/**
- * Record a git that is no longer running as the adder of `path`, as a crash of both Atomic and git leaves it. Where its
- * start cannot be read, as on Windows, an adder is named by its pid alone, and a later process given that pid would be
- * taken for it, so none is given it until the test ends.
- */
 export async function recordExitedAdder(repo: string, path: string): Promise<void> {
 	const exited = await keptExitedPid();
 	onTestFinished(() => exited.release());

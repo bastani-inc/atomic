@@ -544,7 +544,6 @@ test("a broker records its own process id, and a membership without one is never
 
 test("a process counts as alive while it runs and dead once it exited (#5038)", async () => {
 	assert.equal(isProcessAlive(process.pid), true);
-	// A later process given the pid would run under it, so none is given it until this is checked.
 	const exited = await keptExitedPid();
 	try {
 		assert.equal(isProcessAlive(exited.pid), false);

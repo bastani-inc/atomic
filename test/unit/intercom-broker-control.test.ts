@@ -331,8 +331,6 @@ test(
 
 test("a stale legacy endpoint with a dead PID is stopped, not a restarted broker (#3857)", async () => {
 	const agentDir = agentDirectory("stale-legacy");
-	// The pid file names the broker by its pid alone, and a later process given that pid would be taken for it, so none
-	// is given it until the test ends.
 	const dead = await keptExitedPid();
 	onTestFinished(() => dead.release());
 	writeFileSync(getBrokerPidPath(agentDir), String(dead.pid));

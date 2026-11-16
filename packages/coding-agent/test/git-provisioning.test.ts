@@ -2758,8 +2758,6 @@ describe("git install command on this machine (#4322)", () => {
 		tools.resetGitProvisionStateForTest();
 		assert.equal(tools.resolveGitSync().version, "2.57.0");
 
-		// A staging directory names its installer by pid alone, so a later process given that pid would keep it: none is
-		// given it until the test ends.
 		const exited = await keptExitedPid();
 		onTestFinished(() => exited.release());
 		const leftover = join(agentDir, "bin", `.git-staging-${hostTag()}-${exited.pid}-1`);
