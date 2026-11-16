@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import {
 	brokerHostIdentity,
 	HOST_COMMAND_ATTEMPTS,
@@ -174,6 +174,24 @@ test("a restarted broker retires its killed instance's leases and claims as it s
 	const liveBrokers = (await leases.listLive("broker", BROKER_LEASE_STALE_AFTER_MS)).map((lease) => lease.holderId);
 	assert.ok(liveBrokers.includes("other"));
 	assert.ok(!liveBrokers.includes("crashed"));
+});
+
+test("a restarted broker retires its killed instance's leases and claims even once they went stale (#5252)", async () => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	try {
+		const { start } = await crashedCluster();
+		// The restarted broker starts routing across nodes only after the killed instance's leases went stale, as a
+		// loaded host can delay it: the killed instance's presence must still be retired, so its recipients count as lost.
+		vi.setSystemTime(Date.now() + BROKER_LEASE_STALE_AFTER_MS + 1_000);
+		const { leases, outbox } = await start({ instanceKey: SOCKET });
+		assert.equal(await holderOf(leases, "hosted-by-crashed"), "missing");
+		assert.deepEqual(await leases.read({ kind: "broker", brokerId: "crashed" }), { status: "missing" });
+		assert.equal(await stateOf(outbox, "claimed-by-crashed"), "queued");
+		assert.equal(await holderOf(leases, "hosted-by-other"), "other");
+		assert.equal(await holderOf(leases, "hosted-by-legacy"), "legacy");
+	} finally {
+		vi.useRealTimers();
+	}
 });
 
 test("a broker with the same host name and socket but another host identity retires nothing (#5038)", async () => {

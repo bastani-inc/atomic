@@ -2794,7 +2794,9 @@ export class MultiNodeRouter {
 	}
 
 	private async retirePreviousInstances(): Promise<void> {
-		for (const lease of await this.state.leases.listLive("broker", BROKER_LEASE_STALE_AFTER_MS)) {
+		// #5252: also once its leases went stale, as when a loaded host delays this start past the stale window: they are
+		// still held, and its recipients count as lost only once it is retired here.
+		for (const lease of await this.state.leases.listLive("broker", Number.MAX_SAFE_INTEGER)) {
 			const { instanceKey, pid, startedAt } = lease.subject as Partial<BrokerMembershipSubject>;
 			if (instanceKey !== this.instanceKey || pid === undefined || this.stillRuns(pid, startedAt)) continue;
 			// #5154: the sessions it had present may have ended with it unrecorded: they are lost until they register again.
