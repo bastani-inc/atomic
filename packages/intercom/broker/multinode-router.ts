@@ -34,6 +34,8 @@ import {
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	type OutboxClaim,
+	type OutboxEnqueueRequest,
+	type OutboxEnqueueResult,
 	type OutboxRow,
 	type PendingAsk,
 	type BrokerMembershipSubject,
@@ -44,6 +46,7 @@ import {
 	type RestoringReservationLease,
 	reservationKeyFor,
 	returnAddressOf,
+	type SentMessageReservation,
 } from "./multinode-state-store.js";
 import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
@@ -1990,27 +1993,20 @@ export class MultiNodeRouter {
 			this.fail(request, TERMINAL_CHILD_ASK_REFUSAL);
 			return;
 		}
-		const reserved = await this.state.sentMessages.reserve({
-			messageId: message.id,
-			digest,
-			targetIdentity: target.identity,
-			...(message.expectsReply === true
-				? { questionRoute: { targetSessionId: target.sessionId, senderGroupIdentity: senderGroupIdentity(from) } }
-				: {}),
-		});
-		if (reserved.status === "conflict") {
-			this.failConflict(request);
-			return;
-		}
 		const frame: IntercomDeliveryFrame = request.supervisorSend
 			? { type: "message", from: from.info, message, channel: "supervisor" }
 			: { type: "message", from: from.info, message };
-		const enqueued = await this.state.outbox.enqueue({
-			targetIdentity: target.identity,
-			originBrokerId: this.brokerId,
-			digest,
-			frame,
-		});
+		const enqueued = await this.reserveAndEnqueue(
+			{
+				messageId: message.id,
+				digest,
+				targetIdentity: target.identity,
+				...(message.expectsReply === true
+					? { questionRoute: { targetSessionId: target.sessionId, senderGroupIdentity: senderGroupIdentity(from) } }
+					: {}),
+			},
+			{ targetIdentity: target.identity, originBrokerId: this.brokerId, digest, frame },
+		);
 		if (enqueued.status === "conflict") {
 			this.failConflict(request);
 			return;
@@ -2020,7 +2016,6 @@ export class MultiNodeRouter {
 			return;
 		}
 		if (enqueued.status === "full") {
-			await this.state.sentMessages.forget({ messageId: message.id, digest });
 			this.fail(request, outboxFullReason(enqueued));
 			return;
 		}
@@ -2033,6 +2028,24 @@ export class MultiNodeRouter {
 			});
 		}
 		await this.answerExistingRow(request, target, digest, enqueued.row);
+	}
+
+	/**
+	 * Reserve the send and enqueue its row: in one write where the store offers it, otherwise in two, forgetting the
+	 * reservation of a send the full queue refused. A conflicting reservation is answered `conflict`.
+	 */
+	private async reserveAndEnqueue(
+		reservation: SentMessageReservation,
+		request: OutboxEnqueueRequest,
+	): Promise<OutboxEnqueueResult> {
+		if (this.state.reserveAndEnqueue !== undefined) return this.state.reserveAndEnqueue(reservation, request);
+		const reserved = await this.state.sentMessages.reserve(reservation);
+		if (reserved.status === "conflict") return { status: "conflict", messageId: reservation.messageId };
+		const enqueued = await this.state.outbox.enqueue(request);
+		if (enqueued.status === "full") {
+			await this.state.sentMessages.forget({ messageId: reservation.messageId, digest: reservation.digest });
+		}
+		return enqueued;
 	}
 
 	/**

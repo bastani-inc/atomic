@@ -244,6 +244,40 @@ describe("wrapTextWithAnsi", () => {
 			}
 		});
 	});
+
+	describe("grapheme clusters wider than the width", () => {
+		// One grapheme cluster 201 columns wide: a consonant and 200 spacing vowel signs.
+		const wideCluster = `\u0915${"\u093e".repeat(200)}`;
+
+		it("clips a cluster wider than the width between code points", () => {
+			for (const width of [201, 80, 1]) {
+				assert.deepStrictEqual(wrapTextWithAnsi(wideCluster, width), [wideCluster.slice(0, width)]);
+			}
+		});
+
+		it("keeps the text around a too-wide cluster on lines of their own", () => {
+			const clipped = wideCluster.slice(0, 10);
+			assert.deepStrictEqual(wrapTextWithAnsi(`ab ${wideCluster} cd`, 10), ["ab", clipped, "cd"]);
+			assert.deepStrictEqual(wrapTextWithAnsi(`ab${wideCluster}cd`, 10), ["ab", clipped, "cd"]);
+		});
+
+		it("never splits a surrogate pair when clipping a cluster", () => {
+			// A Brahmi consonant and 30 spacing visarga signs, each code point a surrogate pair: 31 columns.
+			const cluster = `\u{11013}${"\u{11002}".repeat(30)}`;
+			assert.deepStrictEqual(wrapTextWithAnsi(cluster, 4), [cluster.slice(0, 8)]);
+		});
+
+		it("keeps the styling of a clipped cluster and the text around it", () => {
+			const underlineOn = "\x1b[4m";
+			const underlineOff = "\x1b[24m";
+			const wrapped = wrapTextWithAnsi(`${underlineOn}ab ${wideCluster} cd${underlineOff}`, 10);
+			assert.deepStrictEqual(wrapped, [
+				`${underlineOn}ab${underlineOff}`,
+				`${underlineOn}${wideCluster.slice(0, 10)}${underlineOff}`,
+				`${underlineOn}cd${underlineOff}`,
+			]);
+		});
+	});
 });
 
 describe("wrapTextWithAnsi with OSC 8 hyperlinks", () => {
