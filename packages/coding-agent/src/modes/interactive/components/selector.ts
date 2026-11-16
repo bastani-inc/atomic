@@ -352,7 +352,8 @@ export function selectorHintEntries<T>(
 
 /**
  * Labels in the order a narrow hint gives them up: the search and help reminders first, cancel and choose last, so a
- * picker never hides how to leave it or how to choose. Labels not listed (a picker's own keys) go after `select`.
+ * picker never hides how to leave it or how to choose. Labels not listed (a picker's own keys) go after `select`,
+ * last first.
  */
 const HINT_DROP_ORDER = ["to search", "keys", "pick", "preview", "select"];
 
@@ -362,12 +363,15 @@ export function fitHintEntries(entries: readonly NavKey[], room: number, keybind
 		`${entry.action !== undefined ? navActionText(keybindings, entry.action) : (entry.keys ?? "")} ${entry.label}`;
 	const kept = [...entries];
 	const width = () => visibleWidth(kept.map(text).join(" · "));
-	const essential = new Set(["cancel", "clear", "choose", "confirm"]);
+	// How to choose and how to leave stay, whatever label the picker gives enter.
+	const essential = (entry: NavKey) =>
+		entry.action === "tui.select.confirm" || ["cancel", "clear", "choose", "confirm"].includes(entry.label);
 	while (kept.length > 1 && width() > room) {
 		const byOrder = HINT_DROP_ORDER.map((label) => kept.findIndex((entry) => entry.label === label)).find(
 			(index) => index >= 0,
 		);
-		const other = kept.findIndex((entry) => !essential.has(entry.label) && !HINT_DROP_ORDER.includes(entry.label));
+		// A picker's own keys go last first, so the first ones it lists stay longest.
+		const other = kept.findLastIndex((entry) => !essential(entry) && !HINT_DROP_ORDER.includes(entry.label));
 		const drop = byOrder ?? (other >= 0 ? other : kept.findIndex((entry) => entry.label !== "cancel"));
 		if (drop < 0) break;
 		kept.splice(drop, 1);

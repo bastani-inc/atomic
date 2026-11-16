@@ -39,6 +39,8 @@ function isSavedOption(option: ProjectTrustOption, savedDecision: ProjectTrustSt
 export class TrustSelectorComponent extends FramedSelector<ProjectTrustOption> {
 	constructor(options: TrustSelectorOptions) {
 		const trustOptions = getProjectTrustOptions(options.cwd);
+		// Mark the saved decision; with none saved there is no current value to mark.
+		const anySaved = trustOptions.some((option) => isSavedOption(option, options.savedDecision));
 		super({
 			title: "Project trust",
 			subtitle: [
@@ -53,7 +55,7 @@ export class TrustSelectorComponent extends FramedSelector<ProjectTrustOption> {
 					id: option.label,
 					value: option,
 					label: option.label,
-					mark: saved ? "on" : "off",
+					mark: anySaved ? (saved ? "on" : "off") : undefined,
 					tag: saved ? "saved" : undefined,
 				};
 			}),

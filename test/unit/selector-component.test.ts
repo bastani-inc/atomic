@@ -355,4 +355,19 @@ describe("shared selector (#5224)", () => {
 		selector.handleInput("\x19");
 		assert.equal(selector.state.getQuery(), "");
 	});
+
+	test("a narrow hint keeps choose under its own label and gives up a picker's own keys, last first", () => {
+		const noop = () => {};
+		const { text } = picker({
+			items: items(3),
+			search: true,
+			confirmLabel: "toggle",
+			extraKeys: [
+				{ hint: { keys: "ctrl+a", label: "all" }, run: noop },
+				{ hint: { keys: "ctrl+x", label: "clear all" }, run: noop },
+				{ hint: { keys: "ctrl+p", label: "provider" }, run: noop },
+			],
+		});
+		assert.equal(hint(text(50)), "enter toggle · ctrl+a all · esc cancel");
+	});
 });

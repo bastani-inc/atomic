@@ -51,6 +51,8 @@ describe("TrustSelectorComponent", () => {
 		const lines = stripAnsi(selector.render(120).join("\n")).split("\n");
 		expect(lines.at(-2)?.trim()).toBe("↑↓ select · enter save · 1-9 pick · esc cancel · ? keys");
 		expect(lines.some((line) => line.includes("saved"))).toBe(false);
+		// With no saved decision there is no current value to mark.
+		expect(lines.some((line) => /[●○]/.test(line))).toBe(false);
 
 		selector.handleInput("j");
 		selector.handleInput("j");
