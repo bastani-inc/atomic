@@ -40,6 +40,13 @@ export interface WorkflowAttachPaneOpts {
 	onClose: () => void;
 	/** Called when the user requests the host to hide the popup. */
 	onHide?: () => void;
+	/**
+	 * Esc at the graph's top: back to where the graph was opened from. Falls back to `onHide`, which returns to main
+	 * chat.
+	 */
+	onBack?: () => void;
+	/** Stop, retry and fork controls the graph offers on a focused stage. */
+	stageActions?: import("./graph-view-types.js").GraphStageActions;
 	/** Live pi-tui host objects used by attached stage chat to reuse coding-agent editor UI. */
 	piTui?: TUI;
 	piTheme?: unknown;

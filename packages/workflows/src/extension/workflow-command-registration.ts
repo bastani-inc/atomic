@@ -2,9 +2,7 @@ import { ForkConfigError } from "../durable/fork-errors.js";
 import { inspectRun } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { resolveRunIndicatorStatuses } from "../shared/run-indicator-status.js";
-import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { schemaIsRequired } from "../shared/schema-introspection.js";
-import { subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import { emitChatSurface } from "../tui/chat-surface-message.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
@@ -13,7 +11,6 @@ import { openInlineInputsForm } from "../tui/inline-form-overlay.js";
 import { openInputsPicker } from "../tui/inputs-overlay.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { selectRunsForPicker } from "../tui/session-picker.js";
-import { openWorkflowsListing } from "../tui/workflows-listing.js";
 import type { ExtensionAPI, PiArgumentCompletionResult, PiCommandContext } from "./public-types.js";
 import type { WorkflowInputEntry, WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
@@ -36,6 +33,7 @@ import {
 	type WorkflowCommandHandler,
 	type WorkflowCommandOutputDetails,
 } from "./workflow-command-utils.js";
+import { handleWorkflowsCommand } from "./workflow-open-run.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { projectTrustConfirmation } from "./workflow-project-trust.js";
@@ -84,47 +82,27 @@ export function registerWorkflowSlashCommand(
 		pi,
 		"workflows",
 		{
-			description: "Browse running and completed workflows. Usage: /workflows [run-id]",
-			handler: (args, ctx) => {
-				// The session's workflows view: a run's graph, or the run picker when there is more than one. Never the
-				// durable resume picker, which `/workflow resume` keeps (#5224).
-				const target = args.trim();
+			description: "Browse workflow runs and definitions. Usage: /workflows [run-id]",
+			handler: async (args, ctx) => {
+				// The session's workflows view: a run's graph, or a list when there are several. Never the durable resume
+				// picker, which `/workflow resume` keeps (#5224).
 				const owner = deps.owner ?? captureWorkflowOwnerResources();
-				const runs = topLevelWorkflowRuns(owner.store.runs());
-				const only = target.length === 0 && runs.length === 1 ? runs[0]?.id : undefined;
-				const run = target.length > 0 ? target : only;
-				if (run !== undefined) return workflowSlashHandler(`attach ${run}`, ctx, pi, deps);
-				return openWorkflowsListingCommand(ctx, pi, deps);
+				const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);
+				try {
+					await deps.ensureWorkflowResourcesLoaded();
+				} catch (error) {
+					ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
+				}
+				await handleWorkflowsCommand(args, ctx, reporter, {
+					overlay: deps.runControl.overlay,
+					store: owner.store,
+					definitions: () => deps.runtimeProxy.registry.all(),
+					startDefinition: (name) => workflowSlashHandler(name, ctx, pi, deps),
+				});
 			},
 		},
 		workflowCommands,
 	);
-}
-
-/**
- * `/workflows` with no run or several: the sheet listing the session's runs and the registered definitions. A run
- * opens its graph; a definition starts, asking for its inputs first (#5224).
- */
-async function openWorkflowsListingCommand(
-	ctx: PiCommandContext,
-	pi: ExtensionAPI,
-	deps: WorkflowSlashCommandDeps,
-): Promise<void> {
-	const owner = deps.owner ?? captureWorkflowOwnerResources();
-	try {
-		await deps.ensureWorkflowResourcesLoaded();
-	} catch (error) {
-		ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
-	}
-	if (typeof ctx.ui?.custom !== "function") return workflowSlashHandler("list", ctx, pi, deps);
-	const target = await openWorkflowsListing(ctx.ui, {
-		runs: () => owner.store.runs(),
-		definitions: () => deps.runtimeProxy.registry.all(),
-		subscribe: (listener) => subscribeStoreInvalidation(owner.store, listener),
-	});
-	if (target === undefined) return;
-	if (target.kind === "run") return workflowSlashHandler(`attach ${target.runId}`, ctx, pi, deps);
-	return workflowSlashHandler(target.name, ctx, pi, deps);
 }
 
 async function workflowSlashHandler(
