@@ -667,6 +667,92 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 	};
 	const steering: string[] = [];
 	const followUps: string[] = [];
+	// Held, queued messages start no turn until released, as a real session's are while it recovers.
+	let queuedMessagesPaused = false;
+	/** One turn: it saves its input, a prompt's text or the results of the calls it continues, then answers. */
+	const runTurn = async (saveInput: () => Promise<void>) => {
+		const emitFallback = (): void => {
+			if (!testOptions.fallbackModel) return;
+			for (const listener of listeners) {
+				listener({
+					type: "model_fallback_start",
+					from: "openai/gpt-5.1-codex",
+					to: testOptions.fallbackModel,
+					reason: "test fallback",
+					attempt: 1,
+				} as AgentSessionEvent);
+				if (testOptions.fallbackThinkingLevel) {
+					listener({
+						type: "thinking_level_changed",
+						level: testOptions.fallbackThinkingLevel,
+					} as AgentSessionEvent);
+				}
+				listener({
+					type: "tool_execution_start",
+					toolCallId: "test-fallback-tool",
+					toolName: "test-fallback-tool",
+					args: {},
+				} as AgentSessionEvent);
+			}
+		};
+		for (const listener of listeners) listener({ type: "agent_start" } as AgentSessionEvent);
+		if (aborted) throw new Error("aborted");
+		const turn = Promise.withResolvers<void>();
+		const previousTurn = activeTurn;
+		activeTurn = turn.promise;
+		streaming = true;
+		try {
+			await saveInput();
+			if (testOptions.seededAssistantText) {
+				lastAssistantText = testOptions.seededAssistantText;
+				await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
+			}
+			if (testOptions.fallbackBeforeGate) emitFallback();
+			for (const event of testOptions.beforeGateEvents ?? []) for (const listener of listeners) listener(event);
+			if (testOptions.promptGate) {
+				const gateResult = await Promise.race([
+					testOptions.promptGate.then(() => "released" as const),
+					new Promise<"aborted">((resolve, reject) => {
+						settlePromptAbort = () => {
+							if (testOptions.abortResolvesPrompt) resolve("aborted");
+							else reject(new DOMException("aborted", "AbortError"));
+						};
+						if (aborted) settlePromptAbort();
+					}),
+				]);
+				if (gateResult === "aborted") {
+					if (testOptions.thinkingOnlyOnAbort) {
+						lastAssistantText = "";
+						await appendAssistant([{ type: "thinking", thinking: "aborted mid-thought" }], "aborted");
+					}
+					for (const event of testOptions.events ?? []) for (const listener of listeners) listener(event);
+					if (testOptions.abortEndsTurnOnly) {
+						aborted = false;
+						settlePromptAbort = undefined;
+						await appendAssistant([], "aborted");
+					}
+					return "";
+				}
+			}
+			for (const event of testOptions.events ?? []) {
+				for (const listener of listeners) listener(event);
+			}
+			if (!testOptions.fallbackBeforeGate) emitFallback();
+			lastAssistantText = testOptions.output ?? "done";
+			await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
+			const next = queuedMessagesPaused ? undefined : (steering.shift() ?? followUps.shift());
+			if (next === undefined) return lastAssistantText;
+			streaming = false;
+			return await session.prompt(next);
+		} finally {
+			streaming = false;
+			// A turn that can be interrupted alone ends as a real session's does, so a waiting viewer sees it end.
+			if (testOptions.abortEndsTurnOnly)
+				for (const listener of listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
+			turn.resolve();
+			if (activeTurn === turn.promise) activeTurn = previousTurn;
+		}
+	};
 	const session = {
 		sessionFile: sessionManager.getSessionFile(),
 		model: sessionModel,
@@ -674,6 +760,9 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		messages,
 		get isStreaming() {
 			return streaming;
+		},
+		get queuedMessagesPaused() {
+			return queuedMessagesPaused;
 		},
 		abort: async () => {
 			aborted = true;
@@ -688,90 +777,39 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		prompt: async (text: string) => {
-			const emitFallback = (): void => {
-				if (!testOptions.fallbackModel) return;
-				for (const listener of listeners) {
-					listener({
-						type: "model_fallback_start",
-						from: "openai/gpt-5.1-codex",
-						to: testOptions.fallbackModel,
-						reason: "test fallback",
-						attempt: 1,
-					} as AgentSessionEvent);
-					if (testOptions.fallbackThinkingLevel) {
-						listener({
-							type: "thinking_level_changed",
-							level: testOptions.fallbackThinkingLevel,
-						} as AgentSessionEvent);
-					}
-					listener({
-						type: "tool_execution_start",
-						toolCallId: "test-fallback-tool",
-						toolName: "test-fallback-tool",
-						args: {},
-					} as AgentSessionEvent);
-				}
-			};
-			for (const listener of listeners) listener({ type: "agent_start" } as AgentSessionEvent);
-			if (aborted) throw new Error("aborted");
-			const turn = Promise.withResolvers<void>();
-			const previousTurn = activeTurn;
-			activeTurn = turn.promise;
-			streaming = true;
-			try {
+		prompt: (text: string) =>
+			runTurn(async () => {
 				if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
 				await sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
 				userMessages += 1;
-				if (testOptions.seededAssistantText) {
-					lastAssistantText = testOptions.seededAssistantText;
-					await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
-				}
-				if (testOptions.fallbackBeforeGate) emitFallback();
-				for (const event of testOptions.beforeGateEvents ?? []) for (const listener of listeners) listener(event);
-				if (testOptions.promptGate) {
-					const gateResult = await Promise.race([
-						testOptions.promptGate.then(() => "released" as const),
-						new Promise<"aborted">((resolve, reject) => {
-							settlePromptAbort = () => {
-								if (testOptions.abortResolvesPrompt) resolve("aborted");
-								else reject(new DOMException("aborted", "AbortError"));
-							};
-							if (aborted) settlePromptAbort();
-						}),
-					]);
-					if (gateResult === "aborted") {
-						if (testOptions.thinkingOnlyOnAbort) {
-							lastAssistantText = "";
-							await appendAssistant([{ type: "thinking", thinking: "aborted mid-thought" }], "aborted");
-						}
-						for (const event of testOptions.events ?? []) for (const listener of listeners) listener(event);
-						if (testOptions.abortEndsTurnOnly) {
-							aborted = false;
-							settlePromptAbort = undefined;
-							await appendAssistant([], "aborted");
-						}
-						return "";
-					}
-				}
-				for (const event of testOptions.events ?? []) {
-					for (const listener of listeners) listener(event);
-				}
-				if (!testOptions.fallbackBeforeGate) emitFallback();
-				lastAssistantText = testOptions.output ?? "done";
-				await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
-				const next = steering.shift() ?? followUps.shift();
-				if (next === undefined) return lastAssistantText;
-				streaming = false;
-				return await session.prompt(next);
-			} finally {
-				streaming = false;
-				// A turn that can be interrupted alone ends as a real session's does, so a waiting viewer sees it end.
-				if (testOptions.abortEndsTurnOnly)
-					for (const listener of listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
-				turn.resolve();
-				if (activeTurn === turn.promise) activeTurn = previousTurn;
-			}
+			}),
+		// As a real session continues the turn that waited on detached calls: it saves their results first, each as its
+		// call's result, and reports them saved; then the turn goes on and answers, and its queued messages follow.
+		resumeDetachedTurn: async (
+			results: readonly DetachedToolResult[],
+			onRecorded?: (toolCallIds: readonly string[]) => void,
+		): Promise<void> => {
+			await runTurn(async () => {
+				for (const { toolCallId, toolName, result, isError } of results)
+					await sessionManager.appendMessage({
+						role: "toolResult",
+						toolCallId,
+						toolName,
+						content: result.content,
+						details: result.details,
+						isError,
+						timestamp: Date.now(),
+					});
+				onRecorded?.(results.map((result) => result.toolCallId));
+			});
+		},
+		pauseQueuedMessages: () => {
+			queuedMessagesPaused = true;
+		},
+		resumeQueuedMessages: async () => {
+			const released = queuedMessagesPaused && steering.length + followUps.length > 0;
+			queuedMessagesPaused = false;
+			return released;
 		},
 		steer: async (text: string) => {
 			steering.push(text);
