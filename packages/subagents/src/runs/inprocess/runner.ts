@@ -580,11 +580,13 @@ export function nextTurnSettled(
 	stops: readonly AbortSignal[],
 	options: {
 		readonly waitForStart?: boolean;
+		readonly skipStarts?: number;
 		readonly subscribeDrained?: (listener: () => void) => () => void;
 	} = {},
 ): Promise<void> {
 	return new Promise<void>((resolve) => {
 		let started = !options.waitForStart && session.isStreaming;
+		let startsToSkip = options.skipStarts ?? 0;
 		let unsubscribe = () => {};
 		let unsubscribeDrained = () => {};
 		const finish = () => {
@@ -596,8 +598,10 @@ export function nextTurnSettled(
 		if (stops.some((stop) => stop.aborted)) return resolve();
 		for (const stop of stops) stop.addEventListener("abort", finish, { once: true });
 		unsubscribe = session.subscribe((event) => {
-			if (event.type === "agent_start") started = true;
-			else if (options.subscribeDrained === undefined) {
+			if (event.type === "agent_start") {
+				if (startsToSkip > 0) startsToSkip -= 1;
+				else started = true;
+			} else if (options.subscribeDrained === undefined) {
 				if (event.type === "agent_settled" && started && !session.isStreaming) finish();
 				else if (event.type === "agent_end" && started)
 					queueMicrotask(() => (session.isStreaming ? undefined : finish()));
@@ -1685,6 +1689,7 @@ export class SubagentControlRuntime {
 
 		let termination: TerminationCauseName | undefined;
 		let interruptedTurnSettlement: Promise<void> | undefined;
+		let stopStartCounting: (() => void) | undefined;
 		// The task and resume follow-ups the session has not been given yet; a stop before then keeps them for resume.
 		const unsent: UnsentInput = { task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] };
 		let terminating: Promise<void> | undefined;
@@ -1945,6 +1950,20 @@ export class SubagentControlRuntime {
 				});
 			}
 			const transcriptSession = session;
+			let undeliveredStarts = 0;
+			const stopCountingStarted =
+				prepared === undefined
+					? () => {}
+					: transcriptSession.agent.subscribe((event) => {
+							if (event.type === "agent_start") undeliveredStarts += 1;
+						});
+			const stopCountingDelivered = transcriptSession.subscribe((event) => {
+				if (event.type === "agent_start") undeliveredStarts = Math.max(0, undeliveredStarts - 1);
+			});
+			stopStartCounting = () => {
+				stopCountingStarted();
+				stopCountingDelivered();
+			};
 			const interruptTurn = async (): Promise<void> => {
 				if (!transcriptSession.isStreaming || termination !== undefined) return;
 				interruptedTurnSettlement = nextTurnSettled(
@@ -1952,6 +1971,7 @@ export class SubagentControlRuntime {
 					[signals.abort, signals.interrupt, executionEnded.signal],
 					{
 						waitForStart: true,
+						skipStarts: undeliveredStarts,
 						...(prepared === undefined
 							? {}
 							: {
@@ -2332,6 +2352,7 @@ export class SubagentControlRuntime {
 			startBudget.end();
 			// End reply capability before asynchronous cleanup or extension invalidation.
 			executionEnded.abort();
+			stopStartCounting?.();
 			signals.abort.removeEventListener("abort", abortListener);
 			signals.interrupt.removeEventListener("abort", interruptListener);
 			try {

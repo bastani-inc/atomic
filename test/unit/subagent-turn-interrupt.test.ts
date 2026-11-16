@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
+import type { ExtensionAPI } from "../../packages/coding-agent/src/core/extensions/types.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
@@ -370,3 +372,134 @@ test("an interrupted subagent woken by its own work settles once that turn ends,
 	await waiting;
 	assert.equal(done, true, "the woken turn's end settles the child");
 });
+
+test.each(["initial", "woken", "fallback-end"] as const)(
+	"an interrupted subagent keeps waiting and wakes cleanly across %s agent_start/agent_end delivery windows (#5224)",
+	async (turnKind) => {
+		const env = await liveChildEnvironment(
+			cleanups,
+			turnKind === "fallback-end"
+				? { models: [{ id: "primary" }, { id: "backup" }], fallbackModels: ["faux/backup"] }
+				: {},
+		);
+		env.faux.setResponses(
+			turnKind === "fallback-end"
+				? [fauxAssistantMessage("first turn finished")]
+				: turnKind === "initial"
+					? [
+							fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-initial" })], {
+								stopReason: "toolUse",
+							}),
+						]
+					: [
+							fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-first" })], {
+								stopReason: "toolUse",
+							}),
+							fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-woken" })], {
+								stopReason: "toolUse",
+							}),
+						],
+		);
+		const targetStart = turnKind === "initial" ? 1 : 2;
+		const inWindow = Promise.withResolvers<void>();
+		const releaseStart = Promise.withResolvers<void>();
+		let extensionStarts = 0;
+		const holdTargetStart = (pi: ExtensionAPI) => {
+			pi.on("agent_start", async () => {
+				extensionStarts += 1;
+				if (turnKind === "fallback-end" || extensionStarts !== targetStart) return;
+				await writeFile(join(env.root, `start-${extensionStarts}.txt`), String(extensionStarts));
+				inWindow.resolve();
+				await releaseStart.promise;
+			});
+		};
+		let source: TaskTranscriptSource | undefined;
+		let deliveredStarts = 0;
+		let deliveredEnds = 0;
+		let streamingAtInterrupt = false;
+		let startsAtInterrupt = -1;
+		let endsAtInterrupt = -1;
+		let interrupting: Promise<void> | undefined;
+		const stop = new AbortController();
+		let settled = false;
+		const run = runSingleInProcess(env.root, agent(), "run until interrupted", {
+			...env.options(`interrupt-window-${turnKind}`, {
+				signal: stop.signal,
+				resourceLoaderInheritanceSnapshot: { extensionFactories: [holdTargetStart] },
+				taskExecution: {
+					signal: stop.signal,
+					reportActivity() {},
+					bindTranscript(bound) {
+						if (source !== undefined || bound.chatSession === undefined) return;
+						source = bound;
+						const session = bound.chatSession as AgentSession;
+						session.subscribe((event) => {
+							if (event.type === "agent_start") deliveredStarts += 1;
+							if (event.type === "agent_end") {
+								deliveredEnds += 1;
+								if (turnKind === "fallback-end" && deliveredEnds === 1) {
+									streamingAtInterrupt = session.agent.state.isStreaming;
+									startsAtInterrupt = deliveredStarts;
+									endsAtInterrupt = deliveredEnds;
+									interrupting = bound.interruptTurn!();
+									inWindow.resolve();
+								}
+							}
+						});
+					},
+					onExecution() {},
+					yieldTaskWait() {},
+					isParentObserving: () => false,
+				},
+			}),
+		}).finally(() => {
+			settled = true;
+		});
+		let waking: Promise<void> | undefined;
+		try {
+			if (turnKind === "woken") {
+				await until(() => env.blockStarted());
+				await source!.interruptTurn!();
+				await until(() => source!.isRunning?.() === false);
+				assert.equal(settled, false);
+				const session = source!.chatSession as AgentSession;
+				waking = session.sendCustomMessage(
+					{ customType: "intercom", content: "carry on", display: true },
+					{ triggerTurn: true },
+				);
+			}
+			await inWindow.promise;
+			const session = source!.chatSession as AgentSession;
+			if (turnKind === "fallback-end") {
+				assert.equal(streamingAtInterrupt, true);
+				assert.equal(startsAtInterrupt, 1);
+				assert.equal(endsAtInterrupt, 1);
+			} else {
+				assert.equal(session.agent.state.isStreaming, true);
+				assert.equal(deliveredStarts, targetStart - 1);
+				assert.equal(deliveredEnds, targetStart - 1);
+				interrupting = source!.interruptTurn!();
+				releaseStart.resolve();
+			}
+			await interrupting;
+			await waking;
+			await until(() => settled || source!.isRunning?.() === false);
+			await new Promise<void>((resolve) => setTimeout(resolve, 50));
+			assert.equal(settled, false, "the interrupted child still waits for the next message");
+			assert.equal(source!.isRunning?.(), false);
+			env.faux.setResponses([fauxAssistantMessage("finished after early interrupt")]);
+			await session.sendCustomMessage(
+				{ customType: "intercom", content: "finish the task", display: true },
+				{ triggerTurn: true },
+			);
+			const result = await run;
+			assert.equal(result.status, "ok");
+			assert.equal(result.finalOutput, "finished after early interrupt");
+		} finally {
+			releaseStart.resolve();
+			stop.abort("user");
+			await Promise.allSettled([run, waking, interrupting]);
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
