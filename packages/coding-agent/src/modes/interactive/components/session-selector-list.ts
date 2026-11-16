@@ -57,7 +57,7 @@ function fitText(text: string, room: number): string {
 	const key = `${room}\u0000${text}`;
 	const cached = fittedTextCache.get(key);
 	if (cached !== undefined) return cached;
-	const fitted = truncateToWidth(text, room, "…");
+	const fitted = visibleWidth(text) <= room ? text : truncateToWidth(text, room, "…");
 	if (fittedTextCache.size >= FITTED_TEXT_CACHE_SIZE) fittedTextCache.clear();
 	fittedTextCache.set(key, fitted);
 	return fitted;
@@ -331,7 +331,7 @@ export class SessionList implements Component, Focusable {
 		}
 		lines.push("");
 		lines.push(this.renderHint(width));
-		return lines.map((line) => truncateToWidth(line, width));
+		return lines.map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line));
 	}
 
 	private emptyText(): string {

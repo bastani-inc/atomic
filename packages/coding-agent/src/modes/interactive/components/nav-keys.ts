@@ -94,7 +94,8 @@ export function renderNavHintLine(
 	});
 	const room = Math.max(1, width - indent);
 	while (parts.length > 1 && visibleWidth(parts.join(" · ")) > room) parts.pop();
-	const line = truncateToWidth(parts.join(" · "), room);
+	const joined = parts.join(" · ");
+	const line = visibleWidth(joined) <= room ? joined : truncateToWidth(joined, room);
 	return style.dim(" ".repeat(Math.min(indent, Math.max(0, width - visibleWidth(line)))) + line);
 }
 

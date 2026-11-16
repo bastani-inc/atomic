@@ -1,8 +1,12 @@
-import { type Component, truncateToWidth } from "@bastani/atomic-tui";
+import { type Component, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 import type { SessionListNotice, SessionListVariant } from "./session-selector-list.ts";
 import type { NameFilter, SortMode } from "./session-selector-search.ts";
 import type { SessionScope } from "./session-selector-types.ts";
+
+function fitHeaderText(text: string, room: number): string {
+	return visibleWidth(text) <= room ? text : truncateToWidth(text, room, "…");
+}
 
 export class SessionSelectorHeader implements Component {
 	private scope: SessionScope;
@@ -113,10 +117,10 @@ export class SessionSelectorHeader implements Component {
 		if (this.loading) {
 			facts.push(this.loadProgress ? `Loading ${this.loadProgress.loaded}/${this.loadProgress.total}` : "Loading…");
 		}
-		const lines = [`  ${theme.bold(theme.fg("text", truncateToWidth(title, inner, "…")))}`];
-		if (facts.length > 0) lines.push(`  ${theme.fg("muted", truncateToWidth(facts.join(" · "), inner, "…"))}`);
+		const lines = [`  ${theme.bold(theme.fg("text", fitHeaderText(title, inner)))}`];
+		if (facts.length > 0) lines.push(`  ${theme.fg("muted", fitHeaderText(facts.join(" · "), inner))}`);
 		lines.push(
-			`  ${theme.fg("dim", truncateToWidth('re:<pattern> for a regex · "phrase" for an exact match', inner, "…"))}`,
+			`  ${theme.fg("dim", fitHeaderText('re:<pattern> for a regex · "phrase" for an exact match', inner))}`,
 		);
 		return lines;
 	}
