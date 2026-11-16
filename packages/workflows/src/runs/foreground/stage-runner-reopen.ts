@@ -1,4 +1,4 @@
-import type { DetachedToolResult } from "@bastani/atomic";
+import type { DetachedToolResult, SessionEntry } from "@bastani/atomic";
 import { asAgentSession } from "./stage-runner-session.js";
 import type { StageSessionRuntime } from "./stage-runner-types.js";
 
@@ -18,22 +18,31 @@ export function storedTranscript(session: StageSessionRuntime): StageSessionRunt
  * `AgentSession`.
  */
 export function storedEntryCount(session: StageSessionRuntime): number | undefined {
-	return storedEntries(session)?.length;
+	const stored = storedEntries(session);
+	return stored === undefined ? undefined : stored.fromSeq - 1 + stored.entries.length;
 }
 
 /** Whether the store gained an assistant message after its first `entryCount` entries, when it was counted at all. */
 export function storedAssistantMessageSince(session: StageSessionRuntime, entryCount: number | undefined): boolean {
 	if (entryCount === undefined) return false;
+	const stored = storedEntries(session);
 	return (
-		storedEntries(session)
-			?.slice(entryCount)
+		stored?.entries
+			.slice(Math.max(0, entryCount - (stored.fromSeq - 1)))
 			.some((entry) => entry.type === "message" && entry.message.role === "assistant") === true
 	);
 }
 
-function storedEntries(session: StageSessionRuntime) {
+/**
+ * The entries the session holds from the first seq it holds every entry from: a session resumed from its latest
+ * compaction holds only state before it, and the rest once it reads it (#5249).
+ */
+function storedEntries(
+	session: StageSessionRuntime,
+): { readonly fromSeq: number; readonly entries: readonly SessionEntry[] } | undefined {
 	const manager = asAgentSession(session)?.sessionManager;
-	return typeof manager?.getEntries === "function" ? manager.getEntries() : undefined;
+	if (typeof manager?.getHeldTail === "function") return manager.getHeldTail();
+	return typeof manager?.getEntries === "function" ? { fromSeq: 1, entries: manager.getEntries() } : undefined;
 }
 
 /** The ids of the tool calls the transcript's last assistant message issued that have no result yet, in call order. */

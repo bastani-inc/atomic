@@ -14,7 +14,7 @@ import { pendingTaskCompletionIntents } from "../../src/core/tasks/completion.ts
 
 const details: VerbatimCompactionDetails = {
 	strategy: "verbatim-lines",
-	promptVersion: 3,
+	promptVersion: 6,
 	parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
 	stats: {
 		linesBefore: 2,
