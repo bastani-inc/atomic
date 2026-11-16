@@ -566,33 +566,43 @@ export class JsonlSessionStore implements SessionStore {
 		const matchesCwd = query.cwd === undefined ? undefined : createSessionCwdMatcher(query.cwd);
 		const paths = await this.run(() => this.paths(), true, query.signal);
 		for (const path of paths) {
+			const cached = query.withoutSearchText ? this.fileStates.get(path) : undefined;
 			const summary = await this.run(
 				async () => {
 					this.checkAbort(query.signal);
 					try {
-						const stored = await this.readFirstLine(path);
-						const header = await this.readHeaderAt(path, stored);
-						if (!matchesSessionIdPrefix(header.id, query.idPrefix)) return undefined;
-						if (matchesCwd && !matchesCwd(header.cwd)) return undefined;
-						if (!query.includeInternal && header.internal) return undefined;
-						if (query.withoutSearchText && isCurrentSessionHeader(stored)) {
+						if (cached?.summaryState !== undefined) {
 							const stats = await stat(path, { bigint: true });
-							const cached = this.fileStates.get(path);
-							if (cached?.summaryState !== undefined && cached.stamp === this.stamp(stats)) {
+							if (cached.stamp === this.stamp(stats)) {
+								const header = JSON.parse(cached.headerStamp) as SessionRecordHeader;
+								if (!matchesSessionIdPrefix(header.id, query.idPrefix)) return undefined;
+								if (matchesCwd && !matchesCwd(header.cwd)) return undefined;
+								if (!query.includeInternal && header.internal) return undefined;
 								return {
 									...materializeSessionSummaryMetadata(header, cached.summaryState),
 									searchText: "",
 									location: path,
 								};
 							}
-							const summarized = await summarizeLegacySession(
-								{ location: path, header, read: () => this.readSnapshot(path, stored) },
-								Number(stats.size),
-								Number(stats.mtimeMs),
-							);
-							return { ...summarized, searchText: "", location: path };
 						}
-						return { ...summarizeSession(await this.readSnapshot(path, stored)), location: path };
+						const readOne = async (): Promise<SessionSummary | undefined> => {
+							const stored = await this.readFirstLine(path);
+							const header = await this.readHeaderAt(path, stored);
+							if (!matchesSessionIdPrefix(header.id, query.idPrefix)) return undefined;
+							if (matchesCwd && !matchesCwd(header.cwd)) return undefined;
+							if (!query.includeInternal && header.internal) return undefined;
+							if (query.withoutSearchText && isCurrentSessionHeader(stored)) {
+								const stats = await stat(path, { bigint: true });
+								const summarized = await summarizeLegacySession(
+									{ location: path, header, read: () => this.readSnapshot(path, stored) },
+									Number(stats.size),
+									Number(stats.mtimeMs),
+								);
+								return { ...summarized, searchText: "", location: path };
+							}
+							return { ...summarizeSession(await this.readSnapshot(path, stored)), location: path };
+						};
+						return cached?.summaryState !== undefined ? this.exclusive(readOne, query.signal) : readOne();
 					} catch (cause) {
 						const error = cause as NodeJS.ErrnoException;
 						if (error.path === path && (error.code === "ENOENT" || error.code === "ENOTDIR")) return undefined;
@@ -606,7 +616,7 @@ export class JsonlSessionStore implements SessionStore {
 						throw cause;
 					}
 				},
-				true,
+				cached?.summaryState === undefined,
 				query.signal,
 			);
 			this.checkAbort(query.signal);
