@@ -94,6 +94,27 @@ describe("early startup input", () => {
 		expect(state.pendingEscape).toBeUndefined();
 	});
 
+	// libuv on Windows and the Linux console send F1-F5 as ESC [ [ A..E. On Windows a cursor position report the
+	// console host did not ask for also arrives as F3, so a prompt typed before the first frame was submitted and a
+	// stray "C" stayed in the editor.
+	it("drops the Linux-console function keys typed before the first frame, whole", () => {
+		const state: EarlyInputState = { text: "", submissions: [] };
+
+		applyEarlyInputChunk(state, "prompt\r\x1b[[C");
+		applyEarlyInputChunk(state, "a\x1b[[Ab\x1b[[5~c");
+
+		expect(state).toEqual({ text: "abc", submissions: ["prompt"], pendingEscape: undefined });
+	});
+
+	it("keeps a Linux-console function key split across chunks out of the text", () => {
+		const state: EarlyInputState = { text: "", submissions: [] };
+
+		applyEarlyInputChunk(state, "x\x1b[[");
+		applyEarlyInputChunk(state, "Ey");
+
+		expect(state.text).toBe("xy");
+	});
+
 	it("skips escape sequences split across chunks instead of treating terminators as text", () => {
 		const state: EarlyInputState = { text: "", submissions: [] };
 

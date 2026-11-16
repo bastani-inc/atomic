@@ -118,7 +118,9 @@ function escapeSequenceEndIndex(sequence: string): number | undefined {
 	const next = chars[1];
 	if (next === undefined) return undefined;
 	if (next !== "[" && next !== "O") return 1;
-	for (let index = 2; index < chars.length; index += 1) {
+	// The Linux console and libuv on Windows send F1-F5 as ESC [ [ A..E: the second "[" opens the sequence.
+	const start = next === "[" && chars[2] === "[" ? 3 : 2;
+	for (let index = start; index < chars.length; index += 1) {
 		const code = chars[index]?.charCodeAt(0) ?? 0;
 		if (code >= 0x40 && code <= 0x7e) return index + 1;
 	}
