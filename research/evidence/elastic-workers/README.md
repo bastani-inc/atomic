@@ -100,25 +100,30 @@ Shipping finishes children sooner, so its workers spend more of the run idle. Th
 
 ### Shipping lag
 
-**How shipping is held to `maxLagMs`:**
-- Once an attempt's oldest unshipped checkpoint has waited half of `maxLagMs`, its next step waits until everything it holds is shipped, and its host claims nothing new.
-- Hosts ship at least every quarter of `maxLagMs`.
-- Deliveries go oldest checkpoint first, at most 2 at a time.
+**How the host keeps lag within `maxLagMs`:**
 
-**Under 16-host load** (`maxLagMs` 30 000), lag never reached `maxLagMs`:
+- It times its deliveries: a running average and the 95th percentile of recent ones, and it uses the larger.
+- It ships a child's checkpoints once the oldest has waited `maxLagMs` minus the deliveries that may still be needed, less a 100 ms margin. Those deliveries are one already under way, plus everything the child holds, sent in one round trip of up to 1 000 checkpoints.
+- From that point, the child's next step waits until its checkpoints are shipped, and the host claims nothing new.
+- It checks this every 25 ms, without waiting for a step, the interval, or other children's deliveries.
+- Before the host has timed a delivery, the point is half of `maxLagMs`.
 
-| Store | Lag p99 | Lag maximum |
+**Delay table** (`test/unit/workflow-checkpoint-shipping-lag.test.ts`). The fake store answers every delivery after a fixed delay. Each attempt takes a step every 10 ms for 3.5 s, with `maxLagMs` 1 000:
+
+| Delivery | Worst lag, 2 or 8 attempts, maxBatch 8 or 64 | Before this change |
 | --- | --- | --- |
-| PG16 | 3.0–7.7 s | 11.3 s |
-| sqld | 1.4–2.7 s | 4.2 s |
+| 20 ms | 106–333 ms | within the bound |
+| 300 ms | 603–815 ms | up to 1 690 ms |
+| 700 ms | about 1 400 ms (steps wait; 1 unshipped at most) | 1 400 ms, with 48 unshipped |
+| 1 200 ms | about 2 400 ms (steps wait; 1 unshipped at most) | 2 400 ms, with 48 unshipped |
 
-**In the kill runs** (`maxLagMs` 10 000, final code, `results/shipping-v4-kill-pg-*`), PG16 lag p99 was 3.9–5.0 s and the maximum was 6.2–9.1 s across 4 runs. On sqld (`results/shipping-v3-kill-sqld-*`), p99 was 2.2 s and the maximum 4.4–5.5 s.
+**The limit:** `maxLagMs` holds while a single delivery takes less than half of it. On a slower store, each of a child's steps waits until the one before it is shipped, so unshipped steps don't pile up, and a checkpoint can wait about two deliveries.
 
-**How the maximum was found over the bound.** An earlier PG kill run recorded a maximum of 11.4 s, then 10.9 s. These were live hosts' checkpoints, never the killed host's. A killed host's unshipped checkpoints are never recorded: their steps run again elsewhere with new completion times, so the lag metric has nothing of theirs to exclude. Two causes, both fixed:
-- **A tracking bug.** A flush that read the local journal's count while a commit accepted a checkpoint cleared the attempt's in-memory list. That attempt then went unshipped, and was not held back, until its child ended.
-- **Delivery order.** On a busy store, a host's deliveries are slower than its interval, and they went out in the order the host took its attempts up.
+**Farm results** (from before this change):
 
-The bound still depends on the store answering a delivery within the remaining half of the window. A store that stalls longer can hold a checkpoint past `maxLagMs`, though no new step is acknowledged meanwhile.
+- **16 hosts, `maxLagMs` 30 000:** lag p99 1.4–7.7 s, maximum 11.3 s on PG16.
+- **Kill runs, `maxLagMs` 10 000:** maximum lag 6.2–9.1 s on PG16 and 4.4–5.5 s on sqld.
+- **The 11.4 s maximum seen earlier** was a live host's checkpoints, not the killed host's: a killed host's unshipped checkpoints are never recorded. It came from a racing flush that cleared an attempt's in-memory list, and from shipping attempts in the order the host took them rather than oldest first. Both are fixed.
 
 ### Replay after a host dies
 
