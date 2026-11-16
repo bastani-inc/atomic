@@ -601,6 +601,11 @@ class IntercomBroker {
   }
 
   private listen(attempt: number): void {
+    // Bound only while the startup lock is still this broker's alone (#5220).
+    if (!this.holdsStartupLock()) {
+      this.exitHavingLostStartupLock();
+      return;
+    }
     const onError = (error: NodeJS.ErrnoException) => {
       void this.recoverFromListenError(error, attempt);
     };
@@ -631,6 +636,11 @@ class IntercomBroker {
    * bound the path since; the server is closed while nothing is there for its close to unlink, and bound again.
    */
   private rebindVanishedSocket(attempt: number): void {
+    // Its close unlinks whatever is at the path: only while no other broker can have bound it (#5220).
+    if (!this.holdsStartupLock()) {
+      this.exitHavingLostStartupLock();
+      return;
+    }
     this.server.close();
     if (attempt >= LISTEN_ATTEMPTS) {
       console.error(`Intercom broker could not listen on ${SOCKET_PATH}: the socket vanished after it was bound`);
@@ -679,9 +689,8 @@ class IntercomBroker {
     // The startup lock is still held, so no other broker has bound the stale socket since it was probed. A broker that
     // lost it (#5220) never removes the socket: another broker may have bound it.
     if (!this.holdsStartupLock()) {
-      console.error(`Intercom broker not started: it lost the socket lock for ${SOCKET_PATH} while starting`);
-      this.abandonStart();
-      process.exit(1);
+      this.exitHavingLostStartupLock();
+      return;
     }
     try {
       unlinkSync(SOCKET_PATH);
@@ -698,6 +707,13 @@ class IntercomBroker {
     } catch (error) {
       console.error(`Intercom broker could not record its socket path ${SOCKET_PATH}:`, error);
     }
+  }
+
+  /** #5220: a broker that no longer holds the socket lock alone never touches the socket; the next spawn starts one. */
+  private exitHavingLostStartupLock(): void {
+    console.error(`Intercom broker not started: it lost the socket lock for ${SOCKET_PATH} while starting`);
+    this.abandonStart();
+    process.exit(1);
   }
 
   /** A broker that does not start leaves no pid file of its own and lets the next starting broker go ahead. */

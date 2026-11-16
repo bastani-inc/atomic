@@ -1,9 +1,11 @@
-import { readdirSync, unlinkSync } from "fs";
-import { basename, dirname } from "path";
+import { randomUUID } from "crypto";
+import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
+import { basename, dirname, join } from "path";
 import {
   createLockFile,
   holderRecord,
   isAbandoned,
+  pidOf,
   readFileOrUndefined,
   removeFileIfUnchanged,
   removeLeftoverParkedFiles,
@@ -22,33 +24,31 @@ export interface SocketReplacementLockOptions {
 export interface SocketReplacementLock {
   (): void;
   /**
-   * Whether this broker still holds the lock, checked just before it acts under it (#5220). False once its generation
-   * is no longer the latest, or its lock file was moved or replaced: a broker that finds that has lost the lock and
-   * must not act as its holder.
+   * Whether this broker still holds the lock, checked immediately before each act under it: unlinking, binding or
+   * closing the socket (#5220). False once its generation is no longer the latest, its legacy lock file is no longer
+   * its own, or a broker of an earlier version holds a takeover token, and so may be moving the legacy file. A broker
+   * that finds it false has lost the lock, or may share it, and must not act.
    */
   held(): boolean;
-}
-
-function removeFile(path: string): void {
-  try {
-    unlinkSync(path);
-  } catch {
-    // Already removed.
-  }
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** The file of generation `generation` of the lock at `lockPath`. */
+/** The directory of generation `generation` of the lock at `lockPath`. */
 function generationPath(lockPath: string, generation: number): string {
-  return `${lockPath}.g${generation}`;
+  return `${lockPath}.gen${generation}`;
+}
+
+/** The record inside a generation: its holder, or {@link RELEASED}. */
+function generationRecord(lockPath: string, generation: number): string | undefined {
+  return readFileOrUndefined(join(generationPath(lockPath, generation), "owner"));
 }
 
 /** The generations of the lock at `lockPath` that are on disk, highest first. */
 function generations(lockPath: string): number[] {
-  const prefix = `${basename(lockPath)}.g`;
+  const prefix = `${basename(lockPath)}.gen`;
   const found: number[] = [];
   for (const name of readdirSync(dirname(lockPath))) {
     if (!name.startsWith(prefix)) continue;
@@ -58,31 +58,107 @@ function generations(lockPath: string): number[] {
   return found.sort((a, b) => b - a);
 }
 
+/** The prefix of the directories in which generations are made before they are moved into place. */
+function stagingPrefix(lockPath: string): string {
+  return `${basename(lockPath)}.staging-`;
+}
+
 /**
- * Whether the latest generation, read as `content`, leaves the lock free: released, or held by a process that is
- * gone, or a record that stayed incomplete and unchanged for a grace period, as one left by a process killed while
- * writing it on a file system without hard links (#5220).
+ * Makes generation `generation` holding `record`, complete or not at all (#5220): its directory is made under a name of
+ * its own with the record already written in it, and then moved into place, which fails while that generation is
+ * there. No reader ever sees a generation without its record, on any file system, so none is ever judged by a time
+ * grace. True when it is in place.
  */
-function generationFree(path: string, content: string | undefined): boolean {
-  if (content === RELEASED) return true;
-  return isAbandoned(path, content);
+function createGeneration(lockPath: string, generation: number, record: string): boolean {
+  const staging = join(dirname(lockPath), `${stagingPrefix(lockPath)}${process.pid}-${randomUUID()}`);
+  try {
+    mkdirSync(staging);
+    writeFileSync(join(staging, "owner"), record);
+    renameSync(staging, generationPath(lockPath, generation));
+    return true;
+  } catch {
+    rmSync(staging, { recursive: true, force: true });
+    return false;
+  }
+}
+
+/** Whether a generation read as `record` leaves the lock free: released, or held by a process that is gone. */
+function generationFree(path: string, record: string): boolean {
+  return record === RELEASED || isAbandoned(path, record);
+}
+
+/**
+ * Removes generations older than `generation`, which hold nothing, and staging directories of processes that died
+ * while making a generation. Only the holder of the latest generation calls this.
+ */
+function removeLeftovers(lockPath: string, generation: number): void {
+  for (const older of generations(lockPath)) {
+    if (older < generation) rmSync(generationPath(lockPath, older), { recursive: true, force: true });
+  }
+  const prefix = stagingPrefix(lockPath);
+  for (const name of readdirSync(dirname(lockPath))) {
+    if (!name.startsWith(prefix)) continue;
+    const pid = Number.parseInt(name.slice(prefix.length), 10);
+    if (Number.isFinite(pid) && isAbandoned(lockPath, `${pid}\n`)) {
+      rmSync(join(dirname(lockPath), name), { recursive: true, force: true });
+    }
+  }
+}
+
+/** The takeover tokens, `<lock>.takeover-<holder>`, that brokers of earlier versions take to replace a stale lock. */
+function takeoverTokens(lockPath: string): string[] {
+  const token = new RegExp(`^${basename(lockPath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.takeover-[^.]+$`);
+  return readdirSync(dirname(lockPath))
+    .filter((name) => token.test(name))
+    .map((name) => join(dirname(lockPath), name));
+}
+
+/** Whether a broker that may still act holds a takeover token: its holder runs, or it cannot be shown to be gone. */
+function liveTakeoverToken(lockPath: string, own?: string): boolean {
+  return takeoverTokens(lockPath).some((token) => {
+    if (token === own) return false;
+    const content = readFileOrUndefined(token);
+    return content !== undefined && !isAbandoned(token, content);
+  });
+}
+
+/**
+ * Replaces the legacy lock file read as `holder`, which is abandoned, the way earlier versions do (#5220): under their
+ * takeover token for that holder, so no broker of an earlier version replaces the same file meanwhile, re-reading the
+ * file under the token, and moving it aside and removing it only when it is still the one judged. A file moved that is
+ * not is put back while the path is free, and otherwise left parked, never removed. A token a dead broker left is
+ * moved the same way.
+ */
+function replaceAbandonedLegacy(lockPath: string, holder: string, record: string): void {
+  const token = `${lockPath}.takeover-${pidOf(holder) ?? "unreadable"}`;
+  if (!createLockFile(token, record)) {
+    const tokenHolder = readFileOrUndefined(token);
+    if (tokenHolder !== undefined && isAbandoned(token, tokenHolder)) removeFileIfUnchanged(token, tokenHolder);
+    return;
+  }
+  try {
+    if (readFileOrUndefined(token) !== record || readFileOrUndefined(lockPath) !== holder) return;
+    if (!isAbandoned(lockPath, holder)) return;
+    removeFileIfUnchanged(lockPath, holder);
+  } finally {
+    removeFileIfUnchanged(token, record);
+  }
 }
 
 /**
  * Serializes stale-socket replacement across brokers, so a broker that probed the socket as stale cannot unlink a
  * socket another broker bound in the meantime: the holder re-probes before it unlinks (#3505).
  *
- * The lock is a series of generations, files `<lock>.g<n>`, and the latest one decides (#5220). A broker takes the lock
- * by creating the generation after the latest, complete or not at all, when the latest is released or its holder is
- * gone; creating a file fails while one is there, so exactly one broker takes each generation, and no broker ever
- * moves or removes a generation another may hold. A broker that created a generation which is not the latest (it
- * judged an older one) removes its own and looks again. Nothing is ever taken over by moving a file aside, so a broker
- * paused or killed at any point can neither take a live broker's lock nor lose one it holds.
+ * The lock is a series of generations, directories `<lock>.gen<n>` naming their holder, and the latest one decides
+ * (#5220). A broker takes the lock by making the generation after the latest, complete or not at all, once the latest
+ * is released or its holder is gone; exactly one broker makes each generation, and no broker moves or removes a
+ * generation another may hold. A broker that made a generation which is not the latest (it judged an older one)
+ * removes its own and looks again. The holder releases the lock by making the next generation, released, and removing
+ * its own, so one released generation stays, and the numbering never starts again.
  *
- * Brokers of earlier versions take the single file `lockPath`; a broker holding the latest generation takes that file
- * too, and waits while an earlier broker that still runs holds it, so the two never replace the socket at once.
- *
- * Resolves with the lock, which releases it when called, and whose `held()` says whether this broker still holds it.
+ * Brokers of earlier versions take the single file `lockPath`. The holder of the latest generation takes that file too,
+ * replacing an abandoned one only as they do, under their takeover token, and {@link SocketReplacementLock.held} says
+ * whether it still holds both and no broker of an earlier version is replacing a lock.
  */
 export async function acquireSocketReplacementLock(
   lockPath: string,
@@ -101,65 +177,64 @@ export async function acquireSocketReplacementLock(
   for (;;) {
     const latest = generations(lockPath)[0];
     if (latest !== undefined) {
-      const path = generationPath(lockPath, latest);
-      const content = readFileOrUndefined(path);
-      // Gone meanwhile, as an older generation removed by a broker that took the lock, or unreadable for a moment.
+      const content = generationRecord(lockPath, latest);
+      // Being removed, as an older generation by a broker that took the lock: it is not the latest for long.
       if (content === undefined) {
         await sleep(SOCKET_REPLACEMENT_LOCK_POLL_MS);
         continue;
       }
-      if (!generationFree(path, content)) {
+      if (!generationFree(join(generationPath(lockPath, latest), "owner"), content)) {
         await waiting();
         continue;
       }
     }
     const next = (latest ?? 0) + 1;
-    if (createLockFile(generationPath(lockPath, next), record)) {
+    if (createGeneration(lockPath, next, record)) {
       if (generations(lockPath)[0] === next) {
         generation = next;
         break;
       }
       // A later generation was taken meanwhile: this one, made from an older judgment, holds nothing.
-      removeFile(generationPath(lockPath, next));
+      rmSync(generationPath(lockPath, next), { recursive: true, force: true });
     }
     await sleep(SOCKET_REPLACEMENT_LOCK_POLL_MS);
   }
-  // Older generations hold nothing now; only this broker removes them.
-  for (const older of generations(lockPath)) if (older < generation) removeFile(generationPath(lockPath, older));
-
-  const mine = generationPath(lockPath, generation);
+  removeLeftovers(lockPath, generation);
   const holdsGeneration = () =>
-    generations(lockPath)[0] === generation && readFileOrUndefined(mine) === record;
-  // Copies of the legacy file a removal left parked, whose holder is gone, are removed by the latest generation's holder,
-  // the only broker that moves that file (#5220); one naming a running broker is that broker's and is kept.
+    generations(lockPath)[0] === generation && generationRecord(lockPath, generation) === record;
+
+  // Copies of the legacy file a removal left parked, whose holder is gone, are removed here, by the only new broker
+  // that moves that file; one naming a running broker is that broker's and is kept.
   try {
     removeLeftoverParkedFiles(lockPath);
   } catch {
     // Best effort: a parked file is only clutter.
   }
-  // The single lock file earlier versions take.
+  const held = () =>
+    holdsGeneration() && readFileOrUndefined(lockPath) === record && !liveTakeoverToken(lockPath);
+  // The single lock file earlier versions take, and then no broker of an earlier version still replacing one: a broker
+  // holding a takeover token may yet move that file, so this one waits, holding both, until none does.
   for (;;) {
-    if (createLockFile(lockPath, record)) break;
-    const holder = readFileOrUndefined(lockPath);
-    // Only the holder of the latest generation removes it, and only while it is still the abandoned one it judged.
-    if (holder !== undefined && isAbandoned(lockPath, holder)) removeFileIfUnchanged(lockPath, holder);
-    else await waiting();
+    if (readFileOrUndefined(lockPath) !== record && !createLockFile(lockPath, record)) {
+      const holder = readFileOrUndefined(lockPath);
+      if (holder !== undefined && isAbandoned(lockPath, holder)) replaceAbandonedLegacy(lockPath, holder, record);
+      else await waiting();
+      continue;
+    }
+    if (held()) break;
+    await waiting();
   }
-
-  const held = () => holdsGeneration() && readFileOrUndefined(lockPath) === record;
   let released = false;
   const release = () => {
     if (released) return;
     released = true;
     removeFileIfUnchanged(lockPath, record);
     if (!holdsGeneration()) return;
-    try {
-      // Its own generation is removed once the released one is in place, so a broker that idles out leaves exactly one
-      // file, the released marker (#4727, #5220). The marker itself stays: removed, numbering would start again, and a
-      // broker paused with a judgment of an older generation could then take one that looks like the latest.
-      if (createLockFile(generationPath(lockPath, generation + 1), RELEASED)) removeFile(mine);
-    } catch {
-      // Not written: the lock is free once this broker is gone.
+    // Its own generation is removed once the released one is in place, so a broker that idles out leaves one released
+    // generation (#4727). That one stays: removed, numbering would start again, and a broker paused with a judgment of
+    // an older generation could then take one that looks like the latest.
+    if (createGeneration(lockPath, generation + 1, RELEASED)) {
+      rmSync(generationPath(lockPath, generation), { recursive: true, force: true });
     }
   };
   return Object.assign(release, { held });

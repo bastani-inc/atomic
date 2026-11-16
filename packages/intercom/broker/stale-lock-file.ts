@@ -1,9 +1,7 @@
 import { randomUUID } from "crypto";
 import { linkSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
-
-/** Locks and tokens get their pid as they are created, so one still unreadable after this was left by a crash. */
-const UNREADABLE_FILE_GRACE_MS = 1_000;
+import { noProcessHasOpen } from "./open-file-check.js";
 
 /**
  * A parked file is renamed, read and removed at once, so one parked longer than this was left by a process that
@@ -59,7 +57,8 @@ export function createLockFile(path: string, content: string): boolean {
 /**
  * Creates `path` holding `content` where no hard link can be made: created and then written, so a reader may see it
  * empty or partly written for a moment. Each record ends its lines with a newline, and readers judge a record whose
- * last line is unterminated, or that is empty, as still being written until {@link UNREADABLE_FILE_GRACE_MS} has passed.
+ * last line is unterminated, or that is empty, as still being written while any process has it open (see
+ * {@link writerGone}).
  */
 function createExclusively(path: string, content: string): boolean {
   try {
@@ -166,23 +165,16 @@ export function isAbandoned(path: string, written: string | undefined): boolean 
     const started = processStart(pid);
     return started !== undefined && started !== recorded;
   }
-  return unchangedThroughGrace(path, written);
-}
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  return writerGone(path, written);
 }
 
 /**
- * Whether the lock at `path`, read as `written` and recording no holder, was left by a process killed while writing it:
- * it is still exactly `written` a grace period later (#5220). A lock is made complete where hard links can be made (see
- * {@link createLockFile}); elsewhere, and from an earlier version, it is created and then written, and a writer that is
- * still running finishes it well within the grace. Judged by content rather than age, since a file system such as FAT
- * keeps modification times only to two seconds, which can make a file look older than the grace as it is created.
+ * Whether the lock at `path`, read as `written` and recording no holder, empty or part-written, was left by a process
+ * that died while writing it (#5220): no process has it open, and it is still exactly as read. Its writer holds it open
+ * from creating it to finishing it, so this needs no time grace, which could not tell a stalled writer from a dead one.
  */
-export function unchangedThroughGrace(path: string, written: string | undefined): boolean {
-  if (written === undefined) return false;
-  sleepSync(UNREADABLE_FILE_GRACE_MS);
+export function writerGone(path: string, written: string | undefined): boolean {
+  if (written === undefined || !noProcessHasOpen(path)) return false;
   return readFileOrUndefined(path) === written;
 }
 
