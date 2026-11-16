@@ -7,8 +7,10 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { isSyntheticPath } from "../src/core/source-info.ts";
 import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 const RAW_TOKEN = "github_pat_runtime_test_token";
 const EXCHANGED_TOKEN = "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com";
 const tempDirs: string[] = [];
@@ -59,14 +61,18 @@ async function captureRequestHeaders(
 	mkdirSync(cwd, { recursive: true });
 	mkdirSync(agentDir, { recursive: true });
 	linkSharedTranspileCache(agentDir);
-	const { session } = await createAgentSession({
+	const { session, extensionsResult } = await createAgentSession({
 		cwd,
 		agentDir,
 		model: model!,
 		modelRuntime: runtime,
 		settingsManager: SettingsManager.inMemory(),
 		sessionManager: SessionManager.inMemory(cwd),
+		builtins: NO_BUILTINS,
 	});
+	expect(
+		extensionsResult.extensions.map((extension) => extension.path).filter((path) => !isSyntheticPath(path)),
+	).toEqual([]);
 
 	let request: Request | undefined;
 	const fetchStub: typeof globalThis.fetch = async (input, init) => {

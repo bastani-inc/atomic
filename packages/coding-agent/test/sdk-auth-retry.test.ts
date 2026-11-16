@@ -19,6 +19,9 @@ import { ModelRuntime } from "../src/core/model-runtime.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { isSyntheticPath } from "../src/core/source-info.js";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 const probe: Model<Api> = {
 	id: "auth-probe",
@@ -82,7 +85,7 @@ function oauthCredential(access: string): OAuthCredential {
 }
 
 async function startSession(model: Model<Api>, modelRuntime: ModelRuntime, authStorage: AuthStorage) {
-	const { session } = await createAgentSession({
+	const { session, extensionsResult } = await createAgentSession({
 		cwd,
 		agentDir,
 		model,
@@ -90,7 +93,12 @@ async function startSession(model: Model<Api>, modelRuntime: ModelRuntime, authS
 		modelRuntime,
 		sessionManager: SessionManager.inMemory(cwd),
 		settingsManager: SettingsManager.inMemory({ cacheWarming: "off" }),
+		builtins: NO_BUILTINS,
 	});
+	assert.deepEqual(
+		extensionsResult.extensions.map((extension) => extension.path).filter((path) => !isSyntheticPath(path)),
+		[],
+	);
 	return session;
 }
 
