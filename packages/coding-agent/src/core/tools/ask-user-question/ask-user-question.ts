@@ -127,7 +127,15 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 			const state = context.state as AskUserQuestionRenderState;
 			const container = new Container();
 			const details = result.details as QuestionnaireResult | undefined;
-			if (!details || !Array.isArray(details.answers)) return container;
+			// Without structured answers (an echoed or restored result), show the result text as it is.
+			if (!details || !Array.isArray(details.answers)) {
+				const text = result.content
+					.map((part) => (part.type === "text" ? part.text : ""))
+					.filter(Boolean)
+					.join("\n");
+				if (text) container.addChild(new Text(theme.fg("muted", text), 0, 0));
+				return container;
+			}
 			const lines = summarizeAnswers(context.args as unknown as QuestionParams, details);
 			const summary = lines.length === 1 ? lines[0] : undefined;
 			if (summary !== state.summary) {

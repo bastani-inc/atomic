@@ -36,7 +36,7 @@ export class TabBar implements StatefulView<TabBarProps> {
 
 	/**
 	 * The steps of the dialog on one line: each question's header, then Review, joined by `──`, the current step as a
-	 * filled chip and answered steps in the success colour; the current question's `n/m` sits at the right edge.
+	 * filled chip and answered steps in the success colour; the current question's `n/m` (on Review, how many are answered) sits at the right edge.
 	 */
 	render(width: number): string[] {
 		const { theme } = this;
@@ -47,7 +47,9 @@ export class TabBar implements StatefulView<TabBarProps> {
 			step("Review", this.props.submit.active, this.props.submit.allAnswered),
 		].join(theme.fg("dim", " ── "));
 		const activeIndex = this.props.tabs.findIndex((tab) => tab.active);
-		const count = activeIndex >= 0 ? `${activeIndex + 1}/${this.props.tabs.length}` : "Review";
+		const total = this.props.tabs.length;
+		const answered = this.props.tabs.filter((tab) => tab.answered).length;
+		const count = activeIndex >= 0 ? `${activeIndex + 1}/${total}` : `${answered}/${total} answered`;
 		const room = width - visibleWidth(count) - 2;
 		const left = truncateToWidth(steps, Math.max(1, room), "…");
 		const gap = Math.max(2, width - visibleWidth(left) - visibleWidth(count));

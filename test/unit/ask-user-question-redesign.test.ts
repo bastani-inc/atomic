@@ -105,7 +105,7 @@ describe("ask_user_question dialog (#5224)", () => {
 		dialog.press(TAB);
 		assert.match(dialog.inner()[0] ?? "", /^Navigation ── Packaging ── Layout ── Review +2\/3$/);
 		dialog.press(TAB, TAB);
-		assert.match(dialog.inner()[0] ?? "", /Review +Review$/);
+		assert.match(dialog.inner()[0] ?? "", /Review +0\/3 answered$/);
 	});
 
 	test("numbers the options and indents each description under its label", () => {
