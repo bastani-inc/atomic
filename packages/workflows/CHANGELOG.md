@@ -33,7 +33,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed late graph retry/fork results overriding a newer view or reopening a closed pane, and stale fork confirmations surviving recovery or reopening a failed stage. Forks keep the selected stage even when same-named sibling completion changes its path; failed child-workflow boundaries are valid targets, and confirmation counts exclude internal records and duplicate tool replays.
 - Worker pool stores (queue, usage, shared placement, fleet, rate limits, resource admission) run no DDL when their schema is current on PostgreSQL, so worker hosts, roots and their child workers run with a runtime role that has only DML privileges, and a starting host no longer blocks running hosts' pool writes. `migrateWorkflowStorage` sets them up, as `atomic storage migrate` does ([#5218](https://github.com/bastani-inc/atomic/issues/5218))
 - The shared-journal setup hint, as `atomic worker status` prints it, names `atomic storage join <postgres-url> --password-file <path>` for PostgreSQL beside the libSQL command, instead of only `atomic team join`, which refuses PostgreSQL ([#5218](https://github.com/bastani-inc/atomic/issues/5218))
 - Fixed a worker pool write on PostgreSQL committing against a journal a later build had just upgraded: the write checked the schema version without locking it, so the upgrade could commit between that check and the write. The check now holds the version until the write commits, so the upgrade waits for it. SQLite and libSQL pools already wrote under the lock the upgrade takes ([#5219](https://github.com/bastani-inc/atomic/issues/5219))
@@ -103,6 +102,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed a pooled stage on a host that doesn't run its root keeping its Intercom inbox after its session failed to start: later messages to it were taken into the failed session instead of staying queued ([#5168](https://github.com/bastani-inc/atomic/issues/5168))
 - Fixed the workflow session picker showing no selected row when the selected run left the list and the list got shorter. The selection now moves to the nearest remaining run, so Enter acts on it without first moving the cursor.
 - Fixed `/workflow` commands whose arguments start after a tab or on a new line not being run ([#5192](https://github.com/bastani-inc/atomic/issues/5192))
+- Fixed late graph retry/fork results overriding a newer view or reopening a closed pane, and stale fork confirmations surviving recovery or reopening a failed stage. Forks keep the selected stage even when same-named sibling completion changes its path; failed child-workflow boundaries are valid targets, and confirmation counts exclude internal records and duplicate tool replays.
+- Graph failure details, notices and tool labels render terminal-control characters as printable data. Tool displays escape C1 controls without changing stored arguments or results, and rejected or synchronously thrown action failures become notices instead of escaping the graph. Remapped stop hints reflect the keys that can act on the focused node.
 
 
 ## [0.9.86] - 2026-11-14
