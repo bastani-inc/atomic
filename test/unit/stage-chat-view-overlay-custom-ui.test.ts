@@ -330,13 +330,15 @@ describe("StageChatView overlay custom UI", () => {
 		}
 		const lines = view.render(100).map(stripAnsi);
 		const topIdx = lines.findIndex((line) => /↑ \d+ more/.test(line));
-		const labeled = lines.map((line, i) => [i, line] as const).filter(([, line]) => line.includes("[stage:"));
+		const labeled = lines
+			.map((line, i) => [i, line] as const)
+			.filter(([, line]) => line.includes("stage · review-a"));
 		assert.ok(topIdx >= 0, "draft must be scrolled");
 		assert.ok(labeled.length <= 1, "at most one label");
 		for (const [i] of labeled) {
 			assert.equal(i, topIdx, "label must be on the editor top rule, never a later rule");
 		}
-		assert.match(lines[topIdx]!, /\[stage: review-a\]/);
+		assert.match(lines[topIdx]!, /stage · review-a · running/, "the attached composer's label (#5224)");
 		assert.equal(visibleWidth(lines[topIdx]!), 100);
 		view.dispose();
 	});

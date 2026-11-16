@@ -66,15 +66,19 @@ export function isActiveBackgroundTask(task: TaskRecord): boolean {
  */
 export function renderTaskFooter(tasks: readonly TaskRecord[], width: number): string[] {
 	const active = tasks.filter(isActiveBackgroundTask);
-	return renderAgentPanelRows(taskPanelItems({ backgroundTasks: active }, new Set()).reverse(), width, {
-		dim: (text) => theme.fg("dim", text),
-		text: (text) => theme.fg("text", text),
-		muted: (text) => theme.fg("muted", text),
-		border: (text) => theme.fg("borderMuted", text),
-		bold: (text) => theme.bold(text),
-		accent: (text) => theme.fg("accent", text),
-		success: (text) => theme.fg("success", text),
-		error: (text) => theme.fg("error", text),
-		warning: (text) => theme.fg("warning", text),
-	});
+	return renderAgentPanelRows(
+		taskPanelItems({ backgroundTasks: active }, new Set(), { topLevelOnly: false }).reverse(),
+		width,
+		{
+			dim: (text) => theme.fg("dim", text),
+			text: (text) => theme.fg("text", text),
+			muted: (text) => theme.fg("muted", text),
+			border: (text) => theme.fg("borderMuted", text),
+			bold: (text) => theme.bold(text),
+			accent: (text) => theme.fg("accent", text),
+			success: (text) => theme.fg("success", text),
+			error: (text) => theme.fg("error", text),
+			warning: (text) => theme.fg("warning", text),
+		},
+	);
 }

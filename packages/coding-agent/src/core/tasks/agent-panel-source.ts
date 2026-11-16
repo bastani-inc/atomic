@@ -127,10 +127,18 @@ function taskState(task: TaskRecord): AgentPanelState {
 	return "running";
 }
 
-/** One panel item per top-level background task of `source` that is not in `dismissed`, in admission order. */
-export function taskPanelItems(source: Pick<TaskViewSource, "backgroundTasks">, dismissed: ReadonlySet<TaskId>) {
+/**
+ * One panel item per background task of `source` that is not in `dismissed`, in admission order. The main chat's panel
+ * lists only top-level tasks; a subagent's chat lists the tasks of that subagent, which all have a parent.
+ */
+export function taskPanelItems(
+	source: Pick<TaskViewSource, "backgroundTasks">,
+	dismissed: ReadonlySet<TaskId>,
+	options: { readonly topLevelOnly?: boolean } = {},
+) {
+	const topLevelOnly = options.topLevelOnly ?? true;
 	return source.backgroundTasks
-		.filter((task) => !dismissed.has(task.ref.taskId) && task.parentTaskId === undefined)
+		.filter((task) => !dismissed.has(task.ref.taskId) && (!topLevelOnly || task.parentTaskId === undefined))
 		.map((task): AgentPanelItem => {
 			const state = taskState(task);
 			const question = task.attention.kind === "input-needed" ? task.attention.prompt : undefined;
