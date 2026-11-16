@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.88-alpha.1] - 2026-11-16
+
 ### Fixed
 
 - Temporary extension installs and the GitHub clone cache now use directories only the current user owns

@@ -4,6 +4,12 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.9.88-alpha.1] - 2026-11-16
+
+### Added
+
+- Added `buildModelsDevChatModels()` and `finalizeChatModels()` in `@bastani/atomic-ai/utils/models-dev-catalog`, the transform from models.dev's `api.json` to the built-in chat catalog ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
+
 ### Changed
 
 - Renamed the package from `@bastani/pi-ai` to `@bastani/atomic-ai`. It now depends on Atomic's forks `@bastani/atomic-schema` and `@bastani/atomic-telemetry` instead of pi's packages. Atomic's extension loader still resolves `@bastani/pi-ai`, `@earendil-works/pi-ai` and `@mariozechner/pi-ai` imports to it ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
@@ -25,10 +31,6 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 ### Removed
 
 - Removed the `radius` provider, its OAuth flow and models, and the build-time fetch of its catalog from radius.pi.dev. The generic `pi-messages` API stays available for custom providers ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
-
-### Added
-
-- Added `buildModelsDevChatModels()` and `finalizeChatModels()` in `@bastani/atomic-ai/utils/models-dev-catalog`, the transform from models.dev's `api.json` to the built-in chat catalog ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
 
 ## [0.9.85] - 2026-11-13
 

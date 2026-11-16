@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.88-alpha.1] - 2026-11-16
+
 ### Added
 
 - Single and parallel `subagent` calls, and each parallel task, accept `worktree: { branch, base?, path? }`: before the child starts, the branch is checked out in a worktree at `path` (default `.atomic/worktrees/<branch>`), created from `base` (default the upstream, or `HEAD`) or reused when that branch is already checked out there. The call is refused before launch when the branch is checked out elsewhere or the path holds something else. Unlike `worktree: true`, a named worktree and its branch are never removed; it is recorded with the child, so the restore notice names it and resume continues in it ([#5202](https://github.com/bastani-inc/atomic/issues/5202))

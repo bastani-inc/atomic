@@ -2,11 +2,17 @@
 
 ## [Unreleased]
 
+## [0.9.88-alpha.1] - 2026-11-16
+
 ### Added
 
 - `@bastani/atomic-storage-postgres`, a PostgreSQL storage adapter for Atomic sessions, workflow journals, and Intercom, installed with `atomic install npm:@bastani/atomic-storage-postgres`. It keeps a pool of up to 8 connections per process, bounds every statement with a 30-second statement timeout, and works through transaction-mode poolers such as PgBouncer. The password comes from the selection's `secrets` and is read again for each new connection, so a rotated password file is picked up without a restart; a URL that carries a password is refused. Lock conflicts, cancelled statements, and refused or lost connections are reported as `StorageTransientError`, and a call that wrote nothing runs again. PostgreSQL 14 or newer is required ([#4793](https://github.com/bastani-inc/atomic/issues/4793))
 - Cloud IAM authentication for the PostgreSQL adapter: set `auth` to `"azure-entra"`, `"aws-iam"` or `"gcp-iam"` and each new connection signs in with a short-lived token from the cloud's own SDK (`@azure/identity`, `@aws-sdk/rds-signer` or `google-auth-library`, installed beside the adapter as an optional peer dependency) instead of a stored password. Tokens stay in memory, each token request is time-limited, and a failure names the package to install or the SDK's reason without showing a token. The README lists the least-privilege role for each cloud ([#4793](https://github.com/bastani-inc/atomic/issues/4793))
 - Wake-ups through `LISTEN`/`NOTIFY`: the adapter keeps one listening connection per process and exposes it as `notifications` on the opened database, so worker hosts and Intercom brokers learn about new work at once instead of at their next poll. Their polls stay, so a dropped listening connection or a transaction pooler only makes them slower, never loses work. Through a transaction pooler, set the new `listenUrl` option to the server's direct endpoint; otherwise the adapter detects that notifications do not arrive, unlistens, and uses polling alone for the rest of the process, so it leaves no `LISTEN` on the pooler's server connections. A listening connection that stops delivering, such as a half-open one, is found by a probe every 30 seconds and a short TCP keepalive, and replaced. `atomic storage status` says which applies ([#5103](https://github.com/bastani-inc/atomic/issues/5103))
+
+### Changed
+
+- A transaction's statements now go to the server without waiting for the answer to the one before, and a transaction that sends several before it commits takes one round trip for all of them and its commit ([#5102](https://github.com/bastani-inc/atomic/issues/5102))
 
 ### Fixed
 
@@ -21,6 +27,3 @@
 - An identifier longer than PostgreSQL's 63 bytes, in any statement, now reaches the server as the storage dialect's name for it (its head and a hash of the whole name) instead of being truncated, so a store whose prefix makes its names long finds again every table, index and trigger it created ([#4793](https://github.com/bastani-inc/atomic/issues/4793))
 - `sslmode` now follows libpq without extra parameters: `verify-ca` checks the server certificate's CA (`sslrootcert`, or the CAs Node.js trusts) but not its host name, so a server reached by an address its certificate does not name, such as Cloud SQL by private IP, connects instead of failing with "Hostname/IP does not match certificate's altnames". `require` with `sslrootcert` does the same. `prefer` and `allow` encrypt without checking the certificate. `require` without `sslrootcert` still checks the certificate and its host name, stricter than libpq, and a URL with `uselibpqcompat` keeps pg's own reading of `sslmode`. A TLS parameter whose name is not lowercase, such as `SSLMODE=verify-full`, is now refused instead of being ignored by pg, which connected to a remote host without TLS; an `sslmode` libpq does not know is refused too ([#5113](https://github.com/bastani-inc/atomic/issues/5113))
 
-### Changed
-
-- A transaction's statements now go to the server without waiting for the answer to the one before, and a transaction that sends several before it commits takes one round trip for all of them and its commit ([#5102](https://github.com/bastani-inc/atomic/issues/5102))

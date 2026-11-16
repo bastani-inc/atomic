@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.88-alpha.1] - 2026-11-16
+
 ### Breaking Changes
 
 - Removed `/workflow connect` and `/workflow attach`. `/workflows` opens the session's only run in its graph, or lists the runs, and `/workflows <run-id>` opens that run; Enter on a stage in the graph opens its chat. On a failed stage, Enter opens its failure detail; press `t` there for its chat. Launch, status and notice text now point to `/workflows`. Autocomplete offers `/workflows`, completes the session's run IDs as `/workflow connect` did, and omits both removed subcommands, including before workflow discovery finishes or when live completion is unavailable. The fallback also offers `/workflow fork` and `--from`. Typing either removed command shows a one-line pointer and runs nothing. **Migration:** use `/workflows <run-id>` (or ↓ to the run in the agent panel) where you used `/workflow connect <run-id>`, and select the stage in that graph where you used `/workflow attach <run-id> <stage>` ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
@@ -113,7 +115,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed reading a workflow run's journal of large events, as resuming or inspecting a run does, and a worker pool host reading a root's large checkpoints, as one that takes over a child does, taking time that grew with the square of their number. To cut each page at its size limit, a read measured the payloads of up to 256 events (the pool host's read, of every checkpoint left) to return a few large ones, so reading 1000 events of 256 KiB took about a minute on SQLite, PostgreSQL and libSQL servers alike. Each page now measures about twice the events it returns, and a journal read's pages of small events are unchanged ([#5263](https://github.com/bastani-inc/atomic/pull/5263))
 - Fixed a fleet controller keeping an instance whose worker died after registering for 5 minutes instead of removing it for its boot timeout, when the removal was cut off after it asked the instance to drain: a busy or paused controller's lease could lapse, or the controller could stop, just before its provider call. The drain now names the boot-timeout removal, so the next tick, or the controller that takes over, removes the instance once no host on it reports or is draining. A controller whose lease may have lapsed still makes no provider call ([#5072](https://github.com/bastani-inc/atomic/issues/5072))
 - `/workflow resume`, `/workflow pause` and `/workflow fork` completion no longer offers run IDs where a stage or message goes, and `fork` no longer offers `--from` twice ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-
 
 ## [0.9.86] - 2026-11-14
 

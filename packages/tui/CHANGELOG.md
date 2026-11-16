@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+## [0.9.88-alpha.1] - 2026-11-16
+
 ### Added
 
 - Exported `decodePrintableKey` for printable Kitty CSI-u and modifyOtherKeys input, and `normalizePastedText` for custom inputs to apply the editor's paste normalization.
@@ -21,3 +23,4 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 - The editor no longer overflows the call stack when one grapheme cluster is wider than its text area, such as a consonant followed by hundreds of spacing vowel signs. The cluster takes a line of its own, clipped between code points to the width, and still moves and deletes as one character.
 - `wrapTextWithAnsi`, and with it `Text` and `Markdown`, clips a grapheme cluster wider than the width the same way, on a line of its own and with its styling kept, instead of returning a line wider than the width, which made the main screen stop with "Rendered line exceeds terminal width". It also no longer emits an empty line before such a cluster.
 - In a one-column editor, the cursor after a line's last character takes a row of its own below that line instead of making the row two columns wide. Moving the cursor and clicking follow the rows as shown.
+
