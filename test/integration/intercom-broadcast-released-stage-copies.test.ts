@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { SessionEntry } from "@bastani/atomic";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import type { ReleasedStageAnnouncement } from "../../packages/intercom/released-stage-peers.js";
-import type { SessionInfo } from "../../packages/intercom/types.js";
+import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 
 const brokerFixture = new IntercomBrokerFixture(mkdtempSync(join(tmpdir(), "intercom-broadcast-copies-")));
@@ -18,7 +18,10 @@ const { ReplyTracker } = await import("../../packages/intercom/reply-tracker.js"
 const { ReplyWaiterRegistry } = await import("../../packages/intercom/reply-waiter.js");
 const { INTERCOM_RECOVERY_PEERS_EVENT } = await import("../../packages/intercom/session-recovery.js");
 const { RELEASED_STAGE_EVENT } = await import("../../packages/intercom/released-stage-peers.js");
-const { unconsumedIntercomInbox } = await import("../../packages/intercom/durable-inbox.js");
+const { consumedIntercomMessageIds, unconsumedIntercomInbox } = await import(
+	"../../packages/intercom/durable-inbox.js"
+);
+const { buildIncomingCustomMessage } = await import("../../packages/intercom/incoming-message-delivery.js");
 
 /** A real broker child, one host runtime hosting 99 released stages, and a 100-recipient broadcast over sockets. */
 const REAL_BROKER_BROADCAST_TEST_TIMEOUT_MS = 60_000;
@@ -27,6 +30,9 @@ const WAIT_TIMEOUT_MS = 20_000;
 /** The incident's shape: one host session and the 99 finished stages it hosts all match the sender's glob. */
 const RELEASED_STAGES = 99;
 const RELEASED_STAGE_STATUS = "closed · reply: post-mortem only";
+/** Closed stages not yet released: each is still its own Intercom session and hands what it receives to its host. */
+const CLOSED_STAGES = 3;
+const LATE_STAGE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
 const GROUP = "default";
 
 beforeAll(() => brokerFixture.startSourceBroker(BROKER_START_TIMEOUT_MS), BROKER_START_TIMEOUT_MS * 2);
@@ -134,6 +140,7 @@ async function startHost(sessionId: string) {
 		release(route: ReleasedStageAnnouncement) {
 			events.emit(RELEASED_STAGE_EVENT, route as unknown as object);
 		},
+		emit: events.emit,
 	};
 }
 
@@ -234,6 +241,104 @@ test(
 			host.shownTexts.filter((text) => text === broadcast).length,
 			1,
 			"one broadcast is shown to its host session once, however many of its copies reach it",
+		);
+		assert.deepEqual(
+			unconsumedIntercomInbox(host.branch).map((record) => record.message.content.text),
+			[],
+			"a resume shows no copy of the broadcast again",
+		);
+	},
+	REAL_BROKER_BROADCAST_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a broadcast reaching a host session and its closed, not yet released, stages is shown to the host once",
+	async () => {
+		const runId = randomUUID();
+		const host = await startHost(`closed-${runId}-host`);
+		const lateDeliveries: Array<Promise<void>> = [];
+		const closedStageIds: string[] = [];
+		for (let index = 0; index < CLOSED_STAGES; index += 1) {
+			// A closed stage's runtime hands a message that arrives after it closed to its host's late-message route.
+			const stage = new IntercomClient();
+			stage.on("error", () => {});
+			stage.on("message", (from: SessionInfo, message: Message) => {
+				const event: { handled: boolean; completion?: Promise<void>; [field: string]: unknown } = {
+					handled: false,
+					batch: false,
+					messages: [buildIncomingCustomMessage({ from, message, bodyText: message.content.text })],
+					workflowRunId: runId,
+					workflowStageId: `closed-stage-${index}`,
+					workflowStageName: `closed-lane-${index}`,
+					options: { triggerTurn: true },
+				};
+				host.emit(LATE_STAGE_MESSAGE_EVENT, event);
+				assert.equal(event.handled, true, "the host owns a closed stage's late message");
+				lateDeliveries.push(event.completion ?? Promise.resolve());
+			});
+			const now = Date.now();
+			await stage.connect(
+				{
+					name: `subagent-chat-closed-${runId}-stage-${index}`,
+					model: "faux/model",
+					cwd: "/repo",
+					pid: process.pid,
+					startedAt: now,
+					lastActivity: now,
+					group: GROUP,
+					groups: [GROUP],
+				},
+				undefined,
+				undefined,
+				undefined,
+				GROUP,
+			);
+			brokerFixture.onCleanup(() => stage.disconnect().catch(() => undefined));
+			closedStageIds.push(stage.sessionId!);
+		}
+		const sender = await connectSender("subagent-debugger-broadcast-2");
+
+		const broadcast = "Closed stages: the scope changed.";
+		const result = await sender.tool.execute(
+			"broadcast-closed",
+			{ action: "send", to: `subagent-chat-closed-${runId}-*`, message: broadcast, broadcast: true },
+			undefined,
+			undefined,
+			sender.context,
+		);
+		assert.equal(result.isError, false, result.content.map((part) => part.text).join("\n"));
+		assert.equal(
+			result.details?.recipients?.length,
+			CLOSED_STAGES + 1,
+			"the host and its closed stages are recipients",
+		);
+		const recipients = (result.details?.recipients ?? []) as Array<{
+			target: string;
+			outcome: string;
+			messageId?: string;
+		}>;
+		const hostCopy = recipients.find((recipient) => !closedStageIds.includes(recipient.target));
+		assert.ok(hostCopy?.messageId, "the host session is a recipient");
+		for (const id of closedStageIds) {
+			assert.equal(recipients.find((recipient) => recipient.target === id)?.outcome, "delivered");
+		}
+
+		await vi.waitFor(
+			() => {
+				assert.equal(lateDeliveries.length, CLOSED_STAGES, "every closed stage hands its copy to the host");
+				assert.ok(
+					consumedIntercomMessageIds(host.branch).has(hostCopy.messageId!),
+					"the host handled its own copy",
+				);
+			},
+			{ timeout: WAIT_TIMEOUT_MS, interval: 20 },
+		);
+		await Promise.all(lateDeliveries);
+
+		assert.equal(
+			host.shownTexts.filter((text) => text === broadcast).length,
+			1,
+			"one broadcast is shown to its host session once, however many closed stages hand it a copy",
 		);
 		assert.deepEqual(
 			unconsumedIntercomInbox(host.branch).map((record) => record.message.content.text),

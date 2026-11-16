@@ -3,6 +3,7 @@ import { type InboundMessageEntry, mayStartTurn, maySupplyReplyContext } from ".
 import type { InboundMessageAdmission, InboundMessageReservation } from "./inbound-message-admission.js";
 import type { IntercomContext, ReplyTracker } from "./reply-tracker.js";
 import { DEFAULT_GROUP, normalizeGroup } from "./group.js";
+import { BroadcastCopies } from "./broadcast-copies.js";
 
 const LATE_STAGE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
 type LateStageMessage = Parameters<ExtensionAPI["sendMessage"]>[0];
@@ -31,6 +32,7 @@ export function registerLateStageMessageRouter(
   admission: InboundMessageAdmission,
   getReplyTracker: () => ReplyTracker,
   getOwnerGroup: () => string = () => DEFAULT_GROUP,
+  broadcastCopies: BroadcastCopies = new BroadcastCopies(),
 ): void {
   pi.events.on(LATE_STAGE_MESSAGE_EVENT, (data) => {
     if (!data || typeof data !== "object") return;
@@ -54,6 +56,8 @@ export function registerLateStageMessageRouter(
       if (entry.channel !== "supervisor"
         && !isSubagentRelayHandoff(entry)
         && normalizeGroup(entry.from.group) !== normalizeGroup(getOwnerGroup())) continue;
+      // A closed stage's copy of a broadcast this session already has, its own or another stage's, is not shown.
+      if (!broadcastCopies.claim(entry.from, entry.message)) continue;
       const result = admission.admit(entry.from, entry.message);
       if (result.kind === "pending") { joined.push(result.completion); continue; }
       if (result.kind === "duplicate") continue;

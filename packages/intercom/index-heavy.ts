@@ -617,7 +617,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     return Boolean(resolvedTo && activeClient?.sessionId && resolvedTo === activeClient.sessionId)
       || targets.has(to.trim().toLowerCase());
   }
-  registerLateStageMessageRouter(pi, inboundDeliveries, () => replyTracker, currentIntercomGroup);
+  registerLateStageMessageRouter(pi, inboundDeliveries, () => replyTracker, currentIntercomGroup, broadcastCopies);
   const sendIncomingMessage = createIncomingMessageSender({
     pi,
     currentGeneration: () => runtimeGeneration,
