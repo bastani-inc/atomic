@@ -227,30 +227,91 @@ async function awaitIntercomPeer(
  * latest change the child's own session recorded after launch wins, then what the launch record says it started
  * on, and only then whatever the session's entries say.
  */
+function hasPartialHistory(sessionManager: SessionManager): boolean {
+	if (typeof sessionManager.hasFullHistory === "function" && !sessionManager.hasFullHistory()) return true;
+	if (typeof sessionManager.getHeldTail === "function" && sessionManager.getHeldTail().fromSeq > 1) return true;
+	return false;
+}
+
+async function entriesAfterLaunch(
+	sessionManager: SessionManager,
+	branch: ReturnType<SessionManager["getBranch"]>,
+	record: SubagentChildRecord,
+): Promise<ReturnType<SessionManager["getBranch"]>> {
+	const branchLaunchIndex =
+		typeof record.launchLeafId === "string" ? branch.findIndex((entry) => entry.id === record.launchLeafId) : -1;
+	const launchIndex =
+		record.launchLeafId === undefined
+			? branch.length
+			: record.launchLeafId === null
+				? 0
+				: branchLaunchIndex === -1
+					? branch.length
+					: branchLaunchIndex + 1;
+	if (typeof sessionManager.getEntrySeq === "function") {
+		const launchSeq =
+			record.launchLeafSeq ??
+			(record.launchLeafId === null
+				? 0
+				: typeof record.launchLeafId === "string"
+					? typeof sessionManager.findEntrySeq === "function"
+						? await sessionManager.findEntrySeq(record.launchLeafId)
+						: sessionManager.getEntrySeq(record.launchLeafId)
+					: undefined);
+		return launchSeq === undefined
+			? branch.slice(launchIndex)
+			: branch.filter((entry) => (sessionManager.getEntrySeq(entry.id) ?? 0) > launchSeq);
+	}
+	if (
+		(record.launchLeafId === null && (record.launchLeafSeq === undefined || record.launchLeafSeq <= 0)) ||
+		branchLaunchIndex !== -1
+	) {
+		return branch.slice(launchIndex);
+	}
+	if (typeof sessionManager.findEntrySeq === "function") {
+		const launchSeq =
+			record.launchLeafSeq ??
+			(record.launchLeafId === null
+				? 0
+				: typeof record.launchLeafId === "string"
+					? await sessionManager.findEntrySeq(record.launchLeafId)
+					: undefined);
+		if (launchSeq === undefined) return branch.slice(launchIndex);
+		const branchSeqs = await Promise.all(branch.map((entry) => sessionManager.findEntrySeq(entry.id)));
+		if (branchSeqs.every((seq) => seq !== undefined)) {
+			return branch.filter((_entry, index) => (branchSeqs[index] ?? 0) > launchSeq);
+		}
+	}
+	if (hasPartialHistory(sessionManager)) {
+		if (typeof sessionManager.loadFullHistory === "function") await sessionManager.loadFullHistory();
+		if (hasPartialHistory(sessionManager)) return branch.slice(launchIndex);
+	}
+	const entries = typeof sessionManager.getEntries === "function" ? sessionManager.getEntries() : [];
+	const seqById = new Map<string, number>();
+	for (let index = 0; index < entries.length; index += 1) {
+		const entry = entries[index];
+		if (entry !== undefined) seqById.set(entry.id, index + 1);
+	}
+	const launchSeq =
+		record.launchLeafSeq ?? (typeof record.launchLeafId === "string" ? seqById.get(record.launchLeafId) : undefined);
+	if (launchSeq !== undefined && branch.every((entry) => seqById.has(entry.id))) {
+		return branch.filter((entry) => (seqById.get(entry.id) ?? 0) > launchSeq);
+	}
+	if (entries.length === 0 && record.launchLeafId === undefined && record.launchLeafSeq !== undefined) {
+		return branch.filter((_entry, index) => index + 1 > record.launchLeafSeq!);
+	}
+	return branch.slice(launchIndex);
+}
+
 async function ownSessionModelCandidate(
 	sessionManager: SessionManager,
 	record: SubagentChildRecord,
 	resolveCandidateModel: ReturnType<typeof createCandidateModelResolver>,
 ): Promise<string | undefined> {
 	const branch = sessionManager.getBranch();
-	const launchSeq =
-		record.launchLeafSeq ??
-		(record.launchLeafId === null
-			? 0
-			: typeof record.launchLeafId === "string"
-				? await sessionManager.findEntrySeq(record.launchLeafId)
-				: undefined);
-	const launchIndex =
-		record.launchLeafId === undefined
-			? branch.length
-			: record.launchLeafId === null
-				? 0
-				: branch.findIndex((entry) => entry.id === record.launchLeafId) + 1 || branch.length;
 	let changedModel: string | undefined;
 	let changedThinking: string | undefined;
-	for (const entry of launchSeq === undefined
-		? branch.slice(launchIndex)
-		: branch.filter((entry) => (sessionManager.getEntrySeq(entry.id) ?? 0) > launchSeq)) {
+	for (const entry of await entriesAfterLaunch(sessionManager, branch, record)) {
 		if (entry.type === "model_change") changedModel = `${entry.provider}/${entry.modelId}`;
 		else if (entry.type === "thinking_level_change") changedThinking = entry.thinkingLevel;
 	}

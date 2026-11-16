@@ -29,13 +29,13 @@ export async function reopenChildSession(
 	ctx: Pick<ExtensionContext, "sessionManager">,
 	record: Pick<SubagentChildRecord, "childSessionId" | "childSessionFile" | "cwd">,
 ): Promise<{ readonly sessionManager: SessionManager } | { readonly reason: string }> {
+	const openOptions =
+		typeof SessionManager.prototype.getEntrySeq === "function" ? ({ history: "tail" } as const) : undefined;
 	try {
 		if (record.childSessionFile && !existsSync(record.childSessionFile))
 			return { reason: `its session file is missing: ${record.childSessionFile}` };
 		if (record.childSessionFile) {
-			const sessionManager = await SessionManager.open(record.childSessionFile, undefined, record.cwd, {
-				history: "tail",
-			});
+			const sessionManager = await SessionManager.open(record.childSessionFile, undefined, record.cwd, openOptions);
 			return record.childSessionId !== undefined && sessionManager.getSessionId() !== record.childSessionId
 				? { reason: "its session file now belongs to a different session" }
 				: { sessionManager };
@@ -46,7 +46,7 @@ export async function reopenChildSession(
 				ctx.sessionManager.getSessionStore(),
 				record.childSessionId,
 				record.cwd,
-				{ history: "tail" },
+				openOptions,
 			),
 		};
 	} catch (error) {

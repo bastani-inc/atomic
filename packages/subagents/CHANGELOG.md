@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed launching, inspecting, and restoring subagents failing with `sessionManager.getEntrySeq is not a function` when the host or an SDK `SessionManager` does not implement `getEntrySeq` or `findEntrySeq` ([#5316](https://github.com/bastani-inc/atomic/issues/5316))
+
 ## [0.9.88] - 2026-11-16
 
 ### Added
