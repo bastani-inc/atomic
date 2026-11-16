@@ -29,6 +29,7 @@ import {
 	type WorkflowRunHistory,
 } from "../src/core/tools/history-protocol.js";
 import { matchLinesInWorker, renderRawEntryInWorker } from "../src/core/tools/history-regex-worker.js";
+import { HISTORY_TEXT_FORMAT } from "../src/core/tools/history-session.js";
 import { entryLines } from "../src/core/tools/history-transcript.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext, InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
@@ -39,6 +40,35 @@ const BASE = Date.parse("2026-11-01T00:00:00.000Z");
 const READ_TOOL_LIMIT_CHARS = 50_000;
 const EVENT_LOOP_CPU_LIMIT_MS = 120;
 const LARGE_SESSION_TIMEOUT_MS = 120_000;
+const INDEX_BUILD_ENTRIES = 6_000;
+const INDEX_BUILD_BLOCK_LIMIT_MS = 10;
+const INDEX_BUILD_STALLS_ALLOWED = 3;
+
+function cpuMs(): number {
+	const used = typeof process.threadCpuUsage === "function" ? process.threadCpuUsage() : process.cpuUsage();
+	return (used.user + used.system) / 1000;
+}
+
+function watchEventLoopTurns(): () => number[] {
+	const turns: number[] = [];
+	let watching = true;
+	let last = performance.now();
+	let lastCpu = cpuMs();
+	const turn = () => {
+		const now = performance.now();
+		const cpu = cpuMs();
+		turns.push(Math.min(now - last, cpu - lastCpu));
+		last = now;
+		lastCpu = cpu;
+		if (watching) setImmediate(turn);
+	};
+	setImmediate(turn);
+	return () => {
+		watching = false;
+		turn();
+		return turns;
+	};
+}
 
 function header(id: string): SessionRecordHeader {
 	return { id, version: SESSION_FORMAT_VERSION, createdAt: new Date(BASE).toISOString(), cwd: PROJECT };
@@ -110,6 +140,29 @@ function countingDatabase(database: SqliteDatabase): { database: SqliteDatabase;
 		},
 	});
 	return { database: counted, entryRows: () => entryRows };
+}
+
+function abortingAfterFirstIndexInsert(database: SqliteDatabase, controller: AbortController): SqliteDatabase {
+	const wrap = (executor: SqliteExecutor): SqliteExecutor => ({
+		exec: (sql) => executor.exec(sql),
+		run: async (sql, ...params) => {
+			const result = await executor.run(sql, ...params);
+			if (sql.includes("search_fts (rowid, body)") && !controller.signal.aborted)
+				controller.abort(new Error("stop indexing"));
+			return result;
+		},
+		get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => executor.get<T>(sql, ...params),
+		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => executor.all<T>(sql, ...params),
+	});
+	return new Proxy(database, {
+		get(target, key) {
+			if (key === "transaction")
+				return (body: (tx: SqliteExecutor) => Promise<unknown>, options?: object) =>
+					target.transaction((tx) => body(wrap(tx)), options as never);
+			const value = Reflect.get(target, key, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
 }
 
 interface Opened {
@@ -1172,6 +1225,35 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		}
 	});
 
+	it("keeps the index's delete trigger for other writers when the first index write rolls back (#5250)", async () => {
+		const raw = await openNodeSqliteDatabase(join(dir, "sessions.sqlite"));
+		const controller = new AbortController();
+		const store = await SqlSessionStore.open(abortingAfterFirstIndexInsert(raw, controller));
+		try {
+			await store.create(header("rolled"), [message("e1", "user", "ROLLED_BACK_NEEDLE", BASE)]);
+			const index = store.searchIndex!;
+			const texts = [
+				{ seq: 1, text: "ROLLED_BACK_NEEDLE" },
+				{ seq: 1, text: "ROLLED_BACK_NEEDLE again" },
+			];
+			await assert.rejects(
+				index.extend("rolled", HISTORY_TEXT_FORMAT, 0, 1, texts, { signal: controller.signal }),
+				/stop indexing/,
+			);
+			assert.equal(await index.extend("rolled", HISTORY_TEXT_FORMAT, 0, 1, texts), true);
+			assert.deepEqual(await index.candidates("rolled", [["ROLLED_BACK"]], 1, 1, 10), [1]);
+			await raw.run("DELETE FROM session_entries WHERE session_id = ?", "rolled");
+			assert.equal(
+				await raw.get("SELECT session_id FROM session_search_state WHERE session_id = ?", "rolled"),
+				undefined,
+				"deleting the session's entries outside this store left its index behind",
+			);
+		} finally {
+			await store.close();
+			await raw.close();
+		}
+	});
+
 	it("stops index writes on abort and replaces partial FTS rows idempotently (#5250)", async () => {
 		const { store, close } = await openSql(dir);
 		try {
@@ -1872,6 +1954,47 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		assert.match(out, /^history:\/\/sessions\/prev:2: ## \S+ assistant$/m);
 		assert.match(out, /^history:\/\/sessions\/prev-2- TARGET$/m);
 	});
+
+	it(
+		"builds the search index of a long session without blocking the event loop for more than a few milliseconds (#5250)",
+		async () => {
+			const database = await openNodeSqliteDatabase(join(dir, "sessions.sqlite"));
+			await database.exec("PRAGMA synchronous=OFF");
+			const store = await SqlSessionStore.open(database);
+			try {
+				let state = 5250;
+				const word = () => {
+					state = (state * 1_103_515_245 + 12_345) % 2_147_483_648;
+					return state.toString(36);
+				};
+				await store.create(
+					header("long"),
+					numbered(INDEX_BUILD_ENTRIES, () => Array.from({ length: 240 }, word).join(" ")),
+				);
+				const { router, request } = historyOver(store, { timeMs: 120_000, rows: 10_000_000 });
+				const stopWatching = watchEventLoopTurns();
+				let found: string;
+				let turns: number[];
+				try {
+					found = (await router.search?.("history://sessions/long", request("no such needle"))) ?? "";
+				} finally {
+					turns = stopWatching();
+				}
+				assert.doesNotMatch(found, /budget ran out/);
+				const coverage = await store.searchIndex?.coverage("long", HISTORY_TEXT_FORMAT);
+				assert.equal(coverage?.indexedSeq, INDEX_BUILD_ENTRIES, "the search indexed the whole session");
+				const stalls = turns.filter((ms) => ms > INDEX_BUILD_BLOCK_LIMIT_MS).sort((a, b) => b - a);
+				assert.ok(
+					stalls.length <= INDEX_BUILD_STALLS_ALLOWED,
+					`indexing held the event loop for more than ${INDEX_BUILD_BLOCK_LIMIT_MS} ms ${stalls.length} times in ${turns.length} turns: ${stalls.slice(0, 8).map(Math.round).join(", ")} ms`,
+				);
+			} finally {
+				await store.close();
+				await database.close();
+			}
+		},
+		LARGE_SESSION_TIMEOUT_MS,
+	);
 
 	it(
 		"never blocks the event loop for long while searching a large session (#5250)",

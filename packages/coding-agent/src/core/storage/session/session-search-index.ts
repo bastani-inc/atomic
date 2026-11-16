@@ -42,6 +42,9 @@ const MAX_LITERAL_CHARS = 200;
 const BATCH_CHARS = 12_288;
 const CANDIDATE_ROWS = 256;
 const SEQ_WINDOW = 4_096;
+const MERGE_PAGES = 8;
+const MERGE_STEPS_PER_WRITE = 8;
+const MAX_MERGE_BACKLOG_WRITES = 16;
 
 interface SearchDoc {
 	readonly seq: number;
@@ -153,6 +156,13 @@ interface TrigramEngine {
 		sessionTables: SessionTables,
 	): Promise<void>;
 	forgetInTrigger(tables: SearchTables): string;
+	prepareWrites(
+		tx: SqliteExecutor,
+		dialect: StorageDialect,
+		tables: SearchTables,
+		sessionTables: SessionTables,
+	): Promise<void>;
+	merge(tx: SqliteExecutor, tables: SearchTables, steps: number, signal?: AbortSignal): Promise<boolean>;
 	insert(
 		tx: SqliteExecutor,
 		tables: SearchTables,
@@ -238,6 +248,21 @@ const sqliteFts: TrigramEngine = {
 	},
 	forgetInTrigger(tables) {
 		return `DELETE FROM ${tables.fts} WHERE rowid BETWEEN (SELECT sid << 40 FROM ${tables.state} WHERE session_id = OLD.session_id) AND (SELECT (sid << 40) + 1099511627775 FROM ${tables.state} WHERE session_id = OLD.session_id)`;
+	},
+	async prepareWrites(tx, dialect, tables, sessionTables) {
+		await tx.exec(dialect.renderTrigger(forgetTrigger(tables, sessionTables, sqliteFts)));
+		await tx.run(`INSERT INTO ${tables.fts} (${tables.fts}, rank) VALUES ('automerge', 0)`);
+	},
+	async merge(tx, tables, steps, signal) {
+		for (let step = 0; step < steps; step++) {
+			signal?.throwIfAborted();
+			const before = await tx.get<SqliteRow & { changes: number | bigint }>("SELECT total_changes() AS changes");
+			await tx.run(`INSERT INTO ${tables.fts} (${tables.fts}, rank) VALUES ('merge', ?)`, MERGE_PAGES);
+			const after = await tx.get<SqliteRow & { changes: number | bigint }>("SELECT total_changes() AS changes");
+			if (Number(after?.changes) - Number(before?.changes) < 2) return false;
+			await yieldTurn();
+		}
+		return true;
 	},
 	async insert(tx, tables, sid, docs, signal) {
 		for (const [index, { seq, part, text }] of docs.entries()) {
@@ -339,6 +364,10 @@ const postgresTrigrams: TrigramEngine = {
 	forgetInTrigger(tables) {
 		return `DELETE FROM ${tables.entries} WHERE sid IN (SELECT sid FROM ${tables.state} WHERE session_id = OLD.session_id)`;
 	},
+	async prepareWrites() {},
+	async merge() {
+		return false;
+	},
 	async insert(tx, tables, sid, docs, signal) {
 		for (let start = 0; start < docs.length; start += INSERT_ROWS_PER_STATEMENT) {
 			signal?.throwIfAborted();
@@ -431,7 +460,7 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 	private readonly sessionTables: SessionTables;
 	private readonly tables: SearchTables;
 	private readonly engine: TrigramEngine;
-	private triggerInstalled = false;
+	private writesPrepared = false;
 
 	private constructor(database: SqliteDatabase, sessionTables: SessionTables, tables: SearchTables) {
 		this.database = database;
@@ -439,7 +468,6 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		this.sessionTables = sessionTables;
 		this.tables = tables;
 		this.engine = engineFor(this.dialect);
-		this.triggerInstalled = this.dialect.name === "postgres";
 	}
 
 	static async open(
@@ -534,12 +562,9 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		const { docs, oversizedSeqs } = prepareDocs(texts);
 		const totalChars = docs.reduce((sum, doc) => sum + doc.text.length, 0);
 		if (totalChars <= BATCH_CHARS) {
-			return this.database.transaction(async (tx) => {
+			let backlog = false;
+			const extended = await this.writeTransaction(async (tx) => {
 				options?.signal?.throwIfAborted();
-				if (!this.triggerInstalled) {
-					await tx.exec(this.dialect.renderTrigger(forgetTrigger(this.tables, this.sessionTables, this.engine)));
-					this.triggerInstalled = true;
-				}
 				const row = await tx.get<CoverageRow>(
 					`SELECT s.last_seq, s.revision AS session_revision, st.sid, st.format, st.indexed_seq, st.revision AS generation, st.entry_id AS whole_seqs
 					FROM ${this.sessionTables.sessions} s LEFT JOIN ${this.tables.state} st ON st.session_id = s.id
@@ -567,7 +592,10 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 					sid = Number(created!.sid);
 				}
 				if (sid > MAX_SID) return false;
-				if (docs.length > 0) await this.engine.insert(tx, this.tables, sid, docs, options?.signal);
+				if (docs.length > 0) {
+					backlog = await this.engine.merge(tx, this.tables, MERGE_STEPS_PER_WRITE, options?.signal);
+					await this.engine.insert(tx, this.tables, sid, docs, options?.signal);
+				}
 				const nextWhole = mergeWholeSeqs(row.whole_seqs, oversizedSeqs);
 				const updated = await tx.run(
 					`UPDATE ${this.tables.state} SET indexed_seq = ?, entry_id = ? WHERE sid = ? AND session_id = ? AND format = ? AND indexed_seq = ? AND revision = ?`,
@@ -580,14 +608,12 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 					activeGen,
 				);
 				return updated.changes === 1;
-			}, txOptions);
+			});
+			if (extended && backlog) await this.mergeBacklog(options?.signal);
+			return extended;
 		}
-		const started = await this.database.transaction(async (tx) => {
+		const started = await this.writeTransaction(async (tx) => {
 			options?.signal?.throwIfAborted();
-			if (!this.triggerInstalled) {
-				await tx.exec(this.dialect.renderTrigger(forgetTrigger(this.tables, this.sessionTables, this.engine)));
-				this.triggerInstalled = true;
-			}
 			const row = await tx.get<CoverageRow>(
 				`SELECT s.last_seq, s.revision AS session_revision, st.sid, st.format, st.indexed_seq, st.revision AS generation, st.entry_id AS whole_seqs
 				FROM ${this.sessionTables.sessions} s LEFT JOIN ${this.tables.state} st ON st.session_id = s.id
@@ -610,7 +636,7 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 				generation,
 			);
 			return { sid: Number(created!.sid), generation, wholeSeqs: "" };
-		}, txOptions);
+		});
 		if (started === undefined || started.sid > MAX_SID) return false;
 		const { sid, generation: activeGen, wholeSeqs } = started;
 		await yieldTurn();
@@ -636,12 +662,15 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 			)
 				chars += docs[end]!.text.length;
 			const batch = docs.slice(start, end);
+			let backlog = false;
 			const written = await this.database.transaction(async (tx) => {
 				if (!(await lockAndCheck(tx))) return false;
+				backlog = await this.engine.merge(tx, this.tables, MERGE_STEPS_PER_WRITE, options?.signal);
 				await this.engine.insert(tx, this.tables, sid, batch, options?.signal);
 				return true;
 			}, txOptions);
 			if (!written) return false;
+			if (backlog) await this.mergeBacklog(options?.signal);
 			start = end;
 			await yieldTurn();
 		}
@@ -666,6 +695,33 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 			);
 			return published.changes === 1;
 		}, txOptions);
+	}
+
+	private async mergeBacklog(signal?: AbortSignal): Promise<void> {
+		for (let write = 0; write < MAX_MERGE_BACKLOG_WRITES; write++) {
+			await yieldTurn();
+			const more = await this.database.transaction(
+				(tx) => this.engine.merge(tx, this.tables, MERGE_STEPS_PER_WRITE, signal),
+				{ retryTransientFailures: true },
+			);
+			if (!more) return;
+		}
+	}
+
+	private async writeTransaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T> {
+		let prepared = this.writesPrepared;
+		const result = await this.database.transaction(
+			async (tx) => {
+				if (!this.writesPrepared) {
+					await this.engine.prepareWrites(tx, this.dialect, this.tables, this.sessionTables);
+					prepared = true;
+				}
+				return body(tx);
+			},
+			{ retryTransientFailures: true },
+		);
+		if (prepared) this.writesPrepared = true;
+		return result;
 	}
 
 	async candidates(
