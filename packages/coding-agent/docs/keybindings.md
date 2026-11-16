@@ -131,6 +131,8 @@ The blocking `ask_user_question` dialog is a bottom-pinned overlay. Opening it d
 
 These transcript actions also work while Notes is open. Notes keeps ordinary text and edit actions, including the default `home` and `end`. A key moves the transcript instead only when configured for a `tui.altScreen.*` action.
 
+Inside the dialog, ↑↓ move between options, `enter` chooses one (in a multi-select question, `enter` or `space` toggles a box and `enter` on **Next** moves on), typing on **Type something.** writes your own answer, `n` adds a note to an option with a preview, `tab` or ←→ move to the next or previous question when there are several, and `esc` cancels the whole dialog. The hint line under the dialog lists the keys of the current step. The step line at the top shows every question and **Review**, with the current question counted, such as `2/3`.
+
 On short terminals, the dialog is bounded to preserve that visible strip. The active questionnaire row stays visible as you move through single-select and multi-select choices, Next, Submit, Cancel, and inline inputs. The dialog keeps its own arrow, `enter`, `tab`, `space`, `esc`, click, and selection input.
 
 | Keybinding id | Default | Description |

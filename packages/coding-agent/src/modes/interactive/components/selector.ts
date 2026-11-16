@@ -340,7 +340,10 @@ export function selectorHintEntries<T>(
 		if (extra.enabled?.(selected) ?? true) entries.push(extra.hint);
 	}
 	if (options.search) entries.push({ keys: "type", label: "to search" });
-	else if (options.numbered && enabledCount > 0) entries.push({ keys: enabledCount > 1 ? "1-9" : "1", label: "pick" });
+	else if (options.numbered && enabledCount > 0) {
+		const last = Math.min(9, state.getVisible().length);
+		entries.push({ keys: last > 1 ? `1-${last}` : "1", label: "pick" });
+	}
 	const cancel = firstKey(keybindings, "tui.select.cancel") || "esc";
 	entries.push({ keys: cancel, label: state.getQuery() ? "clear" : (options.cancelLabel ?? "cancel") });
 	if (!options.search) {

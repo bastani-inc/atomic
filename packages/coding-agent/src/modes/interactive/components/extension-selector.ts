@@ -10,6 +10,8 @@ export interface ExtensionSelectorOptions {
 	tui?: TUI;
 	timeout?: number;
 	onToggleToolsExpanded?: () => void;
+	/** Number the options so a digit chooses one, as permission prompts do. */
+	numbered?: boolean;
 }
 
 /**
@@ -36,6 +38,7 @@ export class ExtensionSelectorComponent extends FramedSelector<string> {
 			subtitle: details.length > 0 ? details.join("\n") : undefined,
 			items: options.map((option, index) => ({ id: String(index), value: option, label: option })),
 			extraKeys,
+			numbered: opts?.numbered,
 			onSelect: (item) => onSelect(item.value),
 			onCancel,
 		});

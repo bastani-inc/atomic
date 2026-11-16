@@ -213,7 +213,7 @@ describe("shared selector (#5224)", () => {
 	test("numbered rows: digits choose directly when there is no search box", () => {
 		const { selector, events, text } = picker({ numbered: true, items: items(3) });
 		assert.ok(text().includes(" ❯ 1. item 0"));
-		assert.equal(hint(text()), "↑↓ select · enter choose · 1-9 pick · esc cancel · ? keys");
+		assert.equal(hint(text()), "↑↓ select · enter choose · 1-3 pick · esc cancel · ? keys");
 		selector.handleInput("3");
 		assert.deepEqual(events, ["select:id-2"]);
 	});
@@ -369,5 +369,11 @@ describe("shared selector (#5224)", () => {
 			],
 		});
 		assert.equal(hint(text(50)), "enter toggle · ctrl+a all · esc cancel");
+	});
+
+	test("the digit hint names the digits that choose a row", () => {
+		assert.match(hint(picker({ items: items(2), numbered: true }).text()), /1-2 pick/);
+		assert.match(hint(picker({ items: items(12), numbered: true }).text()), /1-9 pick/);
+		assert.match(hint(picker({ items: items(1), numbered: true }).text()), /1 pick/);
 	});
 });

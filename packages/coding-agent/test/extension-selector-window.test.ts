@@ -142,4 +142,14 @@ describe("extension selector", () => {
 		assert.equal(onCancel.mock.calls.length, 1);
 		selector.dispose();
 	});
+
+	it("numbers the options of a permission prompt so a digit answers it (#5224)", () => {
+		const { selector, onSelect } = choose(["Yes", "No"], { numbered: true });
+		const out = lines(selector);
+		assert.ok(out.includes(" ❯ 1. Yes"), out.join("\n"));
+		assert.ok(out.includes("   2. No"), out.join("\n"));
+		assert.equal(hint(selector), "↑↓ select · enter choose · 1-2 pick · esc cancel · ? keys");
+		selector.handleInput("2");
+		assert.deepEqual(onSelect.mock.calls, [["No"]]);
+	});
 });
