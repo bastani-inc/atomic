@@ -111,7 +111,7 @@ test("card: inactive filled fields remain visible on the single page", () => {
 	const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
 	assert.match(txt, /╭ prompt /);
 	assert.match(txt, /│first line\s+│\n│second line/);
-	assert.match(txt, /╭ iters ─+╮\n│5/);
+	assert.match(txt, /╭ iters [✓✗][^╮\n]*╮\n│5/);
 	assert.doesNotMatch(txt, /⏎/);
 });
 
