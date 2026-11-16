@@ -1112,7 +1112,7 @@ export class JsonlSessionStore implements SessionStore {
 							}
 							return { ...summarizeSession(await this.readSnapshot(path, stored)), location: path };
 						};
-						return cached?.summaryState !== undefined ? this.exclusive(readOne, query.signal) : readOne();
+						return await (cached?.summaryState !== undefined ? this.exclusive(readOne, query.signal) : readOne());
 					} catch (cause) {
 						const error = cause as NodeJS.ErrnoException;
 						if (error.path === path && (error.code === "ENOENT" || error.code === "ENOTDIR")) return undefined;

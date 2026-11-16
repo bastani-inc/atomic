@@ -980,12 +980,7 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	private async *listWithoutSearchText(query: SessionListQuery): AsyncIterable<SessionSummary> {
-		await assertStoredSchemaVersion(
-			this.database,
-			{ sql: `SELECT schema_version FROM ${this.tables.meta}` },
-			"sessions",
-			SESSION_SCHEMA_VERSION,
-		);
+		await this.assertReadableSchema(this.database);
 		const scope = await this.scopeOf(query, true);
 		if (scope === undefined) return;
 		const order = this.dialect.rowOrder();
