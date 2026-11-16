@@ -713,7 +713,6 @@ export class PoolCoordinator {
 	private requestSequence = 0;
 	private usageChanged = false;
 	private budgetBlocked = false;
-	/** The root's checkpoint shipping on this host, when the root ships its children's checkpoints (#4768). */
 	private shipping: CheckpointShipping | undefined;
 	private openingShipping?: Promise<CheckpointShipping | undefined>;
 	private desiredControl?: PoolControl["state"];
@@ -761,6 +760,7 @@ export class PoolCoordinator {
 	private recycleLimitReported = false;
 	/** Set once the root's lease is gone: workers then end without counting as crashes, and none is replaced. */
 	private rootLeaseLost = false;
+	private rootEnded = false;
 	/** Settles once a late root renewal lands (true) or the root's lease is lost or the pool closes (false). */
 	private lateRoot?: Promise<boolean>;
 	/** Generation of each work item when this root incarnation enqueued it: attempts count from here (#3979). */
@@ -1240,10 +1240,6 @@ export class PoolCoordinator {
 		});
 	}
 
-	/**
-	 * The host's local journal of the root's checkpoints, when the root ships them (#4768). A pool whose root journal is in
-	 * another database already stages its checkpoints locally and delivers them itself, so it never ships them too.
-	 */
 	private openShipping(
 		root: string,
 		durable: PoolDurableJournal | undefined,
@@ -1500,7 +1496,8 @@ export class PoolCoordinator {
 	}
 
 	/** Closes a satellite at once: its workers stop, and the work they held goes back to the queue. */
-	stopSatellite(): Promise<void> {
+	stopSatellite(options: { readonly rootEnded?: boolean } = {}): Promise<void> {
+		if (options.rootEnded === true) this.rootEnded = true;
 		this.closing ??= this.close();
 		return this.closing;
 	}
@@ -2659,8 +2656,7 @@ export class PoolCoordinator {
 					// renewed before the request runs again, which fences the request only if another attempt replaced it.
 					const renewAttempt = async () => {
 						await extensions.extendHeld();
-						if (this.shipping !== undefined && slot.work !== undefined)
-							await this.shipping.hold(slot.work, options.leaseMs);
+						if (slot.work !== undefined) await this.holdShipping(slot, slot.work, options.leaseMs);
 					};
 					// A request from this worker shows it is alive, so a work lease that only lapsed while the request waited
 					// (this process starved of CPU, the journal's write lock held by other writers) does not fence it: the
@@ -2770,7 +2766,7 @@ export class PoolCoordinator {
 						}
 						slot.work = claimed.work;
 						slot.worktree = claimed.worktree;
-						if (this.shipping !== undefined) await this.shipping.hold(claimed.work, options.leaseMs);
+						await this.holdShipping(slot, claimed.work, options.leaseMs);
 						if (this.satellite !== undefined) this.claimLog.push(claimed.work);
 						// Views of the work on another host's attempt reconnect to this worker's (#4391).
 						for (const id of this.remoteWatches.takenOver(claimed.work.id))
@@ -2792,7 +2788,7 @@ export class PoolCoordinator {
 						const record = this.usageLedger!.recording(lease, held, message.reports);
 						const beat = await leased(() => queue.heartbeat(lease, held, options.leaseMs, record));
 						extensions.adopt(beat.work);
-						if (this.shipping !== undefined) await this.shipping.hold(beat.work, options.leaseMs);
+						await this.holdShipping(slot, beat.work, options.leaseMs);
 						this.noteUsage(beat.recorded);
 						return beat.control;
 					}
@@ -2801,7 +2797,7 @@ export class PoolCoordinator {
 						held.expiresAt - Date.now() <= options.leaseMs / 2
 							? await leased(() => extensions.extend(held))
 							: held;
-					if (work !== held && this.shipping !== undefined) await this.shipping.hold(work, options.leaseMs);
+					if (work !== held) await this.holdShipping(slot, work, options.leaseMs);
 					if (message.kind === "activity") {
 						for (const run of message.runs) slot.runs.add(run.id);
 						return this.publish(work, message.runs);
@@ -3038,7 +3034,11 @@ export class PoolCoordinator {
 		satellite.placementFailed(restored.error);
 		// The work goes back to the queue unplaced, for a host that can restore it; an attempt replaced meanwhile has
 		// nothing to put back.
-		await queue.releaseUnplaced(lease, work);
+		try {
+			await queue.releaseUnplaced(lease, work);
+		} finally {
+			this.shipping?.release(work);
+		}
 		if (restored.lost !== true) await this.restoreFailed(satellite, backoff, binding, restored.error);
 		return undefined;
 	}
@@ -3259,7 +3259,7 @@ export class PoolCoordinator {
 					// child's attempts (#4768).
 					if (this.slotHolds(work.worker, work)) {
 						const renewed = await queue.extend(lease, work, leaseMs).catch(ignoreStaleWorkLease);
-						if (renewed !== undefined && this.shipping !== undefined && this.slotHolds(work.worker, renewed))
+						if (renewed !== undefined && this.shipping !== undefined && this.slotRuns(work.worker, renewed))
 							await this.shipping.hold(renewed, leaseMs);
 					} else {
 						await queue.releaseExited(lease, work, { delayMs: 0 });
@@ -3405,6 +3405,26 @@ export class PoolCoordinator {
 		return false;
 	}
 
+	private slotRuns(worker: string, work: PoolWork): boolean {
+		for (const slot of this.slots) {
+			if (slot.worker === worker) return this.attemptIsLive(slot, work);
+		}
+		return false;
+	}
+
+	private attemptIsLive(slot: WorkerSlot, work: PoolWork): boolean {
+		return (
+			this.slots.has(slot) &&
+			slot.work !== undefined &&
+			slot.work.id === work.id &&
+			slot.work.generation === work.generation
+		);
+	}
+
+	private async holdShipping(slot: WorkerSlot, work: PoolWork, leaseMs: number): Promise<void> {
+		if (this.shipping !== undefined && this.attemptIsLive(slot, work)) await this.shipping.hold(work, leaseMs);
+	}
+
 	private isLive(worker: string, child: ChildProcess): boolean {
 		this.observeResponsiveness();
 		const heard = this.lastHeard.get(worker);
@@ -3521,11 +3541,10 @@ export class PoolCoordinator {
 			await this.sharedPass;
 			stopping = [...this.children].map((child) => ({ child, log: this.logs.get(child) }));
 			confirmed = await Promise.all(stopping.map(({ child }) => this.stop(child)));
-			// Every worker is stopped: none commits through the host's local journal any more.
 			const opened = await this.openingShipping?.catch(() => undefined);
 			const shipping = this.shipping ?? opened;
 			this.shipping = undefined;
-			await shipping?.close().catch(() => {});
+			await shipping?.close({ retire: this.runEnded() }).catch(() => {});
 			// A worker still running after SIGKILL is retired: the pool closes without it and reports it.
 			stopping.forEach(({ child }, index) => {
 				if (!confirmed[index]) this.retireUnconfirmed(child);
@@ -3570,6 +3589,11 @@ export class PoolCoordinator {
 		for (const pending of this.requests.values()) pending.reject(new Error("Local worker pool is closed"));
 		this.requests.clear();
 		if (failure !== undefined) throw failure;
+	}
+
+	private runEnded(): boolean {
+		if (this.satellite !== undefined) return this.rootEnded;
+		return !this.rootLeaseLost && (this.desiredControl === undefined || this.desiredControl === "running");
 	}
 
 	/**

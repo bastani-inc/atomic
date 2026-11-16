@@ -480,7 +480,12 @@ class WorkerHost implements WorkflowWorkerHost {
 			satellite.coordinator.followBudget(current?.budgetBlocked === true);
 			if (!satellite.detached && active(current?.status) && current?.lease.epoch === satellite.epoch) continue;
 			this.satellites.delete(root);
-			await satellite.coordinator.stopSatellite().catch((error: Error) => {
+			const rootEnded =
+				current !== undefined &&
+				current.lease.epoch === satellite.epoch &&
+				!active(current.status) &&
+				current.status !== "pending";
+			await satellite.coordinator.stopSatellite({ rootEnded }).catch((error: Error) => {
 				this.lastDetach = failure(error);
 			});
 			await satellite.coordinator.shutdown();

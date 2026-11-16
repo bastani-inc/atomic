@@ -89,10 +89,10 @@ export class CheckpointShipping {
 		return receipt;
 	}
 
-	close(): Promise<void> {
+	close(options: { readonly retire?: boolean } = {}): Promise<void> {
 		this.syncOnly.clear();
 		this.generations.clear();
-		return this.shard.close();
+		return this.shard.close(options);
 	}
 
 	private async acceptWithRenewal(

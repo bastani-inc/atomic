@@ -69,7 +69,6 @@ export interface SharedPoolCoordination {
 	readonly host: string;
 	/** Bound work that no capable live host claims within this window fails, typed (the root's coordinator only). */
 	readonly claimWindowMs: number;
-	/** Checkpoint shipping of the root's children (#4768); absent: every checkpoint commits to the shared journal. */
 	readonly checkpointShipping?: ResolvedCheckpointShipping;
 	/** The root's fleet-wide model rate limits (`workers.rateLimits`, #4768). */
 	readonly rateLimits?: FleetRateLimits;
