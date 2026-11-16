@@ -1,6 +1,7 @@
 import { ensureStorageSchema, fencedPath, type SqliteRow, type SqliteStatement } from "@bastani/atomic/storage";
 import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { poolWriteBatch } from "./pool-guarded-write.js";
+import { poolSchemaPresent } from "./pool-schema-probe.js";
 import { FLEET_HOST_LIVE_MS } from "./sql-fleet.js";
 import type { RunJournal } from "./types.js";
 
@@ -50,14 +51,13 @@ export class SqlRateBuckets {
 		const { int, real } = storage.dialect.types;
 		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
 		const schema = { ledger: poolSchemaLedger(storage), domain: "rate-buckets", revision: 1 };
-		await storage.transaction((tx) =>
-			ensureStorageSchema(tx, storage.dialect, schema, () =>
-				tx.exec(`CREATE TABLE IF NOT EXISTS ${store.table}(
+		const table = `CREATE TABLE IF NOT EXISTS ${store.table}(
 				scope TEXT PRIMARY KEY, tat ${int} NOT NULL, interval_ms ${real} NOT NULL, burst ${int} NOT NULL,
 				cooldown_until ${int} NOT NULL DEFAULT 0, kind TEXT, updated_at ${int}
-			)`),
-			),
-		);
+			)`;
+		// A schema that is current opens with reads alone, without a shared server's write lock (#4768).
+		if (await poolSchemaPresent(storage, [table])) return store;
+		await storage.transaction((tx) => ensureStorageSchema(tx, storage.dialect, schema, () => tx.exec(table)));
 		return store;
 	}
 
