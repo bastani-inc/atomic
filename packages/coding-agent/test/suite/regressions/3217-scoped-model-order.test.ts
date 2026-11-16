@@ -94,7 +94,11 @@ describe("issue #3217 scoped model ordering", () => {
 			.split("\n")
 			.filter((line) => line.includes(`${modelOne.provider}/`));
 		const orderedIds = renderedLines.slice(0, 3).map((line) => {
-			const [label] = line.trim().replace(/^→\s*/, "").replace(/^✓\s*/, "").split(" ");
+			const [label] = line
+				.trim()
+				.replace(/^❯\s*/, "")
+				.replace(/^[●○]\s*/, "")
+				.split(" ");
 			return label?.slice(`${modelOne.provider}/`.length) ?? "";
 		});
 
@@ -118,7 +122,7 @@ describe("issue #3217 scoped model ordering", () => {
 		);
 
 		const rendered = selector.render(120).join("\n");
-		expect(stripAnsi(rendered)).toContain(`${unavailableId} [unavailable]`);
+		expect(stripAnsi(rendered)).toMatch(new RegExp(`${unavailableId.replace(/[[\]/]/g, "\\$&")} +unavailable`));
 		// Upstream pi #8900 replaced the trailing " ✗" on unavailable scoped models with a
 		// strikethrough on the id. Atomic never carried upstream's `6949-unavailable-scoped-model`
 		// baseline, so that presentation assertion is folded in here instead.

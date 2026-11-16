@@ -26,6 +26,7 @@ import {
 	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
+	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 import {
@@ -53,10 +54,13 @@ export interface SelectorItem<T> {
 	readonly tag?: string;
 	readonly tagTone?: SelectorTone;
 	/**
-	 * A radio mark before the label: `on` draws `●`, `off` draws `○`. Use it where one row is the current value, as in
-	 * the model or theme picker. Rows without a mark draw none.
+	 * A mark before the label. A radio mark (`on` draws `●`, `off` draws `○`) shows the one current value, as in the
+	 * model or theme picker; a checkbox mark (`checked` draws `[✓]`, `unchecked` draws `[ ]`) shows a row that is
+	 * switched on, where enter switches it. Rows without a mark draw none.
 	 */
-	readonly mark?: "on" | "off";
+	readonly mark?: "on" | "off" | "checked" | "unchecked";
+	/** Paints the (possibly truncated) label instead of the default colours, told whether the row is selected. */
+	readonly labelStyle?: (label: string, selected: boolean) => string;
 	/** Rows that cannot be chosen: drawn dim, skipped by ↑↓, refused by enter. */
 	readonly disabled?: boolean;
 	/** Rows with the same group are listed under a section label. Items should already be ordered by group. */
@@ -78,7 +82,7 @@ export interface SelectorExtraKey<T> {
 
 export interface SelectorOptions<T> {
 	readonly title?: string;
-	/** Dim line under the title. */
+	/** Dim text under the title; each `\n` starts a line and long lines wrap. */
 	readonly subtitle?: string;
 	readonly items: readonly SelectorItem<T>[];
 	/** `two-line` puts each description on the line under its label. Default `one-line`. */
@@ -382,7 +386,7 @@ export class Selector<T> implements Component, Focusable {
 	readonly state: SelectorState<T>;
 	private readonly options: SelectorOptions<T>;
 	private readonly style: SelectorStyle;
-	private readonly input?: Input;
+	private input?: Input;
 	private showingHelp = false;
 	private title?: string;
 	private subtitle?: string;
@@ -399,11 +403,7 @@ export class Selector<T> implements Component, Focusable {
 		this.style = options.style ?? themeSelectorStyle();
 		this.state = new SelectorState(options);
 		if (options.search) {
-			this.input = new Input({
-				prompt: "⌕ ",
-				placeholder: options.searchPlaceholder ?? "Search…",
-				placeholderStyle: (text) => this.style.dim(text),
-			});
+			this.input = this.createInput();
 			if (options.initialQuery) {
 				this.input.setValue(options.initialQuery);
 				this.state.setQuery(options.initialQuery);
@@ -417,6 +417,29 @@ export class Selector<T> implements Component, Focusable {
 	set focused(value: boolean) {
 		this._focused = value;
 		if (this.input) this.input.focused = value;
+	}
+
+	private createInput(): Input {
+		const input = new Input({
+			prompt: "⌕ ",
+			placeholder: this.options.searchPlaceholder ?? "Search…",
+			placeholderStyle: (text) => this.style.dim(text),
+		});
+		input.focused = this._focused;
+		return input;
+	}
+
+	/** The search box, when the picker has one. */
+	getSearchInput(): Input | undefined {
+		return this.input;
+	}
+
+	/** Empty the search with a fresh search box, so its undo and kill history cannot bring the old text back. */
+	clearSearch(): void {
+		if (!this.input) return;
+		this.input = this.createInput();
+		this.state.setQuery("");
+		this.options.onSelectionChange?.(this.state.getSelected());
 	}
 
 	setTitle(title: string | undefined): void {
@@ -461,14 +484,14 @@ export class Selector<T> implements Component, Focusable {
 		}
 		const selected = this.state.getSelected();
 		const before = this.state.getSelectedIndex();
-		if (kb.matches(data, "tui.select.up")) this.state.move(-1);
-		else if (kb.matches(data, "tui.select.down")) this.state.move(1);
+		if (kb.matches(data, "tui.select.up") || (!this.input && data === "k")) this.state.move(-1);
+		else if (kb.matches(data, "tui.select.down") || (!this.input && data === "j")) this.state.move(1);
 		else if (kb.matches(data, "tui.select.pageUp")) this.state.page(-1);
 		else if (kb.matches(data, "tui.select.pageDown")) this.state.page(1);
 		else if (!this.input && data === "\x1b[H") this.state.edge("first");
 		else if (!this.input && data === "\x1b[F") this.state.edge("last");
 		else if (kb.matches(data, "tui.select.cancel")) {
-			if (this.state.getQuery() && !isCtrlC(data)) this.setQuery("");
+			if (this.state.getQuery() && !isCtrlC(data)) this.clearSearch();
 			else this.options.onCancel?.();
 			return;
 		} else if (this.runExtraKey(kb, data, selected)) {
@@ -542,7 +565,10 @@ export class Selector<T> implements Component, Focusable {
 		if (this.title) {
 			lines.push(`  ${this.style.bold(this.style.text(truncateToWidth(this.title, Math.max(1, inner - 1))))}`);
 		}
-		if (this.subtitle) lines.push(`  ${this.style.muted(truncateToWidth(this.subtitle, inner))}`);
+		for (const line of (this.subtitle ?? "").split("\n")) {
+			if (!this.subtitle) break;
+			for (const wrapped of wrapTextWithAnsi(line, inner)) lines.push(`  ${this.style.muted(wrapped)}`);
+		}
 		if (this.input) lines.push(...this.renderSearch(width));
 		if (lines.length > 0) lines.push("");
 		this.rowLines = new Map();
@@ -627,7 +653,7 @@ export class Selector<T> implements Component, Focusable {
 		if (top > 0) lines.push(`  ${this.style.dim(`↑ ${top} more`)}`);
 		const numbered = this.options.numbered === true;
 		const numberWidth = numbered ? String(visible.length).length + 2 : 0;
-		const hasMarks = visible.some((item) => item.mark !== undefined);
+		const hasMarks = visible.some((item) => item.mark === "on" || item.mark === "off");
 		const multi = this.state.mode === "multi";
 		const labelWidth = Math.max(...visible.slice(top, end).map((item) => visibleWidth(item.label)));
 		const twoLine = this.options.layout === "two-line";
@@ -685,6 +711,8 @@ export class Selector<T> implements Component, Focusable {
 		let mark = "";
 		if (multi) {
 			mark = this.state.isChecked(item.id) ? `${this.style.tone("success", "[✓]")} ` : this.style.dim("[ ] ");
+		} else if (item.mark === "checked" || item.mark === "unchecked") {
+			mark = item.mark === "checked" ? `${this.style.tone("success", "[✓]")} ` : this.style.dim("[ ] ");
 		} else if (hasMarks) {
 			mark =
 				item.mark === "on"
@@ -694,6 +722,7 @@ export class Selector<T> implements Component, Focusable {
 						: "  ";
 		}
 		const label = (text: string): string => {
+			if (item.labelStyle) return item.labelStyle(text, isSelected);
 			if (item.disabled) return this.style.dim(text);
 			if (isSelected) return this.style.accent(this.style.bold(text));
 			return this.style.text(text);

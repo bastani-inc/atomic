@@ -1,22 +1,10 @@
 import type { Api, Model } from "@bastani/atomic-ai/compat";
-import {
-	Container,
-	type Focusable,
-	fuzzyFilter,
-	getKeybindings,
-	getSelectPageIndex,
-	Input,
-	Key,
-	matchesKey,
-	Spacer,
-	Text,
-	visibleWidth,
-} from "@bastani/atomic-tui";
-import { formatModelLabel, MODEL_LABEL_SEPARATOR } from "../../../core/model-label.ts";
+import { getKeybindings, type Input } from "@bastani/atomic-tui";
+import { formatModelLabel } from "../../../core/model-label.ts";
 import { getDistinctModelName, getModelSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.js";
-import { DynamicBorder } from "./dynamic-border.ts";
-import { keyText } from "./keybinding-hints.js";
+import { navActionText } from "./nav-keys.ts";
+import { FramedSelector, type SelectorExtraKey, type SelectorItem, type SelectorTone } from "./selector.ts";
 
 // EnabledIds: null = all enabled (no filter), string[] = explicit ordered list
 type EnabledIds = string[] | null;
@@ -73,12 +61,6 @@ function getSortedIds(enabledIds: EnabledIds, allIds: string[]): string[] {
 	return [...enabledIds, ...allIds.filter((id) => !enabledSet.has(id))];
 }
 
-interface ModelItem {
-	fullId: string;
-	model: Model<Api> | undefined;
-	enabled: boolean;
-}
-
 export interface ModelsConfig {
 	allModels: readonly Model<Api>[];
 	enabledModelIds: string[] | null;
@@ -94,79 +76,93 @@ export interface ModelsCallbacks {
 }
 
 /**
- * Component for enabling/disabling models for Ctrl+P cycling.
- * Changes are saved automatically by the caller.
+ * The `/scoped-models` picker: which models Ctrl+P cycles through, and in what order. Enter switches the selected
+ * model on or off; changes are saved automatically by the caller.
  */
-export class ScopedModelsSelectorComponent extends Container implements Focusable {
-	readonly capturesViewportInput: boolean = true;
+export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 	private modelsById: Map<string, Model<Api>> = new Map();
 	private allIds: string[] = [];
 	private enabledIds: EnabledIds = null;
-	private filteredItems: ModelItem[] = [];
-	private selectedIndex = 0;
-	private searchInput: Input;
+	private readonly callbacks: ModelsCallbacks;
+	private readonly thinkingLevelFor: ModelsConfig["thinkingLevelFor"];
 
-	// Focusable implementation - propagate to searchInput for IME cursor positioning
-	private _focused = false;
-	get focused(): boolean {
-		return this._focused;
-	}
-	set focused(value: boolean) {
-		this._focused = value;
-		this.searchInput.focused = value;
-	}
-	private listContainer: Container;
-	private footerText: Text;
-	private callbacks: ModelsCallbacks;
-	private thinkingLevelFor: ModelsConfig["thinkingLevelFor"];
-	private maxVisible = 8;
-	private refreshStatusText?: Text;
 	constructor(config: ModelsConfig, callbacks: ModelsCallbacks) {
-		super();
+		const kb = getKeybindings();
+		// Set by the reorder key's matcher, read by its action: which way the pressed key moves the model.
+		let reorderDelta = 0;
+		const self = (): ScopedModelsSelectorComponent => this;
+		const extraKeys: SelectorExtraKey<string>[] = [
+			{ hint: { action: "app.models.enableAll", label: "all" }, run: () => self().setAll(true) },
+			{ hint: { action: "app.models.clearAll", label: "clear" }, run: () => self().setAll(false) },
+			{
+				hint: { action: "app.models.toggleProvider", label: "provider" },
+				enabled: (item) => item !== undefined && self().modelsById.has(item.value),
+				run: (item) => item && self().toggleProvider(item.value),
+			},
+			{
+				hint: {
+					keys: [navActionText(kb, "app.models.reorderUp"), navActionText(kb, "app.models.reorderDown")]
+						.filter(Boolean)
+						.join("/"),
+					label: "reorder",
+				},
+				matches: (data) => {
+					reorderDelta = kb.matches(data, "app.models.reorderUp")
+						? -1
+						: kb.matches(data, "app.models.reorderDown")
+							? 1
+							: 0;
+					return reorderDelta !== 0;
+				},
+				enabled: (item) => item !== undefined && self().enabledIds?.includes(item.value) === true,
+				run: (item) => item && self().reorder(item.value, reorderDelta),
+			},
+		];
+		super({
+			title: "Scoped models",
+			search: true,
+			items: [],
+			maxVisible: 8,
+			emptyText: "No models available",
+			confirmLabel: "toggle",
+			extraKeys,
+			onSelect: (item) => self().toggleModel(item.value),
+			onCancel: callbacks.onCancel,
+		});
 		this.callbacks = callbacks;
 		this.thinkingLevelFor = config.thinkingLevelFor;
-
-		for (const model of config.allModels) {
-			const fullId = `${model.provider}/${model.id}`;
-			this.modelsById.set(fullId, model);
-			this.allIds.push(fullId);
-		}
-
 		this.enabledIds = config.enabledModelIds === null ? null : [...config.enabledModelIds];
-		this.filteredItems = this.buildItems();
-
-		// Header
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("accent", theme.bold("Model Configuration")), 0, 0));
-		this.addChild(new Text(theme.fg("muted", "Changes are saved automatically."), 0, 0));
-		this.addChild(new Spacer(1));
-
-		// Search input
-		this.searchInput = new Input();
-		this.addChild(this.searchInput);
-		this.addChild(new Spacer(1));
-
-		// List container
-		this.listContainer = new Container();
-		this.addChild(this.listContainer);
-
-		// Footer hint
-		this.addChild(new Spacer(1));
-		if (config.refreshStatus) {
-			this.refreshStatusText = new Text(theme.fg("muted", `  ${config.refreshStatus}`), 0, 0);
-			this.addChild(this.refreshStatusText);
-		}
-		this.footerText = new Text(this.getFooterText(), 0, 0);
-		this.addChild(this.footerText);
-
-		this.addChild(new DynamicBorder());
-		this.updateList();
+		this.setModels(config.allModels);
+		if (config.refreshStatus) this.setRefreshStatus(config.refreshStatus, "muted");
+		this.refresh();
 	}
 
 	updateModels(models: readonly Model<Api>[], enabledModelIds?: string[] | null): void {
-		const selectedId = this.filteredItems[this.selectedIndex]?.fullId;
 		if (enabledModelIds !== undefined) this.enabledIds = enabledModelIds === null ? null : [...enabledModelIds];
+		this.setModels(models);
+		this.refresh();
+	}
+
+	setRefreshStatus(message: string, kind: "muted" | "success" | "warning"): void {
+		this.selector.setNotice({ text: message, tone: kind satisfies SelectorTone });
+	}
+
+	getSearchInput(): Input {
+		const input = this.selector.getSearchInput();
+		if (!input) throw new Error("The scoped models picker always has a search box");
+		return input;
+	}
+
+	override handleInput(data: string): void {
+		// Ctrl+C clears a search before it closes the picker, as it always has here.
+		if (data === "\x03" && this.selector.state.getQuery()) {
+			this.selector.clearSearch();
+			return;
+		}
+		super.handleInput(data);
+	}
+
+	private setModels(models: readonly Model<Api>[]): void {
 		this.modelsById.clear();
 		this.allIds = [];
 		for (const model of models) {
@@ -174,236 +170,86 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			this.modelsById.set(fullId, model);
 			this.allIds.push(fullId);
 		}
-		this.refresh();
-		const refreshedIndex = selectedId ? this.filteredItems.findIndex((item) => item.fullId === selectedId) : -1;
-		if (refreshedIndex >= 0) {
-			this.selectedIndex = refreshedIndex;
-			this.updateList();
-		}
 	}
 
-	setRefreshStatus(message: string, kind: "muted" | "success" | "warning"): void {
-		this.refreshStatusText?.setText(theme.fg(kind, `  ${message}`));
+	private buildItems(): SelectorItem<string>[] {
+		// Rows show the raw ID and level, exactly what `enabledModels` and `--models` take (#4269); a display name that
+		// adds words the ID lacks follows in a dim column.
+		return getSortedIds(this.enabledIds, this.allIds).map((id) => {
+			const model = this.modelsById.get(id);
+			const enabled = model !== undefined && isEnabled(this.enabledIds, id);
+			return {
+				id,
+				value: id,
+				label: model ? formatModelLabel(model, { thinkingLevel: this.thinkingLevelFor?.(model) }) : id,
+				description: model ? getDistinctModelName(model) : undefined,
+				mark: enabled || (!model && isEnabled(this.enabledIds, id)) ? "checked" : "unchecked",
+				tag: model ? undefined : "unavailable",
+				searchText: model ? getModelSearchText({ id: model.id, provider: model.provider, name: model.name }) : id,
+				labelStyle: model
+					? undefined
+					: (text, selected) =>
+							selected ? theme.fg("accent", theme.strikethrough(text)) : theme.strikethrough(text),
+			};
+		});
 	}
 
-	private buildItems(): ModelItem[] {
-		return getSortedIds(this.enabledIds, this.allIds).map((id) => ({
-			fullId: id,
-			model: this.modelsById.get(id),
-			enabled: isEnabled(this.enabledIds, id),
-		}));
+	private countText(): string {
+		if (this.enabledIds === null) return "all enabled";
+		const enabledCount = this.enabledIds.filter((id) => this.modelsById.has(id)).length;
+		const unavailableCount = this.enabledIds.length - enabledCount;
+		return `${enabledCount}/${this.allIds.length} enabled${unavailableCount ? ` · ${unavailableCount} unavailable` : ""}`;
 	}
 
-	private getFooterText(): string {
-		const enabledCount = this.enabledIds?.filter((id) => this.modelsById.has(id)).length ?? this.allIds.length;
-		const unavailableCount = this.enabledIds?.filter((id) => !this.modelsById.has(id)).length ?? 0;
-		const allEnabled = this.enabledIds === null;
-		const countText = allEnabled
-			? "all enabled"
-			: `${enabledCount}/${this.allIds.length} enabled${unavailableCount ? ` · ${unavailableCount} unavailable` : ""}`;
-		const parts = [
-			`${keyText("tui.select.confirm")} Toggle`,
-			`${keyText("app.models.enableAll")} All`,
-			`${keyText("app.models.clearAll")} Clear`,
-			`${keyText("app.models.toggleProvider")} Provider`,
-			`${keyText("app.models.reorderUp")}/${keyText("app.models.reorderDown")} Reorder`,
-			countText,
-		];
-		return theme.fg("dim", `  ${parts.join(" · ")}`);
+	/** Rebuild the rows; the browsed model stays selected unless `keepPosition` keeps the row position instead. */
+	private refresh(keepPosition = false): void {
+		const position = this.selector.state.getSelectedIndex();
+		this.selector.setItems(this.buildItems());
+		if (keepPosition) this.selector.state.select(position);
+		this.selector.setSubtitle(`Changes are saved automatically · ${this.countText()}`);
 	}
 
-	private refresh(selectedId?: string): void {
-		const query = this.searchInput.getValue();
-		const items = this.buildItems();
-		this.filteredItems = query
-			? fuzzyFilter(items, query, (item) =>
-					item.model
-						? getModelSearchText({ id: item.model.id, provider: item.model.provider, name: item.model.name })
-						: item.fullId,
-				)
-			: items;
-		if (selectedId) this.selectedIndex = this.filteredItems.findIndex((item) => item.fullId === selectedId);
-		this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, this.filteredItems.length - 1));
-		this.updateList();
-		this.footerText.setText(this.getFooterText());
-	}
-
-	private notifyChange(): void {
+	private change(enabledIds: EnabledIds, keepPosition = false): void {
+		this.enabledIds = enabledIds;
+		this.refresh(keepPosition);
 		this.callbacks.onChange(this.enabledIds === null ? null : [...this.enabledIds]);
 	}
 
-	private updateList(): void {
-		this.listContainer.clear();
+	private toggleModel(id: string): void {
+		this.change(toggle(this.enabledIds, this.allIds, id), true);
+	}
 
-		if (this.filteredItems.length === 0) {
-			this.listContainer.addChild(new Text(theme.fg("muted", "  No matching models"), 0, 0));
-			return;
-		}
-
-		const startIndex = Math.max(
-			0,
-			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredItems.length - this.maxVisible),
+	/** Enable or clear every model, or only the matching ones while searching. */
+	private setAll(enable: boolean): void {
+		const targetIds = this.selector.state.getQuery()
+			? this.selector.state.getVisible().map((item) => item.value)
+			: undefined;
+		this.change(
+			enable
+				? enableAll(this.enabledIds, this.allIds, targetIds)
+				: clearAll(this.enabledIds, this.allIds, targetIds),
+			true,
 		);
-		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredItems.length);
-		// Rows show the raw ID and level, exactly what `enabledModels` and `--models` take (#4269); a display name that
-		// adds words the ID lacks follows in a dim column.
-		const rows = this.filteredItems.slice(startIndex, endIndex).map((item) => ({
-			item,
-			label: item.model
-				? formatModelLabel(item.model, { thinkingLevel: this.thinkingLevelFor?.(item.model) })
-				: item.fullId,
-			name: item.model ? getDistinctModelName(item.model) : undefined,
-		}));
-		const labelWidth = Math.max(0, ...rows.map((row) => visibleWidth(row.label)));
-		for (const [offset, { item, label, name }] of rows.entries()) {
-			const isSelected = startIndex + offset === this.selectedIndex;
-			const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
-			const styledLabel = item.model ? label : theme.strikethrough(label);
-			const modelText = isSelected ? theme.fg("accent", styledLabel) : styledLabel;
-			const nameText = name
-				? `${" ".repeat(labelWidth - visibleWidth(label))}${MODEL_LABEL_SEPARATOR}${theme.fg("muted", name)}`
-				: "";
-			const unavailableBadge = item.model ? "" : theme.fg("muted", " [unavailable]");
-			const status = item.model && item.enabled ? theme.fg("accent", "✓ ") : "  ";
-			this.listContainer.addChild(new Text(`${prefix}${status}${modelText}${nameText}${unavailableBadge}`, 0, 0));
-		}
-
-		// Add scroll indicator if needed
-		if (startIndex > 0 || endIndex < this.filteredItems.length) {
-			this.listContainer.addChild(
-				new Text(theme.fg("muted", `  (${this.selectedIndex + 1}/${this.filteredItems.length})`), 0, 0),
-			);
-		}
-
-		if (this.filteredItems.length > 0) {
-			const selected = this.filteredItems[this.selectedIndex]!;
-			this.listContainer.addChild(new Spacer(1));
-			this.listContainer.addChild(
-				new Text(
-					theme.fg("muted", `  ${selected.model ? `Model Name: ${selected.model.name}` : "Model unavailable"}`),
-					0,
-					0,
-				),
-			);
-		}
 	}
 
-	handleInput(data: string): boolean {
-		const kb = getKeybindings();
-
-		// Navigation
-		if (kb.matches(data, "tui.select.up")) {
-			if (this.filteredItems.length === 0) return true;
-			this.selectedIndex = this.selectedIndex === 0 ? this.filteredItems.length - 1 : this.selectedIndex - 1;
-			this.updateList();
-			return true;
-		}
-		if (kb.matches(data, "tui.select.down")) {
-			if (this.filteredItems.length === 0) return true;
-			this.selectedIndex = this.selectedIndex === this.filteredItems.length - 1 ? 0 : this.selectedIndex + 1;
-			this.updateList();
-			return true;
-		}
-		const pageIndex = getSelectPageIndex(kb, data, this.selectedIndex, this.filteredItems.length, this.maxVisible);
-		if (pageIndex !== undefined) {
-			if (this.filteredItems.length === 0) return true;
-			this.selectedIndex = pageIndex;
-			this.updateList();
-			return true;
-		}
-
-		// Reorder enabled models
-		const reorderUp = kb.matches(data, "app.models.reorderUp");
-		const reorderDown = kb.matches(data, "app.models.reorderDown");
-		if (reorderUp || reorderDown) {
-			if (this.enabledIds === null) return true;
-			const item = this.filteredItems[this.selectedIndex];
-			if (item && isEnabled(this.enabledIds, item.fullId)) {
-				const delta = reorderUp ? -1 : 1;
-				const currentIndex = this.enabledIds.indexOf(item.fullId);
-				const newIndex = currentIndex + delta;
-				// Only move if within bounds
-				if (newIndex >= 0 && newIndex < this.enabledIds.length) {
-					this.enabledIds = move(this.enabledIds, item.fullId, delta);
-					this.refresh(item.fullId);
-					this.notifyChange();
-				}
-			}
-			return true;
-		}
-
-		// Toggle on Enter
-		if (kb.matches(data, "tui.select.confirm")) {
-			const item = this.filteredItems[this.selectedIndex];
-			if (item) {
-				this.enabledIds = toggle(this.enabledIds, this.allIds, item.fullId);
-				this.refresh();
-				this.notifyChange();
-			}
-			return true;
-		}
-
-		// Enable all (filtered if search active, otherwise all)
-		if (kb.matches(data, "app.models.enableAll")) {
-			const targetIds = this.searchInput.getValue() ? this.filteredItems.map((i) => i.fullId) : undefined;
-			this.enabledIds = enableAll(this.enabledIds, this.allIds, targetIds);
-			this.refresh();
-			this.notifyChange();
-			return true;
-		}
-
-		// Clear all (filtered if search active, otherwise all)
-		if (kb.matches(data, "app.models.clearAll")) {
-			const targetIds = this.searchInput.getValue() ? this.filteredItems.map((i) => i.fullId) : undefined;
-			this.enabledIds = clearAll(this.enabledIds, this.allIds, targetIds);
-			this.refresh();
-			this.notifyChange();
-			return true;
-		}
-
-		// Toggle provider of current item
-		if (kb.matches(data, "app.models.toggleProvider")) {
-			const item = this.filteredItems[this.selectedIndex];
-			if (item?.model) {
-				const provider = item.model.provider;
-				const providerIds = this.allIds.filter((id) => this.modelsById.get(id)!.provider === provider);
-				const allEnabled = providerIds.every((id) => isEnabled(this.enabledIds, id));
-				this.enabledIds = allEnabled
-					? clearAll(this.enabledIds, this.allIds, providerIds)
-					: enableAll(this.enabledIds, this.allIds, providerIds);
-				this.refresh();
-				this.notifyChange();
-			}
-			return true;
-		}
-
-		// Ctrl+C - clear search or cancel if empty
-		if (matchesKey(data, Key.ctrl("c"))) {
-			if (this.searchInput.getValue()) {
-				const searchInputIndex = this.children.indexOf(this.searchInput);
-				this.searchInput = new Input();
-				this.searchInput.focused = this.focused;
-				this.children[searchInputIndex] = this.searchInput;
-				this.refresh();
-			} else {
-				this.callbacks.onCancel();
-			}
-			return true;
-		}
-
-		// Escape - cancel
-		if (matchesKey(data, Key.escape)) {
-			this.callbacks.onCancel();
-			return true;
-		}
-
-		// Pass everything else to search input
-		this.searchInput.handleInput(data);
-		this.refresh();
-		return true;
+	private toggleProvider(id: string): void {
+		const provider = this.modelsById.get(id)?.provider;
+		if (provider === undefined) return;
+		const providerIds = this.allIds.filter((modelId) => this.modelsById.get(modelId)?.provider === provider);
+		const allEnabled = providerIds.every((modelId) => isEnabled(this.enabledIds, modelId));
+		this.change(
+			allEnabled
+				? clearAll(this.enabledIds, this.allIds, providerIds)
+				: enableAll(this.enabledIds, this.allIds, providerIds),
+			true,
+		);
 	}
 
-	getSearchInput(): Input {
-		return this.searchInput;
+	private reorder(id: string, delta: number): void {
+		if (this.enabledIds === null) return;
+		const newIndex = this.enabledIds.indexOf(id) + delta;
+		// Only move within the enabled list.
+		if (newIndex < 0 || newIndex >= this.enabledIds.length) return;
+		this.change(move(this.enabledIds, id, delta));
 	}
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { CURSOR_MARKER, setKeybindings } from "@bastani/atomic-tui";
+import { CURSOR_MARKER, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager, useWindowsKeybindings } from "../src/core/keybindings.js";
 import { ScopedModelsSelectorComponent } from "../src/modes/interactive/components/scoped-models-selector.ts";
@@ -21,7 +21,7 @@ function getMarkerStates(selector: ScopedModelsSelectorComponent, models: ModelS
 	return models.map((model) => {
 		const line = lines.find((candidate) => candidate.includes(`/${model.id}`));
 		if (!line) throw new Error(`Expected rendered row for ${model.id}`);
-		return line.slice(2).startsWith("✓ ");
+		return line.includes("[✓] ");
 	});
 }
 
@@ -70,7 +70,7 @@ describe("scoped models selector", () => {
 
 		const rows = stripAnsi(selector.render(120).join("\n"))
 			.split("\n")
-			.map((line) => line.slice(4).trimEnd());
+			.map((line) => line.slice(7).trimEnd());
 		assert.ok(rows.includes(`${provider}/model-a`), rows.join("\n"));
 		assert.ok(rows.includes(`${provider}/model-b  Renamed B`), rows.join("\n"));
 	});
@@ -90,7 +90,7 @@ describe("scoped models selector", () => {
 
 		const rows = stripAnsi(selector.render(120).join("\n"))
 			.split("\n")
-			.map((line) => line.slice(4).trimEnd());
+			.map((line) => line.slice(7).trimEnd());
 		assert.ok(rows.includes(`${provider}/reasoning-model  xhigh`), rows.join("\n"));
 		assert.ok(rows.includes(`${provider}/plain-model`), rows.join("\n"));
 	});
@@ -118,14 +118,14 @@ describe("scoped models selector", () => {
 
 		assert.doesNotThrow(() => selector.handleInput(REORDER_UP));
 		assert.deepEqual(changes, [[orderedIds[1], orderedIds[0]]]);
-		assert.match(stripAnsi(selector.render(120).join("\n")), /→ ✓ \S+\/model-b *$/m);
+		assert.match(stripAnsi(selector.render(120).join("\n")), /❯ \[✓\] \S+\/model-b *$/m);
 
 		selector.handleInput(REORDER_UP);
 		assert.equal(changes.length, 1);
 
 		selector.handleInput(REORDER_DOWN);
 		assert.deepEqual(changes, [[orderedIds[1], orderedIds[0]], orderedIds]);
-		assert.match(stripAnsi(selector.render(120).join("\n")), /→ ✓ \S+\/model-b *$/m);
+		assert.match(stripAnsi(selector.render(120).join("\n")), /❯ \[✓\] \S+\/model-b *$/m);
 
 		selector.handleInput(REORDER_DOWN);
 		assert.equal(changes.length, 2);
@@ -154,12 +154,12 @@ describe("scoped models selector", () => {
 			assert.equal(cancellations, 0);
 			selector.handleInput("\x1by");
 			assert.equal(selector.getSearchInput().getValue(), "");
-			assert.ok(selector.render(120).some((line) => line.startsWith(`> ${CURSOR_MARKER}`)));
+			assert.ok(selector.render(120).some((line) => line.includes(`⌕ ${CURSOR_MARKER}`)));
 			if (list === "populated") assert.match(stripAnsi(selector.render(120).join("\n")), /\/model-a *$/m);
 
 			selector.handleInput("ok");
 			assert.equal(selector.getSearchInput().getValue(), "ok");
-			assert.ok(selector.render(120).some((line) => line.startsWith(`> ok${CURSOR_MARKER}`)));
+			assert.ok(selector.render(120).some((line) => line.includes(`⌕ ok${CURSOR_MARKER}`)));
 			selector.handleInput("\x03");
 			selector.handleInput("\x03");
 			assert.equal(cancellations, 1);
@@ -230,5 +230,41 @@ describe("scoped models selector", () => {
 		expect(models.map((model) => model.enabled)).toEqual([true, true, true]);
 		expect(getMarkerStates(selector, models)).toEqual([true, true, true]);
 		expect(stripAnsi(selector.render(120).join("\n"))).toContain("all enabled");
+	});
+
+	it("uses the shared selector: checkboxes, a count under the title, and a hint of exactly its keys (#5224)", async () => {
+		const models = [
+			{ id: "model-a", name: "Model A", enabled: true },
+			{ id: "model-b", name: "Model B", enabled: false },
+		];
+		const selector = await createSelector(models);
+		const lines = () => stripAnsi(selector.render(160).join("\n")).split("\n");
+		const reorder = useWindowsKeybindings() ? "alt+q/alt+↓" : "alt+↑/alt+↓";
+		expect(lines()[1]).toBe("  Scoped models");
+		expect(lines()[2]).toBe("  Changes are saved automatically · 1/2 enabled");
+		expect(lines().at(-2)?.trim()).toBe(
+			`↑↓ select · enter toggle · ctrl+a all · ctrl+x clear · ctrl+p provider · ${reorder} reorder · type to search · esc cancel`,
+		);
+		// Reordering applies only to enabled models; on a disabled row the key does nothing and is not hinted.
+		selector.handleInput("\x1b[B");
+		expect(lines().at(-2)).not.toContain("reorder");
+		for (const width of [40, 80, 160]) {
+			for (const line of selector.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+		}
+	});
+
+	it("clears the search before esc closes it", async () => {
+		let cancellations = 0;
+		harness = await createHarness({ models: [{ id: "model-a", name: "Model A" }] });
+		const selector = new ScopedModelsSelectorComponent(
+			{ allModels: harness.models, enabledModelIds: null },
+			{ onChange: () => {}, onCancel: () => cancellations++ },
+		);
+		selector.handleInput("zz");
+		selector.handleInput("\x1b");
+		assert.equal(selector.getSearchInput().getValue(), "");
+		assert.equal(cancellations, 0);
+		selector.handleInput("\x1b");
+		assert.equal(cancellations, 1);
 	});
 });

@@ -298,4 +298,61 @@ describe("shared selector (#5224)", () => {
 		assert.deepEqual(events, []);
 		assert.equal(selector.getSelected()?.id, "id-0");
 	});
+
+	test("j and k move in a picker without a search box, and are typed into one with a search box", () => {
+		const plainPicker = picker({ items: items(3) });
+		plainPicker.selector.handleInput("j");
+		assert.equal(plainPicker.selector.getSelected()?.id, "id-1");
+		plainPicker.selector.handleInput("k");
+		assert.equal(plainPicker.selector.getSelected()?.id, "id-0");
+
+		const searching = picker({ items: items(3), search: true });
+		searching.selector.handleInput("j");
+		assert.equal(searching.selector.state.getQuery(), "j");
+	});
+
+	test("checkbox marks draw [✓] and [ ] in a single-select picker", () => {
+		const { text } = picker({
+			items: items(2, (index) => ({ mark: index === 0 ? "checked" : "unchecked" })),
+		});
+		const lines = text();
+		assert.ok(lines.includes(" ❯ [✓] item 0"), lines.join("\n"));
+		assert.ok(lines.includes("   [ ] item 1"), lines.join("\n"));
+	});
+
+	test("a row's own label style paints its label, told whether the row is selected", () => {
+		const { text, selector } = picker({
+			items: items(2, () => ({
+				labelStyle: (label: string, selected: boolean) => (selected ? `<${label}>` : label),
+			})),
+		});
+		assert.ok(text().includes(" ❯ <item 0>"));
+		selector.handleInput(DOWN);
+		assert.ok(text().includes("   item 0"));
+		assert.ok(text().includes(" ❯ <item 1>"));
+	});
+
+	test("a subtitle with several lines shows each line, wrapped to the width", () => {
+		const { text } = picker({
+			title: "Confirm",
+			subtitle: `first line\n${"word ".repeat(20).trim()}`,
+			items: items(2),
+		});
+		const lines = text(40);
+		assert.equal(lines[1], "  first line");
+		const wrapped = lines.slice(2, lines.indexOf(""));
+		assert.ok(wrapped.length >= 2, lines.join("\n"));
+		for (const line of lines) assert.ok(line.length <= 40);
+		assert.equal(wrapped.join(" ").replace(/\s+/g, " ").trim(), "word ".repeat(20).trim());
+	});
+
+	test("clearing the search starts a fresh search box, so a yank cannot restore the cleared text (#3668)", () => {
+		const { selector } = picker({ items: items(2), search: true });
+		for (const key of ["beta", "\x15"]) selector.handleInput(key);
+		selector.handleInput("gam");
+		selector.handleInput(ESC);
+		assert.equal(selector.state.getQuery(), "");
+		selector.handleInput("\x19");
+		assert.equal(selector.state.getQuery(), "");
+	});
 });

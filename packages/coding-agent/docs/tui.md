@@ -449,8 +449,11 @@ Keys are the same in every picker: ↑↓ select (wrapping), pgup/pgdn page, ent
 | `extraKeys` | Keys of your own, each with a hint and an `enabled(item)` check, so a key that does nothing for the selected row is not shown. |
 | `group` on items | Rows with the same group are listed under a section label (hidden while searching). |
 | `disabled` on items | Drawn dim and skipped by ↑↓. |
+| `mark` on items | `"on"`/`"off"` draw `●`/`○` for the current value; `"checked"`/`"unchecked"` draw `[✓]`/`[ ]` for a row enter switches on and off. |
+| `labelStyle` on items | Paints the label yourself, told whether the row is selected. |
+| `subtitle` | Dim text under the title; each `\n` starts a line and long lines wrap. |
 
-Without a search box, `?` shows the picker's keys. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
+Without a search box, `?` shows the picker's keys and `j`/`k` move like ↓/↑. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
 
 ### Pattern 1b: Selection Dialog (SelectList)
 
