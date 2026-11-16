@@ -64,6 +64,17 @@ export interface FleetRegisteredHost {
 	readonly providerId?: string;
 	readonly live: boolean;
 	readonly leased: number;
+	/** It read a drain naming it and started draining (#5072). */
+	readonly draining?: boolean;
+}
+
+/**
+ * The drain a boot-timeout removal writes for the instance `providerId`, beside one for the host the instance is known
+ * to run (#5072). It names the instance as removed for its boot timeout, so a removal cut off after it wrote its drains
+ * is finished by whichever controller leads next, instead of waiting {@link FLEET_DRAIN_TIMEOUT_MS} on a dead worker.
+ */
+export function bootTimeoutDrainHost(providerId: string): string {
+	return `boot-timeout:${providerId}`;
 }
 
 export interface FleetDrain {
@@ -406,9 +417,9 @@ export class SqlFleetStore {
 				const host = row.worker.slice(0, Math.max(0, row.worker.lastIndexOf("/")));
 				heldBy.set(host, (heldBy.get(host) ?? 0) + Number(row.count));
 			}
-			const registered = await executor.all<SqliteRow & { host: string; provider_id?: string | null; ago: number }>(
-				`SELECT *, ${this.storage.dialect.nowMs} - heartbeat_at AS ago FROM ${runs}_pool_hosts ORDER BY host`,
-			);
+			const registered = await executor.all<
+				SqliteRow & { host: string; provider_id?: string | null; draining?: number | null; ago: number }
+			>(`SELECT *, ${this.storage.dialect.nowMs} - heartbeat_at AS ago FROM ${runs}_pool_hosts ORDER BY host`);
 			return {
 				roots,
 				hosts: registered.map((row) => ({
@@ -416,6 +427,7 @@ export class SqlFleetStore {
 					...(row.provider_id === undefined || row.provider_id === null ? {} : { providerId: row.provider_id }),
 					live: Number(row.ago) <= FLEET_HOST_LIVE_MS,
 					leased: heldBy.get(row.host) ?? 0,
+					...(Number(row.draining ?? 0) === 1 ? { draining: true } : {}),
 				})),
 				drains,
 				leased: heldBy,
