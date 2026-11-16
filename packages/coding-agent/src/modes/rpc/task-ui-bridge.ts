@@ -65,8 +65,8 @@ export function agentPanelBoardSource(session: AgentSession): TaskBoardSource {
 	return {
 		items: () => agentPanelItems(session).filter((item) => agentPanelTaskId(item.id) === undefined),
 		subscribe: (listener) => subscribeAgentPanel(session, listener),
-		open: (id) => {
-			openAgentPanelItem(session, id);
+		open: (id, options) => {
+			openAgentPanelItem(session, id, options);
 		},
 		stop: (id) => stopAgentPanelItem(session, id),
 		answer: (id, text) => answerAgentPanelItem(session, id, text),
@@ -119,7 +119,12 @@ export async function showTaskInspector(
 		undefined,
 		() => environment,
 	);
-	if (options.board) inspector.setBoardSource(options.board);
+	if (options.board) {
+		inspector.setBoardSource(options.board);
+		// Back from a view a row opened, such as a run's graph, comes to /tasks again on that row.
+		const reopenOptions = { board: options.board };
+		inspector.setReopen((id) => void showTaskInspector(ui, store, id, reopenOptions));
+	}
 	if (options.chat && taskId !== undefined) {
 		// The chat needs its environment, which the first mount below creates; open it once the mount exists.
 		pendingChat = taskId as TaskId;
