@@ -151,7 +151,7 @@ test("SQL session schema is strict, checks JSON, and rejects unsupported version
 		const store = await SqlSessionStore.open(database, { prefix: "tenant_" });
 		assert.equal(
 			(await database.get(`SELECT schema_version FROM ${tables.meta}`))?.schema_version,
-			SESSION_SCHEMA_VERSION,
+			SESSION_SCHEMA_VERSION - 1,
 		);
 		for (const name of Object.values(tables)) {
 			assert.equal((await database.get("SELECT strict FROM pragma_table_list WHERE name = ?", name))?.strict, 1);

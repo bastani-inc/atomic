@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test, vi } from "vitest";
@@ -28,6 +27,8 @@ type Message = import("../../packages/intercom/types.js").Message;
 /** Spawning, and restarting, the real broker child is the structural cost of this suite. */
 const REAL_BROKER_TEST_TIMEOUT_MS = 60_000;
 const WAIT = { timeout: 10_000, interval: 20 };
+const BROKER_START_WAIT_MS = 90_000;
+const BROKER_START_HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 5_000;
 /** Long enough for a failure that must not arrive twice to arrive. */
 const SETTLE_MS = 500;
 
@@ -40,18 +41,7 @@ async function startBroker(): Promise<void> {
 		stdio: "ignore",
 	});
 	brokerFixture.trackBroker(broker);
-	await vi.waitFor(async () => {
-		brokerFixture.assertRunning();
-		const connected = await new Promise<boolean>((resolveConnected) => {
-			const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
-			socket.once("connect", () => {
-				socket.destroy();
-				resolveConnected(true);
-			});
-			socket.once("error", () => resolveConnected(false));
-		});
-		assert.ok(connected);
-	}, WAIT);
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, brokerFixture.agentDir), BROKER_START_WAIT_MS);
 }
 
 /** `atomic intercom restart`, or a crash. */
@@ -182,7 +172,7 @@ async function toldOnce(asker: Session, askId: string): Promise<void> {
 	assert.deepEqual(asker.failures, [askId], "told once");
 }
 
-beforeAll(startBroker, REAL_BROKER_TEST_TIMEOUT_MS);
+beforeAll(startBroker, BROKER_START_HOOK_TIMEOUT_MS);
 afterAll(() => brokerFixture.cleanup());
 
 test(

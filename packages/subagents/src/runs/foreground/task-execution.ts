@@ -340,6 +340,7 @@ function taskTranscriptSource(
 		getSessionId: () => session.getSessionId(),
 		getEntries: () => session.getEntries(),
 		...(session.loadHistory ? { loadHistory: session.loadHistory.bind(session) } : {}),
+		...(session.loadFullHistory ? { loadFullHistory: session.loadFullHistory.bind(session) } : {}),
 		...(session.subscribe ? { subscribe: session.subscribe.bind(session) } : {}),
 		...(session.getStreamingMessage ? { getStreamingMessage: session.getStreamingMessage.bind(session) } : {}),
 		...(session.getCompactionReason ? { getCompactionReason: session.getCompactionReason.bind(session) } : {}),
@@ -460,7 +461,10 @@ export async function runAgentTask(input: {
 	const registered = Promise.withResolvers<void>();
 	const childCwd = input.options.cwd ?? input.cwd;
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
-	let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
+	let childLaunch: Pick<
+		SubagentChildRecordInput,
+		"launchModel" | "launchThinkingLevel" | "launchLeafId" | "launchLeafSeq"
+	> = {};
 	const agentConfig = input.agents.find((agent) => agent.name === input.agent);
 	const agentSource = agentConfig?.source;
 	const requestedModel = launchRequestedModel(agentConfig, input.options);
@@ -691,6 +695,7 @@ export async function runAgentTask(input: {
 									...(launch.model ? { launchModel: launch.model } : {}),
 									...(launch.thinking ? { launchThinkingLevel: launch.thinking } : {}),
 									launchLeafId: launch.leafId,
+									launchLeafSeq: launch.leafSeq,
 								};
 								recordChild("running");
 							},

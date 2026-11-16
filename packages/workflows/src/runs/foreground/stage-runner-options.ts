@@ -112,7 +112,7 @@ export async function stripWorkflowOnlyOptions(
 				? await resolveWorkspace(sessionOptions.workspace, { signal })
 				: await bindSessionWorkspace(
 						sessionOptions.workspace,
-						await SessionManager.open(resumeStore, resumeFromSessionId!),
+						await SessionManager.open(resumeStore, resumeFromSessionId!, undefined, { history: "tail" }),
 						signal,
 					);
 		sessionOptions.workspace = binding;
@@ -120,7 +120,9 @@ export async function stripWorkflowOnlyOptions(
 	}
 	const cwd = sessionOptions.cwd ?? process.cwd();
 	if (resumeStore !== undefined) {
-		sessionOptions.sessionManager = await SessionManager.open(resumeStore, resumeFromSessionId!, cwd);
+		sessionOptions.sessionManager = await SessionManager.open(resumeStore, resumeFromSessionId!, cwd, {
+			history: "tail",
+		});
 	} else if (context === "fork" && forkFromSessionId !== undefined) {
 		sessionOptions.sessionManager = await forkStageSession(
 			await stageSessionStore(options, defaultSessionDir),
@@ -172,7 +174,8 @@ export async function readStoredStageMessages(
 	const owned = options.sessionStore === undefined && options.sessionManager === undefined;
 	let messages: ReturnType<SessionManager["buildSessionContext"]>["messages"];
 	try {
-		messages = (await SessionManager.open(store, sessionId, options.cwd)).buildSessionContext().messages;
+		messages = (await SessionManager.open(store, sessionId, options.cwd, { history: "tail" })).buildSessionContext()
+			.messages;
 	} catch (error) {
 		if (owned) await closeAfterFailure(store, error);
 		throw error;

@@ -1963,6 +1963,14 @@ describe("Editor component", () => {
 			assert.strictEqual(editor.getText(), "line1\nline2\nline3");
 		});
 
+		it("keeps editor paste normalization unchanged when sharing it with startup drafts (#5241)", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme);
+
+			editor.handleInput("\x1b[200~\x00a\x1b]0;title\x07b\rc\r\nd\te\x7f\u0085🦊\x1b[201~");
+
+			assert.strictEqual(editor.getExpandedText(), "a]0;titleb\nc\nd    e\x7f\u0085🦊");
+		});
+
 		it("undoes multi-line paste atomically", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 

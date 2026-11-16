@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { ForkOptions } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { openNodeSqliteDatabase } from "@bastani/atomic";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -92,10 +93,13 @@ test("a local checkpoint journal is kept when it still holds a checkpoint, anoth
 
 		const sharedPath = shipShardPath(directory, "journal", "shared");
 		const first = await ShipShard.open(sharedPath, "shared");
-		const second = await ShipShard.open(sharedPath, "shared");
+		await assert.rejects(ShipShard.open(sharedPath, "shared"), /already open/);
+		const second = await openNodeSqliteDatabase(sharedPath);
 		await first.close({ retire: true });
 		assert.ok(existsSync(sharedPath), "a connection still open keeps the file");
-		await second.close({ retire: true });
+		await second.close();
+		const reopened = await ShipShard.open(sharedPath, "shared");
+		await reopened.close({ retire: true });
 		assert.ok(!existsSync(sharedPath), "the last connection removes it");
 
 		const keptPath = shipShardPath(directory, "journal", "kept");

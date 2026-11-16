@@ -410,7 +410,7 @@ These patterns cover the most common UI needs in extensions. **Copy these patter
 
 ### Pattern 1: Selection Dialog (Selector)
 
-For letting users pick from a list, use `Selector` from `@bastani/atomic`. It is the picker Atomic's own selectors use, so your dialog looks and behaves like `/model`, `/login` and the other built-in pickers: a title, an optional type-to-search box, one- or two-line rows with dim descriptions and right-aligned tags, `↑ N more` / `↓ N more` scroll indicators, an empty state, and one hint line that lists exactly the keys that work.
+For letting users pick from a list, use `Selector` from `@bastani/atomic`. It is the picker behind `/model`, `/login`, `/logout`, `/thinking`, `/trust`, `/scoped-models` and extension `select` and `confirm` dialogs, so your dialog looks and behaves like them: a title, an optional type-to-search box, one- or two-line rows with dim descriptions and right-aligned tags, `↑ N more` / `↓ N more` scroll indicators, an empty state, and one hint line that lists exactly the keys that work.
 
 ```typescript
 import { DynamicBorder, Selector } from "@bastani/atomic";
@@ -444,7 +444,7 @@ Selector uses ↑↓ to select (wrapping) and pgup/pgdn to page. Enter chooses, 
 | --- | --- |
 | `layout: "two-line"` | Each description goes on the line under its label, for rows like sessions or runs. |
 | `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. |
-| `numbered: true` | Rows are numbered; without a search box, digits choose a row directly. |
+| `numbered: true` | Rows are numbered; without a search box, digits 1–9 choose a row directly, or toggle it with `mode: "multi"`. |
 | `onPreview` | Space previews the selected row; the hint shows `space preview`. |
 | `onSelectionChange` | Reports the selected row when navigation or filtering changes its identity, or `undefined` when no enabled row matches. |
 | `extraKeys` | Keys of your own, each with a hint and an `enabled(item)` check, so a key that does nothing for the selected row is not shown. |
