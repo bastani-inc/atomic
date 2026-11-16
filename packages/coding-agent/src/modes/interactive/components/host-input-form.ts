@@ -373,7 +373,7 @@ export class HostInputFormComponent implements Component, Focusable {
 				Reflect.set(editor, "cursor", rawCursor);
 			}
 		}
-		const rendered = withDisplayLines(editor, () => editor.render(width), false);
+		const rendered = withDisplayLines(editor, () => editor.render(Math.max(3, width)), false);
 		return rendered.length > 0 ? rendered : [""];
 	}
 
@@ -627,7 +627,7 @@ export class HostInputFormComponent implements Component, Focusable {
 			}
 			const clipped = visibleWidth(line) > cw ? truncateToWidth(line, cw, "…") : line;
 			const pad = " ".repeat(Math.max(0, cw - visibleWidth(clipped)));
-			return truncateToWidth(`${border("│")} ${clipped}${pad} ${border("│")}`, boxWidth, "");
+			return `${border("│")} ${clipped}${pad} ${border("│")}`;
 		});
 		const bottom = truncateToWidth(`${border("╰")}${border("─".repeat(inner))}${border("╯")}`, boxWidth, "");
 		return [top, ...rows, bottom];

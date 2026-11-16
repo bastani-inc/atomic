@@ -89,3 +89,34 @@ test("Up in a prefilled text field moves one displayed row of its escaped text (
 	component.handleInput("\x1b[B");
 	assert.equal(editor.getCursor().col, 60);
 });
+
+test("the host form draws wide text and control characters within every width from 1 to 200 (#5245)", () => {
+	const wide = "漢字🙂‍👩e\u0301".repeat(20);
+	const component = new HostInputFormComponent(
+		new TuiMainScreen(new QuietTerminal()),
+		theme,
+		new KeybindingsManager(),
+		{
+			title: `t${wide}`,
+			heading: `H${wide}`,
+			fields: [
+				{
+					name: `n${wide}`,
+					type: "string",
+					initialValue: `\x1b]52;c;x\x07${wide}`,
+					description: wide,
+					required: true,
+					maxLength: 3,
+				},
+				{ name: "t", type: "text", initialValue: `${wide}\n\t\x01${wide}` },
+				{ name: "s", type: "select", choices: [wide, "b"], initialValue: "" },
+				{ name: "b", type: "boolean", initialValue: "" },
+			],
+		},
+		{ onSubmit: () => {}, onCancel: () => {} },
+	);
+	for (let width = 1; width <= 200; width++) {
+		for (const line of component.render(width))
+			assert.ok(visibleWidth(line) <= width, `width ${width}: a line takes ${visibleWidth(line)} columns`);
+	}
+});
