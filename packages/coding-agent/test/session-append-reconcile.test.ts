@@ -42,6 +42,13 @@ function faultyStore() {
 			if (lose === "after-commit") await store.append(...args);
 			throw lost();
 		},
+		async readRange(sessionId: string, startSeq: number, endSeq: number) {
+			if (failLoads > 0) {
+				failLoads--;
+				throw lost();
+			}
+			return store.readRange(sessionId, startSeq, endSeq);
+		},
 		async load(sessionId: string) {
 			if (failLoads > 0) {
 				failLoads--;

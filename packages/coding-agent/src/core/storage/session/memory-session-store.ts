@@ -783,6 +783,7 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	private encodeSession(header: SessionRecordHeader, entries: readonly SessionEntry[]): StoredSession {
+		const headerBytes = this.encode(() => JSON.stringify(header));
 		const encoded = entries.length === 0 ? undefined : this.encodeEntries(entries);
 		const starts: number[] = [];
 		let position = 0;
@@ -791,7 +792,7 @@ export class MemorySessionStore implements SessionStore {
 			position += length + 1;
 		}
 		return {
-			header: this.encode(() => JSON.stringify(header)),
+			header: headerBytes,
 			entries: encoded === undefined ? [] : [encoded.bytes],
 			lastSeq: entries.length,
 			directory: undefined,

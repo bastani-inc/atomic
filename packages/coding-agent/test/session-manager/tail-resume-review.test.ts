@@ -175,3 +175,18 @@ test("partial session ids cannot reuse a short id hidden in omitted history (#52
 	vi.mocked(crypto.randomUUID).mockReturnValueOnce(uuid);
 	assert.equal(generateId({ has: () => false, preferFullIds: true }), uuid);
 });
+
+test("refreshing a resumed mirror reads only the new seq range and rejects branch or generation changes (#5249)", async () => {
+	const entries = [user("u", null), user("kept", "u"), boundary("c", "kept", "kept")];
+	const { open, store, header } = await fixture(entries);
+	const partial = await open();
+	const spy = vi.spyOn(store, "readRange");
+	await store.append("session", [user("later", "c")], { expectSeq: 3 });
+	assert.equal(await partial.refreshFromStore(), true);
+	assert.equal(partial.getLeafId(), "later");
+	assert.deepEqual(spy.mock.calls, [["session", 3, Number.MAX_SAFE_INTEGER]]);
+	assert.equal(partial.hasFullHistory(), false);
+	await store.replace("session", header, [user("new", null)], { expectSeq: 4 });
+	assert.equal(await partial.refreshFromStore(), false);
+	assert.equal(partial.getLeafId(), "later");
+});

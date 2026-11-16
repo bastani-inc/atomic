@@ -1219,14 +1219,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private async refreshSessionView(): Promise<void> {
 		const session = super.session;
 		const currentManager = session.sessionManager;
-		const refreshed = currentManager.isPersisted()
-			? await SessionManager.open(
-					currentManager.getSessionStore(),
-					currentManager.getSessionId(),
-					currentManager.getCwd(),
-					{ history: "tail" },
-				)
-			: await this.openUnpersistedSessionView(currentManager);
+		const unchanged =
+			currentManager.isPersisted() &&
+			typeof currentManager.refreshFromStore === "function" &&
+			(await currentManager.refreshFromStore());
+		const refreshed = unchanged
+			? currentManager
+			: currentManager.isPersisted()
+				? await SessionManager.open(
+						currentManager.getSessionStore(),
+						currentManager.getSessionId(),
+						currentManager.getCwd(),
+						{ history: "tail" },
+					)
+				: await this.openUnpersistedSessionView(currentManager);
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: refreshed });
 		this.patchSessionManager(refreshed);
 		session.agent.state.messages = refreshed.buildSessionContext().messages;

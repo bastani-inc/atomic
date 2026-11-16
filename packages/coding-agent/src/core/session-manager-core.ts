@@ -318,6 +318,27 @@ export class SessionManager {
 		this.leafId = leafId;
 	}
 
+	async refreshFromStore(): Promise<boolean> {
+		const { store, sessionId, lastSeq, historyEpoch, lastEntryId } = this;
+		const range = await readSessionRange(store, sessionId, Math.max(1, lastSeq), Number.MAX_SAFE_INTEGER);
+		if (this.sessionId !== sessionId || this.store !== store || this.lastSeq !== lastSeq) return false;
+		if (range.lastSeq < lastSeq || (historyEpoch !== undefined && range.epoch !== historyEpoch)) return false;
+		if (lastSeq > 0 && range.entries[0]?.id !== lastEntryId) return false;
+		const added = range.entries.slice(lastSeq > 0 ? 1 : 0);
+		let parent = this.leafId;
+		for (const entry of added) {
+			if (entry.parentId !== parent) return false;
+			parent = isLeafMoveEntry(entry) ? entry.parentId : entry.id;
+		}
+		this.lastSeq = range.lastSeq;
+		this.applyAppended(added);
+		if (added.length > 0) {
+			this._buildIndex();
+			this.leafId = parent;
+		}
+		return true;
+	}
+
 	getEntrySeq(id: string): number | undefined {
 		return this.entrySeqs.get(id);
 	}

@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { CompactionEntry, SessionEntry } from "../../session-manager-types.ts";
 import type {
@@ -406,7 +405,7 @@ export function foldSessionResume(
 	return {
 		version: 2,
 		...(needsBranchRebuild ? { needsBranchRebuild: true } : {}),
-		epoch: previous?.epoch ?? randomUUID(),
+		epoch: previous?.epoch ?? crypto.randomUUID(),
 		latest,
 		fields,
 		models,

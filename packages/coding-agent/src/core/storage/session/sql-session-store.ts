@@ -1273,6 +1273,7 @@ export class SqlSessionStore implements SessionStore {
 			}
 			const index = { ...source.index, leafSeq };
 			const plan = sessionResumePlan(index);
+			announceHistoryLoad(plan.state.length + plan.branch.reduce((sum, [a, b]) => sum + b - a + 1, 0));
 			const branch: SessionStoredEntry[] = [];
 			for (const [start, end] of plan.branch)
 				branch.push(...(await this.readRows(tx, sessionId, "seq >= ? AND seq <= ?", [start, end])));
@@ -1285,7 +1286,6 @@ export class SqlSessionStore implements SessionStore {
 							sessionId,
 							leafSeq,
 						);
-			announceHistoryLoad(branch.length + state.length);
 			return sessionResumeFrom(index, source.header, branch, state, leaf?.entry_id ?? null);
 		}, SESSION_TRANSACTION);
 	}

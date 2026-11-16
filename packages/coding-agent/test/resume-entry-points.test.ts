@@ -1079,7 +1079,8 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 	function aroundReads(store: SessionStore, around: <T>(read: () => Promise<T>) => Promise<T>): void {
 		const load = store.load.bind(store);
 		store.load = (id) => around(() => load(id));
-		const { readTail, readRange, findLatestCompaction } = store;
+		const { readTail, readRange, findLatestCompaction, readResume } = store;
+		if (readResume) store.readResume = (id, leafId) => around(() => readResume.call(store, id, leafId));
 		if (readTail) store.readTail = (id, fromSeq) => around(() => readTail.call(store, id, fromSeq));
 		if (readRange) store.readRange = (id, start, end) => around(() => readRange.call(store, id, start, end));
 		if (findLatestCompaction)
