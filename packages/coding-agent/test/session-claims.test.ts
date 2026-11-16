@@ -20,7 +20,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { setNativeLocksForTesting, takeTakeoverMutex } from "../src/core/lock-takeover.ts";
+import { setNativeLocksForTesting, TAKEOVER_MUTEX_STALE_MS, takeTakeoverMutex } from "../src/core/lock-takeover.ts";
 import { processStartToken } from "../src/core/process-start-token.ts";
 import { attachSessionClaim, claimSession } from "../src/core/session-claims.ts";
 import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "../src/core/session-manager-errors.ts";
@@ -257,7 +257,12 @@ describe("session claims (#5135)", () => {
 		const sessionId = newSessionId();
 		const dead = await deadPid();
 		writeClaim(sessionId, { token: "dead", pid: dead, host: hostname() });
-		mkdirSync(`${claimFile(sessionId)}.takeover`);
+		const lock = `${claimFile(sessionId)}.takeover`;
+		mkdirSync(lock);
+		// The lock names no owner, as a takeover's does between making it and naming itself, and it is held until it is
+		// TAKEOVER_MUTEX_STALE_MS old. The claim's attempts can outlast that on a loaded host, so the clock is kept at the
+		// last instant before it however long they take.
+		vi.useFakeTimers({ toFake: ["Date"], now: Math.floor(statSync(lock).mtimeMs) + TAKEOVER_MUTEX_STALE_MS - 1 });
 		assert.throws(
 			() => claim(sessionId),
 			(error: unknown) => error instanceof SessionAlreadyOpenError && error.pid === dead,
