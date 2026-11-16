@@ -252,14 +252,18 @@ function mergeOrchestratorReturnHintIntoLine(
 		minimumPrefixWidth?: number;
 	} = {},
 ): string {
-	const key = backToGraphKey(ctx);
+	// An open choice or yes/no card: ← moves its selection, so its only way out is Esc, which closes the card.
+	const cardOpen = closableQuestionCardOpen(ctx);
+	const key = cardOpen ? "esc" : backToGraphKey(ctx);
+	const full = cardOpen ? " close" : " return to graph";
+	const compact = cardOpen ? " close" : " graph";
 	const fullHint = {
-		plain: `${key} return to graph`,
-		styled: paint(key, ctx.theme.text, { bold: true }) + paint(" return to graph", ctx.theme.textMuted),
+		plain: `${key}${full}`,
+		styled: paint(key, ctx.theme.text, { bold: true }) + paint(full, ctx.theme.textMuted),
 	};
 	const compactHint = {
-		plain: `${key} graph`,
-		styled: paint(key, ctx.theme.text, { bold: true }) + paint(" graph", ctx.theme.textMuted),
+		plain: `${key}${compact}`,
+		styled: paint(key, ctx.theme.text, { bold: true }) + paint(compact, ctx.theme.textMuted),
 	};
 	const trailingBorder = options.preserveTrailingBorder === true ? trailingWidgetBorderChar(line) : "";
 	const suffixWidth = visibleWidth(trailingBorder);
@@ -335,15 +339,18 @@ export function editorRuleColor(
 	}
 }
 
+/** Whether a choice or yes/no question card owns the composer's place (not closed back to the prompt with Esc). */
+export function closableQuestionCardOpen(
+	ctx: Pick<StageChatViewContext, "promptState"> & Partial<Pick<StageChatViewContext, "dismissedPromptId">>,
+): boolean {
+	const prompt = ctx.promptState?.prompt;
+	return (
+		prompt !== undefined && prompt.kind !== "input" && prompt.kind !== "editor" && prompt.id !== ctx.dismissedPromptId
+	);
+}
+
 /** The key that returns from a stage chat to its graph, as its hints name it. */
-export function backToGraphKey(
-	ctx: Pick<StageChatViewContext, "piKeybindings" | "promptState"> &
-		Partial<Pick<StageChatViewContext, "dismissedPromptId">>,
-): string {
+export function backToGraphKey(ctx: Pick<StageChatViewContext, "piKeybindings">): string {
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	// Choices and yes/no questions move with ←: Esc closes the question to the chat's prompt, then ← leaves.
-	const kind = ctx.promptState?.prompt.id === ctx.dismissedPromptId ? undefined : ctx.promptState?.prompt.kind;
-	const back = navKeyLabel(keybindings, APP_ACTION.navBack, "←") || "←";
-	if (kind !== undefined && kind !== "input" && kind !== "editor") return `esc, ${back}`;
-	return back;
+	return navKeyLabel(keybindings, APP_ACTION.navBack, "←") || "←";
 }

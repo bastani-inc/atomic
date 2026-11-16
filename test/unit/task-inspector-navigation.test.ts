@@ -216,9 +216,24 @@ test("shell input: Esc keeps it and its text, ← on empty input returns to the 
 		h.inspector.handleInput("\x1b[B");
 		h.inspector.handleInput(ENTER);
 		await h.type("draft");
+		h.inspector.handleInput(LEFT);
+		assert.match(h.text(), /Input to /, "← inside the text moves the cursor");
 		h.inspector.handleInput("\x1b[H");
 		h.inspector.handleInput(LEFT);
-		assert.match(h.text(), /Input to /, "← with text typed edits it");
+		assert.match(h.text(), /Background tasks/, "← at the start of a draft leaves, as in a chat");
+		h.inspector.handleInput(SPACE);
+		await flush();
+		h.inspector.handleInput("\x1b[B");
+		h.inspector.handleInput("\x1b[B");
+		h.inspector.handleInput(ENTER);
+		assert.match(
+			h
+				.text()
+				.replace(/[\x00-\x1f]/g, "")
+				.replace(/_pi:\/?fc/g, ""),
+			/draft/,
+			"the draft comes back",
+		);
 		assert.deepEqual(writes, []);
 	} finally {
 		await h.dispose();

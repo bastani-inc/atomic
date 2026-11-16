@@ -41,6 +41,9 @@ for (const kind of ["select", "confirm"] as const) {
 		try {
 			const text = () => stripAnsi(view.render(100).join("\n"));
 			assert.match(text(), /Ship the plan\?/);
+			// The card's hint names only its live keys: ← moves the choice, Esc closes the card (#5224).
+			assert.doesNotMatch(text(), /← return to graph|← graph|esc, ←/);
+			assert.match(text(), /esc close/i);
 			assert.equal(view.handleInput("\x1b"), true);
 			await flush();
 			assert.equal(detached, 0, "Esc never leaves the stage chat");
@@ -49,6 +52,7 @@ for (const kind of ["select", "confirm"] as const) {
 			assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt?.id, prompt.id);
 			assert.match(text(), /❯/, "the chat's own prompt is back");
 			assert.match(text(), /enter to answer/i, "the chat says how to reopen the question");
+			assert.match(text(), /← (?:return to )?graph/, "the closed card leaves the chat's own ← hint");
 			view.handleInput("\r");
 			assert.match(text(), /Ship the plan\?/, "Enter on the empty prompt reopens the question");
 			view.handleInput("\x1b");
