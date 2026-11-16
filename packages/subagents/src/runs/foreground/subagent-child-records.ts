@@ -23,8 +23,10 @@ import {
 	registerSubagentChildRecordReader,
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_RELEASED_STATUS,
+	type SubagentChildIndexEntry,
 	settleSubagentChildRecord,
 	subagentChildIdsOf,
+	subagentChildIndexEntry,
 	subagentChildRecordOf,
 	unsavedSubagentChildRecordsOf,
 } from "./subagent-child-card-state.js";
@@ -393,8 +395,25 @@ const ENDED_STATUSES: ReadonlySet<string> = new Set([
  * Whether a workflow stage closing for good ends this settled child: every one does, completed, failed, interrupted,
  * paused or quit. Running children end when their task settles.
  */
-function endsWithStage(record: SubagentChildRecord): boolean {
+function endsWithStage(record: Pick<SubagentChildRecord, "state" | "terminalStatus">): boolean {
 	return record.state === "terminal" && !ENDED_STATUSES.has(record.terminalStatus ?? "");
+}
+
+/** Where a child stands, as the index keeps it: its state, its terminal status and which task, session and name it has. */
+function standingOf(
+	known: SubagentChildIndexEntry,
+): Pick<
+	SubagentChildRecord,
+	"state" | "terminalStatus" | "taskId" | "childSessionId" | "childSessionFile" | "intercomTarget"
+> {
+	return {
+		state: known.state,
+		...(known.terminalStatus === undefined ? {} : { terminalStatus: known.terminalStatus }),
+		...(known.taskId === undefined ? {} : { taskId: known.taskId }),
+		...(known.childSessionId === undefined ? {} : { childSessionId: known.childSessionId }),
+		...(known.childSessionFile === undefined ? {} : { childSessionFile: known.childSessionFile }),
+		...(known.intercomTarget === undefined ? {} : { intercomTarget: known.intercomTarget }),
+	};
 }
 
 /** Whether a workflow run ending for good ends this child: every one does that has not ended already, running or not. */
@@ -589,10 +608,13 @@ export function watchWorkflowStageSubagentChildren(
 		try {
 			return subagentChildRecordOf(owner.sessionId, childId) ?? persisted;
 		} catch (error) {
-			// The copy of the stage's session that saved the latest record is not open in this process any more: the stage
-			// is closed for good, so the record its own session holds ends the child just as well.
+			// The copy of the stage's session that saved the latest record is not open in this process any more, but the
+			// index still knows where the child stands. One that runs ends when its task settles, and one that ended
+			// stays as it ended; any other ends from the record the stage's own session holds, as the index last saw it.
+			const known = subagentChildIndexEntry(childId);
+			if (known === undefined || !endsWithStage(known)) return undefined;
 			if (persisted === undefined) throw error;
-			return persisted;
+			return { ...persisted, ...standingOf(known) };
 		}
 	};
 	// Never throws: it runs in the close signal's abort listener and in the stage runner's close, where an error would

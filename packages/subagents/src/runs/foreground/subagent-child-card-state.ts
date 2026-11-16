@@ -410,7 +410,10 @@ export function subagentChildIndexSize(): number {
 	return entries.size;
 }
 
-/** What the index keeps of a child, by its child id; read by tests and the benchmark. */
+/**
+ * What the index keeps of a child, by its child id: where it stands even when its full record cannot be read, as a
+ * closing workflow stage needs. Read by tests and the benchmark too.
+ */
 export function subagentChildIndexEntry(childId: string): SubagentChildIndexEntry | undefined {
 	return entries.get(childId);
 }
