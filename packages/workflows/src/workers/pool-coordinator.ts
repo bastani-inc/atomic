@@ -18,6 +18,7 @@ import { resolveRunJournal } from "../durable/journal/resolution.js";
 import "../durable/journal/workflows-host-module.js";
 import {
 	openSqlPoolQueue,
+	type PoolClaimCandidate,
 	type PoolControl,
 	type PoolWork,
 	type SqlPoolQueue,
@@ -710,11 +711,12 @@ export class PoolCoordinator {
 	private committedControl?: PoolControl;
 	private recoveryTimer?: NodeJS.Timeout;
 	private readyProbeTimer?: NodeJS.Timeout;
-	private restoreRetryTimer?: NodeJS.Timeout;
-	private restoreRetryAt = Number.POSITIVE_INFINITY;
+	private claimRetryTimer?: NodeJS.Timeout;
+	private claimRetryAt = Number.POSITIVE_INFINITY;
 	private poolReady?: StorageNotificationSubscription;
 	private readonly idleClaims = new IdleClaimWaits();
 	private claimsGated = false;
+	private lagGated = false;
 	private flushTimer?: NodeJS.Timeout;
 	private lastFlushAt = 0;
 	private batchSequence = 0;
@@ -1323,6 +1325,7 @@ export class PoolCoordinator {
 	}
 
 	private gateOpened(): void {
+		this.lagGated = false;
 		if (!this.claimsGated) return;
 		this.claimsGated = false;
 		this.idleClaims.wakeAll();
@@ -1337,6 +1340,7 @@ export class PoolCoordinator {
 	/** Starts the recovery of expired attempts, every {@link RECOVERY_INTERVAL_MS}. */
 	private startRecovery(): void {
 		const recover = () => {
+			if (this.lagGated && !this.budgetBlocked && this.shipping?.lagging() !== true) this.gateOpened();
 			if (this.hasPendingHandoff) this.nextRecoveryAt = 0;
 			this.counters.enter("recovery");
 			void this.recoverExpired().catch(async (error: Error) => {
@@ -2826,13 +2830,15 @@ export class PoolCoordinator {
 								if (this.draining) return undefined;
 								const shipping = this.shipping;
 								const lagging = shipping?.lagging() === true;
-								if (lagging)
+								if (lagging) {
+									this.lagGated = true;
 									void shipping
 										?.flushAll()
 										.then(() => {
 											if (!shipping.lagging()) this.gateOpened();
 										})
 										.catch(() => {});
+								}
 								if (this.budgetBlocked || lagging || !this.places.claim(slot)) {
 									this.claimsGated = true;
 									return undefined;
@@ -3083,7 +3089,10 @@ export class PoolCoordinator {
 				definitions,
 				leaseMs,
 				shared ? { kind: "unbound" } : undefined,
-				() => slot.idle.reset(),
+				(error) => {
+					if (infrastructureFaultOf(error) === "storage_unavailable") throw error;
+					slot.idle.reset();
+				},
 			);
 			if (work !== undefined) found();
 			// A journal in another database than the pool's holds the snapshot's blobs: they are checked as the work is claimed.
@@ -3102,24 +3111,31 @@ export class PoolCoordinator {
 				previous !== undefined &&
 				ready.some((candidate) => candidate.id === previous.id && candidate.generation === previous.generation)
 			) {
-				if (!(await queue.acceptsClaim(lease, { id: satellite.host, providerId: satellite.providerId })))
-					return undefined;
+				const admission = await queue.acceptsClaim(lease, {
+					id: satellite.host,
+					providerId: satellite.providerId,
+				});
+				if (admission === "drain") {
+					this.scheduleClaimRetry(SHARED_POLL_MS);
+					this.scheduleCandidateRetries(satellite, backoff, ready);
+				}
+				if (admission !== "accepted") return undefined;
 				slot.idle.reset();
 			}
 			const candidates = ready.filter((candidate) => attempted.get(candidate.id) !== candidate.generation);
 			chosen = await choosePlacement(
 				candidates,
 				(binding) => this.warmWorktree(satellite, binding, slot.exited.signal),
-				(binding) => satellite.restore !== undefined && !backoff.waiting(workspaceAffinityKey(binding)),
+				(binding) => {
+					if (satellite.restore === undefined) return false;
+					const waitMs = backoff.remaining(workspaceAffinityKey(binding));
+					if (waitMs > 0) this.scheduleClaimRetry(waitMs);
+					return waitMs === 0;
+				},
 			);
 			if (this.draining || this.closed || slot.exited.signal.aborted) return undefined;
 			if (chosen === undefined) {
-				if (satellite.restore !== undefined)
-					for (const candidate of candidates) {
-						if (candidate.workspace === undefined) continue;
-						const waitMs = backoff.remaining(workspaceAffinityKey(candidate.workspace));
-						if (waitMs > 0) this.scheduleRestoreRetry(waitMs);
-					}
+				this.scheduleCandidateRetries(satellite, backoff, candidates);
 				return undefined;
 			}
 			work = await queue.claim(lease, worker, definitions, leaseMs, {
@@ -3184,15 +3200,28 @@ export class PoolCoordinator {
 		return undefined;
 	}
 
-	private scheduleRestoreRetry(waitMs: number): void {
+	private scheduleCandidateRetries(
+		satellite: SatellitePlacement,
+		backoff: RestoreBackoff,
+		candidates: readonly PoolClaimCandidate[],
+	): void {
+		if (satellite.restore === undefined) return;
+		for (const candidate of candidates) {
+			if (candidate.workspace === undefined) continue;
+			const waitMs = backoff.remaining(workspaceAffinityKey(candidate.workspace));
+			if (waitMs > 0) this.scheduleClaimRetry(waitMs);
+		}
+	}
+
+	private scheduleClaimRetry(waitMs: number): void {
 		if (this.closed) return;
 		const at = performance.now() + waitMs;
-		if (at >= this.restoreRetryAt) return;
-		clearTimeout(this.restoreRetryTimer);
-		this.restoreRetryAt = at;
-		this.restoreRetryTimer = setTimeout(() => {
-			this.restoreRetryTimer = undefined;
-			this.restoreRetryAt = Number.POSITIVE_INFINITY;
+		if (at >= this.claimRetryAt) return;
+		clearTimeout(this.claimRetryTimer);
+		this.claimRetryAt = at;
+		this.claimRetryTimer = setTimeout(() => {
+			this.claimRetryTimer = undefined;
+			this.claimRetryAt = Number.POSITIVE_INFINITY;
 			if (!this.closed) this.idleClaims.wakeOne();
 		}, Math.ceil(waitMs)).unref();
 	}
@@ -3208,7 +3237,7 @@ export class PoolCoordinator {
 		await this.sharedPool!.recordRestoreBackoff(satellite.host, key, waitMs, serializeError(error)).catch(
 			(recording: Error) => satellite.placementFailed(recording),
 		);
-		this.scheduleRestoreRetry(backoff.remaining(key));
+		this.scheduleClaimRetry(backoff.remaining(key));
 	}
 
 	/**
@@ -3222,6 +3251,7 @@ export class PoolCoordinator {
 	): Promise<void> {
 		const key = workspaceAffinityKey(binding);
 		if (!backoff.succeeded(key)) return;
+		this.idleClaims.wakeOne();
 		await this.sharedPool!.clearRestoreBackoff(satellite.host, key).catch((clearing: Error) =>
 			satellite.placementFailed(clearing),
 		);
@@ -3675,7 +3705,7 @@ export class PoolCoordinator {
 		clearInterval(this.ticker);
 		clearInterval(this.recoveryTimer);
 		clearInterval(this.readyProbeTimer);
-		clearTimeout(this.restoreRetryTimer);
+		clearTimeout(this.claimRetryTimer);
 		this.poolReady?.close();
 		clearInterval(this.mirrorTimer);
 		clearInterval(this.statsTimer);

@@ -307,7 +307,7 @@ test("a pool's ready mark shows claimable work, and changes as work becomes read
 	}
 });
 
-test("notifyReady starts the readiness revision upsert and notification before the first statement settles (#5230)", async () => {
+test("ready-producing writes advance readiness in the work table trigger and send only the notification in notifyReady (#5230)", async () => {
 	const directory = makeTempDirectory("pool-ready-pipelined-");
 	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
 	await database.exec("CREATE TABLE notices(id INTEGER PRIMARY KEY, channel TEXT NOT NULL, payload TEXT NOT NULL)");
@@ -323,19 +323,8 @@ test("notifyReady starts the readiness revision upsert and notification before t
 						get: (sql, ...params) => tx.get(sql, ...params),
 						all: (sql, ...params) => tx.all(sql, ...params),
 						async run(sql, ...params) {
-							if (sql.includes("wf_runs_pool_ready") && sql.startsWith("INSERT")) {
-								events.push("start:ready");
-								await new Promise((resolve) => setImmediate(resolve));
-								const result = await tx.run(sql, ...params);
-								events.push("settle:ready");
-								return result;
-							}
-							if (sql.includes("INSERT INTO notices")) {
-								events.push("start:notice");
-								const result = await tx.run(sql, ...params);
-								events.push("settle:notice");
-								return result;
-							}
+							if (sql.includes("wf_runs_pool_ready")) events.push("client:ready");
+							if (sql.includes("INSERT INTO notices")) events.push("notice");
 							return tx.run(sql, ...params);
 						},
 					};
@@ -353,11 +342,17 @@ test("notifyReady starts the readiness revision upsert and notification before t
 		await pool.initialize(lease, 60_000);
 		events = [];
 		await pool.enqueue(lease, work, boundary);
-		assert.deepEqual(events.slice(0, 2), ["start:ready", "start:notice"]);
+		assert.deepEqual(events, ["notice"]);
+		assert.deepEqual(await database.get("SELECT revision FROM wf_runs_pool_ready WHERE root = 'root'"), {
+			revision: 1,
+		});
 		const held = (await pool.claim(lease, "worker", [work], 60_000))!;
 		events = [];
 		assert.equal(await pool.releaseExited(lease, held), true);
-		assert.deepEqual(events.slice(0, 2), ["start:ready", "start:notice"]);
+		assert.deepEqual(events, ["notice"]);
+		assert.deepEqual(await database.get("SELECT revision FROM wf_runs_pool_ready WHERE root = 'root'"), {
+			revision: 2,
+		});
 	} finally {
 		await journal.close();
 		await database.close();

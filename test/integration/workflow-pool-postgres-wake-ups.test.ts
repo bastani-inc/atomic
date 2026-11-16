@@ -119,10 +119,18 @@ async function listening(scope: PostgresScope): Promise<void> {
 }
 
 describe.skipIf(postgresSkipReason !== undefined)("worker pool wake-ups on Postgres (#5103)", () => {
-	test("ready-work wake-ups write no separate readiness rows on PostgreSQL (#5230)", async () => {
+	test("ready-work wake-ups create no readiness table and write no separate readiness rows on PostgreSQL (#5230)", async () => {
 		await withPostgresDatabase(async (scope) => {
 			const f = await rootAndHost(scope);
 			try {
+				const reader = await scope.open();
+				assert.equal(
+					await reader.get(
+						"SELECT c.relname AS name FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ?",
+						`${PREFIX}wf_runs_pool_ready`,
+					),
+					undefined,
+				);
 				await listening(scope);
 				const assertNoticeWithoutReadyWrite = () => {
 					assert.equal(f.statements.filter((sql) => sql.includes(`${PREFIX}wf_runs_pool_ready`)).length, 0);

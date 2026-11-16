@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import type { SqliteDatabase, SqliteExecutor, SqliteTransactionOptions, SqliteValue } from "@bastani/atomic/storage";
 import { test } from "vitest";
+import { sqliteDialect } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { openSqlPoolQueue, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
@@ -10,10 +12,57 @@ import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtim
 const actions = ["enqueue", "claim", "unplaced", "exited", "expire", "resume"] as const;
 type Action = (typeof actions)[number];
 
+function countReadyTableStatements(database: SqliteDatabase): {
+	readonly database: SqliteDatabase;
+	readonly count: () => number;
+	readonly reset: () => void;
+} {
+	let statements = 0;
+	let watching = false;
+	const isClientReadyWrite = (sql: string): boolean => {
+		if (watching && sql.includes("wf_runs_pool_ready") && !sql.trimStart().startsWith("SELECT")) {
+			statements++;
+			return true;
+		}
+		return false;
+	};
+	const wrapExecutor = (executor: SqliteExecutor): SqliteExecutor => ({
+		exec: async (sql: string) => {
+			if (isClientReadyWrite(sql)) return;
+			await executor.exec(sql);
+		},
+		run: async (sql: string, ...params: readonly SqliteValue[]) => {
+			if (isClientReadyWrite(sql)) return { changes: 0 };
+			return executor.run(sql, ...params);
+		},
+		get: (sql: string, ...params: readonly SqliteValue[]) => executor.get(sql, ...params),
+		all: (sql: string, ...params: readonly SqliteValue[]) => executor.all(sql, ...params),
+	});
+	const wrapped: SqliteDatabase = {
+		descriptor: database.descriptor,
+		dialect: database.dialect,
+		notifications: database.notifications,
+		...wrapExecutor(database),
+		transaction: <T>(body: (tx: SqliteExecutor) => Promise<T>, options?: SqliteTransactionOptions) =>
+			database.transaction((tx) => body(wrapExecutor(tx)), options),
+		close: () => database.close(),
+	};
+	return {
+		database: wrapped,
+		count: () => statements,
+		reset: () => {
+			watching = true;
+			statements = 0;
+		},
+	};
+}
+
 for (const seed of [7, 41, 97]) {
 	test(`ready marks stay fresh across mixed queue transitions with seed ${seed} (#5230)`, async () => {
 		const directory = makeTempDirectory("pool-ready-revision-");
-		const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+		const rawDatabase = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+		const counted = countReadyTableStatements(rawDatabase);
+		const { database } = counted;
 		const journal = await SqlRunJournal.open(database);
 		try {
 			await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
@@ -22,6 +71,7 @@ for (const seed of [7, 41, 97]) {
 			const lease = acquired.lease;
 			const pool = await openSqlPoolQueue(journal);
 			await pool.initialize(lease, 600_000);
+			counted.reset();
 			const ready = new Map<string, PoolWork>();
 			const held = new Map<string, PoolWork>();
 			const marks = new Set<string>();
@@ -36,6 +86,7 @@ for (const seed of [7, 41, 97]) {
 				return (random >>> 0) % limit;
 			};
 			const record = async (action: Action) => {
+				assert.equal(counted.count(), 0, `${action} sent a client-side wf_runs_pool_ready write`);
 				const mark = await pool.readyMark("root");
 				if (mark !== undefined) {
 					assert.equal(marks.has(mark), false, `${action} repeated ready mark ${mark}`);
@@ -147,6 +198,97 @@ test("an existing pool gains ready tracking without changing legacy initializati
 	} finally {
 		await journal.close();
 		await database.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("migrating from pool-ready schema revision 1 installs work-table readiness triggers (#5230)", async () => {
+	const directory = makeTempDirectory("pool-ready-rev1-migration-");
+	const rawDatabase = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+	const versionedDatabase: SqliteDatabase = new Proxy(rawDatabase, {
+		get(target, key) {
+			if (key === "dialect") return { ...sqliteDialect, versionedMigrations: true };
+			const value = Reflect.get(target, key, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	const counted = countReadyTableStatements(versionedDatabase);
+	const journal = await SqlRunJournal.open(counted.database);
+	try {
+		const header = { runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" };
+		await journal.createRun(header);
+		const acquired = await journal.acquire("root", "coordinator");
+		if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
+		const lease = acquired.lease;
+		const initial = await openSqlPoolQueue(journal);
+		await initial.initialize(lease, 600_000);
+		await rawDatabase.exec(
+			"DROP TRIGGER IF EXISTS wf_runs_pool_ready_insert; DROP TRIGGER IF EXISTS wf_runs_pool_ready_update; DELETE FROM atomic_migrations WHERE domain = 'schema:pool-ready' AND version > 1; INSERT OR REPLACE INTO atomic_migrations(domain, version, applied_at) VALUES ('schema:pool-ready', 1, 0)",
+		);
+		assert.deepEqual(
+			await rawDatabase.all(
+				"SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'wf_runs_pool_ready_%' ORDER BY name",
+			),
+			[],
+		);
+		const upgraded = await openSqlPoolQueue(journal);
+		assert.deepEqual(
+			await rawDatabase.all(
+				"SELECT version FROM atomic_migrations WHERE domain = 'schema:pool-ready' ORDER BY version",
+			),
+			[{ version: 1 }, { version: 2 }],
+		);
+		assert.deepEqual(
+			await rawDatabase.all(
+				"SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'wf_runs_pool_ready_%' ORDER BY name",
+			),
+			[{ name: "wf_runs_pool_ready_insert" }, { name: "wf_runs_pool_ready_update" }],
+		);
+		counted.reset();
+		const fixture = poolWorkFixture();
+		await upgraded.enqueue(lease, fixture.work, fixture.boundary);
+		assert.equal(counted.count(), 0);
+		const firstMark = await upgraded.readyMark("root");
+		assert.ok(firstMark !== undefined);
+		const claimed = await upgraded.claim(lease, "worker", [fixture.work], 60_000);
+		assert.ok(claimed);
+		assert.equal(await upgraded.releaseUnplaced(lease, claimed), true);
+		assert.equal(counted.count(), 0);
+		const unplacedMark = await upgraded.readyMark("root");
+		assert.ok(unplacedMark !== undefined && unplacedMark !== firstMark);
+		const secondClaim = await upgraded.claim(lease, "worker", [fixture.work], 60_000);
+		assert.ok(secondClaim);
+		assert.equal(await upgraded.releaseExited(lease, secondClaim), true);
+		assert.equal(counted.count(), 0);
+		const exitedMark = await upgraded.readyMark("root");
+		assert.ok(exitedMark !== undefined && exitedMark !== unplacedMark && exitedMark !== firstMark);
+		const thirdClaim = await upgraded.claim(lease, "worker", [fixture.work], 60_000);
+		assert.ok(thirdClaim);
+		await rawDatabase.run(
+			"UPDATE wf_runs_work SET state = 'ready', worker = NULL, expires_at = 0, generation = ? WHERE id = ?",
+			thirdClaim.generation - 1,
+			thirdClaim.id,
+		);
+		const directUpdateMark = await upgraded.readyMark("root");
+		assert.ok(
+			directUpdateMark !== undefined &&
+				directUpdateMark !== exitedMark &&
+				directUpdateMark !== unplacedMark &&
+				directUpdateMark !== firstMark,
+		);
+		const other = poolWorkFixture("direct-insert");
+		await rawDatabase.run(
+			"INSERT INTO wf_runs_work(id, root, boundary, descriptor, fingerprint, state, generation, epoch, expires_at, renewed_at, ready_at, inputs_chunks) VALUES (?, 'root', ?, ?, 'fp', 'ready', 0, ?, 0, 0, 0, 0)",
+			"direct-work-id",
+			other.work.boundaryId,
+			JSON.stringify(other.work),
+			lease.epoch,
+		);
+		const directInsertMark = await upgraded.readyMark("root");
+		assert.ok(directInsertMark !== undefined && directInsertMark !== directUpdateMark);
+	} finally {
+		await journal.close();
+		await rawDatabase.close();
 		removeTempDirectory(directory);
 	}
 });

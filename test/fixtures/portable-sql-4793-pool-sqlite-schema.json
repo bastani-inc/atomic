@@ -487,6 +487,18 @@
 	},
 	{
 		"type": "trigger",
+		"name": "team_wf_runs_pool_ready_insert",
+		"tbl_name": "team_wf_runs_work",
+		"sql": "CREATE TRIGGER team_wf_runs_pool_ready_insert AFTER INSERT ON team_wf_runs_work WHEN NEW.state = 'ready' BEGIN INSERT INTO team_wf_runs_pool_ready(root, revision) VALUES (NEW.root, 1) ON CONFLICT(root) DO UPDATE SET revision = revision + 1 END"
+	},
+	{
+		"type": "trigger",
+		"name": "team_wf_runs_pool_ready_update",
+		"tbl_name": "team_wf_runs_work",
+		"sql": "CREATE TRIGGER team_wf_runs_pool_ready_update AFTER UPDATE ON team_wf_runs_work WHEN NEW.state = 'ready' BEGIN INSERT INTO team_wf_runs_pool_ready(root, revision) VALUES (NEW.root, 1) ON CONFLICT(root) DO UPDATE SET revision = revision + 1 END"
+	},
+	{
+		"type": "trigger",
 		"name": "team_wf_runs_pool_usage_totals_delete",
 		"tbl_name": "team_wf_runs_pool_usage",
 		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_delete AFTER DELETE ON team_wf_runs_pool_usage BEGIN DELETE FROM team_wf_runs_pool_usage_totals WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = OLD.work) END"
@@ -514,6 +526,18 @@
 		"name": "wf_runs_pool_fence_abort",
 		"tbl_name": "wf_runs_pool_fence",
 		"sql": "CREATE TRIGGER wf_runs_pool_fence_abort BEFORE INSERT ON wf_runs_pool_fence BEGIN SELECT RAISE(ABORT, 'atomic-pool-fence') END"
+	},
+	{
+		"type": "trigger",
+		"name": "wf_runs_pool_ready_insert",
+		"tbl_name": "wf_runs_work",
+		"sql": "CREATE TRIGGER wf_runs_pool_ready_insert AFTER INSERT ON wf_runs_work WHEN NEW.state = 'ready' BEGIN INSERT INTO wf_runs_pool_ready(root, revision) VALUES (NEW.root, 1) ON CONFLICT(root) DO UPDATE SET revision = revision + 1 END"
+	},
+	{
+		"type": "trigger",
+		"name": "wf_runs_pool_ready_update",
+		"tbl_name": "wf_runs_work",
+		"sql": "CREATE TRIGGER wf_runs_pool_ready_update AFTER UPDATE ON wf_runs_work WHEN NEW.state = 'ready' BEGIN INSERT INTO wf_runs_pool_ready(root, revision) VALUES (NEW.root, 1) ON CONFLICT(root) DO UPDATE SET revision = revision + 1 END"
 	},
 	{
 		"type": "trigger",

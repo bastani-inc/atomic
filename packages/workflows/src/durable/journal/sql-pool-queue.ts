@@ -108,6 +108,7 @@ const POOL_SCHEMA_VERSION_UNCHUNKED = 2;
  * every change to what {@link SqlPoolQueue.open} creates, so a schema an earlier build set up is set up again.
  */
 const POOL_SCHEMA_REVISION = 1;
+const POOL_READY_SCHEMA_REVISION = 2;
 /** Work whose inputs a work row holds only as a stub, by the work this queue read: how many chunks hold them. */
 const chunkedInputs = new WeakMap<PoolWork, number>();
 /**
@@ -562,12 +563,26 @@ export class SqlPoolQueue {
 				);
 				pool.outboxPending = (await tx.get(`SELECT 1 AS held FROM ${pool.outbox} LIMIT 1`)) !== undefined;
 			}
-			await ensureStorageSchema(tx, dialect, { ledger, domain: "pool-ready", revision: 1 }, () =>
-				tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.roots}_ready(
+			if (!pool.rowLocks) {
+				await ensureStorageSchema(
+					tx,
+					dialect,
+					{ ledger, domain: "pool-ready", revision: POOL_READY_SCHEMA_REVISION },
+					async () => {
+						await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.roots}_ready(
 					root TEXT PRIMARY KEY REFERENCES ${pool.roots}(root) ON DELETE CASCADE,
 					revision ${int} NOT NULL DEFAULT 0
-				)`),
-			);
+				)`);
+						for (const event of ["INSERT", "UPDATE"])
+							await tx.exec(`CREATE TRIGGER IF NOT EXISTS ${pool.roots}_ready_${event.toLowerCase()} AFTER ${event} ON ${pool.work}
+						WHEN NEW.state = 'ready'
+						BEGIN
+							INSERT INTO ${pool.roots}_ready(root, revision) VALUES (NEW.root, 1)
+							ON CONFLICT(root) DO UPDATE SET revision = revision + 1;
+						END`);
+					},
+				);
+			}
 			// The ledger and watermarks a shipping root's hosts write (#4768): a domain of their own, so a pool set up before
 			// them gets them once, and a current one runs no DDL.
 			await ensureStorageSchema(tx, dialect, { ledger, domain: "pool-ship", revision: 1 }, () =>
@@ -1385,7 +1400,7 @@ export class SqlPoolQueue {
 		definitions: readonly Pick<PoolWorkDescriptor, "definition" | "digest">[],
 		durationMs: number,
 		placement?: PoolClaimPlacement,
-		outboxBlocked?: () => void,
+		outboxBlocked?: (error: unknown) => void,
 	): Promise<PoolWork | undefined> {
 		positive(durationMs);
 		lease = snapshotLease(lease);
@@ -1393,16 +1408,22 @@ export class SqlPoolQueue {
 		validateText("holderId", worker);
 		const compatible = compatibleClause(this.dialect, definitions.length);
 		if (this.remote) {
+			try {
+				while (this.outboxPending || this.draining !== undefined) await this.drainOutbox(lease);
+			} catch (error) {
+				if (error instanceof StaleLeaseError) {
+					await this.remote.fresh(lease);
+					throw error;
+				}
+				outboxBlocked?.(error);
+				return undefined;
+			}
 			await this.remote.fresh(lease);
-			// No work is handed out while an event this root's workers were told is committed is missing from the
-			// journal: a replacement attempt replays the journal, so it must find that event there. A delivery in
-			// flight counts as missing events too, since it clears the pending flag when it starts, not when it ends;
-			// and a commit can stage another row after the pass this claim joined has read its rows, so ask again.
 			try {
 				while (this.outboxPending || this.draining !== undefined) await this.drainOutbox(lease);
 			} catch (error) {
 				if (error instanceof StaleLeaseError) throw error;
-				outboxBlocked?.();
+				outboxBlocked?.(error);
 				return undefined;
 			}
 		}
@@ -1529,7 +1550,10 @@ export class SqlPoolQueue {
 			...(row.workspace === null ? {} : { workspace: JSON.parse(String(row.workspace)) as WorkspaceBinding }),
 		}));
 	}
-	async acceptsClaim(lease: Lease, host: { readonly id: string; readonly providerId?: string }): Promise<boolean> {
+	async acceptsClaim(
+		lease: Lease,
+		host: { readonly id: string; readonly providerId?: string },
+	): Promise<"accepted" | "control" | "drain"> {
 		lease = snapshotLease(lease);
 		const requested = { ...host };
 		await this.remote?.fresh(lease);
@@ -1553,11 +1577,8 @@ export class SqlPoolQueue {
 				lease.runId,
 			);
 			const { status } = this.authorityOf(row, lease);
-			return (
-				status === "running" &&
-				(row!.control === null || row!.control === "running") &&
-				Number(row!.host_available) === 1
-			);
+			if (status !== "running" || (row!.control !== null && row!.control !== "running")) return "control";
+			return Number(row!.host_available) === 1 ? "accepted" : "drain";
 		});
 	}
 
@@ -3026,16 +3047,7 @@ export class SqlPoolQueue {
 	}
 	private async notifyReady(tx: SqliteExecutor, root: string): Promise<void> {
 		const notice = this.readyNotice(root);
-		if (this.rowLocks) {
-			if (notice !== undefined) await tx.run(notice.sql, ...notice.params);
-			return;
-		}
-		const advance = `INSERT INTO ${this.roots}_ready(root, revision) VALUES (?, 1)
-			ON CONFLICT(root) DO UPDATE SET revision = ${this.roots}_ready.revision + 1`;
-		await Promise.all([
-			tx.run(advance, root),
-			...(notice === undefined ? [] : [tx.run(notice.sql, ...notice.params)]),
-		]);
+		if (notice !== undefined) await tx.run(notice.sql, ...notice.params);
 	}
 	/** Every work item of `root`. A read: each coordinator's recovery asks every half second. */
 	async inspect(root: string): Promise<readonly PoolWork[]> {

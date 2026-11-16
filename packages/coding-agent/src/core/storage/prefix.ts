@@ -131,7 +131,6 @@ export const POSTGRES_STORAGE_IDENTIFIER_SUFFIXES: readonly string[] = Object.fr
 	"wf_runs_pool_hosts",
 	"wf_runs_pool_meta",
 	"wf_runs_pool_operations",
-	"wf_runs_pool_ready",
 	"wf_runs_pool_restore_backoffs",
 	"wf_runs_pool_root_snapshot",
 	"wf_runs_pool_shared",
