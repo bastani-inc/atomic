@@ -59,6 +59,11 @@ test("each field of the workflow inputs form shows ✓ when ready and ✗ with t
 	const { text } = form(FIELDS);
 	const shown = text();
 	assert.match(shown, /objective +.*✓/);
+	assert.doesNotMatch(
+		form([{ name: "goal", type: "string", required: true, initialValue: "" }]).text(),
+		/required · ✗ required/,
+	);
+	assert.match(form([{ name: "goal", type: "string", required: true, initialValue: "" }]).text(), /goal +✗ required/);
 	assert.match(shown, /max_loops +.*✗ must be a whole number/);
 	assert.match(shown, /mode +.*✗ choose one/);
 	assert.match(shown, /dry_run +.*✗ choose on or off/);

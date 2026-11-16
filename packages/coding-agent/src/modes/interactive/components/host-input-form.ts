@@ -353,7 +353,9 @@ export class HostInputFormComponent implements Component, Focusable {
 		const invalid = this.invalidReason(field, this.currentValue(index));
 		const requiredness = field.required ? "required" : "optional";
 		const statusPlain = invalid === undefined ? "✓" : `✗ ${invalid}`;
-		const badgePlain = `${requiredness} · ${statusPlain}`;
+		// An empty required field says `✗ required` once, not `required · ✗ required`.
+		const prefix = invalid === "required" ? "" : `${requiredness} · `;
+		const badgePlain = `${prefix}${statusPlain}`;
 		const marker = active ? this.theme.fg("accent", "▸") : " ";
 		const nameBudget = Math.max(4, cw - badgePlain.length - 3);
 		const nameShown = truncateToWidth(field.name, nameBudget, "…");
@@ -364,7 +366,7 @@ export class HostInputFormComponent implements Component, Focusable {
 			invalid === undefined
 				? this.theme.fg("success", statusPlain)
 				: this.theme.fg(this.invalid.has(index) || !field.required ? "error" : "warning", statusPlain);
-		const badge = `${this.theme.fg("dim", `${requiredness} · `)}${status}`;
+		const badge = `${prefix ? this.theme.fg("dim", prefix) : ""}${status}`;
 		const gap = Math.max(1, cw - 2 - visibleWidth(nameShown) - badgePlain.length);
 		return `${marker} ${nameStyled}${" ".repeat(gap)}${badge}`;
 	}

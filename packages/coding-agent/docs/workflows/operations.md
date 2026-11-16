@@ -204,7 +204,7 @@ Common controls:
 /workflow resume <run-id> --accept-entry-changes  # resume after editing a local worker definition's entry module
 /workflow quit <run-id>                # pause gracefully and keep the run resumable
 /workflow fork <run-id> --from <stage> # retry from a stage in a new run; the source run is unchanged
-/workflows [run-id]                    # retained alias for /workflow resume (history picker)
+/workflows [run-id]                    # this session's runs and the registered definitions; one run opens its graph
 ```
 
 Surface behavior:
@@ -230,7 +230,12 @@ Surface behavior:
 - **Status listing** - `/workflow status` lists all retained active and terminal top-level runs by default; implementation-owned nested child runs are flattened into their parent workflow rather than listed separately. `/workflow status --all` is retained as a compatibility alias.
 - **Status times** - `/workflow status <run-id>` displays `started` and `ended` in the system local timezone as `HH:mm:ss`. If they differ from your expected clock, check the timezone of the machine or container running Atomic and any inherited `TZ` environment setting. Elapsed durations and raw timestamps in structured results are unchanged.
 
-`/workflows` is the retained-run history alias for `/workflow resume`: with no id it opens the same mixed picker, but the resumable section lists only runs that the resume path can actually accept and the completed section is read-only inspection. A run with no durable checkpoint, missing/pruned artifacts, or explicit deletion is omitted from the resume picker; an explicit `/workflow resume <id>` still returns an explanatory error. It is intentionally different from `/workflow list`, which lists installed workflow definitions. See [`/workflow resume` — cross-session resume selector](#/workflow-resume-—-cross-session-resume-selector) for the full picker semantics.
+`/workflows` is where you find this session's workflows. With exactly one run it opens that run's graph. Otherwise it opens a sheet with two groups:
+
+- **Runs** - newest first. Each row names the workflow and what tells the run apart (its label, else its first text input, else its short id), then its state: `running · stage 3/5 implement · 12m · $1.84`, `needs input · <question>` with `◆`, or a failed run's `✗` and one-line reason. Stopped runs show `◼`.
+- **Definitions** - every registered workflow, with its description and how many inputs it takes (`4 inputs (2 required)`).
+
+Type to search. Enter on a run opens its graph, and `esc` at the graph's top comes back to the sheet; Enter on a definition starts it, asking for its inputs first. `esc` closes the sheet. With no runs and no definitions, or without an interactive terminal, it says `No workflows in this session.` or prints the run list. `/workflow resume` keeps the cross-session resume picker described below.
 
 At the supported 40-column terminal minimum, attached stage chats keep the `← return to graph` hint. The TUI may truncate provider/model context to make room, but it keeps that context separate from the hierarchy hint so the controls stay readable.
 
@@ -638,7 +643,7 @@ Changing `iteration` makes each loop pass a distinct durable call. Reusing the s
 
 ### `/workflow resume` — cross-session resume selector
 
-The `/workflow resume` command mirrors `/resume` ergonomics and `/workflows` is its alias. With no ID, it builds a newest-first picker from eligible live runs and journal records. Selected records are revalidated before resume or inspection. Runs with live leases are excluded; expired running leases appear as `crashed`.
+The `/workflow resume` command mirrors `/resume` ergonomics. With no ID, it builds a newest-first picker from eligible live runs and journal records. Selected records are revalidated before resume or inspection. Runs with live leases are excluded; expired running leases appear as `crashed`.
 
 Picker rows use the run label when set, otherwise a one-line objective or prompt input, falling back to the workflow ID. When a generated progress summary is available, it has its own column; status and workflow name precede the identity in the other column. Live rows also show completed/total stages. Without a generated summary, the adjacent column shows those status details instead. Search matches the identity, summary, and full run ID.
 

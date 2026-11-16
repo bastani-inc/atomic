@@ -12,6 +12,7 @@ import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunct
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowInputSchemaMap } from "../shared/types.js";
+import { panelItemsFromSnapshot } from "./panel-runs.js";
 
 /** What a chosen row is: a run to open, or a definition to start. */
 export type WorkflowsListingTarget = { kind: "run"; runId: string } | { kind: "definition"; name: string };
@@ -93,8 +94,23 @@ export function runCostText(run: RunSnapshot): string | undefined {
 	return cost === undefined || cost <= 0 ? undefined : `$${cost.toFixed(2)}`;
 }
 
-/** A run's second line: `running · stage 3/5 implement · 12m · $1.84`, or a failed run's `✗ <reason>`. */
-export function runRowDescription(run: RunSnapshot, now: number): string {
+/** What tells a run apart from other runs of its workflow: its label, else its first text input, else its short id. */
+export function runRowLabel(run: RunSnapshot): string {
+	if (run.label) return `${run.name} · ${run.label}`;
+	const input = Object.values(run.inputs).find((value) => typeof value === "string" && value.trim() !== "");
+	const detail = typeof input === "string" ? (input.split("\n")[0] ?? "").trim() : run.id.slice(0, 8);
+	return `${run.name} · ${detail.length > 40 ? `${detail.slice(0, 39)}…` : detail}`;
+}
+
+/**
+ * A run's second line: `running · stage 3/5 implement · 12m · $1.84`, a failed run's `✗ <reason>`, or
+ * `needs input · <question>` while it waits on one.
+ */
+export function runRowDescription(run: RunSnapshot, now: number, question?: string): string {
+	if (question !== undefined)
+		return ["needs input", question, listingDuration(runElapsedMs(run, now)), runCostText(run)]
+			.filter((part): part is string => part !== undefined && part !== "")
+			.join(" · ");
 	const status = RUN_STATUS_TEXT[run.status];
 	const live = run.status === "running" || run.status === "pending" || run.status === "paused";
 	const reason = run.status === "failed" || run.status === "blocked" ? shortFailureReason(run) : undefined;
@@ -140,21 +156,35 @@ export function workflowsListingItems(
 	definitions: readonly WorkflowsListingDefinition[],
 	now = Date.now(),
 ): SelectorItem<WorkflowsListingTarget>[] {
+	// The agent panel's view of each run says whether it waits on a question, and which.
+	const waiting = new Map(
+		panelItemsFromSnapshot(runs, now)
+			.filter((item) => item.state === "input")
+			.map((item) => [item.id, item.question ?? item.task] as const),
+	);
 	const runItems = [...topLevelWorkflowRuns(runs)]
 		.sort((a, b) => b.startedAt - a.startedAt)
-		.map(
-			(run): SelectorItem<WorkflowsListingTarget> => ({
+		.map((run): SelectorItem<WorkflowsListingTarget> => {
+			const question = waiting.get(`run:${run.id}`);
+			const tag =
+				question !== undefined
+					? "◆"
+					: run.status === "failed"
+						? "✗"
+						: run.status === "cancelled" || run.status === "killed"
+							? "◼"
+							: undefined;
+			return {
 				id: `run:${run.id}`,
 				value: { kind: "run", runId: run.id },
-				label: run.label ? `${run.name} · ${run.label}` : run.name,
-				description: runRowDescription(run, now),
-				tag:
-					run.status === "failed" ? "✗" : run.status === "cancelled" || run.status === "killed" ? "◼" : undefined,
-				tagTone: RUN_TONE[run.status],
+				label: runRowLabel(run),
+				description: runRowDescription(run, now, question),
+				tag,
+				tagTone: question !== undefined ? "warning" : RUN_TONE[run.status],
 				group: "Runs",
-				searchText: `${run.name} ${run.label ?? ""} ${run.id} ${RUN_STATUS_TEXT[run.status]}`,
-			}),
-		);
+				searchText: `${runRowLabel(run)} ${run.id} ${RUN_STATUS_TEXT[run.status]}`,
+			};
+		});
 	const definitionItems = [...definitions]
 		.sort((a, b) => a.normalizedName.localeCompare(b.normalizedName))
 		.map(
