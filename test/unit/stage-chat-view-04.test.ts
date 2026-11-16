@@ -76,11 +76,10 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
-	test("ctrl+c closes and ctrl+x detaches without cancelling the pending custom UI", async () => {
+	test("ctrl+c closes without cancelling the pending custom UI, and ctrl+x never detaches (#5224)", async () => {
 		for (const variant of [
 			{ key: "\x03", expect: "close", status: "running" },
-			{ key: "\x18", expect: "detach", status: "running" },
-			{ key: "\x18", expect: "detach", status: "paused" },
+			{ key: "\x03", expect: "close", status: "paused" },
 		] as const) {
 			const store = createStore();
 			setupRun(store, "run-1", "stage-a", variant.status);
@@ -124,14 +123,11 @@ describe("StageChatView", () => {
 			);
 			await flush();
 
+			view.handleInput("\x18");
+			assert.equal(detached, 0, "Ctrl+X belongs to the custom UI, never to navigation");
 			assert.equal(view.handleInput(variant.key), true);
-			if (variant.expect === "close") {
-				assert.equal(closed, 1);
-				assert.equal(detached, 0);
-			} else {
-				assert.equal(detached, 1);
-				assert.equal(closed, 0);
-			}
+			assert.equal(closed, 1);
+			assert.equal(detached, 0);
 			// The local display is released (transcript renders again)...
 			assert.doesNotMatch(stripAnsi(view.render(80).join("\n")), /Q/);
 			// ...but the human-input request is NOT cancelled — it stays pending so a

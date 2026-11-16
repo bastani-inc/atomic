@@ -1727,6 +1727,7 @@ export function registerReleasedAskStoreConformance(
 				ask: heldBy("abandoned"),
 			});
 			await sleep(RENEWAL_GAP_MS);
+			const newClaimStarted = Date.now();
 			assert.deepEqual(await b.supersede(over("new", "abandoned", RENEWAL_GAP_MS / 2)), {
 				status: "claimed",
 				ask: heldBy("new"),
@@ -1735,7 +1736,9 @@ export function registerReleasedAskStoreConformance(
 				status: "taken",
 				ask: heldBy("new"),
 			});
-			assert.deepEqual(await a.supersede(over("newer", "new", RENEWAL_GAP_MS / 2)), {
+			// Younger than the elapsed time since it was made, by a margin no older claim could pass.
+			const freshWindow = Date.now() - newClaimStarted + RENEWAL_GAP_MS / 2;
+			assert.deepEqual(await a.supersede(over("newer", "new", freshWindow)), {
 				status: "taken",
 				ask: heldBy("new"),
 			});
@@ -1767,9 +1770,12 @@ export function registerReleasedAskStoreConformance(
 		await a.claim(by("q1", "first"));
 		await sleep(RENEWAL_GAP_MS);
 		assert.deepEqual(await b.reopen(by("q1", "first")), { status: "settled" });
+		const secondClaimStarted = Date.now();
 		await b.claim(by("q1", "second"));
+		// The first claim's age, carried over, would exceed this window by at least RENEWAL_GAP_MS / 2.
+		const freshWindow = Date.now() - secondClaimStarted + RENEWAL_GAP_MS / 2;
 		assert.deepEqual(
-			await a.supersede({ ...by("q1", "third"), staleReplyMessageId: "second", staleAfterMs: RENEWAL_GAP_MS / 2 }),
+			await a.supersede({ ...by("q1", "third"), staleReplyMessageId: "second", staleAfterMs: freshWindow }),
 			{ status: "taken", ask: { ...asked("q1"), state: "claimed", replyMessageId: "second" } },
 		);
 	});

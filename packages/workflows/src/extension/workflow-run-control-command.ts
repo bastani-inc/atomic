@@ -538,8 +538,8 @@ export async function handleRunControlCommand(
 			if (policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId, stageRunId);
 			print(
 				stageId
-					? `Attached to ${runId} stage ${stageId}. ctrl+x return to graph · esc close.`
-					: `Attached to ${runId}. ↵ chat · ctrl+x leave graph · return to main chat.`,
+					? `Attached to ${runId} stage ${stageId}. ← return to graph · esc interrupt.`
+					: `Attached to ${runId}. ↵ open stage chat · esc return to main chat.`,
 			);
 			return true;
 		}

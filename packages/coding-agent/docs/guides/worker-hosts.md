@@ -12,7 +12,7 @@ Choose the database:
 - **[PostgreSQL](/storage#postgresql)** for fleets in the cloud, or when you already run managed PostgreSQL: Amazon RDS or Aurora, Google Cloud SQL, Azure Database for PostgreSQL, Neon or Supabase. Hosts sign in with a password file or the cloud's own identity. [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres) has a recipe for each service.
 - **[libSQL or Turso](/storage#turso-and-libsql)** as the lightweight option: one URL and a token. If you host it yourself with sqld, start sqld with `--checkpoint-interval-s 60` (or `SQLD_CHECKPOINT_INTERVAL_S=60`): sqld 0.24.33 can otherwise stop taking writes when many hosts write at once.
 
-On either, the pool's writes take turns, one at a time across the database. See [Which store to choose](/storage#which-store-to-choose). On PostgreSQL, size the server's `max_connections` for every host and its slots, or put a pooler in front: see [Plan connections](/guides/worker-fleets-postgres#plan-connections).
+On libSQL the pool's writes take turns, one at a time across the database, and idle hosts poll it. On PostgreSQL hosts claim children, send heartbeats, record checkpoints and complete children in parallel, each write locking only its own rows, and idle hosts are woken through `LISTEN`/`NOTIFY` as soon as work is queued. See [Which store to choose](/storage#which-store-to-choose) and [What works on PostgreSQL](/storage#what-works-on-postgresql). On PostgreSQL, hosts can connect with a runtime role that only reads and writes rows, once the owner role has run `atomic storage migrate`: see [Set up the database](/storage#set-up-the-database). On PostgreSQL, size the server's `max_connections` for every host and its slots, or put a pooler in front: see [Plan connections](/guides/worker-fleets-postgres#plan-connections).
 
 ## Join a machine
 
@@ -37,7 +37,7 @@ The command prints `ready host=… slots=… journal=…` and then one line per 
 - A PostgreSQL URL takes exactly one credential: `--password-file`, `--token-file` for a password another process keeps fresh, or `--auth aws|gcp|azure` for the machine's cloud identity. See [Choose a credential](/guides/worker-fleets-postgres#choose-a-credential). A libSQL URL takes `--token-file`.
 - `--slots <n>` is the most children the machine runs at once. The default is half its CPUs, from 1 to 16, which leaves room for the tools the children run.
 - `--label zone=east` adds a label that `atomic worker status` shows. Repeat it for more labels.
-- `--prefix <prefix>` selects the tables of one team when several share a database. On PostgreSQL it can be at most 24 characters.
+- `--prefix <prefix>` selects the tables of one team when several share a database. On PostgreSQL it can be at most 24 characters, in lowercase.
 - `--idle-exit <ms>` drains and exits once no child has run for that long. Use it for machines that should shut down when the queue is empty.
 - `--provider-id <id>` names the VM instance, pod or CI job the host runs on, for a [fleet controller](#scale-the-fleet-automatically). It defaults to the `ATOMIC_PROVIDER_ID` environment variable, or on Kubernetes to the pod name.
 - `--json` prints the events as one JSON object per line, for log shippers.
@@ -113,6 +113,8 @@ The policy wants `ceil(demand / workersPerHost)` hosts, kept between `minHosts` 
 atomic worker metrics --listen 0.0.0.0:9464 --db 'postgresql://atomic@db.example.com:5432/atomic' \
   --password-file /etc/atomic/db-password --workers-per-host 8 --max-hosts 20
 ```
+
+`atomic worker metrics` only reads a database whose schema is current, so on PostgreSQL a monitoring role with `USAGE` on the `atomic` schema and `SELECT` on its tables can serve it.
 
 - `GET /scaling` returns the signal as JSON, the shape a KEDA [`metrics-api`](https://keda.sh/docs/latest/scalers/metrics-api/) trigger reads. It answers `503` while the database cannot be read.
 - `GET /metrics` returns the same counts in Prometheus text: `atomic_fleet_desired_hosts`, `atomic_fleet_desired_workers`, `atomic_fleet_demand`, `atomic_fleet_queue_depth`, `atomic_fleet_running`, `atomic_fleet_hosts`, `atomic_fleet_slots{state="busy"|"idle"}`, the policy's `atomic_fleet_min_hosts`, `atomic_fleet_max_hosts` and `atomic_fleet_workers_per_host`, and `atomic_fleet_store_up`.

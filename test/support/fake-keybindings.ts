@@ -63,6 +63,10 @@ const DEFAULTS: Readonly<Record<string, readonly string[]>> = {
 	"tui.select.pageUp": ["\x1b[5~"],
 	"tui.select.pageDown": ["\x1b[6~"],
 	"tui.select.confirm": ["\r", "\n"],
+	// Navigation: ← goes back one level, x stops, ? lists the keys (#5224).
+	"app.nav.back": ["\x1b[D"],
+	"app.list.stop": ["x"],
+	"app.keys.help": ["?"],
 };
 
 /**
