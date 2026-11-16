@@ -44,7 +44,7 @@ import {
 	stagingWorktreeName,
 } from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
-import { holderRuns, type ProcessHolder, thisProcess } from "./process-holder.ts";
+import { HOST, holderRuns, type ProcessHolder, thisProcess } from "./process-holder.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
 import { checkoutStoreIdOf, sameRemote, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import {
@@ -1139,7 +1139,7 @@ async function pullPendingLfs(worktree: GitRunOptions, pending: PendingLfs): Pro
 	const waiting: PendingLfs = { head: pending.head, tree: pending.tree, remotes: pending.remotes };
 	pullingHere.add(marker);
 	try {
-		await rewritePendingMark(marker, { ...waiting, holder: thisProcess() });
+		await rewritePendingMark(marker, { ...waiting, holder: await thisProcess() });
 		const pointers = await pullLfsObjects(worktree, pending.head, pending.tree, pending.remotes);
 		if (pointers.length === 0) await rm(marker, { force: true });
 		else await rewritePendingMark(marker, waiting);
@@ -1158,10 +1158,10 @@ async function lfsHolderRuns(marker: string, pending: PendingLfs): Promise<boole
 	const holder = pending.holder;
 	if (holder === undefined) return false;
 	// This process, when it is not downloading into the worktree, stopped the download that names it.
-	if (holder.host === thisProcess().host && holder.pid === process.pid) return false;
+	if (holder.host === HOST && holder.pid === process.pid) return false;
 	try {
 		const age = Date.now() - (await stat(marker)).mtimeMs;
-		return holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
+		return await holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
 		throw error;
@@ -1266,7 +1266,7 @@ async function claimPendingLfs(git: GitRunOptions, marker: string): Promise<LfsC
 		if (pending?.holder !== undefined) for (const lock of locks) await rm(lock, { force: true });
 		if (pending !== undefined) {
 			const { head, tree, remotes } = pending;
-			await rewritePendingMark(marker, { head, tree, remotes, holder: thisProcess() });
+			await rewritePendingMark(marker, { head, tree, remotes, holder: await thisProcess() });
 			pullingHere.add(marker);
 		}
 		return { kind: "claimed", pending };

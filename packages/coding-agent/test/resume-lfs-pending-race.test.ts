@@ -171,7 +171,7 @@ describe("two processes finishing one pending LFS download (#5193)", () => {
 			const tree = await sandbox.git(clone, "rev-parse", "HEAD^{tree}");
 			const paths = { mark: await gitPath("atomic-lfs-pending.json"), indexLock: await gitPath("index.lock") };
 			// The process downloading died during its Git steps, leaving their locks.
-			const holder = { ...thisProcess(), pid: exitedPid() };
+			const holder = { ...(await thisProcess()), pid: exitedPid() };
 			writeFileSync(paths.mark, JSON.stringify({ head, tree, remotes: [remote], holder }));
 			writeFileSync(paths.indexLock, "");
 			writeFileSync(await gitPath("HEAD.lock"), "");

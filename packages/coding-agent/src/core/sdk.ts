@@ -66,6 +66,7 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { SessionManager } from "./session-manager.ts";
+import { prepareSessionOpenMarkers } from "./session-open-markers.ts";
 import { registerStartupRollback, rollbackStartup } from "./session-startup-rollback.ts";
 import { resolveSessionStore } from "./session-storage.js";
 import { releaseSessionWorktrees } from "./session-worktree-snapshots.ts";
@@ -817,6 +818,7 @@ async function constructAgentSession(
 		}
 	}
 
+	await prepareSessionOpenMarkers();
 	const providerRollback = modelRuntime.createExtensionProviderTransaction();
 	let session: AgentSession;
 	const childCommandTaskOwner = createChildCommandTaskOwner(() =>

@@ -26,7 +26,7 @@ import {
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { putBack, removeAside, takeTakeoverMutex } from "./lock-takeover.ts";
-import { processStartToken } from "./process-start-token.ts";
+import { processStartToken, readProcessStartToken } from "./process-start-token.ts";
 import { SessionAlreadyOpenError } from "./session-manager-errors.js";
 
 /** How often a held claim's heartbeat is refreshed. */
@@ -39,7 +39,6 @@ const MAX_ATTEMPTS = 100;
 const TAKEOVER_WAIT_MS = 20;
 /** Tells this process's claims from an earlier process given the same pid. */
 const PROCESS_TOKEN = `${process.pid}-${randomBytes(8).toString("hex")}`;
-const PROCESS_START = processStartToken(process.pid);
 
 interface ClaimRecord {
 	readonly token: string;
@@ -192,6 +191,20 @@ process.on("exit", () => {
 	for (const [sessionId, claim] of held) dropClaim(sessionId, claim);
 });
 
+export async function prepareSessionClaim(sessionId: string, options: { readonly agentDir: string }): Promise<void> {
+	const holder = claimHolder(claimPath(options.agentDir, sessionId));
+	const judged = holder?.host === hostname() && holder.pid !== process.pid && holder.started !== undefined;
+	await Promise.all([readProcessStartToken(process.pid), judged ? readProcessStartToken(holder.pid) : undefined]);
+}
+
+function claimHolder(path: string): ClaimRecord | undefined {
+	try {
+		return readClaim(path)?.record;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Claims `sessionId` for this process before a resume writes to it or restores its checkouts (#5135). Rejects with a
  * {@link SessionAlreadyOpenError} naming the holder, having changed nothing, when another live process holds it. A
@@ -204,11 +217,12 @@ export function claimSession(sessionId: string, options: { readonly agentDir: st
 	if (held.has(sessionId)) return () => {};
 	const path = claimPath(options.agentDir, sessionId);
 	mkdirSync(join(options.agentDir, "session-claims"), { recursive: true });
+	const started = processStartToken(process.pid);
 	const record: ClaimRecord = {
 		token: PROCESS_TOKEN,
 		pid: process.pid,
 		host: hostname(),
-		...(PROCESS_START === undefined ? {} : { started: PROCESS_START }),
+		...(started === undefined ? {} : { started }),
 	};
 	for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
 		if (linkClaim(path, record)) {

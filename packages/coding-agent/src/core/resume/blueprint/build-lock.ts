@@ -10,14 +10,14 @@
  * build beside it.
  */
 
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { killProcessTree } from "../../../utils/shell.ts";
 import { type TakeoverMutex, takeTakeoverMutex } from "../../lock-takeover.ts";
-import { processStartToken } from "../../worktree-snapshot/pool.ts";
+import { processStartToken, readProcessStartToken } from "../../process-start-token.ts";
 import { rootKey } from "./ledger.ts";
 import { stepProcessWatcher } from "./process.ts";
 
@@ -39,9 +39,12 @@ export const BUILD_LOCK_POLL_MS = 200;
 
 const HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
 
-function locked(pid: number): LockedProcess {
-	const start = processStartToken(pid);
+function locked(pid: number, start: string | undefined): LockedProcess {
 	return start === undefined ? { pid } : { pid, start };
+}
+
+async function readLocked(pid: number): Promise<LockedProcess> {
+	return locked(pid, await readProcessStartToken(pid));
 }
 
 export function buildLockPath(storeDir: string, root: string): string {
@@ -101,13 +104,15 @@ function writeLock(file: string, lock: BuildLock): void {
 	renameSync(temporary, file);
 }
 
+type Identity = "same" | "gone" | "unknown";
+
 /**
  * Whether `recorded` is the process that runs under its id now: proven only by the start it recorded matching the
  * running process's. `"unknown"` when either start cannot be read: a process of that id runs, but it may be a later
  * one given the same id.
  */
-function identity(recorded: LockedProcess): "same" | "gone" | "unknown" {
-	const start = processStartToken(recorded.pid);
+async function identity(recorded: LockedProcess): Promise<Identity> {
+	const start = await readProcessStartToken(recorded.pid);
 	if (recorded.start !== undefined && start !== undefined) return start === recorded.start ? "same" : "gone";
 	try {
 		process.kill(recorded.pid, 0);
@@ -125,24 +130,22 @@ function identity(recorded: LockedProcess): "same" | "gone" | "unknown" {
  * processes are not listed. Each is returned with its start, so the wait for it to end follows that process, not a
  * later one given its id.
  */
-function orphanedChildren(steps: readonly LockedProcess[]): LockedProcess[] {
+async function orphanedChildren(steps: readonly LockedProcess[]): Promise<LockedProcess[]> {
 	if (!steps.some((step) => step.start !== undefined && step.at !== undefined)) return [];
 	const script =
 		"Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }";
-	const shell = join(
-		process.env.SystemRoot || "C:\\Windows",
-		"System32",
-		"WindowsPowerShell",
-		"v1.0",
-		"powershell.exe",
-	);
-	const listed = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-Command", script], {
-		encoding: "utf8",
-		timeout: 30_000,
-		windowsHide: true,
+	const systemRoot = process.env.SystemRoot || "C:\\Windows";
+	const shell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+	const listed = await new Promise<string | undefined>((resolve) => {
+		execFile(
+			shell,
+			["-NoProfile", "-NonInteractive", "-Command", script],
+			{ cwd: systemRoot, encoding: "utf8", timeout: 30_000, windowsHide: true },
+			(error, stdout) => resolve(error === null ? stdout : undefined),
+		);
 	});
-	if (listed.status !== 0 || typeof listed.stdout !== "string") return [];
-	const processes = listed.stdout
+	if (listed === undefined) return [];
+	const processes = listed
 		.split(/\r?\n/)
 		.map((line) => line.trim().split(/\s+/).map(Number))
 		.filter((fields) => fields.length === 3 && fields.every(Number.isFinite))
@@ -159,7 +162,7 @@ function orphanedChildren(steps: readonly LockedProcess[]): LockedProcess[] {
 			if (candidate.parent !== step.pid || candidate.created < after) continue;
 			if (before !== undefined && candidate.created >= before) continue;
 			if (found.some((known) => known.pid === candidate.pid)) continue;
-			found.push(locked(candidate.pid));
+			found.push(await readLocked(candidate.pid));
 		}
 	}
 	return found;
@@ -180,16 +183,21 @@ function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
 	});
 }
 
+async function stepsWhose(steps: readonly LockedProcess[], wanted: Identity): Promise<LockedProcess[]> {
+	const identities = await Promise.all(steps.map((step) => identity(step)));
+	return steps.filter((_, index) => identities[index] === wanted);
+}
+
 /** Stops each of `steps` proven to be the step its lock recorded, and `extra`, and waits briefly until they ended. */
 async function stopProven(
 	steps: readonly LockedProcess[],
 	signal: AbortSignal | undefined,
 	extra: readonly LockedProcess[] = [],
 ): Promise<void> {
-	const proven = [...steps.filter((step) => identity(step) === "same"), ...extra];
+	const proven = [...(await stepsWhose(steps, "same")), ...extra];
 	for (const step of proven) killProcessTree(step.pid);
 	// Stopping is asynchronous on Windows: the next build starts only once they have ended, or after a bounded wait.
-	for (let waited = 0; waited < 50 && proven.some((step) => identity(step) === "same"); waited++) {
+	for (let waited = 0; waited < 50 && (await stepsWhose(proven, "same")).length > 0; waited++) {
 		await delay(BUILD_LOCK_POLL_MS / 2, signal);
 	}
 }
@@ -261,7 +269,7 @@ async function settleLock(
 		const { lock } = read;
 		if (lock.host !== HOST || lock.pid === process.pid) return [];
 		const steps = lock.steps ?? [];
-		const holder = identity(lock);
+		const holder = await identity(lock);
 		if (holder !== "gone") {
 			if (await wait("another Atomic process's blueprint build")) continue;
 			// Building anyway: the steps proven to be that build's stop first, so two builds never run in the worktree.
@@ -273,9 +281,9 @@ async function settleLock(
 		if (!stopped) {
 			stopped = true;
 			// Stopped once: the Windows scan lists every process, and a later look only waits on what could not be proven.
-			await stopProven(steps, options.signal, process.platform === "win32" ? orphanedChildren(steps) : []);
+			await stopProven(steps, options.signal, process.platform === "win32" ? await orphanedChildren(steps) : []);
 		}
-		const unproven = steps.filter((step) => identity(step) === "unknown");
+		const unproven = await stepsWhose(steps, "unknown");
 		if (unproven.length > 0) {
 			if (await wait("an earlier blueprint build")) continue;
 			removeLock(file);
@@ -380,8 +388,11 @@ export async function withBuildLocks<T>(
 ): Promise<T> {
 	const files = [...new Set(roots.map((root) => buildLockPath(storeDir, root)))];
 	const steps = new Map<number, LockedProcess>();
+	const own = await readLocked(process.pid);
+	let settled = false;
 	const write = () => {
-		const lock: BuildLock = { host: HOST, ...locked(process.pid), steps: [...steps.values()] };
+		if (settled) return;
+		const lock: BuildLock = { host: HOST, ...own, steps: [...steps.values()] };
 		for (const file of files) {
 			try {
 				writeLock(file, lock);
@@ -390,13 +401,25 @@ export async function withBuildLocks<T>(
 	};
 	// Written once a step starts a process, so a build that runs nothing, as for an untrusted worktree, writes nothing.
 	const watch = (pid: number, running: boolean) => {
-		if (running) steps.set(pid, { ...locked(pid), at: Date.now() });
-		else steps.delete(pid);
+		if (!running) {
+			steps.delete(pid);
+			write();
+			return;
+		}
+		const step: LockedProcess = { ...locked(pid, processStartToken(pid)), at: Date.now() };
+		steps.set(pid, step);
 		write();
+		if (step.start !== undefined) return;
+		void readProcessStartToken(pid).then((start) => {
+			if (start === undefined || steps.get(pid) !== step) return;
+			steps.set(pid, { pid, start, at: step.at });
+			write();
+		});
 	};
 	try {
 		return await stepProcessWatcher.run(watch, build);
 	} finally {
+		settled = true;
 		for (const file of files) if (readLock(file)?.pid === process.pid) removeLock(file);
 	}
 }

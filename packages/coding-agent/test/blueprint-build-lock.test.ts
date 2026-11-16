@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	closeSync,
@@ -16,22 +16,25 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { takeTakeoverMutex } from "../src/core/lock-takeover.ts";
+import { setNativeProcessCreationTimeForTesting } from "../src/core/process-start-token.ts";
 import { buildLockPath, settleOtherBuilds, withBuildLocks } from "../src/core/resume/blueprint/build-lock.ts";
 import { runLoggedProcess } from "../src/core/resume/blueprint/process.ts";
 import { processStartToken } from "../src/core/worktree-snapshot/pool.ts";
 
-// Process creation is real; spawnSync is only watched, to tell when a build lock lists this host's processes.
+// Process creation is real; execFile is only watched, to tell when a build lock lists this host's processes.
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
-	return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+	return { ...actual, execFile: vi.fn(actual.execFile) };
 });
 
 /** How many times this host's processes were listed to find the orphans of a dead build's steps. */
 const processScans = () =>
 	vi
-		.mocked(spawnSync)
+		.mocked(execFile)
 		.mock.calls.filter(([, args]) => Array.isArray(args) && args.some((arg) => String(arg).includes("Win32_Process")))
 		.length;
+
+const POWERSHELL_READS_TIMEOUT_MS = 60_000;
 
 let dir: string;
 const children: ChildProcess[] = [];
@@ -39,6 +42,7 @@ beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "atomic-build-lock-"));
 });
 afterEach(() => {
+	setNativeProcessCreationTimeForTesting(undefined);
 	for (const child of children.splice(0)) if (child.exitCode === null) child.kill("SIGKILL");
 	rmSync(dir, { recursive: true, force: true });
 });
@@ -144,6 +148,57 @@ describe("blueprint build locks (#4748)", () => {
 			await exited(orphan);
 			assert.equal(existsSync(buildLockPath(dir, root())), false);
 		},
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"without the native module, a dead build's step proven by its start is stopped, and a build records its own and its steps' starts (#5315)",
+		async () => {
+			const orphan = sleeper();
+			const orphanStart = processStartToken(orphan.pid!);
+			const dead = await deadProcess();
+			const own = processStartToken(process.pid);
+			setNativeProcessCreationTimeForTesting(null);
+			writeLock({ ...dead, steps: [{ pid: orphan.pid, start: orphanStart }] });
+			assert.deepEqual(await settle([root()]), []);
+			await exited(orphan);
+
+			const log = join(dir, "step.log");
+			const fd = openSync(log, "a");
+			const gate = join(dir, "gate");
+			const recorded = () => {
+				try {
+					return lockOf() as { start?: string; steps: { pid: number; start?: string }[] };
+				} catch {
+					return undefined;
+				}
+			};
+			await withBuildLocks(dir, [root()], async () => {
+				const waiting = {
+					command: process.execPath,
+					args: [
+						"-e",
+						'const fs=require("fs");const t=setInterval(()=>{if(fs.existsSync(process.argv[1]))clearInterval(t)},20)',
+						gate,
+					],
+					cwd: dir,
+					env: process.env,
+				};
+				const run = runLoggedProcess(waiting, { fd, path: log }, { timeoutMs: 30_000 });
+				const deadline = Date.now() + 30_000;
+				while (recorded()?.steps[0]?.start === undefined && Date.now() < deadline) {
+					await new Promise((resolve) => setTimeout(resolve, 20));
+				}
+				const lock = recorded();
+				const step = lock?.steps[0];
+				assert.equal(lock?.start, own, "the build names this process's start");
+				setNativeProcessCreationTimeForTesting(undefined);
+				assert.equal(step?.start, processStartToken(step!.pid), "and its running step's");
+				writeFileSync(gate, "");
+				await run;
+			});
+			closeSync(fd);
+		},
+		POWERSHELL_READS_TIMEOUT_MS,
 	);
 
 	test("a process that only has a recorded step's id, with no start to prove it is that step, is never stopped", async () => {
