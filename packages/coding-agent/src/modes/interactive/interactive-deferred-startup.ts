@@ -74,14 +74,17 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		await this.themeController.applyFromSettings();
 		this.setupAutocompleteProvider();
 		this.setupExtensionShortcuts(this.session.extensionRunner);
-		if (completedStartupTrust) {
-			showSessionNotices(this, this.runtimeHost?.services.diagnostics);
-		} else {
-			await applyDeferredModelScope(this);
-		}
-		await this.retryDeferredModelRestore(this.startupNoticesContainer);
-		for (const diagnostic of this.options.deferredFallbackModelCheck?.(this.session) ?? []) {
-			this.showWarning(diagnostic.message);
+		try {
+			if (completedStartupTrust) {
+				showSessionNotices(this, this.runtimeHost?.services.diagnostics);
+			} else {
+				await applyDeferredModelScope(this);
+			}
+			await this.retryDeferredModelRestore(this.startupNoticesContainer);
+		} finally {
+			for (const diagnostic of this.options.deferredFallbackModelCheck?.(this.session) ?? []) {
+				this.showWarning(diagnostic.message);
+			}
 		}
 		this.showLoadedResources({
 			force: true,

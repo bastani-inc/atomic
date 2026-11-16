@@ -51,8 +51,6 @@ export function buildSessionOptions(
 	options: CreateAgentSessionOptions;
 	cliThinkingFromModel: boolean;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
-	/** Fallback entries that resolve to no usable model; meaningful only once extension providers are registered. */
-	fallbackDiagnostics: AgentSessionRuntimeDiagnostic[];
 } {
 	const options: CreateAgentSessionOptions = {};
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
@@ -122,12 +120,6 @@ export function buildSessionOptions(
 	if (fallbackChain !== undefined) {
 		options.fallbackModels = fallbackChain;
 	}
-	const fallbackDiagnostics = unresolvedFallbackModelDiagnostics(
-		parsed,
-		settingsManager,
-		modelRuntime,
-		options.model?.provider ?? settingsManager.getDefaultProvider(),
-	);
 
 	// Scoped models for CTRL+P cycling
 	// Keep thinking level undefined when not explicitly set in the model pattern.
@@ -155,5 +147,5 @@ export function buildSessionOptions(
 		options.excludedTools = [...parsed.excludeTools];
 	}
 
-	return { options, cliThinkingFromModel, diagnostics, fallbackDiagnostics };
+	return { options, cliThinkingFromModel, diagnostics };
 }

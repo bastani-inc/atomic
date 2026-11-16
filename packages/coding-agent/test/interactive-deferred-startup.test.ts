@@ -141,7 +141,9 @@ describe("applyDeferredModelScope", () => {
 
 		const startup = buildSessionOptions(parsed, [], false, modelRuntime, settingsManager);
 		assert.deepEqual(
-			startup.fallbackDiagnostics.map((diagnostic) => diagnostic.message.match(/"([^"]+)"/)?.[1]),
+			unresolvedFallbackModelDiagnostics(parsed, settingsManager, modelRuntime, undefined).map(
+				(diagnostic) => diagnostic.message.match(/"([^"]+)"/)?.[1],
+			),
 			["extension-provider/extension-model", "nowhere/no-model"],
 		);
 		assert.deepEqual(startup.diagnostics, []);
@@ -256,7 +258,7 @@ describe("applyDeferredModelScope", () => {
 			undefined,
 		);
 		const session = {
-			model: { ...savedModel, provider: "unknown", id: "unknown" },
+			model: { ...savedModel, provider: "unknown", id: "unknown", api: "unknown" },
 			modelRuntime,
 			settingsManager,
 			setModel: async (model: typeof savedModel) => {
@@ -287,6 +289,59 @@ describe("applyDeferredModelScope", () => {
 		);
 		assert.equal(deferredFallbackModelCheck.mock.calls.length, 1);
 	});
+
+	for (const selection of ["scope", "restore"] as const) {
+		it(`still reports invalid fallback entries when deferred model ${selection} fails (#5247)`, async () => {
+			const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
+			registerExtensionModel(registry, "initial-provider", "primary-model");
+			registerExtensionModel(registry, "extension-provider", "shared-model");
+			const modelRuntime = getModelRuntime(registry);
+			const settingsManager = SettingsManager.inMemory({
+				fallbackModels: ["extension-provider/shared-model", "ghost/no-model"],
+			});
+			const parsed = parseArgs([]);
+			const showWarning = vi.fn();
+			const showError = vi.fn();
+			const session = {
+				model: registry.find("initial-provider", "primary-model"),
+				modelRuntime,
+				settingsManager,
+				setScopedModels: vi.fn(),
+				setModel: vi.fn(async () => {
+					throw new Error("model selection failed");
+				}),
+			};
+			const mode = {
+				options: {
+					deferredModelScopePatterns: selection === "scope" ? ["extension-provider/shared-model"] : undefined,
+					modelFallbackMessage: selection === "restore" ? "Could not restore saved model" : undefined,
+					deferredFallbackModelCheck: () =>
+						unresolvedFallbackModelDiagnostics(parsed, settingsManager, modelRuntime, session.model?.provider),
+				},
+				session,
+				sessionManager: {
+					buildSessionContext: () => ({
+						messages: [],
+						model:
+							selection === "restore" ? { provider: "extension-provider", modelId: "shared-model" } : undefined,
+					}),
+				},
+				settingsManager,
+				showWarning,
+				showError,
+			};
+
+			await completeDeferredStartup(mode);
+
+			assert.equal(session.setModel.mock.calls.length, 1);
+			assert.equal(session.model?.provider, "initial-provider");
+			assert.deepEqual(showError.mock.calls, [["Extension loading failed: model selection failed"]]);
+			assert.deepEqual(
+				showWarning.mock.calls.map(([message]) => message.match(/entry "([^"]+)"/)?.[1]),
+				["ghost/no-model"],
+			);
+		});
+	}
 
 	it("deduplicates repeated unmatched model-scope patterns (#4694)", async () => {
 		const showWarning = vi.fn();

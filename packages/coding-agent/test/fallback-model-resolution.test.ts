@@ -5,7 +5,7 @@ import { parseArgs } from "../src/cli/args.ts";
 import { resolveFallbackModel } from "../src/core/fallback-models.ts";
 import { resolveCliModel } from "../src/core/model-resolver.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { buildSessionOptions } from "../src/main-session-options.ts";
+import { unresolvedFallbackModelDiagnostics } from "../src/main-session-options.ts";
 import { fakeModelRuntime } from "./model-runtime-test-utils.ts";
 
 function model(provider: string, id: string): Model<Api> {
@@ -80,12 +80,11 @@ describe("fallbackModels resolution (#4902)", () => {
 	test("the startup check prefers the default provider for an ambiguous bare id (#4902)", () => {
 		const settingsManager = SettingsManager.inMemory({ defaultProvider: "openai", fallbackModels: ["shared-model"] });
 
-		const { fallbackDiagnostics: diagnostics } = buildSessionOptions(
+		const diagnostics = unresolvedFallbackModelDiagnostics(
 			parseArgs([]),
-			[],
-			false,
-			runtime(),
 			settingsManager,
+			runtime(),
+			settingsManager.getDefaultProvider(),
 		);
 
 		assert.deepEqual(diagnostics, []);
@@ -100,13 +99,7 @@ describe("fallbackModels resolution (#4902)", () => {
 			fallbackModels: ["nowhere/no-model", "openai/gpt-4o", "nowhere/no-model"],
 		});
 
-		const { fallbackDiagnostics: diagnostics } = buildSessionOptions(
-			parseArgs([]),
-			[],
-			false,
-			runtime(),
-			settingsManager,
-		);
+		const diagnostics = unresolvedFallbackModelDiagnostics(parseArgs([]), settingsManager, runtime(), undefined);
 
 		assert.deepEqual(diagnostics, [
 			{
@@ -120,12 +113,11 @@ describe("fallbackModels resolution (#4902)", () => {
 	test("--fallback-models entries are checked in place of the setting (#4902)", () => {
 		const settingsManager = SettingsManager.inMemory({ fallbackModels: ["nowhere/no-model"] });
 
-		const { fallbackDiagnostics: diagnostics } = buildSessionOptions(
+		const diagnostics = unresolvedFallbackModelDiagnostics(
 			parseArgs(["--fallback-models", "openai/gpt-4o,ghost/model"]),
-			[],
-			false,
-			runtime(),
 			settingsManager,
+			runtime(),
+			undefined,
 		);
 
 		assert.equal(diagnostics.length, 1);
@@ -138,13 +130,7 @@ describe("fallbackModels resolution (#4902)", () => {
 			fallbackModels: ["Anthropic/Claude-Sonnet-4-5", "qwen/qwen3-coder:exacto"],
 		});
 
-		const { fallbackDiagnostics: diagnostics } = buildSessionOptions(
-			parseArgs([]),
-			[],
-			false,
-			runtime(),
-			settingsManager,
-		);
+		const diagnostics = unresolvedFallbackModelDiagnostics(parseArgs([]), settingsManager, runtime(), undefined);
 
 		assert.deepEqual(diagnostics, []);
 	});

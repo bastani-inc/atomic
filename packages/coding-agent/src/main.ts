@@ -960,7 +960,6 @@ export async function main(argv: string[], options?: MainOptions) {
 				options: sessionOptions,
 				cliThinkingFromModel,
 				diagnostics: sessionOptionDiagnostics,
-				fallbackDiagnostics,
 			} = buildSessionOptions(
 				sessionArgs,
 				scopedModels,
@@ -969,7 +968,6 @@ export async function main(argv: string[], options?: MainOptions) {
 				settingsManager,
 			);
 			if (!deferStartupTrust) diagnostics.push(...sessionOptionDiagnostics);
-			if (!deferModelScopeDiagnostics && !isolateInteractiveHost) diagnostics.push(...fallbackDiagnostics);
 
 			if (parsed.apiKey && !isolateInteractiveHost && !deferStartupTrust) {
 				if (!sessionOptions.model) {
@@ -1100,6 +1098,18 @@ export async function main(argv: string[], options?: MainOptions) {
 			const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 			if (!isolateInteractiveHost && created.session.model && cliThinkingOverride) {
 				await created.session.setThinkingLevel(created.session.thinkingLevel);
+			}
+			if (!deferModelScopeDiagnostics && !isolateInteractiveHost) {
+				diagnostics.push(
+					...unresolvedFallbackModelDiagnostics(
+						parsed,
+						settingsManager,
+						modelRuntime,
+						created.session.model && !isUnknownModel(created.session.model)
+							? created.session.model.provider
+							: settingsManager.getDefaultProvider(),
+					),
+				);
 			}
 			return {
 				...created,
