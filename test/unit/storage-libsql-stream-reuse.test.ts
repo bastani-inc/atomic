@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { test, vi } from "vitest";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/index.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { countRows, useFakeLibsqlServers } from "../helpers/fake-libsql-server.js";
-import { bunExecutable, makeTempDirectory, removeTempDirectory, sleep, spawnSyncCollect } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
 const { server, open } = useFakeLibsqlServers();
 
@@ -115,26 +115,38 @@ test("schema changes, pragmas and transaction control never run on the reused st
 test("comments before a statement's keyword decide its stream as the keyword alone does (#5151)", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
+	const commentedRead = "/* lead */ -- note\n  SELECT n FROM events";
+	const commentedSchemaChange = "/* lead */ CREATE TABLE other(n INTEGER)";
+	const unclosedComment = "/* open comment SELECT n FROM events";
 	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
 	await database.run("INSERT INTO events VALUES (?)", 1);
-	await database.all("/* lead */ -- note\n  SELECT n FROM events");
-	await database.run("/* lead */ CREATE TABLE other(n INTEGER)");
-	await database.all("/* open comment SELECT n FROM events").catch(() => undefined);
-	assert.equal(requestsRunning(fake, "-- note")[0]?.continuesStream, true, "a commented read continues the stream");
+	await database.all(commentedRead);
+	await database.run(commentedSchemaChange);
+	await database.all(unclosedComment).catch(() => undefined);
 	assert.equal(
-		requestsRunning(fake, "CREATE TABLE other")[0]?.continuesStream,
+		requestsRunning(fake, commentedRead)[0]?.continuesStream,
+		true,
+		"a commented read continues the stream",
+	);
+	assert.equal(
+		requestsRunning(fake, commentedSchemaChange)[0]?.continuesStream,
 		false,
 		"a commented schema change does not",
 	);
+	const unclosed = requestsRunning(fake, unclosedComment);
+	assert.ok(unclosed.length > 0, "the statement with an unclosed comment was sent");
 	assert.ok(
-		requestsRunning(fake, "/* open comment").every((pipeline) => !pipeline.continuesStream),
+		unclosed.every((pipeline) => !pipeline.continuesStream),
 		"an unclosed comment hides the keyword, so it runs on a stream of its own",
 	);
 });
 
 /** Comments in a statement's prefix that a backtracking pattern splits in 2^n ways before rejecting the statement. */
 const AMBIGUOUS_COMMENT_RUNS = 40;
-/** How long a child process may take to open a database and run one statement. */
+/**
+ * How long a Node child process may take to open a database and run one statement. Node, as npm installs run Atomic:
+ * its regular expression engine is the one that backtracked on such a prefix.
+ */
 const CLASSIFY_PROCESS_BOUND_MS = 20_000;
 /** The test's own budget: it runs a real child process, bounded above. */
 const CLASSIFY_PROCESS_TEST_TIMEOUT_MS = 2 * CLASSIFY_PROCESS_BOUND_MS;
@@ -144,18 +156,18 @@ test(
 	() => {
 		const directory = makeTempDirectory("libsql-comment-prefix-");
 		try {
-			const script = join(directory, "classify.ts");
+			const script = join(directory, "classify.mjs");
 			const libsql = fileURLToPath(new URL("../../packages/storage-libsql/libsql.js", import.meta.url));
 			writeFileSync(
 				script,
-				`import { openLibsqlDatabase } from ${JSON.stringify(libsql)};
-const database = await openLibsqlDatabase({ url: ${JSON.stringify(`file:${join(directory, "store.sqlite")}`)} });
+				`import { openLibsqlDatabase } from ${JSON.stringify(pathToFileURL(libsql).href)};
+const database = await openLibsqlDatabase({ url: ${JSON.stringify(pathToFileURL(join(directory, "store.sqlite")).href)} });
 const row = await database.get("/*" + "*//*".repeat(${AMBIGUOUS_COMMENT_RUNS}) + "*/ PRAGMA user_version");
 console.log(JSON.stringify(row));
 await database.close();
 `,
 			);
-			const result = spawnSyncCollect([bunExecutable(), script], { timeout: CLASSIFY_PROCESS_BOUND_MS });
+			const result = spawnSyncCollect([process.execPath, script], { timeout: CLASSIFY_PROCESS_BOUND_MS });
 			assert.equal(result.exitCode, 0, result.stderr.toString());
 			assert.equal(result.stdout.toString().trim(), JSON.stringify({ user_version: 0 }));
 		} finally {
