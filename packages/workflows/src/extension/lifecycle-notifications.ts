@@ -23,6 +23,7 @@ import type {
 } from "../shared/store-types.js";
 import type { WorkflowOutputValues } from "../shared/types.js";
 import { deriveGraphThemeFromPiTheme, type GraphTheme } from "../tui/graph-theme.js";
+import { buildRunOutcome, summarizeFailureText } from "../tui/run-outcome.js";
 import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "../tui/workflow-notice-card.js";
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
 import { createLifecycleNoticeDelivery } from "./lifecycle-notification-delivery.js";
@@ -79,6 +80,12 @@ export interface WorkflowLifecycleNoticeDetails {
 	readonly error?: string;
 	/** Partial declared outputs carried by an author-initiated terminal exit. */
 	readonly outputs?: WorkflowOutputValues;
+	/** A completed run's declared outputs on one line, for the card; the model reads them from the run's status. */
+	readonly outputsPreview?: string;
+	/** The failure's first message line, for the card; `error` keeps the text the model reads. */
+	readonly reason?: string;
+	/** The first few artifacts the run's stages collected, and how many there were in all. */
+	readonly artifacts?: { readonly shown: readonly WorkflowLifecycleNoticeArtifact[]; readonly total: number };
 	readonly failedStageId?: string;
 	readonly toolNodeId?: string;
 	readonly toolName?: string;
@@ -95,6 +102,14 @@ export interface WorkflowLifecycleNoticeDetails {
 	readonly origin?: WorkflowActor;
 	readonly createdAt: number;
 }
+
+export interface WorkflowLifecycleNoticeArtifact {
+	readonly kind: string;
+	readonly path: string;
+	readonly detail?: string;
+}
+
+const NOTICE_ARTIFACTS_SHOWN = 1;
 
 export interface WorkflowLifecycleNotificationState {
 	readonly deliveredTerminalRuns: Set<string>;
@@ -268,7 +283,8 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 			state.retryableTerminalNotices.delete(key);
 			return;
 		}
-		delivery.deliver(key, makeTerminalNotice(run, kind));
+		// The graph snapshot keeps only a compact result; the card shows every declared output.
+		delivery.deliver(key, makeTerminalNotice(run, kind, options.store.run(run.id)?.result ?? run.result));
 	};
 
 	const emitControlNoticesOnce = (run: RunSnapshot): void => {
@@ -443,6 +459,7 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 function makeTerminalNotice(
 	run: RunSnapshot,
 	kind: "completed" | "failed" | "blocked",
+	fullResult: WorkflowOutputValues | undefined = run.result,
 ): WorkflowLifecycleNoticeDetails {
 	const failedStage = run.failedStageId ? run.stages.find((stage) => stage.id === run.failedStageId) : undefined;
 	const failedToolNodeId = kind === "failed" && run.failedStageId === undefined ? run.failedToolNodeId : undefined;
@@ -461,12 +478,30 @@ function makeTerminalNotice(
 		: (run.error ??
 			returnedNoticeError(run, kind) ??
 			(kind === "blocked" || kind === "failed" ? run.exitReason : undefined));
+	const outcome = kind === "completed" ? buildRunOutcome(run) : undefined;
+	const artifacts = outcome?.artifacts ?? [];
 	return {
 		kind,
 		scope: "run",
 		runId: run.id,
 		workflowName: run.name,
 		status: effectiveRunStatus(run),
+		...(kind === "completed" && formatCardOutputs(fullResult) !== undefined
+			? { outputsPreview: formatCardOutputs(fullResult) }
+			: {}),
+		...(error && (kind === "failed" || kind === "blocked") ? { reason: summarizeFailureText(error).reason } : {}),
+		...(artifacts.length > 0
+			? {
+					artifacts: {
+						total: artifacts.length,
+						shown: artifacts.slice(0, NOTICE_ARTIFACTS_SHOWN).map((artifact) => ({
+							kind: artifact.kind,
+							path: artifact.path,
+							...(artifact.detail === undefined ? {} : { detail: artifact.detail }),
+						})),
+					},
+				}
+			: {}),
 		...(activeBlocked ? { active: true } : {}),
 		...(run.exited === true && run.status === "failed" && run.resumable !== undefined
 			? { resumable: run.resumable }
@@ -732,7 +767,14 @@ function renderLifecycleNoticeCard(
 			{ label: "actor", value: details.actor, tone: "muted" },
 			{ label: "launched", value: details.origin, tone: "muted" },
 			{ label: "prompt", value: details.promptMessage, tone: "muted" },
-			{ label: "error", value: details.error, tone: "error" },
+			{
+				label: "error",
+				value:
+					details.reason ?? (details.error === undefined ? undefined : summarizeFailureText(details.error).reason),
+				tone: "error",
+			},
+			{ label: "outputs", value: details.outputsPreview },
+			{ label: "artifacts", value: formatCardArtifacts(details.artifacts), tone: "muted" },
 			{
 				label: "partial outputs",
 				value: formatLifecycleOutputs(details.outputs),
@@ -741,7 +783,7 @@ function renderLifecycleNoticeCard(
 			{ label: "resumable", value: resumableFieldValue(details), tone: "muted" },
 			{ label: "duration", value: formatDurationMs(details.durationMs), tone: "muted" },
 		],
-		hints: [lifecycleNoticeHint(details)],
+		hints: [lifecycleNoticeHint(details), ...lifecycleOutcomeHints(details)],
 		fallbackText: opts.fallbackText,
 		width: opts.width,
 		...(opts.theme ? { theme: opts.theme } : {}),
@@ -838,6 +880,36 @@ function lifecycleNoticeHint(details: WorkflowLifecycleNoticeDetails): string {
 	if (details.kind === "paused" || details.kind === "quit") return `/workflow resume ${details.runId}`;
 	if (details.kind === "blocked" && details.budgetExceeded === true) return `/workflow resume ${details.runId}`;
 	return `/workflow status ${details.runId}`;
+}
+
+/** Where the run's details and full log live, for the notices that have an outcome to look at. */
+function lifecycleOutcomeHints(details: WorkflowLifecycleNoticeDetails): string[] {
+	if (details.scope !== "run") return [];
+	if (details.kind === "completed") return ["/workflows, then o: run details"];
+	if (details.kind === "failed" || details.kind === "blocked") return ["full log: /workflows, then o and l"];
+	return [];
+}
+
+function formatCardOutputs(result: WorkflowOutputValues | undefined): string | undefined {
+	if (result === undefined) return undefined;
+	const entries = Object.entries(result);
+	if (entries.length === 0) return undefined;
+	const text = entries
+		.map(([key, value]) => {
+			const shown = typeof value === "string" ? (value.split(/\r?\n/)[0] ?? "") : JSON.stringify(value);
+			return `${key}: ${shown}`;
+		})
+		.join(" \u00b7 ");
+	return truncateSnippet(text);
+}
+
+function formatCardArtifacts(artifacts: WorkflowLifecycleNoticeDetails["artifacts"]): string | undefined {
+	if (artifacts === undefined || artifacts.shown.length === 0) return undefined;
+	const first = artifacts.shown
+		.map((artifact) => `${artifact.kind} ${artifact.path}${artifact.detail ? ` \u00b7 ${artifact.detail}` : ""}`)
+		.join(", ");
+	const more = artifacts.total - artifacts.shown.length;
+	return more > 0 ? `${first} \u00b7 +${more} more` : first;
 }
 
 function resumableFieldValue(details: WorkflowLifecycleNoticeDetails): string | undefined {

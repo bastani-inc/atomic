@@ -72,6 +72,28 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 		assert.match(hint(graph), /o run details/);
 	});
 
+	it("shows every declared output, not just the graph snapshot's compact result", () => {
+		const compact = {
+			...h.makeSnap([stage("plan", "completed")]).runs[0],
+			status: "completed",
+			result: { summary: "short" },
+		};
+		const full = { ...compact, result: { summary: "short", prNumber: 5236, files: ["a.ts"] } };
+		const store = { ...makeStore({ runs: [compact], notices: [], version: 1 }), run: () => full };
+		const graph = new GraphView({
+			piKeybindings: makeFakeKeybindings(),
+			mode: "overlay",
+			runId: compact.id,
+			store,
+			graphTheme: defaultTheme,
+			piTui: h.makeTestTui(40),
+		});
+		graph.handleInput("o");
+		const shown = screen(graph);
+		assert.match(shown, /prNumber\s+5236/);
+		assert.match(shown, /files\s+\["a\.ts"\]/);
+	});
+
 	it("a failed run's details show the short reason, never the stack, and l shows the full log", () => {
 		const graph = view([stage("verify", "failed", { error: STACK })], {
 			status: "failed",

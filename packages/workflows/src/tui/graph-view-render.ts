@@ -243,7 +243,10 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			cached.selected === detail.selected
 		)
 			return cached.frame;
-		const rendered = renderRunOutcome(buildRunOutcome(run), {
+		// The graph snapshot keeps only a compact result; the details show every declared output.
+		const fullResult = this.store.run(run.id)?.result;
+		const outcomeRun = fullResult === undefined || fullResult === run.result ? run : { ...run, result: fullResult };
+		const rendered = renderRunOutcome(buildRunOutcome(outcomeRun), {
 			theme: this.graphTheme,
 			width: safeWidth,
 			logs: detail.logs,
