@@ -97,6 +97,11 @@ export const distributedChild = workflow({
 		const stage = ctx.stage("agent", (await poolStageOptions(ctx.cwd ?? process.cwd(), false, "never")) as never);
 		await stage.complete("Reply with your PID.");
 		const replayMarkers = process.env.SHARED_POOL_REPLAY_MARKERS;
+		const replayGate = process.env.SHARED_POOL_REPLAY_GATE;
+		if (replayGate !== undefined) {
+			writeFileSync(join(replayGate, `ready-${host()}-${ctx.inputs.index}`), "");
+			while (!existsSync(join(replayGate, `accept-${host()}-${ctx.inputs.index}`))) await delay(20);
+		}
 		if (replayMarkers !== undefined)
 			await ctx.tool("unshipped", { index: ctx.inputs.index }, async () => {
 				writeFileSync(join(replayMarkers, `unshipped-${host()}-${ctx.inputs.index}`), "");
