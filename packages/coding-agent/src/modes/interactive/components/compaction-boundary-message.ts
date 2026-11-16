@@ -87,7 +87,7 @@ export class CompactionBoundaryMessageComponent extends Box {
 		const reduction =
 			this.view.rung === "fresh"
 				? undefined
-				: `${formatWorkingTokens(tokensBefore)} → ${formatWorkingTokens(this.view.stats.tokensAfter)} tokens`;
+				: `${formatWorkingTokens(this.view.stats.tokensBefore)} → ${formatWorkingTokens(this.view.stats.tokensAfter)} tokens`;
 		const hint = this.expanded ? "" : keyHintIfBound("app.tools.expand", "for summary");
 		const label = [
 			theme.fg("customMessageLabel", theme.bold(title)),

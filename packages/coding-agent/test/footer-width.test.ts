@@ -196,11 +196,10 @@ describe("FooterComponent composer hints (#5224)", () => {
 
 	it("the main composer's keys follow the model line, and its session title moves to the prompt's rule", () => {
 		const footer = new FooterComponent(session(), createFooterData(1), undefined, undefined, undefined, () => [
-			"↓ 2 agents",
 			"? keys",
 		]);
 		const line = stripAnsi(footer.render(200)[0] ?? "");
-		assert.match(line, / · ↓ 2 agents · \? keys$/);
+		assert.match(line, / · \? keys$/);
 		assert.doesNotMatch(line, /shipping fix-first/);
 	});
 
@@ -216,6 +215,20 @@ describe("FooterComponent composer hints (#5224)", () => {
 	it("a chat without composer hints still names its session in the footer", () => {
 		const line = stripAnsi(new FooterComponent(session(), createFooterData(1)).render(200)[0] ?? "");
 		assert.match(line, /shipping fix-first/);
+	});
+
+	it("sanitizes newlines and terminal escape sequences in the footer session name (#5243)", () => {
+		for (const [raw, expected] of [
+			["my\nsession", "my session"],
+			["a\x1b]52;c;SGVsbG8=\x07b", "a ]52;c;SGVsbG8= b"],
+			["x\x1b]0;PWNED\x07y", "x ]0;PWNED y"],
+			["\x1b[2J\x1b[Hboom", "[2J [Hboom"],
+		] as const) {
+			const s = createSession({ sessionName: raw, provider: "anthropic", modelId: "claude-sonnet-4-5" });
+			const rawLine = new FooterComponent(s, createFooterData(1)).render(200)[0] ?? "";
+			assert.doesNotMatch(rawLine, /[\r\n\t\x07]|\x1b\]|\x1b\[2J|\x1b\[H/);
+			assert.ok(stripAnsi(rawLine).endsWith(` • ${expected}`), stripAnsi(rawLine));
+		}
 	});
 });
 describe("FooterComponent width handling", () => {

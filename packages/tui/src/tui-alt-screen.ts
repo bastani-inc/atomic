@@ -676,6 +676,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return scrollView.scrollTop !== before;
 	}
 
+	private isCurrentSearchMatchOnRow(row: number): boolean {
+		const search = this.activeSearch;
+		const selected = search && search.selectedIndex >= 0 ? search.matches[search.selectedIndex] : undefined;
+		return selected?.segments.some((segment) => segment.row === row) ?? false;
+	}
+
 	/** Show a transient message in the alternate-screen flash stack. */
 	flash(message: string, durationMs?: number): void {
 		this.flashes.flash(message, durationMs);
@@ -1697,6 +1703,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (!this.scrollPinnedPrompt) return screen;
 		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
 		if (!scrollView.followEnd || scrollView.isFollowingEnd || scrollView.scrollTop <= 0) return screen;
+		if (this.isCurrentSearchMatchOnRow(scrollView.scrollTop)) return screen;
 		const box = getScrollViewBox(layout, scrollView);
 		const clip = box?.clip;
 		const lines = box?.scrollContentLines;

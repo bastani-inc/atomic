@@ -294,7 +294,8 @@ export class AtomicWorkingLoader implements Component {
 	private armMetaTimer(): void {
 		if (this.metaTimer) clearInterval(this.metaTimer);
 		this.metaTimer = undefined;
-		if (!this.meta || (!this.logo && process.env.ATOMIC_REDUCED_MOTION !== "1")) return;
+		if (this.indicator || this.delegate || !this.meta || (!this.logo && process.env.ATOMIC_REDUCED_MOTION !== "1"))
+			return;
 		const timer = setInterval(() => this.ui.requestRender(), 1000);
 		timer.unref?.();
 		this.metaTimer = timer;

@@ -1,4 +1,4 @@
-import { stripVTControlCharacters } from "node:util";
+import { stripTerminalSequences } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 import { USER_PROMPT_ZONE_START } from "./user-message.ts";
 
@@ -7,13 +7,36 @@ export class NewMessageCounter {
 	private latest = 0;
 
 	observe(following: boolean, count: number): void {
+		if (following || this.baseline === undefined) {
+			this.baseline = count;
+			this.latest = count;
+			return;
+		}
+		if (count < this.latest) {
+			this.baseline = count - this.count;
+		}
 		this.latest = count;
-		if (following || this.baseline === undefined || count < this.baseline) this.baseline = count;
 	}
 
 	historyPrepended(count: number): void {
 		this.latest += count;
 		if (this.baseline !== undefined) this.baseline += count;
+	}
+
+	replaced(count: number): void {
+		if (this.baseline !== undefined) {
+			this.baseline = count - this.count;
+		}
+		this.latest = count;
+	}
+
+	compactionRefreshed(count: number): void {
+		this.replaced(count);
+	}
+
+	reset(): void {
+		this.baseline = undefined;
+		this.latest = 0;
 	}
 
 	get count(): number {
@@ -27,7 +50,7 @@ export function jumpToLatestLabel(newCount: number, keyLabel: string): string {
 }
 
 export function pinnedPromptLine(promptRow: string): string {
-	const text = stripVTControlCharacters(promptRow).trim();
+	const text = stripTerminalSequences(promptRow).trim();
 	return `${theme.fg("dim", "↑ ")}${theme.fg("muted", text)}`;
 }
 

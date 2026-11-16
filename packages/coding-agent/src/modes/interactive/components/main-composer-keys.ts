@@ -3,24 +3,15 @@ import { theme } from "../theme/theme.js";
 import { isNavHelpKey, type NavKey, type NavKeybindings, navActionText, renderNavKeyOverlay } from "./nav-keys.ts";
 
 export interface MainComposerKeyState {
-	readonly agentRows: number;
+	readonly agentRows?: number;
 	readonly working: boolean;
-}
-
-function agentsSegment(keybindings: NavKeybindings | undefined, rows: number): string | undefined {
-	if (rows <= 0) return undefined;
-	const key = navActionText(keybindings, "app.agents.focus");
-	if (!key) return undefined;
-	return `${key} ${rows} ${rows === 1 ? "agent" : "agents"}`;
 }
 
 export function mainComposerHintSegments(
 	keybindings: NavKeybindings | undefined,
-	state: Pick<MainComposerKeyState, "agentRows">,
+	_state?: Pick<MainComposerKeyState, "agentRows">,
 ): string[] {
 	const segments: string[] = [];
-	const agents = agentsSegment(keybindings, state.agentRows);
-	if (agents) segments.push(agents);
 	const help = navActionText(keybindings, "app.keys.help");
 	if (help) segments.push(`${help} keys`);
 	return segments;
@@ -30,7 +21,6 @@ export function mainComposerKeys(state: MainComposerKeyState): NavKey[] {
 	return [
 		{ keys: "enter", label: "send the prompt" },
 		...(state.working ? [{ action: "app.interrupt", label: "interrupt the agent's turn" }] : []),
-		...(state.agentRows > 0 ? [{ action: "app.agents.focus", label: "agents, on an empty prompt" }] : []),
 		{ keys: "/", label: "commands, at the start of the prompt" },
 		{ keys: "pgup/pgdn", label: "scroll" },
 		{ action: "tui.altScreen.bottom", label: "jump to the latest message" },

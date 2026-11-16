@@ -1,8 +1,9 @@
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
+import type { TUI } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
 import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
-import { stripVerbatimCompactionPrefix } from "../../core/messages.ts";
+import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
@@ -10,12 +11,14 @@ import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { appendBoundedStderr } from "../rpc/rpc-client-process.js";
+import { messageComponents, statusComponents } from "./chat-message-count.ts";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
+import type { NewMessageCounter } from "./components/jump-to-latest.ts";
 import { createMarkdownTransform } from "./components/markdown-transform.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ThemedText } from "./components/themed-text.js";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
-import { InteractiveModeBase, statusComponents } from "./interactive-mode-base.ts";
+import { InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
 import {
 	type AgentMessage,
 	APP_NAME,
@@ -311,6 +314,9 @@ InteractiveModeBase.prototype.addRenderedChatEntry = function (
 	entry: ChatMessageEntry,
 ): Component {
 	const component = renderChatMessageEntry(entry, this.chatMessageRenderOptions());
+	if (entry.kind !== "system" && !(entry.kind === "custom" && isVerbatimCompactionMessage(entry.message))) {
+		messageComponents.add(component);
+	}
 	addChatTranscriptEntry(this.chatContainer, component, entry.role);
 	return component;
 };
@@ -351,9 +357,15 @@ InteractiveModeBase.prototype.addCustomEntryToChat = function (this: Interactive
 	);
 	component.setExpanded(this.toolOutputExpanded);
 	if (!component.hasContent()) return;
+	messageComponents.add(component);
 	const streamingIndex = this.streamingComponent ? this.chatContainer.children.indexOf(this.streamingComponent) : -1;
 	if (streamingIndex >= 0) this.chatContainer.children.splice(streamingIndex, 0, component);
 	else this.chatContainer.addChild(component);
+};
+
+type AltScreenMessageCounterHost = TUI & {
+	isFollowingOutput?: boolean;
+	newMessages?: NewMessageCounter;
 };
 
 InteractiveModeBase.prototype.addMessageToChat = function (
@@ -379,6 +391,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				message.truncated ? ({ truncated: true } as TruncationResult) : undefined,
 				message.fullOutputPath,
 			);
+			messageComponents.add(component);
 			this.chatContainer.addChild(component);
 			break;
 		}
@@ -401,6 +414,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 								markdownTransformers,
 							);
 				component.setExpanded(this.toolOutputExpanded);
+				messageComponents.add(component);
 				this.chatContainer.addChild(component);
 			}
 			break;
@@ -415,6 +429,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				markdownTransformers,
 			);
 			component.setExpanded(this.toolOutputExpanded);
+			messageComponents.add(component);
 			this.chatContainer.addChild(component);
 			break;
 		}
@@ -445,7 +460,10 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 							markdownTransformers,
 							this.settingsManager.getLatexRenderingEnabled(),
 						);
+						messageComponents.add(userComponent);
 						this.chatContainer.addChild(userComponent);
+					} else {
+						messageComponents.add(component);
 					}
 				} else {
 					const userComponent = new UserMessageComponent(
@@ -455,6 +473,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 						markdownTransformers,
 						this.settingsManager.getLatexRenderingEnabled(),
 					);
+					messageComponents.add(userComponent);
 					this.chatContainer.addChild(userComponent);
 				}
 				if (options?.populateHistory) {
@@ -474,6 +493,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				false,
 				this.settingsManager.getLatexRenderingEnabled(),
 			);
+			messageComponents.add(assistantComponent);
 			this.chatContainer.addChild(assistantComponent);
 			break;
 		}
@@ -611,12 +631,24 @@ InteractiveModeBase.prototype.attachStartupNoticesContainer = function (
 	}
 };
 
+const renderedSessionIds = new WeakMap<InteractiveModeBase, string>();
+
 InteractiveModeBase.prototype.renderInitialMessages = function (this: InteractiveModeBase): void {
+	const sessionId = this.sessionManager.getSessionId();
+	const previousSessionId = renderedSessionIds.get(this);
+	renderedSessionIds.set(this, sessionId);
+	const renderer = this.ui as AltScreenMessageCounterHost;
+	if (previousSessionId !== sessionId) {
+		renderer.newMessages?.reset();
+	}
 	this.attachStartupNoticesContainer({ resetDetached: true });
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { updateFooter: true, populateHistory: true });
 	renderProjectTrustWarningIfNeeded(this);
 	refreshInteractiveTasks(this);
+	if (previousSessionId === sessionId) {
+		renderer.newMessages?.replaced(this.chatContainer.children.filter(isChatMessageComponent).length);
+	}
 };
 
 function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
@@ -692,6 +724,10 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	// Generic rebuilds keep the same session: pending fd/rg callbacks still own
 	// this transcript. Full session replacements invalidate their generation in
 	// renderCurrentSessionState() before rebuilding the replacement transcript.
+	const renderer = this.ui as AltScreenMessageCounterHost;
+	if (this.chatContainer.children.length > 0 && renderer.isFollowingOutput === false) {
+		renderer.newMessages?.observe(false, this.chatContainer.children.filter(isChatMessageComponent).length);
+	}
 	this.managedToolStatusStarted = false;
 	this.lastStatusSpacer = undefined;
 	this.lastStatusText = undefined;
@@ -700,6 +736,7 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	this.attachStartupNoticesContainer();
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { suppressCompactionBoundary: options.suppressCompactionBoundary });
+	renderer.newMessages?.replaced(this.chatContainer.children.filter(isChatMessageComponent).length);
 };
 
 function isSynthesizedCompactionBoundary(message: AgentMessage | undefined, result: VerbatimCompactionResult): boolean {

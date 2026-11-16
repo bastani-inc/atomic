@@ -177,7 +177,10 @@ InteractiveModeBase.prototype.handleEngineDiagnostic = function (
 ): void {
 	exitOnRefusedDecisionSetting(this, diagnostic.error);
 	renderEngineDiagnostic(diagnostic, {
-		stopWorkingLoader: () => this.stopWorkingLoader(),
+		stopWorkingLoader: () => {
+			this.workingRunMeter.stop();
+			this.stopWorkingLoader();
+		},
 		showStatus: (message, persist) => this.showStatus(message, persist),
 		showError: (message) => this.showError(message),
 	});
@@ -196,6 +199,9 @@ InteractiveModeBase.prototype.renderCurrentSessionState = function (this: Intera
 	this.streamingComponent = undefined;
 	this.streamingMessage = undefined;
 	this.pendingTools.clear();
+	if (!this.session.isStreaming) {
+		this.workingRunMeter.stop();
+	}
 	this.renderInitialMessages();
 };
 

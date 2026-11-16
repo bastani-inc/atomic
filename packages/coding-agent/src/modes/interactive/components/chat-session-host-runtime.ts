@@ -91,6 +91,7 @@ function openChatSessionExternalPromptLifecycle<TExtraEntry extends ChatTranscri
 	preserveStatusMessage: boolean,
 ): number | undefined {
 	if (state.disposed) return undefined;
+	if (!isChatSessionStreaming(state)) state.workingRunMeter.stop();
 	if (!preserveStatusMessage) state.statusMessage = "";
 	state.sdkBusy = true;
 	startChatSessionWorkingLifecycle(state);
@@ -176,6 +177,7 @@ export function clearChatSessionBusyForTerminalWorkflowStage<TExtraEntry extends
 	state.sdkBusy = false;
 	state.workingMessage = undefined;
 	state.compacting = false;
+	state.workingRunMeter.stop();
 	stopChatSessionWorkingLifecycle(state, false);
 	if (finalizeTerminalWorkflowToolEntries(state.transcript)) {
 		state.transcriptComponent.invalidate();

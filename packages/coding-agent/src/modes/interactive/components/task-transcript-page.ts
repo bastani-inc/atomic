@@ -363,6 +363,13 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			return;
 		}
 		const session = follow?.session?.subscribe === undefined ? undefined : follow.session;
+		const sessionChanged = session !== this.followed;
+		if (sessionChanged) {
+			this.unsubscribe?.();
+			this.unsubscribe = undefined;
+			this.followed = session;
+			this.chat.resetFollowedSession();
+		}
 		this.chat.replaceMessages(page.value.messages);
 		this.chat.hydrateCompactionStatus(
 			page.value.compactionReason,
@@ -370,11 +377,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		);
 		this.cursor = page.value.nextCursor;
 		this.status = "";
-		if (session === this.followed) return;
-		this.unsubscribe?.();
-		this.unsubscribe = undefined;
-		this.followed = session;
-		if (session === undefined) return;
+		if (!sessionChanged || session === undefined) return;
 		this.chat.hydrateStreamingAssistantMessage(session.getStreamingMessage?.());
 		this.hydrateRunningTurn(session);
 		this.unsubscribe = session.subscribe?.((event) => {

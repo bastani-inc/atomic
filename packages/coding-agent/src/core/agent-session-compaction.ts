@@ -642,7 +642,7 @@ export function compact(this: AgentSession, options: SessionCompactOptions = {})
 	const controller = new AbortController();
 	this._compactionAbortController = controller;
 	this._compactionReason = "manual";
-	this._compactionStartedAt = Date.now();
+	this._compactionStartedAt ??= Date.now();
 	// Handle rejection now so a failing event drain cannot become unhandled
 	// while an automatic run finishes.
 	void abortBoundary.catch(() => {});

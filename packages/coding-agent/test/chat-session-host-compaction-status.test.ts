@@ -236,6 +236,32 @@ test("hydrated compaction clock uses active session start timestamp and clears s
 		explicitHost.hydrateCompactionStatus("manual");
 		assert.match(explicitHost.renderWorkingStatus(100).join("\n"), /Compacting context\.\.\. \(0s · esc to cancel\)/);
 		explicitHost.dispose();
+
+		vi.setSystemTime(0);
+		let sessionCompactionStartedAt: number | undefined = 0;
+		const takeoverHost = makeHost({
+			getAgentSession: () => ({ compactionStartedAt: sessionCompactionStartedAt }) as never,
+		});
+		takeoverHost.applyAgentEvent({ type: "compaction_start", reason: "threshold" });
+		vi.setSystemTime(5_000);
+		sessionCompactionStartedAt = 5_000;
+		vi.setSystemTime(8_000);
+		assert.match(takeoverHost.renderWorkingStatus(100).join("\n"), /Auto-compacting\.\.\. \(8s · esc to cancel\)/);
+		takeoverHost.applyAgentEvent({
+			type: "compaction_end",
+			reason: "threshold",
+			result: undefined,
+			aborted: true,
+			willRetry: false,
+			manualTakeoverPending: true,
+		});
+		assert.match(takeoverHost.renderWorkingStatus(100).join("\n"), /Auto-compacting\.\.\. \(8s · esc to cancel\)/);
+		vi.setSystemTime(10_000);
+		assert.match(takeoverHost.renderWorkingStatus(100).join("\n"), /Auto-compacting\.\.\. \(10s · esc to cancel\)/);
+		sessionCompactionStartedAt = 10_000;
+		takeoverHost.applyAgentEvent({ type: "compaction_start", reason: "manual" });
+		assert.match(takeoverHost.renderWorkingStatus(100).join("\n"), /Compacting context\.\.\. \(0s · esc to cancel\)/);
+		takeoverHost.dispose();
 	} finally {
 		vi.useRealTimers();
 	}

@@ -32,7 +32,7 @@ import {
 	isTerminalStageChatState,
 	isTerminalStageChatTransition,
 } from "./stage-chat-view-status.js";
-import { noticeRow, noticeSummary } from "./stage-chat-view-transcript.js";
+import { noticeRow, noticeSummary, stageNoticeCountsAsMessage } from "./stage-chat-view-transcript.js";
 import {
 	HEADER_ROWS,
 	isReadOnlyArchiveStatus,
@@ -357,6 +357,7 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 		getChatRenderSettings: () => stageChatRenderSettings(ctx, opts),
 		footerData: ctx.footerData,
 		renderExtraEntry: (entry) => noticeRow(entry, ctx.theme),
+		countsAsMessage: stageNoticeCountsAsMessage,
 	});
 }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Container, type EditorTheme, stripTerminalSequences } from "@bastani/atomic-tui";
-import { beforeAll, describe, test } from "vitest";
+import { beforeAll, describe, test, vi } from "vitest";
 import { AtomicWorkingStatusComponent } from "../src/modes/interactive/components/atomic-working-status.ts";
 import { ChatSessionHost, type ChatSessionHostStyle } from "../src/modes/interactive/components/chat-session-host.ts";
 import {
@@ -36,6 +36,10 @@ describe("working line time and tokens (#5224)", () => {
 		assert.equal(formatWorkingTokens(999_499), "999k");
 		assert.equal(formatWorkingTokens(999_500), "1.0M");
 		assert.equal(formatWorkingTokens(1_200_000), "1.2M");
+		assert.equal(formatWorkingTokens(99_949_999), "99.9M");
+		assert.equal(formatWorkingTokens(99_950_000), "100M");
+		assert.equal(formatWorkingTokens(999_499_999), "999M");
+		assert.equal(formatWorkingTokens(999_950_000), "1000M");
 	});
 
 	test("the meta shows only the time until a token arrives", () => {
@@ -73,6 +77,73 @@ describe("working line time and tokens (#5224)", () => {
 		meter.start();
 		meter.streaming({ role: "assistant", usage: { output: 3 }, content: [{ type: "text", text: "x".repeat(800) }] });
 		assert.equal(meter.snapshot()?.outputTokens, 200);
+	});
+
+	test("streaming defers argument serialization to painted snapshots, caches completed arguments, and refreshes mutated streaming arguments (#5243)", () => {
+		const meter = new WorkingRunMeter(() => 1_000);
+		meter.start();
+		const completedArgs = { path: "first.ts", content: "a".repeat(400) };
+		const stringifySpy = vi.spyOn(JSON, "stringify");
+		try {
+			for (let i = 1; i <= 20; i++) {
+				meter.streaming({
+					role: "assistant",
+					content: [
+						{ type: "toolCall", id: "call-1", name: "write", arguments: completedArgs },
+						{ type: "toolCall", id: "call-2", name: "write", arguments: { content: "b".repeat(i * 20) } },
+					],
+				});
+			}
+			assert.equal(stringifySpy.mock.calls.length, 0);
+
+			const firstSnapshot = meter.snapshot();
+			assert.ok((firstSnapshot?.outputTokens ?? 0) > 200);
+			assert.equal(stringifySpy.mock.calls.length, 2);
+
+			const mutableStreamingArgs: { content: string; nested?: { detail: string } } = {
+				content: "c".repeat(40),
+				nested: { detail: "d".repeat(40) },
+			};
+			const mutableMessage = {
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "call-1", name: "write", arguments: completedArgs },
+					{ type: "toolCall", id: "call-2", name: "write", arguments: mutableStreamingArgs },
+				],
+			};
+			meter.streaming(mutableMessage);
+			const beforeMutation = meter.snapshot()?.outputTokens ?? 0;
+			const callsAfterBeforeMutation = stringifySpy.mock.calls.length;
+			assert.equal(stringifySpy.mock.calls.filter(([value]) => value === completedArgs).length, 1);
+
+			mutableStreamingArgs.content = "c".repeat(400);
+			mutableStreamingArgs.nested!.detail = "d".repeat(400);
+			meter.streaming(mutableMessage);
+			const afterMutation = meter.snapshot()?.outputTokens ?? 0;
+			assert.ok(afterMutation > beforeMutation);
+			assert.ok(stringifySpy.mock.calls.length > callsAfterBeforeMutation);
+			assert.equal(stringifySpy.mock.calls.filter(([value]) => value === completedArgs).length, 1);
+
+			meter.settled({
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "call-1", name: "write", arguments: completedArgs },
+					{ type: "toolCall", id: "call-2", name: "write", arguments: mutableStreamingArgs },
+				],
+			});
+			assert.equal(stringifySpy.mock.calls.filter(([value]) => value === completedArgs).length, 1);
+			const callsAfterSettled = stringifySpy.mock.calls.length;
+			meter.settled({
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "call-1", name: "write", arguments: completedArgs },
+					{ type: "toolCall", id: "call-2", name: "write", arguments: mutableStreamingArgs },
+				],
+			});
+			assert.equal(stringifySpy.mock.calls.length, callsAfterSettled);
+		} finally {
+			stringifySpy.mockRestore();
+		}
 	});
 
 	test("the working line keeps Atomic's ∀ and its message, with the run's time and tokens after it", () => {

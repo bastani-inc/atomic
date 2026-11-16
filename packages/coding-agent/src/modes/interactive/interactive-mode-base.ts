@@ -17,8 +17,9 @@ import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { readClipboardText } from "../../utils/clipboard.js";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
-import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
+import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
+import { messageComponents, statusComponents } from "./chat-message-count.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mainComposerHintSegments } from "./components/main-composer-keys.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
@@ -30,10 +31,10 @@ import {
 	type AgentSession,
 	type AgentSessionRuntime,
 	type AssistantMessage,
-	type AssistantMessageComponent,
+	AssistantMessageComponent,
 	type AutocompleteProvider,
 	type AutocompleteProviderFactory,
-	type BashExecutionComponent,
+	BashExecutionComponent,
 	type Component,
 	Container,
 	type CountdownTimer,
@@ -48,11 +49,11 @@ import {
 	KeybindingsManager,
 	type Loader,
 	type LoaderIndicatorOptions,
-	Spacer,
+	type Spacer,
 	setKeybindings,
 	setRegisteredThemes,
 	type Text,
-	type ToolExecutionComponent,
+	ToolExecutionComponent,
 	type TUI,
 	theme,
 	UsageMeterComponent,
@@ -90,7 +91,18 @@ const FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS = [
 ] as const;
 
 const FULLSCREEN_VIEWPORT_ACTIONS = FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS;
-export const statusComponents = new WeakSet<Component>();
+
+export { messageComponents, statusComponents };
+
+export function isChatMessageComponent(child: Component): boolean {
+	return (
+		messageComponents.has(child) ||
+		child instanceof AssistantMessageComponent ||
+		child instanceof ToolExecutionComponent ||
+		child instanceof RemoteToolExecutionComponent ||
+		child instanceof BashExecutionComponent
+	);
+}
 
 export function isFullscreenViewportAction(data: string, keybindings: KeybindingsManager): boolean {
 	return FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
@@ -705,9 +717,7 @@ export class InteractiveModeBase {
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,
 			onOverlayInternalUiAction: this.onOverlayInternalUiAction,
-			messageCount: () =>
-				this.chatContainer?.children.filter((child) => !(child instanceof Spacer) && !statusComponents.has(child))
-					.length ?? 0,
+			messageCount: () => this.chatContainer?.children.filter(isChatMessageComponent).length ?? 0,
 			onInternalUiAction: () => {
 				this.jumpToTranscriptEnd();
 				return undefined;

@@ -14,7 +14,7 @@ import type { AppKeybinding, KeybindingsManager } from "../../../core/keybinding
 import { isPhysicalEscape } from "../interactive-key-identity.ts";
 import { theme } from "../theme/theme.js";
 import type { AtomicWorkingLoader } from "./atomic-working-status.ts";
-import { renderComposerRule } from "./composer-rule.ts";
+import { renderComposerRule, sanitizeRuleLabel } from "./composer-rule.ts";
 
 export interface CustomEditorOptions extends EditorOptions {
 	promptPrefix?: string;
@@ -24,7 +24,80 @@ export interface CustomEditorOptions extends EditorOptions {
 	topRuleLabel?: () => string | undefined;
 }
 
-const ANSI_ESCAPE_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[PX_][\s\S]*?\x1b\\/g;
+export function stripEditorAnsi(text: string): string {
+	let i = text.indexOf("\x1b");
+	if (i === -1) return text;
+	const len = text.length;
+	let out = "";
+	let copyFrom = 0;
+	let belPos = -1;
+	let stPos = -1;
+	let lastSt = -2;
+	while (i !== -1 && i < len) {
+		const next = i + 1 < len ? text.charCodeAt(i + 1) : -1;
+		if (next === 0x5b) {
+			let j = i + 2;
+			while (j < len) {
+				const c = text.charCodeAt(j);
+				if (c >= 0x30 && c <= 0x3f) j++;
+				else break;
+			}
+			while (j < len) {
+				const c = text.charCodeAt(j);
+				if (c >= 0x20 && c <= 0x2f) j++;
+				else break;
+			}
+			if (j < len) {
+				const c = text.charCodeAt(j);
+				if (c >= 0x40 && c <= 0x7e) {
+					out += text.slice(copyFrom, i);
+					copyFrom = j + 1;
+					i = text.indexOf("\x1b", copyFrom);
+					continue;
+				}
+			}
+			i = text.indexOf("\x1b", j);
+			continue;
+		}
+		if (next === 0x5d) {
+			if (belPos < i + 2 && belPos !== len) {
+				const found = text.indexOf("\x07", i + 2);
+				belPos = found === -1 ? len : found;
+			}
+			let end = -1;
+			if (belPos < len) {
+				end = belPos + 1;
+			} else {
+				if (lastSt === -2) lastSt = text.lastIndexOf("\x1b\\");
+				if (lastSt >= i + 2) end = lastSt + 2;
+			}
+			if (end !== -1) {
+				out += text.slice(copyFrom, i);
+				copyFrom = end;
+				i = text.indexOf("\x1b", copyFrom);
+				continue;
+			}
+			i = text.indexOf("\x1b", i + 2);
+			continue;
+		}
+		if (next === 0x50 || next === 0x58 || next === 0x5f) {
+			if (stPos < i + 2 && stPos !== len) {
+				const found = text.indexOf("\x1b\\", i + 2);
+				stPos = found === -1 ? len : found;
+			}
+			if (stPos < len) {
+				out += text.slice(copyFrom, i);
+				copyFrom = stPos + 2;
+				i = text.indexOf("\x1b", copyFrom);
+				continue;
+			}
+			i = text.indexOf("\x1b", i + 2);
+			continue;
+		}
+		i = text.indexOf("\x1b", i + 1);
+	}
+	return copyFrom === 0 ? text : out + text.slice(copyFrom);
+}
 const BORDER_LINE_PATTERN = /^[─ ↑↓0-9more]+$/;
 /** Exact Empty Bracketed Paste sequence from the terminal (image-only macOS Cmd+V). */
 const EMPTY_BRACKETED_PASTE = "\x1b[200~\x1b[201~";
@@ -129,7 +202,7 @@ export class CustomEditor extends Editor {
 		const indicator = this.workingStatusIndicator;
 		if (!this.embedWorkingStatus || !indicator || width <= 0) return this.renderLabeledTopRule(line, width);
 
-		const plainLine = line.replace(ANSI_ESCAPE_PATTERN, "");
+		const plainLine = stripEditorAnsi(line);
 		const overflowMatch = /↑ (\d+) more/.exec(plainLine);
 		let status = indicator.renderInBorder(Math.max(1, width - 5));
 		let statusWidth = visibleWidth(status);
@@ -171,8 +244,9 @@ export class CustomEditor extends Editor {
 	}
 
 	private renderLabeledTopRule(line: string, width: number): string {
-		const label = this.topRuleLabel?.()?.trim();
-		const plain = line.replace(ANSI_ESCAPE_PATTERN, "");
+		const raw = this.topRuleLabel?.();
+		const label = raw ? sanitizeRuleLabel(raw) : "";
+		const plain = stripEditorAnsi(line);
 		if (!label || !/^─+$/.test(plain.trim())) return this.extendBorderLine(line, width);
 		return renderComposerRule(width, {
 			label: { plain: label, styled: theme.fg("muted", label) },
@@ -181,7 +255,7 @@ export class CustomEditor extends Editor {
 	}
 
 	private isEditorBorderLine(line: string): boolean {
-		const plain = line.replace(ANSI_ESCAPE_PATTERN, "").trim();
+		const plain = stripEditorAnsi(line).trim();
 		return plain.includes("─") && BORDER_LINE_PATTERN.test(plain);
 	}
 

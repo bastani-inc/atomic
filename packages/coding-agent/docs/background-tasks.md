@@ -119,8 +119,8 @@ Completion creates a shaded notification card in the owning chat without dependi
 
 ```text
 ✓ Subagent codebase-analyzer completed: Trace the authentication flow.
-  Authentication starts in …
-/tasks to inspect
+⎿ Authentication starts in …
+(ctrl+o for the full result) · /tasks to inspect
 ```
 
 The parent model also receives the result context. Delivery retries do not relaunch the child. Workflow completions stay in their owning stage chat, not the main conversation.
@@ -134,6 +134,8 @@ A subagent stopped with `subagent({ action: "pause" | "quit", id })`, or by its 
 Repeated stop requests or late child results do not duplicate the notice or overwrite the recorded outcome. A task that finished before cancellation keeps its actual result. Closing the owning session or workflow stage still suppresses late notices.
 
 Restored completions may have only an outcome and task identity if the original live task or transcript is unavailable. Atomic does not invent missing output. Excerpts are bounded; inspect retained history for more detail.
+
+A collapsed subagent notice shows the first wrapped line of its result; a shell notice shows the last three wrapped lines of retained output. Use the expand-tools key, normally Ctrl+O, for more of the retained preview, or `/tasks` to inspect. Missing model metadata does not change a subagent notice's layout.
 
 Long titles and previews are truncated or wrapped within the card width. Its background covers the ellipsis, expand hint, and trailing padding on every row.
 

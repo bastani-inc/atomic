@@ -693,6 +693,41 @@ describe("InteractiveMode compaction events", () => {
 		expect(mode.showError).toHaveBeenCalledWith("Post-compaction continuation failed: provider failed");
 	});
 
+	it("keeps the session compaction start clock across summarization retry attempts (#5243)", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(4_000);
+			const { mode } = makeMode([]);
+			Object.assign(mode.session, { compactionStartedAt: 4_000 });
+
+			vi.setSystemTime(6_000);
+			await emit(mode, { type: "compaction_start", reason: "threshold" });
+			expect(renderedText(mode.statusContainer)).toContain("Auto-compacting... (2s · esc to cancel)");
+
+			await emit(mode, {
+				type: "summarization_retry_scheduled",
+				source: "compaction",
+				attempt: 1,
+				maxAttempts: 3,
+				delayMs: 3_000,
+				errorMessage: "rate limited",
+			} as never);
+			vi.setSystemTime(9_000);
+			await emit(mode, {
+				type: "summarization_retry_attempt_start",
+				source: "compaction",
+				reason: "threshold",
+				attempt: 1,
+				maxAttempts: 3,
+			} as never);
+			expect(renderedText(mode.statusContainer)).toContain("Auto-compacting... (5s · esc to cancel)");
+			mode.autoCompactionLoader?.stop();
+			mode.retryCountdown?.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("does not restore the working spinner when mid-turn compaction cannot continue", async () => {
 		for (const event of [
 			{ type: "compaction_end", reason: "threshold", aborted: true, willRetry: false, midTurn: true },
@@ -1042,8 +1077,12 @@ describe("compaction boundary component", () => {
 			stats: { ...result.stats, tokensBefore: 480, tokensAfter: 240, percentReduction: 50 },
 		};
 		const component = new CompactionBoundaryMessageComponent(divergent);
+		const collapsed = stripVTControlCharacters(component.render(200).join("\n"));
+		expect(collapsed).toContain("480 → 240 tokens");
+		expect(collapsed).not.toContain("1.2k → 240 tokens");
 		component.setExpanded(true);
 		const text = stripVTControlCharacters(component.render(200).join("\n"));
+		expect(text).toContain("480 → 240 tokens");
 		expect(text).toContain("Compacted from 1,200 tokens");
 		expect(text).not.toContain("Compacted from 480 tokens");
 	});

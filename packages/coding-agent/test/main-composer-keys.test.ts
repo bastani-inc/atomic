@@ -36,9 +36,9 @@ beforeAll(() => {
 const keybindings = () => new KeybindingsManager();
 
 describe("main composer keys (#5224)", () => {
-	test("the footer names the agent panel only when it lists something", () => {
-		assert.deepEqual(mainComposerHintSegments(keybindings(), { agentRows: 3 }), ["↓ 3 agents", "? keys"]);
-		assert.deepEqual(mainComposerHintSegments(keybindings(), { agentRows: 1 }), ["↓ 1 agent", "? keys"]);
+	test("the footer names the keys help shortcut without advertising an unhandled agent-focus key (#5243)", () => {
+		assert.deepEqual(mainComposerHintSegments(keybindings(), { agentRows: 3 }), ["? keys"]);
+		assert.deepEqual(mainComposerHintSegments(keybindings(), { agentRows: 1 }), ["? keys"]);
 		assert.deepEqual(mainComposerHintSegments(keybindings(), { agentRows: 0 }), ["? keys"]);
 	});
 
@@ -47,16 +47,16 @@ describe("main composer keys (#5224)", () => {
 			matches: () => false,
 			getKeys: (action: string) => (action === "app.keys.help" ? [] : ["down"]),
 		};
-		assert.deepEqual(mainComposerHintSegments(unbound, { agentRows: 2 }), ["↓ 2 agents"]);
+		assert.deepEqual(mainComposerHintSegments(unbound, { agentRows: 2 }), []);
 	});
 
-	test("the overlay lists interrupt only while working and the panel only when it has rows", () => {
+	test("the overlay lists interrupt only while working and never lists an unhandled agent-focus key (#5243)", () => {
 		const idle = mainComposerKeys({ agentRows: 0, working: false }).map((key) => key.action ?? key.keys);
 		assert.ok(!idle.includes("app.interrupt"));
 		assert.ok(!idle.includes("app.agents.focus"));
 		const busy = mainComposerKeys({ agentRows: 2, working: true }).map((key) => key.action ?? key.keys);
 		assert.ok(busy.includes("app.interrupt"));
-		assert.ok(busy.includes("app.agents.focus"));
+		assert.ok(!busy.includes("app.agents.focus"));
 	});
 
 	for (const width of [80, 160]) {

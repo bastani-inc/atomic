@@ -20,7 +20,7 @@ The interface has four main areas:
 - **Startup header** - shortcuts plus named lists of loaded context files, prompt templates, skills, and extensions; use the expand-tools shortcut (Ctrl+O by default) to switch those lists to source paths
 - **Messages** - user messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI
 - **Editor** - where you type; border color indicates the current thinking level
-- **Footer** - token/cache usage, cost, and context usage above the editor; below it, the current model, reasoning level, working directory, Git branch, and session name while the agent is idle, or `esc to interrupt` while it works (a turn, compaction, automatic retry, or `!` command)
+- **Footer** - token/cache usage, cost, and context usage above the editor; below it, the current model, reasoning level, working directory, Git branch, and session name while the agent is idle, or the bound interrupt key while it works (a turn, compaction, automatic retry, or `!` command). Press `?` on an empty prompt for the main chat's key overview
 
 The editor can be replaced temporarily by built-in UI such as `/settings` or by custom extension UI.
 
@@ -32,7 +32,7 @@ Startup lists loaded context files, skills, prompts, and extensions by name. Cus
 
 While the agent works, `∀` pulses beside a working message, followed by the current run's elapsed time and output tokens. A new run starts a fresh meter; steering keeps the current run's meter. Retry, fallback, compaction, cancellation, and error messages take precedence; approval prompts hide ordinary activity. Set `ATOMIC_REDUCED_MOTION=1` for a static indicator or `NO_COLOR` for activity without foreground colors. Elapsed time still updates once per second with reduced motion. Extensions can [customize the indicator](/tui#pattern-4b-working-indicator-customization).
 
-Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening a chat during compaction shows the time since that compaction began. Afterwards, `∀ Context compacted` shows the token counts before and after; use the expand key, normally Ctrl+O, to read the summary.
+Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening a chat during compaction shows the time since that compaction began. Afterwards, `∀ Context compacted` shows estimated message-token counts before and after; use the expand key, normally Ctrl+O, to read the summary.
 
 ### Editor Features
 

@@ -424,7 +424,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				(text) => theme.fg(isOverflowAutoCompaction ? "warning" : "muted", text),
 				label,
 			);
-			const compactionStartedAt = Date.now();
+			const compactionStartedAt = this.session.compactionStartedAt ?? Date.now();
 			this.autoCompactionLoader.setLogo(true);
 			this.autoCompactionLoader.setMeta(() => compactionMeta(compactionStartedAt, keyText("app.interrupt")));
 			this.statusContainer.addChild(this.autoCompactionLoader);
@@ -559,6 +559,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 		}
 		case "model_fallback_end": {
+			if (!event.success) this.workingRunMeter.stop();
 			if (this.fallbackLoader) {
 				this.fallbackLoader.stop();
 				this.fallbackLoader = undefined;
@@ -587,6 +588,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			}
 			// Show error only on final failure (success shows normal response)
 			if (!event.success) {
+				this.workingRunMeter.stop();
 				this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
 			}
 			this.ui.requestRender();
@@ -594,6 +596,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "agent_continue_error": {
+			this.workingRunMeter.stop();
 			this.stopWorkingLoader();
 			this.showError(event.errorMessage);
 			this.ui.requestRender();

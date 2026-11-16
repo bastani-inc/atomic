@@ -244,7 +244,6 @@ The same keys move between the main chat, subagent chats, workflow graphs, stage
 | `app.list.peek` | `space` | Peek at the selected task |
 | `app.list.filter` | `/` | Filter the list by name |
 | `app.keys.help` | `?` | Show the keys of the current screen |
-| `app.agents.focus` | `down` | Focus the agent panel from an empty prompt |
 | `app.agents.chord` | `ctrl+x` | Start a background-work chord in the main chat |
 | `app.agents.stopAll` | `ctrl+k` | After the chord key: stop all background subagents and workflow runs (press twice to confirm) |
 | `app.tasks.open` | Unbound | Command-only `/tasks` route |

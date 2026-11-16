@@ -393,11 +393,25 @@ describe("manual compaction re-entrancy", () => {
 			);
 			await gate.committed;
 
+			const autoStartedAt = harness.session.compactionStartedAt;
+			expect(autoStartedAt).toBeTypeOf("number");
+			await vi.advanceTimersByTimeAsync(5_000);
 			const manual = harness.session.compact({ preserve_recent: 0, query: "manual-only-query" });
+			expect(harness.session.compactionStartedAt).toBe(autoStartedAt);
+			await vi.advanceTimersByTimeAsync(3_000);
+			let manualStartedAt: number | undefined;
+			const unsub = harness.session.subscribe((event) => {
+				if (event.type === "compaction_start" && event.reason === "manual") {
+					manualStartedAt = harness.session.compactionStartedAt;
+				}
+			});
 			gate.release();
 			const manualResult = await manual;
+			unsub();
 			await automatic;
 			await vi.advanceTimersByTimeAsync(100);
+
+			expect(manualStartedAt).toBe((autoStartedAt ?? 0) + 8_000);
 
 			expect(continueSpy).not.toHaveBeenCalled();
 			expect(manualResult.compactedText).toBe("manual summary");

@@ -4,6 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import { createVerbatimCompactionMessage } from "../../packages/coding-agent/src/core/messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { TaskMessageError } from "../../packages/coding-agent/src/core/tasks/message-error.js";
@@ -191,6 +192,75 @@ test("loading earlier history preserves only actual unread arrivals (#5243)", ()
 	}
 });
 
+test("compaction refresh while scrolled up preserves counted arrivals in a chat host (#5243)", () => {
+	initTheme("dark");
+	let compactedMessages: Array<Parameters<ChatSessionHost["replaceMessages"]>[0][number]> = [...longConversation];
+	const host = new ChatSessionHost(
+		hostOptions({
+			getSessionMessages: () => compactedMessages,
+		}),
+	);
+	try {
+		host.replaceMessages(longConversation);
+		host.renderBody(80, 10);
+		host.handleInput("\x1b[1;5H");
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/);
+
+		host.appendMessages([
+			{ role: "user", content: "ARRIVAL-1", timestamp: 101 },
+			{ role: "user", content: "ARRIVAL-2", timestamp: 102 },
+		]);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /2 new messages ·/);
+
+		const stats = {
+			linesBefore: 50,
+			linesDeleted: 45,
+			linesKept: 5,
+			rangeCount: 1,
+			tokensBefore: 4000,
+			tokensAfter: 500,
+			percentReduction: 87.5,
+		};
+		const parameters = {
+			compression_ratio: 0.5,
+			preserve_recent: 2,
+			query: "",
+		};
+		const compactionResult = {
+			compactedText: "Compacted earlier context",
+			firstKeptEntryId: null,
+			tokensBefore: 4000,
+			rung: "planned" as const,
+			promptVersion: 6 as const,
+			parameters,
+			stats,
+		};
+		compactedMessages = [
+			createVerbatimCompactionMessage("Compacted earlier context", 4000, new Date(103).toISOString(), {
+				strategy: "verbatim-lines",
+				promptVersion: 6,
+				parameters,
+				rung: "planned",
+				stats,
+			}),
+			...longConversation.slice(-15),
+		];
+		host.applyAgentEvent({
+			type: "compaction_end",
+			reason: "threshold",
+			aborted: false,
+			willRetry: false,
+			result: compactionResult,
+		});
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /2 new messages ·/);
+
+		host.appendMessages([{ role: "user", content: "ARRIVAL-3", timestamp: 104 }]);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /3 new messages ·/);
+	} finally {
+		host.dispose();
+	}
+});
+
 test("an auto scrollbar hides again through the host's repaint hook (#4521)", () => {
 	vi.useFakeTimers();
 	initTheme("dark");
@@ -369,6 +439,8 @@ test("a footer without a task list of its own counts nothing for a session that 
 
 test("a chat that does not own its running session never offers to interrupt it, and shows its model once idle (#4640, #4690)", () => {
 	initTheme("dark");
+	const previous = getKeybindings();
+	setKeybindings(new KeybindingsManager());
 	let session = { ...boxSession("busy-model"), isStreaming: true } as ChatBoxSession;
 	const borrowed = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getChatBoxSession: () => session }));
 	const owned = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getAgentSession: () => session as never }));
@@ -381,5 +453,6 @@ test("a chat that does not own its running session never offers to interrupt it,
 	} finally {
 		borrowed.dispose();
 		owned.dispose();
+		setKeybindings(previous);
 	}
 });

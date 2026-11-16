@@ -50,7 +50,7 @@ export function handleSummarizationRetryEvent(mode: InteractiveModeBase, event: 
 			(text) => theme.fg("muted", text),
 			message,
 		);
-		const compactionStartedAt = Date.now();
+		const compactionStartedAt = mode.session.compactionStartedAt ?? Date.now();
 		if (event.source !== "branchSummary") mode.autoCompactionLoader.setLogo(true);
 		mode.autoCompactionLoader.setMeta(() => compactionMeta(compactionStartedAt, keyText("app.interrupt")));
 		mode.statusContainer.addChild(mode.autoCompactionLoader);

@@ -77,6 +77,13 @@ async function assertFullBackground(lines: string[], width: number, background: 
 
 test("single background launch shades every terminal cell after truncating a long task", async () => {
 	initTheme("dark");
+	const callHeading =
+		renderSubagentToolCall({ agent: "worker", task: longTask }, theme, {
+			toolCallId: "heading-fixture",
+			state: {},
+			invalidate() {},
+		}).render(140)[0] ?? "";
+	assert.doesNotMatch(callHeading, /\x1b\[0m\.\.\.\x1b\[0m/);
 	const card = createCard({ agent: "worker", task: longTask });
 	try {
 		const result = taskToolResult({

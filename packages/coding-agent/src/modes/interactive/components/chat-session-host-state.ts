@@ -53,6 +53,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getCwd: (() => string) | undefined;
 	readonly footerData: ReadonlyFooterDataProvider | undefined;
 	readonly renderExtraEntry: ((entry: TExtraEntry) => Component) | undefined;
+	readonly countsAsMessage: ((entry: TExtraEntry) => boolean) | undefined;
 	readonly tui: TUI | undefined;
 
 	footer: FooterComponent | undefined;
@@ -125,7 +126,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 				keyLabel: () => followIndicatorKeyLabel(opts.keybindings),
 				newCount: () => this.newMessages.count,
 			}),
-			observeFollowing: (following) => this.newMessages.observe(following, this.transcript.length),
+			observeFollowing: (following) => this.newMessages.observe(following, countableTranscriptLength(this)),
 			pinnedPrompt: pinnedPromptLine,
 			requestRender: () => this.requestRender?.(),
 			onNearTop: () => opts.onNearTop?.(),
@@ -149,6 +150,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.getCwd = opts.getCwd;
 		this.footerData = opts.footerData;
 		this.renderExtraEntry = opts.renderExtraEntry;
+		this.countsAsMessage = opts.countsAsMessage;
 		this.tui = opts.tui;
 		this.liveChat = new LiveChatEntriesController(this.transcript);
 		this.transcriptComponent = new ChatTranscriptComponent(
@@ -166,4 +168,22 @@ function followIndicatorKeyLabel(keybindings: unknown): string {
 	return typeof getKeys === "function"
 		? getKeys.call(keybindings, "tui.altScreen.bottom").join("/")
 		: keyText("tui.altScreen.bottom");
+}
+
+export function extraEntryCountsAsMessage<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	entry: TExtraEntry,
+): boolean {
+	if (state.countsAsMessage !== undefined) return state.countsAsMessage(entry);
+	return (entry as { readonly role?: unknown }).role !== "notice";
+}
+
+export function countableTranscriptLength<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): number {
+	let excluded = 0;
+	for (const entry of state.extraEntries) {
+		if (!extraEntryCountsAsMessage(state, entry)) excluded += 1;
+	}
+	return Math.max(0, state.transcript.length - excluded);
 }
