@@ -15,7 +15,7 @@ describe("AgentSession compaction surface", () => {
 	});
 });
 
-test("RPC get_state round-trips the active compaction reason", async () => {
+test("RPC get_state round-trips the active compaction reason and start time (#5243)", async () => {
 	const session = Object.assign(Object.create(AgentSession.prototype) as AgentSession, {
 		agent: {
 			state: { model: undefined, thinkingLevel: "off", messages: [] },
@@ -36,6 +36,7 @@ test("RPC get_state round-trips the active compaction reason", async () => {
 		_queuedMessagesPaused: false,
 		_autoCompactionAbortController: new AbortController(),
 		_compactionReason: "threshold",
+		_compactionStartedAt: 4_000,
 	});
 	const createRuntime: CreateAgentSessionRuntimeFactory = async () => {
 		throw new Error("unused");
@@ -58,6 +59,7 @@ test("RPC get_state round-trips the active compaction reason", async () => {
 	if (!response.success || !("data" in response)) throw new Error("get_state did not return state data");
 	assert.equal(response.data.isCompacting, true);
 	assert.equal(response.data.compactionReason, "threshold");
+	assert.equal(response.data.compactionStartedAt, 4_000);
 	assert.deepEqual(
 		response.data.compaction,
 		{ state: "idle" },

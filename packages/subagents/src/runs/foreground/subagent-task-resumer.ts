@@ -35,8 +35,7 @@ export function bindSubagentTaskResumer(
 }
 
 function resumer(deps: SubagentChildRestoreDeps, ctx: ExtensionContext): TaskResumer {
-	const resumedFrom = new Map<string, string>();
-	const childOf = (taskId: TaskId) => subagentChildOfTask(ctx, taskId, resumedFrom.get(taskId));
+	const childOf = (taskId: TaskId) => subagentChildOfTask(ctx, taskId);
 	return {
 		readOnlyReason(taskId: TaskId) {
 			const child = childOf(taskId);
@@ -65,10 +64,7 @@ function resumer(deps: SubagentChildRestoreDeps, ctx: ExtensionContext): TaskRes
 			if (child === undefined) return { ok: false, reason: "this subagent is no longer kept" };
 			if (child.readOnlyReason !== undefined) return { ok: false, reason: child.readOnlyReason };
 			const result = await controlSubagentChildren(deps, ctx, { action: "resume", id: child.childId, message });
-			if (!result.isError) {
-				resumedFrom.set(taskId, child.childId);
-				return { ok: true };
-			}
+			if (!result.isError) return { ok: true };
 			return {
 				ok: false,
 				reason: result.content.map((part) => (part.type === "text" ? part.text : "")).join(" "),

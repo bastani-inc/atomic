@@ -387,6 +387,12 @@ export function _enqueueInterruptCustomMessage<T>(
 			!sessionLifetime(liveOwner).aborted
 		) {
 			await liveOwner._runAgentContinuation(async () => {}, "settle");
+		} else if (
+			liveOwner._pendingInterruptDeliveries === 0 &&
+			liveOwner._activePromptCount === 0 &&
+			!liveOwner.isStreaming
+		) {
+			liveOwner._subagentPolicy?.onTurnDrained?.();
 		}
 	});
 }

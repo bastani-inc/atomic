@@ -29,7 +29,7 @@ describe("TranscriptFollowIndicator", () => {
 
 	test("renders a centered linked highlight row with the live key label", () => {
 		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "ctrl+end" });
-		const highlight = " ↓ Jump to latest message · ctrl+end ";
+		const highlight = " ↓ jump to bottom · ctrl+end ";
 		const highlightWidth = visibleWidth(highlight);
 		for (const width of [80, 41]) {
 			const rows = indicator.render(width);
@@ -52,7 +52,7 @@ describe("TranscriptFollowIndicator", () => {
 		const rows = indicator.render(8);
 		expect(rows).toHaveLength(1);
 		expect(visibleWidth(rows[0]!)).toBeLessThanOrEqual(8);
-		expect(stripTerminalSequences(rows[0]!)).toContain("J");
+		expect(stripTerminalSequences(rows[0]!)).toContain("↓ j");
 		expect(rows[0]).not.toContain("·");
 
 		for (const width of [0, 1, 2, 3, 4]) {

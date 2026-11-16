@@ -329,26 +329,48 @@ function viewClosed(host: CompactingMode): boolean {
 }
 
 const reasons = ["manual", "threshold", "overflow"] as const;
+const reasonPatterns: Record<CompactionReason, RegExp> = {
+	manual: /∀ Compacting context\.\.\. \((\d+)s · esc to cancel\)/,
+	threshold: /∀ Auto-compacting\.\.\. \((\d+)s · esc to cancel\)/,
+	overflow: /∀ Context overflow detected\. Auto-compacting\.\.\. \((\d+)s · esc to cancel\)/,
+};
+
+function normalizeCompactionElapsed(status: string): string {
+	return status.trimEnd().replace(/\(\d+s · esc to cancel\)/, "(0s · esc to cancel)");
+}
 
 async function assertViewRoundTrips(host: CompactingMode, view: OpenView): Promise<void> {
 	for (const reason of reasons) {
 		const compaction = await host.startCompaction(reason);
 		const label = host.status();
-		assert.match(label, /\(esc Cancel\)/, `${reason}: indicator shown before ${view.name} opens`);
+		const before = reasonPatterns[reason].exec(label);
+		assert.notEqual(before, null, `${reason}: indicator shown before ${view.name} opens`);
 
 		await view.open(host);
 		await flush();
 		assert.equal(viewClosed(host), false, `${view.name} is open`);
 		await dismiss(host);
 		assert.equal(viewClosed(host), true, `${view.name} is closed again`);
-		assert.equal(host.status(), label, `${view.name}: ${reason} indicator restored with reason and cancel hint`);
+		const restored = host.status();
+		const after = reasonPatterns[reason].exec(restored);
+		assert.notEqual(after, null, `${view.name}: ${reason} indicator restored with reason and cancel hint`);
+		assert.equal(
+			normalizeCompactionElapsed(restored),
+			normalizeCompactionElapsed(label),
+			`${view.name}: ${reason} indicator restored with reason and cancel hint`,
+		);
+		assert.equal(
+			Number(after?.[1]) >= Number(before?.[1]),
+			true,
+			`${view.name}: ${reason} compaction clock does not step backward`,
+		);
 
 		await view.open(host);
 		await flush();
 		await compaction.finish();
 		await dismiss(host);
 		assert.equal(viewClosed(host), true, `${view.name} is closed again`);
-		assert.doesNotMatch(host.status(), /ompacting|\(esc Cancel\)/, `${view.name}: ${reason} ended while open`);
+		assert.doesNotMatch(host.status(), /ompacting|to cancel\)/, `${view.name}: ${reason} ended while open`);
 		assert.equal(host.mode.autoCompactionLoader, undefined, `${view.name}: ${reason} loader released`);
 	}
 
@@ -357,7 +379,7 @@ async function assertViewRoundTrips(host: CompactingMode, view: OpenView): Promi
 	const startedWhileOpen = await host.startCompaction("threshold");
 	await dismiss(host);
 	assert.equal(viewClosed(host), true, `${view.name} is closed again`);
-	assert.match(host.status(), /Auto-compacting\.\.\. \(esc Cancel\)/, `${view.name}: started while open`);
+	assert.match(host.status(), /Auto-compacting\.\.\. \(\d+s · esc to cancel\)/, `${view.name}: started while open`);
 	await startedWhileOpen.finish();
 	assert.doesNotMatch(host.status(), /ompacting/);
 }

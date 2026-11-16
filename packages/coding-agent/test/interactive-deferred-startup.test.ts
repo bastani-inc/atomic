@@ -883,7 +883,6 @@ describe("deferred startup thinking level (#5247)", () => {
 		args?: string[];
 	}
 
-	/** The extension provider a deferred startup registers only after the session exists. */
 	function registerExtensionProvider(registry: ModelRegistry): void {
 		registry.registerProvider("ext-provider", {
 			baseUrl: "https://extension.test/v1",
@@ -944,7 +943,6 @@ describe("deferred startup thinking level (#5247)", () => {
 		return { registry, parsed, sessionManager, settingsManager, sessionOptions };
 	}
 
-	/** Startup with the extension provider registered before the session is created. */
 	async function eagerStartup(startup: StartupCase) {
 		const { sessionOptions } = await startupInputs(startup, true);
 		const { session, modelFallbackMessage } = await createAgentSession(sessionOptions);
@@ -960,14 +958,9 @@ describe("deferred startup thinking level (#5247)", () => {
 		}
 	}
 
-	/**
-	 * Startup that creates the session before the extension provider registers. On the extension-load path the
-	 * session records its startup state, then the deferred model scope and model restore run. On the trust path it
-	 * records nothing, and trust completion has already selected eager startup's model and level when the restore runs.
-	 */
 	async function deferredStartup(startup: StartupCase, path: "extension-load" | "trust") {
 		const { registry, parsed, sessionManager, settingsManager, sessionOptions } = await startupInputs(startup, false);
-		const savedThinkingLevel = savedConversationThinkingLevel(sessionManager);
+		const savedThinkingLevel = savedConversationThinkingLevel(sessionManager, sessionManager.buildSessionContext());
 		const { session, modelFallbackMessage } = await createUnstartedAgentSession(
 			sessionOptions,
 			path === "extension-load",
@@ -978,7 +971,7 @@ describe("deferred startup thinking level (#5247)", () => {
 			const mode = {
 				options: {
 					modelFallbackMessage,
-					deferredStartupThinkingLevel: sessionOptions.thinkingLevel ?? savedThinkingLevel,
+					deferredStartupThinkingLevel: parsed.thinking ?? savedThinkingLevel,
 					deferredSavedThinkingLevel: savedThinkingLevel,
 					deferredModelScopePatterns: path === "extension-load" ? parsed.models : undefined,
 				},
@@ -1141,4 +1134,47 @@ describe("deferred startup thinking level (#5247)", () => {
 			assert.deepEqual(deferred, eager);
 		});
 	}
+
+	for (const scope of [
+		{
+			settings: { defaultProvider: "ext-provider", defaultModel: "ext-primary" },
+			models: "openai/gpt-5.3-codex:high,ext-provider/ext-primary:low",
+		},
+		{ settings: {}, models: "ext-provider/ext-primary:low,openai/gpt-5.3-codex:high" },
+	]) {
+		it(`selects eager startup's extension model when deferred --models ${scope.models} first resolved a built-in model`, async () => {
+			const startup: StartupCase = { settings: scope.settings, openaiKey: true, args: ["--models", scope.models] };
+			const eager = await eagerStartup(startup);
+			const deferred = await deferredStartup(startup, "extension-load");
+
+			assert.deepEqual(eager, {
+				model: "ext-provider/ext-primary",
+				thinkingLevel: "low",
+				recordedThinkingLevel: "low",
+				warnings: [],
+			});
+			assert.deepEqual(deferred, eager);
+		});
+	}
+
+	it("ignores the thinking entry of a session without messages", async () => {
+		const sessionManager = SessionManager.inMemory(root);
+		await sessionManager.appendThinkingLevelChange("low");
+		assert.equal(savedConversationThinkingLevel(sessionManager, sessionManager.buildSessionContext()), undefined);
+
+		const startup: StartupCase = {
+			settings: { defaultProvider: "ext-provider", defaultModel: "ext-primary" },
+			savedThinkingLevel: "low",
+		};
+		const eager = await eagerStartup(startup);
+		const deferred = await deferredStartup(startup, "extension-load");
+
+		assert.deepEqual(eager, {
+			model: "ext-provider/ext-primary",
+			thinkingLevel: "medium",
+			recordedThinkingLevel: "medium",
+			warnings: [],
+		});
+		assert.deepEqual(deferred, eager);
+	});
 });

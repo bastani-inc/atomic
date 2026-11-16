@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   automaticWaitBudgetMs,
   type ExtensionAPI,
@@ -356,7 +357,8 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
   });
   /**
    * #4752: send one message to every recipient a pattern names. Each recipient gets its own direct send, with that
-   * send's retries, refusals and receipts; the result lists how each one fared.
+   * send's retries, refusals and receipts; the result lists how each one fared. Every copy carries one `broadcastId`,
+   * so a session that several of them reach shows the message once.
    */
   const sendToPatternTarget = async (
     target: string,
@@ -369,7 +371,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
       readonly broadcast: boolean;
       readonly signal: AbortSignal | undefined;
       readonly ctx: { readonly hasUI: boolean; readonly ui: { confirm(title: string, message: string): Promise<boolean> } };
-      readonly sendOne: (recipient: string) => Promise<IntercomAttemptResult>;
+      readonly sendOne: (recipient: string, broadcastId: string) => Promise<IntercomAttemptResult>;
     },
   ): Promise<IntercomAttemptResult> => {
     if (!request.message) return patternError("Missing 'to' or 'message' parameter");
@@ -431,8 +433,9 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
       const confirmed = await request.ctx.ui.confirm("Send Message", `Send to "${target}":\n${names}\n\n${request.message}${attachmentText}`);
       if (!confirmed) return { content: [{ type: "text", text: "Message cancelled by user" }], isError: false, details: {} };
     }
+    const broadcastId = randomUUID();
     const outcomes = await Promise.all(recipients.map(async (recipient): Promise<PatternRecipientOutcome> => {
-      const result = await request.sendOne(recipient.target);
+      const result = await request.sendOne(recipient.target, broadcastId);
       const messageId = typeof result.details.messageId === "string" ? result.details.messageId : undefined;
       const base = { target: recipient.target, label: recipient.label, ...(messageId === undefined ? {} : { messageId }) };
       if (!result.isError) return { ...base, outcome: result.details.queued === true ? "queued" : "delivered" };
@@ -551,7 +554,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         }
       }
       // A pattern send (#4752) runs this once per recipient, as a direct send to `fanOutRecipient`.
-      const executeAttempt = async (retryToken: string | undefined, _signal?: AbortSignal, retries = 0, fanOutRecipient?: string): Promise<IntercomAttemptResult> => {
+      const executeAttempt = async (retryToken: string | undefined, _signal?: AbortSignal, retries = 0, fanOutRecipient?: string, broadcastId?: string): Promise<IntercomAttemptResult> => {
       const to = fanOutRecipient ?? params.to;
       if (retryToken !== undefined) {
         if (action !== "send" && action !== "ask" && action !== "reply") {
@@ -897,6 +900,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               text: message,
               attachments,
               replyTo,
+              ...(broadcastId === undefined ? {} : { broadcastId }),
               ...deliveryOption,
             });
 
@@ -1688,9 +1692,9 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           broadcast: params.broadcast === true,
           signal,
           ctx,
-          sendOne: (recipient) =>
+          sendOne: (recipient, broadcastId) =>
             runIntercomOperation(
-              (token, attemptSignal, retries) => executeAttempt(token, attemptSignal, retries, recipient),
+              (token, attemptSignal, retries) => executeAttempt(token, attemptSignal, retries, recipient, broadcastId),
               (token) => retryIdentities.discard(token),
               signal,
             ),
