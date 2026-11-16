@@ -48,6 +48,12 @@ const ATOMIC_SETTING_KEYS: ReadonlySet<string> = new Set([
 ]);
 const AGENT_DIR_STATE_ENTRIES: ReadonlySet<string> = new Set([
 	HOME_DECISION_FILE,
+	"open-sessions",
+	"extensions",
+	"skills",
+	"prompts",
+	"themes",
+	"agents",
 	"trust.json",
 	"pool-host-id",
 	"atomic-debug.log",
@@ -376,33 +382,12 @@ function hasRelativeTargetEntries(
 	return false;
 }
 
-function hasTargetContents(path: string): boolean {
-	let dir: ReturnType<typeof opendirSync> | undefined;
-	try {
-		const stat = statSync(path);
-		if (!stat.isDirectory()) return stat.isFile() && stat.size > 0;
-		dir = opendirSync(path);
-		return dir.readSync() !== null;
-	} catch {
-		return false;
-	} finally {
-		try {
-			dir?.closeSync();
-		} catch {}
-	}
-}
-
 function hasOwnTargetEntries(agentPath: string, parent: string, relativeTargets: readonly string[]): boolean {
 	for (const target of relativeTargets) {
 		const own = resolve(agentPath, target);
 		if (pathsEqual(own, agentPath) || !existsSync(own)) continue;
 		const legacy = resolve(parent, target);
-		if (
-			!pathsEqual(legacy, agentPath) &&
-			!pathsEqual(legacy, parent) &&
-			existsSync(legacy) &&
-			!hasTargetContents(own)
-		) {
+		if (!pathsEqual(legacy, agentPath) && !pathsEqual(legacy, parent) && existsSync(legacy)) {
 			continue;
 		}
 		return true;
@@ -529,6 +514,14 @@ function canClaimParentStore(parent: string, agentPath: string, defaultAgent: st
 
 function recordSettledStorageHome(fastKey: string, cacheKey: string, settled: SettledStorageHome): SettledStorageHome {
 	lastStorageHome = undefined;
+	if (!settled.provisionalWithoutSettings) {
+		for (const [key, entry] of settledStorageHomes) {
+			if (entry.provisionalWithoutSettings) settledStorageHomes.delete(key);
+		}
+		for (const [key, entry] of fastStorageHomes) {
+			if (entry.provisionalWithoutSettings) fastStorageHomes.delete(key);
+		}
+	}
 	settledStorageHomes.set(cacheKey, settled);
 	fastStorageHomes.set(fastKey, settled);
 	return settled;
@@ -536,6 +529,7 @@ function recordSettledStorageHome(fastKey: string, cacheKey: string, settled: Se
 
 interface StorageHomeDecision {
 	readonly home: string;
+	readonly defaultHome?: boolean;
 	readonly parentOwner?: string;
 	readonly targets?: readonly string[];
 }
@@ -579,6 +573,7 @@ function readStorageHomeDecision(file: string): StorageHomeDecision | undefined 
 		typeof decision !== "object" ||
 		typeof decision.home !== "string" ||
 		!isAbsolute(decision.home) ||
+		(decision.defaultHome !== undefined && typeof decision.defaultHome !== "boolean") ||
 		(decision.parentOwner !== undefined &&
 			(typeof decision.parentOwner !== "string" || !isAbsolute(decision.parentOwner))) ||
 		(decision.targets !== undefined &&
@@ -684,6 +679,7 @@ function parentStorageOwner(parent: string): string | undefined {
 }
 
 function applyStorageHomeDecision(decision: StorageHomeDecision, agentPath: string): SettledStorageHome {
+	if (decision.defaultHome) return createStorageHomeEntry(decision.home);
 	if (decision.parentOwner === undefined) return createStorageHomeEntry(agentPath);
 	const workflows = join(decision.home, "workflows");
 	const claim = join(decision.home, PARENT_CLAIM_FILE);
@@ -745,7 +741,27 @@ function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettin
 
 	const matchedDefaultHome = defaultHomeForAgent(agentPath, defaultHome);
 	if (matchedDefaultHome !== undefined) {
-		return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(matchedDefaultHome));
+		const file = storageHomeDecisionFile(agentPath);
+		const existing = readStorageHomeDecision(file);
+		if (existing !== undefined) {
+			return recordSettledStorageHome(fastKey, cacheKey, applyStorageHomeDecision(existing, agentPath));
+		}
+		const aliasParent = dirname(agentPath);
+		const targets = configuredRelativeTargets(agentPath, rawHome, settings);
+		const aliasHasHistory =
+			!sameDirectory(aliasParent, matchedDefaultHome) &&
+			hasParentStoreEntries(aliasParent, agentPath, targets) &&
+			!hasParentStoreEntries(matchedDefaultHome, agentPath, targets);
+		if (!aliasHasHistory) {
+			const entry =
+				settings === undefined || !isDirectory(agentPath)
+					? createStorageHomeEntry(matchedDefaultHome, undefined, true)
+					: applyStorageHomeDecision(
+							settleStorageDecision(file, { home: matchedDefaultHome, defaultHome: true }),
+							agentPath,
+						);
+			return recordSettledStorageHome(fastKey, cacheKey, entry);
+		}
 	}
 
 	const parent = dirname(agentPath);
@@ -796,6 +812,7 @@ export function coLocatesWorkflowStore(agentDir: string, settings?: StorageHomeS
 	if (defaultHomeForAgent(agentPath, defaultHome) !== undefined) return false;
 	const decision = readStorageHomeDecision(storageHomeDecisionFile(agentPath));
 	if (decision !== undefined) {
+		if (decision.defaultHome) return false;
 		if (decision.parentOwner === undefined) return true;
 		const owner = parentStorageOwner(decision.home);
 		return !sameDirectory(owner ?? decision.parentOwner, agentPath);
@@ -874,10 +891,7 @@ export function storagePathBaseDir(path: string, agentDir: string, settings?: St
 	const decisionFile = `${storageHomeDecisionFile(agentPath)}.target-${key}`;
 	let decision = readStorageHomeDecision(decisionFile);
 	if (decision === undefined) {
-		const base =
-			pathsEqual(home, parent) || existsSync(resolve(home, target)) || !existsSync(resolve(parent, target))
-				? home
-				: parent;
+		const base = pathsEqual(home, parent) || !existsSync(resolve(parent, target)) ? home : parent;
 		const selected = resolve(base, target);
 		decision = containsPath(canonicalPath(agentPath), canonicalPath(selected))
 			? { home: base }

@@ -1978,3 +1978,71 @@ test("changing HOME cannot make a custom profile share the original default agen
 	assert.equal(defaultSessionDatabasePath(custom, {}), join(custom, "workflows", "journal.sqlite"));
 	assert.equal(defaultSessionDatabasePath(original, {}), originalStore);
 });
+
+test("a settings-aware home decision replaces provisional cached spellings of the same directory (#5242)", () => {
+	const parent = join(root, "provisional-spellings");
+	const agent = join(parent, "a1");
+	mkdirSync(agent, { recursive: true });
+	writeFileSync(join(parent, "history.sqlite"), "");
+	const alias = `${agent}/`;
+	assert.equal(storageHomeDir(agent), agent);
+	assert.equal(storageHomeDir(alias), agent);
+	assert.equal(storageHomeDir(alias, { sessions: { storage: { path: "history.sqlite" } } }), parent);
+	assert.equal(storageHomeDir(agent), parent);
+});
+
+test("an agent with an open-session registry keeps priority over an empty new sibling (#5242)", () => {
+	const parent = join(root, "open-session-priority");
+	const original = join(parent, "original");
+	const fresh = join(parent, "fresh");
+	mkdirSync(join(original, "open-sessions"), { recursive: true });
+	mkdirSync(fresh, { recursive: true });
+	mkdirSync(join(parent, "workflows"), { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	assert.equal(storageHomeDir(fresh, {}), fresh);
+	assert.equal(storageHomeDir(original, {}), parent);
+});
+
+test("explicit relative JSONL settings retain the parent target beside pre-SQLite agent sessions (#5242)", () => {
+	const parent = join(root, "pre-sqlite-relative-sessions");
+	const agent = join(parent, "a1");
+	for (const base of [agent, parent]) {
+		mkdirSync(join(base, "sessions"), { recursive: true });
+		writeFileSync(join(base, "sessions", "history.jsonl"), "{}\n");
+	}
+	const settings = { sessions: { storage: { dir: "sessions" } } };
+	assert.deepEqual(selectSessionStorage(project, { agentDir: agent, settings }), {
+		kind: "jsonl",
+		dir: join(parent, "sessions"),
+	});
+});
+
+test("a default-agent alias keeps its unclaimed legacy parent history when the canonical default home has no store (#5242)", () => {
+	const home = join(root, "default-agent-legacy-alias");
+	const canonical = join(home, ".atomic", "agent");
+	const alias = join(home, "link-agent");
+	mkdirSync(canonical, { recursive: true });
+	mkdirSync(join(home, "workflows"));
+	writeFileSync(join(home, "workflows", "journal.sqlite"), "");
+	symlinkSync(canonical, alias, "junction");
+	vi.stubEnv("HOME", home);
+	vi.stubEnv("USERPROFILE", home);
+	assert.equal(defaultSessionDatabasePath(alias, {}), join(home, "workflows", "journal.sqlite"));
+	resetStorageHomeCacheForTests();
+	assert.equal(defaultSessionDatabasePath(canonical, {}), join(home, "workflows", "journal.sqlite"));
+});
+
+test("agent resources retain legacy-store eligibility beside a credentials-only sibling (#5242)", () => {
+	for (const resource of ["extensions", "skills", "prompts", "themes", "agents"]) {
+		const parent = join(root, `resource-priority-${resource}`);
+		const original = join(parent, "agent");
+		const sibling = join(parent, "other");
+		mkdirSync(join(original, resource), { recursive: true });
+		mkdirSync(sibling, { recursive: true });
+		writeFileSync(join(sibling, "auth.json"), JSON.stringify({ anthropic: { type: "api_key", key: "test-key" } }));
+		mkdirSync(join(parent, "workflows"));
+		writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+		assert.equal(storageHomeDir(original, {}), parent, resource);
+		assert.equal(storageHomeDir(sibling, {}), sibling, resource);
+	}
+});
