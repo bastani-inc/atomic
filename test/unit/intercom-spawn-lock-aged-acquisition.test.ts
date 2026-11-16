@@ -154,6 +154,81 @@ describe("aged spawn lock acquisition (#5220)", () => {
 		}
 	});
 
+	test("an ownership read that keeps failing is not retried longer when the clock steps back (#5220)", () => {
+		const lockPath = nextLockPath();
+		const owner = `${process.pid}\n${Date.now()}\n`;
+		writeTextSync(lockPath, owner);
+		const realReadFileSync = fsModule.readFileSync;
+		const realNow = Date.now.bind(Date);
+		let nowCalls = 0;
+		let reads = 0;
+		fsModule.readFileSync = ((...args: Parameters<typeof fsModule.readFileSync>) => {
+			if (String(args[0]) === lockPath) {
+				reads++;
+				throw Object.assign(new Error(`EBUSY: resource busy or locked, open '${lockPath}'`), { code: "EBUSY" });
+			}
+			return realReadFileSync(...args);
+		}) as typeof fsModule.readFileSync;
+		syncBuiltinESMExports();
+		Date.now = () => realNow() - (++nowCalls > 1 ? 3_000 : 0);
+		try {
+			releaseSpawnLock(owner, lockPath);
+		} finally {
+			Date.now = realNow;
+			fsModule.readFileSync = realReadFileSync;
+			syncBuiltinESMExports();
+		}
+		assert.ok(reads <= 26, `${reads} reads`);
+		assert.equal(fileExistsSync(lockPath), true);
+	});
+
+	test("one acquisition does not keep creating lock files that cannot be read (#5220)", () => {
+		const lockPath = nextLockPath();
+		const realReadFileSync = fsModule.readFileSync;
+		const realStatSync = fsModule.statSync;
+		const firstReadAt = new Map<string, number>();
+		let failedReads = 0;
+		let armed = true;
+		fsModule.readFileSync = ((...args: Parameters<typeof fsModule.readFileSync>) => {
+			if (armed && String(args[0]) === lockPath) {
+				let identity: string | undefined;
+				try {
+					const stats = realStatSync(lockPath, { bigint: true });
+					identity = `${stats.ino}-${stats.birthtimeNs}`;
+				} catch {}
+				if (identity !== undefined) {
+					const first = firstReadAt.get(identity) ?? performance.now();
+					firstReadAt.set(identity, first);
+					if (performance.now() - first < 2_500) {
+						failedReads++;
+						throw Object.assign(new Error(`EBUSY: resource busy or locked, open '${lockPath}'`), {
+							code: "EBUSY",
+						});
+					}
+				}
+			}
+			return realReadFileSync(...args);
+		}) as typeof fsModule.readFileSync;
+		syncBuiltinESMExports();
+		let owner: string | undefined;
+		try {
+			owner = acquireSpawnLock(lockPath);
+		} finally {
+			armed = false;
+			fsModule.readFileSync = realReadFileSync;
+			syncBuiltinESMExports();
+		}
+		const onDisk = fileExistsSync(lockPath) ? readTextSync(lockPath, "utf8") : undefined;
+		if (owner !== undefined) {
+			assert.equal(onDisk, owner);
+			releaseSpawnLock(owner, lockPath);
+		} else {
+			assert.ok(onDisk === undefined || !onDisk.startsWith(`${process.pid}\n`), `left ${JSON.stringify(onDisk)}`);
+		}
+		assert.ok(firstReadAt.size <= 2, `${firstReadAt.size} lock files created`);
+		assert.ok(failedReads <= 52, `${failedReads} failed reads`);
+	}, 60_000);
+
 	test("a mismatched first read-back does not strand a spawner's newly created lock (#5220)", () => {
 		const lockPath = nextLockPath();
 		const realReadFileSync = fsModule.readFileSync;

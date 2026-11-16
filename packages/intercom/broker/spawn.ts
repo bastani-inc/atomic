@@ -787,19 +787,25 @@ const OWNERSHIP_READ_BACKOFF_MAX_MS = 100;
 const TRANSIENT_OWNERSHIP_READ_CODES: ReadonlySet<string> = new Set(["EACCES", "EPERM", "EBUSY"]);
 const ownershipReadSleeper = new Int32Array(new SharedArrayBuffer(4));
 
-function ownsSpawnLock(owner: string, lockPath: string = getBrokerSpawnLockPath()): boolean {
-  const started = Date.now();
+type OwnershipRead = "owned" | "other" | "unreadable";
+
+function readOwnership(owner: string, lockPath: string): OwnershipRead {
+  const started = performance.now();
   let backoff = OWNERSHIP_READ_BACKOFF_START_MS;
   for (;;) {
     try {
-      return readFileSync(lockPath, "utf-8").startsWith(owner);
+      return readFileSync(lockPath, "utf-8").startsWith(owner) ? "owned" : "other";
     } catch (error) {
-      if (!TRANSIENT_OWNERSHIP_READ_CODES.has((error as NodeJS.ErrnoException).code ?? "")) return false;
-      if (Date.now() - started + backoff > OWNERSHIP_READ_RETRY_BUDGET_MS) return false;
+      if (!TRANSIENT_OWNERSHIP_READ_CODES.has((error as NodeJS.ErrnoException).code ?? "")) return "other";
+      if (performance.now() - started + backoff > OWNERSHIP_READ_RETRY_BUDGET_MS) return "unreadable";
       Atomics.wait(ownershipReadSleeper, 0, 0, backoff);
       backoff = Math.min(backoff + OWNERSHIP_READ_BACKOFF_START_MS, OWNERSHIP_READ_BACKOFF_MAX_MS);
     }
   }
+}
+
+function ownsSpawnLock(owner: string, lockPath: string = getBrokerSpawnLockPath()): boolean {
+  return readOwnership(owner, lockPath) === "owned";
 }
 
 /** Returns the header this spawner wrote, which proves ownership on release, or undefined when another spawner holds the lock. */
@@ -809,13 +815,15 @@ export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): s
     const writtenAt = Date.now();
     const owner = `${process.pid}\n${writtenAt}\n`;
     if (createLockFile(lockPath, owner)) {
-      if (ownsSpawnLock(owner, lockPath)) {
+      const ownership = readOwnership(owner, lockPath);
+      if (ownership === "owned") {
         const nowMs = Date.now();
         if (nowMs - writtenAt < SPAWN_LOCK_RENEW_AFTER_MS) return owner;
         const renewed = renewSpawnLock(owner, nowMs, lockPath);
         if (renewed !== undefined && renewed !== owner) return renewed;
       }
       releaseSpawnLock(owner, lockPath);
+      if (ownership === "unreadable") return undefined;
       continue;
     }
     const inspected = readFileOrUndefined(lockPath);

@@ -23,7 +23,7 @@ function destinationDirectoryExists(from: string, to: string): boolean {
 export function renameWithRetry(from: string, to: string, options: RenameRetryOptions = {}): void {
   options.signal?.throwIfAborted();
   if ((options.platform ?? process.platform) !== "win32") return renameSync(from, to);
-  const started = Date.now();
+  const started = performance.now();
   const budgetMs = options.budgetMs ?? RENAME_RETRY_BUDGET_MS;
   let backoff = RENAME_BACKOFF_START_MS;
   for (;;) {
@@ -34,7 +34,7 @@ export function renameWithRetry(from: string, to: string, options: RenameRetryOp
     } catch (error) {
       if (!TRANSIENT_RENAME_CODES.has((error as NodeJS.ErrnoException).code ?? "")) throw error;
       options.signal?.throwIfAborted();
-      if (Date.now() - started + backoff > budgetMs || destinationDirectoryExists(from, to)) throw error;
+      if (performance.now() - started + backoff > budgetMs || destinationDirectoryExists(from, to)) throw error;
       Atomics.wait(sleeper, 0, 0, backoff);
       backoff = Math.min(backoff + RENAME_BACKOFF_START_MS, RENAME_BACKOFF_MAX_MS);
     }

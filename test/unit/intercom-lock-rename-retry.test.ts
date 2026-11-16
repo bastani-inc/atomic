@@ -112,3 +112,34 @@ test("an occupied generation directory is not retried (#5220)", () => {
 	);
 	assert.equal(attempts, 1);
 });
+
+test("a Windows rename that keeps failing is not retried longer when the clock steps back (#5220)", () => {
+	const from = join(tempDir, "clock-step-from");
+	fsModule.writeFileSync(from, "x");
+	const realNow = Date.now.bind(Date);
+	let nowCalls = 0;
+	let renames = 0;
+	let code: string | undefined;
+	Date.now = () => realNow() - (++nowCalls > 1 ? 3_000 : 0);
+	try {
+		withRename(
+			(source, target) => {
+				renames++;
+				throw Object.assign(new Error(`EPERM: operation not permitted, rename '${source}' -> '${target}'`), {
+					code: "EPERM",
+				});
+			},
+			() => {
+				try {
+					renameWithRetry(from, `${from}.moved`, { platform: "win32" });
+				} catch (error) {
+					code = (error as NodeJS.ErrnoException).code;
+				}
+			},
+		);
+	} finally {
+		Date.now = realNow;
+	}
+	assert.equal(code, "EPERM");
+	assert.ok(renames <= 26, `${renames} renames`);
+});
