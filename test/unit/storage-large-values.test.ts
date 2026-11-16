@@ -4,6 +4,7 @@ import { describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
 import { StorageError, StorageSchemaVersionError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { assertStorageSchemaVersion } from "../../packages/coding-agent/src/core/storage/schema.js";
 import {
 	SESSION_SUMMARY_TEXT_CHARS,
@@ -189,6 +190,83 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 		});
 	});
 
+	test("session pages do not include the entry that would cross the character bound (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const limited = rowLimitedDatabase(database, { ...LIMITS, maxResponseBytes: MiB });
+			const store = await SqlSessionStore.open(limited.wrapped);
+			const entries = Array.from({ length: 5 }, (_, index) =>
+				message(`m-${index}`, index === 0 ? null : `m-${index - 1}`, "x".repeat(600_000), "assistant"),
+			);
+			await store.create(header(), entries);
+			assert.deepEqual((await store.load("session")).entries, entries);
+			assert.deepEqual(limited.refused, []);
+		});
+	});
+
+	test("listing pages do not include the session that would cross the character bound (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const limited = rowLimitedDatabase(database, { ...LIMITS, maxResponseBytes: MiB });
+			const store = await SqlSessionStore.open(limited.wrapped);
+			const ids = ["third", "first", "second"];
+			for (const id of ids) {
+				await store.create(header(id), [
+					{
+						type: "session_info",
+						id: `${id}-name`,
+						parentId: null,
+						timestamp: createdAt,
+						name: "n".repeat(600_000),
+					},
+				]);
+			}
+			assert.deepEqual(
+				(await list(store)).map((summary) => summary.id),
+				ids,
+			);
+			await store.append("first", [message("m", "first-name", "changed")], { expectSeq: 1 });
+			assert.deepEqual(
+				(await list(store)).map((summary) => summary.id),
+				ids,
+			);
+			assert.deepEqual(limited.refused, []);
+		});
+	});
+
+	test("listing pages count text columns that duplicate header fields (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const limited = rowLimitedDatabase(database, { ...LIMITS, maxResponseBytes: MiB });
+			const store = await SqlSessionStore.open(limited.wrapped);
+			const ids = ["first", "second", "third"];
+			for (const id of ids) await store.create({ ...header(id), cwd: `/${"x".repeat(300_000)}` }, []);
+			assert.deepEqual(
+				(await list(store)).map((summary) => summary.id),
+				ids,
+			);
+			assert.deepEqual(limited.refused, []);
+		});
+	});
+
+	test("listing pages count the separators between search texts (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const limited = rowLimitedDatabase(database, { ...LIMITS, maxResponseBytes: MiB });
+			const store = await SqlSessionStore.open(limited.wrapped);
+			const ids = ["first", "second"];
+			for (const id of ids) {
+				await store.create(
+					header(id),
+					Array.from({ length: 1000 }, (_, index) => message(`${id}-${index}`, null, "x".repeat(521))),
+				);
+			}
+			const summaries = await list(store);
+			assert.deepEqual(
+				summaries.map((summary) => summary.id),
+				ids,
+			);
+			assert.ok(summaries.every((summary) => summary.searchText === Array(1000).fill("x".repeat(521)).join(" ")));
+			assert.deepEqual(limited.refused, []);
+		});
+	});
+
 	test("a long session loads in time linear in its entries, not one scan of the rest per page (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
 			const store = await SqlSessionStore.open(database);
@@ -197,8 +275,21 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 			);
 			await store.create(header(), entries);
 			const scanned = await countLongValuesMeasured(() => store.load("session"));
-			assert.equal(scanned.result.entries.length, entries.length);
+			assert.deepEqual(scanned.result.entries, entries);
 			assert.ok(scanned.calls <= 8 * entries.length, `${scanned.calls} entry lengths measured`);
+		});
+	});
+
+	test("single-entry pages shrink their fetches instead of repeatedly measuring large batches (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const entries = Array.from({ length: 40 }, (_, index) =>
+				message(`m-${index}`, index === 0 ? null : `m-${index - 1}`, "x".repeat(600_000)),
+			);
+			await store.create(header(), entries);
+			const scanned = await countLongValuesMeasured(() => store.load("session"));
+			assert.deepEqual(scanned.result.entries, entries);
+			assert.ok(scanned.calls <= 4 * entries.length, `${scanned.calls} entry lengths measured`);
 		});
 	});
 
@@ -211,7 +302,10 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 				await store.create(header(id), [message(`${id}-1`, null, "x".repeat(SESSION_SUMMARY_TEXT_CHARS))]);
 			}
 			const scanned = await countLongValuesMeasured(() => list(store));
-			assert.equal(scanned.result.length, sessions);
+			assert.deepEqual(
+				scanned.result.map((summary) => summary.id),
+				Array.from({ length: sessions }, (_, index) => `s-${index}`),
+			);
 			assert.ok(scanned.calls <= 20 * sessions, `${scanned.calls} listing lengths measured`);
 		});
 	});
@@ -483,6 +577,49 @@ describe("a database written with chunked entries is refused by older builds (#4
 			);
 			await assert.rejects(openAsOlderBuild(database), StorageSchemaVersionError);
 			assert.equal((await store.load("session")).entries.length, 2);
+		});
+	});
+
+	test("a failed first chunked write rolls back its schema bump and entries (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const kept = message("m", null, "kept");
+			const large = message("large", "m", "x".repeat(2 * MiB));
+			await store.create(header(), [kept]);
+			await database.exec(`CREATE TRIGGER reject_search BEFORE INSERT ON session_search_texts
+				BEGIN SELECT RAISE(ABORT, 'rejected search text'); END`);
+			await assert.rejects(store.append("session", [large], { expectSeq: 1 }), /rejected search text/);
+			await openAsOlderBuild(database);
+			assert.deepEqual((await store.load("session")).entries, [kept]);
+			assert.equal(await count(database, "SELECT count(*) AS n FROM session_entry_chunks"), 0);
+			await database.exec("DROP TRIGGER reject_search");
+			await store.append("session", [large], { expectSeq: 1 });
+			await assert.rejects(openAsOlderBuild(database), StorageSchemaVersionError);
+			assert.deepEqual((await store.load("session")).entries, [kept, large]);
+			await store.delete("session");
+			await assert.rejects(openAsOlderBuild(database), StorageSchemaVersionError);
+		});
+	});
+
+	test("concurrent first chunked writers both commit with one schema upgrade (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const first = await SqlSessionStore.open(database);
+			const otherDatabase = await openNodeSqliteDatabase(database.descriptor.location);
+			try {
+				const second = await SqlSessionStore.open(otherDatabase);
+				await openAsOlderBuild(database);
+				const firstEntry = message("a", null, "a".repeat(2 * MiB));
+				const secondEntry = message("b", null, "b".repeat(2 * MiB));
+				await Promise.all([
+					first.create(header("first"), [firstEntry]),
+					second.create(header("second"), [secondEntry]),
+				]);
+				await assert.rejects(openAsOlderBuild(database), StorageSchemaVersionError);
+				assert.deepEqual((await second.load("first")).entries, [firstEntry]);
+				assert.deepEqual((await first.load("second")).entries, [secondEntry]);
+			} finally {
+				await otherDatabase.close();
+			}
 		});
 	});
 
