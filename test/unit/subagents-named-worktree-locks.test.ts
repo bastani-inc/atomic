@@ -293,11 +293,14 @@ test.skipIf(process.platform === "win32")(
 
 		const uid = process.getuid?.();
 		const gid = process.getgid?.();
-		const canChownOtherUid =
-			uid !== undefined &&
-			uid !== 0 &&
-			gid !== undefined &&
-			spawnSyncCollect(["sudo", "-n", "chown", "-R", `54321:${gid}`, lockDir]).exitCode === 0;
+		let canChownOtherUid = false;
+		if (uid !== undefined && uid !== 0 && gid !== undefined) {
+			try {
+				canChownOtherUid = spawnSyncCollect(["sudo", "-n", "chown", "-R", `54321:${gid}`, lockDir]).exitCode === 0;
+			} catch (error) {
+				if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+			}
+		}
 		if (canChownOtherUid) {
 			cleanups.push(() => {
 				spawnSyncCollect(["sudo", "-n", "rm", "-rf", root]);
