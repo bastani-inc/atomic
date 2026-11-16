@@ -780,7 +780,8 @@ test("filling maxBatch ships the attempt's checkpoints at once, without waiting 
 	await sleep(50);
 	assert.deepEqual(shared.recorded, [], "one checkpoint waits for the interval");
 	await shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit);
-	for (let waited = 0; shared.recorded.length < 2 && waited < 5_000; waited += 10) await sleep(10);
+	for (let waited = 0; (shared.recorded.length < 2 || shipping.status().pending > 0) && waited < 5_000; waited += 10)
+		await sleep(10);
 	assert.deepEqual(shared.recorded, ["a", "b"].map(keyOf));
 	assert.deepEqual(shipping.status(), { pending: 0, lagMs: 0 });
 });

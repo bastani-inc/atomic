@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { Worker } from "node:worker_threads";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
 import { StorageUnavailableError } from "@bastani/atomic/storage";
@@ -9,7 +10,13 @@ import {
 	ShipShard,
 	shipShardPath,
 } from "../../packages/workflows/src/workers/ship-shard.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import {
+	makeTempDirectory,
+	readStreamText,
+	removeTempDirectory,
+	type SpawnedProcess,
+	spawnProcess,
+} from "../helpers/runtime.js";
 
 const threads = vi.hoisted(() => ({ started: [] as Worker[], exited: new Set<Worker>() }));
 
@@ -30,11 +37,15 @@ const LEASE = { id: "work-1", generation: 1, worker: "host/1", epoch: 1 } as con
 const LEASE_MS = 600_000;
 const SLOW_ROWS = 1_500;
 const LOCK_RELEASE_MS = 20;
+const LIVENESS_FIXTURE = fileURLToPath(new URL("../fixtures/ship-shard-liveness.mjs", import.meta.url));
+const CHILD_PROCESS_TIMEOUT_MS = 60_000;
 
 const directories: string[] = [];
 const opened: { close(): Promise<void> }[] = [];
+const children: SpawnedProcess[] = [];
 
 afterEach(async () => {
+	for (const child of children.splice(0)) if (child.exitCode === null) child.kill("SIGKILL");
 	for (const item of opened.splice(0)) await item.close().catch(() => {});
 	for (const directory of directories.splice(0)) removeTempDirectory(directory);
 	threads.started.splice(0);
@@ -152,10 +163,17 @@ for (const failure of ["error", "exit"] as const)
 		});
 		await held.promise;
 		const discarding = shard.discard(LEASE, localSeq);
-		if (failure === "error") thread.emit("error", new Error("connection thread failed"));
+		const reported = new Error("connection thread failed");
+		if (failure === "error") thread.emit("error", reported);
 		else thread.emit("exit", 1);
-		await assert.rejects(discarding, StorageUnavailableError);
-		await assert.rejects(shard.accept(ROOT, LEASE, "later", "{}", 2), StorageUnavailableError);
+		const lost = await discarding.then(
+			() => assert.fail("the discard settled after its thread stopped"),
+			(error: unknown) => error,
+		);
+		assert.ok(lost instanceof StorageUnavailableError);
+		if (failure === "error") assert.equal(lost.cause, reported);
+		else assert.match((lost.cause as Error).message, /exited with code 1/);
+		await assert.rejects(shard.accept(ROOT, LEASE, "later", "{}", 2), (error: unknown) => error === lost);
 		release.resolve();
 		await holding;
 		await shard.close();
@@ -177,3 +195,21 @@ test("a checkpoint shard stops its connection threads when it closes, and when i
 	await reopened.hold(LEASE, LEASE_MS);
 	assert.equal((await reopened.accept(ROOT, LEASE, "after", "{}", 1)).accepted, true);
 });
+
+test(
+	"a pending checkpoint shard write keeps its process running until it settles, and an idle open shard lets the process exit (#5321)",
+	async () => {
+		const directory = makeTempDirectory("ship-shard-liveness-");
+		directories.push(directory);
+		const child = spawnProcess([process.execPath, LIVENESS_FIXTURE, directory], { stdout: "pipe", stderr: "pipe" });
+		children.push(child);
+		const [stdout, stderr, exitCode] = await Promise.all([
+			readStreamText(child.stdout),
+			readStreamText(child.stderr),
+			child.exited,
+		]);
+		assert.equal(exitCode, 0, stderr);
+		assert.deepEqual(JSON.parse(stdout), { localSeq: 1, accepted: true });
+	},
+	CHILD_PROCESS_TIMEOUT_MS,
+);

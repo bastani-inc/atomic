@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import type { Worker } from "node:worker_threads";
 import {
 	type SqliteDatabase,
 	StorageInvalidTextError,
@@ -8,9 +10,26 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "@bastani/atomic/storage";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { openThreadedSqliteDatabase } from "../../packages/workflows/src/workers/ship-shard-thread.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+
+const threads = vi.hoisted(() => ({ started: [] as Worker[] }));
+
+vi.mock("node:worker_threads", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:worker_threads")>();
+	class TrackedWorker extends actual.Worker {
+		constructor(...args: ConstructorParameters<typeof actual.Worker>) {
+			super(...args);
+			threads.started.push(this);
+		}
+	}
+	return { ...actual, Worker: TrackedWorker };
+});
+
+const WINDOWS_MAX_PATH = 260;
+const SQLITE_CONSTRAINT_UNIQUE = 2067;
+const SQLITE_CANTOPEN = 14;
 
 const directories: string[] = [];
 const databases: SqliteDatabase[] = [];
@@ -18,12 +37,20 @@ const databases: SqliteDatabase[] = [];
 afterEach(async () => {
 	for (const database of databases.splice(0)) await database.close().catch(() => {});
 	for (const directory of directories.splice(0)) removeTempDirectory(directory);
+	threads.started.splice(0);
 });
 
-async function openItems(schema = "CREATE TABLE items (value TEXT NOT NULL UNIQUE)"): Promise<SqliteDatabase> {
+function itemsPath(...segments: string[]): string {
 	const directory = makeTempDirectory("ship-shard-thread-");
 	directories.push(directory);
-	const database = await openThreadedSqliteDatabase(join(directory, "nested", "items.sqlite"));
+	return join(directory, ...segments, "items.sqlite");
+}
+
+async function openItems(
+	schema = "CREATE TABLE items (value TEXT NOT NULL UNIQUE)",
+	path = itemsPath("nested"),
+): Promise<SqliteDatabase> {
+	const database = await openThreadedSqliteDatabase(path);
 	databases.push(database);
 	await database.exec(schema);
 	return database;
@@ -169,3 +196,96 @@ test("closing runs what was queued first, then refuses new work (#5321)", async 
 	databases.push(reopened);
 	assert.deepEqual(await rows(reopened), ["queued"]);
 });
+
+test("a failed statement reports the SQLite failure and the database it happened in (#5321)", async () => {
+	const path = itemsPath("nested");
+	const database = await openItems(undefined, path);
+	await database.run("INSERT INTO items VALUES ('taken')");
+	const failure = await database.run("INSERT INTO items VALUES ('taken')").then(
+		() => assert.fail("a duplicate was inserted"),
+		(error: unknown) => error,
+	);
+	assert.ok(failure instanceof StorageUnavailableError);
+	assert.equal(failure.adapter, "node-sqlite");
+	assert.equal(failure.location, path);
+	assert.match(
+		failure.message,
+		new RegExp(`UNIQUE constraint failed: items\\.value \\(SQLite code ${SQLITE_CONSTRAINT_UNIQUE}\\)$`),
+	);
+	assert.deepEqual(
+		{
+			name: (failure.cause as Error).name,
+			code: (failure.cause as { code?: string }).code,
+			errcode: (failure.cause as { errcode?: number }).errcode,
+			errstr: (failure.cause as { errstr?: string }).errstr,
+		},
+		{ name: "Error", code: "ERR_SQLITE_ERROR", errcode: SQLITE_CONSTRAINT_UNIQUE, errstr: "constraint failed" },
+	);
+});
+
+test("a file that cannot open fails the open with SQLite's reason and stops its thread (#5321)", async () => {
+	const path = itemsPath();
+	mkdirSync(path);
+	const failure = await openThreadedSqliteDatabase(path).then(
+		() => assert.fail("a directory opened as a database"),
+		(error: unknown) => error,
+	);
+	assert.ok(failure instanceof StorageUnavailableError);
+	assert.equal((failure.cause as { errcode?: number }).errcode, SQLITE_CANTOPEN);
+	assert.equal(threads.started.length, 1);
+	assert.equal(threads.started[0]!.threadId, -1);
+});
+
+test("a database whose path is longer than Windows' MAX_PATH opens and keeps its rows (#5321)", async () => {
+	const segments = Array.from({ length: 12 }, (_, index) => `segment-${index}-${"x".repeat(16)}`);
+	const path = itemsPath(...segments);
+	assert.ok(path.length > WINDOWS_MAX_PATH);
+	const database = await openItems(undefined, path);
+	await database.run("INSERT INTO items VALUES ('deep')");
+	await database.close();
+	const reopened = await openThreadedSqliteDatabase(path);
+	databases.push(reopened);
+	assert.deepEqual(await rows(reopened), ["deep"]);
+});
+
+test("a grouped transaction's handle refuses statements once its callback returned (#5321)", async () => {
+	const database = await openItems();
+	let kept: Parameters<Parameters<SqliteDatabase["transaction"]>[0]>[0] | undefined;
+	await Promise.all([
+		database.transaction(async (tx) => {
+			kept = tx;
+			await tx.run("INSERT INTO items VALUES ('first')");
+		}),
+		database.transaction((tx) => tx.run("INSERT INTO items VALUES ('second')")),
+	]);
+	await assert.rejects(kept!.run("INSERT INTO items VALUES ('late')"), StorageTransactionClosedError);
+	assert.deepEqual(await rows(database), ["first", "second"]);
+});
+
+for (const grouped of [false, true])
+	test(`a connection thread that fails inside ${grouped ? "a group of transactions" : "a transaction"} fails it with the thread's failure, not a rollback failure (#5321)`, async () => {
+		const database = await openItems();
+		const [thread] = threads.started;
+		assert.ok(thread !== undefined);
+		const inside = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		const failing = database.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES ('first')");
+			inside.resolve();
+			await resume.promise;
+			await tx.run("INSERT INTO items VALUES ('second')");
+		});
+		const behind = grouped ? database.transaction((tx) => tx.run("INSERT INTO items VALUES ('behind')")) : undefined;
+		await inside.promise;
+		const reported = new Error("connection thread failed");
+		thread.emit("error", reported);
+		resume.resolve();
+		const lost = await failing.then(
+			() => assert.fail("the transaction committed after its thread failed"),
+			(error: unknown) => error,
+		);
+		assert.ok(lost instanceof StorageUnavailableError);
+		assert.equal(lost.cause, reported);
+		if (behind !== undefined) await assert.rejects(behind, (error: unknown) => error === lost);
+		await assert.rejects(database.get("SELECT 1"), (error: unknown) => error === lost);
+	});
