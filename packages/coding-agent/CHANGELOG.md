@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
 - On Windows, Atomic no longer freezes while it checks whether the process holding a lock, session, worktree or blueprint build still runs, when its native module cannot read process start times. It asked PowerShell and waited on the main thread, about 150 ms each time on an idle machine and 5 to 7 seconds on a busy one, once at every start and again for each check, so input, timers and subagents stopped meanwhile. The start is now read in the background, still bounded at 5 seconds. A blueprint build that follows an interrupted one also lists the machine's processes in the background now, instead of waiting on the main thread ([#5315](https://github.com/bastani-inc/atomic/issues/5315))
 
 ## [0.9.88] - 2026-11-16
