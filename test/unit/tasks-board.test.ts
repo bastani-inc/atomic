@@ -292,3 +292,47 @@ test("a finished run with no current stage reads its stage count, the filter box
 		await h.dispose();
 	}
 });
+
+test("/tasks opens on its first row, a waiting run above a working subagent, and the panel's clock and /tasks agree (#5224)", async () => {
+	const fixture = taskFixture();
+	try {
+		await fixture.start("Spawn lock fix");
+		const runs = runSource([waitingRun]);
+		const { liveElapsedMs } = await import("../../packages/coding-agent/src/core/tasks/live-elapsed.js");
+		const taskId = fixture.store.tasks[0]?.ref.taskId ?? "";
+		const seenEarlier = liveElapsedMs(taskId, 0, true, Date.now() - 60_000);
+		assert.equal(seenEarlier, 0);
+		const inspector = new TaskInspector(
+			ownerTaskViewSource(fixture.store),
+			() => {},
+			() => {},
+		);
+		inspector.setBoardSource(runs.source);
+		const text = inspector
+			.renderViewport(100, 24)
+			.map((line) => stripVTControlCharacters(line).trimEnd())
+			.join("\n");
+		assert.match(text, /❯ ◆ ralph/, "the waiting run, the first row, is selected");
+		assert.match(text, /∀ worker +Spawn lock fix +1m 0s/, "/tasks counts from when another view first saw the task");
+		inspector.dispose();
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+test("/tasks fits a short viewport: the selected row first, then its hint line (#5224)", async () => {
+	const h = await harness([waitingRun, failedRun]);
+	try {
+		for (const rows of [1, 2, 3, 5]) {
+			const lines = h.inspector.renderViewport(100, rows).map((line) => stripVTControlCharacters(line));
+			assert.equal(lines.length, rows, `exactly ${rows} rows`);
+			assert.ok(
+				lines.some((line) => /❯ ◆ ralph/.test(line)),
+				`the selected row shows at ${rows} rows`,
+			);
+		}
+		assert.match(stripVTControlCharacters(h.inspector.renderViewport(100, 2).at(-1) ?? ""), /space peek/);
+	} finally {
+		await h.dispose();
+	}
+});
