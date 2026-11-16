@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { visibleWidth } from "@bastani/atomic-tui";
 import { beforeEach, describe, test } from "vitest";
-import { buildItemsForQuestion } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
+import {
+	buildItemsForQuestion,
+	createAskUserQuestionToolDefinition,
+} from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
 import { QuestionnaireSession } from "../../packages/coding-agent/src/core/tools/ask-user-question/state/questionnaire-session.ts";
 import type {
 	QuestionnaireResult,
@@ -161,5 +164,92 @@ describe("ask_user_question dialog (#5224)", () => {
 		const single = open(ONE);
 		single.press(DOWN, ENTER);
 		assert.equal(single.result()?.answers[0]?.answer, "Simplify");
+	});
+});
+
+describe("ask_user_question transcript summary (#5224)", () => {
+	beforeEach(() => initTheme("dark"));
+
+	const render = (result: QuestionnaireResult | undefined, params: QuestionParams = THREE) => {
+		const tool = createAskUserQuestionToolDefinition();
+		const state = {};
+		const context = {
+			args: params,
+			toolCallId: "t1",
+			invalidate: () => {},
+			lastComponent: undefined,
+			state,
+			cwd: "/",
+			executionStarted: true,
+			argsComplete: true,
+			isPartial: result === undefined,
+			expanded: false,
+			showImages: false,
+			isError: false,
+			durationMs: undefined,
+		} as unknown as Parameters<NonNullable<typeof tool.renderCall>>[2];
+		const rendered = () => ({
+			call: (tool.renderCall?.(params as never, theme, context).render(120) ?? [])
+				.map(plain)
+				.map((l) => l.trimEnd()),
+			result:
+				result === undefined
+					? []
+					: (
+							tool
+								.renderResult?.(
+									{ content: [], details: result },
+									{ expanded: false, isPartial: false },
+									theme,
+									context,
+								)
+								.render(120) ?? []
+						)
+							.map(plain)
+							.map((l) => l.trimEnd()),
+		});
+		const first = rendered();
+		// The result render records the answer the call line then shows.
+		return result === undefined ? first : rendered();
+	};
+
+	test("while waiting, the call line names the questions", () => {
+		assert.deepEqual(render(undefined).call, ["Questions · Navigation · Packaging · Layout"]);
+	});
+
+	test("one answered question is one line: header → answer", () => {
+		const out = render(
+			{
+				answers: [
+					{ questionIndex: 0, question: ONE.questions[0]!.question, kind: "option", answer: "Build it as shown" },
+				],
+				cancelled: false,
+			},
+			ONE,
+		);
+		assert.deepEqual(out.call, ["Navigation → Build it as shown"]);
+		assert.deepEqual(out.result, []);
+	});
+
+	test("several answers get a line each, multi-select joined, with notes", () => {
+		const out = render({
+			answers: [
+				{ questionIndex: 0, question: "q0", kind: "option", answer: "Simplify" },
+				{ questionIndex: 1, question: "q1", kind: "multi", answer: null, selected: ["coding-agent", "workflows"] },
+				{ questionIndex: 2, question: "q2", kind: "option", answer: "Sidebar", notes: "keep it narrow" },
+			],
+			cancelled: false,
+		});
+		assert.deepEqual(out.call, ["Questions · Navigation · Packaging · Layout"]);
+		assert.deepEqual(out.result, [
+			"Navigation → Simplify",
+			"Packaging → coding-agent, workflows",
+			"Layout → Sidebar · notes: keep it narrow",
+		]);
+	});
+
+	test("a declined questionnaire says so and lists what was asked", () => {
+		const out = render({ answers: [], cancelled: true }, ONE);
+		assert.deepEqual(out.call, ["Declined · Navigation (Build it as shown / Simplify)"]);
 	});
 });

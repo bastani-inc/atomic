@@ -1,4 +1,4 @@
-import type { OverlayOptions } from "@bastani/atomic-tui";
+import { Container, type OverlayOptions, Text } from "@bastani/atomic-tui";
 import { experimentalToolSamplingProperty } from "../../experimental.ts";
 import { getHostQuestionnaire } from "../../extensions/host-input.js";
 import type { ToolDefinition } from "../../extensions/types.ts";
@@ -7,6 +7,7 @@ import { loadConfig, validateGuidanceFields } from "./config.ts";
 import { QuestionnaireSession } from "./state/questionnaire-session.ts";
 import { ROW_INTENT_META, sentinelsToAppend } from "./state/row-intent.ts";
 import { buildQuestionnaireResponse, buildToolResult } from "./tool/response-envelope.ts";
+import { summarizeAnswers, summarizeQuestions } from "./tool/transcript-summary.ts";
 import {
 	MAX_OPTIONS,
 	MAX_QUESTIONS,
@@ -72,6 +73,12 @@ export const askUserQuestionToolSystemPromptContribution = Object.freeze({
 	] as const),
 } as const);
 
+/** What the transcript row remembers between its call and result renders. */
+interface AskUserQuestionRenderState {
+	/** A one-question answer, shown on the call line in place of the question list. */
+	summary?: string;
+}
+
 export function createAskUserQuestionToolDefinition(options?: {
 	readonly chatAsOption?: boolean;
 }): ToolDefinition<typeof QuestionParamsSchema, unknown> {
@@ -107,6 +114,30 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 		promptGuidelines: guidance.promptGuidelines ?? [...askUserQuestionToolSystemPromptContribution.guidelines],
 		...experimentalToolSamplingProperty(),
 		parameters: QuestionParamsSchema,
+
+		// One line per question in the transcript; a single answered question folds into the call line.
+		renderCall(args, theme, context) {
+			const state = context.state as AskUserQuestionRenderState;
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const params = args as unknown as QuestionParams;
+			text.setText(state.summary ?? theme.fg("toolTitle", summarizeQuestions(params)));
+			return text;
+		},
+		renderResult(result, _options, theme, context) {
+			const state = context.state as AskUserQuestionRenderState;
+			const container = new Container();
+			const details = result.details as QuestionnaireResult | undefined;
+			if (!details || !Array.isArray(details.answers)) return container;
+			const lines = summarizeAnswers(context.args as unknown as QuestionParams, details);
+			const summary = lines.length === 1 ? lines[0] : undefined;
+			if (summary !== state.summary) {
+				state.summary = summary;
+				context.invalidate();
+			}
+			if (summary === undefined)
+				for (const line of lines) container.addChild(new Text(theme.fg("muted", line), 0, 0));
+			return container;
+		},
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const typed = params as unknown as QuestionParams;
