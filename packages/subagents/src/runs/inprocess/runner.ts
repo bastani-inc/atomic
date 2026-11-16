@@ -578,13 +578,18 @@ export function inProcessChildResourceLoaderOptions(input: {
 export function nextTurnSettled(
 	session: Pick<AgentSession, "subscribe" | "isStreaming">,
 	stops: readonly AbortSignal[],
-	options: { readonly waitForStart?: boolean } = {},
+	options: {
+		readonly waitForStart?: boolean;
+		readonly subscribeDrained?: (listener: () => void) => () => void;
+	} = {},
 ): Promise<void> {
 	return new Promise<void>((resolve) => {
 		let started = !options.waitForStart && session.isStreaming;
 		let unsubscribe = () => {};
+		let unsubscribeDrained = () => {};
 		const finish = () => {
 			unsubscribe();
+			unsubscribeDrained();
 			for (const stop of stops) stop.removeEventListener("abort", finish);
 			resolve();
 		};
@@ -592,10 +597,16 @@ export function nextTurnSettled(
 		for (const stop of stops) stop.addEventListener("abort", finish, { once: true });
 		unsubscribe = session.subscribe((event) => {
 			if (event.type === "agent_start") started = true;
-			else if (event.type === "agent_settled" && started && !session.isStreaming) finish();
-			else if (event.type === "agent_end" && started)
-				queueMicrotask(() => (session.isStreaming ? undefined : finish()));
+			else if (options.subscribeDrained === undefined) {
+				if (event.type === "agent_settled" && started && !session.isStreaming) finish();
+				else if (event.type === "agent_end" && started)
+					queueMicrotask(() => (session.isStreaming ? undefined : finish()));
+			}
 		});
+		unsubscribeDrained =
+			options.subscribeDrained?.(() => {
+				if (started && !session.isStreaming) finish();
+			}) ?? (() => {});
 	});
 }
 
@@ -1670,6 +1681,7 @@ export class SubagentControlRuntime {
 		// Messages this attempt produced; a forked child's inherited history is never among them.
 		let ownMessages: () => TranscriptMessage[] = () => [];
 		const executionEnded = new AbortController();
+		const turnDrainedListeners = new Set<() => void>();
 
 		let termination: TerminationCauseName | undefined;
 		let interruptedTurnSettlement: Promise<void> | undefined;
@@ -1897,6 +1909,9 @@ export class SubagentControlRuntime {
 						subagentPolicy: {
 							...admitted.policy,
 							executionEnded: executionEnded.signal,
+							onTurnDrained: () => {
+								for (const listener of turnDrainedListeners) listener();
+							},
 							...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
 						},
 						settingsManager,
@@ -1935,7 +1950,17 @@ export class SubagentControlRuntime {
 				interruptedTurnSettlement = nextTurnSettled(
 					transcriptSession,
 					[signals.abort, signals.interrupt, executionEnded.signal],
-					{ waitForStart: true },
+					{
+						waitForStart: true,
+						...(prepared === undefined
+							? {}
+							: {
+									subscribeDrained: (listener: () => void) => {
+										turnDrainedListeners.add(listener);
+										return () => turnDrainedListeners.delete(listener);
+									},
+								}),
+					},
 				);
 				await transcriptSession.interruptTurn();
 			};

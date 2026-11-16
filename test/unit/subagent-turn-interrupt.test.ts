@@ -271,6 +271,76 @@ test.each(["background work", "a queued message"] as const)(
 	LIVE_CHILD_TIMEOUT_MS,
 );
 
+test(
+	"an interrupted subagent keeps a turn started by its settlement message drain running (#5224)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-before-drain" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("the first wake finished"),
+			fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "drain" }, { id: "block-during-drain" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("the drained message was answered"),
+		]);
+		let source: TaskTranscriptSource | undefined;
+		const stop = new AbortController();
+		let settled = false;
+		const run = runSingleInProcess(env.root, agent(), "run until interrupted", {
+			...env.options("interrupt-message-drain", {
+				signal: stop.signal,
+				taskExecution: {
+					signal: stop.signal,
+					reportActivity() {},
+					bindTranscript(bound) {
+						source = bound;
+					},
+					onExecution() {},
+					yieldTaskWait() {},
+					isParentObserving: () => false,
+				},
+			}),
+		}).finally(() => {
+			settled = true;
+		});
+		let waking: Promise<void> | undefined;
+		let unsubscribe: (() => void) | undefined;
+		try {
+			await until(() => env.blockStarted());
+			const session = source!.chatSession as AgentSession;
+			let ends = 0;
+			let drainStarted = false;
+			unsubscribe = session.subscribe((event) => {
+				if (event.type === "agent_settled" && ++ends === 2)
+					session.agent.steer({ role: "user", content: "answer the remaining message", timestamp: Date.now() });
+				if (event.type === "tool_execution_start" && event.toolCallId === "block-during-drain") drainStarted = true;
+			});
+			await source!.interruptTurn!();
+			await until(() => ends === 1);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			waking = session.sendCustomMessage(
+				{ customType: "background-task", content: "the shell finished", display: true },
+				{ triggerTurn: true },
+			);
+			await until(() => drainStarted || settled);
+			assert.equal(settled, false, "settlement does not stop the admitted continuation");
+			assert.equal(drainStarted, true);
+			assert.equal(source!.isRunning?.(), true);
+			env.answers[0]({ content: [{ type: "text", text: "CI passed" }], details: undefined });
+			await waking;
+			const result = await run;
+			assert.equal(result.status, "ok");
+			assert.equal(result.finalOutput, "the drained message was answered");
+		} finally {
+			unsubscribe?.();
+			stop.abort("user");
+			for (const answer of env.answers) answer({ content: [{ type: "text", text: "stopped" }], details: undefined });
+			await Promise.allSettled([run, waking]);
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
 test("an interrupted subagent woken by its own work settles once that turn ends, even if agent_end comes before idle (#5224)", async () => {
 	const listeners = new Set<(event: { type: string }) => void>();
 	let streaming = false;

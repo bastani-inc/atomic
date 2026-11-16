@@ -261,6 +261,7 @@ async function admittedPrompt(this: AgentSession, text: string, options?: Prompt
 		}
 	} finally {
 		this._activePromptCount -= 1;
+		if (this._activePromptCount === 0) this._subagentPolicy?.onTurnDrained?.();
 	}
 }
 
@@ -815,7 +816,11 @@ async function finishAgentRun(session: AgentSession): Promise<void> {
 		// Runs deferred by agent_settled handlers start only after every settled handler completed.
 		// Guarded because prompt-handshake suites drive this function on a synthetic session.
 		const deferred = session._deferredSettledActions?.splice(0) ?? [];
-		for (const action of deferred) await action();
+		try {
+			for (const action of deferred) await action();
+		} finally {
+			if (session._activePromptCount === 0) session._subagentPolicy?.onTurnDrained?.();
+		}
 	}
 }
 
