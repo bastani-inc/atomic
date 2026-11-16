@@ -1,19 +1,33 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, test, vi } from "vitest";
-import { type TwoBrokerClient, TwoBrokerHarness } from "../helpers/intercom-two-broker-harness.js";
+import { BROKER_LEASE_STALE_AFTER_MS } from "../../packages/intercom/broker/multinode-state-store.js";
+import {
+	BROKER_START_ALLOWANCE_MS,
+	SHARED_LEASES_TABLE,
+	TWO_BROKER_HARNESS_START_TIMEOUT_MS,
+	type TwoBrokerClient,
+	TwoBrokerHarness,
+} from "../helpers/intercom-two-broker-harness.js";
 import { sleep } from "../helpers/runtime.js";
 
 /** Spawning two real broker processes (and restarting one) is the structural cost of this suite. */
-const REAL_BROKERS_HOOK_TIMEOUT_MS = 60_000;
+const REAL_BROKERS_HOOK_TIMEOUT_MS = TWO_BROKER_HARNESS_START_TIMEOUT_MS;
 /**
  * #5038: once a session re-registers on its restarted broker, a send from the other broker reaches it within a few
  * seconds, far inside the 30 s window the crashed instance's presence lease would otherwise stay live.
  */
 const RESTARTED_DELIVERY_BOUND_MS = 5_000;
+/**
+ * How long a re-registered session's presence lease may take to reach the shared store. Its registration completes
+ * after at most `PRESENCE_REGISTRATION_BOUND_MS` (5 s) whether or not the lease is written by then, and a loaded store
+ * writes it later; other brokers route to the session once it is there.
+ */
+const PRESENCE_WRITE_WAIT_MS = 30_000;
 /** Settle time after delivery in which a duplicate frame would have arrived. */
 const DUPLICATE_WINDOW_MS = 1_000;
-const TEST_TIMEOUT_MS = 60_000;
+/** A restart of one broker, then the scenario's own sends and waits. */
+const TEST_TIMEOUT_MS = BROKER_START_ALLOWANCE_MS + 60_000;
 
 let harness: TwoBrokerHarness;
 
@@ -39,13 +53,39 @@ const registrationOf = (client: TwoBrokerClient): Registration => ({
 });
 
 async function reconnect(registration: Registration, node: "a" | "b", group: string): Promise<TwoBrokerClient> {
+	const registeringAt = Date.now();
 	const back = await harness.connect(node, registration.name, {
 		group,
 		returnAddress: registration.returnAddress,
 		preferredSessionId: registration.sessionId,
 	});
 	assert.equal(back.sessionId, registration.sessionId);
+	await presenceWritten(back.sessionId, registeringAt);
 	return back;
+}
+
+/**
+ * A session is registered across nodes once its presence lease is in the shared store (spec §12, S1/S5): one taken
+ * since it registered, not a lease its broker's killed instance left.
+ */
+async function presenceWritten(sessionId: string, since: number): Promise<void> {
+	const database = await harness.openSharedStorage("a");
+	await vi.waitFor(
+		async () => {
+			const rows = await database.all<{ subject_json: string }>(
+				`SELECT subject_json FROM "${SHARED_LEASES_TABLE}"
+				 WHERE kind = 'presence' AND holder_id IS NOT NULL AND renewed_at >= ?
+				 AND CAST(unixepoch('subsec') * 1000 AS INTEGER) - renewed_at < ?`,
+				since,
+				BROKER_LEASE_STALE_AFTER_MS,
+			);
+			assert.ok(
+				rows.some((row) => row.subject_json.includes(JSON.stringify(sessionId))),
+				`no live presence for ${sessionId} yet`,
+			);
+		},
+		{ timeout: PRESENCE_WRITE_WAIT_MS, interval: 50 },
+	);
 }
 
 test(

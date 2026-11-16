@@ -13,12 +13,20 @@ function createFakeTui(): TUI {
 	return { requestRender: () => {} } as unknown as TUI;
 }
 
+function untagged(line: string): string {
+	return line.trimEnd().replace(/\s{2,}(current|default)$/, "");
+}
+
+function rowBody(line: string): string {
+	return untagged(line).slice(5);
+}
+
 function selectedModelId(selector: ModelSelectorComponent): string | undefined {
 	const row = stripAnsi(selector.render(120).join("\n"))
 		.split("\n")
-		.find((line) => line.startsWith("→"));
+		.find((line) => line.startsWith(" ❯"));
 	return row
-		?.replace(/^→\s*(✓\s*)?/, "")
+		?.replace(/^ ❯\s*([●○]\s*)?/, "")
 		.split(" ")[0]
 		?.split("/")
 		.pop();
@@ -40,7 +48,6 @@ describe("model selector", () => {
 		harness = undefined;
 	});
 
-	// Upstream pi #8900: the current model keeps a leading "✓ " while the cursor browses away.
 	// Adapted for Atomic's constructor, which takes a SettingsManager before the ModelRuntime.
 	it("keeps the current model marked while browsing", async () => {
 		harness = await createHarness({
@@ -65,14 +72,13 @@ describe("model selector", () => {
 		const getModelRow = (id: string): string | undefined =>
 			stripAnsi(selector.render(120).join("\n"))
 				.split("\n")
-				.find((line) => line.includes(`/${id}`))
-				?.trimEnd();
+				.find((line) => line.includes(`/${id}`));
 
 		const provider = currentModel.provider;
-		expect(getModelRow("current-model")).toBe(`→ ✓ ${provider}/current-model  high`);
+		expect(untagged(getModelRow("current-model") ?? "")).toBe(` ❯ ● ${provider}/current-model  high`);
 		selector.handleInput("\x1b[B");
-		expect(getModelRow("current-model")).toBe(`  ✓ ${provider}/current-model  high`);
-		expect(getModelRow("browsed-model")).toBe(`→   ${provider}/browsed-model  high`);
+		expect(untagged(getModelRow("current-model") ?? "")).toBe(`   ● ${provider}/current-model  high`);
+		expect(untagged(getModelRow("browsed-model") ?? "")).toBe(` ❯ ○ ${provider}/browsed-model  high`);
 		selector.dispose();
 	});
 
@@ -126,9 +132,7 @@ describe("model selector", () => {
 			"high",
 		);
 
-		const rows = stripAnsi(selector.render(120).join("\n"))
-			.split("\n")
-			.map((line) => line.slice(4).trimEnd());
+		const rows = stripAnsi(selector.render(120).join("\n")).split("\n").map(rowBody);
 		// Each row shows the level selecting it applies: a saved per-model level, else the current level it inherits.
 		assert.ok(rows.includes(`${provider}/current-model  high`), rows.join("\n"));
 		assert.ok(rows.includes(`${provider}/saved-level-model  low`), rows.join("\n"));
@@ -163,13 +167,12 @@ describe("model selector", () => {
 		);
 		const row = stripAnsi(selector.render(120).join("\n"))
 			.split("\n")
-			.find((line) => line.startsWith("→ ✓ "))!
-			.slice(4)
-			.trim();
+			.find((line) => line.startsWith(" ❯ ● "))!;
+		const rowText = rowBody(row).trim();
 		selector.dispose();
 
 		await session.setModel(currentModel);
-		assert.equal(row, `${currentModel.provider}/current-model  ${session.thinkingLevel}`);
+		assert.equal(rowText, `${currentModel.provider}/current-model  ${session.thinkingLevel}`);
 		assert.equal(session.thinkingLevel, "low");
 	});
 
@@ -194,11 +197,10 @@ describe("model selector", () => {
 		);
 		const row = stripAnsi(selector.render(120).join("\n"))
 			.split("\n")
-			.find((line) => line.startsWith("→ ✓ "))!
-			.slice(4)
-			.trim();
+			.find((line) => line.startsWith(" ❯ ● "))!;
+		const rowText = rowBody(row).trim();
 
-		const [reference, level] = row.split(/\s+/);
+		const [reference, level] = rowText.split(/\s+/);
 		const parsed = resolveCliModel({
 			cliModel: `${reference}:${level}`,
 			modelRuntime: harness.session.modelRuntime,
@@ -228,9 +230,7 @@ describe("model selector", () => {
 			() => {},
 		);
 
-		const rows = stripAnsi(selector.render(120).join("\n"))
-			.split("\n")
-			.map((line) => line.slice(4).trimEnd());
+		const rows = stripAnsi(selector.render(120).join("\n")).split("\n").map(rowBody);
 		// A name that adds words the ID lacks follows it, dimmed; one that only restates the ID is left out (pi #5916).
 		assert.ok(rows.includes(`${provider}/minimax/minimax-m3  MiniMax M3 [parasail]`), rows.join("\n"));
 		assert.ok(rows.includes(`${provider}/claude-sonnet-4-5`), rows.join("\n"));
@@ -241,10 +241,7 @@ describe("model selector", () => {
 		const matches = stripAnsi(selector.render(120).join("\n"))
 			.split("\n")
 			.filter((line) => line.includes(`${provider}/`));
-		assert.deepEqual(
-			matches.map((line) => line.slice(4).trimEnd()),
-			[`${provider}/minimax/minimax-m3  MiniMax M3 [parasail]`],
-		);
+		assert.deepEqual(matches.map(rowBody), [`${provider}/minimax/minimax-m3  MiniMax M3 [parasail]`]);
 		selector.dispose();
 	});
 

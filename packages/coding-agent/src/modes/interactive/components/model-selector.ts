@@ -1,19 +1,8 @@
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
-import { type Api, type Model, modelsAreEqual } from "@bastani/atomic-ai/compat";
-import {
-	Container,
-	type Focusable,
-	fuzzyFilter,
-	getKeybindings,
-	getSelectPageIndex,
-	Input,
-	Spacer,
-	Text,
-	type TUI,
-	visibleWidth,
-} from "@bastani/atomic-tui";
+import { type Api, getSupportedThinkingLevels, type Model, modelsAreEqual } from "@bastani/atomic-ai/compat";
+import { type Focusable, getKeybindings, type TUI } from "@bastani/atomic-tui";
 import { boundedInteractiveModelRefresh } from "../../../core/bounded-model-refresh.ts";
-import { formatModelLabel, MODEL_LABEL_SEPARATOR } from "../../../core/model-label.ts";
+import { formatModelLabel } from "../../../core/model-label.ts";
 import type { ModelRuntime } from "../../../core/model-runtime.js";
 import {
 	type ModelSwitchThinkingContext,
@@ -22,15 +11,8 @@ import {
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { refreshModelCatalogs } from "../model-catalog-refresh.ts";
 import { getDistinctModelName, getModelSelectorSearchText } from "../model-search.ts";
-import { theme } from "../theme/theme.js";
-import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint } from "./keybinding-hints.js";
-
-interface ModelItem {
-	provider: string;
-	id: string;
-	model: Model<Api>;
-}
+import { navActionText } from "./nav-keys.ts";
+import { FramedSelector, type SelectorItem } from "./selector.ts";
 
 interface ScopedModelItem {
 	model: Model<Api>;
@@ -40,53 +22,40 @@ interface ScopedModelItem {
 type ModelScope = "all" | "scoped";
 
 const MAX_VISIBLE = 10;
+const LEFT = "\x1b[D";
+const RIGHT = "\x1b[C";
+
+function modelKey(model: Model<Api>): string {
+	return `${model.provider}/${model.id}`;
+}
 
 /**
- * Component that renders a model selector with search
+ * The `/model` picker. Each row is the model's raw ID and the level selecting it applies, exactly what
+ * `--model provider/id:level` takes (#4269); a display name that adds words the ID lacks follows in a dim column. The
+ * current model is marked `●`, the saved default is tagged. ←→ change the level a reasoning model is selected at, and
+ * tab switches between all models and the scoped ones when a scope is set.
  */
-export class ModelSelectorComponent extends Container implements Focusable {
-	readonly capturesViewportInput: boolean = true;
-	private searchInput: Input;
-
-	// Focusable implementation - propagate to searchInput for IME cursor positioning
-	private _focused = false;
-	get focused(): boolean {
-		return this._focused;
-	}
-	set focused(value: boolean) {
-		this._focused = value;
-		this.searchInput.focused = value;
-	}
-	private listContainer: Container;
-	private allModels: ModelItem[] = [];
-	private scopedModelItems: ModelItem[] = [];
-	private activeModels: ModelItem[] = [];
-	private filteredModels: ModelItem[] = [];
-	private selectedIndex: number = 0;
-	private currentModel?: Model<Api>;
-	private thinkingContext: ModelSwitchThinkingContext;
-	private defaultModelKey?: string;
-	private modelRuntime: ModelRuntime;
-	private onSelectCallback: (model: Model<Api>) => void;
-	private onCancelCallback: () => void;
-	private errorMessage?: string;
-	private tui: TUI;
-	private refreshStatusMessage = "Refreshing model catalogs…";
-	private refreshStatusSuccess = false;
+export class ModelSelectorComponent extends FramedSelector<Model<Api>> implements Focusable {
+	private allModels: Model<Api>[] = [];
+	private scopedModelList: Model<Api>[] = [];
+	private readonly currentModel?: Model<Api>;
+	private readonly thinkingContext: ModelSwitchThinkingContext;
+	private readonly defaultModelKey?: string;
+	private readonly modelRuntime: ModelRuntime;
+	private readonly tui: TUI;
 	private scopedModels: ReadonlyArray<ScopedModelItem>;
-	private scope: ModelScope = "all";
-	private scopeText?: Text;
-	private scopeHintText?: Text;
+	private scope: ModelScope;
+	private readonly chosenLevels = new Map<string, ThinkingLevel>();
 	private readonly refreshAbortController = new AbortController();
 	private closed = false;
 
 	constructor(
 		tui: TUI,
 		currentModel: Model<Api> | undefined,
-		_settingsManager: SettingsManager,
+		settingsManager: SettingsManager,
 		modelRuntime: ModelRuntime,
 		scopedModels: ReadonlyArray<ScopedModelItem>,
-		onSelect: (model: Model<Api>) => void,
+		onSelect: (model: Model<Api>, thinkingLevel?: ThinkingLevel) => void,
 		onCancel: () => void,
 		initialSearchInput?: string,
 		/**
@@ -95,102 +64,153 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		 */
 		currentThinkingLevel?: ThinkingLevel,
 	) {
-		super();
-
+		const holder: { self?: ModelSelectorComponent } = {};
+		const scope: ModelScope = scopedModels.length > 0 ? "scoped" : "all";
+		super({
+			title: "Select model",
+			subtitle:
+				scopedModels.length > 0
+					? undefined
+					: "Only showing models from configured providers. Use /login to add providers.",
+			search: true,
+			initialQuery: initialSearchInput,
+			items: [],
+			maxVisible: MAX_VISIBLE,
+			emptyText: "No models available. Use /login to add a provider.",
+			onSelect: (item) => {
+				const self = holder.self;
+				if (!self) return;
+				const chosen = self.chosenLevels.get(item.id);
+				self.dispose();
+				if (chosen === undefined) onSelect(item.value);
+				else onSelect(item.value, chosen);
+			},
+			onCancel: () => {
+				holder.self?.dispose();
+				onCancel();
+			},
+			extraKeys: [
+				{
+					hint: { keys: "←→", label: "effort" },
+					matches: (data) => data === LEFT || data === RIGHT,
+					enabled: (item) => item !== undefined && holder.self?.levelsFor(item.value).length !== 0,
+					run: () => {},
+				},
+				{
+					hint: { keys: navActionText(getKeybindings(), "tui.input.tab") || "tab", label: "all/scoped" },
+					matches: (data) => getKeybindings().matches(data, "tui.input.tab"),
+					enabled: () => (holder.self?.scopedModelList.length ?? 0) > 0,
+					run: () => holder.self?.toggleScope(),
+				},
+			],
+		});
+		holder.self = this;
 		this.tui = tui;
 		this.currentModel = currentModel;
 		this.thinkingContext = {
-			settings: _settingsManager,
+			settings: settingsManager,
 			...(currentThinkingLevel === undefined
 				? {}
 				: { current: { model: currentModel, thinkingLevel: currentThinkingLevel } }),
 		};
-		const defaultProvider = _settingsManager.getDefaultProvider();
-		const defaultModel = _settingsManager.getDefaultModel();
+		const defaultProvider = settingsManager.getDefaultProvider();
+		const defaultModel = settingsManager.getDefaultModel();
 		this.defaultModelKey = defaultProvider && defaultModel ? `${defaultProvider}/${defaultModel}` : undefined;
 		this.modelRuntime = modelRuntime;
 		this.scopedModels = scopedModels;
-		this.scope = scopedModels.length > 0 ? "scoped" : "all";
-		this.onSelectCallback = onSelect;
-		this.onCancelCallback = onCancel;
-
-		// Add top border
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
-
-		// Add hint about model filtering
-		if (scopedModels.length > 0) {
-			this.scopeText = new Text(this.getScopeText(), 0, 0);
-			this.addChild(this.scopeText);
-			this.scopeHintText = new Text(this.getScopeHintText(), 0, 0);
-			this.addChild(this.scopeHintText);
-		} else {
-			const hintText = "Only showing models from configured providers. Use /login to add providers.";
-			this.addChild(new Text(theme.fg("warning", hintText), 0, 0));
-		}
-		this.addChild(new Spacer(1));
-
-		// Create search input
-		this.searchInput = new Input();
-		if (initialSearchInput) {
-			this.searchInput.setValue(initialSearchInput);
-		}
-		this.searchInput.onSubmit = () => {
-			// Enter on search input selects the first filtered item
-			if (this.filteredModels[this.selectedIndex]) {
-				this.handleSelect(this.filteredModels[this.selectedIndex].model);
-			}
-		};
-		this.addChild(this.searchInput);
-
-		this.addChild(new Spacer(1));
-
-		// Create list container
-		this.listContainer = new Container();
-		this.addChild(this.listContainer);
-
-		this.addChild(new Spacer(1));
-		this.addChild(
-			new Text(
-				`${keyHint("tui.select.confirm", "select")} ${theme.fg("muted", "·")} ${keyHint("tui.select.cancel", "cancel")}`,
-				1,
-				0,
-			),
-		);
-		this.addChild(new Spacer(1));
-
-		// Add bottom border
-		this.addChild(new DynamicBorder());
-
-		// Render the current snapshot immediately, then refresh in the background.
+		this.scope = scope;
+		this.selector.setNotice({ text: "Refreshing model catalogs…", tone: "muted" });
 		this.loadModelsFromSnapshot();
-		if (initialSearchInput) this.filterModels(initialSearchInput);
-		else this.updateList();
+		this.rebuild(currentModel ? modelKey(currentModel) : undefined);
 		this.tui.requestRender();
 		void this.refreshModels();
 	}
 
+	override handleInput(data: string): void {
+		if (data === LEFT || data === RIGHT) {
+			const item = this.selector.getSelected();
+			if (item) this.stepLevel(item.value, data === RIGHT ? 1 : -1);
+			return;
+		}
+		super.handleInput(data);
+	}
+
+	dispose(): void {
+		if (this.closed) return;
+		this.closed = true;
+		this.refreshAbortController.abort();
+	}
+
+	levelsFor(model: Model<Api>): ThinkingLevel[] {
+		if (!model.reasoning) return [];
+		return getSupportedThinkingLevels(model) as ThinkingLevel[];
+	}
+
+	private levelOf(model: Model<Api>): ThinkingLevel | undefined {
+		return this.chosenLevels.get(modelKey(model)) ?? thinkingLevelForModelSwitch(model, this.thinkingContext);
+	}
+
+	private stepLevel(model: Model<Api>, direction: 1 | -1): void {
+		const levels = this.levelsFor(model);
+		if (levels.length === 0) return;
+		const current = this.levelOf(model);
+		const index = current === undefined ? -1 : levels.indexOf(current);
+		const next = levels[Math.max(0, Math.min(levels.length - 1, (index < 0 ? 0 : index) + direction))];
+		if (next === undefined || next === current) return;
+		this.chosenLevels.set(modelKey(model), next);
+		this.rebuild();
+	}
+
 	private loadModelsFromSnapshot(): void {
-		const models = this.modelRuntime.getAvailableSnapshot().map((model: Model<Api>) => ({
-			provider: model.provider,
-			id: model.id,
-			model,
-		}));
-		this.allModels = this.sortModels(models);
+		this.allModels = this.sortModels([...this.modelRuntime.getAvailableSnapshot()]);
 		this.scopedModels = this.scopedModels.map((scoped) => {
 			const refreshed = this.modelRuntime.getModel(scoped.model.provider, scoped.model.id);
 			return refreshed ? { ...scoped, model: refreshed } : scoped;
 		});
-		this.scopedModelItems = this.scopedModels.map((scoped) => ({
-			provider: scoped.model.provider,
-			id: scoped.model.id,
-			model: scoped.model,
-		}));
-		this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
-		this.filteredModels = this.activeModels;
-		const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-		this.selectedIndex =
-			currentIndex >= 0 ? currentIndex : Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
+		this.scopedModelList = this.scopedModels.map((scoped) => scoped.model);
+	}
+
+	private sortModels(models: Model<Api>[]): Model<Api>[] {
+		return models.sort((a, b) => {
+			const aIsCurrent = modelsAreEqual(this.currentModel, a);
+			const bIsCurrent = modelsAreEqual(this.currentModel, b);
+			if (aIsCurrent !== bIsCurrent) return aIsCurrent ? -1 : 1;
+			const aIsDefault = modelKey(a) === this.defaultModelKey;
+			const bIsDefault = modelKey(b) === this.defaultModelKey;
+			if (aIsDefault !== bIsDefault) return aIsDefault ? -1 : 1;
+			return a.provider.localeCompare(b.provider);
+		});
+	}
+
+	private toggleScope(): void {
+		if (this.scopedModelList.length === 0) return;
+		this.scope = this.scope === "all" ? "scoped" : "all";
+		this.selector.setQuery(this.selector.state.getQuery());
+		this.rebuild(this.currentModel ? modelKey(this.currentModel) : undefined);
+	}
+
+	private rebuild(preferId?: string): void {
+		const models = this.scope === "scoped" ? this.scopedModelList : this.allModels;
+		const items = models.map((model): SelectorItem<Model<Api>> => {
+			const key = modelKey(model);
+			const isCurrent = modelsAreEqual(this.currentModel, model);
+			const isDefault = key === this.defaultModelKey;
+			const name = getDistinctModelName({ id: model.id, name: model.name });
+			return {
+				id: key,
+				value: model,
+				label: formatModelLabel(model, { thinkingLevel: this.levelOf(model) }),
+				description: name,
+				mark: isCurrent ? "on" : "off",
+				tag: isCurrent ? "current" : isDefault ? "default" : undefined,
+				tagTone: isCurrent ? "success" : "muted",
+				searchText: `${getModelSelectorSearchText({ id: model.id, provider: model.provider, name: model.name })} ${isDefault ? "default" : ""}`,
+			};
+		});
+		this.selector.setItems(items, preferId);
+		if (this.scopedModelList.length > 0) {
+			this.selector.setSubtitle(`Scope: ${this.scope === "scoped" ? "scoped models" : "all models"}`);
+		}
 	}
 
 	private async refreshModels(): Promise<void> {
@@ -200,215 +220,28 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.refreshAbortController.signal,
 		);
 		if (this.closed) return;
-		this.refreshStatusMessage = "";
+		let notice: { text: string; tone: "error" | "success" } | undefined;
 		if (outcome.status === "timed-out") {
-			this.errorMessage = "Model refresh timed out; showing cached models.";
+			notice = { text: "Model refresh timed out; showing cached models.", tone: "error" };
 		} else if (outcome.status === "rejected") {
-			this.errorMessage = "Could not refresh model catalogs; showing cached models.";
+			notice = { text: "Could not refresh model catalogs; showing cached models.", tone: "error" };
 		} else if (outcome.status === "success" && outcome.value.errors.size === 1) {
-			this.errorMessage = `Could not refresh ${outcome.value.errors.keys().next().value}; showing cached models.`;
+			notice = {
+				text: `Could not refresh ${outcome.value.errors.keys().next().value}; showing cached models.`,
+				tone: "error",
+			};
 		} else if (outcome.status === "success" && outcome.value.errors.size > 1) {
-			this.errorMessage = `Could not refresh ${outcome.value.errors.size} model catalogs; showing cached models.`;
+			notice = {
+				text: `Could not refresh ${outcome.value.errors.size} model catalogs; showing cached models.`,
+				tone: "error",
+			};
 		} else if (outcome.status === "success") {
-			this.errorMessage = this.modelRuntime.getError();
-			if (!this.errorMessage) {
-				this.refreshStatusMessage = "Model catalogs refreshed.";
-				this.refreshStatusSuccess = true;
-			}
+			const error = this.modelRuntime.getError();
+			notice = error ? { text: error, tone: "error" } : { text: "Model catalogs refreshed.", tone: "success" };
 		}
-		const selectedModel = this.filteredModels[this.selectedIndex]?.model;
+		this.selector.setNotice(notice);
 		this.loadModelsFromSnapshot();
-		// The user may have moved while the refresh was in flight, and the refresh can shift rows.
-		this.filterModels(this.searchInput.getValue(), selectedModel);
+		this.rebuild(this.currentModel ? modelKey(this.currentModel) : undefined);
 		this.tui.requestRender();
-	}
-
-	dispose(): void {
-		if (this.closed) return;
-		this.closed = true;
-		this.refreshAbortController.abort();
-	}
-
-	private sortModels(models: ModelItem[]): ModelItem[] {
-		const sorted = [...models];
-		// Sort current first, saved default second, then by provider.
-		sorted.sort((a, b) => {
-			const aIsCurrent = modelsAreEqual(this.currentModel, a.model);
-			const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
-			if (aIsCurrent !== bIsCurrent) return aIsCurrent ? -1 : 1;
-			const aIsDefault = `${a.provider}/${a.id}` === this.defaultModelKey;
-			const bIsDefault = `${b.provider}/${b.id}` === this.defaultModelKey;
-			if (aIsDefault !== bIsDefault) return aIsDefault ? -1 : 1;
-			return a.provider.localeCompare(b.provider);
-		});
-		return sorted;
-	}
-
-	private getScopeText(): string {
-		const allText = this.scope === "all" ? theme.fg("accent", "all") : theme.fg("muted", "all");
-		const scopedText = this.scope === "scoped" ? theme.fg("accent", "scoped") : theme.fg("muted", "scoped");
-		return `${theme.fg("muted", "Scope: ")}${allText}${theme.fg("muted", " | ")}${scopedText}`;
-	}
-
-	private getScopeHintText(): string {
-		return keyHint("tui.input.tab", "scope") + theme.fg("muted", " (all/scoped)");
-	}
-
-	private setScope(scope: ModelScope): void {
-		if (this.scope === scope) return;
-		this.scope = scope;
-		this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
-		const currentIndex = this.activeModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-		this.selectedIndex = currentIndex >= 0 ? currentIndex : 0;
-		this.filterModels(this.searchInput.getValue());
-		if (this.scopeText) {
-			this.scopeText.setText(this.getScopeText());
-		}
-	}
-
-	private filterModels(query: string, preferredModel?: Model<Api>): void {
-		this.filteredModels = query
-			? fuzzyFilter(
-					this.activeModels,
-					query,
-					({ id, provider, model }) =>
-						`${getModelSelectorSearchText({ id, provider, name: model.name })} ${`${provider}/${id}` === this.defaultModelKey ? "default" : ""}`,
-				)
-			: this.activeModels;
-		// Keep the preferred model selected if it is still listed. Otherwise, when filtering
-		// by a query, move the selector to the top row so the best match is highlighted.
-		// When the query is cleared, keep the current position clamped to the (restored) list length.
-		const preferredIndex = preferredModel
-			? this.filteredModels.findIndex((item) => modelsAreEqual(preferredModel, item.model))
-			: -1;
-		if (preferredIndex >= 0) this.selectedIndex = preferredIndex;
-		else this.selectedIndex = query ? 0 : Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
-		this.updateList();
-	}
-
-	private updateList(): void {
-		this.listContainer.clear();
-
-		const startIndex = Math.max(
-			0,
-			Math.min(this.selectedIndex - Math.floor(MAX_VISIBLE / 2), this.filteredModels.length - MAX_VISIBLE),
-		);
-		const endIndex = Math.min(startIndex + MAX_VISIBLE, this.filteredModels.length);
-
-		// Each row is the model's raw ID and the level selecting it applies, exactly what `--model provider/id:level`
-		// takes (#4269). That holds for the current model too: selecting it reapplies a saved per-model level. A display
-		// name that adds words the ID lacks follows in a dim column, aligned across the visible rows.
-		const rows = this.filteredModels.slice(startIndex, endIndex).map((item) => ({
-			item,
-			label: formatModelLabel(item.model, {
-				thinkingLevel: thinkingLevelForModelSwitch(item.model, this.thinkingContext),
-			}),
-			name: getDistinctModelName({ id: item.id, name: item.model.name }),
-		}));
-		const labelWidth = Math.max(0, ...rows.map((row) => visibleWidth(row.label)));
-		for (const [offset, { item, label, name }] of rows.entries()) {
-			const isSelected = startIndex + offset === this.selectedIndex;
-			const isCurrent = modelsAreEqual(this.currentModel, item.model);
-			const isDefault = `${item.provider}/${item.id}` === this.defaultModelKey;
-
-			const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
-			const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
-			const currentMarker = isCurrent ? theme.fg("accent", "✓ ") : "  ";
-			const modelText = isSelected ? theme.fg("accent", label) : label;
-			const nameText = name
-				? `${" ".repeat(labelWidth - visibleWidth(label))}${MODEL_LABEL_SEPARATOR}${theme.fg("muted", name)}`
-				: "";
-			const line = `${cursor}${currentMarker}${modelText}${nameText}${defaultBadge}`;
-
-			this.listContainer.addChild(new Text(line, 0, 0));
-		}
-
-		// Add scroll indicator if needed
-		if (startIndex > 0 || endIndex < this.filteredModels.length) {
-			const scrollInfo = theme.fg("muted", `  (${this.selectedIndex + 1}/${this.filteredModels.length})`);
-			this.listContainer.addChild(new Text(scrollInfo, 0, 0));
-		}
-
-		// Show error message or "no results" if empty
-		if (this.errorMessage) {
-			this.listContainer.addChild(new Spacer(1));
-			// Show error in red
-			const errorLines = this.errorMessage.split("\n");
-			for (const line of errorLines) {
-				this.listContainer.addChild(new Text(theme.fg("error", line), 0, 0));
-			}
-		} else if (this.filteredModels.length === 0) {
-			this.listContainer.addChild(new Text(theme.fg("muted", "  No matching models"), 0, 0));
-		} else {
-			const selected = this.filteredModels[this.selectedIndex];
-			this.listContainer.addChild(new Spacer(1));
-			this.listContainer.addChild(new Text(theme.fg("muted", `  Model Name: ${selected.model.name}`), 0, 0));
-		}
-		if (this.refreshStatusMessage) {
-			this.listContainer.addChild(new Spacer(1));
-			this.listContainer.addChild(
-				new Text(theme.fg(this.refreshStatusSuccess ? "success" : "muted", `  ${this.refreshStatusMessage}`), 0, 0),
-			);
-		}
-	}
-
-	handleInput(keyData: string): boolean {
-		const kb = getKeybindings();
-		const pageIndex = getSelectPageIndex(kb, keyData, this.selectedIndex, this.filteredModels.length, MAX_VISIBLE);
-		if (kb.matches(keyData, "tui.input.tab")) {
-			if (this.scopedModelItems.length > 0) {
-				const nextScope: ModelScope = this.scope === "all" ? "scoped" : "all";
-				this.setScope(nextScope);
-				if (this.scopeHintText) {
-					this.scopeHintText.setText(this.getScopeHintText());
-				}
-			}
-			return true;
-		}
-		// Up arrow - wrap to bottom when at top
-		if (kb.matches(keyData, "tui.select.up")) {
-			if (this.filteredModels.length === 0) return true;
-			this.selectedIndex = this.selectedIndex === 0 ? this.filteredModels.length - 1 : this.selectedIndex - 1;
-			this.updateList();
-		}
-		// Down arrow - wrap to top when at bottom
-		else if (kb.matches(keyData, "tui.select.down")) {
-			if (this.filteredModels.length === 0) return true;
-			this.selectedIndex = this.selectedIndex === this.filteredModels.length - 1 ? 0 : this.selectedIndex + 1;
-			this.updateList();
-		}
-		// Page up/down
-		else if (pageIndex !== undefined) {
-			if (this.filteredModels.length === 0) return true;
-			this.selectedIndex = pageIndex;
-			this.updateList();
-		}
-		// Enter
-		else if (kb.matches(keyData, "tui.select.confirm")) {
-			const selectedModel = this.filteredModels[this.selectedIndex];
-			if (selectedModel) {
-				this.handleSelect(selectedModel.model);
-			}
-		}
-		// Escape or Ctrl+C
-		else if (kb.matches(keyData, "tui.select.cancel")) {
-			this.dispose();
-			this.onCancelCallback();
-		}
-		// Pass everything else to search input
-		else {
-			this.searchInput.handleInput(keyData);
-			this.filterModels(this.searchInput.getValue());
-		}
-		return true;
-	}
-
-	private handleSelect(model: Model<Api>): void {
-		this.dispose();
-		this.onSelectCallback(model);
-	}
-
-	getSearchInput(): Input {
-		return this.searchInput;
 	}
 }

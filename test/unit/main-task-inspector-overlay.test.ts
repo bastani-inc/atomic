@@ -274,7 +274,7 @@ for (const isolated of [false, true]) {
 		const previousKeys = getKeybindings();
 		const host = await mountMainInspector(isolated);
 		try {
-			assert.equal(host.tui.hasOverlay(), false, "/tasks opens in the editor slot like /workflow connect");
+			assert.equal(host.tui.hasOverlay(), false, "/tasks opens in the editor slot like /workflows");
 			for (const surface of [host.mode, host.service].filter((value) => value !== undefined)) {
 				const state = surface.getHostCustomUiState();
 				assert.equal(state.blockingInlineCustomUiActive, true, "picker still owns inline input");

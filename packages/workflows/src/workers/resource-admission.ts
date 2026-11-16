@@ -3,8 +3,16 @@ import { realpath } from "node:fs/promises";
 import { cpus, freemem, loadavg } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ResourcePermit, ResourceProcessIdentity } from "@bastani/atomic";
-import { ensureStorageSchema, type SqliteExecutor, type SqliteRow, type StorageDialect } from "@bastani/atomic/storage";
+import {
+	ensureStorageSchema,
+	type SqliteExecutor,
+	type SqliteRow,
+	type SqliteStatement,
+	type StorageDialect,
+} from "@bastani/atomic/storage";
 import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
+import { guardedPoolWrite, poolFenceSchema } from "../durable/journal/pool-guarded-write.js";
+import { poolSchemaPresent } from "../durable/journal/pool-schema-probe.js";
 import { openSqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
@@ -25,6 +33,9 @@ import {
 } from "./admission-host.js";
 
 const OWNER_LEASE_MS = 30_000;
+/** Columns later builds added to the permits table, as text and as integers. */
+const ADMISSION_TEXT_COLUMNS = ["owner", "attempt", "process_identity"] as const;
+const ADMISSION_INT_COLUMNS = ["root_epoch", "granted_at"] as const;
 /** How long an exited worker's orphaned process groups get to exit after SIGTERM, before SIGKILL. */
 export const REAP_TERM_GRACE_MS = 5_000;
 /** How long a SIGKILLed process group may take to disappear before its permits stay quarantined. */
@@ -198,6 +209,11 @@ export class SqlResourceAdmission {
 	private readonly owners: string;
 	private readonly owner = randomUUID();
 	private nextReconciliation = 0;
+	/**
+	 * Whether this admission's writes go as single batches: the database sends them (libSQL) and holds the pool's fence
+	 * table, which a batch's version fence writes to. Read once, as the admission opens.
+	 */
+	private batches = false;
 	private readonly dialect: StorageDialect;
 	/** The database clock, in integer milliseconds, as SQL. */
 	private readonly now: string;
@@ -234,82 +250,161 @@ export class SqlResourceAdmission {
 			const probe = dialect.columnExists(table, column);
 			return (await tx.get(probe.sql, ...probe.params)) !== undefined;
 		};
-		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
-		const schema = { ledger: poolSchemaLedger(storage), domain: "resource-admission", revision: 1 };
-		await storage.transaction(async (tx) => {
-			await ensureStorageSchema(tx, dialect, schema, async () => {
-				await tx.exec(`CREATE TABLE IF NOT EXISTS ${admission.configuration}(scope TEXT PRIMARY KEY, config TEXT NOT NULL);
+		const ownerRow: SqliteStatement = {
+			sql: `INSERT INTO ${admission.owners}(id, host, pid, expires_at, boot) VALUES (?, ?, ?, ${admission.now} + ?, ?)`,
+			params: [admission.owner, admissionHost, process.pid, OWNER_LEASE_MS, boot],
+		};
+		const configurations = admission.configurationWrites();
+		admission.batches = await poolSchemaPresent(storage, [poolFenceSchema(storage.tables.runs, dialect)]);
+		// On a libSQL database whose admission schema is current, the open is one request: it never holds the shared write
+		// lock across a round trip while every other host waits (#4768).
+		if (!(await admission.openedInOneRequest(ownerRow, configurations))) {
+			// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
+			const schema = { ledger: poolSchemaLedger(storage), domain: "resource-admission", revision: 1 };
+			await storage.transaction(async (tx) => {
+				await ensureStorageSchema(tx, dialect, schema, async () => {
+					await tx.exec(`CREATE TABLE IF NOT EXISTS ${admission.configuration}(scope TEXT PRIMARY KEY, config TEXT NOT NULL);
 				CREATE TABLE IF NOT EXISTS ${admission.permits}(ticket ${serialKey}, operation TEXT UNIQUE NOT NULL,
 				root TEXT NOT NULL, holder TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, owner TEXT, attempt TEXT, process_identity TEXT);
 				CREATE INDEX IF NOT EXISTS ${admission.permits}_active ON ${admission.permits}(kind, state, root);
 				CREATE TABLE IF NOT EXISTS ${admission.owners}(id TEXT PRIMARY KEY, host TEXT NOT NULL, pid ${int} NOT NULL, expires_at ${int} NOT NULL, boot TEXT);`);
-				for (const column of ["owner", "attempt", "process_identity"])
-					if (!(await hasColumn(tx, admission.permits, column)))
-						await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} TEXT`);
-				for (const column of ["root_epoch", "granted_at"])
-					if (!(await hasColumn(tx, admission.permits, column)))
-						await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} ${int}`);
-				// Reconciliation fences permits owner by owner and finds live permits by state. Without these indexes each
-				// statement reads every permit ever issued, which held the shared journal's write lock for seconds (#3978).
-				await tx.exec(`CREATE INDEX IF NOT EXISTS ${admission.permits}_owner ON ${admission.permits}(owner, state);
+					for (const column of ADMISSION_TEXT_COLUMNS)
+						if (!(await hasColumn(tx, admission.permits, column)))
+							await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} TEXT`);
+					for (const column of ADMISSION_INT_COLUMNS)
+						if (!(await hasColumn(tx, admission.permits, column)))
+							await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} ${int}`);
+					// Reconciliation fences permits owner by owner and finds live permits by state. Without these indexes each
+					// statement reads every permit ever issued, which held the shared journal's write lock for seconds (#3978).
+					await tx.exec(`CREATE INDEX IF NOT EXISTS ${admission.permits}_owner ON ${admission.permits}(owner, state);
 				CREATE INDEX IF NOT EXISTS ${admission.permits}_state ON ${admission.permits}(state)`);
-				if (!(await hasColumn(tx, admission.owners, "boot")))
-					await tx.exec(`ALTER TABLE ${admission.owners} ADD COLUMN boot TEXT`);
-			});
-			await tx.run(
-				`INSERT INTO ${admission.owners}(id, host, pid, expires_at, boot) VALUES (?, ?, ?, ${admission.now} + ?, ?)`,
-				admission.owner,
-				admissionHost,
-				process.pid,
-				OWNER_LEASE_MS,
-				boot,
-			);
-			const rootLimits = options.rootLimits ?? "check";
-			for (const [scope, limits] of [
-				[`root:${options.root}`, options.limits],
-				["user", options.userLimits],
-			] as const) {
-				const ofRoot = scope !== "user";
-				if (ofRoot && rootLimits === "unchanged") continue;
-				if (!limits && (scope === "user" || !options.host)) {
-					// A root resumed without limits must not keep admitting against the ones it saved before.
-					if (ofRoot && rootLimits === "replace")
-						await tx.run(`DELETE FROM ${admission.configuration} WHERE scope = ?`, scope);
-					continue;
-				}
-				const config = JSON.stringify({
-					session: limits?.session ?? null,
-					process: limits?.process ?? null,
-					...(scope === "user"
-						? {}
-						: {
-								host: {
-									maxLoadPerCpu: options.host?.maxLoadPerCpu ?? null,
-									minFreeMemoryBytes: options.host?.minFreeMemoryBytes ?? null,
-								},
-							}),
+					if (!(await hasColumn(tx, admission.owners, "boot")))
+						await tx.exec(`ALTER TABLE ${admission.owners} ADD COLUMN boot TEXT`);
 				});
-				if (ofRoot && rootLimits === "replace") {
-					await tx.run(
-						dialect.insertOrReplace(admission.configuration, ["scope", "config"], ["scope"], "VALUES (?, ?)"),
-						scope,
-						config,
-					);
-					continue;
+				await tx.run(ownerRow.sql, ...ownerRow.params);
+				for (const write of configurations) {
+					await tx.run(write.sql, ...write.params);
+					if (
+						write.checks !== undefined &&
+						(await tx.get(`SELECT config FROM ${admission.configuration} WHERE scope = ?`, write.checks.scope))
+							?.config !== write.checks.config
+					)
+						throw new Error("Conflicting resource admission configuration");
 				}
-				await tx.run(
-					dialect.insertOrIgnore(admission.configuration, ["scope", "config"], "VALUES (?, ?)"),
-					scope,
-					config,
-				);
-				if (
-					(await tx.get(`SELECT config FROM ${admission.configuration} WHERE scope = ?`, scope))?.config !== config
-				)
-					throw new Error("Conflicting resource admission configuration");
-			}
-		});
+			});
+		}
 		await admission.reconcile();
 		return admission;
+	}
+	/**
+	 * The writes that record this admission's limits: for each scope, the limits replaced, removed, or recorded unless
+	 * the scope has some already, in which case `checks` names the configuration the scope must then hold, or the open
+	 * fails as conflicting.
+	 */
+	private configurationWrites(): (SqliteStatement & {
+		readonly checks?: { readonly scope: string; readonly config: string };
+	})[] {
+		const { options, dialect } = this;
+		const writes: (SqliteStatement & { readonly checks?: { readonly scope: string; readonly config: string } })[] =
+			[];
+		const rootLimits = options.rootLimits ?? "check";
+		for (const [scope, limits] of [
+			[`root:${options.root}`, options.limits],
+			["user", options.userLimits],
+		] as const) {
+			const ofRoot = scope !== "user";
+			if (ofRoot && rootLimits === "unchanged") continue;
+			if (!limits && (scope === "user" || !options.host)) {
+				// A root resumed without limits must not keep admitting against the ones it saved before.
+				if (ofRoot && rootLimits === "replace")
+					writes.push({ sql: `DELETE FROM ${this.configuration} WHERE scope = ?`, params: [scope] });
+				continue;
+			}
+			const config = JSON.stringify({
+				session: limits?.session ?? null,
+				process: limits?.process ?? null,
+				...(scope === "user"
+					? {}
+					: {
+							host: {
+								maxLoadPerCpu: options.host?.maxLoadPerCpu ?? null,
+								minFreeMemoryBytes: options.host?.minFreeMemoryBytes ?? null,
+							},
+						}),
+			});
+			if (ofRoot && rootLimits === "replace") {
+				writes.push({
+					sql: dialect.insertOrReplace(this.configuration, ["scope", "config"], ["scope"], "VALUES (?, ?)"),
+					params: [scope, config],
+				});
+				continue;
+			}
+			writes.push({
+				sql: dialect.insertOrIgnore(this.configuration, ["scope", "config"], "VALUES (?, ?)"),
+				params: [scope, config],
+				checks: { scope, config },
+			});
+		}
+		return writes;
+	}
+	/**
+	 * Opens admission on a libSQL database whose admission schema is current in one request, which holds the write lock
+	 * for that request only: the owner row and the limits are written in one batch, fenced on each checked scope holding
+	 * no other configuration, as the transaction checks after its insert. A fence that breaks plans again from a read,
+	 * which fails the open as conflicting. False, having written nothing, on a database that sends no batches, or whose
+	 * schema is missing something, which the transaction then sets up.
+	 */
+	private async openedInOneRequest(
+		ownerRow: SqliteStatement,
+		configurations: ReturnType<SqlResourceAdmission["configurationWrites"]>,
+	): Promise<boolean> {
+		const { storage, dialect } = this;
+		if (!this.batches) return false;
+		const current = await storage.read(async (read) => {
+			const names = [
+				this.configuration,
+				this.permits,
+				this.owners,
+				`${this.permits}_active`,
+				`${this.permits}_owner`,
+				`${this.permits}_state`,
+			];
+			const objects = dialect.schemaObjects(names);
+			const found = new Set(
+				(await read.all<SqliteRow & { name: string }>(objects.sql, ...objects.params)).map((row) => row.name),
+			);
+			if (!names.every((name) => found.has(name))) return false;
+			for (const [table, column] of [
+				...[...ADMISSION_TEXT_COLUMNS, ...ADMISSION_INT_COLUMNS].map((column) => [this.permits, column] as const),
+				[this.owners, "boot"] as const,
+			]) {
+				const probe = dialect.columnExists(table, column);
+				if ((await read.get(probe.sql, ...probe.params)) === undefined) return false;
+			}
+			return true;
+		});
+		if (!current) return false;
+		const checked = configurations.flatMap((write) => (write.checks === undefined ? [] : [write.checks]));
+		await guardedPoolWrite(storage, async (read, optimistic, afterUnknown) => {
+			// A request whose answer was lost may have committed: its owner row says so, and it wrote everything else too.
+			if (afterUnknown && (await read.get(`SELECT 1 AS held FROM ${this.owners} WHERE id = ?`, this.owner)))
+				return { done: undefined };
+			if (!optimistic)
+				for (const { scope, config } of checked) {
+					const stored = await read.get(`SELECT config FROM ${this.configuration} WHERE scope = ?`, scope);
+					if (stored !== undefined && stored.config !== config)
+						throw new Error("Conflicting resource admission configuration");
+				}
+			return {
+				fences: checked.map(({ scope, config }) => ({
+					sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.configuration} WHERE scope = ? AND config <> ?)`,
+					params: [scope, config],
+				})),
+				writes: [ownerRow, ...configurations.map(({ sql, params }) => ({ sql, params }))],
+				result: () => undefined,
+			};
+		});
+		return true;
 	}
 	private sampleHost(): { freeMemoryBytes?: number; load?: number } {
 		return (
@@ -787,37 +882,39 @@ export class SqlResourceAdmission {
 		);
 	}
 	async inspect(): Promise<PermitRow[]> {
-		return this.storage.transaction((tx) => tx.all<PermitRow>(`SELECT * FROM ${this.permits} ORDER BY ticket`));
+		return this.storage.read((executor) => executor.all<PermitRow>(`SELECT * FROM ${this.permits} ORDER BY ticket`));
 	}
 	async releaseStoppedSessions(holder: string): Promise<number> {
 		await this.reconcile();
-		return this.storage.transaction(async (tx) => {
-			await tx.run(
-				`UPDATE ${this.permits} SET state = 'released', reason = 'worker exit confirmed' WHERE root = ? AND holder = ? AND state IN ('waiting', 'granted') AND (kind = 'session' OR state = 'waiting')`,
-				this.options.root,
-				holder,
-			);
+		const { root } = this.options;
+		const statements: SqliteStatement[] = [
+			{
+				sql: `UPDATE ${this.permits} SET state = 'released', reason = 'worker exit confirmed' WHERE root = ? AND holder = ? AND state IN ('waiting', 'granted') AND (kind = 'session' OR state = 'waiting')`,
+				params: [root, holder],
+			},
 			// The reconcile above may have fenced this holder's waiters for a lapsed owner lease, which a live waiter
 			// would take back (#4179): record the stop on them too, so they stay released.
-			await tx.run(
-				`UPDATE ${this.permits} SET reason = 'worker exit confirmed' WHERE root = ? AND holder = ? AND state = 'released' AND reason = ?`,
-				this.options.root,
-				holder,
-				FENCED_WAITER_REASON,
-			);
+			{
+				sql: `UPDATE ${this.permits} SET reason = 'worker exit confirmed' WHERE root = ? AND holder = ? AND state = 'released' AND reason = ?`,
+				params: [root, holder, FENCED_WAITER_REASON],
+			},
 			// A quarantined permit keeps its reason; it is still counted, since its cleanup is still unconfirmed.
-			await tx.run(
-				`UPDATE ${this.permits} SET reason = ? WHERE root = ? AND holder = ? AND kind = 'process' AND state = 'granted' AND ${this.dialect.isDistinct("reason", "?")}`,
-				UNCONFIRMED_REASON,
-				this.options.root,
-				holder,
-				QUARANTINED_REASON,
-			);
-			const held = await tx.get(
-				`SELECT COUNT(*) AS count FROM ${this.permits} WHERE root = ? AND holder = ? AND kind = 'process' AND state = 'granted'`,
-				this.options.root,
-				holder,
-			);
+			{
+				sql: `UPDATE ${this.permits} SET reason = ? WHERE root = ? AND holder = ? AND kind = 'process' AND state = 'granted' AND ${this.dialect.isDistinct("reason", "?")}`,
+				params: [UNCONFIRMED_REASON, root, holder, QUARANTINED_REASON],
+			},
+			{
+				sql: `SELECT COUNT(*) AS count FROM ${this.permits} WHERE root = ? AND holder = ? AND kind = 'process' AND state = 'granted'`,
+				params: [root, holder],
+			},
+		];
+		// Nothing here depends on what an earlier statement read, so a database that sends batches (libSQL) takes them in
+		// one request, which holds the write lock for that request only (#4768).
+		const { batch } = this.storage;
+		if (this.batches && batch !== undefined) return Number((await batch(statements)).at(-1)?.[0]?.count);
+		return this.storage.transaction(async (tx) => {
+			for (const statement of statements.slice(0, -1)) await tx.run(statement.sql, ...statement.params);
+			const held = await tx.get(statements.at(-1)!.sql, ...statements.at(-1)!.params);
 			return Number(held?.count);
 		});
 	}

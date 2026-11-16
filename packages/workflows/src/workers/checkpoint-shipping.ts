@@ -102,6 +102,11 @@ class DeliveryTiming {
 		return this.ewmaSize;
 	}
 
+	/** The running average of delivery times: the time of a delivery of {@link averageSize} checkpoints. */
+	get averageMs(): number | undefined {
+		return this.ewmaMs;
+	}
+
 	note(ms: number, size: number): void {
 		this.ewmaMs = this.ewmaMs === undefined ? ms : this.ewmaMs + DELIVERY_EWMA_WEIGHT * (ms - this.ewmaMs);
 		this.ewmaSize =
@@ -134,6 +139,8 @@ interface Attempt {
 	/** After a deadline shipment failed: when the next may start, by the monotonic clock, and how many failed in a row. */
 	retryAt?: number;
 	failures?: number;
+	normalTiming?: DeliveryTiming;
+	urgentTiming?: DeliveryTiming;
 }
 
 /**
@@ -234,14 +241,20 @@ export class CheckpointShipping {
 	 * The attempt ended or lost its work: what it accepted is shipped first, while its lease may still hold, and then the
 	 * host accepts nothing more for it.
 	 */
-	async release(work: Pick<AttemptLease, "id" | "generation">): Promise<void> {
+	async release(work: Pick<AttemptLease, "id" | "generation"> & Partial<Pick<AttemptLease, "worker">>): Promise<void> {
 		const attempt = this.attempts.get(work.id);
-		if (attempt?.lease.generation !== work.generation) return;
+		if (
+			attempt === undefined ||
+			attempt.lease.generation !== work.generation ||
+			(work.worker !== undefined && attempt.lease.worker !== work.worker)
+		)
+			return;
 		for (let tries = 1; ; tries++) {
 			try {
 				await this.flush(attempt.lease);
 				break;
 			} catch (error) {
+				// A fenced attempt's checkpoints are dropped: another attempt owns its work.
 				if (attempt.fenced !== undefined) break;
 				if (tries >= RELEASE_FLUSH_ATTEMPTS) {
 					this.options.onReleaseFailure?.({ workId: work.id, error: error as Error });
@@ -343,27 +356,38 @@ export class CheckpointShipping {
 		}
 	}
 
-	backpressurePointMs(attempt?: { readonly accepted: readonly unknown[] }): number {
-		const normal = this.normalTiming.estimate() ?? this.urgentTiming.estimate();
+	backpressurePointMs(attempt?: {
+		readonly accepted: readonly unknown[];
+		readonly normalTiming?: DeliveryTiming;
+		readonly urgentTiming?: DeliveryTiming;
+	}): number {
+		const useAttempt = (attempt?.normalTiming?.count ?? 0) > 0;
+		const normalTiming = useAttempt ? attempt!.normalTiming! : this.normalTiming;
+		const urgentTiming = useAttempt ? attempt?.urgentTiming : this.urgentTiming;
+		const normal = normalTiming.estimate() ?? urgentTiming?.estimate();
 		if (normal === undefined) return this.options.maxLagMs * BACKPRESSURE_SHARE;
 		const pending = Math.max(1, attempt?.accepted.length ?? 0);
 		const catchUpSize = Math.min(pending, URGENT_BATCH_CAP);
 		const initialGuess = normal * Math.ceil(catchUpSize / this.options.maxBatch);
-		const urgentEstimate = this.urgentTiming.estimate();
-		const normalSize = this.normalTiming.averageSize ?? 1;
-		const urgentSize = this.urgentTiming.averageSize;
-		const marginalMs =
-			urgentEstimate !== undefined && urgentSize !== undefined && urgentSize > normalSize
-				? Math.max(0, (urgentEstimate - normal) / (urgentSize - normalSize))
-				: 0;
+		const urgentEstimate = urgentTiming?.estimate();
 		const catchUpEstimate =
 			catchUpSize <= this.options.maxBatch
 				? normal
-				: this.urgentTiming.count < 2
-					? Math.max(urgentEstimate ?? 0, initialGuess)
-					: normal + marginalMs * Math.max(0, catchUpSize - normalSize);
+				: urgentTiming === undefined || urgentTiming.count < 2
+					? Math.max(urgentEstimate ?? 0, initialGuess, this.hostTimedCatchUpMs(catchUpSize))
+					: timedCatchUpMs(normal, normalTiming, urgentTiming, catchUpSize);
 		const remainingMs = Math.ceil(pending / URGENT_BATCH_CAP) * catchUpEstimate;
 		return Math.max(0, this.options.maxLagMs - normal - remainingMs - SCHEDULING_MARGIN_MS);
+	}
+
+	private hostTimedCatchUpMs(size: number): number {
+		if (size <= this.options.maxBatch || this.urgentTiming.count < 2) return 0;
+		return timedCatchUpMs(
+			this.normalTiming.estimate() ?? this.urgentTiming.estimate()!,
+			this.normalTiming,
+			this.urgentTiming,
+			size,
+		);
 	}
 
 	/**
@@ -431,7 +455,7 @@ export class CheckpointShipping {
 		return false;
 	}
 
-	async close(): Promise<void> {
+	async close(options: { readonly retire?: boolean } = {}): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
 		clearInterval(this.timer);
@@ -443,7 +467,7 @@ export class CheckpointShipping {
 		this.attempts.clear();
 		this.syncOnly.clear();
 		this.generations.clear();
-		await this.shard.close();
+		await this.shard.close(options);
 	}
 
 	/** Takes up the attempts a stopped host left checkpoints of, so they ship (see {@link start}). */
@@ -559,8 +583,16 @@ export class CheckpointShipping {
 		try {
 			await this.options.deliver(lease, batch);
 			const elapsedMs = this.now() - began;
-			const timing = sealed.events.length > this.options.maxBatch ? this.urgentTiming : this.normalTiming;
+			const isUrgent = sealed.events.length > this.options.maxBatch;
+			const timing = isUrgent ? this.urgentTiming : this.normalTiming;
 			timing.note(elapsedMs, sealed.events.length);
+			if (isUrgent) {
+				attempt.urgentTiming ??= new DeliveryTiming();
+				attempt.urgentTiming.note(elapsedMs, sealed.events.length);
+			} else {
+				attempt.normalTiming ??= new DeliveryTiming();
+				attempt.normalTiming.note(elapsedMs, sealed.events.length);
+			}
 		} catch (error) {
 			const fenced = await this.fence(attempt, lease, error as Error);
 			if (fenced === undefined) this.lastError = error as Error;
@@ -679,4 +711,19 @@ export class CheckpointShipping {
 function payloadOf(checkpoint: unknown) {
 	assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
 	return checkpoint;
+}
+
+function timedCatchUpMs(normal: number, normalTiming: DeliveryTiming, urgentTiming: DeliveryTiming, size: number) {
+	const urgentMs = urgentTiming.averageMs!;
+	const urgentSize = urgentTiming.averageSize!;
+	const normalMs = normalTiming.averageMs;
+	const normalSize = normalTiming.averageSize;
+	if (normalMs === undefined || normalSize === undefined)
+		return Math.max(urgentTiming.estimate()!, (urgentMs / urgentSize) * size);
+	const marginalMs = urgentSize > normalSize ? Math.max(0, (urgentMs - normalMs) / (urgentSize - normalSize)) : 0;
+	return (
+		normal +
+		marginalMs * Math.max(0, size - normalSize) +
+		Math.max(0, urgentTiming.estimate()! - urgentMs) * (size / urgentSize)
+	);
 }

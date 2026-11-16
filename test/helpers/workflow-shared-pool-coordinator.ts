@@ -245,8 +245,9 @@ export async function satellite(
 	failures: Error[] = [],
 	host = "host-b",
 	workers = 2,
+	health: string[] = [],
 ): Promise<PoolCoordinator> {
-	const coordinator = new PoolCoordinator(quietPort([]));
+	const coordinator = new PoolCoordinator(quietPort(health));
 	await coordinator.attachSatellite({
 		root: root.root,
 		lease: root.lease,

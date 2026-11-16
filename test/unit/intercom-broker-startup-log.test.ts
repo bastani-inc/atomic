@@ -45,6 +45,7 @@ import {
 	retractBrokerStartAnnouncement,
 } from "../../packages/intercom/broker/start-announcement.js";
 import { bunExecutable, removePathSync } from "../helpers/runtime.js";
+import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 /** Resolves true once the broker socket accepts a connection. */
 function connectable(socketPath: string): Promise<boolean> {
@@ -388,7 +389,7 @@ describe("a broker announces its own pid", () => {
 			} finally {
 				await stopRealBroker(broker);
 				await new Promise<void>((resolve) => incumbent.close(() => resolve()));
-				removePathSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+				removeTestDirectory(dir, { retries: 20, retryDelayMs: 50 });
 			}
 		},
 		REAL_BROKER_STARTUP_TIMEOUT_MS * 2,
@@ -411,7 +412,7 @@ describe("a broker announces its own pid", () => {
 				assert.equal(Number.parseInt(readFileSync(pathsModule.getBrokerPidPath(dir), "utf8"), 10), broker.pid);
 			} finally {
 				await stopRealBroker(broker);
-				removePathSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+				removeTestDirectory(dir, { retries: 20, retryDelayMs: 50 });
 			}
 		},
 		REAL_BROKER_STARTUP_TIMEOUT_MS * 2,

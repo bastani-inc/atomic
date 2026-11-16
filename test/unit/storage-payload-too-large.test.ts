@@ -11,6 +11,8 @@ import {
 	serializeStorageError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { createSqliteDatabase } from "../../packages/coding-agent/src/core/storage/sqlite-facade.js";
+import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
+import { libsqlDatabaseSubject } from "../helpers/libsql-database.js";
 
 const descriptor = { adapter: "libsql", location: "http://127.0.0.1:8080" };
 
@@ -85,6 +87,33 @@ test("a payload too large names the size and the limit, is permanent, and crosse
 	const rehydratedResponse = rehydrateStorageError(serializeStorageError(response));
 	assert.ok(rehydratedResponse instanceof StoragePayloadTooLargeError);
 	assert.deepEqual([rehydratedResponse.kind, rehydratedResponse.adapter], ["response", undefined]);
+});
+
+test("a value or row the backend builds past its limit is reported as built, not as the small value sent (#5260)", async () => {
+	// The shipped libSQL adapter on a file: the statement sends five bytes and builds a blob past the file's limit.
+	await libsqlDatabaseSubject((url) => openLibsqlDatabase({ url }))(async ({ database }) => {
+		await assert.rejects(database.get("SELECT ? AS label, zeroblob(2000000000) AS built", "label"), (error) => {
+			assert.ok(error instanceof StoragePayloadTooLargeError);
+			assert.deepEqual([error.kind, error.limitBytes, error.actualBytes], ["value", 1_000_000_000, 5]);
+			assert.match(
+				error.message,
+				/the backend refused a value or row it built while running the statement, larger than it stores; the limit is 1,000,000,000 bytes per value or row, and the largest value sent was 5 bytes/,
+			);
+			return true;
+		});
+	});
+
+	// What a pool commit's read met on sqld: every value it sent was small, and the value the statement built was not.
+	const built = new StoragePayloadTooLargeError(5_000_000, 59, { descriptor });
+	assert.equal(
+		built.message,
+		"Storage payload too large: libsql at http://127.0.0.1:8080: the backend refused a value or row it built while running the statement, larger than it stores; the limit is 5,000,000 bytes per value or row, and the largest value sent was 59 bytes (payload-too-large). Retrying does not help: store less in one value, or raise the backend's limit (sqld: max_row_size, --max-response-size).",
+	);
+	assert.deepEqual([built.kind, built.limitBytes, built.actualBytes], ["value", 5_000_000, 59]);
+	assert.equal(rehydrateStorageError(serializeStorageError(built)).message, built.message);
+	// A value at the limit is the backend's to build too; one over it is the one sent.
+	assert.match(new StoragePayloadTooLargeError(5_000_000, 5_000_000).message, /a value or row it built/);
+	assert.match(new StoragePayloadTooLargeError(5_000_000, 5_000_001).message, /refused a value of 5,000,001 bytes/);
 });
 
 test("a driver call refused as too large fails typed with the driver's limit and the largest bound value (#4954)", async () => {

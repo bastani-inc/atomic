@@ -297,7 +297,7 @@ describe("installStoreWidget", () => {
 		assert.ok(renderRequests.count > requestsBeforePrompt, "prompt creation must request an in-place repaint");
 		const waiting = component.render(120).join("\n");
 		assert.match(waiting, /"Approve the deployment\?"/);
-		assert.match(waiting, /Answer: \/workflow connect r1/);
+		assert.match(waiting, /Answer: \/workflows r1/);
 		assert.doesNotMatch(waiting, /F2 answer/);
 
 		const requestsBeforeResolution = renderRequests.count;
@@ -332,7 +332,7 @@ describe("installStoreWidget", () => {
 		assert.equal(widgetCalls.length, callsAfterMount);
 		const afterOne = renderRequests.count;
 		assert.match(component.render(120).join("\n"), /"Answer one\?"/);
-		assert.match(component.render(120).join("\n"), /Answer: \/workflow connect r1/);
+		assert.match(component.render(120).join("\n"), /Answer: \/workflows r1/);
 
 		assert.equal(
 			storeInstance.recordStagePendingPrompt("r1", "s2", {
@@ -350,8 +350,8 @@ describe("installStoreWidget", () => {
 		const many = component.render(120).join("\n");
 		assert.doesNotMatch(many, /"Answer one\?"/);
 		assert.doesNotMatch(many, /"Answer two\?"/);
-		assert.doesNotMatch(many, /Answer: \/workflow connect/);
-		assert.match(many, /？ ↵ 1 needs attention \(attach to workflow with `\/workflow connect`\)/);
+		assert.doesNotMatch(many, /Answer: \/workflows/);
+		assert.match(many, /？ ↵ 1 needs attention \(open with `\/workflows`\)/);
 
 		assert.equal(storeInstance.resolveStagePendingPrompt("r1", "s2", "p2", true), true);
 		await Promise.resolve();
@@ -359,7 +359,7 @@ describe("installStoreWidget", () => {
 		assert.ok(renderRequests.count > afterMany);
 		const afterOneAgain = renderRequests.count;
 		assert.match(component.render(120).join("\n"), /"Answer one\?"/);
-		assert.match(component.render(120).join("\n"), /Answer: \/workflow connect r1/);
+		assert.match(component.render(120).join("\n"), /Answer: \/workflows r1/);
 
 		assert.equal(storeInstance.resolveStagePendingPrompt("r1", "s1", "p1", true), true);
 		await Promise.resolve();
@@ -367,7 +367,7 @@ describe("installStoreWidget", () => {
 		assert.ok(renderRequests.count > afterOneAgain);
 		const none = component.render(120).join("\n");
 		assert.doesNotMatch(none, /"Answer one\?"/);
-		assert.doesNotMatch(none, /Answer: \/workflow connect/);
+		assert.doesNotMatch(none, /Answer: \/workflows/);
 		assert.doesNotMatch(none, new RegExp(statusIcon("awaiting_input")));
 	});
 
@@ -410,7 +410,7 @@ describe("installStoreWidget", () => {
 		const after = component.render(120).join("\n");
 		assert.doesNotMatch(after, /Answer first/);
 		assert.match(after, /"Answer second\?"/);
-		assert.match(after, /Answer: \/workflow connect second-root/);
+		assert.match(after, /Answer: \/workflows second-root/);
 	});
 
 	test("linked nested child prompt previews under the visible root and clears without remounting", async () => {
@@ -464,7 +464,7 @@ describe("installStoreWidget", () => {
 		await Promise.resolve();
 		const waiting = component.render(120).join("\n");
 		assert.match(waiting, /"Answer inside the child\?"/);
-		assert.match(waiting, new RegExp(`Answer: /workflow connect ${rootId}`));
+		assert.match(waiting, new RegExp(`Answer: /workflows ${rootId}`));
 		assert.equal(waiting.includes(childId), false);
 		assert.equal(widgetCalls.length, callsAfterMount);
 		assert.ok(renderRequests.count > requestsBeforePrompt);
@@ -472,7 +472,7 @@ describe("installStoreWidget", () => {
 		await Promise.resolve();
 		const after = component.render(120).join("\n");
 		assert.doesNotMatch(after, /Answer inside the child/);
-		assert.doesNotMatch(after, /Answer: \/workflow connect/);
+		assert.doesNotMatch(after, /Answer: \/workflows/);
 		assert.equal(widgetCalls.length, callsAfterMount);
 	});
 
@@ -518,10 +518,10 @@ describe("installStoreWidget", () => {
 			render(w: number): string[];
 		};
 		const waiting = component.render(120).join("\n");
-		assert.match(waiting, /↵ 1 needs attention \(attach to workflow with `\/workflow connect`\)/);
+		assert.match(waiting, /↵ 1 needs attention \(open with `\/workflows`\)/);
 		assert.match(waiting, new RegExp(statusIcon("awaiting_input")));
 		assert.doesNotMatch(waiting, /"Answer inside the child\?"/);
-		assert.equal(waiting.includes(`/workflow connect ${childId}`), false);
+		assert.equal(waiting.includes(`/workflows ${childId}`), false);
 	});
 
 	test("display-equivalent prompt updates do not broadcast redundant renders", async () => {
