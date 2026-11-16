@@ -79,7 +79,7 @@ import {
 	senderGroupIdentity,
 } from "./send-handler.js";
 import { deliverHeldToAsker } from "./ask-failures.js";
-import { brokerHostIdentity, isProcessAlive } from "./broker-instance.js";
+import { brokerHostIdentity, isProcessAlive, processStartedAt } from "./broker-instance.js";
 import { type LostRecipientBounds, lostRecipientBounds, lostRecipientReason } from "./lost-recipients.js";
 import type { BrokerOutboundFrame } from "./socket-writes.js";
 import type { SupervisorChannelCache } from "./supervisor-channel.js";
@@ -233,6 +233,8 @@ export interface MultiNodeRouterOptions {
 	readonly pid?: number;
 	/** #5038: whether a process of this host still runs (`isProcessAlive`). */
 	readonly isProcessAlive?: (pid: number) => boolean;
+	/** #5252: when a process of this host started, in ms since the epoch, where that can be read (`processStartedAt`). */
+	readonly processStartedAt?: (pid: number) => number | undefined;
 	/** #5154: how long a recipient whose end was lost stays gone before its asks fail; `lostRecipientBounds()`. */
 	readonly lostRecipientBounds?: LostRecipientBounds;
 }
@@ -473,6 +475,7 @@ export class MultiNodeRouter {
 	private readonly instanceKey: string;
 	private readonly pid: number;
 	private readonly isProcessAlive: (pid: number) => boolean;
+	private readonly processStartedAt: (pid: number) => number | undefined;
 	private readonly lostBounds: LostRecipientBounds;
 	private membership: Lease | undefined;
 	private subscription: WakeUpSubscription | undefined;
@@ -508,6 +511,7 @@ export class MultiNodeRouter {
 				: `${this.nodeId}:${hostIdentity}:${options.instanceKey}`;
 		this.pid = options.pid ?? process.pid;
 		this.isProcessAlive = options.isProcessAlive ?? isProcessAlive;
+		this.processStartedAt = options.processStartedAt ?? ((pid) => processStartedAt(pid));
 		this.lostBounds = options.lostRecipientBounds ?? lostRecipientBounds();
 	}
 
@@ -2759,10 +2763,20 @@ export class MultiNodeRouter {
 	 * that re-register here from taking their presence, and its outbox claims would hold its recipients' queues, until
 	 * they go stale; retire them now. Its claimed rows are delivered again, once, by whoever claims them next.
 	 */
+	/**
+	 * #5038: whether the process an earlier instance recorded still runs. #5252: a process that started after that
+	 * instance recorded its own start is a later one the host gave its id to, not that instance.
+	 */
+	private stillRuns(pid: number, recordedStartedAt: number | undefined): boolean {
+		if (!this.isProcessAlive(pid)) return false;
+		const startedAt = recordedStartedAt === undefined ? undefined : this.processStartedAt(pid);
+		return startedAt === undefined || recordedStartedAt === undefined || startedAt <= recordedStartedAt;
+	}
+
 	private async retirePreviousInstances(): Promise<void> {
 		for (const lease of await this.state.leases.listLive("broker", BROKER_LEASE_STALE_AFTER_MS)) {
-			const { instanceKey, pid } = lease.subject as Partial<BrokerMembershipSubject>;
-			if (instanceKey !== this.instanceKey || pid === undefined || this.isProcessAlive(pid)) continue;
+			const { instanceKey, pid, startedAt } = lease.subject as Partial<BrokerMembershipSubject>;
+			if (instanceKey !== this.instanceKey || pid === undefined || this.stillRuns(pid, startedAt)) continue;
 			// #5154: the sessions it had present may have ended with it unrecorded: they are lost until they register again.
 			const present = (await this.state.leases.listLive("presence", Number.MAX_SAFE_INTEGER)).filter(
 				(presence) => presence.holderId === lease.holderId,

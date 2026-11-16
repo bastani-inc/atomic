@@ -11,6 +11,7 @@ import {
 	isProcessAlive,
 	osMachineId,
 	persistedMachineId,
+	processStartedAt,
 	systemSources,
 	WINDOWS_BOOT_TIME_COMMAND,
 } from "../../packages/intercom/broker/broker-instance.js";
@@ -131,6 +132,8 @@ async function crashedCluster() {
 			nodeId: NODE,
 			hostIdentity: HOST,
 			isProcessAlive: (pid) => pid !== DEAD_PID,
+			// No process start can be read here unless a test says what it is.
+			processStartedAt: () => undefined,
 			...options,
 			host: {
 				sessions: new Map(),
@@ -194,6 +197,45 @@ test("an earlier instance whose process still runs is not retired (#5038)", asyn
 	const { leases, outbox } = await start({ instanceKey: SOCKET, isProcessAlive: () => true });
 	assert.equal(await holderOf(leases, "hosted-by-crashed"), "crashed");
 	assert.equal(await stateOf(outbox, "claimed-by-crashed"), "claimed");
+});
+
+test("an earlier instance whose process id a process started after it now holds is retired (#5252)", async () => {
+	const { start } = await crashedCluster();
+	// The killed broker recorded its start at 1; the host gave its process id to a process that started at 5000.
+	const { leases, outbox } = await start({
+		instanceKey: SOCKET,
+		isProcessAlive: () => true,
+		processStartedAt: (pid) => (pid === DEAD_PID ? 5_000 : undefined),
+	});
+	assert.equal(await holderOf(leases, "hosted-by-crashed"), "missing");
+	assert.deepEqual(await leases.read({ kind: "broker", brokerId: "crashed" }), { status: "missing" });
+	assert.equal(await stateOf(outbox, "claimed-by-crashed"), "queued");
+
+	// One whose process started before it recorded its start is still that instance, and is left alone.
+	const { start: startAgain } = await crashedCluster();
+	const { leases: kept } = await startAgain({
+		instanceKey: SOCKET,
+		isProcessAlive: () => true,
+		processStartedAt: (pid) => (pid === DEAD_PID ? 0 : undefined),
+	});
+	assert.equal(await holderOf(kept, "hosted-by-crashed"), "crashed");
+});
+
+test("a Windows process's start is read as its creation time, and a process of another platform's is not read (#5252)", () => {
+	const startOf = (pid: number) =>
+		[
+			"powershell",
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { $p.StartTime.ToFileTimeUtc() }`,
+		].join(" ");
+	// 2026-11-15T04:00:00.000Z as a Windows file time (100 ns since 1601).
+	const windows = fakeSources({ platform: "win32", commands: { [startOf(process.pid)]: "134391888000000000\r\n" } });
+	assert.equal(processStartedAt(process.pid, windows), Date.parse("2026-11-15T04:00:00.000Z"));
+	const linux = fakeSources({ platform: "linux" });
+	assert.equal(processStartedAt(process.pid, linux), undefined);
+	assert.deepEqual(linux.runs, []);
 });
 
 test("a broker on another socket, or without an instance key, leaves a live broker's leases alone (#5038)", async () => {
