@@ -143,6 +143,10 @@ const options = {
 		placement: "shared",
 		...(binding === undefined ? {} : { workspace: binding }),
 		...(process.env.SHARED_POOL_CLAIM_WINDOW_MS === undefined ? {} : { claimWindowMs: Number(process.env.SHARED_POOL_CLAIM_WINDOW_MS) }),
+		// SHARED_POOL_CHECKPOINT_SHIPPING (#4768): the root's `checkpointShipping`, as JSON.
+		...(process.env.SHARED_POOL_CHECKPOINT_SHIPPING === undefined
+			? {}
+			: { checkpointShipping: JSON.parse(process.env.SHARED_POOL_CHECKPOINT_SHIPPING) }),
 		// SHARED_POOL_FLEET=1 (#4768): the root runs a fleet controller whose provisioner records each call in `fleet-calls`
 		// and has no host to start.
 		...(process.env.SHARED_POOL_FLEET === "1"

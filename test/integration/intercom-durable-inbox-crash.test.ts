@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { SessionEntry } from "@bastani/atomic";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
+import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const agentDir = mkdtempSync(join(tmpdir(), "intercom-durable-inbox-"));
@@ -75,7 +76,7 @@ afterAll(async () => {
 		else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
 		if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
-		rmSync(agentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+		removeTestDirectory(agentDir, { retries: 20, retryDelayMs: 50 });
 	}
 });
 
