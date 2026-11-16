@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
+import { ProjectTrustStore } from "../../packages/coding-agent/src/core/trust-manager.ts";
 import {
 	bunExecutable,
 	decodeStream,
@@ -331,3 +332,135 @@ serialTest(
 	},
 	REAL_EXTENSION_FALLBACK_TEST_TIMEOUT_MS,
 );
+
+const MODEL_NOTICE = /^(Could not restore model|Configured default model|No models available)/;
+const STARTUP_NOTICE_SETTLE_MS = 1_500;
+const HOST_NOTICE_REPLAY_TIMEOUT_MS = 240_000;
+
+/** How the engine child gets the extension that registers the default model's provider. */
+type ExtensionLoading = "settings" | "cli-extension" | "project-extension";
+
+/** Model notices one startup shows: host warnings and engine stderr warnings, one line per notice. */
+function startupModelNotices(reports: readonly HarnessReport[]): string[] {
+	return reports
+		.filter((report) => report.type === "warning" || report.type === "diagnostic")
+		.flatMap((report) => (report.message ?? "").split("\n"))
+		.map((line) => line.replace(/^Warning: /, "").trim())
+		.filter((line) => MODEL_NOTICE.test(line))
+		.sort();
+}
+
+async function startupWithExtensionDefault(
+	loading: ExtensionLoading,
+	{ continued, credentials }: { continued: boolean; credentials: boolean },
+): Promise<{ model: string; notices: string[] }> {
+	const root = mkdtempSync(join(tmpdir(), `atomic-extension-default-notices-${loading}-`));
+	const cwd = join(root, "cwd");
+	const agentDir = join(root, "agent");
+	const sessionDir = join(root, "sessions");
+	mkdirSync(cwd);
+	mkdirSync(agentDir);
+	mkdirSync(sessionDir);
+	const extensionSource = `export default function (pi) {
+	pi.registerProvider("notice-ext", {
+		api: "anthropic-messages",
+		baseUrl: "https://notice-ext.invalid",
+		${credentials ? 'apiKey: "notice-key",' : ""}
+		models: [{ id: "notice-model", name: "Notice", reasoning: true, input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024 }],
+	});
+}
+`;
+	const extensionPath = join(root, "notice-extension.ts");
+	writeFileSync(extensionPath, extensionSource);
+	if (loading === "project-extension") {
+		mkdirSync(join(cwd, ".atomic", "extensions"), { recursive: true });
+		writeFileSync(join(cwd, ".atomic", "extensions", "notice-extension.ts"), extensionSource);
+		new ProjectTrustStore(agentDir).set(cwd, true);
+	}
+	writeFileSync(
+		join(agentDir, "settings.json"),
+		JSON.stringify({
+			defaultProvider: "notice-ext",
+			defaultModel: "notice-model",
+			...(loading === "settings" ? { extensions: [extensionPath] } : {}),
+			lastChangelogVersion: "0.0.0",
+			firstRunOnboardingStartedVersion: "0.0.0",
+			onboardedVersion: "0.0.0",
+		}),
+	);
+	const sessionArgs = ["--session-dir", sessionDir];
+	if (continued) {
+		const persisted = await SessionManager.create(cwd, sessionDir);
+		await persisted.appendModelChange("gone-provider", "old-model");
+		await persisted.appendMessage({ role: "user", content: [{ type: "text", text: "continue" }], timestamp: 1 });
+		sessionArgs.push("--session", persisted.getSessionId());
+	}
+	const driver = new Driver(
+		[
+			...sessionArgs,
+			...(loading === "cli-extension" ? ["--no-extensions", "--extension", extensionPath] : []),
+			// A trust override would skip the stored project trust that loads the project extension.
+			...(loading === "project-extension" ? [] : ["--approve"]),
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-themes",
+			"--offline",
+		],
+		{
+			ATOMIC_CODING_AGENT_DIR: agentDir,
+			ATOMIC_CODING_AGENT_SESSION_DIR: sessionDir,
+			ATOMIC_SKIP_VERSION_CHECK: "1",
+			NO_COLOR: "1",
+		},
+		cwd,
+	);
+	try {
+		await waitForInputLoopState(driver);
+		await driver.waitFor((report) => report.type === "engine_resources_ready");
+		await sleep(STARTUP_NOTICE_SETTLE_MS);
+		const stateFrom = driver.reports.length;
+		driver.send({ type: "state" });
+		const state = await driver.waitFor((report) => report.type === "state", stateFrom);
+		return { model: `${state.modelProvider}/${state.modelId}`, notices: startupModelNotices(driver.reports) };
+	} finally {
+		await driver.stop();
+		rmSync(root, { recursive: true, force: true });
+	}
+}
+
+serialTest(
+	"isolated --extension startup reports a continued session's replaced model once, as eager startup does (#5247)",
+	async () => {
+		const options = { continued: true, credentials: true };
+		const eager = await startupWithExtensionDefault("settings", options);
+		assert.deepEqual(eager, {
+			model: "notice-ext/notice-model",
+			notices: ["Could not restore model gone-provider/old-model. Using notice-ext/notice-model"],
+		});
+		assert.deepEqual(await startupWithExtensionDefault("cli-extension", options), eager);
+	},
+	HOST_NOTICE_REPLAY_TIMEOUT_MS,
+);
+
+for (const continued of [false, true]) {
+	for (const credentials of [true, false]) {
+		serialTest(
+			`isolated startup with a trusted project extension default shows eager startup's model notices, continued=${continued}, credentials=${credentials} (#5247)`,
+			async () => {
+				const options = { continued, credentials };
+				const eager = await startupWithExtensionDefault("settings", options);
+				assert.deepEqual(
+					eager.notices.map((notice) => notice.replace(/\. Use \/login.*/, "")),
+					credentials
+						? continued
+							? ["Could not restore model gone-provider/old-model. Using notice-ext/notice-model"]
+							: []
+						: [continued ? "Could not restore model gone-provider/old-model" : "No models available"],
+				);
+				assert.deepEqual(await startupWithExtensionDefault("project-extension", options), eager);
+			},
+			HOST_NOTICE_REPLAY_TIMEOUT_MS,
+		);
+	}
+}

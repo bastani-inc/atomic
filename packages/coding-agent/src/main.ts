@@ -59,7 +59,7 @@ import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dis
 import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
 import { formatModelLabel } from "./core/model-label.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
-import { resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
+import { findInitialModel, resolveModelScopeWithDiagnostics, uncachedCopilotModelHint } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
@@ -75,6 +75,7 @@ import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "./core/
 import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
+import { recordStartupThinkingLevel, savedConversationThinkingLevel } from "./core/startup-thinking-level.ts";
 import { isTeamProfileError, StorageConfigError } from "./core/storage/errors.js";
 import {
 	hasProcessStorageSelection,
@@ -776,6 +777,8 @@ export async function main(argv: string[], options?: MainOptions) {
 	const projectTrustByCwd = new Map<string, boolean>();
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
 	let deferredExtensionLoad = false;
+	let deferredStartupThinkingLevel: ThinkingLevel | undefined;
+	let deferredSavedThinkingLevel: ThinkingLevel | undefined;
 	let forceEagerInteractiveEngineResources = false;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async (options) => (await prepareRuntime(options))();
 	const prepareRuntime: NonNullable<CreateAgentSessionRuntimeFactory["prepareResume"]> = async ({
@@ -984,6 +987,11 @@ export async function main(argv: string[], options?: MainOptions) {
 				settingsManager,
 			);
 			if (!deferStartupTrust) diagnostics.push(...sessionOptionDiagnostics);
+			const savedThinkingLevel = savedConversationThinkingLevel(sessionManager);
+			if (sessionStartEvent === undefined) {
+				deferredStartupThinkingLevel = sessionOptions.thinkingLevel ?? savedThinkingLevel;
+				deferredSavedThinkingLevel = savedThinkingLevel;
+			}
 
 			if (parsed.apiKey && !isolateInteractiveHost && !deferStartupTrust) {
 				if (!sessionOptions.model) {
@@ -1084,9 +1092,7 @@ export async function main(argv: string[], options?: MainOptions) {
 							await sessionManager.appendModelChange(finalModel.provider, finalModel.id);
 							const continuedThinkingLevel =
 								existingSession.messages.length > 0
-									? sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change")
-										? (existingSession.thinkingLevel as ThinkingLevel)
-										: (settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL)
+									? (savedThinkingLevel ?? settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL)
 									: undefined;
 							await created.session.setThinkingLevel(
 								finalSelection.options.thinkingLevel ??
@@ -1095,7 +1101,47 @@ export async function main(argv: string[], options?: MainOptions) {
 									settingsManager.getDefaultThinkingLevel() ??
 									DEFAULT_THINKING_LEVEL,
 							);
+						} else {
+							const savedModel = existingSession.model;
+							const restoreLabel =
+								existingSession.messages.length > 0 && savedModel
+									? formatModelLabel({ provider: savedModel.provider, id: savedModel.modelId })
+									: undefined;
+							const copilotHint =
+								restoreLabel && savedModel
+									? uncachedCopilotModelHint(savedModel.provider, savedModel.modelId, modelRuntime)
+									: undefined;
+							const unavailable = copilotHint
+								? undefined
+								: await findInitialModel({
+										scopedModels: [],
+										isContinuing: existingSession.messages.length > 0,
+										defaultProvider: settingsManager.getDefaultProvider(),
+										defaultModelId: settingsManager.getDefaultModel(),
+										modelRuntime,
+									});
+							if (copilotHint) {
+								runtime.replaceModelFallback(
+									`Could not restore model ${restoreLabel}: ${copilotHint}, or choose another model with /model.`,
+									"configured-provider-unsupported",
+								);
+							} else if (unavailable?.fallbackReason === "configured-provider-unsupported") {
+								runtime.replaceModelFallback(unavailable.fallbackMessage, unavailable.fallbackReason);
+							} else if (restoreLabel) {
+								runtime.replaceModelFallback(`Could not restore model ${restoreLabel}`, "session-restore");
+							} else {
+								runtime.replaceModelFallback(
+									unavailable?.fallbackMessage ?? formatNoModelsAvailableMessage(),
+									unavailable?.fallbackReason ?? "no-models-available",
+								);
+							}
+							const finalFallbackMessage = runtime.modelFallbackMessage;
+							if (appMode !== "interactive" && finalFallbackMessage) {
+								finalServices.diagnostics.push({ type: "warning", message: finalFallbackMessage });
+							}
 						}
+						// Creation saved nothing while trust was pending; save what eager creation saves.
+						await recordStartupThinkingLevel(sessionManager, savedThinkingLevel, created.session.thinkingLevel);
 						await created.session.completeStartupResources(finalServices.resourceLoader);
 						if (appMode !== "interactive") {
 							finalServices.diagnostics.push(...sessionFallbackModelDiagnostics(parsed, created.session));
@@ -1161,6 +1207,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	);
 	endTimingSpan(runtimeCreationSpan);
 	const { services, session, modelFallbackMessage } = runtime;
+	if (engineEnv.child === "1" && services.completeStartup) runtime.replaceModelFallback();
 	const { settingsManager, modelRuntime } = services;
 	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
@@ -1273,7 +1320,8 @@ export async function main(argv: string[], options?: MainOptions) {
 			deferredModelScopePatterns: deferredExtensionLoad
 				? (parsed.models ?? settingsManager.getEnabledModels())
 				: undefined,
-			deferredModelScopePreserveThinking: parsed.thinking !== undefined,
+			deferredStartupThinkingLevel,
+			deferredSavedThinkingLevel,
 			deferredFallbackModelCheck:
 				deferredExtensionLoad && !isolateInteractiveHost
 					? (session) => sessionFallbackModelDiagnostics(parsed, session)

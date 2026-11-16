@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import { Container, stripTerminalSequences } from "@bastani/atomic-tui";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";
-import { findInitialModel } from "../src/core/model-resolver.js";
+import { findInitialModel, resolveModelScopeWithDiagnostics } from "../src/core/model-resolver.js";
+import { createAgentSession, createUnstartedAgentSession } from "../src/core/sdk.js";
+import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { recordStartupThinkingLevel, savedConversationThinkingLevel } from "../src/core/startup-thinking-level.js";
 import { resolveDeferredStartupModel } from "../src/main-deferred-startup.js";
 import { buildSessionOptions, unresolvedFallbackModelDiagnostics } from "../src/main-session-options.js";
 import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.js";
@@ -110,7 +117,7 @@ describe("applyDeferredModelScope", () => {
 	it("does not let deferred model-scope thinking suffixes override explicit CLI thinking", async () => {
 		const setThinkingLevel = vi.fn();
 		const mode = {
-			options: { deferredModelScopePatterns: ["claude-*:high"], deferredModelScopePreserveThinking: true },
+			options: { deferredModelScopePatterns: ["claude-*:high"], deferredStartupThinkingLevel: "low" },
 			session: {
 				modelRuntime: {
 					getAvailableSnapshot: vi.fn(() => [claudeModel]),
@@ -129,7 +136,7 @@ describe("applyDeferredModelScope", () => {
 		await applyDeferredModelScope(mode as never);
 
 		expect(mode.session.setModel).toHaveBeenCalledWith(claudeModel);
-		expect(setThinkingLevel).not.toHaveBeenCalled();
+		expect(setThinkingLevel.mock.calls).toEqual([["low"]]);
 	});
 
 	it("checks fallbackModels entries only after deferred extension providers register (#5247)", async () => {
@@ -191,6 +198,7 @@ describe("applyDeferredModelScope", () => {
 				setModel: vi.fn(async (model: ReturnType<ModelRegistry["find"]>) => {
 					session.model = model;
 				}),
+				setThinkingLevel: vi.fn(),
 			};
 			const mode = {
 				options: {
@@ -265,6 +273,7 @@ describe("applyDeferredModelScope", () => {
 			setModel: async (model: typeof savedModel) => {
 				session.model = model;
 			},
+			setThinkingLevel: async () => {},
 		};
 		const deferredFallbackModelCheck = vi.fn((activeSession: Pick<typeof session, "model">) =>
 			unresolvedFallbackModelDiagnostics(parsed, settingsManager, modelRuntime, activeSession.model.provider),
@@ -771,7 +780,7 @@ describe("retryDeferredModelRestore", () => {
 				const setThinkingLevel = vi.fn();
 				const showWarning = vi.fn();
 				await InteractiveMode.prototype.retryDeferredModelRestore.call({
-					options: { modelFallbackMessage: genericUnsupportedWarning },
+					options: { modelFallbackMessage: genericUnsupportedWarning, deferredStartupThinkingLevel: "low" },
 					settingsManager,
 					sessionManager: {
 						buildSessionContext: () => ({
@@ -779,7 +788,6 @@ describe("retryDeferredModelRestore", () => {
 							model: { provider: "gone-provider", modelId: "old-model" },
 							thinkingLevel: "low",
 						}),
-						getBranch: () => [{ type: "thinking_level_change", thinkingLevel: "low" }],
 					},
 					session: {
 						model: alreadySelected ? expectedModel : undefined,
@@ -846,7 +854,6 @@ describe("retryDeferredModelRestore", () => {
 							messages: continued ? [{ role: "user", content: "hello", timestamp: 1 }] : [],
 							thinkingLevel: "off",
 						}),
-						getBranch: () => [],
 					},
 					session: { modelRuntime: getModelRuntime(registry), setModel, setThinkingLevel },
 					showWarning,
@@ -856,5 +863,282 @@ describe("retryDeferredModelRestore", () => {
 				expect(showWarning).not.toHaveBeenCalled();
 			});
 		}
+	}
+});
+
+describe("deferred startup thinking level (#5247)", () => {
+	const noBuiltins = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false };
+	let root: string;
+	beforeAll(() => {
+		root = mkdtempSync(join(tmpdir(), "atomic-deferred-thinking-"));
+	});
+	afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+	interface StartupCase {
+		settings?: Parameters<typeof SettingsManager.inMemory>[0];
+		openaiKey?: boolean;
+		savedModel?: { provider: string; modelId: string };
+		savedThinkingLevel?: ThinkingLevel;
+		continued?: boolean;
+		args?: string[];
+	}
+
+	/** The extension provider a deferred startup registers only after the session exists. */
+	function registerExtensionProvider(registry: ModelRegistry): void {
+		registry.registerProvider("ext-provider", {
+			baseUrl: "https://extension.test/v1",
+			apiKey: "test-key",
+			api: "openai-completions",
+			models: ["ext-primary", "ext-other"].map((id) => ({
+				id,
+				name: id,
+				reasoning: true,
+				input: ["text" as const],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128000,
+				maxTokens: 4096,
+			})),
+		});
+	}
+
+	async function startupInputs(startup: StartupCase, extensionRegistered: boolean) {
+		const registry = await createInMemoryModelRegistry(
+			AuthStorage.inMemory(startup.openaiKey ? { openai: { type: "api_key", key: "test-key" } } : {}),
+		);
+		if (extensionRegistered) registerExtensionProvider(registry);
+		const modelRuntime = getModelRuntime(registry);
+		const settingsManager = SettingsManager.inMemory(startup.settings ?? {});
+		const sessionManager = SessionManager.inMemory(root);
+		if (startup.savedModel)
+			await sessionManager.appendModelChange(startup.savedModel.provider, startup.savedModel.modelId);
+		if (startup.savedThinkingLevel) await sessionManager.appendThinkingLevelChange(startup.savedThinkingLevel);
+		if (startup.continued) {
+			await sessionManager.appendMessage({
+				role: "user",
+				content: [{ type: "text", text: "continue" }],
+				timestamp: 1,
+			});
+		}
+		const parsed = parseArgs(startup.args ?? []);
+		const { scopedModels } = parsed.models
+			? await resolveModelScopeWithDiagnostics(parsed.models, modelRuntime)
+			: { scopedModels: [] };
+		const { options } = buildSessionOptions(
+			parsed,
+			scopedModels,
+			Boolean(startup.continued),
+			modelRuntime,
+			settingsManager,
+		);
+		const sessionOptions = {
+			cwd: root,
+			agentDir: join(root, "agent"),
+			modelRuntime,
+			settingsManager,
+			sessionManager,
+			builtins: noBuiltins,
+			model: options.model,
+			thinkingLevel: options.thinkingLevel,
+			scopedModels: options.scopedModels,
+		};
+		return { registry, parsed, sessionManager, settingsManager, sessionOptions };
+	}
+
+	/** Startup with the extension provider registered before the session is created. */
+	async function eagerStartup(startup: StartupCase) {
+		const { sessionOptions } = await startupInputs(startup, true);
+		const { session, modelFallbackMessage } = await createAgentSession(sessionOptions);
+		try {
+			return {
+				model: `${session.model?.provider}/${session.model?.id}`,
+				thinkingLevel: session.thinkingLevel,
+				recordedThinkingLevel: sessionOptions.sessionManager.buildSessionContext().thinkingLevel,
+				warnings: modelFallbackMessage ? [modelFallbackMessage] : [],
+			};
+		} finally {
+			await session.dispose();
+		}
+	}
+
+	/**
+	 * Startup that creates the session before the extension provider registers. On the extension-load path the
+	 * session records its startup state, then the deferred model scope and model restore run. On the trust path it
+	 * records nothing, and trust completion has already selected eager startup's model and level when the restore runs.
+	 */
+	async function deferredStartup(startup: StartupCase, path: "extension-load" | "trust") {
+		const { registry, parsed, sessionManager, settingsManager, sessionOptions } = await startupInputs(startup, false);
+		const savedThinkingLevel = savedConversationThinkingLevel(sessionManager);
+		const { session, modelFallbackMessage } = await createUnstartedAgentSession(
+			sessionOptions,
+			path === "extension-load",
+		);
+		try {
+			registerExtensionProvider(registry);
+			const showWarning = vi.fn();
+			const mode = {
+				options: {
+					modelFallbackMessage,
+					deferredStartupThinkingLevel: sessionOptions.thinkingLevel ?? savedThinkingLevel,
+					deferredSavedThinkingLevel: savedThinkingLevel,
+					deferredModelScopePatterns: path === "extension-load" ? parsed.models : undefined,
+				},
+				session,
+				sessionManager,
+				settingsManager,
+				showWarning,
+			};
+			if (path === "trust") {
+				const eager = await eagerStartup(startup);
+				const [provider, modelId] = eager.model.split("/");
+				const finalModel = registry.find(provider ?? "", modelId ?? "");
+				assert.ok(finalModel);
+				session.agent.state.model = finalModel;
+				await sessionManager.appendModelChange(finalModel.provider, finalModel.id);
+				await session.setThinkingLevel(eager.thinkingLevel);
+				await recordStartupThinkingLevel(sessionManager, savedThinkingLevel, session.thinkingLevel);
+			} else {
+				await applyDeferredModelScope(mode as never);
+			}
+			await InteractiveMode.prototype.retryDeferredModelRestore.call(mode as never);
+			return {
+				model: `${session.model?.provider}/${session.model?.id}`,
+				thinkingLevel: session.thinkingLevel,
+				recordedThinkingLevel: sessionManager.buildSessionContext().thinkingLevel,
+				warnings: showWarning.mock.calls.map(([message]) => message),
+			};
+		} finally {
+			await session.dispose();
+		}
+	}
+
+	it("gives a continued conversation without a saved level the default level when an extension default replaces its model", async () => {
+		const startup: StartupCase = {
+			settings: { defaultProvider: "ext-provider", defaultModel: "ext-primary" },
+			savedModel: { provider: "gone-provider", modelId: "old-model" },
+			continued: true,
+		};
+		const eager = await eagerStartup(startup);
+		const deferred = await deferredStartup(startup, "extension-load");
+
+		assert.deepEqual(eager, {
+			model: "ext-provider/ext-primary",
+			thinkingLevel: "medium",
+			recordedThinkingLevel: "medium",
+			warnings: ["Could not restore model gone-provider/old-model. Using ext-provider/ext-primary"],
+		});
+		assert.deepEqual(deferred, eager);
+	});
+
+	it("keeps a continued conversation's saved level when its extension model is restored", async () => {
+		const startup: StartupCase = {
+			settings: { defaultThinkingLevel: "low" },
+			savedModel: { provider: "ext-provider", modelId: "ext-primary" },
+			savedThinkingLevel: "high",
+			continued: true,
+		};
+		const eager = await eagerStartup(startup);
+		const deferred = await deferredStartup(startup, "extension-load");
+
+		assert.deepEqual(eager, {
+			model: "ext-provider/ext-primary",
+			thinkingLevel: "high",
+			recordedThinkingLevel: "high",
+			warnings: [],
+		});
+		assert.deepEqual(deferred, eager);
+	});
+
+	it("keeps the default level when the restored extension model replaces a non-reasoning default", async () => {
+		const startup: StartupCase = {
+			settings: { defaultProvider: "openai", defaultModel: "gpt-4.1", defaultThinkingLevel: "high" },
+			openaiKey: true,
+			savedModel: { provider: "ext-provider", modelId: "ext-primary" },
+			continued: true,
+		};
+		const eager = await eagerStartup(startup);
+		const deferred = await deferredStartup(startup, "extension-load");
+
+		assert.deepEqual(eager, {
+			model: "ext-provider/ext-primary",
+			thinkingLevel: "high",
+			recordedThinkingLevel: "high",
+			warnings: [],
+		});
+		assert.deepEqual(deferred, eager);
+	});
+
+	it("keeps a continued conversation's saved level on record when --thinking overrides it for a restored extension model", async () => {
+		const startup: StartupCase = {
+			savedModel: { provider: "ext-provider", modelId: "ext-primary" },
+			savedThinkingLevel: "low",
+			continued: true,
+			args: ["--thinking", "high"],
+		};
+		const eager = await eagerStartup(startup);
+		const deferred = await deferredStartup(startup, "extension-load");
+
+		assert.deepEqual(eager, {
+			model: "ext-provider/ext-primary",
+			thinkingLevel: "high",
+			recordedThinkingLevel: "low",
+			warnings: [],
+		});
+		assert.deepEqual(deferred, eager);
+	});
+
+	it("keeps the conversation's level after trust completion when the final model has a per-model level", async () => {
+		const startup: StartupCase = {
+			settings: {
+				defaultProvider: "ext-provider",
+				defaultModel: "ext-primary",
+				modelThinkingLevels: { "ext-provider/ext-primary": "low" },
+			},
+			savedModel: { provider: "gone-provider", modelId: "old-model" },
+			savedThinkingLevel: "high",
+			continued: true,
+		};
+		const eager = await eagerStartup(startup);
+		const deferred = await deferredStartup(startup, "trust");
+
+		assert.equal(eager.model, "ext-provider/ext-primary");
+		assert.equal(eager.thinkingLevel, "high");
+		assert.equal(eager.recordedThinkingLevel, "high");
+		assert.deepEqual(deferred, { ...eager, warnings: [] });
+	});
+
+	for (const path of ["extension-load", "trust"] as const) {
+		it(`applies --thinking to a model selected after deferred registration, ${path} path`, async () => {
+			const startup: StartupCase = {
+				settings: { defaultProvider: "ext-provider", defaultModel: "ext-primary" },
+				args: ["--thinking", "high"],
+			};
+			const eager = await eagerStartup(startup);
+			const deferred = await deferredStartup(startup, path);
+
+			assert.deepEqual(eager, {
+				model: "ext-provider/ext-primary",
+				thinkingLevel: "high",
+				recordedThinkingLevel: "high",
+				warnings: [],
+			});
+			assert.deepEqual(deferred, eager);
+		});
+
+		it(`applies a deferred --models thinking suffix over a per-model level, ${path} path`, async () => {
+			const startup: StartupCase = {
+				settings: { modelThinkingLevels: { "ext-provider/ext-primary": "low" } },
+				args: ["--models", "ext-provider/ext-primary:high"],
+			};
+			const eager = await eagerStartup(startup);
+			const deferred = await deferredStartup(startup, path);
+
+			assert.deepEqual(eager, {
+				model: "ext-provider/ext-primary",
+				thinkingLevel: "high",
+				recordedThinkingLevel: "high",
+				warnings: [],
+			});
+			assert.deepEqual(deferred, eager);
+		});
 	}
 });

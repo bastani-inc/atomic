@@ -1,9 +1,10 @@
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
-import { modelsAreEqual } from "@bastani/atomic-ai/compat";
+import { type Api, type Model, modelsAreEqual } from "@bastani/atomic-ai/compat";
 import { failureDebugFields, reportDebug } from "../../core/debug.ts";
 import { DEFAULT_THINKING_LEVEL } from "../../core/defaults.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { deduplicateDiagnostics } from "../../core/settings-diagnostics.ts";
+import { recordStartupThinkingLevel } from "../../core/startup-thinking-level.ts";
 import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -164,9 +165,39 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
 	const nextScopedModel = preferred ?? scopedModels[0];
 	if (mode.session.modelRuntime.hasConfiguredAuth(nextScopedModel.model.provider)) {
 		await mode.session.setModel(nextScopedModel.model);
-		if (nextScopedModel.thinkingLevel && !mode.options.deferredModelScopePreserveThinking) {
-			await mode.session.setThinkingLevel(nextScopedModel.thinkingLevel);
-		}
+		await mode.session.setThinkingLevel(
+			startupThinkingLevel(mode, nextScopedModel.model, false, nextScopedModel.thinkingLevel),
+		);
+	}
+}
+
+/**
+ * The level eager startup gives a model that became available only after deferred extension loading: the level the
+ * command line or the continued conversation set, else the model scope's suffix, else the model's own level for a
+ * new conversation, else the default level.
+ */
+function startupThinkingLevel(
+	mode: InteractiveModeBase,
+	model: Model<Api>,
+	continued: boolean,
+	scopedThinkingLevel?: ThinkingLevel,
+): ThinkingLevel {
+	return (
+		mode.options.deferredStartupThinkingLevel ??
+		scopedThinkingLevel ??
+		(continued ? undefined : mode.settingsManager.getModelThinkingLevel(model.provider, model.id)) ??
+		mode.settingsManager.getDefaultThinkingLevel() ??
+		DEFAULT_THINKING_LEVEL
+	);
+}
+
+/** Selects a model for a startup that loaded extensions late, leaving the thinking level eager startup leaves. */
+async function selectStartupModel(mode: InteractiveModeBase, model: Model<Api>, continued: boolean): Promise<void> {
+	await mode.session.setModel(model);
+	await mode.session.setThinkingLevel(startupThinkingLevel(mode, model, continued));
+	const savedThinkingLevel = mode.options.deferredSavedThinkingLevel;
+	if (savedThinkingLevel !== undefined) {
+		await recordStartupThinkingLevel(mode.sessionManager, savedThinkingLevel, mode.session.thinkingLevel);
 	}
 }
 
@@ -179,6 +210,7 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 
 	const sessionContext = this.sessionManager.buildSessionContext();
 	const savedModel = sessionContext.model;
+	const continued = sessionContext.messages.length > 0;
 	let restoreFailure: string | undefined;
 	if (savedModel) {
 		const restoredModel = await resolveRestoredModelReference(
@@ -187,10 +219,14 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 			this.session.modelRuntime,
 		);
 		if (restoredModel && this.session.modelRuntime.hasConfiguredAuth(restoredModel.provider)) {
-			await this.session.setModel(restoredModel);
+			// Trust completion or the deferred model scope may already have selected it, with its startup level.
+			const selectedModel = this.session.model;
+			if (!selectedModel || !modelsAreEqual(selectedModel, restoredModel)) {
+				await selectStartupModel(this, restoredModel, continued);
+			}
 			return;
 		}
-		if (sessionContext.messages.length > 0) {
+		if (continued) {
 			if (uncachedCopilotModelHint(savedModel.provider, savedModel.modelId, this.session.modelRuntime)) {
 				this.showWarning(preliminaryFallbackMessage, targetContainer);
 				return;
@@ -216,16 +252,7 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 		modelRuntime: this.session.modelRuntime,
 	});
 	if (result.model) {
-		await this.session.setModel(result.model);
-		await this.session.setThinkingLevel(
-			sessionContext.messages.length > 0
-				? this.sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change")
-					? (sessionContext.thinkingLevel as ThinkingLevel)
-					: (this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL)
-				: (this.settingsManager.getModelThinkingLevel(result.model.provider, result.model.id) ??
-						this.settingsManager.getDefaultThinkingLevel() ??
-						DEFAULT_THINKING_LEVEL),
-		);
+		await selectStartupModel(this, result.model, continued);
 		if (restoreFailure) {
 			this.showWarning(`${restoreFailure}. Using ${result.model.provider}/${result.model.id}`, targetContainer);
 		}
