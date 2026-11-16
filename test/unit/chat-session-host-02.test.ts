@@ -82,7 +82,7 @@ test("ChatSessionHost renders the lifecycle-origin one-cell Atomic identity in o
 		const lines = host.renderWorkingStatus(64);
 		assert.equal(lines.length, 2);
 		assert.equal(lines[0], "");
-		assert.equal(stripAnsi(lines[1] ?? "").trimEnd(), " ∀ Working...");
+		assert.equal(stripAnsi(lines[1] ?? "").trimEnd(), " ∀ Working... (0s)");
 		assert.deepEqual(stripAnsi(lines[1] ?? "").match(/∀/g), ["∀"]);
 	} finally {
 		host.dispose();
@@ -98,7 +98,7 @@ test("ChatSessionHost keeps the Atomic identity static without a workflow animat
 		host.applyAgentEvent({ type: "agent_start" } as never);
 		assert.equal(host.hasAnimationTick(), false);
 		const lines = host.renderWorkingStatus(64);
-		assert.equal(stripAnsi(lines[1] ?? "").trimEnd(), " ∀ Working...");
+		assert.equal(stripAnsi(lines[1] ?? "").trimEnd(), " ∀ Working... (0s)");
 	} finally {
 		host.dispose();
 		if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
@@ -326,8 +326,9 @@ test("ChatSessionHost refreshes successful compacted transcripts exactly once fo
 		assert.equal(
 			host
 				.renderBody(200, 20)
+				.map(stripAnsi)
 				.join("\n")
-				.match(/✻ Context compacted/g)?.length,
+				.match(/∀ Context compacted/g)?.length,
 			1,
 		);
 		assert.match(host.renderBody(200, 20).join("\n"), /extension host state/);
@@ -355,8 +356,9 @@ test("ChatSessionHost refreshes successful compacted transcripts exactly once fo
 		assert.equal(
 			host
 				.renderBody(200, 20)
+				.map(stripAnsi)
 				.join("\n")
-				.match(/✻ Context compacted/g)?.length,
+				.match(/∀ Context compacted/g)?.length,
 			1,
 		);
 		assert.match(host.renderBody(200, 20).join("\n"), /extension host state/);
@@ -404,8 +406,9 @@ test("ChatSessionHost renders a type-safe compaction boundary when the refreshed
 	assert.equal(
 		host
 			.renderBody(200, 20)
+			.map(stripAnsi)
 			.join("\n")
-			.match(/✻ Context compacted/g)?.length,
+			.match(/∀ Context compacted/g)?.length,
 		1,
 	);
 	assert.equal(

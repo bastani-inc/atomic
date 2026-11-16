@@ -336,13 +336,13 @@ describe("interactive TUI renderer", () => {
 				scrolledDock.rect.y,
 				scrolledDock.rect.y + scrolledDock.rect.height,
 			);
-			expect(scrolledDockLines.some((line) => line.includes("Jump to latest message"))).toBe(false);
-			expect(terminal.writes.at(-1)).toContain("↓ Jump to latest message · ctrl+j");
+			expect(scrolledDockLines.some((line) => line.includes("jump to bottom"))).toBe(false);
+			expect(terminal.writes.at(-1)).toContain("↓ jump to bottom · ctrl+j");
 			expect(terminal.writes.at(-1)).toContain(
 				`\x1b[${scrolledTranscript.rect.y + scrolledTranscript.rect.height};1H`,
 			);
 
-			const indicator = " ↓ Jump to latest message · ctrl+j ";
+			const indicator = " ↓ jump to bottom · ctrl+j ";
 			const indicatorColumn =
 				scrolledTranscript.rect.x + Math.floor((scrolledTranscript.rect.width - indicator.length) / 2);
 			const indicatorRow = scrolledTranscript.rect.y + scrolledTranscript.rect.height - 1;
@@ -380,7 +380,7 @@ describe("interactive TUI renderer", () => {
 			if (!jumpedDock) throw new Error("fullscreen dock disappeared after jumping to the transcript end");
 			expect(transcript.isFollowingEnd).toBe(true);
 			expect(jumpedDock.rect).toEqual(initialDock.rect);
-			expect(terminal.writes.at(-1)).not.toContain("Jump to latest message");
+			expect(terminal.writes.at(-1)).not.toContain("jump to bottom");
 
 			terminal.resize(30, 8);
 			tui.renderNow();
@@ -432,7 +432,7 @@ describe("interactive TUI renderer", () => {
 			) => string[];
 
 			const plainLines = composite.call(tui, [...frame.lines], frame, terminal.columns);
-			expect(plainLines[row]).toContain("Jump to latest message");
+			expect(plainLines[row]).toContain("jump to bottom");
 
 			expect(composite.call(tui, lines, frame, terminal.columns)[row]).toBe(imageLine);
 		} finally {

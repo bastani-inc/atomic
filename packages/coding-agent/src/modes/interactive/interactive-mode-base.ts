@@ -13,15 +13,19 @@ import {
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
 import type { FullscreenExitOutput, MermaidRenderingMode } from "../../core/settings-manager.ts";
+import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { readClipboardText } from "../../utils/clipboard.js";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
 import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { mainComposerHintSegments } from "./components/main-composer-keys.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
 import { WidgetContainer } from "./components/scroll-widget.js";
+import { isActiveBackgroundTask } from "./components/task-list.ts";
+import { WorkingRunMeter } from "./components/working-run-meter.ts";
 import {
 	type AgentSession,
 	type AgentSessionRuntime,
@@ -485,6 +489,8 @@ export class InteractiveModeBase {
 	blockingInlineCustomUiDepth = 0;
 
 	navigationInlineCustomUiDepth = 0;
+	/** Time and output tokens of the agent's current run, for the working line. */
+	readonly workingRunMeter = new WorkingRunMeter();
 
 	deferredInlineCustomUiFocusDepth = 0;
 
@@ -522,6 +528,11 @@ export class InteractiveModeBase {
 	// Convenience accessors
 	get session(): AgentSession & AgentSessionQueuePauseControl {
 		return this.runtimeHost.session as AgentSession & AgentSessionQueuePauseControl;
+	}
+
+	/** Rows the agent panel lists below the main composer: the session's active background agents and shells. */
+	mainComposerAgentRows(): number {
+		return (getOwnerTaskStore(this.session)?.backgroundTasks ?? []).filter(isActiveBackgroundTask).length;
 	}
 
 	/** Includes the short handoff window that an isolated engine cannot mirror. */
@@ -695,6 +706,7 @@ export class InteractiveModeBase {
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,
 			onOverlayInternalUiAction: this.onOverlayInternalUiAction,
+			messageCount: () => this.chatContainer?.children.length ?? 0,
 			onInternalUiAction: () => {
 				this.jumpToTranscriptEnd();
 				return undefined;
@@ -726,6 +738,7 @@ export class InteractiveModeBase {
 		this.defaultEditor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
 			paddingX: editorPaddingX,
 			autocompleteMaxVisible,
+			topRuleLabel: () => this.sessionManager.getSessionName(),
 		});
 
 		this.editor = this.defaultEditor;
@@ -737,6 +750,8 @@ export class InteractiveModeBase {
 			this.footerDataProvider,
 			undefined,
 			() => this.navigationInlineCustomUiDepth > 0,
+			undefined,
+			() => mainComposerHintSegments(this.keybindings, { agentRows: this.mainComposerAgentRows() }),
 		);
 		this.footerContainer = new Container();
 		this.footerContainer.addChild(this.footer);

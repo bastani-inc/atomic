@@ -78,7 +78,7 @@ describe("chat session compaction status", () => {
 		const rendered = renderChatSessionWorkingStatus(state, 80).join("\n");
 
 		expect(rendered).toContain("∀");
-		expect(rendered).toContain("Auto-compacting... (esc Cancel)");
+		expect(rendered).toMatch(/Auto-compacting\.\.\. \(\d+s · esc to cancel\)/);
 	});
 
 	it("uses the host keybinding display for the cancel hint", () => {
@@ -87,7 +87,7 @@ describe("chat session compaction status", () => {
 
 		const rendered = renderChatSessionWorkingStatus(state, 80).join("\n");
 
-		expect(rendered).toContain("Compacting context... (ctrl+c Cancel)");
+		expect(rendered).toMatch(/Compacting context\.\.\. \(\d+s · ctrl\+c to cancel\)/);
 	});
 });
 
@@ -177,7 +177,7 @@ test("live events and re-attach hydration use the same status mapping and busy s
 			assert.equal(reattachedHost.statusText(), compactionStatusMessage(reason));
 			assert.equal(reattachedHost.isCompacting(), true);
 			assert.equal(reattachedHost.isStreaming(), liveHost.isStreaming());
-			assert.match(reattachedHost.renderWorkingStatus(100).join("\n"), /Cancel/);
+			assert.match(reattachedHost.renderWorkingStatus(100).join("\n"), /to cancel/);
 		}
 		liveHost.dispose();
 		reattachedHost.dispose();

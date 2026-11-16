@@ -265,6 +265,7 @@ export class FooterComponent implements Component {
 	private declare readonly renderStyle: FooterRenderStyle;
 	private readonly navigationActive: () => boolean;
 	private readonly backgroundTasks: (() => readonly TaskRecord[]) | undefined;
+	private readonly hintSegments: (() => readonly string[]) | undefined;
 	private branchCwd: string | undefined;
 	private releaseBranch: (() => void) | undefined;
 	private disposed = false;
@@ -276,12 +277,14 @@ export class FooterComponent implements Component {
 		renderStyle: FooterRenderStyle = defaultFooterRenderStyle,
 		navigationActive: () => boolean = () => false,
 		backgroundTasks?: () => readonly TaskRecord[],
+		hintSegments?: () => readonly string[],
 	) {
 		this.session = session;
 		this.footerData = footerData;
 		this.renderStyle = renderStyle;
 		this.navigationActive = navigationActive;
 		this.backgroundTasks = backgroundTasks;
+		this.hintSegments = hintSegments;
 	}
 
 	setSession(session: ChatBoxSession): void {
@@ -346,6 +349,10 @@ export class FooterComponent implements Component {
 			let statusText = working
 				? this.renderStyle.muted("esc to interrupt")
 				: `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
+			// The composer's own keys follow, joined with ` · `, so one line names everything this prompt offers.
+			for (const segment of this.hintSegments?.() ?? []) {
+				statusText += `${this.renderStyle.dim(" · ")}${this.renderStyle.muted(segment)}`;
+			}
 			if (areExperimentalFeaturesEnabled()) statusText += ` ${this.renderStyle.warning("xp")}`;
 			if (isDebugEnabled()) statusText += ` ${this.renderStyle.warning("debug")}`;
 			lines.push(truncateToWidth(statusText, width, this.renderStyle.dim("...")));

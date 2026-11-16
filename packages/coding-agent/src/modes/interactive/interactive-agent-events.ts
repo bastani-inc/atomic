@@ -14,6 +14,7 @@ import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { interruptedNotice } from "./components/assistant-message.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
+import { compactionMeta } from "./components/working-run-meter.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -111,6 +112,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 
 	switch (event.type) {
 		case "agent_start":
+			this.workingRunMeter.start();
 			this.pendingTools.clear();
 			if (this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(true);
@@ -256,6 +258,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			// `message_end` supplies the authoritative final message.
 			if (this.streamingMessage) {
 				applyAssistantMessageDelta(this.streamingMessage, event.assistantMessageEvent);
+				this.workingRunMeter.streaming(this.streamingMessage);
 			}
 			if (this.streamingComponent && this.streamingMessage?.role === "assistant") {
 				this.streamingComponent.updateContent(this.streamingMessage, true);
@@ -282,6 +285,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 
 		case "message_end":
 			if (event.message.role === "user") break;
+			this.workingRunMeter.settled(event.message);
 			if (this.streamingComponent && event.message.role === "assistant") {
 				this.streamingMessage = event.message;
 				let errorMessage: string | undefined;
@@ -408,18 +412,20 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.session.abortCompaction();
 			};
 			this.stopWorkingLoader();
-			const cancelHint = `(${keyText("app.interrupt")} Cancel)`;
 			const isOverflowAutoCompaction = event.reason === "overflow";
 			const label =
 				event.reason === "manual"
-					? `Compacting context... ${cancelHint}`
-					: `${isOverflowAutoCompaction ? "Context overflow detected. " : ""}Auto-compacting... ${cancelHint}`;
+					? "Compacting context..."
+					: `${isOverflowAutoCompaction ? "Context overflow detected. " : ""}Auto-compacting...`;
 			this.autoCompactionLoader = new AtomicWorkingLoader(
 				this.ui,
 				undefined,
 				(text) => theme.fg(isOverflowAutoCompaction ? "warning" : "muted", text),
 				label,
 			);
+			const compactionStartedAt = Date.now();
+			this.autoCompactionLoader.setLogo(true);
+			this.autoCompactionLoader.setMeta(() => compactionMeta(compactionStartedAt, keyText("app.interrupt")));
 			this.statusContainer.addChild(this.autoCompactionLoader);
 			this.ui.requestRender();
 			break;

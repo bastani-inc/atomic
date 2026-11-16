@@ -10,6 +10,7 @@ import {
 	visibleWidth,
 	type WheelScrollLines,
 } from "@bastani/atomic-tui";
+import type { NewMessageCounter } from "./jump-to-latest.ts";
 import { WheelScrollAccelerator } from "./wheel-scroll-accelerator.ts";
 
 /**
@@ -282,6 +283,8 @@ export interface ScrollableComponentViewportOptions {
 	readonly scrollbar?: () => ScrollViewScrollbar | undefined;
 	/** Painted in the last row while the viewport is scrolled away from its live end. */
 	readonly followIndicator?: Pick<Component, "render">;
+	/** Told on every frame whether the reader follows the live end and how many items the transcript holds. */
+	readonly newMessages?: Pick<NewMessageCounter, "observe">;
 	/** Asked to repaint when an `"auto"` scrollbar hides. */
 	readonly requestRender?: () => void;
 	/** Called after a render whose first row lies within one viewport of the top. */
@@ -530,6 +533,7 @@ export class ScrollableComponentViewport implements Component {
 		this.maxScroll = maxScroll;
 		this.clampScroll();
 
+		this.options.newMessages?.observe(this.scrollFromBottom === 0, componentRows.length);
 		const start = Math.max(0, maxScroll - this.scrollFromBottom);
 		const indicator =
 			this.scrollFromBottom > 0 && this.visibleRows > 1

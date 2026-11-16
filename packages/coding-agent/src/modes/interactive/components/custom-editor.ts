@@ -14,12 +14,15 @@ import type { AppKeybinding, KeybindingsManager } from "../../../core/keybinding
 import { isPhysicalEscape } from "../interactive-key-identity.ts";
 import { theme } from "../theme/theme.js";
 import type { AtomicWorkingLoader } from "./atomic-working-status.ts";
+import { renderComposerRule } from "./composer-rule.ts";
 
 export interface CustomEditorOptions extends EditorOptions {
 	promptPrefix?: string;
 	placeholder?: string | (() => string);
 	/** Render the streaming working status in the editor's top border. */
 	embedWorkingStatus?: boolean;
+	/** Text right-aligned in the prompt's top rule, such as the session title. */
+	topRuleLabel?: () => string | undefined;
 }
 
 const ANSI_ESCAPE_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[PX_][\s\S]*?\x1b\\/g;
@@ -43,6 +46,7 @@ export class CustomEditor extends Editor {
 	private keybindings: KeybindingsManager;
 	private promptPrefix: string;
 	private placeholder: string | (() => string) | undefined;
+	private topRuleLabel: (() => string | undefined) | undefined;
 	private workingStatusIndicator: AtomicWorkingLoader | undefined;
 	readonly embedWorkingStatus: boolean;
 	public actionHandlers: Map<AppKeybinding, () => void> = new Map();
@@ -59,7 +63,13 @@ export class CustomEditor extends Editor {
 		this.keybindings = keybindings;
 		this.promptPrefix = options?.promptPrefix ?? "❯ ";
 		this.placeholder = options?.placeholder;
+		this.topRuleLabel = options?.topRuleLabel;
 		this.embedWorkingStatus = options?.embedWorkingStatus ?? false;
+	}
+
+	/** Names something in the prompt's top rule, right-aligned, such as the session title. */
+	setTopRuleLabel(label: (() => string | undefined) | undefined): void {
+		this.topRuleLabel = label;
 	}
 
 	setWorkingStatusIndicator(indicator: AtomicWorkingLoader | undefined): void {
@@ -119,7 +129,7 @@ export class CustomEditor extends Editor {
 
 	private renderTopBorderWithWorkingStatus(line: string, width: number): string {
 		const indicator = this.workingStatusIndicator;
-		if (!this.embedWorkingStatus || !indicator || width <= 0) return this.extendBorderLine(line, width);
+		if (!this.embedWorkingStatus || !indicator || width <= 0) return this.renderLabeledTopRule(line, width);
 
 		const plainLine = line.replace(ANSI_ESCAPE_PATTERN, "");
 		const overflowMatch = /↑ (\d+) more/.exec(plainLine);
@@ -160,6 +170,17 @@ export class CustomEditor extends Editor {
 			status +
 			this.borderColor("─".repeat(Math.max(0, width - prefixWidth - statusWidth)))
 		);
+	}
+
+	/** The plain top rule, carrying the top-rule label when it has one; a scrolled `↑ N more` rule keeps its indicator. */
+	private renderLabeledTopRule(line: string, width: number): string {
+		const label = this.topRuleLabel?.()?.trim();
+		const plain = line.replace(ANSI_ESCAPE_PATTERN, "");
+		if (!label || !/^─+$/.test(plain.trim())) return this.extendBorderLine(line, width);
+		return renderComposerRule(width, {
+			label: { plain: label, styled: theme.fg("muted", label) },
+			color: this.borderColor,
+		});
 	}
 
 	private isEditorBorderLine(line: string): boolean {
@@ -263,6 +284,19 @@ export class CustomEditor extends Editor {
 			// Fall through to editor handling for delete-char-forward when not empty
 		}
 
+		// `?` on an empty prompt opens the key overlay; anywhere else it is just a character.
+		if (
+			this.getText().length === 0 &&
+			!this.isShowingAutocomplete() &&
+			this.keybindings.matches(data, "app.keys.help")
+		) {
+			const handler = this.actionHandlers.get("app.keys.help");
+			if (handler) {
+				handler();
+				return true;
+			}
+		}
+
 		// Explicit history bindings take precedence over app actions while the editor is focused.
 		// This lets users bind Ctrl+P or Ctrl+N without triggering another app action.
 		if (
@@ -275,7 +309,12 @@ export class CustomEditor extends Editor {
 
 		// Check all other app actions
 		for (const [action, handler] of this.actionHandlers) {
-			if (action !== "app.interrupt" && action !== "app.exit" && this.keybindings.matches(data, action)) {
+			if (
+				action !== "app.interrupt" &&
+				action !== "app.exit" &&
+				action !== "app.keys.help" &&
+				this.keybindings.matches(data, action)
+			) {
 				handler();
 				return true;
 			}

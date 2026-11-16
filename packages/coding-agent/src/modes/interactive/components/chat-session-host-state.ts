@@ -18,8 +18,10 @@ import {
 	ScrollableComponentViewport,
 } from "./chat-transcript.js";
 import type { FooterComponent } from "./footer.ts";
+import { NewMessageCounter } from "./jump-to-latest.ts";
 import { keyText } from "./keybinding-hints.js";
 import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
+import { WorkingRunMeter } from "./working-run-meter.ts";
 
 export interface ChatSessionHostStateCallbacks<TExtraEntry extends ChatTranscriptEntryLike> {
 	renderEntry: (state: ChatSessionHostState<TExtraEntry>, entry: ChatSessionHostEntry<TExtraEntry>) => Component;
@@ -70,6 +72,12 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	interruptFailureMessage: string | undefined;
 	workingMessage: string | undefined;
 	workingFrame = 0;
+	/** What arrived while the reader was scrolled up, for the jump-to-latest pill. */
+	readonly newMessages = new NewMessageCounter();
+	/** When the running compaction started, for the time its status shows. */
+	compactionStartedAt: number | undefined;
+	/** Time and output tokens of the chat's current run, for the working line. */
+	readonly workingRunMeter = new WorkingRunMeter();
 	workingLifecycleActive: boolean;
 	workingLifecycleGeneration = 0;
 	immediateEventRenderPending = false;
@@ -117,7 +125,9 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 			followIndicator: new TranscriptFollowIndicator({
 				isFollowing: () => false,
 				keyLabel: () => followIndicatorKeyLabel(opts.keybindings),
+				newCount: () => this.newMessages.count,
 			}),
+			newMessages: this.newMessages,
 			requestRender: () => this.requestRender?.(),
 			onNearTop: () => opts.onNearTop?.(),
 		});

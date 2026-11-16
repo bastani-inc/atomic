@@ -10,7 +10,9 @@ import {
 	stripVerbatimCompactionPrefix,
 } from "../../../core/messages.ts";
 import { theme } from "../theme/theme.js";
-import { parenthesizedKeyHint } from "./keybinding-hints.js";
+import { atomicLogoMark } from "./atomic-working-status.ts";
+import { keyHintIfBound } from "./keybinding-hints.js";
+import { formatWorkingTokens } from "./working-run-meter.ts";
 
 interface BoundaryView {
 	text: string;
@@ -74,24 +76,32 @@ export class CompactionBoundaryMessageComponent extends Box {
 	private updateDisplay(): void {
 		this.clear();
 		const content = new Container();
-		const tokenStr = (this.view.tokensBefore ?? this.view.stats.tokensBefore).toLocaleString();
-		// The fresh rung destroyed the compactable conversation; say so plainly.
-		const label = theme.fg(
-			"customMessageLabel",
-			theme.bold(
-				this.view.rung === "fresh"
-					? "✻ Context cleared (compaction degraded)"
-					: this.view.backend === "summary"
-						? "✻ Context compacted · summary (fallback)"
-						: "✻ Context compacted",
-			),
-		);
-		content.addChild(new Text(label, 0, 0));
+		const tokensBefore = this.view.tokensBefore ?? this.view.stats.tokensBefore;
+		const tokenStr = tokensBefore.toLocaleString();
+		// Atomic's logo mark heads the boundary, so it never reads as ordinary work. The fresh rung destroyed the
+		// compactable conversation; say so plainly.
+		const title =
+			this.view.rung === "fresh"
+				? "Context cleared (compaction degraded)"
+				: this.view.backend === "summary"
+					? "Context compacted · summary (fallback)"
+					: "Context compacted";
+		const reduction =
+			this.view.rung === "fresh"
+				? undefined
+				: `${formatWorkingTokens(tokensBefore)} → ${formatWorkingTokens(this.view.stats.tokensAfter)} tokens`;
+		const hint = this.expanded ? "" : keyHintIfBound("app.tools.expand", "for summary");
+		const label = [
+			theme.fg("customMessageLabel", theme.bold(title)),
+			...(reduction ? [theme.fg("customMessageText", reduction)] : []),
+			...(hint ? [hint] : []),
+		].join(theme.fg("dim", " · "));
+		content.addChild(new Text(`${atomicLogoMark()} ${label}`, 0, 0));
 		if (this.view.model) content.addChild(new Text(theme.fg("dim", this.view.model), 0, 0));
 		const released = releasedSpansNotice(this.view.releasedRanges);
 		if (released) content.addChild(new Text(theme.fg("dim", released), 0, 0));
-		content.addChild(new Spacer(1));
 		if (this.expanded) {
+			content.addChild(new Spacer(1));
 			content.addChild(
 				new Text(theme.bold(theme.fg("customMessageText", `Compacted from ${tokenStr} tokens`)), 0, 0),
 			);
@@ -103,15 +113,6 @@ export class CompactionBoundaryMessageComponent extends Box {
 				)
 				.join("\n");
 			content.addChild(new Text(rendered, 0, 0));
-		} else {
-			const hint = parenthesizedKeyHint("app.tools.expand", "to expand");
-			content.addChild(
-				new Text(
-					theme.fg("customMessageText", `Compacted from ${tokenStr} tokens`) + (hint ? ` ${hint}` : ""),
-					0,
-					0,
-				),
-			);
 		}
 		this.addChild(
 			new MouseRegion(content, (event) => {

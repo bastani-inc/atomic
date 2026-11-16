@@ -367,7 +367,7 @@ describe("InteractiveMode compaction events", () => {
 			expect(mode.addCompactionBoundaryToChat).toHaveBeenCalledWith(result);
 
 			expect(visibleBoundaries(chatContainer)).toHaveLength(1);
-			expect(renderedText(chatContainer).match(/✻ Context compacted/g)).toHaveLength(1);
+			expect(renderedText(chatContainer).match(/∀ Context compacted/g)).toHaveLength(1);
 			expect(renderedText(chatContainer)).toContain("startup notice");
 			expect(renderedText(chatContainer)).toContain("retained context message");
 		});
@@ -390,7 +390,7 @@ describe("InteractiveMode compaction events", () => {
 
 		const text = renderedText(chatContainer);
 		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
-		expect(text.match(/✻ Context compacted/g)).toHaveLength(1);
+		expect(text.match(/∀ Context compacted/g)).toHaveLength(1);
 		expect(text.match(/Compaction: 1,234 tokens billed/g)).toHaveLength(1);
 		expect(text.match(/Prompt cache miss expected after background compaction/g)).toHaveLength(1);
 	});
@@ -408,7 +408,7 @@ describe("InteractiveMode compaction events", () => {
 
 		const text = renderedText(chatContainer);
 		expect(text).toContain("Compaction: 1,234 tokens billed (~$0.02)");
-		expect(text.indexOf("✻ Context compacted")).toBeLessThan(text.indexOf("Compaction: 1,234 tokens billed"));
+		expect(text.indexOf("∀ Context compacted")).toBeLessThan(text.indexOf("Compaction: 1,234 tokens billed"));
 	});
 
 	for (const showCacheMissNotices of [true, false]) {
@@ -430,7 +430,7 @@ describe("InteractiveMode compaction events", () => {
 				"Prompt cache miss expected after background compaction: 41,000 tokens re-billed ($0.137, $0.123 more than a cache hit)";
 			if (showCacheMissNotices) {
 				assert.ok(text.includes(notice));
-				assert.ok(text.indexOf("✻ Context compacted") < text.indexOf(notice));
+				assert.ok(text.indexOf("∀ Context compacted") < text.indexOf(notice));
 			} else assert.ok(!text.includes("Prompt cache miss"));
 		});
 	}
@@ -546,7 +546,7 @@ describe("InteractiveMode compaction events", () => {
 		await emit(mode, { type: "compaction_start", reason: "threshold" });
 
 		const status = renderedText(mode.statusContainer);
-		expect(status).toContain("∀ Auto-compacting... (esc Cancel)");
+		expect(status).toMatch(/∀ Auto-compacting\.\.\. \(\d+s · esc to cancel\)/);
 		expect(status).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
 
 		await emit(mode, {
@@ -592,7 +592,7 @@ describe("InteractiveMode compaction events", () => {
 		await emit(mode, { type: "compaction_end", reason: "manual", result, aborted: true, willRetry: false });
 		expect(visibleBoundaries(chatContainer)).toHaveLength(0);
 		expect(mode.addCompactionBoundaryToChat).not.toHaveBeenCalled();
-		expect(renderedText(chatContainer)).not.toContain("✻ Context compacted");
+		expect(renderedText(chatContainer)).not.toContain("∀ Context compacted");
 	});
 
 	it("renders a committed boundary together with a later failure (#4977)", async () => {
@@ -734,7 +734,7 @@ describe("InteractiveMode compaction events", () => {
 
 		expect(mode.renderSessionEntries).toHaveBeenCalledWith(entries, { suppressCompactionBoundary: result });
 		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
-		expect(renderedText(chatContainer).match(/✻ Context compacted/g)).toHaveLength(1);
+		expect(renderedText(chatContainer).match(/∀ Context compacted/g)).toHaveLength(1);
 		expect(renderedText(chatContainer)).toContain("extension-owned state");
 	});
 
@@ -748,7 +748,7 @@ describe("InteractiveMode compaction events", () => {
 		expect(chatContainer.children[0]).toBe(mode.resourceDisclosureContainer);
 		expect(chatContainer.children[1]).toBe(mode.startupNoticesContainer);
 		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
-		expect(renderedText(chatContainer).match(/✻ Context compacted/g)).toHaveLength(1);
+		expect(renderedText(chatContainer).match(/∀ Context compacted/g)).toHaveLength(1);
 	});
 
 	it("keeps terminal progress active when the same run resumes after compaction", async () => {
@@ -1015,10 +1015,10 @@ describe("compaction boundary component", () => {
 		const component = new CompactionBoundaryMessageComponent(result);
 		const collapsedRaw = component.render(200).join("\n");
 		const collapsed = stripVTControlCharacters(collapsedRaw);
-		expect(collapsedRaw).toContain(theme.fg("customMessageLabel", theme.bold("✻ Context compacted")));
-		expect(collapsed).toContain("✻ Context compacted");
-		expect(collapsed).toContain("Compacted from 100 tokens (");
-		expect(collapsed).toContain(" to expand)");
+		expect(collapsedRaw).toContain(theme.fg("customMessageLabel", theme.bold("Context compacted")));
+		// One line (#5224): Atomic's logo mark, what changed, and the key that shows the summary.
+		expect(collapsed).toMatch(/∀ Context compacted · 100 → \S+ tokens · ctrl\+o for summary/);
+		expect(collapsed).not.toContain("Compacted from");
 		expect(collapsed).not.toContain("retained");
 		expect(collapsed).not.toContain("planned");
 
@@ -1028,7 +1028,7 @@ describe("compaction boundary component", () => {
 			.split("\n")
 			.map((line) => line.trimEnd())
 			.join("\n");
-		expect(expanded).toContain("✻ Context compacted");
+		expect(expanded).toContain("∀ Context compacted");
 		expect(expanded).toContain("Compacted from 100 tokens");
 		expect(expanded).toContain("[User]: retained\n (filtered 1 lines)");
 		expect(expandedRaw).toContain(theme.fg("dim", "(filtered 1 lines)"));

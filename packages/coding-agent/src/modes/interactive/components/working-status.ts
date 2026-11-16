@@ -5,6 +5,7 @@ import {
 	AtomicWorkingStatusComponent,
 	atomicWorkingFrame,
 } from "./atomic-working-status.ts";
+import type { WorkingRunSnapshot } from "./working-run-meter.ts";
 
 export interface WorkingStatusComponentOptions {
 	/** Explicit caller-owned indicator frame; omitted uses Atomic's one-cell identity. */
@@ -15,6 +16,10 @@ export interface WorkingStatusComponentOptions {
 	spinnerBoldColor?: (text: string) => string;
 	palette?: AtomicWorkingPalette | (() => AtomicWorkingPalette);
 	messageColor?: (text: string) => string;
+	/** The run's time and tokens, shown after the message. */
+	meta?: WorkingRunSnapshot;
+	/** Atomic's still logo mark instead of the spinner, as compaction shows. */
+	logo?: boolean;
 }
 
 export class WorkingStatusComponent implements Component {
@@ -39,6 +44,8 @@ export class WorkingStatusComponent implements Component {
 			spinnerBoldColor: this.options.spinnerBoldColor,
 			palette: this.options.palette,
 			messageColor,
+			meta: this.options.meta,
+			logo: this.options.logo,
 		}).render(width);
 	}
 

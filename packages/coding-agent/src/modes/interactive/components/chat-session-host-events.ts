@@ -164,6 +164,14 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			}
 		}
 	}
+	if (type === "message_update" || type === "message_end") {
+		const message = (event as { message?: unknown }).message;
+		if (typeof message === "object" && message !== null && "role" in message) {
+			const metered = message as { role: string };
+			if (type === "message_update") state.workingRunMeter.streaming(metered);
+			else state.workingRunMeter.settled(metered);
+		}
+	}
 	if (isSharedLiveChatEvent(type)) {
 		const changed = state.liveChat.applyEvent(event);
 		const toolCallEvent = assistantToolCallEvent(event);
@@ -174,6 +182,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	let changed = false;
 	switch (type) {
 		case "agent_start":
+			state.workingRunMeter.start();
 			state.sdkBusy = true;
 			state.workingMessage = undefined;
 			startChatSessionWorkingLifecycle(state);
@@ -236,6 +245,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		case "compaction_start": {
 			const compaction = event as Extract<AgentSessionEvent, { type: "compaction_start" }>;
 			state.compacting = true;
+			state.compactionStartedAt = Date.now();
 			state.sdkBusy = true;
 			state.statusMessage = compactionStatusMessage(compaction.reason);
 			// The animation timer this event starts would otherwise swallow the

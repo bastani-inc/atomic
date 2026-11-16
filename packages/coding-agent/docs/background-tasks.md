@@ -218,7 +218,7 @@ The cadence is fixed when the task starts, and a running task's `/tasks` detail 
 
 Configured task bindings take precedence over the default Left, page, and `x` shortcuts. A transcript's prompt and input mode receive ordinary typing, including `x`, without stopping the task. The footer shows the applicable controls.
 
-Scrolling settings apply to transcripts as they do to the chat: `fullscreenWheelScrollLines` sets the wheel step and `fullscreenScrollbar` shows the scrollbar. When you scroll away from the latest message, the last row offers **↓ Jump to latest message**; click it or press Ctrl+End to follow the output again.
+Scrolling settings apply to transcripts as they do to the chat: `fullscreenWheelScrollLines` sets the wheel step and `fullscreenScrollbar` shows the scrollbar. When you scroll away from the latest message, the last row shows a pill: **↓ jump to bottom**, or **↓ N new messages** once new output arrives. Click it, press Ctrl+End or page down to the bottom to follow the output again; typing doesn't.
 
 The list groups **Agents** and **Shells**, with counts and status symbols. Detail views pin identity, state, available metrics, and the selected action while their body scrolls. Missing metrics are omitted rather than displayed as zero. Recorded zero values remain visible.
 

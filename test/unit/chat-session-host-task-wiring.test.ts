@@ -131,8 +131,8 @@ test("prepending or replacing history repaints the host (#4521)", () => {
 test("the jump-to-latest row names the host's own bottom key, or the global one (#4521)", () => {
 	initTheme("dark");
 	for (const [keybindings, label] of [
-		[new KeybindingsManager({ "tui.altScreen.bottom": "ctrl+g" }), /Jump to latest message · ctrl\+g/],
-		[undefined, /Jump to latest message · ctrl\+end/],
+		[new KeybindingsManager({ "tui.altScreen.bottom": "ctrl+g" }), /jump to bottom · ctrl\+g/],
+		[undefined, /jump to bottom · ctrl\+end/],
 	] as const) {
 		const host = new ChatSessionHost(hostOptions(keybindings === undefined ? {} : { keybindings }));
 		try {

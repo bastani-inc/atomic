@@ -102,7 +102,8 @@ test("live and reloaded compaction cards show only the model when collapsed or e
 				const lines = output.split("\n").map((line) => line.trim());
 				assert.ok(lines.includes(`${backend}/model`), "the model alone, without the backend");
 				assert.equal(output.includes(`${backend} · `), false);
-				assert.ok(output.includes("Compacted from 100 tokens"));
+				// Collapsed, the card is one line with the reduction (#5224); expanded, it names the exact count.
+				assert.ok(output.includes(expanded ? "Compacted from 100 tokens" : "100 → "), output);
 				assert.equal(output.includes("retained text"), expanded);
 			}
 		}

@@ -11,6 +11,7 @@ import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { FooterComponent, UsageMeterComponent } from "./footer.ts";
+import { compactionMeta } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
 export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -71,10 +72,14 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	const useCallerStyling =
 		!palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
 	if (state.compacting) {
-		const cancelHint = `(${state.getActionKeyDisplay?.("app.interrupt") ?? "esc"} Cancel)`;
 		return new WorkingStatusComponent({
 			frame: state.workingFrame,
-			message: `${state.statusMessage || "Compacting context..."} ${cancelHint}`,
+			logo: true,
+			message: state.statusMessage || "Compacting context...",
+			meta: compactionMeta(
+				state.compactionStartedAt ?? Date.now(),
+				state.getActionKeyDisplay?.("app.interrupt") ?? "esc",
+			),
 			palette,
 			spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
 			spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
@@ -85,6 +90,7 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	return new WorkingStatusComponent({
 		frame: state.workingFrame,
 		message: state.workingMessage ?? "Working...",
+		meta: state.workingRunMeter.snapshot(),
 		palette,
 		spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
 		spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,
