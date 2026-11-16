@@ -20,7 +20,7 @@ import {
 	parseReleaseWhenIdle,
 	type ReleaseWhenIdleOptions,
 } from "./agent-session-release.ts";
-import { childCommandTaskHost } from "./agent-session-tasks.js";
+import { bindChildTaskNotices, childCommandTaskHost } from "./agent-session-tasks.js";
 import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { getBuiltinPackageLocations, getBuiltinPackagePaths } from "./builtin-packages.ts";
@@ -961,6 +961,7 @@ async function constructAgentSession(
 		}
 		if (options.parentUsageSink !== undefined) forwardUsage(session, options.parentUsageSink);
 		if (!deferStart) await session.bindExtensions(options.extensionBindings ?? {});
+		bindChildTaskNotices(session as unknown as AgentSessionInternalSurface);
 		return {
 			session,
 			extensionsResult,

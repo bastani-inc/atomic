@@ -98,6 +98,11 @@ export type CommandIntent = {
 	parentTaskId?: TaskId;
 	/** Heartbeat cadence for this task in milliseconds; `0` disables. Omitted uses the owner default. */
 	readonly heartbeatMs?: number;
+	/**
+	 * The session that launched the command in an owner it shares with the owner's own session: an in-process
+	 * subagent's session id. Omitted for the owner's own commands. Kept by the host, never sent to the native door.
+	 */
+	readonly launchedBy?: string;
 };
 export type TaskIntent = AgentIntent | CommandIntent;
 export type TaskWaitConfiguration =
@@ -177,6 +182,12 @@ export type TaskRecord = {
 	ref: NativeTaskRef;
 	launchOperationId: OperationId;
 	parentTaskId?: TaskId;
+	/**
+	 * The session that launched this task in an owner it shares with the owner's own session (an in-process subagent's
+	 * session id). Absent for the owner's own tasks. Its completion notice goes to that session only, and only that
+	 * session lists it among its tasks.
+	 */
+	readonly launchedBy?: string;
 	launchGroupId?: string;
 	launchOrdinal: number;
 	kind: "agent" | "command";
@@ -247,7 +258,14 @@ export type OwnerSnapshot = {
 	cursor: Cursor;
 };
 export type ReportReceipt = { reportId: string; cursor: Cursor; disposition: "accepted" | "duplicate" };
-export type SettlementReceipt = { taskId: TaskId; cursor: Cursor; result: TaskResult; completionId: string };
+export type SettlementReceipt = {
+	taskId: TaskId;
+	cursor: Cursor;
+	result: TaskResult;
+	completionId: string;
+	/** The session that launched the task in a shared owner (see {@link TaskRecord.launchedBy}). */
+	launchedBy?: string;
+};
 export type CancelReceipt = {
 	taskId: TaskId;
 	decision: "already-settled" | "cancellation-requested";

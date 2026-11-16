@@ -24,6 +24,11 @@ export type TaskCompletionEnvelope = {
 	 * was not kept (#5079).
 	 */
 	interruptedByRestart?: true;
+	/**
+	 * The subagent session that launched the task in this owner, which alone receives its notice. Absent for the
+	 * owner's own tasks, whose notices this session receives. Intents saved by earlier versions lack it.
+	 */
+	launchedBy?: string;
 };
 
 /** The structured delivery identity of a settled task's completion notice. */
@@ -40,6 +45,7 @@ export function taskCompletionEnvelope(
 		result: receipt.result,
 		display: false,
 		...(taskKind === undefined ? {} : { taskKind }),
+		...(receipt.launchedBy === undefined ? {} : { launchedBy: receipt.launchedBy }),
 	};
 }
 

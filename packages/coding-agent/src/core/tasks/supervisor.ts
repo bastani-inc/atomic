@@ -492,6 +492,11 @@ export type LaunchMetadata = {
 	readonly executionTimeouts: Map<string, number>;
 	/** What each agent released while it waited waits on, by task id: it is released, not paused (#5031). */
 	readonly releases: Map<string, C.TaskReleased>;
+	/**
+	 * The session that launched each command in a shared owner, by launch operation: a command can settle, and be
+	 * reported, before its native start resolves, and it must already name that session.
+	 */
+	readonly launchers: Map<string, string>;
 	/** The close that ended the owner, which every task that close cancelled names (#4639). Kept past the close. */
 	ownerClose?: C.OwnerCloseCause;
 };
@@ -517,10 +522,12 @@ function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecor
 	const routerSelection = launches.routerSelections.get(value.ref.taskId);
 	const requestedModel = launches.requestedModels.get(value.ref.taskId);
 	const heartbeatMs = launches.launchHeartbeats.get(value.launchOperationId)?.heartbeatMs;
+	const launchedBy = launches.launchers.get(value.launchOperationId);
 	return {
 		ref: reference(value.ref),
 		launchOperationId: value.launchOperationId as C.OperationId,
 		...(value.parentTaskId === undefined ? {} : { parentTaskId: value.parentTaskId as C.TaskId }),
+		...(launchedBy === undefined ? {} : { launchedBy }),
 		...(value.launchGroupId === undefined ? {} : { launchGroupId: value.launchGroupId }),
 		launchOrdinal: value.launchOrdinal,
 		kind: value.kind,
@@ -980,6 +987,7 @@ export class TaskSupervisor {
 						launchHeartbeats: new Map(),
 						executionTimeouts: new Map(),
 						releases: new Map(),
+						launchers: new Map(),
 					},
 				};
 				this.#owners.set(owner, ownerState);
@@ -1044,7 +1052,7 @@ export class TaskSupervisor {
 								launch.settled = { ref: record.ref, receipt: settled.value };
 								continue;
 							}
-							this.#notifyTaskSettled(ownerState, record.ref, settled.value);
+							this.#notifyTaskSettled(ownerState, record.ref, settled.value, record.launchOperationId);
 						} catch (error) {
 							failure ??= new Error(rejectionMessage(error));
 						}
@@ -1069,6 +1077,7 @@ export class TaskSupervisor {
 			state.launches.launchHeartbeats.delete(operation);
 		state.launches.executionTimeouts.delete(taskId);
 		state.launches.releases.delete(taskId);
+		state.launches.launchers.delete(operation);
 		if (state.commandStarts.get(operation)?.task === task) state.commandStarts.delete(operation);
 	}
 	#evicted(task: TaskLease): boolean {
@@ -1141,16 +1150,23 @@ export class TaskSupervisor {
 			clearTimeout(timer);
 		}
 	}
-	#notifyTaskSettled(state: OwnerState, ref: C.NativeTaskRef, receipt: native.SettlementReceipt): void {
+	#notifyTaskSettled(
+		state: OwnerState,
+		ref: C.NativeTaskRef,
+		receipt: native.SettlementReceipt,
+		operation: string,
+	): void {
 		if (!state.host.binding.onTaskSettled || state.settledTasks.has(ref.taskId)) return;
 		// Runner outcomes and snapshot recovery share one delivery door. Mark before
 		// host code so reentrant drains or callback failures cannot redeliver.
 		state.settledTasks.add(ref.taskId);
+		const launchedBy = state.launches.launchers.get(operation);
 		state.host.binding.onTaskSettled(ref, {
 			taskId: receipt.taskId as C.TaskId,
 			cursor: cursor(receipt.cursor),
 			result: taskResult(receipt.result, receipt.taskId, state.launches),
 			completionId: receipt.completionId,
+			...(launchedBy === undefined ? {} : { launchedBy }),
 		});
 	}
 	async startCommandTask(
@@ -1204,14 +1220,18 @@ export class TaskSupervisor {
 		state.commandLaunches.set(operation, launch);
 		let held: HeldPermit | undefined;
 		let provisional: LaunchHeartbeat | undefined;
+		let registered = false;
 		try {
 			held = await this.#acquireProcessPermit(
 				state,
 				currentResourceAdmission() ?? state.host.binding.resourceAdmission,
 				signal,
 			);
-			const { heartbeatMs, ...nativeIntent } = intent;
+			const { heartbeatMs, launchedBy, ...nativeIntent } = intent;
 			const cadence = heartbeatMs ?? state.host.binding.defaultHeartbeatMs?.();
+			// Named before the native start: the command can settle, and be reported, before that start resolves.
+			if (launchedBy !== undefined && !state.closing.signal.aborted)
+				state.launches.launchers.set(operation, launchedBy);
 			provisional = rememberLaunchHeartbeat(state.launches, operation, cadence);
 			let started: Awaited<ReturnType<native.TaskSupervisor["startCommandTask"]>>;
 			try {
@@ -1239,6 +1259,7 @@ export class TaskSupervisor {
 			if (!ref.ok) throw new Error(ref.error.message);
 			const id = ref.value.taskId as C.TaskId;
 			const existing = state.tasks.get(id);
+			registered = true;
 			if (existing) return { ok: true, value: existing };
 			// A closing owner forgets its launch metadata, maybe already: a late admission adds none (#4451).
 			if (!state.closing.signal.aborted) {
@@ -1289,6 +1310,8 @@ export class TaskSupervisor {
 			return { ok: true, value: task };
 		} finally {
 			this.#endCommandLaunch(state, operation, launch);
+			// A launch that admitted no task of its own names no launching session.
+			if (!registered) state.launches.launchers.delete(operation);
 			// A launch that admitted no task of its own keeps no provisional cadence (#4451).
 			if (state.launches.launchHeartbeats.get(operation) === provisional)
 				state.launches.launchHeartbeats.delete(operation);
@@ -1308,7 +1331,7 @@ export class TaskSupervisor {
 		if (settled === undefined) return;
 		launch.settled = undefined;
 		try {
-			this.#notifyTaskSettled(state, settled.ref, settled.receipt);
+			this.#notifyTaskSettled(state, settled.ref, settled.receipt, operation);
 		} catch {
 			// As in a drain, the host's failure neither redelivers the settlement nor undoes the launch.
 		}
@@ -1451,7 +1474,7 @@ export class TaskSupervisor {
 					}
 					return mapped(
 						this.#native.reportRunnerOutcome(runner.value, result),
-						(receipt) => this.#notifyTaskSettled(state, taskState.ref, receipt),
+						(receipt) => this.#notifyTaskSettled(state, taskState.ref, receipt, taskState.operation),
 						reportErrors,
 					);
 				});
@@ -1690,6 +1713,7 @@ export class TaskSupervisor {
 				state.launches.launchHeartbeats.clear();
 				state.launches.executionTimeouts.clear();
 				state.launches.releases.clear();
+				state.launches.launchers.clear();
 			}
 		if (result.ok) {
 			for (const taskId of [...state.permits.keys()]) this.#releasePermit(state, taskId);

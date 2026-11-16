@@ -203,6 +203,7 @@ async function admittedCustomMessage<T>(
 	if (boundary === undefined) return deliver();
 	await boundary.admit(options?.stageAdmissionKey, deliver, () => {
 		if (this._subagentMessageAdmission) throw new Error("Subagent execution is terminal and cannot accept messages");
+		if (options?.stayInSession) throw new Error("Workflow stage closed; the message waits for this session");
 		const router = this._orchestrationContext?.lateMessageRouter;
 		if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
 		return router.routeMessage(message, options);
@@ -254,6 +255,7 @@ async function admittedCustomMessages<T>(
 	if (boundary === undefined) return deliver();
 	await boundary.admit(options?.stageAdmissionKey, deliver, () => {
 		if (this._subagentMessageAdmission) throw new Error("Subagent execution is terminal and cannot accept messages");
+		if (options?.stayInSession) throw new Error("Workflow stage closed; the messages wait for this session");
 		const router = this._orchestrationContext?.lateMessageRouter;
 		if (router === undefined) throw new Error("Workflow stage closed without a late-message router");
 		return router.routeMessages(messages, options);

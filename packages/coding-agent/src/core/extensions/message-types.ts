@@ -46,6 +46,15 @@ export interface SendMessageOptions {
 	 * @internal
 	 */
 	wakeIdleSession?: boolean;
+
+	/**
+	 * The message is for this session only: when the session's workflow stage or subagent execution has closed, the
+	 * delivery fails instead of taking the late-message route to the chat that launched the workflow. Task completion
+	 * notices use it, so a stage's notice never reaches another session.
+	 *
+	 * @internal
+	 */
+	stayInSession?: boolean;
 }
 
 export type SendMessagesOptions = Omit<

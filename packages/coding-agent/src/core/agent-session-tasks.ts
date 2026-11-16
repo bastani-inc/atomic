@@ -6,7 +6,7 @@ import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-cust
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
 import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import { AgentTaskHost } from "./tasks/agent-adapter.js";
-import { type ChildTaskCompletionRoute, childTaskCompletionRoute } from "./tasks/child-command-owner.js";
+import { type ChildTaskCompletionRoute, deliverToLaunchingSession } from "./tasks/child-command-owner.js";
 import { type TaskCompletionEnvelope, TaskCompletionOutbox } from "./tasks/completion.js";
 import { commandOutputExcerpt, taskCompletionMessage } from "./tasks/completion-message.js";
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
@@ -107,15 +107,11 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			if (task?.kind === "command" && lease?.ok && host)
 				output = await commandOutputExcerpt(host, lease.value, task);
 			const message = taskCompletionMessage(envelope, task, output);
-			const childRoute =
-				host && task?.kind === "command" ? childTaskCompletionRoute(host, envelope.taskId) : undefined;
-			if (childRoute) {
-				try {
-					await childRoute.deliver(message);
-					return;
-				} catch {
-					// The launching child ended before delivery; the owning parent receives the notice.
-				}
+			// A shell a subagent launched in this owner belongs to that subagent's session: its notice goes there, now or
+			// when it runs again, and never to this session. It is acknowledged here once the subagent took it.
+			if (envelope.launchedBy !== undefined) {
+				if (host === undefined) throw new Error("Task owner is closed");
+				return { saved: deliverToLaunchingSession(host, envelope.launchedBy, envelope.taskId, message) };
 			}
 			const completionSource = source?.ok ? source.value.session.completionSource : undefined;
 			if (completionSource) {
@@ -125,12 +121,19 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 					envelope.completionId,
 				);
 			}
+			// A notice reaches this session or waits for it: a closed stage keeps it rather than sending it on to the chat
+			// that launched the workflow.
 			const deliver = () =>
 				this.sendCustomMessage(
 					message,
 					restored || !task
-						? { triggerTurn: false, stageAdmissionKey: envelope.completionId }
-						: { triggerTurn: true, persistWhenStreaming: true, stageAdmissionKey: envelope.completionId },
+						? { triggerTurn: false, stageAdmissionKey: envelope.completionId, stayInSession: true }
+						: {
+								triggerTurn: true,
+								persistWhenStreaming: true,
+								stageAdmissionKey: envelope.completionId,
+								stayInSession: true,
+							},
 				);
 			if (stageAdmission) await deliver();
 			else {
@@ -266,6 +269,19 @@ export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner
 		this._parentCommandTaskOwner.bind(this.sessionManager.getSessionId(), route, this._childTaskWaits),
 		hasToolDetachment(this),
 	);
+}
+
+/**
+ * A subagent session that runs, or runs again, takes the notices of the shells it launched that were kept for it while
+ * it could not, as soon as it opens rather than at its first shell call.
+ */
+export function bindChildTaskNotices(session: AgentSession): void {
+	if (!isSubagentChildSession(session) || session._parentCommandTaskOwner === undefined) return;
+	try {
+		session._getCommandTaskOwner();
+	} catch {
+		// The launcher's task owner is closed: it keeps nothing for this session.
+	}
 }
 
 type TaskWait = NonNullable<SupervisedCommandOwner["waitForTask"]>;

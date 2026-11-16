@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { OrchestrationContext } from "./extensions/context-types.ts";
 import { AgentTaskHost, type AgentTaskHostBinding } from "./tasks/agent-adapter.js";
-import { type ChildTaskCompletionRoute, childTaskCompletionRoute } from "./tasks/child-command-owner.js";
+import { deliverToLaunchingSession } from "./tasks/child-command-owner.js";
 import { taskCompletionEnvelope } from "./tasks/completion.js";
 import { commandOutputExcerpt, taskCompletionMessage } from "./tasks/completion-message.js";
 import type { OwnerId, OwnerScope, SettlementReceipt, TaskRecord } from "./tasks/contracts.js";
@@ -62,19 +62,23 @@ function settledTask(host: AgentTaskHost, receipt: SettlementReceipt): TaskRecor
 }
 
 /**
- * Hand a worker's settled shell to the live worker that launched it, as the stage's session would. A close of the stage
- * may leave its record unreadable: the notice then still names the shell and why it stopped.
+ * Hand a worker's settled shell to the worker that launched it, as the stage's session would: now while it runs, or
+ * when it runs again or is released, never to the stage. A close of the stage may leave its record unreadable: the
+ * notice then still names the shell and why it stopped.
  */
 async function deliverToWorker(
 	host: AgentTaskHost,
-	route: ChildTaskCompletionRoute,
+	worker: string,
 	settlement: ParkedTaskSettlement,
 	task: TaskRecord | undefined,
 ): Promise<void> {
 	const lease = host.resolveTask(settlement.receipt.taskId);
 	const output = lease.ok && task !== undefined ? await commandOutputExcerpt(host, lease.value, task) : undefined;
 	const envelope = taskCompletionEnvelope(settlement.ownerId, settlement.receipt, "command");
-	await route.deliver(taskCompletionMessage(envelope, task, output));
+	const message = taskCompletionMessage(envelope, task, output);
+	// The notice holds what it reports: the record need not outlive a worker that takes it only when it runs again.
+	host.releaseTaskRecord(settlement.receipt.taskId);
+	await deliverToLaunchingSession(host, worker, settlement.receipt.taskId, message);
 }
 
 /**
@@ -171,17 +175,13 @@ export class WorkflowStageAdmissionBoundary {
 				host.retainTaskRecord(receipt.taskId);
 				const task = settledTask(host, receipt);
 				const settlement: ParkedTaskSettlement = { ownerId: ref.ownerId, receipt, kind: task?.kind };
-				// Only shells a worker launched have a worker's route.
-				const worker = childTaskCompletionRoute(host, receipt.taskId);
+				// The stage's own shells wait for its next session; a worker's shells reach that worker only.
+				const worker = receipt.launchedBy;
 				if (worker === undefined) {
 					this.parkedSettlements.push(settlement);
 					return;
 				}
-				// A worker that ended before its notice arrived leaves it to the stage's next session.
-				void deliverToWorker(host, worker, settlement, task).then(
-					() => host.releaseTaskRecord(receipt.taskId),
-					() => this.parkedSettlements.push(settlement),
-				);
+				void deliverToWorker(host, worker, settlement, task).catch(() => host.releaseTaskRecord(receipt.taskId));
 			},
 		});
 	}
