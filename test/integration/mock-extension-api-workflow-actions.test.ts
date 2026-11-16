@@ -212,7 +212,7 @@ describe("MockExtensionAPI — completions include admin subcommands and workflo
 		const labels = completions.map((c) => c.label);
 
 		// Admin subcommands
-		for (const sub of ["list", "status", "connect", "pause", "resume", "inputs"]) {
+		for (const sub of ["list", "status", "pause", "resume", "inputs"]) {
 			assert.ok(labels.includes(sub));
 		}
 		assert.equal(labels.includes("session"), false);

@@ -307,67 +307,19 @@ export default workflow({
 		);
 	});
 
-	test.sequential("/workflow connect <missing> rejects visibly in headless mode", async () => {
-		const { handler } = await registerWorkflowCommand();
-
-		await assertRejectsHeadlessCommand(
-			() => handler(`connect ${MISSING_RUN_ID}`, headlessNoOpCtx()),
-			new RegExp(`Run not found: ${MISSING_RUN_ID}`),
-		);
-	});
-
-	test.sequential("/workflow connect without a run id rejects visibly in headless mode", async () => {
-		const { handler } = await registerWorkflowCommand();
-
-		await assertRejectsHeadlessCommand(
-			() => handler("connect", headlessNoOpCtx()),
-			/Pass a runId: \/workflow connect <id>/,
-		);
-	});
-
-	test.sequential("/workflow connect <valid> rejects visibly in headless mode", async () => {
-		const { handler } = await registerWorkflowCommand();
-		const runId = testRunId(`headless-connect-valid-${Date.now()}`);
+	test.sequential("removed /workflow connect and /workflow attach print a pointer to /workflows and open nothing (#5224)", async () => {
+		const { handler, sent } = await registerWorkflowCommand();
+		const runId = testRunId(`headless-removed-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
-
-		await assertRejectsHeadlessCommand(
-			() => handler(`connect ${runId}`, headlessNoOpCtx()),
-			/requires an interactive UI surface.*Use \/workflow status/i,
-		);
-	});
-
-	test.sequential("/workflow attach <valid> rejects visibly in headless mode", async () => {
-		const { handler } = await registerWorkflowCommand();
-		const runId = testRunId(`headless-attach-valid-${Date.now()}`);
-		store.recordRunStart(makeInflightRun(runId));
-
-		await assertRejectsHeadlessCommand(
-			() => handler(`attach ${runId}`, headlessNoOpCtx()),
-			/requires an interactive UI surface.*Use \/workflow status/i,
-		);
-	});
-
-	test.sequential("/workflow attach <valid> <stage> rejects visibly in headless mode", async () => {
-		const { handler } = await registerWorkflowCommand();
-		const runId = testRunId(`headless-attach-stage-${Date.now()}`);
-		const stageId = "stage-headless-attach";
-		store.recordRunStart({
-			...makeInflightRun(runId),
-			stages: [
-				{
-					id: stageId,
-					name: "review",
-					status: "running",
-					parentIds: [],
-					startedAt: Date.now(),
-					toolEvents: [],
-				},
-			],
-		});
-
-		await assertRejectsHeadlessCommand(
-			() => handler(`attach ${runId} ${stageId}`, headlessNoOpCtx()),
-			/requires an interactive UI surface.*workflow tool.*inspection/i,
-		);
+		for (const args of ["connect", `connect ${runId}`, `attach ${runId}`, `attach ${runId} stage-x`]) {
+			const before = sent.length;
+			await handler(args, headlessNoOpCtx());
+			const output = sent
+				.slice(before)
+				.map((message) => JSON.stringify(message))
+				.join("\n");
+			const subcommand = args.split(" ")[0];
+			assert.match(output, new RegExp(`\`/workflow ${subcommand}\` was removed: use \`/workflows\``), args);
+		}
 	});
 });

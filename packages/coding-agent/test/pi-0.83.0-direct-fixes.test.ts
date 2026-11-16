@@ -18,7 +18,7 @@ import { loadProjectContextFiles } from "../src/core/resource-loader-context-fil
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { LlamaModelInfo } from "../src/extensions/llama/client.ts";
 import { createLlamaProvider } from "../src/extensions/llama/provider.ts";
-import { ModelSelectorComponent } from "../src/modes/interactive/components/model-selector.ts";
+import { SelectorState } from "../src/modes/interactive/components/selector.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 import { createHarness } from "./suite/harness.ts";
@@ -61,30 +61,18 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 	});
 
 	it("f1ea6c0d: moves the model selector to the top row when a filter query is applied", () => {
-		const filterModels = Reflect.get(ModelSelectorComponent.prototype, "filterModels") as (
-			this: {
-				activeModels: unknown[];
-				filteredModels: unknown[];
-				selectedIndex: number;
-				updateList: () => void;
-			},
-			query: string,
-		) => void;
-		const activeModels = [
-			{ id: "alpha", provider: "p", model: { name: "alpha" } },
-			{ id: "beta", provider: "p", model: { name: "beta" } },
-			{ id: "gamma", provider: "p", model: { name: "gamma" } },
-		];
-		const context = { activeModels, filteredModels: activeModels, selectedIndex: 2, updateList: () => {} };
+		const state = new SelectorState({
+			items: ["alpha", "beta", "gamma"].map((id) => ({ id, value: id, label: `p/${id}` })),
+		});
+		state.select(2);
 
-		filterModels.call(context, "beta");
-		expect(context.selectedIndex).toBe(0);
+		state.setQuery("beta");
+		expect(state.getSelectedIndex()).toBe(0);
+		expect(state.getSelected()?.id).toBe("beta");
 
-		// Clearing the query restores the full list and keeps the clamped position.
-		context.selectedIndex = 2;
-		filterModels.call(context, "");
-		expect(context.filteredModels).toHaveLength(3);
-		expect(context.selectedIndex).toBe(2);
+		state.setQuery("");
+		expect(state.getVisible()).toHaveLength(3);
+		expect(state.getSelected()?.id).toBe("beta");
 	});
 
 	it("0d008b74: applies tool-output expansion without emitting a status line", () => {

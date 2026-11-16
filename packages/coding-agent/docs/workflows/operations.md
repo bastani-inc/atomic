@@ -51,7 +51,7 @@ From the main editor, use **Alt+K** to scroll up and **Alt+J** down one row. On 
 
 Mouse scrolling requires Atomic's fullscreen renderer and terminal mouse reporting. On macOS, enable your terminal's Option-as-Alt or Option-as-Meta setting for these shortcuts. If the terminal emits a character instead, reserves a shortcut, or does not forward wheel events, use the Page aliases or remap the actions to keys your terminal sends. Linux and Windows terminals also vary; terminal and multiplexer settings can intercept input. Plain typing, arrows, and unmodified PageUp/PageDown retain their editor behavior.
 
-Below 80 columns, the widget collapses to one count line, truncated to fit. It omits run IDs, stage identities, targets, tool names, prompt text, and connect commands. Widen the terminal to scroll cards, or use `/workflow connect` to inspect runs at narrow widths.
+Below 80 columns, the widget collapses to one count line, truncated to fit. It omits run IDs, stage identities, targets, tool names, prompt text, and graph commands. Widen the terminal to scroll cards, or use `/workflows` to inspect runs at narrow widths.
 
 Stage progress includes nested child workflows and updates as stages appear:
 
@@ -64,7 +64,7 @@ Stage progress includes nested child workflows and updates as stages appear:
 
 ### Pending questions and exact identities
 
-The `BACKGROUND` panel sits below the editor. When a visible root has exactly one displayable pending question, its card shows a quoted one-line preview and `Answer: /workflow connect <full-visible-root-UUID>`. Use the full UUID on that row. The preview strips terminal controls and fits within its cell budget. Nested prompts retain their real run, stage, and prompt owner, even though the connect command targets the visible root.
+The `BACKGROUND` panel sits below the editor. When a visible root has exactly one displayable pending question, its card shows a quoted one-line preview and `Answer: /workflows <full-visible-root-UUID>`. Use the full UUID on that row. The preview strips terminal controls and fits within its cell budget. Nested prompts retain their real run, stage, and prompt owner, even though `/workflows` targets the visible root.
 
 Atomic keeps general needs-attention guidance instead when a root has multiple questions, missing descriptors, empty sanitized text, a multi-question questionnaire, or unproven nested ownership. Eligibility is per root, so one card can show a preview while another shows general guidance.
 
@@ -74,7 +74,7 @@ Status, run detail, dispatch confirmation, and run-picker cards wrap full IDs on
 
 An `AWAITING INPUT` banner has two identity rows: `？` with the full run id, then the workflow name and optional metadata. The question and options appear below it in the normal prompt UI.
 
-The `/workflow connect` run picker shows five runs at a time; use the arrow keys or mouse wheel to scroll through additional retained runs. Active runs come first, with runs waiting for input or blocked at the top, then running and paused runs, followed by ended runs (failed, cancelled, then completed); the newest run comes first within each group, and `/workflow status` lists runs in the same order.
+The `/workflows` run picker shows five runs at a time; use the arrow keys or mouse wheel to scroll through additional retained runs. Active runs come first, with runs waiting for input or blocked at the top, then running and paused runs, followed by ended runs (failed, cancelled, then completed); the newest run comes first within each group, and `/workflow status` lists runs in the same order.
 
 The rendered card shape at the 80-column breakpoint is:
 
@@ -88,7 +88,7 @@ The rendered card shape at the 80-column breakpoint is:
 │   ？  8f3a1c20-5b64-4d8e-a791-2c3f0e6b9d44                                   │
 │     review-and-merge · single · 0/1 · 12m                                    │
 │     "Approve the generated migration before deployment?"                     │
-│     Answer: /workflow connect 8f3a1c20-5b64-4d8e-a791-2c3f0e6b9d44           │
+│     Answer: /workflows 8f3a1c20-5b64-4d8e-a791-2c3f0e6b9d44                  │
 ```
 
 Below the breakpoint the same run set is represented by the collapsed count line, for example ` ▾  4 background · 2 ● · 1 quit`; a tool-only run adds its live count, for example ` ▾  1 background · 1 ● · 1 tool`.
@@ -133,7 +133,7 @@ Cancellation does not undo committed journal writes or external effects. Inspect
 
 Run-level `quit` preserves eligible checkpointed work as a paused run instead of cancelling its durable record. Inspect `/workflow status <run-id>` if it reports a storage error; local suspension alone is not proof that the journal saved the pause.
 
-From interactive chat, named workflow launches run in the background so the parent chat stays available. Run `/workflow connect <run>` to see agents working and chat with and steer each stage. Inspection, prompt-response, and control calls (`status`, `stages`, `stage`, `transcript`, `answer`, `pause`, `resume`, `quit`) remain available while work runs.
+From interactive chat, named workflow launches run in the background so the parent chat stays available. Run `/workflows <run>` to see agents working and chat with and steer each stage. Inspection, prompt-response, and control calls (`status`, `stages`, `stage`, `transcript`, `answer`, `pause`, `resume`, `quit`) remain available while work runs.
 
 The no-`runId` status listing includes bounded pending-stage rows after each run summary. Each row gives the display name, canonical stage ID, literal `pending` lifecycle, `pendingStageDeliveryAvailable`, and either the exact usable Intercom target or `unavailable`. Interactive status cards and run detail show the same identity/availability distinction within their width budgets. Status cards wrap exact targets onto continuation rows instead of rendering a partially truncated address; bounded omissions retain an explicit remaining-stage count.
 
@@ -180,15 +180,13 @@ Graph node cards show each model stage's effective model and thinking level abov
 /workflow inputs <name>
 /workflow <name> --help
 /workflow <name> [key=value ...]
-/workflow connect [run-id]
-/workflow attach [run-id] [stage-id-or-name]
+/workflows [run-id]                     # the session's runs: the only run's graph, or a list
 /workflow pause [run-id|--all] [stage-id-or-name]
 /workflow status [run-id]
 /workflow status --all
 /workflow quit <run-id|--all>
 /workflow resume <run-id> [stage-id-or-name] [message] [--accept-entry-changes]
 /workflow fork <run-id> [--from <stage-path>]
-/workflows [full-workflow-uuid]
 /workflow reload
 ```
 
@@ -196,26 +194,26 @@ Common controls:
 
 ```text
 /workflow status                       # list retained active and terminal runs
-/workflow connect <run-id>             # graph viewer, including terminal runs
-/workflow attach <run-id> <stage>      # chat with a single stage
+/workflows <run-id>                    # graph viewer, including terminal runs
 /workflow pause <run-id>               # pause resumably
 /workflow pause <run-id> <stage>       # pause one stage; the others keep running
 /workflow resume <run-id> [stage] msg  # forward a steer message and resume
 /workflow resume <run-id> --accept-entry-changes  # resume after editing a local worker definition's entry module
 /workflow quit <run-id>                # pause gracefully and keep the run resumable
 /workflow fork <run-id> --from <stage> # retry from a stage in a new run; the source run is unchanged
-/workflows [run-id]                    # retained alias for /workflow resume (history picker)
 ```
 
 Surface behavior:
 
-- **Graph vs. stage chat** - Use `connect` for the workflow graph. Use `attach` when you want a chat pane for a specific stage.
-- **Run state** - The graph header puts the run's state before its stage counts and colors the ORCHESTRATOR pill to match: `↑ blocked`, followed by the exit reason when the workflow gave one and shortened to fit; `❚❚ paused`; or `○ quit`. A running run shows no state, including one you resumed. `↑ N` counts blocked stages. The stage switcher (`/`), `/workflow status`, and the `/workflow connect` picker show the same state.
-- **Going back** - In an attached stage chat, `←` on an empty prompt returns to the graph. A choice or yes/no question moves with `←`, so there `esc` returns to the graph; the question stays waiting. The graph has no prompt: `esc` returns to main chat, and so does `←` on a node with nothing to its left. A custom question widget owns every key; `ctrl+c` closes the workflow view from it. `ctrl+x` does not navigate. See [Keybindings](/keybindings#navigation).
+- **Graph vs. stage chat** - `/workflows` opens the graph (or ↓ to the run in the agent panel). Press Enter on a stage to open its chat. On a failed stage, Enter opens its failure detail; press `t` there for its chat. `/workflow connect` and `/workflow attach` were removed; typing either shows a one-line pointer to `/workflows`.
+- **Run state** - The graph header puts the run's state before its stage counts and colors the ORCHESTRATOR pill to match: `↑ blocked`, followed by the exit reason when the workflow gave one and shortened to fit; `❚❚ paused`; or `○ quit`. A running run shows no state, including one you resumed. `↑ N` counts blocked stages. The stage switcher (`/`), `/workflow status`, and the `/workflows` picker show the same state.
+- **Going back** - In an attached stage chat, `←` on an empty prompt returns to the graph. A choice or yes/no question moves with `←`, so there `esc` returns to the graph; the question stays waiting. The graph has no prompt: `esc` goes back one level (it closes a stage's failure detail, a tool detail or the `?` overlay first), and at the top it returns to where you opened the graph from, such as main chat or the `/workflows` list. `←` does the same on a node with nothing to its left, and otherwise moves to that sibling. A custom question widget owns every key; `ctrl+c` closes the workflow view from it. `ctrl+x` does not navigate. See [Keybindings](/keybindings#navigation).
+- **Graph keys** - The hint line under the graph lists exactly the keys that work on the focused node, and `?` lists them all. `↑↓←→` move, `enter` opens the focused node (a stage's chat, a tool's detail, or a failed stage's failure detail), `/` finds a stage, and `f` cycles a status filter (all, running, completed, failed) that dims the nodes it doesn't match without moving anything. On a running or waiting stage, `x` then `x` again within 3 seconds stops it so it can be resumed from its stage chat. A stopped stage or run shows `◼` in a muted colour; a failed one shows a red `✗`.
+- **Failed stages** - `enter` on a failed stage opens its failure detail: the stage, how long it ran, and a one-line reason. `r` retries the failed stage, keeping the completed ones; `f` forks the run into a new run, leaving the original unchanged; `t` opens the stage's transcript; `l` switches between the summary and the full log, including the error's code, hint and causes. A retry or fork shows its new run in the graph.
 - **Stage input label** - Attached stage chats show `[stage: name]` on the composer top rule, a mounted question's top rule, and awaiting-input prompt borders so you can tell which stage owns the input. Long names truncate with `…`. A subagent's transcript opened from `/tasks` labels its prompt `[subagent: name]` the same way.
 - **Draft preservation** - Leaving a stage preserves unsent composer and prompt drafts and keeps pending custom questions unresolved so they reappear when you attach again.
 - **Queued-message survival** - Detaching preserves queued steering and follow-up text. Reattach to see the pending messages; the graph shows their count as `✉ N queued`. Queues also survive model fallback and eligible post-mortem reopening. Custom session adapters must publish `queue_update` snapshots and expose pre-attachment queues as described in [authoring](/workflows/authoring#stage-follow-on-user-messages).
-- **Reserved keys** - `ctrl+d` and `q` do not navigate workflow surfaces; `ctrl+d` keeps its ordinary editor or prompt behavior where applicable, and `q` remains printable in text-owning prompts. In a stage chat with a prompt, `esc` only interrupts a running stage; in the graph it closes the stage switcher or a tool detail, then returns to main chat. `ctrl+c` and graph `h` close and hide as before.
+- **Reserved keys** - `ctrl+d` and `q` do not navigate workflow surfaces; `ctrl+d` keeps its ordinary editor or prompt behavior where applicable, and `q` remains printable in text-owning prompts. In a stage chat with a prompt, `esc` only interrupts a running stage; in the graph it closes the stage switcher, a detail or the `?` overlay, then goes back to where the graph was opened from. `ctrl+c` and graph `h` close and hide as before.
 - **Wheel and trackpad** - While the workflow graph is active, vertical wheel/trackpad gestures pan it up and down, and horizontal gestures pan wide graphs left and right when the terminal exposes horizontal wheel events. Focused graph and stage-chat overlays receive those gestures through the fullscreen application route, so scrolling stays inside the active workflow surface instead of falling through to terminal or main-chat scrollback.
 - **Stage chat scrolling** - An attached stage chat scrolls like the main transcript: the wheel follows `fullscreenWheelScrollLines`, Alt+wheel scrolls five times as far, `fullscreenScrollbar` controls its scrollbar, `ctrl+home` and `ctrl+end` jump to the top and the latest message, `ctrl+up` and `ctrl+down` jump between prompts, and the half-page bindings work once you bind them. Scrolled up, its last row offers **↓ Jump to latest message**. A `/tasks` transcript opened from a stage chat behaves the same way and follows the stage's Ctrl+T and Ctrl+O. See [Keybindings](/keybindings#tui-fullscreen-viewport).
 - **Selection and copying** - Graph panning, stage scrolling, click-to-attach, and drag or multi-click selection work without a separate selection mode. Copy uses OSC 52; if the terminal blocks it, use its Shift/Option modifier-drag bypass. `ctrl+t` retains the host thinking toggle, not a workflow action.
@@ -223,12 +221,12 @@ Surface behavior:
 - **Footer context** - An attached live stage chat shows its own current folder and Git branch and shows the live extension status lines that the stage's own session sets, such as the MCP server indicator, never the main chat's. Branch changes trigger a repaint through the host's cached footer provider. As in the main chat, the line with the stage's model, reasoning level, folder and branch shows only while the stage's agent is idle. While it works, that line shows `esc to interrupt`, or nothing in the compact `/tasks` picker, which keeps this context; detail, transcript, input, and confirmation pages remain fullscreen.
 - **Working indicator** - Stage chat shows `∀` during accepted prompt startup and active work, including retained-session follow-ups. Retry, fallback, compaction, cancellation, and errors take precedence. `NO_COLOR` removes foreground colors; `ATOMIC_REDUCED_MOTION=1` makes the indicator static.
 - **Subagent statusline** - If a subagent is running while the fullscreen workflow graph is open, the graph statusline mirrors its summary so the run remains visible; hide the graph with `h`, leave it with `esc`, or reconnect later to return to the full below-editor widget.
-- **Run control** - Use `pause` and `resume` for resumable live work. Pause holds a stage's queued steering and follow-up items in place without dequeuing them or starting continuation; `resume` releases those items once in their existing per-queue order, but queue release alone does not start a model turn. `resume` on a non-paused run reopens the saved snapshot or overlay. Use `quit` to pause a live run gracefully while preserving it for `/workflow resume`. `/workflow pause` selects the active run by default, accepts a full run id or `--all`, and does not open a stage picker. `/workflow pause <run-id> <stage>` pauses only that stage, named by id, name or unique prefix as `/workflow attach` resolves it, and `/workflow resume <run-id> <stage>` resumes it. The workflow tool's `stageId` does the same and also targets tool nodes.
+- **Run control** - Use `pause` and `resume` for resumable live work. Pause holds a stage's queued steering and follow-up items in place without dequeuing them or starting continuation; `resume` releases those items once in their existing per-queue order, but queue release alone does not start a model turn. `resume` on a non-paused run reopens the saved snapshot or overlay. Use `quit` to pause a live run gracefully while preserving it for `/workflow resume`. `/workflow pause` selects the active run by default, accepts a full run id or `--all`, and does not open a stage picker. `/workflow pause <run-id> <stage>` pauses only that stage, named by its id, name or unique id prefix, and `/workflow resume <run-id> <stage>` resumes it. The workflow tool's `stageId` does the same and also targets tool nodes.
 - **Rediscovery** - Use `/workflow reload` after adding, editing, installing, or removing workflow resources or package manifest workflow entries and you want Atomic to rediscover them in-process ([Reloading workflow resources](/workflows/operations#reloading-workflow-resources)).
 - **Status listing** - `/workflow status` lists all retained active and terminal top-level runs by default; implementation-owned nested child runs are flattened into their parent workflow rather than listed separately. `/workflow status --all` is retained as a compatibility alias.
 - **Status times** - `/workflow status <run-id>` displays `started` and `ended` in the system local timezone as `HH:mm:ss`. If they differ from your expected clock, check the timezone of the machine or container running Atomic and any inherited `TZ` environment setting. Elapsed durations and raw timestamps in structured results are unchanged.
 
-`/workflows` is the retained-run history alias for `/workflow resume`: with no id it opens the same mixed picker, but the resumable section lists only runs that the resume path can actually accept and the completed section is read-only inspection. A run with no durable checkpoint, missing/pruned artifacts, or explicit deletion is omitted from the resume picker; an explicit `/workflow resume <id>` still returns an explanatory error. It is intentionally different from `/workflow list`, which lists installed workflow definitions. See [`/workflow resume` — cross-session resume selector](#/workflow-resume-—-cross-session-resume-selector) for the full picker semantics.
+`/workflows` browses runs already in this session: it opens the only run's graph directly, lists several runs, or reports that there are none. Use `/workflow resume` for the cross-session durable picker; its resumable section lists only runs the resume path can accept, and its completed section opens read-only inspection. A run with no durable checkpoint, missing/pruned artifacts, or explicit deletion is omitted from the resume picker; an explicit `/workflow resume <id>` still returns an explanatory error. It is intentionally different from `/workflow list`, which lists installed workflow definitions. See [`/workflow resume` — cross-session resume selector](#/workflow-resume-—-cross-session-resume-selector) for the full picker semantics.
 
 At the supported 40-column terminal minimum, attached stage chats keep the `← return to graph` hint. The TUI may truncate provider/model context to make room, but it keeps that context separate from the hierarchy hint so the controls stay readable.
 
@@ -330,7 +328,7 @@ Control behavior:
 - Killing a run, or aborting the `signal` passed to `run()`, ends its stages still in flight, and those of its nested child runs, as `failed` with the error `workflow killed`, and cancels its running `ctx.tool` calls. A run cancelled by its parent's exit ends them as `skipped`. Status then lists no active stage for the run. Pause and quit leave stages resumable.
 - `reload` refreshes discovered workflow resources in-process; the optional `reason` is echoed in the result.
 
-Use slash commands for graph connect and stage attach because those are interactive TUI surfaces. When a run needs user input or attention, tell the user instead of polling silently.
+Use `/workflows <run-id>` to open the interactive graph, then select a stage to open its chat. When a run needs user input or attention, tell the user instead of polling silently.
 
 ### Suspended stages
 
@@ -396,11 +394,11 @@ Resuming several stages can make partial progress. Inspect status after an ackno
 
 These are distinct operations. *Resuming workflow execution* (`/workflow resume`) is for paused, interrupted, recoverably failed, or unfinished durable work; it may replay checkpoints, continue an incomplete stage, and dispatch remaining DAG work. *Opening a post-mortem chat* reopens one terminal agent stage's retained conversation for follow-up only — it never resumes, retries, rewinds, or otherwise changes workflow execution.
 
-Any eligible terminal agent stage with a valid retained session opens as an interactive post-mortem chat through the explicit user-driven TUI path: completed-workflow inspection, `/workflow attach`, or `/workflow connect` followed by stage selection, including restored/replayed durable snapshots after a restart. Explicit `/workflow attach <root-run> <nested-stage>` targets are resolved through the expanded graph and routed to the child run that owns the stage while the overlay remains rooted on the requested graph; the resolved owner is preserved when sibling child workflows reuse the same local stage ID.
+Any eligible terminal agent stage with a valid retained session opens as an interactive post-mortem chat through the explicit user-driven TUI path: completed-workflow inspection, or `/workflows` followed by stage selection, including restored/replayed durable snapshots after a restart. A nested stage selected in the graph is resolved through the expanded graph and routed to the child run that owns the stage while the overlay remains rooted on the requested graph; the resolved owner is preserved when sibling child workflows reuse the same local stage ID.
 
-Atomic disposes the live session of each completed stage whose conversation is saved, so a long run or a long-lived session does not hold every finished stage in memory. A stage run with `ctx.task`, `ctx.chain` or `ctx.parallel` is released as soon as it completes, a stage run with `ctx.stage` once the workflow no longer holds its stage context, and every remaining completed stage when the run ends, whether it completed, failed, or was cancelled. Resuming a failed run replays its completed stages from the saved run and does not need their live sessions. A stage context the workflow still holds keeps its session, so `ctx.stage` can prompt it again. Attaching to such a stage or messaging it reopens the saved conversation first, which takes a moment, without rerunning the workflow. While the session that ran the workflow is open, the released stage also stays in the Intercom session list under its previous name as `closed · reply: post-mortem only`: an ask to it reopens the saved conversation, runs one turn with the question, and returns that turn's final answer (or a failure if the conversation cannot be reopened), and a plain send is delivered to the session that ran the workflow. Once that session ends or is replaced, the Intercom entry is gone; reopen the stage with `/workflow attach`. A stage with a mounted chat (visible or hidden), queued or in-flight messages, an active turn, compaction or retry keeps its live session while that lasts, and is released as soon as the last of them ends. A stage you reopen by attaching, by messaging it, or with an Intercom ask is released the same way once its chat is closed and its turn has ended; the next attach, message or ask reopens it from its saved transcript, and it keeps its Intercom name. So memory holds only the stages you are actually using. A completed stage with no saved transcript keeps its live session until the session that ran the workflow is replaced or shut down. The saved transcript, result, and run record are never removed.
+Atomic disposes the live session of each completed stage whose conversation is saved, so a long run or a long-lived session does not hold every finished stage in memory. A stage run with `ctx.task`, `ctx.chain` or `ctx.parallel` is released as soon as it completes, a stage run with `ctx.stage` once the workflow no longer holds its stage context, and every remaining completed stage when the run ends, whether it completed, failed, or was cancelled. Resuming a failed run replays its completed stages from the saved run and does not need their live sessions. A stage context the workflow still holds keeps its session, so `ctx.stage` can prompt it again. Attaching to such a stage or messaging it reopens the saved conversation first, which takes a moment, without rerunning the workflow. While the session that ran the workflow is open, the released stage also stays in the Intercom session list under its previous name as `closed · reply: post-mortem only`: an ask to it reopens the saved conversation, runs one turn with the question, and returns that turn's final answer (or a failure if the conversation cannot be reopened), and a plain send is delivered to the session that ran the workflow. Once that session ends or is replaced, the Intercom entry is gone; reopen the stage from its graph with `/workflows`. A stage with a mounted chat (visible or hidden), queued or in-flight messages, an active turn, compaction or retry keeps its live session while that lasts, and is released as soon as the last of them ends. A stage you reopen by attaching, by messaging it, or with an Intercom ask is released the same way once its chat is closed and its turn has ended; the next attach, message or ask reopens it from its saved transcript, and it keeps its Intercom name. So memory holds only the stages you are actually using. A completed stage with no saved transcript keeps its live session until the session that ran the workflow is replaced or shut down. The saved transcript, result, and run record are never removed.
 
-Intercom and explicit `/workflow attach` own stage communication. The workflow tool has no free-form message action; start a new workflow if tracked work remains after a terminal root.
+Intercom and the stage chat opened from the graph own stage communication. The workflow tool has no free-form message action; start a new workflow if tracked work remains after a terminal root.
 
 When a nested stage is reopened after a restart or from another checkout through the explicit TUI path, its session cwd comes from the durable root workflow (resolved workflow cwd first, then original invocation cwd) while stage-control ownership remains with the actual child run. Follow-up turns are appended in place to the stage's retained session (no separate fork), so the agent may still invoke its ordinary tools and cause side effects; only the workflow DAG, run/stage status, results, timings, checkpoints, and topology are immutable. Post-mortem chat does not resume or modify workflow execution state.
 
@@ -450,7 +448,7 @@ Treat blocked runs as continuable by default: resume, answer a pending prompt, s
 
 Lifecycle notices appear once in main chat without interrupting current streaming text. Atomic also queues a model update so later responses can correct stale progress claims. Notices waiting for delivery survive recoverable delivery failures; session replacement does not send them to an unrelated chat.
 
-An awaiting-input workflow remains visible in status and connect views without waking the main model. Connect to the run to answer its question.
+An awaiting-input workflow remains visible in status and graph views without waking the main model. Open `/workflows <run-id>` and select the waiting node to answer its question.
 
 Resume of a recoverable block continues the same workflow ID and reuses completed checkpoints. It does not reroute, allocate a replacement instance or replay completed effects. Concurrent admission is refused while another executor or resume owns the instance. A fail-closed topology mismatch preserves the prior resumable snapshot and prompt answers for inspection and a corrected retry.
 
@@ -474,15 +472,14 @@ Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.sele
 
 Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, and `ctx.ui.custom<T>` appear as awaiting-input nodes in the workflow UI/graph viewer, not as ordinary chat modals. Workflow definitions do not declare HIL; runtime `ctx.ui.*` calls create prompt nodes. If the prompt lives inside an imported child workflow, it still appears in the same expanded parent graph so the user can focus and answer it without switching to a separate child status entry. When the attached stage has a pending prompt, its attribution banner is headed `AWAITING INPUT` and shows the full run id in a two-row identity block; the question and its options continue through the existing prompt UI below the banner.
 
-When the below-editor `BACKGROUND` panel can prove exactly one displayable pending question for a visible root, it also shows that question as a one-line preview with `/workflow connect <full-run-id>`. Multiple or unavailable questions keep the existing needs-attention guidance. Answer in the connected graph, attached stage chat, or with `workflow answer`; the panel itself does not answer, restrict, or remove any of those paths.
+When the below-editor `BACKGROUND` panel can prove exactly one displayable pending question for a visible root, it also shows that question as a one-line preview with `/workflows <full-run-id>`. Multiple or unavailable questions keep the existing needs-attention guidance. Answer in the graph opened with `/workflows <run-id>`, its stage chat, or with `workflow answer`; the panel itself does not answer, restrict, or remove any of those paths.
 
-Use `/workflow connect <run-id>` (or F2), then press Enter on the focused node or click a graph node to focus and open or attach it for local answers. Custom widget prompts mount inside the attached stage chat and must be completed interactively with the widget's `done(value)` callback.
+Use `/workflows <run-id>` (or F2), then press Enter on the focused node or click a graph node to focus and open or attach it for local answers. Custom widget prompts mount inside the attached stage chat and must be completed interactively with the widget's `done(value)` callback.
 
 When a workflow needs human input, answer in the graph viewer or attached stage chat when possible:
 
 ```text
-/workflow connect <run-id>
-/workflow attach <run-id> <stage-id-or-name>
+/workflows <run-id>
 ```
 
 Agents can answer primitive and structured pending prompts programmatically with `workflow({ action: "answer", ... })` only while the root workflow is nonterminal; use `promptId` when it is present in the stage details, and provide answer content with `response`, `text`, or `message`. Arbitrary custom TUI widget prompts intentionally refuse this path in iteration 1 because a generic `T` cannot be reconstructed safely from a non-TUI payload.
@@ -513,7 +510,7 @@ When you steer a stage that asked you a question — you type an answer into **C
 
 Advancing cannot be undone, so it has the higher bar. The thresholds are exported from `@bastani/atomic/workflows` as `READINESS_DECISION_THRESHOLDS`. The decision needs probabilities, which only a classifier gives, so with a chat model as the decision model, or none configured, Atomic always asks and records no decision. The decision is bounded by [`httpIdleTimeoutMs`](/settings#http).
 
-Each decision is recorded on the stage while the run is live in this session: a `ready` line under the stage in `/workflow status <run-id>`, `readinessDecision` in `workflow({ action: "stages" })` and `stage` output, with the outcome, the model and the probabilities, and a **STAGE READINESS** notice in the stage's transcript and the `/workflow connect` view, for example `Decision model advanced the stage (p=0.93, addressed p=0.91)`. When the question was asked because the decision failed, the record names the typed error's class and code, such as `DecisionTimeoutError` and `timeout`. A pause during the decision keeps your message and decides again after resume.
+Each decision is recorded on the stage while the run is live in this session: a `ready` line under the stage in `/workflow status <run-id>`, `readinessDecision` in `workflow({ action: "stages" })` and `stage` output, with the outcome, the model and the probabilities, and a **STAGE READINESS** notice in the stage's transcript and the `/workflows` view, for example `Decision model advanced the stage (p=0.93, addressed p=0.91)`. When the question was asked because the decision failed, the record names the typed error's class and code, such as `DecisionTimeoutError` and `timeout`. A pause during the decision keeps your message and decides again after resume.
 
 Turn it off with `workflows.autoAdvanceAfterSteer: false` in `settings.json`, or `/settings` → **Auto-advance after steer**. Stages that run on [local workers](/settings#local-worker-pools) always ask.
 
@@ -636,7 +633,7 @@ Changing `iteration` makes each loop pass a distinct durable call. Reusing the s
 
 ### `/workflow resume` — cross-session resume selector
 
-The `/workflow resume` command mirrors `/resume` ergonomics and `/workflows` is its alias. With no ID, it builds a newest-first picker from eligible live runs and journal records. Selected records are revalidated before resume or inspection. Runs with live leases are excluded; expired running leases appear as `crashed`.
+The `/workflow resume` command mirrors `/resume` ergonomics for cross-session workflow history. With no ID, it builds a newest-first picker from eligible live runs and journal records. Selected records are revalidated before resume or inspection. Runs with live leases are excluded; expired running leases appear as `crashed`.
 
 Picker rows use the run label when set, otherwise a one-line objective or prompt input, falling back to the workflow ID. When a generated progress summary is available, it has its own column; status and workflow name precede the identity in the other column. Live rows also show completed/total stages. Without a generated summary, the adjacent column shows those status details instead. Search matches the identity, summary, and full run ID.
 
@@ -646,7 +643,7 @@ Resuming through the picker, `/workflow resume <id>`, or the workflow tool adds 
 
 If resume reports a checkpoint decoding error or an unavailable serializer, retain the full run ID and original diagnostic when reporting the problem. Do not delete saved progress or launch a fresh copy just to bypass the error: that can repeat completed side effects.
 
-Only runs with usable durable checkpoints or pending prompts can resume. Deleted durable entries and missing artifacts are not offered. Status and connect/attach still expose eligible terminal runs for inspection.
+Only runs with usable durable checkpoints or pending prompts can resume. Deleted durable entries and missing artifacts are not offered. `/workflow status` and `/workflows` still expose eligible terminal runs for inspection.
 
 Rows carry semantic colors — completed green, paused yellow, failed/blocked/crashed red. The open picker live-updates on local run changes plus a bounded cross-session poll, so state transitions appear (and freshly running workflows disappear) without reopening it.
 
@@ -664,7 +661,7 @@ A run quit while a `ctx.tool` call was in flight resumes the same way: the unfin
 
 Selecting a completed target—or a checkpointed failed target marked non-resumable—follows a separate read-only open path. Atomic reconstructs root and reciprocal nested child-run snapshots from authoritative checkpoints, remaps persisted source-stage, boundary, and tool references into a stable expanded hierarchy, and never calls the resume dispatcher or runs workflow code, tools, tasks, or prompts. These graphs remain inspectable even when no retained chat transcript survives, including tool-only graphs.
 
-A terminal child stage with a valid retained session may be reopened for detached post-mortem conversation through `/workflow attach` or completed graph inspection. Follow-up is routed to that real child `{runId, stageId}` and may append chat, but it cannot pause, resume, retry, mutate root or child execution state, write a terminal checkpoint, or emit a duplicate lifecycle notice. Tool nodes never offer chat attachment.
+A terminal child stage with a valid retained session may be reopened for detached post-mortem conversation through its graph or completed graph inspection. Follow-up is routed to that real child `{runId, stageId}` and may append chat, but it cannot pause, resume, retry, mutate root or child execution state, write a terminal checkpoint, or emit a duplicate lifecycle notice. Tool nodes never offer chat attachment.
 
 Older compatible tool checkpoints still replay their cached output without rerunning callbacks. Unsupported or malformed formats are refused; do not edit records to force recovery.
 
@@ -673,8 +670,6 @@ Fresh completed inspection does not currently persist the workflow's declared ro
 ```text
 /workflow resume                          # Mixed picker: resumable + completed
 /workflow resume <full-workflow-uuid> # Resume unfinished work or open completed detail/chat
-/workflows                               # Alias for the same mixed picker
-/workflows <full-workflow-uuid>        # Alias for targeted resume/open
 ```
 
 Targets resolve across top-level live, resumable durable, and completed entries as one namespace using full UUIDs or unique 8-hex prefixes. Exact loadable paused live targets retain direct in-session precedence. Prefixes require successful catalog discovery and reject collisions. A root appearing in both resumable and read-only history remains resumable. Nested child runs remain excluded from this top-level resume namespace.
@@ -959,7 +954,7 @@ The root's existing `/workflow status`, `/workflow stages`, steering, pause, qui
 
 ### Watching stages on local workers
 
-A stage that runs on a local worker opens from the workflow graph or `/workflow attach` like any other stage. While its session is still starting on the worker (loading resources, creating the session), the stage reads as `queued` with what it is doing, such as `creating session 32s`, on its graph node, in the stage list, `/workflow status` and the `workflow` tool's stage list, and its chat says it is starting on its local worker. The chat streams the stage as soon as its session starts; messages you send meanwhile are delivered then. While it runs, its chat shows the transcript so far and the reply as it streams, with tool calls. The chat header reads `on local worker`. Enter steers the running turn and Ctrl+F queues a follow-up, as for any stage. `/skill:` commands complete with the stage's own skills, `/compact` compacts the stage's session, and a `!` command runs in the stage's working directory on its worker. `/tasks` and the task footer list the stage's agents and shells on its worker; you can view their output and transcripts, send input and stop them there. Queued messages show on the stage's graph node (`✉ N queued`) even when its chat is closed. `/workflow pause <run> <stage>` and the stage chat's pause and resume hold and release just that stage; other stages, including ones on other workers, keep running, and the paused stage keeps its worker. While the whole pool is paused, a single stage cannot be paused or resumed on its own; resume the run first.
+A stage that runs on a local worker opens from the workflow graph like any other stage. While its session is still starting on the worker (loading resources, creating the session), the stage reads as `queued` with what it is doing, such as `creating session 32s`, on its graph node, in the stage list, `/workflow status` and the `workflow` tool's stage list, and its chat says it is starting on its local worker. The chat streams the stage as soon as its session starts; messages you send meanwhile are delivered then. While it runs, its chat shows the transcript so far and the reply as it streams, with tool calls. The chat header reads `on local worker`. Enter steers the running turn and Ctrl+F queues a follow-up, as for any stage. `/skill:` commands complete with the stage's own skills, `/compact` compacts the stage's session, and a `!` command runs in the stage's working directory on its worker. `/tasks` and the task footer list the stage's agents and shells on its worker; you can view their output and transcripts, send input and stop them there. Queued messages show on the stage's graph node (`✉ N queued`) even when its chat is closed. `/workflow pause <run> <stage>` and the stage chat's pause and resume hold and release just that stage; other stages, including ones on other workers, keep running, and the paused stage keeps its worker. While the whole pool is paused, a single stage cannot be paused or resumed on its own; resume the run first.
 
 If the worker running an open stage dies or loses its lease, the chat header shows `RECONNECTING` until the stage runs again on a replacement worker. The chat then reloads from the replacement's transcript and sends again, once each, in the order and the mode you sent them (a steer still steers the running turn, a follow-up still waits for it), the messages the replacement does not have, such as messages that were still queued. The header then shows how many were redelivered. Messages you sent stay queued for the stage even if you close its chat before they arrive, and they are delivered when the stage runs again. If the stage or its run ends first, the header shows how many messages were not delivered.
 
@@ -1055,6 +1050,18 @@ To bind children to a repository state, pass `workers.workspace`: a binding with
 A cold host can restore a bound tree, the root's or a child's, with its uncommitted, untracked and unpushed content. The root's machine snapshots the root's bound worktree when the root starts, and a child's bound worktree when it dispatches the child, and the work carries that snapshot. These snapshots follow the root's `snapshots` settings: Git ignores, `.atomic/snapshot-ignore`, the deny list and the size limits apply, and `snapshots.enabled: false` turns them off. Snapshot garbage collection keeps the root's own snapshot while the root's worker pool runs, and the snapshot a child carries for as long as the root run's queued work exists, which is until the root run is deleted from history. Both are kept at any `snapshots.graceSeconds`, `0` included. A root bound by a `WorkspaceBinding` alone, or resumed without its `workspace({ … })` value, has no worktree to snapshot. Its children's trees then restore only from the binding's remotes and from snapshots that checkpoints recorded of that exact tree, and children it queued earlier keep the snapshot they carried.
 
 If no live host that serves the root and can restore a binding claims a bound child within `workers.claimWindowMs` (default 60000), the child fails with `WorkspaceRestoreUnavailableError`. A host waiting after failed restores of the binding does not count, and its last failure is the error's `cause`, for example a remote it cannot reach. Start a capable host and resume the root to run it.
+
+### Checkpoint shipping
+
+`workers.checkpointShipping` sets how each host records the checkpoints of the children it runs. The default, `"sync"`, commits every checkpoint to the shared journal before the step returns. With `{ intervalMs?, maxBatch?, maxLagMs? }`, each host first records a child's checkpoints in a local journal under its pool state directory (`workflows/pool/ship/`), and then ships them to the shared journal:
+
+| Option | Range | Default | Meaning |
+| --- | --- | --- | --- |
+| `intervalMs` | 100 to 60 000 | 2 000 | How often a host ships what its children recorded. |
+| `maxBatch` | 1 to 1 000 | 64 | The most checkpoints one shipment carries. |
+| `maxLagMs` | 1 000 to 600 000 | 30 000 | How far a host's shipping may fall behind before it claims no new children. |
+
+In this release a host still ships each checkpoint before the step returns, so runs behave exactly as with `"sync"`. Session transcripts and checkpoints that carry worktree snapshots always commit to the shared journal directly. A host whose local journal fails, for example on a full disk, commits that child's checkpoints directly to the shared journal for the rest of that attempt and reports it once as a pool health warning. A later attempt tries the local journal again. If the local journal cannot open at startup, the pool still starts and all its children on that host commit directly to the shared journal, with one health warning for the root. Once a root's run ends, each host removes that root's local journal file when it holds nothing left to ship and no other process on the host still uses it. One small lock file per shared journal stays in `workflows/pool/ship/`: it keeps a process from opening a root's local journal while another removes it. A resume may change the setting.
 
 A worker host checks its setup once, before it opens anything, and reports every missing piece together in one `SharedPoolSetupError`: a journal that is not selected through a storage adapter, an adapter that does not load, a secret whose environment variable or file is missing, or a `restore` function on a host where git is not installed and Atomic cannot download a portable one (the error's `cause` is the `GitUnavailableError` from `resolveGit()`, and the problem's `hint` says how to install git). The error's `hint` says how to fix each one, for example `atomic team join <url> --token-file <path>` to join a machine to shared storage, or `atomic install npm:@bastani/atomic-storage-libsql`. A host with a `restore` function uses the git `resolveGit()` from `@bastani/atomic` resolves, downloading a portable git when the machine has none; pass `git: { path, env }` to run another git instead. A host without one never downloads git: without git it starts, reports `restore: false` in its stats, and takes bound work only where its tree is warm. Starting a root with shared placement fails the same way, in one `SharedPoolSetupError` with operation `shared-placement`, before its journal opens: a journal other machines cannot open, an adapter that does not load, or a missing secret.
 

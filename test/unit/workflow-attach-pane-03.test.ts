@@ -292,7 +292,7 @@ describe("WorkflowAttachPane", () => {
 		});
 	}
 
-	test("initial workflow connect Enter does not attach to a stage-local HIL", () => {
+	test("initial /workflows Enter does not attach to a stage-local HIL", () => {
 		const clock = makeClock();
 		const store = createStore();
 		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);

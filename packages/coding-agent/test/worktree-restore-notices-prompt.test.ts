@@ -9,6 +9,9 @@ import { withWorktreeRestoreNotices } from "../src/core/resume/path-mapping.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { isSyntheticPath } from "../src/core/source-info.js";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 let tempDir: string;
 let agentDir: string;
@@ -28,14 +31,19 @@ async function openSession() {
 		extensionFactories: [() => {}],
 	});
 	await resourceLoader.reload();
-	const { session } = await createAgentSession({
+	const { session, extensionsResult } = await createAgentSession({
 		cwd: tempDir,
 		agentDir,
 		model: getModel("anthropic", "claude-sonnet-4-5")!,
 		settingsManager,
 		sessionManager: SessionManager.inMemory(),
 		resourceLoader,
+		builtins: NO_BUILTINS,
 	});
+	assert.deepEqual(
+		extensionsResult.extensions.map((extension) => extension.path).filter((path) => !isSyntheticPath(path)),
+		[],
+	);
 	return session;
 }
 

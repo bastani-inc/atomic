@@ -633,6 +633,25 @@ const WorkflowsSettingsSchema = Type.Union(
 									"Milliseconds bound work may wait unclaimed while no live host can restore its workspace, before the child fails. Default: 60000.",
 							}),
 						),
+						checkpointShipping: Type.Optional(
+							Type.Union(
+								[
+									Type.Literal("sync"),
+									Type.Object(
+										{
+											intervalMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 60_000 })),
+											maxBatch: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000 })),
+											maxLagMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 600_000 })),
+										},
+										{ additionalProperties: false },
+									),
+								],
+								{
+									description:
+										'How worker hosts record the pooled children\'s checkpoints: "sync" (default) commits each to the shared journal before the step returns; { intervalMs, maxBatch, maxLagMs } records them in a local journal on the host first and ships them to the shared journal.',
+								},
+							),
+						),
 					},
 					{ additionalProperties: false },
 				),

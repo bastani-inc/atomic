@@ -129,8 +129,8 @@ describe("statusColor", () => {
 		assert.equal(statusColor("failed", defaultTheme), defaultTheme.error);
 	});
 
-	it("killed → theme.error", () => {
-		assert.equal(statusColor("killed", defaultTheme), defaultTheme.error);
+	it("killed → theme.textMuted (stopped is not failed, #5224)", () => {
+		assert.equal(statusColor("killed", defaultTheme), defaultTheme.textMuted);
 	});
 });
 
@@ -151,8 +151,8 @@ describe("statusIcon", () => {
 		assert.equal(statusIcon("failed"), "✗");
 	});
 
-	it("killed → ⊘", () => {
-		assert.equal(statusIcon("killed"), "⊘");
+	it("killed → ◼ (#5224)", () => {
+		assert.equal(statusIcon("killed"), "◼");
 	});
 
 	it("paused → ❚❚", () => {

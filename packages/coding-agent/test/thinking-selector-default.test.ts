@@ -31,7 +31,7 @@ function nonReasoningModel(): Model<Api> {
 }
 
 function renderedLines(selector: ThinkingSelectorComponent): string[] {
-	return selector.getSelectList().render(80);
+	return selector.render(80);
 }
 
 test("keeps a saved default that the active model supports", () => {
@@ -131,11 +131,11 @@ test("keeps the current thinking level marked while browsing", () => {
 			.map((line) => stripAnsi(line))
 			.find((line) => line.includes(level));
 
-	expect(selector.getSelectList().getSelectedItem()?.label).toBe("✓ medium");
-	expect(getLevelRow("medium")?.startsWith("→ ✓ medium")).toBe(true);
+	expect(selector.selector.getSelected()?.value).toBe("medium");
+	expect(getLevelRow("medium")?.startsWith(" ❯ ● medium")).toBe(true);
 	selector.handleInput("\x1b[B");
-	expect(getLevelRow("medium")?.startsWith("  ✓ medium")).toBe(true);
-	expect(getLevelRow("high")?.startsWith("→   high")).toBe(true);
+	expect(getLevelRow("medium")?.startsWith("   ● medium")).toBe(true);
+	expect(getLevelRow("high")?.startsWith(" ❯ ○ high")).toBe(true);
 });
 
 test("has no save-default shortcut or hint", () => {

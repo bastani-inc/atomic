@@ -88,9 +88,7 @@ send "/workflow reload" Enter
 wait_for "Reloaded workflow resources" 30
 send "/workflow security-review-demo" Enter
 wait_for "started in background" 30
-send "/workflow connect" Enter
-wait_for "Connect to workflow run" 30
-send Enter
+send "/workflows" Enter
 wait_for "awaiting input" 30
 # The graph node is selected. Open its live input form.
 send Enter

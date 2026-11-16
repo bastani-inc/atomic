@@ -1,4 +1,4 @@
-import type { Component, OverlayHandle, OverlayOptions, TUI } from "@bastani/atomic-tui";
+import type { Component, OverlayHandle, OverlayOptions, TUI, TuiMode } from "@bastani/atomic-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
@@ -58,6 +58,7 @@ class RemoteComponent implements Component {
 	private lines: string[] = [];
 	private width = 0;
 	private rows = 0;
+	private hostMode: TuiMode | undefined;
 	private requestId = 0;
 	private inputRequestId = 0;
 	private appliedRequestId = 0;
@@ -70,6 +71,7 @@ class RemoteComponent implements Component {
 	private readonly runtime: RemoteComponentRuntime;
 	private readonly requestRender: () => void;
 	private readonly getRows: () => number;
+	private readonly getHostMode: () => TuiMode;
 	private readonly getRenderSettings: () => EngineHostRenderSettings | undefined;
 	private renderSettingsKey = "";
 
@@ -78,6 +80,7 @@ class RemoteComponent implements Component {
 		runtime: RemoteComponentRuntime,
 		requestRender: () => void,
 		getRows: () => number,
+		getHostMode: () => TuiMode,
 		handlesInternalUiAction = false,
 		getRenderSettings: () => EngineHostRenderSettings | undefined = () => undefined,
 	) {
@@ -85,12 +88,15 @@ class RemoteComponent implements Component {
 		this.runtime = runtime;
 		this.requestRender = requestRender;
 		this.getRows = getRows;
+		this.getHostMode = getHostMode;
 		this.handlesInternalUiAction = handlesInternalUiAction;
 		this.getRenderSettings = getRenderSettings;
 	}
 
 	render(width: number): string[] {
 		const rows = this.getRows();
+		// A renderer switch in the host changes the mode the engine component lays itself out for.
+		const hostMode = this.getHostMode();
 		const renderSettings = this.getRenderSettings();
 		const renderSettingsKey =
 			renderSettings === undefined
@@ -98,10 +104,15 @@ class RemoteComponent implements Component {
 				: `${renderSettings.hideThinkingBlock}|${renderSettings.toolOutputExpanded}|${renderSettings.fullscreenScrollbar}|${renderSettings.fullscreenWheelScrollLines}`;
 		if (
 			!this.disposed &&
-			(this.dirty || width !== this.width || rows !== this.rows || renderSettingsKey !== this.renderSettingsKey)
+			(this.dirty ||
+				width !== this.width ||
+				rows !== this.rows ||
+				hostMode !== this.hostMode ||
+				renderSettingsKey !== this.renderSettingsKey)
 		) {
 			this.width = width;
 			this.rows = rows;
+			this.hostMode = hostMode;
 			this.renderSettingsKey = renderSettingsKey;
 			this.dirty = false;
 			this.runtime.sendEngineCommand({
@@ -110,6 +121,7 @@ class RemoteComponent implements Component {
 				requestId: ++this.requestId,
 				width,
 				rows,
+				hostMode,
 				...(renderSettings === undefined ? {} : { renderSettings }),
 			});
 		}
@@ -248,6 +260,11 @@ export class RemoteComponentController {
 		this.unsubscribe();
 		this.unsubscribeGenerationEnded();
 		this.disposeAll("host-shutdown");
+	}
+
+	/** The mode of the host's current renderer, which engine components lay themselves out for. */
+	private hostMode(): TuiMode {
+		return this.tuiRendererLifecycle.isFullscreen() ? "fullscreen" : "regular";
 	}
 
 	/** The remote overlay proxy that currently holds focus (see remote-input-ownership.ts). */
@@ -432,6 +449,7 @@ export class RemoteComponentController {
 				this.runtime,
 				() => this.ui.requestRender(),
 				() => getRows(),
+				() => this.hostMode(),
 				handlesInternalUiAction,
 				() => this.tuiRendererLifecycle.chatRenderSettings?.(),
 			);
@@ -464,6 +482,7 @@ export class RemoteComponentController {
 						this.runtime,
 						() => this.ui.requestRender(),
 						() => tui.terminal.rows,
+						() => this.hostMode(),
 						handlesInternalUiAction,
 						() => this.tuiRendererLifecycle.chatRenderSettings?.(),
 					);

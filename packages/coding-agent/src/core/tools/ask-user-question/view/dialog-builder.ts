@@ -1,5 +1,4 @@
-import { type Component, Container, type Input, Spacer } from "@bastani/atomic-tui";
-import { DynamicBorder } from "../../../../modes/interactive/components/index.ts";
+import { type Component, Container, type Input, Spacer, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
 import type { QuestionnaireState } from "../state/state.ts";
 import type { QuestionData } from "../tool/types.js";
@@ -10,19 +9,35 @@ import type { StatefulView } from "./stateful-view.ts";
 import type { TabComponents } from "./tab-components.ts";
 import { QuestionTabStrategy, SubmitTabStrategy, type TabContentStrategy } from "./tab-content-strategy.ts";
 
-export const HINT_PART_ENTER = "enter select";
-export const HINT_PART_NAV = "↑/↓ navigate";
-export const HINT_PART_TOGGLE = "space toggle";
+export const HINT_PART_NAV = "↑↓ select";
+export const HINT_PART_ENTER = "enter choose";
+export const HINT_PART_TOGGLE = "enter/space toggle";
 export const HINT_PART_NOTES = "n add notes";
-export const HINT_PART_TAB = "tab switch questions";
+export const HINT_PART_NOTES_TYPE = "type a note";
+export const HINT_PART_NOTES_CLOSE = "enter/esc close notes";
+export const HINT_PART_TAB = "tab next question";
+export const HINT_PART_REVIEW_TAB = "tab questions";
 export const HINT_PART_CANCEL = "esc cancel";
-export const HINT_SINGLE = [HINT_PART_ENTER, HINT_PART_NAV, HINT_PART_CANCEL].join(" · ");
-export const HINT_MULTI = [HINT_PART_ENTER, HINT_PART_NAV, HINT_PART_TAB, HINT_PART_CANCEL].join(" · ");
-export const HINT_MULTISELECT_SUFFIX = ` · ${HINT_PART_TOGGLE}`;
-export const HINT_NOTES_SUFFIX = ` · ${HINT_PART_NOTES}`;
 export const REVIEW_HEADING = "Review your answers";
 export const READY_PROMPT = "Ready to submit your answers?";
 export const INCOMPLETE_WARNING_PREFIX = "⚠ Answer remaining questions before submitting:";
+
+function fitHintText(hint: string, width: number): string {
+	if (visibleWidth(hint) <= width) return hint;
+	const compact = hint
+		.replace(HINT_PART_NAV, "↑↓")
+		.replace(HINT_PART_ENTER, "enter")
+		.replace(HINT_PART_TOGGLE, "enter/space")
+		.replace(HINT_PART_NOTES, "n notes")
+		.replace(HINT_PART_TAB, "tab")
+		.replace(HINT_PART_REVIEW_TAB, "tab");
+	if (visibleWidth(compact) <= width) return compact;
+	return compact
+		.replace("n notes", "n")
+		.replace(HINT_PART_CANCEL, "esc")
+		.replace(HINT_PART_NOTES_TYPE, "type")
+		.replace(HINT_PART_NOTES_CLOSE, "enter/esc");
+}
 
 export type DialogState = QuestionnaireState;
 
@@ -75,9 +90,19 @@ export class DialogView implements StatefulView<DialogProps> {
 	private liveProps: DialogProps;
 	private frame: CachedFrame | undefined;
 	private readonly config: DialogConfig;
-	private readonly questionStrategy: TabContentStrategy;
+	private readonly questionStrategy: QuestionTabStrategy;
 	private readonly submitStrategy: TabContentStrategy | undefined;
 	private readonly maxFooterRowCount: number;
+	private headingMeasurement: { readonly width: number; readonly rows: number } | undefined;
+	private chrome:
+		| {
+				readonly width: number;
+				readonly top: string;
+				readonly bottom: string;
+				readonly side: string;
+				readonly rule: string;
+		  }
+		| undefined;
 
 	constructor(config: DialogConfig, initialProps: DialogProps) {
 		this.config = config;
@@ -111,6 +136,9 @@ export class DialogView implements StatefulView<DialogProps> {
 	// The adapter's `invalidate()` resets every other renderable alongside this one.
 	invalidate(): void {
 		this.frame = undefined;
+		this.headingMeasurement = undefined;
+		this.chrome = undefined;
+		this.questionStrategy.invalidate();
 	}
 
 	render(width: number): string[] {
@@ -119,34 +147,73 @@ export class DialogView implements StatefulView<DialogProps> {
 		if (frame?.width === width && frame.terminalWidth === terminalWidth) return frame.lines;
 		const onSubmit = this.config.isMulti && this.liveProps.state.currentTab === this.config.questions.length;
 		const strategy = onSubmit && this.submitStrategy ? this.submitStrategy : this.questionStrategy;
-		const lines = this.buildContainerFromStrategy(strategy, width).render(width);
+		const lines = this.buildLines(strategy, width);
 		this.frame = { width, terminalWidth, lines };
 		return lines;
 	}
 
-	private buildContainerFromStrategy(strategy: TabContentStrategy, width: number): Container {
+	private maxHeadingRows(width: number): number {
+		if (this.headingMeasurement?.width === width) return this.headingMeasurement.rows;
+		const state = this.liveProps.state;
+		let max = this.submitStrategy?.headingRows(state).reduce((sum, c) => sum + c.render(width).length, 0) ?? 0;
+		for (let tab = 0; tab < this.config.questions.length; tab++) {
+			const rows = this.questionStrategy.headingRows({ ...state, currentTab: tab });
+			max = Math.max(
+				max,
+				rows.reduce((sum, c) => sum + c.render(width).length, 0),
+			);
+		}
+		this.headingMeasurement = { width, rows: max };
+		return max;
+	}
+
+	private buildLines(strategy: TabContentStrategy, width: number): string[] {
 		const { theme, isMulti, tabBar } = this.config;
 		const state = this.liveProps.state;
-		const container = new Container();
-		const border = () => new DynamicBorder((s) => theme.fg("accent", s));
+		const innerWidth = Math.max(1, width - 4);
+		if (this.chrome?.width !== width) {
+			this.chrome = {
+				width,
+				top: theme.fg("accent", `╭${"─".repeat(Math.max(0, width - 2))}╮`),
+				bottom: theme.fg("accent", `╰${"─".repeat(Math.max(0, width - 2))}╯`),
+				side: theme.fg("accent", "│"),
+				rule: theme.fg("borderMuted", "─".repeat(innerWidth)),
+			};
+		}
+		const chrome = this.chrome;
 		// Rendered once; its row count is the current height the residual below is measured against.
-		const body = strategy.bodyComponent(state).render(width);
+		const body = strategy.bodyComponent(state).render(innerWidth);
 
-		container.addChild(border());
-		if (isMulti && tabBar) container.addChild(tabBar);
-		container.addChild(new Spacer(1));
+		const inner = new Container();
+		if (isMulti && tabBar) {
+			inner.addChild(tabBar);
+			inner.addChild(new Spacer(1));
+		}
+		const heading = strategy.headingRows(state).flatMap((c) => c.render(innerWidth));
+		inner.addChild({ render: () => heading, invalidate: () => {} });
+		inner.addChild({ render: () => body, invalidate: () => {} });
+		inner.addChild(new Spacer(1));
+		for (const c of strategy.midRows(state)) inner.addChild(c);
+		inner.addChild({ render: () => [chrome.rule], invalidate: () => {} });
+		for (const c of strategy.footerRows(state)) inner.addChild(c);
 
-		for (const c of strategy.headingRows(state)) container.addChild(c);
-		container.addChild({ render: () => body, invalidate: () => {} });
-		container.addChild(new Spacer(1));
-		for (const c of strategy.midRows(state)) container.addChild(c);
+		const lines = [chrome.top];
+		const side = chrome.side;
+		for (const line of inner.render(innerWidth)) {
+			const lineWidth = visibleWidth(line);
+			const fitted = lineWidth > innerWidth ? truncateToWidth(line, innerWidth, "") : line;
+			const fittedWidth = lineWidth > innerWidth ? visibleWidth(fitted) : lineWidth;
+			lines.push(`${side} ${fitted}${" ".repeat(Math.max(0, innerWidth - fittedWidth))} ${side}`);
+		}
+		lines.push(chrome.bottom);
+		const hint = fitHintText(strategy.hintText(state), Math.max(1, width - 2));
+		const hintLine = `  ${theme.fg("dim", hint)}`;
+		lines.push(visibleWidth(hintLine) > width ? truncateToWidth(hintLine, width, "") : hintLine);
 
-		container.addChild(border());
-		for (const c of strategy.footerRows(state)) container.addChild(c);
-
-		// Residual rows equalize total height across tabs and strategies; rendered AFTER the bottom border.
-		const maxHeight = this.config.getBodyHeight(width) + this.maxFooterRowCount;
-		container.addChild(new Spacer(Math.max(0, maxHeight - body.length - strategy.footerRowCount)));
-		return container;
+		const maxHeight =
+			this.config.getBodyHeight(innerWidth) + this.maxFooterRowCount + this.maxHeadingRows(innerWidth);
+		const used = heading.length + body.length + strategy.footerRowCount;
+		for (let i = Math.max(0, maxHeight - used); i > 0; i--) lines.push("");
+		return lines;
 	}
 }

@@ -20,7 +20,7 @@ The integration runs only for interactive Atomic sessions. It stays inactive out
 
 Quiet periods such as provider waits, retries, and tool execution still count as working. Background work keeps the pane working after Atomic finishes its response.
 
-Opening `/tasks`, `/agents`, or `/workflow connect` does not count as an approval request. Neither does a subagent asking its supervisor for guidance. Actual permission requests and workflow budget approvals can show Blocked.
+Opening `/tasks`, `/agents`, or `/workflows` does not count as an approval request. Neither does a subagent asking its supervisor for guidance. Actual permission requests and workflow budget approvals can show Blocked.
 
 A failed workflow can remain marked blocked in Atomic after its execution ends, while the pane returns to Idle. Check the workflow details for its result; the pane indicator is not a success or failure verdict. Sending a message acknowledges existing workflow attention for the indicator, but does not resume the workflow or approve a budget increase.
 
