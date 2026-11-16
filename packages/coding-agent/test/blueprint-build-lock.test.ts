@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	closeSync,
@@ -14,11 +14,24 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { takeTakeoverMutex } from "../src/core/lock-takeover.ts";
 import { buildLockPath, settleOtherBuilds, withBuildLocks } from "../src/core/resume/blueprint/build-lock.ts";
 import { runLoggedProcess } from "../src/core/resume/blueprint/process.ts";
 import { processStartToken } from "../src/core/worktree-snapshot/pool.ts";
+
+// Process creation is real; spawnSync is only watched, to tell when a build lock lists this host's processes.
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
+
+/** How many times this host's processes were listed to find the orphans of a dead build's steps. */
+const processScans = () =>
+	vi
+		.mocked(spawnSync)
+		.mock.calls.filter(([, args]) => Array.isArray(args) && args.some((arg) => String(arg).includes("Win32_Process")))
+		.length;
 
 let dir: string;
 const children: ChildProcess[] = [];
@@ -431,6 +444,22 @@ describe("blueprint build locks (#4748)", () => {
 				await releaseId();
 				if (runs(orphan)) process.kill(orphan);
 			}
+		},
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"on Windows, this host's processes are listed for a dead build's orphans only when one of its steps recorded its start",
+		async () => {
+			const before = processScans();
+			writeLock({ ...(await deadProcess()), steps: [{ pid: (await deadProcess()).pid, at: Date.now() }] });
+			await settle([root()], { waitMs: 300 });
+			writeLock({ ...(await deadProcess()), steps: [] });
+			await settle([root()], { waitMs: 300 });
+			assert.equal(processScans() - before, 0, "no step could be followed, so nothing was listed");
+			const step = { pid: (await deadProcess()).pid, start: "000000000000", at: Date.now() };
+			writeLock({ ...(await deadProcess()), steps: [step] });
+			await settle([root()], { waitMs: 300 });
+			assert.equal(processScans() - before, 1, "a step that recorded its start is followed");
 		},
 	);
 
