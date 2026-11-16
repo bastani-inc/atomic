@@ -37,6 +37,10 @@ export interface AgentPanelItem {
 	readonly endedAt?: number;
 }
 
+export interface AgentPanelOpenOptions {
+	readonly onReturn?: () => void;
+}
+
 export type AgentPanelActionResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
 /** A provider of panel items, registered by an extension with `pi.registerAgentPanelSource()`. */
@@ -44,8 +48,11 @@ export interface AgentPanelSource {
 	items(): readonly AgentPanelItem[];
 	/** Calls `listener` whenever {@link items} may have changed; returns the unsubscribe. */
 	subscribe(listener: () => void): () => void;
-	/** Opens an item in the interactive UI, as Enter on its row does (a workflow run's graph). */
-	open?(id: string): void;
+	/**
+	 * Opens an item in the interactive UI, as Enter on its row does (a workflow run's graph). `onReturn` is called when
+	 * the opened view goes back one level, so the view it was opened from (the agent panel, `/tasks`) shows again.
+	 */
+	open?(id: string, options?: AgentPanelOpenOptions): void;
 	/** Stops a running item, after the second `x`. */
 	stop?(id: string): Promise<AgentPanelActionResult>;
 	/** Answers a waiting item's question with `text`. */
@@ -206,10 +213,10 @@ function sourceOf(session: AgentPanelSession, id: string): AgentPanelSource | un
 }
 
 /** Opens an extension's item (a workflow run's graph). Task items open through the task inspector instead. */
-export function openAgentPanelItem(session: AgentPanelSession, id: string): boolean {
+export function openAgentPanelItem(session: AgentPanelSession, id: string, options?: AgentPanelOpenOptions): boolean {
 	const source = sourceOf(session, id);
 	if (source?.open === undefined) return false;
-	source.open(id);
+	source.open(id, options);
 	return true;
 }
 

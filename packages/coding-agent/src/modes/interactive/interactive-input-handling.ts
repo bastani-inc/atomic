@@ -1,4 +1,4 @@
-import { isKeyRelease } from "@bastani/atomic-tui";
+import { isKeyRelease, Text } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
@@ -18,6 +18,7 @@ import { agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts"
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { showTaskInspector } from "../rpc/task-ui-bridge.js";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
+import { NAV_CONFIRM_WINDOW_MS } from "./components/nav-keys.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
@@ -28,7 +29,8 @@ import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
 import { handOffCompactionQueue, settleSubmission, showSubmissionAsQueued } from "./interactive-queueing.ts";
-import { createStopAllChord } from "./interactive-stop-all.ts";
+import { createStopAllChord, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
+import { theme } from "./theme/theme.js";
 
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	mode.addTuiInputListener(() =>
@@ -65,6 +67,37 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 
 InteractiveModeBase.prototype.setupKeyHandlers = async function (this: InteractiveModeBase): Promise<void> {
 	registerStartupInputListeners(this);
+	// The chord works over overlays such as the workflow graph, which hide the chat: its notices also show as a
+	// status in every footer and statusline for as long as they apply.
+	let stopAllStatusTimer: ReturnType<typeof setTimeout> | undefined;
+	let stopAllToast: { hide(): void } | undefined;
+	const clearStopAllStatus = () => {
+		if (stopAllStatusTimer !== undefined) clearTimeout(stopAllStatusTimer);
+		stopAllStatusTimer = undefined;
+		stopAllToast?.hide();
+		stopAllToast = undefined;
+		this.footerDataProvider.setExtensionStatus(STOP_ALL_STATUS_KEY, undefined);
+	};
+	const flashStopAllStatus = (message: string | undefined) => {
+		clearStopAllStatus();
+		if (message !== undefined) {
+			this.footerDataProvider.setExtensionStatus(STOP_ALL_STATUS_KEY, message);
+			// A fullscreen view such as the workflow graph covers the chat: the notice floats over it, without the keyboard.
+			if (this.ui.hasOverlay())
+				stopAllToast = this.ui.showOverlay(new Text(theme.fg("warning", message), 1, 0), {
+					anchor: "bottom-center",
+					width: "100%",
+					offsetY: -3,
+					nonCapturing: true,
+				});
+			stopAllStatusTimer = setTimeout(() => {
+				clearStopAllStatus();
+				this.ui.requestRender();
+			}, NAV_CONFIRM_WINDOW_MS);
+			stopAllStatusTimer.unref?.();
+		}
+		this.ui.requestRender();
+	};
 	this.addTuiInputListener(
 		createStopAllChord({
 			keybindings: this.keybindings,
@@ -76,9 +109,16 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 				this.runtimeHost instanceof IsolatedInteractiveRuntime
 					? this.runtimeHost.stopAllBackgroundWork()
 					: stopAllBackgroundWork(this.session),
-			showStatus: (message) => this.showStatus(message),
-			showWarning: (message) => this.showWarning(message),
+			showStatus: (message) => {
+				this.showStatus(message);
+				flashStopAllStatus(message);
+			},
+			showWarning: (message) => {
+				this.showWarning(message);
+				flashStopAllStatus(message);
+			},
 			clearStatus: () => {
+				flashStopAllStatus(undefined);
 				const text = this.lastStatusText;
 				if (text === undefined) return;
 				this.chatContainer.removeChild(text);

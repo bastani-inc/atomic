@@ -2,6 +2,9 @@ import { isKeyRelease } from "@bastani/atomic-tui";
 import { type StopAllBackgroundOutcome, stopAllBackgroundMessage } from "../../core/tasks/stop-all.ts";
 import { type NavKeybindings, navActionText, TwoPressConfirm } from "./components/nav-keys.ts";
 
+/** The footer status key the chord's notices show under, so they are seen over overlays too. */
+export const STOP_ALL_STATUS_KEY = "atomic.stop-all";
+
 /** What the chord needs of the main chat. */
 export interface StopAllChordHost {
 	readonly keybindings: NavKeybindings;

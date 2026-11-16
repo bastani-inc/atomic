@@ -78,8 +78,20 @@ export interface OverlayPiSurface {
  * that exact stage-chat node — used by `/workflow attach <runId> <stageId>`
  * and the picker overlay's connect-to-stage flow.
  */
+/** How a graph opened from somewhere other than the main chat goes back there (#5224). */
+export interface GraphOverlayOpenOptions {
+	/** Called once, after the graph's back key hides it, so the view it came from (the agent panel, `/tasks`) reopens. */
+	readonly onReturn?: () => void;
+}
+
 export interface GraphOverlayPort {
-	open(runId: string | null, surface?: OverlayPiSurface, stageId?: string, stageRunId?: string): void;
+	open(
+		runId: string | null,
+		surface?: OverlayPiSurface,
+		stageId?: string,
+		stageRunId?: string,
+		options?: GraphOverlayOpenOptions,
+	): void;
 	toggle(runId: string | null, surface?: OverlayPiSurface): void;
 	close(): void;
 }
@@ -241,6 +253,10 @@ export function buildGraphOverlayAdapter(
 	 */
 	function hideMounted(): void {
 		observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
+		// One level back: to the view that opened the graph, once it is out of the way.
+		const onReturn = pendingReturn;
+		pendingReturn = undefined;
+		if (onReturn) queueMicrotask(onReturn);
 		if (currentHandle) {
 			currentView?.setVisible(false);
 			currentHandle.setHidden(true);
@@ -297,7 +313,15 @@ export function buildGraphOverlayAdapter(
 		};
 	}
 
-	function open(runId: string | null, surface?: OverlayPiSurface, stageId?: string, stageRunId?: string): void {
+	let pendingReturn: (() => void) | undefined;
+	function open(
+		runId: string | null,
+		surface?: OverlayPiSurface,
+		stageId?: string,
+		stageRunId?: string,
+		openOptions?: GraphOverlayOpenOptions,
+	): void {
+		pendingReturn = openOptions?.onReturn;
 		const ui = surface?.ui ?? pi.ui;
 		observeHostCustomUi(ui);
 
@@ -344,6 +368,8 @@ export function buildGraphOverlayAdapter(
 			const finish = (): void => {
 				if (settled) return;
 				settled = true;
+				// Closing the workflow view (Ctrl+C) returns to the main chat, not to the view that opened it.
+				pendingReturn = undefined;
 				observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
 				currentView?.dispose();
 				currentView = null;
