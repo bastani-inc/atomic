@@ -7,6 +7,7 @@ import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
 import type { AdvisoryLock } from "@bastani/atomic-natives";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
+import { openThreadedSqliteDatabase } from "./ship-shard-thread.js";
 
 /** The root's own lock, held while its shard is open: one process at a time opens a root's local journal. */
 async function tryRootLock(path: string): Promise<AdvisoryLock | null> {
@@ -93,6 +94,8 @@ CREATE TABLE IF NOT EXISTS ship_lease(
 );
 `;
 
+const JOURNAL_LOCK_WAIT_MS = 30_000;
+
 const GENERATION_UNIQUE_RE = /UNIQUE\s*\(\s*work\s*,\s*generation\s*,\s*event_key\s*\)/i;
 
 export function shipDigest(payload: string): string {
@@ -128,7 +131,7 @@ export class ShipShard {
 		if (lock === null) throw new Error(`Checkpoint shard is already open by another process: ${path}`);
 		let database: SqliteDatabase | undefined;
 		try {
-			database = await openNodeSqliteDatabase(path);
+			database = path === ":memory:" ? await openNodeSqliteDatabase(path) : await openThreadedSqliteDatabase(path);
 			await database.exec(SHIP_SHARD_SCHEMA);
 			const table = await database.get<SqliteRow & { sql: string | null }>(
 				`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ship_events'`,
@@ -478,7 +481,7 @@ export class ShipShard {
 
 async function underJournalLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
 	if (path === ":memory:") return operation();
-	const lock = await openNodeSqliteDatabase(`${dirname(path)}.lock`);
+	const lock = await openThreadedSqliteDatabase(`${dirname(path)}.lock`, JOURNAL_LOCK_WAIT_MS);
 	try {
 		return await lock.transaction(() => operation());
 	} finally {
