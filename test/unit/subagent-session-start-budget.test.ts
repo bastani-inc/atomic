@@ -17,6 +17,11 @@ import {
 const BLOCKED_BUDGET_MS = 900;
 /** One turn the main thread is held for: three probe intervals. */
 const BLOCKED_TURN_MS = 3 * START_PROBE_INTERVAL_MS;
+/**
+ * A turn of a saturated loop, past the starvation threshold by a quarter: a mean over three such turns that counted a
+ * fourth falls below that threshold.
+ */
+const SATURATED_TURN_MS = SATURATED_LOOP_TURN_MS + START_PROBE_INTERVAL_MS / 2;
 
 const idleLoop: SessionStartEventLoopSample = { turns: 3_000, meanTurnMs: START_PROBE_INTERVAL_MS, maxTurnMs: 104 };
 
@@ -169,6 +174,27 @@ describe("SessionStartBudget (#4319)", () => {
 			}
 		},
 	);
+
+	test("reports the turns a saturated loop took when its budget runs out in the turn of its last probe", () => {
+		const startedAt = performance.now();
+		let now = startedAt;
+		const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+		// Due between the third probe and the fourth, the deadline fires in the third turn, right after that probe.
+		const budget = new SessionStartBudget("child", 3.5 * START_PROBE_INTERVAL_MS, "creating-session");
+		try {
+			for (const turn of [1, 2, 3]) {
+				// Other work holds the thread for the whole turn; then its due timers run, the probe once.
+				now = startedAt + turn * SATURATED_TURN_MS;
+				vi.advanceTimersByTime(turn < 3 ? START_PROBE_INTERVAL_MS : 1.5 * START_PROBE_INTERVAL_MS);
+			}
+			const error = expiry(budget);
+			assert.deepEqual(error.eventLoop, { turns: 3, meanTurnMs: SATURATED_TURN_MS, maxTurnMs: SATURATED_TURN_MS });
+			assert.equal(error.phase, "event-loop");
+		} finally {
+			clock.mockRestore();
+			budget.end();
+		}
+	});
 
 	test("never fires once ended, whatever steps follow", () => {
 		const budget = new SessionStartBudget("child", 100, "opening-session");

@@ -1,4 +1,4 @@
-import { holdPendingDetachedCalls } from "./agent-session-detached-tools.ts";
+import { holdPendingDetachedCalls, holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import {
 	dismissProtectedStreamingCustomMessage,
@@ -105,7 +105,16 @@ async function recover(session: AgentSession, reason: SessionRecoveryReason): Pr
 	report.replayed = recoverProtectedStreamingCustomMessages(session, replay);
 	// A resumed stage whose detachable calls are pending takes the replayed deliveries in the turn those calls resume:
 	// a turn of their own ahead of them would answer the calls as interrupted (#4391).
-	if (!session.isStreaming && !session._isPreparingRun && !callsPending) await session._continueQueuedAgentMessages();
+	if (!session.isStreaming && !session._isPreparingRun && !callsPending) {
+		const startsChildRecoveryRun =
+			session._subagentMessageAdmission !== undefined &&
+			session._activePromptCount === 0 &&
+			!session._queuedMessagesPaused &&
+			!holdsTurnsForDetachedResults(session) &&
+			session.agent.hasQueuedMessages();
+		if (startsChildRecoveryRun) await session._runAgentContinuation(async () => {}, "recovery");
+		else await session._continueQueuedAgentMessages();
+	}
 	return report;
 }
 

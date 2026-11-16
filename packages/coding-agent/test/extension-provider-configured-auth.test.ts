@@ -104,7 +104,7 @@ function loginStatuses(session: AgentSession, providers: string[]): Record<strin
 		statuses[provider] = selector
 			.render(120)
 			.map((line) => stripAnsi(line).trim())
-			.flatMap((line) => line.match(/(✓ .*|• not configured)$/)?.[0] ?? []);
+			.flatMap((line) => line.match(/(✓ .*|not configured)$/)?.[0] ?? []);
 	}
 	return statuses;
 }
@@ -170,8 +170,8 @@ describe("/login and /model treat extension providers like built-in ones", () =>
 			login: {
 				[BUILTIN_KEY]: ["✓ env: GROQ_API_KEY"],
 				[EXTENSION_KEY]: ["✓ env: CORP_KEY_API_KEY"],
-				[BUILTIN_OAUTH]: ["• not configured", "• not configured"],
-				[EXTENSION_OAUTH]: ["• not configured"],
+				[BUILTIN_OAUTH]: ["not configured", "not configured"],
+				[EXTENSION_OAUTH]: ["not configured"],
 			},
 			model: { hint: true, listed: [BUILTIN_KEY, EXTENSION_KEY] },
 		};
@@ -181,8 +181,8 @@ describe("/login and /model treat extension providers like built-in ones", () =>
 	test("a stored OAuth login is configured and an API-key provider without a key is not", async () => {
 		const expected = {
 			login: {
-				[BUILTIN_KEY]: ["• not configured"],
-				[EXTENSION_KEY]: ["• not configured"],
+				[BUILTIN_KEY]: ["not configured"],
+				[EXTENSION_KEY]: ["not configured"],
 				[BUILTIN_OAUTH]: ["✓ subscription configured", "✓ subscription configured"],
 				[EXTENSION_OAUTH]: ["✓ subscription configured"],
 			},

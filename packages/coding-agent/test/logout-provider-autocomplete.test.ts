@@ -158,7 +158,7 @@ for (const search of ["", "   ", "kimi", "Kimi  For Coding", "anthropic", "nonex
 		const rendered = renderText(selector()!.render(100));
 		assert.ok(rendered.includes(search.trim()));
 		if (search === "nonexistent-provider") {
-			assert.match(rendered, /No matching providers/);
+			assert.match(rendered, /No matches for "nonexistent-provider"/);
 			selector()!.handleInput("\r");
 		}
 		selector()!.handleInput("\x1b");

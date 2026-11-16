@@ -1279,3 +1279,183 @@ test("a nonexistent or empty sibling directory never claims an existing parent s
 	writeFileSync(join(soleParent, "workflows", "journal.sqlite"), "");
 	assert.equal(storageHomeDir(soleNonexistent), soleParent);
 });
+
+test("a hidden dot-prefixed sibling profile with prior Atomic state keeps parent adoption ahead of a nonexistent or empty sibling (#5242)", async () => {
+	const parent = join(root, "hidden-sibling-parent");
+	const hiddenOld = join(parent, ".profile-old");
+	const newSibling = join(parent, "new");
+	mkdirSync(hiddenOld, { recursive: true });
+
+	const seeded = await resolveSessionStore(project, {
+		agentDir: join(root, "seed-helper-a"),
+		sessionStore: { kind: "sqlite", path: join(parent, "workflows", "journal.sqlite") },
+	});
+	try {
+		await seeded.create(
+			{
+				id: "eeeeeeee-5555-4555-8555-555555555555",
+				version: 4,
+				createdAt: "2026-11-16T00:00:00.000Z",
+				cwd: project,
+			},
+			[],
+		);
+	} finally {
+		await seeded.close();
+	}
+	writeFileSync(join(hiddenOld, "settings.json"), "{}\n");
+	resetStorageHomeCacheForTests();
+
+	const newStatus = await collectStorageStatus({ cwd: project, agentDir: newSibling, probe: false });
+	assert.deepEqual(newStatus.notes, []);
+	assert.equal(existsSync(join(parent, "workflows", ".adopted-by")), false);
+
+	const oldStore = await resolveSessionStore(project, { agentDir: hiddenOld, settings: {} });
+	const newStore = await resolveSessionStore(project, { agentDir: newSibling, settings: {} });
+	try {
+		assert.equal(
+			(await oldStore.readHeader("eeeeeeee-5555-4555-8555-555555555555"))?.id,
+			"eeeeeeee-5555-4555-8555-555555555555",
+		);
+		assert.equal(await newStore.readHeader("eeeeeeee-5555-4555-8555-555555555555"), undefined);
+	} finally {
+		await oldStore.close();
+		await newStore.close();
+	}
+	assert.equal(readClaimFile(join(parent, "workflows", ".adopted-by")), hiddenOld);
+});
+
+test("an agent directory named workflows adopts its existing parent store in place while a sibling isolates (#5242)", async () => {
+	const parent = join(root, "workflows-named-parent");
+	const workflowsAgent = join(parent, "workflows");
+	const sibling = join(parent, "a2");
+	mkdirSync(workflowsAgent, { recursive: true });
+	mkdirSync(sibling, { recursive: true });
+	writeFileSync(join(workflowsAgent, "settings.json"), "{}\n");
+
+	const seeded = await resolveSessionStore(project, {
+		agentDir: join(root, "seed-helper-b"),
+		sessionStore: { kind: "sqlite", path: join(workflowsAgent, "journal.sqlite") },
+	});
+	try {
+		await seeded.create(
+			{
+				id: "ffffffff-6666-4666-8666-666666666666",
+				version: 4,
+				createdAt: "2026-11-16T00:00:00.000Z",
+				cwd: project,
+			},
+			[],
+		);
+	} finally {
+		await seeded.close();
+	}
+	resetStorageHomeCacheForTests();
+
+	const store = await resolveSessionStore(project, { agentDir: workflowsAgent, settings: {} });
+	const siblingStore = await resolveSessionStore(project, { agentDir: sibling, settings: {} });
+	try {
+		assert.equal(
+			(await store.readHeader("ffffffff-6666-4666-8666-666666666666"))?.id,
+			"ffffffff-6666-4666-8666-666666666666",
+		);
+		assert.equal(await siblingStore.readHeader("ffffffff-6666-4666-8666-666666666666"), undefined);
+	} finally {
+		await store.close();
+		await siblingStore.close();
+	}
+	assert.deepEqual(selectRunJournal({ agentDir: workflowsAgent, settings: {} }), {
+		kind: "sharded",
+		dir: join(workflowsAgent, "journal"),
+	});
+	assert.deepEqual(selectRunJournal({ agentDir: sibling, settings: {} }), {
+		kind: "sharded",
+		dir: join(sibling, "workflows", "journal"),
+	});
+	assert.equal(existsSync(join(workflowsAgent, "workflows", "journal.sqlite")), false);
+});
+
+test("an empty <agentDir>/sessions directory does not block adoption of a populated <parent>/sessions store and parent workflow journal (#5242)", async () => {
+	const parent = join(root, "jsonl-sessions-parent");
+	const a1 = join(parent, "a1");
+	const a2 = join(parent, "a2");
+	mkdirSync(join(a1, "sessions"), { recursive: true });
+	mkdirSync(join(a2, "sessions"), { recursive: true });
+
+	const seededSessions = await resolveSessionStore(project, {
+		agentDir: join(root, "seed-helper-c"),
+		sessionStore: { kind: "jsonl", dir: join(parent, "sessions") },
+	});
+	try {
+		await seededSessions.create(
+			{
+				id: "12121212-7777-4777-8777-777777777777",
+				version: 4,
+				createdAt: "2026-11-16T00:00:00.000Z",
+				cwd: project,
+			},
+			[],
+		);
+	} finally {
+		await seededSessions.close();
+	}
+
+	const seededJournal = await resolveRunJournal({
+		agentDir: join(root, "seed-helper-c"),
+		journal: { path: join(parent, "workflows", "journal.sqlite") },
+	});
+	try {
+		assert.equal(
+			await seededJournal.createRun({
+				runId: "run-in-parent-journal",
+				name: "wf",
+				cwd: project,
+				createdAt: 1,
+				status: "running",
+			}),
+			"created",
+		);
+	} finally {
+		await seededJournal.close();
+	}
+
+	const settings = { sessions: { storage: { dir: "sessions" } } };
+	writeFileSync(join(a1, "settings.json"), JSON.stringify(settings));
+	writeFileSync(join(a2, "settings.json"), JSON.stringify(settings));
+	resetStorageHomeCacheForTests();
+
+	const a1Sessions = await resolveSessionStore(project, { agentDir: a1 });
+	const a2Sessions = await resolveSessionStore(project, { agentDir: a2 });
+	try {
+		assert.equal(
+			(await a1Sessions.readHeader("12121212-7777-4777-8777-777777777777"))?.id,
+			"12121212-7777-4777-8777-777777777777",
+		);
+		assert.equal(await a2Sessions.readHeader("12121212-7777-4777-8777-777777777777"), undefined);
+	} finally {
+		await a1Sessions.close();
+		await a2Sessions.close();
+	}
+
+	const a1Journal = await resolveRunJournal({ agentDir: a1, settings });
+	const a2Journal = await resolveRunJournal({ agentDir: a2, settings });
+	try {
+		assert.deepEqual(
+			(await a1Journal.listRuns()).map((run) => run.runId),
+			["run-in-parent-journal"],
+		);
+		assert.deepEqual(await a2Journal.listRuns(), []);
+	} finally {
+		await a1Journal.close();
+		await a2Journal.close();
+	}
+
+	const ownCatalogParent = join(root, "own-catalog-parent");
+	const ownCatalogAgent = join(ownCatalogParent, "a1");
+	mkdirSync(join(ownCatalogParent, "sessions"), { recursive: true });
+	mkdirSync(join(ownCatalogAgent, "sessions"), { recursive: true });
+	mkdirSync(join(ownCatalogAgent, "workflows", "journal"), { recursive: true });
+	writeFileSync(join(ownCatalogAgent, "workflows", "journal", "catalog.sqlite"), "");
+	writeFileSync(join(ownCatalogAgent, "settings.json"), JSON.stringify(settings));
+	assert.equal(storageHomeDir(ownCatalogAgent, settings), ownCatalogAgent);
+});

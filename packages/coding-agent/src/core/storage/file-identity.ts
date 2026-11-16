@@ -296,23 +296,27 @@ function hasRelativeTargetEntries(
 	return false;
 }
 
-function hasOwnStoreEntries(agentPath: string, relativeTargets: readonly string[]): boolean {
+function hasExclusiveOwnTargetEntries(agentPath: string, parent: string, relativeTargets: readonly string[]): boolean {
+	for (const target of relativeTargets) {
+		const own = resolve(agentPath, target);
+		if (pathsEqual(own, agentPath) || !existsSync(own)) continue;
+		const legacy = resolve(parent, target);
+		if (!pathsEqual(legacy, agentPath) && !pathsEqual(legacy, parent) && existsSync(legacy)) continue;
+		return true;
+	}
+	return false;
+}
+
+function hasOwnStoreEntries(agentPath: string, parent: string, relativeTargets: readonly string[]): boolean {
 	for (const entry of ATOMIC_STORE_FILES) {
 		if (existsSync(join(agentPath, entry))) return true;
 	}
-	return hasRelativeTargetEntries(agentPath, agentPath, relativeTargets);
+	return hasExclusiveOwnTargetEntries(agentPath, parent, relativeTargets);
 }
 
-function hasParentStoreEntries(
-	parent: string,
-	agentPath: string,
-	parentWorkflows: string,
-	relativeTargets: readonly string[],
-): boolean {
-	if (!pathsEqual(parentWorkflows, agentPath)) {
-		for (const entry of ATOMIC_STORE_FILES) {
-			if (existsSync(join(parent, entry))) return true;
-		}
+function hasParentStoreEntries(parent: string, agentPath: string, relativeTargets: readonly string[]): boolean {
+	for (const entry of ATOMIC_STORE_FILES) {
+		if (existsSync(join(parent, entry))) return true;
 	}
 	return hasRelativeTargetEntries(parent, agentPath, relativeTargets, true);
 }
@@ -349,22 +353,17 @@ function canClaimParentStore(parent: string, agentPath: string, defaultAgent: st
 			const entry = dir.readSync();
 			if (entry === null) break;
 			const name = entry.name;
-			if (
-				name.startsWith(".") ||
-				name === "workflows" ||
-				name === "repos" ||
-				name === "worktrees" ||
-				(parentIsDefaultAgent && AGENT_DIR_STATE_ENTRIES.has(name))
-			) {
+			if (name === "repos" || name === "worktrees" || (parentIsDefaultAgent && AGENT_DIR_STATE_ENTRIES.has(name))) {
 				continue;
 			}
 			const siblingPath = join(parent, name);
 			if (!(entry.isDirectory() || (entry.isSymbolicLink() && isDirectory(siblingPath)))) continue;
 			if (sameDirectory(siblingPath, agentPath)) continue;
 			const siblingTier = agentDirectoryPriorUseTier(siblingPath);
+			if (name === "workflows" && siblingTier < 2) continue;
 			if (
 				siblingTier > selfTier &&
-				!hasOwnStoreEntries(siblingPath, configuredRelativeTargets(siblingPath, rawHome))
+				!hasOwnStoreEntries(siblingPath, parent, configuredRelativeTargets(siblingPath, rawHome))
 			) {
 				return false;
 			}
@@ -412,7 +411,7 @@ function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettin
 		const targetList = [...settingsTargets];
 		const parent = dirname(agentPath);
 		if (
-			hasRelativeTargetEntries(agentPath, agentPath, targetList) ||
+			hasExclusiveOwnTargetEntries(agentPath, parent, targetList) ||
 			!hasRelativeTargetEntries(parent, agentPath, targetList, true)
 		) {
 			const finalized = createStorageHomeEntry(cached.home, cached.adoptedClaim, false);
@@ -431,14 +430,14 @@ function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettin
 	}
 
 	const relativeTargets = configuredRelativeTargets(agentPath, rawHome, settings);
-	if (hasOwnStoreEntries(agentPath, relativeTargets)) {
+	if (hasOwnStoreEntries(agentPath, parent, relativeTargets)) {
 		return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(agentPath));
 	}
 
 	const parentWorkflows = join(parent, "workflows");
 	const parentWorkflowsIsDir = isDirectory(parentWorkflows);
 	const claim = join(parentWorkflows, ADOPTION_CLAIM_FILE);
-	if (parentWorkflowsIsDir && !pathsEqual(parentWorkflows, agentPath)) {
+	if (parentWorkflowsIsDir) {
 		const existingOwner = readClaimFile(claim);
 		if (existingOwner !== undefined) {
 			return recordSettledStorageHome(
@@ -451,7 +450,7 @@ function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettin
 		}
 	}
 
-	if (!hasParentStoreEntries(parent, agentPath, parentWorkflows, relativeTargets)) {
+	if (!hasParentStoreEntries(parent, agentPath, relativeTargets)) {
 		return recordSettledStorageHome(
 			fastKey,
 			cacheKey,
@@ -463,7 +462,8 @@ function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettin
 		? readClaimFile(join(parentWorkflows, "pool", "host-id.adopted-by"))
 		: undefined;
 	const validHostIdOwner =
-		hostIdOwner !== undefined && !hasOwnStoreEntries(hostIdOwner, configuredRelativeTargets(hostIdOwner, rawHome))
+		hostIdOwner !== undefined &&
+		!hasOwnStoreEntries(hostIdOwner, dirname(hostIdOwner), configuredRelativeTargets(hostIdOwner, rawHome))
 			? hostIdOwner
 			: undefined;
 	if (validHostIdOwner === undefined && !canClaimParentStore(parent, agentPath, defaultAgent, rawHome)) {
@@ -494,18 +494,21 @@ export function coLocatesWorkflowStore(agentDir: string, settings?: StorageHomeS
 	const parent = dirname(agentPath);
 	if (pathsEqual(parent, agentPath) || sameDirectory(parent, defaultHome)) return true;
 	const relativeTargets = configuredRelativeTargets(agentPath, rawHome, settings);
-	if (hasOwnStoreEntries(agentPath, relativeTargets)) return true;
+	if (hasOwnStoreEntries(agentPath, parent, relativeTargets)) return true;
 	const parentWorkflows = join(parent, "workflows");
 	const parentWorkflowsIsDir = isDirectory(parentWorkflows);
-	if (parentWorkflowsIsDir && !pathsEqual(parentWorkflows, agentPath)) {
+	if (parentWorkflowsIsDir) {
 		const existingOwner = readClaimFile(join(parentWorkflows, ADOPTION_CLAIM_FILE));
 		if (existingOwner !== undefined) return !sameDirectory(existingOwner, agentPath);
 	}
-	if (!hasParentStoreEntries(parent, agentPath, parentWorkflows, relativeTargets)) return true;
+	if (!hasParentStoreEntries(parent, agentPath, relativeTargets)) return true;
 	const hostIdOwner = parentWorkflowsIsDir
 		? readClaimFile(join(parentWorkflows, "pool", "host-id.adopted-by"))
 		: undefined;
-	if (hostIdOwner !== undefined && !hasOwnStoreEntries(hostIdOwner, configuredRelativeTargets(hostIdOwner, rawHome))) {
+	if (
+		hostIdOwner !== undefined &&
+		!hasOwnStoreEntries(hostIdOwner, dirname(hostIdOwner), configuredRelativeTargets(hostIdOwner, rawHome))
+	) {
 		return !sameDirectory(hostIdOwner, agentPath);
 	}
 	return !canClaimParentStore(parent, agentPath, defaultAgent, rawHome);
