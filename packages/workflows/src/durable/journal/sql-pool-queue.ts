@@ -1529,12 +1529,19 @@ export class SqlPoolQueue {
 	 */
 	async readyMark(root: string): Promise<string | undefined> {
 		const row = await (this.storage.peek ?? this.storage.read)((executor) =>
-			executor.get<SqliteRow & { ready: number | bigint; latest: number | bigint | null }>(
-				`SELECT COUNT(*) AS ready, MAX(ready_at) AS latest FROM ${this.work} WHERE root = ? AND state = 'ready' AND ready_at <= ${this.now}`,
+			executor.get<
+				SqliteRow & { ready: number | bigint; latest: number | bigint | null; revision: number | bigint | null }
+			>(
+				`SELECT COUNT(*) AS ready, MAX(ready_at) AS latest,
+				(SELECT revision FROM ${this.roots}_control WHERE root = ?) AS revision
+				FROM ${this.work} WHERE root = ? AND state = 'ready' AND ready_at <= ${this.now}`,
+				root,
 				root,
 			),
 		);
-		return row === undefined || Number(row.ready) === 0 ? undefined : `${row.ready}:${row.latest}`;
+		return row === undefined || Number(row.ready) === 0
+			? undefined
+			: `${row.ready}:${row.latest}:${row.revision ?? 0}`;
 	}
 	/**
 	 * Fails ready work of this root incarnation that no worker may take, as bound work no capable host claimed within

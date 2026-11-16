@@ -241,6 +241,22 @@ test("a journal whose database has no notifications sends none and has nothing t
 	}
 });
 
+test("resuming changes the ready mark even if no work changed while paused (#5230)", async () => {
+	const f = await fixture();
+	try {
+		await f.pool.enqueue(f.lease, work, boundary);
+		const before = await f.pool.readyMark("root");
+		assert.ok(before !== undefined);
+		await f.pool.setControl(f.lease, "paused");
+		await f.pool.setControl(f.lease, "running");
+		const resumed = await f.pool.readyMark("root");
+		assert.ok(resumed !== undefined);
+		assert.notEqual(resumed, before, "a host without notifications discovers the resume on its next ready probe");
+	} finally {
+		await f.close();
+	}
+});
+
 test("a pool's ready mark shows claimable work, and changes as work becomes ready or is claimed (#5230)", async () => {
 	const f = await fixture();
 	try {
