@@ -64,14 +64,19 @@ InteractiveModeBase.prototype.beginHostInlineCustomUi = function (
 ): () => void {
 	let released = false;
 	this.blockingInlineCustomUiDepth++;
-	if (purpose === "navigation") this.navigationInlineCustomUiDepth = (this.navigationInlineCustomUiDepth ?? 0) + 1;
+	if (purpose === "navigation") {
+		this.navigationInlineCustomUiDepth = (this.navigationInlineCustomUiDepth ?? 0) + 1;
+		this.renderWidgets?.();
+	}
 	this.notifyHostCustomUiStateListeners();
 	return () => {
 		if (released) return;
 		released = true;
 		this.blockingInlineCustomUiDepth = Math.max(0, this.blockingInlineCustomUiDepth - 1);
-		if (purpose === "navigation")
+		if (purpose === "navigation") {
 			this.navigationInlineCustomUiDepth = Math.max(0, this.navigationInlineCustomUiDepth - 1);
+			this.renderWidgets?.();
+		}
 		this.notifyHostCustomUiStateListeners();
 	};
 };

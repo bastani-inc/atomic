@@ -1,23 +1,6 @@
-import type { WorkflowInputEntry } from "../extension/render-result.js";
-import { sanitizeToolDisplayText, sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { BOLD, hexBg, hexToAnsi, paint, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
-import { parseBooleanInput } from "./inputs-picker-types.js";
-import {
-	formatReviewValue,
-	renderWrappedPrefixedLines,
-	truncateToWidth,
-	visibleWidth,
-	wrapPlainText,
-} from "./text-helpers.js";
-
-export interface SubmitPaneRenderOpts {
-	workflowName: string;
-	fields: readonly WorkflowInputEntry[];
-	rawText: Record<string, string>;
-	theme: GraphTheme;
-	width: number;
-}
+import { renderWrappedPrefixedLines, truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
 
 export interface SubmitControlsRenderOpts {
 	invalidFieldNames: readonly string[];
@@ -53,29 +36,6 @@ export function renderAskChoiceRows(
 		firstPrefix,
 		styleLine: (line) => (active ? paint(line, theme.accent, { bold: true }) : paint(line, theme.textMuted)),
 	});
-}
-
-export function renderSubmitReview(opts: SubmitPaneRenderOpts): string[] {
-	const { workflowName, fields, rawText, theme, width } = opts;
-	const out: string[] = [truncateToWidth(paint("Review your inputs", theme.accent, { bold: true }), width, "…"), ""];
-	out.push(
-		truncateToWidth(
-			paint("/workflow ", theme.dim) + paint(sanitizeToolTitleText(workflowName), theme.text),
-			width,
-			"…",
-		),
-	);
-	for (const field of fields) {
-		out.push(
-			truncateToWidth(
-				paint(" ● ", theme.dim) + paint(sanitizeToolTitleText(field.name), theme.textMuted),
-				width,
-				"…",
-			),
-		);
-		out.push(...renderReviewValueRows(field, rawText[field.name] ?? "", theme, width));
-	}
-	return out;
 }
 
 export function renderSubmitControls(opts: SubmitControlsRenderOpts): string[] {
@@ -138,25 +98,4 @@ function renderCompactSubmitButton(
 		text: `${chromeBg}${labelFg}${BOLD}${plain}${RESET}${chromeBg}`,
 		visibleWidth: visibleWidth(plain),
 	};
-}
-
-function renderReviewValueRows(field: WorkflowInputEntry, raw: string, theme: GraphTheme, width: number): string[] {
-	const plainPrefix = "   → ";
-	const firstPrefix = `   ${paint("→ ", theme.dim)}`;
-	return renderWrappedPrefixedLines({
-		text: formatFieldReviewValue(field, raw),
-		width,
-		plainPrefix,
-		firstPrefix,
-		styleLine: (line) => paint(line, theme.text),
-	});
-}
-
-function formatFieldReviewValue(field: WorkflowInputEntry, raw: string): string {
-	if (field.type === "boolean") {
-		if (raw.trim().length === 0) return formatReviewValue("");
-		const parsed = parseBooleanInput(raw);
-		if (parsed !== undefined) return parsed ? "on" : "off";
-	}
-	return formatReviewValue(sanitizeToolDisplayText(raw));
 }

@@ -243,6 +243,9 @@ export async function openInlineInputsForm(
 
 		try {
 			setEditor.call(ctx.ui, factory);
+			if (typeof getEditor === "function" && getEditor.call(ctx.ui) !== factory) {
+				throw new Error("The host did not install the form's editor.");
+			}
 		} catch {
 			activeEditor?.dispose?.();
 			activeEditor = undefined;

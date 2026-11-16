@@ -78,6 +78,7 @@ export interface WorkflowInputEntry {
 	pattern?: string;
 	format?: string;
 	schema?: { readonly [key: string]: WorkflowInputJson };
+	validationDeferred?: boolean;
 }
 
 /**

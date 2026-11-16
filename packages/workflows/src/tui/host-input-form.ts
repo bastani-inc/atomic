@@ -21,7 +21,6 @@ function supportedType(type: string): PiHostInputFormField["type"] {
 	}
 }
 
-/** Adapt workflow schemas to the host-owned, raw-string form capability. */
 export async function openHostInputsForm(
 	ui: HostInputsFormUi,
 	options: {
@@ -32,6 +31,7 @@ export async function openHostInputsForm(
 ): Promise<InputsPickerResult | { kind: "unsupported" }> {
 	const open = ui.hostInputForm;
 	if (typeof open !== "function") return { kind: "unsupported" };
+	if (options.fields.some((field) => field.validationDeferred === true)) return { kind: "unsupported" };
 	const prefilled = options.prefilled ?? {};
 	const fields: PiHostInputFormField[] = options.fields.map((field) => ({
 		name: field.name,

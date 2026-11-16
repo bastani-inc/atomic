@@ -168,7 +168,15 @@ function renderField(
 	const borderColor = focused ? theme.accent : theme.borderDim;
 	const rows = renderAskStyleFieldBody(field, raw, focused ? caret : raw.length, focused, theme, contentWidth);
 	const invalid = invalidForField(field, raw, 0);
-	const top = renderFieldTop(field.name, invalid, boxWidth, borderColor, focused, theme);
+	const top = renderFieldTop(
+		field.name,
+		invalid,
+		boxWidth,
+		borderColor,
+		focused,
+		theme,
+		field.validationDeferred === true,
+	);
 	const errorLines =
 		invalid !== null && !top.reasonShown
 			? wrapPlainText(`✗ ${sanitizeToolTitleText(invalid)}`, width).map((line) => paint(line, theme.error))
@@ -244,16 +252,17 @@ function renderFieldTop(
 	borderColor: string,
 	focused: boolean,
 	theme: GraphTheme,
+	validationDeferred = false,
 ): { line: string; reasonShown: boolean } {
 	const safeTitle = sanitizeToolTitleText(title);
 	const room = Math.max(0, width - 2);
 	const minTitleCols = Math.min(visibleWidth(safeTitle), 4);
 	if (invalid === null) {
-		const statusPlain = "✓ ";
+		const statusPlain = validationDeferred ? "? " : "✓ ";
 		const titleBudget = Math.max(1, room - visibleWidth(statusPlain) - 2);
 		const titleShown = truncateToWidth(safeTitle, titleBudget, "…");
 		const labelText = paint(` ${titleShown} `, focused ? theme.accent : theme.textMuted, { bold: focused });
-		const status = paint(statusPlain, theme.success);
+		const status = paint(statusPlain, validationDeferred ? theme.textMuted : theme.success);
 		const head = truncateToWidth(labelText + status, room, "…");
 		const fill = Math.max(0, room - visibleWidth(head));
 		return {
@@ -372,8 +381,10 @@ function composeCommand(state: InlineFormState): string {
 	for (const [name, value] of Object.entries(coerceValues(state.fields, state.rawText))) {
 		const safeName = sanitizeToolTitleText(name);
 		const safeValue = sanitizeToolTitleText(typeof value === "string" ? value : JSON.stringify(value));
-		const needsQuotes = typeof value === "string" && (safeValue === "" || /\s|=/.test(safeValue));
-		parts.push(`${safeName}=${needsQuotes ? `"${safeValue}"` : safeValue}`);
+		const needsQuotes =
+			safeValue === "" || /\s|=/.test(safeValue) || (typeof value === "string" && safeValue.includes('"'));
+		const formattedValue = needsQuotes ? `"${safeValue.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : safeValue;
+		parts.push(`${safeName}=${formattedValue}`);
 	}
 	return parts.join(" ");
 }

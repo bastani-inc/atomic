@@ -15,7 +15,7 @@ InteractiveModeBase.prototype.renderWidgets = function (this: InteractiveModeBas
 	this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, true, true);
 	// Engine-owned tasks can mount after a workflow or remount after inspection.
 	// Keep their status below the footer's MCP text but before the BACKGROUND card.
-	const below = [...this.extensionWidgetsBelow];
+	const below = this.navigationInlineCustomUiDepth > 0 ? [] : [...this.extensionWidgetsBelow];
 	const taskIndex = below.findIndex(([key]) => key === "atomic.background-tasks");
 	const workflowIndex = below.findIndex(([key]) => key === "workflow.run");
 	if (workflowIndex >= 0 && taskIndex > workflowIndex) {

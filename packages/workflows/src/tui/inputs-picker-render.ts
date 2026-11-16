@@ -110,7 +110,15 @@ function renderInputField(
 		theme,
 		contentWidth,
 	);
-	const top = renderFieldTop(field.name, invalid, boxWidth, borderColor, focused, theme);
+	const top = renderFieldTop(
+		field.name,
+		invalid,
+		boxWidth,
+		borderColor,
+		focused,
+		theme,
+		field.validationDeferred === true,
+	);
 	const errorLines =
 		invalid !== null && !top.reasonShown
 			? wrapPlainText(`✗ ${sanitizeToolTitleText(invalid)}`, width).map((line) => paint(line, theme.error))
@@ -268,16 +276,17 @@ function renderFieldTop(
 	borderColor: string,
 	focused: boolean,
 	theme: GraphTheme,
+	validationDeferred = false,
 ): { line: string; reasonShown: boolean } {
 	const safeTitle = sanitizeToolTitleText(title);
 	const room = Math.max(0, width - 2);
 	const minTitleCols = Math.min(visibleWidth(safeTitle), 4);
 	if (invalid === null) {
-		const statusPlain = "✓ ";
+		const statusPlain = validationDeferred ? "? " : "✓ ";
 		const titleBudget = Math.max(1, room - visibleWidth(statusPlain) - 2);
 		const titleShown = truncateToWidth(safeTitle, titleBudget, "…");
 		const labelText = paint(` ${titleShown} `, focused ? theme.accent : theme.textMuted, { bold: focused });
-		const status = paint(statusPlain, theme.success);
+		const status = paint(statusPlain, validationDeferred ? theme.textMuted : theme.success);
 		const head = truncateToWidth(labelText + status, room, "…");
 		const fill = Math.max(0, room - visibleWidth(head));
 		return {

@@ -5,20 +5,12 @@ import type { WorkflowInputValues, WorkflowSerializableValue } from "../shared/t
 import type { GraphTheme } from "./graph-theme.js";
 
 export interface InputsPickerState {
-	/** Index of the currently-focused field. */
 	focusedIdx: number;
 	rawText: Record<string, string>;
-	/**
-	 * Set of field indices that failed validation on the most recent submit
-	 * attempt. Used to dim the run hint and to highlight a field if the user
-	 * retries with required fields still empty.
-	 */
 	invalidIndices: readonly number[];
-	/** Cursor offset within the focused single-line text field. */
 	caret: number;
 }
 
-/** Discriminated action returned by the key handler. */
 export type InputsPickerAction = { kind: "noop" } | { kind: "cancel" } | { kind: "run"; values: WorkflowInputValues };
 
 export interface InputsPickerRenderOpts {
@@ -27,18 +19,13 @@ export interface InputsPickerRenderOpts {
 	workflowName: string;
 	fields: readonly WorkflowInputEntry[];
 	state: InputsPickerState;
-	/** True when the blinking cursor is in its visible half-period. */
 	cursorOn: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// State construction + value coercion
-// ---------------------------------------------------------------------------
-
 export function initialInputText(field: WorkflowInputEntry, prefilled: WorkflowInputValues): string {
-	if (prefilled[field.name] !== undefined) return String(prefilled[field.name]);
-	if (field.default !== undefined) return String(field.default);
-	return "";
+	const value = prefilled[field.name] !== undefined ? prefilled[field.name] : field.default;
+	if (value === undefined) return "";
+	return typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
 }
 
 export function createInputsPickerState(
@@ -47,8 +34,6 @@ export function createInputsPickerState(
 ): InputsPickerState {
 	const rawText: Record<string, string> = {};
 	for (const f of fields) rawText[f.name] = initialInputText(f, prefilled);
-	// Focus the first invalid field if any; otherwise field 0. This keeps the
-	// cursor on the first thing the user actually needs to fill in.
 	const firstInvalid = fields.findIndex((f, i) => invalidForField(f, rawText[f.name] ?? "", i) !== null);
 	const focusedIdx = firstInvalid >= 0 ? firstInvalid : 0;
 	return {
@@ -119,8 +104,18 @@ function checkSchema(schema: TSchema, value: unknown, kind: string): string | nu
 	try {
 		return Value.Check(schema, value) ? null : firstSchemaError(schema, value, kind);
 	} catch (error) {
-		return error instanceof SyntaxError ? INVALID_PATTERN : null;
+		if (error instanceof SyntaxError) return INVALID_PATTERN;
+		return error instanceof Error && error.message ? error.message : `does not match ${kind} schema`;
 	}
+}
+
+function parseFiniteJson(text: string): WorkflowSerializableValue {
+	return JSON.parse(text, (_key, value) => {
+		if (typeof value === "number" && !Number.isFinite(value)) {
+			throw new RangeError("non-finite number");
+		}
+		return value;
+	}) as WorkflowSerializableValue;
 }
 
 function structuredValue(field: WorkflowInputEntry, text: string): WorkflowSerializableValue {
@@ -129,7 +124,7 @@ function structuredValue(field: WorkflowInputEntry, text: string): WorkflowSeria
 	if (schema === undefined && !looksLikeJson) return text;
 	let parsed: WorkflowSerializableValue;
 	try {
-		parsed = JSON.parse(text) as WorkflowSerializableValue;
+		parsed = parseFiniteJson(text);
 	} catch {
 		return text;
 	}
@@ -198,6 +193,13 @@ function fieldReason(field: WorkflowInputEntry, value: string): string | null {
 		return "required";
 	}
 	if (empty) return null;
+	if (field.schema !== undefined || ["unknown", "object", "array"].includes(field.type)) {
+		try {
+			parseFiniteJson(value);
+		} catch (error) {
+			if (error instanceof RangeError) return "must be JSON-serializable";
+		}
+	}
 	if (field.schema !== undefined) return checkSchema(field.schema as TSchema, structuredValue(field, value), "value");
 	if (field.type === "select") {
 		return (field.choices ?? []).includes(value) ? null : "not in choices";

@@ -351,19 +351,32 @@ export function openWorkflowsListing(
 				before: readonly SelectorItem<WorkflowsListingTarget>[],
 				after: readonly SelectorItem<WorkflowsListingTarget>[],
 			): boolean => before.length === after.length && before.every((item, index) => item.id === after[index]?.id);
-			const refreshClock = (): boolean => {
+			const sameDescriptions = (
+				before: readonly SelectorItem<WorkflowsListingTarget>[],
+				after: readonly SelectorItem<WorkflowsListingTarget>[],
+			): boolean =>
+				sameIds(before, after) && before.every((item, index) => item.description === after[index]?.description);
+			const visiblePage = (): SelectorItem<WorkflowsListingTarget>[] => {
+				const visible = selector.getVisible();
+				const top = selector.getTop();
+				return visible.slice(top, top + selector.maxVisible);
+			};
+			const refreshClock = (fromTick = false): boolean => {
 				const now = Date.now();
-				if (Math.abs(now - currentNow) < LISTING_CLOCK_TICK_MS || cachedRuns.length === 0) return false;
+				if ((!fromTick && Math.abs(now - currentNow) < LISTING_CLOCK_TICK_MS) || cachedRuns.length === 0)
+					return false;
 				currentNow = now;
 				const next = workflowsListingItems(cachedRuns, cachedDefinitions, currentNow);
-				const unchanged =
-					sameIds(items, next) && items.every((item, index) => item.description === next[index]?.description);
-				if (unchanged) return false;
+				if (sameDescriptions(items, next)) return false;
 				items = next;
 				const before = selector.getVisible();
+				const beforePage = visiblePage();
 				selector.setItems(items);
-				if (!sameIds(before, selector.getVisible())) refreshedSincePaint = true;
-				return true;
+				if (!sameIds(before, selector.getVisible())) {
+					refreshedSincePaint = true;
+					return true;
+				}
+				return !sameDescriptions(beforePage, visiblePage());
 			};
 			const refreshItems = (): void => {
 				if (itemsStale) {
@@ -379,7 +392,7 @@ export function openWorkflowsListing(
 				refreshClock();
 			};
 			const tick = setInterval(() => {
-				if (refreshClock()) tui.requestRender?.();
+				if (refreshClock(true)) tui.requestRender?.();
 			}, LISTING_CLOCK_TICK_MS);
 			tick.unref?.();
 			let unsubscribe: (() => void) | undefined;

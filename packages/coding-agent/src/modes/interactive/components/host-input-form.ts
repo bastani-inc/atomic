@@ -91,15 +91,22 @@ function checkSchema(schema: TSchema, value: unknown, kind: string): string | un
 	try {
 		return Value.Check(schema, value) ? undefined : firstSchemaError(schema, value, kind);
 	} catch (error) {
-		return error instanceof SyntaxError ? INVALID_PATTERN : undefined;
+		if (error instanceof SyntaxError) return INVALID_PATTERN;
+		return error instanceof Error && error.message ? error.message : `does not match ${kind} schema`;
 	}
 }
 
 function schemaValue(schema: TSchema, text: string): unknown {
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(text);
-	} catch {
+		parsed = JSON.parse(text, (_key, value) => {
+			if (typeof value === "number" && !Number.isFinite(value)) {
+				throw new RangeError("non-finite number");
+			}
+			return value;
+		});
+	} catch (error) {
+		if (error instanceof RangeError) throw error;
 		return text;
 	}
 	if (checkSchema(schema, parsed, "value") === undefined) return parsed;
@@ -546,7 +553,11 @@ export class HostInputFormComponent implements Component, Focusable {
 		if (empty) return undefined;
 		if (field.schema !== undefined) {
 			const schema = field.schema as TSchema;
-			return checkSchema(schema, schemaValue(schema, value), "value");
+			try {
+				return checkSchema(schema, schemaValue(schema, value), "value");
+			} catch {
+				return "must be JSON-serializable";
+			}
 		}
 		if (field.type === "select") {
 			return (field.choices ?? []).includes(value) ? undefined : "not in choices";

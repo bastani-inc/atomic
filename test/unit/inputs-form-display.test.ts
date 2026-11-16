@@ -10,7 +10,6 @@ import { deriveInputFields } from "../../packages/workflows/src/shared/schema-in
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import { renderInlineCard } from "../../packages/workflows/src/tui/inline-form-card.ts";
 import type { InlineFormState } from "../../packages/workflows/src/tui/inline-form-store.ts";
-import { renderSubmitReview } from "../../packages/workflows/src/tui/submit-pane.ts";
 
 class QuietTerminal implements Terminal {
 	columns = 100;
@@ -36,13 +35,6 @@ beforeAll(() => {
 });
 
 const graphTheme = deriveGraphTheme({});
-
-test("the inputs review fits widths narrower than its heading (#5245)", () => {
-	for (const width of [1, 5, 10, 17]) {
-		const lines = renderSubmitReview({ workflowName: "w", fields: [], rawText: {}, theme: graphTheme, width });
-		for (const line of lines) assert.ok(visibleWidth(line) <= width, `width ${width}: ${visibleWidth(line)} columns`);
-	}
-});
 
 test("the submitted inputs line shows the values the run received (#5245)", () => {
 	const fields = deriveInputFields({
