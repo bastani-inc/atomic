@@ -1,14 +1,36 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as wait } from "node:timers/promises";
 import { afterEach, test, vi } from "vitest";
 import {
+	CLEANUP_MARKER_FILE,
 	resetSessionTempCleanupScheduleForTesting,
+	SESSION_TEMP_CLEANUP_DELAY_MS,
 	scheduleSessionTempCleanup,
 } from "../src/core/tools/session-temp-cleanup.js";
+import { getTempRootDir, resetSessionTempDirStateForTesting } from "../src/core/tools/session-temp-dir.ts";
+import {
+	readWindowsDirectorySecurity,
+	setWindowsDirectorySecurityReaderForTesting,
+} from "../src/core/tools/windows-directory-security.ts";
+
+/** How long the sweep may take to settle: its one PowerShell descriptor read is bounded by 30 s per attempt. */
+const DEFERRED_SWEEP_SETTLED_MS = 75_000;
+const DEFERRED_SWEEP_TEST_TIMEOUT_MS = DEFERRED_SWEEP_SETTLED_MS + 10_000;
+
+const sandboxes: string[] = [];
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
 	resetSessionTempCleanupScheduleForTesting();
+	setWindowsDirectorySecurityReaderForTesting(undefined);
+	resetSessionTempDirStateForTesting();
+	for (const sandbox of sandboxes.splice(0)) rmSync(sandbox, { recursive: true, force: true });
 });
 
 test("the deferred sweep is armed once, outside the async context of the session that asked for it (#4309)", () => {
@@ -26,3 +48,32 @@ test("the deferred sweep is armed once, outside the async context of the session
 
 	assert.deepEqual(armedIn, [undefined]);
 });
+
+test.skipIf(process.platform !== "win32")(
+	"the deferred sweep reads the temp root's descriptor without holding the event loop (#5324)",
+	async () => {
+		const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-deferred-sweep-")));
+		sandboxes.push(sandbox);
+		for (const key of ["TEMP", "TMP", "TMPDIR"]) vi.stubEnv(key, sandbox);
+		resetSessionTempDirStateForTesting();
+		const root = getTempRootDir();
+		mkdirSync(root);
+		const heldReads: string[] = [];
+		setWindowsDirectorySecurityReaderForTesting((path) => {
+			heldReads.push(path);
+			return readWindowsDirectorySecurity(path);
+		});
+
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		scheduleSessionTempCleanup({ sessionsRoots: [] });
+		vi.advanceTimersByTime(SESSION_TEMP_CLEANUP_DELAY_MS);
+		vi.useRealTimers();
+		const marker = join(root, CLEANUP_MARKER_FILE);
+		const deadline = Date.now() + DEFERRED_SWEEP_SETTLED_MS;
+		while (!existsSync(marker) && Date.now() < deadline) await wait(20);
+
+		assert.deepEqual(heldReads, [], "the sweep read no descriptor on the main thread");
+		assert.ok(existsSync(marker), "the sweep ran once the temp root was verified");
+	},
+	DEFERRED_SWEEP_TEST_TIMEOUT_MS,
+);
