@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { ForkOptions } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -45,6 +45,11 @@ function filesUnder(directory: string): string[] {
 		.map((entry) => join(entry.parentPath, entry.name));
 }
 
+/** Files of roots' local journals under `directory`: everything but each journal's lock, which is never removed. */
+function shardFilesUnder(directory: string): string[] {
+	return filesUnder(directory).filter((file) => !file.endsWith(".lock"));
+}
+
 async function shipOnce(shard: ShipShard, key: string): Promise<void> {
 	await shard.hold(LEASE, 60_000);
 	const { localSeq } = await shard.accept(shard.root, LEASE, key, "{}", 1);
@@ -60,7 +65,11 @@ test("a retired local checkpoint journal whose checkpoints all shipped leaves no
 			for (let checkpoint = 0; checkpoint < 50; checkpoint++) await shipOnce(shard, `key-${checkpoint}`);
 			await shard.close({ retire: true });
 		}
-		assert.deepEqual(filesUnder(join(directory, "ship")), []);
+		assert.deepEqual(
+			filesUnder(join(directory, "ship")).map((file) => basename(file)),
+			[`${basename(dirname(shipShardPath(directory, "journal", "root-0")))}.lock`],
+			"only the journal's lock is left",
+		);
 	} finally {
 		removeTempDirectory(directory);
 	}
@@ -123,9 +132,9 @@ test("a root pool that closes after its run ends removes its local checkpoint jo
 	mkdirSync(stateDirectory);
 	const { journal, host } = await prepareRoot(directory, stateDirectory);
 	try {
-		assert.equal(filesUnder(join(stateDirectory, "ship")).length > 0, true);
+		assert.equal(shardFilesUnder(join(stateDirectory, "ship")).length > 0, true);
 		await host.command({ kind: "close" });
-		assert.deepEqual(filesUnder(join(stateDirectory, "ship")), []);
+		assert.deepEqual(shardFilesUnder(join(stateDirectory, "ship")), []);
 	} finally {
 		await host.coordinator.shutdown();
 		await journal.close();
@@ -167,10 +176,10 @@ test("a worker host removes its local checkpoint journal only when its root's ru
 			while (forked.length === before) await sleep(5);
 			await forked[before]!.request({ kind: "ready" });
 			await attaching;
-			assert.equal(filesUnder(join(stateDirectory, "ship")).length > 0, true);
+			assert.equal(shardFilesUnder(join(stateDirectory, "ship")).length > 0, true);
 			await host.coordinator.stopSatellite({ rootEnded });
 			await host.coordinator.shutdown();
-			assert.equal(filesUnder(join(stateDirectory, "ship")).length === 0, rootEnded);
+			assert.equal(shardFilesUnder(join(stateDirectory, "ship")).length === 0, rootEnded);
 		}
 	} finally {
 		await journal.close();

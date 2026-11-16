@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { realpath, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
@@ -71,7 +71,11 @@ export class ShipShard {
 		private readonly now: () => number = () => performance.now(),
 	) {}
 
-	static async open(path: string, root: string, now?: () => number): Promise<ShipShard> {
+	static open(path: string, root: string, now?: () => number): Promise<ShipShard> {
+		return underJournalLock(path, () => ShipShard.openUnlocked(path, root, now));
+	}
+
+	private static async openUnlocked(path: string, root: string, now?: () => number): Promise<ShipShard> {
 		mkdirSync(dirname(path), { recursive: true });
 		const database = await openNodeSqliteDatabase(path);
 		try {
@@ -275,10 +279,28 @@ export class ShipShard {
 		if (this.closed) return;
 		this.closed = true;
 		this.leases.clear();
-		const retire = options.retire === true && (await this.holdsNothing());
-		const location = retire ? await realpath(this.path).catch(() => undefined) : undefined;
+		try {
+			if (options.retire === true) await underJournalLock(this.path, () => this.retire());
+		} finally {
+			await this.database.close();
+		}
+	}
+
+	private async retire(): Promise<void> {
+		const unused = (await this.onlyConnection()) && (await this.holdsNothing());
+		const location = unused ? await realpath(this.path).catch(() => undefined) : undefined;
 		await this.database.close();
-		if (location !== undefined) await removeUnusedShardFiles(location);
+		if (location !== undefined) await removeShardFiles(location);
+	}
+
+	private async onlyConnection(): Promise<boolean> {
+		try {
+			await this.database.exec("PRAGMA busy_timeout=0");
+			const mode = await this.database.get<SqliteRow & { journal_mode: string }>("PRAGMA journal_mode=DELETE");
+			return mode?.journal_mode === "delete";
+		} catch {
+			return false;
+		}
 	}
 
 	private async holdsNothing(): Promise<boolean> {
@@ -329,31 +351,17 @@ export class ShipShard {
 	}
 }
 
-function processAlive(pid: number): boolean {
+async function underJournalLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+	const lock = await openNodeSqliteDatabase(`${dirname(path)}.lock`);
 	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
+		return await lock.transaction(() => operation());
+	} finally {
+		await lock.close();
 	}
 }
 
-function usedByLiveConnection(location: string): boolean {
-	let names: string[];
-	try {
-		names = readdirSync(`${location}-holders`);
-	} catch {
-		return false;
-	}
-	return names.some((name) => {
-		const pid = Number(/^(\d+)-/.exec(name)?.[1] ?? Number.NaN);
-		return Number.isSafeInteger(pid) && pid > 0 && processAlive(pid);
-	});
-}
-
-async function removeUnusedShardFiles(location: string): Promise<void> {
-	if (usedByLiveConnection(location)) return;
-	for (const suffix of ["-wal", "-shm", "-journal", ""])
+async function removeShardFiles(location: string): Promise<void> {
+	for (const suffix of ["", "-journal", "-wal", "-shm"])
 		await rm(`${location}${suffix}`, { force: true }).catch(() => {});
 	for (const suffix of ["-holders", "-writers", "-wakes"])
 		await rm(`${location}${suffix}`, { recursive: true, force: true }).catch(() => {});
