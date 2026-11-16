@@ -76,6 +76,7 @@ const { SessionAlreadyOpenError } = await import("../src/core/session-manager-er
 
 const SESSION_CLAIMS_MODULE = fileURLToPath(new URL("../src/core/session-claims.ts", import.meta.url));
 const LOCK_TAKEOVER_MODULE = fileURLToPath(new URL("../src/core/lock-takeover.ts", import.meta.url));
+const PROCESS_START_TOKEN_MODULE = fileURLToPath(new URL("../src/core/process-start-token.ts", import.meta.url));
 /** Whether this process and the others it starts take over through the native advisory lock (#5193). */
 let native = false;
 /** How long another process may take to report how its claim went. */
@@ -97,7 +98,7 @@ beforeEach(() => {
 	race.beforeClaimRemoval = undefined;
 	race.beforeMutexRemoval = undefined;
 	mkdirSync(join(agentDir, "session-claims"), { recursive: true });
-	writeFileSync(claimFile, JSON.stringify({ token: "dead", pid: exitedPid(), host: hostname() }));
+	writeFileSync(claimFile, JSON.stringify({ token: "dead", ...exitedProcess(), host: hostname() }));
 });
 
 afterEach(() => {
@@ -108,10 +109,23 @@ afterEach(() => {
 	rmSync(agentDir, { recursive: true, force: true });
 });
 
-function exitedPid(): number {
-	return Number(
-		spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout,
+/**
+ * A process that exited, named as a claim names its holder: by its pid and, where that can be read, when it started,
+ * which it reads itself while it runs. Windows soon gives an exited process's pid to another process, and only the
+ * start tells that process from the one that exited; a claim naming the pid alone would be that process's.
+ */
+function exitedProcess(): { readonly pid: number; readonly started?: string } {
+	const exited = spawnSync(
+		"bun",
+		[
+			"--eval",
+			`const { processStartToken } = await import(${JSON.stringify(PROCESS_START_TOKEN_MODULE)});
+			process.stdout.write(JSON.stringify({ pid: process.pid, started: processStartToken(process.pid) }));`,
+		],
+		{ encoding: "utf8" },
 	);
+	assert.equal(exited.status, 0, exited.stderr);
+	return JSON.parse(exited.stdout) as { pid: number; started?: string };
 }
 
 function sleep(ms: number): void {
@@ -240,7 +254,7 @@ describe("concurrent takeovers of a dead session claim (#5179)", () => {
 	test("a takeover lock whose owner is dead is broken at once, and the claim taken over (#5179)", () => {
 		const mutex = `${claimFile}.takeover`;
 		mkdirSync(mutex);
-		writeFileSync(join(mutex, "owner"), JSON.stringify({ host: hostname(), pid: exitedPid(), id: "dead" }));
+		writeFileSync(join(mutex, "owner"), JSON.stringify({ host: hostname(), ...exitedProcess(), id: "dead" }));
 		assert.deepEqual(thisProcessClaims(), { held: true, pid: process.pid });
 		assert.equal(claimHolderPid(), process.pid);
 		assert.equal(existsSync(mutex), false);
