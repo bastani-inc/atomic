@@ -1054,7 +1054,7 @@ describe("compaction boundary component", () => {
 		const collapsed = stripVTControlCharacters(collapsedRaw);
 		expect(collapsedRaw).toContain(theme.fg("customMessageLabel", theme.bold("Context compacted")));
 		expect(collapsed).toMatch(/∀ Context compacted · 100 → \S+ tokens · ctrl\+o for summary/);
-		expect(collapsed).not.toContain("Compacted from");
+		expect(collapsed).not.toContain("Context before compaction");
 		expect(collapsed).not.toContain("retained");
 		expect(collapsed).not.toContain("planned");
 
@@ -1065,7 +1065,7 @@ describe("compaction boundary component", () => {
 			.map((line) => line.trimEnd())
 			.join("\n");
 		expect(expanded).toContain("∀ Context compacted");
-		expect(expanded).toContain("Compacted from 100 tokens");
+		expect(expanded).toContain("Context before compaction: 100 tokens");
 		expect(expanded).toContain("[User]: retained\n (filtered 1 lines)");
 		expect(expandedRaw).toContain(theme.fg("dim", "(filtered 1 lines)"));
 	});
@@ -1079,11 +1079,11 @@ describe("compaction boundary component", () => {
 		const component = new CompactionBoundaryMessageComponent(divergent);
 		component.setExpanded(true);
 		const text = stripVTControlCharacters(component.render(200).join("\n"));
-		expect(text).toContain("Compacted from 1,200 tokens");
-		expect(text).not.toContain("Compacted from 480 tokens");
+		expect(text).toContain("Context before compaction: 1,200 tokens");
+		expect(text).not.toContain("Context before compaction: 480 tokens");
 	});
 
-	it("shows the message-token reduction in the header and labels the expanded whole-context count (#5243)", () => {
+	it("shows the message-token reduction in the header and labels the expanded context count neutrally (#5243)", () => {
 		const divergent: VerbatimCompactionResult = {
 			...result,
 			tokensBefore: 1_200,
@@ -1096,8 +1096,30 @@ describe("compaction boundary component", () => {
 		component.setExpanded(true);
 		const text = stripVTControlCharacters(component.render(200).join("\n"));
 		expect(text).toContain("480 → 240 tokens");
-		expect(text).toContain("Compacted from 1,200 tokens (including the system prompt and tools)");
-		expect(text).not.toContain("Compacted from 480 tokens");
+		expect(text).toContain("Context before compaction: 1,200 tokens");
+		expect(text).not.toContain("system prompt");
+		expect(text).not.toContain("Context before compaction: 480 tokens");
+	});
+
+	it("does not claim a count without provider usage includes the system prompt and tools (#5243)", () => {
+		const estimated = createCustomMessage(
+			"compaction",
+			`${VERBATIM_COMPACTION_PREFIX}[User]: retained\n(filtered 1 lines)`,
+			true,
+			{
+				strategy: "verbatim-lines",
+				parameters: result.parameters,
+				promptVersion: result.promptVersion,
+				rung: result.rung,
+				stats: result.stats,
+			},
+			new Date(1).toISOString(),
+		) as unknown as AgentMessage;
+		const component = compactionBoundaryFromMessage(estimated, true);
+		const text = stripVTControlCharacters(component.render(200).join("\n"));
+		expect(text).toContain("Context before compaction: 100 tokens");
+		expect(text).not.toContain("system prompt");
+		expect(text).not.toContain("tools");
 	});
 
 	it("projects the authoritative count onto a persisted boundary whose details only carry stats (#2052)", () => {
@@ -1114,7 +1136,7 @@ describe("compaction boundary component", () => {
 		expect("tokensBefore" in details).toBe(false);
 		const component = compactionBoundaryFromMessage(message, true);
 		const text = stripVTControlCharacters(component.render(200).join("\n"));
-		expect(text).toContain("Compacted from 1,200 tokens");
+		expect(text).toContain("Context before compaction: 1,200 tokens");
 	});
 
 	it.each([
@@ -1142,8 +1164,8 @@ describe("compaction boundary component", () => {
 			expect((message.details as { tokensBefore?: number }).tokensBefore).toBe(existing);
 			const component = compactionBoundaryFromMessage(message, true);
 			const text = stripVTControlCharacters(component.render(200).join("\n"));
-			expect(text).toContain(`Compacted from ${rendered} tokens`);
-			expect(text).not.toContain("Compacted from 1,200 tokens");
+			expect(text).toContain(`Context before compaction: ${rendered} tokens`);
+			expect(text).not.toContain("Context before compaction: 1,200 tokens");
 		},
 	);
 
@@ -1163,7 +1185,7 @@ describe("compaction boundary component", () => {
 		) as unknown as AgentMessage;
 		const component = compactionBoundaryFromMessage(legacy, true);
 		const text = stripVTControlCharacters(component.render(200).join("\n"));
-		expect(text).toContain("Compacted from 100 tokens");
+		expect(text).toContain("Context before compaction: 100 tokens");
 	});
 });
 
@@ -1216,8 +1238,8 @@ describe("compaction boundary JSONL reopen (#2052)", () => {
 		expect(boundary).toBeDefined();
 		const component = compactionBoundaryFromMessage(boundary!, true);
 		const text = stripVTControlCharacters(component.render(200).join("\n"));
-		expect(text).toContain("Compacted from 1,200 tokens");
-		expect(text).not.toContain("Compacted from 480 tokens");
+		expect(text).toContain("Context before compaction: 1,200 tokens");
+		expect(text).not.toContain("Context before compaction: 480 tokens");
 		expect(text).toContain("retained");
 	});
 });

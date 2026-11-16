@@ -250,6 +250,32 @@ describe("FooterComponent composer hints (#5224)", () => {
 			assert.ok(stripAnsi(rawLine).startsWith(`${expectedModel} • `), stripAnsi(rawLine));
 		}
 	});
+
+	it("sanitizes the provider shown when several providers are configured (#5243)", () => {
+		for (const [rawProvider, expectedLabel] of [
+			["anthropic", "anthropic/claude-sonnet-4-5"],
+			["evil\x1b]0;PWNED\x07co", "evil ]0;PWNED co/claude-sonnet-4-5"],
+			["evil\x1b]52;c;SGVsbG8=\x1b\\\nco", "evil ]52;c;SGVsbG8= \\ co/claude-sonnet-4-5"],
+		] as const) {
+			const s = createSession({ sessionName: "", provider: rawProvider, modelId: "claude-sonnet-4-5" });
+			const rawLine = new FooterComponent(s, createFooterData(2)).render(200)[0] ?? "";
+			assert.doesNotMatch(rawLine, /[\r\n\t\x07]|\x1b\]|\x1b\\/);
+			assert.ok(stripAnsi(rawLine).startsWith(`${expectedLabel} • `), stripAnsi(rawLine));
+		}
+	});
+
+	it("sanitizes the thinking level shown for a reasoning model (#5243)", () => {
+		const s = createSession({
+			sessionName: "",
+			provider: "anthropic",
+			modelId: "claude-sonnet-4-5",
+			reasoning: true,
+			thinkingLevel: "high\x1b]0;PWNED\x07\n",
+		});
+		const rawLine = new FooterComponent(s, createFooterData(1)).render(200)[0] ?? "";
+		assert.doesNotMatch(rawLine, /[\r\n\t\x07]|\x1b\]/);
+		assert.ok(stripAnsi(rawLine).startsWith("claude-sonnet-4-5  high ]0;PWNED • "), stripAnsi(rawLine));
+	});
 });
 describe("FooterComponent width handling", () => {
 	beforeAll(() => {

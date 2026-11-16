@@ -20,7 +20,7 @@ interface BoundaryView {
 	rung: VerbatimCompactionDetails["rung"];
 	backend?: VerbatimCompactionDetails["backend"];
 	model?: string;
-	/** Authoritative whole-context count, preferred for "Compacted from N tokens". */
+	/** Authoritative whole-context count, preferred for "Context before compaction: N tokens". */
 	tokensBefore?: number;
 	releasedRanges?: VerbatimCompactionDetails["releasedRanges"];
 }
@@ -101,16 +101,7 @@ export class CompactionBoundaryMessageComponent extends Box {
 		if (this.expanded) {
 			content.addChild(new Spacer(1));
 			content.addChild(
-				new Text(
-					theme.bold(
-						theme.fg(
-							"customMessageText",
-							`Compacted from ${tokenStr} tokens (including the system prompt and tools)`,
-						),
-					),
-					0,
-					0,
-				),
+				new Text(theme.bold(theme.fg("customMessageText", `Context before compaction: ${tokenStr} tokens`)), 0, 0),
 			);
 			content.addChild(new Spacer(1));
 			const rendered = this.view.text
