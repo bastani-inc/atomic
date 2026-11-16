@@ -293,6 +293,43 @@ test("a shippable checkpoint is acknowledged from the local journal and reaches 
 	assert.deepEqual(shipping.status(), { pending: 0, lagMs: 0 });
 });
 
+test("shipping before a local acknowledgement leaves no phantom pending checkpoints (#4768)", async () => {
+	const { shard: local, clock } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver, { now: () => clock.now });
+	await shipping.hold(LEASE, LEASE_MS);
+	const accept = local.accept.bind(local);
+	let inserted!: () => void;
+	let release!: () => void;
+	const accepted = new Promise<void>((resolve) => {
+		inserted = resolve;
+	});
+	const delayed = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	local.accept = async (...args) => {
+		const result = await accept(...args);
+		inserted();
+		await delayed;
+		return result;
+	};
+	const committing = shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	await accepted;
+	await shipping.flush(LEASE);
+	release();
+	assert.equal((await committing).local, true);
+	local.accept = accept;
+	assert.equal(await local.pendingCount(LEASE), 0);
+	assert.deepEqual(shipping.status(), { pending: 0, lagMs: 0 });
+	clock.now = BACKPRESSURE_MS;
+	assert.equal(shipping.lagging(), false);
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit);
+	await shipping.flush(LEASE);
+	assert.deepEqual(shared.recorded, ["a", "b"].map(keyOf));
+	assert.deepEqual(shipping.status(), { pending: 0, lagMs: 0 });
+});
+
 test("a batch ships once maxBatch checkpoints wait, in the order they were accepted (#4768)", async () => {
 	const { shard: local } = await shard();
 	const shared = fakeShared();
@@ -949,4 +986,83 @@ test("closing during a deadline flush stops even when another batch remains pend
 		release();
 		vi.useRealTimers();
 	}
+});
+
+test("a delayed local acknowledgement that returns after the attempt is fenced adds no pending checkpoint (#4768)", async () => {
+	const { shard: local, clock } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver, { now: () => clock.now });
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	const accept = local.accept.bind(local);
+	let entered!: () => void;
+	let release!: () => void;
+	const acceptedInShard = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	local.accept = async (root, lease, key, payload, completedAt) => {
+		const result = await accept(root, lease, key, payload, completedAt);
+		entered();
+		await gate;
+		return result;
+	};
+	const delayed = shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit);
+	await acceptedInShard;
+	local.accept = accept;
+	const stale = new StaleWorkLeaseError({
+		root: ROOT,
+		workId: LEASE.id,
+		generation: LEASE.generation,
+		reason: "superseded",
+	});
+	shared.state.failWith = stale;
+	await assert.rejects(shipping.flush(LEASE), stale);
+	release();
+	await delayed;
+	assert.equal(await local.pendingCount(LEASE), 0);
+	assert.equal(shipping.status().pending, await local.pendingCount(LEASE));
+	clock.now = BACKPRESSURE_MS;
+	assert.equal(shipping.lagging(), false);
+});
+
+test("a delayed local acknowledgement from a superseded generation adds no pending checkpoint to the replacement (#4768)", async () => {
+	const { shard: local, clock } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver, { now: () => clock.now });
+	await shipping.hold(LEASE, LEASE_MS);
+	const accept = local.accept.bind(local);
+	let entered!: () => void;
+	let release!: () => void;
+	const acceptedInShard = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	local.accept = async (root, lease, key, payload, completedAt) => {
+		const result = await accept(root, lease, key, payload, completedAt);
+		entered();
+		await gate;
+		return result;
+	};
+	const delayed = shipping.commit(LEASE, checkpoint("old"), sharedCommit().commit);
+	await acceptedInShard;
+	local.accept = accept;
+	const replacement = { ...LEASE, generation: LEASE.generation + 1 };
+	await shipping.hold(replacement, LEASE_MS);
+	release();
+	await delayed;
+	assert.equal(await local.pendingCount(replacement), 0);
+	assert.equal(shipping.status().pending, await local.pendingCount(replacement));
+	clock.now = BACKPRESSURE_MS;
+	assert.equal(shipping.lagging(), false);
+	assert.equal((await shipping.commit(replacement, checkpoint("new"), sharedCommit().commit)).local, true);
+	assert.equal(shipping.status().pending, await local.pendingCount(replacement));
+	await shipping.flush(replacement);
+	assert.deepEqual(shared.recorded, [keyOf("new")]);
+	assert.equal(shipping.status().pending, 0);
+	assert.equal(await local.pendingCount(replacement), 0);
 });

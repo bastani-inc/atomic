@@ -5,12 +5,14 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { PoolRemoteJournal } from "../../packages/workflows/src/durable/journal/pool-remote-journal.js";
 import {
+	checkpointKey,
 	openSqlPoolQueue,
+	type PoolMutation,
 	type PoolWork,
 	type SqlPoolQueue,
 } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { type Lease, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
+import { type Lease, RUN_EVENT_TYPES, StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { CheckpointShipping, type ShipDelivery } from "../../packages/workflows/src/workers/checkpoint-shipping.js";
@@ -116,6 +118,47 @@ test("a shipped batch records its checkpoints in the root's journal once, with t
 	);
 	assert.equal(mark!.host, "host-A");
 	assert.match(String(mark!.last_event_key), /tool:3/);
+});
+
+test("background shipping keeps acknowledged checkpoints after work lease expiry and ships them after extension (#4768)", async () => {
+	const { queue, lease, attempt, tool, recorded, database } = await claimedAttempt();
+	let refusedDelivery: StaleWorkLeaseError | undefined;
+	const { shipping, shard } = await hostShipping(queue, lease, {
+		maxBatch: 10,
+		deliver: async (held, batch) => {
+			try {
+				await queue.shipBatch(lease, held, batch);
+			} catch (error) {
+				assert.ok(error instanceof StaleWorkLeaseError);
+				refusedDelivery = error;
+				throw error;
+			}
+		},
+	});
+	await shipping.hold(attempt, LEASE_MS);
+	for (const index of [1, 2, 3]) {
+		const receipt = await shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(index) }, noShared);
+		assert.equal(receipt.local, true);
+	}
+	await database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", attempt.id);
+	await assert.rejects(
+		shipping.flush(attempt),
+		(error: Error) => error === refusedDelivery && refusedDelivery.reason === "expired",
+	);
+	assert.equal(await shard.pendingCount(attempt), 3);
+	assert.equal(shipping.status().pending, 3);
+	assert.equal(shipping.status().error, refusedDelivery);
+	assert.deepEqual(await recorded(), []);
+	const renewed = await queue.extend(lease, attempt, LEASE_MS);
+	assert.equal(renewed.generation, attempt.generation);
+	await shipping.hold(renewed, LEASE_MS);
+	await shipping.commit(renewed, { kind: "checkpoint", checkpoint: tool(4) }, noShared);
+	await shipping.flush(renewed);
+	await shipping.flush(renewed);
+	assert.deepEqual(await recorded(), [1, 2, 3, 4]);
+	assert.equal(await shard.pendingCount(renewed), 0);
+	assert.equal(shipping.status().pending, 0);
+	assert.equal(shipping.status().error, undefined);
 });
 
 test("a batch delivered again, after its answer was lost, records nothing twice (#4768)", async () => {
@@ -319,3 +362,99 @@ test(
 	},
 	CRASH_SWEEP_TIMEOUT_MS,
 );
+
+function billedStage(
+	scope: string,
+	tool: (index: number) => DurableToolCheckpoint,
+): Extract<PoolMutation, { kind: "checkpoint" }> {
+	return {
+		kind: "checkpoint",
+		checkpoint: {
+			kind: "stage",
+			workflowId: "root",
+			checkpointId: `${scope}:session:billed`,
+			name: "stage",
+			replayKey: `${scope}:stage`,
+			completedAt: 0,
+			output: "done",
+			topology: {
+				version: 1,
+				stageId: "stage",
+				parentIds: [],
+				sourceOrder: 0,
+				run: tool(1).topology!.run,
+				status: "completed",
+			},
+			modelAttempts: [
+				{
+					model: "fixture",
+					success: true,
+					usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.5 },
+				},
+			],
+		},
+	};
+}
+
+test("a direct commit refused after work lease expiry succeeds after extension and keeps shipping plain checkpoints (#4768)", async () => {
+	const { journal, queue, lease, attempt, work, tool, recorded, database } = await claimedAttempt();
+	const { shipping, shard } = await hostShipping(queue, lease);
+	await shipping.hold(attempt, LEASE_MS);
+	await database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", attempt.id);
+	const billed = billedStage(work.scope, tool);
+	let refusedCommit: StaleWorkLeaseError | undefined;
+	await assert.rejects(
+		shipping.commit(attempt, billed, async () => {
+			try {
+				return await queue.commit(lease, attempt, "billed", billed);
+			} catch (error) {
+				assert.ok(error instanceof StaleWorkLeaseError);
+				refusedCommit = error;
+				throw error;
+			}
+		}),
+		(error: Error) => error === refusedCommit && refusedCommit.reason === "expired",
+	);
+	const renewed = await queue.extend(lease, attempt, LEASE_MS);
+	assert.equal(renewed.generation, attempt.generation);
+	await shipping.hold(renewed, LEASE_MS);
+	const direct = await shipping.commit(renewed, billed, () => queue.commit(lease, renewed, "billed", billed));
+	assert.equal(direct.local, undefined);
+	assert.ok(await journal.readKey("root", checkpointKey(billed.checkpoint)));
+	const plain = await shipping.commit(renewed, { kind: "checkpoint", checkpoint: tool(1) }, noShared);
+	assert.equal(plain.local, true);
+	await shipping.flush(renewed);
+	assert.deepEqual(await recorded(), [1]);
+	assert.equal(await shard.pendingCount(renewed), 0);
+});
+
+test("a direct commit refused while the root renews late in the same epoch succeeds after root renewal (#4768)", async () => {
+	const { journal, queue, lease, attempt, work, tool, recorded, database } = await claimedAttempt();
+	const { shipping, shard } = await hostShipping(queue, lease);
+	await shipping.hold(attempt, LEASE_MS);
+	await database.run("UPDATE wf_leases SET renewed_at = renewed_at - 3600000 WHERE run_id = ?", lease.runId);
+	const billed = billedStage(work.scope, tool);
+	let refusedRoot: StaleLeaseError | undefined;
+	await assert.rejects(
+		shipping.commit(attempt, billed, async () => {
+			try {
+				return await queue.commit(lease, attempt, "billed", billed);
+			} catch (error) {
+				assert.ok(error instanceof StaleLeaseError);
+				refusedRoot = error;
+				throw error;
+			}
+		}),
+		(error: Error) =>
+			error === refusedRoot && refusedRoot.heldEpoch === lease.epoch && refusedRoot.currentEpoch === lease.epoch,
+	);
+	await journal.renew(lease);
+	const direct = await shipping.commit(attempt, billed, () => queue.commit(lease, attempt, "billed", billed));
+	assert.equal(direct.local, undefined);
+	assert.ok(await journal.readKey("root", checkpointKey(billed.checkpoint)));
+	const plain = await shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(1) }, noShared);
+	assert.equal(plain.local, true);
+	await shipping.flush(attempt);
+	assert.deepEqual(await recorded(), [1]);
+	assert.equal(await shard.pendingCount(attempt), 0);
+});

@@ -86,6 +86,7 @@ export interface ShippingStatus {
 
 interface Attempt {
 	lease: AttemptLease;
+	shippedThrough: number;
 	/**
 	 * Each unshipped checkpoint, oldest first: its local sequence and when it was accepted, by the monotonic clock. An
 	 * entry goes only once the shared journal holds its checkpoint, or the attempt is fenced, so a read of the local
@@ -162,7 +163,12 @@ export class CheckpointShipping {
 	async hold(lease: AttemptLease, leaseMs: number): Promise<void> {
 		const known = this.attempts.get(lease.id);
 		if (known === undefined || known.lease.generation !== lease.generation)
-			this.attempts.set(lease.id, { lease: { ...lease }, accepted: [], chain: Promise.resolve() });
+			this.attempts.set(lease.id, {
+				lease: { ...lease },
+				shippedThrough: 0,
+				accepted: [],
+				chain: Promise.resolve(),
+			});
 		else known.lease = { ...lease };
 		try {
 			await this.shard.hold(lease, leaseMs);
@@ -367,6 +373,7 @@ export class CheckpointShipping {
 	lagging(): boolean {
 		const now = this.now();
 		for (const attempt of this.attempts.values()) {
+			if (attempt.fenced !== undefined) continue;
 			const oldest = attempt.accepted[0]?.at;
 			if (oldest !== undefined && now - oldest >= this.backpressurePointMs(attempt)) return true;
 		}
@@ -439,9 +446,10 @@ export class CheckpointShipping {
 			throw fenced ?? error;
 		}
 		this.lastError = undefined;
-		await this.shard.shipped(lease, sealed.events.at(-1)!.localSeq);
 		const last = sealed.events.at(-1)!.localSeq;
-		attempt.accepted = attempt.accepted.filter((entry) => entry.localSeq > last);
+		await this.shard.shipped(lease, last);
+		attempt.shippedThrough = Math.max(attempt.shippedThrough, last);
+		attempt.accepted = attempt.accepted.filter((entry) => entry.localSeq > attempt.shippedThrough);
 	}
 
 	private async commitDirect(
@@ -462,7 +470,9 @@ export class CheckpointShipping {
 	}
 
 	private async fence(attempt: Attempt, lease: AttemptLease, error: Error): Promise<Error | undefined> {
-		if (!(error instanceof StaleWorkLeaseError || error instanceof StaleLeaseError)) return undefined;
+		const workLeaseLost = error instanceof StaleWorkLeaseError && error.reason !== "expired";
+		const rootLeaseLost = error instanceof StaleLeaseError && error.currentEpoch !== error.heldEpoch;
+		if (!workLeaseLost && !rootLeaseLost) return undefined;
 		attempt.fenced =
 			error instanceof StaleWorkLeaseError
 				? error
@@ -477,7 +487,13 @@ export class CheckpointShipping {
 
 	private noteAccepted(lease: AttemptLease, localSeq: number): void {
 		const attempt = this.attempts.get(lease.id);
-		if (attempt === undefined) return;
+		if (
+			attempt === undefined ||
+			attempt.lease.generation !== lease.generation ||
+			attempt.fenced !== undefined ||
+			localSeq <= attempt.shippedThrough
+		)
+			return;
 		attempt.accepted.push({ localSeq, at: this.now() });
 	}
 
