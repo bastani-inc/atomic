@@ -11,7 +11,8 @@ import {
 	type StorageDialect,
 } from "@bastani/atomic/storage";
 import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
-import { guardedPoolWrite } from "../durable/journal/pool-guarded-write.js";
+import { guardedPoolWrite, poolFenceSchema } from "../durable/journal/pool-guarded-write.js";
+import { poolSchemaPresent } from "../durable/journal/pool-schema-probe.js";
 import { openSqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
@@ -208,6 +209,11 @@ export class SqlResourceAdmission {
 	private readonly owners: string;
 	private readonly owner = randomUUID();
 	private nextReconciliation = 0;
+	/**
+	 * Whether this admission's writes go as single batches: the database sends them (libSQL) and holds the pool's fence
+	 * table, which a batch's version fence writes to. Read once, as the admission opens.
+	 */
+	private batches = false;
 	private readonly dialect: StorageDialect;
 	/** The database clock, in integer milliseconds, as SQL. */
 	private readonly now: string;
@@ -249,6 +255,7 @@ export class SqlResourceAdmission {
 			params: [admission.owner, admissionHost, process.pid, OWNER_LEASE_MS, boot],
 		};
 		const configurations = admission.configurationWrites();
+		admission.batches = await poolSchemaPresent(storage, [poolFenceSchema(storage.tables.runs, dialect)]);
 		// On a libSQL database whose admission schema is current, the open is one request: it never holds the shared write
 		// lock across a round trip while every other host waits (#4768).
 		if (!(await admission.openedInOneRequest(ownerRow, configurations))) {
@@ -352,7 +359,7 @@ export class SqlResourceAdmission {
 		configurations: ReturnType<SqlResourceAdmission["configurationWrites"]>,
 	): Promise<boolean> {
 		const { storage, dialect } = this;
-		if (storage.batch === undefined || dialect.versionedMigrations) return false;
+		if (!this.batches) return false;
 		const current = await storage.read(async (read) => {
 			const names = [
 				this.configuration,
@@ -904,7 +911,7 @@ export class SqlResourceAdmission {
 		// Nothing here depends on what an earlier statement read, so a database that sends batches (libSQL) takes them in
 		// one request, which holds the write lock for that request only (#4768).
 		const { batch } = this.storage;
-		if (batch !== undefined) return Number((await batch(statements)).at(-1)?.[0]?.count);
+		if (this.batches && batch !== undefined) return Number((await batch(statements)).at(-1)?.[0]?.count);
 		return this.storage.transaction(async (tx) => {
 			for (const statement of statements.slice(0, -1)) await tx.run(statement.sql, ...statement.params);
 			const held = await tx.get(statements.at(-1)!.sql, ...statements.at(-1)!.params);

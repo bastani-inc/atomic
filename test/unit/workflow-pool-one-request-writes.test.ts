@@ -78,3 +78,17 @@ test("a root queues a new child, and a worker opens and releases its admission, 
 	// Only queueing work the root queued already, which may rebind it, takes the transaction.
 	assert.equal(transactions.mock.calls.length, 1, "queueing a new child or opening admission held the write lock");
 });
+
+test("admission on a libSQL journal whose pool was never opened opens and releases in transactions (#4768)", async () => {
+	const directory = makeLibsqlDirectory("pool-one-request-no-pool-");
+	cleanups.push(() => removeLibsqlDirectory(directory));
+	const database = await openLibsqlDatabase({ url: pathToFileURL(join(directory, "shared.db")).href });
+	cleanups.push(() => database.close());
+	const journal = await SqlRunJournal.open(database);
+	cleanups.push(() => journal.close());
+	// Without the pool's tables there is no fence table for a batch's fences: admission keeps to its transactions.
+	for (let open = 0; open < 2; open++) {
+		const admission = await SqlResourceAdmission.open(journal, { root: header.runId, holder: "worker" });
+		assert.equal(await admission.releaseStoppedSessions("worker"), 0);
+	}
+});
