@@ -745,3 +745,32 @@ test("a host delivers at most SHIP_CONCURRENCY of its attempts' batches at once 
 	assert.equal(shared.recorded.length, 5);
 	assert.equal(most, SHIP_CONCURRENCY);
 });
+
+test("a flush that finds nothing to ship never loses track of a checkpoint accepted meanwhile, so it still ships and still holds steps back (#4768)", async () => {
+	const { shard: local, clock } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver, { now: () => clock.now });
+	await shipping.hold(LEASE, LEASE_MS);
+	// The flush reads the local journal's count before the commit's checkpoint is in it, and resumes after.
+	const count = local.pendingCount.bind(local);
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	local.pendingCount = async (lease) => {
+		const n = await count(lease);
+		await held;
+		return n;
+	};
+	const flushing = shipping.flushAll();
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	release();
+	await flushing;
+	local.pendingCount = count;
+	assert.deepEqual(shipping.status(), { pending: 1, lagMs: 0 }, "the accepted checkpoint is still counted");
+	// So it holds the attempt's next step back once it waited too long, and ships first.
+	clock.now = BACKPRESSURE_MS;
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit);
+	assert.deepEqual(shared.recorded, [keyOf("a")]);
+});
