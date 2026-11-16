@@ -559,7 +559,7 @@ You can also implement `SqliteDatabase` yourself by following the same rules. Ei
 
 This module is a complete adapter. Install `@libsql/client` where the module can import it, for example as a dependency of an [Atomic package](#adapters-from-atomic-packages). It accepts caller-provided credentials only. For a local file, create its parent directory first; no network or credentials are needed.
 
-Keep `closeEachConnectionOnce` when you copy the example. For a local file, `@libsql/client` 0.18 uses the native `libsql` 0.5.29 driver, which closes a connection's SQLite handle twice when no statement still holds the connection. The second close reads freed memory, and on Windows the process can then exit without an error message. The function prepares a statement before each close and holds it until the close returns, so the handle closes once. `@bastani/atomic-storage-libsql` does the same.
+Keep `closeEachConnectionOnce` when you copy the example. For a local file, `@libsql/client` 0.18 uses the native `libsql` 0.5 driver, which closes a connection's SQLite handle twice when no statement still holds the connection. The second close reads freed memory, and on Windows the process can then exit without an error message. The function prepares a statement before each close and holds it until the close returns, so the handle closes once, when a garbage collection finalizes that statement. Until then the database's files stay open, and Windows refuses to delete them. `@bastani/atomic-storage-libsql` does the same, and runs that collection after each close of a local file.
 
 {/* custom-driver-example */}
 ```ts
