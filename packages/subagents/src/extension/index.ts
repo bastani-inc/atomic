@@ -5,6 +5,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	keyHintIfBound,
+	publishExtensionContextEffect,
 	type SessionEntry,
 	type ToolDefinition,
 } from "@bastani/atomic";
@@ -490,7 +491,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		let stopReleasedChildWakes: (() => void) | undefined;
 		let taskResumer: ReturnType<typeof bindSubagentTaskResumer> | undefined;
 		pi.on("agent_start", () => taskResumer?.ensure());
-		pi.on("session_start", (event, ctx) => {
+		pi.on("session_start", async (event, ctx) => {
 			if (!lifecycle.isCurrent()) return;
 			if (releaseStartupCleanup === undefined && !isSubagentChildSession(ctx))
 				releaseStartupCleanup = claimStartupCleanup(maintenance);
@@ -509,8 +510,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				// Released children wake through this session: their tool results, Intercom sends and asks (#4326).
 				stopReleasedChildWakes = bindReleasedChildWakes(executorDeps, ctx, pi.events);
 				// A finished child continues from its chat: the message the reader sends resumes it in its own session.
-				taskResumer?.dispose();
-				taskResumer = bindSubagentTaskResumer(executorDeps, ctx);
+				await publishExtensionContextEffect(ctx, () => {
+					taskResumer?.dispose();
+					taskResumer = bindSubagentTaskResumer(executorDeps, ctx);
+				});
 				if (opened) void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
 				if (opened)
 					void resumeAwaitingSubagentChildren(

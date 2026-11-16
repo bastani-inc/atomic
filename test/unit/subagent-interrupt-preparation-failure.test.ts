@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
+import { type FauxResponseFactory, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import type { ExtensionAPI } from "../../packages/coding-agent/src/core/extensions/types.js";
@@ -268,7 +268,6 @@ test.each(SAVE_FAILURE_CASES)(
 				assert.equal(result.finalOutput, "the first reply", "a woken turn that recovers completes the task");
 				return;
 			}
-			// The woken turn starts once its input is saved, and the Esc aborts that start; while every save fails it never starts.
 			const startedAfterRelease = failedSaves === Number.POSITIVE_INFINITY ? 0 : 1;
 			await until(
 				() =>
@@ -294,6 +293,150 @@ test.each(SAVE_FAILURE_CASES)(
 			assert.ok(!answered.includes(""), "no turn after the interrupted one is aborted by its Esc");
 			assert.equal(result.status, "ok");
 			assert.equal(result.finalOutput, answered.at(-1));
+		} finally {
+			releasePreparation.resolve();
+			stop.abort("user");
+			await Promise.allSettled([run, waking, interrupting]);
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+const CORRECTION = "use the staging database instead";
+
+function answerPendingInput(): FauxResponseFactory {
+	return (context) => {
+		const pending: string[] = [];
+		for (let index = context.messages.length - 1; index >= 0; index--) {
+			const message = context.messages[index]!;
+			if (message.role === "assistant") break;
+			if (message.role !== "user") continue;
+			const text =
+				typeof message.content === "string"
+					? message.content
+					: message.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+			pending.unshift(text);
+		}
+		return fauxAssistantMessage(`answered: ${pending.join(" | ")}`);
+	};
+}
+
+const INTERRUPTING_MESSAGES = [
+	{
+		name: "an Intercom interrupt, save fails once",
+		options: {
+			triggerTurn: true,
+			deliverAs: "interrupt",
+			persistWhenStreaming: true,
+			stageAdmissionKey: "intercom:correction",
+		},
+		failedSaves: 1,
+	},
+	{
+		name: "an extension interrupt, save fails once",
+		options: { triggerTurn: true, deliverAs: "interrupt" },
+		failedSaves: 1,
+	},
+	{
+		name: "an Intercom interrupt, no failed save",
+		options: {
+			triggerTurn: true,
+			deliverAs: "interrupt",
+			persistWhenStreaming: true,
+			stageAdmissionKey: "intercom:correction",
+		},
+		failedSaves: 0,
+	},
+	{
+		name: "an extension interrupt, no failed save",
+		options: { triggerTurn: true, deliverAs: "interrupt" },
+		failedSaves: 0,
+	},
+] as const;
+
+test.each(INTERRUPTING_MESSAGES)(
+	"an interrupting message sent after an Esc while a woken turn starts is answered ($name) (#5224)",
+	async ({ name, options, failedSaves }) => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: `block-${name}` })], { stopReason: "toolUse" }),
+			answerPendingInput(),
+			answerPendingInput(),
+			answerPendingInput(),
+			answerPendingInput(),
+		]);
+		const store = new BusyStore();
+		const preparing = Promise.withResolvers<void>();
+		const releasePreparation = Promise.withResolvers<void>();
+		let holdPreparation = false;
+		const holdWokenTurn = (pi: ExtensionAPI) => {
+			pi.on("before_agent_start", async () => {
+				if (!holdPreparation) return;
+				holdPreparation = false;
+				preparing.resolve();
+				await releasePreparation.promise;
+			});
+		};
+		let source: TaskTranscriptSource | undefined;
+		const stop = new AbortController();
+		let settled = false;
+		let settledRuns = 0;
+		const run = runSingleInProcess(env.root, agent(), "run until interrupted", {
+			...env.options(`interrupting-after-esc-${name}`, {
+				signal: stop.signal,
+				sessionManager: await SessionManager.create(store, env.root),
+				resourceLoaderInheritanceSnapshot: { extensionFactories: [holdWokenTurn] },
+				taskExecution: {
+					signal: stop.signal,
+					reportActivity() {},
+					bindTranscript(bound) {
+						if (source !== undefined || bound.chatSession === undefined) return;
+						source = bound;
+						(bound.chatSession as AgentSession).subscribe((event) => {
+							if (event.type === "agent_settled") settledRuns += 1;
+						});
+					},
+					onExecution() {},
+					yieldTaskWait() {},
+					isParentObserving: () => false,
+				},
+			}),
+		}).finally(() => {
+			settled = true;
+		});
+		let waking: Promise<void> | undefined;
+		let interrupting: Promise<void> | undefined;
+		try {
+			await until(() => env.blockStarted());
+			const session = source!.chatSession as AgentSession;
+			await source!.interruptTurn!();
+			await until(() => settledRuns === 1 && !source!.isRunning?.());
+			assert.equal(settled, false);
+			const textsBefore = assistantTexts(session).length;
+			holdPreparation = true;
+			waking = session.sendCustomMessage(
+				{ customType: "intercom", content: "carry on", display: true },
+				{ triggerTurn: true, persistWhenStreaming: true, stageAdmissionKey: "intercom:wake" },
+			);
+			await preparing.promise;
+			await session.sendCustomMessage(
+				{ customType: "note", content: BUSY_NOTE, display: false },
+				{ triggerTurn: false },
+			);
+			interrupting = source!.interruptTurn!();
+			await session.sendCustomMessage({ customType: "intercom", content: CORRECTION, display: true }, options);
+			store.failuresLeft = failedSaves;
+			releasePreparation.resolve();
+			await Promise.allSettled([interrupting, waking]);
+			await until(() => settled);
+			assert.equal(store.rejected, failedSaves);
+			const answered = assistantTexts(session).slice(textsBefore);
+			assert.ok(
+				answered.some((text) => text.includes(CORRECTION)),
+				`the message sent after the Esc is answered, not swallowed by the aborted start: ${JSON.stringify(answered)}`,
+			);
+			const result = await run;
+			assert.equal(result.status, "ok");
 		} finally {
 			releasePreparation.resolve();
 			stop.abort("user");

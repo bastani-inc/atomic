@@ -784,7 +784,7 @@ async function holdForDetachedResults(session: AgentSession, message: AgentMessa
 	);
 }
 
-async function settleAgentRun(session: AgentSession): Promise<void> {
+async function settleAgentRun(session: AgentSession, keepMessageAdmissionOpen = false): Promise<void> {
 	session._cacheWarmer?.onAgentSettled();
 	try {
 		await session._agentEventQueue;
@@ -793,11 +793,11 @@ async function settleAgentRun(session: AgentSession): Promise<void> {
 	} finally {
 		// A failed event or flush must still close and settle the run; otherwise the open-run
 		// marker and active prompt count leak and later interactive messages stay queued forever.
-		await finishAgentRun(session);
+		await finishAgentRun(session, keepMessageAdmissionOpen);
 	}
 }
 
-async function finishAgentRun(session: AgentSession): Promise<void> {
+async function finishAgentRun(session: AgentSession, keepMessageAdmissionOpen = false): Promise<void> {
 	closeRun(session);
 	try {
 		session._isEmittingAgentSettled = true;
@@ -810,7 +810,7 @@ async function finishAgentRun(session: AgentSession): Promise<void> {
 		} finally {
 			session._isEmittingAgentSettled = false;
 		}
-		if (session._subagentMessageAdmission) await settleSubagentMessages(session);
+		if (session._subagentMessageAdmission) await settleSubagentMessages(session, keepMessageAdmissionOpen);
 	} finally {
 		session._abortPreparedRunAtStart = false;
 		session._activePromptCount -= 1;
@@ -848,7 +848,7 @@ async function runBeforeSettleContinuations(session: AgentSession): Promise<void
 	}
 }
 
-async function settleSubagentMessages(session: AgentSession): Promise<void> {
+async function settleSubagentMessages(session: AgentSession, keepMessageAdmissionOpen = false): Promise<void> {
 	const admission = session._subagentMessageAdmission!;
 	// A host-requested stop is terminal for a child, like cancellation. Retain
 	// protected input for persistence without restarting work or spinning on it.
@@ -872,7 +872,7 @@ async function settleSubagentMessages(session: AgentSession): Promise<void> {
 		session._awaitingMessageAfterInterrupt = true;
 		return;
 	}
-	admission.seal();
+	if (!keepMessageAdmissionOpen) admission.seal();
 }
 
 export async function _runAgentContinue(this: AgentSession): Promise<void> {
@@ -893,7 +893,11 @@ function sessionClosedForDetachedTurn(session: AgentSession): ToolDetachmentErro
  * results of detached tool calls), then the loop continues without a new user message, with the same queue drains
  * and settlement as a prompt. The caller has already refused a closed session, so nothing is recorded on one.
  */
-export async function _runAgentContinuation(this: AgentSession, beforeContinue: () => Promise<void>): Promise<void> {
+export async function _runAgentContinuation(
+	this: AgentSession,
+	beforeContinue: () => Promise<void>,
+	mode: "continue" | "recovery" = "continue",
+): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	return trackSessionWork(this, async () => {
 		this._workflowStageAwaitingFirstPrompt = false;
@@ -906,7 +910,8 @@ export async function _runAgentContinuation(this: AgentSession, beforeContinue: 
 			await beforeContinue();
 			if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
 				throw sessionClosedForDetachedTurn(this);
-			await this.agent.continue();
+			if (mode === "recovery") await this._continueQueuedAgentMessages();
+			else await this.agent.continue();
 			await this.waitForRetry();
 			if (lifetime.aborted || sessionGenerationClosing.has(this)) return;
 			await this._continueQueuedAgentMessages();
@@ -915,7 +920,7 @@ export async function _runAgentContinuation(this: AgentSession, beforeContinue: 
 			await runBeforeSettleContinuations(this);
 		} finally {
 			this._runSystemPromptOptions = undefined;
-			await settleAgentRun(this);
+			await settleAgentRun(this, mode === "recovery");
 		}
 	});
 }
@@ -932,6 +937,7 @@ function preparePriorityContinuation(session: AgentSession): Promise<void> | und
 	const restore = (): void => {
 		if (!session._priorityInterruptPending) return;
 		session._priorityInterruptPending = false;
+		session._abortPreparedRunAtStart = false;
 		session._restoreAndClearActiveInterruptQueueHold();
 	};
 	// Keep the idle prompt start synchronous unless a producer commit is still in flight.

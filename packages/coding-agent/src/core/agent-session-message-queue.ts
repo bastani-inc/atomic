@@ -402,6 +402,7 @@ async function sendInterruptCustomMessageUnlocked<T>(
 		session._queueAgentMessage(message, "steer");
 		return;
 	}
+	session._abortPreparedRunAtStart = false;
 	await session.agent.prompt(message);
 }
 
