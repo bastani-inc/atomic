@@ -166,6 +166,7 @@ InteractiveModeBase.prototype.showModelSelector = function (
 	initialSearchInput?: string,
 ): void {
 	this.showSelector((done) => {
+		let settled = false;
 		const selector = new ModelSelectorComponent(
 			this.ui,
 			this.session.model,
@@ -173,10 +174,10 @@ InteractiveModeBase.prototype.showModelSelector = function (
 			this.session.modelRuntime,
 			this.session.scopedModels,
 			async (model, thinkingLevel) => {
+				if (settled) return;
+				settled = true;
 				try {
-					await this.session.setModel(model, { persist: true });
-					// A level chosen with ←→ in the picker applies on top of the level the switch would use.
-					if (thinkingLevel !== undefined) await this.session.setThinkingLevel(thinkingLevel, { persist: true });
+					await this.session.setModel(model, { persist: true, thinkingLevel });
 					await this.updateAvailableProviderCount();
 					this.footer.invalidate();
 					this.updateEditorBorderColor();
@@ -189,6 +190,8 @@ InteractiveModeBase.prototype.showModelSelector = function (
 				}
 			},
 			() => {
+				if (settled) return;
+				settled = true;
 				done();
 				this.ui.requestRender();
 			},

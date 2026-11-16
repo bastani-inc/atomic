@@ -323,7 +323,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		previousModel: Model<Api> | undefined,
 		source: "set" | "cycle" | "restore" | "fallback",
 	): Promise<void>;
-	setModel(model: Model<Api>, options?: ModelMutationOptions): Promise<void>;
+	setModel(model: Model<Api>, options?: ModelMutationOptions & { thinkingLevel?: ThinkingLevel }): Promise<void>;
 	cycleModel(
 		direction?: "forward" | "backward",
 		options?: ModelMutationOptions,
