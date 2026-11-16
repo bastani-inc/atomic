@@ -1133,7 +1133,11 @@ class SessionSearcher {
 			if (entry.lineCount > 0) rendered.push(entry);
 		}
 		for (let s = prevSeq + 1; s <= page.throughSeq; s++) this.rememberEntry(s, null);
-		await this.extendIndex(pos, page.throughSeq, rendered);
+		if ((await this.extendIndex(pos, page.throughSeq, rendered)) === "timedOut") {
+			if (this.emittedAny || this.coveredThroughSeq >= this.coveredFromSeq) {
+				return { stop: { reason: "time", resume: { seq: pos, matchIndex: 0 } } };
+			}
+		}
 		const span = page.throughSeq - pos + 1;
 		budget.takeRows(span);
 		if (this.multiline) {
@@ -1173,8 +1177,12 @@ class SessionSearcher {
 		return { next: page.throughSeq + 1 };
 	}
 
-	private async extendIndex(pos: number, throughSeq: number, rendered: readonly RenderedEntry[]): Promise<void> {
-		if (!this.indexing || this.coverage === undefined || pos !== this.coverage.indexedSeq + 1) return;
+	private async extendIndex(
+		pos: number,
+		throughSeq: number,
+		rendered: readonly RenderedEntry[],
+	): Promise<"ok" | "timedOut"> {
+		if (!this.indexing || this.coverage === undefined || pos !== this.coverage.indexedSeq + 1) return "ok";
 		const texts: SessionSearchText[] = [];
 		for (const entry of rendered) {
 			if (entry.lineCount === 0) continue;
@@ -1184,7 +1192,8 @@ class SessionSearcher {
 				texts.push({ seq: entry.seq, parts: await entry.searchParts(this.search.budget) });
 			}
 		}
-		if (this.lastSeq <= 1 && texts.every((item) => !item.oversized && (item.parts?.length ?? 0) <= 1)) return;
+		if (this.lastSeq <= 1 && texts.every((item) => !item.oversized && (item.parts?.length ?? 0) <= 1)) return "ok";
+		let timedOut = false;
 		const extended = await this.search.budget
 			.race(
 				this.index!.extend(
@@ -1202,10 +1211,15 @@ class SessionSearcher {
 			)
 			.catch((error) => {
 				if (this.search.budget.signal?.aborted) throw error;
+				if (isHistoryDeadlineError(error)) timedOut = true;
 				return false;
 			});
-		if (extended) this.coverage.indexedSeq = throughSeq;
-		else this.indexing = false;
+		if (extended) {
+			this.coverage.indexedSeq = throughSeq;
+			return "ok";
+		}
+		this.indexing = false;
+		return timedOut ? "timedOut" : "ok";
 	}
 
 	private async matchSingleEntryLines(entry: RenderedEntry): Promise<number[] | "timedOut"> {
