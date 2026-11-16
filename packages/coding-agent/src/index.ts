@@ -168,6 +168,12 @@ export {
 	renderNavKeyOverlay,
 	TwoPressConfirm,
 } from "./modes/interactive/components/nav-keys.ts";
+export {
+	NoticeLine,
+	type NoticeLineSpec,
+	type NoticeStatus,
+	noticeLineText,
+} from "./modes/interactive/components/notice-line.ts";
 export { renderTaskFooter, TaskList, taskListSections } from "./modes/interactive/components/task-list.js";
 export { TaskRow } from "./modes/interactive/components/task-row.js";
 export {
