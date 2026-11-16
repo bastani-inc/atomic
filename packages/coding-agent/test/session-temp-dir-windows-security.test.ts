@@ -219,6 +219,7 @@ describe("windows directory security cache", () => {
 		assert.deepEqual(reads, [child, child]);
 	});
 
+	// Windows only: a POSIX file system may give a recreated directory its old inode and report no creation time.
 	it.skipIf(!isWindows)(
 		"reads a verified directory again once it is recreated, and refuses it when it grants another account",
 		() => {

@@ -215,8 +215,8 @@ export class TempDirRefusedError extends Error {
  * (see `windows-directory-security.ts`). Node exposes neither — `lstatSync`
  * reports uid/gid 0 on Windows — so the read goes through a PowerShell
  * `Get-Acl` subprocess. It runs once per private root per process: a verified
- * directory stays verified while its creation time is unchanged, and a
- * directory inside a verified one needs no read of its own (see
+ * directory stays verified while it is the same directory, and a directory
+ * inside a verified one needs no read of its own (see
  * `verifyWindowsDirectorySecurity`). Domain-qualifying the
  * principal (see `windowsPrincipal`) stops two accounts *colliding* by
  * accident, which is a different problem and is not a substitute for this

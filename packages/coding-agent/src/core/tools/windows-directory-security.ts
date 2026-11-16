@@ -12,9 +12,10 @@
  * The read is a synchronous subprocess, and on a loaded host it holds the
  * main thread for seconds, so it runs once per private root per process: a
  * successful verification is cached for the life of the process, keyed to the
- * directory's path and creation time, and a directory inside a verified one
- * needs no read of its own (see `verifyWindowsDirectorySecurity`). A directory
- * swapped underneath the path carries a fresh creation time and is read again.
+ * directory's path and identity (its file ID and creation time), and a
+ * directory inside a verified one needs no read of its own (see
+ * `verifyWindowsDirectorySecurity`). A directory swapped underneath the path
+ * is a new file with a new ID and is read again.
  * Failures are not cached: a refusal means "no spill file this time", and a
  * transient read failure must not disable persistence for the rest of the
  * process.
@@ -225,21 +226,26 @@ type SecurityReader = (path: string) => WindowsDirectorySecurity | undefined;
 
 let securityReader: SecurityReader = readWindowsDirectorySecurity;
 
-/** Verified paths mapped to their creation time when verified: a directory recreated at the path carries a fresh one. */
-const verifiedPaths = new Map<string, number>();
+/**
+ * Verified paths mapped to the identity of the directory verified there: its volume, file ID and creation time. A
+ * directory recreated at the path is a new file with a new ID; the creation time alone would not tell, since NTFS gives
+ * a name recreated within seconds of its deletion the old creation time back ("tunneling").
+ */
+const verifiedPaths = new Map<string, string>();
 
-/** The creation time of `path`, or `undefined` when it cannot be read. */
-function birthtimeOf(path: string): number | undefined {
+/** The identity of the directory at `path`, or `undefined` when it cannot be read. */
+function identityOf(path: string): string | undefined {
 	try {
-		return statSync(path).birthtimeMs;
+		const stat = statSync(path, { bigint: true });
+		return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
 	} catch {
 		return undefined;
 	}
 }
 
 /** True when `path` was verified in this process and is still the directory verified there. */
-function stillVerified(path: string, birthtimeMs: number | undefined): boolean {
-	return birthtimeMs !== undefined && verifiedPaths.get(path) === birthtimeMs;
+function stillVerified(path: string, identity: string | undefined): boolean {
+	return identity !== undefined && verifiedPaths.get(path) === identity;
 }
 
 /**
@@ -247,10 +253,10 @@ function stillVerified(path: string, birthtimeMs: number | undefined): boolean {
  *
  * The descriptor read is a synchronous subprocess, so it runs once per private root per process:
  *
- * - A directory verified in this process is trusted for the rest of it while its creation time is unchanged. Only its
- *   owner or an administrator can change its DACL (the verified DACL grants nobody else that right), and both can
- *   already reach everything below it, so an in-place edit by one of them is not read again. A directory swapped
- *   underneath the path carries a fresh creation time and is read again.
+ * - A directory verified in this process is trusted for the rest of it while it is the same directory (same file ID and
+ *   creation time). Only its owner or an administrator can change its DACL (the verified DACL grants nobody else that
+ *   right), and both can already reach everything below it, so an in-place edit by one of them is not read again. A
+ *   directory swapped underneath the path is a new file and is read again.
  * - A directory inside a verified one needs no read of its own. The verified DACL lets only trusted principals create
  *   entries in it, and grants nobody else access through inheritance either, since an inheritable entry for another
  *   account refuses the parent itself; so a directory inside it was made by a trusted principal and starts private.
@@ -259,16 +265,16 @@ function stillVerified(path: string, birthtimeMs: number | undefined): boolean {
  * transient read error does not permanently disable spills.
  */
 export function verifyWindowsDirectorySecurity(path: string): string | undefined {
-	const birthtimeMs = birthtimeOf(path);
-	if (birthtimeMs === undefined) {
+	const identity = identityOf(path);
+	if (identity === undefined) {
 		return "its ownership could not be verified";
 	}
-	if (stillVerified(path, birthtimeMs)) {
+	if (stillVerified(path, identity)) {
 		return undefined;
 	}
 	const parent = dirname(path);
-	if (parent !== path && stillVerified(parent, birthtimeOf(parent))) {
-		verifiedPaths.set(path, birthtimeMs);
+	if (parent !== path && stillVerified(parent, identityOf(parent))) {
+		verifiedPaths.set(path, identity);
 		return undefined;
 	}
 	const security = securityReader(path);
@@ -280,7 +286,7 @@ export function verifyWindowsDirectorySecurity(path: string): string | undefined
 		verifiedPaths.delete(path);
 		return refusal;
 	}
-	verifiedPaths.set(path, birthtimeMs);
+	verifiedPaths.set(path, identity);
 	return undefined;
 }
 
