@@ -48,9 +48,7 @@ interface CachedModelMeta {
 	readonly provider: string;
 	readonly name: string | undefined;
 	readonly reasoning: boolean;
-	readonly thinkingLevelMap: Model<Api>["thinkingLevelMap"];
 	readonly key: string;
-	readonly levels: readonly ThinkingLevel[];
 	readonly labels: Map<ThinkingLevel | undefined, string>;
 	readonly textMeta: StaticModelTextMeta;
 }
@@ -69,21 +67,17 @@ function getModelMeta(model: Model<Api>): CachedModelMeta {
 		existing.id === model.id &&
 		existing.provider === model.provider &&
 		existing.name === model.name &&
-		existing.reasoning === Boolean(model.reasoning) &&
-		existing.thinkingLevelMap === model.thinkingLevelMap
+		existing.reasoning === Boolean(model.reasoning)
 	) {
 		return existing;
 	}
 	const key = modelKey(model);
-	const levels = model.reasoning ? (getSupportedThinkingLevels(model) as ThinkingLevel[]) : [];
 	const created: CachedModelMeta = {
 		id: model.id,
 		provider: model.provider,
 		name: model.name,
 		reasoning: Boolean(model.reasoning),
-		thinkingLevelMap: model.thinkingLevelMap,
 		key,
-		levels,
 		labels: new Map(),
 		textMeta: { descriptionResolved: false, descriptionValue: undefined, searchTextValue: undefined },
 	};
@@ -120,6 +114,51 @@ function getCachedLabel(model: Model<Api>, meta: CachedModelMeta, level: Thinkin
 	return label;
 }
 
+type ModelLevelResolver = (model: Model<Api>, meta: CachedModelMeta) => ThinkingLevel | undefined;
+
+class ModelSelectorRow implements SelectorItem<Model<Api>> {
+	readonly id: string;
+	readonly value: Model<Api>;
+	readonly mark: "on" | "off";
+	readonly tag: "current" | "default" | undefined;
+	readonly tagTone: "success" | "muted";
+	readonly searchTextMode = "replace";
+	private readonly meta: CachedModelMeta;
+	private readonly isDefault: boolean;
+	private readonly resolveLevel: ModelLevelResolver;
+	private resolvedLabel?: string;
+
+	constructor(
+		model: Model<Api>,
+		meta: CachedModelMeta,
+		isCurrent: boolean,
+		isDefault: boolean,
+		resolveLevel: ModelLevelResolver,
+	) {
+		this.id = meta.key;
+		this.value = model;
+		this.meta = meta;
+		this.mark = isCurrent ? "on" : "off";
+		this.tag = isCurrent ? "current" : isDefault ? "default" : undefined;
+		this.tagTone = isCurrent ? "success" : "muted";
+		this.isDefault = isDefault;
+		this.resolveLevel = resolveLevel;
+	}
+
+	get label(): string {
+		this.resolvedLabel ??= getCachedLabel(this.value, this.meta, this.resolveLevel(this.value, this.meta));
+		return this.resolvedLabel;
+	}
+
+	get description(): string | undefined {
+		return getCachedDescription(this.meta);
+	}
+
+	get searchText(): string {
+		return getCachedSearchText(this.meta, this.isDefault);
+	}
+}
+
 /**
  * The `/model` picker. Each row is the model's raw ID and the level selecting it applies, exactly what
  * `--model provider/id:level` takes (#4269); a display name that adds words the ID lacks follows in a dim column. The
@@ -140,6 +179,7 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 	private scope: ModelScope;
 	/** Levels the user picked with ←→ for a row; rows without one use the level selecting them applies. */
 	private readonly chosenLevels = new Map<string, ThinkingLevel>();
+	private readonly resolveRowLevel: ModelLevelResolver = (model, meta) => this.levelOf(model, meta);
 	private readonly refreshAbortController = new AbortController();
 	private closed = false;
 
@@ -249,20 +289,20 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 
 	/** Levels ←→ step through for `model`: none for a model that does not reason. */
 	levelsFor(model: Model<Api>): ThinkingLevel[] {
-		return [...getModelMeta(model).levels];
+		return model.reasoning ? (getSupportedThinkingLevels(model) as ThinkingLevel[]) : [];
 	}
 
 	private levelOf(model: Model<Api>, meta = getModelMeta(model)): ThinkingLevel | undefined {
 		if (!meta.reasoning) return undefined;
 		const chosen = this.chosenLevels.get(meta.key);
-		return chosen !== undefined && meta.levels.includes(chosen)
+		return chosen !== undefined && this.levelsFor(model).includes(chosen)
 			? chosen
 			: thinkingLevelForModelSwitch(model, this.thinkingContext);
 	}
 
 	private stepLevel(model: Model<Api>, direction: 1 | -1): void {
 		const meta = getModelMeta(model);
-		const levels = meta.levels;
+		const levels = this.levelsFor(model);
 		if (levels.length <= 1) return;
 		const current = this.levelOf(model, meta);
 		const index = current === undefined ? -1 : levels.indexOf(current);
@@ -291,18 +331,16 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 
 	/** Current model first, the saved default second, then by provider. */
 	private sortModels(models: Model<Api>[]): Model<Api>[] {
-		const currentKey = this.currentModelKey;
-		return models.sort((a, b) => {
-			const aKey = getModelMeta(a).key;
-			const bKey = getModelMeta(b).key;
-			const aIsCurrent = aKey === currentKey && modelsAreEqual(this.currentModel, a);
-			const bIsCurrent = bKey === currentKey && modelsAreEqual(this.currentModel, b);
-			if (aIsCurrent !== bIsCurrent) return aIsCurrent ? -1 : 1;
-			const aIsDefault = aKey === this.defaultModelKey;
-			const bIsDefault = bKey === this.defaultModelKey;
-			if (aIsDefault !== bIsDefault) return aIsDefault ? -1 : 1;
-			return compareProviders(a.provider, b.provider);
-		});
+		const current: Model<Api>[] = [];
+		const defaults: Model<Api>[] = [];
+		const remaining: Model<Api>[] = [];
+		for (const model of models) {
+			if (modelsAreEqual(this.currentModel, model)) current.push(model);
+			else if (this.defaultModelKey !== undefined && modelKey(model) === this.defaultModelKey) defaults.push(model);
+			else remaining.push(model);
+		}
+		remaining.sort((a, b) => compareProviders(a.provider, b.provider));
+		return [...current, ...defaults, ...remaining];
 	}
 
 	private toggleScope(): void {
@@ -322,7 +360,7 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 				this.chosenLevels.delete(key);
 				continue;
 			}
-			const levels = getModelMeta(model).levels;
+			const levels = this.levelsFor(model);
 			if (levels.length <= 1) {
 				this.chosenLevels.delete(key);
 				continue;
@@ -336,32 +374,9 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 	}
 
 	private buildItem(model: Model<Api>): SelectorItem<Model<Api>> {
-		const self = this;
 		const meta = getModelMeta(model);
 		const isCurrent = meta.key === this.currentModelKey && modelsAreEqual(this.currentModel, model);
-		const isDefault = meta.key === this.defaultModelKey;
-		let resolvedLabel: string | undefined;
-		return {
-			id: meta.key,
-			value: model,
-			get label() {
-				if (resolvedLabel === undefined) {
-					const level = self.levelOf(model, meta);
-					resolvedLabel = getCachedLabel(model, meta, level);
-				}
-				return resolvedLabel;
-			},
-			get description() {
-				return getCachedDescription(meta);
-			},
-			mark: isCurrent ? "on" : "off",
-			tag: isCurrent ? "current" : isDefault ? "default" : undefined,
-			tagTone: isCurrent ? "success" : "muted",
-			get searchText() {
-				return getCachedSearchText(meta, isDefault);
-			},
-			searchTextMode: "replace",
-		};
+		return new ModelSelectorRow(model, meta, isCurrent, meta.key === this.defaultModelKey, this.resolveRowLevel);
 	}
 
 	private rebuild(preferId?: string): void {

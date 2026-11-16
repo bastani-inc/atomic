@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import type { ModelsRefreshResult } from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { setKeybindings, type TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
@@ -552,6 +553,36 @@ describe("model selector", () => {
 		assert.equal(onSelect.mock.calls.length, 1);
 		assert.equal(onSelect.mock.calls[0]?.[0]?.id, "alpha-1");
 		assert.equal(onSelect.mock.calls[0]?.[1], "high");
+		selector.dispose();
+	});
+
+	it("reconciles effort when refreshed capabilities update the same model object (#5237)", async () => {
+		harness = await createHarness({ models: [{ id: "mutable-model", name: "Mutable Model", reasoning: true }] });
+		const model: Model<Api> = { ...harness.models[0]!, thinkingLevelMap: { xhigh: "xhigh" } };
+		const runtime = harness.session.modelRuntime;
+		const refresh = Promise.withResolvers<ModelsRefreshResult>();
+		vi.spyOn(runtime, "getAvailableSnapshot").mockReturnValue([model]);
+		vi.spyOn(runtime, "refresh").mockReturnValue(refresh.promise);
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			model,
+			harness.settingsManager,
+			runtime,
+			[],
+			() => {},
+			() => {},
+			undefined,
+			"high",
+		);
+		selector.handleInput("\x1b[C");
+		assert.ok(stripAnsi(selector.render(120).join("\n")).includes("mutable-model  xhigh"));
+		model.thinkingLevelMap!.xhigh = null;
+		refresh.resolve({ aborted: false, errors: new Map() });
+		await vi.waitFor(() =>
+			assert.ok(stripAnsi(selector.render(120).join("\n")).includes("Model catalogs refreshed.")),
+		);
+		assert.ok(stripAnsi(selector.render(120).join("\n")).includes("mutable-model  high"));
+		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("mutable-model  xhigh"), false);
 		selector.dispose();
 	});
 
