@@ -37,6 +37,7 @@ chmod 600 ~/.atomic/postgres-password
 | `maxConnections` | no | Connections each process keeps open at most. Default 8. |
 | `statementTimeoutMs` | no | How long one statement may run before the server cancels it. Default 30000. |
 | `listenUrl` | no | A direct (session) endpoint for the connection that listens for wake-ups, when `url` goes through a transaction pooler. Default `url`. |
+| `schema` | no | The schema Atomic's tables live in, a lowercase name. Default `atomic`, which the first store that sets up its tables creates when the role may. A database whose `public` schema holds an earlier release's tables, and has no `atomic` schema, keeps using `public` until `atomic storage migrate` moves them. Every transaction sets it with `SET LOCAL search_path`. |
 
 PostgreSQL 14 or newer is required. A URL that names no `sslmode` gets `sslmode=verify-full` when its host is not this machine, so the connection is encrypted and the server certificate is checked. Name a CA with `sslrootcert=/path/to/ca.pem` when the server's certificate is not signed by a CA Node trusts, or set `sslmode` yourself. `sslmode` follows libpq: `verify-ca` checks the certificate's CA (`sslrootcert`, or else the CAs Node trusts) but not its host name, for a server reached by an address its certificate does not name; `prefer` and `allow` encrypt without checking the certificate; `disable` turns TLS off. `require` with `sslrootcert` acts as `verify-ca`; without it, `require` checks the certificate and its host name, as `verify-full` does, which is stricter than libpq. Parameter names are case-sensitive, as in libpq: a TLS parameter that is not lowercase, or an unknown `sslmode`, is refused.
 
@@ -44,7 +45,7 @@ The adapter works through a transaction-mode connection pooler (PgBouncer, Supav
 
 Each process also keeps one connection outside the pool that `LISTEN`s for wake-ups (`notifications` on the opened database), so worker hosts and Intercom brokers find new work at once. A transaction-mode pooler does not deliver notifications to it: the adapter detects that with a probe and falls back to polling alone, unless `listenUrl` names the server's direct endpoint. Nothing is lost without wake-ups; work is found at the next poll. `atomic storage status` says which applies.
 
-A failure that passes, such as a refused or lost connection, a lock conflict (SQLSTATE `40001`, `40P01`, `55P03`) or a cancelled statement (`57014`), is reported as `StorageTransientError`, and a call that wrote nothing runs again. Refused credentials (`28P01`), a missing database (`3D000`) and missing privileges (`42501`) fail at once. The password is redacted from error messages and diagnostics. Add a `prefix` to the `storage` block to keep projects or teams apart in one database. See [Storage](../coding-agent/docs/storage.md) for selection precedence and the other storage options.
+A failure that passes, such as a refused or lost connection, a lock conflict (SQLSTATE `40001`, `40P01`, `55P03`) or a cancelled statement (`57014`), is reported as `StorageTransientError`, and a call that wrote nothing runs again. Refused credentials (`28P01`), a missing database (`3D000`) and a refused server certificate fail at once. A missing privilege (`42501`) fails at once with `StorageConfigError` reason `missing-privilege`, which names the privilege and the grant or `atomic storage migrate` that fixes it. The password is redacted from error messages and diagnostics. Add a `prefix` to the `storage` block to keep projects or teams apart in one database. See [Storage](../coding-agent/docs/storage.md) for selection precedence and the other storage options.
 
 ## Cloud IAM authentication
 
@@ -59,7 +60,7 @@ On Azure, AWS and Google Cloud the adapter can sign in with the machine's cloud 
 }
 ```
 
-Each cloud signs in through its own SDK, which the adapter does not bundle. Install the one your `auth` needs beside the adapter (these are the versions the adapter is tested with):
+Each cloud signs in through its own SDK, which the adapter does not bundle. Install the one your `auth` needs among the user packages (these are the versions the adapter is tested with). The adapter finds it beside itself, or in `~/.atomic/agent/npm`, where `atomic install npm:<package>` puts it, so an adapter installed from a local path finds it too:
 
 | `auth` | SDK | Install | Where the token comes from |
 |---|---|---|---|
@@ -69,13 +70,26 @@ Each cloud signs in through its own SDK, which the adapter does not bundle. Inst
 
 In an SDK project, `npm install` the same package next to `@bastani/atomic-storage-postgres`; each is an optional peer dependency. Only the configured cloud's SDK is loaded, when the store opens its first connection.
 
-For each new connection the adapter asks the SDK for a short-lived token and sends it as the password. Tokens are kept in memory only and never written to settings, logs or error messages; Azure tokens are reused until 5 minutes before they expire, and the AWS and Google SDKs cache their own credentials. One token request may take up to 8 seconds. When the SDK is missing or gives no token, opening fails with `StorageConfigError` reason `auth-unavailable`; the message names the package to install, or the SDK's own reason with anything shaped like a credential removed.
+For each new connection the adapter asks the SDK for a short-lived token and sends it as the password. Tokens are kept in memory only and never written to settings, logs or error messages; Azure tokens are reused until 5 minutes before they expire, and the AWS and Google SDKs cache their own credentials. A token the server refuses (`28P01`, or Azure's `28000` for a malformed one) is dropped, and the connection tried once more with a fresh one. One token request may take up to 8 seconds. When the SDK is missing or gives no token, opening fails with `StorageConfigError` reason `auth-unavailable`; the message names the package to install, or the SDK's own reason with anything shaped like a credential removed.
 
 Cloud tokens require TLS; keep `sslmode=verify-full` (the default for a remote host) or at least `require`.
 
 ### Least-privilege roles
 
-Give the identity a database role with only what Atomic needs: `CONNECT` on the database, and `USAGE` on the schema (`USAGE, CREATE` for the first host that joins, which creates the tables). The cloud side needs no more than this:
+Atomic uses two roles: an owner role that owns the database and the `atomic` schema and runs `atomic storage migrate`, and a runtime role for hosts, roots, sessions and brokers, which runs no DDL. Give a cloud identity the runtime role's privileges, as [Set up the database](../coding-agent/docs/storage.md#set-up-the-database) lists them; after `atomic storage migrate`, as the owner role:
+
+```sql
+GRANT CONNECT ON DATABASE atomic TO "<identity>";
+GRANT USAGE ON SCHEMA atomic TO "<identity>";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA atomic TO "<identity>";
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA atomic TO "<identity>";
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA atomic TO "<identity>";
+ALTER DEFAULT PRIVILEGES FOR ROLE atomic_owner IN SCHEMA atomic GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "<identity>";
+ALTER DEFAULT PRIVILEGES FOR ROLE atomic_owner IN SCHEMA atomic GRANT USAGE, SELECT ON SEQUENCES TO "<identity>";
+ALTER DEFAULT PRIVILEGES FOR ROLE atomic_owner IN SCHEMA atomic GRANT EXECUTE ON FUNCTIONS TO "<identity>";
+```
+
+The cloud side needs no more than this:
 
 **Azure Database for PostgreSQL (flexible server).** Enable Microsoft Entra authentication. As the Entra administrator, connected to the `postgres` database, create a role for the managed identity (named exactly as the identity) and grant it the database privileges:
 

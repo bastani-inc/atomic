@@ -179,7 +179,7 @@ test("attaching to a running pooled stage renders its streaming text, not SESSIO
 			"Enter in a pooled stage's chat steers it through the delivery door",
 		);
 
-		pane.handleInput("\x18");
+		pane.handleInput("\x1b[D");
 		assert.equal(pane._mode, "graph");
 		assert.deepEqual(pool.unwatched, ["watch-1"], "leaving the chat closes the watch");
 	} finally {
@@ -299,7 +299,7 @@ test("a stage registered in an SDK registry attaches with its transcript, reply 
 			},
 		} as never as AgentSessionEvent);
 		await until(() => visible(pane.render(100)).includes(FIRST + SECOND));
-		pane.handleInput("\x18");
+		pane.handleInput("\x1b[D");
 		assert.equal(pane._mode, "graph");
 		assert.match(visible(pane.render(100)), /✉ 3 queued/, "and again after the chat closes");
 	} finally {

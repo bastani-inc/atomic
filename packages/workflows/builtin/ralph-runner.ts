@@ -20,6 +20,7 @@ import {
   REPO_INTENT_MINING_GUIDANCE,
   SCOPE_DISCIPLINE_CONTRACT,
   WORKER_PREFLIGHT_CONTRACT,
+  CONTEXT_SIZE_CONTINUATION_RULE,
   WORKTREE_DISCIPLINE_CONTRACT,
   keepContext,
 } from "./shared-prompts.js";
@@ -188,6 +189,7 @@ export async function runRalphWorkflow(
             "Complete the requested implementation.",
             `Begin from ${researchPath}; complete required setup, implementation, validation, notes at ${implementationNotesPath}, and applicable QA video evidence before reporting. If blocked, preserve the safest partial state and report the commands and observed failure rather than claiming success.`,
             "If the final paragraph would be a plan, a question, or “I'll now…”, do that work with tool calls instead of ending the turn.",
+            CONTEXT_SIZE_CONTINUATION_RULE,
           ].join("\n"),
         ],
       ])

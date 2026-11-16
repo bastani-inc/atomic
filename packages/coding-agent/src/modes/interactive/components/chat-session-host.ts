@@ -14,6 +14,7 @@ import {
 	submitChatSession,
 } from "./chat-session-host-actions.ts";
 import {
+	chatSessionEditorAccess,
 	createChatSessionEditor,
 	handleChatSessionInput,
 	setChatSessionEditorText,
@@ -413,6 +414,12 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	inputText(): string {
 		return this.state.inputBuffer;
+	}
+	/** Whether the cursor is at the very start of the prompt, so ← there leaves the chat and keeps what is typed. */
+	inputCursorAtStart(): boolean {
+		if (this.state.inputBuffer.length === 0) return true;
+		const cursor = chatSessionEditorAccess(this.state).getCursor?.();
+		return cursor !== undefined && cursor.line === 0 && cursor.col === 0;
 	}
 	setInputText(text: string): void {
 		setChatSessionEditorText(this.state, text);

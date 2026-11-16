@@ -10,6 +10,8 @@ import type { CandidateModelResolver } from "./model-resolution.js";
 export interface TestSessionQueue {
 	steer(text: string): Promise<void>;
 	followUp(text: string): Promise<void>;
+	/** Starts a turn on the idle session, as a message delivered to an interrupted child does. */
+	prompt(text: string): Promise<void>;
 }
 
 import type {

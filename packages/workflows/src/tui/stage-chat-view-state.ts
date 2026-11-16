@@ -70,6 +70,7 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	ctx.mountedCustomUi = null;
 	ctx.mountingRequestId = null;
 	ctx.promptState = null;
+	ctx.dismissedPromptId = null;
 	ctx.promptEditor = null;
 	ctx.promptEditorPromptId = null;
 	ctx.promptEditorSubmitFromEnter = false;
@@ -460,6 +461,11 @@ export function currentRun(ctx: StageChatViewContext): RunSnapshot | undefined {
 
 export function currentStage(ctx: StageChatViewContext): StageSnapshot | undefined {
 	return currentRun(ctx)?.stages.find((s) => s.id === ctx.stageId);
+}
+
+/** Whether a pending question owns the composer's place, rather than being closed back to the chat's prompt. */
+export function promptCardShown(ctx: Pick<StageChatViewContext, "promptState" | "dismissedPromptId">): boolean {
+	return ctx.promptState !== null && ctx.promptState.prompt.id !== ctx.dismissedPromptId;
 }
 
 export function syncPromptState(ctx: StageChatViewContext, prompt: PendingPrompt | undefined): boolean {

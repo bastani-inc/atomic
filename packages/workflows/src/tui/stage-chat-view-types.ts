@@ -42,9 +42,9 @@ export interface StageChatViewOpts {
 	handle?: StageControlHandle;
 	/** Why a retained terminal stage could not be reopened for follow-up chat. */
 	postMortemUnavailableReason?: PostMortemUnavailableReason;
-	/** Called when the user presses Ctrl+X (back to graph). */
+	/** Called when the user presses ← on an empty prompt (back to graph). */
 	onDetach: (reason?: StageChatDetachReason, metadata?: StageChatDetachMetadata) => void;
-	/** Called when the user presses Escape (close the whole popup). */
+	/** Called when the user presses Ctrl+C (close the whole popup). */
 	onClose: () => void;
 	/** Request a host TUI repaint after SDK events mutate local chat state. */
 	requestRender?: () => void;
@@ -140,6 +140,11 @@ export interface StageChatViewContext {
 	mountedCustomUi: MountedStageCustomUi | null;
 	mountingRequestId: string | null;
 	promptState: PromptCardState | null;
+	/**
+	 * A choice or yes/no question the reader closed with Esc: it stays pending, the chat's own prompt shows, and Enter on
+	 * that empty prompt reopens it (#5224).
+	 */
+	dismissedPromptId: string | null;
 	promptEditor: EditorComponent | null;
 	promptEditorPromptId: string | null;
 	promptEditorSubmitFromEnter: boolean;
