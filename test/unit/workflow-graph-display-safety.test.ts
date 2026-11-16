@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
+import { MAX_CAUSE_DEPTH } from "../../packages/workflows/src/shared/error-cause-chain.js";
+import { type SerializedError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
 import type { StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import * as toolPayloadBounds from "../../packages/workflows/src/shared/tool-payload-bounds.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
@@ -13,6 +15,7 @@ import {
 	stageFailureReason,
 } from "../../packages/workflows/src/tui/stage-failure-detail.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
+import { wrapPlainText } from "../../packages/workflows/src/tui/text-helpers.js";
 import { renderToolDetail } from "../../packages/workflows/src/tui/tool-detail.js";
 import { buildThemedWidgetLines, renderWidgetLines } from "../../packages/workflows/src/tui/widget.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
@@ -305,6 +308,182 @@ test("failure detail visits a bounded number of repeated error entries (#5234)",
 	});
 	assert.ok(lines.some((line) => line.includes("duplicate")));
 	assert.ok(entriesRead <= 32, `visited ${entriesRead} repeated entries`);
+});
+
+test("failure logs render the deepest recorded cause and omit bare child headings (#5234)", () => {
+	let rootCause: Error = new Error(`level ${MAX_CAUSE_DEPTH - 1} root cause`);
+	for (let level = MAX_CAUSE_DEPTH - 2; level >= 0; level--) {
+		rootCause = new Error(`level ${level}`, { cause: rootCause });
+	}
+	const chainStage: StageSnapshot = {
+		...makeStage("verify"),
+		status: "failed",
+		error: "level 0",
+		failureMessage: "level 0",
+		failureDetail: serializeError(rootCause),
+	};
+	const chainLines = stageFailureLogLines(chainStage);
+	assert.ok(
+		chainLines.some((line) => line.includes(`level ${MAX_CAUSE_DEPTH - 1} root cause`)),
+		"deepest serialized cause is rendered",
+	);
+	const renderedChain = renderStageFailureDetailLines(chainStage, {
+		theme: defaultTheme,
+		width: 120,
+		logs: true,
+	}).join("\n");
+	assert.ok(renderedChain.includes(`level ${MAX_CAUSE_DEPTH - 1} root cause`));
+
+	const cyclic: {
+		name: string;
+		message: string;
+		fields: Record<string, never>;
+		cause?: SerializedError;
+		cleanupCause?: SerializedError;
+	} = {
+		name: "Error",
+		message: "loop",
+		fields: {},
+	};
+	cyclic.cause = cyclic;
+	cyclic.cleanupCause = cyclic;
+
+	let overDepth: SerializedError = { name: "Error", message: "beyond max depth", fields: {} };
+	for (let level = MAX_CAUSE_DEPTH; level >= 0; level--) {
+		overDepth = {
+			name: "Error",
+			message: `depth ${level}`,
+			fields: {},
+			cause: overDepth,
+			cleanupCause: { name: "CleanupError", message: `cleanup ${level}`, fields: {} },
+		};
+	}
+
+	for (const detail of [chainStage.failureDetail!, cyclic as SerializedError, overDepth]) {
+		const logLines = stageFailureLogLines({ error: "failed", failureDetail: detail });
+		for (let index = 0; index < logLines.length; index++) {
+			const line = logLines[index]!;
+			if (/^\s*(caused by:|during cleanup:)$/.test(line)) {
+				const next = logLines[index + 1];
+				assert.ok(next !== undefined && next.trim().length > 0, `dangling heading at line ${index}: ${line}`);
+				assert.equal(/^\s*(caused by:|during cleanup:)$/.test(next), false);
+			}
+		}
+	}
+});
+
+test("stage failure reason and logs skip leading whitespace before bounding (#5234)", () => {
+	for (const prefix of ["\n".repeat(20_000), " ".repeat(20_000), "\n".repeat(16_370), "\n".repeat(16_371)]) {
+		const error = `${prefix}Error: disk full\nsecond line`;
+		const stage: StageSnapshot = {
+			...makeStage("verify"),
+			status: "failed",
+			error,
+			failureMessage: error,
+		};
+		assert.equal(stageFailureReason(stage), "Error: disk full");
+		const summary = renderStageFailureDetailLines(stage, { theme: defaultTheme, width: 120, logs: false }).join("\n");
+		assert.ok(summary.includes("Error: disk full"));
+		assert.equal(summary.includes(TOOL_PAYLOAD_TRUNCATION_MARKER), false);
+		const logs = renderStageFailureDetailLines(stage, { theme: defaultTheme, width: 120, logs: true }).join("\n");
+		assert.ok(logs.includes("Error: disk full"));
+	}
+	assert.equal(
+		stageFailureReason({ error: " ".repeat(20_000), failureMessage: "\n".repeat(20_000) }),
+		"No reason was recorded.",
+	);
+});
+
+test("failure logs preserve error code, hint and cause when the stage stack or root error message is huge (#5234)", () => {
+	const stack = `Error: build failed\n${Array.from({ length: 2_000 }, (_, index) => `    at frame${index} (file.ts:${index}:1)`).join("\n")}`;
+	const hugeStackStage: StageSnapshot = {
+		...makeStage("verify"),
+		status: "failed",
+		error: stack,
+		failureMessage: stack,
+		failureDetail: {
+			name: "AggregateError",
+			code: "E_AGGREGATE",
+			message: "two steps failed",
+			hint: "rerun with --verbose",
+			fields: {},
+			cause: { name: "TypeError", code: "E_CAUSE", message: "root cause here", fields: {} },
+		},
+	};
+	const hugeRootErrorStage: StageSnapshot = {
+		...hugeStackStage,
+		failureDetail: {
+			name: "AggregateError",
+			code: "E_AGGREGATE",
+			message: "M".repeat(40_000),
+			hint: "rerun with --verbose",
+			fields: {},
+			cause: { name: "TypeError", code: "E_CAUSE", message: "root cause here", fields: {} },
+		},
+	};
+	for (const candidate of [
+		hugeStackStage,
+		hugeRootErrorStage,
+		{
+			...hugeRootErrorStage,
+			failureDetail: { ...hugeRootErrorStage.failureDetail!, message: "M\n".repeat(20_000) },
+		},
+		{ ...hugeRootErrorStage, error: undefined, failureMessage: undefined },
+	]) {
+		const rawLines = stageFailureLogLines(candidate).join("\n");
+		const rendered = renderStageFailureDetailLines(candidate, { theme: defaultTheme, width: 120, logs: true }).join(
+			"\n",
+		);
+		for (const expected of ["E_AGGREGATE", "rerun with --verbose", "E_CAUSE", "root cause here"]) {
+			assert.ok(rawLines.includes(expected), `stageFailureLogLines missing ${expected}`);
+			assert.ok(rendered.includes(expected), `renderStageFailureDetailLines missing ${expected}`);
+		}
+	}
+});
+
+test("failure logs cap newline-dense rows across widths and keep truncation explicit (#5234)", () => {
+	for (const dense of ["a\n".repeat(500_000), "\u0001\n".repeat(20_000)]) {
+		const stage: StageSnapshot = {
+			...makeStage("verify"),
+			status: "failed",
+			error: dense,
+			failureMessage: dense,
+		};
+		assert.ok(stageFailureLogLines(stage).length <= 256);
+		for (const width of [3, 42, 120]) {
+			const rows = renderStageFailureDetailLines(stage, { theme: defaultTheme, width, logs: true });
+			assert.ok(rows.length <= 260, `expected capped log rows at width ${width}, got ${rows.length}`);
+			assert.ok(rows.join("\n").includes("…"), `expected truncation marker at width ${width}`);
+		}
+	}
+	const narrowDetailStage: StageSnapshot = {
+		...makeStage("verify"),
+		status: "failed",
+		error: "\u0001\n".repeat(20_000),
+		failureMessage: "\u0001\n".repeat(20_000),
+		failureDetail: {
+			name: "AggregateError",
+			code: "E_AGGREGATE",
+			message: "two steps failed",
+			hint: "rerun with --verbose",
+			fields: {},
+			cause: { name: "TypeError", code: "E_CAUSE", message: "root cause here", fields: {} },
+		},
+	};
+	const narrowRows = renderStageFailureDetailLines(narrowDetailStage, {
+		theme: defaultTheme,
+		width: 40,
+		logs: true,
+	}).join("\n");
+	assert.ok(narrowRows.includes(TOOL_PAYLOAD_TRUNCATION_MARKER));
+	assert.ok(narrowRows.includes("E_AGGREGATE"));
+	assert.ok(narrowRows.includes("root cause here"));
+});
+
+test("plain wrapping preserves combining and emoji graphemes after text (#5234)", () => {
+	const combiningWord = `e${"\u0301".repeat(1_000)}`;
+	const zwjCluster = "👨\u200d👩\u200d👧\u200d👦";
+	assert.deepEqual(wrapPlainText(`head ${combiningWord} ${zwjCluster}`, 20), [`head ${combiningWord} ${zwjCluster}`]);
 });
 
 test.each([

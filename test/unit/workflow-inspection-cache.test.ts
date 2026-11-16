@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
+import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import {
 	expandedInspectionRun,
 	prepareInspectionStoreSnapshot,
 } from "../../packages/workflows/src/shared/inspection-store-snapshot.js";
+import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { makeRun, makeStage } from "./overlay-graph-helpers.js";
 
@@ -117,3 +123,150 @@ test("cold status preparation yields between bounded batches and preserves chang
 		vi.useRealTimers();
 	}
 });
+
+test("notices preserve unchanged compact graph runs without re-projecting their results (#5234)", () => {
+	const store = createStore();
+	let resultReads = 0;
+	for (let index = 0; index < 40; index++) {
+		store.recordRunStart({
+			...makeRun([makeStage("stage")]),
+			id: `run-${index}`,
+			result: {
+				get summary() {
+					resultReads++;
+					return `summary-${index}`;
+				},
+			},
+		});
+	}
+	const before = store.graphSnapshot();
+	assert.equal(resultReads, 40);
+	resultReads = 0;
+	store.recordNotice({ id: "notice", runId: "run-0", level: "info", message: "Updated", createdAt: 1 });
+	const after = store.graphSnapshot();
+	assert.equal(resultReads, 0);
+	for (let index = 0; index < before.runs.length; index++) {
+		assert.equal(after.runs[index], before.runs[index]);
+	}
+});
+
+test("clearing a completed stage's prompt answer invalidates cached inspection and graph answer state (#5234)", () => {
+	const store = createStore();
+	store.recordRunStart({ ...makeRun([{ ...makeStage("stage"), status: "running", startedAt: 1 }]), id: "run-1" });
+	assert.equal(
+		store.recordStagePromptAnswer(
+			"run-1",
+			"stage",
+			{ id: "prompt-1", kind: "input", message: "Confirm?", createdAt: 1 },
+			"yes",
+		),
+		true,
+	);
+	store.recordStageEnd("run-1", {
+		...makeStage("stage"),
+		status: "completed",
+		startedAt: 1,
+		endedAt: 2,
+		durationMs: 1,
+	});
+	const before = store.inspectionSnapshot!();
+	const beforeGraph = store.graphSnapshot();
+	assert.equal(before.runs[0]?.stages[0]?.status, "completed");
+	assert.equal(before.runs[0]?.stages[0]?.promptAnswerState, "available");
+	assert.equal(beforeGraph.runs[0]?.stages[0]?.promptAnswerState, "available");
+	store.clearStagePromptAnswer("run-1", "stage");
+	const after = store.inspectionSnapshot!();
+	const afterGraph = store.graphSnapshot();
+	assert.equal(after.runs[0]?.stages[0]?.promptAnswerState, undefined);
+	assert.equal(afterGraph.runs[0]?.stages[0]?.promptAnswerState, undefined);
+	assert.deepEqual(after, store.snapshot());
+});
+
+test.each([false, true])(
+	"cold workflow status listing prepares inspection snapshots in slices of at most 16 runs (cleared during yield: %s) (#5234)",
+	async (clearDuringYield) => {
+		const store = createStore();
+		let sliceReads = 0;
+		let totalReads = 0;
+		for (let index = 0; index < 40; index++) {
+			store.recordRunStart({
+				...makeRun([
+					{
+						...makeStage("stage"),
+						structured: {
+							get value() {
+								sliceReads++;
+								totalReads++;
+								return index;
+							},
+						},
+					},
+				]),
+				id: `run-${index}`,
+			});
+		}
+		const runtime = createExtensionRuntime();
+		const execute = makeExecuteWorkflowTool(
+			runtime,
+			() => undefined,
+			() => {},
+			{
+				store,
+				jobs: createJobTracker(),
+				toolControlRegistry: createToolControlRegistry(),
+				stageControlRegistry: createStageControlRegistry(),
+				stageUiBroker: new StageUiBroker(store),
+			},
+		);
+		const originalSetTimeout = globalThis.setTimeout;
+		let maxSliceReads = 0;
+		let addedDuringYield = false;
+		const flushSlice = () => {
+			maxSliceReads = Math.max(maxSliceReads, sliceReads);
+			sliceReads = 0;
+		};
+		const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+			callback: () => void,
+			delay?: number,
+		) => {
+			flushSlice();
+			return originalSetTimeout(() => {
+				if (!addedDuringYield) {
+					addedDuringYield = true;
+					if (clearDuringYield) store.clear();
+					for (let index = 40; index < 80; index++) {
+						store.recordRunStart({
+							...makeRun([
+								{
+									...makeStage("stage"),
+									structured: {
+										get value() {
+											sliceReads++;
+											totalReads++;
+											return index;
+										},
+									},
+								},
+							]),
+							id: `run-${index}`,
+						});
+					}
+				}
+				flushSlice();
+				callback();
+				flushSlice();
+			}, delay);
+		}) as typeof setTimeout);
+		try {
+			const result = await execute({ action: "status" }, {} as never);
+			flushSlice();
+			assert.ok(maxSliceReads <= 16, `one synchronous slice materialized ${maxSliceReads} runs`);
+			assert.equal(result.action, "status");
+			const expectedCount = clearDuringYield ? 40 : 80;
+			if (result.action === "status") assert.equal(result.runs.length, expectedCount);
+			assert.equal(totalReads, expectedCount);
+		} finally {
+			timerSpy.mockRestore();
+		}
+	},
+);

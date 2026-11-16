@@ -251,19 +251,22 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	}
 
 	async function prepareInspectionSnapshot(): Promise<void> {
-		inspectionBuilder ??= new GraphStoreSnapshotBuilder({ fullPayloads: true });
-		const builder = inspectionBuilder;
-		const runs = state.runs.slice();
 		let prepared = 0;
-		for (const run of runs) {
-			if (builder.hasRun(run)) continue;
-			if (prepared % 16 === 0) {
-				await new Promise<void>((resolve) => setTimeout(resolve, 0));
-				if (inspectionBuilder !== builder) return;
-			}
-			if (findRun(run.id) === run) {
-				builder.buildRun(run);
-				prepared++;
+		for (;;) {
+			inspectionBuilder ??= new GraphStoreSnapshotBuilder({ fullPayloads: true });
+			const builder = inspectionBuilder;
+			const unhandled = state.runs.filter((run) => !builder.hasRun(run));
+			if (unhandled.length === 0) return;
+			for (const run of unhandled) {
+				if (builder.hasRun(run)) continue;
+				if (prepared % 16 === 0) {
+					await new Promise<void>((resolve) => setTimeout(resolve, 0));
+					if (inspectionBuilder !== builder) break;
+				}
+				if (findRun(run.id) === run) {
+					builder.buildRun(run);
+					prepared++;
+				}
 			}
 		}
 	}
@@ -390,6 +393,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		const [removed] = state.runs.splice(position, 1);
 		if (removed === undefined) return;
 		state.runPositions.delete(removed.id);
+		graphBuilder.removeRun(removed.id);
 		inspectionBuilder?.removeRun(removed.id);
 		inspectionView = undefined;
 		inspectionTargets = new WeakMap();
@@ -399,6 +403,9 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	}
 
 	function clearRuns(): void {
+		graphBuilder.clear();
+		cachedGraphSnapshot = undefined;
+		cachedGraphVersion = -1;
 		inspectionBuilder = undefined;
 		inspectionTargets = new WeakMap();
 		inspectionView = undefined;

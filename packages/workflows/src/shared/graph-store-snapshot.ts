@@ -331,14 +331,7 @@ export class GraphStoreSnapshotBuilder {
 	/** Records a store change; `change` scopes it to one run, or one stage or tool node of it. */
 	markChanged(change?: { readonly runId: string; readonly stageId?: string; readonly toolNodeId?: string }): void {
 		if (change === undefined) {
-			if (this.full) {
-				this.recheckSettledStages = true;
-				return;
-			}
-			this.projected.clear();
-			this.changedRuns.clear();
-			this.changedStages.clear();
-			this.changedToolNodes.clear();
+			this.recheckSettledStages = true;
 			return;
 		}
 		if (change.stageId === undefined && change.toolNodeId === undefined) {
@@ -358,6 +351,14 @@ export class GraphStoreSnapshotBuilder {
 		this.changedRuns.delete(runId);
 		this.changedStages.delete(runId);
 		this.changedToolNodes.delete(runId);
+	}
+
+	clear(): void {
+		this.projected.clear();
+		this.recheckSettledStages = false;
+		this.changedRuns.clear();
+		this.changedStages.clear();
+		this.changedToolNodes.clear();
 	}
 
 	build(runs: readonly RunSnapshot[], notices: readonly WorkflowNotice[], version: number): StoreSnapshot {

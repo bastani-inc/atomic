@@ -1,5 +1,5 @@
 import { mkdir, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import { prepareInspectionStoreSnapshot, readInspectionStoreSnapshot } from "../shared/inspection-store-snapshot.js";
 import type { Store } from "../shared/store.js";
@@ -27,12 +27,28 @@ export function resolveStatusFilePath(
 	return join(root, DEFAULT_STATUS_SUBPATH);
 }
 
-export async function atomicWriteJson(path: string, content: string | Iterable<string>): Promise<void> {
-	const dir = dirname(path);
-	await mkdir(dir, { recursive: true });
-	const tmpPath = `${path}.tmp`;
-	await writeFile(tmpPath, content, "utf8");
-	await rename(tmpPath, path);
+const pathWrites = new Map<string, Promise<void>>();
+
+export function atomicWriteJson(path: string, content: string | Iterable<string>): Promise<void> {
+	const targetPath = resolve(path);
+	const previous = pathWrites.get(targetPath) ?? Promise.resolve();
+	const current = previous.then(async () => {
+		await mkdir(dirname(targetPath), { recursive: true });
+		const tmpPath = `${targetPath}.tmp`;
+		await writeFile(tmpPath, content, "utf8");
+		await rename(tmpPath, targetPath);
+	});
+	const settled = current.then(
+		() => {},
+		() => {},
+	);
+	pathWrites.set(targetPath, settled);
+	void settled.then(() => {
+		if (pathWrites.get(targetPath) === settled) {
+			pathWrites.delete(targetPath);
+		}
+	});
+	return current;
 }
 
 export function createStatusWriter(
@@ -48,7 +64,7 @@ export function createStatusWriter(
 	let lastErrorMessage: string | null = null;
 	let active = true;
 	let writing = false;
-	let initialWrite = (store.runs?.().length ?? 0) > 0 || (store.notices?.().length ?? 0) > 0;
+	let initialWrite = true;
 	let pending = initialWrite;
 	let drainPromise: Promise<void> | null = null;
 	let inFlightWrite: Promise<void> | null = null;
@@ -73,6 +89,7 @@ export function createStatusWriter(
 			if (!active) return;
 			await prepareInspectionStoreSnapshot(store);
 			if (!active) return;
+			pending = false;
 			const content = await serializer.serialize(readInspectionStoreSnapshot(store));
 			if (!active) return;
 			await atomicWriteJson(filePath, content);

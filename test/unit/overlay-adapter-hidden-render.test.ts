@@ -160,17 +160,25 @@ async function registerIsolatedTests(): Promise<void> {
 		test("visible overlay coalesces a status burst into one frame (#5234)", async () => {
 			const { adapter, store, renderRequests } = buildHarness();
 			adapter.open(null);
-			const graphSnapshotSpy = spyOn(store, "graphSnapshot");
+			const snapshotSpies = [
+				spyOn(store, "graphSnapshot"),
+				spyOn(store, "snapshot"),
+				spyOn(store, "inspectionSnapshot"),
+			];
 			try {
 				const before = renderRequests.count;
 				for (let update = 0; update < 50; update++) store.recordRunStart(makeRun(`r${update}`));
-				assert.equal(graphSnapshotSpy.mock.calls.length, 0, "focused burst performs zero graphSnapshot reads");
+				for (const snapshotSpy of snapshotSpies) {
+					assert.equal(snapshotSpy.mock.calls.length, 0, "focused burst performs zero snapshot reads");
+				}
 				assert.equal(renderRequests.count, before, "status events schedule a frame without painting inline");
 				await sleep(32);
-				assert.equal(graphSnapshotSpy.mock.calls.length, 0, "coalesced frame performs zero graphSnapshot reads");
+				for (const snapshotSpy of snapshotSpies) {
+					assert.equal(snapshotSpy.mock.calls.length, 0, "coalesced frame performs zero snapshot reads");
+				}
 				assert.equal(renderRequests.count - before, 1, "one frame paints the entire burst");
 			} finally {
-				graphSnapshotSpy.mockRestore();
+				for (const snapshotSpy of snapshotSpies) snapshotSpy.mockRestore();
 				adapter.close();
 			}
 		});

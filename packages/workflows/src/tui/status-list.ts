@@ -31,10 +31,10 @@ import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import { createRunIndicatorStatusResolver, runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { sortRunsByStatus } from "../shared/run-order.js";
-import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import { boundedToolTitleText } from "../shared/tool-payload-bounds.js";
-import type { FlatBandBadge } from "./chat-surface.js";
+import type { FlatBandBadge, ProgressCell } from "./chat-surface.js";
 import { chatWidth, ELLIPSIS, progressStrip, renderRoundedBox } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -116,7 +116,10 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 		body.push("");
 		body.push(...renderStatusHintRows(sorted[0]!.id, opts.theme, width).map((line) => ` ${line} `));
 	}
-	const badgeText = badges && badges.length > 0 ? `  ${badges.map((b) => b.text).join("  ")}` : "";
+	const badgeText =
+		badges && badges.length > 0
+			? `  ${badges.map((badge) => (opts.theme && badge.fg ? `${hexToAnsi(badge.fg)}${badge.text}${RESET}` : badge.text)).join("  ")}`
+			: "";
 	return renderRoundedBox({
 		title: `BACKGROUND  ${subtitle}${badgeText}`,
 		bodyLines: body,
@@ -396,36 +399,11 @@ function stageDurationString(stage: StageSnapshot, now: number): string | undefi
 	return elapsed === undefined ? undefined : fmtDuration(elapsed);
 }
 
-function stageCells(run: RunSnapshot): Array<{ status: StageStatus }> {
-	// Single-stage runs render a single cell mirroring run status. Chain
-	// runs render one cell per stage.
+function stageCells(run: RunSnapshot): ProgressCell[] {
 	if (run.stages.length === 0) {
-		return [{ status: stageStatusFromRun(run) }];
+		return [{ status: effectiveRunStatus(run) }];
 	}
 	return run.stages.map((s) => ({ status: s.status }));
-}
-
-function stageStatusFromRun(run: RunSnapshot): StageStatus {
-	switch (effectiveRunStatus(run)) {
-		case "completed":
-			return "completed";
-		case "skipped":
-			return "skipped";
-		case "cancelled":
-			return "skipped";
-		case "blocked":
-			return "blocked";
-		case "running":
-			return "running";
-		case "paused":
-			return "paused";
-		case "failed":
-			return "failed";
-		case "killed":
-			return "failed";
-		default:
-			return "pending";
-	}
 }
 
 /**
@@ -448,14 +426,16 @@ interface Counts {
 	completed: number;
 	blocked: number;
 	failed: number;
+	stopped: number;
 	pending: number;
 }
 
 function countBuckets(runs: readonly RunSnapshot[]): Counts {
-	const c: Counts = { active: 0, paused: 0, quit: 0, completed: 0, blocked: 0, failed: 0, pending: 0 };
+	const c: Counts = { active: 0, paused: 0, quit: 0, completed: 0, blocked: 0, failed: 0, stopped: 0, pending: 0 };
 	for (const r of runs) {
 		const status = effectiveRunStatus(r);
 		if (isQuitRun(r)) c.quit++;
+		else if (status === "killed" || status === "cancelled") c.stopped++;
 		else if (r.endedAt === undefined) {
 			if (status === "pending") c.pending++;
 			else if (status === "paused") c.paused++;
@@ -465,7 +445,7 @@ function countBuckets(runs: readonly RunSnapshot[]): Counts {
 			else c.failed++;
 		} else if (status === "completed") c.completed++;
 		else if (status === "blocked") c.blocked++;
-		else if (status === "skipped" || status === "cancelled") c.completed++;
+		else if (status === "skipped") c.completed++;
 		else c.failed++;
 	}
 	return c;
@@ -481,7 +461,8 @@ function themedBadges(c: Counts, theme: GraphTheme): FlatBandBadge[] {
 	if (c.paused > 0) out.push({ text: `❚❚ ${c.paused} paused`, fg: theme.warning });
 	if (c.quit > 0) out.push({ text: `${c.quit} quit`, fg: theme.warning });
 	if (c.pending > 0) out.push({ text: `○ ${c.pending}`, fg: theme.dim });
-	if (c.failed > 0) out.push({ text: `⊘ ${c.failed}`, fg: theme.error });
+	if (c.stopped > 0) out.push({ text: `◼ ${c.stopped}`, fg: theme.textMuted });
+	if (c.failed > 0) out.push({ text: `✗ ${c.failed}`, fg: theme.error });
 	return out;
 }
 
@@ -495,7 +476,8 @@ function plainBadges(c: Counts): FlatBandBadge[] {
 	if (c.paused > 0) out.push({ text: `❚❚ ${c.paused} paused` });
 	if (c.quit > 0) out.push({ text: `${c.quit} quit` });
 	if (c.pending > 0) out.push({ text: `○ ${c.pending}` });
-	if (c.failed > 0) out.push({ text: `⊘ ${c.failed}` });
+	if (c.stopped > 0) out.push({ text: `◼ ${c.stopped}` });
+	if (c.failed > 0) out.push({ text: `✗ ${c.failed}` });
 	return out;
 }
 

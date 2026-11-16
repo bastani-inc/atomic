@@ -112,29 +112,40 @@ export function wrapPlainText(text: string, width: number): string[] {
 			continue;
 		}
 		let line = "";
+		let lineWidth = 0;
 		for (const word of words) {
-			if (visibleWidth(word) > budget) {
+			const wordWidth = visibleWidth(word);
+			if (wordWidth > budget) {
 				if (line.length > 0) {
 					out.push(line);
 					line = "";
+					lineWidth = 0;
 				}
 				let chunk = "";
-				for (const g of graphemes(word)) {
-					if (chunk.length > 0 && visibleWidth(chunk) + visibleWidth(g) > budget) {
+				let chunkWidth = 0;
+				for (const { segment: g } of segmenter.segment(word)) {
+					const gWidth = visibleWidth(g);
+					if (chunk.length > 0 && chunkWidth + gWidth > budget) {
 						out.push(chunk);
 						chunk = g;
+						chunkWidth = gWidth;
 					} else {
 						chunk += g;
+						chunkWidth += gWidth;
 					}
 				}
 				line = chunk;
+				lineWidth = chunkWidth;
 			} else if (line.length === 0) {
 				line = word;
-			} else if (visibleWidth(line) + 1 + visibleWidth(word) <= budget) {
+				lineWidth = wordWidth;
+			} else if (lineWidth + 1 + wordWidth <= budget) {
 				line += ` ${word}`;
+				lineWidth += 1 + wordWidth;
 			} else {
 				out.push(line);
 				line = word;
+				lineWidth = wordWidth;
 			}
 		}
 		if (line.length > 0) out.push(line);

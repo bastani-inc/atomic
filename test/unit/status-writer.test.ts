@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
 	atomicWriteJson,
@@ -114,6 +114,24 @@ describe("atomicWriteJson", () => {
 		const content = await readFile(path, "utf8");
 		assert.equal(content, '"second"');
 	});
+
+	test.each(["identical", "relative and absolute"])(
+		"serializes concurrent chunked writes using %s paths (#5234)",
+		async (paths) => {
+			const path = join(tmpDir, "concurrent-status.json");
+			const firstChunks = [
+				'{"writer":1,"items":[',
+				...Array.from({ length: 200 }, (_, index) => `${index > 0 ? "," : ""}"${"a".repeat(2_000)}"`),
+				"]}",
+			];
+			const secondChunks = ['{"writer":2,"items":["final"]}'];
+			const replacementPath = paths === "identical" ? path : relative(process.cwd(), path);
+			await Promise.all([atomicWriteJson(path, firstChunks), atomicWriteJson(replacementPath, secondChunks)]);
+			await assert.rejects(stat(`${path}.tmp`));
+			const parsed = JSON.parse(await readFile(path, "utf8")) as { writer: number; items: string[] };
+			assert.deepEqual(parsed, { writer: 2, items: ["final"] });
+		},
+	);
 });
 
 // ---------------------------------------------------------------------------
@@ -243,6 +261,31 @@ describe("createStatusWriter — statusFile:true", () => {
 			runs: Array<{ id: string; status: string }>;
 		};
 		assert.equal(fromReplacement.runs[0]?.status, "completed");
+	});
+
+	test("overwrites stale runs when replaced after the store becomes empty (#5234)", async () => {
+		const filePath = join(tmpDir, "replaced-empty.json");
+		const store = createStore();
+		const writer = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		store.recordRunStart({
+			id: "run-stale",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
+		await writer.flush();
+		store.clear();
+		writer.unsubscribe();
+		const replacement = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		await replacement.flush();
+		replacement.unsubscribe();
+		const fromReplacement = JSON.parse(await readFile(filePath, "utf8")) as {
+			runs: Array<{ id: string }>;
+		};
+		assert.deepEqual(fromReplacement.runs, []);
 	});
 
 	test("creates status file on store update", async () => {

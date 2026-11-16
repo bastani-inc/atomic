@@ -14,7 +14,7 @@ const overlay: GraphOverlayPort = {
 	close: () => {},
 };
 
-test("registers /workflows as the durable run-history alias", async () => {
+test("registers /workflows with its optional stage argument (#5234)", async () => {
 	setDurableBackend(await createMemoryTestBackend());
 	try {
 		const handlers = new Map<string, WorkflowCommandHandler>();
@@ -48,7 +48,10 @@ test("registers /workflows as the durable run-history alias", async () => {
 			registered.filter((name) => name.startsWith("workflow")),
 			["workflow", "workflows"],
 		);
-		assert.equal(descriptions.get("workflows"), "Open this session's workflow runs. Usage: /workflows [run-id]");
+		assert.equal(
+			descriptions.get("workflows"),
+			"Open this session's workflow runs. Usage: /workflows [run-id] [stage]",
+		);
 	} finally {
 		setDurableBackend(undefined);
 	}

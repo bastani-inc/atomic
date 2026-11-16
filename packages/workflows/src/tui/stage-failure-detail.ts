@@ -1,4 +1,5 @@
 import { sliceHead } from "@bastani/atomic";
+import { MAX_CAUSE_DEPTH } from "../shared/error-cause-chain.js";
 import type { SerializedError } from "../shared/error-codec.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
@@ -7,6 +8,7 @@ import {
 	boundedToolTitleText,
 	sanitizeToolDisplayText,
 	sanitizeToolTitleText,
+	TOOL_PAYLOAD_TRUNCATION_MARKER,
 	TOOL_PAYLOAD_VALUE_LIMIT,
 } from "../shared/tool-payload-bounds.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
@@ -15,8 +17,13 @@ import { fmtDuration } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
 
 const MAX_FAILURE_REASON_ROWS = 3;
-const MAX_SERIALIZED_ERROR_DEPTH = 6;
+const MAX_FAILURE_LOG_ROWS = 256;
+const MAX_FAILURE_LOG_MESSAGE_CHARS = 4_096;
+const MAX_SERIALIZED_ERROR_DEPTH = MAX_CAUSE_DEPTH - 1;
 const MAX_SERIALIZED_ERROR_NODES = 32;
+const MAX_SERIALIZED_ERROR_CHARS = Math.floor(TOOL_PAYLOAD_VALUE_LIMIT / 2);
+const MAX_SERIALIZED_ERROR_LINES = Math.floor(MAX_FAILURE_LOG_ROWS / 2);
+const MAX_SERIALIZED_ERROR_FIELD_CHARS = 512;
 
 export interface StageFailureDetailOpts {
 	theme: GraphTheme;
@@ -25,8 +32,27 @@ export interface StageFailureDetailOpts {
 	logs: boolean;
 }
 
+function trimLeadingWhitespace(value: string): string {
+	const start = value.search(/\S/);
+	return start < 0 ? "" : start === 0 ? value : value.slice(start);
+}
+
+function capLogLines(lines: string[], maxLines: number): string[] {
+	if (lines.length <= maxLines) return lines;
+	const capped = lines.slice(0, maxLines);
+	const lastIndex = capped.length - 1;
+	const lastLine = capped[lastIndex];
+	if (lastLine !== undefined && !lastLine.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER)) {
+		capped[lastIndex] = `${lastLine}${TOOL_PAYLOAD_TRUNCATION_MARKER}`;
+	}
+	return capped;
+}
+
 export function stageFailureReason(stage: Pick<StageSnapshot, "error" | "failureMessage">): string {
-	const text = boundedToolText(stage.error ?? stage.failureMessage ?? "", TOOL_PAYLOAD_VALUE_LIMIT);
+	const text = boundedToolText(
+		trimLeadingWhitespace(stage.error ?? stage.failureMessage ?? ""),
+		TOOL_PAYLOAD_VALUE_LIMIT,
+	);
 	const line = text
 		.split(/\r?\n/)
 		.map((part) => part.trim())
@@ -48,6 +74,21 @@ function pushBoundedErrorLine(state: SerializedErrorFormatState, line: string): 
 	state.charsRemaining -= bounded.length + 1;
 }
 
+function canVisitChildError(
+	child: SerializedError | undefined,
+	depth: number,
+	heading: string,
+	state: SerializedErrorFormatState,
+): child is SerializedError {
+	return (
+		child !== undefined &&
+		depth <= MAX_SERIALIZED_ERROR_DEPTH &&
+		!state.seen.has(child) &&
+		state.nodesRemaining > 0 &&
+		state.charsRemaining > heading.length + 1
+	);
+}
+
 function visitSerializedError(error: SerializedError, depth: number, state: SerializedErrorFormatState): void {
 	if (state.nodesRemaining <= 0 || state.charsRemaining <= 0) return;
 	state.nodesRemaining -= 1;
@@ -56,17 +97,26 @@ function visitSerializedError(error: SerializedError, depth: number, state: Seri
 	const indent = "  ".repeat(depth);
 	const name = boundedToolTitleText(error.name, 240);
 	const code = error.code ? boundedToolTitleText(error.code, 240) : undefined;
-	const message = boundedToolText(error.message, Math.max(1, state.charsRemaining));
+	const message = boundedToolTitleText(
+		trimLeadingWhitespace(error.message),
+		Math.min(MAX_SERIALIZED_ERROR_FIELD_CHARS, Math.max(1, state.charsRemaining)),
+	);
 	pushBoundedErrorLine(state, `${indent}${name}${code ? ` (${code})` : ""}: ${message}`);
 	if (error.hint && state.charsRemaining > 0) {
-		pushBoundedErrorLine(state, `${indent}hint: ${boundedToolText(error.hint, Math.max(1, state.charsRemaining))}`);
+		const hint = boundedToolTitleText(
+			trimLeadingWhitespace(error.hint),
+			Math.min(MAX_SERIALIZED_ERROR_FIELD_CHARS, Math.max(1, state.charsRemaining)),
+		);
+		pushBoundedErrorLine(state, `${indent}hint: ${hint}`);
 	}
-	if (error.cause && state.nodesRemaining > 0 && state.charsRemaining > 0) {
-		pushBoundedErrorLine(state, `${indent}caused by:`);
+	const causeHeading = `${indent}caused by:`;
+	if (canVisitChildError(error.cause, depth + 1, causeHeading, state)) {
+		pushBoundedErrorLine(state, causeHeading);
 		visitSerializedError(error.cause, depth + 1, state);
 	}
-	if (error.cleanupCause && state.nodesRemaining > 0 && state.charsRemaining > 0) {
-		pushBoundedErrorLine(state, `${indent}during cleanup:`);
+	const cleanupHeading = `${indent}during cleanup:`;
+	if (canVisitChildError(error.cleanupCause, depth + 1, cleanupHeading, state)) {
+		pushBoundedErrorLine(state, cleanupHeading);
 		visitSerializedError(error.cleanupCause, depth + 1, state);
 	}
 	for (const member of error.errors ?? []) {
@@ -75,10 +125,10 @@ function visitSerializedError(error: SerializedError, depth: number, state: Seri
 	}
 }
 
-function serializedErrorLines(error: SerializedError): string[] {
+function serializedErrorLines(error: SerializedError, charLimit = TOOL_PAYLOAD_VALUE_LIMIT): string[] {
 	const state: SerializedErrorFormatState = {
 		nodesRemaining: MAX_SERIALIZED_ERROR_NODES,
-		charsRemaining: TOOL_PAYLOAD_VALUE_LIMIT,
+		charsRemaining: charLimit,
 		seen: new Set<object>(),
 		lines: [],
 	};
@@ -90,9 +140,29 @@ export function stageFailureLogLines(
 	stage: Pick<StageSnapshot, "error" | "failureMessage" | "failureDetail" | "failureCode">,
 ): string[] {
 	const lines: string[] = [];
-	const message = stage.failureMessage ?? stage.error;
-	if (message) lines.push(...boundedToolText(message, TOOL_PAYLOAD_VALUE_LIMIT).split(/\r?\n/));
-	if (stage.failureDetail) lines.push("", ...serializedErrorLines(stage.failureDetail));
+	const message = trimLeadingWhitespace(stage.failureMessage ?? stage.error ?? "");
+	const detailLines = stage.failureDetail
+		? capLogLines(
+				serializedErrorLines(
+					stage.failureDetail,
+					message.length > 0 ? MAX_SERIALIZED_ERROR_CHARS : TOOL_PAYLOAD_VALUE_LIMIT,
+				).flatMap((line) => line.split(/\r?\n/)),
+				message.length > 0 ? MAX_SERIALIZED_ERROR_LINES : MAX_FAILURE_LOG_ROWS,
+			)
+		: [];
+	if (message.length > 0) {
+		const detailChars = detailLines.join("\n").length;
+		const messageCharLimit =
+			detailLines.length > 0
+				? Math.min(
+						MAX_FAILURE_LOG_MESSAGE_CHARS,
+						Math.max(1, TOOL_PAYLOAD_VALUE_LIMIT - detailChars - 2 - TOOL_PAYLOAD_TRUNCATION_MARKER.length),
+					)
+				: MAX_FAILURE_LOG_MESSAGE_CHARS;
+		const messageLineLimit = detailLines.length > 0 ? MAX_SERIALIZED_ERROR_LINES : MAX_FAILURE_LOG_ROWS;
+		lines.push(...capLogLines(boundedToolText(message, messageCharLimit).split(/\r?\n/), messageLineLimit));
+	}
+	if (detailLines.length > 0) lines.push("", ...detailLines);
 	if (lines.length === 0) lines.push("No log was recorded for this stage.");
 	return lines;
 }
@@ -110,24 +180,36 @@ export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageF
 	const title = `${indent}${error}${BOLD}✗ ${boundedToolTitleText(stage.name, width * 4)}${RESET}${muted} · failed${after}${RESET}`;
 	if (opts.logs) {
 		const boundedLogs = boundedToolText(stageFailureLogLines(stage).join("\n"), TOOL_PAYLOAD_VALUE_LIMIT);
+		const partLimit = Math.min(TOOL_PAYLOAD_VALUE_LIMIT, room * MAX_FAILURE_LOG_ROWS);
 		const body = boundedLogs
 			.split(/\r?\n/)
 			.flatMap((part) =>
 				part.length === 0
 					? [""]
 					: wrapPlainText(
-							boundedToolText(
-								sanitizeToolDisplayText(boundedToolText(part, TOOL_PAYLOAD_VALUE_LIMIT)),
-								TOOL_PAYLOAD_VALUE_LIMIT,
-							),
+							boundedToolText(sanitizeToolDisplayText(boundedToolText(part, partLimit)), partLimit),
 							room,
 						),
 			);
+		const markerRow = truncateToWidth(TOOL_PAYLOAD_TRUNCATION_MARKER, room, "…");
+		const cappedBody =
+			body.length <= MAX_FAILURE_LOG_ROWS
+				? body
+				: stage.failureDetail
+					? [
+							...body.slice(0, MAX_SERIALIZED_ERROR_LINES - 1),
+							markerRow,
+							...body.slice(-(MAX_FAILURE_LOG_ROWS - MAX_SERIALIZED_ERROR_LINES)),
+						]
+					: [...body.slice(0, MAX_FAILURE_LOG_ROWS - 1), markerRow];
 		return [
 			truncateToWidth(title, width),
 			"",
 			`${indent}${muted}Log${RESET}`,
-			...body.map((line) => truncateToWidth(`${indent}${text}${line}${RESET}`, width)),
+			...cappedBody.map((line) => {
+				const row = `${indent}${text}${line}${RESET}`;
+				return width > indent.length + 1 && line.length <= room ? row : truncateToWidth(row, width);
+			}),
 		];
 	}
 	const label = "Reason";

@@ -28,7 +28,7 @@
  *    above-editor widget, distinct surface)
  */
 
-import type { StageStatus } from "../shared/store-types.js";
+import type { RunStatus, StageStatus } from "../shared/store-types.js";
 import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
@@ -392,7 +392,7 @@ function renderTaggedCardPlain(opts: RenderTaggedCardOpts, width: number): strin
 	return rows.join("\n");
 }
 export interface ProgressCell {
-	status: StageStatus;
+	status: StageStatus | RunStatus;
 }
 export function progressStrip(cells: readonly ProgressCell[], budget: number, theme?: GraphTheme): string {
 	const usable = Math.max(0, Math.floor(budget));
@@ -414,16 +414,16 @@ export function progressStrip(cells: readonly ProgressCell[], budget: number, th
 	const suffix = theme ? `${hexToAnsi(theme.dim)}${ELLIPSIS}${RESET}` : ELLIPSIS;
 	return `${out.join("")}${suffix}`;
 }
-function renderCellThemed(status: StageStatus, theme: GraphTheme): string {
+function renderCellThemed(status: ProgressCell["status"], theme: GraphTheme): string {
 	const dim = hexToAnsi(theme.dim);
 	const glyph = stageGlyph(status);
 	const fg = stageColor(status, theme);
 	return `${dim}[${RESET}${fg}${glyph}${RESET}${dim}]${RESET}`;
 }
-function renderCellPlain(status: StageStatus): string {
+function renderCellPlain(status: ProgressCell["status"]): string {
 	return `[${stageGlyph(status)}]`;
 }
-function stageGlyph(status: StageStatus): string {
+function stageGlyph(status: ProgressCell["status"]): string {
 	switch (status) {
 		case "completed":
 			return "✓";
@@ -437,13 +437,16 @@ function stageGlyph(status: StageStatus): string {
 			return "？";
 		case "suspended":
 			return "◷";
+		case "killed":
+		case "cancelled":
+			return "◼";
 		case "skipped":
 			return "⊘";
 		default:
 			return "○";
 	}
 }
-function stageColor(status: StageStatus, theme: GraphTheme): string {
+function stageColor(status: ProgressCell["status"], theme: GraphTheme): string {
 	switch (status) {
 		case "completed":
 			return hexToAnsi(theme.success);
@@ -455,6 +458,9 @@ function stageColor(status: StageStatus, theme: GraphTheme): string {
 			return hexToAnsi(theme.error);
 		case "awaiting_input":
 			return hexToAnsi(theme.info);
+		case "killed":
+		case "cancelled":
+			return hexToAnsi(theme.textMuted);
 		case "skipped":
 			return hexToAnsi(theme.dim);
 		default:

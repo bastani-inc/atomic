@@ -5,7 +5,11 @@ import {
 	expandWorkflowGraph,
 	stageMatchesExpandedIdentifier,
 } from "../shared/expanded-workflow-graph.js";
-import { expandedInspectionRun, readInspectionStoreSnapshot } from "../shared/inspection-store-snapshot.js";
+import {
+	expandedInspectionRun,
+	prepareInspectionStoreSnapshot,
+	readInspectionStoreSnapshot,
+} from "../shared/inspection-store-snapshot.js";
 import {
 	isFullRunId,
 	isResolvedRunId,
@@ -18,7 +22,7 @@ import {
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { type Store, store } from "../shared/store.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
-import type { RunStatus } from "../shared/store-types.js";
+import type { RunSnapshot, RunStatus } from "../shared/store-types.js";
 import type { OverlayPiSurface } from "../tui/overlay-adapter.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { PiUISurface } from "./wiring.js";
@@ -47,9 +51,26 @@ export function inFlightRunCount(): number {
 	return topLevelWorkflowRuns(store.runs()).filter((run) => run.endedAt === undefined).length;
 }
 
+const EXPANSION_BATCH_SIZE = 16;
+
 export function topLevelExpandedSnapshots(activeStore: Store = store) {
 	const snapshot = readInspectionStoreSnapshot(activeStore);
 	return topLevelWorkflowRuns(snapshot.runs).map((run) => expandedInspectionRun(snapshot, run.id)!);
+}
+
+export async function prepareTopLevelExpandedSnapshots(activeStore: Store = store): Promise<RunSnapshot[]> {
+	await prepareInspectionStoreSnapshot(activeStore);
+	const snapshot = readInspectionStoreSnapshot(activeStore);
+	const runs = topLevelWorkflowRuns(snapshot.runs);
+	const expanded: RunSnapshot[] = [];
+	for (let index = 0; index < runs.length; index++) {
+		if (index > 0 && index % EXPANSION_BATCH_SIZE === 0) {
+			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		}
+		const candidate = expandedInspectionRun(snapshot, runs[index]!.id);
+		if (candidate !== undefined) expanded.push(candidate);
+	}
+	return expanded;
 }
 
 export function allStageConflictMessage(action: "pause" | "quit"): string {
