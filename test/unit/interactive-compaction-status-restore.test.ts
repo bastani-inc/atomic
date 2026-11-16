@@ -6,6 +6,7 @@ import { Container, getKeybindings, setKeybindings, Text } from "@bastani/atomic
 import { afterAll, beforeAll, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { AtomicWorkingLoader } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";
+import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interactive/components/working-run-meter.js";
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-extension-runtime.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
@@ -93,6 +94,7 @@ function makeHarness(): Harness {
 		statusContainer,
 		chatContainer,
 		pendingTools: new Map(),
+		workingRunMeter: new WorkingRunMeter(),
 		compactionQueuedMessages: [],
 		settingsManager: {
 			getShowTerminalProgress: () => false,
@@ -158,9 +160,9 @@ function releaseTimers(harness: Harness): void {
 }
 
 const labels: ReadonlyArray<readonly [CompactionReason, RegExp]> = [
-	["manual", /Compacting context\.\.\. \(esc Cancel\)/],
-	["threshold", /Auto-compacting\.\.\. \(esc Cancel\)/],
-	["overflow", /Context overflow detected\. Auto-compacting\.\.\. \(esc Cancel\)/],
+	["manual", /Compacting context\.\.\. \(\d+s · esc to cancel\)/],
+	["threshold", /Auto-compacting\.\.\. \(\d+s · esc to cancel\)/],
+	["overflow", /Context overflow detected\. Auto-compacting\.\.\. \(\d+s · esc to cancel\)/],
 ];
 
 test("#4625: hiding and restoring the Working row keeps each compaction reason's indicator and cancel hint", async () => {
@@ -201,7 +203,7 @@ test("#4625: a compaction that ends while the Working row is hidden leaves nothi
 			await endCompaction(harness, reason);
 			harness.mode.setWorkingVisible(true);
 
-			assert.doesNotMatch(harness.status(), /ompacting|\(esc Cancel\)|Working\.\.\./, reason);
+			assert.doesNotMatch(harness.status(), /ompacting|to cancel\)|Working\.\.\./, reason);
 			assert.equal(harness.mode.autoCompactionLoader, undefined, reason);
 			assert.equal(harness.mode.loadingAnimation, undefined, reason);
 			assert.equal(harness.mode.defaultEditor.onEscape, escapeBefore, `${reason}: Esc handler restored`);
@@ -221,7 +223,7 @@ test("#4625: a compaction that starts while the Working row is hidden shows its 
 		await startCompaction(harness, "threshold");
 		harness.mode.setWorkingVisible(true);
 
-		assert.match(harness.status(), /Auto-compacting\.\.\. \(esc Cancel\)/);
+		assert.match(harness.status(), /Auto-compacting\.\.\. \(\d+s · esc to cancel\)/);
 		assert.equal(timers.intervalCount(), 1);
 	} finally {
 		releaseTimers(harness);
@@ -256,11 +258,11 @@ test("#4625: post-tool compaction keeps its indicator, not generic Working, when
 		await emit(harness.mode, { type: "turn_start" });
 		await startCompaction(harness, "threshold", true);
 		await emit(harness.mode, { type: "turn_start" });
-		assert.match(harness.status(), /Auto-compacting\.\.\. \(esc Cancel\)/);
+		assert.match(harness.status(), /Auto-compacting\.\.\. \(\d+s · esc to cancel\)/);
 
 		hideThenRestoreWorkingRow(harness.mode);
 
-		assert.match(harness.status(), /Auto-compacting\.\.\. \(esc Cancel\)/);
+		assert.match(harness.status(), /Auto-compacting\.\.\. \(\d+s · esc to cancel\)/);
 		assert.doesNotMatch(harness.status(), /Working\.\.\./);
 		assert.equal(harness.mode.loadingAnimation, undefined, "generic Working must not claim the surface");
 
@@ -318,7 +320,7 @@ test("#4625: a manual takeover handoff keeps the indicator across a Working row 
 
 		hideThenRestoreWorkingRow(harness.mode);
 
-		assert.match(harness.status(), /Auto-compacting\.\.\. \(esc Cancel\)/);
+		assert.match(harness.status(), /Auto-compacting\.\.\. \(\d+s · esc to cancel\)/);
 		assert.equal(timers.intervalCount(), 1);
 	} finally {
 		releaseTimers(harness);

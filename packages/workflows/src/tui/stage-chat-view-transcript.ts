@@ -12,6 +12,21 @@ export function noticeSummary(n: StageNotice): string {
 	return n.from ? `${base} (was ${n.from})` : base;
 }
 
+export function stageNoticeCountsAsMessage(entry: NoticeEntry): boolean {
+	switch (entry.kind) {
+		case "model":
+		case "thinking":
+		case "compaction":
+		case "tree":
+		case "abort":
+		case "mcp":
+		case "cleanup":
+		case "decision":
+		case "undelivered":
+			return false;
+	}
+}
+
 export function noticeRow(entry: NoticeEntry, theme: GraphTheme): Component {
 	return {
 		render(width: number): string[] {

@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { afterEach, test } from "vitest";
+import {
+	getKeybindings,
+	setKeybindings,
+	TUI_KEYBINDINGS,
+	KeybindingsManager as TuiKeybindingsManager,
+} from "@bastani/atomic-tui";
+import { afterEach, beforeEach, test } from "vitest";
 import type { ReadonlyFooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { ChatBoxSession } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
@@ -82,6 +89,11 @@ function hostOptions(overrides: Partial<ChatSessionHostOpts>): ChatSessionHostOp
 }
 
 const disposers: Array<() => void | Promise<void>> = [];
+beforeEach(() => {
+	const previous = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	disposers.push(() => setKeybindings(previous));
+});
 afterEach(async () => {
 	for (const dispose of disposers.splice(0).reverse()) await dispose();
 });
@@ -165,4 +177,26 @@ test("a stage chat hides the model line while /tasks is open over a running turn
 	assert.equal(lines()[0], "");
 	chat = session();
 	assert.equal(lines()[0], IDLE_LINE);
+});
+
+test("working footer follows remapped app.interrupt and hides the interrupt hint when unbound (#5243)", () => {
+	initTheme("dark");
+	setKeybindings(new KeybindingsManager({ "app.interrupt": "ctrl+c" }));
+	assert.equal(mainFooterLine(session({ isStreaming: true })), "ctrl+c to interrupt");
+
+	setKeybindings(new KeybindingsManager({ "app.interrupt": [] }));
+	assert.equal(mainFooterLine(session({ isStreaming: true })), "");
+	const withHints = new FooterComponent(
+		session({ isStreaming: true }),
+		FOOTER_DATA,
+		undefined,
+		() => false,
+		undefined,
+		() => ["? keys"],
+	);
+	disposers.push(() => withHints.dispose());
+	assert.equal(text(withHints.render(120)), "? keys");
+
+	setKeybindings(new TuiKeybindingsManager(TUI_KEYBINDINGS));
+	assert.equal(mainFooterLine(session({ isStreaming: true })), "");
 });

@@ -1,24 +1,26 @@
 import { keyHintIfBound } from "@bastani/atomic";
 import { type Component, Container, Text } from "@bastani/atomic-tui";
-import { shortenPath } from "../shared/formatters.js";
+import { formatDuration, formatTokens, shortenPath } from "../shared/formatters.js";
 import type { AgentProgress, Details } from "../shared/types.js";
 import { getSingleResultOutput } from "../shared/utils.js";
 import { modelThinkingBadge } from "./render-event-formatting.js";
 import { getTermWidth, pulseGlyph, type Theme, truncLine } from "./render-layout.js";
 import { buildMultiProgressLabel, resultRowLabel } from "./render-progress.js";
 import {
-	buildLiveStatusLine,
 	compactCurrentActivity,
+	displayProgressDurationMs,
 	extractOutputTarget,
 	firstOutputLine,
 	formatProgressStats,
+	formatToolUseStat,
 	hasEmptyTextOutputWithoutOutputTarget,
 	resultGlyph,
 	resultStatusLine,
-	snapshotNowForProgress,
 	statJoin,
 	themeBold,
 } from "./render-status-progress.js";
+
+export const RUNNING_BLOCK_RECENT_TOOLS = 3;
 
 export function renderSingleCompact(
 	d: Details,
@@ -31,54 +33,83 @@ export function renderSingleCompact(
 	const progress = r.progress || r.progressSummary;
 	const isRunning = r.progress?.status === "running";
 	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
+	const c = new Container();
+	const width = getTermWidth() - 4;
+	const modelDisplay = modelThinkingBadge(theme, r.model, r.thinking);
+	const glyph = resultGlyph(r, output, theme, isRunning, pulseFrame);
+
+	if (isRunning && r.progress) {
+		const hasCurrentTool = Boolean(r.progress.currentTool);
+		const recentLimit = RUNNING_BLOCK_RECENT_TOOLS - (hasCurrentTool ? 1 : 0);
+		const recent = recentLimit > 0 ? r.progress.recentTools.slice(-recentLimit) : [];
+		const current = compactCurrentActivity(r.progress, now);
+		const toolLines = recent.map((tool) => (tool.args ? `${tool.tool}: ${tool.args}` : tool.tool));
+		const displayed = hasCurrentTool ? [...toolLines, current] : toolLines;
+		const lines = hasCurrentTool ? displayed : [...displayed, current];
+		const folded = Math.max(0, r.progress.toolCount - displayed.length);
+		if (folded > 0)
+			c.addChild(new Text(truncLine(theme.fg("dim", `  ⎿  … +${formatToolUseStat(folded)}`), width), 0, 0));
+		lines.forEach((line, index) => {
+			const prefix = index === 0 && folded === 0 ? "  ⎿  " : "     ";
+			c.addChild(new Text(truncLine(theme.fg("dim", `${prefix}${line}`), width), 0, 0));
+		});
+		const elapsedMs = displayProgressDurationMs(r.progress, now);
+		const running = statJoin(theme, [
+			`Running${contextBadge}`,
+			elapsedMs >= 1000 ? formatDuration(elapsedMs) : "",
+			r.progress.tokens > 0 ? `↓ ${formatTokens(r.progress.tokens)} tokens` : "",
+		]);
+		const hint = keyHintIfBound("app.tools.expand", "for live detail");
+		const runningLine = `${glyph} ${running}${modelDisplay}${hint ? ` ${theme.fg("dim", "·")} ${hint}` : ""}`;
+		c.addChild(new Text(truncLine(`  ${theme.fg("dim", "⎿")}  ${runningLine}`, width), 0, 0));
+		if (r.artifactPaths)
+			c.addChild(
+				new Text(
+					truncLine(theme.fg("dim", `     output: ${shortenPath(r.artifactPaths.outputPath)}`), width),
+					0,
+					0,
+				),
+			);
+		return c;
+	}
+
+	const outcome = r.status === "ok" && !r.detached ? "finished" : resultStatusLine(r, output).toLowerCase();
 	const stats = statJoin(theme, [
 		r.usage?.turns ? `⟳ ${r.usage.turns}` : "",
 		formatProgressStats(theme, progress, true, now),
 	]);
-	const c = new Container();
-	const width = getTermWidth() - 4;
-	const modelDisplay = modelThinkingBadge(theme, r.model, r.thinking);
 	c.addChild(
 		new Text(
 			truncLine(
-				`${resultGlyph(r, output, theme, isRunning, pulseFrame)} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
+				`${glyph} ${theme.fg("toolTitle", themeBold(theme, r.agent))}${modelDisplay}${contextBadge} ${theme.fg("dim", outcome)}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
 				width,
 			),
 			0,
 			0,
 		),
 	);
-
-	if (isRunning && r.progress) {
-		const progressSnapshotNow = snapshotNowForProgress(r.progress, now);
-		const activity = compactCurrentActivity(r.progress, now);
-		c.addChild(new Text(truncLine(theme.fg("dim", `  ⎿  ${activity}`), width), 0, 0));
-		const liveStatus = buildLiveStatusLine(r.progress, progressSnapshotNow);
-		if (liveStatus && liveStatus !== activity)
-			c.addChild(new Text(truncLine(theme.fg("dim", `     ${liveStatus}`), width), 0, 0));
-		const expandHint = keyHintIfBound("app.tools.expand", "for live detail");
-		if (expandHint) c.addChild(new Text(truncLine(theme.fg("accent", `  Press ${expandHint}`), width), 0, 0));
-		if (r.artifactPaths)
-			c.addChild(
-				new Text(truncLine(theme.fg("dim", `  output: ${shortenPath(r.artifactPaths.outputPath)}`), width), 0, 0),
-			);
-		return c;
-	}
-
-	c.addChild(new Text(truncLine(theme.fg("dim", `  ⎿  ${resultStatusLine(r, output)}`), width), 0, 0));
-	const preview = firstOutputLine(output);
-	if (preview && r.status === "ok" && !hasEmptyTextOutputWithoutOutputTarget(r.task, output)) {
-		c.addChild(new Text(truncLine(theme.fg("dim", `     ${preview}`), width), 0, 0));
-	}
-	if (r.sessionFile)
-		c.addChild(new Text(truncLine(theme.fg("dim", `  session: ${shortenPath(r.sessionFile)}`), width), 0, 0));
+	const headline = firstOutputLine(output);
+	const showHeadline = headline && r.status === "ok" && !hasEmptyTextOutputWithoutOutputTarget(r.task, output);
+	c.addChild(
+		new Text(
+			truncLine(theme.fg("dim", `  ⎿  ${showHeadline ? headline : resultStatusLine(r, output)}`), width),
+			0,
+			0,
+		),
+	);
+	const expand = keyHintIfBound("app.tools.expand", "for prompt, tool calls and full result");
+	if (expand) c.addChild(new Text(truncLine(theme.fg("dim", `     (${expand})`), width), 0, 0));
 	if (r.artifactPaths)
 		c.addChild(
-			new Text(truncLine(theme.fg("dim", `  output: ${shortenPath(r.artifactPaths.outputPath)}`), width), 0, 0),
+			new Text(truncLine(theme.fg("dim", `     output: ${shortenPath(r.artifactPaths.outputPath)}`), width), 0, 0),
 		);
 	if (r.truncation?.artifactPath)
 		c.addChild(
-			new Text(truncLine(theme.fg("dim", `  full output: ${shortenPath(r.truncation.artifactPath)}`), width), 0, 0),
+			new Text(
+				truncLine(theme.fg("dim", `     full output: ${shortenPath(r.truncation.artifactPath)}`), width),
+				0,
+				0,
+			),
 		);
 	return c;
 }

@@ -395,7 +395,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `ATOMIC_TEAM_TOKEN_FILE` | File holding the team database token for `ATOMIC_PROFILE=ci` |
 | `ATOMIC_TEAM_PREFIX` | Team table prefix for `ATOMIC_PROFILE=ci` |
 | `ATOMIC_PACKAGE_DIR` | Override package directory, useful for Nix/Guix store paths |
-| `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and render the ordinary working identity as a static regular accent `∀` without a timer |
+| `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and keep the working `∀` static. Elapsed working and compaction time still updates once per second |
 | `ATOMIC_OFFLINE` | Disable automatic network activity, including update checks, package update checks, install/update telemetry, and model catalog refreshes |
 | `ATOMIC_DEBUG` | Set to `1` to turn on [debug mode](/development#debugging), the same as `--debug` (`PI_DEBUG` is a legacy alias) |
 | `ATOMIC_SKIP_VERSION_CHECK` | Skip the Atomic version update check at startup. This prevents the latest-version request |

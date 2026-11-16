@@ -134,6 +134,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
 	private retrying = false;
 	private compactionReason: CompactionReason | undefined;
+	private compactionStartedAt: number | undefined;
 	private readonly activeBashRequestIds = new Map<string | symbol, string>();
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
@@ -216,6 +217,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.compacting = false;
 				this.retrying = false;
 				this.compactionReason = undefined;
+				this.compactionStartedAt = undefined;
 				this.pendingQueueClear = undefined;
 				this.engineCallbackActive = false;
 				this.health.markCooperativeAbortSettled();
@@ -341,6 +343,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.streaming = state.isStreaming;
 			this.compacting = state.isCompacting;
 			this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
+			this.compactionStartedAt = state.isCompacting
+				? (state.compactionStartedAt ?? this.compactionStartedAt ?? Date.now())
+				: undefined;
 			this.queuePause.synchronize(state.queuedMessagesPaused === true);
 			this.replaceModelFallback(state.modelFallbackMessage, state.modelFallbackReason);
 			await this.refreshSessionView();
@@ -750,6 +755,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			isStreaming: { configurable: true, get: () => this.streaming },
 			isCompacting: { configurable: true, get: () => this.compacting },
 			compactionReason: { configurable: true, get: () => this.compactionReason },
+			compactionStartedAt: { configurable: true, get: () => this.compactionStartedAt },
 			isBashRunning: { configurable: true, get: () => this.activeBashRequestIds.size > 0 },
 			isRetrying: { configurable: true, get: () => this.retrying },
 			sessionName: { configurable: true, get: () => this.remoteSessionName },
@@ -1275,10 +1281,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			case "compaction_start":
 				this.compacting = true;
 				this.compactionReason = event.reason;
+				this.compactionStartedAt = Date.now();
 				break;
 			case "compaction_end":
 				this.compacting = false;
 				this.compactionReason = undefined;
+				this.compactionStartedAt = undefined;
 				if (!event.aborted && event.errorMessage === undefined) this.sessionStats.refresh();
 				break;
 			case "auto_retry_start":

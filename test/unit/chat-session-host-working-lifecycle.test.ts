@@ -271,7 +271,7 @@ test("ChatSessionHost terminal cleanup stops ordinary and compaction animation w
 	}
 });
 
-test("ChatSessionHost reduced motion keeps each lifecycle at an un-emphasized identity without animation ticks", () => {
+test("ChatSessionHost reduced motion keeps each lifecycle static while metadata repaints (#5243)", () => {
 	process.env.ATOMIC_REDUCED_MOTION = "1";
 	const timers = installLifecycleFakeClock();
 	let renderRequests = 0;
@@ -297,18 +297,23 @@ test("ChatSessionHost reduced motion keeps each lifecycle at an un-emphasized id
 		assert.equal(host.entries().length, 1, "reduced-motion content updates before its throttled paint");
 		assert.match(workingLine(host) ?? "", /^ ∀ /);
 		assert.equal(host.hasAnimationTick(), false);
-		assert.equal(timers.intervalCount(), 0);
-		assert.equal(timers.capturedAnimationCallbacks().length, 0);
+		assert.equal(timers.intervalCount(), 1);
+		assert.deepEqual(timers.activeIntervalDelays(), [1000]);
+		assert.ok(timers.intervalDelays().every((delay) => delay === 1000));
 		assert.deepEqual(timers.timeoutDelays(), [80]);
 		timers.advanceBy(79);
 		assert.equal(renderRequests, beforeContentEvent);
 		timers.advanceBy(1);
 		assert.equal(renderRequests, beforeContentEvent + 1, "content repaints at 80ms without animation");
 		assert.match(workingLine(host) ?? "", /^ ∀ /);
+		timers.advanceBy(920);
+		assert.equal(renderRequests, beforeContentEvent + 2, "elapsed metadata repaints at one second");
+		assert.match(workingLine(host) ?? "", /^ ∀ /);
 
 		host.applyAgentEvent({ type: "turn_end" } as never);
 		assert.deepEqual(host.renderWorkingStatus(64), []);
 		assert.equal(host.hasAnimationTick(), false);
+		assert.equal(timers.intervalCount(), 0);
 	} finally {
 		host.dispose();
 		timers.restore();

@@ -24,6 +24,45 @@ export interface ShipEvent {
 	readonly at: number;
 }
 
+export interface ShipBatchRows {
+	readonly id: string;
+	readonly events: readonly ShipEvent[];
+}
+
+type ShipEventRow = SqliteRow & {
+	local_seq: number;
+	work: string;
+	generation: number;
+	epoch: number;
+	event_key: string;
+	payload: string;
+	digest: string;
+	at: number;
+};
+
+function shipEventOf(row: ShipEventRow): ShipEvent {
+	return {
+		localSeq: Number(row.local_seq),
+		work: row.work,
+		generation: Number(row.generation),
+		epoch: Number(row.epoch),
+		key: row.event_key,
+		payload: row.payload,
+		digest: row.digest,
+		at: Number(row.at),
+	};
+}
+
+export function shipBatchId(
+	root: string,
+	lease: Pick<AttemptLease, "id" | "generation">,
+	events: readonly Pick<ShipEvent, "key" | "digest">[],
+): string {
+	return createHash("sha256")
+		.update(JSON.stringify([root, lease.id, lease.generation, events.map((event) => [event.key, event.digest])]))
+		.digest("hex");
+}
+
 interface HeldLease {
 	readonly lease: AttemptLease;
 	readonly leaseMs: number;
@@ -76,7 +115,7 @@ export class ShipShard {
 	}
 
 	private static async openUnlocked(path: string, root: string, now?: () => number): Promise<ShipShard> {
-		mkdirSync(dirname(path), { recursive: true });
+		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
 		const database = await openNodeSqliteDatabase(path);
 		try {
 			await database.exec(SHIP_SHARD_SCHEMA);
@@ -149,13 +188,12 @@ export class ShipShard {
 		});
 	}
 
-	release(work: string | Pick<AttemptLease, "id" | "generation">): void {
-		if (typeof work === "string") {
-			this.leases.delete(work);
-			return;
-		}
+	release(work: Pick<AttemptLease, "id" | "generation"> & Partial<Pick<AttemptLease, "worker">>): void {
 		const held = this.leases.get(work.id);
-		if (held !== undefined && held.lease.generation <= work.generation) {
+		if (
+			held?.lease.generation === work.generation &&
+			(work.worker === undefined || held.lease.worker === work.worker)
+		) {
 			this.leases.delete(work.id);
 		}
 	}
@@ -199,43 +237,76 @@ export class ShipShard {
 		});
 	}
 
-	async pending(lease: Pick<AttemptLease, "id" | "generation">, limit = 1_000): Promise<ShipEvent[]> {
-		const rows = await this.database.all<
-			SqliteRow & {
-				local_seq: number;
-				work: string;
-				generation: number;
-				epoch: number;
-				event_key: string;
-				payload: string;
-				digest: string;
-				at: number;
-			}
-		>(
-			`SELECT local_seq, work, generation, epoch, event_key, payload, digest, at FROM ship_events
-			WHERE work = ? AND generation = ? ORDER BY local_seq LIMIT ?`,
+	pending(lease: Pick<AttemptLease, "id" | "generation">, limit = 1_000): Promise<ShipEvent[]> {
+		return this.rows(
+			this.database,
+			`WHERE work = ? AND generation = ? ORDER BY local_seq LIMIT ?`,
 			lease.id,
 			lease.generation,
 			limit,
 		);
-		return rows.map((row) => ({
-			localSeq: Number(row.local_seq),
-			work: row.work,
-			generation: Number(row.generation),
-			epoch: Number(row.epoch),
-			key: row.event_key,
-			payload: row.payload,
-			digest: row.digest,
-			at: Number(row.at),
-		}));
+	}
+
+	async seal(lease: Pick<AttemptLease, "id" | "generation">, maxBatch: number): Promise<ShipBatchRows | undefined> {
+		return this.database.transaction(async (tx) => {
+			const sealed = await tx.get<SqliteRow & { batch: string }>(
+				`SELECT batch FROM ship_events WHERE work = ? AND generation = ? AND batch IS NOT NULL ORDER BY local_seq LIMIT 1`,
+				lease.id,
+				lease.generation,
+			);
+			if (sealed !== undefined) {
+				const events = await this.rows(tx, `WHERE batch = ? ORDER BY local_seq`, sealed.batch);
+				return { id: sealed.batch, events };
+			}
+			const events = await this.rows(
+				tx,
+				`WHERE work = ? AND generation = ? ORDER BY local_seq LIMIT ?`,
+				lease.id,
+				lease.generation,
+				maxBatch,
+			);
+			if (events.length === 0) return undefined;
+			const id = shipBatchId(this.root, lease, events);
+			await tx.run(
+				`UPDATE ship_events SET batch = ? WHERE work = ? AND generation = ? AND local_seq BETWEEN ? AND ?`,
+				id,
+				lease.id,
+				lease.generation,
+				events[0]!.localSeq,
+				events.at(-1)!.localSeq,
+			);
+			return { id, events };
+		});
+	}
+
+	async pendingCount(lease: Pick<AttemptLease, "id" | "generation">): Promise<number> {
+		const row = await this.database.get<SqliteRow & { n: number }>(
+			`SELECT COUNT(*) AS n FROM ship_events WHERE work = ? AND generation = ?`,
+			lease.id,
+			lease.generation,
+		);
+		return Number(row?.n ?? 0);
+	}
+
+	private async rows(
+		executor: Pick<SqliteDatabase, "all">,
+		where: string,
+		...params: (string | number)[]
+	): Promise<ShipEvent[]> {
+		const rows = await executor.all<ShipEventRow>(
+			`SELECT local_seq, work, generation, epoch, event_key, payload, digest, at FROM ship_events ${where}`,
+			...params,
+		);
+		return rows.map(shipEventOf);
 	}
 
 	async shipped(lease: Pick<AttemptLease, "id" | "generation">, localSeq: number, at = Date.now()): Promise<void> {
 		await this.database.transaction(async (tx) => {
 			await tx.run(
-				`DELETE FROM ship_events WHERE work = ? AND generation = ? AND local_seq = ?`,
+				`DELETE FROM ship_events WHERE work = ? AND generation = ? AND (local_seq = ? OR (batch IS NOT NULL AND local_seq <= ?))`,
 				lease.id,
 				lease.generation,
+				localSeq,
 				localSeq,
 			);
 			await tx.run(
@@ -261,10 +332,14 @@ export class ShipShard {
 	}
 
 	async fence(lease: Pick<AttemptLease, "id" | "generation">, at = Date.now()): Promise<void> {
-		const held = this.leases.get(lease.id);
-		if (held?.lease.generation === lease.generation) this.leases.delete(lease.id);
+		if (this.leases.get(lease.id)?.lease.generation === lease.generation) this.leases.delete(lease.id);
 		await this.database.transaction(async (tx) => {
 			await tx.run(`DELETE FROM ship_events WHERE work = ? AND generation = ?`, lease.id, lease.generation);
+			const stored = await tx.get<SqliteRow & { generation: number }>(
+				`SELECT generation FROM ship_lease WHERE work = ?`,
+				lease.id,
+			);
+			if (stored !== undefined && lease.generation < Number(stored.generation)) return;
 			await tx.run(
 				`INSERT INTO ship_cursor(work, generation, shipped_local_seq, shipped_at, fenced) VALUES (?, ?, 0, ?, 1)
 				ON CONFLICT(work, generation) DO UPDATE SET fenced = 1, shipped_at = excluded.shipped_at`,
@@ -280,7 +355,8 @@ export class ShipShard {
 		this.closed = true;
 		this.leases.clear();
 		try {
-			if (options.retire === true) await underJournalLock(this.path, () => this.retire());
+			if (options.retire === true && this.path !== ":memory:")
+				await underJournalLock(this.path, () => this.retire());
 		} finally {
 			await this.database.close();
 		}
@@ -352,6 +428,7 @@ export class ShipShard {
 }
 
 async function underJournalLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+	if (path === ":memory:") return operation();
 	const lock = await openNodeSqliteDatabase(`${dirname(path)}.lock`);
 	try {
 		return await lock.transaction(() => operation());
