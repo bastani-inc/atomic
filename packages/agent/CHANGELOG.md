@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-agent-core`. Its history up
 
 ## [Unreleased]
 
+## [0.9.88-alpha.1] - 2026-11-16
+
 ### Changed
 
 - Forked `@earendil-works/pi-agent-core` 1.5.2 as `@bastani/atomic-agent-core`, published with every Atomic release at Atomic's version. Atomic's extension loader still resolves `@earendil-works/pi-agent-core` and `@mariozechner/pi-agent-core` imports to this package ([#5174](https://github.com/bastani-inc/atomic/issues/5174))

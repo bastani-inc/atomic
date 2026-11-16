@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.88-alpha.1] - 2026-11-16
+
 ### Added
 
 - Codemode scripts can call `intercom` with `list`, `status`, `pending`, and `send`. `list` and `status` resolve to session entries (`sessionId`, `name`, `cwd`, `state`, `groups`, `replyCapability`), and each `send` to its delivery outcome. Scripts may send only to exact targets: globs, `*`, `subagents:` targets and workflow path patterns are refused, and `ask`, `reply`, `join`, `leave` and the other actions fail with a pointer to the direct tool ([#5087](https://github.com/bastani-inc/atomic/issues/5087))
