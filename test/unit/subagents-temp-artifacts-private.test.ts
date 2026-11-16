@@ -13,13 +13,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
-import type { ExtensionContext } from "@bastani/atomic";
+import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { afterAll, afterEach, beforeEach, test } from "vitest";
 import { resetSessionTempDirStateForTesting } from "../../packages/coding-agent/src/core/tools/session-temp-dir.ts";
 import {
 	readWindowsDirectorySecurity,
 	setWindowsDirectorySecurityReaderForTesting,
 } from "../../packages/coding-agent/src/core/tools/windows-directory-security.ts";
+import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { cleanupAllArtifactDirs, getArtifactsDir } from "../../packages/subagents/src/shared/artifacts.js";
@@ -93,6 +94,21 @@ test.skipIf(process.platform === "win32")(
 		assert.deepEqual(readdirSync(elsewhere), [], "nothing is created through the planted link");
 	},
 );
+
+test("registering the subagent extension leaves the session-less artifact directory to the first launch that needs it (#5324)", () => {
+	const pi = {
+		events: { on: () => () => {}, emit: () => {} },
+		registerTool: () => {},
+		registerCommand: () => {},
+		registerMessageRenderer: () => {},
+		on: () => {},
+		sendMessage: () => {},
+	} as unknown as ExtensionAPI;
+
+	registerSubagentExtension(pi);
+
+	assert.equal(existsSync(join(agentDir, "cache", "tmp", "subagents")), false);
+});
 
 test.skipIf(process.platform !== "win32")(
 	"a subagent launched from an in-memory session reads its artifact directory's descriptor without holding the event loop (#5324)",
