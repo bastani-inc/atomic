@@ -40,3 +40,26 @@ export function recordPersistenceFailure(session: AgentSession, message: AgentMe
 		});
 	}
 }
+
+/** What the current run could not save, and why, while its stop stands (#4226). */
+export interface PersistenceFailure {
+	/** The reported cause, naming the storage error. */
+	readonly error: string;
+	/** The run's messages the session holds in memory but could not save, oldest first. */
+	readonly unsavedMessages: readonly AgentMessage[];
+}
+
+/**
+ * #5210: what the current run could not save, or undefined when it saved every message. The unsaved messages stay in
+ * the session's memory only, so a caller that reports the run can still name and keep them.
+ */
+function getPersistenceFailure(this: AgentSession): PersistenceFailure | undefined {
+	const error = this._persistenceFailure;
+	if (error === undefined) return undefined;
+	const unsavedMessages = this.agent.state.messages.filter((message) =>
+		this._messagesWithFailedPersistence.has(message),
+	);
+	return { error, unsavedMessages };
+}
+
+export const agentSessionPersistenceFailureMethods = { getPersistenceFailure };

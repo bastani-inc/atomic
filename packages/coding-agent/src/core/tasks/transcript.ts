@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { Failure, Result } from "./contracts.js";
-import { type TaskLease, taskTranscriptSource } from "./supervisor.js";
+import { type TaskLease, type TaskTranscriptSource, taskTranscriptSource } from "./supervisor.js";
 
 export type TaskTranscriptItem = {
 	id: string;
@@ -26,12 +26,22 @@ export type TaskTranscriptPage = {
 export type TranscriptError = "UnknownTask" | "ScopeMismatch" | "TranscriptUnavailable";
 const PAGE_ITEMS = 100;
 
-/** References existing session entries; never copies message text into task history. */
+/**
+ * References existing session entries; never copies message text into task history. A finished task's history is read
+ * from its session store (#5186).
+ */
 export async function readTaskTranscript(
 	task: TaskLease,
 	cursor?: string,
 ): Promise<Result<TaskTranscriptPage, Failure<TranscriptError>>> {
-	return readTaskTranscriptSnapshot(task, cursor);
+	const bound = taskTranscriptSource(task);
+	if (!bound.ok) return bound;
+	const { session, taskId } = bound.value;
+	if (!session.loadHistory) return readTaskTranscriptSnapshot(task, cursor);
+	const history = await session.loadHistory();
+	if (history.unavailable !== undefined)
+		return { ok: false, error: { code: "TranscriptUnavailable", message: history.unavailable } };
+	return taskTranscriptPage(taskId, session.getSessionId(), history.entries, cursor);
 }
 
 /** Synchronous history read lets an in-process viewer subscribe without an await gap. */
@@ -42,7 +52,16 @@ export function readTaskTranscriptSnapshot(
 	const bound = taskTranscriptSource(task);
 	if (!bound.ok) return bound;
 	const { session, taskId } = bound.value;
-	const sessionId = session.getSessionId();
+	return taskTranscriptPage(taskId, session.getSessionId(), session.getEntries(), cursor);
+}
+
+/** The page of `entries`, the history of task `taskId`'s session `sessionId`, that ends before `cursor`. */
+export function taskTranscriptPage(
+	taskId: string,
+	sessionId: string,
+	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
+	cursor?: string,
+): Result<TaskTranscriptPage, Failure<TranscriptError>> {
 	const scope = `${taskId}\n${sessionId}\n`;
 	let before: string | undefined;
 	if (cursor !== undefined) {
@@ -62,7 +81,7 @@ export function readTaskTranscriptSnapshot(
 		seen.add(item.id);
 		items.push(item);
 	};
-	for (const entry of session.getEntries()) {
+	for (const entry of entries) {
 		const source = { sessionId, entryId: entry.id };
 		if (entry.type === "compaction" || entry.type === "branch_summary") {
 			if (sessionEntryToContextMessages(entry).length > 0)

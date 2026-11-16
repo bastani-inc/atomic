@@ -45,6 +45,7 @@ import {
   closeSessionNames,
   listIntercomChildren,
   matchSessionPattern,
+  multipleMatchesRefusal,
   parseSendPatternTarget,
   type PatternRecipientOutcome,
   patternSendResult,
@@ -365,6 +366,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
       readonly replyTo: string | undefined;
       readonly toolSessionId: string;
       readonly attachments: Attachment[] | undefined;
+      readonly broadcast: boolean;
       readonly signal: AbortSignal | undefined;
       readonly ctx: { readonly hasUI: boolean; readonly ui: { confirm(title: string, message: string): Promise<boolean> } };
       readonly sendOne: (recipient: string) => Promise<IntercomAttemptResult>;
@@ -395,6 +397,10 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
             target: session.id,
             label: session.name ? `${session.name} (${session.id})` : session.id,
           }));
+          // #5202: a name glob reaches several sessions only when the sender says it means to.
+          if (recipients.length > 1 && !request.broadcast) {
+            return patternError(multipleMatchesRefusal(pattern.pattern, recipients));
+          }
         } else {
           const children = await listIntercomChildren(pi.events, request.toolSessionId, pattern.runId);
           if (children.length === 0) {
@@ -453,7 +459,9 @@ remain supported. \`send\` also takes a name glob (\`subagent-worker-*\`, or \`*
 visible in your groups except you) and \`subagents:*\` (every running, released or paused subagent this
 session launched) or \`subagents:<runId>/*\` (those of one run). Each recipient gets its own direct send,
 and the result lists every recipient's outcome; a glob that matches no session is an error naming close
-names. Patterns never reach outside your groups. Workflow-stage targets use
+names. A name glob (\`*\` included) that matches more than one session needs \`broadcast: true\`; without it
+the send is refused with the list of matches, so pick one. \`subagents:\` and \`workflow:\` targets broadcast
+without it. Patterns never reach outside your groups. Workflow-stage targets use
 \`workflow:<rootRunId>/<segment>[/<segment>...]\`; a segment may be a stage name, run id, or glob
 (\`*\` matches one segment and may be embedded, while \`**\` matches any depth). Use \`intercom list\`
 inside the invocation group to see live, pending, and possible future targets with queued counts.
@@ -479,7 +487,7 @@ Usage:
   intercom({ action: "leave", group: "name" })    → Leave one named group
   intercom({ action: "leave" })                   → Return to your resolved home group
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message (shared group only)
-  intercom({ action: "send", to: "subagent-worker-*", message: "..." }) → Send to every matching session
+  intercom({ action: "send", to: "subagent-worker-*", message: "...", broadcast: true }) → Send to every matching session
   intercom({ action: "send", to: "subagents:*", message: "..." })   → Send to every subagent you launched
 ${ASK_USAGE}
   intercom({ action: "send", to: "session-name", message: "...", delivery: "interrupt" }) → Cancel the recipient's current work
@@ -501,6 +509,9 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
+      })),
+      broadcast: Type.Optional(Type.Boolean({
+        description: "For 'send' to a session-name glob: true to reach every match. Without it, a glob that matches more than one session is refused with the list of matches. `subagents:` and `workflow:` targets broadcast without it.",
       })),
       attachments: Type.Optional(Type.Array(Type.Object({
         type: Type.Union([Type.Literal("file"), Type.Literal("snippet"), Type.Literal("context")]),
@@ -1674,6 +1685,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           replyTo,
           toolSessionId,
           attachments,
+          broadcast: params.broadcast === true,
           signal,
           ctx,
           sendOne: (recipient) =>

@@ -20,6 +20,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { setNativeLocksForTesting, takeTakeoverMutex } from "../src/core/lock-takeover.ts";
 import { processStartToken } from "../src/core/process-start-token.ts";
 import { attachSessionClaim, claimSession } from "../src/core/session-claims.ts";
 import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "../src/core/session-manager-errors.ts";
@@ -35,6 +36,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.useRealTimers();
+	setNativeLocksForTesting(undefined);
 	while (releases.length > 0) releases.pop()?.();
 	for (const child of children.splice(0)) child.kill("SIGKILL");
 	rmSync(agentDir, { recursive: true, force: true });
@@ -237,7 +239,8 @@ describe("session claims (#5135)", () => {
 		assert.ok(claimedByThisProcess(sessionId));
 	});
 
-	test("a takeover lock left by a dead process is broken (#5135)", async () => {
+	test("without the native lock, a takeover lock left by a dead process is broken (#5135)", async () => {
+		setNativeLocksForTesting(null);
 		const sessionId = newSessionId();
 		writeClaim(sessionId, { token: "dead", pid: await deadPid(), host: hostname() });
 		const lock = `${claimFile(sessionId)}.takeover`;
@@ -249,7 +252,8 @@ describe("session claims (#5135)", () => {
 		assert.equal(existsSync(lock), false);
 	});
 
-	test("a takeover lock held by a live takeover is waited out, then the claim is reported held (#5135)", async () => {
+	test("without the native lock, a takeover lock held by a live takeover is waited out, then the claim is reported held (#5135)", async () => {
+		setNativeLocksForTesting(null);
 		const sessionId = newSessionId();
 		const dead = await deadPid();
 		writeClaim(sessionId, { token: "dead", pid: dead, host: hostname() });
@@ -258,6 +262,37 @@ describe("session claims (#5135)", () => {
 			() => claim(sessionId),
 			(error: unknown) => error instanceof SessionAlreadyOpenError && error.pid === dead,
 		);
+	});
+
+	test("an advisory takeover lock held by a live takeover is waited out, then the claim is reported held (#5193)", async () => {
+		const sessionId = newSessionId();
+		const dead = await deadPid();
+		writeClaim(sessionId, { token: "dead", pid: dead, host: hostname() });
+		const mutex = takeTakeoverMutex(claimFile(sessionId));
+		assert.ok(mutex);
+		try {
+			assert.throws(
+				() => claim(sessionId),
+				(error: unknown) => error instanceof SessionAlreadyOpenError && error.pid === dead,
+			);
+			assert.equal(JSON.parse(readFileSync(claimFile(sessionId), "utf8")).token, "dead", "the claim is left to it");
+		} finally {
+			mutex.release();
+		}
+		claim(sessionId);
+		assert.ok(claimedByThisProcess(sessionId), "once released, the dead claim is taken over");
+	});
+
+	test("a takeover directory a killed process left behind does not stop the takeover (#5193)", async () => {
+		const sessionId = newSessionId();
+		writeClaim(sessionId, { token: "dead", pid: await deadPid(), host: hostname() });
+		mkdirSync(`${claimFile(sessionId)}.takeover`);
+		writeFileSync(
+			join(`${claimFile(sessionId)}.takeover`, "owner"),
+			JSON.stringify({ host: hostname(), pid: await deadPid(), id: "killed" }),
+		);
+		claim(sessionId);
+		assert.ok(claimedByThisProcess(sessionId));
 	});
 
 	test("a claim the session's open marker took over lasts until the session closes (#5135)", async () => {

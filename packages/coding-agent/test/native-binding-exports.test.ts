@@ -7,6 +7,7 @@ import { describe, it } from "vitest";
 const EXPECTED_NATIVE_EXPORTS = [
 	"__napiBindingTarget",
 	"AdmissionRefusalKind",
+	"AdvisoryLock",
 	"AgentStatus",
 	"AgentTaskKind",
 	"CancelCause",
@@ -36,7 +37,9 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"invalidateFsScanCache",
 	"killSupervisedProcessTrees",
 	"processCreationTime",
+	"renameNoReplace",
 	"search",
+	"tryAdvisoryLock",
 ] as const;
 
 const requireNativeBinding = process.env.ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE === "1";
