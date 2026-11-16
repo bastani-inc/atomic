@@ -1491,7 +1491,7 @@ export class SqlPoolQueue {
 	 * sends no wake-ups reads it while its workers are idle, instead of each worker asking for work (#5230).
 	 */
 	async readyMark(root: string): Promise<string | undefined> {
-		const row = await this.storage.read((executor) =>
+		const row = await (this.storage.peek ?? this.storage.read)((executor) =>
 			executor.get<SqliteRow & { ready: number | bigint; latest: number | bigint | null }>(
 				`SELECT COUNT(*) AS ready, MAX(ready_at) AS latest FROM ${this.work} WHERE root = ? AND state = 'ready' AND ready_at <= ${this.now}`,
 				root,

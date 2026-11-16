@@ -196,12 +196,16 @@ async function openStore(work) {
 					});
 				return { classes: classTotals(statements.map((row) => ({ sql: row.sql, calls: row.calls, statements: row.calls, ms: row.ms }))), top: statements.slice(0, 40) };
 			}
-			// A request counts toward the class of its first statement past transaction control.
+			// A request counts toward the class of its first statement past transaction control and the libSQL adapter's
+			// stream probe, which rides in front of the statement it checks for; the probes are counted apart.
 			return {
 				requests: traced.records.length,
+				streamProbes: traced.records.filter((record) => record.sql.some((sql) => /sqlite_schema LIMIT 0/.test(sql))).length,
 				classes: classTotals(
 					traced.records.map((record) => ({
-						sql: record.sql.find((sql) => !/^(BEGIN|COMMIT|ROLLBACK|SET)\b/i.test(sql)) ?? record.sql.join(" "),
+						sql:
+							record.sql.find((sql) => !/^(BEGIN|COMMIT|ROLLBACK|SET)\b/i.test(sql) && !/sqlite_schema LIMIT 0/.test(sql)) ??
+							record.sql.join(" "),
 						calls: 1,
 						statements: record.sql.length,
 						ms: record.answered - record.arrived,
@@ -428,6 +432,7 @@ async function trial(hosts, shipping) {
 		let mainCpuMs;
 		let mainProfile;
 		let mainRequests;
+		let idleProfile;
 		let watching = idleProbe > 0;
 		const phaseWatch = (async () => {
 			while (watching) {
@@ -440,7 +445,10 @@ async function trial(hosts, shipping) {
 						mainCpuMs = phases[name].cpuMs;
 						mainProfile = shared.profile();
 						mainRequests = phases[name].requests;
+						// What the store does while every worker idles, apart.
+						shared.resetProfile();
 					}
+					if (name === "probe-start") idleProfile = shared.profile();
 				}
 				await sleep(50);
 			}
@@ -541,8 +549,8 @@ async function trial(hosts, shipping) {
 						return {
 							settleMs: settled.at - done.at,
 							storeCpuMsPerSec: Math.round((settled.cpuMs - done.cpuMs) / seconds),
-							storeRequestsPerSec:
-								settled.requests === null ? null : Math.round((settled.requests - done.requests) / seconds),
+							storeRequestsPerSec: idleProfile?.requests === undefined ? null : Math.round(idleProfile.requests / seconds),
+							storeProfile: idleProfile ?? null,
 							claimLatencyMs: distribution(latencies),
 							claimLatencyByPlacementMs: Object.fromEntries(
 								Object.entries(byPlacement).map(([placement, values]) => [placement, distribution(values)]),

@@ -275,6 +275,7 @@ export class SqlRunJournal implements RunJournal {
 					}
 				: {}),
 			read: (body) => this.operation(() => this.readSnapshot((executor) => body(this.versionChecked(executor)))),
+			peek: (body) => this.operation(() => this.readSnapshot(body)),
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
 			olderBuildLive: (executor) => olderBuildLive(executor, this.dialect, this.tables),
