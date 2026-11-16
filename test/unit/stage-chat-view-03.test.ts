@@ -69,7 +69,7 @@ describe("StageChatView", () => {
 			pending.catch(() => {});
 			await flush();
 			const scrolled = stripTerminalSequences(view.render(96).join("\n"));
-			assert.ok(scrolled.includes("↓ Jump to latest message · ctrl+e"));
+			assert.ok(scrolled.includes("↓ jump to bottom · ctrl+e"));
 			assert.ok(scrolled.includes("custom question"));
 
 			assert.equal(view.handleInput(String.fromCharCode(5)), true);

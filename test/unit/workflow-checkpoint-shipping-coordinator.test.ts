@@ -281,7 +281,8 @@ test("renewing an attempt after a late root lease renewal refreshes its local ch
 					stateDirectory,
 					host: "host-a",
 					claimWindowMs: 60_000,
-					checkpointShipping: { intervalMs: 2_000, maxBatch: 64, maxLagMs: 30_000 },
+					// No shipping tick within the test: what a commit accepted locally stays unshipped until the flush below.
+					checkpointShipping: { intervalMs: 60_000, maxBatch: 64, maxLagMs: 600_000 },
 				},
 				workers: 1,
 				leaseMs,
@@ -372,7 +373,8 @@ test("a shippable checkpoint whose local lease expired while the attempt still o
 					stateDirectory,
 					host: "host-a",
 					claimWindowMs: 60_000,
-					checkpointShipping: { intervalMs: 2_000, maxBatch: 64, maxLagMs: 30_000 },
+					// No shipping tick within the test: what a commit accepted locally stays unshipped until the flush below.
+					checkpointShipping: { intervalMs: 60_000, maxBatch: 64, maxLagMs: 600_000 },
 				},
 				workers: 1,
 				leaseMs,

@@ -6,6 +6,7 @@ import type net from "node:net";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, test, vi } from "vitest";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
+import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { bunExecutable, type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
@@ -15,10 +16,12 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
  */
 
 const agentDir = useTemporaryAgentDir();
+const brokerFixture = new IntercomBrokerFixture(agentDir);
 const repoRoot = resolve(import.meta.dirname, "../..");
 const previousRelease = join(repoRoot, "test/fixtures/intercom-0.9.71");
 
 const { createMessageReader } = await import("../../packages/intercom/broker/framing.js");
+const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 const { queryIntercomBroker } = await import("../../packages/intercom/broker/control.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { PROTOCOL_2_FRAME_TYPES, PROTOCOL_3_FRAME_TYPES } = await import(
@@ -64,6 +67,8 @@ const { IntercomClient: PreviousIntercomClient } = (await import(previousClientP
 };
 
 const REAL_BROKER_TEST_TIMEOUT_MS = 60_000;
+const BROKER_START_WAIT_MS = 90_000;
+const BROKER_START_HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 5_000;
 const WAIT = { timeout: 15_000, interval: 20 };
 
 /** Every `case "<type>"` a module's switch handles. */
@@ -100,6 +105,7 @@ function startBroker(): SpawnedProcess {
 }
 
 async function brokerRunning(): Promise<number> {
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, agentDir), BROKER_START_WAIT_MS);
 	let pid = 0;
 	await vi.waitFor(async () => {
 		const query = await queryIntercomBroker(agentDir);
@@ -186,13 +192,14 @@ function idOf(client: { readonly sessionId: string | null }): string {
 beforeAll(async () => {
 	startBroker();
 	await brokerRunning();
-}, REAL_BROKER_TEST_TIMEOUT_MS);
+}, BROKER_START_HOOK_TIMEOUT_MS);
 
 afterAll(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 	broker?.kill("SIGTERM");
 	await broker?.exited;
 	await stopDetachedBroker(agentDir);
+	await brokerFixture.cleanup();
 }, REAL_BROKER_TEST_TIMEOUT_MS);
 
 describe("the 0.9.71 Intercom client against this version's broker (#4538)", () => {

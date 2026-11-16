@@ -872,7 +872,9 @@ async function settleSubagentMessages(session: AgentSession, keepMessageAdmissio
 		session._awaitingMessageAfterInterrupt = true;
 		return;
 	}
-	if (!keepMessageAdmissionOpen) admission.seal();
+	// A turn that settles before the child's execution gave it its task, such as one an extension's interrupt started
+	// while the task was still being sent, leaves admission open for that task.
+	if (!keepMessageAdmissionOpen && session._subagentPolicy?.taskPending?.() !== true) admission.seal();
 }
 
 export async function _runAgentContinue(this: AgentSession): Promise<void> {

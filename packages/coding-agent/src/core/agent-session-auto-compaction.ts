@@ -547,6 +547,7 @@ export async function _runAutoCompaction(
 	this._autoCompactionAbortController = controller;
 	this._autoCompactionCompletion = completion.promise;
 	this._compactionReason = reason;
+	this._compactionStartedAt = Date.now();
 	let fromExtension = false;
 	try {
 		this._emit({ type: "compaction_start", reason });
@@ -554,7 +555,10 @@ export async function _runAutoCompaction(
 		// A throwing start listener still propagates, matching current behavior,
 		// but must not leave ownership published with no owner running.
 		if (this._autoCompactionAbortController === controller) this._autoCompactionAbortController = undefined;
-		if (this._compactionReason === reason) this._compactionReason = undefined;
+		if (this._compactionReason === reason) {
+			this._compactionReason = undefined;
+			this._compactionStartedAt = undefined;
+		}
 		completion.resolve();
 		if (this._autoCompactionCompletion === completion.promise) this._autoCompactionCompletion = undefined;
 		throw error;
@@ -704,7 +708,10 @@ export async function _runAutoCompaction(
 		return manualTakeoverPending ? "deferred" : "failed";
 	} finally {
 		if (this._autoCompactionAbortController === controller) this._autoCompactionAbortController = undefined;
-		if (this._compactionReason === reason) this._compactionReason = undefined;
+		if (this._compactionReason === reason) {
+			this._compactionReason = undefined;
+			this._compactionStartedAt = undefined;
+		}
 		completion.resolve();
 		if (this._autoCompactionCompletion === completion.promise) this._autoCompactionCompletion = undefined;
 	}

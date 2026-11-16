@@ -5,6 +5,7 @@ import type { TuiInputListener } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { createHarness, getAssistantTexts, getMessageText, type Harness } from "./suite/harness.ts";
 
@@ -22,6 +23,7 @@ type Editor = {
 
 type SubmitHost = {
 	session: AgentSession;
+	workingRunMeter: WorkingRunMeter;
 	runtimeHost: object;
 	ui: {
 		onDebug?: () => void;
@@ -96,6 +98,7 @@ function createSubmitHost(session: AgentSession): SubmitHost {
 	};
 	const host: SubmitHost = {
 		session,
+		workingRunMeter: new WorkingRunMeter(),
 		runtimeHost: {},
 		ui: { addInputListener: () => () => {}, requestRender() {}, setFocus() {} },
 		keybindings: { matches: () => false },

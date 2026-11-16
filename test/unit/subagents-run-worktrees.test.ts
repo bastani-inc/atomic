@@ -75,7 +75,7 @@ function assertAtomicSetupPresent(worktreePath: string, why: string): void {
 	);
 }
 
-test("resuming a paused child in its kept worktree restores the node_modules link and settings its run's diff removed (#3784)", () => {
+test("resuming a paused child in its kept worktree restores the node_modules link and settings its run's diff removed (#3784)", async () => {
 	const repo = repositoryWithSetupSources();
 	const { runId, setup } = worktreeRun(repo);
 	const worktree = setup.worktrees[0]!;
@@ -91,7 +91,7 @@ test("resuming a paused child in its kept worktree restores the node_modules lin
 	assert.equal(existsSync(worktree.path), true, "the paused child's worktree with unsaved work is kept");
 	assert.equal(existsSync(join(worktree.path, "node_modules")), false, "the diff removed the node_modules link");
 
-	const releaseResume = resumeRunWorktree({ runId, index: 0, cwd: worktree.agentCwd, agent: "worker" });
+	const releaseResume = await resumeRunWorktree({ runId, index: 0, cwd: worktree.agentCwd, agent: "worker" });
 	const resumedExecution = holdRunWorktree(runId, 0);
 	claimRunWorktree(runId, 0);
 	releaseResume();
@@ -107,7 +107,7 @@ test("resuming a paused child in its kept worktree restores the node_modules lin
 	);
 });
 
-test("after a restart, resuming a child whose worktree was removed recreates it on its branch from the child's record (#3784)", () => {
+test("after a restart, resuming a child whose worktree was removed recreates it on its branch from the child's record (#3784)", async () => {
 	const repo = repositoryWithSetupSources();
 	const { runId, setup } = worktreeRun(repo);
 	const worktree = setup.worktrees[0]!;
@@ -128,7 +128,7 @@ test("after a restart, resuming a child whose worktree was removed recreates it 
 	assert.equal(existsSync(worktree.path), false);
 	assert.equal(runWorktreeRecord(runId, 0), undefined, "this process does not track the run, as after a restart");
 
-	const releaseResume = resumeRunWorktree({
+	const releaseResume = await resumeRunWorktree({
 		runId,
 		index: 0,
 		cwd: worktree.agentCwd,
@@ -148,7 +148,7 @@ test("after a restart, resuming a child whose worktree was removed recreates it 
 	assert.equal(existsSync(worktree.path), false, "the recreated worktree is removed once the resumed execution ends");
 });
 
-test("after a restart, a resumed child's tracked and untracked edits are saved as a patch before its worktree is removed (#3784)", () => {
+test("after a restart, a resumed child's tracked and untracked edits are saved as a patch before its worktree is removed (#3784)", async () => {
 	const repo = repositoryWithSetupSources();
 	const { runId, setup } = worktreeRun(repo);
 	const worktree = setup.worktrees[0]!;
@@ -161,7 +161,7 @@ test("after a restart, a resumed child's tracked and untracked edits are saved a
 	assert.equal(existsSync(worktree.path), false, "the run removed the clean worktree");
 	assert.equal(runWorktreeRecord(runId, 0), undefined, "this process does not track the run, as after a restart");
 
-	const releaseResume = resumeRunWorktree({
+	const releaseResume = await resumeRunWorktree({
 		runId,
 		index: 0,
 		cwd: worktree.agentCwd,

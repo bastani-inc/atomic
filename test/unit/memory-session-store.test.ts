@@ -35,7 +35,7 @@ test("memory sessions commit the header and ordered entries before create resolv
 	const entries = [
 		{ type: "session_info", id: "name", parentId: null, timestamp: header.createdAt, name: " Name " },
 	] as const;
-	assert.deepEqual(await store.create(header, entries), { lastSeq: 1 });
+	assert.equal((await store.create(header, entries)).lastSeq, 1);
 	assert.deepEqual(await store.load(header.id), { header, entries, lastSeq: 1 });
 	await store.close();
 });

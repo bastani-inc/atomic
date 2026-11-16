@@ -21,7 +21,7 @@ See [#3331](https://github.com/bastani-inc/atomic/issues/3331) for details. This
    npm ci --ignore-scripts
    ```
 
-   The committed `.npmrc` pins exact versions without a minimum release age.
+   The committed `.npmrc` pins exact versions and sets no minimum release age.
 
 3. Read [`DEV_SETUP.md`](DEV_SETUP.md) for the full development setup, local CLI workflow, testing notes, and repository layout.
 
@@ -66,8 +66,8 @@ Every suite runs with a shared **30000 ms** per-test budget, declared once as `T
 
 - Do not restate the budget in a package script, in `bunfig.toml` (Bun ignores `[test] timeout`), or only in the CI workflow (CI and local runs would drift apart), and do not make it platform-specific.
 - Pass an explicit third-argument timeout only when a test is structurally heavy — it reloads the full builtin package graph, spawns a real CLI child, runs `tsc`, or installs a built package. Otherwise rely on the shared default; never restate it.
-- CI runs each suite once and warns when a test uses at least 40 % of its effective timeout. Headroom warnings do not fail the suite; Vitest enforces the actual timeout. The full duration table is uploaded as a `.ci-diagnostics/` artifact. Investigate slow tests rather than raising the shared default to silence a warning.
-- That scoring reads vitest's JSON reporter, which the CI wrapper requests alongside the human one so the step log stays readable. A run that executes tests without producing durations fails the step instead of reporting no slow tests.
+- The CI wrapper runs each suite once and warns when a test uses at least 40 % of its effective timeout. Headroom warnings are advisory; Vitest enforces the actual timeout. The full duration table is uploaded as a `.ci-diagnostics/` artifact, including on successful runs. Do not raise a test's budget merely to silence a warning.
+- Headroom reporting reads Vitest's JSON reporter, which the CI wrapper requests alongside the human one so the step log stays readable. A run that executes tests without producing durations fails the step instead of reporting no slow tests.
 
 ### Tests run in parallel
 

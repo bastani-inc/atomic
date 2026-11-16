@@ -148,7 +148,7 @@ test("caller-owned facade stays open after both domain stores close", async () =
 		await sessions.close();
 		await journal.close();
 		assert.equal((await database.get("SELECT schema_version FROM owned_wf_meta"))?.schema_version, 2);
-		assert.equal((await database.get("SELECT schema_version FROM owned_session_meta"))?.schema_version, 2);
+		assert.equal((await database.get("SELECT schema_version FROM owned_session_meta"))?.schema_version, 1);
 	} finally {
 		await database.close();
 		removeTempDirectory(root);

@@ -379,7 +379,7 @@ describe("programmatic subagent tool boundary", () => {
 				keyHint: () => "",
 			});
 			const rendered = component.render(120).join("\n");
-			assert.match(rendered, /subagent /);
+			assert.match(rendered, /Agent\(|subagent parallel/);
 			assert.doesNotMatch(rendered, /\[async\]/);
 		}
 		for (const shutdown of handlers.get("session_shutdown") ?? []) shutdown();

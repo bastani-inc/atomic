@@ -392,4 +392,24 @@ describe("Atomic working status", () => {
 			restoreEnv("ATOMIC_REDUCED_MOTION", previousReducedMotion);
 		}
 	});
+
+	it("does not arm the reduced-motion meta timer while an extension indicator delegate is active (#5243)", () => {
+		const previousReducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+		vi.useFakeTimers();
+		process.env.ATOMIC_REDUCED_MOTION = "1";
+		try {
+			const requestRender = vi.fn();
+			const loader = new AtomicWorkingLoader({ requestRender } as never, undefined, String, "Working...", {
+				frames: ["*"],
+			});
+			loader.setMeta(() => ({ elapsedMs: 3_000, outputTokens: 0 }));
+			expect(renderedContent(loader)).toBe(" * Working...");
+			const callsAfterSetup = requestRender.mock.calls.length;
+			vi.advanceTimersByTime(3_000);
+			expect(requestRender).toHaveBeenCalledTimes(callsAfterSetup);
+			loader.stop();
+		} finally {
+			restoreEnv("ATOMIC_REDUCED_MOTION", previousReducedMotion);
+		}
+	});
 });

@@ -100,6 +100,17 @@ test("single background launch shades every terminal cell after truncating a lon
 	}
 });
 
+test("subagent tool call heading truncates a long task with a styled ellipsis (#5243)", () => {
+	initTheme("dark");
+	const callHeading =
+		renderSubagentToolCall({ agent: "worker", task: longTask }, theme, {
+			toolCallId: "heading-fixture",
+			state: {},
+			invalidate() {},
+		}).render(140)[0] ?? "";
+	assert.doesNotMatch(callHeading, /\x1b\[0m\.\.\.\x1b\[0m/);
+});
+
 for (const themeName of ["dark", "light"] as const) {
 	test(`single launch and result remain fully shaded through resize and expansion (${themeName})`, async () => {
 		initTheme(themeName);
@@ -127,8 +138,7 @@ for (const themeName of ["dark", "light"] as const) {
 						state === "pending" || state === "partial" ? "toolPendingBg" : "toolSuccessBg",
 					);
 					const text = stripVTControlCharacters(lines.join("\n"));
-					// Count the tool heading, not "subagents" inside the expanded task text.
-					assert.equal(text.match(/^ +subagent(?: |$)/gm)?.length, 1, `${state} width ${width}:\n${text}`);
+					assert.equal(text.match(/^ +Agent\(/gm)?.length, 1, `${state} width ${width}:\n${text}`);
 					if (state !== "pending") assert.equal(text.match(/\/tasks/g)?.length, 1);
 					if (state === "expanded") assert.match(text.replace(/\s/g, ""), /task-fixture/);
 					else assert.doesNotMatch(text, /task-fixture|wait-fixture/);

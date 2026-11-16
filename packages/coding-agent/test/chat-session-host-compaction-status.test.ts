@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { EditorTheme } from "@bastani/atomic-tui";
 import { type Component, Text } from "@bastani/atomic-tui";
-import { describe, expect, it, test } from "vitest";
+import { describe, expect, it, test, vi } from "vitest";
 import type { CompactionReason } from "../src/core/agent-session.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { ChatSessionHost } from "../src/modes/interactive/components/chat-session-host.ts";
@@ -78,7 +78,7 @@ describe("chat session compaction status", () => {
 		const rendered = renderChatSessionWorkingStatus(state, 80).join("\n");
 
 		expect(rendered).toContain("∀");
-		expect(rendered).toContain("Auto-compacting... (esc Cancel)");
+		expect(rendered).toMatch(/Auto-compacting\.\.\. \(\d+s · esc to cancel\)/);
 	});
 
 	it("uses the host keybinding display for the cancel hint", () => {
@@ -87,7 +87,7 @@ describe("chat session compaction status", () => {
 
 		const rendered = renderChatSessionWorkingStatus(state, 80).join("\n");
 
-		expect(rendered).toContain("Compacting context... (ctrl+c Cancel)");
+		expect(rendered).toMatch(/Compacting context\.\.\. \(\d+s · ctrl\+c to cancel\)/);
 	});
 });
 
@@ -177,7 +177,7 @@ test("live events and re-attach hydration use the same status mapping and busy s
 			assert.equal(reattachedHost.statusText(), compactionStatusMessage(reason));
 			assert.equal(reattachedHost.isCompacting(), true);
 			assert.equal(reattachedHost.isStreaming(), liveHost.isStreaming());
-			assert.match(reattachedHost.renderWorkingStatus(100).join("\n"), /Cancel/);
+			assert.match(reattachedHost.renderWorkingStatus(100).join("\n"), /to cancel/);
 		}
 		liveHost.dispose();
 		reattachedHost.dispose();
@@ -195,6 +195,76 @@ test("branch-summary hydration leaves the ordinary working spinner available", (
 	assert.match(rendered, /Working\.\.\./);
 	assert.doesNotMatch(rendered, /summarizing branch…/);
 	host.dispose();
+});
+
+test("hydrated compaction clock uses active session start timestamp and clears stale start (#5243)", () => {
+	vi.useFakeTimers();
+	try {
+		vi.setSystemTime(10_000);
+		const compactionStartedAt: number | undefined = 4_000;
+		const sessionHost = makeHost({
+			getAgentSession: () => ({ compactionStartedAt }) as never,
+		});
+		sessionHost.hydrateCompactionStatus("threshold");
+		assert.match(sessionHost.renderWorkingStatus(100).join("\n"), /Auto-compacting\.\.\. \(6s · esc to cancel\)/);
+		sessionHost.dispose();
+
+		const chatBoxHost = makeHost({
+			getChatBoxSession: () => ({ compactionStartedAt: 3_000 }) as never,
+		});
+		chatBoxHost.hydrateCompactionStatus("manual");
+		assert.match(chatBoxHost.renderWorkingStatus(100).join("\n"), /Compacting context\.\.\. \(7s · esc to cancel\)/);
+		chatBoxHost.dispose();
+
+		const explicitHost = makeHost();
+		explicitHost.applyAgentEvent({ type: "compaction_start", reason: "manual" });
+		vi.setSystemTime(25_000);
+		explicitHost.applyAgentEvent({
+			type: "compaction_end",
+			reason: "manual",
+			result: undefined,
+			aborted: false,
+			willRetry: false,
+		});
+		explicitHost.hydrateCompactionStatus(undefined);
+		explicitHost.hydrateCompactionStatus("overflow", 22_000);
+		assert.match(
+			explicitHost.renderWorkingStatus(100).join("\n"),
+			/Context overflow detected\. Auto-compacting\.\.\. \(3s · esc to cancel\)/,
+		);
+		vi.setSystemTime(27_000);
+		explicitHost.hydrateCompactionStatus("manual");
+		assert.match(explicitHost.renderWorkingStatus(100).join("\n"), /Compacting context\.\.\. \(0s · esc to cancel\)/);
+		explicitHost.dispose();
+
+		vi.setSystemTime(0);
+		let sessionCompactionStartedAt: number | undefined = 0;
+		const takeoverHost = makeHost({
+			getAgentSession: () => ({ compactionStartedAt: sessionCompactionStartedAt }) as never,
+		});
+		takeoverHost.applyAgentEvent({ type: "compaction_start", reason: "threshold" });
+		vi.setSystemTime(5_000);
+		sessionCompactionStartedAt = 5_000;
+		vi.setSystemTime(8_000);
+		assert.match(takeoverHost.renderWorkingStatus(100).join("\n"), /Auto-compacting\.\.\. \(8s · esc to cancel\)/);
+		takeoverHost.applyAgentEvent({
+			type: "compaction_end",
+			reason: "threshold",
+			result: undefined,
+			aborted: true,
+			willRetry: false,
+			manualTakeoverPending: true,
+		});
+		assert.match(takeoverHost.renderWorkingStatus(100).join("\n"), /Auto-compacting\.\.\. \(8s · esc to cancel\)/);
+		vi.setSystemTime(10_000);
+		assert.match(takeoverHost.renderWorkingStatus(100).join("\n"), /Auto-compacting\.\.\. \(10s · esc to cancel\)/);
+		sessionCompactionStartedAt = 10_000;
+		takeoverHost.applyAgentEvent({ type: "compaction_start", reason: "manual" });
+		assert.match(takeoverHost.renderWorkingStatus(100).join("\n"), /Compacting context\.\.\. \(0s · esc to cancel\)/);
+		takeoverHost.dispose();
+	} finally {
+		vi.useRealTimers();
+	}
 });
 
 for (const sessionId of ["shared-archive-id", ""]) {

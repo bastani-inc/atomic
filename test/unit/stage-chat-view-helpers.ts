@@ -17,8 +17,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AgentSession, type AgentSessionEvent, initTheme, SessionManager } from "@bastani/atomic";
-import { type Component, CURSOR_MARKER, type EditorComponent, type TUI } from "@bastani/atomic-tui";
+import { type Component, CURSOR_MARKER, type EditorComponent, setKeybindings, type TUI } from "@bastani/atomic-tui";
 import { beforeAll } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageDeliveryActivityEvent } from "../../packages/workflows/src/runs/foreground/stage-delivery-activity.js";
 import { StageDeliveryActivity } from "../../packages/workflows/src/runs/foreground/stage-delivery-activity.js";
@@ -36,6 +37,7 @@ export { makeTestTui };
 
 beforeAll(() => {
 	initTheme("dark", false);
+	setKeybindings(new KeybindingsManager());
 });
 
 export interface StageChatSendUserMessageCall {

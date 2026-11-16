@@ -27,6 +27,9 @@ interface HarnessReport {
 	output?: string;
 	modelProvider?: string;
 	modelId?: string;
+	thinkingLevel?: string;
+	deferredStartupThinkingLevel?: string;
+	deferredSavedThinkingLevel?: string;
 	message?: string;
 	modelFallbackMessage?: string;
 	modelFallbackReason?: string;
@@ -337,10 +340,8 @@ const MODEL_NOTICE = /^(Could not restore model|Configured default model|No mode
 const STARTUP_NOTICE_SETTLE_MS = 1_500;
 const HOST_NOTICE_REPLAY_TIMEOUT_MS = 240_000;
 
-/** How the engine child gets the extension that registers the default model's provider. */
 type ExtensionLoading = "settings" | "cli-extension" | "project-extension";
 
-/** Model notices one startup shows: host warnings and engine stderr warnings, one line per notice. */
 function startupModelNotices(reports: readonly HarnessReport[]): string[] {
 	return reports
 		.filter((report) => report.type === "warning" || report.type === "diagnostic")
@@ -400,7 +401,6 @@ async function startupWithExtensionDefault(
 		[
 			...sessionArgs,
 			...(loading === "cli-extension" ? ["--no-extensions", "--extension", extensionPath] : []),
-			// A trust override would skip the stored project trust that loads the project extension.
 			...(loading === "project-extension" ? [] : ["--approve"]),
 			"--no-skills",
 			"--no-prompt-templates",
@@ -464,3 +464,138 @@ for (const continued of [false, true]) {
 		);
 	}
 }
+
+async function continuedStartupWithSavedExtensionModel(
+	resources: "eager" | "deferred",
+	{
+		builtinCredentials,
+		savedThinkingLevel,
+		args = [],
+	}: { builtinCredentials: boolean; savedThinkingLevel?: "low"; args?: string[] },
+): Promise<HarnessReport> {
+	const root = mkdtempSync(join(tmpdir(), `atomic-saved-extension-model-${resources}-`));
+	const cwd = join(root, "cwd");
+	const agentDir = join(root, "agent");
+	const sessionDir = join(root, "sessions");
+	mkdirSync(cwd);
+	mkdirSync(agentDir);
+	mkdirSync(sessionDir);
+	const extensionPath = join(root, "saved-extension.ts");
+	writeFileSync(
+		extensionPath,
+		`export default function (pi) {
+	pi.registerProvider("saved-ext", {
+		api: "anthropic-messages",
+		baseUrl: "https://saved-ext.invalid",
+		apiKey: "saved-key",
+		models: [{ id: "saved-model", name: "Saved", reasoning: true, input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024 }],
+	});
+}
+`,
+	);
+	writeFileSync(
+		join(agentDir, "settings.json"),
+		JSON.stringify({
+			extensions: [extensionPath],
+			lastChangelogVersion: "0.0.0",
+			firstRunOnboardingStartedVersion: "0.0.0",
+			onboardedVersion: "0.0.0",
+		}),
+	);
+	const persisted = await SessionManager.create(cwd, sessionDir);
+	await persisted.appendModelChange("saved-ext", "saved-model");
+	if (savedThinkingLevel) await persisted.appendThinkingLevelChange(savedThinkingLevel);
+	await persisted.appendMessage({ role: "user", content: [{ type: "text", text: "continue" }], timestamp: 1 });
+	await persisted.appendMessage({
+		role: "assistant",
+		content: [{ type: "text", text: "previous answer" }],
+		api: "anthropic-messages",
+		provider: "saved-ext",
+		model: "saved-model",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: 2,
+	});
+	const env: Record<string, string> = {
+		ATOMIC_CODING_AGENT_DIR: agentDir,
+		ATOMIC_CODING_AGENT_SESSION_DIR: sessionDir,
+		ATOMIC_SKIP_VERSION_CHECK: "1",
+		NO_COLOR: "1",
+		OPENAI_API_KEY: builtinCredentials ? "openai-test-key" : "",
+	};
+	const driver = new Driver(
+		[
+			"--session-dir",
+			persisted.getSessionDir(),
+			"--session",
+			persisted.getSessionId(),
+			...(resources === "eager" ? ["--append-system-prompt", "eager"] : []),
+			...args,
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-themes",
+			"--offline",
+		],
+		env,
+		cwd,
+	);
+	try {
+		await waitForInputLoopState(driver);
+		await driver.waitFor((report) => report.type === "engine_resources_ready");
+		await sleep(STARTUP_NOTICE_SETTLE_MS);
+		const stateFrom = driver.reports.length;
+		driver.send({ type: "state" });
+		return await driver.waitFor((report) => report.type === "state", stateFrom);
+	} finally {
+		await driver.stop();
+		rmSync(root, { recursive: true, force: true });
+	}
+}
+
+for (const builtinCredentials of [true, false]) {
+	serialTest(
+		`isolated startup with deferred engine resources restores a continued session's extension model at eager startup's level, builtinCredentials=${builtinCredentials}`,
+		async () => {
+			const options = { builtinCredentials };
+			const eager = await continuedStartupWithSavedExtensionModel("eager", options);
+			const deferred = await continuedStartupWithSavedExtensionModel("deferred", options);
+			assert.deepEqual(
+				{ model: `${eager.modelProvider}/${eager.modelId}`, thinkingLevel: eager.thinkingLevel },
+				{ model: "saved-ext/saved-model", thinkingLevel: "medium" },
+			);
+			assert.deepEqual(
+				{ model: `${deferred.modelProvider}/${deferred.modelId}`, thinkingLevel: deferred.thinkingLevel },
+				{ model: "saved-ext/saved-model", thinkingLevel: "medium" },
+			);
+		},
+		HOST_NOTICE_REPLAY_TIMEOUT_MS,
+	);
+}
+
+serialTest(
+	"startup passes a continued conversation's saved level, or --thinking, to deferred model selection",
+	async () => {
+		const saved = await continuedStartupWithSavedExtensionModel("deferred", {
+			builtinCredentials: false,
+			savedThinkingLevel: "low",
+		});
+		assert.equal(saved.deferredStartupThinkingLevel, "low");
+		assert.equal(saved.deferredSavedThinkingLevel, "low");
+		const cli = await continuedStartupWithSavedExtensionModel("deferred", {
+			builtinCredentials: false,
+			savedThinkingLevel: "low",
+			args: ["--thinking", "high"],
+		});
+		assert.equal(cli.deferredStartupThinkingLevel, "high");
+		assert.equal(cli.deferredSavedThinkingLevel, "low");
+	},
+	HOST_NOTICE_REPLAY_TIMEOUT_MS,
+);
