@@ -22,6 +22,12 @@ interface ActiveEarlyInputCapture {
 	keepDraft(text: string): void;
 }
 
+/**
+ * How long a startup dialog waits for input already typed to arrive before it takes stdin: long enough for the event
+ * loop to poll stdin and for a Windows read thread to hand over what it read, short enough not to be seen.
+ */
+const STARTUP_DIALOG_INPUT_GRACE_MS = 25;
+
 let activeCapture: ActiveEarlyInputCapture | undefined;
 let startupDialogDrafts: string[] = [];
 let startupDialogQueue: Promise<void> | undefined;
@@ -40,7 +46,10 @@ export async function withEarlyInputHeldForStartupDialog<T>(
 		if (previous) await previous;
 		if (activeCapture) {
 			activeCapture.resume();
-			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+			// A timer that is not yet due makes the event loop wait in its I/O poll, so input the terminal or a
+			// Windows read thread already holds reaches the capture before the dialog takes stdin. A zero-delay timer
+			// and an immediate can both run before that poll, which lost input under Bun and on loaded runners.
+			await new Promise<void>((resolve) => setTimeout(resolve, STARTUP_DIALOG_INPUT_GRACE_MS));
 			await new Promise<void>((resolve) => setImmediate(resolve));
 		}
 		capture = activeCapture;

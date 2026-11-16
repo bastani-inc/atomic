@@ -25,12 +25,12 @@ export type StartupMode = (typeof STARTUP_MODES)[number];
 export const STARTUP_PROFILES = ["warm", "cold"] as const;
 export type StartupProfile = (typeof STARTUP_PROFILES)[number];
 
-interface Target {
+export interface Target {
 	readonly name: string;
 	readonly binDirectory: string;
 }
 
-interface Options {
+export interface Options {
 	readonly output: string;
 	readonly state: string;
 	readonly cwd: string;
@@ -42,6 +42,10 @@ interface Options {
 	readonly port: number;
 	readonly timeoutMs: number;
 	readonly dropCaches: boolean;
+	/** Arguments every start also gets, such as `--extension <path>`. */
+	readonly extraArgs?: readonly string[];
+	/** Environment every start also gets. */
+	readonly extraEnv?: Readonly<Record<string, string>>;
 }
 
 const COLS = 120;
@@ -78,9 +82,12 @@ function commandLine(args: readonly string[]): string {
 	return ["atomic", ...args].join(" ");
 }
 
-/** A PTY command must also drop session variables the native PTY inherits from this process. */
-function ptyCommandLine(args: readonly string[]): string {
-	const leaked = leakedSessionVariables();
+/**
+ * A PTY command must also drop session variables the native PTY inherits from this process, except those the sample
+ * sets itself.
+ */
+function ptyCommandLine(args: readonly string[], env: Readonly<Record<string, string>>): string {
+	const leaked = leakedSessionVariables().filter((name) => !Object.hasOwn(env, name));
 	if (process.platform === "win32") {
 		if (leaked.length > 0) throw new Error(`run the benchmark without these variables: ${leaked.join(", ")}`);
 		return commandLine(args);
@@ -195,7 +202,7 @@ async function runInteractive(context: SampleContext, typeAhead: boolean): Promi
 	const waiters = new Set<() => void>();
 	const launch = context.launched();
 	const child = startPty({
-		command: ptyCommandLine(["--session-dir", sessionDir, ...PROVIDER]),
+		command: ptyCommandLine(["--session-dir", sessionDir, ...PROVIDER, ...(options.extraArgs ?? [])], env),
 		cwd: options.cwd,
 		env,
 		timeoutMs: options.timeoutMs * 3,
@@ -309,7 +316,11 @@ async function runVersion(context: SampleContext): Promise<Record<string, number
 async function runPrint(context: SampleContext): Promise<Record<string, number>> {
 	const { collector, nonce, sessionDir, options } = context;
 	const launch = context.launched();
-	const child = spawnAtomic(context, ["-p", nonce, "--session-dir", sessionDir, ...PROVIDER], "ignore");
+	const child = spawnAtomic(
+		context,
+		["-p", nonce, "--session-dir", sessionDir, ...PROVIDER, ...(options.extraArgs ?? [])],
+		"ignore",
+	);
 	const output = collectOutput(child);
 	const exited = exitOf(child);
 	try {
@@ -339,7 +350,11 @@ async function runPrint(context: SampleContext): Promise<Record<string, number>>
 async function runRpc(context: SampleContext): Promise<Record<string, number>> {
 	const { collector, nonce, sessionDir, options } = context;
 	const launch = context.launched();
-	const child = spawnAtomic(context, ["--mode", "rpc", "--session-dir", sessionDir, ...PROVIDER], "pipe");
+	const child = spawnAtomic(
+		context,
+		["--mode", "rpc", "--session-dir", sessionDir, ...PROVIDER, ...(options.extraArgs ?? [])],
+		"pipe",
+	);
 	const exited = exitOf(child);
 	let ready: bigint | undefined;
 	let ended = false;
@@ -399,7 +414,7 @@ async function runRpc(context: SampleContext): Promise<Record<string, number>> {
 	}
 }
 
-async function runSample(
+export async function runSample(
 	options: Options,
 	target: Target,
 	mode: StartupMode,
@@ -433,7 +448,11 @@ async function runSample(
 		const context: SampleContext = {
 			options,
 			target,
-			env: { ...environmentFor(target, agentDir, cacheDir, home), ATOMIC_STARTUP_TRACE: traceFile },
+			env: {
+				...environmentFor(target, agentDir, cacheDir, home),
+				...options.extraEnv,
+				ATOMIC_STARTUP_TRACE: traceFile,
+			},
 			sessionDir,
 			collector,
 			nonce,
@@ -515,11 +534,16 @@ export function roundOrder<T>(targets: readonly T[], round: number): T[] {
 	return round % 2 === 0 ? rotated : rotated.reverse();
 }
 
-async function runBenchmark(options: Options): Promise<StartupSample[]> {
+/** A fresh state directory with the agent template every sample copies, and the working directory. */
+export async function prepareBenchmarkState(options: Options): Promise<void> {
 	await mkdir(options.output, { recursive: true });
 	await rm(options.state, { recursive: true, force: true });
 	await mkdir(options.cwd, { recursive: true });
 	await createAgentTemplate(join(options.state, "agent-template"), options.port);
+}
+
+async function runBenchmark(options: Options): Promise<StartupSample[]> {
+	await prepareBenchmarkState(options);
 	const samplesPath = join(options.output, "samples.jsonl");
 	const samples: StartupSample[] = [];
 	let ordinal = 0;
