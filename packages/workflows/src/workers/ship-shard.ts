@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
 import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
+import type { AdvisoryLock } from "@bastani/atomic-natives";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
 
@@ -121,23 +122,32 @@ export class ShipShard {
 	private constructor(
 		private readonly database: SqliteDatabase,
 		readonly root: string,
+		private readonly lock: AdvisoryLock,
 		private readonly now: () => number = () => performance.now(),
 	) {}
 
 	static async open(path: string, root: string, now?: () => number): Promise<ShipShard> {
 		mkdirSync(dirname(path), { recursive: true });
-		const database = await openNodeSqliteDatabase(path);
+		const { tryAdvisoryLock } = await import("@bastani/atomic-natives");
+		const lock = tryAdvisoryLock(`${path}.lock`, 0);
+		if (lock === null) throw new Error(`Checkpoint shard is already open by another process: ${path}`);
+		let database: SqliteDatabase | undefined;
 		try {
+			database = await openNodeSqliteDatabase(path);
 			await database.exec(SHIP_SHARD_SCHEMA);
 			// Checkpoints whose attempt's lease the journal no longer names can never ship: an attempt replaced here.
 			await database.run(
 				`DELETE FROM ship_events WHERE NOT EXISTS (SELECT 1 FROM ship_lease l WHERE l.work = ship_events.work AND l.generation = ship_events.generation)`,
 			);
+			return new ShipShard(database, root, lock, now);
 		} catch (error) {
-			await database.close();
+			try {
+				await database?.close();
+			} finally {
+				lock.release();
+			}
 			throw error;
 		}
-		return new ShipShard(database, root, now);
 	}
 
 	/**
@@ -357,7 +367,11 @@ export class ShipShard {
 		if (this.closed) return;
 		this.closed = true;
 		this.leases.clear();
-		await this.database.close();
+		try {
+			await this.database.close();
+		} finally {
+			this.lock.release();
+		}
 	}
 
 	private assertHeld(root: string, lease: AttemptLease): void {

@@ -16,7 +16,7 @@ import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-
 import { CheckpointShipping, type ShipDelivery } from "../../packages/workflows/src/workers/checkpoint-shipping.js";
 import { ShipShard } from "../../packages/workflows/src/workers/ship-shard.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 import { startRun } from "../helpers/snapshot-reference-index.js";
 
 const LEASE_MS = 60_000;
@@ -73,7 +73,12 @@ let shardCount = 0;
 async function hostShipping(
 	queue: SqlPoolQueue,
 	lease: Lease,
-	options: { readonly maxBatch?: number; readonly path?: string; readonly deliver?: ShipDelivery } = {},
+	options: {
+		readonly maxBatch?: number;
+		readonly path?: string;
+		readonly deliver?: ShipDelivery;
+		readonly now?: () => number;
+	} = {},
 ) {
 	const path = options.path ?? join(directory, `shard-${shardCount++}.sqlite`);
 	const shard = await ShipShard.open(path, "root");
@@ -82,6 +87,7 @@ async function hostShipping(
 		maxBatch: options.maxBatch ?? 2,
 		maxLagMs: 30_000,
 		host: "host-A",
+		now: options.now,
 		deliver: options.deliver ?? ((attempt, batch) => queue.shipBatch(lease, attempt, batch)),
 	});
 	closers.push(() => shipping.close());
@@ -89,6 +95,16 @@ async function hostShipping(
 }
 
 const noShared = async () => assert.fail("a shippable checkpoint is not committed directly");
+
+test("a failed shard open releases ownership so the repaired journal can open (#4768)", async () => {
+	const path = join(directory, "invalid-shard.sqlite");
+	await writeFileEnsuringDir(path, "not a SQLite database");
+	await assert.rejects(ShipShard.open(path, "root"), /not a database/);
+	await writeFileEnsuringDir(path, "");
+	const shard = await ShipShard.open(path, "root");
+	closers.push(() => shard.close());
+	assert.deepEqual(await shard.leftover(), []);
+});
 
 test("a shipped batch records its checkpoints in the root's journal once, with the ledger and the watermark (#4768)", async () => {
 	const { queue, lease, attempt, tool, recorded, database } = await claimedAttempt();
@@ -198,11 +214,12 @@ test("a host that starts again ships what it left while its attempt still owns t
 test("a new attempt claimed during startup recovery ships its checkpoints without restoring the previous generation (#4768)", async () => {
 	const { queue, lease, attempt, tool, recorded, work } = await claimedAttempt();
 	const path = join(directory, "recover-claim.sqlite");
+	let now = 0;
 	const before = await hostShipping(queue, lease, { path, maxBatch: 10 });
 	await before.shipping.hold(attempt, LEASE_MS);
 	await before.shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(1) }, noShared);
 	await before.shipping.close();
-	const after = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	const after = await hostShipping(queue, lease, { path, maxBatch: 10, now: () => now });
 	const scanned = Promise.withResolvers<void>();
 	const resume = Promise.withResolvers<void>();
 	const pending = after.shard.pending.bind(after.shard);
@@ -225,6 +242,8 @@ test("a new attempt claimed during startup recovery ships its checkpoints withou
 	assert.deepEqual(await recorded(), [2]);
 	assert.deepEqual(await after.shard.pending(next), []);
 	assert.equal(after.shipping.status().pending, 0);
+	now = LEASE_MS;
+	assert.equal(after.shipping.lagging(), false);
 });
 
 test("renewing a lease during startup recovery preserves unshipped checkpoint accounting after a delivery fails (#4768)", async () => {
