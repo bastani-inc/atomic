@@ -51,6 +51,7 @@ import { getAgentConfigPaths } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
 	ensureTempDir,
+	ensureTempDirAsync,
 	getProtectedSessionTempDirs,
 	getTempRootDir,
 	SESSION_TEMP_FILE_MODE,
@@ -674,32 +675,43 @@ const scheduledSessionDirs = new Set<string>();
 /** Runs a callback in the async context of this module's load, outside every session. */
 const outsideAnySession = AsyncLocalStorage.snapshot();
 
+async function runDeferredSessionTempCleanup(options: SessionTempCleanupOptions): Promise<void> {
+	try {
+		await ensureTempDirAsync(getTempRootDir());
+	} catch {
+		return;
+	}
+	runSessionTempCleanup(options);
+}
+
 /** Arm one deferred sweep for the roots currently pending. */
 function armSessionTempCleanup(options: SessionTempCleanupOptions): void {
 	cleanupScheduled = true;
-	cleanupTimer = setTimeout(() => {
+	const timer = setTimeout(() => {
 		// Drain before the sweep. A session discovered while cleanup is running adds
-		// to the now-empty sets and is rearmed in `finally`, rather than being lost
+		// to the now-empty sets and is rearmed once it settles, rather than being lost
 		// or starting a second callback alongside this one.
 		const sessionsRoots = [...scheduledSessionsRoots];
 		const sessionDirs = [...scheduledSessionDirs];
 		scheduledSessionsRoots.clear();
 		scheduledSessionDirs.clear();
-		try {
-			runSessionTempCleanup({
-				...options,
-				sessionsRoots: sessionsRoots.length > 0 ? sessionsRoots : options.sessionsRoots,
-				sessionDirs,
-			});
-		} finally {
+		void runDeferredSessionTempCleanup({
+			...options,
+			sessionsRoots: sessionsRoots.length > 0 ? sessionsRoots : options.sessionsRoots,
+			sessionDirs,
+		}).finally(() => {
+			if (cleanupTimer !== timer) {
+				return;
+			}
 			cleanupTimer = undefined;
 			cleanupScheduled = false;
 			if (scheduledSessionsRoots.size > 0 || scheduledSessionDirs.size > 0) {
 				armSessionTempCleanup(options);
 			}
-		}
+		});
 	}, SESSION_TEMP_CLEANUP_DELAY_MS);
-	cleanupTimer.unref?.();
+	cleanupTimer = timer;
+	timer.unref?.();
 }
 
 /**

@@ -1,5 +1,16 @@
 import assert from "node:assert/strict";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
@@ -11,11 +22,13 @@ import {
 } from "../../packages/coding-agent/src/core/tools/windows-directory-security.ts";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { getArtifactsDir } from "../../packages/subagents/src/shared/artifacts.js";
+import { cleanupAllArtifactDirs, getArtifactsDir } from "../../packages/subagents/src/shared/artifacts.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 
 /** A launch that reads one real PowerShell descriptor: each attempt is bounded by 30 s, and a loaded host takes them all. */
 const REAL_DESCRIPTOR_READ_LAUNCH_TIMEOUT_MS = 90_000;
+const REAL_DESCRIPTOR_READ_SETTLED_MS = REAL_DESCRIPTOR_READ_LAUNCH_TIMEOUT_MS - 10_000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const envKeys = ["TMPDIR", "TEMP", "TMP", "XDG_RUNTIME_DIR", "ATOMIC_CODING_AGENT_DIR"] as const;
 const savedEnv = new Map<string, string | undefined>(envKeys.map((key) => [key, process.env[key]]));
@@ -169,6 +182,30 @@ test.skipIf(process.platform !== "win32")(
 		assert.notEqual(result.isError, true, JSON.stringify(result.content));
 		assert.deepEqual(heldReads, [], "the launch read no descriptor on the main thread");
 		assert.deepEqual(launchedArtifactDirs, [getArtifactsDir(null)], "the child writes into the verified directory");
+	},
+	REAL_DESCRIPTOR_READ_LAUNCH_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform !== "win32")(
+	"the deferred artifact scan reads the session-less directory's descriptor without holding the event loop (#5324)",
+	async () => {
+		const stale = join(agentDir, "cache", "tmp", "subagents", "artifacts", "run_worker_output.md");
+		mkdirSync(dirname(stale), { recursive: true });
+		writeFileSync(stale, "stale\n");
+		const old = new Date(Date.now() - 10 * DAY_MS);
+		utimesSync(stale, old, old);
+		const heldReads: string[] = [];
+		setWindowsDirectorySecurityReaderForTesting((path) => {
+			heldReads.push(path);
+			return readWindowsDirectorySecurity(path);
+		});
+
+		cleanupAllArtifactDirs(1, []);
+		const deadline = Date.now() + REAL_DESCRIPTOR_READ_SETTLED_MS;
+		while (existsSync(stale) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+
+		assert.deepEqual(heldReads, [], "the scan read no descriptor on the main thread");
+		assert.equal(existsSync(stale), false, "the scan removed the stale session-less artifact");
 	},
 	REAL_DESCRIPTOR_READ_LAUNCH_TIMEOUT_MS,
 );

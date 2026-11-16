@@ -28,11 +28,14 @@ import type { PackageLocationContext } from "../src/core/package-manager-types.t
 import {
 	assertPrivateDirectory,
 	ensurePrivateTempDir,
+	ensurePrivateTempDirAsync,
 	getTempRootDir,
 	resetSessionTempDirStateForTesting,
 } from "../src/core/tools/session-temp-dir.ts";
 import {
 	readWindowsDirectorySecurity,
+	readWindowsDirectorySecurityAsync,
+	setWindowsDirectorySecurityAsyncReaderForTesting,
 	setWindowsDirectorySecurityReaderForTesting,
 } from "../src/core/tools/windows-directory-security.ts";
 import { isPathInside } from "../src/utils/path-inside.js";
@@ -63,6 +66,7 @@ beforeEach(() => {
 afterEach(() => {
 	vi.restoreAllMocks();
 	setWindowsDirectorySecurityReaderForTesting(undefined);
+	setWindowsDirectorySecurityAsyncReaderForTesting(undefined);
 	resetSessionTempDirStateForTesting();
 });
 
@@ -267,6 +271,50 @@ describe("temporary extension install directories", () => {
 
 			for (let call = 0; call < 5; call++) assert.equal(ensurePrivateTempDir("extensions"), dir);
 			assert.equal(reads, firstReads, "repeat calls cost no PowerShell security reads");
+		},
+	);
+
+	it("the asynchronous form chooses the private directory the synchronous one returns (#5324)", async () => {
+		const dir = await ensurePrivateTempDirAsync("extensions");
+
+		assert.ok(isPathInside(join(agentDir, "cache", "tmp"), dir), `${dir} is inside the agent cache`);
+		assertPrivateChain(dir, agentDir);
+		assert.equal(ensurePrivateTempDir("extensions"), dir);
+	});
+
+	it.skipIf(!isPosix)(
+		"the asynchronous form falls back past an agent cache that is not this account's (#5324)",
+		async () => {
+			const elsewhere = plantAgentCacheLink();
+
+			const dir = await ensurePrivateTempDirAsync("extensions");
+
+			assert.ok(isPathInside(getTempRootDir(), dir), `${dir} is inside the per-user temp root`);
+			assert.deepEqual(readdirSync(elsewhere), [], "nothing is created through the planted link");
+		},
+	);
+
+	it.runIf(process.platform === "win32")(
+		"the asynchronous form falls back past an agent cache another account owns, reading descriptors only off the main thread (#5324)",
+		async () => {
+			const foreignCache = join(agentDir, "cache", "tmp");
+			const heldReads: string[] = [];
+			const asyncReads: string[] = [];
+			setWindowsDirectorySecurityReaderForTesting((path) => {
+				heldReads.push(path);
+				return readWindowsDirectorySecurity(path);
+			});
+			setWindowsDirectorySecurityAsyncReaderForTesting(async (path) => {
+				asyncReads.push(path);
+				const security = await readWindowsDirectorySecurityAsync(path);
+				return security && path === foreignCache ? { ...security, ownerSid: "S-1-5-21-4-5-6-1002" } : security;
+			});
+
+			const dir = await ensurePrivateTempDirAsync("extensions");
+
+			assert.ok(isPathInside(getTempRootDir(), dir), `${dir} is inside the per-user temp root`);
+			assert.deepEqual(asyncReads, [foreignCache, getTempRootDir()]);
+			assert.deepEqual(heldReads, [], "no descriptor was read on the main thread");
 		},
 	);
 

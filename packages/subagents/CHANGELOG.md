@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Atomic on Windows pausing while the first subagent launched from a session without a session file (an SDK or in-memory session) checked the owner and permissions of its private artifact directory, and again when the startup artifact cleanup did. Both checks now run in the background ([#5324](https://github.com/bastani-inc/atomic/issues/5324))
+
 ## [0.9.88] - 2026-11-16
 
 ### Added

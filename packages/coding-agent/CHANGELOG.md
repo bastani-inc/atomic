@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Atomic on Windows pausing about 10 seconds after a session started, while PowerShell checked the owner and permissions of its private temp directory. Every timer, hook and wait in the process stalled for as long as the check took, up to half a minute on a busy machine. The check now runs in the background, and when it times out Atomic no longer retries it with the same PowerShell program ([#5324](https://github.com/bastani-inc/atomic/issues/5324))
+
 ## [0.9.88] - 2026-11-16
 
 Atomic runs on its own libraries, workflows scale out to worker fleets on libSQL or PostgreSQL, and every screen shares one set of keys.

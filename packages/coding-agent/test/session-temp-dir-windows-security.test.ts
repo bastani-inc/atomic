@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
 import { spawnSyncCollect } from "../../../test/helpers/runtime.ts";
 import {
+	ensureTempDirAsync,
 	getSessionTempDir,
 	getTempRootDir,
 	resetSessionTempDirStateForTesting,
@@ -21,8 +22,10 @@ import {
 	getLastWindowsSecurityReadFailureForTesting,
 	readWindowsDirectorySecurity,
 	resetWindowsDirectorySecurityStateForTesting,
+	setWindowsDirectorySecurityAsyncReaderForTesting,
 	setWindowsDirectorySecurityReaderForTesting,
 	verifyWindowsDirectorySecurity,
+	verifyWindowsDirectorySecurityAsync,
 	type WindowsDirectorySecurity,
 } from "../src/core/tools/windows-directory-security.ts";
 
@@ -205,6 +208,43 @@ describe("windows directory security cache", () => {
 		assert.deepEqual(reads, [dir], "only the verified root was read");
 	});
 
+	it("verifies concurrent asynchronous callers with one read that the synchronous path then reuses (#5324)", async () => {
+		const asyncReads: string[] = [];
+		let syncReads = 0;
+		const read = Promise.withResolvers<WindowsDirectorySecurity>();
+		setWindowsDirectorySecurityAsyncReaderForTesting((path) => {
+			asyncReads.push(path);
+			return read.promise;
+		});
+		setWindowsDirectorySecurityReaderForTesting(() => {
+			syncReads += 1;
+			return security();
+		});
+
+		const verdicts = Promise.all([
+			verifyWindowsDirectorySecurityAsync(dir),
+			verifyWindowsDirectorySecurityAsync(dir),
+		]);
+		read.resolve(security());
+
+		assert.deepEqual(await verdicts, [undefined, undefined]);
+		assert.deepEqual(asyncReads, [dir], "one read serves both callers");
+		assert.equal(verifyWindowsDirectorySecurity(dir), undefined);
+		assert.equal(syncReads, 0, "the synchronous path reuses the asynchronous verification");
+	});
+
+	it("reads a refused directory again on the next asynchronous verification (#5324)", async () => {
+		let reads = 0;
+		setWindowsDirectorySecurityAsyncReaderForTesting(async () => {
+			reads += 1;
+			return security({ ownerSid: FOREIGN_SID });
+		});
+
+		assert.equal(await verifyWindowsDirectorySecurityAsync(dir), "it is owned by another account");
+		assert.equal(await verifyWindowsDirectorySecurityAsync(dir), "it is owned by another account");
+		assert.equal(reads, 2, "a refusal is not cached");
+	});
+
 	it("reads, and refuses, a foreign directory whose parent was never verified", () => {
 		const reads: string[] = [];
 		setWindowsDirectorySecurityReaderForTesting((path) => {
@@ -276,6 +316,7 @@ describe("windows session temp root verification", () => {
 
 	afterEach(() => {
 		setWindowsDirectorySecurityReaderForTesting(undefined);
+		setWindowsDirectorySecurityAsyncReaderForTesting(undefined);
 	});
 
 	it.skipIf(!isWindows)("adopts its own restrictive root and spills into it", () => {
@@ -333,6 +374,28 @@ describe("windows session temp root verification", () => {
 				error instanceof TempDirRefusedError && error.message.includes("its ownership could not be verified"),
 		);
 	});
+
+	it.skipIf(!isWindows)(
+		"an asynchronous walk refuses a root owned by another account without reading on the main thread (#5324)",
+		async () => {
+			const root = getTempRootDir();
+			mkdirSync(root, { recursive: true });
+			let syncReads = 0;
+			setWindowsDirectorySecurityReaderForTesting(() => {
+				syncReads += 1;
+				return undefined;
+			});
+			setWindowsDirectorySecurityAsyncReaderForTesting(async () => security({ ownerSid: FOREIGN_SID }));
+
+			await assert.rejects(
+				ensureTempDirAsync(join(root, "through-foreign-root")),
+				(error: unknown) =>
+					error instanceof TempDirRefusedError && error.message.includes("it is owned by another account"),
+			);
+			assert.equal(existsSync(join(root, "through-foreign-root")), false);
+			assert.equal(syncReads, 0);
+		},
+	);
 
 	it.skipIf(!isWindows)("verifies unchanged components once, keeping the subprocess off the spill path", () => {
 		const reads: string[] = [];

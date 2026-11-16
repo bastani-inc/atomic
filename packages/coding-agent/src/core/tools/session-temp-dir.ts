@@ -23,8 +23,10 @@ import { dirname, isAbsolute, join, sep } from "node:path";
 import { APP_NAME, getAgentDir } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
+	isWindowsDirectoryVerified,
 	resetWindowsDirectorySecurityStateForTesting,
 	verifyWindowsDirectorySecurity,
+	verifyWindowsDirectorySecurityAsync,
 } from "./windows-directory-security.ts";
 
 /** Directory mode for every directory this module creates (owner-only). */
@@ -203,6 +205,41 @@ export class TempDirRefusedError extends Error {
 	}
 }
 
+type WindowsVerification = (path: string) => string | undefined;
+
+class DescriptorNotReadError extends Error {
+	readonly path: string;
+
+	constructor(path: string) {
+		super(`The security descriptor of ${path} has not been read yet`);
+		this.name = "DescriptorNotReadError";
+		this.path = path;
+	}
+}
+
+async function readingDescriptorsOffThread<T>(walk: (verifyWindows: WindowsVerification) => T): Promise<T> {
+	const verdicts = new Map<string, string | undefined>();
+	const verifyFromVerdicts = (path: string): string | undefined => {
+		if (isWindowsDirectoryVerified(path)) {
+			return undefined;
+		}
+		if (verdicts.has(path)) {
+			return verdicts.get(path) ?? "its ownership could not be verified";
+		}
+		throw new DescriptorNotReadError(path);
+	};
+	for (;;) {
+		try {
+			return walk(verifyFromVerdicts);
+		} catch (error) {
+			if (!(error instanceof DescriptorNotReadError)) {
+				throw error;
+			}
+			verdicts.set(error.path, await verifyWindowsDirectorySecurityAsync(error.path));
+		}
+	}
+}
+
 /**
  * Confirm one existing component is a directory this account owns, at mode 0700.
  *
@@ -222,7 +259,12 @@ export class TempDirRefusedError extends Error {
  * accident, which is a different problem and is not a substitute for this
  * verification.
  */
-function verifyOwnedDirectory(path: string, known?: Stats, strict = false): void {
+function verifyOwnedDirectory(
+	path: string,
+	known?: Stats,
+	strict = false,
+	verifyWindows: WindowsVerification = verifyWindowsDirectorySecurity,
+): void {
 	let stat = known ?? lstatSync(path);
 	if (stat.isSymbolicLink()) {
 		throw new TempDirRefusedError(path, "it is a symbolic link");
@@ -231,7 +273,7 @@ function verifyOwnedDirectory(path: string, known?: Stats, strict = false): void
 		throw new TempDirRefusedError(path, "it is not a directory");
 	}
 	if (process.platform === "win32") {
-		const refusal = verifyWindowsDirectorySecurity(path);
+		const refusal = verifyWindows(path);
 		if (refusal !== undefined) {
 			throw new TempDirRefusedError(path, refusal);
 		}
@@ -267,7 +309,11 @@ function verifyOwnedDirectory(path: string, known?: Stats, strict = false): void
  * on the way down, which is how a link planted at the predictable owner root
  * redirects every later write outside the tree.
  */
-function ensureOwnedDirectory(path: string, strict = false): void {
+function ensureOwnedDirectory(
+	path: string,
+	strict = false,
+	verifyWindows: WindowsVerification = verifyWindowsDirectorySecurity,
+): void {
 	let stat: Stats | undefined;
 	try {
 		stat = lstatSync(path);
@@ -283,10 +329,10 @@ function ensureOwnedDirectory(path: string, strict = false): void {
 				throw new TempDirRefusedError(path, "it could not be created");
 			}
 		}
-		verifyOwnedDirectory(path, undefined, strict);
+		verifyOwnedDirectory(path, undefined, strict, verifyWindows);
 		return;
 	}
-	verifyOwnedDirectory(path, stat, strict);
+	verifyOwnedDirectory(path, stat, strict, verifyWindows);
 }
 
 /** Split caller segments into plain path components, refusing `.`, `..` and empty ones. */
@@ -317,11 +363,16 @@ function isUntouchablePrivateRoot(path: string): boolean {
 }
 
 /** Create or adopt each of `parts` below `checkedBase`, strictly; returns the path below `returnedBase`. */
-function ensurePrivateChain(checkedBase: string, returnedBase: string, parts: readonly string[]): string {
+function ensurePrivateChain(
+	checkedBase: string,
+	returnedBase: string,
+	parts: readonly string[],
+	verifyWindows: WindowsVerification,
+): string {
 	let current = checkedBase;
 	for (const part of parts) {
 		current = join(current, part);
-		ensureOwnedDirectory(current, true);
+		ensureOwnedDirectory(current, true, verifyWindows);
 	}
 	return join(returnedBase, ...parts);
 }
@@ -354,6 +405,14 @@ let privateTempFallbackDir: string | undefined;
  * relative path or not even a fresh temp directory can be created.
  */
 export function ensurePrivateTempDir(...segments: string[]): string {
+	return ensurePrivateTempDirWith(segments, verifyWindowsDirectorySecurity);
+}
+
+export function ensurePrivateTempDirAsync(...segments: string[]): Promise<string> {
+	return readingDescriptorsOffThread((verifyWindows) => ensurePrivateTempDirWith(segments, verifyWindows));
+}
+
+function ensurePrivateTempDirWith(segments: readonly string[], verifyWindows: WindowsVerification): string {
 	const parts = privateSegmentParts(segments);
 	const key = JSON.stringify([process.env.XDG_RUNTIME_DIR ?? "", getAgentDir(), tmpdir(), parts]);
 	const known = privateTempDirs.get(key);
@@ -361,7 +420,7 @@ export function ensurePrivateTempDir(...segments: string[]): string {
 		return known.path;
 	}
 	privateTempDirs.delete(key);
-	const path = choosePrivateTempDir(segments, parts);
+	const path = choosePrivateTempDir(segments, parts, verifyWindows);
 	try {
 		privateTempDirs.set(key, { path, birthtimeMs: lstatSync(path).birthtimeMs });
 	} catch {
@@ -400,7 +459,11 @@ function stillPrivate(known: KnownPrivateTempDir): boolean {
 	}
 }
 
-function choosePrivateTempDir(segments: readonly string[], parts: readonly string[]): string {
+function choosePrivateTempDir(
+	segments: readonly string[],
+	parts: readonly string[],
+	verifyWindows: WindowsVerification,
+): string {
 	const attempts: Array<() => string> = [];
 	const runtimeDir = process.env.XDG_RUNTIME_DIR;
 	if (process.platform !== "win32" && runtimeDir && isAbsolute(runtimeDir)) {
@@ -409,23 +472,26 @@ function choosePrivateTempDir(segments: readonly string[], parts: readonly strin
 				throw new TempDirRefusedError(runtimeDir, "it is not private to this account");
 			}
 			const app = sanitizeTempPathComponent(APP_NAME, "atomic");
-			return ensurePrivateChain(runtimeDir, runtimeDir, [app, ...parts]);
+			return ensurePrivateChain(runtimeDir, runtimeDir, [app, ...parts], verifyWindows);
 		});
 	}
 	attempts.push(() => {
 		const cacheDir = join(getAgentDir(), "cache");
 		mkdirSync(cacheDir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
-		return ensurePrivateChain(cacheDir, cacheDir, ["tmp", ...parts]);
+		return ensurePrivateChain(cacheDir, cacheDir, ["tmp", ...parts], verifyWindows);
 	});
 	attempts.push(() => {
 		const base = baseTempDirs();
 		const rootName = getTempRootDir().slice(base.raw.length + sep.length);
-		return ensurePrivateChain(base.canonical, base.raw, [rootName, ...parts]);
+		return ensurePrivateChain(base.canonical, base.raw, [rootName, ...parts], verifyWindows);
 	});
 	for (const attempt of attempts) {
 		try {
 			return attempt();
-		} catch {
+		} catch (error) {
+			if (error instanceof DescriptorNotReadError) {
+				throw error;
+			}
 			// Not trustworthy (or not creatable) for this account; try the next root.
 		}
 	}
@@ -460,7 +526,7 @@ export function assertPrivateDirectory(path: string): void {
  * alone. A parent — above all the owner root — is refused instead, because
  * deleting it would be acting on a directory this process does not own.
  */
-function ensureLeafDirectory(dir: string): void {
+function ensureLeafDirectory(dir: string, verifyWindows: WindowsVerification): void {
 	try {
 		if (!lstatSync(dir).isDirectory()) {
 			rmSync(dir, { force: true });
@@ -468,7 +534,7 @@ function ensureLeafDirectory(dir: string): void {
 	} catch {
 		// Nothing at the path yet, or it cannot be inspected; creation decides.
 	}
-	ensureOwnedDirectory(dir);
+	ensureOwnedDirectory(dir, false, verifyWindows);
 }
 
 /** Map a lexical temp child to the same path below the canonical temp base. */
@@ -497,6 +563,14 @@ function canonicalTempChild(dir: string, base: BaseTempDirs): string | undefined
  * directory someone else controls.
  */
 export function ensureTempDir(dir: string): string {
+	return ensureTempDirWith(dir, verifyWindowsDirectorySecurity);
+}
+
+export function ensureTempDirAsync(dir: string): Promise<string> {
+	return readingDescriptorsOffThread((verifyWindows) => ensureTempDirWith(dir, verifyWindows));
+}
+
+function ensureTempDirWith(dir: string, verifyWindows: WindowsVerification): string {
 	const base = baseTempDirs();
 	const checkedDir = canonicalTempChild(dir, base);
 	if (checkedDir !== undefined) {
@@ -508,15 +582,15 @@ export function ensureTempDir(dir: string): string {
 		let current = base.canonical;
 		for (const part of parts.slice(0, -1)) {
 			current = join(current, part);
-			ensureOwnedDirectory(current);
+			ensureOwnedDirectory(current, false, verifyWindows);
 		}
-		ensureLeafDirectory(checkedDir);
+		ensureLeafDirectory(checkedDir, verifyWindows);
 	} else {
 		// A caller-supplied directory outside the system temp base (a session
 		// directory, for instance) is the caller's to own; only the leaf is ours.
 		if (!(ensuredDirs.has(dir) && isRealDirectory(dir))) {
 			mkdirSync(dirname(dir), { recursive: true, mode: SESSION_TEMP_DIR_MODE });
-			ensureLeafDirectory(dir);
+			ensureLeafDirectory(dir, verifyWindows);
 		}
 	}
 	ensuredDirs.add(dir);
