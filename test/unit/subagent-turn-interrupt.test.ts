@@ -125,6 +125,29 @@ test("an interrupted subagent that is never messaged again still stops when aske
 	}
 });
 
+test("interruptTurn settles only once the interrupted turn has ended (#5224)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-turn-interrupt-settled-"));
+	clearSubagentControls();
+	try {
+		const child = launch(root, new AbortController().signal);
+		await until(() => child.source()?.isRunning?.() === true);
+		const source = child.source()!;
+
+		await source.interruptTurn!();
+		assert.equal(source.isRunning?.(), false, "the interrupted turn ended before interruptTurn settled");
+		assert.equal(child.settled(), false, "the child waits for the next message");
+
+		child.gate.resolve();
+		await child.queue()!.prompt("carry on with the picker");
+		const result = await child.result;
+		assert.equal(result.status, "ok");
+		assert.equal(result.finalOutput, "picker fixed");
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 /** A live child loads its real resources; that load is the structural cost of this test. */
 const LIVE_CHILD_TIMEOUT_MS = 120_000;
 const cleanups: Array<() => void> = [];

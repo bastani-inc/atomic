@@ -22,13 +22,19 @@ knowledge:
     contents: |
       Run `npm run check`: biome, the `bun check` typecheck passes and the published-shrinkwrap check.
       It needs Bun >= 1.4.4 on PATH. `npm run typecheck` runs the typecheck passes alone, and
-      `npm run format` applies biome's formatting.
+      `npm run format` applies biome's formatting. If a direct Git commit cannot find `prek`,
+      use `PATH="$PWD/node_modules/.bin:$PATH" git commit ...` so the installed hook finds the local binary.
   - name: test
     contents: |
       Root suites run under vitest: `npm run test:unit`, `npm run test:integration`, or both with
       `npm run test:all`. The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
       suites load the built packages.
+  - name: readme feature tables
+    contents: |
+      After changing scripts/readme-feature-wall/manifest.json, run
+      `node scripts/readme-feature-wall/build-readme.mjs` to regenerate the README tables.
+      `node scripts/readme-feature-wall/build-readme.mjs --check` checks that they match.
   - name: build
     contents: |
       `npm run build` (scripts/build.mjs) builds the forked pi packages in dependency order

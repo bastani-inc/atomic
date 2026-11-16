@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -16,10 +16,16 @@ import type {
 	ReleasedStagePeers as ReleasedStagePeersType,
 } from "../../packages/intercom/released-stage-peers.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
 
-const BROKER_STARTUP_TIMEOUT_MS = 10_000;
-const BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;
+/**
+ * Structural: the broker child compiles its TypeScript through jiti before it reports that it started. A second or two
+ * on an idle machine; longer than 10 s on a loaded Windows host (#5252).
+ */
+const BROKER_STARTUP_TIMEOUT_MS = 90_000;
+/** The start-up hook waits for that report, then has room to fail with its own message. */
+const BROKER_STARTUP_HOOK_TIMEOUT_MS = BROKER_STARTUP_TIMEOUT_MS + 5_000;
 /**
  * Inner waits (an ask's reply, a listing poll) must outlast a loaded runner yet stay well inside
  * the per-test budget, so a real hang fails with its own message rather than a bare test timeout.
@@ -34,6 +40,7 @@ const RELEASED_STAGE_STATUS = "closed · reply: post-mortem only";
 
 const extensionDir = resolve(import.meta.dirname, "../../packages/intercom");
 const agentDir = mkdtempSync(join(tmpdir(), "released-stage-peers-"));
+const brokerFixture = new IntercomBrokerFixture(agentDir);
 const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
 const previousLegacyAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
@@ -49,14 +56,14 @@ const { HostedSessionRequestError, NotHostedSessionError, isNotHostedSessionErro
 const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
 const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 
-let broker: ChildProcess | undefined;
-
 beforeAll(async () => {
 	const child = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
 		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
-	broker = child;
+	brokerFixture.trackBroker(child);
+	// Read what the broker logs to stderr too: an unread pipe fills, and a broker writing to it then blocks.
+	child.stderr?.resume();
 	await new Promise<void>((resolveReady, rejectReady) => {
 		let stdout = "";
 		const timer = setTimeout(
@@ -74,29 +81,21 @@ beforeAll(async () => {
 			rejectReady(new Error(`Intercom broker exited before readiness (code=${String(code)})`));
 		});
 	});
-});
+	// A broker retires once no session has been connected for 5 s. Every test disconnects its clients when it ends, and a
+	// loaded host can take that long to connect the next test's, so the fixture holds a session until cleanup.
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, agentDir), BROKER_STARTUP_TIMEOUT_MS);
+}, BROKER_STARTUP_HOOK_TIMEOUT_MS);
 
 afterAll(async () => {
-	const active = broker;
-	broker = undefined;
-	if (active !== undefined && active.exitCode === null) {
-		await new Promise<void>((resolveExit, rejectExit) => {
-			const timer = setTimeout(
-				() => rejectExit(new Error(`Broker did not exit within ${BROKER_SHUTDOWN_TIMEOUT_MS}ms`)),
-				BROKER_SHUTDOWN_TIMEOUT_MS,
-			);
-			active.once("exit", () => {
-				clearTimeout(timer);
-				resolveExit();
-			});
-			active.kill("SIGTERM");
-		});
+	try {
+		// Ends the held session, stops the broker and waits for it to close, then removes the agent directory.
+		await brokerFixture.cleanup();
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+		else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+		if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
 	}
-	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
-	if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-	else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
-	rmSync(agentDir, { recursive: true, force: true });
 });
 
 const cleanups: Array<() => Promise<void>> = [];

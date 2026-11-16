@@ -17,7 +17,7 @@ Reach for a workflow when the task has structure and a finish line you can check
 - Durable runs you can pause, resume, inspect, and steer while they work.
 - Explicit stop conditions and evidence, instead of a transcript you have to re-read.
 
-Run one with the `workflow` tool, or from chat with `/workflow`. Connect to a live run with `/workflow connect <run>` to watch stages and talk to them.
+Run one with the `workflow` tool, or from chat with `/workflow`. Connect to a live run with `/workflows <run>` to watch stages and talk to them.
 
 ## Next steps
 

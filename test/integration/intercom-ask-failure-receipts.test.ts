@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import net from "node:net";
+import type net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test, vi } from "vitest";
@@ -23,6 +23,13 @@ type ReleasedChildReply = import("../../packages/intercom/broker/client.js").Rel
 /** Spawning the real broker child is the structural cost of this suite. */
 const REAL_BROKER_TEST_TIMEOUT_MS = 60_000;
 const WAIT = { timeout: 10_000, interval: 20 };
+/**
+ * Structural: the broker child compiles its TypeScript through jiti before it answers, which took longer than
+ * {@link WAIT} on a loaded Windows host (#5252).
+ */
+const BROKER_START_WAIT_MS = 90_000;
+/** Starting the broker waits for it, then has room to fail with its own message. */
+const BROKER_START_HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 5_000;
 /** Long enough for a frame the broker wrote to arrive, so its absence means none was written. */
 const SETTLE_MS = 300;
 
@@ -35,18 +42,9 @@ async function startBroker(): Promise<void> {
 		stdio: "ignore",
 	});
 	brokerFixture.trackBroker(broker);
-	await vi.waitFor(async () => {
-		brokerFixture.assertRunning();
-		const connected = await new Promise<boolean>((resolveConnected) => {
-			const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
-			socket.once("connect", () => {
-				socket.destroy();
-				resolveConnected(true);
-			});
-			socket.once("error", () => resolveConnected(false));
-		});
-		assert.ok(connected);
-	}, WAIT);
+	// A broker retires once no session has been connected for 5 s since it listened. Under load the suite can spend that
+	// long before its own sessions register, so the fixture holds a session for this broker until cleanup.
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, brokerFixture.agentDir), BROKER_START_WAIT_MS);
 }
 
 interface Session {
@@ -159,7 +157,7 @@ async function askThenFail(
 	return { askerAddress, askerId, first, questionId: questionIds[0], otherQuestionId: questionIds[1] };
 }
 
-beforeAll(startBroker, REAL_BROKER_TEST_TIMEOUT_MS);
+beforeAll(startBroker, BROKER_START_HOOK_TIMEOUT_MS);
 afterAll(() => brokerFixture.cleanup());
 
 for (const { how, reason, fail } of RECIPIENT_FAILURES) {
@@ -469,12 +467,15 @@ for (const [mode, when] of ASKER_DIES.entries()) {
 		async () => {
 			const outcomes: string[] = [];
 			const outcomeMsByIteration: number[] = [];
+			// Sees which sessions the broker still lists, so the asker comes back only once both departures were handled.
+			const observer = await connect(`observer-${mode}-5095`, { returnAddress: randomUUID() });
 			for (let iteration = 0; iteration < ASKER_DIES_ITERATIONS; iteration++) {
 				const label = `asker-dies-${mode}-${iteration}-5095`;
 				const askerAddress = { name: `asker-${label}`, returnAddress: randomUUID() };
 				const asker = await connect(askerAddress.name, askerAddress);
 				const askerId = idOf(asker.client);
 				const recipient = await connect(`recipient-${label}`, { returnAddress: randomUUID() });
+				const recipientId = idOf(recipient.client);
 				const questionId = randomUUID();
 				const asked = await asker.client.send(`recipient-${label}`, {
 					messageId: questionId,
@@ -492,7 +493,12 @@ for (const [mode, when] of ASKER_DIES.entries()) {
 				if (mode !== 0) socket?.destroy();
 				void recipient.client.disconnect().catch(() => undefined);
 				await replying;
-				// Its process restarts, as p28 does, after both departures were handled.
+				// Its process restarts, as p28 does, after both departures were handled: on a loaded host the broker can
+				// take longer than the restart to handle them, so wait for it to list neither session.
+				await vi.waitFor(async () => {
+					const listed = (await observer.client.listSessions()).map((session) => session.id);
+					assert.ok(!listed.includes(askerId) && !listed.includes(recipientId), "both departures were handled");
+				}, WAIT);
 				await sleep(ASKER_RESTART_MS);
 				const back = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
 				const backAt = Date.now();

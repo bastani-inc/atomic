@@ -68,7 +68,7 @@ describe("stage user message during session startup", () => {
 		const { runId, stageId } = await createStarted.promise;
 		const handle = registry.get(runId, stageId);
 		assert.ok(handle, "stage handle should be registered");
-		const sent = handle.sendUserMessage?.("/workflow attach some-run work-0", { deliverAs: "steer" });
+		const sent = handle.sendUserMessage?.("/workflows some-run work-0", { deliverAs: "steer" });
 		await sleep(5);
 		creation.resolve();
 		await sent;

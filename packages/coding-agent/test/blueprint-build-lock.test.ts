@@ -50,11 +50,13 @@ function exited(child: ChildProcess): Promise<void> {
 		: new Promise((resolve) => child.once("exit", () => resolve()));
 }
 
-/** The id of a process that has ended. */
-async function deadPid(): Promise<number> {
-	const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+/** A process that has ended, as a lock records it: its id, and its start where that is readable. */
+async function deadProcess(): Promise<{ pid: number; start?: string }> {
+	const child = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
+	const start = processStartToken(child.pid!);
+	child.stdin!.end();
 	await exited(child);
-	return child.pid!;
+	return start === undefined ? { pid: child.pid! } : { pid: child.pid!, start };
 }
 
 /** How a lock names this machine: `sha12` of its host name. */
@@ -123,7 +125,7 @@ describe("blueprint build locks (#4748)", () => {
 		"the step processes of a build whose process died are stopped when proven to be its steps, and its lock removed",
 		async () => {
 			const orphan = sleeper();
-			writeLock({ pid: await deadPid(), steps: [{ pid: orphan.pid, start: processStartToken(orphan.pid!) }] });
+			writeLock({ ...(await deadProcess()), steps: [{ pid: orphan.pid, start: processStartToken(orphan.pid!) }] });
 			assert.deepEqual(await settle([root()]), []);
 			assert.throws(() => process.kill(orphan.pid!, 0), "the step had ended when the wait returned");
 			await exited(orphan);
@@ -133,7 +135,7 @@ describe("blueprint build locks (#4748)", () => {
 
 	test("a process that only has a recorded step's id, with no start to prove it is that step, is never stopped", async () => {
 		const unrelated = sleeper();
-		writeLock({ pid: await deadPid(), steps: [{ pid: unrelated.pid }] });
+		writeLock({ ...(await deadProcess()), steps: [{ pid: unrelated.pid }] });
 		const waits: string[] = [];
 		const warnings = await settle([root()], {
 			waitMs: 600,
@@ -147,9 +149,27 @@ describe("blueprint build locks (#4748)", () => {
 		assert.equal(existsSync(buildLockPath(dir, root())), false);
 	});
 
+	test.skipIf(processStartToken(process.pid) === undefined)(
+		"a dead build whose process id a later process was given is told apart by its recorded start, and not waited for",
+		async () => {
+			const { start } = await deadProcess();
+			const later = sleeper();
+			writeLock({ pid: later.pid, start, steps: [] });
+			const waits: string[] = [];
+			const warnings = await settle([root()], {
+				waitMs: 600,
+				onWait: (_root, message) => waits.push(message),
+			});
+			assert.deepEqual(warnings, []);
+			assert.deepEqual(waits, []);
+			assert.equal(later.signalCode, null, "the later process given the id still runs");
+			assert.equal(existsSync(buildLockPath(dir, root())), false);
+		},
+	);
+
 	test("a process with a recorded step's id but another start is never stopped", async () => {
 		const later = sleeper();
-		writeLock({ pid: await deadPid(), steps: [{ pid: later.pid, start: "000000000000" }] });
+		writeLock({ ...(await deadProcess()), steps: [{ pid: later.pid, start: "000000000000" }] });
 		await settle([root()], { waitMs: 600 });
 		assert.equal(later.exitCode, null);
 		assert.equal(later.signalCode, null, "the later process given the id still runs");
@@ -205,7 +225,7 @@ describe("blueprint build locks (#4748)", () => {
 	);
 
 	test("a build whose dead process recorded its steps without their start is reported, as they may still run", async () => {
-		writeLock({ pid: await deadPid(), steps: [{ pid: await deadPid() }] });
+		writeLock({ ...(await deadProcess()), steps: [{ pid: (await deadProcess()).pid }] });
 		const warnings = await settle([root()], { waitMs: 300 });
 		assert.equal(warnings.length, 1);
 		assert.match(warnings[0]!, /was interrupted, and processes it started could not be identified/);
@@ -213,7 +233,7 @@ describe("blueprint build locks (#4748)", () => {
 	});
 
 	test("a build whose dead process recorded the start of each step it ran leaves nothing to report", async () => {
-		writeLock({ pid: await deadPid(), steps: [{ pid: await deadPid(), start: "000000000000" }] });
+		writeLock({ ...(await deadProcess()), steps: [{ pid: (await deadProcess()).pid, start: "000000000000" }] });
 		assert.deepEqual(await settle([root()], { waitMs: 300 }), []);
 	});
 
@@ -290,7 +310,7 @@ describe("blueprint build locks (#4748)", () => {
 	test("several unproven steps are named in the warning, after the wait for an earlier build is shown", async () => {
 		const first = sleeper();
 		const second = sleeper();
-		writeLock({ pid: await deadPid(), steps: [{ pid: first.pid }, { pid: second.pid }] });
+		writeLock({ ...(await deadProcess()), steps: [{ pid: first.pid }, { pid: second.pid }] });
 		const waits: string[] = [];
 		const warnings = await settle([root()], {
 			waitMs: 300,
@@ -356,7 +376,7 @@ describe("blueprint build locks (#4748)", () => {
 			const bystander = sleeper();
 			try {
 				assert.equal(runs(orphan), true, "the step's child outlived it");
-				writeLock({ pid: await deadPid(), steps: [step] });
+				writeLock({ ...(await deadProcess()), steps: [step] });
 				assert.deepEqual(await settle([root()]), []);
 				assert.equal(runs(orphan), false, "the orphan had ended when the wait returned");
 				assert.equal(bystander.exitCode, null, "a process that is no child of the step still runs");
@@ -371,7 +391,7 @@ describe("blueprint build locks (#4748)", () => {
 		async () => {
 			const { step, orphan } = await stepThatLeftAnOrphan();
 			try {
-				writeLock({ pid: await deadPid(), steps: [{ pid: step.pid, at: step.at }] });
+				writeLock({ ...(await deadProcess()), steps: [{ pid: step.pid, at: step.at }] });
 				const warnings = await settle([root()], { waitMs: 300 });
 				assert.match(warnings[0] ?? "", /could not be identified/);
 				assert.equal(runs(orphan), true, "an orphan of an unproven step still runs");
@@ -386,7 +406,7 @@ describe("blueprint build locks (#4748)", () => {
 		async () => {
 			const { step, orphan } = await stepThatLeftAnOrphan();
 			try {
-				writeLock({ pid: await deadPid(), steps: [{ ...step, at: step.at + 60_000 }] });
+				writeLock({ ...(await deadProcess()), steps: [{ ...step, at: step.at + 60_000 }] });
 				await settle([root()], { waitMs: 300 });
 				assert.equal(runs(orphan), true);
 			} finally {

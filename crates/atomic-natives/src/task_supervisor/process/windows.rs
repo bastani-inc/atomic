@@ -11,10 +11,11 @@ use windows_sys::Win32::{
 	Security::SECURITY_ATTRIBUTES,
 	System::{
 		JobObjects::{
-			AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-			JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-			JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
-			QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+			AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT,
+			JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+			JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+			JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+			TerminateJobObject,
 		},
 		Pipes::{CreatePipe, PeekNamedPipe},
 		Threading::{
@@ -28,9 +29,70 @@ use windows_sys::Win32::{
 	},
 };
 
+pub(super) struct ContainmentJob(OwnedHandle);
+impl ContainmentJob {
+	pub(super) fn create() -> io::Result<Self> {
+		let job = unsafe { CreateJobObjectW(null(), null()) };
+		if job.is_null() {
+			return Err(io::Error::last_os_error());
+		}
+		let job = Self(unsafe { OwnedHandle::from_raw_handle(job) });
+		job.limit(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)?;
+		Ok(job)
+	}
+	fn limit(&self, flags: JOB_OBJECT_LIMIT) -> io::Result<()> {
+		let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+		limits.BasicLimitInformation.LimitFlags = flags;
+		if unsafe {
+			SetInformationJobObject(
+				raw(&self.0),
+				JobObjectExtendedLimitInformation,
+				(&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+				std::mem::size_of_val(&limits) as u32,
+			)
+		} == 0
+		{
+			return Err(io::Error::last_os_error());
+		}
+		Ok(())
+	}
+	pub(super) fn release(self) -> io::Result<()> {
+		self.limit(0)
+	}
+	pub(super) fn assign(&self, process: HANDLE) -> io::Result<()> {
+		if unsafe { AssignProcessToJobObject(raw(&self.0), process) } == 0 {
+			Err(io::Error::last_os_error())
+		} else {
+			Ok(())
+		}
+	}
+	pub(super) fn active(&self) -> io::Result<u32> {
+		let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+		if unsafe {
+			QueryInformationJobObject(
+				raw(&self.0),
+				JobObjectBasicAccountingInformation,
+				(&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+				std::mem::size_of_val(&info) as u32,
+				null_mut(),
+			)
+		} == 0
+		{
+			return Err(io::Error::last_os_error());
+		}
+		Ok(info.ActiveProcesses)
+	}
+	pub(super) fn terminate(&self) -> io::Result<()> {
+		if unsafe { TerminateJobObject(raw(&self.0), 1) } == 0 {
+			Err(io::Error::last_os_error())
+		} else {
+			Ok(())
+		}
+	}
+}
 pub(super) struct WindowsProcess {
 	process: OwnedHandle,
-	job: OwnedHandle,
+	job: ContainmentJob,
 	pty: Option<PseudoConsole>,
 }
 struct LaunchFailure {
@@ -43,7 +105,7 @@ impl From<TaskFailure> for LaunchFailure {
 	}
 }
 type PreparedHandles =
-	(OwnedHandle, Option<(File, File, File)>, File, ProcessReader, ProcessReader);
+	(ContainmentJob, Option<(File, File, File)>, File, ProcessReader, ProcessReader);
 struct WindowsLaunch {
 	resource: WindowsProcess,
 	stdin: File,
@@ -125,27 +187,10 @@ impl WindowsProcess {
 		if value == u32::MAX { Err(io::Error::last_os_error()) } else { Ok(value == WAIT_OBJECT_0) }
 	}
 	fn active(&self) -> io::Result<u32> {
-		let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-		if unsafe {
-			QueryInformationJobObject(
-				raw(&self.job),
-				JobObjectBasicAccountingInformation,
-				(&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
-				std::mem::size_of_val(&info) as u32,
-				null_mut(),
-			)
-		} == 0
-		{
-			return Err(io::Error::last_os_error());
-		}
-		Ok(info.ActiveProcesses)
+		self.job.active()
 	}
 	fn kill(&self) -> io::Result<()> {
-		if unsafe { TerminateJobObject(raw(&self.job), 1) } == 0 {
-			Err(io::Error::last_os_error())
-		} else {
-			Ok(())
-		}
+		self.job.terminate()
 	}
 	fn exit_code(&self) -> io::Result<u32> {
 		let mut code = 0;
@@ -209,24 +254,7 @@ fn spawn_inner(
 		}
 	}
 	let mut prepare = || -> io::Result<PreparedHandles> {
-		let job = unsafe { CreateJobObjectW(null(), null()) };
-		if job.is_null() {
-			return Err(io::Error::last_os_error());
-		}
-		let job = unsafe { OwnedHandle::from_raw_handle(job) };
-		let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-		limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-		if unsafe {
-			SetInformationJobObject(
-				raw(&job),
-				JobObjectExtendedLimitInformation,
-				(&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-				std::mem::size_of_val(&limits) as u32,
-			)
-		} == 0
-		{
-			return Err(io::Error::last_os_error());
-		}
+		let job = ContainmentJob::create()?;
 		if let CommandTerminal::Pty { columns, rows } = command.intent.terminal {
 			let stdin = PseudoConsole::create(command, columns, rows, pty)?;
 			return Ok((job, None, stdin, Box::new(io::empty()), Box::new(io::empty())));
@@ -333,8 +361,7 @@ fn spawn_inner(
 	let process = unsafe { OwnedHandle::from_raw_handle(info.hProcess) };
 	let thread = unsafe { OwnedHandle::from_raw_handle(info.hThread) };
 	// No user instruction has executed yet. Assignment precedes ResumeThread.
-	let assigned =
-		!refuse_assignment && unsafe { AssignProcessToJobObject(raw(&job), raw(&process)) } != 0;
+	let assigned = !refuse_assignment && job.assign(raw(&process)).is_ok();
 	if !assigned || unsafe { ResumeThread(raw(&thread)) } == u32::MAX {
 		let terminated = unsafe { TerminateProcess(raw(&process), 1) } != 0;
 		let reaped =

@@ -22,6 +22,13 @@ export declare class HostSession {}
 
 export declare class OwnerLease {}
 
+export declare class ProcessTreeContainment {
+  terminate(): boolean
+  activeProcesses(): number
+  release(): boolean
+  close(): void
+}
+
 export declare class PtySession {
   constructor()
   start(options: PtyStartOptions, onChunk?: ((error: Error | null, chunk: string) => void) | undefined | null): Promise<PtyRunResult>
@@ -267,6 +274,8 @@ export type CommandTaskKind = 'command'
 export type CommandTerminal =
   | { kind: 'pipe' }
   | { kind: 'pty'; columns: number; rows: number }
+
+export declare function containProcessTree(pid: number): ProcessTreeContainment | null
 
 /** A context line (before or after a match). */
 export interface ContextLine {

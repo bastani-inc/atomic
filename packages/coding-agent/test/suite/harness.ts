@@ -2,7 +2,7 @@
  * Local test harness for the new coding-agent test suite.
  */
 
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage, AgentTool } from "@bastani/atomic-agent-core";
@@ -15,6 +15,7 @@ import type {
 	RegisterFauxProviderOptions,
 } from "@bastani/atomic-ai/compat";
 import { registerFauxProvider, streamSimple } from "@bastani/atomic-ai/compat";
+import { removeTestDirectory } from "../../../../test/helpers/test-directory-removal.js";
 import { AgentSession, type AgentSessionEvent } from "../../src/core/agent-session.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type {
@@ -268,7 +269,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 				await session.dispose();
 			} finally {
 				fauxProvider.unregister();
-				if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, maxRetries: 10, retryDelay: 100 });
+				if (existsSync(tempDir)) removeTestDirectory(tempDir, { retries: 10, retryDelayMs: 100 });
 			}
 		},
 	};

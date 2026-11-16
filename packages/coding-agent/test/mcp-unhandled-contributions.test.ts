@@ -8,6 +8,9 @@ import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { isSyntheticPath } from "../src/core/source-info.js";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 it("reports unhandled MCP servers once per name at startup, reload and later registration", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-unhandled-mcp-"));
@@ -34,16 +37,20 @@ it("reports unhandled MCP servers once per name at startup, reload and later reg
 	});
 	try {
 		await resourceLoader.reload();
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd,
 			agentDir,
 			settingsManager,
 			resourceLoader,
-			builtins: { mcp: false },
+			builtins: NO_BUILTINS,
 			sessionManager: SessionManager.inMemory(cwd),
 			extensionBindings: { onError: (error) => errors.push(error) },
 		});
 		try {
+			assert.deepEqual(
+				extensionsResult.extensions.map((extension) => extension.path).filter((path) => !isSyntheticPath(path)),
+				[],
+			);
 			assert.ok(api);
 			assert.deepEqual(
 				api.getMcpServerContributions!().map((server) => server.name),
@@ -113,16 +120,20 @@ it("suppresses MCP contribution warnings when an extension subscribes during sta
 	});
 	try {
 		await resourceLoader.reload();
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd,
 			agentDir,
 			settingsManager,
 			resourceLoader,
-			builtins: { mcp: false },
+			builtins: NO_BUILTINS,
 			sessionManager: SessionManager.inMemory(cwd),
 			extensionBindings: { onError: (error) => errors.push(error) },
 		});
 		try {
+			assert.deepEqual(
+				extensionsResult.extensions.map((extension) => extension.path).filter((path) => !isSyntheticPath(path)),
+				[],
+			);
 			assert.deepEqual(snapshots, [["initial"]]);
 			api!.registerMcpServer("later", { url: "https://later.test/mcp" });
 			await session.extensionRunner.drainWork();

@@ -173,10 +173,11 @@ async function entries(journal: SqlRunJournal) {
 test("journal appends whose stream expired mid-transaction are written exactly once (#4383)", async () => {
 	const fake = await server();
 	const { journal, lease } = await journalOn(fake);
+	// An expected sequence keeps each append in a transaction: an append without one goes in one request (#4768).
 	stallNextTransaction(fake);
-	const keyed = await journal.append(lease, checkpoint("plan"), { key: "stage:plan" });
+	const keyed = await journal.append(lease, checkpoint("plan"), { key: "stage:plan", expectSeq: 0 });
 	stallNextTransaction(fake);
-	const keyless = await journal.append(lease, statusChanged("suspended"));
+	const keyless = await journal.append(lease, statusChanged("suspended"), { expectSeq: 1 });
 	assert.equal(keyed.status, "appended");
 	assert.equal(keyless.status, "appended");
 	assert.equal(fake.expiredStatements, 2);
