@@ -912,8 +912,6 @@ describe("Editor component", () => {
 			for (const width of widths) {
 				const editor = new Editor(createTestTUI(width), defaultEditorTheme);
 				editor.setText(wideCluster);
-				// At width 1 a line with the cursor after its last character is two columns wide, whatever its text.
-				if (width === 1) editor.handleInput("\x01");
 				for (const line of editor.render(width)) {
 					assert.ok(visibleWidth(line) <= width, `width ${width}: ${JSON.stringify(line)}`);
 				}
@@ -927,13 +925,68 @@ describe("Editor component", () => {
 				tui.addChild(editor);
 				tui.setFocus(editor);
 				editor.setText(wideCluster);
-				if (width === 1) editor.handleInput("\x01");
 				try {
 					assert.doesNotThrow(() => tui.renderNow(), `width ${width}`);
 				} finally {
 					tui.stop();
 				}
 			}
+		});
+	});
+
+	describe("One-column editor", () => {
+		function contentRows(editor: Editor): string[] {
+			const lines = editor.render(1);
+			for (const line of lines) assert.ok(visibleWidth(line) <= 1, `${JSON.stringify(line)} is wider than 1`);
+			return lines.slice(1, -1);
+		}
+
+		it("shows the cursor after the last character on a row of its own", () => {
+			const editor = new Editor(createTestTUI(1), defaultEditorTheme);
+			editor.setText("ab");
+			const rows = contentRows(editor);
+			assert.deepStrictEqual(rows.map(stripTerminalSequences), ["a", "b", " "]);
+			assert.strictEqual(rows[2], renderFakeCursor(" "));
+		});
+
+		it("keeps an empty line's cursor on its row", () => {
+			const editor = new Editor(createTestTUI(1), defaultEditorTheme);
+			editor.setText("a\n");
+			assert.deepStrictEqual(contentRows(editor).map(stripTerminalSequences), ["a", " "]);
+		});
+
+		it("moves up from the cursor's own row onto the last character", () => {
+			const editor = new Editor(createTestTUI(1), defaultEditorTheme);
+			editor.setText("ab");
+			contentRows(editor);
+			editor.handleInput("\x1b[A");
+			assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 1 });
+			const rows = contentRows(editor);
+			assert.deepStrictEqual(rows.map(stripTerminalSequences), ["a", "b"]);
+			assert.strictEqual(rows[1], renderFakeCursor("b"));
+		});
+
+		it("maps a click below the cursor's own row to the row clicked", () => {
+			const editor = new Editor(createTestTUI(1), defaultEditorTheme);
+			editor.setText("ab\ncd");
+			editor.handleInput("\x01"); // start of "cd"
+			editor.handleInput("\x1b[D"); // end of "ab"
+			assert.deepStrictEqual(contentRows(editor).map(stripTerminalSequences), ["a", "b", " ", "c", "d"]);
+			// Row 4 below the top border shows "c".
+			editor.handleMouse({
+				type: "click",
+				button: "left",
+				x: 0,
+				y: 4,
+				screenX: 0,
+				screenY: 4,
+				width: 1,
+				height: 7,
+				shift: false,
+				alt: false,
+				ctrl: false,
+			});
+			assert.deepStrictEqual(editor.getCursor(), { line: 1, col: 0 });
 		});
 	});
 
