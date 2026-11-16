@@ -42,6 +42,11 @@ const RUN_TIMEOUT_MS = Number(args["run-timeout-ms"] ?? 900_000);
 // --profile 1: what the store spent its time on, by statement (PostgreSQL's pg_stat_statements; for sqld, a proxy that
 // records every request).
 const profile = args.profile === "1";
+// --idle-probe N (#5230): after the fan-out, every worker idles for --idle-settle-ms (store CPU per second idle), then the
+// root runs N one-step children one at a time, and each one's claim latency (enqueue to start) is recorded. The fan-out's
+// figures (CPU, profile) stop where the idle phase begins.
+const idleProbe = Number(args["idle-probe"] ?? 0);
+const idleSettleMs = Number(args["idle-settle-ms"] ?? 10_000);
 // The classes below need more of each statement than the trace keeps by default.
 if (profile) process.env.TRACE_WORDS ??= "40";
 const listen = args.listen;
@@ -169,6 +174,8 @@ async function openStore(work) {
 			: undefined;
 	return {
 		url: traced === undefined ? url : `http://${listen ?? "127.0.0.1"}:${traced.port}`,
+		/** Requests the trace proxy saw so far; null when nothing traces them. */
+		requests: () => (traced === undefined ? null : traced.records.length),
 		/** Starts counting what the store does from now. */
 		resetProfile: () => {
 			if (store === "pg" && profile) psql("SELECT pg_stat_statements_reset()");
@@ -373,6 +380,7 @@ async function trial(hosts, shipping) {
 			}
 		}
 		const resultFile = join(work, "result.json");
+		const phaseFile = join(work, "phases");
 		shared.resetProfile();
 		const cpuBefore = shared.cpuMs();
 		const rootLog = [];
@@ -390,6 +398,13 @@ async function trial(hosts, shipping) {
 			ELASTIC_SESSIONS: String(hosts * slots + 1),
 			...(killAfter === undefined ? {} : { ELASTIC_LEASE_MS: String(args["lease-ms"] ?? 8000) }),
 			...(shipping === "sync" ? {} : { ELASTIC_CHECKPOINT_SHIPPING: shipping }),
+			...(idleProbe > 0
+				? {
+						ELASTIC_IDLE_PROBE: String(idleProbe),
+						ELASTIC_IDLE_SETTLE_MS: String(idleSettleMs),
+						ELASTIC_PHASE_FILE: phaseFile,
+					}
+				: {}),
 		}, rootLog, work);
 		processes.push(root);
 		const exited = new Promise((resolve) => root.on("exit", (code, signal) => resolve(code ?? signal)));
@@ -407,10 +422,34 @@ async function trial(hosts, shipping) {
 						killed = busiestHost(work, hosts - remoteHosts);
 						killTree(processes[killed].pid);
 					}, killAfter);
+		// With --idle-probe, the fan-out's figures are taken where the idle phase begins, and the idle phase's CPU apart.
+		const phases = {};
+		let mainCpuMs;
+		let mainProfile;
+		let mainRequests;
+		let watching = idleProbe > 0;
+		const phaseWatch = (async () => {
+			while (watching) {
+				const lines = existsSync(phaseFile) ? readFileSync(phaseFile, "utf8").trim().split("\n").filter(Boolean) : [];
+				for (const line of lines) {
+					const [name, at] = line.split(" ");
+					if (phases[name] !== undefined) continue;
+					phases[name] = { at: Number(at), cpuMs: shared.cpuMs() - cpuBefore, requests: shared.requests() };
+					if (name === "main-done") {
+						mainCpuMs = phases[name].cpuMs;
+						mainProfile = shared.profile();
+						mainRequests = phases[name].requests;
+					}
+				}
+				await sleep(50);
+			}
+		})();
 		const code = await Promise.race([exited, sleep(RUN_TIMEOUT_MS).then(() => "timeout")]);
+		watching = false;
+		await phaseWatch;
 		clearTimeout(killer);
-		const cpuMs = shared.cpuMs() - cpuBefore;
-		const storeProfile = shared.profile();
+		const cpuMs = mainCpuMs ?? shared.cpuMs() - cpuBefore;
+		const storeProfile = mainProfile ?? shared.profile();
 		if (code !== 0 || !existsSync(resultFile)) throw new Error(`root exited ${code}\n${rootLog.join("").slice(-6000)}`);
 		const result = JSON.parse(readFileSync(resultFile, "utf8"));
 		const events = await query(
@@ -457,6 +496,35 @@ async function trial(hosts, shipping) {
 			}
 		}
 		const acknowledged = children * steps;
+		const idle =
+			phases["main-done"] === undefined || phases["probe-start"] === undefined
+				? null
+				: (() => {
+						const settled = phases["probe-start"];
+						const done = phases["main-done"];
+						const seconds = (settled.at - done.at) / 1000;
+						const probes = (result.probes ?? []).filter((probe) => probe.startedAt !== null);
+						const latencies = probes.map((probe) => probe.startedAt - probe.enqueuedAt);
+						const byPlacement = {};
+						for (const probe of probes) {
+							// h0–h3 run on the store's VM; the root's own worker is "root"; other hosts are on other VMs.
+							const placement =
+								probe.host === "root" ? "root host" : Number(probe.host?.slice(1)) < 100 ? "store VM" : "other VMs";
+							(byPlacement[placement] ??= []).push(probe.startedAt - probe.enqueuedAt);
+						}
+						return {
+							settleMs: settled.at - done.at,
+							storeCpuMsPerSec: Math.round((settled.cpuMs - done.cpuMs) / seconds),
+							storeRequestsPerSec:
+								settled.requests === null ? null : Math.round((settled.requests - done.requests) / seconds),
+							claimLatencyMs: distribution(latencies),
+							claimLatencyByPlacementMs: Object.fromEntries(
+								Object.entries(byPlacement).map(([placement, values]) => [placement, distribution(values)]),
+							),
+							probes: result.probes,
+						};
+					})();
+		const mainWallMs = phases["main-done"] === undefined ? result.wallMs : phases["main-done"].at - result.began;
 		return {
 			store,
 			hosts,
@@ -471,6 +539,11 @@ async function trial(hosts, shipping) {
 				checkpointsPerSec: Math.round((recorded.length / (journalSpanMs / 1000)) * 10) / 10,
 			},
 			sharedStoreCpuMs: Math.round(cpuMs),
+			mainWallMs,
+			/** The store's CPU time per second of the fan-out. */
+			storeCpuMsPerSec: Math.round(cpuMs / (mainWallMs / 1000)),
+			storeRequests: mainRequests ?? shared.requests(),
+			idle,
 			/** The store's CPU time per step the children took, each acknowledged with a checkpoint. */
 			storeCpuMsPerCheckpoint: Math.round((cpuMs / acknowledged) * 100) / 100,
 			storeProfile,
