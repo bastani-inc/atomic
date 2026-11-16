@@ -747,6 +747,7 @@ export class PoolCoordinator {
 	private starting?: Promise<void>;
 	private recovering?: Promise<void>;
 	private nextRecoveryAt = 0;
+	private hasPendingHandoff = false;
 	private cleanupFailure?: Error;
 	/** Work of exited workers whose leases recovery extends instead of expiring, while their process groups are reaped. */
 	private readonly held = new Set<string>();
@@ -1316,6 +1317,7 @@ export class PoolCoordinator {
 	/** Starts the recovery of expired attempts, every {@link RECOVERY_INTERVAL_MS}. */
 	private startRecovery(): void {
 		const recover = () => {
+			if (this.hasPendingHandoff) this.nextRecoveryAt = 0;
 			this.counters.enter("recovery");
 			void this.recoverExpired().catch(async (error: Error) => {
 				// A late root renewal stops nothing: the next recovery runs once it lands.
@@ -3317,6 +3319,9 @@ export class PoolCoordinator {
 			await this.admission?.reconcile();
 			const expiredBefore = Date.now();
 			const rows = await queue.inspect(root);
+			this.hasPendingHandoff = rows.some(
+				(work) => work.state === "ready" && work.epoch === lease.epoch && this.handoffs(work) > 0,
+			);
 			const expired = rows.filter((work) => work.state === "leased" && work.expiresAt < expiredBefore);
 			// A root that renews late holds back its workers' answers, and so their renewals: nothing is stopped or
 			// expired for that silence. Recovery resumes once the renewal lands.
@@ -3361,8 +3366,7 @@ export class PoolCoordinator {
 						.expire(lease, work, { handOffUnconfirmed: this.handoffs(work) < MAX_CHILD_HANDOFFS })
 						.catch(ignoreStaleWorkLease);
 			}
-			// What recovery put back is claimed at once by an idle worker of this host (#5230).
-			if (expired.length > 0) this.idleClaims.wakeOne();
+			if (expired.length > 0 || this.hasPendingHandoff) this.idleClaims.wakeOne();
 			if (this.satellite === undefined && this.sharedPool !== undefined)
 				await this.settleShared(queue, lease, this.sharedPool, rows);
 		})().finally(() => {

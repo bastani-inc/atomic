@@ -144,7 +144,7 @@ The early local sqld × 8 pair ran on the 80-core dev box at load average 30. Th
 
 ## Idle workers wait for wake-ups (#5230)
 
-Before #5230, an idle pooled worker looped on: read pool control, catch up on the root's journal, ask to claim, sleep 25–50 ms (a shared pool's coordinator also paused an empty claim 500 ms). Now an idle worker only asks to claim. Its coordinator registers the claim for wake-ups before it checks the store, and answers an empty claim after a pause that grows from 25–50 ms to 2 s. A `pool_ready` notification, the host's own enqueue or release, an opening gate, or new control ends the pause. A host whose store sends no wake-ups (sqld, SQLite, PostgreSQL through a pooler or while its listener reconnects) reads one ready mark every 250 ms while a worker idles.
+Before #5230, an idle pooled worker looped on: read pool control, catch up on the root's journal, ask to claim, sleep 25–50 ms (a shared pool's coordinator also paused an empty claim 500 ms). Now an idle worker only asks to claim. Its coordinator registers the claim for wake-ups before it checks the store, and answers an empty claim after a pause that grows from 25–50 ms to 2 s. A `pool_ready` notification, the host's own enqueue or release, an opening gate, or new control ends the pause. A host whose store sends no wake-ups (sqld, SQLite, PostgreSQL through a pooler or while its listener reconnects) reads one ready mark every 250 ms while a worker idles. The mark includes the control revision, so a resume is visible even if no work changed. The existing recovery scan also wakes one idle worker while handed-off work is queued. A newly pending handoff is discovered within one existing recovery period, normally about 1 s from the 500 ms timer plus the post-pass throttle. Once a scan sees a handoff pending, it runs on the next 500 ms tick. These intervals exclude store and worker round-trip time. No query is added to a recovery pass, and the empty-queue cadence is unchanged.
 
 ### Runs
 
@@ -194,7 +194,7 @@ Discarded: a second 32-host pair (r6, r7). Both builds' runs failed children the
 
 Idle workers no longer read anything. What the store still serves while every worker idles:
 - each idle worker's claim every 2 s, a write whose version fence stays;
-- each coordinator's recovery pass every 500 ms (`inspect` of the root's work rows and the admission reconcile), whose reads check the version;
+- each coordinator's recovery timer every 500 ms, throttled for 500 ms after a pass ends, so empty-queue passes normally run about 1 s apart (`inspect` of the root's work rows and the admission reconcile), whose reads check the version;
 - on sqld, each host's ready mark every 250 ms, which skips the version check: a stale mark can only wake a worker, whose claim checks it.
 
 At sqld × 16, that is about 65 work-row reads, 62 version checks and 16 lease reads per second. Skipping the recovery pass on a satellite whose workers hold nothing would remove most of the rest; that is left for a follow-up.
