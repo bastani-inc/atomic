@@ -452,6 +452,8 @@ Keys are the same in every picker: ↑↓ select (wrapping), pgup/pgdn page, ent
 
 Without a search box, `?` shows the picker's keys. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
 
+For live lists, call `selector.setItems(nextItems)` and then `tui.requestRender()`. Updates keep the search text and selected item by its `id`. If that item disappears, becomes disabled, or no longer matches the search, selection moves to the first enabled match. Checked items that disappear are removed from the selection.
+
 ### Pattern 1b: Selection Dialog (SelectList)
 
 The lower-level `SelectList` from `@bastani/atomic-tui` is still available when you need a bare list inside your own layout, such as autocomplete rows. Frame it with `DynamicBorder`.

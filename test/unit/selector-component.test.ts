@@ -153,6 +153,46 @@ describe("shared selector (#5224)", () => {
 		assert.deepEqual(events, ["cancel"]);
 	});
 
+	test("refreshing rows preserves selected and checked identities and removes vanished checks (#5245)", () => {
+		const { selector, events } = picker({ mode: "multi", search: true, items: items(3) });
+		selector.setQuery("item");
+		selector.handleInput(SPACE);
+		selector.handleInput(DOWN);
+		selector.handleInput(SPACE);
+		selector.setItems([
+			{ id: "new", value: 9, label: "new item" },
+			{ id: "id-1", value: 10, label: "updated item" },
+		]);
+		assert.equal(selector.state.getQuery(), "item");
+		assert.equal(selector.getSelected()?.id, "id-1");
+		assert.equal(selector.state.isChecked("id-0"), false);
+		selector.handleInput(ENTER);
+		assert.deepEqual(events, ["confirm:id-1"]);
+		assert.deepEqual(
+			selector.state.getChecked().map((item) => item.value),
+			[10],
+		);
+	});
+
+	test("refreshing a removed, disabled or filtered selection picks an enabled match (#5245)", () => {
+		const { selector, events } = picker({ search: true, items: items(2) });
+		selector.setQuery("item");
+		for (const replacement of [
+			{ id: "other", value: 4, label: "item other" },
+			{ id: "id-0", value: 0, label: "item disabled", disabled: true },
+			{ id: "id-0", value: 0, label: "hidden" },
+		]) {
+			selector.setItems(items(2));
+			selector.state.edge("first");
+			selector.setItems([replacement, { id: "fallback", value: 5, label: "item fallback" }]);
+			assert.equal(selector.getSelected()?.id, replacement.id === "other" ? "other" : "fallback");
+		}
+		selector.setItems([]);
+		selector.handleInput(ENTER);
+		assert.equal(selector.getSelected(), undefined);
+		assert.deepEqual(events, []);
+	});
+
 	test("ctrl+c cancels even with search text", () => {
 		const { selector, events } = picker({ search: true, items: items(2) });
 		selector.handleInput("i");

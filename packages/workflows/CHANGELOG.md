@@ -103,6 +103,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed a pooled stage on a host that doesn't run its root keeping its Intercom inbox after its session failed to start: later messages to it were taken into the failed session instead of staying queued ([#5168](https://github.com/bastani-inc/atomic/issues/5168))
 - Fixed the workflow session picker showing no selected row when the selected run left the list and the list got shorter. The selection now moves to the nearest remaining run, so Enter acts on it without first moving the cursor.
 - Fixed `/workflow` commands whose arguments start after a tab or on a new line not being run ([#5192](https://github.com/bastani-inc/atomic/issues/5192))
+- Fixed the open `/workflows` sheet keeping stale run states and omitting newly started runs. Updates preserve the search and selected run ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
 
 
 ### Removed

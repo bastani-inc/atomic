@@ -156,7 +156,7 @@ const DESCRIPTION_GAP = 2;
 
 /** Filtering, selection and checked state of a picker, without rendering. */
 export class SelectorState<T> {
-	readonly items: readonly SelectorItem<T>[];
+	private currentItems: readonly SelectorItem<T>[];
 	readonly mode: "single" | "multi";
 	readonly maxVisible: number;
 	private query = "";
@@ -166,7 +166,7 @@ export class SelectorState<T> {
 	private readonly checked = new Set<string>();
 
 	constructor(options: Pick<SelectorOptions<T>, "items" | "mode" | "maxVisible" | "initialId" | "initialChecked">) {
-		this.items = options.items;
+		this.currentItems = options.items;
 		this.mode = options.mode ?? "single";
 		this.maxVisible = Math.max(1, options.maxVisible ?? DEFAULT_MAX_VISIBLE);
 		this.visible = [...this.items];
@@ -175,6 +175,22 @@ export class SelectorState<T> {
 			options.initialId !== undefined ? this.visible.findIndex((item) => item.id === options.initialId) : -1;
 		const marked = this.visible.findIndex((item) => item.mark === "on" && !item.disabled);
 		this.selected = initial >= 0 ? initial : marked >= 0 ? marked : this.firstEnabled(0, 1);
+		this.scrollToSelected();
+	}
+
+	get items(): readonly SelectorItem<T>[] {
+		return this.currentItems;
+	}
+
+	setItems(items: readonly SelectorItem<T>[]): void {
+		const previous = this.getSelected()?.id;
+		this.currentItems = items;
+		this.visible = this.filterItems();
+		const kept =
+			previous === undefined ? -1 : this.visible.findIndex((item) => item.id === previous && !item.disabled);
+		this.selected = kept >= 0 ? kept : this.firstEnabled(0, 1);
+		const ids = new Set(items.map((item) => item.id));
+		for (const id of this.checked) if (!ids.has(id)) this.checked.delete(id);
 		this.scrollToSelected();
 	}
 
@@ -213,11 +229,7 @@ export class SelectorState<T> {
 		if (query === this.query) return;
 		const previous = this.visible[this.selected]?.id;
 		this.query = query;
-		this.visible = query
-			? fuzzyFilter([...this.items], query, (item) =>
-					[item.label, item.description ?? "", item.tag ?? "", item.searchText ?? ""].join(" "),
-				)
-			: [...this.items];
+		this.visible = this.filterItems();
 		const kept = previous === undefined ? -1 : this.visible.findIndex((item) => item.id === previous);
 		// A new query highlights its best match; clearing it returns to the row that was selected.
 		this.selected = query ? this.firstEnabled(0, 1) : kept >= 0 ? kept : this.firstEnabled(0, 1);
@@ -262,6 +274,14 @@ export class SelectorState<T> {
 	toggle(id: string): void {
 		if (this.checked.has(id)) this.checked.delete(id);
 		else this.checked.add(id);
+	}
+
+	private filterItems(): SelectorItem<T>[] {
+		return this.query
+			? fuzzyFilter([...this.items], this.query, (item) =>
+					[item.label, item.description ?? "", item.tag ?? "", item.searchText ?? ""].join(" "),
+				)
+			: [...this.items];
 	}
 
 	private firstEnabled(from: number, direction: 1 | -1): number {
@@ -400,6 +420,13 @@ export class Selector<T> implements Component, Focusable {
 
 	getSelected(): SelectorItem<T> | undefined {
 		return this.state.getSelected();
+	}
+
+	setItems(items: readonly SelectorItem<T>[]): void {
+		this.state.setItems(items);
+		this.rowLines.clear();
+		this.mousePressed = undefined;
+		this.options.onSelectionChange?.(this.state.getSelected());
 	}
 
 	/** Set the search text as if typed. */

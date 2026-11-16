@@ -252,16 +252,23 @@ export function openWorkflowsListing(
 				onSelect: (item) => finish(item.value),
 				onCancel: () => finish(undefined),
 			});
+			let itemsStale = false;
+			const refreshItems = (): void => {
+				if (!itemsStale) return;
+				itemsStale = false;
+				selector.setItems(items());
+			};
 			release = source.subscribe?.(() => {
-				const updatable = selector as {
-					setItems?: (next: readonly SelectorItem<WorkflowsListingTarget>[]) => void;
-				};
-				updatable.setItems?.(items());
+				itemsStale = true;
 				tui.requestRender?.();
 			});
 			return {
-				render: (width: number) => selector.render(width),
+				render: (width: number) => {
+					refreshItems();
+					return selector.render(width);
+				},
 				handleInput: (data: string) => {
+					refreshItems();
 					selector.handleInput(data);
 					tui.requestRender?.();
 					return true;

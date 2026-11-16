@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { test } from "vitest";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import type { PiCustomComponent } from "../../packages/workflows/src/extension/wiring.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowInputSchemaMap } from "../../packages/workflows/src/shared/types.js";
 import {
 	inputsSummary,
+	openWorkflowsListing,
 	runRowDescription,
 	shortFailureReason,
 	type WorkflowsListingDefinition,
@@ -140,4 +144,61 @@ test("runs of one workflow are told apart by their first input, and a run waitin
 	assert.equal(second?.label, "approve-demo · rename a file");
 	assert.match(second?.description ?? "", /^needs input · Approve this plan\? · /);
 	assert.equal(second?.tag, "◆");
+});
+
+test("an open workflows sheet refreshes runs without losing its search or selection (#5245)", async () => {
+	initTheme("dark");
+	let runs = [
+		run({ id: "first", status: "running", startedAt: NOW }),
+		run({ id: "selected", status: "running", startedAt: NOW - 1 }),
+	];
+	let notify = () => {};
+	let released = 0;
+	let reads = 0;
+	let mounted: Promise<PiCustomComponent> | undefined;
+	const pending = openWorkflowsListing(
+		{
+			custom: (factory) => {
+				mounted = Promise.resolve(factory({ requestRender() {} }, undefined, undefined, () => {}));
+			},
+		},
+		{
+			runs: () => {
+				reads++;
+				return runs;
+			},
+			definitions: () => [],
+			subscribe: (listener) => {
+				notify = listener;
+				return () => released++;
+			},
+		},
+	);
+	assert.ok(mounted);
+	const component = await mounted;
+	try {
+		for (const key of "ralph") component.handleInput?.(key);
+		component.handleInput?.("\x1b[B");
+		runs = [
+			run({ id: "new", status: "running", startedAt: NOW + 1 }),
+			runs[0]!,
+			{ ...runs[1]!, status: "failed", error: "gate refused", endedAt: NOW },
+		];
+		notify();
+		notify();
+		notify();
+		assert.equal(reads, 1, "store events defer the snapshot read until rendering");
+		const text = stripVTControlCharacters(component.render(160).join("\n"));
+		component.render(160);
+		assert.equal(reads, 2, "one snapshot read per changed frame, not per event or unchanged render");
+		assert.match(text, /gate refused/);
+		assert.match(text, /ralph · new/);
+		assert.match(text, /❯ ralph · selected/);
+		assert.doesNotMatch(text, / {2}Runs\n/);
+		component.handleInput?.("\r");
+		assert.deepEqual(await pending, { kind: "run", runId: "selected" });
+		assert.equal(released, 1);
+	} finally {
+		component.dispose?.();
+	}
 });

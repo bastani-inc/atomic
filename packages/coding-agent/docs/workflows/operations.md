@@ -235,7 +235,7 @@ Surface behavior:
 - **Runs** - newest first. Each row names the workflow and what tells the run apart (its label, else its first text input, else its short id), then its state: `running · stage 3/5 implement · 12m · $1.84`, `needs input · <question>` with `◆`, or a failed run's `✗` and one-line reason. Stopped runs show `◼`.
 - **Definitions** - every registered workflow, with its description and how many inputs it takes (`4 inputs (2 required)`).
 
-Type to search. Enter on a run opens its graph, and `esc` at the graph's top comes back to the sheet; Enter on a definition starts it, asking for its inputs first. `esc` closes the sheet. With no runs and no definitions, or without an interactive terminal, it says `No workflows in this session.` or prints the run list. `/workflow resume` keeps the cross-session resume picker described below.
+Run rows update while the sheet is open, keeping your search and selected run. Type to search. Enter on a run opens its graph, and `esc` at the graph's top comes back to the sheet; Enter on a definition starts it, asking for its inputs first. `esc` closes the sheet. With no runs and no definitions, or without an interactive terminal, it says `No workflows in this session.` or prints the run list. `/workflow resume` keeps the cross-session resume picker described below.
 
 At the supported 40-column terminal minimum, attached stage chats keep the `← return to graph` hint. The TUI may truncate provider/model context to make room, but it keeps that context separate from the hierarchy hint so the controls stay readable.
 
