@@ -101,7 +101,9 @@ export class TrustDecisionSelector extends Container {
 	}
 
 	dispose(): void {
-		const draft = this.draft.replace(/\n+$/, "");
+		let end = this.draft.length;
+		while (end > 0 && this.draft.charCodeAt(end - 1) === 10) end -= 1;
+		const draft = this.draft.slice(0, end);
 		this.draft = "";
 		if (draft.length > 0) this.keepDraft(draft);
 		this.selector.dispose?.();

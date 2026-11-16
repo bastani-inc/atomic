@@ -170,7 +170,13 @@ export async function confirmStartupQuestion(
 							normalized === "n" ||
 							normalized === "no"
 						) {
-							const suffix = buffer.replace(/(?:\r\n|\r|\n)+$/, "").replace(/\r\n?/g, "\n");
+							let end = buffer.length;
+							while (end > 0) {
+								const code = buffer.charCodeAt(end - 1);
+								if (code !== 10 && code !== 13) break;
+								end -= 1;
+							}
+							const suffix = buffer.slice(0, end).replace(/\r\n?/g, "\n");
 							buffer = "";
 							keepStartupDialogDraft(suffix);
 							cleanup();

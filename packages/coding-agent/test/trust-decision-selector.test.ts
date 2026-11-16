@@ -103,3 +103,23 @@ test.each([
 	selector.dispose();
 	assert.deepEqual(drafts, [expected]);
 });
+
+test("drops trailing blank lines of a long pasted startup draft in linear time (#5241)", () => {
+	const drafts: string[] = [];
+	const selector = new TrustDecisionSelector(
+		new ExtensionSelectorComponent(
+			"Trust project folder?",
+			["Do not trust"],
+			() => {},
+			() => {},
+		),
+		(draft) => drafts.push(draft),
+	);
+	const blankLines = "\n".repeat(100_000);
+	selector.handleInput(`\x1b[200~${blankLines}x${blankLines}\x1b[201~`);
+	const started = performance.now();
+	selector.dispose();
+	const elapsed = performance.now() - started;
+	assert.deepEqual(drafts, [`${blankLines}x`]);
+	assert.ok(elapsed < 1000, `dispose took ${elapsed.toFixed(0)} ms`);
+}, 60_000);

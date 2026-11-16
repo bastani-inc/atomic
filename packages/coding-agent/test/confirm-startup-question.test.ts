@@ -177,3 +177,26 @@ test("confirmStartupQuestion retains invalid answers and CRLF suffix in typing o
 		heldForStartupDecision: true,
 	});
 });
+
+test("confirmStartupQuestion trims a long run of line breaks after the answer in linear time (#5241)", async () => {
+	const stdin = new FakeStdin();
+	const capture = startEarlyInputCapture({ enabled: true, stdin, process: fakeProcess });
+	assert.ok(capture);
+	const input = new PassThrough();
+	const output = new PassThrough();
+	output.resume();
+	const lineBreaks = "\r".repeat(100_000);
+
+	const started = performance.now();
+	const answer = confirmStartupQuestion("Fork this session into current directory?", { input, output });
+	input.write(`y\r${lineBreaks}text\r\n\r\n`);
+
+	assert.equal(await answer, true);
+	const elapsed = performance.now() - started;
+	assert.deepEqual(consumeStartupInput(capture), {
+		text: `${"\n".repeat(100_000)}text`,
+		submissions: [],
+		heldForStartupDecision: true,
+	});
+	assert.ok(elapsed < 1000, `the answer took ${elapsed.toFixed(0)} ms`);
+}, 60_000);
