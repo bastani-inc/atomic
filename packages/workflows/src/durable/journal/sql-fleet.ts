@@ -1,5 +1,5 @@
-import type { SqliteExecutor, SqliteRow, StorageDialect } from "@bastani/atomic/storage";
-import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
+import { ensureStorageSchema, type SqliteExecutor, type SqliteRow, type StorageDialect } from "@bastani/atomic/storage";
+import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import type { RunJournal } from "./types.js";
 
 /**
@@ -157,8 +157,11 @@ export class SqlFleetStore {
 		if (storage === undefined) throw new Error("A fleet controller requires a SQL run journal");
 		const store = new SqlFleetStore(storage);
 		const { int, rowKey } = storage.dialect.types;
+		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
+		const schema = { ledger: poolSchemaLedger(storage), domain: "fleet", revision: 1 };
 		await storage.transaction((tx) =>
-			tx.exec(`
+			ensureStorageSchema(tx, storage.dialect, schema, () =>
+				tx.exec(`
 				CREATE TABLE IF NOT EXISTS ${store.lease}(
 					id ${int} PRIMARY KEY CHECK(id = 1), holder TEXT NOT NULL, epoch ${int} NOT NULL, renewed_at ${int} NOT NULL,
 					lease_ms ${int} NOT NULL
@@ -169,6 +172,7 @@ export class SqlFleetStore {
 				);
 				${fleetDrainsSchema(store.runs, storage.dialect)};
 			`),
+			),
 		);
 		return store;
 	}

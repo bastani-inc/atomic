@@ -1,10 +1,16 @@
 import type { WorktreeSnapshot } from "@bastani/atomic";
-import type { SqliteExecutor, SqliteRow, SqliteStatement, StorageDialect } from "@bastani/atomic/storage";
+import {
+	ensureStorageSchema,
+	type SqliteExecutor,
+	type SqliteRow,
+	type SqliteStatement,
+	type StorageDialect,
+} from "@bastani/atomic/storage";
 import type { SerializedError } from "../../shared/error-codec.js";
 import { StaleStageLeaseError } from "../../workers/placement-errors.js";
 import type { ResolvedCheckpointShipping } from "../../workers/public-options.js";
 import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
-import { type SqlPoolStorage, sqlPoolStorage, sqlPoolWrites } from "./internal.js";
+import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage, sqlPoolWrites } from "./internal.js";
 import { guardedPoolWrite } from "./pool-guarded-write.js";
 import type {
 	SharedPoolFleet,
@@ -191,8 +197,11 @@ export class SqlSharedPool {
 		const runs = storage.tables.runs;
 		const { dialect } = storage;
 		const { int } = dialect.types;
-		await storage.transaction(async (tx) => {
-			await tx.exec(`
+		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
+		const schema = { ledger: poolSchemaLedger(storage), domain: "shared-pool", revision: 1 };
+		await storage.transaction((tx) =>
+			ensureStorageSchema(tx, dialect, schema, async () => {
+				await tx.exec(`
 				CREATE TABLE IF NOT EXISTS ${pool.shared}(
 					root TEXT PRIMARY KEY REFERENCES ${runs}_pool(root) ON DELETE CASCADE, config TEXT NOT NULL,
 					epoch ${int} NOT NULL, budget_blocked ${int} NOT NULL DEFAULT 0${dialect.rowOrderColumn}
@@ -232,14 +241,15 @@ export class SqlSharedPool {
 				);
 				${fleetDrainsSchema(runs, dialect)};
 			`);
-			// A registry an older version created lacks the status and provider id columns; its hosts go on writing
-			// without them.
-			for (const [column, type] of Object.entries(hostStatusColumns(dialect))) {
-				const present = dialect.columnExists(pool.hosts, column);
-				if (!(await tx.get(present.sql, ...present.params)))
-					await tx.exec(`ALTER TABLE ${pool.hosts} ADD COLUMN ${column} ${type}`);
-			}
-		});
+				// A registry an older version created lacks the status and provider id columns; its hosts go on writing
+				// without them.
+				for (const [column, type] of Object.entries(hostStatusColumns(dialect))) {
+					const present = dialect.columnExists(pool.hosts, column);
+					if (!(await tx.get(present.sql, ...present.params)))
+						await tx.exec(`ALTER TABLE ${pool.hosts} ADD COLUMN ${column} ${type}`);
+				}
+			}),
+		);
 		return pool;
 	}
 

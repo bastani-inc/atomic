@@ -43,6 +43,9 @@ export interface KeybindingsLike {
 export const APP_ACTION = {
 	toolsExpand: "app.tools.expand",
 	thinkingToggle: "app.thinking.toggle",
+	navBack: "app.nav.back",
+	listStop: "app.list.stop",
+	keysHelp: "app.keys.help",
 } as const;
 
 export const TUI_ACTION = {
@@ -58,6 +61,34 @@ export const TUI_ACTION = {
 	selectPageDown: "tui.select.pageDown",
 	selectConfirm: "tui.select.confirm",
 } as const;
+
+const NAV_KEY_GLYPHS: Record<string, string> = { left: "←", right: "→", up: "↑", down: "↓", escape: "esc" };
+
+/** How a hint names an action's first key: arrows as glyphs, `fallback` when the host lists no keys. */
+export function navKeyLabel(kb: KeybindingsLike | undefined, action: string, fallback: string): string {
+	const key = kb?.getKeys?.(action)?.[0];
+	if (key === undefined) return kb?.getKeys ? "" : fallback;
+	return key
+		.split("+")
+		.map((part) => NAV_KEY_GLYPHS[part.toLowerCase()] ?? part.toLowerCase())
+		.join("+");
+}
+
+/**
+ * The navigation actions' default keys, for a view mounted without the host's manager: a back key must still lead
+ * somewhere. With a manager, only its resolved keys count, so a remap or an unbound action is honoured.
+ */
+const NAV_ACTION_FALLBACK_KEYS: Readonly<Record<string, readonly string[]>> = {
+	"app.nav.back": ["\x1b[D", "\x1bOD"],
+	"app.list.stop": ["x"],
+	"app.keys.help": ["?"],
+};
+
+/** `matchesAction` for the navigation actions, falling back to their default keys without a host manager. */
+export function matchesNavAction(kb: KeybindingsLike | undefined, data: string, action: string): boolean {
+	if (kb) return kb.matches(data, action);
+	return NAV_ACTION_FALLBACK_KEYS[action]?.includes(data) === true;
+}
 
 /** Runtime guard for hosts that wire the keybindings manager. */
 export function isKeybindingsLike(kb: unknown): kb is KeybindingsLike {

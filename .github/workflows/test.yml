@@ -423,13 +423,13 @@ jobs:
         shell: bash
         timeout-minutes: 1
         run: until curl -fsS "$ATOMIC_TEST_LIBSQL_URL/health"; do sleep 1; done
-      # The file filters select the matrix, the Postgres adapter's own tests, the worker pool's tests that need a
+      # The file filters select the matrix, the Postgres adapter's own tests, the worker pool's and Intercom's tests that need a
       # PostgreSQL server, and every integration file that needs a libSQL server. The shared-pool scale cases (#4790) run
       # in the next step.
       - name: Storage conformance and libSQL server tests
         run: >-
           bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64)"
-          -- npm run test:integration -- storage-conformance-matrix storage-postgres pool-postgres fleet-safety-postgres sqld
+          -- npm run test:integration -- storage-conformance-matrix storage-postgres pool-postgres fleet-safety-postgres intercom-postgres sqld
       # The shared-pool scale cases start fleets of up to 16 hosts and 64 workers against the same server (#4768): run
       # alongside the files above they starve them and each other of the runner's cores, so they run on their own.
       - name: Shared-pool scale on the libSQL server

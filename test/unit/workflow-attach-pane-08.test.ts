@@ -192,7 +192,7 @@ describe("WorkflowAttachPane", () => {
 		pane.dispose();
 	});
 
-	test("Ctrl+X in stage-chat mode swaps back to graph with same stage focused", () => {
+	test("← on an empty prompt swaps back to graph with the same stage focused; a draft keeps the chat (#5224)", () => {
 		const store = createStore();
 		setupRun(store, "run-1", [
 			{ id: "stage-a", name: "A" },
@@ -209,20 +209,22 @@ describe("WorkflowAttachPane", () => {
 		});
 		pane.handleInput(Key.enter);
 		assert.equal(pane._mode, "stage-chat");
-		for (const ch of "unsent draft") pane.handleInput(ch);
-		// Ctrl+X returns to graph.
+		for (const ch of "draft") pane.handleInput(ch);
 		pane.handleInput(Key.ctrl("x"));
+		pane.handleInput("\x1b[D");
+		assert.equal(pane._mode, "stage-chat", "neither Ctrl+X nor ← with a draft leaves");
+		for (let i = 0; i < "draft".length + 1; i++) pane.handleInput("\x7f");
+		pane.handleInput("\x1b[D");
 		assert.equal(pane._mode, "graph");
 		assert.equal(pane._hasChatView, false);
-		// Stage id and unsent composer draft are preserved for re-attach.
+		// The stage id is preserved for re-attach.
 		assert.equal(pane._lastAttachedStageId, "stage-a");
 		pane.handleInput(Key.enter);
 		assert.equal(pane._mode, "stage-chat");
-		assert.equal(pane._chatInputBuffer, "unsent draft");
 		pane.dispose();
 	});
 
-	test("Ctrl+X in paused stage-chat mode returns to graph", () => {
+	test("← in paused stage-chat mode returns to graph (#5224)", () => {
 		const store = createStore();
 		setupRun(store, "run-1", [{ id: "stage-a", name: "A", status: "paused" }]);
 		const registry = createStageControlRegistry();
@@ -246,7 +248,7 @@ describe("WorkflowAttachPane", () => {
 			initialAttachStageId: "stage-a",
 		});
 		assert.equal(pane._mode, "stage-chat");
-		pane.handleInput(Key.ctrl("x"));
+		pane.handleInput("\x1b[D");
 		assert.equal(closed, 0);
 		assert.equal(hidden, 0);
 		assert.equal(pane._mode, "graph");

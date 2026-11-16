@@ -26,6 +26,7 @@ import type {
 } from "./multinode-state-store.js";
 import { isReleasedReservationKey } from "./released-children.js";
 import { addMissingColumns } from "./sql-add-column.js";
+import { ensureBrokerSchema } from "./sql-schema.js";
 
 type ReservationRow = SqliteRow & {
 	reservation_key: string;
@@ -105,11 +106,15 @@ async function renameWakeIndex(tx: SqliteExecutor, dialect: StorageDialect, tabl
 	const probe = dialect.schemaObjects([earlier, index]);
 	const found = new Set((await tx.all(probe.sql, ...probe.params)).map((row) => row.name));
 	if (found.has(earlier)) {
-		if (dialect.name === "postgres" && !found.has(index))
+		if (dialect.name === "postgres" && !found.has(index)) {
 			await tx.exec(`ALTER INDEX IF EXISTS ${earlier} RENAME TO ${index}`);
-		else await tx.exec(`DROP INDEX IF EXISTS ${earlier}`);
+			return;
+		}
+		await tx.exec(`DROP INDEX IF EXISTS ${earlier}`);
 	}
-	await tx.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${table}(owner_broker_id) WHERE wake_requested = 1`);
+	// Probed first, so a current schema runs no DDL (#5218).
+	if (!found.has(index))
+		await tx.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${table}(owner_broker_id) WHERE wake_requested = 1`);
 }
 
 /**
@@ -126,7 +131,7 @@ export async function openSqlRestoringReservationStore({
 	const counters = `${validPrefix}intercom_restoring_reservation_counters`;
 	const wakeClaims = `${validPrefix}intercom_restoring_wake_claims`;
 	const { types, nowMs, greatest } = dialectOf(database);
-	await database.transaction((tx) =>
+	await ensureBrokerSchema(database, prefix, "restoring-reservations", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
 				reservation_key TEXT PRIMARY KEY,
@@ -163,10 +168,11 @@ export async function openSqlRestoringReservationStore({
 		wake_generation: wakeColumn,
 	});
 	// In a serial transaction, so brokers opening a new store at once take turns creating them (#5054).
-	await database.transaction(async (tx) => {
-		await tx.exec(`CREATE INDEX IF NOT EXISTS ${table}_child ON ${table}(child_target) WHERE end_json IS NULL`);
-		await renameWakeIndex(tx, dialectOf(database), table);
-	});
+	await ensureBrokerSchema(database, prefix, "restoring-reservation-indexes", (tx) =>
+		tx.exec(`CREATE INDEX IF NOT EXISTS ${table}_child ON ${table}(child_target) WHERE end_json IS NULL`),
+	);
+	// Probed every time, as an earlier broker may recreate its index meanwhile; a current one runs no DDL (#5218).
+	await database.transaction((tx) => renameWakeIndex(tx, dialectOf(database), table));
 	const columns = `reservation_key, owner_session_id, owner_broker_id, child_name AS child_name_json, child_target,
 		targets_json, "group" AS reservation_group, dormant, wake, wake_generation, fencing_token, "order" AS reservation_order,
 		gone AS gone_json, end_json,

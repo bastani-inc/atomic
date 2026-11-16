@@ -276,13 +276,16 @@ export function stripAnsi(text: string): string {
 
 export const CTRL_X_VARIANTS = ["\x18", "\x1b[120;5u", "\x1b[120;5:1u", "\x1b[27;5;120~"];
 
-export const RETURN_HINT_TEXT = "ctrl+x return to graph";
-export const COMPACT_RETURN_HINT_TEXT = "ctrl+x graph";
+/** The left-arrow sequences that return an empty stage chat to its graph (#5224). */
+export const BACK_VARIANTS = ["\x1b[D"];
+
+export const RETURN_HINT_TEXT = "← return to graph";
+export const COMPACT_RETURN_HINT_TEXT = "← graph";
 
 export function expectRightAlignedReturnHint(lines: readonly string[], width: number, rightInset = 0): number {
 	const hint = lines.some((line) => line.includes(RETURN_HINT_TEXT)) ? RETURN_HINT_TEXT : COMPACT_RETURN_HINT_TEXT;
 	const index = lines.findIndex((line) => line.includes(hint));
-	assert.ok(index >= 0, "expected Ctrl+X hierarchy navigation hint");
+	assert.ok(index >= 0, "expected the back-to-graph navigation hint");
 	assert.equal(lines[index]!.indexOf(hint), width - hint.length - rightInset);
 	return index;
 }

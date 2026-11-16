@@ -16,6 +16,11 @@ export interface CloudPasswordOptions {
 	readonly user: string;
 	/** Upper bound for one token request, in milliseconds. Default 8000. */
 	readonly timeoutMs?: number;
+	/**
+	 * npm prefixes to find the SDK in when it is not found beside the adapter, such as `<agentDir>/npm`, where
+	 * `atomic install npm:<package>` installs user packages.
+	 */
+	readonly searchPaths?: readonly string[];
 }
 
 /**
@@ -23,5 +28,11 @@ export interface CloudPasswordOptions {
  * `DefaultAzureCredential`, the RDS `Signer`, or `GoogleAuth`. Tokens live only in memory; concurrent connections
  * share one request. Throws a `StorageConfigError` with reason `invalid-auth-target` when the host or user is
  * missing, and the reader rejects with reason `auth-unavailable` when the SDK is not installed or issues no token.
+ * The adapter calls `invalidate` when the server refuses a token (`28P01`, or Azure's `28000`), and connects once more.
  */
-export function createCloudPasswordProvider(options: CloudPasswordOptions): () => Promise<string>;
+export function createCloudPasswordProvider(
+	options: CloudPasswordOptions,
+): (() => Promise<string>) & {
+	/** Forgets the cached token, so the next read asks the SDK again: after the server refused it (#5218). */
+	invalidate(): void;
+};

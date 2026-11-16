@@ -9,6 +9,7 @@ import type {
 	KnownSessionState,
 	KnownSessionStore,
 } from "./multinode-state-store.js";
+import { ensureBrokerSchema } from "./sql-schema.js";
 
 type BindingRow = SqliteRow & { return_address: string };
 
@@ -56,7 +57,7 @@ export async function openSqlKnownSessionStore({
 	const bindings = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_session_bindings`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	const age = greatest("0", `${nowMs} - recorded_at`);
-	await database.transaction((tx) =>
+	await ensureBrokerSchema(database, prefix, "known-sessions", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
 				record_order ${types.serialKey},

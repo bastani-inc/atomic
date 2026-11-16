@@ -7,7 +7,6 @@ import {
 	assert,
 	createStore,
 	deriveGraphTheme,
-	expectRightAlignedReturnHint,
 	flush,
 	makeFakeKeybindings,
 	makeHandle,
@@ -448,21 +447,16 @@ describe("StageChatView", () => {
 		}));
 		await flush();
 
-		// Both the prior transcript and the question render together, with the
-		// return-to-graph hint inside the custom UI's bottom-right corner.
+		// Both the prior transcript and the question render together. The widget owns every key, including ←, so it
+		// carries no return-to-graph hint (#5224).
 		const renderedLines = view.render(80).map(stripAnsi);
 		const rendered = renderedLines.join("\n");
 		assert.match(rendered, /EARLIER-HISTORY-MARKER/);
 		assert.match(rendered, /Proceed with the plan\?/);
-		const questionIndex = renderedLines.findIndex((line) => line.includes("Proceed with the plan?"));
-		const hintIndex = expectRightAlignedReturnHint(renderedLines, 80, 3);
-		assert.equal(hintIndex, questionIndex);
-		assert.match(renderedLines[hintIndex] ?? "", /^│/);
-		assert.ok(
-			(renderedLines[hintIndex] ?? "").endsWith(`  ${RETURN_HINT_TEXT}  │`),
-			"expected return hint inside the custom UI border",
-		);
-		assert.doesNotMatch(renderedLines[hintIndex] ?? "", /^╰/);
+		assert.doesNotMatch(rendered, new RegExp(RETURN_HINT_TEXT));
+		assert.equal(view.handleInput("\x1b[D"), true);
+		assert.deepEqual(questionInputs, ["\x1b[D"]);
+		questionInputs.length = 0;
 
 		// Scroll input (mouse wheel) is consumed by the transcript, not the
 		// question component, so history stays scrollable while the gate is open.

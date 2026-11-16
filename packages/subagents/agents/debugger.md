@@ -53,3 +53,5 @@ Lead with the outcome. Keep the facts, decisions, caveats, and next steps; drop 
 ## Stop rule
 
 Stop when the reproduced failure is gone under the relevant validation and the evidence supports the diagnosed cause, or when a named scope/access blocker prevents the exact required edit.
+
+A long conversation is never a reason to stop or to hand work to a fresh run; Atomic compacts context automatically. If only a supervisor decision blocks you, ask through `contact_supervisor` and continue any work the decision does not block.

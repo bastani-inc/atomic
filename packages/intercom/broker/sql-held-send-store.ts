@@ -11,6 +11,7 @@ import type {
 	InvalidStateInput,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
+import { ensureBrokerSchema } from "./sql-schema.js";
 
 type HeldRow = SqliteRow & {
 	reservation_key: string;
@@ -37,7 +38,7 @@ function heldSendOf(row: HeldRow): HeldSend {
 export async function openSqlHeldSendStore({ database, prefix }: IntercomBrokerStateOptions): Promise<HeldSendStore> {
 	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_held_sends`;
 	const { types, nowMs } = dialectOf(database);
-	await database.transaction((tx) =>
+	await ensureBrokerSchema(database, prefix, "held-sends", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
 				"order" ${types.serialKey},
