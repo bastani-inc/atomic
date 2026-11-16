@@ -1,3 +1,5 @@
+import { agentPanelTaskId } from "../../../core/tasks/agent-panel-source.ts";
+import { liveElapsedMs } from "../../../core/tasks/live-elapsed.ts";
 /**
  * The agent panel below the main chat's prompt: one row per running or recent subagent, workflow run and background
  * shell. Unfocused it is a quiet status block; ↓ on an empty prompt focuses it, and then it is a list like every other
@@ -67,8 +69,6 @@ export function panelProgressBar(done: number, total: number, cells = 16): strin
  */
 export class AgentPanelModel {
 	private readonly finishedAt = new Map<string, number>();
-	/** When a task row was first seen live: its reported elapsed time arrives with progress, so the panel's clock runs between reports. */
-	private readonly liveSince = new Map<string, number>();
 	private readonly now: () => number;
 	constructor(now: () => number = Date.now) {
 		this.now = now;
@@ -81,7 +81,6 @@ export class AgentPanelModel {
 		const now = this.now();
 		const live = new Set(rows.map((row) => row.id));
 		for (const id of this.finishedAt.keys()) if (!live.has(id)) this.finishedAt.delete(id);
-		for (const id of this.liveSince.keys()) if (!live.has(id)) this.liveSince.delete(id);
 		const rank = (row: AgentPanelRow) =>
 			row.state === "input" ? 0 : row.state === "running" ? 1 : isFinishedPanelRow(row) ? 3 : 2;
 		return rows
@@ -94,10 +93,11 @@ export class AgentPanelModel {
 				return keep(row) || now - (this.finishedAt.get(row.id) ?? now) < AGENT_PANEL_DROP_MS;
 			})
 			.map((row) => {
-				if (row.kind === "workflow" || isFinishedPanelRow(row) || row.state === "queued") return row;
-				const since = this.liveSince.get(row.id) ?? now - (row.elapsedMs ?? 0);
-				if (!this.liveSince.has(row.id)) this.liveSince.set(row.id, since);
-				return { ...row, elapsedMs: Math.max(row.elapsedMs ?? 0, now - since) };
+				if (row.kind === "workflow" || row.state === "queued") return row;
+				// One clock for every view of the task, so the panel and /tasks agree; a finished row keeps its time.
+				const taskId = agentPanelTaskId(row.id) ?? row.id;
+				const elapsedMs = liveElapsedMs(taskId, row.elapsedMs, !isFinishedPanelRow(row), now);
+				return elapsedMs === undefined ? row : { ...row, elapsedMs };
 			})
 			.map((row, index) => ({ row, index }))
 			.sort((a, b) => rank(a.row) - rank(b.row) || a.index - b.index)

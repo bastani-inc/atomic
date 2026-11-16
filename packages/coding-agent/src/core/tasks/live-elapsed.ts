@@ -1,27 +1,30 @@
 /**
- * A running task's elapsed time between its progress reports.
- *
- * A task reports its elapsed time only with progress, so a view keeps the clock running between reports from the
- * moment the task was first seen running. Every view in the process reads the same moment, so the agent panel and
- * /tasks show the same time for the same task whenever either first saw it.
+ * A task's elapsed time between its own reports, the same in every view (the agent panel, `/tasks`, its chat): one
+ * process-wide record of when each running task was first seen, so views that open later agree with earlier ones,
+ * and of the time it showed when it stopped running, so a finished row keeps it.
  */
-const firstSeen = new Map<string, number>();
+
+const seen = new Map<string, { readonly since: number; frozen?: number }>();
 
 /**
- * The elapsed time to show for a task: its reported time, or longer while it runs. `running: false` forgets it, so a
- * resumed task starts its clock again from its next report.
+ * `reportedMs` advanced by the time since the task was first seen running. Once it stops running, the time it reached
+ * stays (or `reportedMs`, when the task reports more).
  */
 export function liveElapsedMs(
-	id: string,
+	taskId: string,
 	reportedMs: number | undefined,
 	running: boolean,
 	now = Date.now(),
 ): number | undefined {
+	let entry = seen.get(taskId);
 	if (!running) {
-		firstSeen.delete(id);
-		return reportedMs;
+		if (entry === undefined) return reportedMs;
+		entry.frozen ??= now - entry.since;
+		return Math.max(reportedMs ?? 0, entry.frozen);
 	}
-	const since = firstSeen.get(id) ?? now - (reportedMs ?? 0);
-	if (!firstSeen.has(id)) firstSeen.set(id, since);
-	return Math.max(reportedMs ?? 0, now - since);
+	if (entry === undefined || entry.frozen !== undefined) {
+		entry = { since: now - (reportedMs ?? 0) };
+		seen.set(taskId, entry);
+	}
+	return Math.max(reportedMs ?? 0, now - entry.since);
 }

@@ -89,7 +89,7 @@ function listKeys(): NavKey[] {
 export type TaskBoardSource = {
 	items(): readonly TaskBoardItem[];
 	subscribe(listener: () => void): () => void;
-	open?(id: string): void;
+	open?(id: string, options?: { readonly onReturn?: () => void }): void;
 	stop?(id: string): Promise<{ ok: true } | { ok: false; reason: string }>;
 	answer?(id: string, text: string): Promise<{ ok: true } | { ok: false; reason: string }>;
 	/** Records an `x` dismissal of a finished row (`task:<id>` for a task), so every view of the source leaves it out. */
@@ -171,6 +171,14 @@ export class TaskInspector implements Component {
 	private releaseBoardSource?: () => void;
 	/** Items dismissed with `x` after they finished, so the list leaves them out. */
 	private readonly dismissedItems = new Set<string>();
+	/** Typed peek-card replies per row, kept when the card closes and restored when it reopens. */
+	private readonly replyDrafts = new Map<string, string>();
+	/** A reply being sent: Enter waits for it instead of sending again or reaching the list. */
+	private sending = false;
+	/** A source's row that finished while its stop was armed: the next stop press only acknowledges it. */
+	private itemFinishedWhileArmed?: { readonly id: string; readonly name: string };
+	/** Reopens /tasks on a row, for the way back from a view a row opened, such as a run's graph. */
+	private reopen?: (id: string) => void;
 	/** Whether the reader or the caller has chosen a row, so new rows from a source don't move the selection. */
 	private selectionChosen = false;
 	private readonly unsubscribe: () => void;
@@ -316,14 +324,32 @@ export class TaskInspector implements Component {
 			rows.map((row) => row.id),
 		);
 		if (this.peekId !== undefined && !rows.some((row) => row.id === this.peekId)) this.closePeek();
+		// A source's row that finishes while its stop is armed is disarmed, as a task is, so the second press can't
+		// dismiss a result nobody has seen.
+		const armed = this.navigation.stopConfirm.pending();
+		const finished = rows.find((row) => row.kind === "item" && row.id === armed && rowFinished(row));
+		if (finished !== undefined) {
+			this.navigation.stopConfirm.reset();
+			this.itemFinishedWhileArmed = { id: finished.id, name: rowName(finished) };
+		}
 	}
 	private selectedRow(): TaskBoardRow | undefined {
 		const id = this.navigation.selectedId;
 		return this.boardRows().find((row) => row.id === id);
 	}
-	private closePeek(): void {
+	/** Closes the peek card, keeping a typed reply for when it opens again unless it was sent. */
+	private closePeek(sent = false): void {
+		if (this.peekId !== undefined) {
+			const draft = this.reply.getValue();
+			if (draft && !sent) this.replyDrafts.set(this.peekId, draft);
+			else this.replyDrafts.delete(this.peekId);
+		}
 		this.peekId = undefined;
 		this.reply.setValue("");
+	}
+	/** How /tasks reopens on a row when the reader comes back from the view that row opened. */
+	setReopen(reopen: ((id: string) => void) | undefined): void {
+		this.reopen = reopen;
 	}
 	private orderedSections(): TaskListSection[] {
 		const dismissed = dismissedTasks(this.store);
@@ -473,7 +499,10 @@ export class TaskInspector implements Component {
 	private route(data: string): boolean {
 		this.failureNotice = "";
 		// The finished-while-armed notice stays through the stop key's presses and leaves with any other key.
-		if (!getKeybindings().matches(data, "app.list.stop")) this.navigation.finishedWhileArmed = undefined;
+		if (!getKeybindings().matches(data, "app.list.stop")) {
+			this.navigation.finishedWhileArmed = undefined;
+			this.itemFinishedWhileArmed = undefined;
+		}
 		if (this.helpOpen) {
 			// The overlay is a dialog: Esc or `?` closes it, and other keys wait until it is closed.
 			if (matchesKey(data, "escape") || isNavHelpKey(getKeybindings(), data)) this.helpOpen = false;
@@ -627,14 +656,16 @@ export class TaskInspector implements Component {
 				return true;
 			}
 			if (replying) {
-				if (keys.matches(data, "app.nav.back") && this.reply.getValue() === "") {
+				// ← on an empty reply, or at the start of a typed one (kept for next time), closes the card.
+				if (keys.matches(data, "app.nav.back") && this.reply.getCursor() === 0) {
 					this.closePeek();
 					return true;
 				}
 				if (matchesKey(data, "enter")) {
-					void this.sendReply(row);
+					if (!this.sending) void this.sendReply(row);
 					return true;
 				}
+				if (this.sending) return true;
 				const choice =
 					/^[1-9]$/.test(data) && this.reply.getValue() === ""
 						? this.peekChoices(row)[Number(data) - 1]
@@ -660,18 +691,23 @@ export class TaskInspector implements Component {
 		if (keys.matches(data, "app.list.peek") && row !== undefined && this.peeksInCard(row)) {
 			this.peekId = row.id;
 			this.reply.setValue("");
+			for (const char of this.replyDrafts.get(row.id) ?? "") this.reply.handleInput(char);
 			return true;
 		}
 		if (row?.kind !== "item") return false;
 		if (keys.matches(data, "app.list.open")) {
 			if (this.boardSource?.open) {
 				this.close();
-				this.boardSource.open(row.id);
+				const reopen = this.reopen;
+				this.boardSource.open(row.id, reopen ? { onReturn: () => reopen(row.id) } : undefined);
 			} else this.status = "This item can't be opened from here.";
 			return true;
 		}
 		if (keys.matches(data, "app.list.stop")) {
-			if (rowFinished(row)) {
+			if (rowFinished(row) && this.itemFinishedWhileArmed?.id === row.id) {
+				// The press meant for the stop: it acknowledges the finished notice, and a later press dismisses.
+				this.itemFinishedWhileArmed = undefined;
+			} else if (rowFinished(row)) {
 				this.dismissedItems.add(row.id);
 				this.boardSource?.dismiss?.(row.id);
 				this.refreshOrder();
@@ -699,12 +735,18 @@ export class TaskInspector implements Component {
 		const text = this.reply.getValue().trim();
 		if (!text || !this.boardSource?.answer) return;
 		const id = row.kind === "item" ? row.id : `task:${row.task.ref.taskId}`;
-		const result = await this.boardSource.answer(id, text);
-		if (result.ok) {
-			this.closePeek();
-			this.status = `Sent to ${rowName(row)}`;
-		} else this.failureNotice = `Could not send the answer: ${result.reason}`;
+		this.sending = true;
 		this.requestRender();
+		try {
+			const result = await this.boardSource.answer(id, text);
+			if (result.ok) {
+				this.closePeek(true);
+				this.status = `Sent to ${rowName(row)}`;
+			} else this.failureNotice = `Could not send the answer: ${result.reason}`;
+		} finally {
+			this.sending = false;
+			this.requestRender();
+		}
 	}
 	private async stopItem(row: Extract<TaskBoardRow, { kind: "item" }>): Promise<void> {
 		if (!this.boardSource?.stop) {
@@ -752,12 +794,17 @@ export class TaskInspector implements Component {
 		return this.navigation.focus.kind === "detail" || this.navigation.focus.kind === "stdin";
 	}
 	/** The waiting first press of `x`, as the line under the list shows it. */
-	/** A running task's elapsed time advances between its own reports, from when this view first saw it running. */
+	/** A running task's elapsed time advances between its own reports, on the clock every view shares. */
 	private withLiveElapsed(task: TaskRecord): TaskRecord {
 		const elapsedMs = liveElapsedMs(task.ref.taskId, task.metrics?.elapsedMs, task.execution.kind === "running");
-		return elapsedMs === task.metrics?.elapsedMs ? task : { ...task, metrics: { ...task.metrics, elapsedMs } };
+		if (elapsedMs === undefined) return task;
+		return { ...task, metrics: { ...task.metrics, elapsedMs } };
 	}
 	private stopNotice(): string {
+		if (this.itemFinishedWhileArmed !== undefined) {
+			const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
+			return `${this.itemFinishedWhileArmed.name} finished · ${key} to dismiss`;
+		}
 		const finished = this.navigation.finishedWhileArmed;
 		if (finished !== undefined) {
 			const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
@@ -944,11 +991,13 @@ export class TaskInspector implements Component {
 					if (detail) body.push(theme.fg("dim", `      ${detail}`));
 				}
 				if (isSelected && this.peekId === row.id) {
-					const replyLines = this.peekReplies(row)
-						? [
-								`${theme.fg("accent", "❯")} ${(this.reply.render(Math.max(1, width - 8))[0] ?? "").replace(/^> /, "")}`,
-							]
-						: [];
+					const replyLines = this.sending
+						? [theme.fg("muted", "Sending…")]
+						: this.peekReplies(row)
+							? [
+									`${theme.fg("accent", "❯")} ${(this.reply.render(Math.max(1, width - 8))[0] ?? "").replace(/^> /, "")}`,
+								]
+							: [];
 					body.push(
 						...renderPeekCard(rowName(row), this.peekContent(row), replyLines, Math.max(10, width - 3)).map(
 							(line) => `   ${line}`,
