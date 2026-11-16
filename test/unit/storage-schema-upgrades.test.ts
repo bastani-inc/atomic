@@ -358,25 +358,28 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			assert.equal((await legacyState(database, blob.hash)).chunkRows, 0);
 		});
 
-		test("a legacy blob stored again while it is being moved to chunks keeps its row and leaves no chunk behind", async () => {
-			let other: SqlSnapshotBlobStore | undefined;
-			let refreshed = false;
-			const { database, blob, store } = await oversizedLegacyBlob(async (transactions) => {
-				if (transactions !== 1) return;
-				assert.equal(await other!.refreshBlobs([blob.hash]), true);
-				refreshed = true;
-			});
-			other = await SqlSnapshotBlobStore.open(database);
-			assert.deepEqual((await collectSnapshotGarbage(store, { graceSeconds: 0 })).deleted, []);
-			assert.ok(refreshed, "the blob is stored again after its first chunks were written");
-			const kept = await legacyState(database, blob.hash);
-			assert.ok(kept.createdAt > 0);
-			assert.deepEqual(
-				{ chunks: kept.chunks, inline: kept.inline, chunkRows: kept.chunkRows },
-				{ chunks: 0, inline: blob.data.length, chunkRows: 0 },
-			);
-			assert.ok(blob.data.equals((await store.getBlob(blob.hash))!));
-		});
+		test.each([1, 3])(
+			"a legacy blob stored again after %i of the 3 chunk transactions of its move keeps its row and leaves no chunk behind",
+			async (storedAfter) => {
+				let other: SqlSnapshotBlobStore | undefined;
+				let refreshed = false;
+				const { database, blob, store } = await oversizedLegacyBlob(async (transactions) => {
+					if (transactions !== storedAfter) return;
+					assert.equal(await other!.refreshBlobs([blob.hash]), true);
+					refreshed = true;
+				});
+				other = await SqlSnapshotBlobStore.open(database);
+				assert.deepEqual((await collectSnapshotGarbage(store, { graceSeconds: 0 })).deleted, []);
+				assert.ok(refreshed, "the blob is stored again after its first chunks were written");
+				const kept = await legacyState(database, blob.hash);
+				assert.ok(kept.createdAt > 0);
+				assert.deepEqual(
+					{ chunks: kept.chunks, inline: kept.inline, chunkRows: kept.chunkRows },
+					{ chunks: 0, inline: blob.data.length, chunkRows: 0 },
+				);
+				assert.ok(blob.data.equals((await store.getBlob(blob.hash))!));
+			},
+		);
 
 		test.each(["", "custom_"])(
 			"upgrades old session snapshot references with prefix '%s' and rebuilds retention links (#4532)",

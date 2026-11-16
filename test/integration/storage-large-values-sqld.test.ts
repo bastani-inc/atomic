@@ -13,6 +13,7 @@ import {
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import {
 	SNAPSHOT_BLOB_CHUNK_BYTES,
+	SNAPSHOT_LEGACY_STAMP_BYTES,
 	SqlSnapshotBlobStore,
 	snapshotIndexTables,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
@@ -119,6 +120,79 @@ for (const backend of storageBackends) {
 					assert.deepEqual([...deleted].sort(), ["chunked", "legacy"]);
 					assert.equal(await chunkRows(), 0, "a collected blob leaves no chunk behind");
 					assert.equal(await blobs.getBlob("chunked"), undefined);
+				} finally {
+					await scope.close();
+				}
+			},
+			LARGE_VALUE_TIMEOUT_MS,
+		);
+
+		test(
+			"collection stamps blobs of unknown age, moves one too large to stamp in its row to chunks, and deletes the chunks a stopped move left",
+			async () => {
+				const scope = await backend.openScope();
+				try {
+					const database = await scope.connect();
+					const blobs = await SqlSnapshotBlobStore.open(database, scope.prefix);
+					const t = snapshotIndexTables(scope.prefix);
+					// Blobs as builds before blob ages left them: unknown ages, bytes in their rows. Together they take more
+					// than one stamping transaction. sqld refuses a row over 5,000,000 bytes, so none there is too large to
+					// stamp in its row, and no move to chunks can have stopped there.
+					const sqld = backend.name.includes("sqld");
+					const tooLarge = () => Uint8Array.from(randomBytes(SNAPSHOT_LEGACY_STAMP_BYTES + 1));
+					const legacy = [
+						...Array.from({ length: 5 }, (_, index) => ({
+							hash: `legacy-${index}`,
+							data: Uint8Array.from(randomBytes(4 * MiB)),
+						})),
+						...(sqld ? [] : [{ hash: "oversized", data: tooLarge() }]),
+					];
+					const insert = (hash: string, data: Uint8Array, createdAt: number) =>
+						database.run(
+							`INSERT INTO ${t.blobs} (hash, bytes, data, created_at) VALUES (?, ?, ?, ?)`,
+							hash,
+							data.byteLength,
+							data,
+							createdAt,
+						);
+					for (const { hash, data } of legacy) await insert(hash, data, 0);
+					if (!sqld) {
+						// One whose move to chunks stopped after its first chunk, and that was stamped in its row since.
+						const stopped = tooLarge();
+						await insert("stopped", stopped, 1);
+						await database.run(
+							`INSERT INTO ${t.blobChunks} (hash, idx, data) VALUES (?, 0, ?)`,
+							"stopped",
+							stopped.subarray(0, SNAPSHOT_BLOB_CHUNK_BYTES),
+						);
+					}
+					const chunkRows = async () =>
+						Number(
+							(await database.get<{ count: number }>(`SELECT count(*) AS count FROM ${t.blobChunks}`))?.count,
+						);
+					const moved = Math.ceil((SNAPSHOT_LEGACY_STAMP_BYTES + 1) / SNAPSHOT_BLOB_CHUNK_BYTES);
+
+					assert.deepEqual(
+						await blobs.collectGarbage({ graceSeconds: 0 }),
+						sqld ? [] : ["stopped"],
+						"a stamped blob gets a grace window",
+					);
+					assert.equal(await chunkRows(), sqld ? 0 : moved, "the stopped move's chunk went with its blob");
+					const rows = await database.all<{ hash: string; created_at: number; chunks: number }>(
+						`SELECT hash, created_at, chunks FROM ${t.blobs}`,
+					);
+					assert.equal(rows.length, legacy.length);
+					for (const row of rows) {
+						assert.ok(Number(row.created_at) > 0, `${row.hash} is stamped`);
+						const chunks = row.hash === "oversized" ? moved : 0;
+						assert.equal(Number(row.chunks), chunks, `${row.hash} has ${chunks} chunks`);
+					}
+					for (const { hash, data } of legacy) assert.deepEqual(await blobs.getBlob(hash), data);
+
+					await database.run(`UPDATE ${t.blobs} SET created_at = 1`);
+					const deleted = await blobs.collectGarbage({ graceSeconds: 0 });
+					assert.deepEqual([...deleted].sort(), legacy.map(({ hash }) => hash).sort());
+					assert.equal(await chunkRows(), 0, "no chunk outlives its blob");
 				} finally {
 					await scope.close();
 				}
