@@ -768,6 +768,21 @@ The database stores sessions, the oversized tool results of agents released whil
 
 Scale by running more workflows, not by splitting one: a single run and a single session each have one writer. Atomic's stores use SQLite SQL, or PostgreSQL through `@bastani/atomic-storage-postgres`, so other `openDatabase` adapters need a SQLite-compatible driver. For another kind of database, implement `openRunJournal` and `openSessionStore` and validate them with the conformance suites below.
 
+## Locks in the agent directory
+
+Processes that share an agent directory take turns writing `settings.json`, `auth.json` and trust decisions, and take a claim on each session they resume, through locks beside those files. When a holder dies, the next process takes its lock over under an operating-system advisory lock on a `*.takeover.lock` file (`flock` on Unix, `LockFileEx` on Windows), which the kernel releases when its holder dies.
+
+These locks exclude only processes on the same machine that reach the agent directory through the same filesystem view. Concurrent access to one agent directory is not supported:
+
+- from several machines through a network filesystem (NFS, SMB, a cloud-synced folder), where advisory locks may be held per machine or not at all;
+- from one machine through both a local path and a mount of the same directory, such as a bind mount, a container volume or a network mount of a local disk.
+
+Give each machine or container its own agent directory with `ATOMIC_CODING_AGENT_DIR`, and share sessions and workflow runs through a [database adapter](#sharing-storage-across-hosts) instead.
+
+If Atomic warns that a `*.takeover.lock` file cannot be opened, another user, often an `atomic` run once with `sudo`, left it behind and it belongs to them. Remove the file, or give it to your user, for example `sudo chown $USER ~/.atomic/agent/settings.json.lock.takeover.lock`. Until then takeovers of that lock fall back to a directory mutex, which a process killed while taking it holds for 10 seconds.
+
+The same goes for a `*.takeover.<id>.dead` directory, or another item left beside a lock, that Atomic warns it cannot remove: it holds no lock, so remove it or give it to your user, for example with `sudo chown -R $USER`.
+
 ## Storage errors
 
 Use error classes and their fields, not message matching. Configuration and facade errors are exported from `@bastani/atomic/storage`. `@bastani/atomic/workflows` exports the journal contract's error classes.
@@ -777,7 +792,7 @@ Use error classes and their fields, not message matching. Configuration and faca
 | `StorageConfigError` | `code` `"invalid-config"`; `source`, `field`, `reason` identify an invalid selected option, and `hint`, when present, says what to pass instead. Correct that selection; Atomic does not try a lower-precedence store. |
 | `StorageAdapterLoadError` | `module`, `cause`. Check installation and the module's default export. |
 | `StorageUnavailableError` | `adapter`, `location`, `cause`. Restore access to the selected store before retrying. |
-| `StoragePrefixError` | `prefix`, `reason` (`"pattern"`, `"reserved"`, or `"too-long"` with `maxLength`). Use a valid non-reserved prefix, at most 24 characters on PostgreSQL. |
+| `StoragePrefixError` | `prefix`, `reason` (`"pattern"`, `"reserved"`, `"too-long"` with `maxLength`, or `"identifier-collision"` with `identifier`, the PostgreSQL name two of the prefix's long names would share). Use a valid non-reserved prefix, at most 24 characters on PostgreSQL. |
 | `StorageSchemaVersionError` | `domain`, `found`, `supported`. Use a supported database; Atomic does not migrate an unknown schema. |
 | `StoreClosedError` / `StorageTransactionClosedError` | The store is closing/closed, or the transaction callback has ended. Open a new store or use the live callback handle. |
 | `StorageRollbackError` | `cause`, `rollbackCause`. Do not assume the transaction rolled back. |

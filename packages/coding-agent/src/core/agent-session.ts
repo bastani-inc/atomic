@@ -27,6 +27,7 @@ import { agentSessionExtensionBindingsMethods } from "./agent-session-extension-
 import { agentSessionMessageQueueMethods } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface, AgentSessionPublicSurface } from "./agent-session-methods.ts";
 import { agentSessionModelsMethods } from "./agent-session-models.ts";
+import { agentSessionPersistenceFailureMethods } from "./agent-session-persistence-failures.ts";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import { agentSessionPostToolCompactionMethods } from "./agent-session-post-tool-compaction.ts";
 import { agentSessionPromptMethods } from "./agent-session-prompt.ts";
@@ -544,4 +545,5 @@ Object.assign(
 	agentSessionExportMethods,
 	agentSessionSummaryMethods,
 	agentSessionTaskMethods,
+	agentSessionPersistenceFailureMethods,
 );

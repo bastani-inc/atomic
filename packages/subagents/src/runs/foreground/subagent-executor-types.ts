@@ -12,15 +12,20 @@ import type {
 	SubagentToolResult,
 } from "../../shared/types.js";
 import type { ChildModePolicy } from "../inprocess/child-policy.js";
+import type { NamedWorktree, NamedWorktreeRequest } from "../shared/named-worktree.js";
 import type { runSync } from "./execution.js";
 
 export const BURST_TASK_DISCOVERY_CWD = Symbol("burstTaskDiscoveryCwd");
 export const BURST_EXECUTION_SCHEDULE = Symbol("burstExecutionSchedule");
+/** The named worktree a launch's child runs in, once it exists (#5202). */
+export const NAMED_WORKTREE = Symbol("namedWorktree");
 
 export interface TaskParam {
 	agent: string;
 	task: string;
 	cwd?: string;
+	worktree?: NamedWorktreeRequest;
+	[NAMED_WORKTREE]?: NamedWorktree;
 	count?: number;
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
@@ -53,7 +58,8 @@ export interface SubagentParamsLike {
 	config?: unknown;
 	tasks?: TaskParam[];
 	concurrency?: number;
-	worktree?: boolean;
+	worktree?: boolean | NamedWorktreeRequest;
+	[NAMED_WORKTREE]?: NamedWorktree;
 	context?: "fresh" | "fork";
 	share?: boolean;
 	control?: ControlConfig;

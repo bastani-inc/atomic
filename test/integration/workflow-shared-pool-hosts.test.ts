@@ -75,7 +75,7 @@ function scenario(label: string, budgetMs: number): Scenario {
 			};
 		},
 		hostId(name) {
-			const file = join(directory, name, "workflows", "pool", "host-id");
+			const file = join(directory, name, "agent", "pool-host-id");
 			return existsSync(file) ? readFileSync(file, "utf8").trim() : name;
 		},
 	};
