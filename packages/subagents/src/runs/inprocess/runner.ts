@@ -2050,8 +2050,6 @@ export class SubagentControlRuntime {
 					(late) => void late.session.dispose().catch(() => undefined),
 				);
 			}
-			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
-			else startBudget.enter("dispatching-task");
 			session = created.session;
 			const release = admitted.spec.releaseWhenWaiting;
 			if (release !== undefined) session.setToolDetachment({ afterMs: release.afterMs });
@@ -2128,10 +2126,12 @@ export class SubagentControlRuntime {
 						? 0
 						: typeof sessionManager.getEntrySeq === "function"
 							? sessionManager.getEntrySeq(currentLeafId)
-							: await sessionLeafSeq(sessionManager, currentLeafId),
+							: await beforeStartDeadline(sessionLeafSeq(sessionManager, currentLeafId)),
 			};
 			taskHooks?.bindChildLaunch?.(childLaunch);
 			admitted.spec.onChildLaunch?.(childLaunch);
+			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
+			else startBudget.enter("dispatching-task");
 			const progressState: AgentProgress = {
 				index: 0,
 				agent: admitted.spec.agent.name,

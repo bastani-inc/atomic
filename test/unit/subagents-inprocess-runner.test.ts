@@ -11,7 +11,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { type AgentSessionEvent, getEnvNames } from "@bastani/atomic";
+import {
+	type AgentSessionEvent,
+	getEnvNames,
+	isSessionStartTimeoutError,
+	rehydrateSessionStartError,
+} from "@bastani/atomic";
 import { SubagentControl as NativeSubagentControl } from "@bastani/atomic-natives";
 import { test, vi } from "vitest";
 import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.js";
@@ -30,6 +35,7 @@ import {
 import { DEFAULT_ARTIFACT_CONFIG, type TaskExecutionHooks } from "../../packages/subagents/src/shared/types.ts";
 import { DEFAULT_RUNNING_CAPACITY } from "../../packages/subagents/src/shared/types-runtime.ts";
 import { resultStatusLine } from "../../packages/subagents/src/tui/render-status-progress.js";
+import { sleep } from "../helpers/runtime.js";
 
 type BoundTranscriptSource = Parameters<NonNullable<TaskExecutionHooks["bindTranscript"]>>[0];
 
@@ -1098,6 +1104,93 @@ test("in-process subagent launch and transcript binding tolerate a SessionManage
 		);
 		assert.equal(tailUnhydratableResult.status, "ok");
 		assert.deepEqual(tailUnhydratableLaunches, [{ leafId: tailUnhydratable.leafId, leafSeq: undefined }]);
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("in-process subagent launch bounds asynchronous leaf-sequence fallback by sessionStartTimeoutMs (#5316)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-leaf-seq-timeout-"));
+	clearSubagentControls();
+	try {
+		const backing = SessionManager.inMemory(root);
+		await backing.appendMessage({ role: "user", content: "turn 1", timestamp: 1 });
+		const findEntered = Promise.withResolvers<void>();
+		const findPending = Promise.withResolvers<number | undefined>();
+		const stalledFindManager = new Proxy(backing, {
+			getPrototypeOf: () => Object.prototype,
+			has: (target, prop) => (prop === "getEntrySeq" ? false : Reflect.has(target, prop)),
+			get: (target, prop: keyof SessionManager) => {
+				if (prop === "getEntrySeq") return undefined;
+				if (prop === "findEntrySeq") {
+					return () => {
+						findEntered.resolve();
+						return findPending.promise;
+					};
+				}
+				const value = target[prop];
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+
+		const findLaunched = runSingleInProcess(root, sampleAgent(), "stalled findEntrySeq", {
+			cwd: root,
+			runId: "stalled-find-entry-seq",
+			sessionDir: join(root, "sessions", "stalled-find"),
+			sessionManager: stalledFindManager,
+			sessionStartTimeoutMs: 100,
+			testSession: { output: "done" },
+		});
+		await findEntered.promise;
+		const findOutcome = await Promise.race([findLaunched, sleep(1_500).then(() => "hung" as const)]);
+		findPending.resolve(1);
+		assert.notEqual(findOutcome, "hung");
+		assert.ok(findOutcome !== "hung");
+		assert.equal(findOutcome.status, "error");
+		assert.ok(findOutcome.startError);
+		const findTimeout = rehydrateSessionStartError(findOutcome.startError);
+		assert.ok(isSessionStartTimeoutError(findTimeout));
+		assert.equal(findTimeout.timeoutMs, 100);
+
+		const tailSession = await createCompactedTailSession(root, "stalled-load");
+		const loadEntered = Promise.withResolvers<void>();
+		const loadPending = Promise.withResolvers<void>();
+		const stalledLoadManager = new Proxy(tailSession.tail, {
+			getPrototypeOf: () => Object.prototype,
+			has: (target, prop) => (prop === "getEntrySeq" || prop === "findEntrySeq" ? false : Reflect.has(target, prop)),
+			get: (target, prop: keyof SessionManager) => {
+				if (prop === "getEntrySeq" || prop === "findEntrySeq") return undefined;
+				if (prop === "loadFullHistory") {
+					return () => {
+						loadEntered.resolve();
+						return loadPending.promise;
+					};
+				}
+				const value = target[prop];
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+
+		const loadLaunched = runSingleInProcess(root, sampleAgent(), "stalled loadFullHistory", {
+			cwd: root,
+			runId: "stalled-load-full-history",
+			sessionDir: join(root, "sessions", "stalled-load-run"),
+			sessionManager: stalledLoadManager,
+			resumeSession: true,
+			sessionStartTimeoutMs: 100,
+			testSession: { output: "done" },
+		});
+		await loadEntered.promise;
+		const loadOutcome = await Promise.race([loadLaunched, sleep(1_500).then(() => "hung" as const)]);
+		loadPending.resolve();
+		assert.notEqual(loadOutcome, "hung");
+		assert.ok(loadOutcome !== "hung");
+		assert.equal(loadOutcome.status, "error");
+		assert.ok(loadOutcome.startError);
+		const loadTimeout = rehydrateSessionStartError(loadOutcome.startError);
+		assert.ok(isSessionStartTimeoutError(loadTimeout));
+		assert.equal(loadTimeout.timeoutMs, 100);
 	} finally {
 		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });
