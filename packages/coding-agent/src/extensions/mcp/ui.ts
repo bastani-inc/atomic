@@ -129,7 +129,7 @@ export class McpManagerView implements McpUi, Component, Focusable {
 				unsubscribe?.();
 				resolve(value);
 			};
-			const menu = build();
+			let menu = build();
 			const picker = new FramedSelector<string>({
 				title: menu.title,
 				subtitle: menu.details,
@@ -137,9 +137,15 @@ export class McpManagerView implements McpUi, Component, Focusable {
 				initialId: menu.selected,
 				search: menu.items.length > MAX_VISIBLE_ITEMS,
 				maxVisible: MAX_VISIBLE_ITEMS,
-				emptyText: menu.empty ?? "Nothing to show.",
-				confirmLabel: menu.confirmLabel,
-				cancelLabel: menu.cancelLabel,
+				get emptyText() {
+					return menu.empty ?? "Nothing to show.";
+				},
+				get confirmLabel() {
+					return menu.confirmLabel;
+				},
+				get cancelLabel() {
+					return menu.cancelLabel;
+				},
 				keybindings: this.keybindings,
 				onSelect: (item) => finish(item.value),
 				onCancel: () => finish(undefined),
@@ -149,6 +155,7 @@ export class McpManagerView implements McpUi, Component, Focusable {
 			unsubscribe = subscribe?.(() => {
 				if (settled) return;
 				const next = build();
+				menu = next;
 				picker.selector.setTitle(next.title);
 				picker.selector.setSubtitle(next.details);
 				picker.selector.setNotice(next.error ? { text: next.error, tone: "error" } : undefined);

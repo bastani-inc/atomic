@@ -6,7 +6,7 @@ import { KeybindingsManager } from "../src/core/keybindings.js";
 import type { LlamaModelInfo } from "../src/extensions/llama/client.js";
 import type { HuggingFaceModel } from "../src/extensions/llama/huggingface.js";
 import { type LlamaUi, showLlamaUi } from "../src/extensions/llama/ui.js";
-import { McpManagerView } from "../src/extensions/mcp/ui.js";
+import { McpManagerView, type McpMenu } from "../src/extensions/mcp/ui.js";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 import { stripAnsi } from "../src/utils/ansi.js";
 
@@ -114,6 +114,57 @@ describe("MCP manager menus share the picker look (#5224)", () => {
 		assert.ok(lines(view).some((line) => line.includes("❯ b")));
 		view.handleInput("\r");
 		assert.equal(await result, "b");
+		assert.equal(notify, undefined);
+	});
+
+	test("live menu rebuilds update empty text and action labels (#5256)", async () => {
+		const view = new McpManagerView(tui, theme, new KeybindingsManager());
+		let menu: McpMenu = {
+			title: "MCP server docs",
+			items: [
+				{ value: "reconnect", label: "Reconnect" },
+				{ value: "disable", label: "Disable" },
+			],
+			confirmLabel: "select",
+			cancelLabel: "back",
+		};
+		let notify: (() => void) | undefined;
+		const result = view.menu(
+			() => menu,
+			(listener) => {
+				notify = listener;
+				return () => {
+					notify = undefined;
+				};
+			},
+		);
+		assert.ok(lines(view).some((line) => line.includes("❯ Reconnect")));
+
+		menu = {
+			title: "docs",
+			items: [],
+			empty: "This server is no longer configured.",
+			confirmLabel: "",
+			cancelLabel: "return",
+		};
+		notify?.();
+		assert.ok(lines(view).some((line) => line.includes("This server is no longer configured.")));
+		assert.equal(hint(view), "esc return · ? keys");
+
+		menu = {
+			title: "docs",
+			items: [{ value: "reconnect", label: "Reconnect" }],
+			confirmLabel: "retry",
+			cancelLabel: "close",
+		};
+		notify?.();
+		assert.equal(hint(view), "enter retry · esc close · ? keys");
+
+		menu = { title: "docs", items: [], confirmLabel: "", cancelLabel: "back" };
+		notify?.();
+		assert.ok(lines(view).some((line) => line.includes("Nothing to show.")));
+		view.handleInput(ESCAPE);
+		assert.equal(await result, undefined);
 		assert.equal(notify, undefined);
 	});
 
