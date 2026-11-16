@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { connect, createServer, type Socket } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { TLSSocket } from "node:tls";
 import { inspect } from "node:util";
@@ -8,6 +8,7 @@ import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import { postgresSkipReason, postgresTestPassword, postgresTestUrl } from "../helpers/postgres-database.js";
+import { connectTestServer } from "../helpers/postgres-proxy.js";
 import { makeTempDirectory, removeTempDirectory, spawnSyncCollect, writeTextSync } from "../helpers/runtime.js";
 
 /** The only name in the server certificate: the address the tests connect to, 127.0.0.1, is not among its names. */
@@ -78,7 +79,6 @@ function writeCertificates(directory: string): void {
  * connection on, decrypted, to the test server.
  */
 async function startTlsServer(directory: string): Promise<{ port: number; close(): Promise<void> }> {
-	const target = new URL(postgresTestUrl!);
 	const cert = readFileSync(join(directory, "server.pem"));
 	const key = readFileSync(join(directory, "server.key"));
 	const sockets = new Set<Socket>();
@@ -91,10 +91,17 @@ async function startTlsServer(directory: string): Promise<{ port: number; close(
 			const secure = new TLSSocket(client, { isServer: true, cert, key });
 			secure.on("error", () => client.destroy());
 			secure.once("secure", () => {
-				const upstream = connect(Number(target.port || 5432), target.hostname);
-				sockets.add(upstream);
-				upstream.on("error", () => secure.destroy());
-				secure.pipe(upstream).pipe(secure);
+				// The test server, over TLS when it takes TLS only (#5218); the client's startup waits in `secure` meanwhile.
+				secure.pause();
+				connectTestServer().then(
+					(upstream) => {
+						sockets.add(upstream as Socket);
+						upstream.on("error", () => secure.destroy());
+						secure.pipe(upstream).pipe(secure);
+						secure.resume();
+					},
+					() => secure.destroy(),
+				);
 			});
 		});
 	});
@@ -168,6 +175,10 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres sslmode (#5113)", ()
 			},
 			(error: Error) => {
 				assert.ok(causeCodes(error).includes(code), inspect(error));
+				// A certificate refused is permanent, never retried as unreachable, and says what to fix (#5218).
+				assert.equal(error.name, "StorageUnavailableError", inspect(error));
+				assert.match(inspect(error), /TLS certificate was not accepted/);
+				assert.match(inspect(error), /sslrootcert/);
 				return true;
 			},
 		);

@@ -84,6 +84,21 @@ export function abort(this: AgentSession, options?: SessionAbortOptions): Promis
 	return abortCurrentGeneration.call(this);
 }
 
+/**
+ * Interrupt the current turn the way a user's Esc does in a chat of a subagent: the run ends, but nothing is sealed
+ * or held, so the session stays open for its next message, which starts a turn as usual.
+ */
+export async function interruptTurn(this: AgentSession): Promise<void> {
+	if (!this.isStreaming) return;
+	this._turnInterruptedByUser = true;
+	this._awaitingMessageAfterInterrupt = false;
+	this._extensionRunner.cancelHostInput();
+	this.abortRetry();
+	this.agent.abort();
+	await this.agent.waitForIdle();
+	await this._agentEventQueue;
+}
+
 /** Internal teardown never redirects cancellation into a replacement generation. */
 export function abortCurrentGeneration(this: AgentSession): Promise<void> {
 	this._extensionRunner.cancelHostInput();

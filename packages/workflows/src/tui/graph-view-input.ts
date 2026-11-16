@@ -1,6 +1,12 @@
 import { GRAPH_SCROLL_STEP_COLS } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
-import { APP_ACTION, isKeybindingsLike, type KeybindingsLike, matchesAction } from "./keybindings-adapter.js";
+import {
+	APP_ACTION,
+	isKeybindingsLike,
+	type KeybindingsLike,
+	matchesAction,
+	matchesNavAction,
+} from "./keybindings-adapter.js";
 import { isTerminalLeftMousePress, parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
 import { filterStages, type SwitcherState } from "./switcher.js";
 import { Key, matchesKey } from "./text-helpers.js";
@@ -18,12 +24,12 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	handleInput(data: string): boolean {
 		this._syncLayout();
 		if (this.toolDetail !== null) return this._handleToolDetailInput(data);
+		if (this.switcherOpen) return this._handleSwitcherInput(data);
 		if (this._isReturnToMainChatInput(data)) {
 			this._returnToMainChat();
 			return true;
 		}
 		if (this.graphLayout.isScrollbarInput(data)) return this._handleGraphInput(data);
-		if (this.switcherOpen) return this._handleSwitcherInput(data);
 		const wheelDelta = this._mouseWheelDelta(data);
 		if (wheelDelta) return this._handleWheelDelta(wheelDelta);
 		return this._handleGraphInput(data);
@@ -44,7 +50,8 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this.pendingEnsureFocusedVisible = true;
 			return true;
 		}
-		if (this._isReturnToMainChatInput(data) || matchesKey(data, Key.escape)) {
+		// Esc closes the detail view; the back key, one level up, returns to the graph too.
+		if (matchesKey(data, Key.escape) || this._matchesNavAction(data, APP_ACTION.navBack)) {
 			this._closeToolDetail();
 			return true;
 		}
@@ -112,8 +119,17 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return matchesAction(keybindings, data, APP_ACTION.toolsExpand);
 	}
 
+	private _matchesNavAction(data: string, action: string): boolean {
+		return matchesNavAction(this._promptKeybindings(), data, action);
+	}
+
+	/**
+	 * The graph has no prompt, so Esc pops it: back to main chat. The back key does the same on a node with nothing to
+	 * its left; elsewhere it moves between nodes.
+	 */
 	private _isReturnToMainChatInput(data: string): boolean {
-		return matchesKey(data, Key.ctrl("x"));
+		if (matchesKey(data, Key.escape)) return true;
+		return this._matchesNavAction(data, APP_ACTION.navBack) && !this._hasSiblingBefore();
 	}
 
 	private _returnToMainChat(): void {
@@ -177,7 +193,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this.onHide();
 			return true;
 		}
-		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
+		if (matchesKey(data, Key.ctrl("c"))) {
 			this.onClose?.();
 			return true;
 		}

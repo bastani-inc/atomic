@@ -1,9 +1,11 @@
 // @ts-check
+import { createRequire } from "node:module";
+import { join } from "node:path";
 import { redactSecrets, StorageConfigError } from "@bastani/atomic/storage";
 
 /**
  * @typedef {"azure-entra" | "aws-iam" | "gcp-iam"} CloudAuth
- * @typedef {{ auth: CloudAuth, host: string, port: number, user: string, timeoutMs?: number }} CloudPasswordOptions
+ * @typedef {{ auth: CloudAuth, host: string, port: number, user: string, timeoutMs?: number, searchPaths?: readonly string[] }} CloudPasswordOptions
  * @typedef {{ token: string, refreshAt: number }} IssuedToken
  * The parts of each cloud SDK this module uses. The SDKs are optional peer dependencies, so their own types may be
  * absent where this package is type-checked.
@@ -47,16 +49,38 @@ function authError(reason, hint) {
 	return new StorageConfigError("sdk", "auth", reason, hint);
 }
 
+/** Whether `error` says a module was not found, as `import()` and `require()` report it. */
+function isNotFound(/** @type {unknown} */ error) {
+	const code = /** @type {NodeJS.ErrnoException} */ (error)?.code;
+	return code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND";
+}
+
 /**
- * Imports `auth`'s SDK, or explains how to install it.
+ * Imports `auth`'s SDK, or explains how to install it. It is found beside the adapter first, then in each of
+ * `searchPaths`, an npm prefix such as the one `atomic install npm:<package>` installs user packages into (#5218): an
+ * adapter installed from a local path resolves only its own `node_modules`, where `atomic install` puts nothing.
  * @param {CloudAuth} auth
+ * @param {readonly string[]} searchPaths
  */
-async function loadSdk(auth) {
+async function loadSdk(auth, searchPaths) {
 	const { name, version } = CLOUD_AUTH_PACKAGES[auth];
 	try {
 		return await import(name);
 	} catch (error) {
-		const cause = /** @type {NodeJS.ErrnoException} */ (error);
+		/** @type {unknown} */
+		let failure = error;
+		if (isNotFound(error))
+			for (const prefix of searchPaths) {
+				try {
+					return createRequire(join(prefix, "package.json"))(name);
+				} catch (fallback) {
+					if (!isNotFound(fallback)) {
+						failure = fallback;
+						break;
+					}
+				}
+			}
+		const cause = /** @type {NodeJS.ErrnoException} */ (failure);
 		throw authError(
 			"auth-unavailable",
 			`${auth} auth needs the optional package ${name}, which could not be loaded (${cause.code ?? cause.message}). ` +
@@ -71,13 +95,14 @@ async function loadSdk(auth) {
  * @template T
  * @param {CloudAuth} auth
  * @param {(sdk: any) => T} create
+ * @param {readonly string[]} searchPaths
  * @returns {() => Promise<T>}
  */
-function lazyClient(auth, create) {
+function lazyClient(auth, create, searchPaths) {
 	/** @type {Promise<T> | undefined} */
 	let client;
 	return () => {
-		client ??= loadSdk(auth).then(create);
+		client ??= loadSdk(auth, searchPaths).then(create);
 		client.catch(() => {
 			client = undefined;
 		});
@@ -90,9 +115,13 @@ function lazyClient(auth, create) {
  * @param {CloudPasswordOptions} options
  * @returns {(signal: AbortSignal) => Promise<IssuedToken>}
  */
-function tokenSource({ auth, host, port, user }) {
+function tokenSource({ auth, host, port, user, searchPaths = [] }) {
 	if (auth === "azure-entra") {
-		const credential = lazyClient(auth, (/** @type {AzureIdentityModule} */ sdk) => new sdk.DefaultAzureCredential());
+		const credential = lazyClient(
+			auth,
+			(/** @type {AzureIdentityModule} */ sdk) => new sdk.DefaultAzureCredential(),
+			searchPaths,
+		);
 		return async (signal) => {
 			const issued = await (await credential()).getToken(AZURE_SCOPE, { abortSignal: signal });
 			if (!issued?.token) throw new Error("returned no token");
@@ -107,6 +136,7 @@ function tokenSource({ auth, host, port, user }) {
 			auth,
 			(/** @type {RdsSignerModule} */ sdk) =>
 				new sdk.Signer({ hostname: host, port, username: user, ...(region === undefined ? {} : { region }) }),
+			searchPaths,
 		);
 		return async () => {
 			const token = await (await signer()).getAuthToken();
@@ -115,7 +145,11 @@ function tokenSource({ auth, host, port, user }) {
 			return { token, refreshAt: 0 };
 		};
 	}
-	const client = lazyClient(auth, (/** @type {GoogleAuthModule} */ sdk) => new sdk.GoogleAuth({ scopes: [GCP_SCOPE] }));
+	const client = lazyClient(
+		auth,
+		(/** @type {GoogleAuthModule} */ sdk) => new sdk.GoogleAuth({ scopes: [GCP_SCOPE] }),
+		searchPaths,
+	);
 	return async () => {
 		const token = await (await client()).getAccessToken();
 		if (!token) throw new Error("returned no token");
@@ -139,7 +173,7 @@ const HINTS = /** @type {Record<CloudAuth, string>} */ ({
  * Tokens live only in memory; concurrent connections share one request, and each request is bounded by
  * `timeoutMs`. Every failure is a `StorageConfigError` with reason `auth-unavailable`, without a token in it.
  * @param {CloudPasswordOptions} options
- * @returns {() => Promise<string>}
+ * @returns {(() => Promise<string>) & { invalidate(): void }}
  */
 export function createCloudPasswordProvider(options) {
 	const { auth, host, user } = options;
@@ -186,11 +220,18 @@ export function createCloudPasswordProvider(options) {
 		}
 	}
 
-	return async () => {
+	const read = async () => {
 		if (cached !== undefined && Date.now() < cached.refreshAt) return cached.token;
 		pending ??= refresh().finally(() => {
 			pending = undefined;
 		});
 		return pending;
 	};
+	// A token the server refused, such as one reused past its expiry by a clock that runs behind, is never used again
+	// (#5218).
+	return Object.assign(read, {
+		invalidate() {
+			cached = undefined;
+		},
+	});
 }

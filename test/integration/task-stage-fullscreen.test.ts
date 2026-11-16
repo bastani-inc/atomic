@@ -64,7 +64,7 @@ test("workflow /tasks owns the full viewport and input until returning to stage 
 		await flush();
 		assert.match(stripAnsi(stage.render(80).join("\n")), /Background tasks/);
 		assert.doesNotMatch(stripAnsi(stage.render(80).join("\n")), /PARENT_CHROME/);
-		stage.handleInput("\r");
+		stage.handleInput(" "); // Space peeks at the task's detail page (#5224)
 		await flush();
 		stage.handleInput("\r");
 		await flush();
@@ -83,7 +83,10 @@ test("workflow /tasks owns the full viewport and input until returning to stage 
 		assert.equal(stage._bodyScrollFromBottom, parentScroll);
 		assert.match(stripAnsi(stage.render(100).join("\n")), /❯ z/, "typed text goes to the task transcript's composer");
 		assert.equal(stage.handleInput("\x14"), false, "Ctrl+T reaches the host thinking toggle (#4521)");
-		stage.handleInput("\x1b"); // transcript -> detail
+		stage.handleInput("\x1b"); // Esc never leaves a task's chat (#5224)
+		assert.match(stripAnsi(stage.render(100).join("\n")), /^Transcript/);
+		stage.handleInput("\x7f");
+		stage.handleInput("\x1b[D"); // ← on the empty prompt: transcript -> detail
 		assert.match(stripAnsi(stage.render(100).join("\n")), /Inspect transcript/);
 		stage.handleInput("\x1b"); // detail -> list
 		assert.match(stripAnsi(stage.render(100).join("\n")), /Background tasks/);
@@ -168,7 +171,7 @@ test.runIf(process.platform !== "win32")(
 				assert.match(list, new RegExp(`SHELL_${stageId}`));
 				assert.doesNotMatch(list, new RegExp(`(?:AGENT|SHELL)_${other.stageId}`));
 				stage.handleInput("\x1b[B"); // select the shell
-				stage.handleInput("\r");
+				stage.handleInput(" ");
 				await flush();
 				stage.handleInput("\r");
 				await flush();

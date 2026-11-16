@@ -190,6 +190,15 @@ export function poolSessionPrefix(storage: Pick<SqlPoolStorage, "tables" | "dial
 }
 
 /**
+ * The ledger the pool's stores record their schema revisions in (#5218): the prefix's `atomic_migrations`, as the
+ * other stores under the prefix use.
+ */
+export function poolSchemaLedger(storage: { readonly tables: Pick<SqlPoolStorage["tables"], "runs"> }): string {
+	const { runs } = storage.tables;
+	return `${runs.endsWith(RUNS_TABLE) ? runs.slice(0, -RUNS_TABLE.length) : `${runs}_`}atomic_migrations`;
+}
+
+/**
  * The channel a pool write notifies, with the root's run id, when the transaction that made work ready or ended an
  * attempt commits: `<prefix>pool_ready` (#5103).
  */

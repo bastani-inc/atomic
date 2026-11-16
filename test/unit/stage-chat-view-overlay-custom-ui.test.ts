@@ -195,7 +195,7 @@ describe("StageChatView overlay custom UI", () => {
 		assert.ok(first.join("\n").includes("Alpha"));
 		assert.ok(first.join("\n").includes("Beta"));
 		assert.ok(first.join("\n").includes("EARLIER-HISTORY-MARKER"));
-		assert.ok(first.some((line) => line.includes("ctrl+x")));
+		assert.ok(!first.some((line) => line.includes("return to graph")));
 
 		assert.equal(view.handleInput("\x1b[B"), true);
 		view.handleInput("\r");

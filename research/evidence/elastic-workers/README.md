@@ -52,75 +52,95 @@ Run from the repository root after `npm ci --ignore-scripts && npm run build`.
 
 ## Checkpoint shipping (#4768, S2–S4)
 
-`run-shipping.mjs` runs each case twice on the same Docker store (`libsql-server:v0.24.33` or `postgres:16`): once with `checkpointShipping: "sync"` and once with shipping. The 16- and 32-host cases run across farm VMs: one VM holds the store, the root and 4 hosts, and the others run 4 hosts each (`--listen` / `--join`).
+`run-shipping.mjs` runs each case twice on the same Docker store (`libsql-server:v0.24.33` or `postgres:16`): once with `checkpointShipping: "sync"`, and once with shipping on. The 16- and 32-host cases run across farm VMs. One VM holds the store, the root and 4 hosts; each other VM runs 4 hosts (`--listen` / `--join`). Unless noted, the settings are 256 children × 20 no-op steps with `{ intervalMs: 2000, maxBatch: 64, maxLagMs: 30000 }`.
 
-Earlier runs, before batching (`results/shipping-farm-*.jsonl`, `results/shipping-devbox-*.json`), sent every shipped event as its own fenced insert, with its own read of the root's checkpoints. Those runs showed no store saving. What follows is after the fix.
+Earlier runs, before batching, are kept as history: `results/shipping-farm-*.jsonl` and `results/shipping-devbox-*.json`. In those, each shipped event was its own fenced insert with its own read of the root's checkpoints, and the store saved nothing.
 
 ### Store CPU
 
-Each batch is now one request: its fences are checked once, its events go in with one multi-row insert, it reads the root's checkpoints once, and its first plan needs no read at all.
+Each batch is now one request:
+- its fences are checked once;
+- its events go in with one multi-row insert;
+- it reads the root's checkpoints once, and its first plan reads nothing.
 
-**Marginal cost per checkpoint** (8 hosts × 4, 64 children; 20 against 60 steps, so per-child costs cancel):
+**The checkpoint path costs about 5× less.** This is the marginal cost per checkpoint at 8 hosts × 4 slots, comparing 20 with 60 steps per child (`results/shipping-v2-marginal-*`):
 
-| Store | Sync, ms CPU per checkpoint | Ship, ms CPU per checkpoint | Requests per checkpoint, sync → ship |
+| Store | Sync, ms CPU per checkpoint | Ship, ms CPU per checkpoint | Requests per checkpoint |
 | --- | --- | --- | --- |
-| PG16 | 4.07 | 0.77 (5.3×) | 5.1 → 0.63 |
-| sqld | 12.3 | 2.35 (5.2×) | 5.0 → 0.51 |
+| PG16 | 4.07 | 0.77 (5.3× less) | 5.1 → 0.63 |
+| sqld | 12.3 | 2.35 (5.2× less) | 5.0 → 0.51 |
 
-**Total store CPU per checkpoint**, which includes every fixed cost. These runs used 256 children × 20 steps, the default `{ intervalMs: 2000, maxBatch: 64, maxLagMs: 30000 }`, and `--profile 1`:
+**Total store CPU falls less.** Per checkpoint it is 1.3× lower on PG16 × 16, 2.4× on sqld × 16 and 3.0× on sqld × 32. This counts all of the store's CPU, fixed costs included, from the profiled runs in `results/shipping-v2-multi4-*`:
 
-| Store × hosts | Total CPU s, sync → ship | Per checkpoint ms | Checkpoints/s | Step p50 ms | Lag p99 ms (maxLagMs 30 000) |
-| --- | --- | --- | --- | --- | --- |
-| PG16 × 16 | 74.2 → 55.6 | 14.5 → 10.9 | 31.1 → 39.1 | 39 → 1.3 | 3 043 |
-| sqld × 16 | 110 → 46 | 21.6 → 9.1 | 44.2 → 95.5 | 454 → 5.3 | 2 745 |
-| sqld × 32 | 123 → 41 | 24.0 → 8.0 | 10.4 → 99.9 | 175 → 7.9 | 1 335 |
+| Store × hosts | Total CPU s | ms per checkpoint | Checkpoints/s | Step p50 ms |
+| --- | --- | --- | --- | --- |
+| PG16 × 16 | 74.2 → 55.6 | 14.5 → 10.9 (1.3×) | 31.1 → 39.1 | 39 → 1.3 |
+| sqld × 16 | 110 → 46 | 21.6 → 9.1 (2.4×) | 44.2 → 95.5 | 454 → 5.3 |
+| sqld × 32 | 123 → 41 | 24.0 → 8.0 (3.0×) | 10.4 → 99.9 | 175 → 7.9 |
 
-The sqld × 32 runs set `--sqld-max-concurrent-requests 1024`. At sqld's default of 128, both modes failed children with 429 and storage-unavailable errors. A few children also failed in the profiled sqld × 32 runs; the unprofiled ones (`results/shipping-v2-multi3-sqld-32-main.jsonl`) had none, so the single trace proxy is the likely cause.
+Unprofiled reruns at 16 hosts on the final code (`results/shipping-v3-*-main.jsonl`) agree. PG16: 12.6 → 8.2 ms per checkpoint, 27 → 40 checkpoints/s. sqld: 14.4 → 6.7 ms, 61 → 123 checkpoints/s.
 
-**Where the store's work goes.** These are PG16 × 16 statements per acknowledged checkpoint, sync → ship.
+The 32-host sqld runs set `--sqld-max-concurrent-requests 1024`. At sqld's default of 128 concurrent requests, both modes failed children with 429 and storage-unavailable errors.
 
-The checkpoint path fell sharply:
-- fence checks 9.82 → 2.85 (what remains is mostly claim, complete and renew fences);
-- event inserts 1.10 → 0.15;
-- checkpoint view reads 1.08 → 0.03;
-- operation receipts 1.65 → 0.75;
-- usage 2.24 → 0.98;
-- the batch ledger adds 0.35.
+**Why the total falls less than the checkpoint path.** On PG16 × 16, these are statements per acknowledged checkpoint, sync → ship:
 
-On sqld, requests per checkpoint fell 14.2 → 8.6.
+- **The checkpoint path:**
+  - fence checks 9.8 → 2.9 (what remains is mostly claim, complete and renew fences);
+  - event inserts 1.1 → 0.15;
+  - checkpoint view reads 1.1 → 0.03;
+  - operation receipts 1.7 → 0.75;
+  - usage 2.2 → 1.0.
+- **Fixed costs that shipping does not touch.** They grow with idle workers and with time:
+  - **The idle worker loop:** each pass reads the control state, catches up with the root's journal and claims, then sleeps 25–50 ms. In the PG ship run that was 12.5k control reads, 12.2k lease reads, 11.1k ready-work scans and 13.5k catch-up reads.
+  - **Per-transaction version checks:** 9.6 → 12.6 per checkpoint.
+  - **libSQL stream probes** (`SELECT 1 FROM sqlite_schema`) on sqld: 5–10 per checkpoint, the largest class of requests.
 
-What remains is fixed overhead that grows with idle workers and time:
-- **The idle worker loop.** Each pass reads the control state, catches up on the root's journal and claims, then sleeps 25–50 ms. In the PG ship run that was 12.5k control reads, 12.2k lease reads, 11.1k ready-work scans and 13.5k catch-up reads.
-- **Version checks.** Each transaction checks the schema version; per checkpoint, that rose from 9.6 to 12.6.
-- **sqld stream probes.** libSQL probes each stream before reusing it (`SELECT 1 FROM sqlite_schema`): 5–10 per checkpoint, the largest single class of requests.
+Shipping finishes children sooner, so its workers spend more of the run idle. The PG store burned about 0.4 core in both modes. #5230 tracks cutting those fixed costs.
 
-Shipping finishes children sooner, so its workers spend more of the run idle and polling. The PG store burned about 0.4 core in both modes.
+**Batches fill completely.** These children finish within one interval, so each child shipped exactly one batch of 20 events.
 
-**Batches fill completely.** These children finish inside one shipping interval, so each child shipped exactly one batch: 20 events, or 60 at 60 steps.
+### Shipping lag
 
-### Shipping lag and backpressure
+**How the host keeps lag within `maxLagMs`:**
 
-- **Backpressure.** Once an attempt's oldest unshipped checkpoint has waited half of `maxLagMs`, its next step waits until everything it holds is shipped, and its host claims nothing new. Hosts ship at least every quarter of `maxLagMs`.
-- **The bound at p99.** Under 16- and 32-host load with `maxLagMs` 30 000, lag p99 was 1.3–3.0 s. In the kill runs, with `maxLagMs` 10 000, it was 5.4 s on PG16 and 2.1 s on sqld.
-- **The bound at the maximum.** The PG16 kill run's single worst checkpoint waited 11.4 s. Backpressure stops new steps; it cannot make a delivery to a slow store finish sooner.
+- It times its deliveries: a running average and the 95th percentile of recent ones, and it uses the larger.
+- It ships a child's checkpoints once the oldest has waited `maxLagMs` minus the deliveries that may still be needed, less a 100 ms margin. Those deliveries are one already under way, plus everything the child holds, sent in one round trip of up to 1 000 checkpoints.
+- From that point, the child's next step waits until its checkpoints are shipped, and the host claims nothing new.
+- It checks this every 25 ms, without waiting for a step, the interval, or other children's deliveries.
+- Before the host has timed a delivery, the point is half of `maxLagMs`.
+
+**Delay table** (`test/unit/workflow-checkpoint-shipping-lag.test.ts`). The fake store answers every delivery after a fixed delay. Each attempt takes a step every 10 ms for 3.5 s, with `maxLagMs` 1 000:
+
+| Delivery | Worst lag, 2 or 8 attempts, maxBatch 8 or 64 | Before this change |
+| --- | --- | --- |
+| 20 ms | 106–333 ms | within the bound |
+| 300 ms | 603–815 ms | up to 1 690 ms |
+| 700 ms | about 1 400 ms (steps wait; 1 unshipped at most) | 1 400 ms, with 48 unshipped |
+| 1 200 ms | about 2 400 ms (steps wait; 1 unshipped at most) | 2 400 ms, with 48 unshipped |
+
+**The limit:** `maxLagMs` holds while a single delivery takes less than half of it. On a slower store, each of a child's steps waits until the one before it is shipped, so unshipped steps don't pile up, and a checkpoint can wait about two deliveries.
+
+**Farm results** (from before this change):
+
+- **16 hosts, `maxLagMs` 30 000:** lag p99 1.4–7.7 s, maximum 11.3 s on PG16.
+- **Kill runs, `maxLagMs` 10 000:** maximum lag 6.2–9.1 s on PG16 and 4.4–5.5 s on sqld.
+- **The 11.4 s maximum seen earlier** was a live host's checkpoints, not the killed host's: a killed host's unshipped checkpoints are never recorded. It came from a racing flush that cleared an attempt's in-memory list, and from shipping attempts in the order the host took them rather than oldest first. Both are fixed.
 
 ### Replay after a host dies
 
-These runs had 8 hosts × 4 slots and 128 children × 40 steps, with 250 ms of work per step. The busiest host's whole process tree was SIGKILLed once a quarter of the steps had run. Shipping used `{ intervalMs: 2000, maxBatch: 64, maxLagMs: 10000 }` with an 8 s lease.
+The kill runs used 8 hosts × 4 slots, 128 children × 40 steps of 250 ms, and an 8 s lease. The busiest host's whole process tree was SIGKILLed once a quarter of the steps had run.
 
-| Store | Mode | Children replayed | Steps run again per child | Unshipped on the host at the kill, per attempt |
-| --- | --- | --- | --- | --- |
-| PG16 | sync | 4 | 1 | — |
-| PG16 | ship | 4 | 4 | 4 |
-| sqld | sync | 0 | 0 | — |
-| sqld | ship | 4 | 8 | 8 |
+| Store | Mode | Steps run again per replayed child | Unshipped on the host at the kill |
+| --- | --- | --- | --- |
+| PG16 (6 runs) | ship | 2–16 | the same count, run by run |
+| sqld (4 runs) | ship | 4–8 | the same count, run by run |
+| both | sync | 0–1 | — |
 
-A replayed child ran again exactly the steps its host held unshipped, never all 40.
+In every run, a replayed child ran exactly the steps its host held unshipped, never all 40.
 
 ### Why the first runs showed 82 s against 2 356 s
 
-- **That pair was a sync collapse.** The early local sqld × 8 pair ran on the 80-core dev box at load average 30. Sync stretched over 220 s instead of about 27 s, with the store contending for its write lock throughout. A rerun shows the native sqld binary and its Docker image cost the same per checkpoint: 22.6 against 20.4 ms in sync.
-- **The farm runs had nothing to save yet.** They predate batching, so every shipped event still cost a fenced write and a view read.
+The early local sqld × 8 pair ran on the 80-core dev box at load average 30. The sync run collapsed under write-lock contention: it took 220 s instead of about 27 s. A rerun shows the native sqld binary and its Docker image cost the same per checkpoint (22.6 against 20.4 ms in sync). The farm runs after it predate batching.
 
 ## Idle workers wait for wake-ups (#5230)
 
