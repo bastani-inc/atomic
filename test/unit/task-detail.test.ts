@@ -40,7 +40,7 @@ test("detail renders task metadata and configured action hints without inventing
 	initTheme("dark");
 	const previous = getKeybindings();
 	try {
-		setKeybindings(new KeybindingsManager({ "app.tasks.cancel": "ctrl+x" }));
+		setKeybindings(new KeybindingsManager({ "app.list.stop": "ctrl+x" }));
 		const task = taskRecord("first");
 		task.metrics = { toolCount: 0 };
 		task.currentAction = { tool: "bash", text: "checking" };
@@ -61,7 +61,7 @@ test("detail renders task metadata and configured action hints without inventing
 		])
 			assert.ok(text.includes(expected), expected);
 		assert.ok(!text.includes("tokens"));
-		setKeybindings(new KeybindingsManager({ "app.tasks.cancel": [] }));
+		setKeybindings(new KeybindingsManager({ "app.list.stop": [] }));
 		assert.ok(!detail.render(48).map(stripVTControlCharacters).join("\n").includes("ctrl+x"));
 	} finally {
 		setKeybindings(previous);

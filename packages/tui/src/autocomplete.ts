@@ -334,7 +334,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 		const commandText = textBeforeCursor.trimStart();
 		if (!options.force && commandText.startsWith("/")) {
-			const spaceIndex = commandText.indexOf(" ");
+			const spaceIndex = commandText.search(/\s/);
 
 			if (spaceIndex === -1) {
 				const prefix = commandText.slice(1);
@@ -463,7 +463,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 		// Check if we're in a slash command context (beforePrefix contains "/command ")
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
-		if (textBeforeCursor.includes("/") && textBeforeCursor.includes(" ")) {
+		if (textBeforeCursor.includes("/") && /\s/.test(textBeforeCursor)) {
 			// This is likely a command argument completion
 			const newLine = beforePrefix + item.value + adjustedAfterCursor;
 			const newLines = [...lines];
@@ -849,7 +849,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
 
 		// Don't trigger if we're typing a slash command at the start of the line
-		if (textBeforeCursor.trim().startsWith("/") && !textBeforeCursor.trim().includes(" ")) {
+		if (textBeforeCursor.trim().startsWith("/") && !/\s/.test(textBeforeCursor.trim())) {
 			return false;
 		}
 

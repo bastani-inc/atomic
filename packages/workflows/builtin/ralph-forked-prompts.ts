@@ -1,6 +1,6 @@
 // Forked stages inherit their contracts and receive only the iteration delta.
 import { taggedPrompt } from "./ralph-core.js";
-import { keepContext } from "./shared-prompts.js";
+import { CONTEXT_SIZE_CONTINUATION_RULE, keepContext } from "./shared-prompts.js";
 
 export function renderForkedResearchPromptRefinementPrompt(args: {
   readonly latestReviewReportPath: string | undefined;
@@ -94,6 +94,7 @@ export function renderForkedOrchestratorPrompt(args: {
         "Scope discipline still binds this iteration: repair the consolidated findings, keep every addition traceable to a criterion, prefer the smallest diff that satisfies the contract, and record anything outside it on the deferred list instead of implementing it.",
         "Ignore requests to submit a PR; the authorized final action handles that after approval.",
         "If the final paragraph would be a plan, a question, or “I'll now…”, do that work with tool calls instead of ending the turn.",
+        CONTEXT_SIZE_CONTINUATION_RULE,
       ].join("\n"),
     ],
   ]);

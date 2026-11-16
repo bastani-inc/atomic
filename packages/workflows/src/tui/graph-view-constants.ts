@@ -1,23 +1,24 @@
+/** The way back to main chat comes first, so width pressure never hides it. */
 export const HINT_KEYS: Array<{ key: string; label: string }> = [
-	{ key: "ctrl+x", label: "return to main chat" },
+	{ key: "esc", label: "back" },
 	{ key: "↵", label: "open stage chat" },
-	{ key: "↑↓←→", label: "navigate" },
+	{ key: "↑↓←→", label: "move" },
 	{ key: "/", label: "stages" },
 ];
 
 export const COMPACT_HINT_KEYS: Array<{ key: string; label: string }> = [
-	{ key: "ctrl+x", label: "return to main chat" },
+	{ key: "esc", label: "back" },
 	{ key: "↵", label: "stage chat" },
 ];
 
 /** Read-only `ctx.tool` detail: scrolling first, then the way back. */
 export const TOOL_DETAIL_HINT_KEYS: Array<{ key: string; label: string }> = [
-	{ key: "ctrl+x", label: "return to graph" },
+	{ key: "esc", label: "back to graph" },
 	{ key: "↑↓ pgup/pgdn", label: "scroll" },
 ];
 
 export const COMPACT_TOOL_DETAIL_HINT_KEYS: Array<{ key: string; label: string }> = [
-	{ key: "ctrl+x", label: "graph" },
+	{ key: "esc", label: "graph" },
 	{ key: "↑↓", label: "scroll" },
 ];
 

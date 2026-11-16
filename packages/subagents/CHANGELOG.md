@@ -8,7 +8,10 @@
 
 ### Changed
 
+- The bundled `worker`, `debugger` and `code-simplifier` agents no longer stop partway through a task because their conversation grew long, reporting it as completed and suggesting a fresh run. Atomic compacts long conversations automatically, so they keep working until the task is done, and `worker` and `debugger` ask their supervisor when only its decision blocks them.
+
 - A launch whose `cwd` does not exist is refused before any child starts, and the error says the directory may still be being created by a parallel tool call in the same turn: launch after that call returns, or use `worktree: { branch, base?, path? }` ([#5202](https://github.com/bastani-inc/atomic/issues/5202))
+- Interrupting a background subagent's turn from its chat (Esc) leaves it running in the same session, waiting for your next message, instead of ending it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Fixed
 

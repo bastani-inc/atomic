@@ -123,6 +123,22 @@ function ownedRecords(ctx: ExtensionContext): Map<string, SubagentChildRecord> {
 	return readSubagentChildRecords(ctx.sessionManager.getEntries(), subagentChildOwner(ctx).sessionId);
 }
 
+/**
+ * The child this session launched as task `taskId`, and why it cannot be resumed, if it cannot: its chat uses this to
+ * send a message that resumes it, or to turn read-only.
+ */
+export function subagentChildOfTask(
+	ctx: ExtensionContext,
+	taskId: string,
+): { readonly childId: string; readonly readOnlyReason?: string } | undefined {
+	const record = [...ownedRecords(ctx).values()].find((candidate) => candidate.taskId === taskId);
+	if (record === undefined) return undefined;
+	const terminal = record.state === "terminal" ? NON_RESUMABLE_STATUSES.get(record.terminalStatus ?? "") : undefined;
+	return terminal === undefined
+		? { childId: record.childId }
+		: { childId: record.childId, readOnlyReason: `${label(record)} cannot take messages: ${terminal}.` };
+}
+
 /** Run ids of the children this session launched: the only runs its `status` shows and its run control reaches. */
 export async function subagentRunsLaunchedBy(ctx: ExtensionContext): Promise<Set<string>> {
 	const owner = subagentChildOwner(ctx).sessionId;

@@ -169,7 +169,7 @@ Inside tmux on macOS, `Ctrl+V` is the reliable image-paste shortcut; native `Cmd
 
 When the clipboard has both text and an image, behavior depends on the terminal: empty-paste terminals may insert the text on `Cmd+V`, while Kitty-protocol terminals that deliver `super+v` go through the image path (same preference as `Ctrl+V`). `Ctrl+V` always prefers the image. Apple Terminal may send nothing for image-only paste; use Ghostty/iTerm/Kitty or `Ctrl+V` in that case.
 
-Ctrl+X does not copy messages or selections. A workflow tool-detail view closes to its graph; the scoped-model selector clears its local selection; an attached workflow stage chat returns to its graph; and a workflow graph returns to main chat. Workflow surfaces recognize the physical Ctrl+X chord directly, including CSI variants. `/copy` always copies the last assistant message.
+Ctrl+X does not copy messages or selections, and it no longer moves between chats. Followed by Ctrl+K it is the stop-all chord (see [Navigation](#navigation)); the scoped-model selector clears its local selection with Ctrl+X. `/copy` always copies the last assistant message.
 
 On OAuth sign-in screens, Ctrl+X copies the sign-in URL, including long URLs that wrap across lines. This also works in `/mcp login`. Customize this shortcut with `app.auth.copyUrl`; it does not change Ctrl+X behavior outside sign-in screens. Remote sessions use OSC 52 clipboard forwarding as described above.
 
@@ -223,16 +223,34 @@ Interactive model and thinking choices automatically become startup defaults. Th
 | `app.message.followUp` | `alt+enter` | Queue follow-up message |
 | `app.message.dequeue` | `alt+up` | Restore queued messages to editor |
 
-### Task inspector actions
+### Navigation
 
-These actions apply only while inspecting tasks. They do not replace global Ctrl+O, F2, or editor input. Open the inspector with `/tasks`.
+The same keys move between the main chat, subagent chats, workflow graphs, stage chats and lists everywhere:
+
+- **Esc** only interrupts the current turn, cancels, closes a dialog or deselects. It never moves you to another chat.
+- **←** on an empty prompt goes back exactly one level, to the chat or list you came from, and the hint line names it (`← tasks`, `← main chat`). With text typed, ← moves the cursor; at the very start of the prompt it leaves too, and what you typed is kept for when you come back.
+- A workflow graph has no prompt, so **Esc** goes back from it; **←** does too on a node with nothing to its left, and elsewhere moves between nodes. The hint shows `esc/← back` only where ← would leave. In a stage chat, Esc on a choice or yes/no question closes it back to the chat's prompt: the question stays pending, a line above the prompt shows it, and Enter on the empty prompt reopens it.
+- In a list, **↑↓** select, **Enter** or **→** opens the item's chat (a workflow run's graph), **Space** peeks at its detail, **x** stops the selected item (press it again within 3 seconds to confirm; on a finished item one press dismisses the row), **Esc** or **←** closes the list. If an item finishes between the two presses of `x`, the stop is called off and the list says `<name> finished · x to dismiss`; the press that was meant as the second one is ignored, and only a later `x` dismisses the row.
+- **Ctrl+X Ctrl+K** stops every running background subagent, shell and workflow run of the session, from any view except a dialog that uses Ctrl+X itself (OAuth sign-in, the scoped-model selector). Press it twice within 3 seconds; the first press says what it will do, and any other key calls it off. Stopped subagents stay resumable: their chats read `Stopped · send to resume`, and only a message you send resumes them. Stopped workflow runs stay resumable.
+- **?** on an empty prompt, or in a list, shows the keys of the current screen; typed after text, `?` is just a character. Esc or ? closes it. Each screen also shows one dim hint line with exactly the keys that work there.
+- A finished subagent's chat stays open to messages: sending one resumes it in its own session. A subagent stopped for good, or one no longer kept, has a read-only chat with a one-line note; ← still goes back.
+- A shell's input prompt keeps Esc from clearing or leaving it; ← on its empty input returns to the list, and a draft is kept when you leave.
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
+| `app.nav.back` | `left` | Go back one level from an empty prompt |
+| `app.list.open` | `enter`, `right` | Open the selected item |
+| `app.list.stop` | `x` | Stop the selected item (press again to confirm); dismiss a finished one |
+| `app.list.peek` | `space` | Peek at the selected task |
+| `app.list.filter` | `/` | Filter the list by name |
+| `app.keys.help` | `?` | Show the keys of the current screen |
+| `app.agents.focus` | `down` | Focus the agent panel from an empty prompt |
+| `app.agents.chord` | `ctrl+x` | Start a background-work chord in the main chat |
+| `app.agents.stopAll` | `ctrl+k` | After the chord key: stop all background subagents and workflow runs (press twice to confirm) |
 | `app.tasks.open` | Unbound | Command-only `/tasks` route |
-| `app.tasks.inspect` | `enter` | Inspect the selected task while task focus owns input |
-| `app.tasks.cancel` | Unbound | Request cancellation after confirming the target |
 | `app.tasks.input` | Unbound | Focus stdin only when the selected task has writable input |
+
+**Migrating from earlier versions:** `app.tasks.inspect` is now `app.list.open` and `app.tasks.cancel` is now `app.list.stop`; existing `keybindings.json` entries are migrated on startup. Ctrl+X used to return from a stage chat to its graph and from a graph to the main chat: use ← on an empty prompt in a stage chat and Esc in the graph instead. Esc used to close an idle stage chat and a subagent's transcript: there it now only interrupts, so use ← on an empty prompt. Stopping a task asked for `y`; press `x` a second time instead.
 
 Mounted human-input prompts and the composer retain priority. Escape leaves stdin
 or task detail before leaving task focus. Unbound actions have no key hint.

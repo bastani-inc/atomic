@@ -308,6 +308,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	getSteeringMessages(): readonly string[];
 	getFollowUpMessages(): readonly string[];
 	abort(options?: SessionAbortOptions): Promise<void>;
+	/** Ends the current turn without closing the session to further messages, as Esc does in a subagent's chat. */
+	interruptTurn(): Promise<void>;
 	setSteeringMode(mode: "all" | "one-at-a-time"): void;
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void;
 
@@ -536,6 +538,7 @@ export interface AgentSessionPublicSurface
 		| "getSteeringMessages"
 		| "getFollowUpMessages"
 		| "abort"
+		| "interruptTurn"
 		| "setModel"
 		| "cycleModel"
 		| "setThinkingLevel"
@@ -614,6 +617,10 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_backgroundCompaction: BackgroundCompactionRuntime;
 	_terminatingToolCallIds: Set<string>;
 	_stopAfterTurnBlockedContinuation: boolean;
+	/** The current turn was ended by {@link interruptTurn}: a child's message admission stays open after it. */
+	_turnInterruptedByUser: boolean;
+	/** A child whose turn the user interrupted waits here: the next message it receives starts its next turn. */
+	_awaitingMessageAfterInterrupt: boolean;
 	_pendingInterruptDeliveries: number;
 	_priorityInterruptPending: boolean;
 	_activePromptCount: number;

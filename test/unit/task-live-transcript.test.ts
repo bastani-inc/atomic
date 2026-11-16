@@ -107,7 +107,7 @@ test("open agent transcript streams text and tool results without task activity 
 		assert.equal((text().match(/Final response/g) ?? []).length, 1);
 		await fixture.settle();
 		assert.match(text(), /Final tool output/);
-		inspector.handleInput("\x1b");
+		inspector.handleInput("\x1b[D");
 		assert.equal(listeners.size, 0);
 		const closedRenders = renders;
 		emit({ type: "agent_end", messages: [] });

@@ -12,7 +12,7 @@ import {
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
-	test("Ctrl+X with non-empty input leaves stage chat and preserves the draft", () => {
+	test("← with a draft and Ctrl+X keep the stage chat and its draft (#5224)", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const { handle } = makeHandle();
@@ -32,8 +32,9 @@ describe("StageChatView", () => {
 
 		for (const ch of "draft") view.handleInput(ch);
 		view.handleInput("\x18");
+		view.handleInput("\x1b[D");
 
-		assert.equal(detached, 1);
+		assert.equal(detached, 0, "neither Ctrl+X nor ← with a draft leaves the stage chat");
 		assert.equal(view._inputBuffer, "draft");
 		view.dispose();
 	});
@@ -98,7 +99,7 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
-	test("Ctrl+X variants call onDetach", () => {
+	test("Ctrl+X variants never detach; ← on an empty prompt does (#5224)", () => {
 		for (const key of CTRL_X_VARIANTS) {
 			const store = createStore();
 			setupRun(store, "run-1", "stage-a");
@@ -117,12 +118,14 @@ describe("StageChatView", () => {
 				onClose: () => {},
 			});
 			view.handleInput(key);
+			assert.equal(detached, 0, JSON.stringify(key));
+			view.handleInput("\x1b[D");
 			assert.equal(detached, 1, JSON.stringify(key));
 			view.dispose();
 		}
 	});
 
-	test("Ctrl+X variants detach from structured pending prompts without answering", async () => {
+	test("← detaches from structured pending prompts without answering; Ctrl+X does not (#5224)", async () => {
 		for (const key of CTRL_X_VARIANTS) {
 			const store = createStore();
 			setupRun(store, "run-1", "stage-a");
@@ -152,7 +155,10 @@ describe("StageChatView", () => {
 				},
 			});
 
-			assert.equal(view.handleInput(key), true);
+			view.handleInput(key);
+			await flush();
+			assert.equal(detached, 0, JSON.stringify(key));
+			assert.equal(view.handleInput("\x1b[D"), true);
 			await flush();
 			assert.equal(detached, 1, JSON.stringify(key));
 			assert.equal(closed, 0, JSON.stringify(key));
@@ -162,7 +168,7 @@ describe("StageChatView", () => {
 		}
 	});
 
-	test("Ctrl+X variants detach from a paused structured pending prompt without answering", async () => {
+	test("← detaches from a paused structured pending prompt without answering; Ctrl+X does not (#5224)", async () => {
 		for (const key of CTRL_X_VARIANTS) {
 			const store = createStore();
 			setupRun(store, "run-1", "stage-a", "paused");
@@ -192,7 +198,10 @@ describe("StageChatView", () => {
 				},
 			});
 
-			assert.equal(view.handleInput(key), true);
+			view.handleInput(key);
+			await flush();
+			assert.equal(detached, 0, JSON.stringify(key));
+			assert.equal(view.handleInput("\x1b[D"), true);
 			await flush();
 			assert.equal(detached, 1, JSON.stringify(key));
 			assert.equal(closed, 0, JSON.stringify(key));
@@ -202,7 +211,7 @@ describe("StageChatView", () => {
 		}
 	});
 
-	test("Ctrl+X variants detach from a paused stage chat", () => {
+	test("← detaches from a paused stage chat; Ctrl+X does not (#5224)", () => {
 		for (const key of CTRL_X_VARIANTS) {
 			const store = createStore();
 			setupRun(store, "run-1", "stage-a", "paused");
@@ -224,6 +233,8 @@ describe("StageChatView", () => {
 				},
 			});
 			view.handleInput(key);
+			assert.equal(detached, 0, JSON.stringify(key));
+			view.handleInput("\x1b[D");
 			assert.equal(detached, 1, JSON.stringify(key));
 			assert.equal(closed, 0, JSON.stringify(key));
 			view.dispose();

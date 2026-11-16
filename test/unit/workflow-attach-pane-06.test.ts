@@ -293,7 +293,7 @@ describe("WorkflowAttachPane", () => {
 		pane.dispose();
 	});
 
-	test("editor prompt drafts survive Ctrl+X detach and reattach", async () => {
+	test("editor prompt drafts stay in the question; Ctrl+X and ← with a draft never leave (#5224)", async () => {
 		const store = createStore();
 		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
 		const registry = createStageControlRegistry();
@@ -325,14 +325,15 @@ describe("WorkflowAttachPane", () => {
 		assert.equal(pane._mode, "stage-chat");
 		assert.equal(editors.at(-1)?.getText(), "seed");
 		for (const ch of "-draft") pane.handleInput(ch);
+		// Neither Ctrl+X nor ← with an answer typed leaves the question (#5224).
 		pane.handleInput(Key.ctrl("x"));
+		pane.handleInput("\x1b[D");
 
-		assert.equal(pane._mode, "graph");
-		assert.equal(store.getStagePromptDraft("run-1", "stage-a", prompt.id), "seed-draft");
-		assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt?.id, prompt.id);
-
-		pane.handleInput(Key.enter);
 		assert.equal(pane._mode, "stage-chat");
+		// The fake editor records raw keys; the real one moves its caret.
+		assert.equal(editors.at(-1)?.getText(), `seed-draft${Key.ctrl("x")}\x1b[D`);
+		editors.at(-1)?.setText("seed-draft");
+		assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt?.id, prompt.id);
 		assert.equal(editors.at(-1)?.getText(), "seed-draft");
 		pane.handleInput("!");
 		pane.handleInput(Key.enter);

@@ -532,6 +532,8 @@ describe("GraphView keyboard navigation", () => {
 		assert.deepEqual(onStageAttach.mock.calls[0], ["run-1", "question"]);
 
 		view.handleInput("\x18");
+		assert.equal(detached, 0);
+		view.handleInput("\x1b");
 		assert.equal(detached, 1);
 		view.dispose();
 	});

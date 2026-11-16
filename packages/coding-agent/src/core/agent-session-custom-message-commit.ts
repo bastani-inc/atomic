@@ -88,6 +88,18 @@ function startTurnIfPauseReleasedDuringAdmission(session: AgentSession, starter:
 	void turn.catch(() => {});
 }
 
+/**
+ * #5224: a child whose turn the user interrupted from its chat waits for their next message, and that message starts
+ * its next turn instead of only queueing for a task prompt that has already ended.
+ */
+function startTurnAfterInterrupt(session: AgentSession, starter: CustomMessage): void {
+	if (!session._awaitingMessageAfterInterrupt || session._queuedMessagesPaused) return;
+	if (session.isStreaming || session._isPreparingRun || session._activePromptCount > 0) return;
+	session._awaitingMessageAfterInterrupt = false;
+	const turn = session._runAgentPrompt([], undefined, undefined, false, starter);
+	void turn.catch(() => {});
+}
+
 /** Commit one delivery whose source generation already granted admission. */
 export async function commitAdmittedCustomMessage<T>(
 	session: AgentSession,
@@ -136,6 +148,7 @@ export async function commitAdmittedCustomMessage<T>(
 			} else {
 				self._queueAgentMessage(appMessage, delivery);
 			}
+			startTurnAfterInterrupt(self, appMessage);
 		} else if (self.isStreaming || self._isPreparingRun) {
 			self._pendingCustomMessages.push(appMessage);
 		} else {

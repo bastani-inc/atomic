@@ -50,6 +50,7 @@ import {
 } from "../runs/foreground/subagent-child-restore.js";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.js";
 import { resumeAwaitingSubagentChildren } from "../runs/foreground/subagent-run-control.js";
+import { bindSubagentTaskResumer } from "../runs/foreground/subagent-task-resumer.ts";
 import { getArtifactsDir } from "../shared/artifacts.js";
 import { formatDuration, shortenPath } from "../shared/formatters.js";
 import { resolveCurrentSessionId } from "../shared/session-identity.js";
@@ -487,6 +488,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			if (!isSubagentChildSession(ctx)) bindSubagentChildCards(ctx);
 		};
 		let stopReleasedChildWakes: (() => void) | undefined;
+		let stopTaskResumer: (() => void) | undefined;
 		pi.on("session_start", (event, ctx) => {
 			if (!lifecycle.isCurrent()) return;
 			if (releaseStartupCleanup === undefined && !isSubagentChildSession(ctx))
@@ -505,6 +507,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				void saveUnsavedSubagentChildRecords(pi, subagentChildOwner(ctx).sessionId);
 				// Released children wake through this session: their tool results, Intercom sends and asks (#4326).
 				stopReleasedChildWakes = bindReleasedChildWakes(executorDeps, ctx, pi.events);
+				// A finished child continues from its chat: the message the reader sends resumes it in its own session.
+				stopTaskResumer?.();
+				stopTaskResumer = bindSubagentTaskResumer(executorDeps, ctx);
 				if (opened) void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
 				if (opened)
 					void resumeAwaitingSubagentChildren(
@@ -574,6 +579,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		});
 		eventUnsubscribes.push(unsubscribeRunEnded);
 		pi.on("session_shutdown", (_event, ctx) => {
+			stopTaskResumer?.();
+			stopTaskResumer = undefined;
 			stopReleasedChildWakes?.();
 			stopReleasedChildWakes = undefined;
 			// Holds nothing took over end with the session; the broker also ends them when its connection closes.
