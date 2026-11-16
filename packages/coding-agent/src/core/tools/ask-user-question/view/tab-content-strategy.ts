@@ -1,6 +1,6 @@
 import { type Component, Container, Input, Spacer, Text, truncateToWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
-import { terminalDisplayCursor, terminalDisplayText } from "../../../../utils/terminal-text.ts";
+import { singleLineDisplayText, terminalDisplayCursor, terminalDisplayText } from "../../../../utils/terminal-text.ts";
 import { fieldTone, styleFieldTone } from "../state/selectors/field-tone.ts";
 import { formatAnswerScalar } from "../tool/format-answer.ts";
 import type { QuestionData } from "../tool/types.js";
@@ -88,7 +88,7 @@ export class QuestionTabStrategy implements TabContentStrategy {
 		const question = this.config.questions[state.currentTab];
 		// In multi-question mode the tab bar already shows the header; suppress the inline badge.
 		if (!this.config.isMulti && question?.header && question.header.length > 0) {
-			out.push(new Text(this.config.theme.bg("selectedBg", ` ${terminalDisplayText(question.header)} `), 0, 0));
+			out.push(new Text(this.config.theme.bg("selectedBg", ` ${singleLineDisplayText(question.header)} `), 0, 0));
 			out.push(new Spacer(1));
 		}
 		if (question) {
@@ -168,7 +168,7 @@ export class SubmitTabStrategy implements TabContentStrategy {
 			const q = this.config.questions[i];
 			const a = state.answers.get(i);
 			if (!a) continue;
-			const label = terminalDisplayText(q.header && q.header.length > 0 ? q.header : `Q${i + 1}`);
+			const label = singleLineDisplayText(q.header && q.header.length > 0 ? q.header : `Q${i + 1}`);
 			const answerText = terminalDisplayText(formatAnswerScalar(a, "summary"));
 			c.addChild(new Text(this.config.theme.fg("muted", ` ● ${label}`), 1, 0));
 			const { theme } = this.config;
@@ -195,7 +195,7 @@ export class SubmitTabStrategy implements TabContentStrategy {
 		for (let i = 0; i < this.config.questions.length; i++) {
 			const q = this.config.questions[i];
 			if (!state.answers.has(i)) {
-				missing.push(terminalDisplayText(q.header && q.header.length > 0 ? q.header : `Q${i + 1}`));
+				missing.push(singleLineDisplayText(q.header && q.header.length > 0 ? q.header : `Q${i + 1}`));
 			}
 		}
 		const promptText =

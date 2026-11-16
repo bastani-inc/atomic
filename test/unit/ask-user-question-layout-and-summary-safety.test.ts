@@ -137,6 +137,81 @@ describe("ask_user_question layout and summary safety (#5244)", () => {
 		assert.match(tab1Plain, /2\. \[ \] Option Two/);
 	});
 
+	test("collapses line breaks in Review headers and missing-question footer prompts so dialog rows stay one line per row (#5224)", () => {
+		const params: QuestionParams = {
+			questions: [
+				{
+					question: "First?",
+					header: "Nav\nX",
+					options: [
+						{ label: "A", description: "a" },
+						{ label: "B", description: "b" },
+					],
+				},
+				{
+					question: "Second?",
+					header: "Pkg\r\nZ",
+					options: [
+						{ label: "C", description: "c" },
+						{ label: "D", description: "d" },
+					],
+				},
+			],
+		};
+
+		const session = new QuestionnaireSession({
+			tui: { terminal: { columns: 80 }, requestRender() {} },
+			theme,
+			params,
+			itemsByTab: params.questions.map(buildItemsForQuestion),
+			done: () => {},
+		});
+
+		session.component.handleInput("\t");
+		session.component.handleInput("\t");
+		const reviewLines = session.component.render(80);
+		for (const line of reviewLines) {
+			assert.equal(/[\n\r]/.test(line), false, `unexpected line break in review row: ${JSON.stringify(line)}`);
+		}
+		const reviewPlain = reviewLines.map(stripAllowedStyling).join("\n");
+		assert.match(reviewPlain, /Answer remaining questions before submitting: Nav X, Pkg Z/);
+
+		session.component.handleInput("\t");
+		session.component.handleInput("\r");
+		session.component.handleInput("\t");
+		const answeredReviewLines = session.component.render(80);
+		for (const line of answeredReviewLines) {
+			assert.equal(
+				/[\n\r]/.test(line),
+				false,
+				`unexpected line break in answered review row: ${JSON.stringify(line)}`,
+			);
+		}
+		const answeredReviewPlain = answeredReviewLines.map(stripAllowedStyling).join("\n");
+		assert.match(answeredReviewPlain, /● Nav X/);
+		assert.match(answeredReviewPlain, /Answer remaining questions before submitting: Pkg Z/);
+
+		const singleParams: QuestionParams = {
+			questions: [params.questions[0]!],
+		};
+		const singleSession = new QuestionnaireSession({
+			tui: { terminal: { columns: 80 }, requestRender() {} },
+			theme,
+			params: singleParams,
+			itemsByTab: singleParams.questions.map(buildItemsForQuestion),
+			done: () => {},
+		});
+		const singleLines = singleSession.component.render(80);
+		for (const line of singleLines) {
+			assert.equal(
+				/[\n\r]/.test(line),
+				false,
+				`unexpected line break in single-question row: ${JSON.stringify(line)}`,
+			);
+		}
+		assert.match(singleLines.map(stripAllowedStyling).join("\n"), / Nav X /);
+	});
+
 	test("renders full error output and summaries when questions is missing or not an array (#5244)", () => {
 		const malformedCases: readonly unknown[] = [
 			undefined,

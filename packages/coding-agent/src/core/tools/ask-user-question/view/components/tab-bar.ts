@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
-import { terminalDisplayText } from "../../../../../utils/terminal-text.ts";
+import { singleLineDisplayText } from "../../../../../utils/terminal-text.ts";
 import type { StatefulView } from "../stateful-view.ts";
 
 /**
@@ -44,9 +44,7 @@ export class TabBar implements StatefulView<TabBarProps> {
 		const step = (label: string, active: boolean, done: boolean): string =>
 			active ? theme.bg("selectedBg", theme.fg("text", label)) : theme.fg(done ? "success" : "muted", label);
 		const steps = [
-			...this.props.tabs.map((tab) =>
-				step(terminalDisplayText(tab.label).replace(/\s+/gu, " "), tab.active, tab.answered),
-			),
+			...this.props.tabs.map((tab) => step(singleLineDisplayText(tab.label), tab.active, tab.answered)),
 			step("Review", this.props.submit.active, this.props.submit.allAnswered),
 		].join(theme.fg("dim", " ── "));
 		const activeIndex = this.props.tabs.findIndex((tab) => tab.active);

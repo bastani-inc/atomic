@@ -178,6 +178,10 @@ export function terminalDisplayText(text: string): string {
 	return escapeBidiControls(sanitizeTerminalText(text));
 }
 
+export function singleLineDisplayText(text: string): string {
+	return terminalDisplayText(text).replace(/\s+/gu, " ");
+}
+
 export function terminalDisplayCursor(text: string, cursor: number): number {
 	return escapeBidiControls(new TerminalTextSanitizer().write(text.slice(0, Math.max(0, cursor)))).length;
 }

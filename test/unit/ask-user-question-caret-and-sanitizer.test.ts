@@ -16,6 +16,8 @@ import {
 
 const DOWN = "\x1b[B";
 const LEFT = "\x1b[D";
+const RIGHT = "\x1b[C";
+const HOME = "\x1b[H";
 const ENTER = "\r";
 const SHIFT_TAB = "\x1b[Z";
 const paste = (text: string): string => `\x1b[200~${text}\x1b[201~`;
@@ -200,6 +202,126 @@ describe("ask_user_question sanitizer and editor caret regressions (#5244)", () 
 				true,
 				`expected ${JSON.stringify(expectedRow)} in ${JSON.stringify(row)}`,
 			);
+		}
+	});
+
+	test("inline custom and chat carets invert full grapheme clusters and snap merged sanitized clusters to start (#5224)", () => {
+		const previewParams: QuestionParams = {
+			questions: [
+				{
+					question: "Pick?",
+					header: "Nav",
+					options: [
+						{ label: "A", description: "a", preview: "preview A" },
+						{ label: "B", description: "b" },
+					],
+				},
+			],
+		};
+		const plainParams: QuestionParams = {
+			questions: [
+				{
+					question: "Pick plain?",
+					header: "Plain",
+					options: [
+						{ label: "A", description: "a" },
+						{ label: "B", description: "b" },
+					],
+				},
+			],
+		};
+		const editors = [
+			{ name: "other", params: plainParams, enterKeys: [DOWN, DOWN] },
+			{ name: "chat", params: previewParams, enterKeys: [DOWN, DOWN] },
+		] as const;
+		const clusters = ["🇺🇸", "👩\u200d💻", "👍🏽", "e\u0301", "\u1100\u1161"] as const;
+
+		for (const editor of editors) {
+			for (const cluster of clusters) {
+				const session = new QuestionnaireSession({
+					tui: { terminal: { columns: 200 }, requestRender() {} },
+					theme,
+					params: editor.params,
+					itemsByTab: editor.params.questions.map(buildItemsForQuestion),
+					done: () => {},
+				});
+				session.component.render(200);
+				for (const key of editor.enterKeys) session.component.handleInput(key);
+				session.component.handleInput(paste(`${cluster}b`));
+
+				const endLine = session.component.render(200).find((line) => line.includes("\x1b[7m"));
+				assert.ok(endLine, `${editor.name}: expected cursor row at end`);
+				assert.equal(
+					endLine.includes(`${cluster}b\x1b[7m \x1b[27m`),
+					true,
+					`${editor.name} ${JSON.stringify(cluster)} at end: ${JSON.stringify(endLine)}`,
+				);
+
+				session.component.handleInput(HOME);
+				const onHomeLine = session.component.render(200).find((line) => line.includes("\x1b[7m"));
+				assert.ok(onHomeLine, `${editor.name}: expected cursor row at home`);
+				assert.equal(
+					onHomeLine.includes(`\x1b[7m${cluster}\x1b[27mb`),
+					true,
+					`${editor.name} ${JSON.stringify(cluster)} at home: ${JSON.stringify(onHomeLine)}`,
+				);
+
+				session.component.handleInput("a");
+				session.component.handleInput(RIGHT);
+				const onBLine = session.component.render(200).find((line) => line.includes("\x1b[7m"));
+				assert.ok(onBLine, `${editor.name}: expected cursor row on b`);
+				assert.equal(
+					onBLine.includes(`a${cluster}\x1b[7mb\x1b[27m`),
+					true,
+					`${editor.name} ${JSON.stringify(cluster)} on b: ${JSON.stringify(onBLine)}`,
+				);
+
+				session.component.handleInput(LEFT);
+				const onClusterLine = session.component.render(200).find((line) => line.includes("\x1b[7m"));
+				assert.ok(onClusterLine, `${editor.name}: expected cursor row on cluster`);
+				assert.equal(
+					onClusterLine.includes(`a\x1b[7m${cluster}\x1b[27mb`),
+					true,
+					`${editor.name} ${JSON.stringify(cluster)} on cluster: ${JSON.stringify(onClusterLine)}`,
+				);
+			}
+
+			const session = new QuestionnaireSession({
+				tui: { terminal: { columns: 200 }, requestRender() {} },
+				theme,
+				params: editor.params,
+				itemsByTab: editor.params.questions.map(buildItemsForQuestion),
+				done: () => {},
+			});
+			session.component.render(200);
+			for (const key of editor.enterKeys) session.component.handleInput(key);
+			session.component.handleInput(paste("e\x1b[0m\u0301x"));
+
+			const pastedEndLine = session.component.render(200).find((line) => line.includes("\x1b[7m"));
+			assert.ok(pastedEndLine, `${editor.name}: expected cursor row after paste`);
+			assert.equal(pastedEndLine.includes("e\u0301x\x1b[7m \x1b[27m"), true);
+
+			session.component.handleInput(LEFT);
+			const onXLine = session.component.render(200).find((line) => line.includes("\x1b[7m"));
+			assert.ok(onXLine, `${editor.name}: expected cursor row on x`);
+			assert.equal(onXLine.includes("e\u0301\x1b[7mx\x1b[27m"), true);
+
+			for (let lefts = 2; lefts <= 6; lefts++) {
+				session.component.handleInput(LEFT);
+				const cursorLine = session.component.render(200).find((line) => line.includes("\x1b[7m"));
+				assert.ok(cursorLine, `${editor.name} lefts=${lefts}: expected cursor row`);
+				const beforeCaret = stripAllowedAnsi(cursorLine.slice(0, cursorLine.indexOf("\x1b[7m")));
+				assert.equal(
+					beforeCaret.endsWith("3. "),
+					true,
+					`${editor.name} lefts=${lefts} expected inverse to start before base e, got prefix ${JSON.stringify(beforeCaret)}`,
+				);
+				assert.equal(
+					cursorLine.includes("\x1b[7me\u0301\x1b[27mx"),
+					true,
+					`${editor.name} lefts=${lefts}: ${JSON.stringify(cursorLine)}`,
+				);
+			}
 		}
 	});
 });

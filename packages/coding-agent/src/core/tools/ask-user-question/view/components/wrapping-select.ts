@@ -58,6 +58,7 @@ export class WrappingSelect implements Component {
 	private static readonly CURSOR_INVERSE_END = "\x1b[27m";
 	private static readonly CONFIRMED_MARK = " ✔";
 	private static readonly MIN_CONTENT_WIDTH = 1;
+	private static readonly GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 	private readonly items: readonly WrappingSelectItem[];
 	private readonly maxVisible: number;
@@ -283,14 +284,16 @@ export class WrappingSelect implements Component {
 			text === this.inputBuffer
 				? rawCursor
 				: Math.min(terminalDisplayCursor(this.inputBuffer, rawCursor), text.length);
-		const before = text.slice(0, cursor);
-		const after = text.slice(cursor);
-		const [at = ""] = Array.from(after);
-		if (at === "") {
-			return `${before}${WrappingSelect.CURSOR_INVERSE_START} ${WrappingSelect.CURSOR_INVERSE_END}`;
+		if (cursor >= text.length) {
+			return `${text}${WrappingSelect.CURSOR_INVERSE_START} ${WrappingSelect.CURSOR_INVERSE_END}`;
 		}
-		const rest = after.slice(at.length);
-		return `${before}${WrappingSelect.CURSOR_INVERSE_START}${at}${WrappingSelect.CURSOR_INVERSE_END}${rest}`;
+		const cluster = WrappingSelect.GRAPHEME_SEGMENTER.segment(text).containing(cursor);
+		if (!cluster) {
+			return `${text}${WrappingSelect.CURSOR_INVERSE_START} ${WrappingSelect.CURSOR_INVERSE_END}`;
+		}
+		const before = text.slice(0, cluster.index);
+		const rest = text.slice(cluster.index + cluster.segment.length);
+		return `${before}${WrappingSelect.CURSOR_INVERSE_START}${cluster.segment}${WrappingSelect.CURSOR_INVERSE_END}${rest}`;
 	}
 
 	private clampInputCursor(cursor: number): number {

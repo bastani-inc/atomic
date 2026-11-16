@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
-import { terminalDisplayText } from "../../../../../utils/terminal-text.ts";
+import { singleLineDisplayText, terminalDisplayText } from "../../../../../utils/terminal-text.ts";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
 import { rowTone, styleFieldTone } from "../../state/selectors/field-tone.ts";
@@ -46,7 +46,7 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 			...question,
 			options: question.options.map((option) => ({
 				...option,
-				label: terminalDisplayText(option.label).replace(/\s+/gu, " "),
+				label: singleLineDisplayText(option.label),
 				description: terminalDisplayText(option.description),
 			})),
 		};
