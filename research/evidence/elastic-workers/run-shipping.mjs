@@ -328,6 +328,7 @@ function busiestHost(work, count) {
 
 async function trial(hosts, shipping) {
 	const work = mkdtempSync(join(tmpdir(), `ship-bench-${hosts}-`));
+	const work_ = work;
 	const log = [];
 	const shared = await openStore(work);
 	const prefix = `s${hosts}_${shipping === "sync" ? "sync" : "ship"}_`;
@@ -411,7 +412,32 @@ async function trial(hosts, shipping) {
 		clearTimeout(killer);
 		const cpuMs = shared.cpuMs() - cpuBefore;
 		const storeProfile = shared.profile();
-		if (code !== 0 || !existsSync(resultFile)) throw new Error(`root exited ${code}\n${rootLog.join("").slice(-6000)}`);
+		if (code !== 0 || !existsSync(resultFile)) {
+			// What was left unfinished, and what the hosts said, to tell a stuck child from a stuck root.
+			const work = await query(
+				shared.url,
+				`SELECT state, generation, worker, expires_at FROM ${prefix}wf_runs_work WHERE state <> 'completed'`,
+			).catch((error) => [{ error: String(error) }]);
+			const held = [];
+			for (let index = 0; index < hosts - remoteHosts; index++) {
+				const ship = join(work_, `host-${index}`, "workflows", "pool", "ship");
+				if (!existsSync(ship)) continue;
+				for (const file of readdirSync(ship, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".sqlite")))
+					try {
+						const local = new DatabaseSync(join(ship, file), { readOnly: true });
+						held.push({ host: `h${index}`, rows: local.prepare("SELECT work, generation, COUNT(*) AS n FROM ship_events GROUP BY work, generation").all() });
+						local.close();
+					} catch {}
+			}
+			throw new Error(
+				`root exited ${code}\nunfinished work: ${JSON.stringify(work)}\nunshipped: ${JSON.stringify(held)}\nroot: ${rootLog.join("").slice(-4000)}\nhosts: ${log
+					.join("")
+					.split("\n")
+					.filter((line) => !/ExperimentalWarning|trace-warnings|connection-refused/.test(line))
+					.join("\n")
+					.slice(-8000)}`,
+			);
+		}
 		const result = JSON.parse(readFileSync(resultFile, "utf8"));
 		const events = await query(
 			shared.url,
@@ -567,7 +593,7 @@ for (const hosts of hostCounts)
 			hosts,
 			shipping,
 			status: "error",
-			error: String(error?.message ?? error).slice(0, 4000),
+			error: String(error?.message ?? error).slice(0, 20000),
 		}));
 		process.stderr.write(`${JSON.stringify({ ...result, perHost: undefined })}\n`);
 		trials.push(result);
