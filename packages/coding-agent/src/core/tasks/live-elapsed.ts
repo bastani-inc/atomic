@@ -1,22 +1,25 @@
-/**
- * A task's elapsed time between its own reports, the same in every view (the agent panel, `/tasks`, its chat): one
- * process-wide record of when each running task was first seen, so views that open later agree with earlier ones,
- * and of the time it showed when it stopped running, so a finished row keeps it.
- */
+import type { AgentPanelState } from "./agent-panel-source.js";
+import type { Execution } from "./contracts.js";
 
-const seen = new Map<string, { readonly since: number; frozen?: number }>();
+export function taskClockRunning(state: Execution["kind"] | AgentPanelState): boolean {
+	return state === "running" || state === "cancelling" || state === "stopping" || state === "input";
+}
 
-/**
- * `reportedMs` advanced by the time since the task was first seen running. Once it stops running, the time it reached
- * stays (or `reportedMs`, when the task reports more).
- */
+type ElapsedClock = { readonly since: number; frozen?: number };
+type ClockReference = { readonly taskId: string; readonly reference: WeakRef<ElapsedClock> };
+
+const seen = new Map<string, WeakRef<ElapsedClock>>();
+const released = new FinalizationRegistry<ClockReference>(({ taskId, reference }) => {
+	if (seen.get(taskId) === reference) seen.delete(taskId);
+});
+
 export function liveElapsedMs(
 	taskId: string,
 	reportedMs: number | undefined,
 	running: boolean,
 	now = Date.now(),
 ): number | undefined {
-	let entry = seen.get(taskId);
+	let entry = seen.get(taskId)?.deref();
 	if (!running) {
 		if (entry === undefined) return reportedMs;
 		entry.frozen ??= now - entry.since;
@@ -24,7 +27,32 @@ export function liveElapsedMs(
 	}
 	if (entry === undefined || entry.frozen !== undefined) {
 		entry = { since: now - (reportedMs ?? 0) };
-		seen.set(taskId, entry);
+		const reference = new WeakRef(entry);
+		seen.set(taskId, reference);
+		released.register(entry, { taskId, reference });
 	}
 	return Math.max(reportedMs ?? 0, now - entry.since);
+}
+
+export class TaskElapsedClocks {
+	private readonly retained = new Map<string, ElapsedClock>();
+
+	elapsedMs(taskId: string, reportedMs: number | undefined, running: boolean, now = Date.now()): number | undefined {
+		const elapsedMs = liveElapsedMs(taskId, reportedMs, running, now);
+		const clock = seen.get(taskId)?.deref();
+		if (clock !== undefined) this.retained.set(taskId, clock);
+		return elapsedMs;
+	}
+
+	delete(taskId: string): void {
+		this.retained.delete(taskId);
+	}
+
+	prune(taskIds: ReadonlySet<string>): void {
+		for (const id of this.retained.keys()) if (!taskIds.has(id)) this.retained.delete(id);
+	}
+
+	clear(): void {
+		this.retained.clear();
+	}
 }

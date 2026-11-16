@@ -74,11 +74,59 @@ export function agentPanelRows(session: AgentPanelSession & object): AgentPanelR
 
 const WIDGET_KEY = "atomic.agent-panel";
 const TICK_MS = 1000;
+export const AGENT_PANEL_REFRESH_WINDOW_MS = 50;
+export const AGENT_PANEL_REFRESH_BUDGET_MS = 8;
+export const AGENT_PANEL_REFRESH_BURST = 4;
 
-/**
- * Mounts the unfocused panel below the prompt while it has rows, and keeps it current: task and run changes repaint
- * it, and a one-second tick advances elapsed times, the spinner and fading while anything is listed.
- */
+function budgetedPanelListener(listener: () => void): { listener: () => void; dispose(): void } {
+	let windowStart = Number.NEGATIVE_INFINITY;
+	let spent = 0;
+	let refreshes = 0;
+	let deferred: ReturnType<typeof setTimeout> | undefined;
+	const refresh = (): void => {
+		const began = performance.now();
+		if (began - windowStart >= AGENT_PANEL_REFRESH_WINDOW_MS) {
+			windowStart = began;
+			spent = 0;
+			refreshes = 0;
+		}
+		refreshes++;
+		try {
+			listener();
+		} finally {
+			spent += performance.now() - began;
+		}
+	};
+	return {
+		listener: () => {
+			if (deferred !== undefined) return;
+			const now = performance.now();
+			if (
+				now - windowStart >= AGENT_PANEL_REFRESH_WINDOW_MS ||
+				refreshes < AGENT_PANEL_REFRESH_BURST ||
+				spent < AGENT_PANEL_REFRESH_BUDGET_MS
+			) {
+				refresh();
+				return;
+			}
+			deferred = setTimeout(
+				() => {
+					deferred = undefined;
+					try {
+						refresh();
+					} catch {}
+				},
+				Math.max(0, windowStart + AGENT_PANEL_REFRESH_WINDOW_MS - now),
+			);
+			deferred.unref?.();
+		},
+		dispose: () => {
+			if (deferred !== undefined) clearTimeout(deferred);
+			deferred = undefined;
+		},
+	};
+}
+
 export function bindAgentPanel(
 	session: AgentPanelSession & object,
 	ui: Pick<ExtensionUIContext, "setWidget" | "requestRender"> & Partial<Pick<ExtensionUIContext, "onWidgetRelease">>,
@@ -95,8 +143,14 @@ export function bindAgentPanel(
 	};
 	const update = () => {
 		if (disposed) return;
+		if (!visible) {
+			if (mounted) ui.setWidget(WIDGET_KEY, undefined);
+			mounted = false;
+			stopTimer();
+			return;
+		}
 		const rows = agentPanelRows(session);
-		if (!visible || rows.length === 0) {
+		if (rows.length === 0) {
 			if (mounted) ui.setWidget(WIDGET_KEY, undefined);
 			mounted = false;
 			stopTimer();
@@ -123,18 +177,21 @@ export function bindAgentPanel(
 		timer.unref?.();
 		ui.requestRender();
 	};
-	const unsubscribe = subscribeAgentPanel(session, update);
+	const budgeted = budgetedPanelListener(update);
+	const unsubscribe = subscribeAgentPanel(session, budgeted.listener);
 	const unwatchRelease = ui.onWidgetRelease?.(WIDGET_KEY, () => {
 		mounted = false;
 	});
 	state.setVisible = (value) => {
 		visible = value;
+		if (!value) budgeted.dispose();
 		update();
 	};
 	update();
 	return () => {
 		disposed = true;
 		stopTimer();
+		budgeted.dispose();
 		state.setVisible = undefined;
 		unsubscribe();
 		unwatchRelease?.();

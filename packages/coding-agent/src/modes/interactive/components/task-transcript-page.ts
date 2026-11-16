@@ -1,7 +1,7 @@
 import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bastani/atomic-tui";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { liveElapsedMs } from "../../../core/tasks/live-elapsed.ts";
+import { TaskElapsedClocks, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import {
@@ -126,6 +126,7 @@ async function settled<T>(read: T | Promise<T>): Promise<T> {
  * the task through its Intercom target.
  */
 export class TaskAgentTranscriptPage implements TaskTranscriptPage {
+	private readonly elapsedClocks = new TaskElapsedClocks();
 	readonly chat: ChatSessionHost;
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
@@ -325,8 +326,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 							? "running"
 							: // The clock the agent panel and /tasks share, so all three agree.
 								formatPanelElapsed(
-									liveElapsedMs(task.ref.taskId, task.metrics.elapsedMs, task.execution.kind === "running") ??
+									this.elapsedClocks.elapsedMs(
+										task.ref.taskId,
 										task.metrics.elapsedMs,
+										taskClockRunning(task.execution.kind),
+									) ?? task.metrics.elapsedMs,
 								);
 		const stopped = this.source.taskStopped?.(this.taskId) === true;
 		const label = [name, task?.title ? taskDisplayText(task.title) : "", stopped ? "stopped" : (state ?? "")]
@@ -366,6 +370,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		this.chat.dispose();
+		this.elapsedClocks.clear();
 	}
 
 	hasDraft(): boolean {

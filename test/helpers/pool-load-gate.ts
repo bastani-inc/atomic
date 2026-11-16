@@ -269,7 +269,9 @@ export async function runPoolLoadGate(watches: 0 | 1, options: { readonly pane?:
 	const disposeRootSurfaces =
 		options.pane === true
 			? (() => {
-					const disposeWidget = store.subscribeInvalidation(() => void panelItemsFromSnapshot(store.runs()));
+					const disposeWidget = store.subscribeInvalidation(
+						() => void panelItemsFromSnapshot(store.graphSnapshot().runs),
+					);
 					installToolExecutionHooks({ events: { on: () => {} } }, store);
 					const observation = createWorkflowObservation(
 						store,

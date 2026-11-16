@@ -123,7 +123,7 @@ export function stateGlyph(state: TaskBoardState): Glyph {
 /** `87.4k`, as rows and the panel show token counts. */
 export function compactTokens(tokens: number): string {
 	if (tokens < 1000) return String(tokens);
-	if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(1)}k`;
+	if (tokens < 999_950) return `${(tokens / 1000).toFixed(1)}k`;
 	return `${(tokens / 1_000_000).toFixed(1)}M`;
 }
 

@@ -14,7 +14,10 @@ export function deferredTaskValue<T>() {
 	});
 	return { promise, resolve };
 }
-export function taskFixture(scope: C.OwnerScope = { kind: "session", sessionId: randomUUID() }) {
+export function taskFixture(
+	scope: C.OwnerScope = { kind: "session", sessionId: randomUUID() },
+	options: { settleOnAbort?: boolean } = {},
+) {
 	const supervisor = new TaskSupervisor();
 	const runners: Array<{ context: FakeRunnerContext; result: ReturnType<typeof deferredTaskValue<C.TaskResult>> }> =
 		[];
@@ -24,9 +27,14 @@ export function taskFixture(scope: C.OwnerScope = { kind: "session", sessionId: 
 		createRunner(context) {
 			const result = deferredTaskValue<C.TaskResult>();
 			runners.push({ context, result });
-			context.signal.addEventListener("abort", () => result.resolve({ kind: "cancelled", cause: "owner-close" }), {
-				once: true,
-			});
+			if (options.settleOnAbort !== false)
+				context.signal.addEventListener(
+					"abort",
+					() => result.resolve({ kind: "cancelled", cause: "owner-close" }),
+					{
+						once: true,
+					},
+				);
 			return { result: result.promise, cleanup: Promise.resolve({ kind: "reaped" as const }) };
 		},
 	});
@@ -58,6 +66,7 @@ export function taskFixture(scope: C.OwnerScope = { kind: "session", sessionId: 
 			store.drain();
 		},
 		async dispose() {
+			for (const runner of runners) runner.result.resolve({ kind: "cancelled", cause: "owner-close" });
 			store.dispose();
 			taskValue(await supervisor.closeTaskOwner(owner, "session-close"));
 		},

@@ -1,5 +1,5 @@
 import { agentPanelTaskId } from "../../../core/tasks/agent-panel-source.ts";
-import { liveElapsedMs } from "../../../core/tasks/live-elapsed.ts";
+import { TaskElapsedClocks, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
 /**
  * The agent panel below the main chat's prompt: one row per running or recent subagent, workflow run and background
  * shell. Unfocused it is a quiet status block; ↓ on an empty prompt focuses it, and then it is a list like every other
@@ -51,7 +51,7 @@ export function formatPanelElapsed(ms: number): string {
 
 /** `96.1k`, `1.2M`, `812`: a token count as the panel shows it. */
 export function formatPanelTokens(tokens: number): string {
-	if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+	if (tokens >= 999_950) return `${(tokens / 1_000_000).toFixed(1)}M`;
 	if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
 	return String(tokens);
 }
@@ -69,6 +69,7 @@ export function panelProgressBar(done: number, total: number, cells = 16): strin
  */
 export class AgentPanelModel {
 	private readonly finishedAt = new Map<string, number>();
+	private readonly elapsedClocks = new TaskElapsedClocks();
 	private readonly now: () => number;
 	constructor(now: () => number = Date.now) {
 		this.now = now;
@@ -80,6 +81,7 @@ export class AgentPanelModel {
 	rows(rows: readonly AgentPanelRow[], keep: (row: AgentPanelRow) => boolean = () => false): AgentPanelRow[] {
 		const now = this.now();
 		const live = new Set(rows.map((row) => row.id));
+		this.elapsedClocks.prune(new Set(rows.map((row) => agentPanelTaskId(row.id) ?? row.id)));
 		for (const id of this.finishedAt.keys()) if (!live.has(id)) this.finishedAt.delete(id);
 		const rank = (row: AgentPanelRow) =>
 			row.state === "input" ? 0 : row.state === "running" ? 1 : isFinishedPanelRow(row) ? 3 : 2;
@@ -96,7 +98,7 @@ export class AgentPanelModel {
 				if (row.kind === "workflow" || row.state === "queued") return row;
 				// One clock for every view of the task, so the panel and /tasks agree; a finished row keeps its time.
 				const taskId = agentPanelTaskId(row.id) ?? row.id;
-				const elapsedMs = liveElapsedMs(taskId, row.elapsedMs, !isFinishedPanelRow(row), now);
+				const elapsedMs = this.elapsedClocks.elapsedMs(taskId, row.elapsedMs, taskClockRunning(row.state), now);
 				return elapsedMs === undefined ? row : { ...row, elapsedMs };
 			})
 			.map((row, index) => ({ row, index }))

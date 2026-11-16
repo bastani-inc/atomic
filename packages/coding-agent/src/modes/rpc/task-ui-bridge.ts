@@ -2,13 +2,14 @@ import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import {
-	agentPanelItems,
+	type AgentPanelSession,
+	agentPanelExtensionItems,
 	agentPanelTaskId,
 	answerAgentPanelItem,
 	dismissedAgentPanelItems,
 	openAgentPanelItem,
 	stopAgentPanelItem,
-	subscribeAgentPanel,
+	subscribeAgentPanelExtensions,
 } from "../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
@@ -57,14 +58,10 @@ export function engineTaskInspectorUi(
 	};
 }
 
-/**
- * The /tasks rows of `session` that are not its own tasks, such as workflow runs, read through the agent panel so
- * /tasks and the panel always agree, with their open, stop and answer actions and the panel's dismissals.
- */
-export function agentPanelBoardSource(session: AgentSession): TaskBoardSource {
+export function agentPanelBoardSource(session: AgentPanelSession & object): TaskBoardSource {
 	return {
-		items: () => agentPanelItems(session).filter((item) => agentPanelTaskId(item.id) === undefined),
-		subscribe: (listener) => subscribeAgentPanel(session, listener),
+		items: () => agentPanelExtensionItems(session).filter((item) => agentPanelTaskId(item.id) === undefined),
+		subscribe: (listener) => subscribeAgentPanelExtensions(session, listener),
 		open: (id, options) => {
 			openAgentPanelItem(session, id, options);
 		},

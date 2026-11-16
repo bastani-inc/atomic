@@ -48,7 +48,7 @@ Run `/tasks` to inspect work without stopping it:
 
 - The list opens in the editor slot, with the conversation visible above it. It lists the subagents and shells that chat owns and the session's workflow runs, running and finished.
 - Its header counts them, for example `Tasks  1 needs input · 3 working · 2 done`, and the rows are grouped **Needs input**, **Working** and **Done**. Each row shows its status mark, its name and task, and on the right how long it has waited, run or took, with its tokens. A failed workflow run adds a short reason. The selected subagent also shows its model and what it is doing now.
-- Space on a workflow run, or on a row waiting for an answer, opens a peek card under the row: a waiting row's exact question with its numbered choices and a reply box (a number fills in that choice; Enter sends it), or a run's stage and status. Escape closes the card. Space on any other task opens its detail page.
+- Space on a workflow run opens a peek card under the row. A waiting run shows its question, visible numbered choices and a reply box. A number fills in the corresponding visible choice; Enter sends the reply. Escape closes the card and keeps an unsent draft. While the reply is sending, keys wait until it finishes. Space on a subagent or shell opens its detail page; a waiting subagent's **Open question** action takes you to its question.
 - `/` filters the list by name or task; Enter keeps the filter and Escape clears it.
 - Detail, transcript, input, and cancellation-confirmation pages use the full screen.
 - Escape returns to the picker with your selection preserved, then to chat.
@@ -234,7 +234,7 @@ The cadence is fixed when the task starts, and a running task's `/tasks` detail 
 
 | View | Controls |
 | --- | --- |
-| Task list | Up/Down selects; Enter or Right opens the task's chat (a shell's output, a workflow run's graph); Space opens a peek card for a workflow run or a row waiting for an answer, and the detail page of any other task; `/` filters; `x` stops the selected task or run when pressed twice within 3 seconds, and dismisses a finished one with one press; `?` lists the keys; Escape or Left returns to chat. |
+| Task list | Up/Down selects; Enter or Right opens the task's chat (a shell's output, a workflow run's graph); Space opens a peek card for a workflow run, and the detail page of a subagent or shell; `/` filters; `x` stops the selected task or run when pressed twice within 3 seconds, and dismisses a finished one with one press; `?` lists the keys; Escape or Left returns to chat. |
 | Task detail | Up/Down selects an action; Enter activates it; PageUp/PageDown scrolls the body. |
 | Transcript | Scrolls like a workflow stage chat: it opens at the latest message and follows new output; PageUp/PageDown move one viewport; Ctrl+Home/Ctrl+End jump to the top and to the latest message; Ctrl+Up/Ctrl+Down jump between prompts; the mouse wheel scrolls (Alt+wheel five times faster). Earlier retained history loads as you scroll toward the top. |
 | Transcript display | A transcript opens with the chat's thinking and tool-output settings. Ctrl+T toggles thinking blocks, as in the chat, and Ctrl+O toggles the transcript's tool output. |

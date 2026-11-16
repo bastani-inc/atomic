@@ -9,6 +9,7 @@ import type {
 	WaitError,
 	WatchError,
 } from "./contracts.js";
+import { TaskElapsedClocks, taskClockRunning } from "./live-elapsed.js";
 import type { OwnerLease, TaskLease, TaskSubscription, TaskSupervisor } from "./supervisor.js";
 
 /** Activity previews are bounded independently of authoritative session history. */
@@ -37,6 +38,7 @@ export class OwnerTaskStore {
 	private omittedActivity = new Set<TaskId>();
 	private backgroundIds = new Set<TaskId>();
 	private settlements = new Map<TaskId, bigint>();
+	private readonly elapsedClocks = new TaskElapsedClocks();
 	readonly anchors = new Map<TaskId, TaskAnchor>();
 	private current?: OwnerSnapshot;
 	readonly supervisor: TaskSupervisor;
@@ -117,6 +119,16 @@ export class OwnerTaskStore {
 				this.settlements.set(event.payload.ref.taskId, BigInt(event.cursor.sequence));
 		for (const task of snapshot.tasks) {
 			const previous = this.records.get(task.ref.taskId);
+			if (
+				previous?.execution.kind !== "settled" &&
+				task.execution.kind !== "queued" &&
+				previous?.execution.kind !== task.execution.kind
+			)
+				this.elapsedClocks.elapsedMs(
+					task.ref.taskId,
+					task.metrics?.elapsedMs,
+					taskClockRunning(task.execution.kind),
+				);
 			if (isBackground(task.observation) || isBackground(previous?.observation))
 				this.backgroundIds.add(task.ref.taskId);
 			// Native settlement is immutable, even when recovering a view from a snapshot.
@@ -142,6 +154,7 @@ export class OwnerTaskStore {
 		for (const id of [...this.records.keys()]) {
 			if (retained.has(id)) continue;
 			this.records.delete(id);
+			this.elapsedClocks.delete(id);
 			this.settlements.delete(id);
 			this.anchors.delete(id);
 			this.backgroundIds.delete(id);
