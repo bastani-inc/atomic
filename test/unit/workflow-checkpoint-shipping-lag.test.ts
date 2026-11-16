@@ -507,3 +507,171 @@ test("an attempt with expensive checkpoints schedules its catch-ups from its own
 	assert.ok(worstLagMs[0]! <= ADAPTIVE_MAX_LAG_MS, `cheap attempt worst lag ${Math.round(worstLagMs[0]!)} ms`);
 	assert.ok(worstLagMs[1]! <= ADAPTIVE_MAX_LAG_MS, `expensive attempt worst lag ${Math.round(worstLagMs[1]!)} ms`);
 });
+
+test("a new attempt after timed host catch-ups and four singles keeps a burst of 1000 steps within maxLagMs (#5194)", async () => {
+	const { firstCatchUps, singlesBeforeBurst, firstWorstLagMs, secondWorstLagMs } = await withControlledTime(
+		async (shard) => {
+			const deliveries: { readonly workId: string; readonly size: number }[] = [];
+			const acknowledged = new Map<string, { readonly workId: string; readonly at: number }>();
+			const recorded = new Map<string, number>();
+			const shipping = new CheckpointShipping(shard, {
+				intervalMs: 2_000,
+				maxBatch: 64,
+				maxLagMs: ADAPTIVE_MAX_LAG_MS,
+				host: "host",
+				deliver: async (attempt, batch) => {
+					await waitForTimer(20 + 3 * batch.events.length);
+					deliveries.push({ workId: attempt.id, size: batch.events.length });
+					const at = performance.now();
+					for (const event of batch.events) {
+						assert.equal(recorded.has(event.key), false, "each checkpoint is delivered once");
+						recorded.set(event.key, at);
+					}
+				},
+			});
+			opened.push(shipping);
+			const began = performance.now();
+			shipping.start();
+			const at = (ms: number) => waitForTimer(Math.max(0, began + ms - performance.now()));
+			let nextStep = 0;
+			const commitSteps = async (
+				lease: {
+					readonly id: string;
+					readonly generation: number;
+					readonly worker: string;
+					readonly epoch: number;
+				},
+				count: number,
+			) => {
+				for (let index = 0; index < count; index++) {
+					const id = `${lease.id}:${nextStep++}`;
+					await shipping.commit(lease, checkpoint(id), async () => assert.fail("a plain checkpoint ships"));
+					acknowledged.set(JSON.stringify(["CheckpointRecorded", "tool", `scope:${id}`]), {
+						workId: lease.id,
+						at: performance.now(),
+					});
+				}
+			};
+			const firstLease = { id: "work-0", generation: 1, worker: "host/0", epoch: 1 };
+			await shipping.hold(firstLease, LEASE_MS);
+			for (const second of [1, 6]) {
+				await at(second * 1_000 + 50);
+				await commitSteps(firstLease, 392);
+			}
+			await at(10_300);
+			await shipping.flushAll();
+			await shipping.release(firstLease);
+			const secondLease = { id: "work-1", generation: 1, worker: "host/1", epoch: 1 };
+			await shipping.hold(secondLease, LEASE_MS);
+			for (const second of [11, 12, 13, 14]) {
+				await at(second * 1_000 - 10);
+				await commitSteps(secondLease, 1);
+			}
+			await at(14_005);
+			const inFlight = deliveries.length + 1;
+			await commitSteps(secondLease, 1_000);
+			await at(24_000);
+			await shipping.flushAll();
+			let firstWorstLagMs = 0;
+			let secondWorstLagMs = 0;
+			for (const [key, accepted] of acknowledged) {
+				const shipped = recorded.get(key);
+				assert.ok(shipped !== undefined, `${key} was shipped`);
+				const lagMs = shipped - accepted.at;
+				if (accepted.workId === firstLease.id) firstWorstLagMs = Math.max(firstWorstLagMs, lagMs);
+				else secondWorstLagMs = Math.max(secondWorstLagMs, lagMs);
+			}
+			return {
+				firstCatchUps: deliveries
+					.filter((batch) => batch.workId === firstLease.id && batch.size > 64)
+					.map((batch) => batch.size),
+				singlesBeforeBurst: deliveries
+					.slice(0, inFlight)
+					.filter((batch) => batch.workId === secondLease.id)
+					.map((batch) => batch.size),
+				firstWorstLagMs,
+				secondWorstLagMs,
+			};
+		},
+		80_000,
+	);
+	assert.deepEqual(firstCatchUps, [200, 200], `first attempt catch-ups: ${firstCatchUps.join(", ")}`);
+	assert.deepEqual(singlesBeforeBurst, [1, 1, 1, 1], "second attempt shipped four singles before the burst");
+	assert.ok(firstWorstLagMs <= ADAPTIVE_MAX_LAG_MS, `first attempt worst lag ${Math.round(firstWorstLagMs)} ms`);
+	assert.ok(secondWorstLagMs <= ADAPTIVE_MAX_LAG_MS, `second attempt worst lag ${Math.round(secondWorstLagMs)} ms`);
+});
+
+for (const { maxBatch, every, offset } of [
+	{ maxBatch: ADAPTIVE_MAX_BATCH, every: 10, offset: 3 },
+	{ maxBatch: 64, every: 7, offset: 0 },
+])
+	test(`periodic slower deliveries every ${every} shipments (maxBatch ${maxBatch}, offset ${offset}) keep checkpoints within maxLagMs after the second urgent catch-up (#5194)`, async () => {
+		const { urgentCount, stepsAfterSecondCatchUp, overTargetAfterSecondCatchUp, worstLagAfterSecondCatchUpMs } =
+			await withControlledTime(async (shard) => {
+				const acknowledged = new Map<string, number>();
+				const recorded = new Map<string, number>();
+				const urgentEndedAt: number[] = [];
+				let deliveryIndex = 0;
+				const shipping = new CheckpointShipping(shard, {
+					intervalMs: 2_000,
+					maxBatch,
+					maxLagMs: ADAPTIVE_MAX_LAG_MS,
+					host: "host",
+					deliver: async (_attempt, batch) => {
+						const factor = (deliveryIndex + offset) % every === every - 1 ? 1.6 : 1;
+						deliveryIndex++;
+						await waitForTimer((20 + 3 * batch.events.length) * factor);
+						const at = performance.now();
+						if (batch.events.length > maxBatch) urgentEndedAt.push(at);
+						for (const event of batch.events) {
+							assert.equal(recorded.has(event.key), false, "each checkpoint is delivered once");
+							recorded.set(event.key, at);
+						}
+					},
+				});
+				opened.push(shipping);
+				shipping.start();
+				const lease = { id: "work-0", generation: 1, worker: "host/0", epoch: 1 };
+				await shipping.hold(lease, LEASE_MS);
+				const began = performance.now();
+				for (let step = 0; performance.now() - began < 40_000; ) {
+					for (let index = 0; index < 12; index++, step++) {
+						const id = `0:${step}`;
+						await shipping.commit(lease, checkpoint(id), async () => assert.fail("a plain checkpoint ships"));
+						acknowledged.set(JSON.stringify(["CheckpointRecorded", "tool", `scope:${id}`]), performance.now());
+					}
+					await waitForTimer(STEP_MS);
+				}
+				await shipping.flushAll();
+				const warmedAt = urgentEndedAt[1] ?? Number.POSITIVE_INFINITY;
+				let stepsAfterSecondCatchUp = 0;
+				let overTargetAfterSecondCatchUp = 0;
+				let worstLagAfterSecondCatchUpMs = 0;
+				for (const [key, acceptedAt] of acknowledged) {
+					const shippedAt = recorded.get(key);
+					assert.ok(shippedAt !== undefined, `${key} was shipped`);
+					if (acceptedAt <= warmedAt) continue;
+					stepsAfterSecondCatchUp++;
+					const lagMs = shippedAt - acceptedAt;
+					worstLagAfterSecondCatchUpMs = Math.max(worstLagAfterSecondCatchUpMs, lagMs);
+					if (lagMs > ADAPTIVE_MAX_LAG_MS) overTargetAfterSecondCatchUp++;
+				}
+				return {
+					urgentCount: urgentEndedAt.length,
+					stepsAfterSecondCatchUp,
+					overTargetAfterSecondCatchUp,
+					worstLagAfterSecondCatchUpMs,
+				};
+			}, 150_000);
+		assert.ok(urgentCount >= 3, `expected at least 3 urgent catch-up deliveries, got ${urgentCount}`);
+		assert.ok(stepsAfterSecondCatchUp >= 10_000, `steps after second urgent catch-up: ${stepsAfterSecondCatchUp}`);
+		assert.equal(
+			overTargetAfterSecondCatchUp,
+			0,
+			`${overTargetAfterSecondCatchUp} checkpoints exceeded maxLagMs (worst lag ${Math.round(worstLagAfterSecondCatchUpMs)} ms)`,
+		);
+		assert.ok(
+			worstLagAfterSecondCatchUpMs <= ADAPTIVE_MAX_LAG_MS,
+			`worst lag after second urgent catch-up ${Math.round(worstLagAfterSecondCatchUpMs)} ms`,
+		);
+	});

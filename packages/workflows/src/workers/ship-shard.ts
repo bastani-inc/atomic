@@ -188,8 +188,12 @@ export class ShipShard {
 		});
 	}
 
-	release(work: Pick<AttemptLease, "id" | "generation">): void {
-		if (this.leases.get(work.id)?.lease.generation === work.generation) {
+	release(work: Pick<AttemptLease, "id" | "generation"> & Partial<Pick<AttemptLease, "worker">>): void {
+		const held = this.leases.get(work.id);
+		if (
+			held?.lease.generation === work.generation &&
+			(work.worker === undefined || held.lease.worker === work.worker)
+		) {
 			this.leases.delete(work.id);
 		}
 	}

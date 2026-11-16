@@ -543,8 +543,8 @@ export class SqlPoolQueue {
 	}
 	/**
 	 * The statements that set up the pool's tables, in order: the meta table, then the tables, indexes and triggers in
-	 * groups, each sent as one `exec`; the chunk tables that `addChunks` creates; and the outbox of a pool whose journal
-	 * is in another database.
+	 * groups, each sent as one `exec`; the chunk tables that `addChunks` creates; the shipping ledger and watermarks;
+	 * and the outbox of a pool whose journal is in another database.
 	 */
 	private schema(): PoolSchemaStatements {
 		const journal = this.storage.tables;

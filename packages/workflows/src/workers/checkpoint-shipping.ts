@@ -223,9 +223,14 @@ export class CheckpointShipping {
 	 * The attempt ended or lost its work: what it accepted is shipped first, while its lease may still hold, and then the
 	 * host accepts nothing more for it.
 	 */
-	async release(work: Pick<AttemptLease, "id" | "generation">): Promise<void> {
+	async release(work: Pick<AttemptLease, "id" | "generation"> & Partial<Pick<AttemptLease, "worker">>): Promise<void> {
 		const attempt = this.attempts.get(work.id);
-		if (attempt !== undefined && attempt.lease.generation !== work.generation) return;
+		if (
+			attempt !== undefined &&
+			(attempt.lease.generation !== work.generation ||
+				(work.worker !== undefined && attempt.lease.worker !== work.worker))
+		)
+			return;
 		if (attempt !== undefined)
 			for (let tries = 1; ; tries++) {
 				try {
@@ -345,10 +350,20 @@ export class CheckpointShipping {
 			catchUpSize <= this.options.maxBatch
 				? normal
 				: urgentTiming === undefined || urgentTiming.count < 2
-					? Math.max(urgentEstimate ?? 0, initialGuess)
+					? Math.max(urgentEstimate ?? 0, initialGuess, this.hostTimedCatchUpMs(catchUpSize))
 					: timedCatchUpMs(normal, normalTiming, urgentTiming, catchUpSize);
 		const remainingMs = Math.ceil(pending / URGENT_BATCH_CAP) * catchUpEstimate;
 		return Math.max(0, this.options.maxLagMs - normal - remainingMs - SCHEDULING_MARGIN_MS);
+	}
+
+	private hostTimedCatchUpMs(size: number): number {
+		if (size <= this.options.maxBatch || this.urgentTiming.count < 2) return 0;
+		return timedCatchUpMs(
+			this.normalTiming.estimate() ?? this.urgentTiming.estimate()!,
+			this.normalTiming,
+			this.urgentTiming,
+			size,
+		);
 	}
 
 	/**
@@ -622,5 +637,9 @@ function timedCatchUpMs(normal: number, normalTiming: DeliveryTiming, urgentTimi
 	if (normalMs === undefined || normalSize === undefined)
 		return Math.max(urgentTiming.estimate()!, (urgentMs / urgentSize) * size);
 	const marginalMs = urgentSize > normalSize ? Math.max(0, (urgentMs - normalMs) / (urgentSize - normalSize)) : 0;
-	return normal + marginalMs * Math.max(0, size - normalSize);
+	return (
+		normal +
+		marginalMs * Math.max(0, size - normalSize) +
+		Math.max(0, urgentTiming.estimate()! - urgentMs) * (size / urgentSize)
+	);
 }
