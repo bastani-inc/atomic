@@ -114,7 +114,7 @@ export async function runParallelPath(
 
 	const workflowStageSubagentGuard = isWorkflowStageOrchestrationContext(ctx);
 
-	if (params.worktree) {
+	if (params.worktree === true) {
 		const worktreeTaskCwdError = buildParallelWorktreeTaskCwdError(tasks, effectiveCwd);
 		if (worktreeTaskCwdError) return buildParallelModeError(worktreeTaskCwdError);
 	}
@@ -188,7 +188,7 @@ export async function runParallelPath(
 	const liveProgress: (AgentProgress | undefined)[] = new Array(tasks.length).fill(undefined);
 	const foregroundControl = deps.state.foregroundControls.get(runId);
 	const { setup: worktreeSetup, errorResult } = createParallelWorktreeSetup(
-		params.worktree,
+		params.worktree === true,
 		effectiveCwd,
 		runId,
 		tasks,

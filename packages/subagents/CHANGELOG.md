@@ -2,8 +2,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- Single and parallel `subagent` calls, and each parallel task, accept `worktree: { branch, base?, path? }`: before the child starts, the branch is checked out in a worktree at `path` (default `.atomic/worktrees/<branch>`), created from `base` (default the upstream, or `HEAD`) or reused when that branch is already checked out there. The call is refused before launch when the branch is checked out elsewhere or the path holds something else. Unlike `worktree: true`, a named worktree and its branch are never removed; it is recorded with the child, so the restore notice names it and resume continues in it ([#5202](https://github.com/bastani-inc/atomic/issues/5202))
+
+### Changed
+
+- A launch whose `cwd` does not exist is refused before any child starts, and the error says the directory may still be being created by a parallel tool call in the same turn: launch after that call returns, or use `worktree: { branch, base?, path? }` ([#5202](https://github.com/bastani-inc/atomic/issues/5202))
+
 ### Fixed
 
+- Fixed a subagent whose final answer its session could not save, for example on a full disk, being reported as completed with no result ([#5210](https://github.com/bastani-inc/atomic/issues/5210)). It now fails with a cause that names the storage error. Its completion card, `/tasks` output and transcript, and its parent's result still show the answer it gave. Resuming it continues after that answer, which its session then holds once.
+- Fixed a long supervising session slowing down until new subagents failed to start with `session-start-timeout` in phase `setup` ([#5186](https://github.com/bastani-inc/atomic/issues/5186)). The cost of a session now follows the subagents running in it, not every one it ever launched:
+  - A finished subagent no longer keeps its whole history in memory, or the text of every skill file it loaded. `/tasks`, its transcript, its completion card and `resume` read its history back from its session file when they need it. Reading it never writes: if the file was moved or deleted, `/tasks` and the completion card still show its prompt and answer, its transcript says the history is unavailable, and `resume` reports the missing file.
+  - A finished subagent no longer leaves a 10-minute timer behind. The startup cleanup scans now run once per Atomic process, not once per subagent.
+  - A finished subagent's output is no longer kept by its run after it has been delivered. Its result stays on disk with the run's artifacts.
+  - Looking up a subagent by id no longer lists every run's children, and reading a task's record no longer copies the record of every task the session keeps.
+  With 500 subagents launched in batches of 12 (a scripted model, each subagent reading a 64 KiB file twice), the session's heap grew 59 MB between 48 and 500 finished subagents before the fix and 9 MB after it. A new subagent took 2.6 s to start with 500 finished, against 0.44 s with 48, before the fix, and 0.62 s against 0.32 s after it.
 - Subagent artifacts written outside a session now use a directory only the current user owns
 - Fixed tool results a wake or a resume brings a released subagent being lost or delivered twice ([#5012](https://github.com/bastani-inc/atomic/issues/5012)). Pausing or quitting it before it saved them no longer deletes them: only the results it saved are cleared, and the rest are handed over once when it resumes, also when they came batched with a `resume`. Results it saved before Atomic closed, or before its run failed, are reported as saved as soon as they are written and are no longer given to it again, as "late" results, when it is restored or woken.
 - Fixed a detached call that a wake answered "still running" being forgotten across an Atomic restart ([#5014](https://github.com/bastani-inc/atomic/issues/5014)). The subagent's record now keeps such calls, across later runs and releases, until the result arrives; after a restart the subagent is told once that the call was interrupted, whether the restart came before or after it saved the wake's results, and a subagent that had already finished is woken to hear it.

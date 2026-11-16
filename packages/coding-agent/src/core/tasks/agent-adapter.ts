@@ -191,6 +191,11 @@ export class AgentTaskHost {
 		return this.supervisor.watchOwnerTasks(this.owner, cursor);
 	}
 
+	/** This owner's current records of the tasks `ids` names, or of all, without a fresh snapshot of them (#5186). */
+	taskRecords(ids?: ReadonlySet<C.TaskId>): readonly C.TaskRecord[] {
+		return this.supervisor.taskRecords(this.owner, ids);
+	}
+
 	reportSettledTasks(): void {
 		this.supervisor.reportSettledTasks(this.owner);
 	}

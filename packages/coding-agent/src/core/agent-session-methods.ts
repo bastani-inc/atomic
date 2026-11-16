@@ -16,6 +16,7 @@ import type {
 	ForegroundBackgroundCompaction,
 } from "./agent-session-background-compaction.ts";
 import type { DetachedToolCall, DetachedToolResult, ToolDetachmentPolicy } from "./agent-session-detached-tools.ts";
+import type { PersistenceFailure } from "./agent-session-persistence-failures.ts";
 import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import type { RecordedToolLoadout } from "./agent-session-state.ts";
 import type {
@@ -474,6 +475,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	closeWorkflowStageGeneration(): Promise<void>;
 	transferWorkflowStageDeliveriesTo(target: object): void;
 	hasExtensionHandlers(eventType: string): boolean;
+	getPersistenceFailure(): PersistenceFailure | undefined;
 }
 
 export interface AgentSessionPublicSurface
@@ -578,6 +580,7 @@ export interface AgentSessionPublicSurface
 		| "getLastAssistantText"
 		| "createReplacedSessionContext"
 		| "hasExtensionHandlers"
+		| "getPersistenceFailure"
 	> {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;

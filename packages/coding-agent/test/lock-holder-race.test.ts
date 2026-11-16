@@ -71,14 +71,26 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 const { lockHolderPath, takeOverDeadHolder } = await import("../src/core/lock-holder.ts");
-const { takeoverMutexPath, takeTakeoverMutex, TAKEOVER_MUTEX_STALE_MS } = await import("../src/core/lock-takeover.ts");
+const { setNativeLocksForTesting, takeoverMutexPath, takeTakeoverMutex, TAKEOVER_MUTEX_STALE_MS } = await import(
+	"../src/core/lock-takeover.ts"
+);
 const { lockHolder } = await import("../src/core/lock-wait.ts");
 
 const LOCK_HOLDER_MODULE = fileURLToPath(new URL("../src/core/lock-holder.ts", import.meta.url));
+const LOCK_TAKEOVER_MODULE = fileURLToPath(new URL("../src/core/lock-takeover.ts", import.meta.url));
+
+/**
+ * Whether this process takes over through the native advisory lock. The tests of #5161 cover the directory mutex
+ * taken without it (#5193), as do the other processes they start.
+ */
+let native = false;
 
 /** Another process tries to take over the lock at `lockPath`, and says whether it did. */
 function anotherProcessTakesOver(): boolean {
-	const script = `import { takeOverDeadHolder } from ${JSON.stringify(LOCK_HOLDER_MODULE)}; console.log(takeOverDeadHolder(${JSON.stringify(lockPath)}));`;
+	const script = `import { takeOverDeadHolder } from ${JSON.stringify(LOCK_HOLDER_MODULE)};
+		import { setNativeLocksForTesting } from ${JSON.stringify(LOCK_TAKEOVER_MODULE)};
+		if (!${native}) setNativeLocksForTesting(null);
+		console.log(takeOverDeadHolder(${JSON.stringify(lockPath)}));`;
 	const result = spawnSync("bun", ["--eval", script], { encoding: "utf8" });
 	assert.equal(result.status, 0, result.stderr);
 	return result.stdout.trim() === "true";
@@ -93,6 +105,8 @@ beforeEach(() => {
 	lockPath = join(directory, "settings.json.lock");
 	race.beforeMutex = undefined;
 	race.beforeRename = undefined;
+	native = false;
+	setNativeLocksForTesting(null);
 	mkdirSync(lockPath);
 	deadLock = lockHolder(lockPath);
 	const exited = Number(
@@ -102,8 +116,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	setNativeLocksForTesting(undefined);
 	rmSync(directory, { recursive: true, force: true });
 });
+
+/** This process, and the others it starts, take over through the native advisory lock. */
+function useNativeLock(): void {
+	native = true;
+	setNativeLocksForTesting(undefined);
+}
 
 /**
  * Another process frees the dead holder's lock and takes a new one. The new lock directory is made while the old one
@@ -167,7 +188,7 @@ it("removes a takeover mutex left by a killed process once it is stale, then tak
 	assert.equal(existsSync(takeoverMutexPath(lockPath)), false);
 });
 
-it("leaves a directory it moved that is not the dead holder's, and never puts it back (#5161)", () => {
+it("without the native lock, leaves a directory it moved that is not the dead holder's, and never puts it back (#5161)", () => {
 	let taken: string | undefined;
 	// Only a remover outside the mutex, such as proper-lockfile's stale check, can swap the lock this late.
 	race.beforeRename = () => {
@@ -271,4 +292,42 @@ it("never removes a mutex whose owner changed after it was judged (#5161)", () =
 	};
 	assert.equal(takeTakeoverMutex(lockPath), undefined);
 	assert.equal(asideNames().length, 1, "the mutex is left aside, not removed");
+});
+
+it("puts back a lock it moved that is not the dead holder's while the lock path is free (#5193)", () => {
+	useNativeLock();
+	let taken: string | undefined;
+	// Only a remover outside the mutex can swap the lock this late.
+	race.beforeRename = () => {
+		taken = anotherProcessTakesTheLock();
+	};
+	assert.equal(takeOverDeadHolder(lockPath), false);
+	assert.ok(taken);
+	assert.equal(lockHolder(lockPath), taken, "the other process's lock is back in place");
+	assert.deepEqual(asideNames(), []);
+});
+
+it("keeps the advisory mutex while paused between judging and moving, so another process cannot take over meanwhile (#5193)", () => {
+	useNativeLock();
+	let otherTookOver: boolean | undefined;
+	race.beforeRename = () => {
+		otherTookOver = anotherProcessTakesOver();
+	};
+	assert.equal(takeOverDeadHolder(lockPath), true);
+	assert.equal(otherTookOver, false);
+	assert.equal(existsSync(lockPath), false);
+	assert.deepEqual(asideNames(), []);
+});
+
+it("is not taken over while another process holds the advisory mutex (#5193)", () => {
+	useNativeLock();
+	const mutex = takeTakeoverMutex(lockPath);
+	assert.ok(mutex);
+	try {
+		assert.equal(anotherProcessTakesOver(), false);
+		assert.equal(lockHolder(lockPath), deadLock);
+	} finally {
+		mutex.release();
+	}
+	assert.equal(anotherProcessTakesOver(), true);
 });

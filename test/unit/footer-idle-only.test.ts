@@ -103,11 +103,15 @@ function stageFooterLine(chat: ChatBoxSession): string {
 }
 
 /** A subagent's chat: the chat shows the subagent's session without owning it. */
-function subagentFooterLine(chat: ChatBoxSession): string {
+function subagentFooterRows(chat: ChatBoxSession, footerData = FOOTER_DATA): string[] {
 	initTheme("dark");
-	const host = new ChatSessionHost(hostOptions({ getChatBoxSession: () => chat }));
+	const host = new ChatSessionHost(hostOptions({ getChatBoxSession: () => chat, footerData }));
 	disposers.push(() => host.dispose());
-	return text(host.renderFooter(120)).split("\n")[0] ?? "";
+	return host.renderFooter(120).map((row) => stripVTControlCharacters(row));
+}
+
+function subagentFooterLine(chat: ChatBoxSession): string {
+	return subagentFooterRows(chat)[0] ?? "";
 }
 
 test("the main, stage and subagent chats show the model line when their agent is idle (#4690)", () => {
@@ -125,13 +129,24 @@ for (const [state, activity] of WORKING_STATES) {
 		assert.equal(stageFooterLine(session(activity)), "esc to interrupt");
 	});
 
-	test(`a subagent's chat hides the model line during ${state} without offering to interrupt it (#4690)`, () => {
-		assert.equal(subagentFooterLine(session(activity)), "working");
+	test(`a subagent's chat shows no status line during ${state}`, () => {
+		assert.deepEqual(subagentFooterRows(session(activity)), []);
 	});
 }
 
-test("the main chat hides the model line while task navigation is open over a running turn (#4690)", () => {
-	assert.equal(mainFooterLine(session({ isStreaming: true }), true), "working");
+test("a subagent's working chat still shows its extension status row without a status line", () => {
+	const footerData: ReadonlyFooterDataProvider = {
+		...FOOTER_DATA,
+		getExtensionStatuses: () => new Map([["mcp", "MCP 2 servers"]]),
+	};
+	const rows = subagentFooterRows(session({ isStreaming: true }), footerData);
+	assert.equal(rows.length, 1);
+	assert.match(rows[0] ?? "", /MCP 2 servers/);
+	assert.doesNotMatch(rows.join("\n"), /working|esc to interrupt/);
+});
+
+test("the main chat shows no status line while task navigation is open over a running turn", () => {
+	assert.equal(mainFooterLine(session({ isStreaming: true }), true), "");
 	assert.equal(mainFooterLine(session(), true), IDLE_LINE);
 });
 
@@ -147,7 +162,7 @@ test("a stage chat hides the model line while /tasks is open over a running turn
 	host.openTasks();
 	assert.equal(host.hasTaskInspector, true);
 	const lines = () => text(host.renderFooter(120)).split("\n");
-	assert.equal(lines()[0], "working");
+	assert.equal(lines()[0], "");
 	chat = session();
 	assert.equal(lines()[0], IDLE_LINE);
 });

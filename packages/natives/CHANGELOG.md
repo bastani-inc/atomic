@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `tryAdvisoryLock(path, waitMs)`: takes the exclusive operating-system advisory lock of a file (`flock` on Unix, `LockFileEx` on Windows), created when missing and never removed, waiting up to `waitMs` while another holder keeps it, and returns an `AdvisoryLock` whose `release()` gives it up, or `null`. The kernel releases it when its holder dies. Added `renameNoReplace(from, to)`, a rename that returns `false` and moves nothing when anything is at `to` ([#5193](https://github.com/bastani-inc/atomic/issues/5193)).
 - Added `processCreationTime(pid)`: on Windows, the creation time of a running process, as the decimal count of 100-nanosecond intervals since 1601 UTC; `null` for a process that is gone or cannot be queried, and on other platforms ([#5141](https://github.com/bastani-inc/atomic/issues/5141)).
 
 ## [0.9.72] - 2026-11-08

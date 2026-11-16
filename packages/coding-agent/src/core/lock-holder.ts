@@ -5,6 +5,8 @@ import {
 	HOLDER_TEMP_STALE_MS,
 	lockHolderPath,
 	processMayRun,
+	putBack,
+	removeAside,
 	removeLeftoverHolderFiles,
 	takeTakeoverMutex,
 } from "./lock-takeover.ts";
@@ -74,10 +76,11 @@ function readHolderRecord(lockPath: string): LockHolderRecord | undefined {
 
 /**
  * Removes the lock directory at `lockPath` when its holder is proven dead, so the next attempt to take it follows at
- * once; true when it did. Takeovers are serialized by a mutex of their own, and inside it the holder record and the
- * lock directory are checked again just before the directory is moved aside, so a lock another process took after the
- * dead holder's is never moved. A directory that, once moved, turns out not to be the dead holder's is left where it
- * is, never put back over the lock path nor removed, and the lock waits for its stale window instead.
+ * once; true when it did. Takeovers are serialized by the takeover mutex, an advisory lock the kernel releases when
+ * its holder dies (#5193), and the whole move runs while it is held: the holder record and the lock directory are
+ * checked again inside it, so a lock another process took after the dead holder's is never moved. A directory that,
+ * once moved, turns out not to be the dead holder's is put back only while the lock path is free, never replacing
+ * anything, and otherwise left aside, never removed.
  */
 export function takeOverDeadHolder(lockPath: string): boolean {
 	const record = readHolderRecord(lockPath);
@@ -97,8 +100,11 @@ export function takeOverDeadHolder(lockPath: string): boolean {
 		} catch {
 			return false;
 		}
-		if (lockHolder(aside) !== record.lock) return false;
-		rmSync(aside, { recursive: true, force: true });
+		if (lockHolder(aside) !== record.lock) {
+			putBack(aside, lockPath);
+			return false;
+		}
+		removeAside(aside);
 		removeLeftoverHolderFiles(lockPath);
 		return true;
 	} finally {
