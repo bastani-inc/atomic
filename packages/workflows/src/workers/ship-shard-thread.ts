@@ -206,13 +206,11 @@ class ThreadedSqliteDatabase implements SqliteDatabase {
 				cause,
 			});
 		const code = (cause as { errcode?: number }).errcode;
-		const detail =
-			cause.message === ""
-				? undefined
-				: code === undefined
-					? cause.message
-					: `${cause.message} (SQLite code ${code})`;
-		return new StorageUnavailableError(this.descriptor, cause, detail);
+		return new StorageUnavailableError(
+			this.descriptor,
+			cause,
+			code === undefined ? cause.message : `${cause.message} (SQLite code ${code})`,
+		);
 	}
 
 	private settle(reply: ConnectionReply): void {
