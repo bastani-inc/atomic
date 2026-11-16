@@ -19,6 +19,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import type { SessionEntry } from "../src/core/session-manager-types.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { getUsageCostBreakdown } from "../src/core/usage-totals.ts";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 
 const tempDirs: string[] = [];
 
@@ -189,6 +190,7 @@ describe("divergent upstream model ID keeps the canonical identity", () => {
 		const agentDir = join(dir, "agent");
 		mkdirSync(cwd, { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
+		linkSharedTranspileCache(agentDir);
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify("openai", async () => ({ type: "api_key", key: "test-api-key" }));
 		const modelRuntime = await ModelRuntime.create({

@@ -263,7 +263,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		customStarter?: CustomMessage,
 	): Promise<void>;
 	_runAgentContinue(): Promise<void>;
-	_runAgentContinuation(beforeContinue: () => Promise<void>): Promise<void>;
+	_runAgentContinuation(beforeContinue: () => Promise<void>, mode?: "continue" | "recovery" | "settle"): Promise<void>;
 	_continueQueuedAgentMessages(): Promise<void>;
 	_tryExecuteExtensionCommand(text: string): Promise<boolean>;
 	_expandSkillCommand(text: string): string;
@@ -619,6 +619,10 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_stopAfterTurnBlockedContinuation: boolean;
 	/** The current turn was ended by {@link interruptTurn}: a child's message admission stays open after it. */
 	_turnInterruptedByUser: boolean;
+	_abortPreparedRunAtStart: boolean;
+	_startAbortedForInterrupt: boolean;
+	_awaitingStartAfterInterrupt: boolean;
+	_undeliveredAgentStarts: number;
 	/** A child whose turn the user interrupted waits here: the next message it receives starts its next turn. */
 	_awaitingMessageAfterInterrupt: boolean;
 	_pendingInterruptDeliveries: number;

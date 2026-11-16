@@ -20,6 +20,7 @@ export const POSTGRES_STORAGE_IDENTIFIER_SUFFIXES: readonly string[] = Object.fr
 	"intercom_leases",
 	"intercom_outbox",
 	"intercom_outbox_target",
+	"intercom_outbox_target_bytes",
 	"intercom_pending_asks",
 	"intercom_pending_asks_target",
 	"intercom_released_asks",

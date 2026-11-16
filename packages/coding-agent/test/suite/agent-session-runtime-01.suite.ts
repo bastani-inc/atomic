@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../../test/helpers/temporary-agent-dir.js";
+import type { AgentSession } from "../../src/core/agent-session.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -16,6 +17,7 @@ import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { MissingSessionCwdError } from "../../src/core/session-cwd.ts";
 import { SessionEntryError, SessionManager } from "../../src/core/session-manager.ts";
 import { resolveSessionStore } from "../../src/core/session-storage.ts";
+import { isSyntheticPath } from "../../src/core/source-info.js";
 import { StorageRollbackError } from "../../src/core/storage/errors.ts";
 import type {
 	ExtensionAPI,
@@ -27,6 +29,14 @@ import type {
 } from "../../src/index.ts";
 
 useTemporaryAgentDir();
+
+function packageExtensionDirs(session: AgentSession): string[] {
+	return session.resourceLoader
+		.getExtensions()
+		.extensions.map((extension) => extension.path)
+		.filter((path) => !isSyntheticPath(path))
+		.map((path) => basename(dirname(path)));
+}
 
 type RecordedSessionEvent =
 	| SessionBeforeSwitchEvent
@@ -67,6 +77,7 @@ describe("AgentSessionRuntime characterization", () => {
 			model: options?.bootstrapModel === false ? undefined : faux.getModel(),
 			thinkingLevel: options?.bootstrapThinkingLevel === false ? undefined : undefined,
 			resourceLoaderOptions: {
+				builtinPackagePaths: [],
 				extensionFactories: [
 					(pi: ExtensionAPI) => {
 						pi.registerProvider(faux.getModel().provider, {
@@ -131,6 +142,7 @@ describe("AgentSessionRuntime characterization", () => {
 				rmSync(tempDir, { recursive: true, force: true });
 			}
 		});
+		assert.deepEqual(packageExtensionDirs(runtime.session), ["intercom"]);
 
 		return { runtime, faux, tempDir };
 	}
@@ -572,6 +584,7 @@ describe("AgentSessionRuntime characterization", () => {
 			authStorage,
 			model: faux.getModel(),
 			resourceLoaderOptions: {
+				builtinPackagePaths: [],
 				extensionFactories: [
 					(pi: ExtensionAPI) => {
 						pi.registerProvider(faux.getModel().provider, {
@@ -625,6 +638,7 @@ describe("AgentSessionRuntime characterization", () => {
 				rmSync(tempDir, { recursive: true, force: true });
 			}
 		});
+		assert.deepEqual(packageExtensionDirs(runtime.session), ["intercom"]);
 
 		await runtime.session.prompt("hello");
 		await runtime.session.prompt("again");

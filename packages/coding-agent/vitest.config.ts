@@ -57,6 +57,7 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 			"../../test/global-setup-provider-credential-isolation.ts",
 			"../../test/global-setup-debug-isolation.ts",
 			"../../test/global-setup-workflow-artifacts.ts",
+			"./test/global-setup-warm-transpile-cache.ts",
 			"../../test/global-setup-workflow-journal.ts",
 		],
 		testTimeout: defaultTestTimeoutMs,

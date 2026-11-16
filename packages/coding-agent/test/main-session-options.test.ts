@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { Model } from "@bastani/atomic-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { buildSessionOptions } from "../src/main-session-options.ts";
@@ -9,6 +9,20 @@ import { fakeModelRuntime } from "./model-runtime-test-utils.ts";
 function build(args: string[]) {
 	return buildSessionOptions(parseArgs(args), [], false, fakeModelRuntime(), SettingsManager.inMemory());
 }
+
+it("does not scan the fallback catalog before session startup selects its final model (#5247)", () => {
+	const getModels = vi.fn(() => []);
+	const { options } = buildSessionOptions(
+		parseArgs(["--fallback-models", "ghost/no-model"]),
+		[],
+		false,
+		fakeModelRuntime({ getModels }),
+		SettingsManager.inMemory(),
+	);
+
+	assert.deepEqual(options.fallbackModels, ["ghost/no-model"]);
+	assert.equal(getModels.mock.calls.length, 0);
+});
 
 describe("buildSessionOptions --provider", () => {
 	// #10236

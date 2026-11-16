@@ -3,7 +3,14 @@ import { test } from "vitest";
 import { sleep } from "../helpers/runtime.js";
 import { type WorkflowProcess, WorkflowProcessHome } from "../helpers/workflow-process.js";
 
-const REAL_SDK_DISPOSED_OWNER_ADOPTION_TIMEOUT_MS = 180_000;
+/**
+ * Structural: what one request to a fixture process may take. Its first request loads the coding agent's resources and
+ * creates its session; `start` and `resume` also run the workflow, each in a process of its own. A whole scenario takes
+ * about 15 s on an idle machine, and `start` alone took longer than the helper's 30 s on a loaded Windows host (#5252).
+ */
+const FIXTURE_REQUEST_TIMEOUT_MS = 90_000;
+/** Two processes each load their session; the owner starts and quits the run, and the other resumes it to completion. */
+const REAL_SDK_DISPOSED_OWNER_ADOPTION_TIMEOUT_MS = 3 * FIXTURE_REQUEST_TIMEOUT_MS;
 const FIXTURE = "sdk-crashed-workflow-recovery-client.ts";
 const OWNED_ELSEWHERE = "WORKFLOW_RUN_OWNED_ELSEWHERE";
 
@@ -36,10 +43,10 @@ async function withQuitRun(
 	let owner: WorkflowProcess | undefined;
 	try {
 		owner = home.client({ ATOMIC_SDK_RECOVERY_PRODUCER: "1", ATOMIC_SDK_RECOVERY_QUITTABLE: "1" }, FIXTURE);
-		const run = await owner.request<{ runId: string; pid: number }>("start");
-		await owner.request("quit", run.runId);
+		const run = await owner.request<{ runId: string; pid: number }>("start", undefined, FIXTURE_REQUEST_TIMEOUT_MS);
+		await owner.request("quit", run.runId, FIXTURE_REQUEST_TIMEOUT_MS);
 		const other = home.client({}, FIXTURE);
-		const paused = await other.request<Inspection>("inspect", run.runId);
+		const paused = await other.request<Inspection>("inspect", run.runId, FIXTURE_REQUEST_TIMEOUT_MS);
 		assert.equal(paused.status, "paused");
 		assert.deepEqual(paused.listed, [], "inspection must not adopt the foreign run into this session");
 		await body(owner, other, run);
@@ -76,7 +83,7 @@ test.each([
 					await owner.waitForExit();
 				} else process.kill(pid, 0);
 			}
-			const resumed = await other.request<Inspection>("resume", runId);
+			const resumed = await other.request<Inspection>("resume", runId, FIXTURE_REQUEST_TIMEOUT_MS);
 			assert.equal(resumed.runId, runId, "adoption must reuse the durable identity");
 			assert.equal(resumed.status, "completed");
 			assert.deepEqual(resumed.listed, [runId], "the adopting SDK session must own the resumed run");

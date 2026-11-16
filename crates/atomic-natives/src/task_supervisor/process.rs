@@ -9,6 +9,7 @@ use std::{
 	io::{self, Read, Seek, SeekFrom, Write},
 	path::PathBuf,
 };
+mod containment;
 mod input;
 pub use input::*;
 #[cfg(target_os = "linux")]

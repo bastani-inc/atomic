@@ -1,5 +1,8 @@
+import { TwoPressConfirm } from "@bastani/atomic";
 import { GRAPH_SCROLL_STEP_COLS } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
+import { GRAPH_STATUS_FILTERS } from "./graph-view-state.js";
+import type { GraphStageActionResult } from "./graph-view-types.js";
 import {
 	APP_ACTION,
 	isKeybindingsLike,
@@ -17,16 +20,24 @@ interface MouseWheelDelta {
 }
 
 const GRAPH_SCROLL_WHEEL_LINES = 4;
+/** How long an action's result stays on the hint line. */
+const GRAPH_NOTICE_MS = 4000;
 
 /** Keyboard, mouse, switcher, prompt, and focus navigation handling. */
 export abstract class GraphViewInputController extends GraphViewRenderer {
 	/** Returns true if consumed. */
 	handleInput(data: string): boolean {
 		this._syncLayout();
-		if (this.toolDetail !== null) return this._handleToolDetailInput(data);
+		if (this.keysHelpOpen) return this._handleKeysHelpInput(data);
 		if (this.switcherOpen) return this._handleSwitcherInput(data);
-		if (this._isReturnToMainChatInput(data)) {
-			this._returnToMainChat();
+		if (this._matchesNavAction(data, APP_ACTION.keysHelp)) {
+			this.keysHelpOpen = true;
+			return true;
+		}
+		if (this.toolDetail !== null) return this._handleToolDetailInput(data);
+		if (this.stageDetail !== null) return this._handleStageDetailInput(data);
+		if (this._isGraphBackInput(data)) {
+			this._leaveGraph();
 			return true;
 		}
 		if (this.graphLayout.isScrollbarInput(data)) return this._handleGraphInput(data);
@@ -103,6 +114,112 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return false;
 	}
 
+	/** The `?` overlay is open: Esc or `?` closes it, and every other key waits for it to close. */
+	private _handleKeysHelpInput(data: string): boolean {
+		if (matchesKey(data, Key.escape) || this._matchesNavAction(data, APP_ACTION.keysHelp)) this.keysHelpOpen = false;
+		else if (matchesKey(data, Key.ctrl("c"))) {
+			this.keysHelpOpen = false;
+			this.onClose?.();
+		}
+		return true;
+	}
+
+	/** A failed stage's detail: retry, fork, transcript and logs, and the way back to the graph. */
+	private _handleStageDetailInput(data: string): boolean {
+		const detail = this.stageDetail;
+		if (detail === null) return false;
+		if (this.graphLayout.handleScrollbarInput(data)) {
+			this.pendingEnsureFocusedVisible = false;
+			return true;
+		}
+		const wheelDelta = this._mouseWheelDelta(data);
+		if (wheelDelta) {
+			if (wheelDelta.rows !== 0) this._scrollGraphVertically(wheelDelta.rows);
+			return true;
+		}
+		if (matchesKey(data, Key.escape) || this._matchesNavAction(data, APP_ACTION.navBack)) {
+			this._closeStageDetail();
+			return true;
+		}
+		if (matchesKey(data, Key.ctrl("c"))) {
+			this.onClose?.();
+			return true;
+		}
+		const name = this._stageDetailStage()?.name ?? detail.stageId;
+		if (matchesKey(data, "r") && this.stageActions?.retry) {
+			this._runStageAction(this.stageActions.retry(detail.runId, detail.stageId), `Retrying ${name}\u2026`);
+			return true;
+		}
+		if (matchesKey(data, "f") && this.stageActions?.fork) {
+			this._runStageAction(this.stageActions.fork(detail.runId, detail.stageId), `Forking the run\u2026`);
+			return true;
+		}
+		if (matchesKey(data, "t") && this.onStageAttach) {
+			this._closeStageDetail();
+			this.onStageAttach(detail.runId, detail.stageId);
+			return true;
+		}
+		if (matchesKey(data, "l")) {
+			detail.logs = !detail.logs;
+			this.graphLayoutInvalidateForDetail();
+			return true;
+		}
+		if (matchesKey(data, Key.down)) this._scrollGraphVertically(1);
+		else if (matchesKey(data, Key.up)) this._scrollGraphVertically(-1);
+		else if (matchesKey(data, Key.pageDown)) this._scrollGraphVertically(this._toolDetailPageRows());
+		else if (matchesKey(data, Key.pageUp)) this._scrollGraphVertically(-this._toolDetailPageRows());
+		return true;
+	}
+
+	/** Show an action's progress, then its result, on the hint line; a new run the action started is shown. */
+	private _runStageAction(result: Promise<GraphStageActionResult>, progress: string): void {
+		this.graphNotice = { text: progress, tone: "info", until: Date.now() + 60_000 };
+		void result.then(
+			(outcome) => {
+				this.graphNotice = {
+					text: outcome.message,
+					tone: outcome.ok ? "info" : "error",
+					until: Date.now() + GRAPH_NOTICE_MS,
+				};
+				if (outcome.ok && outcome.runId !== undefined) {
+					this._closeStageDetail();
+					this.onShowRun?.(outcome.runId);
+				}
+				this.requestRender?.();
+			},
+			(error: unknown) => {
+				this.graphNotice = {
+					text: error instanceof Error ? error.message : String(error),
+					tone: "error",
+					until: Date.now() + GRAPH_NOTICE_MS,
+				};
+				this.requestRender?.();
+			},
+		);
+	}
+
+	/** `x x` on a working stage stops it so it can be resumed; the first press only says what the second will do. */
+	private _handleStopInput(): boolean {
+		const stage = this.cachedLayout[this.focusedIndex]?.stage;
+		const target = this._stageChatTarget(stage);
+		if (!this._focusedStageStoppable() || stage === undefined || target === undefined) return true;
+		const key = `${target.runId}\u0000${target.stageId}`;
+		if (!this.stopConfirm.press(key)) {
+			this.graphNotice = {
+				text: `Press x again within 3s to stop ${stage.name}`,
+				tone: "info",
+				until: Date.now() + 3000,
+			};
+			return true;
+		}
+		this.graphNotice = null;
+		const stop = this.stageActions?.stop;
+		if (stop) this._runStageAction(stop(target.runId, target.stageId), `Stopping ${stage.name}\u2026`);
+		return true;
+	}
+
+	private readonly stopConfirm = new TwoPressConfirm();
+
 	/** One page is the visible body, less a row of overlap for continuity. */
 	private _toolDetailPageRows(): number {
 		return Math.max(1, this.graphLayout.viewportRows - 1);
@@ -124,15 +241,16 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	}
 
 	/**
-	 * The graph has no prompt, so Esc pops it: back to main chat. The back key does the same on a node with nothing to
-	 * its left; elsewhere it moves between nodes.
+	 * The graph has no prompt, so Esc pops it one level: back to where it was opened from. The back key does the same
+	 * on a node with nothing to its left; elsewhere it moves between nodes.
 	 */
-	private _isReturnToMainChatInput(data: string): boolean {
+	private _isGraphBackInput(data: string): boolean {
 		if (matchesKey(data, Key.escape)) return true;
 		return this._matchesNavAction(data, APP_ACTION.navBack) && !this._hasSiblingBefore();
 	}
 
-	private _returnToMainChat(): void {
+	private _leaveGraph(): void {
+		this.stopConfirm.reset();
 		if (this.onDetach) this.onDetach();
 		else this.onHide?.();
 	}
@@ -189,6 +307,12 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this._activateFocusedNode();
 			return true;
 		}
+		if (matchesKey(data, "f")) {
+			const next = (GRAPH_STATUS_FILTERS.indexOf(this.statusFilter) + 1) % GRAPH_STATUS_FILTERS.length;
+			this.statusFilter = GRAPH_STATUS_FILTERS[next]!;
+			return true;
+		}
+		if (this._matchesNavAction(data, APP_ACTION.listStop)) return this._handleStopInput();
 		if (matchesKey(data, "h") && this.onHide) {
 			this.onHide();
 			return true;
@@ -309,6 +433,8 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		// Tool nodes open a read-only snapshot detail; they never enter the
 		// stage-chat attach path even though they share the graph card shape.
 		if (this._openFocusedToolDetail()) return;
+		// A failed stage opens its failure detail first: the reason, then retry, fork, transcript and logs.
+		if (this._openFocusedStageDetail()) return;
 		this._attachFocusedStage();
 	}
 
@@ -324,6 +450,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		const max = Math.max(0, this.cachedLayout.length - 1);
 		const next = Math.max(0, Math.min(index, max));
 		if (next === this.focusedIndex) return;
+		this.stopConfirm.reset();
 		this.focusedIndex = next;
 		this.pendingEnsureFocusedVisible = true;
 	}

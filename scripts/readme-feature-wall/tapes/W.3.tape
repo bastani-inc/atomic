@@ -23,9 +23,8 @@ Type "/workflow status"
 Sleep 1s
 Enter
 Sleep 8s
-Type "/workflow connect"
+Type "/workflows"
 Sleep 1s
 Enter
 Sleep 4s
-Enter
 Sleep 12s
