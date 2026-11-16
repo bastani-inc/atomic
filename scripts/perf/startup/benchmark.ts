@@ -212,7 +212,9 @@ async function runInteractive(context: SampleContext, typeAhead: boolean): Promi
 			});
 		},
 	});
-	// Answer terminal queries (device attributes, cursor position, colors) the way a real terminal does.
+	// Answer terminal queries (device attributes, cursor position, colors) the way a real terminal does. On Windows the
+	// native PTY has already answered the console host's startup cursor-position query, so the second report reaches
+	// Atomic as an F3 key press while it starts: input it must ignore, not type into the editor.
 	tracker.terminal.onData((data) => child.write(data));
 	const until = async (predicate: () => boolean, label: string): Promise<void> => {
 		const deadline = Date.now() + options.timeoutMs;
@@ -250,6 +252,10 @@ async function runInteractive(context: SampleContext, typeAhead: boolean): Promi
 			identityMs: elapsedMs(launch, identity!),
 			firstPromptDispatchMs: elapsedMs(enter, BigInt(request.firstByteNs)),
 		};
+	} catch (error) {
+		await queue.catch(() => undefined);
+		if (process.env.BENCH_DEBUG) process.stderr.write(`--- screen at failure ---\n${tracker.snapshot().text}\n---\n`);
+		throw error;
 	} finally {
 		await stopPty(child, undefined);
 		await queue.catch(() => undefined);

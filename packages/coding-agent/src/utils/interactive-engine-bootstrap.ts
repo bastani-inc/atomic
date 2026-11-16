@@ -25,6 +25,11 @@ import { join } from "node:path";
  */
 export const INTERACTIVE_ENGINE_BOOTSTRAP_FLAG = "--internal-engine-bootstrap";
 export const INTERACTIVE_ENGINE_BOOTSTRAP_VERSION = 1;
+/**
+ * The only argument of an engine child an interactive host starts before it knows the engine's arguments: the child
+ * loads the application, then reads them from its first stdin line (see engine-prewarm.ts).
+ */
+export const INTERACTIVE_ENGINE_PREWARM_FLAG = "--internal-engine-prewarm";
 
 export interface InteractiveEngineBootstrap {
 	version: number;

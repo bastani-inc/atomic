@@ -1,4 +1,4 @@
-import { APP_NAME, ENV_STARTUP_BENCHMARK, ENV_TIMING, getEnvValue } from "./config.js";
+import { APP_NAME, ENV_STARTUP_BENCHMARK, getEnvValue } from "./config.js";
 import type { AgentSessionRuntime } from "./core/agent-session-runtime.ts";
 import {
 	type ErrorFieldValue,
@@ -154,16 +154,7 @@ export function resolveStartupBenchmark(
 	return true;
 }
 
-/**
- * Environment overrides for the isolated engine of a host that runs the startup benchmark. The host prints the
- * session's timings once; the engine inherits the timing switch, so without this its own block would reach the
- * terminal through its relayed stderr as a second one (#4354).
- */
-export function startupBenchmarkEngineEnv(
-	value: string | undefined = getEnvValue(ENV_STARTUP_BENCHMARK),
-): Record<string, string> {
-	return isTruthyEnvFlag(value) ? { [ENV_TIMING]: "0" } : {};
-}
+export { startupBenchmarkEngineEnv } from "./modes/interactive-engine/engine-prewarm.ts";
 
 /** The startup timing hooks the benchmark records into and prints. */
 export interface StartupBenchmarkTimings {
