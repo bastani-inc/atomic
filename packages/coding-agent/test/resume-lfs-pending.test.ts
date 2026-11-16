@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { thisProcess } from "../src/core/worktree-snapshot/process-holder.ts";
@@ -119,7 +120,7 @@ describe("an LFS download an interrupted resume left pending (#5099)", () => {
 		writeFileSync(mark, JSON.stringify({ head, tree, remotes: [remote], holder: parent }));
 		const pull = await pendingLfsDownload(clone);
 		assert.ok(pull);
-		statHook.removeBeforeStat = mark;
+		statHook.removeBeforeStat = resolve(mark);
 		assert.deepEqual(await pull(), []);
 		assert.equal(statHook.removeBeforeStat, undefined);
 		assert.equal(existsSync(mark), false);
