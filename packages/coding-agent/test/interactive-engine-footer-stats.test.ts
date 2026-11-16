@@ -3,10 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, AssistantMessage, Model, ToolResultMessage, Usage } from "@bastani/atomic-ai/compat";
-import { Container } from "@bastani/atomic-tui";
+import { Container, setKeybindings } from "@bastani/atomic-tui";
 import { beforeAll, test, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import type { SessionStats } from "../src/core/agent-session-types.js";
+import { KeybindingsManager } from "../src/core/keybindings.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { resolveSessionStore } from "../src/core/session-storage.js";
 import { FooterComponent, UsageMeterComponent } from "../src/modes/interactive/components/footer.js";
@@ -21,6 +22,7 @@ import { createHarness, type Harness } from "./suite/harness.js";
 
 beforeAll(() => {
 	initTheme(undefined, false);
+	setKeybindings(new KeybindingsManager());
 });
 
 function usage(input: number, output: number, cacheRead: number, cacheWrite: number, total = 0): Usage {

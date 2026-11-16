@@ -124,6 +124,7 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	getCwd?: () => string;
 	footerData?: ReadonlyFooterDataProvider;
 	renderExtraEntry?: (entry: TExtraEntry) => Component;
+	countsAsMessage?: (entry: TExtraEntry) => boolean;
 }
 
 export type ChatSessionHostEntry<TExtraEntry extends ChatTranscriptEntryLike = never> = ChatMessageEntry | TExtraEntry;

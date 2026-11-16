@@ -419,6 +419,45 @@ describe("manual compaction re-entrancy", () => {
 		}
 	});
 
+	it("resets compactionStartedAt when a manual compaction takes over an in-flight automatic compaction (#5243)", async () => {
+		const gate = createCommittedAutomaticGate();
+		const harness = await createHarness(gate.factory);
+		const continueSpy = vi.spyOn(harness.agent, "continue").mockResolvedValue();
+		vi.useFakeTimers();
+		try {
+			const automatic = (harness.session as AutoCompactionRunner)._runAutoCompaction(
+				"threshold",
+				true,
+				"recoverable",
+			);
+			await gate.committed;
+
+			const autoStartedAt = harness.session.compactionStartedAt;
+			expect(autoStartedAt).toBeTypeOf("number");
+			await vi.advanceTimersByTimeAsync(5_000);
+			const manual = harness.session.compact({ preserve_recent: 0, query: "manual-only-query" });
+			expect(harness.session.compactionStartedAt).toBe(autoStartedAt);
+			await vi.advanceTimersByTimeAsync(3_000);
+			let manualStartedAt: number | undefined;
+			const unsub = harness.session.subscribe((event) => {
+				if (event.type === "compaction_start" && event.reason === "manual") {
+					manualStartedAt = harness.session.compactionStartedAt;
+				}
+			});
+			gate.release();
+			await manual;
+			unsub();
+			await automatic;
+			await vi.advanceTimersByTimeAsync(100);
+
+			expect(manualStartedAt).toBe((autoStartedAt ?? 0) + 8_000);
+		} finally {
+			gate.release();
+			continueSpy.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
 	it("does not resume an armed automatic retry after manual compaction completes", async () => {
 		const factory: ExtensionFactory = (pi) => {
 			pi.on("session_before_compact", (event) => ({

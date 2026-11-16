@@ -951,7 +951,7 @@ Watch for these failure modes in long or multi-stage workflows:
 | Confusion | Similar instructions or duplicate facts conflict | Consolidate each shared contract into one canonical copy and name artifacts clearly |
 | Clash | User, system, or stage instructions disagree | Resolve conflicts before launching downstream stages |
 
-Use compaction, file references, and bounded loops before context fills. Attached stage chat shows `Compacting context...`, `Auto-compacting...`, or `Context overflow detected. Auto-compacting...` as appropriate. The label survives detaching and reattaching and clears when compaction ends. Successful compaction leaves an expandable `✻ Context compacted` transcript boundary.
+Use compaction, file references, and bounded loops before context fills. Attached stage chat shows `Compacting context...`, `Auto-compacting...`, or `Context overflow detected. Auto-compacting...` as appropriate, beside a still `∀` mark with elapsed time and the cancel key. Detaching and reattaching preserves the label and elapsed time. The label clears when compaction ends, leaving an expandable `∀ Context compacted` transcript boundary with the token counts before and after.
 
 ### Compression and Artifact Handoffs
 
