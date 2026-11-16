@@ -11,6 +11,8 @@ import {
 	HINT_PART_ENTER,
 	HINT_PART_NAV,
 	HINT_PART_NOTES,
+	HINT_PART_NOTES_CLOSE,
+	HINT_PART_NOTES_TYPE,
 	HINT_PART_REVIEW_TAB,
 	HINT_PART_TAB,
 	HINT_PART_TOGGLE,
@@ -197,8 +199,10 @@ export class SubmitTabStrategy implements TabContentStrategy {
  *   ↑↓ select · enter choose | enter/space toggle [· n add notes] [· tab next question] · esc cancel
  */
 export function buildHintText(question: QuestionData | undefined, isMulti: boolean, state: DialogState): string {
+	// While the notes field is open, enter and esc both close it and keep the note.
+	if (state.notesVisible) return [HINT_PART_NOTES_TYPE, HINT_PART_NOTES_CLOSE].join(" · ");
 	const parts: string[] = [HINT_PART_NAV, question?.multiSelect === true ? HINT_PART_TOGGLE : HINT_PART_ENTER];
-	if (question && question.multiSelect !== true && state.focusedOptionHasPreview && !state.notesVisible) {
+	if (question && question.multiSelect !== true && state.focusedOptionHasPreview) {
 		parts.push(HINT_PART_NOTES);
 	}
 	if (isMulti) parts.push(HINT_PART_TAB);

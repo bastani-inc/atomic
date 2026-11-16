@@ -151,6 +151,10 @@ describe("ask_user_question dialog (#5224)", () => {
 		assert.equal(dialog.hint(), "↑↓ select · enter/space toggle · tab next question · esc cancel");
 		dialog.press(TAB);
 		assert.equal(dialog.hint(), "↑↓ select · enter choose · n add notes · tab next question · esc cancel");
+		dialog.press("n", "x");
+		assert.equal(dialog.hint(), "type a note · enter/esc close notes");
+		dialog.press(ENTER);
+		assert.equal(dialog.hint(), "↑↓ select · enter choose · n add notes · tab next question · esc cancel");
 		dialog.press(TAB);
 		assert.equal(dialog.hint(), "↑↓ select · enter choose · tab questions · esc cancel");
 		assert.equal(open(ONE).hint(), "↑↓ select · enter choose · esc cancel");
