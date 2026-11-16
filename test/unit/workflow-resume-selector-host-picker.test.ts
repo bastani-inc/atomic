@@ -517,10 +517,12 @@ describe("workflow resume selector host-picker end-to-end (real engine bridge)",
 			.component()
 			.render(80)
 			.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
-		assert.ok(rows.some((row) => /paused 0\/0 pr-lifecycle/.test(row) && row.includes("Compiler repaired")));
-		assert.ok(rows.some((row) => /blocked pr-lifecycle/.test(row) && row.includes("Tests verified")));
-		assert.ok(rows.some((row) => row.includes("Fix compiler")));
-		assert.ok(rows.some((row) => row.includes("Run checks")));
+		// Two-line rows (#5224): the workflow and what the run is about, then status · … · its generated summary.
+		const live = rows.findIndex((row) => row.includes("pr-lifecycle · Fix compiler"));
+		const durable = rows.findIndex((row) => row.includes("pr-lifecycle · Run checks"));
+		assert.ok(live >= 0 && durable >= 0, rows.join("\n"));
+		assert.match(rows[live + 1]!, /paused · .*Compiler repaired/);
+		assert.match(rows[durable + 1]!, /blocked · .*Tests verified/);
 		bridge.component().handleInput("\x1b");
 		await promise;
 		bridge.controller.dispose();
@@ -547,23 +549,30 @@ describe("workflow resume selector host-picker end-to-end (real engine bridge)",
 				.component()
 				.render(width)
 				.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
-			const visible = ids.map((id) => rows.find((line) => line.includes(id.slice(0, 8))));
+			// Two-line rows (#5224): the title names the workflow and the run's short id; the line under it its state.
+			const visible = ids.map((id) => rows.findIndex((line) => line.includes(id.slice(0, 8))));
 			assert.ok(
-				visible.every((row) => row !== undefined),
-				`all three rows visible at ${width} columns`,
+				visible.every((index) => index >= 0),
+				`all three rows visible at ${width} columns:\n${rows.join("\n")}`,
 			);
-			if (width >= 100) {
-				assert.match(visible[0]!, /paused {2}0\/0 stages/);
-				assert.match(visible[1]!, /paused {2}paused-workflow/);
-				assert.match(visible[2]!, /✓ completed {2}completed-workflow/);
-			}
-			if (width === 120) {
-				for (const [index, id] of ids.entries()) assert.ok(visible[index]!.includes(id));
-				assert.match(visible[0]!, /live-workflow/);
-				assert.match(visible[1]!, /paused-workflow/);
-				assert.match(visible[2]!, /completed-workflow/);
-			}
+			assert.match(rows[visible[0]!]!, /live-workflow · 11111111/);
+			assert.match(rows[visible[0]! + 1]!, /^\s+paused · /);
+			assert.match(rows[visible[1]!]!, /paused-workflow · 22222222/);
+			assert.match(rows[visible[1]! + 1]!, /^\s+paused · /);
+			assert.match(rows[visible[2]!]!, /completed-workflow · 33333333/);
+			assert.match(rows[visible[2]! + 1]!, /^\s+✓ completed · /);
 		}
+		// The full id stays one key away: space previews the selected run.
+		bridge.component().handleInput(" ");
+		const preview = bridge
+			.component()
+			.render(120)
+			.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+		assert.ok(
+			preview.some((line) => ids.some((id) => line.includes(id))),
+			preview.join("\n"),
+		);
+		bridge.component().handleInput("\x1b");
 		bridge.component().handleInput("\x1b");
 		await promise;
 		bridge.controller.dispose();

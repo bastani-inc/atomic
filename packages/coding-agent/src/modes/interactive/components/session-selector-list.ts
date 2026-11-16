@@ -6,14 +6,85 @@ import {
 	Input,
 	truncateToWidth,
 	visibleWidth,
+	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { SessionInfo } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
+import { type NavKey, type NavKeybindings, type NavKeyStyle, navActionText, renderNavHintLine } from "./nav-keys.ts";
 import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode } from "./session-selector-search.ts";
 import { buildSessionTree, type FlatSessionNode, flattenSessionTree } from "./session-selector-tree.ts";
 import { formatSessionDate, getSessionPathKey, shortenPath, truncatePathStart } from "./session-selector-utils.ts";
+
+/** What a resume picker lists: saved sessions (with folder scope and names) or workflow runs. */
+export type SessionListVariant = "sessions" | "runs";
+
+/** The line under the list: a pending delete question or a transient status. */
+export interface SessionListNotice {
+	readonly text: string;
+	readonly tone: "error" | "accent" | "muted";
+}
+
+const HINT_STYLE: NavKeyStyle = {
+	dim: (text) => theme.fg("dim", text),
+	text: (text) => theme.fg("text", text),
+	muted: (text) => theme.fg("muted", text),
+	border: (text) => theme.fg("borderMuted", text),
+	bold: (text) => theme.bold(text),
+};
+
+/** Control characters out and whitespace collapsed, so one row stays one line. */
+function cleanText(text: string): string {
+	return text
+		.replace(/[\x00-\x1f\x7f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+/** `2h ago`, `just now`. */
+function ageText(date: Date): string {
+	const short = formatSessionDate(date);
+	return short === "now" ? "just now" : `${short} ago`;
+}
+
+/** A row's first line: a synthetic row's own title, else the session's name or first message. */
+export function sessionRowTitle(session: SessionInfo): string {
+	return cleanText(session.title ?? session.name ?? session.firstMessage) || "(no messages)";
+}
+
+/**
+ * Labels in the order a narrow hint gives them up: the reminders and view toggles first, then the row actions, so
+ * how to move, preview, resume and leave stay longest.
+ */
+const RESUME_HINT_DROP_ORDER = [
+	"to search",
+	"path",
+	"hide path",
+	"named",
+	"all names",
+	"sort",
+	"all",
+	"this folder",
+	"rename",
+	"delete",
+	"select",
+	"preview",
+	"close preview",
+];
+
+function fitResumeHint(entries: readonly NavKey[], room: number, keybindings: NavKeybindings): NavKey[] {
+	const kept = [...entries];
+	const text = (entry: NavKey) =>
+		`${entry.action !== undefined ? navActionText(keybindings, entry.action) : (entry.keys ?? "")} ${entry.label}`;
+	const width = () => visibleWidth(kept.map(text).join(" · "));
+	for (const label of RESUME_HINT_DROP_ORDER) {
+		if (width() <= room) break;
+		const index = kept.findIndex((entry) => entry.label === label);
+		if (index >= 0) kept.splice(index, 1);
+	}
+	return kept;
+}
 
 /**
  * Custom session list component with multi-line items and search
@@ -51,7 +122,12 @@ export class SessionList implements Component, Focusable {
 	public onDeleteSession?: (sessionPath: string, session: SessionInfo) => Promise<void>;
 	public onRenameSession?: (session: SessionInfo) => void;
 	public onError?: (message: string) => void;
-	private maxVisible: number = 10; // Max sessions visible (one line each)
+	private maxVisible: number = 6; // Max sessions visible (two lines each)
+	private variant: SessionListVariant = "sessions";
+	private canDelete = true;
+	private canRename = false;
+	private previewOpen = false;
+	private noticeProvider?: () => SessionListNotice | undefined;
 
 	// Focusable implementation - propagate to searchInput for IME cursor positioning
 	private _focused = false;
@@ -73,23 +149,33 @@ export class SessionList implements Component, Focusable {
 	) {
 		this.allSessions = sessions;
 		this.filteredSessions = [];
-		this.searchInput = new Input();
+		this.searchInput = this.createSearchInput();
 		this.showCwd = showCwd;
 		this.sortMode = sortMode;
 		this.nameFilter = nameFilter;
 		this.keybindings = keybindings;
 		this.currentSession = currentSession;
 		this.filterSessions("");
+	}
 
-		// Handle Enter in search input - select current item
-		this.searchInput.onSubmit = () => {
-			if (this.filteredSessions[this.selectedIndex]) {
-				const selected = this.filteredSessions[this.selectedIndex];
-				if (this.onSelect) {
-					this.onSelect(selected.session);
-				}
-			}
+	private createSearchInput(): Input {
+		const input = new Input({
+			prompt: "⌕ ",
+			placeholder: "Search…",
+			placeholderStyle: (text) => theme.fg("dim", text),
+		});
+		input.focused = this._focused;
+		input.onSubmit = () => {
+			const selected = this.filteredSessions[this.selectedIndex];
+			if (selected) this.onSelect?.(selected.session);
 		};
+		return input;
+	}
+
+	/** Empty the search with a fresh box, so its undo history cannot bring the old text back. */
+	private clearSearch(): void {
+		this.searchInput = this.createSearchInput();
+		this.filterSessions("");
 	}
 
 	setSortMode(sortMode: SortMode): void {
@@ -148,7 +234,7 @@ export class SessionList implements Component, Focusable {
 
 	private startDeleteConfirmationForSelectedSession(): void {
 		const selected = this.filteredSessions[this.selectedIndex];
-		if (!selected) return;
+		if (!selected || !this.canDelete) return;
 
 		// Prevent deleting current session
 		if (this.isCurrentSession(selected.session)) {
@@ -170,148 +256,222 @@ export class SessionList implements Component, Focusable {
 
 	invalidate(): void {}
 
+	/** What the picker lists, which decides its title, empty text and keys. */
+	setVariant(variant: SessionListVariant): void {
+		this.variant = variant;
+	}
+
+	/** Whether the picker can delete a row (Ctrl+D); its hint and key follow this. */
+	setCanDelete(canDelete: boolean): void {
+		this.canDelete = canDelete;
+	}
+
+	/** Whether the picker can rename a row; its hint follows this. */
+	setCanRename(canRename: boolean): void {
+		this.canRename = canRename;
+	}
+
+	/** Read the state line under the list: a pending delete question or a transient status. */
+	setNoticeProvider(provider: () => SessionListNotice | undefined): void {
+		this.noticeProvider = provider;
+	}
+
+	isPreviewOpen(): boolean {
+		return this.previewOpen;
+	}
+
 	render(width: number): string[] {
 		const lines: string[] = [];
-
-		// Render search input
-		lines.push(...this.searchInput.render(width));
-		lines.push(""); // Blank line after search
+		lines.push(...this.renderSearch(width));
+		lines.push("");
 
 		if (this.filteredSessions.length === 0) {
-			let emptyMessage: string;
-			if (this.nameFilter === "named") {
-				const toggleKey = keyText("app.session.toggleNamedFilter");
-				if (this.showCwd) {
-					emptyMessage = `  No named sessions found. Press ${toggleKey} to show all.`;
-				} else {
-					emptyMessage = `  No named sessions in current folder. ${toggleKey} show all · tab view all.`;
-				}
-			} else if (this.showCwd) {
-				// "All" scope - no sessions anywhere that match filter
-				emptyMessage = "  No sessions found";
-			} else {
-				// "Current folder" scope - hint to try "all"
-				emptyMessage = "  No sessions in current folder. tab view all.";
-			}
-			lines.push(theme.fg("muted", truncateToWidth(emptyMessage, width, "…")));
-			return lines;
+			lines.push(`  ${theme.fg("muted", truncateToWidth(this.emptyText(), Math.max(1, width - 2), "…"))}`);
+		} else {
+			lines.push(...this.renderRows(width));
+			if (this.previewOpen) lines.push(...this.renderPreview(width));
 		}
 
-		// Calculate visible range with scrolling
-		const startIndex = Math.max(
+		const notice = this.noticeProvider?.();
+		if (notice) {
+			lines.push("");
+			lines.push(`  ${theme.fg(notice.tone, truncateToWidth(notice.text, Math.max(1, width - 2), "…"))}`);
+		}
+		lines.push("");
+		lines.push(this.renderHint(width));
+		return lines.map((line) => truncateToWidth(line, width));
+	}
+
+	private emptyText(): string {
+		if (this.searchInput.getValue().trim()) return `No matches for "${this.searchInput.getValue().trim()}"`;
+		if (this.variant === "runs") return "No workflow runs to resume.";
+		const toggleKey = keyText("app.session.toggleNamedFilter");
+		const tabKey = keyText("tui.input.tab");
+		if (this.nameFilter === "named") {
+			return this.showCwd
+				? `No named sessions. ${toggleKey} show all.`
+				: `No named sessions in this folder. ${toggleKey} show all · ${tabKey} all folders.`;
+		}
+		return this.showCwd ? "No sessions found." : `No sessions in this folder. ${tabKey} all folders.`;
+	}
+
+	private renderSearch(width: number): string[] {
+		const boxWidth = Math.max(8, width - 2);
+		const field = Math.max(1, boxWidth - 4);
+		const content = this.searchInput.render(field)[0] ?? "";
+		const pad = " ".repeat(Math.max(0, field - visibleWidth(content)));
+		const color = this.searchInput.getValue() ? "muted" : "borderMuted";
+		const border = (text: string) => theme.fg(color, text);
+		return [
+			` ${border(`╭${"─".repeat(boxWidth - 2)}╮`)}`,
+			` ${border("│ ")}${content}${pad}${border(" │")}`,
+			` ${border(`╰${"─".repeat(boxWidth - 2)}╯`)}`,
+		];
+	}
+
+	private visibleRange(): { start: number; end: number } {
+		const total = this.filteredSessions.length;
+		const start = Math.max(
 			0,
-			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredSessions.length - this.maxVisible),
+			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), total - this.maxVisible),
 		);
-		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredSessions.length);
+		return { start, end: Math.min(start + this.maxVisible, total) };
+	}
 
-		// The summary column only exists when at least one listed row has a summary. Lists that
-		// reuse this component for rows that never carry summaries (durable workflow runs, fresh
-		// installs) keep the single-column layout instead of a screenful of placeholders.
-		const showSummaryColumn = this.filteredSessions.some((n) => !!n.session.summary?.trim());
-
-		// Render visible sessions (one line each with tree structure)
-		for (let i = startIndex; i < endIndex; i++) {
+	private renderRows(width: number): string[] {
+		const lines: string[] = [];
+		const { start, end } = this.visibleRange();
+		if (start > 0) lines.push(`  ${theme.fg("dim", `↑ ${start} more`)}`);
+		for (let i = start; i < end; i++) {
 			const node = this.filteredSessions[i]!;
 			const session = node.session;
 			const isSelected = i === this.selectedIndex;
 			const isConfirmingDelete = session === this.confirmingDeleteSession;
-			const isCurrent = this.isCurrentSession(session);
-
-			// Build tree prefix
 			const prefix = this.buildTreePrefix(node);
-
-			// Session display text (name or first message). A generated summary renders in its
-			// own column beside it, so a summary never displaces the identity of the row; rows
-			// missing a usable summary show an explicit placeholder there instead.
-			const hasName = !!session.name;
-			const displayText = session.name ?? session.firstMessage;
-			const normalizedMessage = displayText.replace(/[\x00-\x1f\x7f]/g, " ").trim();
-			const rawSummary = session.summary?.replace(/[\x00-\x1f\x7f]/g, " ").trim();
-			const hasSummary = !!rawSummary;
-			const summaryText = rawSummary || "No summary available.";
-
-			// Right side: message count and age
-			const age = formatSessionDate(session.modified);
-			const msgCount = String(session.messageCount);
-			const stats = `${msgCount} ${age}`;
-			const locations: string[] = [];
-			if (this.showPath) locations.push(shortenPath(session.path));
-			if (this.showCwd && session.cwd) locations.push(shortenPath(session.cwd));
-
-			// Cursor
-			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
-
-			// Calculate available width, split between the identity column and the summary column
-			const prefixWidth = visibleWidth(prefix);
-			const summaryGutter = 2;
-			const identityWidth =
-				Math.max(10, visibleWidth(normalizedMessage)) +
-				(showSummaryColumn ? summaryGutter + Math.max(10, visibleWidth(summaryText)) : 0);
-			const identityAndLocationWidth = width - 2 - prefixWidth - (visibleWidth(stats) + 2) - 1;
-			const location = truncatePathStart(
-				locations.join(" "),
-				Math.max(Math.floor(identityAndLocationWidth / 2), identityAndLocationWidth - identityWidth),
+			const continuation = this.buildTreeContinuation(node);
+			const cursor = isSelected ? theme.fg("accent", theme.bold("❯ ")) : "  ";
+			const lead = ` ${cursor}`;
+			const indent = visibleWidth(lead);
+			const titleRoom = Math.max(1, width - indent - visibleWidth(prefix) - 1);
+			const title = truncateToWidth(sessionRowTitle(session), titleRoom, "…");
+			let color: "error" | "warning" | "accent" | "success" | null = null;
+			if (isConfirmingDelete) color = "error";
+			else if (this.isCurrentSession(session)) color = "accent";
+			else if (session.messageColor !== undefined) color = session.messageColor;
+			else if (session.name) color = "warning";
+			let styledTitle = color ? theme.fg(color, title) : theme.fg("text", title);
+			if (isSelected) styledTitle = theme.bold(color ? styledTitle : theme.fg("accent", title));
+			lines.push(lead + theme.fg("dim", prefix) + styledTitle);
+			const detailRoom = Math.max(1, width - indent - visibleWidth(continuation) - 1);
+			const detail = this.rowDetail(session, detailRoom);
+			lines.push(
+				" ".repeat(indent) +
+					theme.fg("dim", continuation) +
+					theme.fg(isConfirmingDelete ? "error" : "muted", detail),
 			);
-			const rightPart = location ? `${location} ${stats}` : stats;
-			const rightWidth = visibleWidth(rightPart) + 2; // +2 for spacing
-			const availableForMsg = width - 2 - prefixWidth - rightWidth; // -2 for cursor
-			const defaultMsgColWidth = Math.max(10, Math.floor(availableForMsg * 0.45));
-			const msgColWidth = showSummaryColumn
-				? Math.max(defaultMsgColWidth, availableForMsg - summaryGutter - Math.max(10, visibleWidth(summaryText)))
-				: Math.max(10, availableForMsg);
-			const summaryColWidth = showSummaryColumn ? availableForMsg - msgColWidth - summaryGutter : 0;
-
-			const truncatedMsg = truncateToWidth(normalizedMessage, msgColWidth, "…");
-
-			// Style message
-			let messageColor: "error" | "warning" | "accent" | "success" | null = null;
-			if (isConfirmingDelete) {
-				messageColor = "error";
-			} else if (isCurrent) {
-				messageColor = "accent";
-			} else if (session.messageColor !== undefined) {
-				messageColor = session.messageColor;
-			} else if (hasName) {
-				messageColor = "warning";
-			}
-			let styledMsg = messageColor ? theme.fg(messageColor, truncatedMsg) : truncatedMsg;
-			if (isSelected) {
-				styledMsg = theme.bold(styledMsg);
-			}
-
-			// Summary column: dim for a real summary, muted italic for the placeholder. Skipped
-			// entirely when the terminal is too narrow to show anything useful.
-			let summaryCell = "";
-			if (summaryColWidth >= 10) {
-				const truncatedSummary = truncateToWidth(summaryText, summaryColWidth, "…");
-				const styledSummary = hasSummary
-					? theme.fg("dim", truncatedSummary)
-					: theme.italic(theme.fg("muted", truncatedSummary));
-				const pad = " ".repeat(Math.max(0, msgColWidth - visibleWidth(truncatedMsg)) + summaryGutter);
-				summaryCell = pad + styledSummary;
-			}
-
-			// Build line
-			const leftPart = cursor + theme.fg("dim", prefix) + styledMsg + summaryCell;
-			const leftWidth = visibleWidth(leftPart);
-			const spacing = Math.max(1, width - leftWidth - visibleWidth(rightPart));
-			const styledRight = theme.fg(isConfirmingDelete ? "error" : "dim", rightPart);
-
-			let line = leftPart + " ".repeat(spacing) + styledRight;
-			if (isSelected) {
-				line = theme.bg("selectedBg", line);
-			}
-			lines.push(truncateToWidth(line, width));
 		}
-
-		// Add scroll indicator if needed
-		if (startIndex > 0 || endIndex < this.filteredSessions.length) {
-			const scrollText = `  (${this.selectedIndex + 1}/${this.filteredSessions.length})`;
-			const scrollInfo = theme.fg("muted", truncateToWidth(scrollText, width, ""));
-			lines.push(scrollInfo);
+		if (end < this.filteredSessions.length) {
+			lines.push(`  ${theme.fg("dim", `↓ ${this.filteredSessions.length - end} more`)}`);
 		}
-
 		return lines;
+	}
+
+	/**
+	 * The row's dim second line, fitted to `room`: its own detail, or age · messages · folder · path · summary. A long
+	 * folder or session path loses its start, never its end, and a summary takes only what the paths leave.
+	 */
+	private rowDetail(session: SessionInfo, room: number): string {
+		if (session.detail !== undefined) return truncateToWidth(cleanText(session.detail), room, "…");
+		const sep = " · ";
+		const head = `${ageText(session.modified)}${sep}${session.messageCount} ${session.messageCount === 1 ? "message" : "messages"}`;
+		const paths: string[] = [];
+		if (this.showCwd && session.cwd) paths.push(shortenPath(session.cwd));
+		if (this.showPath) paths.push(shortenPath(session.path));
+		const summary = session.summary ? cleanText(session.summary) : "";
+		let line = head;
+		if (paths.length > 0) {
+			const pathRoom = room - visibleWidth(line) - visibleWidth(sep) * paths.length;
+			const share = Math.floor(pathRoom / paths.length);
+			const fitted = paths.map((path) => truncatePathStart(path, Math.max(1, share))).filter(Boolean);
+			if (pathRoom > paths.length * 2) line += fitted.map((path) => sep + path).join("");
+		}
+		if (summary && room - visibleWidth(line) - visibleWidth(sep) >= 10) {
+			line += sep + truncateToWidth(summary, room - visibleWidth(line) - visibleWidth(sep), "…");
+		}
+		return truncateToWidth(line, room, "…");
+	}
+
+	/** The selected row in full: its title, summary and where it lives, wrapped under the list. */
+	private renderPreview(width: number): string[] {
+		const selected = this.filteredSessions[this.selectedIndex]?.session;
+		if (!selected) return [];
+		const room = Math.max(10, width - 6);
+		const rule = theme.fg("borderMuted", `  ╭${"─".repeat(Math.max(1, width - 6))}╮`);
+		const end = theme.fg("borderMuted", `  ╰${"─".repeat(Math.max(1, width - 6))}╯`);
+		const body: string[] = [];
+		const add = (text: string, style: (value: string) => string, maxLines: number) => {
+			const wrapped = wrapTextWithAnsi(cleanText(text), room).slice(0, maxLines);
+			for (const line of wrapped) body.push(`    ${style(line)}`);
+		};
+		add(sessionRowTitle(selected), (text) => theme.bold(theme.fg("text", text)), 3);
+		if (selected.detail !== undefined) add(selected.detail, (text) => theme.fg("muted", text), 2);
+		if (selected.summary) add(selected.summary, (text) => theme.fg("text", text), 6);
+		if (selected.title !== undefined && selected.firstMessage)
+			add(selected.firstMessage, (text) => theme.fg("dim", text), 2);
+		const facts: string[] = [];
+		facts.push(`Created ${selected.created.toLocaleString()} · updated ${ageText(selected.modified)}`);
+		if (selected.detail === undefined)
+			facts.push(`${selected.messageCount} ${selected.messageCount === 1 ? "message" : "messages"}`);
+		if (selected.cwd && this.variant !== "runs") facts.push(shortenPath(selected.cwd));
+		if (this.variant !== "runs") facts.push(shortenPath(selected.path));
+		else facts.push(selected.id);
+		for (const fact of facts) add(fact, (text) => theme.fg("dim", text), 2);
+		return ["", rule, ...body, end];
+	}
+
+	/** The keys that work now, in hint order; narrow terminals drop the least needed first. */
+	private hintEntries(): NavKey[] {
+		const kb = getKeybindings();
+		const entries: NavKey[] = [];
+		const selected = this.filteredSessions[this.selectedIndex];
+		if (this.confirmingDeleteSession !== null) {
+			entries.push({ action: "tui.select.confirm", label: "delete" });
+			entries.push({ keys: navActionText(kb, "tui.select.cancel") || "esc", label: "keep" });
+			return entries;
+		}
+		const query = this.searchInput.getValue();
+		if (this.filteredSessions.length > 1) {
+			const up = navActionText(kb, "tui.select.up");
+			const down = navActionText(kb, "tui.select.down");
+			entries.push({
+				keys: up === "↑" && down === "↓" ? "↑↓" : [up, down].filter(Boolean).join("/"),
+				label: "select",
+			});
+		}
+		if (selected && !query) entries.push({ keys: "space", label: this.previewOpen ? "close preview" : "preview" });
+		if (selected) entries.push({ action: "tui.select.confirm", label: "resume" });
+		if (this.variant === "sessions") {
+			entries.push({ action: "tui.input.tab", label: this.showCwd ? "this folder" : "all" });
+		}
+		entries.push({ action: "app.session.toggleSort", label: "sort" });
+		if (this.variant === "sessions") {
+			entries.push({
+				action: "app.session.toggleNamedFilter",
+				label: this.nameFilter === "named" ? "all names" : "named",
+			});
+			entries.push({ action: "app.session.togglePath", label: this.showPath ? "hide path" : "path" });
+		}
+		if (selected && this.canRename) entries.push({ action: "app.session.rename", label: "rename" });
+		if (selected && this.canDelete) entries.push({ action: "app.session.delete", label: "delete" });
+		entries.push({ keys: "type", label: "to search" });
+		const cancel = navActionText(kb, "tui.select.cancel").split("/")[0] || "esc";
+		entries.push({ keys: cancel, label: this.previewOpen ? "close" : query ? "clear" : "cancel" });
+		return entries;
+	}
+
+	private renderHint(width: number): string {
+		const kb = getKeybindings();
+		return renderNavHintLine(fitResumeHint(this.hintEntries(), Math.max(1, width - 2), kb), width, HINT_STYLE, kb);
 	}
 
 	private buildTreePrefix(node: FlatSessionNode): string {
@@ -322,6 +482,13 @@ export class SessionList implements Component, Focusable {
 		const parts = node.ancestorContinues.map((continues) => (continues ? "│  " : "   "));
 		const branch = node.isLast ? "└─ " : "├─ ";
 		return parts.join("") + branch;
+	}
+
+	/** The tree guide under a row's title, so a child's second line stays inside its branch. */
+	private buildTreeContinuation(node: FlatSessionNode): string {
+		if (node.depth === 0) return "";
+		const parts = node.ancestorContinues.map((continues) => (continues ? "│  " : "   "));
+		return parts.join("") + (node.isLast ? "   " : "│  ");
 	}
 
 	handleInput(keyData: string): boolean {
@@ -343,10 +510,19 @@ export class SessionList implements Component, Focusable {
 			return true;
 		}
 
+		// A preview closes before anything else leaves; it follows the selection while open.
+		if (this.previewOpen && kb.matches(keyData, "tui.select.cancel") && keyData !== "\x03") {
+			this.previewOpen = false;
+			return true;
+		}
+
+		if (keyData === " " && !this.searchInput.getValue()) {
+			if (this.filteredSessions[this.selectedIndex]) this.previewOpen = !this.previewOpen;
+			return true;
+		}
+
 		if (kb.matches(keyData, "tui.input.tab")) {
-			if (this.onToggleScope) {
-				this.onToggleScope();
-			}
+			if (this.variant === "sessions") this.onToggleScope?.();
 			return true;
 		}
 
@@ -356,12 +532,13 @@ export class SessionList implements Component, Focusable {
 		}
 
 		if (this.keybindings.matches(keyData, "app.session.toggleNamedFilter")) {
-			this.onToggleNameFilter?.();
+			if (this.variant === "sessions") this.onToggleNameFilter?.();
 			return true;
 		}
 
 		// Ctrl+P: toggle path display
 		if (kb.matches(keyData, "app.session.togglePath")) {
+			if (this.variant !== "sessions") return true;
 			this.showPath = !this.showPath;
 			this.onTogglePath?.(this.showPath);
 			return true;
@@ -422,11 +599,10 @@ export class SessionList implements Component, Focusable {
 				this.onSelect(selected.session);
 			}
 		}
-		// Escape - cancel
+		// Escape clears a search first, then cancels; ctrl+c always cancels.
 		else if (kb.matches(keyData, "tui.select.cancel")) {
-			if (this.onCancel) {
-				this.onCancel();
-			}
+			if (this.searchInput.getValue() && keyData !== "\x03") this.clearSearch();
+			else this.onCancel?.();
 		}
 		// Pass everything else to search input
 		else {

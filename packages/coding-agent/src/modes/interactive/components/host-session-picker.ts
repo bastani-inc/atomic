@@ -24,6 +24,30 @@ export function sessionInfoFromPickerRow(row: HostSessionPickerRow): SessionInfo
 		allMessagesText: row.allMessagesText ?? "",
 		...(row.name !== undefined ? { name: row.name } : {}),
 		...(row.messageColor !== undefined ? { messageColor: row.messageColor } : {}),
+		...(row.title !== undefined ? { title: row.title } : {}),
+		...(row.detail !== undefined ? { detail: row.detail } : {}),
+	};
+}
+
+/** How a mounted picker presents itself: its title, what it lists, and which row actions it offers. */
+export interface HostSessionPickerPresentation {
+	readonly showRenameHint: boolean;
+	readonly title?: string;
+	readonly variant?: "sessions" | "runs";
+	/** Whether Ctrl+D asks the owner to delete a row. */
+	readonly canDelete: boolean;
+}
+
+/** The presentation a picker request asks for. Deletion is offered only when the request handles it. */
+export function hostSessionPickerPresentation(
+	request: Pick<HostSessionPickerRequest, "showRenameHint" | "title" | "variant" | "onDelete">,
+	canDelete = request.onDelete !== undefined,
+): HostSessionPickerPresentation {
+	return {
+		showRenameHint: request.showRenameHint === true,
+		...(request.title !== undefined ? { title: request.title } : {}),
+		...(request.variant !== undefined ? { variant: request.variant } : {}),
+		canDelete,
 	};
 }
 
@@ -63,7 +87,7 @@ export interface HostSessionPickerMount {
 export function mountHostSessionPicker(
 	ui: HostSessionPickerUi,
 	initialRows: SessionInfo[],
-	showRenameHint: boolean,
+	presentation: HostSessionPickerPresentation,
 	delegate: HostSessionPickerMountDelegate,
 ): HostSessionPickerMount {
 	interface MountRecord {
@@ -108,7 +132,13 @@ export function mountHostSessionPicker(
 					() => settle(() => delegate.onCancel()),
 					() => settle(() => delegate.onCancel()),
 					() => ui.requestRender(),
-					{ showRenameHint, initialSessions: [...currentRows] },
+					{
+						showRenameHint: presentation.showRenameHint,
+						initialSessions: [...currentRows],
+						canDelete: presentation.canDelete,
+						...(presentation.title !== undefined ? { title: presentation.title } : {}),
+						...(presentation.variant !== undefined ? { variant: presentation.variant } : {}),
+					},
 				);
 				// Owner-owned deletion: forward the confirmed request and keep the
 				// row until the owner replies with setRows (or showError).
@@ -213,7 +243,7 @@ export function openLocalHostSessionPicker(
 	const mount = mountHostSessionPicker(
 		ui,
 		request.sessions.map(sessionInfoFromPickerRow),
-		request.showRenameHint === true,
+		hostSessionPickerPresentation(request),
 		{
 			onSelect: (path) => settle(path),
 			onCancel: () => settle(undefined),

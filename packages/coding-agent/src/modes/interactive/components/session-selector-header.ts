@@ -1,6 +1,6 @@
-import { type Component, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { type Component, truncateToWidth } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
-import { keyHint } from "./keybinding-hints.js";
+import type { SessionListNotice, SessionListVariant } from "./session-selector-list.ts";
 import type { NameFilter, SortMode } from "./session-selector-search.ts";
 import type { SessionScope } from "./session-selector-types.ts";
 
@@ -15,7 +15,8 @@ export class SessionSelectorHeader implements Component {
 	private confirmingDeletePath: string | null = null;
 	private statusMessage: { type: "info" | "error"; message: string } | null = null;
 	private statusTimeout: ReturnType<typeof setTimeout> | null = null;
-	private showRenameHint = false;
+	private variant: SessionListVariant = "sessions";
+	private title?: string;
 
 	constructor(scope: SessionScope, sortMode: SortMode, nameFilter: NameFilter, requestRender: () => void) {
 		this.scope = scope;
@@ -50,10 +51,6 @@ export class SessionSelectorHeader implements Component {
 		this.showPath = showPath;
 	}
 
-	setShowRenameHint(show: boolean): void {
-		this.showRenameHint = show;
-	}
-
 	setConfirmingDeletePath(path: string | null): void {
 		this.confirmingDeletePath = path;
 	}
@@ -78,61 +75,49 @@ export class SessionSelectorHeader implements Component {
 
 	invalidate(): void {}
 
-	render(width: number): string[] {
-		const title = this.scope === "current" ? "Resume Session (Current Folder)" : "Resume Session (All)";
-		const leftText = theme.bold(title);
+	setVariant(variant: SessionListVariant): void {
+		this.variant = variant;
+	}
 
-		const sortLabel = this.sortMode === "threaded" ? "Threaded" : this.sortMode === "recent" ? "Recent" : "Fuzzy";
-		const sortText = theme.fg("muted", "Sort: ") + theme.fg("accent", sortLabel);
+	setTitle(title: string | undefined): void {
+		this.title = title;
+	}
 
-		const nameLabel = this.nameFilter === "all" ? "All" : "Named";
-		const nameText = theme.fg("muted", "Name: ") + theme.fg("accent", nameLabel);
-
-		let scopeText: string;
-		if (this.loading) {
-			const progressText = this.loadProgress ? `${this.loadProgress.loaded}/${this.loadProgress.total}` : "...";
-			scopeText = `${theme.fg("muted", "○ Current Folder | ")}${theme.fg("accent", `Loading ${progressText}`)}`;
-		} else if (this.scope === "current") {
-			scopeText = `${theme.fg("accent", "◉ Current Folder")}${theme.fg("muted", " | ○ All")}`;
-		} else {
-			scopeText = `${theme.fg("muted", "○ Current Folder | ")}${theme.fg("accent", "◉ All")}`;
-		}
-
-		const rightText = truncateToWidth(`${scopeText}  ${nameText}  ${sortText}`, width, "");
-		const availableLeft = Math.max(0, width - visibleWidth(rightText) - 1);
-		const left = truncateToWidth(leftText, availableLeft, "");
-		const spacing = Math.max(0, width - visibleWidth(left) - visibleWidth(rightText));
-
-		// Build hint lines - changes based on state (all branches truncate to width)
-		let hintLine1: string;
-		let hintLine2: string;
+	/** The line under the list: the pending delete question, else a transient status. */
+	getNotice(): SessionListNotice | undefined {
 		if (this.confirmingDeletePath !== null) {
-			const confirmHint = `Delete session? ${keyHint("tui.select.confirm", "confirm")} · ${keyHint("tui.select.cancel", "cancel")}`;
-			hintLine1 = theme.fg("error", truncateToWidth(confirmHint, width, "…"));
-			hintLine2 = "";
-		} else if (this.statusMessage) {
-			const color = this.statusMessage.type === "error" ? "error" : "accent";
-			hintLine1 = theme.fg(color, truncateToWidth(this.statusMessage.message, width, "…"));
-			hintLine2 = "";
-		} else {
-			const pathState = this.showPath ? "(on)" : "(off)";
-			const sep = theme.fg("muted", " · ");
-			const hint1 =
-				keyHint("tui.input.tab", "scope") + sep + theme.fg("muted", 're:<pattern> regex · "phrase" exact');
-			const hint2Parts = [
-				keyHint("app.session.toggleSort", "Sort"),
-				keyHint("app.session.toggleNamedFilter", "Named"),
-				keyHint("app.session.delete", "Delete"),
-				keyHint("app.session.togglePath", `Path ${pathState}`),
-			];
-			if (this.showRenameHint) {
-				hint2Parts.push(keyHint("app.session.rename", "Rename"));
-			}
-			const hint2 = hint2Parts.join(sep);
-			hintLine1 = truncateToWidth(hint1, width, "…");
-			hintLine2 = truncateToWidth(hint2, width, "…");
+			return { text: `Delete ${this.variant === "runs" ? "this workflow run" : "this session"}?`, tone: "error" };
 		}
+		if (this.statusMessage) {
+			return { text: this.statusMessage.message, tone: this.statusMessage.type === "error" ? "error" : "accent" };
+		}
+		return undefined;
+	}
 
-		return [`${left}${" ".repeat(spacing)}${rightText}`, hintLine1, hintLine2];
+	render(width: number): string[] {
+		const inner = Math.max(1, width - 3);
+		const title = this.title ?? (this.variant === "runs" ? "Resume workflow run" : "Resume session");
+		const facts: string[] = [];
+		if (this.variant === "sessions") facts.push(this.scope === "current" ? "this folder" : "all folders");
+		if (this.variant === "sessions" || this.sortMode !== "threaded") {
+			facts.push(
+				this.sortMode === "threaded"
+					? "threaded"
+					: this.sortMode === "recent"
+						? "most recent first"
+						: "best match first",
+			);
+		}
+		if (this.variant === "sessions" && this.nameFilter === "named") facts.push("named only");
+		if (this.variant === "sessions" && this.showPath) facts.push("showing paths");
+		if (this.loading) {
+			facts.push(this.loadProgress ? `Loading ${this.loadProgress.loaded}/${this.loadProgress.total}` : "Loading…");
+		}
+		const lines = [`  ${theme.bold(theme.fg("text", truncateToWidth(title, inner, "…")))}`];
+		if (facts.length > 0) lines.push(`  ${theme.fg("muted", truncateToWidth(facts.join(" · "), inner, "…"))}`);
+		lines.push(
+			`  ${theme.fg("dim", truncateToWidth('re:<pattern> for a regex · "phrase" for an exact match', inner, "…"))}`,
+		);
+		return lines;
 	}
 }

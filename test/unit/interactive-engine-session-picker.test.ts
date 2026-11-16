@@ -162,6 +162,26 @@ describe("engine_session_picker protocol", () => {
 		}
 	});
 
+	test("carries a picker's title, kind, delete offer and each row's title and detail line (#5224)", () => {
+		const sessions = [{ ...row("alpha"), title: "ralph · ship it", detail: "paused · stage 3/5 implement" }];
+		const message = {
+			type: "engine_session_picker_open",
+			componentId: "p1",
+			sessions,
+			title: "Resume workflow run",
+			variant: "runs",
+			canDelete: false,
+		} as const;
+		assert.deepEqual(parseInteractiveEngineMessage(serializeInteractiveEngineFrame(message)), message);
+		const reject = (payload: Record<string, unknown>) =>
+			parseInteractiveEngineMessage(
+				JSON.stringify({ type: "engine_session_picker_open", componentId: "p1", sessions: [row("a")], ...payload }),
+			);
+		assert.equal(reject({ variant: "tasks" }), undefined);
+		assert.equal(reject({ canDelete: "no" }), undefined);
+		assert.equal(reject({ sessions: [{ ...row("a"), detail: 3 }] }), undefined);
+	});
+
 	test("rejects malformed rows, colors, and missing fields", () => {
 		const reject = (payload: Record<string, unknown>) =>
 			parseInteractiveEngineMessage(
@@ -217,6 +237,26 @@ describe("host-native session picker (source-path)", () => {
 		const rendered = renderText(bridge);
 		assert.ok(rendered.includes("alpha-message"), "first row rendered");
 		assert.ok(rendered.includes("beta-message"), "second row rendered");
+		bridge.controller.dispose();
+	});
+
+	test("the host mount shows the child's title and rows, and offers delete only when the child handles it (#5224)", async () => {
+		const bridge = makeBridge();
+		void bridge.child.open({
+			sessions: [{ ...row("alpha"), title: "ralph · ship it", detail: "paused · stage 3/5 implement" }, row("beta")],
+			title: "Resume workflow run",
+			variant: "runs",
+		});
+		await flush();
+		const lines = renderText(bridge).split("\n");
+		assert.ok(
+			lines.some((line) => line.trim() === "Resume workflow run"),
+			lines.join("\n"),
+		);
+		const title = lines.findIndex((line) => line.includes("ralph · ship it"));
+		assert.match(lines[title + 1]!, /^\s+paused · stage 3\/5 implement\s*$/);
+		assert.ok(!lines.some((line) => line.includes("delete")), "no delete without the child's onDelete");
+		assert.ok(!lines.some((line) => line.includes("tab all")), "no folder scope for runs");
 		bridge.controller.dispose();
 	});
 

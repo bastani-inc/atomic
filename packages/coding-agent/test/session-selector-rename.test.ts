@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { setKeybindings } from "@bastani/atomic-tui";
+import { setKeybindings, stripTerminalSequences as stripAnsi } from "@bastani/atomic-tui";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import type { SessionInfo } from "../src/core/session-manager.js";
@@ -54,8 +54,7 @@ describe("session selector rename", () => {
 		await flushPromises();
 
 		const output = selector.render(120).join("\n");
-		expect(output).toContain("ctrl+r");
-		expect(output).toContain("Rename");
+		expect(stripAnsi(output)).toContain("ctrl+r rename");
 	});
 
 	it("does not show rename hint in --resume picker configuration", async () => {

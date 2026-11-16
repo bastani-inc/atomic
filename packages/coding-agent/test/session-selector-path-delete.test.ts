@@ -242,8 +242,8 @@ describe("session selector path/delete interactions", () => {
 
 		expect(allLoadCalls).toBe(1);
 		const output = selector.render(120).join("\n");
-		expect(output).toContain("Resume Session (Current Folder)");
-		expect(output).not.toContain("Resume Session (All)");
+		expect(output).toContain("this folder · ");
+		expect(output).not.toContain("all folders");
 	});
 
 	it("does not start redundant All loads when toggling scopes while All is already loading", async () => {
@@ -458,7 +458,7 @@ describe("session selector path/delete interactions", () => {
 
 		list.handleInput("\t");
 		const backToLoadingCurrent = stripAnsi(selector.render(120).join("\n"));
-		assert.equal(backToLoadingCurrent.includes("Loading ..."), true);
+		assert.equal(backToLoadingCurrent.includes("Loading…"), true);
 		assert.equal(backToLoadingCurrent.includes("msg-s2"), true);
 		assert.equal(backToLoadingCurrent.includes("/proj/a"), false);
 
@@ -466,27 +466,27 @@ describe("session selector path/delete interactions", () => {
 		emitAllProgress?.(2, 3, [s3]);
 		assert.equal(requestRender.mock.calls.length, rendersBeforeBgAllProgress);
 		const duringBgAllFrame = stripAnsi(selector.render(120).join("\n"));
-		assert.equal(duringBgAllFrame.includes("Loading ..."), true);
+		assert.equal(duringBgAllFrame.includes("Loading…"), true);
 		assert.equal(duringBgAllFrame.includes("Loading 2/3"), false);
 		assert.equal(duringBgAllFrame.includes("msg-s3"), false);
 
 		currentInitial.resolve([s1, s2]);
 		await flushPromises();
 		assert.equal(list.getSelectedSessionPath(), s1.path);
-		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("◉ Current Folder"), true);
+		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("this folder · "), true);
 
 		list.handleInput("\x1b[B");
 		assert.equal(list.getSelectedSessionPath(), s2.path);
 
 		list.handleInput("\t");
 		const partialAllFrame = stripAnsi(selector.render(120).join("\n"));
-		assert.equal(partialAllFrame.includes("Loading ..."), true);
+		assert.equal(partialAllFrame.includes("Loading…"), true);
 		assert.equal(partialAllFrame.includes("msg-s3"), true);
 		assert.equal(partialAllFrame.includes("/proj/b"), true);
 
 		list.handleInput("\t");
 		const settledCurrentFrame = stripAnsi(selector.render(120).join("\n"));
-		assert.equal(settledCurrentFrame.includes("◉ Current Folder"), true);
+		assert.equal(settledCurrentFrame.includes("this folder · "), true);
 		assert.equal(settledCurrentFrame.includes("/proj/a"), false);
 		assert.equal(list.getSelectedSessionPath(), s2.path);
 
@@ -496,7 +496,7 @@ describe("session selector path/delete interactions", () => {
 		allLoad.resolve([s1, s3]);
 		await flushPromises();
 		assert.equal(list.getSelectedSessionPath(), s3.path);
-		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("◉ All"), true);
+		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("all folders"), true);
 
 		list.handleInput("\t");
 		list.handleInput("\x1b[A");

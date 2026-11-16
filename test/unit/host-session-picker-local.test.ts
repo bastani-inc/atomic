@@ -184,15 +184,15 @@ describe("in-process host session picker (non-isolated)", () => {
 		assert.equal(await handle.result, undefined);
 	});
 
-	test("delete without an onDelete callback reports it as unsupported", async () => {
+	test("a picker without an onDelete callback offers no delete: no hint, and ctrl+d does nothing (#5224)", async () => {
 		const mount = makeLocalUi();
 		const handle = openLocalHostSessionPicker(mount.ui, { sessions: [row("alpha")] });
 		await flush();
 
+		assert.ok(!renderText(mount).includes("delete"), "no delete hint");
 		mount.component().handleInput(CTRL_D);
-		mount.component().handleInput(ENTER);
 		await flush();
-		assert.ok(renderText(mount).includes("Deletion is not supported for this picker"));
+		assert.ok(!renderText(mount).includes("Delete this session?"), "no delete question");
 		assert.ok(renderText(mount).includes("alpha-message"), "row untouched");
 
 		handle.close();

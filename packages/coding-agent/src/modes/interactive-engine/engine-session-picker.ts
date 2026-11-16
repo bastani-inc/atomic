@@ -56,6 +56,9 @@ export class EngineSessionPickerService {
 			componentId,
 			sessions: [...request.sessions],
 			...(request.showRenameHint !== undefined ? { showRenameHint: request.showRenameHint } : {}),
+			...(request.title !== undefined ? { title: request.title } : {}),
+			...(request.variant !== undefined ? { variant: request.variant } : {}),
+			canDelete: request.onDelete !== undefined,
 		});
 		return {
 			result,

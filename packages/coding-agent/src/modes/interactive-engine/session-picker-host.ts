@@ -1,6 +1,8 @@
 import type { ExtensionUIContext, HostSessionPickerRow } from "../../core/extensions/index.js";
 import {
 	type HostSessionPickerMount,
+	type HostSessionPickerPresentation,
+	hostSessionPickerPresentation,
 	mountHostSessionPicker,
 	sessionInfoFromPickerRow,
 } from "../interactive/components/host-session-picker.ts";
@@ -50,7 +52,11 @@ export class SessionPickerHostController {
 				this.disposeAll();
 				break;
 			case "engine_session_picker_open":
-				this.open(message.componentId, message.sessions, message.showRenameHint === true);
+				this.open(
+					message.componentId,
+					message.sessions,
+					hostSessionPickerPresentation(message, message.canDelete ?? true),
+				);
 				break;
 			case "engine_session_picker_update":
 				this.mounted.get(message.componentId)?.setRows(message.sessions.map(sessionInfoFromPickerRow));
@@ -68,9 +74,13 @@ export class SessionPickerHostController {
 		}
 	}
 
-	private open(componentId: string, sessions: HostSessionPickerRow[], showRenameHint: boolean): void {
+	private open(
+		componentId: string,
+		sessions: HostSessionPickerRow[],
+		presentation: HostSessionPickerPresentation,
+	): void {
 		if (this.mounted.has(componentId)) return;
-		const mount = mountHostSessionPicker(this.ui, sessions.map(sessionInfoFromPickerRow), showRenameHint, {
+		const mount = mountHostSessionPicker(this.ui, sessions.map(sessionInfoFromPickerRow), presentation, {
 			onSelect: (path) => {
 				this.mounted.delete(componentId);
 				this.runtime.sendEngineCommand({ type: "engine_session_picker_select", componentId, path });

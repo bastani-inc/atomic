@@ -124,6 +124,10 @@ export type InteractiveEngineMessage =
 			componentId: string;
 			sessions: HostSessionPickerRow[];
 			showRenameHint?: boolean;
+			title?: string;
+			variant?: "sessions" | "runs";
+			/** Whether the child handles row deletion; absent means it does (older children). */
+			canDelete?: boolean;
 	  }
 	| { type: "engine_session_picker_update"; componentId: string; sessions: HostSessionPickerRow[] }
 	| { type: "engine_session_picker_error"; componentId: string; message: string }
@@ -367,6 +371,8 @@ function parseSessionPickerRow(value: JsonValue): HostSessionPickerRow | undefin
 		allMessagesText,
 		name,
 		messageColor,
+		title,
+		detail,
 	} = value;
 	if (
 		typeof path !== "string" ||
@@ -381,6 +387,8 @@ function parseSessionPickerRow(value: JsonValue): HostSessionPickerRow | undefin
 	if (summary !== undefined && typeof summary !== "string") return undefined;
 	if (allMessagesText !== undefined && typeof allMessagesText !== "string") return undefined;
 	if (name !== undefined && typeof name !== "string") return undefined;
+	if (title !== undefined && typeof title !== "string") return undefined;
+	if (detail !== undefined && typeof detail !== "string") return undefined;
 	if (
 		messageColor !== undefined &&
 		!SESSION_PICKER_MESSAGE_COLORS.includes(messageColor as (typeof SESSION_PICKER_MESSAGE_COLORS)[number])
@@ -400,6 +408,8 @@ function parseSessionPickerRow(value: JsonValue): HostSessionPickerRow | undefin
 		...(messageColor !== undefined
 			? { messageColor: messageColor as (typeof SESSION_PICKER_MESSAGE_COLORS)[number] }
 			: {}),
+		...(title !== undefined ? { title } : {}),
+		...(detail !== undefined ? { detail } : {}),
 	};
 }
 
@@ -661,12 +671,18 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 			const sessions = parseSessionPickerRows(value.sessions);
 			return typeof value.componentId === "string" &&
 				sessions &&
-				(value.showRenameHint === undefined || typeof value.showRenameHint === "boolean")
+				(value.showRenameHint === undefined || typeof value.showRenameHint === "boolean") &&
+				(value.title === undefined || typeof value.title === "string") &&
+				(value.variant === undefined || value.variant === "sessions" || value.variant === "runs") &&
+				(value.canDelete === undefined || typeof value.canDelete === "boolean")
 				? {
 						type: value.type,
 						componentId: value.componentId,
 						sessions,
 						...(typeof value.showRenameHint === "boolean" ? { showRenameHint: value.showRenameHint } : {}),
+						...(typeof value.title === "string" ? { title: value.title } : {}),
+						...(value.variant === "sessions" || value.variant === "runs" ? { variant: value.variant } : {}),
+						...(typeof value.canDelete === "boolean" ? { canDelete: value.canDelete } : {}),
 					}
 				: undefined;
 		}

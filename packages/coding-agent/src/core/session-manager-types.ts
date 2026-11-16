@@ -362,6 +362,10 @@ export interface SessionInfo {
 	allMessagesText: string;
 	/** Optional semantic color for synthetic selector rows. */
 	messageColor?: "success" | "warning" | "accent" | "error";
+	/** Synthetic selector rows: the row's first line, in place of the name or first message. */
+	title?: string;
+	/** Synthetic selector rows: the row's dim second line, in place of age · messages · summary. */
+	detail?: string;
 }
 
 export type SessionListProgress = (loaded: number, total: number, partialSessions?: readonly SessionInfo[]) => void;

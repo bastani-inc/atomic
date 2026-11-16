@@ -7,7 +7,7 @@ import { DynamicBorder } from "./dynamic-border.ts";
 import { keyText } from "./keybinding-hints.js";
 import { type DeleteSessionFileResult, deleteSessionFile } from "./session-selector-delete.ts";
 import { SessionSelectorHeader } from "./session-selector-header.ts";
-import { SessionList } from "./session-selector-list.ts";
+import { SessionList, type SessionListVariant } from "./session-selector-list.ts";
 import type { NameFilter, SortMode } from "./session-selector-search.ts";
 import type { SessionScope, SessionsLoader } from "./session-selector-types.ts";
 
@@ -74,15 +74,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private buildBaseLayout(content: Component, options?: { showHeader?: boolean }): void {
 		this.clear();
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
-		this.addChild(new Spacer(1));
-		if (options?.showHeader ?? true) {
-			this.addChild(this.header);
-			this.addChild(new Spacer(1));
-		}
+		this.addChild(new DynamicBorder((s) => theme.fg("borderMuted", s)));
+		if (options?.showHeader ?? true) this.addChild(this.header);
 		this.addChild(content);
-		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
+		this.addChild(new DynamicBorder((s) => theme.fg("borderMuted", s)));
 	}
 
 	constructor(
@@ -104,6 +99,12 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			 * and keeps live rows visible if the loader later errors.
 			 */
 			initialSessions?: SessionInfo[];
+			/** What the picker lists; `runs` drops folder scope, name filtering and paths. Defaults to sessions. */
+			variant?: SessionListVariant;
+			/** The picker's title; defaults to "Resume session" or "Resume workflow run". */
+			title?: string;
+			/** Whether Ctrl+D deletes a row. Defaults to true. */
+			canDelete?: boolean;
 		},
 		currentSession?: { id: string; directory: string },
 	) {
@@ -117,7 +118,9 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		const renameSession = options?.renameSession;
 		this.renameSession = renameSession;
 		this.canRename = !!renameSession;
-		this.header.setShowRenameHint(options?.showRenameHint ?? this.canRename);
+		const variant = options?.variant ?? "sessions";
+		this.header.setVariant(variant);
+		this.header.setTitle(options?.title);
 
 		// Create the session list. Seed with any provided initial rows so the very
 		// first frame is populated (kept minimal/in-memory by the caller) while the
@@ -134,6 +137,10 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		if (initialSessions !== undefined) {
 			this.currentSessions = initialSessions;
 		}
+		this.sessionList.setVariant(variant);
+		this.sessionList.setCanDelete(options?.canDelete ?? true);
+		this.sessionList.setCanRename(options?.showRenameHint ?? this.canRename);
+		this.sessionList.setNoticeProvider(() => this.header.getNotice());
 
 		this.buildBaseLayout(this.sessionList);
 

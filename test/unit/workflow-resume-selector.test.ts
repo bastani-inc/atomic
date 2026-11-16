@@ -329,3 +329,48 @@ describe("workflow resume selector row presentation", () => {
 		assert.match(item!.session.allMessagesText, /crashed/);
 	});
 });
+
+describe("workflow resume picker rows: a title and one detail line (#5224)", () => {
+	const NOW = 10_000_000;
+
+	test("a live run's title names the workflow and its identity; its detail is status · stage · elapsed · cost", () => {
+		const run: RunSnapshot = {
+			...pausedLiveRun("run-ship", NOW - 60_000),
+			name: "ralph",
+			label: "fix the shipping benchmark",
+			startedAt: NOW - 3_000_000,
+			durationMs: 41 * 60_000,
+			stages: [
+				{ ...stage("plan", NOW - 2_000_000), status: "completed" },
+				{ ...stage("research", NOW - 1_900_000), status: "completed" },
+				{ ...stage("implement", NOW - 100_000), status: "running", endedAt: undefined },
+				{ ...stage("review", NOW), status: "pending", startedAt: undefined, endedAt: undefined },
+				{ ...stage("verify", NOW), status: "pending", startedAt: undefined, endedAt: undefined },
+			],
+			budgetState: { accounting: { cost: 1.84 } } as RunSnapshot["budgetState"],
+		};
+		const [item] = workflowResumeSelectorItems([run], [], [], undefined, undefined, NOW);
+		assert.equal(item?.session.title, "ralph · fix the shipping benchmark");
+		assert.equal(item?.session.detail, "paused · stage 3/5 implement · 41m · $1.84");
+	});
+
+	test("a finished run's detail says how long ago it ended; a failed run's says why", () => {
+		const completed = { ...entry("done-run", "completed", NOW - 2 * 3_600_000), name: "review-pr", label: "#5222" };
+		const failed = {
+			...entry("bad-run", "failed", NOW - 60_000),
+			name: "goal",
+			error: "Error: gate failed: 2 jobs\n    at run (x.ts:1:1)",
+		};
+		const items = workflowResumeSelectorItems([], [failed], [completed], undefined, undefined, NOW);
+		const byId = new Map(items.map((item) => [item.session.id, item.session]));
+		assert.equal(byId.get("done-run")?.title, "review-pr · #5222");
+		assert.equal(byId.get("done-run")?.detail, "✓ completed · 2h ago");
+		assert.equal(byId.get("bad-run")?.detail, "failed · 1m ago · ✗ gate failed: 2 jobs");
+	});
+
+	test("a run without a label or objective shows its short id in the title", () => {
+		const id = "11111111-1111-4111-8111-111111111111";
+		const [item] = workflowResumeSelectorItems([], [entry(id, "paused")], [], undefined, undefined, NOW);
+		assert.equal(item?.session.title, "paused-workflow · 11111111");
+	});
+});
