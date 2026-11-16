@@ -1,5 +1,13 @@
+import { Readable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
-import { applyEarlyInputChunk, type EarlyInputState, startEarlyInputCapture } from "../src/main-early-input.ts";
+import {
+	applyEarlyInputChunk,
+	consumeStartupInput,
+	type EarlyInputState,
+	startEarlyInputCapture,
+	withEarlyInputHeldForStartupDialog,
+} from "../src/main-early-input.ts";
 
 class FakeStdin {
 	isTTY = true;
@@ -215,5 +223,81 @@ describe("early startup input", () => {
 
 		expect(startEarlyInputCapture({ enabled: false, stdin, process })).toBeUndefined();
 		expect(stdin.rawModeCalls).toEqual([]);
+	});
+});
+
+/**
+ * A terminal's stdin as libuv reads it on Windows: keys the user typed reach the process only once a read has started
+ * and its helper thread has completed it, `readLatencyMs` later.
+ */
+class OsStdin extends Readable {
+	isTTY = true;
+	isRaw = false;
+	private readonly typed: Buffer[] = [];
+	private wanted = false;
+	private delivering = false;
+
+	constructor(private readonly readLatencyMs: number) {
+		super();
+	}
+
+	setRawMode(mode: boolean): this {
+		this.isRaw = mode;
+		return this;
+	}
+
+	type(text: string): void {
+		this.typed.push(Buffer.from(text));
+		this.deliverWhenRead();
+	}
+
+	override _read(): void {
+		this.wanted = true;
+		this.deliverWhenRead();
+	}
+
+	private deliverWhenRead(): void {
+		if (!this.wanted || this.delivering || this.typed.length === 0) return;
+		this.delivering = true;
+		setTimeout(() => {
+			this.delivering = false;
+			this.wanted = false;
+			this.push(Buffer.concat(this.typed.splice(0)));
+		}, this.readLatencyMs);
+	}
+}
+
+function busyFor(ms: number): void {
+	const end = performance.now() + ms;
+	while (performance.now() < end) {}
+}
+
+describe("early startup input held for a startup dialog (#5241)", () => {
+	it("captures input typed while startup does not yield, before a dialog takes stdin", async () => {
+		const stdin = new OsStdin(5);
+		const capture = startEarlyInputCapture({ enabled: true, stdin, process: new FakeProcess() });
+		stdin.type("hello");
+		busyFor(20);
+		const snapshot = await withEarlyInputHeldForStartupDialog(async () => consumeStartupInput(capture));
+		expect(snapshot).toEqual({ text: "hello", submissions: [], heldForStartupDecision: true });
+	});
+
+	it("leaves input that arrives once a dialog holds stdin to the dialog's reader instead of dropping it", async () => {
+		const stdin = new OsStdin(0);
+		const capture = startEarlyInputCapture({ enabled: true, stdin, process: new FakeProcess() });
+		const read = await withEarlyInputHeldForStartupDialog(async () => {
+			stdin.type("y");
+			await delay(10);
+			const chunks: string[] = [];
+			const onData = (chunk: Buffer | string) => chunks.push(String(chunk));
+			stdin.on("data", onData);
+			stdin.resume();
+			await delay(10);
+			stdin.off("data", onData);
+			stdin.pause();
+			return chunks.join("");
+		});
+		expect(read).toBe("y");
+		expect(consumeStartupInput(capture)).toEqual({ text: "", submissions: [], heldForStartupDecision: true });
 	});
 });

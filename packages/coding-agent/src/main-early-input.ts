@@ -80,6 +80,8 @@ interface EarlyInputStream {
 	setRawMode?(mode: boolean): void;
 	setEncoding?(encoding: BufferEncoding): void;
 	resume(): void;
+	pause?(): void;
+	read?(size?: number): unknown;
 	on(event: "data", listener: (chunk: Buffer | string) => void): void;
 	off?(event: "data", listener: (chunk: Buffer | string) => void): void;
 	removeListener(event: "data", listener: (chunk: Buffer | string) => void): void;
@@ -223,6 +225,8 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 			paused = true;
 			heldForStartupDecision = true;
 			detach();
+			// Without a reader a flowing stream drops what arrives: keep it for the dialog's reader instead.
+			stdin.pause?.();
 			clearPendingEscapeTimer();
 			state.pendingEscape = undefined;
 			stdin.setRawMode?.(wasRaw);
@@ -283,6 +287,10 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 	});
 	activeCapture = control;
 	stdin.resume();
+	// Start the OS read now rather than on the next tick: keys typed while startup runs without yielding must already
+	// be on their way when a startup dialog takes stdin. On Windows a read completes through a helper thread, so a
+	// read started only when startup yields can miss the dialog's handoff.
+	stdin.read?.(0);
 
 	return {
 		consume() {
