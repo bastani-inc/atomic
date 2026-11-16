@@ -1035,7 +1035,7 @@ export async function main(argv: string[], options?: MainOptions) {
 							modelRuntime,
 							settingsManager,
 						);
-						finalServices.diagnostics.push(...finalSelection.diagnostics, ...finalSelection.fallbackDiagnostics);
+						finalServices.diagnostics.push(...finalSelection.diagnostics);
 						const finalModel = await resolveDeferredStartupModel({
 							selected: finalSelection.options.model,
 							isContinuing: existingSession.messages.length > 0,
@@ -1063,6 +1063,14 @@ export async function main(argv: string[], options?: MainOptions) {
 							);
 						}
 						await created.session.completeStartupResources(finalServices.resourceLoader);
+						finalServices.diagnostics.push(
+							...unresolvedFallbackModelDiagnostics(
+								parsed,
+								settingsManager,
+								modelRuntime,
+								created.session.model?.provider ?? settingsManager.getDefaultProvider(),
+							),
+						);
 						const completedDiagnostics = deduplicateDiagnostics(finalServices.diagnostics);
 						services.diagnostics = completedDiagnostics;
 						if (appMode !== "interactive") {

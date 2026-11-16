@@ -42,6 +42,43 @@ function registerExtensionModel(registry: ModelRegistry, provider: string, model
 	});
 }
 
+async function completeDeferredStartup(mode: { options: InteractiveMode["options"]; session: object }): Promise<void> {
+	Object.assign(mode.session, {
+		reload: async () => {},
+		resourceLoader: { getThemes: () => ({ themes: [] }) },
+		getToolStatus: () => ({ missing: [] }),
+	});
+	const harness = Object.assign(
+		{
+			resourceDisclosureContainer: new Container(),
+			startupNoticesContainer: new Container(),
+			ui: { requestRender() {} },
+			deferredStartupPending: true,
+			bindCurrentSessionExtensions: async () => {},
+			applyRuntimeSettings() {},
+			rebuildChatFromMessages() {},
+			stopWorkingLoader() {},
+			themeController: { applyFromSettings: async () => {} },
+			setupAutocompleteProvider() {},
+			setupExtensionShortcuts() {},
+			retryDeferredModelRestore: async () =>
+				InteractiveMode.prototype.retryDeferredModelRestore.call(harness as never),
+			showLoadedResources() {},
+			maybeWarnAboutAnthropicSubscriptionAuth: async () => {},
+			showStartupNoticesIfNeeded() {},
+			reportModelCatalogWarning() {},
+			updateAvailableProviderCount: async () => {},
+			updateEditorBorderColor() {},
+			startSessionRecovery() {},
+			showError(message: string) {
+				assert.fail(message);
+			},
+		},
+		mode,
+	);
+	await InteractiveMode.prototype.completeDeferredStartup.call(harness as never);
+}
+
 describe("applyDeferredModelScope", () => {
 	it("resolves saved model scope after deferred extension loading and surfaces warnings then", async () => {
 		const setScopedModels = vi.fn();
@@ -92,7 +129,7 @@ describe("applyDeferredModelScope", () => {
 		expect(setThinkingLevel).not.toHaveBeenCalled();
 	});
 
-	it("checks fallbackModels entries only after deferred extension providers register", async () => {
+	it("checks fallbackModels entries only after deferred extension providers register (#5247)", async () => {
 		const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
 		const modelRuntime = getModelRuntime(registry);
 		const settingsManager = SettingsManager.inMemory({
@@ -122,7 +159,7 @@ describe("applyDeferredModelScope", () => {
 			showWarning,
 		};
 
-		await applyDeferredModelScope(mode as never);
+		await completeDeferredStartup(mode);
 
 		assert.deepEqual(showWarning.mock.calls, [
 			[
@@ -130,6 +167,56 @@ describe("applyDeferredModelScope", () => {
 			],
 		]);
 	});
+
+	for (const selection of ["scope", "restore"] as const) {
+		it(`checks bare fallback ids against the provider selected by deferred ${selection} (#5247)`, async () => {
+			const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
+			registerExtensionModel(registry, "initial-provider", "primary-model");
+			registerExtensionModel(registry, "other-provider", "shared-model");
+			registerExtensionModel(registry, "extension-provider", "shared-model");
+			const modelRuntime = getModelRuntime(registry);
+			const settingsManager = SettingsManager.inMemory({ fallbackModels: ["shared-model"] });
+			const parsed = parseArgs([]);
+			const showWarning = vi.fn();
+			const session = {
+				model: registry.find("initial-provider", "primary-model"),
+				modelRuntime,
+				settingsManager,
+				setScopedModels: vi.fn(),
+				setModel: vi.fn(async (model: ReturnType<ModelRegistry["find"]>) => {
+					session.model = model;
+				}),
+			};
+			const mode = {
+				options: {
+					deferredModelScopePatterns: selection === "scope" ? ["extension-provider/shared-model"] : undefined,
+					modelFallbackMessage: selection === "restore" ? "Could not restore saved model" : undefined,
+					deferredFallbackModelCheck: (activeSession: Pick<typeof session, "model">) =>
+						unresolvedFallbackModelDiagnostics(
+							parsed,
+							settingsManager,
+							modelRuntime,
+							activeSession.model?.provider,
+						),
+				},
+				session,
+				sessionManager: {
+					buildSessionContext: () => ({
+						messages: [],
+						model:
+							selection === "restore" ? { provider: "extension-provider", modelId: "shared-model" } : undefined,
+					}),
+				},
+				settingsManager,
+				showWarning,
+			};
+
+			await completeDeferredStartup(mode);
+
+			assert.equal(session.model?.provider, "extension-provider");
+			assert.deepEqual(showWarning.mock.calls, []);
+		});
+	}
 
 	it("deduplicates repeated unmatched model-scope patterns (#4694)", async () => {
 		const showWarning = vi.fn();

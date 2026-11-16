@@ -80,6 +80,11 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 			await applyDeferredModelScope(this);
 		}
 		await this.retryDeferredModelRestore(this.startupNoticesContainer);
+		if (!completedStartupTrust) {
+			for (const diagnostic of this.options.deferredFallbackModelCheck?.(this.session) ?? []) {
+				this.showWarning(diagnostic.message);
+			}
+		}
 		this.showLoadedResources({
 			force: true,
 			showDiagnosticsWhenQuiet: true,
@@ -121,15 +126,11 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 };
 
 export async function applyDeferredModelScope(mode: InteractiveModeBase): Promise<void> {
-	const fallbackDiagnostics = mode.options.deferredFallbackModelCheck?.(mode.session) ?? [];
 	const patterns = mode.options.deferredModelScopePatterns;
-	if (!patterns || patterns.length === 0) {
-		for (const diagnostic of fallbackDiagnostics) mode.showWarning(diagnostic.message);
-		return;
-	}
+	if (!patterns || patterns.length === 0) return;
 
 	const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, mode.session.modelRuntime);
-	for (const diagnostic of deduplicateDiagnostics([...diagnostics, ...fallbackDiagnostics])) {
+	for (const diagnostic of deduplicateDiagnostics(diagnostics)) {
 		mode.showWarning(diagnostic.message);
 	}
 	mode.session.setScopedModels(scopedModels);
