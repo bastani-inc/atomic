@@ -298,8 +298,21 @@ export class AgentPanelFocus {
 		this.actions = actions;
 		this.stopConfirm = new TwoPressConfirm(now);
 	}
+	/**
+	 * A row that finished while its stop waited for the second `x`: the wait ends, and the next `x` on it only
+	 * acknowledges this, so a row is never dismissed by a press aimed at a running item.
+	 */
+	finishedWhileArmed?: AgentPanelRow;
+	private finishedAcknowledged = false;
 	update(rows: readonly AgentPanelRow[]): void {
 		this.rows = rows;
+		const armed = this.stopConfirm.pending();
+		const settled = rows.find((row) => row.id === armed && isFinishedPanelRow(row));
+		if (settled !== undefined) {
+			this.stopConfirm.reset();
+			this.finishedWhileArmed = settled;
+			this.finishedAcknowledged = false;
+		}
 		if (this.selectedId !== AGENT_PANEL_MAIN_ID && !rows.some((row) => row.id === this.selectedId))
 			this.selectedId = rows[0]?.id ?? AGENT_PANEL_MAIN_ID;
 		this.keepInView();
@@ -346,7 +359,10 @@ export class AgentPanelFocus {
 			return true;
 		}
 		const stopKey = this.keys.matches(data, "app.list.stop");
-		if (!stopKey) this.stopConfirm.reset();
+		if (!stopKey) {
+			this.stopConfirm.reset();
+			this.finishedWhileArmed = undefined;
+		}
 		// Esc and ← go back one level, to the prompt the panel was focused from.
 		if (is(data, "escape") || is(data, "left")) {
 			this.actions.close();
@@ -379,8 +395,14 @@ export class AgentPanelFocus {
 		}
 		if (stopKey) {
 			if (row === undefined) return true;
-			if (isFinishedPanelRow(row)) this.actions.dismiss(row);
-			else if (this.stopConfirm.press(row.id)) this.actions.stop(row);
+			if (isFinishedPanelRow(row)) {
+				if (this.finishedWhileArmed?.id === row.id && !this.finishedAcknowledged) {
+					this.finishedAcknowledged = true;
+					return true;
+				}
+				this.finishedWhileArmed = undefined;
+				this.actions.dismiss(row);
+			} else if (this.stopConfirm.press(row.id)) this.actions.stop(row);
 			return true;
 		}
 		return true;
@@ -394,6 +416,11 @@ export function renderAgentPanelHint(
 	style: AgentPanelStyle,
 	keybindings: NavKeybindings | undefined,
 ): string {
+	const finished = focus.finishedWhileArmed;
+	if (finished !== undefined) {
+		const key = keybindings?.getKeys?.("app.list.stop")?.[0] ?? "x";
+		return style.warning(truncateToWidth(`  ${panelText(finished.name)} finished · ${key} to dismiss`, width));
+	}
 	const pending = focus.pendingStop();
 	if (pending !== undefined) {
 		const key = keybindings?.getKeys?.("app.list.stop")?.[0] ?? "x";

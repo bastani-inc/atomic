@@ -127,6 +127,26 @@ function taskState(task: TaskRecord): AgentPanelState {
 	return "running";
 }
 
+const SHORT_TITLE_CHARS = 60;
+
+/**
+ * What a row says a task works on: a subagent's whole prompt is too long for one, so its first line, cut at its first
+ * sentence when that ends early enough, else at a word near {@link SHORT_TITLE_CHARS}.
+ */
+export function shortTaskTitle(title: string): string {
+	const line =
+		title
+			.split("\n")
+			.find((part) => part.trim().length > 0)
+			?.trim() ?? "";
+	const sentence = /^(.{12,}?[.!?])(\s|$)/.exec(line)?.[1];
+	if (sentence !== undefined && sentence.length <= SHORT_TITLE_CHARS) return sentence;
+	if (line.length <= SHORT_TITLE_CHARS) return line;
+	const cut = line.slice(0, SHORT_TITLE_CHARS);
+	const space = cut.lastIndexOf(" ");
+	return `${(space > SHORT_TITLE_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
 /**
  * One panel item per background task of `source` that is not in `dismissed`, in admission order. The main chat's panel
  * lists only top-level tasks; a subagent's chat lists the tasks of that subagent, which all have a parent.
@@ -147,7 +167,7 @@ export function taskPanelItems(
 				kind: task.kind === "agent" ? "agent" : "shell",
 				state,
 				name: task.kind === "agent" ? (task.agentName ?? "agent") : "shell",
-				task: task.title || "",
+				task: shortTaskTitle(task.title || ""),
 				...(task.metrics?.elapsedMs === undefined ? {} : { elapsedMs: task.metrics.elapsedMs }),
 				...(task.metrics?.tokenCount === undefined ? {} : { tokens: task.metrics.tokenCount }),
 				...(question ? { question } : {}),
@@ -156,6 +176,21 @@ export function taskPanelItems(
 					: {}),
 			};
 		});
+}
+
+const reportedSources = new WeakSet<AgentPanelSource>();
+
+/** A source's items, or none when it throws: one broken extension never takes the panel or the host down. */
+function sourceItems(source: AgentPanelSource, onError?: (error: Error) => void): readonly AgentPanelItem[] {
+	try {
+		return source.items();
+	} catch (error) {
+		if (onError !== undefined && !reportedSources.has(source)) {
+			reportedSources.add(source);
+			onError(error instanceof Error ? error : new Error(String(error)));
+		}
+		return [];
+	}
 }
 
 /** The task id an item names, for items of the session's own tasks. */
@@ -188,12 +223,16 @@ function dismissedTaskIds(session: object): Set<TaskId> {
  * Every item of `session`: its extensions' items (workflow runs) first, then its own background tasks, each in launch
  * order. Dismissed items are left out.
  */
-export function agentPanelItems(session: AgentPanelSession & object): AgentPanelItem[] {
+export function agentPanelItems(
+	session: AgentPanelSession & object,
+	/** Told, once per source, when a source fails to list its items; that source is then left out. */
+	onSourceError?: (error: Error) => void,
+): AgentPanelItem[] {
 	const dismissed = dismissedAgentPanelItems(session);
 	const store = getOwnerTaskStore(session);
 	const tasks = store === undefined ? [] : taskPanelItems(ownerTaskViewSource(store), dismissedTaskIds(session));
 	const extensions = (hubOf(session)?.all() ?? []).flatMap((source) =>
-		source.items().filter((item) => !dismissed.has(item.id)),
+		sourceItems(source, onSourceError).filter((item) => !dismissed.has(item.id)),
 	);
 	return [...extensions, ...tasks];
 }
@@ -217,7 +256,7 @@ export function subscribeAgentPanel(session: AgentPanelSession & object, listene
 function sourceOf(session: AgentPanelSession, id: string): AgentPanelSource | undefined {
 	return hubOf(session)
 		?.all()
-		.find((source) => source.items().some((item) => item.id === id));
+		.find((source) => sourceItems(source).some((item) => item.id === id));
 }
 
 /** Opens an extension's item (a workflow run's graph). Task items open through the task inspector instead. */

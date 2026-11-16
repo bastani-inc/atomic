@@ -8,6 +8,7 @@ import {
 	AgentPanelSourceHub,
 	dismissedAgentPanelItems,
 	openAgentPanelItem,
+	shortTaskTitle,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
@@ -382,4 +383,84 @@ test("the focused panel scrolls to keep the selection in view and keeps every ro
 	focus.selectedId = "task:5";
 	focus.update(many.filter((row) => row.id !== "task:5"));
 	assert.equal(focus.selectedId, "task:0", "a row that leaves moves the selection to the first row");
+});
+
+test("a source that throws is left out of the panel, reported once, and never crashes the host (#4009, #5224)", async () => {
+	initTheme("dark");
+	const hub = new AgentPanelSourceHub();
+	const listeners = new Set<() => void>();
+	let broken = false;
+	hub.register({
+		items: () => {
+			if (broken) throw new Error("source exploded");
+			return [{ id: "run:ok", kind: "workflow", state: "running", name: "ralph", task: "" }];
+		},
+		subscribe: (listener) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+	});
+	hub.register({
+		items: () => [{ id: "run:other", kind: "workflow", state: "running", name: "other", task: "" }],
+		subscribe: () => () => {},
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const reports: string[] = [];
+	const uncaught: unknown[] = [];
+	const onUncaught = (error: unknown) => uncaught.push(error);
+	process.on("uncaughtException", onUncaught);
+	let widget: { render(width: number): string[] } | undefined;
+	const dispose = bindAgentPanel(session, {
+		setWidget(_key: string, content: unknown) {
+			widget = typeof content === "function" ? (content({} as never, {} as never) as never) : undefined;
+		},
+		requestRender() {},
+		notify: (message: string) => reports.push(message),
+	} as never);
+	try {
+		broken = true;
+		for (const listener of listeners) listener();
+		for (const listener of listeners) listener();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		assert.deepEqual(uncaught, [], "the deferred refresh stays inside its task");
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => row.name),
+			["other"],
+			"the other source's rows still show",
+		);
+		assert.match(widget?.render(80).join("\n") ?? "", /other/);
+		assert.equal(reports.length, 1, "the failure is reported once");
+		assert.match(reports[0] ?? "", /source exploded/);
+	} finally {
+		process.off("uncaughtException", onUncaught);
+		dispose();
+	}
+});
+
+test("a row that finishes between the two x presses is not dismissed by the second one (#5224)", () => {
+	const { focus, calls, press } = focusFixture();
+	press("x");
+	assert.equal(focus.pendingStop()?.id, "task:a");
+	focus.update([{ ...ROWS[0]!, state: "done" }, ...ROWS.slice(1)]);
+	assert.equal(focus.pendingStop(), undefined, "the stop is called off");
+	assert.equal(
+		stripVTControlCharacters(renderAgentPanelHint(focus, 80, plain, new KeybindingsManager())),
+		"  worker finished · x to dismiss",
+	);
+	press("x");
+	assert.deepEqual(calls, [], "the press meant as the second one only acknowledges the notice");
+	press("x");
+	assert.deepEqual(calls, ["dismiss task:a"], "a later press dismisses it");
+});
+
+test("a row names a task by a short title, not the subagent's whole prompt (#5224)", () => {
+	assert.equal(
+		shortTaskTitle(
+			"Start `sleep 90` with the bash tool in the background. Then use the wait tool on that task until it finishes.",
+		),
+		"Start `sleep 90` with the bash tool in the background.",
+	);
+	assert.equal(shortTaskTitle("\n  fix the picker clamp\nthen run the tests"), "fix the picker clamp");
+	const long = shortTaskTitle(`Investigate ${"the flaky spawn lock ".repeat(6)}`);
+	assert.ok(long.length <= 61 && long.endsWith("…"), long);
 });

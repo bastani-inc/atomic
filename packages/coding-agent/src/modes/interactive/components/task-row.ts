@@ -4,6 +4,7 @@ import { formatModelLabel } from "../../../core/model-label.ts";
 import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
 import { isResumableStop, releasedWaitingOn } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
+import { liveElapsedMs } from "../../../core/tasks/live-elapsed.ts";
 import type { TaskActivity } from "../../../core/tasks/owner-store.js";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound as keyHint } from "./keybinding-hints.js";
@@ -83,8 +84,13 @@ export function taskStatusAppearance(task: TaskRecord): {
 
 export function taskMetricsText(task: TaskRecord): string {
 	const metrics = task.metrics;
+	// Every view reads a task's time from the one shared clock, so lists, detail pages and the panel agree.
+	const elapsedMs =
+		metrics?.elapsedMs === undefined
+			? undefined
+			: liveElapsedMs(task.ref.taskId, metrics.elapsedMs, task.execution.kind === "running");
 	return [
-		metrics?.elapsedMs === undefined ? "" : taskDuration(metrics.elapsedMs),
+		elapsedMs === undefined ? "" : taskDuration(elapsedMs),
 		metrics?.tokenCount === undefined ? "" : `${metrics.tokenCount.toLocaleString("en-US")} tokens`,
 		metrics?.toolCount === undefined ? "" : `${metrics.toolCount} ${metrics.toolCount === 1 ? "tool" : "tools"}`,
 	]

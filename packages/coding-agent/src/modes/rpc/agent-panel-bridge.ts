@@ -8,6 +8,7 @@ import {
 	stopAgentPanelItem,
 	subscribeAgentPanel,
 } from "../../core/tasks/agent-panel-source.ts";
+import { observeTaskClocks } from "../../core/tasks/live-elapsed.ts";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
 import {
@@ -32,6 +33,8 @@ interface PanelState {
 	readonly model: AgentPanelModel;
 	/** Workflow-run rows opened at least once: a finished run stays until it has been viewed. */
 	readonly viewed: Set<string>;
+	/** Where a failing extension source is reported, once. */
+	onSourceError?: (error: Error) => void;
 	/** Hides the unfocused panel while the focused one owns the same rows. */
 	setVisible?: (visible: boolean) => void;
 }
@@ -65,7 +68,7 @@ export function themedAgentPanelStyle(): AgentPanelStyle {
 /** The rows the panel shows now: workflow runs, then subagents and shells, newest first, with finished rows aging out. */
 export function agentPanelRows(session: AgentPanelSession & object): AgentPanelRow[] {
 	const state = panelState(session);
-	const items = agentPanelItems(session);
+	const items = agentPanelItems(session, state.onSourceError);
 	const runs = items.filter((item) => item.kind === "workflow").reverse();
 	const tasks = items.filter((item) => item.kind !== "workflow").reverse();
 	// A finished run stays until it has been viewed; a finished task ages out.
@@ -81,9 +84,13 @@ const TICK_MS = 1000;
  */
 export function bindAgentPanel(
 	session: AgentPanelSession & object,
-	ui: Pick<ExtensionUIContext, "setWidget" | "requestRender"> & Partial<Pick<ExtensionUIContext, "onWidgetRelease">>,
+	ui: Pick<ExtensionUIContext, "setWidget" | "requestRender"> &
+		Partial<Pick<ExtensionUIContext, "onWidgetRelease" | "notify">>,
 ): () => void {
 	const state = panelState(session);
+	const report = (error: Error) =>
+		ui.notify?.(`Agent panel: a source failed and is hidden: ${error.message}`, "warning");
+	state.onSourceError = report;
 	let mounted = false;
 	let visible = true;
 	let disposed = false;
@@ -93,8 +100,18 @@ export function bindAgentPanel(
 		if (timer !== undefined) clearInterval(timer);
 		timer = undefined;
 	};
+	// Every refresh runs from a timer or a microtask: a failure there is reported, never thrown into the host.
 	const update = () => {
+		try {
+			refresh();
+		} catch (error) {
+			report(error instanceof Error ? error : new Error(String(error)));
+		}
+	};
+	const refresh = () => {
 		if (disposed) return;
+		// Every task's stop is recorded as it happens, including subagents' own tasks that only /tasks shows.
+		observeTaskClocks(getOwnerTaskStore(session)?.tasks ?? []);
 		const rows = agentPanelRows(session);
 		if (!visible || rows.length === 0) {
 			if (mounted) ui.setWidget(WIDGET_KEY, undefined);
@@ -146,6 +163,7 @@ export function bindAgentPanel(
 		disposed = true;
 		stopTimer();
 		state.setVisible = undefined;
+		if (state.onSourceError === report) state.onSourceError = undefined;
 		unsubscribe();
 		unwatchRelease?.();
 		if (mounted) ui.setWidget(WIDGET_KEY, undefined);

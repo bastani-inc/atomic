@@ -19,7 +19,6 @@ import { agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts"
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { showTaskInspector } from "../rpc/task-ui-bridge.js";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
-import { NAV_CONFIRM_WINDOW_MS } from "./components/nav-keys.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
@@ -30,7 +29,7 @@ import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
 import { handOffCompactionQueue, settleSubmission, showSubmissionAsQueued } from "./interactive-queueing.ts";
-import { createStopAllChord, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
+import { createStopAllChord, createStopAllNotices, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
 import { theme } from "./theme/theme.js";
 
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
@@ -68,43 +67,27 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 
 InteractiveModeBase.prototype.setupKeyHandlers = async function (this: InteractiveModeBase): Promise<void> {
 	registerStartupInputListeners(this);
-	// The chord works over overlays such as the workflow graph, which hide the chat: its notices also show as a
-	// status in every footer and statusline for as long as they apply.
-	let stopAllStatusTimer: ReturnType<typeof setTimeout> | undefined;
-	let stopAllToast: { hide(): void } | undefined;
-	const clearStopAllStatus = () => {
-		if (stopAllStatusTimer !== undefined) clearTimeout(stopAllStatusTimer);
-		stopAllStatusTimer = undefined;
-		stopAllToast?.hide();
-		stopAllToast = undefined;
-		this.footerDataProvider.setExtensionStatus(STOP_ALL_STATUS_KEY, undefined);
-		if (this.runtimeHost instanceof IsolatedInteractiveRuntime)
-			void this.runtimeHost.setStopAllNotice(undefined).catch(() => {});
-	};
-	const flashStopAllStatus = (message: string | undefined) => {
-		clearStopAllStatus();
-		if (message !== undefined) {
-			// An isolated engine draws its own fullscreen views (the workflow graph): its status line carries the notice
-			// there. Over the main chat, the chat line already says it.
-			if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
-				if (this.ui.hasOverlay()) void this.runtimeHost.setStopAllNotice(message).catch(() => {});
-			} else this.footerDataProvider.setExtensionStatus(STOP_ALL_STATUS_KEY, message);
-			// An in-process fullscreen view covers the chat: the notice floats over it, without the keyboard.
-			if (this.ui.hasOverlay() && !(this.runtimeHost instanceof IsolatedInteractiveRuntime))
-				stopAllToast = this.ui.showOverlay(new Text(theme.fg("warning", message), 1, 0), {
-					anchor: "bottom-center",
-					width: "100%",
-					offsetY: -3,
-					nonCapturing: true,
-				});
-			stopAllStatusTimer = setTimeout(() => {
-				clearStopAllStatus();
-				this.ui.requestRender();
-			}, NAV_CONFIRM_WINDOW_MS);
-			stopAllStatusTimer.unref?.();
-		}
-		this.ui.requestRender();
-	};
+	// The chord's notices show in the view the user is in and clear themselves; none is written to a transcript.
+	const isolated = this.runtimeHost instanceof IsolatedInteractiveRuntime ? this.runtimeHost : undefined;
+	const notices = createStopAllNotices({
+		...(isolated === undefined
+			? {
+					setFooterStatus: (text: string | undefined) =>
+						this.footerDataProvider.setExtensionStatus(STOP_ALL_STATUS_KEY, text),
+					showToast: (text: string) => {
+						const toast = this.ui.showOverlay(new Text(theme.fg("warning", text), 1, 0), {
+							anchor: "bottom-center",
+							width: "100%",
+							offsetY: -3,
+							nonCapturing: true,
+						});
+						return () => toast.hide();
+					},
+				}
+			: { setEngineNotice: (text: string | undefined) => void isolated.setStopAllNotice(text).catch(() => {}) }),
+		hasOverlay: () => this.ui.hasOverlay(),
+		requestRender: () => this.ui.requestRender(),
+	});
 	this.addTuiInputListener(
 		createStopAllChord({
 			keybindings: this.keybindings,
@@ -116,24 +99,9 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 				this.runtimeHost instanceof IsolatedInteractiveRuntime
 					? this.runtimeHost.stopAllBackgroundWork()
 					: stopAllBackgroundWork(this.session),
-			showStatus: (message) => {
-				this.showStatus(message);
-				flashStopAllStatus(message);
-			},
-			showWarning: (message) => {
-				this.showWarning(message);
-				flashStopAllStatus(message);
-			},
-			clearStatus: () => {
-				flashStopAllStatus(undefined);
-				const text = this.lastStatusText;
-				if (text === undefined) return;
-				this.chatContainer.removeChild(text);
-				if (this.lastStatusSpacer) this.chatContainer.removeChild(this.lastStatusSpacer);
-				this.lastStatusText = undefined;
-				this.lastStatusSpacer = undefined;
-				this.ui.requestRender();
-			},
+			showStatus: (message) => notices.show(message),
+			showWarning: (message) => notices.show(message),
+			clearStatus: () => notices.clear(),
 		}),
 	);
 	// ↓ on an empty prompt focuses the agent panel below it.

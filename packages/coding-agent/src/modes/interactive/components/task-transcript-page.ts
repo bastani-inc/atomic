@@ -1,5 +1,6 @@
 import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bastani/atomic-tui";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { liveElapsedMs } from "../../../core/tasks/live-elapsed.ts";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
@@ -329,7 +330,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 										task.metrics.elapsedMs,
 								);
 		const stopped = this.source.taskStopped?.(this.taskId) === true;
-		const label = [name, task?.title ? taskDisplayText(task.title) : "", stopped ? "stopped" : (state ?? "")]
+		const label = [
+			name,
+			task?.title ? taskDisplayText(shortTaskTitle(task.title)) : "",
+			stopped ? "stopped" : (state ?? ""),
+		]
 			.filter(Boolean)
 			.join(" · ");
 		// A stopped subagent resumes only with a message the reader sends: its prompt says so.
