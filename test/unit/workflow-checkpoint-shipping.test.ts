@@ -324,6 +324,73 @@ test("a mutation that does not ship commits only after what the attempt accepted
 	assert.deepEqual(shippedBefore, [keyOf("a")]);
 });
 
+test("a direct commit refused by the shared journal fences later local acknowledgements (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver);
+	await shipping.hold(LEASE, LEASE_MS);
+	const stale = new StaleWorkLeaseError({ root: ROOT, workId: LEASE.id, generation: 1, reason: "superseded" });
+	await assert.rejects(
+		shipping.commit(
+			LEASE,
+			{ kind: "session-append", sessionId: "s", entries: [], expectSeq: 0 } as PoolMutation,
+			sharedCommit({ failure: stale }).commit,
+		),
+		stale,
+	);
+	await assert.rejects(shipping.commit(LEASE, checkpoint("after-refusal"), sharedCommit().commit), stale);
+	assert.deepEqual(await local.pending(LEASE), []);
+	assert.deepEqual(shared.recorded, []);
+});
+
+test("a direct commit that loses the root lease fences the attempt before another shared commit (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shipping = shippingOf(local, async () => {});
+	await shipping.hold(LEASE, LEASE_MS);
+	const stale = new StaleLeaseError(ROOT, LEASE.epoch, LEASE.epoch + 1);
+	const mutation = { kind: "session-append", sessionId: "s", entries: [], expectSeq: 0 } as PoolMutation;
+	await assert.rejects(shipping.commit(LEASE, mutation, sharedCommit({ failure: stale }).commit), (error: Error) => {
+		assert.ok(error instanceof StaleWorkLeaseError);
+		assert.equal(error.reason, "fenced");
+		assert.equal(error.cause, stale);
+		return true;
+	});
+	const direct = sharedCommit();
+	await assert.rejects(shipping.commit(LEASE, mutation, direct.commit), StaleWorkLeaseError);
+	assert.equal(direct.calls.length, 0);
+	assert.deepEqual(await local.pending(LEASE), []);
+});
+
+test("a late direct commit refusal never fences the replacement generation (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver);
+	await shipping.hold(LEASE, LEASE_MS);
+	let reject!: (error: Error) => void;
+	let entered!: () => void;
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	const committing = shipping.commit(
+		LEASE,
+		{ kind: "session-append", sessionId: "s", entries: [], expectSeq: 0 } as PoolMutation,
+		() =>
+			new Promise<PoolCommitReceipt>((_resolve, refuse) => {
+				reject = refuse;
+				entered();
+			}),
+	);
+	await started;
+	const replacement = { ...LEASE, generation: LEASE.generation + 1 };
+	await shipping.hold(replacement, LEASE_MS);
+	const stale = new StaleWorkLeaseError({ root: ROOT, workId: LEASE.id, generation: 1, reason: "superseded" });
+	reject(stale);
+	await assert.rejects(committing, stale);
+	assert.equal((await shipping.commit(replacement, checkpoint("replacement"), sharedCommit().commit)).local, true);
+	await shipping.flush(replacement);
+	assert.deepEqual(shared.recorded, [keyOf("replacement")]);
+});
+
 test("a stale attempt is refused before anything reaches either journal (#4768)", async () => {
 	const { shard: local } = await shard();
 	const shared = fakeShared();

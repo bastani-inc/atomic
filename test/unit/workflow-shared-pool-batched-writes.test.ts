@@ -437,6 +437,30 @@ test("a shipped batch, after its attempt's first write, is one request with no r
 	}
 });
 
+for (const batched of [true, false])
+	test(`a maximum-sized shipping batch records all 1000 checkpoints in order with ${batched ? "batched" : "transactional"} writes (#4768)`, async () => {
+		const f = await fixture(batched);
+		try {
+			const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+			assert.ok(attempt);
+			const indexes = Array.from({ length: 1_000 }, (_, index) => index + 1);
+			const batch = shipBatchOf("maximum", ...indexes);
+			await f.pool.shipBatch(f.lease, attempt, batch);
+			await f.pool.shipBatch(f.lease, attempt, batch);
+			const recorded = await recordedTools(f);
+			assert.deepEqual(
+				recorded.map((entry) => entry.index),
+				indexes,
+			);
+			assert.deepEqual(
+				recorded.map((entry) => entry.seq),
+				indexes.map((index) => recorded[0]!.seq + index - 1),
+			);
+		} finally {
+			await f.close();
+		}
+	});
+
 test("a batch planned from a read reads as much for many checkpoints as for one, and writes in one request (#4768)", async () => {
 	const f = await fixture();
 	try {
