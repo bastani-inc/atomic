@@ -51,11 +51,7 @@ function checkpoint(id: string): PoolMutation {
 	};
 }
 
-async function run(deliveryMs: number, attempts: number, maxBatch: number, inMemory = false) {
-	const directory = makeTempDirectory("ship-lag-");
-	directories.push(directory);
-	const shard = await ShipShard.open(inMemory ? ":memory:" : join(directory, "shard.sqlite"), ROOT);
-	opened.push(shard);
+async function run(deliveryMs: number, attempts: number, maxBatch: number, shard: ShipShard) {
 	const acknowledged = new Map<string, number>();
 	const recorded = new Map<string, number>();
 	const acceptedByAttempt = new Map<string, string[]>();
@@ -115,11 +111,13 @@ async function run(deliveryMs: number, attempts: number, maxBatch: number, inMem
 	return { worstLagMs, mostHeld, steps: acknowledged.size, batchSizes };
 }
 
-async function withControlledTime<T>(work: () => Promise<T>, budgetMs = CASE_TIMEOUT_MS): Promise<T> {
+async function withControlledTime<T>(work: (shard: ShipShard) => Promise<T>, budgetMs = CASE_TIMEOUT_MS): Promise<T> {
+	const shard = await ShipShard.open(":memory:", ROOT);
+	opened.push(shard);
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 	try {
 		let settled = false;
-		const result = work();
+		const result = work(shard);
 		const observed = result.then(
 			() => {
 				settled = true;
@@ -148,7 +146,9 @@ describe("checkpoint shipping against a store with slow deliveries (#4768)", () 
 			test(
 				`deliveries of ${deliveryMs} ms, ${attempts} attempts, maxBatch ${maxBatch}: no checkpoint waits longer than maxLagMs to be shipped (#4768)`,
 				async () => {
-					const { worstLagMs, steps } = await withControlledTime(() => run(deliveryMs, attempts, maxBatch, true));
+					const { worstLagMs, steps } = await withControlledTime((shard) =>
+						run(deliveryMs, attempts, maxBatch, shard),
+					);
 					assert.ok(steps > attempts, "the attempts took steps");
 					assert.ok(worstLagMs <= MAX_LAG_MS, `worst lag ${Math.round(worstLagMs)} ms`);
 				},
@@ -158,7 +158,7 @@ describe("checkpoint shipping against a store with slow deliveries (#4768)", () 
 			test(
 				`deliveries of ${deliveryMs} ms, ${attempts} attempts, maxBatch ${maxBatch}: a delivery longer than half of maxLagMs makes steps wait instead of piling up (#4768)`,
 				async () => {
-					const { mostHeld } = await withControlledTime(() => run(deliveryMs, attempts, maxBatch, true));
+					const { mostHeld } = await withControlledTime((shard) => run(deliveryMs, attempts, maxBatch, shard));
 					// Each step waits for the one before it to be shipped: an attempt holds at most the one it just took.
 					assert.ok(mostHeld <= 1, `an attempt held ${mostHeld} unshipped checkpoints`);
 				},
@@ -167,7 +167,11 @@ describe("checkpoint shipping against a store with slow deliveries (#4768)", () 
 });
 
 test("real SQLite shipping batches preserve ordering with disk and timer headroom (#4768)", async () => {
-	const { worstLagMs, steps, batchSizes } = await run(20, 2, 8);
+	const directory = makeTempDirectory("ship-lag-");
+	directories.push(directory);
+	const shard = await ShipShard.open(join(directory, "shard.sqlite"), ROOT);
+	opened.push(shard);
+	const { worstLagMs, steps, batchSizes } = await run(20, 2, 8, shard);
 	assert.ok(steps > 2, "the attempts took steps");
 	assert.ok(
 		batchSizes.some((size) => size > 1),
@@ -180,9 +184,7 @@ test("real SQLite shipping batches preserve ordering with disk and timer headroo
 	assert.ok(worstLagMs <= REAL_SQLITE_LAG_LIMIT_MS, `worst lag ${Math.round(worstLagMs)} ms`);
 });
 
-async function runSizeDependent(maxBatch: number) {
-	const shard = await ShipShard.open(":memory:", ROOT);
-	opened.push(shard);
+async function runSizeDependent(shard: ShipShard, maxBatch: number) {
 	const acknowledgedAfterUrgent = new Map<string, number>();
 	const recorded = new Map<string, number>();
 	const batchSizes: number[] = [];
@@ -246,7 +248,7 @@ async function runSizeDependent(maxBatch: number) {
 }
 
 test("deliveries of 150 ms plus 0.6 ms per checkpoint keep checkpoints within maxLagMs after urgent catch-up (#5194)", async () => {
-	const { worstLagMs, stepsAfterUrgent, batchSizes } = await withControlledTime(() => runSizeDependent(8));
+	const { worstLagMs, stepsAfterUrgent, batchSizes } = await withControlledTime((shard) => runSizeDependent(shard, 8));
 	const urgentBatchSizes = batchSizes.filter((size) => size > 8);
 	assert.ok(urgentBatchSizes.length >= 3, `expected urgent catch-up deliveries, got ${urgentBatchSizes.length}`);
 	assert.ok(
@@ -271,9 +273,7 @@ interface TrafficPhase {
 	readonly quiet?: boolean;
 }
 
-async function runTraffic(phases: readonly TrafficPhase[]) {
-	const shard = await ShipShard.open(":memory:", ROOT);
-	opened.push(shard);
+async function runTraffic(shard: ShipShard, phases: readonly TrafficPhase[]) {
 	const acknowledged = new Map<string, { readonly at: number; readonly phase: number }>();
 	const recorded = new Map<string, number>();
 	const deliveries: { readonly size: number; readonly phase: number }[] = [];
@@ -330,8 +330,8 @@ async function runTraffic(phases: readonly TrafficPhase[]) {
 
 test("catch-up scheduling adapts to slower normal deliveries before a new burst (#5194)", async () => {
 	const { steps, worstLagMs, deliveries } = await withControlledTime(
-		() =>
-			runTraffic([
+		(shard) =>
+			runTraffic(shard, [
 				{ durationMs: 20_000, latencyMs: 20, checkpointMs: 0.05 },
 				{ durationMs: 10_000, latencyMs: 1_000, checkpointMs: 0.6, quiet: true },
 				{ durationMs: 30_000, latencyMs: 1_000, checkpointMs: 0.6 },
@@ -346,7 +346,7 @@ test("catch-up scheduling adapts to slower normal deliveries before a new burst 
 
 test("high-latency catch-up batches do not charge request latency per checkpoint (#5194)", async () => {
 	const { steps, worstLagMs, deliveries } = await withControlledTime(
-		() => runTraffic([{ durationMs: 40_000, latencyMs: 1_000, checkpointMs: 0.6 }]),
+		(shard) => runTraffic(shard, [{ durationMs: 40_000, latencyMs: 1_000, checkpointMs: 0.6 }]),
 		60_000,
 	);
 	const warmedCatchUps = deliveries.filter((batch) => batch.size > ADAPTIVE_MAX_BATCH).slice(2);
@@ -360,7 +360,7 @@ test("high-latency catch-up batches do not charge request latency per checkpoint
 
 test("timed catch-up deliveries keep a fast producer moving within the lag target (#5194)", async () => {
 	const { steps, worstLagMs, deliveries } = await withControlledTime(
-		() => runTraffic([{ durationMs: 40_000, latencyMs: 150, checkpointMs: 0.6 }]),
+		(shard) => runTraffic(shard, [{ durationMs: 40_000, latencyMs: 150, checkpointMs: 0.6 }]),
 		60_000,
 	);
 	assert.ok(deliveries.filter((batch) => batch.size > ADAPTIVE_MAX_BATCH).length >= 3);
@@ -374,9 +374,7 @@ test("timed catch-up deliveries keep a fast producer moving within the lag targe
  * what is left reaches its catch-up point and ships in one urgent catch-up. Then it takes one step a second, so four
  * deliveries carry one checkpoint each. Then it takes 1000 steps at once, while the last of those is in flight.
  */
-async function runSteadyCatchUps(burst: number) {
-	const shard = await ShipShard.open(":memory:", ROOT);
-	opened.push(shard);
+async function runSteadyCatchUps(shard: ShipShard, burst: number) {
 	const deliveries: number[] = [];
 	const acknowledged = new Map<string, number>();
 	const recorded = new Map<string, number>();
@@ -438,7 +436,10 @@ for (const { burst, catchUp } of [
 	{ burst: 321, catchUp: 65 },
 ])
 	test(`after catch-ups of ${catchUp} and normal batches of 64 and 1, a burst of 1000 steps on a steady store stays within maxLagMs (#5194)`, async () => {
-		const { beforeBacklog, worstLagMs } = await withControlledTime(() => runSteadyCatchUps(burst), 60_000);
+		const { beforeBacklog, worstLagMs } = await withControlledTime(
+			(shard) => runSteadyCatchUps(shard, burst),
+			60_000,
+		);
 		assert.deepEqual(
 			beforeBacklog.filter((size) => size > 64),
 			[catchUp, catchUp],
@@ -449,9 +450,7 @@ for (const { burst, catchUp } of [
 	});
 
 test("an attempt with expensive checkpoints schedules its catch-ups from its own deliveries (#5194)", async () => {
-	const { worstLagMs, urgentDeliveries } = await withControlledTime(async () => {
-		const shard = await ShipShard.open(":memory:", ROOT);
-		opened.push(shard);
+	const { worstLagMs, urgentDeliveries } = await withControlledTime(async (shard) => {
 		const checkpointCosts = [0.05, 3] as const;
 		const acknowledged = new Map<string, { readonly at: number; readonly attempt: number }>();
 		const recorded = new Map<string, number>();

@@ -115,7 +115,7 @@ export class ShipShard {
 	}
 
 	private static async openUnlocked(path: string, root: string, now?: () => number): Promise<ShipShard> {
-		mkdirSync(dirname(path), { recursive: true });
+		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
 		const database = await openNodeSqliteDatabase(path);
 		try {
 			await database.exec(SHIP_SHARD_SCHEMA);
@@ -351,7 +351,8 @@ export class ShipShard {
 		this.closed = true;
 		this.leases.clear();
 		try {
-			if (options.retire === true) await underJournalLock(this.path, () => this.retire());
+			if (options.retire === true && this.path !== ":memory:")
+				await underJournalLock(this.path, () => this.retire());
 		} finally {
 			await this.database.close();
 		}
@@ -423,6 +424,7 @@ export class ShipShard {
 }
 
 async function underJournalLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+	if (path === ":memory:") return operation();
 	const lock = await openNodeSqliteDatabase(`${dirname(path)}.lock`);
 	try {
 		return await lock.transaction(() => operation());

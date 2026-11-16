@@ -603,18 +603,18 @@ export class SqlPoolQueue {
 			);
 		`,
 			ship: `
-				CREATE TABLE IF NOT EXISTS ${journal.runs}_ship_batches(
-					batch TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE,
-					generation ${int} NOT NULL, worker TEXT, epoch ${int} NOT NULL, host TEXT NOT NULL,
-					first_local_seq ${int} NOT NULL, last_local_seq ${int} NOT NULL, events ${int} NOT NULL,
-					shipped_at ${int} NOT NULL${dialect.rowOrderColumn}
-				);
-				CREATE INDEX IF NOT EXISTS ${journal.runs}_ship_batches_work ON ${journal.runs}_ship_batches(work, generation);
-				CREATE TABLE IF NOT EXISTS ${journal.runs}_ship_watermarks(
-					work TEXT PRIMARY KEY REFERENCES ${this.work}(id) ON DELETE CASCADE, generation ${int} NOT NULL,
-					host TEXT NOT NULL, last_local_seq ${int} NOT NULL, last_event_key TEXT NOT NULL,
-					shipped_at ${int} NOT NULL${dialect.rowOrderColumn}
-				);
+			CREATE TABLE IF NOT EXISTS ${journal.runs}_ship_batches(
+				batch TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE,
+				generation ${int} NOT NULL, worker TEXT, epoch ${int} NOT NULL, host TEXT NOT NULL,
+				first_local_seq ${int} NOT NULL, last_local_seq ${int} NOT NULL, events ${int} NOT NULL,
+				shipped_at ${int} NOT NULL${dialect.rowOrderColumn}
+			);
+			CREATE INDEX IF NOT EXISTS ${journal.runs}_ship_batches_work ON ${journal.runs}_ship_batches(work, generation);
+			CREATE TABLE IF NOT EXISTS ${journal.runs}_ship_watermarks(
+				work TEXT PRIMARY KEY REFERENCES ${this.work}(id) ON DELETE CASCADE, generation ${int} NOT NULL,
+				host TEXT NOT NULL, last_local_seq ${int} NOT NULL, last_event_key TEXT NOT NULL,
+				shipped_at ${int} NOT NULL${dialect.rowOrderColumn}
+			);
 			`,
 			outbox: `CREATE TABLE IF NOT EXISTS ${this.outbox}(
 					work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE,
