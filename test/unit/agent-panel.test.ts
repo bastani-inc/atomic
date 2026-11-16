@@ -198,7 +198,7 @@ test("x stops a running row only on a second press within three seconds and dism
 	assert.equal(calls.at(-1), "dismiss task:c");
 	assert.equal(
 		stripVTControlCharacters(renderAgentPanelHint(focus, 160, plain, new KeybindingsManager())),
-		"  ↑↓ select · enter/→ open · x dismiss · esc back to prompt · ? keys",
+		"  ↑↓ select · enter/→ open · x dismiss · esc/← back to prompt · ? keys",
 	);
 	press("?");
 	assert.equal(focus.helpOpen, true);
@@ -269,4 +269,36 @@ test("an attached composer has accent rules naming its target and a placeholder 
 	assert.equal(typed[1], "❯ hi", "typed text replaces the placeholder");
 	const narrow = applyAttachedComposer(style, "debugger", undefined, ["─".repeat(30), "❯", "─".repeat(30)]);
 	assert.equal(narrow[0], "━".repeat(30), "narrow terminals keep the rule without the label");
+});
+
+test("← also leaves the focused panel, and coming back selects the row that was open (#5224)", () => {
+	const { focus, calls, press } = focusFixture();
+	press("\x1b[D");
+	assert.equal(calls.at(-1), "close", "← goes back to the prompt");
+	focus.enter("task:c");
+	assert.equal(focus.selectedId, "task:c", "the row opened before is selected again");
+	focus.enter("task:gone");
+	assert.equal(focus.selectedId, "task:a", "a row that left falls back to the first");
+	focus.selectedId = AGENT_PANEL_MAIN_ID;
+	assert.equal(
+		stripVTControlCharacters(renderAgentPanelHint(focus, 160, plain, new KeybindingsManager())),
+		"  ↑↓ select · esc/← back to prompt · ? keys",
+		"the main row offers neither open nor stop",
+	);
+});
+
+test("a workflow row opens through its source with a way back to the panel (#5224)", () => {
+	const hub = new AgentPanelSourceHub();
+	let returned = 0;
+	const opened: Array<{ id: string; onReturn?: () => void }> = [];
+	hub.register({
+		items: () => [{ id: "run:r", kind: "workflow", state: "running", name: "ralph", task: "" }],
+		subscribe: () => () => {},
+		open: (id, options) => opened.push({ id, ...(options?.onReturn ? { onReturn: options.onReturn } : {}) }),
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	assert.equal(openAgentPanelItem(session, "run:r", { onReturn: () => returned++ }), true);
+	opened[0]?.onReturn?.();
+	assert.equal(returned, 1);
+	assert.equal(openAgentPanelItem(session, "run:missing"), false);
 });

@@ -37,6 +37,10 @@ export interface AgentPanelItem {
 	readonly endedAt?: number;
 }
 
+export interface AgentPanelOpenOptions {
+	readonly onReturn?: () => void;
+}
+
 export type AgentPanelActionResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
 /** A provider of panel items, registered by an extension with `pi.registerAgentPanelSource()`. */
@@ -44,8 +48,11 @@ export interface AgentPanelSource {
 	items(): readonly AgentPanelItem[];
 	/** Calls `listener` whenever {@link items} may have changed; returns the unsubscribe. */
 	subscribe(listener: () => void): () => void;
-	/** Opens an item in the interactive UI, as Enter on its row does (a workflow run's graph). */
-	open?(id: string): void;
+	/**
+	 * Opens an item in the interactive UI, as Enter on its row does (a workflow run's graph). `onReturn` is called when
+	 * the opened view goes back one level, so the view it was opened from (the agent panel, `/tasks`) shows again.
+	 */
+	open?(id: string, options?: AgentPanelOpenOptions): void;
 	/** Stops a running item, after the second `x`. */
 	stop?(id: string): Promise<AgentPanelActionResult>;
 	/** Answers a waiting item's question with `text`. */
@@ -120,10 +127,18 @@ function taskState(task: TaskRecord): AgentPanelState {
 	return "running";
 }
 
-/** One panel item per top-level background task of `source` that is not in `dismissed`, in admission order. */
-export function taskPanelItems(source: Pick<TaskViewSource, "backgroundTasks">, dismissed: ReadonlySet<TaskId>) {
+/**
+ * One panel item per background task of `source` that is not in `dismissed`, in admission order. The main chat's panel
+ * lists only top-level tasks; a subagent's chat lists the tasks of that subagent, which all have a parent.
+ */
+export function taskPanelItems(
+	source: Pick<TaskViewSource, "backgroundTasks">,
+	dismissed: ReadonlySet<TaskId>,
+	options: { readonly topLevelOnly?: boolean } = {},
+) {
+	const topLevelOnly = options.topLevelOnly ?? true;
 	return source.backgroundTasks
-		.filter((task) => !dismissed.has(task.ref.taskId) && task.parentTaskId === undefined)
+		.filter((task) => !dismissed.has(task.ref.taskId) && (!topLevelOnly || task.parentTaskId === undefined))
 		.map((task): AgentPanelItem => {
 			const state = taskState(task);
 			const question = task.attention.kind === "input-needed" ? task.attention.prompt : undefined;
@@ -206,10 +221,10 @@ function sourceOf(session: AgentPanelSession, id: string): AgentPanelSource | un
 }
 
 /** Opens an extension's item (a workflow run's graph). Task items open through the task inspector instead. */
-export function openAgentPanelItem(session: AgentPanelSession, id: string): boolean {
+export function openAgentPanelItem(session: AgentPanelSession, id: string, options?: AgentPanelOpenOptions): boolean {
 	const source = sourceOf(session, id);
 	if (source?.open === undefined) return false;
-	source.open(id);
+	source.open(id, options);
 	return true;
 }
 

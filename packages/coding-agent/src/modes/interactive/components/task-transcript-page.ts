@@ -129,8 +129,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
 	get status(): string {
-		const stopped = this.source.taskStopped?.(this.taskId) === true ? STOPPED_NOTE : "";
-		return [this.loadStatus, this.readOnlyReason() ?? stopped].filter(Boolean).join(" · ");
+		return [this.loadStatus, this.readOnlyReason() ?? ""].filter(Boolean).join(" · ");
 	}
 	set status(value: string) {
 		this.loadStatus = value;
@@ -324,13 +323,18 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 						: task.metrics?.elapsedMs === undefined
 							? "running"
 							: formatPanelElapsed(task.metrics.elapsedMs);
-		const label = [name, task?.title ? taskDisplayText(task.title) : "", state ?? ""].filter(Boolean).join(" · ");
+		const stopped = this.source.taskStopped?.(this.taskId) === true;
+		const label = [name, task?.title ? taskDisplayText(task.title) : "", stopped ? "stopped" : (state ?? "")]
+			.filter(Boolean)
+			.join(" · ");
+		// A stopped subagent resumes only with a message the reader sends: its prompt says so.
+		const placeholder = stopped ? STOPPED_NOTE : `${waiting ? "Answer" : "Message"} ${name}…`;
 		return applyAttachedComposer(
 			{ accent: this.env.style.accent, text: this.env.style.text, dim: this.env.style.dim },
 			label,
-			this.chat.hasInputText() || this.source.sendTaskMessage === undefined
+			this.chat.hasInputText() || this.source.sendTaskMessage === undefined || this.readOnlyReason() !== undefined
 				? undefined
-				: `${waiting ? "Answer" : "Message"} ${name}…`,
+				: placeholder,
 			lines,
 		);
 	}

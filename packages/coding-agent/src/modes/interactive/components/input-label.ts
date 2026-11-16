@@ -1,5 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { stripAnsi } from "./chat-session-host-utils.ts";
+import { renderComposerRule } from "./composer-rule.ts";
 
 /** Supported terminal floor for naming the session in a chat input's top rule. */
 export const INPUT_LABEL_MIN_COLUMNS = 40;
@@ -150,8 +151,18 @@ export function applyAttachedComposer(
 	while (bottomIndex > 0 && !isRule(lines[bottomIndex]!)) bottomIndex--;
 	if (top === undefined || bottomIndex < 1) return lines;
 	const width = visibleWidth(stripAnsi(top));
-	if (isRule(top)) {
-		const overflow = EDITOR_OVERFLOW_RE.exec(stripAnsi(top))?.[2];
+	const overflowNote = isRule(top) ? EDITOR_OVERFLOW_RE.exec(stripAnsi(top))?.[2] : undefined;
+	if (isRule(top) && overflowNote === undefined) {
+		// The shared composer rule, in its attached form: heavy, accent, the label bold (#5224).
+		lines[0] = renderComposerRule(width, {
+			...(label === undefined
+				? {}
+				: { label: { plain: label, styled: `${BOLD}${style.text(label)}${NORMAL_INTENSITY}` } }),
+			color: style.accent,
+			heavy: true,
+		});
+	} else if (isRule(top)) {
+		const overflow = overflowNote;
 		const shown =
 			label === undefined || width < INPUT_LABEL_MIN_COLUMNS
 				? undefined
@@ -176,7 +187,8 @@ export function applyAttachedComposer(
 	if (isRule(bottom)) lines[bottomIndex] = style.accent(HEAVY_RULE.repeat(visibleWidth(stripAnsi(bottom))));
 	if (placeholder !== undefined && bottomIndex === 2) {
 		const line = lines[1]!;
-		const plain = stripAnsi(line).trimEnd();
+		// The cursor and focus markers are application commands, not text.
+		const plain = stripAnsi(line.replace(/\x1b_[^\x07]*\x07/g, "")).trimEnd();
 		if (plain === PROMPT_GLYPH || plain === `${PROMPT_GLYPH} `) {
 			const room = Math.max(0, width - visibleWidth(stripAnsi(line).trimEnd()) - 2);
 			const text = truncateToWidth(placeholder, room, "…");

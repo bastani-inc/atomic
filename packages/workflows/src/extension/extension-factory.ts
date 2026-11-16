@@ -201,9 +201,12 @@ function factory(pi: ExtensionAPI): void {
 	pi.registerAgentPanelSource?.({
 		items: () => panelItemsFromSnapshot(owner.store.runs()),
 		subscribe: (listener) => owner.store.subscribeInvalidation(listener),
-		open: (id) => {
+		open: (id, options) => {
 			const runId = panelRunId(id);
-			if (runId !== undefined) overlay.open(runId, overlaySurfaceFromContext(sessionContext));
+			if (runId === undefined) return;
+			overlay.open(runId, overlaySurfaceFromContext(sessionContext), undefined, undefined, {
+				...(options?.onReturn === undefined ? {} : { onReturn: options.onReturn }),
+			});
 		},
 		stop: async (id) => {
 			const runId = panelRunId(id);

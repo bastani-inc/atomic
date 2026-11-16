@@ -139,6 +139,8 @@ export class TaskInspector implements Component {
 	private helpOpen = false;
 	/** Where ← from an open task chat goes: the list, the task's detail page, or out to whatever opened the inspector. */
 	private chatFrom: "list" | "detail" | "caller" = "detail";
+	/** The inspector closed by going back one level (← or ↓ in a chat opened by the caller), not by Ctrl+C. */
+	closedByBack = false;
 	/** What ← from a chat opened by the caller names, such as `main chat`. */
 	private callerLabel = "back";
 	/** Typed shell input per task, kept when the reader leaves the input and restored when they return. */
@@ -551,6 +553,7 @@ export class TaskInspector implements Component {
 		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
 		if (keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
 			if (this.chatFrom === "caller") {
+				this.closedByBack = true;
 				this.close();
 				return true;
 			}
@@ -560,6 +563,12 @@ export class TaskInspector implements Component {
 			if (this.chatFrom === "list") this.navigation.focus = { kind: "tasks" };
 			else void this.loadDetail();
 			this.requestRender();
+			return true;
+		}
+		// Opened from the agent panel, ↓ on an empty prompt goes to the panel too, as it does from the main chat.
+		if (this.chatFrom === "caller" && keys.matches(data, "app.agents.focus") && !transcript.hasDraft()) {
+			this.closedByBack = true;
+			this.close();
 			return true;
 		}
 		if (isNavHelpKey(keys, data) && !transcript.hasDraft()) {
@@ -787,7 +796,11 @@ export class TaskInspector implements Component {
 				...renderNavKeyOverlay("keys · task chat", TASK_CHAT_OVERLAY_KEYS, width, style, getKeybindings()),
 			].slice(0, Math.max(1, budget));
 		const back = this.chatFrom === "caller" ? this.callerLabel : this.chatFrom === "list" ? "tasks" : "task";
-		const hint = renderNavHintLine(taskChatKeys(back, transcript.interruptible()), width, style, getKeybindings());
+		const chatKeys = taskChatKeys(back, transcript.interruptible());
+		// From the agent panel, ↓ returns there as well.
+		if (this.chatFrom === "caller" && back === "agents")
+			chatKeys.splice(1, 0, { action: "app.agents.focus", label: "agents" });
+		const hint = renderNavHintLine(chatKeys, width, style, getKeybindings());
 		const footer = [...(notes ? [fitWidth(theme.fg("dim", notes))] : []), hint];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
 		const statusRows = this.taskStatusRows(width);
