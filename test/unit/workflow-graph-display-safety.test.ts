@@ -9,6 +9,8 @@ import {
 	visibleWidth,
 } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
+import { renderAgentPanelRows } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { PLAIN_SELECTOR_STYLE } from "../../packages/coding-agent/src/modes/interactive/components/selector.js";
 import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
 import { MAX_CAUSE_DEPTH } from "../../packages/workflows/src/shared/error-cause-chain.js";
 import { type SerializedError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
@@ -18,6 +20,7 @@ import { typedFailureDetail } from "../../packages/workflows/src/shared/typed-fa
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import type { GraphViewOpts } from "../../packages/workflows/src/tui/graph-view-types.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
+import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
 import {
 	renderStageFailureDetailLines,
@@ -32,6 +35,12 @@ import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { defaultTheme, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
 
 const { boundedToolPayloadText, TOOL_PAYLOAD_TRUNCATION_MARKER } = toolPayloadBounds;
+const panelStyle = {
+	...PLAIN_SELECTOR_STYLE,
+	success: (text: string) => text,
+	error: (text: string) => text,
+	warning: (text: string) => text,
+};
 
 function graphFor(stage: StageSnapshot, options: Partial<GraphViewOpts> = {}): GraphView {
 	return new GraphView({
@@ -136,7 +145,7 @@ test("display serialization bounds long property keys before quoting them (#5234
 	}
 });
 
-test.each(["card", "detail", "listing"])(
+test.each(["card", "detail", "listing", "panel"])(
 	"%s graph labels keep C1 controls inert without changing stored names (#5234)",
 	(surface) => {
 		const stage: StageSnapshot = { ...makeStage("stage"), status: "running", name: "model\u009b2JNAME" };
@@ -160,10 +169,12 @@ test.each(["card", "detail", "listing"])(
 			assert.ok(detail.ok);
 			for (const theme of [undefined, defaultTheme])
 				assertSafeRows(renderRunDetail(detail.detail, { theme, width: 200, now: 2 }).split("\n"));
-		} else {
+		} else if (surface === "listing") {
 			const rows = workflowsListingItems(snap.runs, [], 2);
 			assertSafeRows(rows.flatMap((row) => [row.label, row.description ?? ""]));
 			assert.ok(rows[0]?.description?.includes("model"));
+		} else {
+			assertSafeRows(renderAgentPanelRows(panelItemsFromSnapshot(snap.runs, 2), 200, panelStyle, {}));
 		}
 		assert.equal(JSON.stringify(snap), before);
 	},
@@ -823,6 +834,12 @@ test.each([
 		assertSafeRows(listingRows);
 		assert.ok(listingRows.join("\n").includes("active-"), "the listing renders the active stage name");
 		assertSafeRows(renderNodeCard(pendingStage, { theme: defaultTheme, width: 80 }));
+		const panelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap.runs, 2_000), 200, panelStyle, {});
+		assertSafeRows(panelRows);
+		assert.ok(panelRows.join("\n").includes("active-"), "panel current stage name is rendered");
+		for (const item of workflowsListingItems(snap.runs, [], 2_000)) {
+			assertSafeRows([item.label, item.description ?? ""]);
+		}
 
 		for (const status of ["running", "failed", "paused", "completed"] as const) {
 			const statusRun = { ...run, status };

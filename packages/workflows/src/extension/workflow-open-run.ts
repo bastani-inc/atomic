@@ -2,22 +2,16 @@ import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
 import { inertDisplayLine, inertDisplayText } from "../tui/display-text.js";
-import { deriveGraphTheme, type GraphTheme } from "../tui/graph-theme.js";
+import { deriveGraphTheme } from "../tui/graph-theme.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { withoutStackFrames } from "../tui/run-outcome.js";
 import { renderSessionList } from "../tui/session-list.js";
-import {
-	closesWorkflowsEmptySheet,
-	renderWorkflowsEmptySheet,
-	WORKFLOWS_EMPTY_MESSAGE,
-} from "../tui/workflows-empty-sheet.js";
 import {
 	openWorkflowsListing,
 	type WorkflowsListingDefinition,
 	type WorkflowsListingInvalidDefinition,
 } from "../tui/workflows-listing.js";
 import type { PiCommandContext } from "./public-types.js";
-import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "./wiring.js";
 import { tokenizeWorkflowArgs, type WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { overlaySurfaceFromContext, resolveRunId, resolveStageTarget } from "./workflow-targets.js";
@@ -69,16 +63,11 @@ export function openWorkflowRun(
 	});
 }
 
-export interface WorkflowsCommandOptions {
-	readonly selectRunId?: string;
-}
-
 export async function handleWorkflowsCommand(
 	args: string,
 	ctx: PiCommandContext,
 	reporter: WorkflowCommandReporter,
 	deps: WorkflowsCommandDeps,
-	options: WorkflowsCommandOptions = {},
 ): Promise<void> {
 	const { store } = deps;
 	const theme = deriveGraphTheme({});
@@ -107,13 +96,7 @@ export async function handleWorkflowsCommand(
 		return;
 	}
 	const runs = topLevelWorkflowRuns(store.runs());
-	const definitions = deps.definitions?.() ?? [];
-	const invalidDefinitions = deps.invalidDefinitions?.() ?? [];
-	if (runs.length === 0 && ((definitions.length === 0 && invalidDefinitions.length === 0) || !interactive)) {
-		if (interactive && typeof ctx.ui?.custom === "function")
-			return await showWorkflowsEmptySheet(ctx.ui.custom, theme);
-		return reporter.info(WORKFLOWS_EMPTY_MESSAGE);
-	}
+	if (runs.length === 0 && !interactive) return reporter.info("No workflows in this session.");
 	if (!interactive) return reporter.info(renderSessionList(store.runs(), { theme, includeAll: true }));
 	if (runs.length === 1) {
 		openWorkflowRun(runs[0]!.id, ctx, deps);
@@ -121,7 +104,7 @@ export async function handleWorkflowsCommand(
 	}
 	if (typeof ctx.ui?.custom !== "function")
 		return reporter.info(renderSessionList(store.runs(), { theme, includeAll: true }));
-	await showWorkflowsListing(ctx, reporter, deps, options.selectRunId);
+	await showWorkflowsListing(ctx, reporter, deps);
 }
 
 async function showWorkflowsListing(
@@ -138,42 +121,13 @@ async function showWorkflowsListing(
 		);
 	};
 	const picked = await openWorkflowsListing(ctx.ui, {
-		selectRunId,
 		runs: () => store.runs(),
 		definitions: () => deps.definitions?.() ?? [],
 		invalidDefinitions: () => deps.invalidDefinitions?.() ?? [],
 		subscribe: (listener) => subscribeStoreInvalidation(store, listener),
+		selectRunId,
 	});
 	if (picked?.kind === "run") openWorkflowRun(picked.runId, ctx, deps, { onReturn: reopen });
 	else if (picked?.kind === "definition") await deps.startDefinition?.(picked.name);
 	else if (picked?.kind === "invalid-definition") reporter.info(formatInvalidDefinitionDetails(picked.definition));
-}
-
-function showWorkflowsEmptySheet(custom: PiCustomOverlayFunction, theme: GraphTheme): Promise<void> {
-	return new Promise<void>((resolve) => {
-		let settled = false;
-		const settle = (): void => {
-			if (settled) return;
-			settled = true;
-			resolve();
-		};
-		const factory = (
-			_tui: PiCustomOverlayFactoryTui,
-			_theme: unknown,
-			_keys: unknown,
-			done: (result: undefined) => void,
-		): PiCustomComponent => ({
-			render: (width: number) => renderWorkflowsEmptySheet(width, theme),
-			handleInput: (data: string): boolean => {
-				if (closesWorkflowsEmptySheet(data)) {
-					done(undefined);
-					settle();
-				}
-				return true;
-			},
-			invalidate: () => {},
-			dispose: settle,
-		});
-		void Promise.resolve(custom(factory, { overlay: false, purpose: "navigation" })).then(settle, settle);
-	});
 }

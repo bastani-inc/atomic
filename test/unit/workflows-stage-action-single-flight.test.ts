@@ -51,7 +51,11 @@ describe("workflow graph stage action single-flight guard (#5245, #5224)", () =>
 		const retry = vi.fn(() => retryDeferred.promise);
 		const fork = vi.fn(() => forkDeferred.promise);
 		const graph = createGraphView([failedStage("verify")], {
-			stageActions: { retry, fork },
+			stageActions: {
+				retry,
+				fork,
+				forkTarget: async () => ({ ok: true, stagePath: "verify", rerunToolSteps: 0, live: false }),
+			},
 		});
 
 		try {
@@ -72,15 +76,19 @@ describe("workflow graph stage action single-flight guard (#5245, #5224)", () =>
 			assert.match(statuslineText(graph), /retry refused/);
 
 			graph.handleInput("f");
+			await settle();
+			assert.equal(fork.mock.calls.length, 0);
+			assert.match(statuslineText(graph), /enter fork/);
+			graph.handleInput(ENTER);
 			assert.equal(fork.mock.calls.length, 1);
 			assert.deepEqual(fork.mock.calls[0], ["run-1", "verify"]);
-			assert.match(statuslineText(graph), /Forking the run…/);
+			assert.match(statuslineText(graph), /Forking from verify…/);
 
 			graph.handleInput("f");
 			graph.handleInput("r");
 			assert.equal(fork.mock.calls.length, 1);
 			assert.equal(retry.mock.calls.length, 1);
-			assert.match(statuslineText(graph), /Forking the run…/);
+			assert.match(statuslineText(graph), /Forking from verify…/);
 
 			forkDeferred.resolve({ ok: true, message: "forked run-2", runId: "run-2" });
 			await settle();
@@ -101,7 +109,11 @@ describe("workflow graph stage action single-flight guard (#5245, #5224)", () =>
 		});
 		const fork = vi.fn(async () => ({ ok: true, message: "forked verify" }));
 		const graph = createGraphView([failedStage("verify")], {
-			stageActions: { retry, fork },
+			stageActions: {
+				retry,
+				fork,
+				forkTarget: async () => ({ ok: true, stagePath: "verify", rerunToolSteps: 0, live: false }),
+			},
 		});
 
 		try {
@@ -117,9 +129,12 @@ describe("workflow graph stage action single-flight guard (#5245, #5224)", () =>
 
 			graph.handleInput("r");
 			assert.equal(retry.mock.calls.length, 2);
+			await settle();
 			assert.match(statuslineText(graph), /sync retry failure/);
 
 			graph.handleInput("f");
+			await settle();
+			graph.handleInput(ENTER);
 			assert.equal(fork.mock.calls.length, 1);
 			await settle();
 			assert.match(statuslineText(graph), /forked verify/);
@@ -132,6 +147,9 @@ describe("workflow graph stage action single-flight guard (#5245, #5224)", () =>
 it("keeps the stage action receiver when invoking guarded controls (#5245, #5224)", async () => {
 	const stageActions = {
 		calls: [] as string[],
+		async forkTarget() {
+			return { ok: true as const, stagePath: "verify", rerunToolSteps: 0, live: false };
+		},
 		async retry(): Promise<GraphStageActionResult> {
 			this.calls.push("retry");
 			return { ok: false, message: "retry refused" };
@@ -147,6 +165,8 @@ it("keeps the stage action receiver when invoking guarded controls (#5245, #5224
 		graph.handleInput("r");
 		await settle();
 		graph.handleInput("f");
+		await settle();
+		graph.handleInput(ENTER);
 		await settle();
 		assert.deepEqual(stageActions.calls, ["retry", "fork"]);
 	} finally {

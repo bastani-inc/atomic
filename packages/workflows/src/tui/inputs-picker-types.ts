@@ -24,15 +24,12 @@ export interface InputsPickerRenderOpts {
 
 export function initialInputText(field: WorkflowInputEntry, prefilled: WorkflowInputValues): string {
 	const value = prefilled[field.name] !== undefined ? prefilled[field.name] : field.default;
-	if (value === undefined) return "";
-	if (typeof value === "object" && value !== null) {
-		try {
-			return JSON.stringify(value);
-		} catch {
-			return String(value);
-		}
+	if (typeof value === "string") return value;
+	try {
+		return JSON.stringify(value) ?? "";
+	} catch {
+		return "";
 	}
-	return String(value);
 }
 
 export function createInputsPickerState(

@@ -162,9 +162,8 @@ export function buildGraphOverlayAdapter(
 	// the chat scrollback, producing visible duplicates.
 	let currentHandle: PiOverlayHandle | null = null;
 	let mounted = false;
-	/** Where the current open goes back to once the graph hides, such as the list it was picked from. */
+
 	let pendingReturn: (() => void) | undefined;
-	/** Esc at the graph's top: hide it; {@link hideMounted} then returns to the view that opened it. */
 	const goBack = (): void => hideMounted();
 	let finishMounted: (() => void) | null = null;
 	// Repaints the mounted overlay through its factory TUI. Needed on the

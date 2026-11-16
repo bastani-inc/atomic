@@ -13,6 +13,7 @@ import {
 	workflowGetResult,
 } from "../../packages/workflows/src/extension/workflow-tool-content.ts";
 import { resolveAndValidateInputs } from "../../packages/workflows/src/runs/foreground/executor-inputs.ts";
+import { renderInputsSchema } from "../../packages/workflows/src/shared/render-inputs-schema.ts";
 import { deriveInputField, deriveInputFields } from "../../packages/workflows/src/shared/schema-introspection.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import { openHostInputsForm } from "../../packages/workflows/src/tui/host-input-form.ts";
@@ -274,6 +275,36 @@ test("model-facing inputs and get tool outputs omit field.schema while dispatch 
 	}
 });
 
+test.each([
+	["BigInt", Type.Optional(Type.BigInt({ default: 1n }))],
+	["object containing BigInt", Type.Optional(Type.Object({ count: Type.BigInt() }, { default: { count: 1n } }))],
+	["function", Type.Optional(Type.String({ default: () => "runtime" }))],
+])("workflow inputs and get omit an unencodable %s default (#5245)", async (_label, schema) => {
+	const registry = createRegistry([
+		{
+			normalizedName: "default-wf",
+			name: "default-wf",
+			description: "demo",
+			inputs: { value: schema },
+			run: async () => ({}),
+		} as never,
+	]);
+	const result = await dispatch({ action: "inputs", workflow: "default-wf" }, { registry });
+	assert.equal(result.action, "inputs");
+	if (result.action !== "inputs") return;
+	assert.doesNotThrow(() => renderWorkflowToolContent(result, { action: "inputs", workflow: "default-wf" }));
+	for (const options of [{}, { theme: graphTheme }]) {
+		assert.match(renderInputsSchema("default-wf", result.inputs, options), /value/);
+	}
+	const field = result.inputs[0]!;
+	assert.equal(Object.hasOwn(field, "default"), false);
+	assert.equal(field.required, false);
+	assert.equal(field.validationDeferred, true);
+	const get = workflowGetResult({ registry } as never, { action: "get", workflow: "default-wf" });
+	assert.doesNotThrow(() => JSON.stringify(get));
+	assert.doesNotThrow(() => renderWorkflowToolContent(get, { action: "get", workflow: "default-wf" }));
+});
+
 test("an input whose schema cannot be copied defers validation instead of crashing (#5245)", () => {
 	const cyclic = Type.Object({ a: Type.Number() }) as TSchema & { self?: unknown };
 	cyclic.self = cyclic;
@@ -282,13 +313,32 @@ test("an input whose schema cannot be copied defers validation instead of crashi
 	assert.equal(field.validationDeferred, true);
 });
 
+test("picker defaults that cannot be JSON encoded start blank instead of coercing or throwing (#5245)", () => {
+	const cyclic: { self?: object } = {};
+	cyclic.self = cyclic;
+	const nullPrototype = Object.assign(Object.create(null), { count: 1n });
+	for (const value of [
+		1n,
+		{ count: 1n },
+		nullPrototype,
+		cyclic,
+		{ toJSON: () => undefined },
+		() => "runtime",
+		Symbol("default"),
+	]) {
+		const field = { name: "config", type: "unknown", required: false, default: value };
+		assert.equal(initialInputText(field, {}), "");
+		assert.equal(createInputsPickerState([field]).rawText.config, "");
+	}
+});
+
 test("an optional object input with a BigInt default opens a cancellable form (#5245)", async () => {
 	const fields = deriveInputFields({
 		config: Type.Optional(Type.Object({ count: Type.BigInt({ default: 1n }) }, { default: { count: 1n } })),
 	});
 	assert.equal(fields[0]!.schema, undefined);
 	assert.equal(fields[0]!.validationDeferred, true);
-	assert.equal(initialInputText(fields[0]!, {}), "[object Object]");
+	assert.equal(initialInputText(fields[0]!, {}), "");
 	let rendered = "";
 	const result = await openInputsPicker(
 		{

@@ -163,14 +163,13 @@ Graph node cards show each model stage's effective model and thinking level abov
 /workflow inputs <name>
 /workflow <name> --help
 /workflow <name> [key=value ...]
-/workflows [run-id] [stage-id-or-name]  # the session's runs: only run's graph, stage chat, or list
+/workflows [run-id] [stage-id-or-name]  # browse runs and definitions, or open a graph or stage chat
 /workflow pause [run-id|--all] [stage-id-or-name]
 /workflow status [run-id]
 /workflow status --all
 /workflow quit <run-id|--all>
 /workflow resume <run-id> [stage-id-or-name] [message] [--accept-entry-changes]
 /workflow fork <run-id> [--from <stage-path>]
-/workflows [run-id]
 /workflow reload
 ```
 
@@ -185,7 +184,6 @@ Common controls:
 /workflow resume <run-id> --accept-entry-changes  # resume after editing a local worker definition's entry module
 /workflow quit <run-id>                # pause gracefully and keep the run resumable
 /workflow fork <run-id> --from <stage> # retry from a stage in a new run; the source run is unchanged
-/workflows [run-id]                    # this session's runs and the registered definitions; one run opens its graph
 ```
 
 Surface behavior:

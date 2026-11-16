@@ -359,12 +359,12 @@ function renderCompactListing(
 export function openWorkflowsListing(
 	ui: WorkflowsListingUi,
 	source: {
-		readonly selectRunId?: string;
 		readonly runs: () => readonly RunSnapshot[];
 		readonly definitions: () => readonly WorkflowsListingDefinition[];
 		/** Definitions discovery could not load, listed with the others as `✗`. */
 		readonly invalidDefinitions?: () => readonly WorkflowsListingInvalidDefinition[];
 		readonly subscribe?: (listener: () => void) => () => void;
+		readonly selectRunId?: string;
 	},
 ): Promise<WorkflowsListingTarget | undefined> {
 	return new Promise((resolve) => {

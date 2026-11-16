@@ -95,6 +95,8 @@ See [examples/extensions/timed-confirm.ts](https://github.com/bastani-inc/atomic
 
 ### Widgets, Status, and Footer
 
+Inline `ctx.ui.custom(..., { purpose: "navigation" })` hides all `setWidget` widgets, both above and below the editor, while it is mounted. Widget updates are retained, and the current widgets reappear when the last inline navigation UI closes. Queued-message previews and pending shell output are hidden for the same interval without discarding messages or stopping commands. Navigation overlays do not hide these areas.
+
 ```typescript
 // Status in footer (persistent until cleared)
 ctx.ui.setStatus("my-ext", "Processing...");

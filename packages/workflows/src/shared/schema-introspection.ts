@@ -93,7 +93,14 @@ export function deriveInputField(name: string, schema: TSchema): WorkflowInputEn
 		required: schemaIsRequired(schema),
 	};
 	if (description !== undefined) entry.description = description;
-	if (def !== undefined) entry.default = def;
+	if (def !== undefined) {
+		try {
+			if (JSON.stringify(def) !== undefined) entry.default = def;
+			else entry.validationDeferred = true;
+		} catch {
+			entry.validationDeferred = true;
+		}
+	}
 	if (choices !== undefined) entry.choices = choices;
 	if (typeof m.const === "string" || typeof m.const === "number" || typeof m.const === "boolean") {
 		entry.const = m.const;

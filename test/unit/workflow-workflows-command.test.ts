@@ -55,7 +55,7 @@ function harness() {
 }
 
 describe("/workflows (#5224)", () => {
-	it("with no runs shows the small sheet that says so and closes on Esc, opening nothing", async () => {
+	it("with no runs shows a searchable empty sheet and closes after clearing search (#5245)", async () => {
 		const t = harness();
 		const pending = handleWorkflowsCommand("", t.ctx, t.reporter, { overlay: t.overlay, store: storeWith([]) });
 		await Promise.resolve();
@@ -68,7 +68,9 @@ describe("/workflows (#5224)", () => {
 		assert.match(text, /No workflows in this session\./);
 		assert.match(text, /esc close/);
 		sheet.handleInput("x");
-		assert.equal(closed, 0, "other keys keep the sheet open");
+		assert.equal(closed, 0, "typing searches and keeps the sheet open");
+		sheet.handleInput("\x1b");
+		assert.equal(closed, 0, "the first Esc clears the search");
 		sheet.handleInput("\x1b");
 		assert.equal(closed, 1);
 		await pending;
@@ -175,7 +177,7 @@ describe("/workflows (#5224)", () => {
 		}
 	});
 
-	it("back from a run's graph, the list opens again with that run selected, not the first row", async () => {
+	it("back from a run's graph, the list opens again with that run selected, not the first row (#5245)", async () => {
 		const t = harness();
 		const pending = handleWorkflowsCommand("", t.ctx, t.reporter, {
 			overlay: t.overlay,
