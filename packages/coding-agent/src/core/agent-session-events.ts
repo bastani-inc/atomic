@@ -132,6 +132,7 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 	}
 	let event = withoutDetachedPlaceholders(this, received);
 	if (event === undefined) return;
+	if (event.type === "agent_start") this._undeliveredAgentStarts += 1;
 	if (event.type === "agent_end" && event.messages.some((message) => persistenceStopReplies.has(message))) {
 		event = { ...event, messages: event.messages.filter((message) => !persistenceStopReplies.has(message)) };
 	}
@@ -287,6 +288,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 
 	try {
 		await this._emitExtensionEvent(event);
+		if (event.type === "agent_start") this._undeliveredAgentStarts -= 1;
 		if (event.type !== "message_end") this._emit(event);
 	} finally {
 		// Agent-core has consumed this protected input already. Its durability
@@ -576,6 +578,10 @@ export function _replaceMessageInPlace(this: AgentSession, target: AgentMessage,
 export async function _emitExtensionEvent(this: AgentSession, event: AgentEvent): Promise<void> {
 	if (event.type === "agent_start") {
 		if (this._agentRunAbortRequested && !this._admittedRecoveryTurn) this.agent.abort();
+		if (this._abortPreparedRunAtStart) {
+			this._abortPreparedRunAtStart = false;
+			this.agent.abort();
+		}
 		this._turnIndex = 0;
 		await this._extensionRunner.emit({ type: "agent_start" }, undefined, true);
 	} else if (event.type === "agent_end") {

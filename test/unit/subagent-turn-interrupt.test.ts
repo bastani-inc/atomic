@@ -343,6 +343,96 @@ test(
 	LIVE_CHILD_TIMEOUT_MS,
 );
 
+test(
+	"an interrupted subagent keeps waiting when Esc lands while its woken turn prepares (#5224)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-before-preparation" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("the interrupted wake must not answer"),
+		]);
+		const preparing = Promise.withResolvers<void>();
+		const releasePreparation = Promise.withResolvers<void>();
+		let holdPreparation = false;
+		const holdWokenTurn = (pi: ExtensionAPI) => {
+			pi.on("before_agent_start", async () => {
+				if (!holdPreparation) return;
+				holdPreparation = false;
+				preparing.resolve();
+				await releasePreparation.promise;
+			});
+		};
+		let source: TaskTranscriptSource | undefined;
+		const stop = new AbortController();
+		let settled = false;
+		let endedTurns = 0;
+		const run = runSingleInProcess(env.root, agent(), "run until interrupted", {
+			...env.options("interrupt-woken-preparation", {
+				signal: stop.signal,
+				resourceLoaderInheritanceSnapshot: { extensionFactories: [holdWokenTurn] },
+				taskExecution: {
+					signal: stop.signal,
+					reportActivity() {},
+					bindTranscript(bound) {
+						if (source !== undefined || bound.chatSession === undefined) return;
+						source = bound;
+						(bound.chatSession as AgentSession).subscribe((event) => {
+							if (event.type === "agent_settled") endedTurns += 1;
+						});
+					},
+					onExecution() {},
+					yieldTaskWait() {},
+					isParentObserving: () => false,
+				},
+			}),
+		}).finally(() => {
+			settled = true;
+		});
+		let waking: Promise<void> | undefined;
+		let interrupting: Promise<void> | undefined;
+		try {
+			await until(() => env.blockStarted());
+			const session = source!.chatSession as AgentSession;
+			const sessionId = source!.getSessionId();
+			await source!.interruptTurn!();
+			await until(() => endedTurns === 1 && !source!.isRunning?.());
+			assert.equal(settled, false);
+			holdPreparation = true;
+			waking = session.sendCustomMessage(
+				{ customType: "intercom", content: "carry on", display: true },
+				{ triggerTurn: true },
+			);
+			await preparing.promise;
+			assert.equal(source!.isRunning?.(), true);
+			assert.equal(session.agent.state.isStreaming, false);
+			interrupting = source!.interruptTurn!();
+			releasePreparation.resolve();
+			await Promise.all([interrupting, waking]);
+			await until(() => endedTurns === 2 || settled);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(settled, false, "Esc during preparation leaves the child waiting for another message");
+			assert.equal(source!.isRunning?.(), false);
+			assert.equal(session.getLastAssistantText(), "");
+			env.faux.setResponses([fauxAssistantMessage("finished after the preparation interrupt")]);
+			await session.sendCustomMessage(
+				{ customType: "intercom", content: "finish the task", display: true },
+				{ triggerTurn: true },
+			);
+			const result = await run;
+			assert.equal(result.status, "ok");
+			assert.equal(result.finalOutput, "finished after the preparation interrupt");
+			assert.equal(source!.getSessionId(), sessionId);
+		} finally {
+			releasePreparation.resolve();
+			stop.abort("user");
+			await Promise.allSettled([run, waking, interrupting]);
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
 test("an interrupted subagent woken by its own work settles once that turn ends, even if agent_end comes before idle (#5224)", async () => {
 	const listeners = new Set<(event: { type: string }) => void>();
 	let streaming = false;

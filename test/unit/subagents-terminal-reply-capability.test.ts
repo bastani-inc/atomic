@@ -57,7 +57,6 @@ for (const outcome of ["completed", "failed", "interrupted", "cancelled"] as con
 						);
 					},
 				},
-				agent: { subscribe },
 				subscribe,
 				prompt: async () => {
 					entered.resolve();
@@ -127,6 +126,7 @@ for (const outcome of ["completed", "failed", "interrupted", "cancelled"] as con
 				}),
 			]);
 			assert.equal(capability(), "live");
+			assert.ok(subscriptions.size > 0, "the runner observes the live session");
 			if (outcome === "cancelled") abort.abort();
 			else if (outcome === "interrupted") interrupt.abort();
 			else release.resolve();

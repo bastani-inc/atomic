@@ -189,6 +189,8 @@ class AgentSessionBase {
 	/** A positive stop callback keeps queued work pending until an explicit new run. */
 	protected _stopAfterTurnBlockedContinuation = false;
 	protected _turnInterruptedByUser = false;
+	protected _abortPreparedRunAtStart = false;
+	readonly _undeliveredAgentStarts: number = 0;
 	protected _awaitingMessageAfterInterrupt = false;
 	protected _disposed = false;
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
