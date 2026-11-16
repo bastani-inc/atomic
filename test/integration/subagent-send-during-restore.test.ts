@@ -22,6 +22,7 @@ import {
 import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const agentDir = mkdtempSync(join(tmpdir(), "send-during-restore-"));
@@ -316,7 +317,7 @@ afterAll(() => {
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
 	if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
-	rmSync(agentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+	removeTestDirectory(agentDir, { retries: 20, retryDelayMs: 50 });
 });
 
 test(

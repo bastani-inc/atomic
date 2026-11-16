@@ -1,10 +1,11 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import v8 from "node:v8";
 import vm from "node:vm";
 import { afterEach, describe, expect, it } from "vitest";
+import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
 
 type NativeBinding = typeof import("@bastani/atomic-natives");
 
@@ -22,11 +23,7 @@ const roots: string[] = [];
 afterEach(() => {
 	for (const root of roots.splice(0)) {
 		if (!existsSync(root)) continue;
-		try {
-			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
-		} catch {
-			// Left for the OS to reclaim.
-		}
+		removeTestDirectory(root, { retries: 20, retryDelayMs: 50 });
 	}
 });
 
