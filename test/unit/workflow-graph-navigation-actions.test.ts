@@ -30,10 +30,11 @@ function view(stages, opts = {}) {
 	});
 }
 
-/** The hint row: the line holding the GRAPH pill's middle. */
+/** The statusline: the notice row above the GRAPH pill's middle, then the hint row. */
 function hint(graph, width = 160) {
 	const lines = graph.render(width).map((line) => stripAnsi(line));
-	return lines.find((line) => line.includes("│ GRAPH │")) ?? "";
+	const index = lines.findIndex((line) => line.includes("│ GRAPH │"));
+	return index < 0 ? "" : `${lines[index - 1]}\n${lines[index]}`;
 }
 
 function settle() {
@@ -198,12 +199,50 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		graph.dispose();
 	});
 
-	it("the hint line lists only keys that act: no stop without a host stop action, no open on a node with nothing to open", () => {
+	it("the hint line lists only keys that act: no stop without a host stop action", () => {
 		const graph = view([stage("A", "running")]);
 		const line = hint(graph);
 		assert.doesNotMatch(line, /stop stage/);
-		assert.doesNotMatch(line, /↵ open/);
 		assert.match(line, /esc\/← back/);
+		graph.dispose();
+	});
+
+	it("a notice gets its own row above the hint line and never splices into it, at 80 and 160 columns", () => {
+		const statuses = new Map([["stop-all", "Press ctrl+x ctrl+k again within 3s to stop all background work"]]);
+		const graph = view([stage("A", "running"), stage("B", "pending", {}, ["A"])], {
+			onStageAttach: () => {},
+			footerData: { getExtensionStatuses: () => statuses },
+		});
+		for (const width of [80, 160]) {
+			const lines = graph.render(width).map((line) => stripAnsi(line));
+			const hintIndex = lines.findIndex((line) => line.includes("│ GRAPH │"));
+			const hintRow = lines[hintIndex];
+			const toastRow = lines[hintIndex - 1];
+			assert.match(
+				toastRow,
+				/Press ctrl\+x ctrl\+k again/,
+				`the notice sits on the row above the hints at ${width}`,
+			);
+			assert.doesNotMatch(hintRow, /Press ctrl\+x/, `the hint row carries no notice at ${width}`);
+			assert.match(hintRow, /esc\/← back {2}· {2}↵ open stage chat/, `the hints start intact at ${width}`);
+			assert.match(hintRow, /\? keys/, `\`? keys\` survives width pressure at ${width}`);
+			if (width === 160) assert.match(hintRow, /\/ stages/, "the wide hint keeps `/ stages`");
+		}
+		statuses.clear();
+		const quiet = graph.render(160).map((line) => stripAnsi(line));
+		const quietHint = quiet.findIndex((line) => line.includes("│ GRAPH │"));
+		assert.equal(quiet[quietHint - 1].replace(/[│╭╮─\s]|GRAPH/g, ""), "", "no notice leaves the row empty");
+		graph.dispose();
+	});
+
+	it("the first x press shows its prompt above the hint line, which stays intact", () => {
+		const graph = view([stage("A", "running")], { stageActions: { stop: async () => ({ ok: true, message: "" }) } });
+		graph.handleInput("x");
+		const lines = graph.render(80).map((line) => stripAnsi(line));
+		const hintIndex = lines.findIndex((line) => line.includes("│ GRAPH │"));
+		assert.match(lines[hintIndex - 1], /Press x again within 3s to stop A/);
+		assert.doesNotMatch(lines[hintIndex], /Press x again/);
+		assert.match(lines[hintIndex], /\? keys/);
 		graph.dispose();
 	});
 

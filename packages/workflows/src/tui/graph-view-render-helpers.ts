@@ -126,7 +126,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				? "open tool detail"
 				: focused?.status === "failed" && this._focusedStageChatTarget() !== undefined
 					? "open failure detail"
-					: this.onStageAttach !== undefined && this._focusedStageChatTarget() !== undefined
+					: this._focusedStageChatTarget() !== undefined
 						? "open stage chat"
 						: undefined;
 		return [
@@ -161,37 +161,47 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const accent = hexToAnsi(t.accent);
 
 		const { top, mid, bot, visibleWidth: pillW } = renderOutlinePill(MODE_PILL_LABEL, t.accent, chromeBg);
-		// Hints use `<key> <label>` segments. The way back comes first, then a transient notice or extension status,
-		// then the graph's other keys, dropped from the end under width pressure.
+		// Hints use `<key> <label>` segments: the way back first and `? keys` last, which stay; under width pressure the
+		// keys between them drop from the end, and `?` lists them all.
 		const sep = `${chromeBg}  ${dim}\u00b7${RESET}${chromeBg}  `;
 		const leftEdgePad = 1;
 		const rightEdgePad = 2;
 		const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
 		const keybindings = this._navKeybindings();
 		const taken = new Set<string>();
+		let helpSegment: string | undefined;
 		const segments = this._graphKeys().flatMap((entry) => {
 			const keys = navEntryKeys(keybindings, entry, taken);
-			return keys ? [`${text}${BOLD}${keys}${RESET}${chromeBg} ${muted}${entry.label}${RESET}${chromeBg}`] : [];
+			if (!keys) return [];
+			const segment = `${text}${BOLD}${keys}${RESET}${chromeBg} ${muted}${entry.label}${RESET}${chromeBg}`;
+			if (entry.action === APP_ACTION.keysHelp || (entry.keys === "?" && entry.label === "keys")) {
+				helpSegment = segment;
+				return [];
+			}
+			return [segment];
 		});
+		const withHelp = (): string[] => (helpSegment ? [...segments, helpSegment] : segments);
 		const notice = this._activeGraphNotice();
 		const statusText = this._externalStatusText();
-		const middle = notice
-			? [`${hexToAnsi(notice.tone === "error" ? t.error : t.accent)}${notice.text}${RESET}${chromeBg}`]
-			: statusText
-				? [`${accent}${statusText}${RESET}${chromeBg}`]
-				: [];
-		const parts = [segments[0], ...middle, ...segments.slice(1)].filter(
-			(segment): segment is string => segment !== undefined,
-		);
-		while (parts.length > 1 && visibleWidth(parts.join(sep)) > hintsBudget) parts.pop();
-		const hintsStyled = truncateToWidth(parts.join(sep), hintsBudget, "");
+		// A notice (the first `x`, an action's result, a stop-all prompt or an extension status) gets its own row above
+		// the hint line, so the hint line keeps every key it can fit at any width.
+		const toastText = notice?.text ?? statusText;
+		const toastColor = notice ? hexToAnsi(notice.tone === "error" ? t.error : t.accent) : accent;
+		while (segments.length > 1 && visibleWidth(withHelp().join(sep)) > hintsBudget) segments.pop();
+		const hintsStyled = truncateToWidth(withHelp().join(sep), hintsBudget, "");
 		const hintsVisibleLen = visibleWidth(hintsStyled);
 		const fillerVisible = Math.max(0, hintsBudget - hintsVisibleLen);
 		const filler = " ".repeat(fillerVisible);
-		const blankAcross = " ".repeat(Math.max(0, width - leftEdgePad - pillW));
+		const acrossWidth = Math.max(0, width - leftEdgePad - pillW);
+		const blankAcross = " ".repeat(acrossWidth);
+		const toastBudget = Math.max(0, acrossWidth - rightEdgePad);
+		const toast = toastText ? truncateToWidth(toastText, toastBudget, "\u2026") : "";
+		const toastRow = toast
+			? `${chromeBg}${" ".repeat(Math.max(0, toastBudget - visibleWidth(toast)))}${toastColor}${toast}${RESET}${chromeBg}${" ".repeat(rightEdgePad)}`
+			: blankAcross;
 
 		return [
-			`${chromeBg} ${RESET}${top}${chromeBg}${blankAcross}${RESET}`,
+			`${chromeBg} ${RESET}${top}${chromeBg}${toastRow}${RESET}`,
 			`${chromeBg} ${RESET}${mid}${chromeBg}${filler}${hintsStyled}${chromeBg}${" ".repeat(rightEdgePad)}${RESET}`,
 			`${chromeBg} ${RESET}${bot}${chromeBg}${blankAcross}${RESET}`,
 		].map((line) => fillBackground(line, width, chromeBg));
