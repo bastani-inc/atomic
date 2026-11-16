@@ -1,4 +1,5 @@
 import { TwoPressConfirm } from "@bastani/atomic";
+import type { KeyId } from "@bastani/atomic-tui";
 import { GRAPH_SCROLL_STEP_COLS } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
 import { GRAPH_STATUS_FILTERS } from "./graph-view-state.js";
@@ -291,15 +292,17 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		);
 	}
 
-	private _handleStopInput(): boolean {
+	private _handleStopInput(data: string): boolean {
 		if (this.stageActionInFlight) return true;
 		const stage = this.cachedLayout[this.focusedIndex]?.stage;
 		const target = this._stageChatTarget(stage);
 		if (!this._focusedStageStoppable() || stage === undefined || target === undefined) return true;
 		const key = `${target.runId}\u0000${target.stageId}`;
 		if (!this.stopConfirm.press(key)) {
+			const bindings = this._promptKeybindings()?.getKeys?.(APP_ACTION.listStop) ?? ["x"];
+			const pressed = bindings.find((binding) => matchesKey(data, binding as KeyId)) ?? "the stop key";
 			this.graphNotice = {
-				text: `Press x again within 3s to stop ${stage.name}`,
+				text: `Press ${pressed} again within 3s to stop ${stage.name}`,
 				tone: "info",
 				until: Date.now() + 3000,
 				arm: true,
@@ -402,7 +405,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this.statusFilter = GRAPH_STATUS_FILTERS[next]!;
 			return true;
 		}
-		if (this._matchesNavAction(data, APP_ACTION.listStop)) return this._handleStopInput();
+		if (this._matchesNavAction(data, APP_ACTION.listStop)) return this._handleStopInput(data);
 		if (matchesKey(data, "h") && this.onHide) {
 			this.onHide();
 			return true;

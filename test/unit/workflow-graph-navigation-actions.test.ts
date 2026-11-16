@@ -8,6 +8,7 @@ import type {
 	GraphForkTargetResult,
 	GraphStageActionResult,
 } from "../../packages/workflows/src/tui/graph-view-types.js";
+import { APP_ACTION } from "../../packages/workflows/src/tui/keybindings-adapter.js";
 import { statusIcon } from "../../packages/workflows/src/tui/status-helpers.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
@@ -78,6 +79,30 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		assert.match(hint(graph), /Stopped B/);
 		graph.dispose();
 	});
+
+	it.each([{ bindings: ["z"] }, { bindings: ["escape", "z"] }])(
+		"stop confirmation names the pressed binding from $bindings (#5234)",
+		async ({ bindings }) => {
+			const stop = vi.fn(async () => ({ ok: true, message: "stopped" }));
+			const graph = view([stage("A", "running")], {
+				stageActions: { stop },
+				piKeybindings: {
+					matches: (data, action) => data === "z" && action === APP_ACTION.listStop,
+					getKeys: (action) => (action === APP_ACTION.listStop ? bindings : []),
+				},
+			});
+			try {
+				graph.handleInput("z");
+				assert.match(hint(graph), /Press z again within 3s to stop A/);
+				assert.equal(stop.mock.calls.length, 0);
+				graph.handleInput("z");
+				await settle();
+				assert.equal(stop.mock.calls.length, 1);
+			} finally {
+				graph.dispose();
+			}
+		},
+	);
 
 	it("moving between presses disarms x", () => {
 		const stop = vi.fn(async () => ({ ok: true, message: "stopped" }));
