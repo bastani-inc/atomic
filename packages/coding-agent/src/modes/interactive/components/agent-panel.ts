@@ -93,9 +93,10 @@ export class AgentPanelModel {
 				return keep(row) || now - (this.finishedAt.get(row.id) ?? now) < AGENT_PANEL_DROP_MS;
 			})
 			.map((row) => {
-				if (row.kind === "workflow" || isFinishedPanelRow(row) || row.state === "queued") return row;
-				// One clock for every view of the task, so the panel and /tasks agree.
-				const elapsedMs = liveElapsedMs(agentPanelTaskId(row.id) ?? row.id, row.elapsedMs, true, now);
+				if (row.kind === "workflow" || row.state === "queued") return row;
+				// One clock for every view of the task, so the panel and /tasks agree; a finished row keeps its time.
+				const taskId = agentPanelTaskId(row.id) ?? row.id;
+				const elapsedMs = liveElapsedMs(taskId, row.elapsedMs, !isFinishedPanelRow(row), now);
 				return elapsedMs === undefined ? row : { ...row, elapsedMs };
 			})
 			.map((row, index) => ({ row, index }))

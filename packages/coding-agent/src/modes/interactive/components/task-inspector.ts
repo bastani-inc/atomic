@@ -503,7 +503,7 @@ export class TaskInspector implements Component {
 	/** A running task's elapsed time advances between its own reports, on the clock every view shares. */
 	private withLiveElapsed(task: TaskRecord): TaskRecord {
 		const elapsedMs = liveElapsedMs(task.ref.taskId, task.metrics?.elapsedMs, task.execution.kind === "running");
-		if (task.execution.kind !== "running" || elapsedMs === undefined) return task;
+		if (elapsedMs === undefined) return task;
 		return { ...task, metrics: { ...task.metrics, elapsedMs } };
 	}
 	private stopNotice(): string {

@@ -22,6 +22,11 @@ test("the agent panel and a later view share one clock for a running task (#5224
 		8000,
 		"a view opened later reads the same elapsed time",
 	);
-	assert.equal(liveElapsedMs("shared-clock", 9000, false, now), 9000, "a finished task reports its own time");
-	assert.equal(liveElapsedMs("shared-clock", 1000, true, now), 1000, "and is seen afresh if it runs again");
+	now += 4000;
+	const finished = { ...row, state: "stopped" as const, elapsedMs: 2000 };
+	assert.equal(model.rows([finished])[0]?.elapsedMs, 12_000, "a finished row keeps the time it reached");
+	now += 60_000;
+	assert.equal(model.rows([finished])[0]?.elapsedMs, 12_000, "and stops counting");
+	assert.equal(liveElapsedMs("shared-clock", 20_000, false, now), 20_000, "a larger reported time wins");
+	assert.equal(liveElapsedMs("shared-clock", 1000, true, now), 1000, "a task that runs again is seen afresh");
 });
