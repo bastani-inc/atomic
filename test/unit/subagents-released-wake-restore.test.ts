@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	agentWakeDispatcher,
@@ -11,6 +11,7 @@ import {
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
 import { afterEach, test, vi } from "vitest";
+import { renameWithRetry } from "../../packages/coding-agent/src/core/rename-retry.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SessionSpillError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
@@ -988,7 +989,7 @@ test("a child whose own checkout is gone here is restored from its own snapshot 
 		"wake-own-checkout",
 		"edited by the child on node A\n",
 	);
-	renameSync(clone, sandbox.path("node-a-offline"));
+	await renameWithRetry(clone, sandbox.path("node-a-offline"));
 
 	const run = await restored(h, record.childId, { prompt: "carry on" });
 
@@ -1007,7 +1008,7 @@ test("a child woken again continues in the worktree it was restored into, which 
 	cleanups.push(() => sandbox.dispose());
 	const h = harness({ sessionManager: await sqlOwner() });
 	const { record, clone } = await childWorkedInCheckout(h, sandbox, "wake-twice", "edited by the child on node A\n");
-	renameSync(clone, sandbox.path("node-a-offline"));
+	await renameWithRetry(clone, sandbox.path("node-a-offline"));
 	const first = await restored(h, record.childId, { prompt: "carry on" });
 	// Its record still names the directory it was recorded in, as when the restore was not recorded with it.
 	await appendRecord(h, { ...h.latest(record.childId)!, cwd: clone });
