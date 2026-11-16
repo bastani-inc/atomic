@@ -781,11 +781,24 @@ export function renewSpawnLock(
   });
 }
 
+const OWNERSHIP_READ_RETRY_BUDGET_MS = 2_000;
+const OWNERSHIP_READ_BACKOFF_START_MS = 10;
+const OWNERSHIP_READ_BACKOFF_MAX_MS = 100;
+const TRANSIENT_OWNERSHIP_READ_CODES: ReadonlySet<string> = new Set(["EACCES", "EPERM", "EBUSY"]);
+const ownershipReadSleeper = new Int32Array(new SharedArrayBuffer(4));
+
 function ownsSpawnLock(owner: string, lockPath: string = getBrokerSpawnLockPath()): boolean {
-  try {
-    return readFileSync(lockPath, "utf-8").startsWith(owner);
-  } catch {
-    return false;
+  const started = Date.now();
+  let backoff = OWNERSHIP_READ_BACKOFF_START_MS;
+  for (;;) {
+    try {
+      return readFileSync(lockPath, "utf-8").startsWith(owner);
+    } catch (error) {
+      if (!TRANSIENT_OWNERSHIP_READ_CODES.has((error as NodeJS.ErrnoException).code ?? "")) return false;
+      if (Date.now() - started + backoff > OWNERSHIP_READ_RETRY_BUDGET_MS) return false;
+      Atomics.wait(ownershipReadSleeper, 0, 0, backoff);
+      backoff = Math.min(backoff + OWNERSHIP_READ_BACKOFF_START_MS, OWNERSHIP_READ_BACKOFF_MAX_MS);
+    }
   }
 }
 

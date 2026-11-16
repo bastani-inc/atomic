@@ -81,6 +81,79 @@ describe("aged spawn lock acquisition (#5220)", () => {
 		}
 	});
 
+	for (const [code, windowMs] of [
+		["EBUSY", 5],
+		["EBUSY", 50],
+		["EPERM", 50],
+		["EACCES", 50],
+	] as const) {
+		test(`a ${windowMs} ms ${code} read-back window does not strand a new spawn lock (#5220)`, () => {
+			const lockPath = nextLockPath();
+			const realReadFileSync = fsModule.readFileSync;
+			let blockedUntil: number | undefined;
+			let failedReads = 0;
+			fsModule.readFileSync = ((...args: Parameters<typeof fsModule.readFileSync>) => {
+				if (args[0] === lockPath) {
+					blockedUntil ??= performance.now() + windowMs;
+					if (performance.now() < blockedUntil) {
+						failedReads++;
+						throw Object.assign(new Error("lock is being scanned"), { code });
+					}
+				}
+				return realReadFileSync(...args);
+			}) as typeof fsModule.readFileSync;
+			syncBuiltinESMExports();
+			try {
+				const owner = acquireSpawnLock(lockPath);
+				assert.ok(failedReads > 0);
+				assertFreshOwner(lockPath, owner);
+				releaseSpawnLock(owner, lockPath);
+				assert.equal(fileExistsSync(lockPath), false);
+				const laterOwner = acquireSpawnLock(lockPath);
+				assertFreshOwner(lockPath, laterOwner);
+				releaseSpawnLock(laterOwner, lockPath);
+			} finally {
+				fsModule.readFileSync = realReadFileSync;
+				syncBuiltinESMExports();
+			}
+		});
+	}
+
+	test("a failed ownership read after deferred renewal still releases the old acquisition before retrying (#5220)", () => {
+		const lockPath = nextLockPath();
+		const realRenameSync = fsModule.renameSync;
+		const realReadFileSync = fsModule.readFileSync;
+		let renewalDeferred = false;
+		let failedReleaseRead = false;
+		fsModule.renameSync = ((from: fsModule.PathLike, to: fsModule.PathLike) => {
+			if (String(from).endsWith(".renew") && to === lockPath) {
+				renewalDeferred = true;
+				throw Object.assign(new Error("lock rename failed"), { code: "EIO" });
+			}
+			realRenameSync(from, to);
+		}) as typeof fsModule.renameSync;
+		fsModule.readFileSync = ((...args: Parameters<typeof fsModule.readFileSync>) => {
+			if (args[0] === lockPath && renewalDeferred && !failedReleaseRead) {
+				failedReleaseRead = true;
+				throw Object.assign(new Error("lock is being scanned"), { code: "EBUSY" });
+			}
+			return realReadFileSync(...args);
+		}) as typeof fsModule.readFileSync;
+		syncBuiltinESMExports();
+		try {
+			const owner = withFirstNowAged(() => acquireSpawnLock(lockPath), 30_000);
+			assert.equal(renewalDeferred, true);
+			assert.equal(failedReleaseRead, true);
+			assertFreshOwner(lockPath, owner);
+			releaseSpawnLock(owner, lockPath);
+			assert.equal(fileExistsSync(lockPath), false);
+		} finally {
+			fsModule.readFileSync = realReadFileSync;
+			fsModule.renameSync = realRenameSync;
+			syncBuiltinESMExports();
+		}
+	});
+
 	test("a mismatched first read-back does not strand a spawner's newly created lock (#5220)", () => {
 		const lockPath = nextLockPath();
 		const realReadFileSync = fsModule.readFileSync;
@@ -215,7 +288,7 @@ describe("aged spawn lock acquisition (#5220)", () => {
 			};
 			try {
 				const owner = acquireSpawnLock(lockPath);
-				assert.ok(owner !== undefined);
+				assertFreshOwner(lockPath, owner);
 				assert.equal(isSpawnLockStale(lockPath), false);
 				assert.equal(acquireSpawnLock(lockPath), undefined);
 				releaseSpawnLock(owner, lockPath);

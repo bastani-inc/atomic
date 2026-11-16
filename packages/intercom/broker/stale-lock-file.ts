@@ -302,7 +302,7 @@ export function setUnknownHolderWaitForTesting(ms: number | undefined): void {
 
 interface UnknownHolderWait {
   readonly written: string | undefined;
-  readonly identity: string | undefined;
+  readonly identity: string;
   readonly since: number;
 }
 
@@ -346,6 +346,10 @@ function recordsForeignHolder(path: string): boolean {
 
 export function unknownHolderWaitedOut(path: string, written: string | undefined): boolean {
   const identity = fileIdentity(path);
+  if (identity === undefined) {
+    unknownSince.delete(path);
+    return false;
+  }
   const current = unknownSince.get(path);
   if (current === undefined || current.written !== written || current.identity !== identity) {
     unknownSince.set(path, { written, identity, since: Date.now() });
