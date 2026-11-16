@@ -231,6 +231,7 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 			assert.deepEqual(await store.readTail("session", 39), sessionTailOf(header, [...entries, later], 39));
 		} finally {
 			await store.close();
+			await database.close();
 		}
 	});
 });
