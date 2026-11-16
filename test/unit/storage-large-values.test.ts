@@ -267,6 +267,40 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 		});
 	});
 
+	test.each([false, true])("read-only session stores open with orphan chunks present=%s (#4954)", async (orphan) => {
+		await withNodeSqliteDatabase(async (subject) => {
+			const database = subject.database;
+			const store = await SqlSessionStore.open(database);
+			const entries = [message("large", null, "x".repeat(2 * MiB))];
+			await store.create(header(), entries);
+			if (orphan) {
+				await database.run(
+					"INSERT INTO session_entry_chunks (session_id, seq, idx, data) VALUES (?, ?, ?, ?)",
+					"deleted-session",
+					1,
+					0,
+					new Uint8Array([1, 2, 3]),
+				);
+			}
+			const chunksBefore = await count(database, "SELECT count(*) AS n FROM session_entry_chunks");
+			const readOnly = await openNodeSqliteDatabase(database.descriptor.location, { readOnly: true });
+			try {
+				const reader = await SqlSessionStore.open(readOnly);
+				assert.deepEqual((await reader.load("session")).entries, entries);
+				assert.equal(await count(readOnly, "SELECT count(*) AS n FROM session_entry_chunks"), chunksBefore);
+			} finally {
+				await readOnly.close();
+			}
+			const writable = await subject.reopen();
+			const reopened = await SqlSessionStore.open(writable);
+			assert.deepEqual((await reopened.load("session")).entries, entries);
+			assert.equal(
+				await count(writable, "SELECT count(*) AS n FROM session_entry_chunks"),
+				chunksBefore - Number(orphan),
+			);
+		});
+	});
+
 	test("sessions load on SQLite without octet_length, as on macOS 13 (#4954)", async () => {
 		const configured = new WeakSet<DatabaseSync>();
 		const prepare = DatabaseSync.prototype.prepare;
@@ -289,6 +323,38 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 				];
 				await store.create(header(), entries);
 				assert.deepEqual((await store.load("session")).entries, entries);
+			});
+		} finally {
+			DatabaseSync.prototype.prepare = prepare;
+		}
+	});
+
+	test("open-session markers keep their heartbeat on SQLite without unixepoch subsec, as on macOS 13 (#4971)", async () => {
+		const configured = new WeakSet<DatabaseSync>();
+		const prepare = DatabaseSync.prototype.prepare;
+		DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+			if (!configured.has(this)) {
+				configured.add(this);
+				this.function("unixepoch", { varargs: true }, (...args) =>
+					args.includes("subsec") ? null : Math.floor(Date.now() / 1000),
+				);
+			}
+			return prepare.call(this, sql);
+		} as typeof prepare;
+		try {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				await store.create(header(), []);
+				await store.openMarkers.put("session", { token: "t", pid: 1, host: "h" });
+				const markers = await store.openMarkers.list("session");
+				assert.deepEqual(
+					markers.map((marker) => marker.token),
+					["t"],
+				);
+				assert.ok(markers[0]!.ageMs >= 0 && markers[0]!.ageMs < 60_000, `${markers[0]!.ageMs} ms old`);
+				await database.run("UPDATE session_open SET heartbeat_at = heartbeat_at - 120000");
+				const [stale] = await store.openMarkers.list("session");
+				assert.ok(stale!.ageMs >= 120_000 && stale!.ageMs < 180_000, `${stale!.ageMs} ms old`);
 			});
 		} finally {
 			DatabaseSync.prototype.prepare = prepare;

@@ -105,7 +105,7 @@ type ListingRow = HeaderRow & {
 type SummaryRow = ListingRow & { search_texts_json: string };
 /** A row's key and how many characters its stored text holds, for reading rows in pages. */
 type SizedRow = SqliteRow & { size: number | bigint | null };
-/** A returned row's cumulative text, its batch's text, and the batch's row count including lookahead. */
+/** Cumulative text (0 when the whole batch fits), batch text, and batch row count including lookahead. */
 type FetchRow = {
 	fetched: number | bigint;
 	batch_chars: number | bigint | null;
@@ -117,7 +117,7 @@ type PageRow = FetchRow & { ord: number | bigint };
  * The rows one statement of a paged read fetches, by key after the previous page, before it keeps those that fit in
  * {@link SESSION_READ_PAGE_CHARS}: each statement reads a bounded batch rather than every remaining row, so a long
  * session or listing is read in linear time. A full batch quadruples the next fetch. A clipped batch keeps its fetch
- * size when its unreturned text is at most four pages; otherwise the next fetch shrinks to twice the returned rows.
+ * size when its unreturned text is at most four pages; otherwise the next fetch is twice the returned rows.
  */
 export const SESSION_READ_FETCH = { first: 1024, min: 1, max: 8192 } as const;
 const SESSION_READ_INLINE_BYTES = 4096;
@@ -379,6 +379,7 @@ export class SqlSessionStore implements SessionStore {
 			if ((await tx.get(probe.sql, ...probe.params)) === undefined) {
 				await tx.exec(`ALTER TABLE ${tables.entries} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
 			}
+			if (database.readOnly === true) return;
 			await tx.run(
 				`DELETE FROM ${tables.entryChunks} WHERE (session_id, seq) IN (
 					SELECT k.session_id, k.seq

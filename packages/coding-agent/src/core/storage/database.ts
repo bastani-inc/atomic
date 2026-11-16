@@ -124,6 +124,7 @@ export interface StorageNotifications {
 }
 
 export interface SqliteDatabase extends SqliteExecutor {
+	readonly readOnly?: boolean;
 	readonly descriptor: StorageDescriptor;
 	/** The SQL dialect the database speaks; absent means SQLite. Read it through `dialectOf(database)`. */
 	readonly dialect?: StorageDialect;
