@@ -287,6 +287,7 @@ test("isolated explicit cycle clears fallback only for a changed model despite a
 			if (behavior === "changed") session.agent.state.model = model;
 			return { model, thinkingLevel: behavior === "same" ? ("high" as const) : ("off" as const), isScoped: false };
 		},
+		getState: async () => ({ thinkingLevel: session.agent.state.thinkingLevel }),
 		getCommands: async () => [],
 		getEntries: async () => ({ entries: [], leafId: null }),
 	} as unknown as RpcClient;

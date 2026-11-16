@@ -352,10 +352,17 @@ export class ModelSelectorComponent extends FramedSelector<Model<Api>> implement
 
 	private reconcileChosenLevels(): void {
 		if (this.chosenLevels.size === 0) return;
+		const modelsByKey = new Map<string, Model<Api>>();
+		for (const candidate of this.allModels) {
+			const key = getModelMeta(candidate).key;
+			if (!modelsByKey.has(key)) modelsByKey.set(key, candidate);
+		}
+		for (const candidate of this.scopedModelList) {
+			const key = getModelMeta(candidate).key;
+			if (!modelsByKey.has(key)) modelsByKey.set(key, candidate);
+		}
 		for (const [key, chosen] of [...this.chosenLevels.entries()]) {
-			const model =
-				this.allModels.find((candidate) => getModelMeta(candidate).key === key) ??
-				this.scopedModelList.find((candidate) => getModelMeta(candidate).key === key);
+			const model = modelsByKey.get(key);
 			if (!model) {
 				this.chosenLevels.delete(key);
 				continue;

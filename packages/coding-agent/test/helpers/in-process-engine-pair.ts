@@ -224,13 +224,18 @@ export async function createEngineHostPair(
 	const engine = await createHarness({ ...options, extensionFactories: options.engineExtensions });
 	const hostHarness = await createHarness({ sessionManager: options.hostSessionManager });
 	const client = new InProcessEngineClient({ toEngineMs: () => lag.toEngineMs, toHostMs: () => lag.toHostMs });
+	const engineRuntimeHost = new AgentSessionRuntime(
+		engine.session,
+		{ cwd: engine.tempDir, agentDir: engine.tempDir } as never,
+		async () => {
+			throw new Error("unused runtime factory");
+		},
+	);
+	if (options.engineRuntimeHost) {
+		Object.assign(engineRuntimeHost, options.engineRuntimeHost);
+	}
 	const handle = createRpcCommandHandler({
-		runtimeHost: {
-			session: engine.session,
-			services: { agentDir: engine.tempDir },
-			takeResumeNotices: () => [],
-			...options.engineRuntimeHost,
-		} as unknown as AgentSessionRuntime,
+		runtimeHost: engineRuntimeHost,
 		getSession: () => engine.session,
 		rebindSession: async () => {},
 		output: (record) => client.engineOutput(record as RpcResponse),

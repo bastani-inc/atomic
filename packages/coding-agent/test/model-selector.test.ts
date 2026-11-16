@@ -630,4 +630,64 @@ describe("model selector", () => {
 		);
 		selector.dispose();
 	});
+
+	it("reconciles chosen thinking levels in linear time across model list rebuilds (#5237)", async () => {
+		const totalModels = 60;
+		const steppedCount = 40;
+		harness = await createHarness({
+			models: Array.from({ length: totalModels }, (_, index) => ({
+				id: `alpha-${String(index).padStart(2, "0")}`,
+				name: `Alpha ${index}`,
+				reasoning: true,
+			})),
+		});
+		let idReads = 0;
+		const trackedModels = harness.session.modelRuntime.getAvailableSnapshot().map((baseModel) => {
+			const modelId = baseModel.id;
+			const tracked = { ...baseModel };
+			Object.defineProperty(tracked, "id", {
+				enumerable: true,
+				get() {
+					idReads++;
+					return modelId;
+				},
+			});
+			return tracked;
+		});
+		vi.spyOn(harness.session.modelRuntime, "getAvailableSnapshot").mockReturnValue(trackedModels);
+		vi.spyOn(harness.session.modelRuntime, "getModel").mockImplementation((provider, id) =>
+			trackedModels.find((model) => model.provider === provider && model.id === id),
+		);
+
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			trackedModels[0],
+			harness.settingsManager,
+			harness.session.modelRuntime,
+			trackedModels.slice(0, 10).map((model) => ({ model })),
+			() => {},
+			() => {},
+			undefined,
+			"medium",
+		);
+
+		selector.handleInput("\t");
+		for (let index = 0; index < steppedCount; index++) {
+			selector.handleInput("\x1b[C");
+			selector.handleInput("\x1b[B");
+		}
+
+		idReads = 0;
+		selector.handleInput("\t");
+		assert.ok(
+			idReads <= totalModels * 3,
+			`expected linear model key lookups during reconcile, got ${idReads} reads for ${totalModels} models`,
+		);
+
+		selector.handleInput("\t");
+		const visible = selector.selector.state.getVisible();
+		assert.ok(visible[0]?.label.endsWith("  high"));
+		assert.ok(visible[steppedCount - 1]?.label.endsWith("  high"));
+		selector.dispose();
+	});
 });
