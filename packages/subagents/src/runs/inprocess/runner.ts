@@ -572,10 +572,6 @@ export function inProcessChildResourceLoaderOptions(input: {
 }
 
 /**
- * Resolves once `session` has started another turn and become idle again, as a message delivered to an interrupted
- * child starts one, or once any of `stops` aborts. A child that is never messaged again waits here until it is stopped.
- */
-/**
  * Resolves once the session has no turn running or starting and no interrupt delivery pending, or a stop fires.
  * `subscribeDrained` is told each time the session's count of running turns returns to zero.
  */
@@ -606,6 +602,10 @@ export async function sessionDrained(
 	}
 }
 
+/**
+ * Resolves once `session` has started another turn and become idle again, as a message delivered to an interrupted
+ * child starts one, or once any of `stops` aborts. A child that is never messaged again waits here until it is stopped.
+ */
 export function nextTurnSettled(
 	session: Pick<AgentSession, "subscribe" | "isStreaming">,
 	stops: readonly AbortSignal[],
@@ -2269,7 +2269,7 @@ export class SubagentControlRuntime {
 				}
 				// A turn that settled while the task was pending left message admission open: what it admitted since is
 				// answered before the execution ends and seals it.
-				if (prepared !== undefined && termination === undefined)
+				if (prepared !== undefined && redispatched === undefined && termination === undefined)
 					await sessionDrained(session, [signals.abort, signals.interrupt], (listener) => {
 						turnDrainedListeners.add(listener);
 						return () => turnDrainedListeners.delete(listener);
