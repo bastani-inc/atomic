@@ -140,8 +140,14 @@ export function renderSubagentToolCall(args: SubagentParamsLike, theme: Theme, c
 		);
 	}
 	// Truncation adds full ANSI resets even to plain text; remove them before styling so the host background survives.
+	// One line: what runs and why, as `Agent(worker · first line of its task)`. The full prompt is in /tasks.
+	const firstLine =
+		displayText(args.task ?? "")
+			.split("\n")
+			.find((line) => line.trim())
+			?.trim() ?? "";
 	return new Text(
-		`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", displayText(args.agent || "?"))}${args.task ? `\n${theme.fg("muted", displayText(truncateToWidth(displayText(args.task), 100)))}` : ""}`,
+		`${theme.fg("toolTitle", theme.bold("Agent"))}(${theme.fg("accent", displayText(args.agent || "?"))}${firstLine ? theme.fg("muted", ` · ${truncateToWidth(firstLine, 100)}`) : ""})`,
 		0,
 		0,
 	);

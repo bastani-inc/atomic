@@ -8,7 +8,7 @@
 
 ### Changed
 
-- A subagent's block in the chat is shorter. While it runs: `Agent(<name> · <task>)`, its last three tool calls with older ones folded into `… +N tool uses`, and `Running · <time> · ↓ <tokens>`. Once settled: one line with its outcome and time, the result's first line, and the expand key for the prompt, tool calls and full result ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- A subagent's call heading is one line, `Agent(<name> · <first line of its task>)`, and its block in the chat is shorter. While it runs: `Agent(<name> · <task>)`, its last three tool calls with older ones folded into `… +N tool uses`, and `Running · <time> · ↓ <tokens>`. Once settled: one line with its outcome and time, the result's first line, and the expand key for the prompt, tool calls and full result ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - A launch whose `cwd` does not exist is refused before any child starts, and the error says the directory may still be being created by a parallel tool call in the same turn: launch after that call returns, or use `worktree: { branch, base?, path? }` ([#5202](https://github.com/bastani-inc/atomic/issues/5202))
 - Interrupting a background subagent's turn from its chat (Esc) leaves it running in the same session, waiting for your next message, instead of ending it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
