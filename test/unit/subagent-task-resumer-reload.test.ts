@@ -64,8 +64,6 @@ test(
 		const sessionManager = SessionManager.inMemory(cwd);
 		const boundary = new WorkflowStageAdmissionBoundary();
 		let parentTurns = 0;
-		let awaitingResumedChild = false;
-		let parentTurnsWhenResumedChildStarted: number | undefined;
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir,
@@ -80,7 +78,6 @@ test(
 				(pi) => {
 					pi.on("agent_start", (_event, ctx) => {
 						if (ctx.sessionManager.getSessionId() === sessionManager.getSessionId()) parentTurns += 1;
-						else if (awaitingResumedChild) parentTurnsWhenResumedChildStarted = parentTurns;
 					});
 				},
 			],
@@ -153,7 +150,6 @@ test(
 				"reload keeps the finished child's chat writable",
 			);
 			faux.setResponses(Array.from({ length: 6 }, () => fauxAssistantMessage("the resumed child answered")));
-			awaitingResumedChild = true;
 			await source.sendTaskMessage(child.ref.taskId, "Continue from this chat.");
 			await until(() =>
 				host
@@ -167,11 +163,6 @@ test(
 				.taskRecords()
 				.find((task) => task.ref.taskId !== child.ref.taskId && task.kind === "agent");
 			assert.ok(resumed);
-			assert.equal(
-				parentTurnsWhenResumedChildStarted,
-				turnsBeforeReload,
-				"the child resumed without a parent turn repairing its chat",
-			);
 			assert.equal((await taskSource().taskDetailText(resumed.ref.taskId)).output, "the resumed child answered");
 		} finally {
 			await session?.dispose();

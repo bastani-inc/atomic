@@ -263,7 +263,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		customStarter?: CustomMessage,
 	): Promise<void>;
 	_runAgentContinue(): Promise<void>;
-	_runAgentContinuation(beforeContinue: () => Promise<void>, mode?: "continue" | "recovery"): Promise<void>;
+	_runAgentContinuation(beforeContinue: () => Promise<void>, mode?: "continue" | "recovery" | "settle"): Promise<void>;
 	_continueQueuedAgentMessages(): Promise<void>;
 	_tryExecuteExtensionCommand(text: string): Promise<boolean>;
 	_expandSkillCommand(text: string): string;

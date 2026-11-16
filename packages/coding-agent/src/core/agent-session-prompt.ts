@@ -896,14 +896,16 @@ function sessionClosedForDetachedTurn(session: AgentSession): ToolDetachmentErro
 export async function _runAgentContinuation(
 	this: AgentSession,
 	beforeContinue: () => Promise<void>,
-	mode: "continue" | "recovery" = "continue",
+	mode: "continue" | "recovery" | "settle" = "continue",
 ): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	return trackSessionWork(this, async () => {
-		this._workflowStageAwaitingFirstPrompt = false;
-		this._agentRunAbortRequested = false;
-		this._persistenceFailure = undefined;
-		this._stopAfterTurnBlockedContinuation = false;
+		if (mode !== "settle") {
+			this._workflowStageAwaitingFirstPrompt = false;
+			this._agentRunAbortRequested = false;
+			this._persistenceFailure = undefined;
+			this._stopAfterTurnBlockedContinuation = false;
+		}
 		this._activePromptCount += 1;
 		openRun(this);
 		try {
@@ -911,7 +913,7 @@ export async function _runAgentContinuation(
 			if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
 				throw sessionClosedForDetachedTurn(this);
 			if (mode === "recovery") await this._continueQueuedAgentMessages();
-			else await this.agent.continue();
+			else if (mode === "continue") await this.agent.continue();
 			await this.waitForRetry();
 			if (lifetime.aborted || sessionGenerationClosing.has(this)) return;
 			await this._continueQueuedAgentMessages();
