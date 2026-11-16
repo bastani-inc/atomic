@@ -128,7 +128,13 @@ test("runs of one workflow are told apart by their first input, and a run waitin
 			},
 		] as never,
 	});
-	const other = run({ id: "22222222-bbbb", status: "running", name: "approve-demo", inputs: {}, startedAt: NOW - 60_000 });
+	const other = run({
+		id: "22222222-bbbb",
+		status: "running",
+		name: "approve-demo",
+		inputs: {},
+		startedAt: NOW - 60_000,
+	});
 	const [first, second] = workflowsListingItems([waiting, other], [], NOW);
 	assert.equal(first?.label, "approve-demo · 22222222", "no input: the run's short id");
 	assert.equal(second?.label, "approve-demo · rename a file");
