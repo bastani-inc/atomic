@@ -28,7 +28,7 @@ function git(repo: string, ...args: string[]): string {
 	return result.stdout.toString().trim();
 }
 
-function makeRepo(shared: boolean | "0001" | "0606" = false, umask?: "002"): { root: string; repo: string } {
+function makeRepo(shared: boolean | "all" | "0001" | "0606" = false, umask?: "002"): { root: string; repo: string } {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "named-worktree-locks-")));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 	const repo = join(root, "repo");
@@ -312,8 +312,7 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(git(third.path, "branch", "--show-current"), "feat/shared-user-b");
 		}
 
-		const { root: rootAll, repo: repoAll } = makeRepo();
-		git(repoAll, "init", "-q", "--shared=all");
+		const { root: rootAll, repo: repoAll } = makeRepo("all");
 		await ensureNamedWorktree(repoAll, { branch: "feat/shared-all", path: join(rootAll, "shared-all") });
 		const lockDirAll = join(repoAll, ".git", "objects", "info", "atomic-named-worktree-locks");
 		assert.equal(statSync(lockDirAll).mode & 0o2777, 0o2770);

@@ -121,7 +121,6 @@ test(
 	async () => {
 		const suspender = await createProcessSuspender();
 		try {
-			// A later process given the pid would be suspended, whatever it is, so none is given it.
 			const exited = await keptExitedPid();
 			try {
 				await assert.rejects(suspender.suspend(exited.pid));

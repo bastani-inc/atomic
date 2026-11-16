@@ -111,7 +111,6 @@ describe("workspace writer lease (#3109)", () => {
 
 	test("takes over a lease whose process exited on this host (#3109)", async () => {
 		const worktree = await boundWorktree("stale");
-		// A holder is named by its pid alone, so a later process given that pid would hold the lease: none is given it.
 		const exited = await keptExitedPid();
 		try {
 			plantHolder(worktree, { pid: exited.pid, host: hostname() });
