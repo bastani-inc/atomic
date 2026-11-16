@@ -16,6 +16,7 @@ import type {
 	LeaseSubject,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
+import { ensureBrokerSchema } from "./sql-schema.js";
 
 /** Store-clock milliseconds since the lease was renewed, never negative. */
 const age = ({ greatest, nowMs }: StorageDialect) => greatest("0", `${nowMs} - renewed_at`);
@@ -108,7 +109,7 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 			first_acquired_order ${types.int} NOT NULL, PRIMARY KEY(kind, key)
 		)
 	`;
-	await database.transaction((tx) => tx.exec(schema));
+	await ensureBrokerSchema(database, options.prefix, "leases", (tx) => tx.exec(schema));
 
 	const holderOf = (executor: SqliteExecutor, key: LeaseKey) =>
 		executor.get<HolderRow>(
