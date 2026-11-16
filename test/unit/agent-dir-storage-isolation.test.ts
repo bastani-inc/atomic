@@ -1872,3 +1872,60 @@ test("a settings-blind parent lookup remains provisional until merged SDK settin
 	assert.equal(existsSync(join(parent, "workflows", ".adopted-by")), false);
 	assert.equal(storageHomeDir(join(parent, "a2"), {}), parent);
 });
+
+test("a legacy worker host claim cannot reserve the parent for a directory whose merged settings durably selected its own home (#5242, #5219)", () => {
+	const parent = join(root, "settled-local-host-owner");
+	const first = join(parent, "a1");
+	const second = join(parent, "a2");
+	mkdirSync(join(first, "local-sessions"), { recursive: true });
+	writeFileSync(join(first, "local-sessions", "history.jsonl"), "{}\n");
+	mkdirSync(second, { recursive: true });
+	mkdirSync(join(parent, "workflows", "pool"), { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	writeFileSync(join(parent, "workflows", "pool", "host-id"), "legacy-host\n");
+	writeFileSync(join(parent, "workflows", "pool", "host-id.adopted-by"), `${first}\n`);
+	assert.equal(storageHomeDir(first, { sessions: { storage: { dir: "local-sessions" } } }), first);
+	resetStorageHomeCacheForTests();
+	assert.equal(storageHomeDir(second, {}), parent);
+});
+
+test("adopting through a parent directory alias does not hide history when that alias is removed (#5242)", () => {
+	const parent = join(root, "physical-adoption-parent");
+	const agent = join(parent, "a1");
+	mkdirSync(agent, { recursive: true });
+	mkdirSync(join(parent, "workflows"), { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	const alias = join(root, "temporary-parent-alias");
+	symlinkSync(parent, alias, "junction");
+	const initial = selectSessionStorage(project, { agentDir: join(alias, "a1"), settings: {} });
+	assert.ok("kind" in initial && initial.kind === "sqlite");
+	rmSync(alias, { recursive: true, force: true });
+	resetStorageHomeCacheForTests();
+	assert.deepEqual(selectSessionStorage(project, { agentDir: agent, settings: {} }), {
+		kind: "sqlite",
+		path: join(parent, "workflows", "journal.sqlite"),
+	});
+});
+
+test("a custom profile directly under the default home cannot claim the default agent's configured relative history before it starts (#5242)", () => {
+	const home = join(root, "default-target-owner");
+	const atomic = join(home, ".atomic");
+	const original = join(atomic, "agent");
+	const custom = join(atomic, "custom");
+	const settings = { sessions: { storage: { dir: "sessions" } } };
+	vi.stubEnv("HOME", home);
+	vi.stubEnv("USERPROFILE", home);
+	mkdirSync(original, { recursive: true });
+	mkdirSync(custom, { recursive: true });
+	mkdirSync(join(atomic, "sessions"), { recursive: true });
+	writeFileSync(join(atomic, "sessions", "history.jsonl"), "{}\n");
+	writeFileSync(join(original, "settings.json"), JSON.stringify(settings));
+	assert.deepEqual(selectSessionStorage(project, { agentDir: custom, settings }), {
+		kind: "jsonl",
+		dir: join(custom, "sessions"),
+	});
+	assert.deepEqual(selectSessionStorage(project, { agentDir: original, settings }), {
+		kind: "jsonl",
+		dir: join(atomic, "sessions"),
+	});
+});
