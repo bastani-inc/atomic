@@ -196,6 +196,21 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		assert.equal(cancelled, true);
 	});
 
+	it.each([
+		{ protocol: "legacy", key: "\x03" },
+		{ protocol: "Kitty", key: "\x1b[99;5u" },
+		{ protocol: "modifyOtherKeys", key: "\x1b[27;5;99~" },
+	])("Ctrl+C cancels searches and previews using $protocol input (#5256)", ({ key }) => {
+		for (const state of ["search", "preview"] as const) {
+			let cancelled = 0;
+			const selector = mount([makeSession({ id: "a" })], { onCancel: () => cancelled++ });
+			selector.handleInput(state === "search" ? "z" : " ");
+			selector.handleInput(key);
+			assert.equal(cancelled, 1, state);
+			selector.dispose();
+		}
+	});
+
 	it("names the empty state for each picker kind", () => {
 		const sessions = frame(mount([]));
 		assert.ok(

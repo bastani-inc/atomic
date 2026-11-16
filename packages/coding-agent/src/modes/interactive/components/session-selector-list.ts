@@ -4,6 +4,7 @@ import {
 	type Focusable,
 	getKeybindings,
 	Input,
+	matchesKey,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -558,7 +559,7 @@ export class SessionList implements Component, Focusable {
 		}
 
 		// A preview closes before anything else leaves; it follows the selection while open.
-		if (this.previewOpen && kb.matches(keyData, "tui.select.cancel") && keyData !== "\x03") {
+		if (this.previewOpen && kb.matches(keyData, "tui.select.cancel") && !matchesKey(keyData, "ctrl+c")) {
 			this.previewOpen = false;
 			return true;
 		}
@@ -653,7 +654,7 @@ export class SessionList implements Component, Focusable {
 		}
 		// Escape clears a search first, then cancels; ctrl+c always cancels.
 		else if (kb.matches(keyData, "tui.select.cancel")) {
-			if (this.searchInput.getValue() && keyData !== "\x03") this.clearSearch();
+			if (this.searchInput.getValue() && !matchesKey(keyData, "ctrl+c")) this.clearSearch();
 			else this.onCancel?.();
 		}
 		// Pass everything else to search input

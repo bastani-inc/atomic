@@ -16,6 +16,7 @@
 - Pickers ignore a repeated Enter or click instead of answering twice, and an extension dialog shown again after another dialog repaints in the current theme ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 - Isolated interactive mode keeps model and reasoning changes made by extensions during `/model` or Ctrl+P, without saving a session-only reasoning change as the startup default ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 - In `/resume`, pressing ↓ or Page Down while a search matched nothing left no session selected once the search matched again, so Enter did nothing until you moved the selection ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Ctrl+C cancels the resume picker while searching or previewing on terminals using Kitty or modifyOtherKeys input, instead of only clearing the search or closing the preview ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
 
 ## [0.9.88] - 2026-11-16
 
