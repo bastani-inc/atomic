@@ -258,6 +258,7 @@ function factory(pi: ExtensionAPI): void {
 		reloadWorkflowResources: runtimeState.reloadWorkflowResources,
 		ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
 		runWithLifecycleSuppressedForPolicy: runtimeState.runWithLifecycleSuppressedForPolicy,
+		discoveryDiagnostics: () => runtimeState.discoveryRef.current?.errors ?? [],
 		runControl: {
 			owner,
 			pi,

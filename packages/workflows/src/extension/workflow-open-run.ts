@@ -9,8 +9,13 @@ import type { Store } from "../shared/store.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
+import { withoutStackFrames } from "../tui/run-outcome.js";
 import { renderSessionList } from "../tui/session-list.js";
-import { openWorkflowsListing, type WorkflowsListingDefinition } from "../tui/workflows-listing.js";
+import {
+	openWorkflowsListing,
+	type WorkflowsListingDefinition,
+	type WorkflowsListingInvalidDefinition,
+} from "../tui/workflows-listing.js";
 import type { PiCommandContext } from "./public-types.js";
 import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
@@ -32,6 +37,24 @@ export interface WorkflowsCommandDeps {
 	readonly definitions?: () => readonly WorkflowsListingDefinition[];
 	/** Starts a definition chosen in the sheet, asking for its inputs first. */
 	readonly startDefinition?: (name: string) => Promise<void>;
+	/** Definitions discovery could not load; the sheet lists them as `✗`, and Enter explains what failed. */
+	readonly invalidDefinitions?: () => readonly WorkflowsListingInvalidDefinition[];
+}
+
+/**
+ * What a definition that could not load shows when chosen: what failed in one line, the file, the error's message lines
+ * without stack frames, and how to fix it.
+ */
+export function formatInvalidDefinitionDetails(definition: WorkflowsListingInvalidDefinition): string {
+	const { kept, frames } = withoutStackFrames(definition.message);
+	const detail = kept.filter((line) => line.trim() !== definition.reason && line.trim() !== "").slice(0, 8);
+	const lines = [`✗ Workflow "${definition.name}" could not be loaded (${definition.code})`, ""];
+	if (definition.source !== undefined) lines.push(`file    ${definition.source}`);
+	lines.push(`reason  ${definition.reason}`);
+	for (const line of detail) lines.push(`        ${line}`);
+	if (frames > 0) lines.push(`        (${frames} stack ${frames === 1 ? "frame" : "frames"} hidden)`);
+	lines.push("", "Fix the file, then run /workflow reload to load it again.");
+	return lines.join("\n");
 }
 
 /**
@@ -73,7 +96,8 @@ export async function handleWorkflowsCommand(
 	}
 	const runs = topLevelWorkflowRuns(store.runs());
 	const definitions = deps.definitions?.() ?? [];
-	if (runs.length === 0 && (definitions.length === 0 || !interactive))
+	const invalidDefinitions = deps.invalidDefinitions?.() ?? [];
+	if (runs.length === 0 && ((definitions.length === 0 && invalidDefinitions.length === 0) || !interactive))
 		return reporter.info("No workflows in this session.");
 	if (!interactive) return reporter.info(renderSessionList(store.runs(), { theme, includeAll: true }));
 	if (runs.length === 1) {
@@ -87,8 +111,10 @@ export async function handleWorkflowsCommand(
 	const picked = await openWorkflowsListing(ctx.ui, {
 		runs: () => store.runs(),
 		definitions: () => deps.definitions?.() ?? [],
+		invalidDefinitions: () => deps.invalidDefinitions?.() ?? [],
 		subscribe: (listener) => subscribeStoreInvalidation(store, listener),
 	});
 	if (picked?.kind === "run") openWorkflowRun(picked.runId, ctx, deps, { onReturn: reopen });
 	else if (picked?.kind === "definition") await deps.startDefinition?.(picked.name);
+	else if (picked?.kind === "invalid-definition") reporter.error(formatInvalidDefinitionDetails(picked.definition));
 }

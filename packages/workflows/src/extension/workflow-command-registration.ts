@@ -11,6 +11,8 @@ import { openInlineInputsForm } from "../tui/inline-form-overlay.js";
 import { openInputsPicker } from "../tui/inputs-overlay.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { selectRunsForPicker } from "../tui/session-picker.js";
+import { invalidDefinitionsFromDiagnostics } from "../tui/workflows-listing.js";
+import type { DiscoveryDiagnostic } from "./discovery.js";
 import type { ExtensionAPI, PiArgumentCompletionResult, PiCommandContext } from "./public-types.js";
 import type { WorkflowInputEntry, WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
@@ -51,6 +53,8 @@ export interface WorkflowSlashCommandDeps {
 	runWithLifecycleSuppressedForPolicy: <T>(policy: WorkflowExecutionPolicy, fn: () => Promise<T>) => Promise<T>;
 	runControl: WorkflowRunControlDeps;
 	owner?: WorkflowOwnerResources;
+	/** The latest discovery's diagnostics, so `/workflows` can list the definitions that failed to load. */
+	discoveryDiagnostics?: () => readonly DiscoveryDiagnostic[];
 }
 
 export function registerWorkflowSlashCommand(
@@ -98,6 +102,7 @@ export function registerWorkflowSlashCommand(
 					store: owner.store,
 					definitions: () => deps.runtimeProxy.registry.all(),
 					startDefinition: (name) => workflowSlashHandler(name, ctx, pi, deps),
+					invalidDefinitions: () => invalidDefinitionsFromDiagnostics(deps.discoveryDiagnostics?.() ?? []),
 				});
 			},
 		},

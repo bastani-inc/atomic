@@ -33,6 +33,7 @@ import { renderRoundedBox } from "../tui/chat-surface.js";
 import { renderDispatchConfirm } from "../tui/dispatch-confirm.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { renderRunDetail } from "../tui/run-detail.js";
+import { withoutStackFrames } from "../tui/run-outcome.js";
 import { renderStatusList } from "../tui/status-list.js";
 import { truncateToWidth } from "../tui/text-helpers.js";
 import { renderWorkflowList } from "../tui/workflow-list.js";
@@ -385,6 +386,13 @@ function transcriptNoticeText(result: TranscriptResult): string {
 	return entriesText;
 }
 
+/** An error's message lines, never its stack frames: they stay in the tool result the model reads. */
+function errorNoticeText(errorText: string): string {
+	const { kept, frames } = withoutStackFrames(errorText);
+	const body = kept.join("\n").trimEnd();
+	return frames > 0 ? `${body}\n(${frames} stack ${frames === 1 ? "frame" : "frames"} hidden)` : body;
+}
+
 export function renderResult(result: WorkflowRegisteredToolResult | null | undefined, opts?: RenderResultOpts): string {
 	return renderResultBody(result, opts);
 }
@@ -399,7 +407,8 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 	// missing `action` here previously threw and crashed the TUI render loop, so
 	// degrade gracefully instead.
 	if (result === null || result === undefined || typeof result.action !== "string") {
-		if (opts?.errorText !== undefined) return renderNotice("WORKFLOW ERROR", opts.errorText, opts, themed);
+		if (opts?.errorText !== undefined)
+			return renderNotice("WORKFLOW ERROR", errorNoticeText(opts.errorText), opts, themed);
 		return partial ? "" : renderNotice("WORKFLOW", "no result", opts, themed);
 	}
 	if ("code" in result && result.code === "WORKFLOW_TIMEOUT") {

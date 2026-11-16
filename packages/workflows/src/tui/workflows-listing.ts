@@ -4,7 +4,9 @@
  * Runs come first, newest first, as two-line rows: the workflow's name and label, then `status · stage n/m <stage> ·
  * elapsed · cost`, with a failed run's short reason in place of its stage. Definitions follow: the name, then its
  * description and an inputs summary. Enter on a run opens its graph; Enter on a definition starts it, which asks for
- * its inputs first. The rows are built by pure functions so the listing can be tested without a terminal.
+ * its inputs first. A definition that failed to load is listed with them as `✗` and its one-line reason; Enter on it
+ * explains what failed instead of starting it. The rows are built by pure functions so the listing can be tested
+ * without a terminal.
  */
 
 import { Selector, type SelectorItem } from "@bastani/atomic";
@@ -13,9 +15,55 @@ import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowInputSchemaMap } from "../shared/types.js";
 import { panelItemsFromSnapshot } from "./panel-runs.js";
+import { summarizeFailureText } from "./run-outcome.js";
 
-/** What a chosen row is: a run to open, or a definition to start. */
-export type WorkflowsListingTarget = { kind: "run"; runId: string } | { kind: "definition"; name: string };
+/** A workflow definition that discovery could not load, and why. */
+export interface WorkflowsListingInvalidDefinition {
+	/** The workflow's name: its file's base name, or the export or workflow name discovery reported. */
+	readonly name: string;
+	/** The file or export discovery reported, when it named one. */
+	readonly source?: string;
+	readonly code: string;
+	/** The error's first message line. */
+	readonly reason: string;
+	/** The full diagnostic message, stack frames included, for the details. */
+	readonly message: string;
+}
+
+/** What a chosen row is: a run to open, a definition to start, or a broken definition to explain. */
+export type WorkflowsListingTarget =
+	| { kind: "run"; runId: string }
+	| { kind: "definition"; name: string }
+	| { kind: "invalid-definition"; definition: WorkflowsListingInvalidDefinition };
+
+/** The discovery diagnostics a definition did not load because of; warnings, such as a skipped duplicate, are not. */
+const FAILED_TO_LOAD_CODES: ReadonlySet<string> = new Set(["INVALID_DEFINITION", "IMPORT_FAILED", "PATH_NOT_FOUND"]);
+
+function definitionNameFromSource(source: string | undefined, code: string): string {
+	if (source === undefined || source.trim() === "") return code.toLowerCase();
+	const base = source.split(/[\\/]/).pop() ?? source;
+	return base.replace(/\.(?:[cm]?[jt]s|tsx)$/, "") || source;
+}
+
+/** The definitions discovery could not load, from its diagnostics. */
+export function invalidDefinitionsFromDiagnostics(
+	diagnostics: readonly {
+		readonly level: string;
+		readonly code: string;
+		readonly message: string;
+		readonly source?: string;
+	}[],
+): WorkflowsListingInvalidDefinition[] {
+	return diagnostics
+		.filter((diagnostic) => diagnostic.level === "error" && FAILED_TO_LOAD_CODES.has(diagnostic.code))
+		.map((diagnostic) => ({
+			name: definitionNameFromSource(diagnostic.source, diagnostic.code),
+			...(diagnostic.source === undefined ? {} : { source: diagnostic.source }),
+			code: diagnostic.code,
+			reason: summarizeFailureText(diagnostic.message).reason,
+			message: diagnostic.message,
+		}));
+}
 
 /** The parts of a registered definition the listing shows. */
 export interface WorkflowsListingDefinition {
@@ -155,6 +203,7 @@ export function workflowsListingItems(
 	runs: readonly RunSnapshot[],
 	definitions: readonly WorkflowsListingDefinition[],
 	now = Date.now(),
+	invalidDefinitions: readonly WorkflowsListingInvalidDefinition[] = [],
 ): SelectorItem<WorkflowsListingTarget>[] {
 	// The agent panel's view of each run says whether it waits on a question, and which.
 	const waiting = new Map(
@@ -185,9 +234,8 @@ export function workflowsListingItems(
 				searchText: `${runRowLabel(run)} ${run.id} ${RUN_STATUS_TEXT[run.status]}`,
 			};
 		});
-	const definitionItems = [...definitions]
-		.sort((a, b) => a.normalizedName.localeCompare(b.normalizedName))
-		.map(
+	const definitionItems = [
+		...definitions.map(
 			(definition): SelectorItem<WorkflowsListingTarget> => ({
 				id: `definition:${definition.normalizedName}`,
 				value: { kind: "definition", name: definition.normalizedName },
@@ -198,7 +246,20 @@ export function workflowsListingItems(
 				group: "Definitions",
 				searchText: `${definition.normalizedName} ${definition.description}`,
 			}),
-		);
+		),
+		...invalidDefinitions.map(
+			(definition, index): SelectorItem<WorkflowsListingTarget> => ({
+				id: `invalid-definition:${index}:${definition.source ?? definition.name}`,
+				value: { kind: "invalid-definition", definition },
+				label: definition.name,
+				description: `failed to load · ${definition.reason}`,
+				tag: "✗",
+				tagTone: "error",
+				group: "Definitions",
+				searchText: `${definition.name} ${definition.source ?? ""} failed ${definition.reason}`,
+			}),
+		),
+	].sort((a, b) => a.label.localeCompare(b.label));
 	return [...runItems, ...definitionItems];
 }
 
@@ -215,6 +276,8 @@ export function openWorkflowsListing(
 	source: {
 		readonly runs: () => readonly RunSnapshot[];
 		readonly definitions: () => readonly WorkflowsListingDefinition[];
+		/** Definitions discovery could not load, listed with the others as `✗`. */
+		readonly invalidDefinitions?: () => readonly WorkflowsListingInvalidDefinition[];
 		readonly subscribe?: (listener: () => void) => () => void;
 	},
 ): Promise<WorkflowsListingTarget | undefined> {
@@ -239,7 +302,8 @@ export function openWorkflowsListing(
 				done(undefined);
 				resolve(target);
 			};
-			const items = () => workflowsListingItems(source.runs(), source.definitions());
+			const items = () =>
+				workflowsListingItems(source.runs(), source.definitions(), Date.now(), source.invalidDefinitions?.() ?? []);
 			const selector = new Selector<WorkflowsListingTarget>({
 				title: "Workflows",
 				items: items(),

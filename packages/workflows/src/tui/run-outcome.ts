@@ -79,6 +79,13 @@ export function summarizeFailureText(text: string | undefined): { reason: string
 	return { reason: reason.length > 0 ? reason : first, frames };
 }
 
+/** A failure's lines without its stack frames, and how many frames were dropped. */
+export function withoutStackFrames(text: string): { kept: string[]; frames: number } {
+	const lines = text.split(/\r?\n/);
+	const kept = lines.filter((line) => !STACK_FRAME.test(line));
+	return { kept, frames: lines.length - kept.length };
+}
+
 function outcomeState(run: RunSnapshot): RunOutcomeState {
 	switch (run.status) {
 		case "completed":
