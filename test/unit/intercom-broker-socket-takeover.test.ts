@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 // `statSync` has no equivalent in test/helpers/runtime.ts: the socket file is read directly.
 import { statSync } from "node:fs";
 import net from "node:net";
@@ -609,6 +610,22 @@ describe("socket replacement lock (#3505)", () => {
 		const release = await acquireSocketReplacementLock(path);
 		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), process.pid, "the lock names this broker");
 		release();
+	});
+
+	test("parked copies of the socket lock are removed by the next holder only when their holder is gone (#5220)", async () => {
+		const path = lockPath();
+		const parked = (owner: string) => {
+			const file = `${path}.${Date.now()}.${randomUUID()}.stale`;
+			writeTextSync(file, owner);
+			return file;
+		};
+		const dead = parked(`${await deadPid()}\n`);
+		const live = parked(`${process.pid}\n`);
+
+		const release = await acquireSocketReplacementLock(path);
+		release();
+		assert.equal(fileExistsSync(dead), false, "a parked lock of a broker that is gone is removed");
+		assert.equal(fileExistsSync(live), true, "a parked lock of a running broker is kept");
 	});
 
 	test("a dead holder's lock is taken over and released by its new holder", async () => {
