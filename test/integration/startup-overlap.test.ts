@@ -12,13 +12,13 @@ const repoRoot = join(moduleDir(import.meta.url), "../..");
 const cli = join(repoRoot, "packages/coding-agent/dist/cli.js");
 
 /**
- * How long the engine child takes to load before it runs anything, as a slow disk or a virus scanner can make it. The
- * host must paint its first frame without waiting for its engine, so the frame comes before the engine has even
- * started; half of the delay is the margin the assertions keep for a loaded runner.
+ * The engine child is held until the host has painted (its first frame is in the startup trace), for at most this
+ * long. A host that waited for its engine would deadlock until then, and its frame would come after the engine
+ * started; the bound only has to outlast a host's own start on a loaded runner.
  */
-const ENGINE_LOAD_DELAY_MS = 3_000;
-/** A real interactive start, its delayed engine and a provider round trip, on a loaded runner. */
-const SAMPLE_TIMEOUT_MS = 60_000;
+const ENGINE_HOLD_MAX_MS = 45_000;
+/** A real interactive start, its held engine and a provider round trip, on a loaded runner. */
+const SAMPLE_TIMEOUT_MS = ENGINE_HOLD_MAX_MS + 30_000;
 /** Two real starts (interactive and RPC) plus their teardown. */
 const TEST_TIMEOUT_MS = 3 * SAMPLE_TIMEOUT_MS;
 
@@ -48,7 +48,7 @@ function writeAtomicShim(directory: string): void {
 }
 
 test(
-	"an interactive start paints before its engine has loaded, and a prompt typed at launch reaches the provider once, with the tools an RPC start sends",
+	"an interactive start paints without waiting for its engine, and a prompt typed at launch reaches the provider once, with the tools an RPC start sends",
 	async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-startup-overlap-"));
 		try {
@@ -66,12 +66,24 @@ test(
 }
 `,
 			);
-			// Only an engine child (prewarmed, or started with its bootstrap) loads slowly; the host does not.
-			const engineDelay = join(root, "engine-delay.mjs");
+			// Only an engine child (prewarmed, or started with its bootstrap) is held, before it runs any of Atomic, until
+			// its host's first frame is in the trace both of them write.
+			const engineHold = join(root, "engine-hold.mjs");
 			writeFileSync(
-				engineDelay,
-				`if (process.argv.some((arg) => arg === "--internal-engine-prewarm" || arg === "--internal-engine-bootstrap"))
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${ENGINE_LOAD_DELAY_MS});
+				engineHold,
+				`import { readFileSync } from "node:fs";
+if (process.argv.some((arg) => arg === "--internal-engine-prewarm" || arg === "--internal-engine-bootstrap")) {
+	const deadline = Date.now() + ${ENGINE_HOLD_MAX_MS};
+	const cell = new Int32Array(new SharedArrayBuffer(4));
+	while (Date.now() < deadline) {
+		let trace = "";
+		try {
+			trace = readFileSync(process.env.ATOMIC_STARTUP_TRACE ?? "", "utf8");
+		} catch {}
+		if (trace.includes('"label":"startup-coherent"')) break;
+		Atomics.wait(cell, 0, 0, 25);
+	}
+}
 `,
 			);
 			const binDirectory = join(root, "bin");
@@ -90,7 +102,7 @@ test(
 				timeoutMs: SAMPLE_TIMEOUT_MS,
 				dropCaches: false,
 				extraArgs: ["--extension", extension],
-				extraEnv: { NODE_OPTIONS: `--import=${pathToFileURL(engineDelay).href}` },
+				extraEnv: { NODE_OPTIONS: `--import=${pathToFileURL(engineHold).href}` },
 			};
 			await prepareBenchmarkState(options);
 
@@ -104,13 +116,7 @@ test(
 			assert.ok(typeahead.toolNames?.includes("startup_probe"), JSON.stringify(typeahead.toolNames));
 			assert.deepEqual(typeahead.toolNames, rpc.toolNames);
 
-			// The host painted before its engine had even started, and the prompt went out once the engine had loaded.
-			const frame = typeahead.metricsMs!.firstFrameMs!;
-			const dispatch = typeahead.metricsMs!.typeaheadDispatchMs!;
-			assert.ok(
-				frame < dispatch - ENGINE_LOAD_DELAY_MS / 2,
-				`first frame at ${frame} ms, typed prompt sent at ${dispatch} ms`,
-			);
+			// The host painted while its engine was held, before the engine ran any of Atomic.
 			const trace = typeahead.traceMs ?? {};
 			assert.ok(
 				trace["0:startup-coherent"]! < trace["1:process-entry"]!,
