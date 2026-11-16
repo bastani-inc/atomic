@@ -384,9 +384,9 @@ describe("resume progress (#4660)", () => {
 		const { sessionId } = await recordSessionWithSnapshot(selection);
 		const { events, progress } = recordingProgress();
 		const atRead: string[][] = [];
-		const prototype = SqlSessionStore.prototype as unknown as { read: (...args: unknown[]) => unknown };
-		const original = prototype.read;
-		const read = vi.spyOn(prototype, "read").mockImplementation(function (this: unknown, ...args: unknown[]) {
+		const prototype = SqlSessionStore.prototype as unknown as { readRows: (...args: unknown[]) => unknown };
+		const original = prototype.readRows;
+		const read = vi.spyOn(prototype, "readRows").mockImplementation(function (this: unknown, ...args: unknown[]) {
 			atRead.push([...events]);
 			return Reflect.apply(original, this, args);
 		});
@@ -1076,14 +1076,30 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		});
 	}
 
-	/** Makes the runtime's store look like `adapter` and delays each session load by `delayMs` of timer time. */
+	/**
+	 * Runs every session read of `store` through `around`: a whole load, and the latest compaction and tail reads a
+	 * resume makes instead (#5249).
+	 */
+	function aroundReads(store: SessionStore, around: <T>(read: () => Promise<T>) => Promise<T>): void {
+		const load = store.load.bind(store);
+		store.load = (id) => around(() => load(id));
+		const { readTail, readRange, findLatestCompaction } = store;
+		if (readTail) store.readTail = (id, fromSeq) => around(() => readTail.call(store, id, fromSeq));
+		if (readRange) store.readRange = (id, start, end) => around(() => readRange.call(store, id, start, end));
+		if (findLatestCompaction)
+			store.findLatestCompaction = (id, leafId) => around(() => findLatestCompaction.call(store, id, leafId));
+	}
+
+	/** Makes the runtime's store look like `adapter` and delays each session read by `delayMs` of timer time. */
 	function slowStore(runtime: AgentSessionRuntime, adapter: string, delayMs: number): SessionStore {
 		const store = runtime.session.sessionManager.getSessionStore();
 		const descriptor = { ...store.descriptor, adapter };
 		Object.defineProperty(store, "descriptor", { value: descriptor, configurable: true });
-		const load = store.load.bind(store);
-		store.load = (id) =>
-			new Promise((resolveLoad, rejectLoad) => setTimeout(() => load(id).then(resolveLoad, rejectLoad), delayMs));
+		aroundReads(
+			store,
+			(read) =>
+				new Promise((resolveRead, rejectRead) => setTimeout(() => read().then(resolveRead, rejectRead), delayMs)),
+		);
 		return store;
 	}
 
@@ -1116,7 +1132,6 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		const { runtime } = await runtimeOn(sandbox.path("agent"), { resume: { setupCommand: "true" } });
 		const store = runtime.session.sessionManager.getSessionStore();
 		assert.equal(store.descriptor.adapter, "node-sqlite");
-		const load = store.load.bind(store);
 		let release!: () => void;
 		let loading!: () => void;
 		const released = new Promise<void>((resolveRelease) => {
@@ -1125,11 +1140,11 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		const loadStarted = new Promise<void>((resolveLoading) => {
 			loading = resolveLoading;
 		});
-		store.load = async (id) => {
+		aroundReads(store, async (read) => {
 			loading();
 			await released;
-			return load(id);
-		};
+			return read();
+		});
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 		let switched: Promise<{ cancelled: boolean }>;
 		try {
@@ -1157,7 +1172,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 			{ code: "connection-lost", outcome: "not-applied", attempts: 1 },
 			new Error("ECONNRESET"),
 		);
-		store.load = async () => Promise.reject(unreachable);
+		aroundReads(store, () => Promise.reject(unreachable));
 		await assert.rejects(runtime.switchSession(sessionId), (error: unknown) => {
 			assert.ok(isResumeCatalogUnavailableError(error), String(error));
 			assert.deepEqual(

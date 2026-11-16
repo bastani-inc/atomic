@@ -1068,7 +1068,10 @@ export class SqlSessionStore implements SessionStore {
 			if (source.entries !== undefined) {
 				return { tail: sessionTailOf(source.header, source.entries, start, source.index), source };
 			}
-			const state = await this.readSeqs(tx, sessionId, stateSeqsBefore(source.index, start));
+			const stateSeqs = stateSeqsBefore(source.index, start);
+			if (hasHistoryLoadObserver())
+				announceHistoryLoad(stateSeqs.length + Math.max(0, source.index.seq - start + 1));
+			const state = await this.readSeqs(tx, sessionId, stateSeqs);
 			const entries = (await this.readRows(tx, sessionId, "seq >= ?", [start])).map(({ entry }) => entry);
 			return { tail: sessionTailFrom(source.index, source.header, start, state, entries), source };
 		}, SESSION_TRANSACTION);
