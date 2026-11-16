@@ -5,7 +5,13 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { BROKER_LEASE_STALE_AFTER_MS } from "../../packages/intercom/broker/multinode-state-store.js";
-import { SHARED_LEASES_TABLE, type TwoBrokerClient, TwoBrokerHarness } from "../helpers/intercom-two-broker-harness.js";
+import {
+	BROKER_START_ALLOWANCE_MS,
+	SHARED_LEASES_TABLE,
+	TWO_BROKER_HARNESS_START_TIMEOUT_MS,
+	type TwoBrokerClient,
+	TwoBrokerHarness,
+} from "../helpers/intercom-two-broker-harness.js";
 import { decodeStream, moduleDir, type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
@@ -19,7 +25,7 @@ const SOURCE_ALIASES = JSON.stringify({
 	"@bastani/atomic": join(ROOT, "packages/coding-agent/src/index.ts"),
 });
 /** Spawning two real broker processes (and restarting one) is the structural cost of this suite. */
-const REAL_BROKERS_HOOK_TIMEOUT_MS = 60_000;
+const REAL_BROKERS_HOOK_TIMEOUT_MS = TWO_BROKER_HARNESS_START_TIMEOUT_MS;
 /**
  * A start-up allowance for the first owner process, not a product timing: it loads the subagent, Intercom and session
  * sources through jiti before it binds, which took close to a minute in a loaded Windows integration shard.
@@ -35,7 +41,12 @@ const SETTLE_MS = 30_000;
 const PRESENCE_GONE_MS = BROKER_LEASE_STALE_AFTER_MS + SETTLE_MS;
 /** Two owner processes start, the child is released, the broker restarts once, and the child is woken five times. */
 const FAULTS_TEST_TIMEOUT_MS =
-	OWNER_START_ALLOWANCE_MS + FIRST_RELEASE_MS + OWNER_PROCESS_READY_MS + 6 * SETTLE_MS + PRESENCE_GONE_MS;
+	OWNER_START_ALLOWANCE_MS +
+	FIRST_RELEASE_MS +
+	OWNER_PROCESS_READY_MS +
+	BROKER_START_ALLOWANCE_MS +
+	6 * SETTLE_MS +
+	PRESENCE_GONE_MS;
 
 let harness: TwoBrokerHarness;
 const owners: OwnerProcess[] = [];

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test, vi } from "vitest";
@@ -40,6 +39,13 @@ const { default: intercomLightweight } = await import("../../packages/intercom/i
 type Client = InstanceType<typeof IntercomClient>;
 
 const REAL_BROKER_TEST_TIMEOUT_MS = 90_000;
+/**
+ * Structural: the broker child compiles its TypeScript through jiti before it answers, which took longer than 10 s on a
+ * loaded Windows host (#5252).
+ */
+const BROKER_START_WAIT_MS = 40_000;
+/** Starting the broker waits for it, then has room to fail with its own message. */
+const BROKER_START_HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 5_000;
 const RECORD_WAIT_MS = 5_000;
 const SETTLE_MS = 400;
 const HELD_PROBE_MS = 150;
@@ -339,22 +345,10 @@ beforeAll(async () => {
 		stdio: "ignore",
 	});
 	brokerFixture.trackBroker(broker);
-	await vi.waitFor(
-		async () => {
-			brokerFixture.assertRunning();
-			const connected = await new Promise<boolean>((resolveConnected) => {
-				const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
-				socket.once("connect", () => {
-					socket.destroy();
-					resolveConnected(true);
-				});
-				socket.once("error", () => resolveConnected(false));
-			});
-			assert.ok(connected);
-		},
-		{ timeout: 10_000, interval: 20 },
-	);
-});
+	// A broker retires once no session has been connected for 5 s since it listened. Each test spends longer than that on
+	// a loaded host before its first client registers, so the fixture holds a session for this broker until cleanup.
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, brokerFixture.agentDir), BROKER_START_WAIT_MS);
+}, BROKER_START_HOOK_TIMEOUT_MS);
 afterAll(() => brokerFixture.cleanup());
 
 test(

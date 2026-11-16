@@ -18,7 +18,13 @@ import type {
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
 
-const BROKER_STARTUP_TIMEOUT_MS = 10_000;
+/**
+ * Structural: the broker child compiles its TypeScript through jiti before it reports that it started. A second or two
+ * on an idle machine; longer than 10 s on a loaded Windows host (#5252).
+ */
+const BROKER_STARTUP_TIMEOUT_MS = 45_000;
+/** The start-up hook waits for that report, then has room to fail with its own message. */
+const BROKER_STARTUP_HOOK_TIMEOUT_MS = BROKER_STARTUP_TIMEOUT_MS + 5_000;
 const BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;
 /**
  * Inner waits (an ask's reply, a listing poll) must outlast a loaded runner yet stay well inside
@@ -74,7 +80,7 @@ beforeAll(async () => {
 			rejectReady(new Error(`Intercom broker exited before readiness (code=${String(code)})`));
 		});
 	});
-});
+}, BROKER_STARTUP_HOOK_TIMEOUT_MS);
 
 afterAll(async () => {
 	const active = broker;
