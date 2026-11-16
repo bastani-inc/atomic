@@ -8,6 +8,7 @@
 
 ### Changed
 
+- Resuming a subagent whose session was compacted reads its session from the latest compaction instead of its whole history; its task transcript reads the earlier entries when opened ([#5249](https://github.com/bastani-inc/atomic/issues/5249))
 - A subagent's call heading is one line, `Agent(<name> · <first line of its task>)`, and its block in the chat is shorter. While it runs: its last three tool calls, with older ones folded into `… +N tool uses`, and `Running · <time> · ↓ <tokens>`. Once settled: one line with its outcome and time, the result's first line, and the expand key for the prompt, tool calls and full result ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - The bundled `worker`, `debugger` and `code-simplifier` agents no longer stop partway through a task because their conversation grew long, reporting it as completed and suggesting a fresh run. Atomic compacts long conversations automatically, so they keep working until the task is done, and `worker` and `debugger` ask their supervisor when only its decision blocks them.
 - A launch whose `cwd` does not exist is refused before any child starts, and the error says the directory may still be being created by a parallel tool call in the same turn: launch after that call returns, or use `worktree: { branch, base?, path? }` ([#5202](https://github.com/bastani-inc/atomic/issues/5202))

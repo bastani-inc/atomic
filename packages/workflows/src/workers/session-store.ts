@@ -78,6 +78,22 @@ export function workerSessionStore(input: {
 				}
 			: {}),
 		load: (id) => input.reader.load(id),
+		...(input.reader.readResume
+			? { readResume: (id: string, leafId?: string) => input.reader.readResume!(id, leafId) }
+			: {}),
+		...(input.reader.findEntrySeq
+			? { findEntrySeq: (id: string, entryId: string) => input.reader.findEntrySeq!(id, entryId) }
+			: {}),
+		...(input.reader.readTail !== undefined &&
+		input.reader.readRange !== undefined &&
+		input.reader.findLatestCompaction !== undefined
+			? {
+					readTail: (id: string, fromSeq: number) => input.reader.readTail!(id, fromSeq),
+					readRange: (id: string, startSeq: number, endSeq: number) =>
+						input.reader.readRange!(id, startSeq, endSeq),
+					findLatestCompaction: (id: string, leafId?: string) => input.reader.findLatestCompaction!(id, leafId),
+				}
+			: {}),
 		readHeader: (id) => input.reader.readHeader(id),
 		list: (query) => input.reader.list(query),
 		findMostRecent: (query) => input.reader.findMostRecent(query),

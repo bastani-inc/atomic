@@ -77,6 +77,8 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	 * and its `getEntries()` is empty. Absent where `getEntries()` holds the history (#5186).
 	 */
 	loadHistory?(): Promise<TaskTranscriptHistory>;
+
+	loadFullHistory?(): Promise<void>;
 	/** The session's commands now; a settled transcript keeps those it had when it settled. */
 	commands?(): TaskTranscriptCommands;
 	/** The live session's usage and footer data; absent from a transcript that has settled or been released. */
@@ -229,7 +231,8 @@ type TaskState = {
 	kind?: "command";
 	execution?: Promise<C.Result<C.Cleanup, C.ReportError>>;
 	transcript?: TaskTranscriptSource;
-	inheritedEntryCount?: number;
+
+	inherited?: { readonly throughId: string | null };
 	/** Extension `setStatus` writes of the task's own session; they never reach the host's footer. */
 	statuses: Map<string, string>;
 	statusListeners: Set<() => void>;
@@ -305,10 +308,20 @@ function clearTaskStatuses(state: TaskState): void {
 	notifyStatusListeners(state);
 }
 
+function entriesAfterInherited(
+	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
+	inherited: TaskState["inherited"],
+): ReturnType<TaskTranscriptSource["getEntries"]> {
+	const throughId = inherited?.throughId;
+	if (throughId === undefined || throughId === null) return entries;
+	return entries.slice(entries.findLastIndex((entry) => entry.id === throughId) + 1);
+}
+
 /** History the runner produced; a forked child's inherited parent entries are excluded. */
 export function taskOwnTranscriptEntries(task: TaskLease): ReturnType<TaskTranscriptSource["getEntries"]> | undefined {
 	const state = environment.tasks.get(task);
-	return state?.transcript?.getEntries().slice(state.inheritedEntryCount ?? 0);
+	const entries = state?.transcript?.getEntries();
+	return entries === undefined ? undefined : entriesAfterInherited(entries, state?.inherited);
 }
 
 /** {@link taskOwnTranscriptEntries}, read from the task's session store when its transcript keeps none in memory. */
@@ -318,10 +331,10 @@ export async function loadTaskOwnTranscriptEntries(
 	const state = environment.tasks.get(task);
 	const source = state?.transcript;
 	if (!state || !source) return undefined;
-	if (!source.loadHistory) return source.getEntries().slice(state.inheritedEntryCount ?? 0);
+	if (!source.loadHistory) return entriesAfterInherited(source.getEntries(), state.inherited);
 	const history = await source.loadHistory();
 	// What a transcript keeps when its saved history is gone is the task's own entries only.
-	return history.unavailable === undefined ? history.entries.slice(state.inheritedEntryCount ?? 0) : history.entries;
+	return history.unavailable === undefined ? entriesAfterInherited(history.entries, state.inherited) : history.entries;
 }
 
 /** Promise rejections, setup throws and consumer exceptions may be arbitrary JavaScript values. */
@@ -1371,7 +1384,7 @@ export class TaskSupervisor {
 						ref: reference(taskState.ref),
 						signal: taskState.controller.signal,
 						bindTranscript: (session) => {
-							taskState.inheritedEntryCount ??= session.getEntries().length;
+							taskState.inherited ??= { throughId: session.getEntries().at(-1)?.id ?? null };
 							taskState.transcript = session;
 						},
 						reportActivity: (report) =>

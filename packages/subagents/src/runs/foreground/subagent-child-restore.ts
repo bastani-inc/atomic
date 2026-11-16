@@ -227,12 +227,19 @@ async function awaitIntercomPeer(
  * latest change the child's own session recorded after launch wins, then what the launch record says it started
  * on, and only then whatever the session's entries say.
  */
-function ownSessionModelCandidate(
+async function ownSessionModelCandidate(
 	sessionManager: SessionManager,
 	record: SubagentChildRecord,
 	resolveCandidateModel: ReturnType<typeof createCandidateModelResolver>,
-): string | undefined {
+): Promise<string | undefined> {
 	const branch = sessionManager.getBranch();
+	const launchSeq =
+		record.launchLeafSeq ??
+		(record.launchLeafId === null
+			? 0
+			: typeof record.launchLeafId === "string"
+				? await sessionManager.findEntrySeq(record.launchLeafId)
+				: undefined);
 	const launchIndex =
 		record.launchLeafId === undefined
 			? branch.length
@@ -241,7 +248,9 @@ function ownSessionModelCandidate(
 				: branch.findIndex((entry) => entry.id === record.launchLeafId) + 1 || branch.length;
 	let changedModel: string | undefined;
 	let changedThinking: string | undefined;
-	for (const entry of branch.slice(launchIndex)) {
+	for (const entry of launchSeq === undefined
+		? branch.slice(launchIndex)
+		: branch.filter((entry) => (sessionManager.getEntrySeq(entry.id) ?? 0) > launchSeq)) {
 		if (entry.type === "model_change") changedModel = `${entry.provider}/${entry.modelId}`;
 		else if (entry.type === "thinking_level_change") changedThinking = entry.thinkingLevel;
 	}
@@ -527,12 +536,13 @@ async function relaunchChild(
 		...(ctx.thinkingLevel ? { thinkingLevel: ctx.thinkingLevel } : {}),
 	};
 	const resolveCandidateModel = createCandidateModelResolver(ctx.modelRegistry, inherited.modelProvider);
+
 	const ownModel = fresh
 		? fresh.modelOverride && resolveCandidateModel(fresh.modelOverride)?.model
 			? fresh.modelOverride
 			: undefined
 		: sessionManager
-			? ownSessionModelCandidate(sessionManager, record, resolveCandidateModel)
+			? await ownSessionModelCandidate(sessionManager, record, resolveCandidateModel)
 			: undefined;
 	// A model it inherited that is no longer usable is dropped, as an unusable model of its own is. It never takes the
 	// owner's new model instead: a child that would have run on the inherited model cannot continue.

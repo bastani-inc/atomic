@@ -275,6 +275,8 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 							? transcriptView(session, taskId, history.entries, cursor)
 							: { ok: false, error: { message: history.unavailable } },
 					);
+			if (session.loadFullHistory)
+				return session.loadFullHistory().then(() => transcriptView(session, taskId, session.getEntries(), cursor));
 			return transcriptView(session, taskId, session.getEntries(), cursor);
 		},
 		followTaskTranscript(id) {

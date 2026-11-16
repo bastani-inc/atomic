@@ -35,8 +35,8 @@ import { assertSessionNotOpenElsewhere } from "./core/session-open-markers.ts";
 import { resolveSessionStore, selectSessionStorage } from "./core/session-storage.js";
 import {
 	deleteSessionWithSnapshotRefs,
-	sessionContinuesIn,
-	sessionRunsInRecordedCheckout,
+	sessionManagerContinuesIn,
+	sessionManagerRunsInRecordedCheckout,
 } from "./core/session-worktree-snapshots.ts";
 import type { DefaultProjectTrust, SettingsManager } from "./core/settings-manager.ts";
 import { type StorageSelection, storageSelectionKey } from "./core/storage/provider.js";
@@ -207,7 +207,7 @@ async function forkSessionOrExit(
 
 async function openSessionOrExit(sessionId: string, store: SessionStore): Promise<SessionManager> {
 	try {
-		return await SessionManager.open(store, sessionId);
+		return await SessionManager.open(store, sessionId, undefined, { history: "tail" });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
@@ -348,14 +348,13 @@ async function createSessionManagerWithStore(
 				return openSessionOrExit(resolved.id, store);
 
 			case "global": {
-				const recordedOnAnotherNode = !existsSync(resolved.cwd);
+				const opened = await openSessionOrExit(resolved.id, store);
 				if (
-					recordedOnAnotherNode ||
-					(await sessionContinuesIn(store, resolved.id, cwd)) ||
-					(settingsManager.getWorktreeSnapshotSettings().enabled &&
-						(await sessionRunsInRecordedCheckout(store, resolved.id)))
+					!existsSync(resolved.cwd) ||
+					sessionManagerContinuesIn(opened, cwd) ||
+					(settingsManager.getWorktreeSnapshotSettings().enabled && sessionManagerRunsInRecordedCheckout(opened))
 				) {
-					return openSessionOrExit(resolved.id, store);
+					return opened;
 				}
 				console.log(chalk.yellow(`Session found in different project: ${resolved.cwd}`));
 				const shouldFork = await promptConfirm("Fork this session into current directory?");
@@ -397,7 +396,9 @@ async function createSessionManagerWithStore(
 
 	if (parsed.continue) {
 		const recent = await store.findMostRecent({ cwd: resolvePath(cwd) });
-		return recent ? SessionManager.open(store, recent.id) : createProvisionalSession(store, cwd);
+		return recent
+			? SessionManager.open(store, recent.id, undefined, { history: "tail" })
+			: createProvisionalSession(store, cwd);
 	}
 
 	if (parsed.sessionId !== undefined) {
@@ -472,7 +473,9 @@ export async function openSessionInCurrentCwdOrExit(
 ): Promise<SessionManager> {
 	switch (choice) {
 		case "continue":
-			return sessionManager.openSessionById(sessionManager.getSessionId(), issue.fallbackCwd);
+			return sessionManager.openSessionById(sessionManager.getSessionId(), issue.fallbackCwd, undefined, {
+				history: "tail",
+			});
 		case "fork":
 			return forkIntoCurrentCwd(sessionManager, issue.fallbackCwd);
 		case undefined:

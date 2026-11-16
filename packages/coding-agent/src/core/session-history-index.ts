@@ -5,6 +5,7 @@ import type { WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/
 
 interface BranchView {
 	readonly byId: ReadonlyMap<string, SessionEntry>;
+	readonly links: ReadonlyMap<string, string> | undefined;
 	leafId: string | null;
 	readonly path: SessionEntry[];
 	mappings: WorktreeRootMapping[] | undefined;
@@ -34,8 +35,12 @@ export class SessionHistoryIndex {
 	private scan: EntryScan | undefined;
 
 	/** The branch from the root to `leafId`, which the caller must not change. */
-	branch(leafId: string | null, byId: ReadonlyMap<string, SessionEntry>): readonly SessionEntry[] {
-		return this.viewOf(leafId, byId).path;
+	branch(
+		leafId: string | null,
+		byId: ReadonlyMap<string, SessionEntry>,
+		links?: ReadonlyMap<string, string>,
+	): readonly SessionEntry[] {
+		return this.viewOf(leafId, byId, links).path;
 	}
 
 	/** Extends the cached branch when `entry` was appended at its leaf; anything else drops it. */
@@ -53,8 +58,12 @@ export class SessionHistoryIndex {
 	}
 
 	/** The worktree restores recorded on the branch to `leafId`, oldest first. */
-	worktreeRootMappings(leafId: string | null, byId: ReadonlyMap<string, SessionEntry>): WorktreeRootMapping[] {
-		const view = this.viewOf(leafId, byId);
+	worktreeRootMappings(
+		leafId: string | null,
+		byId: ReadonlyMap<string, SessionEntry>,
+		links?: ReadonlyMap<string, string>,
+	): WorktreeRootMapping[] {
+		const view = this.viewOf(leafId, byId, links);
 		view.mappings ??= view.path.flatMap((entry) =>
 			entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [],
 		);
@@ -62,8 +71,12 @@ export class SessionHistoryIndex {
 	}
 
 	/** The snapshot entries on the branch to `leafId`, oldest first, which the caller must not change. */
-	worktreeSnapshots(leafId: string | null, byId: ReadonlyMap<string, SessionEntry>): readonly RecordedSnapshot[] {
-		const view = this.viewOf(leafId, byId);
+	worktreeSnapshots(
+		leafId: string | null,
+		byId: ReadonlyMap<string, SessionEntry>,
+		links?: ReadonlyMap<string, string>,
+	): readonly RecordedSnapshot[] {
+		const view = this.viewOf(leafId, byId, links);
 		view.snapshots ??= view.path.flatMap((entry) =>
 			entry.type === "worktree_snapshot" ? [{ root: entry.root, snapshotId: entry.snapshotId }] : [],
 		);
@@ -80,12 +93,17 @@ export class SessionHistoryIndex {
 		return this.scanOf(entries).name;
 	}
 
-	private viewOf(leafId: string | null, byId: ReadonlyMap<string, SessionEntry>): BranchView {
-		if (this.view?.byId !== byId || this.view.leafId !== leafId) {
+	private viewOf(
+		leafId: string | null,
+		byId: ReadonlyMap<string, SessionEntry>,
+		links: ReadonlyMap<string, string> | undefined,
+	): BranchView {
+		if (this.view?.byId !== byId || this.view.leafId !== leafId || this.view.links !== links) {
 			this.view = {
 				byId,
+				links,
 				leafId,
-				path: getBranchPath(leafId, byId),
+				path: getBranchPath(leafId, byId, links),
 				mappings: undefined,
 				snapshots: undefined,
 			};

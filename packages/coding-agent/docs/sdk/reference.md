@@ -749,12 +749,17 @@ await runtime.newSession();
 // Replace the active session with another saved session
 await runtime.switchSession("session-id");
 
+// The same, reading a compacted session from its latest compaction
+await runtime.switchSession("session-id", { history: "tail" });
+
 // Replace the active session with a fork from a specific user entry
 await runtime.fork("entry-id");
 
 // Clone the active path through a specific entry
 await runtime.fork("entry-id", { position: "at" });
 ```
+
+`runtime.switchSession(id, options?)` and `runtime.rehydrate(id, options?)` read the session's whole history unless you pass `{ history: "tail" }`. With `"tail"`, the session manager holds the branch from the latest compaction and the entries that keep the session's state; `getEntries()` and `getTree()` return only those until `await sessionManager.loadFullHistory()` reads the rest, and `session.getUserMessagesForForking()` throws `SessionHistoryNotLoadedError` until then.
 
 `SessionManager.create()`, `open()`, `continueRecent()`, `forkFrom()`, and mutations are asynchronous. `SessionManager.inMemory()` returns an explicitly memory-backed manager synchronously. Await a mutation before reading its result or starting dependent work. A resolved write is committed; a failed write rejects with the store's typed error and leaves the failed entry unpublished. New persistent sessions store their header during creation and commit setup entries immediately. There is no `flush` method. Reads remain synchronous.
 
@@ -768,7 +773,7 @@ const currentProjectSessions = await SessionManager.list(process.cwd());
 const allSessions = await SessionManager.listAll(process.cwd());
 
 // Tree traversal
-const entries = sm.getEntries();        // All entries (excludes header)
+const entries = sm.getEntries();        // All entries (excludes header); only the held ones after a { history: "tail" } open
 const tree = sm.getTree();              // Full tree structure
 const path = sm.getPath();              // Path from root to current leaf
 const leaf = sm.getLeafEntry();         // Current leaf entry

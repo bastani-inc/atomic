@@ -137,6 +137,7 @@ export interface SubagentChildRecord {
 	 * for an empty session). Model and thinking changes the child's session records after it are the child's own.
 	 */
 	readonly launchLeafId?: string | null;
+	readonly launchLeafSeq?: number;
 	/**
 	 * What the launch asked the child to do, as one short line (see {@link summarizeSubagentTask}), so a child that
 	 * cannot be restored is still told apart and can be relaunched (#4660). Absent for a resumed child, whose message
@@ -612,7 +613,7 @@ export async function endWorkflowRunStageSubagentChildren(
 	for (const stageSessionId of new Set(stageSessionIds)) {
 		if (stageSessionsInProcess.has(stageSessionId)) continue;
 		try {
-			const stageSession = await SessionManager.open(store, stageSessionId);
+			const stageSession = await SessionManager.open(store, stageSessionId, undefined, { history: "tail" });
 			for (const record of readSubagentChildRecords(stageSession.getEntries(), stageSessionId).values()) {
 				if (!endsWithRun(record)) continue;
 				const ended: SubagentChildRecord = {
