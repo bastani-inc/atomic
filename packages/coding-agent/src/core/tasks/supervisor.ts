@@ -40,6 +40,7 @@ export type ChatBoxSession = Pick<
 	| "modelRuntime"
 	| "isStreaming"
 	| "isCompacting"
+	| "compactionStartedAt"
 	| "isRetrying"
 	| "isBashRunning"
 >;

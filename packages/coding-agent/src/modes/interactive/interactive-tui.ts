@@ -13,6 +13,7 @@ import { stripOsc133Marks, stripOverlayActiveRowMarker } from "../../core/extens
 import { isLifecycleTimingEnabled, markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { copyToClipboard } from "../../utils/clipboard.js";
 import { openBrowser } from "../../utils/open-browser.ts";
+import { jumpToLatestLabel, NewMessageCounter, PINNED_PROMPT } from "./components/jump-to-latest.ts";
 import { keyDisplayText } from "./components/keybinding-hints.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
 import { compositeOverlayLine } from "./overlay-line-composite.ts";
@@ -139,6 +140,7 @@ export interface InteractiveTuiOptions {
 	 * Defaults to Atomic's clipboard implementation and platform diagnostics.
 	 */
 	copySelection?: (text: string) => Promise<boolean | string>;
+	messageCount?: () => number;
 }
 
 /** The default selection-copy route: Atomic's host clipboard write. */
@@ -382,6 +384,14 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		(this as unknown as TuiOverlayCompositingInternals).compositeLineAt = compositeOverlayLine;
 	}
 
+	readonly newMessages = new NewMessageCounter();
+	messageCount: (() => number) | undefined;
+
+	protected override doRender(): void {
+		if (this.messageCount) this.newMessages.observe(this.isFollowingOutput, this.messageCount());
+		super.doRender();
+	}
+
 	/**
 	 * Last stop before pi-tui turns the composited screen into bytes, and where
 	 * it already removes its own `CURSOR_MARKER`. Every component tree that this
@@ -622,16 +632,16 @@ export function shouldUseFullscreenTui(usesInjectedTerminal: boolean): boolean {
  * those tests a renderer with no layout and no gate.
  */
 export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScreen {
-	return new AtomicTuiAltScreen(
+	const tui: AtomicTuiAltScreen = new AtomicTuiAltScreen(
 		options.terminal ?? createProcessTerminal(),
 		options.showHardwareCursor,
 		options.logDirectory,
 		{
 			scrollToEndIndicator: () => {
-				const shortcut = keyDisplayText("tui.altScreen.bottom");
-				const label = ` ↓ Jump to latest message${shortcut ? ` · ${shortcut}` : ""} `;
+				const label = ` ${jumpToLatestLabel(tui.newMessages.count, keyDisplayText("tui.altScreen.bottom") ?? "")} `;
 				return theme.bg("selectedBg", theme.fg("text", label));
 			},
+			scrollPinnedPrompt: PINNED_PROMPT,
 			openUrl: (url) =>
 				handleUrlActivation(url, {
 					onOverlayInternalUiAction: options.onOverlayInternalUiAction,
@@ -646,6 +656,8 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 		options.onOverlayUnhandledInput,
 		options.copySelection,
 	);
+	tui.messageCount = options.messageCount;
+	return tui;
 }
 
 /** Main-screen fallback renderer, carrying the same central mark strip as the fullscreen one. */

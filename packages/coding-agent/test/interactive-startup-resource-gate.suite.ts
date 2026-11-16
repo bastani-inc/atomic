@@ -4,6 +4,7 @@ import { Container, Text } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { MarkdownTransformer } from "../src/core/extensions/types.js";
 import type { SessionEntry } from "../src/core/session-manager.js";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { bindInitialEagerSession } from "../src/modes/interactive/interactive-initial-session-binding.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import {
@@ -16,6 +17,7 @@ initTheme("dark");
 function createGateMode(): InteractiveMode {
 	const mode = Object.create(InteractiveMode.prototype) as InteractiveMode;
 	Object.assign(mode, {
+		workingRunMeter: new WorkingRunMeter(),
 		chatContainer: new StartupChatContainer(),
 		resourceDisclosureContainer: new Container(),
 		startupNoticesContainer: new Container(),

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interactive/components/working-run-meter.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-input-handling.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-process-lifecycle.ts";
@@ -73,6 +74,7 @@ function makeSubmitStub(options?: {
 		onSubmit: undefined as ((text: string) => Promise<void> | void) | undefined,
 	};
 	const host = {
+		workingRunMeter: new WorkingRunMeter(),
 		firstSubmitRecorded: true,
 		startupReplayActiveInput: undefined,
 		startupReplayInputs: [],
@@ -258,6 +260,7 @@ test("idle Alt+Enter restores the exact expanded buffer when the send fails", as
 	};
 	let turn: Promise<void> | undefined;
 	const host = {
+		workingRunMeter: new WorkingRunMeter(),
 		firstSubmitRecorded: true,
 		startupReplayActiveInput: undefined,
 		startupReplayInputs: [],
