@@ -335,12 +335,41 @@ describe("blueprint build locks (#4748)", () => {
 	});
 
 	/**
+	 * On Windows, keeps process `pid`'s id from any later process until the returned function is called, by holding a
+	 * handle to the process: Windows gives an ended process's id to another process only once no handle to it is open,
+	 * and Node closes its own as the process exits.
+	 */
+	async function keepProcessId(pid: number): Promise<() => Promise<void>> {
+		const holder = spawn(
+			join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+			[
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				`$ErrorActionPreference = 'Stop'; $p = [System.Diagnostics.Process]::GetProcessById(${pid}); $null = $p.Handle; [Console]::Out.WriteLine('held'); $null = [Console]::In.ReadLine()`,
+			],
+			{ stdio: ["pipe", "pipe", "ignore"], windowsHide: true },
+		);
+		children.push(holder);
+		await new Promise<void>((resolve, reject) => {
+			holder.stdout!.once("data", () => resolve());
+			holder.once("exit", (code) => reject(new Error(`no handle to process ${pid} could be held (exit ${code})`)));
+		});
+		return async () => {
+			holder.stdin!.end();
+			await exited(holder);
+		};
+	}
+
+	/**
 	 * A step process that started a child and then ended, as Git for Windows' `bash.exe` does when its host is killed:
 	 * the child keeps the ended step's id as its parent. Resolves the step as a lock records it, and the orphaned child.
+	 * With `keepId`, no later process is given the step's id until `releaseId` resolves.
 	 */
-	async function stepThatLeftAnOrphan(): Promise<{
+	async function stepThatLeftAnOrphan(keepId = false): Promise<{
 		step: { pid: number; start?: string; at: number };
 		orphan: number;
+		releaseId: () => Promise<void>;
 	}> {
 		const at = Date.now();
 		const step = spawn(
@@ -355,9 +384,10 @@ describe("blueprint build locks (#4748)", () => {
 			step.stdout!.once("data", (data) => resolve(Number(String(data).trim()))),
 		);
 		const recorded = { pid: step.pid!, start: processStartToken(step.pid!), at };
+		const releaseId = keepId ? await keepProcessId(step.pid!) : async () => {};
 		step.stdin!.write("\n");
 		await exited(step);
-		return { step: recorded, orphan };
+		return { step: recorded, orphan, releaseId };
 	}
 
 	const runs = (pid: number) => {
@@ -389,13 +419,16 @@ describe("blueprint build locks (#4748)", () => {
 	test.skipIf(process.platform !== "win32")(
 		"on Windows, the orphaned child of a step recorded without its start is never stopped, and the build is reported",
 		async () => {
-			const { step, orphan } = await stepThatLeftAnOrphan();
+			// The step's id is kept from later processes: with no start recorded, a later process given it could not be
+			// told from the step, and the build would rightly be reported as one that may still run (#5274).
+			const { step, orphan, releaseId } = await stepThatLeftAnOrphan(true);
 			try {
 				writeLock({ ...(await deadProcess()), steps: [{ pid: step.pid, at: step.at }] });
 				const warnings = await settle([root()], { waitMs: 300 });
 				assert.match(warnings[0] ?? "", /could not be identified/);
 				assert.equal(runs(orphan), true, "an orphan of an unproven step still runs");
 			} finally {
+				await releaseId();
 				if (runs(orphan)) process.kill(orphan);
 			}
 		},
