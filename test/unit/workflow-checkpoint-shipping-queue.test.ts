@@ -80,6 +80,7 @@ async function hostShipping(
 		readonly path?: string;
 		readonly deliver?: ShipDelivery;
 		readonly now?: () => number;
+		readonly onFallback?: (fallback: { readonly workId: string; readonly error: Error }) => void;
 	} = {},
 ) {
 	const path = options.path ?? join(directory, `shard-${shardCount++}.sqlite`);
@@ -92,6 +93,7 @@ async function hostShipping(
 		now: options.now,
 		rootStanding: () => queue.rootLease(lease, LEASE_MS),
 		deliver: options.deliver ?? ((attempt, batch) => queue.shipBatch(lease, attempt, batch)),
+		onFallback: options.onFallback,
 	});
 	closers.push(() => shipping.close());
 	return { shard, shipping, path };
@@ -785,4 +787,102 @@ test("a direct commit refused while the root renews late in the same epoch succe
 	await shipping.flush(attempt);
 	assert.deepEqual(await recorded(), [1]);
 	assert.equal(await shard.pendingCount(attempt), 0);
+});
+
+test("a retrying release of an older generation during a store outage preserves a replacement generation held on the same host (#5194)", async () => {
+	const { queue, lease, attempt, work, tool, recorded, database } = await claimedAttempt();
+	let outage = false;
+	let releaseDeliveries = 0;
+	let notifyFirstDelivery: (() => void) | undefined;
+	const firstDelivery = new Promise<void>((resolve) => {
+		notifyFirstDelivery = resolve;
+	});
+	let notifyReplacementHeld: (() => void) | undefined;
+	const replacementHeld = new Promise<void>((resolve) => {
+		notifyReplacementHeld = resolve;
+	});
+	const { shipping, shard } = await hostShipping(queue, lease, {
+		maxBatch: 64,
+		deliver: async (held, batch) => {
+			if (held.generation === attempt.generation) {
+				releaseDeliveries++;
+				if (releaseDeliveries === 1) notifyFirstDelivery?.();
+				if (releaseDeliveries >= 2) await replacementHeld;
+			}
+			if (outage) throw Object.assign(new Error("store unreachable"), { code: "ECONNREFUSED" });
+			return queue.shipBatch(lease, held, batch);
+		},
+	});
+	await shipping.hold(attempt, LEASE_MS);
+	await shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(1) }, noShared);
+	outage = true;
+	const releasing = shipping.release(attempt);
+	await firstDelivery;
+	await database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", attempt.id);
+	assert.equal(await queue.expire(lease, attempt), true);
+	const gen2 = (await queue.claim(lease, "worker-2", [work], LEASE_MS)) as PoolWork;
+	assert.equal(gen2.generation, 2);
+	await shipping.hold(gen2, LEASE_MS);
+	for (const index of [11, 12, 13]) {
+		const receipt = await shipping.commit(gen2, { kind: "checkpoint", checkpoint: tool(index) }, noShared);
+		assert.equal(receipt.local, true);
+	}
+	outage = false;
+	notifyReplacementHeld?.();
+	await releasing;
+	await shipping.flush(gen2);
+	await queue.complete(lease, gen2, { runId: work.childRunId, status: "completed", output: "done" });
+	assert.deepEqual(await recorded(), [11, 12, 13]);
+	assert.equal(await shard.pendingCount(gen2), 0);
+	assert.equal(shipping.status().pending, 0);
+});
+
+test("a local journal failure from an older generation after replacement does not let a delayed renewal hold overwrite the newer generation (#5194)", async () => {
+	const { queue, lease, attempt, work, tool, recorded, database } = await claimedAttempt();
+	const renewedGen1 = await queue.extend(lease, attempt, LEASE_MS);
+	assert.equal(renewedGen1.generation, 1);
+	const fallbacks: string[] = [];
+	const { shipping, shard } = await hostShipping(queue, lease, {
+		maxBatch: 64,
+		onFallback: (fallback) => fallbacks.push(`${fallback.workId}: ${fallback.error.message}`),
+	});
+	await shipping.hold(attempt, LEASE_MS);
+	const accept = shard.accept.bind(shard);
+	let notifyAcceptEntered: (() => void) | undefined;
+	const acceptEntered = new Promise<void>((resolve) => {
+		notifyAcceptEntered = resolve;
+	});
+	let finishStaleAccept: (() => void) | undefined;
+	const staleAcceptGate = new Promise<void>((resolve) => {
+		finishStaleAccept = resolve;
+	});
+	shard.accept = async (root, held, key, payload, at) => {
+		if (held.generation === attempt.generation) {
+			notifyAcceptEntered?.();
+			await staleAcceptGate;
+			throw Object.assign(new Error("database or disk is full"), { code: "SQLITE_FULL" });
+		}
+		return accept(root, held, key, payload, at);
+	};
+	const staleCommit = shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(1) }, () =>
+		queue.commit(lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(1) }),
+	);
+	await acceptEntered;
+	await database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", attempt.id);
+	assert.equal(await queue.expire(lease, attempt), true);
+	const gen2 = (await queue.claim(lease, "worker-2", [work], LEASE_MS)) as PoolWork;
+	assert.equal(gen2.generation, 2);
+	await shipping.hold(gen2, LEASE_MS);
+	finishStaleAccept?.();
+	await assert.rejects(staleCommit, StaleWorkLeaseError);
+	await shipping.hold(renewedGen1, LEASE_MS);
+	for (const index of [11, 12, 13]) {
+		const receipt = await shipping.commit(gen2, { kind: "checkpoint", checkpoint: tool(index) }, noShared);
+		assert.equal(receipt.local, true);
+	}
+	await shipping.flush(gen2);
+	await queue.complete(lease, gen2, { runId: work.childRunId, status: "completed", output: "done" });
+	assert.deepEqual(await recorded(), [11, 12, 13]);
+	assert.equal(await shard.pendingCount(gen2), 0);
+	assert.deepEqual(fallbacks, []);
 });

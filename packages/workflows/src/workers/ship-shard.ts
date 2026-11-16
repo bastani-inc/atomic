@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync } from "node:fs";
+import { realpath, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
 import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
@@ -107,6 +108,7 @@ export class ShipShard {
 		private readonly database: SqliteDatabase,
 		readonly root: string,
 		private readonly lock: AdvisoryLock | undefined,
+		private readonly path: string,
 		private readonly now: () => number = () => performance.now(),
 	) {}
 
@@ -144,7 +146,7 @@ export class ShipShard {
 			await database.run(
 				`DELETE FROM ship_events WHERE NOT EXISTS (SELECT 1 FROM ship_lease l WHERE l.work = ship_events.work AND l.generation = ship_events.generation)`,
 			);
-			return new ShipShard(database, root, lock, now);
+			return new ShipShard(database, root, lock, path, now);
 		} catch (error) {
 			try {
 				await database?.close();
@@ -380,14 +382,25 @@ export class ShipShard {
 		});
 	}
 
-	async close(): Promise<void> {
+	async close(options: { readonly retire?: boolean } = {}): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
 		this.leases.clear();
 		try {
+			const retire = options.retire === true && (await this.holdsNothing());
+			const location = retire ? await realpath(this.path).catch(() => undefined) : undefined;
 			await this.database.close();
+			if (location !== undefined) await removeUnusedShardFiles(location);
 		} finally {
 			this.lock?.release();
+		}
+	}
+
+	private async holdsNothing(): Promise<boolean> {
+		try {
+			return (await this.database.get(`SELECT 1 AS present FROM ship_events LIMIT 1`)) === undefined;
+		} catch {
+			return false;
 		}
 	}
 
@@ -429,4 +442,35 @@ export class ShipShard {
 			throw this.staleError(root, lease, "missing");
 		}
 	}
+}
+
+function processAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+function usedByLiveConnection(location: string): boolean {
+	let names: string[];
+	try {
+		names = readdirSync(`${location}-holders`);
+	} catch {
+		return false;
+	}
+	return names.some((name) => {
+		const pid = Number(/^(\d+)-/.exec(name)?.[1] ?? Number.NaN);
+		return Number.isSafeInteger(pid) && pid > 0 && processAlive(pid);
+	});
+}
+
+async function removeUnusedShardFiles(location: string): Promise<void> {
+	if (usedByLiveConnection(location)) return;
+	for (const suffix of ["-wal", "-shm", "-journal", ""])
+		await rm(`${location}${suffix}`, { force: true }).catch(() => {});
+	for (const suffix of ["-holders", "-writers", "-wakes"])
+		await rm(`${location}${suffix}`, { recursive: true, force: true }).catch(() => {});
+	await rmdir(dirname(location)).catch(() => {});
 }
