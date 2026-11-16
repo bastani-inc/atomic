@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Replacing a submission echo with a prompt rewritten by an `input` hook, or inserting a custom message ahead of a streaming reply, now touches only the tail of the chat container instead of scanning the whole transcript, keeping prompt swaps instantaneous in long sessions ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
+
 ## [0.9.88] - 2026-11-16
 
 Atomic runs on its own libraries, workflows scale out to worker fleets on libSQL or PostgreSQL, and every screen shares one set of keys.

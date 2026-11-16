@@ -33,10 +33,11 @@ export class StartupChatContainer extends Container {
 	}
 
 	override removeChild(component: Component): void {
+		const index = this.children.lastIndexOf(component);
+		if (index === -1) return;
 		const counted = this.current();
-		const length = this.children.length;
-		super.removeChild(component);
-		if (counted && this.children.length < length) this.recount(counted, this.isCounted(component) ? -1 : 0);
+		this.children.splice(index, 1);
+		if (counted) this.recount(counted, this.isCounted(component) ? -1 : 0);
 	}
 
 	private current(): { children: Component[]; length: number; count: number } | undefined {
