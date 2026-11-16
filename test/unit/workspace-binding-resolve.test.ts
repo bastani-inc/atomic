@@ -1389,7 +1389,7 @@ describe("interrupted worktree additions (#3109)", () => {
 		const adminDir = resolvePath(interruptedWorktree(repo, path, "feat/busy", WORKTREE_ADDING_REASON));
 		const adder = await liveProcess();
 		onTestFinished(() => stopProcess(adder));
-		onTestFinished(await keepProcessPid(adder.pid!));
+		onTestFinished(await keepProcessPid(adder));
 		try {
 			recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
 			const { result: error, commands } = await countGitCommands(() =>
@@ -1593,7 +1593,7 @@ describe("interrupted worktree additions (#3109)", () => {
 		interruptedWorktree(repo, path, "feat/wait", WORKTREE_ADDING_REASON);
 		const adder = await liveProcess();
 		onTestFinished(() => stopProcess(adder));
-		onTestFinished(await keepProcessPid(adder.pid!));
+		onTestFinished(await keepProcessPid(adder));
 		const restoreWait = setWorktreeAdditionWait({ probes: 1_000, intervalMs: 10 });
 		try {
 			recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
@@ -2061,7 +2061,7 @@ describe("bindings racing an addition or its repair (#4429)", () => {
 		writeFileSync(join(path, "notes.txt"), "kept\n");
 		const adder = await liveProcess();
 		onTestFinished(() => stopProcess(adder));
-		onTestFinished(await keepProcessPid(adder.pid!));
+		onTestFinished(await keepProcessPid(adder));
 		try {
 			recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
 			const busy = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/exited" })));

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { statSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
@@ -570,9 +572,9 @@ describe("socket replacement lock (#3505)", () => {
 	test("a lock still unreadable only briefly is waited on, not taken over (#5132)", async () => {
 		const path = lockPath();
 		const publish = `${path}.publish`;
-		const writer = spawnProcess(
+		const writer = spawn(
+			process.execPath,
 			[
-				process.execPath,
 				"-e",
 				`const { existsSync, openSync, writeSync, closeSync } = require("node:fs");
 				const fd = openSync(${JSON.stringify(path)}, "wx");
@@ -584,14 +586,16 @@ describe("socket replacement lock (#3505)", () => {
 				}, ${POLL_INTERVAL_MS});
 				setInterval(() => {}, 1000);`,
 			],
-			{ stdout: "ignore" },
+			{ stdio: "ignore", windowsHide: true },
 		);
+		const writerExited = once(writer, "exit");
 		onTestFinished(async () => {
 			writer.kill();
-			await writer.exited;
+			await writerExited;
 		});
+		await once(writer, "spawn");
 		assert.ok(writer.pid !== undefined);
-		onTestFinished(await keepProcessPid(writer.pid));
+		onTestFinished(await keepProcessPid(writer));
 		while (!fileExistsSync(path)) await sleep(POLL_INTERVAL_MS);
 		let waits = 0;
 		let noticed!: () => void;
@@ -613,7 +617,7 @@ describe("socket replacement lock (#3505)", () => {
 		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), writer.pid, "the writer's lock is left in place");
 
 		writer.kill();
-		await writer.exited;
+		await writerExited;
 		const release = await acquiring;
 		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), process.pid, "once the writer is gone it is taken");
 		release();

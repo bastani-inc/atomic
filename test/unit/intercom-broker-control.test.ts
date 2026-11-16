@@ -294,7 +294,7 @@ test(
 		const fixture = fixtureFor(agentDirectory("idle"));
 		const broker = await startBroker(fixture);
 		assert.ok(broker.pid !== undefined);
-		onTestFinished(await keepProcessPid(broker.pid));
+		onTestFinished(await keepProcessPid(broker));
 		const outcome = await restartIntercomBroker(fixture.agentDir);
 		assert.deepEqual(outcome, { status: "stopped", previous: { pid: broker.pid, sessions: 0 } });
 		await exited(broker);
@@ -311,7 +311,7 @@ test(
 		const fixture = fixtureFor(agentDirectory("restart"));
 		const before = await startBroker(fixture);
 		assert.ok(before.pid !== undefined);
-		onTestFinished(await keepProcessPid(before.pid));
+		onTestFinished(await keepProcessPid(before));
 		const session = await connectSession(fixture.agentDir, "reconnecting");
 		// A real session reconnects through `spawnBrokerIfNeeded` once its broker is gone; this one starts the broker itself.
 		let after: Promise<ChildProcess> | undefined;
@@ -372,7 +372,7 @@ test(
 		const fixture = fixtureFor(agentDir);
 		fixture.trackBroker(legacy);
 		assert.ok(legacy.pid !== undefined);
-		onTestFinished(await keepProcessPid(legacy.pid));
+		onTestFinished(await keepProcessPid(legacy));
 		await vi.waitFor(
 			async () => {
 				fixture.assertRunning();
