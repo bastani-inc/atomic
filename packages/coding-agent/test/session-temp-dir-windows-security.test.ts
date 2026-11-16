@@ -27,6 +27,8 @@ import {
 } from "../src/core/tools/windows-directory-security.ts";
 
 const isWindows = process.platform === "win32";
+/** New session temp directories created one after another, as a busy process's sessions and subagents create them. */
+const SESSION_BURST = 20;
 
 const CURRENT_SID = "S-1-5-21-1000000000-2000000000-3000000000-1001";
 const FOREIGN_SID = "S-1-5-21-4000000000-5000000000-6000000000-1002";
@@ -315,6 +317,22 @@ describe("windows session temp root verification", () => {
 			"repeat creations of unchanged directories must not re-run the subprocess",
 		);
 	});
+
+	it.skipIf(!isWindows)(
+		"a burst of new session temp directories reads the private root's descriptor once, not once per directory (#4640)",
+		() => {
+			const reads: string[] = [];
+			setWindowsDirectorySecurityReaderForTesting((path) => {
+				reads.push(path);
+				return readWindowsDirectorySecurity(path);
+			});
+
+			for (let session = 0; session < SESSION_BURST; session++) getSessionTempDir(`burst-${session}`);
+
+			// Each read is a PowerShell subprocess that holds the main thread; on a loaded host each took seconds.
+			assert.deepEqual(reads, [getTempRootDir()], "only the private root is read, once");
+		},
+	);
 
 	it.skipIf(!isWindows)("re-verifies a directory swapped underneath a verified path", () => {
 		const dir = getSessionTempDir("swap-detect");
