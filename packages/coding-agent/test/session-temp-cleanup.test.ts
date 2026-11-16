@@ -28,6 +28,7 @@ import {
 	CLEANUP_CONTROL_SUBDIR,
 	CLEANUP_LOCK_FILE,
 	CLEANUP_MARKER_FILE,
+	deferredSessionTempCleanupSettledForTesting,
 	getCleanupControlDir,
 	resetSessionTempCleanupScheduleForTesting,
 	runSessionTempCleanup,
@@ -735,6 +736,7 @@ describe("scheduleSessionTempCleanup", () => {
 		assert.equal(vi.getTimerCount(), 1);
 
 		await vi.advanceTimersByTimeAsync(SESSION_TEMP_CLEANUP_DELAY_MS);
+		await deferredSessionTempCleanupSettledForTesting();
 		assert.equal(existsSync(first.toolResults), false);
 
 		const second = makeStaleCustomSession("second-late-root");
@@ -742,6 +744,7 @@ describe("scheduleSessionTempCleanup", () => {
 		assert.equal(vi.getTimerCount(), 1, "a later root gets a new deferred sweep");
 
 		await vi.advanceTimersByTimeAsync(SESSION_TEMP_CLEANUP_DELAY_MS);
+		await deferredSessionTempCleanupSettledForTesting();
 		assert.equal(existsSync(second.toolResults), false);
 	});
 
@@ -754,6 +757,7 @@ describe("scheduleSessionTempCleanup", () => {
 		assert.equal(vi.getTimerCount(), 1);
 
 		await vi.advanceTimersByTimeAsync(SESSION_TEMP_CLEANUP_DELAY_MS);
+		await deferredSessionTempCleanupSettledForTesting();
 		assert.equal(existsSync(first.toolResults), false);
 		assert.equal(existsSync(second.toolResults), false);
 	});

@@ -3,10 +3,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as wait } from "node:timers/promises";
 import { afterEach, test, vi } from "vitest";
 import {
 	CLEANUP_MARKER_FILE,
+	deferredSessionTempCleanupSettledForTesting,
 	resetSessionTempCleanupScheduleForTesting,
 	SESSION_TEMP_CLEANUP_DELAY_MS,
 	scheduleSessionTempCleanup,
@@ -17,9 +17,8 @@ import {
 	setWindowsDirectorySecurityReaderForTesting,
 } from "../src/core/tools/windows-directory-security.ts";
 
-/** How long the sweep may take to settle: its one PowerShell descriptor read is bounded by 30 s per attempt. */
-const DEFERRED_SWEEP_SETTLED_MS = 75_000;
-const DEFERRED_SWEEP_TEST_TIMEOUT_MS = DEFERRED_SWEEP_SETTLED_MS + 10_000;
+/** A sweep that reads one real PowerShell descriptor: each attempt is bounded by 30 s, and a loaded host takes them all. */
+const DEFERRED_SWEEP_TEST_TIMEOUT_MS = 90_000;
 
 const sandboxes: string[] = [];
 
@@ -68,12 +67,10 @@ test.skipIf(process.platform !== "win32")(
 		scheduleSessionTempCleanup({ sessionsRoots: [] });
 		vi.advanceTimersByTime(SESSION_TEMP_CLEANUP_DELAY_MS);
 		vi.useRealTimers();
-		const marker = join(root, CLEANUP_MARKER_FILE);
-		const deadline = Date.now() + DEFERRED_SWEEP_SETTLED_MS;
-		while (!existsSync(marker) && Date.now() < deadline) await wait(20);
+		await deferredSessionTempCleanupSettledForTesting();
 
 		assert.deepEqual(heldReads, [], "the sweep read no descriptor on the main thread");
-		assert.ok(existsSync(marker), "the sweep ran once the temp root was verified");
+		assert.ok(existsSync(join(root, CLEANUP_MARKER_FILE)), "the sweep ran once the temp root was verified");
 	},
 	DEFERRED_SWEEP_TEST_TIMEOUT_MS,
 );
