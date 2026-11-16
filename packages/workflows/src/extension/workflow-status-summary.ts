@@ -11,7 +11,7 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
  * cross-ref:
  *  - src/extension/workflow-tool.ts        `case "status"` (listing path)
  *  - src/extension/workflow-tool-content.ts agent-visible text rendering
- *  - src/extension/workflow-targets.ts      topLevelExpandedSnapshots()
+ *  - src/extension/workflow-targets.ts      prepareTopLevelExpandedSnapshots()
  */
 
 import {

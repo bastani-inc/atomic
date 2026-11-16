@@ -69,7 +69,6 @@ function statusGlyph(status: ToolNodeStatus): string | undefined {
 		case "cached":
 			return "↻";
 		case "cancelled":
-			// Stopped (◼) and failed (✗) never share a glyph.
 			return "◼";
 		default:
 			return "○";
@@ -141,7 +140,7 @@ function resultValue(tool: ToolNodeSnapshot): ToolPayloadValue | undefined {
 
 function resultText(tool: ToolNodeSnapshot, limit: number): { text: string; error: boolean } {
 	if (tool.error !== undefined) {
-		return { text: boundedToolText(sanitizeToolDisplayText(tool.error), limit), error: true };
+		return { text: boundedToolText(sanitizeToolDisplayText(boundedToolText(tool.error, limit)), limit), error: true };
 	}
 	return { text: boundedSerializedValue(resultValue(tool), limit), error: false };
 }
@@ -327,7 +326,7 @@ function renderMessageLines(
 		rows.push(...wrappedBody);
 		if (tool.source !== undefined && tool.source.length > 0) {
 			rows.push(
-				...wrapFieldValue(boundedToolText(sanitizeToolDisplayText(tool.source)), inner).map(
+				...wrapFieldValue(boundedToolText(sanitizeToolDisplayText(boundedToolText(tool.source))), inner).map(
 					(line) => `${pad}${styledMuted(line, theme)}`,
 				),
 			);
