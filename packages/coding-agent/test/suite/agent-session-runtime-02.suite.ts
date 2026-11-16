@@ -209,6 +209,7 @@ describe("AgentSessionRuntime characterization", () => {
 			agentDir: tempDir,
 			authStorage: otherAuthStorage,
 			resourceLoaderOptions: {
+				builtinPackagePaths: [],
 				extensionFactories: [
 					(pi: ExtensionAPI) => {
 						pi.registerProvider(faux.getModel().provider, {
@@ -269,5 +270,6 @@ describe("AgentSessionRuntime characterization", () => {
 
 		expect(runtime.session.model?.id).toBe("faux-2");
 		expect(runtime.session.thinkingLevel).toBe("off");
+		assert.deepEqual(packageExtensionDirs(otherRuntime.session), ["intercom"]);
 	});
 });
