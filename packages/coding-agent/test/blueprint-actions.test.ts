@@ -18,6 +18,7 @@ import { basename, delimiter, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
 import {
 	closedObject,
 	type ExpressionContext,
@@ -111,7 +112,7 @@ beforeEach(() => {
 afterEach(() => {
 	if (previousBaseUrl === undefined) delete process.env[ACTIONS_GITHUB_BASE_URL_ENV];
 	else process.env[ACTIONS_GITHUB_BASE_URL_ENV] = previousBaseUrl;
-	rmSync(fixture.root, { recursive: true, force: true, maxRetries: 3 });
+	removeTestDirectory(fixture.root, { retries: 3, retryDelayMs: 100 });
 });
 
 function expression(source: string): string {

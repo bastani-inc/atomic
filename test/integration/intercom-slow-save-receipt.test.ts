@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,6 +13,7 @@ import {
 	SEND_RESPONSE_TIMEOUT_MS,
 } from "../../packages/intercom/retry-policy.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
@@ -64,7 +65,7 @@ afterAll(async () => {
 	await stopBroker();
 	if (originalAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
-	rmSync(agentDir, { recursive: true, force: true, maxRetries: 5 });
+	removeTestDirectory(agentDir, { retries: 5, retryDelayMs: 100 });
 });
 
 async function client(name: string, acknowledgesReceipt: boolean) {
