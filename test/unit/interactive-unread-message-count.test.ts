@@ -283,3 +283,51 @@ test("main chat jump-to-latest pill retracts a discarded submission echo while s
 		else process.env.TERM = previousTerm;
 	}
 });
+
+test("discarding an already-read submission echo preserves later unread arrivals (#5243)", () => {
+	initTheme("dark");
+	const previousTerm = process.env.TERM;
+	const previousKeybindings = getKeybindings();
+	process.env.TERM = "xterm-256color";
+	const terminal = new RecordingTerminal();
+	terminal.columns = 80;
+	terminal.rows = 10;
+	const mode = new InteractiveMode(createTestRuntimeHost(), { terminal });
+	setKeybindings(new KeybindingsManager({ "tui.altScreen.bottom": "ctrl+end" }));
+	const tui = mode.ui as unknown as TuiAltScreen;
+	const transcript = new ScrollView(mode.documentContainer, { follow: "end", primary: true });
+	mode.transcriptScrollView = transcript;
+	tui.setLayoutRoot(transcript);
+	releaseStartupChatOutput(mode);
+	tui.start();
+	try {
+		for (let index = 1; index <= 12; index += 1) {
+			mode.addMessageToChat({ role: "user", content: `Prompt line ${index}`, timestamp: index });
+		}
+		mode.renderDeferredUserInput("Earlier echo");
+		tui.requestRender();
+		tui.renderNow();
+		transcript.scrollTo(0);
+		tui.requestRender();
+		tui.renderNow();
+		assert.match(tui.getScreenLines().join("\n"), /↓ jump to bottom · ctrl\+end/);
+
+		for (let index = 1; index <= 14; index += 1) {
+			mode.addMessageToChat({ role: "user", content: `Unread message ${index}`, timestamp: 100 + index });
+		}
+		tui.requestRender();
+		tui.renderNow();
+		assert.match(tui.getScreenLines().join("\n"), /↓ 14 new messages · ctrl\+end/);
+
+		mode.discardDeferredRenderedUserInput("Earlier echo");
+		mode.addMessageToChat({ role: "user", content: "Next unpainted arrival", timestamp: 200 });
+		tui.requestRender();
+		tui.renderNow();
+		assert.match(tui.getScreenLines().join("\n"), /↓ 15 new messages · ctrl\+end/);
+	} finally {
+		tui.stop();
+		setKeybindings(previousKeybindings);
+		if (previousTerm === undefined) delete process.env.TERM;
+		else process.env.TERM = previousTerm;
+	}
+});

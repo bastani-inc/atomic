@@ -14,7 +14,7 @@ import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
 import { getEngineSessionStats } from "../../interactive-engine/engine-session-stats.js";
 import { theme } from "../theme/theme.js";
-import { keyText } from "./keybinding-hints.ts";
+import { keyText } from "./keybinding-hints.js";
 import { renderTaskFooter } from "./task-list.js";
 
 export interface FooterRenderStyle {

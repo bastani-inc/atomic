@@ -185,18 +185,24 @@ InteractiveModeBase.prototype.discardDeferredRenderedUserInput = function (
 	}
 	if (!componentsToRemove) return;
 	const renderer = this.ui as AltScreenMessageCounterHost;
-	if (renderer.isFollowingOutput === false && this.chatContainer.children.length > 0) {
-		renderer.newMessages?.observe(false, this.chatContainer.children.filter(isChatMessageComponent).length);
+	const messages = this.chatContainer.children.filter(isChatMessageComponent);
+	if (renderer.isFollowingOutput === false) {
+		renderer.newMessages?.observe(false, messages.length);
 	}
+	const unreadCount = renderer.isFollowingOutput === false ? (renderer.newMessages?.count ?? 0) : 0;
+	const firstUnreadMessage = Math.max(0, messages.length - unreadCount);
 	let removedMessages = 0;
+	let removedUnreadMessages = 0;
 	for (const component of componentsToRemove) {
-		const attached = this.chatContainer.children.includes(component);
+		const messageIndex = messages.indexOf(component);
 		this.chatContainer.removeChild(component);
-		if (attached && isChatMessageComponent(component)) {
+		if (messageIndex >= 0) {
 			removedMessages += 1;
+			if (messageIndex >= firstUnreadMessage) removedUnreadMessages += 1;
 		}
 	}
-	renderer.newMessages?.retract(removedMessages);
+	renderer.newMessages?.retract(removedUnreadMessages);
+	renderer.newMessages?.observe(renderer.isFollowingOutput !== false, messages.length - removedMessages);
 	this.updatePendingMessagesDisplay();
 	this.ui.requestRender();
 };
