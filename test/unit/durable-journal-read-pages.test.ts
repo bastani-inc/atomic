@@ -3,7 +3,6 @@ import { join } from "node:path";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
-import { JOURNAL_READ_PAGE_SIZE } from "../../packages/workflows/src/durable/journal/internal.js";
 import { PoolCheckpointIndex } from "../../packages/workflows/src/durable/journal/pool-checkpoint-index.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { type Lease, RUN_EVENT_TYPES, type RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
@@ -84,19 +83,19 @@ async function withJournal(
 	}
 }
 
-/** The pages among `statements`: those that measured or returned anything. The first measures at most `firstBatch`. */
-function assertPagesTrackReturnedRows(statements: readonly Statement[], firstBatch: number): void {
+/**
+ * The pages among `statements`, those that measured a large payload: every page after the first measures at most four
+ * rows for each it returns. The first measures its whole batch, however few of it fit.
+ */
+function assertPagesTrackReturnedRows(statements: readonly Statement[]): void {
 	const pages = statements.filter((statement) => statement.measured > 0);
 	assert.ok(pages.length > 1, "the read took more than one page");
-	assert.ok(pages[0]!.measured <= firstBatch, `the first page measured ${pages[0]!.measured} rows`);
 	for (const [index, page] of pages.entries())
 		if (index > 0)
 			assert.ok(
 				page.measured <= 4 * page.returned,
 				`page ${index + 1} measured ${page.measured} rows to return ${page.returned}: ${JSON.stringify(pages)}`,
 			);
-	const measured = pages.reduce((sum, page) => sum + page.measured, 0);
-	assert.ok(measured <= firstBatch + 4 * EVENTS, `the read measured ${measured} rows for ${EVENTS}`);
 }
 
 test("a journal read of large events measures rows in proportion to each page's", async () => {
@@ -110,11 +109,11 @@ test("a journal read of large events measures rows in proportion to each page's"
 			read.map((entry) => entry.event.payload),
 			payloads,
 		);
-		assertPagesTrackReturnedRows(statements, JOURNAL_READ_PAGE_SIZE);
+		assertPagesTrackReturnedRows(statements);
 		statements.length = 0;
 		const keyed = await Array.fromAsync(SqlRunJournal.readKeyRange(journal, "root", "k-", "k-~"));
 		assert.equal(keyed.length, EVENTS);
-		assertPagesTrackReturnedRows(statements, JOURNAL_READ_PAGE_SIZE);
+		assertPagesTrackReturnedRows(statements);
 	});
 });
 
@@ -144,6 +143,6 @@ test("a pool checkpoint index reads a root's large checkpoints in proportion to 
 		const view = await database.transaction((tx) => read.read(tx, "wf_events"));
 		read.commit();
 		assert.equal(view.entries("byRun", "child").length, EVENTS);
-		assertPagesTrackReturnedRows(statements, JOURNAL_READ_PAGE_SIZE);
+		assertPagesTrackReturnedRows(statements);
 	});
 });

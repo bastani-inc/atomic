@@ -8,6 +8,7 @@ import {
 } from "@bastani/atomic/storage";
 import { durableStageGroupKey } from "../stage-topology-validation.js";
 import type { DurableCheckpoint, DurableStageCheckpoint } from "../types.js";
+import { nextReadBatch } from "./internal.js";
 import { type JournalEntry, RUN_EVENT_TYPES } from "./types.js";
 
 /** Every recorded checkpoint pool validation reads; UI checkpoints are never consulted. */
@@ -164,16 +165,24 @@ export class PoolCheckpointRead implements PoolCheckpointSource {
  */
 const CHECKPOINT_PAGE_BYTES = 2 * 1024 * 1024;
 
-/**
- * The root's checkpoints after `from` up to `to`, in pages of about {@link CHECKPOINT_PAGE_BYTES}: a host that has
- * not read the root yet, as one that took over a child, reads them all, which in one response a server refuses
- * (#4768). Each page holds at least one checkpoint, however large.
- */
 /** The event chunks table beside the events table `events`, as `runJournalTables` names both under one prefix. */
 function eventChunksTable(events: string): string {
 	return `${events.slice(0, -"events".length)}event_chunks`;
 }
 
+/**
+ * How many checkpoints the first page of {@link readCheckpointPages} fetches, and the most any page does: the batch a
+ * page measures to cut itself at {@link CHECKPOINT_PAGE_BYTES} follows what the pages hold ({@link nextReadBatch}).
+ */
+const CHECKPOINT_READ_BATCH = { first: 1024, max: 8192 } as const;
+
+/**
+ * The root's checkpoints after `from` up to `to`, in pages of about {@link CHECKPOINT_PAGE_BYTES}: a host that has
+ * not read the root yet, as one that took over a child, reads them all, which in one response a server refuses
+ * (#4768). Each page holds at least one checkpoint, however large. Each statement fetches the next batch of
+ * checkpoints by sequence and measures only those: measuring every remaining one for each page read a root's large
+ * checkpoints in time quadratic in their number.
+ */
 async function readCheckpointPages(
 	tx: SqliteExecutor,
 	events: string,
@@ -181,24 +190,40 @@ async function readCheckpointPages(
 	from: number,
 	to: number,
 ): Promise<(SqliteRow & { seq: number; key: string | null; payload: string })[]> {
-	type Row = SqliteRow & { run_id: string; seq: number; key: string | null; payload: string; chunks: number };
+	type Row = SqliteRow & {
+		run_id: string;
+		seq: number;
+		key: string | null;
+		payload: string;
+		chunks: number;
+		fetched: number | bigint;
+	};
 	const rows: Row[] = [];
-	for (let after = from; after < to; ) {
+	for (let after = from, limit: number = CHECKPOINT_READ_BATCH.first; after < to; ) {
 		// A checkpoint stored in chunks counts its stub here, and its chunks are read one statement each (#4965).
 		const page = await tx.all<Row>(
-			`SELECT run_id, seq, key, payload, chunks FROM (
-				SELECT run_id, seq, key, payload, chunks, SUM(length(payload)) OVER (ORDER BY seq) - length(payload) AS before
-				FROM ${events} WHERE run_id = ? AND seq > ? AND seq <= ? AND type = ?
-			) WHERE before < ? ORDER BY seq`,
+			`SELECT run_id, seq, key, payload, chunks, fetched FROM (
+				SELECT run_id, seq, key, payload, chunks, COUNT(*) OVER () AS fetched,
+					SUM(length(payload)) OVER (ORDER BY seq) - length(payload) AS before
+				FROM (
+					SELECT run_id, seq, key, payload, chunks FROM ${events}
+					WHERE run_id = ? AND seq > ? AND seq <= ? AND type = ? ORDER BY seq LIMIT ?
+				) AS batch
+			) AS sized WHERE before < ? ORDER BY seq`,
 			root,
 			after,
 			to,
 			RUN_EVENT_TYPES.checkpointRecorded,
+			limit,
 			CHECKPOINT_PAGE_BYTES,
 		);
 		if (page.length === 0) break;
 		rows.push(...(await withJournalPayloads(tx, eventChunksTable(events), page)));
 		after = Number(page.at(-1)!.seq);
+		const fetched = Number(page[0]!.fetched);
+		// The batch held every checkpoint left up to `to`, and the page all of them.
+		if (fetched < limit && page.length === fetched) break;
+		limit = nextReadBatch(limit, fetched, page.length, CHECKPOINT_READ_BATCH.max);
 	}
 	return rows;
 }
