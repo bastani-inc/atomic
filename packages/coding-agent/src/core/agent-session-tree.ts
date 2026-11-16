@@ -4,6 +4,7 @@ import { collectEntriesForBranchSummary, generateBranchSummary } from "./compact
 import type { SessionBeforeTreeResult, TreePreparation } from "./extensions/index.js";
 import { assertSessionOpen } from "./session-lifecycle-work.ts";
 import type { BranchSummaryEntry } from "./session-manager.ts";
+import { SessionHistoryNotLoadedError } from "./session-manager-errors.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 
 export async function setSessionName(this: AgentSession, name: string): Promise<void> {
@@ -265,6 +266,8 @@ export async function navigateTree(
  */
 
 export function getUserMessagesForForking(this: AgentSession): Array<{ entryId: string; text: string }> {
+	if (!this.sessionManager.hasFullHistory())
+		throw new SessionHistoryNotLoadedError(this.sessionManager.getSessionId());
 	const entries = this.sessionManager.getEntries();
 	const result: Array<{ entryId: string; text: string }> = [];
 

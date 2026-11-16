@@ -758,6 +758,7 @@ export {
 	type SessionEntryBase,
 	SessionEntryError,
 	type SessionHeader,
+	SessionHistoryNotLoadedError,
 	SessionIdError,
 	type SessionInfo,
 	type SessionInfoEntry,

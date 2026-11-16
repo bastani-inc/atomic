@@ -543,7 +543,8 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `getLastSeq()` - The session's last stored sequence, including entries not in memory
 - `getEntrySeq(id)` - A held entry's sequence, or `undefined` when it is not held
 - `findEntrySeq(id)` - Look up an entry's sequence in the store without loading the earlier transcript
-- `getSessionRecoveryState()` - Persisted admission keys and delivered Intercom message ids used to prevent duplicate deliveries after resume
+- `forEachStoredEntry(fromSeq, visit)` - Visit every stored entry from `fromSeq` on in store order, reading the ones a `{ history: "tail" }` manager does not hold in pages and keeping none of them. Resolves with the last sequence visited
+- `getSessionRecoveryState()` - Persisted admission keys, delivered Intercom message ids and pooled workflow delivery ids (`deliveryOpIds`) used to prevent duplicate deliveries after resume
 - `getHeader()` - Session header metadata
 - `getSessionName()` - Get display name from latest session_info entry (`undefined` when cleared or never named)
 - `getSessionNameState()` - Get the name state: `{ hasName: false }` when never named, `{ hasName: true }` when the latest entry cleared it, `{ hasName: true, name }` when currently named

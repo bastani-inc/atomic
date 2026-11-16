@@ -527,6 +527,7 @@ export function createRpcCommandHandler({
 				const result = await runtimeHost.switchSession(command.sessionId, {
 					cwdOverride: command.cwdOverride,
 					sessionDirectory: command.sessionDirectory,
+					history: "tail",
 				});
 				if (!result.cancelled) {
 					await rebindSession();

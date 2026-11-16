@@ -307,6 +307,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			) {
 				await super.switchSession(state.sessionId, {
 					sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+					history: "tail",
 				});
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
@@ -645,6 +646,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			await super.switchSession(sessionId, {
 				cwdOverride: options?.cwdOverride,
 				sessionDirectory: options?.sessionDirectory,
+				history: options?.history ?? "full",
 			});
 			await this.initializeFromEngine();
 			if (options?.withSession) await options.withSession(this.session.createReplacedSessionContext());
@@ -659,6 +661,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+				history: "tail",
 			});
 		else await this.resetUnpersistedSessionView();
 		await this.initializeFromEngine();
@@ -678,6 +681,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			await super.switchSession(state.sessionId, {
 				cwdOverride,
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+				history: "tail",
 			});
 		await this.initializeFromEngine();
 		return { cancelled: false };
@@ -701,6 +705,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+				history: "tail",
 			});
 		await this.initializeFromEngine();
 		return { cancelled: false, selectedText };

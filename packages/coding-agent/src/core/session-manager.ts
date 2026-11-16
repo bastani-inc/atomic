@@ -5,6 +5,7 @@ export {
 	SessionAlreadyOpenError,
 	SessionDeletedError,
 	SessionEntryError,
+	SessionHistoryNotLoadedError,
 	SessionIdError,
 	SessionOpenElsewhereError,
 } from "./session-manager-errors.js";
