@@ -53,6 +53,7 @@ interface ActiveComponent {
 	terminal: RemoteTerminal;
 	tui: TUI;
 	widgetKey?: string;
+	lastRequestId?: number;
 	/**
 	 * Overlay visibility as last driven through the remote OverlayHandle.
 	 * Hidden components are skipped by the extension-level `requestRender()`
@@ -145,6 +146,31 @@ function jsonResult(value: object | boolean | null | number | string | undefined
 	return decoded;
 }
 
+function renderError(error: unknown): Error {
+	try {
+		return new Error(error instanceof Error ? String(error.message) : String(error));
+	} catch {
+		return new Error("Remote component render failed.");
+	}
+}
+
+class RemoteCustomTui extends TuiMainScreen {
+	private readonly onRenderError: (error: unknown) => void;
+
+	constructor(terminal: Terminal, onRenderError: (error: unknown) => void) {
+		super(terminal, undefined, getAgentDir());
+		this.onRenderError = onRenderError;
+	}
+
+	protected override doRender(): void {
+		try {
+			super.doRender();
+		} catch (error) {
+			this.onRenderError(error);
+		}
+	}
+}
+
 export class EngineCustomUiService {
 	private readonly widgetIds = new Map<string, string>();
 	private readonly active = new Map<string, ActiveComponent>();
@@ -177,7 +203,9 @@ export class EngineCustomUiService {
 		const componentId = `remote_widget_${++this.nextId}`;
 		this.widgetIds.set(key, componentId);
 		const terminal = new RemoteTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
-		const tui = new BackgroundRenderTui(terminal, this.backgroundRenders, `check:${componentId}`);
+		const tui = new BackgroundRenderTui(terminal, this.backgroundRenders, `check:${componentId}`, (error) =>
+			this.sendComponentRenderFailure(componentId, error),
+		);
 		ensurePngTranscoder(() => {
 			tui.invalidate();
 			tui.requestRender();
@@ -186,6 +214,7 @@ export class EngineCustomUiService {
 			.then((component) => {
 				if (this.widgetIds.get(key) !== componentId) {
 					component.dispose?.();
+					tui.stop();
 					return;
 				}
 				tui.addChild(component);
@@ -206,13 +235,14 @@ export class EngineCustomUiService {
 					...(scroll ? { widgetScroll: scroll } : {}),
 				});
 			})
-			.catch((error: Error) => {
+			.catch((error: unknown) => {
 				if (this.widgetIds.get(key) === componentId) this.widgetIds.delete(key);
+				tui.stop();
 				this.send({
 					type: "engine_custom_frame",
 					componentId,
 					requestId: 0,
-					lines: [`Widget ${key} failed: ${error.message}`],
+					lines: [`Widget ${key} failed: ${renderError(error).message}`],
 				});
 			});
 	}
@@ -250,7 +280,7 @@ export class EngineCustomUiService {
 			(control) => this.send({ type: "engine_custom_terminal", componentId, control }),
 			(requestId, text) => this.send({ type: "engine_custom_copy", componentId, requestId, text }),
 		);
-		const tui = new TuiMainScreen(terminal, undefined, getAgentDir());
+		const tui = new RemoteCustomTui(terminal, (error) => this.sendComponentRenderFailure(componentId, error));
 		ensurePngTranscoder(() => {
 			tui.invalidate();
 			tui.requestRender();
@@ -352,6 +382,7 @@ export class EngineCustomUiService {
 				record.terminal.columns = Math.max(1, command.width);
 				record.terminal.rows = Math.max(1, command.rows);
 				const { componentId, requestId } = command;
+				record.lastRequestId = requestId;
 				if (record.widgetKey !== undefined) {
 					this.backgroundRenders.schedule(`frame:${componentId}`, () =>
 						this.renderWidgetFrame(componentId, requestId, record),
@@ -362,7 +393,7 @@ export class EngineCustomUiService {
 					record.component.render(record.terminal.columns),
 				)
 					.then((lines) => this.sendFrame(componentId, requestId, record, lines))
-					.catch((error: Error) => this.sendRenderFailure(componentId, requestId, error));
+					.catch((error: unknown) => this.sendRenderFailure(componentId, requestId, error));
 				break;
 			}
 			case "engine_custom_input":
@@ -427,7 +458,7 @@ export class EngineCustomUiService {
 			);
 			this.sendFrame(componentId, requestId, record, lines);
 		} catch (error) {
-			this.sendRenderFailure(componentId, requestId, error instanceof Error ? error : new Error(String(error)));
+			this.sendRenderFailure(componentId, requestId, error);
 		}
 	}
 
@@ -442,12 +473,18 @@ export class EngineCustomUiService {
 		});
 	}
 
-	private sendRenderFailure(componentId: string, requestId: number, error: Error): void {
+	private sendComponentRenderFailure(componentId: string, error: unknown): void {
+		const record = this.active.get(componentId);
+		if (!record) return;
+		this.sendRenderFailure(componentId, record.lastRequestId ?? 0, error);
+	}
+
+	private sendRenderFailure(componentId: string, requestId: number, error: unknown): void {
 		this.send({
 			type: "engine_custom_frame",
 			componentId,
 			requestId,
-			lines: [`Remote component render failed: ${error.message}`],
+			lines: [`Remote component render failed: ${renderError(error).message}`],
 		});
 	}
 	private notifyWidgetRelease(key: string): void {

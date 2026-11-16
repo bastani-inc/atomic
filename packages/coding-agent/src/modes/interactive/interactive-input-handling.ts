@@ -1,6 +1,7 @@
 import { isKeyRelease, Text } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { parseSlashCommand } from "../../core/slash-commands.js";
+import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
@@ -104,13 +105,12 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			clearStatus: () => notices.clear(),
 		}),
 	);
-	// ↓ on an empty prompt focuses the agent panel below it.
 	this.addTuiInputListener((data) => {
 		if (isKeyRelease(data) || !this.keybindings.matches(data, "app.agents.focus")) return undefined;
 		if (this.ui.hasOverlay() || !this.editorContainer.children.includes(this.editor)) return undefined;
 		if (this.editor.getText() !== "" || this.isBashMode) return undefined;
 		if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
-			void this.runtimeHost.openAgentPanel().catch((error: Error) => this.showWarning(error.message));
+			void this.runtimeHost.openAgentPanel().catch((error: unknown) => this.showWarning(sourceError(error).message));
 			return { consume: true };
 		}
 		if (!agentPanelHasRows(this.session)) return undefined;
@@ -122,7 +122,7 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			getToolsExpanded: ui.getToolsExpanded,
 			setToolsExpanded: ui.setToolsExpanded,
 			notify: ui.notify,
-		}).catch((error: Error) => this.showWarning(error.message));
+		}).catch((error: unknown) => this.showWarning(sourceError(error).message));
 		return { consume: true };
 	});
 	// Set up handlers on defaultEditor - they use this.editor for text access

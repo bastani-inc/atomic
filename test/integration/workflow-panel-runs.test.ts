@@ -178,14 +178,63 @@ test("a structured question shows when it is the only one; a multi-question form
 	assert.equal(store.recordStageAwaitingInput(formId, "ask", true), true);
 	assert.equal(row(uniqueId)?.state, "input");
 	assert.equal(row(uniqueId)?.question, "Ready to continue?");
+	assert.deepEqual(row(uniqueId)?.choices, ["Yes", "No"]);
 	assert.equal(row(formId)?.state, "input", "a form still marks its run as needing input");
 	assert.equal(row(formId)?.question, undefined, "but no single question is shown for it");
+	assert.equal(row(formId)?.choices, undefined);
 	broker.clearStagePrompt(uniqueId, "ask");
 	assert.equal(store.recordStageAwaitingInput(uniqueId, "ask", false), true);
 	assert.equal(row(uniqueId)?.question, undefined);
+	assert.equal(row(uniqueId)?.choices, undefined);
 	assert.equal(row(uniqueId)?.state, "running");
 	broker.clearStagePrompt(formId, "ask");
 	assert.equal(store.recordStageAwaitingInput(formId, "ask", false), true);
+});
+
+test("a single-select brokered prompt projects choices and answers by option index through the panel source (#5224)", async () => {
+	const owner = captureWorkflowOwnerResources();
+	const adapter = buildStagePromptAdapter(
+		"release-channel",
+		"ask_user_question",
+		{
+			questions: [
+				{
+					question: "Which release channel?",
+					options: [{ label: "stable" }, { label: "canary" }],
+				},
+			],
+		},
+		1,
+	);
+	assert.ok(adapter);
+	const hub = new AgentPanelSourceHub();
+	hub.register(
+		workflowPanelSource(owner, {
+			open: () => {},
+			quit: async () => {
+				throw new Error("not used");
+			},
+		}),
+	);
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const runId = makeRun("channel-choice", "release", [stage("ask", "running")]);
+	owner.stageUiBroker.provideStagePrompt(runId, "ask", adapter);
+	const customUiPromise = owner.stageUiBroker.requestCustomUi(runId, "ask", async () => ({
+		render: () => [],
+		invalidate: () => {},
+	}));
+	const item = agentPanelItems(session).find((candidate) => candidate.id === `run:${runId}`);
+	assert.equal(item?.state, "input");
+	assert.equal(item?.question, "Which release channel?");
+	assert.deepEqual(item?.choices, ["stable", "canary"]);
+	assert.deepEqual(await answerAgentPanelItem(session, `run:${runId}`, "2"), { ok: true });
+	const resolved = (await customUiPromise) as {
+		answers: Array<{ kind: string; answer: string | null }>;
+		cancelled: boolean;
+	};
+	assert.equal(resolved.cancelled, false);
+	assert.equal(resolved.answers[0]?.kind, "option");
+	assert.equal(resolved.answers[0]?.answer, "canary");
 });
 
 test("a hidden nested child's wait marks its top-level run as needing input (#5224)", () => {

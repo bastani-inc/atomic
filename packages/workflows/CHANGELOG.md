@@ -98,6 +98,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed a pooled stage on a host that doesn't run its root keeping its Intercom inbox after its session failed to start: later messages to it were taken into the failed session instead of staying queued ([#5168](https://github.com/bastani-inc/atomic/issues/5168))
 - Fixed the workflow session picker showing no selected row when the selected run left the list and the list got shorter. The selection now moves to the nearest remaining run, so Enter acts on it without first moving the cursor.
 - Fixed `/workflow` commands whose arguments start after a tab or on a new line not being run ([#5192](https://github.com/bastani-inc/atomic/issues/5192))
+- Workflow rows in the agent panel now count expanded nested, dynamic and fan-out stages, omit empty progress bars on tools-only runs, and show the choices for a pending single-select question. Run and stage names display terminal controls as inert text, and unchanged stage progress is reused between refreshes ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
 
 
 ### Removed

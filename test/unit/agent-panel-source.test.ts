@@ -4,10 +4,16 @@ import {
 	type AgentPanelItem,
 	AgentPanelSourceHub,
 	agentPanelItems,
+	agentPanelTaskId,
 	answerAgentPanelItem,
+	dismissedAgentPanelItems,
 	openAgentPanelItem,
+	sourceError,
 	stopAgentPanelItem,
+	subscribeAgentPanel,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
+import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import { taskFixture } from "../helpers/task-projection.js";
 
 const healthyItem: AgentPanelItem = {
 	id: "run:healthy",
@@ -285,4 +291,367 @@ test("panel rows retain a safe snapshot when a source changes its returned objec
 	assert.equal(rows[1]?.name, healthyItem.name);
 	assert.deepEqual(rows[1]?.progress, { done: 1, total: 3 });
 	assert.deepEqual(rows[1]?.choices, ["yes"]);
+});
+
+test("stop and answer normalize non-string reasons and non-string ids without throwing or rejecting (#5239)", async () => {
+	const { hub, session } = panelFixture();
+	const reasons: unknown[] = [
+		Symbol("stop-symbol"),
+		Object.create(null),
+		{
+			toString() {
+				throw new Error("toString boom");
+			},
+		},
+		{
+			toString() {
+				throw Object.create(null);
+			},
+		},
+		42,
+		null,
+		undefined,
+	];
+	let currentReason: unknown = reasons[0];
+	hub.register({
+		items: () => [{ ...healthyItem, id: "run:reason" }],
+		subscribe: () => () => {},
+		stop: async () => ({ ok: false, reason: currentReason as string }),
+		answer: async () => ({ ok: false, reason: currentReason as string }),
+	});
+	for (const reason of reasons) {
+		currentReason = reason;
+		const stopped = await stopAgentPanelItem(session, "run:reason");
+		const answered = await answerAgentPanelItem(session, "run:reason", "ok");
+		assert.equal(stopped.ok, false);
+		assert.equal(answered.ok, false);
+		if (!stopped.ok) {
+			assert.equal(typeof stopped.reason, "string");
+			assert.ok(stopped.reason.length > 0);
+			assert.doesNotThrow(() => `Could not stop: ${stopped.reason}`);
+		}
+		if (!answered.ok) {
+			assert.equal(typeof answered.reason, "string");
+			assert.ok(answered.reason.length > 0);
+			assert.doesNotThrow(() => `Could not answer: ${answered.reason}`);
+		}
+	}
+	for (const badId of [
+		42,
+		undefined,
+		null,
+		"",
+		{
+			startsWith() {
+				throw Object.create(null);
+			},
+		},
+	]) {
+		assert.equal(agentPanelTaskId(badId as never), undefined);
+		assert.equal(openAgentPanelItem(session, badId as never), false);
+		const stopped = await stopAgentPanelItem(session, badId as never);
+		const answered = await answerAgentPanelItem(session, badId as never, "yes");
+		assert.equal(stopped.ok, false);
+		assert.equal(answered.ok, false);
+	}
+});
+
+test("sourceError normalizes arbitrary thrown values and hostile error getters without throwing (#5239)", () => {
+	for (const input of [
+		new Error("plain"),
+		new Error(""),
+		"",
+		"text",
+		Symbol("sym"),
+		Object.create(null),
+		null,
+		undefined,
+		{
+			toString() {
+				throw new Error("inner boom");
+			},
+		},
+		{
+			toString() {
+				throw Object.create(null);
+			},
+		},
+		Object.defineProperty(new Error("ignored"), "message", {
+			get() {
+				throw Object.create(null);
+			},
+		}),
+	]) {
+		const err = sourceError(input);
+		assert.ok(err instanceof Error);
+		assert.equal(typeof err.message, "string");
+		assert.ok(err.message.length > 0);
+	}
+});
+
+test("malformed source items and non-iterable item lists are dropped and reported once while keeping valid rows (#5239)", () => {
+	const { hub, session } = panelFixture();
+	const validSibling: AgentPanelItem = {
+		id: "run:sibling",
+		kind: "workflow",
+		state: "input",
+		name: "sibling",
+		task: "stage ask",
+		elapsedMs: 1000,
+		tokens: 500,
+		progress: { done: 1, total: 3 },
+		question: "Proceed?",
+		choices: ["yes", "no"],
+		reason: "waiting",
+		queued: 2,
+		endedAt: 2000,
+	};
+	const malformedItems: unknown[] = [
+		null,
+		undefined,
+		"not-an-object",
+		42,
+		{ ...healthyItem, id: 42 },
+		{ ...healthyItem, id: "" },
+		{ ...healthyItem, id: "main" },
+		{ ...healthyItem, id: "run:bad-kind", kind: "other" },
+		{ ...healthyItem, id: "run:bad-state", state: "other" },
+		{ ...healthyItem, id: "run:bad-name", name: undefined },
+		{ ...healthyItem, id: "run:bad-task", task: undefined },
+		{ ...healthyItem, id: "run:bad-elapsed-neg", elapsedMs: -1 },
+		{ ...healthyItem, id: "run:bad-elapsed-nan", elapsedMs: Number.NaN },
+		{
+			...healthyItem,
+			id: "run:bad-elapsed-obj",
+			elapsedMs: {
+				valueOf() {
+					throw Object.create(null);
+				},
+			},
+		},
+		{ ...healthyItem, id: "run:bad-tokens-esc", tokens: "\x1b[2J\x1b[H" },
+		{ ...healthyItem, id: "run:bad-tokens-title", tokens: "\x1b]0;pwned\x07" },
+		{ ...healthyItem, id: "run:bad-queued-str", queued: "1\n2" },
+		{ ...healthyItem, id: "run:bad-queued-float", queued: 1.5 },
+		{ ...healthyItem, id: "run:bad-queued-neg", queued: -1 },
+		{ ...healthyItem, id: "run:bad-ended", endedAt: Number.POSITIVE_INFINITY },
+		{ ...healthyItem, id: "run:bad-progress-neg", progress: { done: -1, total: 3 } },
+		{ ...healthyItem, id: "run:bad-progress-null", progress: null },
+		{ ...healthyItem, id: "run:bad-question", question: 123 },
+		{ ...healthyItem, id: "run:bad-reason", reason: {} },
+		{ ...healthyItem, id: "run:bad-choices-str", choices: "ab" },
+		{ ...healthyItem, id: "run:bad-choices-elem", choices: ["ok", 123] },
+	];
+	hub.register({
+		items: () => [...(malformedItems as AgentPanelItem[]), validSibling],
+		subscribe: () => () => {},
+	});
+	for (const badReturn of [undefined, null, "string-items", 123, {}]) {
+		hub.register({
+			items: () => badReturn as never,
+			subscribe: () => () => {},
+		});
+	}
+	const reports: string[] = [];
+	const first = agentPanelItems(session, (error) => reports.push(error.message));
+	const second = agentPanelItems(session, (error) => reports.push(error.message));
+	assert.deepEqual(
+		first.map((item) => item.id),
+		[healthyItem.id, validSibling.id],
+	);
+	assert.deepEqual(
+		second.map((item) => item.id),
+		[healthyItem.id, validSibling.id],
+	);
+	assert.equal(reports.length, 6);
+});
+
+test("duplicate item ids and reserved task ids are deduplicated, reported once, and never hijack actions (#5239)", async () => {
+	const fixture = taskFixture();
+	try {
+		await fixture.start("real task");
+		const taskId = fixture.store.tasks[0]!.ref.taskId;
+		const hub = new AgentPanelSourceHub();
+		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+		bindOwnerTaskStore(session, fixture.store);
+		const stoppedBySource: string[] = [];
+		hub.register({
+			items: () => [
+				{ ...healthyItem, id: "ext:a", name: "first-a" },
+				{ ...healthyItem, id: "ext:a", name: "dup-a" },
+				{ ...healthyItem, id: "ext:b", name: "first-b" },
+			],
+			subscribe: () => () => {},
+			stop: async (id) => {
+				stoppedBySource.push(`s1:${id}`);
+				return { ok: true };
+			},
+		});
+		hub.register({
+			items: () => [
+				{ ...healthyItem, id: "ext:a", name: "second-source-a" },
+				{ ...healthyItem, id: `task:${taskId}`, name: "shadow-task" },
+				{ ...healthyItem, id: "main", name: "shadow-main" },
+				{ ...healthyItem, id: "ext:c", name: "first-c" },
+			],
+			subscribe: () => () => {},
+			stop: async (id) => {
+				stoppedBySource.push(`s2:${id}`);
+				return { ok: true };
+			},
+		});
+		const reports: string[] = [];
+		const items = agentPanelItems(session, (error) => reports.push(error.message));
+		assert.deepEqual(
+			items.map((item) => `${item.id}:${item.name}`),
+			["ext:a:first-a", "ext:b:first-b", "ext:c:first-c", `task:${taskId}:worker`],
+		);
+		assert.equal(reports.length, 2);
+		agentPanelItems(session, (error) => reports.push(error.message));
+		assert.equal(reports.length, 2);
+
+		dismissedAgentPanelItems(session).add("ext:a");
+		assert.deepEqual(await stopAgentPanelItem(session, "ext:a"), { ok: true });
+		assert.deepEqual(stoppedBySource, ["s1:ext:a"]);
+
+		const missingTaskStop = await stopAgentPanelItem(session, "task:missing-task");
+		assert.deepEqual(missingTaskStop, { ok: false, reason: "UnknownTask" });
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+test("re-registering a source inside its own unsubscribe runs each cleanup once and keeps the new subscription (#5239)", () => {
+	const hub = new AgentPanelSourceHub();
+	const counts = [0, 0, 0];
+	let call = 0;
+	const emits: Array<() => void> = [];
+	const source = {
+		items: () => [healthyItem],
+		subscribe(listener: () => void) {
+			const index = call++;
+			emits[index] = listener;
+			return () => {
+				counts[index]!++;
+				if (index === 0) hub.register(source);
+			};
+		},
+	};
+	hub.register(source);
+	hub.register(source);
+	assert.deepEqual(counts, [1, 1, 0]);
+	let notifications = 0;
+	hub.subscribe(() => notifications++);
+	emits[2]?.();
+	assert.equal(notifications, 1);
+	hub.dispose();
+	assert.deepEqual(counts, [1, 1, 1]);
+
+	const disposeHub = new AgentPanelSourceHub();
+	const disposeCounts = [0, 0];
+	let disposeCall = 0;
+	const disposeSource = {
+		items: () => [healthyItem],
+		subscribe() {
+			const index = disposeCall++;
+			return () => {
+				disposeCounts[index]!++;
+				if (index === 0) disposeHub.register(disposeSource);
+			};
+		},
+	};
+	disposeHub.register(disposeSource);
+	disposeHub.dispose();
+	assert.deepEqual(disposeCounts, [1, 0]);
+	assert.deepEqual(disposeHub.all(), []);
+});
+
+test("subscribeAgentPanel follows extension runner hub swaps across reload and contains throwing listeners (#5239)", async () => {
+	const currentHub = new AgentPanelSourceHub();
+	const session = {
+		extensionRunner: {
+			getAgentPanelSourceHub: () => currentHub,
+		},
+	};
+	let notifications = 0;
+	const unsubThrowing = subscribeAgentPanel(session, () => {
+		throw Object.create(null);
+	});
+	const unsub = subscribeAgentPanel(session, () => {
+		notifications++;
+	});
+	try {
+		const oldHub = currentHub;
+		const nextHub = new AgentPanelSourceHub();
+		let emitReloaded = () => {};
+		nextHub.register({
+			items: () => [{ ...healthyItem, id: "run:reloaded" }],
+			subscribe(listener) {
+				emitReloaded = listener;
+				return () => {};
+			},
+		});
+		session.extensionRunner = { getAgentPanelSourceHub: () => nextHub };
+		oldHub.dispose();
+		const afterReload = notifications;
+		assert.ok(afterReload >= 1);
+		emitReloaded();
+		assert.equal(notifications, afterReload + 1);
+		assert.deepEqual(
+			agentPanelItems(session).map((item) => item.id),
+			["run:reloaded"],
+		);
+	} finally {
+		unsubThrowing();
+		unsub();
+	}
+});
+
+test("source items are validated and copied once per source change version and invalidated on notify (#5239)", () => {
+	const hub = new AgentPanelSourceHub();
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	let itemCalls = 0;
+	let choiceReads = 0;
+	let notifySource = () => {};
+	let label = "v1";
+	const choices = {
+		*[Symbol.iterator]() {
+			choiceReads++;
+			yield "alpha";
+			yield "beta";
+		},
+	};
+	hub.register({
+		items() {
+			itemCalls++;
+			return [
+				{
+					...healthyItem,
+					id: "run:cached",
+					name: label,
+					choices: choices as unknown as readonly string[],
+				},
+			];
+		},
+		subscribe(listener) {
+			notifySource = listener;
+			return () => {};
+		},
+	});
+	assert.equal(openAgentPanelItem(session, "run:cached"), false);
+	assert.equal(itemCalls, 1);
+	assert.equal(choiceReads, 1);
+	for (let i = 0; i < 50; i++) {
+		const items = agentPanelItems(session);
+		assert.equal(items[0]?.name, "v1");
+		assert.deepEqual(items[0]?.choices, ["alpha", "beta"]);
+	}
+	assert.equal(itemCalls, 1);
+	assert.equal(choiceReads, 1);
+	label = "v2";
+	notifySource();
+	const updated = agentPanelItems(session);
+	assert.equal(updated[0]?.name, "v2");
+	assert.equal(itemCalls, 2);
+	assert.equal(choiceReads, 2);
 });

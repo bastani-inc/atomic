@@ -42,7 +42,7 @@ Going back from what you opened returns to the panel with the same row selected:
 
 A workflow stage chat or a subagent's chat lists its own active agents and shells below its prompt in the same row format.
 
-If the panel warns that an extension source failed, that source's rows are hidden while the other rows and chat remain usable. Fix or update the extension, then use `/reload` to register it again. A failed stop or answer reports the source's error without closing the chat.
+If the panel warns that an extension source failed, its invalid rows are hidden while the other rows and chat remain usable. A source that cannot list its rows is hidden entirely. The warning appears once per source, including during startup. Fix or update the extension, then use `/reload` to register it again; new rows continue updating without reopening the panel. A failed stop or answer reports the source's error without closing the chat.
 
 ### Open the task inspector
 

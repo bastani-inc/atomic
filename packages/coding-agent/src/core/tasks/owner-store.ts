@@ -9,6 +9,7 @@ import type {
 	WaitError,
 	WatchError,
 } from "./contracts.js";
+import { liveElapsedMs } from "./live-elapsed.js";
 import type { OwnerLease, TaskLease, TaskSubscription, TaskSupervisor } from "./supervisor.js";
 
 /** Activity previews are bounded independently of authoritative session history. */
@@ -115,8 +116,20 @@ export class OwnerTaskStore {
 		for (const event of events)
 			if (event.payload.kind === "task-settled" && !this.settlements.has(event.payload.ref.taskId))
 				this.settlements.set(event.payload.ref.taskId, BigInt(event.cursor.sequence));
+		const now = Date.now();
 		for (const task of snapshot.tasks) {
 			const previous = this.records.get(task.ref.taskId);
+			if (
+				previous?.execution.kind !== task.execution.kind ||
+				previous?.metrics?.elapsedMs !== task.metrics?.elapsedMs
+			) {
+				liveElapsedMs(
+					task.ref.taskId,
+					task.metrics?.elapsedMs,
+					task.execution.kind === "running" || task.execution.kind === "cancelling",
+					now,
+				);
+			}
 			if (isBackground(task.observation) || isBackground(previous?.observation))
 				this.backgroundIds.add(task.ref.taskId);
 			// Native settlement is immutable, even when recovering a view from a snapshot.

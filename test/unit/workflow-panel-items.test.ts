@@ -10,7 +10,9 @@ import {
 	formatPanelElapsed,
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
-import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 
 const plain: AgentPanelStyle = {
@@ -122,4 +124,214 @@ test("run rows stay well formed at the requested width with hostile, wide and su
 			assert.equal(text, text.toWellFormed(), "no unpaired surrogates");
 		}
 	}
+});
+
+test("nested, dynamic and fan-out runs match the expanded graph's stage progress and current stage (#5224)", () => {
+	const store = createStore();
+	store.recordRunStart(
+		run("root", "running", [
+			stage("composition", "running", { workflowChildRun: { runId: "child", workflow: "sub", alias: "sub" } }),
+			stage("verify", "pending", { parentIds: ["composition"] }),
+		]),
+	);
+	store.recordRunStart(
+		run(
+			"child",
+			"running",
+			[
+				stage("step-1", "completed"),
+				stage("step-2", "running", { parentIds: ["step-1"] }),
+				stage("step-3", "pending", { parentIds: ["step-2"] }),
+			],
+			{ parentRunId: "root", parentStageId: "composition", rootRunId: "root" },
+		),
+	);
+	const initialGraph = expandWorkflowGraph(store.graphSnapshot(), "root");
+	const [initialItem] = panelItemsFromSnapshot(store.graphSnapshot());
+	assert.deepEqual(initialItem?.progress, {
+		done: initialGraph.stages.filter((s) => s.status === "completed").length,
+		total: initialGraph.stages.length,
+	});
+	assert.deepEqual(initialItem?.progress, { done: 1, total: 4 });
+	assert.equal(initialItem?.task, "stage step-2");
+
+	store.recordStageEnd("child", stage("step-2", "completed", { parentIds: ["step-1"] }));
+	store.recordStageStart("child", stage("step-4", "pending", { parentIds: ["step-3"] }));
+	store.editRun("child", (target) => {
+		const next = target.stages.find((candidate) => candidate.id === "step-3");
+		if (next) next.status = "running";
+		return { stageIds: ["step-3"] };
+	});
+	const updatedGraph = expandWorkflowGraph(store.graphSnapshot(), "root");
+	const [updatedItem] = panelItemsFromSnapshot(store.graphSnapshot());
+	assert.deepEqual(updatedItem?.progress, { done: 2, total: updatedGraph.stages.length });
+	assert.deepEqual(updatedItem?.progress, { done: 2, total: 5 });
+	assert.equal(updatedItem?.task, "stage step-3");
+
+	const fanoutStore = createStore();
+	fanoutStore.recordRunStart(
+		run("fanout-root", "running", [
+			stage("fan-a", "completed", {
+				workflowChild: {
+					runId: "fan-child-a",
+					workflow: "sub",
+					alias: "a",
+					status: "completed",
+					outputs: {},
+				},
+			}),
+			stage("fan-b", "running", { workflowChildRun: { runId: "fan-child-b", workflow: "sub", alias: "b" } }),
+			stage("final", "pending", { parentIds: ["fan-a", "fan-b"] }),
+		]),
+	);
+	fanoutStore.recordRunStart(
+		run("fan-child-a", "completed", [stage("a1", "completed"), stage("a2", "completed", { parentIds: ["a1"] })], {
+			parentRunId: "fanout-root",
+			parentStageId: "fan-a",
+			rootRunId: "fanout-root",
+			endedAt: 2_000,
+		}),
+	);
+	fanoutStore.recordRunStart(
+		run("fan-child-b", "running", [stage("b1", "completed"), stage("merge", "running", { parentIds: ["b1"] })], {
+			parentRunId: "fanout-root",
+			parentStageId: "fan-b",
+			rootRunId: "fanout-root",
+		}),
+	);
+	const fanoutGraph = expandWorkflowGraph(fanoutStore.graphSnapshot(), "fanout-root");
+	const [fanoutItem] = panelItemsFromSnapshot(fanoutStore.graphSnapshot());
+	assert.deepEqual(fanoutItem?.progress, { done: 3, total: fanoutGraph.stages.length });
+	assert.deepEqual(fanoutItem?.progress, { done: 3, total: 5 });
+	assert.equal(fanoutItem?.task, "stage merge");
+});
+
+test("a tools-only completed run omits empty stage progress and never renders a 0/0 bar (#5224)", () => {
+	const tools: ToolNodeSnapshot[] = [
+		{
+			id: "t1",
+			kind: "tool",
+			name: "collect",
+			argsHash: "h1",
+			ordinal: 0,
+			status: "completed",
+			parentIds: [],
+			attachable: false,
+			startedAt: 1_000,
+			endedAt: 2_000,
+		},
+		{
+			id: "t2",
+			kind: "tool",
+			name: "publish",
+			argsHash: "h2",
+			ordinal: 1,
+			status: "completed",
+			parentIds: ["t1"],
+			attachable: false,
+			startedAt: 2_000,
+			endedAt: 3_000,
+		},
+	];
+	const items = panelItemsFromSnapshot([run("ship-notes", "completed", [], { toolNodes: tools, endedAt: 3_000 })]);
+	assert.equal(items[0]?.state, "done");
+	assert.equal(items[0]?.progress, undefined);
+	for (const width of [80, 160]) {
+		const rendered = renderAgentPanelRows(items, width, plain).join("\n");
+		assert.match(rendered, /✓ ship-notes/);
+		assert.doesNotMatch(rendered, /0\/0 stages/);
+		assert.doesNotMatch(rendered, /▱/);
+	}
+});
+
+test("run and stage names strip escape sequences, format control bytes as \\xNN and bidi controls as <U+XXXX> (#5224)", () => {
+	const [item] = panelItemsFromSnapshot([
+		run("ship\x1b[31m\x1b]0;pwned\x07\x00\u202enotes", "running", [
+			stage("build\x1b[2J\x07\x7f\u2066step", "running"),
+		]),
+	]);
+	assert.equal(item?.name, "ship\\x00<U+202E>notes");
+	assert.equal(item?.task, "stage build\\x07\\x7f<U+2066>step");
+});
+
+test("single-select input requests project option labels as choices while multi-select and ambiguous prompts do not (#5224)", () => {
+	const single = run("single-select", "running", [
+		stage("ask", "awaiting_input", {
+			inputRequest: {
+				id: "req-1",
+				kind: "ask_user_question",
+				createdAt: 1_000,
+				questions: [
+					{
+						question: "Which track?",
+						options: [{ label: "stable" }, { label: "canary" }],
+					},
+				],
+			},
+		}),
+	]);
+	const multi = run("multi-select", "running", [
+		stage("ask", "awaiting_input", {
+			inputRequest: {
+				id: "req-2",
+				kind: "ask_user_question",
+				createdAt: 1_000,
+				questions: [
+					{
+						question: "Which tracks?",
+						multiSelect: true,
+						options: [{ label: "stable" }, { label: "canary" }],
+					},
+				],
+			},
+		}),
+	]);
+	const items = panelItemsFromSnapshot([single, multi]);
+	assert.deepEqual(items[0]?.choices, ["stable", "canary"]);
+	assert.equal(items[1]?.choices, undefined);
+});
+
+test("shallowly frozen workflow inputs still reflect mutable stage changes (#5239)", () => {
+	for (const snapshotInput of [false, true]) {
+		const stages = [stage("a", "completed"), stage("b", "completed"), stage("c", "completed")];
+		const runs = Object.freeze([Object.freeze(run("shallow-frozen", "running", stages))]);
+		const input = snapshotInput ? Object.freeze({ runs, notices: [], version: 1 }) : runs;
+		assert.deepEqual(panelItemsFromSnapshot(input)[0]?.progress, { done: 3, total: 3 });
+		stages[1]!.status = "running";
+		const updated = panelItemsFromSnapshot(input)[0];
+		assert.deepEqual(updated?.progress, { done: 2, total: 3 });
+		assert.equal(updated?.task, "stage b");
+	}
+});
+
+test("cached snapshot projection does not rescan stages across frames and reflects middle-stage restarts (#5224)", () => {
+	const store = createStore();
+	const stages: StageSnapshot[] = Array.from({ length: 200 }, (_, i) =>
+		stage(`stage-${i}`, i < 199 ? "completed" : "running"),
+	);
+	store.recordRunStart(run("large", "running", stages, { startedAt: 1_000 }));
+	const snapshot = store.graphSnapshot();
+	const first = panelItemsFromSnapshot(snapshot, 5_000);
+	assert.equal(first[0]?.elapsedMs, 4_000);
+	assert.deepEqual(first[0]?.progress, { done: 199, total: 200 });
+	for (let frame = 1; frame <= 20; frame++) {
+		const next = panelItemsFromSnapshot(snapshot, 5_000 + frame * 1_000);
+		assert.equal(next[0]?.elapsedMs, 4_000 + frame * 1_000);
+		assert.deepEqual(next[0]?.progress, { done: 199, total: 200 });
+		assert.equal(next[0]?.progress, first[0]?.progress);
+	}
+
+	const a = stage("a", "completed");
+	const b = stage("b", "completed", { parentIds: ["a"] });
+	const c = stage("c", "completed", { parentIds: ["b"] });
+	const restartStages: StageSnapshot[] = [a, b, c];
+	const target = run("middle-restart", "running", restartStages);
+	const [beforeRestart] = panelItemsFromSnapshot([target]);
+	assert.deepEqual(beforeRestart?.progress, { done: 3, total: 3 });
+	assert.equal(beforeRestart?.task, "");
+
+	restartStages[1] = { ...b, status: "running" };
+	const [afterRestart] = panelItemsFromSnapshot([target]);
+	assert.deepEqual(afterRestart?.progress, { done: 2, total: 3 });
+	assert.equal(afterRestart?.task, "stage b");
 });

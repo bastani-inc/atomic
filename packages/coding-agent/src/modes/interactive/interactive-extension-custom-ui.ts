@@ -43,7 +43,10 @@ InteractiveModeBase.prototype.showExtensionNotify = function (
 	if (type === "error") {
 		this.showError(message);
 	} else if (type === "warning") {
-		this.showWarning(message);
+		this.showWarning(
+			message,
+			this.deferredStartupPending || this.initialStartupBinding ? this.startupNoticesContainer : this.chatContainer,
+		);
 	} else {
 		this.showStatus(message);
 	}

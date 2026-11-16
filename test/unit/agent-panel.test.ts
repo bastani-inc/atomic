@@ -21,6 +21,7 @@ import {
 	type AgentPanelStyle,
 	formatPanelElapsed,
 	formatPanelTokens,
+	panelProgressBar,
 	renderAgentPanelHint,
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
@@ -103,6 +104,25 @@ test("the unfocused panel shows four rows and folds the rest; empty renders noth
 	assert.deepEqual(renderAgentPanelRows([], 100, plain), []);
 });
 
+test("rendering collapsed panel rows does not measure hidden names (#5239)", () => {
+	let reads = 0;
+	const rows = Array.from({ length: 10_000 }, (_, index) => ({
+		...ROWS[0]!,
+		id: `hidden:${index}`,
+		get name() {
+			reads++;
+			return `worker${index}`;
+		},
+	}));
+	const idle = renderAgentPanelRows(rows, 80, plain);
+	assert.equal(idle.length, 5);
+	assert.ok(reads <= 12, `only visible names are measured, read ${reads}`);
+	reads = 0;
+	const focused = renderAgentPanelRows(rows, 80, plain, { selectedId: "hidden:9999", scroll: 9992 });
+	assert.equal(focused.length, 10);
+	assert.ok(reads <= 24, `only the focused window is measured, read ${reads}`);
+});
+
 test("rows sort needing input, running, then finished; finished rows fade, then leave unless kept (#5224)", () => {
 	let now = 0;
 	const model = new AgentPanelModel(() => now);
@@ -131,6 +151,28 @@ test("rows sort needing input, running, then finished; finished rows fade, then 
 		["run:done"],
 		"a finished run stays until it has been viewed",
 	);
+});
+
+test("panel row ordering reads each status a bounded number of times in a large mixed list (#5239)", () => {
+	let reads = 0;
+	const states = ["done", "running", "queued", "input", "stopping"] as const;
+	const rows = Array.from(
+		{ length: 10_000 },
+		(_, index): AgentPanelRow => ({
+			...ROWS[0]!,
+			id: `rank:${index}`,
+			get state() {
+				reads++;
+				return states[index % states.length]!;
+			},
+		}),
+	);
+	const shown = new AgentPanelModel(() => 0).rows(rows);
+	assert.equal(shown.length, rows.length);
+	assert.equal(shown[0]?.id, "rank:3");
+	assert.equal(shown[1999]?.id, "rank:9998");
+	assert.equal(shown.at(-1)?.id, "rank:9995");
+	assert.ok(reads <= rows.length * 4, `status reads stay linear without repeated comparisons: ${reads}`);
 });
 
 function focusFixture(now: () => number = () => 0) {
@@ -207,6 +249,37 @@ test("x stops a running row only on a second press within three seconds and dism
 	assert.equal(calls.at(-1), "dismiss task:c", "keys wait while the overlay is open");
 	press("\x1b");
 	assert.equal(focus.helpOpen, false);
+});
+
+test("a stop confirmation keeps terminal controls in a source's name inert (#5239)", () => {
+	const { focus, press } = focusFixture();
+	focus.update([{ ...ROWS[0]!, name: "\x1b]0;changed-title\x07\u202e" }]);
+	focus.enter();
+	press("x");
+	const hint = renderAgentPanelHint(focus, 160, plain, new KeybindingsManager());
+	assert.doesNotMatch(hint, /[\x1b\x07\u202e]/u);
+	assert.match(hint, /changed-title/);
+});
+
+test("token units roll over after rounding and reject malformed counts (#5239)", () => {
+	assert.equal(formatPanelTokens(999_949), "999.9k");
+	assert.equal(formatPanelTokens(999_950), "1.0M");
+	assert.equal(formatPanelTokens(999_999), "1.0M");
+	assert.equal(formatPanelTokens(999_950_000), "1.0B");
+	for (const value of [NaN, Infinity, -1, "\x1b[2J", Symbol("tokens"), Object.create(null)]) {
+		assert.equal(formatPanelTokens(value as number), "0");
+	}
+});
+
+test("progress bars clamp invalid and out-of-range values without throwing (#5239)", () => {
+	assert.equal(panelProgressBar(-1, 3), "▱".repeat(16));
+	assert.equal(panelProgressBar(9, 3), "▰".repeat(16));
+	for (const value of [NaN, Infinity, Symbol("done"), Object.create(null)]) {
+		assert.equal(panelProgressBar(value as number, 3), "▱".repeat(16));
+		assert.equal(panelProgressBar(1, value as number), "▱".repeat(16));
+	}
+	assert.equal(panelProgressBar(1, 3, -1), "");
+	assert.equal(panelProgressBar(1, 3, Infinity), "");
 });
 
 test("panel time and token formats (#5224)", () => {
@@ -383,6 +456,34 @@ test("the focused panel scrolls to keep the selection in view and keeps every ro
 	focus.selectedId = "task:5";
 	focus.update(many.filter((row) => row.id !== "task:5"));
 	assert.equal(focus.selectedId, "task:0", "a row that leaves moves the selection to the first row");
+});
+
+test("duplicate row ids do not trap focused keyboard navigation (#5239)", () => {
+	const { focus, press } = focusFixture();
+	focus.update([ROWS[0]!, ROWS[0]!, ROWS[1]!]);
+	focus.selectedId = AGENT_PANEL_MAIN_ID;
+	press("\x1b[B");
+	press("\x1b[B");
+	press("\x1b[B");
+	assert.equal(focus.selectedId, ROWS[1]!.id);
+});
+
+test("the panel resets its scroll when the selected rows disappear and main remains selected (#5239)", () => {
+	const { focus } = focusFixture();
+	const many = Array.from({ length: 12 }, (_, index) => ({ ...ROWS[0]!, id: `scroll:${index}` }));
+	focus.update(many);
+	focus.enter("scroll:11");
+	assert.equal(focus.scroll, 4);
+	focus.update([]);
+	focus.update(many.slice(0, 3));
+	assert.equal(focus.selectedId, AGENT_PANEL_MAIN_ID);
+	assert.equal(focus.scroll, 0);
+	const lines = renderAgentPanelRows(many.slice(0, 3), 80, plain, {
+		selectedId: focus.selectedId,
+		scroll: focus.scroll,
+	});
+	assert.equal(lines.length, 4);
+	assert.ok(lines.slice(1).every((line) => line.includes("worker")));
 });
 
 test("a source that throws is left out of the panel, reported once, and never crashes the host (#4009, #5224)", async () => {
