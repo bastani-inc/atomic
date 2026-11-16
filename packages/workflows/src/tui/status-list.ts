@@ -284,11 +284,11 @@ function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?:
 		case "skipped":
 			return { text: "⊘ skipped", fg: theme?.dim };
 		case "cancelled":
-			return { text: "⊘ cancelled", fg: theme?.dim };
+			return { text: "◼ cancelled", fg: theme?.textMuted };
 		case "failed":
 			return { text: "✗ failed", fg: theme?.error };
 		case "killed":
-			return { text: "⊘ killed", fg: theme?.error };
+			return { text: "◼ killed", fg: theme?.textMuted };
 		default:
 			return { text: "○ pending", fg: theme?.dim };
 	}

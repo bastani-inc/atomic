@@ -94,7 +94,7 @@ describe("interactive engine command lane during a manual compaction", () => {
 		await waitFor("the engine to start compacting", () => engine.session.isCompacting);
 		input.send({ id: "tasks", type: "open_task_inspector" });
 		input.send({ id: "models", type: "get_available_models" });
-		input.send({ id: "connect", type: "prompt", message: "/workflow connect" });
+		input.send({ id: "connect", type: "prompt", message: "/workflow status" });
 		input.send({ id: "catalog", type: "get_commands" });
 
 		await waitFor("commands sent during compaction to be answered", () =>
@@ -102,7 +102,7 @@ describe("interactive engine command lane during a manual compaction", () => {
 		);
 		assert.equal(engine.session.isCompacting, true, "compaction must still be running");
 		assert.equal(input.response("compact"), undefined);
-		assert.deepEqual(invocations, ["connect"]);
+		assert.deepEqual(invocations, ["status"]);
 		for (const id of ["tasks", "models", "connect", "catalog"]) {
 			assert.equal(input.response(id)?.success, true, id);
 		}

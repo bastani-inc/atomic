@@ -221,12 +221,17 @@ test("selectRunsForPicker filters by name and runId prefix", () => {
 	assert.equal(selectRunsForPicker(runs, "zzz", true).length, 0);
 });
 
-test("handleSessionPickerInput: enter on selected row returns connect", () => {
+test("Open workflow run picker opens the selected run on Enter (#5224)", () => {
 	const state = createSessionPickerState();
 	const rows = [
 		{ run: makeRun({ id: "id-1", name: "a" }), bucket: "active" as const },
 		{ run: makeRun({ id: "id-2", name: "b" }), bucket: "active" as const },
 	];
+	const lines = renderSessionPicker({ width: 80, theme: deriveGraphTheme({}), rows, state });
+	assert.match(lines[0]!, /Open workflow run/);
+	const hints = lines.at(-1)!;
+	assert.match(hints, /Open/);
+	assert.doesNotMatch(hints, /Connect/);
 	const action = handleSessionPickerInput("\r", state, rows);
 	assert.deepEqual(action, { kind: "connect", runId: "id-1" });
 });
@@ -350,13 +355,14 @@ test("renderSessionPicker emits header, sections, and footer hints", () => {
 	];
 	const lines = renderSessionPicker({ width: 80, theme, rows, state });
 	const joined = lines.join("\n");
-	assert.match(joined, /Connect to workflow run/);
+	assert.match(joined, /Open workflow run/);
 	assert.match(joined, /ACTIVE/);
 	assert.match(joined, /TERMINAL/);
 	assert.match(joined, /aaaa1111-0000-0000-0000-000000000000/);
 	assert.match(joined, /tournament/);
 	assert.match(joined, /Navigate/);
-	assert.match(joined, /Connect/);
+	assert.match(joined, /Open/);
+	assert.doesNotMatch(joined, /Connect/);
 	assert.doesNotMatch(joined, /Kill/);
 });
 

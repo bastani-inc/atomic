@@ -4,7 +4,7 @@ import { type Store, store } from "../shared/store.js";
 import type { PiArgumentCompletion, PiArgumentCompletionResult } from "./public-types.js";
 import type { ExtensionRuntime } from "./runtime.js";
 
-function completeToken(argumentText: string, candidates: PiArgumentCompletion[]): PiArgumentCompletionResult {
+export function completeToken(argumentText: string, candidates: PiArgumentCompletion[]): PiArgumentCompletionResult {
 	const tokenStart = /\s$/.test(argumentText)
 		? argumentText.length
 		: Math.max(argumentText.lastIndexOf(" "), argumentText.lastIndexOf("\t")) + 1;
@@ -19,8 +19,6 @@ function completeToken(argumentText: string, candidates: PiArgumentCompletion[])
 
 function adminCompletions(): PiArgumentCompletion[] {
 	return [
-		{ value: "connect ", label: "connect", description: "Attach to a run (picker if no id)" },
-		{ value: "attach ", label: "attach", description: "Open the in-place attach pane on a node" },
 		{ value: "list ", label: "list", description: "List registered workflows" },
 		{ value: "status ", label: "status", description: "List current-session active and retained terminal runs" },
 		{ value: "pause ", label: "pause", description: "Pause a run" },
@@ -40,7 +38,7 @@ function workflowNameItems(runtime: ExtensionRuntime): PiArgumentCompletion[] {
 	}));
 }
 
-function runIdItems(activeStore: Store): PiArgumentCompletion[] {
+export function runIdItems(activeStore: Store): PiArgumentCompletion[] {
 	return topLevelWorkflowRuns(activeStore.runs()).map((run) => ({
 		value: `${run.id} `,
 		label: run.id,
@@ -53,10 +51,18 @@ export function workflowArgumentCompletionsNeedWorkflowResources(partial: string
 	const subcommand = parts[0] ?? "";
 	if (!partial.includes(" ")) return true;
 	if (!subcommand || subcommand === "inputs") return true;
-	if (["status", "connect", "resume", "attach", "pause", "quit", "reload", "fork"].includes(subcommand)) {
+	if (["status", "resume", "pause", "quit", "reload", "fork"].includes(subcommand)) {
 		return false;
 	}
 	return true;
+}
+
+function hasPositionalRunArgument(argumentText: string): boolean {
+	return argumentText
+		.trimStart()
+		.split(/\s+/)
+		.slice(1, -1)
+		.some((token) => !token.startsWith("-"));
 }
 
 export function workflowArgumentCompletions(
@@ -71,21 +77,27 @@ export function workflowArgumentCompletions(
 		return completeToken(partial, [...adminCompletions(), ...workflows()]);
 	}
 	if (subcommand === "inputs") return completeToken(partial, workflows());
-	if (["status", "connect", "resume", "attach"].includes(subcommand)) {
+	if (subcommand === "status" || subcommand === "resume") {
+		if (subcommand === "resume" && hasPositionalRunArgument(partial)) return null;
 		return completeToken(partial, runIdItems(activeStore));
 	}
 	if (subcommand === "pause") {
+		if (hasPositionalRunArgument(partial)) return null;
 		return completeToken(partial, [
 			{ value: "--all ", label: "--all", description: "Pause all in-flight runs" },
-			{ value: "--yes ", label: "--yes", description: "Skip confirmation" },
-			{ value: "-y ", label: "-y", description: "Skip confirmation" },
 			...runIdItems(activeStore),
 		]);
 	}
 	if (subcommand === "fork") {
+		const completed = partial.trimStart().split(/\s+/).slice(1, -1);
+		if (completed.at(-1) === "--from") return null;
+		const hasFrom = completed.some((token) => token === "--from" || token.startsWith("--from="));
+		const hasRun = completed.some((token, index) => !token.startsWith("-") && completed[index - 1] !== "--from");
 		return completeToken(partial, [
-			{ value: "--from ", label: "--from", description: "Dot path of the stage the fork re-runs from" },
-			...runIdItems(activeStore),
+			...(hasFrom
+				? []
+				: [{ value: "--from ", label: "--from", description: "Dot path of the stage the fork re-runs from" }]),
+			...(hasRun ? [] : runIdItems(activeStore)),
 		]);
 	}
 	if (subcommand === "quit") {
