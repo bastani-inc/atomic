@@ -296,6 +296,10 @@ export class PoolCheckpointIndex {
 	 * otherwise `cp_added` is NULL. A queue that has not
 	 * read the root yet, as on a host that just took over a child, would otherwise ask for every checkpoint of the root
 	 * in one value, past what the database returns in one (#4768).
+	 *
+	 * The array is built in a subquery the `CASE` runs only when the checkpoints fit: the database builds an aggregate
+	 * from every row, even one the `CASE` around it discards, and the 64 checkpoints of 256 KiB a queue commits before
+	 * it reads again made one value past the 5,000,000 bytes a libSQL server holds, which failed the commit after them.
 	 */
 	prefetchColumns(events: string, root: string): { readonly sql: string; readonly params: readonly SqliteValue[] } {
 		const dialect = this.dialect;
@@ -306,8 +310,16 @@ export class PoolCheckpointIndex {
 			(SELECT ${headObject(dialect)} FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1) AS cp_head,
 			(SELECT ${markObject(dialect)} FROM ${events} WHERE run_id = ? AND seq = ?) AS cp_mark,
 			(SELECT CASE WHEN COUNT(*) <= ${PREFETCH_MAX_CHECKPOINTS} AND COALESCE(SUM(length(payload)), 0) <= ${PREFETCH_MAX_BYTES} AND COALESCE(MAX(chunks), 0) = 0
-				THEN ${dialect.jsonGroupArray(dialect.jsonArray(["seq", "key", "payload"]), "seq")} END FROM (${added}) AS added) AS cp_added`,
-			params: [from, root, root, from, root, from, RUN_EVENT_TYPES.checkpointRecorded],
+				THEN (SELECT ${dialect.jsonGroupArray(dialect.jsonArray(["seq", "key", "payload"]), "seq")} FROM (${added}) AS fitting) END
+			FROM (${added}) AS added) AS cp_added`,
+			params: [
+				from,
+				root,
+				root,
+				from,
+				...[root, from, RUN_EVENT_TYPES.checkpointRecorded],
+				...[root, from, RUN_EVENT_TYPES.checkpointRecorded],
+			],
 		};
 	}
 
