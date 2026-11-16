@@ -1120,9 +1120,12 @@ export class SqlPoolQueue {
 		// A journal in another database takes the boundary's start first, as its own idempotent write: a crash before the
 		// work row below leaves a start with no work, which the root's resume enqueues again and finds already recorded.
 		if (this.remote) await this.recordBoundaryStart(lease, key, boundary);
+		const matching = `root = ? AND (boundary = ? OR ${this.dialect.jsonIndexText("descriptor", "scope")} = ? OR ${this.dialect.jsonIndexText("descriptor", "childRunId")} = ?)`;
+		// New work in a libSQL database is queued in one request, which holds the write lock for that request only (#4768).
+		const queued = await this.enqueueInOneRequest(lease, descriptor, matching, fingerprint, payload, key, options);
+		if (queued !== undefined) return queued;
 		return this.transaction(async (tx) => {
 			const { now } = await this.authority(tx, lease);
-			const matching = `root = ? AND (boundary = ? OR ${this.dialect.jsonIndexText("descriptor", "scope")} = ? OR ${this.dialect.jsonIndexText("descriptor", "childRunId")} = ?)`;
 			await this.lockRows(tx, this.work, matching, lease.runId, boundaryId, scope, childRunId);
 			// Work carries its root's snapshot only while every blob of it is stored (#5077): the child of work queued
 			// without one restores as for a capture that was unavailable, never from a snapshot it cannot restore.
@@ -1213,6 +1216,101 @@ export class SqlPoolQueue {
 				inputs: descriptor.inputs,
 			};
 		});
+	}
+	/**
+	 * {@link enqueue} of new work as one request on a database that sends batches (libSQL), planned from a read outside
+	 * the write lock: fences repeat everything the plan decided on (the root's lease, no work of the boundary, scope or
+	 * child yet, no overlapping scope, the snapshot's blobs stored, and the boundary's event not recorded yet), so the
+	 * batch writes exactly what the transaction would, or nothing, and is planned again. Undefined, having written
+	 * nothing, for work the transaction handles: work the root queued before (rebound or made claimable again), sessions
+	 * to claim, inputs or a descriptor stored in chunks, a pool whose journal is in another database, or a database
+	 * without batches.
+	 */
+	private async enqueueInOneRequest(
+		lease: Lease,
+		descriptor: PoolWorkDescriptor,
+		matching: string,
+		fingerprint: string,
+		payload: string,
+		key: string,
+		options: PoolEnqueueOptions,
+	): Promise<PoolWork | undefined> {
+		if (
+			this.storage.batch === undefined ||
+			this.remote !== undefined ||
+			this.rowLocks ||
+			(options.claimSessions !== undefined && options.claimSessions.length > 0)
+		)
+			return undefined;
+		const { boundaryId, childRunId, scope } = descriptor;
+		const root = lease.runId;
+		const scopeOf = this.dialect.jsonIndexText("descriptor", "scope");
+		const handled = Symbol("handled by the transaction");
+		const queued = await guardedPoolWrite<PoolWork | typeof handled>(this.storage, async (read) => {
+			const { now } = await this.authority(read, lease);
+			if (
+				await read.get(`SELECT 1 AS held FROM ${this.work} WHERE ${matching}`, root, boundaryId, scope, childRunId)
+			)
+				return { done: handled };
+			const siblings = await read.all<SqliteRow & { scope: string }>(
+				`SELECT ${scopeOf} AS scope FROM ${this.work} WHERE root = ?`,
+				root,
+			);
+			if (siblings.some((item) => scope.startsWith(`${item.scope}:`) || item.scope.startsWith(`${scope}:`)))
+				throw new Error("Pool work scopes overlap");
+			const withSnapshot = await this.withStoredSnapshot(read, descriptor);
+			const json = serializeJson({ ...withSnapshot });
+			const whole = await this.keepsWhole(read, json, payload);
+			const stored = storedDescriptor(json, whole);
+			if (stored.chunks.length > 0) return { done: handled };
+			const existing = await this.eventPayload(read, root, key);
+			if (existing !== undefined && existing !== payload) throw new Error("Pool boundary identity conflict");
+			const head = await read.get<SqliteRow & { seq: number }>(
+				`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${this.journal.events} WHERE run_id = ?`,
+				root,
+			);
+			// The sequence is taken in SQL as the batch runs; one past the limit fails here, as the transaction fails.
+			journalCounter(root, "seq", Number(head?.seq ?? 0) + 1, "overflow");
+			const snapshot = withSnapshot.execution.workspaceSnapshot as unknown as WorktreeSnapshot | undefined;
+			const blobsFence = snapshot === undefined ? undefined : this.blobs?.storedFence([snapshot]);
+			const notice = this.readyNotice(root);
+			const id = randomUUID();
+			return {
+				fences: [
+					this.rootFence(lease),
+					{
+						sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.work} WHERE ${matching})`,
+						params: [root, boundaryId, scope, childRunId],
+					},
+					{
+						sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.work} WHERE root = ? AND (substr(?, 1, length(${scopeOf}) + 1) = ${scopeOf} || ':' OR substr(${scopeOf}, 1, length(?) + 1) = ? || ':'))`,
+						params: [root, scope, scope, scope],
+					},
+					...(blobsFence === undefined ? [] : [blobsFence]),
+					...(existing === undefined
+						? [
+								{
+									sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.journal.events} WHERE run_id = ? AND key = ?)`,
+									params: [root, key],
+								},
+							]
+						: []),
+				],
+				writes: [
+					{
+						sql: `INSERT INTO ${this.work}(id, root, boundary, descriptor, fingerprint, epoch, ready_at, inputs_chunks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+						params: [id, root, boundaryId, stored.descriptor, fingerprint, lease.epoch, now, 0],
+					},
+					...(existing === undefined
+						? this.eventWrites(root, undefined, lease.epoch, key, payload, "?", [now], undefined, whole)
+						: []),
+					...(notice === undefined ? [] : [notice]),
+				],
+				reads: [{ sql: `SELECT * FROM ${this.work} WHERE id = ?`, params: [id] }],
+				result: ([[row]]) => ({ ...fromRow(row as WorkRow), inputs: descriptor.inputs }),
+			};
+		});
+		return queued === handled ? undefined : queued;
 	}
 	/**
 	 * `work` without the worktree snapshot it carries, which its row no longer carries either: for work a root queued in
