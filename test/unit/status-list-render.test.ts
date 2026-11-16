@@ -83,6 +83,54 @@ describe("renderStatusList — empty", () => {
 });
 
 describe("renderStatusList — populated", () => {
+	test("blocked runs and stages use warning arrows in progress cells (#5234)", () => {
+		const theme = deriveGraphTheme({ warning: "#123456" });
+		const runs = [
+			makeRun({ id: "blocked-run", status: "blocked" }),
+			makeRun({
+				id: "mixed-run",
+				stages: [
+					makeStage("done", "done", "completed"),
+					makeStage("blocked", "blocked", "blocked"),
+					makeStage("pending", "pending", "pending"),
+				],
+			}),
+		];
+		for (const themed of [false, true]) {
+			const rendered = renderStatusList(runs, { theme: themed ? theme : undefined, width: 120 });
+			const plain = stripAnsi(rendered);
+			assert.match(plain, /↑ 1 blocked/);
+			assert.match(plain, /\[↑\]/);
+			assert.match(plain, /\[✓\]\[↑\]\[○\]/);
+			if (themed) {
+				assert.equal(rendered.split(`${hexToAnsi(theme.warning)}↑${RESET}`).length - 1, 2);
+			} else {
+				assert.equal(rendered, plain);
+			}
+		}
+	});
+
+	test("summary badges and progress distinguish stopped and failed runs (#5234)", () => {
+		const theme = deriveGraphTheme({});
+		for (const status of ["killed", "cancelled", "failed"] as const) {
+			for (const endedAt of [undefined, 100]) {
+				const run = makeRun({ status, endedAt });
+				const glyph = status === "failed" ? "✗" : "◼";
+				for (const themed of [false, true]) {
+					const rendered = renderStatusList([run], { theme: themed ? theme : undefined, width: 120 });
+					const header = rendered.split("\n")[0]!;
+					assert.ok(stripAnsi(rendered).includes(`[${glyph}]`), `${status} progress uses ${glyph}`);
+					assert.ok(stripAnsi(header).includes(`${glyph} 1`), `${status} header uses ${glyph}`);
+					assert.doesNotMatch(stripAnsi(header), /[⊘✓] 1/);
+					if (themed) {
+						const color = status === "failed" ? theme.error : theme.textMuted;
+						assert.ok(header.includes(`${hexToAnsi(color)}${glyph} 1${RESET}`));
+					}
+				}
+			}
+		}
+	});
+
 	test("multi-run snapshot renders header counts, cards, and a drill-down hint — without listing every stage", () => {
 		const now = 1_000_000;
 		const runs: RunSnapshot[] = [

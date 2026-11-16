@@ -84,10 +84,8 @@ export function registerWorkflowSlashCommand(
 		pi,
 		"workflows",
 		{
-			description: "Browse workflow runs. Usage: /workflows [run-id]",
+			description: "Open this session's workflow runs. Usage: /workflows [run-id] [stage]",
 			handler: async (args, ctx) => {
-				// The session's workflows view: a run's graph, or a list when there are several. Never the durable resume
-				// picker, which `/workflow resume` keeps (#5224).
 				const owner = deps.owner ?? captureWorkflowOwnerResources();
 				const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);
 				await handleWorkflowsCommand(args, ctx, reporter, { overlay: deps.runControl.overlay, store: owner.store });

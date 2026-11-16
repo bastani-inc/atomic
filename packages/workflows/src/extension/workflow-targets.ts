@@ -6,6 +6,12 @@ import {
 	stageMatchesExpandedIdentifier,
 } from "../shared/expanded-workflow-graph.js";
 import {
+	expandedInspectionRun,
+	hasExpandedInspectionRun,
+	prepareInspectionStoreSnapshot,
+	readInspectionStoreSnapshot,
+} from "../shared/inspection-store-snapshot.js";
+import {
 	isFullRunId,
 	isResolvedRunId,
 	isRunIdPrefix,
@@ -17,7 +23,7 @@ import {
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { type Store, store } from "../shared/store.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
-import type { RunStatus } from "../shared/store-types.js";
+import type { RunSnapshot, RunStatus } from "../shared/store-types.js";
 import type { OverlayPiSurface } from "../tui/overlay-adapter.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { PiUISurface } from "./wiring.js";
@@ -46,16 +52,26 @@ export function inFlightRunCount(): number {
 	return topLevelWorkflowRuns(store.runs()).filter((run) => run.endedAt === undefined).length;
 }
 
-export function topLevelExpandedSnapshots(activeStore: Store = store) {
-	const snapshot = activeStore.snapshot();
-	return topLevelWorkflowRuns(snapshot.runs).map((run) => {
-		const graph = expandWorkflowGraph(snapshot, run.id);
-		return {
-			...structuredClone(run),
-			stages: graph.stages.map((stage) => structuredClone(stage)),
-			toolNodes: graph.tools.map((tool) => structuredClone(tool)),
-		};
-	});
+const EXPANSION_BATCH_SIZE = 16;
+
+export async function prepareTopLevelExpandedSnapshots(activeStore: Store = store): Promise<RunSnapshot[]> {
+	await prepareInspectionStoreSnapshot(activeStore);
+	const snapshot = readInspectionStoreSnapshot(activeStore);
+	const runs = topLevelWorkflowRuns(snapshot.runs);
+	const expanded: RunSnapshot[] = [];
+	let uncached = 0;
+	for (const run of runs) {
+		if (!hasExpandedInspectionRun(snapshot, run.id)) {
+			if (uncached >= EXPANSION_BATCH_SIZE) {
+				uncached = 0;
+				await new Promise<void>((resolve) => setImmediate(resolve));
+			}
+			uncached++;
+		}
+		const candidate = expandedInspectionRun(snapshot, run.id);
+		if (candidate !== undefined) expanded.push(candidate);
+	}
+	return expanded;
 }
 
 export function allStageConflictMessage(action: "pause" | "quit"): string {

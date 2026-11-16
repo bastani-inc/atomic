@@ -50,7 +50,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	private hasReportedViewportRows = false;
 	private renderRun: RunSnapshot | null | undefined;
 	private detailFrame: ToolDetailFrame | null = null;
-	/** A failed stage's detail, rebuilt when its stage snapshot, the log toggle or the width changes. */
+
 	private stageDetailFrame: { frame: ToolDetailFrame; stage: object; logs: boolean } | null = null;
 	constructor(opts: GraphViewOpts) {
 		super(opts);
@@ -195,7 +195,6 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		return frame;
 	}
 
-	/** The open read-only detail's frame: a tool's, or a failed stage's; null while the graph shows. */
 	private _openDetailFrame(width: number): ToolDetailFrame | null {
 		if (this.toolDetail !== null) return this._toolDetailFrame(this.toolDetail, width);
 		const stage = this._stageDetailStage();
@@ -375,7 +374,6 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		}
 	}
 
-	/** The `?` overlay: every key the graph's current state answers to, centred over the body. */
 	private _renderKeysHelpOverlay(lines: string[], frameWidth: number, bodyStart: number, bodyRows: number): void {
 		if (!this.keysHelpOpen) return;
 		const boxWidth = Math.min(56, Math.max(24, frameWidth - 8));
@@ -389,7 +387,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const bodyEnd = bodyStart + bodyRows;
 		const insertAt = Math.max(bodyStart, bodyStart + Math.floor((bodyRows - help.length) / 2));
 		const left = Math.max(2, Math.floor((frameWidth - boxWidth) / 2));
-		// A short body clips the overlay's last rows; the hint line below still names `?` to close it.
+
 		for (let index = 0; index < help.length; index++) {
 			const lineIndex = insertAt + index;
 			if (lineIndex >= bodyEnd) break;

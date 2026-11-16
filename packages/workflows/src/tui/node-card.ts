@@ -34,6 +34,7 @@ import {
 } from "../shared/stage-display-status.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
+import { boundedToolTitleText } from "../shared/tool-payload-bounds.js";
 import { BOLD, DEFAULT_BG, hexToAnsi, lerpColor, paint, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { NODE_H, NODE_W } from "./layout.js";
@@ -292,7 +293,7 @@ function buildTitleSlot(
 	const maxName = Math.max(2, compact ? innerWidth - 1 : innerWidth - 4);
 	// Labels are plain text. Remove the truncator's resets before styling the
 	// whole tab so its ellipsis keeps the same background, foreground and weight.
-	const safeName = stripTerminalSequences(truncate(name, maxName));
+	const safeName = stripTerminalSequences(truncate(boundedToolTitleText(name, maxName * 4), maxName));
 	if (focused) {
 		// Flanking spaces sit on the accent tab so the pill reads as a
 		// single coloured run. Use `paint` to combine bg + fg + bold +
@@ -359,7 +360,7 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 				? blockedBadgeText(stage, opts.stages, innerWidth)
 				: (pooledStageStartingText(stage) ?? durationText(stage));
 	const bodyHex = durationColor(status, theme);
-	// A cancelled tool reads as stopped (◼), never as skipped.
+
 	const statusText = `${statusIcon(stage.toolStatus === "cancelled" ? "cancelled" : status)} ${stage.toolStatus ?? statusLabel(status)}`;
 	const queuedCount = queuedBadgeCount(opts.queuedMessageCount);
 	const statusLine =

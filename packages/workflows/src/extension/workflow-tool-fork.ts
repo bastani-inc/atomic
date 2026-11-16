@@ -11,6 +11,7 @@ export interface WorkflowForkActionDeps {
 	readonly getRuntime: () => ExtensionRuntime;
 	readonly policy: WorkflowExecutionPolicy;
 	readonly source: "sdk" | "cli";
+	readonly expectedStageId?: string;
 	readonly modelOwner?: string;
 	readonly signal?: AbortSignal;
 	readonly onRunAccepted?: (runId: string) => void;
@@ -56,6 +57,7 @@ export async function workflowForkAction(
 	const forked = await deps.getRuntime().forkDurableWorkflow(sourceRunId, {
 		source: deps.source,
 		fromStage: args.fromStage,
+		...(deps.expectedStageId === undefined ? {} : { expectedStageId: deps.expectedStageId }),
 		inputs: replacement,
 		carryMessages: args.carryMessages,
 		policy: deps.policy,

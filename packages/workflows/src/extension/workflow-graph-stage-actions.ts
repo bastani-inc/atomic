@@ -1,21 +1,30 @@
-/**
- * The graph's stage controls, wired to the same run operations the `/workflow` commands use: `x x` stops a stage so it
- * can be resumed, `r` continues a failed run from its failed stage, and `f` forks the run into a new one.
- */
-
+import { durableForkTarget } from "../durable/fork-run.js";
+import { hasActiveLiveRun } from "../durable/run-claims.js";
+import { availableStoreDurableBackend } from "../durable/store-backend.js";
+import { type QuitRunResult, quitRun } from "../runs/background/quit.js";
 import { pauseRun } from "../runs/background/status.js";
-import type { GraphStageActionResult, GraphStageActions } from "../tui/graph-view-types.js";
+import { unknownErrorMessage } from "../runs/foreground/executor-abort.js";
+import type { GraphStageActions } from "../tui/graph-view-types.js";
 import type { ExtensionRuntime } from "./runtime.js";
+import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import type { WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { workflowForkAction } from "./workflow-tool-fork.js";
 
 export interface GraphStageActionDeps {
 	readonly owner: WorkflowOwnerResources;
-	/** The session's workflow runtime; absent before the session starts, when retry and fork are unavailable. */
+
 	readonly runtime: () => ExtensionRuntime | undefined;
-	/** Whether the session has a person to answer prompts, as the slash commands read it. */
-	readonly context: () => { readonly hasUI?: boolean; readonly hasHumanInput?: boolean } | undefined;
+
+	readonly context: () =>
+		| {
+				readonly hasUI?: boolean;
+				readonly hasHumanInput?: boolean;
+				readonly ui?: { readonly notify?: (message: string, type?: "info" | "warning" | "error") => void };
+		  }
+		| undefined;
+
+	readonly ensureWorkflowResourcesLoaded?: () => Promise<void> | void;
 }
 
 const PAUSE_REFUSALS: Record<string, string> = {
@@ -26,12 +35,23 @@ const PAUSE_REFUSALS: Record<string, string> = {
 	stage_not_found: "That stage is gone.",
 };
 
-function failure(error: unknown): GraphStageActionResult {
-	return { ok: false, message: error instanceof Error ? error.message : String(error) };
+function quitRefusal(result: Extract<QuitRunResult, { ok: false }>): string {
+	return "message" in result && typeof result.message === "string" ? result.message : result.reason;
+}
+
+function failure(error: unknown): { readonly ok: false; readonly message: string } {
+	return { ok: false, message: unknownErrorMessage(error) };
 }
 
 export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageActions {
 	const { owner } = deps;
+	const ensureWorkflowResourcesVisible = async (): Promise<void> => {
+		try {
+			await deps.ensureWorkflowResourcesLoaded?.();
+		} catch (error) {
+			deps.context()?.ui?.notify?.(formatWorkflowResourceLoadWarning(error), "warning");
+		}
+	};
 	return {
 		async stop(runId, stageId) {
 			try {
@@ -46,9 +66,10 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 			}
 		},
 		async retry(runId, stageId) {
-			const runtime = deps.runtime();
-			if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 			try {
+				await ensureWorkflowResourcesVisible();
+				const runtime = deps.runtime();
+				if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 				const policy = workflowPolicyFromContext(deps.context());
 				const result = await runtime.resumeFailedRun(runId, stageId, { policy, actor: "user" });
 				return result.ok
@@ -58,13 +79,45 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 				return failure(error);
 			}
 		},
-		async fork(runId) {
-			const runtime = deps.runtime();
-			if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
+		async forkTarget(rootRunId, stageId) {
 			try {
+				await ensureWorkflowResourcesVisible();
+				const backend = availableStoreDurableBackend(owner.store, rootRunId);
+				if (backend === undefined) return { ok: false, message: "This run keeps no durable record to fork from." };
+				const target = await durableForkTarget(backend, rootRunId, stageId);
+				if (target === undefined)
+					return { ok: false, message: "A fork can't start at this stage: it is still running or never ran." };
+				return {
+					ok: true,
+					stagePath: target.stagePath,
+					rerunToolSteps: target.rerunToolSteps,
+					live: hasActiveLiveRun(owner.store, rootRunId),
+				};
+			} catch (error) {
+				return failure(error);
+			}
+		},
+		async fork(rootRunId, stageId) {
+			try {
+				await ensureWorkflowResourcesVisible();
+				const runtime = deps.runtime();
+				if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
+				if (hasActiveLiveRun(owner.store, rootRunId)) {
+					const quit = await quitRun(rootRunId, { ...owner, awaitSettlement: true, actor: "user" });
+					if (!quit.ok) return { ok: false, message: `Could not stop the run to fork it: ${quitRefusal(quit)}` };
+				}
+				const backend = availableStoreDurableBackend(owner.store, rootRunId);
+				if (backend === undefined) return { ok: false, message: "This run keeps no durable record to fork from." };
+				const target = await durableForkTarget(backend, rootRunId, stageId);
+				if (target === undefined) return { ok: false, message: "The selected stage is no longer a fork target." };
 				const result = await workflowForkAction(
-					{ runId },
-					{ getRuntime: () => runtime, policy: workflowPolicyFromContext(deps.context()), source: "cli" },
+					{ runId: rootRunId, fromStage: target.stagePath },
+					{
+						getRuntime: () => runtime,
+						policy: workflowPolicyFromContext(deps.context()),
+						source: "cli",
+						expectedStageId: stageId,
+					},
 				);
 				return result.status === "failed"
 					? { ok: false, message: result.message }
