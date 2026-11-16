@@ -20,9 +20,17 @@ export class EngineInputFormService {
 		this.write = write;
 	}
 
-	open(request: HostInputFormRequest, signal?: AbortSignal): Promise<Record<string, string> | undefined> {
-		if (signal?.aborted) return Promise.resolve(undefined);
+	async open(request: HostInputFormRequest, signal?: AbortSignal): Promise<Record<string, string> | undefined> {
+		if (signal?.aborted) return undefined;
 		const componentId = `input_form_${++this.nextId}`;
+		const frame = serializeInteractiveEngineMessage({
+			type: "engine_input_form_open",
+			componentId,
+			title: request.title,
+			fields: request.fields.map((field) => ({ ...field, choices: field.choices ? [...field.choices] : undefined })),
+			...(request.heading !== undefined ? { heading: request.heading } : {}),
+			...(request.submitLabel !== undefined ? { submitLabel: request.submitLabel } : {}),
+		});
 		let resolveResult!: (values: Record<string, string> | undefined) => void;
 		let rejectResult!: (error: Error) => void;
 		const result = new Promise<Record<string, string> | undefined>((resolve, reject) => {
@@ -51,14 +59,11 @@ export class EngineInputFormService {
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 		this.active.set(componentId, record);
-		this.send({
-			type: "engine_input_form_open",
-			componentId,
-			title: request.title,
-			fields: request.fields.map((field) => ({ ...field, choices: field.choices ? [...field.choices] : undefined })),
-			...(request.heading !== undefined ? { heading: request.heading } : {}),
-			...(request.submitLabel !== undefined ? { submitLabel: request.submitLabel } : {}),
-		});
+		try {
+			this.write(frame);
+		} catch (error) {
+			record.reject(error instanceof Error ? error : new Error(String(error)));
+		}
 		return result;
 	}
 

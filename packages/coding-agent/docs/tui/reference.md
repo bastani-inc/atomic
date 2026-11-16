@@ -328,22 +328,26 @@ const path = await picker.result;    // selected row's path, or undefined on can
 
 ### Host-native input form
 
-Use `ctx.ui.hostInputForm(request)` for a structured inline form in the editor slot. It supports Tab/Shift+Tab, arrows, text editing, configured keybindings, Enter, Escape, and Ctrl+C, including under engine isolation.
+Use `ctx.ui.hostInputForm(request)` for a structured inline form in the editor slot. It supports Tab/Shift+Tab, arrows, text editing, configured keybindings, Enter, Escape, and Ctrl+C, including under engine isolation. The promise rejects if the host cannot read the form, with "The host could not read this input form."
 
 ```typescript
-const values = await ctx.ui.hostInputForm?.({
-  title: "Release",
-  fields: [
-    { name: "version", type: "string", required: true, initialValue: "" },
-    { name: "channel", type: "select", choices: ["stable", "beta"], initialValue: "stable" },
-  ],
-});
-if (values === undefined) return; // Escape, Ctrl+C, teardown, or close
+try {
+  const values = await ctx.ui.hostInputForm?.({
+    title: "Release",
+    fields: [
+      { name: "version", type: "string", required: true, initialValue: "" },
+      { name: "channel", type: "select", choices: ["stable", "beta"], initialValue: "stable" },
+    ],
+  });
+  if (values === undefined) return;
+} catch (error) {
+  ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+}
 ```
 
 Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. Initial and returned values are raw strings; the caller owns domain coercion.
 
-A field can also carry constraints, which decide whether its value is ready:
+A field can also carry constraints, which decide whether its value is ready. When `schema` is present, it replaces all other checks, including the field type and select choices:
 
 | Field | Applies to | Checks |
 |---|---|---|
@@ -354,7 +358,9 @@ A field can also carry constraints, which decide whether its value is ready:
 | `minLength`, `maxLength` | `string`, `text` | length in characters |
 | `pattern` | `string`, `text` | a regular expression, compiled with the `u` flag |
 | `format` | `string`, `text` | a JSON Schema format such as `email`, `uuid` or `date-time` |
-| `schema` | any | a JSON Schema the value must match: the text is read as JSON when it parses, else as the string itself | Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
+| `schema` | any | a JSON Schema the value must match: the text is read as JSON when that value matches the schema, otherwise as the string itself |
+
+Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
 
 Each field's header shows whether its value is ready: `✓`, or `✗` with the reason (`required`, `choose one`, `choose on or off`, `must be a whole number`, `must be a number`, `must be on or off`, `not in choices`, `must equal <value>`, the broken constraint such as `must be >= 1` or `must not have more than 100 characters (maxLength 100)`, or `invalid pattern in the workflow schema` when a `pattern` does not compile). Enter on the submit button runs only when every field is ready. A boolean accepts `true`, `false`, `on`, `off`, `1` or `0`; anything else is refused rather than read as off.
 
