@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
 - Pickers ignore a repeated Enter or click instead of answering twice, and an extension dialog shown again after another dialog repaints in the current theme. Ctrl+C cancels a filtered picker with Kitty and modifyOtherKeys keyboard protocols too; `/scoped-models` keeps its clear-search-first behavior ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 - Isolated interactive mode applies the reasoning level chosen in `/model` and keeps model and reasoning changes made by extensions during `/model` or Ctrl+P without saving session-only changes. Saving a model choice no longer copies project model defaults or scoped-model lists into global settings ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 - In `/resume`, pressing ↓ or Page Down while a search matched nothing left no session selected once the search matched again, so Enter did nothing until you moved the selection ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
