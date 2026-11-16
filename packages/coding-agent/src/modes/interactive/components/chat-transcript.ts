@@ -276,6 +276,7 @@ const SCROLLBAR_THUMB = "┃";
 const SCROLLBAR_TRACK = "│";
 const SCROLLBAR_CELL_RESET = "\x1b[0m\x1b]8;;\x07";
 const PINNED_PROMPT_SCAN_ROWS = 64;
+const MAX_PINNED_PROMPT_SCAN_ROWS = 16_384;
 
 /** Settings and hooks of a {@link ScrollableComponentViewport}; every member is optional. */
 export interface ScrollableComponentViewportOptions {
@@ -704,19 +705,28 @@ export class ScrollableComponentViewport implements Component {
 	private pinnedPromptRow(componentRows: ComponentRows[], width: number, start: number): string | undefined {
 		const style = this.options.pinnedPrompt;
 		if (!style) return undefined;
-		let promptText: string | undefined;
+		let windowRows = PINNED_PROMPT_SCAN_ROWS;
 		for (let end = start + 1; end > 0; ) {
-			const begin = Math.max(0, end - PINNED_PROMPT_SCAN_ROWS);
+			const begin = Math.max(0, end - windowRows);
 			const rows = this.renderVisibleRows(componentRows, width, begin, end);
-			for (let index = rows.length - 1; index >= 0; index--) {
-				const row = rows[index] ?? "";
-				if (begin + index < start) {
-					const text = stripTerminalSequences(row);
-					if (text.trim()) promptText = text;
+			let promptIndex = rows.length - 1;
+			while (promptIndex >= 0 && !isUserPromptRow(rows[promptIndex] ?? "")) promptIndex--;
+			if (promptIndex >= 0) {
+				let text = firstPromptTextRow(rows.slice(promptIndex, Math.min(rows.length, start - begin)));
+				for (let cursor = end; text === undefined && cursor < start; cursor += PINNED_PROMPT_SCAN_ROWS) {
+					text = firstPromptTextRow(
+						this.renderVisibleRows(
+							componentRows,
+							width,
+							cursor,
+							Math.min(start, cursor + PINNED_PROMPT_SCAN_ROWS),
+						),
+					);
 				}
-				if (isUserPromptRow(row)) return promptText === undefined ? undefined : style(promptText);
+				return text === undefined ? undefined : style(text);
 			}
 			end = begin;
+			windowRows = Math.min(MAX_PINNED_PROMPT_SCAN_ROWS, windowRows * 2);
 		}
 		return undefined;
 	}
@@ -914,6 +924,14 @@ function withoutTerminalControl(row: string): string {
 	return row
 		.replace(CONTROL_SEQUENCE, (sequence) => (sequence.endsWith("m") ? sequence : ""))
 		.replace(CONTROL_CHARACTER, " ");
+}
+
+function firstPromptTextRow(rows: readonly string[]): string | undefined {
+	for (const row of rows) {
+		const text = stripTerminalSequences(row);
+		if (text.trim()) return text;
+	}
+	return undefined;
 }
 
 function isMouseSequence(data: string): boolean {

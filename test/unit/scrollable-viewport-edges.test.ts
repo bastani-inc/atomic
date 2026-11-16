@@ -311,6 +311,30 @@ test("a pinned prompt does not materialize earlier turns of a windowed transcrip
 	assert.ok(requestedRows <= 100, `requested ${requestedRows} rows for a prompt 50 rows above the view`);
 });
 
+test("prompt lookup batches long histories without user prompt markers (#5243)", () => {
+	const rows = numbered(20_000);
+	let renderCalls = 0;
+	const component = {
+		supportsRowWindow: true,
+		rowCount: () => rows.length,
+		renderRows: (_width: number, start: number, end: number) => {
+			renderCalls++;
+			return rows.slice(start, end);
+		},
+		render: () => rows,
+		invalidate() {},
+	};
+	const view = new ScrollableComponentViewport(undefined, { pinnedPrompt: (row) => `PIN ${row}` });
+	view.setComponents([component]);
+	view.setVisibleRows(10);
+	view.render(40);
+	view.scrollTo(19_950);
+	renderCalls = 0;
+	const frame = plain(view.render(40));
+	assert.equal(frame[0], "row-19950");
+	assert.ok(renderCalls <= 16, `requested ${renderCalls} separate row windows for a history without prompts`);
+});
+
 test("a pinned prompt finds its first nonblank line across scan windows (#5243)", () => {
 	const rows = numbered(200);
 	rows[50] = "\x1b]133;A;atomic=user\x07";
