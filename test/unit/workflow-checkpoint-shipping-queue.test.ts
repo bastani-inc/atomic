@@ -84,6 +84,7 @@ async function hostShipping(
 		maxBatch: options.maxBatch ?? 2,
 		maxLagMs: 30_000,
 		host: "host-A",
+		rootStanding: () => queue.rootLease(lease, LEASE_MS),
 		deliver: options.deliver ?? ((attempt, batch) => queue.shipBatch(lease, attempt, batch)),
 	});
 	closers.push(() => shipping.close());

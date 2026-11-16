@@ -6,18 +6,12 @@ import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
 
-/**
- * Where a host keeps the checkpoints it accepted for one shared root and has not shipped yet (#4768): one SQLite file
- * per root, under the host's pool state directory and the identity of the shared journal, so a host serving many
- * roots never contends on one file.
- */
 export function shipShardPath(stateDirectory: string, journalIdentity: string, root: string): string {
 	const journal = createHash("sha256").update(journalIdentity).digest("hex").slice(0, 24);
 	const file = createHash("sha256").update(root).digest("hex").slice(0, 32);
 	return join(stateDirectory, "ship", journal, `${file}.sqlite`);
 }
 
-/** A checkpoint a host accepted for an attempt, as the local journal holds it. */
 export interface ShipEvent {
 	readonly localSeq: number;
 	readonly work: string;
@@ -29,7 +23,6 @@ export interface ShipEvent {
 	readonly at: number;
 }
 
-/** A sealed batch: its content address and its checkpoints, in the order the host accepted them. */
 export interface ShipBatchRows {
 	readonly id: string;
 	readonly events: readonly ShipEvent[];
@@ -59,7 +52,6 @@ function shipEventOf(row: ShipEventRow): ShipEvent {
 	};
 }
 
-/** A batch's content address: the root, the attempt, and each checkpoint's key and digest, in order. */
 export function shipBatchId(
 	root: string,
 	lease: Pick<AttemptLease, "id" | "generation">,
@@ -70,11 +62,9 @@ export function shipBatchId(
 		.digest("hex");
 }
 
-/** The attempt's lease as the host last renewed it: what a local commit is checked against. */
 interface HeldLease {
 	readonly lease: AttemptLease;
 	readonly leaseMs: number;
-	/** When the host last renewed it, by `performance.now()`, so a wall-clock step never extends or ends it (#5058). */
 	renewedAt: number;
 }
 
@@ -84,7 +74,7 @@ CREATE TABLE IF NOT EXISTS ship_events(
 	work TEXT NOT NULL, generation INTEGER NOT NULL, epoch INTEGER NOT NULL,
 	event_key TEXT NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL, at INTEGER NOT NULL,
 	batch TEXT,
-	UNIQUE(work, event_key)
+	UNIQUE(work, generation, event_key)
 );
 CREATE TABLE IF NOT EXISTS ship_cursor(
 	work TEXT NOT NULL, generation INTEGER NOT NULL, shipped_local_seq INTEGER NOT NULL, shipped_at INTEGER NOT NULL,
@@ -95,14 +85,12 @@ CREATE TABLE IF NOT EXISTS ship_lease(
 );
 `;
 
+const GENERATION_UNIQUE_RE = /UNIQUE\s*\(\s*work\s*,\s*generation\s*,\s*event_key\s*\)/i;
+
 export function shipDigest(payload: string): string {
 	return createHash("sha256").update(payload).digest("hex");
 }
 
-/**
- * The attempt accepted a checkpoint under this key before, with another payload: the identity conflict the shared
- * journal reports for the same case, with its message.
- */
 export class ShipIdentityConflictError extends Error {
 	override readonly name = "ShipIdentityConflictError";
 	constructor() {
@@ -110,10 +98,6 @@ export class ShipIdentityConflictError extends Error {
 	}
 }
 
-/**
- * One shared root's local checkpoint journal on this host (#4768). The host accepts an attempt's checkpoint here only
- * while it holds the attempt's lease, and ships accepted checkpoints to the shared journal under that lease's fences.
- */
 export class ShipShard {
 	private readonly leases = new Map<string, HeldLease>();
 	private closed = false;
@@ -129,6 +113,28 @@ export class ShipShard {
 		const database = await openNodeSqliteDatabase(path);
 		try {
 			await database.exec(SHIP_SHARD_SCHEMA);
+			const table = await database.get<SqliteRow & { sql: string | null }>(
+				`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ship_events'`,
+			);
+			if (table?.sql !== null && table?.sql !== undefined && !GENERATION_UNIQUE_RE.test(table.sql)) {
+				await database.transaction(async (tx) => {
+					await tx.run(`ALTER TABLE ship_events RENAME TO ship_events_legacy`);
+					await tx.run(
+						`CREATE TABLE ship_events(
+							local_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+							work TEXT NOT NULL, generation INTEGER NOT NULL, epoch INTEGER NOT NULL,
+							event_key TEXT NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL, at INTEGER NOT NULL,
+							batch TEXT,
+							UNIQUE(work, generation, event_key)
+						)`,
+					);
+					await tx.run(
+						`INSERT INTO ship_events(local_seq, work, generation, epoch, event_key, payload, digest, at, batch)
+						SELECT local_seq, work, generation, epoch, event_key, payload, digest, at, batch FROM ship_events_legacy`,
+					);
+					await tx.run(`DROP TABLE ship_events_legacy`);
+				});
+			}
 		} catch (error) {
 			await database.close();
 			throw error;
@@ -136,12 +142,9 @@ export class ShipShard {
 		return new ShipShard(database, root, now);
 	}
 
-	/**
-	 * The host holds `lease` for its attempt, renewed now: at its claim, and again by each heartbeat. Rows another
-	 * generation of the work left behind are dropped: a displaced attempt's checkpoints are never shipped.
-	 */
 	async hold(lease: AttemptLease, leaseMs: number): Promise<void> {
 		const held = this.leases.get(lease.id);
+		if (held !== undefined && lease.generation < held.lease.generation) return;
 		if (
 			held !== undefined &&
 			held.lease.generation === lease.generation &&
@@ -153,11 +156,24 @@ export class ShipShard {
 		}
 		this.leases.set(lease.id, { lease: { ...lease }, leaseMs, renewedAt: this.now() });
 		await this.database.transaction(async (tx) => {
-			await tx.run(`DELETE FROM ship_events WHERE work = ? AND generation <> ?`, lease.id, lease.generation);
-			await tx.run(`DELETE FROM ship_cursor WHERE work = ? AND generation <> ?`, lease.id, lease.generation);
+			const current = this.leases.get(lease.id);
+			if (current !== undefined && lease.generation < current.lease.generation) return;
+			const stored = await tx.get<SqliteRow & { generation: number }>(
+				`SELECT generation FROM ship_lease WHERE work = ?`,
+				lease.id,
+			);
+			if (stored !== undefined && lease.generation < Number(stored.generation)) return;
+			await tx.run(`DELETE FROM ship_events WHERE work = ? AND generation < ?`, lease.id, lease.generation);
+			await tx.run(`DELETE FROM ship_cursor WHERE work = ? AND generation < ?`, lease.id, lease.generation);
+			await tx.run(
+				`UPDATE ship_cursor SET fenced = 0 WHERE work = ? AND generation = ? AND fenced <> 0`,
+				lease.id,
+				lease.generation,
+			);
 			await tx.run(
 				`INSERT INTO ship_lease(work, generation, worker, epoch) VALUES (?, ?, ?, ?)
-				ON CONFLICT(work) DO UPDATE SET generation = excluded.generation, worker = excluded.worker, epoch = excluded.epoch`,
+				ON CONFLICT(work) DO UPDATE SET generation = excluded.generation, worker = excluded.worker, epoch = excluded.epoch
+				WHERE excluded.generation >= ship_lease.generation`,
 				lease.id,
 				lease.generation,
 				lease.worker,
@@ -166,16 +182,12 @@ export class ShipShard {
 		});
 	}
 
-	/** The host no longer holds the attempt's lease: its local commits are refused from now on. */
-	release(workId: string): void {
-		this.leases.delete(workId);
+	release(work: Pick<AttemptLease, "id" | "generation">): void {
+		if (this.leases.get(work.id)?.lease.generation === work.generation) {
+			this.leases.delete(work.id);
+		}
 	}
 
-	/**
-	 * Accepts `payload` as the attempt's checkpoint under `key`. Refused, with {@link StaleWorkLeaseError}, unless the
-	 * host holds the attempt's lease (same generation, worker and epoch) and renewed it within the lease's duration. The
-	 * same key with the same payload is the checkpoint accepted before; with another payload it is an identity conflict.
-	 */
 	async accept(
 		root: string,
 		lease: AttemptLease,
@@ -187,9 +199,11 @@ export class ShipShard {
 		const digest = shipDigest(payload);
 		return this.database.transaction(async (tx) => {
 			this.assertHeld(root, lease);
+			await this.assertStoredLease(tx, root, lease);
 			const existing = await tx.get<SqliteRow & { local_seq: number; digest: string }>(
-				`SELECT local_seq, digest FROM ship_events WHERE work = ? AND event_key = ?`,
+				`SELECT local_seq, digest FROM ship_events WHERE work = ? AND generation = ? AND event_key = ?`,
 				lease.id,
+				lease.generation,
 				key,
 			);
 			if (existing !== undefined) {
@@ -213,7 +227,6 @@ export class ShipShard {
 		});
 	}
 
-	/** The attempt's accepted checkpoints not shipped yet, in the order the host accepted them. */
 	pending(lease: Pick<AttemptLease, "id" | "generation">, limit = 1_000): Promise<ShipEvent[]> {
 		return this.rows(
 			this.database,
@@ -224,11 +237,6 @@ export class ShipShard {
 		);
 	}
 
-	/**
-	 * The attempt's next batch to ship, up to `maxBatch` checkpoints in the order the host accepted them, or undefined
-	 * when nothing is left. A batch is sealed once: until it is shipped, the same checkpoints are the same batch, under
-	 * the same id, however often it is asked for, so a retry after a lost answer is recognised as delivered.
-	 */
 	async seal(lease: Pick<AttemptLease, "id" | "generation">, maxBatch: number): Promise<ShipBatchRows | undefined> {
 		return this.database.transaction(async (tx) => {
 			const sealed = await tx.get<SqliteRow & { batch: string }>(
@@ -261,7 +269,6 @@ export class ShipShard {
 		});
 	}
 
-	/** How many checkpoints of the attempt the host holds unshipped. */
 	async pendingCount(lease: Pick<AttemptLease, "id" | "generation">): Promise<number> {
 		const row = await this.database.get<SqliteRow & { n: number }>(
 			`SELECT COUNT(*) AS n FROM ship_events WHERE work = ? AND generation = ?`,
@@ -283,13 +290,13 @@ export class ShipShard {
 		return rows.map(shipEventOf);
 	}
 
-	/** The shared journal holds the attempt's checkpoints up to `localSeq`: the host forgets them. */
 	async shipped(lease: Pick<AttemptLease, "id" | "generation">, localSeq: number, at = Date.now()): Promise<void> {
 		await this.database.transaction(async (tx) => {
 			await tx.run(
-				`DELETE FROM ship_events WHERE work = ? AND generation = ? AND local_seq <= ?`,
+				`DELETE FROM ship_events WHERE work = ? AND generation = ? AND (local_seq = ? OR (batch IS NOT NULL AND local_seq <= ?))`,
 				lease.id,
 				lease.generation,
+				localSeq,
 				localSeq,
 			);
 			await tx.run(
@@ -305,15 +312,24 @@ export class ShipShard {
 		});
 	}
 
-	/**
-	 * The shared store refused the attempt's checkpoints because another attempt owns its work: the host drops what it
-	 * did not ship, refuses the attempt's next commit, and marks the attempt fenced.
-	 */
+	async discard(lease: Pick<AttemptLease, "id" | "generation">, localSeq: number): Promise<void> {
+		await this.database.run(
+			`DELETE FROM ship_events WHERE work = ? AND generation = ? AND local_seq = ?`,
+			lease.id,
+			lease.generation,
+			localSeq,
+		);
+	}
+
 	async fence(lease: Pick<AttemptLease, "id" | "generation">, at = Date.now()): Promise<void> {
-		const held = this.leases.get(lease.id);
-		if (held?.lease.generation === lease.generation) this.leases.delete(lease.id);
+		if (this.leases.get(lease.id)?.lease.generation === lease.generation) this.leases.delete(lease.id);
 		await this.database.transaction(async (tx) => {
 			await tx.run(`DELETE FROM ship_events WHERE work = ? AND generation = ?`, lease.id, lease.generation);
+			const stored = await tx.get<SqliteRow & { generation: number }>(
+				`SELECT generation FROM ship_lease WHERE work = ?`,
+				lease.id,
+			);
+			if (stored !== undefined && lease.generation < Number(stored.generation)) return;
 			await tx.run(
 				`INSERT INTO ship_cursor(work, generation, shipped_local_seq, shipped_at, fenced) VALUES (?, ?, 0, ?, 1)
 				ON CONFLICT(work, generation) DO UPDATE SET fenced = 1, shipped_at = excluded.shipped_at`,
@@ -331,14 +347,42 @@ export class ShipShard {
 		await this.database.close();
 	}
 
+	private staleError(
+		root: string,
+		lease: AttemptLease,
+		reason: "missing" | "generation-mismatch" | "worker-mismatch" | "epoch-mismatch" | "expired",
+	): StaleWorkLeaseError {
+		return new StaleWorkLeaseError({ root, workId: lease.id, generation: lease.generation, reason });
+	}
+
 	private assertHeld(root: string, lease: AttemptLease): void {
-		const stale = (reason: "missing" | "generation-mismatch" | "worker-mismatch" | "epoch-mismatch" | "expired") =>
-			new StaleWorkLeaseError({ root, workId: lease.id, generation: lease.generation, reason });
 		const held = this.leases.get(lease.id);
-		if (held === undefined) throw stale("missing");
-		if (held.lease.generation !== lease.generation) throw stale("generation-mismatch");
-		if (held.lease.worker !== lease.worker) throw stale("worker-mismatch");
-		if (held.lease.epoch !== lease.epoch) throw stale("epoch-mismatch");
-		if (this.now() - held.renewedAt >= held.leaseMs) throw stale("expired");
+		if (held === undefined) throw this.staleError(root, lease, "missing");
+		if (held.lease.generation !== lease.generation) throw this.staleError(root, lease, "generation-mismatch");
+		if (held.lease.worker !== lease.worker) throw this.staleError(root, lease, "worker-mismatch");
+		if (held.lease.epoch !== lease.epoch) throw this.staleError(root, lease, "epoch-mismatch");
+		if (this.now() - held.renewedAt >= held.leaseMs) throw this.staleError(root, lease, "expired");
+	}
+
+	private async assertStoredLease(tx: Pick<SqliteDatabase, "get">, root: string, lease: AttemptLease): Promise<void> {
+		const stored = await tx.get<SqliteRow & { generation: number; worker: string; epoch: number }>(
+			`SELECT generation, worker, epoch FROM ship_lease WHERE work = ?`,
+			lease.id,
+		);
+		if (stored === undefined) throw this.staleError(root, lease, "missing");
+		if (Number(stored.generation) !== lease.generation) throw this.staleError(root, lease, "generation-mismatch");
+		if (stored.worker !== lease.worker) throw this.staleError(root, lease, "worker-mismatch");
+		if (Number(stored.epoch) !== lease.epoch) throw this.staleError(root, lease, "epoch-mismatch");
+		const cursor = await tx.get<SqliteRow & { fenced: number }>(
+			`SELECT fenced FROM ship_cursor WHERE work = ? AND generation = ?`,
+			lease.id,
+			lease.generation,
+		);
+		if (cursor !== undefined && Number(cursor.fenced) !== 0) {
+			if (this.leases.get(lease.id)?.lease.generation === lease.generation) {
+				this.leases.delete(lease.id);
+			}
+			throw this.staleError(root, lease, "missing");
+		}
 	}
 }
