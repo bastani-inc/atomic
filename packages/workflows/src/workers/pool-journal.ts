@@ -124,8 +124,16 @@ export function openDurableJournal(durable: PoolDurableJournal): Promise<RunJour
 	return openSelectedRunJournal(decodeSelection(durable.selection), durable.agentDir);
 }
 
+const poolStateDirectories = new Map<string, string>();
+
 export function poolStateDirectory(agentDir: string): string {
-	return join(workflowsStorageDir(agentDir), "pool");
+	const workflowsDir = workflowsStorageDir(agentDir);
+	let directory = poolStateDirectories.get(workflowsDir);
+	if (directory === undefined) {
+		directory = join(workflowsDir, "pool");
+		poolStateDirectories.set(workflowsDir, directory);
+	}
+	return directory;
 }
 
 /**

@@ -17,6 +17,7 @@ const STORAGE_ENV_NAMES = ["ATOMIC_STORAGE", "ATOMIC_SESSIONS_STORAGE", "ATOMIC_
 interface SettledStorageHome {
 	readonly home: string;
 	readonly workflowsDir: string;
+	readonly journalStoreDir: string;
 	readonly sessionDatabasePath: string;
 	readonly sharedStoragePath: string;
 	readonly adoptedClaim?: string;
@@ -103,6 +104,7 @@ function createStorageHomeEntry(home: string, adoptedClaim?: string): SettledSto
 	return {
 		home,
 		workflowsDir,
+		journalStoreDir: join(workflowsDir, "journal"),
 		sessionDatabasePath: join(workflowsDir, "journal.sqlite"),
 		sharedStoragePath: join(home, "storage.sqlite"),
 		...(adoptedClaim === undefined ? {} : { adoptedClaim }),
@@ -263,11 +265,13 @@ function recordSettledStorageHome(fastKey: string, cacheKey: string, settled: Se
 function resolveStorageHomeEntry(agentDir?: string): SettledStorageHome {
 	const rawHome = getHomeDir();
 	const rawAgentDir = agentDir ?? resolveConfiguredAgentDir(rawHome);
-	const agentPath = normalizeAgentDirPath(rawAgentDir);
-	const fastKey = `${process.platform}\0${rawHome}\0${agentPath}`;
+	const fastKey = isAbsolute(rawAgentDir)
+		? `${process.platform}\0${rawHome}\0${rawAgentDir}`
+		: `${process.platform}\0${rawHome}\0${process.cwd()}\0${rawAgentDir}`;
 	const fastHit = fastStorageHomes.get(fastKey);
 	if (fastHit !== undefined) return fastHit;
 
+	const agentPath = normalizeAgentDirPath(rawAgentDir);
 	const defaultHome = normalizeAgentDirPath(join(rawHome, CONFIG_DIR_NAME));
 	const defaultAgent = join(defaultHome, "agent");
 	const cacheKey = `${getPathComparisonKey(defaultHome)}\0${getPathComparisonKey(agentPath)}`;
@@ -335,6 +339,10 @@ export function storageHomeDir(agentDir?: string): string {
 
 export function workflowsStorageDir(agentDir?: string): string {
 	return resolveStorageHomeEntry(agentDir).workflowsDir;
+}
+
+export function defaultJournalStoreDirectory(agentDir: string): string {
+	return resolveStorageHomeEntry(agentDir).journalStoreDir;
 }
 
 export function defaultSessionDatabasePath(agentDir?: string): string {

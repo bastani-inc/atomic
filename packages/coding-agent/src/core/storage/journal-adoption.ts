@@ -14,7 +14,7 @@ import {
 	JournalShardUnavailableError,
 	StorageSchemaVersionError,
 } from "./errors.js";
-import { isSameFile, workflowsStorageDir } from "./file-identity.js";
+import { isSameFile } from "./file-identity.js";
 import {
 	isFinishedJournalStatus,
 	JournalCatalog,
@@ -32,9 +32,7 @@ import {
 	writeJournalPayloadChunks,
 } from "./run-journal.js";
 
-export function defaultJournalStoreDirectory(agentDir: string): string {
-	return join(workflowsStorageDir(agentDir), "journal");
-}
+export { defaultJournalStoreDirectory } from "./file-identity.js";
 
 /**
  * The single-file journal every workflow run used by default before the journal store, beside the store's directory.
