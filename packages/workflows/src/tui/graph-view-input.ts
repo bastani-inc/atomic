@@ -212,7 +212,11 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			}
 			if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) {
 				const blocker = blockers[Math.min(detail.selected, blockers.length - 1)]!;
-				if (this._focusBlockerNode(blocker.node, blocker.id)) this._activateFocusedNode();
+				if (this._focusBlockerNode(blocker.node, blocker.id)) {
+					this._activateFocusedNode();
+					// A stage chat leaves the graph; only a detail over it comes back to the run details.
+					if (!this._detailOpen()) this.runDetailReturn = null;
+				}
 				return true;
 			}
 		}

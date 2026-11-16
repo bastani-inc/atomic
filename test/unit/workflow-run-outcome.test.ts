@@ -203,6 +203,45 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 		]);
 	});
 
+	it("lists tool nodes in the events, and the run's end event leaves the reason to the Reason line", () => {
+		const r = run("failed", [], {
+			startedAt: 500,
+			endedAt: 3_000,
+			error: "verify gate failed",
+			toolNodes: [
+				{ id: "t1", name: "prepare", status: "completed", startedAt: 600, endedAt: 900, parentIds: [] },
+				{
+					id: "t2",
+					name: "verify",
+					status: "failed",
+					startedAt: 1_000,
+					endedAt: 2_000,
+					error: "verify gate failed",
+					parentIds: [],
+				},
+			],
+		});
+		assert.deepEqual(
+			buildRunOutcome(r, 3_000).events.map((event) => event.text),
+			[
+				"ralph started",
+				"prepare started",
+				"prepare completed",
+				"verify started",
+				"verify failed: verify gate failed",
+				"ralph failed",
+			],
+		);
+	});
+
+	it("the log shows a failure once when a stage or tool repeats the run's own message", () => {
+		const r = run("failed", [], {
+			error: "verify gate failed",
+			toolNodes: [{ id: "t2", name: "verify", status: "failed", error: "verify gate failed", parentIds: [] }],
+		});
+		assert.deepEqual(runOutcomeLogLines(r), ["verify gate failed"]);
+	});
+
 	it("fits every row to the width at 80 and 160 columns, and degrades to plain text without a theme", () => {
 		const r = run("failed", [stage("verify", "failed", { error: "x".repeat(400) })], {
 			error: "x".repeat(400),

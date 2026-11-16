@@ -217,14 +217,15 @@ function stageEndEvent(stage: StageSnapshot): Omit<RunOutcomeEvent, "at"> | unde
 	}
 }
 
-function runEndText(run: RunSnapshot, state: RunOutcomeState, reason: string | undefined): string {
-	if (state === "failed") return `${run.name} failed${reason ? `: ${reason}` : ""}`;
+/** The run's own end; a failure's reason is on the Reason line above, so it is not repeated here. */
+function runEndText(run: RunSnapshot, state: RunOutcomeState): string {
+	if (state === "failed") return `${run.name} failed`;
 	if (state === "stopped") return `${run.name} stopped`;
 	if (state === "blocked") return `${run.name} ended blocked`;
 	return `${run.name} completed`;
 }
 
-function eventsOf(run: RunSnapshot, state: RunOutcomeState, reason: string | undefined): RunOutcomeEvent[] {
+function eventsOf(run: RunSnapshot, state: RunOutcomeState): RunOutcomeEvent[] {
 	const events: Array<RunOutcomeEvent & { order: number }> = [];
 	let order = 0;
 	const push = (at: number | undefined, event: Omit<RunOutcomeEvent, "at">): void => {
@@ -237,13 +238,20 @@ function eventsOf(run: RunSnapshot, state: RunOutcomeState, reason: string | und
 		const end = stageEndEvent(stage);
 		if (end !== undefined) push(stage.endedAt, end);
 	}
+	for (const tool of run.toolNodes) {
+		push(tool.startedAt, { tone: "info", text: `${tool.name} started` });
+		if (tool.status === "completed") push(tool.endedAt, { tone: "success", text: `${tool.name} completed` });
+		else if (tool.status === "failed")
+			push(tool.endedAt, { tone: "error", text: `${tool.name} failed: ${summarizeFailureText(tool.error).reason}` });
+		else if (tool.status === "cancelled") push(tool.endedAt, { tone: "muted", text: `${tool.name} stopped` });
+	}
 	push(run.pausedAt, { tone: "warning", text: `${run.name} ${run.quitAt !== undefined ? "stopped" : "paused"}` });
 	if (run.resumedAt !== undefined && (run.pausedAt === undefined || run.resumedAt > run.pausedAt))
 		push(run.resumedAt, { tone: "info", text: `${run.name} resumed` });
 	if (state === "completed" || state === "failed" || state === "blocked" || (state === "stopped" && !run.quitAt))
 		push(run.endedAt, {
 			tone: state === "failed" ? "error" : state === "completed" ? "success" : "muted",
-			text: runEndText(run, state, reason),
+			text: runEndText(run, state),
 		});
 	events.sort((a, b) => a.at - b.at || a.order - b.order);
 	return events.map(({ order: _order, ...event }) => event);
@@ -268,7 +276,7 @@ export function buildRunOutcome(run: RunSnapshot, now = Date.now()): RunOutcome 
 		outputs: outputsOf(run),
 		artifacts: artifactsOf(run),
 		blockers: blockersOf(run, state),
-		events: eventsOf(run, state, reason),
+		events: eventsOf(run, state),
 		log: runOutcomeLogLines(run),
 	};
 }
@@ -278,13 +286,16 @@ export function runOutcomeLogLines(run: RunSnapshot): string[] {
 	const lines: string[] = [];
 	const message = run.failureMessage ?? run.error;
 	if (message) lines.push(...message.split(/\r?\n/));
+	// A node that failed with the run's own message adds nothing the run's lines don't already show.
+	const repeatsRun = (text: string | undefined): boolean => message !== undefined && text?.trim() === message.trim();
 	for (const stage of run.stages) {
 		if (stage.status !== "failed" && stage.status !== "blocked") continue;
+		if (repeatsRun(stage.failureMessage ?? stage.error) && stage.failureDetail === undefined) continue;
 		if (lines.length > 0) lines.push("");
 		lines.push(`${stage.name}:`, ...stageFailureLogLines(stage).map((line) => (line ? `  ${line}` : line)));
 	}
 	for (const tool of run.toolNodes) {
-		if (tool.status !== "failed" || tool.error === undefined) continue;
+		if (tool.status !== "failed" || tool.error === undefined || repeatsRun(tool.error)) continue;
 		if (lines.length > 0) lines.push("");
 		lines.push(`${tool.name}:`, ...tool.error.split(/\r?\n/).map((line) => `  ${line}`));
 	}

@@ -151,6 +151,8 @@ export abstract class GraphViewState {
 	protected stageDetail: GraphStageDetail | null = null;
 	/** The run's details view, opened with `o`. */
 	protected runDetail: GraphRunDetail | null = null;
+	/** The run details a stage or tool detail was opened from, so Esc there goes back to them. */
+	protected runDetailReturn: GraphRunDetail | null = null;
 	/** Scroll the selected blocker into view on the next frame. */
 	protected runDetailRevealSelected = false;
 	/** The `f` status filter. */
@@ -542,13 +544,17 @@ export abstract class GraphViewState {
 		if (this.toolDetail === null) return false;
 		this.toolDetail = null;
 		this.toolDetailExpanded = false;
+		this._returnToRunDetail();
 		this.graphLayoutInvalidateForDetail();
 		return true;
 	}
 
 	private _syncToolDetail(): void {
 		// A failure detail follows its stage; once the stage is gone or no longer failed it closes back to the graph.
-		if (this.stageDetail !== null && this._stageDetailStage()?.status !== "failed") this.stageDetail = null;
+		if (this.stageDetail !== null && this._stageDetailStage()?.status !== "failed") {
+			this.stageDetail = null;
+			this._returnToRunDetail();
+		}
 		if (this.toolDetail === null) return;
 		this.toolDetail = this.expandedGraph.tools.find((tool) => tool.id === this.toolDetail?.id) ?? null;
 	}
@@ -568,6 +574,14 @@ export abstract class GraphViewState {
 	protected _runDetailBlockers(): readonly RunOutcomeBlocker[] {
 		const run = this._getCurrentRun();
 		return run === null ? [] : buildRunOutcome(run).blockers;
+	}
+
+	/** Back to the run details a detail was opened from, if it was. */
+	private _returnToRunDetail(): void {
+		if (this.runDetailReturn === null) return;
+		this.runDetail = this.runDetailReturn;
+		this.runDetailReturn = null;
+		this.runDetailRevealSelected = true;
 	}
 
 	/** Open the run's details over the graph. */
@@ -598,6 +612,7 @@ export abstract class GraphViewState {
 			);
 		});
 		if (index < 0) return false;
+		this.runDetailReturn = this.runDetail;
 		this.runDetail = null;
 		this.focusedIndex = index;
 		this.pendingEnsureFocusedVisible = true;
@@ -608,6 +623,7 @@ export abstract class GraphViewState {
 	protected _closeStageDetail(): boolean {
 		if (this.stageDetail === null) return false;
 		this.stageDetail = null;
+		this._returnToRunDetail();
 		this.graphLayoutInvalidateForDetail();
 		return true;
 	}

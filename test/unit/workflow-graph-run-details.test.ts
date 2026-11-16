@@ -136,6 +136,21 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 		assert.match(screen(graph), /❯ ✗ s7\s+boom 7/);
 	});
 
+	it("esc from a detail opened from the run details goes back to the run details, one level", () => {
+		const graph = view([stage("plan", "completed"), stage("verify", "failed", { error: STACK }, ["plan"])], {
+			status: "failed",
+			error: STACK,
+		});
+		graph.handleInput("o");
+		graph.handleInput(ENTER);
+		assert.match(screen(graph), /✗ verify · failed/);
+		graph.handleInput(ESC);
+		assert.match(hint(graph), /esc\/← back to graph/);
+		assert.match(screen(graph), /Blockers · 1/, "back at the run details");
+		graph.handleInput(ESC);
+		assert.match(hint(graph), /o run details/, "then the graph");
+	});
+
 	it("↑↓ move between blockers, and enter on a waiting stage attaches its chat", () => {
 		const attached = [];
 		const graph = view(
