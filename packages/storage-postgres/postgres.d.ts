@@ -19,10 +19,22 @@ export interface PostgresDatabaseOptions {
 	 * pooler. Default `url`. Without notifications, worker hosts and Intercom brokers find work by polling alone.
 	 */
 	listenUrl?: string;
+	/**
+	 * The schema Atomic's tables live in (#5218). Default `atomic`, created by the first store that sets up its tables
+	 * when the role may; a database whose `public` schema holds an earlier release's tables, and has no `atomic` schema,
+	 * keeps using `public` until `atomic storage migrate` moves them.
+	 */
+	schema?: string;
+	/**
+	 * npm prefixes to find a cloud `auth`'s SDK in when it is not found beside the adapter. The adapter's
+	 * `openDatabase` passes `<agentDir>/npm`, where `atomic install npm:<package>` installs user packages.
+	 */
+	sdkSearchPaths?: readonly string[];
 }
 
 export const DEFAULT_MAX_CONNECTIONS: 8;
 export const DEFAULT_STATEMENT_TIMEOUT_MS: 30000;
+export const DEFAULT_SCHEMA: "atomic";
 
 /** `sql` with each positional `?` parameter outside literals, quoted identifiers and comments numbered `$1`, `$2`, .... */
 export function numberPlaceholders(sql: string): string;

@@ -62,10 +62,30 @@ const GroupSchema = Type.Union([Type.String(), Type.Boolean()], {
 		"Intercom group for spawned children. A named string joins that group; boolean `true` or the trimmed, case-insensitive string sentinel `true`/`auto` auto-generates one shared UUID group per parallel set. The names `true` and `auto` are reserved; use a different literal group name. Defaults to the current session/stage's group. Only applied when the child has intercom access; contact_supervisor still reaches the supervisor across groups.",
 });
 
+const NamedWorktreeSchema = Type.Object(
+	{
+		branch: Type.String({ description: "Branch to check out in the worktree; created when it does not exist." }),
+		base: Type.Optional(
+			Type.String({
+				description: "Where a new branch starts (default: the current branch's upstream, or HEAD).",
+			}),
+		),
+		path: Type.Optional(
+			Type.String({ description: "Worktree directory (default: .atomic/worktrees/<branch> in the repository)." }),
+		),
+	},
+	{
+		additionalProperties: false,
+		description:
+			"Run in a named git worktree, created before the child starts or reused when this branch is already checked out at this path. Refused before launch when the branch is checked out elsewhere or the path holds something else. The worktree and branch are yours: never removed.",
+	},
+);
+
 const TaskItem = Type.Object({
 	agent: Type.String(),
 	task: Type.String(),
 	cwd: Type.Optional(Type.String()),
+	worktree: Type.Optional(NamedWorktreeSchema),
 	count: Type.Optional(
 		Type.Integer({ minimum: 1, description: "Repeat this parallel task N times with the same settings." }),
 	),
@@ -211,11 +231,12 @@ export const SubagentParams = Type.Object(
 		),
 		group: Type.Optional(GroupSchema),
 		worktree: Type.Optional(
-			Type.Boolean({
+			Type.Union([Type.Boolean(), NamedWorktreeSchema], {
 				description:
-					"Create isolated git worktrees for each parallel task. " +
-					"Prevents filesystem conflicts. Requires clean git state. " +
-					"Per-worktree diffs included in output.",
+					"true: create isolated, temporary git worktrees for each parallel task " +
+					"(requires clean git state; per-worktree diffs included in output; removed afterwards). " +
+					"{ branch, base?, path? }: run the single agent, or each task without its own, in that named worktree, " +
+					"created before the child starts and never removed.",
 			}),
 		),
 		context: Type.Optional(

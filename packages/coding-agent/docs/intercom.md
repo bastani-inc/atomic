@@ -94,8 +94,8 @@ intercom({ action: "list" })
 intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null" })
 // → Message sent to research
 
-// Send one update to every matching session, or to every subagent you launched
-intercom({ action: "send", to: "subagent-worker-*", message: "Scope changed: skip the migration" })
+// Send one update to every matching session (broadcast: true), or to every subagent you launched
+intercom({ action: "send", to: "subagent-worker-*", message: "Scope changed: skip the migration", broadcast: true })
 intercom({ action: "send", to: "subagents:*", message: "Stop and report what you have" })
 // → Each recipient's outcome is listed: delivered, queued, or not delivered with the reason
 

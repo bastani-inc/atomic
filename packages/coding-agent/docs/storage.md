@@ -71,16 +71,58 @@ On PostgreSQL, worker hosts claim children, send heartbeats, record checkpoints 
 
 ### Set up the database
 
-Create a role and a database it owns. Atomic creates its tables the first time it uses the database.
+Atomic keeps its tables, indexes, trigger functions and sequences in a schema of its own, `atomic` (the `schema` option), never in `public`. It uses two roles, as Temporal, Airflow and pg-boss do:
+
+- An **owner role** that owns the database and the `atomic` schema. It creates and upgrades Atomic's tables with `atomic storage migrate`, after the first join and after each Atomic upgrade.
+- A **runtime role** for worker hosts, roots, sessions and Intercom brokers. It reads and writes rows and runs no DDL, so it needs no ownership and no `CREATE`.
+
+For one person on one machine, one role that owns the database is enough: Atomic sets up the schema the first time it opens it, under an advisory lock, so hosts that start together on a new database set it up once. Every later open of a current schema runs no DDL at all.
+
+As the server's administrator (a superuser, or the administrator a managed service created):
 
 ```sql
-CREATE ROLE atomic LOGIN PASSWORD '<password>';
-CREATE DATABASE atomic OWNER atomic;
+CREATE ROLE atomic_owner LOGIN PASSWORD '<owner password>';
+CREATE ROLE atomic_runtime LOGIN PASSWORD '<runtime password>';
+CREATE DATABASE atomic OWNER atomic_owner;
+REVOKE ALL ON DATABASE atomic FROM PUBLIC;
+GRANT CONNECT ON DATABASE atomic TO atomic_owner, atomic_runtime;
 ```
 
-On a managed service, run this as the administrator the service created, or create the database in the console. Every Atomic process keeps its own pool of up to 8 connections (`maxConnections`). When your machines need more connections than the server's `max_connections`, lower `maxConnections` or connect through a [connection pooler](#connection-poolers).
+Owning the database gives the owner role `CREATE` on it, which is all it needs to create the `atomic` schema: it does not need `public`. On a managed service where the administrator is no superuser (Azure, RDS, Cloud SQL), the administrator must be a member of the owner role to create a database it owns: run `GRANT atomic_owner TO <administrator>;` first.
 
-Give each team or project its own `prefix`, or its own database. On PostgreSQL a prefix can be at most 24 characters, because PostgreSQL cuts table and index names off at 63 bytes. A longer prefix is refused with `StoragePrefixError` (reason `"too-long"`) before Atomic creates anything.
+Then, from a machine with the owner role's password, create the schema and its tables, and grant the runtime role its privileges. Connected to the `atomic` database as `atomic_owner`:
+
+```bash
+atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomic' --password-file ~/atomic-owner-password
+```
+
+```sql
+GRANT USAGE ON SCHEMA atomic TO atomic_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA atomic TO atomic_runtime;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA atomic TO atomic_runtime;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA atomic TO atomic_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE atomic_owner IN SCHEMA atomic GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO atomic_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE atomic_owner IN SCHEMA atomic GRANT USAGE, SELECT ON SEQUENCES TO atomic_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE atomic_owner IN SCHEMA atomic GRANT EXECUTE ON FUNCTIONS TO atomic_runtime;
+```
+
+That is every privilege the runtime role uses: `LISTEN`, `NOTIFY`, `pg_notify` and advisory locks need none, and Atomic uses no `TRUNCATE`, `REFERENCES` or temporary tables. The default privileges cover the tables a later `atomic storage migrate` adds. The sequence grants are harmless and only matter if you add your own sequences; identity columns need none. `EXECUTE` covers the trigger functions, which run as the role that writes the row, on a server that revoked `EXECUTE` from `PUBLIC`. Join each runtime machine with the runtime role, as in [Join a machine](#join-a-machine).
+
+The same statements work on every service:
+
+- **Self-hosted PostgreSQL** (15 and later, where `public` gives no one `CREATE`) and **Amazon RDS / Aurora**: as above. On RDS the master user is a member of `rds_superuser`; it still needs `GRANT atomic_owner TO <master user>` before `CREATE DATABASE â€¦ OWNER atomic_owner`.
+- **Azure Database for PostgreSQL Flexible Server**: as above, as the server's administrator, a member of `azure_pg_admin`. Azure's `public` schema belongs to `azure_pg_admin`, which is why Atomic keeps out of it; if you select `schema: "public"` yourself, also run `GRANT CREATE ON SCHEMA public TO atomic_owner;` as the administrator.
+- **Google Cloud SQL**: as above, as `postgres` or another member of `cloudsqlsuperuser`.
+
+When the runtime role lacks a privilege, the store fails with `StorageConfigError` reason `"missing-privilege"`, whose message names the privilege PostgreSQL refused and the grant or command that fixes it, rather than a bare `42501`. A runtime role on a schema an older `atomic storage migrate` set up gets the same error, asking for `atomic storage migrate` as the owner role.
+
+#### Upgrading from tables in `public`
+
+Releases before the `atomic` schema created their tables in `public`. Atomic still finds them there: a database whose `public` schema holds Atomic's tables, and that has no `atomic` schema, keeps using `public`. `atomic storage migrate`, run as the role that owns those tables, moves every one of them, with its indexes, triggers, sequences and trigger functions, into `atomic` in one transaction. Processes of an earlier release that still use `public` are refused from then on, rather than writing to tables that moved: sessions, workflow runs and worker pools at their next write or open, with a schema-version error that asks for an upgrade, and Intercom brokers at their first write, by copies of Intercom's tables the move leaves in `public`. A process of this release that opened the database before the move refuses to create anything in `public` and asks to be restarted. Upgrade every machine, run `atomic storage migrate` once, then grant the runtime role as above. Several `atomic storage migrate` runs at once move the tables once; the others say so. A later `atomic storage migrate` lists any of Atomic's tables that a process created in `public` after the move, and fails, so state written there is not lost unnoticed. The tables the move leaves in `public` hold nothing; a database whose `atomic` schema you drop to start over starts afresh in a new `atomic` schema beside them.
+
+Every Atomic process keeps its own pool of up to 8 connections (`maxConnections`). When your machines need more connections than the server's `max_connections`, lower `maxConnections` or connect through a [connection pooler](#connection-poolers).
+
+Give each team or project its own `prefix`, or its own database. On PostgreSQL a prefix can be at most 24 characters, because PostgreSQL cuts table and index names off at 63 bytes. A longer prefix is refused with `StoragePrefixError` (reason `"too-long"`) before Atomic creates anything, and so is a prefix with uppercase letters (reason `"uppercase"`): PostgreSQL folds names to lowercase, so `Team_` would share `team_`'s tables.
 
 ### Join a machine
 
@@ -89,7 +131,7 @@ Install the adapter once per machine, in user scope, and join the database:
 ```bash
 atomic install npm:@bastani/atomic-storage-postgres
 printf '%s' '<password>' > ~/atomic-db-password && chmod 600 ~/atomic-db-password
-atomic storage join 'postgresql://atomic@db.example.com:5432/atomic' --password-file ~/atomic-db-password
+atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
 atomic intercom restart
 atomic storage status
 ```
@@ -106,7 +148,7 @@ The command checks the connection with `SELECT 1` before it writes anything, the
 {
   "storage": {
     "adapter": "@bastani/atomic-storage-postgres",
-    "options": { "url": "postgresql://atomic@db.example.com:5432/atomic" },
+    "options": { "url": "postgresql://atomic_runtime@db.example.com:5432/atomic" },
     "secrets": { "password": { "file": "agent/storage-token.3f2a" } }
   }
 }
@@ -121,6 +163,7 @@ You can write this block by hand as well. `secrets.password` takes `{ "file": â€
 | `maxConnections` | 8 | Connections each Atomic process may open |
 | `statementTimeoutMs` | 30000 | How long one statement may run before the server cancels it |
 | `listenUrl` | `url` | A direct endpoint for [wake-ups](#wake-ups), when `url` goes through a transaction pooler |
+| `schema` | `"atomic"` | The schema Atomic's tables live in: a lowercase name of letters, digits and `_`. Atomic creates it when the role may |
 
 `atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL. To run worker hosts and a fleet controller on a managed service, follow [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres). SDK callers can import `openPostgresDatabase` from `@bastani/atomic-storage-postgres`.
 
@@ -139,7 +182,7 @@ By provider:
 
 Atomic works through transaction-mode poolers: PgBouncer, the PgBouncer built into Azure Database for PostgreSQL (port 6432), Supabase's Supavisor (port 6543), and Neon's pooled endpoint (the `-pooler` host name). Point the URL at the pooler. A pooler lets many machines share a small number of server connections. Use transaction or session mode, not statement mode. For a worker fleet's connection count and pooler settings, see [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres#connection-poolers).
 
-A transaction-mode pooler does not pass on [wake-ups](#wake-ups). To keep them, set `listenUrl` to the server's direct endpoint, such as port 5432 instead of 6432 on Azure, or Neon's host name without `-pooler`. Everything else still goes through the pooler.
+Atomic sets nothing on a server connection outside a transaction: the schema (`SET LOCAL search_path`), the statement and lock timeouts and the advisory locks it takes all end with the transaction, so a transaction-mode pooler can hand the connection to anyone next. A transaction-mode pooler does not pass on [wake-ups](#wake-ups). To keep them, set `listenUrl` to the server's direct endpoint, such as port 5432 instead of 6432 on Azure, or Neon's host name without `-pooler`. Everything else still goes through the pooler.
 
 ### Wake-ups
 
@@ -167,11 +210,13 @@ When the SDK is missing or gives no token, the store fails to open with `Storage
 
 On each service, map the identity to a database user that may connect:
 
-- **Azure:** enable Microsoft Entra authentication on the server. As the Entra administrator, create a role named exactly as the identity with `SELECT * FROM pgaadauth_create_principal('<identity name>', false, false);` and grant it `CONNECT` on the database. The URL's user name is that role.
+- **Azure:** enable Microsoft Entra authentication on the server. As the Entra administrator, connected to the `postgres` database, create a role named exactly as the identity with `SELECT * FROM pgaadauth_create_principal('<identity name>', false, false);` and grant it `CONNECT` on the database. The URL's user name is that role.
 - **AWS:** enable IAM database authentication, run `CREATE USER atomic; GRANT rds_iam TO atomic;`, and allow the identity only `rds-db:connect` on `arn:aws:rds-db:<region>:<account>:dbuser:<DbiResourceId>/atomic`.
 - **Google Cloud:** set the instance flag `cloudsql.iam_authentication=on`, add the service account as an IAM database user, and grant it `roles/cloudsql.instanceUser`. The URL's user name is the service account's email without `.gserviceaccount.com`. A Compute Engine VM needs the `cloud-platform` access scope.
 
-The first machine to join also needs `CREATE` on the schema, to create the tables. The [adapter's README](https://www.npmjs.com/package/@bastani/atomic-storage-postgres) has the full grants for each service.
+A cloud identity is a role like any other: make it the runtime role with the grants in [Set up the database](#set-up-the-database) (`GRANT USAGE ON SCHEMA atomic TO "<identity name>"`, and so on), and run `atomic storage migrate` as the owner role, with a password or another identity. The [adapter's README](https://www.npmjs.com/package/@bastani/atomic-storage-postgres) has each service's sign-in setup.
+
+`atomic install npm:@azure/identity` installs the SDK among your user packages (`~/.atomic/agent/npm`). The adapter finds it there as well as beside itself, so an adapter installed from a local path (`atomic install ./atomic-storage-postgres`) finds it too.
 
 ### Troubleshooting PostgreSQL
 
@@ -180,8 +225,11 @@ The first machine to join also needs `CREATE` on the schema, to create the table
 - **`unsupported-option`**: `--password-file` or `--auth` was passed with a libSQL URL. libSQL takes `--token-file`.
 - **`unsupported-auth`**: `--auth` takes `azure`, `aws`, or `gcp`.
 - **`adapter-not-installed`** ("The storage adapter is not installed"): run `atomic install npm:@bastani/atomic-storage-postgres` as the user that runs Atomic.
-- **`auth-unavailable`**: install the cloud's SDK named in the message, and check that the machine has the identity.
-- **`StorageUnavailableError`** when the store opens: the server refused the password (`28P01`), the database does not exist (`3D000`), the role lacks a privilege it needs (`42501`), or the server is older than PostgreSQL 14. Atomic's tables need PostgreSQL 16: on 14 and 15 the adapter connects, but sessions and workflow runs fail to open.
+- **`auth-unavailable`** (from `atomic storage join`: "Could not sign in to the shared database"): install the cloud's SDK named in the message, and check that the machine has the identity. It is not retried.
+- **`missing-privilege`**: the role lacks a privilege (`42501`, or `3F000` when it has no `USAGE` on the schema). The message names the grant: `GRANT USAGE ON SCHEMA atomic TO <role>`, or the table grants, for a runtime role (see [Set up the database](#set-up-the-database)); "must be owner of" or a refused `CREATE` means the schema is behind this version of Atomic, so run `atomic storage migrate` as the owner role.
+- **"This database was upgraded since this process started"**: `atomic storage migrate` moved Atomic's tables to the `atomic` schema while this process ran against `public`. Restart it.
+- **The server refused a token**: `28P01` ("password authentication failed") is a token for the wrong user or one that expired. Azure answers `28000` ("The access token has invalid format") for a malformed one, such as a token for another resource or an empty or truncated token file: get it for `https://ossrdbms-aad.database.windows.net` (`az account get-access-token --resource-type oss-rdbms`), or use `--auth azure`.
+- **`StorageUnavailableError`** when the store opens: the server refused the password (`28P01`, or `28000` for an Azure token, as above), the database does not exist (`3D000`), or the server is older than PostgreSQL 14. Atomic's tables need PostgreSQL 16: on 14 and 15 the adapter connects, but sessions and workflow runs fail to open.
 - **A certificate error** (`self-signed certificate in certificate chain`, `unable to get local issuer certificate`): the server's CA is not one Node.js trusts. Add `sslrootcert`, as in [TLS](#tls).
 - **`too many connections`** (`53300`): lower `maxConnections`, raise the server's `max_connections`, or put a [pooler](#connection-poolers) in front.
 - **`StorageTransientError` with code `lock-conflict` or `transaction-timeout`**: the server cancelled a statement or transaction that waited too long for a lock or ran past `statementTimeoutMs`, and nothing it wrote was kept. Persistent ones point to an overloaded server.
@@ -768,6 +816,21 @@ The database stores sessions, the oversized tool results of agents released whil
 
 Scale by running more workflows, not by splitting one: a single run and a single session each have one writer. Atomic's stores use SQLite SQL, or PostgreSQL through `@bastani/atomic-storage-postgres`, so other `openDatabase` adapters need a SQLite-compatible driver. For another kind of database, implement `openRunJournal` and `openSessionStore` and validate them with the conformance suites below.
 
+## Locks in the agent directory
+
+Processes that share an agent directory take turns writing `settings.json`, `auth.json` and trust decisions, and take a claim on each session they resume, through locks beside those files. When a holder dies, the next process takes its lock over under an operating-system advisory lock on a `*.takeover.lock` file (`flock` on Unix, `LockFileEx` on Windows), which the kernel releases when its holder dies.
+
+These locks exclude only processes on the same machine that reach the agent directory through the same filesystem view. Concurrent access to one agent directory is not supported:
+
+- from several machines through a network filesystem (NFS, SMB, a cloud-synced folder), where advisory locks may be held per machine or not at all;
+- from one machine through both a local path and a mount of the same directory, such as a bind mount, a container volume or a network mount of a local disk.
+
+Give each machine or container its own agent directory with `ATOMIC_CODING_AGENT_DIR`, and share sessions and workflow runs through a [database adapter](#sharing-storage-across-hosts) instead.
+
+If Atomic warns that a `*.takeover.lock` file cannot be opened, another user, often an `atomic` run once with `sudo`, left it behind and it belongs to them. Remove the file, or give it to your user, for example `sudo chown $USER ~/.atomic/agent/settings.json.lock.takeover.lock`. Until then takeovers of that lock fall back to a directory mutex, which a process killed while taking it holds for 10 seconds.
+
+The same goes for a `*.takeover.<id>.dead` directory, or another item left beside a lock, that Atomic warns it cannot remove: it holds no lock, so remove it or give it to your user, for example with `sudo chown -R $USER`.
+
 ## Storage errors
 
 Use error classes and their fields, not message matching. Configuration and facade errors are exported from `@bastani/atomic/storage`. `@bastani/atomic/workflows` exports the journal contract's error classes.
@@ -777,7 +840,7 @@ Use error classes and their fields, not message matching. Configuration and faca
 | `StorageConfigError` | `code` `"invalid-config"`; `source`, `field`, `reason` identify an invalid selected option, and `hint`, when present, says what to pass instead. Correct that selection; Atomic does not try a lower-precedence store. |
 | `StorageAdapterLoadError` | `module`, `cause`. Check installation and the module's default export. |
 | `StorageUnavailableError` | `adapter`, `location`, `cause`. Restore access to the selected store before retrying. |
-| `StoragePrefixError` | `prefix`, `reason` (`"pattern"`, `"reserved"`, or `"too-long"` with `maxLength`). Use a valid non-reserved prefix, at most 24 characters on PostgreSQL. |
+| `StoragePrefixError` | `prefix`, `reason` (`"pattern"`, `"reserved"`, `"too-long"` with `maxLength`, `"identifier-collision"` with `identifier`, the PostgreSQL name two of the prefix's long names would share, or `"uppercase"` on PostgreSQL). Use a valid non-reserved prefix, at most 24 characters and lowercase on PostgreSQL. |
 | `StorageSchemaVersionError` | `domain`, `found`, `supported`. Use a supported database; Atomic does not migrate an unknown schema. |
 | `StoreClosedError` / `StorageTransactionClosedError` | The store is closing/closed, or the transaction callback has ended. Open a new store or use the live callback handle. |
 | `StorageRollbackError` | `cause`, `rollbackCause`. Do not assume the transaction rolled back. |

@@ -138,14 +138,15 @@ Explicit `to` selects that sender's pending ask even if another message triggere
 Send one message to every matching session in one call:
 
 ```typescript
-// Every visible session whose name matches the glob (never yourself, never outside your groups)
-intercom({ action: "send", to: "worker-*", message: "Check for null pointer exceptions in your assigned files" })
+// Every visible session whose name matches the glob (never yourself, never outside your groups).
+// broadcast: true says you mean every match; without it, a glob that matches more than one session is refused.
+intercom({ action: "send", to: "worker-*", message: "Check for null pointer exceptions in your assigned files", broadcast: true })
 // Every running, released or paused subagent you launched, or those of one run
 intercom({ action: "send", to: "subagents:*", message: "Scope changed: skip the migration" })
 intercom({ action: "send", to: "subagents:<runId>/*", message: "Wrap up and report" })
 ```
 
-The result lists each recipient's outcome (delivered, queued, or not delivered with the reason). A glob that matches no session is an error that lists close names. `ask` takes only one exact target.
+The result lists each recipient's outcome (delivered, queued, or not delivered with the reason). A glob that matches no session is an error that lists close names. A name glob that matches more than one session, `*` included, sends nothing without `broadcast: true` and lists the matches instead: pick one exact name for a private message, or add `broadcast: true` when every match should get it. A glob that matches one session sends to it. `subagents:` and `workflow:` targets broadcast without the flag. `ask` takes only one exact target.
 
 ### Pattern 5: Send with Attachments
 

@@ -1,6 +1,6 @@
-import type { SqliteExecutor, SqliteRow, StorageDialect } from "@bastani/atomic/storage";
+import { ensureStorageSchema, type SqliteExecutor, type SqliteRow, type StorageDialect } from "@bastani/atomic/storage";
 import { StaleWorkLeaseError, type StaleWorkLeaseReason } from "../../shared/worker-pool-errors.js";
-import { locksRows, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
+import { locksRows, poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import {
 	POOL_USAGE_FIELDS as FIELDS,
@@ -64,7 +64,11 @@ export class SqlPoolUsage {
 		dialect: StorageDialect,
 	): Promise<SqlPoolUsage> {
 		const usage = new SqlPoolUsage(transaction, read, journal, dialect);
-		await transaction((tx) => tx.exec(poolUsageSchema(journal.runs, dialect)));
+		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
+		const schema = { ledger: poolSchemaLedger({ tables: journal }), domain: "pool-usage", revision: 1 };
+		await transaction((tx) =>
+			ensureStorageSchema(tx, dialect, schema, () => tx.exec(poolUsageSchema(journal.runs, dialect))),
+		);
 		return usage;
 	}
 	private async keptTotal(executor: SqliteExecutor, root: string): Promise<PoolUsage | undefined> {

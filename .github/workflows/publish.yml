@@ -451,6 +451,20 @@ jobs:
       - name: Load Intel native binding under Rosetta
         if: matrix.slug == 'darwin-x64'
         run: node -e "require('node:assert/strict').equal(process.arch, 'x64'); require('./packages/natives/native/atomic_natives.darwin-x64.node'); console.log('Intel native binding loaded under Rosetta')"
+      # #5193: lock takeovers rely on the binding's advisory lock (flock) and no-replace rename (renamex_np with
+      # RENAME_EXCL); a broken macOS binding fails the release here, before anything is published.
+      - name: Smoke Intel native advisory lock and rename under Rosetta
+        if: matrix.slug == 'darwin-x64'
+        shell: bash
+        run: |
+          test "$(node -p process.arch)" = x64
+          node scripts/smoke-native-locks.mjs packages/natives/native/atomic_natives.darwin-x64.node
+      - name: Smoke Apple silicon native advisory lock and rename
+        if: matrix.slug == 'darwin-arm64'
+        shell: bash
+        run: |
+          test "$(node -p process.arch)" = arm64
+          node scripts/smoke-native-locks.mjs packages/natives/native/atomic_natives.darwin-arm64.node
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: atomic-natives-${{ matrix.slug }}
@@ -636,6 +650,10 @@ jobs:
           $binding = (Join-Path $smoke "node_modules/@bastani/atomic-natives") -replace '\\', '/'
           bun -e "const b = require('$binding'); const t = b.processCreationTime(process.pid); if (!/^\d+$/.test(t ?? '')) throw new Error('processCreationTime returned ' + t); if (b.processCreationTime(4194311) !== null) throw new Error('processCreationTime read a missing process'); console.log('native process creation time', t)"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # #5193: lock takeovers are serialized by an advisory file lock the kernel releases when its holder dies;
+          # a binding without it falls back to a directory mutex that a paused process can lose.
+          bun scripts/smoke-native-locks.mjs $binding
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $cwd = Join-Path $env:RUNNER_TEMP "atomic-windows-cwd"
           New-Item -ItemType Directory -Force -Path $cwd | Out-Null
           Push-Location $cwd
@@ -748,10 +766,13 @@ jobs:
           # paths, so starting is not proof the addon dlopen'd. Require it here.
           docker run --rm --platform "${{ matrix.docker_platform }}" -v "$smoke:/smoke:ro" node:22-alpine node -e '
             const binding = require("/smoke/atomic/node_modules/@bastani/atomic-natives");
-            for (const name of ["glob", "grep", "processCreationTime"]) {
+            for (const name of ["glob", "grep", "processCreationTime", "tryAdvisoryLock", "renameNoReplace"]) {
               if (typeof binding[name] !== "function") throw new Error(`musl binding is missing ${name}()`);
             }
             console.log("musl native binding loaded:", Object.keys(binding).length, "exports");'
+          # #5193: the advisory lock and no-replace rename work under musl libc, not only load.
+          docker run --rm --platform "${{ matrix.docker_platform }}" -v "$smoke:/smoke:ro" -v "$PWD/scripts:/scripts:ro" node:22-alpine \
+            node /scripts/smoke-native-locks.mjs /smoke/atomic/node_modules/@bastani/atomic-natives
 
   build:
     name: Build release payload
