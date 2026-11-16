@@ -120,6 +120,17 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				help,
 			];
 		}
+		if (this.runDetail !== null) {
+			const blockers = this.runDetail.logs ? 0 : this._runDetailBlockers().length;
+			return [
+				{ keys: "esc/\u2190", label: "back to graph" },
+				...(blockers > 1 ? [{ keys: "\u2191\u2193", label: "select" }] : []),
+				...(blockers > 0 ? [{ keys: "\u21b5", label: "open" }] : []),
+				{ keys: "l", label: this.runDetail.logs ? "summary" : "logs" },
+				{ keys: "pgup/pgdn", label: "scroll" },
+				help,
+			];
+		}
 		const focused = this.cachedLayout[this.focusedIndex]?.stage;
 		const openLabel =
 			focused?.nodeKind === "tool"
@@ -135,6 +146,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			{ keys: "\u2191\u2193\u2190\u2192", label: "move" },
 			{ keys: "/", label: "stages" },
 			{ keys: "f", label: `filter: ${this.statusFilter}` },
+			{ keys: "o", label: "run details" },
 			...(this._focusedStageStoppable() ? [this._actionKey(APP_ACTION.listStop, "x", "stop stage")] : []),
 			help,
 			...(this.onHide ? [{ keys: "h", label: "hide" }] : []),

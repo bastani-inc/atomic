@@ -17,6 +17,7 @@ import { ANIMATION_TICK_MS } from "./graph-view-constants.js";
 import type { GraphStageActions, GraphViewMode, GraphViewOpts } from "./graph-view-types.js";
 import { computeLayout, type LayoutNode, NODE_H, NODE_W } from "./layout.js";
 import { nodeCardHeight } from "./node-card.js";
+import { buildRunOutcome, type RunOutcomeBlocker } from "./run-outcome.js";
 import type { SwitcherState } from "./switcher.js";
 
 /** The `f` status filter, in the order `f` cycles it. */
@@ -45,6 +46,14 @@ export interface GraphStageDetail {
 	readonly nodeId: string;
 	/** Whether the full log is shown instead of the summary. */
 	logs: boolean;
+}
+
+/** The run's details: its outcome, outputs, artifacts, blockers and events, or its full log. */
+export interface GraphRunDetail {
+	/** Whether the full log is shown instead of the summary. */
+	logs: boolean;
+	/** The selected blocker, which Enter opens. */
+	selected: number;
 }
 
 export interface GraphStageCounts {
@@ -140,6 +149,10 @@ export abstract class GraphViewState {
 	protected toolDetailExpanded = false;
 	/** Selected failed stage's detail (its reason and next actions). */
 	protected stageDetail: GraphStageDetail | null = null;
+	/** The run's details view, opened with `o`. */
+	protected runDetail: GraphRunDetail | null = null;
+	/** Scroll the selected blocker into view on the next frame. */
+	protected runDetailRevealSelected = false;
 	/** The `f` status filter. */
 	protected statusFilter: GraphStatusFilter = "all";
 	/** Whether the `?` key overlay is open. */
@@ -551,6 +564,47 @@ export abstract class GraphViewState {
 		return true;
 	}
 
+	/** The blockers the run details list, in their order, from the latest snapshot. */
+	protected _runDetailBlockers(): readonly RunOutcomeBlocker[] {
+		const run = this._getCurrentRun();
+		return run === null ? [] : buildRunOutcome(run).blockers;
+	}
+
+	/** Open the run's details over the graph. */
+	protected _openRunDetail(): boolean {
+		if (this._getCurrentRun() === null) return false;
+		this.runDetail = { logs: false, selected: 0 };
+		this.graphLayoutInvalidateForDetail();
+		return true;
+	}
+
+	protected _closeRunDetail(): boolean {
+		if (this.runDetail === null) return false;
+		this.runDetail = null;
+		this.graphLayoutInvalidateForDetail();
+		return true;
+	}
+
+	/**
+	 * Leave the run details for one blocker: focus its node, then open what Enter opens there (a failed stage's
+	 * detail, a tool's detail, or the stage's chat). False when the node is no longer in the graph.
+	 */
+	protected _focusBlockerNode(node: "stage" | "tool", id: string): boolean {
+		const index = this.cachedLayout.findIndex((layoutNode) => {
+			if (node === "tool") return layoutNode.stage.nodeKind === "tool" && layoutNode.stage.id === id;
+			if (layoutNode.stage.nodeKind === "tool") return false;
+			return (
+				layoutNode.stage.id === id || expandedStageTarget(this.expandedGraph, layoutNode.stage.id)?.stageId === id
+			);
+		});
+		if (index < 0) return false;
+		this.runDetail = null;
+		this.focusedIndex = index;
+		this.pendingEnsureFocusedVisible = true;
+		this.graphLayoutInvalidateForDetail();
+		return true;
+	}
+
 	protected _closeStageDetail(): boolean {
 		if (this.stageDetail === null) return false;
 		this.stageDetail = null;
@@ -567,7 +621,7 @@ export abstract class GraphViewState {
 
 	/** Whether a read-only detail (a tool's, or a failed stage's) replaces the graph body. */
 	protected _detailOpen(): boolean {
-		return this.toolDetail !== null || this.stageDetail !== null;
+		return this.toolDetail !== null || this.stageDetail !== null || this.runDetail !== null;
 	}
 
 	/** Let the renderer discard any cached body frame after a detail transition. */

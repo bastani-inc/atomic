@@ -36,6 +36,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		}
 		if (this.toolDetail !== null) return this._handleToolDetailInput(data);
 		if (this.stageDetail !== null) return this._handleStageDetailInput(data);
+		if (this.runDetail !== null) return this._handleRunDetailInput(data);
 		if (this._isGraphBackInput(data)) {
 			this._leaveGraph();
 			return true;
@@ -163,6 +164,57 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			detail.logs = !detail.logs;
 			this.graphLayoutInvalidateForDetail();
 			return true;
+		}
+		if (matchesKey(data, Key.down)) this._scrollGraphVertically(1);
+		else if (matchesKey(data, Key.up)) this._scrollGraphVertically(-1);
+		else if (matchesKey(data, Key.pageDown)) this._scrollGraphVertically(this._toolDetailPageRows());
+		else if (matchesKey(data, Key.pageUp)) this._scrollGraphVertically(-this._toolDetailPageRows());
+		return true;
+	}
+
+	/** The run details: ↑↓ pick a blocker, Enter opens it, `l` toggles the full log, Esc or ← go back to the graph. */
+	private _handleRunDetailInput(data: string): boolean {
+		const detail = this.runDetail;
+		if (detail === null) return false;
+		if (this.graphLayout.handleScrollbarInput(data)) {
+			this.pendingEnsureFocusedVisible = false;
+			return true;
+		}
+		const wheelDelta = this._mouseWheelDelta(data);
+		if (wheelDelta) {
+			if (wheelDelta.rows !== 0) this._scrollGraphVertically(wheelDelta.rows);
+			return true;
+		}
+		if (matchesKey(data, Key.escape) || this._matchesNavAction(data, APP_ACTION.navBack)) {
+			this._closeRunDetail();
+			return true;
+		}
+		if (matchesKey(data, Key.ctrl("c"))) {
+			this.onClose?.();
+			return true;
+		}
+		if (matchesKey(data, "l")) {
+			detail.logs = !detail.logs;
+			this.graphLayoutInvalidateForDetail();
+			return true;
+		}
+		const blockers = detail.logs ? [] : this._runDetailBlockers();
+		if (blockers.length > 0) {
+			if (matchesKey(data, Key.down)) {
+				detail.selected = Math.min(blockers.length - 1, detail.selected + 1);
+				this.runDetailRevealSelected = true;
+				return true;
+			}
+			if (matchesKey(data, Key.up)) {
+				detail.selected = Math.max(0, detail.selected - 1);
+				this.runDetailRevealSelected = true;
+				return true;
+			}
+			if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) {
+				const blocker = blockers[Math.min(detail.selected, blockers.length - 1)]!;
+				if (this._focusBlockerNode(blocker.node, blocker.id)) this._activateFocusedNode();
+				return true;
+			}
 		}
 		if (matchesKey(data, Key.down)) this._scrollGraphVertically(1);
 		else if (matchesKey(data, Key.up)) this._scrollGraphVertically(-1);
@@ -307,6 +359,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this._activateFocusedNode();
 			return true;
 		}
+		if (matchesKey(data, "o")) return this._openRunDetail();
 		if (matchesKey(data, "f")) {
 			const next = (GRAPH_STATUS_FILTERS.indexOf(this.statusFilter) + 1) % GRAPH_STATUS_FILTERS.length;
 			this.statusFilter = GRAPH_STATUS_FILTERS[next]!;
@@ -429,7 +482,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return true;
 	}
 
-	private _activateFocusedNode(): void {
+	protected _activateFocusedNode(): void {
 		// Tool nodes open a read-only snapshot detail; they never enter the
 		// stage-chat attach path even though they share the graph card shape.
 		if (this._openFocusedToolDetail()) return;
