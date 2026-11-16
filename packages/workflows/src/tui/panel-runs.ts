@@ -1,4 +1,3 @@
-import { stripVTControlCharacters } from "node:util";
 import type { AgentPanelItem, AgentPanelState } from "@bastani/atomic";
 import { createWorkflowGraphExpander, settledStageCount } from "../shared/expanded-workflow-graph.js";
 import { graphSnapshotLineage } from "../shared/graph-store-snapshot.js";
@@ -9,18 +8,18 @@ import type { RunSnapshot, RunStatus, StageSnapshot, StoreSnapshot, WorkflowNoti
 import { elapsedRunMs } from "../shared/timing.js";
 import { sanitizeToolDisplayText } from "../shared/tool-payload-bounds.js";
 import { findSnapshotRun, findSnapshotStage } from "../shared/workflow-run-ownership.js";
-import { pendingInputAffordance } from "./pending-input-affordance.js";
+import { pendingInputAffordance, stripTerminalControls } from "./pending-input-affordance.js";
 
 const REASON_WIDTH = 120;
 export const PANEL_RUN_PREFIX = "run:";
 
 const BIDI_CONTROLS = /[\u202a-\u202e\u2066-\u2069]/g;
-const NEEDS_LINE_CHANGE = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/;
+const NEEDS_LINE_CHANGE = /[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/;
 const EMPTY_NOTICES: readonly WorkflowNotice[] = Object.freeze([]);
 
 function inertLine(text: string): string {
 	if (!NEEDS_LINE_CHANGE.test(text)) return text;
-	return sanitizeToolDisplayText(stripVTControlCharacters(text))
+	return sanitizeToolDisplayText(stripTerminalControls(text, true))
 		.replace(BIDI_CONTROLS, (char) => `<U+${char.charCodeAt(0).toString(16).toUpperCase()}>`)
 		.replace(/\r?\n/g, " ");
 }

@@ -254,6 +254,21 @@ test("run and stage names strip escape sequences, format control bytes as \\xNN 
 	assert.equal(item?.task, "stage build\\x07\\x7f<U+2066>step");
 });
 
+test("workflow names strip complete cursor and control-string sequences without swallowing visible text (#5239)", () => {
+	const [item] = panelItemsFromSnapshot([
+		run("ship\x1b[?25l hello m\u009b2Jdone\x07", "running", [
+			stage("build\x1bPpayload\x1b\\\x07\u009dhidden title\u009cstep", "running"),
+		]),
+	]);
+	assert.equal(item?.name, "ship hello mdone\\x07");
+	assert.equal(item?.task, "stage build\\x07step");
+	const [separated] = panelItemsFromSnapshot([
+		run("row\u2028next\u2029line", "running", [stage("build\u2028next", "running")]),
+	]);
+	assert.equal(separated?.name, "row next line");
+	assert.equal(separated?.task, "stage build next");
+});
+
 test("single-select input requests project option labels as choices while multi-select and ambiguous prompts do not (#5224)", () => {
 	const single = run("single-select", "running", [
 		stage("ask", "awaiting_input", {
