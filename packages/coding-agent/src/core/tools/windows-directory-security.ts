@@ -3,28 +3,30 @@
  *
  * POSIX proves ownership of an existing temp component with a uid comparison
  * and a mode check. Node exposes neither on Windows — `lstatSync` reports
- * uid/gid 0 — so this module reads the real security descriptor through a
- * PowerShell `Get-Acl` subprocess and decides from SIDs alone: the owner must
- * be a trusted principal and every access-allowed ACE must grant only trusted
- * principals. Names are never compared; two accounts can share a display name,
- * but never a SID.
+ * uid/gid 0 — so this module reads the real security descriptor and decides
+ * from SIDs alone: the owner must be a trusted principal and every
+ * access-allowed ACE must grant only trusted principals. Names are never
+ * compared; two accounts can share a display name, but never a SID.
  *
- * The read is a subprocess that takes seconds on a loaded host, so it runs
- * once per private root per process: a successful verification is cached for
- * the life of the process, keyed to the directory's path and identity (its
- * file ID and creation time), and a directory inside a verified one needs no
- * read of its own (see `verifyWindowsDirectorySecurity`). A directory swapped
- * underneath the path is a new file with a new ID and is read again. The
- * synchronous reader holds the main thread for the whole read;
- * `verifyWindowsDirectorySecurityAsync` reads without holding it.
+ * The descriptor is read by the native module (`windowsDirectorySecurity` in
+ * `@bastani/atomic-natives`). Only where that binding is missing, or cannot
+ * read the directory, is it read through PowerShell. That fallback is a
+ * synchronous subprocess, and on a loaded host it holds the main thread for
+ * seconds, so a read runs once per private root per process: a
+ * successful verification is cached for the life of the process, keyed to the
+ * directory's path and identity (its file ID and creation time), and a
+ * directory inside a verified one needs no read of its own (see
+ * `verifyWindowsDirectorySecurity`). A directory swapped underneath the path
+ * is a new file with a new ID and is read again.
  * Failures are not cached: a refusal means "no spill file this time", and a
  * transient read failure must not disable persistence for the rest of the
  * process.
  */
 
-import { execFile, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { dirname, win32 } from "node:path";
+import { createModuleRequire } from "../../utils/module-require.ts";
 import { getErrnoCode } from "./errno.ts";
 
 /** One DACL entry with its trustee resolved to a literal SID. */
@@ -172,92 +174,38 @@ export function getLastWindowsSecurityReadFailureForTesting(): string | undefine
 	return lastReadFailure;
 }
 
-const READ_SECURITY_ARGS = ["-NoProfile", "-NonInteractive", "-Command", READ_SECURITY_SCRIPT];
+type NativeSecurityReader = (path: string) => WindowsDirectorySecurity | null;
 
-type ReadOutcome = { stdout: string } | { failure: string; timedOut: boolean };
+let nativeReader: NativeSecurityReader | null | undefined;
+
+function nativeSecurityReader(): NativeSecurityReader | null {
+	if (nativeReader === undefined) {
+		try {
+			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
+				windowsDirectorySecurity?: NativeSecurityReader;
+			};
+			nativeReader = binding.windowsDirectorySecurity ?? null;
+		} catch {
+			nativeReader = null;
+		}
+	}
+	return nativeReader;
+}
+
+function readNatively(path: string): WindowsDirectorySecurity | null {
+	const native = nativeSecurityReader();
+	if (native === null) {
+		return null;
+	}
+	try {
+		return native(path);
+	} catch {
+		return null;
+	}
+}
 
 function samePowerShellProgram(left: string, right: string): boolean {
 	return win32.basename(left).toLowerCase() === win32.basename(right).toLowerCase();
-}
-
-function* securityReadAttempts(): Generator<string, WindowsDirectorySecurity | undefined, ReadOutcome> {
-	const failures: string[] = [];
-	const timedOut: string[] = [];
-	for (const executable of powershellCandidates()) {
-		if (timedOut.some((program) => samePowerShellProgram(program, executable))) {
-			failures.push(`${executable}: not tried, the same program timed out`);
-			continue;
-		}
-		const outcome = yield executable;
-		if ("failure" in outcome) {
-			failures.push(`${executable}: ${outcome.failure}`);
-			if (outcome.timedOut) timedOut.push(executable);
-			continue;
-		}
-		const parsed = parseSecurityOutput(outcome.stdout);
-		if (parsed !== undefined) {
-			return parsed;
-		}
-		failures.push(`${executable}: unparseable output ${JSON.stringify(outcome.stdout.slice(0, 500))}`);
-	}
-	lastReadFailure = failures.join(" | ");
-	return undefined;
-}
-
-function readEnvironment(path: string): NodeJS.ProcessEnv {
-	return { ...process.env, ATOMIC_SECURITY_QUERY_PATH: path };
-}
-
-function describeFailure(
-	status: number | string | null | undefined,
-	signal: string | null | undefined,
-	error: Error | undefined,
-	stderr: unknown,
-): string {
-	return `status=${status} signal=${signal} error=${error?.message} stderr=${
-		typeof stderr === "string" ? stderr.trim().slice(0, 500) : stderr
-	}`;
-}
-
-function spawnSecurityRead(executable: string, path: string): ReadOutcome {
-	const result = spawnSync(executable, READ_SECURITY_ARGS, {
-		env: readEnvironment(path),
-		encoding: "utf8",
-		timeout: READ_SECURITY_TIMEOUT_MS,
-		windowsHide: true,
-	});
-	if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
-		return {
-			failure: describeFailure(result.status, result.signal, result.error, result.stderr),
-			timedOut: getErrnoCode(result.error) === "ETIMEDOUT",
-		};
-	}
-	return { stdout: result.stdout };
-}
-
-function execSecurityRead(executable: string, path: string): Promise<ReadOutcome> {
-	return new Promise((resolve) => {
-		execFile(
-			executable,
-			READ_SECURITY_ARGS,
-			{
-				env: readEnvironment(path),
-				encoding: "utf8",
-				signal: AbortSignal.timeout(READ_SECURITY_TIMEOUT_MS),
-				windowsHide: true,
-			},
-			(error, stdout, stderr) => {
-				if (error) {
-					resolve({
-						failure: describeFailure(error.code, error.signal, error, stderr),
-						timedOut: error.code === "ABORT_ERR",
-					});
-					return;
-				}
-				resolve({ stdout });
-			},
-		);
-	});
 }
 
 /**
@@ -266,23 +214,48 @@ function execSecurityRead(executable: string, path: string): Promise<ReadOutcome
  * `undefined` as unverifiable and refuse the directory.
  */
 export function readWindowsDirectorySecurity(path: string): WindowsDirectorySecurity | undefined {
-	lastReadFailure = undefined;
-	const attempts = securityReadAttempts();
-	let attempt = attempts.next();
-	while (!attempt.done) {
-		attempt = attempts.next(spawnSecurityRead(attempt.value, path));
+	const security = readNatively(path);
+	if (security === null) {
+		return readWindowsDirectorySecurityWithPowerShell(path);
 	}
-	return attempt.value;
+	lastReadFailure = undefined;
+	return security;
 }
 
-export async function readWindowsDirectorySecurityAsync(path: string): Promise<WindowsDirectorySecurity | undefined> {
+export function readWindowsDirectorySecurityWithPowerShell(path: string): WindowsDirectorySecurity | undefined {
 	lastReadFailure = undefined;
-	const attempts = securityReadAttempts();
-	let attempt = attempts.next();
-	while (!attempt.done) {
-		attempt = attempts.next(await execSecurityRead(attempt.value, path));
+	const failures: string[] = [];
+	const timedOut: string[] = [];
+	for (const executable of powershellCandidates()) {
+		if (timedOut.some((program) => samePowerShellProgram(program, executable))) {
+			failures.push(`${executable}: not tried, the same program timed out`);
+			continue;
+		}
+		const result = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-Command", READ_SECURITY_SCRIPT], {
+			env: { ...process.env, ATOMIC_SECURITY_QUERY_PATH: path },
+			encoding: "utf8",
+			timeout: READ_SECURITY_TIMEOUT_MS,
+			windowsHide: true,
+		});
+		if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
+			failures.push(
+				`${executable}: status=${result.status} signal=${result.signal} error=${result.error?.message} stderr=${
+					typeof result.stderr === "string" ? result.stderr.trim().slice(0, 500) : result.stderr
+				}`,
+			);
+			if (getErrnoCode(result.error) === "ETIMEDOUT") {
+				timedOut.push(executable);
+			}
+			continue;
+		}
+		const parsed = parseSecurityOutput(result.stdout);
+		if (parsed !== undefined) {
+			return parsed;
+		}
+		failures.push(`${executable}: unparseable output ${JSON.stringify(result.stdout.slice(0, 500))}`);
 	}
-	return attempt.value;
+	lastReadFailure = failures.join(" | ");
+	return undefined;
 }
 
 function parseSecurityOutput(stdout: string): WindowsDirectorySecurity | undefined {
@@ -305,10 +278,8 @@ function parseSecurityOutput(stdout: string): WindowsDirectorySecurity | undefin
 }
 
 type SecurityReader = (path: string) => WindowsDirectorySecurity | undefined;
-type AsyncSecurityReader = (path: string) => Promise<WindowsDirectorySecurity | undefined>;
 
 let securityReader: SecurityReader = readWindowsDirectorySecurity;
-let asyncSecurityReader: AsyncSecurityReader = readWindowsDirectorySecurityAsync;
 
 /**
  * Verified paths mapped to the identity of the directory verified there: its volume, file ID and creation time. A
@@ -316,10 +287,6 @@ let asyncSecurityReader: AsyncSecurityReader = readWindowsDirectorySecurityAsync
  * a name recreated within seconds of its deletion the old creation time back ("tunneling").
  */
 const verifiedPaths = new Map<string, string>();
-
-const pendingReads = new Map<string, Promise<WindowsDirectorySecurity | undefined>>();
-
-const UNVERIFIABLE = "its ownership could not be verified";
 
 /** The identity of the directory at `path`, or `undefined` when it cannot be read. */
 function identityOf(path: string): string | undefined {
@@ -336,39 +303,10 @@ function stillVerified(path: string, identity: string | undefined): boolean {
 	return identity !== undefined && verifiedPaths.get(path) === identity;
 }
 
-function verifiedWithoutReading(path: string, identity: string): boolean {
-	if (stillVerified(path, identity)) {
-		return true;
-	}
-	const parent = dirname(path);
-	if (parent !== path && stillVerified(parent, identityOf(parent))) {
-		verifiedPaths.set(path, identity);
-		return true;
-	}
-	return false;
-}
-
-function settleVerification(
-	path: string,
-	identity: string,
-	security: WindowsDirectorySecurity | undefined,
-): string | undefined {
-	if (security === undefined) {
-		return UNVERIFIABLE;
-	}
-	const refusal = evaluateWindowsDirectorySecurity(security);
-	if (refusal !== undefined) {
-		verifiedPaths.delete(path);
-		return refusal;
-	}
-	verifiedPaths.set(path, identity);
-	return undefined;
-}
-
 /**
  * Verify `path` as adoptable, returning the refusal reason when it is not.
  *
- * The descriptor read is a subprocess, so it runs once per private root per process:
+ * The descriptor read can be a synchronous PowerShell subprocess, so it runs once per private root per process:
  *
  * - A directory verified in this process is trusted for the rest of it while it is the same directory (same file ID and
  *   creation time). Only its owner or an administrator can change its DACL (the verified DACL grants nobody else that
@@ -379,44 +317,32 @@ function settleVerification(
  *   account refuses the parent itself; so a directory inside it was made by a trusted principal and starts private.
  *
  * The symlink/directory checks in `session-temp-dir.ts` still run on every use. A failure is never cached, so a
- * transient read error does not permanently disable spills. This form holds the main thread while it reads; see
- * {@link verifyWindowsDirectorySecurityAsync}.
+ * transient read error does not permanently disable spills.
  */
 export function verifyWindowsDirectorySecurity(path: string): string | undefined {
 	const identity = identityOf(path);
 	if (identity === undefined) {
-		return UNVERIFIABLE;
+		return "its ownership could not be verified";
 	}
-	if (verifiedWithoutReading(path, identity)) {
+	if (stillVerified(path, identity)) {
 		return undefined;
 	}
-	return settleVerification(path, identity, securityReader(path));
-}
-
-export async function verifyWindowsDirectorySecurityAsync(path: string): Promise<string | undefined> {
-	const identity = identityOf(path);
-	if (identity === undefined) {
-		return UNVERIFIABLE;
-	}
-	if (verifiedWithoutReading(path, identity)) {
+	const parent = dirname(path);
+	if (parent !== path && stillVerified(parent, identityOf(parent))) {
+		verifiedPaths.set(path, identity);
 		return undefined;
 	}
-	return settleVerification(path, identity, await sharedRead(path, identity));
-}
-
-export function isWindowsDirectoryVerified(path: string): boolean {
-	const identity = identityOf(path);
-	return identity !== undefined && verifiedWithoutReading(path, identity);
-}
-
-function sharedRead(path: string, identity: string): Promise<WindowsDirectorySecurity | undefined> {
-	const key = `${path}\0${identity}`;
-	let read = pendingReads.get(key);
-	if (read === undefined) {
-		read = asyncSecurityReader(path).finally(() => pendingReads.delete(key));
-		pendingReads.set(key, read);
+	const security = securityReader(path);
+	if (security === undefined) {
+		return "its ownership could not be verified";
 	}
-	return read;
+	const refusal = evaluateWindowsDirectorySecurity(security);
+	if (refusal !== undefined) {
+		verifiedPaths.delete(path);
+		return refusal;
+	}
+	verifiedPaths.set(path, identity);
+	return undefined;
 }
 
 /** Test seam: substitute the descriptor reader; pass `undefined` to restore. */
@@ -424,14 +350,8 @@ export function setWindowsDirectorySecurityReaderForTesting(reader: SecurityRead
 	securityReader = reader ?? readWindowsDirectorySecurity;
 }
 
-export function setWindowsDirectorySecurityAsyncReaderForTesting(reader: AsyncSecurityReader | undefined): void {
-	asyncSecurityReader = reader ?? readWindowsDirectorySecurityAsync;
-}
-
 /** Test seam: forget verified paths so a suite can re-drive verification. */
 export function resetWindowsDirectorySecurityStateForTesting(): void {
 	verifiedPaths.clear();
-	pendingReads.clear();
 	securityReader = readWindowsDirectorySecurity;
-	asyncSecurityReader = readWindowsDirectorySecurityAsync;
 }

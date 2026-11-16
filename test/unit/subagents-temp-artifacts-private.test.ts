@@ -1,35 +1,23 @@
 import assert from "node:assert/strict";
-import {
-	existsSync,
-	lstatSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	realpathSync,
-	rmSync,
-	symlinkSync,
-	utimesSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
-import { afterAll, afterEach, beforeEach, test } from "vitest";
+import { afterAll, beforeEach, test, vi } from "vitest";
 import { resetSessionTempDirStateForTesting } from "../../packages/coding-agent/src/core/tools/session-temp-dir.ts";
-import {
-	readWindowsDirectorySecurity,
-	setWindowsDirectorySecurityReaderForTesting,
-} from "../../packages/coding-agent/src/core/tools/windows-directory-security.ts";
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import { cleanupAllArtifactDirs, getArtifactsDir } from "../../packages/subagents/src/shared/artifacts.js";
+import { getArtifactsDir } from "../../packages/subagents/src/shared/artifacts.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 
-/** A launch that reads one real PowerShell descriptor: each attempt is bounded by 30 s, and a loaded host takes them all. */
-const REAL_DESCRIPTOR_READ_LAUNCH_TIMEOUT_MS = 90_000;
-const REAL_DESCRIPTOR_READ_SETTLED_MS = REAL_DESCRIPTOR_READ_LAUNCH_TIMEOUT_MS - 10_000;
-const DAY_MS = 24 * 60 * 60 * 1000;
+const spawned = vi.hoisted(() => ({ spawnSync: vi.fn() }));
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	spawned.spawnSync.mockImplementation(actual.spawnSync);
+	return { ...actual, spawnSync: spawned.spawnSync };
+});
 
 const envKeys = ["TMPDIR", "TEMP", "TMP", "XDG_RUNTIME_DIR", "ATOMIC_CODING_AGENT_DIR"] as const;
 const savedEnv = new Map<string, string | undefined>(envKeys.map((key) => [key, process.env[key]]));
@@ -44,10 +32,6 @@ beforeEach(() => {
 	process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 	delete process.env.XDG_RUNTIME_DIR;
 	resetSessionTempDirStateForTesting();
-});
-
-afterEach(() => {
-	setWindowsDirectorySecurityReaderForTesting(undefined);
 });
 
 afterAll(() => {
@@ -111,13 +95,9 @@ test("registering the subagent extension leaves the session-less artifact direct
 });
 
 test.skipIf(process.platform !== "win32")(
-	"a subagent launched from an in-memory session reads its artifact directory's descriptor without holding the event loop (#5324)",
+	"a subagent launched from an in-memory session verifies its artifact directory without starting PowerShell on the main thread (#5324)",
 	async () => {
-		const heldReads: string[] = [];
-		setWindowsDirectorySecurityReaderForTesting((path) => {
-			heldReads.push(path);
-			return readWindowsDirectorySecurity(path);
-		});
+		spawned.spawnSync.mockClear();
 		const cwd = join(dirname(agentDir), "project");
 		mkdirSync(cwd, { recursive: true });
 		const launchedArtifactDirs: (string | undefined)[] = [];
@@ -135,7 +115,6 @@ test.skipIf(process.platform !== "win32")(
 				lastUiContext: null,
 			},
 			config: { intercomBridge: { mode: "off" }, parallel: { concurrency: 4, maxTasks: 50 } },
-			tempArtifactsDir: join(cwd, "unused-artifacts"),
 			getSubagentSessionRoot: () => join(cwd, "sessions"),
 			expandTilde: (value) => value,
 			discoverAgents: () => ({
@@ -196,32 +175,13 @@ test.skipIf(process.platform !== "win32")(
 		);
 
 		assert.notEqual(result.isError, true, JSON.stringify(result.content));
-		assert.deepEqual(heldReads, [], "the launch read no descriptor on the main thread");
+		assert.deepEqual(
+			spawned.spawnSync.mock.calls
+				.map(([command]) => String(command))
+				.filter((command) => /powershell|pwsh/i.test(command)),
+			[],
+			"no PowerShell process held the main thread",
+		);
 		assert.deepEqual(launchedArtifactDirs, [getArtifactsDir(null)], "the child writes into the verified directory");
 	},
-	REAL_DESCRIPTOR_READ_LAUNCH_TIMEOUT_MS,
-);
-
-test.skipIf(process.platform !== "win32")(
-	"the deferred artifact scan reads the session-less directory's descriptor without holding the event loop (#5324)",
-	async () => {
-		const stale = join(agentDir, "cache", "tmp", "subagents", "artifacts", "run_worker_output.md");
-		mkdirSync(dirname(stale), { recursive: true });
-		writeFileSync(stale, "stale\n");
-		const old = new Date(Date.now() - 10 * DAY_MS);
-		utimesSync(stale, old, old);
-		const heldReads: string[] = [];
-		setWindowsDirectorySecurityReaderForTesting((path) => {
-			heldReads.push(path);
-			return readWindowsDirectorySecurity(path);
-		});
-
-		cleanupAllArtifactDirs(1, []);
-		const deadline = Date.now() + REAL_DESCRIPTOR_READ_SETTLED_MS;
-		while (existsSync(stale) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
-
-		assert.deepEqual(heldReads, [], "the scan read no descriptor on the main thread");
-		assert.equal(existsSync(stale), false, "the scan removed the stale session-less artifact");
-	},
-	REAL_DESCRIPTOR_READ_LAUNCH_TIMEOUT_MS,
 );

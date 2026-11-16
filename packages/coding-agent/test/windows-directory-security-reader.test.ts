@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, test, vi } from "vitest";
 
-const { execFile, spawnSync } = vi.hoisted(() => ({ execFile: vi.fn(), spawnSync: vi.fn() }));
+const spawnSync = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
-	return { ...actual, execFile, spawnSync };
+	return { ...actual, spawnSync };
 });
 
-const { powershellCandidates, readWindowsDirectorySecurity, readWindowsDirectorySecurityAsync } = await import(
+const { evaluateWindowsDirectorySecurity, powershellCandidates, readWindowsDirectorySecurity } = await import(
 	"../src/core/tools/windows-directory-security.ts"
 );
-
-type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
 
 const QUERY_PATH = "C:\\Users\\alice\\AppData\\Local\\Temp\\atomic-alice";
 
@@ -30,19 +31,8 @@ function triedExecutables(): string[] {
 	return spawnSync.mock.calls.map(([executable]) => String(executable));
 }
 
-function execFileAnswers(answer: (callback: ExecFileCallback) => void): void {
-	execFile.mockImplementation((_file: string, _args: string[], _options: object, callback: ExecFileCallback) => {
-		answer(callback);
-	});
-}
-
-function triedAsynchronously(): string[] {
-	return execFile.mock.calls.map(([executable]) => String(executable));
-}
-
 beforeEach(() => {
 	spawnSync.mockReset();
-	execFile.mockReset();
 });
 
 test("a descriptor read that times out is not retried with the same PowerShell program (#5324)", () => {
@@ -60,27 +50,20 @@ test("a descriptor read that cannot start a PowerShell program still tries the n
 	assert.deepEqual(triedExecutables(), powershellCandidates());
 });
 
-test("an asynchronous descriptor read that times out is not retried with the same PowerShell program (#5324)", async () => {
-	execFileAnswers((callback) =>
-		callback(Object.assign(new Error("The operation was aborted"), { code: "ABORT_ERR" }), "", ""),
-	);
-	const [windowsPowerShell, , powerShellCore] = powershellCandidates();
+test.skipIf(process.platform !== "win32")(
+	"a directory's descriptor is read without starting PowerShell, so a loaded host cannot hold the main thread on it (#5324)",
+	() => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-native-descriptor-"));
+		try {
+			const security = readWindowsDirectorySecurity(dir);
 
-	assert.equal(await readWindowsDirectorySecurityAsync(QUERY_PATH), undefined);
-	assert.deepEqual(triedAsynchronously(), [windowsPowerShell, powerShellCore]);
-	assert.equal(spawnSync.mock.calls.length, 0, "nothing was read on the main thread");
-});
-
-test("an asynchronous descriptor read returns the first PowerShell program's answer (#5324)", async () => {
-	const sid = "S-1-5-21-1000000000-2000000000-3000000000-1001";
-	execFileAnswers((callback) => callback(null, `${sid}\n${sid}\nD:PAI(A;OICI;FA;;;${sid})\nAllow;${sid}`, ""));
-
-	assert.deepEqual(await readWindowsDirectorySecurityAsync(QUERY_PATH), {
-		currentSid: sid,
-		ownerSid: sid,
-		dacl: `D:PAI(A;OICI;FA;;;${sid})`,
-		accessRules: [{ allow: true, sid }],
-	});
-	assert.deepEqual(triedAsynchronously(), powershellCandidates().slice(0, 1));
-	assert.equal(execFile.mock.calls[0]?.[2].env.ATOMIC_SECURITY_QUERY_PATH, QUERY_PATH);
-});
+			assert.ok(security, "the descriptor of an owned directory is readable");
+			assert.match(security.currentSid, /^S-1-/);
+			assert.match(security.ownerSid, /^S-1-/);
+			assert.equal(evaluateWindowsDirectorySecurity(security), undefined);
+			assert.deepEqual(triedExecutables(), [], "no PowerShell process was started");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	},
+);

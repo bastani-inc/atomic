@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed Atomic on Windows pausing about 10 seconds after a session started, while PowerShell checked the owner and permissions of its private temp directory. Every timer, hook and wait in the process stalled for as long as the check took, up to half a minute on a busy machine. The check now runs in the background, and when it times out Atomic no longer retries it with the same PowerShell program ([#5324](https://github.com/bastani-inc/atomic/issues/5324))
+- Fixed Atomic on Windows pausing for seconds, and on a busy machine for half a minute or more, while it started PowerShell to check that a private temp directory belonged to you. This happened about 10 seconds after a session started, and when the first subagent launched from a session without a session file. The owner and permissions are now read directly, without starting PowerShell. Where the native module is missing, PowerShell is still used, and a check that times out is no longer retried with the same PowerShell program ([#5324](https://github.com/bastani-inc/atomic/issues/5324))
 
 ## [0.9.88] - 2026-11-16
 

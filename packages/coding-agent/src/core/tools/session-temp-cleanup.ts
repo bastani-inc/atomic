@@ -51,7 +51,6 @@ import { getAgentConfigPaths } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
 	ensureTempDir,
-	ensureTempDirAsync,
 	getProtectedSessionTempDirs,
 	getTempRootDir,
 	SESSION_TEMP_FILE_MODE,
@@ -639,72 +638,36 @@ function safeSessionsRoots(): readonly string[] {
 	}
 }
 
-interface CleanupSweep {
-	target: string;
-	controlDir: string;
-	sweep(): SweepOutcome;
-}
-
-function cleanupSweeps(options: SessionTempCleanupOptions): CleanupSweep[] {
+/** Run every sweep once. Each failure is swallowed: cleanup is housekeeping. */
+export function runSessionTempCleanup(options: SessionTempCleanupOptions = {}): void {
 	const { tempRoot, sessionsRoots, sessionDirs, ...sweepOptions } = options;
-	const root = tempRoot ?? getTempRootDir();
+	try {
+		sweepSessionTempRoot(tempRoot ?? getTempRootDir(), sweepOptions);
+	} catch {
+		// Best effort.
+	}
 	// Session storage carries the same protection as the temp trees: a live
 	// session registers its own `tool-results` directory, and a replayed result
 	// reuses an old file without refreshing its mtime, so age alone cannot keep
 	// an advertised path alive.
-	return [
-		{ target: root, controlDir: root, sweep: () => sweepSessionTempRoot(root, sweepOptions) },
-		...(sessionsRoots ?? safeSessionsRoots()).map((target) => ({
-			target,
-			controlDir: getCleanupControlDir(target, sweepOptions.controlRoot),
-			sweep: () => sweepToolResultsRoot(target, sweepOptions),
-		})),
-		...(sessionDirs ?? []).map((target) => ({
-			target,
-			controlDir: getCleanupControlDir(target, sweepOptions.controlRoot),
-			sweep: () => sweepSessionDirToolResults(target, sweepOptions),
-		})),
-	];
-}
-
-function runSweep(sweep: CleanupSweep): void {
-	try {
-		sweep.sweep();
-	} catch {
-		// Best effort.
+	for (const root of sessionsRoots ?? safeSessionsRoots()) {
+		try {
+			sweepToolResultsRoot(root, sweepOptions);
+		} catch {
+			// Best effort.
+		}
 	}
-}
-
-/** Run every sweep once. Each failure is swallowed: cleanup is housekeeping. */
-export function runSessionTempCleanup(options: SessionTempCleanupOptions = {}): void {
-	for (const sweep of cleanupSweeps(options)) {
-		runSweep(sweep);
-	}
-}
-
-async function controlDirVerified(sweep: CleanupSweep): Promise<boolean> {
-	if (!isRealDirectory(sweep.target)) {
-		return true;
-	}
-	try {
-		await ensureTempDirAsync(sweep.controlDir);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-async function runDeferredSessionTempCleanup(options: SessionTempCleanupOptions): Promise<void> {
-	for (const sweep of cleanupSweeps(options)) {
-		if (await controlDirVerified(sweep)) {
-			runSweep(sweep);
+	for (const dir of sessionDirs ?? []) {
+		try {
+			sweepSessionDirToolResults(dir, sweepOptions);
+		} catch {
+			// Best effort.
 		}
 	}
 }
 
 let cleanupScheduled = false;
 let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
-let deferredCleanup: Promise<void> | undefined;
 const scheduledSessionsRoots = new Set<string>();
 const scheduledSessionDirs = new Set<string>();
 
@@ -714,31 +677,29 @@ const outsideAnySession = AsyncLocalStorage.snapshot();
 /** Arm one deferred sweep for the roots currently pending. */
 function armSessionTempCleanup(options: SessionTempCleanupOptions): void {
 	cleanupScheduled = true;
-	const timer = setTimeout(() => {
+	cleanupTimer = setTimeout(() => {
 		// Drain before the sweep. A session discovered while cleanup is running adds
-		// to the now-empty sets and is rearmed once it settles, rather than being lost
+		// to the now-empty sets and is rearmed in `finally`, rather than being lost
 		// or starting a second callback alongside this one.
 		const sessionsRoots = [...scheduledSessionsRoots];
 		const sessionDirs = [...scheduledSessionDirs];
 		scheduledSessionsRoots.clear();
 		scheduledSessionDirs.clear();
-		deferredCleanup = runDeferredSessionTempCleanup({
-			...options,
-			sessionsRoots: sessionsRoots.length > 0 ? sessionsRoots : options.sessionsRoots,
-			sessionDirs,
-		}).finally(() => {
-			if (cleanupTimer !== timer) {
-				return;
-			}
+		try {
+			runSessionTempCleanup({
+				...options,
+				sessionsRoots: sessionsRoots.length > 0 ? sessionsRoots : options.sessionsRoots,
+				sessionDirs,
+			});
+		} finally {
 			cleanupTimer = undefined;
 			cleanupScheduled = false;
 			if (scheduledSessionsRoots.size > 0 || scheduledSessionDirs.size > 0) {
 				armSessionTempCleanup(options);
 			}
-		});
+		}
 	}, SESSION_TEMP_CLEANUP_DELAY_MS);
-	cleanupTimer = timer;
-	timer.unref?.();
+	cleanupTimer.unref?.();
 }
 
 /**
@@ -760,10 +721,6 @@ export function scheduleSessionTempCleanup(options: SessionTempCleanupOptions = 
 	}
 	// The sweep is process-wide: armed inside a session's async context, its timer would keep that session reachable.
 	outsideAnySession(armSessionTempCleanup, options);
-}
-
-export function deferredSessionTempCleanupSettledForTesting(): Promise<void> {
-	return deferredCleanup ?? Promise.resolve();
 }
 
 /** Test seam: cancel pending work and forget scheduler state. */

@@ -6,12 +6,12 @@
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
 import { spawnSyncCollect } from "../../../test/helpers/runtime.ts";
 import {
-	ensureTempDirAsync,
 	getSessionTempDir,
 	getTempRootDir,
 	resetSessionTempDirStateForTesting,
@@ -21,11 +21,10 @@ import {
 	evaluateWindowsDirectorySecurity,
 	getLastWindowsSecurityReadFailureForTesting,
 	readWindowsDirectorySecurity,
+	readWindowsDirectorySecurityWithPowerShell,
 	resetWindowsDirectorySecurityStateForTesting,
-	setWindowsDirectorySecurityAsyncReaderForTesting,
 	setWindowsDirectorySecurityReaderForTesting,
 	verifyWindowsDirectorySecurity,
-	verifyWindowsDirectorySecurityAsync,
 	type WindowsDirectorySecurity,
 } from "../src/core/tools/windows-directory-security.ts";
 
@@ -208,43 +207,6 @@ describe("windows directory security cache", () => {
 		assert.deepEqual(reads, [dir], "only the verified root was read");
 	});
 
-	it("verifies concurrent asynchronous callers with one read that the synchronous path then reuses (#5324)", async () => {
-		const asyncReads: string[] = [];
-		let syncReads = 0;
-		const read = Promise.withResolvers<WindowsDirectorySecurity>();
-		setWindowsDirectorySecurityAsyncReaderForTesting((path) => {
-			asyncReads.push(path);
-			return read.promise;
-		});
-		setWindowsDirectorySecurityReaderForTesting(() => {
-			syncReads += 1;
-			return security();
-		});
-
-		const verdicts = Promise.all([
-			verifyWindowsDirectorySecurityAsync(dir),
-			verifyWindowsDirectorySecurityAsync(dir),
-		]);
-		read.resolve(security());
-
-		assert.deepEqual(await verdicts, [undefined, undefined]);
-		assert.deepEqual(asyncReads, [dir], "one read serves both callers");
-		assert.equal(verifyWindowsDirectorySecurity(dir), undefined);
-		assert.equal(syncReads, 0, "the synchronous path reuses the asynchronous verification");
-	});
-
-	it("reads a refused directory again on the next asynchronous verification (#5324)", async () => {
-		let reads = 0;
-		setWindowsDirectorySecurityAsyncReaderForTesting(async () => {
-			reads += 1;
-			return security({ ownerSid: FOREIGN_SID });
-		});
-
-		assert.equal(await verifyWindowsDirectorySecurityAsync(dir), "it is owned by another account");
-		assert.equal(await verifyWindowsDirectorySecurityAsync(dir), "it is owned by another account");
-		assert.equal(reads, 2, "a refusal is not cached");
-	});
-
 	it("reads, and refuses, a foreign directory whose parent was never verified", () => {
 		const reads: string[] = [];
 		setWindowsDirectorySecurityReaderForTesting((path) => {
@@ -316,7 +278,6 @@ describe("windows session temp root verification", () => {
 
 	afterEach(() => {
 		setWindowsDirectorySecurityReaderForTesting(undefined);
-		setWindowsDirectorySecurityAsyncReaderForTesting(undefined);
 	});
 
 	it.skipIf(!isWindows)("adopts its own restrictive root and spills into it", () => {
@@ -336,6 +297,38 @@ describe("windows session temp root verification", () => {
 		assert.match(descriptor.ownerSid, /^S-1-/);
 		assert.equal(evaluateWindowsDirectorySecurity(descriptor), undefined);
 	});
+
+	it.skipIf(!isWindows)(
+		"the native module reads the owner, user, rules and verdict PowerShell's Get-Acl reads (#5324)",
+		() => {
+			const binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+				windowsDirectorySecurity: (path: string) => WindowsDirectorySecurity | null;
+			};
+			const own = getSessionTempDir("native-parity");
+			const shared = join(sandbox, "shared-parity");
+			mkdirSync(shared);
+			const granted = spawnSyncCollect(["icacls", shared, "/grant", "*S-1-1-0:(OI)(CI)F"]);
+			assert.equal(granted.exitCode, 0, granted.stderr.toString());
+			const rules = (security: WindowsDirectorySecurity) =>
+				new Set(security.accessRules.map((rule) => `${rule.allow ? "allow" : "deny"} ${rule.sid}`));
+
+			for (const [path, verdict] of [
+				[own, undefined],
+				[shared, "it grants access to another account"],
+			] as const) {
+				const native = binding.windowsDirectorySecurity(path);
+				const powershell = readWindowsDirectorySecurityWithPowerShell(path);
+				assert.ok(native, `the native module reads ${path}`);
+				assert.ok(powershell, `PowerShell reads ${path}: ${getLastWindowsSecurityReadFailureForTesting()}`);
+				assert.equal(native.currentSid, powershell.currentSid);
+				assert.equal(native.ownerSid, powershell.ownerSid);
+				assert.deepEqual(rules(native), rules(powershell));
+				assert.equal(evaluateWindowsDirectorySecurity(native), verdict);
+				assert.equal(evaluateWindowsDirectorySecurity(powershell), verdict);
+			}
+			assert.equal(binding.windowsDirectorySecurity(join(sandbox, "missing")), null);
+		},
+	);
 
 	it.skipIf(!isWindows)("refuses a pre-created root whose DACL grants Everyone access", () => {
 		const root = getTempRootDir();
@@ -374,28 +367,6 @@ describe("windows session temp root verification", () => {
 				error instanceof TempDirRefusedError && error.message.includes("its ownership could not be verified"),
 		);
 	});
-
-	it.skipIf(!isWindows)(
-		"an asynchronous walk refuses a root owned by another account without reading on the main thread (#5324)",
-		async () => {
-			const root = getTempRootDir();
-			mkdirSync(root, { recursive: true });
-			let syncReads = 0;
-			setWindowsDirectorySecurityReaderForTesting(() => {
-				syncReads += 1;
-				return undefined;
-			});
-			setWindowsDirectorySecurityAsyncReaderForTesting(async () => security({ ownerSid: FOREIGN_SID }));
-
-			await assert.rejects(
-				ensureTempDirAsync(join(root, "through-foreign-root")),
-				(error: unknown) =>
-					error instanceof TempDirRefusedError && error.message.includes("it is owned by another account"),
-			);
-			assert.equal(existsSync(join(root, "through-foreign-root")), false);
-			assert.equal(syncReads, 0);
-		},
-	);
 
 	it.skipIf(!isWindows)("verifies unchanged components once, keeping the subprocess off the spill path", () => {
 		const reads: string[] = [];

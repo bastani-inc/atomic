@@ -4,21 +4,22 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
-import {
+
+const spawned = vi.hoisted(() => ({ spawnSync: vi.fn() }));
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	spawned.spawnSync.mockImplementation(actual.spawnSync);
+	return { ...actual, spawnSync: spawned.spawnSync };
+});
+
+const {
 	CLEANUP_MARKER_FILE,
-	deferredSessionTempCleanupSettledForTesting,
 	resetSessionTempCleanupScheduleForTesting,
 	SESSION_TEMP_CLEANUP_DELAY_MS,
 	scheduleSessionTempCleanup,
-} from "../src/core/tools/session-temp-cleanup.js";
-import { getTempRootDir, resetSessionTempDirStateForTesting } from "../src/core/tools/session-temp-dir.ts";
-import {
-	readWindowsDirectorySecurity,
-	setWindowsDirectorySecurityReaderForTesting,
-} from "../src/core/tools/windows-directory-security.ts";
-
-/** A sweep that reads one real PowerShell descriptor: each attempt is bounded by 30 s, and a loaded host takes them all. */
-const DEFERRED_SWEEP_TEST_TIMEOUT_MS = 90_000;
+} = await import("../src/core/tools/session-temp-cleanup.js");
+const { getTempRootDir, resetSessionTempDirStateForTesting } = await import("../src/core/tools/session-temp-dir.ts");
 
 const sandboxes: string[] = [];
 
@@ -27,7 +28,6 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
 	resetSessionTempCleanupScheduleForTesting();
-	setWindowsDirectorySecurityReaderForTesting(undefined);
 	resetSessionTempDirStateForTesting();
 	for (const sandbox of sandboxes.splice(0)) rmSync(sandbox, { recursive: true, force: true });
 });
@@ -49,28 +49,27 @@ test("the deferred sweep is armed once, outside the async context of the session
 });
 
 test.skipIf(process.platform !== "win32")(
-	"the deferred sweep reads the temp root's descriptor without holding the event loop (#5324)",
-	async () => {
+	"the deferred sweep verifies the temp root without starting PowerShell on the main thread (#5324)",
+	() => {
 		const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-deferred-sweep-")));
 		sandboxes.push(sandbox);
 		for (const key of ["TEMP", "TMP", "TMPDIR"]) vi.stubEnv(key, sandbox);
 		resetSessionTempDirStateForTesting();
 		const root = getTempRootDir();
 		mkdirSync(root);
-		const heldReads: string[] = [];
-		setWindowsDirectorySecurityReaderForTesting((path) => {
-			heldReads.push(path);
-			return readWindowsDirectorySecurity(path);
-		});
+		spawned.spawnSync.mockClear();
 
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 		scheduleSessionTempCleanup({ sessionsRoots: [] });
 		vi.advanceTimersByTime(SESSION_TEMP_CLEANUP_DELAY_MS);
-		vi.useRealTimers();
-		await deferredSessionTempCleanupSettledForTesting();
 
-		assert.deepEqual(heldReads, [], "the sweep read no descriptor on the main thread");
-		assert.ok(existsSync(join(root, CLEANUP_MARKER_FILE)), "the sweep ran once the temp root was verified");
+		assert.ok(existsSync(join(root, CLEANUP_MARKER_FILE)), "the sweep verified the temp root and ran");
+		assert.deepEqual(
+			spawned.spawnSync.mock.calls
+				.map(([command]) => String(command))
+				.filter((command) => /powershell|pwsh/i.test(command)),
+			[],
+			"no PowerShell process held the main thread",
+		);
 	},
-	DEFERRED_SWEEP_TEST_TIMEOUT_MS,
 );
