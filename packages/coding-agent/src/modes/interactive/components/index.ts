@@ -63,6 +63,19 @@ export { LoginDialogComponent } from "./login-dialog.ts";
 export { ModelSelectorComponent } from "./model-selector.ts";
 export { OAuthSelectorComponent } from "./oauth-selector.ts";
 export { type ModelsCallbacks, type ModelsConfig, ScopedModelsSelectorComponent } from "./scoped-models-selector.ts";
+export {
+	fitHintEntries,
+	PLAIN_SELECTOR_STYLE,
+	Selector,
+	type SelectorExtraKey,
+	type SelectorItem,
+	type SelectorOptions,
+	SelectorState,
+	type SelectorStyle,
+	type SelectorTone,
+	selectorHintEntries,
+	themeSelectorStyle,
+} from "./selector.ts";
 export { SessionSelectorComponent } from "./session-selector.ts";
 export { type SettingsCallbacks, type SettingsConfig, SettingsSelectorComponent } from "./settings-selector.ts";
 export { ShowImagesSelectorComponent } from "./show-images-selector.ts";
