@@ -176,35 +176,73 @@ describe("windows directory security cache", () => {
 		assert.equal(reads, 1, "an unchanged directory is not re-read");
 	});
 
-	it("re-reads the descriptor after an in-place metadata change and refuses a broadened DACL", () => {
+	it("keeps a verified directory verified when entries are created inside it", () => {
 		let reads = 0;
-		let descriptor = security();
 		setWindowsDirectorySecurityReaderForTesting(() => {
 			reads += 1;
-			return descriptor;
+			return security();
 		});
 		assert.equal(verifyWindowsDirectorySecurity(dir), undefined);
-		assert.equal(reads, 1);
-
-		// An in-place DACL edit changes the directory's metadata identity
-		// (the NTFS change time) without recreating it or changing its
-		// creation time; model that by bumping the directory's timestamps and
-		// swapping in a descriptor that now grants a foreign SID.
-		descriptor = security({
-			dacl: `D:(A;OICI;FA;;;${FOREIGN_SID})(A;;FA;;;${CURRENT_SID})`,
-			accessRules: [
-				{ allow: true, sid: FOREIGN_SID },
-				{ allow: true, sid: CURRENT_SID },
-			],
-		});
+		writeFileSync(join(dir, "spill.log"), "content");
 		utimesSync(dir, new Date("2020-01-01T00:00:00Z"), new Date("2020-01-01T00:00:00Z"));
-
-		assert.equal(verifyWindowsDirectorySecurity(dir), "it grants access to another account");
-		assert.equal(reads, 2, "a changed metadata identity forces a fresh descriptor read");
-		// Failures are never cached: the next call reads again.
-		assert.equal(verifyWindowsDirectorySecurity(dir), "it grants access to another account");
-		assert.equal(reads, 3);
+		assert.equal(verifyWindowsDirectorySecurity(dir), undefined);
+		assert.equal(reads, 1, "a verified directory is read once per process");
 	});
+
+	it("trusts a directory inside a verified one without reading it", () => {
+		const reads: string[] = [];
+		setWindowsDirectorySecurityReaderForTesting((path) => {
+			reads.push(path);
+			return security();
+		});
+		assert.equal(verifyWindowsDirectorySecurity(dir), undefined);
+		const child = join(dir, "session");
+		mkdirSync(child);
+		assert.equal(verifyWindowsDirectorySecurity(child), undefined);
+		const grandchild = join(child, "tool-results");
+		mkdirSync(grandchild);
+		assert.equal(verifyWindowsDirectorySecurity(grandchild), undefined);
+		assert.deepEqual(reads, [dir], "only the verified root was read");
+	});
+
+	it("reads, and refuses, a foreign directory whose parent was never verified", () => {
+		const reads: string[] = [];
+		setWindowsDirectorySecurityReaderForTesting((path) => {
+			reads.push(path);
+			return security({ ownerSid: FOREIGN_SID });
+		});
+		const child = join(dir, "planted");
+		mkdirSync(child);
+		assert.equal(verifyWindowsDirectorySecurity(child), "it is owned by another account");
+		// Failures are never cached: the next call reads again.
+		assert.equal(verifyWindowsDirectorySecurity(child), "it is owned by another account");
+		assert.deepEqual(reads, [child, child]);
+	});
+
+	it.skipIf(!isWindows)(
+		"reads a verified directory again once it is recreated, and refuses it when it grants another account",
+		() => {
+			let descriptor = security();
+			let reads = 0;
+			setWindowsDirectorySecurityReaderForTesting(() => {
+				reads += 1;
+				return descriptor;
+			});
+			assert.equal(verifyWindowsDirectorySecurity(dir), undefined);
+
+			rmSync(dir, { recursive: true, force: true });
+			mkdirSync(dir);
+			descriptor = security({
+				dacl: `D:(A;OICI;FA;;;${FOREIGN_SID})(A;;FA;;;${CURRENT_SID})`,
+				accessRules: [
+					{ allow: true, sid: FOREIGN_SID },
+					{ allow: true, sid: CURRENT_SID },
+				],
+			});
+			assert.equal(verifyWindowsDirectorySecurity(dir), "it grants access to another account");
+			assert.equal(reads, 2, "a directory with a new creation time is read again");
+		},
+	);
 });
 
 describe("windows session temp root verification", () => {
@@ -334,36 +372,38 @@ describe("windows session temp root verification", () => {
 		},
 	);
 
-	it.skipIf(!isWindows)("re-verifies a directory swapped underneath a verified path", () => {
+	it.skipIf(!isWindows)("re-verifies a private root swapped underneath a verified path", () => {
 		const dir = getSessionTempDir("swap-detect");
-		getSessionTempDir("swap-detect"); // settle the root's post-leaf-creation metadata
+		const root = getTempRootDir();
 		const reads: string[] = [];
 		setWindowsDirectorySecurityReaderForTesting((path) => {
 			reads.push(path);
 			return readWindowsDirectorySecurity(path);
 		});
 		assert.equal(getSessionTempDir("swap-detect"), dir);
-		assert.equal(reads.length, 0, "the unchanged directory is served from the cache");
+		assert.equal(reads.length, 0, "the unchanged root is served from the cache");
 
-		rmSync(dir, { recursive: true, force: true });
+		rmSync(root, { recursive: true, force: true });
 		mkdirSync(dir, { recursive: true });
-		getSessionTempDir("swap-detect");
-		assert.ok(reads.includes(dir), "a recreated directory must be re-verified");
+		assert.equal(getSessionTempDir("swap-detect"), dir);
+		assert.deepEqual(reads, [root], "a recreated root must be re-verified");
 	});
 
-	it.skipIf(!isWindows)("refuses a previously verified root after its DACL is broadened in place", () => {
-		const dir = getSessionTempDir("acl-mutation");
-		writeFileSync(join(dir, "spill.log"), "before");
-
-		const granted = spawnSyncCollect(["icacls", dir, "/grant", "*S-1-1-0:(OI)(CI)F"]);
+	it.skipIf(!isWindows)("refuses a verified root swapped for one whose DACL grants Everyone access", () => {
+		getSessionTempDir("acl-swap");
+		const root = getTempRootDir();
+		rmSync(root, { recursive: true, force: true });
+		mkdirSync(root);
+		const granted = spawnSyncCollect(["icacls", root, "/grant", "*S-1-1-0:(OI)(CI)F"]);
 		assert.equal(granted.exitCode, 0, granted.stderr.toString());
 
 		assert.throws(
-			() => getSessionTempDir("acl-mutation"),
+			() => getSessionTempDir("acl-swap"),
 			(error: unknown) =>
 				error instanceof TempDirRefusedError && error.message.includes("it grants access to another account"),
-			"an in-place DACL broadening must be re-verified and refused",
+			"a root recreated with a shared DACL must be re-verified and refused",
 		);
+		assert.equal(existsSync(join(root, "acl-swap")), false, "nothing is written below a shared root");
 	});
 
 	it.skipIf(isWindows)("never consults the Windows reader on POSIX", () => {
