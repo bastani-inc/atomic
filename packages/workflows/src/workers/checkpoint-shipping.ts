@@ -125,7 +125,10 @@ export class CheckpointShipping {
 	/** How long recent deliveries took: a running average, and the latest times for their 95th percentile. */
 	private deliveryEwmaMs: number | undefined;
 	private readonly deliverySamples: number[] = [];
+	private deliveryP95Ms = 0;
 	private lastError: Error | undefined;
+	private recovery: Promise<void> | undefined;
+	private recoveryScan: Promise<readonly AttemptLease[]> | undefined;
 	private closed = false;
 
 	constructor(
@@ -162,13 +165,23 @@ export class CheckpointShipping {
 
 	/** The attempt holds its work's lease as of now: at its claim and at each renewal. */
 	async hold(lease: AttemptLease, leaseMs: number): Promise<void> {
+		if (this.recoveryScan !== undefined) await this.recoveryScan;
+		if (this.closed) return;
 		const known = this.attempts.get(lease.id);
+		if (known !== undefined && known.lease.generation > lease.generation)
+			throw new StaleWorkLeaseError({
+				root: this.shard.root,
+				workId: lease.id,
+				generation: lease.generation,
+				reason: "generation-mismatch",
+			});
 		if (known === undefined || known.lease.generation !== lease.generation)
 			this.attempts.set(lease.id, { lease: { ...lease }, accepted: [], chain: Promise.resolve() });
 		else known.lease = { ...lease };
 		try {
 			await this.shard.hold(lease, leaseMs);
 		} catch (error) {
+			if (error instanceof StaleWorkLeaseError) throw error;
 			this.fallBack(lease.id, error as Error);
 		}
 	}
@@ -215,10 +228,7 @@ export class CheckpointShipping {
 	): Promise<PoolCommitReceipt> {
 		const fenced = this.attempts.get(lease.id)?.fenced;
 		if (fenced !== undefined && this.attempts.get(lease.id)?.lease.generation === lease.generation) throw fenced;
-		if (!shippableCheckpoint(mutation) || this.syncOnly.has(lease.id)) {
-			await this.flush(lease);
-			return commitShared();
-		}
+		if (!shippableCheckpoint(mutation) || this.syncOnly.has(lease.id)) return this.commitDirect(lease, commitShared);
 		const checkpoint = mutation.checkpoint;
 		await this.catchUp(lease);
 		try {
@@ -233,8 +243,7 @@ export class CheckpointShipping {
 		} catch (error) {
 			if (error instanceof StaleWorkLeaseError || error instanceof ShipIdentityConflictError) throw error;
 			this.fallBack(lease.id, error as Error);
-			await this.flush(lease);
-			return commitShared();
+			return this.commitDirect(lease, commitShared);
 		}
 		const attempt = this.attempts.get(lease.id);
 		// A full batch ships at once, unless a shipment is queued already: it takes what has come since when it runs.
@@ -251,6 +260,7 @@ export class CheckpointShipping {
 		const attempt = this.attempts.get(lease.id);
 		if (attempt === undefined || attempt.lease.generation !== lease.generation) return;
 		for (;;) {
+			if (this.closed) throw new Error("Checkpoint shipping stopped");
 			if (attempt.fenced !== undefined) throw attempt.fenced;
 			if ((await this.shard.pendingCount(attempt.lease)) === 0) return;
 			await this.ship(attempt, cap);
@@ -300,9 +310,7 @@ export class CheckpointShipping {
 	/** The larger of the recent average and 95th percentile delivery time; undefined before any delivery. */
 	private deliveryEstimateMs(): number | undefined {
 		if (this.deliveryEwmaMs === undefined) return undefined;
-		const sorted = [...this.deliverySamples].sort((left, right) => left - right);
-		const p95 = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)]!;
-		return Math.max(this.deliveryEwmaMs, p95);
+		return Math.max(this.deliveryEwmaMs, this.deliveryP95Ms);
 	}
 
 	private noteDelivery(ms: number): void {
@@ -312,6 +320,8 @@ export class CheckpointShipping {
 				: this.deliveryEwmaMs + DELIVERY_EWMA_WEIGHT * (ms - this.deliveryEwmaMs);
 		this.deliverySamples.push(ms);
 		if (this.deliverySamples.length > DELIVERY_SAMPLES) this.deliverySamples.shift();
+		const sorted = [...this.deliverySamples].sort((left, right) => left - right);
+		this.deliveryP95Ms = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)]!;
 	}
 
 	/**
@@ -383,6 +393,7 @@ export class CheckpointShipping {
 		this.closed = true;
 		clearInterval(this.timer);
 		clearInterval(this.deadlines);
+		await this.recovery?.catch(() => {});
 		await Promise.all(
 			[...this.attempts.values()].flatMap((attempt) => [attempt.chain.catch(() => {}), attempt.urgent]),
 		);
@@ -392,18 +403,42 @@ export class CheckpointShipping {
 	}
 
 	/** Takes up the attempts a stopped host left checkpoints of, so they ship (see {@link start}). */
-	async recover(): Promise<void> {
+	recover(): Promise<void> {
+		if (this.closed) return Promise.resolve();
+		if (this.recovery !== undefined) return this.recovery;
+		this.recoveryScan = this.recoverAttempts();
+		this.recovery = this.recoveryScan
+			.then(async (leases) => {
+				this.recoveryScan = undefined;
+				for (const lease of leases) {
+					if (this.closed) return;
+					await this.flush(lease).catch(() => {});
+				}
+			})
+			.finally(() => {
+				this.recovery = undefined;
+				this.recoveryScan = undefined;
+			});
+		return this.recovery;
+	}
+
+	private async recoverAttempts(): Promise<readonly AttemptLease[]> {
+		const recovered: AttemptLease[] = [];
 		for (const { lease } of await this.shard.leftover()) {
+			if (this.closed) return recovered;
 			if (this.attempts.has(lease.id)) continue;
 			const now = this.now();
 			const held = await this.shard.pending(lease, Number.MAX_SAFE_INTEGER);
+			if (this.closed) return recovered;
+			if (this.attempts.has(lease.id)) continue;
 			this.attempts.set(lease.id, {
 				lease,
 				accepted: held.map((event) => ({ localSeq: event.localSeq, at: now })),
 				chain: Promise.resolve(),
 			});
-			await this.flush(lease).catch(() => {});
+			recovered.push(lease);
 		}
+		return recovered;
 	}
 
 	/**
@@ -454,23 +489,45 @@ export class CheckpointShipping {
 			await this.options.deliver(lease, batch);
 			this.noteDelivery(this.now() - began);
 		} catch (error) {
-			if (error instanceof StaleWorkLeaseError || error instanceof StaleLeaseError) {
-				attempt.fenced =
-					error instanceof StaleWorkLeaseError
-						? error
-						: new StaleWorkLeaseError(
-								{ root: this.shard.root, workId: lease.id, generation: lease.generation, reason: "fenced" },
-								{ cause: error },
-							);
-				attempt.accepted = [];
-				await this.shard.fence(lease);
-			} else this.lastError = error as Error;
-			throw attempt.fenced ?? error;
+			const fenced = await this.fence(attempt, lease, error as Error);
+			if (fenced === undefined) this.lastError = error as Error;
+			throw fenced ?? error;
 		}
 		this.lastError = undefined;
 		await this.shard.shipped(lease, sealed.events.at(-1)!.localSeq);
 		const last = sealed.events.at(-1)!.localSeq;
 		attempt.accepted = attempt.accepted.filter((entry) => entry.localSeq > last);
+	}
+
+	private async commitDirect(
+		lease: AttemptLease,
+		commitShared: () => Promise<PoolCommitReceipt>,
+	): Promise<PoolCommitReceipt> {
+		const attempt = this.attempts.get(lease.id);
+		await this.flush(lease);
+		try {
+			return await commitShared();
+		} catch (error) {
+			const fenced =
+				attempt?.lease.generation === lease.generation
+					? await this.fence(attempt, lease, error as Error)
+					: undefined;
+			throw fenced ?? error;
+		}
+	}
+
+	private async fence(attempt: Attempt, lease: AttemptLease, error: Error): Promise<Error | undefined> {
+		if (!(error instanceof StaleWorkLeaseError || error instanceof StaleLeaseError)) return undefined;
+		attempt.fenced =
+			error instanceof StaleWorkLeaseError
+				? error
+				: new StaleWorkLeaseError(
+						{ root: this.shard.root, workId: lease.id, generation: lease.generation, reason: "fenced" },
+						{ cause: error },
+					);
+		attempt.accepted = [];
+		await this.shard.fence(lease);
+		return attempt.fenced;
 	}
 
 	private noteAccepted(lease: AttemptLease, localSeq: number): void {

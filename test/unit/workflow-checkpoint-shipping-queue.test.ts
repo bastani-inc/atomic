@@ -195,6 +195,133 @@ test("a host that starts again ships what it left while its attempt still owns t
 	assert.deepEqual(await replaced.shard.pending(attempt), [], "and the host drops it");
 });
 
+test("a new attempt claimed during startup recovery ships its checkpoints without restoring the previous generation (#4768)", async () => {
+	const { queue, lease, attempt, tool, recorded, work } = await claimedAttempt();
+	const path = join(directory, "recover-claim.sqlite");
+	const before = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	await before.shipping.hold(attempt, LEASE_MS);
+	await before.shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(1) }, noShared);
+	await before.shipping.close();
+	const after = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	const scanned = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	const pending = after.shard.pending.bind(after.shard);
+	after.shard.pending = async (...args) => {
+		const events = await pending(...args);
+		scanned.resolve();
+		await resume.promise;
+		return events;
+	};
+	const recovering = after.shipping.recover();
+	await scanned.promise;
+	await queue.releaseExited(lease, attempt);
+	const next = (await queue.claim(lease, "replacement", [work], LEASE_MS)) as PoolWork;
+	assert.equal(next.generation, attempt.generation + 1);
+	const holding = after.shipping.hold(next, LEASE_MS);
+	resume.resolve();
+	await Promise.all([recovering, holding]);
+	await after.shipping.commit(next, { kind: "checkpoint", checkpoint: tool(2) }, noShared);
+	await after.shipping.flush(next);
+	assert.deepEqual(await recorded(), [2]);
+	assert.deepEqual(await after.shard.pending(next), []);
+	assert.equal(after.shipping.status().pending, 0);
+});
+
+test("renewing a lease during startup recovery preserves unshipped checkpoint accounting after a delivery fails (#4768)", async () => {
+	const { queue, lease, attempt, tool, recorded } = await claimedAttempt();
+	const path = join(directory, "recover-renew.sqlite");
+	const before = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	await before.shipping.hold(attempt, LEASE_MS);
+	await before.shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(1) }, noShared);
+	await before.shipping.close();
+	let unavailable = true;
+	const after = await hostShipping(queue, lease, {
+		path,
+		maxBatch: 10,
+		deliver: async (held, batch) => {
+			if (unavailable) throw new Error("store unavailable");
+			await queue.shipBatch(lease, held, batch);
+		},
+	});
+	const scanned = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	const pending = after.shard.pending.bind(after.shard);
+	after.shard.pending = async (...args) => {
+		const events = await pending(...args);
+		scanned.resolve();
+		await resume.promise;
+		return events;
+	};
+	const recovering = after.shipping.recover();
+	await scanned.promise;
+	const holding = after.shipping.hold(attempt, LEASE_MS);
+	resume.resolve();
+	await Promise.all([recovering, holding]);
+	assert.equal(after.shipping.status().pending, 1);
+	assert.deepEqual(await recorded(), []);
+	unavailable = false;
+	await after.shipping.flush(attempt);
+	assert.deepEqual(await recorded(), [1]);
+	assert.equal(after.shipping.status().pending, 0);
+});
+
+test("closing during startup recovery waits for the shard scan and leaves checkpoints recoverable on the next restart (#4768)", async () => {
+	const { queue, lease, attempt, tool, recorded } = await claimedAttempt();
+	const path = join(directory, "recover-close.sqlite");
+	const before = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	await before.shipping.hold(attempt, LEASE_MS);
+	await before.shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(1) }, noShared);
+	await before.shipping.close();
+	const after = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	const scanned = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	const pending = after.shard.pending.bind(after.shard);
+	const close = after.shard.close.bind(after.shard);
+	let scanFinished = false;
+	after.shard.pending = async (...args) => {
+		const events = await pending(...args);
+		scanned.resolve();
+		await resume.promise;
+		scanFinished = true;
+		return events;
+	};
+	after.shard.close = async () => {
+		assert.ok(scanFinished, "the shard must stay open until recovery finishes reading it");
+		await close();
+	};
+	after.shipping.start();
+	await scanned.promise;
+	const recovering = after.shipping.recover();
+	const closing = after.shipping.close();
+	resume.resolve();
+	try {
+		await Promise.all([recovering, closing]);
+		assert.equal(after.shipping.status().pending, 0);
+		await after.shipping.recover();
+	} finally {
+		await close();
+	}
+	const restarted = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	await restarted.shipping.recover();
+	assert.deepEqual(await recorded(), [1]);
+});
+
+test("a delayed renewal cannot replace a newer attempt or discard its accepted checkpoints (#4768)", async () => {
+	const { queue, lease, attempt, tool, recorded, work } = await claimedAttempt();
+	const { shipping, shard } = await hostShipping(queue, lease, { maxBatch: 10 });
+	await shipping.hold(attempt, LEASE_MS);
+	await queue.releaseExited(lease, attempt);
+	const next = (await queue.claim(lease, "replacement", [work], LEASE_MS)) as PoolWork;
+	assert.equal(next.generation, attempt.generation + 1);
+	await shipping.hold(next, LEASE_MS);
+	await shipping.commit(next, { kind: "checkpoint", checkpoint: tool(1) }, noShared);
+	await assert.rejects(shipping.hold(attempt, LEASE_MS), StaleWorkLeaseError);
+	assert.equal(shipping.status().pending, 1);
+	assert.equal((await shard.pending(next)).length, 1);
+	await shipping.flush(next);
+	assert.deepEqual(await recorded(), [1]);
+});
+
 /** One event of a batch, as a host seals it, for `checkpoint`. */
 function eventOf(localSeq: number, checkpoint: DurableToolCheckpoint) {
 	return {

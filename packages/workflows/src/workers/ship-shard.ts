@@ -146,6 +146,13 @@ export class ShipShard {
 	 */
 	async hold(lease: AttemptLease, leaseMs: number): Promise<void> {
 		const held = this.leases.get(lease.id);
+		if (held !== undefined && held.lease.generation > lease.generation)
+			throw new StaleWorkLeaseError({
+				root: this.root,
+				workId: lease.id,
+				generation: lease.generation,
+				reason: "generation-mismatch",
+			});
 		if (
 			held !== undefined &&
 			held.lease.generation === lease.generation &&

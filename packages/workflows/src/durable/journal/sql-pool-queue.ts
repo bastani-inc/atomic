@@ -1960,15 +1960,13 @@ export class SqlPoolQueue {
 		const int = this.dialect.types.int;
 		const values = rows
 			.map((_, index) =>
-				index === 0
-					? `SELECT CAST(? AS ${int}) AS n, CAST(? AS TEXT) AS k, CAST(? AS TEXT) AS p, CAST(? AS ${int}) AS c`
-					: "SELECT ?, ?, ?, ?",
+				index === 0 ? `(CAST(? AS ${int}), CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS ${int}))` : "(?, ?, ?, ?)",
 			)
-			.join(" UNION ALL ");
+			.join(", ");
 		const insert: SqliteStatement = {
 			sql: `INSERT INTO ${events} (run_id, seq, epoch, key, type, payload, at, chunks)
 			SELECT ?, (SELECT COALESCE(MAX(seq), 0) FROM ${events} WHERE run_id = ?) + v.n, ?, v.k, ?, v.p, ${this.now}, v.c
-			FROM (${values}) AS v ORDER BY v.n`,
+			FROM (WITH batch(n, k, p, c) AS (VALUES ${values}) SELECT * FROM batch) AS v ORDER BY v.n`,
 			params: [
 				lease.runId,
 				lease.runId,
