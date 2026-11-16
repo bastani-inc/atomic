@@ -344,7 +344,7 @@ test.skipIf(process.platform === "win32")(
 			);
 			nodeC = startNode(s, "C", 2, markers);
 			await until(
-				"node C to be ready before blocking journal writes",
+				"node C to be ready before node B is killed",
 				s,
 				() => nodeC!.stdout.some((line) => line.startsWith("ready ")),
 				[nodeB.process, nodeC.process, root],
@@ -353,27 +353,33 @@ test.skipIf(process.platform === "win32")(
 				.find((name) => name.startsWith("ready-B-"))!
 				.split("-")
 				.at(-1)!;
+			// From here until node B dies, the shared journal refuses node B's checkpoint batches, so the step it accepts next
+			// stays in its local journal wherever its shipping interval falls. Only those batches: holding the journal's write
+			// lock instead also stops node B's heartbeats renewing its attempt's lease, and node B renews a lease that is
+			// running out before it acknowledges a step, so it waited on the test while the test waited on it.
 			const beforeKill = await openLibsqlDatabase({ url: s.url });
 			try {
-				await beforeKill.transaction(async (tx) => {
-					await tx.run(`UPDATE ${PREFIX}wf_runs_ship_batches SET host = host WHERE host = ?`, "B");
-					writeFileSync(join(s.directory, `accept-B-${index}`), "");
-					await until(
-						"node B to acknowledge its local-only checkpoint",
-						s,
-						() => readdirSync(s.directory).includes(`working-B-${index}`),
-						[nodeB!.process, nodeC!.process, root!],
-					);
-					assert.ok(readdirSync(s.directory).includes(`unshipped-B-${index}`));
-					killGroup(nodeB!.process);
-					await nodeB!.process.process.exited;
-					assert.deepEqual(
-						await tx.all(
-							`SELECT key FROM ${PREFIX}wf_events WHERE json_extract(payload, '$.name') = 'unshipped' AND json_extract(payload, '$.output') = 'B'`,
-						),
-						[],
-					);
-				});
+				await beforeKill.run(
+					`CREATE TRIGGER worker_cli_ships_nothing_from_b BEFORE INSERT ON ${PREFIX}wf_runs_ship_batches WHEN NEW.host = 'B'
+					BEGIN SELECT RAISE(ABORT, 'node B ships nothing until it is killed'); END`,
+				);
+				writeFileSync(join(s.directory, `accept-B-${index}`), "");
+				await until(
+					"node B to acknowledge its local-only checkpoint",
+					s,
+					() => readdirSync(s.directory).includes(`working-B-${index}`),
+					[nodeB.process, nodeC.process, root],
+				);
+				assert.ok(readdirSync(s.directory).includes(`unshipped-B-${index}`));
+				killGroup(nodeB.process);
+				await nodeB.process.process.exited;
+				assert.deepEqual(
+					await beforeKill.all(
+						`SELECT key FROM ${PREFIX}wf_events WHERE json_extract(payload, '$.name') = 'unshipped' AND json_extract(payload, '$.output') = 'B'`,
+					),
+					[],
+				);
+				await beforeKill.run("DROP TRIGGER worker_cli_ships_nothing_from_b");
 			} finally {
 				await beforeKill.close();
 			}
