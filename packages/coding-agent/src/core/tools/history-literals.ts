@@ -53,7 +53,7 @@ class PatternReader {
 		return this.chars[this.index + offset];
 	}
 
-	private take(): string {
+	private consume(): string {
 		const char = this.chars[this.index++];
 		if (char === undefined) throw new UnsupportedPattern();
 		return char;
@@ -111,7 +111,7 @@ class PatternReader {
 	}
 
 	private atom(): { kind: "char"; char: string } | { kind: "group"; requirement: Requirement } | { kind: "any" } {
-		const char = this.take();
+		const char = this.consume();
 		switch (char) {
 			case "\\":
 				return this.escape();
@@ -135,7 +135,7 @@ class PatternReader {
 	}
 
 	private escape(): { kind: "char"; char: string } | { kind: "any" } {
-		const char = this.take();
+		const char = this.consume();
 		if (/^[^A-Za-z0-9]$/.test(char)) return { kind: "char", char };
 		if (char === "t") return { kind: "char", char: "\t" };
 		if (/^[0-9]$/.test(char)) {
@@ -151,7 +151,7 @@ class PatternReader {
 		}
 		if (char === "p" || char === "P") {
 			if (this.peek() === "{") this.skipPast("}");
-			else this.take();
+			else this.consume();
 			return { kind: "any" };
 		}
 		if (char === "k" && this.peek() === "<") {
@@ -159,22 +159,22 @@ class PatternReader {
 			return { kind: "any" };
 		}
 		if (char === "c") {
-			this.take();
+			this.consume();
 			return { kind: "any" };
 		}
 		return { kind: "any" };
 	}
 
 	private skipPast(closing: string): void {
-		while (this.take() !== closing);
+		while (this.consume() !== closing);
 	}
 
 	private characterClass(): void {
 		if (this.peek() === "^") this.index++;
 		if (this.peek() === "]") throw new UnsupportedPattern();
 		for (;;) {
-			const char = this.take();
-			if (char === "\\") this.take();
+			const char = this.consume();
+			if (char === "\\") this.consume();
 			else if (char === "[") throw new UnsupportedPattern();
 			else if (char === "]") return;
 		}
@@ -184,7 +184,7 @@ class PatternReader {
 		let lookaround = false;
 		if (this.peek() === "?") {
 			this.index++;
-			const marker = this.take();
+			const marker = this.consume();
 			if (marker === "=" || marker === "!") lookaround = true;
 			else if (marker === "<" && (this.peek() === "=" || this.peek() === "!")) {
 				this.index++;
@@ -193,13 +193,13 @@ class PatternReader {
 			else if (marker === "P" && this.peek() === "<") this.skipPast(">");
 			else if (marker !== ":") {
 				let flags = marker;
-				while (this.peek() !== ")" && this.peek() !== ":") flags += this.take();
+				while (this.peek() !== ")" && this.peek() !== ":") flags += this.consume();
 				if (/[^imsU-]/.test(flags)) throw new UnsupportedPattern();
-				if (this.take() === ")") return { kind: "any" };
+				if (this.consume() === ")") return { kind: "any" };
 			}
 		}
 		const requirement = this.alternation();
-		if (this.take() !== ")") throw new UnsupportedPattern();
+		if (this.consume() !== ")") throw new UnsupportedPattern();
 		return lookaround ? { kind: "any" } : { kind: "group", requirement };
 	}
 }

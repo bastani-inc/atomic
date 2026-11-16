@@ -20,6 +20,7 @@ import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.j
 import {
 	SESSION_FORMAT_VERSION,
 	type SessionRecordHeader,
+	type SessionSearchIndex,
 	type SessionStore,
 } from "../src/core/storage/session/types.js";
 import { createHistoryRouter, type ProjectHistory } from "../src/core/tools/history-protocol.js";
@@ -330,16 +331,28 @@ export function recalledLines(compactedText: string): string[] {
 }
 
 /** A store whose `load` rejects once armed, to show that failed history reads never fail compaction. */
-export function failingLoadStore(store: SessionStore): { store: SessionStore; arm(): void } {
+export function failingHistoryStore(store: SessionStore): { store: SessionStore; arm(): void } {
 	let armed = false;
+	const unavailable = async (): Promise<never> => {
+		throw new Error("history store unavailable");
+	};
+	const index = store.searchIndex;
+	const failingIndex: SessionSearchIndex | undefined =
+		index === undefined
+			? undefined
+			: {
+					coverage: (...args) => (armed ? unavailable() : index.coverage(...args)),
+					extend: (...args) => (armed ? unavailable() : index.extend(...args)),
+					candidates: (...args) => (armed ? unavailable() : index.candidates(...args)),
+				};
 	const proxy = new Proxy(store, {
 		get(target, property) {
-			if (property === "load") {
-				return async (sessionId: string) => {
-					if (armed) throw new Error("history store unavailable");
-					return target.load(sessionId);
-				};
+			if (property === "load" || property === "readEntryRange") {
+				const read = Reflect.get(target, property, target) as ((...args: never[]) => Promise<unknown>) | undefined;
+				if (read === undefined) return undefined;
+				return (...args: never[]) => (armed ? unavailable() : read.apply(target, args));
 			}
+			if (property === "searchIndex") return failingIndex;
 			const value = Reflect.get(target, property, target);
 			return typeof value === "function" ? value.bind(target) : value;
 		},

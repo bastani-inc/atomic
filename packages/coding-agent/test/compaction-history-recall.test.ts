@@ -19,7 +19,7 @@ import {
 	CYCLE_ONE_DECISION,
 	compactOnce,
 	createCompactingSession,
-	failingLoadStore,
+	failingHistoryStore,
 	firstCycleMessages,
 	historyTools,
 	KEPT_NOTE,
@@ -50,12 +50,6 @@ const THIRD_CYCLE_PLAN = "3,3\n";
 
 function assertIncludes(text: string, part: string): void {
 	assert.ok(text.includes(part), `expected ${JSON.stringify(part)} in:\n${text}`);
-}
-
-function lineOf(transcript: string, needle: string): number {
-	const index = transcript.split("\n").findIndex((line) => line.includes(needle));
-	assert.ok(index >= 0, `expected a line with ${JSON.stringify(needle)}`);
-	return index + 1;
 }
 
 describe.each(SESSION_STORES)("history recall during compaction over $name (#4568)", (backend) => {
@@ -147,9 +141,12 @@ describe.each(SESSION_STORES)("history recall during compaction over $name (#456
 		const id = compacting.session.sessionId;
 		const source = recalledSources(second).find((entry) => entry.startsWith(`history://sessions/${id}:`));
 		assert.ok(source, "the earlier cycle is among the sources");
-		const transcript = await historyTools(compacting.session, cwd, workflows).read(`history://sessions/${id}`);
-		const line = lineOf(transcript, CYCLE_ONE_DECISION);
-		assert.equal(source, `history://sessions/${id}:${line}-${line}`);
+		const seq =
+			compacting.session.sessionManager
+				.getEntries()
+				.findIndex((entry) => JSON.stringify(entry).includes(CYCLE_ONE_DECISION)) + 1;
+		assert.ok(seq > 0, "the decision is an entry of the session");
+		assert.equal(source, `history://sessions/${id}:${seq}-${seq}`);
 		assertIncludes(await historyTools(compacting.session, cwd, workflows).read(source), CYCLE_ONE_DECISION);
 	});
 
@@ -283,7 +280,7 @@ describe.each(SESSION_STORES)("history recall during compaction over $name (#456
 		const { store: seeded, close } = await backend.open(join(dir, "failing"));
 		open.push(close);
 		await seedOtherHistory(seeded, cwd);
-		const failing = failingLoadStore(seeded);
+		const failing = failingHistoryStore(seeded);
 		const compacting = await createCompactingSession({
 			store: failing.store,
 			cwd,

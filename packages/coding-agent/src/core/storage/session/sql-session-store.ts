@@ -1,4 +1,3 @@
-import { setImmediate } from "node:timers";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
@@ -17,7 +16,7 @@ import {
 	StoreClosedError,
 } from "./errors.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
-import { SqlSessionSearchIndex } from "./session-search-index.ts";
+import { SqlSessionSearchIndex, yieldTurn } from "./session-search-index.ts";
 import {
 	applySessionSummaryEntries,
 	materializeSessionSummaryMetadata,
@@ -194,10 +193,6 @@ const LISTING_SIZE =
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
 export const LISTING_FETCH_BATCH = 500;
 const LISTING_CWD_PAGE = 2_000;
-
-function yieldTurn(): Promise<void> {
-	return new Promise((resolve) => setImmediate(resolve));
-}
 
 /** Listing scopes (visibility and project) kept at once; the picker uses two. */
 const LISTING_SCOPES = 8;

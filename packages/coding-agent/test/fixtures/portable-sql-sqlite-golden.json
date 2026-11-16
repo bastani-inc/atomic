@@ -154,7 +154,7 @@
 			"type": "table",
 			"name": "session_search_state",
 			"tbl_name": "session_search_state",
-			"sql": "CREATE TABLE session_search_state (sid INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL UNIQUE, format INTEGER NOT NULL, indexed_seq INTEGER NOT NULL, revision TEXT NOT NULL, entry_id TEXT NOT NULL) STRICT"
+			"sql": "CREATE TABLE session_search_state (sid INTEGER PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, format INTEGER NOT NULL, indexed_seq INTEGER NOT NULL, revision TEXT NOT NULL, entry_id TEXT NOT NULL) STRICT"
 		},
 		{
 			"type": "table",
@@ -298,7 +298,7 @@
 			"type": "table",
 			"name": "team_session_search_state",
 			"tbl_name": "team_session_search_state",
-			"sql": "CREATE TABLE team_session_search_state (sid INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL UNIQUE, format INTEGER NOT NULL, indexed_seq INTEGER NOT NULL, revision TEXT NOT NULL, entry_id TEXT NOT NULL) STRICT"
+			"sql": "CREATE TABLE team_session_search_state (sid INTEGER PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, format INTEGER NOT NULL, indexed_seq INTEGER NOT NULL, revision TEXT NOT NULL, entry_id TEXT NOT NULL) STRICT"
 		},
 		{
 			"type": "table",
@@ -702,7 +702,7 @@
 			"type": "table",
 			"name": "session_search_state",
 			"tbl_name": "session_search_state",
-			"sql": "CREATE TABLE session_search_state (sid INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL UNIQUE, format INTEGER NOT NULL, indexed_seq INTEGER NOT NULL, revision TEXT NOT NULL, entry_id TEXT NOT NULL) STRICT"
+			"sql": "CREATE TABLE session_search_state (sid INTEGER PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, format INTEGER NOT NULL, indexed_seq INTEGER NOT NULL, revision TEXT NOT NULL, entry_id TEXT NOT NULL) STRICT"
 		},
 		{
 			"type": "table",

@@ -1,4 +1,3 @@
-import { setImmediate } from "node:timers";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../database.js";
 import { dialectOf, type StorageDialect } from "../dialect.js";
 import { applyStorageMigrations } from "../migrations.js";
@@ -36,8 +35,11 @@ interface SearchDoc {
 	readonly text: string;
 }
 
-function yieldTurn(): Promise<void> {
-	return new Promise((resolve) => setImmediate(resolve));
+export function yieldTurn(): Promise<void> {
+	return new Promise((resolve) => {
+		if (typeof setImmediate === "function") setImmediate(resolve);
+		else setTimeout(resolve, 0);
+	});
 }
 
 function isHighSurrogate(code: number): boolean {
@@ -253,9 +255,9 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 					{
 						version: 1,
 						up: async (tx, dialect) => {
-							const { int, text, serialKey } = dialect.types;
+							const { int, text, rowKey } = dialect.types;
 							await tx.exec(
-								`CREATE TABLE IF NOT EXISTS ${tables.state} (sid ${serialKey}, session_id ${text} NOT NULL UNIQUE, format ${int} NOT NULL, indexed_seq ${int} NOT NULL, revision ${text} NOT NULL, entry_id ${text} NOT NULL)${dialect.tableOptions}`,
+								`CREATE TABLE IF NOT EXISTS ${tables.state} (sid ${rowKey}, session_id ${text} NOT NULL UNIQUE, format ${int} NOT NULL, indexed_seq ${int} NOT NULL, revision ${text} NOT NULL, entry_id ${text} NOT NULL)${dialect.tableOptions}`,
 							);
 							await engine.create(tx, dialect, tables);
 						},
