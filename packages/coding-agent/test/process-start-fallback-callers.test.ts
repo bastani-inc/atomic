@@ -72,12 +72,13 @@ describe("callers reading starts without the native module (#5315)", () => {
 			setNativeProcessCreationTimeForTesting(null);
 			const sessionId = "22222222-2222-4222-8222-222222222222";
 			const markers = join(agentDir, "open-sessions", sessionId);
-			mkdirSync(markers, { recursive: true });
-			const marker = (nonce: string, start: string | undefined) =>
+			const marker = (nonce: string, start: string | undefined) => {
+				mkdirSync(markers, { recursive: true });
 				writeFileSync(
 					join(markers, `${holder.pid}-${nonce.repeat(16)}-${start}.json`),
 					JSON.stringify({ pid: holder.pid, host: hostname() }),
 				);
+			};
 
 			marker("0", GONE_START);
 			assert.equal(await findSessionOpenHolder(sessionId, { agentDir }), undefined);

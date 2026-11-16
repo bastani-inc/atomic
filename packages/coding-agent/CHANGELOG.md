@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, Atomic no longer freezes while it checks whether the process holding a lock, session, worktree or blueprint build still runs, when its native module cannot read process start times. It asked PowerShell and waited on the main thread, about 150 ms each time on an idle machine and 5 to 7 seconds on a busy one, once at every start and again for each check, so input, timers and subagents stopped meanwhile. The start is now read in the background, still bounded at 5 seconds. A blueprint build that follows an interrupted one also lists the machine's processes in the background now, instead of waiting on the main thread ([#5315](https://github.com/bastani-inc/atomic/issues/5315))
+
 ## [0.9.88] - 2026-11-16
 
 Atomic runs on its own libraries, workflows scale out to worker fleets on libSQL or PostgreSQL, and every screen shares one set of keys.
