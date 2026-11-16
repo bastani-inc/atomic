@@ -286,7 +286,13 @@ export interface RpcLogoutProviderResult {
 // RPC Responses (stdout)
 // ============================================================================
 
-// Success responses with data
+export interface RpcPersistedModelDefaults {
+	provider: string;
+	modelId: string;
+	thinkingLevel: ThinkingLevel;
+	defaultThinkingLevel: ThinkingLevel;
+}
+
 export type RpcResponse =
 	// Prompting
 	| { id?: string; type: "response"; command: "prompt"; success: true; data: { disposition: PromptDisposition } }
@@ -335,14 +341,19 @@ export type RpcResponse =
 			type: "response";
 			command: "set_model";
 			success: true;
-			data: Model<Api>;
+			data: Model<Api> & { persistedDefaults?: RpcPersistedModelDefaults };
 	  }
 	| {
 			id?: string;
 			type: "response";
 			command: "cycle_model";
 			success: true;
-			data: { model: Model<Api>; thinkingLevel: ThinkingLevel; isScoped: boolean } | null;
+			data: {
+				model: Model<Api>;
+				thinkingLevel: ThinkingLevel;
+				isScoped: boolean;
+				persistedDefaults?: RpcPersistedModelDefaults;
+			} | null;
 	  }
 	| {
 			id?: string;

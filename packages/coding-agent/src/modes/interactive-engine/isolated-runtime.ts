@@ -46,6 +46,7 @@ import type {
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcModelCatalog,
+	RpcPersistedModelDefaults,
 	RpcResourceExtension,
 	RpcResumeNotice,
 	RpcSessionState,
@@ -81,7 +82,11 @@ function isEngineExtensionError(record: unknown): record is { type: "extension_e
 	return typeof record === "object" && record !== null && (record as { type?: unknown }).type === "extension_error";
 }
 
-function applyPersistedModelDefault(session: AgentSession, model: Model<Api>, alreadyInScope: boolean): void {
+function applyPersistedModelDefault(
+	session: AgentSession,
+	model: Pick<Model<Api>, "provider" | "id">,
+	alreadyInScope: boolean,
+): void {
 	session.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 	if (alreadyInScope || session.scopedModels.length === 0) return;
 	const enabledModels = session.settingsManager.getEnabledModels();
@@ -141,6 +146,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private queueUpdateGeneration = 0;
 	/** Bumped by local thinking mutations and thinking_level_changed events. */
 	private thinkingEpoch = 0;
+	private modelEpoch = 0;
 	/** Clears started before the next queue_update share one rollback snapshot. */
 	private pendingQueueClear: PendingQueueClear | undefined;
 	private engineCallbackActive = false;
@@ -923,14 +929,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				) => {
 					return serializeSessionMutation(session, async () => {
 						await this.settleEngineResync();
+						const modelEpoch = this.modelEpoch;
 						const selected = await this.client.setModel(model.provider, model.id, options);
 						const nextModel = session.modelRuntime.getModel(selected.provider, selected.id) ?? model;
-						session.agent.state.model = nextModel;
+						if (modelEpoch === this.modelEpoch) session.agent.state.model = nextModel;
 						this.resolveModelFallback();
 						const epoch = ++this.thinkingEpoch;
 						const state =
 							options?.persist === true
-								? await this.syncPersistedModelCatalog(session, nextModel)
+								? await this.syncPersistedModelCatalog(session, nextModel, selected.persistedDefaults)
 								: await this.client.getState();
 						this.applyThinkingAck(session, epoch, { level: state.thinkingLevel }, false);
 					});
@@ -952,14 +959,19 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					return serializeSessionMutation(session, async () => {
 						await this.settleEngineResync();
 						const previousModel = session.model;
+						const modelEpoch = this.modelEpoch;
 						const result = await this.client.cycleModel(direction, options);
 						if (!result) return undefined;
 						const model = session.modelRuntime.getModel(result.model.provider, result.model.id) ?? result.model;
-						session.agent.state.model = model;
-						session.agent.state.thinkingLevel = result.thinkingLevel;
+						if (modelEpoch === this.modelEpoch) session.agent.state.model = model;
 						this.resolveModelFallbackAfterExplicitModelSelection(previousModel, model);
-						if (options?.persist === true) await this.syncPersistedModelCatalog(session, model);
-						return { ...result, model };
+						const epoch = ++this.thinkingEpoch;
+						const state =
+							options?.persist === true
+								? await this.syncPersistedModelCatalog(session, model, result.persistedDefaults)
+								: await this.client.getState();
+						this.applyThinkingAck(session, epoch, { level: state.thinkingLevel }, false);
+						return { model, thinkingLevel: result.thinkingLevel, isScoped: result.isScoped };
 					});
 				},
 			},
@@ -1211,15 +1223,29 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 	}
 
-	private async syncPersistedModelCatalog(session: AgentSession, model: Model<Api>): Promise<RpcSessionState> {
+	private async syncPersistedModelCatalog(
+		session: AgentSession,
+		model: Model<Api>,
+		persistedDefaults?: RpcPersistedModelDefaults,
+	): Promise<RpcSessionState> {
+		const persistedModel = persistedDefaults
+			? { provider: persistedDefaults.provider, id: persistedDefaults.modelId }
+			: model;
 		const alreadyInScope = session.scopedModels.some(
-			(scoped) => scoped.model.provider === model.provider && scoped.model.id === model.id,
+			(scoped) => scoped.model.provider === persistedModel.provider && scoped.model.id === persistedModel.id,
 		);
 		const catalog = await this.client.requestInternal<RpcModelCatalog>({ type: "get_available_models" });
 		this.remoteModelCatalog.apply(catalog);
-		applyPersistedModelDefault(session, model, alreadyInScope);
+		applyPersistedModelDefault(session, persistedModel, alreadyInScope);
 		const state = await this.client.getState();
-		if (state.model?.provider === model.provider && state.model.id === model.id) {
+		if (persistedDefaults !== undefined) {
+			session.settingsManager.setModelThinkingLevel(
+				persistedDefaults.provider,
+				persistedDefaults.modelId,
+				persistedDefaults.thinkingLevel,
+			);
+			session.settingsManager.setDefaultThinkingLevel(persistedDefaults.defaultThinkingLevel);
+		} else if (state.model?.provider === model.provider && state.model.id === model.id) {
 			applyPersistedThinkingDefault(session, state.thinkingLevel, { provider: model.provider, modelId: model.id });
 		}
 		return state;
@@ -1311,6 +1337,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.followUpMessages = [...event.followUp];
 				break;
 			case "model_changed":
+				this.modelEpoch += 1;
 				session.agent.state.model = event.model;
 				this.sessionStats.refresh();
 				break;

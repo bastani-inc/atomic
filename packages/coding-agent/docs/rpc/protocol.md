@@ -294,6 +294,8 @@ Response contains the full [Model](/rpc/protocol#model) object:
 }
 ```
 
+When `persist` is true, the model object also includes `persistedDefaults` with `provider`, `modelId`, `thinkingLevel` and `defaultThinkingLevel`. These fields report the saved startup model, its saved reasoning preference and the global reasoning default. They can differ from the live session if an extension makes a session-only change during model selection. Use `get_state` to read the live model and reasoning level.
+
 #### cycle_model
 
 Cycle to the next available model. Returns `null` when fewer than two authenticated models are available in the active scope or catalog. When an unsupported saved default is blocking prompts, a successful cycle that returns a different model clears that condition; a `null` or unchanged result does not. Set `"persist": true` to also write the cycled model as the startup default.
@@ -316,7 +318,7 @@ Response:
 }
 ```
 
-The `model` field is a full [Model](#model) object.
+The `model` field is a full [Model](#model) object. With `persist: true`, the response data also includes `persistedDefaults` in the same format as [`set_model`](#set_model).
 
 #### get_available_models
 

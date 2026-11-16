@@ -384,11 +384,11 @@ export function selectorHintEntries<T>(
 		const up = navActionText(keybindings, "tui.select.up");
 		const down = navActionText(keybindings, "tui.select.down");
 		const keys = up === "↑" && down === "↓" ? "↑↓" : [up, down].filter(Boolean).join("/");
-		if (keys) entries.push({ keys, label: "select" });
+		if (keys) entries.push(tagHintEntry({ keys, label: "select" }, "select"));
 	}
 	if (multi && selected) entries.push({ keys: "space", label: "toggle" });
 	if (!multi && selected && options.onPreview)
-		entries.push({ keys: "space", label: options.previewLabel ?? "preview" });
+		entries.push(tagHintEntry({ keys: "space", label: options.previewLabel ?? "preview" }, "preview"));
 	if (multi ? state.getChecked().length > 0 || selected !== undefined : selected) {
 		entries.push({
 			action: "tui.select.confirm",
@@ -399,8 +399,9 @@ export function selectorHintEntries<T>(
 	for (const extra of options.extraKeys ?? []) {
 		if (extra.enabled?.(selected) ?? true) entries.push({ ...extra.hint, role: "extra" });
 	}
-	if (options.search) entries.push({ keys: "type", label: "to search" });
-	else if (options.numbered && enabledCount > 0) entries.push({ keys: enabledCount > 1 ? "1-9" : "1", label: "pick" });
+	if (options.search) entries.push(tagHintEntry({ keys: "type", label: "to search" }, "to search"));
+	else if (options.numbered && enabledCount > 0)
+		entries.push(tagHintEntry({ keys: enabledCount > 1 ? "1-9" : "1", label: "pick" }, "pick"));
 	const cancel = firstKey(keybindings, "tui.select.cancel") || "esc";
 	entries.push({
 		keys: cancel,
@@ -409,17 +410,19 @@ export function selectorHintEntries<T>(
 	});
 	if (!options.search) {
 		const help = navActionText(keybindings, "app.keys.help");
-		if (help) entries.push({ action: "app.keys.help", label: "keys" });
+		if (help) entries.push(tagHintEntry({ action: "app.keys.help", label: "keys" }, "keys"));
 	}
 	return entries;
 }
 
-/**
- * Labels in the order a narrow hint gives them up: the search and help reminders first, cancel and choose last, so a
- * picker never hides how to leave it or how to choose. Labels not listed (a picker's own keys) go after `select`,
- * last first.
- */
-const HINT_DROP_ORDER = ["to search", "keys", "pick", "preview", "select"];
+const HINT_DROP_ORDER = ["to search", "keys", "pick", "preview", "select"] as const;
+type HintDropKey = (typeof HINT_DROP_ORDER)[number];
+const hintDropKeys = new WeakMap<SelectorHintEntry, HintDropKey>();
+
+function tagHintEntry(entry: SelectorHintEntry, key: HintDropKey): SelectorHintEntry {
+	hintDropKeys.set(entry, key);
+	return entry;
+}
 
 export interface SelectorHintEntry extends NavKey {
 	readonly role?: "confirm" | "cancel" | "extra";
@@ -438,13 +441,15 @@ export function fitHintEntries(
 	const essential = (entry: SelectorHintEntry) =>
 		entry.role !== "extra" &&
 		(entry.role === "confirm" || entry.role === "cancel" || entry.action === "tui.select.confirm");
+	const dropKey = (entry: SelectorHintEntry): HintDropKey | undefined =>
+		essential(entry) || entry.role === "extra"
+			? undefined
+			: (hintDropKeys.get(entry) ?? HINT_DROP_ORDER.find((key) => key === entry.label));
 	while (kept.length > 1 && width() > room) {
-		const byOrder = HINT_DROP_ORDER.map((label) =>
-			kept.findIndex((entry) => !essential(entry) && entry.role !== "extra" && entry.label === label),
-		).find((index) => index >= 0);
-		const other = kept.findLastIndex(
-			(entry) => !essential(entry) && (entry.role === "extra" || !HINT_DROP_ORDER.includes(entry.label)),
+		const byOrder = HINT_DROP_ORDER.map((key) => kept.findIndex((entry) => dropKey(entry) === key)).find(
+			(index) => index >= 0,
 		);
+		const other = kept.findLastIndex((entry) => !essential(entry) && dropKey(entry) === undefined);
 		const nonEssential = kept.findIndex((entry) => !essential(entry));
 		const drop =
 			byOrder ??
@@ -875,7 +880,7 @@ export class Selector<T> implements Component, Focusable {
 			const tagText = item.tag
 				? visibleWidth(item.tag) <= tagRoom
 					? item.tag
-					: tagRoom >= 4
+					: tagRoom >= 4 && visibleWidth(truncateToWidth(item.tag, tagRoom - 3, "")) > 0
 						? truncateToWidth(item.tag, tagRoom)
 						: ""
 				: "";

@@ -28,6 +28,7 @@ import type {
 	RpcLogoutProviderResult,
 	RpcModelCatalog,
 	RpcModelRefreshResult,
+	RpcPersistedModelDefaults,
 	RpcResponse,
 	RpcResumeNotice,
 	RpcSessionInfo,
@@ -105,7 +106,7 @@ export abstract class RpcClientApi {
 		provider: string,
 		modelId: string,
 		options?: { persist?: boolean; thinkingLevel?: ThinkingLevel },
-	): Promise<{ provider: string; id: string }> {
+	): Promise<{ provider: string; id: string; persistedDefaults?: RpcPersistedModelDefaults }> {
 		return this.data(
 			await this.request({
 				type: "set_model",
@@ -123,6 +124,7 @@ export abstract class RpcClientApi {
 		model: Model<Api>;
 		thinkingLevel: ThinkingLevel;
 		isScoped: boolean;
+		persistedDefaults?: RpcPersistedModelDefaults;
 	} | null> {
 		return this.data(
 			await this.request({

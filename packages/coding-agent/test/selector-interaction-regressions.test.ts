@@ -192,6 +192,36 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 			const roomForFirstExtra = "enter toggle · ctrl+a all · esc cancel".length + 2;
 			assert.equal(hint(trailingCollision.render(roomForFirstExtra)), "enter toggle · ctrl+a all · esc cancel");
 		}
+
+		const defaultPreview = new Selector<string>({
+			items: makeItems(["a", "b", "c"]),
+			onPreview: noop,
+			style: PLAIN_SELECTOR_STYLE,
+		});
+		const customPreview = new Selector<string>({
+			items: makeItems(["a", "b", "c"]),
+			onPreview: noop,
+			previewLabel: "details",
+			style: PLAIN_SELECTOR_STYLE,
+		});
+		const collidingPreview = new Selector<string>({
+			items: makeItems(["a", "b", "c"]),
+			onPreview: noop,
+			previewLabel: "select",
+			style: PLAIN_SELECTOR_STYLE,
+		});
+		for (let width = 39; width <= 54; width += 1) {
+			assert.equal(hint(defaultPreview.render(width)), "↑↓ select · enter choose · esc cancel");
+			assert.equal(hint(customPreview.render(width)), hint(defaultPreview.render(width)));
+		}
+		for (const width of [39, 43, 48, 53]) {
+			assert.equal(hint(collidingPreview.render(width)), "↑↓ select · enter choose · esc cancel");
+		}
+		for (const width of [27, 33, 38]) {
+			assert.equal(hint(defaultPreview.render(width)), "enter choose · esc cancel");
+			assert.equal(hint(customPreview.render(width)), hint(defaultPreview.render(width)));
+			assert.equal(hint(collidingPreview.render(width)), hint(defaultPreview.render(width)));
+		}
 	});
 
 	test("ignores a mouse release when the pressed row shifted or disappeared during the hold (#5237)", () => {
@@ -375,6 +405,29 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 		});
 		assert.equal(plain(shortTag.render(20)[0] ?? "").trimEnd(), " ❯ openai/gpt-4o");
 		assert.equal(plain(shortTag.render(21)[0] ?? "").trimEnd(), " ❯ openai/gpt-4o  on");
+
+		const emojiTag = new Selector<string>({
+			items: [{ id: "a", value: "a", label: "x", tag: "🔒 locked" }],
+			style: PLAIN_SELECTOR_STYLE,
+		});
+		assert.equal(plain(emojiTag.render(11)[0] ?? "").trimEnd(), " ❯ x");
+		assert.equal(plain(emojiTag.render(12)[0] ?? "").trimEnd(), " ❯ x  🔒...");
+
+		const cjkTag = new Selector<string>({
+			items: [{ id: "a", value: "a", label: "x", tag: "日本語" }],
+			style: PLAIN_SELECTOR_STYLE,
+		});
+		assert.equal(plain(cjkTag.render(11)[0] ?? "").trimEnd(), " ❯ x");
+		assert.equal(plain(cjkTag.render(12)[0] ?? "").trimEnd(), " ❯ x  日...");
+
+		const tabTag = new Selector<string>({
+			items: [{ id: "a", value: "a", label: "x", tag: "\tlocked" }],
+			style: PLAIN_SELECTOR_STYLE,
+		});
+		for (const width of [11, 12]) {
+			assert.equal(plain(tabTag.render(width)[0] ?? "").trimEnd(), " ❯ x");
+		}
+		assert.equal(plain(tabTag.render(13)[0] ?? "").trimEnd(), " ❯ x  \t...");
 	});
 
 	test("notifies onSelectionChange only when the selected row id changes across all input paths (#5237)", () => {
