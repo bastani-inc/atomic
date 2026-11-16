@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { failureDebugFields, reportDebug } from "../debug.ts";
 import { renameWithRetry } from "../rename-retry.ts";
 import { isWorkspaceRestoreError } from "./errors.ts";
@@ -114,6 +115,9 @@ export const DEFAULT_MAX_IDLE_PER_REPOSITORY = 2;
 /** The lease constants of restore records: a stopped process loses its lease after 30 seconds. */
 const LEASE_STALE_MS = 30_000;
 const LEASE_UPDATE_MS = 10_000;
+const POOL_LOCK_POLL_MS = 50;
+const POOL_LOCK_WAIT_MS = 60_000;
+export const POOL_LOCK_REFUSED_MS = 10_000;
 /**
  * How long after a lease went stale it still keeps its slot from being claimed or evicted, and its lock from being
  * removed (#4830): a holder stalled for a short while, by an overloaded host or a debugger, keeps its slot and its lease.
@@ -200,23 +204,45 @@ async function exists(path: string): Promise<boolean> {
 	}
 }
 
+function refusedForAMoment(error: unknown, since: number): boolean {
+	return (
+		(error as NodeJS.ErrnoException).code === "EPERM" &&
+		process.platform === "win32" &&
+		Date.now() - since < POOL_LOCK_REFUSED_MS
+	);
+}
+
+function lockHeldAndWaiting(error: unknown, wait: boolean, startedAt: number): boolean {
+	return wait && (error as NodeJS.ErrnoException).code === "ELOCKED" && Date.now() - startedAt < POOL_LOCK_WAIT_MS;
+}
+
 /**
  * Locks `path` with the restore-record constants: a stopped process loses the lock after 30 seconds. `wait` retries a
  * lock another process holds for a while, as when a slot's record is briefly being written.
  */
-function lockPath(path: string, wait: boolean, onLost?: () => void): Promise<() => Promise<void>> {
-	return lockShared(path, {
-		realpath: false,
-		stale: LEASE_STALE_MS,
-		update: LEASE_UPDATE_MS,
-		retries: wait ? { retries: 60, minTimeout: 20, maxTimeout: 500 } : 0,
-		// A lost lock never ends this process: a lost lease marks its hold, which checks the record again before the
-		// slot is used (#4830).
-		onCompromised: (error) => {
-			reportDebug("storage", "worktree-pool-lock-lost", { path, ...failureDebugFields(error) });
-			onLost?.();
-		},
-	});
+async function lockPath(path: string, wait: boolean, onLost?: (error: Error) => void): Promise<() => Promise<void>> {
+	const startedAt = Date.now();
+	let refusedSince: number | undefined;
+	for (;;) {
+		try {
+			return await lockShared(path, {
+				realpath: false,
+				stale: LEASE_STALE_MS,
+				update: LEASE_UPDATE_MS,
+				retries: 0,
+				onCompromised: (error) => {
+					reportDebug("storage", "worktree-pool-lock-lost", { path, ...failureDebugFields(error) });
+					onLost?.(error);
+				},
+			});
+		} catch (error) {
+			const since = refusedSince ?? Date.now();
+			if (refusedForAMoment(error, since)) refusedSince = since;
+			else if (lockHeldAndWaiting(error, wait, startedAt)) refusedSince = undefined;
+			else throw error;
+		}
+		await sleep(POOL_LOCK_POLL_MS);
+	}
 }
 
 /** A slot's record lock as {@link withSlotLock} holds it. */
@@ -488,14 +514,13 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 	}
 	const directory = join(storeDir, "pool", repository);
 	await mkdir(directory, { recursive: true });
-	const unlockRepository = await lockShared(directory, {
-		realpath: false,
-		stale: LEASE_STALE_MS,
-		update: LEASE_UPDATE_MS,
-		retries: { retries: 100, minTimeout: 20, maxTimeout: 200 },
+	let repositoryLost: Error | undefined;
+	const unlockRepository = await lockPath(directory, true, (error) => {
+		repositoryLost ??= error;
 	});
 	try {
 		for (let n = 0; ; n++) {
+			if (repositoryLost !== undefined) throw repositoryLost;
 			const slot = n as SlotNumber;
 			const file = recordFile(storeDir, repository, slot);
 			const path = pooledWorktreePath(storeDir, repository, slot);
@@ -512,12 +537,20 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 				releasedAt: null,
 				tenancy: randomUUID(),
 			};
-			let held: HeldSlot;
+			let held: HeldSlot | undefined;
 			try {
 				held = await withSlotLock(file, false, async (lock) => {
+					if (repositoryLost !== undefined) throw repositoryLost;
 					if (!(await lock.held())) throw lockLostError(file);
+					if ((await exists(file)) || (await exists(path))) return undefined;
 					const taken = await takeSlot(file, owner, record);
 					try {
+						if (repositoryLost !== undefined) throw repositoryLost;
+						if (!(await lock.held())) throw lockLostError(file);
+						if ((await exists(file)) || (await exists(path))) {
+							await taken.unlease().catch(() => {});
+							return undefined;
+						}
 						await writeRecord(file, record);
 					} catch (error) {
 						await taken.unlease().catch(() => {});
@@ -530,6 +563,7 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 				if ((error as NodeJS.ErrnoException).code === "ELOCKED") continue;
 				throw error;
 			}
+			if (held === undefined) continue;
 			return newLease(record, storeDir, held);
 		}
 	} finally {

@@ -1,6 +1,7 @@
 import type { Stats } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { failureDebugFields, reportDebug } from "../debug.ts";
 import { releaseLock } from "../lock-release.ts";
 import { renameWithRetry } from "../rename-retry.ts";
@@ -99,6 +100,45 @@ export type NoSeedReason = "missing" | "busy" | "path-taken" | "restore-failed" 
 /** The seed lock's constants: a stopped process loses it after 30 seconds. */
 const SEED_LOCK_STALE_MS = 30_000;
 const SEED_LOCK_UPDATE_MS = 10_000;
+const SEED_LOCK_POLL_MS = 50;
+const SEED_LOCK_WAIT_MS = 120_000;
+export const SEED_LOCK_REFUSED_MS = 10_000;
+
+function refusedForAMoment(error: unknown, since: number): boolean {
+	return (
+		(error as NodeJS.ErrnoException).code === "EPERM" &&
+		process.platform === "win32" &&
+		Date.now() - since < SEED_LOCK_REFUSED_MS
+	);
+}
+
+function seedHeldAndWaiting(error: unknown, wait: boolean, startedAt: number): boolean {
+	return wait && (error as NodeJS.ErrnoException).code === "ELOCKED" && Date.now() - startedAt < SEED_LOCK_WAIT_MS;
+}
+
+async function lockSeed(file: string, wait: boolean): Promise<() => Promise<void>> {
+	await mkdir(dirname(file), { recursive: true });
+	const startedAt = Date.now();
+	let refusedSince: number | undefined;
+	for (;;) {
+		try {
+			return await lockShared(file, {
+				realpath: false,
+				stale: SEED_LOCK_STALE_MS,
+				update: SEED_LOCK_UPDATE_MS,
+				retries: 0,
+				onCompromised: (error) =>
+					reportDebug("storage", "worktree-seed-lock-lost", { file, ...failureDebugFields(error) }),
+			});
+		} catch (error) {
+			const since = refusedSince ?? Date.now();
+			if (refusedForAMoment(error, since)) refusedSince = since;
+			else if (seedHeldAndWaiting(error, wait, startedAt)) refusedSince = undefined;
+			else throw error;
+		}
+		await sleep(SEED_LOCK_POLL_MS);
+	}
+}
 
 /**
  * Runs `action` holding the seed lock of `repository`, which serializes parking a seed and adopting it, so an adoption
@@ -112,15 +152,7 @@ export async function withSeedLock<T>(
 	action: () => Promise<T>,
 ): Promise<T> {
 	const file = seedManifestPath(storeDir, repository);
-	await mkdir(dirname(file), { recursive: true });
-	const unlock = await lockShared(file, {
-		realpath: false,
-		stale: SEED_LOCK_STALE_MS,
-		update: SEED_LOCK_UPDATE_MS,
-		retries: wait ? { retries: 120, minTimeout: 100, maxTimeout: 1_000 } : 0,
-		onCompromised: (error) =>
-			reportDebug("storage", "worktree-seed-lock-lost", { file, ...failureDebugFields(error) }),
-	});
+	const unlock = await lockSeed(file, wait);
 	try {
 		return await action();
 	} finally {
