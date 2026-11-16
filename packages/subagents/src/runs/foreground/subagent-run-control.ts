@@ -130,8 +130,13 @@ function ownedRecords(ctx: ExtensionContext): Map<string, SubagentChildRecord> {
 export function subagentChildOfTask(
 	ctx: ExtensionContext,
 	taskId: string,
+	/** The child a chat already resumed: a resume gives it a new task, and its earlier chat still reaches it. */
+	childId?: string,
 ): { readonly childId: string; readonly readOnlyReason?: string } | undefined {
-	const record = [...ownedRecords(ctx).values()].find((candidate) => candidate.taskId === taskId);
+	const records = [...ownedRecords(ctx).values()];
+	const record =
+		records.find((candidate) => candidate.taskId === taskId) ??
+		(childId === undefined ? undefined : records.find((candidate) => candidate.childId === childId));
 	if (record === undefined) return undefined;
 	const terminal = record.state === "terminal" ? NON_RESUMABLE_STATUSES.get(record.terminalStatus ?? "") : undefined;
 	return terminal === undefined

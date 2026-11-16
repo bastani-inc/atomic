@@ -9,6 +9,7 @@ import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
+import { nextTurnSettled } from "../../packages/subagents/src/runs/inprocess/runner.js";
 import type { TaskExecutionHooks, TestSessionQueue } from "../../packages/subagents/src/shared/types.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 
@@ -181,3 +182,34 @@ test(
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );
+
+test("an interrupted subagent woken by its own work settles once that turn ends, even if agent_end comes before idle (#5224)", async () => {
+	const listeners = new Set<(event: { type: string }) => void>();
+	let streaming = false;
+	const session = {
+		get isStreaming() {
+			return streaming;
+		},
+		subscribe(listener: (event: { type: string }) => void) {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+	};
+	const emit = (type: string) => {
+		for (const listener of [...listeners]) listener({ type });
+	};
+	let done = false;
+	const waiting = nextTurnSettled(session as never, [new AbortController().signal]).then(() => {
+		done = true;
+	});
+	// A background task's completion wakes the child: a turn runs, and its run closes only after agent_end.
+	streaming = true;
+	emit("agent_start");
+	emit("agent_end");
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	assert.equal(done, false, "the run is still closing");
+	streaming = false;
+	emit("agent_settled");
+	await waiting;
+	assert.equal(done, true, "the woken turn's end settles the child");
+});

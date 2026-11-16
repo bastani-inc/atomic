@@ -488,7 +488,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			if (!isSubagentChildSession(ctx)) bindSubagentChildCards(ctx);
 		};
 		let stopReleasedChildWakes: (() => void) | undefined;
-		let stopTaskResumer: (() => void) | undefined;
+		let taskResumer: ReturnType<typeof bindSubagentTaskResumer> | undefined;
+		// A turn may launch children: the chat resumer is bound by then (#5224).
+		pi.on("agent_start", () => taskResumer?.ensure());
 		pi.on("session_start", (event, ctx) => {
 			if (!lifecycle.isCurrent()) return;
 			if (releaseStartupCleanup === undefined && !isSubagentChildSession(ctx))
@@ -508,8 +510,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				// Released children wake through this session: their tool results, Intercom sends and asks (#4326).
 				stopReleasedChildWakes = bindReleasedChildWakes(executorDeps, ctx, pi.events);
 				// A finished child continues from its chat: the message the reader sends resumes it in its own session.
-				stopTaskResumer?.();
-				stopTaskResumer = bindSubagentTaskResumer(executorDeps, ctx);
+				taskResumer?.dispose();
+				taskResumer = bindSubagentTaskResumer(executorDeps, ctx);
 				if (opened) void holdRunningSubagentChildren(pi.events, ctx).catch(() => undefined);
 				if (opened)
 					void resumeAwaitingSubagentChildren(
@@ -579,8 +581,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		});
 		eventUnsubscribes.push(unsubscribeRunEnded);
 		pi.on("session_shutdown", (_event, ctx) => {
-			stopTaskResumer?.();
-			stopTaskResumer = undefined;
+			taskResumer?.dispose();
+			taskResumer = undefined;
 			stopReleasedChildWakes?.();
 			stopReleasedChildWakes = undefined;
 			// Holds nothing took over end with the session; the broker also ends them when its connection closes.
