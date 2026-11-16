@@ -44,7 +44,8 @@ import {
 	taskDetailLabels,
 	taskDetailSummary,
 } from "./task-detail.js";
-import { dismissedTasks, type TaskListSection, taskListSections } from "./task-list.js";
+import { dismissedTasks } from "./task-dismissal.ts";
+import { type TaskListSection, taskListSections } from "./task-list.js";
 import { TaskNavigation } from "./task-navigation.js";
 import { taskDisplayText, taskLabel, taskMetricsText, taskModelText, taskStatusAppearance } from "./task-row.js";
 import {
@@ -780,11 +781,15 @@ export class TaskInspector implements Component {
 	private renderTranscriptPage(width: number, budget: number, transcript: TaskTranscriptPage): string[] {
 		const task = this.selected();
 		const fitWidth = (line: string) => truncateToWidth(line, Math.max(1, width));
-		const header = [
-			theme.bold(`Transcript · ${task ? taskDisplayText(taskLabel(task)) : "Task"}`),
-			task ? taskDetailSummary(task) : "",
-			theme.fg("borderMuted", "─".repeat(Math.max(0, width))),
-		].map(fitWidth);
+		// Opened from the agent panel, a subagent's chat is named by its composer's rule; the page needs no title.
+		const header =
+			this.chatFrom === "caller" && task?.kind === "agent"
+				? []
+				: [
+						theme.bold(`Transcript · ${task ? taskDisplayText(taskLabel(task)) : "Task"}`),
+						task ? taskDetailSummary(task) : "",
+						theme.fg("borderMuted", "─".repeat(Math.max(0, width))),
+					].map(fitWidth);
 		const notes = [transcript.status, this.status].filter(Boolean).join(" · ");
 		const style = themedNavKeyStyle();
 		if (this.helpOpen)

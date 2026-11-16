@@ -638,7 +638,7 @@ describe("keybindings.json schema", () => {
 	it("describes every keybinding, including Atomic's", () => {
 		const properties = Object.keys(renderedSchema("keybindings").properties);
 		assert.deepEqual(properties, ["$schema", ...Object.keys(KEYBINDINGS)]);
-		for (const property of ["app.workflows.scrollUp", "app.tasks.open", "app.auth.copyUrl", "tui.altScreen.search"]) {
+		for (const property of ["app.nav.back", "app.tasks.open", "app.auth.copyUrl", "tui.altScreen.search"]) {
 			assert.ok(properties.includes(property), property);
 		}
 		assertDescriptionIncludes(renderedSchema("keybindings").properties["app.suspend"], "PowerShell");
@@ -669,7 +669,7 @@ describe("keybindings.json schema", () => {
 			validator.Check({
 				$schema: schemaUrl("keybindings"),
 				"app.session.new": "ctrl+n",
-				"app.workflows.scrollUp": ["ctrl+alt+k"],
+				"app.list.stop": ["ctrl+k"],
 				"extension.action": ["alt+x"],
 			}),
 			true,

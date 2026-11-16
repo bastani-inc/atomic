@@ -47,6 +47,8 @@ export { FirstTimeSetupComponent, type FirstTimeSetupOptions, type FirstTimeSetu
 export { FooterComponent, UsageMeterComponent } from "./footer.ts";
 export { IdleStatus } from "./idle-status.ts";
 export {
+	type AttachedComposerStyle,
+	applyAttachedComposer,
 	applyInputLabelToEditorTopRule,
 	buildInputLabel,
 	INPUT_LABEL_MIN_COLUMNS,

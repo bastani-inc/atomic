@@ -11,11 +11,12 @@ import {
 } from "../../../core/tasks/task-view-source.js";
 import { createSessionSkillAutocompleteProvider, getSkillCatalogCommands } from "../skill-command-autocomplete.ts";
 import { theme } from "../theme/theme.js";
+import { formatPanelElapsed } from "./agent-panel.ts";
 import type { ChatSessionHost } from "./chat-session-host.ts";
 import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-host-types.ts";
 import { ScrollableComponentViewport } from "./chat-transcript.js";
-import { applyInputLabelToEditorTopRule } from "./input-label.ts";
-import { taskDisplayText } from "./task-row.js";
+import { applyAttachedComposer } from "./input-label.ts";
+import { taskDisplayText, taskState } from "./task-row.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
 
 /** Where a task's transcript view is mounted: the chat host it builds on and the render settings it inherits. */
@@ -293,15 +294,45 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			remaining -= shown.length;
 			return shown;
 		};
-		const editor = reserve(
-			applyInputLabelToEditorTopRule(this.env.style, "subagent", this.sessionName(), this.chat.renderEditor(width)),
-		);
+		const editor = reserve(this.decorateComposer(this.chat.renderEditor(width)));
 		const footer = reserve(this.chat.renderFooter(width));
 		const pending = reserve(this.chat.renderPendingMessages(width));
 		const working = reserve(this.chat.renderWorkingStatus(width), true);
 		const usage = reserve(this.chat.renderUsage(width));
 		const body = remaining > 0 ? this.chat.renderBody(width, remaining) : [];
 		return [...body, ...pending, ...working, ...usage, ...editor, ...footer];
+	}
+
+	/**
+	 * The attached composer: accent rules naming the subagent, its task and its state (`debugger · #5220 spawn lock ·
+	 * 18m`), and a placeholder that says where typing goes (`Message debugger…`, or `Answer debugger…` while it waits on
+	 * a question).
+	 */
+	private decorateComposer(lines: readonly string[]): string[] {
+		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		const name = taskDisplayText(task?.agentName ?? this.sessionName() ?? "subagent");
+		const waiting = task?.attention.kind === "input-needed";
+		const state =
+			task === undefined
+				? undefined
+				: waiting
+					? "needs input"
+					: task.execution.kind === "settled"
+						? taskState(task) === "completed"
+							? "done"
+							: taskState(task)
+						: task.metrics?.elapsedMs === undefined
+							? "running"
+							: formatPanelElapsed(task.metrics.elapsedMs);
+		const label = [name, task?.title ? taskDisplayText(task.title) : "", state ?? ""].filter(Boolean).join(" · ");
+		return applyAttachedComposer(
+			{ accent: this.env.style.accent, text: this.env.style.text, dim: this.env.style.dim },
+			label,
+			this.chat.hasInputText() || this.source.sendTaskMessage === undefined
+				? undefined
+				: `${waiting ? "Answer" : "Message"} ${name}…`,
+			lines,
+		);
 	}
 
 	/** What the subagent's session is called: its Intercom name, else its agent's name. */

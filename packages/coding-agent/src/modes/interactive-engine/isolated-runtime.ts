@@ -268,6 +268,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	async openTaskInspector(taskId?: string): Promise<void> {
 		await this.client.requestInternal({ type: "open_task_inspector", ...(taskId ? { taskId } : {}) });
 	}
+	/** Focuses the engine's agent panel, as ↓ on an empty main prompt does. */
+	async openAgentPanel(): Promise<void> {
+		await this.client.requestInternal({ type: "open_agent_panel" });
+	}
 	/** The engine owns the session's tasks and workflow runs, so it stops them. */
 	async stopAllBackgroundWork(): Promise<StopAllBackgroundOutcome> {
 		return this.client.requestInternal<StopAllBackgroundOutcome>({ type: "stop_all_background" });

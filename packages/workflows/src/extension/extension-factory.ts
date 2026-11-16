@@ -10,7 +10,8 @@ import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { registerInlineFormRenderer } from "../tui/inline-form-overlay.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { buildGraphOverlayAdapter } from "../tui/overlay-adapter.js";
-import { installStoreWidget, installToolExecutionHooks, scrollStoreWidget } from "../tui/store-widget-installer.js";
+import { panelItemsFromSnapshot, panelRunId } from "../tui/panel-runs.js";
+import { installToolExecutionHooks } from "../tui/tool-execution-hooks.js";
 import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-types.js";
 import { adoptWorkflowSessionRunState } from "./adopt-session-run-state.js";
 import { registerCompletedStageIntercomAskRouter } from "./completed-stage-intercom-ask.js";
@@ -33,6 +34,7 @@ import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { createSessionRunControl } from "./workflow-session-run-control.js";
 import { overlaySurfaceFromContext } from "./workflow-targets.js";
 import { makeExecuteWorkflowTool } from "./workflow-tool.js";
+import { workflowAnswerAction } from "./workflow-tool-answer.js";
 import { registerWorkflowTool } from "./workflow-tool-registration.js";
 
 function registerWorkflowMessageRenderers(pi: ExtensionAPI): void {
@@ -71,18 +73,6 @@ function registerWorkflowShortcut(pi: ExtensionAPI, overlay: GraphOverlayPort, s
 	pi.registerShortcut("F2", {
 		description: "Open workflow orchestrator pane",
 		handler: openPane,
-	});
-	pi.registerShortcut("alt+pageUp", {
-		description: "Scroll background workflows up",
-		keybinding: "app.workflows.scrollUp",
-		preferEditor: true,
-		handler: () => scrollStoreWidget(store, -1),
-	});
-	pi.registerShortcut("alt+pageDown", {
-		description: "Scroll background workflows down",
-		keybinding: "app.workflows.scrollDown",
-		preferEditor: true,
-		handler: () => scrollStoreWidget(store, 1),
 	});
 }
 
@@ -181,7 +171,6 @@ function factory(pi: ExtensionAPI): void {
 	});
 	const overlay = buildWorkflowOverlay(pi, owner, postMortemHandleResolver, () => adapters.sessionStore);
 	const workflowCommands = new Map<string, WorkflowCommandHandler>();
-	const storeWidgetRef: { current: (() => void) | null } = { current: null };
 	const intercomControlRef: { current: (() => void) | null } = { current: null };
 	const executeWorkflowTool = makeExecuteWorkflowTool(
 		(ctx) => runtimeState.runtimeForContext(ctx),
@@ -197,18 +186,42 @@ function factory(pi: ExtensionAPI): void {
 	pi.on?.("session_shutdown", () => {
 		sessionContext = undefined;
 	});
-	pi.registerWorkflowRunControl?.(
-		createSessionRunControl({
-			execute: executeWorkflowTool,
-			context: () => sessionContext,
-			store: owner.store,
-			jobs: runState.jobs,
-			catalog: async () => {
-				const runtime = runtimeState.runtimeForContext(sessionContext);
-				return (await runtime.prepareDurableCatalog?.()) ?? { resumable: [], completed: [] };
-			},
-		}),
-	);
+	const sessionRunControl = createSessionRunControl({
+		execute: executeWorkflowTool,
+		context: () => sessionContext,
+		store: owner.store,
+		jobs: runState.jobs,
+		catalog: async () => {
+			const runtime = runtimeState.runtimeForContext(sessionContext);
+			return (await runtime.prepareDurableCatalog?.()) ?? { resumable: [], completed: [] };
+		},
+	});
+	pi.registerWorkflowRunControl?.(sessionRunControl);
+	// Each run is a row of the agent panel and /tasks; Enter opens its graph, x x quits it resumably (#5224).
+	pi.registerAgentPanelSource?.({
+		items: () => panelItemsFromSnapshot(owner.store.runs()),
+		subscribe: (listener) => owner.store.subscribeInvalidation(listener),
+		open: (id) => {
+			const runId = panelRunId(id);
+			if (runId !== undefined) overlay.open(runId, overlaySurfaceFromContext(sessionContext));
+		},
+		stop: async (id) => {
+			const runId = panelRunId(id);
+			if (runId === undefined) return { ok: false, reason: "not a workflow run" };
+			try {
+				const outcome = await sessionRunControl.quit(runId);
+				return outcome.status === "ok" ? { ok: true } : { ok: false, reason: outcome.message };
+			} catch (error) {
+				return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+			}
+		},
+		answer: async (id, text) => {
+			const runId = panelRunId(id);
+			if (runId === undefined) return { ok: false, reason: "not a workflow run" };
+			const result = await workflowAnswerAction({ action: "answer", runId, text }, owner);
+			return result.status === "ok" ? { ok: true } : { ok: false, reason: result.message ?? result.status };
+		},
+	});
 	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx, signal, onRunAccepted) => {
 		const result = await executeWorkflowTool(args, ctx, signal, onRunAccepted);
 		if (
@@ -245,13 +258,11 @@ function factory(pi: ExtensionAPI): void {
 	registerWorkflowMessageRenderers(pi);
 	registerWorkflowLifecycleHandlers(pi, {
 		runtimeState,
-		storeWidgetRef,
 		intercomControlRef,
 		disposeObservation,
 		runState,
 	});
 
-	storeWidgetRef.current = installStoreWidget(pi, store);
 	installToolExecutionHooks(pi, store);
 	registerWorkflowShortcut(pi, overlay, store);
 	registerIntercomControl(pi, intercomControlRef, store);

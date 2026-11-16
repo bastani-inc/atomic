@@ -2,14 +2,14 @@ import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { TaskId } from "../../core/tasks/contracts.js";
-import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../core/tasks/owner-store.js";
+import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
 import { TaskInspector } from "../interactive/components/task-inspector.js";
-import { isActiveBackgroundTask, renderTaskFooter } from "../interactive/components/task-list.js";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
 import type { EngineHostRenderSettings } from "../interactive-engine/protocol.ts";
+import { setAgentPanelVisible } from "./agent-panel-bridge.ts";
 
 /** The UI a task inspector mounts in: its custom UI, and the chat render settings its transcripts inherit. */
 export type TaskInspectorUi = Pick<ExtensionUIContext, "custom"> &
@@ -48,64 +48,6 @@ export function engineTaskInspectorUi(
 	};
 }
 
-const widgetVisibility = new WeakMap<AgentSession, (visible: boolean) => void>();
-
-/** Render against the engine's owner. Native capabilities never cross the UI bridge. */
-export function bindEngineTaskWidget(session: AgentSession, ui: ExtensionUIContext): () => void {
-	const key = "atomic.background-tasks";
-	let unsubscribe = () => {};
-	let disposed = false;
-	let mounted = false;
-	let visible = true;
-	const connect = () => {
-		unsubscribe();
-		if (mounted) ui.setWidget(key, undefined);
-		mounted = false;
-		const store = getOwnerTaskStore(session);
-		const update = () => {
-			if (disposed) return;
-			if (!visible || !store?.backgroundTasks.some(isActiveBackgroundTask)) {
-				if (mounted) ui.setWidget(key, undefined);
-				mounted = false;
-				return;
-			}
-			if (!mounted) {
-				mounted = true;
-				ui.setWidget(
-					key,
-					() => ({
-						invalidate() {},
-						render(width: number) {
-							return renderTaskFooter(store?.backgroundTasks ?? [], width);
-						},
-					}),
-					{ placement: "belowEditor" },
-				);
-			}
-			ui.requestRender();
-		};
-		unsubscribe = store?.subscribe(update) ?? (() => {});
-		update();
-	};
-	const unwatch = watchOwnerTaskStoreBinding(session, connect);
-	const unwatchWidget = ui.onWidgetRelease?.(key, () => {
-		mounted = false;
-	});
-	widgetVisibility.set(session, (value) => {
-		visible = value;
-		connect();
-	});
-	connect();
-	return () => {
-		disposed = true;
-		widgetVisibility.delete(session);
-		unwatch();
-		unwatchWidget?.();
-		unsubscribe();
-		if (mounted) ui.setWidget(key, undefined);
-	};
-}
-
 export async function showEngineTaskInspector(
 	session: AgentSession,
 	ui: TaskInspectorUi,
@@ -114,21 +56,28 @@ export async function showEngineTaskInspector(
 	session.getAgentTaskHost();
 	const store = getOwnerTaskStore(session);
 	if (!store) throw new Error("Task owner is unavailable");
+	// The agent panel lists the same tasks; it steps aside while the inspector owns the prompt's place.
+	setAgentPanelVisible(session, false);
 	try {
-		widgetVisibility.get(session)?.(false);
 		await showTaskInspector(ui, store, taskId);
 	} finally {
-		widgetVisibility.get(session)?.(true);
+		setAgentPanelVisible(session, true);
 	}
 }
 
 /** Main CLI mount, shared by the local host and its isolated engine. */
-export async function showTaskInspector(ui: TaskInspectorUi, store: OwnerTaskStore, taskId?: string): Promise<void> {
+export async function showTaskInspector(
+	ui: TaskInspectorUi,
+	store: OwnerTaskStore,
+	taskId?: string,
+	options: { readonly chat?: boolean } = {},
+): Promise<void> {
 	let requestRender = () => {};
 	let finishView = () => {};
 	let closed = false;
 	let fullscreen = false;
 	let environment: TaskTranscriptEnvironment | undefined;
+	let pendingChat: TaskId | undefined;
 	const inspector = new TaskInspector(
 		store,
 		() => {
@@ -142,10 +91,13 @@ export async function showTaskInspector(ui: TaskInspectorUi, store: OwnerTaskSto
 		undefined,
 		() => environment,
 	);
-	inspector.open(taskId as TaskId | undefined);
+	if (options.chat && taskId !== undefined) {
+		// The chat needs its environment, which the first mount below creates; open it once the mount exists.
+		pendingChat = taskId as TaskId;
+	} else inspector.open(taskId as TaskId | undefined);
 	try {
 		while (!closed) {
-			fullscreen = inspector.fullscreen;
+			fullscreen = inspector.fullscreen || pendingChat !== undefined;
 			await ui.custom<void>(
 				(tui, _theme, keybindings, done) => {
 					requestRender = () => tui.requestRender();
@@ -164,6 +116,16 @@ export async function showTaskInspector(ui: TaskInspectorUi, store: OwnerTaskSto
 						...(ui.getFooterDataProvider ? { footerData: ui.getFooterDataProvider() } : {}),
 						...(ui.notify ? { notify: (message: string) => ui.notify?.(message, "warning") } : {}),
 					};
+					if (pendingChat !== undefined) {
+						const chat = pendingChat;
+						pendingChat = undefined;
+						inspector.openChat(chat);
+						// A task that is gone opens nothing: close instead of showing the list.
+						if (!inspector.fullscreen) {
+							closed = true;
+							queueMicrotask(() => done());
+						}
+					}
 					// Elapsed times and the stop notice's window advance while the view is shown.
 					const tick = setInterval(() => tui.requestRender(), 1000);
 					tick.unref?.();

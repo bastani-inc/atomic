@@ -1,0 +1,260 @@
+import { matchesKey, truncateToWidth } from "@bastani/atomic-tui";
+import type { ExtensionUIContext } from "../../core/extensions/index.js";
+import {
+	type AgentPanelSession,
+	agentPanelItems,
+	dismissedAgentPanelItems,
+	openAgentPanelItem,
+	stopAgentPanelItem,
+	subscribeAgentPanel,
+} from "../../core/tasks/agent-panel-source.ts";
+import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
+import { ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
+import {
+	AgentPanelFocus,
+	AgentPanelModel,
+	type AgentPanelRow,
+	type AgentPanelStyle,
+	agentPanelKeys,
+	panelTaskId,
+	renderAgentPanelHint,
+	renderAgentPanelRows,
+} from "../interactive/components/agent-panel.ts";
+import { atomicWorkingFrame } from "../interactive/components/atomic-working-status.ts";
+import { renderNavKeyOverlay } from "../interactive/components/nav-keys.ts";
+import { dismissedTasks } from "../interactive/components/task-dismissal.ts";
+import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
+import { theme } from "../interactive/theme/theme.js";
+import { showTaskInspector, type TaskInspectorUi } from "./task-ui-bridge.js";
+
+/** Per-session panel state that outlives one mount: when rows finished, viewed and dismissed runs. */
+interface PanelState {
+	readonly model: AgentPanelModel;
+	/** Workflow-run rows opened at least once: a finished run stays until it has been viewed. */
+	readonly viewed: Set<string>;
+	/** Hides the unfocused panel while the focused one owns the same rows. */
+	setVisible?: (visible: boolean) => void;
+}
+
+const states = new WeakMap<object, PanelState>();
+
+function panelState(session: object): PanelState {
+	let state = states.get(session);
+	if (state === undefined) {
+		state = { model: new AgentPanelModel(), viewed: new Set() };
+		states.set(session, state);
+	}
+	return state;
+}
+
+/** The panel's colours from Atomic's theme. */
+export function themedAgentPanelStyle(): AgentPanelStyle {
+	return {
+		dim: (text) => theme.fg("dim", text),
+		text: (text) => theme.fg("text", text),
+		muted: (text) => theme.fg("muted", text),
+		border: (text) => theme.fg("borderMuted", text),
+		bold: (text) => theme.bold(text),
+		accent: (text) => theme.fg("accent", text),
+		success: (text) => theme.fg("success", text),
+		error: (text) => theme.fg("error", text),
+		warning: (text) => theme.fg("warning", text),
+	};
+}
+
+/** The rows the panel shows now: workflow runs, then subagents and shells, newest first, with finished rows aging out. */
+export function agentPanelRows(session: AgentPanelSession & object): AgentPanelRow[] {
+	const state = panelState(session);
+	const items = agentPanelItems(session);
+	const runs = items.filter((item) => item.kind === "workflow").reverse();
+	const tasks = items.filter((item) => item.kind !== "workflow").reverse();
+	// A finished run stays until it has been viewed; a finished task ages out.
+	return state.model.rows([...runs, ...tasks], (row) => row.kind === "workflow" && !state.viewed.has(row.id));
+}
+
+const WIDGET_KEY = "atomic.agent-panel";
+const TICK_MS = 1000;
+
+/**
+ * Mounts the unfocused panel below the prompt while it has rows, and keeps it current: task and run changes repaint
+ * it, and a one-second tick advances elapsed times, the spinner and fading while anything is listed.
+ */
+export function bindAgentPanel(
+	session: AgentPanelSession & object,
+	ui: Pick<ExtensionUIContext, "setWidget" | "requestRender"> & Partial<Pick<ExtensionUIContext, "onWidgetRelease">>,
+): () => void {
+	const state = panelState(session);
+	let mounted = false;
+	let visible = true;
+	let disposed = false;
+	let timer: ReturnType<typeof setInterval> | undefined;
+
+	const stopTimer = () => {
+		if (timer !== undefined) clearInterval(timer);
+		timer = undefined;
+	};
+	const update = () => {
+		if (disposed) return;
+		const rows = agentPanelRows(session);
+		if (!visible || rows.length === 0) {
+			if (mounted) ui.setWidget(WIDGET_KEY, undefined);
+			mounted = false;
+			stopTimer();
+			return;
+		}
+		if (!mounted) {
+			mounted = true;
+			ui.setWidget(
+				WIDGET_KEY,
+				() => ({
+					invalidate() {},
+					render(width: number) {
+						const current = agentPanelRows(session);
+						return renderAgentPanelRows(current, width, themedAgentPanelStyle(), {
+							frame: atomicWorkingFrame(),
+							faded: (row) => state.model.faded(row),
+						});
+					},
+				}),
+				{ placement: "belowEditor" },
+			);
+		}
+		timer ??= setInterval(update, TICK_MS);
+		timer.unref?.();
+		ui.requestRender();
+	};
+	const unsubscribe = subscribeAgentPanel(session, update);
+	const unwatchRelease = ui.onWidgetRelease?.(WIDGET_KEY, () => {
+		mounted = false;
+	});
+	state.setVisible = (value) => {
+		visible = value;
+		update();
+	};
+	update();
+	return () => {
+		disposed = true;
+		stopTimer();
+		state.setVisible = undefined;
+		unsubscribe();
+		unwatchRelease?.();
+		if (mounted) ui.setWidget(WIDGET_KEY, undefined);
+	};
+}
+
+/**
+ * The focused panel, in the prompt's place: ↓ on an empty prompt opens it. Enter or → opens a subagent's or shell's
+ * chat, or a workflow run's graph; `x` twice stops; Esc (or ↑ past `main`) returns to the prompt.
+ */
+export async function showAgentPanel(session: AgentPanelSession & object, ui: TaskInspectorUi): Promise<void> {
+	const state = panelState(session);
+	const store = getOwnerTaskStore(session);
+	const style = themedAgentPanelStyle();
+	if (agentPanelRows(session).length === 0) return;
+	let next: (() => Promise<void>) | undefined;
+	state.setVisible?.(false);
+	try {
+		await ui.custom<void>(
+			(tui, _theme, keybindings, done) => {
+				const keys = keybindings as Parameters<typeof renderAgentPanelHint>[3] & {
+					matches(data: string, action: string): boolean;
+				};
+				const finish = () => done();
+				const focus = new AgentPanelFocus(keys, {
+					open(row) {
+						const taskId = panelTaskId(row);
+						if (taskId !== undefined && store !== undefined)
+							next = () => showTaskInspector(ui, store, taskId, { chat: true });
+						else {
+							state.viewed.add(row.id);
+							next = async () => {
+								openAgentPanelItem(session, row.id);
+							};
+						}
+						finish();
+					},
+					stop(row) {
+						void stopAgentPanelItem(session, row.id).then((result) => {
+							if (!result.ok) ui.notify?.(`Could not stop ${row.name}: ${result.reason}`, "warning");
+							tui.requestRender();
+						});
+						tui.requestRender();
+					},
+					dismiss(row) {
+						dismissedAgentPanelItems(session).add(row.id);
+						const taskId = panelTaskId(row);
+						// /tasks hides a dismissed task too.
+						if (taskId !== undefined && store !== undefined)
+							dismissedTasks(ownerTaskViewSource(store)).add(taskId);
+						focus.update(agentPanelRows(session));
+						if (agentPanelRows(session).length === 0) finish();
+						tui.requestRender();
+					},
+					close: finish,
+				});
+				focus.update(agentPanelRows(session));
+				focus.enter();
+				const unsubscribe = subscribeAgentPanel(session, () => {
+					focus.update(agentPanelRows(session));
+					tui.requestRender();
+				});
+				const tick = setInterval(() => tui.requestRender(), TICK_MS);
+				tick.unref?.();
+				return {
+					invalidate() {},
+					render(width: number) {
+						const rows = agentPanelRows(session);
+						focus.update(rows);
+						if (focus.helpOpen)
+							return renderNavKeyOverlay(
+								"keys · agents",
+								agentPanelKeys(focus.selected()).concat([
+									{ keys: "↑ on main", label: "back to prompt" },
+									{ action: "app.agents.chord", label: "then the stop-all key: stop all background work" },
+								]),
+								width,
+								style,
+								keys,
+							);
+						return [
+							...renderAgentPanelRows(rows, width, style, {
+								selectedId: focus.selectedId,
+								frame: atomicWorkingFrame(),
+								faded: (row) => state.model.faded(row),
+								scroll: focus.scroll,
+							}),
+							truncateToWidth(renderAgentPanelHint(focus, width, style, keys), width),
+						];
+					},
+					handleInput(data: string) {
+						if (isPhysicalCtrlC(data)) {
+							finish();
+							return true;
+						}
+						focus.handleInput(data, (input, key) => matchesKey(input, key as Parameters<typeof matchesKey>[1]));
+						tui.requestRender();
+						return true;
+					},
+					dispose() {
+						clearInterval(tick);
+						unsubscribe();
+					},
+				};
+			},
+			{ overlay: false, purpose: "navigation", handlesCtrlC: true, deferInlineCustomUiFocus: true },
+		);
+	} finally {
+		state.setVisible?.(true);
+	}
+	await next?.();
+}
+
+/** Shows or hides the unfocused panel, as a view that owns the prompt's place (such as `/tasks`) needs. */
+export function setAgentPanelVisible(session: object, visible: boolean): void {
+	states.get(session)?.setVisible?.(visible);
+}
+
+/** Whether the session has anything for ↓ to focus. */
+export function agentPanelHasRows(session: AgentPanelSession & object): boolean {
+	return agentPanelRows(session).length > 0;
+}

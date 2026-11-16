@@ -18,15 +18,15 @@ import {
 	parseInteractiveEngineMessage,
 	serializeInteractiveEngineFrame,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
+import { bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import {
-	bindEngineTaskWidget,
 	engineTaskInspectorUi,
 	showEngineTaskInspector,
 	showTaskInspector,
 } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
-test("engine task widget follows the real lazy owner through activity, settlement and disposal", async () => {
+test("the engine's agent panel follows the real lazy owner through activity, settlement and disposal (#5224)", async () => {
 	initTheme("dark");
 	const fixture = taskFixture();
 	const session = {} as AgentSession;
@@ -48,31 +48,30 @@ test("engine task widget follows the real lazy owner through activity, settlemen
 			throw new Error("Task updates must not open the inspector");
 		},
 	} as Pick<ExtensionUIContext, "setWidget" | "requestRender" | "custom"> as ExtensionUIContext;
-	const dispose = bindEngineTaskWidget(session, ui);
+	const dispose = bindAgentPanel(session, ui);
 	try {
 		assert.equal(widget, undefined);
 		bindOwnerTaskStore(session, fixture.store);
 		await fixture.start("Visible background review");
 		const mounted = currentWidget();
 		assert.ok(mounted);
-		assert.equal(mounted.render(80).length, 1);
-		assert.match(stripVTControlCharacters(mounted.render(80).join("\n")), /Tasks.*1.*\/tasks/);
-		assert.doesNotMatch(stripVTControlCharacters(mounted.render(80).join("\n")), /Visible background review/);
+		assert.equal(mounted.render(80).length, 1, "one row per task");
+		assert.match(
+			stripVTControlCharacters(mounted.render(80).join("\n")),
+			/^ {2}∀ worker {2}Visible background review/,
+		);
 		fixture.runners[0].context.reportActivity({
-			reportId: "action",
-			change: { kind: "action", tool: "read", text: "Inspecting the UI" },
+			reportId: "metrics",
+			change: { kind: "metrics", elapsedMs: 2_460_000, tokenCount: 96_100 },
 		});
 		fixture.store.drain();
-		assert.equal(mounted.render(80).length, 1);
-		assert.doesNotMatch(
-			stripVTControlCharacters(mounted.render(80).join("\n")),
-			/Inspecting the UI|Visible background review/,
-		);
+		assert.match(stripVTControlCharacters(mounted.render(100).join("\n")), /41m · ↓ 96\.1k tokens$/);
+		assert.match(stripVTControlCharacters(mounted.render(60).join("\n")), /41m$/, "narrow rows drop tokens");
 		assert.ok(renders > 0);
 		await fixture.settle();
-		assert.equal(currentWidget(), undefined, "settled tasks must unmount the compact widget");
+		assert.equal(currentWidget(), mounted, "a finished task stays a while");
+		assert.match(stripVTControlCharacters(mounted.render(80).join("\n")), /^ {2}✓ worker .* done · 41m$/);
 		assert.equal(fixture.store.backgroundTasks.length, 1, "history remains available in /tasks");
-		assert.deepEqual(mounted.render(80), []);
 		dispose();
 		await fixture.start("Should not mount after disposal");
 		assert.equal(widget, undefined);

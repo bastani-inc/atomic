@@ -1,4 +1,5 @@
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
@@ -152,8 +153,12 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 				warning: (text) => state.style.accent(text),
 			},
 			() => state.footerNavigationActive,
-			// A task's session has no task store of its own: its footer counts the tasks the host shows for it.
-			agentSession === undefined ? () => state.getTaskSource?.()?.backgroundTasks ?? [] : undefined,
+			// A stage or subagent chat lists its own active tasks below its prompt; the main chat has its agent panel.
+			// A task's session has no task store of its own: its footer lists the tasks the host shows for it.
+			() =>
+				(agentSession === undefined ? state.getTaskSource?.() : undefined)?.backgroundTasks ??
+				getOwnerTaskStore(session)?.backgroundTasks ??
+				[],
 		);
 		state.footer.setSession(session);
 		return state.footer.render(width);
