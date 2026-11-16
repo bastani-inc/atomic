@@ -65,8 +65,19 @@ export interface AgentPanelSourceRegistration {
 }
 
 const hubWatchers = new Set<(notifiedHub?: AgentPanelSourceHub) => void>();
-let nextSourceVersion = 1;
-const sourceVersions = new WeakMap<AgentPanelSource, number>();
+interface SourceVersion {
+	current: number;
+}
+const sourceVersions = new WeakMap<AgentPanelSource, SourceVersion>();
+
+function sourceVersion(source: AgentPanelSource): SourceVersion {
+	let version = sourceVersions.get(source);
+	if (version === undefined) {
+		version = { current: 0 };
+		sourceVersions.set(source, version);
+	}
+	return version;
+}
 
 function notifyHubWatchers(notifiedHub?: AgentPanelSourceHub): void {
 	if (hubWatchers.size === 0) return;
@@ -74,7 +85,7 @@ function notifyHubWatchers(notifiedHub?: AgentPanelSourceHub): void {
 }
 
 function bumpSourceVersion(source: AgentPanelSource): void {
-	sourceVersions.set(source, ++nextSourceVersion);
+	sourceVersion(source).current++;
 }
 
 function bumpHubSources(hub: AgentPanelSourceHub | undefined): void {
@@ -90,6 +101,7 @@ export class AgentPanelSourceHub {
 	private disposing = false;
 	register(source: AgentPanelSource): AgentPanelSourceRegistration {
 		if (this.disposing) return { dispose() {} };
+		const version = sourceVersion(source);
 		const regId = ++this.nextRegId;
 		this.regIds.set(source, regId);
 		let unsubscribe: () => void;
@@ -102,7 +114,7 @@ export class AgentPanelSourceHub {
 		try {
 			const result: unknown = source.subscribe(() => {
 				if (this.sources.get(source) !== cleanup) return;
-				bumpSourceVersion(source);
+				version.current++;
 				this.notify();
 			});
 			if (drainThenable(result) || typeof result !== "function") {
@@ -366,7 +378,7 @@ function drainReadFields(
 	return undefined;
 }
 
-function validateItem(raw: unknown): AgentPanelItem | undefined {
+function validateItem(raw: unknown, readAt: number): SampledPanelItem | undefined {
 	if (typeof raw !== "object" || raw === null) {
 		drainThenable(raw);
 		return undefined;
@@ -511,36 +523,22 @@ function validateItem(raw: unknown): AgentPanelItem | undefined {
 		}
 	}
 
-	const validated: {
-		id: string;
-		kind: AgentPanelItem["kind"];
-		state: AgentPanelState;
-		name: string;
-		task: string;
-		elapsedMs?: number;
-		tokens?: number;
-		progress?: { readonly done: number; readonly total: number };
-		question?: string;
-		choices?: readonly string[];
-		reason?: string;
-		queued?: number;
-		endedAt?: number;
-	} = {
+	return {
 		id,
 		kind,
 		state,
 		name,
 		task,
+		elapsedMs,
+		tokens,
+		progress,
+		question,
+		choices,
+		reason,
+		queued,
+		endedAt,
+		[itemSampleTime]: readAt,
 	};
-	if (elapsedMs !== undefined) validated.elapsedMs = elapsedMs;
-	if (tokens !== undefined) validated.tokens = tokens;
-	if (progress !== undefined) validated.progress = progress;
-	if (question !== undefined) validated.question = question;
-	if (choices !== undefined) validated.choices = choices;
-	if (reason !== undefined) validated.reason = reason;
-	if (queued !== undefined) validated.queued = queued;
-	if (endedAt !== undefined) validated.endedAt = endedAt;
-	return validated;
 }
 
 interface SourceCacheEntry {
@@ -550,14 +548,15 @@ interface SourceCacheEntry {
 }
 
 const sourceCache = new WeakMap<AgentPanelSource, SourceCacheEntry>();
-const itemReadAt = new WeakMap<AgentPanelItem, number>();
+const itemSampleTime = Symbol("panel-read-at");
+type SampledPanelItem = AgentPanelItem & { readonly [itemSampleTime]: number };
 
 export function agentPanelItemReadAt(item: AgentPanelItem): number | undefined {
-	return itemReadAt.get(item);
+	return (item as SampledPanelItem)[itemSampleTime];
 }
 
 function readSourceCache(source: AgentPanelSource): SourceCacheEntry {
-	const version = sourceVersions.get(source) ?? 0;
+	const version = sourceVersions.get(source)?.current ?? 0;
 	const cached = sourceCache.get(source);
 	if (cached !== undefined && cached.version === version) return cached;
 	const readAt = Date.now();
@@ -569,10 +568,21 @@ function readSourceCache(source: AgentPanelSource): SourceCacheEntry {
 		const items: AgentPanelItem[] = [];
 		const seenIds = new Set<string>();
 		let validationError: Error | undefined;
-		for (const raw of rawItems as Iterable<unknown>) {
+		let rawRows: readonly unknown[];
+		if (Array.isArray(rawItems)) rawRows = rawItems;
+		else {
+			const iterator: unknown = (rawItems as Iterable<unknown>)[Symbol.iterator];
+			if (typeof iterator !== "function") {
+				drainThenable(iterator);
+				throw new TypeError("Agent panel source items must be an iterable object.");
+			}
+			rawRows = Array.from(rawItems as Iterable<unknown>);
+		}
+		const count = rawRows.length;
+		for (let index = 0; index < count; index++) {
 			let validated: AgentPanelItem | undefined;
 			try {
-				validated = validateItem(raw);
+				validated = validateItem(rawRows[index], readAt);
 			} catch (error) {
 				validationError ??= sourceError(error);
 				continue;
@@ -581,16 +591,16 @@ function readSourceCache(source: AgentPanelSource): SourceCacheEntry {
 				validationError ??= new Error("Invalid agent panel item.");
 				continue;
 			}
-			if (seenIds.has(validated.id)) {
+			const before = seenIds.size;
+			seenIds.add(validated.id);
+			if (seenIds.size === before) {
 				validationError ??= new Error(`Duplicate agent panel item id "${validated.id}".`);
 				continue;
 			}
-			seenIds.add(validated.id);
-			itemReadAt.set(validated, readAt);
 			items.push(validated);
 		}
 		const entry: SourceCacheEntry = {
-			version: sourceVersions.get(source) ?? 0,
+			version: sourceVersions.get(source)?.current ?? 0,
 			items,
 			error: validationError,
 		};
@@ -598,7 +608,7 @@ function readSourceCache(source: AgentPanelSource): SourceCacheEntry {
 		return entry;
 	} catch (error) {
 		const entry: SourceCacheEntry = {
-			version: sourceVersions.get(source) ?? 0,
+			version: sourceVersions.get(source)?.current ?? 0,
 			items: [],
 			error: sourceError(error),
 		};

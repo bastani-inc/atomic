@@ -28,6 +28,7 @@ import { renderNavKeyOverlay } from "../interactive/components/nav-keys.ts";
 import { dismissedTasks } from "../interactive/components/task-dismissal.ts";
 import { taskDisplayText } from "../interactive/components/task-row.js";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
+import { getGlobalTheme } from "../interactive/theme/global-theme.ts";
 import { theme } from "../interactive/theme/theme.js";
 import { showTaskInspector, type TaskInspectorUi } from "./task-ui-bridge.js";
 
@@ -86,16 +87,20 @@ function reportOnceWith(
 	notifyPanelWarning(notify, message);
 }
 
+function panelTheme(): typeof theme {
+	return getGlobalTheme() ?? theme;
+}
+
 const THEMED_STYLE: AgentPanelStyle = {
-	dim: (text) => theme.fg("dim", text),
-	text: (text) => theme.fg("text", text),
-	muted: (text) => theme.fg("muted", text),
-	border: (text) => theme.fg("borderMuted", text),
-	bold: (text) => theme.bold(text),
-	accent: (text) => theme.fg("accent", text),
-	success: (text) => theme.fg("success", text),
-	error: (text) => theme.fg("error", text),
-	warning: (text) => theme.fg("warning", text),
+	dim: (text) => panelTheme().fg("dim", text),
+	text: (text) => panelTheme().fg("text", text),
+	muted: (text) => panelTheme().fg("muted", text),
+	border: (text) => panelTheme().fg("borderMuted", text),
+	bold: (text) => panelTheme().bold(text),
+	accent: (text) => panelTheme().fg("accent", text),
+	success: (text) => panelTheme().fg("success", text),
+	error: (text) => panelTheme().fg("error", text),
+	warning: (text) => panelTheme().fg("warning", text),
 };
 
 /** The panel's colours from Atomic's theme. */
@@ -107,7 +112,7 @@ export function themedAgentPanelStyle(): AgentPanelStyle {
 export function agentPanelRows(session: AgentPanelSession & object): AgentPanelRow[] {
 	const state = panelState(session);
 	const items = agentPanelItems(session, state.onSourceError);
-	if (items.length === 0) return state.model.rows(items, state.keepRow);
+	if (items.length <= 1) return state.model.rows(items, state.keepRow);
 	const ordered: AgentPanelRow[] = [];
 	for (let i = items.length - 1; i >= 0; i--) {
 		const item = items[i]!;

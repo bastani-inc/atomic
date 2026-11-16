@@ -605,6 +605,34 @@ test("a malformed or throwing item only hides that row while keeping valid neigh
 	assert.equal(reports.length, 1);
 });
 
+test("array sources read rows by index and keep valid neighbors around a throwing row getter (#5239)", () => {
+	const hub = new AgentPanelSourceHub();
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const rows = [
+		{ ...healthyItem, id: "ext:first" },
+		{ ...healthyItem, id: "ext:broken" },
+		{ ...healthyItem, id: "ext:last" },
+	];
+	Object.defineProperty(rows, 1, {
+		get() {
+			throw new Error("row getter failed");
+		},
+	});
+	Object.defineProperty(rows, Symbol.iterator, {
+		value() {
+			throw new Error("array iterator must not run");
+		},
+	});
+	hub.register({ items: () => rows, subscribe: () => () => {} });
+	const warnings: string[] = [];
+	assert.deepEqual(
+		agentPanelItems(session, (error) => warnings.push(error.message)).map((item) => item.id),
+		["ext:first", "ext:last"],
+	);
+	assert.deepEqual(warnings, ["row getter failed"]);
+	hub.dispose();
+});
+
 test("extension items with task: ids are rejected and never routed to source actions (#5224, #5239)", async () => {
 	const hub = new AgentPanelSourceHub();
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };

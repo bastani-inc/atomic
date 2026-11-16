@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { type Component, getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -26,6 +26,10 @@ import {
 } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
+const PANEL_REFRESH_WINDOW_MS = 50;
+const PANEL_TIMER_TICK_MS = 25;
+const PANEL_REPAINT_BOUND_MS = PANEL_REFRESH_WINDOW_MS + PANEL_TIMER_TICK_MS;
+
 test("the engine's agent panel follows the real lazy owner through activity, settlement and disposal (#5224)", async () => {
 	initTheme("dark");
 	const fixture = taskFixture();
@@ -33,6 +37,24 @@ test("the engine's agent panel follows the real lazy owner through activity, set
 	let widget: Component | undefined;
 	const currentWidget = (): Component | undefined => widget;
 	let renders = 0;
+	let settledRenders = 0;
+	const settleWaiters = new Set<() => void>();
+	const waitForSettledRepaint = (): Promise<void> => {
+		if (settledRenders > 0) return Promise.resolve();
+		return new Promise<void>((resolve, reject) => {
+			const onRender = () => {
+				if (settledRenders === 0) return;
+				clearTimeout(timer);
+				settleWaiters.delete(onRender);
+				resolve();
+			};
+			const timer = setTimeout(() => {
+				settleWaiters.delete(onRender);
+				reject(new Error(`Agent panel did not request a settled repaint within ${PANEL_REPAINT_BOUND_MS}ms`));
+			}, PANEL_REPAINT_BOUND_MS);
+			settleWaiters.add(onRender);
+		});
+	};
 	const ui = {
 		setWidget(_key, content, options) {
 			if (content) assert.equal(options?.placement, "belowEditor");
@@ -43,6 +65,10 @@ test("the engine's agent panel follows the real lazy owner through activity, set
 		},
 		requestRender() {
 			renders++;
+			if (fixture.store.tasks[0]?.execution.kind === "settled") {
+				settledRenders++;
+				for (const waiter of [...settleWaiters]) waiter();
+			}
 		},
 		custom() {
 			throw new Error("Task updates must not open the inspector");
@@ -69,6 +95,7 @@ test("the engine's agent panel follows the real lazy owner through activity, set
 		assert.match(stripVTControlCharacters(mounted.render(60).join("\n")), /41m$/, "narrow rows drop tokens");
 		assert.ok(renders > 0);
 		await fixture.settle();
+		await waitForSettledRepaint();
 		assert.equal(currentWidget(), mounted, "a finished task stays a while");
 		assert.match(stripVTControlCharacters(mounted.render(80).join("\n")), /^ {2}✓ worker .* done · 41m$/);
 		assert.equal(fixture.store.backgroundTasks.length, 1, "history remains available in /tasks");
@@ -77,6 +104,65 @@ test("the engine's agent panel follows the real lazy owner through activity, set
 		assert.equal(widget, undefined);
 	} finally {
 		dispose();
+		await fixture.dispose();
+	}
+});
+
+test("a final task settlement deferred by the 8ms/50ms refresh budget schedules its own repaint at the 50ms window boundary (#5224)", async () => {
+	initTheme("dark");
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+	let now = 1_000;
+	const perfSpy = vi.spyOn(performance, "now").mockImplementation(() => {
+		now += 2;
+		return now;
+	});
+	const fixture = taskFixture();
+	const session = {} as AgentSession;
+	let widget: Component | undefined;
+	let settledRenders = 0;
+	const ui = {
+		setWidget(_key, content) {
+			widget =
+				typeof content === "function"
+					? content({} as Parameters<Exclude<typeof content, string[] | undefined>>[0], theme)
+					: undefined;
+		},
+		requestRender() {
+			if (fixture.store.tasks[0]?.execution.kind === "settled") {
+				settledRenders++;
+			}
+		},
+		custom() {
+			throw new Error("Task updates must not open the inspector");
+		},
+	} as Pick<ExtensionUIContext, "setWidget" | "requestRender" | "custom"> as ExtensionUIContext;
+	const dispose = bindAgentPanel(session, ui);
+	try {
+		bindOwnerTaskStore(session, fixture.store);
+		await fixture.start("Visible background review");
+		assert.ok(widget);
+		widget.render(80);
+		fixture.runners[0]!.context.reportActivity({
+			reportId: "metrics",
+			change: { kind: "metrics", elapsedMs: 2_460_000, tokenCount: 96_100 },
+		});
+		fixture.store.drain();
+		widget.render(100);
+		widget.render(60);
+		await fixture.settle();
+		assert.equal(settledRenders, 0, "settlement refresh is deferred once the 8ms/50ms budget is spent");
+		assert.match(
+			stripVTControlCharacters(widget.render(80).join("\n")),
+			/^ {2}∀ worker {2}Visible background review/,
+		);
+		now += PANEL_REFRESH_WINDOW_MS;
+		vi.advanceTimersByTime(PANEL_REFRESH_WINDOW_MS);
+		assert.equal(settledRenders, 1, "deferred refresh calls requestRender when the 50ms budget window expires");
+		assert.match(stripVTControlCharacters(widget.render(80).join("\n")), /^ {2}✓ worker .* done · 41m$/);
+	} finally {
+		dispose();
+		perfSpy.mockRestore();
+		vi.useRealTimers();
 		await fixture.dispose();
 	}
 });

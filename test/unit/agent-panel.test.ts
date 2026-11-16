@@ -25,9 +25,15 @@ import {
 	renderAgentPanelHint,
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { atomicWorkingGlyph } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.js";
 import { applyAttachedComposer } from "../../packages/coding-agent/src/modes/interactive/components/input-label.js";
-import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { agentPanelRows, bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import { getGlobalTheme } from "../../packages/coding-agent/src/modes/interactive/theme/global-theme.js";
+import { initTheme, setThemeInstance, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import {
+	agentPanelRows,
+	bindAgentPanel,
+	themedAgentPanelStyle,
+} from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
 const plain: AgentPanelStyle = {
@@ -72,6 +78,55 @@ const ROWS: AgentPanelRow[] = [
 	},
 	{ id: "task:c", kind: "agent", state: "done", name: "worker", task: "picker clamp", elapsedMs: 6 * 60_000 },
 ];
+
+test("panel styling preserves foreground overrides on installed theme instances (#5239)", () => {
+	initTheme("dark");
+	const previous = getGlobalTheme()!;
+	const customized = Object.create(previous) as typeof previous;
+	customized.fg = (color, text) => previous.fg(color, `[${text}]`);
+	try {
+		setThemeInstance(customized);
+		assert.equal(themedAgentPanelStyle().muted("content"), theme.fg("muted", "content"));
+	} finally {
+		setThemeInstance(previous);
+	}
+});
+
+test("panel colors and running glyphs follow theme, color and motion changes after cached renders (#5239)", () => {
+	initTheme("dark");
+	const previous = getGlobalTheme()!;
+	const noColor = process.env.NO_COLOR;
+	const reducedMotion = process.env.ATOMIC_REDUCED_MOTION;
+	const paint = themedAgentPanelStyle();
+	try {
+		for (const name of ["dark", "light", "dark"]) {
+			initTheme(name);
+			for (const color of [undefined, "1"]) {
+				if (color === undefined) delete process.env.NO_COLOR;
+				else process.env.NO_COLOR = color;
+				for (const motion of [undefined, "1"]) {
+					if (motion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+					else process.env.ATOMIC_REDUCED_MOTION = motion;
+					for (const frame of [0, 4, 9, 0]) {
+						const line = renderAgentPanelRows([ROWS[0]!], 100, paint, { frame })[0]!;
+						assert.ok(line.startsWith(`  ${atomicWorkingGlyph(frame)} `));
+						assert.ok(visibleWidth(line) <= 100);
+					}
+					for (const colorName of ["dim", "text", "muted", "accent", "success", "error", "warning"] as const) {
+						assert.equal(paint[colorName]("nested\x1b[39mtext"), theme.fg(colorName, "nested\x1b[39mtext"));
+					}
+					assert.equal(paint.border("border"), theme.fg("borderMuted", "border"));
+				}
+			}
+		}
+	} finally {
+		if (noColor === undefined) delete process.env.NO_COLOR;
+		else process.env.NO_COLOR = noColor;
+		if (reducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
+		else process.env.ATOMIC_REDUCED_MOTION = reducedMotion;
+		setThemeInstance(previous);
+	}
+});
 
 test("panel rows show glyph, name, task, elapsed and tokens, right-aligned at 160 and 80 columns (#5224)", () => {
 	const wide = renderAgentPanelRows(ROWS, 160, plain);

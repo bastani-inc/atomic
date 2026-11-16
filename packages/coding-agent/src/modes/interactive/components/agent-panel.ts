@@ -13,7 +13,8 @@ import { isRunningTaskClock, liveElapsedMs } from "../../../core/tasks/live-elap
 
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { atomicWorkingGlyph } from "./atomic-working-status.ts";
+import { getGlobalTheme } from "../theme/global-theme.ts";
+import { ATOMIC_WORKING_FRAMES, atomicWorkingGlyph } from "./atomic-working-status.ts";
 import { type NavKey, type NavKeybindings, type NavKeyStyle, renderNavHintLine, TwoPressConfirm } from "./nav-keys.ts";
 import { taskDisplayText } from "./task-row.js";
 
@@ -39,6 +40,33 @@ export interface AgentPanelStyle extends NavKeyStyle {
 }
 
 const FINISHED: ReadonlySet<AgentPanelState> = new Set(["done", "failed", "stopped"]);
+const NON_PRINTABLE_ASCII = /[^\x20-\x7e]/;
+const NON_SINGLE_CELL = /[^\x20-\x7e\u00b7\u25b0\u25b1\u2193]/;
+const BARS_16 = Array.from({ length: 17 }, (_, filled) => "▰".repeat(filled) + "▱".repeat(16 - filled));
+let glyphThemeRef: ReturnType<typeof getGlobalTheme>;
+let glyphNoColor: string | undefined;
+let glyphReducedMotion: string | undefined;
+const glyphCache: Array<string | undefined> = new Array(ATOMIC_WORKING_FRAMES.length);
+
+function cachedWorkingGlyph(frame: number): string {
+	const themeRef = getGlobalTheme();
+	const noColor = process.env.NO_COLOR;
+	const reduced = process.env.ATOMIC_REDUCED_MOTION;
+	if (themeRef !== glyphThemeRef || noColor !== glyphNoColor || reduced !== glyphReducedMotion) {
+		glyphThemeRef = themeRef;
+		glyphNoColor = noColor;
+		glyphReducedMotion = reduced;
+		glyphCache.fill(undefined);
+	}
+	const count = ATOMIC_WORKING_FRAMES.length;
+	const index = reduced === "1" ? 3 : ((frame % count) + count) % count;
+	let cached = glyphCache[index];
+	if (cached === undefined) {
+		cached = atomicWorkingGlyph(index);
+		glyphCache[index] = cached;
+	}
+	return cached;
+}
 
 export function isFinishedPanelRow(row: Pick<AgentPanelRow, "state">): boolean {
 	return FINISHED.has(row.state);
@@ -46,9 +74,22 @@ export function isFinishedPanelRow(row: Pick<AgentPanelRow, "state">): boolean {
 
 /** One safe display line: no terminal controls, unpaired surrogates, or invisible and bidi-override characters. */
 function panelText(text: string): string {
+	if (!NON_PRINTABLE_ASCII.test(text)) return text;
 	return taskDisplayText(text)
 		.toWellFormed()
 		.replace(/\p{Default_Ignorable_Code_Point}/gu, "");
+}
+
+function cellWidth(text: string): number {
+	return NON_SINGLE_CELL.test(text) ? visibleWidth(text) : text.length;
+}
+
+function fitToWidth(text: string, maxWidth: number): { readonly text: string; readonly width: number } {
+	if (!NON_SINGLE_CELL.test(text) && text.length <= maxWidth) {
+		return { text, width: text.length };
+	}
+	const truncated = truncateToWidth(text, maxWidth);
+	return { text: truncated, width: cellWidth(truncated) };
 }
 
 /** `41m`, `1h 31m`, `9s`: elapsed time as the panel shows it. */
@@ -77,9 +118,11 @@ export function formatPanelTokens(tokens: number): string {
 
 /** A run's stage progress as a 16-cell bar: `▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱`. */
 export function panelProgressBar(done: number, total: number, cells = 16): string {
-	const size = Number.isFinite(cells) ? Math.max(0, Math.min(1024, Math.floor(cells))) : 0;
 	const ratio = Number.isFinite(done) && Number.isFinite(total) && total > 0 ? done / total : 0;
-	const filled = Math.round(Math.max(0, Math.min(1, ratio)) * size);
+	const clamped = Math.max(0, Math.min(1, ratio));
+	if (cells === 16) return BARS_16[Math.round(clamped * 16)]!;
+	const size = Number.isFinite(cells) ? Math.max(0, Math.min(1024, Math.floor(cells))) : 0;
+	const filled = Math.round(clamped * size);
 	return "▰".repeat(filled) + "▱".repeat(size - filled);
 }
 
@@ -100,17 +143,31 @@ export class AgentPanelModel {
 		return this.finishedAt.get(id);
 	}
 	rows(rows: readonly AgentPanelRow[], keep: (row: AgentPanelRow) => boolean = () => false): AgentPanelRow[] {
+		if (rows.length === 0) {
+			this.finishedAt.clear();
+			return [];
+		}
 		const now = this.now();
-		const live = new Set<string>();
-		const groups: [AgentPanelRow[], AgentPanelRow[], AgentPanelRow[], AgentPanelRow[]] = [[], [], [], []];
-		for (const row of rows) {
-			live.add(row.id);
+		const hadFinished = this.finishedAt.size > 0;
+		const live = hadFinished ? new Set<string>() : undefined;
+		const g0: AgentPanelRow[] = [];
+		const g1: AgentPanelRow[] = [];
+		const g2: AgentPanelRow[] = [];
+		const g3: AgentPanelRow[] = [];
+		for (let i = 0; i < rows.length; i++) {
+			const row = rows[i]!;
+			live?.add(row.id);
 			const state = row.state;
 			const finished = FINISHED.has(state);
-			if (!finished) this.finishedAt.delete(row.id);
-			else {
-				if (!this.finishedAt.has(row.id)) this.finishedAt.set(row.id, now);
-				if (!keep(row) && now - (this.finishedAt.get(row.id) ?? now) >= AGENT_PANEL_DROP_MS) continue;
+			if (!finished) {
+				if (hadFinished) this.finishedAt.delete(row.id);
+			} else {
+				let finishedSince = this.finishedAt.get(row.id);
+				if (finishedSince === undefined) {
+					finishedSince = now;
+					this.finishedAt.set(row.id, now);
+				}
+				if (!keep(row) && now - finishedSince >= AGENT_PANEL_DROP_MS) continue;
 			}
 			let item = row;
 			if (state !== "queued") {
@@ -129,11 +186,17 @@ export class AgentPanelModel {
 					if (elapsedMs !== row.elapsedMs) item = { ...row, elapsedMs };
 				}
 			}
-			const rank = state === "input" ? 0 : state === "running" ? 1 : finished ? 3 : 2;
-			groups[rank].push(item);
+			if (state === "input") g0.push(item);
+			else if (state === "running") g1.push(item);
+			else if (finished) g3.push(item);
+			else g2.push(item);
 		}
-		for (const id of this.finishedAt.keys()) if (!live.has(id)) this.finishedAt.delete(id);
-		return groups.flat();
+		if (live !== undefined && this.finishedAt.size > 0) {
+			for (const id of this.finishedAt.keys()) if (!live.has(id)) this.finishedAt.delete(id);
+		}
+		if (g0.length === 0 && g2.length === 0 && g3.length === 0) return g1;
+		if (g0.length === 0 && g1.length === 0 && g2.length === 0) return g3;
+		return g0.concat(g1, g2, g3);
 	}
 	/** Whether a finished row has been finished long enough to read dim. */
 	faded(row: AgentPanelRow): boolean {
@@ -145,7 +208,7 @@ export class AgentPanelModel {
 function glyph(row: AgentPanelRow, style: AgentPanelStyle, frame: number | undefined): string {
 	switch (row.state) {
 		case "running":
-			return frame === undefined ? style.accent("∀") : atomicWorkingGlyph(frame);
+			return frame === undefined ? style.accent("∀") : cachedWorkingGlyph(frame);
 		case "input":
 			return style.warning("◆");
 		case "paused":
@@ -187,19 +250,23 @@ function stateWord(row: AgentPanelRow): string {
 /** The right-hand column: `18m · ↓ 87.4k tokens`, `done · 6m`, `needs input · 3m`. Narrow panels drop tokens. */
 function rightColumn(row: AgentPanelRow, width: number): string {
 	const elapsed = row.elapsedMs === undefined ? "" : formatPanelElapsed(row.elapsedMs);
-	const tokens = row.tokens === undefined || width < 70 ? "" : `↓ ${formatPanelTokens(row.tokens)} tokens`;
-	if (row.state === "running") return [elapsed, tokens].filter(Boolean).join(" · ") || "running";
-	return [stateWord(row), elapsed].filter(Boolean).join(" · ");
+	if (row.state === "running") {
+		const tokens = row.tokens === undefined || width < 70 ? "" : `↓ ${formatPanelTokens(row.tokens)} tokens`;
+		if (elapsed.length > 0 && tokens.length > 0) return `${elapsed} · ${tokens}`;
+		return elapsed || tokens || "running";
+	}
+	const word = stateWord(row);
+	return elapsed.length > 0 ? `${word} · ${elapsed}` : word;
 }
 
 /** The middle column: the task, or a workflow run's stage bar and `n/m stages`. */
-function taskColumn(row: AgentPanelRow, width: number): string {
+function taskColumn(row: AgentPanelRow, cleanTask: string, width: number): string {
 	if (row.kind === "workflow" && row.progress !== undefined && width >= 60) {
 		const counts = `${row.progress.done}/${row.progress.total} stages`;
-		const stage = row.task.startsWith("stage ") ? ` · ${row.task.slice(6)}` : "";
+		const stage = cleanTask.startsWith("stage ") ? ` · ${cleanTask.slice(6)}` : "";
 		return `${panelProgressBar(row.progress.done, row.progress.total)}  ${counts}${stage}`;
 	}
-	return row.task;
+	return cleanTask;
 }
 
 export interface AgentPanelRenderOptions {
@@ -225,13 +292,28 @@ export function renderAgentPanelRows(
 	if (rows.length === 0) return [];
 	const focused = options.selectedId !== undefined;
 	const visible = focused ? rows.slice(options.scroll ?? 0, (options.scroll ?? 0) + AGENT_PANEL_FOCUSED_ROWS) : rows;
-	const shown = focused ? visible : visible.slice(0, AGENT_PANEL_IDLE_ROWS);
-	const nameWidth = shown.reduce((width, row) => Math.min(14, Math.max(width, visibleWidth(panelText(row.name)))), 4);
+	const shown = focused
+		? visible
+		: visible.length <= AGENT_PANEL_IDLE_ROWS
+			? visible
+			: visible.slice(0, AGENT_PANEL_IDLE_ROWS);
+	const count = shown.length;
+	const names = new Array<string>(count);
+	const nameWidths = new Array<number>(count);
+	let nameWidth = 4;
+	for (let i = 0; i < count; i++) {
+		const cleanName = panelText(shown[i]!.name);
+		const w = cellWidth(cleanName);
+		names[i] = cleanName;
+		nameWidths[i] = w;
+		if (w > nameWidth) nameWidth = w < 14 ? w : 14;
+	}
 	const lines: string[] = [];
 	const line = (
 		id: string,
 		glyphText: string,
 		name: string,
+		knownNameWidth: number,
 		task: string,
 		right: string,
 		dim: boolean,
@@ -240,39 +322,46 @@ export function renderAgentPanelRows(
 		const selected = options.selectedId === id;
 		const cursor = selected ? style.accent(style.bold("❯ ")) : "  ";
 		const paint = (text: string) => (dim ? style.dim(text) : selected ? style.text(text) : style.muted(text));
-		const rightPlain = right + (queued ?? "");
-		const shownName = truncateToWidth(name, nameWidth);
-		const head = `${shownName}${" ".repeat(Math.max(0, nameWidth - visibleWidth(shownName)))}`;
-		const fixed = 2 + 2 + visibleWidth(head) + 2;
 		if (width < 40) {
-			const short = `${cursor}${glyphText} ${paint(truncateToWidth(name, Math.max(1, width - 5)))}`;
+			const shortName = fitToWidth(name, Math.max(1, width - 5)).text;
+			const short = `${cursor}${glyphText} ${paint(shortName)}`;
 			return lines.push(truncateToWidth(short, width));
 		}
-		const rightWidth = visibleWidth(rightPlain);
+		const fittedName =
+			knownNameWidth <= nameWidth ? { text: name, width: knownNameWidth } : fitToWidth(name, nameWidth);
+		const head =
+			fittedName.width < nameWidth
+				? `${fittedName.text}${" ".repeat(nameWidth - fittedName.width)}`
+				: fittedName.text;
+		const headWidth = fittedName.width < nameWidth ? nameWidth : fittedName.width;
+		const fixed = 6 + headWidth;
+		const rightPlain = queued === undefined ? right : right + queued;
+		const rightWidth = cellWidth(rightPlain);
 		const taskRoom = Math.max(0, width - fixed - rightWidth - 2);
-		const shownTask = taskRoom >= 4 ? truncateToWidth(task, taskRoom) : "";
-		const pad = Math.max(1, width - fixed - visibleWidth(shownTask) - rightWidth);
+		const fittedTask = taskRoom >= 4 && task.length > 0 ? fitToWidth(task, taskRoom) : { text: "", width: 0 };
+		const pad = Math.max(1, width - fixed - fittedTask.width - rightWidth);
 		const nameText = selected ? style.bold(style.text(head)) : paint(head);
 		const rightText = paint(right) + (queued === undefined ? "" : style.warning(queued));
-		lines.push(
-			truncateToWidth(`${cursor}${glyphText} ${nameText}  ${paint(shownTask)}${" ".repeat(pad)}${rightText}`, width),
-		);
+		const full = `${cursor}${glyphText} ${nameText}  ${paint(fittedTask.text)}${" ".repeat(pad)}${rightText}`;
+		lines.push(fixed + fittedTask.width + pad + rightWidth <= width ? full : truncateToWidth(full, width));
 	};
 	if (focused) {
 		const selected = options.selectedId === AGENT_PANEL_MAIN_ID;
-		line(AGENT_PANEL_MAIN_ID, selected ? style.accent("●") : style.text("●"), "main", "", "", false);
+		line(AGENT_PANEL_MAIN_ID, selected ? style.accent("●") : style.text("●"), "main", 4, "", "", false);
 	}
-	for (const raw of shown) {
-		// Names and tasks come from models and commands: control sequences never reach the terminal.
-		const row = { ...raw, name: panelText(raw.name), task: panelText(raw.task) };
-		const dim = options.faded?.(row) === true;
-		const queued = Number.isSafeInteger(row.queued) && (row.queued ?? 0) > 0 ? ` · ${row.queued} queued` : undefined;
+	for (let i = 0; i < count; i++) {
+		const raw = shown[i]!;
+		const cleanName = names[i]!;
+		const cleanTask = panelText(raw.task);
+		const dim = options.faded?.(raw) === true;
+		const queued = Number.isSafeInteger(raw.queued) && (raw.queued ?? 0) > 0 ? ` · ${raw.queued} queued` : undefined;
 		line(
-			row.id,
-			dim ? style.dim(glyph(row, style, undefined)) : glyph(row, style, options.frame),
-			row.name,
-			taskColumn(row, width),
-			rightColumn(row, width),
+			raw.id,
+			dim ? style.dim(glyph(raw, style, undefined)) : glyph(raw, style, options.frame),
+			cleanName,
+			nameWidths[i]!,
+			taskColumn(raw, cleanTask, width),
+			rightColumn(raw, width),
 			dim,
 			queued,
 		);
