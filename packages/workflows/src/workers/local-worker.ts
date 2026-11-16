@@ -533,7 +533,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				// waits out the worker's idle pause in the coordinator, which wake-ups end early. Neither control nor the
 				// journal is read before it: control arrives pushed or with the claim's attempt, and the journal is caught up
 				// once the claim found work. A paused or quit worker of the root's host waits for the push that changes it.
-				// It still asks once per IDLE_CLAIM_FALLBACK_MS, refused while the pool does not run, so the pool can retire it.
+				// Once per IDLE_CLAIM_FALLBACK_MS it reads control again, in case a push was missed, and asks for work, refused
+				// while the pool does not run, so the pool can still retire it.
 				if (controlPushed && control.state !== "running") {
 					const waited = await new Promise<boolean>((resolve) => {
 						const timer = setTimeout(() => resolve(true), IDLE_CLAIM_FALLBACK_MS);
@@ -544,6 +545,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					});
 					controlChanged = undefined;
 					if (!waited) continue;
+					await observeControl();
 				}
 				work = (await request({ kind: "claim" })) as PoolWork | undefined;
 			} catch (error) {

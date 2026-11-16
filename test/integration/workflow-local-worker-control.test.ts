@@ -169,6 +169,14 @@ async function realWorker(scenario: WorkerScenario, workerEntry: string, directo
 			control = next;
 			worker.send({ kind: "pool-control", control: next });
 		},
+		/** Commits `next` without pushing it: the push was lost. */
+		commitUnpushed(next: PoolControl) {
+			control = next;
+		},
+		/** The next claim is given the child again. */
+		requeue() {
+			claimed = false;
+		},
 		acknowledged: () => requests.flatMap((request) => (request.kind === "controlled" ? [request.revision] : [])),
 		async until(condition: () => boolean, what: string) {
 			const deadline = Date.now() + OBSERVATION_TIMEOUT_MS;
@@ -306,6 +314,28 @@ test(
 				);
 			},
 		);
+	},
+	REAL_WORKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a paused idle worker that missed the resume push reads control again and claims within the idle bound (#5230)",
+	async () => {
+		await withRealWorker({ child: "pool-heartbeat-child", heartbeatMs: 600_000, released: true }, async (f) => {
+			await f.until(() => f.count("complete") > 0, "the child completes");
+			f.push({ state: "paused", revision: 1 });
+			await f.until(() => f.acknowledged().includes(1), "the idle worker acknowledges the pause");
+			const resumedAt = performance.now();
+			f.commitUnpushed({ state: "running", revision: 2 });
+			f.requeue();
+			await f.until(() => f.acknowledged().includes(2), "it reads the resume it was never pushed");
+			const readAfter = performance.now() - resumedAt;
+			assert.ok(
+				readAfter < IDLE_CLAIM_FALLBACK_MS + IDLE_CONTROL_BOUND_MS,
+				`read the resume after ${readAfter} ms, at most one idle bound late`,
+			);
+			await f.until(() => f.count("complete") > 1, "and runs the child queued meanwhile");
+		});
 	},
 	REAL_WORKER_TEST_TIMEOUT_MS,
 );
