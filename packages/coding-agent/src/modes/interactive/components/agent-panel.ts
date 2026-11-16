@@ -62,8 +62,7 @@ export function panelProgressBar(done: number, total: number, cells = 16): strin
  * that has not been viewed yet).
  */
 export class AgentPanelModel {
-	private readonly finishedAt = new Map<string, number>();
-	private readonly finishedPass = new Map<string, number>();
+	private readonly finishedAt = new Map<string, { since: number; pass: number }>();
 	private pass = 0;
 	private passMatchedFinished = 0;
 	private hasLocalClocks = false;
@@ -74,29 +73,28 @@ export class AgentPanelModel {
 	}
 	/** When the row was first seen finished, if it is. */
 	finishedSince(id: string): number | undefined {
-		return this.finishedAt.get(id);
+		return this.finishedAt.get(id)?.since;
 	}
 	beginPass(): { readonly now: number; readonly pass: number } {
 		this.passMatchedFinished = 0;
 		return { now: this.now(), pass: ++this.pass };
 	}
 	keepFinished(id: string, keep: boolean, now: number, pass: number): boolean {
-		let since = this.finishedAt.get(id);
-		if (since === undefined) {
-			since = now;
-			this.finishedAt.set(id, now);
-		}
-		if (this.finishedPass.get(id) !== pass) {
-			this.finishedPass.set(id, pass);
+		let entry = this.finishedAt.get(id);
+		if (entry === undefined) {
+			entry = { since: now, pass };
+			this.finishedAt.set(id, entry);
+			this.passMatchedFinished++;
+		} else if (entry.pass !== pass) {
+			entry.pass = pass;
 			this.passMatchedFinished++;
 		}
-		return keep || now - since < AGENT_PANEL_DROP_MS;
+		return keep || now - entry.since < AGENT_PANEL_DROP_MS;
 	}
 	endPass(pass: number): void {
 		if (this.passMatchedFinished === this.finishedAt.size) return;
-		for (const [id, seenPass] of this.finishedPass) {
-			if (seenPass !== pass) {
-				this.finishedPass.delete(id);
+		for (const [id, entry] of this.finishedAt) {
+			if (entry.pass !== pass) {
 				this.finishedAt.delete(id);
 			}
 		}
@@ -154,7 +152,7 @@ export class AgentPanelModel {
 	}
 	/** Whether a finished row has been finished long enough to read dim. */
 	faded(row: Pick<AgentPanelRow, "id">): boolean {
-		const since = this.finishedAt.get(row.id);
+		const since = this.finishedAt.get(row.id)?.since;
 		return since !== undefined && this.now() - since >= AGENT_PANEL_FADE_MS;
 	}
 }
@@ -354,7 +352,7 @@ export class AgentPanelFocus {
 	update(rows: readonly AgentPanelRow[]): void {
 		this.rows = rows;
 		const armed = this.stopConfirm.pending();
-		const settled = rows.find((row) => row.id === armed && isFinishedPanelRow(row));
+		const settled = armed === undefined ? undefined : rows.find((row) => row.id === armed && isFinishedPanelRow(row));
 		if (settled !== undefined) {
 			this.stopConfirm.reset();
 			this.finishedWhileArmed = settled;
@@ -364,16 +362,24 @@ export class AgentPanelFocus {
 		) {
 			this.finishedWhileArmed = undefined;
 		}
-		if (this.selectedId !== AGENT_PANEL_MAIN_ID && !rows.some((row) => row.id === this.selectedId))
+		if (this.selectedId === AGENT_PANEL_MAIN_ID) return;
+		let index = rows.findIndex((row) => row.id === this.selectedId);
+		if (index < 0) {
 			this.selectedId = rows[0]?.id ?? AGENT_PANEL_MAIN_ID;
-		this.keepInView();
+			index = rows.length > 0 ? 0 : -1;
+		}
+		this.keepIndexInView(index);
 	}
 	/** Focus starts on the first row below `main`, as ↓ from the prompt moves one step. */
 	enter(selectId?: string): void {
-		this.selectedId = this.rows.some((row) => row.id === selectId)
-			? (selectId as string)
-			: (this.rows[0]?.id ?? AGENT_PANEL_MAIN_ID);
-		this.keepInView();
+		const index = selectId === undefined ? -1 : this.rows.findIndex((row) => row.id === selectId);
+		if (index >= 0) {
+			this.selectedId = selectId!;
+			this.keepIndexInView(index);
+			return;
+		}
+		this.selectedId = this.rows[0]?.id ?? AGENT_PANEL_MAIN_ID;
+		this.keepIndexInView(this.rows.length > 0 ? 0 : -1);
 	}
 	selected(): AgentPanelRow | undefined {
 		return this.rows.find((row) => row.id === this.selectedId);
@@ -383,12 +389,14 @@ export class AgentPanelFocus {
 		const id = this.stopConfirm.pending();
 		return id === undefined ? undefined : this.rows.find((row) => row.id === id);
 	}
-	private keepInView(): void {
-		const index = this.rows.findIndex((row) => row.id === this.selectedId);
+	private keepIndexInView(index: number): void {
 		if (index < 0) return;
 		if (index < this.scroll) this.scroll = index;
 		if (index >= this.scroll + AGENT_PANEL_FOCUSED_ROWS) this.scroll = index - AGENT_PANEL_FOCUSED_ROWS + 1;
 		this.scroll = Math.max(0, Math.min(this.scroll, Math.max(0, this.rows.length - AGENT_PANEL_FOCUSED_ROWS)));
+	}
+	private keepInView(): void {
+		this.keepIndexInView(this.rows.findIndex((row) => row.id === this.selectedId));
 	}
 	private move(delta: number): void {
 		const current =

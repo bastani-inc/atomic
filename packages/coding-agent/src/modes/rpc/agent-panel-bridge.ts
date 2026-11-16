@@ -9,13 +9,15 @@ import {
 	openAgentPanelItem,
 	stopAgentPanelItem,
 	subscribeAgentPanel,
+	taskPanelItem,
 	taskPanelState,
 	viewedAgentPanelItems,
 } from "../../core/tasks/agent-panel-source.ts";
 import { taskClockOf } from "../../core/tasks/live-elapsed.ts";
-import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
+import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
 import {
+	AGENT_PANEL_DROP_MS,
 	AGENT_PANEL_FOCUSED_ROWS,
 	AGENT_PANEL_IDLE_ROWS,
 	AgentPanelFocus,
@@ -37,8 +39,20 @@ import { theme } from "../interactive/theme/theme.js";
 import { showTaskInspector, type TaskInspectorUi } from "./task-ui-bridge.js";
 
 /** Per-session panel state that outlives one mount: when rows finished, viewed and dismissed runs. */
+type PanelRankCache = {
+	readonly store: OwnerTaskStore | undefined;
+	readonly revision: number;
+	readonly extensions: string;
+	readonly dismissed: ReadonlySet<string>;
+	readonly expiresAt: number;
+	readonly rows: AgentPanelRow[];
+	readonly total: number;
+	readonly extensionSlots: readonly { readonly index: number; readonly id: string }[];
+};
+
 interface PanelState {
 	readonly model: AgentPanelModel;
+	rankCaches?: Map<number, PanelRankCache>;
 	/** Workflow-run rows opened at least once: a finished run stays until it has been viewed. */
 	readonly viewed: Set<string>;
 	hideCount: number;
@@ -87,6 +101,13 @@ export function themedAgentPanelStyle(): AgentPanelStyle {
 	};
 }
 
+function currentPanelItem(store: OwnerTaskStore | undefined, row: AgentPanelRow): AgentPanelRow {
+	const taskId = panelTaskId(row);
+	const task = taskId === undefined ? undefined : store?.taskRecord(taskId);
+	if (task === undefined || store === undefined) return materializePanelItem(row);
+	return taskPanelItem(task, taskClockOf(ownerTaskViewSource(store)));
+}
+
 function rankPanelSession(
 	session: AgentPanelSession & object,
 	options: { readonly start?: number; readonly limit?: number; readonly cap?: number } = {},
@@ -95,6 +116,39 @@ function rankPanelSession(
 	const sharedViewed = viewedAgentPanelItems(session);
 	const dismissed = dismissedAgentPanelItems(session);
 	const extItems = agentPanelExtensionItems(session);
+	const store = getOwnerTaskStore(session);
+	const cap = options.cap ?? Number.POSITIVE_INFINITY;
+	const revision = store?.panelRevision ?? 0;
+	const extensions = JSON.stringify(
+		extItems.map((item) => [
+			item.id,
+			item.kind,
+			item.state,
+			item.kind === "workflow" && item.viewed !== true && !state.viewed.has(item.id) && !sharedViewed.has(item.id),
+		]),
+	);
+	const cached = state.rankCaches?.get(cap);
+	const materialize = (row: AgentPanelRow): AgentPanelRow => currentPanelItem(store, row);
+	if (
+		cached !== undefined &&
+		cached.store === store &&
+		cached.revision === revision &&
+		cached.extensions === extensions &&
+		cached.expiresAt > Date.now() &&
+		cached.dismissed.size === dismissed.size &&
+		[...dismissed].every((id) => cached.dismissed.has(id))
+	) {
+		const currentExtensions = new Map(extItems.map((item) => [item.id, item]));
+		for (const { index, id } of cached.extensionSlots) {
+			const current = currentExtensions.get(id);
+			if (current !== undefined) cached.rows[index] = current;
+		}
+		const start = Math.max(0, options.start ?? 0);
+		const end = Math.min(cached.rows.length, start + Math.max(0, options.limit ?? AGENT_PANEL_IDLE_ROWS));
+		for (let index = start; index < end; index++)
+			cached.rows[index] = state.model.withElapsed(materialize(cached.rows[index]!));
+		return { rows: cached.rows, total: cached.total };
+	}
 	const liveWorkflowIds = new Set<string>();
 	for (const item of extItems) {
 		if (item.kind === "workflow") liveWorkflowIds.add(item.id);
@@ -103,7 +157,7 @@ function rankPanelSession(
 	for (const id of sharedViewed) if (!liveWorkflowIds.has(id)) sharedViewed.delete(id);
 
 	const { now, pass } = state.model.beginPass();
-	const cap = options.cap ?? Number.POSITIVE_INFINITY;
+	let expiresAt = Number.POSITIVE_INFINITY;
 	const inputRows: AgentPanelRow[] = [];
 	const runningRows: AgentPanelRow[] = [];
 	const otherRows: AgentPanelRow[] = [];
@@ -114,6 +168,7 @@ function rankPanelSession(
 		const finished = isFinishedPanelRow(item);
 		if (finished) {
 			if (!state.model.keepFinished(item.id, keep, now, pass)) return;
+			if (!keep) expiresAt = Math.min(expiresAt, state.model.finishedSince(item.id)! + AGENT_PANEL_DROP_MS);
 			total++;
 			if (inputRows.length + runningRows.length + otherRows.length + finishedRows.length < cap) {
 				finishedRows.push(item);
@@ -137,7 +192,6 @@ function rankPanelSession(
 		pushItem(item, keep);
 	}
 
-	const store = getOwnerTaskStore(session);
 	if (store !== undefined) {
 		const source = ownerTaskViewSource(store);
 		const sourceClocks = taskClockOf(source);
@@ -150,6 +204,7 @@ function rankPanelSession(
 			if (rowState === "done" || rowState === "failed" || rowState === "stopped") {
 				const id = `task:${task.ref.taskId}`;
 				if (!state.model.keepFinished(id, false, now, pass)) continue;
+				expiresAt = Math.min(expiresAt, state.model.finishedSince(id)! + AGENT_PANEL_DROP_MS);
 				total++;
 				if (inputRows.length + runningRows.length + otherRows.length + finishedRows.length < cap) {
 					finishedRows.push(lazyTaskPanelItem(task, sourceClocks));
@@ -182,8 +237,23 @@ function rankPanelSession(
 	const limit = Math.max(0, options.limit ?? AGENT_PANEL_IDLE_ROWS);
 	const end = Math.min(rows.length, start + limit);
 	for (let index = start; index < end; index++) {
-		rows[index] = state.model.withElapsed(materializePanelItem(rows[index]!), now);
+		rows[index] = state.model.withElapsed(materialize(rows[index]!), now);
 	}
+	state.rankCaches ??= new Map();
+	const extensionSlots: { index: number; id: string }[] = [];
+	for (let index = 0; index < rows.length; index++) {
+		if (panelTaskId(rows[index]!) === undefined) extensionSlots.push({ index, id: rows[index]!.id });
+	}
+	state.rankCaches.set(cap, {
+		store,
+		revision,
+		extensions,
+		dismissed: new Set(dismissed),
+		expiresAt,
+		rows,
+		total,
+		extensionSlots,
+	});
 	return { rows, total };
 }
 
@@ -192,7 +262,7 @@ export function agentPanelRows(
 	session: AgentPanelSession & object,
 	window?: { readonly start?: number; readonly limit?: number },
 ): AgentPanelRow[] {
-	return rankPanelSession(session, window).rows;
+	return [...rankPanelSession(session, window).rows];
 }
 
 const WIDGET_KEY = "atomic.agent-panel";
@@ -449,7 +519,7 @@ export async function showAgentPanel(
 						const start = Math.max(0, focus.scroll);
 						const visible = currentRows
 							.slice(start, start + AGENT_PANEL_FOCUSED_ROWS)
-							.map((row) => state.model.withElapsed(materializePanelItem(row)));
+							.map((row) => state.model.withElapsed(currentPanelItem(store, row)));
 						return [
 							...renderAgentPanelRows(visible, width, style, {
 								selectedId: focus.selectedId,
