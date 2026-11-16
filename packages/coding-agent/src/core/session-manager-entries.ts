@@ -30,7 +30,7 @@ import { generateId } from "./session-manager-validation.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeUnrestored } from "./worktree-snapshot/types.ts";
 
 function entryBase(
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
 ): Pick<SessionEntryBase, "id" | "parentId" | "timestamp"> {
 	return {
@@ -67,7 +67,7 @@ export function createSessionFilePath(sessionDir: string, timestamp: string, ses
 
 export function createMessageEntry(
 	message: Message | CustomMessage | BashExecutionMessage,
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
 ): SessionMessageEntry {
 	return {
@@ -79,7 +79,7 @@ export function createMessageEntry(
 
 export function createThinkingLevelChangeEntry(
 	thinkingLevel: string,
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
 ): ThinkingLevelChangeEntry {
 	return {
@@ -92,7 +92,7 @@ export function createThinkingLevelChangeEntry(
 export function createModelChangeEntry(
 	provider: string,
 	modelId: string,
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
 	fallback?: ModelFallbackRecord,
 ): ModelChangeEntry {
@@ -111,7 +111,7 @@ export function createCompactionEntry(
 	tokensBefore: number,
 	details: VerbatimCompactionDetails,
 	usage: Usage | undefined,
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
 	coveredThroughEntryId?: string,
 ): CompactionEntry<VerbatimCompactionDetails> {
@@ -131,7 +131,7 @@ export function createCompactionEntry(
 export function createContextEditEntry(
 	targetId: string,
 	replacement: ContextEditEntry["replacement"],
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
 ): ContextEditEntry {
 	return {
@@ -145,7 +145,7 @@ export function createContextEditEntry(
 export function createCustomEntry(
 	customType: string,
 	data: unknown,
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
 ): CustomEntry {
 	return {
@@ -158,7 +158,7 @@ export function createCustomEntry(
 
 export function createSessionInfoEntry(
 	name: string,
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
 ): SessionInfoEntry {
 	return {
@@ -174,7 +174,7 @@ export function createWorktreeSnapshotEntry(
 	snapshot: WorktreeSnapshot | undefined,
 	restore: WorktreeRootMapping | undefined,
 	restoreWarnings: readonly WorktreeRestoreHostWarning[],
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
 	unrestored?: WorktreeUnrestored,
 	captureMs?: number,
@@ -198,7 +198,7 @@ export function createSessionSummaryEntry(
 	summary: string,
 	summarizedThroughId: string,
 	usage: Usage | undefined,
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
 ): SessionSummaryEntry {
 	return {
@@ -268,7 +268,7 @@ export function createCustomMessageEntry<T = unknown>(
 	details: T | undefined,
 	excludeFromContext: boolean | undefined,
 	protectedReconciliation: CustomMessageEntry["protectedReconciliation"],
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
 	stageAdmissionKey?: string,
 ): CustomMessageEntry<T> {
@@ -288,7 +288,7 @@ export function createCustomMessageEntry<T = unknown>(
 export function createLabelEntry(
 	targetId: string,
 	label: string | undefined,
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 	parentId: string | null,
 	timestamp?: string,
 ): LabelEntry {
@@ -308,7 +308,7 @@ export function createBranchSummaryEntry(
 	details: unknown,
 	usage: Usage | undefined,
 	fromHook: boolean | undefined,
-	byId: { has(id: string): boolean },
+	byId: { has(id: string): boolean; preferFullIds?: boolean },
 ): BranchSummaryEntry {
 	return {
 		type: "branch_summary",

@@ -66,7 +66,7 @@ export async function forkStageSession(
 		entries,
 	);
 	await copySessionBlobs(store, sessionId, destination, id, hashes);
-	return SessionManager.open(destination, id, cwd);
+	return SessionManager.open(destination, id, cwd, { history: "tail" });
 }
 
 /**

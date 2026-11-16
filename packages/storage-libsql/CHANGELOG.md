@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.88-alpha.1] - 2026-11-16
+
 ### Changed
 
 - Statements outside a transaction on a libSQL server (sqld) or Turso database now reuse one Hrana stream instead of opening a new one for every request ([#5151](https://github.com/bastani-inc/atomic/issues/5151)). sqld loads the database's schema for every stream it opens, so the server's work for each request grew with the number of tables: on one sqld, a pooled workflow round used 6.0 s of server CPU with no other tables, 8.3 s with 100 and 13.1 s with 400; it now uses 2.9, 3.2 and 3.8 s. Only reads and writes (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `WITH`, `VALUES`) reuse the stream; schema changes, pragmas, transaction control, transactions and write batches keep a stream of their own, so a reused stream never holds a transaction or the write lock. A stream idle 5 seconds or open 60 seconds is closed and a new one opened, before sqld would expire it. A statement is sent again only when the server refused it without running it, because the stream had expired or its baton was refused before anything ran; a statement whose answer was lost, or any other refusal, is not, and the next statement opens a new stream. Each statement on a kept stream is preceded, in the same request, by a read of `sqlite_schema`, so the stream's connection rereads a schema another process changed: without it, a kept connection compiled the next statement against the old schema, and `SELECT *` returned the old columns. A stream's first request that fails no longer sends the server a close for a stream it never opened.

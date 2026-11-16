@@ -48,6 +48,7 @@ export function interruptChatSession<TExtraEntry extends ChatTranscriptEntryLike
 			}
 			state.sdkBusy = false;
 			state.workingMessage = undefined;
+			state.workingRunMeter.stop();
 			stopChatSessionWorkingLifecycle(state, false);
 			await state.commands.interrupt?.();
 		} catch (err) {
@@ -231,6 +232,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 				!submission,
 			);
 		} else {
+			state.workingRunMeter.stop();
 			state.statusMessage = "";
 			state.sdkBusy = true;
 			startChatSessionWorkingLifecycle(state);
@@ -269,6 +271,7 @@ export async function abortChatSessionCompaction<TExtraEntry extends ChatTranscr
 			// A host without an abort command also has no engine completion to clear
 			// this local indicator.
 			state.compacting = false;
+			state.compactionStartedAt = undefined;
 			state.sdkBusy = false;
 		} else {
 			await state.commands.abortCompaction();

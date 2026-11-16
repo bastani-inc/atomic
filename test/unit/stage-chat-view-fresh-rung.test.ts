@@ -85,10 +85,10 @@ describe("StageChatView fresh-rung visibility", () => {
 
 		const body = rendered(view);
 		assert.ok(
-			body.includes("✻ Context cleared (compaction degraded)"),
+			body.includes("∀ Context cleared (compaction degraded)"),
 			`attached stage chat hid the fresh notice:\n${body}`,
 		);
-		assert.ok(!body.includes("✻ Context compacted"), `stage chat also showed the ordinary label:\n${body}`);
+		assert.ok(!body.includes("∀ Context compacted"), `stage chat also showed the ordinary label:\n${body}`);
 		// The collapsed boundary card, not a raw custom-message dump.
 		assert.ok(!body.includes(COMPACTED_TEXT), `stage chat rendered the raw compacted body:\n${body}`);
 		// The compaction spinner is released once the event lands.
@@ -104,7 +104,7 @@ describe("StageChatView fresh-rung visibility", () => {
 		await flush();
 
 		const body = rendered(view);
-		assert.ok(body.includes("✻ Context compacted"), `stage chat lost the ordinary label:\n${body}`);
+		assert.ok(body.includes("∀ Context compacted"), `stage chat lost the ordinary label:\n${body}`);
 		assert.ok(!body.includes("compaction degraded"), `stage chat showed the degraded notice:\n${body}`);
 	});
 
@@ -122,7 +122,7 @@ describe("StageChatView fresh-rung visibility", () => {
 
 		const body = rendered(view);
 		assert.ok(
-			body.includes("✻ Context cleared (compaction degraded)"),
+			body.includes("∀ Context cleared (compaction degraded)"),
 			`stage chat hid the committed fresh boundary behind the error:\n${body}`,
 		);
 		assert.ok(!body.includes("Auto-compacting"), `the compaction status stayed active:\n${body}`);

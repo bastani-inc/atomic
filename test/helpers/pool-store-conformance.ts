@@ -187,6 +187,32 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			assert.equal((await recovered.inspect("root"))[0]?.id, queued.id);
 		});
 
+		test("another host discovers exited and unplaced releases without notifications (#5230)", async (f) => {
+			await f.pool.enqueue(f.lease, work, boundary);
+			const peer = await openSqlPoolQueue(await f.peer());
+			const marks = new Set<string>();
+			const first = await peer.readyMark("root");
+			assert.ok(first !== undefined);
+			marks.add(first);
+			for (const kind of ["exited", "unplaced", "exited", "unplaced"] as const) {
+				const claim = await f.pool.claim(f.lease, "worker", [definition], 60_000);
+				assert.ok(claim);
+				assert.equal(await peer.readyMark("root"), undefined);
+				assert.equal(
+					await (kind === "exited"
+						? f.pool.releaseExited(f.lease, claim)
+						: f.pool.releaseUnplaced(f.lease, claim)),
+					true,
+				);
+				const released = await peer.readyMark("root");
+				assert.ok(released !== undefined);
+				assert.equal(marks.has(released), false, `${kind} release must change the other host's ready mark`);
+				marks.add(released);
+				assert.equal(await peer.readyMark("root"), released);
+			}
+			assert.deepEqual(await peer.control(f.lease), { state: "running", revision: 0 });
+		});
+
 		test("work is enqueued once, by boundary, scope or child, and a conflicting identity is refused", async (f) => {
 			const first = await f.pool.enqueue(f.lease, work, boundary);
 			assert.deepEqual(await f.pool.enqueue(f.lease, work, boundary), first);
@@ -293,6 +319,53 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			}
 		});
 
+		for (const size of [3, 1_000])
+			test(`a host's shipped batch of ${size} records each checkpoint once, a retried batch nothing, and a replaced attempt's batch is fenced (#4768)`, async (f) => {
+				await f.pool.enqueue(f.lease, work, boundary);
+				const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);
+				assert.ok(attempt);
+				const item = { work, boundary };
+				const events = Array.from({ length: size }, (_, index) => {
+					const shipped = toolCheckpointOf(item, index + 1);
+					return {
+						localSeq: index + 1,
+						key: JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "tool", shipped.checkpointId]),
+						payload: JSON.stringify(shipped),
+					};
+				});
+				const batch = { id: "batch-1", host: "host-A", events };
+				const journal = await f.peer();
+				const host = await openSqlPoolQueue(journal);
+				await host.shipBatch(f.lease, attempt, batch);
+				await f.pool.shipBatch(f.lease, attempt, batch);
+				await assertDenseEvents(f, size + 1);
+				const ledger = await f.database.all<{ events: number }>(
+					`SELECT events FROM ${f.table("wf_runs_ship_batches")}`,
+				);
+				assert.deepEqual(
+					ledger.map((row) => Number(row.events)),
+					[size],
+				);
+				await host.releaseExited(f.lease, attempt);
+				const next = await host.claim(f.lease, "replacement-worker", [definition], 60_000);
+				assert.ok(next);
+				const late = toolCheckpointOf(item, size + 1);
+				await assert.rejects(
+					f.pool.shipBatch(f.lease, attempt, {
+						id: "batch-late",
+						host: "host-A",
+						events: [
+							{
+								localSeq: size + 1,
+								key: JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "tool", late.checkpointId]),
+								payload: JSON.stringify(late),
+							},
+						],
+					}),
+					staleWorkLease({ workId: attempt.id, generation: attempt.generation }),
+				);
+				await assertDenseEvents(f, size + 1);
+			});
 		test("1000 commits of 256 KiB checkpoints, one after another, all commit and read back intact", async (f) => {
 			await f.pool.enqueue(f.lease, work, boundary);
 			const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);

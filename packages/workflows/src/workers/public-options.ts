@@ -46,9 +46,9 @@ export const DEFAULT_PLACEMENT_CLAIM_WINDOW_MS = 60_000;
 
 /**
  * How a shared root's worker hosts record their children's checkpoints (#4768). `"sync"` commits each checkpoint to
- * the shared journal before the step returns. An object first records each checkpoint in a local journal on the host,
- * and in this release still ships it to the shared journal before the step returns. Its limits are validated and saved
- * with the root, and take effect only with background shipping.
+ * the shared journal before the step returns. An object first records each plain checkpoint in a local journal on the
+ * host and ships them to the shared journal in background batches, scheduling catch-up shipments toward `maxLagMs` and
+ * shipping everything before a child completes, before a pause or quit takes effect, and before the host stops.
  */
 export type CheckpointShippingOption = "sync" | CheckpointShippingOptions;
 

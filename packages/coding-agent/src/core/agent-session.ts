@@ -133,7 +133,7 @@ class AgentSessionBase {
 	protected _steeringMessages: string[] = [];
 	protected _followUpMessages: string[] = [];
 	protected _interruptDeliveryQueue: Promise<void> = Promise.resolve();
-	protected _pendingInterruptDeliveries = 0;
+	readonly _pendingInterruptDeliveries: number = 0;
 	protected _activeInterruptQueueHold: InterruptQueueHold | undefined = undefined;
 	protected _queuedMessagesPaused = false;
 	protected _queuedMessagesPauseAbortBoundary: Promise<void> | undefined = undefined;
@@ -155,7 +155,7 @@ class AgentSessionBase {
 	protected _activeInterruptAbortMessage: string | undefined = undefined;
 	/** Priority input cancels the native operation, not the host-owned task. */
 	protected _priorityInterruptPending = false;
-	protected _activePromptCount = 0;
+	readonly _activePromptCount: number = 0;
 	protected _isPreparingRun: false | "user" | "custom" = false;
 	/** Prompts between their start and `_isPreparingRun`, so tree navigation cannot rebuild their context. */
 	protected _promptPreflightCount = 0;
@@ -170,6 +170,7 @@ class AgentSessionBase {
 	}> = [];
 	protected _compactionAbortController: AbortController | undefined = undefined;
 	protected _compactionReason: import("./agent-session-types.js").CompactionReason | undefined = undefined;
+	protected _compactionStartedAt: number | undefined = undefined;
 	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	/** Resolves when the current automatic compaction has settled. */
@@ -385,7 +386,11 @@ class AgentSessionBase {
 		try {
 			if (config.subagentPolicy?.executionEnded !== undefined) {
 				// Reuse the stable-key admission/drain primitive, not workflow identity or task ownership.
-				const admission = WorkflowStageAdmissionBoundary.restore(this.sessionManager.getBranch());
+				const admission = WorkflowStageAdmissionBoundary.restore(
+					this.sessionManager.getBranch(),
+					undefined,
+					this.sessionManager.getSessionRecoveryState?.().admissionKeys,
+				);
 				this._subagentMessageAdmission = admission;
 				this._subagentPolicy = {
 					...config.subagentPolicy,
@@ -412,10 +417,19 @@ class AgentSessionBase {
 			// A stage keeps its boundary for every session it opens; a session reopened after a release gives it back
 			// the admission keys its transcript records.
 			const stageBoundary = stageContext?.messageAdmission?.boundary;
-			stageBoundary?.restoreCompleted(this.sessionManager.getBranch());
+			stageBoundary?.restoreCompleted(
+				this.sessionManager.getBranch(),
+				this.sessionManager.getSessionRecoveryState?.().admissionKeys,
+			);
 			this._workflowStageAdmission =
 				stageBoundary ??
-				(stageContext ? WorkflowStageAdmissionBoundary.restore(this.sessionManager.getBranch()) : undefined);
+				(stageContext
+					? WorkflowStageAdmissionBoundary.restore(
+							this.sessionManager.getBranch(),
+							undefined,
+							this.sessionManager.getSessionRecoveryState?.().admissionKeys,
+						)
+					: undefined);
 			// #3919: a fresh stage is live before its runner dispatches the stage prompt. Turn-starting
 			// input that arrives in that gap is startup context for the prompt's turn, not a turn of its own.
 			this._workflowStageAwaitingFirstPrompt =

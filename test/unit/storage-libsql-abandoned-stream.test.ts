@@ -283,3 +283,46 @@ test("a failed request that does more than close a stream is never sent again (#
 	assert.equal(fake.pipelines.length, received, "nothing was sent again");
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 2"), 1, "the statement ran once");
 });
+
+test("a request whose client disconnects while waiting behind an open transaction never runs or takes the lock (#5236)", async () => {
+	const fake = await server({ streamTtlMs: LONG_STREAM_TTL_MS });
+	const holder = await open(fake.url);
+	const writer = await open(fake.url);
+	await holder.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	let notifyHolding!: () => void;
+	const holderReady = new Promise<void>((resolve) => {
+		notifyHolding = resolve;
+	});
+	let releaseHolder!: () => void;
+	const held = holder.transaction(async (tx) => {
+		await tx.run("INSERT INTO events VALUES (1)");
+		notifyHolding();
+		await new Promise<void>((resolve) => {
+			releaseHolder = resolve;
+		});
+	});
+	await holderReady;
+	const beforeWaiter = fake.pipelines.length;
+	const controller = new AbortController();
+	const waiter = fetch(`${fake.url}/v2/pipeline`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			baton: null,
+			requests: [
+				{ type: "execute", stmt: { sql: "BEGIN IMMEDIATE" } },
+				{ type: "execute", stmt: { sql: "INSERT INTO events VALUES (99)" } },
+			],
+		}),
+		signal: controller.signal,
+	});
+	while (fake.pipelines.length < beforeWaiter + 1) await sleep(5);
+	controller.abort();
+	await assert.rejects(waiter);
+	releaseHolder();
+	await held;
+	await sleep(20);
+	await within(writer.run("INSERT INTO events VALUES (2)"), "a write after an aborted waiter");
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 99"), 0);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 2);
+});

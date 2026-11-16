@@ -83,7 +83,6 @@ function startupCaptureEnabledForExplicitPackages(): boolean {
 			session: undefined,
 		},
 		sessionCwd: startupCwd,
-		projectTrustStore: { get: () => null },
 		resolvedExtensionPathCount: explicitPackagePaths.length,
 		resolvedResourcePathCount: 0,
 		deprecationWarningCount: 0,

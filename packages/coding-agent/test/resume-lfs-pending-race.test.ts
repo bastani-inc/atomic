@@ -87,6 +87,16 @@ function finisher(
 			return true;
 		};
 		const isMark = (path) => resolve(String(path)) === mark;
+		// The mark is written beside it and renamed over it.
+		const isPartialMark = (path) => resolve(String(path)).startsWith(mark + ".");
+		const namingItself = new Set();
+		const named = () => {
+			event("names itself");
+			if (held || ${JSON.stringify(holdAt)} !== "downloading") return;
+			writeFileSync(indexLock, "");
+			hold("downloading");
+			rmSync(indexLock, { force: true });
+		};
 		export const readFile = async (path, ...rest) => {
 			if (isMark(path)) event("reads");
 			return fs.readFile(path, ...rest);
@@ -97,25 +107,26 @@ function finisher(
 		};
 		export const writeFile = async (path, data, ...rest) => {
 			await fs.writeFile(path, data, ...rest);
-			if (!isMark(path) || JSON.parse(String(data)).holder?.pid !== process.pid) return;
-			event("names itself");
-			if (held || ${JSON.stringify(holdAt)} !== "downloading") return;
-			writeFileSync(indexLock, "");
-			hold("downloading");
-			rmSync(indexLock, { force: true });
+			if (!(isMark(path) || isPartialMark(path)) || JSON.parse(String(data)).holder?.pid !== process.pid) return;
+			if (isMark(path)) named();
+			else namingItself.add(resolve(String(path)));
+		};
+		export const rename = async (from, to, ...rest) => {
+			await fs.rename(from, to, ...rest);
+			if (isMark(to) && namingItself.delete(resolve(String(from)))) named();
 		};
 		export const rm = async (path, ...rest) => {
 			if (/(HEAD|index)\\.lock$/.test(String(path))) event("removes " + basename(String(path)));
 			return fs.rm(path, ...rest);
 		};
-		export default { ...fs, readFile, stat, writeFile, rm };
+		export default { ...fs, readFile, stat, writeFile, rename, rm };
 	`,
 	);
 	const script = `
 		import { readFileSync, writeFileSync } from "node:fs";
 		Bun.plugin({
 			setup(build) {
-				build.onLoad({ filter: /[\\\\/]worktree-snapshot[\\\\/]restore\\.ts$/ }, (args) => ({
+				build.onLoad({ filter: /[\\\\/](worktree-snapshot[\\\\/]restore|rename-retry)\\.ts$/ }, (args) => ({
 					loader: "ts",
 					contents: readFileSync(args.path, "utf8").replaceAll('from "node:fs/promises"', ${JSON.stringify(`from ${JSON.stringify(pathToFileURL(shim).href)}`)}),
 				}));

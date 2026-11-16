@@ -39,18 +39,54 @@ import type {
 	SessionCompactFailedEvent,
 } from "./extensions/index.js";
 import { assertSessionOpen as assertCompactionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
-import type { CompactionEntry, SessionEntry } from "./session-manager.ts";
+import type { CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 import { createHistoryRouter, transcriptEntryLines } from "./tools/history-protocol.ts";
-import { renderHistoryTranscript } from "./tools/history-transcript.ts";
+import { type HistoryLineRange, historyEntryLineCount, renderHistoryTranscript } from "./tools/history-transcript.ts";
 
-/** This session's own history layout, or undefined when it has no history a `read` could open. */
-function historyLocation(session: AgentSession): CompactionBoundaryControl["history"] {
+interface HistoryLedger {
+	readonly key: string;
+	readonly throughSeq: number;
+	readonly nextLine: number;
+	readonly ranges: ReadonlyMap<string, HistoryLineRange>;
+}
+
+const historyLedgers = new WeakMap<SessionManager, Promise<HistoryLedger | undefined>>();
+
+function heldHistoryRanges(manager: SessionManager, firstLine: number): Promise<HistoryLedger> {
+	const key = `${manager.getSessionId()}\u0000${firstLine}`;
+	const ledger = (historyLedgers.get(manager) ?? Promise.resolve(undefined))
+		.catch(() => undefined)
+		.then(async (previous) => {
+			const base = previous?.key === key ? previous : { key, throughSeq: 0, nextLine: firstLine, ranges: new Map() };
+			const ranges = new Map(base.ranges);
+			let nextLine = base.nextLine;
+			const throughSeq = await manager.forEachStoredEntry(base.throughSeq + 1, (entry, _seq, held) => {
+				const count = historyEntryLineCount(entry);
+				if (held && count > 0) ranges.set(entry.id, { start: nextLine, end: nextLine + count - 1 });
+				nextLine += count;
+			});
+			return { key, throughSeq, nextLine, ranges };
+		});
+	historyLedgers.set(manager, ledger);
+	return ledger;
+}
+
+export async function historyLocation(session: AgentSession): Promise<CompactionBoundaryControl["history"]> {
 	const manager = session.sessionManager;
 	const header = manager.getHeader();
 	if (!header || !manager.isPersisted()) return undefined;
-	const { entryRanges } = renderHistoryTranscript(header, manager.getEntries(), true);
-	return { sessionId: manager.getSessionId(), entryRanges };
+	if (manager.hasFullHistory()) {
+		const { entryRanges } = renderHistoryTranscript(header, manager.getEntries(), true);
+		return { sessionId: manager.getSessionId(), entryRanges };
+	}
+	const firstLine = renderHistoryTranscript(header, [], true).lines.join("\n").split("\n").length + 1;
+	try {
+		const { ranges } = await heldHistoryRanges(manager, firstLine);
+		return { sessionId: manager.getSessionId(), entryRanges: new Map(ranges) };
+	} catch {
+		return undefined;
+	}
 }
 
 function frozenCollectionMutation(): never {
@@ -206,7 +242,7 @@ export async function planVerbatimCompaction(
 			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 			...(options.query === undefined ? {} : { query: options.query }),
 		},
-		{ allowSmallRegion, history: historyLocation(this) },
+		{ allowSmallRegion, history: await historyLocation(this) },
 	);
 	if (!preparation) {
 		// Mid-turn threshold preflight needs the load-bearing planner fallback if
@@ -526,7 +562,10 @@ export async function emitSessionCompactFailed(
 function clearOwnedManualCompactionState(this: AgentSession, controller: AbortController): void {
 	if (this._compactionAbortController !== controller) return;
 	this._compactionAbortController = undefined;
-	if (this._compactionReason === "manual") this._compactionReason = undefined;
+	if (this._compactionReason === "manual") {
+		this._compactionReason = undefined;
+		this._compactionStartedAt = undefined;
+	}
 	// Lifecycle listeners run synchronously. Once the manual end event is
 	// emitted, a new /compact must own a new run rather than join the settled one.
 	this._manualCompactionPromise = undefined;
@@ -564,6 +603,7 @@ async function runOwnedManualCompaction(
 	controller: AbortController,
 	options: SessionCompactOptions,
 ): Promise<VerbatimCompactionResult> {
+	this._compactionStartedAt = Date.now();
 	this._emit({ type: "compaction_start", reason: "manual" });
 	let fromExtension = false;
 	try {
@@ -638,6 +678,7 @@ export function compact(this: AgentSession, options: SessionCompactOptions = {})
 	const controller = new AbortController();
 	this._compactionAbortController = controller;
 	this._compactionReason = "manual";
+	this._compactionStartedAt ??= Date.now();
 	// Handle rejection now so a failing event drain cannot become unhandled
 	// while an automatic run finishes.
 	void abortBoundary.catch(() => {});

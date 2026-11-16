@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   automaticWaitBudgetMs,
   type ExtensionAPI,
@@ -31,7 +32,8 @@ import {
 } from "./intercom-utils.js";
 import type { ReplyTracker } from "./reply-tracker.js";
 import { awaitSubagentChildRestoration } from "./session-recovery.js";
-import { resolveSessionTarget, resolveSessionTargetId, sessionTargetFailureReason } from "./session-target.js";
+import { resolveSessionTarget, resolveSessionTargetId, resolveSessionTargetIdIn, sessionTargetFailureReason } from "./session-target.js";
+import { createConcurrencyGate } from "./route-connect-gate.js";
 import { DEFAULT_GROUP, normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
 import { DEFAULT_GROUP_WARNING } from "./project-group.js";
 import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from "./workflow-stage-target.js";
@@ -51,6 +53,9 @@ import {
   patternSendResult,
   type SendPatternTarget,
 } from "./send-pattern-targets.js";
+
+/** The most direct sends one pattern send runs at once; its other recipients wait their turn. */
+const PATTERN_SEND_CONCURRENCY = 16;
 
 function retryErrorDetails(retryToken: string | undefined): Record<string, unknown> {
 	return retryToken === undefined ? { error: true } : { error: true, retryToken };
@@ -356,7 +361,10 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
   });
   /**
    * #4752: send one message to every recipient a pattern names. Each recipient gets its own direct send, with that
-   * send's retries, refusals and receipts; the result lists how each one fared.
+   * send's retries, refusals and receipts; the result lists how each one fared. Every copy carries one `broadcastId`,
+   * so a session that several of them reach shows the message once. Every recipient is resolved from the one session
+   * list the lookup fetched, and at most `PATTERN_SEND_CONCURRENCY` sends run at once: a list per recipient made a
+   * broadcast to hundreds of sessions time out most of its lookups and miss those recipients.
    */
   const sendToPatternTarget = async (
     target: string,
@@ -369,7 +377,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
       readonly broadcast: boolean;
       readonly signal: AbortSignal | undefined;
       readonly ctx: { readonly hasUI: boolean; readonly ui: { confirm(title: string, message: string): Promise<boolean> } };
-      readonly sendOne: (recipient: string) => Promise<IntercomAttemptResult>;
+      readonly sendOne: (recipient: string, sendTo: string, broadcastId: string) => Promise<IntercomAttemptResult>;
     },
   ): Promise<IntercomAttemptResult> => {
     if (!request.message) return patternError("Missing 'to' or 'message' parameter");
@@ -377,7 +385,8 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
     if (request.replyTo) {
       return patternError(`replyTo answers one ask, so it needs one exact target; "${target}" is a pattern.`);
     }
-    let recipients: Array<{ readonly target: string; readonly label: string }> = [];
+    /** `sendTo` is the session the snapshot resolved; `refusal` says why the snapshot names no single session. */
+    let recipients: Array<{ readonly target: string; readonly label: string; readonly sendTo?: string; readonly refusal?: string }> = [];
     let lookupFailure = "";
     // Connecting and finding the recipients retry recoverable disconnects as a direct send does; nothing is sent yet.
     const lookup = await runIntercomOperation(async () => {
@@ -396,6 +405,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
           recipients = matches.map((session) => ({
             target: session.id,
             label: session.name ? `${session.name} (${session.id})` : session.id,
+            sendTo: session.id,
           }));
           // #5202: a name glob reaches several sessions only when the sender says it means to.
           if (recipients.length > 1 && !request.broadcast) {
@@ -408,7 +418,16 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
               pattern.runId === undefined ? "" : ` in run ${pattern.runId}`
             } to send to.`);
           }
-          recipients = children.map((child) => ({ target: child.childName, label: `${child.childName} (${child.childId})` }));
+          const sessions = await client.listSessions();
+          recipients = children.map((child) => {
+            const base = { target: child.childName, label: `${child.childName} (${child.childId})` };
+            if (parseWorkflowStageTarget(child.childName) !== undefined) return { ...base, sendTo: child.childName };
+            try {
+              return { ...base, sendTo: resolveSessionTargetIdIn(sessions, client.supervisorSessionId, child.childName) ?? child.childName };
+            } catch (error) {
+              return { ...base, refusal: getErrorMessage(error) };
+            }
+          });
         }
         return { content: [], isError: false, details: {} };
       } catch (error) {
@@ -431,8 +450,14 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
       const confirmed = await request.ctx.ui.confirm("Send Message", `Send to "${target}":\n${names}\n\n${request.message}${attachmentText}`);
       if (!confirmed) return { content: [{ type: "text", text: "Message cancelled by user" }], isError: false, details: {} };
     }
+    const broadcastId = randomUUID();
+    const sends = createConcurrencyGate(PATTERN_SEND_CONCURRENCY);
     const outcomes = await Promise.all(recipients.map(async (recipient): Promise<PatternRecipientOutcome> => {
-      const result = await request.sendOne(recipient.target);
+      if (recipient.sendTo === undefined) {
+        return { target: recipient.target, label: recipient.label, outcome: "refused", reason: recipient.refusal ?? "Session not found" };
+      }
+      const sendTo = recipient.sendTo;
+      const result = await sends.run(() => request.sendOne(recipient.target, sendTo, broadcastId));
       const messageId = typeof result.details.messageId === "string" ? result.details.messageId : undefined;
       const base = { target: recipient.target, label: recipient.label, ...(messageId === undefined ? {} : { messageId }) };
       if (!result.isError) return { ...base, outcome: result.details.queued === true ? "queued" : "delivered" };
@@ -550,8 +575,16 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           return { content: [{ type: "text", text: sizeError }], isError: true, details: { error: true } };
         }
       }
-      // A pattern send (#4752) runs this once per recipient, as a direct send to `fanOutRecipient`.
-      const executeAttempt = async (retryToken: string | undefined, _signal?: AbortSignal, retries = 0, fanOutRecipient?: string): Promise<IntercomAttemptResult> => {
+      // A pattern send (#4752) runs this once per recipient, as a direct send to `fanOut.recipient`, which its lookup
+      // already resolved to `fanOut.sendTo`.
+      const executeAttempt = async (
+        retryToken: string | undefined,
+        _signal?: AbortSignal,
+        retries = 0,
+        fanOut?: { readonly recipient: string; readonly sendTo: string; readonly broadcastId: string },
+      ): Promise<IntercomAttemptResult> => {
+      const fanOutRecipient = fanOut?.recipient;
+      const broadcastId = fanOut?.broadcastId;
       const to = fanOutRecipient ?? params.to;
       if (retryToken !== undefined) {
         if (action !== "send" && action !== "ask" && action !== "reply") {
@@ -867,7 +900,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 details: { error: true, delivered: false, reason: goneChild },
               };
             }
-            const sendTo = await resolveRecipient(connectedClient, to);
+            const sendTo = fanOut?.sendTo ?? await resolveRecipient(connectedClient, to);
             if (_signal?.aborted) {
               const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
               retryIdentity = undefined;
@@ -897,6 +930,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               text: message,
               attachments,
               replyTo,
+              ...(broadcastId === undefined ? {} : { broadcastId }),
               ...deliveryOption,
             });
 
@@ -1688,9 +1722,9 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           broadcast: params.broadcast === true,
           signal,
           ctx,
-          sendOne: (recipient) =>
+          sendOne: (recipient, sendTo, broadcastId) =>
             runIntercomOperation(
-              (token, attemptSignal, retries) => executeAttempt(token, attemptSignal, retries, recipient),
+              (token, attemptSignal, retries) => executeAttempt(token, attemptSignal, retries, { recipient, sendTo, broadcastId }),
               (token) => retryIdentities.discard(token),
               signal,
             ),

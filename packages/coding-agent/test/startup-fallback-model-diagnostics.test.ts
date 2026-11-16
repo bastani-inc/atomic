@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import { test } from "vitest";
 import { resolveFallbackModel } from "../src/core/fallback-models.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -28,7 +29,7 @@ function providerConfig(modelIds: string[]) {
 	};
 }
 
-async function createStartupFallbackFixture(defaultProjectTrust: "always" | "ask") {
+async function createStartupFallbackFixture(defaultProjectTrust: "always" | "ask", savedThinkingLevel?: ThinkingLevel) {
 	const root = mkdtempSync(join(tmpdir(), "atomic-startup-fallback-"));
 	const cwd = join(root, "project");
 	const agentDir = join(root, "agent");
@@ -59,6 +60,7 @@ async function createStartupFallbackFixture(defaultProjectTrust: "always" | "ask
 	);
 	const saved = SessionManager.inMemory(cwd);
 	await saved.appendModelChange("restored-provider", "saved-primary");
+	if (savedThinkingLevel) await saved.appendThinkingLevelChange(savedThinkingLevel);
 	await saved.appendMessage({
 		role: "assistant",
 		content: [{ type: "text", text: "Previous turn finished." }],
@@ -451,3 +453,78 @@ test(
 	},
 	REAL_STARTUP_RPC_TIMEOUT_MS,
 );
+
+async function startupThinkingRecord(
+	trust: "ask" | "always",
+	startup: { continued: boolean; savedThinkingLevel?: ThinkingLevel; args?: string[] },
+): Promise<{ thinkingLevel: string | undefined; latestThinkingEntry: string | undefined }> {
+	const { root, cwd, agentDir, source } = await createStartupFallbackFixture(trust, startup.savedThinkingLevel);
+	const trustPrompt = Promise.withResolvers<RpcExtensionUIRequest>();
+	const client = new RpcClient({
+		cliPath,
+		cwd,
+		runtimeExecutable: bunExecutable(),
+		args: [
+			...(trust === "always" ? ["--approve"] : []),
+			...(startup.continued ? ["--import", source] : []),
+			"--no-session",
+			"--offline",
+			"--no-skills",
+			"--no-themes",
+			"--no-prompt-templates",
+			"--no-context-files",
+			...(startup.args ?? []),
+		],
+		env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+		...(trust === "ask" ? { interactiveEngine: { onDiagnostic: () => {} } } : {}),
+	});
+	client.onExtensionUIRequest((request) => {
+		if (request.method === "select") trustPrompt.resolve(request);
+	});
+	try {
+		await client.start();
+		if (trust === "ask") {
+			const request = await trustPrompt.promise;
+			await client.respondExtensionUI({
+				type: "extension_ui_response",
+				id: request.id,
+				value: "Trust (this session only)",
+			});
+			await client.waitForInteractiveEngineResources();
+		}
+		const state = await client.getState();
+		const { entries } = await client.getEntries();
+		const thinkingEntries = entries.filter((entry) => entry.type === "thinking_level_change");
+		return {
+			thinkingLevel: state.thinkingLevel,
+			latestThinkingEntry: thinkingEntries.at(-1)?.thinkingLevel,
+		};
+	} finally {
+		await client.stop();
+		rmSync(root, { recursive: true, force: true });
+	}
+}
+
+for (const [name, startup, expected] of [
+	[
+		"a continued conversation's saved level under --thinking",
+		{ continued: true, savedThinkingLevel: "low", args: ["--thinking", "high"] },
+		{ thinkingLevel: "high", latestThinkingEntry: "low" },
+	],
+	[
+		"a continued conversation without a saved level",
+		{ continued: true },
+		{ thinkingLevel: "medium", latestThinkingEntry: "medium" },
+	],
+	["an empty session", { continued: false }, { thinkingLevel: "medium", latestThinkingEntry: "medium" }],
+] as const) {
+	test(
+		`startup trust records the thinking level eager startup records for ${name}`,
+		async () => {
+			const eager = await startupThinkingRecord("always", startup);
+			assert.deepEqual(eager, expected);
+			assert.deepEqual(await startupThinkingRecord("ask", startup), eager);
+		},
+		REAL_STARTUP_RPC_TIMEOUT_MS * 2,
+	);
+}
