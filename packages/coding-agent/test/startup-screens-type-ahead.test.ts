@@ -6,14 +6,18 @@ import type { SessionInfo } from "../src/core/session-manager.ts";
 import type { SettingsManager } from "../src/core/settings-manager.ts";
 
 const screens = vi.hoisted(() => ({
-	created: [] as Array<{ setFocus: (component: Component) => void; sendChunk: (data: string) => void }>,
+	created: [] as Array<{
+		running: boolean;
+		setFocus: (component: Component) => void;
+		sendChunk: (data: string) => void;
+	}>,
 	detectTheme: vi.fn<() => Promise<"dark">>(async () => "dark"),
 }));
 
 vi.mock("@bastani/atomic-tui", async (importOriginal) => {
 	const original = await importOriginal<typeof import("@bastani/atomic-tui")>();
 	class FakeMainScreen extends original.Container {
-		private running = false;
+		running = false;
 		private readonly buffer = new original.StdinBuffer();
 		start = vi.fn(() => {
 			this.running = true;
@@ -118,16 +122,13 @@ function startCapture(stdin: FakeStdin) {
 }
 
 async function focused(): Promise<Component> {
-	await new Promise((resolve) => setImmediate(resolve));
-	for (let attempt = 0; attempt < 50; attempt += 1) {
+	return vi.waitFor(() => {
 		const screen = screens.created.at(-1);
-		const component = screen
-			? (vi.mocked(screen.setFocus).mock.calls.at(-1)?.[0] as Component | undefined)
-			: undefined;
-		if (component?.handleInput) return component;
-		await new Promise((resolve) => setImmediate(resolve));
-	}
-	assert.fail("a startup screen took focus");
+		assert.ok(screen?.running, "a startup screen is running");
+		const component = vi.mocked(screen.setFocus).mock.calls.at(-1)?.[0];
+		assert.ok(component?.handleInput, "a startup screen took focus");
+		return component;
+	});
 }
 
 async function press(...keys: string[]): Promise<void> {
@@ -291,10 +292,8 @@ test("keeps text typed during first-time setup theme detection (#5241)", async (
 		}),
 	);
 	const setup = runFirstTimeSetup("interactive", settingsManager, capture);
-	await new Promise((resolve) => setImmediate(resolve));
-	const screen = screens.created.at(-1);
-	const guard = screen && (vi.mocked(screen.setFocus).mock.calls.at(-1)?.[0] as Component | undefined);
-	guard?.handleInput?.("gap2");
+	const guard = await focused();
+	guard.handleInput?.("gap2");
 	detect("dark");
 	await press(DOWN, UP, ENTER, ENTER);
 	await setup;
@@ -308,7 +307,7 @@ test("the deprecation notice keeps type-ahead and the key that closes it as a dr
 	const log = vi.spyOn(console, "log").mockImplementation(() => {});
 	try {
 		const notice = showDeprecationWarnings(["Old extension path"], stdin);
-		await new Promise((resolve) => setImmediate(resolve));
+		await vi.waitFor(() => assert.ok(log.mock.calls.some(([text]) => String(text).includes("Press any key"))));
 		stdin.emit("and more");
 		await notice;
 	} finally {

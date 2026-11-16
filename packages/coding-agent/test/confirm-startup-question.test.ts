@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { consumeStartupInput, startEarlyInputCapture } from "../src/main-early-input.ts";
 import { confirmStartupQuestion } from "../src/main-session.ts";
 
@@ -96,7 +96,7 @@ test.each(["y", "n"] as const)(
 			},
 		};
 		const answer = confirmStartupQuestion("Fork this session into current directory?", { input, output });
-		await new Promise((resolve) => setImmediate(resolve));
+		await vi.waitFor(() => assert.equal(input.listeners.length, 1));
 		try {
 			input.emit("\r");
 			assert.equal(await settled(answer), false);
@@ -152,7 +152,7 @@ test("confirmStartupQuestion retains invalid answers and CRLF suffix in typing o
 	};
 
 	const answer = confirmStartupQuestion("Fork this session into current directory?", { input, output });
-	await new Promise((resolve) => setImmediate(resolve));
+	await vi.waitFor(() => assert.equal(input.listeners.length, 1));
 	input.emit("first invalid\r\n");
 	assert.equal(await settled(answer), false);
 
