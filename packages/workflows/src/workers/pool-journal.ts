@@ -146,7 +146,6 @@ export function coordinationPath(durable: PoolDurableJournal): string {
 	return join(poolStateDirectory(durable.agentDir), `${identity.slice(0, 24)}.sqlite`);
 }
 
-/** Which shared journal `durable` opens, without the references its credentials are read through (#4768). */
 export function durableJournalIdentity(durable: PoolDurableJournal): string {
 	return databaseIdentity(decodeSelection(durable.selection), durable.agentDir);
 }

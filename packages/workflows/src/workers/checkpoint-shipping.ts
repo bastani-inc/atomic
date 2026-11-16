@@ -399,7 +399,7 @@ export class CheckpointShipping {
 		return false;
 	}
 
-	async close(): Promise<void> {
+	async close(options: { readonly retire?: boolean } = {}): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
 		clearInterval(this.timer);
@@ -410,7 +410,7 @@ export class CheckpointShipping {
 		this.attempts.clear();
 		this.syncOnly.clear();
 		this.generations.clear();
-		await this.shard.close();
+		await this.shard.close(options);
 	}
 
 	/**
