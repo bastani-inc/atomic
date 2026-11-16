@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 // `node:fs` calls below: `mkdtempSync`, `statSync` and `openSync` have no
 // helper equivalents, and the async ones that do exist would not make the
 // descriptor plumbing any safer.
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
 	appendFileSync,
 	closeSync,
@@ -30,7 +30,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, onTestFinished, test } from "vitest";
 import {
 	type BoundedStderrOptions,
 	BROKER_LOG_MAX_BYTES,
@@ -44,6 +44,7 @@ import {
 	readBrokerStartAnnouncement,
 	retractBrokerStartAnnouncement,
 } from "../../packages/intercom/broker/start-announcement.js";
+import { keptExitedPid } from "../helpers/exited-process.js";
 import { bunExecutable, removePathSync } from "../helpers/runtime.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
@@ -526,15 +527,15 @@ describe("a broker behind a launcher that hides it", () => {
 		}
 	});
 
-	test("an announcement that is another spawn's is ignored, so the wait is the ordinary start-up budget", async () => {
+	test("an announcement that is another spawn's is ignored, so the wait is the ordinary start-up budget (#2208)", async () => {
 		const announced = {
 			path: pathsModule.getBrokerStartAnnouncementPath(),
 			token: `mine-${process.pid}-${Date.now()}`,
 		};
-		const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], {
-			encoding: "utf8",
-		});
-		writeFileSync(announced.path, `someone-elses ${dead.stdout}\n`);
+		const dead = await keptExitedPid();
+		onTestFinished(() => dead.release());
+		assert.throws(() => process.kill(dead.pid, 0), { code: "ESRCH" });
+		writeFileSync(announced.path, `someone-elses ${dead.pid}\n`);
 
 		await assert.rejects(
 			() => spawnModule.waitForBroker(400, probe(announced)),
@@ -543,10 +544,10 @@ describe("a broker behind a launcher that hides it", () => {
 		removePathSync(announced.path, { force: true });
 	});
 
-	test("a broker that yielded to a live one, which answers, is a success", async () => {
-		const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], {
-			encoding: "utf8",
-		});
+	test("a broker that yielded to a live one, which answers, is a success (#2208)", async () => {
+		const dead = await keptExitedPid();
+		onTestFinished(() => dead.release());
+		assert.throws(() => process.kill(dead.pid, 0), { code: "ESRCH" });
 		let live: net.Server | undefined;
 		try {
 			await spawnModule.waitForBroker(PROMPT_EXIT_BOUND_MS, () => {
@@ -555,7 +556,7 @@ describe("a broker behind a launcher that hides it", () => {
 				live ??= net
 					.createServer((socket) => socket.on("error", () => {}))
 					.listen(pathsModule.getBrokerSocketPath());
-				return Number.parseInt(dead.stdout, 10);
+				return dead.pid;
 			});
 			assert.ok(live);
 		} finally {

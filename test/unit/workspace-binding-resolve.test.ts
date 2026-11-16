@@ -17,7 +17,7 @@ import {
 import { open } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, onTestFinished, test } from "vitest";
 import {
 	assertWorkspaceGitAvailable,
 	observeWorkspaceGitCommands,
@@ -50,6 +50,7 @@ import {
 	worktreeAdderRecord,
 } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
 import { classifyRepository } from "../../packages/coding-agent/src/core/workspace/spec.ts";
+import { keepProcessPid } from "../helpers/exited-process.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 import {
 	commitFile,
@@ -1387,6 +1388,8 @@ describe("interrupted worktree additions (#3109)", () => {
 		const path = autoWorktree(repo, "feat/busy");
 		const adminDir = resolvePath(interruptedWorktree(repo, path, "feat/busy", WORKTREE_ADDING_REASON));
 		const adder = await liveProcess();
+		onTestFinished(() => stopProcess(adder));
+		onTestFinished(await keepProcessPid(adder.pid!));
 		try {
 			recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
 			const { result: error, commands } = await countGitCommands(() =>
@@ -1589,6 +1592,8 @@ describe("interrupted worktree additions (#3109)", () => {
 		const path = autoWorktree(repo, "feat/wait");
 		interruptedWorktree(repo, path, "feat/wait", WORKTREE_ADDING_REASON);
 		const adder = await liveProcess();
+		onTestFinished(() => stopProcess(adder));
+		onTestFinished(await keepProcessPid(adder.pid!));
 		const restoreWait = setWorktreeAdditionWait({ probes: 1_000, intervalMs: 10 });
 		try {
 			recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
@@ -2055,6 +2060,8 @@ describe("bindings racing an addition or its repair (#4429)", () => {
 		git(repo, "worktree", "add", "-q", "-b", "feat/exited", path);
 		writeFileSync(join(path, "notes.txt"), "kept\n");
 		const adder = await liveProcess();
+		onTestFinished(() => stopProcess(adder));
+		onTestFinished(await keepProcessPid(adder.pid!));
 		try {
 			recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
 			const busy = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/exited" })));

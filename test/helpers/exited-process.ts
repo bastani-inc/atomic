@@ -55,7 +55,7 @@ export async function keptExitedPid(): Promise<KeptExitedPid> {
 	const pid = child.pid!;
 	const exited = once(child, "exit");
 	try {
-		const release = process.platform === "win32" ? await holdHandle(pid) : async () => {};
+		const release = await keepProcessPid(pid);
 		return { pid, release };
 	} finally {
 		child.kill("SIGKILL");
@@ -64,7 +64,8 @@ export async function keptExitedPid(): Promise<KeptExitedPid> {
 }
 
 /** Holds a handle to running process `pid` until the returned function is called. Windows only. */
-async function holdHandle(pid: number): Promise<() => Promise<void>> {
+export async function keepProcessPid(pid: number): Promise<() => Promise<void>> {
+	if (process.platform !== "win32") return async () => {};
 	const holder = spawn(
 		join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
 		[

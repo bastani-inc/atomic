@@ -9,7 +9,7 @@ import { isSocketAnswering } from "../../packages/intercom/broker/socket-livenes
 import { acquireSocketReplacementLock } from "../../packages/intercom/broker/socket-replacement-lock.js";
 import * as staleLockFile from "../../packages/intercom/broker/stale-lock-file.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
-import { keptExitedPid } from "../helpers/exited-process.js";
+import { keepProcessPid, keptExitedPid } from "../helpers/exited-process.js";
 import {
 	type ByteStream,
 	decodeStream,
@@ -569,17 +569,29 @@ describe("socket replacement lock (#3505)", () => {
 
 	test("a lock still unreadable only briefly is waited on, not taken over (#5132)", async () => {
 		const path = lockPath();
+		const publish = `${path}.publish`;
 		const writer = spawnProcess(
 			[
 				process.execPath,
 				"-e",
-				`const { openSync, writeSync, closeSync } = require("node:fs");
+				`const { existsSync, openSync, writeSync, closeSync } = require("node:fs");
 				const fd = openSync(${JSON.stringify(path)}, "wx");
-				setTimeout(() => { writeSync(fd, process.pid + "\\n"); closeSync(fd); }, ${STILL_WRITING_MS});
+				const publishing = setInterval(() => {
+					if (!existsSync(${JSON.stringify(publish)})) return;
+					clearInterval(publishing);
+					writeSync(fd, process.pid + "\\n");
+					closeSync(fd);
+				}, ${POLL_INTERVAL_MS});
 				setInterval(() => {}, 1000);`,
 			],
 			{ stdout: "ignore" },
 		);
+		onTestFinished(async () => {
+			writer.kill();
+			await writer.exited;
+		});
+		assert.ok(writer.pid !== undefined);
+		onTestFinished(await keepProcessPid(writer.pid));
 		while (!fileExistsSync(path)) await sleep(POLL_INTERVAL_MS);
 		let waits = 0;
 		let noticed!: () => void;
@@ -596,6 +608,7 @@ describe("socket replacement lock (#3505)", () => {
 		await sleep(LIVE_HOLDER_OBSERVATION_MS);
 		assert.equal(waits, 1, "the wait is announced once");
 		assert.equal(readTextSync(path, "utf8"), "", "the lock still being written is left in place");
+		writeTextSync(publish, "");
 		while (readTextSync(path, "utf8") === "") await sleep(POLL_INTERVAL_MS);
 		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), writer.pid, "the writer's lock is left in place");
 
