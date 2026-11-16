@@ -40,48 +40,53 @@ import type {
 } from "./extensions/index.js";
 import { assertSessionOpen as assertCompactionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
 import type { CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
-import { readSessionRange } from "./storage/session/session-resume.js";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 import { createHistoryRouter, transcriptEntryLines } from "./tools/history-protocol.ts";
-import { historyEntryLineCount, renderHistoryTranscript } from "./tools/history-transcript.ts";
+import { type HistoryLineRange, historyEntryLineCount, renderHistoryTranscript } from "./tools/history-transcript.ts";
 
-const HISTORY_LINE_READ_ENTRIES = 4096;
-
-const earlierHistoryLines = new WeakMap<SessionManager, { readonly key: string; readonly lines: Promise<number> }>();
-
-async function countEarlierHistoryLines(manager: SessionManager, fromSeq: number): Promise<number> {
-	let lines = 0;
-	for (let start = 1; start < fromSeq; start += HISTORY_LINE_READ_ENTRIES) {
-		const end = Math.min(fromSeq - 1, start + HISTORY_LINE_READ_ENTRIES - 1);
-		const range = await readSessionRange(manager.getSessionStore(), manager.getSessionId(), start, end);
-		for (const entry of range.entries) lines += historyEntryLineCount(entry);
-	}
-	return lines;
+interface HistoryLedger {
+	readonly key: string;
+	readonly throughSeq: number;
+	readonly nextLine: number;
+	readonly ranges: ReadonlyMap<string, HistoryLineRange>;
 }
 
-async function historyLocation(session: AgentSession): Promise<CompactionBoundaryControl["history"]> {
+const historyLedgers = new WeakMap<SessionManager, Promise<HistoryLedger | undefined>>();
+
+function heldHistoryRanges(manager: SessionManager, firstLine: number): Promise<HistoryLedger> {
+	const key = `${manager.getSessionId()}\u0000${firstLine}`;
+	const ledger = (historyLedgers.get(manager) ?? Promise.resolve(undefined))
+		.catch(() => undefined)
+		.then(async (previous) => {
+			const base = previous?.key === key ? previous : { key, throughSeq: 0, nextLine: firstLine, ranges: new Map() };
+			const ranges = new Map(base.ranges);
+			let nextLine = base.nextLine;
+			const throughSeq = await manager.forEachStoredEntry(base.throughSeq + 1, (entry, _seq, held) => {
+				const count = historyEntryLineCount(entry);
+				if (held && count > 0) ranges.set(entry.id, { start: nextLine, end: nextLine + count - 1 });
+				nextLine += count;
+			});
+			return { key, throughSeq, nextLine, ranges };
+		});
+	historyLedgers.set(manager, ledger);
+	return ledger;
+}
+
+export async function historyLocation(session: AgentSession): Promise<CompactionBoundaryControl["history"]> {
 	const manager = session.sessionManager;
 	const header = manager.getHeader();
 	if (!header || !manager.isPersisted()) return undefined;
-	await manager.loadFullHistory();
-	const { fromSeq, entries } = manager.getHeldTail();
-	let earlier = 0;
-	if (fromSeq > 1) {
-		const key = `${manager.getSessionId()}\u0000${fromSeq}`;
-		let cached = earlierHistoryLines.get(manager);
-		if (cached?.key !== key) {
-			cached = { key, lines: countEarlierHistoryLines(manager, fromSeq) };
-			earlierHistoryLines.set(manager, cached);
-		}
-		try {
-			earlier = await cached.lines;
-		} catch (error) {
-			earlierHistoryLines.delete(manager);
-			throw error;
-		}
+	if (manager.hasFullHistory()) {
+		const { entryRanges } = renderHistoryTranscript(header, manager.getEntries(), true);
+		return { sessionId: manager.getSessionId(), entryRanges };
 	}
-	const { entryRanges } = renderHistoryTranscript(header, entries, true, earlier);
-	return { sessionId: manager.getSessionId(), entryRanges };
+	const firstLine = renderHistoryTranscript(header, [], true).lines.join("\n").split("\n").length + 1;
+	try {
+		const { ranges } = await heldHistoryRanges(manager, firstLine);
+		return { sessionId: manager.getSessionId(), entryRanges: new Map(ranges) };
+	} catch {
+		return undefined;
+	}
 }
 
 function frozenCollectionMutation(): never {

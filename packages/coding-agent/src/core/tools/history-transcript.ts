@@ -115,7 +115,6 @@ export function renderHistoryTranscript(
 	header: SessionRecordHeader,
 	entries: readonly SessionEntry[],
 	linkRun: boolean,
-	earlierLines = 0,
 ): HistoryTranscript {
 	const lines = [
 		`# session ${header.id}`,
@@ -127,7 +126,7 @@ export function renderHistoryTranscript(
 			: []),
 	];
 	const entryRanges = new Map<string, HistoryLineRange>();
-	let next = lines.reduce((count, line) => count + physicalLineCount(line), 1 + earlierLines);
+	let next = lines.reduce((count, line) => count + physicalLineCount(line), 1);
 	for (const entry of entries) {
 		const rendered = entryLines(entry);
 		if (rendered.length === 0) continue;

@@ -286,25 +286,39 @@ export class SessionManager {
 		return this.historyLoad;
 	}
 
-	private async readHistory(): Promise<void> {
+	async forEachStoredEntry(
+		fromSeq: number,
+		visit: (entry: SessionEntry, seq: number, held: boolean) => void,
+	): Promise<number> {
 		const { store, sessionId, historyEpoch } = this;
 		const watermark = this.lastSeq;
-		const held = new Map(this.getEntries().map((entry) => [this.entrySeqs.get(entry.id)!, entry]));
-		const missing: number[] = [];
-		for (let seq = 1; seq <= watermark; seq++) if (!held.has(seq)) missing.push(seq);
-		for (let i = 0; i < missing.length; ) {
-			const start = missing[i]!;
-			let end = start;
-			while (i + 1 < missing.length && missing[i + 1] === end + 1 && end - start < 4095) {
-				i++;
-				end++;
+		const held = new Map<number, SessionEntry>();
+		for (const entry of this.getEntries()) {
+			const seq = this.entrySeqs.get(entry.id);
+			if (seq !== undefined) held.set(seq, entry);
+		}
+		for (let start = Math.max(1, fromSeq); start <= watermark; ) {
+			const entry = held.get(start);
+			if (entry !== undefined) {
+				visit(entry, start, true);
+				start++;
+				continue;
 			}
+			let end = start;
+			while (end < watermark && end - start < 4095 && !held.has(end + 1)) end++;
 			const range = await readSessionRange(store, sessionId, start, end);
 			if (historyEpoch !== undefined && range.epoch !== historyEpoch)
 				throw new SessionConflictError(sessionId, watermark, range.lastSeq);
-			for (const [j, entry] of range.entries.entries()) held.set(range.seqs?.[j] ?? start + j, entry);
-			i++;
+			for (const [i, read] of range.entries.entries()) visit(read, range.seqs?.[i] ?? start + i, false);
+			start = end + 1;
 		}
+		return watermark;
+	}
+
+	private async readHistory(): Promise<void> {
+		const { store, sessionId, historyEpoch } = this;
+		const held = new Map<number, SessionEntry>();
+		await this.forEachStoredEntry(1, (entry, seq) => held.set(seq, entry));
 		if (this.store !== store || this.sessionId !== sessionId || this.historyEpoch !== historyEpoch) return;
 		const leafId = this.leafId;
 		for (const entry of this.getEntries()) held.set(this.entrySeqs.get(entry.id)!, entry);
