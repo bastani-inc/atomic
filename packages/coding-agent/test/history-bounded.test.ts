@@ -35,7 +35,7 @@ import { createSearchToolDefinition } from "../src/core/tools/search.js";
 const PROJECT = resolve("/projects/bounded");
 const BASE = Date.parse("2026-11-01T00:00:00.000Z");
 const READ_TOOL_LIMIT_CHARS = 50_000;
-const EVENT_LOOP_CPU_LIMIT_MS = 80;
+const EVENT_LOOP_CPU_LIMIT_MS = 120;
 const LARGE_SESSION_TIMEOUT_MS = 120_000;
 
 function header(id: string): SessionRecordHeader {

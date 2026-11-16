@@ -243,6 +243,7 @@ parentPort.on("message", (msg) => {
 interface PendingTask {
 	readonly id: number;
 	readonly payload: Record<string, unknown>;
+	readonly transfer?: readonly ArrayBuffer[];
 	readonly deadline: number;
 	readonly settle: (
 		outcome: { readonly value: unknown } | { readonly timedOut: true } | { readonly error: unknown },
@@ -298,7 +299,7 @@ function pumpQueue(): void {
 		next.dispatched = true;
 		activeTask = next;
 		const worker = getWorker();
-		worker.postMessage({ ...next.payload, id: next.id });
+		worker.postMessage({ ...next.payload, id: next.id }, next.transfer ? [...next.transfer] : []);
 	}
 }
 
@@ -306,6 +307,7 @@ function runWorkerTask<T>(
 	payload: Record<string, unknown>,
 	timeoutMs: number,
 	signal: AbortSignal | undefined,
+	transfer?: readonly ArrayBuffer[],
 ): Promise<{ readonly value: T } | { readonly timedOut: true }> {
 	if (signal?.aborted) {
 		return Promise.reject(signal.reason ?? new Error("Operation aborted"));
@@ -318,6 +320,7 @@ function runWorkerTask<T>(
 		const task: PendingTask = {
 			id,
 			payload,
+			...(transfer === undefined ? {} : { transfer }),
 			deadline,
 			dispatched: false,
 			settle(outcome) {
@@ -400,10 +403,21 @@ export async function renderRawEntryInWorker(
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): Promise<{ readonly outline: WorkerOutlineInfo; readonly renderedUtf8: Uint8Array } | { readonly timedOut: true }> {
+	const transfer: ArrayBuffer[] = [];
+	for (const chunk of rawChunks) {
+		if (
+			chunk.buffer instanceof ArrayBuffer &&
+			chunk.byteOffset === 0 &&
+			chunk.byteLength === chunk.buffer.byteLength
+		) {
+			transfer.push(chunk.buffer);
+		}
+	}
 	const result = await runWorkerTask<{ outline: WorkerOutlineInfo; renderedUtf8: Uint8Array }>(
 		{ op: "entry", chunks: rawChunks, previewChars },
 		timeoutMs,
 		signal,
+		transfer,
 	);
 	if ("timedOut" in result) return result;
 	return { outline: result.value.outline, renderedUtf8: result.value.renderedUtf8 };
