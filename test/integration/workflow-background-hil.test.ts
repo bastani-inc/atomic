@@ -66,7 +66,7 @@ test("answer and cancellation clear only the owning background affordance", () =
 	assert.equal(store.resolveStagePendingPrompt(ownerB, "ask", "prompt-b", true, { recordAnswer: false }), true);
 	const afterCancel = renderWidgetLines(store.snapshot(), 120).join("\n");
 	assert.doesNotMatch(afterCancel, /Answer beta/);
-	assert.doesNotMatch(afterCancel, new RegExp(`/workflow connect ${ownerB}`));
+	assert.doesNotMatch(afterCancel, new RegExp(`/workflows ${ownerB}`));
 });
 
 test("background preview updates emit no transcript or model messages", async () => {
@@ -155,18 +155,18 @@ test("structured stage prompts preview one question and keep multi-question root
 		const uniqueCard = rangeCard(lines, layout, uniqueId);
 		const formCard = rangeCard(lines, layout, formId);
 		assert.match(uniqueCard, /"Ready to continue\?"/);
-		assert.equal([...uniqueCard.matchAll(/Answer: \/workflow connect/g)].length, 1);
-		assert.match(uniqueCard, new RegExp(`Answer: /workflow connect ${uniqueId}`));
+		assert.equal([...uniqueCard.matchAll(/Answer: \/workflows/g)].length, 1);
+		assert.match(uniqueCard, new RegExp(`Answer: /workflows ${uniqueId}`));
 		assert.doesNotMatch(formCard, /First structured field/);
 		assert.doesNotMatch(formCard, /Second structured field/);
-		assert.doesNotMatch(formCard, /Answer: \/workflow connect/);
+		assert.doesNotMatch(formCard, /Answer: \/workflows/);
 		assert.match(lines[0] ?? "", /needs attention/);
 
 		const answerOwners = new Map<number, string>();
 		for (const range of layout.runs) {
 			const card = lines.slice(range.start, range.end);
 			for (const [offset, line] of card.entries()) {
-				if (!line.includes("Answer: /workflow connect")) continue;
+				if (!line.includes("Answer: /workflows")) continue;
 				const absolute = range.start + offset;
 				assert.equal(answerOwners.has(absolute), false, `answer row ${absolute} reused`);
 				answerOwners.set(absolute, range.id);
@@ -188,8 +188,8 @@ test("structured stage prompts preview one question and keep multi-question root
 		const afterUniqueLayout: WorkflowWidgetRowLayout = { runs: [] };
 		const afterUniqueClear = buildThemedWidgetLines(store.snapshot(), undefined, 180, Date.now(), afterUniqueLayout);
 		assert.doesNotMatch(rangeCard(afterUniqueClear, afterUniqueLayout, uniqueId), /Ready to continue/);
-		assert.doesNotMatch(rangeCard(afterUniqueClear, afterUniqueLayout, uniqueId), /Answer: \/workflow connect/);
-		assert.doesNotMatch(rangeCard(afterUniqueClear, afterUniqueLayout, formId), /Answer: \/workflow connect/);
+		assert.doesNotMatch(rangeCard(afterUniqueClear, afterUniqueLayout, uniqueId), /Answer: \/workflows/);
+		assert.doesNotMatch(rangeCard(afterUniqueClear, afterUniqueLayout, formId), /Answer: \/workflows/);
 
 		broker.clearStagePrompt(formId, "ask");
 		assert.equal(store.recordStageAwaitingInput(formId, "ask", false), true);
@@ -198,7 +198,7 @@ test("structured stage prompts preview one question and keep multi-question root
 		const cleared = buildThemedWidgetLines(store.snapshot(), undefined, 180, Date.now(), clearedLayout);
 		assert.doesNotMatch(rangeCard(cleared, clearedLayout, uniqueId), /Ready to continue/);
 		assert.doesNotMatch(rangeCard(cleared, clearedLayout, formId), /First structured field/);
-		assert.doesNotMatch(cleared.join("\n"), /Answer: \/workflow connect/);
+		assert.doesNotMatch(cleared.join("\n"), /Answer: \/workflows/);
 
 		store.removeRun(uniqueId);
 		store.removeRun(formId);

@@ -485,13 +485,13 @@ function stateBadges(detail: RunDetail, theme: GraphTheme): FlatBandBadge[] {
 		case "skipped":
 			return [{ text: "⊘ skipped", fg: theme.dim }];
 		case "cancelled":
-			return [{ text: "⊘ cancelled", fg: theme.dim }];
+			return [{ text: "◼ cancelled", fg: theme.textMuted }];
 		case "blocked":
 			return [{ text: "↑ blocked", fg: theme.dim }];
 		case "failed":
 			return [{ text: "✗ failed", fg: theme.error }];
 		case "killed":
-			return [{ text: "⊘ killed", fg: theme.dim }];
+			return [{ text: "◼ killed", fg: theme.textMuted }];
 		default:
 			return [{ text: "○ pending", fg: theme.dim }];
 	}
@@ -510,13 +510,13 @@ function stateLabel(detail: RunDetail): string {
 		case "skipped":
 			return "⊘ skipped";
 		case "cancelled":
-			return "⊘ cancelled";
+			return "◼ cancelled";
 		case "blocked":
 			return "↑ blocked";
 		case "failed":
 			return "✗ failed";
 		case "killed":
-			return "⊘ killed";
+			return "◼ killed";
 		default:
 			return "○ pending";
 	}

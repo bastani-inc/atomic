@@ -3064,7 +3064,7 @@ test("a resume's message is delivered as written, whether or not the child had h
 	const held = (await h.launch("literal2")).record;
 	h.onSession = undefined;
 	const session = await live.promise;
-	const steer = "/workflow attach run-1";
+	const steer = "/workflows run-1";
 	await session.steer(steer);
 	await h.closeOwnerAndReopen("session-close");
 	await h.waitForLatest(held.childId, (candidate) => candidate.heldMessages !== undefined);

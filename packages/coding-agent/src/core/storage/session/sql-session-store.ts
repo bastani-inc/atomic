@@ -135,7 +135,7 @@ type ListingRow = HeaderRow & {
 type SummaryRow = ListingRow & { search_texts_json: string };
 /** A row's key and how many characters its stored text holds, for reading rows in pages. */
 type SizedRow = SqliteRow & { size: number | bigint | null };
-/** A returned row's cumulative text, its batch's text, and the batch's row count including lookahead. */
+/** Cumulative text (0 when the whole batch fits), batch text, and batch row count including lookahead. */
 type FetchRow = {
 	fetched: number | bigint;
 	batch_chars: number | bigint | null;
@@ -147,7 +147,7 @@ type PageRow = FetchRow & { ord: number | bigint };
  * The rows one statement of a paged read fetches, by key after the previous page, before it keeps those that fit in
  * {@link SESSION_READ_PAGE_CHARS}: each statement reads a bounded batch rather than every remaining row, so a long
  * session or listing is read in linear time. A full batch quadruples the next fetch. A clipped batch keeps its fetch
- * size when its unreturned text is at most four pages; otherwise the next fetch shrinks to twice the returned rows.
+ * size when its unreturned text is at most four pages; otherwise the next fetch is twice the returned rows.
  */
 export const SESSION_READ_FETCH = { first: 1024, min: 1, max: 8192 } as const;
 const SESSION_READ_INLINE_BYTES = 4096;
@@ -396,11 +396,20 @@ export class SqlSessionStore implements SessionStore {
 				await tx.exec(`ALTER TABLE ${tables.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT -1`);
 			}
 		};
+		const orphanedEntryKeys = `SELECT k.session_id, k.seq
+			FROM (SELECT DISTINCT session_id, seq FROM ${tables.entryChunks}) AS k
+			WHERE NOT EXISTS (
+				SELECT 1 FROM ${tables.entries} AS e
+				WHERE e.session_id = k.session_id AND e.seq = k.seq AND e.chunks > 0
+			)`;
+		const removeOrphanedEntryChunks = async (tx: SqliteExecutor): Promise<void> => {
+			await tx.run(`DELETE FROM ${tables.entryChunks} WHERE (session_id, seq) IN (${orphanedEntryKeys})`);
+		};
 		/**
 		 * Long entries in chunks (#4954): the entry chunks table and the entries table's `chunks` column, 0 for an entry
 		 * stored whole, as every entry written before it was. Older builds read and write these tables unchanged, so the
-		 * sessions meta stays where it is until the first chunked entry (`insertEntries`). Idempotent, so SQLite runs it
-		 * with every open.
+		 * sessions meta stays where it is until the first chunked entry (`insertEntries`). Setup is idempotent and runs
+		 * when the current tables or columns are missing.
 		 */
 		const addEntryChunks = async (tx: SqliteExecutor, dialect: StorageDialect) => {
 			const { int, text, blob } = dialect.types;
@@ -414,39 +423,78 @@ export class SqlSessionStore implements SessionStore {
 			if ((await tx.get(probe.sql, ...probe.params)) === undefined) {
 				await tx.exec(`ALTER TABLE ${tables.entries} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
 			}
-			if (database.readOnly === true) return;
-			await tx.run(
-				`DELETE FROM ${tables.entryChunks} WHERE (session_id, seq) IN (
-     SELECT k.session_id,k.seq FROM (SELECT DISTINCT session_id,seq FROM ${tables.entryChunks}) AS k
-     WHERE NOT EXISTS (SELECT 1 FROM ${tables.entries} AS e WHERE e.session_id=k.session_id AND e.seq=k.seq AND e.chunks>0)
-    )`,
-			);
+			if (database.readOnly !== true) await removeOrphanedEntryChunks(tx);
 		};
-		await applyStorageMigrations(
-			database,
-			SESSION_DOMAIN,
-			[
-				{ version: 1, up: createTables },
-				{ version: 2, up: addEntryChunks },
-			],
-			{ table: storageMigrationTable(options.prefix) },
-		);
-		// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971). Its later
-		// steps must stay additive: a build that knows fewer of them accepts a newer version and keeps marking (#5065).
 		const presence = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, options.prefix);
-		await applyStorageMigrations(
-			database,
-			SESSION_PRESENCE_DOMAIN,
-			[
-				{ version: 1, up: (tx, dialect) => SqlSessionOpenMarkers.createTable(tx, dialect, presence.open) },
-				{ version: 2, up: (tx, dialect) => SqlSessionOpenMarkers.addSchemaVersion(tx, dialect, presence.open) },
-			],
-			{ table: storageMigrationTable(options.prefix), acceptNewer: true },
-		);
+		// A SQLite schema records no ledger, so its idempotent setup would run, under the write lock, at every open. A
+		// schema that is current already opens with reads alone: on a server many processes share, each open otherwise
+		// held the write lock for a dozen round trips while every other writer waited (#4768).
+		const current = await SqlSessionStore.currentSchema(database, tables, presence.open);
+		if (current !== undefined) {
+			legacyBlobData = current.legacyBlobData;
+			if (
+				database.readOnly !== true &&
+				(await database.get(`SELECT 1 FROM (${orphanedEntryKeys}) AS orphaned LIMIT 1`)) !== undefined
+			)
+				await database.transaction(removeOrphanedEntryChunks);
+		} else {
+			await applyStorageMigrations(
+				database,
+				SESSION_DOMAIN,
+				[
+					{ version: 1, up: createTables },
+					{ version: 2, up: addEntryChunks },
+				],
+				{ table: storageMigrationTable(options.prefix) },
+			);
+			// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971). Its
+			// later steps must stay additive: a build that knows fewer of them accepts a newer version and keeps marking
+			// (#5065).
+			await applyStorageMigrations(
+				database,
+				SESSION_PRESENCE_DOMAIN,
+				[
+					{ version: 1, up: (tx, dialect) => SqlSessionOpenMarkers.createTable(tx, dialect, presence.open) },
+					{ version: 2, up: (tx, dialect) => SqlSessionOpenMarkers.addSchemaVersion(tx, dialect, presence.open) },
+				],
+				{ table: storageMigrationTable(options.prefix), acceptNewer: true },
+			);
+		}
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
 		const store = new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs, legacyBlobData);
 		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
 		return store;
+	}
+
+	/**
+	 * What the open's setup would find, read without the write lock, when the setup would change nothing: every table
+	 * and column of both domains exists and the sessions meta holds only versions this build supports. Undefined otherwise, and
+	 * always on a database with versioned migrations, whose ledger the setup checks.
+	 */
+	private static async currentSchema(
+		database: SqliteDatabase,
+		tables: Tables,
+		open: string,
+	): Promise<{ readonly legacyBlobData: boolean } | undefined> {
+		const dialect = dialectOf(database);
+		if (dialect.versionedMigrations) return undefined;
+		const probes = [
+			...[...Object.values(tables), open].map((table) => dialect.tableExists(table)),
+			dialect.columnExists(tables.sessions, "revision"),
+			dialect.columnExists(tables.entries, "chunks"),
+			dialect.columnExists(tables.blobs, "chunks"),
+			dialect.columnExists(open, "schema_version"),
+		];
+		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
+		if (!found.every((row) => row !== undefined)) return undefined;
+		const versions = await database.all(`SELECT schema_version FROM ${tables.meta}`);
+		if (
+			versions.length === 0 ||
+			versions.some((row) => row.schema_version !== 1 && row.schema_version !== SESSION_SCHEMA_VERSION)
+		)
+			return undefined;
+		const legacy = dialect.columnExists(tables.blobs, "data");
+		return { legacyBlobData: (await database.get(legacy.sql, ...legacy.params)) !== undefined };
 	}
 
 	/**

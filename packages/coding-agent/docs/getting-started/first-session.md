@@ -85,21 +85,20 @@ For natural-language launches, Atomic decides between inline work and a workflow
 
 ### Monitor and steer a run
 
-Named workflow runs execute in the background. After launch you get the full run id; user-facing workflow surfaces show that complete UUID. You can still type the full id or a unique short prefix to inspect, connect, pause, quit, or resume a run. Ambiguous prefixes are reported rather than selecting a run arbitrarily.
+Named workflow runs execute in the background. After launch you get the full run id; user-facing workflow surfaces show that complete UUID. You can still type the full id or a unique short prefix to inspect, open (`/workflows <id>`), pause, quit, or resume a run. Ambiguous prefixes are reported rather than selecting a run arbitrarily.
 
 ```text
 /workflow status <run-id>         # inspect one run's progress
 /workflow status                  # list this session's active and terminal runs
-/workflow connect <run-id>        # see agents working; chat with or steer each stage (F2 also opens latest)
-/workflow attach <run-id> <stage> # chat with one stage
+/workflows <run-id>                # see agents working; chat with or steer each stage (F2 also opens latest)
 /workflow pause <run-id>          # pause resumably
 /workflow resume <run-id> "go"    # send a steer message and resume
 /workflow quit <run-id>           # pause gracefully and keep the run resumable
 ```
 
-The below-editor `BACKGROUND` panel uses two lines per ordinary card at 80 columns and wider: the status glyph and full id are on the first line, and the workflow name plus mode/progress/elapsed metadata are on the second. A unique pending question adds a quoted one-line preview and `Answer: /workflow connect <full-run-id>`. Below 80 columns it collapses to a count-only line. In chat surfaces, a full id wraps onto continuation lines at narrow widths instead of being cut, and the surrounding border remains intact.
+The below-editor `BACKGROUND` panel uses two lines per ordinary card at 80 columns and wider: the status glyph and full id are on the first line, and the workflow name plus mode/progress/elapsed metadata are on the second. A unique pending question adds a quoted one-line preview and `Answer: /workflows <full-run-id>`. Below 80 columns it collapses to a count-only line. In chat surfaces, a full id wraps onto continuation lines at narrow widths instead of being cut, and the surrounding border remains intact.
 
-Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals — connect to the run to answer them. The BACKGROUND preview does not change that answering path.
+Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals. Open `/workflows <run-id>` and select the waiting node to answer them. The BACKGROUND preview does not change that answering path.
 
 Atomic also posts main-chat lifecycle notices when a run completes, fails, or awaits input. If you answer a workflow prompt in the graph or attached stage chat, the main chat receives a display-only answer summary for audit; it does not wake the model, enter LLM context, or answer later prompts. See [Workflow Operations](/workflows/operations) for the full run-control reference.
 

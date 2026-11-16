@@ -1,5 +1,6 @@
 import { ensureStorageSchema, type SqliteExecutor, type SqliteRow, type StorageDialect } from "@bastani/atomic/storage";
 import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
+import { poolSchemaPresent } from "./pool-schema-probe.js";
 import type { RunJournal } from "./types.js";
 
 /**
@@ -64,6 +65,17 @@ export interface FleetRegisteredHost {
 	readonly providerId?: string;
 	readonly live: boolean;
 	readonly leased: number;
+	/** It read a drain naming it and started draining (#5072). */
+	readonly draining?: boolean;
+}
+
+/**
+ * The drain a boot-timeout removal writes for the instance `providerId`, beside one for the host the instance is known
+ * to run (#5072). It names the instance as removed for its boot timeout, so a removal cut off after it wrote its drains
+ * is finished by whichever controller leads next, instead of waiting {@link FLEET_DRAIN_TIMEOUT_MS} on a dead worker.
+ */
+export function bootTimeoutDrainHost(providerId: string): string {
+	return `boot-timeout:${providerId}`;
 }
 
 export interface FleetDrain {
@@ -159,9 +171,7 @@ export class SqlFleetStore {
 		const { int, rowKey } = storage.dialect.types;
 		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
 		const schema = { ledger: poolSchemaLedger(storage), domain: "fleet", revision: 1 };
-		await storage.transaction((tx) =>
-			ensureStorageSchema(tx, storage.dialect, schema, () =>
-				tx.exec(`
+		const tables = `
 				CREATE TABLE IF NOT EXISTS ${store.lease}(
 					id ${int} PRIMARY KEY CHECK(id = 1), holder TEXT NOT NULL, epoch ${int} NOT NULL, renewed_at ${int} NOT NULL,
 					lease_ms ${int} NOT NULL
@@ -171,9 +181,10 @@ export class SqlFleetStore {
 					reason TEXT NOT NULL, error TEXT
 				);
 				${fleetDrainsSchema(store.runs, storage.dialect)};
-			`),
-			),
-		);
+			`;
+		// A schema that is current opens with reads alone, without a shared server's write lock (#4768).
+		if (await poolSchemaPresent(storage, [tables])) return store;
+		await storage.transaction((tx) => ensureStorageSchema(tx, storage.dialect, schema, () => tx.exec(tables)));
 		return store;
 	}
 
@@ -406,9 +417,9 @@ export class SqlFleetStore {
 				const host = row.worker.slice(0, Math.max(0, row.worker.lastIndexOf("/")));
 				heldBy.set(host, (heldBy.get(host) ?? 0) + Number(row.count));
 			}
-			const registered = await executor.all<SqliteRow & { host: string; provider_id?: string | null; ago: number }>(
-				`SELECT *, ${this.storage.dialect.nowMs} - heartbeat_at AS ago FROM ${runs}_pool_hosts ORDER BY host`,
-			);
+			const registered = await executor.all<
+				SqliteRow & { host: string; provider_id?: string | null; draining?: number | null; ago: number }
+			>(`SELECT *, ${this.storage.dialect.nowMs} - heartbeat_at AS ago FROM ${runs}_pool_hosts ORDER BY host`);
 			return {
 				roots,
 				hosts: registered.map((row) => ({
@@ -416,6 +427,7 @@ export class SqlFleetStore {
 					...(row.provider_id === undefined || row.provider_id === null ? {} : { providerId: row.provider_id }),
 					live: Number(row.ago) <= FLEET_HOST_LIVE_MS,
 					leased: heldBy.get(row.host) ?? 0,
+					...(Number(row.draining ?? 0) === 1 ? { draining: true } : {}),
 				})),
 				drains,
 				leased: heldBy,

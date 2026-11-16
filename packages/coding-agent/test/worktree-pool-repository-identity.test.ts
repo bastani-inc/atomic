@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import {
 	type PreparedSessionResume,
 	type PrepareSessionResumeOptions,
@@ -98,7 +99,7 @@ async function resumeAway(root: string): Promise<{ snapshot: WorktreeSnapshot; c
 	const snapshot = await capture(root);
 	const manager = await SessionManager.create(store, root);
 	await manager.appendWorktreeSnapshot(root, snapshot.id, snapshot);
-	renameSync(root, `${root}-away`);
+	await renameWithRetry(root, `${root}-away`);
 	const prepared: PreparedSessionResume = await prepareSessionResume(manager, prepareOptions());
 	assert.equal(prepared.status, "ready");
 	if (prepared.status !== "ready") throw new Error("unreachable");
@@ -237,7 +238,7 @@ describe("pooled worktrees and object stores belong to one repository (#4989)", 
 		// A's idle slot, recorded under B's identity, as a record of an identity several repositories shared may be.
 		const repositoryB = repositoryIdOf(snapshotB.remotes);
 		const foreign = pooledWorktreePath(storeDir(), repositoryB, 0 as SlotNumber);
-		renameSync(resumedA.cwd, foreign);
+		await renameWithRetry(resumedA.cwd, foreign);
 		const fromA = join(storeDir(), "pool", repositoryIdOf(resumedA.snapshot.remotes), "0.json");
 		const record = { ...(JSON.parse(readFileSync(fromA, "utf8")) as PoolSlotRecord), repository: repositoryB };
 		const recordFile = join(storeDir(), "pool", repositoryB, "0.json");

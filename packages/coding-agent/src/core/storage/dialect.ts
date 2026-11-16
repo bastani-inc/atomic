@@ -243,7 +243,7 @@ export const sqliteDialect: StorageDialect = Object.freeze({
 	byteOrderCollation: "",
 	tableOptions: " STRICT",
 	withoutRowidTableOptions: " STRICT, WITHOUT ROWID",
-	nowMs: "CAST(unixepoch('subsec') * 1000 AS INTEGER)",
+	nowMs: "CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER)",
 	nowSeconds: "unixepoch()",
 	changeMarkers: Object.freeze({
 		columns: "data_version, total_changes() AS changes",

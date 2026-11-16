@@ -47,13 +47,12 @@ type WorkflowCompletionMetadata = {
 };
 
 const WORKFLOW_ADMIN_COMPLETIONS: AutocompleteItem[] = [
-	{ value: "connect ", label: "connect", description: "Attach to a run (picker if no id)" },
-	{ value: "attach ", label: "attach", description: "Open the in-place attach pane on a node" },
 	{ value: "list ", label: "list", description: "List registered workflows" },
 	{ value: "status ", label: "status", description: "List current-session active and retained terminal runs" },
 	{ value: "pause ", label: "pause", description: "Pause a run" },
 	{ value: "quit ", label: "quit", description: "Quit a run and keep it resumable" },
 	{ value: "resume ", label: "resume", description: "Re-open overlay for a run" },
+	{ value: "fork ", label: "fork", description: "Fork a run into a new run, optionally --from a stage" },
 	{ value: "inputs ", label: "inputs", description: "Show a workflow's input schema" },
 	{ value: "reload ", label: "reload", description: "Reload workflow resources" },
 ];
@@ -278,6 +277,14 @@ function bundledWorkflowNameItems(): AutocompleteItem[] {
 	}));
 }
 
+function hasPositionalRunArgument(argumentText: string): boolean {
+	return argumentText
+		.trimStart()
+		.split(/\s+/)
+		.slice(1, -1)
+		.some((token) => !token.startsWith("-"));
+}
+
 export function getBundledWorkflowArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
 	const parts = argumentPrefix.trim().split(/\s+/).filter(Boolean);
 	const subcommand = parts[0] ?? "";
@@ -287,10 +294,15 @@ export function getBundledWorkflowArgumentCompletions(argumentPrefix: string): A
 	}
 	if (subcommand === "inputs") return completeWorkflowToken(argumentPrefix, workflowItems);
 	if (subcommand === "pause") {
+		if (hasPositionalRunArgument(argumentPrefix)) return null;
 		return completeWorkflowToken(argumentPrefix, [
 			{ value: "--all ", label: "--all", description: "Pause all in-flight runs" },
-			{ value: "--yes ", label: "--yes", description: "Skip confirmation" },
-			{ value: "-y ", label: "-y", description: "Skip confirmation" },
+		]);
+	}
+	if (subcommand === "fork") {
+		if (parts.slice(1).some((token) => token === "--from" || token.startsWith("--from="))) return null;
+		return completeWorkflowToken(argumentPrefix, [
+			{ value: "--from ", label: "--from", description: "Dot path of the stage the fork re-runs from" },
 		]);
 	}
 	if (subcommand === "quit") {
@@ -367,9 +379,10 @@ export const BUNDLED_EXTENSION_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand
 	{
 		name: "workflow",
 		description:
-			"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|quit|pause|resume|inputs|reload] [args]",
+			"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|quit|pause|resume|inputs|reload] [args] | /workflow fork <run> [--from <stage>]",
 		getArgumentCompletions: getBundledWorkflowArgumentCompletions,
 	},
+	{ name: "workflows", description: "Browse workflow runs. Usage: /workflows [run-id]" },
 	{ name: "mcp", description: "Show MCP server status" },
 	{ name: "mcp-auth", description: "Authenticate with an MCP server (OAuth)" },
 	{ name: "curator", description: "Toggle or configure the search curator workflow" },

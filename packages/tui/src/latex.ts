@@ -611,8 +611,32 @@ function replaceCharacters(value: string, replacements: Readonly<Record<string, 
 	return result;
 }
 
+const WHITESPACE = /\s/;
+
+function isScriptOperator(character: string | undefined): boolean {
+	return character === "=" || character === "+" || character === "-";
+}
+
+/**
+ * `value` trimmed, without the whitespace next to `=`, `+` and `-`. One pass over the text: a pattern like
+ * `\s*([=+-])\s*` retries each start inside a run of spaces and takes quadratic time on a long one.
+ */
 function normalizeScriptValue(value: string): string {
-	return value.trim().replace(/\s*([=+-])\s*/g, "$1");
+	const text = value.trim();
+	let result = "";
+	let index = 0;
+	while (index < text.length) {
+		if (!WHITESPACE.test(text[index]!)) {
+			result += text[index];
+			index++;
+			continue;
+		}
+		let end = index + 1;
+		while (end < text.length && WHITESPACE.test(text[end]!)) end++;
+		if (!isScriptOperator(text[index - 1]) && !isScriptOperator(text[end])) result += text.slice(index, end);
+		index = end;
+	}
+	return result;
 }
 
 function formatUnicodeScript(value: string, kind: "sub" | "sup"): string | undefined {

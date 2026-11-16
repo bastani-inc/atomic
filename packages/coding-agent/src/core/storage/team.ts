@@ -36,7 +36,13 @@ import {
 } from "./errors.js";
 import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { processSharedStorageSelection } from "./process-selection.js";
-import { loadStorageAdapter, type SecretRef, type StorageSelection, storageSelectionKey } from "./provider.js";
+import {
+	loadStorageAdapter,
+	type SecretRef,
+	type StorageAdapterModule,
+	type StorageSelection,
+	storageSelectionKey,
+} from "./provider.js";
 import {
 	checkSharedDatabaseArguments,
 	checkTeamPrefix,
@@ -236,7 +242,7 @@ interface JoinTarget {
 	readonly secret?: string;
 }
 
-async function checkConnection(target: JoinTarget, agentDir: string): Promise<void> {
+async function checkConnection(target: JoinTarget, agentDir: string, adapter: StorageAdapterModule): Promise<void> {
 	const database = await openAdapterSelectionDatabase(
 		{
 			kind: "adapter",
@@ -245,6 +251,7 @@ async function checkConnection(target: JoinTarget, agentDir: string): Promise<vo
 			...(target.secret === undefined ? {} : { secrets: { [target.secretName]: inMemorySecret(target.secret) } }),
 		},
 		{ agentDir, domain: "sessions" },
+		adapter,
 	);
 	try {
 		await database.get("SELECT 1 AS ok");
@@ -263,25 +270,28 @@ function storageConfigCause(error: unknown): StorageConfigError | undefined {
 	return undefined;
 }
 
-/** How long a join waits for the team database to load its adapter, connect and answer `SELECT 1`. */
+/** How long a join waits for the team database to connect and answer `SELECT 1`, after the adapter has loaded. */
 export const TEAM_CONNECTION_TIMEOUT_MS = 15_000;
 
 /**
- * `checkConnection`, bounded by `timeoutMs`: a database that does not answer fails with a retryable
- * {@link TeamProfileTimeoutError} instead of waiting for the operating system's connection timeout. A check that
- * fails after the deadline is recorded as the timeout error's `cleanupCause`. `elapsedMs` is never below `timeoutMs`:
- * Node can fire a timer a millisecond before the wall clock shows its delay has passed.
+ * `checkConnection`, bounded by `timeoutMs` once the adapter module has loaded: a database that does not answer fails
+ * with a retryable {@link TeamProfileTimeoutError} instead of waiting for the operating system's connection timeout. A
+ * check that fails after the deadline is recorded as the timeout error's `cleanupCause`. `elapsedMs` is never below
+ * `timeoutMs`: Node can fire a timer a millisecond before the wall clock shows its delay has passed.
  */
 async function checkConnectionWithin(target: JoinTarget, agentDir: string, timeoutMs: number): Promise<void> {
 	const url = target.options.url as string;
-	const started = Date.now();
-	const check = checkConnection(target, agentDir).then(() => "answered" as const);
 	let timer: ReturnType<typeof setTimeout> | undefined;
-	const deadline = new Promise<"timed-out">((resolveDeadline) => {
-		timer = setTimeout(() => resolveDeadline("timed-out"), timeoutMs);
-	});
+	let started = 0;
+	let check: Promise<"answered"> | undefined;
 	let outcome: "answered" | "timed-out";
 	try {
+		const adapter = await loadStorageAdapter(target.adapter, { agentDir, domain: "sessions" });
+		started = Date.now();
+		check = checkConnection(target, agentDir, adapter).then(() => "answered" as const);
+		const deadline = new Promise<"timed-out">((resolveDeadline) => {
+			timer = setTimeout(() => resolveDeadline("timed-out"), timeoutMs);
+		});
 		outcome = await Promise.race([check, deadline]);
 	} catch (error) {
 		// A cloud identity that cannot sign in, such as one whose SDK is not installed, is no connection failure that

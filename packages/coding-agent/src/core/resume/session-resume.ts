@@ -1085,7 +1085,7 @@ async function setUpCheckoutBlueprints(
 		// Another process's build of one of them is waited for, or the steps of one whose process died are stopped,
 		// before the ledger says which need building.
 		// Settling another build never fails the resume: a failure to read or clean up its lock is a warning.
-		const lockWarnings = await settleOtherBuilds(storeDir, claimed, {
+		const settled = await settleOtherBuilds(storeDir, claimed, {
 			signal: options.signal,
 			onWait: (root, message) => {
 				options.onProgress?.(message);
@@ -1093,27 +1093,36 @@ async function setUpCheckoutBlueprints(
 			},
 		}).catch((error: unknown) => {
 			if (options.signal?.aborted) throw error;
-			return [
-				`Could not check for an earlier blueprint build of these worktrees (${error instanceof Error ? describeFailure(error) : String(error)}); building them anyway.`,
-			];
+			return {
+				warnings: [
+					`Could not check for an earlier blueprint build of these worktrees (${error instanceof Error ? describeFailure(error) : String(error)}); building them anyway.`,
+				],
+				release: () => {},
+			};
 		});
-		const retried = await checkoutsNeedingRebuild(candidates, storeDir);
-		const restored = [...toBuild, ...retried];
-		const built = await withBuildLocks(
-			storeDir,
-			restored.map((checkout) => checkout.root),
-			() =>
-				setUpResumedBlueprints({
-					restored,
-					inPlace,
-					earlier: [...joined, ...candidates.filter((checkout) => !retried.includes(checkout))],
-					config: { ...options.blueprint, storeDir },
-					signal: options.signal,
-				}),
-		);
+		// No other process builds them until this build settled, and then the ledger says whether they still need it.
+		let built: ResumedBlueprints;
+		try {
+			const retried = await checkoutsNeedingRebuild(candidates, storeDir);
+			const restored = [...toBuild, ...retried];
+			built = await withBuildLocks(
+				storeDir,
+				restored.map((checkout) => checkout.root),
+				() =>
+					setUpResumedBlueprints({
+						restored,
+						inPlace,
+						earlier: [...joined, ...candidates.filter((checkout) => !retried.includes(checkout))],
+						config: { ...options.blueprint, storeDir },
+						signal: options.signal,
+					}),
+			);
+		} finally {
+			settled.release();
+		}
 		// The warnings of LFS downloads that end after their restores were recorded come with the build's (#5099).
 		const downloads = await lfs.notices([...restoredHere, ...earlier].map((checkout) => checkout.root));
-		const warnings = lockWarnings.map((message) => ({ type: "warning" as const, message }));
+		const warnings = settled.warnings.map((message) => ({ type: "warning" as const, message }));
 		return { ...built, notices: [...warnings, ...downloads, ...built.notices] };
 	} finally {
 		for (const root of claimed) if (buildsInProgress.get(root) === settled) buildsInProgress.delete(root);
