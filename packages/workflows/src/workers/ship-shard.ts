@@ -122,14 +122,14 @@ export class ShipShard {
 	private constructor(
 		private readonly database: SqliteDatabase,
 		readonly root: string,
-		private readonly lock: AdvisoryLock,
+		private readonly lock: AdvisoryLock | undefined,
 		private readonly now: () => number = () => performance.now(),
 	) {}
 
 	static async open(path: string, root: string, now?: () => number): Promise<ShipShard> {
 		mkdirSync(dirname(path), { recursive: true });
-		const { tryAdvisoryLock } = await import("@bastani/atomic-natives");
-		const lock = tryAdvisoryLock(`${path}.lock`, 0);
+		const lock =
+			path === ":memory:" ? undefined : (await import("@bastani/atomic-natives")).tryAdvisoryLock(`${path}.lock`, 0);
 		if (lock === null) throw new Error(`Checkpoint shard is already open by another process: ${path}`);
 		let database: SqliteDatabase | undefined;
 		try {
@@ -144,7 +144,7 @@ export class ShipShard {
 			try {
 				await database?.close();
 			} finally {
-				lock.release();
+				lock?.release();
 			}
 			throw error;
 		}
@@ -370,7 +370,7 @@ export class ShipShard {
 		try {
 			await this.database.close();
 		} finally {
-			this.lock.release();
+			this.lock?.release();
 		}
 	}
 

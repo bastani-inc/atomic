@@ -96,6 +96,29 @@ async function hostShipping(
 
 const noShared = async () => assert.fail("a shippable checkpoint is not committed directly");
 
+test("independent in-memory checkpoint journals do not contend for file ownership or share checkpoints (#4768)", async () => {
+	const first = await ShipShard.open(":memory:", "root");
+	closers.push(() => first.close());
+	const second = await ShipShard.open(":memory:", "root");
+	closers.push(() => second.close());
+	const lease = { id: "work", generation: 1, worker: "worker", epoch: 1 };
+	for (const [shard, payload] of [
+		[first, "first"],
+		[second, "second"],
+	] as const) {
+		await shard.hold(lease, LEASE_MS);
+		await shard.accept("root", lease, "key", JSON.stringify(payload), 1);
+	}
+	assert.deepEqual(
+		(await first.pending(lease)).map((event) => event.payload),
+		['"first"'],
+	);
+	assert.deepEqual(
+		(await second.pending(lease)).map((event) => event.payload),
+		['"second"'],
+	);
+});
+
 test("a failed shard open releases ownership so the repaired journal can open (#4768)", async () => {
 	const path = join(directory, "invalid-shard.sqlite");
 	await writeFileEnsuringDir(path, "not a SQLite database");
