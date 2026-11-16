@@ -25,6 +25,7 @@ export declare class OwnerLease {}
 export declare class ProcessTreeContainment {
   terminate(): boolean
   activeProcesses(): number
+  release(): boolean
   close(): void
 }
 

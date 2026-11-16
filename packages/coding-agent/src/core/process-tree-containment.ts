@@ -1,8 +1,10 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { createModuleRequire } from "../utils/module-require.ts";
 
 export interface ProcessTreeContainment {
 	terminate(): boolean;
 	activeProcesses(): number;
+	release(): boolean;
 	close(): void;
 }
 
@@ -30,5 +32,18 @@ export function containProcessTree(pid: number): ProcessTreeContainment | undefi
 		return containFunction()?.(pid) ?? undefined;
 	} catch {
 		return undefined;
+	}
+}
+
+export async function processTreeEnded(tree: ProcessTreeContainment, timeoutMs: number): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		try {
+			if (tree.activeProcesses() === 0) return;
+		} catch {
+			return;
+		}
+		if (Date.now() >= deadline) return;
+		await sleep(5);
 	}
 }
