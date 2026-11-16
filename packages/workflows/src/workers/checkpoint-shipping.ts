@@ -292,10 +292,15 @@ export class CheckpointShipping {
 
 	/** Takes up the attempts a stopped host left checkpoints of, so they ship (see {@link start}). */
 	async recover(): Promise<void> {
-		for (const { lease, pending } of await this.shard.leftover()) {
+		for (const { lease } of await this.shard.leftover()) {
 			if (this.attempts.has(lease.id)) continue;
 			const now = this.now();
-			this.attempts.set(lease.id, { lease, accepted: Array(pending).fill(now), chain: Promise.resolve() });
+			const held = await this.shard.pending(lease, Number.MAX_SAFE_INTEGER);
+			this.attempts.set(lease.id, {
+				lease,
+				accepted: held.map((event) => ({ localSeq: event.localSeq, at: now })),
+				chain: Promise.resolve(),
+			});
 			await this.flush(lease).catch(() => {});
 		}
 	}
