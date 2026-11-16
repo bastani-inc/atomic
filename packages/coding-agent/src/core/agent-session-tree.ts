@@ -4,7 +4,7 @@ import { collectEntriesForBranchSummary, generateBranchSummary } from "./compact
 import type { SessionBeforeTreeResult, TreePreparation } from "./extensions/index.js";
 import { assertSessionOpen } from "./session-lifecycle-work.ts";
 import type { BranchSummaryEntry } from "./session-manager.ts";
-import { SessionHistoryNotLoadedError } from "./session-manager-errors.ts";
+import { SessionHistoryNotLoadedError } from "./session-manager-errors.js";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 
 export async function setSessionName(this: AgentSession, name: string): Promise<void> {

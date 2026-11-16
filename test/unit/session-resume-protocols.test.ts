@@ -3,7 +3,9 @@ import { test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import { sessionResumeOf } from "../../packages/coding-agent/src/core/storage/session/session-resume.ts";
 import { pendingTaskCompletionIntents } from "../../packages/coding-agent/src/core/tasks/completion.ts";
+import { unconsumedIntercomInbox } from "../../packages/intercom/durable-inbox.ts";
 import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.ts";
+import { ReplyTracker, restorePendingInboundAsks } from "../../packages/intercom/reply-tracker.ts";
 import { scanInFlightRuns } from "../../packages/workflows/src/shared/persistence-restore.ts";
 
 const timestamp = "2026-11-16T00:00:00.000Z";
@@ -200,4 +202,38 @@ test("resume reduces pooled delivery receipts to their op ids (#5249)", () => {
 		resume.state.some(({ entry }) => entry.type === "custom" && entry.customType === "atomic-pooled-delivery-op"),
 		false,
 	);
+});
+
+test("intercom ask and inbox restores return the same result from a tail-resumed session as from a whole read (#5249)", () => {
+	const s = session();
+	const from = { id: "peer", cwd: "/p", model: "m", pid: 1, startedAt: 1, lastActivity: 1 };
+	const message = (id: string, extra: object = {}) => ({ id, timestamp: 1, content: { text: id }, ...extra });
+	s.custom("intercom_session_identity", { sessionId: "s", intercomSessionId: "intercom-s" });
+	s.card("answered-card", "intercom_message", { from, message: message("ask-answered", { expectsReply: true }) });
+	s.custom("intercom_sent", { message: message("reply", { replyTo: "ask-answered" }) });
+	s.card("open-card", "intercom_message", { from, message: message("ask-open", { expectsReply: true }) });
+	s.custom("intercom_inbox", { message: message("inbox-consumed"), from, receivedAt: 4 });
+	s.card("consumed-card", "intercom_message", { from, message: message("inbox-consumed") });
+	s.custom("intercom_inbox", { message: message("inbox-handled"), from, receivedAt: 5 });
+	s.custom("intercom_inbox_handled", { messageId: "inbox-handled" });
+	s.custom("intercom_inbox", { message: message("inbox-open"), from, receivedAt: 6 });
+	const resume = s.resume();
+	const branch = [...resume.state.filter((held) => held.onBranch), ...resume.branch]
+		.sort((a, b) => a.seq - b.seq)
+		.map((held) => held.entry);
+	assert.ok(branch.length < s.entries.length);
+	const whole = new ReplyTracker();
+	restorePendingInboundAsks(whole, s.entries, "s");
+	const resumed = new ReplyTracker();
+	restorePendingInboundAsks(resumed, branch, "s");
+	assert.deepEqual(
+		whole.listPending().map((context) => context.message.id),
+		["ask-open"],
+	);
+	assert.deepEqual(resumed.listPending(), whole.listPending());
+	assert.deepEqual(
+		unconsumedIntercomInbox(s.entries).map((record) => record.message.id),
+		["inbox-open"],
+	);
+	assert.deepEqual(unconsumedIntercomInbox(branch), unconsumedIntercomInbox(s.entries));
 });
