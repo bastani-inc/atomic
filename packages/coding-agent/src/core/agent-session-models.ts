@@ -137,7 +137,7 @@ function addPersistedDefaultToNonEmptyScope(session: AgentSession, model: Model<
 export async function setModel(
 	this: AgentSession,
 	model: Model<Api>,
-	options: ModelMutationOptions = {},
+	options: ModelMutationOptions & { thinkingLevel?: ThinkingLevel } = {},
 ): Promise<void> {
 	assertSessionOpen(this);
 	return trackSessionWork(this, async () => {
@@ -146,7 +146,7 @@ export async function setModel(
 				throw new Error(`No API key for ${model.provider}/${model.id}`);
 			}
 			const previousModel = this.model;
-			const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
+			const thinkingLevel = this._getThinkingLevelForModelSwitch(model, options.thinkingLevel);
 			const nextModel = model;
 			await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 			this._clearFallbackModelScope?.();

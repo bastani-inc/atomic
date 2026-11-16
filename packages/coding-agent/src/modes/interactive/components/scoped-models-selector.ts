@@ -15,7 +15,9 @@ function isEnabled(enabledIds: EnabledIds, id: string): boolean {
 
 /** Collapse an explicit list back to null (= all enabled) when it covers every available model. */
 function normalizeEnabled(result: string[], allIds: string[]): EnabledIds {
-	return result.length === allIds.length && result.every((id) => allIds.includes(id)) ? null : result;
+	if (result.length !== allIds.length) return result;
+	const allSet = new Set(allIds);
+	return result.every((id) => allSet.has(id)) ? null : result;
 }
 
 function toggle(enabledIds: EnabledIds, allIds: string[], id: string): EnabledIds {
@@ -29,15 +31,21 @@ function enableAll(enabledIds: EnabledIds, allIds: string[], targetIds?: string[
 	if (enabledIds === null) return null; // Already all enabled
 	const targets = targetIds ?? allIds;
 	const result = [...enabledIds];
+	const seen = new Set(result);
 	for (const id of targets) {
-		if (!result.includes(id)) result.push(id);
+		if (!seen.has(id)) {
+			seen.add(id);
+			result.push(id);
+		}
 	}
 	return normalizeEnabled(result, allIds);
 }
 
 function clearAll(enabledIds: EnabledIds, allIds: string[], targetIds?: string[]): EnabledIds {
 	if (enabledIds === null) {
-		return targetIds ? allIds.filter((id) => !targetIds.includes(id)) : [];
+		if (!targetIds) return [];
+		const targets = new Set(targetIds);
+		return allIds.filter((id) => !targets.has(id));
 	}
 	const targets = new Set(targetIds ?? enabledIds);
 	return enabledIds.filter((id) => !targets.has(id));
@@ -55,10 +63,60 @@ function move(enabledIds: EnabledIds, id: string, delta: number): EnabledIds {
 	return result;
 }
 
-function getSortedIds(enabledIds: EnabledIds, allIds: string[]): string[] {
+function getSortedIds(enabledIds: EnabledIds, allIds: string[], enabledSet?: ReadonlySet<string>): string[] {
 	if (enabledIds === null) return allIds;
-	const enabledSet = new Set(enabledIds);
-	return [...enabledIds, ...allIds.filter((id) => !enabledSet.has(id))];
+	const lookup = enabledSet ?? new Set(enabledIds);
+	return [...enabledIds, ...allIds.filter((id) => !lookup.has(id))];
+}
+
+interface ScopedModelMetadata {
+	descriptionResolved: boolean;
+	descriptionValue: string | undefined;
+	searchTextValue: string | undefined;
+}
+
+const UNAVAILABLE_LABEL_STYLE = (text: string, selected: boolean): string =>
+	selected ? theme.fg("accent", theme.strikethrough(text)) : theme.strikethrough(text);
+
+interface ScopedModelRowHost {
+	resolveLabel(id: string, model: Model<Api> | undefined): string;
+	resolveDescription(id: string, model: Model<Api> | undefined): string | undefined;
+	resolveSearchText(id: string, model: Model<Api> | undefined): string;
+}
+
+class ScopedModelRow implements SelectorItem<string> {
+	readonly id: string;
+	readonly value: string;
+	readonly mark: "checked" | "unchecked";
+	readonly tag: "unavailable" | undefined;
+	readonly searchTextMode = "replace";
+	readonly labelStyle: ((label: string, selected: boolean) => string) | undefined;
+	private readonly model: Model<Api> | undefined;
+	private readonly host: ScopedModelRowHost;
+	private resolvedLabel?: string;
+
+	constructor(id: string, model: Model<Api> | undefined, enabled: boolean, host: ScopedModelRowHost) {
+		this.id = id;
+		this.value = id;
+		this.model = model;
+		this.mark = enabled ? "checked" : "unchecked";
+		this.tag = model ? undefined : "unavailable";
+		this.labelStyle = model ? undefined : UNAVAILABLE_LABEL_STYLE;
+		this.host = host;
+	}
+
+	get label(): string {
+		this.resolvedLabel ??= this.host.resolveLabel(this.id, this.model);
+		return this.resolvedLabel;
+	}
+
+	get description(): string | undefined {
+		return this.host.resolveDescription(this.id, this.model);
+	}
+
+	get searchText(): string {
+		return this.host.resolveSearchText(this.id, this.model);
+	}
 }
 
 export interface ModelsConfig {
@@ -79,8 +137,9 @@ export interface ModelsCallbacks {
  * The `/scoped-models` picker: which models Ctrl+P cycles through, and in what order. Enter switches the selected
  * model on or off; changes are saved automatically by the caller.
  */
-export class ScopedModelsSelectorComponent extends FramedSelector<string> {
+export class ScopedModelsSelectorComponent extends FramedSelector<string> implements ScopedModelRowHost {
 	private modelsById: Map<string, Model<Api>> = new Map();
+	private readonly modelMetadata = new Map<string, ScopedModelMetadata>();
 	private allIds: string[] = [];
 	private enabledIds: EnabledIds = null;
 	private readonly callbacks: ModelsCallbacks;
@@ -125,20 +184,23 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 			maxVisible: 8,
 			emptyText: "No models available",
 			confirmLabel: "toggle",
+			closeOnSelect: false,
 			extraKeys,
 			onSelect: (item) => self().toggleModel(item.value),
 			onCancel: callbacks.onCancel,
 		});
 		this.callbacks = callbacks;
 		this.thinkingLevelFor = config.thinkingLevelFor;
-		this.enabledIds = config.enabledModelIds === null ? null : [...config.enabledModelIds];
+		this.enabledIds = config.enabledModelIds === null ? null : [...new Set(config.enabledModelIds)];
 		this.setModels(config.allModels);
 		if (config.refreshStatus) this.setRefreshStatus(config.refreshStatus, "muted");
 		this.refresh();
 	}
 
 	updateModels(models: readonly Model<Api>[], enabledModelIds?: string[] | null): void {
-		if (enabledModelIds !== undefined) this.enabledIds = enabledModelIds === null ? null : [...enabledModelIds];
+		if (enabledModelIds !== undefined) {
+			this.enabledIds = enabledModelIds === null ? null : [...new Set(enabledModelIds)];
+		}
 		this.setModels(models);
 		this.refresh();
 	}
@@ -162,8 +224,39 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 		super.handleInput(data);
 	}
 
+	resolveLabel(id: string, model: Model<Api> | undefined): string {
+		return model ? formatModelLabel(model, { thinkingLevel: this.thinkingLevelFor?.(model) }) : id;
+	}
+
+	resolveDescription(id: string, model: Model<Api> | undefined): string | undefined {
+		if (!model) return undefined;
+		const meta = this.getOrCreateMetadata(id);
+		if (!meta.descriptionResolved) {
+			meta.descriptionValue = getDistinctModelName(model);
+			meta.descriptionResolved = true;
+		}
+		return meta.descriptionValue;
+	}
+
+	resolveSearchText(id: string, model: Model<Api> | undefined): string {
+		if (!model) return id;
+		const meta = this.getOrCreateMetadata(id);
+		meta.searchTextValue ??= getModelSearchText(model);
+		return meta.searchTextValue;
+	}
+
+	private getOrCreateMetadata(id: string): ScopedModelMetadata {
+		let meta = this.modelMetadata.get(id);
+		if (!meta) {
+			meta = { descriptionResolved: false, descriptionValue: undefined, searchTextValue: undefined };
+			this.modelMetadata.set(id, meta);
+		}
+		return meta;
+	}
+
 	private setModels(models: readonly Model<Api>[]): void {
 		this.modelsById.clear();
+		this.modelMetadata.clear();
 		this.allIds = [];
 		for (const model of models) {
 			const fullId = `${model.provider}/${model.id}`;
@@ -173,25 +266,10 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 	}
 
 	private buildItems(): SelectorItem<string>[] {
-		// Rows show the raw ID and level, exactly what `enabledModels` and `--models` take (#4269); a display name that
-		// adds words the ID lacks follows in a dim column.
-		return getSortedIds(this.enabledIds, this.allIds).map((id) => {
-			const model = this.modelsById.get(id);
-			const enabled = model !== undefined && isEnabled(this.enabledIds, id);
-			return {
-				id,
-				value: id,
-				label: model ? formatModelLabel(model, { thinkingLevel: this.thinkingLevelFor?.(model) }) : id,
-				description: model ? getDistinctModelName(model) : undefined,
-				mark: enabled || (!model && isEnabled(this.enabledIds, id)) ? "checked" : "unchecked",
-				tag: model ? undefined : "unavailable",
-				searchText: model ? getModelSearchText({ id: model.id, provider: model.provider, name: model.name }) : id,
-				labelStyle: model
-					? undefined
-					: (text, selected) =>
-							selected ? theme.fg("accent", theme.strikethrough(text)) : theme.strikethrough(text),
-			};
-		});
+		const enabledIds = this.enabledIds === null ? undefined : new Set(this.enabledIds);
+		return getSortedIds(this.enabledIds, this.allIds, enabledIds).map(
+			(id) => new ScopedModelRow(id, this.modelsById.get(id), enabledIds === undefined || enabledIds.has(id), this),
+		);
 	}
 
 	private countText(): string {

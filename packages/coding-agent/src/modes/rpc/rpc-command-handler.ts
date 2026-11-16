@@ -1,6 +1,7 @@
 import type { KeyId } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { THINKING_LEVELS } from "../../core/agent-session-types.js";
 import { runCallback } from "../../core/callback-activity.ts";
 import { serializeBackgroundCompactionState } from "../../core/compaction/background-compaction.ts";
 import { setDebugSetting } from "../../core/debug-setting.ts";
@@ -21,7 +22,13 @@ import {
 	formatRpcErrorMessage,
 	type RpcOutput,
 } from "./rpc-responses.ts";
-import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
+import type {
+	RpcCommand,
+	RpcPersistedModelDefaults,
+	RpcResponse,
+	RpcSessionState,
+	RpcSlashCommand,
+} from "./rpc-types.ts";
 import { type EngineTaskInspectorMount, engineTaskInspectorUi, showEngineTaskInspector } from "./task-ui-bridge.js";
 
 export type RpcCommandHandler = (command: RpcCommand) => Promise<RpcResponse | undefined>;
@@ -47,6 +54,17 @@ interface RpcCommandHandlerOptions {
 	 */
 	detachCompaction?: boolean;
 	beginCommand?: () => () => void;
+}
+
+function persistedModelDefaults(session: AgentSession, persist?: boolean): RpcPersistedModelDefaults | undefined {
+	if (!persist) return undefined;
+	const provider = session.settingsManager.getDefaultProvider();
+	const modelId = session.settingsManager.getDefaultModel();
+	const defaultThinkingLevel = session.settingsManager.getDefaultThinkingLevel();
+	if (!provider || !modelId || defaultThinkingLevel === undefined) return undefined;
+	const thinkingLevel = session.settingsManager.getModelThinkingLevel(provider, modelId);
+	if (thinkingLevel === undefined) return undefined;
+	return { provider, modelId, thinkingLevel, defaultThinkingLevel };
 }
 
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {
@@ -266,6 +284,13 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_state", state);
 			}
 			case "set_model": {
+				if (command.thinkingLevel !== undefined && !THINKING_LEVELS.includes(command.thinkingLevel)) {
+					return createRpcErrorResponse(
+						id,
+						"set_model",
+						`Invalid thinkingLevel: expected one of ${THINKING_LEVELS.join(", ")}`,
+					);
+				}
 				const models = await session.modelRuntime.getAvailableSnapshot();
 				const model = models.find(
 					(candidate) => candidate.provider === command.provider && candidate.id === command.modelId,
@@ -277,9 +302,16 @@ export function createRpcCommandHandler({
 						`Model not found: ${command.provider}/${command.modelId}`,
 					);
 				}
-				await session.setModel(model, command.persist === true ? { persist: true } : {});
+				await session.setModel(model, {
+					...(command.persist === true ? { persist: true } : {}),
+					...(command.thinkingLevel !== undefined ? { thinkingLevel: command.thinkingLevel } : {}),
+				});
 				runtimeHost.resolveModelFallback();
-				return createRpcSuccessResponse(id, "set_model", session.model ?? model);
+				const persistedDefaults = persistedModelDefaults(session, command.persist);
+				return createRpcSuccessResponse(id, "set_model", {
+					...(session.model ?? model),
+					...(persistedDefaults ? { persistedDefaults } : {}),
+				});
 			}
 			case "cycle_model": {
 				const previousModel = session.model;
@@ -288,7 +320,12 @@ export function createRpcCommandHandler({
 					command.persist === true ? { persist: true } : {},
 				);
 				runtimeHost.resolveModelFallbackAfterExplicitModelSelection(previousModel, result?.model);
-				return createRpcSuccessResponse(id, "cycle_model", result ?? null);
+				const persistedDefaults = result ? persistedModelDefaults(session, command.persist) : undefined;
+				return createRpcSuccessResponse(
+					id,
+					"cycle_model",
+					result ? { ...result, ...(persistedDefaults ? { persistedDefaults } : {}) } : null,
+				);
 			}
 			case "get_available_models":
 				return createRpcSuccessResponse(id, "get_available_models", createRpcModelCatalog(session));

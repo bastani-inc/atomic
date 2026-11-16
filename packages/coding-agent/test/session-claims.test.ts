@@ -252,16 +252,24 @@ describe("session claims (#5135)", () => {
 		assert.equal(existsSync(lock), false);
 	});
 
-	test("without the native lock, a takeover lock held by a live takeover is waited out, then the claim is reported held (#5135)", async () => {
+	test("without the native lock, a takeover lock held by a live takeover is waited out, then the claim is reported held (#5135, #5237)", async () => {
 		setNativeLocksForTesting(null);
 		const sessionId = newSessionId();
 		const dead = await deadPid();
 		writeClaim(sessionId, { token: "dead", pid: dead, host: hostname() });
-		mkdirSync(`${claimFile(sessionId)}.takeover`);
-		assert.throws(
-			() => claim(sessionId),
-			(error: unknown) => error instanceof SessionAlreadyOpenError && error.pid === dead,
-		);
+		const mutex = takeTakeoverMutex(claimFile(sessionId));
+		assert.ok(mutex);
+		const lock = `${claimFile(sessionId)}.takeover`;
+		const at = new Date(Date.now() - 11_000);
+		utimesSync(lock, at, at);
+		try {
+			assert.throws(
+				() => claim(sessionId),
+				(error: unknown) => error instanceof SessionAlreadyOpenError && error.pid === dead,
+			);
+		} finally {
+			mutex.release();
+		}
 	});
 
 	test("an advisory takeover lock held by a live takeover is waited out, then the claim is reported held (#5193)", async () => {

@@ -253,6 +253,96 @@ describe("scoped models selector", () => {
 		}
 	});
 
+	it("reuses model metadata while toggling and refreshes it with the catalog (#5237)", async () => {
+		harness = await createHarness({ models: [{ id: "model-a", reasoning: true }] });
+		let name = "Original custom title";
+		let nameReads = 0;
+		let level = "low";
+		const model = {
+			...harness.models[0],
+			get name() {
+				nameReads++;
+				return name;
+			},
+		};
+		const selector = new ScopedModelsSelectorComponent(
+			{ allModels: [model], enabledModelIds: null, thinkingLevelFor: () => level },
+			{ onChange: () => {}, onCancel: () => {} },
+		);
+		assert.ok(stripAnsi(selector.render(160).join("\n")).includes(name));
+		nameReads = 0;
+		level = "high";
+
+		selector.handleInput("\r");
+
+		const toggled = stripAnsi(selector.render(160).join("\n"));
+		assert.equal(nameReads, 0);
+		assert.ok(toggled.includes(`[ ] ${model.provider}/${model.id}  high`), toggled);
+		assert.ok(toggled.includes(name), toggled);
+
+		name = "Refreshed custom title";
+		selector.updateModels([model]);
+		selector.handleInput("Refreshed");
+		const refreshed = stripAnsi(selector.render(160).join("\n"));
+		assert.ok(nameReads > 0);
+		assert.ok(refreshed.includes(name), refreshed);
+		assert.ok(!refreshed.includes("Original custom title"), refreshed);
+	});
+
+	it("resolves row labels and metadata lazily for visible rows on open and toggle (#5237)", async () => {
+		const modelSpecs = Array.from({ length: 20 }, (_, index) => ({
+			id: `model-${String(index).padStart(2, "0")}`,
+			name: `Distinct Title ${index}`,
+			reasoning: true,
+		}));
+		harness = await createHarness({ models: modelSpecs });
+		const nameReads = new Set<string>();
+		const levelReads = new Set<string>();
+		const trackedModels = harness.models.map((baseModel, index) => ({
+			...baseModel,
+			get name() {
+				nameReads.add(baseModel.id);
+				return `Distinct Title ${index}`;
+			},
+		}));
+
+		const selector = new ScopedModelsSelectorComponent(
+			{
+				allModels: trackedModels,
+				enabledModelIds: null,
+				thinkingLevelFor: (model) => {
+					levelReads.add(model.id);
+					return "high";
+				},
+			},
+			{ onChange: () => {}, onCancel: () => {} },
+		);
+
+		assert.equal(nameReads.size, 0);
+		assert.equal(levelReads.size, 0);
+
+		selector.render(120);
+		assert.equal(nameReads.size, 8);
+		assert.equal(levelReads.size, 8);
+		assert.equal(nameReads.has("model-19"), false);
+		assert.equal(levelReads.has("model-19"), false);
+
+		nameReads.clear();
+		levelReads.clear();
+		selector.handleInput("\r");
+		selector.render(120);
+		assert.deepEqual([...nameReads], ["model-08"]);
+		assert.equal(levelReads.size, 8);
+		assert.equal(levelReads.has("model-00"), false);
+		assert.equal(levelReads.has("model-19"), false);
+
+		selector.handleInput("Distinct Title 19");
+		const searched = stripAnsi(selector.render(120).join("\n"));
+		assert.ok(nameReads.has("model-19"));
+		assert.ok(levelReads.has("model-19"));
+		assert.ok(searched.includes("model-19  high  Distinct Title 19"), searched);
+	});
+
 	it("clears the search before esc closes it", async () => {
 		let cancellations = 0;
 		harness = await createHarness({ models: [{ id: "model-a", name: "Model A" }] });
@@ -266,5 +356,116 @@ describe("scoped models selector", () => {
 		assert.equal(cancellations, 0);
 		selector.handleInput("\x1b");
 		assert.equal(cancellations, 1);
+	});
+
+	it("ignores the displayed thinking level when filtering and bulk-clearing models (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "gpt-5", name: "GPT-5", reasoning: true },
+				{ id: "o3", name: "o3", reasoning: true },
+				{ id: "claude-opus", name: "Claude Opus", reasoning: true },
+				{ id: "gemini-pro", name: "Gemini Pro", reasoning: true },
+				{ id: "mistral-medium", name: "Mistral Medium", reasoning: true },
+			],
+		});
+		const provider = harness.models[0].provider;
+		let latestEnabledIds: string[] | null = null;
+		const selector = new ScopedModelsSelectorComponent(
+			{
+				allModels: [...harness.models],
+				enabledModelIds: null,
+				thinkingLevelFor: () => "medium",
+			},
+			{
+				onChange: (enabledModelIds) => {
+					latestEnabledIds = enabledModelIds;
+				},
+				onCancel: () => {},
+			},
+		);
+
+		selector.handleInput("medium");
+
+		const filteredOutput = stripAnsi(selector.render(120).join("\n"));
+		assert.ok(filteredOutput.includes(`${provider}/mistral-medium  medium`), filteredOutput);
+		assert.ok(!filteredOutput.includes(`${provider}/gpt-5`), filteredOutput);
+		assert.ok(!filteredOutput.includes(`${provider}/o3`), filteredOutput);
+
+		selector.handleInput("\x18");
+
+		assert.deepEqual(latestEnabledIds, [
+			`${provider}/gpt-5`,
+			`${provider}/o3`,
+			`${provider}/claude-opus`,
+			`${provider}/gemini-pro`,
+		]);
+	});
+
+	it("deduplicates enabled model IDs on construction and update so toggling disables the model (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "model-a", name: "Model A" },
+				{ id: "model-b", name: "Model B" },
+			],
+		});
+		const provider = harness.models[0].provider;
+		const modelA = `${provider}/model-a`;
+		const changes: Array<string[] | null> = [];
+		const selector = new ScopedModelsSelectorComponent(
+			{
+				allModels: [...harness.models],
+				enabledModelIds: [modelA, modelA],
+			},
+			{
+				onChange: (enabledModelIds) => {
+					changes.push(enabledModelIds);
+				},
+				onCancel: () => {},
+			},
+		);
+
+		const initialLines = stripAnsi(selector.render(120).join("\n")).split("\n");
+		assert.equal(initialLines.filter((line) => line.includes(modelA)).length, 1);
+		assert.ok(initialLines.some((line) => line.includes("1/2 enabled")));
+
+		selector.handleInput("\r");
+		assert.deepEqual(changes, [[]]);
+
+		selector.updateModels([...harness.models], [modelA, modelA]);
+		const updatedLines = stripAnsi(selector.render(120).join("\n")).split("\n");
+		assert.equal(updatedLines.filter((line) => line.includes(modelA)).length, 1);
+		assert.ok(updatedLines.some((line) => line.includes("1/2 enabled")));
+
+		selector.handleInput("\r");
+		assert.deepEqual(changes, [[], []]);
+	});
+
+	it("keeps enter toggle and esc cancel in narrow hints instead of ctrl+x clear (#5237)", async () => {
+		const selector = await createSelector([
+			{ id: "model-a", name: "Model A", enabled: true },
+			{ id: "model-b", name: "Model B", enabled: false },
+		]);
+
+		for (let width = 27; width <= 41; width++) {
+			const hint = stripAnsi(selector.render(width).at(-2) ?? "").trim();
+			assert.ok(hint.includes("enter toggle"), `missing enter toggle at width ${width}: ${hint}`);
+			assert.ok(hint.includes("esc cancel"), `missing esc cancel at width ${width}: ${hint}`);
+		}
+
+		for (let width = 42; width <= 54; width++) {
+			const hint = stripAnsi(selector.render(width).at(-2) ?? "").trim();
+			assert.ok(hint.includes("enter toggle"), `missing enter toggle at width ${width}: ${hint}`);
+			assert.ok(hint.includes("esc cancel"), `missing esc cancel at width ${width}: ${hint}`);
+			if (!hint.includes("ctrl+x clear")) {
+				assert.ok(hint.includes("ctrl+a all"), `dropped ctrl+a all before ctrl+x clear at width ${width}: ${hint}`);
+			}
+		}
+
+		selector.handleInput("model");
+		for (let width = 30; width <= 40; width++) {
+			const hint = stripAnsi(selector.render(width).at(-2) ?? "").trim();
+			assert.ok(hint.includes("enter toggle"), `missing enter toggle at width ${width}: ${hint}`);
+			assert.ok(hint.includes("esc clear"), `missing esc clear at width ${width}: ${hint}`);
+		}
 	});
 });
