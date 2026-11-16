@@ -5,6 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 import {
 	defaultJournalStoreDirectory,
 	defaultSessionDatabasePath,
+	readClaimFile,
+	sameDirectory,
 	secretFilePath,
 	storageHomeDir,
 } from "@bastani/atomic/storage";
@@ -861,4 +863,212 @@ test("an adopted parent store and legacy pool host id stay adopted when the agen
 	}
 	assert.equal(storageHomeDir(aliasedA2), aliasedA2);
 	assert.equal(poolHostId(aliasedA1), legacyHostId);
+	assert.equal(sameDirectory(aliasedA1, a1), true);
+	assert.equal(readClaimFile(join(parent, "workflows", ".adopted-by")), a1);
+});
+
+test("user workflow resource discovery keeps nested journal, pool, and runs files in default ~/.atomic/agent, ~/.pi/agent, and adopted directories while excluding them in co-located custom directories (#5242)", async () => {
+	const home = join(root, "res-home");
+	const defaultAgent = join(home, ".atomic", "agent");
+	const piAgent = join(home, ".pi", "agent");
+	const defaultTop = join(defaultAgent, "workflows", "top.ts");
+	const defaultNested = join(defaultAgent, "workflows", "runs", "nested.ts");
+	const piNested = join(piAgent, "workflows", "runs", "pi-nested.ts");
+	mkdirSync(join(defaultAgent, "workflows", "runs"), { recursive: true });
+	mkdirSync(join(piAgent, "workflows", "runs"), { recursive: true });
+	writeFileSync(defaultTop, "export default {};\n");
+	writeFileSync(defaultNested, "export default {};\n");
+	writeFileSync(piNested, "export default {};\n");
+
+	vi.stubEnv("HOME", home);
+	vi.stubEnv("USERPROFILE", home);
+	delete process.env.ATOMIC_CODING_AGENT_DIR;
+	delete process.env.PI_CODING_AGENT_DIR;
+
+	const defaultManager = new DefaultPackageManager({
+		cwd: project,
+		agentDir: defaultAgent,
+		settingsManager: SettingsManager.inMemory(),
+	});
+	const defaultResolved = await defaultManager.resolve();
+	const defaultPaths = defaultResolved.workflows.map((entry) => entry.path);
+	assert.equal(defaultPaths.includes(defaultTop), true);
+	assert.equal(defaultPaths.includes(defaultNested), true);
+	assert.equal(defaultPaths.includes(piNested), true);
+
+	const adoptedParent = join(root, "adopted-res-parent");
+	const adoptedAgent = join(adoptedParent, "a1");
+	const adoptedNested = join(adoptedAgent, "workflows", "runs", "adopted-nested.ts");
+	mkdirSync(join(adoptedParent, "workflows"), { recursive: true });
+	writeFileSync(join(adoptedParent, "workflows", ".adopted-by"), `${adoptedAgent}\n`);
+	mkdirSync(join(adoptedAgent, "workflows", "runs"), { recursive: true });
+	writeFileSync(adoptedNested, "export default {};\n");
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", adoptedAgent);
+	const adoptedManager = new DefaultPackageManager({
+		cwd: project,
+		agentDir: adoptedAgent,
+		settingsManager: SettingsManager.inMemory(),
+	});
+	const adoptedResolved = await adoptedManager.resolve();
+	assert.equal(
+		adoptedResolved.workflows.some((entry) => entry.path === adoptedNested),
+		true,
+	);
+});
+
+test("cross-domain process environment variables and settings-blind lookups do not pre-settle adoption before settings-aware resolution (#5242)", async () => {
+	const parent1 = join(root, "cross-domain-1");
+	const a1 = join(parent1, "a1");
+	const a2 = join(parent1, "a2");
+	mkdirSync(a1, { recursive: true });
+	mkdirSync(a2, { recursive: true });
+	const seeded1 = await resolveSessionStore(project, {
+		agentDir: a1,
+		sessionStore: { kind: "sqlite", path: join(parent1, "team.sqlite") },
+	});
+	try {
+		await seeded1.create(
+			{
+				id: "aaaaaaaa-1111-4111-8111-111111111111",
+				version: 4,
+				createdAt: "2026-11-16T00:00:00.000Z",
+				cwd: project,
+			},
+			[],
+		);
+	} finally {
+		await seeded1.close();
+	}
+	resetStorageHomeCacheForTests();
+
+	vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", "{}");
+	const sessionSettings = { sessions: { storage: { path: "team.sqlite" } } };
+	const store1 = await resolveSessionStore(project, { agentDir: a1, settings: sessionSettings });
+	const store2 = await resolveSessionStore(project, { agentDir: a2, settings: sessionSettings });
+	try {
+		assert.equal(
+			(await store1.readHeader("aaaaaaaa-1111-4111-8111-111111111111"))?.id,
+			"aaaaaaaa-1111-4111-8111-111111111111",
+		);
+		assert.equal(await store2.readHeader("aaaaaaaa-1111-4111-8111-111111111111"), undefined);
+	} finally {
+		await store1.close();
+		await store2.close();
+	}
+	assert.deepEqual(selectRunJournal({ agentDir: a1, settings: sessionSettings }), {
+		kind: "sharded",
+		dir: join(parent1, "workflows", "journal"),
+	});
+	vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", "");
+
+	const parent2 = join(root, "cross-domain-2");
+	const b1 = join(parent2, "b1");
+	const b2 = join(parent2, "b2");
+	mkdirSync(b1, { recursive: true });
+	mkdirSync(b2, { recursive: true });
+	writeFileSync(join(parent2, "wf-team.sqlite"), "");
+	vi.stubEnv("ATOMIC_SESSIONS_STORAGE", "{}");
+	const journalSettings = { workflows: { journal: { path: "wf-team.sqlite" } } };
+	assert.deepEqual(selectRunJournal({ agentDir: b1, settings: journalSettings }), {
+		kind: "sqlite",
+		path: join(parent2, "wf-team.sqlite"),
+	});
+	assert.deepEqual(selectRunJournal({ agentDir: b2, settings: journalSettings }), {
+		kind: "sqlite",
+		path: join(b2, "wf-team.sqlite"),
+	});
+	vi.stubEnv("ATOMIC_SESSIONS_STORAGE", "");
+
+	const parent3 = join(root, "provisional-parent");
+	const c1 = join(parent3, "c1");
+	mkdirSync(c1, { recursive: true });
+	writeFileSync(join(parent3, "late-settings.sqlite"), "");
+	assert.equal(storageHomeDir(c1), c1);
+	assert.deepEqual(
+		selectSessionStorage(project, { agentDir: c1, settings: { storage: { path: "late-settings.sqlite" } } }),
+		{
+			kind: "sqlite",
+			path: join(parent3, "late-settings.sqlite"),
+		},
+	);
+	assert.equal(storageHomeDir(c1), parent3);
+});
+
+test.skipIf(process.platform === "win32")(
+	"an agent directory ending with a literal backslash on POSIX stays distinct from its sibling without the backslash (#5242)",
+	async () => {
+		const parent = join(root, "posix-backslash");
+		const plain = join(parent, "profile");
+		const withBackslash = `${plain}\\`;
+		mkdirSync(plain, { recursive: true });
+		mkdirSync(withBackslash, { recursive: true });
+
+		assert.equal(storageHomeDir(plain), plain);
+		assert.equal(storageHomeDir(withBackslash), withBackslash);
+		assert.equal(defaultSessionDatabasePath(plain), join(plain, "workflows", "journal.sqlite"));
+		assert.equal(defaultSessionDatabasePath(withBackslash), join(withBackslash, "workflows", "journal.sqlite"));
+
+		const plainStore = await resolveSessionStore(project, { agentDir: plain, settings: {} });
+		const backslashStore = await resolveSessionStore(project, { agentDir: withBackslash, settings: {} });
+		try {
+			await plainStore.create(
+				{
+					id: "bbbbbbbb-2222-4222-8222-222222222222",
+					version: 4,
+					createdAt: "2026-11-16T00:00:00.000Z",
+					cwd: project,
+				},
+				[],
+			);
+			assert.equal(
+				(await plainStore.readHeader("bbbbbbbb-2222-4222-8222-222222222222"))?.id,
+				"bbbbbbbb-2222-4222-8222-222222222222",
+			);
+			assert.equal(await backslashStore.readHeader("bbbbbbbb-2222-4222-8222-222222222222"), undefined);
+		} finally {
+			await plainStore.close();
+			await backslashStore.close();
+		}
+	},
+);
+
+test("relative storage target classification matches untrimmed resolvePath rules for leading-whitespace paths (#5242)", async () => {
+	const parent = join(root, "untrimmed-target");
+	const a1 = join(parent, "a1");
+	const a2 = join(parent, "a2");
+	mkdirSync(a1, { recursive: true });
+	mkdirSync(a2, { recursive: true });
+
+	const seeded = await resolveSessionStore(project, {
+		agentDir: a1,
+		sessionStore: { kind: "sqlite", path: join(parent, " ~") },
+	});
+	try {
+		await seeded.create(
+			{
+				id: "cccccccc-3333-4333-8333-333333333333",
+				version: 4,
+				createdAt: "2026-11-16T00:00:00.000Z",
+				cwd: project,
+			},
+			[],
+		);
+	} finally {
+		await seeded.close();
+	}
+	resetStorageHomeCacheForTests();
+
+	const settings = { storage: { path: " ~" } };
+	const store1 = await resolveSessionStore(project, { agentDir: a1, settings });
+	const store2 = await resolveSessionStore(project, { agentDir: a2, settings });
+	try {
+		assert.equal(
+			(await store1.readHeader("cccccccc-3333-4333-8333-333333333333"))?.id,
+			"cccccccc-3333-4333-8333-333333333333",
+		);
+		assert.equal(await store2.readHeader("cccccccc-3333-4333-8333-333333333333"), undefined);
+	} finally {
+		await store1.close();
+		await store2.close();
+	}
 });

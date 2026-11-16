@@ -477,7 +477,7 @@ export const TEAM_PROFILE_SOURCE = `${TEAM_PROFILE_ENV}=ci`;
 
 /** The journal selection exactly as the workflows extension makes it from these settings. */
 export function selectJournal(agentDir: string, settings: Settings): StorageSelection {
-	const processChoice = selectProcessStorage("journal", agentDir);
+	const processChoice = selectProcessStorage("journal", agentDir, undefined, settings);
 	if (processChoice !== undefined) return processChoice.selection;
 	const journal = journalSetting(settings);
 	const value = journal ?? settings.storage;

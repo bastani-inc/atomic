@@ -129,7 +129,7 @@ export function selectSessionStorage(
 		return selection;
 	}
 	const agentDir = options.agentDir ?? getAgentDir();
-	const processChoice = selectProcessStorage("sessions", agentDir, cwd);
+	const processChoice = selectProcessStorage("sessions", agentDir, cwd, options.settings);
 	if (processChoice !== undefined) {
 		sources.set(processChoice.selection, { source: processChoice.source, field: processChoice.field });
 		return processChoice.selection;

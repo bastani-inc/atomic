@@ -103,7 +103,7 @@ describe("createAgentSession session manager defaults", () => {
 			[],
 		);
 
-		const location = join(tempDir, "workflows", "journal.sqlite");
+		const location = join(agentDir, "workflows", "journal.sqlite");
 		assert.deepEqual(session.sessionManager.getSessionStore().descriptor, { adapter: "node-sqlite", location });
 		assert.equal(session.sessionManager.getSessionFile(), undefined);
 		assert.equal(session.sessionManager.isPersisted(), true);
@@ -114,12 +114,14 @@ describe("createAgentSession session manager defaults", () => {
 	});
 
 	it("rejects an unavailable default database without choosing memory", async () => {
-		writeFileSync(join(tempDir, "workflows"), "not a directory");
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(join(agentDir, "workflows"), "not a directory");
 		await assert.rejects(
 			createAgentSession({ cwd, agentDir, model: getModel("anthropic", "claude-sonnet-4-5")! }),
 			(error: Error) => {
 				assert.ok(error instanceof StorageUnavailableError);
 				assert.equal(error.adapter, "node-sqlite");
+				assert.equal(error.location, join(agentDir, "workflows", "journal.sqlite"));
 				return true;
 			},
 		);

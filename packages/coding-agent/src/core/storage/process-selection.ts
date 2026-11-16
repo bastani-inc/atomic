@@ -6,7 +6,12 @@ import { ENV_SESSION_DIR } from "../../config.js";
 import { resolvePath } from "../../utils/paths.ts";
 import { SessionStorageSelectionSchema, StorageSelectionSchema } from "../settings-schema.ts";
 import { StorageConfigError, StoragePrefixError } from "./errors.js";
-import { defaultSessionDatabasePath, defaultSharedStoragePath, storageHomeDir } from "./file-identity.js";
+import {
+	defaultSessionDatabasePath,
+	defaultSharedStoragePath,
+	type StorageHomeSettings,
+	storageHomeDir,
+} from "./file-identity.js";
 import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { validateStoragePrefix } from "./prefix.js";
 import type { StorageSelection } from "./provider.js";
@@ -151,30 +156,45 @@ export function selectProcessStorage(
 	domain: StorageDomain,
 	agentDir: string,
 	cwd = process.cwd(),
+	settings?: StorageHomeSettings,
 ): ProcessStorageChoice | undefined {
 	const legacyField = domain === "sessions" ? ENV_SESSION_DIR : WORKFLOW_JOURNAL_PATH_ENV;
 	const legacy = environmentValue(legacyField);
-	const environment = environmentChoices(agentDir);
+	const validated = environmentChoices(agentDir, false);
+	const baseDir = () => storageHomeDir(agentDir, settings);
+	const domainDefault = () => defaultSessionDatabasePath(agentDir, settings);
+	const sharedDefault = () => defaultSharedStoragePath(agentDir, settings);
+	const journalDefault = () => defaultJournalStoreDirectory(agentDir, settings);
+	const resolveEnv = (
+		field: string,
+		schema: typeof SessionStorageSelectionSchema | typeof StorageSelectionSchema,
+		defaultPath: () => string,
+	): ProcessStorageChoice | undefined => {
+		const text = environmentValue(field);
+		if (text === undefined) return undefined;
+		const value = parseSelection(text, schema, "env", field);
+		if (field === WORKFLOWS_JOURNAL_ENV && !("dir" in value) && selectsDefaultJournalStore(value))
+			return { selection: { kind: "sharded", dir: journalDefault() }, source: "env", field };
+		return choose(value, "env", field, baseDir, defaultPath);
+	};
 	const cli = registry[CLI_SELECTION];
 	if (cli !== undefined) {
 		if (legacy !== undefined) {
 			throw new StorageConfigError("cli", `${cli.field}, ${legacyField}`, "conflicting-overrides");
 		}
-		return choose(
-			cli.value,
-			"cli",
-			cli.field,
-			() => storageHomeDir(agentDir),
-			() => defaultSharedStoragePath(agentDir),
-		);
+		return choose(cli.value, "cli", cli.field, baseDir, sharedDefault);
 	}
 	const domainField = domain === "sessions" ? SESSIONS_STORAGE_ENV : WORKFLOWS_JOURNAL_ENV;
-	const domainChoice = domain === "sessions" ? environment.sessions : environment.journal;
+	const domainChoice = domain === "sessions" ? validated.sessions : validated.journal;
 	if (domainChoice !== undefined) {
 		if (legacy !== undefined) {
 			throw new StorageConfigError("env", `${domainField}, ${legacyField}`, "conflicting-overrides");
 		}
-		return domainChoice;
+		return resolveEnv(
+			domainField,
+			domain === "sessions" ? SessionStorageSelectionSchema : StorageSelectionSchema,
+			domainDefault,
+		);
 	}
 	if (legacy !== undefined) {
 		if (domain === "journal")
@@ -185,7 +205,11 @@ export function selectProcessStorage(
 			throw new StorageConfigError("env", legacyField, "invalid-path");
 		}
 	}
-	return environment.shared ?? environment.team;
+	if (validated.shared !== undefined) {
+		return resolveEnv(STORAGE_ENV, StorageSelectionSchema, sharedDefault);
+	}
+	const team = environmentTeamProfile();
+	return team === undefined ? undefined : choose(team, "env", TEAM_PROFILE_ENV, baseDir, sharedDefault);
 }
 
 /** Whether the launching process selected this domain's storage, without validating the selection. */

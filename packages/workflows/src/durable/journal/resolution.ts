@@ -33,6 +33,9 @@ export interface RunJournalSettings {
 				/** Whether the decision model may decide a stage's readiness after a steer. Default: true. */
 				autoAdvanceAfterSteer?: boolean;
 		  };
+	sessions?: {
+		storage?: unknown;
+	};
 	storage?: StorageSettingsSelection;
 	snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
 }
@@ -94,7 +97,7 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 			defaultSessionDatabasePath(agentDir, options.settings),
 		);
 	}
-	const processChoice = selectProcessStorage("journal", agentDir);
+	const processChoice = selectProcessStorage("journal", agentDir, undefined, options.settings);
 	if (processChoice !== undefined) {
 		origins.set(processChoice.selection, { source: processChoice.source, field: processChoice.field });
 		return processChoice.selection;

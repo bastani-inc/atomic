@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createChildProcessEnvironment } from "@bastani/atomic";
 import {
 	type AdapterOptions,
+	readClaimFile,
 	type StorageSelection,
+	sameDirectory,
 	storageHomeDir,
 	storageSelectionKey,
 	workflowsStorageDir,
@@ -236,41 +238,6 @@ function readId(file: string): string | undefined {
 	}
 }
 
-function readClaimPath(file: string): string | undefined {
-	try {
-		const raw = readFileSync(file, "utf8");
-		const line = raw.endsWith("\r\n") ? raw.slice(0, -2) : raw.endsWith("\n") ? raw.slice(0, -1) : raw;
-		return line.length > 0 ? line : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function fileIdentity(path: string): string | undefined {
-	try {
-		const { dev, ino } = statSync(path, { bigint: true });
-		if (ino !== 0n) return `${dev}:${ino}`;
-		const real = realpathSync.native(path);
-		return `path:${process.platform === "win32" || process.platform === "darwin" ? real.toLowerCase() : real}`;
-	} catch {
-		return undefined;
-	}
-}
-
-function samePath(left: string, right: string): boolean {
-	const resolvedLeft = resolve(left);
-	const resolvedRight = resolve(right);
-	if (
-		process.platform === "win32"
-			? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
-			: resolvedLeft === resolvedRight
-	) {
-		return true;
-	}
-	const identity = fileIdentity(left);
-	return identity !== undefined && identity === fileIdentity(right);
-}
-
 /**
  * The id an earlier build kept for every agent directory under one parent, in the pool state directory they share, for
  * the one agent directory that claims it (#5219): the first to start records itself beside it, and only the directory
@@ -280,7 +247,7 @@ function adoptedHostId(agentDir: string): string | undefined {
 	const legacy = join(dirname(agentDir), "workflows", "pool", "host-id");
 	const id = readId(legacy);
 	if (id === undefined) return undefined;
-	if (!samePath(storageHomeDir(agentDir), dirname(agentDir))) return undefined;
+	if (!sameDirectory(storageHomeDir(agentDir), dirname(agentDir))) return undefined;
 	const claim = `${legacy}.adopted-by`;
 	const self = resolve(agentDir);
 	// Written whole beside the claim and linked into place, so the claim is never seen, or left by a crash, empty: a
@@ -293,8 +260,8 @@ function adoptedHostId(agentDir: string): string | undefined {
 	} finally {
 		rmSync(staged, { force: true });
 	}
-	const owner = readClaimPath(claim);
-	return owner !== undefined && samePath(owner, self) ? id : undefined;
+	const owner = readClaimFile(claim);
+	return owner !== undefined && sameDirectory(owner, self) ? id : undefined;
 }
 
 /**

@@ -747,7 +747,7 @@ Atomic discovers workflow definitions in this order:
 | `.atomic/extensions/workflow/config.json` | Project | `workflows.<name>.path`; project entries override global entries |
 | `.atomic/workflows/*.{ts,js,mjs,cjs}` | Project | Current project workflow directory |
 | `~/.atomic/agent/extensions/workflow/config.json` | Global | `workflows.<name>.path` for user-wide configured paths |
-| `~/.atomic/agent/workflows/*.{ts,js,mjs,cjs}` | Global | Current user workflow directory (top-level `journal/`, `pool/`, and `runs/` are reserved for Atomic's store and skipped) |
+| `~/.atomic/agent/workflows/*.{ts,js,mjs,cjs}` | Global | Current user workflow directory (when `ATOMIC_CODING_AGENT_DIR` co-locates Atomic's store in `<agentDir>/workflows`, top-level `journal/`, `pool/`, and `runs/` are skipped) |
 | Installed Atomic packages | Package | Uses package metadata or conventional `workflows/` directories |
 | Bundled workflows | Built-in | Shipped with `@bastani/atomic/workflows` |
 
