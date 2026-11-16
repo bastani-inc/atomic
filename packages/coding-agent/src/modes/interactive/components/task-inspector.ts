@@ -389,7 +389,10 @@ export class TaskInspector implements Component {
 	}
 	private selected() {
 		const id = this.navigation.selectedTaskId;
-		return id === undefined ? undefined : this.tasksById.get(id);
+		if (id === undefined) return undefined;
+		return this.navigation.focus.kind === "tasks"
+			? this.tasksById.get(id)
+			: this.store.backgroundTasks.find((task) => task.ref.taskId === id);
 	}
 	private stdinAvailable(): boolean {
 		const task = this.selected();
