@@ -82,6 +82,11 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	readonly chatSession?: ChatBoxSession;
 	/** Whether the session is part-way through a turn, for a viewer that missed `agent_start`. */
 	isRunning?(): boolean;
+	/**
+	 * Interrupts the session's current turn, as Esc does in a chat. The task keeps running: it waits for its next
+	 * message instead of ending. Absent where the task's turn cannot be interrupted from a view.
+	 */
+	interruptTurn?(): Promise<void>;
 	/** The messages queued for the session now, for a viewer that missed their `queue_update`. */
 	getQueuedMessages?(): QueuedTaskMessages;
 	readonly completionSource?: TaskCompletionSource;

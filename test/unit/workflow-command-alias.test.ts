@@ -50,3 +50,65 @@ test("registers /workflows as the durable run-history alias", async () => {
 		setDurableBackend(undefined);
 	}
 });
+
+test("/workflows opens the session's only run in its graph, never a resume picker (#5224)", async () => {
+	setDurableBackend(await createMemoryTestBackend());
+	const { store } = await import("../../packages/workflows/src/shared/store.js");
+	const runId = crypto.randomUUID();
+	store.recordRunStart({
+		id: runId,
+		name: "demo",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: Date.now(),
+	});
+	try {
+		const handlers = new Map<string, WorkflowCommandHandler>();
+		const opened: string[] = [];
+		const pickers: string[] = [];
+		const graph: GraphOverlayPort = {
+			open: (id) => {
+				opened.push(String(id));
+			},
+			toggle: () => {},
+			close: () => {},
+		};
+		const pi: ExtensionAPI = { registerCommand() {} };
+		const runtime = createExtensionRuntime();
+		registerWorkflowSlashCommand(pi, handlers, {
+			runtimeProxy: runtime,
+			runtimeForContext: () => runtime,
+			overlay: graph,
+			reloadWorkflowResources: () => undefined,
+			ensureWorkflowResourcesLoaded: () => undefined,
+			runWithLifecycleSuppressedForPolicy: (_policy, run) => run(),
+			runControl: {
+				pi,
+				overlay: graph,
+				runtimeForContext: () => runtime,
+				ensureWorkflowResourcesLoaded: () => undefined,
+			},
+		});
+		const ui = {
+			custom: async () => undefined,
+			select: async () => undefined,
+			notify: () => {},
+			sessionPicker: async () => {
+				pickers.push("session");
+				return undefined;
+			},
+			showSessionPicker: async () => {
+				pickers.push("session");
+				return undefined;
+			},
+		};
+		await handlers.get("workflows")?.("", { ui, hasUI: true, cwd: process.cwd() } as never);
+		assert.deepEqual(opened, [runId]);
+		assert.deepEqual(pickers, [], "no resume picker opens");
+	} finally {
+		store.removeRun(runId);
+		setDurableBackend(undefined);
+	}
+});

@@ -42,6 +42,8 @@ interface UndeliveredMessage {
 }
 
 const undeliveredMessages = new WeakMap<TaskViewSource, Map<TaskId, UndeliveredMessage>>();
+/** What the reader had typed in a task's chat when they left it, per chat, for when they come back. */
+const keptDrafts = new WeakMap<TaskViewSource, Map<TaskId, string>>();
 
 function failureText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -57,8 +59,14 @@ export interface TaskTranscriptPage {
 	handleInput(data: string): boolean;
 	/** Whether the reader is typing, so a key such as Left edits instead of leaving. */
 	hasDraft(): boolean;
+	/** Whether the prompt's cursor is at its start, where ← leaves and keeps any draft for the return. */
+	cursorAtStart(): boolean;
 	/** Whether the page takes Escape and Left itself, as while its own task list is open. */
 	handlesBack(): boolean;
+	/** Whether Esc would interrupt the task's current turn now. */
+	interruptible(): boolean;
+	/** Interrupts the task's current turn; the task keeps running and waits for its next message. */
+	interrupt(): Promise<TaskViewResult<undefined>>;
 	render(width: number, rows: number): string[];
 	invalidate(): void;
 	dispose(): void;
@@ -97,6 +105,15 @@ function withoutExtensionStatuses(data: ReadonlyFooterDataProvider): ReadonlyFoo
 	};
 }
 
+/** A subagent stopped resumably (`x x`, Ctrl+X Ctrl+K): a message resumes it, and never anything else. */
+export const STOPPED_NOTE = "Stopped · send to resume";
+
+/** Printable text, Enter, Backspace or Delete: keys that type into or send the prompt. */
+function isTyping(data: string): boolean {
+	if (matchesKey(data, "enter") || matchesKey(data, "backspace") || matchesKey(data, "delete")) return true;
+	return [...data].every((ch) => ch >= " " && ch !== "\x7f");
+}
+
 async function settled<T>(read: T | Promise<T>): Promise<T> {
 	return read instanceof Promise ? await read : read;
 }
@@ -108,7 +125,19 @@ async function settled<T>(read: T | Promise<T>): Promise<T> {
  */
 export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	readonly chat: ChatSessionHost;
-	status = "Loading transcript…";
+	private loadStatus = "Loading transcript…";
+	/** Loading and failure notes, then why the chat is read-only when it is. */
+	get status(): string {
+		const stopped = this.source.taskStopped?.(this.taskId) === true ? STOPPED_NOTE : "";
+		return [this.loadStatus, this.readOnlyReason() ?? stopped].filter(Boolean).join(" · ");
+	}
+	set status(value: string) {
+		this.loadStatus = value;
+	}
+	/** Why messages cannot reach this task any more, or `undefined` while they can. */
+	readOnlyReason(): string | undefined {
+		return this.source.taskReadOnlyReason?.(this.taskId);
+	}
 	private readonly source: TaskViewSource;
 	private readonly taskId: TaskId;
 	private readonly env: TaskTranscriptEnvironment;
@@ -150,7 +179,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			requestRender,
 			taskRowsInChat: false,
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
-			isDisabled: () => source.sendTaskMessage === undefined,
+			// A finished subagent's chat stays live, and a message resumes it; one stopped for good is read-only.
+			isDisabled: () => source.sendTaskMessage === undefined || this.readOnlyReason() !== undefined,
 			onNearTop: () => this.loadEarlier(),
 			// A subagent's `/tasks` lists the tasks it launched, as a stage chat's lists the stage's own.
 			getTaskSource: () => launchedTaskViewSource(source, taskId),
@@ -166,7 +196,17 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 				handleSlashCommand: (text) => this.chat.openTasks(text.split(/\s+/)[1]),
 			},
 		});
+		this.restoreDraft();
 		this.restoreUndelivered();
+	}
+
+	/** Restores what was typed here before the reader left. */
+	private restoreDraft(): void {
+		const kept = keptDrafts.get(this.source);
+		const draft = kept?.get(this.taskId);
+		if (draft === undefined) return;
+		kept?.delete(this.taskId);
+		this.chat.setInputText(draft);
 	}
 
 	async load(): Promise<void> {
@@ -230,6 +270,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.requestRender();
 			return true;
 		}
+		// A read-only chat scrolls and keeps its keys, but takes no typing: nothing it sends could reach the task.
+		if (!this.chat.hasTaskInspector && this.readOnlyReason() !== undefined && isTyping(data)) return true;
 		// The subagent's own task list is modal while it is open, as in a stage chat.
 		const handled = this.chat.hasTaskInspector ? this.chat.handleTaskInput(data) : this.chat.handleInput(data);
 		this.requestRender();
@@ -275,6 +317,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	dispose(): void {
+		if (!this.disposed && this.chat.hasInputText()) {
+			const kept = keptDrafts.get(this.source) ?? new Map<TaskId, string>();
+			kept.set(this.taskId, this.chat.inputText());
+			keptDrafts.set(this.source, kept);
+		}
 		this.disposed = true;
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
@@ -285,8 +332,23 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return this.chat.hasInputText();
 	}
 
+	cursorAtStart(): boolean {
+		return this.chat.inputCursorAtStart();
+	}
+
 	handlesBack(): boolean {
 		return this.chat.hasTaskInspector;
+	}
+
+	interruptible(): boolean {
+		return this.source.interruptTask !== undefined && this.followed?.isRunning?.() === true;
+	}
+
+	async interrupt(): Promise<TaskViewResult<undefined>> {
+		const interrupt = this.source.interruptTask;
+		if (interrupt === undefined)
+			return { ok: false, error: { message: "This task's turn cannot be interrupted from here." } };
+		return interrupt.call(this.source, this.taskId);
 	}
 
 	private adoptLatestPage(page: TaskViewResult<TaskTranscriptView>): void {
@@ -377,7 +439,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const message = kept?.get(this.taskId);
 		if (message === undefined) return;
 		kept?.delete(this.taskId);
-		this.chat.setInputText(message.text);
+		const draft = this.chat.inputText();
+		this.chat.setInputText(draft ? `${message.text}\n${draft}` : message.text);
 		this.chat.showWarning(message.reason);
 	}
 }
@@ -460,8 +523,20 @@ export class TaskCommandOutputPage implements TaskTranscriptPage {
 		return false;
 	}
 
+	cursorAtStart(): boolean {
+		return true;
+	}
+
 	handlesBack(): boolean {
 		return false;
+	}
+
+	interruptible(): boolean {
+		return false;
+	}
+
+	async interrupt(): Promise<TaskViewResult<undefined>> {
+		return { ok: false, error: { message: "A shell's output has no turn to interrupt." } };
 	}
 
 	render(width: number, rows: number): string[] {

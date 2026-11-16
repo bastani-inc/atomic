@@ -3,6 +3,7 @@ import { Box, Text } from "@bastani/atomic-tui";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
+import { APP_ACTION, isKeybindingsLike, navKeyLabel } from "./keybindings-adapter.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
 import {
 	bgFn,
@@ -160,7 +161,7 @@ export function renderFooterWithOrchestratorReturnHint(
 	return lines;
 }
 export function renderReadOnlyArchiveFooter(ctx: StageChatViewContext, width: number): string[] {
-	const closeHint = paint("esc", ctx.theme.text, { bold: true }) + paint(" to close", ctx.theme.textMuted);
+	const closeHint = paint("ctrl+c", ctx.theme.text, { bold: true }) + paint(" to close", ctx.theme.textMuted);
 	return [
 		mergeOrchestratorReturnHintIntoLine(ctx, closeHint, width, {
 			minimumPrefixWidth: visibleWidth(closeHint) + 1,
@@ -172,7 +173,7 @@ export function renderReadOnlyArchiveFooter(ctx: StageChatViewContext, width: nu
  * Inject `[stage: name]` into the widget top rule (Case 2 of issue #2886).
  *
  * Accepts a pure `─` DynamicBorder and empty boxed fill. Titled boxes and
- * unrelated first rows are left unchanged. The ctrl+x hint is merged
+ * unrelated first rows are left unchanged. The back-to-graph hint is merged
  * separately by embedOrchestratorReturnHintInWidget.
  */
 export function embedStageLabelInWidgetTopRule(
@@ -217,13 +218,18 @@ function mergeOrchestratorReturnHintIntoLine(
 		minimumPrefixWidth?: number;
 	} = {},
 ): string {
+	// An open choice or yes/no card: ← moves its selection, so its only way out is Esc, which closes the card.
+	const cardOpen = closableQuestionCardOpen(ctx);
+	const key = cardOpen ? "esc" : backToGraphKey(ctx);
+	const full = cardOpen ? " close" : " return to graph";
+	const compact = cardOpen ? " close" : " graph";
 	const fullHint = {
-		plain: "ctrl+x return to graph",
-		styled: paint("ctrl+x", ctx.theme.text, { bold: true }) + paint(" return to graph", ctx.theme.textMuted),
+		plain: `${key}${full}`,
+		styled: paint(key, ctx.theme.text, { bold: true }) + paint(full, ctx.theme.textMuted),
 	};
 	const compactHint = {
-		plain: "ctrl+x graph",
-		styled: paint("ctrl+x", ctx.theme.text, { bold: true }) + paint(" graph", ctx.theme.textMuted),
+		plain: `${key}${compact}`,
+		styled: paint(key, ctx.theme.text, { bold: true }) + paint(compact, ctx.theme.textMuted),
 	};
 	const trailingBorder = options.preserveTrailingBorder === true ? trailingWidgetBorderChar(line) : "";
 	const suffixWidth = visibleWidth(trailingBorder);
@@ -297,4 +303,20 @@ export function editorRuleColor(
 		default:
 			return ctx.theme.border;
 	}
+}
+
+/** Whether a choice or yes/no question card owns the composer's place (not closed back to the prompt with Esc). */
+export function closableQuestionCardOpen(
+	ctx: Pick<StageChatViewContext, "promptState"> & Partial<Pick<StageChatViewContext, "dismissedPromptId">>,
+): boolean {
+	const prompt = ctx.promptState?.prompt;
+	return (
+		prompt !== undefined && prompt.kind !== "input" && prompt.kind !== "editor" && prompt.id !== ctx.dismissedPromptId
+	);
+}
+
+/** The key that returns from a stage chat to its graph, as its hints name it. */
+export function backToGraphKey(ctx: Pick<StageChatViewContext, "piKeybindings">): string {
+	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+	return navKeyLabel(keybindings, APP_ACTION.navBack, "←") || "←";
 }

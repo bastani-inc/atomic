@@ -134,7 +134,7 @@ test.each(["main", "stage", "engine-workflow-first", "engine-tasks-first"] as co
 			if (stage) {
 				const narrow = stripVTControlCharacters(stage.render(40).join("\n"));
 				assert.match(narrow, /Tasks {2}1 local agent running.*\/tasks/);
-				assert.match(narrow, /ctrl\+x (?:return to )?graph/);
+				assert.match(narrow, /← (?:return to )?graph/);
 			}
 			await tasks.settle(1);
 			assert.doesNotMatch(render(), /Tasks {2}/);

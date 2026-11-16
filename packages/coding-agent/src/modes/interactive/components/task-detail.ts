@@ -81,7 +81,7 @@ export class TaskDetail implements Component {
 		for (const action of taskDetailActions(this.task.execution, this.task.attention, this.content.stdinAvailable)) {
 			const hint =
 				action === "cancel" || action === "input"
-					? keyHintIfBound(`app.tasks.${action}`, taskDetailLabels[action])
+					? keyHintIfBound(action === "cancel" ? "app.list.stop" : "app.tasks.input", taskDetailLabels[action])
 					: "";
 			lines.push(hint || taskDetailLabels[action]);
 		}

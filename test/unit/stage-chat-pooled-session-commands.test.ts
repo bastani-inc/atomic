@@ -120,7 +120,7 @@ test("/tasks in the chat of a stage on a local worker lists that stage's tasks f
 	}
 });
 
-test("a stop of a worker stage's task that does not reach the worker says so in /tasks, where x stops only from the detail page (#3996, #4521)", async () => {
+test("a stop of a worker stage's task that does not reach the worker says so in /tasks, after a second x (#3996, #4521, #5224)", async () => {
 	initTheme("dark");
 	const previous = getKeybindings();
 	setKeybindings(new KeybindingsManager());
@@ -142,14 +142,10 @@ test("a stop of a worker stage's task that does not reach the worker says so in 
 	try {
 		submitStageChatText(view, "/tasks");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /npm run build/));
-		assert.doesNotMatch(view.render(120).join("\n"), /x stop/, "the task list offers no x");
+		assert.match(view.render(120).join("\n"), /x stop/, "the task list offers x");
 		view.handleInput("x");
-		assert.doesNotMatch(view.render(120).join("\n"), /y: confirm/, "x on the task list stops nothing");
-		view.handleInput("\r");
-		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /x stop/));
+		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /again within 3s to stop npm run build/));
 		view.handleInput("x");
-		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /y: confirm/));
-		view.handleInput("y");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Could not stop the task: The connection/));
 	} finally {
 		view.dispose();
@@ -157,7 +153,7 @@ test("a stop of a worker stage's task that does not reach the worker says so in 
 	}
 });
 
-test("a stop from a task's detail page that does not reach the worker says so, and x in its transcript stops nothing (#3996, #4521)", async () => {
+test("a stop from a task's detail page that does not reach the worker says so, and x in its transcript stops nothing (#3996, #4521, #5224)", async () => {
 	initTheme("dark");
 	const previous = getKeybindings();
 	setKeybindings(new KeybindingsManager());
@@ -180,17 +176,17 @@ test("a stop from a task's detail page that does not reach the worker says so, a
 	try {
 		submitStageChatText(view, "/tasks");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /npm run build/));
-		view.handleInput("\r");
+		view.handleInput(" ");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Inspect transcript/));
 		view.handleInput("\r");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Transcript ·/));
 		view.handleInput("x");
-		assert.doesNotMatch(view.render(120).join("\n"), /y: confirm/);
-		view.handleInput("\x1b");
+		assert.doesNotMatch(view.render(120).join("\n"), /again within 3s/);
+		view.handleInput("\x1b[D");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Inspect transcript/));
 		view.handleInput("x");
-		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /y: confirm/));
-		view.handleInput("y");
+		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /again within 3s to stop/));
+		view.handleInput("x");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Could not stop the task: the worker is gone/));
 	} finally {
 		view.dispose();

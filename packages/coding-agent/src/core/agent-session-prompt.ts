@@ -858,6 +858,13 @@ async function settleSubagentMessages(session: AgentSession): Promise<void> {
 		// #4226: a child that could not save a message stops; its queued input waits for its next prompt.
 		(!session._queuedMessagesPaused && session._persistenceFailure === undefined && session.agent.hasQueuedMessages())
 	);
+	// #5224: a turn the user interrupted from the child's chat is not the child's end. Its admission stays open for the
+	// next message, which starts a turn; the child's execution ending seals it.
+	if (session._turnInterruptedByUser) {
+		session._turnInterruptedByUser = false;
+		session._awaitingMessageAfterInterrupt = true;
+		return;
+	}
 	admission.seal();
 }
 

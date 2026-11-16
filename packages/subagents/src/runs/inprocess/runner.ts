@@ -112,6 +112,8 @@ export interface TestSessionOptions {
 	readonly promptGate?: Promise<void>;
 	/** Match AgentSession.abort() settling an active prompt without throwing. */
 	readonly abortResolvesPrompt?: boolean;
+	/** An abort that settles a prompt ends only that turn: the session takes another prompt, as after Esc. */
+	readonly abortEndsTurnOnly?: boolean;
 	/** Emit a fallback event for tests that exercise live model metadata. */
 	readonly fallbackModel?: string;
 	/** Emit the effective thinking level applied to the fallback candidate. */
@@ -569,6 +571,32 @@ export function inProcessChildResourceLoaderOptions(input: {
 	};
 }
 
+/**
+ * Resolves once `session` has started another turn and become idle again, as a message delivered to an interrupted
+ * child starts one, or once any of `stops` aborts. A child that is never messaged again waits here until it is stopped.
+ */
+export function nextTurnSettled(
+	session: Pick<AgentSession, "subscribe" | "isStreaming">,
+	stops: readonly AbortSignal[],
+): Promise<void> {
+	return new Promise<void>((resolve) => {
+		let started = session.isStreaming;
+		let unsubscribe = () => {};
+		const finish = () => {
+			unsubscribe();
+			for (const stop of stops) stop.removeEventListener("abort", finish);
+			resolve();
+		};
+		if (stops.some((stop) => stop.aborted)) return resolve();
+		for (const stop of stops) stop.addEventListener("abort", finish, { once: true });
+		unsubscribe = session.subscribe((event) => {
+			if (event.type === "agent_start") started = true;
+			else if (event.type === "agent_end" && started)
+				queueMicrotask(() => (session.isStreaming ? undefined : finish()));
+		});
+	});
+}
+
 function createTestSession(sessionManager: SessionManager, spec: ChildSpec): AgentSession {
 	const listeners = new Set<AgentSessionEventListener>();
 	const testOptions = typeof spec.testSession === "object" ? spec.testSession : {};
@@ -583,6 +611,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 	})();
 	let lastAssistantText = "";
 	let aborted = false;
+	let streaming = false;
 	let settlePromptAbort: (() => void) | undefined;
 	const messages: Array<{
 		role: string;
@@ -624,7 +653,14 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		model: sessionModel,
 		thinkingLevel: testOptions.sessionThinkingLevel,
 		messages,
+		get isStreaming() {
+			return streaming;
+		},
 		abort: async () => {
+			aborted = true;
+			settlePromptAbort?.();
+		},
+		interruptTurn: async () => {
 			aborted = true;
 			settlePromptAbort?.();
 		},
@@ -659,43 +695,58 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			};
 			for (const listener of listeners) listener({ type: "agent_start" } as AgentSessionEvent);
 			if (aborted) throw new Error("aborted");
-			if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
-			await sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
-			userMessages += 1;
-			if (testOptions.seededAssistantText) {
-				lastAssistantText = testOptions.seededAssistantText;
-				await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
-			}
-			if (testOptions.fallbackBeforeGate) emitFallback();
-			for (const event of testOptions.beforeGateEvents ?? []) for (const listener of listeners) listener(event);
-			if (testOptions.promptGate) {
-				const gateResult = await Promise.race([
-					testOptions.promptGate.then(() => "released" as const),
-					new Promise<"aborted">((resolve, reject) => {
-						settlePromptAbort = () => {
-							if (testOptions.abortResolvesPrompt) resolve("aborted");
-							else reject(new DOMException("aborted", "AbortError"));
-						};
-						if (aborted) settlePromptAbort();
-					}),
-				]);
-				if (gateResult === "aborted") {
-					if (testOptions.thinkingOnlyOnAbort) {
-						lastAssistantText = "";
-						await appendAssistant([{ type: "thinking", thinking: "aborted mid-thought" }], "aborted");
-					}
-					for (const event of testOptions.events ?? []) for (const listener of listeners) listener(event);
-					return "";
+			streaming = true;
+			try {
+				if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
+				await sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
+				userMessages += 1;
+				if (testOptions.seededAssistantText) {
+					lastAssistantText = testOptions.seededAssistantText;
+					await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
 				}
+				if (testOptions.fallbackBeforeGate) emitFallback();
+				for (const event of testOptions.beforeGateEvents ?? []) for (const listener of listeners) listener(event);
+				if (testOptions.promptGate) {
+					const gateResult = await Promise.race([
+						testOptions.promptGate.then(() => "released" as const),
+						new Promise<"aborted">((resolve, reject) => {
+							settlePromptAbort = () => {
+								if (testOptions.abortResolvesPrompt) resolve("aborted");
+								else reject(new DOMException("aborted", "AbortError"));
+							};
+							if (aborted) settlePromptAbort();
+						}),
+					]);
+					if (gateResult === "aborted") {
+						if (testOptions.thinkingOnlyOnAbort) {
+							lastAssistantText = "";
+							await appendAssistant([{ type: "thinking", thinking: "aborted mid-thought" }], "aborted");
+						}
+						for (const event of testOptions.events ?? []) for (const listener of listeners) listener(event);
+						if (testOptions.abortEndsTurnOnly) {
+							aborted = false;
+							settlePromptAbort = undefined;
+							await appendAssistant([], "aborted");
+						}
+						return "";
+					}
+				}
+				for (const event of testOptions.events ?? []) {
+					for (const listener of listeners) listener(event);
+				}
+				if (!testOptions.fallbackBeforeGate) emitFallback();
+				lastAssistantText = testOptions.output ?? "done";
+				await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
+				const next = steering.shift() ?? followUps.shift();
+				if (next === undefined) return lastAssistantText;
+				streaming = false;
+				return await session.prompt(next);
+			} finally {
+				streaming = false;
+				// A turn that can be interrupted alone ends as a real session's does, so a waiting viewer sees it end.
+				if (testOptions.abortEndsTurnOnly)
+					for (const listener of listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
 			}
-			for (const event of testOptions.events ?? []) {
-				for (const listener of listeners) listener(event);
-			}
-			if (!testOptions.fallbackBeforeGate) emitFallback();
-			lastAssistantText = testOptions.output ?? "done";
-			await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
-			const next = steering.shift() ?? followUps.shift();
-			return next === undefined ? lastAssistantText : session.prompt(next);
 		},
 		steer: async (text: string) => {
 			steering.push(text);
@@ -743,6 +794,9 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		},
 		followUp: async (text) => {
 			await session.followUp(text);
+		},
+		prompt: async (text) => {
+			await session.prompt(text);
 		},
 	});
 	return session;
@@ -1616,6 +1670,8 @@ export class SubagentControlRuntime {
 		const executionEnded = new AbortController();
 
 		let termination: TerminationCauseName | undefined;
+		// The user interrupted the child's turn from its chat: it waits for their next message instead of ending.
+		let turnInterruptedByUser = false;
 		// The task and resume follow-ups the session has not been given yet; a stop before then keeps them for resume.
 		const unsent: UnsentInput = { task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] };
 		let terminating: Promise<void> | undefined;
@@ -1873,6 +1929,11 @@ export class SubagentControlRuntime {
 				});
 			}
 			const transcriptSession = session;
+			const interruptTurn = async (): Promise<void> => {
+				if (!transcriptSession.isStreaming || termination !== undefined) return;
+				turnInterruptedByUser = true;
+				await transcriptSession.interruptTurn();
+			};
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
 			let observedStreamingMessage: AssistantMessage | undefined;
 			taskHooks?.bindTranscript?.({
@@ -1884,6 +1945,7 @@ export class SubagentControlRuntime {
 				chatSession: transcriptSession,
 				commands: () => sessionCommands(transcriptSession, sessionManager.getCwd()),
 				isRunning: () => transcriptSession.isStreaming,
+				interruptTurn,
 				getQueuedMessages: () => ({
 					steering: transcriptSession.getSteeringMessages(),
 					followUp: transcriptSession.getFollowUpMessages(),
@@ -2068,6 +2130,10 @@ export class SubagentControlRuntime {
 						await prompting;
 					}
 				}
+			}
+			while (turnInterruptedByUser && termination === undefined) {
+				turnInterruptedByUser = false;
+				await nextTurnSettled(session, [signals.abort, signals.interrupt]);
 			}
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);

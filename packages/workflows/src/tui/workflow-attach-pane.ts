@@ -1,7 +1,7 @@
 /**
  * In-place shell that swaps one `pi.ui.custom` overlay between the workflow
  * graph and a stage chat without remounting the outer popup. Enter attaches
- * the focused graph node; Ctrl+X returns to the graph with focus preserved,
+ * the focused graph node; ← on an empty prompt returns to the graph with focus preserved,
  * including for paused stages.
  *
  * Related host and view wiring lives in `overlay-adapter.ts`, `graph-view.ts`,

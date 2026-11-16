@@ -48,6 +48,7 @@ import type {
 	SessionTreeNode,
 } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import type { QuestionAnswer, QuestionParams } from "../../core/tools/ask-user-question/tool/types.js";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
@@ -114,6 +115,7 @@ export type RpcCommand =
 	| { id?: string; type: "list_workflow_runs"; status?: WorkflowRunFilterStatus }
 	| { id?: string; type: "get_workflow_run_summary"; runId: string }
 	| { id?: string; type: "open_task_inspector"; taskId?: string }
+	| { id?: string; type: "stop_all_background" }
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string; persist?: boolean }
@@ -312,6 +314,13 @@ export type RpcResponse =
 	  }
 	| { id?: string; type: "response"; command: "get_workflow_run_summary"; success: true; data: WorkflowRunDetail }
 	| { id?: string; type: "response"; command: "open_task_inspector"; success: true }
+	| {
+			id?: string;
+			type: "response";
+			command: "stop_all_background";
+			success: true;
+			data: StopAllBackgroundOutcome;
+	  }
 
 	// Model
 	| {
