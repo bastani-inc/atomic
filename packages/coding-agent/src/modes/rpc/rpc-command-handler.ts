@@ -257,6 +257,9 @@ export function createRpcCommandHandler({
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
 					compactionReason: session.compactionReason,
+					...(session.compactionStartedAt === undefined
+						? {}
+						: { compactionStartedAt: session.compactionStartedAt }),
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
 					...(session.sessionFile ? { sessionLocation: session.sessionFile } : {}),

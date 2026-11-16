@@ -15,6 +15,7 @@ import { bindAgentPanel } from "../rpc/agent-panel-bridge.ts";
 import { interruptedNotice } from "./components/assistant-message.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
+import { compactionMeta } from "./components/working-run-meter.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -118,6 +119,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 
 	switch (event.type) {
 		case "agent_start":
+			this.workingRunMeter.start();
 			this.pendingTools.clear();
 			if (this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(true);
@@ -263,6 +265,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			// `message_end` supplies the authoritative final message.
 			if (this.streamingMessage) {
 				applyAssistantMessageDelta(this.streamingMessage, event.assistantMessageEvent);
+				this.workingRunMeter.streaming(this.streamingMessage);
 			}
 			if (this.streamingComponent && this.streamingMessage?.role === "assistant") {
 				this.streamingComponent.updateContent(this.streamingMessage, true);
@@ -289,6 +292,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 
 		case "message_end":
 			if (event.message.role === "user") break;
+			this.workingRunMeter.settled(event.message);
 			if (this.streamingComponent && event.message.role === "assistant") {
 				this.streamingMessage = event.message;
 				let errorMessage: string | undefined;
@@ -374,6 +378,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "agent_end": {
+			this.workingRunMeter.stop();
 			const compactionInProgress = this.compactionActive;
 			if (!compactionInProgress && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);
@@ -415,18 +420,20 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.session.abortCompaction();
 			};
 			this.stopWorkingLoader();
-			const cancelHint = `(${keyText("app.interrupt")} Cancel)`;
 			const isOverflowAutoCompaction = event.reason === "overflow";
 			const label =
 				event.reason === "manual"
-					? `Compacting context... ${cancelHint}`
-					: `${isOverflowAutoCompaction ? "Context overflow detected. " : ""}Auto-compacting... ${cancelHint}`;
+					? "Compacting context..."
+					: `${isOverflowAutoCompaction ? "Context overflow detected. " : ""}Auto-compacting...`;
 			this.autoCompactionLoader = new AtomicWorkingLoader(
 				this.ui,
 				undefined,
 				(text) => theme.fg(isOverflowAutoCompaction ? "warning" : "muted", text),
 				label,
 			);
+			const compactionStartedAt = this.session.compactionStartedAt ?? Date.now();
+			this.autoCompactionLoader.setLogo(true);
+			this.autoCompactionLoader.setMeta(() => compactionMeta(compactionStartedAt, keyText("app.interrupt")));
 			this.statusContainer.addChild(this.autoCompactionLoader);
 			this.ui.requestRender();
 			break;
@@ -468,7 +475,6 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				// `result` and `errorMessage` are independent: a committed boundary stays visible when a
 				// later step failed, such as foreground compaction after a background result (#4977).
 				if (event.result) {
-					this.chatContainer.clear();
 					this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
 					this.addCompactionBoundaryToChat(event.result);
 					if (event.result.usage) this.addCompactionCostNotice("compaction", event.result.usage);
@@ -559,6 +565,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			break;
 		}
 		case "model_fallback_end": {
+			if (!event.success) this.workingRunMeter.stop();
 			if (this.fallbackLoader) {
 				this.fallbackLoader.stop();
 				this.fallbackLoader = undefined;
@@ -587,6 +594,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 			}
 			// Show error only on final failure (success shows normal response)
 			if (!event.success) {
+				this.workingRunMeter.stop();
 				this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
 			}
 			this.ui.requestRender();
@@ -594,6 +602,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "agent_continue_error": {
+			this.workingRunMeter.stop();
 			this.stopWorkingLoader();
 			this.showError(event.errorMessage);
 			this.ui.requestRender();

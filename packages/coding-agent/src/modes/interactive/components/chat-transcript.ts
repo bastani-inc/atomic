@@ -6,10 +6,12 @@ import {
 	matchesKey,
 	type ScrollViewScrollbar,
 	Spacer,
+	stripTerminalSequences,
 	truncateToWidth,
 	visibleWidth,
 	type WheelScrollLines,
 } from "@bastani/atomic-tui";
+import { isUserPromptRow } from "./jump-to-latest.ts";
 import { WheelScrollAccelerator } from "./wheel-scroll-accelerator.ts";
 
 /**
@@ -43,6 +45,7 @@ interface CachedChatTranscriptBlock<TEntry extends ChatTranscriptEntryLike> {
 	readonly width: number;
 	readonly component: Component;
 	readonly lines: readonly string[];
+	readonly promptRows: readonly number[];
 }
 
 type DisposableComponent = Component & { dispose?: () => void };
@@ -61,10 +64,18 @@ export interface RowWindowSegment {
 	readonly rows: number;
 }
 
+interface MeasuredRowWindow {
+	readonly rowCount: number;
+	readonly segments?: readonly RowWindowSegment[];
+	renderRows(start: number, end: number): string[];
+	findUserPromptRow?(start: number): number | undefined;
+}
+
 interface RowWindowComponent extends Component {
 	readonly supportsRowWindow: true;
 	rowCount(width: number): number;
 	renderRows(width: number, startRow: number, endRow: number): string[];
+	measureRows?(width: number): MeasuredRowWindow;
 	/**
 	 * Optional row map, letting the viewport keep a scroll anchor that sits
 	 * *inside* this component when its interior changes height.
@@ -74,7 +85,8 @@ interface RowWindowComponent extends Component {
 
 interface WindowedComponentRows {
 	readonly kind: "windowed";
-	readonly component: RowWindowComponent;
+	readonly renderRows: MeasuredRowWindow["renderRows"];
+	readonly findUserPromptRow: MeasuredRowWindow["findUserPromptRow"];
 	readonly rowCount: number;
 	readonly segments: readonly RowWindowSegment[] | undefined;
 }
@@ -120,6 +132,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 
 	private readonly cacheKey: ChatTranscriptCacheKey<TEntry> | undefined;
 	private blockCache: Array<CachedChatTranscriptBlock<TEntry> | undefined> = [];
+	private measuredRows: MeasuredRowWindow | undefined;
 	/** Per-entry heights recorded by the most recent `renderAllRows`. */
 	private staticSegments: readonly RowWindowSegment[] = [];
 	/** Width those heights were measured at; they mean nothing at another width. */
@@ -138,17 +151,13 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 
 	render(width: number): string[] {
 		if (!this.supportsRowWindow) return this.renderAllRows(width);
-		return this.renderRows(width, 0, this.rowCount(width));
+		const measured = this.measureRows(width);
+		return measured.renderRows(0, measured.rowCount);
 	}
 
 	rowCount(width: number): number {
 		if (!this.supportsRowWindow) return this.renderAllRows(width).length;
-		this.ensureBlockCache(width);
-		let count = 0;
-		for (const block of this.blockCache) {
-			if (block !== undefined) count += block.lines.length;
-		}
-		return count;
+		return this.measureRows(width).rowCount;
 	}
 
 	/**
@@ -164,12 +173,7 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 			// accounting instead.
 			return this.staticSegmentsWidth === width ? this.staticSegments : [];
 		}
-		this.ensureBlockCache(width);
-		const segments: RowWindowSegment[] = [];
-		for (const block of this.blockCache) {
-			if (block !== undefined) segments.push({ id: block.entry, rows: block.lines.length });
-		}
-		return segments;
+		return this.measureRows(width).segments ?? [];
 	}
 
 	renderRows(width: number, startRow: number, endRow: number): string[] {
@@ -177,33 +181,57 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 		const end = Math.max(start, Math.floor(endRow));
 		if (end <= start) return [];
 		if (!this.supportsRowWindow) return this.renderAllRows(width).slice(start, end);
+		return this.measureRows(width).renderRows(start, end);
+	}
 
+	measureRows(width: number): MeasuredRowWindow {
 		this.ensureBlockCache(width);
-		const lines: string[] = [];
-		let cursor = 0;
-		for (let index = 0; index < this.entries.length; index += 1) {
-			const block = this.blockCache[index];
+		if (this.measuredRows !== undefined) return this.measuredRows;
+		const segments: RowWindowSegment[] = [];
+		const blocks: Array<CachedChatTranscriptBlock<TEntry>> = [];
+		const starts: number[] = [];
+		const prompts: number[] = [];
+		let rowCount = 0;
+		for (const block of this.blockCache) {
 			if (block === undefined) continue;
-			const blockStart = cursor;
-			const blockEnd = blockStart + block.lines.length;
-			if (blockEnd > start && blockStart < end) {
-				const localStart = Math.max(0, start - blockStart);
-				const localEnd = Math.min(block.lines.length, end - blockStart);
-				lines.push(...block.lines.slice(localStart, localEnd));
+			segments.push({ id: block.entry, rows: block.lines.length });
+			if (block.lines.length > 0) {
+				blocks.push(block);
+				starts.push(rowCount);
+				for (const row of block.promptRows) prompts.push(rowCount + row);
 			}
-			cursor = blockEnd;
-			if (cursor >= end) break;
+			rowCount += block.lines.length;
 		}
-		return lines;
+		this.measuredRows = {
+			rowCount,
+			segments,
+			findUserPromptRow: (start) => prompts[indexAtOrBefore(prompts, start)],
+			renderRows: (start, end) => {
+				const lines: string[] = [];
+				for (let index = Math.max(0, indexAtOrBefore(starts, start)); index < blocks.length; index++) {
+					const block = blocks[index];
+					const blockStart = starts[index] ?? 0;
+					if (block === undefined || blockStart >= end) break;
+					const localEnd = Math.min(block.lines.length, end - blockStart);
+					for (let row = Math.max(0, start - blockStart); row < localEnd; row++) {
+						lines.push(block.lines[row] ?? "");
+					}
+				}
+				return lines;
+			},
+		};
+		return this.measuredRows;
 	}
 
 	invalidate(): void {
 		for (const block of this.blockCache) disposeComponent(block?.component);
 		this.blockCache = [];
+		this.measuredRows = undefined;
 	}
 
 	private ensureBlockCache(width: number): void {
 		if (this.blockCache.length > this.entries.length) {
+			this.measuredRows = undefined;
 			for (let index = this.entries.length; index < this.blockCache.length; index += 1) {
 				disposeComponent(this.blockCache[index]?.component);
 			}
@@ -219,13 +247,13 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 			}
 			disposeComponent(cached?.component);
 			const component = this.renderEntry(entry);
-			this.blockCache[index] = {
-				entry,
-				key,
-				width,
-				component,
-				lines: this.renderEntryBlock(component, entry, index, width),
-			};
+			const lines = this.renderEntryBlock(component, entry, index, width);
+			const promptRows: number[] = [];
+			for (let row = 0; row < lines.length; row++) {
+				if (isUserPromptRow(lines[row] ?? "")) promptRows.push(row);
+			}
+			this.blockCache[index] = { entry, key, width, component, lines, promptRows };
+			this.measuredRows = undefined;
 		}
 	}
 
@@ -261,6 +289,17 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	}
 }
 
+function indexAtOrBefore(sorted: readonly number[], target: number): number {
+	let low = 0;
+	let high = sorted.length;
+	while (low < high) {
+		const middle = Math.floor((low + high) / 2);
+		if ((sorted[middle] ?? 0) <= target) low = middle + 1;
+		else high = middle;
+	}
+	return low - 1;
+}
+
 function disposeComponent(component: Component | undefined): void {
 	(component as DisposableComponent | undefined)?.dispose?.();
 }
@@ -269,10 +308,12 @@ function disposeComponent(component: Component | undefined): void {
 export const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
 /** How long an `"auto"` scrollbar stays visible after the last scroll. */
 export const SCROLLBAR_HIDE_DELAY_MS = 1000;
-const OSC133_PROMPT_START = /^\x1b\]133;A(?:\x07|\x1b\\)/;
+const OSC133_PROMPT_START = /^\x1b\]133;A(?:;[^\x07\x1b]*)?(?:\x07|\x1b\\)/;
 const SCROLLBAR_THUMB = "┃";
 const SCROLLBAR_TRACK = "│";
 const SCROLLBAR_CELL_RESET = "\x1b[0m\x1b]8;;\x07";
+const PINNED_PROMPT_SCAN_ROWS = 64;
+const MAX_PINNED_PROMPT_SCAN_ROWS = 16_384;
 
 /** Settings and hooks of a {@link ScrollableComponentViewport}; every member is optional. */
 export interface ScrollableComponentViewportOptions {
@@ -282,6 +323,8 @@ export interface ScrollableComponentViewportOptions {
 	readonly scrollbar?: () => ScrollViewScrollbar | undefined;
 	/** Painted in the last row while the viewport is scrolled away from its live end. */
 	readonly followIndicator?: Pick<Component, "render">;
+	readonly pinnedPrompt?: (promptRow: string) => string;
+	readonly observeFollowing?: (following: boolean) => void;
 	/** Asked to repaint when an `"auto"` scrollbar hides. */
 	readonly requestRender?: () => void;
 	/** Called after a render whose first row lies within one viewport of the top. */
@@ -426,7 +469,7 @@ export class ScrollableComponentViewport implements Component {
 	 */
 	renderRows(width: number, startRow: number, endRow: number): string[] {
 		const contentWidth = this.contentWidth(width);
-		return this.renderVisibleRows(this.measureComponentRows(contentWidth), contentWidth, startRow, endRow);
+		return this.renderVisibleRows(this.measureComponentRows(contentWidth), startRow, endRow);
 	}
 
 	handleInput(data: string): boolean {
@@ -530,16 +573,23 @@ export class ScrollableComponentViewport implements Component {
 		this.maxScroll = maxScroll;
 		this.clampScroll();
 
+		this.options.observeFollowing?.(this.scrollFromBottom === 0);
 		const start = Math.max(0, maxScroll - this.scrollFromBottom);
 		const indicator =
 			this.scrollFromBottom > 0 && this.visibleRows > 1
 				? (this.options.followIndicator?.render(width).slice(0, 1) ?? [])
 				: [];
-		const contentRows = this.visibleRows - indicator.length;
-		const visible = this.renderVisibleRows(componentRows, contentWidth, start, start + contentRows).map(
-			withoutTerminalControl,
-		);
-		while (visible.length < contentRows) visible.push(" ".repeat(contentWidth));
+		const pinned =
+			this.scrollFromBottom > 0 && start > 0 && this.visibleRows - indicator.length > 2
+				? this.pinnedPromptRow(componentRows, start)
+				: undefined;
+		const pin = pinned === undefined ? [] : [truncateToWidth(pinned, contentWidth, "")];
+		const contentRows = this.visibleRows - indicator.length - pin.length;
+		const visible = [
+			...pin,
+			...this.renderVisibleRows(componentRows, start, start + contentRows).map(withoutTerminalControl),
+		];
+		while (visible.length < contentRows + pin.length) visible.push(" ".repeat(contentWidth));
 		const painted = this.paintScrollbar(visible, width, scrollbar, { lineCount, start, maxScroll });
 		if (start < this.visibleRows) this.options.onNearTop?.();
 		return [...painted, ...indicator];
@@ -558,11 +608,13 @@ export class ScrollableComponentViewport implements Component {
 	private measureComponentRows(width: number): ComponentRows[] {
 		return this.components.map((component) => {
 			if (isRowWindowComponent(component)) {
+				const measured = component.measureRows?.(width);
 				return {
 					kind: "windowed",
-					component,
-					rowCount: component.rowCount(width),
-					segments: component.rowSegments?.(width),
+					renderRows: measured?.renderRows ?? ((start, end) => component.renderRows(width, start, end)),
+					findUserPromptRow: measured?.findUserPromptRow,
+					rowCount: measured?.rowCount ?? component.rowCount(width),
+					segments: measured?.segments ?? component.rowSegments?.(width),
 				};
 			}
 			const lines = component.render(width);
@@ -579,12 +631,7 @@ export class ScrollableComponentViewport implements Component {
 		});
 	}
 
-	private renderVisibleRows(
-		componentRows: readonly ComponentRows[],
-		width: number,
-		startRow: number,
-		endRow: number,
-	): string[] {
+	private renderVisibleRows(componentRows: readonly ComponentRows[], startRow: number, endRow: number): string[] {
 		const lines: string[] = [];
 		let cursor = 0;
 		for (const rows of componentRows) {
@@ -593,11 +640,11 @@ export class ScrollableComponentViewport implements Component {
 			if (componentEnd > startRow && componentStart < endRow) {
 				const localStart = Math.max(0, startRow - componentStart);
 				const localEnd = Math.min(rows.rowCount, endRow - componentStart);
-				if (rows.kind === "windowed") {
-					lines.push(...rows.component.renderRows(width, localStart, localEnd));
-				} else {
-					lines.push(...rows.lines.slice(localStart, localEnd));
-				}
+				const selected =
+					rows.kind === "windowed"
+						? rows.renderRows(localStart, localEnd)
+						: rows.lines.slice(localStart, localEnd);
+				for (const line of selected) lines.push(line);
 			}
 			cursor = componentEnd;
 			if (cursor >= endRow) break;
@@ -683,15 +730,61 @@ export class ScrollableComponentViewport implements Component {
 		});
 	}
 
+	private pinnedPromptRow(componentRows: ComponentRows[], start: number): string | undefined {
+		const style = this.options.pinnedPrompt;
+		if (!style) return undefined;
+		const prompt = this.findUserPromptRow(componentRows, start);
+		if (prompt === undefined) return undefined;
+		let cursor = prompt;
+		let windowRows = 1;
+		while (cursor < start) {
+			const end = Math.min(start, cursor + windowRows);
+			const text = firstPromptTextRow(this.renderVisibleRows(componentRows, cursor, end));
+			if (text !== undefined) return style(text);
+			cursor = end;
+			windowRows = PINNED_PROMPT_SCAN_ROWS;
+		}
+		return undefined;
+	}
+
+	private findUserPromptRow(componentRows: readonly ComponentRows[], start: number): number | undefined {
+		let componentEnd = componentRows.reduce((total, rows) => total + rows.rowCount, 0);
+		for (let index = componentRows.length - 1; index >= 0; index--) {
+			const rows = componentRows[index];
+			if (rows === undefined) continue;
+			const componentStart = componentEnd - rows.rowCount;
+			componentEnd = componentStart;
+			if (componentStart > start || rows.rowCount === 0) continue;
+			const last = Math.min(rows.rowCount - 1, start - componentStart);
+			if (rows.kind === "windowed" && rows.findUserPromptRow !== undefined) {
+				const prompt = rows.findUserPromptRow(last);
+				if (prompt !== undefined) return componentStart + prompt;
+				continue;
+			}
+			if (rows.kind === "static") {
+				for (let row = last; row >= 0; row--) {
+					if (isUserPromptRow(rows.lines[row] ?? "")) return componentStart + row;
+				}
+				continue;
+			}
+			let windowRows = PINNED_PROMPT_SCAN_ROWS;
+			for (let end = last + 1; end > 0; ) {
+				const begin = Math.max(0, end - windowRows);
+				const lines = rows.renderRows(begin, end);
+				for (let row = lines.length - 1; row >= 0; row--) {
+					if (isUserPromptRow(lines[row] ?? "")) return componentStart + begin + row;
+				}
+				end = begin;
+				windowRows = Math.min(MAX_PINNED_PROMPT_SCAN_ROWS, windowRows * 2);
+			}
+		}
+		return undefined;
+	}
+
 	/** Parks the nearest semantic prompt (an OSC 133 `A` mark) above or below the first visible row at the top. */
 	private scrollToPrompt(direction: -1 | 1): void {
 		if (this.lastWidth <= 0) return;
-		const rows = this.renderVisibleRows(
-			this.measureComponentRows(this.lastWidth),
-			this.lastWidth,
-			0,
-			this.lastLineCount,
-		);
+		const rows = this.renderVisibleRows(this.measureComponentRows(this.lastWidth), 0, this.lastLineCount);
 		const top = Math.max(0, this.maxScroll - this.scrollFromBottom);
 		for (let row = top + direction; row >= 0 && row < rows.length; row += direction) {
 			if (!OSC133_PROMPT_START.test(rows[row] ?? "")) continue;
@@ -876,6 +969,14 @@ function withoutTerminalControl(row: string): string {
 	return row
 		.replace(CONTROL_SEQUENCE, (sequence) => (sequence.endsWith("m") ? sequence : ""))
 		.replace(CONTROL_CHARACTER, " ");
+}
+
+function firstPromptTextRow(rows: readonly string[]): string | undefined {
+	for (const row of rows) {
+		const text = stripTerminalSequences(row);
+		if (text.trim()) return text;
+	}
+	return undefined;
 }
 
 function isMouseSequence(data: string): boolean {

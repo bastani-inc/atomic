@@ -119,7 +119,7 @@ test("open agent transcript streams text and tool results without task activity 
 	}
 });
 
-test("live transcript keeps earlier pages and scroll position while new state arrives", async () => {
+test("live transcript keeps earlier pages and scroll position while new state arrives (#5243)", async () => {
 	initTheme("dark");
 	const keys = getKeybindings();
 	setKeybindings(new KeybindingsManager());
@@ -160,9 +160,21 @@ test("live transcript keeps earlier pages and scroll position while new state ar
 		inspector.handleInput("\x1b[1;5H");
 		assert.match(text(), /HISTORY-000/);
 		const before = text();
+		const beforeLines = before.split("\n");
+		const pillIndex = beforeLines.findIndex((line) => line.includes("↓ jump to bottom · ctrl+end"));
+		assert.notEqual(pillIndex, -1);
+		assert.equal(beforeLines[pillIndex]?.trim(), "↓ jump to bottom · ctrl+end");
 		listener?.({ type: "message_start", message: assistant("New live response") });
-		assert.match(text(), /HISTORY-000/);
-		assert.equal(text(), before, "live output below a reader who scrolled up leaves their rows still");
+		const after = text();
+		assert.match(after, /HISTORY-000/);
+		const afterLines = after.split("\n");
+		assert.equal(afterLines.length, beforeLines.length);
+		assert.equal(afterLines[pillIndex]?.trim(), "↓ 1 new message · ctrl+end");
+		assert.deepEqual(
+			afterLines.filter((_, index) => index !== pillIndex),
+			beforeLines.filter((_, index) => index !== pillIndex),
+			"live output below a reader who scrolled up leaves their rows still",
+		);
 		inspector.handleInput("\x1b[1;5F");
 		assert.match(text(), /New live response/);
 		inspector.dispose();

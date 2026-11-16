@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { type Component, Container, resetCapabilitiesCache, setCapabilities } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -102,6 +103,7 @@ type InitContext = {
 };
 
 type PromptTurnContext = {
+	workingRunMeter: WorkingRunMeter;
 	deferredStartupPending: boolean;
 	deferredStartupPromise?: Promise<void>;
 	compactionQueuedMessages: Array<{ text: string; mode: "steer" | "followUp" }>;
@@ -138,6 +140,7 @@ function createPromptTurnContext(
 	options: { deferredStartupPending?: boolean; deferredStartupPromise?: Promise<void> } = {},
 ): PromptTurnContext {
 	return {
+		workingRunMeter: new WorkingRunMeter(),
 		deferredStartupPending: options.deferredStartupPending ?? false,
 		deferredStartupPromise: options.deferredStartupPromise,
 		compactionQueuedMessages: [],

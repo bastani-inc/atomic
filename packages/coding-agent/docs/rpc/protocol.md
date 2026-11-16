@@ -243,6 +243,8 @@ Response:
 
 `resourceErrors` lists the extensions that failed to load in the last startup or reload, and `resourceWarnings` lists their load warnings, such as an extension registering the same tool name twice.
 
+When `isCompacting` is `true`, `compactionReason` identifies the foreground compaction. The optional `compactionStartedAt` gives its start time in Unix epoch milliseconds, so an attaching client can show elapsed time. These fields are absent when no foreground compaction is active.
+
 `compaction` is the [background compaction state](/compaction/reference#background-compaction-state): `state` is `idle`, `running`, `ready` or `failed`, and a failed state carries the serialized typed `error`.
 
 The `model` field is a full [Model](#model) object or `null`. Its `contextWindow` is the model's token budget. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.

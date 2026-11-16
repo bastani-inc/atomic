@@ -67,6 +67,7 @@ export async function _preflightPostToolContext(
 		this._autoCompactionAbortController = abortController;
 		this._autoCompactionCompletion = completion.promise;
 		this._compactionReason = "threshold";
+		this._compactionStartedAt = Date.now();
 		this._emit({ type: "compaction_start", reason: "threshold", midTurn: true });
 
 		const ready = await this._useReadyBackgroundCompaction(model);
@@ -167,7 +168,10 @@ export async function _preflightPostToolContext(
 		if (this._autoCompactionAbortController === abortController) this._autoCompactionAbortController = undefined;
 		completion.resolve();
 		if (this._autoCompactionCompletion === completion.promise) this._autoCompactionCompletion = undefined;
-		if (this._compactionReason === "threshold") this._compactionReason = undefined;
+		if (this._compactionReason === "threshold") {
+			this._compactionReason = undefined;
+			this._compactionStartedAt = undefined;
+		}
 	}
 }
 /** Gate the transformed message context immediately before provider conversion. */

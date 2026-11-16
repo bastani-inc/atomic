@@ -9,6 +9,7 @@ import {
 } from "@bastani/atomic-tui";
 import { ansi256ToHex, fgAnsi, hexToRgb } from "../theme/color-utils.ts";
 import { theme } from "../theme/theme.js";
+import { formatWorkingMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 
 /** Atomic's literal one-cell identity follows the approved ten-step luminance ramp. */
 export const ATOMIC_WORKING_FRAMES = ["∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀"] as const;
@@ -46,6 +47,12 @@ export interface AtomicWorkingStatusOptions {
 	spinnerColor?: (text: string) => string;
 	spinnerBoldColor?: (text: string) => string;
 	messageColor?: (text: string) => string;
+	meta?: WorkingRunSnapshot;
+	logo?: boolean;
+}
+
+export function atomicLogoMark(palette?: AtomicWorkingPalette | (() => AtomicWorkingPalette)): string {
+	return noColorRequested() ? "∀" : emphasize(colorizePhase(ATOMIC_WORKING_PHASES.indexOf("accent"), "∀", palette));
 }
 
 function normalizedFrameIndex(frame: number): number {
@@ -149,15 +156,20 @@ export class AtomicWorkingStatusComponent implements Component {
 		const frame = ATOMIC_WORKING_FRAMES[frameIndex];
 		const message = this.options.message ?? "Working...";
 		const bold = !reducedMotion && ATOMIC_WORKING_BOLD_PHASES[frameIndex];
-		const icon =
-			styleLegacyFrame(frame, bold, this.options) ??
-			(bold
-				? emphasize(colorizePhase(frameIndex, frame, this.options.palette))
-				: colorizePhase(frameIndex, frame, this.options.palette));
+		const icon = this.options.logo
+			? (styleLegacyFrame("∀", true, this.options) ?? atomicLogoMark(this.options.palette))
+			: (styleLegacyFrame(frame, bold, this.options) ??
+				(bold
+					? emphasize(colorizePhase(frameIndex, frame, this.options.palette))
+					: colorizePhase(frameIndex, frame, this.options.palette)));
 		const styledMessage = noColorRequested()
 			? message
 			: (this.options.messageColor ?? ((text: string) => theme.fg("muted", text)))(message);
-		return ["", ...new Text(`${icon} ${styledMessage}`, 1, 0).render(width)];
+		const metaText = this.options.meta ? formatWorkingMeta(this.options.meta) : "";
+		const meta = metaText ? ` (${metaText})` : "";
+		const metaColor = this.options.messageColor ?? ((text: string) => theme.fg("dim", text));
+		const styledMeta = meta && !noColorRequested() ? metaColor(meta) : meta;
+		return ["", ...new Text(`${icon} ${styledMessage}${styledMeta}`, 1, 0).render(width)];
 	}
 	invalidate(): void {}
 }
@@ -173,6 +185,9 @@ export class AtomicWorkingLoader implements Component {
 	private delegateGeneration = 0;
 	private indicator: LoaderIndicatorOptions | undefined;
 	private delegate: Loader | undefined;
+	private meta: (() => WorkingRunSnapshot | undefined) | undefined;
+	private logo = false;
+	private metaTimer: ReturnType<typeof setInterval> | undefined;
 
 	constructor(
 		ui: TUI,
@@ -196,6 +211,8 @@ export class AtomicWorkingLoader implements Component {
 				message: this.message,
 				spinnerColor: this.spinnerColor,
 				messageColor: this.messageColor,
+				meta: this.meta?.(),
+				logo: this.logo,
 			}).render(width)
 		);
 	}
@@ -236,7 +253,8 @@ export class AtomicWorkingLoader implements Component {
 			return;
 		}
 		this.stop();
-		if (process.env.ATOMIC_REDUCED_MOTION === "1") return;
+		this.armMetaTimer();
+		if (process.env.ATOMIC_REDUCED_MOTION === "1" || this.logo) return;
 		const timer = setInterval(() => {
 			if (this.timer !== timer || this.delegate) return;
 			this.frame = (this.frame + 1) % ATOMIC_WORKING_FRAMES.length;
@@ -253,6 +271,34 @@ export class AtomicWorkingLoader implements Component {
 		delegate?.stop();
 		if (this.timer) clearInterval(this.timer);
 		this.timer = undefined;
+		if (this.metaTimer) clearInterval(this.metaTimer);
+		this.metaTimer = undefined;
+	}
+
+	setMeta(meta: (() => WorkingRunSnapshot | undefined) | undefined): void {
+		this.meta = meta;
+		this.armMetaTimer();
+		this.ui.requestRender();
+	}
+
+	setLogo(logo: boolean): void {
+		this.logo = logo;
+		if (logo && this.timer) {
+			clearInterval(this.timer);
+			this.timer = undefined;
+		}
+		this.armMetaTimer();
+		this.ui.requestRender();
+	}
+
+	private armMetaTimer(): void {
+		if (this.metaTimer) clearInterval(this.metaTimer);
+		this.metaTimer = undefined;
+		if (this.indicator || this.delegate || !this.meta || (!this.logo && process.env.ATOMIC_REDUCED_MOTION !== "1"))
+			return;
+		const timer = setInterval(() => this.ui.requestRender(), 1000);
+		timer.unref?.();
+		this.metaTimer = timer;
 	}
 
 	setMessage(message: string): void {

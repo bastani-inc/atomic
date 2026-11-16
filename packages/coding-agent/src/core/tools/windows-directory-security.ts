@@ -9,19 +9,21 @@
  * principals. Names are never compared; two accounts can share a display name,
  * but never a SID.
  *
- * A subprocess per directory creation would sit on the spill hot path, so a
- * successful verification is cached per canonical path per process, keyed to
- * the directory's metadata identity — creation time, NTFS change time, and
- * last-write time. A directory swapped underneath the path carries a fresh
- * creation time, and an in-place DACL edit bumps the change time, so either
- * forces a fresh descriptor read rather than trust from a stale check (see
- * `verifyWindowsDirectorySecurity`). Failures are not cached: a refusal means
- * "no spill file this time", and a transient read failure must not disable
- * persistence for the rest of the process.
+ * The read is a synchronous subprocess, and on a loaded host it holds the
+ * main thread for seconds, so it runs once per private root per process: a
+ * successful verification is cached for the life of the process, keyed to the
+ * directory's path and identity (its file ID and creation time), and a
+ * directory inside a verified one needs no read of its own (see
+ * `verifyWindowsDirectorySecurity`). A directory swapped underneath the path
+ * is a new file with a new ID and is read again.
+ * Failures are not cached: a refusal means "no spill file this time", and a
+ * transient read failure must not disable persistence for the rest of the
+ * process.
  */
 
 import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
+import { dirname } from "node:path";
 
 /** One DACL entry with its trustee resolved to a literal SID. */
 export interface WindowsAccessRule {
@@ -224,53 +226,55 @@ type SecurityReader = (path: string) => WindowsDirectorySecurity | undefined;
 
 let securityReader: SecurityReader = readWindowsDirectorySecurity;
 
-/** The metadata identity a successful verification is bound to. */
-interface VerifiedDirectoryIdentity {
-	/** Creation time: a directory recreated at the path carries a fresh one. */
-	birthtimeMs: number;
-	/** NTFS change time: bumped by an in-place DACL edit (and by entry
-	 * creation/removal inside the directory, which forces a harmless
-	 * re-read). */
-	ctimeMs: number;
-	/** Last-write time: redundant with the change time on NTFS, kept so the
-	 * cache never outlives any observable metadata change. */
-	mtimeMs: number;
+/**
+ * Verified paths mapped to the identity of the directory verified there: its volume, file ID and creation time. A
+ * directory recreated at the path is a new file with a new ID; the creation time alone would not tell, since NTFS gives
+ * a name recreated within seconds of its deletion the old creation time back ("tunneling").
+ */
+const verifiedPaths = new Map<string, string>();
+
+/** The identity of the directory at `path`, or `undefined` when it cannot be read. */
+function identityOf(path: string): string | undefined {
+	try {
+		const stat = statSync(path, { bigint: true });
+		return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
+	} catch {
+		return undefined;
+	}
 }
 
-/** Verified paths mapped to the metadata identity observed *before* the
- * descriptor was read. Snapshotting before the read means any mutation that
- * races the read still changes the identity relative to the cache entry, so
- * the next call re-verifies rather than trusting the racing state. */
-const verifiedPaths = new Map<string, VerifiedDirectoryIdentity>();
+/** True when `path` was verified in this process and is still the directory verified there. */
+function stillVerified(path: string, identity: string | undefined): boolean {
+	return identity !== undefined && verifiedPaths.get(path) === identity;
+}
 
 /**
  * Verify `path` as adoptable, returning the refusal reason when it is not.
  *
- * The subprocess read sits on the spill path, so a successful verification
- * is cached for the life of the process while the directory's metadata
- * identity (creation, change, and last-write times) is unchanged. A swapped
- * directory or an in-place DACL edit changes that identity and forces a
- * fresh read; so does creating a file inside the directory, which trades one
- * bounded subprocess per spill for never trusting a stale descriptor. The
- * symlink/directory checks in `session-temp-dir.ts` still run on every use.
- * A failure is never cached, so a transient read error does not permanently
- * disable spills.
+ * The descriptor read is a synchronous subprocess, so it runs once per private root per process:
+ *
+ * - A directory verified in this process is trusted for the rest of it while it is the same directory (same file ID and
+ *   creation time). Only its owner or an administrator can change its DACL (the verified DACL grants nobody else that
+ *   right), and both can already reach everything below it, so an in-place edit by one of them is not read again. A
+ *   directory swapped underneath the path is a new file and is read again.
+ * - A directory inside a verified one needs no read of its own. The verified DACL lets only trusted principals create
+ *   entries in it, and grants nobody else access through inheritance either, since an inheritable entry for another
+ *   account refuses the parent itself; so a directory inside it was made by a trusted principal and starts private.
+ *
+ * The symlink/directory checks in `session-temp-dir.ts` still run on every use. A failure is never cached, so a
+ * transient read error does not permanently disable spills.
  */
 export function verifyWindowsDirectorySecurity(path: string): string | undefined {
-	let identity: VerifiedDirectoryIdentity;
-	try {
-		const stat = statSync(path);
-		identity = { birthtimeMs: stat.birthtimeMs, ctimeMs: stat.ctimeMs, mtimeMs: stat.mtimeMs };
-	} catch {
+	const identity = identityOf(path);
+	if (identity === undefined) {
 		return "its ownership could not be verified";
 	}
-	const cached = verifiedPaths.get(path);
-	if (
-		cached !== undefined &&
-		cached.birthtimeMs === identity.birthtimeMs &&
-		cached.ctimeMs === identity.ctimeMs &&
-		cached.mtimeMs === identity.mtimeMs
-	) {
+	if (stillVerified(path, identity)) {
+		return undefined;
+	}
+	const parent = dirname(path);
+	if (parent !== path && stillVerified(parent, identityOf(parent))) {
+		verifiedPaths.set(path, identity);
 		return undefined;
 	}
 	const security = securityReader(path);

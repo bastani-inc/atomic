@@ -247,6 +247,7 @@ export interface RpcSessionState {
 	isStreaming: boolean;
 	isCompacting: boolean;
 	compactionReason?: CompactionReason;
+	compactionStartedAt?: number;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
 	sessionLocation?: string;

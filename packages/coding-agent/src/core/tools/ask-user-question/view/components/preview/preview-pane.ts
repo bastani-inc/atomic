@@ -163,10 +163,10 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		for (let i = 0; i < rows; i++) {
 			const leftRaw = leftLines[i] ?? "";
 			const rightRaw = rightLines[i] ?? "";
-			const leftClamped = truncateToWidth(leftRaw, leftWidth, "");
+			const leftClamped = visibleWidth(leftRaw) > leftWidth ? truncateToWidth(leftRaw, leftWidth, "") : leftRaw;
 			const leftPad = " ".repeat(Math.max(0, leftWidth - visibleWidth(leftClamped)));
 			const joined = `${leftClamped}${leftPad}${gapStr}${rightRaw}`;
-			out.push(truncateToWidth(joined, width, ""));
+			out.push(visibleWidth(joined) > width ? truncateToWidth(joined, width, "") : joined);
 		}
 		return out;
 	}

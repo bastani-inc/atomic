@@ -32,7 +32,12 @@ function renderInitialChat(projectTrusted: boolean): string {
 		ui: { requestRender: vi.fn() },
 		attachStartupNoticesContainer: vi.fn(),
 		renderSessionEntries: vi.fn(),
-		sessionManager: { getEntries: () => [], getLeafId: () => null, getCwd: () => projectDir },
+		sessionManager: {
+			getSessionId: () => "session-1",
+			getEntries: () => [],
+			getLeafId: () => null,
+			getCwd: () => projectDir,
+		},
 		settingsManager: { isProjectTrusted: () => projectTrusted },
 	};
 	InteractiveModeBase.prototype.renderInitialMessages.call(mode as never);

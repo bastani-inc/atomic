@@ -572,28 +572,77 @@ export function inProcessChildResourceLoaderOptions(input: {
 }
 
 /**
+ * Resolves once the session has no turn running or starting and no interrupt delivery pending, or a stop fires.
+ * `subscribeDrained` is told each time the session's count of running turns returns to zero.
+ */
+export async function sessionDrained(
+	session: Pick<AgentSession, "subscribe" | "isStreaming" | "_activePromptCount" | "_pendingInterruptDeliveries">,
+	stops: readonly AbortSignal[],
+	subscribeDrained: (listener: () => void) => () => void,
+): Promise<void> {
+	// A session that does not count its turns has none running here.
+	const drained = () =>
+		(session._activePromptCount ?? 0) === 0 &&
+		(session._pendingInterruptDeliveries ?? 0) === 0 &&
+		!session.isStreaming;
+	while (!drained() && !stops.some((stop) => stop.aborted)) {
+		await new Promise<void>((resolve) => {
+			const unsubscribeDrained = subscribeDrained(() => done());
+			const unsubscribe = session.subscribe((event) => {
+				if (event.type === "agent_end" || event.type === "agent_settled") queueMicrotask(() => done());
+			});
+			function done(): void {
+				unsubscribeDrained();
+				unsubscribe();
+				for (const stop of stops) stop.removeEventListener("abort", done);
+				resolve();
+			}
+			for (const stop of stops) stop.addEventListener("abort", done, { once: true });
+		});
+	}
+}
+
+/**
  * Resolves once `session` has started another turn and become idle again, as a message delivered to an interrupted
  * child starts one, or once any of `stops` aborts. A child that is never messaged again waits here until it is stopped.
  */
 export function nextTurnSettled(
 	session: Pick<AgentSession, "subscribe" | "isStreaming">,
 	stops: readonly AbortSignal[],
+	options: {
+		readonly waitForStart?: boolean;
+		readonly skipStarts?: number;
+		readonly skipStart?: () => boolean;
+		readonly subscribeDrained?: (listener: () => void) => () => void;
+	} = {},
 ): Promise<void> {
 	return new Promise<void>((resolve) => {
-		let started = session.isStreaming;
+		let started = !options.waitForStart && session.isStreaming;
+		let startsToSkip = options.skipStarts ?? 0;
 		let unsubscribe = () => {};
+		let unsubscribeDrained = () => {};
 		const finish = () => {
 			unsubscribe();
+			unsubscribeDrained();
 			for (const stop of stops) stop.removeEventListener("abort", finish);
 			resolve();
 		};
 		if (stops.some((stop) => stop.aborted)) return resolve();
 		for (const stop of stops) stop.addEventListener("abort", finish, { once: true });
 		unsubscribe = session.subscribe((event) => {
-			if (event.type === "agent_start") started = true;
-			else if (event.type === "agent_end" && started)
-				queueMicrotask(() => (session.isStreaming ? undefined : finish()));
+			if (event.type === "agent_start") {
+				if (startsToSkip > 0) startsToSkip -= 1;
+				else if (options.skipStart?.() !== true) started = true;
+			} else if (options.subscribeDrained === undefined) {
+				if (event.type === "agent_settled" && started && !session.isStreaming) finish();
+				else if (event.type === "agent_end" && started)
+					queueMicrotask(() => (session.isStreaming ? undefined : finish()));
+			}
 		});
+		unsubscribeDrained =
+			options.subscribeDrained?.(() => {
+				if (started && !session.isStreaming) finish();
+			}) ?? (() => {});
 	});
 }
 
@@ -649,6 +698,92 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 	};
 	const steering: string[] = [];
 	const followUps: string[] = [];
+	// Held, queued messages start no turn until released, as a real session's are while it recovers.
+	let queuedMessagesPaused = false;
+	/** One turn: it saves its input, a prompt's text or the results of the calls it continues, then answers. */
+	const runTurn = async (saveInput: () => Promise<void>) => {
+		const emitFallback = (): void => {
+			if (!testOptions.fallbackModel) return;
+			for (const listener of listeners) {
+				listener({
+					type: "model_fallback_start",
+					from: "openai/gpt-5.1-codex",
+					to: testOptions.fallbackModel,
+					reason: "test fallback",
+					attempt: 1,
+				} as AgentSessionEvent);
+				if (testOptions.fallbackThinkingLevel) {
+					listener({
+						type: "thinking_level_changed",
+						level: testOptions.fallbackThinkingLevel,
+					} as AgentSessionEvent);
+				}
+				listener({
+					type: "tool_execution_start",
+					toolCallId: "test-fallback-tool",
+					toolName: "test-fallback-tool",
+					args: {},
+				} as AgentSessionEvent);
+			}
+		};
+		for (const listener of listeners) listener({ type: "agent_start" } as AgentSessionEvent);
+		if (aborted) throw new Error("aborted");
+		const turn = Promise.withResolvers<void>();
+		const previousTurn = activeTurn;
+		activeTurn = turn.promise;
+		streaming = true;
+		try {
+			await saveInput();
+			if (testOptions.seededAssistantText) {
+				lastAssistantText = testOptions.seededAssistantText;
+				await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
+			}
+			if (testOptions.fallbackBeforeGate) emitFallback();
+			for (const event of testOptions.beforeGateEvents ?? []) for (const listener of listeners) listener(event);
+			if (testOptions.promptGate) {
+				const gateResult = await Promise.race([
+					testOptions.promptGate.then(() => "released" as const),
+					new Promise<"aborted">((resolve, reject) => {
+						settlePromptAbort = () => {
+							if (testOptions.abortResolvesPrompt) resolve("aborted");
+							else reject(new DOMException("aborted", "AbortError"));
+						};
+						if (aborted) settlePromptAbort();
+					}),
+				]);
+				if (gateResult === "aborted") {
+					if (testOptions.thinkingOnlyOnAbort) {
+						lastAssistantText = "";
+						await appendAssistant([{ type: "thinking", thinking: "aborted mid-thought" }], "aborted");
+					}
+					for (const event of testOptions.events ?? []) for (const listener of listeners) listener(event);
+					if (testOptions.abortEndsTurnOnly) {
+						aborted = false;
+						settlePromptAbort = undefined;
+						await appendAssistant([], "aborted");
+					}
+					return "";
+				}
+			}
+			for (const event of testOptions.events ?? []) {
+				for (const listener of listeners) listener(event);
+			}
+			if (!testOptions.fallbackBeforeGate) emitFallback();
+			lastAssistantText = testOptions.output ?? "done";
+			await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
+			const next = queuedMessagesPaused ? undefined : (steering.shift() ?? followUps.shift());
+			if (next === undefined) return lastAssistantText;
+			streaming = false;
+			return await session.prompt(next);
+		} finally {
+			streaming = false;
+			// A turn that can be interrupted alone ends as a real session's does, so a waiting viewer sees it end.
+			if (testOptions.abortEndsTurnOnly)
+				for (const listener of listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
+			turn.resolve();
+			if (activeTurn === turn.promise) activeTurn = previousTurn;
+		}
+	};
 	const session = {
 		sessionFile: sessionManager.getSessionFile(),
 		model: sessionModel,
@@ -656,6 +791,9 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		messages,
 		get isStreaming() {
 			return streaming;
+		},
+		get queuedMessagesPaused() {
+			return queuedMessagesPaused;
 		},
 		abort: async () => {
 			aborted = true;
@@ -670,90 +808,39 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		prompt: async (text: string) => {
-			const emitFallback = (): void => {
-				if (!testOptions.fallbackModel) return;
-				for (const listener of listeners) {
-					listener({
-						type: "model_fallback_start",
-						from: "openai/gpt-5.1-codex",
-						to: testOptions.fallbackModel,
-						reason: "test fallback",
-						attempt: 1,
-					} as AgentSessionEvent);
-					if (testOptions.fallbackThinkingLevel) {
-						listener({
-							type: "thinking_level_changed",
-							level: testOptions.fallbackThinkingLevel,
-						} as AgentSessionEvent);
-					}
-					listener({
-						type: "tool_execution_start",
-						toolCallId: "test-fallback-tool",
-						toolName: "test-fallback-tool",
-						args: {},
-					} as AgentSessionEvent);
-				}
-			};
-			for (const listener of listeners) listener({ type: "agent_start" } as AgentSessionEvent);
-			if (aborted) throw new Error("aborted");
-			const turn = Promise.withResolvers<void>();
-			const previousTurn = activeTurn;
-			activeTurn = turn.promise;
-			streaming = true;
-			try {
+		prompt: (text: string) =>
+			runTurn(async () => {
 				if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
 				await sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
 				userMessages += 1;
-				if (testOptions.seededAssistantText) {
-					lastAssistantText = testOptions.seededAssistantText;
-					await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
-				}
-				if (testOptions.fallbackBeforeGate) emitFallback();
-				for (const event of testOptions.beforeGateEvents ?? []) for (const listener of listeners) listener(event);
-				if (testOptions.promptGate) {
-					const gateResult = await Promise.race([
-						testOptions.promptGate.then(() => "released" as const),
-						new Promise<"aborted">((resolve, reject) => {
-							settlePromptAbort = () => {
-								if (testOptions.abortResolvesPrompt) resolve("aborted");
-								else reject(new DOMException("aborted", "AbortError"));
-							};
-							if (aborted) settlePromptAbort();
-						}),
-					]);
-					if (gateResult === "aborted") {
-						if (testOptions.thinkingOnlyOnAbort) {
-							lastAssistantText = "";
-							await appendAssistant([{ type: "thinking", thinking: "aborted mid-thought" }], "aborted");
-						}
-						for (const event of testOptions.events ?? []) for (const listener of listeners) listener(event);
-						if (testOptions.abortEndsTurnOnly) {
-							aborted = false;
-							settlePromptAbort = undefined;
-							await appendAssistant([], "aborted");
-						}
-						return "";
-					}
-				}
-				for (const event of testOptions.events ?? []) {
-					for (const listener of listeners) listener(event);
-				}
-				if (!testOptions.fallbackBeforeGate) emitFallback();
-				lastAssistantText = testOptions.output ?? "done";
-				await appendAssistant([{ type: "text", text: lastAssistantText }], "stop");
-				const next = steering.shift() ?? followUps.shift();
-				if (next === undefined) return lastAssistantText;
-				streaming = false;
-				return await session.prompt(next);
-			} finally {
-				streaming = false;
-				// A turn that can be interrupted alone ends as a real session's does, so a waiting viewer sees it end.
-				if (testOptions.abortEndsTurnOnly)
-					for (const listener of listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
-				turn.resolve();
-				if (activeTurn === turn.promise) activeTurn = previousTurn;
-			}
+			}),
+		// As a real session continues the turn that waited on detached calls: it saves their results first, each as its
+		// call's result, and reports them saved; then the turn goes on and answers, and its queued messages follow.
+		resumeDetachedTurn: async (
+			results: readonly DetachedToolResult[],
+			onRecorded?: (toolCallIds: readonly string[]) => void,
+		): Promise<void> => {
+			await runTurn(async () => {
+				for (const { toolCallId, toolName, result, isError } of results)
+					await sessionManager.appendMessage({
+						role: "toolResult",
+						toolCallId,
+						toolName,
+						content: result.content,
+						details: result.details,
+						isError,
+						timestamp: Date.now(),
+					});
+				onRecorded?.(results.map((result) => result.toolCallId));
+			});
+		},
+		pauseQueuedMessages: () => {
+			queuedMessagesPaused = true;
+		},
+		resumeQueuedMessages: async () => {
+			const released = queuedMessagesPaused && steering.length + followUps.length > 0;
+			queuedMessagesPaused = false;
+			return released;
 		},
 		steer: async (text: string) => {
 			steering.push(text);
@@ -1675,10 +1762,12 @@ export class SubagentControlRuntime {
 		// Messages this attempt produced; a forked child's inherited history is never among them.
 		let ownMessages: () => TranscriptMessage[] = () => [];
 		const executionEnded = new AbortController();
+		const turnDrainedListeners = new Set<() => void>();
 
 		let termination: TerminationCauseName | undefined;
-		// The user interrupted the child's turn from its chat: it waits for their next message instead of ending.
-		let turnInterruptedByUser = false;
+		let interruptedTurnSettlement: Promise<void> | undefined;
+		// Until the session has its task, a turn that settles leaves message admission open for it (#5224).
+		let taskPending = true;
 		// The task and resume follow-ups the session has not been given yet; a stop before then keeps them for resume.
 		const unsent: UnsentInput = { task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] };
 		let terminating: Promise<void> | undefined;
@@ -1903,6 +1992,10 @@ export class SubagentControlRuntime {
 						subagentPolicy: {
 							...admitted.policy,
 							executionEnded: executionEnded.signal,
+							onTurnDrained: () => {
+								for (const listener of turnDrainedListeners) listener();
+							},
+							taskPending: () => taskPending,
 							...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
 						},
 						settingsManager,
@@ -1938,7 +2031,23 @@ export class SubagentControlRuntime {
 			const transcriptSession = session;
 			const interruptTurn = async (): Promise<void> => {
 				if (!transcriptSession.isStreaming || termination !== undefined) return;
-				turnInterruptedByUser = true;
+				interruptedTurnSettlement = nextTurnSettled(
+					transcriptSession,
+					[signals.abort, signals.interrupt, executionEnded.signal],
+					{
+						waitForStart: true,
+						skipStarts: transcriptSession._undeliveredAgentStarts ?? 0,
+						skipStart: () => transcriptSession._startAbortedForInterrupt === true,
+						...(prepared === undefined
+							? {}
+							: {
+									subscribeDrained: (listener: () => void) => {
+										turnDrainedListeners.add(listener);
+										return () => turnDrainedListeners.delete(listener);
+									},
+								}),
+					},
+				);
 				await transcriptSession.interruptTurn();
 			};
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
@@ -2019,8 +2128,13 @@ export class SubagentControlRuntime {
 			const taskDispatched = new Promise<void>((resolve) => {
 				markTaskDispatched = () => resolve();
 			});
+			let artifactJsonlPath = admitted.spec.artifactJsonlPath;
 			unsubscribe = session.subscribe((event) => {
-				writeEvent(admitted.spec.artifactJsonlPath, event);
+				try {
+					writeEvent(artifactJsonlPath, event);
+				} catch {
+					artifactJsonlPath = undefined;
+				}
 				if (event.type === "message_start" && event.message.role === "assistant")
 					observedStreamingMessage = beginStreamingAssistantMessage(event.message);
 				else if (event.type === "message_update" && observedStreamingMessage)
@@ -2084,8 +2198,10 @@ export class SubagentControlRuntime {
 			if (!termination && admitted.spec.resumeSession) await recoverChildSession(session, admitted.spec);
 			const redispatched =
 				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
-			if (redispatched !== undefined) unsent.task = unsent.followUps.shift();
-			else if (!termination && admitted.spec.resumeToolResults?.length) {
+			if (redispatched !== undefined) {
+				taskPending = false;
+				unsent.task = unsent.followUps.shift();
+			} else if (!termination && admitted.spec.resumeToolResults?.length) {
 				if (!admitted.spec.skipTaskPrompt) {
 					await session.followUp(
 						admitted.spec.task,
@@ -2101,6 +2217,7 @@ export class SubagentControlRuntime {
 				}
 				if (!termination) {
 					unsent.task = undefined;
+					taskPending = false;
 					// Reported as soon as they are saved: the turn they continue may never end in this process (#5012).
 					const reported = new Set<string>();
 					await session.resumeDetachedTurn(admitted.spec.resumeToolResults, (toolCallIds) => {
@@ -2123,8 +2240,10 @@ export class SubagentControlRuntime {
 				}
 				if (!termination) {
 					unsent.task = undefined;
-					if (admitted.spec.skipTaskPrompt) startBudget.end();
-					else {
+					if (admitted.spec.skipTaskPrompt) {
+						taskPending = false;
+						startBudget.end();
+					} else {
 						const prompting = session.prompt(
 							admitted.spec.task,
 							admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
@@ -2134,14 +2253,28 @@ export class SubagentControlRuntime {
 						void prompting.then(markTaskDispatched, markTaskDispatched);
 						await beforeStartDeadline(taskDispatched);
 						startBudget.end();
-						await prompting;
+						try {
+							await prompting;
+						} finally {
+							taskPending = false;
+						}
 					}
 				}
 			}
-			while (turnInterruptedByUser && termination === undefined) {
-				turnInterruptedByUser = false;
-				await nextTurnSettled(session, [signals.abort, signals.interrupt]);
-			}
+			do {
+				while (interruptedTurnSettlement !== undefined && termination === undefined) {
+					const settlement = interruptedTurnSettlement;
+					interruptedTurnSettlement = undefined;
+					await settlement;
+				}
+				// A turn that settled while the task was pending left message admission open: what it admitted since is
+				// answered before the execution ends and seals it.
+				if (prepared !== undefined && redispatched === undefined && termination === undefined)
+					await sessionDrained(session, [signals.abort, signals.interrupt], (listener) => {
+						turnDrainedListeners.add(listener);
+						return () => turnDrainedListeners.delete(listener);
+					});
+			} while (interruptedTurnSettlement !== undefined && termination === undefined);
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;

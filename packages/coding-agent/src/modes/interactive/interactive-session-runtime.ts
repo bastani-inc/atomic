@@ -7,6 +7,7 @@ import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { setRegisteredThemes, stopThemeWatcher, Text, theme } from "./interactive-mode-deps.ts";
+import { clearChatForRerender } from "./interactive-render-chat.ts";
 import { exitOnRefusedDecisionSetting } from "./refused-decision-setting.ts";
 
 InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (this: InteractiveModeBase): Promise<void> {
@@ -61,7 +62,7 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function (thi
 					return { cancelled: true };
 				}
 
-				this.chatContainer.clear();
+				clearChatForRerender(this);
 				this.renderInitialMessages();
 				if (result.editorText && !this.editor.getText().trim()) {
 					this.editor.setText(result.editorText);
@@ -177,7 +178,10 @@ InteractiveModeBase.prototype.handleEngineDiagnostic = function (
 ): void {
 	exitOnRefusedDecisionSetting(this, diagnostic.error);
 	renderEngineDiagnostic(diagnostic, {
-		stopWorkingLoader: () => this.stopWorkingLoader(),
+		stopWorkingLoader: () => {
+			this.workingRunMeter.stop();
+			this.stopWorkingLoader();
+		},
 		showStatus: (message, persist) => this.showStatus(message, persist),
 		showError: (message) => this.showError(message),
 	});
@@ -188,7 +192,7 @@ InteractiveModeBase.prototype.renderCurrentSessionState = function (this: Intera
 	this.managedToolStatusStarted = false;
 	this.lastStatusSpacer = undefined;
 	this.lastStatusText = undefined;
-	this.chatContainer.clear();
+	clearChatForRerender(this);
 	this.pendingMessagesContainer.clear();
 	this.pendingBashComponents = [];
 	this.compactionQueuedMessages = [];
@@ -196,6 +200,9 @@ InteractiveModeBase.prototype.renderCurrentSessionState = function (this: Intera
 	this.streamingComponent = undefined;
 	this.streamingMessage = undefined;
 	this.pendingTools.clear();
+	if (!this.session.isStreaming) {
+		this.workingRunMeter.stop();
+	}
 	this.renderInitialMessages();
 };
 

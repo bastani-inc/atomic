@@ -39,6 +39,12 @@ for (const outcome of ["completed", "failed", "interrupted", "cancelled"] as con
 			}),
 		);
 		let disposed = false;
+		const subscriptions = new Set<symbol>();
+		const subscribe = () => {
+			const subscription = Symbol();
+			subscriptions.add(subscription);
+			return () => subscriptions.delete(subscription);
+		};
 		vi.spyOn(DefaultResourceLoader.prototype, "reload").mockResolvedValue(undefined);
 		vi.mocked(createAgentSession).mockImplementation(async (options) => {
 			assert.ok(options?.subagentPolicy?.executionEnded, "real SDK admission must carry the execution signal");
@@ -51,7 +57,7 @@ for (const outcome of ["completed", "failed", "interrupted", "cancelled"] as con
 						);
 					},
 				},
-				subscribe: () => () => {},
+				subscribe,
 				prompt: async () => {
 					entered.resolve();
 					await release.promise;
@@ -84,6 +90,7 @@ for (const outcome of ["completed", "failed", "interrupted", "cancelled"] as con
 				getFollowUpMessages: () => [],
 				dispose: () => {
 					assert.equal(capability(), "terminal");
+					assert.equal(subscriptions.size, 0, "the runner removes its listeners before disposal");
 					disposed = true;
 				},
 			};
@@ -119,6 +126,7 @@ for (const outcome of ["completed", "failed", "interrupted", "cancelled"] as con
 				}),
 			]);
 			assert.equal(capability(), "live");
+			assert.ok(subscriptions.size > 0, "the runner observes the live session");
 			if (outcome === "cancelled") abort.abort();
 			else if (outcome === "interrupted") interrupt.abort();
 			else release.resolve();
