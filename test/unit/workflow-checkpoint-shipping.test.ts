@@ -4,7 +4,7 @@ import { afterEach, test } from "vitest";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import type { PoolMutation } from "../../packages/workflows/src/durable/journal/pool-mutations.js";
 import type { PoolCommitReceipt } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
-import { StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
+import { StaleLeaseError, StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
@@ -479,7 +479,7 @@ test("an attempt whose oldest unshipped checkpoint reached the backpressure poin
 	const shipping = shippingOf(local, shared.deliver, { now: () => clock.now });
 	await shipping.hold(LEASE, LEASE_MS);
 	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
-	const unreachable = new Error("shared store unreachable");
+	const unreachable = new StorageUnavailableError({ adapter: "test", location: "shared" }, new Error("unreachable"));
 	shared.state.failWith = unreachable;
 	clock.now = BACKPRESSURE_MS - 1;
 	await shipping.hold(LEASE, LEASE_MS);
@@ -750,4 +750,29 @@ test("a flush that finds nothing to ship never loses track of a checkpoint accep
 	await shipping.hold(LEASE, LEASE_MS);
 	await shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit);
 	assert.deepEqual(shared.recorded, [keyOf("a")]);
+});
+
+test("a delivery the shared journal refuses fails the held-back step instead of holding it for good (#4768)", async () => {
+	const { shard: local, clock } = await shard();
+	const refusal = new Error("Pool topology scope mismatch");
+	let tries = 0;
+	const shipping = shippingOf(
+		local,
+		async () => {
+			tries++;
+			throw refusal;
+		},
+		{ now: () => clock.now },
+	);
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	clock.now = BACKPRESSURE_MS;
+	await shipping.hold(LEASE, LEASE_MS);
+	await assert.rejects(shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit), refusal);
+	assert.equal(tries, 1);
+	assert.deepEqual(
+		(await local.pending(LEASE)).map((event) => event.key),
+		[keyOf("a")],
+		"the refused step was not acknowledged",
+	);
 });

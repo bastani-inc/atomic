@@ -1739,8 +1739,69 @@ export class SqlPoolQueue {
 		const seqs = await guardedPoolWrite<ReadonlyMap<string, number>>(
 			this.storage,
 			async (read, optimistic) => {
-				recorded = [];
-				let plan: ShipPlan;
+				/** A plan from what `read` sees; undefined when the batch is shipped already. */
+				const fromRead = async (): Promise<ShipPlan | undefined> => {
+					const state = await this.attemptState(read, lease, token, `ship:${batch.id}`, undefined, checkpoints);
+					if ((await read.get(shipped.sql, ...shipped.params)) !== undefined) return undefined;
+					const { now, status } = state;
+					const row = this.currentOf(state.work, lease, token);
+					if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
+					if (row.expires_at < now) throw staleWork(lease, token, "expired");
+					if (status !== "running" && !(status === "paused" && state.control === "paused"))
+						throw staleWork(lease, token, "root-not-running");
+					return {
+						row,
+						now,
+						head: state.recorded.head,
+						own: [],
+						source: checkpoints,
+						existing: await this.recordedPayloads(
+							read,
+							lease.runId,
+							parsed.map((event) => event.key),
+						),
+					};
+				};
+				/** Each checkpoint of the batch validated against `plan`, with how it is stored. */
+				const validated = async (plan: ShipPlan) => {
+					recorded = [];
+					const work = fromRow(plan.row);
+					// The root's checkpoints, read once for the whole batch: each checkpoint validates against them and those
+					// before it in the batch.
+					const view = await plan.source.read(read, this.journal.events);
+					const source: PoolCheckpointSource = { read: async () => view };
+					const rows: { key: string; payload: string; chunks: readonly Uint8Array[] }[] = [];
+					for (const event of parsed) {
+						const checkpoint = event.checkpoint;
+						const existing = plan.existing?.get(event.key);
+						if (existing !== undefined) {
+							if (!isRecordedCheckpoint(existing, event.payload))
+								throw new Error("Pool checkpoint identity conflict");
+							continue;
+						}
+						await validatePoolMutation(
+							read,
+							this.storage,
+							lease.runId,
+							work,
+							{ kind: "checkpoint", checkpoint },
+							recorded.length === 0 ? source : withRecorded(source, recorded),
+						);
+						if (checkpoint.completedAt > Math.max(plan.now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
+							throw new Error("Pool checkpoint timestamp is in the future");
+						assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
+						if (poolCheckpointUsage(checkpoint) !== undefined)
+							throw new Error("A pool checkpoint that bills usage is committed, not shipped");
+						// Positions past the head, in order: what validation of the next checkpoint in the batch sees.
+						recorded.push({ seq: plan.head + recorded.length + 1, key: event.key, checkpoint });
+						const stored = (await this.keepsWhole(read, event.payload))
+							? { payload: event.payload, chunks: [] }
+							: storedJournalPayload(event.payload, checkpoint);
+						rows.push({ key: event.key, payload: stored.payload, chunks: stored.chunks });
+					}
+					return { work, rows };
+				};
+				let plan: ShipPlan | undefined;
 				const cached = this.attempts.get(token.id);
 				const known = this.checkpoints.known(lease.runId);
 				if (
@@ -1755,62 +1816,13 @@ export class SqlPoolQueue {
 					// Every check it skips, a fence repeats: a batch shipped already, or one of its keys recorded, breaks one, and
 					// the plan that follows reads why.
 					plan = { row: cached, now: Date.now(), head: known.from, own: known.own, source: known.source };
-				else {
-					const state = await this.attemptState(read, lease, token, `ship:${batch.id}`, undefined, checkpoints);
-					if ((await read.get(shipped.sql, ...shipped.params)) !== undefined) return { done: new Map() };
-					const { now, status } = state;
-					const row = this.currentOf(state.work, lease, token);
-					if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
-					if (row.expires_at < now) throw staleWork(lease, token, "expired");
-					if (status !== "running" && !(status === "paused" && state.control === "paused"))
-						throw staleWork(lease, token, "root-not-running");
-					plan = {
-						row,
-						now,
-						head: state.recorded.head,
-						own: [],
-						source: checkpoints,
-						existing: await this.recordedPayloads(
-							read,
-							lease.runId,
-							parsed.map((event) => event.key),
-						),
-					};
-				}
-				const work = fromRow(plan.row);
-				// The root's checkpoints, read once for the whole batch: each checkpoint validates against them and those
-				// before it in the batch.
-				const view = await plan.source.read(read, this.journal.events);
-				const source: PoolCheckpointSource = { read: async () => view };
-				const rows: { key: string; payload: string; chunks: readonly Uint8Array[] }[] = [];
-				for (const event of parsed) {
-					const checkpoint = event.checkpoint;
-					const existing = plan.existing?.get(event.key);
-					if (existing !== undefined) {
-						if (!isRecordedCheckpoint(existing, event.payload))
-							throw new Error("Pool checkpoint identity conflict");
-						continue;
-					}
-					await validatePoolMutation(
-						read,
-						this.storage,
-						lease.runId,
-						work,
-						{ kind: "checkpoint", checkpoint },
-						recorded.length === 0 ? source : withRecorded(source, recorded),
-					);
-					if (checkpoint.completedAt > Math.max(plan.now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
-						throw new Error("Pool checkpoint timestamp is in the future");
-					assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
-					if (poolCheckpointUsage(checkpoint) !== undefined)
-						throw new Error("A pool checkpoint that bills usage is committed, not shipped");
-					// Positions past the head, in order: what validation of the next checkpoint in the batch sees.
-					recorded.push({ seq: plan.head + recorded.length + 1, key: event.key, checkpoint });
-					const stored = (await this.keepsWhole(read, event.payload))
-						? { payload: event.payload, chunks: [] }
-						: storedJournalPayload(event.payload, checkpoint);
-					rows.push({ key: event.key, payload: stored.payload, chunks: stored.chunks });
-				}
+				// A plan without a read validates against the cached view of the root, which may predate what the batch
+				// depends on, such as the start of a child the root began since this queue last read it (#4768): only a plan
+				// from a read may refuse the batch.
+				const checked = plan === undefined ? undefined : await validated(plan).catch(() => undefined);
+				if (checked === undefined) plan = await fromRead();
+				if (plan === undefined) return { done: new Map() };
+				const { work, rows } = checked ?? (await validated(plan));
 				const keys = rows.map((row) => row.key);
 				const first = batch.events[0]!;
 				const last = batch.events.at(-1)!;
