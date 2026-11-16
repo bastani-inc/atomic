@@ -217,6 +217,9 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 			}
 		};
 		check(graph.render(160));
+		graph.handleInput("/");
+		check(graph.render(160));
+		graph.handleInput(ESC);
 		graph.handleInput("o");
 		check(graph.render(160));
 		assert.match(screen(graph), /<U\+202E>/, "the bidi override is shown, not obeyed");

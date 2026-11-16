@@ -36,9 +36,10 @@ function harness(definitions = [], invalid = DIAGNOSTICS) {
 	const ctx = {
 		hasUI: true,
 		ui: {
+			// Like the host's, the custom component stays open until it calls done.
 			custom: (factory) => {
 				pickers.push(factory);
-				return Promise.resolve(undefined);
+				return new Promise(() => {});
 			},
 		},
 	};
