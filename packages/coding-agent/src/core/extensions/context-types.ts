@@ -169,6 +169,7 @@ export interface SubagentChildPolicy {
 	readonly inheritSkills: boolean;
 	/** Host-owned signal fired when this noninteractive execution ends, before disposal. */
 	readonly executionEnded?: AbortSignal;
+	readonly onTurnDrained?: () => void;
 	/** SDK-owned inbound lifetime; closing drains admitted messages without reopening the task. */
 	readonly messageAdmission?: {
 		isOpen(): boolean;

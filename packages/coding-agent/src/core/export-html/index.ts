@@ -1,4 +1,5 @@
 import type { AgentState } from "@bastani/atomic-agent-core";
+import type { ToolCall } from "@bastani/atomic-ai/compat";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { APP_NAME, getExportTemplateDir } from "../../config.js";
@@ -188,6 +189,7 @@ function preRenderCustomTools(
 	toolRenderer: ToolHtmlRenderer,
 ): Record<string, RenderedToolHtml> {
 	const renderedTools: Record<string, RenderedToolHtml> = {};
+	const toolCalls = new Map<string, ToolCall>();
 
 	for (const entry of entries) {
 		if (entry.type !== "message") continue;
@@ -197,6 +199,7 @@ function preRenderCustomTools(
 		if (msg.role === "assistant" && Array.isArray(msg.content)) {
 			for (const block of msg.content) {
 				if (block.type === "toolCall" && !TEMPLATE_RENDERED_TOOLS.has(block.name)) {
+					toolCalls.set(block.id, block);
 					const callHtml = toolRenderer.renderCall(block.id, block.name, block.arguments);
 					if (callHtml) {
 						renderedTools[block.id] = { callHtml };
@@ -219,8 +222,11 @@ function preRenderCustomTools(
 					msg.isError || false,
 				);
 				if (rendered) {
+					const call = toolCalls.get(msg.toolCallId);
+					const callHtml = call ? toolRenderer.renderCall(msg.toolCallId, call.name, call.arguments) : undefined;
 					renderedTools[msg.toolCallId] = {
 						...existing,
+						...(callHtml !== undefined ? { callHtml } : {}),
 						resultHtmlCollapsed: rendered.collapsed,
 						resultHtmlExpanded: rendered.expanded,
 					};

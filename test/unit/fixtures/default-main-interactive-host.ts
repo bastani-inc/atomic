@@ -202,6 +202,10 @@ async function runHost(): Promise<void> {
 							}),
 							(error: Error) => report({ type: "diagnostic", message: `Engine binding failed: ${error.message}` }),
 						);
+						void created.runtimeHost.waitUntilResourcesReady().then(
+							() => report({ type: "engine_resources_ready" }),
+							(error: Error) => report({ type: "engine_resources_failed", message: error.message }),
+						);
 					}
 					created.session.subscribe((event) => report({ type: "session_event", eventType: event.type }));
 				},

@@ -464,6 +464,11 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 			};
 		}
 		const gate = [...state.finishOn].find(([marker]) => task.includes(marker))?.[1];
+		// The scripted session saves the tool results a woken or resumed run carries before its prompt gate, as a real
+		// session saves them before it continues their turn, so that gate cannot hold such a run before it saved them: a
+		// gated one waits before it starts instead, where it has saved none of them, until its gate opens or it is stopped
+		// (#5012).
+		if (gate && options.resumeToolResults?.length) await openedOrStopped(gate.promise, options.signal);
 		const onSession = state.onSession ? { onSession: state.onSession } : {};
 		const disposeGate = state.disposeGate;
 		const dispose = gate && disposeGate ? { dispose: () => disposeGate.promise } : {};
@@ -504,6 +509,15 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		removeTempDirectory(cwd);
 	});
 	return state;
+}
+
+/** Settles once `gate` opens or `signal` aborts, as a run's stop aborts it. */
+function openedOrStopped(gate: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted) return resolve();
+		signal?.addEventListener("abort", () => resolve(), { once: true });
+		void gate.then(resolve);
+	});
 }
 
 /** Discovery as the default scope does it: a project agent shadows a user agent of the same name in `both`. */
@@ -4179,6 +4193,8 @@ test("after an owner restart, a reply to a released child's ask wakes it with th
 	);
 	assert.ok(woken.taskId);
 	await settled(h, woken.taskId);
+	// It continued the turn with both results and finished, and its record no longer holds the reply.
+	await h.waitForLatest(`${runId}:0`, (record) => record.taskId === woken.taskId && clearedOk(record));
 
 	const wake = h.runs.find((run) => run.options.resumeToolResults !== undefined);
 	assert.ok(wake, "the reply wakes the child");
@@ -4209,7 +4225,10 @@ test("after an owner restart, a resume before the ask's reply keeps the ask wait
 	bindProcessWakes(h);
 
 	const resumed = await h.call({ action: "resume", id: `${runId}:0`, message: "carry on" });
-	await settled(h, resumedTaskId(resumed));
+	const taskId = resumedTaskId(resumed);
+	await settled(h, taskId);
+	// It continued the turn with those results and finished, holding none of them.
+	await h.waitForLatest(`${runId}:0`, (record) => record.taskId === taskId && clearedOk(record));
 
 	const run = h.runs.find((item) => item.options.resumeToolResults !== undefined);
 	assert.ok(run);
@@ -4232,7 +4251,10 @@ test("after an owner restart, a paused released child waiting only on a detached
 	bindProcessWakes(h);
 
 	const resumed = await h.call({ action: "resume", id: `${runId}:0`, message: "carry on" });
-	await settled(h, resumedTaskId(resumed));
+	const taskId = resumedTaskId(resumed);
+	await settled(h, taskId);
+	// It continued the turn with those results and finished, holding none of them.
+	await h.waitForLatest(`${runId}:0`, (record) => record.taskId === taskId && clearedOk(record));
 
 	const run = h.runs.find((item) => item.options.resumeToolResults !== undefined);
 	assert.ok(run, "the resume continues the turn the call was made in");
@@ -4820,11 +4842,15 @@ test("a result batched with a resume is kept for the child when the resumed run 
 	// The resumed run is paused before it saved the result.
 	await h.waitForLatest(childId, (record) => record.state === "running");
 	await h.call({ action: "pause", id: childId });
-	await h.waitForLatest(childId, (record) => record.terminalStatus === "paused");
+	const paused = await h.waitForLatest(childId, (record) => record.terminalStatus === "paused");
 	h.finishOn.clear();
 
 	await h.call({ action: "resume", id: childId });
-	await h.waitForLatest(childId, (record) => h.runs.length === 3 && record.state === "terminal");
+	// That run continues the turn with the result and finishes, and the record no longer holds it.
+	await h.waitForLatest(
+		childId,
+		(record) => h.runs.length === 3 && record.taskId !== paused.taskId && clearedOk(record),
+	);
 
 	assert.deepEqual(h.runs.at(-1)?.options.resumeToolResults, [green], "the resume after the pause hands it over");
 });

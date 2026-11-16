@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,7 +8,10 @@ import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
 import { createAgentSession } from "../../../src/core/sdk.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
 import { SettingsManager } from "../../../src/core/settings-manager.ts";
+import { isSyntheticPath } from "../../../src/core/source-info.ts";
 import { linkSharedTranspileCache } from "../../helpers/shared-transpile-cache.ts";
+
+const ONLY_INTERCOM = { workflows: false, subagents: false, mcp: false, "web-access": false } as const;
 
 describe("regression #2835: tool allowlists filter extension tools", () => {
 	let tempDir: string;
@@ -54,7 +57,7 @@ describe("regression #2835: tool allowlists filter extension tools", () => {
 		});
 		await resourceLoader.reload();
 
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
@@ -62,7 +65,14 @@ describe("regression #2835: tool allowlists filter extension tools", () => {
 			sessionManager,
 			resourceLoader,
 			tools: allowedToolNames,
+			builtins: ONLY_INTERCOM,
 		});
+		expect(
+			extensionsResult.extensions
+				.map((extension) => extension.path)
+				.filter((path) => !isSyntheticPath(path))
+				.map((path) => basename(dirname(path))),
+		).toEqual(["intercom"]);
 		await session.bindExtensions({});
 		return session;
 	}

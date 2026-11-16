@@ -64,6 +64,7 @@ export const UNTERMINATED_CONTROL_SEQUENCE_MARKER = "[unterminated control seque
 export class TerminalTextSanitizer {
 	private state: State = State.Ground;
 	private controlStringLength = 0;
+	private controlStringHighSurrogate = false;
 	private unterminated = false;
 
 	write(chunk: string): string {
@@ -104,6 +105,7 @@ export class TerminalTextSanitizer {
 	private enterControlString(): void {
 		this.state = State.ControlString;
 		this.controlStringLength = 0;
+		this.controlStringHighSurrogate = false;
 	}
 
 	/** Consume one character inside a sequence. Returns false when the character does not belong to it. */
@@ -134,11 +136,17 @@ export class TerminalTextSanitizer {
 			case State.ControlString:
 				if (code === BEL || code === ST || code === CAN || code === SUB) this.state = State.Ground;
 				else if (code === ESC) this.state = State.ControlStringEscape;
-				else if (this.controlStringLength === MAX_CONTROL_STRING_LENGTH) {
+				else if (
+					this.controlStringLength >= MAX_CONTROL_STRING_LENGTH &&
+					!(this.controlStringHighSurrogate && code >= 0xdc00 && code <= 0xdfff)
+				) {
 					// No terminator within the limit: this character and the rest are text again.
 					this.unterminated = true;
 					return false;
-				} else this.controlStringLength++;
+				} else {
+					this.controlStringLength++;
+					this.controlStringHighSurrogate = code >= 0xd800 && code <= 0xdbff;
+				}
 				return true;
 			default:
 				// After ESC inside a control string: ESC \ ends it; any other ESC ends it and starts a new sequence.
@@ -168,4 +176,28 @@ export function escapeBidiControls(text: string): string {
 /** Make untrusted text inert for terminal display, keeping its newlines and tabs. */
 export function terminalDisplayText(text: string): string {
 	return escapeBidiControls(sanitizeTerminalText(text));
+}
+
+export function singleLineDisplayText(text: string): string {
+	return terminalDisplayText(text).replace(/\s+/gu, " ");
+}
+
+export function terminalDisplayCursor(text: string, cursor: number): number {
+	return escapeBidiControls(new TerminalTextSanitizer().write(text.slice(0, Math.max(0, cursor)))).length;
+}
+
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+export function graphemeAt(text: string, cursor: number): { index: number; segment: string } | undefined {
+	const code = text.charCodeAt(cursor);
+	if (
+		code >= 0x20 &&
+		code <= 0x7e &&
+		(cursor === 0 || text.charCodeAt(cursor - 1) < 0x300) &&
+		(cursor + 1 === text.length || text.charCodeAt(cursor + 1) < 0x300)
+	) {
+		return { index: cursor, segment: text.charAt(cursor) };
+	}
+	const cluster = graphemeSegmenter.segment(text).containing(cursor);
+	return cluster && { index: cluster.index, segment: cluster.segment };
 }

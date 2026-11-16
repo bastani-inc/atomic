@@ -1,7 +1,8 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -52,11 +53,7 @@ function createBashGate(label: string) {
 		isWaiting: (marker: string) => existsSync(join(cwd, `${marker}.waiting`)) && !existsSync(join(cwd, marker)),
 		release: (marker: string) => writeFileSync(join(cwd, marker), ""),
 		cleanup: () => {
-			try {
-				rmSync(cwd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
-			} catch {
-				// Left for the OS to reclaim if a spawned shell still holds the cwd.
-			}
+			removeTestDirectory(cwd, { retries: 20, retryDelayMs: 50 });
 		},
 	};
 }

@@ -1,10 +1,10 @@
 import { visibleWidth } from "@bastani/atomic-tui";
+import { terminalDisplayText } from "../../../../../../utils/terminal-text.ts";
 import type { QuestionData } from "../../../tool/types.js";
 import type { WrappingSelectItem } from "../wrapping-select.ts";
 import { BORDER_HORIZONTAL_OVERHEAD, BORDER_INNER_PADDING_HORIZONTAL } from "./preview-box-renderer.ts";
 
-/** Min terminal/pane width for the side-by-side layout to engage. */
-export const PREVIEW_MIN_WIDTH = 100;
+export const PREVIEW_MIN_WIDTH = 64;
 /** Visual gap between options column and preview column in side-by-side. */
 export const PREVIEW_COLUMN_GAP = 2;
 /** 1 col padding inside the preview column (between gap and `│`). */
@@ -17,7 +17,7 @@ export const MIN_LEFT = 30;
 /** Ceiling ratio: left column never exceeds this fraction of pane width. */
 export const MAX_LEFT_RATIO = 0.5;
 /** Floor for the preview column width — prevents right-side collapse on narrow terminals. */
-export const MIN_PREVIEW_WIDTH = 45;
+export const MIN_PREVIEW_WIDTH = 30;
 /** visibleWidth(" ✔") = 2 (space + ✔ codepoint). Reserved on the longest-label measurement
  *  so a confirmed row never gets truncated when MIN_LEFT clamps the column. */
 export const CONFIRMED_OVERHEAD = 2;
@@ -55,7 +55,7 @@ export function adaptiveLeftWidth(
 	const confirmedOverhead = CONFIRMED_OVERHEAD; // visibleWidth(" ✔") = 2 (space + ✔ codepoint)
 	let maxLabel = 0;
 	for (const item of items) {
-		const w = visibleWidth(item.label);
+		const w = visibleWidth(terminalDisplayText(item.label));
 		if (w > maxLabel) maxLabel = w;
 	}
 	const desired = maxLabel + prefixW + confirmedOverhead;
@@ -103,7 +103,7 @@ export function previewSourceWidth(question: QuestionData): number {
 	for (const option of question.options) {
 		const text = option.preview;
 		if (!text) continue;
-		for (const line of text.split("\n")) {
+		for (const line of terminalDisplayText(text).split("\n")) {
 			const w = visibleWidth(line);
 			if (w > max) max = w;
 		}

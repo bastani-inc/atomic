@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -180,7 +181,7 @@ describe("resuming through the SDK (#4245)", () => {
 		await writeTurn(first, join(clone, "a.txt"), "recorded\n");
 		const sessionId = first.session.sessionManager.getSessionId();
 		await first.session.dispose();
-		renameSync(clone, sandbox.path("moved-away"));
+		await renameWithRetry(clone, sandbox.path("moved-away"));
 		const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
 		const store = await SqlSessionStore.open(database);
 		cleanups.push(async () => {
@@ -214,7 +215,7 @@ describe("resuming through the SDK, failures (#4748)", () => {
 		await writeTurn(first, join(clone, "a.txt"), "recorded\n");
 		const sessionId = first.session.sessionManager.getSessionId();
 		await first.session.dispose();
-		renameSync(clone, sandbox.path("moved-away"));
+		await renameWithRetry(clone, sandbox.path("moved-away"));
 		const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
 		const store = await SqlSessionStore.open(database);
 		cleanups.push(async () => {

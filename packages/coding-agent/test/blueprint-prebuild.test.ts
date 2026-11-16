@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { runBlueprintCommand } from "../src/cli/blueprint-command.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { blueprintCacheKeys } from "../src/core/resume/blueprint/cache.js";
 import { type PrebuildOutcome, prebuildRepository } from "../src/core/resume/blueprint/prebuild.js";
 import {
@@ -208,7 +209,7 @@ async function editedSession(clone: string): Promise<{ manager: SessionManager; 
 	sandbox.write(join(clone, "README.md"), "edited\n");
 	const snapshot = await capture(clone);
 	const manager = await sessionOf(clone, snapshot);
-	renameSync(clone, sandbox.path("repo-away"));
+	await renameWithRetry(clone, sandbox.path("repo-away"), { budgetMs: 2_000 });
 	return { manager, snapshot };
 }
 
@@ -700,7 +701,7 @@ describe("repository identity across remote spellings (#4748)", () => {
 			assert.deepEqual(overHttps.remotes, [HTTPS]);
 			const x = await sessionOf(fixture.clone, overSsh);
 			const y = await sessionOf(fixture.clone, overHttps);
-			renameSync(fixture.clone, sandbox.path("repo-away"));
+			await renameWithRetry(fixture.clone, sandbox.path("repo-away"), { budgetMs: 2_000 });
 
 			const first = await resume(x);
 			assert.equal(first.sessionManager.getCwd(), slot([SSH], 0));
@@ -729,7 +730,7 @@ describe("repository identity across remote spellings (#4748)", () => {
 			const b = await capture(fixture.clone);
 			const x = await sessionOf(fixture.clone, a);
 			const y = await sessionOf(fixture.clone, b);
-			renameSync(fixture.clone, sandbox.path("repo-away"));
+			await renameWithRetry(fixture.clone, sandbox.path("repo-away"), { budgetMs: 2_000 });
 			// An earlier version's store: named after the remote as spelled, so the restore uses it.
 			const legacyId = legacyRepositoryIdOf([SSH]) as RepositoryId;
 			const legacyStore = join(storeDir(), "repositories", `${legacyId}.git`);
