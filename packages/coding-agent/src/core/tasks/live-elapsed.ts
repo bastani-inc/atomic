@@ -5,7 +5,7 @@ export function taskClockRunning(state: Execution["kind"] | AgentPanelState): bo
 	return state === "running" || state === "cancelling" || state === "stopping" || state === "input";
 }
 
-type ElapsedClock = { readonly since: number; frozen?: number };
+type ElapsedClock = { since: number; displayed: number; frozen?: number; settled?: boolean };
 type ClockReference = { readonly taskId: string; readonly reference: WeakRef<ElapsedClock> };
 
 const seen = new Map<string, WeakRef<ElapsedClock>>();
@@ -22,16 +22,18 @@ export function liveElapsedMs(
 	let entry = seen.get(taskId)?.deref();
 	if (!running) {
 		if (entry === undefined) return reportedMs;
-		entry.frozen ??= now - entry.since;
-		return Math.max(reportedMs ?? 0, entry.frozen);
+		entry.frozen = Math.max(entry.frozen ?? 0, reportedMs ?? 0, entry.displayed);
+		return entry.frozen;
 	}
 	if (entry === undefined || entry.frozen !== undefined) {
-		entry = { since: now - (reportedMs ?? 0) };
+		entry = { since: now - (reportedMs ?? 0), displayed: reportedMs ?? 0 };
 		const reference = new WeakRef(entry);
 		seen.set(taskId, reference);
 		released.register(entry, { taskId, reference });
 	}
-	return Math.max(reportedMs ?? 0, now - entry.since);
+	if (reportedMs !== undefined) entry.since = Math.min(entry.since, now - reportedMs);
+	entry.displayed = Math.max(entry.displayed, reportedMs ?? 0, now - entry.since);
+	return entry.displayed;
 }
 
 export class TaskElapsedClocks {
@@ -42,6 +44,14 @@ export class TaskElapsedClocks {
 		const clock = seen.get(taskId)?.deref();
 		if (clock !== undefined) this.retained.set(taskId, clock);
 		return elapsedMs;
+	}
+
+	settle(taskId: string, reportedMs: number | undefined, now = Date.now()): void {
+		const entry = seen.get(taskId)?.deref();
+		if (entry === undefined || entry.settled) return;
+		entry.frozen = Math.max(entry.frozen ?? 0, reportedMs ?? 0, entry.displayed, now - entry.since);
+		entry.settled = true;
+		this.retained.set(taskId, entry);
 	}
 
 	delete(taskId: string): void {

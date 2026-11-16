@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { liveElapsedMs } from "../../packages/coding-agent/src/core/tasks/live-elapsed.js";
+import { liveElapsedMs, TaskElapsedClocks } from "../../packages/coding-agent/src/core/tasks/live-elapsed.js";
 import { AgentPanelModel } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
 
 test("the agent panel and a later view share one clock for a running task (#5224)", () => {
 	let now = 100_000;
 	const model = new AgentPanelModel(() => now);
+	const lifecycle = new TaskElapsedClocks();
 	const row = {
 		id: "task:shared-clock",
 		kind: "agent" as const,
@@ -23,6 +24,7 @@ test("the agent panel and a later view share one clock for a running task (#5224
 		"a view opened later reads the same elapsed time",
 	);
 	now += 4000;
+	lifecycle.settle("shared-clock", 2000, now);
 	const finished = { ...row, state: "stopped" as const, elapsedMs: 2000 };
 	assert.equal(model.rows([finished])[0]?.elapsedMs, 12_000, "a finished row keeps the time it reached");
 	now += 60_000;

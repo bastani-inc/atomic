@@ -96,3 +96,11 @@ test("a task that settles while the picker is closed does not include the observ
 		clock.mockRestore();
 	}
 });
+
+test("a settled remote task uses its final report rather than the next observation time (#5224)", async () => {
+	const { liveElapsedMs } = await import("../../packages/coding-agent/src/core/tasks/live-elapsed.js");
+	const id = "late-remote-clock";
+	assert.equal(liveElapsedMs(id, 1000, true, 10_000), 1000);
+	assert.equal(liveElapsedMs(id, 1000, true, 13_000), 4000);
+	assert.equal(liveElapsedMs(id, 6000, false, 610_000), 6000);
+});

@@ -123,12 +123,16 @@ export class OwnerTaskStore {
 				previous?.execution.kind !== "settled" &&
 				task.execution.kind !== "queued" &&
 				previous?.execution.kind !== task.execution.kind
-			)
-				this.elapsedClocks.elapsedMs(
-					task.ref.taskId,
-					task.metrics?.elapsedMs,
-					taskClockRunning(task.execution.kind),
-				);
+			) {
+				if (task.execution.kind === "settled" && previous !== undefined)
+					this.elapsedClocks.settle(task.ref.taskId, task.metrics?.elapsedMs);
+				else
+					this.elapsedClocks.elapsedMs(
+						task.ref.taskId,
+						task.metrics?.elapsedMs,
+						taskClockRunning(task.execution.kind),
+					);
+			}
 			if (isBackground(task.observation) || isBackground(previous?.observation))
 				this.backgroundIds.add(task.ref.taskId);
 			// Native settlement is immutable, even when recovering a view from a snapshot.
