@@ -1117,6 +1117,40 @@ export function isPunctuationChar(char: string): boolean {
 	return PUNCTUATION_REGEX.test(char);
 }
 
+/**
+ * The longest prefix of a grapheme cluster, cut between code points, that is at most `maxWidth` columns wide. It is
+ * empty when even the first code point is wider. `grapheme` must be wider than `maxWidth`. A grapheme cluster cannot be
+ * wrapped, so the editor and `wrapTextWithAnsi` show one wider than the line clipped.
+ */
+export function clipGraphemeToWidth(grapheme: string, maxWidth: number): string {
+	// Code-unit offset after each code point, so no cut splits a surrogate pair.
+	const codePointEnds: number[] = [];
+	for (let i = 0; i < grapheme.length; ) {
+		i += grapheme.codePointAt(i)! > 0xffff ? 2 : 1;
+		codePointEnds.push(i);
+	}
+	const fits = (codePoints: number): boolean =>
+		visibleWidth(grapheme.slice(0, codePointEnds[codePoints - 1])) <= maxWidth;
+
+	// A longer prefix of a cluster is almost always at least as wide. Gallop and then bisect for a prefix that fits
+	// followed by a code point that does not, so a cluster of n code points is measured O(log n) times, not n.
+	let fitting = 0;
+	let overflowing = codePointEnds.length;
+	for (let step = 1; fitting + step < overflowing; step *= 2) {
+		if (!fits(fitting + step)) {
+			overflowing = fitting + step;
+			break;
+		}
+		fitting += step;
+	}
+	while (overflowing - fitting > 1) {
+		const middle = (fitting + overflowing) >>> 1;
+		if (fits(middle)) fitting = middle;
+		else overflowing = middle;
+	}
+	return fitting === 0 ? "" : grapheme.slice(0, codePointEnds[fitting - 1]);
+}
+
 function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker): string[] {
 	const lines: string[] = [];
 	let currentLine = tracker.getActiveCodes();
@@ -1158,7 +1192,9 @@ function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker): s
 
 		const graphemeWidth = visibleWidth(grapheme);
 
-		if (currentWidth + graphemeWidth > width) {
+		// Break before a grapheme that does not fit, unless the line has nothing visible yet: a cluster wider than the
+		// line then takes the empty line rather than leaving it empty.
+		if (currentWidth > 0 && currentWidth + graphemeWidth > width) {
 			// Add specific reset for underline only (preserves background)
 			const lineEndReset = tracker.getLineEndReset();
 			if (lineEndReset) {
@@ -1167,6 +1203,13 @@ function breakLongWord(word: string, width: number, tracker: AnsiCodeTracker): s
 			lines.push(currentLine);
 			currentLine = tracker.getActiveCodes();
 			currentWidth = 0;
+		}
+
+		if (graphemeWidth > width) {
+			// A grapheme cluster cannot be broken, so it is clipped between code points and fills the line.
+			currentLine += clipGraphemeToWidth(grapheme, width);
+			currentWidth = width;
+			continue;
 		}
 
 		currentLine += grapheme;

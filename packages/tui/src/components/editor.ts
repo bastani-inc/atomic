@@ -16,6 +16,7 @@ import {
 	autocompleteBoundaryRegex,
 	autocompleteSeparatorRegex,
 	cjkBreakRegex,
+	clipGraphemeToWidth,
 	getGraphemeSegmenter,
 	getWordSegmenter,
 	isWhitespaceChar,
@@ -233,39 +234,6 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 	return chunks;
 }
 
-/**
- * The longest prefix of a grapheme cluster, cut between code points, that is at most `maxWidth` columns wide. It is
- * empty when even the first code point is wider. `grapheme` must be wider than `maxWidth`.
- */
-function clipGraphemeToWidth(grapheme: string, maxWidth: number): string {
-	// Code-unit offset after each code point, so no cut splits a surrogate pair.
-	const codePointEnds: number[] = [];
-	for (let i = 0; i < grapheme.length; ) {
-		i += grapheme.codePointAt(i)! > 0xffff ? 2 : 1;
-		codePointEnds.push(i);
-	}
-	const fits = (codePoints: number): boolean =>
-		visibleWidth(grapheme.slice(0, codePointEnds[codePoints - 1])) <= maxWidth;
-
-	// A longer prefix of a cluster is almost always at least as wide. Gallop and then bisect for a prefix that fits
-	// followed by a code point that does not, so a cluster of n code points is measured O(log n) times, not n.
-	let fitting = 0;
-	let overflowing = codePointEnds.length;
-	for (let step = 1; fitting + step < overflowing; step *= 2) {
-		if (!fits(fitting + step)) {
-			overflowing = fitting + step;
-			break;
-		}
-		fitting += step;
-	}
-	while (overflowing - fitting > 1) {
-		const middle = (fitting + overflowing) >>> 1;
-		if (fits(middle)) fitting = middle;
-		else overflowing = middle;
-	}
-	return fitting === 0 ? "" : grapheme.slice(0, codePointEnds[fitting - 1]);
-}
-
 // Kitty CSI-u sequences for printable keys, including optional shifted/base codepoints.
 interface EditorState {
 	lines: string[];
@@ -366,6 +334,11 @@ export class Editor implements Component, Focusable {
 
 	// Store last render geometry for cursor navigation and mouse hit-testing.
 	private lastWidth: number = 80;
+	/**
+	 * Columns a row offers its text and the cursor after a line's last character: one more than the layout width,
+	 * from the column the layout leaves free or from the right padding, except in a one-column editor without padding.
+	 */
+	private lastCursorRowWidth = 81;
 	private renderedVisibleLineCount = 1;
 	private renderedAutocompleteHeight = 0;
 
@@ -585,6 +558,7 @@ export class Editor implements Component, Focusable {
 
 		// Store for cursor navigation (must match wrapping width)
 		this.lastWidth = layoutWidth;
+		this.lastCursorRowWidth = paddingX > 0 ? contentWidth + 1 : contentWidth;
 
 		// Layout the text
 		const layoutLines = this.layoutText(layoutWidth);
@@ -1139,9 +1113,27 @@ export class Editor implements Component, Focusable {
 					}
 				}
 			}
+
+			const lastRow = layoutLines[layoutLines.length - 1]!;
+			if (isCurrentLine && this.cursorNeedsOwnRow(i, lastRow.text)) {
+				layoutLines[layoutLines.length - 1] = { text: lastRow.text, hasCursor: false };
+				layoutLines.push({ text: "", hasCursor: true, cursorPos: 0 });
+			}
 		}
 
 		return layoutLines;
+	}
+
+	/**
+	 * Whether the cursor sits after the last character of logical line `lineIndex` while that line's last row, showing
+	 * `lastRowText`, leaves no cell for it. The cursor then takes a row of its own below, as in a terminal.
+	 */
+	private cursorNeedsOwnRow(lineIndex: number, lastRowText: string): boolean {
+		return (
+			lineIndex === this.state.cursorLine &&
+			this.state.cursorCol >= (this.state.lines[lineIndex] ?? "").length &&
+			visibleWidth(lastRowText) >= this.lastCursorRowWidth
+		);
 	}
 
 	getText(): string {
@@ -1900,6 +1892,7 @@ export class Editor implements Component, Focusable {
 		for (let i = 0; i < this.state.lines.length; i++) {
 			const line = this.state.lines[i] || "";
 			const lineVisWidth = visibleWidth(line);
+			let lastRowText = line;
 			if (line.length === 0) {
 				// Empty line still takes one visual line
 				visualLines.push({ logicalLine: i, startCol: 0, length: 0 });
@@ -1915,6 +1908,11 @@ export class Editor implements Component, Focusable {
 						length: chunk.endIndex - chunk.startIndex,
 					});
 				}
+				lastRowText = chunks[chunks.length - 1]!.text;
+			}
+			// The row layoutText gives a cursor that finds no cell after the last character.
+			if (this.cursorNeedsOwnRow(i, lastRowText)) {
+				visualLines.push({ logicalLine: i, startCol: line.length, length: 0 });
 			}
 		}
 
