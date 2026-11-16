@@ -819,18 +819,11 @@ export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): s
   return undefined;
 }
 
-/**
- * Whether the spawn lock read as `written` may be replaced: it is stale, and, when it records no spawner, no process
- * has it open, so that no process that created it before writing it, an earlier version or one on a file system
- * without hard links, is still writing it, however long it stalls (#5220).
- */
 function isSpawnLockReplaceable(written: string | undefined, lockPath: string): boolean {
   // A last line not yet terminated is still being written, where the lock could not be linked into place whole.
   const content = completeLines(written) ?? "";
   if (!isSpawnLockContentStale(content)) return false;
-  if (recordsSpawner(content)) return true;
-  const writer = writerState(lockPath, written);
-  // A writer that cannot be checked is waited on, and then refused with a warning naming the lock and the fix.
+  const writer = writerState(lockPath, written) ?? (recordsSpawner(content) ? "abandoned" : "unknown");
   if (writer === "unknown" && unknownHolderWaitedOut(lockPath, written)) warnUnknownSpawnLockHolder(lockPath);
   return writer === "abandoned";
 }

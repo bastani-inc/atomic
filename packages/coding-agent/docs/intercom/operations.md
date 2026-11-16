@@ -125,6 +125,10 @@ Disposing a session cancels a broker start it has not launched yet, and waits fo
 
 When startup fails, read the `broker.log` path printed in the error. Ordinary diagnostics are capped at 8 KiB per broker. The next spawn keeps a bounded copy in `broker.log.previous`; `broker-watchdog.log` separately retains the latest automatic termination's time, PID, and reason. Preserve these files when reporting repeated stalls or restarts. They live under the Intercom directory above.
 
+If startup reports a lock held by a process it cannot check, Atomic leaves that lock untouched. This can happen when another host or container shares the agent directory, or an earlier version left an incomplete lock. After 30 seconds the warning names the lock and recovery steps. Confirm that no process on any host using that directory still needs the lock before removing the named file. If another user owns it, ask that user to remove it or restore ownership first. Do not remove the Intercom database or key files.
+
+An idle broker may leave one `broker.sock.replace.lock.gen<N>` directory containing a released marker. This is normal and does not prevent the next broker from starting. Leave it in place.
+
 ## Workflow and Subagent Notifications
 
 Intercom is also the delivery channel for workflow run results and subagent control notices from [workflows](/workflows) and [subagents](/subagents).

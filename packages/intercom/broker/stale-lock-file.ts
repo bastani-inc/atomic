@@ -303,20 +303,16 @@ export function processState(pid: number, start: string, host: string, hashedSta
   return now === start ? "held" : "abandoned";
 }
 
-/**
- * How the lock at `path`, read as `written`, is held (#5220). A record that names its holder is judged by that holder:
- * its pid, its start where it can be read (a start that cannot be read now never makes a running pid another process,
- * as for #5164), and its host. A record that names none, empty or part-written, is judged by its writer, which the
- * intent marker created before its first byte names; never by its age or by scanning which processes have it open.
- */
 export function holderState(path: string, written: string | undefined): HolderState {
+  const writer = writerState(path, written);
+  if (writer === "held" || writer === "unknown") return writer;
   const content = completeLines(written);
   const pid = pidOf(content);
   if (pid !== undefined) {
     const [, start = "", host = ""] = (content ?? "").split("\n");
     return processState(pid, start, host, false);
   }
-  return writerState(path, written);
+  return writer ?? "unknown";
 }
 
 /** Whether a lock or token read as `written` was left by a process that is gone. */
@@ -324,21 +320,21 @@ export function isAbandoned(path: string, written: string | undefined): boolean 
   return holderState(path, written) === "abandoned";
 }
 
-/**
- * How the lock at `path`, read as `written` and recording no holder, empty or part-written, is held (#5220). A writer of
- * this version creates its marker before the file and binds it to the file once created. The record is held while a
- * marker bound to it, or a marker not yet bound, names a writer that runs; it was left by a writer that is gone when
- * every marker bound to it names one that is gone. Otherwise its writer cannot be checked: an earlier version, which
- * leaves no marker, made it, or this version's writer was killed between creating the file and binding its marker.
- */
-export function writerState(path: string, written: string | undefined): HolderState {
+export function writerState(path: string, written: string | undefined): HolderState | undefined {
   const file = fileIdentity(path);
   if (written === undefined || file === undefined) return "held";
-  const markers = writingMarkers(path).filter((marker) => marker.file === undefined || marker.file === file);
+  let markers: WritingMarker[];
+  try {
+    markers = writingMarkers(path).filter((marker) => marker.file === undefined || marker.file === file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "held";
+    throw error;
+  }
+  if (markers.length === 0) return undefined;
   if (markers.some((marker) => marker.state === "held")) return "held";
   if (markers.some((marker) => marker.state === "unknown")) return "unknown";
   const bound = markers.filter((marker) => marker.file === file);
-  if (bound.length === 0) return "unknown";
+  if (bound.length === 0) return undefined;
   // Its writer is gone: abandoned while it is still exactly as read.
   return readFileOrUndefined(path) === written && fileIdentity(path) === file ? "abandoned" : "held";
 }

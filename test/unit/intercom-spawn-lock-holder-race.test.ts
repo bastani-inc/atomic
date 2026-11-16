@@ -29,6 +29,7 @@ const race = vi.hoisted(() => ({
 	foreignUid: undefined as number | undefined,
 	/** Runs once just after this process creates the lock's file, before it has written anything into it. */
 	afterCreating: undefined as (() => void) | undefined,
+	afterBinding: undefined as (() => void) | undefined,
 }));
 
 function once(take: () => (() => void) | undefined, clear: () => void): void {
@@ -58,6 +59,14 @@ vi.mock("fs", async (importOriginal) => {
 			);
 		}
 		actual.renameSync(from, to);
+		if (race.lockPath !== undefined && String(from).startsWith(`${race.lockPath}.writing.`)) {
+			once(
+				() => race.afterBinding,
+				() => {
+					race.afterBinding = undefined;
+				},
+			);
+		}
 	}) as typeof actual.renameSync;
 	const linkSync = ((existing, path) => {
 		if (race.lockPath !== undefined && String(path) === race.lockPath) {
@@ -171,6 +180,7 @@ afterEach(() => {
 	race.procListings = 0;
 	race.foreignUid = undefined;
 	race.afterCreating = undefined;
+	race.afterBinding = undefined;
 	(staleLockFile.setUnknownHolderWaitForTesting as ((ms: number | undefined) => void) | undefined)?.(undefined);
 });
 
@@ -287,6 +297,16 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 		}
 	});
 
+	test("a live writer keeps an aged lock whose spawner header is already complete (#5220)", () => {
+		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
+		const partial = `${process.pid}\n${Date.now() - BROKER_SPAWN_LOCK_MAX_AGE_MS - 1_000}\n`;
+		writeTextSync(path, partial);
+		writingMarker(path, process.pid);
+
+		assert.equal(acquireSpawnLock(path), undefined, "the writer has not finished publishing its record");
+		assert.equal(readTextSync(path, "utf8"), partial, "the writer's file is untouched");
+	});
+
 	test("a lock left part-written by a spawner killed while writing it is replaced (#5220)", () => {
 		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
 		writeTextSync(path, "2147483646\n17");
@@ -357,6 +377,25 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 		const owners = [owner, other].filter((held) => held !== undefined);
 		assert.equal(owners.length, 1, `exactly one spawner owns the lock: ${JSON.stringify([owner, other])}`);
 	});
+
+	for (const stage of ["creation", "binding"] as const) {
+		test(`a matching dead marker cannot hide the live writer after ${stage}, even when inode and birthtime repeat (#5220)`, () => {
+			const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
+			race.lockPath = path;
+			race.linkError = "EPERM";
+			let other: string | undefined;
+			const whilePublishing = () => {
+				writingMarker(path, 2147483646);
+				other = acquireSpawnLock(path);
+			};
+			if (stage === "creation") race.afterCreating = whilePublishing;
+			else race.afterBinding = whilePublishing;
+
+			const owner = acquireSpawnLock(path);
+			assert.ok(owner !== undefined, "the writer takes its lock");
+			assert.equal(other, undefined, "the other spawner waits despite the matching dead marker");
+		});
+	}
 
 	test("an empty lock whose only marker names a writer killed before writing it is taken (#5220)", () => {
 		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
