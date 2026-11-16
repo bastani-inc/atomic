@@ -15,6 +15,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 
 type PromptTurnHarness = {
 	deferredStartupPending: boolean;
@@ -71,6 +72,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 		tempDir = join(tmpdir(), `atomic-deferred-first-prompt-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		agentDir = join(tempDir, "agent");
 		mkdirSync(agentDir, { recursive: true });
+		linkSharedTranspileCache(agentDir);
 	});
 
 	afterEach(() => {

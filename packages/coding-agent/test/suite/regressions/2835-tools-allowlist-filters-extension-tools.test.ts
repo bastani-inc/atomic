@@ -8,6 +8,7 @@ import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
 import { createAgentSession } from "../../../src/core/sdk.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
 import { SettingsManager } from "../../../src/core/settings-manager.ts";
+import { linkSharedTranspileCache } from "../../helpers/shared-transpile-cache.ts";
 
 describe("regression #2835: tool allowlists filter extension tools", () => {
 	let tempDir: string;
@@ -17,6 +18,7 @@ describe("regression #2835: tool allowlists filter extension tools", () => {
 		tempDir = join(tmpdir(), `pi-tools-filter-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		agentDir = join(tempDir, "agent");
 		mkdirSync(agentDir, { recursive: true });
+		linkSharedTranspileCache(agentDir);
 	});
 
 	afterEach(() => {
