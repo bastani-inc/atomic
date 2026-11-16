@@ -427,3 +427,54 @@ test(
 	},
 	REAL_VITEST_SUITE_TIMEOUT_MS,
 );
+
+const LOST_WORKER_CONFIG = [
+	'import { defineConfig } from "vitest/config";',
+	"export default defineConfig({",
+	`  test: { projects: [{ test: { name: "unit", root: import.meta.dirname, include: ["suite.test.ts"], globalSetup: [${JSON.stringify(join(root, "test/global-setup-lost-workers.ts"))}], testTimeout: 30_000 } }] },`,
+	"});",
+].join("\n");
+
+function expectedLostWorkerKillStatus(): RegExp {
+	return process.platform === "win32"
+		? /exited with code 1 \(0x1 terminated \(TerminateProcess: process\.kill or taskkill\)\) signal null after \d+ ms/
+		: /exited with code null \(killed \(out-of-memory killer or external kill\)\) signal SIGKILL after \d+ ms/;
+}
+
+test(
+	"a test worker that dies names its file and exit status in the suite output (#5325)",
+	async () => {
+		const result = await realVitestSuite(
+			{
+				"vitest.config.ts": LOST_WORKER_CONFIG,
+				"suite.test.ts": [
+					'import { test } from "vitest";',
+					'test("kills its own worker", () => { process.kill(process.pid, "SIGKILL"); });',
+				].join("\n"),
+			},
+			[process.execPath, join(root, "node_modules", "vitest", "vitest.mjs"), "--run", "--project", "unit"],
+		);
+		assert.notEqual(result.code, 0);
+		assert.match(result.output, /Worker exited unexpectedly/);
+		assert.match(result.output, /Lost test worker: suite\.test\.ts/);
+		assert.match(result.output, expectedLostWorkerKillStatus());
+		assert.match(result.output, /::error title=Lost test worker: real suite::suite\.test\.ts exited with code /);
+	},
+	REAL_VITEST_SUITE_TIMEOUT_MS,
+);
+
+test(
+	"workers that stop normally report no lost worker (#5325)",
+	async () => {
+		const result = await realVitestSuite(
+			{
+				"vitest.config.ts": LOST_WORKER_CONFIG,
+				"suite.test.ts": REAL_SUITE,
+			},
+			[process.execPath, join(root, "node_modules", "vitest", "vitest.mjs"), "--run", "--project", "unit"],
+		);
+		assert.equal(result.code, 0, result.output);
+		assert.doesNotMatch(result.output, /Lost test worker/);
+	},
+	REAL_VITEST_SUITE_TIMEOUT_MS,
+);
