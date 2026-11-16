@@ -19,7 +19,7 @@ import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { BrokerMultiNodeStatus } from "../../packages/intercom/types.js";
-import { keptExitedPid } from "../helpers/exited-process.js";
+import { keepProcessPid, keptExitedPid } from "../helpers/exited-process.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 
 /**
@@ -293,6 +293,8 @@ test(
 	async () => {
 		const fixture = fixtureFor(agentDirectory("idle"));
 		const broker = await startBroker(fixture);
+		assert.ok(broker.pid !== undefined);
+		onTestFinished(await keepProcessPid(broker.pid));
 		const outcome = await restartIntercomBroker(fixture.agentDir);
 		assert.deepEqual(outcome, { status: "stopped", previous: { pid: broker.pid, sessions: 0 } });
 		await exited(broker);
@@ -308,6 +310,8 @@ test(
 	async () => {
 		const fixture = fixtureFor(agentDirectory("restart"));
 		const before = await startBroker(fixture);
+		assert.ok(before.pid !== undefined);
+		onTestFinished(await keepProcessPid(before.pid));
 		const session = await connectSession(fixture.agentDir, "reconnecting");
 		// A real session reconnects through `spawnBrokerIfNeeded` once its broker is gone; this one starts the broker itself.
 		let after: Promise<ChildProcess> | undefined;
@@ -367,6 +371,8 @@ test(
 		);
 		const fixture = fixtureFor(agentDir);
 		fixture.trackBroker(legacy);
+		assert.ok(legacy.pid !== undefined);
+		onTestFinished(await keepProcessPid(legacy.pid));
 		await vi.waitFor(
 			async () => {
 				fixture.assertRunning();
