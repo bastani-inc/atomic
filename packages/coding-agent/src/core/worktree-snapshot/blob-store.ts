@@ -242,6 +242,15 @@ const DEGRADED_PIN_SECONDS = DEGRADED_RESTORE_RETENTION_DAYS * 24 * 60 * 60;
 /** Blobs one collection batch examines and deletes in one write transaction. */
 export const SNAPSHOT_COLLECTION_BATCH = 256;
 
+/**
+ * The most bytes of legacy blobs one write transaction of a collection stamps or moves. A blob stored before blob ages
+ * has an unknown age, which collection stamps; changing one column rewrites the whole row on SQLite and libSQL, its
+ * blob included, and holds the writer for as long as that takes, so a stamping transaction stops at this many bytes of
+ * blobs. A legacy blob larger than this is moved to chunks instead, at most this many bytes per transaction, and
+ * stamped in the transaction that publishes its chunks, which rewrites only its header.
+ */
+export const SNAPSHOT_LEGACY_STAMP_BYTES = 16 * SNAPSHOT_BLOB_CHUNK_BYTES;
+
 /** Rows of one referencing table that one backfill transaction indexes. */
 export const SNAPSHOT_INDEX_BACKFILL_BATCH = 500;
 
