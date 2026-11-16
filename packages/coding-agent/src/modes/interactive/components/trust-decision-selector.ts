@@ -1,5 +1,5 @@
 /**
- * A selector for a trust decision that keys meant for the prompt cannot answer.
+ * A selector for a trust decision, or another startup question or screen, that keys meant for the prompt cannot answer.
  *
  * Startup can show the "Trust project folder?" question while the user is already typing a prompt (#5227 review): a
  * slow first start paints it after the keys were sent. A plain selector drops the typed text and takes the Enter as a
@@ -8,13 +8,17 @@
  * the user is answering the question.
  */
 
-import { Container, getKeybindings, Text } from "@bastani/atomic-tui";
+import { type Component, Container, getKeybindings, Text } from "@bastani/atomic-tui";
 import { PROJECT_TRUST_DISTRUST_LABEL, PROJECT_TRUST_SESSION_DISTRUST_LABEL } from "../../../core/trust-manager.ts";
 import { theme } from "../theme/theme.js";
-import type { ExtensionSelectorComponent } from "./extension-selector.ts";
+
+/** A startup screen or decision the guard wraps: it gets every key the guard does not keep as typed text. */
+export type GuardedDecision = Component & { handleInput(data: string): unknown; dispose?(): void };
 
 export const TRUST_DECISION_TYPED_TEXT_NOTICE =
 	"Answer the trust question with ↑↓ and Enter; your text is kept as a draft.";
+/** The same notice for a startup question or screen that is not about trust. */
+export const STARTUP_DECISION_TYPED_TEXT_NOTICE = "Answer with ↑↓ and Enter; your text is kept as a draft.";
 
 /** Whether a selector's choices are a project trust decision. */
 export function isTrustDecision(labels: readonly string[]): boolean {
@@ -49,14 +53,20 @@ export class TrustDecisionSelector extends Container {
 	private draft = "";
 	private enterArmed = true;
 	private readonly notice = new Text("", 1, 0);
-	private readonly selector: ExtensionSelectorComponent;
+	private readonly selector: GuardedDecision;
 	private readonly keepDraft: (text: string) => void;
+	private readonly noticeText: string;
 
 	/** `keepDraft` receives the typed text once, when the selector is disposed. */
-	constructor(selector: ExtensionSelectorComponent, keepDraft: (text: string) => void) {
+	constructor(
+		selector: GuardedDecision,
+		keepDraft: (text: string) => void,
+		noticeText: string = TRUST_DECISION_TYPED_TEXT_NOTICE,
+	) {
 		super();
 		this.selector = selector;
 		this.keepDraft = keepDraft;
+		this.noticeText = noticeText;
 		this.addChild(selector);
 		this.addChild(this.notice);
 	}
@@ -81,17 +91,18 @@ export class TrustDecisionSelector extends Container {
 			this.showNotice();
 			return true;
 		}
-		return this.selector.handleInput(data);
+		this.selector.handleInput(data);
+		return true;
 	}
 
 	dispose(): void {
 		const draft = this.draft;
 		this.draft = "";
 		if (draft.length > 0) this.keepDraft(draft);
-		this.selector.dispose();
+		this.selector.dispose?.();
 	}
 
 	private showNotice(): void {
-		this.notice.setText(theme.fg("warning", TRUST_DECISION_TYPED_TEXT_NOTICE));
+		this.notice.setText(theme.fg("warning", this.noticeText));
 	}
 }

@@ -220,24 +220,29 @@ describe("computeStartupInputCaptureEnabled", () => {
 		}
 	});
 
-	it("does not start pre-session input capture for resume picker startup", () => {
-		const input = baseStartupCaptureInput();
-		input.parsed.resume = true;
+	it("captures startup input when deprecation warnings will be shown", () => {
+		const input = baseStartupCaptureInput({ deprecationWarningCount: 1 });
 		try {
-			expect(computeStartupInputCaptureEnabled(input)).toBe(false);
-			input.sessionSelectionComplete = true;
 			assert.equal(computeStartupInputCaptureEnabled(input), true);
 		} finally {
 			removeTempDir(input.sessionCwd);
 		}
 	});
 
-	it("does not start pre-session input capture for session fork confirmation startup", () => {
+	it("captures startup input before the resume picker, which keeps it as a draft", () => {
+		const input = baseStartupCaptureInput();
+		input.parsed.resume = true;
+		try {
+			assert.equal(computeStartupInputCaptureEnabled(input), true);
+		} finally {
+			removeTempDir(input.sessionCwd);
+		}
+	});
+
+	it("captures startup input before the session fork question, which keeps it as a draft", () => {
 		const input = baseStartupCaptureInput();
 		input.parsed.session = "other-project-session";
 		try {
-			expect(computeStartupInputCaptureEnabled(input)).toBe(false);
-			input.sessionSelectionComplete = true;
 			assert.equal(computeStartupInputCaptureEnabled(input), true);
 		} finally {
 			removeTempDir(input.sessionCwd);

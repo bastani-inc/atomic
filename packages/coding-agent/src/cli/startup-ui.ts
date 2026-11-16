@@ -12,6 +12,7 @@ import {
 	type FirstTimeSetupResult,
 } from "../modes/interactive/components/first-time-setup.ts";
 import {
+	STARTUP_DECISION_TYPED_TEXT_NOTICE,
 	safeTrustChoiceIndex,
 	TrustDecisionSelector,
 } from "../modes/interactive/components/trust-decision-selector.ts";
@@ -52,12 +53,18 @@ export function shouldRunFirstTimeSetup(settingsPath: string = getSettingsPath()
 }
 
 export async function showFirstTimeSetup(settingsManager: SettingsManager): Promise<void> {
+	return withEarlyInputHeldForStartupDialog(() => openFirstTimeSetup(settingsManager));
+}
+
+function openFirstTimeSetup(settingsManager: SettingsManager): Promise<void> {
 	const ui = createStartupTui(settingsManager);
 	return new Promise((resolve) => {
 		let settled = false;
+		let disposeSetup: (() => void) | undefined;
 		const finish = async (result: FirstTimeSetupResult | undefined) => {
 			if (settled) return;
 			settled = true;
+			disposeSetup?.();
 			if (result) {
 				settingsManager.setTheme(result.theme);
 				settingsManager.setEnableAnalytics(result.shareAnalytics);
@@ -84,8 +91,11 @@ export async function showFirstTimeSetup(settingsManager: SettingsManager): Prom
 					void finish(undefined);
 				},
 			});
-			ui.addChild(setup);
-			ui.setFocus(setup);
+			// Keys meant for the prompt neither confirm the setup nor get lost: typed text joins the prompt's draft.
+			const guarded = new TrustDecisionSelector(setup, keepStartupDialogDraft, STARTUP_DECISION_TYPED_TEXT_NOTICE);
+			disposeSetup = () => guarded.dispose();
+			ui.addChild(guarded);
+			ui.setFocus(guarded);
 			ui.requestRender();
 		})();
 	});

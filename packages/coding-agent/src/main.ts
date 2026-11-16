@@ -567,10 +567,6 @@ export async function main(argv: string[], options?: MainOptions) {
 		projectTrusted: startupProjectTrusted,
 	});
 	time("runMigrations");
-	if (deprecationWarnings.length > 0) {
-		startupEarlyInputCapture?.consume();
-		startupEarlyInputCapture = undefined;
-	}
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: startupProjectTrusted });
 	setCapabilityOverrides(startupSettingsManager.getTerminalCapabilityOverrides());
@@ -681,13 +677,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			claim: engineEnv.child !== "1",
 			progress: startupProgress,
 			chooseDirtyCheckout:
-				appMode === "interactive"
-					? (prompt) => {
-							startupEarlyInputCapture?.consume();
-							startupEarlyInputCapture = undefined;
-							return promptForDirtyCheckout(prompt, startupSettingsManager);
-						}
-					: undefined,
+				appMode === "interactive" ? (prompt) => promptForDirtyCheckout(prompt, startupSettingsManager) : undefined,
 		});
 		stopAnnouncingWaits?.();
 		if (opened === "cancelled") process.exit(0);
@@ -714,8 +704,6 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 	const missingSessionCwdIssue = findMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
-		startupEarlyInputCapture?.consume();
-		startupEarlyInputCapture = undefined;
 		if (appMode === "interactive") {
 			const choice = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
 			sessionManager = await openSessionInCurrentCwdOrExit(sessionManager, missingSessionCwdIssue, choice);

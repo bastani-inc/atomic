@@ -7,6 +7,12 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, w
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentConfigPaths, getAgentDir, getBinDir } from "./config.js";
 import { migrateKeybindingsConfig } from "./core/keybindings.ts";
+import {
+	applyEarlyInputChunk,
+	type EarlyInputState,
+	keepStartupDialogDraft,
+	withEarlyInputHeldForStartupDialog,
+} from "./main-early-input.ts";
 import { migrateAzureProvider } from "./migrations-azure.js";
 import { stripBom } from "./utils/text.ts";
 
@@ -300,12 +306,19 @@ function migrateExtensionSystem(cwd: string, options?: { projectTrusted?: boolea
 	return warnings;
 }
 
-/**
- * Print deprecation warnings and wait for keypress.
- */
-export async function showDeprecationWarnings(warnings: string[]): Promise<void> {
-	if (warnings.length === 0) return;
+/** The terminal input the deprecation notice waits on. */
+type KeypressInput = Pick<NodeJS.ReadStream, "resume" | "pause" | "once"> & { setRawMode?(mode: boolean): unknown };
 
+/**
+ * Print deprecation warnings and wait for keypress. The notice takes the terminal from the early-input capture while it
+ * waits; what was typed, and the text of the key that closes it, wait in the prompt as a draft.
+ */
+export async function showDeprecationWarnings(warnings: string[], stdin: KeypressInput = process.stdin): Promise<void> {
+	if (warnings.length === 0) return;
+	await withEarlyInputHeldForStartupDialog(() => waitForDeprecationKeypress(warnings, stdin));
+}
+
+async function waitForDeprecationKeypress(warnings: string[], stdin: KeypressInput): Promise<void> {
 	for (const warning of warnings) {
 		console.log(chalk.yellow(`Warning: ${warning}`));
 	}
@@ -314,11 +327,15 @@ export async function showDeprecationWarnings(warnings: string[]): Promise<void>
 	console.log(chalk.dim(`\nPress any key to continue...`));
 
 	await new Promise<void>((resolve) => {
-		process.stdin.setRawMode?.(true);
-		process.stdin.resume();
-		process.stdin.once("data", () => {
-			process.stdin.setRawMode?.(false);
-			process.stdin.pause();
+		stdin.setRawMode?.(true);
+		stdin.resume();
+		stdin.once("data", (chunk: Buffer | string) => {
+			stdin.setRawMode?.(false);
+			stdin.pause();
+			// Any key closes the notice; text typed with it is kept for the prompt, never dropped.
+			const typed: EarlyInputState = { text: "", submissions: [] };
+			applyEarlyInputChunk(typed, chunk.toString());
+			keepStartupDialogDraft([...typed.submissions, typed.text].filter((part) => part.length > 0).join("\n"));
 			resolve();
 		});
 	});

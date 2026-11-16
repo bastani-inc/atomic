@@ -57,15 +57,12 @@ export interface ComputeStartupInputCaptureInput {
 }
 
 export function computeStartupInputCaptureEnabled(input: ComputeStartupInputCaptureInput): boolean {
-	if (!input.sessionSelectionComplete && (input.parsed.resume || input.parsed.session !== undefined)) return false;
-	// A pending project trust prompt does not stop the capture: the standalone trust prompt takes the terminal from it
-	// while open, and what was typed comes back as a draft (see withEarlyInputHeldForStartupDialog).
+	// The resume picker and the fork question take the terminal from the capture while open, like the other startup
+	// screens, so input typed before them is kept as a draft instead of choosing a session.
+	// A pending project trust prompt or deprecation notice does not stop the capture: a startup screen takes the
+	// terminal from it while open, and what was typed comes back as a draft (see withEarlyInputHeldForStartupDialog).
 	return (
-		input.appMode === "interactive" &&
-		input.stdinIsTTY &&
-		!input.parsed.help &&
-		input.parsed.listModels === undefined &&
-		input.deprecationWarningCount === 0
+		input.appMode === "interactive" && input.stdinIsTTY && !input.parsed.help && input.parsed.listModels === undefined
 	);
 }
 

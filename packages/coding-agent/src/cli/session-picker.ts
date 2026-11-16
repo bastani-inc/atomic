@@ -7,12 +7,26 @@ import { getAgentDir } from "../config.js";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SessionInfo, SessionListProgress } from "../core/session-manager.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
+import { withEarlyInputHeldForStartupDialog } from "../main-early-input.ts";
 import { SessionSelectorComponent } from "../modes/interactive/components/session-selector.ts";
 
 type SessionsLoader = (onProgress?: SessionListProgress) => Promise<SessionInfo[]>;
 
 /** Show TUI session selector and return the selected row with its store scope, or null if cancelled. */
 export async function selectSession(
+	currentSessionsLoader: SessionsLoader,
+	allSessionsLoader: SessionsLoader,
+	settingsManager: SettingsManager,
+	deleteSession?: (sessionId: string) => Promise<void>,
+): Promise<SessionInfo | null> {
+	// The picker takes the terminal from the early-input capture: what was typed before it waits in the prompt as a
+	// draft instead of filtering the list or picking a session with its Enter.
+	return withEarlyInputHeldForStartupDialog(() =>
+		openSessionPicker(currentSessionsLoader, allSessionsLoader, settingsManager, deleteSession),
+	);
+}
+
+function openSessionPicker(
 	currentSessionsLoader: SessionsLoader,
 	allSessionsLoader: SessionsLoader,
 	settingsManager: SettingsManager,

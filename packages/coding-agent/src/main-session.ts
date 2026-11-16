@@ -1,12 +1,11 @@
 import { existsSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@bastani/atomic-tui";
 import chalk from "chalk";
 import type { Args } from "./cli/args.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { createStartupProgress, type StartupProgress } from "./cli/startup-progress.ts";
+import { showStartupSelector } from "./cli/startup-ui.ts";
 import { getAgentDir } from "./config.js";
-import { KeybindingsManager } from "./core/keybindings.ts";
 import {
 	RESUME_CATALOG_TIMEOUT_MS,
 	resumeLookupError,
@@ -44,7 +43,7 @@ import { observeHistoryLoads } from "./core/storage/session/history-load-observe
 import type { SessionStore } from "./core/storage/session/types.js";
 import type { ProjectTrustStore } from "./core/trust-manager.ts";
 import type { AppMode } from "./main-app-mode.ts";
-import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
+import { keepStartupDialogDraft, withEarlyInputHeldForStartupDialog } from "./main-early-input.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { isSessionIdPrefix, resolveSessionIdTargetAcrossScopes } from "./session-id-target.js";
 import { createSessionCwdMatcher, resolvePath } from "./utils/paths.ts";
@@ -112,18 +111,43 @@ async function resolveSessionId(sessionArg: string, cwd: string, store: SessionS
 	return { type: "not_found", arg: sessionArg };
 }
 
-/** Prompt user for yes/no confirmation */
-async function promptConfirm(message: string): Promise<boolean> {
-	return new Promise((resolve) => {
-		const rl = createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-		rl.question(`${message} [y/N] `, (answer) => {
-			rl.close();
-			resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
-		});
-	});
+/**
+ * Ask a yes/no startup question on the terminal; an empty answer is no. It takes the terminal from the early-input
+ * capture while it asks, so type-ahead waits in the prompt as a draft instead of answering. An answer that is neither
+ * yes nor no is kept for the draft too, and the question is asked again: text meant for the prompt never answers it.
+ */
+export async function confirmStartupQuestion(
+	message: string,
+	io: { input: NodeJS.ReadableStream; output: NodeJS.WritableStream } = {
+		input: process.stdin,
+		output: process.stdout,
+	},
+): Promise<boolean> {
+	return withEarlyInputHeldForStartupDialog(
+		() =>
+			new Promise((resolve) => {
+				const rl = createInterface({ input: io.input, output: io.output });
+				const ask = (prefix: string) => {
+					rl.question(`${prefix}${message} [y/N] `, (answer) => {
+						const normalized = answer.trim().toLowerCase();
+						if (
+							normalized === "y" ||
+							normalized === "yes" ||
+							normalized === "" ||
+							normalized === "n" ||
+							normalized === "no"
+						) {
+							rl.close();
+							resolve(normalized === "y" || normalized === "yes");
+							return;
+						}
+						keepStartupDialogDraft(answer);
+						ask("Answer y or n; your text is kept as a draft.\n");
+					});
+				};
+				ask("");
+			}),
+	);
 }
 
 export class SessionSelectorConflictError extends Error {
@@ -358,7 +382,7 @@ async function createSessionManagerWithStore(
 					return openSessionOrExit(resolved.id, store);
 				}
 				console.log(chalk.yellow(`Session found in different project: ${resolved.cwd}`));
-				const shouldFork = await promptConfirm("Fork this session into current directory?");
+				const shouldFork = await confirmStartupQuestion("Fork this session into current directory?");
 				if (!shouldFork) {
 					console.log(chalk.dim("Aborted."));
 					process.exit(0);
@@ -411,40 +435,20 @@ async function createSessionManagerWithStore(
 	return createProvisionalSession(store, cwd, parsed.sessionId);
 }
 
+/**
+ * A startup question in its own screen. It takes the terminal from the early-input capture while open, keeps text
+ * typed into it for the prompt's draft, and ignores Enter after typed text until ↑ or ↓ picks a choice.
+ */
 function promptStartupSelector(
 	title: string,
 	options: readonly string[],
 	settingsManager: SettingsManager,
 ): Promise<string | undefined> {
-	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
-	initTheme(settingsManager.getTheme());
-	setKeybindings(KeybindingsManager.create());
-
-	return new Promise((resolve) => {
-		const ui = new TuiMainScreen(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
-		ui.setClearOnShrink(settingsManager.getClearOnShrink());
-
-		let settled = false;
-		const finish = (result: string | undefined) => {
-			if (settled) {
-				return;
-			}
-			settled = true;
-			ui.stop();
-			resolve(result);
-		};
-
-		const selector = new ExtensionSelectorComponent(
-			title,
-			[...options],
-			(option) => finish(option),
-			() => finish(undefined),
-			{ tui: ui },
-		);
-		ui.addChild(selector);
-		ui.setFocus(selector);
-		ui.start();
-	});
+	return showStartupSelector(
+		settingsManager,
+		title,
+		options.map((option) => ({ label: option, value: option })),
+	);
 }
 
 export async function promptForMissingSessionCwd(
