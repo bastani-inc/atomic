@@ -293,6 +293,53 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			}
 		});
 
+		for (const size of [3, 1_000])
+			test(`a host's shipped batch of ${size} records each checkpoint once, a retried batch nothing, and a replaced attempt's batch is fenced (#4768)`, async (f) => {
+				await f.pool.enqueue(f.lease, work, boundary);
+				const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);
+				assert.ok(attempt);
+				const item = { work, boundary };
+				const events = Array.from({ length: size }, (_, index) => {
+					const shipped = toolCheckpointOf(item, index + 1);
+					return {
+						localSeq: index + 1,
+						key: JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "tool", shipped.checkpointId]),
+						payload: JSON.stringify(shipped),
+					};
+				});
+				const batch = { id: "batch-1", host: "host-A", events };
+				const journal = await f.peer();
+				const host = await openSqlPoolQueue(journal);
+				await host.shipBatch(f.lease, attempt, batch);
+				await f.pool.shipBatch(f.lease, attempt, batch);
+				await assertDenseEvents(f, size + 1);
+				const ledger = await f.database.all<{ events: number }>(
+					`SELECT events FROM ${f.table("wf_runs_ship_batches")}`,
+				);
+				assert.deepEqual(
+					ledger.map((row) => Number(row.events)),
+					[size],
+				);
+				await host.releaseExited(f.lease, attempt);
+				const next = await host.claim(f.lease, "replacement-worker", [definition], 60_000);
+				assert.ok(next);
+				const late = toolCheckpointOf(item, size + 1);
+				await assert.rejects(
+					f.pool.shipBatch(f.lease, attempt, {
+						id: "batch-late",
+						host: "host-A",
+						events: [
+							{
+								localSeq: size + 1,
+								key: JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "tool", late.checkpointId]),
+								payload: JSON.stringify(late),
+							},
+						],
+					}),
+					staleWorkLease({ workId: attempt.id, generation: attempt.generation }),
+				);
+				await assertDenseEvents(f, size + 1);
+			});
 		test("1000 commits of 256 KiB checkpoints, one after another, all commit and read back intact", async (f) => {
 			await f.pool.enqueue(f.lease, work, boundary);
 			const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);

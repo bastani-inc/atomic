@@ -25,6 +25,12 @@
 	},
 	{
 		"type": "index",
+		"name": "team_wf_runs_ship_batches_work",
+		"tbl_name": "team_wf_runs_ship_batches",
+		"sql": "CREATE INDEX team_wf_runs_ship_batches_work ON team_wf_runs_ship_batches(work, generation)"
+	},
+	{
+		"type": "index",
 		"name": "team_wf_runs_stage_inputs_pending",
 		"tbl_name": "team_wf_runs_stage_inputs",
 		"sql": "CREATE INDEX team_wf_runs_stage_inputs_pending ON team_wf_runs_stage_inputs(work, state)"
@@ -76,6 +82,12 @@
 		"name": "wf_runs_resource_permits_state",
 		"tbl_name": "wf_runs_resource_permits",
 		"sql": "CREATE INDEX wf_runs_resource_permits_state ON wf_runs_resource_permits(state)"
+	},
+	{
+		"type": "index",
+		"name": "wf_runs_ship_batches_work",
+		"tbl_name": "wf_runs_ship_batches",
+		"sql": "CREATE INDEX wf_runs_ship_batches_work ON wf_runs_ship_batches(work, generation)"
 	},
 	{
 		"type": "index",
@@ -226,6 +238,18 @@
 		"name": "team_wf_runs_resource_permits",
 		"tbl_name": "team_wf_runs_resource_permits",
 		"sql": "CREATE TABLE team_wf_runs_resource_permits(ticket INTEGER PRIMARY KEY AUTOINCREMENT, operation TEXT UNIQUE NOT NULL,\n\t\t\t\troot TEXT NOT NULL, holder TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, owner TEXT, attempt TEXT, process_identity TEXT, root_epoch INTEGER, granted_at INTEGER)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_ship_batches",
+		"tbl_name": "team_wf_runs_ship_batches",
+		"sql": "CREATE TABLE team_wf_runs_ship_batches(\n\t\t\t\tbatch TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES team_wf_runs_work(id) ON DELETE CASCADE,\n\t\t\t\tgeneration INTEGER NOT NULL, worker TEXT, epoch INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\tfirst_local_seq INTEGER NOT NULL, last_local_seq INTEGER NOT NULL, events INTEGER NOT NULL,\n\t\t\t\tshipped_at INTEGER NOT NULL\n\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_ship_watermarks",
+		"tbl_name": "team_wf_runs_ship_watermarks",
+		"sql": "CREATE TABLE team_wf_runs_ship_watermarks(\n\t\t\t\twork TEXT PRIMARY KEY REFERENCES team_wf_runs_work(id) ON DELETE CASCADE, generation INTEGER NOT NULL,\n\t\t\t\thost TEXT NOT NULL, last_local_seq INTEGER NOT NULL, last_event_key TEXT NOT NULL,\n\t\t\t\tshipped_at INTEGER NOT NULL\n\t\t\t)"
 	},
 	{
 		"type": "table",
@@ -388,6 +412,18 @@
 		"name": "wf_runs_resource_permits",
 		"tbl_name": "wf_runs_resource_permits",
 		"sql": "CREATE TABLE wf_runs_resource_permits(ticket INTEGER PRIMARY KEY AUTOINCREMENT, operation TEXT UNIQUE NOT NULL,\n\t\t\t\troot TEXT NOT NULL, holder TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, owner TEXT, attempt TEXT, process_identity TEXT, root_epoch INTEGER, granted_at INTEGER)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_ship_batches",
+		"tbl_name": "wf_runs_ship_batches",
+		"sql": "CREATE TABLE wf_runs_ship_batches(\n\t\t\t\tbatch TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES wf_runs_work(id) ON DELETE CASCADE,\n\t\t\t\tgeneration INTEGER NOT NULL, worker TEXT, epoch INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\tfirst_local_seq INTEGER NOT NULL, last_local_seq INTEGER NOT NULL, events INTEGER NOT NULL,\n\t\t\t\tshipped_at INTEGER NOT NULL\n\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_ship_watermarks",
+		"tbl_name": "wf_runs_ship_watermarks",
+		"sql": "CREATE TABLE wf_runs_ship_watermarks(\n\t\t\t\twork TEXT PRIMARY KEY REFERENCES wf_runs_work(id) ON DELETE CASCADE, generation INTEGER NOT NULL,\n\t\t\t\thost TEXT NOT NULL, last_local_seq INTEGER NOT NULL, last_event_key TEXT NOT NULL,\n\t\t\t\tshipped_at INTEGER NOT NULL\n\t\t\t)"
 	},
 	{
 		"type": "table",
