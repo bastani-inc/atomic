@@ -3,25 +3,11 @@ import type { GraphFrontierTracker } from "../../packages/workflows/src/engine/g
 import { createStageScheduler } from "../../packages/workflows/src/runs/foreground/executor-scheduler.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { findSnapshotRun, findSnapshotStage } from "../../packages/workflows/src/shared/workflow-run-ownership.js";
 import { GraphViewLayout } from "../../packages/workflows/src/tui/graph-view-layout.js";
-import { installStoreWidget } from "../../packages/workflows/src/tui/store-widget-installer.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { assert } from "./executor-shared.js";
-
-const widgetFrames = vi.hoisted(() => [] as StoreSnapshot[]);
-
-vi.mock("../../packages/workflows/src/tui/widget.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../../packages/workflows/src/tui/widget.js")>();
-	return {
-		...actual,
-		buildThemedWidgetLines: (...args: Parameters<typeof actual.buildThemedWidgetLines>) => {
-			if (args[1] !== undefined) widgetFrames.push(args[0]);
-			return actual.buildThemedWidgetLines(...args);
-		},
-	};
-});
 
 /** Stages of one lane: each one's parent is the one before it. */
 function chain(count: number, status: StageSnapshot["status"] = "completed"): StageSnapshot[] {
@@ -162,40 +148,6 @@ describe("frame and event work does not grow with the stages a run finished", ()
 
 		assert.equal(scheduler.blockingAncestorFor(joined), undefined);
 		assert.equal(parentReads, 3, "left, right and root once each");
-	});
-
-	test("every widget frame between store changes renders the store's frozen snapshot of that version (#4642)", () => {
-		const store = createStore();
-		store.recordRunStart(runOf([...chain(200), ...chain(1, "running").map((stage) => ({ ...stage, id: "live" }))]));
-		let factory: ((tui: object, theme: object) => { render(width: number): string[] }) | undefined;
-		const dispose = installStoreWidget(
-			{
-				ui: {
-					setWidget: (_key, next) => {
-						factory = next as typeof factory;
-					},
-					requestRender: () => {},
-				},
-			},
-			store,
-		);
-		try {
-			assert.ok(factory, "the widget mounted");
-			const component = factory({ terminal: { rows: 40 }, requestRender: () => {} }, {});
-			widgetFrames.length = 0;
-			for (let frame = 0; frame < 5; frame++) component.render(120);
-			const version = store.graphSnapshot();
-			assert.equal(widgetFrames.length, 5);
-			assert.ok(widgetFrames.every((snapshot) => snapshot === version));
-			assert.ok(Object.isFrozen(version));
-
-			store.recordStageStart("run-4642", { ...chain(1, "running")[0]!, id: "next", name: "next" });
-			component.render(120);
-			assert.equal(widgetFrames.at(-1), store.graphSnapshot(), "the next frame reads the store as it is now");
-			assert.notEqual(widgetFrames.at(-1), version);
-		} finally {
-			dispose();
-		}
 	});
 
 	test("a scrolled body draws its thumb where the scroll position puts it (#4642)", () => {

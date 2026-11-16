@@ -62,6 +62,22 @@ export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js
 // Internal trusted-host task integration (not model authority).
 export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory } from "./core/tasks/agent-adapter.js";
 export {
+	type AgentPanelActionResult,
+	type AgentPanelItem,
+	type AgentPanelOpenOptions,
+	type AgentPanelSession,
+	type AgentPanelSource,
+	type AgentPanelSourceRegistration,
+	type AgentPanelState,
+	agentPanelItems,
+	agentPanelTaskId,
+	answerAgentPanelItem,
+	dismissedAgentPanelItems,
+	openAgentPanelItem,
+	stopAgentPanelItem,
+	subscribeAgentPanel,
+} from "./core/tasks/agent-panel-source.ts";
+export {
 	isRetryableTaskError,
 	isTaskCleanupAdmissionTimeoutError,
 	isTaskCleanupError,
@@ -1147,6 +1163,7 @@ export {
 export {
 	ArminComponent,
 	AssistantMessageComponent,
+	applyAttachedComposer,
 	applyInputLabelToEditorTopRule,
 	BashExecutionComponent,
 	BorderedLoader,

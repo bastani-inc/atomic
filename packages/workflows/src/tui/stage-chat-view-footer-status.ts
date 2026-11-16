@@ -1,4 +1,4 @@
-import type { AgentSession } from "@bastani/atomic";
+import { type AgentSession, applyAttachedComposer } from "@bastani/atomic";
 import { Box, Text } from "@bastani/atomic-tui";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { StageSnapshot } from "../shared/store-types.js";
@@ -52,8 +52,42 @@ export function injectStageLabelIntoEditorTopRule(
 	ctx: StageChatViewContext,
 	stageName: string | undefined,
 	editorLines: readonly string[],
+	stage?: StageSnapshot,
+	now = Date.now(),
 ): string[] {
-	return applyStageLabelToEditorTopRule(ctx.theme, stageName, editorLines);
+	if (stageName === undefined) return applyStageLabelToEditorTopRule(ctx.theme, stageName, editorLines);
+	// The attached composer: accent rules naming the stage and its state, and where typing goes.
+	const waiting = stage?.status === "awaiting_input";
+	const state =
+		stage === undefined
+			? undefined
+			: waiting
+				? "needs input"
+				: stage.status === "running" && stage.startedAt !== undefined
+					? formatStageElapsed(now - stage.startedAt)
+					: stage.status === "completed"
+						? "done"
+						: stage.status;
+	const label = ["stage", stageName, state].filter(Boolean).join(" · ");
+	const t = ctx.theme;
+	return applyAttachedComposer(
+		{
+			accent: (text) => paint(text, t.accent),
+			text: (text) => paint(text, t.text),
+			dim: (text) => paint(text, t.dim),
+		},
+		label,
+		ctx.chatHost.hasInputText() ? undefined : `${waiting ? "Answer" : "Message"} ${stageName}…`,
+		editorLines,
+	);
+}
+
+/** `41m`, `1h 31m`, `9s`, as the agent panel shows elapsed time. */
+function formatStageElapsed(ms: number): string {
+	const seconds = Math.max(0, Math.floor(ms / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 export function renderHeader(ctx: StageChatViewContext, width: number, stage: StageSnapshot | undefined): string[] {

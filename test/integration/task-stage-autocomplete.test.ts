@@ -52,7 +52,9 @@ test("stage slash suggestions select /tasks and inspect only the stage owner wit
 		assert.deepEqual(fixture.userTexts(), beforeStage);
 		assert.deepEqual(fixture.main.session.messages, beforeMain);
 		view.handleInput("\x1b");
-		assert.doesNotMatch(stripVTControlCharacters(view.render(100).join("\n")), /STAGE OWNER TASK/);
+		// The list closes; the stage chat's own task row stays below its prompt (#5224).
+		assert.doesNotMatch(stripVTControlCharacters(view.render(100).join("\n")), /Background tasks/);
+		assert.match(stripVTControlCharacters(view.render(100).join("\n")), /∀ worker {2}STAGE OWNER TASK/);
 	} finally {
 		await fixture.cleanup();
 		await stageTasks.dispose();

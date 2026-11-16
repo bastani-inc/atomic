@@ -1,6 +1,7 @@
-import { Text } from "@bastani/atomic-tui";
+import { isKeyRelease, Text } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { parseSlashCommand } from "../../core/slash-commands.js";
+import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
@@ -15,12 +16,12 @@ import {
 	remoteEngineProxyOwner,
 	remoteProxyHandlesCtrlC,
 } from "../interactive-engine/remote-input-ownership.ts";
+import { agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { showTaskInspector } from "../rpc/task-ui-bridge.js";
 import { isChatSessionWorking } from "./components/footer.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
 import { MainComposerKeyOverlay } from "./components/main-composer-keys.ts";
-import { NAV_CONFIRM_WINDOW_MS } from "./components/nav-keys.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
@@ -31,7 +32,7 @@ import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
 import { handOffCompactionQueue, settleSubmission, showSubmissionAsQueued } from "./interactive-queueing.ts";
-import { createStopAllChord, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
+import { createStopAllChord, createStopAllNotices, STOP_ALL_STATUS_KEY } from "./interactive-stop-all.ts";
 import { theme } from "./theme/theme.js";
 
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
@@ -69,37 +70,27 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 
 InteractiveModeBase.prototype.setupKeyHandlers = async function (this: InteractiveModeBase): Promise<void> {
 	registerStartupInputListeners(this);
-	// The chord works over overlays such as the workflow graph, which hide the chat: its notices also show as a
-	// status in every footer and statusline for as long as they apply.
-	let stopAllStatusTimer: ReturnType<typeof setTimeout> | undefined;
-	let stopAllToast: { hide(): void } | undefined;
-	const clearStopAllStatus = () => {
-		if (stopAllStatusTimer !== undefined) clearTimeout(stopAllStatusTimer);
-		stopAllStatusTimer = undefined;
-		stopAllToast?.hide();
-		stopAllToast = undefined;
-		this.footerDataProvider.setExtensionStatus(STOP_ALL_STATUS_KEY, undefined);
-	};
-	const flashStopAllStatus = (message: string | undefined) => {
-		clearStopAllStatus();
-		if (message !== undefined) {
-			this.footerDataProvider.setExtensionStatus(STOP_ALL_STATUS_KEY, message);
-			// A fullscreen view such as the workflow graph covers the chat: the notice floats over it, without the keyboard.
-			if (this.ui.hasOverlay())
-				stopAllToast = this.ui.showOverlay(new Text(theme.fg("warning", message), 1, 0), {
-					anchor: "bottom-center",
-					width: "100%",
-					offsetY: -3,
-					nonCapturing: true,
-				});
-			stopAllStatusTimer = setTimeout(() => {
-				clearStopAllStatus();
-				this.ui.requestRender();
-			}, NAV_CONFIRM_WINDOW_MS);
-			stopAllStatusTimer.unref?.();
-		}
-		this.ui.requestRender();
-	};
+	// The chord's notices show in the view the user is in and clear themselves; none is written to a transcript.
+	const isolated = this.runtimeHost instanceof IsolatedInteractiveRuntime ? this.runtimeHost : undefined;
+	const notices = createStopAllNotices({
+		...(isolated === undefined
+			? {
+					setFooterStatus: (text: string | undefined) =>
+						this.footerDataProvider.setExtensionStatus(STOP_ALL_STATUS_KEY, text),
+					showToast: (text: string) => {
+						const toast = this.ui.showOverlay(new Text(theme.fg("warning", text), 1, 0), {
+							anchor: "bottom-center",
+							width: "100%",
+							offsetY: -3,
+							nonCapturing: true,
+						});
+						return () => toast.hide();
+					},
+				}
+			: { setEngineNotice: (text: string | undefined) => void isolated.setStopAllNotice(text).catch(() => {}) }),
+		hasOverlay: () => this.ui.hasOverlay(),
+		requestRender: () => this.ui.requestRender(),
+	});
 	this.addTuiInputListener(
 		createStopAllChord({
 			keybindings: this.keybindings,
@@ -111,26 +102,31 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 				this.runtimeHost instanceof IsolatedInteractiveRuntime
 					? this.runtimeHost.stopAllBackgroundWork()
 					: stopAllBackgroundWork(this.session),
-			showStatus: (message) => {
-				this.showStatus(message);
-				flashStopAllStatus(message);
-			},
-			showWarning: (message) => {
-				this.showWarning(message);
-				flashStopAllStatus(message);
-			},
-			clearStatus: () => {
-				flashStopAllStatus(undefined);
-				const text = this.lastStatusText;
-				if (text === undefined) return;
-				this.chatContainer.removeChild(text);
-				if (this.lastStatusSpacer) this.chatContainer.removeChild(this.lastStatusSpacer);
-				this.lastStatusText = undefined;
-				this.lastStatusSpacer = undefined;
-				this.ui.requestRender();
-			},
+			showStatus: (message) => notices.show(message),
+			showWarning: (message) => notices.show(message),
+			clearStatus: () => notices.clear(),
 		}),
 	);
+	this.addTuiInputListener((data) => {
+		if (isKeyRelease(data) || !this.keybindings.matches(data, "app.agents.focus")) return undefined;
+		if (this.ui.hasOverlay() || !this.editorContainer.children.includes(this.editor)) return undefined;
+		if (this.editor.getText() !== "" || this.isBashMode) return undefined;
+		if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
+			void this.runtimeHost.openAgentPanel().catch((error: unknown) => this.showWarning(sourceError(error).message));
+			return { consume: true };
+		}
+		if (!agentPanelHasRows(this.session)) return undefined;
+		const ui = this.createExtensionUIContext();
+		void showAgentPanel(this.session, {
+			custom: (factory, options) => this.showExtensionCustom(factory, options),
+			getChatRenderSettings: ui.getChatRenderSettings,
+			getFooterDataProvider: ui.getFooterDataProvider,
+			getToolsExpanded: ui.getToolsExpanded,
+			setToolsExpanded: ui.setToolsExpanded,
+			notify: ui.notify,
+		}).catch((error: unknown) => this.showWarning(sourceError(error).message));
+		return { consume: true };
+	});
 	// Set up handlers on defaultEditor - they use this.editor for text access
 	// so they work correctly regardless of which editor is active
 	this.defaultEditor.onEscape = () => {

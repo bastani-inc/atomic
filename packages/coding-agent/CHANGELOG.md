@@ -5,11 +5,14 @@
 ### Added
 
 - Added `AgentSession.setModel(model, { thinkingLevel })` to set a model and its reasoning level in one call. Unsupported levels clamp to a supported level, and `persist: true` saves both. RPC `set_model` also accepts `thinkingLevel` and rejects unrecognized values without switching the model. `RpcClient.setModel(provider, modelId, { thinkingLevel })` sends the option. Persisted `set_model` and `cycle_model` responses include `persistedDefaults` to distinguish saved startup preferences from session-only changes ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
+- `AgentSession.interruptTurn()` ends the current turn without closing a subagent child to further messages, and `WorkflowRunControl` gains optional `panelRuns()`, `subscribePanelRuns()` and `openRun()` for the agent panel ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Changed
 
 - `/resume` and `/workflow resume` share one picker design: two-line rows (a session's name or first message, then its age, message count, folder and summary; a run's workflow and objective, then its status, stage, elapsed time, cost, checkpoints or failure reason), a search box, Space to preview the selected row, Enter or → (on an empty search) to resume, and one hint line listing only the keys that work. Esc clears a search before it closes the picker. The picker opens, and clears a search, in about the same time whatever the number of sessions: opening 3,000 sessions took about 73 ms and now takes about 1 ms ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - The fork picker, `/tree`, `atomic config`, the editor's `@` and `/` menus, and the `/mcp` and `/llama` pickers share the same picker look: the ❯ selection marker, a rounded search box, and "↑ N more · ↓ N more" in place of a position counter. The fork picker gains type-to-search, and `/mcp` and `/llama` lists longer than one screen get a search box ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- The main chat's below-prompt task line is now the **agent panel**: one row per running or recent background subagent, workflow run and shell, with its status glyph, name, task, elapsed time and tokens (a workflow run shows its stage progress, current stage, waiting question or failure reason). ↓ on an empty prompt focuses it; Enter or → opens a subagent's or shell's chat, or a run's graph; `x` twice stops; finished rows fade and leave after a few minutes. A stage or subagent chat lists its own active tasks below its prompt in the same rows, and `renderTaskFooter` renders those rows ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- A subagent's chat has an attached composer: heavy accent rules naming the subagent, its task and its state (`debugger · #5220 spawn lock · 18m`), and a `Message debugger…` placeholder (`Answer debugger…` while it waits on a question). Opened from the agent panel, ← on its empty prompt returns to the main chat ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Fixed
 
@@ -22,6 +25,14 @@
 - The MCP manager refreshes empty-state messages and action hints with live menu changes, including when a server is removed while its menu is open ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
 - A session or workflow row being deleted cannot be resumed, renamed or deleted again while the operation is pending. Other rows can still be resumed, cancellation remains available, failed deletions can be retried, and the active session is not offered for deletion ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
 - Resume previews keep the end of long paths and mark shortened titles and summaries with an ellipsis instead of silently cutting them ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
+- Fixed a failing extension's agent panel source crashing the host during updates, navigation or cleanup, including rejected row values, thrown promises, throwing iterators or getters, and errors whose messages cannot be read safely. Source reads now limit rows and choices so oversized arrays or endless iterables cannot freeze the chat. Other sources remain usable, and failed stop and answer actions report their errors ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
+- Fixed long runs of cursor-control prefixes or spaces stalling the attached chat composer's placeholder formatting ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
+- The agent panel now hides malformed extension rows without losing their valid neighbours, rejects reserved task ids and malformed action results, and keeps token and queue fields from sending terminal controls. A source that notifies while listing its rows no longer freezes the chat. Startup warnings remain visible, repeated ↓ presses open only one panel, and the panel can reopen after `/reload` while focused ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
+- Fixed task elapsed time freezing while stopping in the task list, inspector and attached chat, and extension elapsed time drifting after updates while the panel was hidden. Panel sources keep updating after reload and after changes raised while listing rows. Also fixed stale panel scrolling after rows disappear, leading combining marks overflowing terminal rows, and rounded token counts such as `1000.0k` instead of `1.0M`. Panel updates reuse unchanged source data and rendered rows, avoid rebuilding task rows while hidden, and combine bursts of changes into one refresh to keep animations responsive ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
+
+### Removed
+
+- The `app.workflows.scrollUp` and `app.workflows.scrollDown` keybindings (Alt+K/J, Alt+PageUp/PageDown), with the workflow list they scrolled; the agent panel replaces it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ## [0.9.88] - 2026-11-16
 

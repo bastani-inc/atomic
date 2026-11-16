@@ -9,7 +9,6 @@ import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { formatModelLabel } from "../../../core/model-label.ts";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
-import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import {
 	addHistoryUsageToTotals,
@@ -394,9 +393,9 @@ export class FooterComponent implements Component {
 		}
 		const statusRow = renderExtensionStatusRow(this.footerData.getExtensionStatuses(), width, this.renderStyle);
 		if (statusRow !== undefined) lines.push(statusRow);
-		lines.push(
-			...renderTaskFooter(this.backgroundTasks?.() ?? getOwnerTaskStore(this.session)?.backgroundTasks ?? [], width),
-		);
+		// The main chat lists its background work in the agent panel; a stage or subagent chat lists its own here.
+		const tasks = this.backgroundTasks?.();
+		if (tasks !== undefined) lines.push(...renderTaskFooter(tasks, width));
 		return lines;
 	}
 }

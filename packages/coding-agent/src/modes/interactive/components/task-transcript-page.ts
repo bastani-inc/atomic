@@ -1,6 +1,8 @@
 import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bastani/atomic-tui";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { shortTaskTitle } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
+import { isRunningTaskClock, liveElapsedMs } from "../../../core/tasks/live-elapsed.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import {
@@ -11,11 +13,12 @@ import {
 } from "../../../core/tasks/task-view-source.js";
 import { createSessionSkillAutocompleteProvider, getSkillCatalogCommands } from "../skill-command-autocomplete.ts";
 import { theme } from "../theme/theme.js";
+import { formatPanelElapsed } from "./agent-panel.ts";
 import type { ChatSessionHost } from "./chat-session-host.ts";
 import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-host-types.ts";
 import { ScrollableComponentViewport } from "./chat-transcript.js";
-import { applyInputLabelToEditorTopRule } from "./input-label.ts";
-import { taskDisplayText } from "./task-row.js";
+import { applyAttachedComposer } from "./input-label.ts";
+import { taskDisplayText, taskState } from "./task-row.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
 
 /** Where a task's transcript view is mounted: the chat host it builds on and the render settings it inherits. */
@@ -128,8 +131,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
 	get status(): string {
-		const stopped = this.source.taskStopped?.(this.taskId) === true ? STOPPED_NOTE : "";
-		return [this.loadStatus, this.readOnlyReason() ?? stopped].filter(Boolean).join(" · ");
+		return [this.loadStatus, this.readOnlyReason() ?? ""].filter(Boolean).join(" · ");
 	}
 	set status(value: string) {
 		this.loadStatus = value;
@@ -293,15 +295,60 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			remaining -= shown.length;
 			return shown;
 		};
-		const editor = reserve(
-			applyInputLabelToEditorTopRule(this.env.style, "subagent", this.sessionName(), this.chat.renderEditor(width)),
-		);
+		const editor = reserve(this.decorateComposer(this.chat.renderEditor(width)));
 		const footer = reserve(this.chat.renderFooter(width));
 		const pending = reserve(this.chat.renderPendingMessages(width));
 		const working = reserve(this.chat.renderWorkingStatus(width), true);
 		const usage = reserve(this.chat.renderUsage(width));
 		const body = remaining > 0 ? this.chat.renderBody(width, remaining) : [];
 		return [...body, ...pending, ...working, ...usage, ...editor, ...footer];
+	}
+
+	/**
+	 * The attached composer: accent rules naming the subagent, its task and its state (`debugger · #5220 spawn lock ·
+	 * 18m`), and a placeholder that says where typing goes (`Message debugger…`, or `Answer debugger…` while it waits on
+	 * a question).
+	 */
+	private decorateComposer(lines: readonly string[]): string[] {
+		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		const name = taskDisplayText(task?.agentName ?? this.sessionName() ?? "subagent");
+		const waiting = task?.attention.kind === "input-needed";
+		const state =
+			task === undefined
+				? undefined
+				: waiting
+					? "needs input"
+					: task.execution.kind === "settled"
+						? taskState(task) === "completed"
+							? "done"
+							: taskState(task)
+						: task.metrics?.elapsedMs === undefined
+							? "running"
+							: formatPanelElapsed(
+									liveElapsedMs(
+										task.ref.taskId,
+										task.metrics.elapsedMs,
+										isRunningTaskClock(task.execution.kind),
+									) ?? task.metrics.elapsedMs,
+								);
+		const stopped = this.source.taskStopped?.(this.taskId) === true;
+		const label = [
+			name,
+			task?.title ? taskDisplayText(shortTaskTitle(task.title)) : "",
+			stopped ? "stopped" : (state ?? ""),
+		]
+			.filter(Boolean)
+			.join(" · ");
+		// A stopped subagent resumes only with a message the reader sends: its prompt says so.
+		const placeholder = stopped ? STOPPED_NOTE : `${waiting ? "Answer" : "Message"} ${name}…`;
+		return applyAttachedComposer(
+			{ accent: this.env.style.accent, text: this.env.style.text, dim: this.env.style.dim },
+			label,
+			this.chat.hasInputText() || this.source.sendTaskMessage === undefined || this.readOnlyReason() !== undefined
+				? undefined
+				: placeholder,
+			lines,
+		);
 	}
 
 	/** What the subagent's session is called: its Intercom name, else its agent's name. */

@@ -729,6 +729,21 @@ Await `pi.appendEntry` before using the new entry. The promise resolves after th
 
 During a transactional reload's `session_start` handler, `pi.appendEntry`, `pi.setSessionName`, and `pi.setLabel` stage their writes instead. Awaiting them confirms staging; the writes and their notifications are published in call order only after reload succeeds. Rejected reloads discard these changes. Do not depend on reading the staged changes back during that handler.
 
+### pi.registerAgentPanelSource(source)
+
+Add background work to the [agent panel](/background-tasks#the-agent-panel). The registration returns `dispose()` and is also disposed when the extension reloads.
+
+- `items()` synchronously returns an array of `AgentPanelItem` rows. Call the listener from `subscribe(listener)` when rows change, and return an unsubscribe function. Apply pending changes before taking the snapshot `items()` returns, or notify after returning; a listener call made while `items()` runs is honoured once.
+- Give each row a stable, session-unique id such as `my-extension:job-1`. The id `main` and the `task:` prefix are reserved.
+- Set `kind` to `agent`, `shell` or `workflow`, and `state` to `running`, `queued`, `input`, `paused`, `stopping`, `done`, `failed` or `stopped`. `name` and `task` are strings.
+- Optional `elapsedMs` and `endedAt` are finite, non-negative milliseconds. `tokens` and `queued` are non-negative safe integers, at most `Number.MAX_SAFE_INTEGER`. `progress` holds finite, non-negative `done` and `total` values, and `choices` is an array of at most 128 strings.
+- Return at most 10,000 rows per source. Atomic ignores additional rows and warns once per registration. A row with more than 128 choices is hidden; keep longer lists in the view opened by `open()`.
+- Optional `open(id, { onReturn })` opens the item's view. Call `onReturn` when returning to the panel. `stop(id)` and `answer(id, text)` return promises resolving to `{ ok: true }` or `{ ok: false, reason: string }`.
+
+Keep `items()` and subscription callbacks short and synchronous. Compute `elapsedMs` when `items()` is called; Atomic advances a running row from that read until the next one and uses the reported value when it pauses or finishes. Publish a new change notification when that state changes.
+
+A malformed row is hidden without hiding valid rows beside it. If `items()` throws, that source's rows are hidden until a later update succeeds. Atomic reports a warning once per registration and keeps other sources usable. Fix the source and use `/reload` to register it again.
+
 ### pi.registerEntryRenderer(customType, renderer)
 
 Register a TUI renderer for durable custom entries created by `pi.appendEntry()`. These entries render in the transcript but do not enter model context.

@@ -10,6 +10,7 @@ import {
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import { isRunningTaskClock, liveElapsedMs } from "../../../core/tasks/live-elapsed.js";
 import { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
@@ -30,7 +31,8 @@ import {
 	taskDetailLabels,
 	taskDetailSummary,
 } from "./task-detail.js";
-import { dismissedTasks, type TaskListSection, taskListSections } from "./task-list.js";
+import { dismissedTasks } from "./task-dismissal.ts";
+import { type TaskListSection, taskListSections } from "./task-list.js";
 import { TaskNavigation } from "./task-navigation.js";
 import { taskDisplayText, taskLabel, taskMetricsText, taskModelText, taskStatusAppearance } from "./task-row.js";
 import {
@@ -113,12 +115,12 @@ export class TaskInspector implements Component {
 	private helpOpen = false;
 	/** Where ← from an open task chat goes: the list, the task's detail page, or out to whatever opened the inspector. */
 	private chatFrom: "list" | "detail" | "caller" = "detail";
+	/** The inspector closed by going back one level (← or ↓ in a chat opened by the caller), not by Ctrl+C. */
+	closedByBack = false;
 	/** What ← from a chat opened by the caller names, such as `main chat`. */
 	private callerLabel = "back";
 	/** Typed shell input per task, kept when the reader leaves the input and restored when they return. */
 	private readonly inputDrafts = new Map<TaskId, string>();
-	/** When each running task was first seen, so elapsed times advance between the task's own reports. */
-	private readonly liveSince = new Map<TaskId, number>();
 	/** The open transcript of the selected task, on the shared chat stack. */
 	private transcript?: TaskTranscriptPage;
 	private status = "";
@@ -453,6 +455,7 @@ export class TaskInspector implements Component {
 		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
 		if (keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
 			if (this.chatFrom === "caller") {
+				this.closedByBack = true;
 				this.close();
 				return true;
 			}
@@ -462,6 +465,12 @@ export class TaskInspector implements Component {
 			if (this.chatFrom === "list") this.navigation.focus = { kind: "tasks" };
 			else void this.loadDetail();
 			this.requestRender();
+			return true;
+		}
+		// Opened from the agent panel, ↓ on an empty prompt goes to the panel too, as it does from the main chat.
+		if (this.chatFrom === "caller" && keys.matches(data, "app.agents.focus") && !transcript.hasDraft()) {
+			this.closedByBack = true;
+			this.close();
 			return true;
 		}
 		if (isNavHelpKey(keys, data) && !transcript.hasDraft()) {
@@ -490,17 +499,14 @@ export class TaskInspector implements Component {
 	get fullscreen(): boolean {
 		return this.navigation.focus.kind === "detail" || this.navigation.focus.kind === "stdin";
 	}
-	/** The waiting first press of `x`, as the line under the list shows it. */
-	/** A running task's elapsed time advances between its own reports, from when this view first saw it running. */
 	private withLiveElapsed(task: TaskRecord): TaskRecord {
-		if (task.execution.kind !== "running") {
-			this.liveSince.delete(task.ref.taskId);
-			return task;
-		}
-		const now = Date.now();
-		const since = this.liveSince.get(task.ref.taskId) ?? now - (task.metrics?.elapsedMs ?? 0);
-		this.liveSince.set(task.ref.taskId, since);
-		return { ...task, metrics: { ...task.metrics, elapsedMs: Math.max(task.metrics?.elapsedMs ?? 0, now - since) } };
+		const elapsedMs = liveElapsedMs(
+			task.ref.taskId,
+			task.metrics?.elapsedMs,
+			isRunningTaskClock(task.execution.kind),
+		);
+		if (elapsedMs === undefined) return task;
+		return { ...task, metrics: { ...task.metrics, elapsedMs } };
 	}
 	private stopNotice(): string {
 		const finished = this.navigation.finishedWhileArmed;
@@ -523,11 +529,15 @@ export class TaskInspector implements Component {
 	private renderTranscriptPage(width: number, budget: number, transcript: TaskTranscriptPage): string[] {
 		const task = this.selected();
 		const fitWidth = (line: string) => truncateToWidth(line, Math.max(1, width));
-		const header = [
-			theme.bold(`Transcript · ${task ? taskDisplayText(taskLabel(task)) : "Task"}`),
-			task ? taskDetailSummary(task) : "",
-			theme.fg("borderMuted", "─".repeat(Math.max(0, width))),
-		].map(fitWidth);
+		// Opened from the agent panel, a subagent's chat is named by its composer's rule; the page needs no title.
+		const header =
+			this.chatFrom === "caller" && task?.kind === "agent"
+				? []
+				: [
+						theme.bold(`Transcript · ${task ? taskDisplayText(taskLabel(task)) : "Task"}`),
+						task ? taskDetailSummary(this.withLiveElapsed(task)) : "",
+						theme.fg("borderMuted", "─".repeat(Math.max(0, width))),
+					].map(fitWidth);
 		const notes = [transcript.status, this.status].filter(Boolean).join(" · ");
 		const style = themedNavKeyStyle();
 		if (this.helpOpen)
@@ -536,7 +546,11 @@ export class TaskInspector implements Component {
 				...renderNavKeyOverlay("keys · task chat", TASK_CHAT_OVERLAY_KEYS, width, style, getKeybindings()),
 			].slice(0, Math.max(1, budget));
 		const back = this.chatFrom === "caller" ? this.callerLabel : this.chatFrom === "list" ? "tasks" : "task";
-		const hint = renderNavHintLine(taskChatKeys(back, transcript.interruptible()), width, style, getKeybindings());
+		const chatKeys = taskChatKeys(back, transcript.interruptible());
+		// From the agent panel, ↓ returns there as well.
+		if (this.chatFrom === "caller" && back === "agents")
+			chatKeys.splice(1, 0, { action: "app.agents.focus", label: "agents" });
+		const hint = renderNavHintLine(chatKeys, width, style, getKeybindings());
 		const footer = [...(notes ? [fitWidth(theme.fg("dim", notes))] : []), hint];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
 		const statusRows = this.taskStatusRows(width);
@@ -577,7 +591,8 @@ export class TaskInspector implements Component {
 		const action = actions[this.actionIndex];
 		const actionRow = action ? [theme.fg("accent", `› ${taskDetailLabels[action]}`)] : [];
 		const rows = this.renderAll(inner);
-		const compactSummary = !framed && detail && current && budget >= 4 ? [taskDetailSummary(current)] : [];
+		const compactSummary =
+			!framed && detail && current && budget >= 4 ? [taskDetailSummary(this.withLiveElapsed(current))] : [];
 		const statusRows = this.taskStatusRows(width);
 		const height = Math.max(
 			0,
@@ -624,7 +639,7 @@ export class TaskInspector implements Component {
 			border("╭─") + theme.bold(heading) + border(`${"─".repeat(Math.max(0, width - visibleWidth(heading) - 3))}╮`),
 			frameRow(
 				detail && current
-					? taskDetailSummary(current)
+					? taskDetailSummary(this.withLiveElapsed(current))
 					: theme.fg("muted", `${live} active · ${this.store.backgroundTasks.length} total`),
 			),
 			...view.map(frameRow),
