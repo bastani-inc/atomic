@@ -45,6 +45,7 @@ class FakeAdmission implements ResourceAdmission {
 	readonly requests: Array<ResourceAdmissionRequest | undefined> = [];
 	readonly bound: ResourceProcessIdentity[] = [];
 	readonly aliveAtRelease: boolean[] = [];
+	bindDelayMs = 0;
 	bindFailure: Error | undefined;
 	private readonly waiters: Array<{ kind: Kind; grant: () => void }> = [];
 	constructor(private readonly caps: Partial<Record<Kind, number>> = {}) {}
@@ -69,6 +70,11 @@ class FakeAdmission implements ResourceAdmission {
 				};
 				permit.bindProcess = async (bound) => {
 					identity = bound;
+					if (this.bindDelayMs > 0) {
+						const delayMs = this.bindDelayMs;
+						this.bindDelayMs = 0;
+						await new Promise((resolve) => setTimeout(resolve, delayMs));
+					}
 					if (this.bindFailure) throw this.bindFailure;
 					this.bound.push(bound);
 				};
@@ -378,6 +384,24 @@ test("a prompt run inside a scope runs its commands under that scope, as a workf
 	assert.deepEqual(scoped.acquired, ["process"]);
 });
 
+test.skipIf(process.platform === "win32")(
+	"a fast foreground command that settles while its process permit binds delivers no completion notice or extra turn",
+	async () => {
+		const session = await echoSession(tempRoot());
+		const scoped = new FakeAdmission();
+		scoped.bindDelayMs = 200;
+		const output = nextCommandOutput(session);
+		await withResourceAdmission(scoped, () => session.prompt("Run it."));
+
+		assert.match((await output) ?? "the command never finished", new RegExp(WOKEN_TURN_OUTPUT));
+		assert.deepEqual(scoped.acquired, ["process"]);
+		assert.deepEqual(
+			session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message"),
+			[],
+		);
+	},
+);
+
 test.each(["sendMessage", "sendUserMessage"] as const)(
 	"a turn that %s requests while the previous run settles runs without the scope that run started in",
 	async (delivery) => {
@@ -557,6 +581,52 @@ test.skipIf(process.platform === "win32")(
 	},
 );
 
+test.skipIf(process.platform === "win32")(
+	"a task registered and then failing to bind is cleaned up and reported once",
+	async () => {
+		const root = tempRoot();
+		const session = await echoSession(root);
+		const host = session.getAgentTaskHost();
+		const settlements: string[] = [];
+		const binding = (
+			host as unknown as {
+				binding: Parameters<typeof host.updateBinding>[0];
+			}
+		).binding;
+		const onTaskSettled = binding.onTaskSettled;
+		host.updateBinding({
+			...binding,
+			onTaskSettled: (ref, receipt) => {
+				assert.equal(host.resolveTask(ref.taskId).ok, true, "the settled task is registered on its owner");
+				settlements.push(ref.taskId);
+				onTaskSettled?.(ref, receipt);
+			},
+		});
+		const toolEnds: Array<{ isError: boolean; text: string }> = [];
+		session.subscribe((event) => {
+			if (event.type === "tool_execution_end")
+				toolEnds.push({ isError: event.isError, text: JSON.stringify(event.result) });
+		});
+		const scoped = new FakeAdmission();
+		scoped.bindDelayMs = 200;
+		scoped.bindFailure = new Error("binding unavailable");
+
+		await withResourceAdmission(scoped, () => session.prompt("Run it."));
+
+		assert.equal(toolEnds.length, 1);
+		assert.equal(toolEnds[0]?.isError, true);
+		assert.match(toolEnds[0]?.text ?? "", /binding unavailable/);
+		assert.equal(settlements.length, 1);
+		assert.deepEqual(
+			session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message"),
+			[],
+		);
+		assert.deepEqual(scoped.acquired, ["process"]);
+		assert.equal(scoped.held.process, 0);
+		assert.deepEqual(scoped.releaseCalls, ["process"]);
+	},
+);
+
 test("a command that fails to spawn releases its permit immediately (#3869)", async () => {
 	const admission = new FakeAdmission();
 	const root = tempRoot();
@@ -577,6 +647,12 @@ test("a command that fails to spawn releases its permit immediately (#3869)", as
 	);
 
 	assert.equal(started.ok, false);
+	session.getAgentTaskHost().reportSettledTasks();
+	await (session as unknown as { _taskCompletionOutbox?: { flush(): Promise<void> } })._taskCompletionOutbox?.flush();
+	assert.deepEqual(
+		session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message"),
+		[],
+	);
 	assert.deepEqual(
 		admission.acquired.filter((kind) => kind === "process"),
 		["process"],

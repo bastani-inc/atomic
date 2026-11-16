@@ -75,6 +75,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				.find((item) => item.ref.ownerId === envelope.ownerId && settledWithCompletion(host, envelope));
 			// Foreground shell results already return through their tool call. Do not
 			// create a second model turn or background card for that same execution.
+			if (!restored && !task) return;
 			if (task?.kind === "command" && !task.wasBackground) return;
 			const lease = task ? host?.resolveTask(envelope.taskId) : undefined;
 			const source = lease?.ok ? taskTranscriptSource(lease.value) : undefined;
@@ -122,7 +123,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			const deliver = () =>
 				this.sendCustomMessage(
 					message,
-					restored
+					restored || !task
 						? { triggerTurn: false, stageAdmissionKey: envelope.completionId }
 						: { triggerTurn: true, persistWhenStreaming: true, stageAdmissionKey: envelope.completionId },
 				);
