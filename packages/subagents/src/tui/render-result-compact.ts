@@ -23,16 +23,6 @@ import {
 /** Tool calls a running block lists; older ones fold into `… +N tool uses`. */
 export const RUNNING_BLOCK_RECENT_TOOLS = 3;
 
-/** `Agent(debugger · #5220 spawn lock)`: what is running and why, on one line. */
-function agentCallTitle(theme: Theme, agent: string, task: string): string {
-	const firstLine =
-		task
-			.split("\n")
-			.find((line) => line.trim())
-			?.trim() ?? "";
-	return `${themeBold(theme, "Agent")}(${theme.fg("toolTitle", themeBold(theme, agent))}${firstLine ? ` · ${firstLine}` : ""})`;
-}
-
 /**
  * One foreground or background child in main chat. While it runs: what it is, its last few tool calls, and one line
  * with its time and tokens. Once settled: one line naming the outcome and time, and the result's headline. The full
@@ -55,13 +45,7 @@ export function renderSingleCompact(
 	const glyph = resultGlyph(r, output, theme, isRunning, pulseFrame);
 
 	if (isRunning && r.progress) {
-		c.addChild(
-			new Text(
-				truncLine(`${glyph} ${agentCallTitle(theme, r.agent, r.task)}${modelDisplay}${contextBadge}`, width),
-				0,
-				0,
-			),
-		);
+		// The call heading above already reads `Agent(<name> · <task>)`; the block lists what the child is doing.
 		const recent = r.progress.recentTools.slice(-RUNNING_BLOCK_RECENT_TOOLS);
 		const current = compactCurrentActivity(r.progress, now);
 		const shownTools = recent.length + (r.progress.currentTool ? 1 : 0);
@@ -76,12 +60,13 @@ export function renderSingleCompact(
 		});
 		const elapsedMs = displayProgressDurationMs(r.progress, now);
 		const running = statJoin(theme, [
-			"Running",
+			`Running${contextBadge}`,
 			elapsedMs > 0 ? formatDuration(elapsedMs) : "",
 			r.progress.tokens > 0 ? `↓ ${formatTokens(r.progress.tokens)} tokens` : "",
-			keyHintIfBound("app.tools.expand", "for live detail"),
 		]);
-		c.addChild(new Text(truncLine(`  ${theme.fg("dim", "⎿")}  ${running}`, width), 0, 0));
+		const hint = keyHintIfBound("app.tools.expand", "for live detail");
+		const runningLine = `${glyph} ${running}${modelDisplay}${hint ? ` ${theme.fg("dim", "·")} ${hint}` : ""}`;
+		c.addChild(new Text(truncLine(`  ${theme.fg("dim", "⎿")}  ${runningLine}`, width), 0, 0));
 		if (r.artifactPaths)
 			c.addChild(
 				new Text(

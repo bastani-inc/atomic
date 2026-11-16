@@ -34,15 +34,15 @@ function running(toolCount: number, recent: number): Result {
 
 const text = (component: { render(width: number): string[] }) => component.render(160).join("\n");
 
-test("a running child shows Agent(name · task), its last three tool calls and one running line (#5224)", () => {
+test("a running child shows its last three tool calls and one running line under its call heading (#5224)", () => {
 	const out = text(renderSingleCompact(details(running(9, 5)), running(9, 5), theme, 0, 0));
-	assert.match(out, /Agent\(debugger · #5220 spawn lock\)/);
-	assert.doesNotMatch(out, /more detail the block never shows/);
+	// The call heading names the child; the block never repeats its prompt.
+	assert.doesNotMatch(out, /Agent\(|more detail the block never shows/);
 	assert.match(out, /… \+6 tool uses/);
 	assert.match(out, /step 3/);
 	assert.match(out, /step 5/);
 	assert.doesNotMatch(out, /step 2/);
-	assert.match(out, /⎿ {2}Running · 18m · ↓ 87k tokens/);
+	assert.match(out, /⎿ {2}\S+ Running · 18m · ↓ 87k tokens/);
 });
 
 test("a running child with few tool calls folds nothing (#5224)", () => {
