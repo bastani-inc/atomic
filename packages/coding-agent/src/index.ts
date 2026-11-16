@@ -32,6 +32,7 @@ export type {
 	ToolRenderers,
 	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
+export { type TakeoverMutex, takeTakeoverMutex } from "./core/lock-takeover.ts";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export * from "./core/resume/index.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
@@ -769,12 +770,14 @@ export {
 	type SessionEntryBase,
 	SessionEntryError,
 	type SessionHeader,
+	SessionHistoryNotLoadedError,
 	SessionIdError,
 	type SessionInfo,
 	type SessionInfoEntry,
 	SessionManager,
 	type SessionMessageEntry,
 	type SessionNameState,
+	type SessionOpenOptions,
 	type SessionProjection,
 	type SessionSummaryEntry,
 	type SessionTreeNode,

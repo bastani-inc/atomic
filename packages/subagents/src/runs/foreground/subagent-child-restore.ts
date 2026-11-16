@@ -227,12 +227,19 @@ async function awaitIntercomPeer(
  * latest change the child's own session recorded after launch wins, then what the launch record says it started
  * on, and only then whatever the session's entries say.
  */
-function ownSessionModelCandidate(
+async function ownSessionModelCandidate(
 	sessionManager: SessionManager,
 	record: SubagentChildRecord,
 	resolveCandidateModel: ReturnType<typeof createCandidateModelResolver>,
-): string | undefined {
+): Promise<string | undefined> {
 	const branch = sessionManager.getBranch();
+	const launchSeq =
+		record.launchLeafSeq ??
+		(record.launchLeafId === null
+			? 0
+			: typeof record.launchLeafId === "string"
+				? await sessionManager.findEntrySeq(record.launchLeafId)
+				: undefined);
 	const launchIndex =
 		record.launchLeafId === undefined
 			? branch.length
@@ -241,7 +248,9 @@ function ownSessionModelCandidate(
 				: branch.findIndex((entry) => entry.id === record.launchLeafId) + 1 || branch.length;
 	let changedModel: string | undefined;
 	let changedThinking: string | undefined;
-	for (const entry of branch.slice(launchIndex)) {
+	for (const entry of launchSeq === undefined
+		? branch.slice(launchIndex)
+		: branch.filter((entry) => (sessionManager.getEntrySeq(entry.id) ?? 0) > launchSeq)) {
 		if (entry.type === "model_change") changedModel = `${entry.provider}/${entry.modelId}`;
 		else if (entry.type === "thinking_level_change") changedThinking = entry.thinkingLevel;
 	}
@@ -527,12 +536,13 @@ async function relaunchChild(
 		...(ctx.thinkingLevel ? { thinkingLevel: ctx.thinkingLevel } : {}),
 	};
 	const resolveCandidateModel = createCandidateModelResolver(ctx.modelRegistry, inherited.modelProvider);
+
 	const ownModel = fresh
 		? fresh.modelOverride && resolveCandidateModel(fresh.modelOverride)?.model
 			? fresh.modelOverride
 			: undefined
 		: sessionManager
-			? ownSessionModelCandidate(sessionManager, record, resolveCandidateModel)
+			? await ownSessionModelCandidate(sessionManager, record, resolveCandidateModel)
 			: undefined;
 	// A model it inherited that is no longer usable is dropped, as an unusable model of its own is. It never takes the
 	// owner's new model instead: a child that would have run on the inherited model cannot continue.
@@ -927,14 +937,20 @@ export async function restoreSubagentChild(
 		// Every sender, not only this session, is told the child is gone, for as long as this session is connected.
 		await hold?.gone(reason);
 	};
-	// Hold the child's worktree until its new execution holds it, recreating it from the run's base if it was removed.
-	const releaseWorktree = resumeRunWorktree(
+	const worktreeResume = resumeRunWorktree(
 		record,
 		deps.config.worktreeSetupHook
 			? { hookPath: deps.config.worktreeSetupHook, timeoutMs: deps.config.worktreeSetupHookTimeoutMs }
 			: undefined,
+		{
+			onWaiting: (message) => {
+				if (ctx.hasUI) ctx.ui.setStatus(`subagent-worktree-${record.childId}`, message);
+			},
+		},
 	);
+	let releaseWorktree: (() => void) | undefined;
 	const restoration: Promise<SubagentChildRestoreOutcome> = (async () => {
+		releaseWorktree = await worktreeResume;
 		// Hold sends to the child before anything can fail, so no sender is told `Session not found` meanwhile.
 		// When the session already holds them since it started, that hold carries on under the same capability:
 		// what it holds stays held, and no moment passes without a hold.
@@ -960,14 +976,14 @@ export async function restoreSubagentChild(
 				registered.settled = outcome;
 				registered.knownPreviousIntercomId = knownPreviousIntercomId;
 			}
-			releaseWorktree();
+			releaseWorktree?.();
 			if (outcome.kind === "unrestorable") await markGone(outcome.reason);
 			else if (outcome.kind !== "restored") release();
 			return outcome;
 		},
 		async (error: Error) => {
 			previousIntercomId.resolve(undefined);
-			releaseWorktree();
+			releaseWorktree?.();
 			// A failure that passes, such as a read of its history that ran out of file descriptors (#4502), leaves the
 			// child as it was, for a later wake or resume; only a lasting one makes it gone.
 			if (isRetryableStorageError(error)) {

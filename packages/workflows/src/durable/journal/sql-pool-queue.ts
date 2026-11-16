@@ -109,6 +109,7 @@ const POOL_SCHEMA_VERSION_UNCHUNKED = 2;
  * every change to what {@link SqlPoolQueue.open} creates, so a schema an earlier build set up is set up again.
  */
 const POOL_SCHEMA_REVISION = 1;
+const POOL_READY_SCHEMA_REVISION = 2;
 
 /** The statements that set up a pool's tables (`SqlPoolQueue.schema`). */
 interface PoolSchemaStatements {
@@ -117,6 +118,8 @@ interface PoolSchemaStatements {
 	readonly chunks: string;
 	readonly outbox: string;
 	readonly ship: string;
+	/** The per-root ready mark and the work-table triggers that advance it, on a store without row locks (#5230). */
+	readonly ready: readonly string[];
 }
 /** Work whose inputs a work row holds only as a stub, by the work this queue read: how many chunks hold them. */
 const chunkedInputs = new WeakMap<PoolWork, number>();
@@ -533,6 +536,16 @@ export class SqlPoolQueue {
 				);
 				pool.outboxPending = (await tx.get(`SELECT 1 AS held FROM ${pool.outbox} LIMIT 1`)) !== undefined;
 			}
+			if (!pool.rowLocks) {
+				await ensureStorageSchema(
+					tx,
+					dialect,
+					{ ledger, domain: "pool-ready", revision: POOL_READY_SCHEMA_REVISION },
+					async () => {
+						for (const statement of schema.ready) await tx.exec(statement);
+					},
+				);
+			}
 			// The ledger and watermarks a shipping root's hosts write (#4768): a domain of their own, so a pool set up before
 			// them gets them once, and a current one runs no DDL.
 			await ensureStorageSchema(tx, dialect, { ledger, domain: "pool-ship", revision: 1 }, () =>
@@ -622,6 +635,22 @@ export class SqlPoolQueue {
 					event_key TEXT NOT NULL, payload TEXT NOT NULL, last_seq ${int},
 					PRIMARY KEY(work, generation, operation)${dialect.rowOrderColumn}
 				)`,
+			ready: [
+				`CREATE TABLE IF NOT EXISTS ${this.roots}_ready(
+					root TEXT PRIMARY KEY REFERENCES ${this.roots}(root) ON DELETE CASCADE,
+					revision ${int} NOT NULL DEFAULT 0
+				)`,
+				...["INSERT", "UPDATE"].map(
+					(
+						event,
+					) => `CREATE TRIGGER IF NOT EXISTS ${this.roots}_ready_${event.toLowerCase()} AFTER ${event} ON ${this.work}
+					WHEN NEW.state = 'ready'
+					BEGIN
+						INSERT INTO ${this.roots}_ready(root, revision) VALUES (NEW.root, 1)
+						ON CONFLICT(root) DO UPDATE SET revision = revision + 1;
+					END`,
+				),
+			],
 		};
 	}
 	/**
@@ -639,6 +668,7 @@ export class SqlPoolQueue {
 			schema.chunks,
 			schema.ship,
 			...(this.remote ? [schema.outbox] : []),
+			...(this.rowLocks ? [] : schema.ready),
 		];
 		const columns = [
 			[this.work, "inputs_chunks"],
@@ -1072,6 +1102,7 @@ export class SqlPoolQueue {
 				state,
 			);
 			const row = (await tx.get(`SELECT revision FROM ${this.roots}_control WHERE root = ?`, lease.runId))!;
+			if (state === "running") await this.notifyReady(tx, lease.runId);
 			return { state, revision: Number(row.revision) };
 		});
 	}
@@ -1531,6 +1562,7 @@ export class SqlPoolQueue {
 		definitions: readonly Pick<PoolWorkDescriptor, "definition" | "digest">[],
 		durationMs: number,
 		placement?: PoolClaimPlacement,
+		outboxBlocked?: (error: unknown) => void,
 	): Promise<PoolWork | undefined> {
 		positive(durationMs);
 		lease = snapshotLease(lease);
@@ -1538,15 +1570,22 @@ export class SqlPoolQueue {
 		validateText("holderId", worker);
 		const compatible = compatibleClause(this.dialect, definitions.length);
 		if (this.remote) {
+			try {
+				while (this.outboxPending || this.draining !== undefined) await this.drainOutbox(lease);
+			} catch (error) {
+				if (error instanceof StaleLeaseError) {
+					await this.remote.fresh(lease);
+					throw error;
+				}
+				outboxBlocked?.(error);
+				return undefined;
+			}
 			await this.remote.fresh(lease);
-			// No work is handed out while an event this root's workers were told is committed is missing from the
-			// journal: a replacement attempt replays the journal, so it must find that event there. A delivery in
-			// flight counts as missing events too, since it clears the pending flag when it starts, not when it ends;
-			// and a commit can stage another row after the pass this claim joined has read its rows, so ask again.
 			try {
 				while (this.outboxPending || this.draining !== undefined) await this.drainOutbox(lease);
 			} catch (error) {
 				if (error instanceof StaleLeaseError) throw error;
+				outboxBlocked?.(error);
 				return undefined;
 			}
 		}
@@ -1672,6 +1711,64 @@ export class SqlPoolQueue {
 			generation: Number(row.generation),
 			...(row.workspace === null ? {} : { workspace: JSON.parse(String(row.workspace)) as WorkspaceBinding }),
 		}));
+	}
+	async acceptsClaim(
+		lease: Lease,
+		host: { readonly id: string; readonly providerId?: string },
+	): Promise<"accepted" | "control" | "drain"> {
+		lease = snapshotLease(lease);
+		const requested = { ...host };
+		await this.remote?.fresh(lease);
+		return this.storage.read(async (read) => {
+			const available = this.dialect.flag(
+				`NOT EXISTS (SELECT 1 FROM ${this.journal.runs}_fleet_drains WHERE host = CAST(? AS TEXT) OR provider_id = CAST(? AS TEXT))`,
+			);
+			const row = await read.get<
+				NonNullable<Awaited<ReturnType<SqlPoolQueue["leaseRow"]>>> & {
+					control: string | null;
+					host_available: number | bigint;
+				}
+			>(
+				`SELECT l.*, r.status, p.timeout, ${this.now} AS now,
+				(SELECT state FROM ${this.roots}_control WHERE root = l.run_id) AS control,
+				${available} AS host_available
+				FROM ${this.journal.leases} l JOIN ${this.journal.runs} r ON r.run_id = l.run_id
+				LEFT JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ?`,
+				requested.id,
+				requested.providerId ?? null,
+				lease.runId,
+			);
+			const { status } = this.authorityOf(row, lease);
+			if (status !== "running" || (row!.control !== null && row!.control !== "running")) return "control";
+			return Number(row!.host_available) === 1 ? "accepted" : "drain";
+		});
+	}
+
+	async readyMark(root: string): Promise<string | undefined> {
+		const readiness = this.rowLocks
+			? "bit_xor(hash_record_extended(ROW(xmin, ctid), 0))"
+			: `(SELECT revision FROM ${this.roots}_ready WHERE root = ?)`;
+		const row = await (this.storage.peek ?? this.storage.read)((executor) =>
+			executor.get<
+				SqliteRow & {
+					ready: number | bigint;
+					latest: number | bigint | null;
+					readiness: number | bigint | string | null;
+					revision: number | bigint | null;
+				}
+			>(
+				`SELECT COUNT(*) AS ready, MAX(ready_at) AS latest,
+				${readiness} AS readiness,
+				(SELECT revision FROM ${this.roots}_control WHERE root = ?) AS revision
+				FROM ${this.work} WHERE root = ? AND state = 'ready' AND ready_at <= (SELECT ${this.now})`,
+				...(this.rowLocks ? [] : [root]),
+				root,
+				root,
+			),
+		);
+		return row === undefined || Number(row.ready) === 0
+			? undefined
+			: `${row.ready}:${row.latest}:${row.readiness ?? 0}:${row.revision ?? 0}`;
 	}
 	/**
 	 * Fails ready work of this root incarnation that no worker may take, as bound work no capable host claimed within

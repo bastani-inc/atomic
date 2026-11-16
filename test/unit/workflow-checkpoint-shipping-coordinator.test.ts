@@ -5,11 +5,16 @@ import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
-import { checkpointKey, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import {
+	checkpointKey,
+	openSqlPoolQueue,
+	type PoolWork,
+	SqlPoolQueue,
+} from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import type { DurableStageCheckpoint, DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
-import { poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
-import { ShipShard } from "../../packages/workflows/src/workers/ship-shard.js";
+import { durableJournalIdentity, poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
+import { ShipShard, shipShardPath } from "../../packages/workflows/src/workers/ship-shard.js";
 import type { FakeWorker } from "../helpers/fake-pool-worker.js";
 import { openCoordinator, SOURCE } from "../helpers/pool-coordinator.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
@@ -34,19 +39,123 @@ afterEach(() => {
 	forked.length = 0;
 });
 
-test("a host whose local journal cannot open starts its pool and commits checkpoints directly (#4768)", async () => {
-	const directory = makeTempDirectory("shipping-startup-");
+test.each(["not a directory", "already open"] as const)(
+	"a host whose local journal cannot open (%s) starts its pool and commits checkpoints directly (#4768)",
+	async (failure) => {
+		const directory = makeTempDirectory("shipping-startup-");
+		const stateDirectory = join(directory, "state");
+		mkdirSync(stateDirectory);
+		if (failure === "not a directory") writeFileSync(join(stateDirectory, "ship"), "not a directory");
+		const journal = await resolveRunJournal({ journal: { path: join(directory, "shared.sqlite") } });
+		const host = openCoordinator();
+		let owner: ShipShard | undefined;
+		try {
+			if (failure === "already open")
+				owner = await ShipShard.open(
+					shipShardPath(stateDirectory, durableJournalIdentity(poolDurableJournal(journal)!), "root"),
+					"root",
+				);
+			await journal.createRun({ runId: "root", name: "root", cwd: directory, createdAt: 0, status: "running" });
+			const acquired = await journal.acquire("root", "holder");
+			assert.equal(acquired.status, "acquired");
+			if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
+			await host.command({
+				kind: "prepare",
+				root: "root",
+				lease: acquired.lease,
+				options: {
+					durable: poolDurableJournal(journal),
+					shared: {
+						stateDirectory,
+						host: "host-a",
+						claimWindowMs: 60_000,
+						checkpointShipping: { intervalMs: 2_000, maxBatch: 64, maxLagMs: 30_000 },
+					},
+					workers: 1,
+					leaseMs: 60_000,
+					heartbeatMs: 15_000,
+					startupTimeoutMs: 30_000,
+					workerEntry: "fake-worker",
+				},
+			});
+			const starting = host.command({ kind: "start", sources: [SOURCE], cwd: directory, publish: false });
+			while (forked.length === 0) await sleep(5);
+			const worker = forked[0]!;
+			await worker.request({ kind: "ready" });
+			await starting;
+			const { work, boundary } = poolWorkFixture();
+			await host.command({
+				kind: "enqueue",
+				descriptor: { ...work, definition: `${SOURCE.path}#${SOURCE.exportName}`, digest: SOURCE.digest },
+				boundary,
+			});
+			const claim = await worker.request({ kind: "claim" });
+			assert.equal(claim.error, undefined);
+			const held = claim.value as PoolWork;
+			assert.ok(held);
+			for (const suffix of ["a", "b"]) {
+				const checkpoint: DurableToolCheckpoint = {
+					kind: "tool",
+					name: `tool-${suffix}`,
+					output: {},
+					workflowId: "root",
+					checkpointId: `${held.scope}:${suffix}`,
+					argsHash: `${held.scope}:args-${suffix}`,
+					completedAt: 1,
+					topology: {
+						version: 1,
+						nodeId: `tool-${suffix}`,
+						ordinal: suffix === "a" ? 0 : 1,
+						order: suffix === "a" ? 0 : 1,
+						parentIds: [],
+						run: boundary.topology!.boundary!.child,
+					},
+				};
+				const committed = await worker.request({
+					kind: "commit",
+					operation: `commit-${suffix}`,
+					mutation: { kind: "checkpoint", checkpoint },
+				});
+				assert.equal(committed.error, undefined);
+				assert.ok(committed.value);
+				assert.ok(await journal.readKey("root", checkpointKey(checkpoint)));
+			}
+			const health = host.events.filter((event) => event.kind === "health");
+			assert.equal(health.length, 1);
+			assert.match(health[0]!.message, /checkpoint shipping.*local journal.*shared journal/);
+		} finally {
+			await host.command({ kind: "close" });
+			await host.coordinator.shutdown();
+			await journal.close();
+			await owner?.close();
+			removeTempDirectory(directory);
+		}
+	},
+);
+
+test("closing while the checkpoint shard opens releases its ownership before the pool finishes preparing (#4768)", async () => {
+	const directory = makeTempDirectory("shipping-open-close-");
 	const stateDirectory = join(directory, "state");
-	mkdirSync(stateDirectory);
-	writeFileSync(join(stateDirectory, "ship"), "not a directory");
 	const journal = await resolveRunJournal({ journal: { path: join(directory, "shared.sqlite") } });
 	const host = openCoordinator();
+	const opened = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const open = ShipShard.open.bind(ShipShard);
+	let owner: ShipShard | undefined;
+	let shardPath: string | undefined;
+	const opening = vi.spyOn(ShipShard, "open").mockImplementation(async (...args) => {
+		owner = await open(...args);
+		shardPath = args[0];
+		opened.resolve();
+		await release.promise;
+		return owner;
+	});
 	try {
 		await journal.createRun({ runId: "root", name: "root", cwd: directory, createdAt: 0, status: "running" });
 		const acquired = await journal.acquire("root", "holder");
 		assert.equal(acquired.status, "acquired");
 		if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
-		await host.command({
+		const preparing = host.command({
 			kind: "prepare",
 			root: "root",
 			lease: acquired.lease,
@@ -65,52 +174,19 @@ test("a host whose local journal cannot open starts its pool and commits checkpo
 				workerEntry: "fake-worker",
 			},
 		});
-		const starting = host.command({ kind: "start", sources: [SOURCE], cwd: directory, publish: false });
-		while (forked.length === 0) await sleep(5);
-		const worker = forked[0]!;
-		await worker.request({ kind: "ready" });
-		await starting;
-		const { work, boundary } = poolWorkFixture();
-		await host.command({
-			kind: "enqueue",
-			descriptor: { ...work, definition: `${SOURCE.path}#${SOURCE.exportName}`, digest: SOURCE.digest },
-			boundary,
-		});
-		const claim = await worker.request({ kind: "claim" });
-		assert.equal(claim.error, undefined);
-		const held = claim.value as PoolWork;
-		assert.ok(held);
-		for (const suffix of ["a", "b"]) {
-			const checkpoint: DurableToolCheckpoint = {
-				kind: "tool",
-				name: `tool-${suffix}`,
-				output: {},
-				workflowId: "root",
-				checkpointId: `${held.scope}:${suffix}`,
-				argsHash: `${held.scope}:args-${suffix}`,
-				completedAt: 1,
-				topology: {
-					version: 1,
-					nodeId: `tool-${suffix}`,
-					ordinal: suffix === "a" ? 0 : 1,
-					order: suffix === "a" ? 0 : 1,
-					parentIds: [],
-					run: boundary.topology!.boundary!.child,
-				},
-			};
-			const committed = await worker.request({
-				kind: "commit",
-				operation: `commit-${suffix}`,
-				mutation: { kind: "checkpoint", checkpoint },
-			});
-			assert.equal(committed.error, undefined);
-			assert.ok(committed.value);
-			assert.ok(await journal.readKey("root", checkpointKey(checkpoint)));
-		}
-		const health = host.events.filter((event) => event.kind === "health");
-		assert.equal(health.length, 1);
-		assert.match(health[0]!.message, /checkpoint shipping.*local journal.*shared journal/);
+		const settled = Promise.allSettled([preparing]);
+		await opened.promise;
+		const closing = host.command({ kind: "close" });
+		release.resolve();
+		await closing;
+		await settled;
+		assert.ok(shardPath !== undefined);
+		const replacement = await open(shardPath, "root");
+		await replacement.close();
 	} finally {
+		release.resolve();
+		opening.mockRestore();
+		await owner?.close();
 		await host.command({ kind: "close" });
 		await host.coordinator.shutdown();
 		await journal.close();
@@ -205,7 +281,8 @@ test("renewing an attempt after a late root lease renewal refreshes its local ch
 					stateDirectory,
 					host: "host-a",
 					claimWindowMs: 60_000,
-					checkpointShipping: { intervalMs: 2_000, maxBatch: 64, maxLagMs: 30_000 },
+					// No shipping tick within the test: what a commit accepted locally stays unshipped until the flush below.
+					checkpointShipping: { intervalMs: 60_000, maxBatch: 64, maxLagMs: 600_000 },
 				},
 				workers: 1,
 				leaseMs,
@@ -296,7 +373,8 @@ test("a shippable checkpoint whose local lease expired while the attempt still o
 					stateDirectory,
 					host: "host-a",
 					claimWindowMs: 60_000,
-					checkpointShipping: { intervalMs: 2_000, maxBatch: 64, maxLagMs: 30_000 },
+					// No shipping tick within the test: what a commit accepted locally stays unshipped until the flush below.
+					checkpointShipping: { intervalMs: 60_000, maxBatch: 64, maxLagMs: 600_000 },
 				},
 				workers: 1,
 				leaseMs,
@@ -600,6 +678,97 @@ test("closing a root pool while prepare opens its local checkpoint journal close
 	} finally {
 		releaseOpen();
 		openSpy.mockRestore();
+		await host.coordinator.shutdown();
+		await journal.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("a displaced worker's fenced handoff during a delivery outage leaves its replacement's checkpoint to ship before completion (#4768)", async () => {
+	const directory = makeTempDirectory("shipping-stale-release-");
+	const stateDirectory = join(directory, "state");
+	const journal = await resolveRunJournal({ journal: { path: join(directory, "shared.sqlite") } });
+	const host = openCoordinator();
+	let failing: ReturnType<typeof vi.spyOn> | undefined;
+	try {
+		await journal.createRun({ runId: "root", name: "root", cwd: directory, createdAt: 0, status: "running" });
+		const acquired = await journal.acquire("root", "holder");
+		assert.equal(acquired.status, "acquired");
+		if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
+		await host.command({
+			kind: "prepare",
+			root: "root",
+			lease: acquired.lease,
+			options: {
+				durable: poolDurableJournal(journal),
+				shared: {
+					stateDirectory,
+					host: "host-a",
+					claimWindowMs: 60_000,
+					checkpointShipping: { intervalMs: 60_000, maxBatch: 64, maxLagMs: 30_000 },
+				},
+				workers: 2,
+				leaseMs: 60_000,
+				heartbeatMs: 15_000,
+				startupTimeoutMs: 30_000,
+				workerEntry: "fake-worker",
+			},
+		});
+		const starting = host.command({ kind: "start", sources: [SOURCE], cwd: directory, publish: false });
+		while (forked.length < 2) await sleep(5);
+		const [firstWorker, secondWorker] = [forked[0]!, forked[1]!];
+		await firstWorker.request({ kind: "ready" });
+		await secondWorker.request({ kind: "ready" });
+		await starting;
+		const { work, boundary } = poolWorkFixture();
+		const child = boundary.topology!.boundary!.child;
+		await host.command({
+			kind: "enqueue",
+			descriptor: { ...work, definition: `${SOURCE.path}#${SOURCE.exportName}`, digest: SOURCE.digest },
+			boundary,
+		});
+		const firstClaim = await firstWorker.request({ kind: "claim" });
+		assert.equal(firstClaim.error, undefined);
+		const first = firstClaim.value as PoolWork;
+		assert.equal(first.generation, 1);
+		const firstCommit = await firstWorker.request({
+			kind: "commit",
+			operation: "commit-a",
+			mutation: { kind: "checkpoint", checkpoint: toolCheckpoint(first, child, "a", 0) },
+		});
+		assert.equal(firstCommit.error, undefined);
+		const queue = await openSqlPoolQueue(journal);
+		await sqlPoolStorage(journal)!.transaction((tx) =>
+			tx.run("UPDATE wf_runs_work SET expires_at = 1 WHERE id = ?", first.id),
+		);
+		assert.equal(await queue.expire(acquired.lease, first), true);
+		const secondClaim = await secondWorker.request({ kind: "claim" });
+		assert.equal(secondClaim.error, undefined);
+		const second = secondClaim.value as PoolWork;
+		assert.equal(second.id, first.id);
+		assert.equal(second.generation, 2);
+		const secondCheckpoint = toolCheckpoint(second, child, "b", 1);
+		const secondCommit = await secondWorker.request({
+			kind: "commit",
+			operation: "commit-b",
+			mutation: { kind: "checkpoint", checkpoint: secondCheckpoint },
+		});
+		assert.equal(secondCommit.error, undefined);
+		assert.equal((secondCommit.value as { readonly local?: boolean } | undefined)?.local, true);
+		failing = vi.spyOn(SqlPoolQueue.prototype, "shipBatch").mockRejectedValue(new Error("shared store unavailable"));
+		const handoff = await firstWorker.request({ kind: "fenced", handoff: true });
+		assert.equal(handoff.error, undefined);
+		failing.mockRestore();
+		const completed = await secondWorker.request({
+			kind: "complete",
+			result: { runId: second.childRunId, status: "completed", stages: [], toolNodes: [] },
+		});
+		assert.equal(completed.error, undefined);
+		assert.equal((await queue.inspect("root")).find((row) => row.id === second.id)?.state, "completed");
+		assert.ok(await journal.readKey("root", checkpointKey(secondCheckpoint)));
+	} finally {
+		failing?.mockRestore();
+		await host.command({ kind: "close" });
 		await host.coordinator.shutdown();
 		await journal.close();
 		removeTempDirectory(directory);

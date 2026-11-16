@@ -734,6 +734,7 @@ async function continueInChosenCheckout(
 		sessionManager.getSessionId(),
 		reuse.cwd,
 		options.sessionDirectory,
+		{ history: "tail" },
 	);
 	const blueprints =
 		options.blueprints === "skip"
@@ -1202,7 +1203,8 @@ async function workedInCheckout(
 export async function continueSessionWhereItWorked(
 	opened: SessionManager,
 	options: PrepareSessionResumeOptions,
-	reopen: (cwd: string) => Promise<SessionManager> = (cwd) => opened.openSessionById(opened.getSessionId(), cwd),
+	reopen: (cwd: string) => Promise<SessionManager> = (cwd) =>
+		opened.openSessionById(opened.getSessionId(), cwd, undefined, { history: "tail" }),
 ): Promise<SessionManager> {
 	const storeDir = resolveStoreDir(options);
 	// The session holds the pooled worktrees it owns before anything else, so no eviction removes one while its

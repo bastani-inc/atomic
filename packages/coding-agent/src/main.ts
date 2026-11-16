@@ -568,7 +568,6 @@ export async function main(argv: string[], options?: MainOptions) {
 				stdinIsTTY: process.stdin.isTTY === true,
 				parsed,
 				sessionCwd,
-				projectTrustStore,
 				resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
 				resolvedResourcePathCount:
 					(resolvedSkillPaths?.length ?? 0) +
@@ -585,10 +584,6 @@ export async function main(argv: string[], options?: MainOptions) {
 		projectTrusted: startupProjectTrusted,
 	});
 	time("runMigrations");
-	if (deprecationWarnings.length > 0) {
-		startupEarlyInputCapture?.consume();
-		startupEarlyInputCapture = undefined;
-	}
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: startupProjectTrusted });
 	setCapabilityOverrides(startupSettingsManager.getTerminalCapabilityOverrides());
@@ -699,13 +694,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			claim: engineEnv.child !== "1",
 			progress: startupProgress,
 			chooseDirtyCheckout:
-				appMode === "interactive"
-					? (prompt) => {
-							startupEarlyInputCapture?.consume();
-							startupEarlyInputCapture = undefined;
-							return promptForDirtyCheckout(prompt, startupSettingsManager);
-						}
-					: undefined,
+				appMode === "interactive" ? (prompt) => promptForDirtyCheckout(prompt, startupSettingsManager) : undefined,
 		});
 		stopAnnouncingWaits?.();
 		if (opened === "cancelled") process.exit(0);
@@ -732,8 +721,6 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 	const missingSessionCwdIssue = findMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
-		startupEarlyInputCapture?.consume();
-		startupEarlyInputCapture = undefined;
 		if (appMode === "interactive") {
 			const choice = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
 			sessionManager = await openSessionInCurrentCwdOrExit(sessionManager, missingSessionCwdIssue, choice);
@@ -1310,20 +1297,20 @@ export async function main(argv: string[], options?: MainOptions) {
 			console.log(chalk.dim(`Model scope: ${formatScopedModelList(scopedModels)} ${chalk.gray("(ctrl+p cycle)")}`));
 		}
 
+		const startupTrustPromptPossible = computeStartupTrustPromptPossible({
+			projectTrustOverride: parsed.projectTrustOverride,
+			hasTrustInputs: hasProjectTrustInputs(sessionCwd),
+			storedProjectTrust: projectTrustStore.get(sessionCwd),
+			defaultProjectTrust: startupDefaultProjectTrust,
+		});
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
 			startupDiagnostics,
 			resumeNotices: worktreeRestoreDiagnostics,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
-			holdTuiForStartupTrust:
-				isolateInteractiveHost &&
-				computeStartupTrustPromptPossible({
-					projectTrustOverride: parsed.projectTrustOverride,
-					hasTrustInputs: hasProjectTrustInputs(sessionCwd),
-					storedProjectTrust: projectTrustStore.get(sessionCwd),
-					defaultProjectTrust: startupDefaultProjectTrust,
-				}),
+			holdTuiForStartupTrust: isolateInteractiveHost && startupTrustPromptPossible,
+			startupTrustPromptPossible,
 			initialMessage,
 			initialImages,
 			initialMessages: parsed.messages,

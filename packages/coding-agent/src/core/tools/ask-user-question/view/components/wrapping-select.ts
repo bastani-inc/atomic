@@ -5,20 +5,6 @@ import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
 import { type FieldTone, fieldTone, rowTone } from "../../state/selectors/field-tone.ts";
 
-/**
- * Row-intent discriminated union. `kind` is the single discriminator —
- * pre-1.0.3 boolean flags have been removed (see `banned-flags.test.ts`).
- * Modeled after `QuestionnaireAction` (`key-router.ts:13-32`) and `Effect`
- * (`state-reducer.ts:26-32`) — pure literal-tagged variants, no shared base,
- * exhaustive-`switch` enforcement via non-`void` returns.
- *
- * Variant semantics:
- * - `option`: a regular author-defined option row.
- * - `other`: the inline free-text input row appended to single-select questions
- *   (label is "Type something."). Renders as inline `Input` when active.
- * - `chat`: the abandon-questionnaire escape-hatch row (label is "Chat about this").
- *   Renders as inline `Input` when active.
- */
 export type WrappingSelectItem =
 	| { kind: "option"; label: string; description?: string }
 	| { kind: "other"; label: string; description?: string }

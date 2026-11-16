@@ -20,6 +20,18 @@ export class SessionEntryError extends Error {
 	}
 }
 
+export class SessionHistoryNotLoadedError extends Error {
+	readonly sessionId: string;
+
+	constructor(sessionId: string) {
+		super(
+			`Session ${sessionId} was opened from its latest compaction; await sessionManager.loadFullHistory() before reading its whole history`,
+		);
+		this.name = "SessionHistoryNotLoadedError";
+		this.sessionId = sessionId;
+	}
+}
+
 export class SessionIdError extends Error {
 	readonly sessionId: string;
 

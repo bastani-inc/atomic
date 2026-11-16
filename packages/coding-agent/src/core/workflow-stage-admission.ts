@@ -187,7 +187,8 @@ export class WorkflowStageAdmissionBoundary {
 	}
 
 	/** Take back the admission keys a reopened session's transcript records. */
-	restoreCompleted(entries: Iterable<PersistedWorkflowStageAdmission>): void {
+	restoreCompleted(entries: Iterable<PersistedWorkflowStageAdmission>, keys: Iterable<string> = []): void {
+		for (const key of keys) this.completed.add(key);
 		for (const key of admissionKeys(entries)) this.completed.add(key);
 	}
 
@@ -205,8 +206,9 @@ export class WorkflowStageAdmissionBoundary {
 	static restore(
 		entries: Iterable<PersistedWorkflowStageAdmission>,
 		drainAdmittedWork?: () => Promise<void>,
+		keys: Iterable<string> = [],
 	): WorkflowStageAdmissionBoundary {
-		return new WorkflowStageAdmissionBoundary(drainAdmittedWork, admissionKeys(entries));
+		return new WorkflowStageAdmissionBoundary(drainAdmittedWork, [...keys, ...admissionKeys(entries)]);
 	}
 
 	/** One FIFO position for an external operation, including its retry waits. */

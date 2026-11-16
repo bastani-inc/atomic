@@ -4,8 +4,11 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+## [0.9.88-alpha.1] - 2026-11-16
+
 ### Added
 
+- Exported `decodePrintableKey` for printable Kitty CSI-u and modifyOtherKeys input, and `normalizePastedText` for custom inputs to apply the editor's paste normalization.
 - `TuiAltScreen` takes a `scrollPinnedPrompt` option: while a follow-end primary scroll view is scrolled up, the first line of the prompt (OSC 133 `A`) that started the turn at its top is pinned over its first row ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Changed

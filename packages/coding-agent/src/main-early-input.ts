@@ -9,10 +9,69 @@ export interface EarlyInputState {
 export interface EarlyInputSnapshot {
 	text: string;
 	submissions: string[];
+	heldForStartupDecision?: true;
 }
 
 export interface EarlyInputCapture {
 	consume(): EarlyInputSnapshot;
+}
+
+interface ActiveEarlyInputCapture {
+	pause(): boolean;
+	resume(): void;
+	keepDraft(text: string): void;
+}
+
+let activeCapture: ActiveEarlyInputCapture | undefined;
+let startupDialogDrafts: string[] = [];
+let startupDialogQueue: Promise<void> | undefined;
+
+export async function withEarlyInputHeldForStartupDialog<T>(
+	run: (state: { hasUnfinishedInput: boolean }) => Promise<T>,
+): Promise<T> {
+	const previous = startupDialogQueue;
+	let release!: () => void;
+	const current = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	startupDialogQueue = current;
+	let capture: ActiveEarlyInputCapture | undefined;
+	try {
+		if (previous) await previous;
+		if (activeCapture) {
+			activeCapture.resume();
+			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+			await new Promise<void>((resolve) => setImmediate(resolve));
+		}
+		capture = activeCapture;
+		const hasUnfinishedInput = capture?.pause() ?? startupDialogDrafts.length > 0;
+		return await run({ hasUnfinishedInput });
+	} finally {
+		if (startupDialogQueue === current) {
+			startupDialogQueue = undefined;
+			if (capture !== undefined && activeCapture === capture) capture.resume();
+		}
+		release();
+	}
+}
+
+export function keepStartupDialogDraft(text: string): void {
+	if (text.length === 0) return;
+	if (activeCapture) activeCapture.keepDraft(text);
+	else startupDialogDrafts.push(text);
+}
+
+export function consumeStartupInput(
+	capture: EarlyInputCapture | undefined,
+	options: { readonly startupDecisionPending?: boolean } = {},
+): EarlyInputSnapshot {
+	const snapshot = capture?.consume() ?? { text: "", submissions: [] };
+	const dialogDrafts = startupDialogDrafts;
+	startupDialogDrafts = [];
+	const held = snapshot.heldForStartupDecision || options.startupDecisionPending === true || dialogDrafts.length > 0;
+	if (!held) return snapshot;
+	const parts = [...snapshot.submissions, snapshot.text, ...dialogDrafts].filter((part) => part.length > 0);
+	return { text: parts.join("\n"), submissions: [], heldForStartupDecision: true };
 }
 
 interface EarlyInputStream {
@@ -117,8 +176,11 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 	if (!options.enabled || stdin.isTTY !== true || !stdin.setRawMode) return undefined;
 
 	const state: EarlyInputState = { text: "", submissions: [] };
+	const draftParts: string[] = [];
 	const wasRaw = stdin.isRaw === true;
 	let consumed = false;
+	let paused = false;
+	let heldForStartupDecision = false;
 	let firstRawKeyRecorded = false;
 	let onData: (chunk: Buffer | string) => void;
 	const registeredProcessListeners: Array<{ event: EarlyInputProcessEvent; listener: EarlyInputProcessListener }> = [];
@@ -136,17 +198,49 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 			pendingEscapeTimer = undefined;
 		}, PENDING_ESCAPE_CLEAR_MS);
 	};
+	const detach = () => {
+		if (stdin.off) stdin.off("data", onData);
+		else stdin.removeListener("data", onData);
+	};
 	const cleanup = () => {
 		if (consumed) return;
 		consumed = true;
-		if (stdin.off) stdin.off("data", onData);
-		else stdin.removeListener("data", onData);
+		if (activeCapture === control) activeCapture = undefined;
+		if (!paused) detach();
 		for (const { event, listener } of registeredProcessListeners) {
 			removeProcessListener(processLike, event, listener);
 		}
 		clearPendingEscapeTimer();
 		state.pendingEscape = undefined;
-		stdin.setRawMode?.(wasRaw);
+		if (!paused) stdin.setRawMode?.(wasRaw);
+	};
+	const control: ActiveEarlyInputCapture = {
+		pause() {
+			const hasUnfinishedInput = state.text.length > 0 || (draftParts.at(-1)?.length ?? 0) > 0;
+			if (consumed || paused) return hasUnfinishedInput;
+			paused = true;
+			heldForStartupDecision = true;
+			detach();
+			clearPendingEscapeTimer();
+			state.pendingEscape = undefined;
+			stdin.setRawMode?.(wasRaw);
+			return hasUnfinishedInput;
+		},
+		resume() {
+			if (consumed || !paused) return;
+			paused = false;
+			stdin.setRawMode?.(true);
+			stdin.setEncoding?.("utf8");
+			stdin.on("data", onData);
+			stdin.resume();
+		},
+		keepDraft(text) {
+			heldForStartupDecision = true;
+			for (const submission of state.submissions) draftParts.push(submission);
+			draftParts.push(state.text, text);
+			state.submissions = [];
+			state.text = "";
+		},
 	};
 	const forwardSignal = (signal: NodeJS.Signals) => {
 		cleanup();
@@ -185,13 +279,24 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 		cleanup();
 		throw error ?? new Error("Uncaught exception during startup input capture");
 	});
+	activeCapture = control;
 	stdin.resume();
 
 	return {
 		consume() {
 			cleanup();
 			state.pendingEscape = undefined;
-			return { text: state.text, submissions: [...state.submissions] };
+			const snapshot: EarlyInputSnapshot =
+				draftParts.length > 0
+					? {
+							text: [...draftParts, ...state.submissions, state.text]
+								.filter((part) => part.length > 0)
+								.join("\n"),
+							submissions: [],
+						}
+					: { text: state.text, submissions: [...state.submissions] };
+			if (heldForStartupDecision) snapshot.heldForStartupDecision = true;
+			return snapshot;
 		},
 	};
 }

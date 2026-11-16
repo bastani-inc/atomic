@@ -59,10 +59,12 @@ if (confirmed) {
 }
 ```
 
-**Return values on timeout:**
+**Return values on timeout or caller abort:**
 - `select()` returns `undefined`
 - `confirm()` returns `false`
-- `input()` returns `undefined`
+- `input()` and `editor()` return `undefined`
+
+The dialog closes without requiring an answer. These defaults apply to the request's `timeout` and `signal`; cancelling all pending human input, closing the session, or replacing its input host can still reject with `HumanInputCancelled`.
 
 #### Manual Dismissal with AbortSignal
 

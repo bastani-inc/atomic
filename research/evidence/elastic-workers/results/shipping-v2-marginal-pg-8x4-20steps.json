@@ -1,0 +1,1137 @@
+{
+  "store": "pg",
+  "slots": 4,
+  "children": 64,
+  "steps": 20,
+  "killAfterMs": null,
+  "trials": [
+    {
+      "store": "pg",
+      "hosts": 8,
+      "slots": 4,
+      "shipping": "sync",
+      "killedHostAtMs": null,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 1280,
+      "wallMs": 41201,
+      "activeMs": 36290,
+      "checkpointsPerSec": 35.3,
+      "latencyMs": {
+        "p50": 23.73,
+        "p90": 2074.43,
+        "p99": 5179.83,
+        "max": 7202.06
+      },
+      "stageMs": null,
+      "perHost": {
+        "root": 3,
+        "h2": 10,
+        "h5": 7,
+        "h7": 9,
+        "h0": 7,
+        "h3": 8,
+        "h1": 7,
+        "h6": 7,
+        "h4": 6
+      },
+      "journal": {
+        "checkpoints": 1282,
+        "spanMs": 36224,
+        "checkpointsPerSec": 35.4
+      },
+      "sharedStoreCpuMs": 10284,
+      "storeCpuMsPerCheckpoint": 8.03,
+      "storeProfile": {
+        "byTime": [
+          {
+            "calls": 1492,
+            "ms": 566382,
+            "rows": 1492,
+            "sql": "SELECT pg_advisory_xact_lock(hashtextextended($1, $2))"
+          },
+          {
+            "calls": 1280,
+            "ms": 25276,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_runs WHERE run_id = $1 AND status IN ($4, $5) FOR UPDATE)"
+          },
+          {
+            "calls": 92,
+            "ms": 21069,
+            "rows": 0,
+            "sql": "CREATE OR REPLACE TRIGGER s8_wf_runs_pool_fence_abort BEFORE INSERT ON s8_wf_runs_pool_fence FOR EACH ROW EXECUTE FUNCTION s8_wf_runs_pool_fence_abort_fn()"
+          },
+          {
+            "calls": 45,
+            "ms": 13460,
+            "rows": 45,
+            "sql": "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, $2)), pg_advisory_xact_lock(hashtextextended($3, $4))"
+          },
+          {
+            "calls": 1985,
+            "ms": 574,
+            "rows": 58444,
+            "sql": "SELECT *, (SELECT schema_version FROM s8_wf_meta) AS meta_version FROM ( SELECT page.*, sum(length(page.payload)) OVER (ORDER BY page.seq) - length(page.payload"
+          },
+          {
+            "calls": 68,
+            "ms": 335,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_runs WHERE run_id = $1 AND status IN ($4, $5) FOR SHARE)"
+          },
+          {
+            "calls": 65,
+            "ms": 265,
+            "rows": 65,
+            "sql": "SELECT $2 FROM s8_wf_runs WHERE run_id = $1 FOR UPDATE"
+          },
+          {
+            "calls": 1280,
+            "ms": 194,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $6 WHERE NOT EXISTS (SELECT $7 WHERE NOT EXISTS (SELECT $8 FROM s8_wf_events WHERE run_id = $1 AND seq > $2 AND"
+          },
+          {
+            "calls": 1280,
+            "ms": 159,
+            "rows": 1280,
+            "sql": "INSERT INTO s8_wf_events (run_id, seq, epoch, key, type, payload, at, chunks) SELECT $1, COALESCE(MAX(seq), $8) + $9, $2, $3, $4, $5, (floor(extract($10 from cl"
+          },
+          {
+            "calls": 127,
+            "ms": 140,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_runs WHERE run_id = $1 AND status = $4 FOR SHARE)"
+          },
+          {
+            "calls": 50,
+            "ms": 138,
+            "rows": 19495,
+            "sql": "SELECT run_id, seq, key, payload, chunks FROM ( SELECT run_id, seq, key, payload, chunks, SUM(length(payload)) OVER (ORDER BY seq) - length(payload) AS before F"
+          },
+          {
+            "calls": 1769,
+            "ms": 104,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $4 WHERE NOT EXISTS (SELECT $5 FROM s8_wf_leases l JOIN s8_wf_runs_pool p ON p.root = l.run_id WHERE l.run_id ="
+          },
+          {
+            "calls": 269,
+            "ms": 97,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $7 WHERE NOT EXISTS (SELECT $8 FROM s8_wf_runs_work WHERE id = $1 AND root = $2 AND state = $9 AND epoch = $3 A"
+          },
+          {
+            "calls": 88,
+            "ms": 92,
+            "rows": 890,
+            "sql": "SELECT relname AS name FROM pg_catalog.pg_class WHERE relnamespace = current_schema()::regnamespace AND relname IN ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11"
+          },
+          {
+            "calls": 132,
+            "ms": 90,
+            "rows": 132,
+            "sql": "SELECT run_id FROM s8_wf_runs WHERE run_id = $1 FOR UPDATE"
+          },
+          {
+            "calls": 269,
+            "ms": 88,
+            "rows": 13768,
+            "sql": "SELECT w.*, (SELECT COALESCE(json_agg(o.generation), $3::json) FROM s8_wf_runs_pool_operations o WHERE o.work = w.id AND o.operation = $1) AS handoffs FROM s8_w"
+          },
+          {
+            "calls": 1280,
+            "ms": 82,
+            "rows": 1280,
+            "sql": "INSERT INTO s8_wf_runs_pool_operations SELECT $1, $2, $3, $4, (SELECT json_build_object($7, seq, $8, at) FROM s8_wf_events WHERE run_id = $5 AND key = $6)"
+          },
+          {
+            "calls": 1305,
+            "ms": 76,
+            "rows": 1292,
+            "sql": "SELECT column_name AS name, column_default AS default_value FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 AND column"
+          },
+          {
+            "calls": 322,
+            "ms": 60,
+            "rows": 274,
+            "sql": "INSERT INTO s8_wf_runs_pool_activity(work, token, runs, version) SELECT $1, $2, $3, (SELECT COALESCE(MAX(version), $9) + $10 FROM s8_wf_runs_pool_activity) WHER"
+          },
+          {
+            "calls": 16303,
+            "ms": 44,
+            "rows": 0,
+            "sql": "SET LOCAL statement_timeout = 30000"
+          },
+          {
+            "calls": 112,
+            "ms": 41,
+            "rows": 0,
+            "sql": "CREATE OR REPLACE FUNCTION s8_wf_runs_pool_usage_totals_insert_fn() RETURNS trigger LANGUAGE plpgsql AS $trigger$ BEGIN UPDATE s8_wf_runs_pool_usage_totals SET "
+          },
+          {
+            "calls": 51,
+            "ms": 39,
+            "rows": 51,
+            "sql": "SELECT l.*, r.status, p.timeout, (floor(extract($14 from clock_timestamp()) * $15))::bigint AS now, (SELECT state FROM s8_wf_runs_pool_control WHERE root = l.ru"
+          },
+          {
+            "calls": 236,
+            "ms": 35,
+            "rows": 1977,
+            "sql": "SELECT id, generation, ((CASE WHEN strpos(descriptor, $6) = $7 OR pg_input_is_valid(descriptor, $8) THEN descriptor ELSE regexp_replace(descriptor, $9, $10, $11"
+          },
+          {
+            "calls": 1370,
+            "ms": 34,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $7 WHERE NOT EXISTS (SELECT $8 FROM s8_wf_runs_work WHERE id = $1 AND root = $2 AND state = $9 AND epoch = $3 A"
+          },
+          {
+            "calls": 247,
+            "ms": 31,
+            "rows": 247,
+            "sql": "UPDATE s8_wf_runs_work SET expires_at = GREATEST(expires_at, (floor(extract($3 from clock_timestamp()) * $4))::bigint + $1), renewed_at = (floor(extract($5 from"
+          },
+          {
+            "calls": 64,
+            "ms": 27,
+            "rows": 0,
+            "sql": "SELECT $5 FROM s8_wf_runs_work WHERE root = $1 AND (boundary = $2 OR ((regexp_replace(descriptor, $6, $7, $8))::jsonb ->> $9) = $3 OR ((regexp_replace(descripto"
+          },
+          {
+            "calls": 5974,
+            "ms": 26,
+            "rows": 5974,
+            "sql": "SELECT schema_version FROM s8_wf_meta"
+          },
+          {
+            "calls": 64,
+            "ms": 25,
+            "rows": 0,
+            "sql": "SELECT * FROM s8_wf_runs_work WHERE root = $1 AND (boundary = $2 OR ((regexp_replace(descriptor, $5, $6, $7))::jsonb ->> $8) = $3 OR ((regexp_replace(descriptor"
+          },
+          {
+            "calls": 1480,
+            "ms": 22,
+            "rows": 1480,
+            "sql": "SELECT $2 FROM ONLY \"public\".\"s8_wf_runs_work\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 103,
+            "ms": 20,
+            "rows": 0,
+            "sql": "CREATE INDEX IF NOT EXISTS s8_wf_runs_work_ready ON s8_wf_runs_work(root, state, ready_at)"
+          },
+          {
+            "calls": 112,
+            "ms": 18,
+            "rows": 0,
+            "sql": "CREATE OR REPLACE FUNCTION s8_wf_runs_pool_usage_totals_update_fn() RETURNS trigger LANGUAGE plpgsql AS $trigger$ BEGIN IF (OLD.input IS DISTINCT FROM NEW.input"
+          },
+          {
+            "calls": 68,
+            "ms": 17,
+            "rows": 68,
+            "sql": "INSERT INTO s8_wf_runs_work_results (work, result, chunks) VALUES ($1, $2, $3)"
+          },
+          {
+            "calls": 113,
+            "ms": 17,
+            "rows": 72,
+            "sql": "UPDATE s8_wf_runs_work SET state = $12, generation = generation + $13, worker = $1, epoch = $2, expires_at = (floor(extract($14 from clock_timestamp()) * $15)):"
+          },
+          {
+            "calls": 1146,
+            "ms": 17,
+            "rows": 1136,
+            "sql": "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1"
+          },
+          {
+            "calls": 64,
+            "ms": 14,
+            "rows": 2016,
+            "sql": "SELECT ((regexp_replace(descriptor, $2, $3, $4))::jsonb ->> $5) AS scope FROM s8_wf_runs_work WHERE root = $1"
+          },
+          {
+            "calls": 620,
+            "ms": 12,
+            "rows": 620,
+            "sql": "SELECT l.*, r.status, p.timeout, (floor(extract($2 from clock_timestamp()) * $3))::bigint AS now FROM s8_wf_leases l JOIN s8_wf_runs r ON r.run_id = l.run_id LE"
+          },
+          {
+            "calls": 3259,
+            "ms": 12,
+            "rows": 0,
+            "sql": "SET LOCAL lock_timeout = 600000"
+          },
+          {
+            "calls": 64,
+            "ms": 11,
+            "rows": 64,
+            "sql": "INSERT INTO s8_wf_runs_work(id, root, boundary, descriptor, fingerprint, epoch, ready_at, inputs_chunks) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+          },
+          {
+            "calls": 1769,
+            "ms": 10,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_meta WHERE schema_version = $1)"
+          },
+          {
+            "calls": 1580,
+            "ms": 10,
+            "rows": 1575,
+            "sql": "SELECT * FROM s8_wf_runs_pool_usage_totals WHERE root = $1"
+          }
+        ],
+        "byCalls": [
+          {
+            "calls": 16337,
+            "ms": 44,
+            "rows": 0,
+            "sql": "SET LOCAL statement_timeout = 30000"
+          },
+          {
+            "calls": 16337,
+            "ms": 5,
+            "rows": 0,
+            "sql": "BEGIN"
+          },
+          {
+            "calls": 16320,
+            "ms": 5,
+            "rows": 0,
+            "sql": "COMMIT"
+          },
+          {
+            "calls": 5999,
+            "ms": 26,
+            "rows": 5999,
+            "sql": "SELECT schema_version FROM s8_wf_meta"
+          },
+          {
+            "calls": 3278,
+            "ms": 12,
+            "rows": 0,
+            "sql": "SET LOCAL lock_timeout = 600000"
+          },
+          {
+            "calls": 1985,
+            "ms": 574,
+            "rows": 58444,
+            "sql": "SELECT *, (SELECT schema_version FROM s8_wf_meta) AS meta_version FROM ( SELECT page.*, sum(length(page.payload)) OVER (ORDER BY page.seq) - length(page.payload"
+          },
+          {
+            "calls": 1769,
+            "ms": 10,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_meta WHERE schema_version = $1)"
+          },
+          {
+            "calls": 1769,
+            "ms": 104,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $4 WHERE NOT EXISTS (SELECT $5 FROM s8_wf_leases l JOIN s8_wf_runs_pool p ON p.root = l.run_id WHERE l.run_id ="
+          },
+          {
+            "calls": 1580,
+            "ms": 10,
+            "rows": 1575,
+            "sql": "SELECT * FROM s8_wf_runs_pool_usage_totals WHERE root = $1"
+          },
+          {
+            "calls": 1511,
+            "ms": 566386,
+            "rows": 1511,
+            "sql": "SELECT pg_advisory_xact_lock(hashtextextended($1, $2))"
+          },
+          {
+            "calls": 1480,
+            "ms": 22,
+            "rows": 1480,
+            "sql": "SELECT $2 FROM ONLY \"public\".\"s8_wf_runs_work\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 1370,
+            "ms": 34,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $7 WHERE NOT EXISTS (SELECT $8 FROM s8_wf_runs_work WHERE id = $1 AND root = $2 AND state = $9 AND epoch = $3 A"
+          },
+          {
+            "calls": 1348,
+            "ms": 7,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_runs r WHERE r.run_id = $1 AND (r.status = $4 OR (r.status = $5 AND E"
+          },
+          {
+            "calls": 1312,
+            "ms": 77,
+            "rows": 1299,
+            "sql": "SELECT column_name AS name, column_default AS default_value FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 AND column"
+          },
+          {
+            "calls": 1301,
+            "ms": 8,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $4 WHERE NOT EXISTS (SELECT $5 WHERE NOT EXISTS (SELECT $6 FROM s8_wf_runs_pool_operations WHERE work = $1 AND "
+          },
+          {
+            "calls": 1280,
+            "ms": 194,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $6 WHERE NOT EXISTS (SELECT $7 WHERE NOT EXISTS (SELECT $8 FROM s8_wf_events WHERE run_id = $1 AND seq > $2 AND"
+          },
+          {
+            "calls": 1280,
+            "ms": 9,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $3 WHERE NOT EXISTS (SELECT $4 WHERE NOT EXISTS (SELECT $5 FROM s8_wf_events WHERE run_id = $1 AND key = $2))"
+          },
+          {
+            "calls": 1280,
+            "ms": 25276,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_runs WHERE run_id = $1 AND status IN ($4, $5) FOR UPDATE)"
+          },
+          {
+            "calls": 1280,
+            "ms": 159,
+            "rows": 1280,
+            "sql": "INSERT INTO s8_wf_events (run_id, seq, epoch, key, type, payload, at, chunks) SELECT $1, COALESCE(MAX(seq), $8) + $9, $2, $3, $4, $5, (floor(extract($10 from cl"
+          },
+          {
+            "calls": 1280,
+            "ms": 5,
+            "rows": 1280,
+            "sql": "SELECT receipt FROM s8_wf_runs_pool_operations WHERE work = $1 AND generation = $2 AND operation = $3"
+          },
+          {
+            "calls": 1280,
+            "ms": 82,
+            "rows": 1280,
+            "sql": "INSERT INTO s8_wf_runs_pool_operations SELECT $1, $2, $3, $4, (SELECT json_build_object($7, seq, $8, at) FROM s8_wf_events WHERE run_id = $5 AND key = $6)"
+          },
+          {
+            "calls": 1150,
+            "ms": 17,
+            "rows": 1140,
+            "sql": "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1"
+          },
+          {
+            "calls": 867,
+            "ms": 7,
+            "rows": 0,
+            "sql": "SELECT *, (SELECT schema_version FROM s8_wf_meta) AS meta_version FROM ( SELECT page.*, sum(length(page.payload)) OVER (ORDER BY page.key) - length(page.payload"
+          },
+          {
+            "calls": 660,
+            "ms": 3,
+            "rows": 660,
+            "sql": "SELECT state, revision FROM s8_wf_runs_pool_control WHERE root = $1"
+          },
+          {
+            "calls": 624,
+            "ms": 12,
+            "rows": 624,
+            "sql": "SELECT l.*, r.status, p.timeout, (floor(extract($2 from clock_timestamp()) * $3))::bigint AS now FROM s8_wf_leases l JOIN s8_wf_runs r ON r.run_id = l.run_id LE"
+          },
+          {
+            "calls": 347,
+            "ms": 3,
+            "rows": 0,
+            "sql": "SELECT $4 AS prunable FROM s8_wf_runs_resource_permits r WHERE r.state || $5 = $6 AND r.ticket <= (SELECT ticket FROM s8_wf_runs_resource_permits WHERE state = "
+          },
+          {
+            "calls": 345,
+            "ms": 2,
+            "rows": 0,
+            "sql": "SELECT p.operation, p.owner, p.kind, p.state, p.reason, p.process_identity, p.attempt, o.host, o.boot, o.pid, o.expires_at < (floor(extract($1 from clock_timest"
+          },
+          {
+            "calls": 322,
+            "ms": 60,
+            "rows": 274,
+            "sql": "INSERT INTO s8_wf_runs_pool_activity(work, token, runs, version) SELECT $1, $2, $3, (SELECT COALESCE(MAX(version), $9) + $10 FROM s8_wf_runs_pool_activity) WHER"
+          },
+          {
+            "calls": 311,
+            "ms": 2,
+            "rows": 311,
+            "sql": "SELECT * FROM s8_wf_runs_work WHERE id = $1"
+          },
+          {
+            "calls": 269,
+            "ms": 88,
+            "rows": 13768,
+            "sql": "SELECT w.*, (SELECT COALESCE(json_agg(o.generation), $3::json) FROM s8_wf_runs_pool_operations o WHERE o.work = w.id AND o.operation = $1) AS handoffs FROM s8_w"
+          },
+          {
+            "calls": 269,
+            "ms": 97,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $7 WHERE NOT EXISTS (SELECT $8 FROM s8_wf_runs_work WHERE id = $1 AND root = $2 AND state = $9 AND epoch = $3 A"
+          },
+          {
+            "calls": 258,
+            "ms": 8,
+            "rows": 75,
+            "sql": "INSERT INTO s8_wf_runs_pool_operations (work, generation, operation, request, receipt) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING"
+          },
+          {
+            "calls": 249,
+            "ms": 2,
+            "rows": 1,
+            "sql": "INSERT INTO s8_wf_runs_pool_usage_totals(root, input, input_err, output, output_err, cacheread, cacheread_err, cachewrite, cachewrite_err, cost, cost_err) SELEC"
+          },
+          {
+            "calls": 247,
+            "ms": 31,
+            "rows": 247,
+            "sql": "UPDATE s8_wf_runs_work SET expires_at = GREATEST(expires_at, (floor(extract($3 from clock_timestamp()) * $4))::bigint + $1), renewed_at = (floor(extract($5 from"
+          },
+          {
+            "calls": 236,
+            "ms": 35,
+            "rows": 1977,
+            "sql": "SELECT id, generation, ((CASE WHEN strpos(descriptor, $6) = $7 OR pg_input_is_valid(descriptor, $8) THEN descriptor ELSE regexp_replace(descriptor, $9, $10, $11"
+          },
+          {
+            "calls": 225,
+            "ms": 2,
+            "rows": 75,
+            "sql": "SELECT *, (SELECT schema_version FROM s8_wf_meta) AS meta_version FROM s8_wf_events WHERE run_id = $1 AND key = $2"
+          },
+          {
+            "calls": 208,
+            "ms": 8,
+            "rows": 184,
+            "sql": "SELECT s.root, s.config, s.budget_blocked, r.status, l.holder_id, l.epoch, l.renewed_at, p.timeout, (floor(extract($1 from clock_timestamp()) * $2))::bigint AS "
+          },
+          {
+            "calls": 196,
+            "ms": 2,
+            "rows": 196,
+            "sql": "SELECT COALESCE(MAX(seq), $2) AS seq FROM s8_wf_events WHERE run_id = $1"
+          },
+          {
+            "calls": 194,
+            "ms": 2,
+            "rows": 0,
+            "sql": "SELECT DISTINCT work, run_id AS runId, stage_id AS stageId FROM s8_wf_runs_stage_inputs WHERE root = $1 AND state = $3 AND work IN (SELECT value FROM jsonb_arra"
+          },
+          {
+            "calls": 149,
+            "ms": 0,
+            "rows": 149,
+            "sql": "SELECT pg_notify($1, $2)"
+          }
+        ]
+      },
+      "shippingLagMs": {
+        "n": 1282,
+        "p50": 16,
+        "p90": 1011,
+        "p99": 2113,
+        "max": 2192
+      },
+      "batches": {
+        "count": 0,
+        "events": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        }
+      },
+      "replayed": {
+        "steps": 0,
+        "children": 0,
+        "perChild": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        },
+        "unshippedAtKillPerAttempt": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        }
+      }
+    },
+    {
+      "store": "pg",
+      "hosts": 8,
+      "slots": 4,
+      "shipping": {
+        "intervalMs": 1000,
+        "maxBatch": 64,
+        "maxLagMs": 5000
+      },
+      "killedHostAtMs": null,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 1280,
+      "wallMs": 31781,
+      "activeMs": 27434,
+      "checkpointsPerSec": 46.7,
+      "latencyMs": {
+        "p50": 8.32,
+        "p90": 10.61,
+        "p99": 35.83,
+        "max": 89.09
+      },
+      "stageMs": null,
+      "perHost": {
+        "root": 5,
+        "h4": 11,
+        "h7": 5,
+        "h5": 5,
+        "h3": 11,
+        "h2": 6,
+        "h6": 6,
+        "h0": 6,
+        "h1": 9
+      },
+      "journal": {
+        "checkpoints": 1282,
+        "spanMs": 27120,
+        "checkpointsPerSec": 47.3
+      },
+      "sharedStoreCpuMs": 6730,
+      "storeCpuMsPerCheckpoint": 5.26,
+      "storeProfile": {
+        "byTime": [
+          {
+            "calls": 1366,
+            "ms": 561753,
+            "rows": 1366,
+            "sql": "SELECT pg_advisory_xact_lock(hashtextextended($1, $2))"
+          },
+          {
+            "calls": 92,
+            "ms": 16001,
+            "rows": 0,
+            "sql": "CREATE OR REPLACE TRIGGER s8_wf_runs_pool_fence_abort BEFORE INSERT ON s8_wf_runs_pool_fence FOR EACH ROW EXECUTE FUNCTION s8_wf_runs_pool_fence_abort_fn()"
+          },
+          {
+            "calls": 43,
+            "ms": 9414,
+            "rows": 43,
+            "sql": "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, $2)), pg_advisory_xact_lock(hashtextextended($3, $4))"
+          },
+          {
+            "calls": 685,
+            "ms": 525,
+            "rows": 62787,
+            "sql": "SELECT *, (SELECT schema_version FROM s8_wf_meta) AS meta_version FROM ( SELECT page.*, sum(length(page.payload)) OVER (ORDER BY page.seq) - length(page.payload"
+          },
+          {
+            "calls": 79,
+            "ms": 282,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_runs WHERE run_id = $1 AND status IN ($4, $5) FOR UPDATE)"
+          },
+          {
+            "calls": 207,
+            "ms": 279,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $7 WHERE NOT EXISTS (SELECT $8 FROM s8_wf_runs_work WHERE id = $1 AND root = $2 AND state = $9 AND epoch = $3 A"
+          },
+          {
+            "calls": 68,
+            "ms": 208,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_runs WHERE run_id = $1 AND status IN ($4, $5) FOR SHARE)"
+          },
+          {
+            "calls": 28,
+            "ms": 89,
+            "rows": 12555,
+            "sql": "SELECT run_id, seq, key, payload, chunks FROM ( SELECT run_id, seq, key, payload, chunks, SUM(length(payload)) OVER (ORDER BY seq) - length(payload) AS before F"
+          },
+          {
+            "calls": 86,
+            "ms": 88,
+            "rows": 860,
+            "sql": "SELECT relname AS name FROM pg_catalog.pg_class WHERE relnamespace = current_schema()::regnamespace AND relname IN ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11"
+          },
+          {
+            "calls": 1284,
+            "ms": 70,
+            "rows": 1271,
+            "sql": "SELECT column_name AS name, column_default AS default_value FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 AND column"
+          },
+          {
+            "calls": 240,
+            "ms": 63,
+            "rows": 13639,
+            "sql": "SELECT w.*, (SELECT COALESCE(json_agg(o.generation), $3::json) FROM s8_wf_runs_pool_operations o WHERE o.work = w.id AND o.operation = $1) AS handoffs FROM s8_w"
+          },
+          {
+            "calls": 218,
+            "ms": 55,
+            "rows": 3301,
+            "sql": "SELECT id, generation, ((CASE WHEN strpos(descriptor, $6) = $7 OR pg_input_is_valid(descriptor, $8) THEN descriptor ELSE regexp_replace(descriptor, $9, $10, $11"
+          },
+          {
+            "calls": 132,
+            "ms": 48,
+            "rows": 132,
+            "sql": "SELECT run_id FROM s8_wf_runs WHERE run_id = $1 FOR UPDATE"
+          },
+          {
+            "calls": 49,
+            "ms": 46,
+            "rows": 980,
+            "sql": "INSERT INTO s8_wf_events (run_id, seq, epoch, key, type, payload, at, chunks) SELECT $1, (SELECT COALESCE(MAX(seq), $85) FROM s8_wf_events WHERE run_id = $2) + "
+          },
+          {
+            "calls": 109,
+            "ms": 38,
+            "rows": 0,
+            "sql": "CREATE OR REPLACE FUNCTION s8_wf_runs_pool_usage_totals_insert_fn() RETURNS trigger LANGUAGE plpgsql AS $trigger$ BEGIN UPDATE s8_wf_runs_pool_usage_totals SET "
+          },
+          {
+            "calls": 155,
+            "ms": 33,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_runs WHERE run_id = $1 AND status = $4 FOR SHARE)"
+          },
+          {
+            "calls": 509,
+            "ms": 28,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $4 WHERE NOT EXISTS (SELECT $5 FROM s8_wf_leases l JOIN s8_wf_runs_pool p ON p.root = l.run_id WHERE l.run_id ="
+          },
+          {
+            "calls": 64,
+            "ms": 28,
+            "rows": 0,
+            "sql": "SELECT $5 FROM s8_wf_runs_work WHERE root = $1 AND (boundary = $2 OR ((regexp_replace(descriptor, $6, $7, $8))::jsonb ->> $9) = $3 OR ((regexp_replace(descripto"
+          },
+          {
+            "calls": 192,
+            "ms": 27,
+            "rows": 192,
+            "sql": "UPDATE s8_wf_runs_work SET expires_at = GREATEST(expires_at, (floor(extract($3 from clock_timestamp()) * $4))::bigint + $1), renewed_at = (floor(extract($5 from"
+          },
+          {
+            "calls": 10483,
+            "ms": 26,
+            "rows": 0,
+            "sql": "SET LOCAL statement_timeout = 30000"
+          },
+          {
+            "calls": 64,
+            "ms": 26,
+            "rows": 0,
+            "sql": "SELECT * FROM s8_wf_runs_work WHERE root = $1 AND (boundary = $2 OR ((regexp_replace(descriptor, $5, $6, $7))::jsonb ->> $8) = $3 OR ((regexp_replace(descriptor"
+          },
+          {
+            "calls": 29,
+            "ms": 24,
+            "rows": 29,
+            "sql": "SELECT l.*, r.status, p.timeout, (floor(extract($14 from clock_timestamp()) * $15))::bigint AS now, (SELECT state FROM s8_wf_runs_pool_control WHERE root = l.ru"
+          },
+          {
+            "calls": 4323,
+            "ms": 19,
+            "rows": 4323,
+            "sql": "SELECT schema_version FROM s8_wf_meta"
+          },
+          {
+            "calls": 139,
+            "ms": 18,
+            "rows": 66,
+            "sql": "UPDATE s8_wf_runs_work SET state = $12, generation = generation + $13, worker = $1, epoch = $2, expires_at = (floor(extract($14 from clock_timestamp()) * $15)):"
+          },
+          {
+            "calls": 68,
+            "ms": 17,
+            "rows": 68,
+            "sql": "INSERT INTO s8_wf_runs_work_results (work, result, chunks) VALUES ($1, $2, $3)"
+          },
+          {
+            "calls": 109,
+            "ms": 17,
+            "rows": 0,
+            "sql": "CREATE OR REPLACE FUNCTION s8_wf_runs_pool_usage_totals_update_fn() RETURNS trigger LANGUAGE plpgsql AS $trigger$ BEGIN IF (OLD.input IS DISTINCT FROM NEW.input"
+          },
+          {
+            "calls": 147,
+            "ms": 16,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $7 WHERE NOT EXISTS (SELECT $8 FROM s8_wf_runs_work WHERE id = $1 AND root = $2 AND state = $9 AND epoch = $3 A"
+          },
+          {
+            "calls": 100,
+            "ms": 16,
+            "rows": 0,
+            "sql": "CREATE INDEX IF NOT EXISTS s8_wf_runs_work_ready ON s8_wf_runs_work(root, state, ready_at)"
+          },
+          {
+            "calls": 1098,
+            "ms": 14,
+            "rows": 1088,
+            "sql": "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1"
+          },
+          {
+            "calls": 64,
+            "ms": 13,
+            "rows": 2016,
+            "sql": "SELECT ((regexp_replace(descriptor, $2, $3, $4))::jsonb ->> $5) AS scope FROM s8_wf_runs_work WHERE root = $1"
+          },
+          {
+            "calls": 541,
+            "ms": 9,
+            "rows": 541,
+            "sql": "SELECT l.*, r.status, p.timeout, (floor(extract($2 from clock_timestamp()) * $3))::bigint AS now FROM s8_wf_leases l JOIN s8_wf_runs r ON r.run_id = l.run_id LE"
+          },
+          {
+            "calls": 64,
+            "ms": 9,
+            "rows": 64,
+            "sql": "INSERT INTO s8_wf_runs_work(id, root, boundary, descriptor, fingerprint, epoch, ready_at, inputs_chunks) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+          },
+          {
+            "calls": 79,
+            "ms": 8,
+            "rows": 79,
+            "sql": "INSERT INTO s8_wf_runs_ship_batches(batch, work, generation, worker, epoch, host, first_local_seq, last_local_seq, events, shipped_at) VALUES ($1, $2, $3, $4, $"
+          },
+          {
+            "calls": 90,
+            "ms": 8,
+            "rows": 25,
+            "sql": "INSERT INTO s8_wf_runs_pool_activity(work, token, runs, version) SELECT $1, $2, $3, (SELECT COALESCE(MAX(version), $9) + $10 FROM s8_wf_runs_pool_activity) WHER"
+          },
+          {
+            "calls": 75,
+            "ms": 8,
+            "rows": 0,
+            "sql": "CREATE INDEX IF NOT EXISTS s8_wf_runs_resource_permits_active ON s8_wf_runs_resource_permits(kind, state, root)"
+          },
+          {
+            "calls": 200,
+            "ms": 8,
+            "rows": 72,
+            "sql": "INSERT INTO s8_wf_runs_pool_operations (work, generation, operation, request, receipt) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING"
+          },
+          {
+            "calls": 109,
+            "ms": 8,
+            "rows": 0,
+            "sql": "CREATE OR REPLACE TRIGGER s8_wf_runs_pool_usage_totals_insert AFTER INSERT ON s8_wf_runs_pool_usage FOR EACH ROW EXECUTE FUNCTION s8_wf_runs_pool_usage_totals_i"
+          },
+          {
+            "calls": 132,
+            "ms": 7,
+            "rows": 132,
+            "sql": "INSERT INTO s8_wf_events (run_id, seq, epoch, key, type, payload, at, chunks) VALUES ($1, $2, $3, $4, $5, $6, (floor(extract($8 from clock_timestamp()) * $9))::"
+          },
+          {
+            "calls": 64,
+            "ms": 7,
+            "rows": 64,
+            "sql": "UPDATE s8_wf_runs_work SET state = $2 WHERE id = $1"
+          },
+          {
+            "calls": 79,
+            "ms": 7,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $6 WHERE NOT EXISTS (SELECT $7 WHERE NOT EXISTS (SELECT $8 FROM s8_wf_events WHERE run_id = $1 AND seq > $2 AND"
+          }
+        ],
+        "byCalls": [
+          {
+            "calls": 10483,
+            "ms": 26,
+            "rows": 0,
+            "sql": "SET LOCAL statement_timeout = 30000"
+          },
+          {
+            "calls": 10483,
+            "ms": 3,
+            "rows": 0,
+            "sql": "BEGIN"
+          },
+          {
+            "calls": 10470,
+            "ms": 3,
+            "rows": 0,
+            "sql": "COMMIT"
+          },
+          {
+            "calls": 4323,
+            "ms": 19,
+            "rows": 4323,
+            "sql": "SELECT schema_version FROM s8_wf_meta"
+          },
+          {
+            "calls": 1873,
+            "ms": 7,
+            "rows": 0,
+            "sql": "SET LOCAL lock_timeout = 600000"
+          },
+          {
+            "calls": 1366,
+            "ms": 561753,
+            "rows": 1366,
+            "sql": "SELECT pg_advisory_xact_lock(hashtextextended($1, $2))"
+          },
+          {
+            "calls": 1284,
+            "ms": 70,
+            "rows": 1271,
+            "sql": "SELECT column_name AS name, column_default AS default_value FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 AND column"
+          },
+          {
+            "calls": 1098,
+            "ms": 14,
+            "rows": 1088,
+            "sql": "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1"
+          },
+          {
+            "calls": 840,
+            "ms": 6,
+            "rows": 0,
+            "sql": "SELECT *, (SELECT schema_version FROM s8_wf_meta) AS meta_version FROM ( SELECT page.*, sum(length(page.payload)) OVER (ORDER BY page.key) - length(page.payload"
+          },
+          {
+            "calls": 685,
+            "ms": 525,
+            "rows": 62787,
+            "sql": "SELECT *, (SELECT schema_version FROM s8_wf_meta) AS meta_version FROM ( SELECT page.*, sum(length(page.payload)) OVER (ORDER BY page.seq) - length(page.payload"
+          },
+          {
+            "calls": 591,
+            "ms": 3,
+            "rows": 591,
+            "sql": "SELECT state, revision FROM s8_wf_runs_pool_control WHERE root = $1"
+          },
+          {
+            "calls": 541,
+            "ms": 9,
+            "rows": 541,
+            "sql": "SELECT l.*, r.status, p.timeout, (floor(extract($2 from clock_timestamp()) * $3))::bigint AS now FROM s8_wf_leases l JOIN s8_wf_runs r ON r.run_id = l.run_id LE"
+          },
+          {
+            "calls": 509,
+            "ms": 28,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $4 WHERE NOT EXISTS (SELECT $5 FROM s8_wf_leases l JOIN s8_wf_runs_pool p ON p.root = l.run_id WHERE l.run_id ="
+          },
+          {
+            "calls": 509,
+            "ms": 3,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_meta WHERE schema_version = $1)"
+          },
+          {
+            "calls": 315,
+            "ms": 2,
+            "rows": 0,
+            "sql": "SELECT $4 AS prunable FROM s8_wf_runs_resource_permits r WHERE r.state || $5 = $6 AND r.ticket <= (SELECT ticket FROM s8_wf_runs_resource_permits WHERE state = "
+          },
+          {
+            "calls": 313,
+            "ms": 2,
+            "rows": 0,
+            "sql": "SELECT p.operation, p.owner, p.kind, p.state, p.reason, p.process_identity, p.attempt, o.host, o.boot, o.pid, o.expires_at < (floor(extract($1 from clock_timest"
+          },
+          {
+            "calls": 303,
+            "ms": 2,
+            "rows": 303,
+            "sql": "SELECT $2 FROM ONLY \"public\".\"s8_wf_runs_work\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 258,
+            "ms": 1,
+            "rows": 253,
+            "sql": "SELECT * FROM s8_wf_runs_pool_usage_totals WHERE root = $1"
+          },
+          {
+            "calls": 256,
+            "ms": 2,
+            "rows": 256,
+            "sql": "SELECT * FROM s8_wf_runs_work WHERE id = $1"
+          },
+          {
+            "calls": 240,
+            "ms": 63,
+            "rows": 13639,
+            "sql": "SELECT w.*, (SELECT COALESCE(json_agg(o.generation), $3::json) FROM s8_wf_runs_pool_operations o WHERE o.work = w.id AND o.operation = $1) AS handoffs FROM s8_w"
+          },
+          {
+            "calls": 218,
+            "ms": 55,
+            "rows": 3301,
+            "sql": "SELECT id, generation, ((CASE WHEN strpos(descriptor, $6) = $7 OR pg_input_is_valid(descriptor, $8) THEN descriptor ELSE regexp_replace(descriptor, $9, $10, $11"
+          },
+          {
+            "calls": 216,
+            "ms": 2,
+            "rows": 72,
+            "sql": "SELECT *, (SELECT schema_version FROM s8_wf_meta) AS meta_version FROM s8_wf_events WHERE run_id = $1 AND key = $2"
+          },
+          {
+            "calls": 207,
+            "ms": 279,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $7 WHERE NOT EXISTS (SELECT $8 FROM s8_wf_runs_work WHERE id = $1 AND root = $2 AND state = $9 AND epoch = $3 A"
+          },
+          {
+            "calls": 200,
+            "ms": 8,
+            "rows": 72,
+            "sql": "INSERT INTO s8_wf_runs_pool_operations (work, generation, operation, request, receipt) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING"
+          },
+          {
+            "calls": 196,
+            "ms": 2,
+            "rows": 196,
+            "sql": "SELECT COALESCE(MAX(seq), $2) AS seq FROM s8_wf_events WHERE run_id = $1"
+          },
+          {
+            "calls": 194,
+            "ms": 2,
+            "rows": 1,
+            "sql": "INSERT INTO s8_wf_runs_pool_usage_totals(root, input, input_err, output, output_err, cacheread, cacheread_err, cachewrite, cachewrite_err, cost, cost_err) SELEC"
+          },
+          {
+            "calls": 192,
+            "ms": 27,
+            "rows": 192,
+            "sql": "UPDATE s8_wf_runs_work SET expires_at = GREATEST(expires_at, (floor(extract($3 from clock_timestamp()) * $4))::bigint + $1), renewed_at = (floor(extract($5 from"
+          },
+          {
+            "calls": 164,
+            "ms": 6,
+            "rows": 140,
+            "sql": "SELECT s.root, s.config, s.budget_blocked, r.status, l.holder_id, l.epoch, l.renewed_at, p.timeout, (floor(extract($1 from clock_timestamp()) * $2))::bigint AS "
+          },
+          {
+            "calls": 155,
+            "ms": 1,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 WHERE NOT EXISTS (SELECT $4 FROM s8_wf_runs_pool_control WHERE root = $1 AND sta"
+          },
+          {
+            "calls": 155,
+            "ms": 33,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_runs WHERE run_id = $1 AND status = $4 FOR SHARE)"
+          },
+          {
+            "calls": 147,
+            "ms": 1,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $2 WHERE NOT EXISTS (SELECT $3 FROM s8_wf_runs r WHERE r.run_id = $1 AND (r.status = $4 OR (r.status = $5 AND E"
+          },
+          {
+            "calls": 147,
+            "ms": 16,
+            "rows": 0,
+            "sql": "INSERT INTO s8_wf_runs_pool_fence(reason) SELECT $7 WHERE NOT EXISTS (SELECT $8 FROM s8_wf_runs_work WHERE id = $1 AND root = $2 AND state = $9 AND epoch = $3 A"
+          },
+          {
+            "calls": 145,
+            "ms": 0,
+            "rows": 145,
+            "sql": "SELECT pg_notify($1, $2)"
+          },
+          {
+            "calls": 139,
+            "ms": 18,
+            "rows": 66,
+            "sql": "UPDATE s8_wf_runs_work SET state = $12, generation = generation + $13, worker = $1, epoch = $2, expires_at = (floor(extract($14 from clock_timestamp()) * $15)):"
+          },
+          {
+            "calls": 137,
+            "ms": 1,
+            "rows": 0,
+            "sql": "SELECT DISTINCT work, run_id AS runId, stage_id AS stageId FROM s8_wf_runs_stage_inputs WHERE root = $1 AND state = $3 AND work IN (SELECT value FROM jsonb_arra"
+          },
+          {
+            "calls": 132,
+            "ms": 48,
+            "rows": 132,
+            "sql": "SELECT run_id FROM s8_wf_runs WHERE run_id = $1 FOR UPDATE"
+          },
+          {
+            "calls": 132,
+            "ms": 1,
+            "rows": 132,
+            "sql": "SELECT * FROM s8_wf_events WHERE run_id = $1 AND seq = $2"
+          },
+          {
+            "calls": 132,
+            "ms": 7,
+            "rows": 132,
+            "sql": "INSERT INTO s8_wf_events (run_id, seq, epoch, key, type, payload, at, chunks) VALUES ($1, $2, $3, $4, $5, $6, (floor(extract($8 from clock_timestamp()) * $9))::"
+          },
+          {
+            "calls": 130,
+            "ms": 1,
+            "rows": 0,
+            "sql": "SELECT * FROM s8_wf_events WHERE run_id = $1 AND key = $2"
+          },
+          {
+            "calls": 129,
+            "ms": 4,
+            "rows": 64,
+            "sql": "SELECT r.result, r.chunks FROM s8_wf_runs_work_results r JOIN s8_wf_runs_work w ON w.id = r.work WHERE w.root = $1 AND w.id = $2"
+          }
+        ]
+      },
+      "shippingLagMs": {
+        "n": 1282,
+        "p50": 961,
+        "p90": 3043,
+        "p99": 4142,
+        "max": 4279
+      },
+      "batches": {
+        "count": 79,
+        "events": {
+          "n": 79,
+          "p50": 20,
+          "p90": 20,
+          "p99": 20,
+          "max": 20
+        }
+      },
+      "replayed": {
+        "steps": 0,
+        "children": 0,
+        "perChild": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        },
+        "unshippedAtKillPerAttempt": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        }
+      }
+    }
+  ]
+}

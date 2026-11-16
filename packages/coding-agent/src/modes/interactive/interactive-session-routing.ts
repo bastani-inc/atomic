@@ -117,6 +117,7 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 	initialSelectedId?: string,
 ): Promise<void> {
 	await this.ensureDeferredStartupComplete();
+	await this.sessionManager.loadFullHistory?.();
 	const tree = this.sessionManager.getTree();
 	const realLeafId = this.sessionManager.getLeafId();
 	const initialFilterMode = this.settingsManager.getTreeFilterMode();
@@ -306,7 +307,9 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 					) {
 						await this.session.setSessionName(next);
 					} else {
-						const mgr = await this.sessionManager.openSessionById(selected.id, undefined, directory);
+						const mgr = await this.sessionManager.openSessionById(selected.id, undefined, directory, {
+							history: "tail",
+						});
 						try {
 							await mgr.appendSessionInfo(next);
 						} finally {
@@ -339,6 +342,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 			withSession: options?.withSession,
 			sessionDirectory,
 			projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
+			history: "tail",
 		});
 		if (result.cancelled) {
 			return result;
@@ -367,6 +371,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 						sessionDirectory,
 						withSession: options?.withSession,
 						projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
+						history: "tail",
 					});
 					if (!result.cancelled) finishMissingCwdResume(this, `Resumed session in ${error.issue.fallbackCwd}`);
 					return result;
@@ -420,6 +425,7 @@ InteractiveModeBase.prototype.switchToForkedSession = async function (
 	const result = await this.runtimeHost.switchSession(forkId, {
 		withSession: options?.withSession,
 		projectTrustContextFactory: (forkCwd) => this.createProjectTrustContext(forkCwd),
+		history: "tail",
 	});
 	if (result.cancelled) {
 		await this.sessionManager.deleteSession(forkId);
