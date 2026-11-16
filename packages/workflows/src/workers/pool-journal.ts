@@ -2,7 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createChildProcessEnvironment } from "@bastani/atomic";
-import { type AdapterOptions, type StorageSelection, storageSelectionKey } from "@bastani/atomic/storage";
+import {
+	type AdapterOptions,
+	type StorageSelection,
+	storageHomeDir,
+	storageSelectionKey,
+	workflowsStorageDir,
+} from "@bastani/atomic/storage";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import "../durable/journal/workflows-host-module.js";
 import { openSelectedRunJournal, resolveRunJournal, runJournalOrigin } from "../durable/journal/resolution.js";
@@ -118,9 +124,8 @@ export function openDurableJournal(durable: PoolDurableJournal): Promise<RunJour
 	return openSelectedRunJournal(decodeSelection(durable.selection), durable.agentDir);
 }
 
-/** The directory of machine-local pool state, beside the default journal: `<agent dir's parent>/workflows/pool`. */
 export function poolStateDirectory(agentDir: string): string {
-	return join(dirname(agentDir), "workflows", "pool");
+	return join(workflowsStorageDir(agentDir), "pool");
 }
 
 /**
@@ -223,15 +228,34 @@ function readId(file: string): string | undefined {
 	}
 }
 
+function readClaimPath(file: string): string | undefined {
+	try {
+		const raw = readFileSync(file, "utf8");
+		const line = raw.endsWith("\r\n") ? raw.slice(0, -2) : raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+		return line.length > 0 ? line : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function samePath(left: string, right: string): boolean {
+	const resolvedLeft = resolve(left);
+	const resolvedRight = resolve(right);
+	return process.platform === "win32"
+		? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
+		: resolvedLeft === resolvedRight;
+}
+
 /**
  * The id an earlier build kept for every agent directory under one parent, in the pool state directory they share, for
  * the one agent directory that claims it (#5219): the first to start records itself beside it, and only the directory
  * recorded there adopts it, again after a crash before it kept the id. The file stays for an older build.
  */
 function adoptedHostId(agentDir: string): string | undefined {
-	const legacy = join(poolStateDirectory(agentDir), "host-id");
+	const legacy = join(dirname(agentDir), "workflows", "pool", "host-id");
 	const id = readId(legacy);
 	if (id === undefined) return undefined;
+	if (!samePath(storageHomeDir(agentDir), dirname(agentDir))) return undefined;
 	const claim = `${legacy}.adopted-by`;
 	const self = resolve(agentDir);
 	// Written whole beside the claim and linked into place, so the claim is never seen, or left by a crash, empty: a
@@ -244,7 +268,8 @@ function adoptedHostId(agentDir: string): string | undefined {
 	} finally {
 		rmSync(staged, { force: true });
 	}
-	return readId(claim) === self ? id : undefined;
+	const owner = readClaimPath(claim);
+	return owner !== undefined && samePath(owner, self) ? id : undefined;
 }
 
 /**

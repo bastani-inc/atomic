@@ -49,13 +49,13 @@ const SANDBOX_REMOVAL_RETRY_DELAY_MS = 100;
 /** A temporary root with its own Atomic home, so shared stores and auto worktrees never touch the real one. */
 export function workspaceSandbox(prefix: string): WorkspaceSandboxDirs {
 	const root = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
-	const home = join(root, "atomic-home");
-	mkdirSync(join(home, "agent"), { recursive: true });
+	const agentDir = join(root, "atomic-home", "agent");
+	mkdirSync(agentDir, { recursive: true });
 	const previous = process.env.ATOMIC_CODING_AGENT_DIR;
-	process.env.ATOMIC_CODING_AGENT_DIR = join(home, "agent");
+	process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 	return {
 		root,
-		home,
+		home: agentDir,
 		cleanup() {
 			if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 			else process.env.ATOMIC_CODING_AGENT_DIR = previous;

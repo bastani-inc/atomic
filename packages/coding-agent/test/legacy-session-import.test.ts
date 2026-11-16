@@ -269,7 +269,7 @@ describe("legacy JSONL sessions in the default store", () => {
 		cwd = join(root, "project");
 		mkdirSync(cwd, { recursive: true });
 		legacyDirectory = getDefaultSessionDirPath(cwd, agentDir);
-		defaultDatabase = join(root, "workflows", "journal.sqlite");
+		defaultDatabase = join(agentDir, "workflows", "journal.sqlite");
 		vi.stubEnv(ENV_AGENT_DIR, agentDir);
 		vi.stubEnv(ENV_SESSION_DIR, "");
 	});

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Jiti, JitiResolveOptions } from "jiti";
 import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
@@ -14,6 +14,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { storageHomeDir } from "./file-identity.js";
 import { legacyDefaultJournalPath } from "./journal-adoption.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { validateStoragePrefix } from "./prefix.js";
@@ -30,7 +31,19 @@ export type SecretRef = { readonly env: string } | { readonly file: string } | I
 
 /** Where a `secrets` `{ file }` reference points: an absolute path, or a path relative to Atomic home. */
 export function secretFilePath(file: string, agentDir: string): string {
-	return isAbsolute(file) ? file : join(dirname(agentDir), file);
+	if (isAbsolute(file)) return file;
+	const primary = join(storageHomeDir(agentDir), file);
+	if (existsSync(primary)) return primary;
+	const resolvedAgentDir = resolve(agentDir);
+	const legacy = join(dirname(resolvedAgentDir), file);
+	const sameDir =
+		process.platform === "win32"
+			? resolve(dirname(legacy)).toLowerCase() === resolvedAgentDir.toLowerCase()
+			: resolve(dirname(legacy)) === resolvedAgentDir;
+	if (existsSync(legacy) || (sameDir && basename(legacy).startsWith("storage-token."))) {
+		return legacy;
+	}
+	return primary;
 }
 export type AdapterOptions = Readonly<Record<string, SqliteValue | boolean>>;
 export type RunJournalOption =

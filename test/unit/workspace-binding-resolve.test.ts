@@ -597,7 +597,7 @@ describe("workspace git runner (#3109)", () => {
 			assert.match(String(result.fields.installCommand), /git/i);
 			assert.ok(result.hint.includes(String(result.fields.installCommand)));
 			assert.equal(commands.length, 1, "one --version probe, nothing else");
-			assert.deepEqual(readdirSync(dirs.home), ["agent"], "no store or worktree directories were created");
+			assert.deepEqual(readdirSync(dirs.home), [], "no store or worktree directories were created");
 		} finally {
 			restore();
 		}

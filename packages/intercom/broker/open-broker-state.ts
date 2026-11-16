@@ -1,7 +1,8 @@
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import {
 	adapterOpenContext,
+	defaultSharedStoragePath,
 	dialectOf,
 	loadStorageAdapter,
 	openNodeSqliteDatabase,
@@ -11,6 +12,7 @@ import {
 	type StorageSettingsSelection,
 	StorageUnavailableError,
 	selectStorage,
+	storageHomeDir,
 	validateStoragePrefix,
 } from "@bastani/atomic/storage";
 import { type DatabaseWakeUpBusOptions, openDatabaseWakeUpBus } from "./database-wake-up-bus.js";
@@ -55,7 +57,7 @@ function resolveSettingsPath(path: string, agentDir: string): string {
 	if (path.startsWith("~/") || (process.platform === "win32" && path.startsWith("~\\"))) {
 		return join(homedir(), path.slice(2));
 	}
-	return isAbsolute(path) ? path : resolve(dirname(agentDir), path);
+	return isAbsolute(path) ? path : resolve(storageHomeDir(agentDir), path);
 }
 
 /**
@@ -67,7 +69,7 @@ export async function resolveBrokerStateSource(
 	agentDir: string,
 ): Promise<BrokerStateSource> {
 	if (value === undefined) return { status: "off", reason: "no-storage" };
-	const selection = selectStorage(value, "settings", "storage", join(dirname(agentDir), "storage.sqlite"));
+	const selection = selectStorage(value, "settings", "storage", defaultSharedStoragePath(agentDir));
 	if (selection.kind === "memory") return { status: "off", reason: "memory" };
 	if (selection.kind === "sqlite") {
 		if (selection.path === "" || selection.path === ":memory:") return { status: "off", reason: "memory" };

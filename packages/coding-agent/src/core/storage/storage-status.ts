@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ENV_SESSION_DIR, isBunBinary } from "../../config.js";
 import { resolvePath } from "../../utils/paths.ts";
@@ -16,6 +16,12 @@ import {
 	type JournalShardUnavailableErrorCode,
 	StorageAdapterLoadError,
 } from "./errors.js";
+import {
+	defaultSessionDatabasePath,
+	defaultSharedStoragePath,
+	storageHomeDir,
+	takeStorageAdoptionNotice,
+} from "./file-identity.js";
 import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { JOURNAL_CATALOG_FILE } from "./journal-catalog.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
@@ -473,7 +479,6 @@ export const TEAM_PROFILE_SOURCE = `${TEAM_PROFILE_ENV}=ci`;
 export function selectJournal(agentDir: string, settings: Settings): StorageSelection {
 	const processChoice = selectProcessStorage("journal", agentDir);
 	if (processChoice !== undefined) return processChoice.selection;
-	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
 	const journal = journalSetting(settings);
 	const value = journal ?? settings.storage;
 	if (value === undefined || selectsDefaultJournalStore(journal))
@@ -482,10 +487,10 @@ export function selectJournal(agentDir: string, settings: Settings): StorageSele
 		value,
 		"settings",
 		journal !== undefined ? "workflows.journal" : "storage",
-		journal !== undefined ? defaultPath : join(dirname(agentDir), "storage.sqlite"),
+		journal !== undefined ? defaultSessionDatabasePath(agentDir) : defaultSharedStoragePath(agentDir),
 	);
 	return selection.kind === "sqlite" && !isAbsolute(selection.path)
-		? { ...selection, path: join(dirname(agentDir), selection.path) }
+		? { ...selection, path: join(storageHomeDir(agentDir), selection.path) }
 		: selection;
 }
 
@@ -513,15 +518,16 @@ export function selectIntercomStorage(
 	const processSelection = processSharedStorageSelection();
 	const value = sharedSelection(globalStorage, processSelection);
 	if (value === undefined) return undefined;
+	const storageHome = storageHomeDir(agentDir);
 	const selection = selectStorage(
 		value,
 		processSelection === undefined ? "settings" : "env",
 		"storage",
-		join(dirname(agentDir), "storage.sqlite"),
+		defaultSharedStoragePath(agentDir),
 	);
 	if (selection.kind === "memory" || (selection.kind === "sqlite" && selection.path === ":memory:")) return undefined;
 	return selection.kind === "sqlite" && !isAbsolute(selection.path)
-		? { ...selection, path: resolvePath(selection.path, dirname(agentDir)) }
+		? { ...selection, path: resolvePath(selection.path, storageHome) }
 		: selection;
 }
 
@@ -558,6 +564,8 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 	const project = manager.getProjectSettings();
 	const merged = manager.getSettings();
 	const notes: string[] = [];
+	const adoptionNotice = takeStorageAdoptionNotice(agentDir);
+	if (adoptionNotice !== undefined) notes.push(adoptionNotice);
 	const unappliedProject = projectTrusted
 		? {}
 		: SettingsManager.create(cwd, agentDir, { projectTrusted: true }).getProjectSettings();

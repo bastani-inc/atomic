@@ -1,7 +1,9 @@
-import { dirname, isAbsolute, join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { getAgentDir, selectProcessStorage } from "@bastani/atomic";
 import {
 	defaultJournalStoreDirectory,
+	defaultSessionDatabasePath,
+	defaultSharedStoragePath,
 	type RunJournalOption,
 	StorageConfigError,
 	StorageProvider,
@@ -9,6 +11,7 @@ import {
 	type StorageSettingsSelection,
 	selectStorage,
 	selectsDefaultJournalStore,
+	storageHomeDir,
 } from "@bastani/atomic/storage";
 import { MemoryRunJournal } from "./memory-run-journal.js";
 import { SqlRunJournal } from "./sql-run-journal.js";
@@ -61,8 +64,6 @@ export interface RunJournalResolutionOptions {
 
 export function selectRunJournal(options: RunJournalResolutionOptions = {}): StorageSelection | RunJournal {
 	const agentDir = options.agentDir ?? getAgentDir();
-	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
-	const defaultStore: StorageSelection = { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir) };
 	if (options.journal !== undefined) {
 		if (options.journal !== null && typeof options.journal === "object" && "createRun" in options.journal) {
 			const journal = options.journal;
@@ -89,7 +90,7 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 			}
 			return journal;
 		}
-		return selectStorage(options.journal, "sdk", "journal", defaultPath);
+		return selectStorage(options.journal, "sdk", "journal", defaultSessionDatabasePath(agentDir));
 	}
 	const processChoice = selectProcessStorage("journal", agentDir);
 	if (processChoice !== undefined) {
@@ -99,16 +100,18 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 	const workflows = options.settings?.workflows;
 	const journal = Array.isArray(workflows) ? undefined : workflows?.journal;
 	const value = journal !== undefined ? journal : options.settings?.storage;
-	if (value === undefined || selectsDefaultJournalStore(journal)) return defaultStore;
+	if (value === undefined || selectsDefaultJournalStore(journal)) {
+		return { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir) };
+	}
 	const selection = selectStorage(
 		value,
 		"settings",
 		journal !== undefined ? "workflows.journal" : "storage",
-		journal !== undefined ? defaultPath : join(dirname(agentDir), "storage.sqlite"),
+		journal !== undefined ? defaultSessionDatabasePath(agentDir) : defaultSharedStoragePath(agentDir),
 	);
 	const resolved =
 		selection.kind === "sqlite" && !isAbsolute(selection.path)
-			? { ...selection, path: join(dirname(agentDir), selection.path) }
+			? { ...selection, path: join(storageHomeDir(agentDir), selection.path) }
 			: selection;
 	origins.set(resolved, { source: "settings" });
 	return resolved;

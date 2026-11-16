@@ -5,6 +5,7 @@ import { hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getAgentDir } from "../../config.js";
 import { renameReplacingAsync } from "../rename-retry.ts";
+import { storageHomeDir } from "../storage/file-identity.js";
 import type { WorkspaceBinding } from "../worktree-snapshot/types.ts";
 import {
 	attachCleanupCause,
@@ -87,7 +88,7 @@ const pendingWorktrees = new Map<string, Promise<void>>();
 
 /** Atomic's home directory (`~/.atomic`), the parent of the agent directory. */
 export function atomicHome(): string {
-	return dirname(getAgentDir());
+	return storageHomeDir(getAgentDir());
 }
 
 function safeSegment(segment: string): string {

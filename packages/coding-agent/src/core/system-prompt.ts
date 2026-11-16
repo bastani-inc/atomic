@@ -2,11 +2,12 @@
  * System prompt construction and project context loading
  */
 
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { getSystemMessageText } from "@bastani/atomic-ai";
 import { getAgentDir, getDocsPath, getExamplesPath, getReadmePath } from "../config.js";
 import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
+import { workflowsStorageDir } from "./storage/file-identity.js";
 
 const DEFAULT_PROMPT_TOOLS = ["read", "bash", "edit", "write", "find", "search", "ask_user_question", "todo"] as const;
 
@@ -112,7 +113,7 @@ function renderProjectContext(contextFiles: Array<{ path: string; content: strin
 export function buildSessionMemoryGuideline(tools: readonly string[], cwd: string): string | undefined {
 	if (!tools.includes("read")) return undefined;
 	const agentDir = getAgentDir();
-	const workflowsDir = join(dirname(agentDir), "workflows");
+	const workflowsDir = workflowsStorageDir(agentDir);
 	return [
 		"**Session memory**: Atomic records past sessions and workflow runs, so earlier work is available as memory even in a fresh session. Recall it through `history://` rather than searching storage files on disk: the default store is SQLite, which `rg` cannot read.",
 		"  - Look when the user refers to earlier or recent work or asks what was being worked on, when a task resembles one done before, when prior work would help the current task, and before choosing between a workflow and inline work, how to verify a change, or how long it will take: comparable earlier sessions and runs, and the preferences the user stated in them, guide those choices. Missing or sparse history is not by itself a reason to work inline.",

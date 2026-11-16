@@ -202,7 +202,7 @@ describe("team join and leave serialize on the settings lock (#4320)", () => {
 			const saved = JSON.parse(settingsText());
 			assert.equal(saved.theme, "dark");
 			assert.deepEqual(saved.sessions, { storage: LOCAL_SESSIONS_STORAGE });
-			assert.equal(join(dirname(agentDir), saved.storage.secrets.authToken.file), second.tokenPath);
+			assert.equal(join(agentDir, saved.storage.secrets.authToken.file), second.tokenPath);
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
 	);
@@ -339,7 +339,7 @@ describe("team leave and a trusted project's remote storage (#4320)", () => {
 			const saved = JSON.parse(settingsText());
 			assert.equal(saved.storage, undefined);
 			assert.deepEqual(saved.sessions, { storage: LOCAL_SESSIONS_STORAGE });
-			assert.deepEqual(effectiveSessions(), { kind: "sqlite", path: join(root, "workflows", "journal.sqlite") });
+			assert.deepEqual(effectiveSessions(), { kind: "sqlite", path: join(agentDir, "workflows", "journal.sqlite") });
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
 	);

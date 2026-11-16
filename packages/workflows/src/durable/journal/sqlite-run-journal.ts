@@ -1,15 +1,18 @@
-import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { getAgentDir, openNodeSqliteDatabase, validateStoragePrefix, wrapNodeSqliteDatabase } from "@bastani/atomic";
+import {
+	defaultSessionDatabasePath,
+	getAgentDir,
+	openNodeSqliteDatabase,
+	validateStoragePrefix,
+	wrapNodeSqliteDatabase,
+} from "@bastani/atomic";
 import { SqlRunJournal } from "./sql-run-journal.js";
 
 export { JOURNAL_READ_PAGE_SIZE, SqlRunJournal } from "./sql-run-journal.js";
 
 export function workflowJournalPath(): string {
 	const override = process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
-	return override !== undefined && override.length > 0
-		? override
-		: join(dirname(getAgentDir()), "workflows", "journal.sqlite");
+	return override !== undefined && override.length > 0 ? override : defaultSessionDatabasePath(getAgentDir());
 }
 
 export async function openSqlRunJournal(

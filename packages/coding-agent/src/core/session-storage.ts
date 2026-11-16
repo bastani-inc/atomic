@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { Value } from "typebox/value";
 import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
@@ -6,6 +6,7 @@ import { SettingsManager } from "./settings-manager.ts";
 import { SessionStorageSelectionSchema } from "./settings-schema.ts";
 import type { Settings } from "./settings-types.ts";
 import { StorageConfigError } from "./storage/errors.js";
+import { defaultSessionDatabasePath, defaultSharedStoragePath, storageHomeDir } from "./storage/file-identity.js";
 import { selectProcessStorage } from "./storage/process-selection.js";
 import { StorageProvider, type StorageSelection } from "./storage/provider.js";
 import { selectStorage } from "./storage/selection.js";
@@ -128,7 +129,6 @@ export function selectSessionStorage(
 		sources.set(processChoice.selection, { source: processChoice.source, field: processChoice.field });
 		return processChoice.selection;
 	}
-	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
 	const settings = options.settings ?? SettingsManager.create(cwd, agentDir).getSettings();
 	if (
 		settings.sessions !== undefined &&
@@ -137,7 +137,7 @@ export function selectSessionStorage(
 		throw new StorageConfigError("settings", "sessions", "selection-object-required");
 	}
 	const value = settings.sessions?.storage !== undefined ? settings.sessions.storage : settings.storage;
-	if (value === undefined) return { kind: "sqlite", path: defaultPath };
+	if (value === undefined) return { kind: "sqlite", path: defaultSessionDatabasePath(agentDir) };
 	const field = settings.sessions?.storage !== undefined ? "sessions.storage" : "storage";
 	const selection = selectSessionSetting(value, field, agentDir);
 	sources.set(selection, { source: "settings", field });
@@ -158,16 +158,15 @@ export function selectSessionSetting(
 		throw new StorageConfigError("settings", field, "invalid-selection");
 	}
 	if ("dir" in value)
-		return { kind: "jsonl", dir: resolveStoragePath(value.dir, dirname(agentDir), "settings", field) };
-	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
+		return { kind: "jsonl", dir: resolveStoragePath(value.dir, storageHomeDir(agentDir), "settings", field) };
 	const selection = selectStorage(
 		value,
 		"settings",
 		field,
-		field === "storage" ? join(dirname(agentDir), "storage.sqlite") : defaultPath,
+		field === "storage" ? defaultSharedStoragePath(agentDir) : defaultSessionDatabasePath(agentDir),
 	);
 	if (selection.kind === "sqlite" && !isAbsolute(selection.path)) {
-		return { ...selection, path: resolveStoragePath(selection.path, dirname(agentDir), "settings", field) };
+		return { ...selection, path: resolveStoragePath(selection.path, storageHomeDir(agentDir), "settings", field) };
 	}
 	return selection;
 }
@@ -185,7 +184,7 @@ function isDefaultDatabase(
 		!selection.prefix &&
 		selection.path !== "" &&
 		selection.path !== ":memory:" &&
-		resolve(selection.path) === resolve(join(dirname(agentDir), "workflows", "journal.sqlite"))
+		resolve(selection.path) === resolve(defaultSessionDatabasePath(agentDir))
 	);
 }
 

@@ -14,5 +14,5 @@ export function journalStoreEnvironment(directory: string): NodeJS.ProcessEnv {
 
 /** The journal store a process launched with `journalStoreEnvironment(directory)` uses. */
 export function journalStoreDirectory(directory: string): string {
-	return join(directory, "workflows", "journal");
+	return join(directory, "agent", "workflows", "journal");
 }

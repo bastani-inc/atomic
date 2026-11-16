@@ -555,6 +555,26 @@ test("secret files lose exactly one trailing line ending (#3856)", async () => {
 			lone: " token\r",
 			none: " token ",
 		});
+		const isolatedAgent = join(home, "isolated-agent");
+		for (const [name, text] of Object.entries(contents)) {
+			await writeFileEnsuringDir(join(isolatedAgent, name), `isolated:${text}`);
+		}
+		const isolatedOptions = await resolveAdapterOptions(
+			{
+				kind: "adapter",
+				module: "unused",
+				secrets: Object.fromEntries(Object.keys(contents).map((name) => [name, { file: name }])),
+			},
+			{ agentDir: isolatedAgent, domain: "sessions" },
+		);
+		assert.deepEqual(isolatedOptions, {
+			lf: "isolated: token",
+			crlf: "isolated: token",
+			double: "isolated: token\n",
+			doubleCrlf: "isolated: token\r\n",
+			lone: "isolated: token\r",
+			none: "isolated: token ",
+		});
 	} finally {
 		removeTempDirectory(home);
 	}

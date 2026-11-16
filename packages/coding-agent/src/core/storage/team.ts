@@ -15,7 +15,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../../config.js";
 import { parseJsonFileContent } from "../../utils/json.ts";
 import type { IntercomBrokerControl, RestartOutcome } from "../intercom-broker-control.js";
@@ -34,10 +34,12 @@ import {
 	TeamProfileError,
 	TeamProfileTimeoutError,
 } from "./errors.js";
+import { defaultSessionDatabasePath, storageHomeDir } from "./file-identity.js";
 import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { processSharedStorageSelection } from "./process-selection.js";
 import {
 	loadStorageAdapter,
+	secretFilePath as resolveProviderSecretFilePath,
 	type SecretRef,
 	type StorageAdapterModule,
 	type StorageSelection,
@@ -331,7 +333,7 @@ async function checkConnectionWithin(target: JoinTarget, agentDir: string, timeo
 /** The token file a `{ file }` reference names, resolved like the storage provider resolves it. */
 function secretFilePath(ref: SecretRef | undefined, agentDir: string): string | undefined {
 	if (ref === undefined || !("file" in ref)) return undefined;
-	return resolve(isAbsolute(ref.file) ? ref.file : join(dirname(agentDir), ref.file));
+	return resolve(resolveProviderSecretFilePath(ref.file, agentDir));
 }
 
 /** Whether a path is a token file that a join created in this agent directory. */
@@ -510,7 +512,7 @@ export async function joinSharedDatabase(
 			}
 		}
 		const file =
-			tokenPath === undefined ? plan.reference : relative(dirname(agentDir), tokenPath).split(sep).join("/");
+			tokenPath === undefined ? plan.reference : relative(storageHomeDir(agentDir), tokenPath).split(sep).join("/");
 		const storage: StorageSettingsSelection = {
 			adapter: target.adapter,
 			options: target.options,
@@ -873,7 +875,7 @@ function isLocalDefault(selection: StorageSelection, agentDir: string): boolean 
 	return (
 		selection.kind === "sqlite" &&
 		!selection.prefix &&
-		resolve(selection.path) === resolve(join(dirname(agentDir), "workflows", "journal.sqlite"))
+		resolve(selection.path) === resolve(defaultSessionDatabasePath(agentDir))
 	);
 }
 

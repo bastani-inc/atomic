@@ -14,7 +14,7 @@ import {
 	JournalShardUnavailableError,
 	StorageSchemaVersionError,
 } from "./errors.js";
-import { isSameFile } from "./file-identity.js";
+import { isSameFile, workflowsStorageDir } from "./file-identity.js";
 import {
 	isFinishedJournalStatus,
 	JournalCatalog,
@@ -32,9 +32,8 @@ import {
 	writeJournalPayloadChunks,
 } from "./run-journal.js";
 
-/** The journal store's directory under an agent directory: `<agent dir's parent>/workflows/journal`. */
 export function defaultJournalStoreDirectory(agentDir: string): string {
-	return join(dirname(agentDir), "workflows", "journal");
+	return join(workflowsStorageDir(agentDir), "journal");
 }
 
 /**

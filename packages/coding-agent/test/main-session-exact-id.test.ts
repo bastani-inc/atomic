@@ -60,7 +60,7 @@ describe("resolving --session and --fork against a large legacy session director
 		mkdirSync(cwd, { recursive: true });
 		mkdirSync(otherCwd, { recursive: true });
 		legacyDirectory = getDefaultSessionDirPath(cwd, agentDir);
-		defaultDatabase = join(root, "workflows", "journal.sqlite");
+		defaultDatabase = join(agentDir, "workflows", "journal.sqlite");
 		vi.stubEnv(ENV_AGENT_DIR, agentDir);
 		vi.stubEnv(ENV_SESSION_DIR, "");
 		prompt.answer = "n";
