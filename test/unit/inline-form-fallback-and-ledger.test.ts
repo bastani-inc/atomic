@@ -15,6 +15,10 @@ import {
 import { createRpcExtensionUIContext } from "../../packages/coding-agent/src/modes/rpc/rpc-extension-ui.ts";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.ts";
 import { registerWorkflowSlashCommand } from "../../packages/workflows/src/extension/workflow-command-registration.ts";
+import {
+	parseWorkflowArgs,
+	tokenizeWorkflowArgs,
+} from "../../packages/workflows/src/extension/workflow-command-utils.ts";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.ts";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.ts";
 import { deriveInputFields } from "../../packages/workflows/src/shared/schema-introspection.ts";
@@ -174,7 +178,7 @@ test("registered /workflow falls back to the custom picker and settles when the 
 	}
 });
 
-test("submitted inline card ledger quotes any value containing whitespace or '=' and escapes quotes (#5245)", () => {
+test("submitted inline card commands preserve structured values and escaped strings through the argument parser (#5245)", () => {
 	const graphTheme = deriveGraphTheme({});
 	const fields = deriveInputFields({
 		cfg: Type.Object({ a: Type.String() }),
@@ -202,8 +206,43 @@ test("submitted inline card ledger quotes any value containing whitespace or '='
 		version: 0,
 	};
 	const line = stripVTControlCharacters(renderInlineCard({ width: 300, theme: graphTheme, state })[0]!);
-	assert.equal(
-		line,
-		'✓ submitted  ·  /workflow demo cfg="{\\"a\\":\\"x y\\"}" body="say \\"hi\\" there" tags="[\\"a b\\",\\"c\\"]" eq="k=v" quoteOnly="a\\"b" plainStr=simple',
-	);
+	const args = line.slice(line.indexOf("/workflow demo ") + "/workflow demo ".length);
+	assert.deepEqual(parseWorkflowArgs(tokenizeWorkflowArgs(args)), {
+		cfg: { a: "x y" },
+		body: 'say "hi" there',
+		tags: ["a b", "c"],
+		eq: "k=v",
+		quoteOnly: 'a"b',
+		plainStr: "simple",
+	});
 });
+
+for (const value of [
+	"1.0",
+	"true",
+	"null",
+	"[1]",
+	"1e9999",
+	"don't split",
+	'a" b',
+	"ends\\",
+	'a\\" b',
+	"a\nb",
+	"a\u0085b",
+]) {
+	test(`submitted inline card commands preserve the string ${JSON.stringify(value)} through the parser (#5245)`, () => {
+		const state: InlineFormState = {
+			formId: "string-ledger",
+			workflowName: "demo",
+			fields: deriveInputFields({ value: Type.String(), after: Type.String() }),
+			rawText: { value, after: "tail" },
+			focusedIdx: 2,
+			caret: 0,
+			status: "submitted",
+			version: 0,
+		};
+		const line = stripVTControlCharacters(renderInlineCard({ width: 300, theme: deriveGraphTheme({}), state })[0]!);
+		const args = line.slice(line.indexOf("/workflow demo ") + "/workflow demo ".length);
+		assert.deepEqual(parseWorkflowArgs(tokenizeWorkflowArgs(args)), { value, after: "tail" });
+	});
+}

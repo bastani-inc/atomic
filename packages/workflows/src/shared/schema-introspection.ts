@@ -113,8 +113,17 @@ export function deriveInputField(name: string, schema: TSchema): WorkflowInputEn
 	if (typeof m.format === "string") entry.format = m.format;
 	if (hasRefine(schema)) {
 		entry.validationDeferred = true;
-	} else if (entry.type === "unknown" || entry.type === "object" || entry.type === "array") {
-		entry.schema = JSON.parse(JSON.stringify(schema)) as WorkflowInputEntry["schema"];
+	}
+	if (entry.type === "unknown" || entry.type === "object" || entry.type === "array") {
+		try {
+			entry.schema = JSON.parse(
+				JSON.stringify(schema, function (this: object, key, value: unknown) {
+					return key === "~refine" && IsRefine(this) ? undefined : value;
+				}),
+			) as WorkflowInputEntry["schema"];
+		} catch {
+			entry.validationDeferred = true;
+		}
 	}
 	return entry;
 }

@@ -609,10 +609,10 @@ test("/workflows waits for a refreshed frame after navigation before a store cha
 		fixture.update([beta]);
 		fixture.component.handleInput?.("\r");
 		assert.equal(fixture.closeCalls, 0, "the refresh must not replace the row chosen by Down");
-		fixture.component.render(120);
+		assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ deploy/);
 		fixture.component.handleInput?.("\r");
 		assert.equal(fixture.closeCalls, 1);
-		assert.deepEqual(await fixture.result, { kind: "run", runId: "beta" });
+		assert.deepEqual(await fixture.result, { kind: "definition", name: "deploy" });
 	} finally {
 		fixture.component.dispose?.();
 	}

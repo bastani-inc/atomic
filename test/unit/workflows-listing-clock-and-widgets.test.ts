@@ -143,111 +143,119 @@ test("the clock tick does not request a frame when only an off-page run changes 
 	component.dispose?.();
 });
 
-test("/workflows keeps its hint visible in the fullscreen dock when extra above- and below-editor widgets are mounted (#5245)", async () => {
-	const runs: RunSnapshot[] = Array.from({ length: 12 }, (_, index) =>
-		run({
-			id: `run-${String(index + 1).padStart(2, "0")}-0000`,
-			name: "ralph",
-			status: "running",
-			inputs: { objective: `task ${index + 1}` },
-			startedAt: T0 - index * 60_000,
-		}),
-	);
-	const definitions: WorkflowsListingDefinition[] = Array.from({ length: 8 }, (_, index) => ({
-		normalizedName: `workflow-${index + 1}`,
-		description: `Run workflow ${index + 1}`,
-		inputs: {},
-	}));
-	const panelRows: AgentPanelRow[] = runs.map((entry) => ({
-		id: `workflow:${entry.id}`,
-		kind: "workflow",
-		state: "running",
-		name: entry.name,
-		task: "stage plan",
-		elapsedMs: 1_000,
-		progress: { done: 0, total: 3 },
-	}));
-	const host = createProductionFullscreenContext({ rows: 24, columns: 80, transcriptLines: 60 });
-	const { context, tui, terminal } = host;
-	Object.assign(context, {
-		navigationInlineCustomUiDepth: 0,
-		blockingInlineCustomUiDepth: 0,
-		deferredInlineCustomUiFocusDepth: 0,
-		pendingInlineCustomUiFocus: undefined,
-		hostCustomUiStateListeners: new Set(),
-		widgetReleaseListeners: new Map(),
-		extensionOverlays: new Set(),
-		nextBlockingOverlayId: 0,
-		tuiInputSubscriptions: new Set(),
-		programStatus: { report() {}, setBlocked() {} },
-		activeSelectorDispose: undefined,
-	});
-	const editor = context.editor as unknown as { getText(): string; setText(text: string): void };
-	editor.getText = () => "";
-	editor.setText = () => {};
-	const footerData = new FooterDataProvider(tmpdir());
-	footerData.setExtensionStatus("mcp", STATUS);
-	context.footerContainer.clear();
-	context.footerContainer.addChild(new FooterComponent(fakeFooterAgentSession(), footerData));
-	context.setExtensionWidget(
-		"atomic.agent-panel",
-		() => ({
-			invalidate() {},
-			render: (width: number) => renderAgentPanelRows(panelRows, width, themedAgentPanelStyle(), {}),
-		}),
-		{ placement: "belowEditor" },
-	);
-	context.setExtensionWidget(
-		"extra.above",
-		() => ({
-			invalidate() {},
-			render: () => ["above-widget"],
-		}),
-		{ placement: "aboveEditor" },
-	);
-	context.setExtensionWidget(
-		"extra.below",
-		() => ({
-			invalidate() {},
-			render: () => ["below-widget"],
-		}),
-		{ placement: "belowEditor" },
-	);
-	let sheet: PiCustomComponent | undefined;
-	const custom: PiCustomOverlayFunction = (factory, options) =>
-		context.showExtensionCustom<unknown>(
-			(tuiArg, theme, keys, done) => {
-				sheet = factory(tuiArg as unknown as PiCustomOverlayFactoryTui, theme, keys, done) as PiCustomComponent;
-				return sheet as Component;
-			},
-			options as Parameters<typeof context.showExtensionCustom>[1],
+for (const [columns, rows, widgetRows] of [
+	[80, 24, 1],
+	[80, 24, 8],
+	[100, 30, 8],
+] as const) {
+	test(`/workflows keeps its hint visible with ${widgetRows}-row widgets at ${columns}x${rows} and restores them on close (#5245)`, async () => {
+		const runs: RunSnapshot[] = Array.from({ length: 12 }, (_, index) =>
+			run({
+				id: `run-${String(index + 1).padStart(2, "0")}-0000`,
+				name: "ralph",
+				status: "running",
+				inputs: { objective: `task ${index + 1}` },
+				startedAt: T0 - index * 60_000,
+			}),
 		);
-	const pending = openWorkflowsListing({ custom }, { runs: () => runs, definitions: () => definitions });
-	await new Promise((resolve) => setImmediate(resolve));
-	try {
-		assert.ok(sheet);
-		for (let step = 0; step <= runs.length + definitions.length; step++) {
+		const definitions: WorkflowsListingDefinition[] = Array.from({ length: 8 }, (_, index) => ({
+			normalizedName: `workflow-${index + 1}`,
+			description: `Run workflow ${index + 1}`,
+			inputs: {},
+		}));
+		const panelRows: AgentPanelRow[] = runs.map((entry) => ({
+			id: `workflow:${entry.id}`,
+			kind: "workflow",
+			state: "running",
+			name: entry.name,
+			task: "stage plan",
+			elapsedMs: 1_000,
+			progress: { done: 0, total: 3 },
+		}));
+		const host = createProductionFullscreenContext({ rows, columns, transcriptLines: 60 });
+		const { context, tui, terminal } = host;
+		Object.assign(context, {
+			navigationInlineCustomUiDepth: 0,
+			blockingInlineCustomUiDepth: 0,
+			deferredInlineCustomUiFocusDepth: 0,
+			pendingInlineCustomUiFocus: undefined,
+			hostCustomUiStateListeners: new Set(),
+			widgetReleaseListeners: new Map(),
+			extensionOverlays: new Set(),
+			nextBlockingOverlayId: 0,
+			tuiInputSubscriptions: new Set(),
+			programStatus: { report() {}, setBlocked() {} },
+			activeSelectorDispose: undefined,
+		});
+		const editor = context.editor as unknown as { getText(): string; setText(text: string): void };
+		editor.getText = () => "";
+		editor.setText = () => {};
+		const footerData = new FooterDataProvider(tmpdir());
+		footerData.setExtensionStatus("mcp", STATUS);
+		context.footerContainer.clear();
+		context.footerContainer.addChild(new FooterComponent(fakeFooterAgentSession(), footerData));
+		context.setExtensionWidget(
+			"atomic.agent-panel",
+			() => ({
+				invalidate() {},
+				render: (width: number) => renderAgentPanelRows(panelRows, width, themedAgentPanelStyle(), {}),
+			}),
+			{ placement: "belowEditor" },
+		);
+		context.setExtensionWidget(
+			"extra.above",
+			() => ({
+				invalidate() {},
+				render: () => Array.from({ length: widgetRows }, (_, row) => `above-widget-${row}`),
+			}),
+			{ placement: "aboveEditor" },
+		);
+		context.setExtensionWidget(
+			"extra.below",
+			() => ({
+				invalidate() {},
+				render: () => ["below-widget"],
+			}),
+			{ placement: "belowEditor" },
+		);
+		let sheet: PiCustomComponent | undefined;
+		const custom: PiCustomOverlayFunction = (factory, options) =>
+			context.showExtensionCustom<unknown>(
+				(tuiArg, theme, keys, done) => {
+					sheet = factory(tuiArg as unknown as PiCustomOverlayFactoryTui, theme, keys, done) as PiCustomComponent;
+					return sheet as Component;
+				},
+				options as Parameters<typeof context.showExtensionCustom>[1],
+			);
+		const pending = openWorkflowsListing({ custom }, { runs: () => runs, definitions: () => definitions });
+		await new Promise((resolve) => setImmediate(resolve));
+		try {
+			assert.ok(sheet);
+			for (let step = 0; step <= runs.length + definitions.length; step++) {
+				tui.renderNow();
+				const text = cleanScreen(getLayoutFrame(tui).lines);
+				assert.match(text, /Workflows/, `title hidden at step ${step}\n${text}`);
+				assert.match(text, /Search…/, `search hidden at step ${step}\n${text}`);
+				assert.match(text, /❯/, `selection hidden at step ${step}\n${text}`);
+				assert.match(text, /enter open/, `hint hidden at step ${step}\n${text}`);
+				assert.doesNotMatch(text, /above-widget|below-widget/);
+				terminal.input(DOWN);
+			}
+			sheet.dispose?.();
+			sheet = undefined;
+			await pending;
 			tui.renderNow();
-			const text = cleanScreen(getLayoutFrame(tui).lines);
-			assert.match(text, /Workflows/, `title hidden at step ${step}\n${text}`);
-			assert.match(text, /Search…/, `search hidden at step ${step}\n${text}`);
-			assert.match(text, /❯/, `selection hidden at step ${step}\n${text}`);
-			assert.match(text, /enter open/, `hint hidden at step ${step}\n${text}`);
-			terminal.input(DOWN);
+			const afterClose = cleanScreen(getLayoutFrame(tui).lines);
+			assert.match(afterClose, /below-widget/);
+			assert.match(afterClose, /above-widget-0/);
+		} finally {
+			sheet?.dispose?.();
+			await pending;
+			host.resolveTheme();
+			await host.initPromise;
+			tui.stop();
+			host.restoreOffline();
+			footerData.dispose();
 		}
-		sheet.dispose?.();
-		sheet = undefined;
-		await pending;
-		tui.renderNow();
-		const afterClose = cleanScreen(getLayoutFrame(tui).lines);
-		assert.match(afterClose, /below-widget/);
-	} finally {
-		sheet?.dispose?.();
-		await pending;
-		host.resolveTheme();
-		await host.initPromise;
-		tui.stop();
-		host.restoreOffline();
-		footerData.dispose();
-	}
-});
+	});
+}

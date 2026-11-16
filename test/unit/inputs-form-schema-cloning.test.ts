@@ -16,6 +16,8 @@ import { resolveAndValidateInputs } from "../../packages/workflows/src/runs/fore
 import { deriveInputField, deriveInputFields } from "../../packages/workflows/src/shared/schema-introspection.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import { openHostInputsForm } from "../../packages/workflows/src/tui/host-input-form.ts";
+import { renderInlineCard } from "../../packages/workflows/src/tui/inline-form-card.ts";
+import { openInputsPicker } from "../../packages/workflows/src/tui/inputs-overlay.ts";
 import {
 	coerceValues,
 	createInputsPickerState,
@@ -80,7 +82,7 @@ test("unknown and any object and array defaults keep their JSON values (#5245)",
 	}
 });
 
-test("deriveInputField omits schema and ready mark for Type.Refine inputs (#5245)", async () => {
+test("refined inputs retain structural checks while deferring their runtime refinements (#5245)", async () => {
 	const refinedObj = Type.Refine(
 		Type.Object({ a: Type.Number() }),
 		(value) => value.a > 0,
@@ -93,12 +95,18 @@ test("deriveInputField omits schema and ready mark for Type.Refine inputs (#5245
 			() => "a must be positive",
 		),
 	});
-	for (const schema of [refinedObj, nestedRefined]) {
+	const refinedArray = Type.Refine(Type.Array(Type.Number()), (value) => value.length > 0);
+	for (const [schema, validText, invalidText, reason] of [
+		[refinedObj, '{"a":-1}', '{"a":"x"}', /must be number/],
+		[nestedRefined, '{"a":-1}', '{"a":"x"}', /must be number/],
+		[refinedArray, "[]", "x", /must be array/],
+	] as const) {
 		const fields = deriveInputFields({ f: schema });
-		assert.equal(fields[0]!.schema, undefined);
+		assert.match(invalidForField(fields[0]!, invalidText, 0)!, reason);
+		assert.equal(invalidForField(fields[0]!, validText, 0), null);
 		assert.equal(fields[0]!.validationDeferred, true);
-		assert.equal(invalidForField(fields[0]!, '{"a":-1}', 0), null);
-		const state = createInputsPickerState(fields, { f: { a: -1 } });
+		const state = createInputsPickerState(fields);
+		state.rawText.f = validText;
 		const rendered = renderInputsPicker({
 			width: 80,
 			theme: graphTheme,
@@ -111,6 +119,33 @@ test("deriveInputField omits schema and ready mark for Type.Refine inputs (#5245
 			.join("\n");
 		assert.doesNotMatch(rendered, / f ✓/);
 		assert.match(rendered, / f \?/);
+		for (const raw of [validText, invalidText]) {
+			state.rawText.f = raw;
+			const pickerText = stripVTControlCharacters(
+				renderInputsPicker({
+					width: 80,
+					theme: graphTheme,
+					workflowName: "demo",
+					fields,
+					state,
+					cursorOn: false,
+				}).join("\n"),
+			);
+			const inlineText = stripVTControlCharacters(
+				renderInlineCard({
+					width: 80,
+					theme: graphTheme,
+					state: { ...state, fields, formId: "refined", workflowName: "demo", status: "editing", version: 0 },
+				}).join("\n"),
+			);
+			for (const text of [pickerText, inlineText]) {
+				if (raw === validText) assert.match(text, / f \?/);
+				else {
+					assert.match(text, / f ✗/);
+					assert.match(text, reason);
+				}
+			}
+		}
 		const hostOut = await openHostInputsForm(
 			{ hostInputForm: async () => ({ f: '{"a":-1}' }) },
 			{ workflowName: "demo", fields },
@@ -119,48 +154,54 @@ test("deriveInputField omits schema and ready mark for Type.Refine inputs (#5245
 	}
 });
 
-test("non-finite parsed JSON numbers are rejected instead of accepted as Infinity (#5245)", () => {
-	const arrFields = deriveInputFields({ f: Type.Array(Type.Unknown()) });
-	assert.notEqual(invalidForField(arrFields[0]!, "[1e309]", 0), null);
-	const objFields = deriveInputFields({ f: Type.Object({ a: Type.Unknown() }) });
-	assert.notEqual(invalidForField(objFields[0]!, '{"a":1e309}', 0), null);
-	const unkFields = deriveInputFields({ f: Type.Unknown() });
-	for (const schema of [Type.Unknown(), Type.Any(), Type.Array(Type.Unknown())]) {
-		const field = deriveInputField("f", schema);
-		for (const value of ["1e999", "[1e999]", '{"a":1e999}']) {
-			assert.notEqual(invalidForField(field, value, 0), null);
+test("non-finite JSON uses the literal string only when that string matches the schema (#5245)", async () => {
+	for (const [schema, text, ready] of [
+		[Type.Union([Type.String(), Type.Number()]), "1e9999", true],
+		[Type.Union([Type.Number(), Type.Null()]), "1e9999", false],
+		[Type.Unknown(), "1e9999", true],
+		[Type.Any(), "[1e999]", true],
+		[Type.Array(Type.Unknown()), "[1e999]", false],
+		[Type.Object({ a: Type.Unknown() }), '{"a":1e999}', false],
+	] as const) {
+		const fields = deriveInputFields({ f: schema });
+		const state = createInputsPickerState(fields);
+		state.rawText.f = text;
+		const values = coerceValues(fields, state.rawText);
+		assert.deepEqual(values, { f: text });
+		assert.equal(invalidForField(fields[0]!, text, 0) === null, ready);
+		if (ready) assert.deepEqual(resolveAndValidateInputs({ f: schema }, values, "test"), values);
+		else assert.throws(() => resolveAndValidateInputs({ f: schema }, values, "test"));
+		const component = new HostInputFormComponent(
+			new TuiMainScreen(new QuietTerminal()),
+			theme,
+			new KeybindingsManager(),
+			{
+				title: "demo",
+				fields: [{ name: "f", type: "string", required: true, initialValue: text, schema: fields[0]!.schema }],
+			},
+			{ onSubmit: () => {}, onCancel: () => {} },
+		);
+		const rendered = [
+			component.render(100),
+			renderInputsPicker({ width: 100, theme: graphTheme, workflowName: "demo", fields, state, cursorOn: false }),
+			renderInlineCard({
+				width: 100,
+				theme: graphTheme,
+				state: { ...state, fields, formId: "finite", workflowName: "demo", status: "editing", version: 0 },
+			}),
+		];
+		for (const lines of rendered) {
+			const renderedText = stripVTControlCharacters(lines.join("\n"));
+			assert.match(renderedText, ready ? /✓/ : /✗/);
+			assert.doesNotMatch(renderedText, ready ? /✗/ : /✓/);
+		}
+		if (ready) {
+			assert.deepEqual(
+				await openHostInputsForm({ hostInputForm: async () => ({ f: text }) }, { workflowName: "demo", fields }),
+				{ kind: "run", values },
+			);
 		}
 	}
-	const coercedUnk = coerceValues(unkFields, { f: "[1e309]" });
-	assert.deepEqual(coercedUnk, { f: "[1e309]" });
-	assert.deepEqual(resolveAndValidateInputs({ f: Type.Unknown() }, coercedUnk, "test"), {
-		f: "[1e309]",
-	});
-
-	const component = new HostInputFormComponent(
-		new TuiMainScreen(new QuietTerminal()),
-		theme,
-		new KeybindingsManager(),
-		{
-			title: "demo",
-			fields: [
-				{
-					name: "f",
-					type: "string",
-					required: true,
-					initialValue: "[1e309]",
-					schema: arrFields[0]!.schema,
-				},
-			],
-		},
-		{ onSubmit: () => {}, onCancel: () => {} },
-	);
-	const hostText = component
-		.render(100)
-		.map((line) => stripVTControlCharacters(line))
-		.join("\n");
-	assert.doesNotMatch(hostText, /✓/);
-	assert.match(hostText, /✗/);
 });
 
 test("schema checking reports unexpected errors instead of claiming readiness (#5245)", () => {
@@ -233,8 +274,33 @@ test("model-facing inputs and get tool outputs omit field.schema while dispatch 
 	}
 });
 
-test("deriveInputField does not swallow a failed schema clone silently (#5245)", () => {
+test("an input whose schema cannot be copied defers validation instead of crashing (#5245)", () => {
 	const cyclic = Type.Object({ a: Type.Number() }) as TSchema & { self?: unknown };
 	cyclic.self = cyclic;
-	assert.throws(() => deriveInputField("bad", cyclic), TypeError);
+	const field = deriveInputField("cyclic", cyclic);
+	assert.equal(field.schema, undefined);
+	assert.equal(field.validationDeferred, true);
+});
+
+test("an optional object input with a BigInt default opens a cancellable form (#5245)", async () => {
+	const fields = deriveInputFields({
+		config: Type.Optional(Type.Object({ count: Type.BigInt({ default: 1n }) }, { default: { count: 1n } })),
+	});
+	assert.equal(fields[0]!.schema, undefined);
+	assert.equal(fields[0]!.validationDeferred, true);
+	assert.equal(initialInputText(fields[0]!, {}), "[object Object]");
+	let rendered = "";
+	const result = await openInputsPicker(
+		{
+			custom: async (factory) => {
+				const component = await factory({ requestRender() {} }, undefined, undefined, () => {});
+				rendered = stripVTControlCharacters(component.render(80).join("\n"));
+				component.handleInput?.("\x1b");
+				return undefined;
+			},
+		},
+		{ workflowName: "demo", fields, theme: graphTheme },
+	);
+	assert.match(rendered, /config \?/);
+	assert.deepEqual(result, { kind: "cancel" });
 });

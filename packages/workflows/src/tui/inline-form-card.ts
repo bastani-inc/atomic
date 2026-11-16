@@ -380,10 +380,17 @@ function composeCommand(state: InlineFormState): string {
 	const parts: string[] = [`/workflow ${sanitizeToolTitleText(state.workflowName)}`];
 	for (const [name, value] of Object.entries(coerceValues(state.fields, state.rawText))) {
 		const safeName = sanitizeToolTitleText(name);
-		const safeValue = sanitizeToolTitleText(typeof value === "string" ? value : JSON.stringify(value));
-		const needsQuotes =
-			safeValue === "" || /\s|=/.test(safeValue) || (typeof value === "string" && safeValue.includes('"'));
-		const formattedValue = needsQuotes ? `"${safeValue.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : safeValue;
+		let formattedValue = JSON.stringify(value).replace(
+			/[\x7f-\x9f\u2028\u2029]/g,
+			(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+		);
+		if (typeof value === "string" && value !== "" && !/[\s\x00-\x1f\x7f-\x9f"'=\\]/.test(value)) {
+			try {
+				JSON.parse(value);
+			} catch {
+				formattedValue = value;
+			}
+		}
 		parts.push(`${safeName}=${formattedValue}`);
 	}
 	return parts.join(" ");

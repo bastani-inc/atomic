@@ -105,8 +105,7 @@ function schemaValue(schema: TSchema, text: string): unknown {
 			}
 			return value;
 		});
-	} catch (error) {
-		if (error instanceof RangeError) throw error;
+	} catch {
 		return text;
 	}
 	if (checkSchema(schema, parsed, "value") === undefined) return parsed;
@@ -553,11 +552,7 @@ export class HostInputFormComponent implements Component, Focusable {
 		if (empty) return undefined;
 		if (field.schema !== undefined) {
 			const schema = field.schema as TSchema;
-			try {
-				return checkSchema(schema, schemaValue(schema, value), "value");
-			} catch {
-				return "must be JSON-serializable";
-			}
+			return checkSchema(schema, schemaValue(schema, value), "value");
 		}
 		if (field.type === "select") {
 			return (field.choices ?? []).includes(value) ? undefined : "not in choices";

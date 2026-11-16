@@ -25,7 +25,14 @@ export interface InputsPickerRenderOpts {
 export function initialInputText(field: WorkflowInputEntry, prefilled: WorkflowInputValues): string {
 	const value = prefilled[field.name] !== undefined ? prefilled[field.name] : field.default;
 	if (value === undefined) return "";
-	return typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
+	if (typeof value === "object" && value !== null) {
+		try {
+			return JSON.stringify(value);
+		} catch {
+			return String(value);
+		}
+	}
+	return String(value);
 }
 
 export function createInputsPickerState(
@@ -193,13 +200,6 @@ function fieldReason(field: WorkflowInputEntry, value: string): string | null {
 		return "required";
 	}
 	if (empty) return null;
-	if (field.schema !== undefined || ["unknown", "object", "array"].includes(field.type)) {
-		try {
-			parseFiniteJson(value);
-		} catch (error) {
-			if (error instanceof RangeError) return "must be JSON-serializable";
-		}
-	}
 	if (field.schema !== undefined) return checkSchema(field.schema as TSchema, structuredValue(field, value), "value");
 	if (field.type === "select") {
 		return (field.choices ?? []).includes(value) ? null : "not in choices";
