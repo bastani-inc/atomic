@@ -56,8 +56,8 @@ const YIELD_ATTEMPTS = 8;
 
 const POLL_INTERVAL_MS = 20;
 
-/** Well inside the 1 s grace in which a broker still writing its lock must change it. */
-const STILL_WRITING_MS = 300;
+/** Longer than the 1 s grace after which earlier versions took a lock that stayed empty. */
+const STILL_WRITING_MS = 1_500;
 
 /** Long enough for the lock's 20 ms poll to retry many times, while a live holder still holds it. */
 const LIVE_HOLDER_OBSERVATION_MS = 300;
@@ -566,14 +566,14 @@ describe("socket replacement lock (#3505)", () => {
 
 	test("a lock still unreadable only briefly is waited on, not taken over (#5132)", async () => {
 		const path = lockPath();
-		// A broker of an earlier version creates its lock and then writes it: empty for a moment, then naming it.
+		// A broker of an earlier version creates its lock and then writes it, holding it open: empty for a moment.
 		const writer = spawnProcess(
 			[
 				process.execPath,
 				"-e",
-				`const { writeFileSync } = require("node:fs");
-				writeFileSync(${JSON.stringify(path)}, "");
-				setTimeout(() => writeFileSync(${JSON.stringify(path)}, process.pid + "\\n"), ${STILL_WRITING_MS});
+				`const { openSync, writeSync, closeSync } = require("node:fs");
+				const fd = openSync(${JSON.stringify(path)}, "wx");
+				setTimeout(() => { writeSync(fd, process.pid + "\\n"); closeSync(fd); }, ${STILL_WRITING_MS});
 				setInterval(() => {}, 1000);`,
 			],
 			{ stdout: "ignore" },
@@ -594,6 +594,9 @@ describe("socket replacement lock (#3505)", () => {
 		// The lock is polled again meanwhile; a slower machine polls it less often, which the assertions allow.
 		await sleep(LIVE_HOLDER_OBSERVATION_MS);
 		assert.equal(waits, 1, "the wait is announced once");
+		assert.equal(readTextSync(path, "utf8"), "", "the lock still being written is left in place");
+		// The writer finishes it, still running: it is its holder's.
+		while (readTextSync(path, "utf8") === "") await sleep(POLL_INTERVAL_MS);
 		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), writer.pid, "the writer's lock is left in place");
 
 		writer.kill();

@@ -157,8 +157,9 @@ function assertOnlyReleasedMarker(agentDir: string): void {
 	const left = readdirSync(intercomDir);
 	assert.equal(left.length, 1, `only the released marker is left: ${left.join(",")}`);
 	const [marker] = left as [string];
-	assert.match(marker, /^broker\.sock\.replace\.lock\.g\d+$/);
-	assert.equal(readFileSync(join(intercomDir, marker), "utf8"), "released\n");
+	assert.match(marker, /^broker\.sock\.replace\.lock\.gen\d+$/);
+	assert.deepEqual(readdirSync(join(intercomDir, marker)), ["owner"], "the marker holds only its record");
+	assert.equal(readFileSync(join(intercomDir, marker, "owner"), "utf8"), "released\n");
 }
 
 /** Spawn and idle-out cycles after which the released markers must still not have grown. */

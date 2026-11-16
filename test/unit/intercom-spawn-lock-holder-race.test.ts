@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { utimesSync } from "node:fs";
+import { closeSync, openSync, utimesSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, test, vi } from "vitest";
 import { makeTempDirectory, readTextSync, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
@@ -23,8 +23,6 @@ const race = vi.hoisted(() => ({
 	beforePutBack: undefined as (() => void) | undefined,
 	/** The error a hard link to the lock's path fails with, as on a file system without hard links. */
 	linkError: undefined as string | undefined,
-	/** Runs as the lock is read, before the read: a writer finishing it meanwhile. */
-	onRead: undefined as (() => void) | undefined,
 }));
 
 function once(take: () => (() => void) | undefined, clear: () => void): void {
@@ -71,19 +69,7 @@ vi.mock("fs", async (importOriginal) => {
 		}
 		actual.linkSync(existing, path);
 	}) as typeof actual.linkSync;
-	const readFileSync = ((path, options) => {
-		if (race.onRead !== undefined && race.lockPath !== undefined && String(path) === race.lockPath) {
-			race.onRead();
-		}
-		return actual.readFileSync(path, options);
-	}) as typeof actual.readFileSync;
-	return {
-		...actual,
-		default: { ...actual, renameSync, linkSync, readFileSync },
-		renameSync,
-		linkSync,
-		readFileSync,
-	};
+	return { ...actual, default: { ...actual, renameSync, linkSync }, renameSync, linkSync };
 });
 
 const { acquireSpawnLock, BROKER_SPAWN_LOCK_MAX_AGE_MS, renewSpawnLock } = await import(
@@ -98,13 +84,16 @@ afterEach(() => {
 	race.beforeRenameAway = undefined;
 	race.beforePutBack = undefined;
 	race.linkError = undefined;
-	race.onRead = undefined;
 });
 
 let lockCount = 0;
 
-/** When a spawner still writing its lock finishes: well within the 1 s grace, and later than a takeover takes. */
-const WRITER_FINISHES_AFTER_MS = 300;
+/** Longer than the 1 s grace after which earlier versions took a lock that stayed part-written. */
+const WRITER_STALL_MS = 1_500;
+
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 /**
  * A spawn lock this process holds but has not renewed for longer than the backstop, as a holder paused that long
@@ -191,28 +180,22 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 		});
 	}
 
-	test("a lock still being written is not replaced, however old a coarse file system makes it look (#5220)", () => {
+	test("a lock still being written is not replaced, however long its writer stalls and however old FAT makes it look (#5220)", () => {
 		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
-		race.lockPath = path;
-		// A live spawner on FAT created the lock and has written only part of it. FAT keeps times to two seconds, so the
-		// lock can look two seconds old as it is created.
-		const partial = `${process.pid}\n17`;
-		writeTextSync(path, partial);
-		const coarse = new Date(Math.floor((Date.now() - 2_000) / 2_000) * 2_000);
-		utimesSync(path, coarse, coarse);
-		const complete = `${process.pid}\n${Date.now()}\n`;
-		// The spawner finishes writing it a moment later, as a running writer does: the review saw a part-written lock
-		// taken 177 ms after it was created.
-		const finishedAt = Date.now() + WRITER_FINISHES_AFTER_MS;
-		let finished = false;
-		race.onRead = () => {
-			if (finished || Date.now() < finishedAt) return;
-			finished = true;
-			writeTextSync(path, complete);
-		};
+		// A live spawner on FAT created the lock and has written only part of it, and stalls there for longer than any
+		// grace. FAT keeps times to two seconds, so the lock can look two seconds old as it is created.
+		const writer = openSync(path, "wx");
+		try {
+			writeSync(writer, `${process.pid}\n17`);
+			const coarse = new Date(Math.floor((Date.now() - 2_000) / 2_000) * 2_000);
+			utimesSync(path, coarse, coarse);
+			sleepSync(WRITER_STALL_MS);
 
-		assert.equal(acquireSpawnLock(path), undefined, "another spawner waits");
-		assert.equal(readTextSync(path, "utf8"), complete, "the lock being written is left to its writer");
+			assert.equal(acquireSpawnLock(path), undefined, "another spawner waits");
+			assert.equal(readTextSync(path, "utf8"), `${process.pid}\n17`, "the lock being written is left to its writer");
+		} finally {
+			closeSync(writer);
+		}
 	});
 
 	test("a lock left part-written by a spawner killed while writing it is replaced once it stays unchanged (#5220)", () => {

@@ -39,7 +39,7 @@ const SCENARIO_TIMEOUT_MS = 120_000;
 
 /**
  * Delays `renameSync` around a move of the lock (`VP_LOCK_PARK` before, `VP_LOCK_CMP` after) or of a takeover token
- * of an earlier protocol (`VP_TOK_PARK`, `VP_TOK_CMP`), and `linkSync` creating a lock generation (`VP_GEN_LINK`).
+ * of an earlier protocol (`VP_TOK_PARK`, `VP_TOK_CMP`), and moving a lock generation into place (`VP_GEN_LINK`).
  */
 const PRELOAD = `
 const fs = require("node:fs");
@@ -51,24 +51,22 @@ const wait = (name) => {
 const lock = process.env.VP_LOCK;
 const rename = fs.renameSync;
 fs.renameSync = (from, to) => {
+	if (/\\.gen\\d+$/.test(String(to)) && String(to).startsWith(lock)) wait("VP_GEN_LINK");
 	const kind = String(from).startsWith(lock + ".takeover-") ? "TOK" : String(from) === lock ? "LOCK" : undefined;
 	if (kind !== undefined) wait("VP_" + kind + "_PARK");
 	rename(from, to);
 	if (kind !== undefined) wait("VP_" + kind + "_CMP");
 };
-const link = fs.linkSync;
-fs.linkSync = (existing, path) => {
-	if (/\\.g\\d+$/.test(String(path)) && String(path).startsWith(lock)) wait("VP_GEN_LINK");
-	link(existing, path);
-};
 syncBuiltinESMExports();
 `;
 
+/** The lock module of the current version, and of the version released before #5220. */
+const CURRENT = "../../packages/intercom/broker/socket-replacement-lock.ts";
+const PREVIOUS = "../fixtures/intercom-socket-lock-main/socket-replacement-lock.ts";
+
 /** A broker: takes the lock, holds it for `HOLD_MS` while checking it is still its own, and releases it. */
-function brokerScript(lockPath: string, events: string): string {
-	const lockModule = pathToFileURL(
-		join(moduleDir(import.meta.url), "../../packages/intercom/broker/socket-replacement-lock.ts"),
-	).href;
+function brokerScript(lockPath: string, events: string, version: string): string {
+	const lockModule = pathToFileURL(join(moduleDir(import.meta.url), version)).href;
 	const jiti = pathToFileURL(createRequire(import.meta.url).resolve("jiti")).href;
 	return `
 import { appendFileSync, readFileSync } from "node:fs";
@@ -98,6 +96,8 @@ interface BrokerPlan {
 	readonly startAfterMs: number;
 	readonly holdMs: number;
 	readonly delays?: Readonly<Record<string, number>>;
+	/** The version of the broker: the current one unless given. */
+	readonly version?: string;
 }
 
 interface Event {
@@ -107,18 +107,22 @@ interface Event {
 }
 
 /** Runs the brokers of `plans` on a lock a crashed broker left, with a crashed taker's token beside it. */
-async function runBrokers(scenario: string, plans: readonly BrokerPlan[]): Promise<Event[]> {
+async function runBrokers(
+	scenario: string,
+	plans: readonly BrokerPlan[],
+	{ crashedTaker = true }: { readonly crashedTaker?: boolean } = {},
+): Promise<Event[]> {
 	const lockPath = join(tempDir, `${scenario}.sock.lock`);
 	const events = join(tempDir, `${scenario}.events`);
 	const preload = join(tempDir, `${scenario}.preload.cjs`);
 	writeTextSync(preload, PRELOAD);
 	writeTextSync(lockPath, `${DEAD_HOLDER}\n\n`);
-	writeTextSync(`${lockPath}.takeover-${DEAD_HOLDER}`, `${DEAD_TAKER}\n\n`);
+	if (crashedTaker) writeTextSync(`${lockPath}.takeover-${DEAD_HOLDER}`, `${DEAD_TAKER}\n\n`);
 	writeTextSync(events, "");
-	const script = brokerScript(lockPath, events);
 	const running: SpawnedProcess[] = [];
 	for (const plan of plans) {
 		await new Promise((resolve) => setTimeout(resolve, plan.startAfterMs));
+		const script = brokerScript(lockPath, events, plan.version ?? CURRENT);
 		const broker = spawnProcess([process.execPath, "--require", preload, "--input-type=module", "-e", script], {
 			env: {
 				...process.env,
@@ -172,6 +176,35 @@ describe("brokers taking over the socket lock of a crashed broker (#5220)", () =
 				{ name: "B1", startAfterMs: 200, holdMs: 3_000, delays: { VP_LOCK_PARK: 4_000, VP_LOCK_CMP: 2_000 } },
 				{ name: "B2", startAfterMs: 1_400, holdMs: 8_000 },
 			]);
+			const { overlaps, lost } = violations(events);
+			assert.deepEqual(overlaps, [], describeEvents(events));
+			assert.deepEqual(lost, [], describeEvents(events));
+			assert.equal(events.filter(({ event }) => event === "held").length, 3, describeEvents(events));
+		},
+		SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"a broker of the previous version paused while replacing a crashed broker's lock never shares the lock with a current one (#5220)",
+		async () => {
+			// O1, of the version released before #5220, takes its takeover token for the crashed lock, re-reads it and
+			// pauses before moving it aside, and again after moving it; N, current, arrives during the first pause, and
+			// O2, of the previous version, during the second.
+			const events = await runBrokers(
+				"mixed-versions",
+				[
+					{
+						name: "O1",
+						startAfterMs: 0,
+						holdMs: 1_000,
+						version: PREVIOUS,
+						delays: { VP_LOCK_PARK: 2_000, VP_LOCK_CMP: 1_500 },
+					},
+					{ name: "N", startAfterMs: 300, holdMs: 3_000 },
+					{ name: "O2", startAfterMs: 1_900, holdMs: 1_000, version: PREVIOUS },
+				],
+				{ crashedTaker: false },
+			);
 			const { overlaps, lost } = violations(events);
 			assert.deepEqual(overlaps, [], describeEvents(events));
 			assert.deepEqual(lost, [], describeEvents(events));
