@@ -299,9 +299,7 @@ for (const isolated of [false, true]) {
 				assert.doesNotMatch(stripVTControlCharacters(frame.join("\n")), /MAIN-CHAT/);
 				return stripVTControlCharacters(frame.join("\n"));
 			};
-			await host.input(" "); // Space peeks at the task in a card under its row (#5224)
-			assert.equal(host.tui.hasOverlay(), false, "a peek stays inline");
-			await host.input(" "); // Space again opens its fullscreen detail page
+			await host.input(" "); // Space peeks at the task: fullscreen detail (#5224)
 			assert.equal(host.tui.hasOverlay(), true);
 			assert.match(await assertFrame(), /Inspect transcript/);
 			const scrollTop = host.scroll.scrollTop;
@@ -372,7 +370,6 @@ for (const isolated of [false, true]) {
 			assert.equal(host.scroll.scrollTop, scrollTop);
 			// Restore the first detail action after the arrow-key checks.
 			await host.input("\x1b");
-			await host.input(" ");
 			await host.input(" ");
 			await host.input("\x05");
 			assert.match(await assertFrame(), /^Transcript/);
@@ -546,7 +543,6 @@ for (const [isolated, completeOlderFirst] of [
 			adapter.close();
 			await flush();
 			assert.equal(host.statuses.get(key), undefined);
-			await host.input(" ");
 			assert.match(stripVTControlCharacters((await host.input(" ")).join("\n")), /Inspect transcript/);
 			await host.input("\x1b");
 			assert.match(host.frame(), /^ Tasks\b/m);
@@ -602,7 +598,6 @@ for (const isolated of [false, true]) {
 			await host.paint();
 			assert.match(host.frame(), /^ Tasks\b/m);
 			assert.equal(source.getHostCustomUiState().blockingInlineCustomUiNeedsInput, true);
-			await host.input(" ");
 			assert.match(stripVTControlCharacters((await host.input(" ")).join("\n")), /Inspect transcript/);
 			await host.input("\x1b");
 			assert.match(host.frame(), /^ Tasks\b/m);
@@ -831,7 +826,6 @@ for (const isolated of [false, true]) {
 						await flush();
 					}
 					if (transcript) {
-						await host.input(" ");
 						await host.input(" ");
 						await host.input("\x05");
 					}

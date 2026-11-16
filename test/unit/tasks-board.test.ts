@@ -6,8 +6,8 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import type { AgentPanelItem } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
-	TaskInspector,
 	type TaskBoardSource,
+	TaskInspector,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
@@ -34,7 +34,12 @@ async function flush(): Promise<void> {
 /** A workflow-run source like the one the workflows extension registers, recording what /tasks asks of it. */
 function runSource(items: AgentPanelItem[]) {
 	const listeners = new Set<() => void>();
-	const calls = { opened: [] as string[], stopped: [] as string[], answered: [] as [string, string][], dismissed: [] as string[] };
+	const calls = {
+		opened: [] as string[],
+		stopped: [] as string[],
+		answered: [] as [string, string][],
+		dismissed: [] as string[],
+	};
 	const source: TaskBoardSource = {
 		items: () => items,
 		subscribe: (listener) => {
@@ -52,7 +57,13 @@ function runSource(items: AgentPanelItem[]) {
 		},
 		dismiss: (id) => calls.dismissed.push(id),
 	};
-	return { source, calls, emit: () => listeners.forEach((listener) => listener()) };
+	return {
+		source,
+		calls,
+		emit: () => {
+			for (const listener of listeners) listener();
+		},
+	};
 }
 
 const waitingRun: AgentPanelItem = {
@@ -115,7 +126,10 @@ test("/tasks groups subagents, shells and workflow runs as Needs input, Working 
 		assert.match(lines[0] ?? "", /^▔+$/, "the sheet's top edge");
 		assert.equal(lines[1], " Tasks  1 needs input · 1 working · 1 done");
 		const groups = ["   Needs input", "   Working", "   Done"].map((title) => lines.indexOf(title));
-		assert.ok(groups.every((index) => index > 0), text);
+		assert.ok(
+			groups.every((index) => index > 0),
+			text,
+		);
 		assert.deepEqual(
 			[...groups].sort((a, b) => a - b),
 			groups,
@@ -124,7 +138,10 @@ test("/tasks groups subagents, shells and workflow runs as Needs input, Working 
 		assert.match(text, /◆ ralph +Approve this plan\? +waiting 3m 0s/);
 		assert.match(text, /∀ worker +Spawn lock fix/, "a working row shows Atomic's ∀");
 		assert.match(text, /✗ review-pr +stage verify · gate failed: 2 jobs +failed · 4m 0s/);
-		assert.match(lines.at(-1) ?? "", /^ {2}↑↓ select · space peek · enter\/→ open · x stop · \/ filter · esc\/← back · \? keys$/);
+		assert.match(
+			lines.at(-1) ?? "",
+			/^ {2}↑↓ select · space peek · enter\/→ open · x stop · \/ filter · esc\/← back · \? keys$/,
+		);
 	} finally {
 		await h.dispose();
 	}
@@ -174,7 +191,13 @@ test("Esc closes a peek without leaving /tasks, and typed reply text is answered
 });
 
 test("Enter on a workflow row opens it through its source and closes /tasks; x x stops it; x dismisses a finished one (#5224)", async () => {
-	const running: AgentPanelItem = { id: "run:build", kind: "workflow", state: "running", name: "build", task: "stage compile" };
+	const running: AgentPanelItem = {
+		id: "run:build",
+		kind: "workflow",
+		state: "running",
+		name: "build",
+		task: "stage compile",
+	};
 	const h = await harness([running, failedRun]);
 	try {
 		h.inspector.handleInput("x");
@@ -231,7 +254,10 @@ test("a source's change repaints /tasks, and its rows render at 80 and 160 colum
 		h.runs.emit();
 		for (const width of [80, 160]) {
 			const lines = h.text(width).split("\n");
-			assert.ok(lines.every((line) => line.length <= width), `no line is wider than ${width}`);
+			assert.ok(
+				lines.every((line) => line.length <= width),
+				`no line is wider than ${width}`,
+			);
 			assert.match(lines.join("\n"), /review-pr/);
 		}
 	} finally {

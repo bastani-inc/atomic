@@ -71,7 +71,6 @@ export function rowName(row: TaskBoardRow): string {
 export function rowTask(row: TaskBoardRow): string {
 	if (row.kind === "item")
 		return taskDisplayText(row.item.state === "input" && row.item.question ? row.item.question : row.item.task);
-	if (row.task.attention.kind === "input-needed") return taskDisplayText(row.task.attention.prompt);
 	return taskDisplayText(row.task.title || taskLabel(row.task));
 }
 
@@ -146,6 +145,7 @@ export function rowMeta(row: TaskBoardRow): string {
 	if (state === "failed") return ["failed", time].filter(Boolean).join(" · ");
 	if (state === "queued") return "queued";
 	if (state === "stopping") return "stopping";
+	if (state === "done") return ["done", time].filter(Boolean).join(" · ");
 	return [time, tokens === undefined ? "" : `↓ ${compactTokens(tokens)}`].filter(Boolean).join(" · ");
 }
 
@@ -156,16 +156,18 @@ export function renderBoardRow(row: TaskBoardRow, selected: boolean, width: numb
 	const state = rowState(row);
 	const { glyph, color } = stateGlyph(state);
 	const marker = selected ? theme.fg("accent", "❯ ") : "  ";
-	const name = truncateToWidth(rowName(row), NAME_COLUMN - 1);
-	const namePadded = name + " ".repeat(Math.max(1, NAME_COLUMN - visibleWidth(name)));
+	// Narrow terminals give the task more room: a shorter name column, and no right-hand column under 40.
+	const nameColumn = Math.min(NAME_COLUMN, Math.max(6, Math.floor((width - 6) / 3)));
+	const name = truncateToWidth(rowName(row), nameColumn - 1);
+	const namePadded = name + " ".repeat(Math.max(1, nameColumn - visibleWidth(name)));
 	let task = rowTask(row);
 	if (row.kind === "item" && row.item.progress && state !== "input")
 		task = `${task} · ${row.item.progress.done}/${row.item.progress.total}`;
 	const reason = row.kind === "item" && state === "failed" && row.item.reason ? ` · ${row.item.reason}` : "";
-	const meta = rowMeta(row);
-	const fixed = 2 + 2 + NAME_COLUMN + 2 + visibleWidth(meta);
+	const meta = width < 40 ? "" : rowMeta(row);
+	const fixed = 2 + 2 + nameColumn + (meta ? 2 + visibleWidth(meta) : 0);
 	const taskText = truncateToWidth(task + reason, Math.max(1, width - fixed));
-	const gap = Math.max(1, width - 2 - 2 - NAME_COLUMN - visibleWidth(taskText) - visibleWidth(meta));
+	const gap = Math.max(1, width - 2 - 2 - nameColumn - visibleWidth(taskText) - visibleWidth(meta));
 	const finished = stateGroup(state) === "done";
 	const nameText = selected ? theme.bold(namePadded) : finished ? theme.fg("muted", namePadded) : namePadded;
 	const taskStyled = finished && !selected ? theme.fg("dim", taskText) : theme.fg("muted", taskText);

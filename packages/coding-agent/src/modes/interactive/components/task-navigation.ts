@@ -54,7 +54,13 @@ export class TaskNavigation {
 	 * The tasks, and every row's id in the order the list shows them. Rows that are not tasks (another source's items)
 	 * can be selected, but the task actions ignore them; their owner handles their keys.
 	 */
-	update(tasks: readonly TaskRecord[], order: readonly string[] = tasks.map((task) => task.ref.taskId)): void {
+	update(
+		tasks: readonly TaskRecord[],
+		order: readonly string[] = [
+			...tasks.filter((task) => task.kind === "agent"),
+			...tasks.filter((task) => task.kind === "command"),
+		].map((task) => task.ref.taskId),
+	): void {
 		this.tasks = [...tasks];
 		this.order = [...order];
 		if (!this.order.includes(this.selectedTaskId ?? "")) this.selectedTaskId = this.order[0] as TaskId | undefined;

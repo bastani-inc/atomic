@@ -57,10 +57,8 @@ async function enter(inspector: TaskInspector) {
 	await flush();
 }
 
-/** Space peeks at the selected task in a card, and Space again opens its detail page (#5224). */
+/** Space: from the list, the selected task's detail page (#5224). */
 async function peek(inspector: TaskInspector) {
-	inspector.handleInput(" ");
-	await flush();
 	inspector.handleInput(" ");
 	await flush();
 }
@@ -69,7 +67,9 @@ test("task picker and detail show exact navigation hints and action rows (#4521)
 	const h = await host();
 	try {
 		await h.fixture.start("Footer task");
-		assert.ok(h.lines().includes("  ↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← back · ? keys"));
+		assert.ok(
+			h.lines().includes("  ↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← back · ? keys"),
+		);
 		assert.doesNotMatch(h.lines().join("\n"), /› Inspect transcript/);
 		await peek(h.inspector);
 		assert.match(h.lines().join("\n"), /› Inspect transcript/);

@@ -64,8 +64,7 @@ test("workflow /tasks owns the full viewport and input until returning to stage 
 		await flush();
 		assert.match(stripAnsi(stage.render(80).join("\n")), /^ Tasks\b/m);
 		assert.doesNotMatch(stripAnsi(stage.render(80).join("\n")), /PARENT_CHROME/);
-		stage.handleInput(" "); // Space peeks at the task, and Space again opens its detail page (#5224)
-		stage.handleInput(" ");
+		stage.handleInput(" "); // Space peeks at the task's detail page (#5224)
 		await flush();
 		stage.handleInput("\r");
 		await flush();
@@ -172,7 +171,6 @@ test.runIf(process.platform !== "win32")(
 				assert.match(list, new RegExp(`SHELL_${stageId}`));
 				assert.doesNotMatch(list, new RegExp(`(?:AGENT|SHELL)_${other.stageId}`));
 				stage.handleInput("\x1b[B"); // select the shell
-				stage.handleInput(" ");
 				stage.handleInput(" ");
 				await flush();
 				stage.handleInput("\r");

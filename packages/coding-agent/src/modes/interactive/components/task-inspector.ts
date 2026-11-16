@@ -603,14 +603,8 @@ export class TaskInspector implements Component {
 				this.closePeek();
 				return true;
 			}
-			// Space on an open peek opens the task's full detail page, with its actions; an item's peek closes.
 			if (keys.matches(data, "app.list.peek") && !replying) {
 				this.closePeek();
-				if (row.kind !== "task") return true;
-				this.navigation.focus = { kind: "detail" };
-				this.actionIndex = 0;
-				this.scroll = 0;
-				void this.loadDetail();
 				return true;
 			}
 			if (replying) {
@@ -642,12 +636,11 @@ export class TaskInspector implements Component {
 			this.filterInput.setValue(this.filter);
 			return true;
 		}
-		if (keys.matches(data, "app.list.peek")) {
-			if (row !== undefined) {
-				this.peekId = row.id;
-				this.reply.setValue("");
-				if (row.kind === "task") void this.loadPeek(row.task);
-			}
+		// Space peeks in a card under the row at a workflow run, or at a row waiting for an answer, which the card
+		// takes. A task's peek otherwise is its detail page, which the task navigation opens.
+		if (keys.matches(data, "app.list.peek") && row !== undefined && this.peeksInCard(row)) {
+			this.peekId = row.id;
+			this.reply.setValue("");
 			return true;
 		}
 		if (row?.kind !== "item") return false;
@@ -673,17 +666,21 @@ export class TaskInspector implements Component {
 		}
 		return false;
 	}
+	private peeksInCard(row: TaskBoardRow): boolean {
+		return row.kind === "item" || rowState(row) === "input";
+	}
 	/** A peek card takes a reply when its row waits on an answer this view can send. */
 	private peekReplies(row: TaskBoardRow): boolean {
-		return row.kind === "item" && row.item.state === "input" && this.boardSource?.answer !== undefined;
+		return rowState(row) === "input" && this.boardSource?.answer !== undefined;
 	}
 	private peekChoices(row: TaskBoardRow): readonly string[] {
 		return row.kind === "item" ? (row.item.choices ?? []) : [];
 	}
 	private async sendReply(row: TaskBoardRow): Promise<void> {
 		const text = this.reply.getValue().trim();
-		if (!text || row.kind !== "item" || !this.boardSource?.answer) return;
-		const result = await this.boardSource.answer(row.id, text);
+		if (!text || !this.boardSource?.answer) return;
+		const id = row.kind === "item" ? row.id : `task:${row.task.ref.taskId}`;
+		const result = await this.boardSource.answer(id, text);
 		if (result.ok) {
 			this.closePeek();
 			this.status = `Sent to ${rowName(row)}`;
@@ -698,19 +695,6 @@ export class TaskInspector implements Component {
 		}
 		const result = await this.boardSource.stop(row.id);
 		this.failureNotice = result.ok ? "" : `Could not stop ${rowName(row)}: ${result.reason}`;
-		this.requestRender();
-	}
-	/** A task's peek: its prompt and result, as its detail page reads them. */
-	private peekText = new Map<string, readonly string[]>();
-	private async loadPeek(task: TaskRecord): Promise<void> {
-		const read = this.store.taskDetailText(task.ref.taskId);
-		const own = read instanceof Promise ? await read : read;
-		const lines = (own.output ?? own.prompt ?? "")
-			.split("\n")
-			.map((line) => line.trimEnd())
-			.filter(Boolean)
-			.slice(-6);
-		this.peekText.set(task.ref.taskId, lines);
 		this.requestRender();
 	}
 	private peekContent(row: TaskBoardRow): PeekContent {
@@ -732,9 +716,7 @@ export class TaskInspector implements Component {
 				? [`${task.currentAction.tool} ${task.currentAction.text}`]
 				: [];
 		const metrics = taskMetricsText(task);
-		return {
-			lines: [...action, ...(this.peekText.get(task.ref.taskId) ?? []), ...(metrics ? [metrics] : [])],
-		};
+		return { lines: [...action, ...(metrics ? [metrics] : [])] };
 	}
 	private async interruptTranscript(transcript: TaskTranscriptPage): Promise<void> {
 		const result = await transcript.interrupt();
@@ -931,9 +913,22 @@ export class TaskInspector implements Component {
 				const isSelected = row.id === selected?.id;
 				if (isSelected) selectedLine = body.length;
 				body.push(renderBoardRow(row, isSelected, width - 1).replace(/^/, " "));
+				// The selected agent's model and what it is doing now, on a dim line under its row.
+				if (isSelected && this.peekId !== row.id && row.kind === "task" && row.task.kind === "agent") {
+					const live = row.task.execution.kind !== "settled" && row.task.currentAction;
+					const detail = [
+						taskModelText(row.task),
+						live ? `${taskDisplayText(live.tool)} ${taskDisplayText(live.text)}` : "",
+					]
+						.filter(Boolean)
+						.join(" · ");
+					if (detail) body.push(theme.fg("dim", `      ${detail}`));
+				}
 				if (isSelected && this.peekId === row.id) {
 					const replyLines = this.peekReplies(row)
-						? [`${theme.fg("accent", "❯")} ${(this.reply.render(Math.max(1, width - 8))[0] ?? "").replace(/^> /, "")}`]
+						? [
+								`${theme.fg("accent", "❯")} ${(this.reply.render(Math.max(1, width - 8))[0] ?? "").replace(/^> /, "")}`,
+							]
 						: [];
 					body.push(
 						...renderPeekCard(rowName(row), this.peekContent(row), replyLines, Math.max(10, width - 3)).map(
@@ -971,7 +966,7 @@ export class TaskInspector implements Component {
 							key.action === "app.list.stop"
 								? { ...key, label: selected && rowFinished(selected) ? "dismiss" : "stop" }
 								: key.action === "app.list.peek" && peekOpen
-									? { ...key, label: selected?.kind === "task" ? "details" : "close peek" }
+									? { ...key, label: "close peek" }
 									: key.keys?.startsWith("esc") === true && peekOpen
 										? { keys: "esc", label: "close peek" }
 										: key,

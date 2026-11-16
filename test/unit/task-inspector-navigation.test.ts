@@ -94,11 +94,7 @@ test("Enter on a /tasks row opens its chat, Space opens its detail, and ← unwi
 		assert.match(h.text(), /^ Tasks\b/m, "← from a chat opened from the list returns to the list");
 		h.inspector.handleInput(SPACE);
 		await flush();
-		assert.match(h.text(), /╭─ worker /, "Space peeks at the task in a card under its row");
-		assert.match(h.text(), /^ Tasks\b/m, "the peek keeps the list");
-		h.inspector.handleInput(SPACE);
-		await flush();
-		assert.match(h.text(), /› Inspect transcript/, "Space again opens the task's detail page");
+		assert.match(h.text(), /› Inspect transcript/, "Space peeks at the task's detail page");
 		h.inspector.handleInput(ENTER);
 		await flush();
 		assert.match(h.text(), /← task · pgup\/pgdn scroll/, "a chat opened from the detail page names it");
@@ -139,9 +135,6 @@ test("every /tasks hint names exactly its live keys, ← included (#5224)", asyn
 		await withTranscript(h, "Hinted");
 		const last = () => h.text().split("\n").at(-1);
 		assert.equal(last(), "  ↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← back · ? keys");
-		h.inspector.handleInput(SPACE);
-		await flush();
-		assert.equal(last(), "  ↑↓ select · space details · enter/→ open · x stop · / filter · esc close peek · ? keys");
 		h.inspector.handleInput(SPACE);
 		await flush();
 		assert.equal(last(), "  ↑↓ actions · enter/→ select · x stop · pgup/pgdn scroll · esc/← back to list · ? keys");
@@ -204,7 +197,6 @@ test("shell input: Esc keeps it and its text, ← on empty input returns to the 
 	}));
 	try {
 		h.inspector.handleInput(SPACE);
-		h.inspector.handleInput(SPACE);
 		await flush();
 		h.inspector.handleInput("\x1b[B");
 		h.inspector.handleInput("\x1b[B");
@@ -218,7 +210,6 @@ test("shell input: Esc keeps it and its text, ← on empty input returns to the 
 		for (let i = 0; i < 3; i++) h.inspector.handleInput("\x7f");
 		h.inspector.handleInput(LEFT);
 		assert.match(h.text(), /^ Tasks\b/m, "← on an empty input returns to the list");
-		h.inspector.handleInput(SPACE);
 		h.inspector.handleInput(SPACE);
 		await flush();
 		h.inspector.handleInput("\x1b[B");
