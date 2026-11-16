@@ -185,6 +185,24 @@ test("a local commit is refused unless the host holds the attempt's lease, renew
 	);
 });
 
+test("a local commit rechecks a lease that expires while its write is queued (#4768)", async () => {
+	const { shard: local, clock } = await shard();
+	await local.hold(LEASE, LEASE_MS);
+	const accepting = local.accept(ROOT, LEASE, "queued", "{}", 1);
+	clock.now = LEASE_MS;
+	await refused(accepting, "expired");
+	assert.deepEqual(await local.pending(LEASE), []);
+});
+
+test("a local commit rechecks a lease released while its write is queued (#4768)", async () => {
+	const { shard: local } = await shard();
+	await local.hold(LEASE, LEASE_MS);
+	const accepting = local.accept(ROOT, LEASE, "queued", "{}", 1);
+	local.release(LEASE.id);
+	await refused(accepting, "missing");
+	assert.deepEqual(await local.pending(LEASE), []);
+});
+
 test("a key accepted again is the same checkpoint with its payload, and an identity conflict without (#4768)", async () => {
 	const { shard: local } = await shard();
 	await local.hold(LEASE, LEASE_MS);
@@ -421,6 +439,24 @@ test("a delivery that fails is retried while commits go on, and a host held back
 	assert.deepEqual(shared.recorded, ["a", "b"].map(keyOf));
 	assert.deepEqual(shipping.status(), { pending: 0, lagMs: 0 });
 	assert.equal(shipping.lagging(), false);
+});
+
+test("a shared refusal of a direct session commit fences the attempt's pending checkpoints (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shipping = shippingOf(local, async () => {});
+	await shipping.hold(LEASE, LEASE_MS);
+	await local.accept(ROOT, LEASE, "pending", "{}", 1);
+	const stale = new StaleWorkLeaseError({ root: ROOT, workId: LEASE.id, generation: 1, reason: "superseded" });
+	await assert.rejects(
+		shipping.commit(
+			LEASE,
+			{ kind: "session-append", sessionId: "s", entries: [], expectSeq: 0 },
+			sharedCommit({ failure: stale }).commit,
+		),
+		stale,
+	);
+	assert.deepEqual(await local.pending(LEASE), []);
+	await refused(local.accept(ROOT, LEASE, "late", "{}", 1), "missing");
 });
 
 test("a local journal that fails, such as on a full disk, sends the attempt to the shared journal and says so once (#4768)", async () => {
