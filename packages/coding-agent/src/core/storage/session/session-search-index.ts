@@ -450,6 +450,8 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		const tables = renderStorageIdentifiers("sessions", SESSION_SEARCH_TABLES, prefix);
 		const engine = engineFor(dialectOf(database));
 		try {
+			if (await SqlSessionSearchIndex.tablesExist(database, tables))
+				return new SqlSessionSearchIndex(database, sessionTables, tables);
 			await applyStorageMigrations(
 				database,
 				SESSION_SEARCH_DOMAIN,
@@ -471,6 +473,14 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 			return undefined;
 		}
 		return new SqlSessionSearchIndex(database, sessionTables, tables);
+	}
+
+	private static async tablesExist(database: SqliteDatabase, tables: SearchTables): Promise<boolean> {
+		const dialect = dialectOf(database);
+		if (dialect.versionedMigrations) return false;
+		const probes = [tables.state, tables.fts].map((table) => dialect.tableExists(table));
+		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
+		return found.every((row) => row !== undefined);
 	}
 
 	async forget(tx: SqliteExecutor, sessionId: string): Promise<void> {
