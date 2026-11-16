@@ -41,6 +41,7 @@ export async function withEarlyInputHeldForStartupDialog<T>(
 		if (activeCapture) {
 			activeCapture.resume();
 			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+			await new Promise<void>((resolve) => setImmediate(resolve));
 		}
 		capture = activeCapture;
 		const hasUnfinishedInput = capture?.pause() ?? startupDialogDrafts.length > 0;
