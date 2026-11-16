@@ -85,6 +85,11 @@ function listKeys(): NavKey[] {
 		{ action: "app.keys.help", label: "keys" },
 	];
 }
+/**
+ * How long after a reply is sent from a peek card an Enter is still taken as part of that send: long enough for a
+ * double press, short enough that a deliberate Enter on the row afterwards opens it.
+ */
+export const REPLY_ENTER_GUARD_MS = 300;
 /** Another source's rows in /tasks, such as workflow runs, with what its keys do to them. */
 export type TaskBoardSource = {
 	items(): readonly TaskBoardItem[];
@@ -175,6 +180,8 @@ export class TaskInspector implements Component {
 	private readonly replyDrafts = new Map<string, string>();
 	/** A reply being sent: Enter waits for it instead of sending again or reaching the list. */
 	private sending = false;
+	/** When the last reply was sent; an Enter within {@link REPLY_ENTER_GUARD_MS} of it reaches nothing. */
+	private sentAt = Number.NEGATIVE_INFINITY;
 	/** A source's row that finished while its stop was armed: the next stop press only acknowledges it. */
 	private itemFinishedWhileArmed?: { readonly id: string; readonly name: string };
 	/** Reopens /tasks on a row, for the way back from a view a row opened, such as a run's graph. */
@@ -644,6 +651,7 @@ export class TaskInspector implements Component {
 			this.refreshOrder();
 			return true;
 		}
+		if (matchesKey(data, "enter") && Date.now() - this.sentAt < REPLY_ENTER_GUARD_MS) return true;
 		const row = this.selectedRow();
 		if (this.peekId !== undefined && row?.id === this.peekId) {
 			const replying = this.peekReplies(row);
@@ -740,6 +748,7 @@ export class TaskInspector implements Component {
 		try {
 			const result = await this.boardSource.answer(id, text);
 			if (result.ok) {
+				this.sentAt = Date.now();
 				this.closePeek(true);
 				this.status = `Sent to ${rowName(row)}`;
 			} else this.failureNotice = `Could not send the answer: ${result.reason}`;

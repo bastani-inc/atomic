@@ -6,6 +6,7 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import type { AgentPanelItem } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
+	REPLY_ENTER_GUARD_MS,
 	type TaskBoardSource,
 	TaskInspector,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
@@ -430,6 +431,25 @@ test("Enter while a reply is being sent sends it once and never reaches the list
 		assert.deepEqual(h.runs.calls.answered, [["run:ralph", "Yes"]], "one answer");
 		assert.deepEqual(h.runs.calls.opened, [], "no Enter reached the list and opened the graph");
 		assert.equal(h.closed(), 0);
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("an Enter just after a reply is sent is swallowed, so a double Enter never opens the run (#5224)", async () => {
+	const h = await harness([waitingRun]);
+	try {
+		h.inspector.handleInput(SPACE);
+		h.inspector.handleInput("1");
+		h.inspector.handleInput(ENTER);
+		await flush();
+		assert.doesNotMatch(h.text(), /╭─ ralph/, "the answer was sent and the card closed");
+		h.inspector.handleInput(ENTER);
+		assert.deepEqual(h.runs.calls.opened, [], "the second Enter of a double press is swallowed");
+		assert.equal(h.closed(), 0);
+		await new Promise<void>((resolve) => setTimeout(resolve, REPLY_ENTER_GUARD_MS + 50));
+		h.inspector.handleInput(ENTER);
+		assert.deepEqual(h.runs.calls.opened, ["run:ralph"], "a later Enter opens it");
 	} finally {
 		await h.dispose();
 	}
