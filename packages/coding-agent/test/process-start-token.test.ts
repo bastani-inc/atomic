@@ -31,13 +31,18 @@ function scratch(): string {
 
 function countedQuery() {
 	const count = join(scratch(), "queries");
+	const cwd = join(scratch(), "cwd");
 	return {
 		file: process.execPath,
 		args: () => [
 			"-e",
-			`require("fs").appendFileSync(${JSON.stringify(count)}, "x"); setTimeout(() => console.log("${FAKE_CREATION_TIME}"), 300)`,
+			`const fs = require("fs"); fs.appendFileSync(${JSON.stringify(count)}, "x"); fs.writeFileSync(${JSON.stringify(cwd)}, process.cwd()); setTimeout(() => console.log("${FAKE_CREATION_TIME}"), 300)`,
 		],
 	};
+}
+
+function queryCwd(): string {
+	return readFileSync(join(scratch(), "cwd"), "utf8");
 }
 
 function queries(): number {
@@ -198,6 +203,13 @@ describe("the start of a process of this host (#5141)", () => {
 			assert.equal(queries(), 1);
 			await readProcessStartToken(FAKE_PID + 4);
 			assert.equal(queries(), 2, "another process is read on its own");
+			assert.equal(processStartToken(FAKE_PID), starts[0], "and the first one's start is still reused");
+			assert.equal(queries(), 2);
+			assert.equal(
+				queryCwd().toLowerCase(),
+				(process.env.SystemRoot ?? "").toLowerCase(),
+				"PowerShell runs from the Windows directory, never holding the caller's",
+			);
 		},
 		POWERSHELL_READS_TIMEOUT_MS,
 	);
@@ -223,7 +235,7 @@ describe("the start of a process of this host (#5141)", () => {
 				file: process.execPath,
 				args: () => [
 					"-e",
-					`require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
+					`const fs = require("fs"); if (fs.existsSync(${JSON.stringify(pidFile)})) console.log("${FAKE_CREATION_TIME}"); else { fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000); }`,
 				],
 			});
 			const started = performance.now();
@@ -233,6 +245,22 @@ describe("the start of a process of this host (#5141)", () => {
 			const deadline = performance.now() + READ_DEADLINE_MS;
 			while (runs(query) && performance.now() < deadline) await sleep(50);
 			assert.equal(runs(query), false, "the query that did not answer was stopped");
+			assert.match(
+				(await readProcessStartToken(FAKE_PID)) ?? "",
+				/^[0-9a-f]{12}$/,
+				"a query that timed out is asked again, not given up on",
+			);
+		},
+		POWERSHELL_READS_TIMEOUT_MS,
+	);
+
+	test.skipIf(!windows)(
+		"without the native module, a query that cannot be started at all gives no start, and never throws (#5315)",
+		async () => {
+			setNativeProcessCreationTimeForTesting(null);
+			setProcessCreationTimeQueryForTesting({ file: process.execPath, args: () => ["\0"] });
+			assert.equal(processStartToken(FAKE_PID), undefined);
+			assert.equal(await readProcessStartToken(FAKE_PID), undefined);
 		},
 		POWERSHELL_READS_TIMEOUT_MS,
 	);
@@ -304,6 +332,10 @@ describe("the start of a process of this host (#5141)", () => {
 		setNativeProcessCreationTimeForTesting(() => null);
 		assert.equal(processStartToken(process.pid), undefined);
 		setNativeProcessCreationTimeForTesting(() => "0");
+		assert.equal(processStartToken(process.pid), undefined);
+		setNativeProcessCreationTimeForTesting(() => "x132000000000000000");
+		assert.equal(processStartToken(process.pid), undefined);
+		setNativeProcessCreationTimeForTesting(() => "132000000000000000x");
 		assert.equal(processStartToken(process.pid), undefined);
 		setNativeProcessCreationTimeForTesting(() => "132000000000000000");
 		assert.match(processStartToken(process.pid) ?? "", /^[0-9a-f]{12}$/);
