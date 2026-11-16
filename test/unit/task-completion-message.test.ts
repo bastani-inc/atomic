@@ -314,3 +314,24 @@ test.each([
 		}
 	}
 });
+
+test("a subagent's completion notice shows its result's headline and keeps the rest behind expand (#5224)", () => {
+	initTheme("dark");
+	const notice = {
+		title: "Subagent worker completed: inspect the sandbox",
+		preview: "PR #5221 open: atomic lock creation\nsecond line\nthird line\nfourth line",
+		taskId: "task-1",
+		status: "completed" as const,
+		model: "anthropic/claude-haiku-4-5",
+	};
+	const collapsed = stripVTControlCharacters(new TaskCompletionMessage(notice, false).render(100).join("\n"));
+	assert.match(collapsed, /⎿ PR #5221 open: atomic lock creation/);
+	assert.doesNotMatch(collapsed, /second line/);
+	assert.match(collapsed, /\/tasks to inspect/);
+	const expanded = stripVTControlCharacters(new TaskCompletionMessage(notice, true).render(100).join("\n"));
+	assert.match(expanded, /fourth line/);
+	// A shell's notice keeps its last three lines.
+	const { model: _model, ...shell } = notice;
+	const shellText = stripVTControlCharacters(new TaskCompletionMessage(shell, false).render(100).join("\n"));
+	assert.match(shellText, /third line/);
+});

@@ -204,6 +204,15 @@ describe("FooterComponent composer hints (#5224)", () => {
 		assert.doesNotMatch(line, /shipping fix-first/);
 	});
 
+	it("the composer's keys stay whole on a narrow terminal while the directory shortens", () => {
+		const footer = new FooterComponent(session(), createFooterData(1), undefined, undefined, undefined, () => [
+			"? keys",
+		]);
+		const line = stripAnsi(footer.render(36)[0] ?? "");
+		assert.ok(visibleWidth(line) <= 36, line);
+		assert.match(line, /\.\.\. · \? keys$/);
+	});
+
 	it("a chat without composer hints still names its session in the footer", () => {
 		const line = stripAnsi(new FooterComponent(session(), createFooterData(1)).render(200)[0] ?? "");
 		assert.match(line, /shipping fix-first/);

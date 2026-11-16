@@ -54,8 +54,13 @@ export class TaskCompletionMessage implements Component {
 			this.notice.status === "completed" ? "success" : this.notice.status === "failed" ? "error" : "warning";
 		const icon = this.notice.status === "completed" ? "✓" : "✗";
 		const preview = wrapTextWithAnsi(clean(this.notice.preview), Math.max(1, width - 2));
-		const limit = this.expanded ? 20 : 3;
-		const expand = !this.expanded && preview.length > limit ? keyHintIfBound("app.tools.expand", "Expand") : "";
+		// A subagent's notice shows its result's headline; a shell's shows the last lines it wrote. Expanding shows more.
+		const agent = this.notice.model !== undefined || this.notice.thinking !== undefined;
+		const limit = this.expanded ? 20 : agent ? 1 : 3;
+		const expand =
+			!this.expanded && preview.length > limit
+				? keyHintIfBound("app.tools.expand", agent ? "for the full result" : "Expand")
+				: "";
 		return [
 			theme.fg(color, theme.bold(`${icon} ${clean(this.notice.title).replace(/\n/g, " ")}`)),
 			...(this.notice.model !== undefined || this.notice.thinking !== undefined
@@ -67,7 +72,9 @@ export class TaskCompletionMessage implements Component {
 						Math.max(1, width),
 					)
 				: []),
-			...(this.notice.preview ? preview.slice(0, limit).map((line) => theme.fg("muted", `  ${line}`)) : []),
+			...(this.notice.preview
+				? preview.slice(0, limit).map((line, index) => theme.fg("muted", `${index === 0 ? "⎿ " : "  "}${line}`))
+				: []),
 			theme.fg(
 				"dim",
 				`${expand ? `(${expand}) · ` : ""}/tasks to inspect${this.expanded ? ` · ${this.notice.taskId}` : ""}`,

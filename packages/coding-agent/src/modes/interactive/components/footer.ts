@@ -350,13 +350,20 @@ export class FooterComponent implements Component {
 			let statusText = working
 				? this.renderStyle.muted("esc to interrupt")
 				: `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
-			// The composer's own keys follow, joined with ` · `, so one line names everything this prompt offers.
-			for (const segment of this.hintSegments?.() ?? []) {
-				statusText += `${this.renderStyle.dim(" · ")}${this.renderStyle.muted(segment)}`;
-			}
 			if (areExperimentalFeaturesEnabled()) statusText += ` ${this.renderStyle.warning("xp")}`;
 			if (isDebugEnabled()) statusText += ` ${this.renderStyle.warning("debug")}`;
-			lines.push(truncateToWidth(statusText, width, this.renderStyle.dim("...")));
+			// The composer's own keys follow, joined with ` · `, so one line names everything this prompt offers. They
+			// stay whole on a narrow terminal: the model line and directory shorten first.
+			const hints = (this.hintSegments?.() ?? [])
+				.map((segment) => `${this.renderStyle.dim(" · ")}${this.renderStyle.muted(segment)}`)
+				.join("");
+			const hintWidth = visibleWidth(hints);
+			const room = width - hintWidth;
+			lines.push(
+				room >= 12
+					? `${truncateToWidth(statusText, room, this.renderStyle.dim("..."))}${hints}`
+					: truncateToWidth(statusText + hints, width, this.renderStyle.dim("...")),
+			);
 		}
 		const statusRow = renderExtensionStatusRow(this.footerData.getExtensionStatuses(), width, this.renderStyle);
 		if (statusRow !== undefined) lines.push(statusRow);
