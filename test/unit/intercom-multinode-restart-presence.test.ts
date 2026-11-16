@@ -130,6 +130,8 @@ async function crashedCluster() {
 			nodeId: NODE,
 			hostIdentity: HOST,
 			isProcessAlive: (pid) => pid !== DEAD_PID,
+			// No process start can be read here unless a test says what it is.
+			processStartToken: () => undefined,
 			...options,
 			host: {
 				sessions: new Map(),
@@ -213,6 +215,34 @@ test("a broker started again on the same socket supersedes the instance before i
 	const { router: next } = await start({ instanceKey: socket, pid: DEAD_PID + 1, isProcessAlive: () => false });
 	assert.deepEqual(await leases.read({ kind: "broker", brokerId: previous.brokerId }), { status: "missing" });
 	assert.equal((await leases.read({ kind: "broker", brokerId: next.brokerId })).status, "found");
+});
+
+test("an earlier instance whose process id a later process now holds is retired (#5252)", async () => {
+	const { start } = await crashedCluster();
+	const socket = "/reused-pid/broker.sock";
+	const starts = new Map([[LIVE_PID, "start-of-the-broker"]]);
+	const processStartToken = (pid: number) => starts.get(pid);
+	const { leases, router: killed } = await start({ instanceKey: socket, pid: LIVE_PID, processStartToken });
+	// While that instance still runs with the start it recorded, a broker starting on its socket leaves it alone.
+	await start({ instanceKey: socket, pid: LIVE_PID + 4, isProcessAlive: () => true, processStartToken });
+	assert.equal((await leases.read({ kind: "broker", brokerId: killed.brokerId })).status, "found");
+
+	// The broker is killed, and the host gives its process id to a later process before the broker starts again.
+	starts.set(LIVE_PID, "start-of-a-later-process");
+	const { router: next } = await start({
+		instanceKey: socket,
+		pid: LIVE_PID + 8,
+		isProcessAlive: () => true,
+		processStartToken,
+	});
+	assert.deepEqual(await leases.read({ kind: "broker", brokerId: killed.brokerId }), { status: "missing" });
+	const own = await leases.read({ kind: "broker", brokerId: next.brokerId });
+	assert.equal(own.status, "found");
+	assert.equal(
+		own.status === "found" && own.lease.subject.kind === "broker" ? own.lease.subject.processStart : undefined,
+		undefined,
+		"a broker whose own start cannot be read records none",
+	);
 });
 
 interface FakeHost {
