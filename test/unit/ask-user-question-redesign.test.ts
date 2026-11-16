@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { visibleWidth } from "@bastani/atomic-tui";
+import { type TUI, visibleWidth } from "@bastani/atomic-tui";
 import { beforeEach, describe, test } from "vitest";
 import {
 	buildItemsForQuestion,
@@ -10,6 +10,7 @@ import type {
 	QuestionnaireResult,
 	QuestionParams,
 } from "../../packages/coding-agent/src/core/tools/ask-user-question/tool/types.ts";
+import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
 const DOWN = "\x1b[B";
@@ -252,6 +253,31 @@ describe("ask_user_question transcript summary (#5224)", () => {
 			"Packaging → coding-agent, workflows",
 			"Layout → Sidebar · notes: keep it narrow",
 		]);
+	});
+
+	test("questionnaire errors stay visible instead of appearing declined (#5244)", async () => {
+		const tool = createAskUserQuestionToolDefinition();
+		const result = await tool.execute("no-ui", ONE, undefined, undefined, {
+			hasUI: false,
+			ui: {},
+		} as Parameters<typeof tool.execute>[4]);
+		const row = new ToolExecutionComponent(
+			"ask_user_question",
+			"no-ui",
+			ONE,
+			{},
+			tool,
+			{ requestRender() {} } as TUI,
+			process.cwd(),
+		);
+		try {
+			row.updateResult({ ...result, isError: false });
+			const output = row.render(120).map(plain).join("\n");
+			assert.ok(output.includes("Error: UI not available"), output);
+			assert.ok(!output.includes("Declined"), output);
+		} finally {
+			row.dispose();
+		}
 	});
 
 	test("a declined questionnaire says so and lists what was asked", () => {

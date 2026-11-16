@@ -76,6 +76,7 @@ export class DialogView implements StatefulView<DialogProps> {
 	private readonly questionStrategy: TabContentStrategy;
 	private readonly submitStrategy: TabContentStrategy | undefined;
 	private readonly maxFooterRowCount: number;
+	private headingMeasurement: { readonly width: number; readonly rows: number } | undefined;
 
 	constructor(config: DialogConfig, initialProps: DialogProps) {
 		this.config = config;
@@ -109,6 +110,7 @@ export class DialogView implements StatefulView<DialogProps> {
 	// The adapter's `invalidate()` resets every other renderable alongside this one.
 	invalidate(): void {
 		this.frame = undefined;
+		this.headingMeasurement = undefined;
 	}
 
 	render(width: number): string[] {
@@ -124,6 +126,7 @@ export class DialogView implements StatefulView<DialogProps> {
 
 	/** The tallest heading of any step at `width`. */
 	private maxHeadingRows(width: number): number {
+		if (this.headingMeasurement?.width === width) return this.headingMeasurement.rows;
 		const state = this.liveProps.state;
 		let max = this.submitStrategy?.headingRows(state).reduce((sum, c) => sum + c.render(width).length, 0) ?? 0;
 		for (let tab = 0; tab < this.config.questions.length; tab++) {
@@ -133,6 +136,7 @@ export class DialogView implements StatefulView<DialogProps> {
 				rows.reduce((sum, c) => sum + c.render(width).length, 0),
 			);
 		}
+		this.headingMeasurement = { width, rows: max };
 		return max;
 	}
 
@@ -159,9 +163,12 @@ export class DialogView implements StatefulView<DialogProps> {
 
 		const edge = (text: string) => theme.fg("accent", text);
 		const lines = [edge(`╭${"─".repeat(Math.max(0, width - 2))}╮`)];
+		const side = edge("│");
 		for (const line of inner.render(innerWidth)) {
-			const fitted = truncateToWidth(line, innerWidth, "");
-			lines.push(`${edge("│")} ${fitted}${" ".repeat(Math.max(0, innerWidth - visibleWidth(fitted)))} ${edge("│")}`);
+			const lineWidth = visibleWidth(line);
+			const fitted = lineWidth > innerWidth ? truncateToWidth(line, innerWidth, "") : line;
+			const fittedWidth = lineWidth > innerWidth ? visibleWidth(fitted) : lineWidth;
+			lines.push(`${side} ${fitted}${" ".repeat(Math.max(0, innerWidth - fittedWidth))} ${side}`);
 		}
 		lines.push(edge(`╰${"─".repeat(Math.max(0, width - 2))}╯`));
 		lines.push(truncateToWidth(`  ${theme.fg("dim", strategy.hintText(state))}`, width, ""));

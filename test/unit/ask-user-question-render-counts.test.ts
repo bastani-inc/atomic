@@ -22,6 +22,7 @@ import {
 import * as layoutDecider from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/preview/preview-layout-decider.ts";
 import { TabBar } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/tab-bar.ts";
 import { WrappingSelect } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/wrapping-select.ts";
+import { QuestionTabStrategy } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/tab-content-strategy.ts";
 import { getMarkdownTheme, initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { benchmarkQuestionnaire, KEY_CYCLE } from "../../scripts/perf/ask-user-question-load/fixture.ts";
 
@@ -109,6 +110,29 @@ test("a keystroke builds one frame and renders each component in it at most once
 		assert.equal(seen.markdown, 0, `key ${index} re-wrapped ${seen.markdown} previews`);
 		assert.equal(repainted, painted, "a repaint with no change returns the frame already built");
 	}
+});
+
+test("keystrokes reuse heading measurements until the width changes or the dialog is invalidated (#5244)", () => {
+	const session = openDialog();
+	const headings = vi.spyOn(QuestionTabStrategy.prototype, "headingRows");
+	session.component.render(WIDE);
+	headings.mockClear();
+	session.component.handleInput("\x1b[B");
+	session.component.render(WIDE);
+	assert.equal(headings.mock.calls.length, 1, "only the active heading is rebuilt after a keystroke");
+
+	headings.mockClear();
+	session.component.render(NARROW);
+	assert.ok(headings.mock.calls.length > 1, "resizing measures the headings at the new width");
+	headings.mockClear();
+	session.component.handleInput("\x1b[A");
+	session.component.render(NARROW);
+	assert.equal(headings.mock.calls.length, 1, "keystrokes reuse the resized heading measurements");
+
+	headings.mockClear();
+	session.component.invalidate();
+	session.component.render(NARROW);
+	assert.ok(headings.mock.calls.length > 1, "invalidation refreshes the heading measurements");
 });
 
 test("repaints that follow no change to the dialog reuse its frame (#4333)", () => {
