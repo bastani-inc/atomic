@@ -17,6 +17,11 @@ import { createEngineHostPair, type EngineHostPair } from "./helpers/in-process-
 
 /** Long enough for a summary request that was going to start to have been sent. */
 const SUMMARY_SETTLE_MS = 250;
+/**
+ * Saved sessions write each turn's user, assistant and summary entries to SQLite on disk, and the host refreshes its
+ * stats over the RPC pipe after each append; under parallel shard load a turn can exceed `vi.waitFor`'s 1 s default.
+ */
+const ENGINE_TURN_SETTLE_TIMEOUT_MS = 10_000;
 
 let pair: EngineHostPair | undefined;
 let sessionDir: string | undefined;
@@ -30,7 +35,9 @@ afterEach(async () => {
 
 async function sendTurn(current: EngineHostPair, text: string): Promise<void> {
 	await current.runtime.session.prompt(text);
-	await vi.waitFor(() => assert.equal(current.engine.session.isStreaming, false));
+	await vi.waitFor(() => assert.equal(current.engine.session.isStreaming, false), {
+		timeout: ENGINE_TURN_SETTLE_TIMEOUT_MS,
+	});
 	await current.drain();
 }
 
@@ -60,14 +67,18 @@ test("the host's session stats include a session summary's usage as soon as it i
 	await sendTurn(pair, "Reply with exactly: alpha");
 	await sendTurn(pair, "Reply with exactly: beta");
 
-	await vi.waitFor(() => assert.equal(summaryCount(pair!), 1));
+	await vi.waitFor(() => assert.equal(summaryCount(pair!), 1), {
+		timeout: ENGINE_TURN_SETTLE_TIMEOUT_MS,
+	});
 	const summary = pair.engine.sessionManager.getEntries().find((entry) => entry.type === "session_summary");
 	assert.ok(summary?.type === "session_summary" && (summary.usage?.input ?? 0) > 0, "the summary records its usage");
 	await pair.drain();
 
 	const host = pair.runtime.session;
 	const engineStats = JSON.parse(JSON.stringify(pair.engine.session.getSessionStats()));
-	await vi.waitFor(() => assert.deepEqual(getEngineSessionStats(host), engineStats));
+	await vi.waitFor(() => assert.deepEqual(getEngineSessionStats(host), engineStats), {
+		timeout: ENGINE_TURN_SETTLE_TIMEOUT_MS,
+	});
 });
 
 test("a --no-session session sends no session summary request (#4726)", async () => {
