@@ -6,6 +6,7 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import type { AgentPanelItem } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import {
+	REPLY_ENTER_GUARD_MS,
 	type TaskBoardSource,
 	TaskInspector,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
@@ -36,6 +37,7 @@ function runSource(items: AgentPanelItem[]) {
 	const listeners = new Set<() => void>();
 	const calls = {
 		opened: [] as string[],
+		returns: [] as (() => void)[],
 		stopped: [] as string[],
 		answered: [] as [string, string][],
 		dismissed: [] as string[],
@@ -46,7 +48,10 @@ function runSource(items: AgentPanelItem[]) {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		open: (id) => calls.opened.push(id),
+		open: (id, options) => {
+			calls.opened.push(id);
+			if (options?.onReturn) calls.returns.push(options.onReturn);
+		},
 		stop: async (id) => {
 			calls.stopped.push(id);
 			return { ok: true };
@@ -180,8 +185,7 @@ test("Esc closes a peek without leaving /tasks, and typed reply text is answered
 		assert.doesNotMatch(h.text(), /╭─ ralph/);
 		assert.equal(h.closed(), 0, "Esc closed the card, not /tasks");
 		h.inspector.handleInput(SPACE);
-		assert.doesNotMatch(h.text(), /go ahead/, "a closed card starts empty");
-		for (const ch of "go ahead") h.inspector.handleInput(ch);
+		assert.match(h.text(), /│ ❯ go ahead/, "a closed card keeps its typed reply");
 		h.inspector.handleInput(ENTER);
 		await flush();
 		assert.deepEqual(h.runs.calls.answered, [["run:ralph", "go ahead"]]);
@@ -332,6 +336,120 @@ test("/tasks fits a short viewport: the selected row first, then its hint line (
 			);
 		}
 		assert.match(stripVTControlCharacters(h.inspector.renderViewport(100, 2).at(-1) ?? ""), /space peek/);
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("a run's graph opened from /tasks comes back to /tasks on that run (#5224)", async () => {
+	const running: AgentPanelItem = {
+		id: "run:build",
+		kind: "workflow",
+		state: "running",
+		name: "build",
+		task: "stage compile",
+	};
+	const h = await harness([running]);
+	try {
+		const reopened: string[] = [];
+		h.inspector.setReopen((id) => reopened.push(id));
+		h.inspector.handleInput(ENTER);
+		assert.deepEqual(h.runs.calls.opened, ["run:build"]);
+		assert.equal(h.runs.calls.returns.length, 1, "the graph is told where back goes");
+		h.runs.calls.returns[0]?.();
+		assert.deepEqual(reopened, ["run:build"], "back reopens /tasks on the same row");
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("a run that finishes between the two presses of x is not dismissed unseen (#5224)", async () => {
+	const run: AgentPanelItem = {
+		id: "run:build",
+		kind: "workflow",
+		state: "running",
+		name: "build",
+		task: "stage compile",
+	};
+	const items = [run];
+	const h = await harness(items);
+	try {
+		h.inspector.handleInput("x");
+		items[0] = { ...run, state: "done" };
+		h.runs.emit();
+		assert.match(h.text(), /build finished · x to dismiss/);
+		h.inspector.handleInput("x");
+		assert.deepEqual(h.runs.calls.dismissed, [], "the press meant for stop only acknowledges");
+		assert.deepEqual(h.runs.calls.stopped, []);
+		assert.match(h.text(), /✓ build/);
+		h.inspector.handleInput("x");
+		assert.deepEqual(h.runs.calls.dismissed, ["run:build"], "a later press dismisses");
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("a peek card keeps its typed reply when closed, and ← at its start closes it keeping the draft (#5224)", async () => {
+	const h = await harness([waitingRun]);
+	try {
+		h.inspector.handleInput(SPACE);
+		for (const ch of "go") h.inspector.handleInput(ch);
+		h.inspector.handleInput(ESC);
+		assert.doesNotMatch(h.text(), /╭─ ralph/);
+		h.inspector.handleInput(SPACE);
+		assert.match(h.text(), /│ ❯ go/, "Space brings the draft back");
+		h.inspector.handleInput("\x1b[H");
+		h.inspector.handleInput("\x1b[D");
+		assert.doesNotMatch(h.text(), /╭─ ralph/, "← at the start closes the card");
+		h.inspector.handleInput(SPACE);
+		assert.match(h.text(), /│ ❯ go/);
+		assert.equal(h.closed(), 0);
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("Enter while a reply is being sent sends it once and never reaches the list (#5224)", async () => {
+	const h = await harness([waitingRun]);
+	let release!: () => void;
+	h.runs.source.answer = async (id, text) => {
+		h.runs.calls.answered.push([id, text]);
+		await new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		return { ok: true };
+	};
+	try {
+		h.inspector.handleInput(SPACE);
+		h.inspector.handleInput("1");
+		h.inspector.handleInput(ENTER);
+		h.inspector.handleInput(ENTER);
+		assert.match(h.text(), /Sending…/, "the card says it is sending");
+		release();
+		await flush();
+		assert.doesNotMatch(h.text(), /╭─ ralph/, "the card closes once sent");
+		assert.deepEqual(h.runs.calls.answered, [["run:ralph", "Yes"]], "one answer");
+		assert.deepEqual(h.runs.calls.opened, [], "no Enter reached the list and opened the graph");
+		assert.equal(h.closed(), 0);
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("an Enter just after a reply is sent is swallowed, so a double Enter never opens the run (#5224)", async () => {
+	const h = await harness([waitingRun]);
+	try {
+		h.inspector.handleInput(SPACE);
+		h.inspector.handleInput("1");
+		h.inspector.handleInput(ENTER);
+		await flush();
+		assert.doesNotMatch(h.text(), /╭─ ralph/, "the answer was sent and the card closed");
+		h.inspector.handleInput(ENTER);
+		assert.deepEqual(h.runs.calls.opened, [], "the second Enter of a double press is swallowed");
+		assert.equal(h.closed(), 0);
+		await new Promise<void>((resolve) => setTimeout(resolve, REPLY_ENTER_GUARD_MS + 50));
+		h.inspector.handleInput(ENTER);
+		assert.deepEqual(h.runs.calls.opened, ["run:ralph"], "a later Enter opens it");
 	} finally {
 		await h.dispose();
 	}

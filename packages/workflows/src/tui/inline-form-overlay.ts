@@ -30,7 +30,7 @@ import type { GraphTheme } from "./graph-theme.js";
 import { renderInlineCard } from "./inline-form-card.js";
 import { InlineFormEditor, InlineFormKeybindingsError } from "./inline-form-editor.js";
 import { createForm, finalizeForm, getForm } from "./inline-form-store.js";
-import { coerceValues } from "./inputs-picker.js";
+import { coerceValues, initialInputText, invalidForField } from "./inputs-picker.js";
 import { isKeybindingsLike } from "./keybindings-adapter.js";
 
 const CUSTOM_TYPE = "workflows:input-form";
@@ -165,21 +165,9 @@ export async function openInlineInputsForm(
 	const formId = makeFormId();
 	const prefilled = opts.prefilled ?? {};
 	const rawText: Record<string, string> = {};
-	for (const f of opts.fields) {
-		if (prefilled[f.name] !== undefined) {
-			rawText[f.name] = String(prefilled[f.name]);
-		} else if (f.default !== undefined) {
-			rawText[f.name] = String(f.default);
-		} else if (f.type === "select" && f.choices && f.choices.length > 0) {
-			rawText[f.name] = f.choices[0]!;
-		} else if (f.type === "boolean") {
-			rawText[f.name] = "false";
-		} else {
-			rawText[f.name] = "";
-		}
-	}
+	for (const f of opts.fields) rawText[f.name] = initialInputText(f, prefilled);
 	// Focus first invalid field if any.
-	const firstInvalid = opts.fields.findIndex((f) => f.required && (rawText[f.name] ?? "").trim() === "");
+	const firstInvalid = opts.fields.findIndex((f, i) => invalidForField(f, rawText[f.name] ?? "", i) !== null);
 	const focusedIdx = firstInvalid >= 0 ? firstInvalid : 0;
 	const state = createForm({
 		formId,

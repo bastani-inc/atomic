@@ -78,13 +78,19 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 		stopAllToast?.hide();
 		stopAllToast = undefined;
 		this.footerDataProvider.setExtensionStatus(STOP_ALL_STATUS_KEY, undefined);
+		if (this.runtimeHost instanceof IsolatedInteractiveRuntime)
+			void this.runtimeHost.setStopAllNotice(undefined).catch(() => {});
 	};
 	const flashStopAllStatus = (message: string | undefined) => {
 		clearStopAllStatus();
 		if (message !== undefined) {
-			this.footerDataProvider.setExtensionStatus(STOP_ALL_STATUS_KEY, message);
-			// A fullscreen view such as the workflow graph covers the chat: the notice floats over it, without the keyboard.
-			if (this.ui.hasOverlay())
+			// An isolated engine draws its own fullscreen views (the workflow graph): its status line carries the notice
+			// there. Over the main chat, the chat line already says it.
+			if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
+				if (this.ui.hasOverlay()) void this.runtimeHost.setStopAllNotice(message).catch(() => {});
+			} else this.footerDataProvider.setExtensionStatus(STOP_ALL_STATUS_KEY, message);
+			// An in-process fullscreen view covers the chat: the notice floats over it, without the keyboard.
+			if (this.ui.hasOverlay() && !(this.runtimeHost instanceof IsolatedInteractiveRuntime))
 				stopAllToast = this.ui.showOverlay(new Text(theme.fg("warning", message), 1, 0), {
 					anchor: "bottom-center",
 					width: "100%",

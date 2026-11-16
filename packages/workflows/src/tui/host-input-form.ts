@@ -2,7 +2,7 @@ import type { WorkflowInputEntry } from "../extension/render-result.js";
 import type { PiHostInputFormField, PiHostInputFormFunction } from "../extension/ui-surface.js";
 import type { WorkflowInputValues } from "../shared/types.js";
 import type { InputsPickerResult } from "./inputs-overlay.js";
-import { coerceValues } from "./inputs-picker.js";
+import { coerceValues, initialInputText } from "./inputs-picker.js";
 
 export interface HostInputsFormUi {
 	hostInputForm?: PiHostInputFormFunction;
@@ -21,14 +21,6 @@ function supportedType(type: string): PiHostInputFormField["type"] {
 	}
 }
 
-function initialValue(field: WorkflowInputEntry, prefilled: WorkflowInputValues): string {
-	if (prefilled[field.name] !== undefined) return String(prefilled[field.name]);
-	if (field.default !== undefined) return String(field.default);
-	if (field.type === "select" && field.choices && field.choices.length > 0) return field.choices[0]!;
-	if (field.type === "boolean") return "false";
-	return "";
-}
-
 /** Adapt workflow schemas to the host-owned, raw-string form capability. */
 export async function openHostInputsForm(
 	ui: HostInputsFormUi,
@@ -44,7 +36,7 @@ export async function openHostInputsForm(
 	const fields: PiHostInputFormField[] = options.fields.map((field) => ({
 		name: field.name,
 		type: supportedType(field.type),
-		initialValue: initialValue(field, prefilled),
+		initialValue: initialInputText(field, prefilled),
 		...(field.description !== undefined ? { description: field.description } : {}),
 		...(field.required !== undefined ? { required: field.required } : {}),
 		...(field.choices !== undefined ? { choices: [...field.choices] } : {}),

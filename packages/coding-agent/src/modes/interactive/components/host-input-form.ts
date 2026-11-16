@@ -25,6 +25,9 @@ export interface HostInputFormDelegate {
 
 type Editable = Input | Editor;
 
+/** What a boolean field accepts, typed or passed in; anything else is refused, never read as off. */
+const BOOLEAN_TEXT = new Set(["true", "false", "1", "0", "on", "off"]);
+
 function isEditable(field: HostInputFormField): boolean {
 	return field.type !== "select" && field.type !== "boolean";
 }
@@ -149,7 +152,7 @@ export class HostInputFormComponent implements Component, Focusable {
 		for (let index = 0; index < this.fields.length; index += 1) {
 			const field = this.fields[index]!;
 			const active = index === this.focusedIndex;
-			body.push(this.labelRow(field, active, cw));
+			body.push(this.labelRow(field, index, active, cw));
 			for (const line of this.renderField(field, index, controlWidth)) body.push(`${indent}${line}`);
 			if (field.description) {
 				for (const line of wrapTextWithAnsi(
@@ -158,11 +161,6 @@ export class HostInputFormComponent implements Component, Focusable {
 				)) {
 					body.push(`${indent}${line}`);
 				}
-			}
-			if (this.invalid.has(index)) {
-				body.push(
-					`${indent}${this.theme.fg("error", `✗ ${this.invalidReason(field, this.currentValue(index)) ?? "invalid"}`)}`,
-				);
 			}
 			body.push("");
 		}
@@ -186,10 +184,10 @@ export class HostInputFormComponent implements Component, Focusable {
 			);
 		}
 		if (field.type === "boolean") {
-			return [
-				this.values[index] === "true" ? this.theme.fg("accent", "● on") : "○ on",
-				this.values[index] === "false" ? this.theme.fg("accent", "● off") : "○ off",
-			];
+			const value = (this.values[index] ?? "").trim().toLowerCase();
+			const on = value === "true" || value === "1" || value === "on";
+			const off = value === "false" || value === "0" || value === "off";
+			return [on ? this.theme.fg("accent", "● on") : "○ on", off ? this.theme.fg("accent", "● off") : "○ off"];
 		}
 		const editor = this.editors[index];
 		if (!editor) return [""];
@@ -237,9 +235,11 @@ export class HostInputFormComponent implements Component, Focusable {
 	private handleSelect(data: string, field: HostInputFormField): void {
 		const choices = field.choices ?? [];
 		if (choices.length === 0) return;
-		const current = Math.max(0, choices.indexOf(this.currentValue(this.focusedIndex)));
+		// An unchosen select moves onto the first choice going down and the last going up.
+		const current = choices.indexOf(this.currentValue(this.focusedIndex));
 		if (this.keybindings.matches(data, "tui.select.up") || this.keybindings.matches(data, "tui.editor.cursorLeft"))
-			this.values[this.focusedIndex] = choices[(current - 1 + choices.length) % choices.length]!;
+			this.values[this.focusedIndex] =
+				choices[current < 0 ? choices.length - 1 : (current - 1 + choices.length) % choices.length]!;
 		else if (
 			this.keybindings.matches(data, "tui.select.down") ||
 			this.keybindings.matches(data, "tui.editor.cursorRight") ||
@@ -261,7 +261,11 @@ export class HostInputFormComponent implements Component, Focusable {
 			this.keybindings.matches(data, "tui.editor.cursorLeft") ||
 			this.keybindings.matches(data, "tui.editor.cursorRight")
 		)
-			this.values[this.focusedIndex] = this.currentValue(this.focusedIndex) === "true" ? "false" : "true";
+			this.values[this.focusedIndex] = ["true", "1", "on"].includes(
+				this.currentValue(this.focusedIndex).trim().toLowerCase(),
+			)
+				? "false"
+				: "true";
 		else if (
 			this.keybindings.matches(data, "tui.select.confirm") ||
 			this.keybindings.matches(data, "tui.input.submit")
@@ -305,11 +309,19 @@ export class HostInputFormComponent implements Component, Focusable {
 		this.delegate.onSubmit(values);
 	}
 
+	/** Why a value can't be submitted, or undefined when it can. Nothing unset is read as a default (#5224). */
 	private invalidReason(field: HostInputFormField, value: string): string | undefined {
-		if (field.required && value.trim() === "") return "required";
-		if (field.type === "select" && value !== "" && !(field.choices ?? []).includes(value)) return "not in choices";
-		if ((field.type === "number" || field.type === "integer") && value !== "" && !Number.isFinite(Number(value)))
-			return "must be a number";
+		const empty = value.trim() === "";
+		if (field.required && empty) {
+			if (field.type === "select") return "choose one";
+			if (field.type === "boolean") return "choose on or off";
+			return "required";
+		}
+		if (empty) return undefined;
+		if (field.type === "select" && !(field.choices ?? []).includes(value)) return "not in choices";
+		if (field.type === "boolean" && !BOOLEAN_TEXT.has(value.trim().toLowerCase())) return "must be on or off";
+		if (field.type === "integer" && !Number.isInteger(Number(value))) return "must be a whole number";
+		if (field.type === "number" && !Number.isFinite(Number(value))) return "must be a number";
 		return undefined;
 	}
 
@@ -333,16 +345,28 @@ export class HostInputFormComponent implements Component, Focusable {
 				? editor.getExpandedText()
 				: (this.values[index] ?? "");
 	}
-	/** Field header: focus chevron + name (accent when active) with a right-aligned required/optional badge. */
-	private labelRow(field: HostInputFormField, active: boolean, cw: number): string {
-		const badgePlain = field.required ? "required" : "optional";
+	/**
+	 * Field header: focus chevron + name (accent when active), then on the right whether the field is ready: `✓`, or
+	 * `✗` with the reason, after a dim required/optional badge.
+	 */
+	private labelRow(field: HostInputFormField, index: number, active: boolean, cw: number): string {
+		const invalid = this.invalidReason(field, this.currentValue(index));
+		const requiredness = field.required ? "required" : "optional";
+		const statusPlain = invalid === undefined ? "✓" : `✗ ${invalid}`;
+		// An empty required field says `✗ required` once, not `required · ✗ required`.
+		const prefix = invalid === "required" ? "" : `${requiredness} · `;
+		const badgePlain = `${prefix}${statusPlain}`;
 		const marker = active ? this.theme.fg("accent", "▸") : " ";
 		const nameBudget = Math.max(4, cw - badgePlain.length - 3);
 		const nameShown = truncateToWidth(field.name, nameBudget, "…");
 		const nameStyled = active
 			? this.theme.fg("accent", this.theme.bold(nameShown))
 			: this.theme.fg("text", nameShown);
-		const badge = field.required ? this.theme.fg("warning", badgePlain) : this.theme.fg("dim", badgePlain);
+		const status =
+			invalid === undefined
+				? this.theme.fg("success", statusPlain)
+				: this.theme.fg(this.invalid.has(index) || !field.required ? "error" : "warning", statusPlain);
+		const badge = `${prefix ? this.theme.fg("dim", prefix) : ""}${status}`;
 		const gap = Math.max(1, cw - 2 - visibleWidth(nameShown) - badgePlain.length);
 		return `${marker} ${nameStyled}${" ".repeat(gap)}${badge}`;
 	}

@@ -67,7 +67,7 @@ export function registerInputsPickerSuite1(): void {
 		assert.equal(s.rawText.prompt, "");
 		assert.equal(s.rawText.iters, "5");
 		assert.equal(s.rawText.focus, "standard");
-		assert.equal(s.rawText.verbose, "false");
+		assert.equal(s.rawText.verbose, "", "a boolean with no default is left unset (#5224)");
 		// First invalid field (prompt) is focused.
 		assert.equal(s.focusedIdx, 0);
 	});
@@ -80,10 +80,10 @@ export function registerInputsPickerSuite1(): void {
 		assert.equal(s.focusedIdx, 0);
 	});
 
-	test("createInputsPickerState seeds select first-choice when no default", () => {
+	test("createInputsPickerState leaves a select with no default unchosen (#5224)", () => {
 		const fields: WorkflowInputEntry[] = [{ name: "mode", type: "select", required: true, choices: ["a", "b", "c"] }];
 		const s = createInputsPickerState(fields);
-		assert.equal(s.rawText.mode, "a");
+		assert.equal(s.rawText.mode, "");
 	});
 
 	// ── Validation ─────────────────────────────────────────────────────────────

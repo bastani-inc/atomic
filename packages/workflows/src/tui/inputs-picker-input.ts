@@ -261,10 +261,10 @@ function handleSelectKey(
 ): InputsPickerAction {
 	const choices = field.choices ?? [];
 	if (choices.length === 0) return { kind: "noop" };
-	const current = state.rawText[field.name] ?? choices[0]!;
-	const idx = Math.max(0, choices.indexOf(current));
+	// An unchosen select (no default) moves onto the first choice going down and the last going up.
+	const idx = choices.indexOf(state.rawText[field.name] ?? "");
 	if (matchesAction(kb, key, TUI_ACTION.selectUp) || matchesAction(kb, key, TUI_ACTION.editorCursorLeft)) {
-		state.rawText[field.name] = choices[(idx - 1 + choices.length) % choices.length]!;
+		state.rawText[field.name] = choices[idx < 0 ? choices.length - 1 : (idx - 1 + choices.length) % choices.length]!;
 		return { kind: "noop" };
 	}
 	if (matchesAction(kb, key, TUI_ACTION.selectDown) || matchesAction(kb, key, TUI_ACTION.editorCursorRight)) {

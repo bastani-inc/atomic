@@ -92,7 +92,7 @@ test("card (live): active field body uses boxed field styling", () => {
 	const state = makeState();
 	const lines = renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) });
 	const visible = plain(lines);
-	assert.match(visible, /╭ prompt ─+╮/);
+	assert.match(visible, /╭ prompt [✓✗][^╮\n]*╮/);
 	assert.match(visible, /│\s+│/);
 	assert.match(visible, /text · required · task/);
 	assert.match(ansi(lines), /\x1b\[7m \x1b\[0m/);
@@ -105,10 +105,10 @@ test("card (live): shows all questions with Submit at the end", () => {
 	});
 	const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
 	assert.match(txt, / SUBMIT /);
-	assert.match(txt, /╭ prompt ─+╮\n│build me a tui/);
-	assert.match(txt, /╭ iters ─+╮\n│5/);
-	assert.match(txt, /╭ focus ─+╮\n│\s+1\. ✓ minimal/);
-	assert.match(txt, /╭ verbose ─+╮\n│\s+1\. on\s+│\n│\s+2\. ✓ off/);
+	assert.match(txt, /╭ prompt [✓✗][^╮\n]*╮\n│build me a tui/);
+	assert.match(txt, /╭ iters [✓✗][^╮\n]*╮\n│5/);
+	assert.match(txt, /╭ focus [✓✗][^╮\n]*╮\n│\s+1\. ✓ minimal/);
+	assert.match(txt, /╭ verbose [✓✗][^╮\n]*╮\n│\s+1\. on\s+│\n│\s+2\. ✓ off/);
 	assert.doesNotMatch(txt, /❯ Submit answers/);
 	assert.doesNotMatch(txt, /Review your inputs/);
 	assert.doesNotMatch(txt, /Ready to submit your inputs\?/);
@@ -123,7 +123,7 @@ test("card (live): normalizes true-like boolean field values", () => {
 		focusedIdx: FIELDS.length,
 	});
 	const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
-	assert.match(txt, /╭ verbose ─+╮\n│\s+1\. ✓ on\s+│\n│\s+2\. off/);
+	assert.match(txt, /╭ verbose [✓✗][^╮\n]*╮\n│\s+1\. ✓ on\s+│\n│\s+2\. off/);
 	assert.doesNotMatch(txt, /✓ off/);
 });
 
@@ -136,7 +136,7 @@ test("card (live): shows empty boolean fields without selecting off", () => {
 		caret: 0,
 	});
 	const txt = plain(renderInlineCard({ width: 80, state, theme: deriveGraphTheme({}) }));
-	assert.match(txt, /╭ enabled ─+╮\n│\s+1\. on\s+│\n│\s+2\. off/);
+	assert.match(txt, /╭ enabled [✓✗][^╮\n]*╮\n│\s+1\. on\s+│\n│\s+2\. off/);
 	assert.doesNotMatch(txt, /✓ off/);
 });
 

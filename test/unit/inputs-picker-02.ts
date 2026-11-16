@@ -100,7 +100,7 @@ export function registerInputsPickerSuite2(): void {
 	test("boolean field: space and arrows flip", () => {
 		const s = createInputsPickerState(FIELDS);
 		s.focusedIdx = 3;
-		assert.equal(s.rawText.verbose, "false");
+		assert.equal(s.rawText.verbose, "", "unset until chosen (#5224)");
 		handleInputsPickerInput(" ", s, FIELDS, KB);
 		assert.equal(s.rawText.verbose, "true");
 		handleInputsPickerInput("\x1b[D", s, FIELDS, KB);

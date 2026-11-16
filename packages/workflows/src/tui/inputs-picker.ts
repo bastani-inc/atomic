@@ -16,5 +16,6 @@ export {
 	coerceValues,
 	computeInvalid,
 	createInputsPickerState,
+	initialInputText,
 	invalidForField,
 } from "./inputs-picker-types.js";

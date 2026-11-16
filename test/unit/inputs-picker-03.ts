@@ -34,7 +34,7 @@ export function registerInputsPickerSuite3(): void {
 		const joined = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
 		assert.doesNotMatch(joined, /←\s+■ prompt/);
 		assert.doesNotMatch(joined, /✓ Submit/);
-		assert.match(joined, /╭ prompt ─+╮/);
+		assert.match(joined, /╭ prompt [✓✗][^╮\n]*╮/);
 		assert.match(joined, /│build/);
 		assert.match(joined, /text · required · task to do/);
 		assert.doesNotMatch(joined, /loop a thinker/);
@@ -64,10 +64,14 @@ export function registerInputsPickerSuite3(): void {
 		});
 		// eslint-disable-next-line no-control-regex
 		const joined = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-		assert.match(joined, /╭ prompt ─+╮\n│build a tui/);
-		assert.match(joined, /╭ iters ─+╮\n│5/);
-		assert.match(joined, /╭ focus ─+╮\n│\s+1\. minimal\s+│\n│\s+2\. ✓ standard/);
-		assert.match(joined, /╭ verbose ─+╮\n│\s+1\. on\s+│\n│\s+2\. ✓ off/);
+		assert.match(joined, /╭ prompt [✓✗][^╮\n]*╮\n│build a tui/);
+		assert.match(joined, /╭ iters [✓✗][^╮\n]*╮\n│5/);
+		assert.match(joined, /╭ focus [✓✗][^╮\n]*╮\n│\s+1\. minimal\s+│\n│\s+2\. ✓ standard/);
+		assert.match(
+			joined,
+			/╭ verbose ✓ ─+╮\n│\s+1\. on\s+│\n│\s+2\. off\s+│/,
+			"an optional boolean with no default stays unset (#5224)",
+		);
 		assert.match(joined, / SUBMIT /);
 		assert.doesNotMatch(joined, /Review your inputs/);
 		assert.doesNotMatch(joined, /Ready to submit your inputs\?/);
@@ -89,7 +93,7 @@ export function registerInputsPickerSuite3(): void {
 		});
 		// eslint-disable-next-line no-control-regex
 		const joined = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-		assert.match(joined, /╭ verbose ─+╮\n│\s+1\. ✓ on\s+│\n│\s+2\. off/);
+		assert.match(joined, /╭ verbose [✓✗][^╮\n]*╮\n│\s+1\. ✓ on\s+│\n│\s+2\. off/);
 		assert.doesNotMatch(joined, /✓ off/);
 	});
 
@@ -109,7 +113,7 @@ export function registerInputsPickerSuite3(): void {
 		});
 		// eslint-disable-next-line no-control-regex
 		const joined = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-		assert.match(joined, /╭ enabled ─+╮\n│\s+1\. on\s+│\n│\s+2\. off/);
+		assert.match(joined, /╭ enabled [✓✗][^╮\n]*╮\n│\s+1\. on\s+│\n│\s+2\. off/);
 		assert.doesNotMatch(joined, /✓ off/);
 	});
 

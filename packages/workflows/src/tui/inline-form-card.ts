@@ -36,7 +36,7 @@ import { paint } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { renderCompactBandHeader } from "./header.js";
 import type { InlineFormState } from "./inline-form-store.js";
-import { computeInvalid } from "./inputs-picker.js";
+import { computeInvalid, invalidForField } from "./inputs-picker.js";
 import { renderAskChoiceRows, renderSubmitControls } from "./submit-pane.js";
 import { truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
 
@@ -166,7 +166,7 @@ function renderField(
 	const borderColor = focused ? theme.accent : theme.borderDim;
 	const rows = renderAskStyleFieldBody(field, raw, focused ? caret : raw.length, focused, theme, contentWidth);
 	return [
-		renderFieldTop(field.name, boxWidth, borderColor, focused, theme),
+		renderFieldTop(field.name, invalidForField(field, raw, 0), boxWidth, borderColor, focused, theme),
 		...rows.map((row) => renderFieldRow(row, contentWidth, borderColor)),
 		renderFieldBottom(boxWidth, borderColor),
 		...renderFieldMeta(field, theme, width),
@@ -229,17 +229,21 @@ function renderInlineSubmitControls(state: InlineFormState, theme: GraphTheme, w
 	});
 }
 
+/** `╭ objective ✓ ───╮`, or `╭ max_loops ✗ must be a whole number ───╮`, from the start (#5224). */
 function renderFieldTop(
 	title: string,
+	invalid: string | null,
 	width: number,
 	borderColor: string,
 	focused: boolean,
 	theme: GraphTheme,
 ): string {
-	const label = ` ${title} `;
-	const labelText = paint(label, focused ? theme.accent : theme.textMuted, { bold: focused });
-	const fill = Math.max(0, width - visibleWidth(label) - 2);
-	return paint("╭", borderColor) + labelText + paint(`${"─".repeat(fill)}╮`, borderColor);
+	const labelText = paint(` ${title} `, focused ? theme.accent : theme.textMuted, { bold: focused });
+	const status = invalid === null ? paint("✓ ", theme.success) : paint(`✗ ${invalid} `, theme.error);
+	const room = Math.max(0, width - 2);
+	const head = truncateToWidth(labelText + status, room, "…");
+	const fill = Math.max(0, room - visibleWidth(head));
+	return paint("╭", borderColor) + head + paint(`${"─".repeat(fill)}╮`, borderColor);
 }
 
 function renderFieldRow(row: string, contentWidth: number, borderColor: string): string {

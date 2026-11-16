@@ -110,10 +110,10 @@ function renderInputField(
 		contentWidth,
 	);
 	const lines = [
-		renderFieldTop(field.name, boxWidth, borderColor, focused, theme),
+		renderFieldTop(field.name, invalid, boxWidth, borderColor, focused, theme),
 		...rows.map((row) => renderFieldRow(row, contentWidth, borderColor, theme)),
 		renderFieldBottom(boxWidth, borderColor),
-		...renderFieldMeta(field, invalid, theme, width),
+		...renderFieldMeta(field, theme, width),
 	];
 	return lines;
 }
@@ -239,7 +239,8 @@ export function renderInputsPicker(opts: InputsPickerRenderOpts): string[] {
 	for (let i = 0; i < fields.length; i += 1) {
 		const field = fields[i]!;
 		const raw = state.rawText[field.name] ?? "";
-		const invalid = state.invalidIndices.includes(i) ? invalidForField(field, raw, i) : null;
+		// Every field says from the start whether it is ready: ✓, or ✗ with the reason.
+		const invalid = invalidForField(field, raw, i);
 		lines.push(...renderInputField(field, raw, state.caret, cursorOn, invalid, state.focusedIdx === i, theme, width));
 		lines.push("");
 	}
@@ -249,17 +250,21 @@ export function renderInputsPicker(opts: InputsPickerRenderOpts): string[] {
 	return lines.map((line) => fitLine(line, width));
 }
 
+/** `╭ objective ✓ ───╮`, or `╭ max_loops ✗ must be a whole number ───╮`. */
 function renderFieldTop(
 	title: string,
+	invalid: string | null,
 	width: number,
 	borderColor: string,
 	focused: boolean,
 	theme: GraphTheme,
 ): string {
-	const label = ` ${title} `;
-	const labelText = paint(label, focused ? theme.accent : theme.textMuted, { bold: focused });
-	const fill = Math.max(0, width - visibleWidth(label) - 2);
-	return paint("╭", borderColor) + labelText + paint(`${"─".repeat(fill)}╮`, borderColor);
+	const labelText = paint(` ${title} `, focused ? theme.accent : theme.textMuted, { bold: focused });
+	const status = invalid === null ? paint("✓ ", theme.success) : paint(`✗ ${invalid} `, theme.error);
+	const room = Math.max(0, width - 2);
+	const head = truncateToWidth(labelText + status, room, "…");
+	const fill = Math.max(0, room - visibleWidth(head));
+	return paint("╭", borderColor) + head + paint(`${"─".repeat(fill)}╮`, borderColor);
 }
 
 function renderFieldRow(row: string, contentWidth: number, borderColor: string, _theme: GraphTheme): string {
@@ -272,20 +277,13 @@ function renderFieldBottom(width: number, borderColor: string): string {
 	return paint(`╰${"─".repeat(Math.max(0, width - 2))}╯`, borderColor);
 }
 
-function renderFieldMeta(
-	field: WorkflowInputEntry,
-	invalid: string | null,
-	theme: GraphTheme,
-	width: number,
-): string[] {
+function renderFieldMeta(field: WorkflowInputEntry, theme: GraphTheme, width: number): string[] {
 	const required = field.required ? "required" : "optional";
 	const text =
 		field.description && field.description.length > 0
 			? `${field.type} · ${required} · ${field.description}`
 			: `${field.type} · ${required}`;
-	const lines = wrapPlainText(text, width).map((line) => paintRequiredMetaLine(line, field.required === true, theme));
-	if (invalid) lines.push(...wrapPlainText(invalid, width).map((line) => paint(line, theme.error)));
-	return lines;
+	return wrapPlainText(text, width).map((line) => paintRequiredMetaLine(line, field.required === true, theme));
 }
 
 function paintRequiredMetaLine(line: string, required: boolean, theme: GraphTheme): string {

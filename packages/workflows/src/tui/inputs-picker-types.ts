@@ -41,34 +41,26 @@ export interface InputsPickerRenderOpts {
 
 /**
  * Seed `rawText` from declared defaults plus any values the user already
- * passed as key=value tokens. Enums/selects fall back to their first choice
- * (matching atomic's seeding rule), booleans default to `false`, and
- * numbers/text default to empty unless the schema declared a default.
+ * passed as key=value tokens. Nothing else is chosen for the user: a select
+ * or boolean without a default starts unset, as text and numbers do, so a
+ * required one must be answered and an optional one is omitted (#5224).
  */
+/**
+ * A field's starting text in every inputs form: the value passed on the command line, else the declared default,
+ * else nothing. A select or boolean is never preset to its first choice or to off (#5224).
+ */
+export function initialInputText(field: WorkflowInputEntry, prefilled: WorkflowInputValues): string {
+	if (prefilled[field.name] !== undefined) return String(prefilled[field.name]);
+	if (field.default !== undefined) return String(field.default);
+	return "";
+}
+
 export function createInputsPickerState(
 	fields: readonly WorkflowInputEntry[],
 	prefilled: WorkflowInputValues = {},
 ): InputsPickerState {
 	const rawText: Record<string, string> = {};
-	for (const f of fields) {
-		if (prefilled[f.name] !== undefined) {
-			rawText[f.name] = String(prefilled[f.name]);
-			continue;
-		}
-		if (f.default !== undefined) {
-			rawText[f.name] = String(f.default);
-			continue;
-		}
-		if (f.type === "select" && f.choices && f.choices.length > 0) {
-			rawText[f.name] = f.choices[0]!;
-			continue;
-		}
-		if (f.type === "boolean") {
-			rawText[f.name] = "false";
-			continue;
-		}
-		rawText[f.name] = "";
-	}
+	for (const f of fields) rawText[f.name] = initialInputText(f, prefilled);
 	// Focus the first invalid field if any; otherwise field 0. This keeps the
 	// cursor on the first thing the user actually needs to fill in.
 	const firstInvalid = fields.findIndex((f, i) => invalidForField(f, rawText[f.name] ?? "", i) !== null);
@@ -104,7 +96,8 @@ export function coerceValues(fields: readonly WorkflowInputEntry[], raw: Record<
 				break;
 			}
 			case "boolean": {
-				out[f.name] = v === "true" || v === "1";
+				const text = v.trim().toLowerCase();
+				out[f.name] = text === "true" || text === "1" || text === "on";
 				break;
 			}
 			case "select":
@@ -138,15 +131,22 @@ export function coerceValues(fields: readonly WorkflowInputEntry[], raw: Record<
  * key hint.
  */
 export function invalidForField(field: WorkflowInputEntry, value: string, _idx: number): string | null {
-	if (field.required && value.trim() === "") return "required";
-	if (field.type === "select" && field.choices && value !== "" && !field.choices.includes(value)) {
-		return "not in choices";
+	const empty = value.trim() === "";
+	if (field.required && empty) {
+		if (field.type === "select") return "choose one";
+		if (field.type === "boolean") return "choose on or off";
+		return "required";
 	}
-	if ((field.type === "number" || field.type === "integer") && value !== "" && !Number.isFinite(Number(value))) {
-		return "must be a number";
-	}
+	if (empty) return null;
+	if (field.type === "select" && field.choices && !field.choices.includes(value)) return "not in choices";
+	if (field.type === "boolean" && !BOOLEAN_TEXT.has(value.trim().toLowerCase())) return "must be on or off";
+	if (field.type === "integer" && !Number.isInteger(Number(value))) return "must be a whole number";
+	if (field.type === "number" && !Number.isFinite(Number(value))) return "must be a number";
 	return null;
 }
+
+/** What a boolean input accepts, typed or passed as `key=value`; anything else is refused, never read as off. */
+const BOOLEAN_TEXT = new Set(["true", "false", "1", "0", "on", "off"]);
 
 export function computeInvalid(fields: readonly WorkflowInputEntry[], raw: Record<string, string>): number[] {
 	const out: number[] = [];

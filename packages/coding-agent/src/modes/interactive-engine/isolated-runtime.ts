@@ -272,6 +272,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	async openAgentPanel(): Promise<void> {
 		await this.client.requestInternal({ type: "open_agent_panel" });
 	}
+	/** Shows (or, with `undefined`, clears) the Ctrl+X Ctrl+K notice in the engine's views, such as the workflow graph. */
+	async setStopAllNotice(text: string | undefined): Promise<void> {
+		await this.client.requestInternal({ type: "set_stop_all_notice", ...(text === undefined ? {} : { text }) });
+	}
 	/** The engine owns the session's tasks and workflow runs, so it stops them. */
 	async stopAllBackgroundWork(): Promise<StopAllBackgroundOutcome> {
 		return this.client.requestInternal<StopAllBackgroundOutcome>({ type: "stop_all_background" });
