@@ -174,8 +174,11 @@ export class SessionList implements Component, Focusable {
 
 	/** Empty the search with a fresh box, so its undo history cannot bring the old text back. */
 	private clearSearch(): void {
+		const selectedPath = this.getSelectedSessionPath();
 		this.searchInput = this.createSearchInput();
 		this.filterSessions("");
+		const index = this.filteredSessions.findIndex((node) => node.session.path === selectedPath);
+		if (index >= 0) this.selectedIndex = index;
 	}
 
 	setSortMode(sortMode: SortMode): void {
@@ -405,19 +408,25 @@ export class SessionList implements Component, Focusable {
 	private renderPreview(width: number): string[] {
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		if (!selected) return [];
-		const room = Math.max(10, width - 6);
-		const rule = theme.fg("borderMuted", `  ╭${"─".repeat(Math.max(1, width - 6))}╮`);
-		const end = theme.fg("borderMuted", `  ╰${"─".repeat(Math.max(1, width - 6))}╯`);
+		const inner = Math.max(10, width - 6);
+		const room = inner - 2;
+		const border = (text: string) => theme.fg("borderMuted", text);
+		const rule = border(`  ╭${"─".repeat(inner)}╮`);
+		const end = border(`  ╰${"─".repeat(inner)}╯`);
 		const body: string[] = [];
 		const add = (text: string, style: (value: string) => string, maxLines: number) => {
 			const wrapped = wrapTextWithAnsi(cleanText(text), room).slice(0, maxLines);
-			for (const line of wrapped) body.push(`    ${style(line)}`);
+			for (const line of wrapped) {
+				const cell = truncateToWidth(line, room, "…");
+				body.push(
+					`  ${border("│")} ${style(cell)}${" ".repeat(Math.max(0, room - visibleWidth(cell)))} ${border("│")}`,
+				);
+			}
 		};
 		add(sessionRowTitle(selected), (text) => theme.bold(theme.fg("text", text)), 3);
-		if (selected.detail !== undefined) add(selected.detail, (text) => theme.fg("muted", text), 2);
-		if (selected.summary) add(selected.summary, (text) => theme.fg("text", text), 6);
-		if (selected.title !== undefined && selected.firstMessage)
-			add(selected.firstMessage, (text) => theme.fg("dim", text), 2);
+		// A row with its own detail line already carries its summary there; a session shows its summary in full.
+		if (selected.detail !== undefined) add(selected.detail, (text) => theme.fg("muted", text), 4);
+		else if (selected.summary) add(selected.summary, (text) => theme.fg("text", text), 6);
 		const facts: string[] = [];
 		facts.push(`Created ${selected.created.toLocaleString()} · updated ${ageText(selected.modified)}`);
 		if (selected.detail === undefined)
@@ -436,7 +445,7 @@ export class SessionList implements Component, Focusable {
 		const selected = this.filteredSessions[this.selectedIndex];
 		if (this.confirmingDeleteSession !== null) {
 			entries.push({ action: "tui.select.confirm", label: "delete" });
-			entries.push({ keys: navActionText(kb, "tui.select.cancel") || "esc", label: "keep" });
+			entries.push({ keys: navActionText(kb, "tui.select.cancel").split("/")[0] || "esc", label: "keep" });
 			return entries;
 		}
 		const query = this.searchInput.getValue();
@@ -453,7 +462,7 @@ export class SessionList implements Component, Focusable {
 		if (this.variant === "sessions") {
 			entries.push({ action: "tui.input.tab", label: this.showCwd ? "this folder" : "all" });
 		}
-		entries.push({ action: "app.session.toggleSort", label: "sort" });
+		if (this.filteredSessions.length > 1 || query) entries.push({ action: "app.session.toggleSort", label: "sort" });
 		if (this.variant === "sessions") {
 			entries.push({
 				action: "app.session.toggleNamedFilter",
