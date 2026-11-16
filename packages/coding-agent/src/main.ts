@@ -1,4 +1,5 @@
-import { drainPendingOAuthRotations } from "@bastani/atomic-ai";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { drainPendingOAuthRotations, normalizeProviderId } from "@bastani/atomic-ai";
 import { setCapabilityOverrides } from "@bastani/atomic-tui";
 import chalk from "chalk";
 import { type Args, parseArgs, printHelp } from "./cli/args.ts";
@@ -52,9 +53,11 @@ import {
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { inheritsDebugSetting, setDebugSetting } from "./core/debug-setting.ts";
+import { DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
 import type { LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
+import { formatModelLabel } from "./core/model-label.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
 import { resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.js";
@@ -1063,14 +1066,34 @@ export async function main(argv: string[], options?: MainOptions) {
 							);
 						created.session.setScopedModels(finalScope);
 						if (finalModel) {
+							const savedModel = existingSession.model;
+							if (
+								!finalSelection.options.model &&
+								existingSession.messages.length > 0 &&
+								savedModel &&
+								(normalizeProviderId(savedModel.provider) !== normalizeProviderId(finalModel.provider) ||
+									savedModel.modelId !== finalModel.id)
+							) {
+								finalServices.diagnostics.push({
+									type: "warning",
+									message: `Could not restore model ${formatModelLabel({ provider: savedModel.provider, id: savedModel.modelId })}. Using ${finalModel.provider}/${finalModel.id}`,
+								});
+							}
+							runtime.replaceModelFallback();
 							created.session.agent.state.model = finalModel;
 							await sessionManager.appendModelChange(finalModel.provider, finalModel.id);
+							const continuedThinkingLevel =
+								existingSession.messages.length > 0
+									? sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change")
+										? (existingSession.thinkingLevel as ThinkingLevel)
+										: (settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL)
+									: undefined;
 							await created.session.setThinkingLevel(
 								finalSelection.options.thinkingLevel ??
-									(existingSession.messages.length > 0 ? created.session.thinkingLevel : undefined) ??
+									continuedThinkingLevel ??
 									settingsManager.getModelThinkingLevel(finalModel.provider, finalModel.id) ??
 									settingsManager.getDefaultThinkingLevel() ??
-									created.session.thinkingLevel,
+									DEFAULT_THINKING_LEVEL,
 							);
 						}
 						await created.session.completeStartupResources(finalServices.resourceLoader);

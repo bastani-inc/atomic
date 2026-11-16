@@ -276,3 +276,178 @@ test(
 	},
 	REAL_STARTUP_RPC_TIMEOUT_MS,
 );
+
+test(
+	"startup trust warns when a continued session provider is missing and preserves saved thinking (#5247)",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-startup-trust-restore-warning-"));
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		const source = join(root, "saved.jsonl");
+		mkdirSync(join(cwd, ".atomic", "extensions"), { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: "ext-provider",
+				defaultModel: "ext-primary",
+				defaultProjectTrust: "ask",
+			}),
+		);
+		writeFileSync(
+			join(cwd, ".atomic", "extensions", "provider.ts"),
+			`export default function(pi) {
+				pi.registerProvider("ext-provider", ${JSON.stringify(providerConfig(["ext-primary"]))});
+			}\n`,
+		);
+		const saved = SessionManager.inMemory(cwd);
+		await saved.appendModelChange("gone-provider", "old-model");
+		await saved.appendThinkingLevelChange("high");
+		await saved.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "Continue previous work." }],
+			timestamp: Date.now(),
+		});
+		writeFileSync(
+			source,
+			`${[saved.getHeader(), ...saved.getEntries()].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		);
+		const trustPrompt = Promise.withResolvers<RpcExtensionUIRequest>();
+		const restoreWarning = Promise.withResolvers<void>();
+		const expectedWarning = "Could not restore model gone-provider/old-model. Using ext-provider/ext-primary";
+		const client = new RpcClient({
+			cliPath,
+			cwd,
+			runtimeExecutable: bunExecutable(),
+			args: [
+				"--import",
+				source,
+				"--no-session",
+				"--offline",
+				"--no-skills",
+				"--no-themes",
+				"--no-prompt-templates",
+				"--no-context-files",
+			],
+			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+			interactiveEngine: {
+				onDiagnostic: ({ message }) => {
+					if (message.includes(expectedWarning)) restoreWarning.resolve();
+				},
+			},
+		});
+		client.onExtensionUIRequest((request) => {
+			if (request.method === "select") trustPrompt.resolve(request);
+		});
+		try {
+			await client.start();
+			const request = await trustPrompt.promise;
+			const before = await client.getState();
+			assert.equal(before.model?.provider, "unknown");
+			assert.equal(before.thinkingLevel, "off");
+			await client.respondExtensionUI({
+				type: "extension_ui_response",
+				id: request.id,
+				value: "Trust (this session only)",
+			});
+			await client.waitForInteractiveEngineResources();
+			const after = await client.getState();
+			assert.equal(after.model?.provider, "ext-provider");
+			assert.equal(after.model?.id, "ext-primary");
+			assert.equal(after.thinkingLevel, "high");
+			assert.equal(after.modelFallbackMessage, undefined);
+			await restoreWarning.promise;
+			assert.deepEqual(
+				[...client.getStderr().matchAll(/Could not restore model [^\r\n]+/g)].map((match) => match[0].trim()),
+				[expectedWarning],
+			);
+		} finally {
+			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);
+
+test(
+	"startup trust applies the default medium thinking level after leaving the unknown placeholder (#5247)",
+	async () => {
+		for (const continuedWithoutThinkingEntry of [false, true]) {
+			const root = mkdtempSync(join(tmpdir(), "atomic-startup-trust-thinking-"));
+			const cwd = join(root, "project");
+			const agentDir = join(root, "agent");
+			const source = join(root, "saved.jsonl");
+			mkdirSync(join(cwd, ".atomic", "extensions"), { recursive: true });
+			mkdirSync(agentDir, { recursive: true });
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					defaultProvider: "ext-provider",
+					defaultModel: "ext-primary",
+					defaultProjectTrust: "ask",
+				}),
+			);
+			writeFileSync(
+				join(cwd, ".atomic", "extensions", "provider.ts"),
+				`export default function(pi) {
+					pi.registerProvider("ext-provider", ${JSON.stringify(providerConfig(["ext-primary"]))});
+				}\n`,
+			);
+			if (continuedWithoutThinkingEntry) {
+				const saved = SessionManager.inMemory(cwd);
+				await saved.appendModelChange("gone-provider", "old-model");
+				await saved.appendMessage({
+					role: "user",
+					content: [{ type: "text", text: "Continue without explicit thinking entry." }],
+					timestamp: Date.now(),
+				});
+				writeFileSync(
+					source,
+					`${[saved.getHeader(), ...saved.getEntries()].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+				);
+			}
+			const trustPrompt = Promise.withResolvers<RpcExtensionUIRequest>();
+			const client = new RpcClient({
+				cliPath,
+				cwd,
+				runtimeExecutable: bunExecutable(),
+				args: [
+					...(continuedWithoutThinkingEntry ? ["--import", source] : []),
+					"--no-session",
+					"--offline",
+					"--no-skills",
+					"--no-themes",
+					"--no-prompt-templates",
+					"--no-context-files",
+				],
+				env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+				interactiveEngine: { onDiagnostic: () => {} },
+			});
+			client.onExtensionUIRequest((request) => {
+				if (request.method === "select") trustPrompt.resolve(request);
+			});
+			try {
+				await client.start();
+				const request = await trustPrompt.promise;
+				const before = await client.getState();
+				assert.equal(before.model?.provider, "unknown");
+				assert.equal(before.thinkingLevel, "off");
+				await client.respondExtensionUI({
+					type: "extension_ui_response",
+					id: request.id,
+					value: "Trust (this session only)",
+				});
+				await client.waitForInteractiveEngineResources();
+				const after = await client.getState();
+				assert.equal(after.model?.provider, "ext-provider");
+				assert.equal(after.model?.id, "ext-primary");
+				assert.equal(after.thinkingLevel, "medium");
+				assert.equal(after.modelFallbackMessage, undefined);
+			} finally {
+				await client.stop();
+				rmSync(root, { recursive: true, force: true });
+			}
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);
