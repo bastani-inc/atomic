@@ -175,6 +175,7 @@ function factory(pi: ExtensionAPI): void {
 	const overlay = buildWorkflowOverlay(pi, owner, postMortemHandleResolver, () => adapters.sessionStore, {
 		runtime: () => (sessionContext === undefined ? undefined : runtimeState.runtimeForContext(sessionContext)),
 		context: () => sessionContext,
+		ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
 	});
 	const workflowCommands = new Map<string, WorkflowCommandHandler>();
 	const intercomControlRef: { current: (() => void) | null } = { current: null };

@@ -51,6 +51,7 @@ type RunStoreMethods = Pick<
 	| "clear"
 	| "snapshot"
 	| "graphSnapshot"
+	| "inspectionSnapshot"
 	| "graphRun"
 	| "subscribe"
 	| "subscribeInvalidation"
@@ -387,6 +388,10 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 
 		graphSnapshot(): StoreSnapshot {
 			return context.graphSnapshot();
+		},
+
+		inspectionSnapshot(runId?: string): StoreSnapshot {
+			return context.inspectionSnapshot(runId);
 		},
 
 		graphRun(runId: string): RunSnapshot | undefined {

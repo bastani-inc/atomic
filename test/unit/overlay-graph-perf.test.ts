@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type {
 	StageSnapshot,
@@ -10,6 +10,7 @@ import { GraphCanvas } from "../../packages/workflows/src/tui/graph-canvas.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { graphLayoutBodyRows } from "../../packages/workflows/src/tui/graph-view-layout.js";
 import { NODE_H } from "../../packages/workflows/src/tui/layout.js";
+import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 import { defaultTheme, makeSnap, makeStage, makeStore, makeTestTui, visibleText } from "./overlay-graph-helpers.js";
 
@@ -141,6 +142,15 @@ class InstrumentedGraphView extends GraphView {
 			...this.cachedRenderGeometry,
 			bands: countArrayReads(this.cachedRenderGeometry.bands, this.bandReads),
 			edges: countArrayReads(this.cachedRenderGeometry.edges, this.edgeReads),
+			edgeIndex: {
+				bands: countArrayReads(
+					this.cachedRenderGeometry.edgeIndex.bands.map((band) => ({
+						...band,
+						edges: countArrayReads(band.edges, this.edgeReads),
+					})),
+					this.edgeReads,
+				),
+			},
 		};
 	}
 
@@ -553,6 +563,111 @@ describe("GraphView many-stage performance (#2100)", () => {
 				totalArrayReads(reads.edges) <= graphScoped.edges,
 				`read edges ${totalArrayReads(reads.edges)} times`,
 			);
+		} finally {
+			view.dispose();
+		}
+	});
+
+	it("arrow input and its paint read only the visible layout, not every sibling (#5234)", () => {
+		const view = new InstrumentedGraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store: createGraphStore(parallelPairs(400)),
+			graphTheme: defaultTheme,
+			piTui: makeTestTui(24),
+		});
+		try {
+			view.render(96);
+			view.countRenderReadsForTest();
+			view.paintedCards = 0;
+			view.handleInput("\x1b[C");
+			view.render(96);
+			const reads = view.renderReadCountsForTest();
+			assert.ok(totalArrayReads(reads.layout) <= 4 * view.paintedCards + 40, JSON.stringify(reads.layout));
+			assert.equal(view._focusedIndex, 1);
+		} finally {
+			view.dispose();
+		}
+	});
+
+	it("a live status burst reads one snapshot per consumer, not one per modeled stage (#5234)", () => {
+		const stages = parallelPairs(200).map((stage) => ({
+			...stage,
+			model: "test/model",
+			status: "running" as const,
+			startedAt: 1,
+		}));
+		const store = createGraphStore(stages);
+		const snapshots = vi.spyOn(store, "graphSnapshot");
+		const pane = new WorkflowAttachPane({
+			store,
+			runId: "run-1",
+			graphTheme: defaultTheme,
+			onClose: () => {},
+			piTui: makeTestTui(24),
+		});
+		try {
+			pane.render(96);
+			snapshots.mockClear();
+			for (let update = 0; update < 50; update++) {
+				store.recordStageEnd("run-1", { ...stages[update]!, durationMs: update + 1 });
+			}
+			assert.equal(snapshots.mock.calls.length, 0, "status events only mark consumers stale");
+			pane.render(96);
+			assert.ok(snapshots.mock.calls.length <= 2, `read ${snapshots.mock.calls.length} snapshots`);
+			snapshots.mockClear();
+			pane.handleInput("\x1b[C");
+			pane.render(96);
+			assert.equal(snapshots.mock.calls.length, 0, "keystroke paints reuse the current snapshot");
+		} finally {
+			pane.dispose();
+			snapshots.mockRestore();
+		}
+	});
+
+	it("a failed graph waiting for fork confirmation does not animate (#5234)", async () => {
+		vi.useFakeTimers();
+		const requestRender = vi.fn();
+		const view = new GraphView({
+			mode: "overlay",
+			runId: "run-1",
+			graphTheme: defaultTheme,
+			store: createGraphStore([{ ...makeStage("verify"), status: "failed" }]),
+			requestRender,
+			stageActions: {
+				forkTarget: async () => ({ ok: true, stagePath: "verify", rerunToolSteps: 0, live: false }),
+				fork: async () => ({ ok: true, message: "forked" }),
+			},
+		});
+		try {
+			view.handleInput("\r");
+			view.handleInput("f");
+			await Promise.resolve();
+			assert.match(visibleText(view.render(160)), /enter fork/);
+			requestRender.mockClear();
+			vi.advanceTimersByTime(10_000);
+			assert.equal(requestRender.mock.calls.length, 0);
+		} finally {
+			view.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("edge lookup visits only visible bands and columns in a large graph (#5234)", () => {
+		const view = new InstrumentedGraphView({
+			mode: "overlay",
+			runId: "run-1",
+			store: createGraphStore(chainStages(1_000)),
+			graphTheme: defaultTheme,
+			piTui: makeTestTui(24),
+		});
+		try {
+			view.render(96);
+			view.countRenderReadsForTest();
+			view.edgeCalls = 0;
+			view.render(96);
+			const reads = view.renderReadCountsForTest();
+			assert.ok(totalArrayReads(reads.edges) <= 4 * view.edgeCalls + 40, JSON.stringify(reads.edges));
 		} finally {
 			view.dispose();
 		}

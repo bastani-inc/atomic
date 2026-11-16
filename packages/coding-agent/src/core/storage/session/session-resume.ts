@@ -21,9 +21,11 @@ const DELIVERY_OP_TYPE = "atomic-pooled-delivery-op";
 
 type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number];
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
+/** Version 5 added `acks`; an index saved by an earlier build fails `isSessionResumeIndex` and is rebuilt. */
+const RESUME_INDEX_VERSION = 5;
 
 export interface SessionResumeIndex {
-	readonly version: 4;
+	readonly version: typeof RESUME_INDEX_VERSION;
 	readonly needsBranchRebuild?: boolean;
 	readonly epoch: string;
 	readonly latest: Readonly<Record<string, readonly number[]>>;
@@ -50,6 +52,11 @@ export interface SessionResumeIndex {
 	readonly nameSeq?: number;
 	readonly summarySeq?: number;
 	readonly intents: readonly (readonly [completionId: string, seq: number])[];
+	/**
+	 * The acknowledgement of each acknowledged completion intent, on any branch. A resume that loads the intent loads
+	 * its acknowledgement too, so a completion acknowledged on another branch is not delivered again.
+	 */
+	readonly acks: readonly (readonly [intentSeq: number, ackSeq: number])[];
 	readonly state: string;
 	readonly universal: readonly number[];
 	readonly lastStateSeq: number;
@@ -243,6 +250,7 @@ type ResumeProtocolIndex = Pick<
 	| "pending"
 	| "parks"
 	| "intents"
+	| "acks"
 >;
 class ResumeProtocols {
 	readonly latest: Record<string, readonly number[]>;
@@ -255,6 +263,7 @@ class ResumeProtocols {
 	readonly pending: Record<string, number>;
 	readonly parks: Record<string, { seq: number; remaining: readonly string[]; notified: readonly number[] }>;
 	readonly intents: Map<string, number>;
+	readonly acks: (readonly [number, number])[];
 	constructor(previous?: ResumeProtocolIndex) {
 		this.latest = { ...previous?.latest };
 		this.fields = { ...previous?.fields };
@@ -266,6 +275,7 @@ class ResumeProtocols {
 		this.pending = { ...previous?.pending };
 		this.parks = { ...previous?.parks };
 		this.intents = new Map(previous?.intents ?? []);
+		this.acks = [...(previous?.acks ?? [])];
 	}
 	keepLatest(key: string, seq: number): void {
 		this.latest[key] = [seq];
@@ -284,6 +294,8 @@ class ResumeProtocols {
 		const completionId = completionIdOf(entry);
 		if (completionId === undefined || entry.type !== "custom") return;
 		if (entry.customType === TASK_COMPLETION_ACK_TYPE) {
+			const intentSeq = this.intents.get(completionId);
+			if (intentSeq !== undefined) this.acks.push([intentSeq, seq]);
 			this.intents.delete(completionId);
 			this.settle(`notice:${completionId}`);
 		}
@@ -414,6 +426,7 @@ class ResumeProtocols {
 			pending: this.pending,
 			parks: this.parks,
 			intents: [...this.intents],
+			acks: this.acks,
 		};
 	}
 }
@@ -508,7 +521,7 @@ export function foldSessionResume(
 		lastId = entry.id;
 	}
 	return {
-		version: 4,
+		version: RESUME_INDEX_VERSION,
 		...(needsBranchRebuild ? { needsBranchRebuild: true } : {}),
 		epoch: previous?.epoch ?? crypto.randomUUID(),
 		...protocols.serialize(),
@@ -533,7 +546,7 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 	if (value === null || typeof value !== "object") return false;
 	const index = value as Partial<SessionResumeIndex>;
 	return (
-		index.version === 4 &&
+		index.version === RESUME_INDEX_VERSION &&
 		!index.needsBranchRebuild &&
 		Array.isArray(index.deliveryOps) &&
 		typeof index.epoch === "string" &&
@@ -542,6 +555,7 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 		Array.isArray(index.jumps) &&
 		Array.isArray(index.compactions) &&
 		Array.isArray(index.intents) &&
+		Array.isArray(index.acks) &&
 		typeof index.state === "string" &&
 		typeof index.lastStateSeq === "number" &&
 		typeof index.totals === "object" &&
@@ -642,6 +656,7 @@ export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number): num
 			if (onBranch(ranges, seq) || index.universal.includes(seq)) seqs.add(seq);
 		}
 	}
+	for (const [intentSeq, ackSeq] of index.acks) if (seqs.has(intentSeq) && ackSeq < fromSeq) seqs.add(ackSeq);
 	return [...seqs].sort((left, right) => left - right);
 }
 
@@ -778,7 +793,14 @@ export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.lea
 		.filter(([a, b]) => a <= b)
 		.reverse();
 	const inTail = (seq: number) => branch.some(([a, b]) => seq >= a && seq <= b);
-	const state = stateSeqsBefore(index, Number.MAX_SAFE_INTEGER).filter((seq) => !inTail(seq));
+	// An intent in the tail keeps its acknowledgement, even one saved on another branch.
+	const acks = index.acks.filter(([intentSeq, ackSeq]) => inTail(intentSeq) && !inTail(ackSeq));
+	const state = [
+		...new Set([
+			...stateSeqsBefore(index, Number.MAX_SAFE_INTEGER).filter((seq) => !inTail(seq)),
+			...acks.map(([, ackSeq]) => ackSeq),
+		]),
+	].sort((left, right) => left - right);
 	return { leafSeq, compaction, branch, state };
 }
 

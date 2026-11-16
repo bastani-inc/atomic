@@ -9,6 +9,7 @@ import {
 	type AgentPanelRow,
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { BashExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/bash-execution.js";
 import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { themedAgentPanelStyle } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
@@ -143,12 +144,18 @@ test("the clock tick does not request a frame when only an off-page run changes 
 	component.dispose?.();
 });
 
-for (const [columns, rows, widgetRows] of [
-	[80, 24, 1],
-	[80, 24, 8],
-	[100, 30, 8],
+for (const [columns, rows, widgetRows, followUps, shellRows] of [
+	[80, 24, 1, 0, 0],
+	[80, 24, 8, 0, 0],
+	[100, 30, 8, 0, 0],
+	[80, 24, 1, 6, 0],
+	[100, 30, 1, 6, 0],
+	[120, 40, 1, 6, 0],
+	[80, 24, 1, 0, 8],
+	[100, 30, 1, 0, 8],
+	[120, 40, 1, 0, 8],
 ] as const) {
-	test(`/workflows keeps its hint visible with ${widgetRows}-row widgets at ${columns}x${rows} and restores them on close (#5245)`, async () => {
+	test(`/workflows keeps its title, search, selection and hint with ${widgetRows}-row widgets, ${followUps} follow-ups and ${shellRows} shell rows at ${columns}x${rows}, restoring previews on close (#5245)`, async () => {
 		const runs: RunSnapshot[] = Array.from({ length: 12 }, (_, index) =>
 			run({
 				id: `run-${String(index + 1).padStart(2, "0")}-0000`,
@@ -187,6 +194,16 @@ for (const [columns, rows, widgetRows] of [
 			programStatus: { report() {}, setBlocked() {} },
 			activeSelectorDispose: undefined,
 		});
+		const queued = Array.from({ length: followUps }, (_, index) => `queued-${index}`);
+		const bash = shellRows > 0 ? new BashExecutionComponent("pending-command", tui) : undefined;
+		bash?.appendOutput(Array.from({ length: shellRows }, (_, index) => `pending-output-${index}`).join("\n"));
+		bash?.setComplete(0, false);
+		Object.assign(context, {
+			keybindings: new KeybindingsManager(),
+			pendingBashComponents: bash ? [bash] : [],
+			getAllQueuedMessages: () => ({ steering: [], followUp: queued }),
+		});
+		context.updatePendingMessagesDisplay();
 		const editor = context.editor as unknown as { getText(): string; setText(text: string): void };
 		editor.getText = () => "";
 		editor.setText = () => {};
@@ -231,6 +248,7 @@ for (const [columns, rows, widgetRows] of [
 		await new Promise((resolve) => setImmediate(resolve));
 		try {
 			assert.ok(sheet);
+			context.updatePendingMessagesDisplay();
 			for (let step = 0; step <= runs.length + definitions.length; step++) {
 				tui.renderNow();
 				const text = cleanScreen(getLayoutFrame(tui).lines);
@@ -238,16 +256,27 @@ for (const [columns, rows, widgetRows] of [
 				assert.match(text, /Search…/, `search hidden at step ${step}\n${text}`);
 				assert.match(text, /❯/, `selection hidden at step ${step}\n${text}`);
 				assert.match(text, /enter open/, `hint hidden at step ${step}\n${text}`);
-				assert.doesNotMatch(text, /above-widget|below-widget/);
+				assert.doesNotMatch(text, /above-widget|below-widget|Follow-up:|pending-output/);
 				terminal.input(DOWN);
 			}
 			sheet.dispose?.();
 			sheet = undefined;
 			await pending;
 			tui.renderNow();
+			if (shellRows > 0) {
+				assert.match(cleanScreen(getLayoutFrame(tui).lines), /pending-output-0/);
+				terminal.resize(columns, 60);
+				tui.renderNow();
+			}
 			const afterClose = cleanScreen(getLayoutFrame(tui).lines);
 			assert.match(afterClose, /below-widget/);
 			assert.match(afterClose, /above-widget-0/);
+			if (followUps > 0) {
+				assert.match(afterClose, /Follow-up: queued-0/);
+				assert.match(afterClose, /Follow-up: queued-5/);
+				assert.equal(context.getAllQueuedMessages().followUp.length, followUps);
+			}
+			if (shellRows > 0) assert.match(afterClose, /pending-output-7/);
 		} finally {
 			sheet?.dispose?.();
 			await pending;

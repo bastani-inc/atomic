@@ -14,14 +14,16 @@ const overlay: GraphOverlayPort = {
 	close: () => {},
 };
 
-test("registers /workflow and /workflows as separate commands (#5224)", async () => {
+test("registers /workflows with its optional stage argument (#5234)", async () => {
 	setDurableBackend(await createMemoryTestBackend());
 	try {
 		const handlers = new Map<string, WorkflowCommandHandler>();
 		const registered: string[] = [];
+		const descriptions = new Map<string, string>();
 		const pi: ExtensionAPI = {
-			registerCommand(name) {
+			registerCommand(name, options) {
 				registered.push(name);
+				descriptions.set(name, options.description);
 			},
 		};
 		const runtime = createExtensionRuntime();
@@ -45,6 +47,10 @@ test("registers /workflow and /workflows as separate commands (#5224)", async ()
 		assert.deepEqual(
 			registered.filter((name) => name.startsWith("workflow")),
 			["workflow", "workflows"],
+		);
+		assert.equal(
+			descriptions.get("workflows"),
+			"Open this session's workflow runs. Usage: /workflows [run-id] [stage]",
 		);
 	} finally {
 		setDurableBackend(undefined);

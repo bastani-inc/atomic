@@ -1,29 +1,42 @@
 import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
 import type { TUI } from "@bastani/atomic-tui";
 import type { Store } from "../shared/store.js";
+import type { StoreSnapshot } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 
 export type GraphViewMode = "overlay" | "widget";
 
-/** What a graph action on a stage reports back: shown on the hint line for a moment. */
+export type GraphForkTargetResult =
+	| {
+			readonly ok: true;
+			readonly stagePath: string;
+
+			readonly rerunToolSteps: number;
+
+			readonly live: boolean;
+	  }
+	| { readonly ok: false; readonly message: string };
+
+export interface GraphViewCarry {
+	readonly notice?: { readonly text: string; readonly tone: "info" | "error" };
+
+	readonly focusStageId?: string;
+}
+
 export interface GraphStageActionResult {
 	readonly ok: boolean;
 	readonly message: string;
-	/** The run a retry or fork started, which the graph then shows. */
+
 	readonly runId?: string;
 }
 
-/**
- * Run controls the graph offers on a focused stage. Each is optional: a host that cannot perform one leaves it out,
- * and the graph neither offers nor advertises its key.
- */
 export interface GraphStageActions {
-	/** Stop the stage so it can be resumed later (`x x`). */
 	stop?(runId: string, stageId: string): Promise<GraphStageActionResult>;
-	/** Continue a failed run from this failed stage: completed stages are kept and the stage runs again (`r`). */
+
 	retry?(runId: string, stageId: string): Promise<GraphStageActionResult>;
-	/** Fork the run into a new run that keeps its completed stages; the source run is never changed (`f`). */
-	fork?(runId: string, stageId: string): Promise<GraphStageActionResult>;
+
+	forkTarget?(rootRunId: string, stageId: string): Promise<GraphForkTargetResult>;
+	fork?(rootRunId: string, stageId: string): Promise<GraphStageActionResult>;
 }
 /**
  * Terminal geometry exposed to GraphView. The renderer reads only `rows`;
@@ -39,11 +52,7 @@ export interface GraphViewOpts {
 	store: Store;
 	graphTheme: GraphTheme;
 	onClose?: () => void;
-	/**
-	 * Invoked when the user presses `h` inside the pane. Hides without
-	 * unmounting (overlay-adapter calls `setHidden(true)`). Re-open via
-	 * `F2` or `/workflows`.
-	 */
+
 	onHide?: () => void;
 	/**
 	 * Invoked when the user presses Enter on a focused graph node — the
@@ -51,15 +60,14 @@ export interface GraphViewOpts {
 	 * pane. When unset, Enter is a no-op (preserves graph mode).
 	 */
 	onStageAttach?: (runId: string, stageId: string) => void;
-	/**
-	 * Invoked when Esc (or ← with nothing to the left) pops the graph itself: back to where it was opened from, main
-	 * chat unless the opener said otherwise. Falls back to `onHide` when unset.
-	 */
+
 	onDetach?: () => void;
-	/** Stop, retry and fork controls for a focused stage. */
+
 	stageActions?: GraphStageActions;
-	/** Show another run in this graph, such as the run a retry or fork started. */
-	onShowRun?: (runId: string) => void;
+
+	onShowRun?: (runId: string, carry?: GraphViewCarry) => void;
+
+	carry?: GraphViewCarry;
 	/**
 	 * When provided, GraphView restores focus to this stage on construction.
 	 * `initialFocusedRunId` disambiguates identical local stage IDs in nested runs.
@@ -93,11 +101,11 @@ export interface GraphViewOpts {
 	 * repaint so a message queued from the stage chat stays visible after the
 	 * user detaches. Runtime-only: queue state never enters a store snapshot.
 	 */
-	getStageQueuedMessageCount?: (runId: string, stageId: string) => number;
+	getStageQueuedMessageCount?: (runId: string, stageId: string, snapshotCount: number) => number;
 	/**
 	 * A value that differs whenever any stage's live queue count differs, read on every repaint in time proportional
 	 * to the stages the host holds live, never to the stages of the run (#4642). A change re-reads every count and
 	 * sizes the cards again; counts are otherwise read when the layout is built.
 	 */
-	getQueuedStageSignature?: () => string;
+	getQueuedStageSignature?: (snapshot: StoreSnapshot | null) => string;
 }

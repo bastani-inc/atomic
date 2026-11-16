@@ -113,6 +113,7 @@ export interface DurableForkRequest<TDefinition = WorkflowDefinition> extends Fo
 	readonly source: ForkConfigSource;
 	readonly runId: string;
 	readonly fromStage?: string;
+	readonly expectedStageId?: string;
 	readonly inputs?: WorkflowInputValues;
 	/** Destination directory of the fork's stages and session store. Omitted: the source run's directory. */
 	readonly cwd?: string;
@@ -379,6 +380,67 @@ function forkPointRecords(checkpoints: readonly CheckpointEvent[], rootRunId: st
 	return records;
 }
 
+const UNFINISHED_FORK_TARGET_STATUSES: ReadonlySet<string> = new Set(["failed", "blocked", "paused", "suspended"]);
+
+function unfinishedForkTargetRecords(
+	checkpoints: readonly CheckpointEvent[],
+	rootRunId: string,
+	completed: readonly ForkPointRecord[],
+): readonly ForkPointRecord[] {
+	const all = checkpoints.map((event) => event.checkpoint);
+	const reached = attemptReachedCheckpoints(all, rootRunId, { rootReach: true });
+	const visible = reached === all ? undefined : new Set(reached);
+	const boundaries = new Map<string, string>();
+	const finished = new Set<string>();
+	const first = new Map<string, CheckpointEvent & { readonly checkpoint: DurableStageCheckpoint }>();
+	const last = new Map<string, DurableStageCheckpoint>();
+	for (const { seq, checkpoint } of checkpoints) {
+		if (checkpoint.kind !== "stage") continue;
+		if (checkpoint.topology?.boundary !== undefined && !boundaries.has(checkpoint.replayKey))
+			boundaries.set(checkpoint.replayKey, checkpoint.name);
+		if (checkpoint.output !== undefined) finished.add(checkpoint.replayKey);
+		if (checkpoint.topology?.occurrenceKey !== undefined || visible?.has(checkpoint) === false) continue;
+		const key = JSON.stringify([checkpoint.replayKey, checkpointAttempt(checkpoint)]);
+		if (!first.has(key)) first.set(key, { seq, checkpoint });
+		last.set(checkpoint.replayKey, checkpoint);
+	}
+	const enclosing = (replayKey: string): string[] =>
+		[...boundaries.keys()]
+			.filter((boundary) => replayKey.startsWith(`${boundary}:`))
+			.sort((a, b) => a.length - b.length)
+			.map((boundary) => boundaries.get(boundary)!);
+	const taken = new Set(completed.map((record) => record.stagePath));
+	const records: ForkPointRecord[] = [];
+	for (const [replayKey, checkpoint] of last) {
+		const status = checkpoint.topology?.status;
+		if (finished.has(replayKey) || status === undefined || !UNFINISHED_FORK_TARGET_STATUSES.has(status)) continue;
+		const base = [...enclosing(replayKey), checkpoint.name].join(STAGE_PATH_SEPARATOR);
+		let occurrence = 0;
+		let stagePath: string;
+		do {
+			occurrence++;
+			stagePath = occurrence === 1 ? base : `${base}#${occurrence}`;
+		} while (taken.has(stagePath));
+		taken.add(stagePath);
+		records.push({
+			stagePath,
+			replayKey,
+			sessionId: stageSessionId(checkpoint),
+			completedAt: checkpoint.completedAt,
+			...firstEvent(first.get(JSON.stringify([replayKey, checkpointAttempt(checkpoint)]))!),
+		});
+	}
+	return records;
+}
+
+function forkTargetRecords(
+	checkpoints: readonly CheckpointEvent[],
+	rootRunId: string,
+): { readonly completed: readonly ForkPointRecord[]; readonly unfinished: readonly ForkPointRecord[] } {
+	const completed = forkPointRecords(checkpoints, rootRunId);
+	return { completed, unfinished: unfinishedForkTargetRecords(checkpoints, rootRunId, completed) };
+}
+
 function firstEvent(event: CheckpointEvent & { readonly checkpoint: DurableStageCheckpoint }) {
 	return { firstSeq: event.seq, firstTopology: event.checkpoint.topology };
 }
@@ -469,6 +531,58 @@ async function loadPoolSession(sessions: SourceSessions, sessionId: string, cont
 			throw new ForkSessionUnavailableError({ sessionId, ...context, storage }, { cause: error as Error });
 		throw error;
 	}
+}
+
+export interface DurableForkTarget {
+	readonly stagePath: string;
+
+	readonly completed: boolean;
+
+	readonly rerunToolSteps: number;
+}
+
+export async function durableForkTarget(
+	backend: DurableWorkflowBackend,
+	runId: string,
+	stageId: string,
+	options: Pick<ForkSourceOptions, "rootRunOf"> = {},
+): Promise<DurableForkTarget | undefined> {
+	const journalBackend = forkJournal(backend);
+	const handle = backend.getWorkflow(runId);
+	const loaded =
+		isFullRunId(runId) && (handle?.rootWorkflowId === undefined || handle.rootWorkflowId === runId)
+			? await inJournal(journalBackend.journal, { runId, phase: "read" }, () =>
+					journalBackend.readCheckpointSequence(runId),
+				)
+			: undefined;
+	const source =
+		loaded === undefined
+			? await readForkSource(journalBackend, runId, options.rootRunOf)
+			: { runId, checkpoints: loaded.map((checkpoint, seq) => ({ seq, checkpoint })) };
+	const { completed, unfinished } = forkTargetRecords(source.checkpoints, source.runId);
+	const byStage = (record: ForkPointRecord) => record.firstTopology?.stageId === stageId;
+	const record = completed.findLast(byStage) ?? unfinished.findLast(byStage);
+	if (record === undefined) return undefined;
+	const reached = new Set(
+		attemptReachedCheckpoints(
+			source.checkpoints.map(({ checkpoint }) => checkpoint),
+			source.runId,
+			{ rootReach: true },
+		),
+	);
+	const rerunTools = new Set<string>();
+	for (const { seq, checkpoint } of source.checkpoints) {
+		if (
+			seq >= record.firstSeq &&
+			reached.has(checkpoint) &&
+			checkpoint.kind === "tool" &&
+			checkpoint.topology !== undefined &&
+			checkpoint.output !== undefined
+		)
+			rerunTools.add(checkpoint.argsHash);
+	}
+	const rerunToolSteps = rerunTools.size;
+	return { stagePath: record.stagePath, completed: completed.includes(record), rerunToolSteps };
 }
 
 /**
@@ -798,15 +912,23 @@ interface ForkSelection {
 }
 
 function selectForkEvents(source: ForkSource, request: DurableForkRequest): ForkSelection {
-	const records = forkPointRecords(source.checkpoints, source.runId);
-	const target = records.find((record) => record.stagePath === request.fromStage);
-	if (request.fromStage !== undefined && target === undefined)
+	const { completed: records, unfinished } = forkTargetRecords(source.checkpoints, source.runId);
+	const target =
+		records.find((record) => record.stagePath === request.fromStage) ??
+		unfinished.find((record) => record.stagePath === request.fromStage);
+	if (
+		request.fromStage !== undefined &&
+		(target === undefined ||
+			(request.expectedStageId !== undefined && target.firstTopology?.stageId !== request.expectedStageId))
+	) {
+		const validTargets = [...records, ...unfinished];
 		throw new ForkTargetNotFoundError({
 			runId: source.runId,
 			fromStage: request.fromStage,
-			validStagePaths: records.map((record) => record.stagePath),
-			totalValidStagePaths: records.length,
+			validStagePaths: validTargets.map((record) => record.stagePath),
+			totalValidStagePaths: validTargets.length,
 		});
+	}
 	const cut = target?.firstSeq ?? Number.POSITIVE_INFINITY;
 	const carryAll = request.carryMessages === "all";
 	const prefix = source.checkpoints.filter((event) => event.seq < cut);

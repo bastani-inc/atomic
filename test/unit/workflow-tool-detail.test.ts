@@ -298,6 +298,8 @@ describe("tool graph inspection", () => {
 			assert.doesNotMatch(expanded, new RegExp(hidden));
 		assert.equal(enterView.handleInput("\x0f"), true);
 		assert.doesNotMatch(visibleText(enterView.render(120)), /\bTIMING\b/);
+		assert.equal(enterView.handleInput("\x1b[D"), true);
+		assert.ok(enterView._toolDetail, "Left does not close the tool detail (#5234)");
 		assert.equal(enterView.handleInput("\x1b"), true);
 		assert.equal(enterView._toolDetail, null);
 		enterView.dispose();
@@ -1292,7 +1294,7 @@ describe("tool graph inspection", () => {
 		});
 		assert.equal(unbound.handleInput("\r"), true);
 		const collapsed = visibleText(unbound.render(120));
-		assert.match(collapsed, /esc\/← back to graph/);
+		assert.match(collapsed, /esc back to graph/);
 		assert.match(collapsed, /↑↓ pgup\/pgdn scroll/);
 		assert.doesNotMatch(collapsed, /ctrl\+o expand|alt\+e expand/);
 		assert.doesNotMatch(collapsed, / · \s+expand/);
