@@ -1,13 +1,18 @@
 /** Tests for bundled workflow discovery. */
 
 import assert from "node:assert/strict";
+import type * as Fs from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, test } from "vitest";
 import {
 	type DiscoveryDiagnostic,
 	type DiscoverySource,
 	discoverStartupWorkflowsSync,
+	discoverWorkflows,
 } from "../../packages/workflows/src/extension/discovery.js";
-import { makeValidDef } from "./discovery-helpers.js";
+import { makeTempDir, makeValidDef } from "./discovery-helpers.js";
 import "./discovery-project-config.test.js";
 import "./discovery-invalid-duplicates.test.js";
 
@@ -227,6 +232,61 @@ describe("registry.all() after discovery", () => {
 		for (const id of srcIds) {
 			assert.equal(regNames.has(id), true);
 		}
+	});
+});
+
+const BUILTIN_SOURCE_DIR = fileURLToPath(new URL("../../packages/workflows/builtin/", import.meta.url));
+
+function recordBuiltinSourceReads(): { readonly paths: readonly string[]; stop(): void } {
+	const fs = createRequire(import.meta.url)("node:fs") as typeof Fs;
+	const readFileSync = fs.readFileSync;
+	const paths: string[] = [];
+	fs.readFileSync = function recordedReadFileSync(this: unknown, ...args: Parameters<typeof Fs.readFileSync>) {
+		const target = args[0];
+		if (typeof target === "string" && resolve(target).startsWith(BUILTIN_SOURCE_DIR)) paths.push(target);
+		return Reflect.apply(readFileSync, this, args);
+	} as typeof Fs.readFileSync;
+	syncBuiltinESMExports();
+	return {
+		paths,
+		stop() {
+			fs.readFileSync = readFileSync;
+			syncBuiltinESMExports();
+		},
+	};
+}
+
+describe("bundled workflow discovery is done once per process (#5319)", () => {
+	test("a discovery after the first reads no bundled workflow source again (#5319)", async () => {
+		const first = discoverStartupWorkflowsSync();
+		const empty = makeTempDir("bundled-once");
+		const reads = recordBuiltinSourceReads();
+		let startup: ReturnType<typeof discoverStartupWorkflowsSync>;
+		let full: Awaited<ReturnType<typeof discoverWorkflows>>;
+		try {
+			startup = discoverStartupWorkflowsSync();
+			full = await discoverWorkflows({ cwd: empty, homeDir: empty, agentDirs: [] });
+		} finally {
+			reads.stop();
+		}
+		assert.deepEqual(reads.paths, []);
+		assert.deepEqual(startup.registry.names(), first.registry.names());
+		assert.deepEqual(startup.sources, first.sources);
+		assert.deepEqual(startup.errors, first.errors);
+		assert.deepEqual(full.registry.names(), first.registry.names());
+		assert.deepEqual(full.sources, first.sources);
+		assert.deepEqual(full.errors, first.errors);
+	});
+
+	test("each discovery returns sources and diagnostics of its own (#5319)", () => {
+		const first = discoverStartupWorkflowsSync();
+		const sources = [...first.sources];
+		const errors = [...first.errors];
+		(first.sources as DiscoverySource[]).splice(0);
+		(first.errors as DiscoveryDiagnostic[]).push({ level: "warn", code: "ZERO_STAGES", message: "", source: "" });
+		const second = discoverStartupWorkflowsSync();
+		assert.deepEqual(second.sources, sources);
+		assert.deepEqual(second.errors, errors);
 	});
 });
 

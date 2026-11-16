@@ -462,7 +462,18 @@ export function discoverStartupWorkflowsSync(): DiscoveryResult {
 	return discoverBundledManifest();
 }
 
+let bundledDiscovery: DiscoveryResult | undefined;
+
 function discoverBundledManifest(): DiscoveryResult {
+	bundledDiscovery ??= validateBundledManifest();
+	return {
+		registry: bundledDiscovery.registry,
+		sources: [...bundledDiscovery.sources],
+		errors: [...bundledDiscovery.errors],
+	};
+}
+
+function validateBundledManifest(): DiscoveryResult {
 	const manifest = bundledManifest as Record<string, unknown>;
 	const diagnostics: DiscoveryDiagnostic[] = [];
 	const sources: DiscoverySource[] = [];
