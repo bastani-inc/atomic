@@ -33,18 +33,20 @@ let shared: string | undefined;
  * rename, so tests and workers can share them. Only the cache is shared: the agent directory stays the test's own, and
  * its `cache/jiti/<version>` directory becomes a link (a junction on Windows) to the shared one, which removing the
  * agent directory unlinks without touching. Creates the agent directory if needed; call it before anything loads
- * extensions under it. Where the link cannot be made, the test keeps a private cache, as without this helper.
+ * extensions under it. Returns false where the link cannot be made (no symlink rights, another volume): the test then
+ * keeps a private cache under its agent directory, as without this helper.
  *
  * Tests that assert transpile-cache behaviour themselves (`extensions-transpile-cache-agent-dir.test.ts`,
  * `blueprint-cache.test.ts`) must not use it.
  */
-export function linkSharedTranspileCache(agentDir: string): void {
+export function linkSharedTranspileCache(agentDir: string): boolean {
 	const cacheDir = getExtensionTranspileCacheDir(agentDir);
 	mkdirSync(dirname(cacheDir), { recursive: true });
 	try {
 		shared ??= sharedCacheDir();
 		symlinkSync(shared, cacheDir, "junction");
+		return true;
 	} catch {
-		// No link (no symlink rights, another volume): the loader creates a private cache under the agent directory.
+		return false;
 	}
 }
