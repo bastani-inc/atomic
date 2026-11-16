@@ -1,4 +1,6 @@
 import { createRequire } from "node:module";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import type { Client, Transaction } from "@libsql/client";
 import {
 	createSqliteDatabase,
@@ -76,6 +78,36 @@ function closeEachConnectionOnce(): void {
 	Connection.prototype[closesOnce] = true;
 }
 
+interface GarbageCollectingRuntime {
+	gc?: () => void;
+	Bun?: { gc(force: boolean): void };
+}
+
+function exposedGc(): () => void {
+	setFlagsFromString("--expose-gc");
+	try {
+		return runInNewContext("gc") as () => void;
+	} finally {
+		setFlagsFromString("--no-expose-gc");
+	}
+}
+
+function collectGarbage(): void {
+	const runtime = globalThis as GarbageCollectingRuntime;
+	if (runtime.gc) runtime.gc();
+	else if (runtime.Bun) runtime.Bun.gc(true);
+	else exposedGc()();
+}
+
+const COLLECTION_PASSES = 2;
+
+async function releaseClosedConnections(): Promise<void> {
+	for (let pass = 0; pass < COLLECTION_PASSES; pass++) {
+		collectGarbage();
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+}
+
 function statements(connection: () => Client | Transaction): SqliteDriverExecutor {
 	return {
 		async execute(sql, params) {
@@ -110,7 +142,10 @@ export async function openLibsqlDatabase({ url, authToken }: LibsqlDatabaseOptio
 				close: () => transaction.close(),
 			};
 		},
-		close: () => client?.close(),
+		async close() {
+			client?.close();
+			if (/^file:/i.test(url)) await releaseClosedConnections();
+		},
 	});
 	try {
 		await database.exec("PRAGMA foreign_keys = ON");

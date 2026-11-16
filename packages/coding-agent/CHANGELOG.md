@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed the libSQL / Turso example in the storage guide crashing the process on Windows without an error message when it closed a local file database. The native `libsql` 0.5 driver closed the connection's SQLite handle twice; the example now holds a statement while each connection closes, as `@bastani/atomic-storage-libsql` already does. See [Bring your own driver](docs/storage.md#bring-your-own-driver) ([#5325](https://github.com/bastani-inc/atomic/issues/5325))
+- Fixed the libSQL / Turso example in the storage guide crashing the process on Windows without an error message when it closed a local file database: the native `libsql` 0.5 driver closed the connection's SQLite handle twice. The example now holds a statement while each connection closes, and for a local file `close()` runs two garbage collections before it resolves, so the file is released when `close()` returns, as `@bastani/atomic-storage-libsql` does. See [Bring your own driver](docs/storage.md#bring-your-own-driver) ([#5325](https://github.com/bastani-inc/atomic/issues/5325))
 
 ## [0.9.88] - 2026-11-16
 

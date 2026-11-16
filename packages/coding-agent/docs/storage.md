@@ -559,11 +559,13 @@ You can also implement `SqliteDatabase` yourself by following the same rules. Ei
 
 This module is a complete adapter. Install `@libsql/client` where the module can import it, for example as a dependency of an [Atomic package](#adapters-from-atomic-packages). It accepts caller-provided credentials only. For a local file, create its parent directory first; no network or credentials are needed.
 
-Keep `closeEachConnectionOnce` when you copy the example. For a local file, `@libsql/client` 0.18 uses the native `libsql` 0.5 driver, which closes a connection's SQLite handle twice when no statement still holds the connection. The second close reads freed memory, and on Windows the process can then exit without an error message. The function prepares a statement before each close and holds it until the close returns, so the handle closes once, when a garbage collection finalizes that statement. Until then the database's files stay open, and Windows refuses to delete them. `@bastani/atomic-storage-libsql` does the same, and runs that collection after each close of a local file.
+Keep `closeEachConnectionOnce` and `releaseClosedConnections` when you copy the example. For a local file, `@libsql/client` 0.18 uses the native `libsql` 0.5 driver, which closes a connection's SQLite handle twice when no statement still holds the connection. The second close reads freed memory, and on Windows the process can then exit without an error message. `closeEachConnectionOnce` prepares a statement before each close and holds it until the close returns, so the handle closes once, when the statement is garbage-collected. For a local file, `close()` therefore runs two garbage collections before it resolves, so the database's files are released when it returns and Windows can delete them. `@bastani/atomic-storage-libsql` does the same.
 
 {/* custom-driver-example */}
 ```ts
 import { createRequire } from "node:module";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import type { Client, Transaction } from "@libsql/client";
 import {
 	createSqliteDatabase,
@@ -641,6 +643,36 @@ function closeEachConnectionOnce(): void {
 	Connection.prototype[closesOnce] = true;
 }
 
+interface GarbageCollectingRuntime {
+	gc?: () => void;
+	Bun?: { gc(force: boolean): void };
+}
+
+function exposedGc(): () => void {
+	setFlagsFromString("--expose-gc");
+	try {
+		return runInNewContext("gc") as () => void;
+	} finally {
+		setFlagsFromString("--no-expose-gc");
+	}
+}
+
+function collectGarbage(): void {
+	const runtime = globalThis as GarbageCollectingRuntime;
+	if (runtime.gc) runtime.gc();
+	else if (runtime.Bun) runtime.Bun.gc(true);
+	else exposedGc()();
+}
+
+const COLLECTION_PASSES = 2;
+
+async function releaseClosedConnections(): Promise<void> {
+	for (let pass = 0; pass < COLLECTION_PASSES; pass++) {
+		collectGarbage();
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+}
+
 function statements(connection: () => Client | Transaction): SqliteDriverExecutor {
 	return {
 		async execute(sql, params) {
@@ -675,7 +707,10 @@ export async function openLibsqlDatabase({ url, authToken }: LibsqlDatabaseOptio
 				close: () => transaction.close(),
 			};
 		},
-		close: () => client?.close(),
+		async close() {
+			client?.close();
+			if (/^file:/i.test(url)) await releaseClosedConnections();
+		},
 	});
 	try {
 		await database.exec("PRAGMA foreign_keys = ON");

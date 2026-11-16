@@ -5,6 +5,7 @@ import { readStreamText, spawnProcess } from "../helpers/runtime.js";
 
 const fixture = fileURLToPath(new URL("../fixtures/storage-libsql-close-once.mjs", import.meta.url));
 const wrapperFixture = fileURLToPath(new URL("../fixtures/storage-libsql-wrapper-close-once.mjs", import.meta.url));
+const releaseFixture = fileURLToPath(new URL("../fixtures/storage-libsql-wrapper-close-releases.mjs", import.meta.url));
 
 /**
  * glibc's allocator, told to fill memory it frees with 0xba (SQLite's "sick connection" marker) and to keep no
@@ -43,6 +44,14 @@ test(
 	"closing libSQL file databases the documented custom driver opens closes each connection once (#5325)",
 	async () => {
 		await runPoisoned(wrapperFixture);
+	},
+	CHILD_PROCESS_TIMEOUT_MS,
+);
+
+test(
+	"closing a libSQL file database the documented custom driver opened releases its files before close resolves (#5325)",
+	async () => {
+		await runPoisoned(releaseFixture);
 	},
 	CHILD_PROCESS_TIMEOUT_MS,
 );
