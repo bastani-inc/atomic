@@ -86,7 +86,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 					stages: this.cachedDisplayStages,
 					queuedMessageCount: this._stageQueuedMessageCount(node.stage),
 				});
-				// The status filter dims what it does not match; the graph keeps its shape so nothing moves.
+
 				const cardLines =
 					ni === this.focusedIndex || stageMatchesStatusFilter(node.stage, this.statusFilter)
 						? rawCardLines

@@ -1,8 +1,3 @@
-/**
- * A failed stage's detail in the graph: what failed, why in one line, and the next actions. The full error, its
- * code, hint and causes, are kept behind the log view so the summary never becomes a stack trace.
- */
-
 import type { SerializedError } from "../shared/error-codec.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
@@ -14,11 +9,10 @@ import { truncateToWidth, wrapPlainText } from "./text-helpers.js";
 export interface StageFailureDetailOpts {
 	theme: GraphTheme;
 	width: number;
-	/** Show the full log instead of the summary. */
+
 	logs: boolean;
 }
 
-/** The first non-empty line of the stage's error: the reason the summary shows. */
 export function stageFailureReason(stage: Pick<StageSnapshot, "error" | "failureMessage">): string {
 	const text = stage.error ?? stage.failureMessage ?? "";
 	const line = text
@@ -39,7 +33,6 @@ function serializedErrorLines(error: SerializedError, depth: number): string[] {
 	return lines;
 }
 
-/** Every recorded line of the stage's failure, for the log view. */
 export function stageFailureLogLines(
 	stage: Pick<StageSnapshot, "error" | "failureMessage" | "failureDetail" | "failureCode">,
 ): string[] {
@@ -51,7 +44,6 @@ export function stageFailureLogLines(
 	return lines;
 }
 
-/** The detail's body rows, already styled and cut to `width`. */
 export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageFailureDetailOpts): string[] {
 	const { theme } = opts;
 	const width = Math.max(1, Math.floor(opts.width));

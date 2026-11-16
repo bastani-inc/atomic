@@ -1,9 +1,3 @@
-/**
- * `/workflows`: the way into a session's workflow runs. It opens the only run's graph directly, lists several, and says
- * so when there are none. Anything that lists runs opens one through {@link openWorkflowRun}, so Esc at the graph's
- * top goes back to that list.
- */
-
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import { deriveGraphTheme, type GraphTheme } from "../tui/graph-theme.js";
@@ -22,11 +16,10 @@ import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { overlaySurfaceFromContext, resolveRunId } from "./workflow-targets.js";
 
 export interface OpenWorkflowRunOptions {
-	/** Where Esc at the graph's top goes back to, such as the list the run was picked from; main chat otherwise. */
 	readonly onReturn?: () => void;
-	/** Open directly on this stage's chat. */
+
 	readonly stageId?: string;
-	/** The run that owns `stageId`, when it is a child run's stage. */
+
 	readonly stageRunId?: string;
 }
 
@@ -35,10 +28,6 @@ export interface WorkflowsCommandDeps {
 	readonly store: Store;
 }
 
-/**
- * Open a run's graph in the session's workflow pane, on the command's own surface when it has one and the session's
- * otherwise.
- */
 export function openWorkflowRun(
 	runId: string,
 	ctx: Pick<PiCommandContext, "ui">,
@@ -54,7 +43,6 @@ export interface WorkflowsCommandOptions {
 	readonly selectRunId?: string;
 }
 
-/** `/workflows [run]`. */
 export async function handleWorkflowsCommand(
 	args: string,
 	ctx: PiCommandContext,

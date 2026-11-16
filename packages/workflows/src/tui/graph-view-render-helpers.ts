@@ -44,12 +44,10 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		return this.cachedNavigation[this.focusedIndex]?.arrows ?? "";
 	}
 
-	/** Keybindings manager the hint line and `?` overlay resolve action keys through. */
 	protected _navKeybindings(): NavKeybindings | undefined {
 		return isKeybindingsLike(this.piKeybindings) ? (this.piKeybindings as NavKeybindings) : undefined;
 	}
 
-	/** The graph theme as the shared hint line and key overlay paint it. */
 	protected _navKeyStyle(): NavKeyStyle {
 		const t = this.graphTheme;
 		return {
@@ -61,15 +59,10 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		};
 	}
 
-	/**
-	 * A remappable key: named by its action when the host's manager can resolve keys, otherwise by its default, which is
-	 * what the graph matches without a manager.
-	 */
 	protected _actionKey(action: string, fallback: string, label: string): NavKey {
 		return this._navKeybindings()?.getKeys ? { action, label } : { keys: fallback, label };
 	}
 
-	/** Whether `x x` can stop the focused stage: a host stop action and a stage that is still working. */
 	protected _focusedStageStoppable(): boolean {
 		if (this.stageActions?.stop === undefined) return false;
 		const stage = this.cachedLayout[this.focusedIndex]?.stage;
@@ -77,10 +70,6 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		return stage.status === "running";
 	}
 
-	/**
-	 * Every key the graph's current state answers to, in the order the hint line keeps them under width pressure: the
-	 * way back first. The `?` overlay lists all of them; the hint line drops entries from the end until it fits.
-	 */
 	protected _graphKeys(compact = false): NavKey[] {
 		const help = this._actionKey(APP_ACTION.keysHelp, "?", "keys");
 		if (this.toolDetail !== null) {
@@ -143,7 +132,6 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		];
 	}
 
-	/** The hint line's transient message, while it lasts. */
 	protected _activeGraphNotice(): { text: string; tone: "info" | "error" } | null {
 		const notice = this.graphNotice;
 		if (notice === null) return null;
@@ -163,8 +151,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const accent = hexToAnsi(t.accent);
 
 		const { top, mid, bot, visibleWidth: pillW } = renderOutlinePill(MODE_PILL_LABEL, t.accent, chromeBg);
-		// Hints use `<key> <label>` segments: the way back first and `? keys` last, which stay; under width pressure the
-		// keys between them drop from the end, and `?` lists them all.
+
 		const sep = `${chromeBg}  ${dim}\u00b7${RESET}${chromeBg}  `;
 		const leftEdgePad = 1;
 		const rightEdgePad = 2;
@@ -200,8 +187,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const withHelp = (): string[] => (helpSegment ? [...segments, helpSegment] : segments);
 		const notice = this._activeGraphNotice();
 		const statusText = this._externalStatusText();
-		// A notice (the first `x`, an action's result, a stop-all prompt or an extension status) gets its own row above
-		// the hint line, so the hint line keeps every key it can fit at any width.
+
 		const toastText = notice?.text ?? statusText;
 		const toastColor = notice ? hexToAnsi(notice.tone === "error" ? t.error : t.accent) : accent;
 		while (segments.length > 1 && visibleWidth(withHelp().join(sep)) > hintsBudget) segments.pop();

@@ -78,7 +78,7 @@ export interface OverlayPiSurface {
  * that exact stage-chat node — used by `/workflow attach <runId> <stageId>`
  * and the picker overlay's connect-to-stage flow.
  */
-/** How a caller opens the graph: where Esc at the graph's top goes back to. */
+
 export interface GraphOverlayOpenOptions {
 	readonly onReturn?: () => void;
 }
@@ -129,7 +129,7 @@ export interface BuildGraphOverlayAdapterOpts {
 	stageUiBroker?: StageUiBroker;
 	/** Optional clock injection for deterministic attach-pane transition tests. */
 	now?: () => number;
-	/** Stop, retry and fork controls the graph offers on a focused stage. */
+
 	stageActions?: import("./graph-view-types.js").GraphStageActions;
 	/** Terminal output seam used to test raw overlay control sequences. */
 	terminalOutput?: OverlayTerminalOutput;
@@ -163,7 +163,7 @@ export function buildGraphOverlayAdapter(
 	// the chat scrollback, producing visible duplicates.
 	let currentHandle: PiOverlayHandle | null = null;
 	let mounted = false;
-	/** Where the current open said Esc at the graph's top goes back to. */
+
 	let returnTo: (() => void) | undefined;
 	const goBack = (): void => {
 		const back = returnTo;

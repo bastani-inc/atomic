@@ -20,11 +20,9 @@ import { nodeCardHeight } from "./node-card.js";
 import { stageFailureReason } from "./stage-failure-detail.js";
 import type { SwitcherState } from "./switcher.js";
 
-/** The `f` status filter, in the order `f` cycles it. */
 export const GRAPH_STATUS_FILTERS = ["all", "running", "stopped", "completed", "failed"] as const;
 export type GraphStatusFilter = (typeof GRAPH_STATUS_FILTERS)[number];
 
-/** Whether a stage matches the status filter; a non-matching node is dimmed, never hidden or moved. */
 export function stageMatchesStatusFilter(stage: StageSnapshot, filter: GraphStatusFilter): boolean {
 	switch (filter) {
 		case "all":
@@ -48,13 +46,12 @@ export interface GraphNotice {
 	readonly arm?: boolean;
 }
 
-/** A stage whose detail shows its failure, with retry, fork, transcript and log actions. */
 export interface GraphStageDetail {
 	readonly runId: string;
 	readonly stageId: string;
-	/** Graph node id of the stage, so the detail follows the node across store updates. */
+
 	readonly nodeId: string;
-	/** Whether the full log is shown instead of the summary. */
+
 	logs: boolean;
 }
 
@@ -145,13 +142,13 @@ export abstract class GraphViewState {
 	protected toolDetail: ExpandedWorkflowTool | null = null;
 	/** Tool message blocks open collapsed and own expansion independently of graph cards. */
 	protected toolDetailExpanded = false;
-	/** Selected failed stage's detail (its reason and next actions). */
+
 	protected stageDetail: GraphStageDetail | null = null;
-	/** The `f` status filter. */
+
 	protected statusFilter: GraphStatusFilter = "all";
-	/** Whether the `?` key overlay is open. */
+
 	protected keysHelpOpen = false;
-	/** A one-line message on the hint line (the first `x` press, an action result), until `until`. */
+
 	protected graphNotice: GraphNotice | null = null;
 	protected abstract _graphScrollTop(): number;
 	protected graphScrollColOffset = 0;
@@ -232,7 +229,7 @@ export abstract class GraphViewState {
 
 	protected _needsAnimationTick(): boolean {
 		this._syncLayout();
-		// A hint-line notice must also disappear on time, even over an idle graph.
+
 		return this.hasAnimatingStages || (this.graphNotice !== null && Date.now() > this.graphNotice.until);
 	}
 
@@ -564,14 +561,12 @@ export abstract class GraphViewState {
 	}
 
 	private _syncToolDetail(): void {
-		// A failure detail follows its stage; once the stage is gone or no longer failed it closes back to the graph.
 		if (this.stageDetail !== null && this._stageDetailStage()?.status !== "failed") this._closeStageDetail();
 		this._syncRetryWatch();
 		if (this.toolDetail === null) return;
 		this.toolDetail = this.expandedGraph.tools.find((tool) => tool.id === this.toolDetail?.id) ?? null;
 	}
 
-	/** Open the focused failed stage's detail; false when the focused node is not a failed stage. */
 	protected _openFocusedStageDetail(): boolean {
 		const stage = this.cachedLayout[this.focusedIndex]?.stage;
 		if (stage?.status !== "failed") return false;
@@ -593,14 +588,12 @@ export abstract class GraphViewState {
 		return true;
 	}
 
-	/** The stage a detail is open on, as the latest snapshot has it. */
 	protected _stageDetailStage(): StageSnapshot | undefined {
 		const detail = this.stageDetail;
 		if (detail === null) return undefined;
 		return this.cachedLayout.find((node) => node.stage.id === detail.nodeId)?.stage;
 	}
 
-	/** Whether a read-only detail (a tool's, or a failed stage's) replaces the graph body. */
 	protected _detailOpen(): boolean {
 		return this.toolDetail !== null || this.stageDetail !== null;
 	}

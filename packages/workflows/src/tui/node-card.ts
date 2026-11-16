@@ -359,7 +359,7 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 				? blockedBadgeText(stage, opts.stages, innerWidth)
 				: (pooledStageStartingText(stage) ?? durationText(stage));
 	const bodyHex = durationColor(status, theme);
-	// A cancelled tool reads as stopped (◼), never as skipped.
+
 	const statusText = `${statusIcon(stage.toolStatus === "cancelled" ? "cancelled" : status)} ${stage.toolStatus ?? statusLabel(status)}`;
 	const queuedCount = queuedBadgeCount(opts.queuedMessageCount);
 	const statusLine =

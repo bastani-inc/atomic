@@ -35,7 +35,6 @@ function view(stages, opts = {}) {
 	});
 }
 
-/** The statusline: the notice row above the GRAPH pill's middle, then the hint row. */
 function hint(graph, width = 160) {
 	const lines = graph.render(width).map((line) => stripAnsi(line));
 	const index = lines.findIndex((line) => line.includes("│ GRAPH │"));

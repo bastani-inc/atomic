@@ -9,21 +9,36 @@ import { makeRun, makeStage } from "./overlay-graph-helpers.js";
 
 function fixture() {
 	const store = createStore();
+	const work = { payloadReads: 0 };
 	store.recordRunStart({
 		...makeRun(
 			Array.from({ length: 40 }, (_, index) => ({
 				...makeStage(`stage-${index}`),
 				status: "running" as const,
 				result: `result-${index}`.repeat(1_000),
-				structured: { nested: { answer: index } },
-				toolEvents: [{ name: "bash", input: { command: "work" }, output: "history".repeat(1_000), startedAt: 1 }],
+				structured: {
+					nested: {
+						get answer() {
+							work.payloadReads++;
+							return index;
+						},
+					},
+				},
+				toolEvents: [
+					{
+						name: "bash",
+						input: { command: "work", bytes: Buffer.from([1, 2, 3]), date: new Date("2026-01-01T00:00:00.000Z") },
+						output: "history".repeat(1_000),
+						startedAt: 1,
+					},
+				],
 			})),
 		),
 		id: "run-1",
 		inputs: { prompt: "keep inputs", config: { value: 7 } },
 		result: { custom: "keep outputs" },
 	});
-	return store;
+	return { store, work };
 }
 
 function views(store: ReturnType<typeof createStore>) {
@@ -58,19 +73,21 @@ test("clearing a store releases full payloads retained by status expansion (#523
 });
 
 test("status refresh reuses full raw views without whole-store snapshots or repeated deep clones (#5234)", () => {
-	const store = fixture();
+	const { store, work } = fixture();
 	const expected = JSON.stringify(views({ ...store, inspectionSnapshot: undefined }));
 	assert.equal(
 		JSON.stringify(views(store)),
 		expected,
 		"the cached view matches the legacy full-snapshot view byte for byte",
 	);
+	work.payloadReads = 0;
 	const snapshots = vi.spyOn(store, "snapshot");
 	const clones = vi.spyOn(globalThis, "structuredClone");
 	try {
 		assert.equal(JSON.stringify(views(store)), expected, "public output remains byte-identical");
 		assert.equal(snapshots.mock.calls.length, 0);
 		assert.equal(clones.mock.calls.length, 0);
+		assert.equal(work.payloadReads, 0);
 	} finally {
 		snapshots.mockRestore();
 		clones.mockRestore();
@@ -78,8 +95,9 @@ test("status refresh reuses full raw views without whole-store snapshots or repe
 });
 
 test("a status refresh clones only the changed stage and preserves every raw stage field (#5234)", () => {
-	const store = fixture();
+	const { store, work } = fixture();
 	const before = views(store);
+	work.payloadReads = 0;
 	const clones = vi.spyOn(globalThis, "structuredClone");
 	const snapshots = vi.spyOn(store, "snapshot");
 	try {
@@ -87,6 +105,7 @@ test("a status refresh clones only the changed stage and preserves every raw sta
 		const after = views(store);
 		assert.equal(snapshots.mock.calls.length, 0);
 		assert.ok(clones.mock.calls.length <= 3, `cloned ${clones.mock.calls.length} objects for one changed stage`);
+		assert.equal(work.payloadReads, 1, "only the changed stage materializes raw payloads");
 		assert.equal(after.listing[0]!.stages[0]!.toolEvents.length, 2);
 		assert.equal(before.listing[0]!.stages[0]!.toolEvents.length, 1);
 		assert.deepEqual(after.listing[0]!.stages[1]!.structured, { nested: { answer: 1 } });

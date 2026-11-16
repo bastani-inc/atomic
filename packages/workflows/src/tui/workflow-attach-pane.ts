@@ -154,7 +154,7 @@ export class WorkflowAttachPane implements Component {
 				else if (this.onHide) this.onHide();
 			},
 			stageActions: this.stageActions,
-			// A retry or fork shows its new run here; the graph that asked is replaced, so wait for its handler to end.
+
 			onShowRun: (runId, carry) => {
 				const generation = this.attachmentGeneration;
 				queueMicrotask(() => {

@@ -1,5 +1,6 @@
 import { sliceHead } from "@bastani/atomic";
 import { flattenTruncatedString } from "./flat-string.js";
+import { cloneInspectionPayload } from "./inspection-payload.js";
 import { indexRunFrom } from "./run-stage-index.js";
 import type {
 	PendingPrompt,
@@ -171,7 +172,7 @@ function compactRun(
 	full = false,
 ): RunSnapshot {
 	if (full) {
-		const copy = structuredClone({ ...run, stages: [], toolNodes: [] });
+		const copy = cloneInspectionPayload({ ...run, stages: [], toolNodes: [] });
 		return { ...copy, stages, toolNodes };
 	}
 	const {
@@ -258,7 +259,7 @@ function isSettledStage(stage: StageSnapshot): boolean {
 }
 
 function projectStage(stage: StageSnapshot, full = false): ProjectedStage {
-	const compact = full ? structuredClone(stage) : compactStage(stage);
+	const compact = full ? cloneInspectionPayload(stage) : compactStage(stage);
 	deepFreezeGraphValue(compact);
 	return {
 		shape: sourceShape(stage),
@@ -282,7 +283,7 @@ function stageUnchanged(stage: StageSnapshot, projected: ProjectedStage): boolea
 }
 
 function projectToolNode(node: ToolNodeSnapshot, full = false): ProjectedToolNode {
-	const compact = full ? structuredClone(node) : compactToolNode(node);
+	const compact = full ? cloneInspectionPayload(node) : compactToolNode(node);
 	deepFreezeGraphValue(compact);
 	return { shape: sourceShape(node), parentCount: node.parentIds.length, compact };
 }

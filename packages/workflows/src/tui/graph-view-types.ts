@@ -23,22 +23,16 @@ export interface GraphViewCarry {
 	readonly focusStageId?: string;
 }
 
-/** What a graph action on a stage reports back: shown on the hint line for a moment. */
 export interface GraphStageActionResult {
 	readonly ok: boolean;
 	readonly message: string;
-	/** The run a retry or fork started, which the graph then shows. */
+
 	readonly runId?: string;
 }
 
-/**
- * Run controls the graph offers on a focused stage. Each is optional: a host that cannot perform one leaves it out,
- * and the graph neither offers nor advertises its key.
- */
 export interface GraphStageActions {
-	/** Stop the stage so it can be resumed later (`x x`). */
 	stop?(runId: string, stageId: string): Promise<GraphStageActionResult>;
-	/** Continue a failed run from this failed stage: completed stages are kept and the stage runs again (`r`). */
+
 	retry?(runId: string, stageId: string): Promise<GraphStageActionResult>;
 
 	forkTarget?(rootRunId: string, stageId: string): Promise<GraphForkTargetResult>;
@@ -58,11 +52,7 @@ export interface GraphViewOpts {
 	store: Store;
 	graphTheme: GraphTheme;
 	onClose?: () => void;
-	/**
-	 * Invoked when the user presses `h` inside the pane. Hides without
-	 * unmounting (overlay-adapter calls `setHidden(true)`). Re-open via
-	 * `F2` or `/workflows`.
-	 */
+
 	onHide?: () => void;
 	/**
 	 * Invoked when the user presses Enter on a focused graph node — the
@@ -72,7 +62,7 @@ export interface GraphViewOpts {
 	onStageAttach?: (runId: string, stageId: string) => void;
 
 	onDetach?: () => void;
-	/** Stop, retry and fork controls for a focused stage. */
+
 	stageActions?: GraphStageActions;
 
 	onShowRun?: (runId: string, carry?: GraphViewCarry) => void;

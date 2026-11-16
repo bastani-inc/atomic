@@ -1,8 +1,3 @@
-/**
- * The graph's stage controls, wired to the same run operations the `/workflow` commands use: `x x` stops a stage so it
- * can be resumed, `r` continues a failed run from its failed stage, and `f` forks the run into a new one.
- */
-
 import { durableForkTarget } from "../durable/fork-run.js";
 import { hasActiveLiveRun } from "../durable/run-claims.js";
 import { availableStoreDurableBackend } from "../durable/store-backend.js";
@@ -16,9 +11,9 @@ import { workflowForkAction } from "./workflow-tool-fork.js";
 
 export interface GraphStageActionDeps {
 	readonly owner: WorkflowOwnerResources;
-	/** The session's workflow runtime; absent before the session starts, when retry and fork are unavailable. */
+
 	readonly runtime: () => ExtensionRuntime | undefined;
-	/** Whether the session has a person to answer prompts, as the slash commands read it. */
+
 	readonly context: () => { readonly hasUI?: boolean; readonly hasHumanInput?: boolean } | undefined;
 }
 

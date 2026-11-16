@@ -20,7 +20,7 @@ interface MouseWheelDelta {
 }
 
 const GRAPH_SCROLL_WHEEL_LINES = 4;
-/** How long an action's result stays on the hint line. */
+
 const GRAPH_NOTICE_MS = 4000;
 
 /** Keyboard, mouse, switcher, prompt, and focus navigation handling. */
@@ -113,7 +113,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return false;
 	}
 
-	/** The `?` overlay is open: Esc or `?` closes it, and every other key waits for it to close. */
 	private _handleKeysHelpInput(data: string): boolean {
 		if (matchesKey(data, Key.escape) || this._matchesNavAction(data, APP_ACTION.keysHelp)) this.keysHelpOpen = false;
 		else if (matchesKey(data, Key.ctrl("c"))) {
@@ -123,7 +122,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return true;
 	}
 
-	/** A failed stage's detail: retry, fork, transcript and logs, and the way back to the graph. */
 	private _handleStageDetailInput(data: string): boolean {
 		const detail = this.stageDetail;
 		if (detail === null) return false;
@@ -196,7 +194,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return true;
 	}
 
-	/** Show an action's progress, then its result, on the hint line; a new run the action started is shown. */
 	private _runStageAction(
 		result: Promise<GraphStageActionResult>,
 		progress: string,
@@ -294,7 +291,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		);
 	}
 
-	/** `x x` on a working stage stops it so it can be resumed; the first press only says what the second will do. */
 	private _handleStopInput(): boolean {
 		if (this.stageActionInFlight) return true;
 		const stage = this.cachedLayout[this.focusedIndex]?.stage;
@@ -497,7 +493,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		// Tool nodes open a read-only snapshot detail; they never enter the
 		// stage-chat attach path even though they share the graph card shape.
 		if (this._openFocusedToolDetail()) return;
-		// A failed stage opens its failure detail first: the reason, then retry, fork, transcript and logs.
+
 		if (this._openFocusedStageDetail()) return;
 		this._attachFocusedStage();
 	}
