@@ -544,10 +544,17 @@ export function subagentChildRecordsAppended(ownerSessionId: string): Promise<vo
 	return appendChains.get(ownerSessionId) ?? Promise.resolve();
 }
 
+type StageSession = Pick<ExtensionContext, "sessionManager">["sessionManager"];
+
 interface StageChildren {
 	readonly closeSignal: AbortSignal;
 	readonly endedForGood: () => boolean;
 	readonly end: (childId: string) => void;
+	/**
+	 * Save and read through the stage's newest session. A released stage reopens in a new session whose extensions
+	 * start afresh, and the API of the session it gave up refuses every append from then on.
+	 */
+	readonly follow: (pi: Pick<ExtensionAPI, "appendEntry">, sessionManager: StageSession) => void;
 }
 
 const stageChildren = new WeakMap<AbortSignal, StageChildren>();
@@ -567,9 +574,16 @@ export function watchWorkflowStageSubagentChildren(
 	const closeSignal = admission?.boundary.closeSignal;
 	if (!admission || !closeSignal) return undefined;
 	const existing = stageChildren.get(closeSignal);
-	if (existing) return existing;
+	if (existing) {
+		existing.follow(pi, ctx.sessionManager);
+		return existing;
+	}
 	const owner = subagentChildOwner(ctx);
-	const sessionManager = ctx.sessionManager;
+	// The stage's newest session; the watch keeps only it, so a session the stage gave up is not kept alive.
+	let current = { pi, sessionManager: ctx.sessionManager };
+	const follow = (nextPi: Pick<ExtensionAPI, "appendEntry">, sessionManager: StageSession) => {
+		current = { pi: nextPi, sessionManager };
+	};
 	const endedForGood = () => admission.extensionState.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE);
 	const latestOf = (childId: string, persisted: SubagentChildRecord | undefined) => {
 		try {
@@ -587,18 +601,19 @@ export function watchWorkflowStageSubagentChildren(
 		try {
 			const latest = latestOf(childId, persisted);
 			if (!endedForGood() || latest?.owner?.sessionId !== owner.sessionId || !endsWithStage(latest)) return;
-			void appendInOrder(pi, { ...latest, terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS });
+			void appendInOrder(current.pi, { ...latest, terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS });
 			// It can no longer resume, so its worktree is no longer kept for it.
 			unparkRunWorktree(latest.runId, latest.index);
 		} catch (error) {
 			observeChildRecordFailure(owner.sessionId, stageCloseFailure(owner.sessionId, childId, error));
 		}
 	};
-	const watched: StageChildren = { closeSignal, endedForGood, end };
+	const watched: StageChildren = { closeSignal, endedForGood, end, follow };
 	stageChildren.set(closeSignal, watched);
 	stageSessionsInProcess.add(owner.sessionId);
 	const endAll = () => {
 		if (!endedForGood()) return;
+		const { sessionManager } = current;
 		let persisted = new Map<string, SubagentChildRecord>();
 		try {
 			// Readers are held weakly and a later copy of the session can take their place, so the stage's own session,

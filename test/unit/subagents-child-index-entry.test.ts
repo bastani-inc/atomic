@@ -14,6 +14,7 @@ import {
 	isUnsavedSubagentChildRecord,
 	observedSubagentRunIds,
 	observeSubagentChildRecord,
+	readableSubagentChildRecordOf,
 	registerSubagentChildRecordReader,
 	settleSubagentChildRecord,
 	subagentChildCardRecord,
@@ -21,6 +22,7 @@ import {
 	subagentChildIdsOf,
 	subagentChildIndexEntry,
 	subagentChildRecordOf,
+	subagentChildRecordsOf,
 	unsavedSubagentChildRecordsOf,
 	watchSubagentChildCard,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
@@ -106,8 +108,8 @@ function isChildEntry(entry: SessionEntry, childId: string): boolean {
 	);
 }
 
-/** Register the subagents extension on `at`'s session; returns what starts it, as a subagent at depth 1. */
-function startExtension(at: SessionManager, policy: { readonly depth: number }): () => void {
+/** Register the subagents extension on `at`'s session; returns what starts it, which settles once its start has. */
+function startExtension(at: SessionManager, policy: { readonly depth: number }): () => Promise<unknown> {
 	const handlers = new Map<string, (event: { reason?: string }, ctx: ExtensionContext) => unknown>();
 	const pi = {
 		events: { on: () => () => {}, emit() {} },
@@ -139,7 +141,7 @@ function startExtension(at: SessionManager, policy: { readonly depth: number }):
 		},
 	} as unknown as ExtensionContext;
 	cleanups.push(() => void handlers.get("session_shutdown")?.({ reason: "quit" }, ctx));
-	return () => void handlers.get("session_start")?.({ reason: "new" }, ctx);
+	return async () => handlers.get("session_start")?.({ reason: "new" }, ctx);
 }
 
 function unreadable(fields: ReleasedChildError["fields"]) {
@@ -630,6 +632,32 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 		assert.equal(findAppendedSubagentChildRecord(unregistered), undefined);
 	});
 
+	test("an owner's children are listed without one whose latest record no open session holds", () => {
+		const owner = session();
+		const ownerSessionId = owner.getSessionId();
+		registerSubagentChildRecordReader(owner, true);
+		observeSubagentChildRecord(record(owner, { childId: "ix-list-lost:0" }), false, {
+			entryId: "entry-of-a-closed-copy",
+			sessionId: ownerSessionId,
+		});
+		const readable = observeSubagentChildRecord(record(owner, { childId: "ix-list-kept:0" }));
+
+		assert.deepEqual(subagentChildRecordsOf(ownerSessionId), [readable]);
+		assert.equal(readableSubagentChildRecordOf(ownerSessionId, "ix-list-lost:0"), undefined);
+		assert.throws(() => subagentChildRecordOf(ownerSessionId, "ix-list-lost:0"), isReleasedChildError);
+	});
+
+	test("a session one of whose children's latest record no open session holds still starts", async () => {
+		const owner = session();
+		observeSubagentChildRecord(
+			record(owner, { childId: "ix-start-lost:0", state: "terminal", terminalStatus: SUBAGENT_RELEASED }),
+			false,
+			{ entryId: "entry-of-a-closed-copy", sessionId: owner.getSessionId() },
+		);
+
+		await startExtension(owner, { depth: 0 })();
+	});
+
 	test("the unsaved records of an owner are exactly its children's, whatever other records are unsaved", () => {
 		const owner = session();
 		const { owner: _owner, ...ownerless } = record(owner, { childId: "ix-unsaved-none:0" });
@@ -775,6 +803,63 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 			},
 		};
 	}
+
+	test("a stage reopened in a new session ends its children through that session when it closes for good", async () => {
+		const store = new MemorySessionStore();
+		const cwd = makeTempDirectory("child-index-reopened-stage-");
+		cleanups.push(() => removeTempDirectory(cwd));
+		const first = await SessionManager.create(store, cwd);
+		const stageSessionId = first.getSessionId();
+		const owner = {
+			kind: "workflow-stage" as const,
+			sessionId: stageSessionId,
+			workflowRunId: "wf-ix-reopened",
+			workflowStageId: "stage-ix-reopened",
+			workflowStageName: "reopened",
+		};
+		// One admission boundary and extension state for every session of the stage generation, as a stage keeps them.
+		const close = new AbortController();
+		const extensionState = new Map<string, object>();
+		const ctxOf = (sessionManager: SessionManager) =>
+			({
+				sessionManager,
+				orchestrationContext: {
+					kind: "workflow-stage",
+					workflowRunId: owner.workflowRunId,
+					workflowStageId: owner.workflowStageId,
+					workflowStageName: owner.workflowStageName,
+					messageAdmission: { boundary: { closeSignal: close.signal }, extensionState, isOpen: () => true },
+				},
+			}) as unknown as Pick<ExtensionContext, "sessionManager" | "orchestrationContext">;
+		let firstReleased = false;
+		const firstHost = {
+			appendEntry: async (customType: string, data?: unknown) => {
+				if (firstReleased) throw new Error("This extension instance is stale after session replacement or reload.");
+				await first.appendCustomEntry(customType, data);
+			},
+		};
+		bindSubagentChildCards({ sessionManager: first });
+		watchWorkflowStageSubagentChildren(firstHost, ctxOf(first));
+		await first.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+			...record(stageSessionId, { childId: "ix-reopened:0", state: "terminal", terminalStatus: "ok" }),
+			owner,
+		});
+		// The stage gives its session up and reopens it from the store in a new one, whose extensions start afresh.
+		firstReleased = true;
+		const reopened = await SessionManager.open(store, stageSessionId, cwd);
+		bindSubagentChildCards({ sessionManager: reopened });
+		watchWorkflowStageSubagentChildren(writingHost(reopened), ctxOf(reopened));
+		const failures = subagentChildRecordFailures.count;
+
+		extensionState.set(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE, {});
+		close.abort();
+		await subagentChildRecordsAppended(stageSessionId);
+
+		assert.equal(subagentChildRecordFailures.count, failures, "nothing was saved through the released session");
+		const ended = readSubagentChildRecords(reopened.getEntries(), stageSessionId).get("ix-reopened:0");
+		assert.equal(ended?.terminalStatus, "stage-closed");
+		await store.close();
+	});
 
 	test("a stage closing for good ends a child whose latest record no open session holds from the record its own session holds", async () => {
 		const stage = session();
@@ -1007,7 +1092,7 @@ describe("what the index keeps besides entries (#4395)", () => {
 		const start = startExtension(childSession, { depth: 1 });
 		const before = subagentChildCardStateSizes();
 
-		start();
+		void start();
 
 		assert.deepEqual(subagentChildCardStateSizes(), before);
 	});
@@ -1025,7 +1110,7 @@ describe("what the index keeps besides entries (#4395)", () => {
 		);
 		const folded = readSubagentChildRecords(owner.getEntries(), ownerSessionId).get("ix-started:0");
 
-		startExtension(owner, { depth: 0 })();
+		void startExtension(owner, { depth: 0 })();
 		await subagentChildRecordsAppended(ownerSessionId);
 
 		const entryId = subagentChildIndexEntry("ix-started:0")?.entryId;
