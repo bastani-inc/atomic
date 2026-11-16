@@ -572,19 +572,30 @@ export function inProcessChildResourceLoaderOptions(input: {
 }
 
 /**
- * Resolves once the session has no turn running or starting and no interrupt delivery pending, or a stop fires.
+ * Resolves once the session has no turn running or starting, no interrupt delivery pending and no admitted message left
+ * to answer, sealing its message admission in that same check unless `waitsForNextTurn` says an interrupted turn still
+ * waits for the next one, or once a stop fires.
  * `subscribeDrained` is told each time the session's count of running turns returns to zero.
  */
 export async function sessionDrained(
-	session: Pick<AgentSession, "subscribe" | "isStreaming" | "_activePromptCount" | "_pendingInterruptDeliveries">,
+	session: Pick<
+		AgentSession,
+		| "subscribe"
+		| "isStreaming"
+		| "_activePromptCount"
+		| "_pendingInterruptDeliveries"
+		| "sealMessageAdmissionIfDrained"
+	>,
 	stops: readonly AbortSignal[],
 	subscribeDrained: (listener: () => void) => () => void,
+	waitsForNextTurn: () => boolean = () => false,
 ): Promise<void> {
 	// A session that does not count its turns has none running here.
 	const drained = () =>
 		(session._activePromptCount ?? 0) === 0 &&
 		(session._pendingInterruptDeliveries ?? 0) === 0 &&
-		!session.isStreaming;
+		!session.isStreaming &&
+		(waitsForNextTurn() || (session.sealMessageAdmissionIfDrained?.() ?? true));
 	while (!drained() && !stops.some((stop) => stop.aborted)) {
 		await new Promise<void>((resolve) => {
 			const unsubscribeDrained = subscribeDrained(() => done());
@@ -2055,6 +2066,13 @@ export class SubagentControlRuntime {
 				);
 				await transcriptSession.interruptTurn();
 			};
+			const settleInterruptedTurns = async (): Promise<void> => {
+				while (interruptedTurnSettlement !== undefined && termination === undefined) {
+					const settlement = interruptedTurnSettlement;
+					interruptedTurnSettlement = undefined;
+					await settlement;
+				}
+			};
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
 			let observedStreamingMessage: AssistantMessage | undefined;
 			taskHooks?.bindTranscript?.({
@@ -2202,7 +2220,10 @@ export class SubagentControlRuntime {
 			});
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
-			if (!termination && admitted.spec.resumeSession) await recoverChildSession(session, admitted.spec);
+			if (!termination && admitted.spec.resumeSession) {
+				await recoverChildSession(session, admitted.spec);
+				await settleInterruptedTurns();
+			}
 			const redispatched =
 				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
 			if (redispatched !== undefined) {
@@ -2269,18 +2290,19 @@ export class SubagentControlRuntime {
 				}
 			}
 			do {
-				while (interruptedTurnSettlement !== undefined && termination === undefined) {
-					const settlement = interruptedTurnSettlement;
-					interruptedTurnSettlement = undefined;
-					await settlement;
-				}
+				await settleInterruptedTurns();
 				// A turn that settled while the task was pending left message admission open: what it admitted since is
 				// answered before the execution ends and seals it.
 				if (prepared !== undefined && redispatched === undefined && termination === undefined)
-					await sessionDrained(session, [signals.abort, signals.interrupt], (listener) => {
-						turnDrainedListeners.add(listener);
-						return () => turnDrainedListeners.delete(listener);
-					});
+					await sessionDrained(
+						session,
+						[signals.abort, signals.interrupt],
+						(listener) => {
+							turnDrainedListeners.add(listener);
+							return () => turnDrainedListeners.delete(listener);
+						},
+						() => interruptedTurnSettlement !== undefined,
+					);
 			} while (interruptedTurnSettlement !== undefined && termination === undefined);
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);

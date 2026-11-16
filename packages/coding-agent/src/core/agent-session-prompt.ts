@@ -877,6 +877,35 @@ async function settleSubagentMessages(session: AgentSession, keepMessageAdmissio
 	if (!keepMessageAdmissionOpen && session._subagentPolicy?.taskPending?.() !== true) admission.seal();
 }
 
+function awaitsSubagentAnswer(
+	session: AgentSession,
+	admission: NonNullable<AgentSession["_subagentMessageAdmission"]>,
+): boolean {
+	if (
+		session._queuedMessagesPaused ||
+		session._persistenceFailure !== undefined ||
+		session._stopAfterTurnBlockedContinuation ||
+		session._disposed ||
+		sessionGenerationClosing.has(session) ||
+		sessionLifetime(session).aborted ||
+		holdsTurnsForDetachedResults(session)
+	)
+		return false;
+	return admission.hasPendingDeliveries() || session._priorityInterruptPending || session.agent.hasQueuedMessages();
+}
+
+export function sealMessageAdmissionIfDrained(this: AgentSession): boolean {
+	if (this.isStreaming || this._activePromptCount > 0 || this._pendingInterruptDeliveries > 0) return false;
+	const admission = this._subagentMessageAdmission;
+	if (admission === undefined || !admission.isOpen()) return true;
+	if (awaitsSubagentAnswer(this, admission)) {
+		void this._runAgentContinuation(async () => {}, "settle").catch(() => {});
+		return false;
+	}
+	admission.seal();
+	return true;
+}
+
 export async function _runAgentContinue(this: AgentSession): Promise<void> {
 	if (this._agentRunAbortRequested || sessionGenerationClosing.has(this) || sessionLifetime(this).aborted) return;
 	// Nothing continues past a detached call that has no result yet; the hand-back continues the turn (#4580).
@@ -1332,6 +1361,7 @@ export const agentSessionPromptMethods = {
 	_runAgentContinue,
 	_runAgentContinuation,
 	_continueQueuedAgentMessages,
+	sealMessageAdmissionIfDrained,
 	_tryExecuteExtensionCommand,
 	_expandSkillCommand,
 	steer,

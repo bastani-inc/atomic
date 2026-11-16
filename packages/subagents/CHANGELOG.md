@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a message that reached a subagent as it finished being accepted and then left unanswered. The child now answers every message it accepted before it completes, and refuses one that arrives after that with its terminal-child error. Pressing Esc while a resumed subagent replays a message that arrived before it stopped also leaves it waiting for your next message, as Esc does on any other turn; it answers that message, then continues with the task it was resumed with ([#5318](https://github.com/bastani-inc/atomic/issues/5318))
+
 ## [0.9.88] - 2026-11-16
 
 ### Added
