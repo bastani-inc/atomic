@@ -50,13 +50,19 @@ const RETAINED_BYTES_PER_FINISHED_CHILD = 48 * 1024;
 /** Timers the 150 children finished between the two measurements may leave pending; before the fix, one each. */
 const PENDING_TIMERS_GROWTH = 16;
 /**
- * How much more work a new child's start may take with 200 finished children than with 50. A start is measured as the
- * CPU time this process spends from its launch to its first model request, not as wall time: on a loaded machine wall
- * time measures the machine, while the work a start does is what grows with every child the session launched.
+ * How much more work a new child's start may take with 200 finished children than with 50. A start's work is the CPU
+ * time this process spends from its launch to its first model request, in units of a fixed reference computation timed
+ * just before and after it: on a busy machine wall time measures the machine, and CPU time stretches too, on Windows
+ * by up to 1.8× when other processes share a core, while the reference stretches with it. What remains is the work a
+ * start does, which is what grows with every child the session launched. Its own conversation still grows with each
+ * batch it launches, by about 1.2× here, so the bound allows twice the work: it catches a start that scales with the
+ * children launched, as one did at 500 children before #5186 (6× the start time it had at 48).
  */
-const START_WORK_GROWTH_FACTOR = 1.5;
-/** Absorbs the timer granularity of CPU accounting, about 16 ms on Windows, and the noise of a few probes. */
-const START_WORK_SLACK_MS = 100;
+const START_WORK_GROWTH_FACTOR = 2;
+/** Absorbs CPU accounting granularity, about 16 ms on Windows, and the noise of a few probes, in reference units. */
+const START_WORK_SLACK = 1;
+/** Records the reference computation sorts and serializes: about 50 ms of CPU on an idle farm machine. */
+const REFERENCE_RECORDS = 40_000;
 /** New children launched, one at a time, at each measurement; the median of their start work is compared. */
 const PROBES = 5;
 /** Collections whose least heap in use is taken as the heap a measurement holds. */
@@ -66,8 +72,11 @@ const RESUME_MESSAGE = "RESUMED-5186";
 interface Measurement {
 	readonly heapBytes: number;
 	readonly pendingTimers: number;
-	/** The median CPU time a new child's start took, from its launch to its first model request. */
+	/** The median work a new child's start took, from its launch to its first model request, in reference units. */
+	readonly childStartWork: number;
+	/** The median CPU time of the same starts and of the reference computation, reported but never asserted. */
 	readonly childStartCpuMs: number;
+	readonly referenceCpuMs: number;
 	/** The median wall time of the same starts, reported but never asserted. */
 	readonly childStartMs: number;
 }
@@ -224,18 +233,50 @@ function median(values: readonly number[]): number {
 	return [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
 }
 
-/** The work and time a new child takes from its launch to its first model request, as medians of a few launches. */
-async function childStart(): Promise<{ readonly cpuMs: number; readonly ms: number }> {
+/** A fixed computation of the kind a start does, allocating, serializing and sorting records; its CPU time in ms. */
+function referenceCpuMs(): number {
+	const started = cpuMs();
+	const records = Array.from({ length: REFERENCE_RECORDS }, (_, index) => ({
+		id: `record-${(index * 7919) % REFERENCE_RECORDS}`,
+		index,
+		tags: [index % 3, index % 5, index % 7],
+	}));
+	const parsed = JSON.parse(JSON.stringify(records)) as typeof records;
+	parsed.sort((a, b) => a.id.localeCompare(b.id));
+	const byId = new Map(parsed.map((record) => [record.id, record]));
+	if (byId.size === 0) throw new Error("the reference computation kept no record");
+	return cpuMs() - started;
+}
+
+/**
+ * The work and time a new child takes from its launch to its first model request, as medians of a few launches. Each
+ * launch's CPU time is divided by the reference computation's, timed just before and just after it, so the load the
+ * machine was under during that launch cancels out.
+ */
+async function childStart(): Promise<{
+	readonly work: number;
+	readonly cpuMs: number;
+	readonly referenceMs: number;
+	readonly ms: number;
+}> {
 	const work: number[] = [];
+	const cpu: number[] = [];
+	const reference: number[] = [];
 	const wall: number[] = [];
 	for (let probe = 0; probe < PROBES; probe++) {
 		const task = String(launched);
+		const before = referenceCpuMs();
 		await launchAndFinish(1);
+		const after = referenceCpuMs();
 		const started = childStarts.get(task);
-		work.push(started === undefined ? Number.NaN : started.cpuMs - lastLaunch.cpuMs);
+		const startCpu = started === undefined ? Number.NaN : started.cpuMs - lastLaunch.cpuMs;
+		const unit = Math.max((before + after) / 2, 1);
+		work.push(startCpu / unit);
+		cpu.push(startCpu);
+		reference.push(unit);
 		wall.push(started === undefined ? Number.NaN : started.at - lastLaunch.at);
 	}
-	return { cpuMs: median(work), ms: median(wall) };
+	return { work: median(work), cpuMs: median(cpu), referenceMs: median(reference), ms: median(wall) };
 }
 
 /**
@@ -260,7 +301,9 @@ async function measure(): Promise<Measurement> {
 	return {
 		heapBytes: await settledHeapBytes(),
 		pendingTimers: v8.queryObjects(TimeoutClass, { format: "count" }) as number,
+		childStartWork: start.work,
 		childStartCpuMs: start.cpuMs,
+		referenceCpuMs: start.referenceMs,
 		childStartMs: start.ms,
 	};
 }
@@ -301,7 +344,7 @@ describe("a long supervising session as its children accumulate (#5186)", () => 
 		assert.ok(retainedPerChild <= RETAINED_BYTES_PER_FINISHED_CHILD, `retained heap per finished child: ${report}`);
 		assert.ok(many.pendingTimers - few.pendingTimers <= PENDING_TIMERS_GROWTH, `pending timers: ${report}`);
 		assert.ok(
-			many.childStartCpuMs <= few.childStartCpuMs * START_WORK_GROWTH_FACTOR + START_WORK_SLACK_MS,
+			many.childStartWork <= few.childStartWork * START_WORK_GROWTH_FACTOR + START_WORK_SLACK,
 			`new child start work: ${report}`,
 		);
 	});
