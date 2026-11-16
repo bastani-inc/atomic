@@ -30,10 +30,10 @@ test("inspector keeps selected live task reachable in a short viewport and confi
 		inspector.handleInput("\x1b[B");
 		inspector.handleInput("\x1b[B");
 		assert.match(stripVTControlCharacters(inspector.renderViewport(48, 4).join("\n")), /› Cancel task/);
-		assert.match(inspector.renderViewport(48, 4).join("\n"), /\/tasks/);
+		assert.match(stripVTControlCharacters(inspector.renderViewport(48, 4).join("\n")), /x stop/);
+		// Cancelling asks for a second press within three seconds instead of a y/n page (#5224).
 		inspector.handleInput("\r");
-		assert.match(inspector.render(80).join("\n"), new RegExp(fixture.store.tasks[1].ref.taskId));
-		inspector.handleInput("n");
+		assert.match(stripVTControlCharacters(inspector.render(80).join("\n")), /Press x again within 3s to stop/);
 		assert.equal(fixture.store.tasks[1].execution.kind, "running");
 		inspector.handleInput("\x1b");
 		inspector.handleInput("\x1b");

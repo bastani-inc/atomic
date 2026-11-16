@@ -25,6 +25,7 @@ import type { SessionRecoveryReason } from "../../core/extensions/session-events
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { SessionManager } from "../../core/session-manager.ts";
 import { serializeSessionMutation } from "../../core/session-mutation-queue.ts";
+import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
@@ -266,6 +267,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 	async openTaskInspector(taskId?: string): Promise<void> {
 		await this.client.requestInternal({ type: "open_task_inspector", ...(taskId ? { taskId } : {}) });
+	}
+	/** The engine owns the session's tasks and workflow runs, so it stops them. */
+	async stopAllBackgroundWork(): Promise<StopAllBackgroundOutcome> {
+		return this.client.requestInternal<StopAllBackgroundOutcome>({ type: "stop_all_background" });
 	}
 	/** The engine owns extensions and tools; the host session has neither. */
 	async getToolStatus(): Promise<ToolStatusReport> {

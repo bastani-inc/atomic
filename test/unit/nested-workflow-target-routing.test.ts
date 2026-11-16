@@ -370,7 +370,7 @@ describe("nested workflow stage target routing", () => {
 			localStore.runs().find((candidate) => candidate.id === fixtureRunId("child-right"))?.stages[0]?.attached,
 			true,
 		);
-		pane.handleInput(Key.ctrl("x"));
+		pane.handleInput("\x1b[D");
 		assert.equal(pane._mode, "graph");
 		pane.handleInput(Key.enter);
 
