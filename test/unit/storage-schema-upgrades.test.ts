@@ -234,13 +234,16 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			assert.equal((await collectSnapshotGarbage(resumed, { graceSeconds: 0 })).deleted.length, total);
 		});
 
-		test("stamps legacy blob ages in write transactions of at most SNAPSHOT_LEGACY_STAMP_BYTES of blobs", async () => {
+		test("stamps legacy blob ages in write transactions of at most SNAPSHOT_LEGACY_STAMP_BYTES of blobs (#5327)", async () => {
 			const database = await openDatabase();
 			await database.exec(
 				"CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL) STRICT",
 			);
 			// Each fits in one stamping transaction, so it is stamped in its row; together they do not.
-			const blobs = Array.from({ length: 12 }, (_, index) => legacyBlob(3 * SNAPSHOT_BLOB_CHUNK_BYTES + index));
+			const blobs = [
+				legacyBlob(SNAPSHOT_LEGACY_STAMP_BYTES),
+				...Array.from({ length: 12 }, (_, index) => legacyBlob(3 * SNAPSHOT_BLOB_CHUNK_BYTES + index)),
+			];
 			for (const blob of blobs)
 				await database.run("INSERT INTO snapshot_blobs VALUES (?, ?, ?)", blob.hash, blob.data.length, blob.data);
 			let written: number | undefined;
@@ -312,7 +315,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 		}
 
 		test.each([1, 2, 3])(
-			"a legacy blob too large to stamp in one write, stopped after %i of its chunk transactions, stays readable and is moved whole by the next collection",
+			"a legacy blob too large to stamp in one write, stopped after %i of its chunk transactions, stays readable and is moved whole by the next collection (#5327)",
 			async (stopAfter) => {
 				const controller = new AbortController();
 				const stopped = new Error(`stop after ${stopAfter} chunk transactions`);
@@ -345,7 +348,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			},
 		);
 
-		test("a legacy blob stored again after its move to chunks stopped leaves no chunk behind once collected", async () => {
+		test("a legacy blob stored again after its move to chunks stopped leaves no chunk behind once collected (#5327)", async () => {
 			const controller = new AbortController();
 			const { database, blob, store } = await oversizedLegacyBlob(async () => controller.abort());
 			await assert.rejects(collectSnapshotGarbage(store, { graceSeconds: 0, signal: controller.signal }));
@@ -359,7 +362,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 		});
 
 		test.each([1, 3])(
-			"a legacy blob stored again after %i of the 3 chunk transactions of its move keeps its row and leaves no chunk behind",
+			"a legacy blob stored again after %i of the 3 chunk transactions of its move keeps its row and leaves no chunk behind (#5327)",
 			async (storedAfter) => {
 				let other: SqlSnapshotBlobStore | undefined;
 				let refreshed = false;
@@ -376,6 +379,29 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				assert.deepEqual(
 					{ chunks: kept.chunks, inline: kept.inline, chunkRows: kept.chunkRows },
 					{ chunks: 0, inline: blob.data.length, chunkRows: 0 },
+				);
+				assert.ok(blob.data.equals((await store.getBlob(blob.hash))!));
+			},
+		);
+
+		test.each([1, 3])(
+			"a legacy blob moved by an overlapping collector after %i chunk transactions keeps its completed chunks (#5327)",
+			async (completedAfter) => {
+				let other: SqlSnapshotBlobStore | undefined;
+				let completed = false;
+				const { database, blob, store, chunks } = await oversizedLegacyBlob(async (transactions) => {
+					if (transactions !== completedAfter || completed) return;
+					assert.deepEqual(await other!.collectGarbage({ graceSeconds: 0 }), []);
+					completed = true;
+				});
+				other = await SqlSnapshotBlobStore.open(database);
+				assert.deepEqual((await collectSnapshotGarbage(store, { graceSeconds: 0 })).deleted, []);
+				assert.ok(completed, "the overlapping collector finished the conversion");
+				const kept = await legacyState(database, blob.hash);
+				assert.ok(kept.createdAt > 0);
+				assert.deepEqual(
+					{ chunks: kept.chunks, inline: kept.inline, chunkRows: kept.chunkRows, chunkBytes: kept.chunkBytes },
+					{ chunks, inline: 0, chunkRows: chunks, chunkBytes: blob.data.length },
 				);
 				assert.ok(blob.data.equals((await store.getBlob(blob.hash))!));
 			},
@@ -552,7 +578,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			assert.equal(publish, false, "conversion must finish after the reader sees the legacy header");
 		});
 
-		test("opens a 256 MiB legacy blob without rewriting it and converts only on its next write", async () => {
+		test("opens a 256 MiB legacy blob without rewriting it and converts only on its next write (#5327)", async () => {
 			const database = await openDatabase();
 			const sessions = await SqlSessionStore.open(database);
 			closers.push(() => sessions.close());

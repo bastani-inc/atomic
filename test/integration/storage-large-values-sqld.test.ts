@@ -128,7 +128,7 @@ for (const backend of storageBackends) {
 		);
 
 		test(
-			"collection stamps blobs of unknown age, moves one too large to stamp in its row to chunks, and deletes the chunks a stopped move left",
+			"collection stamps blobs of unknown age, moves one too large to stamp in its row to chunks, and deletes the chunks a stopped move left (#5327)",
 			async () => {
 				const scope = await backend.openScope();
 				try {

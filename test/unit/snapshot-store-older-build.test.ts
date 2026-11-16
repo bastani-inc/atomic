@@ -147,7 +147,7 @@ describe("an older build on a snapshot store this build wrote (#5065)", () => {
 		await journal.close();
 	});
 
-	test("an older build refuses a database where collection moved a legacy blob to chunks, never reading it as empty", async () => {
+	test("an older build refuses a database where collection moved a legacy blob to chunks, never reading it as empty (#5327)", async () => {
 		const database = await open();
 		await SqlSessionStore.open(database);
 		// A blob table from before blob ages, through the sessions only, holding a blob too large to stamp in its row.
