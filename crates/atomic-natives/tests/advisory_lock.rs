@@ -88,12 +88,15 @@ fn a_lock_in_a_missing_directory_is_an_error_not_contention_5193() {
 		.expect("missing dir fails");
 	assert_eq!(napi_err.reason, io_err.to_string());
 	assert_eq!(napi_err.reason.matches(&suffix).count(), 1);
+	let from = dir.join("missing");
+	let to = dir.join("elsewhere");
+	let rename_io_err = rename_no_replace(&from, &to).unwrap_err();
 	let rename_err = rename_no_replace_napi(
-		dir.join("missing").to_string_lossy().into_owned(),
-		dir.join("elsewhere").to_string_lossy().into_owned(),
+		from.to_string_lossy().into_owned(),
+		to.to_string_lossy().into_owned(),
 	)
 	.unwrap_err();
-	assert_eq!(rename_err.reason.matches(&suffix).count(), 1);
+	assert_eq!(rename_err.reason, rename_io_err.to_string());
 	fs::remove_dir_all(dir).unwrap();
 }
 
