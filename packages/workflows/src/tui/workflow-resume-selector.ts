@@ -207,6 +207,12 @@ function durableWorkflowSession(
 			title: workflowRowTitle(entry.name, entry.workflowId, identity),
 			detail: joinDetail([
 				presentation.label,
+				kind === "durable" && entry.completedCheckpoints > 0
+					? `${entry.completedCheckpoints} ${entry.completedCheckpoints === 1 ? "checkpoint" : "checkpoints"}`
+					: undefined,
+				entry.pendingPrompts > 0
+					? `waiting on ${entry.pendingPrompts} ${entry.pendingPrompts === 1 ? "answer" : "answers"}`
+					: undefined,
 				shortAgo(now - entry.updatedAt),
 				reason ? `✗ ${reason}` : undefined,
 				entry.summary?.replace(/\s+/g, " ").trim(),

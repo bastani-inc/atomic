@@ -11,6 +11,9 @@ interface UserMessageItem {
  * selected, with type-to-search. Enter forks from the chosen message.
  */
 export class UserMessageSelectorComponent extends FramedSelector<string> {
+	/** Fork from an entry as if it were chosen; the same path Enter takes. */
+	readonly onSelect: (entryId: string) => void;
+
 	constructor(
 		messages: UserMessageItem[],
 		onSelect: (entryId: string) => void,
@@ -41,6 +44,7 @@ export class UserMessageSelectorComponent extends FramedSelector<string> {
 			onSelect: (item) => onSelect(item.value),
 			onCancel,
 		});
+		this.onSelect = onSelect;
 
 		// Auto-cancel if no messages
 		if (messages.length === 0) {

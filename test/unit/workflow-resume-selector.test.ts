@@ -365,7 +365,13 @@ describe("workflow resume picker rows: a title and one detail line (#5224)", () 
 		const byId = new Map(items.map((item) => [item.session.id, item.session]));
 		assert.equal(byId.get("done-run")?.title, "review-pr · #5222");
 		assert.equal(byId.get("done-run")?.detail, "✓ completed · 2h ago");
-		assert.equal(byId.get("bad-run")?.detail, "failed · 1m ago · ✗ gate failed: 2 jobs");
+		assert.equal(byId.get("bad-run")?.detail, "failed · 2 checkpoints · 1m ago · ✗ gate failed: 2 jobs");
+	});
+
+	test("a saved run's detail says how far it got and whether it waits on an answer", () => {
+		const saved = { ...entry("saved-run", "paused", NOW - 120_000), completedCheckpoints: 4, pendingPrompts: 1 };
+		const [item] = workflowResumeSelectorItems([], [saved], [], undefined, undefined, NOW);
+		assert.equal(item?.session.detail, "paused · 4 checkpoints · waiting on 1 answer · 2m ago");
 	});
 
 	test("a run without a label or objective shows its short id in the title", () => {
