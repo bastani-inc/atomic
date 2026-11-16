@@ -16,6 +16,8 @@ import {
 	type IntercomBrokerStateOptions,
 	type OutboxClaim,
 	type OutboxClaimWriteRejection,
+	type OutboxEnqueueRequest,
+	type OutboxEnqueueResult,
 	type OutboxFrame,
 	type OutboxRow,
 	type OutboxRowState,
@@ -67,11 +69,17 @@ function toRow(record: OutboxRecord): OutboxRow {
 
 const isSettled = (record: OutboxRecord): boolean => record.state === "delivered" || record.state === "failed";
 
+/** The SQL outbox, which can also enqueue inside a transaction the caller holds. */
+export interface SqlOutboxStore extends OutboxStore {
+	/** `enqueue`, as part of `executor`'s transaction: the row is written only when that transaction commits. */
+	enqueueIn(executor: SqliteExecutor, request: OutboxEnqueueRequest): Promise<OutboxEnqueueResult>;
+}
+
 /**
  * S2 outbox on the shared storage adapter's database, in `<prefix>intercom_outbox`. Every read-modify-write runs in
  * one `BEGIN IMMEDIATE` transaction, and every age is measured on the database clock.
  */
-export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): Promise<OutboxStore> {
+export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): Promise<SqlOutboxStore> {
 	const { database } = options;
 	const table = `${validateStoragePrefix(options.prefix, dialectOf(database).name)}intercom_outbox`;
 	const { types, nowMs, greatest } = dialectOf(database);
@@ -100,6 +108,11 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 	await addMissingColumns(database, table, { saving_at: types.int });
 	// #4896: when the row was queued and the size of its frame; rows an older broker wrote have neither.
 	await addMissingColumns(database, table, { queued_at: types.int, frame_bytes: types.int });
+	// The per-recipient cap is summed from this index alone. Summed from the rows, `frame_bytes`, stored after the
+	// frame, cost a read of every queued frame (overflow pages and all) on every enqueue. In a serial transaction (#5054).
+	await ensureBrokerSchema(database, options.prefix, "outbox-indexes", (tx) =>
+		tx.exec(`CREATE INDEX IF NOT EXISTS ${table}_target_bytes ON ${table}(target_identity, state, frame_bytes)`),
+	);
 
 	const columns = `sequence, message_id, target_identity, origin_broker_id, digest, frame_json, state,
 		claim_attempts, claimant_id, claim_token, failure_reason,
@@ -156,49 +169,70 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		return toRow((await select(executor, messageId))!);
 	};
 
+	/**
+	 * #4896: the recipient's undelivered rows and their frame bytes, read from `<table>_target_bytes` alone. Only rows an
+	 * older broker wrote, without `frame_bytes`, are measured from their frames.
+	 */
+	const queuedTotals = async (executor: SqliteExecutor, targetIdentity: string) => {
+		const sized = (await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue; unsized: SqliteValue }>(
+			`SELECT COUNT(*) AS row_count, COALESCE(SUM(frame_bytes), 0) AS byte_count, COUNT(*) - COUNT(frame_bytes) AS unsized
+			FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}`,
+			targetIdentity,
+		))!;
+		const unsized =
+			Number(sized.unsized) === 0
+				? 0
+				: Number(
+						(await executor.get<{ byte_count: SqliteValue }>(
+							`SELECT COALESCE(SUM(LENGTH(frame_json)), 0) AS byte_count
+							FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} AND frame_bytes IS NULL`,
+							targetIdentity,
+						))!.byte_count,
+					);
+		return { rows: Number(sized.row_count), bytes: Number(sized.byte_count) + unsized };
+	};
+
+	const enqueueIn = async (executor: SqliteExecutor, request: OutboxEnqueueRequest): Promise<OutboxEnqueueResult> => {
+		if (request.targetIdentity.length === 0) return invalid("empty-target-identity");
+		if (request.originBrokerId.length === 0) return invalid("empty-broker-id");
+		const messageId = request.frame.message.id;
+		if (messageId.length === 0) return invalid("empty-message-id");
+		const frameJson = JSON.stringify(request.frame);
+		const existing = await select(executor, messageId);
+		if (existing !== undefined) {
+			return existing.digest === request.digest
+				? ({ status: "duplicate", row: toRow(existing) } as const)
+				: ({ status: "conflict", messageId } as const);
+		}
+		const frameBytes = Buffer.byteLength(frameJson);
+		const queued = request.owed === true ? undefined : await queuedTotals(executor, request.targetIdentity);
+		if (
+			queued !== undefined &&
+			(queued.rows >= OUTBOX_TARGET_MAX_ROWS || queued.bytes + frameBytes > OUTBOX_TARGET_MAX_BYTES)
+		) {
+			return { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES } as const;
+		}
+		await executor.run(
+			`INSERT INTO ${table}(message_id, target_identity, origin_broker_id, digest, frame_json, state, queued_at,
+				frame_bytes)
+			VALUES (?, ?, ?, ?, ?, 'queued', ${nowMs}, ?)`,
+			messageId,
+			request.targetIdentity,
+			request.originBrokerId,
+			request.digest,
+			frameJson,
+			frameBytes,
+		);
+		return { status: "inserted", row: toRow((await select(executor, messageId))!) } as const;
+	};
+
 	return {
+		enqueueIn,
 		async enqueue(request) {
 			if (request.targetIdentity.length === 0) return invalid("empty-target-identity");
 			if (request.originBrokerId.length === 0) return invalid("empty-broker-id");
-			const messageId = request.frame.message.id;
-			if (messageId.length === 0) return invalid("empty-message-id");
-			const frameJson = JSON.stringify(request.frame);
-			return database.transaction(async (executor) => {
-				const existing = await select(executor, messageId);
-				if (existing !== undefined) {
-					return existing.digest === request.digest
-						? ({ status: "duplicate", row: toRow(existing) } as const)
-						: ({ status: "conflict", messageId } as const);
-				}
-				const frameBytes = Buffer.byteLength(frameJson);
-				const queued =
-					request.owed === true
-						? undefined
-						: (await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue }>(
-								`SELECT COUNT(*) AS row_count, COALESCE(SUM(COALESCE(frame_bytes, LENGTH(frame_json))), 0) AS byte_count
-								FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}`,
-								request.targetIdentity,
-							))!;
-				if (
-					queued !== undefined &&
-					(Number(queued.row_count) >= OUTBOX_TARGET_MAX_ROWS ||
-						Number(queued.byte_count) + frameBytes > OUTBOX_TARGET_MAX_BYTES)
-				) {
-					return { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES } as const;
-				}
-				await executor.run(
-					`INSERT INTO ${table}(message_id, target_identity, origin_broker_id, digest, frame_json, state, queued_at,
-						frame_bytes)
-					VALUES (?, ?, ?, ?, ?, 'queued', ${nowMs}, ?)`,
-					messageId,
-					request.targetIdentity,
-					request.originBrokerId,
-					request.digest,
-					frameJson,
-					frameBytes,
-				);
-				return { status: "inserted", row: toRow((await select(executor, messageId))!) } as const;
-			});
+			if (request.frame.message.id.length === 0) return invalid("empty-message-id");
+			return database.transaction((executor) => enqueueIn(executor, request));
 		},
 
 		async claim(request) {
