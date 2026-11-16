@@ -66,22 +66,32 @@ export interface AgentPanelSourceRegistration {
 
 /** The sources one extension generation registered, read by its sessions. */
 export class AgentPanelSourceHub {
-	private readonly sources = new Set<AgentPanelSource>();
+	private readonly sources = new Map<AgentPanelSource, () => void>();
 	private readonly listeners = new Set<() => void>();
 	register(source: AgentPanelSource): AgentPanelSourceRegistration {
-		this.sources.add(source);
-		const unsubscribe = source.subscribe(() => this.notify());
+		let unsubscribe: () => void;
+		try {
+			unsubscribe = source.subscribe(() => {
+				if (this.sources.has(source)) this.notify();
+			});
+		} catch {
+			return { dispose() {} };
+		}
+		const cleanup = () => safelyCall(unsubscribe);
+		this.sources.get(source)?.();
+		this.sources.set(source, cleanup);
 		this.notify();
 		return {
 			dispose: () => {
-				if (!this.sources.delete(source)) return;
-				unsubscribe();
+				if (this.sources.get(source) !== cleanup) return;
+				this.sources.delete(source);
+				cleanup();
 				this.notify();
 			},
 		};
 	}
 	all(): readonly AgentPanelSource[] {
-		return [...this.sources];
+		return [...this.sources.keys()];
 	}
 	/** Calls `listener` when a source registers, leaves or reports a change. */
 	subscribe(listener: () => void): () => void {
@@ -89,12 +99,14 @@ export class AgentPanelSourceHub {
 		return () => this.listeners.delete(listener);
 	}
 	dispose(): void {
+		const cleanups = [...this.sources.values()];
 		this.sources.clear();
+		for (const cleanup of cleanups) cleanup();
 		this.notify();
 		this.listeners.clear();
 	}
 	private notify(): void {
-		for (const listener of [...this.listeners]) listener();
+		for (const listener of [...this.listeners]) safelyCall(listener);
 	}
 }
 
@@ -180,14 +192,50 @@ export function taskPanelItems(
 
 const reportedSources = new WeakSet<AgentPanelSource>();
 
+function sourceError(error: unknown): Error {
+	try {
+		return new Error(error instanceof Error ? String(error.message) : String(error));
+	} catch {
+		return new Error("Agent panel source failed.");
+	}
+}
+
+function safelyCall(callback: () => void | PromiseLike<void>): boolean {
+	try {
+		const result = callback();
+		if (result !== undefined) void Promise.resolve(result).catch(() => {});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** A source's items, or none when it throws: one broken extension never takes the panel or the host down. */
 function sourceItems(source: AgentPanelSource, onError?: (error: Error) => void): readonly AgentPanelItem[] {
 	try {
-		return source.items();
+		return Array.from(source.items(), (item) => {
+			const progress = item.progress;
+			const choices = item.choices;
+			return {
+				id: item.id,
+				kind: item.kind,
+				state: item.state,
+				name: item.name,
+				task: item.task,
+				elapsedMs: item.elapsedMs,
+				tokens: item.tokens,
+				progress: progress === undefined ? undefined : { done: progress.done, total: progress.total },
+				question: item.question,
+				choices: choices === undefined ? undefined : Array.from(choices),
+				reason: item.reason,
+				queued: item.queued,
+				endedAt: item.endedAt,
+			};
+		});
 	} catch (error) {
 		if (onError !== undefined && !reportedSources.has(source)) {
 			reportedSources.add(source);
-			onError(error instanceof Error ? error : new Error(String(error)));
+			safelyCall(() => onError(sourceError(error)));
 		}
 		return [];
 	}
@@ -261,10 +309,13 @@ function sourceOf(session: AgentPanelSession, id: string): AgentPanelSource | un
 
 /** Opens an extension's item (a workflow run's graph). Task items open through the task inspector instead. */
 export function openAgentPanelItem(session: AgentPanelSession, id: string, options?: AgentPanelOpenOptions): boolean {
-	const source = sourceOf(session, id);
-	if (source?.open === undefined) return false;
-	source.open(id, options);
-	return true;
+	try {
+		const source = sourceOf(session, id);
+		if (source?.open === undefined) return false;
+		return safelyCall(() => source.open?.(id, options));
+	} catch {
+		return false;
+	}
 }
 
 /** Stops an item: a task through its owner, an extension's item through its source. */
@@ -279,9 +330,14 @@ export async function stopAgentPanelItem(
 		const result = await ownerTaskViewSource(store).cancelTask(taskId);
 		return result.ok ? { ok: true } : { ok: false, reason: result.error.message };
 	}
-	const source = sourceOf(session, id);
-	if (source?.stop === undefined) return { ok: false, reason: "This item cannot be stopped from here." };
-	return source.stop(id);
+	try {
+		const source = sourceOf(session, id);
+		if (source?.stop === undefined) return { ok: false, reason: "This item cannot be stopped from here." };
+		const result = await source.stop(id);
+		return result.ok ? { ok: true } : { ok: false, reason: result.reason };
+	} catch (error) {
+		return { ok: false, reason: sourceError(error).message };
+	}
 }
 
 /** Answers a waiting extension item's question; tasks answer through their own question route. */
@@ -290,7 +346,12 @@ export async function answerAgentPanelItem(
 	id: string,
 	text: string,
 ): Promise<AgentPanelActionResult> {
-	const source = sourceOf(session, id);
-	if (source?.answer === undefined) return { ok: false, reason: "This item cannot be answered from here." };
-	return source.answer(id, text);
+	try {
+		const source = sourceOf(session, id);
+		if (source?.answer === undefined) return { ok: false, reason: "This item cannot be answered from here." };
+		const result = await source.answer(id, text);
+		return result.ok ? { ok: true } : { ok: false, reason: result.reason };
+	} catch (error) {
+		return { ok: false, reason: sourceError(error).message };
+	}
 }
