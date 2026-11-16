@@ -191,7 +191,7 @@ export function unchangedThroughGrace(path: string, written: string | undefined)
  * left while making one: those whose content names a dead holder, and those that name none once parked longer than
  * {@link PARKED_FILE_MAX_AGE_MS}. A file that names a live holder is left, however old (#5220).
  */
-function removeLeftoverParkedFiles(lockPath: string): void {
+export function removeLeftoverParkedFiles(lockPath: string): void {
   const directory = dirname(lockPath);
   const prefix = `${basename(lockPath)}.`;
   for (const name of readdirSync(directory)) {

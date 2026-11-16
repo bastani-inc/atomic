@@ -6,6 +6,7 @@ import {
   isAbandoned,
   readFileOrUndefined,
   removeFileIfUnchanged,
+  removeLeftoverParkedFiles,
 } from "./stale-lock-file.js";
 
 const SOCKET_REPLACEMENT_LOCK_POLL_MS = 20;
@@ -129,6 +130,13 @@ export async function acquireSocketReplacementLock(
   const mine = generationPath(lockPath, generation);
   const holdsGeneration = () =>
     generations(lockPath)[0] === generation && readFileOrUndefined(mine) === record;
+  // Copies of the legacy file a removal left parked, whose holder is gone, are removed by the latest generation's holder,
+  // the only broker that moves that file (#5220); one naming a running broker is that broker's and is kept.
+  try {
+    removeLeftoverParkedFiles(lockPath);
+  } catch {
+    // Best effort: a parked file is only clutter.
+  }
   // The single lock file earlier versions take.
   for (;;) {
     if (createLockFile(lockPath, record)) break;
