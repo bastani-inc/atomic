@@ -117,11 +117,13 @@ async function runBrokers(
 		running.push(broker);
 	}
 	await Promise.all(running.map((broker) => broker.exited));
+	// Events keep the order the brokers appended them to the one file, which is the order they happened in. Sorting by
+	// `at` would trust each broker's own Date.now(), and on Windows two processes' clocks can disagree by ~16 ms, enough to
+	// put a broker's `held` before the previous holder's `released` at a plain hand-off (#5220).
 	return readTextSync(events, "utf8")
 		.split("\n")
 		.filter((line) => line !== "")
-		.map((line) => JSON.parse(line) as Event)
-		.sort((a, b) => a.at - b.at);
+		.map((line) => JSON.parse(line) as Event);
 }
 
 function violations(events: readonly Event[]): { readonly overlaps: string[]; readonly lost: string[] } {
