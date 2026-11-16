@@ -187,7 +187,7 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			assert.equal((await recovered.inspect("root"))[0]?.id, queued.id);
 		});
 
-		test("another host discovers exited and unplaced releases without notifications (#5236)", async (f) => {
+		test("another host discovers exited and unplaced releases without notifications (#5230)", async (f) => {
 			await f.pool.enqueue(f.lease, work, boundary);
 			const peer = await openSqlPoolQueue(await f.peer());
 			const marks = new Set<string>();
