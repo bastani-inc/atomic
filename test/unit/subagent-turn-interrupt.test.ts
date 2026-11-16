@@ -25,8 +25,12 @@ function agent(): AgentConfig {
 	};
 }
 
+/** How long a condition may take to hold on a loaded runner; the test's own budget bounds it, not a fixed sleep. */
+const CONDITION_WAIT_MS = 20_000;
+
 async function until(predicate: () => boolean): Promise<void> {
-	for (let i = 0; i < 200 && !predicate(); i++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+	const deadline = Date.now() + CONDITION_WAIT_MS;
+	while (!predicate() && Date.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 5));
 	assert.ok(predicate(), "condition never held");
 }
 
@@ -83,8 +87,8 @@ test("Esc interrupts a subagent's turn and it waits for the next message in the 
 		assert.equal(typeof source.interruptTurn, "function", "a running subagent's chat can interrupt its turn");
 
 		await source.interruptTurn!();
-		await new Promise<void>((resolve) => setTimeout(resolve, 20));
-		assert.equal(source.isRunning?.(), false, "the interrupted turn ended");
+		// The turn ends asynchronously after the interrupt: wait for it rather than for a fixed time (#5224).
+		await until(() => source.isRunning?.() === false);
 		assert.equal(child.settled(), false, "the child did not end: it waits for the next message");
 
 		// The next message the reader sends starts a turn on the same session, which then finishes the task.
@@ -113,7 +117,7 @@ test("an interrupted subagent that is never messaged again still stops when aske
 		const child = launch(root, stop.signal);
 		await until(() => child.source()?.isRunning?.() === true);
 		await child.source()!.interruptTurn!();
-		await new Promise<void>((resolve) => setTimeout(resolve, 20));
+		await until(() => child.source()?.isRunning?.() === false);
 		assert.equal(child.settled(), false);
 		stop.abort("user");
 		const result = await child.result;
