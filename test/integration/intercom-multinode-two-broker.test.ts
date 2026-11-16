@@ -10,18 +10,36 @@ import {
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { planIntercomRecoveryReplay } from "../../packages/intercom/session-recovery.js";
-import { type ReceivedFrame, type TwoBrokerClient, TwoBrokerHarness } from "../helpers/intercom-two-broker-harness.js";
+import {
+	BROKER_START_ALLOWANCE_MS,
+	type ReceivedFrame,
+	TWO_BROKER_HARNESS_START_TIMEOUT_MS,
+	type TwoBrokerClient,
+	TwoBrokerHarness,
+	type TwoBrokerHarnessOptions,
+	twoBrokerHarnessStartTimeoutMs,
+} from "../helpers/intercom-two-broker-harness.js";
 import { sleep } from "../helpers/runtime.js";
 
 /** Spawning two real broker processes (and restarting them) is the structural cost of this suite. */
-const REAL_BROKERS_HOOK_TIMEOUT_MS = 60_000;
+const REAL_BROKERS_HOOK_TIMEOUT_MS = TWO_BROKER_HARNESS_START_TIMEOUT_MS;
+/** A broker restart, then the scenario's own connections and checks. */
+const BROKER_RESTART_TEST_TIMEOUT_MS = BROKER_START_ALLOWANCE_MS + 30_000;
+/** A harness whose every shared database call waits 20 ms. */
+const DELAYED_HARNESS: TwoBrokerHarnessOptions = { databaseCallDelayMs: 20 };
+/** It starts both brokers, then restarts one. */
+const DELAYED_HARNESS_TEST_TIMEOUT_MS =
+	twoBrokerHarnessStartTimeoutMs(DELAYED_HARNESS) +
+	twoBrokerHarnessStartTimeoutMs({ ...DELAYED_HARNESS, nodes: ["b"] }) +
+	30_000;
 /** Headroom on top of the lease, claim and poll windows a cross-node recovery has to wait out. */
 const RECOVERY_MARGIN_MS = 30_000;
 const DELIVERY_WAIT_MS = 15_000;
+/** These scenarios restart a broker before the windows they wait out. */
 const OFFLINE_QUEUED_TEST_TIMEOUT_MS =
-	BROKER_LEASE_STALE_AFTER_MS + OUTBOX_BACKUP_POLL_INTERVAL_MS + RECOVERY_MARGIN_MS;
+	BROKER_START_ALLOWANCE_MS + BROKER_LEASE_STALE_AFTER_MS + OUTBOX_BACKUP_POLL_INTERVAL_MS + RECOVERY_MARGIN_MS;
 const BROKER_KILL_WAIT_MS = BROKER_LEASE_STALE_AFTER_MS + OUTBOX_CLAIM_STALE_AFTER_MS + OUTBOX_BACKUP_POLL_INTERVAL_MS;
-const BROKER_KILL_TEST_TIMEOUT_MS = BROKER_KILL_WAIT_MS + RECOVERY_MARGIN_MS;
+const BROKER_KILL_TEST_TIMEOUT_MS = BROKER_START_ALLOWANCE_MS + BROKER_KILL_WAIT_MS + RECOVERY_MARGIN_MS;
 const LOST_WAKE_UP_WAIT_MS = 2 * OUTBOX_BACKUP_POLL_INTERVAL_MS;
 const LOST_WAKE_UP_TEST_TIMEOUT_MS = LOST_WAKE_UP_WAIT_MS + RECOVERY_MARGIN_MS;
 const VERBATIM_TEXT = "  cross-node\tparity\u0000 ünïcödé ✓  \n";
@@ -133,13 +151,13 @@ test(
 		await harness.startBroker("b");
 		assert.equal(harness.isBrokerRunning("b"), true);
 	},
-	REAL_BROKERS_HOOK_TIMEOUT_MS,
+	BROKER_RESTART_TEST_TIMEOUT_MS,
 );
 
 test(
 	"a restarted two-broker fixture waits for shared routing to open (#3857)",
 	async () => {
-		const delayed = await TwoBrokerHarness.start({ databaseCallDelayMs: 20 });
+		const delayed = await TwoBrokerHarness.start(DELAYED_HARNESS);
 		try {
 			await delayed.stopBroker("b", "SIGTERM");
 			await delayed.startBroker("b");
@@ -150,7 +168,7 @@ test(
 			await delayed.cleanup();
 		}
 	},
-	REAL_BROKERS_HOOK_TIMEOUT_MS,
+	DELAYED_HARNESS_TEST_TIMEOUT_MS,
 );
 
 test("cross-node send delivers the exact frame and reports delivered after the recipient saves it", async ({
