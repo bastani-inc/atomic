@@ -84,6 +84,28 @@ export interface ShippingStatus {
 	readonly error?: Error;
 }
 
+class DeliveryTiming {
+	private ewmaMs: number | undefined;
+	private readonly samples: number[] = [];
+	private p95Ms = 0;
+
+	get count(): number {
+		return this.samples.length;
+	}
+
+	estimate(): number | undefined {
+		return this.ewmaMs === undefined ? undefined : Math.max(this.ewmaMs, this.p95Ms);
+	}
+
+	note(ms: number): void {
+		this.ewmaMs = this.ewmaMs === undefined ? ms : this.ewmaMs + DELIVERY_EWMA_WEIGHT * (ms - this.ewmaMs);
+		this.samples.push(ms);
+		if (this.samples.length > DELIVERY_SAMPLES) this.samples.shift();
+		const sorted = [...this.samples].sort((left, right) => left - right);
+		this.p95Ms = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)]!;
+	}
+}
+
 interface Attempt {
 	lease: AttemptLease;
 	shippedThrough: number;
@@ -119,14 +141,14 @@ interface Attempt {
  * what it accepted and did not ship is dropped, and its next commit is refused, as the shared journal would refuse it.
  */
 export class CheckpointShipping {
-	private readonly syncOnly = new Set<string>();
+	private readonly syncOnly = new Map<string, number>();
+	private readonly generations = new Map<string, number>();
 	private readonly attempts = new Map<string, Attempt>();
 	private timer: ReturnType<typeof setInterval> | undefined;
 	private deadlines: ReturnType<typeof setInterval> | undefined;
-	/** How long recent deliveries took: a running average, and the latest times for their 95th percentile. */
-	private deliveryEwmaMs: number | undefined;
-	private readonly deliverySamples: number[] = [];
-	private deliveryP95Ms = 0;
+	private readonly normalTiming = new DeliveryTiming();
+	private readonly urgentTiming = new DeliveryTiming();
+	private readonly urgentPerCheckpointTiming = new DeliveryTiming();
 	private lastError: Error | undefined;
 	private recovery: Promise<void> | undefined;
 	private recoveryScan: Promise<readonly AttemptLease[]> | undefined;
@@ -137,6 +159,7 @@ export class CheckpointShipping {
 		private readonly options: ResolvedCheckpointShipping & {
 			readonly host: string;
 			readonly deliver: ShipDelivery;
+			readonly rootStanding?: () => Promise<"current" | "late" | "lost">;
 			readonly onFallback?: (fallback: ShippingFallback) => void;
 			/**
 			 * An attempt's work is released with checkpoints it accepted still unshipped, after {@link RELEASE_FLUSH_ATTEMPTS}
@@ -174,14 +197,14 @@ export class CheckpointShipping {
 				recoveryFailure = error as Error;
 			}
 		if (this.closed) return;
+		const generation = this.generations.get(lease.id);
+		if (generation !== undefined && generation > lease.generation) return;
+		if (generation === undefined || generation < lease.generation) {
+			this.generations.set(lease.id, lease.generation);
+			this.syncOnly.delete(lease.id);
+		}
 		const known = this.attempts.get(lease.id);
-		if (known !== undefined && known.lease.generation > lease.generation)
-			throw new StaleWorkLeaseError({
-				root: this.shard.root,
-				workId: lease.id,
-				generation: lease.generation,
-				reason: "generation-mismatch",
-			});
+		if (known !== undefined && known.lease.generation > lease.generation) return;
 		if (known === undefined || known.lease.generation !== lease.generation)
 			this.attempts.set(lease.id, {
 				lease: { ...lease },
@@ -190,12 +213,12 @@ export class CheckpointShipping {
 				chain: Promise.resolve(),
 			});
 		else known.lease = { ...lease };
-		if (recoveryFailure !== undefined) this.fallBack(lease.id, recoveryFailure);
+		if (recoveryFailure !== undefined) this.fallBack(lease, recoveryFailure);
 		try {
 			await this.shard.hold(lease, leaseMs);
 		} catch (error) {
 			if (error instanceof StaleWorkLeaseError) throw error;
-			this.fallBack(lease.id, error as Error);
+			this.fallBack(lease, error as Error);
 		}
 	}
 
@@ -203,32 +226,35 @@ export class CheckpointShipping {
 	 * The attempt ended or lost its work: what it accepted is shipped first, while its lease may still hold, and then the
 	 * host accepts nothing more for it.
 	 */
-	async release(workId: string): Promise<void> {
-		const attempt = this.attempts.get(workId);
-		if (attempt !== undefined)
-			for (let tries = 1; ; tries++) {
-				try {
-					await this.flush(attempt.lease);
+	async release(work: Pick<AttemptLease, "id" | "generation">): Promise<void> {
+		const attempt = this.attempts.get(work.id);
+		if (attempt?.lease.generation !== work.generation) return;
+		for (let tries = 1; ; tries++) {
+			try {
+				await this.flush(attempt.lease);
+				break;
+			} catch (error) {
+				if (attempt.fenced !== undefined) break;
+				if (tries >= RELEASE_FLUSH_ATTEMPTS) {
+					this.options.onReleaseFailure?.({ workId: work.id, error: error as Error });
 					break;
-				} catch (error) {
-					// A fenced attempt's checkpoints are dropped: another attempt owns its work.
-					if (attempt.fenced !== undefined) break;
-					if (tries >= RELEASE_FLUSH_ATTEMPTS) {
-						this.options.onReleaseFailure?.({ workId, error: error as Error });
-						break;
-					}
-					await sleep(RELEASE_FLUSH_RETRY_MS * 2 ** (tries - 1));
 				}
+				await sleep(RELEASE_FLUSH_RETRY_MS * 2 ** (tries - 1));
 			}
-		if (this.attempts.get(workId) !== attempt) return;
-		this.attempts.delete(workId);
-		this.shard.release(workId);
-		this.syncOnly.delete(workId);
+		}
+		if (this.attempts.get(work.id) !== attempt) return;
+		this.attempts.delete(work.id);
+		this.shard.release(work);
+		if (this.syncOnly.get(work.id) === work.generation) this.syncOnly.delete(work.id);
 	}
 
 	/** Whether the attempt commits every checkpoint to the shared journal, after its local journal failed. */
-	isSyncOnly(workId: string): boolean {
-		return this.syncOnly.has(workId);
+	isSyncOnly(work: string | Pick<AttemptLease, "id" | "generation">): boolean {
+		if (typeof work === "string") {
+			const generation = this.generations.get(work);
+			return generation !== undefined && this.syncOnly.get(work) === generation;
+		}
+		return this.syncOnly.get(work.id) === work.generation;
 	}
 
 	/**
@@ -239,26 +265,22 @@ export class CheckpointShipping {
 		lease: AttemptLease,
 		mutation: PoolMutation,
 		commitShared: () => Promise<PoolCommitReceipt>,
+		renewAttempt?: () => Promise<void>,
 	): Promise<PoolCommitReceipt> {
 		const fenced = this.attempts.get(lease.id)?.fenced;
 		if (fenced !== undefined && this.attempts.get(lease.id)?.lease.generation === lease.generation) throw fenced;
-		if (!shippableCheckpoint(mutation) || this.syncOnly.has(lease.id)) return this.commitDirect(lease, commitShared);
+		if (!shippableCheckpoint(mutation) || this.isSyncOnly(lease)) return this.commitDirect(lease, commitShared);
 		const checkpoint = mutation.checkpoint;
 		await this.catchUp(lease);
-		try {
-			const { localSeq, accepted } = await this.shard.accept(
-				this.shard.root,
-				lease,
-				checkpointKey(checkpoint),
-				serializeJson(payloadOf(checkpoint)),
-				checkpoint.completedAt,
-			);
-			if (accepted) this.noteAccepted(lease, localSeq);
-		} catch (error) {
-			if (error instanceof StaleWorkLeaseError || error instanceof ShipIdentityConflictError) throw error;
-			this.fallBack(lease.id, error as Error);
-			return this.commitDirect(lease, commitShared);
-		}
+		const accepted = await this.acceptWithRenewal(
+			lease,
+			checkpointKey(checkpoint),
+			serializeJson(payloadOf(checkpoint)),
+			checkpoint.completedAt,
+			renewAttempt,
+		);
+		if (accepted === undefined) return this.commitDirect(lease, commitShared);
+		if (accepted.accepted) this.noteAccepted(lease, accepted.localSeq);
 		const attempt = this.attempts.get(lease.id);
 		// A full batch ships at once, unless a shipment is queued already: it takes what has come since when it runs.
 		if (attempt !== undefined && attempt.accepted.length >= this.options.maxBatch && !attempt.shipping)
@@ -306,36 +328,24 @@ export class CheckpointShipping {
 		}
 	}
 
-	/**
-	 * How old an attempt's oldest unshipped checkpoint may grow before it is shipped at once and the attempt's next step
-	 * waits for it (#4768). What is left of `maxLagMs` once the deliveries that may still be needed are counted: one
-	 * already under way, and everything the attempt holds in one round trip ({@link URGENT_BATCH_CAP} at a time), each
-	 * taking the larger of the recent average and 95th percentile delivery time, with {@link SCHEDULING_MARGIN_MS} in
-	 * hand. Before the host timed a delivery: {@link BACKPRESSURE_SHARE} of `maxLagMs`. A store whose deliveries take
-	 * half of `maxLagMs` or more leaves nothing: every step then waits for the one before it to be shipped.
-	 */
 	backpressurePointMs(attempt?: { readonly accepted: readonly unknown[] }): number {
-		const estimate = this.deliveryEstimateMs();
-		if (estimate === undefined) return this.options.maxLagMs * BACKPRESSURE_SHARE;
-		const deliveries = 1 + Math.max(1, Math.ceil((attempt?.accepted.length ?? 0) / URGENT_BATCH_CAP));
-		return Math.max(0, this.options.maxLagMs - deliveries * estimate - SCHEDULING_MARGIN_MS);
-	}
-
-	/** The larger of the recent average and 95th percentile delivery time; undefined before any delivery. */
-	private deliveryEstimateMs(): number | undefined {
-		if (this.deliveryEwmaMs === undefined) return undefined;
-		return Math.max(this.deliveryEwmaMs, this.deliveryP95Ms);
-	}
-
-	private noteDelivery(ms: number): void {
-		this.deliveryEwmaMs =
-			this.deliveryEwmaMs === undefined
-				? ms
-				: this.deliveryEwmaMs + DELIVERY_EWMA_WEIGHT * (ms - this.deliveryEwmaMs);
-		this.deliverySamples.push(ms);
-		if (this.deliverySamples.length > DELIVERY_SAMPLES) this.deliverySamples.shift();
-		const sorted = [...this.deliverySamples].sort((left, right) => left - right);
-		this.deliveryP95Ms = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)]!;
+		const normal = this.normalTiming.estimate() ?? this.urgentTiming.estimate();
+		if (normal === undefined) return this.options.maxLagMs * BACKPRESSURE_SHARE;
+		const pending = Math.max(1, attempt?.accepted.length ?? 0);
+		const catchUpSize = Math.min(pending, URGENT_BATCH_CAP);
+		const initialGuess = normal * Math.ceil(catchUpSize / this.options.maxBatch);
+		const timedUrgent = Math.max(
+			this.urgentTiming.estimate() ?? 0,
+			(this.urgentPerCheckpointTiming.estimate() ?? 0) * catchUpSize,
+		);
+		const catchUpEstimate =
+			catchUpSize <= this.options.maxBatch
+				? normal
+				: this.urgentTiming.count < 2
+					? Math.max(timedUrgent, initialGuess)
+					: timedUrgent;
+		const remainingMs = Math.ceil(pending / URGENT_BATCH_CAP) * catchUpEstimate;
+		return Math.max(0, this.options.maxLagMs - normal - remainingMs - SCHEDULING_MARGIN_MS);
 	}
 
 	/**
@@ -414,6 +424,7 @@ export class CheckpointShipping {
 		);
 		this.attempts.clear();
 		this.syncOnly.clear();
+		this.generations.clear();
 		await this.shard.close();
 	}
 
@@ -443,13 +454,14 @@ export class CheckpointShipping {
 			if (this.closed) return recovered;
 			if (this.attempts.has(lease.id)) continue;
 			const now = this.now();
-			const held = await this.shard.pending(lease, Number.MAX_SAFE_INTEGER);
+			const held = await this.shard.pendingSeqs(lease);
 			if (this.closed) return recovered;
 			if (this.attempts.has(lease.id)) continue;
+			this.generations.set(lease.id, lease.generation);
 			this.attempts.set(lease.id, {
 				lease,
 				shippedThrough: 0,
-				accepted: held.map((event) => ({ localSeq: event.localSeq, at: now })),
+				accepted: held.map((localSeq) => ({ localSeq, at: now })),
 				chain: Promise.resolve(),
 			});
 			recovered.push(lease);
@@ -503,7 +515,11 @@ export class CheckpointShipping {
 		const began = this.now();
 		try {
 			await this.options.deliver(lease, batch);
-			this.noteDelivery(this.now() - began);
+			const elapsedMs = this.now() - began;
+			if (sealed.events.length > this.options.maxBatch) {
+				this.urgentTiming.note(elapsedMs);
+				this.urgentPerCheckpointTiming.note(elapsedMs / sealed.events.length);
+			} else this.normalTiming.note(elapsedMs);
 		} catch (error) {
 			const fenced = await this.fence(attempt, lease, error as Error);
 			if (fenced === undefined) this.lastError = error as Error;
@@ -514,6 +530,43 @@ export class CheckpointShipping {
 		await this.shard.shipped(lease, last);
 		attempt.shippedThrough = Math.max(attempt.shippedThrough, last);
 		attempt.accepted = attempt.accepted.filter((entry) => entry.localSeq > attempt.shippedThrough);
+	}
+
+	private async acceptWithRenewal(
+		lease: AttemptLease,
+		key: string,
+		payload: string,
+		at: number,
+		renewAttempt?: () => Promise<void>,
+	): Promise<{ readonly localSeq: number; readonly accepted: boolean } | undefined> {
+		const accept = () => this.shard.accept(this.shard.root, lease, key, payload, at);
+		try {
+			return await accept();
+		} catch (error) {
+			if (error instanceof StaleWorkLeaseError && error.reason === "expired" && renewAttempt !== undefined) {
+				try {
+					await renewAttempt();
+				} catch (renewError) {
+					const attempt = this.attempts.get(lease.id);
+					if (attempt?.lease.generation === lease.generation)
+						await this.fence(attempt, lease, renewError as Error);
+					throw renewError;
+				}
+				if (this.isSyncOnly(lease)) return undefined;
+				try {
+					return await accept();
+				} catch (retryError) {
+					return this.acceptFailure(lease, retryError as Error);
+				}
+			}
+			return this.acceptFailure(lease, error as Error);
+		}
+	}
+
+	private acceptFailure(lease: AttemptLease, error: Error): undefined {
+		if (error instanceof StaleWorkLeaseError || error instanceof ShipIdentityConflictError) throw error;
+		this.fallBack(lease, error);
+		return undefined;
 	}
 
 	private async commitDirect(
@@ -535,7 +588,11 @@ export class CheckpointShipping {
 
 	private async fence(attempt: Attempt, lease: AttemptLease, error: Error): Promise<Error | undefined> {
 		const workLeaseLost = error instanceof StaleWorkLeaseError && error.reason !== "expired";
-		const rootLeaseLost = error instanceof StaleLeaseError && error.currentEpoch !== error.heldEpoch;
+		const rootLeaseLost =
+			error instanceof StaleLeaseError &&
+			(error.currentEpoch !== error.heldEpoch ||
+				this.options.rootStanding === undefined ||
+				(await this.options.rootStanding()) === "lost");
 		if (!workLeaseLost && !rootLeaseLost) return undefined;
 		attempt.fenced =
 			error instanceof StaleWorkLeaseError
@@ -545,7 +602,11 @@ export class CheckpointShipping {
 						{ cause: error },
 					);
 		attempt.accepted = [];
-		await this.shard.fence(lease);
+		try {
+			await this.shard.fence(lease);
+		} catch (fenceError) {
+			this.fallBack(lease, fenceError as Error);
+		}
 		return attempt.fenced;
 	}
 
@@ -565,10 +626,11 @@ export class CheckpointShipping {
 		return (this.options.now ?? (() => performance.now()))();
 	}
 
-	private fallBack(workId: string, error: Error): void {
-		if (this.syncOnly.has(workId)) return;
-		this.syncOnly.add(workId);
-		this.options.onFallback?.({ workId, error });
+	private fallBack(lease: Pick<AttemptLease, "id" | "generation">, error: Error): void {
+		if ((this.generations.get(lease.id) ?? lease.generation) > lease.generation || this.isSyncOnly(lease)) return;
+		this.generations.set(lease.id, lease.generation);
+		this.syncOnly.set(lease.id, lease.generation);
+		this.options.onFallback?.({ workId: lease.id, error });
 	}
 }
 
