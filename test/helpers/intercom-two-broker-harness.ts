@@ -33,12 +33,23 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
 const storageAdapterModule = join(repoRoot, "test/fixtures/storage-adapter.ts");
 const BROKER_READY_TIMEOUT_MS = 10_000;
+/**
+ * Structural: one broker start. The child compiles its TypeScript through jiti, reads its host's identity, answers on
+ * its socket, registers the harness's keeper and opens multi-node routing. That takes a second or two on an idle
+ * machine; with every suite's brokers starting at once on a loaded Windows host it took longer than 45 s (#5252).
+ */
+export const BROKER_START_ALLOWANCE_MS = 90_000;
+/** How long a client waits for a loaded broker to answer its registration; the client's own default is 10 s. */
+const CLIENT_REGISTRATION_TIMEOUT_MS = 30_000;
 /** Generously more database calls than a broker's shared storage opening makes (its tables, columns and indexes). */
 const SHARED_STORAGE_OPENING_CALLS = 60;
 const CLIENT_DISCONNECT_TIMEOUT_MS = 5_000;
 const BROKER_SHUTDOWN_TIMEOUT_MS = 15_000;
-/** How long start() waits for a broker to write its lease before reporting single-node brokers. */
-const CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
+/**
+ * How long start() waits for a broker to write its lease before reporting single-node brokers. Every node has already
+ * opened multi-node routing by then, so this only waits for that lease's write, which a loaded host can delay.
+ */
+const CAPABILITY_PROBE_TIMEOUT_MS = BROKER_START_ALLOWANCE_MS;
 const DROP_WAKEUPS_TRIGGER = "two_broker_harness_drop_wakeups";
 const STORAGE_OPEN_GATE = "storage-open-gate";
 const REGISTRATION_GATE = "registration-gate";
@@ -53,6 +64,8 @@ export interface TwoBrokerConnectOptions {
 	readonly group?: string;
 	/** Reuse a disconnected client's address to reconnect as the same recipient. */
 	readonly returnAddress?: string;
+	/** How long to wait for the broker to answer the registration; default `CLIENT_REGISTRATION_TIMEOUT_MS`. */
+	readonly connectTimeoutMs?: number;
 	readonly preferredSessionId?: string;
 	/** Default true: confirm each saved message (#3761), as a real session does. */
 	readonly acknowledgeReceipts?: boolean;
@@ -112,6 +125,19 @@ export interface TwoBrokerHarnessOptions {
 	readonly brokerEnv?: Readonly<Record<string, string>>;
 }
 
+/** How long one broker start may take: every call of its shared storage opening waits the configured database delay. */
+function brokerStartTimeoutMs(options: TwoBrokerHarnessOptions): number {
+	return BROKER_START_ALLOWANCE_MS + SHARED_STORAGE_OPENING_CALLS * (options.databaseCallDelayMs ?? 0);
+}
+
+/** How long a suite's hook may take to start every broker of a harness started with `options`: one start per node. */
+export function twoBrokerHarnessStartTimeoutMs(options: TwoBrokerHarnessOptions = {}): number {
+	return (options.nodes ?? BROKER_NODES).length * brokerStartTimeoutMs(options);
+}
+
+/** The same for a harness of the default two nodes and no database delay. */
+export const TWO_BROKER_HARNESS_START_TIMEOUT_MS = twoBrokerHarnessStartTimeoutMs();
+
 /** Whether a gated broker's shared storage opening waits, fails, or proceeds. */
 export type StorageOpeningState = "held" | "fail" | "open";
 
@@ -169,10 +195,10 @@ export class TwoBrokerHarness {
 		nodes: Partial<Record<BrokerNode, NodeState>>,
 		private readonly gatedStorageOpening?: BrokerNode,
 		/**
-		 * How long a broker may take to open the shared storage: every call of the opening waits the configured database
+		 * How long one broker start may take: every call of its shared storage opening waits the configured database
 		 * delay, so a slow database extends it.
 		 */
-		private readonly sharedRoutingReadyTimeoutMs = BROKER_READY_TIMEOUT_MS,
+		private readonly brokerStartTimeoutMs = BROKER_START_ALLOWANCE_MS,
 	) {
 		this.sharedDatabasePath = join(root, "shared.sqlite");
 		this.nodes = nodes;
@@ -205,12 +231,7 @@ export class TwoBrokerHarness {
 				broker: undefined,
 			};
 		}
-		const harness = new TwoBrokerHarness(
-			root,
-			nodes,
-			options.gatedStorageOpening,
-			BROKER_READY_TIMEOUT_MS + SHARED_STORAGE_OPENING_CALLS * (options.databaseCallDelayMs ?? 0),
-		);
+		const harness = new TwoBrokerHarness(root, nodes, options.gatedStorageOpening, brokerStartTimeoutMs(options));
 		harness.brokerEnv = options.brokerEnv ?? {};
 		try {
 			for (const node of harness.nodeNames) await harness.startBroker(node);
@@ -288,14 +309,19 @@ export class TwoBrokerHarness {
 		});
 		state.broker = broker;
 		state.fixture.trackBroker(broker);
+		// One allowance for the whole start: each step waits for its event, a broker that exits fails it at once.
+		const deadline = Date.now() + this.brokerStartTimeoutMs;
+		const remainingMs = () => Math.max(1, deadline - Date.now());
 		await vi.waitFor(
 			async () => {
 				state.fixture.assertRunning();
 				if (!(await socketAnswers(this.socketPath(node)))) throw new Error(`broker ${node} is not answering yet`);
 			},
-			{ timeout: BROKER_READY_TIMEOUT_MS, interval: 20 },
+			{ timeout: remainingMs(), interval: 20 },
 		);
-		await this.connect(node, `harness-keeper-${node}-${randomUUID().slice(0, 8)}`);
+		await this.connect(node, `harness-keeper-${node}-${randomUUID().slice(0, 8)}`, {
+			connectTimeoutMs: remainingMs(),
+		});
 		// A listening socket and a locally registered keeper do not imply shared routing is ready.
 		// Gated-startup scenarios deliberately exercise local clients before storage opens.
 		if (node !== this.gatedStorageOpening) {
@@ -306,7 +332,7 @@ export class TwoBrokerHarness {
 						throw new Error(`broker ${node} has not opened multi-node routing`);
 					}
 				},
-				{ timeout: this.sharedRoutingReadyTimeoutMs, interval: 20 },
+				{ timeout: remainingMs(), interval: 20 },
 			);
 		}
 	}
@@ -413,6 +439,7 @@ export class TwoBrokerHarness {
 			brokerSocketPath: getBrokerSocketPath(process.platform, state.fixture.agentDir),
 			...(options.preferredSessionId === undefined ? {} : { preferredSessionId: options.preferredSessionId }),
 			acknowledgesReceipt: true,
+			connectTimeoutMs: options.connectTimeoutMs ?? CLIENT_REGISTRATION_TIMEOUT_MS,
 		});
 		const attached = new TwoBrokerClient(node, name, group, returnAddress, client);
 		const acknowledge = options.acknowledgeReceipts ?? true;

@@ -16,6 +16,7 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 
 type PromptTurnHarness = {
 	workingRunMeter: WorkingRunMeter;
@@ -73,6 +74,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 		tempDir = join(tmpdir(), `atomic-deferred-first-prompt-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		agentDir = join(tempDir, "agent");
 		mkdirSync(agentDir, { recursive: true });
+		linkSharedTranspileCache(agentDir);
 	});
 
 	afterEach(() => {

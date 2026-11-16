@@ -1,12 +1,15 @@
 // A workflow root writing its journal to a libSQL server. Once its parent writes "go", it appends a stage completion
-// record and a status change per round, so the parent can stop it in the middle of one of those transactions for
-// longer than the server keeps an idle stream. Prints one JSON report: every append's outcome, or the typed failure.
+// record and a status change per round, so the parent can stop it in the middle of one of those writes for longer
+// than the server keeps an idle stream. With the mode "transaction" each append names the sequence it expects, which
+// keeps it in an interactive transaction; with "one-request", the default, each goes in one request (#4768). Prints
+// one JSON report: every append's outcome, or the typed failure.
 import { createInterface } from "node:readline";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { RUN_EVENT_TYPES, type RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
 
-const [url, rounds] = process.argv.slice(2);
+const [url, rounds, mode = "one-request"] = process.argv.slice(2);
+if (mode !== "one-request" && mode !== "transaction") throw new Error(`unknown mode ${mode}`);
 const warnings: { name: string; code?: unknown; outcome?: unknown }[] = [];
 process.on("warning", (warning: Error & { code?: unknown; outcome?: unknown }) =>
 	warnings.push({ name: warning.name, code: warning.code, outcome: warning.outcome }),
@@ -22,14 +25,17 @@ try {
 	console.log("ready");
 	if ((await lines.next()).value !== "go") throw new Error("expected go");
 	const outcomes: string[] = [];
+	/** The sequence the next append expects, in the mode that names it. */
+	let head = 0;
+	const expecting = () => (mode === "transaction" ? { expectSeq: head++ } : {});
 	for (let round = 0; round < Number(rounds); round++) {
 		const completed = {
 			type: RUN_EVENT_TYPES.checkpointRecorded,
 			payload: { kind: "stage", stage: `stage-${round}`, status: "completed" },
 		} as unknown as RunEvent;
 		const status = { type: RUN_EVENT_TYPES.statusChanged, payload: { status: `round-${round}` } } as RunEvent;
-		outcomes.push((await journal.append(acquired.lease, completed, { key: `stage:${round}` })).status);
-		outcomes.push((await journal.append(acquired.lease, status)).status);
+		outcomes.push((await journal.append(acquired.lease, completed, { key: `stage:${round}`, ...expecting() })).status);
+		outcomes.push((await journal.append(acquired.lease, status, expecting())).status);
 	}
 	console.log(JSON.stringify({ outcomes, warnings }));
 } catch (error) {

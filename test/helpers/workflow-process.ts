@@ -7,7 +7,7 @@ import {
 	makeTempDirectory,
 	moduleDir,
 	readText,
-	removeTempDirectory,
+	removePath,
 	type SpawnedProcess,
 	sleep,
 	spawnProcess,
@@ -16,6 +16,13 @@ import {
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const BROKER_EXIT_TIMEOUT_MS = 10_000;
+/**
+ * Windows refuses to remove a broker log while a broker still holds it. A broker the home's sessions started or retired
+ * around cleanup publishes no PID to wait for, but it exits within its 5 s idle window once no session is left, so the
+ * removal retries (`retryDelay` grows linearly per attempt, about 24 s in all) instead of failing on that broker.
+ */
+const HOME_REMOVE_RETRIES = 15;
+const HOME_REMOVE_RETRY_DELAY_MS = 200;
 
 /** Windows redirects broker stderr from a cmd.exe parent that also owns the log handle. */
 function brokerLauncherPid(pid: number, logPath: string): number | undefined {
@@ -193,7 +200,12 @@ export class WorkflowProcessHome {
 			if (Date.now() >= deadline) throw new Error("Fixture broker or launcher did not exit before cleanup");
 			await sleep(20);
 		}
-		removeTempDirectory(this.path);
+		await removePath(this.path, {
+			recursive: true,
+			force: true,
+			maxRetries: HOME_REMOVE_RETRIES,
+			retryDelay: HOME_REMOVE_RETRY_DELAY_MS,
+		});
 		for (const exit of exits) {
 			if (exit.status === "rejected") throw exit.reason;
 		}

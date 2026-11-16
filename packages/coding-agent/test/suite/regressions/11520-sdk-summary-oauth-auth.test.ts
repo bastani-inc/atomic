@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,8 @@ import { createAgentSession } from "../../../src/core/sdk.js";
 import { SessionManager } from "../../../src/core/session-manager.js";
 import { SettingsManager } from "../../../src/core/settings-manager.js";
 import { assistantMsg, createTestResourceLoader, userMsg } from "../../utilities.js";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 // Issue #11520: summaries in SDK sessions passed the resolved OAuth token back to the
 // ModelRuntime as an explicit API key, so provider auth took the API-key override branch.
@@ -88,7 +91,7 @@ describe("issue #11520 SDK summary OAuth auth", () => {
 		}) as ModelRuntime["getAuth"];
 
 		const sessionManager = SessionManager.inMemory(cwd);
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd,
 			agentDir: cwd,
 			model,
@@ -96,7 +99,12 @@ describe("issue #11520 SDK summary OAuth auth", () => {
 			settingsManager: SettingsManager.inMemory(),
 			sessionManager,
 			resourceLoader: createTestResourceLoader(),
+			builtins: NO_BUILTINS,
 		});
+		assert.deepEqual(
+			extensionsResult.extensions.map((extension) => extension.path),
+			[],
+		);
 		try {
 			const targetId = await sessionManager.appendMessage(userMsg("first branch"));
 			await sessionManager.appendMessage(assistantMsg("first reply"));

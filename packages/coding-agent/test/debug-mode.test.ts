@@ -2,12 +2,27 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	Container,
+	getKeybindings,
+	SelectList,
+	setKeybindings,
+	Text,
+	TuiAltScreen,
+	TuiMainScreen,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	VStack,
+} from "@bastani/atomic-tui";
 import { afterEach, describe, it, vi } from "vitest";
 import { parseArgs, printHelp } from "../src/cli/args.js";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
+import { boundedInteractiveModelRefresh } from "../src/core/bounded-model-refresh.ts";
 import { isDebugEnabled } from "../src/core/debug.js";
 import { DebugConfigError, isDebugConfigError } from "../src/core/debug-errors.js";
 import { setDebugSetting } from "../src/core/debug-setting.js";
+import { KeybindingsManager } from "../src/core/keybindings.ts";
+import type { ModelRuntime } from "../src/core/model-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.js";
 import { main } from "../src/main.js";
@@ -15,7 +30,8 @@ import { createSettingsChangeHandler } from "../src/modes/interactive/components
 import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.js";
 import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
-import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { refreshModelCatalogs } from "../src/modes/interactive/model-catalog-refresh.ts";
+import { getSelectListTheme, initTheme } from "../src/modes/interactive/theme/theme.js";
 import { buildInteractiveEngineArgs } from "../src/modes/interactive-engine/engine-args.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 import { RpcClient } from "../src/modes/rpc/rpc-client.js";
@@ -24,6 +40,8 @@ import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js
 import { createRpcInputLineHandler } from "../src/modes/rpc/rpc-input.js";
 import { createRpcErrorResponse } from "../src/modes/rpc/rpc-responses.js";
 import type { RpcCommandBody, RpcResponse } from "../src/modes/rpc/rpc-types.js";
+import { stripAnsi } from "../src/utils/ansi.ts";
+import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
 import { createHarness } from "./suite/harness.js";
 
 const unusedCreateRuntime = (async () => {
@@ -344,6 +362,180 @@ describe("/debug (#4360)", () => {
 			assert.equal(written.startsWith(`${earlier}Debug output at `), true, written.slice(0, 200));
 			assert.match(written, /"rendered line"/);
 		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps painted-row selection targets aligned with the screen when Shift+Ctrl+D runs in the same frame as a catalog refresh", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "atomic-debug-paint-"));
+		const previousKeys = getKeybindings();
+		setKeybindings(KeybindingsManager.create());
+		initTheme("dark");
+
+		class PaintedRowCatalogPicker extends Container {
+			private items: string[];
+			private rowLines = new Map<number, string>();
+			private rowLinesWidth = 0;
+			private mousePressed: string | undefined;
+			private readonly header = new Container();
+			private readonly selectList: SelectList;
+			private readonly onPick: (id: string) => void;
+
+			constructor(initialItems: string[], onPick: (id: string) => void) {
+				super();
+				this.items = [...initialItems];
+				this.onPick = onPick;
+				this.header.addChild(new Text("Select model", 0, 0));
+				this.selectList = new SelectList(
+					initialItems.map((id) => ({ value: id, label: id })),
+					5,
+					getSelectListTheme(),
+				);
+				this.selectList.onSelect = (item) => this.onPick(`list:${item.value}`);
+				this.addChild(this.header);
+				this.addChild(this.selectList);
+			}
+
+			setCatalogItems(nextItems: string[], refreshNotice: string): void {
+				this.items = [...nextItems];
+				this.header.addChild(new Text(refreshNotice, 0, 0));
+			}
+
+			override render(width: number): string[] {
+				const lines = super.render(width);
+				this.rowLines = new Map();
+				this.rowLinesWidth = width;
+				for (const id of this.items) {
+					this.rowLines.set(lines.length, id);
+					lines.push(`  ${id}`);
+				}
+				return lines;
+			}
+
+			override handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+				const id = this.rowLinesWidth === event.width ? this.rowLines.get(event.y) : undefined;
+				if (id !== undefined) {
+					if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
+					if (!this.items.includes(id)) {
+						this.mousePressed = undefined;
+						return { handled: true };
+					}
+					if (event.type === "press") {
+						this.mousePressed = id;
+						return { handled: true, focus: true };
+					}
+					const pressed = this.mousePressed;
+					this.mousePressed = undefined;
+					if (pressed === id) this.onPick(id);
+					return { handled: true };
+				}
+				return super.handleMouse(event);
+			}
+		}
+
+		const terminal = new RecordingTerminal();
+		terminal.columns = 100;
+		terminal.rows = 30;
+		const tui = new TuiAltScreen(terminal);
+		const chosen: string[] = [];
+		const picker = new PaintedRowCatalogPicker(["openai/gpt-4o", "anthropic/claude-sonnet-4-5"], (id) =>
+			chosen.push(id),
+		);
+		const editorContainer = new Container();
+		editorContainer.addChild(picker);
+		const dock = new VStack([
+			{ component: editorContainer, shrink: 1, minSize: 3 },
+			{ component: new Text("footer", 0, 0), shrink: 1, minSize: 1 },
+		]);
+		const root = new VStack([
+			{ component: new Text("transcript", 0, 0), basis: 0, grow: 1, shrink: 1, minSize: 1 },
+			{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+		]);
+		const host = {
+			ui: tui,
+			session: { messages: [] },
+			chatContainer: new Container(),
+		};
+		tui.onDebug = () => Reflect.apply(InteractiveMode.prototype.handleDebugCommand, host, []);
+		tui.setLayoutRoot(root);
+		tui.setFocus(picker);
+		tui.start();
+		tui.renderNow();
+
+		try {
+			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+			const painted = tui.getScreenLines().map(stripAnsi);
+			const listRow = painted.findIndex((line) => line.includes("→ openai/gpt-4o"));
+			const customRow = painted.findIndex((line) => line.trim() === "openai/gpt-4o");
+			assert.equal(listRow >= 0, true);
+			assert.equal(customRow >= 0, true);
+
+			let releaseRefresh!: () => void;
+			const refreshGate = new Promise<void>((resolve) => {
+				releaseRefresh = resolve;
+			});
+			const runtime = {
+				refresh: async () => {
+					await refreshGate;
+					return { aborted: false, errors: new Map() };
+				},
+				isNetworkRefreshEnabled: () => true,
+				getCatalogInputsGeneration: () => 0,
+			} as unknown as ModelRuntime;
+
+			const refreshTask = boundedInteractiveModelRefresh((options) => refreshModelCatalogs(runtime, options)).then(
+				() => {
+					picker.setCatalogItems(
+						["openai/gpt-4.1-mini", "openai/gpt-4o", "anthropic/claude-sonnet-4-5"],
+						"Model catalogs refreshed.",
+					);
+					tui.requestRender();
+				},
+			);
+
+			const writesBeforeRefresh = terminal.writes.length;
+			releaseRefresh();
+			await refreshTask;
+
+			terminal.input("\x1b[100;6u");
+			assert.equal(terminal.writes.length, writesBeforeRefresh);
+			assert.equal(stripAnsi(tui.getScreenLines()[listRow] ?? "").includes("openai/gpt-4o"), true);
+			assert.equal(stripAnsi(tui.getScreenLines()[customRow] ?? "").trim(), "openai/gpt-4o");
+
+			terminal.input(`\x1b[<0;8;${customRow + 1}M`);
+			terminal.input(`\x1b[<0;8;${customRow + 1}m`);
+			assert.deepEqual(chosen, ["openai/gpt-4o"]);
+
+			terminal.input(`\x1b[<0;8;${listRow + 2}M`);
+			terminal.input(`\x1b[<0;8;${listRow + 2}m`);
+			assert.deepEqual(chosen, ["openai/gpt-4o", "list:anthropic/claude-sonnet-4-5"]);
+
+			const written = readFileSync(join(agentDir, "atomic-debug.log"), "utf8");
+			assert.equal(written.includes("Model catalogs refreshed."), false);
+
+			const mainTerminal = new RecordingTerminal();
+			const mainTui = new TuiMainScreen(mainTerminal);
+			const mainLine = new Text("painted main line", 0, 0);
+			mainTui.addChild(mainLine);
+			mainTui.start();
+			mainTui.renderNow();
+			mainLine.setText("unpainted main line");
+			mainTui.requestRender();
+			const mainHost = {
+				ui: mainTui,
+				session: { messages: [] },
+				chatContainer: new Container(),
+			};
+			mainTui.onDebug = () => Reflect.apply(InteractiveMode.prototype.handleDebugCommand, mainHost, []);
+			mainTerminal.input("\x1b[100;6u");
+			mainTui.stop();
+
+			const afterMain = readFileSync(join(agentDir, "atomic-debug.log"), "utf8");
+			assert.match(afterMain, /"painted main line/);
+			assert.equal(afterMain.includes("unpainted main line"), false);
+		} finally {
+			tui.stop();
+			setKeybindings(previousKeys);
 			rmSync(agentDir, { recursive: true, force: true });
 		}
 	});

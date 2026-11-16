@@ -13,9 +13,24 @@ import {
 	path,
 	Spacer,
 	Text,
+	type TUI,
 	theme,
 	visibleWidth,
 } from "./interactive-mode-deps.ts";
+
+function getPaintedDebugLines(ui: TUI, width: number): string[] {
+	const paintedUi = ui as TUI & {
+		getScreenLines?: () => string[];
+		captureRenderState?: () => { previousLines: string[] };
+	};
+	if (typeof paintedUi.getScreenLines === "function") {
+		return paintedUi.getScreenLines();
+	}
+	if (typeof paintedUi.captureRenderState === "function") {
+		return paintedUi.captureRenderState().previousLines;
+	}
+	return ui.render(width);
+}
 
 InteractiveModeBase.prototype.getAppKeyDisplay = function (this: InteractiveModeBase, action: AppKeybinding): string {
 	return keyDisplayText(action);
@@ -163,7 +178,7 @@ InteractiveModeBase.prototype.handleClearCommand = async function (this: Interac
 InteractiveModeBase.prototype.handleDebugCommand = function (this: InteractiveModeBase): void {
 	const width = this.ui.terminal.columns;
 	const height = this.ui.terminal.rows;
-	const allLines = this.ui.render(width);
+	const allLines = getPaintedDebugLines(this.ui, width);
 
 	const debugLogPath = getDebugLogPath();
 	const debugData = [

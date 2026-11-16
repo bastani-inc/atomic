@@ -240,7 +240,7 @@ save "cli-started"
 #    connect hint, just as the existing terminal evidence scripts do.
 type_command "/workflow $WORKFLOW_NAME"
 await_text "started in background" "the workflow to be dispatched" 120
-RUN_ID="$(capture | grep -oE '/workflow connect [0-9a-f-]+' | tail -1 | awk '{print $3}')"
+RUN_ID="$(capture | grep -oE '/workflows [0-9a-f-]+' | tail -1 | awk '{print $2}')"
 if [[ -z "$RUN_ID" ]]; then
 	echo "stage-output-transcript evidence: the CLI rendered no dispatched run id" >&2
 	exit 1

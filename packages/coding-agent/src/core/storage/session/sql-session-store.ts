@@ -352,31 +352,67 @@ export class SqlSessionStore implements SessionStore {
 				SESSION_SCHEMA_VERSION_UNCHUNKED,
 			);
 		};
-		await applyStorageMigrations(
-			database,
-			SESSION_DOMAIN,
-			[
-				{ version: 1, up: createTables },
-				{ version: 2, up: addEntryChunks },
-			],
-			{ table: storageMigrationTable(options.prefix) },
-		);
-		// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971). Its later
-		// steps must stay additive: a build that knows fewer of them accepts a newer version and keeps marking (#5065).
 		const presence = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, options.prefix);
-		await applyStorageMigrations(
-			database,
-			SESSION_PRESENCE_DOMAIN,
-			[
-				{ version: 1, up: (tx, dialect) => SqlSessionOpenMarkers.createTable(tx, dialect, presence.open) },
-				{ version: 2, up: (tx, dialect) => SqlSessionOpenMarkers.addSchemaVersion(tx, dialect, presence.open) },
-			],
-			{ table: storageMigrationTable(options.prefix), acceptNewer: true },
-		);
+		// A SQLite schema records no ledger, so its idempotent setup would run, under the write lock, at every open. A
+		// schema that is current already opens with reads alone: on a server many processes share, each open otherwise
+		// held the write lock for a dozen round trips while every other writer waited (#4768).
+		const current = await SqlSessionStore.currentSchema(database, tables, presence.open);
+		if (current !== undefined) legacyBlobData = current.legacyBlobData;
+		else {
+			await applyStorageMigrations(
+				database,
+				SESSION_DOMAIN,
+				[
+					{ version: 1, up: createTables },
+					{ version: 2, up: addEntryChunks },
+				],
+				{ table: storageMigrationTable(options.prefix) },
+			);
+			// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971). Its
+			// later steps must stay additive: a build that knows fewer of them accepts a newer version and keeps marking
+			// (#5065).
+			await applyStorageMigrations(
+				database,
+				SESSION_PRESENCE_DOMAIN,
+				[
+					{ version: 1, up: (tx, dialect) => SqlSessionOpenMarkers.createTable(tx, dialect, presence.open) },
+					{ version: 2, up: (tx, dialect) => SqlSessionOpenMarkers.addSchemaVersion(tx, dialect, presence.open) },
+				],
+				{ table: storageMigrationTable(options.prefix), acceptNewer: true },
+			);
+		}
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
 		const store = new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs, legacyBlobData);
 		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
 		return store;
+	}
+
+	/**
+	 * What the open's setup would find, read without the write lock, when the setup would change nothing: every table
+	 * and column of both domains exists and the sessions meta holds this build's version only. Undefined otherwise, and
+	 * always on a database with versioned migrations, whose ledger the setup checks.
+	 */
+	private static async currentSchema(
+		database: SqliteDatabase,
+		tables: Tables,
+		open: string,
+	): Promise<{ readonly legacyBlobData: boolean } | undefined> {
+		const dialect = dialectOf(database);
+		if (dialect.versionedMigrations) return undefined;
+		const probes = [
+			...[...Object.values(tables), open].map((table) => dialect.tableExists(table)),
+			dialect.columnExists(tables.sessions, "revision"),
+			dialect.columnExists(tables.entries, "chunks"),
+			dialect.columnExists(tables.blobs, "chunks"),
+			dialect.columnExists(open, "schema_version"),
+		];
+		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
+		if (!found.every((row) => row !== undefined)) return undefined;
+		const versions = await database.all(`SELECT schema_version FROM ${tables.meta}`);
+		if (versions.length === 0 || versions.some((row) => row.schema_version !== SESSION_SCHEMA_VERSION))
+			return undefined;
+		const legacy = dialect.columnExists(tables.blobs, "data");
+		return { legacyBlobData: (await database.get(legacy.sql, ...legacy.params)) !== undefined };
 	}
 
 	/**

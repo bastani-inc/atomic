@@ -293,18 +293,46 @@ const REFUSED_BATON = [
 ];
 
 /**
- * Statements that run on the reused stream: reads and writes that leave the connection as they found it. Anything
- * else, such as `BEGIN`, a `PRAGMA`, a temporary table or a schema change, runs on a stream of its own, so the
- * connection a reused stream holds never carries a transaction or a setting from one call into the next.
+ * The keyword that makes a statement run on the reused stream: reads and writes that leave the connection as they
+ * found it. Anything else, such as `BEGIN`, a `PRAGMA`, a temporary table or a schema change, runs on a stream of its
+ * own, so the connection a reused stream holds never carries a transaction or a setting from one call into the next.
  */
-const REUSABLE_STATEMENT = /^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*(?:SELECT|INSERT|UPDATE|DELETE|REPLACE|WITH|VALUES)\b/i;
+const REUSABLE_KEYWORD = /(?:SELECT|INSERT|UPDATE|DELETE|REPLACE|WITH|VALUES)\b/iy;
+
+const WHITESPACE = /\s/;
+
+/**
+ * Where `sql`'s first token starts, after its leading whitespace, `--` comments and `/* *\/` comments, or -1 when a
+ * block comment is left open. One pass, which ends a block comment at its first `*\/` as SQLite does: a regular
+ * expression for the same prefix backtracks exponentially on runs of comments such as `/**\//**\/…`.
+ * @param {string} sql
+ */
+function firstTokenStart(sql) {
+	let index = 0;
+	while (index < sql.length) {
+		if (WHITESPACE.test(sql[index])) index++;
+		else if (sql.startsWith("--", index)) {
+			const end = sql.indexOf("\n", index + 2);
+			if (end === -1) return sql.length;
+			index = end + 1;
+		} else if (sql.startsWith("/*", index)) {
+			const end = sql.indexOf("*/", index + 2);
+			if (end === -1) return -1;
+			index = end + 2;
+		} else return index;
+	}
+	return index;
+}
 
 /**
  * Whether `sql`, one statement, runs on the reused stream.
  * @param {string} sql
  */
 function reusable(sql) {
-	return REUSABLE_STATEMENT.test(sql) && isOneStatement(sql);
+	const start = firstTokenStart(sql);
+	if (start === -1) return false;
+	REUSABLE_KEYWORD.lastIndex = start;
+	return REUSABLE_KEYWORD.test(sql) && isOneStatement(sql);
 }
 
 /**

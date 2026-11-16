@@ -5,6 +5,7 @@ import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { waitForChildProcess } from "../../../utils/child-process.ts";
 import { killProcessTree } from "../../../utils/shell.ts";
+import { containProcessTree, type ProcessTreeContainment, processTreeEnded } from "../../process-tree-containment.ts";
 
 /** A step's log file, open for appending: the child processes of the step write their output to `fd`. */
 export interface StepLog {
@@ -42,6 +43,18 @@ export interface LoggedProcessOptions {
  */
 export const stepProcessWatcher = new AsyncLocalStorage<(pid: number, running: boolean) => void>();
 
+const STOPPED_PROCESS_TREE_WAIT_MS = 10_000;
+
+async function settleTree(tree: ProcessTreeContainment | undefined, stopped: boolean): Promise<void> {
+	if (tree === undefined) return;
+	if (!stopped) {
+		tree.release();
+		return;
+	}
+	await processTreeEnded(tree, STOPPED_PROCESS_TREE_WAIT_MS);
+	tree.close();
+}
+
 /** Whether a process started on `platform` leads its own process group, which is how stopping it stops its children. */
 export function startsProcessGroup(platform: NodeJS.Platform): boolean {
 	return platform !== "win32";
@@ -76,11 +89,15 @@ export async function runLoggedProcess(
 				copiesOutput ? "pipe" : log.fd,
 			],
 		});
+		const tree = child.pid === undefined ? undefined : containProcessTree(child.pid);
 		const watch = stepProcessWatcher.getStore();
 		if (child.pid !== undefined) watch?.(child.pid, true);
 		let timedOut = false;
+		let stopped = false;
 		let writeError: Error | undefined;
 		const stop = () => {
+			stopped = true;
+			if (tree?.terminate()) return;
 			if (child.pid !== undefined) killProcessTree(child.pid);
 		};
 		const timer = setTimeout(() => {
@@ -119,6 +136,7 @@ export async function runLoggedProcess(
 		options.signal?.addEventListener("abort", onAbort);
 		const onSpawnError = (error: Error) => {
 			settle();
+			tree?.close();
 			if (options.signal?.aborted) {
 				reject(options.signal.reason);
 				return;
@@ -131,7 +149,10 @@ export async function runLoggedProcess(
 				spawnError: error,
 			});
 		};
-		const ended = (exitStatus: number | null, exitSignal: NodeJS.Signals | null) => {
+		const ended = async (exitStatus: number | null, exitSignal: NodeJS.Signals | null) => {
+			clearTimeout(timer);
+			options.signal?.removeEventListener("abort", onAbort);
+			await settleTree(tree, stopped);
 			settle();
 			if (options.signal?.aborted) {
 				reject(options.signal.reason);

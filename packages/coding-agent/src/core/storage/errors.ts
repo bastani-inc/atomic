@@ -165,7 +165,9 @@ function byteCount(bytes: number): string {
  * `SQLITE_TOOBIG`, `ARGS_INVALID "string or blob too big"`, Postgres's `54000`), or a statement's response (a libSQL
  * server's `RESPONSE_TOO_LARGE`). Permanent: the same write fails again, so it is never `retryable` and never a
  * `StorageUnavailableError` (#4954). `limitBytes` is the backend's default limit when the backend does not report its
- * own; `actualBytes` is the largest value the statement bound, or 0 when unknown (a response).
+ * own; `actualBytes` is the largest value the statement bound, or 0 when unknown (a response). A value refused while
+ * the largest bound value is within the limit is one the backend built running the statement, a row of several values
+ * or a value a query computes, and the message says so instead of calling the small value sent too large (#5260).
  */
 export class StoragePayloadTooLargeError extends StorageError {
 	readonly code = "payload-too-large" as const;
@@ -182,10 +184,13 @@ export class StoragePayloadTooLargeError extends StorageError {
 		const where =
 			options.descriptor === undefined ? "" : `: ${options.descriptor.adapter} at ${options.descriptor.location}`;
 		const limit = limitBytes > 0 ? `the limit is ${byteCount(limitBytes)}` : "over its limit";
+		const built = actualBytes > 0 && actualBytes <= limitBytes;
 		const what =
 			kind === "response"
 				? `refused to return a response larger than it allows; ${limit} per response`
-				: `refused a value${actualBytes > 0 ? ` of ${byteCount(actualBytes)}` : ""} larger than it stores; ${limit} per value or row`;
+				: built
+					? `refused a value or row it built while running the statement, larger than it stores; ${limit} per value or row, and the largest value sent was ${byteCount(actualBytes)}`
+					: `refused a value${actualBytes > 0 ? ` of ${byteCount(actualBytes)}` : ""} larger than it stores; ${limit} per value or row`;
 		super(
 			`Storage payload too large${where}: the backend ${what} (payload-too-large). ${PAYLOAD_TOO_LARGE_HINT}.`,
 			options.cause === undefined ? undefined : { cause: options.cause },
