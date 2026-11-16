@@ -120,6 +120,8 @@ pub struct CommandResourceOptions {
 	/// Internal host/test seam for distinguishing a real TERM wait from teardown latency (integer 1..=60000 ms).
 	/// Ignored on Windows, whose Job containment terminates immediately rather than sending TERM.
 	pub termination_grace_ms: Option<f64>,
+	pub keep_background_on_exit: Option<bool>,
+	pub retain_record_on_start: Option<bool>,
 }
 
 pub(super) struct CommandTask {
@@ -302,20 +304,29 @@ impl Actor {
 		if state.closing || state.owners[oi].state != "open" {
 			return Err(fail("OwnerClosing"));
 		}
-		if let Some(task) =
-			state.owners[oi].tasks.iter().find(|task| task.record.launch_operation_id == operation)
-		{
-			let Some(command) = task
+		if let Some(existing) =
+			state.owners[oi].tasks.ordinals().into_iter().find(|&ordinal| {
+				state.owners[oi].tasks[ordinal].record.launch_operation_id == operation
+			}) {
+			let Some(command) = state.owners[oi].tasks[existing]
 				.command
 				.as_ref()
 				.filter(|command| command.intent == intent && command.options == options)
+				.cloned()
 			else {
 				return Err(fail("OperationConflict"));
 			};
-			let command = command.clone();
-			let lease = TaskLease { cap: task.cap.clone() };
+			let lease = TaskLease { cap: state.owners[oi].tasks[existing].cap.clone() };
+			if options.retain_record_on_start == Some(true) {
+				state.owners[oi].tasks[existing].held = true;
+			}
 			drop(state);
-			command.await_setup()?;
+			if let Err(error) = command.await_setup() {
+				if options.retain_record_on_start == Some(true) {
+					let _ = self.release_record(&lease);
+				}
+				return Err(error);
+			}
 			return Ok(lease);
 		}
 		// Unsupported platforms refuse before executing any part of the command.
@@ -424,7 +435,7 @@ impl Actor {
 			settlement: None,
 			cancel_cause: None,
 			cancellation_output: None,
-			held: false,
+			held: options.retain_record_on_start.unwrap_or(false),
 			command: Some(command.clone()),
 		});
 		state.emit(oi, Some(reference.task_id), TaskEvent::TaskAdmitted { task: record });
@@ -435,18 +446,31 @@ impl Actor {
 		let spawn = std::thread::Builder::new().name("task-command".into()).spawn(move || {
 			actor.run_command(&runner, &resource);
 			resource.output.lock().unwrap().settle();
+			let mut worker = resource.worker.lock().unwrap();
 			resource.finished.store(true, Ordering::Release);
+			drop(worker.take());
 		});
 		match spawn {
-			Ok(worker) => *command.worker.lock().unwrap() = Some(worker),
+			Ok(worker) => {
+				let mut slot = command.worker.lock().unwrap();
+				if !command.finished.load(Ordering::Acquire) {
+					*slot = Some(worker);
+				}
+			},
 			Err(error) => self.command_spawn_failed(
 				&RunnerLease { cap: cap.clone() },
 				&command,
 				error.to_string(),
 			),
 		}
-		command.await_setup()?;
-		Ok(TaskLease { cap })
+		let lease = TaskLease { cap };
+		if let Err(error) = command.await_setup() {
+			if options.retain_record_on_start == Some(true) {
+				let _ = self.release_record(&lease);
+			}
+			return Err(error);
+		}
+		Ok(lease)
 	}
 	fn command_spawn_failed(&self, runner: &RunnerLease, command: &CommandTask, message: String) {
 		let _ = self.runner_outcome(
@@ -628,6 +652,7 @@ impl Actor {
 		// Quarantine has no deadline until the owner closes or the task is stopped (#4338).
 		let mut expires: Option<Instant> = None;
 		let mut group_gone = false;
+		let mut preserved_background = false;
 		loop {
 			#[cfg(test)]
 			command.loop_iterations.fetch_add(1, Ordering::AcqRel);
@@ -692,6 +717,47 @@ impl Actor {
 					break;
 				},
 			};
+			if stopping.is_none()
+				&& command.options.keep_background_on_exit == Some(true)
+				&& exited
+				&& !cancelling
+				&& read_failure.is_none()
+			{
+				if status.is_none() {
+					match command.try_reap(&mut child) {
+						Ok(value) => status = value,
+						Err(error) => {
+							cleanup_failure = Some(error.to_string());
+							break;
+						},
+					}
+					group.reaped = status.is_some();
+				}
+				if status.is_some() {
+					for _ in 0..16 {
+						let before = command.output.lock().unwrap().byte_count;
+						for result in [
+							read_pipe(&mut stdout, command, &mut stdout_eof, true),
+							read_pipe(&mut stderr, command, &mut stderr_eof, true),
+						] {
+							if let Err(error) = result {
+								read_failure = Some(error.to_string());
+							}
+						}
+						if read_failure.is_some()
+							|| (stdout_eof && stderr_eof)
+							|| command.output.lock().unwrap().byte_count == before
+						{
+							break;
+						}
+					}
+					if read_failure.is_none() {
+						preserved_background = true;
+						group.forget();
+						break;
+					}
+				}
+			}
 			if stopping.is_none() && (cancelling || exited || read_failure.is_some()) {
 				let _ = self.acknowledge_cleanup(runner, Cleanup::Draining {});
 				let cause = self.state.lock().unwrap().owners[runner.cap.owner].tasks
@@ -805,13 +871,18 @@ impl Actor {
 					break;
 				}
 			}
-			std::thread::sleep(if quarantined && expires.is_none() {
-				PROCESS_QUARANTINE_POLL
+			if stopping.is_none() && !exited {
+				group.wait(PROCESS_POLL);
 			} else {
-				PROCESS_POLL
-			});
+				std::thread::sleep(if quarantined && expires.is_none() {
+					PROCESS_QUARANTINE_POLL
+				} else {
+					PROCESS_POLL
+				});
+			}
 		}
 		command.input.lock().unwrap().close();
+		drop(stdin);
 		if let Some(message) = cleanup_failure {
 			command.retain_failed(runner.cap.reference(), child, (stdout, stderr), message.clone());
 			if !quarantined {
@@ -839,6 +910,12 @@ impl Actor {
 				command.setup_result(Err(TaskFailure { code: "CleanupFailed".into(), message }));
 			}
 			return;
+		}
+		if preserved_background {
+			detach_background_output(stdout, stdout_eof, stderr, stderr_eof);
+		} else {
+			drop(stdout);
+			drop(stderr);
 		}
 		if !quarantined {
 			let status = status.expect("group confirmed only after direct child reaped");
@@ -1037,6 +1114,16 @@ impl ProcessGroup {
 			cgroup.remove();
 		}
 	}
+	fn wait(&self, timeout: Duration) {
+		#[cfg(target_os = "linux")]
+		if let Some(pidfd) = &self.pidfd {
+			use std::os::fd::AsRawFd;
+			let mut poll = libc::pollfd { fd: pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+			let _ = unsafe { libc::poll(&mut poll, 1, timeout.as_millis() as libc::c_int) };
+			return;
+		}
+		std::thread::sleep(timeout);
+	}
 }
 /// A pidfd of the leader that can signal its whole group, or None where it cannot: before Linux 6.9, which
 /// rejects `PIDFD_SIGNAL_PROCESS_GROUP`, or under a seccomp filter that refuses either call. The group is
@@ -1113,6 +1200,43 @@ fn make_nonblocking(fd: &impl std::os::fd::AsRawFd) -> io::Result<()> {
 }
 fn drain_pipe(reader: &mut impl Read, command: &CommandTask, eof: &mut bool) -> io::Result<()> {
 	read_pipe(reader, command, eof, true)
+}
+pub(super) fn detach_background_output(
+	stdout: ProcessReader,
+	stdout_eof: bool,
+	stderr: ProcessReader,
+	stderr_eof: bool,
+) {
+	let mut stdout = (!stdout_eof).then_some(stdout);
+	let mut stderr = (!stderr_eof).then_some(stderr);
+	if stdout.is_none() && stderr.is_none() {
+		return;
+	}
+	let _ = std::thread::Builder::new().name("task-bg-output".into()).spawn(move || {
+		let mut buffer = [0u8; 8192];
+		while stdout.is_some() || stderr.is_some() {
+			let mut progressed = false;
+			for slot in [&mut stdout, &mut stderr] {
+				let Some(reader) = slot.as_mut() else {
+					continue;
+				};
+				match reader.read(&mut buffer) {
+					Ok(0) => {
+						*slot = None;
+					},
+					Ok(_) => progressed = true,
+					Err(error) if error.kind() == io::ErrorKind::WouldBlock => {},
+					Err(error) if error.kind() == io::ErrorKind::Interrupted => progressed = true,
+					Err(_) => {
+						*slot = None;
+					},
+				}
+			}
+			if (stdout.is_some() || stderr.is_some()) && !progressed {
+				std::thread::sleep(PROCESS_POLL);
+			}
+		}
+	});
 }
 /// Reads what the pipe holds; with `keep` false the bytes are discarded, as output after a settled result is.
 fn read_pipe(
@@ -3186,5 +3310,33 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&dir);
 		assert!(matches!(record.cleanup, Cleanup::Quarantined { .. }), "{record:?}");
 		assert!(!watched, "an empty session stayed watched while its output was held open");
+	}
+	#[test]
+	fn retain_record_on_start_holds_until_released_and_unpins_failed_setup_5202() {
+		let (actor, owner) = command_owner();
+		let options = CommandResourceOptions {
+			retain_record_on_start: Some(true),
+			keep_background_on_exit: Some(true),
+			..Default::default()
+		};
+		let mut bad_intent = pipe_intent("exit 0");
+		bad_intent.cwd = Some("/nonexistent-atomic-dir-5202".into());
+		let failed =
+			actor.start_command_configured(&owner, bad_intent, "bad-cwd".into(), options.clone());
+		assert!(failed.is_err());
+		assert!(!actor.state.lock().unwrap().owners[0].tasks[0].held);
+		let held = actor
+			.start_command_configured(&owner, pipe_intent("exit 0"), "held-op".into(), options.clone())
+			.unwrap();
+		assert!(actor.state.lock().unwrap().owners[0].tasks[1].held);
+		actor.release_record(&held).unwrap();
+		assert!(!actor.state.lock().unwrap().owners[0].tasks[1].held);
+		let replayed = actor
+			.start_command_configured(&owner, pipe_intent("exit 0"), "held-op".into(), options)
+			.unwrap();
+		assert!(actor.state.lock().unwrap().owners[0].tasks[1].held);
+		actor.release_record(&replayed).unwrap();
+		assert!(!actor.state.lock().unwrap().owners[0].tasks[1].held);
+		actor.shutdown();
 	}
 }

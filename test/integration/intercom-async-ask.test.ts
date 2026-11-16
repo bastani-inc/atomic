@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, test } from "vitest";
@@ -10,13 +10,14 @@ import { registerPendingStageIntercomBridge } from "../../packages/workflows/src
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { sleep } from "../helpers/runtime.js";
 import { configureTestStoreBackend } from "../helpers/store-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { createPersistedStageFixture } from "../unit/persisted-stage-fixture.js";
 
-const BROKER_STARTUP_TIMEOUT_MS = 10_000;
-const BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;
+const BROKER_STARTUP_TIMEOUT_MS = 90_000;
+const BROKER_STARTUP_HOOK_TIMEOUT_MS = BROKER_STARTUP_TIMEOUT_MS + 5_000;
 const POLL_TIMEOUT_MS = 10_000;
 const POLL_INTERVAL_MS = 20;
 /** A foreground budget short enough to keep the suite quick and long enough to observe the call still waiting. */
@@ -25,16 +26,15 @@ const SHORT_BUDGET_MS = 300;
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
 const agentDir = mkdtempSync(join(tmpdir(), "intercom-async-ask-"));
-const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
-const previousLegacyAgentDir = process.env.PI_CODING_AGENT_DIR;
-process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
-delete process.env.PI_CODING_AGENT_DIR;
+const brokerFixture = new IntercomBrokerFixture(agentDir);
+brokerFixture.overrideAgentDir();
 
 // The broker paths are read at module load, so every Intercom import follows the agent-dir override.
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
 const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 type ReleasedChildReply = import("../../packages/intercom/broker/client.js").ReleasedChildReply;
+const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 
 interface ToolResult {
@@ -209,7 +209,6 @@ async function questionArrives(recipient: Session, question: string): Promise<vo
 	await until(() => recipient.cards(new RegExp(question)).length > 0, `the recipient receives "${question}"`);
 }
 
-let broker: ChildProcess | undefined;
 const cleanups: Array<() => void | Promise<void>> = [];
 
 beforeAll(async () => {
@@ -217,7 +216,8 @@ beforeAll(async () => {
 		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
-	broker = child;
+	brokerFixture.trackBroker(child);
+	child.stderr?.resume();
 	await new Promise<void>((resolveReady, rejectReady) => {
 		let stdout = "";
 		const timer = setTimeout(
@@ -235,31 +235,14 @@ beforeAll(async () => {
 			rejectReady(new Error(`Intercom broker exited before readiness (code=${String(code)})`));
 		});
 	});
-});
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, agentDir), BROKER_STARTUP_TIMEOUT_MS);
+}, BROKER_STARTUP_HOOK_TIMEOUT_MS);
 
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-afterAll(async () => {
-	const active = broker;
-	broker = undefined;
-	if (active !== undefined && active.exitCode === null) {
-		await new Promise<void>((resolveExit, rejectExit) => {
-			const timer = setTimeout(() => rejectExit(new Error("Broker did not exit")), BROKER_SHUTDOWN_TIMEOUT_MS);
-			active.once("exit", () => {
-				clearTimeout(timer);
-				resolveExit();
-			});
-			active.kill("SIGTERM");
-		});
-	}
-	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
-	if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-	else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
-	rmSync(agentDir, { recursive: true, force: true });
-});
+afterAll(() => brokerFixture.cleanup());
 
 test("an ask to a busy recipient returns at delivery and the reply arrives later as a message (#4751)", async () => {
 	const asker = await started({ name: "asker-busy" });

@@ -572,6 +572,37 @@ export function inProcessChildResourceLoaderOptions(input: {
 }
 
 /**
+ * Resolves once the session has no turn running or starting and no interrupt delivery pending, or a stop fires.
+ * `subscribeDrained` is told each time the session's count of running turns returns to zero.
+ */
+export async function sessionDrained(
+	session: Pick<AgentSession, "subscribe" | "isStreaming" | "_activePromptCount" | "_pendingInterruptDeliveries">,
+	stops: readonly AbortSignal[],
+	subscribeDrained: (listener: () => void) => () => void,
+): Promise<void> {
+	// A session that does not count its turns has none running here.
+	const drained = () =>
+		(session._activePromptCount ?? 0) === 0 &&
+		(session._pendingInterruptDeliveries ?? 0) === 0 &&
+		!session.isStreaming;
+	while (!drained() && !stops.some((stop) => stop.aborted)) {
+		await new Promise<void>((resolve) => {
+			const unsubscribeDrained = subscribeDrained(() => done());
+			const unsubscribe = session.subscribe((event) => {
+				if (event.type === "agent_end" || event.type === "agent_settled") queueMicrotask(() => done());
+			});
+			function done(): void {
+				unsubscribeDrained();
+				unsubscribe();
+				for (const stop of stops) stop.removeEventListener("abort", done);
+				resolve();
+			}
+			for (const stop of stops) stop.addEventListener("abort", done, { once: true });
+		});
+	}
+}
+
+/**
  * Resolves once `session` has started another turn and become idle again, as a message delivered to an interrupted
  * child starts one, or once any of `stops` aborts. A child that is never messaged again waits here until it is stopped.
  */
@@ -1735,6 +1766,8 @@ export class SubagentControlRuntime {
 
 		let termination: TerminationCauseName | undefined;
 		let interruptedTurnSettlement: Promise<void> | undefined;
+		// Until the session has its task, a turn that settles leaves message admission open for it (#5224).
+		let taskPending = true;
 		// The task and resume follow-ups the session has not been given yet; a stop before then keeps them for resume.
 		const unsent: UnsentInput = { task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] };
 		let terminating: Promise<void> | undefined;
@@ -1962,6 +1995,7 @@ export class SubagentControlRuntime {
 							onTurnDrained: () => {
 								for (const listener of turnDrainedListeners) listener();
 							},
+							taskPending: () => taskPending,
 							...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
 						},
 						settingsManager,
@@ -2164,8 +2198,10 @@ export class SubagentControlRuntime {
 			if (!termination && admitted.spec.resumeSession) await recoverChildSession(session, admitted.spec);
 			const redispatched =
 				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
-			if (redispatched !== undefined) unsent.task = unsent.followUps.shift();
-			else if (!termination && admitted.spec.resumeToolResults?.length) {
+			if (redispatched !== undefined) {
+				taskPending = false;
+				unsent.task = unsent.followUps.shift();
+			} else if (!termination && admitted.spec.resumeToolResults?.length) {
 				if (!admitted.spec.skipTaskPrompt) {
 					await session.followUp(
 						admitted.spec.task,
@@ -2181,6 +2217,7 @@ export class SubagentControlRuntime {
 				}
 				if (!termination) {
 					unsent.task = undefined;
+					taskPending = false;
 					// Reported as soon as they are saved: the turn they continue may never end in this process (#5012).
 					const reported = new Set<string>();
 					await session.resumeDetachedTurn(admitted.spec.resumeToolResults, (toolCallIds) => {
@@ -2203,8 +2240,10 @@ export class SubagentControlRuntime {
 				}
 				if (!termination) {
 					unsent.task = undefined;
-					if (admitted.spec.skipTaskPrompt) startBudget.end();
-					else {
+					if (admitted.spec.skipTaskPrompt) {
+						taskPending = false;
+						startBudget.end();
+					} else {
 						const prompting = session.prompt(
 							admitted.spec.task,
 							admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
@@ -2214,15 +2253,28 @@ export class SubagentControlRuntime {
 						void prompting.then(markTaskDispatched, markTaskDispatched);
 						await beforeStartDeadline(taskDispatched);
 						startBudget.end();
-						await prompting;
+						try {
+							await prompting;
+						} finally {
+							taskPending = false;
+						}
 					}
 				}
 			}
-			while (interruptedTurnSettlement !== undefined && termination === undefined) {
-				const settlement = interruptedTurnSettlement;
-				interruptedTurnSettlement = undefined;
-				await settlement;
-			}
+			do {
+				while (interruptedTurnSettlement !== undefined && termination === undefined) {
+					const settlement = interruptedTurnSettlement;
+					interruptedTurnSettlement = undefined;
+					await settlement;
+				}
+				// A turn that settled while the task was pending left message admission open: what it admitted since is
+				// answered before the execution ends and seals it.
+				if (prepared !== undefined && redispatched === undefined && termination === undefined)
+					await sessionDrained(session, [signals.abort, signals.interrupt], (listener) => {
+						turnDrainedListeners.add(listener);
+						return () => turnDrainedListeners.delete(listener);
+					});
+			} while (interruptedTurnSettlement !== undefined && termination === undefined);
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;

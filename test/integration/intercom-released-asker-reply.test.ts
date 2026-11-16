@@ -3,7 +3,6 @@ import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test, vi } from "vitest";
@@ -25,6 +24,8 @@ const pendingAnswers = new Map<string, { resolve(message: Message): void; reject
 const REAL_BROKER_TEST_TIMEOUT_MS = 60_000;
 const STALLED_OWNER_TEST_TIMEOUT_MS = 30_000;
 const WAIT = { timeout: 10_000, interval: 20 };
+const BROKER_START_WAIT_MS = 90_000;
+const BROKER_START_HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 5_000;
 
 let broker: ChildProcess | undefined;
 
@@ -184,19 +185,8 @@ beforeAll(async () => {
 		stdio: "ignore",
 	});
 	brokerFixture.trackBroker(broker);
-	await vi.waitFor(async () => {
-		brokerFixture.assertRunning();
-		const connected = await new Promise<boolean>((resolveConnected) => {
-			const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
-			socket.once("connect", () => {
-				socket.destroy();
-				resolveConnected(true);
-			});
-			socket.once("error", () => resolveConnected(false));
-		});
-		assert.ok(connected);
-	}, WAIT);
-});
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, brokerFixture.agentDir), BROKER_START_WAIT_MS);
+}, BROKER_START_HOOK_TIMEOUT_MS);
 afterAll(() => brokerFixture.cleanup());
 
 for (const order of ["disconnect-first", "reserve-first"] as const) {

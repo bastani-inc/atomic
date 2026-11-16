@@ -31,12 +31,6 @@ import type { TabComponents } from "./tab-components.ts";
 
 const NOTES_HEADER = "Notes:";
 
-/**
- * Per-tab content provider. Pure functional — closes over construction-time
- * config; per-tick state threads through method args. The chrome wrapper
- * enforces height equality across tabs from the rendered body's row count
- * plus `footerRowCount`.
- */
 export interface TabContentStrategy {
 	readonly footerRowCount: number;
 
@@ -46,7 +40,6 @@ export interface TabContentStrategy {
 	/** Body Component placed at the body slot. */
 	bodyComponent(state: DialogState): Component;
 
-	/** Optional rows between body's trailing Spacer and the bottom border. */
 	midRows(state: DialogState): Component[];
 
 	footerRows(state: DialogState): Component[];

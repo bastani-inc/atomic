@@ -5,9 +5,8 @@
  * extension.
  */
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DEFAULT_MAX_BYTES } from "@bastani/atomic";
@@ -15,6 +14,7 @@ import { afterAll, beforeAll, test, vi } from "vitest";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { formatAttachments } from "../../packages/intercom/intercom-utils.js";
 import type { Attachment, Message } from "../../packages/intercom/types.js";
+import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { IntercomWireProxy, type WireFrame } from "../helpers/intercom-wire-proxy.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
@@ -52,7 +52,7 @@ const WAIT = { timeout: 30_000, interval: 20 };
 const MIB = 1024 * 1024;
 const RECIPIENT = "bounded-recipient";
 
-let broker: ChildProcess | undefined;
+const brokerFixture = new IntercomBrokerFixture(brokerAgentDir);
 const proxy = new IntercomWireProxy(frontSocketPath, brokerSocketPath);
 
 type Handler = (event: object, ctx: object) => unknown;
@@ -112,27 +112,14 @@ const context = {
 	ui: { confirm: async () => true, notify() {} },
 };
 
-async function waitForSocket(socketPath: string): Promise<void> {
-	await vi.waitFor(
-		() =>
-			new Promise<void>((resolveProbe, rejectProbe) => {
-				const probe = net.createConnection(socketPath);
-				probe.once("connect", () => {
-					probe.destroy();
-					resolveProbe();
-				});
-				probe.once("error", rejectProbe);
-			}),
-		{ timeout: BROKER_STARTUP_TIMEOUT_MS, interval: 50 },
-	);
-}
-
 beforeAll(async () => {
-	broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
-		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: brokerAgentDir, PI_CODING_AGENT_DIR: undefined },
-		stdio: "ignore",
-	});
-	await waitForSocket(brokerSocketPath);
+	brokerFixture.trackBroker(
+		spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
+			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: brokerAgentDir, PI_CODING_AGENT_DIR: undefined },
+			stdio: "ignore",
+		}),
+	);
+	await brokerFixture.holdSession(brokerSocketPath, BROKER_STARTUP_TIMEOUT_MS);
 	await proxy.listen();
 	intercomHeavy(pi as never);
 	for (const handler of handlers.get("session_start") ?? []) {
@@ -144,20 +131,19 @@ beforeAll(async () => {
 }, REAL_BROKER_TEST_TIMEOUT_MS);
 
 afterAll(async () => {
-	for (const handler of handlers.get("session_shutdown") ?? []) {
-		await Promise.resolve(handler({ type: "session_shutdown", reason: "quit" }, context)).catch(() => {});
-	}
-	await proxy.close();
-	if (broker?.exitCode === null) {
-		const stopped = new Promise<void>((resolveExit) => broker?.once("exit", () => resolveExit()));
-		broker.kill("SIGTERM");
-		await stopped;
-	}
-	if (originalAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-	else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
-	if (originalLegacyAgentDir !== undefined) process.env.PI_CODING_AGENT_DIR = originalLegacyAgentDir;
-	for (const dir of [brokerAgentDir, frontAgentDir, sessionDir]) {
-		removeTestDirectory(dir, { retries: 20, retryDelayMs: 50 });
+	try {
+		for (const handler of handlers.get("session_shutdown") ?? []) {
+			await Promise.resolve(handler({ type: "session_shutdown", reason: "quit" }, context)).catch(() => {});
+		}
+		await proxy.close();
+		await brokerFixture.cleanup();
+	} finally {
+		if (originalAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+		else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
+		if (originalLegacyAgentDir !== undefined) process.env.PI_CODING_AGENT_DIR = originalLegacyAgentDir;
+		for (const dir of [frontAgentDir, sessionDir]) {
+			removeTestDirectory(dir, { retries: 20, retryDelayMs: 50 });
+		}
 	}
 });
 

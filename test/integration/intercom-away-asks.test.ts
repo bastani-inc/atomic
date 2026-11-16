@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -25,6 +24,8 @@ type Message = import("../../packages/intercom/types.js").Message;
 /** Spawning, and restarting, the real broker child is the structural cost of this suite. */
 const REAL_BROKER_TEST_TIMEOUT_MS = 60_000;
 const WAIT = { timeout: 10_000, interval: 20 };
+const BROKER_START_WAIT_MS = 90_000;
+const BROKER_START_HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 5_000;
 /** Long enough for a frame the broker wrote to arrive, so its absence means none was written. */
 const SETTLE_MS = 300;
 
@@ -37,18 +38,7 @@ async function startBroker(): Promise<void> {
 		stdio: "ignore",
 	});
 	brokerFixture.trackBroker(broker);
-	await vi.waitFor(async () => {
-		brokerFixture.assertRunning();
-		const connected = await new Promise<boolean>((resolveConnected) => {
-			const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
-			socket.once("connect", () => {
-				socket.destroy();
-				resolveConnected(true);
-			});
-			socket.once("error", () => resolveConnected(false));
-		});
-		assert.ok(connected);
-	}, WAIT);
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, brokerFixture.agentDir), BROKER_START_WAIT_MS);
 }
 
 /** `SIGKILL` stands for a crash: the broker handles nothing more, as a Windows hard kill can leave a departure unhandled. */
@@ -146,7 +136,7 @@ async function askThenClose(label: string) {
 	return { label, returnAddress, askerId, questionId, replyId, recipient };
 }
 
-beforeAll(startBroker, REAL_BROKER_TEST_TIMEOUT_MS);
+beforeAll(startBroker, BROKER_START_HOOK_TIMEOUT_MS);
 afterAll(() => brokerFixture.cleanup());
 
 test(

@@ -24,15 +24,6 @@ export const CONFIRMED_OVERHEAD = 2;
 
 export type PreviewLayoutMode = "side-by-side" | "stacked";
 
-/**
- * Decide layout mode from terminal + pane widths. Pure of inputs.
- *
- * The terminal-width gate is the AND check from the previous `preview-pane.ts` —
- * lifted here so the decision is computed ONCE per render and threaded explicitly
- * through `previewBlockHeight`. Removes the bug class where `previewBlockHeight`
- * re-derived `sideBySide` from a column width (already < pane width post-split),
- * capping height too short.
- */
 export function decideLayout(terminalWidth: number, paneWidth: number): PreviewLayoutMode {
 	return terminalWidth >= PREVIEW_MIN_WIDTH && paneWidth >= PREVIEW_MIN_WIDTH ? "side-by-side" : "stacked";
 }
