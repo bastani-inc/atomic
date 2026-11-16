@@ -1,31 +1,21 @@
-/**
- * Generic selector component for extensions.
- * Displays a list of string options with keyboard navigation.
- */
-
-import { Container, getKeybindings, Spacer, Text, type TUI } from "@bastani/atomic-tui";
-import { theme } from "../theme/theme.js";
+import type { TUI } from "@bastani/atomic-tui";
 import { CountdownTimer } from "./countdown-timer.ts";
-import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint, rawKeyHint } from "./keybinding-hints.js";
+import { FramedSelector, type SelectorExtraKey } from "./selector.ts";
 
 export interface ExtensionSelectorOptions {
 	tui?: TUI;
 	timeout?: number;
 	onToggleToolsExpanded?: () => void;
+	numbered?: boolean;
 	initialIndex?: number;
 }
 
-export class ExtensionSelectorComponent extends Container {
-	private options: string[];
-	private selectedIndex = 0;
-	private listContainer: Container;
-	private onSelectCallback: (option: string) => void;
-	private onCancelCallback: () => void;
-	private titleText: Text;
-	private baseTitle: string;
-	private countdown: CountdownTimer | undefined;
-	private onToggleToolsExpanded: (() => void) | undefined;
+/**
+ * A picker for `ctx.ui.select` and the built-in choices that reuse it. The first line of `title` is the title; any
+ * further lines show dim under it. With a timeout the title counts down and the picker cancels when it runs out.
+ */
+export class ExtensionSelectorComponent extends FramedSelector<string> {
+	private readonly countdown: CountdownTimer | undefined;
 
 	constructor(
 		title: string,
@@ -34,97 +24,31 @@ export class ExtensionSelectorComponent extends Container {
 		onCancel: () => void,
 		opts?: ExtensionSelectorOptions,
 	) {
-		super();
-
-		this.options = options;
-		this.onSelectCallback = onSelect;
-		this.onCancelCallback = onCancel;
-		this.onToggleToolsExpanded = opts?.onToggleToolsExpanded;
-		this.baseTitle = title;
-		if (opts?.initialIndex !== undefined) {
-			this.selectedIndex = Math.max(0, Math.min(options.length - 1, opts.initialIndex));
-		}
-
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
-
-		this.titleText = new Text(theme.fg("accent", theme.bold(title)), 1, 0);
-		this.addChild(this.titleText);
-		this.addChild(new Spacer(1));
-
+		const [heading = "", ...details] = title.split("\n");
+		const toggleTools = opts?.onToggleToolsExpanded;
+		const extraKeys: SelectorExtraKey<string>[] = toggleTools
+			? [{ hint: { action: "app.tools.expand", label: "tool output" }, run: () => toggleTools() }]
+			: [];
+		const initialIndex =
+			opts?.initialIndex === undefined ? undefined : Math.max(0, Math.min(options.length - 1, opts.initialIndex));
+		super({
+			title: heading,
+			subtitle: details.length > 0 ? details.join("\n") : undefined,
+			items: options.map((option, index) => ({ id: String(index), value: option, label: option })),
+			extraKeys,
+			numbered: opts?.numbered,
+			initialId: initialIndex === undefined ? undefined : String(initialIndex),
+			onSelect: (item) => onSelect(item.value),
+			onCancel,
+		});
 		if (opts?.timeout && opts.timeout > 0 && opts.tui) {
 			this.countdown = new CountdownTimer(
 				opts.timeout,
 				opts.tui,
-				(s) => this.titleText.setText(theme.fg("accent", theme.bold(`${this.baseTitle} (${s}s)`))),
-				() => this.onCancelCallback(),
+				(seconds) => this.selector.setTitle(`${heading} (${seconds}s)`),
+				onCancel,
 			);
 		}
-
-		this.listContainer = new Container();
-		this.addChild(this.listContainer);
-		this.addChild(new Spacer(1));
-		this.addChild(
-			new Text(
-				rawKeyHint("↑↓", "navigate") +
-					"  " +
-					keyHint("tui.select.confirm", "select") +
-					"  " +
-					keyHint("tui.select.cancel", "cancel"),
-				1,
-				0,
-			),
-		);
-		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
-
-		this.updateList();
-	}
-
-	private updateList(): void {
-		this.listContainer.clear();
-
-		const maxVisible = 10;
-		// Center the window on the selection, then clamp it to the list boundaries.
-		const startIndex = Math.max(
-			0,
-			Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.options.length - maxVisible),
-		);
-		const endIndex = Math.min(startIndex + maxVisible, this.options.length);
-
-		for (let i = startIndex; i < endIndex; i++) {
-			const isSelected = i === this.selectedIndex;
-			const text = isSelected
-				? theme.fg("accent", "→ ") + theme.fg("accent", this.options[i])
-				: `  ${theme.fg("text", this.options[i])}`;
-			this.listContainer.addChild(new Text(text, 1, 0));
-		}
-
-		if (startIndex > 0 || endIndex < this.options.length) {
-			const scrollInfo = theme.fg("muted", `  (${this.selectedIndex + 1}/${this.options.length})`);
-			this.listContainer.addChild(new Text(scrollInfo, 0, 0));
-		}
-	}
-
-	handleInput(keyData: string): boolean {
-		const kb = getKeybindings();
-		if (kb.matches(keyData, "app.tools.expand")) {
-			this.onToggleToolsExpanded?.();
-		} else if (kb.matches(keyData, "tui.select.up") || keyData === "k") {
-			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
-			this.updateList();
-		} else if (kb.matches(keyData, "tui.select.down") || keyData === "j") {
-			this.selectedIndex = Math.min(this.options.length - 1, this.selectedIndex + 1);
-			this.updateList();
-		} else if (kb.matches(keyData, "tui.select.confirm") || keyData === "\n") {
-			const selected = this.options[this.selectedIndex];
-			if (selected) this.onSelectCallback(selected);
-		} else if (kb.matches(keyData, "tui.select.cancel")) {
-			this.onCancelCallback();
-		} else {
-			return false;
-		}
-		return true;
 	}
 
 	dispose(): void {

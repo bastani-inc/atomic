@@ -1,8 +1,10 @@
+import { stripTerminalSequences } from "@bastani/atomic-tui";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { DEFAULT_BG, hexToAnsi, RESET } from "./color-utils.js";
 import { GraphCanvas } from "./graph-canvas.js";
 import { PULSE_PERIOD_MS } from "./graph-view-constants.js";
 import { GraphViewRenderHelpers } from "./graph-view-render-helpers.js";
+import { stageMatchesStatusFilter } from "./graph-view-state.js";
 import { NODE_H, NODE_W } from "./layout.js";
 import { renderNodeCard } from "./node-card.js";
 
@@ -62,6 +64,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 			right: viewportRight,
 		});
 		const edgeColor = this.graphTheme.borderDim;
+		const dimFg = hexToAnsi(this.graphTheme.dim);
 		for (const edge of edges) {
 			if (
 				edge.bottom <= safeTop ||
@@ -81,7 +84,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 			for (const ni of band.nodeIndices) {
 				const node = this.cachedLayout[ni]!;
 				if (node.x + NODE_W <= viewportLeft || node.x >= viewportRight) continue;
-				const cardLines = renderNodeCard(node.stage, {
+				const rawCardLines = renderNodeCard(node.stage, {
 					width: NODE_W,
 					height: node.height ?? NODE_H,
 					focused: ni === this.focusedIndex,
@@ -90,6 +93,11 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 					stages: this.cachedDisplayStages,
 					queuedMessageCount: this._stageQueuedMessageCount(node.stage),
 				});
+				// The status filter dims what it does not match; the graph keeps its shape so nothing moves.
+				const cardLines =
+					ni === this.focusedIndex || stageMatchesStatusFilter(node.stage, this.statusFilter)
+						? rawCardLines
+						: rawCardLines.map((line) => `${dimFg}${stripTerminalSequences(line)}${RESET}`);
 				const visibleLeft = Math.max(node.x, viewportLeft);
 				const visibleRight = Math.min(node.x + NODE_W, viewportRight);
 				for (let li = 0; li < cardLines.length; li++) {

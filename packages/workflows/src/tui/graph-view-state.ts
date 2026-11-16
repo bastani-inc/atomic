@@ -14,10 +14,38 @@ import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/st
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { ANIMATION_TICK_MS } from "./graph-view-constants.js";
-import type { GraphViewMode, GraphViewOpts } from "./graph-view-types.js";
+import type { GraphStageActions, GraphViewMode, GraphViewOpts } from "./graph-view-types.js";
 import { computeLayout, type LayoutNode, NODE_H, NODE_W } from "./layout.js";
 import { nodeCardHeight } from "./node-card.js";
 import type { SwitcherState } from "./switcher.js";
+
+/** The `f` status filter, in the order `f` cycles it. */
+export const GRAPH_STATUS_FILTERS = ["all", "running", "completed", "failed"] as const;
+export type GraphStatusFilter = (typeof GRAPH_STATUS_FILTERS)[number];
+
+/** Whether a stage matches the status filter; a non-matching node is dimmed, never hidden or moved. */
+export function stageMatchesStatusFilter(stage: StageSnapshot, filter: GraphStatusFilter): boolean {
+	switch (filter) {
+		case "all":
+			return true;
+		case "running":
+			return stage.status === "running" || stage.status === "awaiting_input" || stage.status === "blocked";
+		case "completed":
+			return stage.status === "completed";
+		case "failed":
+			return stage.status === "failed";
+	}
+}
+
+/** A stage whose detail shows its failure, with retry, fork, transcript and log actions. */
+export interface GraphStageDetail {
+	readonly runId: string;
+	readonly stageId: string;
+	/** Graph node id of the stage, so the detail follows the node across store updates. */
+	readonly nodeId: string;
+	/** Whether the full log is shown instead of the summary. */
+	logs: boolean;
+}
 
 export interface GraphStageCounts {
 	pending: number;
@@ -79,6 +107,8 @@ export abstract class GraphViewState {
 	protected onHide?: () => void;
 	protected onStageAttach?: (runId: string, stageId: string) => void;
 	protected onDetach?: () => void;
+	protected stageActions?: GraphStageActions;
+	protected onShowRun?: (runId: string) => void;
 	protected initialFocusedStageId?: string;
 	protected initialFocusedRunId?: string;
 	protected piTui?: GraphViewOpts["piTui"];
@@ -108,6 +138,14 @@ export abstract class GraphViewState {
 	protected toolDetail: ExpandedWorkflowTool | null = null;
 	/** Tool message blocks open collapsed and own expansion independently of graph cards. */
 	protected toolDetailExpanded = false;
+	/** Selected failed stage's detail (its reason and next actions). */
+	protected stageDetail: GraphStageDetail | null = null;
+	/** The `f` status filter. */
+	protected statusFilter: GraphStatusFilter = "all";
+	/** Whether the `?` key overlay is open. */
+	protected keysHelpOpen = false;
+	/** A one-line message on the hint line (the first `x` press, an action result), until `until`. */
+	protected graphNotice: { text: string; tone: "info" | "error"; until: number } | null = null;
 	protected abstract _graphScrollTop(): number;
 	protected graphScrollColOffset = 0;
 	protected graphNodeHitRects: GraphNodeHitRect[] = [];
@@ -138,6 +176,8 @@ export abstract class GraphViewState {
 		this.onHide = opts.onHide;
 		this.onStageAttach = opts.onStageAttach;
 		this.onDetach = opts.onDetach;
+		this.stageActions = opts.stageActions;
+		this.onShowRun = opts.onShowRun;
 		this.initialFocusedStageId = opts.initialFocusedStageId;
 		this.initialFocusedRunId = opts.initialFocusedRunId;
 		this.piTui = opts.piTui;
@@ -179,7 +219,8 @@ export abstract class GraphViewState {
 
 	protected _needsAnimationTick(): boolean {
 		this._syncLayout();
-		return this.hasAnimatingStages;
+		// A hint-line notice must also disappear on time, even over an idle graph.
+		return this.hasAnimatingStages || this.graphNotice !== null;
 	}
 
 	/**
@@ -493,12 +534,44 @@ export abstract class GraphViewState {
 	}
 
 	private _syncToolDetail(): void {
+		// A failure detail follows its stage; once the stage is gone or no longer failed it closes back to the graph.
+		if (this.stageDetail !== null && this._stageDetailStage()?.status !== "failed") this.stageDetail = null;
 		if (this.toolDetail === null) return;
 		this.toolDetail = this.expandedGraph.tools.find((tool) => tool.id === this.toolDetail?.id) ?? null;
 	}
 
+	/** Open the focused failed stage's detail; false when the focused node is not a failed stage. */
+	protected _openFocusedStageDetail(): boolean {
+		const stage = this.cachedLayout[this.focusedIndex]?.stage;
+		if (stage?.status !== "failed") return false;
+		const target = this._stageChatTarget(stage);
+		if (target === undefined) return false;
+		this.stageDetail = { runId: target.runId, stageId: target.stageId, nodeId: stage.id, logs: false };
+		this.graphLayoutInvalidateForDetail();
+		return true;
+	}
+
+	protected _closeStageDetail(): boolean {
+		if (this.stageDetail === null) return false;
+		this.stageDetail = null;
+		this.graphLayoutInvalidateForDetail();
+		return true;
+	}
+
+	/** The stage a detail is open on, as the latest snapshot has it. */
+	protected _stageDetailStage(): StageSnapshot | undefined {
+		const detail = this.stageDetail;
+		if (detail === null) return undefined;
+		return this.cachedLayout.find((node) => node.stage.id === detail.nodeId)?.stage;
+	}
+
+	/** Whether a read-only detail (a tool's, or a failed stage's) replaces the graph body. */
+	protected _detailOpen(): boolean {
+		return this.toolDetail !== null || this.stageDetail !== null;
+	}
+
 	/** Let the renderer discard any cached body frame after a detail transition. */
-	private graphLayoutInvalidateForDetail(): void {
+	protected graphLayoutInvalidateForDetail(): void {
 		this.pendingEnsureFocusedVisible = true;
 		this.graphNodeHitRects = [];
 		this.lastGraphViewport = null;

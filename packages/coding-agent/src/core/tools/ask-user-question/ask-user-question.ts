@@ -1,4 +1,5 @@
-import type { OverlayOptions } from "@bastani/atomic-tui";
+import { Container, type OverlayOptions, Text } from "@bastani/atomic-tui";
+import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { experimentalToolSamplingProperty } from "../../experimental.ts";
 import { getHostQuestionnaire } from "../../extensions/host-input.js";
 import type { ToolDefinition } from "../../extensions/types.ts";
@@ -7,6 +8,7 @@ import { loadConfig, validateGuidanceFields } from "./config.ts";
 import { QuestionnaireSession } from "./state/questionnaire-session.ts";
 import { ROW_INTENT_META, sentinelsToAppend } from "./state/row-intent.ts";
 import { buildQuestionnaireResponse, buildToolResult } from "./tool/response-envelope.ts";
+import { summarizeAnswers, summarizeQuestions } from "./tool/transcript-summary.ts";
 import {
 	MAX_OPTIONS,
 	MAX_QUESTIONS,
@@ -72,6 +74,11 @@ export const askUserQuestionToolSystemPromptContribution = Object.freeze({
 	] as const),
 } as const);
 
+interface AskUserQuestionRenderState {
+	callComponent?: Text;
+	summary?: string;
+}
+
 export function createAskUserQuestionToolDefinition(options?: {
 	readonly chatAsOption?: boolean;
 }): ToolDefinition<typeof QuestionParamsSchema, unknown> {
@@ -107,6 +114,44 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 		promptGuidelines: guidance.promptGuidelines ?? [...askUserQuestionToolSystemPromptContribution.guidelines],
 		...experimentalToolSamplingProperty(),
 		parameters: QuestionParamsSchema,
+
+		renderCall(args, theme, context) {
+			const state = context.state as AskUserQuestionRenderState;
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			const params = args as unknown as QuestionParams;
+			state.callComponent = text;
+			text.setText(
+				state.summary === undefined
+					? theme.fg("toolTitle", summarizeQuestions(params))
+					: terminalDisplayText(state.summary),
+			);
+			return text;
+		},
+		renderResult(result, _options, theme, context) {
+			const state = context.state as AskUserQuestionRenderState;
+			const container = new Container();
+			const details = result.details as QuestionnaireResult | undefined;
+			const params = context.args as unknown as QuestionParams;
+			const setSummary = (summary: string | undefined) => {
+				state.summary = summary;
+				state.callComponent?.setText(summary ?? theme.fg("toolTitle", summarizeQuestions(params)));
+			};
+			if (!details || !Array.isArray(details.answers) || details.error || context.isError) {
+				if (state.summary !== undefined) setSummary(undefined);
+				const text = result.content
+					.map((part) => (part.type === "text" ? terminalDisplayText(part.text) : ""))
+					.filter(Boolean)
+					.join("\n");
+				if (text) container.addChild(new Text(theme.fg("muted", text), 0, 0));
+				return container;
+			}
+			const lines = summarizeAnswers(params, details);
+			const summary = lines.length === 1 ? lines[0] : undefined;
+			if (summary !== state.summary) setSummary(summary);
+			if (summary === undefined)
+				for (const line of lines) container.addChild(new Text(theme.fg("muted", line), 0, 0));
+			return container;
+		},
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const typed = params as unknown as QuestionParams;

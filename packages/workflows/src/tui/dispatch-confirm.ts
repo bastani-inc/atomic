@@ -128,7 +128,7 @@ function renderIdentifierRows(id: string, width: number, theme?: GraphTheme): st
 
 function renderDispatchHintRows(id: string, width: number, theme?: GraphTheme): string[] {
 	const budget = Math.max(1, width);
-	const prefix = "▸ /workflow connect ";
+	const prefix = "▸ /workflows ";
 	const continuation = "  ";
 	const rows = wrapIdentifierLines(id, budget, prefix, continuation);
 	const suffix = "  see agents working · chat with and steer each stage";

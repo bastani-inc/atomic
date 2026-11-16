@@ -58,6 +58,7 @@ InteractiveModeBase.prototype.showExtensionSelector = function (
 				tui: this.ui,
 				timeout: opts?.timeout,
 				onToggleToolsExpanded: () => this.toggleToolOutputExpansion(),
+				numbered: blocked.kind === "permission",
 				initialIndex: trustDecision ? safeTrustChoiceIndex(options) : undefined,
 			},
 		);

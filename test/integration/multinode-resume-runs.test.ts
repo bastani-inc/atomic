@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, test } from "vitest";
+import { renameWithRetry } from "../../packages/coding-agent/src/core/rename-retry.ts";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { bunExecutable, makeTempDirectory, moduleDir, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -245,7 +246,7 @@ describe.skipIf(process.platform === "win32")(
 				await untilFiles([join(holdDir, "alpha.holding"), join(holdDir, "beta.holding")], nodeA);
 				nodeA.child.kill("SIGKILL");
 				assert.equal((await nodeA.run).signal, "SIGKILL");
-				renameSync(join(root, "node-a"), join(root, "node-a-gone"));
+				await renameWithRetry(join(root, "node-a"), join(root, "node-a-gone"));
 				await expireLease(runId);
 
 				const shim = killingGit("node-b", 2);
@@ -295,7 +296,7 @@ describe.skipIf(process.platform === "win32")(
 				const sourceOutput = finalLine(source);
 				assert.equal(sourceOutput.status, "completed", JSON.stringify(sourceOutput));
 				assert.equal((JSON.parse(sourceOutput.result?.two ?? "{}") as { before: string }).before, "one\n");
-				renameSync(join(root, "fork-node-a"), join(root, "fork-node-a-gone"));
+				await renameWithRetry(join(root, "fork-node-a"), join(root, "fork-node-a-gone"));
 
 				const shim = killingGit("fork-node-c", 1);
 				const killed = await startNode(
@@ -339,7 +340,7 @@ describe.skipIf(process.platform === "win32")(
 				await untilFiles([join(holdDir, "alpha.holding"), join(holdDir, "beta.holding")], nodeA);
 				nodeA.child.kill("SIGKILL");
 				await nodeA.run;
-				renameSync(join(root, "chaos-node-a"), join(root, "chaos-node-a-gone"));
+				await renameWithRetry(join(root, "chaos-node-a"), join(root, "chaos-node-a-gone"));
 				await expireLease(runId);
 				const worktrees = join(root, "chaos-node-b", "agent", "worktree-snapshots", "worktrees");
 

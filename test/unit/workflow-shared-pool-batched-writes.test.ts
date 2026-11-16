@@ -21,6 +21,8 @@ import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-
 import { StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
+import { CheckpointShipping } from "../../packages/workflows/src/workers/checkpoint-shipping.js";
+import { ShipShard } from "../../packages/workflows/src/workers/ship-shard.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -377,6 +379,279 @@ test("a commit planned without a read is refused when another writer recorded a 
 	}
 });
 
+/** A batch of `indexes`' tool checkpoints, as a host seals it. */
+function shipBatchOf(id: string, ...indexes: number[]) {
+	return {
+		id,
+		host: "host",
+		events: indexes.map((index, position) => ({
+			localSeq: position + 1,
+			key: JSON.stringify(["CheckpointRecorded", "tool", tool(index).checkpointId]),
+			payload: JSON.stringify(tool(index)),
+		})),
+	};
+}
+
+async function recordedTools(f: Awaited<ReturnType<typeof fixture>>): Promise<{ index: number; seq: number }[]> {
+	return f.connection
+		.prepare(
+			"SELECT seq, payload FROM acme_wf_events WHERE run_id = 'root' AND type = 'CheckpointRecorded' AND key LIKE '%\"tool\"%' ORDER BY seq",
+		)
+		.all()
+		.map((row) => ({
+			index: (JSON.parse(String(row.payload)) as { output: { index: number } }).output.index,
+			seq: Number(row.seq),
+		}));
+}
+
+test("a shipped batch, after its attempt's first write, is one request with no read and one insert for all its events (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		await f.pool.commit(f.lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(1) });
+		let statements = 0;
+		f.hooks.beforeBatch = (_connection, sent) => {
+			statements = sent.filter((statement) => /^\s*INSERT INTO acme_wf_events/.test(statement.sql)).length;
+		};
+		const shipped = await f.requestsOf(() => f.pool.shipBatch(f.lease, attempt, shipBatchOf("b1", 2, 3, 4, 5)));
+		assert.deepEqual(shipped.sent, ["batch"]);
+		assert.equal(statements, 1, "the batch's four events go in with one insert");
+		// The next batch validates against the sequences the first one read back: again one request.
+		const next = await f.requestsOf(() => f.pool.shipBatch(f.lease, attempt, shipBatchOf("b2", 6, 7)));
+		assert.deepEqual(next.sent, ["batch"]);
+		const tools = await recordedTools(f);
+		assert.deepEqual(
+			tools.map((entry) => entry.index),
+			[1, 2, 3, 4, 5, 6, 7],
+		);
+		assert.deepEqual(
+			tools.map((entry) => entry.seq),
+			tools.map((_, index) => tools[0]!.seq + index),
+			"dense sequences, in the order the host accepted them",
+		);
+		// The same batch again, as after a lost answer: its ledger row breaks the fence, and a read finds it shipped.
+		const again = await f.requestsOf(() => f.pool.shipBatch(f.lease, attempt, shipBatchOf("b2", 6, 7)));
+		assert.equal(again.sent.filter((request) => request === "batch").length, 1);
+		assert.equal((await recordedTools(f)).length, 7);
+	} finally {
+		await f.close();
+	}
+});
+
+for (const batched of [true, false])
+	test(`a maximum-sized shipping batch records all 1000 checkpoints in order with ${batched ? "batched" : "transactional"} writes (#4768)`, async () => {
+		const f = await fixture(batched);
+		try {
+			const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+			assert.ok(attempt);
+			const indexes = Array.from({ length: 1_000 }, (_, index) => index + 1);
+			const batch = shipBatchOf("maximum", ...indexes);
+			await f.pool.shipBatch(f.lease, attempt, batch);
+			await f.pool.shipBatch(f.lease, attempt, batch);
+			const recorded = await recordedTools(f);
+			assert.deepEqual(
+				recorded.map((entry) => entry.index),
+				indexes,
+			);
+			assert.deepEqual(
+				recorded.map((entry) => entry.seq),
+				indexes.map((index) => recorded[0]!.seq + index - 1),
+			);
+		} finally {
+			await f.close();
+		}
+	});
+
+test("urgent shipping expands a default-sized batch to 1000 checkpoints and records the backlog in order (#4768)", async () => {
+	const f = await fixture();
+	const directory = makeTempDirectory("urgent-shipping-");
+	const clock = { now: 0 };
+	const local = await ShipShard.open(join(directory, "shard.sqlite"), "root", () => clock.now);
+	let release!: () => void;
+	let entered!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	const sizes: number[] = [];
+	const shipping = new CheckpointShipping(local, {
+		host: "host",
+		intervalMs: 2_000,
+		maxBatch: 64,
+		maxLagMs: 1_000,
+		now: () => clock.now,
+		deliver: async (attempt, batch) => {
+			sizes.push(batch.events.length);
+			if (sizes.length === 1) {
+				entered();
+				await gate;
+			}
+			await f.pool.shipBatch(f.lease, attempt, batch);
+		},
+	});
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		await shipping.hold(attempt, 60_000);
+		const indexes = Array.from({ length: 1_064 }, (_, index) => index + 1);
+		for (const index of indexes) {
+			await shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(index) }, async () =>
+				assert.fail("a plain checkpoint ships"),
+			);
+			if (index === 64) await started;
+		}
+		clock.now = 500;
+		const flushing = shipping.flush(attempt);
+		release();
+		await flushing;
+		await shipping.flush(attempt);
+		assert.deepEqual(sizes, [64, 1_000]);
+		assert.deepEqual(
+			(await recordedTools(f)).map((entry) => entry.index),
+			indexes,
+		);
+		assert.equal(shipping.status().pending, 0);
+	} finally {
+		release();
+		await shipping.close();
+		await f.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("a batch planned from a read reads as much for many checkpoints as for one, and writes in one request (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		await f.pool.commit(f.lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(1) });
+		// A queue that never saw the attempt, as after its host restarted, plans from a read.
+		const shipOn = async (id: string, indexes: number[]) => {
+			const fresh = await openSqlPoolQueue(f.journal);
+			return f.requestsOf(() => fresh.shipBatch(f.lease, attempt, shipBatchOf(id, ...indexes)));
+		};
+		const one = await shipOn("one", [2]);
+		const many = await shipOn(
+			"many",
+			Array.from({ length: 12 }, (_, index) => index + 3),
+		);
+		assert.equal(many.sent.filter((request) => request === "batch").length, 1);
+		assert.equal(
+			many.sent.filter((request) => request === "statement").length,
+			one.sent.filter((request) => request === "statement").length,
+			`reads: one checkpoint ${one.sent.join(", ")}; twelve ${many.sent.join(", ")}`,
+		);
+		assert.equal((await recordedTools(f)).length, 14);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a host's batch for a child the root started after the host's last read is recorded, not refused (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const first = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(first);
+		await f.pool.shipBatch(f.lease, first, shipBatchOf("first", 1, 2));
+		// The root starts a second child through its own queue: the host's view of the root's checkpoints predates it.
+		const second = poolWorkFixture("second");
+		const root = await openSqlPoolQueue(f.journal);
+		await root.enqueue(f.lease, second.work, second.boundary);
+		const attempt = await f.pool.claim(f.lease, "host/w2", [second.work], 60_000);
+		assert.ok(attempt);
+		const secondRun = { ...second.boundary.topology!.boundary!.child };
+		const step: DurableToolCheckpoint = {
+			kind: "tool",
+			workflowId: "root",
+			checkpointId: `${second.work.scope}:tool:1`,
+			name: "tool",
+			argsHash: `${second.work.scope}:args:1`,
+			output: { index: 101 },
+			completedAt: 1,
+			topology: { version: 1, nodeId: "tool-1", parentIds: [], ordinal: 1, order: 1, run: secondRun },
+		};
+		await f.pool.shipBatch(f.lease, attempt, {
+			id: "second",
+			host: "host",
+			events: [
+				{
+					localSeq: 1,
+					key: JSON.stringify(["CheckpointRecorded", "tool", step.checkpointId]),
+					payload: JSON.stringify(step),
+				},
+			],
+		});
+		assert.deepEqual(
+			(await recordedTools(f)).map((entry) => entry.index),
+			[1, 2, 101],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a batch planned without a read is refused when another writer recorded a checkpoint in its scope that it did not see (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		await f.pool.commit(f.lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(1) });
+		const foreign = {
+			...tool(2),
+			argsHash: `${work.scope}:args:foreign`,
+			checkpointId: `${work.scope}:tool:foreign`,
+		};
+		f.hooks.beforeBatch = (connection) => {
+			f.hooks.beforeBatch = undefined;
+			connection
+				.prepare(
+					"INSERT INTO acme_wf_events(run_id, seq, epoch, key, type, payload, at) SELECT 'root', MAX(seq) + 1, 1, ?, 'CheckpointRecorded', ?, 0 FROM acme_wf_events WHERE run_id = 'root'",
+				)
+				.run(JSON.stringify(["CheckpointRecorded", "tool", foreign.checkpointId]), JSON.stringify(foreign));
+		};
+		await assert.rejects(
+			f.pool.shipBatch(f.lease, attempt, shipBatchOf("b1", 2, 3)),
+			/Pool tool topology scope mismatch/,
+		);
+		assert.deepEqual(
+			(await recordedTools(f)).map((entry) => entry.index),
+			[1, 2],
+			"nothing of the batch was written; the foreign checkpoint is the second",
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a batch with a key the root recorded already skips it with the same payload and refuses it with another (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		await f.pool.commit(f.lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(1) });
+		await f.pool.commit(f.lease, attempt, "op-2", { kind: "checkpoint", checkpoint: tool(2) });
+		await f.pool.shipBatch(f.lease, attempt, shipBatchOf("b1", 2, 3));
+		assert.deepEqual(
+			(await recordedTools(f)).map((entry) => entry.index),
+			[1, 2, 3],
+		);
+		const changed = shipBatchOf("b2", 3);
+		const altered = { ...tool(3), output: { index: 3, changed: true } };
+		await assert.rejects(
+			f.pool.shipBatch(f.lease, attempt, {
+				...changed,
+				events: [{ ...changed.events[0]!, payload: JSON.stringify(altered) }],
+			}),
+			/Pool checkpoint identity conflict/,
+		);
+	} finally {
+		await f.close();
+	}
+});
+
 test("a write the server keeps leaving unanswered fails after a bounded number of plans, for the caller's outage handling (#4768)", async () => {
 	const f = await fixture();
 	try {
@@ -606,6 +881,8 @@ test("lease renewals, heartbeats and host reports take the priority lane; commit
 			await operation();
 			return [...f.priorities];
 		};
+		// The fixture's own writes, queueing the work among them, are not the claim's.
+		f.priorities.length = 0;
 		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
 		assert.ok(attempt);
 		assert.deepEqual(f.priorities, [false]);
@@ -614,6 +891,7 @@ test("lease renewals, heartbeats and host reports take the priority lane; commit
 			[false],
 		);
 		assert.deepEqual(await lanes(() => f.pool.renew(f.lease, attempt, 60_000)), [true]);
+		assert.deepEqual(await lanes(() => f.journal.renew(f.lease)), [true]);
 		assert.deepEqual(await lanes(() => f.pool.extend(f.lease, attempt, 60_000)), [true]);
 		assert.deepEqual(
 			await lanes(() => f.pool.heartbeat(f.lease, attempt, 60_000, f.usage.recording(f.lease, attempt, []))),

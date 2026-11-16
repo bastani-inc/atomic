@@ -1,0 +1,310 @@
+import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import { Text } from "@bastani/atomic-tui";
+import { afterEach, test, vi } from "vitest";
+import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import type {
+	TaskTranscriptView,
+	TaskViewResult,
+} from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
+import type { ChatSessionHostOpts } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-types.js";
+import type { ChatTranscriptEntryLike } from "../../packages/coding-agent/src/modes/interactive/components/chat-transcript.js";
+import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import type { StageNotice } from "../../packages/workflows/src/shared/store-types.js";
+import { stageNoticeCountsAsMessage } from "../../packages/workflows/src/tui/stage-chat-view-transcript.js";
+import type { NoticeEntry } from "../../packages/workflows/src/tui/stage-chat-view-types.js";
+import { taskTranscriptEnvironment, transcriptOnlySource } from "../helpers/task-transcript-environment.js";
+
+const identity = (value: string): string => value;
+const PAGE_UP = "\x1b[5~";
+
+function hostOptions<TExtraEntry extends ChatTranscriptEntryLike = never>(
+	overrides: Partial<ChatSessionHostOpts<TExtraEntry>> = {},
+): ChatSessionHostOpts<TExtraEntry> {
+	return {
+		style: {
+			dim: identity,
+			text: identity,
+			textMuted: identity,
+			accent: identity,
+			accentBold: identity,
+			rule: (_hex, value) => value,
+			cursor: () => "",
+			blank: (width) => " ".repeat(width),
+			editorRuleColor: () => "#ffffff",
+		},
+		editorTheme: {
+			borderColor: identity,
+			selectList: {
+				selectedPrefix: identity,
+				selectedText: identity,
+				description: identity,
+				scrollInfo: identity,
+				noMatch: identity,
+			},
+		},
+		...overrides,
+	};
+}
+
+const plain = (rows: readonly string[]): string => stripVTControlCharacters(rows.join("\n"));
+
+function makeNoticeEntry(index: number, kind: StageNotice["kind"]): NoticeEntry {
+	return {
+		role: "notice",
+		noticeId: `notice-${index}`,
+		kind,
+		value: `value-${index}`,
+		from: `from-${index}`,
+		meta: `meta-${index}`,
+		text: `~ ${kind} -> value-${index}`,
+	};
+}
+
+afterEach(() => {
+	vi.useRealTimers();
+});
+
+test("loadSession excludes hydrated session history from the scrolled-up new-message count (#5243)", async () => {
+	initTheme("dark");
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	for (let i = 0; i < 5; i++) {
+		await manager.appendMessage({ role: "user", content: `SAVED-${i}`, timestamp: i + 1 });
+	}
+	const host = new ChatSessionHost<NoticeEntry>(
+		hostOptions<NoticeEntry>({
+			renderExtraEntry: (entry) => new Text(entry.text, 0, 0),
+		}),
+	);
+	try {
+		for (let i = 0; i < 20; i++) {
+			host.appendExtraEntry(makeNoticeEntry(i, "model"));
+		}
+		host.renderBody(80, 6);
+		host.handleInput(PAGE_UP);
+		assert.match(plain(host.renderBody(80, 6).slice(-1)), /jump to bottom/);
+
+		assert.equal(await host.loadSession(store, manager.getSessionId()), true);
+		assert.match(plain(host.renderBody(80, 6).slice(-1)), /jump to bottom/);
+		assert.doesNotMatch(plain(host.renderBody(80, 6)), /new message/);
+
+		host.appendMessages([{ role: "user", content: "LIVE-ARRIVAL", timestamp: 100 }]);
+		assert.match(plain(host.renderBody(80, 6).slice(-1)), /1 new message ·/);
+	} finally {
+		host.dispose();
+		await store.close();
+	}
+});
+
+test("stage notices do not count as new messages while scrolled up (#5243)", () => {
+	initTheme("dark");
+	const host = new ChatSessionHost<NoticeEntry>(
+		hostOptions<NoticeEntry>({
+			renderExtraEntry: (entry) => new Text(entry.text, 0, 0),
+			countsAsMessage: stageNoticeCountsAsMessage,
+		}),
+	);
+	try {
+		host.replaceMessages(
+			Array.from({ length: 20 }, (_, i) => ({
+				role: "user" as const,
+				content: `INITIAL-${i}`,
+				timestamp: i,
+			})),
+		);
+		host.renderBody(80, 6);
+		host.handleInput(PAGE_UP);
+		assert.match(plain(host.renderBody(80, 6).slice(-1)), /jump to bottom/);
+
+		const noticeKinds: readonly StageNotice["kind"][] = [
+			"model",
+			"thinking",
+			"compaction",
+			"tree",
+			"abort",
+			"mcp",
+			"cleanup",
+			"decision",
+			"undelivered",
+		];
+		for (let i = 0; i < noticeKinds.length; i++) {
+			host.appendExtraEntry(makeNoticeEntry(i, noticeKinds[i]!));
+			assert.match(plain(host.renderBody(80, 6).slice(-1)), /jump to bottom/);
+		}
+
+		host.appendMessages([{ role: "user", content: "REAL-MESSAGE", timestamp: 999 }]);
+		assert.match(plain(host.renderBody(80, 6).slice(-1)), /1 new message ·/);
+	} finally {
+		host.dispose();
+	}
+});
+
+function createFollowedSession(initialRunning = false): {
+	session: TaskTranscriptSource;
+	emit(event: AgentSessionEvent): void;
+	setRunning(running: boolean): void;
+} {
+	let running = initialRunning;
+	const listeners = new Set<(event: AgentSessionEvent) => void>();
+	return {
+		session: {
+			getSessionId: () => "session",
+			getEntries: () => [],
+			isRunning: () => running,
+			subscribe: (listener) => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+		},
+		emit(event: AgentSessionEvent) {
+			for (const listener of listeners) listener(event);
+		},
+		setRunning(next: boolean) {
+			running = next;
+		},
+	};
+}
+
+test("switching the followed session in /tasks resets unread messages and stops the previous run's meter (#5243)", async () => {
+	vi.useFakeTimers();
+	vi.setSystemTime(1_000);
+	initTheme("dark");
+	const taskId = "task-follow-switch" as TaskId;
+	const sessionA = createFollowedSession(true);
+	const sessionB = createFollowedSession(true);
+	let activeSession: TaskTranscriptSource = sessionA.session;
+	let transcriptMessages = Array.from({ length: 20 }, (_, i) => ({
+		role: "user" as const,
+		content: `A-LINE-${i}`,
+		timestamp: i,
+	}));
+
+	const source = transcriptOnlySource({
+		readTaskTranscript: (): TaskViewResult<TaskTranscriptView> => ({
+			ok: true,
+			value: { messages: transcriptMessages },
+		}),
+		followTaskTranscript: () => ({ session: activeSession, historyOnly: false }),
+	});
+
+	const page = new TaskAgentTranscriptPage(
+		source,
+		taskId,
+		taskTranscriptEnvironment({ keybindings: new KeybindingsManager() }),
+		() => {},
+	);
+	try {
+		await page.load();
+		page.render(100, 14);
+		page.handleInput(PAGE_UP);
+		assert.match(plain(page.render(100, 14)), /jump to bottom/);
+
+		sessionA.emit({ type: "agent_start" });
+		sessionA.emit({
+			type: "message_start",
+			message: { role: "user", content: "A-NEW-1", timestamp: 100 },
+		} as unknown as AgentSessionEvent);
+		sessionA.emit({
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x".repeat(400) },
+			message: { role: "assistant", content: [{ type: "text", text: "x".repeat(400) }] },
+		} as unknown as AgentSessionEvent);
+		vi.setSystemTime(3_000);
+
+		const duringA = plain(page.render(100, 14));
+		assert.match(duringA, /2 new messages ·/);
+		assert.match(duringA, /2s · ↓ 100 tokens/);
+
+		activeSession = sessionB.session;
+		transcriptMessages = Array.from({ length: 30 }, (_, i) => ({
+			role: "user" as const,
+			content: `B-LINE-${i}`,
+			timestamp: i,
+		}));
+		await page.load();
+
+		const afterSwitchToB = plain(page.render(100, 14));
+		assert.doesNotMatch(afterSwitchToB, /2s · ↓ 100 tokens/);
+		assert.doesNotMatch(afterSwitchToB, /new message/);
+		assert.match(afterSwitchToB, /jump to bottom/);
+	} finally {
+		page.dispose();
+	}
+});
+
+test("switching the followed session in /tasks or hydrating idle compaction status clears manualCompactionTakeoverPending (#5243)", async () => {
+	vi.useFakeTimers();
+	vi.setSystemTime(5_000);
+	initTheme("dark");
+	const taskId = "task-takeover-switch" as TaskId;
+	const sessionA = createFollowedSession(false);
+	const sessionB = createFollowedSession(false);
+	let activeSession: TaskTranscriptSource = sessionA.session;
+
+	const source = transcriptOnlySource({
+		readTaskTranscript: (): TaskViewResult<TaskTranscriptView> => ({
+			ok: true,
+			value: { messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+		}),
+		followTaskTranscript: () => ({ session: activeSession, historyOnly: false }),
+	});
+
+	const page = new TaskAgentTranscriptPage(
+		source,
+		taskId,
+		taskTranscriptEnvironment({ keybindings: new KeybindingsManager() }),
+		() => {},
+	);
+	try {
+		await page.load();
+		sessionA.emit({ type: "compaction_start", reason: "threshold" });
+		sessionA.emit({
+			type: "compaction_end",
+			reason: "threshold",
+			result: undefined,
+			aborted: false,
+			willRetry: false,
+			manualTakeoverPending: true,
+		});
+		assert.match(plain(page.render(100, 14)), /Auto-compacting\.\.\./);
+
+		activeSession = sessionB.session;
+		await page.load();
+
+		sessionB.emit({ type: "agent_start" });
+		sessionB.emit({ type: "agent_end", messages: [] });
+
+		const afterBRun = plain(page.render(100, 14));
+		assert.doesNotMatch(afterBRun, /Auto-compacting\.\.\.|Compacting context\.\.\./);
+
+		const host = new ChatSessionHost(hostOptions());
+		try {
+			host.applyAgentEvent({ type: "compaction_start", reason: "threshold" });
+			host.applyAgentEvent({
+				type: "compaction_end",
+				reason: "threshold",
+				result: undefined,
+				aborted: false,
+				willRetry: false,
+				manualTakeoverPending: true,
+			});
+			host.hydrateCompactionStatus(undefined);
+			host.applyAgentEvent({ type: "agent_start" });
+			host.applyAgentEvent({ type: "agent_end", messages: [] });
+			assert.equal(host.isCompacting(), false);
+			assert.deepEqual(host.renderWorkingStatus(80), []);
+		} finally {
+			host.dispose();
+		}
+	} finally {
+		page.dispose();
+	}
+});

@@ -40,6 +40,7 @@ export type ChatBoxSession = Pick<
 	| "modelRuntime"
 	| "isStreaming"
 	| "isCompacting"
+	| "compactionStartedAt"
 	| "isRetrying"
 	| "isBashRunning"
 >;
@@ -1210,6 +1211,18 @@ export class TaskSupervisor {
 				if (intent.executionTimeoutMs !== undefined)
 					state.launches.executionTimeouts.set(id, intent.executionTimeoutMs);
 			}
+			const task = new TaskCapability();
+			this.#tasks.set(task, {
+				native: admitted.value,
+				owner: state,
+				ref: reference(ref.value),
+				operation,
+				controller: new AbortController(),
+				kind: "command",
+				statuses: new Map(),
+				statusListeners: new Set(),
+			});
+			state.tasks.set(id, task);
 			let bindFailure: Error | undefined;
 			if (held?.release.bindProcess) {
 				try {
@@ -1226,21 +1239,8 @@ export class TaskSupervisor {
 				this.#notifyAdmissionWatchers(state);
 				held = undefined;
 			}
-			const task = new TaskCapability();
-			this.#tasks.set(task, {
-				native: admitted.value,
-				owner: state,
-				ref: reference(ref.value),
-				operation,
-				controller: new AbortController(),
-				kind: "command",
-				statuses: new Map(),
-				statusListeners: new Set(),
-			});
-			state.tasks.set(id, task);
 			if (bindFailure) {
 				await this.cancelTask(task, "owner-close").catch(() => undefined);
-				throw bindFailure;
 			}
 			if (state.permits.has(id)) {
 				for (const watch of state.watches) {
@@ -1249,6 +1249,7 @@ export class TaskSupervisor {
 						this.#releasePermit(state, id);
 				}
 			}
+			if (bindFailure) throw bindFailure;
 			return { ok: true, value: task };
 		} finally {
 			// A launch that admitted no task of its own keeps no provisional cadence (#4451).

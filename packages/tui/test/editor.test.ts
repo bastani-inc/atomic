@@ -874,6 +874,122 @@ describe("Editor component", () => {
 		});
 	});
 
+	describe("Grapheme clusters wider than the editor", () => {
+		// One grapheme cluster 201 columns wide: a consonant and 200 spacing vowel signs.
+		const wideCluster = `\u0915${"\u093e".repeat(200)}`;
+		const widths = [201, 80, 1];
+
+		it("wraps a cluster wider than the width onto a line of its own, clipped between code points", () => {
+			assert.strictEqual(visibleWidth(wideCluster), 201);
+			for (const width of widths) {
+				const chunks = wordWrapLine(wideCluster, width);
+				assert.deepStrictEqual(chunks, [
+					{ text: wideCluster.slice(0, width), startIndex: 0, endIndex: wideCluster.length },
+				]);
+			}
+		});
+
+		it("keeps the text around a too-wide cluster on lines of their own", () => {
+			const line = `ab ${wideCluster} cd`;
+			const chunks = wordWrapLine(line, 10);
+			assert.deepStrictEqual(
+				chunks.map((chunk) => chunk.text),
+				["ab ", wideCluster.slice(0, 10), " cd"],
+			);
+			const covered = chunks.map((chunk) => line.slice(chunk.startIndex, chunk.endIndex)).join("");
+			assert.strictEqual(covered, line, "the chunks still cover the whole logical line");
+		});
+
+		it("never splits a surrogate pair when clipping a cluster", () => {
+			// A Brahmi consonant and 30 spacing visarga signs, each code point a surrogate pair: 31 columns.
+			const cluster = `\u{11013}${"\u{11002}".repeat(30)}`;
+			assert.deepStrictEqual(wordWrapLine(cluster, 4), [
+				{ text: cluster.slice(0, 8), startIndex: 0, endIndex: cluster.length },
+			]);
+		});
+
+		it("renders the cluster in the editor within the width", () => {
+			for (const width of widths) {
+				const editor = new Editor(createTestTUI(width), defaultEditorTheme);
+				editor.setText(wideCluster);
+				for (const line of editor.render(width)) {
+					assert.ok(visibleWidth(line) <= width, `width ${width}: ${JSON.stringify(line)}`);
+				}
+			}
+		});
+
+		it("renders the cluster on the main screen without exceeding the terminal width", () => {
+			for (const width of widths) {
+				const tui = new TuiMainScreen(new VirtualTerminal(width, 10));
+				const editor = new Editor(tui, defaultEditorTheme);
+				tui.addChild(editor);
+				tui.setFocus(editor);
+				editor.setText(wideCluster);
+				try {
+					assert.doesNotThrow(() => tui.renderNow(), `width ${width}`);
+				} finally {
+					tui.stop();
+				}
+			}
+		});
+	});
+
+	describe("One-column editor", () => {
+		function contentRows(editor: Editor): string[] {
+			const lines = editor.render(1);
+			for (const line of lines) assert.ok(visibleWidth(line) <= 1, `${JSON.stringify(line)} is wider than 1`);
+			return lines.slice(1, -1);
+		}
+
+		it("shows the cursor after the last character on a row of its own", () => {
+			const editor = new Editor(createTestTUI(1), defaultEditorTheme);
+			editor.setText("ab");
+			const rows = contentRows(editor);
+			assert.deepStrictEqual(rows.map(stripTerminalSequences), ["a", "b", " "]);
+			assert.strictEqual(rows[2], renderFakeCursor(" "));
+		});
+
+		it("keeps an empty line's cursor on its row", () => {
+			const editor = new Editor(createTestTUI(1), defaultEditorTheme);
+			editor.setText("a\n");
+			assert.deepStrictEqual(contentRows(editor).map(stripTerminalSequences), ["a", " "]);
+		});
+
+		it("moves up from the cursor's own row onto the last character", () => {
+			const editor = new Editor(createTestTUI(1), defaultEditorTheme);
+			editor.setText("ab");
+			contentRows(editor);
+			editor.handleInput("\x1b[A");
+			assert.deepStrictEqual(editor.getCursor(), { line: 0, col: 1 });
+			const rows = contentRows(editor);
+			assert.deepStrictEqual(rows.map(stripTerminalSequences), ["a", "b"]);
+			assert.strictEqual(rows[1], renderFakeCursor("b"));
+		});
+
+		it("maps a click below the cursor's own row to the row clicked", () => {
+			const editor = new Editor(createTestTUI(1), defaultEditorTheme);
+			editor.setText("ab\ncd");
+			editor.handleInput("\x01"); // start of "cd"
+			editor.handleInput("\x1b[D"); // end of "ab"
+			assert.deepStrictEqual(contentRows(editor).map(stripTerminalSequences), ["a", "b", " ", "c", "d"]);
+			// Row 4 below the top border shows "c".
+			editor.handleMouse({
+				type: "click",
+				button: "left",
+				x: 0,
+				y: 4,
+				screenX: 0,
+				screenY: 4,
+				width: 1,
+				height: 7,
+				shift: false,
+				alt: false,
+				ctrl: false,
+			});
+			assert.deepStrictEqual(editor.getCursor(), { line: 1, col: 0 });
+		});
+	});
+
 	describe("Word wrapping", () => {
 		it("wraps at word boundaries instead of mid-word", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);

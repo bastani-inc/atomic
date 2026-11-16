@@ -105,7 +105,7 @@ Local copy operations require a working native clipboard or platform command. On
 
 ### TUI Fullscreen Viewport
 
-Interactive sessions use a fullscreen transcript. The wheel scrolls the region under the pointer; over the fixed editor, status, or footer it scrolls the transcript. When scrolled up, click "Jump to latest message" or use `tui.altScreen.bottom` to return to live output. Attached workflow chats and `/tasks` transcripts show the same jump row in their own view; other OSC 8 links open in the default handler.
+Interactive sessions use a fullscreen transcript. The wheel scrolls the region under the pointer; over the fixed editor, status, or footer it scrolls the transcript. When scrolled up, a pill above the composer reads "↓ jump to bottom", or "↓ N new messages" once new output arrives; click it or use `tui.altScreen.bottom` to return to live output. While scrolled up, the first line of the prompt that started the turn you are reading stays pinned at the top, marked `↑`. Attached workflow chats and `/tasks` transcripts show the same jump row in their own view; other OSC 8 links open in the default handler.
 
 Attached workflow stage chats and `/tasks` transcripts scroll the same way as the main transcript: the wheel follows `fullscreenWheelScrollLines`, Alt+wheel scrolls five times as far, `fullscreenScrollbar` controls their scrollbar, and `tui.altScreen.top`, `tui.altScreen.bottom`, `tui.altScreen.previousPrompt`, `tui.altScreen.nextPrompt`, `tui.altScreen.halfPageUp`, and `tui.altScreen.halfPageDown` act on them. In those views `pageUp` and `pageDown` always page the view, `tui.altScreen.lineUp` and `tui.altScreen.lineDown` do nothing, and the scrollbar shows the position but cannot be dragged.
 
@@ -130,6 +130,8 @@ A focused custom component may consume viewport keys and mouse input before the 
 The blocking `ask_user_question` dialog is a bottom-pinned overlay. Opening it does not shrink the transcript viewport or change the page step. `pageUp`, `pageDown`, `ctrl+home`, `ctrl+end`, and the wheel still reach every scrollback line, including the newest ones, in the visible strip above the dialog.
 
 These transcript actions also work while Notes is open. Notes keeps ordinary text and edit actions, including the default `home` and `end`. A key moves the transcript instead only when configured for a `tui.altScreen.*` action.
+
+Inside the dialog, ↑↓ move between options, `enter` chooses one (in a multi-select question, `enter` or `space` toggles a box and `enter` on **Next** moves on), typing on **Type something.** writes your own answer, `n` adds a note to an option with a preview, `tab` or ←→ move to the next or previous question when there are several, and `esc` cancels the whole dialog. The hint line under the dialog lists the keys of the current step. A custom answer must contain non-whitespace text; its Enter hint appears when it can be submitted. In narrow terminals its descriptions shorten so the selection, notes, question-switching and cancellation keys stay visible. The step line at the top shows every question and **Review**, with the current question counted, such as `2/3`.
 
 On short terminals, the dialog is bounded to preserve that visible strip. The active questionnaire row stays visible as you move through single-select and multi-select choices, Next, Submit, Cancel, and inline inputs. The dialog keeps its own arrow, `enter`, `tab`, `space`, `esc`, click, and selection input.
 
@@ -244,7 +246,6 @@ The same keys move between the main chat, subagent chats, workflow graphs, stage
 | `app.list.peek` | `space` | Peek at the selected task |
 | `app.list.filter` | `/` | Filter the list by name |
 | `app.keys.help` | `?` | Show the keys of the current screen |
-| `app.agents.focus` | `down` | Focus the agent panel from an empty prompt |
 | `app.agents.chord` | `ctrl+x` | Start a background-work chord in the main chat |
 | `app.agents.stopAll` | `ctrl+k` | After the chord key: stop all background subagents and workflow runs (press twice to confirm) |
 | `app.tasks.open` | Unbound | Command-only `/tasks` route |
@@ -273,7 +274,7 @@ or task detail before leaving task focus. Unbound actions have no key hint.
 
 ### Scoped Models Selector
 
-Used inside the scoped models selector (opened via `/scoped-models`). Changes are saved automatically.
+Used inside the scoped models selector (opened via `/scoped-models`). Enter switches the selected model on or off, typing filters, and Esc clears the search before it closes the selector. Changes are saved automatically.
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|

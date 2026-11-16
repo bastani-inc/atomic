@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { AgentTool, AgentToolResult } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai";
 import { Type } from "typebox";
@@ -10,6 +11,8 @@ import {
 } from "../../../src/core/agent-session-runtime.ts";
 import { createTestResourceLoader } from "../../utilities.ts";
 import { createHarness } from "../harness.ts";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 describe("regression #8724: in-memory fork during an active tool turn", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
@@ -56,17 +59,19 @@ describe("regression #8724: in-memory fork during an active tool turn", () => {
 		// services per factory call for the same reason.
 		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ sessionManager, sessionStartEvent }) => {
 			const services: AgentSessionServices = { ...harnessServices, resourceLoader: createTestResourceLoader() };
-			return {
-				...(await createAgentSessionFromServices({
-					services,
-					sessionManager,
-					sessionStartEvent,
-					model: harness.getModel(),
-					noTools: "all",
-				})),
+			const created = await createAgentSessionFromServices({
 				services,
-				diagnostics: [],
-			};
+				sessionManager,
+				sessionStartEvent,
+				model: harness.getModel(),
+				noTools: "all",
+				builtins: NO_BUILTINS,
+			});
+			assert.deepEqual(
+				created.extensionsResult.extensions.map((extension) => extension.path),
+				[],
+			);
+			return { ...created, services, diagnostics: [] };
 		};
 		const runtime = new AgentSessionRuntime(harness.session, harnessServices, createRuntime);
 		cleanups.push(async () => {

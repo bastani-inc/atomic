@@ -75,11 +75,26 @@ export interface OverlayPiSurface {
  * `close()`      — permanently dismiss.
  *
  * Optional `stageId` and owning `stageRunId` (on `open`) open directly on
- * that exact stage-chat node — used by `/workflow attach <runId> <stageId>`
+ * that exact stage-chat node — used to open a stage chat directly
  * and the picker overlay's connect-to-stage flow.
  */
+/** How a caller opens the graph: where Esc at the graph's top goes back to. */
+export interface GraphOverlayOpenOptions {
+	/**
+	 * Called after the graph hides when Esc (or ← with nothing to the left) pops the graph itself, so the view that
+	 * opened it, such as a workflow list, can show again. Without it the graph returns to main chat.
+	 */
+	readonly onReturn?: () => void;
+}
+
 export interface GraphOverlayPort {
-	open(runId: string | null, surface?: OverlayPiSurface, stageId?: string, stageRunId?: string): void;
+	open(
+		runId: string | null,
+		surface?: OverlayPiSurface,
+		stageId?: string,
+		stageRunId?: string,
+		openOptions?: GraphOverlayOpenOptions,
+	): void;
 	toggle(runId: string | null, surface?: OverlayPiSurface): void;
 	close(): void;
 }
@@ -117,6 +132,8 @@ export interface BuildGraphOverlayAdapterOpts {
 	stageUiBroker?: StageUiBroker;
 	/** Optional clock injection for deterministic attach-pane transition tests. */
 	now?: () => number;
+	/** Stop, retry and fork controls the graph offers on a focused stage. */
+	stageActions?: import("./graph-view-types.js").GraphStageActions;
 	/** Terminal output seam used to test raw overlay control sequences. */
 	terminalOutput?: OverlayTerminalOutput;
 }
@@ -149,6 +166,14 @@ export function buildGraphOverlayAdapter(
 	// the chat scrollback, producing visible duplicates.
 	let currentHandle: PiOverlayHandle | null = null;
 	let mounted = false;
+	/** Where the current open said Esc at the graph's top goes back to. */
+	let returnTo: (() => void) | undefined;
+	const goBack = (): void => {
+		const back = returnTo;
+		returnTo = undefined;
+		hideMounted();
+		back?.();
+	};
 	let finishMounted: (() => void) | null = null;
 	// Repaints the mounted overlay through its factory TUI. Needed on the
 	// hidden→visible flip: store updates while hidden intentionally skip
@@ -297,7 +322,14 @@ export function buildGraphOverlayAdapter(
 		};
 	}
 
-	function open(runId: string | null, surface?: OverlayPiSurface, stageId?: string, stageRunId?: string): void {
+	function open(
+		runId: string | null,
+		surface?: OverlayPiSurface,
+		stageId?: string,
+		stageRunId?: string,
+		openOptions?: GraphOverlayOpenOptions,
+	): void {
+		returnTo = openOptions?.onReturn;
 		const ui = surface?.ui ?? pi.ui;
 		observeHostCustomUi(ui);
 
@@ -370,6 +402,8 @@ export function buildGraphOverlayAdapter(
 				stageUiBroker,
 				onClose: finish,
 				onHide: hideMounted,
+				onBack: goBack,
+				stageActions: buildOpts.stageActions,
 				initialAttachStageId: stageId,
 				initialAttachRunId: stageRunId,
 				piTui: tui,

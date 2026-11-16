@@ -170,6 +170,7 @@ class AgentSessionBase {
 	}> = [];
 	protected _compactionAbortController: AbortController | undefined = undefined;
 	protected _compactionReason: import("./agent-session-types.js").CompactionReason | undefined = undefined;
+	protected _compactionStartedAt: number | undefined = undefined;
 	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	/** Resolves when the current automatic compaction has settled. */
@@ -189,6 +190,10 @@ class AgentSessionBase {
 	/** A positive stop callback keeps queued work pending until an explicit new run. */
 	protected _stopAfterTurnBlockedContinuation = false;
 	protected _turnInterruptedByUser = false;
+	protected _abortPreparedRunAtStart = false;
+	readonly _startAbortedForInterrupt: boolean = false;
+	protected _awaitingStartAfterInterrupt = false;
+	readonly _undeliveredAgentStarts: number = 0;
 	protected _awaitingMessageAfterInterrupt = false;
 	protected _disposed = false;
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;

@@ -69,7 +69,8 @@ function statusGlyph(status: ToolNodeStatus): string | undefined {
 		case "cached":
 			return "↻";
 		case "cancelled":
-			return "⊘";
+			// Stopped (◼) and failed (✗) never share a glyph.
+			return "◼";
 		default:
 			return "○";
 	}

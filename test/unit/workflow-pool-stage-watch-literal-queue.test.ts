@@ -123,9 +123,9 @@ test.each(["steer", "followUp"] as const)(
 				},
 			],
 		});
-		const result = await admitStageUserMessage(handle, "/workflow attach", intent, undefined);
+		const result = await admitStageUserMessage(handle, "/workflows", intent, undefined);
 		assert.equal(result.action, intent);
 		const queued = intent === "steer" ? harness.session.getSteeringMessages() : harness.session.getFollowUpMessages();
-		assert.deepEqual(queued, ["/workflow attach"]);
+		assert.deepEqual(queued, ["/workflows"]);
 	},
 );

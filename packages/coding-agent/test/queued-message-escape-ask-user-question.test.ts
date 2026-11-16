@@ -5,6 +5,7 @@ import type { TuiInputListener } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { createHarness, getAssistantTexts, getUserTexts, type Harness } from "./suite/harness.ts";
 
@@ -18,6 +19,7 @@ type EscapeEditor = {
 
 type EscapeHost = {
 	session: AgentSession;
+	workingRunMeter: WorkingRunMeter;
 	runtimeHost: object;
 	ui: { onDebug?: () => void; addInputListener: (l: TuiInputListener) => () => void; requestRender: () => void };
 	keybindings: { matches: () => boolean };
@@ -62,6 +64,7 @@ function createEscapeHost(session: AgentSession): EscapeHost {
 	};
 	const host: EscapeHost = {
 		session,
+		workingRunMeter: new WorkingRunMeter(),
 		runtimeHost: {},
 		ui: { addInputListener: () => () => {}, requestRender() {} },
 		keybindings: { matches: () => false },

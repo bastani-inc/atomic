@@ -123,7 +123,7 @@ describe("renderResult — run variant", () => {
 		assert.ok(plain.includes(runId));
 		assert.ok(plain.includes("hello-world"));
 		assert.ok(plain.includes(`${statusIcon("running")} running`));
-		assert.ok(plain.includes(`/workflow connect ${runId}`));
+		assert.ok(plain.includes(`/workflows ${runId}`));
 	});
 
 	test("failed run shows error", () => {
