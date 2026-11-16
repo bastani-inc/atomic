@@ -719,12 +719,18 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 		async () => {
 			fake = installFakePowerShell("answer");
 			simulateWindows();
+			const reads: string[] = [];
+			setWindowsDirectorySecurityReaderForTesting((path, options) => {
+				reads.push(path);
+				return readWindowsDirectorySecurityAsync(path, options);
+			});
 			const blockedMs = await longestMainThreadBlockMs(spillBurst);
 
+			assert.deepEqual(reads, [getTempRootDir()], "only the private root is read, once");
 			assert.deepEqual(
 				fake.launches().map((launch) => launch.path),
 				[getTempRootDir()],
-				"only the private root is read, once",
+				"one PowerShell process reads it",
 			);
 			assert.ok(blockedMs < MAIN_THREAD_BLOCK_LIMIT_MS, `the main thread was blocked for ${blockedMs} ms`);
 		},

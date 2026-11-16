@@ -222,7 +222,7 @@ class SharedSecurityRead {
 			};
 			const onDeadline = () => leave(undefined);
 			deadline.addEventListener("abort", onDeadline, { once: true });
-			void this.result.then(leave);
+			void this.result.then(leave, () => leave(undefined));
 		});
 	}
 
@@ -278,11 +278,14 @@ class SharedSecurityRead {
 				settle({ failure: `${executable}: aborted` });
 			};
 			this.controller.signal.addEventListener("abort", stop, { once: true });
-			child.once("error", (error) => {
+			const fail = (error: Error) => {
 				child.stdout?.destroy();
 				child.stderr?.destroy();
 				settle({ failure: `${executable}: error=${error.message}` });
-			});
+			};
+			child.on("error", fail);
+			child.stdout?.on("error", fail);
+			child.stderr?.on("error", fail);
 			child.once("close", (status, signal) => {
 				const output = Buffer.concat(stdout).toString("utf8");
 				if (status !== 0) {
@@ -446,7 +449,10 @@ export async function verifyWindowsDirectorySecurityAsync(
 	return undefined;
 }
 
-export function verifyWindowsDirectorySecurity(path: string): string | undefined {
+export function verifyWindowsDirectorySecurity(
+	path: string,
+	options: { startVerification?: boolean } = {},
+): string | undefined {
 	const identity = identityOf(path);
 	if (identity === undefined) {
 		return "its ownership could not be verified";
@@ -454,9 +460,11 @@ export function verifyWindowsDirectorySecurity(path: string): string | undefined
 	if (verifiedWithoutReading(path, identity)) {
 		return undefined;
 	}
-	outsideAnyCaller(() => {
-		verifyWindowsDirectorySecurityAsync(path, undefined, { background: true }).catch(() => undefined);
-	});
+	if (options.startVerification !== false) {
+		outsideAnyCaller(() => {
+			verifyWindowsDirectorySecurityAsync(path, undefined, { background: true }).catch(() => undefined);
+		});
+	}
 	return VERIFICATION_PENDING_REASON;
 }
 

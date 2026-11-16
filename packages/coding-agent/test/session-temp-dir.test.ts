@@ -26,6 +26,7 @@ import {
 	deriveOwnerComponent,
 	ensureTempDir,
 	getSessionTempDir,
+	getSessionTempDirAsync,
 	getTempRootDir,
 	resetSessionTempDirStateForTesting,
 	resolveSessionTempDirPath,
@@ -223,8 +224,8 @@ describe("session temp directory scoping", () => {
 		assert.equal(resolveSessionTempDirPath(), resolveSessionTempDirPath("live-session"));
 	});
 
-	it("creates the directory lazily with owner-only permissions", () => {
-		const dir = getSessionTempDir("mode-check");
+	it("creates the directory lazily with owner-only permissions", async () => {
+		const dir = await getSessionTempDirAsync("mode-check");
 		const stat = statSync(dir);
 		assert.ok(stat.isDirectory());
 		if (isPosix) {
@@ -233,13 +234,13 @@ describe("session temp directory scoping", () => {
 		}
 	});
 
-	it("recreates a memoized directory that was removed out of band", () => {
-		const dir = getSessionTempDir("reaped");
+	it("recreates a memoized directory that was removed out of band", async () => {
+		const dir = await getSessionTempDirAsync("reaped");
 		writeFileSync(join(dir, "spill.log"), "before");
 		rmSync(dir, { recursive: true, force: true });
 		assert.equal(existsSync(dir), false);
 
-		const again = getSessionTempDir("reaped");
+		const again = await getSessionTempDirAsync("reaped");
 
 		assert.equal(again, dir);
 		assert.equal(statSync(dir).isDirectory(), true, "a cache hit must not hand back a deleted directory");
@@ -392,7 +393,7 @@ process.stdout.write(JSON.stringify(result));
 
 describe("persisted tool-output files", () => {
 	it("creates spill files owner-only", async () => {
-		const dir = getSessionTempDir("file-mode");
+		const dir = await getSessionTempDirAsync("file-mode");
 		const file = new PersistedOutputFile(join(dir, "spill.log"));
 		file.write("hello");
 		await file.close();

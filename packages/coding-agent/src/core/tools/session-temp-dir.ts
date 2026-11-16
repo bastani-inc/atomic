@@ -214,11 +214,22 @@ function isVerificationPending(error: unknown): error is TempDirRefusedError {
 	return error instanceof TempDirRefusedError && error.reason === VERIFICATION_PENDING_REASON;
 }
 
+let syncChecksStartVerification = true;
+
+function attemptWithoutBackgroundVerification<T>(attempt: () => T): T {
+	syncChecksStartVerification = false;
+	try {
+		return attempt();
+	} finally {
+		syncChecksStartVerification = true;
+	}
+}
+
 async function afterVerification<T>(attempt: () => T): Promise<T> {
 	const verified = new Set<string>();
 	for (;;) {
 		try {
-			return attempt();
+			return attemptWithoutBackgroundVerification(attempt);
 		} catch (error) {
 			if (!isVerificationPending(error)) throw error;
 			if (verified.has(error.path)) throw new TempDirRefusedError(error.path, "its ownership could not be verified");
@@ -259,7 +270,7 @@ function verifyOwnedDirectory(path: string, known?: Stats, strict = false): void
 		throw new TempDirRefusedError(path, "it is not a directory");
 	}
 	if (process.platform === "win32") {
-		const refusal = verifyWindowsDirectorySecurity(path);
+		const refusal = verifyWindowsDirectorySecurity(path, { startVerification: syncChecksStartVerification });
 		if (refusal !== undefined) {
 			throw new TempDirRefusedError(path, refusal);
 		}
