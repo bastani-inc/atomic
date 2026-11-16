@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, rmSync } from "node:fs";
-import { realpath, rm } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
+import { realpath, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
 import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
@@ -8,30 +8,10 @@ import type { AdvisoryLock } from "@bastani/atomic-natives";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
 
-const DIRECTORY_LOCK_WAIT_MS = 30_000;
-const DIRECTORY_LOCK_RETRY_MS = 5;
-
-async function withDirectoryLock<T>(
-	path: string,
-	callback: (tryAdvisoryLock: typeof import("@bastani/atomic-natives").tryAdvisoryLock) => Promise<T> | T,
-): Promise<T> {
+/** The root's own lock, held while its shard is open: one process at a time opens a root's local journal. */
+async function tryRootLock(path: string): Promise<AdvisoryLock | null> {
 	const { tryAdvisoryLock } = await import("@bastani/atomic-natives");
-	const lockPath = join(dirname(path), ".lock");
-	const deadline = performance.now() + DIRECTORY_LOCK_WAIT_MS;
-	let directoryLock: AdvisoryLock | null = null;
-	for (;;) {
-		directoryLock = tryAdvisoryLock(lockPath, 0);
-		if (directoryLock !== null) break;
-		if (performance.now() >= deadline) {
-			throw new Error(`Checkpoint shard directory is busy: ${dirname(path)}`);
-		}
-		await new Promise<void>((resolve) => setTimeout(resolve, DIRECTORY_LOCK_RETRY_MS));
-	}
-	try {
-		return await callback(tryAdvisoryLock);
-	} finally {
-		directoryLock.release();
-	}
+	return tryAdvisoryLock(`${path}.lock`, 0);
 }
 
 export function shipShardPath(stateDirectory: string, journalIdentity: string, root: string): string {
@@ -138,12 +118,13 @@ export class ShipShard {
 		private readonly now: () => number = () => performance.now(),
 	) {}
 
-	static async open(path: string, root: string, now?: () => number): Promise<ShipShard> {
+	static open(path: string, root: string, now?: () => number): Promise<ShipShard> {
+		return underJournalLock(path, () => ShipShard.openUnlocked(path, root, now));
+	}
+
+	private static async openUnlocked(path: string, root: string, now?: () => number): Promise<ShipShard> {
 		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-		const lock =
-			path === ":memory:"
-				? undefined
-				: await withDirectoryLock(path, (tryAdvisoryLock) => tryAdvisoryLock(`${path}.lock`, 0));
+		const lock = path === ":memory:" ? undefined : await tryRootLock(path);
 		if (lock === null) throw new Error(`Checkpoint shard is already open by another process: ${path}`);
 		let database: SqliteDatabase | undefined;
 		try {
@@ -225,8 +206,12 @@ export class ShipShard {
 		});
 	}
 
-	release(work: Pick<AttemptLease, "id" | "generation">): void {
-		if (this.leases.get(work.id)?.lease.generation === work.generation) {
+	release(work: Pick<AttemptLease, "id" | "generation"> & Partial<Pick<AttemptLease, "worker">>): void {
+		const held = this.leases.get(work.id);
+		if (
+			held?.lease.generation === work.generation &&
+			(work.worker === undefined || held.lease.worker === work.worker)
+		) {
 			this.leases.delete(work.id);
 		}
 	}
@@ -408,25 +393,38 @@ export class ShipShard {
 		});
 	}
 
-	async close(): Promise<void> {
+	async close(options: { readonly retire?: boolean } = {}): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
 		this.leases.clear();
-		const retire = this.path !== ":memory:" && (await this.holdsNothing());
-		const location = retire ? await realpath(this.path).catch(() => this.path) : undefined;
 		try {
-			await this.database.close();
-			if (location !== undefined) {
-				await withDirectoryLock(this.path, async () => {
-					if (await removeUnusedShardFiles(location)) {
-						this.lock?.release();
-						rmSync(`${this.path}.lock`, { force: true });
-						if (location !== this.path) rmSync(`${location}.lock`, { force: true });
-					}
-				});
-			}
+			if (options.retire === true && this.path !== ":memory:")
+				await underJournalLock(this.path, () => this.retire());
 		} finally {
-			this.lock?.release();
+			try {
+				await this.database.close();
+			} finally {
+				this.lock?.release();
+			}
+		}
+	}
+
+	private async retire(): Promise<void> {
+		const unused = (await this.onlyConnection()) && (await this.holdsNothing());
+		const location = unused ? await realpath(this.path).catch(() => undefined) : undefined;
+		await this.database.close();
+		if (location === undefined) return;
+		this.lock?.release();
+		await removeShardFiles(location, this.path);
+	}
+
+	private async onlyConnection(): Promise<boolean> {
+		try {
+			await this.database.exec("PRAGMA busy_timeout=0");
+			const mode = await this.database.get<SqliteRow & { journal_mode: string }>("PRAGMA journal_mode=DELETE");
+			return mode?.journal_mode === "delete";
+		} catch {
+			return false;
 		}
 	}
 
@@ -478,33 +476,21 @@ export class ShipShard {
 	}
 }
 
-function processAlive(pid: number): boolean {
+async function underJournalLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+	if (path === ":memory:") return operation();
+	const lock = await openNodeSqliteDatabase(`${dirname(path)}.lock`);
 	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
+		return await lock.transaction(() => operation());
+	} finally {
+		await lock.close();
 	}
 }
 
-function usedByLiveConnection(location: string): boolean {
-	let names: string[];
-	try {
-		names = readdirSync(`${location}-holders`);
-	} catch {
-		return false;
-	}
-	return names.some((name) => {
-		const pid = Number(/^(\d+)-/.exec(name)?.[1] ?? Number.NaN);
-		return Number.isSafeInteger(pid) && pid > 0 && processAlive(pid);
-	});
-}
-
-async function removeUnusedShardFiles(location: string): Promise<boolean> {
-	if (usedByLiveConnection(location)) return false;
-	for (const suffix of ["-wal", "-shm", "-journal", ""])
+async function removeShardFiles(location: string, path: string): Promise<void> {
+	for (const suffix of ["", "-journal", "-wal", "-shm"])
 		await rm(`${location}${suffix}`, { force: true }).catch(() => {});
 	for (const suffix of ["-holders", "-writers", "-wakes"])
 		await rm(`${location}${suffix}`, { recursive: true, force: true }).catch(() => {});
-	return true;
+	for (const lock of new Set([`${location}.lock`, `${path}.lock`])) await rm(lock, { force: true }).catch(() => {});
+	await rmdir(dirname(location)).catch(() => {});
 }

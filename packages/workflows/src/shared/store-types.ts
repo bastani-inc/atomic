@@ -543,7 +543,7 @@ export interface StageSnapshot {
 	/**
 	 * Effective reasoning/thinking level in force for this stage's session
 	 * (e.g. "off", "low", "high"). Populated on the live snapshot alongside
-	 * {@link model} so the `/workflow connect` graph node cards can show the
+	 * {@link model} so the workflow graph's node cards can show the
 	 * same model + thinking identity the main session footer shows, and
 	 * restored onto replayed stages from the durable checkpoint so
 	 * `/workflow resume` keeps that identity. Optional: absent for stages

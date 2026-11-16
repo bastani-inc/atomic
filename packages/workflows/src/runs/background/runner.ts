@@ -78,7 +78,7 @@ export interface DetachedRunOpts extends Omit<RunOpts, "signal" | "cancellation"
 // ---------------------------------------------------------------------------
 
 export function workflowConnectGuidance(runId: string): string {
-	return `Run /workflow connect ${runId} to see agents working and chat with and steer each stage.`;
+	return `Open /workflows ${runId} to see agents working and chat with and steer each stage.`;
 }
 
 export function buildDetachedAccepted(name: string, runId: string): DetachedAccepted {

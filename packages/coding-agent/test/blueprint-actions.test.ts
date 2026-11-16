@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
 	chmodSync,
+	closeSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
@@ -18,6 +20,7 @@ import { basename, delimiter, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
 import {
 	closedObject,
 	type ExpressionContext,
@@ -111,7 +114,7 @@ beforeEach(() => {
 afterEach(() => {
 	if (previousBaseUrl === undefined) delete process.env[ACTIONS_GITHUB_BASE_URL_ENV];
 	else process.env[ACTIONS_GITHUB_BASE_URL_ENV] = previousBaseUrl;
-	rmSync(fixture.root, { recursive: true, force: true, maxRetries: 3 });
+	removeTestDirectory(fixture.root, { retries: 3, retryDelayMs: 100 });
 });
 
 function expression(source: string): string {
@@ -2889,4 +2892,37 @@ describe("the log of a Node.js action", () => {
 			`=== Using the cached ${label} ===\n=== pre of ${label} ===\n$ node scripts/pre.js\n=== main of ${label} ===\n$ node scripts/main.js\n`,
 		);
 	});
+
+	test.skipIf(process.platform !== "win32")(
+		"on Windows, moving a fetched action into the cache retries when a handle briefly holds the staging directory (#4588)",
+		async () => {
+			let heldFd: number | undefined;
+			const fetchAction: ActionFetcher = async (request: ActionFetchRequest) => {
+				writeFiles(
+					request.destination,
+					nodeAction('const fs = require("node:fs"); fs.writeFileSync(process.env.RESULT_FILE, "ran\\n");'),
+				);
+				heldFd = openSync(join(request.destination, "action.yml"), "r+");
+				setTimeout(() => {
+					if (heldFd !== undefined) {
+						try {
+							closeSync(heldFd);
+						} catch {}
+						heldFd = undefined;
+					}
+				}, 150);
+			};
+			try {
+				await runToSuccess("github.com/acme/briefly-held@v1", { fetchAction });
+				assert.deepEqual(resultLines(), ["ran"]);
+			} finally {
+				if (heldFd !== undefined) {
+					try {
+						closeSync(heldFd);
+					} catch {}
+				}
+			}
+		},
+		ACTION_TIMEOUT_MS,
+	);
 });

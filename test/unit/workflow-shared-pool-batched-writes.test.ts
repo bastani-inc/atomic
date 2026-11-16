@@ -881,6 +881,8 @@ test("lease renewals, heartbeats and host reports take the priority lane; commit
 			await operation();
 			return [...f.priorities];
 		};
+		// The fixture's own writes, queueing the work among them, are not the claim's.
+		f.priorities.length = 0;
 		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
 		assert.ok(attempt);
 		assert.deepEqual(f.priorities, [false]);
@@ -889,6 +891,7 @@ test("lease renewals, heartbeats and host reports take the priority lane; commit
 			[false],
 		);
 		assert.deepEqual(await lanes(() => f.pool.renew(f.lease, attempt, 60_000)), [true]);
+		assert.deepEqual(await lanes(() => f.journal.renew(f.lease)), [true]);
 		assert.deepEqual(await lanes(() => f.pool.extend(f.lease, attempt, 60_000)), [true]);
 		assert.deepEqual(
 			await lanes(() => f.pool.heartbeat(f.lease, attempt, 60_000, f.usage.recording(f.lease, attempt, []))),

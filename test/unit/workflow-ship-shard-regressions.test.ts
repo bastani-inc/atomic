@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
@@ -37,6 +38,29 @@ async function assertRefused(promise: Promise<unknown>, reason: string): Promise
 		`expected StaleWorkLeaseError with reason ${reason}`,
 	);
 }
+
+test("an in-memory checkpoint journal creates no disk files while open or after close and retirement (#5194)", async () => {
+	const directory = makeTempDirectory("ship-shard-memory-");
+	directories.push(directory);
+	const cwd = process.cwd();
+	process.chdir(directory);
+	try {
+		for (const retire of [false, true]) {
+			const shard = await ShipShard.open(":memory:", ROOT);
+			try {
+				await shard.hold(LEASE_G1, LEASE_MS);
+				await shard.accept(ROOT, LEASE_G1, "key", '{"saved":true}', 1);
+				assert.equal(await shard.pendingCount(LEASE_G1), 1);
+				assert.deepEqual(readdirSync(directory), [], "an open in-memory journal creates no files");
+			} finally {
+				await shard.close({ retire });
+			}
+			assert.deepEqual(readdirSync(directory), [], "closing an in-memory journal creates no files");
+		}
+	} finally {
+		process.chdir(cwd);
+	}
+});
 
 test("holding an older generation ignores it and preserves the newer generation lease and pending rows (#4768)", async () => {
 	const { shard } = await openShard();

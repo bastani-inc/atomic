@@ -1501,7 +1501,7 @@ const BASE_GATE_MESSAGE = [
 	"Preview file: /run/preview.html",
 	"Preview URL: file:///run/preview.html",
 	"",
-	'"Start live review" opens an interactive browser session; the session-start stage prints the live http:// review URL as soon as its server is up (attach with /workflow connect to see it, or open the preview URL above directly).',
+	'"Start live review" opens an interactive browser session; the session-start stage prints the live http:// review URL as soon as its server is up (open it with /workflows to see it, or open the preview URL above directly).',
 	"The session is unbounded: pick elements, accept variants, and steer for as long as you like, and everything you accept lands in the preview as you go.",
 	"",
 	"YOU end the review, and nothing else does. It keeps waiting through any amount of silence.",

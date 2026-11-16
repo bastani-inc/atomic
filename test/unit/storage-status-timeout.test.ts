@@ -6,6 +6,7 @@ import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storag
 import * as provider from "../../packages/coding-agent/src/core/storage/provider.js";
 import {
 	collectStorageStatus,
+	STORAGE_ADAPTER_LOAD_TIMEOUT_MS,
 	STORAGE_PROBE_TIMEOUT_MS,
 } from "../../packages/coding-agent/src/core/storage/storage-status.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -59,6 +60,45 @@ test("status finishes when both the adapter query and close stall (#3856)", asyn
 		assert.equal(settled, true, "database.close must not hold status open forever");
 		const status = await pending;
 		assert.ok(status.domains.every((domain) => domain.probe?.connection.status === "failed"));
+	} finally {
+		removeTempDirectory(root);
+	}
+});
+
+test("a stalled adapter module load stays bounded by the adapter load timeout rather than the server probe timeout", async () => {
+	const root = makeTempDirectory("storage-adapter-load-timeout-");
+	const agentDir = join(root, "agent");
+	mkdirSync(agentDir);
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ storage: { adapter: "stalled-loader" } }));
+	for (const name of [
+		"ATOMIC_STORAGE",
+		"ATOMIC_SESSIONS_STORAGE",
+		"ATOMIC_WORKFLOWS_JOURNAL",
+		"ATOMIC_CODING_AGENT_SESSION_DIR",
+		"ATOMIC_WORKFLOW_JOURNAL_PATH",
+	])
+		vi.stubEnv(name, "");
+	vi.spyOn(provider, "loadStorageAdapter").mockReturnValue(new Promise<never>(() => {}));
+	vi.useFakeTimers();
+	try {
+		let settled = false;
+		const pending = collectStorageStatus({ cwd: root, agentDir, probe: true, probeTimeoutMs: 100 }).then((status) => {
+			settled = true;
+			return status;
+		});
+		await vi.advanceTimersByTimeAsync(STORAGE_ADAPTER_LOAD_TIMEOUT_MS - 1);
+		assert.equal(settled, false, "the server probe timeout must not cut off adapter module loading");
+		await vi.advanceTimersByTimeAsync(1);
+		const status = await pending;
+		const sessions = status.domains.find((domain) => domain.domain === "sessions");
+		assert.deepEqual(sessions?.probe, {
+			adapter: {
+				module: "stalled-loader",
+				loaded: false,
+				detail: `Loading the adapter did not answer within ${STORAGE_ADAPTER_LOAD_TIMEOUT_MS / 1000} s`,
+			},
+			connection: { status: "skipped", detail: "adapter not loaded" },
+		});
 	} finally {
 		removeTempDirectory(root);
 	}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { SessionEntry } from "@bastani/atomic";
-import type { SqliteDatabase, SqliteValue } from "@bastani/atomic/storage";
+import { dialectOf, type SqliteDatabase, type SqliteRow, type SqliteValue } from "@bastani/atomic/storage";
 import { describe } from "vitest";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -138,20 +138,28 @@ async function rootFixture(scope: PoolStoreScope) {
 }
 
 export function registerPoolStoreConformance(run_: Runner, name: string, openScope: () => Promise<PoolStoreScope>) {
-	const test = (title: string, body: (f: Awaited<ReturnType<typeof rootFixture>>) => Promise<void>) =>
-		run_(title, async () => {
-			const scope = await openScope();
-			try {
-				const f = await rootFixture(scope);
+	const test = (
+		title: string,
+		body: (f: Awaited<ReturnType<typeof rootFixture>>) => Promise<void>,
+		timeoutMs?: number,
+	) =>
+		run_(
+			title,
+			async () => {
+				const scope = await openScope();
 				try {
-					await body(f);
+					const f = await rootFixture(scope);
+					try {
+						await body(f);
+					} finally {
+						await f.close();
+					}
 				} finally {
-					await f.close();
+					await scope.close();
 				}
-			} finally {
-				await scope.close();
-			}
-		});
+			},
+			timeoutMs,
+		);
 
 	describe(name, () => {
 		test("control revisions survive reopening and close admission without deleting work", async (f) => {
@@ -358,6 +366,35 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 				);
 				await assertDenseEvents(f, size + 1);
 			});
+		test("1000 commits of 256 KiB checkpoints, one after another, all commit and read back intact", async (f) => {
+			await f.pool.enqueue(f.lease, work, boundary);
+			const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);
+			assert.ok(attempt);
+			// Each commit past the 64 a queue keeps of its own reads the root's checkpoints since its watermark, 16 MiB
+			// of them here: no value, row or response of that read may pass a libSQL server's limits.
+			const sized = (step: number) => ({ ...toolCheckpointOf({ work, boundary }, step), output: largeOutput(step) });
+			const seqs: number[] = [];
+			for (let step = 0; step < 1000; step++) {
+				const receipt = await f.pool
+					.commit(f.lease, attempt, `step-${step}`, { kind: "checkpoint", checkpoint: sized(step) })
+					.catch((error: Error) => assert.fail(`commit ${step + 1} of 1000 failed: ${error.message}`));
+				seqs.push(receipt.seq!);
+			}
+			assert.deepEqual(
+				seqs,
+				seqs.map((_, index) => seqs[0]! + index),
+				"each commit recorded the next event",
+			);
+			let read = 0;
+			for await (const entry of (await f.peer()).read("root")) {
+				// The child's boundary start, which queueing it recorded, comes first.
+				if (entry.event.type !== RUN_EVENT_TYPES.checkpointRecorded || entry.event.payload.kind !== "tool")
+					continue;
+				assert.deepEqual(entry.event.payload, sized(read), `checkpoint ${read} reads back intact`);
+				read++;
+			}
+			assert.equal(read, 1000);
+		}, 600_000);
 
 		test("a completed child keeps its result and fences later writes", async (f) => {
 			await f.pool.enqueue(f.lease, work, boundary);
@@ -509,15 +546,30 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 		test("a 429 cooldown one host shares holds every host's acquires and reaches their polls (#4768)", async (f) => {
 			const one = await SqlRateBuckets.open(f.journal);
 			const other = await SqlRateBuckets.open(await f.peer());
+			// The cooldown runs on the database's clock: what is left of it is measured against the time that clock says
+			// passed since it was recorded, however slowly a loaded server answers.
+			const recorded = await databaseNow(f.database);
 			await one.cooldown("anthropic/opus", 30_000);
 			// A bucket shaped after its cooldown was recorded keeps that cooldown.
 			const held = await other.acquire("anthropic/opus", 1, { intervalMs: 10, burst: 10 });
-			assert.ok("cooldownMs" in held && held.cooldownMs > 29_000 && held.cooldownMs <= 30_000, JSON.stringify(held));
+			const acquired = await databaseNow(f.database);
+			assert.ok(
+				"cooldownMs" in held && held.cooldownMs >= 30_000 - (acquired - recorded) && held.cooldownMs <= 30_000,
+				JSON.stringify({ held, elapsedMs: acquired - recorded }),
+			);
+			// A shorter cooldown never shortens it.
 			await other.cooldown("anthropic/opus", 5);
 			const { cooldowns } = await other.poll();
-			assert.equal(cooldowns.length, 1);
-			assert.equal(cooldowns[0]?.scope, "anthropic/opus");
-			assert.ok(cooldowns[0]!.remainingMs > 29_000, String(cooldowns[0]?.remainingMs));
+			const polled = await databaseNow(f.database);
+			assert.deepEqual(
+				cooldowns.map((cooldown) => cooldown.scope),
+				["anthropic/opus"],
+			);
+			const { remainingMs } = cooldowns[0]!;
+			assert.ok(
+				remainingMs >= 30_000 - (polled - recorded) && remainingMs <= held.cooldownMs,
+				JSON.stringify({ remainingMs, elapsedMs: polled - recorded, held }),
+			);
 		});
 
 		test("many hosts claim, commit and complete concurrently: no double claim, no lost settle (#5102)", async (f) => {
@@ -690,6 +742,12 @@ function toolCheckpointOf(item: ReturnType<typeof poolWorkFixture>, step: number
 	};
 }
 
+/** A tool output of about 256 KiB, its text distinct for each `step`. */
+function largeOutput(step: number): { readonly step: number; readonly text: string } {
+	const unit = `${step}:"quoted" \\ é;`;
+	return { step, text: unit.repeat(Math.ceil((256 * 1024) / unit.length)).slice(0, 256 * 1024) };
+}
+
 /** The root's events: one per key, numbered 1 to their count, with `count` checkpoints when given. */
 async function assertDenseEvents(f: { database: SqliteDatabase; table: (name: string) => string }, count?: number) {
 	const events = await f.database.all<{ seq: number; key: string | null }>(
@@ -713,4 +771,10 @@ async function assertDenseEvents(f: { database: SqliteDatabase; table: (name: st
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Now on `database`'s own clock, in milliseconds: the clock its stores record and measure shared times on. */
+async function databaseNow(database: SqliteDatabase): Promise<number> {
+	const row = await database.get<SqliteRow & { now: number | string }>(`SELECT ${dialectOf(database).nowMs} AS now`);
+	return Number(row!.now);
 }

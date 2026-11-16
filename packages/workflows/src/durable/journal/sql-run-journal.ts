@@ -35,6 +35,7 @@ import {
 	type JournalBatchAppend,
 	locksRows,
 	NON_SNAPSHOT_EVENT_TYPES,
+	nextReadBatch,
 	type RunSnapshotTail,
 	type RunVersion,
 	registerJournalKeyRangeRead,
@@ -112,10 +113,13 @@ function entryFromRow(row: EventRow): JournalEntry {
 }
 
 /**
- * One page of events: the rows of `pageRows`, a query of the events table that ends in `ORDER BY <order> LIMIT ?`,
- * cut after the row whose payload takes the page past {@link JOURNAL_READ_PAGE_CHARS}, so a page of large checkpoints
- * stays under a libSQL server's 10 MB response limit (#4954). One statement, as before; the first row always comes
- * back. `more` says whether rows may follow the page.
+ * One page of events: the rows of `pageRows`, a query of the events table that ends in `ORDER BY <order> LIMIT ?`
+ * and fetches the next `limit` of them, cut after the row whose payload takes the page past
+ * {@link JOURNAL_READ_PAGE_CHARS}, so a page of large checkpoints stays under a libSQL server's 10 MB response limit
+ * (#4954). One statement, as before; the first row always comes back. `more` says whether rows may follow the page,
+ * and `limit` how many rows the next page's statement fetches ({@link nextReadBatch}): the statement measures every
+ * row it fetches, and a fixed batch of {@link JOURNAL_READ_PAGE_SIZE} large events made each page of a few of them
+ * measure the payloads of up to 256.
  */
 async function readSizedPage(
 	database: SqliteDatabase,
@@ -124,7 +128,8 @@ async function readSizedPage(
 	pageRows: string,
 	order: string,
 	params: readonly SqliteValue[],
-): Promise<{ readonly page: JournalEntry[]; readonly more: boolean }> {
+	limit: number,
+): Promise<{ readonly page: JournalEntry[]; readonly more: boolean; readonly limit: number }> {
 	const rows = await database.all<EventRow & { fetched: number | bigint }>(
 		`SELECT *, (SELECT ${c.schemaVersion} FROM ${meta}) AS ${META_VERSION} FROM (
 			SELECT page.*, sum(length(page.${c.payload})) OVER (ORDER BY page.${order}) - length(page.${c.payload}) AS before_chars,
@@ -132,6 +137,7 @@ async function readSizedPage(
 			FROM (${pageRows}) AS page
 		) AS sized WHERE before_chars < ? ORDER BY ${order}`,
 		...params,
+		limit,
 		JOURNAL_READ_PAGE_CHARS,
 	);
 	const fetched = Number(rows[0]?.fetched ?? 0);
@@ -142,7 +148,8 @@ async function readSizedPage(
 	return {
 		// A payload stored in chunks has its stub's length in the page's size: its chunks are read one statement each.
 		page: (await withJournalPayloads(database, chunkTable, rows)).map(entryFromRow),
-		more: rows.length > 0 && (rows.length < fetched || fetched === JOURNAL_READ_PAGE_SIZE),
+		more: rows.length > 0 && (rows.length < fetched || fetched === limit),
+		limit: nextReadBatch(limit, fetched, rows.length, JOURNAL_READ_PAGE_SIZE),
 	};
 }
 
@@ -823,6 +830,10 @@ export class SqlRunJournal implements RunJournal {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		const owned = { ...lease };
+		const batch = this.database.batch?.bind(this.database);
+		// One request where the database sends batches: the renewal writes only while the lease is held, in SQL, and the
+		// lease row read in the same request says whether it did, so it never holds the write lock across a round trip.
+		if (batch) return this.operation(() => this.renewInOneRequest(batch, owned));
 		return this.operation(() =>
 			this.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
@@ -832,6 +843,31 @@ export class SqlRunJournal implements RunJournal {
 				);
 			}),
 		);
+	}
+
+	/** {@link renew} as one request: refuses a lease another holder or epoch took, as {@link checkLease} does. */
+	private async renewInOneRequest(batch: NonNullable<SqliteDatabase["batch"]>, owned: Lease): Promise<void> {
+		const t = this.tables;
+		const rows = await batch(
+			[
+				{
+					sql: `SELECT ${this.metaVersion}, l.* FROM (SELECT 1) AS one LEFT JOIN ${t.leases} AS l ON l.${c.runId} = ?`,
+					params: [owned.runId],
+				},
+				{
+					sql: `UPDATE ${t.leases} SET ${c.renewedAt} = ${this.dialect.nowMs} WHERE ${c.runId} = ? AND ${c.holderId} = ? AND ${c.epoch} = ? AND EXISTS (SELECT 1 FROM ${t.meta} WHERE ${c.schemaVersion} = ?)`,
+					params: [owned.runId, owned.holderId, owned.epoch, JOURNAL_SCHEMA_VERSION],
+				},
+			],
+			// A renewal keeps the root's lease alive, so it never waits behind this process's other writes to the server.
+			{ ...JOURNAL_WRITE_TRANSACTION, priority: true },
+		);
+		// The renewal wrote nothing when the journal is at another version: its condition checks it.
+		assertRowVersion(rows[0]![0]);
+		const row = rows[0]![0] as LeaseRow | undefined;
+		const epoch = row?.[c.epoch] == null ? undefined : journalCounter(owned.runId, "epoch", row[c.epoch]);
+		if (row?.[c.holderId] !== owned.holderId || epoch !== owned.epoch)
+			throw new StaleLeaseError(owned.runId, owned.epoch, epoch ?? JOURNAL_LEASE.absentEpoch);
 	}
 
 	async release(lease: Lease): Promise<void> {
@@ -874,6 +910,20 @@ export class SqlRunJournal implements RunJournal {
 		const owned = { ...lease };
 		const prepared = this.prepare(event, options?.key, this.appendGuard.getStore());
 		const expected = options?.expectSeq;
+		const batch = this.database.batch?.bind(this.database);
+		// One request where the database sends batches and the append needs no guard, no expected sequence and no chunks,
+		// as `appendMany` sends them: the lease, the key and the sequence are checked in SQL, so the write lock is never
+		// held across a round trip.
+		if (batch && expected === undefined && this.inOneRequest(prepared))
+			return this.operation(async () => {
+				const [settled] = await this.appendInOneRequest(
+					(statements) => batch(statements, JOURNAL_WRITE_TRANSACTION),
+					owned,
+					[prepared],
+				);
+				if (settled!.status === "rejected") throw settled!.reason;
+				return settled!.value;
+			});
 		return this.operation(() =>
 			this.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
@@ -910,18 +960,7 @@ export class SqlRunJournal implements RunJournal {
 			}
 		});
 		const batch = this.database.batch?.bind(this.database);
-		if (
-			batch &&
-			prepared.every(
-				(append) =>
-					append instanceof Error ||
-					(append.guard === undefined &&
-						typeof append.payload === "string" &&
-						append.stored !== undefined &&
-						append.stored.chunks.length === 0 &&
-						append.worktreeSnapshots.length === 0),
-			)
-		)
+		if (batch && prepared.every((append) => append instanceof Error || this.inOneRequest(append)))
 			return this.operation(() => this.appendInOneRequest(batch, owned, prepared));
 		return this.operation(() =>
 			this.transaction(async (tx) => {
@@ -1043,6 +1082,17 @@ export class SqlRunJournal implements RunJournal {
 		return settled;
 	}
 
+	/** Whether `append` goes in one request: it has no pool guard, no payload error, and nothing stored in chunks. */
+	private inOneRequest(append: ReturnType<SqlRunJournal["prepare"]>): boolean {
+		return (
+			append.guard === undefined &&
+			typeof append.payload === "string" &&
+			append.stored !== undefined &&
+			append.stored.chunks.length === 0 &&
+			append.worktreeSnapshots.length === 0
+		);
+	}
+
 	/** Validate an append outside any transaction; its payload error is raised where `append` always raised it. */
 	private prepare(event: RunEvent, key: string | undefined, appendGuard: JournalAppendGuard | undefined) {
 		if (key !== undefined) validateText("key", key);
@@ -1150,13 +1200,14 @@ export class SqlRunJournal implements RunJournal {
 		this.assertOpen();
 		validateText("runId", runId);
 		let nextSeq = fromSeq;
+		let limit = JOURNAL_READ_PAGE_SIZE;
 		const legacy = this.legacy;
 		const readsLegacy = legacy !== undefined && (await this.operation(() => this.isUnconvertedLegacyRun(runId)));
 		for (;;) {
-			const { page, more } = await this.operation(async () => {
+			const { page, more, ...next } = await this.operation(async () => {
 				if (readsLegacy) {
 					const rows = (await legacy.events(this.database, runId, nextSeq, JOURNAL_READ_PAGE_SIZE)) as EventRow[];
-					return { page: rows.map(entryFromRow), more: rows.length === JOURNAL_READ_PAGE_SIZE };
+					return { page: rows.map(entryFromRow), more: rows.length === JOURNAL_READ_PAGE_SIZE, limit };
 				}
 				return readSizedPage(
 					this.database,
@@ -1164,7 +1215,8 @@ export class SqlRunJournal implements RunJournal {
 					this.tables.meta,
 					`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
 					c.seq,
-					[runId, nextSeq, JOURNAL_READ_PAGE_SIZE],
+					[runId, nextSeq],
+					limit,
 				);
 			});
 			for (const entry of page) {
@@ -1175,6 +1227,7 @@ export class SqlRunJournal implements RunJournal {
 			const last = page.at(-1);
 			if (last === undefined || !more) return;
 			nextSeq = last.seq + 1;
+			limit = next.limit;
 		}
 	}
 
@@ -1221,15 +1274,17 @@ export class SqlRunJournal implements RunJournal {
 			return;
 		}
 		let after: string | undefined;
+		let limit = JOURNAL_READ_PAGE_SIZE;
 		for (;;) {
-			const { page, more } = await journal.operation(async () => {
+			const { page, more, ...next } = await journal.operation(async () => {
 				return readSizedPage(
 					journal.database,
 					journal.tables.eventChunks,
 					journal.tables.meta,
 					`SELECT * FROM ${journal.tables.events} WHERE ${c.runId} = ? AND ${c.key} ${after === undefined ? ">=" : ">"} ? AND ${c.key} < ? ORDER BY ${c.key} LIMIT ?`,
 					c.key,
-					[runId, after ?? fromKey, toKey, JOURNAL_READ_PAGE_SIZE],
+					[runId, after ?? fromKey, toKey],
+					limit,
 				);
 			});
 			for (const entry of page) {
@@ -1240,6 +1295,7 @@ export class SqlRunJournal implements RunJournal {
 			const last = page.at(-1);
 			if (last === undefined || !more) return;
 			after = last.key;
+			limit = next.limit;
 		}
 	}
 

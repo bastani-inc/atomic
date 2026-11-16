@@ -5,7 +5,7 @@
  * The child is a real session on a scripted model: it starts a shell task in the background and waits on it, so it is
  * released, and a woken child waits on it again. Its release delay is short, so one test can wake it many times.
  *
- * Usage: <jiti> released-subagent-owner.ts <launch|recover> <dir> <child-name>
+ * Usage: <jiti> released-subagent-owner.ts <launch|recover> <dir> <child-name>, or `compile` to only load the sources
  * Prints `READY <group>` once it is bound, with the Intercom group the child is launched in; `RUN start|end <n>` around
  * each run of the child; `RECORD <json>` when the child's record changes; `RECEIVED <json>` when the Intercom messages
  * its session holds change; `READ <json>` when the messages it read from cards a delivery saved while it was busy
@@ -45,6 +45,13 @@ import {
 import { reopenChildSession } from "../../packages/subagents/src/runs/foreground/subagent-child-session.js";
 import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
+
+/** Where its start-up got to, on stderr: a test that times out waiting for `READY` reports it. */
+const startedAt = performance.now();
+const progress = (step: string) => process.stderr.write(`owner ${Math.round(performance.now() - startedAt)} ms: ${step}\n`);
+progress("sources loaded");
+// `compile`: only load the sources, so a test fills their compile cache before an owner starts.
+if (process.argv[2] === "compile") process.exit(0);
 
 const [phase, dir, childName] = process.argv.slice(2);
 if ((phase !== "launch" && phase !== "recover") || !dir || !childName)
@@ -125,6 +132,7 @@ const topUp = () => {
 };
 topUp();
 
+progress("model runtime ready");
 const store = await SqlSessionStore.open(await openNodeSqliteDatabase(join(dir, "owner.sqlite")));
 const ownerFile = join(dir, "owner.json");
 const sessionManager = existsSync(ownerFile)
@@ -149,6 +157,7 @@ const appendEntry = async (customType: string, data?: unknown) => {
 };
 let ownerIntercomId: string | undefined;
 events.on("intercom:connected", (payload) => {
+	progress("Intercom connected");
 	ownerIntercomId = (payload as { readonly sessionId: string }).sessionId;
 });
 const handlers = new Map<string, Handler[]>();
@@ -197,8 +206,10 @@ const ctx = {
 	modelRegistry: { getAvailable: () => [], getAll: () => [], find: () => undefined },
 	ui: { confirm: async () => true, notify() {} },
 } as unknown as ExtensionContext;
+progress("session opened; starting its extensions");
 for (const handler of handlers.get("session_start") ?? [])
 	await handler({ type: "session_start", reason: phase === "launch" ? "startup" : "resume" }, ctx);
+progress("extensions started");
 
 let runs = 0;
 const runtime = {

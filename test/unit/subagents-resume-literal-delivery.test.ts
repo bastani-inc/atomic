@@ -151,13 +151,13 @@ test(
 		const f = await fixture();
 		const result = await f.run("/review src/resume.ts", {
 			resumeTaskLiteral: true,
-			resumeFollowUps: ["/workflow attach run-1", "/review src/held.ts"],
+			resumeFollowUps: ["/workflows run-1", "/review src/held.ts"],
 		});
 
 		assert.equal(result.status, "ok", JSON.stringify(result));
 		assert.equal(f.commandRan(), false, "a held `/workflow …` message is not run as a command");
 		const delivered = userTexts(f.requests.at(-1) ?? []);
-		assert.deepEqual(delivered, ["/review src/resume.ts", "/workflow attach run-1", "/review src/held.ts"]);
+		assert.deepEqual(delivered, ["/review src/resume.ts", "/workflows run-1", "/review src/held.ts"]);
 		assert.ok(
 			f.requests.every((request) => userTexts(request).every((text) => !text.startsWith(TEMPLATE_PREFIX))),
 			"no resume or held text is expanded as a prompt template",
@@ -170,11 +170,11 @@ test(
 	"a resumed child without held messages gets its resume message as written too (#4027)",
 	async () => {
 		const f = await fixture();
-		const result = await f.run("/workflow attach run-2", { resumeTaskLiteral: true });
+		const result = await f.run("/workflows run-2", { resumeTaskLiteral: true });
 
 		assert.equal(result.status, "ok", JSON.stringify(result));
 		assert.equal(f.commandRan(), false, "the resume message is not run as a command");
-		assert.deepEqual(userTexts(f.requests.at(-1) ?? []), ["/workflow attach run-2"]);
+		assert.deepEqual(userTexts(f.requests.at(-1) ?? []), ["/workflows run-2"]);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
