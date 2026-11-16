@@ -199,8 +199,8 @@ const warnedParked = new Set<string>();
  * Removes `path` only while it is still exactly the file its caller read as `inspected` and judged stale (undefined
  * when that file was unreadable). The file is first renamed to a unique name, which is atomic on POSIX and Windows, so
  * the content checked is the content removed. A file that replaced the inspected one meanwhile is not this caller's to
- * remove (#5220): it is put back only while nothing is in its place, and otherwise, or where it cannot be linked back
- * (a file system without hard links), left parked beside the lock with a warning, never removed. Its holder finds its
+ * remove (#5220): it is put back only while nothing is in its place (see {@link putBack}), and otherwise left parked
+ * beside the lock with a warning, never removed. Its holder finds its
  * lock gone at its next check and stops acting as its holder. Returns whether the inspected file was removed.
  */
 export function removeFileIfUnchanged(path: string, inspected: string | undefined): boolean {
@@ -215,10 +215,9 @@ export function removeFileIfUnchanged(path: string, inspected: string | undefine
     removeFile(parked);
     return true;
   }
-  try {
-    linkSync(parked, path);
+  if (putBack(parked, path, moved)) {
     removeFile(parked);
-  } catch {
+  } else {
     if (!warnedParked.has(path)) {
       warnedParked.add(path);
       process.emitWarning(
@@ -227,6 +226,25 @@ export function removeFileIfUnchanged(path: string, inspected: string | undefine
     }
   }
   return false;
+}
+
+/**
+ * Puts the lock moved to `parked`, read as `moved`, back at `path` only while nothing is there, never replacing a lock
+ * (#5220): linked back, or, where no hard link can be made (FAT, some SMB shares), made again with the same record
+ * through the same exclusive create as any lock, which its holder, who knows its lock by its record, still finds its own.
+ */
+function putBack(parked: string, path: string, moved: string | undefined): boolean {
+  try {
+    linkSync(parked, path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST" || moved === undefined) return false;
+  }
+  try {
+    return createExclusively(path, moved);
+  } catch {
+    return false;
+  }
 }
 
 function isProcessAlive(pid: number): boolean {
