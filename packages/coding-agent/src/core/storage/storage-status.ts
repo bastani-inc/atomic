@@ -113,8 +113,14 @@ async function readJournalStoreStatus(catalog: SqliteDatabase, directory: string
 
 export type StorageStatusDomain = "sessions" | "journal" | "intercom";
 
-/** How long one connectivity check may take, from loading the adapter to the answer of its `SELECT 1`. */
+/** How long one database connectivity check may take, from opening the database to the answer of its `SELECT 1`. */
 export const STORAGE_PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * How long `storage status` waits for an adapter module to load before giving up on a hung evaluation; separate from
+ * {@link STORAGE_PROBE_TIMEOUT_MS} so the server-probe timer starts only once the connection attempt starts.
+ */
+export const STORAGE_ADAPTER_LOAD_TIMEOUT_MS = 15_000;
 
 export interface StorageProbe {
 	readonly adapter?: { readonly module: string; readonly loaded: boolean; readonly detail?: string };
@@ -193,7 +199,7 @@ export interface StorageStatusOptions {
 	readonly agentDir: string;
 	/** Load adapters and run a `SELECT 1` on each selected database. */
 	readonly probe: boolean;
-	/** How long each step of one check may take. Default {@link STORAGE_PROBE_TIMEOUT_MS}. */
+	/** How long each database step of one check may take, after the adapter has loaded. Default {@link STORAGE_PROBE_TIMEOUT_MS}. */
 	readonly probeTimeoutMs?: number;
 	/** Ask the running Intercom broker about itself; needs `probe`-independent access to the bundled Intercom package. */
 	readonly control?: IntercomBrokerControl;
@@ -313,7 +319,11 @@ async function probeSelection(
 	const module = selection.module;
 	let adapter: Awaited<ReturnType<typeof loadStorageAdapter>>;
 	try {
-		adapter = await withTimeout(loadStorageAdapter(module, context), "Loading the adapter", timeoutMs);
+		adapter = await withTimeout(
+			loadStorageAdapter(module, context),
+			"Loading the adapter",
+			Math.max(timeoutMs, STORAGE_ADAPTER_LOAD_TIMEOUT_MS),
+		);
 	} catch (error) {
 		return {
 			adapter: { module, loaded: false, detail: errorText(error as Error) },
