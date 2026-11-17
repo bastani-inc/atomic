@@ -3,7 +3,7 @@
  * line a screen shows, the `?` key overlay, and the two-press confirmation that `x` and Ctrl+X Ctrl+K use.
  */
 
-import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { type EditorAutocompleteHintEntry, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 
 /** What a screen needs of the keybindings manager: matching, and the keys an action resolves to. */
 export interface NavKeybindings {
@@ -210,4 +210,35 @@ export class TwoPressConfirm {
 /** Whether `data` is the `?` key of the overlay. */
 export function isNavHelpKey(keybindings: NavKeybindings | undefined, data: string): boolean {
 	return keybindings?.matches(data, "app.keys.help") === true;
+}
+
+export function renderAutocompleteHintLine(
+	entries: readonly EditorAutocompleteHintEntry[],
+	width: number,
+	keybindings: NavKeybindings,
+	style: NavKeyStyle,
+): string {
+	const kept = entries.flatMap((entry) => {
+		const keys = (
+			entry.resolvedKeys ??
+			entry.actions
+				.map((action) => keybindings.getKeys?.(action)?.[0])
+				.filter((key): key is string => key !== undefined)
+		).map(navKeyText);
+		if (keys.length === 0) return [];
+		const text = keys.every((key) => key === "↑" || key === "↓") ? keys.join("") : keys.join("/");
+		return [{ key: { keys: text, label: entry.label } satisfies NavKey, essential: entry.essential === true }];
+	});
+	const room = Math.max(1, width - 2);
+	const lineWidth = () => visibleWidth(kept.map(({ key }) => `${key.keys} ${key.label}`).join(" · "));
+	while (kept.length > 1 && lineWidth() > room) {
+		const optional = kept.findIndex((entry) => !entry.essential);
+		kept.splice(optional >= 0 ? optional : 0, 1);
+	}
+	return renderNavHintLine(
+		kept.map(({ key }) => key),
+		width,
+		style,
+		keybindings,
+	);
 }

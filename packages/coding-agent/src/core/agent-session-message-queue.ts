@@ -34,6 +34,7 @@ import {
 	type InterruptQueueHold,
 	normalizeInterruptAbortMessage,
 	priorityHoldCounts,
+	type UserMessageWithRawText,
 } from "./agent-session-types.js";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
@@ -82,10 +83,11 @@ export async function _queueSteer(
 	text: string,
 	images?: ImageContent[],
 	typed?: string,
+	rawText?: string,
 ): Promise<void> {
 	assertSessionOpen(this);
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._queueSteer(text, images, typed);
+	if (owner !== this) return owner._queueSteer(text, images, typed, rawText);
 	this._steeringMessages.push(text);
 	rememberTypedQueuedText(this, "steer", text, typed);
 	this._emitQueueUpdate();
@@ -93,7 +95,12 @@ export async function _queueSteer(
 	if (images) {
 		content.push(...images);
 	}
-	const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
+	const message: UserMessageWithRawText = {
+		role: "user",
+		content,
+		...(rawText !== undefined && rawText !== text ? { rawText } : {}),
+		timestamp: Date.now(),
+	};
 	if (images?.length) markQueuedMessageImages(message);
 	rememberLaneMessage(message, images);
 	this._queueAgentMessage(message, "steer");
@@ -107,10 +114,11 @@ export async function _queueFollowUp(
 	text: string,
 	images?: ImageContent[],
 	typed?: string,
+	rawText?: string,
 ): Promise<void> {
 	assertSessionOpen(this);
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._queueFollowUp(text, images, typed);
+	if (owner !== this) return owner._queueFollowUp(text, images, typed, rawText);
 	this._followUpMessages.push(text);
 	rememberTypedQueuedText(this, "followUp", text, typed);
 	this._emitQueueUpdate();
@@ -118,7 +126,12 @@ export async function _queueFollowUp(
 	if (images) {
 		content.push(...images);
 	}
-	const message: AgentMessage = { role: "user", content, timestamp: Date.now() };
+	const message: UserMessageWithRawText = {
+		role: "user",
+		content,
+		...(rawText !== undefined && rawText !== text ? { rawText } : {}),
+		timestamp: Date.now(),
+	};
 	if (images?.length) markQueuedMessageImages(message);
 	rememberLaneMessage(message, images);
 	this._queueAgentMessage(message, "followUp");

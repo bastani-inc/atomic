@@ -1,4 +1,11 @@
-import type { Component, EditorComponent, EditorTheme, Focusable } from "@bastani/atomic-tui";
+import { renderAutocompleteHintLine } from "@bastani/atomic";
+import {
+	type Component,
+	type EditorComponent,
+	type EditorTheme,
+	type Focusable,
+	getKeybindings,
+} from "@bastani/atomic-tui";
 import type { PendingPrompt } from "../shared/store-types.js";
 import { BOLD, hexBg, hexToAnsi, lerpColor, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -58,6 +65,14 @@ export function editorThemeFromGraphTheme(t: GraphTheme): EditorTheme {
 			noMatch: (text: string) => hexToAnsi(t.warning) + text + RESET,
 			normal,
 		},
+		autocompleteHint: (entries, width) =>
+			renderAutocompleteHintLine(entries, width, getKeybindings(), {
+				dim: (text: string) => hexToAnsi(t.dim) + text + RESET,
+				text: normal,
+				muted: (text: string) => hexToAnsi(t.dim) + text + RESET,
+				border: (text: string) => hexToAnsi(t.border) + text + RESET,
+				bold: (text: string) => BOLD + text + RESET,
+			}),
 	} as EditorTheme;
 }
 
