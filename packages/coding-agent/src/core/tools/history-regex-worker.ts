@@ -228,13 +228,25 @@ parentPort.on("message", (msg) => {
 			} else {
 				const flags = msg.flags.includes("g") ? msg.flags : msg.flags + "g";
 				const re = new RegExp(msg.pattern, flags);
-				re.lastIndex = msg.ownedFrom;
-				for (let match = re.exec(text); match !== null; match = re.exec(text)) {
-					if (match.index >= msg.ownedTo) break;
+				const record = (match) => {
 					const length = match[0].length;
 					const endIdx = length > 0 ? match.index + length - 1 : match.index;
 					matches.push({ startLine: lineNumberAt(newlines, match.index), endLine: lineNumberAt(newlines, endIdx) });
-					if (length === 0) re.lastIndex++;
+				};
+				re.lastIndex = msg.ownedFrom;
+				if (msg.startPattern !== undefined) {
+					const sticky = new RegExp(msg.startPattern, flags.replace("g", "") + "y");
+					sticky.lastIndex = msg.ownedFrom;
+					const match = sticky.exec(text);
+					if (match !== null && match.index < msg.ownedTo) {
+						record(match);
+						re.lastIndex = match.index + Math.max(1, match[0].length);
+					} else re.lastIndex = msg.ownedFrom + 1;
+				}
+				for (let match = re.exec(text); match !== null; match = re.exec(text)) {
+					if (match.index >= msg.ownedTo) break;
+					record(match);
+					if (match[0].length === 0) re.lastIndex++;
 				}
 			}
 			parentPort.postMessage({ id: msg.id, matches });
@@ -290,6 +302,7 @@ interface WorkerRequests {
 		readonly text: string;
 		readonly ownedFrom: number;
 		readonly ownedTo: number;
+		readonly startPattern: string | undefined;
 	};
 	readonly entry: {
 		readonly op: "entry";
@@ -460,9 +473,10 @@ export async function matchMultilineInWorker(
 	literal: boolean,
 	timeoutMs: number,
 	signal?: AbortSignal,
+	startPattern?: string,
 ): Promise<{ readonly matches: readonly MultilineSpan[]; readonly timedOut: boolean }> {
 	const result = await runWorkerTask<"multiline">(
-		{ op: "multiline", text, ownedFrom, ownedTo, pattern, flags, ignoreCase, literal },
+		{ op: "multiline", text, ownedFrom, ownedTo, pattern, flags, ignoreCase, literal, startPattern },
 		timeoutMs,
 		signal,
 	);

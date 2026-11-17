@@ -1338,4 +1338,55 @@ describe("bounded session reads (#5250)", () => {
 			}
 		});
 	});
+
+	it("retries a JSONL range read when the file is truncated and regrown while the scan checks where it resumes (#5250)", async () => {
+		const entries = numbered("e", 600);
+		const initialText = fileText(entries);
+		const resumeOffset = Buffer.byteLength(initialText);
+		const regrownEntries = [...entries, info("regrown")];
+		const regrownText = fileText(regrownEntries);
+		await withDirectory(async (directory) => {
+			const path = join(directory, "s.jsonl");
+			await writeFile(path, initialText);
+			await withJsonl(directory, async (store) => {
+				assert.equal((await store.readEntryRange("s", { fromSeq: 1, toSeq: 600 })).lastSeq, 600);
+				appendFileSync(path, `${JSON.stringify(info("grown"))}\n`);
+				const handle = await open(path, "r");
+				const prototype = Object.getPrototypeOf(handle) as FileHandlePrototype;
+				await handle.close();
+				const read = prototype.read;
+				let resumeChecks = 0;
+				let truncated = false;
+				prototype.read = async function (
+					this: FileHandle,
+					buffer: Buffer,
+					offset: number,
+					length: number,
+					position: number | null,
+				) {
+					const trigger = !truncated && length === 64 && position === resumeOffset - 64 && ++resumeChecks === 2;
+					if (trigger) {
+						truncated = true;
+						writeFileSync(path, initialText.slice(0, resumeOffset - 400));
+					}
+					try {
+						return await read.call(this, buffer, offset, length, position);
+					} finally {
+						if (trigger) writeFileSync(path, regrownText);
+					}
+				};
+				try {
+					const page = await store.readEntryRange("s", { fromSeq: 601, toSeq: 601 });
+					assert.ok(truncated);
+					assert.deepEqual(
+						page.entries.map((item) => item.entry.id),
+						["regrown"],
+					);
+					assert.equal(page.lastSeq, 601);
+				} finally {
+					prototype.read = read;
+				}
+			});
+		});
+	});
 });
