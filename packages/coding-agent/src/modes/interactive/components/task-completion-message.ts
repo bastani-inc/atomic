@@ -122,7 +122,7 @@ export class TaskCompletionMessage implements Component {
 		const [line] = new NoticeLine(spec).render(width);
 		if (!preview) return line === undefined ? [] : [line];
 		const result = wrapTextWithAnsi(preview, Math.max(1, width - 5));
-		const shown = this.expanded ? result.slice(0, 40) : result.slice(0, 1);
+		const shown = this.expanded ? result : result.slice(0, 1);
 		const hint = !this.expanded && result.length > 1 ? keyHintIfBound("app.tools.expand", "for the full result") : "";
 		return [
 			...(line === undefined ? [] : [line]),

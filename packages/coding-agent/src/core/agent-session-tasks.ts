@@ -9,6 +9,7 @@ import { AgentTaskHost } from "./tasks/agent-adapter.js";
 import {
 	type ChildTaskCompletionRoute,
 	deliverToLaunchingSession,
+	forgetChildDelivery,
 	type TaskCompletionMessage,
 } from "./tasks/child-command-owner.js";
 import { type AdmittedTaskCompletion, type TaskCompletionEnvelope, TaskCompletionOutbox } from "./tasks/completion.js";
@@ -159,43 +160,47 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				};
 		}
 		if (own.length === 0) return admitted;
-		for (const notice of own) {
-			if (notice.completionSource === undefined) continue;
-			await flushTaskCompletionMessages(
-				getExtensionRuntimeEventBus(this._resourceLoader.getExtensions().runtime),
-				notice.completionSource,
-				notice.envelope.completionId,
-			);
-		}
-		const key = own[0]!.envelope.completionId;
-		// A restored notice, or one whose task is gone, joins the transcript without starting a turn. Notices admitted
-		// together reach the model in one request, which they start as one turn.
-		const live = !restored && own.some((notice) => notice.hasTask);
-		const options = {
-			triggerTurn: live,
-			...(live ? { persistWhenStreaming: true } : {}),
-			stageAdmissionKey: key,
-			stayInSession: true,
-		};
-		const deliver = () =>
-			own.length === 1
-				? this.sendCustomMessage(own[0]!.message, options)
-				: this.sendCustomMessages(
-						own.map((notice) => notice.message),
-						// Each notice keeps its own entry, recognized by its own completion after a restart.
-						{ ...options, stageAdmissionKeys: own.map((notice) => notice.envelope.completionId) },
-					);
-		if (stageAdmission) await deliver();
-		else
-			await admission.admit(key, deliver, () => {
-				throw new Error("Task owner is closed");
-			}).completion;
-		// Without a turn, a notice admitted mid-turn waits in memory for that turn's end; it is acknowledged once saved (#5047).
-		if (!live)
+		try {
 			for (const notice of own) {
-				const saved = pendingCustomMessageSaved(this, notice.envelope.completionId);
-				if (saved !== undefined) admitted[envelopes.indexOf(notice.envelope)] = { saved };
+				if (notice.completionSource === undefined) continue;
+				await flushTaskCompletionMessages(
+					getExtensionRuntimeEventBus(this._resourceLoader.getExtensions().runtime),
+					notice.completionSource,
+					notice.envelope.completionId,
+				);
 			}
+			const key = own[0]!.envelope.completionId;
+			// A restored notice, or one whose task is gone, joins the transcript without starting a turn. Notices admitted
+			// together reach the model in one request, which they start as one turn.
+			const live = !restored && own.some((notice) => notice.hasTask);
+			const options = {
+				triggerTurn: live,
+				...(live ? { persistWhenStreaming: true } : {}),
+				stageAdmissionKey: key,
+				stayInSession: true,
+			};
+			const deliver = () =>
+				own.length === 1
+					? this.sendCustomMessage(own[0]!.message, options)
+					: this.sendCustomMessages(
+							own.map((notice) => notice.message),
+							// Each notice keeps its own entry, recognized by its own completion after a restart.
+							{ ...options, stageAdmissionKeys: own.map((notice) => notice.envelope.completionId) },
+						);
+			if (stageAdmission) await deliver();
+			else
+				await admission.admit(key, deliver, () => {
+					throw new Error("Task owner is closed");
+				}).completion;
+			// Without a turn, a notice admitted mid-turn waits in memory for that turn's end; it is acknowledged once saved (#5047).
+			if (!live)
+				for (const notice of own) {
+					const saved = pendingCustomMessageSaved(this, notice.envelope.completionId);
+					if (saved !== undefined) admitted[envelopes.indexOf(notice.envelope)] = { saved };
+				}
+		} catch {
+			for (const notice of own) admitted[envelopes.indexOf(notice.envelope)] = { failed: true };
+		}
 		return admitted;
 	};
 	const outbox = new TaskCompletionOutbox(
@@ -204,9 +209,15 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		async (envelope, restored) => (await admitBatch([envelope], restored))[0],
 		// Each notice holds its task's record until it is delivered, so a burst of finishes cannot evict what the
 		// notice is built from (#4385).
-		(envelope) => this._agentTaskHost?.releaseTaskRecord(envelope.taskId),
+		(envelope) => {
+			forgetChildDelivery(host, envelope.completionId);
+			host.releaseTaskRecord(envelope.taskId);
+		},
 		() => !waitsOnDetachedResults(this),
-		(envelope) => releaseDeliveredTaskRecord(this._agentTaskHost, envelope),
+		(envelope) => {
+			forgetChildDelivery(host, envelope.completionId);
+			releaseDeliveredTaskRecord(host, envelope);
+		},
 		{ admitBatch },
 	);
 	this._taskCompletionOutbox = outbox;
@@ -261,7 +272,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			this._emit({ type: "task_cleanup_quarantined", taskId: ref.taskId, resources }),
 	};
 	if (!stageAdmission && !replacementOwnerScopes.has(this)) replacementOwnerScopes.set(this, randomUUID());
-	this._agentTaskHost = stageAdmission
+	const host = stageAdmission
 		? stageAdmission.bindAgentTaskHost(binding)
 		: new AgentTaskHost({
 				...binding,
@@ -270,7 +281,8 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 					sessionId: replacementOwnerScopes.get(this)!,
 				},
 			});
-	const { supervisor, owner } = this._agentTaskHost.ownerBinding;
+	this._agentTaskHost = host;
+	const { supervisor, owner } = host.ownerBinding;
 	const store = new OwnerTaskStore(supervisor, owner);
 	const connected = store.connect();
 	if (!connected.ok) throw new Error(connected.error.message);
@@ -342,8 +354,7 @@ export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner
  */
 export function bindChildTaskNotices(session: AgentSession): void {
 	if (!isSubagentChildSession(session) || session._parentCommandTaskOwner === undefined) return;
-	// Only a child something waits for binds now; the others bind at their first shell call, as before.
-	if (!session._parentCommandTaskOwner.hasKeptNotices(session.sessionManager.getSessionId())) return;
+	if (!session._parentCommandTaskOwner.hasOpenHost()) return;
 	try {
 		session._getCommandTaskOwner();
 	} catch {

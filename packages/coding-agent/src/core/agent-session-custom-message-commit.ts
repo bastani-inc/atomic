@@ -366,14 +366,30 @@ async function commitCustomMessages<T>(
 		self._pendingNextTurnMessages.push(...appMessages);
 	} else if (holdsTurn) {
 		if (options?.triggerTurn === true) {
-			let queued = true;
 			if (useProtectedReconciliation || holdsTurnsForDetachedResults(self) || options.excludeFromContext === true) {
-				queued = (await queueHeldCustomMessages(self, appMessages, delivery)) > 0;
-				if (queued) startTurnIfPauseReleasedDuringAdmission(self, appMessages[0]!);
+				let queued = false;
+				try {
+					await queueHeldCustomMessages(self, appMessages, delivery, {
+						onQueued: () => {
+							queued = true;
+						},
+						// A held batch that no turn reads now leaves a failed write's saved prefix to its retry or to recovery.
+						queuesSavedPrefix: () =>
+							self.isStreaming ||
+							self._isPreparingRun !== false ||
+							!(self._queuedMessagesPaused || self._subagentPolicy?.executionEnded !== undefined),
+					});
+				} finally {
+					// A later card's failed write still wakes the saved prefix it queued.
+					if (queued) {
+						startTurnIfPauseReleasedDuringAdmission(self, appMessages[0]!);
+						startTurnAfterInterrupt(self, appMessages[0]!);
+					}
+				}
 			} else {
 				for (const item of appMessages) self._queueAgentMessage(item, delivery);
+				startTurnAfterInterrupt(self, appMessages[0]!);
 			}
-			if (queued) startTurnAfterInterrupt(self, appMessages[0]!);
 		} else if (self.isStreaming || self._isPreparingRun) {
 			self._pendingCustomMessages.push(...appMessages);
 		} else {
@@ -389,8 +405,11 @@ async function commitCustomMessages<T>(
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn === false) {
 		self._pendingCustomMessages.push(...appMessages);
 	} else if ((self.isStreaming || self._isPreparingRun) && useProtectedReconciliation) {
-		await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
-		if (!self.isStreaming) deliverQueuedInputIfIdle(self);
+		await queueProtectedStreamingCustomMessages(self, appMessages, delivery, {
+			onQueued: () => {
+				if (!self.isStreaming) deliverQueuedInputIfIdle(self);
+			},
+		});
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.persistWhenStreaming === true) {
 		for (const item of appMessages) await self._appendCustomMessage(item);
 	} else if ((self.isStreaming || self._isPreparingRun) && options?.triggerTurn !== false) {

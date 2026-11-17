@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
+import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type { SessionWriteOptions } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
@@ -224,6 +225,7 @@ async function settleInBackground(
 	env: Awaited<ReturnType<typeof liveChildEnvironment>>,
 	runId: string,
 	sessionManager: SessionManager,
+	settingsManager?: SettingsManager,
 ) {
 	const owner = SessionManager.inMemory(env.root);
 	const host = new AgentTaskHost({
@@ -232,13 +234,25 @@ async function settleInBackground(
 	});
 	cleanups.push(() => void host.close("session-close"));
 	toolThenAnswer(env);
+	const baseOptions = env.options(runId, { sessionManager, resumeSession: true });
 	const response = await runAgentTask({
 		host,
 		cwd: env.root,
 		agents: [agent],
 		agent: "waiter",
 		task: "check CI and answer",
-		options: { ...env.options(runId, { sessionManager, resumeSession: true }), index: 0 },
+		options: {
+			...baseOptions,
+			...(settingsManager === undefined
+				? {}
+				: {
+						getChildSessionOptions: (childOptions) => ({
+							...baseOptions.getChildSessionOptions!(childOptions),
+							settingsManager,
+						}),
+					}),
+			index: 0,
+		},
 		wait: { kind: "background" },
 		recordChild: createSubagentChildRecordSink(
 			{ appendEntry: async (type, data) => void (await owner.appendCustomEntry(type, data)) },
@@ -399,6 +413,62 @@ test(
 		assert.equal(views.answers, 1);
 		assert.ok(Array.isArray(views.transcriptKinds));
 		assert.equal(views.transcriptKinds.filter((kind) => kind === "response").length, 1);
+	},
+	CHILD_LOAD_TIMEOUT_MS,
+);
+
+test(
+	"a settled child whose final answer failed to save keeps the answer in its card and /tasks while its session is still shutting down (#5210)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const settingsManager = SettingsManager.inMemory();
+		const shutdownEntered = Promise.withResolvers<void>();
+		const releaseShutdown = Promise.withResolvers<void>();
+		settingsManager.flush = async () => {
+			shutdownEntered.resolve();
+			await releaseShutdown.promise;
+		};
+		try {
+			const { host, taskId, result } = await settleInBackground(
+				env,
+				"final-answer-held-shutdown",
+				await SessionManager.create(new FullOnFinalAnswerStore(), env.root),
+				settingsManager,
+			);
+			assert.ok(result.kind === "failed", JSON.stringify(result));
+			await shutdownEntered.promise;
+			const view = ownerTaskViewSource(new OwnerTaskStore(host.ownerBinding.supervisor, host.ownerBinding.owner));
+			assert.equal(view.followTaskTranscript(taskId)?.historyOnly, false);
+			assert.ok(view.followTaskTranscript(taskId)?.session?.chatSession);
+
+			const duringShutdown = await settledViews(host, taskId);
+			assert.equal(duringShutdown.detailOutput, FINAL_ANSWER);
+			assert.equal(duringShutdown.answers, 1);
+			assert.match(duringShutdown.cardOutput ?? "", new RegExp(FINAL_ANSWER));
+			assert.ok(Array.isArray(duringShutdown.transcriptKinds));
+			assert.equal(
+				duringShutdown.transcriptKinds.at(-1),
+				"response",
+				JSON.stringify(duringShutdown.transcriptKinds),
+			);
+
+			releaseShutdown.resolve();
+			await vi.waitFor(
+				() => {
+					assert.equal(view.followTaskTranscript(taskId)?.historyOnly, true);
+				},
+				{ timeout: CHILD_LOAD_TIMEOUT_MS },
+			);
+
+			const afterShutdown = await settledViews(host, taskId);
+			assert.equal(afterShutdown.detailOutput, FINAL_ANSWER);
+			assert.equal(afterShutdown.answers, 1);
+			assert.match(afterShutdown.cardOutput ?? "", new RegExp(FINAL_ANSWER));
+			assert.ok(Array.isArray(afterShutdown.transcriptKinds));
+			assert.equal(afterShutdown.transcriptKinds.at(-1), "response", JSON.stringify(afterShutdown.transcriptKinds));
+		} finally {
+			releaseShutdown.resolve();
+		}
 	},
 	CHILD_LOAD_TIMEOUT_MS,
 );

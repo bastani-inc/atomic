@@ -113,7 +113,7 @@ test(
 		await deliverToLaunchingSession(host, childSession.getSessionId(), taskId, {
 			customType: "task_completion",
 			content: "build task finished",
-			details: {},
+			details: { completionId: "build-task-finished" },
 			display: true,
 		});
 

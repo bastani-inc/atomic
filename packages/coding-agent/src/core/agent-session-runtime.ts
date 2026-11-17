@@ -35,17 +35,21 @@ import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists, findMissingSessionCwdIssue, MissingSessionCwdError } from "./session-cwd.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
+	abortSessionWork,
 	drainSessionWork,
 	hasCallingSessionWork,
 	ownedSessionManagerStores,
 	ownedSessionStores,
 	registerSessionRetirement,
+	registerSessionWorkOwner,
+	sessionLifetime,
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { SessionEntryError, SessionManager } from "./session-manager.ts";
 import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
+import { drainWindowsDirectorySecurityReads } from "./tools/windows-directory-security.ts";
 
 /**
  * Result returned by runtime creation.
@@ -261,6 +265,7 @@ export class AgentSessionRuntime {
 		_modelFallbackReason?: ModelFallbackReason,
 		interactive = false,
 	) {
+		registerSessionWorkOwner(this);
 		this.interactive = interactive;
 		this._session = _session;
 		this.retainSessionStore(_session);
@@ -948,6 +953,7 @@ export class AgentSessionRuntime {
 	dispose(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.closing) return this.closing;
 		this.closed = true;
+		abortSessionWork(this, true);
 		this.endedBySignal = options?.fromSignal === true;
 		// Every graceful exit path (quit, signals, RPC shutdown, print mode) disposes the runtime before exiting.
 		const oauthDrainDeadline = Date.now() + OAUTH_SHUTDOWN_DRAIN_MS;
@@ -958,6 +964,7 @@ export class AgentSessionRuntime {
 			: this.disposeCurrentSession(this.quitEvent());
 		void current.catch(() => {});
 		this.closing = (async () => {
+			await drainWindowsDirectorySecurityReads(sessionLifetime(this));
 			await drainSessionWork(this);
 			for (const candidate of this.candidates) {
 				try {
