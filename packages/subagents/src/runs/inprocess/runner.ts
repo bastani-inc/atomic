@@ -2859,9 +2859,9 @@ export class SubagentControlRuntime {
 		if (options?.artifactsDisabled) return bounded;
 		if (!artifactDir || !paths)
 			throw new Error(`Artifact persistence paths are unresolved for child ${envelope.path}`);
-		ensureArtifactsDir(artifactDir);
-		writeArtifact(paths.outputPath, envelope.envelope);
-		writeMetadata(paths.metadataPath, {
+		await ensureArtifactsDir(artifactDir);
+		await writeArtifact(paths.outputPath, envelope.envelope);
+		await writeMetadata(paths.metadataPath, {
 			...deliveredEnvelope,
 			outputPath: paths.outputPath,
 		});

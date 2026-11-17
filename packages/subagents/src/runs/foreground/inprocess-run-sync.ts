@@ -451,8 +451,8 @@ async function launchSingleInProcess(
 		options.artifactConfig?.enabled === false ||
 		(options.artifactsDir === undefined && options.artifactConfig === undefined);
 	if (artifactsDir && artifactPaths && options.artifactConfig?.includeInput !== false) {
-		ensureArtifactsDir(artifactsDir);
-		writeArtifact(artifactPaths.inputPath, `# Task for ${agent.name}\n\n${task}`);
+		await ensureArtifactsDir(artifactsDir);
+		await writeArtifact(artifactPaths.inputPath, `# Task for ${agent.name}\n\n${task}`);
 	}
 	const testSession = options.testSession ?? defaultTestSession();
 	// Where the child is in its start, across its attempts, until its first turn starts: never merely "running".
