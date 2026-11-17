@@ -17,7 +17,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import lockfile from "proper-lockfile";
-import { createSessionCwdMatcher } from "../../../utils/canonical-path.ts";
+import { createSessionCwdMatcherAsync } from "../../../utils/canonical-path.ts";
 import { readLines } from "../../../utils/lines.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { validateSessionEntryStructure } from "./entry-structure.js";
@@ -819,7 +819,7 @@ export class JsonlSessionStore implements SessionStore {
 
 	async *list(query: SessionListQuery): AsyncIterable<SessionSummary> {
 		this.checkAbort(query.signal);
-		const matchesCwd = query.cwd === undefined ? undefined : createSessionCwdMatcher(query.cwd);
+		const matchesCwd = query.cwd === undefined ? undefined : createSessionCwdMatcherAsync(query.cwd);
 		const paths = await this.run(() => this.paths(), true, query.signal);
 		for (const path of paths) {
 			const summary = await this.run(
@@ -828,7 +828,7 @@ export class JsonlSessionStore implements SessionStore {
 					try {
 						const header = await this.readHeaderAt(path);
 						if (!matchesSessionIdPrefix(header.id, query.idPrefix)) return undefined;
-						if (matchesCwd && !matchesCwd(header.cwd)) return undefined;
+						if (matchesCwd && !(await matchesCwd(header.cwd))) return undefined;
 						if (!query.includeInternal && header.internal) return undefined;
 						return { ...summarizeSession(await this.readSnapshot(path)), location: path };
 					} catch (cause) {

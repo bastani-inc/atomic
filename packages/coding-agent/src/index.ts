@@ -1093,6 +1093,7 @@ export {
 	workspace,
 	workspaceChangeSet,
 	workspaceSessionCwd,
+	workspaceSessionCwdAsync,
 } from "./core/workspace/index.ts";
 export {
 	findLlamaServerError,

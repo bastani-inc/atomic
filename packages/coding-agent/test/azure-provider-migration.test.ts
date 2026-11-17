@@ -5,8 +5,8 @@ import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import { test, vi } from "vitest";
 import { ENV_AGENT_DIR, getAgentConfigPaths, getProjectConfigPaths } from "../src/config.js";
-import { runMigrations } from "../src/migrations.js";
-import { migrateAzureProvider } from "../src/migrations-azure.js";
+import { runMigrations, runMigrationsAsync } from "../src/migrations.js";
+import { migrateAzureProvider, migrateAzureProviderAsync } from "../src/migrations-azure.js";
 
 const legacy = "azure-openai-responses";
 
@@ -165,6 +165,32 @@ test("migration leaves malformed config and locked files untouched", () => {
 		assert.equal(readFileSync(join(root, "settings.json"), "utf-8"), "[]");
 		migrateAzureProvider(root, { projectTrusted: false });
 		assert.deepEqual(JSON.parse(readFileSync(path, "utf-8")), { azure: { type: "api_key", key: "old" } });
+	} finally {
+		vi.unstubAllEnvs();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("migrateAzureProviderAsync and runMigrationsAsync preserve permissions and skip locked files", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-azure-async-"));
+	vi.stubEnv(ENV_AGENT_DIR, root);
+	try {
+		const path = join(root, "auth.json");
+		const content = JSON.stringify({ [legacy]: { type: "api_key", key: "old" } });
+		writeFileSync(path, content);
+		chmodSync(path, 0o600);
+		writeFileSync(join(root, "models.json"), "null");
+		writeFileSync(join(root, "settings.json"), "[]");
+		const release = lockfile.lockSync(path, { realpath: false });
+		try {
+			await migrateAzureProviderAsync(root, { projectTrusted: false });
+			assert.equal(readFileSync(path, "utf-8"), content);
+		} finally {
+			release();
+		}
+		await runMigrationsAsync(root, { projectTrusted: false });
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf-8")), { azure: { type: "api_key", key: "old" } });
+		if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
 	} finally {
 		vi.unstubAllEnvs();
 		rmSync(root, { recursive: true, force: true });

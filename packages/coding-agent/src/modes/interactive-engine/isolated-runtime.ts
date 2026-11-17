@@ -29,7 +29,7 @@ import type { StopAllBackgroundOutcome } from "../../core/tasks/stop-all.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
-import { canonicalizePath } from "../../utils/paths.ts";
+import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
@@ -304,8 +304,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (
 				(super.session.sessionManager.isPersisted() && state.sessionId !== super.session.sessionId) ||
 				(state.sessionLocation &&
-					canonicalizePath(dirname(state.sessionLocation)) !==
-						canonicalizePath(super.session.sessionManager.getSessionDir()))
+					(await canonicalizePathAsync(dirname(state.sessionLocation))) !==
+						(await canonicalizePathAsync(super.session.sessionManager.getSessionDir())))
 			) {
 				await super.switchSession(state.sessionId, {
 					sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
