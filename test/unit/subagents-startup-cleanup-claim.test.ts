@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
@@ -8,6 +8,7 @@ import {
 	createSubagentStartupMaintenance,
 	type SubagentStartupMaintenance,
 } from "../../packages/subagents/src/extension/startup-maintenance.js";
+import { getArtifactsDir } from "../../packages/subagents/src/shared/artifacts.js";
 import type { SubagentState } from "../../packages/subagents/src/shared/types.js";
 
 const roots: string[] = [];
@@ -61,11 +62,16 @@ function sessionMaintenance(): {
 	};
 }
 
-test("the process's startup scans are scheduled by one session at a time and run once, however many sessions start (#5186)", () => {
+test("the process's startup scans run once even when their holder stops during a scan (#5186, #5285)", async () => {
 	// The scans run for real at the end: keep them to an agent directory of this test's own.
 	const agentDir = mkdtempSync(join(tmpdir(), "atomic-startup-claim-"));
 	roots.push(agentDir);
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+	vi.stubEnv("XDG_RUNTIME_DIR", "");
+	const staleFile = join(await getArtifactsDir(null), "run_worker_output.md");
+	writeFileSync(staleFile, "stale\n");
+	const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+	utimesSync(staleFile, old, old);
 	const first = sessionMaintenance();
 	const releaseFirst = claimStartupCleanup(first.maintenance);
 	assert.equal(first.pending(), 1, "the first session schedules the startup scans");
@@ -100,6 +106,11 @@ test("the process's startup scans are scheduled by one session at a time and run
 	assert.equal(holder.pending(), 1, "the next session still waiting takes them over");
 
 	holder.runAll();
+	assert.equal(existsSync(staleFile), true, "the sessionless scan is still awaiting its directory");
+	holder.maintenance.stop();
+	releases[2]!();
+	assert.equal(children[3]!.pending(), 0, "stopping an active holder does not start a second scan");
+	await vi.waitFor(() => assert.equal(existsSync(staleFile), false));
 	for (const release of releases) release();
 	const late = sessionMaintenance();
 	claimStartupCleanup(late.maintenance);

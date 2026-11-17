@@ -88,14 +88,14 @@ function isInside(root: string, path: string): boolean {
 }
 
 /** The default clone path, asserted to be inside this test's directory before anything touches it. */
-function sandboxedDefaultClonePath(): string {
-	const { clonePath } = loadGitHubConfig();
+async function sandboxedDefaultClonePath(): Promise<string> {
+	const { clonePath } = await loadGitHubConfig();
 	assert.ok(isInside(boundary.sandbox, clonePath), `${clonePath} must stay inside the test directory`);
 	return clonePath;
 }
 
 test("the GitHub clone cache defaults to a directory only the current user owns", async () => {
-	const clonePath = sandboxedDefaultClonePath();
+	const clonePath = await sandboxedDefaultClonePath();
 	assert.ok(isInside(agentDir, clonePath), `${clonePath} is inside the account's agent directory`);
 
 	const result = await extractGitHub("https://github.com/octo/widgets", undefined, true);
@@ -120,7 +120,7 @@ test.skipIf(process.platform === "win32")(
 		chmodSync(join(agentDir, "cache", "tmp"), 0o700);
 		symlinkSync(elsewhere, join(agentDir, "cache", "tmp", "github-repos"), "dir");
 
-		const clonePath = sandboxedDefaultClonePath();
+		const clonePath = await sandboxedDefaultClonePath();
 		const result = await extractGitHub("https://github.com/octo/widgets", undefined, true);
 
 		assert.equal(result?.error, null);
@@ -132,7 +132,7 @@ test.skipIf(process.platform === "win32")(
 test.skipIf(process.platform === "win32")(
 	"a default clone cache opened up after it was chosen is refused",
 	async () => {
-		const clonePath = sandboxedDefaultClonePath();
+		const clonePath = await sandboxedDefaultClonePath();
 		chmodSync(clonePath, 0o770);
 
 		await extractGitHub("https://github.com/octo/widgets", undefined, true);

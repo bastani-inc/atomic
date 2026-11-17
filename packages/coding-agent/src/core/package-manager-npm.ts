@@ -118,7 +118,7 @@ export async function installNpm(
 	scope: SourceScope,
 	temporary: boolean,
 ): Promise<void> {
-	const installRoot = getNpmInstallRoot(context, scope, temporary);
+	const installRoot = await getNpmInstallRoot(context, scope, temporary);
 	await withInstallLock(installRoot, async () => {
 		ensureNpmProject(installRoot);
 		await runNpmCommand(context, getNpmInstallArgs(context, [source.spec], installRoot));
@@ -130,7 +130,7 @@ export async function uninstallNpm(
 	source: NpmSource,
 	scope: SourceScope,
 ): Promise<void> {
-	const root = getNpmInstallRoot(context, scope, false);
+	const root = await getNpmInstallRoot(context, scope, false);
 	if (!existsSync(root)) {
 		return;
 	}
@@ -152,7 +152,7 @@ export async function installNpmBatch(
 	specs: string[],
 	scope: InstalledSourceScope,
 ): Promise<void> {
-	const installRoot = getNpmInstallRoot(context, scope, false);
+	const installRoot = await getNpmInstallRoot(context, scope, false);
 	await withInstallLock(installRoot, async () => {
 		ensureNpmProject(installRoot);
 		await runNpmCommand(context, getNpmInstallArgs(context, specs, installRoot));
@@ -185,11 +185,8 @@ export function ensureGitIgnore(dir: string): void {
 export function getManagedNpmInstallPath(
 	context: PackageLocationContext,
 	source: NpmSource,
-	scope: SourceScope,
+	scope: InstalledSourceScope,
 ): string {
-	if (scope === "temporary") {
-		return join(getNpmInstallRoot(context, scope, true), "node_modules", source.name);
-	}
 	if (scope === "project") {
 		return join(context.cwd, CONFIG_DIR_NAME, "npm", "node_modules", source.name);
 	}
@@ -238,7 +235,11 @@ function getLegacyGlobalNpmInstallPath(context: PackageManagerContext, source: N
 	}
 }
 
-export function getNpmInstallPath(context: PackageManagerContext, source: NpmSource, scope: SourceScope): string {
+export function getNpmInstallPath(
+	context: PackageManagerContext,
+	source: NpmSource,
+	scope: InstalledSourceScope,
+): string {
 	const managedPath = getManagedNpmInstallPath(context, source, scope);
 	if (scope !== "user" || existsSync(managedPath)) {
 		return managedPath;
@@ -247,10 +248,24 @@ export function getNpmInstallPath(context: PackageManagerContext, source: NpmSou
 	return legacyPath && existsSync(legacyPath) ? legacyPath : managedPath;
 }
 
-export function getExistingNpmInstallPath(
+export async function getTemporaryNpmInstallPath(context: PackageLocationContext, source: NpmSource): Promise<string> {
+	return join(await getNpmInstallRoot(context, "temporary", true), "node_modules", source.name);
+}
+
+export async function findExistingNpmInstallPath(
 	context: PackageManagerContext,
 	source: NpmSource,
 	scope: SourceScope,
+): Promise<string | undefined> {
+	if (scope !== "temporary") return getExistingNpmInstallPath(context, source, scope);
+	const path = await getTemporaryNpmInstallPath(context, source);
+	return existsSync(path) ? path : undefined;
+}
+
+export function getExistingNpmInstallPath(
+	context: PackageManagerContext,
+	source: NpmSource,
+	scope: InstalledSourceScope,
 ): string | undefined {
 	const candidates = [getNpmInstallPath(context, source, scope)];
 	if (scope === "project") {
