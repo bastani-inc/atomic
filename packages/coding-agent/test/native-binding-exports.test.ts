@@ -45,6 +45,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"search",
 	"startHostProcess",
 	"tryAdvisoryLock",
+	"trySharedAdvisoryLock",
 ] as const;
 
 const requireNativeBinding = process.env.ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE === "1";
