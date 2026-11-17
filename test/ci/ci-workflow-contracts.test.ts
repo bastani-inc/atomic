@@ -38,7 +38,11 @@ test("every test suite entry point resolves to one shared per-test timeout", asy
 		default: { test?: { projects?: { test?: { name?: string; testTimeout?: number } }[] } };
 	};
 	const projects = config.default.test?.projects ?? [];
-	assert.equal(projects.length, 4, "one vitest project per suite directory, plus the integration load gate");
+	assert.equal(
+		projects.length,
+		5,
+		"one vitest project per suite directory, plus the integration load gate and the interactive event-loop gate",
+	);
 
 	const budgets = new Set<number>();
 	for (const script of ["test:unit", "test:integration", "test:ci-contracts"]) {
