@@ -74,6 +74,18 @@ test("a block whose every stack runs in another change's area belongs to that ch
 	);
 });
 
+test("a synced COMMIT that holds the engine's loop on Windows belongs to #5376, in sources and in the build", () => {
+	for (const frame of [
+		"commitAlone (file:///C:/w/0/atomic/packages/coding-agent/dist/core/storage/node-sqlite.js:1334:33)",
+		"commitMembers (file:///repo/packages/coding-agent/src/core/storage/node-sqlite.ts:1539:20)",
+	]) {
+		assert.equal(
+			blockOwner(block(["promiseInitHook (node:internal/async_hooks:329:3)", frame]), OWNED_ELSEWHERE),
+			"#5376 (node:sqlite statements off the event loop)",
+		);
+	}
+});
+
 test("a block with any stack in this code's own modules, or in two areas, is not deferred", () => {
 	assert.equal(
 		blockOwner(

@@ -817,7 +817,8 @@ describe("resolveCliModel", () => {
 	});
 });
 
-test("prefers GPT-6.1 Sol when Codex models are available", () => {
-	const sol = { ...openaiCodexBaseModel, id: "gpt-6.1-sol", name: "GPT-6.1 Sol" };
-	expect(findPreferredAvailableModel([openaiCodexBaseModel, sol])).toBe(sol);
+test("prefers GPT-6.2 Sol when Codex models are available", () => {
+	const sol61 = { ...openaiCodexBaseModel, id: "gpt-6.1-sol", name: "GPT-6.1 Sol" };
+	const sol = { ...openaiCodexBaseModel, id: "gpt-6.2-sol", name: "GPT-6.2 Sol" };
+	expect(findPreferredAvailableModel([openaiCodexBaseModel, sol61, sol])).toBe(sol);
 });

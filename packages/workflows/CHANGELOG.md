@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `/compact` in a workflow stage chat takes optional instructions, for example `/compact keep the API notes`, for a stage in this process or on a local worker. They reach the stage's compaction as they do in the main chat
 - `PendingPrompt.source` identifies a stage's extension dialog as `stage-dialog`; `expiresAt` gives its timeout deadline when one was set. Hosts can show these prompts in their stage chats and answer them through the workflow tool ([#5354](https://github.com/bastani-inc/atomic/pull/5354))
 - `o` in a workflow graph opens run details with outputs, artifacts, ordered events, nested blockers and logs. Esc returns to the graph; a second Esc pressed before the graph is shown again stays in the graph instead of closing it. `/workflows` also lists definitions that failed to load; Enter shows their actionable error details and `/reload` guidance without starting a run ([#5255](https://github.com/bastani-inc/atomic/pull/5255))
+- Added a GPT-6.2 Astra and GPT-6.2 Sol guide to the bundled `prompt-engineer` skill, from OpenAI's GPT-6.2 guide: choosing between Astra and Sol, effort migration, the more concise default writing, finishing authorized work within approval boundaries, coding conventions, frontend design, and keeping the conversation prefix unchanged so reasoning and the prompt cache carry over
 
 ### Changed
 
