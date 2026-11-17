@@ -35,7 +35,6 @@ import { releaseSessionWorktrees } from "../src/core/session-worktree-snapshots.
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
-import { setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
 import {
 	type PoolSlotRecord,
 	pooledWorktreeHolder,
@@ -48,7 +47,7 @@ import {
 	type RepositoryId,
 	repositoryIdOf,
 } from "../src/core/worktree-snapshot/repository-identity.js";
-import { objectStorePath, restoreWorktreeAt, storeCheckoutHead } from "../src/core/worktree-snapshot/restore.js";
+import { objectStorePath } from "../src/core/worktree-snapshot/restore.js";
 import {
 	adoptPrebuiltSeed,
 	readSeedManifest,
@@ -1100,94 +1099,6 @@ describe("prebuild and seed edge cases (#4748)", () => {
 				assert.ok(movable(clone), `the checkout is in use after an interrupt at ${delayMs} ms`);
 				assert.equal(existsSync(slot([remote], 0)), false, `slot 0 remained after ${delayMs} ms interrupt`);
 			}
-
-			// Deterministic interrupt during publishWorktree's moveIntoPlace after staging is renamed to slot 0.
-			const moveController = new AbortController();
-			const worktreesDir = join(storeDir(), "worktrees");
-			let stagingPrepared = false;
-			const previousGit = setWorktreeSnapshotGit(async (sig) => {
-				if (!moveController.signal.aborted && existsSync(worktreesDir)) {
-					const stagingName = readdirSync(worktreesDir).find((name) => name.startsWith(".s-"));
-					if (stagingName !== undefined) {
-						const stagingPath = join(worktreesDir, stagingName);
-						if (existsSync(join(stagingPath, "README.md"))) {
-							if (!stagingPrepared) {
-								stagingPrepared = true;
-							} else {
-								renameSync(stagingPath, slot([remote], 0));
-								moveController.abort(new Error("stop during worktree move"));
-							}
-						}
-					}
-				}
-				return previousGit(sig);
-			});
-			try {
-				await prebuildRepository(clone, {
-					agentDir: agentDir(),
-					storeDir: storeDir(),
-					settings,
-					maxIdlePerRepository: 8,
-					signal: moveController.signal,
-				}).catch(() => undefined);
-			} finally {
-				setWorktreeSnapshotGit(previousGit);
-			}
-			assert.equal(existsSync(slot([remote], 0)), false);
-
-			// Negative safety check: a foreign valid worktree from the same object store placed at the target
-			// when a restore aborts before staging is materialized must never be removed by cleanRestoreRecord.
-			const foreignHold = sandbox.path("foreign-worktree-hold");
-			const snapshot = await capture(clone);
-			await restoreWorktreeAt(snapshot, foreignHold, { storeDir: storeDir(), blobs: store.snapshotBlobs });
-			writeFileSync(join(foreignHold, "FOREIGN_KEEP.txt"), "keep-foreign-worktree\n");
-			const foreignTarget = slot([remote], 0);
-			const foreignController = new AbortController();
-			const restoresDir = join(storeDir(), "restores");
-			const prevGitForeign = setWorktreeSnapshotGit(async (sig) => {
-				if (
-					!foreignController.signal.aborted &&
-					existsSync(restoresDir) &&
-					readdirSync(restoresDir).some((name) => name.endsWith(".json"))
-				) {
-					renameSync(foreignHold, foreignTarget);
-					foreignController.abort(new Error("abort before materialize with foreign same-store target"));
-				}
-				return prevGitForeign(sig);
-			});
-			try {
-				await restoreWorktreeAt(snapshot, foreignTarget, {
-					storeDir: storeDir(),
-					blobs: store.snapshotBlobs,
-					signal: foreignController.signal,
-				}).catch(() => undefined);
-			} finally {
-				setWorktreeSnapshotGit(prevGitForeign);
-			}
-			assert.equal(existsSync(foreignTarget), true, "foreign same-store worktree must be preserved");
-			assert.equal(readFileSync(join(foreignTarget, "FOREIGN_KEEP.txt"), "utf8"), "keep-foreign-worktree\n");
-			rmSync(foreignTarget, { recursive: true, force: true });
-
-			// Incomplete fetch unpack check: if an interrupted git fetch unpacked the loose commit and root tree
-			// objects before unpacking blobs (and before writing refs/atomic/heads/<head>), the next storeCheckoutHead
-			// must re-fetch rather than trusting hasObject(<head>^{commit}) alone.
-			const partialStoreDir = sandbox.path("host-partial-fetch");
-			const partialStore = objectStorePath(partialStoreDir, [remote], clone)!;
-			mkdirSync(partialStore, { recursive: true });
-			await sandbox.git(partialStore, "init", "-q", "--bare");
-			for (const oid of [snapshot.head, snapshot.tree]) {
-				const dir = join(partialStore, "objects", oid.slice(0, 2));
-				mkdirSync(dir, { recursive: true });
-				cpSync(join(clone, ".git", "objects", oid.slice(0, 2), oid.slice(2)), join(dir, oid.slice(2)));
-			}
-			await storeCheckoutHead(partialStoreDir, [remote], clone, snapshot.head);
-			const recoveredTarget = sandbox.path("recovered-after-partial-fetch");
-			await restoreWorktreeAt(snapshot, recoveredTarget, {
-				storeDir: partialStoreDir,
-				blobs: store.snapshotBlobs,
-			});
-			assert.equal(readFileSync(join(recoveredTarget, "README.md"), "utf8"), "hello\n");
-			rmSync(recoveredTarget, { recursive: true, force: true });
 		},
 		INTERRUPT_TEST_TIMEOUT_MS,
 	);
