@@ -1306,7 +1306,7 @@ function namedModelId(spec: ChildSpec): string {
 
 /** Why no other model ran in place of a named model, as its failures say. */
 const NAMED_MODEL_RULE =
-	"No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels that its modelConstraints allow.";
+	"No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels.";
 
 /**
  * Why a child launched on a named model failed when that model, and every fallback it opted into, failed: the models
@@ -1362,7 +1362,7 @@ function assertStartModelAllowed(input: {
 	if (named?.provider === model.provider && named.id === model.id) return;
 	if (gate(model, effort)) return;
 	throw new Error(
-		`Model ${model.provider}/${model.id}${effort ? ` at ${effort} effort` : ""} would run${spec.namedModel ? ` in place of ${spec.namedModel}` : ""}, but the launch's modelConstraints do not allow it. No other model was used.`,
+		`Model ${model.provider}/${model.id}${effort ? ` at ${effort} effort` : ""} would run${spec.namedModel ? ` in place of ${spec.namedModel}` : ""}, but the session's fallback policy does not allow it. No other model was used.`,
 	);
 }
 

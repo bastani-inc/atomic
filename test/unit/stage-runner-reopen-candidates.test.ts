@@ -48,7 +48,6 @@ function releasedChain(chain: readonly string[], reportsModel: boolean, reportsE
 		stageOptions: {
 			model: chain[0],
 			fallbackModels: chain.slice(1),
-			modelConstraints: { allowedEfforts: ["low", "high"] },
 			sessionStore: store,
 			settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
 		},
@@ -140,7 +139,7 @@ for (const reportsModel of [false, true]) {
 				["p/x:low", "p/a:low"],
 				["p/a", "p/a:low"],
 			]) {
-				test(`a rejected reopen preserves the final candidate for ${chain.join(", ")} with effort set ${timing} and ${adapter} (#3326)`, async () => {
+				test(`a released stage reopens on its final candidate for ${chain.join(", ")} after effort changes ${timing} and ${adapter} (#3326)`, async () => {
 					const { ctx, creations, requests, exhaust } = releasedChain(chain, reportsModel, reportsEffort);
 					try {
 						await ctx.setThinkingLevel("low");
@@ -156,8 +155,7 @@ for (const reportsModel of [false, true]) {
 						if (changeBeforeRelease) await ctx.setThinkingLevel("medium");
 						await ctx.release();
 						if (!changeBeforeRelease) await ctx.setThinkingLevel("medium");
-						await assert.rejects(ctx.prompt("excluded"), /modelConstraints/);
-						assert.equal(requests.length, chain.length);
+						assert.equal(requests.length, chain.length, "changing effort sends no request");
 						await ctx.setThinkingLevel("high");
 						assert.equal(await ctx.prompt("allowed"), "ok");
 						const beforeExhaustion = [...creations];

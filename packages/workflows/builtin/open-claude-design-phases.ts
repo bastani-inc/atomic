@@ -88,7 +88,6 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
       importContext,
     }),
     reads: [designContextFile, referencesFile, ...referenceImagePaths],
-    ...(referenceImagePaths.length > 0 ? { taskNeeds: { needsImages: true } } : {}),
     ...designModelConfig,
   });
 

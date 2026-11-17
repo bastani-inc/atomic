@@ -21,10 +21,10 @@ import {
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
+import { resolveSubagentAutoModel } from "../shared/auto-model.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { sharedAutoGroupForSet } from "../shared/intercom-group.js";
 import { resolveModelCandidate, resultRanOnLine } from "../shared/model-fallback.js";
-import { routeSubagentModel } from "../shared/model-router.js";
 import { formatParallelResultContent } from "../shared/parallel-utils.js";
 import { recordRun } from "../shared/run-history.js";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.js";
@@ -134,50 +134,16 @@ export async function runParallelPath(
 		...(skillOverrides[index] !== undefined ? { skills: skillOverrides[index] } : {}),
 		...(task.model ? { model: task.model } : {}),
 	}));
-	const modelRoutes = await (async () => {
-		const routing = new AbortController();
-		const cancelled = Promise.withResolvers<never>();
-		const onParentAbort = () => {
-			routing.abort(signal.reason);
-			cancelled.reject(signal.reason);
-		};
-		signal.throwIfAborted();
-		signal.addEventListener("abort", onParentAbort, { once: true });
-		try {
-			return await Promise.race([
-				Promise.all(
-					tasks.map((task, index) =>
-						(task.model ?? agentConfigs[index]?.model) === "auto"
-							? routeSubagentModel({
-									ctx,
-									agent: agentConfigs[index]!,
-									task: task.task,
-									modelConstraints: task.modelConstraints,
-									taskNeeds: task.taskNeeds,
-									signal: routing.signal,
-								})
-							: undefined,
-					),
+	const autoModels = tasks.map((task, index) => (task.model ?? agentConfigs[index]?.model) === "auto");
+	const settings = autoModels.includes(true) ? deps.pi.getSettings?.() : undefined;
+	const modelOverrides = tasks.map((_, index) =>
+		autoModels[index]
+			? resolveSubagentAutoModel(ctx, settings, agentConfigs[index]!)
+			: resolveModelCandidate(
+					behaviorOverrides[index]?.model ?? agentConfigs[index]?.model,
+					availableModels,
+					currentProvider,
 				),
-				cancelled.promise,
-			]);
-		} catch (error) {
-			// Stop sibling inference without cancelling the parent or waiting for
-			// providers that ignore cancellation. Preserve the initiating failure.
-			routing.abort(error);
-			throw error;
-		} finally {
-			signal.removeEventListener("abort", onParentAbort);
-		}
-	})();
-	const modelOverrides = tasks.map(
-		(_, index) =>
-			modelRoutes[index]?.modelOverride ??
-			resolveModelCandidate(
-				behaviorOverrides[index]?.model ?? agentConfigs[index]?.model,
-				availableModels,
-				currentProvider,
-			),
 	);
 
 	const behaviors = agentConfigs.map((config, index) =>
@@ -277,7 +243,7 @@ export async function runParallelPath(
 			knownModelProviders,
 			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, currentProvider),
 			modelOverrides,
-			modelRoutes,
+			autoModels,
 			behaviors,
 			...(progressDir ? { progressDir } : {}),
 			controlConfig,

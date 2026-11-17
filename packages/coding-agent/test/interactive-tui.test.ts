@@ -284,6 +284,7 @@ describe("interactive TUI renderer", () => {
 			renderer,
 			ui: renderer,
 			disposeMarkitDiagnosticSink: vi.fn(),
+			disposeDeprecationWarningSink: vi.fn(),
 		}) as unknown as InteractiveMode;
 
 		renderer.start();
@@ -293,6 +294,8 @@ describe("interactive TUI renderer", () => {
 		expect([terminal.startCount, terminal.stopCount]).toEqual([1, 1]);
 		expect(terminal.cursorVisible).toBe(true);
 		expect(context.disposeMarkitDiagnosticSink).toHaveBeenCalledOnce();
+		// Deprecation warnings go back to stderr once the UI no longer owns the terminal.
+		expect(context.disposeDeprecationWarningSink).toHaveBeenCalledOnce();
 	});
 	test("keeps the fullscreen dock fixed and offers a clickable jump to latest while scrolled up", async () => {
 		const previousKeybindings = getKeybindings();

@@ -635,12 +635,6 @@ export async function runAgentTask(input: {
 					ticket?.release();
 					throw error;
 				});
-	try {
-		input.options.modelRoute?.assertCurrent();
-	} catch (error) {
-		ticket?.release();
-		throw error;
-	}
 	const started = await input.host
 		.startAgentTask(
 			{
@@ -648,7 +642,6 @@ export async function runAgentTask(input: {
 				agent: input.agent,
 				task: input.intentTask ?? input.task,
 				cwd: input.options.cwd ?? input.cwd,
-				...(input.options.modelRoute ? { routerSelection: input.options.modelRoute.routerSelection } : {}),
 				...(requestedModel ? { requestedModel } : {}),
 				...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
 			},
@@ -718,7 +711,6 @@ export async function runAgentTask(input: {
 				});
 				const result = registered.promise.then(async (): Promise<TaskResult> => {
 					try {
-						input.options.modelRoute?.assertCurrent();
 						const ownerSessionId = input.recordChild?.ownerSessionId;
 						const running = input.runtime.runSync(input.cwd, input.agents, input.agent, input.task, {
 							...input.options,

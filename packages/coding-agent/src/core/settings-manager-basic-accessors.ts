@@ -11,12 +11,7 @@ import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals, stringEntries } from "./settings-manager-internals.ts";
 import { resolveDefaultTools, resolveDefaultToolsWith } from "./settings-merge.js";
 import type { Settings } from "./settings-schema.ts";
-import type {
-	CompactionModelOverride,
-	CompactionSettings,
-	ModelRoutingSettings,
-	TransportSetting,
-} from "./settings-types.ts";
+import type { CompactionModelOverride, CompactionSettings, TransportSetting } from "./settings-types.ts";
 import { CACHE_WARMING_MODES, type CacheWarmingMode } from "./settings-types.ts";
 import type { WorktreePoolSettings } from "./worktree-snapshot/pool.ts";
 import { resolveWorktreeSnapshotSettings } from "./worktree-snapshot/settings.ts";
@@ -28,16 +23,6 @@ type CompactionModel = Pick<Model<string>, "provider" | "id">;
 export interface StorageLayout {
 	readonly storage?: Settings["storage"];
 	readonly sessionsStorage?: NonNullable<Settings["sessions"]>["storage"];
-}
-
-const MODEL_ROUTING_ERROR =
-	'Invalid modelRouting: allowedProviders and excludedProviders must be arrays of provider IDs, such as ["github-copilot"], and allowedModels and excludedModels must be arrays of model IDs or glob patterns, such as ["anthropic/claude-*"].';
-
-function routingList(value: unknown): string[] | undefined {
-	if (value === undefined) return undefined;
-	if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim() || item.trim() !== item))
-		throw new Error(MODEL_ROUTING_ERROR);
-	return [...new Set(value as string[])];
 }
 
 function resolveCompactionSetting(
@@ -92,7 +77,6 @@ interface SettingsManagerBasicAccessors {
 	getDefaultProvider(): string | undefined;
 	getDefaultModel(): string | undefined;
 	getDecisionModel(): string;
-	getModelRouting(): ModelRoutingSettings;
 	getCompactionModel(): string;
 	setCompactionModel(model: string, scope?: "global" | "project"): void;
 	setDecisionModel(model: string, scope?: "global" | "project"): void;
@@ -310,22 +294,6 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		state.globalSettings.compactionModel = model;
 		state.markModified("compactionModel");
 		state.save();
-	},
-
-	getModelRouting() {
-		const value = settingsInternals(this).settings.modelRouting;
-		if (value === undefined) return {};
-		if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(MODEL_ROUTING_ERROR);
-		const allowedProviders = routingList(value.allowedProviders);
-		const excludedProviders = routingList(value.excludedProviders);
-		const allowedModels = routingList(value.allowedModels);
-		const excludedModels = routingList(value.excludedModels);
-		return {
-			...(allowedProviders ? { allowedProviders } : {}),
-			...(excludedProviders ? { excludedProviders } : {}),
-			...(allowedModels ? { allowedModels } : {}),
-			...(excludedModels ? { excludedModels } : {}),
-		};
 	},
 
 	setDecisionModel(model, scope) {

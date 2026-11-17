@@ -34,7 +34,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 // The setup files loaded the storage adapter with the real node:fs. Load every module this test drives afresh, in one
 // module graph, so the adapter sees the mocked node:fs and every area shares one debug setting.
 vi.resetModules();
-const { reportModelRoutingDebug } = await import("../../packages/coding-agent/src/core/model-routing-debug.js");
+const { reportDebug } = await import("../../packages/coding-agent/src/core/debug.js");
 const { openNodeSqliteDatabase } = await import("../../packages/coding-agent/src/core/storage/node-sqlite.js");
 const { installWorkflowLifecycleNotifications } = await import(
 	"../../packages/workflows/src/extension/lifecycle-notifications.js"
@@ -60,7 +60,7 @@ afterEach(() => {
 const stats = { since: 0, requests: { claim: { count: 1, perSecond: 1 } }, writes: {} };
 
 async function triggerEveryArea(agentDir: string): Promise<string | undefined> {
-	reportModelRoutingDebug("routing fallback");
+	reportDebug("decision", "classifier-fallback", { message: "classifier fallback" });
 	configurePooledWatchTrace(join(agentDir, "journal.sqlite"), "root");
 	tracePooledWatch("root.reconnect.start", { key: "k" });
 	const store = createStore();
@@ -135,7 +135,7 @@ test("with debug off, no debug sink is written by any area (#4360)", async () =>
 test("with debug on, each area's event is one append to the debug log and nothing else (#4360)", async () => {
 	for (const source of ["setting", "ATOMIC_DEBUG"] as const) {
 		const on = await count(source);
-		assert.deepEqual(on.areas, { "model-routing": 1, "pooled-watch": 1, workflow: 2, storage: 1, pool: 1 });
+		assert.deepEqual(on.areas, { decision: 1, "pooled-watch": 1, workflow: 2, storage: 1, pool: 1 });
 		assert.deepEqual(on.poolEvents, [
 			{
 				event: "coordination",

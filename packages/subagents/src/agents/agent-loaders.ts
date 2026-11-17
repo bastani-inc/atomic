@@ -123,7 +123,7 @@ export async function loadAgentsFromDirWithDiagnostics(dir: string, source: Agen
 			continue;
 		}
 
-		const { frontmatter, body, parseError, modelConstraints } = parseFrontmatter(content);
+		const { frontmatter, body, parseError } = parseFrontmatter(content);
 		if (parseError !== undefined) {
 			diagnostics.push({ path: filePath, message: parseError });
 			continue;
@@ -190,7 +190,6 @@ export async function loadAgentsFromDirWithDiagnostics(dir: string, source: Agen
 			tools: parsedTools.tools,
 			mcpDirectTools: parsedTools.mcpDirectTools,
 			model: frontmatterString(frontmatter.model),
-			modelConstraints,
 			fallbackModels,
 			fallbackThinkingLevels,
 			thinking: frontmatterString(frontmatter.thinking),

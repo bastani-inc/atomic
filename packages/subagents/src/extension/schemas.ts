@@ -1,9 +1,9 @@
-import { ModelConstraintsSchema, TaskNeedsSchema } from "../shared/model-constraints.js";
 /**
  * TypeBox schemas for subagent tool parameters
  */
 
 import { type Static, Type } from "typebox";
+import { warnRemovedRoutingOption } from "../shared/removed-routing-warning.js";
 import {
 	MAX_PARALLEL_TASKS,
 	REMOVED_SUBAGENT_ACTIONS,
@@ -100,11 +100,10 @@ const TaskItem = Type.Object({
 	),
 	model: Type.Optional(
 		Type.String({
-			description: "Concrete model override, or 'auto' to select an available model and effort for this task.",
+			description:
+				"Concrete model override, or 'auto' for the user's default model (the current session's model when none is configured).",
 		}),
 	),
-	modelConstraints: Type.Optional(ModelConstraintsSchema),
-	taskNeeds: Type.Optional(TaskNeedsSchema),
 	skill: Type.Optional(SkillOverride),
 	group: Type.Optional(GroupSchema),
 	heartbeatMs: Type.Optional(heartbeatSchema("this task")),
@@ -282,22 +281,38 @@ export const SubagentParams = Type.Object(
 		skill: Type.Optional(SkillOverride),
 		model: Type.Optional(
 			Type.String({
-				description: "Concrete model override, or 'auto' to select an available model and effort for this task.",
+				description:
+					"Concrete model override, or 'auto' for the user's default model (the current session's model when none is configured).",
 			}),
 		),
-		modelConstraints: Type.Optional(ModelConstraintsSchema),
-		taskNeeds: Type.Optional(TaskNeedsSchema),
 	},
 	{ additionalProperties: false },
 );
 
+/** Launch fields of removed automatic model routing that calls may still pass; they are dropped and ignored. */
+const REMOVED_LAUNCH_FIELDS = ["taskNeeds", "modelConstraints"] as const;
+
+function withoutRemovedLaunchFields<T extends object>(value: T): T {
+	if (!REMOVED_LAUNCH_FIELDS.some((field) => Object.hasOwn(value, field))) return value;
+	for (const field of REMOVED_LAUNCH_FIELDS) if (Object.hasOwn(value, field)) warnRemovedRoutingOption(field);
+	const removed: ReadonlySet<string> = new Set(REMOVED_LAUNCH_FIELDS);
+	return Object.fromEntries(Object.entries(value).filter(([key]) => !removed.has(key))) as T;
+}
+
 /**
  * Reject removed control actions before schema validation, so the error names their replacement
- * instead of reporting an unknown enum value.
+ * instead of reporting an unknown enum value. Fields of removed automatic model routing are dropped.
  */
 export function prepareSubagentArguments(args: unknown): Static<typeof SubagentParams> {
 	const action = typeof args === "object" && args !== null ? (args as { action?: string }).action : undefined;
 	if (action !== undefined && (REMOVED_SUBAGENT_ACTIONS as readonly string[]).includes(action))
 		throw new Error(removedSubagentActionMessage(action));
-	return args as Static<typeof SubagentParams>;
+	if (typeof args !== "object" || args === null || Array.isArray(args)) return args as Static<typeof SubagentParams>;
+	const params = withoutRemovedLaunchFields(args as { tasks?: unknown });
+	const tasks = Array.isArray(params.tasks)
+		? params.tasks.map((task: unknown) =>
+				typeof task === "object" && task !== null && !Array.isArray(task) ? withoutRemovedLaunchFields(task) : task,
+			)
+		: undefined;
+	return (tasks === undefined ? params : { ...params, tasks }) as Static<typeof SubagentParams>;
 }

@@ -190,12 +190,6 @@ export interface RunSyncOptions {
 	 * had fallen back does. Reported beside the model it runs on (#4188).
 	 */
 	requestedModel?: string;
-	modelRoute?: import("../runs/shared/model-router.js").ModelRoute;
-	/**
-	 * The launch's own `modelConstraints`. With the agent's, they gate every model execution fallback may move the child
-	 * to; an auto-routed launch's route already holds them (#4188).
-	 */
-	modelConstraints?: import("./model-constraints.js").ModelConstraints;
 	/** Registry models available for heuristic bare-model resolution */
 	availableModels?: Array<{ provider: string; id: string; fullId: string }>;
 	/** Providers known to the registry before auth filtering */

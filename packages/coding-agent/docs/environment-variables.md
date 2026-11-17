@@ -18,7 +18,6 @@ Atomic accepts environment variables for configuration, provider credentials, an
 | `ATOMIC_REDUCED_MOTION` | `PI_REDUCED_MOTION` | Use static reduced-motion presentation |
 | `ATOMIC_DEBUG` | `PI_DEBUG` | Set to `1` to turn on [debug mode](/development#debugging) for this run, the same as `--debug`. The footer shows a `debug` badge |
 | `ATOMIC_WORKFLOW_DEBUG` | None | Set to `1` to print workflow debug output to stderr. See [Debugging](/development#debugging) |
-| `ATOMIC_MODEL_ROUTING_DEBUG` | None | Set to `1` to print `model: "auto"` routing fallbacks to stderr. See [Debugging](/development#debugging) |
 | `ATOMIC_TIMING` | `PI_TIMING` | Set to `1` to print startup timings to stderr, and where a resume's time went for `atomic --session` (see [Inspecting snapshots](/worktree-snapshots#inspecting-snapshots)) |
 | `ATOMIC_STARTUP_TRACE` | `PI_STARTUP_TRACE` | Set to a file path to append one JSON line per startup milestone (process start, first paint, engine ready, first provider request) with its wall-clock time. An interactive session's engine writes to the same file, so the two timelines line up |
 | `ATOMIC_DEBUG_POOLED_WATCH` | None | Set to `1` to trace pooled stage watches to `pooled-watch-trace.jsonl` next to the pool journal, or to a file path to choose the file. See [Debugging](/development#debugging) |

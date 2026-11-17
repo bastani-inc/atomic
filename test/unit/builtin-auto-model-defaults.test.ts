@@ -49,11 +49,10 @@ for (const models of [undefined, [], ["provider/model:high", "provider/model:hig
 	});
 }
 
-test("builtin task, chain and parallel defaults preserve caller models, efforts, constraints and raw prompts", async () => {
+test("builtin task, chain and parallel defaults preserve caller models, efforts and raw prompts", async () => {
 	const ctx = makeMockCtx({});
 	const wrapped = withBuiltinContext(ctx);
-	const constraints = { allowedEfforts: ["high" as const] };
-	await wrapped.task("auto", { prompt: "  task  ", modelConstraints: constraints });
+	await wrapped.task("auto", { prompt: "  task  " });
 	await wrapped.task("explicit", { prompt: "task", model: "provider/model:low" });
 	await wrapped.chain([{ name: "chain-auto", prompt: "task" }]);
 	await wrapped.parallel([{ name: "parallel-auto", prompt: "task" }]);
@@ -65,7 +64,6 @@ test("builtin task, chain and parallel defaults preserve caller models, efforts,
 		{ model: "provider/shared:high" },
 	);
 	assert.equal(ctx.calls.taskOptions.auto?.[0]?.model, "auto");
-	assert.equal(ctx.calls.taskOptions.auto?.[0]?.modelConstraints, constraints);
 	assert.ok(ctx.calls.taskOptions.auto?.[0]?.prompt?.startsWith("  task  "));
 	assert.equal(ctx.calls.taskOptions.explicit?.[0]?.model, "provider/model:low");
 	assert.equal(ctx.calls.taskOptions["chain-auto"]?.[0]?.model, "auto");
@@ -94,7 +92,7 @@ test("every manifest builtin uses the builtin-only context and none pins model f
 	}
 });
 
-test("every shipped builtin agent routes automatically without pinned fallback chains", async () => {
+test("every shipped builtin agent runs the default model without pinned fallback chains", async () => {
 	const { agents, diagnostics } = await loadAgentsFromDirWithDiagnostics(
 		resolve("packages/subagents/agents"),
 		"builtin",
@@ -107,7 +105,7 @@ test("every shipped builtin agent routes automatically without pinned fallback c
 	}
 });
 
-test("provider guidance distinguishes main-chat defaults from automatic builtin selection", () => {
+test("provider guidance distinguishes main-chat defaults from the builtins' auto default", () => {
 	const guide = readFileSync(resolve("packages/coding-agent/docs/providers.md"), "utf8");
 	for (const obsolete of [
 		"Built-in workflow and subagent fallback chains use",

@@ -1,40 +1,5 @@
 import type { WorkflowProviderRateLimit, WorkflowSerializableValue } from "./types.js";
 
-export function isRouterSelection<T>(value: T): boolean {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-	const record = value as Record<string, WorkflowSerializableValue>;
-	const isPair = (pair: WorkflowSerializableValue): boolean => {
-		if (typeof pair !== "object" || pair === null || Array.isArray(pair)) return false;
-		const fields = pair as Record<string, WorkflowSerializableValue>;
-		return (
-			Object.keys(pair).length === 2 &&
-			typeof fields.model === "string" &&
-			(fields.effort === null || isReasoningLevel(fields.effort))
-		);
-	};
-	return (
-		Object.keys(record).every((key) =>
-			["model", "effort", "fallbacks", "candidates", "requiredInputs"].includes(key),
-		) &&
-		typeof record.model === "string" &&
-		(record.effort === null || isReasoningLevel(record.effort)) &&
-		(record.fallbacks === undefined ||
-			(Array.isArray(record.fallbacks) &&
-				record.fallbacks.length <= 2 &&
-				record.fallbacks.every(isPair) &&
-				new Set([
-					record.model,
-					...record.fallbacks.map((pair) => (pair as Record<string, WorkflowSerializableValue>).model),
-				]).size ===
-					record.fallbacks.length + 1)) &&
-		(record.candidates === undefined ||
-			(Array.isArray(record.candidates) && record.candidates.every((id) => typeof id === "string"))) &&
-		(record.requiredInputs === undefined ||
-			(Array.isArray(record.requiredInputs) &&
-				record.requiredInputs.every((input) => input === "text" || input === "image")))
-	);
-}
-
 export function isModelAttempts<T>(value: T): boolean {
 	return (
 		Array.isArray(value) &&

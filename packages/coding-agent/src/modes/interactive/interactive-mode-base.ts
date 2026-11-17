@@ -328,6 +328,7 @@ export class InteractiveModeBase {
 
 	disposeInteractiveEngineHost: () => void = () => {};
 	disposeMarkitDiagnosticSink: () => void = () => {};
+	disposeDeprecationWarningSink: () => void = () => {};
 
 	version: string;
 
@@ -689,6 +690,7 @@ export class InteractiveModeBase {
 		});
 		if (this.writeExitOutputInSlices) this.exitOutputWritten = this.ui.whenStopped();
 		this.disposeMarkitDiagnosticSink();
+		this.disposeDeprecationWarningSink();
 	}
 
 	declare options: InteractiveModeOptions;

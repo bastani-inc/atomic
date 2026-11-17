@@ -23,10 +23,10 @@ import {
 	wrapForkTask,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
+import { resolveSubagentAutoModel } from "../shared/auto-model.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId, resolveModelCandidate, resultRanOnLine } from "../shared/model-fallback.js";
-import { routeSubagentModel } from "../shared/model-router.js";
 import { isExecutionTicket } from "../shared/parallel-utils.js";
 import { recordRun } from "../shared/run-history.js";
 import {
@@ -143,19 +143,10 @@ export async function runSinglePath(
 	const handoffTaskContext = params.task ?? "";
 	let task = handoffTaskContext;
 	const effectiveModel = params.model ?? agentConfig.model;
-	const modelRoute =
-		effectiveModel === "auto"
-			? await routeSubagentModel({
-					ctx,
-					agent: agentConfig,
-					task: params.task,
-					modelConstraints: params.modelConstraints,
-					taskNeeds: params.taskNeeds,
-					signal,
-				})
-			: undefined;
-	const modelOverride =
-		modelRoute?.modelOverride ?? resolveModelCandidate(effectiveModel, availableModels, currentProvider);
+	const runsAutoModel = effectiveModel === "auto";
+	const modelOverride = runsAutoModel
+		? resolveSubagentAutoModel(ctx, deps.pi.getSettings?.(), agentConfig)
+		: resolveModelCandidate(effectiveModel, availableModels, currentProvider);
 	const skillOverride: string[] | false | undefined = normalizeSkillInput(params.skill);
 	const rawOutput = params.output !== undefined ? params.output : agentConfig.output;
 	const effectiveOutput = normalizeSingleOutputOverride(rawOutput, agentConfig.output);
@@ -283,8 +274,7 @@ export async function runSinglePath(
 			},
 			index: 0,
 			modelOverride,
-			modelRoute,
-			...(params.modelConstraints ? { modelConstraints: params.modelConstraints } : {}),
+			...(runsAutoModel ? { runsNamedModel: false as const } : {}),
 			availableModels,
 			knownModelProviders,
 			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, currentProvider),
@@ -293,7 +283,6 @@ export async function runSinglePath(
 			currentThinkingLevel: ctx.thinkingLevel,
 			skills: effectiveSkills,
 		};
-		modelRoute?.assertCurrent();
 		if (ctx.getAgentTaskHost) {
 			let settledChild: SingleResult | undefined;
 			let progressCleanup: Promise<void> | undefined;

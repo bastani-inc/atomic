@@ -26,7 +26,6 @@ import {
 	onDebugSettingChange,
 	setDebugSetting,
 } from "../../packages/coding-agent/src/core/debug-setting.js";
-import { reportModelRoutingDebug } from "../../packages/coding-agent/src/core/model-routing-debug.js";
 import { createChildProcessEnvironment } from "../../packages/coding-agent/src/utils/child-process.js";
 import { getBrokerSpawnOptions } from "../../packages/intercom/broker/spawn.js";
 import { poolCoordinationLine } from "../../packages/workflows/src/shared/pool-coordination.js";
@@ -52,7 +51,7 @@ describe("isDebugEnabled (#4360)", () => {
 	test("names each area's own variable", () => {
 		assert.deepEqual(DEBUG_AREA_VARIABLES, {
 			workflow: "ATOMIC_WORKFLOW_DEBUG",
-			"model-routing": "ATOMIC_MODEL_ROUTING_DEBUG",
+			decision: undefined,
 			"pooled-watch": "ATOMIC_DEBUG_POOLED_WATCH",
 			pool: undefined,
 			storage: undefined,
@@ -119,7 +118,6 @@ describe("isDebugEnabled (#4360)", () => {
 	test("the pooled-watch variable also takes a trace file path, while the others need exactly 1", () => {
 		assert.equal(isDebugEnabled("pooled-watch", { ATOMIC_DEBUG_POOLED_WATCH: "/tmp/trace.jsonl" }), true);
 		assert.equal(isDebugEnabled("workflow", { ATOMIC_WORKFLOW_DEBUG: "yes" }), false);
-		assert.equal(isDebugEnabled("model-routing", { ATOMIC_MODEL_ROUTING_DEBUG: "true" }), false);
 	});
 
 	test("reads process.env at call time, so a variable set later counts", () => {
@@ -279,7 +277,7 @@ describe("reportDebug (#4360)", () => {
 			vi.stubEnv("ATOMIC_WORKFLOW_DEBUG", "1");
 			const own = vi.fn();
 			reportDebug("workflow", "event", { value: 1 }, own);
-			reportDebug("model-routing", "event", { value: 1 }, own);
+			reportDebug("pooled-watch", "event", { value: 1 }, own);
 			assert.equal(own.mock.calls.length, 1, "only the area whose variable is set");
 			assert.equal(await log.exists(), false);
 		});
@@ -287,13 +285,13 @@ describe("reportDebug (#4360)", () => {
 
 	test("with both on, the event reaches the debug log and the area's own output", async () => {
 		await withDebugLog("setting", async (log) => {
-			vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
+			vi.stubEnv("ATOMIC_WORKFLOW_DEBUG", "1");
 			const own = vi.fn();
-			reportDebug("model-routing", "event", { value: 1 }, own);
-			reportDebug("model-routing", "without-own-output", {});
+			reportDebug("workflow", "event", { value: 1 }, own);
+			reportDebug("workflow", "without-own-output", {});
 			assert.equal(own.mock.calls.length, 1);
 			assert.deepEqual(
-				(await areaRecords(log, "model-routing")).map((record) => record.event),
+				(await areaRecords(log, "workflow")).map((record) => record.event),
 				["event", "without-own-output"],
 			);
 		});
@@ -324,6 +322,8 @@ describe("reportDebug (#4360)", () => {
 	test("redacts GitHub tokens and private key blocks, and leaves look-alikes alone", async () => {
 		await withDebugLog("setting", async (log) => {
 			const body = "A1b2C3d4E5f6G7h8I9j0";
+			const privateKeyMarker = (boundary: "BEGIN" | "END", kind = "") =>
+				`-----${boundary} ${kind ? `${kind} ` : ""}PRIVATE KEY-----`;
 			const cases: Record<string, readonly [string, string]> = {
 				ghp: [`push rejected ${`ghp_${body}`}, try again`, "push rejected [redacted], try again"],
 				gho: [`gho_${body}xyz`, "[redacted]"],
@@ -336,13 +336,13 @@ describe("reportDebug (#4360)", () => {
 				otherPrefix: [`ghx_${body}`, `ghx_${body}`],
 				inWord: [`xghp_${body}`, `xghp_${body}`],
 				keyBlock: [
-					"before\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\nafter",
+					`before\n${privateKeyMarker("BEGIN", "RSA")}\nMIIEowIBAAKCAQEA\n${privateKeyMarker("END", "RSA")}\nafter`,
 					"before\n[redacted]\nafter",
 				],
-				plainKeyBlock: ["-----BEGIN PRIVATE KEY-----\nMIIEvQ\n-----END PRIVATE KEY----- tail", "[redacted] tail"],
-				cutKeyBlock: ["seen -----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA", "seen [redacted]"],
+				plainKeyBlock: [`${privateKeyMarker("BEGIN")}\nMIIEvQ\n${privateKeyMarker("END")} tail`, "[redacted] tail"],
+				cutKeyBlock: [`seen ${privateKeyMarker("BEGIN", "OPENSSH")}\nb3BlbnNzaC1rZXktdjEA`, "seen [redacted]"],
 				labelledKeyBlock: [
-					"key:\n-----BEGIN EC PRIVATE KEY-----\nMHcCAQEE\n-----END EC PRIVATE KEY-----",
+					`key:\n${privateKeyMarker("BEGIN", "EC")}\nMHcCAQEE\n${privateKeyMarker("END", "EC")}`,
 					// The whole block is redacted; its label keeps its own line, as no value runs past a line break (#5142).
 					"key:\n[redacted]",
 				],
@@ -392,29 +392,21 @@ describe("reportDebug (#4360)", () => {
 	});
 });
 
-describe("model routing area (#4360)", () => {
-	test("prints to stderr for its own variable and writes the debug log in debug mode", async () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+describe("decision area", () => {
+	test("has no variable of its own and writes the debug log only in debug mode", async () => {
+		const own = vi.fn();
 		await withDebugLog("off", async (log) => {
-			reportModelRoutingDebug("off message");
-			vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
-			reportModelRoutingDebug("own message");
+			reportDebug("decision", "classifier-fallback", { message: "off" }, own);
 			assert.equal(await log.exists(), false);
 		});
-		assert.deepEqual(warn.mock.calls, [["own message"]]);
 		for (const source of DEBUG_MODE_SOURCES)
 			await withDebugLog(source, async (log) => {
-				reportModelRoutingDebug(`fallback from ${source}`);
-				assert.deepEqual(await areaRecords(log, "model-routing"), [
-					{ event: "routing", data: { message: `fallback from ${source}` } },
+				reportDebug("decision", "classifier-fallback", { message: `from ${source}` }, own);
+				assert.deepEqual(await areaRecords(log, "decision"), [
+					{ event: "classifier-fallback", data: { message: `from ${source}` } },
 				]);
 			});
-		assert.equal(warn.mock.calls.length, 1, "debug mode alone prints nothing");
-		await withDebugLog("off", async (log) => {
-			reportModelRoutingDebug("injected", { ATOMIC_MODEL_ROUTING_DEBUG: "1" });
-			assert.equal(await log.exists(), false);
-		});
-		assert.deepEqual(warn.mock.calls[1], ["injected"], "the environment it is given decides");
+		assert.equal(own.mock.calls.length, 0, "nothing is printed");
 	});
 });
 

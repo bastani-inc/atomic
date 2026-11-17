@@ -1,34 +1,26 @@
 import {
 	type AgentSession,
-	AutoRoutingInferenceError,
 	type CreateAgentSessionOptions,
-	clampThinkingLevel,
 	convertToLlm,
 	currentWorktreeRootMappings,
 	type DetachedToolCall,
 	type DetachedToolResult,
 	type ExtensionToolContext,
-	eligiblePair,
 	findToolDetachmentError,
-	getSupportedThinkingLevels,
 	isExtensionStartupFailure,
 	isProviderCredentialRejection,
 	isTaskCleanupError,
 	isTransientExtensionStartupFailure,
-	type ModelConstraints,
-	type ModelRoute,
 	modelCallUsage,
 	NoUsableModelError,
 	type PromptOptions,
 	parkWorkflowStageForRelease,
-	parseModelConstraints,
 	partitionByCredentials,
 	providerOfModelReference,
 	reportDebug,
 	type SessionManager,
 	type SessionStore,
 	type StructuredOutputCapture,
-	setsProviders,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
 import { raceAbort } from "../../shared/abort.js";
@@ -53,12 +45,12 @@ import type {
 	StageOptions,
 	StageSendUserMessageOptions,
 	StageUserMessageContent,
+	WorkflowAutoModel,
 	WorkflowModelAttempt,
 	WorkflowModelCatalogPort,
 	WorkflowModelUsage,
 	WorkflowModelValue,
 } from "../../shared/types.js";
-import { classifyFailureFrom } from "../../shared/workflow-failures-classifier.js";
 import { ProcessCleanupUnconfirmedError } from "../../shared/workflow-infrastructure-error.js";
 import {
 	buildModelCandidatesFromCatalog,
@@ -68,6 +60,7 @@ import {
 	isUnrecognizedModelFailure,
 	type ModelFallbackFailureOptions,
 	resolveScopedModelsFromCatalog,
+	splitReasoningSuffix,
 	type WorkflowResolvedModelCandidate,
 	type WorkflowResolvedScopedModel,
 	workflowModelId,
@@ -87,7 +80,6 @@ import { isWorkflowPendingStageDeliveryFailure } from "./pending-stage-delivery.
 import { stageSessionCompaction } from "./stage-background-compaction.js";
 import { StageDeliveryActivity, type StageDeliveryActivityListener } from "./stage-delivery-activity.js";
 import { stageSessionQueueUpdateEvent } from "./stage-queued-user-messages.js";
-import { routeStageModel } from "./stage-routing.js";
 import { StageArtifactCapture } from "./stage-runner-artifact-capture.js";
 import { candidateLabel, modelAttemptReasoning } from "./stage-runner-candidate.js";
 import { StageMessageAdmission } from "./stage-runner-message-admission.js";
@@ -417,9 +409,26 @@ function splitStageContent(content: StageUserMessageContent): { text: string; im
 	return { text, images: images.length === 0 ? undefined : images };
 }
 
+/** Whether a model accepts image input; a bare model ID, whose capabilities are unknown here, is taken as accepting. */
+function acceptsImageInput(model: WorkflowModelValue | undefined): boolean {
+	if (typeof model !== "object" || model === null || !("input" in model)) return true;
+	const input = (model as { readonly input?: readonly string[] }).input;
+	return !Array.isArray(input) || input.includes("image");
+}
+
+function imageInputError(model: WorkflowModelValue | undefined): string {
+	return `This task reads images, but ${workflowModelId(model) ?? "the model"}, which "auto" stands for, does not accept image input, and neither does the current session's model. Set an image-capable default model with /model or the "defaultProvider" and "defaultModel" settings, or give the task an image-capable model.`;
+}
+
+/** `provider/id[:effort]` for what `model: "auto"` stands for, or undefined when nothing resolved it. */
+function autoModelReference(selected: WorkflowAutoModel | undefined): string | undefined {
+	const id = workflowModelId(selected?.model);
+	if (id === undefined) return undefined;
+	return selected?.thinkingLevel === undefined ? id : `${id}:${selected.thinkingLevel}`;
+}
+
 export class StageSessionController {
 	private session: StageSessionRuntime | undefined;
-	private hasAdmittedSession = false;
 	private activeCreation: Promise<StageSessionRuntime> | undefined;
 	/** The creation promise a candidate walk still owns, if one is advancing. */
 	private ownedCreationPromise: Promise<StageSessionRuntime> | undefined;
@@ -461,11 +470,13 @@ export class StageSessionController {
 	/** The restores of the run this stage belongs to, which every session it opens follows, wherever it reopens. */
 	private readonly runWorktreeRootMappings = currentWorktreeRootMappings();
 	private candidatesPromise: Promise<WorkflowResolvedModelCandidate[]> | undefined;
-	private explicitCandidateModels = new Map<string, WorkflowModelValue>();
 	private scopedModelsPromise: Promise<WorkflowResolvedScopedModel[] | undefined> | undefined;
-	private modelRoute: ModelRoute | undefined;
-	private routingPromise: Promise<void> | undefined;
-	private explicitModel: CreateAgentSessionOptions["model"];
+	/** What `model: "auto"` stands for, `provider/id[:effort]`, resolved when the stage is created. */
+	private readonly autoModel: string | undefined;
+	/** `provider/id` of the primary model `auto` resolved to, already checked for what the stage needs. */
+	private verifiedPrimaryId: string | undefined;
+	/** Why `auto` has no model for this task: it reads images and no candidate accepts image input. */
+	private autoImageInputError: string | undefined;
 	private activeCandidateIndex: number | undefined;
 	private selectedModel: string | undefined;
 	private sharedModelRuntime: CreateAgentSessionOptions["modelRuntime"];
@@ -556,8 +567,6 @@ export class StageSessionController {
 		private readonly structuredOutputCapture: StructuredOutputCapture<unknown> | undefined,
 	) {
 		this.stageDefaultCwd = opts.defaultCwd;
-		this.hasExplicitModelFallbackConfig =
-			effectiveStageOptions?.model !== undefined || (effectiveStageOptions?.fallbackModels?.length ?? 0) > 0;
 		this.modelCatalog =
 			opts.models === undefined
 				? undefined
@@ -568,6 +577,20 @@ export class StageSessionController {
 							opts.models?.recordWarning?.(warning);
 						},
 					} satisfies WorkflowModelCatalogPort);
+		this.autoModel = effectiveStageOptions?.model === "auto" ? this.resolveAutoModel() : undefined;
+		// Adapters and records see the model `auto` stood for, never `auto` itself.
+		if (this.autoModel !== undefined && meta.stageOptions?.model === "auto")
+			meta.stageOptions = { ...meta.stageOptions, model: this.autoModel };
+		// Without a catalog that resolves `auto`, the session adapter resolves it before the stage's first session. An
+		// `auto` neither resolves names no model: the session factory picks the default one.
+		const adapterResolvesAuto =
+			effectiveStageOptions?.model === "auto" &&
+			this.autoModel === undefined &&
+			opts.adapters.agentSession?.autoModel !== undefined;
+		const namesModel =
+			effectiveStageOptions?.model !== undefined &&
+			(effectiveStageOptions.model !== "auto" || this.autoModel !== undefined || adapterResolvesAuto);
+		this.hasExplicitModelFallbackConfig = namesModel || (effectiveStageOptions?.fallbackModels?.length ?? 0) > 0;
 		this.bindAbortSignal();
 	}
 
@@ -579,6 +602,8 @@ export class StageSessionController {
 	useStageOptions(options: StageOptions | undefined, defaultCwd: string): void {
 		this.effectiveStageOptions = options;
 		this.stageDefaultCwd = defaultCwd;
+		if (this.autoModel !== undefined && this.meta.stageOptions?.model === "auto")
+			this.meta.stageOptions = { ...this.meta.stageOptions, model: this.autoModel };
 	}
 
 	/** Opens no session until `ready` settles, and none at all when it rejects: each attempt fails with its error. */
@@ -713,14 +738,6 @@ export class StageSessionController {
 		else this.requestedThinkingLevel = level;
 		this.pendingThinkingLevel = level;
 		this.thinkingLevelRevision++;
-		if (
-			!this.modelRoute &&
-			!this.hasAdmittedSession &&
-			this.sessionPromise === undefined &&
-			this.activeCreation === undefined &&
-			this.ownedCreationPromise === undefined
-		)
-			this.candidatesPromise = undefined;
 	}
 
 	async cycleThinkingLevel(): ReturnType<StageSessionRuntime["cycleThinkingLevel"]> {
@@ -732,95 +749,57 @@ export class StageSessionController {
 		return level;
 	}
 
-	get awaitingAutoPrompt(): boolean {
-		return (
-			this.effectiveStageOptions?.model === "auto" &&
-			this.modelRoute === undefined &&
-			this.explicitModel === undefined
+	/** `provider/id:effort` for the model `model: "auto"` stands for: the user's default model, else the session's. */
+	private resolveAutoModel(): string | undefined {
+		const selected = this.modelCatalog?.autoModel?.();
+		if (this.effectiveStageOptions?.autoNeedsImageInput !== true || selected === undefined)
+			return autoModelReference(selected);
+		if (acceptsImageInput(selected.model)) return autoModelReference(selected);
+		// The task reads images: the session's model stands in when it sees them and the default model does not.
+		const current = this.modelCatalog?.currentModel;
+		if (current !== undefined && acceptsImageInput(current)) return workflowModelId(current);
+		this.autoImageInputError = imageInputError(selected.model);
+		return autoModelReference(selected);
+	}
+
+	/** The stage's primary model: the one it names, or what `auto` stands for, from its catalog or its session adapter. */
+	private async primaryModel(): Promise<WorkflowModelValue | undefined> {
+		const options = this.effectiveStageOptions;
+		if (options?.model !== "auto") return options?.model;
+		if (this.autoImageInputError !== undefined) throw new Error(this.autoImageInputError);
+		if (this.autoModel !== undefined) return this.verifiedPrimary(this.autoModel);
+		const cwd = options.cwd ?? this.opts.defaultCwd;
+		const modelRuntime = options.modelRuntime ?? this.sharedModelRuntime;
+		const needsImageInput = options.autoNeedsImageInput === true;
+		const selected = await this.opts.adapters.agentSession?.autoModel?.(
+			{
+				...(cwd === undefined ? {} : { cwd }),
+				...(options.agentDir === undefined ? {} : { agentDir: options.agentDir }),
+				...(options.settingsManager === undefined ? {} : { settingsManager: options.settingsManager }),
+				...(modelRuntime === undefined ? {} : { modelRuntime }),
+			},
+			...(needsImageInput ? [{ imageInput: true }] : []),
 		);
+		if (needsImageInput && selected !== undefined && !acceptsImageInput(selected.model))
+			throw new Error(imageInputError(selected.model));
+		const resolved = autoModelReference(selected);
+		if (resolved !== undefined && this.meta.stageOptions?.model === "auto")
+			this.meta.stageOptions = { ...this.meta.stageOptions, model: resolved };
+		return resolved === undefined ? undefined : this.verifiedPrimary(resolved);
 	}
 
-	async preparePrompt(text: string): Promise<void> {
-		if (!this.awaitingAutoPrompt && this.routingPromise === undefined) return;
-		if (!this.routingPromise) {
-			this.beginStartup();
-			// A failed routing attempt is not memoized: the next prompt routes again.
-			const routing: Promise<void> = (async () => {
-				const route = this.modelCatalog?.routeModel;
-				if (!route) throw new Error("Workflow stage auto routing requires a routing-capable model catalog.");
-				const options = this.effectiveStageOptions;
-				const thinking = this.pendingThinkingLevel;
-				const constraints = [
-					...(options?.inheritedModelConstraints ?? []),
-					parseModelConstraints(options?.modelConstraints),
-					...(thinking === undefined ? [] : [{ allowedEfforts: [thinking] }]),
-				].filter((c): c is ModelConstraints => c !== undefined);
-				try {
-					this.modelRoute = await routeStageModel(route, {
-						task: text,
-						stageName: this.opts.stageName,
-						constraints,
-						signal: this.residency.startupWait.signal,
-						selection: options?.routerSelection,
-						...(options?.taskNeeds ? { taskNeeds: options.taskNeeds } : {}),
-						...(options?.parallelSlot ? { parallelSlot: options.parallelSlot } : {}),
-						...(setsProviders(parseModelConstraints(options?.modelConstraints))
-							? { overrideProviderSettings: true }
-							: {}),
-					});
-				} catch (error) {
-					this.residency.startupWait.signal.throwIfAborted();
-					this.opts.signal?.throwIfAborted();
-					// #3206: only a total routing-inference failure (Jev and the chat
-					// structured-output fallback both failed) degrades, and only to a
-					// current chat model that satisfies every routing constraint.
-					if (!(error instanceof AutoRoutingInferenceError) || error.currentModelRoute === undefined) throw error;
-					this.modelRoute = error.currentModelRoute;
-					const warning = `workflows: stage auto routing failed; running "${this.opts.stageName}" on the current chat model ${this.modelRoute.modelOverride}.`;
-					reportDebug("model-routing", "stage-routing-fallback", { message: warning }, () =>
-						this.modelCatalog?.recordWarning?.(warning),
-					);
-				}
-				this.modelRoute.assertCurrent();
-				this.meta.stageOptions = { ...options, model: this.modelRoute.modelOverride };
-				this.opts.onModelFallbackMetaChange?.(this.currentModelFallbackMeta());
-			})().catch((error: unknown) => {
-				if (this.routingPromise === routing) {
-					this.routingPromise = undefined;
-					this.modelRoute = undefined;
-				}
-				if (this.residency.startupWait.signal.aborted || this.opts.signal?.aborted) throw error;
-				this.settleStartup(true);
-				// #4031: classified as the routing failure it wraps, never by the stage name in this message.
-				throw classifyFailureFrom(
-					new Error(
-						`atomic-workflows: stage "${this.opts.stageName}" failed during startup phase model-resolution: ${errorMessage(error)}`,
-						{ cause: error },
-					),
-					error,
-				);
-			});
-			this.routingPromise = routing;
-		}
-		await this.routingPromise;
-	}
-
-	assertAutoExecutionCurrent(): void {
-		if (!this.modelRoute) return;
-		this.residency.startupWait.signal.throwIfAborted();
-		this.opts.signal?.throwIfAborted();
-		this.modelRoute.assertCurrent();
+	/**
+	 * Remember the primary model `auto` stands for, which its resolution already checked against what the stage needs.
+	 * Any other candidate, including one that leads the chain after credential checks skipped the primary, is checked
+	 * before it runs.
+	 */
+	private verifiedPrimary(reference: string): string {
+		this.verifiedPrimaryId = splitReasoningSuffix(reference).baseModel;
+		return reference;
 	}
 
 	async setModel(model: NonNullable<CreateAgentSessionOptions["model"]>): Promise<void> {
-		if (this.awaitingAutoPrompt && !this.routingPromise) this.explicitModel = model;
 		await (await this.ensureSession()).setModel(model);
-	}
-	private checkedSession(session: StageSessionRuntime): StageSessionRuntime {
-		if (this.modelRoute && (!session.model || !this.modelRoute.allowsModel(session.model, session.thinkingLevel)))
-			throw new Error("Workflow stage execution model no longer satisfies routing constraints.");
-		this.assertExplicitSessionConstraints(session);
-		return session;
 	}
 
 	ensureSession(consumer: AgentSessionConsumer = "prompt"): Promise<StageSessionRuntime> {
@@ -843,11 +822,6 @@ export class StageSessionController {
 
 	/** The stage's session, created or reopened as needed. Reopening a released stage calls this directly. */
 	private async openSession(consumer: AgentSessionConsumer): Promise<StageSessionRuntime> {
-		if (this.awaitingAutoPrompt && this.routingPromise === undefined)
-			throw new Error(
-				"Workflow stage auto requires prompt text before model-dependent session operations. Call prompt first or set a concrete model.",
-			);
-		if (this.routingPromise !== undefined) await this.routingPromise;
 		if (this.stageOptionsReady !== undefined) await this.stageOptionsReady;
 		if (this.bindingCleanupFailure !== undefined) throw this.bindingCleanupFailure;
 		if (this.sessionShutdownPromise !== undefined) {
@@ -858,7 +832,7 @@ export class StageSessionController {
 		}
 		if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 		this.opts.signal?.throwIfAborted();
-		if (this.session !== undefined && this.activeCreation === undefined) return this.checkedSession(this.session);
+		if (this.session !== undefined && this.activeCreation === undefined) return this.session;
 		if (!this.sessionPromise) {
 			this.beginStartup();
 			const pending = this.createInitialSession(consumer);
@@ -883,8 +857,7 @@ export class StageSessionController {
 				},
 			);
 		}
-		const ready = waitForStageStartup(this.sessionPromise, this.residency.startupWait.signal);
-		return this.modelRoute ? this.checkedSession(await ready) : ready;
+		return waitForStageStartup(this.sessionPromise, this.residency.startupWait.signal);
 	}
 
 	async ensureSessionFromId(
@@ -956,15 +929,6 @@ export class StageSessionController {
 			preparation?.beforePreparation?.();
 			const sessionId = preparation?.sessionId;
 			const deliver = async (activity?: StageDeliveryActivity) => {
-				if (this.effectiveStageOptions?.model === "auto")
-					await this.preparePrompt(
-						typeof content === "string"
-							? content
-							: content
-									.filter((part) => part.type === "text")
-									.map((part) => part.text)
-									.join("\n"),
-					);
 				const activeSession =
 					sessionId === undefined
 						? await this.ensureSession("prompt")
@@ -1237,7 +1201,6 @@ export class StageSessionController {
 		};
 		for (;;) {
 			try {
-				this.checkedSession(session);
 				await resume.call(session, results);
 				break;
 			} catch (error) {
@@ -1902,8 +1865,6 @@ export class StageSessionController {
 		consumer: AgentSessionConsumer = "prompt",
 		newSessionText?: string,
 	): Promise<void> {
-		if (this.effectiveStageOptions?.model === "auto" && this.pendingDetachedResults === undefined)
-			await this.preparePrompt(text);
 		if (
 			this.session !== undefined &&
 			this.activeCreation === undefined &&
@@ -2061,10 +2022,7 @@ export class StageSessionController {
 
 	currentModelFallbackMeta(): StageModelFallbackMeta {
 		const attemptedModels = this.modelAttempts.map((attempt) => attempt.model);
-		const model =
-			(this.modelRoute ? workflowModelId(this.session?.model) : undefined) ??
-			this.selectedModel ??
-			workflowModelId(this.session?.model);
+		const model = this.selectedModel ?? workflowModelId(this.session?.model);
 		const thinkingLevel = this.session?.thinkingLevel ?? this.pendingThinkingLevel;
 		const rateLimits = [...this.rateLimitProviders].flatMap((provider) => {
 			const snapshot = providerRateLimitSnapshot(provider);
@@ -2078,7 +2036,6 @@ export class StageSessionController {
 					];
 		});
 		return {
-			...(this.modelRoute ? { routerSelection: this.modelRoute.routerSelection } : {}),
 			...(model !== undefined ? { model } : {}),
 			...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
 			...(attemptedModels.length > 0 ? { attemptedModels } : {}),
@@ -2418,6 +2375,38 @@ export class StageSessionController {
 		walk: CandidateWalk,
 		start: number,
 	): Promise<number | undefined> {
+		const withoutImages: string[] = [];
+		for (;;) {
+			const index = await this.selectReadyCandidateByAvailability(candidates, walk, start);
+			// Nothing left because every remaining candidate failed the image check: that is a failure the stage reports,
+			// never the normal end of a walk (a pause without a replacement prompt also ends it without a candidate).
+			if (index === undefined && withoutImages.length > 0 && walk.remaining.size === 0)
+				throw new Error(this.noImageCandidateMessage(withoutImages));
+			// The primary model of an image-reading `auto` task already sees images; every other candidate is checked now.
+			if (index === undefined || !this.autoTaskReadsImages()) return index;
+			const candidate = candidates[index]!;
+			if (candidate.id === this.verifiedPrimaryId || (await this.fallbackSeesImages(candidate))) return index;
+			withoutImages.push(candidate.id);
+			walk.remaining.delete(index);
+		}
+	}
+
+	/** Why no model can run an image-reading `auto` task: each candidate skipped, and the settings that fix it. */
+	private noImageCandidateMessage(withoutImages: readonly string[]): string {
+		const reasons = [
+			...this.modelAttempts.flatMap((attempt) =>
+				!attempt.success && attempt.error?.startsWith("Skipped ") ? [attempt.error.slice("Skipped ".length)] : [],
+			),
+			...withoutImages.map((id) => `${id} does not accept image input`),
+		];
+		return `No model can run this task: it reads images, and ${reasons.join("; ")}. Set an image-capable default model with /model or the "defaultProvider" and "defaultModel" settings, give the task an image-capable model, or sign in to the provider of one.`;
+	}
+
+	private async selectReadyCandidateByAvailability(
+		candidates: readonly WorkflowResolvedModelCandidate[],
+		walk: CandidateWalk,
+		start: number,
+	): Promise<number | undefined> {
 		while (walk.remaining.size > 0) {
 			this.opts.signal?.throwIfAborted();
 			let earliest: { index: number; delay: number } | undefined;
@@ -2533,7 +2522,6 @@ export class StageSessionController {
 		this.residency.thrownErrorRetryStates.add(state);
 		try {
 			await this.waitForProvider(this.currentModelValue());
-			this.checkedSession(continuationSession);
 			await continuationSession._runAgentContinue();
 		} catch (error) {
 			const resume = state.pauseResume ?? this.pauseControl.currentResume();
@@ -2570,7 +2558,6 @@ export class StageSessionController {
 		let retainedPrompt: StageSessionRuntime["messages"][number] | undefined;
 		let terminalScanStartIndex: number | undefined;
 		while (true) {
-			this.checkedSession(activeSession);
 			// Same-model retries must not accept answers from an earlier failed iteration.
 			this.artifactCapture.beginAttempt(activeSession);
 			const messagesBeforeAttempt = [...activeSession.messages];
@@ -2762,138 +2749,56 @@ export class StageSessionController {
 	}
 
 	private modelCandidates(): Promise<WorkflowResolvedModelCandidate[]> {
-		if (!this.candidatesPromise) {
-			const resolved = buildModelCandidatesFromCatalog({
-				primaryModel: this.modelRoute?.modelOverride ?? this.explicitModel ?? this.effectiveStageOptions?.model,
-				fallbackModels: [
-					...(this.modelRoute?.fallbackModels ?? []),
-					...(this.effectiveStageOptions?.fallbackModels ?? []),
-				],
+		// `auto` keeps the current model as its last fallback; a model the author named runs only its own chain.
+		this.candidatesPromise ??= this.primaryModel().then((primaryModel) =>
+			buildModelCandidatesFromCatalog({
+				primaryModel,
+				fallbackModels: this.effectiveStageOptions?.fallbackModels ?? [],
 				catalog: this.modelCatalog,
-				includeCurrentModel: this.modelRoute !== undefined,
-			});
-			this.candidatesPromise = this.modelRoute
-				? resolved
-						.then((candidates) => this.withCredentials(candidates))
-						.then((candidates) => {
-							if (!this.modelRoute) return candidates;
-							this.modelRoute.assertCurrent();
-							const effort = this.modelRoute.routerSelection.effort ?? undefined;
-							const seenModels = new Set<string>();
-							const allowed = candidates
-								.filter((candidate) => {
-									if (
-										typeof candidate.value === "string" ||
-										!this.modelRoute!.allowsModel(candidate.value, candidate.reasoningLevel ?? effort)
-									)
-										return false;
-									const id = `${candidate.value.provider}/${candidate.value.id}`;
-									if (seenModels.has(id)) return false;
-									seenModels.add(id);
-									return true;
-								})
-								.map((candidate) => ({
-									...candidate,
-									...(candidate.reasoningLevel === undefined && effort !== undefined
-										? { reasoningLevel: effort as WorkflowResolvedModelCandidate["reasoningLevel"] }
-										: {}),
-								}));
-							if (allowed.length === 0)
-								throw new Error("Workflow stage auto has no eligible execution candidates.");
-							return allowed;
-						})
-				: resolved
-						.then((candidates) => this.withExplicitConstraints(candidates))
-						.then((candidates) => this.withCredentials(candidates));
-		}
+				includeCurrentModel: this.autoModel !== undefined,
+			}).then((candidates) => this.withCredentials(candidates)),
+		);
+
 		return this.candidatesPromise;
 	}
 
-	private explicitModelConstraints(): ModelConstraints[] {
-		const options = this.effectiveStageOptions;
-		return [
-			...(options?.inheritedModelConstraints ?? []).map((constraint) => parseModelConstraints(constraint)),
-			parseModelConstraints(options?.modelConstraints),
-		].filter((constraint): constraint is ModelConstraints => constraint !== undefined);
+	/** Whether this is an `auto` task that reads images, whose every model must accept image input. */
+	private autoTaskReadsImages(): boolean {
+		return this.effectiveStageOptions?.model === "auto" && this.effectiveStageOptions.autoNeedsImageInput === true;
 	}
 
-	private withExplicitConstraints(candidates: WorkflowResolvedModelCandidate[]): WorkflowResolvedModelCandidate[] {
-		this.explicitCandidateModels = new Map(candidates.map((candidate) => [candidate.id, candidate.value]));
-		const constraints = this.explicitModelConstraints();
-		if (constraints.length === 0 || candidates.length === 0) return candidates;
-		const allowed = candidates.filter((candidate) => this.candidateSatisfiesConstraints(candidate, constraints));
-		if (allowed.length === 0)
-			throw new Error("No workflow stage model candidate satisfies the stage's modelConstraints.");
-		return allowed;
-	}
-
-	private candidateSatisfiesConstraints(
-		candidate: WorkflowResolvedModelCandidate,
-		constraints: readonly ModelConstraints[],
-	): boolean {
-		const stageThinkingLevel = (
-			this.effectiveStageOptions as
-				| { readonly thinkingLevel?: WorkflowResolvedModelCandidate["reasoningLevel"] }
-				| undefined
-		)?.thinkingLevel;
-		const effort = this.requestedThinkingLevel ?? candidate.reasoningLevel ?? stageThinkingLevel;
-		if (typeof candidate.value !== "string") {
-			const model = candidate.value;
-			if (!model.reasoning) {
-				return eligiblePair(model, { model: candidate.id, effort: null }, constraints);
-			}
-			if (effort === undefined) {
-				if (constraints.some((constraint) => constraint.allowedEfforts !== undefined)) return false;
-				return getSupportedThinkingLevels(model).some((level) =>
-					eligiblePair(model, { model: candidate.id, effort: level }, constraints),
-				);
-			}
-			return eligiblePair(model, { model: candidate.id, effort: clampThinkingLevel(model, effort) }, constraints);
+	/**
+	 * Whether a fallback of an `auto` task that reads images can see them, judged when it is about to be tried: a candidate
+	 * named only by ID is looked up in the stage's model runtime as it is then (the task's `modelRuntime`, else the one an
+	 * earlier session opened with). One that does not accept images, or that cannot be looked up, is skipped with a
+	 * warning rather than run on placeholders.
+	 */
+	private async fallbackSeesImages(candidate: WorkflowResolvedModelCandidate): Promise<boolean> {
+		let model: WorkflowModelValue | undefined = candidate.value;
+		if (typeof model === "string") {
+			const runtime = this.effectiveStageOptions?.modelRuntime ?? this.sharedModelRuntime;
+			const id = splitReasoningSuffix(model).baseModel;
+			model =
+				runtime === undefined
+					? undefined
+					: (await runtime.getAvailable()).find((available) => `${available.provider}/${available.id}` === id);
 		}
-		const provider = this.candidateProvider(candidate);
-		return constraints.every(
-			(constraint) =>
-				constraint.maxInputCost === undefined &&
-				constraint.maxOutputCost === undefined &&
-				constraint.minContextWindow === undefined &&
-				(constraint.requiredInputs === undefined || constraint.requiredInputs.length === 0) &&
-				(constraint.allowedModels === undefined || constraint.allowedModels.includes(candidate.id)) &&
-				(constraint.allowedProviders === undefined ||
-					(provider !== undefined && constraint.allowedProviders.includes(provider))) &&
-				(constraint.excludedProviders === undefined ||
-					constraint.excludedProviders.length === 0 ||
-					(provider !== undefined && !constraint.excludedProviders.includes(provider))) &&
-				(constraint.allowedEfforts === undefined ||
-					(effort !== undefined && constraint.allowedEfforts.some((allowed) => allowed === effort))),
-		);
+		if (model !== undefined && acceptsImageInput(model)) return true;
+		const warning = `Skipped fallback model ${candidate.id}: ${model === undefined ? "its image support is unknown" : "it does not accept image input"}, and this task reads images.`;
+		if (!this.modelWarnings.includes(warning)) this.modelWarnings.push(warning);
+		return false;
 	}
 
-	private assertExplicitSessionConstraints(
-		session: StageSessionRuntime,
-		candidate?: WorkflowResolvedModelCandidate,
-	): void {
-		if (this.modelRoute || !this.hasExplicitModelFallbackConfig) return;
-		const constraints = this.explicitModelConstraints();
-		if (constraints.length === 0) return;
-		const selectedValue = session.model ?? candidate?.value ?? this.currentModelValue();
-		const id = workflowModelId(selectedValue);
-		const value =
-			typeof selectedValue === "string" && id !== undefined
-				? (this.explicitCandidateModels.get(id) ?? selectedValue)
-				: selectedValue;
-		if (
-			value === undefined ||
-			id === undefined ||
-			!this.candidateSatisfiesConstraints(
-				{
-					id,
-					value,
-					reasoningLevel: session.thinkingLevel ?? this.pendingThinkingLevel ?? candidate?.reasoningLevel,
-				},
-				constraints,
-			)
-		)
-			throw new Error("No workflow stage model candidate satisfies the stage's modelConstraints.");
+	/** The first candidate from `start` an `auto` task that reads images may try next, if any. */
+	private async nextImageCandidateIndex(
+		candidates: readonly WorkflowResolvedModelCandidate[],
+		start: number,
+	): Promise<number | undefined> {
+		for (let index = start; index < candidates.length; index += 1) {
+			const candidate = candidates[index]!;
+			if (candidate.id === this.verifiedPrimaryId || (await this.fallbackSeesImages(candidate))) return index;
+		}
+		return undefined;
 	}
 
 	private candidateProvider(candidate: WorkflowResolvedModelCandidate | undefined): string | undefined {
@@ -3254,7 +3159,6 @@ export class StageSessionController {
 	): Promise<StageSessionRuntime> {
 		const startGeneration = this.abortGeneration;
 		if (this.disposed || this.opts.signal?.aborted) throw this.staleCreationReason(startGeneration);
-		this.modelRoute?.assertCurrent();
 		this.reportStartupPhase("route-authority");
 		const authority = this.opts.routeAuthorityReady?.();
 		if (authority !== undefined) {
@@ -3287,22 +3191,8 @@ export class StageSessionController {
 			sharedModelRuntime: this.sharedModelRuntime,
 			defaultCwd: this.stageDefaultCwd,
 		});
-		if (stageOptions && this.modelRoute) stageOptions.isFallbackModelAllowed = this.modelRoute.allowsModel;
 		let created: StageSessionRuntime | StageSessionCreateResult;
 		try {
-			this.modelRoute?.assertCurrent();
-			if (
-				this.modelRoute &&
-				candidate &&
-				(typeof candidate.value === "string" ||
-					!this.modelRoute.allowsModel(candidate.value, candidate.reasoningLevel))
-			)
-				throw new Error("Workflow stage execution candidate is no longer eligible.");
-			if (!this.modelRoute && candidate) {
-				const constraints = this.explicitModelConstraints();
-				if (constraints.length > 0 && !this.candidateSatisfiesConstraints(candidate, constraints))
-					throw new Error("No workflow stage model candidate satisfies the stage's modelConstraints.");
-			}
 			const adapter = this.opts.adapters.agentSession ?? missingAdapter(consumer);
 			const createOptions = (await stripWorkflowOnlyOptions(
 				stageOptions,
@@ -3373,7 +3263,6 @@ export class StageSessionController {
 			await this.opts.onSessionReady?.();
 			if (this.disposed || this.opts.signal?.aborted || this.abortGeneration !== startGeneration)
 				throw this.staleCreationReason(startGeneration);
-			this.assertExplicitSessionConstraints(attachedSession, candidate);
 		} catch (reason) {
 			// Attachment is not readiness. The retained creation owns cleanup on
 			// both rejection and cancellation; never expose this identity for reuse.
@@ -3386,7 +3275,6 @@ export class StageSessionController {
 			}
 			throw reason;
 		}
-		this.hasAdmittedSession = true;
 		this.givenUp = undefined;
 		this.reopenFailure = undefined;
 		this.reportStartupPhase("ready");
@@ -3529,7 +3417,6 @@ export class StageSessionController {
 				this.reportStartupPhase("first-dispatch");
 				// A live resume loops here without returning through the outer retry guard.
 				await this.waitForProvider(this.currentModelValue());
-				this.checkedSession(activeSession);
 				const detachedResults = this.pendingDetachedResults;
 				this.pendingDetachedResults = undefined;
 				if (detachedResults !== undefined && activeSession.resumeDetachedTurn !== undefined) {
@@ -3739,6 +3626,8 @@ export class StageSessionController {
 			error: message,
 		});
 		let nextIndex: number | undefined = index + 1 < candidates.length ? index + 1 : undefined;
+		if (walk === undefined && nextIndex !== undefined && this.autoTaskReadsImages())
+			nextIndex = await this.nextImageCandidateIndex(candidates, nextIndex);
 		if (walk !== undefined) {
 			this.recordCandidateFailure(walk, index, err, candidates);
 			nextIndex = undefined;
@@ -3785,12 +3674,6 @@ export class StageSessionController {
 	private recordSuccessfulAttempt(candidate: WorkflowResolvedModelCandidate): void {
 		this.artifactCapture.settleAttempt(true);
 		const usage = this.takeAttemptUsage();
-		if (this.modelRoute && this.session?.model)
-			candidate = {
-				id: workflowModelId(this.session.model)!,
-				value: this.session.model,
-				reasoningLevel: this.session.thinkingLevel,
-			};
 		this.modelAttempts.push({
 			model: candidate.id,
 			success: true,

@@ -12,6 +12,7 @@ import {
 	workspaceSessionCwdAsync,
 } from "@bastani/atomic";
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
+import { warnRemovedRoutingOption } from "../../shared/removed-routing-warning.js";
 import { forkStageSession, migrateLegacyStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageExecutionMeta, StageOptions } from "../../shared/types.js";
 import { agentSessionAdapterDefaultCwd } from "./stage-runner-session-options.js";
@@ -55,6 +56,21 @@ async function stageResumeStore(
 	return store;
 }
 
+/**
+ * Stage options of the removed automatic model routing that older workflow definitions and journals may still carry.
+ * They are accepted, ignored and never reach the session.
+ */
+interface RemovedRoutingStageOptions {
+	readonly modelConstraints?: object;
+	readonly taskNeeds?: object;
+	readonly parallelSlot?: object;
+	readonly inheritedModelConstraints?: readonly object[];
+	readonly routerSelection?: object;
+}
+
+/** Removed routing options a workflow author may still pass; the ones the runtime itself carried are not named. */
+const REMOVED_ROUTING_STAGE_OPTIONS = ["modelConstraints", "taskNeeds", "parallelSlot"] as const;
+
 export async function stripWorkflowOnlyOptions(
 	options: StageOptions | undefined,
 	defaultSessionDir: string | undefined,
@@ -64,6 +80,9 @@ export async function stripWorkflowOnlyOptions(
 ): Promise<CreateAgentSessionOptions> {
 	const classification = workflowSessionOptions(meta);
 	const orchestrationContext = workflowOrchestrationContext(meta, options, pendingStageDelivery);
+	if (options)
+		for (const option of REMOVED_ROUTING_STAGE_OPTIONS)
+			if (Object.hasOwn(options, option)) warnRemovedRoutingOption(option);
 	if (!options) {
 		return defaultSessionDir === undefined
 			? { orchestrationContext }
@@ -94,12 +113,13 @@ export async function stripWorkflowOnlyOptions(
 		durableStageId: _durableStageId,
 		durableIntercomGroup: _durableIntercomGroup,
 		durableParentIds: _durableParentIds,
+		autoNeedsImageInput: _autoNeedsImageInput,
 		sessionDir,
 		gitWorktreeDir: _gitWorktreeDir,
 		baseBranch: _baseBranch,
 		group: _group,
 		...sessionOptions
-	} = options;
+	} = options as StageOptions & RemovedRoutingStageOptions;
 	// Bound here, before the session opens, so the session store, the session and its tools all use the bound worktree.
 	// A resumed session restores the binding its session recorded instead of resolving the workspace again.
 	const resumeStore =
