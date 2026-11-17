@@ -7,15 +7,26 @@ import { resolvePath } from "../../utils/paths.ts";
 import { SessionStorageSelectionSchema, StorageSelectionSchema } from "../settings-schema.ts";
 import { StorageConfigError, StoragePrefixError } from "./errors.js";
 import {
-	defaultSessionDatabasePath,
-	defaultSharedStoragePath,
+	defaultJournalStoreDirectorySteps,
+	defaultSessionDatabasePathSteps,
+	defaultSharedStoragePathSteps,
+	runStorageSteps,
+	runStorageStepsSync,
 	type StorageHomeSettings,
-	storagePathBaseDir,
+	type StorageSteps,
+	storagePathBaseDirSteps,
+	storageSettingsSteps,
 } from "./file-identity.js";
-import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { validateStoragePrefix } from "./prefix.js";
 import type { StorageSelection } from "./provider.js";
-import { environmentTeamProfile, selectStorage, selectsDefaultJournalStore, TEAM_PROFILE_ENV } from "./selection.js";
+import {
+	environmentTeamProfile,
+	environmentTeamProfileAsync,
+	environmentTeamProfileSelection,
+	selectStorageSteps,
+	selectsDefaultJournalStore,
+	TEAM_PROFILE_ENV,
+} from "./selection.js";
 
 export const STORAGE_ENV = "ATOMIC_STORAGE";
 export const SESSIONS_STORAGE_ENV = "ATOMIC_SESSIONS_STORAGE";
@@ -61,32 +72,38 @@ function parseSelection<T extends TSchema>(text: string, schema: T, source: "cli
 	return value;
 }
 
-function choose(
+function chooseAt(value: DomainSelection, source: "cli" | "env", field: string, path: string): ProcessStorageChoice {
+	const next = chooseSteps(value, source, field, path, path).next();
+	if (!next.done) throw new Error(`Unexpected storage lookup while checking ${field}`);
+	return next.value;
+}
+
+function* chooseSteps(
 	value: DomainSelection,
 	source: "cli" | "env",
 	field: string,
-	baseDir: (path: string) => string,
-	defaultPath: () => string,
-): ProcessStorageChoice {
-	const resolve = (path: string): string => {
+	baseDir: string | ((path: string) => StorageSteps<string>),
+	defaultPath: string | (() => StorageSteps<string>),
+): StorageSteps<ProcessStorageChoice> {
+	function* resolve(path: string): StorageSteps<string> {
 		try {
-			return resolvePath(path, baseDir(path));
+			return resolvePath(path, typeof baseDir === "string" ? baseDir : yield* baseDir(path));
 		} catch {
 			throw new StorageConfigError(source, field, "invalid-path");
 		}
-	};
-	if ("dir" in value) return { selection: { kind: "jsonl", dir: resolve(value.dir) }, source, field };
+	}
+	if ("dir" in value) return { selection: { kind: "jsonl", dir: yield* resolve(value.dir) }, source, field };
 	try {
 		validateStoragePrefix(value.prefix);
 	} catch (error) {
 		if (error instanceof StoragePrefixError) throw new StorageConfigError(source, field, "invalid-prefix");
 		throw error;
 	}
-	const selection = selectStorage(value, source, field, defaultPath);
+	const selection = yield* selectStorageSteps(value, source, field, defaultPath);
 	return {
 		selection:
 			selection.kind === "sqlite" && !isAbsolute(selection.path)
-				? { ...selection, path: resolve(selection.path) }
+				? { ...selection, path: yield* resolve(selection.path) }
 				: selection,
 		source,
 		field,
@@ -116,28 +133,23 @@ export function setCliStorageSelection(argument: StorageFlagArgument | undefined
 
 /** Every set storage variable, parsed and checked even when another selection outranks it. */
 function environmentChoices(agentDir: string) {
-	const baseDir = () => agentDir;
-	const domainDefault = () => agentDir;
-	const sharedDefault = domainDefault;
-	const journalDefault = domainDefault;
 	const read = (
 		field: string,
 		schema: typeof SessionStorageSelectionSchema | typeof StorageSelectionSchema,
-		defaultPath: () => string,
 	): ProcessStorageChoice | undefined => {
 		const text = environmentValue(field);
 		if (text === undefined) return undefined;
 		const value = parseSelection(text, schema, "env", field);
 		if (field === WORKFLOWS_JOURNAL_ENV && !("dir" in value) && selectsDefaultJournalStore(value))
-			return { selection: { kind: "sharded", dir: journalDefault() }, source: "env", field };
-		return choose(value, "env", field, baseDir, defaultPath);
+			return { selection: { kind: "sharded", dir: agentDir }, source: "env", field };
+		return chooseAt(value, "env", field, agentDir);
 	};
-	const team = environmentTeamProfile();
+	const team = environmentTeamProfileSelection();
 	return {
-		sessions: read(SESSIONS_STORAGE_ENV, SessionStorageSelectionSchema, domainDefault),
-		journal: read(WORKFLOWS_JOURNAL_ENV, StorageSelectionSchema, domainDefault),
-		shared: read(STORAGE_ENV, StorageSelectionSchema, sharedDefault),
-		team: team === undefined ? undefined : choose(team, "env", TEAM_PROFILE_ENV, baseDir, sharedDefault),
+		sessions: read(SESSIONS_STORAGE_ENV, SessionStorageSelectionSchema),
+		journal: read(WORKFLOWS_JOURNAL_ENV, StorageSelectionSchema),
+		shared: read(STORAGE_ENV, StorageSelectionSchema),
+		team: team === undefined ? undefined : chooseAt(team, "env", TEAM_PROFILE_ENV, agentDir),
 		teamValue: team,
 	};
 }
@@ -145,6 +157,12 @@ function environmentChoices(agentDir: string) {
 /** Check every set storage variable, whether or not any selection uses it. */
 export function validateProcessStorage(agentDir: string): void {
 	environmentChoices(agentDir);
+	environmentTeamProfile();
+}
+
+export async function validateProcessStorageAsync(agentDir: string): Promise<void> {
+	environmentChoices(agentDir);
+	await environmentTeamProfileAsync();
 }
 
 /**
@@ -159,40 +177,63 @@ export function selectProcessStorage(
 	cwd = process.cwd(),
 	settings?: StorageHomeSettings | (() => StorageHomeSettings | undefined),
 ): ProcessStorageChoice | undefined {
+	return runStorageStepsSync(
+		selectProcessStorageSteps(domain, agentDir, cwd),
+		typeof settings === "function" ? settings : () => settings,
+	);
+}
+
+export function selectProcessStorageAsync(
+	domain: StorageDomain,
+	agentDir: string,
+	cwd = process.cwd(),
+	settings?: StorageHomeSettings | (() => Promise<StorageHomeSettings | undefined>),
+): Promise<ProcessStorageChoice | undefined> {
+	return runStorageSteps(
+		selectProcessStorageSteps(domain, agentDir, cwd),
+		typeof settings === "function" ? settings : async () => settings,
+	);
+}
+
+export function* selectProcessStorageSteps(
+	domain: StorageDomain,
+	agentDir: string,
+	cwd: string,
+): StorageSteps<ProcessStorageChoice | undefined> {
 	const legacyField = domain === "sessions" ? ENV_SESSION_DIR : WORKFLOW_JOURNAL_PATH_ENV;
 	const legacy = environmentValue(legacyField);
 	const validated = environmentChoices(agentDir);
-	let resolvedSettings: StorageHomeSettings | undefined;
-	let hasResolvedSettings = typeof settings !== "function";
-	const getSettings = (): StorageHomeSettings | undefined => {
-		if (!hasResolvedSettings) {
-			resolvedSettings = (settings as () => StorageHomeSettings | undefined)();
-			hasResolvedSettings = true;
-		}
-		return typeof settings === "function" ? resolvedSettings : settings;
+	const settings = storageSettingsSteps<StorageHomeSettings | undefined>;
+	const baseDir = function* (path: string): StorageSteps<string> {
+		return yield* storagePathBaseDirSteps(path, agentDir, yield* settings());
 	};
-	const baseDir = (path: string) => storagePathBaseDir(path, agentDir, getSettings());
-	const domainDefault = () => defaultSessionDatabasePath(agentDir, getSettings());
-	const sharedDefault = () => defaultSharedStoragePath(agentDir, getSettings());
-	const journalDefault = () => defaultJournalStoreDirectory(agentDir, getSettings());
-	const resolveEnv = (
+	const domainDefault = function* (): StorageSteps<string> {
+		return yield* defaultSessionDatabasePathSteps(agentDir, yield* settings());
+	};
+	const sharedDefault = function* (): StorageSteps<string> {
+		return yield* defaultSharedStoragePathSteps(agentDir, yield* settings());
+	};
+	const journalDefault = function* (): StorageSteps<string> {
+		return yield* defaultJournalStoreDirectorySteps(agentDir, yield* settings());
+	};
+	function* resolveEnv(
 		field: string,
 		schema: typeof SessionStorageSelectionSchema | typeof StorageSelectionSchema,
-		defaultPath: () => string,
-	): ProcessStorageChoice | undefined => {
+		defaultPath: () => StorageSteps<string>,
+	): StorageSteps<ProcessStorageChoice | undefined> {
 		const text = environmentValue(field);
 		if (text === undefined) return undefined;
 		const value = parseSelection(text, schema, "env", field);
 		if (field === WORKFLOWS_JOURNAL_ENV && !("dir" in value) && selectsDefaultJournalStore(value))
-			return { selection: { kind: "sharded", dir: journalDefault() }, source: "env", field };
-		return choose(value, "env", field, baseDir, defaultPath);
-	};
+			return { selection: { kind: "sharded", dir: yield* journalDefault() }, source: "env", field };
+		return yield* chooseSteps(value, "env", field, baseDir, defaultPath);
+	}
 	const cli = registry[CLI_SELECTION];
 	if (cli !== undefined) {
 		if (legacy !== undefined) {
 			throw new StorageConfigError("cli", `${cli.field}, ${legacyField}`, "conflicting-overrides");
 		}
-		return choose(cli.value, "cli", cli.field, baseDir, sharedDefault);
+		return yield* chooseSteps(cli.value, "cli", cli.field, baseDir, sharedDefault);
 	}
 	const domainField = domain === "sessions" ? SESSIONS_STORAGE_ENV : WORKFLOWS_JOURNAL_ENV;
 	const domainChoice = domain === "sessions" ? validated.sessions : validated.journal;
@@ -200,7 +241,7 @@ export function selectProcessStorage(
 		if (legacy !== undefined) {
 			throw new StorageConfigError("env", `${domainField}, ${legacyField}`, "conflicting-overrides");
 		}
-		return resolveEnv(
+		return yield* resolveEnv(
 			domainField,
 			domain === "sessions" ? SessionStorageSelectionSchema : StorageSelectionSchema,
 			domainDefault,
@@ -216,10 +257,10 @@ export function selectProcessStorage(
 		}
 	}
 	if (validated.shared !== undefined) {
-		return resolveEnv(STORAGE_ENV, StorageSelectionSchema, sharedDefault);
+		return yield* resolveEnv(STORAGE_ENV, StorageSelectionSchema, sharedDefault);
 	}
 	const team = validated.teamValue;
-	return team === undefined ? undefined : choose(team, "env", TEAM_PROFILE_ENV, baseDir, sharedDefault);
+	return team === undefined ? undefined : yield* chooseSteps(team, "env", TEAM_PROFILE_ENV, baseDir, sharedDefault);
 }
 
 /** Whether the launching process selected this domain's storage, without validating the selection. */
@@ -248,10 +289,24 @@ export function processSharedStorageSelection(): string | undefined {
 	return team === undefined ? undefined : JSON.stringify(team);
 }
 
+export async function processSharedStorageSelectionAsync(): Promise<string | undefined> {
+	const cli = registry[CLI_SELECTION];
+	if (cli !== undefined) return JSON.stringify(cli.value);
+	const shared = environmentValue(STORAGE_ENV);
+	if (shared !== undefined) return shared;
+	const team = await environmentTeamProfileAsync();
+	return team === undefined ? undefined : JSON.stringify(team);
+}
+
 /**
  * `process.env` with `ATOMIC_STORAGE` set to {@link processSharedStorageSelection}, as the Intercom broker this
  * process starts receives it: the environment to compare a running broker's storage against.
  */
 export function processStorageEnvironment(): NodeJS.ProcessEnv {
 	return { ...process.env, [STORAGE_ENV]: processSharedStorageSelection() ?? "" };
+}
+
+export async function processStorageEnvironmentAsync(): Promise<NodeJS.ProcessEnv> {
+	const selection = await processSharedStorageSelectionAsync();
+	return { ...process.env, [STORAGE_ENV]: selection ?? "" };
 }

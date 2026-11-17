@@ -31,18 +31,18 @@ describe("artifact manager", () => {
 	it("saves with sequential ids and scan-inits existing", async () => {
 		const dir = await tempDir();
 		const m1 = new ArtifactManager(dir);
-		expect(m1.save("a", "read")).toBe("0");
-		expect(m1.save("b", "read")).toBe("1");
+		expect(await m1.save("a", "read")).toBe("0");
+		expect(await m1.save("b", "read")).toBe("1");
 		const m2 = new ArtifactManager(dir);
-		expect(m2.save("c", "read")).toBe("2");
+		expect(await m2.save("c", "read")).toBe("2");
 	});
 
 	it("resolves by id prefix and lists", async () => {
 		const dir = await tempDir();
 		const m = getArtifactManager(dir);
-		const id = m.save("content", "bash");
-		expect(m.resolve(id)).toBe(join(dir, `${id}.bash.log`));
-		expect(m.list()).toEqual([id]);
+		const id = await m.save("content", "bash");
+		expect(await m.resolve(id)).toBe(join(dir, `${id}.bash.log`));
+		expect(await m.list()).toEqual([id]);
 	});
 });
 
@@ -51,23 +51,23 @@ describe("artifact protocol", () => {
 		const dir = await tempDir();
 		registerArtifactDir(dir);
 		const m = getArtifactManager(dir);
-		const id = m.save("hello world", "read");
-		const path = resolveArtifactUrl(`artifact://${id}`, []);
+		const id = await m.save("hello world", "read");
+		const path = await resolveArtifactUrl(`artifact://${id}`, []);
 		expect(path).toBe(join(dir, `${id}.read.log`));
-		expect(readArtifactUrl(`artifact://${id}`, [])).toBe("hello world");
+		expect(await readArtifactUrl(`artifact://${id}`, [])).toBe("hello world");
 	});
 
 	it("router resolves and reads artifact urls only", async () => {
 		const dir = await tempDir();
 		const m = getArtifactManager(dir);
-		const id = m.save("body", "read");
+		const id = await m.save("body", "read");
 		const router = createArtifactRouter(() => [dir]);
-		expect(router.resolve?.("skill://x")).toBeUndefined();
-		expect(router.resolve?.(`artifact://${id}`)).toBe(join(dir, `${id}.read.log`));
-		expect(router.read?.(`artifact://${id}`)).toBe("body");
+		expect(await router.resolve?.("skill://x")).toBeUndefined();
+		expect(await router.resolve?.(`artifact://${id}`)).toBe(join(dir, `${id}.read.log`));
+		expect(await router.read?.(`artifact://${id}`)).toBe("body");
 	});
 
-	it("rejects non-numeric ids", () => {
-		expect(() => resolveArtifactUrl("artifact://abc", [])).toThrow(/numeric/);
+	it("rejects non-numeric ids", async () => {
+		await expect(resolveArtifactUrl("artifact://abc", [])).rejects.toThrow(/numeric/);
 	});
 });

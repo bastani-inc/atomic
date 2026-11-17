@@ -1,10 +1,13 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	canonicalizePath,
+	canonicalizePathAsync,
+	createSessionCwdMatcherAsync,
 	getCwdRelativePath,
 	getPathComparisonKey,
 	isLocalPath,
@@ -70,6 +73,42 @@ describe("canonicalizePath", () => {
 		symlinkSync(target, link);
 		// realpathSync would throw, so canonicalizePath returns the link path.
 		expect(canonicalizePath(link)).toBe(link);
+	});
+
+	it("canonicalizes paths and matches session cwds asynchronously", async () => {
+		const dir = createTempDir();
+		const targetDir = join(dir, "target-dir");
+		const linkDir = join(dir, "link-dir");
+		mkdirSync(targetDir);
+		symlinkSync(targetDir, linkDir, "dir");
+		const missing = join(dir, "no-such-file");
+
+		expect(await canonicalizePathAsync(linkDir)).toBe(realpathSync(targetDir));
+		expect(await canonicalizePathAsync(missing)).toBe(missing);
+
+		const matches = createSessionCwdMatcherAsync(targetDir);
+		expect(await matches(linkDir)).toBe(true);
+		expect(await matches(missing)).toBe(false);
+		expect(await matches(undefined)).toBe(false);
+	});
+
+	it("uses non-native fs.realpath in canonicalizePathAsync to match canonicalizePath", async () => {
+		const dir = createTempDir();
+		const target = join(dir, "RUNNER~1");
+		mkdirSync(target);
+		const cjsFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+		const originalLstat = cjsFs.lstat;
+		let lstatCalls = 0;
+		cjsFs.lstat = ((...args: Parameters<typeof originalLstat>) => {
+			lstatCalls += 1;
+			return Reflect.apply(originalLstat, cjsFs, args);
+		}) as typeof originalLstat;
+		try {
+			expect(await canonicalizePathAsync(target)).toBe(canonicalizePath(target));
+			expect(lstatCalls).toBeGreaterThan(0);
+		} finally {
+			cjsFs.lstat = originalLstat;
+		}
 	});
 });
 

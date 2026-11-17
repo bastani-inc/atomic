@@ -205,7 +205,7 @@ test(
 				try {
 					Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
 					// Atomic's bash shell runs it, Git Bash on Windows, so it takes the POSIX hint.
-					hint = formatResumeCommand(manager, "linux");
+					hint = await formatResumeCommand(manager, "linux");
 				} finally {
 					if (tty) Object.defineProperty(process.stdout, "isTTY", tty);
 					else Reflect.deleteProperty(process.stdout, "isTTY");
@@ -275,7 +275,7 @@ test.runIf(process.platform === "win32")(
 				let hint: string | undefined;
 				try {
 					Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
-					hint = formatResumeCommand(manager, "win32");
+					hint = await formatResumeCommand(manager, "win32");
 				} finally {
 					if (tty) Object.defineProperty(process.stdout, "isTTY", tty);
 					else Reflect.deleteProperty(process.stdout, "isTTY");

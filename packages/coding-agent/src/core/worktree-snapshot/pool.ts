@@ -2,12 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { failureDebugFields, reportDebug } from "../debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
 import { renameWithRetry } from "../rename-retry.ts";
 import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
 import { processesWorkIn } from "./in-use.ts";
-import { canonicalizeWorktreePath } from "./paths.ts";
+import { canonicalizeWorktreePathAsync } from "./paths.ts";
 import { isDeniedSnapshotPath } from "./policy.ts";
 import { HOST, holderRuns as processHolderRuns, thisProcess } from "./process-holder.js";
 import { type RepositoryId, sharedRepositoryIdOf, sharedRepositoryIdsOf } from "./repository-identity.ts";
@@ -374,8 +374,9 @@ async function withSlotLock<T>(
 	const token = randomUUID();
 	let named = false;
 	try {
-		await writeFile(`${lockTokenFile(file)}.${await ownLease()}.tmp`, token, { mode: 0o600 });
-		await renameWithRetry(`${lockTokenFile(file)}.${await ownLease()}.tmp`, lockTokenFile(file));
+		const temporary = `${lockTokenFile(file)}.${await ownLease()}.tmp`;
+		await writeFile(temporary, token, { mode: 0o600 });
+		await renameWithRetry(temporary, lockTokenFile(file));
 		named = true;
 	} catch (error) {
 		reportDebug("storage", "worktree-pool-lock-token-failed", { file, ...failureDebugFields(error) });
@@ -707,12 +708,19 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 }
 
 /** The repository and slot of a pooled worktree path under `storeDir`, or undefined for any other path. */
-function slotOf(storeDir: string, root: string): { repository: RepositoryId; slot: SlotNumber } | undefined {
+async function slotOf(
+	storeDir: string,
+	root: string,
+): Promise<{ repository: RepositoryId; slot: SlotNumber } | undefined> {
 	const worktrees = join(resolve(storeDir), "worktrees");
 	const match = SLOT_NAME.exec(basename(root));
 	if (!match) return undefined;
 	try {
-		if (canonicalizeWorktreePath(dirname(root)) !== canonicalizeWorktreePath(worktrees)) return undefined;
+		const [parent, pooled] = await Promise.all([
+			canonicalizeWorktreePathAsync(dirname(root)),
+			canonicalizeWorktreePathAsync(worktrees),
+		]);
+		if (parent !== pooled) return undefined;
 	} catch {
 		return undefined;
 	}
@@ -721,7 +729,7 @@ function slotOf(storeDir: string, root: string): { repository: RepositoryId; slo
 
 /** Who owns the worktree at `root`, and whether a live process holds it. Reads, never writes, and never throws. */
 export async function pooledWorktreeHolder(storeDir: string, root: string): Promise<PooledWorktreeHolder> {
-	const slot = slotOf(storeDir, root);
+	const slot = await slotOf(storeDir, root);
 	if (slot === undefined) return "unpooled";
 	const file = recordFile(storeDir, slot.repository, slot.slot);
 	let record: PoolSlotRecord | undefined;
@@ -745,7 +753,7 @@ export async function holdRestoredWorktree(
 	owner: PoolOwner,
 	signal?: AbortSignal,
 ): Promise<WorktreeLease | undefined> {
-	const slot = slotOf(storeDir, root);
+	const slot = await slotOf(storeDir, root);
 	if (slot === undefined) return undefined;
 	const file = recordFile(storeDir, slot.repository, slot.slot);
 	// Every change to the slot, this process's share of it included, happens under its record lock, so concurrent
@@ -1138,7 +1146,7 @@ export async function claimIdleWorktree(
 	// Slots an earlier version admitted under the remotes as spelled are the repository's too (#4748), when that spelling
 	// named this repository alone (#4989).
 	const repositories = sharedRepositoryIdsOf(snapshot.remotes, snapshot.root);
-	const stores = new Set(repositories.map((repository) => repositoryStore(storeDir, repository)));
+	const stores = new Set(await Promise.all(repositories.map((repository) => repositoryStore(storeDir, repository))));
 	const candidates: PoolSlotRecord[] = [];
 	for (const repository of repositories) {
 		candidates.push(...(await slotRecords(storeDir, repository).catch(() => [])));
@@ -1158,14 +1166,14 @@ export async function claimIdleWorktree(
 }
 
 /** The object store, as a canonical path, that pooled worktrees of `repository` belong to. */
-function repositoryStore(storeDir: string, repository: RepositoryId): string {
-	return canonicalizeWorktreePath(join(storeDir, "repositories", `${repository}.git`));
+function repositoryStore(storeDir: string, repository: RepositoryId): Promise<string> {
+	return canonicalizeWorktreePathAsync(join(storeDir, "repositories", `${repository}.git`));
 }
 
 /** Whether the worktree at `path` belongs to one of `stores`; false when that cannot be told. */
 async function belongsTo(storeDir: string, path: string, stores: ReadonlySet<string>, signal?: AbortSignal) {
 	try {
-		return stores.has(canonicalizeWorktreePath(await pooledWorktreeStore(storeDir, path, signal)));
+		return stores.has(await canonicalizeWorktreePathAsync(await pooledWorktreeStore(storeDir, path, signal)));
 	} catch {
 		return false;
 	}

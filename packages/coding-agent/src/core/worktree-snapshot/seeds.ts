@@ -2,7 +2,7 @@ import type { Stats } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { failureDebugFields, reportDebug } from "../debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
 import { releaseLock } from "../lock-release.ts";
 import { renameWithRetry } from "../rename-retry.ts";
 import { timeRestorePhase } from "../resume/timings.ts";

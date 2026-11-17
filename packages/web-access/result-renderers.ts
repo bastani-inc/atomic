@@ -158,7 +158,7 @@ function parseSources(
 	}
 
 	if (sources.length === 0 && rawText) {
-		const numberedPattern = /^\d+\.\s+([^\n]+)\n\s+(https?:\/\/\S+)/gm;
+		const numberedPattern = /^\d+\.\s+(\S[^\n]*)\n\s+(https?:\/\/\S+)/gm;
 		for (let match = numberedPattern.exec(rawText); match !== null; match = numberedPattern.exec(rawText)) {
 			add(match[1]!, match[2]!);
 		}

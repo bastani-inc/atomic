@@ -1,4 +1,5 @@
 import { dirname } from "node:path";
+import type { Focusable } from "@bastani/atomic-tui";
 import { isResumeFailure } from "../../core/resume/failure.ts";
 import type { SessionInfo, SessionListProgress } from "../../core/session-manager.ts";
 import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts";
@@ -7,15 +8,17 @@ import {
 	listWorkflowResumeEntries,
 	resumeWorkflowFromPicker,
 } from "../../core/workflow-resume.ts";
-import { canonicalizePath } from "../../utils/paths.ts";
+import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	APP_NAME,
+	type Component,
 	type ExtensionCommandContext,
-	hasTrustRequiringProjectResources,
+	getProjectTrustPathAsync,
+	hasTrustRequiringProjectResourcesAsync,
 	keyText,
 	Loader,
 	MissingSessionCwdError,
@@ -56,22 +59,24 @@ InteractiveModeBase.prototype.handleCloneCommand = async function (this: Interac
 	}
 };
 
-InteractiveModeBase.prototype.maybeSaveImplicitProjectTrustAfterReload = function (this: InteractiveModeBase): boolean {
+InteractiveModeBase.prototype.maybeSaveImplicitProjectTrustAfterReload = async function (
+	this: InteractiveModeBase,
+): Promise<boolean> {
 	const cwd = this.sessionManager.getCwd();
 	if (this.autoTrustOnReloadCwd !== cwd) {
 		return false;
 	}
-	if (!this.settingsManager.isProjectTrusted() || !hasTrustRequiringProjectResources(cwd)) {
+	if (!this.settingsManager.isProjectTrusted() || !(await hasTrustRequiringProjectResourcesAsync(cwd))) {
 		return false;
 	}
 
 	const trustStore = new ProjectTrustStore(this.runtimeHost.services.agentDir);
 	try {
-		if (trustStore.get(cwd) !== null) {
+		if ((await trustStore.getAsync(cwd)) !== null) {
 			this.autoTrustOnReloadCwd = undefined;
 			return false;
 		}
-		trustStore.set(cwd, true);
+		await trustStore.setAsync(cwd, true);
 		this.autoTrustOnReloadCwd = undefined;
 		return true;
 	} catch (error) {
@@ -82,40 +87,86 @@ InteractiveModeBase.prototype.maybeSaveImplicitProjectTrustAfterReload = functio
 	}
 };
 
-InteractiveModeBase.prototype.showTrustSelector = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.showTrustSelector = async function (this: InteractiveModeBase): Promise<void> {
 	const cwd = this.sessionManager.getCwd();
 	const trustStore = new ProjectTrustStore(this.runtimeHost.services.agentDir);
-	const savedDecision = trustStore.getEntry(cwd);
-	void withHostProjectTrustPrompt(
+	const trustData = Promise.all([trustStore.getEntryAsync(cwd), getProjectTrustPathAsync(cwd)]);
+	await withHostProjectTrustPrompt(
 		this.runtimeHost,
 		"select",
 		"Project trust",
 		() =>
-			new Promise<void>((resolve) => {
+			new Promise<void>((resolve, reject) => {
 				this.showSelector((done) => {
-					const selector = new TrustSelectorComponent({
-						cwd,
-						savedDecision,
-						projectTrusted: this.settingsManager.isProjectTrusted(),
-						onSelect: (selection) => {
-							try {
-								trustStore.setMany(selection.updates);
-							} catch (error) {
-								selector.selector.retrySelection();
-								this.showError(error instanceof Error ? error.message : String(error));
-								return;
-							}
-							done();
-							this.showStatus(
-								`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
-							);
+					const heldInput: string[] = [];
+					let selector: TrustSelectorComponent | undefined;
+					let focused = false;
+					let closed = false;
+					const view: Component & Focusable = {
+						capturesViewportInput: true,
+						get focused() {
+							return focused;
 						},
-						onCancel: () => {
-							done();
+						set focused(value: boolean) {
+							focused = value;
+							if (selector) selector.focused = value;
+						},
+						render: (width) => selector?.render(width) ?? [],
+						invalidate: () => selector?.invalidate(),
+						handleInput: (data) => {
+							if (selector) selector.handleInput(data);
+							else heldInput.push(data);
+						},
+						handleMouse: (event) => selector?.handleMouse(event),
+					};
+					trustData.then(
+						([savedDecision, trustPath]) => {
+							if (closed) return;
+							const shown = new TrustSelectorComponent({
+								cwd,
+								trustPath,
+								savedDecision,
+								projectTrusted: this.settingsManager.isProjectTrusted(),
+								onSelect: (selection) => {
+									trustStore.setManyAsync(selection.updates).then(
+										() => {
+											done();
+											this.showStatus(
+												`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
+											);
+										},
+										(error: unknown) => {
+											shown.selector.retrySelection();
+											this.showError(error instanceof Error ? error.message : String(error));
+										},
+									);
+								},
+								onCancel: () => {
+									done();
+									this.ui.requestRender();
+								},
+							});
+							shown.focused = focused;
+							selector = shown;
+							for (const data of heldInput.splice(0)) {
+								if (closed) break;
+								shown.handleInput(data);
+							}
 							this.ui.requestRender();
 						},
-					});
-					return { component: selector, focus: selector, dispose: resolve };
+						(error: unknown) => {
+							reject(error);
+							done();
+						},
+					);
+					return {
+						component: view,
+						focus: view,
+						dispose: () => {
+							closed = true;
+							resolve();
+						},
+					};
 				});
 			}),
 	).catch((error: Error) => this.showError(error.message));
@@ -374,7 +425,8 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 					if (
 						selected.id === this.sessionManager.getSessionId() &&
 						(directory === undefined ||
-							canonicalizePath(directory) === canonicalizePath(this.sessionManager.getSessionDir()))
+							(await canonicalizePathAsync(directory)) ===
+								(await canonicalizePathAsync(this.sessionManager.getSessionDir())))
 					) {
 						await this.session.setSessionName(next);
 					} else {

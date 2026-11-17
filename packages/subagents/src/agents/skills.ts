@@ -2,9 +2,11 @@
  * Skill resolution and caching for subagent extension
  */
 
-import * as fs from "node:fs";
+import type { Dirent, Stats } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
 import type { SkillCatalog } from "@bastani/atomic";
+import { pathExists } from "../shared/path-exists.js";
 import {
 	buildSkillPaths,
 	clearSkillPathDiscoveryCache,
@@ -12,7 +14,7 @@ import {
 	type SkillSearchPath,
 } from "./skills-paths.js";
 
-export { __setGlobalNpmRootExecSyncForTest } from "./skills-paths.js";
+export { __setGlobalNpmRootExecForTest } from "./skills-paths.js";
 
 export type SkillSource =
 	| "project"
@@ -48,7 +50,7 @@ interface CachedSkillEntry {
 const skillCache = new Map<string, SkillCacheEntry>();
 const MAX_CACHE_SIZE = 50;
 
-let loadSkillsCache: { cwd: string; skills: CachedSkillEntry[]; timestamp: number } | null = null;
+let loadSkillsCache: { cwd: string; skills: Promise<CachedSkillEntry[]>; timestamp: number } | null = null;
 const LOAD_SKILLS_CACHE_TTL_MS = 5000;
 
 const SUBAGENT_ORCHESTRATION_SKILL = "subagent";
@@ -97,9 +99,9 @@ function chooseHigherPrioritySkill(
 	return candidate.order < existing.order ? candidate : existing;
 }
 
-function maybeReadSkillDescription(filePath: string): string | undefined {
+async function maybeReadSkillDescription(filePath: string): Promise<string | undefined> {
 	try {
-		const content = fs.readFileSync(filePath, "utf-8");
+		const content = await readFile(filePath, "utf-8");
 		const normalized = content.replace(/\r\n/g, "\n");
 		if (!normalized.startsWith("---")) return undefined;
 
@@ -116,56 +118,56 @@ function maybeReadSkillDescription(filePath: string): string | undefined {
 	}
 }
 
-function collectFilesystemSkills(cwd: string, skillPaths: SkillSearchPath[]): CachedSkillEntry[] {
+async function collectFilesystemSkills(cwd: string, skillPaths: SkillSearchPath[]): Promise<CachedSkillEntry[]> {
 	const entries: CachedSkillEntry[] = [];
 	const seen = new Set<string>();
 	let order = 0;
 
-	const pushEntry = (name: string, filePath: string, sourceHint?: SkillSource) => {
+	const pushEntry = async (name: string, filePath: string, sourceHint?: SkillSource): Promise<void> => {
 		const resolvedFile = path.resolve(filePath);
 		if (seen.has(resolvedFile)) return;
-		if (!fs.existsSync(resolvedFile)) return;
+		if (!(await pathExists(resolvedFile))) return;
 		seen.add(resolvedFile);
 		entries.push({
 			name,
 			filePath: resolvedFile,
-			source: inferSkillSource(resolvedFile, cwd, sourceHint),
-			description: maybeReadSkillDescription(resolvedFile),
+			source: await inferSkillSource(resolvedFile, cwd, sourceHint),
+			description: await maybeReadSkillDescription(resolvedFile),
 			order: order++,
 		});
 	};
 
 	for (const skillPath of skillPaths) {
-		if (!fs.existsSync(skillPath.path)) continue;
+		if (!(await pathExists(skillPath.path))) continue;
 
-		let stat: fs.Stats;
+		let skillPathStat: Stats;
 		try {
-			stat = fs.statSync(skillPath.path);
+			skillPathStat = await stat(skillPath.path);
 		} catch {
 			continue;
 		}
 
-		if (stat.isFile()) {
+		if (skillPathStat.isFile()) {
 			const fileName = path.basename(skillPath.path);
 			if (!fileName.toLowerCase().endsWith(".md")) continue;
 			const skillName =
 				fileName.toLowerCase() === "skill.md"
 					? path.basename(path.dirname(skillPath.path))
 					: path.basename(fileName, path.extname(fileName));
-			pushEntry(skillName, skillPath.path, skillPath.source);
+			await pushEntry(skillName, skillPath.path, skillPath.source);
 			continue;
 		}
 
-		if (!stat.isDirectory()) continue;
+		if (!skillPathStat.isDirectory()) continue;
 
 		const rootSkillFile = path.join(skillPath.path, "SKILL.md");
-		if (fs.existsSync(rootSkillFile)) {
-			pushEntry(path.basename(skillPath.path), rootSkillFile, skillPath.source);
+		if (await pathExists(rootSkillFile)) {
+			await pushEntry(path.basename(skillPath.path), rootSkillFile, skillPath.source);
 		}
 
-		let childEntries: fs.Dirent[];
+		let childEntries: Dirent[];
 		try {
-			childEntries = fs.readdirSync(skillPath.path, { withFileTypes: true });
+			childEntries = await readdir(skillPath.path, { withFileTypes: true });
 		} catch {
 			continue;
 		}
@@ -175,13 +177,13 @@ function collectFilesystemSkills(cwd: string, skillPaths: SkillSearchPath[]): Ca
 			const childPath = path.join(skillPath.path, child.name);
 			if (child.isDirectory() || child.isSymbolicLink()) {
 				const nestedSkillPath = path.join(childPath, "SKILL.md");
-				if (fs.existsSync(nestedSkillPath)) {
-					pushEntry(child.name, nestedSkillPath, skillPath.source);
+				if (await pathExists(nestedSkillPath)) {
+					await pushEntry(child.name, nestedSkillPath, skillPath.source);
 				}
 				continue;
 			}
 			if (child.isFile() && child.name.toLowerCase().endsWith(".md")) {
-				pushEntry(path.basename(child.name, path.extname(child.name)), childPath, skillPath.source);
+				await pushEntry(path.basename(child.name, path.extname(child.name)), childPath, skillPath.source);
 			}
 		}
 	}
@@ -189,14 +191,9 @@ function collectFilesystemSkills(cwd: string, skillPaths: SkillSearchPath[]): Ca
 	return entries;
 }
 
-function getCachedSkills(cwd: string): CachedSkillEntry[] {
-	const now = Date.now();
-	if (loadSkillsCache && loadSkillsCache.cwd === cwd && now - loadSkillsCache.timestamp < LOAD_SKILLS_CACHE_TTL_MS) {
-		return loadSkillsCache.skills;
-	}
-
-	const skillPaths = buildSkillPaths(cwd);
-	const loaded = collectFilesystemSkills(cwd, skillPaths);
+async function loadSkills(cwd: string): Promise<CachedSkillEntry[]> {
+	const skillPaths = await buildSkillPaths(cwd);
+	const loaded = await collectFilesystemSkills(cwd, skillPaths);
 	const dedupedByName = new Map<string, CachedSkillEntry>();
 
 	for (const entry of loaded) {
@@ -204,28 +201,47 @@ function getCachedSkills(cwd: string): CachedSkillEntry[] {
 		dedupedByName.set(entry.name, chooseHigherPrioritySkill(current, entry));
 	}
 
-	const skills = [...dedupedByName.values()].sort((a, b) => a.order - b.order);
-	loadSkillsCache = { cwd, skills, timestamp: now };
-	return skills;
+	return [...dedupedByName.values()].sort((a, b) => a.order - b.order);
 }
 
-export function resolveSkillPath(skillName: string, cwd: string): { path: string; source: SkillSource } | undefined {
-	const skills = getCachedSkills(cwd);
+function getCachedSkills(cwd: string): Promise<CachedSkillEntry[]> {
+	const now = Date.now();
+	if (loadSkillsCache && loadSkillsCache.cwd === cwd && now - loadSkillsCache.timestamp < LOAD_SKILLS_CACHE_TTL_MS) {
+		return loadSkillsCache.skills;
+	}
+
+	const entry = { cwd, skills: loadSkills(cwd), timestamp: now };
+	loadSkillsCache = entry;
+	entry.skills.catch(() => {
+		if (loadSkillsCache === entry) loadSkillsCache = null;
+	});
+	return entry.skills;
+}
+
+export async function resolveSkillPath(
+	skillName: string,
+	cwd: string,
+): Promise<{ path: string; source: SkillSource } | undefined> {
+	const skills = await getCachedSkills(cwd);
 	const skill = skills.find((s) => s.name === skillName);
 	if (!skill) return undefined;
 	return { path: skill.filePath, source: skill.source };
 }
 
-function readSkill(skillName: string, skillPath: string, source: SkillSource): ResolvedSkill | undefined {
+async function readSkill(
+	skillName: string,
+	skillPath: string,
+	source: SkillSource,
+): Promise<ResolvedSkill | undefined> {
 	const cacheKey = `${skillPath}\0${skillName}`;
 	try {
-		const stat = fs.statSync(skillPath);
+		const { mtimeMs } = await stat(skillPath);
 		const cached = skillCache.get(cacheKey);
-		if (cached && cached.mtime === stat.mtimeMs) {
+		if (cached && cached.mtime === mtimeMs) {
 			return cached.skill;
 		}
 
-		const raw = fs.readFileSync(skillPath, "utf-8");
+		const raw = await readFile(skillPath, "utf-8");
 		const content = stripSkillFrontmatter(raw);
 		const skill: ResolvedSkill = {
 			name: skillName,
@@ -234,7 +250,7 @@ function readSkill(skillName: string, skillPath: string, source: SkillSource): R
 			source,
 		};
 
-		skillCache.set(cacheKey, { mtime: stat.mtimeMs, skill });
+		skillCache.set(cacheKey, { mtime: mtimeMs, skill });
 		if (skillCache.size > MAX_CACHE_SIZE) {
 			const firstKey = skillCache.keys().next().value;
 			if (firstKey) skillCache.delete(firstKey);
@@ -247,7 +263,7 @@ function readSkill(skillName: string, skillPath: string, source: SkillSource): R
 	}
 }
 
-function catalogSkillSource(
+async function catalogSkillSource(
 	skillPath: string,
 	cwd: string,
 	catalogSource: {
@@ -255,18 +271,18 @@ function catalogSkillSource(
 		readonly origin: "package" | "top-level";
 		readonly configurationOrigin?: string;
 	},
-): SkillSource {
+): Promise<SkillSource> {
 	if (catalogSource.configurationOrigin === "bundled") return "builtin";
 	if (catalogSource.scope === "project") return catalogSource.origin === "package" ? "project-package" : "project";
 	if (catalogSource.scope === "user") return catalogSource.origin === "package" ? "user-package" : "user";
 	return inferSkillSource(skillPath, cwd);
 }
 
-export function resolveSkillsFromCatalog(
+export async function resolveSkillsFromCatalog(
 	skillNames: string[],
 	catalog: SkillCatalog,
 	cwd: string,
-): { resolved: ResolvedSkill[]; missing: string[] } {
+): Promise<{ resolved: ResolvedSkill[]; missing: string[] }> {
 	const resolved: ResolvedSkill[] = [];
 	const missing: string[] = [];
 	for (const name of skillNames) {
@@ -282,10 +298,10 @@ export function resolveSkillsFromCatalog(
 			continue;
 		}
 		const candidate = resolution.candidate;
-		const skill = readSkill(
+		const skill = await readSkill(
 			selector,
 			candidate.skill.filePath,
-			catalogSkillSource(candidate.skill.filePath, cwd, candidate.skill.sourceInfo),
+			await catalogSkillSource(candidate.skill.filePath, cwd, candidate.skill.sourceInfo),
 		);
 		if (skill) resolved.push(skill);
 		else missing.push(selector);
@@ -293,7 +309,10 @@ export function resolveSkillsFromCatalog(
 	return { resolved, missing };
 }
 
-export function resolveSkills(skillNames: string[], cwd: string): { resolved: ResolvedSkill[]; missing: string[] } {
+export async function resolveSkills(
+	skillNames: string[],
+	cwd: string,
+): Promise<{ resolved: ResolvedSkill[]; missing: string[] }> {
 	const resolved: ResolvedSkill[] = [];
 	const missing: string[] = [];
 
@@ -305,13 +324,13 @@ export function resolveSkills(skillNames: string[], cwd: string): { resolved: Re
 			continue;
 		}
 
-		const location = resolveSkillPath(trimmed, cwd);
+		const location = await resolveSkillPath(trimmed, cwd);
 		if (!location) {
 			missing.push(trimmed);
 			continue;
 		}
 
-		const skill = readSkill(trimmed, location.path, location.source);
+		const skill = await readSkill(trimmed, location.path, location.source);
 		if (skill) {
 			resolved.push(skill);
 		} else {
@@ -322,16 +341,16 @@ export function resolveSkills(skillNames: string[], cwd: string): { resolved: Re
 	return { resolved, missing };
 }
 
-export function resolveSkillsWithFallback(
+export async function resolveSkillsWithFallback(
 	skillNames: string[],
 	primaryCwd: string,
 	fallbackCwd?: string,
-): { resolved: ResolvedSkill[]; missing: string[] } {
-	const primary = resolveSkills(skillNames, primaryCwd);
+): Promise<{ resolved: ResolvedSkill[]; missing: string[] }> {
+	const primary = await resolveSkills(skillNames, primaryCwd);
 	if (!fallbackCwd || primary.missing.length === 0) return primary;
 	if (path.resolve(primaryCwd) === path.resolve(fallbackCwd)) return primary;
 
-	const fallback = resolveSkills(primary.missing, fallbackCwd);
+	const fallback = await resolveSkills(primary.missing, fallbackCwd);
 	return {
 		resolved: [...primary.resolved, ...fallback.resolved],
 		missing: fallback.missing,
@@ -375,12 +394,14 @@ export function normalizeSkillInput(input: string | string[] | boolean | undefin
 	];
 }
 
-export function discoverAvailableSkills(cwd: string): Array<{
-	name: string;
-	source: SkillSource;
-	description?: string;
-}> {
-	const skills = getCachedSkills(cwd);
+export async function discoverAvailableSkills(cwd: string): Promise<
+	Array<{
+		name: string;
+		source: SkillSource;
+		description?: string;
+	}>
+> {
+	const skills = await getCachedSkills(cwd);
 	return skills
 		.filter((s) => s.name !== SUBAGENT_ORCHESTRATION_SKILL)
 		.map((s) => ({

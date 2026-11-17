@@ -101,39 +101,39 @@ describe("session environment files (#4588)", () => {
 		assert.notEqual(sessionEnvrcPath(path("other-store"), path("repos", "one")), file);
 	});
 
-	test("the prefix sources, in order, the files that exist for the roots, each once, with every assignment exported (#4588)", () => {
+	test("the prefix sources, in order, the files that exist for the roots, each once, with every assignment exported (#4588)", async () => {
 		const store = path("store");
 		const [first, second, third] = [path("repos", "first"), path("repos", "second"), path("repos", "third")];
 		const firstFile = writeSessionEnvrc(store, first, "FIRST=1\n");
 		const thirdFile = writeSessionEnvrc(store, third, "THIRD=3\n");
 		assert.equal(
-			sessionEnvironmentPrefix(store, [third, second, first, third]),
+			await sessionEnvironmentPrefix(store, [third, second, first, third]),
 			`set -a; . '${bashPath(thirdFile)}'; . '${bashPath(firstFile)}'; set +a`,
 		);
 		assert.equal(
-			sessionEnvironmentPrefix(store, new Set([second, first])),
+			await sessionEnvironmentPrefix(store, new Set([second, first])),
 			`set -a; . '${bashPath(firstFile)}'; set +a`,
 		);
-		assert.equal(sessionEnvironmentPrefix(store, [second]), undefined);
-		assert.equal(sessionEnvironmentPrefix(store, []), undefined);
+		assert.equal(await sessionEnvironmentPrefix(store, [second]), undefined);
+		assert.equal(await sessionEnvironmentPrefix(store, []), undefined);
 	});
 
-	test("the prefix gives a command the variables and leaves its own assignments unexported (#4588)", () => {
+	test("the prefix gives a command the variables and leaves its own assignments unexported (#4588)", async () => {
 		const store = path("store");
 		const [first, second] = [path("repos", "first"), path("repos", "second")];
 		writeSessionEnvrc(store, first, "SHARED=one\nexport PATH_EXTRA='two words'\n");
 		writeSessionEnvrc(store, second, "SECOND=2\n");
-		const prefix = sessionEnvironmentPrefix(store, [first, second]);
+		const prefix = await sessionEnvironmentPrefix(store, [first, second]);
 		assert.ok(prefix !== undefined);
 		const shown = bash(`${prefix}\nLATE=1\nenv | grep -E '^(SHARED|PATH_EXTRA|SECOND|LATE)=' | sort`);
 		assert.equal(shown, "PATH_EXTRA=two words\nSECOND=2\nSHARED=one\n");
 	});
 
-	test("a file path with a single quote is quoted so bash still reads it (#4588)", () => {
+	test("a file path with a single quote is quoted so bash still reads it (#4588)", async () => {
 		const store = path("it's a store");
 		const root = path("repos", "quoted");
 		writeSessionEnvrc(store, root, "QUOTED=yes\n");
-		const prefix = sessionEnvironmentPrefix(store, [root]);
+		const prefix = await sessionEnvironmentPrefix(store, [root]);
 		assert.ok(prefix !== undefined);
 		assert.equal(bash(`${prefix}\nenv | grep '^QUOTED='`), "QUOTED=yes\n");
 	});
@@ -199,7 +199,7 @@ describe("evaluating an ENVRC file (#4588)", () => {
 
 	test("a shell that takes its script on stdin still receives the ENVRC as a positional argument (#4588)", async () => {
 		const config = shell.getShellConfig();
-		vi.spyOn(shell, "getShellConfig").mockReturnValue({
+		vi.spyOn(shell, "getShellConfigAsync").mockResolvedValue({
 			shell: config.shell,
 			args: ["-s"],
 			commandTransport: "stdin",
@@ -211,7 +211,7 @@ describe("evaluating an ENVRC file (#4588)", () => {
 
 	test("Windows evaluation converts the sourced PATH for native children with cygpath (#4588)", async () => {
 		const config = shell.getShellConfig();
-		vi.spyOn(shell, "getShellConfig").mockReturnValue(config);
+		vi.spyOn(shell, "getShellConfigAsync").mockResolvedValue(config);
 		const commands = path("commands");
 		mkdirSync(commands);
 		const converter = join(commands, "cygpath");

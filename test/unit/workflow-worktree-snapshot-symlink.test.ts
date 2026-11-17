@@ -143,20 +143,20 @@ describe.skipIf(process.platform === "win32")(
 					restoredAt: "2026-01-01T00:00:00Z",
 				},
 			];
-			assert.equal(mapWorkflowWorktreePath(link, mappings), sandbox.path("restored"));
+			assert.equal(await mapWorkflowWorktreePath(link, mappings), sandbox.path("restored"));
 			assert.equal(
-				mapWorkflowWorktreePath(join(link, "src", "a.ts"), mappings),
+				await mapWorkflowWorktreePath(join(link, "src", "a.ts"), mappings),
 				sandbox.path("restored", "src", "a.ts"),
 			);
 			assert.equal(
-				mapWorkflowWorktreePath(join(link, "gone", "deep"), mappings),
+				await mapWorkflowWorktreePath(join(link, "gone", "deep"), mappings),
 				sandbox.path("restored", "gone", "deep"),
 			);
 			const through = sandbox.path("outside-link");
-			assert.equal(mapWorkflowWorktreePath(through, mappings), through);
+			assert.equal(await mapWorkflowWorktreePath(through, mappings), through);
 		});
 
-		test("a link to the restored worktree maps to it, so a second restore of the same root chains through the link", () => {
+		test("a link to the restored worktree maps to it, so a second restore of the same root chains through the link", async () => {
 			const real = sandbox.path("real");
 			mkdirSync(real);
 			const restored = sandbox.path("restored");
@@ -173,7 +173,7 @@ describe.skipIf(process.platform === "win32")(
 					restoredAt: "2026-01-02T00:00:00Z",
 				},
 			];
-			assert.equal(mapWorkflowWorktreePath(real, mappings), sandbox.path("second"));
+			assert.equal(await mapWorkflowWorktreePath(real, mappings), sandbox.path("second"));
 		});
 	},
 );

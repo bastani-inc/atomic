@@ -107,7 +107,7 @@ export class ModelRegistry {
 		try {
 			const resolution = await this.runtime.getAuth(model);
 			if (!resolution) {
-				const compatibility = this.runtime.getCompatibilityRequestConfig(model);
+				const compatibility = await this.runtime.getCompatibilityRequestConfigAsync(model);
 				if (compatibility.authHeader) {
 					return { ok: false, error: `No API key found for "${model.provider}"` };
 				}

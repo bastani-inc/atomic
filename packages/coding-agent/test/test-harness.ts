@@ -439,9 +439,14 @@ async function createHarnessWithResourceLoader(
 
 	const cleanup = () => {
 		session.dispose();
-		if (existsSync(tempDir)) {
-			rmSync(tempDir, { recursive: true });
-		}
+		void settingsManager
+			.flush()
+			.then(() => {
+				if (existsSync(tempDir)) {
+					rmSync(tempDir, { recursive: true, force: true });
+				}
+			})
+			.catch(() => undefined);
 	};
 
 	return {

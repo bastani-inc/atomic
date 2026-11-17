@@ -35,7 +35,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sliceHead } from "@bastani/atomic";
@@ -149,13 +149,13 @@ const NAME_LIKE_LITERAL = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
  * deterministic for a given file set: stage paths are sorted and warnings
  * follow the deterministic traversal order.
  */
-export function scanPossibleStagesFromSource(
+export async function scanPossibleStagesFromSource(
 	entrySourcePath: string,
 	options: PossibleStagesScanOptions = {},
-): PossibleStagesScanResult {
+): Promise<PossibleStagesScanResult> {
 	const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
-	const scanner = new PossibleStagesScanner(maxDepth, resolve(entrySourcePath));
 	const entryPath = resolve(entrySourcePath);
+	const scanner = new PossibleStagesScanner(maxDepth, entryPath, await readScanFiles(entryPath));
 	scanner.scanSubtree(entryPath, "", 0, [entryPath]);
 	scanner.noteZeroStages(entryPath);
 	return {
@@ -175,15 +175,17 @@ export function scanPossibleStagesFromSource(
  * extensions. The `.js` probe covers the shipped layout, where builtin
  * entries exist as bundled chunks beside the extension bundle.
  */
-export function resolveBuiltinDefinitionSource(name: string): string | undefined {
-	const builtinDir = fileURLToPath(new URL("../../builtin/", import.meta.url));
-	for (const stem of [name, kebabCase(name)]) {
-		for (const extension of [".ts", ".js"]) {
-			const candidate = join(builtinDir, `${stem}${extension}`);
-			if (isFileSync(candidate)) return candidate;
-		}
-	}
+export async function resolveBuiltinDefinitionSource(name: string): Promise<string | undefined> {
+	const files = new ScanFiles();
+	for (const candidate of builtinDefinitionCandidates(name)) if (await files.load(candidate)) return candidate;
 	return undefined;
+}
+
+function builtinDefinitionCandidates(name: string): string[] {
+	const builtinDir = fileURLToPath(new URL("../../builtin/", import.meta.url));
+	return [name, kebabCase(name)].flatMap((stem) =>
+		[".ts", ".js"].map((extension) => join(builtinDir, `${stem}${extension}`)),
+	);
 }
 
 /** Validate a persisted possible-stages value; anything but a string array yields `undefined`. */
@@ -467,6 +469,74 @@ interface CandidateIndex {
 	readonly functionBodies: ReadonlyMap<string, readonly Token[]>;
 }
 
+interface ScannedSource {
+	readonly source: string;
+	readonly tokens: readonly Token[];
+	readonly imports: ReadonlyMap<string, ImportBinding>;
+}
+
+class ScanFiles {
+	private readonly texts = new Map<string, string | Error>();
+	private readonly sources = new Map<string, ScannedSource>();
+
+	async load(path: string): Promise<boolean> {
+		if (!this.texts.has(path)) {
+			try {
+				this.texts.set(path, await readFile(path, "utf-8"));
+			} catch (error) {
+				this.texts.set(path, error instanceof Error ? error : new Error(String(error)));
+			}
+		}
+		return this.isFile(path);
+	}
+
+	isFile(path: string): boolean {
+		return typeof this.texts.get(path) === "string";
+	}
+
+	read(path: string): ScannedSource | Error {
+		const text = this.texts.get(path) ?? new Error(`${path} was not read before the scan`);
+		if (text instanceof Error) return text;
+		let source = this.sources.get(path);
+		if (source === undefined) {
+			const tokens = tokenize(text);
+			const imports = collectImports(tokens);
+			collectExportFroms(tokens, imports);
+			source = { source: text, tokens, imports };
+			this.sources.set(path, source);
+		}
+		return source;
+	}
+}
+
+async function readScanFiles(entryPath: string): Promise<ScanFiles> {
+	const files = new ScanFiles();
+	const queue = [entryPath];
+	const queued = new Set(queue);
+	while (queue.length > 0) {
+		const path = queue.shift()!;
+		if (!(await files.load(path))) continue;
+		const read = files.read(path);
+		if (read instanceof Error) continue;
+		for (const binding of read.imports.values()) {
+			const stem = builtinStem(binding);
+			const candidateLists = [relativeSpecifierCandidates(binding.specifier, path)];
+			if (stem !== undefined) candidateLists.push(builtinDefinitionCandidates(stem));
+			for (const candidates of candidateLists) {
+				for (const candidate of candidates) {
+					if (!(await files.load(candidate))) continue;
+					if (!queued.has(candidate)) {
+						queued.add(candidate);
+						queue.push(candidate);
+					}
+					break;
+				}
+			}
+		}
+	}
+	return files;
+}
+
 interface FileUnit {
 	readonly source: string;
 	readonly sha256: string;
@@ -487,18 +557,14 @@ interface FileUnit {
 	readonly workflowNames: ReadonlySet<string>;
 }
 
-function buildFileUnit(path: string, warnings: string[]): FileUnit | undefined {
-	let source: string;
-	try {
-		source = readFileSync(path, "utf-8");
-	} catch (error) {
-		warnings.push(`possible-stages: failed to read ${path}: ${errorMessage(error)}`);
+function buildFileUnit(path: string, warnings: string[], files: ScanFiles): FileUnit | undefined {
+	const read = files.read(path);
+	if (read instanceof Error) {
+		warnings.push(`possible-stages: failed to read ${path}: ${errorMessage(read)}`);
 		return undefined;
 	}
-	const tokens = tokenize(source);
+	const { source, tokens, imports } = read;
 	const localValues = collectLocalValues(tokens);
-	const imports = collectImports(tokens);
-	collectExportFroms(tokens, imports);
 	const workflowNames = new Set<string>(["workflow", "defineWorkflow"]);
 	for (const [local, binding] of imports) {
 		if (binding.importedName === "workflow") workflowNames.add(local);
@@ -1054,7 +1120,11 @@ class PossibleStagesScanner {
 	private readonly aliasPool = new Set<string>();
 	private closure: readonly string[] = [];
 
-	constructor(maxDepth: number, entryPath: string) {
+	constructor(
+		maxDepth: number,
+		entryPath: string,
+		private readonly files: ScanFiles,
+	) {
 		this.maxDepth = maxDepth;
 		this.entryDirectory = dirname(entryPath);
 	}
@@ -1169,7 +1239,7 @@ class PossibleStagesScanner {
 	): { readonly unit: FileUnit; readonly exportName: string; readonly path: string } | undefined {
 		const binding = site.unit.imports.get(localName);
 		if (binding?.importedName === undefined) return undefined;
-		const target = resolveRelativeSpecifier(binding.specifier, site.path);
+		const target = resolveRelativeSpecifier(binding.specifier, site.path, this.files);
 		if (target === undefined) return undefined;
 		const unit = this.unitFor(target);
 		return unit === undefined ? undefined : { unit, exportName: binding.importedName, path: target };
@@ -1250,7 +1320,7 @@ class PossibleStagesScanner {
 		const out: PossibleStageCandidate[] = [];
 		const seenTargets = new Set<string>([site.path]);
 		for (const binding of site.unit.imports.values()) {
-			const target = resolveRelativeSpecifier(binding.specifier, site.path);
+			const target = resolveRelativeSpecifier(binding.specifier, site.path, this.files);
 			if (target === undefined || seenTargets.has(target)) continue;
 			seenTargets.add(target);
 			const child = this.unitFor(target);
@@ -1332,7 +1402,7 @@ class PossibleStagesScanner {
 			// Shipped-layout wrapper entry (e.g. `export { x_default as default
 			// }`): the definition lives in the module the wrapper re-exports, so
 			// the subtree roots there instead of scanning an empty wrapper.
-			const behind = relativeImportTargets(entryUnit, entryPath)
+			const behind = relativeImportTargets(entryUnit, entryPath, this.files)
 				.map((target) => ({ target, unit: this.unitFor(target) }))
 				.find((entry) => entry.unit?.hasWorkflowCall === true);
 			if (behind?.target !== undefined) rootPath = behind.target;
@@ -1348,7 +1418,7 @@ class PossibleStagesScanner {
 			const unit = this.unitFor(path);
 			if (unit === undefined) continue;
 			ordered.push(path);
-			for (const target of relativeImportTargets(unit, path)) {
+			for (const target of relativeImportTargets(unit, path, this.files)) {
 				if (visited.has(target)) continue;
 				visited.add(target);
 				// Modules containing a workflow-definition call are child
@@ -1383,7 +1453,7 @@ class PossibleStagesScanner {
 
 	private unitFor(path: string): FileUnit | undefined {
 		if (this.units.has(path)) return this.units.get(path);
-		const unit = buildFileUnit(path, this.warnings);
+		const unit = buildFileUnit(path, this.warnings, this.files);
 		this.units.set(path, unit);
 		if (unit === undefined) {
 			this.uncertainties.push({
@@ -1494,7 +1564,7 @@ class PossibleStagesScanner {
 		if (childPath !== undefined) {
 			const childUnit = this.unitFor(childPath);
 			if (childUnit !== undefined && !childUnit.hasWorkflowCall) {
-				const definitionBehindWrapper = relativeImportTargets(childUnit, childPath)
+				const definitionBehindWrapper = relativeImportTargets(childUnit, childPath, this.files)
 					.map((target) => ({ target, unit: this.unitFor(target) }))
 					.find((entry) => entry.unit?.hasWorkflowCall === true);
 				if (definitionBehindWrapper?.target !== undefined) subtreeEntry = definitionBehindWrapper.target;
@@ -1559,23 +1629,19 @@ class PossibleStagesScanner {
 	private resolveChildPath(binding: ImportBinding | undefined, importingFile: string): string | undefined {
 		if (binding === undefined) return undefined;
 		const specifier = binding.specifier;
-		if (BUILTIN_BARREL_SPECIFIERS.has(specifier)) {
-			const stem = binding.importedName;
+		if (
+			BUILTIN_BARREL_SPECIFIERS.has(specifier) ||
+			BUILTIN_SUBPATH_PREFIXES.some((prefix) => specifier.startsWith(prefix))
+		) {
+			const stem = builtinStem(binding);
 			if (stem === undefined) return undefined;
-			const resolved = resolveBuiltinDefinitionSource(stem);
-			if (resolved === undefined) {
+			const resolved = builtinDefinitionCandidates(stem).find((candidate) => this.files.isFile(candidate));
+			if (resolved === undefined && BUILTIN_BARREL_SPECIFIERS.has(specifier)) {
 				this.warnings.push(`possible-stages: builtin definition "${stem}" has no source file to scan`);
 			}
 			return resolved;
 		}
-		const subpath = BUILTIN_SUBPATH_PREFIXES.find((prefix) => specifier.startsWith(prefix));
-		if (subpath !== undefined) {
-			const rest = specifier.slice(subpath.length);
-			const stem = rest.length > 0 ? rest : binding.importedName;
-			if (stem === undefined) return undefined;
-			return resolveBuiltinDefinitionSource(stem);
-		}
-		return resolveRelativeSpecifier(specifier, importingFile);
+		return resolveRelativeSpecifier(specifier, importingFile, this.files);
 	}
 
 	/** Caller options must expose ordinary own data fields, not executable members or a custom prototype. */
@@ -1701,7 +1767,7 @@ class PossibleStagesScanner {
 				[...caller.imports.values()].some(
 					(binding) =>
 						binding.importedName === undefined &&
-						resolveRelativeSpecifier(binding.specifier, callerPath) === path,
+						resolveRelativeSpecifier(binding.specifier, callerPath, this.files) === path,
 				)
 			)
 				return undefined;
@@ -1712,7 +1778,7 @@ class PossibleStagesScanner {
 							.filter(
 								([, binding]) =>
 									binding.importedName === owner.name &&
-									resolveRelativeSpecifier(binding.specifier, callerPath) === path,
+									resolveRelativeSpecifier(binding.specifier, callerPath, this.files) === path,
 							)
 							.map(([local]) => local);
 			for (const reference of references) {
@@ -2525,18 +2591,17 @@ function objectFieldValue(tokens: readonly Token[], key: string): readonly Token
 // Path resolution
 // ---------------------------------------------------------------------------
 
-function relativeImportTargets(unit: FileUnit, importingFile: string): readonly string[] {
+function relativeImportTargets(unit: FileUnit, importingFile: string, files: ScanFiles): readonly string[] {
 	const targets: string[] = [];
 	for (const binding of unit.imports.values()) {
-		const resolved = resolveRelativeSpecifier(binding.specifier, importingFile);
+		const resolved = resolveRelativeSpecifier(binding.specifier, importingFile, files);
 		if (resolved !== undefined) targets.push(resolved);
 	}
 	return [...new Set(targets)].sort();
 }
 
-/** Resolve a relative specifier to an existing file, probing TS/JS conventions. */
-function resolveRelativeSpecifier(specifier: string, importingFile: string): string | undefined {
-	if (!specifier.startsWith(".")) return undefined;
+function relativeSpecifierCandidates(specifier: string, importingFile: string): string[] {
+	if (!specifier.startsWith(".")) return [];
 	const candidates: string[] = [];
 	if (specifier.endsWith(".js")) {
 		candidates.push(join(dirname(importingFile), `${specifier.slice(0, -3)}.ts`));
@@ -2548,17 +2613,20 @@ function resolveRelativeSpecifier(specifier: string, importingFile: string): str
 		join(dirname(importingFile), specifier, "index.ts"),
 		join(dirname(importingFile), specifier, "index.js"),
 	);
-	return candidates.find((candidate) => isFileSync(candidate));
+	return candidates;
 }
 
-function isFileSync(path: string): boolean {
-	if (!existsSync(path)) return false;
-	try {
-		readFileSync(path, { flag: "r" });
-		return true;
-	} catch {
-		return false;
-	}
+/** Resolve a relative specifier to an existing file, probing TS/JS conventions. */
+function resolveRelativeSpecifier(specifier: string, importingFile: string, files: ScanFiles): string | undefined {
+	return relativeSpecifierCandidates(specifier, importingFile).find((candidate) => files.isFile(candidate));
+}
+
+function builtinStem(binding: ImportBinding): string | undefined {
+	if (BUILTIN_BARREL_SPECIFIERS.has(binding.specifier)) return binding.importedName;
+	const subpath = BUILTIN_SUBPATH_PREFIXES.find((prefix) => binding.specifier.startsWith(prefix));
+	if (subpath === undefined) return undefined;
+	const rest = binding.specifier.slice(subpath.length);
+	return rest.length > 0 ? rest : binding.importedName;
 }
 
 function safeNormalize(name: string): string {

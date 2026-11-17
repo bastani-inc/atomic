@@ -10,7 +10,11 @@ import {
 } from "../runs/foreground/executor-direct-helpers.js";
 import type { WorkflowExitManager } from "../runs/foreground/executor-exit-manager.js";
 import type { StageScheduler } from "../runs/foreground/executor-scheduler.js";
-import { agentStageReplayKey, createWorkflowStageFactory } from "../runs/foreground/executor-stage-factory.js";
+import {
+	agentStageReplayKey,
+	createWorkflowStageFactory,
+	type StageOptionsMapper,
+} from "../runs/foreground/executor-stage-factory.js";
 import type { LiveStageRuntime, StageContextWithMeta, StageMcpScope } from "../runs/foreground/executor-stage-types.js";
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
 import type { RunStageResidency } from "../runs/foreground/run-residency.js";
@@ -46,6 +50,7 @@ export interface EngineRuntimeInput {
 	readonly workflowInvocationCwd: string;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly worktreeSymlinkDirectories?: readonly string[];
+	readonly mapRestoredOptions?: StageOptionsMapper | undefined;
 	readonly stageRegistry: StageControlRegistry;
 	readonly stageUiBroker: StageUiBroker;
 	readonly exit: WorkflowExitManager;
@@ -64,7 +69,7 @@ export interface EngineSpawnAgentStageOptions {
 	readonly options?: StageOptions;
 	readonly failFastScope?: ParallelFailFastScope;
 	/** Resolve side-effecting task setup only after replay and live admission. */
-	readonly prepareLiveOptions?: () => StageOptions | undefined;
+	readonly prepareLiveOptions?: () => Promise<StageOptions | undefined>;
 }
 
 export interface EngineSpawnWorkflowBoundaryOptions {
@@ -105,16 +110,17 @@ export class EngineRuntime {
 	readonly rootBudget: RunBudgetController;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 	readonly worktreeSymlinkDirectories?: readonly string[];
+	readonly mapRestoredOptions: StageOptionsMapper | undefined;
 	readonly assertLiveWorkAllowed?: () => void;
 	private readonly replayIndex: ContinuationReplayIndex;
 	/** The run's one owner of waiting stages. */
 	readonly wakeDispatcher: StageWakeDispatcher;
-	private readonly terminalArtifactCollectors = new Map<string, () => readonly WorkflowArtifact[]>();
+	private readonly terminalArtifactCollectors = new Map<string, () => Promise<readonly WorkflowArtifact[]>>();
 	private readonly spawnAgentStage: (
 		name: string,
 		options?: StageOptions,
 		stageFailFastScope?: ParallelFailFastScope,
-		prepareLiveOptions?: () => StageOptions | undefined,
+		prepareLiveOptions?: () => Promise<StageOptions | undefined>,
 	) => StageContextWithMeta;
 	private readonly spawnWorkflowBoundary: (
 		name: string,
@@ -140,6 +146,7 @@ export class EngineRuntime {
 		this.rootBudget = input.rootBudget;
 		this.gitWorktreeSetupCache = input.gitWorktreeSetupCache;
 		this.worktreeSymlinkDirectories = input.worktreeSymlinkDirectories;
+		this.mapRestoredOptions = input.mapRestoredOptions;
 		this.assertLiveWorkAllowed = input.assertLiveWorkAllowed;
 		this.replayIndex = input.replayIndex;
 		this.wakeDispatcher = new StageWakeDispatcher(input.runId, input.signal, {}, input.resumedWaits);
@@ -160,6 +167,7 @@ export class EngineRuntime {
 			inputRuntimeDefaults: input.inputRuntimeDefaults,
 			workflowInvocationCwd: input.workflowInvocationCwd,
 			gitWorktreeSetupCache: input.gitWorktreeSetupCache,
+			mapRestoredOptions: input.mapRestoredOptions,
 			stageRegistry: input.stageRegistry,
 			stageUiBroker: input.stageUiBroker,
 			budget: input.budget,
@@ -205,11 +213,11 @@ export class EngineRuntime {
 		);
 	}
 
-	registerTerminalArtifactCollector(replayKey: string, collect: () => readonly WorkflowArtifact[]): void {
+	registerTerminalArtifactCollector(replayKey: string, collect: () => Promise<readonly WorkflowArtifact[]>): void {
 		this.terminalArtifactCollectors.set(replayKey, collect);
 	}
 
-	private takeTerminalArtifacts(replayKey: string): readonly WorkflowArtifact[] | undefined {
+	private takeTerminalArtifacts(replayKey: string): Promise<readonly WorkflowArtifact[]> | undefined {
 		const collect = this.terminalArtifactCollectors.get(replayKey);
 		if (collect === undefined) return undefined;
 		this.terminalArtifactCollectors.delete(replayKey);

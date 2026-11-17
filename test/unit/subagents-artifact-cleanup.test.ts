@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { test } from "vitest";
 import { cleanupOldArtifacts } from "../../packages/subagents/src/shared/artifacts.js";
 
-test("stale artifact cleanup recursively removes nested progress storage", () => {
+test("stale artifact cleanup recursively removes nested progress storage", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-subagent-artifact-cleanup-"));
 	try {
 		const progressRoot = join(root, "progress");
@@ -21,7 +21,9 @@ test("stale artifact cleanup recursively removes nested progress storage", () =>
 		mkdirSync(freshRunDir);
 		writeFileSync(join(freshRunDir, "progress.md"), "# Fresh progress\n");
 
-		cleanupOldArtifacts(root, 1);
+		const cleanup = cleanupOldArtifacts(root, 1);
+		assert.equal(existsSync(staleProgressFile), true, "cleanup yields while it reads the artifact directory");
+		await cleanup;
 
 		assert.equal(existsSync(staleRunDir), false);
 		assert.equal(existsSync(freshRunDir), true);
@@ -30,7 +32,7 @@ test("stale artifact cleanup recursively removes nested progress storage", () =>
 	}
 });
 
-test("stale artifact cleanup retains an old parent containing a fresh descendant", () => {
+test("stale artifact cleanup retains an old parent containing a fresh descendant", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-subagent-artifact-cleanup-"));
 	try {
 		const oldParent = join(root, "progress", "old-parent");
@@ -40,7 +42,7 @@ test("stale artifact cleanup retains an old parent containing a fresh descendant
 		const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
 		utimesSync(oldParent, old, old);
 
-		cleanupOldArtifacts(root, 1);
+		await cleanupOldArtifacts(root, 1);
 
 		assert.equal(existsSync(oldParent), true);
 		assert.equal(existsSync(freshProgress), true);
@@ -49,7 +51,7 @@ test("stale artifact cleanup retains an old parent containing a fresh descendant
 	}
 });
 
-test("stale artifact cleanup removes a directory symlink without traversing its target", () => {
+test("stale artifact cleanup removes a directory symlink without traversing its target", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-subagent-artifact-cleanup-"));
 	const external = mkdtempSync(join(tmpdir(), "atomic-subagent-artifact-target-"));
 	try {
@@ -64,7 +66,7 @@ test("stale artifact cleanup removes a directory symlink without traversing its 
 			throw error;
 		}
 
-		cleanupOldArtifacts(root, -1);
+		await cleanupOldArtifacts(root, -1);
 
 		assert.equal(existsSync(linkPath), false);
 		assert.equal(existsSync(externalFile), true, "cleanup must not traverse directory symlinks");

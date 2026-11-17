@@ -19,12 +19,17 @@ function successfulRefresh(): ModelsRefreshResult {
 	return { aborted: false, errors: new Map() };
 }
 
+function keysRead(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
+}
+
 /**
  * A runtime stub carrying the network policy an omitted `allowNetwork` resolves
- * to and the single catalog-inputs generation a real `ModelRuntime` bumps for
- * every input a pass reads. The mutators below stand for the three sources that
- * bump it — a credential write, a provider registration, and a models.json edit
- * — and the coordinator cannot tell them apart, which is the point.
+ * to and the catalog-inputs key a real `ModelRuntime` reads for every input a
+ * pass reads, captured when a request is made. The mutators below stand for the
+ * three sources that change it — a credential write, a provider registration,
+ * and a models.json edit — and the coordinator cannot tell them apart, which is
+ * the point.
  */
 function createRuntime(
 	refresh: (options?: ModelsRefreshOptions) => Promise<ModelsRefreshResult>,
@@ -37,7 +42,7 @@ function createRuntime(
 	return {
 		refresh: vi.fn(refresh),
 		isNetworkRefreshEnabled: () => networkEnabled,
-		getCatalogInputsGeneration: () => catalogInputsGeneration,
+		readCatalogInputsKey: () => Promise.resolve(String(catalogInputsGeneration)),
 		mutateCredentials: bump,
 		registerProvider: bump,
 		editModelsJson: bump,
@@ -55,6 +60,7 @@ describe("interactive model catalog refresh", () => {
 
 		const first = refreshModelCatalogs(runtime, { signal: firstController.signal });
 		const second = refreshModelCatalogs(runtime, { signal: secondController.signal });
+		await keysRead();
 
 		expect(runtime.refresh).toHaveBeenCalledOnce();
 		deferred.resolve(successfulRefresh());
@@ -73,6 +79,7 @@ describe("interactive model catalog refresh", () => {
 		const secondController = new AbortController();
 		const first = refreshModelCatalogs(runtime, { signal: firstController.signal });
 		const second = refreshModelCatalogs(runtime, { signal: secondController.signal });
+		await keysRead();
 
 		firstController.abort();
 		await expect(first).rejects.toMatchObject({ name: "AbortError" });
@@ -90,8 +97,10 @@ describe("interactive model catalog refresh", () => {
 		});
 		const firstController = new AbortController();
 		const first = refreshModelCatalogs(runtime, { signal: firstController.signal });
+		await keysRead();
 
 		firstController.abort();
+		const firstRejected = expect(first).rejects.toMatchObject({ name: "AbortError" });
 		// Synchronous: a closing selector cancels the network work it started
 		// before the next render, exactly as a direct runtime.refresh() did.
 		expect(refreshSignals[0]?.aborted).toBe(true);
@@ -100,10 +109,11 @@ describe("interactive model catalog refresh", () => {
 		// reopened selector must start a refresh rather than join a dead one.
 		const secondController = new AbortController();
 		const second = refreshModelCatalogs(runtime, { signal: secondController.signal });
+		await keysRead();
 		expect(runtime.refresh).toHaveBeenCalledTimes(2);
 		expect(refreshSignals[1]?.aborted).toBe(false);
 
-		await expect(first).rejects.toMatchObject({ name: "AbortError" });
+		await firstRejected;
 		secondController.abort();
 		await expect(second).rejects.toMatchObject({ name: "AbortError" });
 	});
@@ -116,6 +126,7 @@ describe("interactive model catalog refresh", () => {
 		});
 		const firstController = new AbortController();
 		const first = refreshModelCatalogs(runtime, { signal: firstController.signal });
+		await keysRead();
 
 		firstController.abort();
 		expect(refreshSignals[0]?.aborted).toBe(true);
@@ -123,6 +134,7 @@ describe("interactive model catalog refresh", () => {
 
 		const secondController = new AbortController();
 		const second = refreshModelCatalogs(runtime, { signal: secondController.signal });
+		await keysRead();
 		expect(runtime.refresh).toHaveBeenCalledTimes(2);
 		secondController.abort();
 		await expect(second).rejects.toMatchObject({ name: "AbortError" });
@@ -141,6 +153,7 @@ describe("interactive model catalog refresh", () => {
 		const beforeLogin = refreshModelCatalogs(runtime, { signal: controller.signal });
 		runtime.mutateCredentials();
 		const afterLogin = refreshModelCatalogs(runtime, { signal: controller.signal });
+		await keysRead();
 
 		expect(runtime.refresh).toHaveBeenCalledTimes(2);
 
@@ -167,6 +180,7 @@ describe("interactive model catalog refresh", () => {
 		const first = refreshModelCatalogs(runtime, { signal: controller.signal });
 		mutate(runtime);
 		const second = refreshModelCatalogs(runtime, { signal: controller.signal });
+		await keysRead();
 
 		expect(runtime.refresh).toHaveBeenCalledTimes(2);
 
@@ -184,6 +198,7 @@ describe("interactive model catalog refresh", () => {
 		const first = refreshModelCatalogs(runtime, { signal: controller.signal });
 		const second = refreshModelCatalogs(runtime, { signal: controller.signal });
 		const third = refreshModelCatalogs(runtime, { signal: controller.signal });
+		await keysRead();
 		expect(runtime.refresh).toHaveBeenCalledOnce();
 
 		// Only a change bumps the generation, so the startup pass a selector opens
@@ -203,6 +218,7 @@ describe("interactive model catalog refresh", () => {
 
 		const networked = refreshModelCatalogs(runtime, { allowNetwork: true, signal: controller.signal });
 		const cached = refreshModelCatalogs(runtime, { allowNetwork: false, signal: controller.signal });
+		await keysRead();
 
 		expect(runtime.refresh).toHaveBeenCalledTimes(2);
 		expect(requested).toEqual([true, false]);
@@ -221,14 +237,17 @@ describe("interactive model catalog refresh", () => {
 		// runtime both mean the same pass, so the second must not start work.
 		const onlineNetworked = refreshModelCatalogs(online, { allowNetwork: true, signal: controller.signal });
 		const onlineDefault = refreshModelCatalogs(online, { signal: controller.signal });
+		await keysRead();
 		expect(online.refresh).toHaveBeenCalledOnce();
 
 		// The same omitted request on a cache-only runtime resolves to `false`, so it
 		// joins the cached pass and leaves an explicit network request its own.
 		const offlineCached = refreshModelCatalogs(offline, { allowNetwork: false, signal: controller.signal });
 		const offlineDefault = refreshModelCatalogs(offline, { signal: controller.signal });
+		await keysRead();
 		expect(offline.refresh).toHaveBeenCalledOnce();
 		const offlineNetworked = refreshModelCatalogs(offline, { allowNetwork: true, signal: controller.signal });
+		await keysRead();
 		expect(offline.refresh).toHaveBeenCalledTimes(2);
 
 		deferred.resolve(successfulRefresh());
@@ -243,6 +262,7 @@ describe("interactive model catalog refresh", () => {
 
 		const firstRefresh = refreshModelCatalogs(first, { signal: controller.signal });
 		const secondRefresh = refreshModelCatalogs(second, { signal: controller.signal });
+		await keysRead();
 
 		expect(first.refresh).toHaveBeenCalledOnce();
 		expect(second.refresh).toHaveBeenCalledOnce();
@@ -260,6 +280,42 @@ describe("interactive model catalog refresh", () => {
 		expect(runtime.refresh).not.toHaveBeenCalled();
 	});
 
+	it("starts no work for a caller that stops waiting before its key is read", async () => {
+		const runtime = createRuntime(() => Promise.resolve(successfulRefresh()));
+		const controller = new AbortController();
+
+		const refresh = refreshModelCatalogs(runtime, { signal: controller.signal });
+		controller.abort();
+
+		await expect(refresh).rejects.toMatchObject({ name: "AbortError" });
+		await keysRead();
+		expect(runtime.refresh).not.toHaveBeenCalled();
+	});
+
+	it("keys a request issued after an edit apart even when the earlier request's key is read later", async () => {
+		const beforeEdit = createDeferred<ModelsRefreshResult>();
+		const afterEdit = createDeferred<ModelsRefreshResult>();
+		let starts = 0;
+		const keys = [createDeferred<string>(), createDeferred<string>()];
+		let reads = 0;
+		const runtime = {
+			...createRuntime(() => (starts++ === 0 ? beforeEdit.promise : afterEdit.promise)),
+			readCatalogInputsKey: () => keys[reads++]!.promise,
+		};
+		const controller = new AbortController();
+
+		const first = refreshModelCatalogs(runtime, { signal: controller.signal });
+		const second = refreshModelCatalogs(runtime, { signal: controller.signal });
+		keys[1]!.resolve("0:new-models-json");
+		keys[0]!.resolve("0:old-models-json");
+		await keysRead();
+
+		expect(runtime.refresh).toHaveBeenCalledTimes(2);
+		beforeEdit.resolve(successfulRefresh());
+		afterEdit.resolve(successfulRefresh());
+		await Promise.all([first, second]);
+	});
+
 	it("starts a fresh refresh once the shared one has settled", async () => {
 		const first = createDeferred<ModelsRefreshResult>();
 		const second = createDeferred<ModelsRefreshResult>();
@@ -272,6 +328,7 @@ describe("interactive model catalog refresh", () => {
 		await expect(firstRefresh).resolves.toEqual(successfulRefresh());
 
 		const secondRefresh = refreshModelCatalogs(runtime, { signal: controller.signal });
+		await keysRead();
 		expect(runtime.refresh).toHaveBeenCalledTimes(2);
 		second.resolve(successfulRefresh());
 		await expect(secondRefresh).resolves.toEqual(successfulRefresh());

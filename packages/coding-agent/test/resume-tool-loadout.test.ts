@@ -213,7 +213,7 @@ test("a tool status that cannot be read leaves the notice out without failing (#
 	await assert.doesNotReject(
 		reportUnavailableTools({
 			session: {
-				getToolStatus: () => {
+				getToolStatusAsync: () => {
 					throw new Error("status exploded");
 				},
 			},

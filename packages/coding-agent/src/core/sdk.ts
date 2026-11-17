@@ -11,6 +11,7 @@ import {
 import { getAtomicEnvValue } from "@bastani/atomic-ai/utils/provider-env";
 import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
+import { isPowerShellAvailableAsync } from "../utils/shell.ts";
 import { AgentSession } from "./agent-session.js";
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
 import { markRuntimeStreamFunction } from "./agent-session-models.ts";
@@ -27,7 +28,7 @@ import { getBuiltinPackageLocations, getBuiltinPackagePaths } from "./builtin-pa
 import { withBuiltinResourceLoader } from "./builtin-resource-loader.ts";
 import { getDefaultCacheRetention } from "./cache-retention.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
-import { inheritChildSessionOptions } from "./child-session-options.ts";
+import { inheritChildSessionOptionsWithDefaults } from "./child-session-options.ts";
 import { getClientIdentity } from "./client-identity.ts";
 import { migrateCompactionModelSettings } from "./compaction/model-resolver.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
@@ -56,7 +57,7 @@ import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanit
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { currentResourceAdmission } from "./resource-admission-scope.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
-import { prepareSessionResume, savedProjectTrust, sessionResumeOptions } from "./resume/session-resume.ts";
+import { prepareSessionResume, savedProjectTrustAsync, sessionResumeOptions } from "./resume/session-resume.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult, ResourceAdmission } from "./sdk-types.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
@@ -76,21 +77,22 @@ import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
 import { defaultSessionDatabasePath } from "./storage/file-identity.js";
-import { validateProcessStorage } from "./storage/process-selection.js";
+import { validateProcessStorageAsync } from "./storage/process-selection.js";
 import { selectStorage } from "./storage/selection.js";
 import type { SessionStore } from "./storage/session/types.js";
 import { assertTeamAdapterInstalled } from "./storage/team.js";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
 import { createToolNameMatcher } from "./tool-selection.ts";
+import { refreshConfig as refreshAskUserQuestionConfig } from "./tools/ask-user-question/config.ts";
 import type { ProjectHistory } from "./tools/history-protocol.ts";
-import { allToolNames, getDefaultToolNames } from "./tools/index.js";
+import { allToolNames, getDefaultToolNamesAsync } from "./tools/index.js";
 import {
-	assertSessionManagerInWorktree,
+	assertSessionManagerInWorktreeAsync,
 	bindSessionWorkspace,
 	recordSessionWorkspace,
 	WORKSPACE_WRITE_TOOL_NAMES,
-	workspaceSessionCwd,
+	workspaceSessionCwdAsync,
 } from "./workspace/session.ts";
 import { resolveWorktreeSnapshotSettings } from "./worktree-snapshot/settings.ts";
 
@@ -294,14 +296,14 @@ async function sessionResumedOnThisNode(
 ): Promise<SessionManager | undefined> {
 	if (sessionManager === undefined || !sessionManager.isPersisted()) return sessionManager;
 	if (sessionManager.getLatestWorktreeSnapshots().size === 0) return sessionManager;
-	const settings = settingsManager ?? SettingsManager.create(process.cwd(), agentDir);
+	const settings = settingsManager ?? (await SettingsManager.createAsync(process.cwd(), agentDir));
 	const prepared = await prepareSessionResume(sessionManager, {
 		...sessionResumeOptions(
 			"create-agent-session",
 			process.cwd(),
 			agentDir,
 			settings,
-			savedProjectTrust(agentDir, settings),
+			savedProjectTrustAsync(agentDir, settings),
 			false,
 		),
 		settings: resolveWorktreeSnapshotSettings(snapshots, "sdk", "snapshots", settings.getWorktreeSnapshotSettings()),
@@ -328,9 +330,9 @@ async function constructAgentSession(
 		options.workspace === undefined
 			? undefined
 			: await bindSessionWorkspace(options.workspace, options.sessionManager, options.resourceAdmissionSignal);
-	if (workspace !== undefined) assertSessionManagerInWorktree(workspace, options.sessionManager);
+	if (workspace !== undefined) await assertSessionManagerInWorktreeAsync(workspace, options.sessionManager);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
-	validateProcessStorage(agentDir);
+	await validateProcessStorageAsync(agentDir);
 	// `storage` backs the sessions only without `sessionManager` and `sessionStore`, and the journal only without
 	// `journal`; an unused selection needs no adapter, while the process's own profile is still checked.
 	const storageUsed =
@@ -344,7 +346,7 @@ async function constructAgentSession(
 	const cwd =
 		workspace === undefined
 			? resolvePath(options.cwd ?? suppliedSession?.getCwd() ?? process.cwd())
-			: workspaceSessionCwd(workspace, options.cwd);
+			: await workspaceSessionCwdAsync(workspace, options.cwd);
 	let resourceLoader = options.resourceLoader;
 	// The concrete default can rediscover into private storage (including deferred
 	// CLI configuration). Custom discovery stays delegated; composition instantiates
@@ -359,7 +361,7 @@ async function constructAgentSession(
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
 	await modelRuntime.refresh({ allowNetwork: false });
 
-	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	const settingsManager = options.settingsManager ?? (await SettingsManager.createAsync(cwd, agentDir));
 	migrateCompactionModelSettings(settingsManager, modelRuntime.getAllModels());
 	const effectiveSettings = settingsManager.getSettings();
 	let sessionManager = suppliedSession;
@@ -510,7 +512,10 @@ async function constructAgentSession(
 	// for any user who configures it (upstream 4d9aa837 + companion fix 541045ae).
 	const toolListError = options.tools ? getToolListError(options.tools) : undefined;
 	if (toolListError) throw new Error(`Invalid tools option: ${toolListError}`);
-	const defaultToolNames = options.noTools ? [] : (settingsManager.getDefaultTools() ?? getDefaultToolNames());
+	const builtinDefaultToolNames = await getDefaultToolNamesAsync();
+	const defaultToolNames = options.noTools
+		? []
+		: (settingsManager.getDefaultToolsWith(builtinDefaultToolNames) ?? builtinDefaultToolNames);
 	const toolModifiers = options.tools?.some(isToolModifier) ? options.tools : undefined;
 	const selectedToolNames = toolModifiers ? applyToolModifiers(defaultToolNames, toolModifiers) : options.tools;
 	const allowedToolNames =
@@ -658,7 +663,7 @@ async function constructAgentSession(
 					env: streamOptions?.env,
 					signal: streamOptions?.signal,
 				});
-				const compatibility = authResult ? undefined : modelRuntime.getCompatibilityRequestConfig(model);
+				const compatibility = authResult ? undefined : await modelRuntime.getCompatibilityRequestConfigAsync(model);
 				if (!authResult && compatibility?.authHeader) {
 					throw new Error(`No API key found for "${model.provider}"`);
 				}
@@ -836,6 +841,7 @@ async function constructAgentSession(
 		}
 	}
 
+	await refreshAskUserQuestionConfig();
 	void prepareSessionOpenMarkers();
 	const providerRollback = modelRuntime.createExtensionProviderTransaction();
 	let session: AgentSession;
@@ -854,11 +860,13 @@ async function constructAgentSession(
 				type: "child_session_usage",
 				usage,
 			});
+		const powerShellAvailable = await isPowerShellAvailableAsync();
 		session = new AgentSession({
 			agent,
 			sessionManager,
 			settingsManager,
 			cwd,
+			powerShellAvailable,
 			workflowJournal: options.journal ?? options.storage,
 			storageAgentDir: agentDir,
 			worktreeSnapshots:
@@ -871,7 +879,7 @@ async function constructAgentSession(
 							settingsManager.getWorktreeSnapshotSettings(),
 						),
 			childSessionOptions: (child) =>
-				inheritChildSessionOptions(
+				inheritChildSessionOptionsWithDefaults(
 					{
 						cwd,
 						agentDir,
@@ -896,6 +904,7 @@ async function constructAgentSession(
 					},
 					child,
 					session.getAllTools().map((tool) => tool.name),
+					builtinDefaultToolNames,
 				),
 			scopedModels: options.scopedModels,
 			// Undefined follows the settings' current `fallbackModels`, also once a project is trusted later.

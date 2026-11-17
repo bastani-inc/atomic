@@ -1,26 +1,33 @@
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
-import { join, dirname } from "path";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { appendFile, chmod, type FileHandle, mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { isSocketAnswering } from "./socket-liveness.js";
-import { renameWithRetry } from "./rename-retry.js";
+import { renameWithRetry, renameWithRetryAsync } from "./rename-retry.js";
 import {
   completeLines,
   createLockFile,
+  createLockFileAsync,
   readFileOrUndefined,
+  readFileOrUndefinedAsync,
   takeOverStaleLock,
+  takeOverStaleLockAsync,
   unknownHolderAdvice,
+  unknownHolderAdviceAsync,
   unknownHolderWaitedOut,
+  unknownHolderWaitedOutAsync,
   writerState,
+  writerStateAsync,
 } from "./stale-lock-file.js";
 import { BROKER_READY_TIMEOUT_MS } from "./startup-timeout.js";
 import {
   BROKER_ANNOUNCE_PATH_ENV,
   BROKER_ANNOUNCE_TOKEN_ENV,
   type BrokerStartAnnouncement,
-  readBrokerStartAnnouncement,
+  readBrokerStartAnnouncementAsync,
 } from "./start-announcement.js";
 import {
   createChildProcessEnvironment,
@@ -28,32 +35,31 @@ import {
   isBunBinary,
   isIntercomBrokerStopTimeoutError,
   processSharedStorageSelection,
+  processSharedStorageSelectionAsync,
   takeTakeoverMutex,
+  takeTakeoverMutexAsync,
 } from "@bastani/atomic";
 import { isBrokerStatusReport } from "./broker-status.js";
 import { BROKER_UPGRADE_STOP_TIMEOUT_MS, requestBrokerShutdown, waitForBrokerExit } from "./broker-stop.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js";
 import { BROKER_PROTOCOL, type BrokerProtocolRange, decideBrokerProtocol, protocolRangeOf } from "./protocol-version.js";
-import { readSharedStorageSetting, sharedStorageDigest } from "./shared-storage-setting.js";
+import { readSharedStorageSettingAsync, sharedStorageDigest } from "./shared-storage-setting.js";
 import {
   BROKER_STORAGE_ENV,
   getBrokerStartAnnouncementPath,
   getBrokerLogPath,
   getBrokerPidPath,
-  getBrokerSocketPath,
+  getBrokerSocketPathAsync,
   getBrokerSpawnLockPath,
   getIntercomDirPath,
 } from "./paths.js";
+import { pathExists } from "../path-exists.js";
 
-function isIntercomPackageRoot(dir: string): boolean {
-  return existsSync(join(dir, "package.json")) && existsSync(join(dir, "broker"));
-}
 
 /** Package root whether this module is `broker/spawn.ts` or the installed `index.bundle.mjs`. */
 export function resolveIntercomPackageRoot(moduleHref: string): string {
   const here = dirname(fileURLToPath(moduleHref));
-  if (isIntercomPackageRoot(here)) return here;
-  return join(here, "..");
+  return basename(here) === "broker" ? join(here, "..") : here;
 }
 
 export function resolveBrokerEntrypoint(packageRoot: string): string {
@@ -61,12 +67,17 @@ export function resolveBrokerEntrypoint(packageRoot: string): string {
   return existsSync(bundled) ? bundled : join(packageRoot, "broker", "broker.ts");
 }
 
+export async function resolveBrokerEntrypointAsync(packageRoot: string): Promise<string> {
+  const bundled = join(packageRoot, "broker", "broker.bundle.mjs");
+  return (await pathExists(bundled)) ? bundled : join(packageRoot, "broker", "broker.ts");
+}
+
 
 const EXTENSION_DIR = resolveIntercomPackageRoot(import.meta.url);
 
-function ensurePrivateDirectory(path: string): void {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
-  if (process.platform !== "win32") chmodSync(path, 0o700);
+async function ensurePrivateDirectoryAsync(path: string): Promise<void> {
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") await chmod(path, 0o700);
 }
 
 /**
@@ -221,12 +232,12 @@ export function getWindowsHiddenLauncherScript(commandLine: string): string {
   ].join("\r\n");
 }
 
-function writeWindowsHiddenLauncher(
+async function writeWindowsHiddenLauncherAsync(
   commandLine: string,
   launcherPath: string = getWindowsHiddenLauncherPath(),
-): string {
-  ensurePrivateDirectory(dirname(launcherPath));
-  writeFileSync(launcherPath, getWindowsHiddenLauncherScript(commandLine), "utf-8");
+): Promise<string> {
+  await ensurePrivateDirectoryAsync(dirname(launcherPath));
+  await writeFile(launcherPath, getWindowsHiddenLauncherScript(commandLine), "utf-8");
   return launcherPath;
 }
 
@@ -280,7 +291,8 @@ export function getBrokerLaunchSpec(
  * `--storage-file` or `ATOMIC_STORAGE`), passed as `ATOMIC_STORAGE`; without one it reads settings.
  * With `announcement` it also gets the file and token it announces its pid with (`start-announcement.ts`).
  */
-export function getBrokerSpawnOptions(
+function buildBrokerSpawnOptions(
+  storage: string | undefined,
   extensionDir: string = EXTENSION_DIR,
   stderr: number | "ignore" = "ignore",
   announcement?: BrokerStartAnnouncement,
@@ -291,7 +303,6 @@ export function getBrokerSpawnOptions(
   env: NodeJS.ProcessEnv;
   windowsHide: true;
 } {
-  const storage = processSharedStorageSelection();
   return {
     detached: true,
     stdio: ["ignore", "ignore", stderr],
@@ -307,6 +318,34 @@ export function getBrokerSpawnOptions(
   };
 }
 
+export function getBrokerSpawnOptions(
+  extensionDir: string = EXTENSION_DIR,
+  stderr: number | "ignore" = "ignore",
+  announcement?: BrokerStartAnnouncement,
+): {
+  detached: true;
+  stdio: ["ignore", "ignore", number | "ignore"];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  windowsHide: true;
+} {
+  return buildBrokerSpawnOptions(processSharedStorageSelection(), extensionDir, stderr, announcement);
+}
+
+export async function getBrokerSpawnOptionsAsync(
+  extensionDir: string = EXTENSION_DIR,
+  stderr: number | "ignore" = "ignore",
+  announcement?: BrokerStartAnnouncement,
+): Promise<{
+  detached: true;
+  stdio: ["ignore", "ignore", number | "ignore"];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  windowsHide: true;
+}> {
+  return buildBrokerSpawnOptions(await processSharedStorageSelectionAsync(), extensionDir, stderr, announcement);
+}
+
 /**
  * How long a spawn waits for the Windows launcher of a broker that just exited to let go of the log. Its `cmd.exe`
  * outlives the broker by a moment, and a broker that is really still starting keeps the log for as long as it runs.
@@ -317,16 +356,17 @@ export const BROKER_LOG_RELEASE_WAIT_MS = 1_000;
  * Preserve a bounded previous log across truncation. Returns false when a
  * Windows launcher holds the log through its stderr redirect.
  */
-function resetBrokerLog(logPath: string = getBrokerLogPath()): boolean {
-  ensurePrivateDirectory(dirname(logPath));
+async function resetBrokerLogAsync(logPath: string = getBrokerLogPath()): Promise<boolean> {
+  await ensurePrivateDirectoryAsync(dirname(logPath));
   try {
-    const previous = readBrokerLogTail(logPath);
-    closeSync(openSync(logPath, "w"));
+    const previous = await readBrokerLogTailAsync(logPath);
+    const handle = await open(logPath, "w");
+    await handle.close();
     if (previous.length > 0) {
       try {
         const previousPath = `${logPath}.previous`;
-        writeFileSync(previousPath, Buffer.from(previous).subarray(-BROKER_LOG_TAIL_BYTES), { mode: 0o600 });
-        if (process.platform !== "win32") chmodSync(previousPath, 0o600);
+        await writeFile(previousPath, Buffer.from(previous).subarray(-BROKER_LOG_TAIL_BYTES), { mode: 0o600 });
+        if (process.platform !== "win32") await chmod(previousPath, 0o600);
       } catch {}
     }
     return true;
@@ -344,11 +384,19 @@ function resetBrokerLog(logPath: string = getBrokerLogPath()): boolean {
  */
 async function resetBrokerLogOnceReleased(): Promise<boolean> {
   const deadline = Date.now() + BROKER_LOG_RELEASE_WAIT_MS;
-  while (!resetBrokerLog()) {
+  while (!(await resetBrokerLogAsync())) {
     if (Date.now() >= deadline) return false;
     await sleep(50);
   }
   return true;
+}
+
+function decodeLogTail(tail: Buffer): string {
+  // Skip the rest of a character the cut started inside (UTF-8 continuation bytes), so it shows no U+FFFD (#5097).
+  // Past the end a read gives `undefined`, whose bits are 0, so the loop stops there.
+  let start = 0;
+  while ((tail[start]! & 0xc0) === 0x80) start++;
+  return tail.subarray(start).toString("utf-8").trim();
 }
 
 /** Read at most {@link BROKER_LOG_TAIL_BYTES} trailing bytes of the broker log. */
@@ -361,12 +409,7 @@ export function readBrokerLogTail(logPath: string = getBrokerLogPath(), maxBytes
     if (length <= 0) return "";
     const buffer = Buffer.allocUnsafe(length);
     const read = readSync(fd, buffer, 0, length, size - length);
-    const tail = buffer.subarray(0, read);
-    // Skip the rest of a character the cut started inside (UTF-8 continuation bytes), so it shows no U+FFFD (#5097).
-    // Past the end a read gives `undefined`, whose bits are 0, so the loop stops there.
-    let start = 0;
-    while ((tail[start]! & 0xc0) === 0x80) start++;
-    return tail.subarray(start).toString("utf-8").trim();
+    return decodeLogTail(buffer.subarray(0, read));
   } catch {
     // A missing or unreadable log simply yields no diagnostic tail.
     return "";
@@ -381,11 +424,43 @@ export function readBrokerLogTail(logPath: string = getBrokerLogPath(), maxBytes
   }
 }
 
-/** Path plus bounded stderr tail, appended to every broker startup failure. */
-export function describeBrokerLog(logPath: string = getBrokerLogPath()): string {
-  const tail = readBrokerLogTail(logPath);
+export async function readBrokerLogTailAsync(
+  logPath: string = getBrokerLogPath(),
+  maxBytes: number = BROKER_LOG_TAIL_BYTES,
+): Promise<string> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(logPath, "r");
+    const { size } = await handle.stat();
+    const length = Math.min(size, maxBytes);
+    if (length <= 0) return "";
+    const buffer = Buffer.allocUnsafe(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, size - length);
+    return decodeLogTail(buffer.subarray(0, bytesRead));
+  } catch {
+    return "";
+  } finally {
+    if (handle !== undefined) {
+      try {
+        await handle.close();
+      } catch {
+      }
+    }
+  }
+}
+
+function formatBrokerLogDescription(logPath: string, tail: string): string {
   if (tail.length === 0) return `Broker log: ${logPath} (empty)`;
   return `Broker log: ${logPath}\n--- broker stderr (last ${Buffer.byteLength(tail)} bytes) ---\n${tail}`;
+}
+
+/** Path plus bounded stderr tail, appended to every broker startup failure. */
+export function describeBrokerLog(logPath: string = getBrokerLogPath()): string {
+  return formatBrokerLogDescription(logPath, readBrokerLogTail(logPath));
+}
+
+export async function describeBrokerLogAsync(logPath: string = getBrokerLogPath()): Promise<string> {
+  return formatBrokerLogDescription(logPath, await readBrokerLogTailAsync(logPath));
 }
 
 function toError(error: unknown): Error {
@@ -407,14 +482,14 @@ export async function spawnBrokerIfNeeded(
   signal?: AbortSignal,
 ): Promise<void> {
   signal?.throwIfAborted();
-  ensurePrivateDirectory(getIntercomDirPath());
+  await ensurePrivateDirectoryAsync(getIntercomDirPath());
 
   if (await isBrokerRunning()) {
     return;
   }
 
   signal?.throwIfAborted();
-  const lockOwner = acquireSpawnLock();
+  const lockOwner = await acquireSpawnLockAsync();
   if (lockOwner === undefined) {
     await waitForBroker(readyTimeoutMs, undefined, signal);
     return;
@@ -445,7 +520,7 @@ async function spawnBrokerHoldingLock(
     }
     cancelSignal?.throwIfAborted();
 
-    const brokerPath = resolveBrokerEntrypoint(extensionDir);
+    const brokerPath = await resolveBrokerEntrypointAsync(extensionDir);
     const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs, extensionDir);
     // The Windows launcher hides the broker's pid and exit, so there the broker announces its pid, which this watches.
     // Elsewhere the child is the broker and its exit event says how it ended.
@@ -453,13 +528,13 @@ async function spawnBrokerHoldingLock(
       launch.kind === "windows-launcher" ? { path: getBrokerStartAnnouncementPath(), token: randomUUID() } : undefined;
     if (announcement !== undefined) {
       try {
-        unlinkSync(announcement.path);
+        await unlink(announcement.path);
       } catch {
         // None left by an earlier broker, or not removable: its token is not this spawn's, so it is ignored.
       }
     }
     if (launch.kind === "windows-launcher") {
-      writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
+      await writeWindowsHiddenLauncherAsync(launch.launcherCommandLine, launch.launcherPath);
     }
     // Reset before spawning either way: the Windows launcher appends to this same path.
     if (!(await resetBrokerLogOnceReleased())) {
@@ -471,16 +546,22 @@ async function spawnBrokerHoldingLock(
     // The Windows launcher redirects the broker's own stderr, so only the direct spawn
     // needs the descriptor. Node duplicates it during spawn, so the parent copy is closed
     // immediately afterwards rather than being held open for the broker's lifetime.
-    const logFd = launch.kind === "direct" ? openSync(getBrokerLogPath(), "a") : undefined;
+    const logHandle = launch.kind === "direct" ? await open(getBrokerLogPath(), "a") : undefined;
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(launch.command, launch.args, getBrokerSpawnOptions(extensionDir, logFd ?? "ignore", announcement));
-    } finally {
-      if (logFd !== undefined) closeSync(logFd);
+      const spawnOptions = await getBrokerSpawnOptionsAsync(extensionDir, logHandle?.fd ?? "ignore", announcement);
+      child = spawn(
+        launch.command,
+        launch.args,
+        spawnOptions,
+      );
+    } catch (error) {
+      await logHandle?.close();
+      throw error;
     }
     child.unref();
 
-    await new Promise<void>((resolve, reject) => {
+    const started = new Promise<void>((resolve, reject) => {
       const cleanup = () => {
         child.off("error", onError);
         child.off("exit", onExit);
@@ -488,39 +569,44 @@ async function spawnBrokerHoldingLock(
 
       const onError = (error: Error) => {
         cleanup();
-        reject(
-          new Error(`Failed to spawn intercom broker: ${error.message}\n${describeBrokerLog()}`, { cause: error }),
+        void describeBrokerLogAsync().then((log) =>
+          reject(new Error(`Failed to spawn intercom broker: ${error.message}\n${log}`, { cause: error })),
         );
       };
 
-      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-        if (launch.kind === "windows-launcher" && code === 0 && signal === null) {
+      const onExit = (code: number | null, exitSignal: NodeJS.Signals | null) => {
+        if (launch.kind === "windows-launcher" && code === 0 && exitSignal === null) {
           return;
         }
         cleanup();
-        if (signal) {
-          reject(new Error(`Intercom broker exited before startup with signal ${signal}\n${describeBrokerLog()}`));
+        if (exitSignal) {
+          void describeBrokerLogAsync().then((log) =>
+            reject(new Error(`Intercom broker exited before startup with signal ${exitSignal}\n${log}`)),
+          );
           return;
         }
-        const exitedBeforeStartup = () =>
-          new Error(`Intercom broker exited before startup with code ${code ?? "unknown"}\n${describeBrokerLog()}`);
+        const rejectExitedBeforeStartup = () => {
+          void describeBrokerLogAsync().then((log) =>
+            reject(new Error(`Intercom broker exited before startup with code ${code ?? "unknown"}\n${log}`)),
+          );
+        };
         if (code === 0) {
           // A broker that finds a live broker on the socket yields with a clean exit.
-          void checkSocketConnectable().then((answering) => (answering ? resolve() : reject(exitedBeforeStartup())));
+          void checkSocketConnectable().then((answering) => (answering ? resolve() : rejectExitedBeforeStartup()));
           return;
         }
-        reject(exitedBeforeStartup());
+        rejectExitedBeforeStartup();
       };
 
       child.once("error", onError);
       child.once("exit", onExit);
       waitForBroker(
         readyTimeoutMs,
-        announcement === undefined ? undefined : () => readBrokerStartAnnouncement(announcement),
+        announcement === undefined ? undefined : () => readBrokerStartAnnouncementAsync(announcement),
       ).then(() => {
         cleanup();
         resolve();
-      }, (error) => {
+      }, async (error) => {
         cleanup();
         const starting = launch.kind === "direct" && child.exitCode === null && child.signalCode === null;
         // #4727: the session that launched this broker is gone and the broker did not start in time; it is stopped
@@ -529,7 +615,7 @@ async function spawnBrokerHoldingLock(
         let abandonedPid: number | undefined;
         if (signal?.aborted) {
           if (launch.kind === "direct") abandonedPid = starting ? child.pid : undefined;
-          else if (announcement !== undefined) abandonedPid = readBrokerStartAnnouncement(announcement);
+          else if (announcement !== undefined) abandonedPid = await readBrokerStartAnnouncementAsync(announcement);
         }
         if (abandonedPid !== undefined) {
           void stopStartingBroker(abandonedPid).finally(() => reject(toError(error)));
@@ -540,12 +626,17 @@ async function spawnBrokerHoldingLock(
         // spawner can judge it stale and replace it while this one may still release it.
         // The Windows launcher hides the broker's pid, so its lock could only follow this live spawner and would
         // block every later spawn; there the broker's own live-socket check is what prevents a takeover.
-        keepLock = starting && handSpawnLockToBroker(child.pid, lockOwner);
+        keepLock = starting && (await handSpawnLockToBrokerAsync(child.pid, lockOwner));
         reject(toError(error));
       });
     });
+    try {
+      await logHandle?.close();
+    } finally {
+      await started;
+    }
   } finally {
-    if (!keepLock) releaseSpawnLock(lockOwner);
+    if (!keepLock) await releaseSpawnLockAsync(lockOwner);
   }
 }
 
@@ -623,7 +714,7 @@ export async function upgradeBroker(
   signal?: AbortSignal,
 ): Promise<BrokerUpgradeOutcome> {
   signal?.throwIfAborted();
-  ensurePrivateDirectory(getIntercomDirPath());
+  await ensurePrivateDirectoryAsync(getIntercomDirPath());
   const acquired = await acquireSpawnLockWithin(readyTimeoutMs + stopTimeoutMs, signal);
   if (acquired === undefined) return "busy";
   let lockOwner = acquired;
@@ -633,7 +724,8 @@ export async function upgradeBroker(
     return spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, false, signal, launchAnyway);
   };
   try {
-    const answer = await controlRequest(getBrokerSocketPath(), "broker_status", "broker_status", BROKER_CONTROL_TIMEOUT_MS);
+    const socketPath = await getBrokerSocketPathAsync();
+    const answer = await controlRequest(socketPath, "broker_status", "broker_status", BROKER_CONTROL_TIMEOUT_MS);
     if (!answer.connected) {
       await spawnHoldingLock(false);
       return "started";
@@ -646,25 +738,25 @@ export async function upgradeBroker(
     if (report === undefined) return "current";
     const running = protocolRangeOf(report.protocol);
     if (decideBrokerProtocol(own, running) !== "upgrade") return "current";
-    if (report.storage?.digest !== successorStorageDigest()) return "storage-differs";
+    if (report.storage?.digest !== (await successorStorageDigestAsync())) return "storage-differs";
     const failed = (phase: "stop" | "start", cause?: Error): IntercomBrokerUpgradeError =>
       new IntercomBrokerUpgradeError({ phase, previousPid: report.pid, previousProtocolMax: running.max }, { cause });
     // #4727: a cancelled upgrade leaves the running broker alone; one that has asked it to shut down launches its
     // successor whatever happens, so the broker's other sessions have one to reconnect to. Only a successor that then
     // misses its startup timeout is stopped once the upgrade is cancelled.
     signal?.throwIfAborted();
-    if ((await requestBrokerShutdown(getBrokerSocketPath())) === "unanswered") throw failed("stop");
+    if ((await requestBrokerShutdown(socketPath)) === "unanswered") throw failed("stop");
     let lockLost = false;
     try {
-      await waitForBrokerExit(report.pid, stopTimeoutMs, () => {
+      await waitForBrokerExit(report.pid, stopTimeoutMs, async () => {
         if (lockLost) return;
-        const renewed = renewSpawnLock(lockOwner);
+        const renewed = await renewSpawnLockAsync(lockOwner);
         if (renewed === undefined) lockLost = true;
         else lockOwner = renewed;
       });
     } catch (error) {
       if (isIntercomBrokerStopTimeoutError(error)) {
-        lockPassedOn = handSpawnLockToBroker(report.pid, lockOwner);
+        lockPassedOn = await handSpawnLockToBrokerAsync(report.pid, lockOwner);
         throw failed("stop", error);
       }
       throw error;
@@ -680,14 +772,14 @@ export async function upgradeBroker(
     }
     return "upgraded";
   } finally {
-    if (!lockPassedOn) releaseSpawnLock(lockOwner);
+    if (!lockPassedOn) await releaseSpawnLockAsync(lockOwner);
   }
 }
 
 /** The digest of the shared storage selection a broker started from this process reads, as its `broker_status` reports it. */
-function successorStorageDigest(): string | undefined {
-  const setting = readSharedStorageSetting(dirname(getIntercomDirPath()), {
-    [BROKER_STORAGE_ENV]: processSharedStorageSelection() ?? "",
+async function successorStorageDigestAsync(): Promise<string | undefined> {
+  const setting = await readSharedStorageSettingAsync(dirname(getIntercomDirPath()), {
+    [BROKER_STORAGE_ENV]: (await processSharedStorageSelectionAsync()) ?? "",
   });
   return setting === undefined ? undefined : sharedStorageDigest(setting);
 }
@@ -697,7 +789,7 @@ async function acquireSpawnLockWithin(boundMs: number, signal?: AbortSignal): Pr
   const deadline = Date.now() + boundMs;
   for (;;) {
     signal?.throwIfAborted();
-    const owner = acquireSpawnLock();
+    const owner = await acquireSpawnLockAsync();
     if (owner !== undefined || Date.now() >= deadline) return owner;
     await sleep(UPGRADE_LOCK_POLL_MS);
   }
@@ -708,10 +800,8 @@ async function isBrokerRunning(): Promise<boolean> {
     return true;
   }
 
-  if (!existsSync(getBrokerPidPath())) return false;
-
   try {
-    const pid = parseInt(readFileSync(getBrokerPidPath(), "utf-8").trim(), 10);
+    const pid = parseInt((await readFile(getBrokerPidPath(), "utf-8")).trim(), 10);
     if (!Number.isFinite(pid)) return false;
     process.kill(pid, 0);
     return checkSocketConnectable();
@@ -721,18 +811,18 @@ async function isBrokerRunning(): Promise<boolean> {
   }
 }
 
-function checkSocketConnectable(): Promise<boolean> {
-  return isSocketAnswering(getBrokerSocketPath());
+async function checkSocketConnectable(): Promise<boolean> {
+  return isSocketAnswering(await getBrokerSocketPathAsync());
 }
 
 /** Records the still-starting broker on the lock so staleness follows that process instead of the spawner. */
-function handSpawnLockToBroker(pid: number | undefined, owner: string): boolean {
+async function handSpawnLockToBrokerAsync(pid: number | undefined, owner: string): Promise<boolean> {
   if (pid === undefined) return false;
   const lockPath = getBrokerSpawnLockPath();
-  return underSpawnLockMutex(lockPath, false, () => {
-    if (!ownsSpawnLock(owner, lockPath)) return false;
+  return underSpawnLockMutexAsync(lockPath, false, async () => {
+    if (!(await ownsSpawnLockAsync(owner, lockPath))) return false;
     try {
-      appendFileSync(lockPath, `${pid}\n`);
+      await appendFile(lockPath, `${pid}\n`);
       return true;
     } catch {
       return false;
@@ -749,6 +839,16 @@ function underSpawnLockMutex<T>(lockPath: string, busy: T, act: () => T): T {
     return mutex.owned() ? act() : busy;
   } finally {
     mutex.release();
+  }
+}
+
+async function underSpawnLockMutexAsync<T>(lockPath: string, busy: T, act: () => Promise<T>): Promise<T> {
+  const mutex = await takeTakeoverMutexAsync(lockPath, SPAWN_LOCK_MUTEX_WAIT_MS);
+  if (mutex === undefined) return busy;
+  try {
+    return (await mutex.owned()) ? await act() : busy;
+  } finally {
+    await mutex.release();
   }
 }
 
@@ -781,6 +881,32 @@ export function renewSpawnLock(
   });
 }
 
+export async function renewSpawnLockAsync(
+  owner: string,
+  nowMs: number = Date.now(),
+  lockPath: string = getBrokerSpawnLockPath(),
+): Promise<string | undefined> {
+  const writtenAt = Number.parseInt(owner.split("\n")[1] ?? "", 10);
+  if (nowMs - writtenAt < SPAWN_LOCK_RENEW_AFTER_MS) return owner;
+  return underSpawnLockMutexAsync<string | undefined>(lockPath, owner, async () => {
+    const current = await readFileOrUndefinedAsync(lockPath);
+    if (current === undefined) return (await pathExists(lockPath)) ? owner : undefined;
+    if (!current.startsWith(owner)) return undefined;
+    const renewed = `${process.pid}\n${nowMs}\n`;
+    const staged = `${lockPath}.${process.pid}.renew`;
+    try {
+      await writeFile(staged, renewed);
+      await renameWithRetryAsync(staged, lockPath);
+      return renewed;
+    } catch {
+      try {
+        await unlink(staged);
+      } catch {}
+      return owner;
+    }
+  });
+}
+
 const OWNERSHIP_READ_RETRY_BUDGET_MS = 2_000;
 const OWNERSHIP_READ_BACKOFF_START_MS = 10;
 const OWNERSHIP_READ_BACKOFF_MAX_MS = 100;
@@ -804,8 +930,27 @@ function readOwnership(owner: string, lockPath: string): OwnershipRead {
   }
 }
 
+async function readOwnershipAsync(owner: string, lockPath: string): Promise<OwnershipRead> {
+  const started = performance.now();
+  let backoff = OWNERSHIP_READ_BACKOFF_START_MS;
+  for (;;) {
+    try {
+      return (await readFile(lockPath, "utf-8")).startsWith(owner) ? "owned" : "other";
+    } catch (error) {
+      if (!TRANSIENT_OWNERSHIP_READ_CODES.has((error as NodeJS.ErrnoException).code ?? "")) return "other";
+      if (performance.now() - started + backoff > OWNERSHIP_READ_RETRY_BUDGET_MS) return "unreadable";
+      await sleep(backoff);
+      backoff = Math.min(backoff + OWNERSHIP_READ_BACKOFF_START_MS, OWNERSHIP_READ_BACKOFF_MAX_MS);
+    }
+  }
+}
+
 function ownsSpawnLock(owner: string, lockPath: string = getBrokerSpawnLockPath()): boolean {
   return readOwnership(owner, lockPath) === "owned";
+}
+
+async function ownsSpawnLockAsync(owner: string, lockPath: string = getBrokerSpawnLockPath()): Promise<boolean> {
+  return (await readOwnershipAsync(owner, lockPath)) === "owned";
 }
 
 /** Returns the header this spawner wrote, which proves ownership on release, or undefined when another spawner holds the lock. */
@@ -833,11 +978,47 @@ export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): s
   return undefined;
 }
 
+export async function acquireSpawnLockAsync(
+  lockPath: string = getBrokerSpawnLockPath(),
+): Promise<string | undefined> {
+  const maxRetries = 5;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const writtenAt = Date.now();
+    const owner = `${process.pid}\n${writtenAt}\n`;
+    if (await createLockFileAsync(lockPath, owner)) {
+      const ownership = await readOwnershipAsync(owner, lockPath);
+      if (ownership === "owned") {
+        const nowMs = Date.now();
+        if (nowMs - writtenAt < SPAWN_LOCK_RENEW_AFTER_MS) return owner;
+        const renewed = await renewSpawnLockAsync(owner, nowMs, lockPath);
+        if (renewed !== undefined && renewed !== owner) return renewed;
+      }
+      await releaseSpawnLockAsync(owner, lockPath);
+      if (ownership === "unreadable") return undefined;
+      continue;
+    }
+    const inspected = await readFileOrUndefinedAsync(lockPath);
+    if (!(await isSpawnLockReplaceableAsync(inspected, lockPath))) return undefined;
+    await replaceStaleSpawnLockAsync(inspected, lockPath);
+  }
+  return undefined;
+}
+
 function isSpawnLockReplaceable(written: string | undefined, lockPath: string): boolean {
   const content = completeLines(written) ?? "";
   if (!isSpawnLockContentStale(content)) return false;
   const writer = writerState(lockPath, written) ?? (recordsSpawner(content) ? "abandoned" : "unknown");
   if (writer === "unknown" && unknownHolderWaitedOut(lockPath, written)) warnUnknownSpawnLockHolder(lockPath);
+  return writer === "abandoned";
+}
+
+async function isSpawnLockReplaceableAsync(written: string | undefined, lockPath: string): Promise<boolean> {
+  const content = completeLines(written) ?? "";
+  if (!isSpawnLockContentStale(content)) return false;
+  const writer = (await writerStateAsync(lockPath, written)) ?? (recordsSpawner(content) ? "abandoned" : "unknown");
+  if (writer === "unknown" && (await unknownHolderWaitedOutAsync(lockPath, written))) {
+    await warnUnknownSpawnLockHolderAsync(lockPath);
+  }
   return writer === "abandoned";
 }
 
@@ -849,12 +1030,30 @@ function warnUnknownSpawnLockHolder(lockPath: string): void {
   process.emitWarning(unknownHolderAdvice(lockPath));
 }
 
+async function warnUnknownSpawnLockHolderAsync(lockPath: string): Promise<void> {
+  if (warnedUnknownHolder.has(lockPath)) return;
+  warnedUnknownHolder.add(lockPath);
+  process.emitWarning(await unknownHolderAdviceAsync(lockPath));
+}
+
 export function replaceStaleSpawnLock(inspected: string | undefined, lockPath: string = getBrokerSpawnLockPath()): void {
   takeOverStaleLock(
     lockPath,
     inspected,
     (current) => isSpawnLockReplaceable(current, lockPath),
     () => takeTakeoverMutex(lockPath),
+  );
+}
+
+export async function replaceStaleSpawnLockAsync(
+  inspected: string | undefined,
+  lockPath: string = getBrokerSpawnLockPath(),
+): Promise<void> {
+  await takeOverStaleLockAsync(
+    lockPath,
+    inspected,
+    (current) => isSpawnLockReplaceableAsync(current, lockPath),
+    () => takeTakeoverMutexAsync(lockPath),
   );
 }
 
@@ -905,6 +1104,19 @@ export function releaseSpawnLock(owner: string, lockPath: string = getBrokerSpaw
   });
 }
 
+export async function releaseSpawnLockAsync(
+  owner: string,
+  lockPath: string = getBrokerSpawnLockPath(),
+): Promise<void> {
+  if (!(await ownsSpawnLockAsync(owner, lockPath))) return;
+  await underSpawnLockMutexAsync(lockPath, undefined, async () => {
+    if (!(await ownsSpawnLockAsync(owner, lockPath))) return;
+    try {
+      await unlink(lockPath);
+    } catch {}
+  });
+}
+
 /**
  * Poll the broker socket with a short initial interval and bounded exponential backoff.
  * Startup is tens of milliseconds, so the previous flat 100 ms sleep dominated it; the
@@ -916,7 +1128,7 @@ export function releaseSpawnLock(owner: string, lockPath: string = getBrokerSpaw
  */
 export async function waitForBroker(
   timeoutMs = BROKER_READY_TIMEOUT_MS,
-  announcedPid?: () => number | undefined,
+  announcedPid?: () => number | undefined | Promise<number | undefined>,
   signal?: AbortSignal,
 ): Promise<void> {
   const start = Date.now();
@@ -926,11 +1138,11 @@ export async function waitForBroker(
     if (await checkSocketConnectable()) {
       return;
     }
-    const pid = announcedPid?.();
+    const pid = await announcedPid?.();
     if (pid !== undefined && !isProcessAlive(pid)) {
       // A broker that finds a live broker on the socket yields and exits; that one answering is a success.
       if (await checkSocketConnectable()) return;
-      throw new Error(`Intercom broker exited before startup (pid ${pid})\n${describeBrokerLog()}`);
+      throw new Error(`Intercom broker exited before startup (pid ${pid})\n${await describeBrokerLogAsync()}`);
     }
     await sleep(interval);
     interval = Math.min(interval * 2, BROKER_POLL_MAX_INTERVAL_MS);
@@ -939,6 +1151,6 @@ export async function waitForBroker(
     `Broker failed to start within timeout (${timeoutMs} ms)\n`
       + "The broker did not answer on its socket in time; it may still be starting, which a busy machine or an empty jiti "
       + "cache slows. Try again, or raise `brokerStartupTimeoutMs` in the Intercom config.json (default "
-      + `${BROKER_READY_TIMEOUT_MS} ms).\n${describeBrokerLog()}`,
+      + `${BROKER_READY_TIMEOUT_MS} ms).\n${await describeBrokerLogAsync()}`,
   );
 }

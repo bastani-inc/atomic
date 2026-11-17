@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import { type AuthInteraction, drainPendingOAuthRotations, OAUTH_SHUTDOWN_DRAIN_MS } from "@bastani/atomic-ai";
@@ -28,11 +27,11 @@ import {
 	type PrepareSessionResumeOptions,
 	prepareSessionResume,
 	type ResumeNotice,
-	savedProjectTrust,
+	savedProjectTrustAsync,
 	sessionResumeOptions,
 } from "./resume/session-resume.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
-import { assertSessionCwdExists, findMissingSessionCwdIssue, MissingSessionCwdError } from "./session-cwd.ts";
+import { assertSessionCwdExists, findMissingSessionCwdIssueAsync, MissingSessionCwdError } from "./session-cwd.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
 	abortSessionWork,
@@ -49,6 +48,7 @@ import { SessionEntryError, SessionManager } from "./session-manager.ts";
 import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
+import { pathExists } from "./tools/path-utils.ts";
 import { drainWindowsDirectorySecurityReads } from "./tools/windows-directory-security.ts";
 
 /**
@@ -669,7 +669,7 @@ export class AgentSessionRuntime {
 				this.cwd,
 				this.services.agentDir,
 				settings,
-				savedProjectTrust(this.services.agentDir, settings),
+				savedProjectTrustAsync(this.services.agentDir, settings),
 				this.interactive,
 			),
 			blueprints: this.resumeBlueprints,
@@ -701,7 +701,7 @@ export class AgentSessionRuntime {
 				sessionId,
 			);
 			const { sessionManager, unrecorded } = await this.resumeWorktree(opened, options?.sessionDirectory);
-			const missingCwd = findMissingSessionCwdIssue(sessionManager, this.cwd);
+			const missingCwd = await findMissingSessionCwdIssueAsync(sessionManager, this.cwd);
 			if (missingCwd !== undefined) throw new MissingSessionCwdError(missingCwd);
 			const runtimeOptions: CreateAgentSessionRuntimeOptions = {
 				cwd: sessionManager.getCwd(),
@@ -815,7 +815,7 @@ export class AgentSessionRuntime {
 	async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
 		return this.replace(async () => {
 			const resolvedPath = resolvePath(inputPath);
-			if (!existsSync(resolvedPath)) throw new SessionImportFileNotFoundError(resolvedPath);
+			if (!(await pathExists(resolvedPath))) throw new SessionImportFileNotFoundError(resolvedPath);
 			const source = await JsonlSessionStore.open(dirname(resolvedPath), { scanExisting: false });
 			let targetSessionId: string;
 			try {
@@ -830,7 +830,7 @@ export class AgentSessionRuntime {
 			const { sessionManager, unrecorded } = await this.resumeWorktree(
 				await this.session.sessionManager.importFromJsonl(resolvedPath, cwdOverride),
 			);
-			const missingCwd = findMissingSessionCwdIssue(sessionManager, this.cwd);
+			const missingCwd = await findMissingSessionCwdIssueAsync(sessionManager, this.cwd);
 			if (missingCwd !== undefined) {
 				const failure = new MissingSessionCwdError(missingCwd);
 				await this.discardImportedSession(sessionManager, failure);
@@ -1034,7 +1034,7 @@ export async function createAgentSessionRuntime(
 	},
 ): Promise<AgentSessionRuntime> {
 	try {
-		assertSessionCwdExists(options.sessionManager, options.cwd);
+		await assertSessionCwdExists(options.sessionManager, options.cwd);
 		const result = await sessionLifecycleCreation.run({ scope: {} }, () => createRuntime(options));
 		return new AgentSessionRuntime(
 			result.session,

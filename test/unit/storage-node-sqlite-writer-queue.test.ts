@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { existsSync, mkdirSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { setImmediate as realTurn } from "node:timers/promises";
 import { afterEach, test, vi } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { sqliteDialect } from "../../packages/coding-agent/src/core/storage/dialect.js";
@@ -34,6 +35,8 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 const WATCHED_RECHECK_MS = 250;
 /** The adapter's retry period for a writer without a watched release notice, within the connection's lock wait. */
 const UNWATCHED_RETRY_MS = 20;
+/** Bound on the event-loop turns a test gives a connection's holder record write to land. */
+const RECORD_WRITE_TURNS = 2_000;
 
 const cleanups: (() => Promise<void> | void)[] = [];
 
@@ -943,19 +946,24 @@ test("the connection's holder record says held while it holds the lock and free 
 		const [name] = readdirSync(`${path}-holders`).filter((entry) => entry.startsWith(`${process.pid}-`));
 		return fs.readFileSync(join(`${path}-holders`, name!), "utf8").slice(0, 4);
 	};
+	/** The record once it says `expected`: the connection writes it off the event loop, just after the lock changes. */
+	const recordOnceItSays = async (expected: string) => {
+		for (let turn = 0; turn < RECORD_WRITE_TURNS && record() !== expected; turn++) await realTurn();
+		return record();
+	};
 	let during = "";
 	await database.transaction(async (tx) => {
 		await tx.run("INSERT INTO items VALUES ('recorded')");
-		during = record();
+		during = await recordOnceItSays("held");
 	});
 	assert.equal(during, "held");
-	assert.equal(record(), "free");
+	assert.equal(await recordOnceItSays("free"), "free");
 	await database
 		.transaction(async () => {
 			throw new Error("rolled back");
 		})
 		.catch((error: Error) => assert.equal(error.message, "rolled back"));
-	assert.equal(record(), "free", "freed after a rollback too");
+	assert.equal(await recordOnceItSays("free"), "free", "freed after a rollback too");
 });
 
 test("a rolled-back transaction counts toward lock-held time but not toward commits (#4316)", async () => {

@@ -1,22 +1,29 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import {
 	HOLDER_TEMP_STALE_MS,
+	lockHolderAsync,
 	lockHolderPath,
 	prepareTakeoverMutex,
 	processMayRun,
+	processMayRunAsync,
 	putBack,
+	putBackAsync,
 	removeAside,
+	removeAsideAsync,
 	removeLeftoverHolderFiles,
+	removeLeftoverHolderFilesAsync,
 	takeTakeoverMutex,
+	takeTakeoverMutexAsync,
 } from "./lock-takeover.js";
 
 export { HOLDER_TEMP_STALE_MS, lockHolderPath, prepareTakeoverMutex };
 
 import { lockHolder } from "./lock-wait.ts";
-import { processStartToken } from "./process-start-token.js";
-import { renameReplacing } from "./rename-retry.ts";
+import { processStartToken, processStartTokenAsync } from "./process-start-token.js";
+import { renameReplacing, renameReplacingAsync } from "./rename-retry.ts";
 
 /**
  * Who holds a proper-lockfile lock, kept beside its lock directory (#5161): the host, the pid and when that process
@@ -54,6 +61,23 @@ export function recordLockHolder(lockPath: string): void {
 	}
 }
 
+let ownStart: Promise<string | undefined> | undefined;
+
+export async function recordLockHolderAsync(lockPath: string): Promise<void> {
+	const lock = await lockHolderAsync(lockPath);
+	if (lock === undefined) return;
+	ownStart ??= processStartTokenAsync(process.pid);
+	const record: LockHolderRecord = { host: hostname(), pid: process.pid, started: await ownStart, lock };
+	const path = lockHolderPath(lockPath);
+	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		await writeFile(temporary, JSON.stringify(record));
+		await renameReplacingAsync(temporary, path);
+	} catch {
+		await rm(temporary, { force: true });
+	}
+}
+
 /** Forgets this process as the holder of the lock at `lockPath`, before it releases the lock. */
 export function clearLockHolder(lockPath: string): void {
 	try {
@@ -63,20 +87,38 @@ export function clearLockHolder(lockPath: string): void {
 	}
 }
 
+export async function clearLockHolderAsync(lockPath: string): Promise<void> {
+	try {
+		await rm(lockHolderPath(lockPath), { force: true });
+	} catch {}
+}
+
 function readHolderRecord(lockPath: string): LockHolderRecord | undefined {
 	try {
-		const record = JSON.parse(readFileSync(lockHolderPath(lockPath), "utf8")) as Partial<LockHolderRecord>;
-		// A host or lock that is not a string never matches this host or a lock directory, so only these are checked.
-		if (!Number.isSafeInteger(record.pid)) return undefined;
-		if (record.started !== undefined && typeof record.started !== "string") return undefined;
-		return record as LockHolderRecord;
+		return parseHolderRecord(readFileSync(lockHolderPath(lockPath), "utf8"));
 	} catch {
 		return undefined;
 	}
 }
 
+async function readHolderRecordAsync(lockPath: string): Promise<LockHolderRecord | undefined> {
+	try {
+		return parseHolderRecord(await readFile(lockHolderPath(lockPath), "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
+function parseHolderRecord(content: string): LockHolderRecord | undefined {
+	const record = JSON.parse(content) as Partial<LockHolderRecord>;
+	// A host or lock that is not a string never matches this host or a lock directory, so only these are checked.
+	if (!Number.isSafeInteger(record.pid)) return undefined;
+	if (record.started !== undefined && typeof record.started !== "string") return undefined;
+	return record as LockHolderRecord;
+}
+
 export async function prepareLockTakeover(lockPath: string): Promise<void> {
-	await prepareTakeoverMutex(lockPath, readHolderRecord(lockPath));
+	await prepareTakeoverMutex(lockPath, await readHolderRecordAsync(lockPath));
 }
 
 /**
@@ -114,6 +156,35 @@ export function takeOverDeadHolder(lockPath: string): boolean {
 		return true;
 	} finally {
 		mutex.release();
+	}
+}
+
+export async function takeOverDeadHolderAsync(lockPath: string): Promise<boolean> {
+	const record = await readHolderRecordAsync(lockPath);
+	if (record === undefined || (await lockHolderAsync(lockPath)) !== record.lock || (await processMayRunAsync(record)))
+		return false;
+	const mutex = await takeTakeoverMutexAsync(lockPath);
+	if (mutex === undefined) return false;
+	try {
+		const current = await readHolderRecordAsync(lockPath);
+		if (current === undefined || !sameRecord(current, record) || (await lockHolderAsync(lockPath)) !== record.lock)
+			return false;
+		const aside = `${lockPath}.${randomUUID()}.dead`;
+		if (!(await mutex.owned())) return false;
+		try {
+			await rename(lockPath, aside);
+		} catch {
+			return false;
+		}
+		if ((await lockHolderAsync(aside)) !== record.lock) {
+			await putBackAsync(aside, lockPath);
+			return false;
+		}
+		await removeAsideAsync(aside);
+		await removeLeftoverHolderFilesAsync(lockPath);
+		return true;
+	} finally {
+		await mutex.release();
 	}
 }
 

@@ -11,7 +11,7 @@ import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
-import { resolveToCwd } from "./path-utils.ts";
+import { resolveToCwdAsync } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { loadNativeSearchBinding, type NativeGrepMatch } from "./search-native.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -263,7 +263,7 @@ export function createGrepToolDefinition(
 				(async () => {
 					try {
 						const executionCwd = ctx?.cwd || cwd;
-						const searchPath = resolveToCwd(searchDir || ".", executionCwd);
+						const searchPath = await resolveToCwdAsync(searchDir || ".", executionCwd);
 						const ops = customOps ?? defaultGrepOperations;
 						let isDirectory: boolean;
 						try {

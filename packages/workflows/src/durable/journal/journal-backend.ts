@@ -10,6 +10,7 @@ import {
 	checkpointKey,
 	createJournalProjection,
 	type DurableWorkflowBackend,
+	migrateStageSessionCheckpoint,
 	normalizedCheckpoint,
 	replacePendingStageMessagesForRun,
 	type WorkflowRegistrationInput,
@@ -227,6 +228,13 @@ function sharingWrittenText(entry: JournalEntry, written: BackendEvent): Journal
 		...(sharesResult ? { result: source.result } : {}),
 	} as typeof decoded;
 	return { ...entry, event: { ...folded, payload } };
+}
+
+async function migratedEntry(entry: JournalEntry): Promise<JournalEntry> {
+	const event = entry.event as BackendEvent;
+	if (event.type !== E.checkpointRecorded || event.payload.kind !== "stage") return entry;
+	const payload = await migrateStageSessionCheckpoint(event.payload);
+	return payload === event.payload ? entry : { ...entry, event: { ...event, payload } };
 }
 
 function snapshotNeedsHistory(tail: RunSnapshotTail): boolean {
@@ -605,7 +613,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 					: (await Promise.all(options.runs.map((runId) => journal.getRun(runId)))).filter(
 							(header): header is RunHeader => header !== undefined,
 						);
-			for (const { runId } of headers) for await (const entry of journal.read(runId)) backend.fold(entry);
+			for (const { runId } of headers)
+				for await (const entry of journal.read(runId)) backend.fold(await migratedEntry(entry));
 			await backend.writeRecordedCompletions(headers);
 			return backend;
 		} catch (error) {
@@ -848,7 +857,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private *entries(runId: string, fromSeq?: number): Operation<readonly JournalEntry[]> {
 		return yield* invoke(async () => {
 			const entries: JournalEntry[] = [];
-			for await (const entry of this.journal.read(runId, fromSeq)) entries.push(entry);
+			for await (const entry of this.journal.read(runId, fromSeq)) entries.push(await migratedEntry(entry));
 			return entries;
 		});
 	}
@@ -1729,7 +1738,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			const entries: JournalEntry[] = [];
 			for await (const entry of this.journal.read(runId)) {
 				if (entry.seq > throughSeq) break;
-				if ((entry.event as BackendEvent).type === E.checkpointRecorded) entries.push(entry);
+				if ((entry.event as BackendEvent).type === E.checkpointRecorded) entries.push(await migratedEntry(entry));
 			}
 			return entries;
 		});
@@ -1768,7 +1777,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				for (const [from, to] of ranges)
 					for await (const entry of ranged.readKeyRange(runId, from, to)) keep(entry);
 			}
-			return [...selected.values()].sort((left, right) => left.seq - right.seq);
+			const sorted = [...selected.values()].sort((left, right) => left.seq - right.seq);
+			return Promise.all(sorted.map((entry) => migratedEntry(entry)));
 		});
 	}
 	/**

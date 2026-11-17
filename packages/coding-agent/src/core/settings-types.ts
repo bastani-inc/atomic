@@ -63,6 +63,21 @@ export interface SettingsStorage {
 	 * hide or outrank a value in another. Storage without layers can omit this; `withLock` content is then one layer.
 	 */
 	readLayers?(scope: SettingsScope): SettingsLayer[];
+	withLockAsync?(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): Promise<void>;
+	withPrimaryWriteLockAsync?(
+		scope: SettingsScope,
+		fn: (currentPrimary: string | undefined) => string | undefined,
+	): Promise<void>;
+	readLayersAsync?(scope: SettingsScope): Promise<SettingsLayer[]>;
+}
+
+export interface AsyncSettingsStorage {
+	withLockAsync(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): Promise<void>;
+	withPrimaryWriteLockAsync?(
+		scope: SettingsScope,
+		fn: (currentPrimary: string | undefined) => string | undefined,
+	): Promise<void>;
+	readLayersAsync?(scope: SettingsScope): Promise<SettingsLayer[]>;
 }
 
 export interface SettingsError {

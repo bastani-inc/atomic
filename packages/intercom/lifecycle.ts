@@ -23,7 +23,7 @@ interface LifecycleDeps {
    * once those in flight have settled, a launched broker having finished starting or been stopped.
    */
   abortBrokerStarts?(): Promise<void>;
-  setRuntimeContext(ctx: ExtensionContext | null): void;
+  setRuntimeContext(ctx: ExtensionContext | null): void | Promise<void>;
   setCurrentSessionId(id: string | null): void;
   setCurrentModel(model: string): void;
   setSessionStartedAt(value: number | null): void;
@@ -86,7 +86,7 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
       }
     }
     deps.restoreIntercomSessionIdEnv?.();
-    deps.setRuntimeContext(null);
+    await deps.setRuntimeContext(null);
     deps.setCurrentSessionId(null);
     deps.setSessionStartedAt(null);
   }
@@ -100,13 +100,13 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.incrementRuntimeGeneration();
     deps.resetReconnectAttempt();
     deps.clearReconnectTimer();
-    deps.setRuntimeContext(ctx);
-    deps.bindReplyTracker?.(ctx);
     deps.setCurrentSessionId(ctx.sessionManager.getSessionId());
     deps.setCurrentModel(ctx.model?.id ?? "unknown");
     deps.setSessionStartedAt(Date.now());
     deps.setAgentRunning(false);
     deps.activeTools.clear();
+    await deps.setRuntimeContext(ctx);
+    deps.bindReplyTracker?.(ctx);
     const stage = ctx.orchestrationContext;
     const closeSignal = stage?.kind === "workflow-stage" ? stage.messageAdmission?.boundary?.closeSignal : undefined;
     closeSignal?.addEventListener("abort", deps.syncPresenceStatus, { once: true });

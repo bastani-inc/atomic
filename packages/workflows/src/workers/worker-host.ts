@@ -1,12 +1,11 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
 	type GitProvisionError,
 	getAgentDir,
 	isGitProvisionError,
 	resolveGit,
-	resolveGitSync,
+	resolveInstalledGit,
 	restoreRunWorktree,
 } from "@bastani/atomic";
 import { isPostgresUrl, type StorageNotificationSubscription, type StorageSelection } from "@bastani/atomic/storage";
@@ -29,6 +28,7 @@ import {
 	type WorkerHostGitSource,
 } from "../durable/journal/sql-shared-pool.js";
 import type { RunJournal } from "../durable/journal/types.js";
+import { pathExists } from "../shared/path-exists.js";
 import { resolveFleetPolicy } from "./autoscaler.js";
 import type { CoordinatorEvent, CoordinatorInbound, CoordinatorPort } from "./coordinator-protocol.js";
 import { definitionDigest, type WorkerDefinitionSource } from "./definitions.js";
@@ -158,7 +158,7 @@ interface HostGit {
 /**
  * The git a worker host runs: the one `options.git` names, probed, or else the git `@bastani/atomic` resolves, with
  * the environment it needs. Only a host given a restore function, which needs git, is provisioned a portable git
- * (`resolveGit()`); any other host takes the git this machine has (`resolveGitSync()`), never downloads one, and
+ * (`resolveGit()`); any other host takes the git this machine has (`resolveInstalledGit()`), never downloads one, and
  * restores by default only with it.
  */
 async function hostGit(options: WorkflowWorkerHostOptions): Promise<HostGit> {
@@ -169,7 +169,7 @@ async function hostGit(options: WorkflowWorkerHostOptions): Promise<HostGit> {
 			: { source, command: options.git };
 	}
 	try {
-		const resolved = typeof options.restore === "function" ? await resolveGit() : resolveGitSync();
+		const resolved = typeof options.restore === "function" ? await resolveGit() : await resolveInstalledGit();
 		return { source: resolved.source, command: { path: resolved.path, env: gitVariables(resolved.env) } };
 	} catch (error) {
 		if (!isGitProvisionError(error)) throw error;
@@ -201,7 +201,7 @@ async function checkHostSetup(
 	readonly git: WorkerHostGitSource;
 	readonly gitCommand: WorkerHostGit | undefined;
 }> {
-	const selection = sharedJournalSelection(options.journal, { agentDir });
+	const selection = await sharedJournalSelection(options.journal, { agentDir });
 	const problems = await sharedSelectionProblems(selection, agentDir);
 	const git = await hostGit(options);
 	if (typeof options.restore === "function" && git.problem !== undefined) problems.push(git.problem);
@@ -242,7 +242,7 @@ async function runnableSources(root: SharedPoolRoot): Promise<readonly WorkerDef
 	const sources: WorkerDefinitionSource[] = [];
 	for (const source of root.config.definitions) {
 		// A definition this host does not have is the root's to run elsewhere.
-		if (!existsSync(source.path)) continue;
+		if (!(await pathExists(source.path))) continue;
 		const digest = await definitionDigest(source.path);
 		if (digest === source.digest)
 			sources.push({ path: source.path, exportName: source.exportName, digest: source.digest });
@@ -806,7 +806,7 @@ export async function startWorkflowWorkerHost(options: WorkflowWorkerHostOptions
 			(roots, works, unidentified) => queue.endedShipRoots(roots, works, unidentified),
 		).catch(() => {});
 		return new WorkerHost(
-			options.hostId ?? poolHostId(durable.agentDir),
+			options.hostId ?? (await poolHostId(durable.agentDir)),
 			journal,
 			shared,
 			durable,
@@ -832,7 +832,7 @@ export async function migrateWorkflowStorage(
 	options: { readonly journal?: SharedJournalSelection; readonly agentDir?: string } = {},
 ): Promise<void> {
 	const agentDir = options.agentDir ?? getAgentDir();
-	const selection = sharedJournalSelection(options.journal, { agentDir });
+	const selection = await sharedJournalSelection(options.journal, { agentDir });
 	const [first, ...rest] = await sharedSelectionProblems(selection, agentDir);
 	if (first !== undefined) throw new SharedPoolSetupError("worker-host", [first, ...rest]);
 	const adapterSelection = selection as Extract<StorageSelection, { kind: "adapter" }>;
@@ -890,7 +890,7 @@ export async function readWorkflowWorkerFleet(
 ): Promise<SharedPoolFleet> {
 	const resolvedPolicy = resolveFleetPolicy(options.policy ?? {});
 	const agentDir = options.agentDir ?? getAgentDir();
-	const selection = sharedJournalSelection(options.journal, { agentDir });
+	const selection = await sharedJournalSelection(options.journal, { agentDir });
 	const [first, ...rest] = await sharedSelectionProblems(selection, agentDir);
 	if (first !== undefined) throw new SharedPoolSetupError("worker-host", [first, ...rest]);
 	const adapterSelection = selection as Extract<StorageSelection, { kind: "adapter" }>;

@@ -29,6 +29,7 @@ import { sleepOrAbort } from "../shared/retry.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
 import { sameStringSet } from "./executor-continuation.js";
 import {
+	assertStageGitWorktreeOptions,
 	type GitWorktreeSetupCache,
 	stageOptionsWithGitWorktree,
 	stageOptionsWithInputDefaults,
@@ -72,6 +73,18 @@ import type { StageWaitHooks } from "./stage-runner-types.js";
 import { createStageSessionHeartbeat } from "./stage-session-heartbeat.js";
 import { type StageWakeDispatcher, stageWakeKey } from "./stage-wake-dispatcher.js";
 
+export type StageOptionsMapper = <T extends StageOptions>(options: T) => Promise<T>;
+
+export function restoresStagePaths(
+	mapRestoredOptions: StageOptionsMapper | undefined,
+	options: StageOptions | undefined,
+): mapRestoredOptions is StageOptionsMapper {
+	return (
+		mapRestoredOptions !== undefined &&
+		(typeof options?.cwd === "string" || typeof options?.gitWorktreeDir === "string")
+	);
+}
+
 export function agentStageReplayKey(name: string, options: StageOptions | undefined): string {
 	return options?.durableReplayKey ?? `stage:${name}`;
 }
@@ -90,13 +103,14 @@ export function createWorkflowStageFactory(input: {
 	readonly inputRuntimeDefaults: Partial<StageOptions>;
 	readonly workflowInvocationCwd: string;
 	readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
+	readonly mapRestoredOptions?: StageOptionsMapper | undefined;
 	readonly stageRegistry: StageControlRegistry;
 	readonly stageUiBroker: StageUiBroker;
 	readonly exit: WorkflowExitManager;
 	readonly budget: RunBudgetController;
 	readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
 	readonly createMcpScope: (stageId: string, options: StageOptions | undefined) => StageMcpScope;
-	readonly takeTerminalArtifacts?: (replayKey: string) => readonly WorkflowArtifact[] | undefined;
+	readonly takeTerminalArtifacts?: (replayKey: string) => Promise<readonly WorkflowArtifact[]> | undefined;
 	readonly assertLiveWorkAllowed?: () => void;
 	readonly wakeDispatcher: StageWakeDispatcher;
 	readonly stageResidency?: RunStageResidency | undefined;
@@ -104,7 +118,7 @@ export function createWorkflowStageFactory(input: {
 	name: string,
 	options?: StageOptions,
 	stageFailFastScope?: ParallelFailFastScope,
-	prepareLiveOptions?: () => StageOptions | undefined,
+	prepareLiveOptions?: () => Promise<StageOptions | undefined>,
 ) => StageContextWithMeta {
 	const runReleasePolicy = parseReleaseWhenWaiting(input.opts.releaseWhenWaiting);
 	const wakeDispatcher = input.wakeDispatcher;
@@ -144,29 +158,48 @@ export function createWorkflowStageFactory(input: {
 		const replaySource = replayDecision.kind === "replay" ? replayDecision.source : undefined;
 		const executeReplaySource = replayDecision.kind === "execute" ? replayDecision.source : undefined;
 		const shouldReplay = replaySource !== undefined;
+		let liveOptions: Promise<StageOptions | undefined> | undefined;
 		if (!shouldReplay) {
 			input.assertLiveWorkAllowed?.();
-			options = stageOptionsWithGitWorktree(
-				prepareLiveOptions?.() ?? options,
-				input.workflowInvocationCwd,
-				input.gitWorktreeSetupCache,
-			);
+			const mapRestored = input.mapRestoredOptions;
+			const mapsPaths = prepareLiveOptions === undefined && restoresStagePaths(mapRestored, options);
+			if (prepareLiveOptions !== undefined || typeof options?.gitWorktreeDir === "string") {
+				assertStageGitWorktreeOptions(options);
+				const spawnOptions = options;
+				liveOptions = (async () =>
+					stageOptionsWithGitWorktree(
+						(await prepareLiveOptions?.()) ??
+							(mapsPaths && spawnOptions !== undefined ? await mapRestored(spawnOptions) : spawnOptions),
+						input.workflowInvocationCwd,
+						input.gitWorktreeSetupCache,
+					))();
+				options =
+					spawnOptions === undefined
+						? undefined
+						: { ...spawnOptions, gitWorktreeDir: undefined, baseBranch: undefined };
+			} else if (mapsPaths && options !== undefined) {
+				liveOptions = mapRestored(options);
+			}
 		}
-		const replayStageOptions: StageOptions | undefined =
+		const replayOptionsOf = (stageOptions: StageOptions | undefined): StageOptions | undefined =>
 			executeReplaySource?.sessionId === undefined
-				? options
+				? stageOptions
 				: {
-						...(options ?? {}),
-						context: options?.context ?? "fork",
-						forkFromSessionId: options?.forkFromSessionId ?? executeReplaySource.sessionId,
-						forkFromEntryId: options?.forkFromSessionId === undefined ? undefined : options.forkFromEntryId,
+						...(stageOptions ?? {}),
+						context: stageOptions?.context ?? "fork",
+						forkFromSessionId: stageOptions?.forkFromSessionId ?? executeReplaySource.sessionId,
+						forkFromEntryId:
+							stageOptions?.forkFromSessionId === undefined ? undefined : stageOptions.forkFromEntryId,
 					};
 		const intercomGroup =
-			options?.durableIntercomGroup ?? resolveStageGroup(replayStageOptions, input.workflowIntercomGroup);
-		const stageOptionsForContext =
-			replayStageOptions?.group === undefined || intercomGroup === undefined
+			options?.durableIntercomGroup ?? resolveStageGroup(replayOptionsOf(options), input.workflowIntercomGroup);
+		const contextOptionsOf = (stageOptions: StageOptions | undefined): StageOptions | undefined => {
+			const replayStageOptions = replayOptionsOf(stageOptions);
+			return replayStageOptions?.group === undefined || intercomGroup === undefined
 				? replayStageOptions
 				: { ...replayStageOptions, group: intercomGroup };
+		};
+		const stageOptionsForContext = contextOptionsOf(options);
 		const pendingStageDeliveryAvailable = stageCanUseWorkflowPendingStageRoute(
 			stageOptionsForContext,
 			input.workflowIntercomGroup,
@@ -202,8 +235,17 @@ export function createWorkflowStageFactory(input: {
 			attachable: !shouldReplay,
 		};
 		setStageWorkingDirectory(stageSnapshot, options?.cwd);
+		const stageOptionsReady = liveOptions?.then((resolved) => {
+			setStageWorkingDirectory(stageSnapshot, resolved?.cwd);
+			return contextOptionsOf(resolved);
+		});
 
 		if (shouldReplay) {
+			if (options !== undefined && restoresStagePaths(input.mapRestoredOptions, options))
+				void input.mapRestoredOptions(options).then(
+					(mapped) => setStageWorkingDirectory(stageSnapshot, mapped.cwd),
+					() => {},
+				);
 			return createReplayStageContext({
 				runId: input.runId,
 				name,
@@ -216,9 +258,9 @@ export function createWorkflowStageFactory(input: {
 				registerWorkflowExitCleanup: input.exit.registerWorkflowExitCleanup,
 				workflowExitSkippedReason: input.exit.workflowExitSkippedReason,
 				throwIfWorkflowExitSelected: input.exit.throwIfWorkflowExitSelected,
-				readStoredMessages: (sessionId) =>
+				readStoredMessages: async (sessionId) =>
 					readReplayedStageMessages(
-						options ?? {},
+						(await input.mapRestoredOptions?.(options ?? {})) ?? options ?? {},
 						{
 							adapters: input.adapters,
 							defaultSessionDir: input.opts.defaultSessionDir,
@@ -444,6 +486,7 @@ export function createWorkflowStageFactory(input: {
 			workflowIntercomGroup: input.workflowIntercomGroup,
 			signal: input.signal,
 			stageOptions: stageOptionsForContext,
+			...(stageOptionsReady === undefined ? {} : { stageOptionsReady }),
 			...(pendingStageDeliveryAvailable
 				? {
 						routeAuthorityReady: () => workflowPendingStageRouteReady(input.activeStore, input.runId),
@@ -703,16 +746,17 @@ export function createWorkflowStageFactory(input: {
 				if (runEndedInFlightStages(input.activeStore, input.runId)) await persistStageEnd();
 				return false;
 			}
+			state.stageFinalized = true;
+			const pendingArtifacts = input.takeTerminalArtifacts?.(replayKey);
+			const artifacts = pendingArtifacts === undefined ? undefined : await pendingArtifacts;
 			if (state.skippedForParallelFailFast) {
 				stageSnapshot.status = "skipped";
 				stageSnapshot.skippedReason = "fail-fast";
 			}
-			state.stageFinalized = true;
 			runtime.unregisterWorkflowExitCleanup();
 			stageSnapshot.endedAt = Date.now();
 			stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
 			applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
-			const artifacts = input.takeTerminalArtifacts?.(replayKey);
 			if (artifacts !== undefined && artifacts.length > 0) stageSnapshot.artifacts = artifacts;
 			input.activeStore.recordStageEnd(input.runId, stageSnapshot);
 			input.stageUiBroker.cancelStagePrompt(

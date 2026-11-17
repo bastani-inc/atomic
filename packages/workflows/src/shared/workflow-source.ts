@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { normalize, win32 } from "node:path";
 import type { DurableWorkflowDefinitionSource } from "../durable/types.js";
 import { isWorkflowRuntimeFrame, normalizeStackPath } from "../runs/shared/prompt-callsite.js";
@@ -18,15 +18,30 @@ export function isWorkflowRuntimeModule(path: string): boolean {
 	return normalized === OWN_MODULE_PATH || isWorkflowRuntimeFrame(normalized);
 }
 
+const PENDING_SOURCE_DIGESTS = new WeakMap<object, Promise<void>>();
+
 export function recordWorkflowSource(definition: object, path: string): void {
 	const normalizedPath = normalizeWorkflowSourcePath(path);
 	WORKFLOW_SOURCES.set(definition, normalizedPath);
-	try {
-		const digest = createHash("sha256").update(readFileSync(normalizedPath)).digest("hex");
-		WORKFLOW_SOURCE_DIGESTS.set(definition, { path: normalizedPath, digest });
-	} catch {
-		WORKFLOW_SOURCE_DIGESTS.delete(definition);
-	}
+	WORKFLOW_SOURCE_DIGESTS.delete(definition);
+	const pending = readFile(normalizedPath).then(
+		(content) => {
+			if (WORKFLOW_SOURCES.get(definition) !== normalizedPath) return;
+			const digest = createHash("sha256").update(content).digest("hex");
+			WORKFLOW_SOURCE_DIGESTS.set(definition, { path: normalizedPath, digest });
+		},
+		() => {
+			if (WORKFLOW_SOURCES.get(definition) === normalizedPath) WORKFLOW_SOURCE_DIGESTS.delete(definition);
+		},
+	);
+	PENDING_SOURCE_DIGESTS.set(definition, pending);
+}
+
+export async function recordedWorkflowDefinitionSource(
+	definition: object,
+): Promise<DurableWorkflowDefinitionSource | undefined> {
+	await PENDING_SOURCE_DIGESTS.get(definition);
+	return WORKFLOW_SOURCE_DIGESTS.get(definition);
 }
 
 export function workflowSource(definition: object): string | undefined {
@@ -41,7 +56,7 @@ export async function resolveWorkflowDefinitionSource(
 	definition: object,
 	existing?: DurableWorkflowDefinitionSource,
 ): Promise<DurableWorkflowDefinitionSource | undefined> {
-	const recorded = WORKFLOW_SOURCE_DIGESTS.get(definition);
+	const recorded = await recordedWorkflowDefinitionSource(definition);
 	if (recorded !== undefined) return recorded;
 	const rawPath = workflowSource(definition) ?? existing?.path;
 	if (rawPath === undefined) return existing;

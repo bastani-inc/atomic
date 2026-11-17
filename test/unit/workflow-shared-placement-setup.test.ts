@@ -426,34 +426,40 @@ test("shared placement names the journal it cannot share: a file, or an adapter 
 	}
 });
 
-test("a shared pool on this host keeps its state beside the agent directory, with the root's window and binding (#4310)", () => {
+test("a shared pool on this host keeps its state beside the agent directory, with the root's window and binding (#4310)", async () => {
 	const shared = { selection: "{}", agentDir: join(makeTempDirectory("shared-placement-host-"), "agent") };
 	try {
-		assert.deepEqual(sharedPoolPlacement(shared, { placement: "shared" }), {
+		assert.deepEqual(await sharedPoolPlacement(shared, { placement: "shared" }), {
 			shared: {
 				stateDirectory: poolStateDirectory(shared.agentDir),
-				host: poolHostId(shared.agentDir),
+				host: await poolHostId(shared.agentDir),
 				claimWindowMs: DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
 			},
 		});
 		assert.equal(DEFAULT_PLACEMENT_CLAIM_WINDOW_MS, 60_000);
-		assert.deepEqual(sharedPoolPlacement(shared, { placement: "shared", claimWindowMs: 5, workspace: binding }), {
-			shared: {
-				stateDirectory: poolStateDirectory(shared.agentDir),
-				host: poolHostId(shared.agentDir),
-				claimWindowMs: 5,
+		assert.deepEqual(
+			await sharedPoolPlacement(shared, { placement: "shared", claimWindowMs: 5, workspace: binding }),
+			{
+				shared: {
+					stateDirectory: poolStateDirectory(shared.agentDir),
+					host: await poolHostId(shared.agentDir),
+					claimWindowMs: 5,
+				},
+				workspace: binding,
 			},
-			workspace: binding,
-		});
-		assert.deepEqual(sharedPoolPlacement(shared, { placement: "shared", workspace: binding }, "/root/worktree"), {
-			shared: {
-				stateDirectory: poolStateDirectory(shared.agentDir),
-				host: poolHostId(shared.agentDir),
-				claimWindowMs: DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
+		);
+		assert.deepEqual(
+			await sharedPoolPlacement(shared, { placement: "shared", workspace: binding }, "/root/worktree"),
+			{
+				shared: {
+					stateDirectory: poolStateDirectory(shared.agentDir),
+					host: await poolHostId(shared.agentDir),
+					claimWindowMs: DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
+				},
+				workspace: binding,
+				workspaceWorktree: "/root/worktree",
 			},
-			workspace: binding,
-			workspaceWorktree: "/root/worktree",
-		});
+		);
 	} finally {
 		removeTempDirectory(join(shared.agentDir, ".."));
 	}
@@ -921,7 +927,7 @@ test.skipIf(process.platform === "win32")(
 				const stats = await host.stats();
 				assert.deepEqual(
 					[stats.git, stats.restore, stats.hostId],
-					["system", true, poolHostId(join(directory, "agent"))],
+					["system", true, await poolHostId(join(directory, "agent"))],
 				);
 			} finally {
 				await host.stop();

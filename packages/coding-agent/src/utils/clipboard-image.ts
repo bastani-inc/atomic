@@ -1,6 +1,6 @@
-import { spawnSync } from "child_process";
+import { execFile } from "child_process";
 import { randomUUID } from "crypto";
-import { readFileSync, unlinkSync } from "fs";
+import { readFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -92,35 +92,39 @@ function runCommand(
 	command: string,
 	args: string[],
 	options?: { timeoutMs?: number; maxBufferBytes?: number; env?: NodeJS.ProcessEnv },
-): { stdout: Buffer; ok: boolean } {
+): Promise<{ stdout: Buffer; ok: boolean }> {
 	const timeoutMs = options?.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
 	const maxBufferBytes = options?.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
+	const env = options?.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment();
 
-	const result = spawnSync(command, args, {
-		timeout: timeoutMs,
-		maxBuffer: maxBufferBytes,
-		// Clipboard tools ignore the cwd, and WSL cannot start powershell.exe from a deep \\wsl.localhost\... path (pi#11592).
-		cwd: "/",
-		env: options?.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment(),
+	return new Promise((resolve) => {
+		execFile(
+			command,
+			args,
+			{
+				encoding: "buffer",
+				timeout: timeoutMs,
+				maxBuffer: maxBufferBytes,
+				// Clipboard tools ignore the cwd, and WSL cannot start powershell.exe from a deep \\wsl.localhost\... path (pi#11592).
+				cwd: "/",
+				env,
+			},
+			(error, stdout) => {
+				if (error) {
+					resolve({ ok: false, stdout: Buffer.alloc(0) });
+					return;
+				}
+				const buffer = Buffer.isBuffer(stdout)
+					? stdout
+					: Buffer.from(stdout ?? "", typeof stdout === "string" ? "utf-8" : undefined);
+				resolve({ ok: true, stdout: buffer });
+			},
+		);
 	});
-
-	if (result.error) {
-		return { ok: false, stdout: Buffer.alloc(0) };
-	}
-
-	if (result.status !== 0) {
-		return { ok: false, stdout: Buffer.alloc(0) };
-	}
-
-	const stdout = Buffer.isBuffer(result.stdout)
-		? result.stdout
-		: Buffer.from(result.stdout ?? "", typeof result.stdout === "string" ? "utf-8" : undefined);
-
-	return { ok: true, stdout };
 }
 
-function readClipboardImageViaWlPaste(): ClipboardImage | null {
-	const list = runCommand("wl-paste", ["--list-types"], { timeoutMs: DEFAULT_LIST_TIMEOUT_MS });
+async function readClipboardImageViaWlPaste(): Promise<ClipboardImage | null> {
+	const list = await runCommand("wl-paste", ["--list-types"], { timeoutMs: DEFAULT_LIST_TIMEOUT_MS });
 	if (!list.ok) {
 		return null;
 	}
@@ -136,7 +140,7 @@ function readClipboardImageViaWlPaste(): ClipboardImage | null {
 		return null;
 	}
 
-	const data = runCommand("wl-paste", ["--type", selectedType, "--no-newline"]);
+	const data = await runCommand("wl-paste", ["--type", selectedType, "--no-newline"]);
 	if (!data.ok || data.stdout.length === 0) {
 		return null;
 	}
@@ -149,11 +153,11 @@ function readClipboardImageViaWlPaste(): ClipboardImage | null {
  * Windows screenshots (Win+Shift+S). PowerShell can access the Windows clipboard
  * directly, so we use it as a fallback.
  */
-function readClipboardImageViaPowerShell(): ClipboardImage | null {
+async function readClipboardImageViaPowerShell(): Promise<ClipboardImage | null> {
 	const tmpFile = join(tmpdir(), `pi-wsl-clip-${randomUUID()}.png`);
 
 	try {
-		const winPathResult = runCommand("wslpath", ["-w", tmpFile], { timeoutMs: DEFAULT_LIST_TIMEOUT_MS });
+		const winPathResult = await runCommand("wslpath", ["-w", tmpFile], { timeoutMs: DEFAULT_LIST_TIMEOUT_MS });
 		if (!winPathResult.ok) {
 			return null;
 		}
@@ -172,7 +176,7 @@ function readClipboardImageViaPowerShell(): ClipboardImage | null {
 			"if ($img) { $img.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'ok' } else { Write-Output 'empty' }",
 		].join("; ");
 
-		const result = runCommand("powershell.exe", ["-NoProfile", "-Command", psScript], {
+		const result = await runCommand("powershell.exe", ["-NoProfile", "-Command", psScript], {
 			timeoutMs: DEFAULT_POWERSHELL_TIMEOUT_MS,
 		});
 		if (!result.ok) {
@@ -184,7 +188,7 @@ function readClipboardImageViaPowerShell(): ClipboardImage | null {
 			return null;
 		}
 
-		const bytes = readFileSync(tmpFile);
+		const bytes = await readFile(tmpFile);
 		if (bytes.length === 0) {
 			return null;
 		}
@@ -194,15 +198,15 @@ function readClipboardImageViaPowerShell(): ClipboardImage | null {
 		return null;
 	} finally {
 		try {
-			unlinkSync(tmpFile);
+			await unlink(tmpFile);
 		} catch {
 			// Ignore cleanup errors.
 		}
 	}
 }
 
-function readClipboardImageViaXclip(): ClipboardImage | null {
-	const targets = runCommand("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], {
+async function readClipboardImageViaXclip(): Promise<ClipboardImage | null> {
+	const targets = await runCommand("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], {
 		timeoutMs: DEFAULT_LIST_TIMEOUT_MS,
 	});
 
@@ -216,7 +220,7 @@ function readClipboardImageViaXclip(): ClipboardImage | null {
 	const preferred = selectPreferredImageMimeType(candidateTypes);
 	if (!preferred) return null;
 
-	const data = runCommand("xclip", ["-selection", "clipboard", "-t", preferred, "-o"]);
+	const data = await runCommand("xclip", ["-selection", "clipboard", "-t", preferred, "-o"]);
 	if (!data.ok || data.stdout.length === 0) return null;
 	return { bytes: data.stdout, mimeType: baseMimeType(preferred) };
 }
@@ -249,21 +253,21 @@ export async function readClipboardImage(options?: {
 	let image: ClipboardImage | null = null;
 
 	if (platform === "linux") {
-		const wsl = isWSL(env);
+		const wsl = await isWSL(env);
 		const wayland = isWaylandSession(env);
 
 		if (wayland || wsl) {
-			image = readClipboardImageViaWlPaste() ?? readClipboardImageViaXclip();
+			image = (await readClipboardImageViaWlPaste()) ?? (await readClipboardImageViaXclip());
 		}
 
 		if (!image && wsl) {
-			image = readClipboardImageViaPowerShell();
+			image = await readClipboardImageViaPowerShell();
 		}
 
 		if (!image && !wayland) {
 			image = await readClipboardImageViaNativeClipboard();
 			if (!image) {
-				image = readClipboardImageViaXclip();
+				image = await readClipboardImageViaXclip();
 			}
 		}
 	} else {

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, it, type MockInstance, vi } from "vitest";
 import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.js";
-import { runMigrations } from "../../packages/coding-agent/src/migrations.js";
+import { runMigrations, runMigrationsAsync } from "../../packages/coding-agent/src/migrations.js";
 import { clearDeprecationWarningsForTests } from "../../packages/coding-agent/src/utils/deprecation.js";
 import { discoverAgents } from "../../packages/subagents/src/agents/agents.js";
 
@@ -26,9 +26,9 @@ describe("startup removes saved modelConstraints and taskNeeds from subagent ove
 	const notices = () =>
 		warn.mock.calls.map((call) => String(call[0])).filter((line) => /modelConstraints|taskNeeds/.test(line));
 	/** One Atomic start: its startup migrations, then the subagent discovery that reads the overrides. */
-	const start = (projectTrusted: boolean) => {
+	const start = async (projectTrusted: boolean) => {
 		runMigrations(cwd, { projectTrusted });
-		discoverAgents(cwd, "both", { projectTrusted });
+		await discoverAgents(cwd, "both", { projectTrusted });
 	};
 	/** A later Atomic start: a new process has shown no notices yet. */
 	const nextProcess = () => {
@@ -58,7 +58,7 @@ describe("startup removes saved modelConstraints and taskNeeds from subagent ove
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	it("deletes the fields from global and trusted project settings, keeping every other key, and says so once", () => {
+	it("deletes the fields from global and trusted project settings, keeping every other key, and says so once", async () => {
 		const globalSaved = {
 			theme: "dark",
 			subagents: {
@@ -78,7 +78,7 @@ describe("startup removes saved modelConstraints and taskNeeds from subagent ove
 		mkdirSync(join(cwd, ".atomic"));
 		writeFileSync(projectPath(), JSON.stringify(projectSaved));
 
-		start(true);
+		await start(true);
 
 		assert.deepEqual(readJson(globalPath()), {
 			theme: "dark",
@@ -111,11 +111,11 @@ describe("startup removes saved modelConstraints and taskNeeds from subagent ove
 		);
 
 		nextProcess();
-		start(true);
+		await start(true);
 		assert.deepEqual(notices(), [], "a later start shows nothing");
 	});
 
-	it("leaves an untrusted project's file unchanged until the project is trusted", () => {
+	it("leaves an untrusted project's file unchanged until the project is trusted", async () => {
 		mkdirSync(join(cwd, ".atomic"));
 		const content = JSON.stringify({
 			theme: "light",
@@ -123,19 +123,48 @@ describe("startup removes saved modelConstraints and taskNeeds from subagent ove
 		});
 		writeFileSync(projectPath(), content);
 
-		start(false);
+		await start(false);
 		assert.equal(readFileSync(projectPath(), "utf-8"), content);
 		assert.deepEqual(notices(), []);
 
 		nextProcess();
-		start(true);
+		await start(true);
 		assert.deepEqual(readJson(projectPath()), { theme: "light", subagents: { agentOverrides: { worker: {} } } });
 		const shown = notices();
 		assert.equal(shown.length, 1, shown.join("\n"));
 		assert.match(shown[0]!, /Removed the "taskNeeds" setting/);
 	});
 
-	it("keeps the file and starts when it cannot be written, and each field is reported as ignored once", () => {
+	it("removes them from a project trusted after startup with the asynchronous migrations, and says so once", async () => {
+		mkdirSync(join(cwd, ".atomic"));
+		const content = JSON.stringify({
+			theme: "light",
+			subagents: { agentOverrides: { worker: { taskNeeds: NEEDS, model: "openai/gpt-6" } } },
+		});
+		writeFileSync(projectPath(), content);
+		await start(false);
+		assert.equal(readFileSync(projectPath(), "utf-8"), content);
+
+		await runMigrationsAsync(cwd, { projectTrusted: true });
+		await discoverAgents(cwd, "both", { projectTrusted: true });
+		assert.deepEqual(readJson(projectPath()), {
+			theme: "light",
+			subagents: { agentOverrides: { worker: { model: "openai/gpt-6" } } },
+		});
+		const shown = notices();
+		assert.equal(shown.length, 1, shown.join("\n"));
+		assert.match(
+			shown[0]!,
+			/Removed the "taskNeeds" setting from the subagent override for "worker" in project settings/,
+		);
+
+		nextProcess();
+		await runMigrationsAsync(cwd, { projectTrusted: true });
+		await discoverAgents(cwd, "both", { projectTrusted: true });
+		assert.deepEqual(notices(), [], "a later start shows nothing");
+	});
+
+	it("keeps the file and starts when it cannot be written, and each field is reported as ignored once", async () => {
 		const content = JSON.stringify({
 			theme: "dark",
 			subagents: { agentOverrides: { worker: { modelConstraints: CONSTRAINTS, taskNeeds: NEEDS } } },
@@ -143,8 +172,8 @@ describe("startup removes saved modelConstraints and taskNeeds from subagent ove
 		writeFileSync(globalPath(), content);
 		const release = lockfile.lockSync(globalPath(), { realpath: false, stale: 60_000 });
 		try {
-			start(true);
-			discoverAgents(cwd, "both", { projectTrusted: true });
+			await start(true);
+			await discoverAgents(cwd, "both", { projectTrusted: true });
 
 			assert.equal(readFileSync(globalPath(), "utf-8"), content);
 			const shown = notices();

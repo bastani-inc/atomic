@@ -131,9 +131,12 @@ export {
 
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import type { TSchema } from "typebox";
-import { isPowerShellAvailable } from "../../utils/shell.ts";
+import { isPowerShellAvailable, isPowerShellAvailableAsync } from "../../utils/shell.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
-import { createAskUserQuestionToolDefinition } from "./ask-user-question/index.ts";
+import {
+	createAskUserQuestionToolDefinition,
+	createLoadedAskUserQuestionToolDefinition,
+} from "./ask-user-question/index.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.js";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
@@ -189,12 +192,11 @@ export const allToolNames: Set<ToolName> = new Set([
  * call rather than at module load, and callers can decide it explicitly through
  * `powerShellAvailable` instead of depending on the host running the process.
  */
-export function getDefaultToolNames(options?: { powerShellAvailable?: boolean }): readonly ToolName[] {
-	const powerShell = options?.powerShellAvailable ?? isPowerShellAvailable();
+export function defaultToolNamesFor(powerShellAvailable: boolean): readonly ToolName[] {
 	return [
 		"read",
 		"bash",
-		...(powerShell ? (["powershell"] as const satisfies readonly ToolName[]) : []),
+		...(powerShellAvailable ? (["powershell"] as const satisfies readonly ToolName[]) : []),
 		"kill",
 		"edit",
 		"write",
@@ -203,6 +205,16 @@ export function getDefaultToolNames(options?: { powerShellAvailable?: boolean })
 		"ask_user_question",
 		"todo",
 	];
+}
+
+export function getDefaultToolNames(options?: { powerShellAvailable?: boolean }): readonly ToolName[] {
+	return defaultToolNamesFor(options?.powerShellAvailable ?? isPowerShellAvailable());
+}
+
+export async function getDefaultToolNamesAsync(options?: {
+	powerShellAvailable?: boolean;
+}): Promise<readonly ToolName[]> {
+	return defaultToolNamesFor(options?.powerShellAvailable ?? (await isPowerShellAvailableAsync()));
 }
 
 export interface ToolsOptions {
@@ -233,6 +245,12 @@ function createBuiltinWriteToolDefinition(cwd: string, options?: WriteToolOption
 }
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
+	return toolName === "ask_user_question"
+		? createAskUserQuestionToolDefinition()
+		: createLoadedToolDefinition(toolName, cwd, options);
+}
+
+export function createLoadedToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
 	switch (toolName) {
 		case "read":
 			return createReadToolDefinition(cwd, options?.read);
@@ -253,7 +271,7 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 		case "ls":
 			return createLsToolDefinition(cwd, options?.ls);
 		case "ask_user_question":
-			return createAskUserQuestionToolDefinition();
+			return createLoadedAskUserQuestionToolDefinition();
 		case "todo":
 			return createTodoToolDefinition(cwd);
 		default:
@@ -312,6 +330,17 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 }
 
 export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): BuiltinToolMap<ToolDef> {
+	return {
+		...createToolDefinitionsFor(cwd, options, isPowerShellAvailable()),
+		ask_user_question: createAskUserQuestionToolDefinition(),
+	};
+}
+
+export function createToolDefinitionsFor(
+	cwd: string,
+	options: ToolsOptions | undefined,
+	powerShellAvailable: boolean,
+): BuiltinToolMap<ToolDef> {
 	const definitions: BuiltinToolMap<ToolDef> = {
 		read: createReadToolDefinition(cwd, options?.read),
 		bash: createBashToolDefinition(cwd, options?.bash),
@@ -321,10 +350,10 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): B
 		find: createFindToolDefinition(cwd, options?.find),
 		search: createSearchToolDefinition(cwd, options?.search),
 		ls: createLsToolDefinition(cwd, options?.ls),
-		ask_user_question: createAskUserQuestionToolDefinition(),
+		ask_user_question: createLoadedAskUserQuestionToolDefinition(),
 		todo: createTodoToolDefinition(cwd),
 	};
-	if (isPowerShellAvailable()) {
+	if (powerShellAvailable) {
 		definitions.powershell = createPowerShellToolDefinition(cwd, options?.powershell);
 	}
 	return definitions;

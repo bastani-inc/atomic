@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import { checkLaunchCwd } from "../../packages/subagents/src/shared/launch-cwd.js";
 import type { SingleResult, TaskExecutionHooks } from "../../packages/subagents/src/shared/types.js";
 import {
 	INTERCOM_DETACH_REQUEST_EVENT,
@@ -79,7 +80,9 @@ describe("foreground intercom detach routing", () => {
 			const recovery = new Promise<void>((resolve) => {
 				resolveRecovery = resolve;
 			});
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "recover",
 				index: 0,
@@ -93,6 +96,7 @@ describe("foreground intercom detach routing", () => {
 					resolveRecovery();
 				},
 			});
+			await Promise.all([launched.promise]);
 			await sleep(25);
 			await handoff(eventBus(emitter), { requestId: "q", childIntercomTarget: "child-a" });
 			const continued = await pending;
@@ -121,7 +125,9 @@ describe("foreground intercom detach routing", () => {
 			const recovery = new Promise<SingleResult>((resolve) => {
 				recoveredResult = resolve;
 			});
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "recover-output",
 				index: 0,
@@ -133,6 +139,7 @@ describe("foreground intercom detach routing", () => {
 				testSession: { output: "detached findings", promptGate: gate.promise },
 				onDetachedExit: (result) => recoveredResult(result),
 			});
+			await Promise.all([launched.promise]);
 			await sleep(25);
 			await handoff(eventBus(emitter), { requestId: "q", childIntercomTarget: "child-a" });
 			assert.equal((await pending).detached, true);
@@ -151,7 +158,9 @@ describe("foreground intercom detach routing", () => {
 			const secondGate = deferred();
 			const emitter = new EventEmitter();
 			const bus = eventBus(emitter);
+			const firstLaunched = Promise.withResolvers<void>();
 			const first = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => firstLaunched.resolve(),
 				cwd: dir,
 				runId: "run",
 				index: 0,
@@ -160,7 +169,9 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "eventual result", promptGate: firstGate.promise },
 			});
+			const secondLaunched = Promise.withResolvers<void>();
 			const second = runSync(dir, [bridgedAgent()], "fake-worker", "B", {
+				onChildLaunch: () => secondLaunched.resolve(),
 				cwd: dir,
 				runId: "run",
 				index: 1,
@@ -171,6 +182,7 @@ describe("foreground intercom detach routing", () => {
 			});
 			let acknowledged = 0;
 			emitter.on(INTERCOM_DETACH_RESPONSE_EVENT, () => acknowledged++);
+			await Promise.all([firstLaunched.promise, secondLaunched.promise]);
 			await sleep(25);
 			const route = {
 				requestId: "q1",
@@ -201,7 +213,9 @@ describe("foreground intercom detach routing", () => {
 			const bus = eventBus(emitter);
 			const controller = new AbortController();
 			const recovered: SingleResult[] = [];
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "cancel-detached",
 				index: 0,
@@ -212,6 +226,7 @@ describe("foreground intercom detach routing", () => {
 				testSession: { output: "too late", promptGate: gate.promise },
 				onDetachedExit: (result) => recovered.push(result),
 			});
+			await Promise.all([launched.promise]);
 			await sleep(25);
 			await handoff(bus, { requestId: "q", childIntercomTarget: "child-a" });
 			assert.equal((await pending).status, "continued");
@@ -230,7 +245,9 @@ describe("foreground intercom detach routing", () => {
 			const gate = deferred();
 			const emitter = new EventEmitter();
 			const controller = new AbortController();
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "cancel-before",
 				index: 0,
@@ -240,6 +257,7 @@ describe("foreground intercom detach routing", () => {
 				signal: controller.signal,
 				testSession: { output: "too late", promptGate: gate.promise },
 			});
+			await Promise.all([launched.promise]);
 			await sleep(25);
 			controller.abort();
 			gate.release();
@@ -260,6 +278,7 @@ describe("foreground intercom detach routing", () => {
 			const groupDetach = new AbortController();
 			const recovered: SingleResult[] = [];
 			const recoveredBoth = Promise.withResolvers<void>();
+			const launched = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
 			const launch = (index: number, target: string, gate: ReturnType<typeof deferred>) =>
 				runSync(dir, [bridgedAgent()], "fake-worker", target, {
 					cwd: dir,
@@ -270,6 +289,7 @@ describe("foreground intercom detach routing", () => {
 					intercomEvents: bus,
 					intercomDetachSignal: groupDetach.signal,
 					onIntercomDetachCommit: () => groupDetach.abort(),
+					onChildLaunch: () => launched[index]!.resolve(),
 					testSession: { output: "parallel child recovered", promptGate: gate.promise },
 					onDetachedExit: (result) => {
 						recovered.push(result);
@@ -278,7 +298,7 @@ describe("foreground intercom detach routing", () => {
 				});
 			const first = launch(0, "child-a", firstGate);
 			const sibling = launch(1, "child-b", secondGate);
-			await sleep(25);
+			await Promise.all(launched.map((ready) => ready.promise));
 			await handoff(bus, { requestId: "parallel-question", childIntercomTarget: "child-a" });
 			const placeholders = await Promise.all([first, sibling]);
 			assert.ok(placeholders.every((result) => result.status === "continued"));
@@ -296,7 +316,9 @@ describe("foreground intercom detach routing", () => {
 			const gate = deferred();
 			const emitter = new EventEmitter();
 			const bus = eventBus(emitter);
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "background",
 				index: 0,
@@ -305,6 +327,7 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "background result", promptGate: gate.promise },
 			});
+			await Promise.all([launched.promise]);
 			await sleep(20);
 			bus.emit(INTERCOM_DETACH_REQUEST_EVENT, {
 				phase: "commit",
@@ -327,7 +350,9 @@ describe("foreground intercom detach routing", () => {
 			const bus = eventBus(emitter);
 			const recovered: SingleResult[] = [];
 			const recoveredExit = Promise.withResolvers<void>();
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "duplicate",
 				index: 0,
@@ -340,6 +365,7 @@ describe("foreground intercom detach routing", () => {
 					recoveredExit.resolve();
 				},
 			});
+			await Promise.all([launched.promise]);
 			await sleep(20);
 			const request = {
 				requestId: "same",
@@ -368,7 +394,9 @@ describe("foreground intercom detach routing", () => {
 			const gate = deferred();
 			const emitter = new EventEmitter();
 			const bus = eventBus(emitter);
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "reserved",
 				index: 0,
@@ -377,6 +405,7 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "normal", promptGate: gate.promise },
 			});
+			await Promise.all([launched.promise]);
 			await sleep(20);
 			const route = { requestId: "q", messageId: "q", senderId: "child-id", childIntercomTarget: "child-a" };
 			bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...route, runtimeGeneration: 1, phase: "commit" });
@@ -394,7 +423,9 @@ describe("foreground intercom detach routing", () => {
 			const gate = deferred();
 			const emitter = new EventEmitter();
 			const bus = eventBus(emitter);
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "run",
 				intercomSessionName: "child-a",
@@ -402,6 +433,7 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "normal", promptGate: gate.promise },
 			});
+			await Promise.all([launched.promise]);
 			await sleep(20);
 			bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "legacy" });
 			gate.release();
@@ -416,7 +448,9 @@ describe("foreground intercom detach routing", () => {
 			const gate = deferred();
 			const emitter = new EventEmitter();
 			const bus = eventBus(emitter);
+			const launched = Promise.withResolvers<void>();
 			const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+				onChildLaunch: () => launched.resolve(),
 				cwd: dir,
 				runId: "exact-run",
 				index: 3,
@@ -425,6 +459,7 @@ describe("foreground intercom detach routing", () => {
 				intercomEvents: bus,
 				testSession: { output: "normal", promptGate: gate.promise },
 			});
+			await Promise.all([launched.promise]);
 			await sleep(20);
 			bus.emit(INTERCOM_DETACH_REQUEST_EVENT, {
 				requestId: "missing",
@@ -463,7 +498,11 @@ test("task hooks retain the live result through tool activity and exact Intercom
 		const reports: Parameters<TaskExecutionHooks["reportActivity"]>[0][] = [];
 		let yields = 0;
 		let launches = 0;
+		const cwdVerdict = await checkLaunchCwd(dir);
+		const launched = Promise.withResolvers<void>();
 		const pending = runSync(dir, [bridgedAgent()], "fake-worker", "task", {
+			onChildLaunch: () => launched.resolve(),
+			cwdVerdict,
 			runId: "task-hooks",
 			intercomSessionName: "child-a",
 			allowIntercomDetach: true,
@@ -546,7 +585,11 @@ test("task hooks retain the live result through tool activity and exact Intercom
 test("task cleanup failure preserves successful execution and is not reaped", async () => {
 	await withTempDir(async (dir) => {
 		let execution: Parameters<TaskExecutionHooks["onExecution"]>[0] | undefined;
+		const cwdVerdict = await checkLaunchCwd(dir);
+		const launched = Promise.withResolvers<void>();
 		const pending = runSync(dir, [bridgedAgent()], "fake-worker", "task", {
+			onChildLaunch: () => launched.resolve(),
+			cwdVerdict,
 			runId: "cleanup-failed",
 			taskExecution: {
 				signal: new AbortController().signal,
@@ -581,7 +624,11 @@ test("task signal cancels the original execution after Intercom yields", async (
 		const controller = new AbortController();
 		const bus = eventBus(new EventEmitter());
 		let execution: Parameters<TaskExecutionHooks["onExecution"]>[0] | undefined;
+		const cwdVerdict = await checkLaunchCwd(dir);
+		const launched = Promise.withResolvers<void>();
 		const pending = runSync(dir, [bridgedAgent()], "fake-worker", "task", {
+			onChildLaunch: () => launched.resolve(),
+			cwdVerdict,
 			runId: "task-cancel",
 			allowIntercomDetach: true,
 			intercomSessionName: "child-a",
@@ -618,8 +665,10 @@ test("task group detach yields every active sibling once without ending their pr
 		const yields = [0, 0];
 		let commits = 0;
 		const executions: Array<Parameters<TaskExecutionHooks["onExecution"]>[0]> = [];
+		const cwdVerdict = await checkLaunchCwd(dir);
 		const pending = [0, 1].map((index) =>
 			runSync(dir, [bridgedAgent()], "fake-worker", " x ", {
+				cwdVerdict,
 				runId: `task-group-${index}`,
 				intercomSessionName: `child-${index}`,
 				allowIntercomDetach: true,

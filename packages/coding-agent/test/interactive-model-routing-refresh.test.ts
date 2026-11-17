@@ -37,7 +37,7 @@ function createMode(
 			modelRuntime: {
 				refresh,
 				getAvailableSnapshot,
-				getCatalogInputsGeneration: () => 0,
+				readCatalogInputsKey: async () => "0",
 			},
 		},
 	};

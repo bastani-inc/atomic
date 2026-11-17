@@ -847,7 +847,7 @@ export function createAgentSessionAdapter(
 		const options = withBaseOptions(stageOptions);
 		const settingsManager =
 			options.settingsManager ??
-			SettingsManager.create(options.cwd ?? process.cwd(), options.agentDir ?? getAgentDir());
+			(await SettingsManager.createAsync(options.cwd ?? process.cwd(), options.agentDir ?? getAgentDir()));
 		const runtime =
 			options.modelRuntime ??
 			(await ModelRuntime.create({

@@ -438,7 +438,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		// Expand skill commands (/skill:name args) and prompt templates (/template args)
 		let expandedText = currentText;
 		if (expandPromptTemplates) {
-			expandedText = this._expandSkillCommand(expandedText);
+			expandedText = await this._expandSkillCommand(expandedText);
 			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 		}
 		keptText = expandedText;
@@ -1192,7 +1192,7 @@ export async function _tryExecuteExtensionCommand(this: AgentSession, text: stri
  * Emits errors via extension runner if file read fails.
  */
 
-export function _expandSkillCommand(this: AgentSession, text: string): string {
+export function _expandSkillCommand(this: AgentSession, text: string): Promise<string> {
 	return expandSkillCommand(getSkillCatalog(this.resourceLoader), text, (error) =>
 		this._extensionRunner.emitError({ extensionPath: error.path, event: "skill_expansion", error: error.message }),
 	);
@@ -1254,7 +1254,7 @@ async function admittedQueueUserInput(
 			}
 		}
 		const expandedText = expandPromptTemplates
-			? expandPromptTemplate(session._expandSkillCommand(text), [...session.promptTemplates])
+			? expandPromptTemplate(await session._expandSkillCommand(text), [...session.promptTemplates])
 			: text;
 		const earlierAdmissions = admission.waitForTurn();
 		if (earlierAdmissions) await earlierAdmissions;

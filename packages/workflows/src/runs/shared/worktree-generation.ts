@@ -1,57 +1,58 @@
-import * as fs from "node:fs";
+import type { BigIntStats } from "node:fs";
+import { type FileHandle, lstat, open } from "node:fs/promises";
 import * as path from "node:path";
 
 export interface GitWorktreeGenerationAnchor {
-	assertCurrent(): void;
-	dispose(): void;
+	assertCurrent(): Promise<void>;
+	dispose(): Promise<void>;
 }
 
-function sameFileIdentity(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
+function sameFileIdentity(left: BigIntStats, right: BigIntStats): boolean {
 	return left.dev === right.dev && left.ino === right.ino;
 }
 
 function openMainCheckoutAnchor(gitDir: string): GitWorktreeGenerationAnchor {
 	let disposed = false;
 	return {
-		assertCurrent() {
+		async assertCurrent() {
 			if (disposed) throw new Error(`cached .git identity anchor is already disposed: ${gitDir}`);
-			if (!fs.lstatSync(gitDir).isDirectory()) {
+			if (!(await lstat(gitDir)).isDirectory()) {
 				throw new Error(`cached main-checkout .git directory is no longer current: ${gitDir}`);
 			}
 		},
-		dispose() {
+		async dispose() {
 			disposed = true;
 		},
 	};
 }
 
-export function openGitWorktreeGenerationAnchor(worktreeRoot: string): GitWorktreeGenerationAnchor {
+export async function openGitWorktreeGenerationAnchor(worktreeRoot: string): Promise<GitWorktreeGenerationAnchor> {
 	const gitFile = path.join(worktreeRoot, ".git");
-	if (fs.lstatSync(gitFile).isDirectory()) return openMainCheckoutAnchor(gitFile);
-	const descriptor = fs.openSync(gitFile, "r");
+	if ((await lstat(gitFile)).isDirectory()) return openMainCheckoutAnchor(gitFile);
+	const handle: FileHandle = await open(gitFile, "r");
 	let disposed = false;
 
 	const anchor: GitWorktreeGenerationAnchor = {
-		assertCurrent() {
+		async assertCurrent() {
 			if (disposed) throw new Error(`cached .git identity anchor is already disposed: ${gitFile}`);
-			const held = fs.fstatSync(descriptor, { bigint: true });
-			const current = fs.lstatSync(gitFile, { bigint: true });
+			const held = await handle.stat({ bigint: true });
+			const current = await lstat(gitFile, { bigint: true });
 			if (!current.isFile() || !sameFileIdentity(held, current)) {
 				throw new Error(`cached .git identity anchor no longer matches the selected checkout: ${gitFile}`);
 			}
 		},
-		dispose() {
+		async dispose() {
 			if (disposed) return;
 			disposed = true;
-			fs.closeSync(descriptor);
+			await handle.close();
 		},
 	};
 
 	try {
-		anchor.assertCurrent();
+		await anchor.assertCurrent();
 		return anchor;
 	} catch (error) {
-		anchor.dispose();
+		await anchor.dispose();
 		throw error;
 	}
 }

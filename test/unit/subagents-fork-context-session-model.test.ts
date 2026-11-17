@@ -72,7 +72,7 @@ vi.mock("../../packages/subagents/src/runs/inprocess/control-registry.ts", () =>
 	};
 	const control = {
 		registerAgents: () => undefined,
-		admitChildSession: (spec: unknown) => ({
+		admitCheckedChildSession: (spec: unknown) => ({
 			admitted: {
 				identity: { path: "child/0", depth: 1 },
 				spec,

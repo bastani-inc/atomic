@@ -46,23 +46,26 @@ function snapshot(root: string, tree: string, extra: Partial<WorktreeSnapshot> =
 	};
 }
 
-test("a restored worktree takes over paths under the root it replaced, keeping their repository-relative part (#4245)", () => {
+test("a restored worktree takes over paths under the root it replaced, keeping their repository-relative part (#4245)", async () => {
 	const mappings = [mapping(at("old", "repo"), at("new", "wt"))];
-	assert.equal(mapWorkflowWorktreePath(at("old", "repo"), mappings), at("new", "wt"));
-	assert.equal(mapWorkflowWorktreePath(at("old", "repo", "src", "a.ts"), mappings), at("new", "wt", "src", "a.ts"));
-	assert.equal(mapWorkflowWorktreePath(at("new", "wt", "src"), mappings), at("new", "wt", "src"));
+	assert.equal(await mapWorkflowWorktreePath(at("old", "repo"), mappings), at("new", "wt"));
+	assert.equal(
+		await mapWorkflowWorktreePath(at("old", "repo", "src", "a.ts"), mappings),
+		at("new", "wt", "src", "a.ts"),
+	);
+	assert.equal(await mapWorkflowWorktreePath(at("new", "wt", "src"), mappings), at("new", "wt", "src"));
 });
 
-test("only paths inside a replaced root move: relative paths, parents, siblings and strangers stay (#4245)", () => {
+test("only paths inside a replaced root move: relative paths, parents, siblings and strangers stay (#4245)", async () => {
 	const mappings = [mapping(at("old", "repo"), at("new", "wt"))];
-	assert.equal(mapWorkflowWorktreePath(join("src", "a.ts"), mappings), join("src", "a.ts"));
-	assert.equal(mapWorkflowWorktreePath(at("old"), mappings), at("old"));
-	assert.equal(mapWorkflowWorktreePath(at("old", "repo-extra", "x"), mappings), at("old", "repo-extra", "x"));
-	assert.equal(mapWorkflowWorktreePath(at("elsewhere", "x"), mappings), at("elsewhere", "x"));
-	assert.equal(mapWorkflowWorktreePath(at("old", "repo", "x"), []), at("old", "repo", "x"));
+	assert.equal(await mapWorkflowWorktreePath(join("src", "a.ts"), mappings), join("src", "a.ts"));
+	assert.equal(await mapWorkflowWorktreePath(at("old"), mappings), at("old"));
+	assert.equal(await mapWorkflowWorktreePath(at("old", "repo-extra", "x"), mappings), at("old", "repo-extra", "x"));
+	assert.equal(await mapWorkflowWorktreePath(at("elsewhere", "x"), mappings), at("elsewhere", "x"));
+	assert.equal(await mapWorkflowWorktreePath(at("old", "repo", "x"), []), at("old", "repo", "x"));
 	const replacedWorkingDirectory = [mapping(process.cwd(), at("new", "wt"))];
 	assert.equal(
-		mapWorkflowWorktreePath(join("src", "a.ts"), replacedWorkingDirectory),
+		await mapWorkflowWorktreePath(join("src", "a.ts"), replacedWorkingDirectory),
 		join("src", "a.ts"),
 		"a relative path is never read against the process's working directory",
 	);
@@ -70,44 +73,44 @@ test("only paths inside a replaced root move: relative paths, parents, siblings 
 
 test.skipIf(process.platform === "win32")(
 	"without restores an absolute path comes back as given, even one whose links cannot be resolved (symbolic links need a privilege on Windows) (#4245)",
-	() => {
+	async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-workflow-paths-"));
 		try {
 			symlinkSync(join(directory, "loop"), join(directory, "loop"));
 			const path = join(directory, "loop", "repo");
-			assert.equal(mapWorkflowWorktreePath(path, []), path);
+			assert.equal(await mapWorkflowWorktreePath(path, []), path);
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
 	},
 );
 
-test("the most specific replaced root wins, whatever order the restores were recorded in (#4245)", () => {
+test("the most specific replaced root wins, whatever order the restores were recorded in (#4245)", async () => {
 	const outer = mapping(at("a"), at("x"));
 	const inner = mapping(at("a", "b"), at("y"));
 	for (const mappings of [
 		[outer, inner],
 		[inner, outer],
 	]) {
-		assert.equal(mapWorkflowWorktreePath(at("a", "b", "c"), mappings), at("y", "c"));
-		assert.equal(mapWorkflowWorktreePath(at("a", "z"), mappings), at("x", "z"));
+		assert.equal(await mapWorkflowWorktreePath(at("a", "b", "c"), mappings), at("y", "c"));
+		assert.equal(await mapWorkflowWorktreePath(at("a", "z"), mappings), at("x", "z"));
 	}
 });
 
-test("a root restored twice maps both the original and the first restore to the latest one (#4245)", () => {
+test("a root restored twice maps both the original and the first restore to the latest one (#4245)", async () => {
 	const mappings = [mapping(at("r"), at("s1")), mapping(at("r"), at("s2"))];
-	assert.equal(mapWorkflowWorktreePath(at("r", "x"), mappings), at("s2", "x"));
-	assert.equal(mapWorkflowWorktreePath(at("s1", "x"), mappings), at("s2", "x"));
-	assert.equal(mapWorkflowWorktreePath(at("s2", "x"), mappings), at("s2", "x"));
+	assert.equal(await mapWorkflowWorktreePath(at("r", "x"), mappings), at("s2", "x"));
+	assert.equal(await mapWorkflowWorktreePath(at("s1", "x"), mappings), at("s2", "x"));
+	assert.equal(await mapWorkflowWorktreePath(at("s2", "x"), mappings), at("s2", "x"));
 });
 
-test("a chain of restores leads every earlier location to the last one, and a cycle terminates (#4245)", () => {
+test("a chain of restores leads every earlier location to the last one, and a cycle terminates (#4245)", async () => {
 	const chain = [mapping(at("r"), at("s")), mapping(at("s"), at("t"))];
-	assert.equal(mapWorkflowWorktreePath(at("r", "x"), chain), at("t", "x"));
-	assert.equal(mapWorkflowWorktreePath(at("s", "x"), chain), at("t", "x"));
-	assert.equal(mapWorkflowWorktreePath(at("t", "x"), chain), at("t", "x"));
+	assert.equal(await mapWorkflowWorktreePath(at("r", "x"), chain), at("t", "x"));
+	assert.equal(await mapWorkflowWorktreePath(at("s", "x"), chain), at("t", "x"));
+	assert.equal(await mapWorkflowWorktreePath(at("t", "x"), chain), at("t", "x"));
 	const cycle = [mapping(at("a"), at("b")), mapping(at("b"), at("a"))];
-	assert.equal(typeof mapWorkflowWorktreePath(at("a", "x"), cycle), "string");
+	assert.equal(typeof (await mapWorkflowWorktreePath(at("a", "x"), cycle)), "string");
 });
 
 test("the frontier keeps each root's latest boundary by journal sequence, however the boundaries are ordered (#4245)", () => {

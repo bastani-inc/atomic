@@ -1,5 +1,5 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { resolvePhysicalPath } from "../../utils/physical-path.ts";
+import { resolvePhysicalPath, resolvePhysicalPathAsync } from "../../utils/physical-path.ts";
 import { WorkspaceBindingError, WorkspaceConfigError, WorkspaceSandboxError } from "./errors.ts";
 import { adoptWorkspaceBinding, type BoundWorkspace, isBoundWorkspace, resolveWorkspace } from "./resolve.ts";
 import { restoreRecordedWorkspace } from "./restore.ts";
@@ -34,6 +34,32 @@ function insideWorktree(binding: Pick<BoundWorkspace, "worktree">, path: string)
 	return inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) ? target : undefined;
 }
 
+async function insideWorktreeAsync(
+	binding: Pick<BoundWorkspace, "worktree">,
+	path: string,
+): Promise<string | undefined> {
+	const [worktree, target] = await Promise.all([
+		resolvePhysicalPathAsync(binding.worktree),
+		resolvePhysicalPathAsync(path),
+	]);
+	const inside = relative(worktree, target);
+	return inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) ? target : undefined;
+}
+
+export async function workspaceSessionCwdAsync(
+	binding: Pick<BoundWorkspace, "worktree">,
+	cwd?: string,
+): Promise<string> {
+	if (cwd === undefined) return binding.worktree;
+	const requested = isAbsolute(cwd) ? cwd : resolve(binding.worktree, cwd);
+	const target = await insideWorktreeAsync(binding, requested);
+	if (target !== undefined) return target;
+	throw new WorkspaceBindingError({
+		code: "cwd-outside-worktree",
+		fields: { worktree: binding.worktree, cwd: requested },
+	});
+}
+
 /**
  * A session manager given together with a workspace must already work inside its worktree: its directory is where
  * shell commands and exports run, so one elsewhere fails with `WorkspaceConfigError` before the session is created.
@@ -45,6 +71,22 @@ export function assertSessionManagerInWorktree(
 	if (sessionManager === undefined) return;
 	const managerCwd = resolve(sessionManager.getCwd());
 	if (insideWorktree(binding, managerCwd) !== undefined) return;
+	throw new WorkspaceConfigError({
+		source: "sdk",
+		field: "sessionManager",
+		reason: "invalid-value",
+		expected: `a session manager whose cwd is inside ${binding.worktree}`,
+		received: `a session manager in ${managerCwd}`,
+	});
+}
+
+export async function assertSessionManagerInWorktreeAsync(
+	binding: Pick<BoundWorkspace, "worktree">,
+	sessionManager: { getCwd(): string } | undefined,
+): Promise<void> {
+	if (sessionManager === undefined) return;
+	const managerCwd = resolve(sessionManager.getCwd());
+	if ((await insideWorktreeAsync(binding, managerCwd)) !== undefined) return;
 	throw new WorkspaceConfigError({
 		source: "sdk",
 		field: "sessionManager",

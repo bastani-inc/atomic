@@ -24,10 +24,15 @@ vi.mock("../src/utils/shell.js", async (importOriginal) => {
 	return {
 		...shell,
 		isPowerShellAvailable: () => true,
+		isPowerShellAvailableAsync: async () => true,
 		getPowerShellConfig: () =>
 			process.platform !== "win32" && process.env.ATOMIC_TEST_PWSH
 				? { shell: process.env.ATOMIC_TEST_PWSH, args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"] }
 				: shell.getPowerShellConfig(),
+		getPowerShellConfigAsync: async () =>
+			process.platform !== "win32" && process.env.ATOMIC_TEST_PWSH
+				? { shell: process.env.ATOMIC_TEST_PWSH, args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"] }
+				: shell.getPowerShellConfigAsync(),
 	};
 });
 

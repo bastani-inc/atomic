@@ -88,7 +88,7 @@ export default function (pi) {
 		const factory = await loadExtensionModule(entry, useExtensionCacheCwd(root));
 		assert.ok(factory);
 		await loadExtensionFromFactory(factory, root, bus, createExtensionRuntime(), entry);
-		const manifest = readExtensionGraphManifest(entry);
+		const manifest = await readExtensionGraphManifest(entry);
 		if (value === "first") {
 			assert.equal(manifest, undefined, "first load must retain the native-first path");
 		} else {

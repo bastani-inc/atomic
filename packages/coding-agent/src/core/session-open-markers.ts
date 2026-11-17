@@ -9,11 +9,12 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { rmdirSync, rmSync } from "node:fs";
+import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "../config.js";
-import { processStartToken, readProcessStartToken } from "./process-start-token.js";
+import { ownProcessStartToken, readProcessStartToken } from "./process-start-token.js";
 import { attachSessionClaim } from "./session-claims.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
 import type {
@@ -42,7 +43,7 @@ let processToken: string | undefined;
  */
 function ownToken(): string {
 	if (processToken === undefined) {
-		const started = processStartToken(process.pid);
+		const started = ownProcessStartToken();
 		processToken = `${process.pid}-${PROCESS_NONCE}${started === undefined ? "" : `-${started}`}`;
 	}
 	return processToken;
@@ -66,6 +67,7 @@ export interface SessionOpenHolder {
 /** Marker files under an agent directory, for stores that keep no markers. */
 class FileOpenMarkers implements SessionOpenMarkerStore {
 	private readonly agentDir: string;
+	private readonly pending = new Map<string, Promise<void>>();
 
 	constructor(agentDir: string) {
 		this.agentDir = agentDir;
@@ -75,18 +77,33 @@ class FileOpenMarkers implements SessionOpenMarkerStore {
 		return join(this.agentDir, "open-sessions", sessionId);
 	}
 
-	async put(sessionId: string, marker: SessionOpenMarker): Promise<void> {
-		this.putSync(sessionId, marker);
+	private inOrder(path: string, operation: () => Promise<void>): Promise<void> {
+		const result = (this.pending.get(path) ?? Promise.resolve()).then(operation);
+		const settled = result.catch(() => {});
+		this.pending.set(path, settled);
+		void settled.then(() => {
+			if (this.pending.get(path) === settled) this.pending.delete(path);
+		});
+		return result;
 	}
 
-	putSync(sessionId: string, marker: SessionOpenMarker): void {
+	put(sessionId: string, marker: SessionOpenMarker): Promise<void> {
 		const path = join(this.directory(sessionId), `${marker.token}.json`);
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, JSON.stringify({ pid: marker.pid, host: marker.host }));
+		return this.inOrder(path, async () => {
+			await mkdir(dirname(path), { recursive: true });
+			await writeFile(path, JSON.stringify({ pid: marker.pid, host: marker.host }));
+		});
 	}
 
-	async remove(sessionId: string, token: string): Promise<void> {
-		this.removeSync(sessionId, token);
+	remove(sessionId: string, token: string): Promise<void> {
+		const directory = this.directory(sessionId);
+		const path = join(directory, `${token}.json`);
+		return this.inOrder(path, async () => {
+			try {
+				await rm(path);
+				await rmdir(directory);
+			} catch {}
+		});
 	}
 
 	removeSync(sessionId: string, token: string): void {
@@ -101,28 +118,30 @@ class FileOpenMarkers implements SessionOpenMarkerStore {
 
 	async list(sessionId: string): Promise<readonly SessionOpenMarkerAge[]> {
 		const directory = this.directory(sessionId);
+		await Promise.all([...this.pending].flatMap(([path, settled]) => (dirname(path) === directory ? [settled] : [])));
 		let names: string[];
 		try {
-			names = readdirSync(directory);
+			names = await readdir(directory);
 		} catch {
 			return [];
 		}
 		if (names.length === 0) return [];
 		// Ages on the clock that stamps the files, which hosts sharing the agent directory share (#5058).
 		const now = await sharedClockNow(dirname(directory));
-		return names.flatMap((name) => {
+		const markers: SessionOpenMarkerAge[] = [];
+		for (const name of names) {
 			const path = join(directory, name);
 			try {
-				const parsed = JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown; host?: unknown };
-				if (typeof parsed.pid !== "number" || typeof parsed.host !== "string") return [];
+				const parsed = JSON.parse(await readFile(path, "utf8")) as { pid?: unknown; host?: unknown };
+				if (typeof parsed.pid !== "number" || typeof parsed.host !== "string") continue;
 				const token = name.replace(/\.json$/, "");
-				const ageMs = Math.max(0, now - statSync(path).mtimeMs);
-				return [{ token, pid: parsed.pid, host: parsed.host, ageMs }];
+				const ageMs = Math.max(0, now - (await stat(path)).mtimeMs);
+				markers.push({ token, pid: parsed.pid, host: parsed.host, ageMs });
 			} catch {
 				// Being written or removed right now, or not a marker.
-				return [];
 			}
-		});
+		}
+		return markers;
 	}
 }
 
@@ -147,7 +166,7 @@ interface HeldMarker {
 	readonly sessionId: string;
 	holds: number;
 	/** Releases the resume claim this marker took over (#5135), if any. */
-	readonly releaseClaim: (() => void) | undefined;
+	readonly releaseClaim: (() => Promise<void>) | undefined;
 }
 
 /** Markers this process holds, by store and then session id. */
@@ -199,13 +218,7 @@ export function holdSessionOpenMarker(
 		marker = { markers, sessionId, holds: 0, releaseClaim: attachSessionClaim(sessionId) };
 		sessions.set(sessionId, marker);
 		heldCount++;
-		if (markers instanceof FileOpenMarkers) {
-			try {
-				markers.putSync(sessionId, ownMarker());
-			} catch {
-				// Best effort, as above.
-			}
-		} else markers.put(sessionId, ownMarker()).catch(() => {});
+		markers.put(sessionId, ownMarker()).catch(() => {});
 		if (heartbeat === undefined) {
 			heartbeat = setInterval(refreshMarkers, HEARTBEAT_MS);
 			heartbeat.unref();
@@ -221,11 +234,13 @@ export function holdSessionOpenMarker(
 		if (--holding.holds > 0) return;
 		owner.delete(sessionId);
 		if (owner.size === 0) held.delete(markers);
-		holding.releaseClaim?.();
+		const releasingClaim = holding.releaseClaim?.();
 		if (--heldCount === 0 && heartbeat !== undefined) {
 			clearInterval(heartbeat);
 			heartbeat = undefined;
 		}
+		await releasingClaim;
+		if (held.get(markers)?.has(sessionId)) return;
 		await markers.remove(sessionId, ownToken()).catch(() => {});
 	};
 }

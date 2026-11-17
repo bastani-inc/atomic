@@ -100,6 +100,60 @@ vi.mock("node:fs", async (original) => {
 		},
 	};
 });
+vi.mock("node:fs/promises", async (original) => {
+	const fs = await original<typeof import("node:fs/promises")>();
+	const { existsSync } = await vi.importActual<typeof import("node:fs")>("node:fs");
+	const faulted = {
+		mkdir: async (...args: Parameters<typeof fs.mkdir>) => {
+			const match = matchingReadOnlyDir(args[0]);
+			if (match !== undefined && (typeof args[0] !== "string" || !existsSync(args[0]))) {
+				throw errnoException(match.code, "mkdir", String(args[0]));
+			}
+			return fs.mkdir(...args);
+		},
+		writeFile: async (...args: Parameters<typeof fs.writeFile>) => {
+			const match = matchingReadOnlyDir(args[0] as PathLike);
+			if (match !== undefined) throw errnoException(match.code, "open", String(args[0]));
+			return fs.writeFile(...args);
+		},
+		link: async (...args: Parameters<typeof fs.link>) => {
+			const match = matchingReadOnlyDir(args[1]);
+			if (match !== undefined) throw errnoException(match.code, "link", String(args[1]));
+			return fs.link(...args);
+		},
+		rename: async (...args: Parameters<typeof fs.rename>) => {
+			if (typeof args[1] === "string") {
+				const code = fsFaults.renameTargets.get(resolve(args[1]));
+				if (code !== undefined) throw errnoException(code, "rename", args[1]);
+			}
+			const match = matchingReadOnlyDir(args[0]) ?? matchingReadOnlyDir(args[1]);
+			if (match !== undefined) throw errnoException(match.code, "rename", String(args[1]));
+			return fs.rename(...args);
+		},
+		rm: async (...args: Parameters<typeof fs.rm>) => {
+			const match = matchingReadOnlyDir(args[0]);
+			if (match !== undefined && (typeof args[0] !== "string" || existsSync(args[0]))) {
+				throw errnoException(match.code, "unlink", String(args[0]));
+			}
+			return fs.rm(...args);
+		},
+		readFile: (async (...args: Parameters<typeof fs.readFile>) => {
+			if (typeof args[0] === "string") {
+				const code = fsFaults.unreadableFiles.get(resolve(args[0]));
+				if (code !== undefined) throw errnoException(code, "open", args[0]);
+			}
+			return fs.readFile(...args);
+		}) as typeof fs.readFile,
+		opendir: async (...args: Parameters<typeof fs.opendir>) => {
+			if (typeof args[0] === "string") {
+				const code = fsFaults.unreadableOpenDirs.get(resolve(args[0]));
+				if (code !== undefined) throw errnoException(code, "opendir", args[0]);
+			}
+			return fs.opendir(...args);
+		},
+	};
+	return { ...fs, ...faulted, default: { ...fs, ...faulted } };
+});
 vi.resetModules();
 
 const {

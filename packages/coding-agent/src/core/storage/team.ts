@@ -21,7 +21,7 @@ import { parseJsonFileContent } from "../../utils/json.ts";
 import type { IntercomBrokerControl, RestartOutcome } from "../intercom-broker-control.js";
 import { prepareLockTakeover } from "../lock-holder.js";
 import { resolvePackageStorageAdapter } from "../package-manager-storage-adapters.js";
-import { selectSessionSetting, selectSessionStorage } from "../session-storage.js";
+import { selectSessionSetting, selectSessionStorageWithSettings } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
 import { deepMergeSettings } from "../settings-merge.js";
 import type { Settings } from "../settings-schema.ts";
@@ -37,7 +37,7 @@ import {
 } from "./errors.js";
 import { defaultSessionDatabasePath, storageHomeDir } from "./file-identity.js";
 import { defaultJournalStoreDirectory } from "./journal-adoption.js";
-import { processSharedStorageSelection } from "./process-selection.js";
+import { processSharedStorageSelectionAsync } from "./process-selection.js";
 import {
 	loadStorageAdapter,
 	secretFilePath as resolveProviderSecretFilePath,
@@ -52,7 +52,7 @@ import {
 	checkTeamUrl,
 	conflictingTeamToken,
 	emptyTeamToken,
-	environmentTeamProfile,
+	environmentTeamProfileAsync,
 	inMemorySecret,
 	isFileUrl,
 	isPostgresUrl,
@@ -609,9 +609,9 @@ async function loadTeamAdapter(agentDir: string, reason: string): Promise<void> 
  * outrank it for sessions, workflow runs and the Intercom broker alike, while a domain variable outranks it only for
  * its own store. So the profile selects some store exactly when it is the shared selection the broker receives.
  */
-function teamProfileInEffect(): boolean {
-	const team = environmentTeamProfile();
-	return team !== undefined && processSharedStorageSelection() === JSON.stringify(team);
+async function teamProfileInEffect(): Promise<boolean> {
+	const team = await environmentTeamProfileAsync();
+	return team !== undefined && (await processSharedStorageSelectionAsync()) === JSON.stringify(team);
 }
 
 /**
@@ -620,16 +620,16 @@ function teamProfileInEffect(): boolean {
  * adapter is loaded, not opened, once per agent directory and process. The CLI checks at startup and
  * `createAgentSession` before it creates a session.
  */
-export function assertTeamAdapterInstalled(
+export async function assertTeamAdapterInstalled(
 	agentDir: string,
 	selection?: { readonly adapter?: string } | object,
 ): Promise<void> {
-	const reason = teamProfileInEffect()
+	const reason = (await teamProfileInEffect())
 		? "ATOMIC_PROFILE=ci"
 		: selection !== undefined && "adapter" in selection && selection.adapter === LIBSQL_ADAPTER_PACKAGE
 			? "The storage selection"
 			: undefined;
-	if (reason === undefined) return Promise.resolve();
+	if (reason === undefined) return;
 	const key = resolve(agentDir);
 	let check = installedAdapters.get(key);
 	if (check === undefined) {
@@ -906,7 +906,7 @@ export function selectTeamProfile(options: TeamProfileOptions = {}): TeamProfile
 		});
 	}
 	const merged = manager.getSettings();
-	const sessions = selectSessionStorage(cwd, { agentDir, settings: merged }) as StorageSelection;
+	const sessions = selectSessionStorageWithSettings(cwd, { agentDir, settings: merged }) as StorageSelection;
 	const journal = selectJournal(agentDir, merged);
 	const intercom = selectIntercomStorage(agentDir, manager.getGlobalSettings().storage);
 	const shared = intercom?.kind === "adapter" ? storageSelectionKey(intercom, agentDir) : undefined;

@@ -32,27 +32,15 @@ import { AsyncLocalStorage } from "node:async_hooks";
  */
 
 import { createHash } from "node:crypto";
-import {
-	closeSync,
-	fchmodSync,
-	fstatSync,
-	lstatSync,
-	openSync,
-	readdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	statSync,
-	unlinkSync,
-	writeSync,
-} from "node:fs";
+import type { Stats } from "node:fs";
+import { type FileHandle, lstat, open, readdir, readFile, rename, rm, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { getAgentConfigPaths } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
 	ensureTempDirAsync,
-	getProtectedSessionTempDirs,
 	getTempRootDir,
+	isProtectedSessionTempDir,
 	SESSION_TEMP_FILE_MODE,
 } from "./session-temp-dir.ts";
 import { TOOL_RESULTS_SUBDIR } from "./tool-limits.js";
@@ -123,9 +111,9 @@ function sameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
 	return left.dev === right.dev && left.ino === right.ino;
 }
 
-function realDirectoryIdentity(path: string): FileIdentity | undefined {
+async function realDirectoryIdentity(path: string): Promise<FileIdentity | undefined> {
 	try {
-		const stat = lstatSync(path, { bigint: true });
+		const stat = await lstat(path, { bigint: true });
 		if (stat.isDirectory() && !stat.isSymbolicLink()) {
 			return { dev: stat.dev, ino: stat.ino };
 		}
@@ -136,13 +124,13 @@ function realDirectoryIdentity(path: string): FileIdentity | undefined {
 }
 
 /** An existing real directory — not a symlink, not a file, not missing. */
-function isRealDirectory(path: string): boolean {
-	return realDirectoryIdentity(path) !== undefined;
+async function isRealDirectory(path: string): Promise<boolean> {
+	return (await realDirectoryIdentity(path)) !== undefined;
 }
 
-function markerIsFresh(markerPath: string, now: number, throttleMs: number): boolean {
+async function markerIsFresh(markerPath: string, now: number, throttleMs: number): Promise<boolean> {
 	try {
-		const stat = lstatSync(markerPath);
+		const stat = await lstat(markerPath);
 		return stat.isFile() && !stat.isSymbolicLink() && now - stat.mtimeMs < throttleMs;
 	} catch {
 		return false;
@@ -153,19 +141,19 @@ interface CleanupLock extends FileIdentity {
 	token: string;
 }
 
-function pathIdentifiesFile(path: string, identity: FileIdentity): boolean {
+async function pathIdentifiesFile(path: string, identity: FileIdentity): Promise<boolean> {
 	try {
-		const stat = lstatSync(path, { bigint: true });
+		const stat = await lstat(path, { bigint: true });
 		return stat.isFile() && !stat.isSymbolicLink() && sameFileIdentity(stat, identity);
 	} catch {
 		return false;
 	}
 }
 
-function removeCreatedFile(path: string, identity: FileIdentity): void {
+async function removeCreatedFile(path: string, identity: FileIdentity): Promise<void> {
 	try {
-		if (pathIdentifiesFile(path, identity)) {
-			unlinkSync(path);
+		if (await pathIdentifiesFile(path, identity)) {
+			await unlink(path);
 		}
 	} catch {
 		// Best effort. An uncertain path is left untouched.
@@ -178,19 +166,19 @@ function removeCreatedFile(path: string, identity: FileIdentity): void {
  * left behind by a crashed process is broken once stale, and release only
  * removes a lock that still carries the caller's token.
  */
-function acquireCleanupLock(lockPath: string, now: number, staleMs: number): CleanupLock | null {
+async function acquireCleanupLock(lockPath: string, now: number, staleMs: number): Promise<CleanupLock | null> {
 	const token = `${process.pid}.${now}.${Math.random().toString(36).slice(2)}`;
 	for (let attempt = 0; attempt < 2; attempt++) {
-		let fd: number;
+		let fd: FileHandle;
 		try {
-			fd = openSync(lockPath, "wx+", SESSION_TEMP_FILE_MODE);
+			fd = await open(lockPath, "wx+", SESSION_TEMP_FILE_MODE);
 		} catch (error) {
 			if (getErrnoCode(error) !== "EEXIST") {
 				return null;
 			}
 			let lockMtimeMs: number;
 			try {
-				lockMtimeMs = statSync(lockPath).mtimeMs;
+				lockMtimeMs = (await stat(lockPath)).mtimeMs;
 			} catch {
 				// The holder released between the failed create and the stat; retry.
 				continue;
@@ -198,7 +186,7 @@ function acquireCleanupLock(lockPath: string, now: number, staleMs: number): Cle
 			if (now - lockMtimeMs < staleMs) {
 				return null;
 			}
-			if (!breakStaleLock(lockPath, lockMtimeMs)) {
+			if (!(await breakStaleLock(lockPath, lockMtimeMs))) {
 				return null;
 			}
 			continue;
@@ -207,19 +195,19 @@ function acquireCleanupLock(lockPath: string, now: number, staleMs: number): Cle
 		let lock: CleanupLock | undefined;
 		let failed = false;
 		try {
-			const createdStat = fstatSync(fd, { bigint: true });
+			const createdStat = await fd.stat({ bigint: true });
 			lock = { token, dev: createdStat.dev, ino: createdStat.ino };
 			if (!createdStat.isFile()) {
 				failed = true;
 			} else {
 				if (process.platform !== "win32") {
-					fchmodSync(fd, SESSION_TEMP_FILE_MODE);
-					const modeStat = fstatSync(fd, { bigint: true });
+					await fd.chmod(SESSION_TEMP_FILE_MODE);
+					const modeStat = await fd.stat({ bigint: true });
 					if (!modeStat.isFile() || Number(modeStat.mode & 0o777n) !== SESSION_TEMP_FILE_MODE) {
 						failed = true;
 					}
 				}
-				if (!failed && writeSync(fd, token) !== token.length) {
+				if (!failed && (await fd.write(token)).bytesWritten !== token.length) {
 					failed = true;
 				}
 			}
@@ -227,13 +215,18 @@ function acquireCleanupLock(lockPath: string, now: number, staleMs: number): Cle
 			failed = true;
 		}
 		try {
-			closeSync(fd);
+			await fd.close();
 		} catch {
 			failed = true;
 		}
-		if (failed || lock === undefined || !pathIdentifiesFile(lockPath, lock) || !ownsCleanupLock(lockPath, lock)) {
+		if (
+			failed ||
+			lock === undefined ||
+			!(await pathIdentifiesFile(lockPath, lock)) ||
+			!(await ownsCleanupLock(lockPath, lock))
+		) {
 			if (lock !== undefined) {
-				removeCreatedFile(lockPath, lock);
+				await removeCreatedFile(lockPath, lock);
 			}
 			return null;
 		}
@@ -247,23 +240,23 @@ function acquireCleanupLock(lockPath: string, now: number, staleMs: number): Cle
  * during stale detection. A lock that changed identity in between belongs to a
  * new holder: hand it back and treat the takeover as contention.
  */
-function breakStaleLock(lockPath: string, observedMtimeMs: number): boolean {
+async function breakStaleLock(lockPath: string, observedMtimeMs: number): Promise<boolean> {
 	const breakPath = `${lockPath}.break.${process.pid}.${Math.random().toString(36).slice(2)}`;
 	try {
-		renameSync(lockPath, breakPath);
+		await rename(lockPath, breakPath);
 	} catch {
 		// Another sweep released or broke it first; contend again on create.
 		return false;
 	}
 	let displacedFreshLock = false;
 	try {
-		displacedFreshLock = statSync(breakPath).mtimeMs !== observedMtimeMs;
+		displacedFreshLock = (await stat(breakPath)).mtimeMs !== observedMtimeMs;
 	} catch {
 		displacedFreshLock = false;
 	}
 	if (displacedFreshLock) {
 		try {
-			renameSync(breakPath, lockPath);
+			await rename(breakPath, lockPath);
 		} catch {
 			// Best-effort hand-back; the displaced holder aborts at its next
 			// ownership recheck.
@@ -271,29 +264,29 @@ function breakStaleLock(lockPath: string, observedMtimeMs: number): boolean {
 		return false;
 	}
 	try {
-		unlinkSync(breakPath);
+		await unlink(breakPath);
 	} catch {
 		// A leftover break file is harmless.
 	}
 	return true;
 }
 
-function ownsCleanupLock(lockPath: string, lock: CleanupLock): boolean {
+async function ownsCleanupLock(lockPath: string, lock: CleanupLock): Promise<boolean> {
 	try {
 		return (
-			pathIdentifiesFile(lockPath, lock) &&
-			readFileSync(lockPath, "utf-8") === lock.token &&
-			pathIdentifiesFile(lockPath, lock)
+			(await pathIdentifiesFile(lockPath, lock)) &&
+			(await readFile(lockPath, "utf-8")) === lock.token &&
+			(await pathIdentifiesFile(lockPath, lock))
 		);
 	} catch {
 		return false;
 	}
 }
 
-function releaseCleanupLock(lockPath: string, lock: CleanupLock): void {
+async function releaseCleanupLock(lockPath: string, lock: CleanupLock): Promise<void> {
 	try {
-		if (ownsCleanupLock(lockPath, lock) && pathIdentifiesFile(lockPath, lock)) {
-			unlinkSync(lockPath);
+		if ((await ownsCleanupLock(lockPath, lock)) && (await pathIdentifiesFile(lockPath, lock))) {
+			await unlink(lockPath);
 		}
 	} catch {
 		// Release is best-effort: an unreleased lock only goes stale and is
@@ -302,12 +295,12 @@ function releaseCleanupLock(lockPath: string, lock: CleanupLock): void {
 }
 
 /** Publish the throttle marker without ever opening or unlinking its destination. */
-function publishCleanupMarker(markerPath: string, now: number): boolean {
+async function publishCleanupMarker(markerPath: string, now: number): Promise<boolean> {
 	const tempPath = `${markerPath}.tmp.${process.pid}.${Math.random().toString(36).slice(2)}`;
 	const timestamp = String(now);
-	let fd: number;
+	let fd: FileHandle;
 	try {
-		fd = openSync(tempPath, "wx+", SESSION_TEMP_FILE_MODE);
+		fd = await open(tempPath, "wx+", SESSION_TEMP_FILE_MODE);
 	} catch {
 		return false;
 	}
@@ -315,19 +308,19 @@ function publishCleanupMarker(markerPath: string, now: number): boolean {
 	let identity: FileIdentity | undefined;
 	let failed = false;
 	try {
-		const createdStat = fstatSync(fd, { bigint: true });
+		const createdStat = await fd.stat({ bigint: true });
 		identity = { dev: createdStat.dev, ino: createdStat.ino };
 		if (!createdStat.isFile()) {
 			failed = true;
 		} else {
 			if (process.platform !== "win32") {
-				fchmodSync(fd, SESSION_TEMP_FILE_MODE);
-				const modeStat = fstatSync(fd, { bigint: true });
+				await fd.chmod(SESSION_TEMP_FILE_MODE);
+				const modeStat = await fd.stat({ bigint: true });
 				if (!modeStat.isFile() || Number(modeStat.mode & 0o777n) !== SESSION_TEMP_FILE_MODE) {
 					failed = true;
 				}
 			}
-			if (!failed && writeSync(fd, timestamp) !== timestamp.length) {
+			if (!failed && (await fd.write(timestamp)).bytesWritten !== timestamp.length) {
 				failed = true;
 			}
 		}
@@ -335,24 +328,24 @@ function publishCleanupMarker(markerPath: string, now: number): boolean {
 		failed = true;
 	}
 	try {
-		closeSync(fd);
+		await fd.close();
 	} catch {
 		failed = true;
 	}
-	if (failed || identity === undefined || !pathIdentifiesFile(tempPath, identity)) {
+	if (failed || identity === undefined || !(await pathIdentifiesFile(tempPath, identity))) {
 		if (identity !== undefined) {
-			removeCreatedFile(tempPath, identity);
+			await removeCreatedFile(tempPath, identity);
 		}
 		return false;
 	}
 
 	try {
-		renameSync(tempPath, markerPath);
+		await rename(tempPath, markerPath);
 	} catch {
-		removeCreatedFile(tempPath, identity);
+		await removeCreatedFile(tempPath, identity);
 		return false;
 	}
-	return pathIdentifiesFile(markerPath, identity);
+	return await pathIdentifiesFile(markerPath, identity);
 }
 
 type ScanFreshness = "fresh" | "stale" | "unknown";
@@ -365,10 +358,10 @@ type ScanFreshness = "fresh" | "stale" | "unknown";
  * bound fail closed as `unknown`; `ENOENT` is stale because the entry vanished.
  * The walk still exits on its first fresh descendant.
  */
-function scanFreshness(entryPath: string, cutoff: number, depth = 0): ScanFreshness {
-	let stat: ReturnType<typeof lstatSync>;
+async function scanFreshness(entryPath: string, cutoff: number, depth = 0): Promise<ScanFreshness> {
+	let stat: Stats;
 	try {
-		stat = lstatSync(entryPath);
+		stat = await lstat(entryPath);
 	} catch (error) {
 		return getErrnoCode(error) === "ENOENT" ? "stale" : "unknown";
 	}
@@ -386,13 +379,13 @@ function scanFreshness(entryPath: string, cutoff: number, depth = 0): ScanFreshn
 	}
 	let children: string[];
 	try {
-		children = readdirSync(entryPath);
+		children = await readdir(entryPath);
 	} catch (error) {
 		return getErrnoCode(error) === "ENOENT" ? "stale" : "unknown";
 	}
 	let foundUnknown = false;
 	for (const child of children) {
-		const freshness = scanFreshness(join(entryPath, child), cutoff, depth + 1);
+		const freshness = await scanFreshness(join(entryPath, child), cutoff, depth + 1);
 		if (freshness === "fresh") {
 			return "fresh";
 		}
@@ -405,9 +398,9 @@ function scanFreshness(entryPath: string, cutoff: number, depth = 0): ScanFreshn
 
 interface CleanupGate {
 	/** Whether this sweep still owns the lock; false means another holder took over. */
-	ownsLock(): boolean;
+	ownsLock(): Promise<boolean>;
 	cutoff: number;
-	protectedPaths: ReadonlySet<string>;
+	isProtected(path: string): boolean;
 }
 
 interface ScannedRoot {
@@ -426,7 +419,7 @@ async function withCleanupGate(
 	controlDir: string,
 	scanRoot: ScannedRoot,
 	options: SweepOptions,
-	scan: (gate: CleanupGate) => void,
+	scan: (gate: CleanupGate) => Promise<void>,
 ): Promise<SweepOutcome> {
 	const now = options.now ?? Date.now();
 	const throttleMs = options.throttleMs ?? SESSION_TEMP_CLEANUP_INTERVAL_MS;
@@ -441,7 +434,7 @@ async function withCleanupGate(
 		// skip rather than sweep unthrottled and unlocked.
 		controlReady = false;
 	}
-	const currentRootIdentity = realDirectoryIdentity(scanRoot.path);
+	const currentRootIdentity = await realDirectoryIdentity(scanRoot.path);
 	if (currentRootIdentity === undefined || !sameFileIdentity(scanRoot.identity, currentRootIdentity)) {
 		return "missing";
 	}
@@ -449,36 +442,37 @@ async function withCleanupGate(
 		return "locked";
 	}
 	const markerPath = join(controlDir, CLEANUP_MARKER_FILE);
-	if (markerIsFresh(markerPath, now, throttleMs)) {
+	if (await markerIsFresh(markerPath, now, throttleMs)) {
 		return "throttled";
 	}
 	const lockPath = join(controlDir, CLEANUP_LOCK_FILE);
-	const token = acquireCleanupLock(lockPath, now, SESSION_TEMP_CLEANUP_LOCK_STALE_MS);
+	const token = await acquireCleanupLock(lockPath, now, SESSION_TEMP_CLEANUP_LOCK_STALE_MS);
 	if (token === null) {
 		return "locked";
 	}
 	let aborted = false;
+	const protectedPaths = options.protectedPaths === undefined ? undefined : new Set(options.protectedPaths);
 	try {
-		scan({
-			ownsLock: () => {
+		await scan({
+			ownsLock: async () => {
 				if (aborted) {
 					return false;
 				}
-				if (ownsCleanupLock(lockPath, token)) {
+				if (await ownsCleanupLock(lockPath, token)) {
 					return true;
 				}
 				aborted = true;
 				return false;
 			},
 			cutoff: now - (options.retentionMs ?? SESSION_TEMP_RETENTION_MS),
-			protectedPaths: new Set(options.protectedPaths ?? getProtectedSessionTempDirs()),
+			isProtected: (path) => protectedPaths?.has(path) ?? isProtectedSessionTempDir(path),
 		});
-		if (!aborted && ownsCleanupLock(lockPath, token)) {
+		if (!aborted && (await ownsCleanupLock(lockPath, token))) {
 			// Failing to publish the marker only means the sweep repeats sooner.
-			publishCleanupMarker(markerPath, now);
+			await publishCleanupMarker(markerPath, now);
 		}
 	} finally {
-		releaseCleanupLock(lockPath, token);
+		await releaseCleanupLock(lockPath, token);
 	}
 	return aborted ? "locked" : "swept";
 }
@@ -504,14 +498,14 @@ export async function sweepSessionTempRoot(
 	root: string = getTempRootDir(),
 	options: SweepOptions = {},
 ): Promise<SweepOutcome> {
-	const rootIdentity = realDirectoryIdentity(root);
+	const rootIdentity = await realDirectoryIdentity(root);
 	if (rootIdentity === undefined) {
 		return "missing";
 	}
-	return withCleanupGate(root, { path: root, identity: rootIdentity }, options, (gate) => {
+	return withCleanupGate(root, { path: root, identity: rootIdentity }, options, async (gate) => {
 		let entries: string[];
 		try {
-			entries = readdirSync(root);
+			entries = await readdir(root);
 		} catch {
 			// Cleanup is best-effort housekeeping; an unreadable root is skipped.
 			return;
@@ -521,27 +515,28 @@ export async function sweepSessionTempRoot(
 				continue;
 			}
 			const entryPath = join(root, entry);
-			if (gate.protectedPaths.has(entryPath)) {
+			if (gate.isProtected(entryPath)) {
 				continue;
 			}
 			// A holder displaced by a stale-lock takeover must stop deleting
 			// alongside the new owner.
-			if (!gate.ownsLock()) {
+			if (!(await gate.ownsLock())) {
 				return;
 			}
 			try {
-				const initialIdentity = realDirectoryIdentity(entryPath);
-				if (initialIdentity === undefined || scanFreshness(entryPath, gate.cutoff) !== "stale") {
+				const initialIdentity = await realDirectoryIdentity(entryPath);
+				if (initialIdentity === undefined || (await scanFreshness(entryPath, gate.cutoff)) !== "stale") {
 					continue;
 				}
-				if (!gate.ownsLock()) {
+				if (!(await gate.ownsLock())) {
 					return;
 				}
-				const finalIdentity = realDirectoryIdentity(entryPath);
+				const finalIdentity = await realDirectoryIdentity(entryPath);
 				if (finalIdentity === undefined || !sameFileIdentity(initialIdentity, finalIdentity)) {
 					continue;
 				}
-				rmSync(entryPath, { recursive: true, force: true });
+				if (gate.isProtected(entryPath)) continue;
+				await rm(entryPath, { recursive: true, force: true });
 			} catch {
 				// One bad entry must not block the rest of the sweep.
 			}
@@ -565,15 +560,16 @@ export async function sweepSessionTempRoot(
  * a session temp tree: one fresh descendant keeps the entire tree, stale siblings
  * included.
  */
-function reapToolResultsDir(parent: string, cutoff: number, protectedPaths: ReadonlySet<string>): void {
+async function reapToolResultsDir(parent: string, gate: CleanupGate): Promise<void> {
 	const toolResultsDir = join(parent, TOOL_RESULTS_SUBDIR);
-	if (protectedPaths.has(toolResultsDir) || !isRealDirectory(toolResultsDir)) {
+	if (gate.isProtected(toolResultsDir) || !(await isRealDirectory(toolResultsDir))) {
 		return;
 	}
-	if (scanFreshness(toolResultsDir, cutoff) !== "stale") {
+	if ((await scanFreshness(toolResultsDir, gate.cutoff)) !== "stale") {
 		return;
 	}
-	rmSync(toolResultsDir, { recursive: true, force: true });
+	if (!(await gate.ownsLock()) || gate.isProtected(toolResultsDir)) return;
+	await rm(toolResultsDir, { recursive: true, force: true });
 }
 
 /**
@@ -582,7 +578,7 @@ function reapToolResultsDir(parent: string, cutoff: number, protectedPaths: Read
  * `.jsonl` transcripts.
  */
 export async function sweepToolResultsRoot(sessionsRoot: string, options: SweepOptions = {}): Promise<SweepOutcome> {
-	const rootIdentity = realDirectoryIdentity(sessionsRoot);
+	const rootIdentity = await realDirectoryIdentity(sessionsRoot);
 	if (rootIdentity === undefined) {
 		return "missing";
 	}
@@ -590,23 +586,23 @@ export async function sweepToolResultsRoot(sessionsRoot: string, options: SweepO
 		getCleanupControlDir(sessionsRoot, options.controlRoot),
 		{ path: sessionsRoot, identity: rootIdentity },
 		options,
-		(gate) => {
+		async (gate) => {
 			let entries: string[];
 			try {
-				entries = readdirSync(sessionsRoot);
+				entries = await readdir(sessionsRoot);
 			} catch {
 				return;
 			}
 			for (const entry of entries) {
 				const projectDir = join(sessionsRoot, entry);
-				if (!isRealDirectory(projectDir) || gate.protectedPaths.has(projectDir)) {
+				if (!(await isRealDirectory(projectDir)) || gate.isProtected(projectDir)) {
 					continue;
 				}
-				if (!gate.ownsLock()) {
+				if (!(await gate.ownsLock())) {
 					return;
 				}
 				try {
-					reapToolResultsDir(projectDir, gate.cutoff, gate.protectedPaths);
+					await reapToolResultsDir(projectDir, gate);
 				} catch {
 					// Keep going so one unreadable project directory does not block the rest.
 				}
@@ -626,7 +622,7 @@ export async function sweepSessionDirToolResults(
 	sessionDir: string,
 	options: SweepOptions = {},
 ): Promise<SweepOutcome> {
-	const rootIdentity = realDirectoryIdentity(sessionDir);
+	const rootIdentity = await realDirectoryIdentity(sessionDir);
 	if (rootIdentity === undefined) {
 		return "missing";
 	}
@@ -634,12 +630,12 @@ export async function sweepSessionDirToolResults(
 		getCleanupControlDir(sessionDir, options.controlRoot),
 		{ path: sessionDir, identity: rootIdentity },
 		options,
-		(gate) => {
-			if (!gate.ownsLock()) {
+		async (gate) => {
+			if (!(await gate.ownsLock())) {
 				return;
 			}
 			try {
-				reapToolResultsDir(sessionDir, gate.cutoff, gate.protectedPaths);
+				await reapToolResultsDir(sessionDir, gate);
 			} catch {
 				// Best effort.
 			}

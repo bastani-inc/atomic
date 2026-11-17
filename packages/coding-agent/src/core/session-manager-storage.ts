@@ -1,4 +1,5 @@
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, statSync } from "fs";
+import { open } from "fs/promises";
 import { join } from "path";
 import { StringDecoder } from "string_decoder";
 import { createSessionCwdMatcher, normalizePath, resolvePath } from "../utils/paths.ts";
@@ -106,44 +107,61 @@ export function parseSessionEntries(content: string): FileEntry[] {
 	return entries;
 }
 
+class SessionHeaderLine {
+	private readonly decoder = new StringDecoder("utf8");
+	private pending = "";
+	private foundNewline = false;
+
+	push(chunk: Buffer): boolean {
+		if (chunk.length === 0) return true;
+		this.pending += this.decoder.write(chunk);
+		const newlineIndex = this.pending.indexOf("\n");
+		if (newlineIndex === -1) return false;
+		this.pending = this.pending.slice(0, newlineIndex);
+		this.foundNewline = true;
+		return true;
+	}
+
+	header(filePath: string): SessionHeader | null {
+		// Only flush the decoder when we hit EOF without a newline. Once a
+		// newline was found, any remaining decoder bytes belong to data after
+		// the header line; flushing them would corrupt the parsed header.
+		if (!this.foundNewline) {
+			this.pending += this.decoder.end();
+		}
+		const firstLine = this.pending.split("\n")[0];
+		if (!firstLine) return null;
+		const header = JSON.parse(firstLine) as SessionHeader;
+		return validateSessionFileEntries(upgradeStoredSessionEntries([header], filePath), filePath);
+	}
+}
+
 export function readSessionHeader(filePath: string): SessionHeader | null {
 	try {
 		const fd = openSync(filePath, "r");
 		try {
-			// Read the full first line rather than a fixed 512-byte window so very
-			// long headers (e.g. internal workflow headers carrying stage metadata)
-			// are not truncated and dropped from listing/resume filtering.
-			const decoder = new StringDecoder("utf8");
-			// Use a small dedicated header buffer instead of the 1MiB transcript
-			// buffer so prefiltering internal sessions during listing stays cheap.
-			// The loop still reads in chunks until the first newline (or EOF) so
-			// headers larger than one chunk are handled correctly.
+			const line = new SessionHeaderLine();
 			const buffer = Buffer.allocUnsafe(HEADER_READ_BUFFER_SIZE);
-			let pending = "";
-			let foundNewline = false;
-			while (true) {
-				const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
-				if (bytesRead === 0) break;
-				pending += decoder.write(buffer.subarray(0, bytesRead));
-				const newlineIndex = pending.indexOf("\n");
-				if (newlineIndex !== -1) {
-					pending = pending.slice(0, newlineIndex);
-					foundNewline = true;
-					break;
-				}
-			}
-			// Only flush the decoder when we hit EOF without a newline. Once a
-			// newline was found, any remaining decoder bytes belong to data after
-			// the header line; flushing them would corrupt the parsed header.
-			if (!foundNewline) {
-				pending += decoder.end();
-			}
-			const firstLine = pending.split("\n")[0];
-			if (!firstLine) return null;
-			const header = JSON.parse(firstLine) as SessionHeader;
-			return validateSessionFileEntries(upgradeStoredSessionEntries([header], filePath), filePath);
+			while (!line.push(buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, null)))) {}
+			return line.header(filePath);
 		} finally {
 			closeSync(fd);
+		}
+	} catch {
+		return null;
+	}
+}
+
+export async function readSessionHeaderAsync(filePath: string): Promise<SessionHeader | null> {
+	try {
+		const file = await open(filePath, "r");
+		try {
+			const line = new SessionHeaderLine();
+			const buffer = Buffer.allocUnsafe(HEADER_READ_BUFFER_SIZE);
+			while (!line.push(buffer.subarray(0, (await file.read(buffer, 0, buffer.length, null)).bytesRead))) {}
+			return line.header(filePath);
+		} finally {
+			await file.close();
 		}
 	} catch {
 		return null;

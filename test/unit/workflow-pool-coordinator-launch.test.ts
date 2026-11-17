@@ -571,8 +571,8 @@ test("a pool's coordinator starts with the debug setting, hears later changes, a
 			]);
 			const stats = { since: 0, requests: { claim: { count: 2, perSecond: 1 } }, writes: {} };
 			(launch!.child as EventEmitter).emit("message", { kind: "coordination", stats });
-			await vi.waitFor(() => assert.equal(log.records().length, 1));
-			assert.deepEqual(areaRecords(log, "pool"), [
+			await vi.waitFor(async () => assert.equal((await log.records()).length, 1));
+			assert.deepEqual(await areaRecords(log, "pool"), [
 				{
 					event: "coordination",
 					data: { root: "root", summary: "pool: requests 1.0/s (claim 1.0) · writes 0.00/s" },

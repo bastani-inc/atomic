@@ -1,12 +1,12 @@
 import { reportOwnedWebDiagnostic } from "./diagnostics.js";
 import { CONFIG_DIR_NAME, getUserConfigPaths } from "@bastani/atomic";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { findReadableConfigPath } from "./config-paths.ts";
 import { isExaAvailable } from "./exa.js";
 import { isGeminiApiAvailable } from "./gemini-api.js";
 import { isGeminiWebAvailable } from "./gemini-web.js";
+import { readWebSearchConfigFile } from "./gemini-web-config.ts";
 import { isPerplexityAvailable } from "./perplexity.js";
 import type { SearchProvider, ResolvedSearchProvider } from "./gemini-search.js";
 
@@ -42,42 +42,35 @@ export interface CuratorBootstrap {
 	timeoutSeconds: number;
 }
 
-export function loadConfig(): WebSearchConfig {
+export async function loadConfig(): Promise<WebSearchConfig> {
 	// Resolve the readable path on every call: saveConfig always writes the
 	// Atomic path, which must win over a legacy file that existed at startup.
-	const configPath = findReadableConfigPath();
-	if (!existsSync(configPath)) return {};
-	const raw = readFileSync(configPath, "utf-8");
-	try {
-		return JSON.parse(raw) as WebSearchConfig;
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`Failed to parse ${configPath}: ${message}`);
-	}
+	return (await readWebSearchConfigFile<WebSearchConfig>()) ?? {};
 }
 
-export function saveConfig(updates: Partial<WebSearchConfig>): void {
-	let config: Record<string, unknown> = {};
-	const existingConfigPath = findReadableConfigPath();
-	if (existsSync(existingConfigPath)) {
-		const raw = readFileSync(existingConfigPath, "utf-8");
-		try {
-			config = JSON.parse(raw) as Record<string, unknown>;
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			throw new Error(`Failed to parse ${existingConfigPath}: ${message}`);
-		}
-	}
+let saveConfigQueue: Promise<void> = Promise.resolve();
 
-	Object.assign(config, updates);
-	const dir = join(homedir(), CONFIG_DIR_NAME);
-	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-	writeFileSync(WEB_SEARCH_CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+export function saveConfig(updates: Partial<WebSearchConfig>): Promise<void> {
+	const run = async (): Promise<void> => {
+		const existing = await readWebSearchConfigFile<Record<string, unknown>>();
+		const config: Record<string, unknown> = existing ? { ...existing } : {};
+
+		Object.assign(config, updates);
+		const dir = join(homedir(), CONFIG_DIR_NAME);
+		await mkdir(dir, { recursive: true });
+		await writeFile(WEB_SEARCH_CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+	};
+	const next = saveConfigQueue.then(run, run);
+	saveConfigQueue = next.then(
+		() => undefined,
+		() => undefined,
+	);
+	return next;
 }
 
-export function loadConfigForExtensionInit(): WebSearchConfig {
+export async function loadConfigForExtensionInit(): Promise<WebSearchConfig> {
 	try {
-		return loadConfig();
+		return await loadConfig();
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		if (!reportOwnedWebDiagnostic()) console.error(`[pi-web-access] ${message}`);
@@ -112,31 +105,35 @@ export function normalizeQueryList(queryList: unknown[]): string[] {
 	return normalized;
 }
 
-function getCuratorTimeoutSeconds(): number {
-	const source = loadConfig();
-	return normalizeCuratorTimeoutSeconds(source.curatorTimeoutSeconds) ?? DEFAULT_CURATOR_TIMEOUT_SECONDS;
-}
-
 async function getProviderAvailability(): Promise<ProviderAvailability> {
-	const geminiWebAvail = await isGeminiWebAvailable();
+	const [geminiWebAvail, perplexity, exa, geminiApi] = await Promise.all([
+		isGeminiWebAvailable(),
+		isPerplexityAvailable(),
+		isExaAvailable(),
+		isGeminiApiAvailable(),
+	]);
 	return {
-		perplexity: isPerplexityAvailable(),
-		exa: isExaAvailable(),
-		gemini: isGeminiApiAvailable() || !!geminiWebAvail,
+		perplexity,
+		exa,
+		gemini: geminiApi || !!geminiWebAvail,
 	};
 }
 
 export async function loadCuratorBootstrap(requestedProvider: unknown): Promise<CuratorBootstrap> {
-	const availableProviders = await getProviderAvailability();
+	const [availableProviders, config] = await Promise.all([getProviderAvailability(), loadConfig()]);
 	return {
 		availableProviders,
-		defaultProvider: resolveProvider(requestedProvider, availableProviders),
-		timeoutSeconds: getCuratorTimeoutSeconds(),
+		defaultProvider: resolveProvider(requestedProvider, availableProviders, config.provider),
+		timeoutSeconds: normalizeCuratorTimeoutSeconds(config.curatorTimeoutSeconds) ?? DEFAULT_CURATOR_TIMEOUT_SECONDS,
 	};
 }
 
-function resolveProvider(requested: unknown, available: ProviderAvailability): ResolvedSearchProvider {
-	const provider = normalizeProviderInput(requested ?? loadConfig().provider ?? "auto") ?? "auto";
+function resolveProvider(
+	requested: unknown,
+	available: ProviderAvailability,
+	configuredProvider?: unknown,
+): ResolvedSearchProvider {
+	const provider = normalizeProviderInput(requested ?? configuredProvider ?? "auto") ?? "auto";
 
 	if (provider === "auto") {
 		if (available.exa) return "exa";

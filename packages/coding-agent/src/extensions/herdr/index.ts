@@ -20,7 +20,7 @@ import type { HerdrDiagnostic } from "./transport.js";
 
 export interface HerdrExtensionOptions extends PaneReportingOptions {
 	env?: NodeJS.ProcessEnv;
-	enabled?: (ctx: ExtensionContext) => boolean;
+	enabled?: (ctx: ExtensionContext) => boolean | Promise<boolean>;
 }
 
 function resumeArgv(sessionManager: ExtensionContext["sessionManager"]): string[] | undefined {
@@ -33,8 +33,8 @@ function resumeArgv(sessionManager: ExtensionContext["sessionManager"]): string[
 	return [APP_NAME, ...sessionDir, "--session", sessionId];
 }
 
-function enabled(ctx: ExtensionContext): boolean {
-	const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
+async function enabled(ctx: ExtensionContext): Promise<boolean> {
+	const settings = await SettingsManager.createAsync(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
 	return (
 		(settings.getProjectSettings().herdr?.enabled ??
 			settings.getGlobalSettings().herdr?.enabled ??
@@ -73,6 +73,7 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 		};
 		const seenDiagnostics = new Set<string>();
 		let generation = 0;
+		const stops = new WeakMap<object, number>();
 		const diagnostic = (value: HerdrDiagnostic) => {
 			const key = `${value.kind}:${value.owner ?? ""}`;
 			if (seenDiagnostics.has(key)) return;
@@ -98,7 +99,12 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			if (boundSessionManager && ctx.sessionManager !== boundSessionManager) return;
 			const environment = captureHerdrEnvironment(options.env ?? process.env);
 			if (!environment || ctx.mode !== "tui" || !ctx.hasUI || ctx.subagentPolicy || ctx.orchestrationContext) return;
-			if (!(options.enabled ?? enabled)(ctx)) return;
+			const isEnabled = (options.enabled ?? enabled)(ctx);
+			if (typeof isEnabled !== "boolean") {
+				const stopped = stops.get(runner);
+				if (!(await isEnabled) || stops.get(runner) !== stopped || retiredRunners.has(runner)) return;
+				if (boundSessionManager && ctx.sessionManager !== boundSessionManager) return;
+			} else if (!isEnabled) return;
 			if (boundRunner && boundRunner !== runner) retiredRunners.add(boundRunner);
 			boundRunner = runner;
 			boundSessionManager = ctx.sessionManager;
@@ -207,6 +213,8 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			report();
 		});
 		pi.on("session_shutdown", async (event, ctx) => {
+			const stopping = getExtensionContextOwner(ctx);
+			stops.set(stopping, (stops.get(stopping) ?? 0) + 1);
 			if (!ownsBinding(ctx)) return;
 			// A non-quit stop may restart this runner, unless a successor supersedes it first.
 			if (event.reason === "quit") retiredRunners.add(boundRunner!);

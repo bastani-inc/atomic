@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
-import { runMigrations } from "../src/migrations.ts";
+import { runMigrations, runMigrationsAsync } from "../src/migrations.ts";
 
 const tempDirs: string[] = [];
 
@@ -59,6 +59,22 @@ describe("project-trust gated migrations", () => {
 
 		withAgentDir(agentDir, () => runMigrations(projectDir, { projectTrusted: true }));
 
+		expect(existsSync(join(projectConfigDir, "prompts"))).toBe(true);
+	});
+
+	it("runs migrations asynchronously via runMigrationsAsync", async () => {
+		const root = createTempDir();
+		const agentDir = join(root, "agent");
+		const projectDir = join(root, "project");
+		const projectConfigDir = join(projectDir, ".atomic");
+		mkdirSync(join(projectConfigDir, "commands"), { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+
+		await withAgentDir(agentDir, () => runMigrationsAsync(projectDir, { projectTrusted: false }));
+		expect(existsSync(join(projectConfigDir, "commands"))).toBe(true);
+		expect(existsSync(join(projectConfigDir, "prompts"))).toBe(false);
+
+		await withAgentDir(agentDir, () => runMigrationsAsync(projectDir, { projectTrusted: true }));
 		expect(existsSync(join(projectConfigDir, "prompts"))).toBe(true);
 	});
 });

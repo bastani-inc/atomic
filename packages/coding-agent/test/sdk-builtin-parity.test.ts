@@ -1896,11 +1896,16 @@ test("public disposal aborts and drains active shell work and pending human inpu
 		release = resolve;
 	});
 	let aborted = false;
+	let markStarted!: () => void;
+	const started = new Promise<void>((resolve) => {
+		markStarted = resolve;
+	});
 	const input = session.extensionRunner.createContext().ui.input("pending");
 	const inputRejected = assert.rejects(input, { code: "HumanInputCancelled" });
 	const shell = session.executeBash("controlled", undefined, {
 		operations: {
 			exec: async (_command, _cwd, options) => {
+				markStarted();
 				await new Promise<void>((resolve) => {
 					options.signal!.addEventListener(
 						"abort",
@@ -1917,6 +1922,7 @@ test("public disposal aborts and drains active shell work and pending human inpu
 		},
 	});
 	try {
+		await started;
 		const closing = session.dispose();
 		let closed = false;
 		void closing.then(() => {
@@ -5094,7 +5100,12 @@ test.each([false, true])(
 		);
 		try {
 			await admitted.promise;
-			await new Promise((resolve) => setTimeout(resolve, 25));
+			await vi.waitFor(() =>
+				assert.throws(() => {
+					const unsubscribe = other.events.on("probe", () => {});
+					unsubscribe();
+				}, /closed|stale/i),
+			);
 			assert.deepEqual(log, [], "all omitted callbacks precede the first shutdown");
 			assert.equal(
 				(await selected.exec(process.execPath, ["-e", "process.stdout.write('selected')"])).stdout,

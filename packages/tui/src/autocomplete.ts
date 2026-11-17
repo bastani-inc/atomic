@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { readdirSync, statSync } from "fs";
+import { readdir, stat } from "fs/promises";
 import { homedir } from "os";
 import { basename, dirname, join } from "path";
 import { fuzzyFilter } from "./fuzzy.ts";
@@ -401,7 +401,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			return null;
 		}
 
-		const suggestions = this.getFileSuggestions(pathMatch);
+		const suggestions = await this.getFileSuggestions(pathMatch);
 		if (suggestions.length === 0) return null;
 
 		return {
@@ -556,7 +556,9 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		return path;
 	}
 
-	private resolveScopedFuzzyQuery(rawQuery: string): { baseDir: string; query: string; displayBase: string } | null {
+	private async resolveScopedFuzzyQuery(
+		rawQuery: string,
+	): Promise<{ baseDir: string; query: string; displayBase: string } | null> {
 		const normalizedQuery = toDisplayPath(rawQuery);
 		const slashIndex = normalizedQuery.lastIndexOf("/");
 		if (slashIndex === -1) {
@@ -576,7 +578,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		}
 
 		try {
-			if (!statSync(baseDir).isDirectory()) {
+			if (!(await stat(baseDir)).isDirectory()) {
 				return null;
 			}
 		} catch {
@@ -595,7 +597,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	}
 
 	// Get file/directory suggestions for a given path prefix
-	private getFileSuggestions(prefix: string): AutocompleteItem[] {
+	private async getFileSuggestions(prefix: string): Promise<AutocompleteItem[]> {
 		try {
 			let searchDir: string;
 			let searchPrefix: string;
@@ -644,7 +646,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				searchPrefix = file;
 			}
 
-			const entries = readdirSync(searchDir, { withFileTypes: true });
+			const entries = await readdir(searchDir, { withFileTypes: true });
 			const suggestions: AutocompleteItem[] = [];
 
 			for (const entry of entries) {
@@ -657,7 +659,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				if (!isDirectory && entry.isSymbolicLink()) {
 					try {
 						const fullPath = join(searchDir, entry.name);
-						isDirectory = statSync(fullPath).isDirectory();
+						isDirectory = (await stat(fullPath)).isDirectory();
 					} catch {
 						// Broken symlink or permission error - treat as file
 					}
@@ -776,7 +778,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		}
 
 		try {
-			const scopedQuery = this.resolveScopedFuzzyQuery(query);
+			const scopedQuery = await this.resolveScopedFuzzyQuery(query);
 			const fdBaseDir = scopedQuery?.baseDir ?? this.basePath;
 			const fdQuery = scopedQuery?.query ?? query;
 			const baseDirEntries = await this.getBaseDirSuggestions(fdBaseDir, fdQuery, options.signal);

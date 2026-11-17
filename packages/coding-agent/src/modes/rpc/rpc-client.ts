@@ -3,6 +3,7 @@ import type { ImageContent } from "@bastani/atomic-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import type { BashOutputChannel } from "../../core/tools/bash.js";
+import { removeOwnedInteractiveEngineBootstrapAsync } from "../../utils/interactive-engine-bootstrap.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
 import type {
@@ -25,6 +26,7 @@ import {
 	appendBoundedStderr,
 	createInteractiveJsonlOptions,
 	createStderrReporter,
+	prepareRpcClientBootstrap,
 	restartCliArgs,
 	spawnRpcClientProcess,
 	terminateRpcClientProcess,
@@ -101,6 +103,7 @@ export class RpcClient extends RpcClientApi {
 	private stderr = "";
 	private exitError: Error | null = null;
 	private engineMonitor: InteractiveEngineMonitor | undefined;
+	private startingMonitor: Promise<InteractiveEngineMonitor | undefined> | undefined;
 	private eventBuffer: RpcEventBuffer | undefined;
 	private stdinWriter: QueuedWriter | undefined;
 	private generation = 0;
@@ -122,7 +125,7 @@ export class RpcClient extends RpcClientApi {
 		this.options = options;
 	}
 
-	async start(): Promise<void> {
+	async start(restartPermit?: number): Promise<void> {
 		if (this.process) {
 			throw new Error("Client already started");
 		}
@@ -140,6 +143,34 @@ export class RpcClient extends RpcClientApi {
 			args.push(...this.options.args);
 		}
 
+		const startRevision = restartPermit ?? this.restartRevision;
+		const monitorReady = Promise.withResolvers<InteractiveEngineMonitor | undefined>();
+		this.startingMonitor = monitorReady.promise;
+		const settleStartingMonitor = (monitor: InteractiveEngineMonitor | undefined): void => {
+			monitorReady.resolve(monitor);
+			if (this.startingMonitor === monitorReady.promise) this.startingMonitor = undefined;
+		};
+		let preparedBootstrap: Awaited<ReturnType<typeof prepareRpcClientBootstrap>> | undefined;
+		try {
+			preparedBootstrap = this.options.interactiveEngine
+				? await prepareRpcClientBootstrap(this.options.interactiveEngine.apiKey)
+				: undefined;
+			if (this.stopPromise) {
+				await this.stopPromise.catch(() => {});
+			}
+			if (this.restartRevision !== startRevision) {
+				await removeOwnedInteractiveEngineBootstrapAsync(preparedBootstrap?.bootstrap);
+				throw rpcTransportError(restartPermit !== undefined ? RESTART_CANCELLED_MESSAGE : "Agent process stopped");
+			}
+			if (this.process) {
+				await removeOwnedInteractiveEngineBootstrapAsync(preparedBootstrap?.bootstrap);
+				throw new Error("Client already started");
+			}
+		} catch (error) {
+			settleStartingMonitor(undefined);
+			throw error;
+		}
+
 		const generation = ++this.generation;
 		this.exitError = null;
 		this.stderr = "";
@@ -151,6 +182,7 @@ export class RpcClient extends RpcClientApi {
 				)
 			: undefined;
 		this.eventBuffer = this.engineMonitor ? new RpcEventBuffer((event) => this.emitEvent(event)) : undefined;
+		settleStartingMonitor(this.engineMonitor);
 		const childProcess = spawnRpcClientProcess({
 			cliPath,
 			cliArgs: args,
@@ -162,6 +194,7 @@ export class RpcClient extends RpcClientApi {
 			...(this.options.interactiveEngine?.apiKey
 				? { interactiveEngineApiKey: this.options.interactiveEngine.apiKey }
 				: {}),
+			...(preparedBootstrap ? { preparedBootstrap } : {}),
 		});
 		this.process = childProcess;
 		this.stdinWriter = new QueuedWriter(childProcess.stdin!);
@@ -404,13 +437,19 @@ export class RpcClient extends RpcClientApi {
 		this.bestEffort(writer.write(frame), `engine command ${command.type}`);
 	}
 	waitForInteractiveEngineBound(): Promise<void> {
-		return this.engineMonitor?.waitUntilBound() ?? Promise.resolve();
+		return this.whenEngineMonitor((monitor) => monitor.waitUntilBound());
 	}
 	waitForInteractiveEngineProjectTrust(): Promise<void> {
-		return this.engineMonitor?.waitUntilProjectTrustSettled() ?? Promise.resolve();
+		return this.whenEngineMonitor((monitor) => monitor.waitUntilProjectTrustSettled());
 	}
 	waitForInteractiveEngineResources(): Promise<void> {
-		return this.engineMonitor?.waitUntilResourcesReady() ?? Promise.resolve();
+		return this.whenEngineMonitor((monitor) => monitor.waitUntilResourcesReady());
+	}
+	private whenEngineMonitor(wait: (monitor: InteractiveEngineMonitor) => Promise<void>): Promise<void> {
+		const starting = this.startingMonitor;
+		if (starting !== undefined)
+			return starting.then((monitor) => (monitor === undefined ? undefined : wait(monitor)));
+		return this.engineMonitor === undefined ? Promise.resolve() : wait(this.engineMonitor);
 	}
 	getEnginePid(): number | undefined {
 		return this.enginePid;
@@ -437,7 +476,7 @@ export class RpcClient extends RpcClientApi {
 			cwd: options?.cwd ?? this.options.cwd,
 			args: restartCliArgs(this.options.args, sessionId, options?.sessionDirectory),
 		};
-		await this.start();
+		await this.start(permit);
 		await this.waitForInteractiveEngineBound();
 	}
 

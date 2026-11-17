@@ -22,9 +22,10 @@ import type { ToolStatusReport } from "../../core/tool-status.js";
 import { validateWorkflowResumeEntries } from "../../core/workflow-resume.ts";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
-import { canonicalizePath } from "../../utils/paths.ts";
+import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
+import type { AgentPanelCounts } from "../rpc/agent-panel-bridge.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import { isExtensionLoadError } from "../rpc/rpc-extension-load-errors.ts";
 import {
@@ -129,7 +130,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private mirroringPersistedModelDefault = false;
 	private pendingEnabledModelsSync: { patterns: string[] | null } | undefined;
 	private streaming = false;
-	private panelCounts = { total: 0, needsInput: 0 };
+	private panelCounts: AgentPanelCounts = { total: 0, needsInput: 0, shells: 0 };
 	private compacting = false;
 	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
 	private retrying = false;
@@ -254,7 +255,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client.onGenerationEnded((event) => {
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
-				this.panelCounts = { total: 0, needsInput: 0 };
+				this.panelCounts = { total: 0, needsInput: 0, shells: 0 };
 				this.updateResources({});
 			}
 			// A first child that never became ready failed startup; initialStart reports it instead of a restart.
@@ -270,11 +271,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		// surfaces.
 		this.client.onInteractiveEngineMessage?.((message) => {
 			if (message.type === "engine_agent_panel_state") {
-				this.panelCounts = { total: message.total, needsInput: message.needsInput };
+				this.panelCounts = { total: message.total, needsInput: message.needsInput, shells: message.shells ?? 0 };
 				return;
 			}
 			if (message.type === "engine_extension_ui_reset") {
-				this.panelCounts = { total: 0, needsInput: 0 };
+				this.panelCounts = { total: 0, needsInput: 0, shells: 0 };
 				this.hostExtensionUIReset?.();
 				return;
 			}
@@ -296,7 +297,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		});
 	}
 
-	get agentPanelCounts(): Readonly<{ total: number; needsInput: number }> {
+	get agentPanelCounts(): Readonly<AgentPanelCounts> {
 		return this.panelCounts;
 	}
 
@@ -372,8 +373,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (
 				(super.session.sessionManager.isPersisted() && state.sessionId !== super.session.sessionId) ||
 				(state.sessionLocation &&
-					canonicalizePath(dirname(state.sessionLocation)) !==
-						canonicalizePath(super.session.sessionManager.getSessionDir()))
+					(await canonicalizePathAsync(dirname(state.sessionLocation))) !==
+						(await canonicalizePathAsync(super.session.sessionManager.getSessionDir())))
 			) {
 				await super.switchSession(state.sessionId, {
 					sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
@@ -387,7 +388,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				session.settingsManager.isProjectTrusted() !== state.projectTrusted
 			) {
 				// The child owns trust hooks/decisions. The host only mirrors their result.
-				session.settingsManager.setProjectTrusted(state.projectTrusted);
+				await session.settingsManager.setProjectTrustedAsync(state.projectTrusted);
 				await session.settingsManager.reload();
 				await session.resourceLoader.reload();
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;

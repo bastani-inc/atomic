@@ -20,10 +20,10 @@ let sandbox: string;
 let authPath: string;
 const children: SpawnedProcess[] = [];
 
-function seedTokens(path: string): void {
+async function seedTokens(path: string): Promise<void> {
 	const backend = new FileAuthStorageBackend(path);
 	const store = new McpOAuthCredentialStore(backend, sandbox);
-	store.forServer("work", SERVER_URL).save({
+	await store.forServer("work", SERVER_URL).save({
 		serverUrl: SERVER_URL,
 		tokens: { access_token: "work-token", token_type: "Bearer" },
 	});
@@ -63,10 +63,10 @@ function readerScript(): string {
 	`;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-mcp-auth-reads-")));
 	authPath = join(sandbox, "mcp-auth.json");
-	seedTokens(authPath);
+	await seedTokens(authPath);
 });
 
 afterEach(async () => {

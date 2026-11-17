@@ -8,6 +8,7 @@ import { afterEach, test, vi } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import {
 	isStorageUnsupportedOperationError,
+	isStorageWriteLockTimeoutError,
 	isStorageWriterQueueDegradedError,
 	isStorageWriterQueueUnusableError,
 	type StorageWriterQueueDegradedError,
@@ -21,13 +22,17 @@ vi.mock("node:fs", async (importOriginal) => {
 	return {
 		...actual,
 		watch: vi.fn(actual.watch),
+		closeSync: vi.fn(actual.closeSync),
 		existsSync: vi.fn(actual.existsSync),
 		mkdirSync: vi.fn(actual.mkdirSync),
 		openSync: vi.fn(actual.openSync),
+		readFileSync: vi.fn(actual.readFileSync),
+		rmSync: vi.fn(actual.rmSync),
 		utimesSync: vi.fn(actual.utimesSync),
 		readdirSync: vi.fn(actual.readdirSync),
 		statSync: vi.fn(actual.statSync),
 		unlinkSync: vi.fn(actual.unlinkSync),
+		write: vi.fn(actual.write),
 		writeSync: vi.fn(actual.writeSync),
 	};
 });
@@ -60,7 +65,7 @@ const { getWriterQueueDegradation, getWriterQueueStats, openNodeSqliteDatabase, 
 );
 // The adapter loads debug output at its first degradation. Load it now, in the same module graph, so each test's
 // degradations are reported while that test runs rather than when a slow first load finishes.
-await import("../../packages/coding-agent/src/core/debug.js");
+const { flushDebugLog } = await import("../../packages/coding-agent/src/core/debug.js");
 
 /** Debug records follow a degradation asynchronously; on a loaded machine they can take far longer than a turn. */
 const DEBUG_RECORD_WAIT_MS = 10_000;
@@ -68,13 +73,17 @@ const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
 const actualPromises = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
 const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
 const watch = vi.mocked(fs.watch);
+const closeSync = vi.mocked(fs.closeSync);
 const existsSync = vi.mocked(fs.existsSync);
 const mkdirSync = vi.mocked(fs.mkdirSync);
 const openSync = vi.mocked(fs.openSync);
+const readFileSync = vi.mocked(fs.readFileSync);
+const rmSync = vi.mocked(fs.rmSync);
 const utimesSync = vi.mocked(fs.utimesSync);
 const readdirSync = vi.mocked(fs.readdirSync);
 const statSync = vi.mocked(fs.statSync);
 const unlinkSync = vi.mocked(fs.unlinkSync);
+const write = vi.mocked(fs.write);
 const writeSync = vi.mocked(fs.writeSync);
 const mkdir = vi.mocked(fsPromises.mkdir);
 const readdir = vi.mocked(fsPromises.readdir);
@@ -89,13 +98,17 @@ const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
 	vi.useRealTimers();
 	watch.mockImplementation(actual.watch);
+	closeSync.mockImplementation(actual.closeSync);
 	existsSync.mockImplementation(actual.existsSync);
 	mkdirSync.mockImplementation(actual.mkdirSync);
 	openSync.mockImplementation(actual.openSync);
+	readFileSync.mockImplementation(actual.readFileSync);
+	rmSync.mockImplementation(actual.rmSync);
 	utimesSync.mockImplementation(actual.utimesSync);
 	readdirSync.mockImplementation(actual.readdirSync);
 	statSync.mockImplementation(actual.statSync);
 	unlinkSync.mockImplementation(actual.unlinkSync);
+	write.mockImplementation(actual.write);
 	writeSync.mockImplementation(actual.writeSync);
 	mkdir.mockImplementation(actualPromises.mkdir);
 	readdir.mockImplementation(actualPromises.readdir);
@@ -118,6 +131,7 @@ function failListing(writers: string, code: string): void {
 		return actual.readdirSync(path);
 	};
 	readdirSync.mockImplementation(listing as typeof fs.readdirSync);
+	failListingOffLoop(writers, code);
 }
 
 /** Makes a waiting writer's listing of the queue, off the event loop, fail with `code`. */
@@ -135,6 +149,11 @@ function failTicketStat(writers: string, code: string, names?: readonly string[]
 		if (dirname(entry) === writers && (names === undefined || names.includes(basename(entry)))) throw failure(code);
 		return actual.statSync(path, options);
 	}) as typeof fs.statSync);
+	stat.mockImplementation((async (path: fs.PathLike, options?: fs.StatOptions) => {
+		const entry = String(path);
+		if (dirname(entry) === writers && (names === undefined || names.includes(basename(entry)))) throw failure(code);
+		return actualPromises.stat(path, options);
+	}) as typeof fsPromises.stat);
 }
 
 /** Makes removing the named queue entries fail with `code`, as another user's entries in a shared directory would. */
@@ -143,6 +162,10 @@ function failUnlink(writers: string, code: string): void {
 		if (dirname(String(path)) === writers) throw failure(code);
 		actual.unlinkSync(path);
 	}) as typeof fs.unlinkSync);
+	unlink.mockImplementation((async (path: fs.PathLike) => {
+		if (dirname(String(path)) === writers) throw failure(code);
+		return actualPromises.unlink(path);
+	}) as typeof fsPromises.unlink);
 }
 
 /** A ticket its writer abandoned long ago: stale for longer than the queue keeps tickets before removing them. */
@@ -345,11 +368,11 @@ test("connections without a writers' queue report no fallback when they let go o
 test("a writer that cannot hand the turn on still commits, and reports the fallback once (#4316)", async () => {
 	const { database, warnings, writers } = await fixture();
 	let ticket = "";
-	utimesSync.mockImplementation(((path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
+	utimes.mockImplementation((async (path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
 		if (ticket !== "" && basename(String(path)) === ticket)
 			throw Object.assign(new Error("EACCES"), { code: "EACCES" });
-		actual.utimesSync(path, atime, mtime);
-	}) as typeof fs.utimesSync);
+		return actualPromises.utimes(path, atime, mtime);
+	}) as typeof fsPromises.utimes);
 	await database.transaction(async (tx) => {
 		await tx.run("INSERT INTO items VALUES ('committed')");
 		ticket = liveTicket(writers, 999_999_984);
@@ -368,11 +391,11 @@ test("a releasing writer whose oldest waiter left as it looked hands the turn to
 	let gone = "";
 	let next = "";
 	let mtimeMs = 0;
-	utimesSync.mockImplementation(((path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
+	utimes.mockImplementation((async (path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
 		if (gone !== "" && basename(String(path)) === gone)
 			throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
-		actual.utimesSync(path, atime, mtime);
-	}) as typeof fs.utimesSync);
+		return actualPromises.utimes(path, atime, mtime);
+	}) as typeof fsPromises.utimes);
 	await database.transaction(async (tx) => {
 		await tx.run("INSERT INTO items VALUES ('handed on')");
 		gone = liveTicket(writers, 999_999_985);
@@ -470,6 +493,7 @@ test("a release that cannot list the queue still commits and reports one wake-fa
 			failListing(writers, "EMFILE");
 		});
 		readdirSync.mockImplementation(actual.readdirSync);
+		readdir.mockImplementation(actualPromises.readdir);
 	}
 	await turn();
 	const [degraded, ...more] = warnings;
@@ -492,6 +516,7 @@ test("a release that cannot read the queue's entries reports the wake-failed fal
 		failTicketStat(writers, "EACCES");
 	});
 	statSync.mockImplementation(actual.statSync);
+	stat.mockImplementation(actualPromises.stat);
 	fs.unlinkSync(join(writers, waiting));
 	await turn();
 	const [degraded] = warnings;
@@ -540,7 +565,9 @@ test("getWriterQueueStats on a queue it cannot read throws a typed writer-queue-
 		assert.deepEqual([error.code, error.errno, error.location], ["writer-queue-unusable", "EACCES", path]);
 		assert.equal((error.cause as NodeJS.ErrnoException).code, "EACCES");
 		readdirSync.mockImplementation(actual.readdirSync);
+		readdir.mockImplementation(actualPromises.readdir);
 		statSync.mockImplementation(actual.statSync);
+		stat.mockImplementation(actualPromises.stat);
 	}
 	assert.equal(getWriterQueueStats(database).waiters, 1);
 });
@@ -552,6 +579,7 @@ test("a queue directory or ticket that vanishes while it is read counts as absen
 	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('directory gone')"));
 	assert.equal(getWriterQueueStats(database).waiters, 0);
 	readdirSync.mockImplementation(actual.readdirSync);
+	readdir.mockImplementation(actualPromises.readdir);
 	const gone = liveTicket(writers, 999_999_973);
 	liveTicket(writers, 999_999_974, 1);
 	failTicketStat(writers, "ENOENT", [gone]);
@@ -580,6 +608,7 @@ test("on Windows a ticket deleted while another process holds it open (EPERM) co
 		(error: Error) => isStorageWriterQueueUnusableError(error) && error.errno === "EPERM",
 	);
 	statSync.mockImplementation(actual.statSync);
+	stat.mockImplementation(actualPromises.stat);
 	for (const name of fs.readdirSync(writers)) fs.unlinkSync(join(writers, name));
 });
 
@@ -588,10 +617,10 @@ test("on Windows a release passes over a ticket deleted while another process ho
 	let going = "";
 	let next = "";
 	let mtimeMs = 0;
-	utimesSync.mockImplementation(((path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
+	utimes.mockImplementation((async (path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
 		if (going !== "" && basename(String(path)) === going) throw failure("EPERM");
-		actual.utimesSync(path, atime, mtime);
-	}) as typeof fs.utimesSync);
+		return actualPromises.utimes(path, atime, mtime);
+	}) as typeof fsPromises.utimes);
 	platform.mockReturnValue("win32");
 	await database.transaction(async (tx) => {
 		await tx.run("INSERT INTO items VALUES ('handed past a deleted ticket')");
@@ -609,21 +638,20 @@ test("on Windows a release passes over a ticket deleted while another process ho
 
 test("a release wakes the oldest live ticket whatever order the directory lists them in (#4316)", async () => {
 	const { database, writers } = await fixture();
-	const listing = (path: fs.PathLike): string[] => {
-		const names = actual.readdirSync(path);
+	readdir.mockImplementation((async (path: fs.PathLike) => {
+		const names = await actualPromises.readdir(path);
 		return String(path) === writers ? names.reverse() : names;
-	};
-	readdirSync.mockImplementation(listing as typeof fs.readdirSync);
+	}) as typeof fsPromises.readdir);
 	let oldest = "";
 	let later = "";
 	await database.transaction(async (tx) => {
 		await tx.run("INSERT INTO items VALUES ('listed backwards')");
 		oldest = liveTicket(writers, 999_999_979);
 		later = liveTicket(writers, 999_999_980, 1);
-		utimesSync.mockClear();
+		utimes.mockClear();
 	});
 	assert.deepEqual(
-		utimesSync.mock.calls.map(([path]) => String(path)),
+		utimes.mock.calls.map(([path]) => String(path)),
 		[join(wakes(writers), oldest)],
 		"the release touched the oldest ticket's notice, and nothing else",
 	);
@@ -678,6 +706,7 @@ test("a release that cannot notify the next writer leaves the degradation readab
 			failListing(writers, code);
 		});
 		readdirSync.mockImplementation(actual.readdirSync);
+		readdir.mockImplementation(actualPromises.readdir);
 	}
 	const [degraded, ...more] = getWriterQueueDegradation(database);
 	assert.ok(degraded && isStorageWriterQueueDegradedError(degraded));
@@ -746,6 +775,7 @@ test("each degradation is recorded once, in the order it first happened, and emi
 			failListing(writers, "EACCES");
 		});
 		readdirSync.mockImplementation(actual.readdirSync);
+		readdir.mockImplementation(actualPromises.readdir);
 	}
 	assert.deepEqual(
 		getWriterQueueDegradation(database).map((degraded) => degraded.reason),
@@ -794,15 +824,15 @@ test("a release does not roll back the refresh a waiting writer made between the
 	let waiter = "";
 	let refreshedMs = 0;
 	let refreshes = 0;
-	utimesSync.mockImplementation(((path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
+	utimes.mockImplementation((async (path: fs.PathLike, atime: fs.TimeLike, mtime: fs.TimeLike) => {
 		if (waiter !== "" && basename(String(path)) === waiter && refreshes === 0) {
 			refreshes += 1;
 			const now = new Date(databaseNow());
 			actual.utimesSync(join(writers, waiter), now, now);
 			refreshedMs = actual.statSync(join(writers, waiter)).mtimeMs;
 		}
-		actual.utimesSync(path, atime, mtime);
-	}) as typeof fs.utimesSync);
+		return actualPromises.utimes(path, atime, mtime);
+	}) as typeof fsPromises.utimes);
 	await database.transaction(async (tx) => {
 		await tx.run("INSERT INTO items VALUES ('released mid-refresh')");
 		waiter = liveTicket(writers, 999_999_959);
@@ -832,10 +862,10 @@ test("an abandoned ticket whose notice cannot be removed stays for the next scan
 	const { database, writers } = await fixture();
 	suppressWarnings();
 	const abandoned = abandonedTicket(writers, 999_999_957);
-	unlinkSync.mockImplementation(((path: fs.PathLike) => {
+	unlink.mockImplementation((async (path: fs.PathLike) => {
 		if (dirname(String(path)) === wakes(writers)) throw failure("EACCES");
-		actual.unlinkSync(path);
-	}) as typeof fs.unlinkSync);
+		return actualPromises.unlink(path);
+	}) as typeof fsPromises.unlink);
 	for (const value of ["first", "second"])
 		await database.transaction((tx) => tx.run("INSERT INTO items VALUES (?)", value));
 	const [degraded, ...more] = getWriterQueueDegradation(database);
@@ -845,6 +875,7 @@ test("an abandoned ticket whose notice cannot be removed stays for the next scan
 	assert.ok(fs.existsSync(join(writers, abandoned)), "the ticket stays, so the removal is retried");
 	assert.ok(fs.existsSync(join(wakes(writers), abandoned)));
 	unlinkSync.mockImplementation(actual.unlinkSync);
+	unlink.mockImplementation(actualPromises.unlink);
 	assert.equal(getWriterQueueStats(database).waiters, 0);
 	assert.deepEqual(
 		[fs.existsSync(join(writers, abandoned)), fs.existsSync(join(wakes(writers), abandoned))],
@@ -897,9 +928,14 @@ test("an uncontended transaction does not list a queue directory that does not e
 		if (String(path) === writers) listed.push(String(path));
 		return actual.readdirSync(path, options as never);
 	}) as typeof fs.readdirSync);
+	readdir.mockImplementation((async (path: fs.PathLike, options?: Parameters<typeof actualPromises.readdir>[1]) => {
+		if (String(path) === writers) listed.push(String(path));
+		return actualPromises.readdir(path, options as never);
+	}) as typeof fsPromises.readdir);
 	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('alone')"));
+	await turn();
 	assert.equal(fs.existsSync(writers), false);
-	assert.deepEqual(listed, [], "no listing, not even a failed one");
+	assert.deepEqual(listed, [], "no listing, not even a failed one, on or off the event loop");
 });
 
 test("in debug mode each writers'-queue degradation reaches the debug log once, without its message (#4360)", async () => {
@@ -913,16 +949,19 @@ test("in debug mode each writers'-queue degradation reaches the debug log once, 
 				failListing(writers, code);
 			});
 			readdirSync.mockImplementation(actual.readdirSync);
+			readdir.mockImplementation(actualPromises.readdir);
 		}
 		abandonedTicket(writers, 999_999_963);
-		unlinkSync.mockImplementation(((target: fs.PathLike) => {
+		unlink.mockImplementation((async (target: fs.PathLike) => {
 			if (dirname(String(target)) === writers)
 				throw Object.assign(new Error("removal refused for a secret reason"), { code: 13 });
-			actual.unlinkSync(target);
-		}) as typeof fs.unlinkSync);
+			return actualPromises.unlink(target);
+		}) as typeof fsPromises.unlink);
 		await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('kept')"));
-		await vi.waitFor(() => assert.equal(areaRecords(log, "storage").length, 2), { timeout: DEBUG_RECORD_WAIT_MS });
-		assert.deepEqual(areaRecords(log, "storage"), [
+		await vi.waitFor(async () => assert.equal((await areaRecords(log, "storage")).length, 2), {
+			timeout: DEBUG_RECORD_WAIT_MS,
+		});
+		assert.deepEqual(await areaRecords(log, "storage"), [
 			{
 				event: "writer-queue-degraded",
 				data: {
@@ -943,7 +982,11 @@ test("in debug mode each writers'-queue degradation reaches the debug log once, 
 				},
 			},
 		]);
-		assert.equal(JSON.stringify(log.records()).includes("secret reason"), false, "the cause's message stays out");
+		assert.equal(
+			JSON.stringify(await log.records()).includes("secret reason"),
+			false,
+			"the cause's message stays out",
+		);
 	});
 });
 
@@ -958,7 +1001,8 @@ test("with debug mode off a writers'-queue degradation writes no debug log (#436
 		});
 		assert.equal(getWriterQueueDegradation(database).length, 1);
 		for (let index = 0; index < 10; index++) await turn();
-		assert.equal(log.exists(), false);
+		await flushDebugLog();
+		assert.equal(await log.exists(), false);
 	});
 });
 
@@ -988,6 +1032,7 @@ test("debug output that cannot load is reported as a process warning, and the de
 			failListing(`${path}-writers`, "EMFILE");
 		});
 		readdirSync.mockImplementation(actual.readdirSync);
+		readdir.mockImplementation(actualPromises.readdir);
 		await vi.waitFor(() => assert.equal(warnings.length, 2), { timeout: DEBUG_RECORD_WAIT_MS });
 		assert.ok(isStorageWriterQueueDegradedError(warnings[0]), "the degradation itself, as before");
 		assert.ok(
@@ -1155,11 +1200,13 @@ test("a write-lock record that cannot be written is removed and left out, and tr
 	const { database, path } = await fixture();
 	suppressWarnings();
 	let attempts = 0;
-	writeSync.mockImplementation(((descriptor: number, data: string, ...rest: never[]) => {
-		if (typeof data !== "string" || !/^(held|free) /.test(data)) return actual.writeSync(descriptor, data, ...rest);
+	write.mockImplementation(((descriptor: number, data: string, ...rest: unknown[]) => {
+		if (typeof data !== "string" || !/^(held|free) /.test(data))
+			return (actual.write as (...args: unknown[]) => void)(descriptor, data, ...rest);
 		attempts += 1;
-		throw failure("EIO");
-	}) as typeof fs.writeSync);
+		const callback = rest.at(-1) as (error: Error) => void;
+		process.nextTick(() => callback(failure("EIO")));
+	}) as typeof fs.write);
 	for (const value of ["first", "second"])
 		await database.transaction((tx) => tx.run("INSERT INTO items VALUES (?)", value));
 	assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: "first" }, { value: "second" }]);
@@ -1338,4 +1385,76 @@ test("a waiting writer that cannot read a ticket's time fails as an unusable wri
 	assert.ok(isStorageWriterQueueUnusableError(error), String(error));
 	assert.deepEqual([error.errno, error.location], ["EACCES", path]);
 	assert.equal((error.cause as NodeJS.ErrnoException).code, "EACCES");
+});
+
+function syncSidecarCalls(path: string): () => string[] {
+	const sidecars = [`${path}-writers`, `${path}-wakes`, `${path}-holders`];
+	const named = [existsSync, readdirSync, statSync, utimesSync, unlinkSync, readFileSync, rmSync];
+	const marks = named.map((spy) => spy.mock.calls.length);
+	const [writes, closes] = [writeSync, closeSync].map((spy) => spy.mock.calls.length);
+	return () => [
+		...named.flatMap((spy, index) =>
+			spy.mock.calls
+				.slice(marks[index])
+				.map(([file]) => String(file))
+				.filter(
+					(file) =>
+						file === path ||
+						file.startsWith(`${path}-open.lock`) ||
+						sidecars.some((sidecar) => file === sidecar || dirname(file) === sidecar),
+				),
+		),
+		...writeSync.mock.calls
+			.slice(writes)
+			.filter(([, data]) => typeof data === "string" && /^(held|free) /.test(data))
+			.map(([, data]) => `write ${String(data).slice(0, 4)}`),
+		...closeSync.mock.calls.slice(closes).map(() => "close"),
+	];
+}
+
+test("a transaction hands the turn to the next writer and records the lock off the event loop, with no synchronous file call (#5377)", async () => {
+	const { database, path, writers } = await fixture();
+	const calls = syncSidecarCalls(path);
+	let waiter = "";
+	await database.transaction(async (tx) => {
+		await tx.run("INSERT INTO items VALUES ('handed on')");
+		waiter = liveTicket(writers, 999_999_981);
+	});
+	assert.ok(noticeTouched(writers, waiter), "the release woke the waiting writer");
+	assert.deepEqual(calls(), [], "no synchronous call read the queue, woke the writer or wrote the record");
+	actual.unlinkSync(join(wakes(writers), waiter));
+	actual.unlinkSync(join(writers, waiter));
+});
+
+test("a writer that gives up names the lock's holder from records read off the event loop (#5377)", async () => {
+	const { database, holder, path } = await fixture();
+	const other = await openNodeSqliteDatabase(path, { lockWaitMs: 50 });
+	cleanups.push(() => other.close());
+	await database.transaction(async (tx) => {
+		await tx.run("INSERT INTO items VALUES ('recorded')");
+	});
+	holder.exec("BEGIN IMMEDIATE");
+	const calls = syncSidecarCalls(path);
+	const error = await other.transaction((tx) => tx.run("INSERT INTO items VALUES ('late')")).catch((e: unknown) => e);
+	holder.exec("ROLLBACK");
+	assert.ok(isStorageWriteLockTimeoutError(error), String(error));
+	assert.deepEqual(calls(), [], "no synchronous call listed or read the write-lock records");
+});
+
+test("closing a connection removes its write-lock record and open lock off the event loop (#5377)", async () => {
+	const { path } = await fixture();
+	const database = await openNodeSqliteDatabase(path);
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('closed')"));
+	const calls = syncSidecarCalls(path);
+	await database.close();
+	assert.deepEqual(calls(), [], "no synchronous call closed or removed the record or the lock file");
+});
+
+test("opening a database read-only looks for its lock files off the event loop (#5377)", async () => {
+	const { path } = await fixture();
+	const calls = syncSidecarCalls(path);
+	const reader = await openNodeSqliteDatabase(path, { readOnly: true });
+	cleanups.push(() => reader.close());
+	assert.deepEqual(await reader.all("SELECT COUNT(*) AS n FROM items"), [{ n: 0 }]);
+	assert.deepEqual(calls(), [], "no synchronous call looked for the record directory, the lock file or the database");
 });

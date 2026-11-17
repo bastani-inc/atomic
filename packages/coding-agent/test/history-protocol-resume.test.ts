@@ -10,6 +10,27 @@ import type { SessionEntry } from "../src/core/session-manager-types.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";
 import { createHistoryRouter, type WorkflowRunHistory } from "../src/core/tools/history-protocol.js";
+
+/** Session project checks that have finished: they resolve both directories off the event loop. */
+const projectChecks = vi.hoisted(() => ({ settled: 0 }));
+
+vi.mock("../src/utils/canonical-path.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/utils/canonical-path.ts")>();
+	return {
+		...actual,
+		createSessionCwdMatcherAsync(cwd: string) {
+			const matches = actual.createSessionCwdMatcherAsync(cwd);
+			return async (candidate: string | undefined) => {
+				try {
+					return await matches(candidate);
+				} finally {
+					projectChecks.settled++;
+				}
+			};
+		},
+	};
+});
+
 import { MULTILINE_WINDOW_NOTE } from "../src/core/tools/history-session.js";
 import type { InternalReadSelection, InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
 
@@ -24,6 +45,10 @@ const CUT_ONLY_BYTES = 910;
 const LONG_WAIT_MS = 1_500;
 const SETTLE_TURNS = 20;
 const PARKED_LISTING_TTL_MS = 60_000;
+
+async function untilProjectChecked(checksBefore: number): Promise<void> {
+	while (projectChecks.settled === checksBefore) await new Promise((resolve) => setImmediate(resolve));
+}
 
 function message(id: string, text: string, at: number): SessionEntry {
 	return {
@@ -507,7 +532,10 @@ describe("history:// continuations keep whole records and positions (#5250)", ()
 				});
 			const first = (await routerWith(SLOW_TIME_MS).read!(url)) ?? "";
 			assert.match(first, /the time budget ran out waiting for the store/, first);
+			const checksBefore = projectChecks.settled;
 			const adopting = routerWith(LONG_WAIT_MS).read!(url);
+			// A stage session's read checks its project before it asks for the run listing it takes over.
+			if (url.includes("sessions")) await untilProjectChecked(checksBefore);
 			for (let turn = 0; turn < SETTLE_TURNS; turn++) await new Promise((resolve) => setImmediate(resolve));
 			const overlapping = (await routerWith(SLOW_TIME_MS).read!("history://workflows")) ?? "";
 			assert.match(overlapping, /the time budget ran out waiting for the store/, overlapping);

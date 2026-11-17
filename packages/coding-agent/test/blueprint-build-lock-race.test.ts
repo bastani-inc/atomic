@@ -56,7 +56,7 @@ function builder(name: string, gate: string): { readonly child: ChildProcess; re
 				event("built");
 			});
 		} finally {
-			settled.release();
+			await settled.release();
 		}
 	`;
 	const child = spawn("bun", ["--eval", script], { stdio: "ignore" });

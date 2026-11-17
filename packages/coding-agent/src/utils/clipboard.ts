@@ -1,6 +1,6 @@
-import { execFile, execFileSync, execSync, spawn } from "child_process";
+import { execFile, spawn } from "child_process";
 import { randomUUID } from "crypto";
-import { unlinkSync, writeFileSync } from "fs";
+import { unlink, writeFile } from "fs/promises";
 import { platform, tmpdir } from "os";
 import { join } from "path";
 import { ENV_CLIPBOARD_OSC52, getEnvNames } from "../config.js";
@@ -25,11 +25,37 @@ type NativeClipboardExecOptions = {
  */
 const CLIPBOARD_CWD = "/";
 
-function copyToX11Clipboard(options: NativeClipboardExecOptions): void {
+function runClipboardCommand(command: string, args: string[], options: NativeClipboardExecOptions): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const proc = spawn(command, args, {
+			timeout: options.timeout,
+			stdio: options.stdio,
+			env: options.env,
+			detached: options.detached,
+			cwd: options.cwd,
+		});
+		let settled = false;
+		const finish = (error?: Error) => {
+			if (settled) return;
+			settled = true;
+			if (error) reject(error);
+			else resolve();
+		};
+		proc.once("error", (error) => finish(error));
+		proc.once("close", (code) => {
+			if (code === 0) finish();
+			else finish(new Error(`${command} exited with code ${code ?? 1}`));
+		});
+		proc.stdin.on("error", () => {});
+		proc.stdin.end(options.input);
+	});
+}
+
+async function copyToX11Clipboard(options: NativeClipboardExecOptions): Promise<void> {
 	try {
-		execSync("xclip -selection clipboard", options);
+		await runClipboardCommand("xclip", ["-selection", "clipboard"], options);
 	} catch {
-		execSync("xsel --clipboard --input", options);
+		await runClipboardCommand("xsel", ["--clipboard", "--input"], options);
 	}
 }
 
@@ -57,29 +83,40 @@ function emitOsc52(text: string): boolean {
 	return true;
 }
 
+function runClipboardExecFile(
+	file: string,
+	args: string[],
+	options: { timeout: number; env: NodeJS.ProcessEnv; cwd: string },
+): Promise<string> {
+	return new Promise((resolve, reject) => {
+		execFile(file, args, options, (error, stdout) => {
+			if (error) reject(error);
+			else resolve(typeof stdout === "string" ? stdout : Buffer.from(stdout ?? "").toString("utf8"));
+		});
+	});
+}
+
 /**
  * WSL without WSLg has no Linux display, so the Windows clipboard is written through
  * interop. PowerShell reads the text from a file because `clip.exe` and PowerShell stdin
  * decode piped bytes with the console code page, which mangles non-ASCII UTF-8.
  */
-function copyViaWindowsClipboard(text: string): boolean {
+async function copyViaWindowsClipboard(text: string): Promise<boolean> {
 	const tmpFile = join(tmpdir(), `pi-wsl-clip-${randomUUID()}.txt`);
 	const env = createChildProcessEnvironment();
 	try {
-		writeFileSync(tmpFile, text, { encoding: "utf8", mode: 0o600 });
-		const winPath = execFileSync("wslpath", ["-w", tmpFile], {
-			timeout: 1000,
-			stdio: ["ignore", "pipe", "ignore"],
-			env,
-			cwd: CLIPBOARD_CWD,
-		})
-			.toString("utf8")
-			.trim();
+		await writeFile(tmpFile, text, { encoding: "utf8", mode: 0o600 });
+		const winPath = (
+			await runClipboardExecFile("wslpath", ["-w", tmpFile], {
+				timeout: 1000,
+				env,
+				cwd: CLIPBOARD_CWD,
+			})
+		).trim();
 		if (!winPath) return false;
 		const script = `Set-Clipboard -Value ([System.IO.File]::ReadAllText('${winPath.replaceAll("'", "''")}', [System.Text.Encoding]::UTF8))`;
-		execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
+		await runClipboardExecFile("powershell.exe", ["-NoProfile", "-Command", script], {
 			timeout: 5000,
-			stdio: ["ignore", "ignore", "ignore"],
 			env,
 			cwd: CLIPBOARD_CWD,
 		});
@@ -88,7 +125,7 @@ function copyViaWindowsClipboard(text: string): boolean {
 		return false;
 	} finally {
 		try {
-			unlinkSync(tmpFile);
+			await unlink(tmpFile);
 		} catch {
 			// The file may not have been created.
 		}
@@ -205,16 +242,16 @@ export async function copyToClipboard(text: string): Promise<void> {
 	if (!copied) {
 		try {
 			if (p === "darwin") {
-				execSync("pbcopy", options);
+				await runClipboardCommand("pbcopy", [], options);
 				copied = true;
 			} else if (p === "win32") {
-				execSync("clip", options);
+				await runClipboardCommand("clip", [], options);
 				copied = true;
 			} else {
 				// Linux. Try Termux, Wayland, or X11 clipboard tools.
 				if (env.TERMUX_VERSION) {
 					try {
-						execSync("termux-clipboard-set", options);
+						await runClipboardCommand("termux-clipboard-set", [], options);
 						copied = true;
 					} catch {
 						// Fall back to Wayland or X11 tools.
@@ -227,41 +264,16 @@ export async function copyToClipboard(text: string): Promise<void> {
 					const isWayland = isWaylandSession();
 					if (isWayland && hasWaylandDisplay) {
 						try {
-							// Verify wl-copy exists (spawn errors are async and won't be caught)
-							execSync("which wl-copy", { stdio: "ignore", env: createChildProcessEnvironment() });
-							// wl-copy with execSync hangs due to fork behavior; use spawn instead.
-							// Await its terminal event so failures can fall through to X11 or OSC 52.
-							const exitCode = await new Promise<number>((resolve) => {
-								const proc = spawn("wl-copy", [], {
-									stdio: ["pipe", "ignore", "ignore"],
-									env: createChildProcessEnvironment(),
-									detached: options.detached,
-									cwd: options.cwd,
-								});
-								let settled = false;
-								const finish = (code: number) => {
-									if (settled) return;
-									settled = true;
-									resolve(code);
-								};
-								proc.once("error", () => finish(1));
-								proc.once("close", (code) => finish(code ?? 1));
-								proc.stdin.on("error", () => {});
-								proc.stdin.end(text);
-							});
-							if (exitCode === 0) copied = true;
-							else if (hasX11Display) {
-								copyToX11Clipboard(options);
-								copied = true;
-							}
+							await runClipboardCommand("wl-copy", [], options);
+							copied = true;
 						} catch {
 							if (hasX11Display) {
-								copyToX11Clipboard(options);
+								await copyToX11Clipboard(options);
 								copied = true;
 							}
 						}
 					} else if (hasX11Display) {
-						copyToX11Clipboard(options);
+						await copyToX11Clipboard(options);
 						copied = true;
 					}
 				}
@@ -274,10 +286,10 @@ export async function copyToClipboard(text: string): Promise<void> {
 	let osc52Emitted = false;
 	// A remote session skips the Windows clipboard: the copied text belongs on the connected
 	// client, which the OSC 52 fallback below reaches, not on the remote host.
-	if (!copied && !remote && p === "linux" && isWSL(env)) {
+	if (!copied && !remote && p === "linux" && (await isWSL(env))) {
 		// Windows Terminal supports OSC 52; prefer it over the slower PowerShell round trip.
 		if (env.WT_SESSION) osc52Emitted = emitOsc52(text);
-		copied = osc52Emitted || copyViaWindowsClipboard(text);
+		copied = osc52Emitted || (await copyViaWindowsClipboard(text));
 	}
 	// OSC 52 cannot be verified, so a desktop session with a display reports the failure
 	// instead. Without a display the terminal is the only clipboard route (containers,

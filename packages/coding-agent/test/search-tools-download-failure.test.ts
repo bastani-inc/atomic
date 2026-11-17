@@ -2,19 +2,20 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SpawnSyncReturns } from "child_process";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { ENV_AGENT_DIR, ENV_OFFLINE } from "../src/config.js";
 import { isManagedToolDownloadError, isManagedToolError } from "../src/utils/managed-tool-errors.js";
 
+type ExecFileCallback = (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void;
+
 const mocks = vi.hoisted(() => ({
-	spawnSync: vi.fn<(command: string, args?: readonly string[]) => SpawnSyncReturns<Buffer>>(),
+	execFile: vi.fn<(command: string, args: readonly string[], options: object, callback: ExecFileCallback) => void>(),
 }));
 
 // Neither fd nor ripgrep is on PATH, and find cannot fall back to the native search.
 vi.mock("child_process", async () => {
 	const actual = await vi.importActual<typeof import("child_process")>("child_process");
-	return { ...actual, spawnSync: mocks.spawnSync };
+	return { ...actual, execFile: mocks.execFile };
 });
 vi.mock("../src/core/tools/search-native.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../src/core/tools/search-native.js")>()),
@@ -35,8 +36,12 @@ describe("search tools when their managed tool cannot be downloaded (#4389)", ()
 		vi.stubEnv(ENV_AGENT_DIR, join(tempDir, "agent"));
 		vi.stubEnv(ENV_OFFLINE, "");
 		vi.stubEnv("PI_OFFLINE", "");
-		mocks.spawnSync.mockReset();
-		mocks.spawnSync.mockReturnValue({ error: new Error("not found") } as SpawnSyncReturns<Buffer>);
+		mocks.execFile.mockReset();
+		mocks.execFile.mockImplementation((command, _args, _options, callback) => {
+			const notFound: NodeJS.ErrnoException = new Error(`spawn ${command} ENOENT`);
+			notFound.code = "ENOENT";
+			queueMicrotask(() => callback(notFound, "", ""));
+		});
 		vi.spyOn(globalThis, "fetch").mockRejectedValue(lookupFailure);
 		vi.resetModules();
 		mkdirSync(workDir);

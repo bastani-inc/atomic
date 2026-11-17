@@ -252,7 +252,7 @@ describe("InteractiveMode startup latency hooks", () => {
 			showTopExtensionDialog: InteractiveMode.prototype.showTopExtensionDialog,
 			extensionDialogs: [],
 			runtimeHost: {},
-			session: { getToolStatus: () => ({ missing: [] }) },
+			session: { getToolStatusAsync: () => ({ missing: [] }) },
 			isInitialized: false,
 			registerSignalHandlers: vi.fn(),
 			ui: {
@@ -332,7 +332,7 @@ describe("InteractiveMode startup latency hooks", () => {
 		const context = {
 			programStatus: { report: vi.fn() },
 			runtimeHost: {},
-			session: { getToolStatus: () => ({ missing: [] }) },
+			session: { getToolStatusAsync: () => ({ missing: [] }) },
 			isInitialized: false,
 			registerSignalHandlers: vi.fn(),
 			ui: {
@@ -407,7 +407,7 @@ describe("InteractiveMode startup latency hooks", () => {
 			const context = {
 				programStatus: { report: vi.fn() },
 				runtimeHost: {},
-				session: { getToolStatus: () => ({ missing: [] }) },
+				session: { getToolStatusAsync: () => ({ missing: [] }) },
 				isInitialized: false,
 				registerSignalHandlers: vi.fn(),
 				ui: { addChild: vi.fn(), setFocus: vi.fn(), start: vi.fn(), requestRender: vi.fn() },

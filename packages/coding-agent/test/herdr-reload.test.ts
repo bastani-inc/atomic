@@ -682,3 +682,75 @@ test.each(["prepareCommit", "extendResources", "publishProviders"] as const)(
 	},
 	REAL_SDK_BUILTIN_RELOAD_TIMEOUT_MS,
 );
+
+async function sessionsSharingHerdr(fake: Awaited<ReturnType<typeof fakeHerdr>>) {
+	const answers: ((enabled: boolean) => void)[] = [];
+	const loaded = await createTestExtensionsResult(
+		[
+			createHerdrExtension({
+				env: fake.env,
+				enabled: () =>
+					new Promise<boolean>((resolve) => {
+						answers.push(resolve);
+					}),
+			}),
+		],
+		fake.dir,
+	);
+	const sessions = [0, 1].map(() => {
+		const manager = SessionManager.inMemory();
+		const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, fake.dir, manager, {} as never);
+		runner.setUIContext({ ...noOpUIContext }, "tui");
+		return { manager, runner };
+	});
+	return { answers, sessions };
+}
+
+test("a session whose settings are read while another binds the pane never takes the pane from it", async () => {
+	const fake = await fakeHerdr();
+	const { answers, sessions } = await sessionsSharingHerdr(fake);
+	const [first, second] = sessions;
+	try {
+		const starting = sessions.map(({ runner }) => runner.emit({ type: "session_start" }));
+		await vi.waitFor(() => assert.equal(answers.length, 2));
+		for (const answer of answers) answer(true);
+		await Promise.all(starting);
+		for (const { runner } of sessions) await runner.emit({ type: "agent_start" });
+		const [report] = await fake.waitFor(1);
+		assert.equal(arg(report!.args, "--agent-session-id"), first!.manager.getSessionId());
+		assert.ok(!(await fake.calls()).some((call) => call.args.includes(second!.manager.getSessionId())));
+	} finally {
+		for (const { runner } of sessions) {
+			await runner.emit({ type: "session_shutdown", reason: "quit" });
+			runner.invalidate();
+		}
+		await fake.dispose();
+	}
+});
+
+test("a session shut down while its settings are read leaves the pane to the next session", async () => {
+	const fake = await fakeHerdr();
+	const { answers, sessions } = await sessionsSharingHerdr(fake);
+	const [first, second] = sessions;
+	try {
+		const starting = first!.runner.emit({ type: "session_start" });
+		await vi.waitFor(() => assert.equal(answers.length, 1));
+		await first!.runner.emit({ type: "session_shutdown", reason: "quit" });
+		answers[0]!(true);
+		await starting;
+		const next = second!.runner.emit({ type: "session_start" });
+		await vi.waitFor(() => assert.equal(answers.length, 2));
+		answers[1]!(true);
+		await next;
+		await second!.runner.emit({ type: "agent_start" });
+		const [report] = await fake.waitFor(1);
+		assert.equal(arg(report!.args, "--agent-session-id"), second!.manager.getSessionId());
+		assert.ok(!(await fake.calls()).some((call) => call.args.includes(first!.manager.getSessionId())));
+	} finally {
+		for (const { runner } of sessions) {
+			await runner.emit({ type: "session_shutdown", reason: "quit" });
+			runner.invalidate();
+		}
+		await fake.dispose();
+	}
+});

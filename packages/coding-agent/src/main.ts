@@ -54,6 +54,7 @@ import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { inheritsDebugSetting, setDebugSetting } from "./core/debug-setting.ts";
 import { DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
+import { startEventLoopMonitor } from "./core/event-loop-monitor.ts";
 import type { LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { markLifecycleTiming } from "./core/lifecycle-timings.ts";
@@ -86,7 +87,7 @@ import {
 	setCliStorageSelection,
 } from "./core/storage/process-selection.js";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
-import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
+import { hasProjectTrustInputs, hasProjectTrustInputsAsync, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import {
 	type AppMode,
@@ -139,7 +140,13 @@ import {
 	unreadableTrustSettingsDiagnostics,
 } from "./main-stdio.ts";
 import type { MainOptions } from "./main-types.ts";
-import { removeSavedModelRoutingSettings, runMigrations, showDeprecationWarnings } from "./migrations.ts";
+import {
+	removeSavedModelRoutingSettings,
+	removeSavedModelRoutingSettingsAsync,
+	runMigrations,
+	runMigrationsAsync,
+	showDeprecationWarnings,
+} from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { isUnknownModel } from "./modes/interactive/interactive-mode-helpers.ts";
 import { shouldUseFullscreenTui } from "./modes/interactive/interactive-tui.ts";
@@ -517,6 +524,8 @@ export async function main(argv: string[], options?: MainOptions) {
 		: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
 	let isolateInteractiveHost =
 		appMode === "interactive" && !isPlainRuntimeMetadataCommand(parsed) && engineEnv.child !== "1";
+	if (engineEnv.child === "1") startEventLoopMonitor("engine");
+	else if (appMode === "interactive" && !isPlainRuntimeMetadataCommand(parsed)) startEventLoopMonitor("host");
 	let startupBenchmark: boolean;
 	try {
 		startupBenchmark = resolveStartupBenchmark(appMode, engineEnv);
@@ -528,7 +537,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	const shouldTakeOverStdout = appMode !== "interactive";
 	const shouldRestoreStdoutForMetadata = isPlainRuntimeMetadataCommand(parsed);
 	if (shouldTakeOverStdout) {
-		takeOverStdout();
+		takeOverStdout({ nonBlockingPipe: appMode === "rpc" });
 	}
 	const engineLiveness = engineEnv.child === "1" ? startInteractiveEngineLiveness(writeRawStdout) : undefined;
 	engineLiveness?.ready();
@@ -783,8 +792,8 @@ export async function main(argv: string[], options?: MainOptions) {
 		projectTrustContext,
 	}) => {
 		const cachedProjectTrust = projectTrustByCwd.get(cwd);
-		const hasTrustInputs = hasProjectTrustInputs(cwd);
-		const storedProjectTrust = projectTrustStore.get(cwd);
+		const hasTrustInputs = await hasProjectTrustInputsAsync(cwd);
+		const storedProjectTrust = await projectTrustStore.getAsync(cwd);
 		const initialProjectTrusted =
 			parsed.projectTrustOverride ?? cachedProjectTrust ?? storedProjectTrust ?? !hasTrustInputs;
 		const shouldResolveProjectTrust =
@@ -792,7 +801,9 @@ export async function main(argv: string[], options?: MainOptions) {
 			parsed.projectTrustOverride === undefined &&
 			cachedProjectTrust === undefined &&
 			hasTrustInputs;
-		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: initialProjectTrusted });
+		const runtimeSettingsManager = await SettingsManager.createAsync(cwd, agentDir, {
+			projectTrusted: initialProjectTrusted,
+		});
 		const existingSession = sessionManager.buildSessionContext();
 		const deferStartupTrust =
 			sessionStartEvent === undefined &&
@@ -894,7 +905,7 @@ export async function main(argv: string[], options?: MainOptions) {
 										if (trusted && !initialProjectTrusted) {
 											migrateAfterTrust = true;
 											// Before the project's settings load, so its removed routing settings are not also reported as ignored.
-											removeSavedModelRoutingSettings(cwd, { projectTrusted: true });
+											await removeSavedModelRoutingSettingsAsync(cwd, { projectTrusted: true });
 										}
 										// Print, JSON and RPC modes cannot ask, so say what an untrusted project loses (#4223).
 										const ignored = ignoredProjectSettingsWarning(cwd, {
@@ -944,7 +955,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			},
 		});
 		return async () => {
-			if (migrateAfterTrust) runMigrations(cwd, { projectTrusted: true });
+			if (migrateAfterTrust) await runMigrationsAsync(cwd, { projectTrusted: true });
 			const services = await completeServices();
 			if (!deferStartupTrust) await finalizeStartupStorage();
 			if (isolateInteractiveHost) limitMandatoryIntercomToTool(services.resourceLoader);
@@ -1036,7 +1047,7 @@ export async function main(argv: string[], options?: MainOptions) {
 					(completion ??= (async () => {
 						startupTrustContext = context;
 						await completeReload();
-						if (migrateAfterTrust) runMigrations(cwd, { projectTrusted: true });
+						if (migrateAfterTrust) await runMigrationsAsync(cwd, { projectTrusted: true });
 						const finalServices = await completeServices();
 						const extensionErrors = finalServices.resourceLoader.getExtensions().errors;
 						if (extensionErrors.length > 0 && appMode !== "interactive" && engineEnv.child !== "1") {

@@ -2,14 +2,17 @@ import assert from "node:assert/strict";
 import type * as ChildProcess from "node:child_process";
 import type * as Fs from "node:fs";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import type * as FsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, it, vi } from "vitest";
 
 type ShellModule = typeof import("../src/utils/shell.js");
 
-const { accessSyncMock, spawnSyncMock, standIns } = vi.hoisted(() => ({
+const { accessMock, accessSyncMock, execFileMock, spawnSyncMock, standIns } = vi.hoisted(() => ({
+	accessMock: vi.fn(),
 	accessSyncMock: vi.fn(),
+	execFileMock: vi.fn(),
 	spawnSyncMock: vi.fn(),
 	standIns: { directories: new Set<string>(), aliases: new Set<string>(), directory: "", danglingLink: "" },
 }));
@@ -29,8 +32,26 @@ vi.mock("node:fs", async (importOriginal) => {
 	return { ...actual, accessSync: accessSyncMock, lstatSync, statSync };
 });
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof FsPromises>();
+	const lstat = ((path: Fs.PathLike, options?: Fs.StatOptions) => {
+		if (standIns.directories.has(String(path))) return actual.lstat(standIns.directory);
+		if (standIns.aliases.has(String(path))) return actual.lstat(standIns.danglingLink);
+		return actual.lstat(path, options);
+	}) as typeof actual.lstat;
+	const stat = ((path: Fs.PathLike, options?: Fs.StatOptions) => {
+		if (standIns.aliases.has(String(path)))
+			return Promise.reject(
+				Object.assign(new Error(`EACCES: permission denied, stat '${String(path)}'`), { code: "EACCES" }),
+			);
+		return actual.stat(path, options);
+	}) as typeof actual.stat;
+	return { ...actual, access: accessMock, lstat, stat };
+});
+
 vi.mock("child_process", async (importOriginal) => ({
 	...(await importOriginal<typeof ChildProcess>()),
+	execFile: execFileMock,
 	spawnSync: spawnSyncMock,
 }));
 
@@ -50,10 +71,13 @@ function stubPlatform(platform: string) {
 beforeEach(async () => {
 	vi.stubEnv("ProgramFiles", undefined);
 	vi.stubEnv("ProgramFiles(x86)", undefined);
-	accessSyncMock.mockReset().mockImplementation((path: string) => {
+	const missingInWorkingDirectory = (path: string) => {
 		if (win32.dirname(path) === win32.resolve(process.cwd()))
 			throw Object.assign(new Error("not found"), { code: "ENOENT" });
-	});
+	};
+	accessMock.mockReset().mockImplementation(async (path: string) => missingInWorkingDirectory(path));
+	accessSyncMock.mockReset().mockImplementation(missingInWorkingDirectory);
+	execFileMock.mockReset();
 	spawnSyncMock.mockReset();
 	// Atomic memoizes PATH lookups per module instance; start each test without them.
 	vi.resetModules();
@@ -151,6 +175,45 @@ describe("Windows Store shell aliases", () => {
 		assert.equal(shell.getPowerShellConfig().shell, alias);
 	});
 
+	it("rejects an explicitly configured directory named like a shell when resolved asynchronously (#5324)", async () => {
+		const directory = "D:\\tools\\bash.exe";
+		standIns.directories.add(directory);
+
+		await assert.rejects(shell.getShellConfigAsync(directory), /Custom shell path not found/);
+		assert.equal(accessSyncMock.mock.calls.length, 0);
+	});
+
+	it("skips a directory named bash.exe in the known installation location when resolved asynchronously (#5324)", async () => {
+		const directory = "D:\\Apps\\Git\\bin\\bash.exe";
+		const executable = `${aliasesDir}\\bash.exe`;
+		standIns.directories.add(directory);
+		vi.stubEnv("ProgramFiles", "D:\\Apps");
+		vi.stubEnv("PATH", aliasesDir);
+		accessMock.mockImplementation(async (path: string) => {
+			if (path !== directory && path !== executable) throw Object.assign(new Error("not found"), { code: "ENOENT" });
+		});
+
+		assert.equal((await shell.getShellConfigAsync()).shell, executable);
+	});
+
+	it("resolves a relative PATH entry to an absolute path and skips a directory named like the executable when resolved asynchronously (#5324)", async () => {
+		const shadowing = "D:\\first\\pwsh.exe";
+		standIns.directories.add(shadowing);
+		vi.stubEnv("PATH", `D:\\first;relative-bin`);
+
+		const found = (await shell.getPowerShellConfigAsync()).shell;
+
+		assert.equal(found, win32.resolve(process.cwd(), "relative-bin", "pwsh.exe"));
+	});
+
+	it("keeps a Store alias whose link target cannot be read when resolved asynchronously (#5324)", async () => {
+		const alias = `${aliasesDir}\\pwsh.exe`;
+		standIns.aliases.add(alias);
+		vi.stubEnv("PATH", aliasesDir);
+
+		assert.equal((await shell.getPowerShellConfigAsync()).shell, alias);
+	});
+
 	it("still rejects PATH results that fail the existence check", () => {
 		const windowsPowerShell = "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 		vi.stubEnv("PATH", `${aliasesDir};D:\\Windows\\System32\\WindowsPowerShell\\v1.0`);
@@ -190,5 +253,18 @@ describe("Unix shell existence checks", () => {
 		assert.throws(() => shell.getShellConfig("/missing/bash"), {
 			message: "Custom shell path not found: /missing/bash",
 		});
+	});
+
+	it("resolves bash on PATH asynchronously with execFile when /bin/bash fails access(F_OK)", async () => {
+		accessMock.mockRejectedValueOnce(Object.assign(new Error("not found"), { code: "ENOENT" }));
+		execFileMock.mockImplementation(
+			(_file: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string) => void) => {
+				cb(null, "/usr/local/bin/bash\n");
+			},
+		);
+
+		assert.equal((await shell.getShellConfigAsync()).shell, "/usr/local/bin/bash");
+		assert.equal(accessSyncMock.mock.calls.length, 0);
+		assert.equal(spawnSyncMock.mock.calls.length, 0);
 	});
 });

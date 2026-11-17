@@ -30,13 +30,12 @@ import {
 	MissingSessionCwdError,
 	normalizeChangelogLinks,
 	os,
-	parseChangelog,
+	parseChangelogAsync,
 	path,
 	SessionImportFileNotFoundError,
 	Spacer,
 	setRegisteredThemes,
 	spawn,
-	spawnSync,
 	Text,
 	theme,
 } from "./interactive-mode-deps.ts";
@@ -94,7 +93,7 @@ InteractiveModeBase.prototype.handleReloadCommand = async function (this: Intera
 		this.setupExtensionShortcuts(runner);
 		this.rebuildChatFromMessages({ resetStartupDisclosure: true });
 		dismissReloadBox(this.editor as Component);
-		const savedImplicitProjectTrust = this.maybeSaveImplicitProjectTrustAfterReload();
+		const savedImplicitProjectTrust = await this.maybeSaveImplicitProjectTrustAfterReload();
 		this.showLoadedResources({
 			force: false,
 			showDiagnosticsWhenQuiet: true,
@@ -239,14 +238,24 @@ InteractiveModeBase.prototype.handleImportCommand = async function (
 	}
 };
 
+const GH_AUTH_STATUS_TIMEOUT_MS = 30_000;
+
+function ghAuthStatus(): Promise<number | null> {
+	return new Promise((resolve) => {
+		const child = spawn("gh", ["auth", "status"], {
+			env: createChildProcessEnvironment(),
+			stdio: "ignore",
+			timeout: GH_AUTH_STATUS_TIMEOUT_MS,
+		});
+		child.once("error", () => resolve(null));
+		child.once("close", (code) => resolve(code));
+	});
+}
+
 InteractiveModeBase.prototype.handleShareCommand = async function (this: InteractiveModeBase): Promise<void> {
 	// Check if gh is available and logged in
 	try {
-		const authResult = spawnSync("gh", ["auth", "status"], {
-			encoding: "utf-8",
-			env: createChildProcessEnvironment(),
-		});
-		if (authResult.status !== 0) {
+		if ((await ghAuthStatus()) !== 0) {
 			this.showError("GitHub CLI is not logged in. Run 'gh auth login' first.");
 			return;
 		}
@@ -257,7 +266,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 
 	// Share an export-only JSONL copy carrying context for the viewer. The
 	// persisted session is not mutated.
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-share-"));
+	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "atomic-share-"));
 	const tmpFile = path.join(tempDir, "session.jsonl");
 	try {
 		await this.session.exportToJsonl(tmpFile, {
@@ -266,7 +275,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 			toolOutputContent: false,
 		});
 	} catch (error: unknown) {
-		fs.rmSync(tempDir, { recursive: true, force: true });
+		await fs.promises.rm(tempDir, { recursive: true, force: true });
 		this.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
 		return;
 	}
@@ -283,11 +292,9 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 		this.editorContainer.clear();
 		this.editorContainer.addChild(this.editor);
 		this.ui.setFocus(this.editor);
-		try {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		} catch {
+		fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {
 			// Ignore cleanup errors
-		}
+		});
 	};
 
 	// Create a secret gist asynchronously
@@ -392,7 +399,7 @@ InteractiveModeBase.prototype.handleToolsCommand = async function (this: Interac
 		report =
 			this.runtimeHost instanceof IsolatedInteractiveRuntime
 				? await this.runtimeHost.getToolStatus()
-				: this.session.getToolStatus();
+				: await this.session.getToolStatusAsync();
 	} catch (error) {
 		this.showError(`Could not read tool status: ${error instanceof Error ? error.message : String(error)}`);
 		return;
@@ -408,7 +415,7 @@ InteractiveModeBase.prototype.handleToolsCommand = async function (this: Interac
 };
 
 InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (this: InteractiveModeBase): Promise<void> {
-	const latest = currentWorktreeSnapshots(this.sessionManager);
+	const latest = await currentWorktreeSnapshots(this.sessionManager);
 	if (latest.size === 0) {
 		this.showStatus("No worktree snapshots recorded in this session");
 		return;
@@ -419,7 +426,7 @@ InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (thi
 		lines.push(...describeWorktreeSnapshot(root, snapshot));
 		const restoreStatus = describeWorktreeRestoreStatus(this.sessionManager, root);
 		if (restoreStatus) lines.push(theme.fg("warning", `  ${restoreStatus}`));
-		const capture = describeLastCapture(this.sessionManager, root);
+		const capture = await describeLastCapture(this.sessionManager, root);
 		if (capture) lines.push(theme.fg("dim", `  ${capture}`));
 		const comparison = await compareWorktreeSnapshot(snapshot, root, settings);
 		if (comparison.status === "match")
@@ -534,9 +541,9 @@ function showSessionInfo(this: InteractiveModeBase): void {
 	this.ui.requestRender();
 }
 
-InteractiveModeBase.prototype.handleChangelogCommand = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.handleChangelogCommand = async function (this: InteractiveModeBase): Promise<void> {
 	const changelogPath = getChangelogPath();
-	const allEntries = parseChangelog(changelogPath);
+	const allEntries = await parseChangelogAsync(changelogPath);
 
 	const changelogMarkdown =
 		allEntries.length > 0

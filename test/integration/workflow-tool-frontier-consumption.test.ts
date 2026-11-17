@@ -210,6 +210,8 @@ test.each(
 		const target = source.toolNodes!.find((node) => node.name === "unfinished\ntarget")!;
 		await workflowPauseAction({ action: "pause", runId: source.id, stageId: target.id });
 		await waitFor(() => source.endedAt !== undefined);
+		// The run's memory ends before its journal records the failure off the event loop: reopen only once it has.
+		await jobTracker.get(source.id)?.promise;
 		assert.equal(source.status, "failed");
 		assert.equal(source.failedToolNodeId, target.id);
 		backend = await backend.reopen();

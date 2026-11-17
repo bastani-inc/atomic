@@ -1,4 +1,4 @@
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { OutputMode, SavedOutputReference, SubagentAttemptStatus } from "../../shared/types.js";
 
@@ -79,10 +79,12 @@ export function validateFileOnlyOutputMode(
 	return undefined;
 }
 
-export function captureSingleOutputSnapshot(outputPath: string | undefined): SingleOutputSnapshot | undefined {
+export async function captureSingleOutputSnapshot(
+	outputPath: string | undefined,
+): Promise<SingleOutputSnapshot | undefined> {
 	if (!outputPath) return undefined;
 	try {
-		const stat = fs.statSync(outputPath);
+		const stat = await fs.stat(outputPath);
 		return { exists: true, mtimeMs: stat.mtimeMs, size: stat.size };
 	} catch {
 		// The snapshot is advisory; resolveSingleOutput reports concrete read/write failures.
@@ -90,30 +92,30 @@ export function captureSingleOutputSnapshot(outputPath: string | undefined): Sin
 	}
 }
 
-function persistSingleOutput(
+async function persistSingleOutput(
 	outputPath: string | undefined,
 	fullOutput: string,
-): { savedPath?: string; error?: string } {
+): Promise<{ savedPath?: string; error?: string }> {
 	if (!outputPath) return {};
 	try {
-		fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-		fs.writeFileSync(outputPath, fullOutput, "utf-8");
+		await fs.mkdir(path.dirname(outputPath), { recursive: true });
+		await fs.writeFile(outputPath, fullOutput, "utf-8");
 		return { savedPath: outputPath };
 	} catch (err) {
 		return { error: err instanceof Error ? err.message : String(err) };
 	}
 }
 
-export function resolveSingleOutput(
+export async function resolveSingleOutput(
 	outputPath: string | undefined,
 	fallbackOutput: string,
 	beforeRun: SingleOutputSnapshot | undefined,
-): { fullOutput: string; savedPath?: string; saveError?: string } {
+): Promise<{ fullOutput: string; savedPath?: string; saveError?: string }> {
 	if (!outputPath) return { fullOutput: fallbackOutput };
 
 	let changedSinceStart = false;
 	try {
-		const stat = fs.statSync(outputPath);
+		const stat = await fs.stat(outputPath);
 		changedSinceStart = !beforeRun?.exists || stat.mtimeMs !== beforeRun.mtimeMs || stat.size !== beforeRun.size;
 	} catch (error) {
 		const code =
@@ -128,7 +130,7 @@ export function resolveSingleOutput(
 
 	if (changedSinceStart) {
 		try {
-			return { fullOutput: fs.readFileSync(outputPath, "utf-8"), savedPath: outputPath };
+			return { fullOutput: await fs.readFile(outputPath, "utf-8"), savedPath: outputPath };
 		} catch (error) {
 			return {
 				fullOutput: fallbackOutput,
@@ -137,7 +139,7 @@ export function resolveSingleOutput(
 		}
 	}
 
-	const save = persistSingleOutput(outputPath, fallbackOutput);
+	const save = await persistSingleOutput(outputPath, fallbackOutput);
 	if (save.savedPath) return { fullOutput: fallbackOutput, savedPath: save.savedPath };
 	return { fullOutput: fallbackOutput, saveError: save.error };
 }

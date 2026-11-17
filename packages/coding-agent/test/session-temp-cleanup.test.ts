@@ -246,6 +246,19 @@ describe("sweepSessionTempRoot", () => {
 		assert.equal(existsSync(laterStale), false);
 	});
 
+	it("only one concurrent sweep owns a root's cleanup lock and publishes its marker", async () => {
+		const stale = makeAgedDir(sandbox, "concurrent-session", 60);
+		const outcomes = await Promise.all([
+			sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }),
+			sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }),
+		]);
+		assert.equal(outcomes.filter((outcome) => outcome === "swept").length, 1);
+		assert.ok(outcomes.every((outcome) => ["swept", "locked", "throttled"].includes(outcome)));
+		assert.equal(existsSync(stale), false);
+		assert.equal(existsSync(join(sandbox, CLEANUP_MARKER_FILE)), true);
+		assert.equal(existsSync(join(sandbox, CLEANUP_LOCK_FILE)), false);
+	});
+
 	it("stands down when another session holds the lock", async () => {
 		const stale = makeAgedDir(sandbox, "stale-session", 45);
 		writeFileSync(join(sandbox, CLEANUP_LOCK_FILE), "other-process-token");
@@ -324,11 +337,11 @@ try {
 	const hooks = cleanup.sessionTempCleanupTestHooks;
 	if (hooks) {
 		const lockPath = path.join(heldRoot, cleanup.CLEANUP_LOCK_FILE);
-		const lock = hooks.acquireCleanupLock(lockPath, now, cleanup.SESSION_TEMP_CLEANUP_LOCK_STALE_MS);
+		const lock = await hooks.acquireCleanupLock(lockPath, now, cleanup.SESSION_TEMP_CLEANUP_LOCK_STALE_MS);
 		if (!lock) throw new Error("lock acquisition failed");
 		lockMode = fs.statSync(lockPath).mode & 0o777;
 		tokenReadable = fs.readFileSync(lockPath, "utf8") === lock.token;
-		hooks.releaseCleanupLock(lockPath, lock);
+		await hooks.releaseCleanupLock(lockPath, lock);
 		released = !fs.existsSync(lockPath);
 	}
 	const outcome = await cleanup.sweepSessionTempRoot(sweepRoot, { now, protectedPaths: [] });

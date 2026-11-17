@@ -81,7 +81,7 @@ describe("extension transpile cache follows the agent directory", () => {
 		assert.equal(fs.existsSync(agentA), false, "a removed agent directory must not be recreated");
 		assert.ok(cachedEntries(agentB).length > 0, "the agent directory in effect must receive the cache");
 		assert.ok(
-			extensionLoaderTestHooks.readExtensionGraphManifest(entry, agentB),
+			await extensionLoaderTestHooks.readExtensionGraphManifest(entry, agentB),
 			"the graph manifest must follow the agent directory",
 		);
 	});

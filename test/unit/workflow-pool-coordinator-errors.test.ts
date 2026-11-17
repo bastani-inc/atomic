@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { ForkOptions } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { appendFile } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { AgentSessionBusyError, isAgentSessionBusyError } from "@bastani/atomic";
@@ -60,7 +60,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 // A worker log that cannot take a health line is arranged by failing one append.
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
-	return { ...actual, appendFile: vi.fn(actual.appendFile) };
+	return { ...actual, appendFile: vi.fn(actual.appendFile), mkdir: vi.fn(actual.mkdir) };
 });
 
 afterEach(() => {
@@ -412,12 +412,32 @@ test("a worker that misses its startup deadline is stopped and fails the start w
 	}
 });
 
+/** Event-loop turns the first worker's log open gives a second open to start before it goes on. */
+const LOG_OPEN_RACE_TURNS = 50;
+
 test("a worker log the pool cannot write is reported once, and the startup error names why (#4327)", async () => {
 	const f = await fixture({ workers: 2, start: false });
+	const createDirectory = vi.mocked(mkdir).getMockImplementation()!;
 	try {
 		const logs = workerLogDirectory(f.path, "root");
 		mkdirSync(dirname(logs), { recursive: true });
 		writeFileSync(logs, "not a directory");
+		// The warning names the first log that failed and the error the first worker that exited. Hold the first
+		// worker's log open until the second one has failed, if the pool lets the second one start: logs must open in
+		// the order their workers started.
+		let opening = 0;
+		let second: Promise<unknown> | undefined;
+		vi.mocked(mkdir).mockImplementation(async (path, options) => {
+			if (path !== logs) return createDirectory(path, options);
+			const call = ++opening;
+			if (call === 1) {
+				for (let turn = 0; turn < LOG_OPEN_RACE_TURNS && second === undefined; turn++) await delay(0);
+				await second?.catch(() => {});
+			}
+			const created = createDirectory(path, options);
+			if (call === 2) second = created;
+			return created;
+		});
 		const starting = f.command({ kind: "start", sources: [SOURCE], cwd: f.directory, publish: false }).then(
 			() => assert.fail("the start succeeded"),
 			(error: unknown) => error,
@@ -433,6 +453,7 @@ test("a worker log the pool cannot write is reported once, and the startup error
 		assert.ok(health[0]!.message.includes(error.logFailure!), health[0]!.message);
 		assert.ok(health[0]!.message.includes(error.logPath), "the warning names the first log that failed");
 	} finally {
+		vi.mocked(mkdir).mockImplementation(createDirectory);
 		await f.close();
 	}
 });

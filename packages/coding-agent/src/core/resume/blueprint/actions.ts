@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { accessSync, constants, statSync, writeSync } from "node:fs";
-import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { parse } from "yaml";
 import { isBunBinary, isBunRuntime } from "../../../config.js";
-import { getPowerShellConfig, getShellConfig, type ShellConfig } from "../../../utils/shell.ts";
+import { getPowerShellConfigAsync, getShellConfigAsync, type ShellConfig } from "../../../utils/shell.ts";
 import { renameWithRetry } from "../../rename-retry.ts";
 import { isWorkspaceGitError } from "../../workspace/errors.ts";
 import { redactUrlCredentials, runGit } from "../../worktree-snapshot/git.ts";
@@ -22,7 +22,7 @@ import {
 	BlueprintUsesUnsupportedError,
 	type BlueprintUsesUnsupportedReason,
 } from "./errors.ts";
-import { buildProcessStarting, type ProcessExit, runLoggedProcess, type StepLog } from "./process.ts";
+import { appendToLog, buildProcessStarting, type ProcessExit, runLoggedProcess, type StepLog } from "./process.ts";
 
 /** The environment variable that replaces `https://github.com` as the place actions are fetched from. */
 export const ACTIONS_GITHUB_BASE_URL_ENV = "ATOMIC_BLUEPRINT_GITHUB_BASE_URL";
@@ -363,8 +363,8 @@ function mapValues(values: Readonly<Record<string, string>>, map: (value: string
 	return Object.fromEntries(Object.entries(values).map(([name, value]) => [name, map(value)]));
 }
 
-function log(context: RunContext, text: string): void {
-	writeSync(context.options.log.fd, `${text}\n`);
+function log(context: RunContext, text: string): Promise<void> {
+	return appendToLog(context.options.log, `${text}\n`);
 }
 
 function failure(
@@ -443,17 +443,17 @@ const NOT_A_CANDIDATE_ERRORS: ReadonlySet<string> = new Set([
 ]);
 
 /** The first executable file called `name` in the directories of the search path in `env`. */
-export function findOnPath(
+export async function findOnPath(
 	name: string,
 	env: Readonly<Record<string, string>>,
 	platform: NodeJS.Platform,
-): string | undefined {
+): Promise<string | undefined> {
 	for (const directory of (env[pathVariableName(env, platform)] ?? "").split(delimiter)) {
 		if (directory === "") continue;
 		const candidate = join(directory, name);
 		try {
-			if (!statSync(candidate).isFile()) continue;
-			accessSync(candidate, constants.X_OK);
+			if (!(await stat(candidate)).isFile()) continue;
+			await access(candidate, constants.X_OK);
 			return candidate;
 		} catch (error) {
 			if (!NOT_A_CANDIDATE_ERRORS.has((error as NodeJS.ErrnoException).code ?? "")) throw error;
@@ -466,16 +466,16 @@ export function findOnPath(
  * The node that runs a Node.js action: the one running Atomic, or, when Bun hosts it and `process.execPath` is Bun, the
  * one on the action's search path.
  */
-export function nodeExecutableFor(
+export async function nodeExecutableFor(
 	env: Readonly<Record<string, string>>,
 	hostedByBun: boolean,
 	platform: NodeJS.Platform,
-): string | undefined {
+): Promise<string | undefined> {
 	if (!hostedByBun) return process.execPath;
 	return findOnPath(platform === "win32" ? "node.exe" : "node", env, platform);
 }
 
-function nodeExecutable(env: Readonly<Record<string, string>>): string | undefined {
+function nodeExecutable(env: Readonly<Record<string, string>>): Promise<string | undefined> {
 	return nodeExecutableFor(env, isBunBinary || isBunRuntime, process.platform);
 }
 
@@ -534,10 +534,10 @@ async function ensureRepository(
 	repositoryDirectory: string,
 ): Promise<void> {
 	if (await isDirectory(repositoryDirectory)) {
-		log(context, `=== Using the cached ${scope.label} ===`);
+		await log(context, `=== Using the cached ${scope.label} ===`);
 		return;
 	}
-	log(context, `=== Fetching ${scope.label} ===`);
+	await log(context, `=== Fetching ${scope.label} ===`);
 	const staging = join(dirname(repositoryDirectory), `.fetch-${randomUUID()}`);
 	let primary: unknown;
 	try {
@@ -556,7 +556,7 @@ async function ensureRepository(
 			if (!(await isDirectory(repositoryDirectory))) throw error;
 		}
 	} catch (error) {
-		primary = fetchFailure(context, scope, reference, error);
+		primary = await fetchFailure(context, scope, reference, error);
 	}
 	const cleanup: unknown = await rm(staging, { recursive: true, force: true, maxRetries: 3 }).then(
 		() => undefined,
@@ -572,11 +572,16 @@ async function ensureRepository(
 }
 
 /** The error a failed fetch ends in: the signal's reason when the run was cancelled, else the typed failure. */
-function fetchFailure(context: RunContext, scope: ActionScope, reference: ActionReference, error: unknown): unknown {
+async function fetchFailure(
+	context: RunContext,
+	scope: ActionScope,
+	reference: ActionReference,
+	error: unknown,
+): Promise<unknown> {
 	const signal = context.options.signal;
 	if (signal?.aborted) return signal.reason;
 	const cause = error instanceof Error ? error : new Error(String(error));
-	log(context, `could not fetch: ${redactUrlCredentials(cause.message)}`);
+	await log(context, `could not fetch: ${redactUrlCredentials(cause.message)}`);
 	if (cause instanceof ActionNotFoundError) return failure(context, scope, "action-not-found", cause.message, cause);
 	return failure(
 		context,
@@ -783,7 +788,7 @@ async function applyFileCommands(
 	}
 	if (lines.length > 0) await appendFile(context.options.envrcPath, `${lines.join("\n")}\n`);
 	if (malformed > 0)
-		log(context, `ignored ${malformed} malformed entries written to GITHUB_ENV, GITHUB_OUTPUT or GITHUB_STATE`);
+		await log(context, `ignored ${malformed} malformed entries written to GITHUB_ENV, GITHUB_OUTPUT or GITHUB_STATE`);
 	const toRecord = ({ entries }: FileEntries) => Object.fromEntries(entries.map(({ name, value }) => [name, value]));
 	return { outputs: toRecord(outputs), state: toRecord(state) };
 }
@@ -797,7 +802,7 @@ async function runProcess(
 	if (remaining <= 0) return { exit: timedOut(context), outputs: {}, state: {} };
 	const files = await createFileCommands(context.runnerTemp);
 	try {
-		log(context, `=== ${request.title} ===\n$ ${request.shown}`);
+		await log(context, `=== ${request.title} ===\n$ ${request.shown}`);
 		const exit = await runLoggedProcess(
 			{
 				command: request.executable,
@@ -829,7 +834,7 @@ async function runNodeAction(
 	runs: NodeRuns,
 	inputs: Readonly<Record<string, string>>,
 ): Promise<ActionOutcome> {
-	const node = nodeExecutable(context.env);
+	const node = await nodeExecutable(context.env);
 	if (node === undefined) {
 		throw failure(context, frame, "node-unavailable", "no node executable is available to run a Node.js action");
 	}
@@ -847,7 +852,7 @@ async function runNodeAction(
 			runs.preCondition === undefined ||
 			evaluateCondition(runs.preCondition, expressionContext(context, frame, inputs, {}, false));
 		if (wanted) phases.unshift(pre);
-		else log(context, `=== Skipping pre of ${frame.label}: its pre-if is false ===`);
+		else await log(context, `=== Skipping pre of ${frame.label}: its pre-if is false ===`);
 	}
 	let state: Record<string, string> = {};
 	let outputs: Record<string, string> = {};
@@ -893,16 +898,16 @@ export function powerShellInvocation(config: ShellConfig, script: string): Shell
 	return { executable: config.shell, args: [...config.args, text] };
 }
 
-function shellInvocation(
+async function shellInvocation(
 	context: RunContext,
 	frame: ActionFrame,
 	shell: string,
 	script: string,
-): ShellInvocation | Error {
+): Promise<ShellInvocation | Error> {
 	const name = shell.toLowerCase();
 	if (name === "bash" || name === "sh") {
 		try {
-			return bashInvocation(getShellConfig(), name, script);
+			return bashInvocation(await getShellConfigAsync(), name, script);
 		} catch (error) {
 			return error as Error;
 		}
@@ -912,7 +917,7 @@ function shellInvocation(
 			throw failure(context, frame, "unsupported-expression", "PowerShell steps are only supported on Windows");
 		}
 		try {
-			return powerShellInvocation(getPowerShellConfig(), script);
+			return powerShellInvocation(await getPowerShellConfigAsync(), script);
 		} catch (error) {
 			return error as Error;
 		}
@@ -962,7 +967,7 @@ async function runCompositeAction(
 		const title = `Step ${index + 1} of ${runs.steps.length}: ${step.name ?? step.id ?? step.action.kind} (${frame.label})`;
 		const expressions = expressionContext(context, frame, inputs, steps, failed !== undefined);
 		if (!evaluateCondition(step.condition ?? "success()", expressions)) {
-			log(context, `=== ${title}: skipped ===`);
+			await log(context, `=== ${title}: skipped ===`);
 			if (step.id !== undefined) steps[step.id] = closedObject(`steps.${step.id}`, { outputs: {} });
 			continue;
 		}
@@ -970,7 +975,7 @@ async function runCompositeAction(
 		let outcome: ActionOutcome;
 		if (step.action.kind === "uses") {
 			const reference = nestedReference(context, frame, step.action.uses);
-			log(context, `=== ${title} ===\nuses ${step.action.uses}`);
+			await log(context, `=== ${title} ===\nuses ${step.action.uses}`);
 			outcome = await executeAction(context, {
 				reference,
 				inputs: mapValues(step.action.inputs, (value) => interpolate(value, expressions)),
@@ -978,7 +983,7 @@ async function runCompositeAction(
 				depth: frame.depth + 1,
 			});
 		} else {
-			const invocation = shellInvocation(
+			const invocation = await shellInvocation(
 				context,
 				frame,
 				interpolate(step.action.shell, expressions).trim(),
@@ -986,7 +991,7 @@ async function runCompositeAction(
 			);
 			const directory = stepDirectory(context, frame, step.workingDirectory, expressions);
 			if (invocation instanceof Error) {
-				log(context, `=== ${title} ===\ncould not start: ${invocation.message}`);
+				await log(context, `=== ${title} ===\ncould not start: ${invocation.message}`);
 				outcome = { exit: unstartable(context, invocation), outputs: {} };
 			} else {
 				const result = await runProcess(context, {
@@ -1005,7 +1010,7 @@ async function runCompositeAction(
 			step.continueOnError !== undefined &&
 			!outcome.exit.timedOut &&
 			interpolate(step.continueOnError, expressions).trim().toLowerCase() === "true";
-		if (tolerated) log(context, `=== ${title}: failed, continuing because of continue-on-error ===`);
+		if (tolerated) await log(context, `=== ${title}: failed, continuing because of continue-on-error ===`);
 		else failed ??= outcome.exit;
 	}
 	if (failed !== undefined) return { exit: failed, outputs: {} };

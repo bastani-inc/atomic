@@ -11,12 +11,17 @@ import { DEFAULT_GROUP, explicitHomeGroup, resolveHomeGroup } from "../../packag
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
 import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import {
+	cachedProjectGroup,
 	DEFAULT_GROUP_WARNING,
 	gitInstallCommand,
 	multiNodeSelected,
+	multiNodeSelectedAsync,
 	projectGroup,
+	projectGroupAsync,
 	projectHomeGroup,
+	projectHomeGroupAsync,
 	projectName,
+	projectNameAsync,
 	remoteRepositoryPath,
 	resetDefaultGroupWarningWithoutUi,
 	warnDefaultGroupWithoutUi,
@@ -185,19 +190,32 @@ describe("project groups (#4320)", () => {
 		assert.equal(isProjectGroupError(null), false);
 	});
 
-	test("the project group applies only while multi-node routing is selected (#4320)", () => {
+	test("the project group applies only while multi-node routing is selected (#4320)", async () => {
 		const alpha = repository("alpha", "https://github.com/acme/alpha");
+		const beta = repository("beta", "https://github.com/acme/beta.git");
 		const env = createGitEnvironment();
 		assert.equal(multiNodeSelected(agentDir, { ATOMIC_STORAGE: "" }), false);
+		assert.equal(await multiNodeSelectedAsync(agentDir, { ATOMIC_STORAGE: "" }), false);
 		assert.equal(projectHomeGroup(alpha, agentDir, { ATOMIC_STORAGE: "" }, env), undefined);
+		assert.equal(await projectHomeGroupAsync(beta, agentDir, { ATOMIC_STORAGE: "" }, env), undefined);
+		assert.equal(cachedProjectGroup(beta), undefined);
 		assert.equal(projectHomeGroup(alpha, agentDir, { ATOMIC_STORAGE: '{"memory":true}' }, env), undefined);
 		assert.equal(
 			projectHomeGroup(alpha, agentDir, { ATOMIC_STORAGE: '{"adapter":"@example/team-db"}' }, env),
 			"project:acme/alpha",
 		);
+		assert.equal(
+			await projectHomeGroupAsync(beta, agentDir, { ATOMIC_STORAGE: '{"adapter":"@example/team-db"}' }, env),
+			"project:acme/beta",
+		);
+		assert.equal(cachedProjectGroup(beta), "project:acme/beta");
+		assert.equal(await projectGroupAsync(beta, env), "project:acme/beta");
+		assert.equal(await projectNameAsync(beta, env), "acme/beta");
 		selectSharedStorage();
 		assert.equal(multiNodeSelected(agentDir, { ATOMIC_STORAGE: "" }), true);
+		assert.equal(await multiNodeSelectedAsync(agentDir, { ATOMIC_STORAGE: "" }), true);
 		assert.equal(projectHomeGroup(alpha, agentDir, { ATOMIC_STORAGE: "" }, env), "project:acme/alpha");
+		assert.equal(await projectHomeGroupAsync(beta, agentDir, { ATOMIC_STORAGE: "" }, env), "project:acme/beta");
 	});
 
 	test("explicit groups still win over the project group, which is computed only when needed (#4320)", () => {
