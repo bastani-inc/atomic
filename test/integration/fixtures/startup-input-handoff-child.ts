@@ -8,31 +8,39 @@ import {
 	withEarlyInputHeldForStartupDialog,
 } from "../../../packages/coding-agent/src/main-early-input.ts";
 
-const [directory, scenario] = process.argv.slice(2);
-if (!directory || (scenario !== "top-level" && scenario !== "after-read")) {
-	throw new Error("usage: startup-input-handoff-child <directory> <top-level|after-read>");
+const [directory, scenario, typedLength] = process.argv.slice(2);
+if (!directory || (scenario !== "top-level" && scenario !== "after-read" && scenario !== "terminal")) {
+	throw new Error("usage: startup-input-handoff-child <directory> <top-level|after-read|terminal>");
 }
 const input = process.stdin;
-const capture = startEarlyInputCapture({
-	enabled: true,
-	stdin: {
-		isTTY: true,
-		isRaw: false,
-		setRawMode() {},
-		setEncoding: (encoding) => input.setEncoding(encoding),
-		resume: () => input.resume(),
-		pause: () => input.pause(),
-		read: (size) => input.read(size),
-		on: (event, listener) => input.on(event, listener),
-		off: (event, listener) => input.off(event, listener),
-		removeListener: (event, listener) => input.removeListener(event, listener),
-	},
-	pendingInput: osStdinPendingInput,
-});
+const capture = startEarlyInputCapture(
+	scenario === "terminal"
+		? { enabled: true }
+		: {
+				enabled: true,
+				stdin: {
+					isTTY: true,
+					isRaw: false,
+					setRawMode() {},
+					setEncoding: (encoding) => input.setEncoding(encoding),
+					resume: () => input.resume(),
+					pause: () => input.pause(),
+					read: (size) => input.read(size),
+					on: (event, listener) => input.on(event, listener),
+					off: (event, listener) => input.off(event, listener),
+					removeListener: (event, listener) => input.removeListener(event, listener),
+				},
+				pendingInput: osStdinPendingInput,
+			},
+);
 if (scenario === "after-read") await readFile(process.argv[1] ?? "");
 writeFileSync(join(directory, "capture-ready"), "ready");
 const inputWritten = join(directory, "input-written");
 while (!existsSync(inputWritten)) {}
+if (scenario === "terminal") {
+	const deadline = Date.now() + 30_000;
+	while ((osStdinPendingInput() ?? 0) < Number(typedLength) && Date.now() < deadline) {}
+}
 if (scenario === "after-read") {
 	setImmediate(() => {
 		const end = performance.now() + 1;
