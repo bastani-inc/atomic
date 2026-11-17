@@ -204,14 +204,19 @@ test("on Node, an anonymous function's hot frame counts every sample, wherever i
 		{ ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS), ATOMIC_EVENT_LOOP_BLOCK_LOG: log },
 		"anonymous",
 	);
-	const fromFixture = (frame: string) =>
-		frame.startsWith("(anonymous) ") && frame.includes("event-loop-block-monitor");
+	const fromFixture = (name: string) => (entry: { readonly frame: string }) =>
+		entry.frame.startsWith(`${name} `) && entry.frame.includes("event-loop-block-monitor");
 	const block = readLog(log).find(
-		(record) => record.type === "block" && record.hotFrames?.some((entry) => fromFixture(entry.frame)),
+		(record) => record.type === "block" && record.hotFrames?.some(fromFixture("(anonymous)")),
 	);
 	assert.ok(block, "the anonymous function's block was recorded");
-	const anonymous = block.hotFrames?.find((entry) => fromFixture(entry.frame));
-	assert.equal(anonymous?.count, block.samples, JSON.stringify(block.hotFrames));
+	const frames = JSON.stringify(block.hotFrames);
+	// A sample can land after the function returned and before the loop turns; only the function's own samples count.
+	const anonymous = block.hotFrames?.filter(fromFixture("(anonymous)")) ?? [];
+	const running = block.hotFrames?.find(fromFixture("runAnonymousBlock"));
+	assert.equal(anonymous.length, 1, `one hot frame for the function wherever its samples landed: ${frames}`);
+	assert.ok((running?.count ?? 0) > 1, `the function ran across several samples: ${frames}`);
+	assert.equal(anonymous[0]?.count, running?.count, `every sample taken while it ran counts toward it: ${frames}`);
 });
 
 test("hot frames count a function once per sample across sampled line and column changes (#5377)", () => {

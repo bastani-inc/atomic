@@ -15,6 +15,11 @@ function holdTheEventLoopForLong(ms: number): number {
 	return spins;
 }
 
+/** Runs `body` and nothing else, so every sample taken while `body` runs has this frame under it. */
+function runAnonymousBlock(body: () => number): number {
+	return body();
+}
+
 function holdTheEventLoopBriefly(ms: number): number {
 	const until = performance.now() + ms;
 	let spins = 0;
@@ -35,7 +40,7 @@ if (mode === "phase-inside-block") markEventLoopStartupComplete();
 if (mode === "anonymous") {
 	await delay(Number(settleMs));
 	// An anonymous function holds the loop across several statements, so its samples land on different lines.
-	(() => {
+	runAnonymousBlock(() => {
 		const until = performance.now() + Number(longBlockMs);
 		let spins = 0;
 		while (performance.now() < until) {
@@ -44,7 +49,7 @@ if (mode === "anonymous") {
 			spins += 1;
 		}
 		return spins;
-	})();
+	});
 }
 await delay(Number(settleMs));
 holdTheEventLoopBriefly(Number(shortBlockMs));
