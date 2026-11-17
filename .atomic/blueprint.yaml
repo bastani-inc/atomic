@@ -34,6 +34,8 @@ knowledge:
       After changing SDK imports used by workflow graph views, run
       `npx vitest run --project unit test/unit/overlay-adapter-autowrap.test.ts test/unit/overlay-adapter-hidden-render.test.ts`:
       these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
+      Use `node --version` to include Node 22 in terminal-text checks: its built-in VT stripper differs
+      from newer Node versions. Workflow displays use the shared terminal-controls parser instead.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

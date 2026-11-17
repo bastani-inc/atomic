@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed workflow notices, error cards, run details and the `/workflows` sheet interpreting run and stage names, outputs, failure messages, artifact paths and discovery errors as terminal commands. Escape sequences are removed and bidirectional controls are shown as text ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed failed-stage details omitting their back key in narrow terminals and their recorded token usage. Retry and fork hints now name the stage consistently ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed workflow graphs, details and expanded notices silently using dark fallback colours after selecting a light theme ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Fixed diagnostic text following a terminal escape sequence disappearing on Node 22. Standalone control characters remain visible as escaped text ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Removed
 

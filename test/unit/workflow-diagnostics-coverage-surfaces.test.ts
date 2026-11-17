@@ -243,6 +243,7 @@ describe("workflow diagnostic surfaces, text safety, and listing wiring (#5224)"
 		assert.doesNotMatch(lines[0]!, /\x1b/);
 		assert.match(lines[0]!, /\\x07/);
 		assert.match(lines[0]!, /<U\+202E>/);
+		assert.equal(lines[0], "badthing\\x07<U+202E>");
 	});
 
 	it("caps invalid-definition detail lines at 8 lines and formats sourceless and single-frame diagnostics (#5224)", () => {
