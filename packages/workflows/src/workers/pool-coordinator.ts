@@ -16,6 +16,7 @@ import { listenPoolReady, observeSqlPoolTransactions, sqlPoolStorage } from "../
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
 import "../durable/journal/workflows-host-module.js";
+import { poolCheckpointUsage } from "../durable/journal/pool-stage-usage.js";
 import {
 	openSqlPoolQueue,
 	type PoolClaimCandidate,
@@ -1305,6 +1306,8 @@ export class PoolCoordinator {
 			host: shared.host,
 			deliver: (attempt, batch) => queue.shipBatch(this.lease!, attempt, batch),
 			rootStanding: () => queue.rootLease(this.lease!, COORDINATOR_LEASE_MS),
+			sessionState: (attempt, session) => queue.poolSessionState(attempt.id, session),
+			snapshotsStored: (checkpoint) => queue.assertSnapshotsStored(checkpoint),
 			onFallback: ({ workId, error }) =>
 				this.port.send({
 					kind: "health",
@@ -3006,6 +3009,12 @@ export class PoolCoordinator {
 							this.deliveryRequests.delete(id);
 						}
 					}
+					// The worker reads a session it wrote from the shared journal, which holds what it wrote once it is shipped.
+					if (message.kind === "session-sync") {
+						const shipping = this.shipping;
+						if (shipping !== undefined) await leased(() => shipping.flushSession(work, message.sessionId));
+						return;
+					}
 					if (message.kind === "commit") {
 						if (
 							message.attempt !== undefined &&
@@ -3022,12 +3031,18 @@ export class PoolCoordinator {
 						const receipt = await leased(() =>
 							shipping === undefined
 								? commitShared()
-								: shipping.commit(work, message.mutation, commitShared, () =>
-										this.whileRootLate(queue, renewAttempt),
-									),
+								: shipping.commit(work, message.mutation, commitShared, {
+										operation: message.operation,
+										renewAttempt: () => this.whileRootLate(queue, renewAttempt),
+									}),
 						);
 						this.noteProgress(work, message.mutation.kind !== "session-append");
-						if (message.mutation.kind !== "session-append" && receipt.local !== true)
+						// A checkpoint that bills usage is shipped by the time the host acknowledges it from its local journal.
+						if (
+							message.mutation.kind === "checkpoint"
+								? receipt.local !== true || poolCheckpointUsage(message.mutation.checkpoint) !== undefined
+								: message.mutation.kind !== "session-append" && receipt.local !== true
+						)
 							this.noteUsage(await this.usageLedger!.total(root));
 						return receipt;
 					}
