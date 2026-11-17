@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { Selector, type SelectorOptions } from "@bastani/atomic";
-import { getKeybindings } from "@bastani/atomic-tui";
+import { getKeybindings, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import { openCompletedDurableWorkflow } from "../durable/completed-inspection.js";
@@ -193,15 +193,31 @@ function isSelectorKeybindings(value: object | undefined): value is SelectorKeyb
 	return value !== undefined && "matches" in value && typeof value.matches === "function";
 }
 
+function isResumePromptTheme(
+	theme: object,
+): theme is { readonly fg: (color: "warning" | "dim", text: string) => string } {
+	return "fg" in theme && typeof theme.fg === "function";
+}
+
+function renderWorkflowDefinitionChangedPrompt(width: number, theme: object): string[] {
+	const fg = isResumePromptTheme(theme) ? theme.fg.bind(theme) : undefined;
+	const pad = width > 4 ? "  " : "";
+	const inner = Math.max(1, width - pad.length);
+	const hint = ` · enter ${WORKFLOW_DEFINITION_CHANGED_CONFIRM_LABEL} · esc ${WORKFLOW_DEFINITION_CHANGED_CANCEL_LABEL}`;
+	const styled = fg
+		? `${fg("warning", WORKFLOW_DEFINITION_CHANGED_TITLE)}${fg("dim", hint)}`
+		: WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT;
+	return wrapTextWithAnsi(styled, inner).map((line) => truncateToWidth(`${pad}${line}`, Math.max(1, width), ""));
+}
+
 export async function confirmEditedWorkflowDefinition(
 	ctx: PiCommandContext,
-	reason?: string,
+	_reason?: string,
 	isGenerationCurrent?: () => boolean,
 ): Promise<"confirmed" | "cancelled" | "unavailable"> {
 	const policy = workflowPolicyFromContext(ctx);
 	if (!policy.allowHumanInput || ctx.hasUI === false) return "unavailable";
 	if (!isResumeContextActive(ctx, isGenerationCurrent)) return "cancelled";
-	const subtitle = cleanEntryChangeReason(reason);
 	const commandSignal = (ctx as { readonly signal?: AbortSignal }).signal;
 	const sessionSignal = ctx.getCurrentSessionSignal?.() ?? ctx.sessionSignal;
 	const signals = [commandSignal, sessionSignal].filter((sig): sig is AbortSignal => sig !== undefined);
@@ -209,7 +225,8 @@ export async function confirmEditedWorkflowDefinition(
 
 	if (typeof ctx.ui?.custom === "function") {
 		const confirmed = await ctx.ui.custom(
-			(_tui, _theme, keybindings, done) => {
+			(_tui, theme, keybindings, done) => {
+				const promptTheme = typeof theme === "object" && theme !== null ? theme : {};
 				let settled = false;
 				const finish = (value: boolean): void => {
 					if (settled) return;
@@ -232,7 +249,6 @@ export async function confirmEditedWorkflowDefinition(
 				};
 				const selector = new Selector<boolean>({
 					title: WORKFLOW_DEFINITION_CHANGED_TITLE,
-					...(subtitle ? { subtitle } : {}),
 					items: [
 						{
 							id: "resume-with-new-definition",
@@ -262,7 +278,7 @@ export async function confirmEditedWorkflowDefinition(
 					set focused(value: boolean) {
 						selector.focused = value;
 					},
-					render: (width: number) => selector.render(width),
+					render: (width: number) => renderWorkflowDefinitionChangedPrompt(width, promptTheme),
 					invalidate: () => selector.invalidate(),
 					handleInput: (data: string) => {
 						if (!isResumeContextActive(ctx, isGenerationCurrent)) {
@@ -287,12 +303,9 @@ export async function confirmEditedWorkflowDefinition(
 		return "confirmed";
 	}
 	if (typeof ctx.ui?.confirm === "function") {
-		const message = subtitle
-			? `${subtitle}\n${WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT}`
-			: WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT;
-		const confirmed = await Promise.resolve(ctx.ui.confirm(WORKFLOW_DEFINITION_CHANGED_TITLE, message)).catch(
-			() => false,
-		);
+		const confirmed = await Promise.resolve(
+			ctx.ui.confirm(WORKFLOW_DEFINITION_CHANGED_TITLE, WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT),
+		).catch(() => false);
 		if (confirmed !== true || !isResumeContextActive(ctx, isGenerationCurrent)) return "cancelled";
 		return "confirmed";
 	}

@@ -161,6 +161,7 @@ export class ResourceList implements Component, Focusable {
 	private selectedIndex = 0;
 	private searchInput: Input;
 	private maxVisible = 15;
+	private compactSearch = false;
 	private settingsManager: SettingsManager;
 	private cwd: string;
 	private agentDir: string;
@@ -192,6 +193,10 @@ export class ResourceList implements Component, Focusable {
 		this.maxVisible = Math.max(3, (terminalHeight ?? 24) - 10);
 		this.buildFlatList();
 		this.filteredItems = [...this.flatItems];
+	}
+	setViewportHeight(height: number): void {
+		this.compactSearch = height < 8;
+		this.maxVisible = Math.max(1, height - (this.compactSearch ? 2 : 5));
 	}
 	getSearchQuery(): string {
 		return this.searchInput.getValue();
@@ -316,7 +321,9 @@ export class ResourceList implements Component, Focusable {
 		return this.renderList(width).map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line));
 	}
 	private renderList(width: number): string[] {
-		const lines = [...this.renderSearch(width), ""];
+		const lines = this.compactSearch
+			? this.searchInput.render(Math.max(1, width))
+			: [...this.renderSearch(width), ""];
 		if (this.filteredItems.length === 0) {
 			const query = this.searchInput.getValue().trim();
 			return [...lines, theme.fg("dim", query ? `  No matches for "${query}"` : "  No resources found")];

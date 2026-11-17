@@ -107,7 +107,7 @@ describe("package and resource picker on the shared look (#5224)", () => {
 				themes: [],
 				workflows: [],
 			}) as never;
-		for (const rows of [14, 24]) {
+		for (const rows of [8, 10, 11, 12, 14, 24]) {
 			const term = new VirtualTerminal(80, rows);
 			const ui = new TuiMainScreen(term);
 			const selector = new ConfigSelectorComponent(
@@ -176,6 +176,80 @@ describe("package and resource picker on the shared look (#5224)", () => {
 				for (const line of list.render(width)) {
 					assert.ok(visibleWidth(line) <= width, `${width}: ${JSON.stringify(line)}`);
 				}
+			}
+		}
+	});
+
+	it("recomputes the config row budget when the terminal shrinks (#5256)", async () => {
+		const resolved = {
+			extensions: Array.from({ length: 40 }, (_, index) => ({
+				path: `/x/ext${index}.ts`,
+				enabled: true,
+				metadata: { source: "auto", scope: "user", origin: "top-level" },
+			})),
+			skills: [],
+			prompts: [],
+			themes: [],
+			workflows: [],
+		} as never;
+		const terminal = new VirtualTerminal(80, 24);
+		const ui = new TuiMainScreen(terminal);
+		const selector = new ConfigSelectorComponent(
+			{ global: resolved, project: resolved },
+			{} as SettingsManager,
+			"/cwd",
+			"/agent",
+			() => {},
+			() => {},
+			() => ui.requestRender(),
+			24,
+			"global",
+			true,
+			() => terminal.rows,
+		);
+		ui.addChild(selector);
+		ui.setFocus(selector.getResourceList());
+		ui.start();
+		try {
+			for (let index = 0; index < 20; index++) terminal.sendInput("\x1b[B");
+			await new Promise<void>((resolve) => setTimeout(resolve, 30));
+			terminal.resize(80, 12);
+			ui.requestRender();
+			await new Promise<void>((resolve) => setTimeout(resolve, 30));
+			assert.ok(selector.render(80).length <= 12);
+			const viewport = await terminal.flushAndGetViewport();
+			assert.ok(
+				viewport.some((line) => line.includes("Global Resources") && line.includes("esc close")),
+				viewport.join("\n"),
+			);
+			assert.ok(
+				viewport.some((line) => line.includes("settings.json")),
+				viewport.join("\n"),
+			);
+			assert.ok(
+				viewport.some((line) => line.includes("❯")),
+				viewport.join("\n"),
+			);
+		} finally {
+			ui.stop();
+		}
+	});
+
+	it("fits the complete config frame after a narrow resize (#5256)", () => {
+		const empty = { extensions: [], skills: [], prompts: [], themes: [], workflows: [] };
+		const selector = new ConfigSelectorComponent(
+			{ global: empty, project: empty },
+			{} as SettingsManager,
+			"/cwd",
+			"/agent",
+			() => {},
+			() => {},
+			() => {},
+			12,
+		);
+		for (const width of [1, 2, 8, 10, 20, 40]) {
+			for (const line of selector.render(width)) {
+				assert.ok(visibleWidth(line) <= width, `${width}: ${JSON.stringify(line)}`);
 			}
 		}
 	});

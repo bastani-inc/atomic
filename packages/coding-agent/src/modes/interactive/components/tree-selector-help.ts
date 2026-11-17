@@ -12,7 +12,7 @@ import { theme } from "../theme/theme.js";
 import { formatKeyText } from "./keybinding-hints.js";
 import type { TreeList } from "./tree-selector-list.ts";
 
-/** The search box: the same rounded box with a ⌕ prompt every picker uses, showing the typed query. */
+/** Component that displays the current search query */
 export class SearchLine implements Component, Focusable {
 	focused = false;
 	private readonly treeList: TreeList;
@@ -30,7 +30,6 @@ export class SearchLine implements Component, Focusable {
 		const field = Math.max(1, boxWidth - 4);
 		const prompt = theme.fg("text", "⌕ ");
 		const cursor = this.focused ? `${CURSOR_MARKER}\x1b[7m \x1b[27m` : "";
-		// The end of a long query stays in view, so the cursor after it is never cut off.
 		const room = Math.max(1, field - 2 - (this.focused ? 1 : 0));
 		const shown =
 			visibleWidth(query) > room ? `…${sliceByColumn(query, visibleWidth(query) - room + 1, room - 1)}` : query;
@@ -53,10 +52,7 @@ export class SearchLine implements Component, Focusable {
 	}
 }
 
-/**
- * The one hint line under the tree: its keys in order, the least needed dropped first on a narrow terminal so how to
- * move, go to an entry and leave stay longest.
- */
+/** Component that renders tree help as semantic rows with chunk-aware wrapping */
 export class TreeHelp implements Component {
 	invalidate(): void {}
 
@@ -77,7 +73,6 @@ export class TreeHelp implements Component {
 	}
 }
 
-/** `drop` orders what a narrow line gives up first (lowest first); entries without it always stay. */
 const TREE_HELP_ITEMS: Array<{ keys: Keybinding[]; label: string; labelFirst?: boolean; drop?: number }> = [
 	{ keys: ["tui.select.up", "tui.select.down"], label: "move" },
 	{ keys: ["tui.select.confirm"], label: "go here" },

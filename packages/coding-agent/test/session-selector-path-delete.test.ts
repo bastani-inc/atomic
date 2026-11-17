@@ -722,6 +722,7 @@ describe("session selector path/delete interactions", () => {
 			selector.handleInput("\r");
 			await flushPromises();
 
+			assert.match(stripAnsi(selector.render(160).join("\n")), /Session deleted/);
 			assert.equal(selector.getSessionList().getSelectedSessionId(), "s2");
 			assert.match(stripAnsi(selector.render(160).at(-2) ?? ""), /ctrl\+d delete/);
 			selector.handleInput(CTRL_D);

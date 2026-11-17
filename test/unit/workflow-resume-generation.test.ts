@@ -104,11 +104,15 @@ async function createIsolatedProject(label: string) {
 function registerExtensionGeneration(scope: object) {
 	const handlers = new Map<string, SessionHandler[]>();
 	const commitEffects: Array<() => void | Promise<void>> = [];
+	const commands = new Map<string, { handler: (args: string, ctx: PiCommandContext) => void | Promise<void> }>();
 	let runControl: WorkflowRunControl | undefined;
 	const pi: ExtensionAPI = {
 		lifecycleScope: scope,
 		on(event, handler) {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		registerCommand(name, command) {
+			commands.set(name, command);
 		},
 		registerWorkflowRunControl(control) {
 			runControl = control;
@@ -121,6 +125,11 @@ function registerExtensionGeneration(scope: object) {
 		async resumeFromPicker(target: string, ctx: PiCommandContext): Promise<void> {
 			assert.ok(runControl?.resumeFromPicker, "workflowFactory must register resumeFromPicker");
 			await Reflect.apply(runControl.resumeFromPicker, runControl, [target, ctx]);
+		},
+		async runWorkflowCommand(args: string, ctx: PiCommandContext): Promise<void> {
+			const command = commands.get("workflow");
+			assert.ok(command, "workflowFactory must register workflow command");
+			await command.handler(args, ctx);
 		},
 		async emit(event: string, payload: { readonly reason: string }, ctx?: PiEventContext): Promise<void> {
 			if (payload.reason === "reload" && event === "session_start" && ctx) {
@@ -317,6 +326,87 @@ describe("workflow resume provider generation lifetime through extension factory
 			backend.getWorkflow(runId)?.status,
 			"paused",
 			"accepting after the owner session shuts down must not resume the workflow",
+		);
+	});
+
+	test("cancels a pending slash-command resume confirmation when /reload commits a replacement generation (#5256)", async () => {
+		const { projectDir, backend, runId } = await createIsolatedProject("resume-cmd-gen-reload");
+		const scope = {};
+		const runState = adoptWorkflowSessionRunState(scope, true);
+		configureCurrentTestStoreBackend(backend);
+		configureTestStoreBackend(runState.store, backend);
+
+		const ownerLifetime = new AbortController();
+		const firstGen = registerExtensionGeneration(scope);
+		const firstHostCtx: PiEventContext = {
+			cwd: projectDir,
+			hasUI: true,
+			isProjectTrusted: () => true,
+			sessionSignal: ownerLifetime.signal,
+			getCurrentSessionSignal: () => ownerLifetime.signal,
+			ui: { notify: () => undefined },
+		};
+		await firstGen.emit("session_start", { reason: "startup" }, firstHostCtx);
+
+		let confirmComponent: { handleInput?: (data: string) => boolean } | undefined;
+		let resolvePromptOpen!: () => void;
+		const promptOpened = new Promise<void>((resolve) => {
+			resolvePromptOpen = resolve;
+		});
+		let finishCustom!: () => void;
+		const customGate = new Promise<void>((resolve) => {
+			finishCustom = resolve;
+		});
+
+		const firstCommandCtx: PiCommandContext = {
+			hasUI: true,
+			cwd: projectDir,
+			ui: {
+				notify: () => undefined,
+				custom: async (factory) => {
+					let settledValue: boolean | undefined;
+					confirmComponent = await factory(
+						{} as never,
+						{} as never,
+						new KeybindingsManager() as never,
+						(value) => {
+							settledValue = value === true;
+							finishCustom();
+						},
+					);
+					resolvePromptOpen();
+					await customGate;
+					return settledValue;
+				},
+			},
+		};
+		const resumeAttempt = firstGen.runWorkflowCommand(`resume ${runId}`, firstCommandCtx);
+
+		await promptOpened;
+		assert.ok(confirmComponent, "changed-definition confirmation must mount before reload");
+
+		const secondGen = registerExtensionGeneration(scope);
+		const secondHostCtx: PiEventContext = {
+			cwd: projectDir,
+			hasUI: true,
+			isProjectTrusted: () => true,
+			sessionSignal: ownerLifetime.signal,
+			getCurrentSessionSignal: () => ownerLifetime.signal,
+			ui: { notify: () => undefined },
+		};
+		await secondGen.emit("session_start", { reason: "reload" }, secondHostCtx);
+		await secondGen.commit();
+		await firstGen.emit("session_shutdown", { reason: "reload" });
+
+		confirmComponent.handleInput?.("\r");
+		finishCustom();
+		await resumeAttempt;
+
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(
+			backend.getWorkflow(runId)?.status,
+			"paused",
+			"accepting a slash-command confirmation on a replaced generation must not resume the workflow",
 		);
 	});
 });

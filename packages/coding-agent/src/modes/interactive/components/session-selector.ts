@@ -252,7 +252,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 							? "Session moved to trash"
 							: "Session deleted";
 				this.header.setStatusMessage({ type: "info", message: msg }, 2000);
-				void this.refreshSessionsAfterMutation();
+				if (!this.isWorkflowRow(session)) void this.refreshSessionsAfterMutation();
 			} else {
 				const errorMessage = result.error ?? "Unknown error";
 				this.header.setStatusMessage({ type: "error", message: `Failed to delete: ${errorMessage}` }, 3000);

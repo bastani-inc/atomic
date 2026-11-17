@@ -102,6 +102,7 @@ const RESUME_HINT_DROP_ORDER = [
 	"select",
 	"preview",
 	"close preview",
+	"resume",
 	"keys",
 	"keep",
 ];
@@ -119,7 +120,8 @@ function fitResumeHint(entries: readonly NavKey[], room: number, keybindings: Na
 	for (const label of RESUME_HINT_DROP_ORDER) {
 		if (total <= room || kept.length <= 1) break;
 		const at = kept.findIndex(
-			(index) => entries[index]!.label === label && entries[index]!.action !== "tui.select.confirm",
+			(index) =>
+				entries[index]!.label === label && (entries[index]!.action !== "tui.select.confirm" || label === "resume"),
 		);
 		if (at < 0) continue;
 		total -= widths[kept[at]!]! + (kept.length > 1 ? separator : 0);
@@ -282,8 +284,15 @@ export class SessionList implements Component, Focusable {
 	}
 
 	setNameFilter(nameFilter: NameFilter): void {
+		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		this.nameFilter = nameFilter;
 		this.filterSessions(this.searchInput.getValue());
+		const index = this.findSessionIndex(
+			selected?.path,
+			selected?.id,
+			selected ? this.isWorkflowSession(selected) : undefined,
+		);
+		if (index >= 0) this.selectedIndex = index;
 	}
 
 	setSessions(sessions: SessionInfo[], showCwd: boolean, partial = false): void {

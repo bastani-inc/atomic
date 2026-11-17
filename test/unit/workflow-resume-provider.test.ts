@@ -10,13 +10,14 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { PiCommandContext } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import {
-	WORKFLOW_DEFINITION_CHANGED_TITLE,
+	WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT,
 	type WorkflowRunControlDeps,
 } from "../../packages/workflows/src/extension/workflow-durable-resume-command.js";
 import { createWorkflowResumeProvider } from "../../packages/workflows/src/extension/workflow-resume-provider.js";
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest } from "../../packages/workflows/src/workers/definitions.js";
+import { refusedResourceChanges } from "../../packages/workflows/src/workers/public-pool.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -86,7 +87,7 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		assert.doesNotMatch(notifications[0]!, /\/workflow\s/);
 	});
 
-	test("resume errors point to current run actions without obsolete flags or extra spaces (#5256)", async () => {
+	test("resume errors point to current run actions without obsolete flags or circular mixed-refusal guidance (#5224, #5256)", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const id = testRunId("picker-guidance");
@@ -123,6 +124,30 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 				return true;
 			});
 		}
+
+		const saved = {
+			definitions: [{ path: "/w/a.ts", exportName: "default", digest: "a".repeat(64) }],
+			localWorkers: { count: 2, definitions: [] },
+		};
+		const current = {
+			...saved,
+			definitions: [{ path: "/w/a.ts", exportName: "default", digest: "b".repeat(64) }],
+			admission: { limits: { user: 3 } },
+		};
+		const mixedMessage =
+			`Since root ${id} started, ${refusedResourceChanges(saved as never, current as never, undefined)
+				.map((change) => change.description)
+				.join("; ")}.` +
+			` Its recorded steps and queued children depend on these, so restore them to resume it, or start a new run. The pool size (localWorkers.count) and the root's own limits (admission.limits and admission.host) can change between resumes. An edited entry module can also be accepted: resume with /workflow resume ${id} --accept-entry-changes, or acceptEntryChanges: true in the SDK, to replay the recorded steps and run the rest of each unfinished child with the edited module.`;
+		resume.mockResolvedValue({ ok: false, reason: "startup_failed", message: mixedMessage });
+		await assert.rejects(provider.resumeFromPicker(id), (error: Error) => {
+			assert.doesNotMatch(
+				error.message,
+				/\/resume\s+\S+,? or acceptEntryChanges|can also be accepted: resume with \/resume/,
+			);
+			assert.doesNotMatch(error.message, /\/workflow(?!s)\b|\s{2,}/);
+			return true;
+		});
 	});
 
 	test("lists resumable live, durable and completed runs with two-line metadata and canDelete flags while excluding active runs", async () => {
@@ -528,7 +553,7 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		assert.equal(resumedStageCalls, 1);
 	});
 
-	test("changed workflow definition shows inline Selector confirmation, resumes on Enter with acceptEntryChanges: true, and cancels on Esc or abort (#5256)", async () => {
+	test("changed workflow definition shows inline confirmation without host paths or digests, resumes on Enter with acceptEntryChanges: true, and cancels on Esc or abort (#5224, #5256)", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 
@@ -574,6 +599,7 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		const provider = createWorkflowResumeProvider(deps);
 
 		let renderedLines: string[] = [];
+		let narrowLines: string[] = [];
 		const escCtx: PiCommandContext = {
 			hasUI: true,
 			cwd: workDir,
@@ -585,6 +611,7 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 						result = val === true;
 					});
 					renderedLines = component.render(120).map(stripAnsi);
+					narrowLines = component.render(80).map(stripAnsi);
 					component.handleInput?.("\x1b");
 					return result;
 				},
@@ -592,11 +619,13 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		};
 		await provider.resumeFromPicker(editedRunId, escCtx);
 		assert.equal(resumeSpy.mock.calls.length, 0, "Esc must not resume the workflow");
-		assert.ok(
-			renderedLines.some((line) => line.includes(WORKFLOW_DEFINITION_CHANGED_TITLE)),
-			renderedLines.join("\n"),
+		assert.deepEqual(
+			renderedLines.map((line) => line.trim()),
+			[WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT],
 		);
-		assert.equal(renderedLines.at(-1)?.trim(), "enter resume with the new definition · esc cancel");
+		assert.doesNotMatch(renderedLines.join("\n"), /Since root|sha256|worker-def\.ts/);
+		assert.ok(narrowLines.every((line) => line.length <= 80));
+		assert.equal(narrowLines.map((line) => line.trim()).join(" "), WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT);
 
 		const enterCtx: PiCommandContext = {
 			hasUI: true,

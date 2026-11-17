@@ -358,6 +358,9 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 					if (closed) return;
 					invalidateWorkflowCatalog();
 					lastWorkflowRows = lastWorkflowRows.filter((row) => row.id !== runId);
+					void workflows().then((rows) => {
+						if (!closed) selector.updateWorkflowSessions(rows);
+					});
 				},
 				deleteSession:
 					this.sessionManager.getSessionStore().descriptor.adapter === "jsonl"

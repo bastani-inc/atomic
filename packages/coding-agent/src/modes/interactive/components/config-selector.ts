@@ -38,7 +38,10 @@ class ConfigSelectorHeader implements Component {
 			this.writeScope === "project"
 				? `${CONFIG_DIR_NAME}/settings.json · global resources are inherited`
 				: `~/${CONFIG_DIR_NAME}/agent/settings.json`;
-		return [truncateToWidth(`${title}${" ".repeat(spacing)}${hint}`, width, ""), theme.fg("muted", scopeFile)];
+		return [
+			truncateToWidth(`${title}${" ".repeat(spacing)}${hint}`, width, ""),
+			theme.fg("muted", truncateToWidth(scopeFile, width, "")),
+		];
 	}
 }
 
@@ -47,6 +50,8 @@ export class ConfigSelectorComponent extends Container implements Focusable {
 	private readonly resourceList: ResourceList;
 	private readonly groups: Record<ConfigWriteScope, ResourceGroup[]>;
 	private writeScope: ConfigWriteScope;
+	private readonly getTerminalHeight: () => number;
+	private terminalHeight = 0;
 	private _focused = false;
 	get focused(): boolean {
 		return this._focused;
@@ -67,22 +72,19 @@ export class ConfigSelectorComponent extends Container implements Focusable {
 		terminalHeight?: number,
 		writeScope: ConfigWriteScope = "global",
 		projectModeAvailable = true,
+		getTerminalHeight?: () => number,
 	) {
 		super();
 		this.writeScope = writeScope;
+		this.getTerminalHeight = getTerminalHeight ?? (() => terminalHeight ?? 24);
 		this.groups = {
 			global: buildGroups(resolvedPaths.global, agentDir),
 			project: buildGroups(resolvedPaths.project, agentDir),
 		};
-		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
 		this.resourceList = new ResourceList(this.groups[writeScope], settingsManager, cwd, agentDir, terminalHeight);
 		this.header = new ConfigSelectorHeader(writeScope, projectModeAvailable, () =>
 			Boolean(this.resourceList.getSearchQuery()),
 		);
-		this.addChild(this.header);
-		this.addChild(new Spacer(1));
 		this.resourceList.setWriteScope(writeScope);
 		this.resourceList.onCancel = onClose;
 		this.resourceList.onExit = onExit;
@@ -95,9 +97,26 @@ export class ConfigSelectorComponent extends Container implements Focusable {
 				this.resourceList.setGroups(this.groups[this.writeScope]);
 				requestRender();
 			};
-		this.addChild(this.resourceList);
-		this.addChild(new Spacer(1));
+		this.updateLayout(this.getTerminalHeight());
+	}
+	private updateLayout(height: number): void {
+		this.terminalHeight = height;
+		const compactFrame = height < 16;
+		this.resourceList.setViewportHeight(height - (compactFrame ? 4 : 8));
+		this.clear();
+		if (!compactFrame) this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
+		if (!compactFrame) this.addChild(new Spacer(1));
+		this.addChild(this.header);
+		if (!compactFrame) this.addChild(new Spacer(1));
+		this.addChild(this.resourceList);
+		if (!compactFrame) this.addChild(new Spacer(1));
+		this.addChild(new DynamicBorder());
+	}
+	override render(width: number): string[] {
+		const height = this.getTerminalHeight();
+		if (height !== this.terminalHeight) this.updateLayout(height);
+		return super.render(width);
 	}
 	handleInput(data: string): boolean {
 		return this.resourceList.handleInput(data);

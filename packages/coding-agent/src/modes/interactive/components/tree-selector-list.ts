@@ -70,7 +70,6 @@ export class TreeList implements Component {
 		}
 	}
 
-	/** The view's state in words: which entries the filter keeps, and whether label times show. */
 	private getStatusLabels(): string[] {
 		const labels: string[] = [];
 		switch (this.state.filterMode) {
@@ -187,7 +186,6 @@ export class TreeList implements Component {
 		}
 
 		lines.push(...renderHorizontalViewport(renderedRows, width));
-		// How many entries are out of view, and the view's state, the way every picker says it.
 		const above = startIndex;
 		const below = state.filteredNodes.length - endIndex;
 		const footer = [

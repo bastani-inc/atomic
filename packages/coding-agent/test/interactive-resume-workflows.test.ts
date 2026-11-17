@@ -247,11 +247,15 @@ test("mixed picker retains previous workflow rows and selection across slow, fai
 			detail: "paused · stage 1/2 verify",
 		},
 	]);
+	const localScansBeforeDelete = vi.spyOn(SessionManager, "list");
+	const allScansBeforeDelete = vi.spyOn(SessionManager, "listAll");
 	f.selector.handleInput("\x04");
 	f.selector.handleInput("\r");
 	await vi.waitFor(() => assert.deepEqual(f.deletedRuns, [runId]));
 	await vi.waitFor(() => assert.match(f.selector.render(160).join("\n"), /Fresh workflow objective/));
 	assert.doesNotMatch(f.selector.render(160).join("\n"), /shipping · Workflow objective/);
+	assert.equal(localScansBeforeDelete.mock.calls.length, 0);
+	assert.equal(allScansBeforeDelete.mock.calls.length, 0);
 
 	resolveSlowPoll([
 		{
@@ -456,4 +460,56 @@ test("direct resume does not guess a prefix while the other catalog is unavailab
 	assert.deepEqual(f.resumedSessions, []);
 	assert.deepEqual(f.resumedRuns, []);
 	assert.match(f.errors[0]!, /Workflow history is unavailable/);
+});
+
+test("selecting a workflow row whose resume throws surfaces the error message (#5256)", async () => {
+	const f = await fixture();
+	f.provider.resumeFromPicker.mockRejectedValueOnce(new Error("Workflow run is locked by another session"));
+	InteractiveModeBase.prototype.showSessionSelector.call(f.mode);
+	await vi.waitFor(() => assert.match(f.selector.render(160).join("\n"), /Workflow objective/));
+	for (const char of "Workflow objective") f.selector.handleInput(char);
+	f.selector.handleInput("\r");
+	await vi.waitFor(() => assert.deepEqual(f.errors, ["Workflow run is locked by another session"]));
+	assert.deepEqual(f.resumedSessions, []);
+});
+
+test("workflow polling skips overlapping ticks while a poll is in flight and ignores stale epoch errors (#5256)", async () => {
+	const f = await fixture();
+	const runId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	let pollCallback: (() => void) | undefined;
+	const realSetInterval = globalThis.setInterval;
+	vi.spyOn(globalThis, "setInterval").mockImplementation(((handler: TimerHandler, timeout?: number) => {
+		if (timeout === 5_000 && typeof handler === "function") {
+			pollCallback = handler as () => void;
+		}
+		return realSetInterval(handler, timeout);
+	}) as typeof setInterval);
+
+	InteractiveModeBase.prototype.showSessionSelector.call(f.mode);
+	await vi.waitFor(() => assert.match(f.selector.render(160).join("\n"), /Workflow objective/));
+	assert.ok(pollCallback);
+
+	const initialCalls = f.provider.listResumeEntries.mock.calls.length;
+	let rejectSlowPoll!: (error: Error) => void;
+	const slowPoll = new Promise<HostSessionPickerRow[]>((_resolve, reject) => {
+		rejectSlowPoll = reject;
+	});
+	f.provider.listResumeEntries.mockImplementationOnce(() => slowPoll);
+
+	pollCallback();
+	await vi.waitFor(() => assert.equal(f.provider.listResumeEntries.mock.calls.length, initialCalls + 1));
+
+	pollCallback();
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(f.provider.listResumeEntries.mock.calls.length, initialCalls + 1);
+
+	f.selector.handleInput("\x1b[B");
+	assert.equal(f.selector.getSessionList().getSelectedSessionId(), runId);
+	f.selector.handleInput("\x04");
+	f.selector.handleInput("\r");
+	await vi.waitFor(() => assert.deepEqual(f.deletedRuns, [runId]));
+
+	rejectSlowPoll(new Error("Stale epoch workflow error"));
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.doesNotMatch(f.selector.render(160).join("\n"), /Stale epoch workflow error/);
 });

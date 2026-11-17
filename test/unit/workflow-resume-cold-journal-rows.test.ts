@@ -170,6 +170,49 @@ test("a run listed cold from the journal shows its saved stage, elapsed time and
 	assert.match(row.detail ?? "", /^failed · stage 1\/1 probe · .+ · 5m · \$1\.84 · ✗ at capacity/);
 });
 
+test("a cold run prefers its recorded run-timing elapsed duration over wall-clock span (#5256)", async () => {
+	const dir = makeTempDirectory("resume-cold-elapsed-");
+	dirs.push(dir);
+	const path = join(dir, "journal.sqlite");
+	const now = Date.now();
+	const timedRunId = "e5f6a7b8-1111-4222-8333-444444444444";
+	const writer = await JournalDurableBackend.open(await openSqlRunJournal(path));
+	try {
+		await writer.commitWorkflowRegistration({
+			workflowId: timedRunId,
+			name: definition.name,
+			label: "measure active elapsed time",
+			inputs: {},
+			createdAt: now - 30 * 60_000,
+			updatedAt: now - 10 * 60_000,
+			status: "running",
+			completedCheckpoints: 1,
+			pendingPrompts: 1,
+			resumable: true,
+			invocationCwd: process.cwd(),
+		});
+		await writer.commitCheckpoint({
+			kind: "tool",
+			workflowId: timedRunId,
+			checkpointId: "run-timing:420000",
+			name: RUN_TIMING_CHECKPOINT_NAME,
+			argsHash: RUN_TIMING_CHECKPOINT_NAME,
+			output: { elapsedMs: 420_000 },
+			completedAt: now - 10 * 60_000,
+		});
+		await writer.commitWorkflowStatus(timedRunId, "paused", 1, true);
+	} finally {
+		await writer.close();
+	}
+
+	const backend = await openCold(path);
+	const provider = providerFor(backend);
+	const row = (await provider.listResumeEntries()).find((entry) => entry.id === timedRunId);
+	assert.ok(row);
+	assert.match(row.detail ?? "", /\b7m\b/);
+	assert.doesNotMatch(row.detail ?? "", /\b20m\b/);
+});
+
 test("listing /resume again reads a cold run's stages only after the run changed (#5256)", async () => {
 	const dir = makeTempDirectory("resume-cold-rows-");
 	dirs.push(dir);

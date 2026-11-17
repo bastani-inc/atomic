@@ -887,6 +887,70 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 });
 
 describe("mixed resume shortcut priority (#5256)", () => {
+	it("keeps cancel and the help shortcut whenever both fit in a narrow picker (#5256)", () => {
+		const picker = mount([makeSession({ id: "a" })], { variant: "mixed" });
+		try {
+			for (const width of [21, 22, 23, 24]) {
+				const hint = frame(picker, width).at(-2)!.trim();
+				assert.equal(hint, "esc cancel · ? keys", `width=${width}: ${hint}`);
+			}
+			assert.equal(frame(picker, 20).at(-2)!.trim(), "esc cancel");
+		} finally {
+			picker.dispose();
+		}
+	});
+
+	it("keeps a workflow row selected when the named-session filter changes (#5256)", () => {
+		const rows = [
+			makeSession({ id: "unnamed" }),
+			makeSession({ id: "named", name: "Named session" }),
+			makeSession({ id: "run-a", resumeKind: "workflow", title: "First workflow" }),
+			makeSession({ id: "run-b", resumeKind: "workflow", title: "Selected workflow" }),
+		];
+		const picker = mount(rows, { variant: "mixed" });
+		try {
+			for (let index = 0; index < 3; index++) picker.handleInput("\x1b[B");
+			assert.match(frame(picker).join("\n"), /❯ Selected workflow/);
+			for (let index = 0; index < 2; index++) {
+				picker.handleInput("\x0e");
+				assert.match(frame(picker).join("\n"), /❯ Selected workflow/);
+			}
+		} finally {
+			picker.dispose();
+		}
+	});
+
+	it("does not reload saved sessions after deleting a workflow row (#5256)", async () => {
+		const session = makeSession({ id: "session" });
+		const run = makeSession({ id: "workflow", resumeKind: "workflow" });
+		let loads = 0;
+		let deletes = 0;
+		const picker = mount([session, run], {
+			variant: "mixed",
+			loader: async () => {
+				loads++;
+				return deletes ? [session] : [session, run];
+			},
+			deleteWorkflow: async () => {
+				deletes++;
+			},
+		});
+		try {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(loads, 1);
+			picker.handleInput("\x1b[B");
+			picker.handleInput("\x04");
+			picker.handleInput("\r");
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(deletes, 1);
+			assert.equal(loads, 1);
+			picker.updateWorkflowSessions([]);
+			assert.doesNotMatch(frame(picker).join("\n"), /first-workflow/);
+			assert.match(frame(picker).join("\n"), /first-session/);
+		} finally {
+			picker.dispose();
+		}
+	});
 	beforeAll(() => initTheme("dark"));
 	beforeEach(() => setKeybindings(new KeybindingsManager()));
 
@@ -999,4 +1063,58 @@ describe("resume deletion completion after closing (#5256)", () => {
 			assert.deepEqual({ loads, renders }, closedCounts);
 		},
 	);
+
+	it("hides delete in a mixed picker with canDelete disabled on non-current sessions and workflow runs (#5256)", () => {
+		const picker = mount(
+			[
+				makeSession({ id: "s1", firstMessage: "alpha" }),
+				makeSession({ id: "s2", firstMessage: "beta" }),
+				makeSession({
+					id: "wf-1",
+					path: "workflow-durable:wf-1",
+					resumeKind: "workflow",
+					title: "deploy · release",
+					detail: "paused · stage 1/2",
+				}),
+			],
+			{
+				variant: "mixed",
+				rename: true,
+				canDelete: false,
+				deleteSession: async () => {},
+				deleteWorkflow: async () => {},
+				currentSession: { id: "current-other", directory: "/work/project" },
+			},
+		);
+		try {
+			assert.equal(picker.getSessionList().getSelectedSessionId(), "s1");
+			const sessionHint = frame(picker, 300).at(-2)!;
+			assert.doesNotMatch(sessionHint, /delete/);
+			picker.handleInput("\x1b[B");
+			picker.handleInput("\x1b[B");
+			assert.equal(picker.getSessionList().getSelectedSessionId(), "wf-1");
+			const workflowHint = frame(picker, 300).at(-2)!;
+			assert.doesNotMatch(workflowHint, /delete/);
+		} finally {
+			picker.dispose();
+		}
+	});
+
+	it("keeps sort listed in the mixed hint while a search query leaves one match (#5256)", () => {
+		const picker = mount(
+			[makeSession({ id: "s1", firstMessage: "alpha" }), makeSession({ id: "s2", firstMessage: "beta" })],
+			{
+				variant: "mixed",
+				rename: true,
+				deleteSession: async () => {},
+			},
+		);
+		try {
+			for (const ch of "alpha") picker.handleInput(ch);
+			const hint = frame(picker, 300).at(-2)!;
+			assert.match(hint, /ctrl\+s sort/);
+		} finally {
+			picker.dispose();
+		}
+	});
 });

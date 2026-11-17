@@ -781,6 +781,11 @@ class JournalProjection {
 				: existing?.handle.gitWorktreeRoot !== undefined
 					? { gitWorktreeRoot: existing.handle.gitWorktreeRoot }
 					: {}),
+			...(handle.branch !== undefined
+				? { branch: handle.branch }
+				: existing?.handle.branch !== undefined
+					? { branch: existing.handle.branch }
+					: {}),
 			...((handle.worktreeRootMappings ?? existing?.handle.worktreeRootMappings) !== undefined
 				? { worktreeRootMappings: handle.worktreeRootMappings ?? existing?.handle.worktreeRootMappings }
 				: {}),
@@ -1229,6 +1234,7 @@ class JournalProjection {
 			...(h.workflowCwd !== undefined ? { workflowCwd: h.workflowCwd } : {}),
 			...(h.repositoryRoot !== undefined ? { repositoryRoot: h.repositoryRoot } : {}),
 			...(h.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: h.gitWorktreeRoot } : {}),
+			...(h.branch !== undefined ? { branch: h.branch } : {}),
 			...(h.snapshots !== undefined ? { snapshots: h.snapshots } : {}),
 			...(h.worktreeRootMappings !== undefined ? { worktreeRootMappings: h.worktreeRootMappings } : {}),
 			...(h.worktreeRestoreOutcomes !== undefined ? { worktreeRestoreOutcomes: h.worktreeRestoreOutcomes } : {}),
@@ -1335,6 +1341,7 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 		...(handle.workflowCwd !== undefined ? { workflowCwd: handle.workflowCwd } : {}),
 		...(handle.repositoryRoot !== undefined ? { repositoryRoot: handle.repositoryRoot } : {}),
 		...(handle.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: handle.gitWorktreeRoot } : {}),
+		...(handle.branch !== undefined ? { branch: handle.branch } : {}),
 		...(handle.forkedFrom !== undefined ? { forkedFrom: handle.forkedFrom } : {}),
 		createdAt: handle.createdAt,
 		updatedAt: handle.updatedAt,

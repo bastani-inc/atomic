@@ -80,7 +80,9 @@ function sanitizePickerGuidance(message: string): string {
 }
 
 function formatPickerResumeError(targetId: string, message: string): string {
-	const sanitized = sanitizePickerGuidance(message);
+	const sanitized = sanitizePickerGuidance(
+		message.replace(/\.\s*An edited entry module can also be accepted:[\s\S]*$/i, "."),
+	);
 	const firstLine = sanitized.split("\n")[0]?.trim() ?? sanitized.trim();
 	if (
 		/^Run not found:/i.test(firstLine) ||
