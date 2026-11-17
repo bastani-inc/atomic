@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 // `node:fs` calls below: `mkdtempSync`, `statSync` and `openSync` have no
 // helper equivalents, and the async ones that do exist would not make the
 // descriptor plumbing any safer.
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
 	appendFileSync,
 	closeSync,
@@ -28,9 +28,9 @@ import {
 } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { afterAll, afterEach, beforeAll, describe, onTestFinished, test } from "vitest";
 import {
 	type BoundedStderrOptions,
 	BROKER_LOG_MAX_BYTES,
@@ -44,6 +44,7 @@ import {
 	readBrokerStartAnnouncement,
 	retractBrokerStartAnnouncement,
 } from "../../packages/intercom/broker/start-announcement.js";
+import { keepProcessPidByStartTime, keptExitedPid } from "../helpers/exited-process.js";
 import { bunExecutable, removePathSync } from "../helpers/runtime.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
@@ -461,9 +462,42 @@ describe("a broker behind a launcher that hides it", () => {
 		}
 	}
 
+	async function launchRetainedBroker(
+		brokerScript: string,
+		log: string,
+		announced: { path: string; token: string },
+	): Promise<number> {
+		const creationTimePath = `${announced.path}.created`;
+		const stopGate = `${announced.path}.stop`;
+		const nativeModule = fileURLToPath(new URL("../../packages/natives/native/index.js", import.meta.url));
+		const recordStart = `require('node:fs').writeFileSync(${JSON.stringify(creationTimePath)}, process.platform === 'win32' ? require(${JSON.stringify(nativeModule)}).processCreationTime(process.pid) : '1'); setInterval(() => { if (require('node:fs').existsSync(${JSON.stringify(stopGate)})) process.exit(0); }, 20);`;
+		let release = async () => {};
+		let finished = false;
+		onTestFinished(async () => {
+			finished = true;
+			try {
+				if (existsSync(dirname(creationTimePath))) writeFileSync(stopGate, "");
+			} finally {
+				await release();
+				removePathSync(creationTimePath, { force: true });
+			}
+		});
+		launchThroughStandIn(`${recordStart} ${brokerScript}`, log, announced);
+		await eventually(() => readBrokerStartAnnouncement(announced) !== undefined, PROMPT_EXIT_BOUND_MS);
+		const pid = readBrokerStartAnnouncement(announced);
+		assert.ok(pid !== undefined);
+		assert.equal(finished, false, "broker started after test cleanup");
+		release = await keepProcessPidByStartTime(pid, readFileSync(creationTimePath, "utf8"));
+		if (finished) {
+			await release();
+			throw new Error("broker PID retention completed after test cleanup");
+		}
+		return pid;
+	}
+
 	const probe = (announced: { path: string; token: string }) => () => readBrokerStartAnnouncement(announced);
 
-	test("a crash after announcing is reported with the broker's log long before the start-up budget", async () => {
+	test("a crash after announcing is reported with the broker's log long before the start-up budget (#5332)", async () => {
 		writeFileSync(logPath, "");
 		const announced = {
 			path: pathsModule.getBrokerStartAnnouncementPath(),
@@ -472,11 +506,15 @@ describe("a broker behind a launcher that hides it", () => {
 		removePathSync(announced.path, { force: true });
 		const marker = `STAND-IN-CRASH-${Date.now()}`;
 		const started = startedAt();
-		launchThroughStandIn(
-			`${ANNOUNCE} console.error(${JSON.stringify(marker)}); process.exit(3);`,
+		const crashGate = `${announced.path}.crash`;
+		removePathSync(crashGate, { force: true });
+		onTestFinished(() => removePathSync(crashGate, { force: true }));
+		await launchRetainedBroker(
+			`${ANNOUNCE} setInterval(() => { if (require('node:fs').existsSync(${JSON.stringify(crashGate)})) { console.error(${JSON.stringify(marker)}); process.exit(3); } }, 20);`,
 			logPath,
 			announced,
 		);
+		writeFileSync(crashGate, "");
 
 		await assert.rejects(
 			// The budget is the bound, so only noticing the exit can have ended the wait with the exit wording.
@@ -531,10 +569,10 @@ describe("a broker behind a launcher that hides it", () => {
 			path: pathsModule.getBrokerStartAnnouncementPath(),
 			token: `mine-${process.pid}-${Date.now()}`,
 		};
-		const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], {
-			encoding: "utf8",
-		});
-		writeFileSync(announced.path, `someone-elses ${dead.stdout}\n`);
+		const dead = await keptExitedPid();
+		onTestFinished(() => dead.release());
+		assert.throws(() => process.kill(dead.pid, 0), { code: "ESRCH" });
+		writeFileSync(announced.path, `someone-elses ${dead.pid}\n`);
 
 		await assert.rejects(
 			() => spawnModule.waitForBroker(400, probe(announced)),
@@ -544,9 +582,9 @@ describe("a broker behind a launcher that hides it", () => {
 	});
 
 	test("a broker that yielded to a live one, which answers, is a success", async () => {
-		const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], {
-			encoding: "utf8",
-		});
+		const dead = await keptExitedPid();
+		onTestFinished(() => dead.release());
+		assert.throws(() => process.kill(dead.pid, 0), { code: "ESRCH" });
 		let live: net.Server | undefined;
 		try {
 			await spawnModule.waitForBroker(PROMPT_EXIT_BOUND_MS, () => {
@@ -555,7 +593,7 @@ describe("a broker behind a launcher that hides it", () => {
 				live ??= net
 					.createServer((socket) => socket.on("error", () => {}))
 					.listen(pathsModule.getBrokerSocketPath());
-				return Number.parseInt(dead.stdout, 10);
+				return dead.pid;
 			});
 			assert.ok(live);
 		} finally {
@@ -563,14 +601,15 @@ describe("a broker behind a launcher that hides it", () => {
 		}
 	});
 
-	test("once the broker is killed nothing writes into its directory, so the directory can be removed at once", async () => {
+	test("once the broker is killed nothing writes into its directory, so the directory can be removed at once (#5332)", async () => {
 		for (let round = 0; round < 5; round++) {
 			const dir = mkdtempSync(join(tmpdir(), "icgone-"));
 			const announced = { path: join(dir, "broker.starting"), token: `gone-${round}-${process.pid}-${Date.now()}` };
-			launchThroughStandIn(`${ANNOUNCE} setInterval(function () {}, 1000);`, join(dir, "broker.log"), announced);
-			await eventually(() => readBrokerStartAnnouncement(announced) !== undefined, 15_000);
-			const pid = readBrokerStartAnnouncement(announced);
-			assert.ok(pid !== undefined);
+			const pid = await launchRetainedBroker(
+				`${ANNOUNCE} setInterval(function () {}, 1000);`,
+				join(dir, "broker.log"),
+				announced,
+			);
 
 			kill(pid);
 			await eventually(() => {
@@ -650,11 +689,32 @@ describe("broker startup failures name the log", () => {
 	async function assertCrashReportedPromptly(marker: string, code: number): Promise<Error> {
 		const started = Date.now();
 		let reported: Error | undefined;
-		await assert.rejects(
+		const identityPath = join(agentDir, `crash-${process.pid}-${Date.now()}.identity`);
+		const crashGate = `${identityPath}.crash`;
+		const nativeModule = fileURLToPath(new URL("../../packages/natives/native/index.js", import.meta.url));
+		let release = async () => {};
+		let finished = false;
+		onTestFinished(async () => {
+			finished = true;
+			try {
+				writeFileSync(crashGate, "");
+			} finally {
+				await release();
+				removePathSync(identityPath, { force: true });
+			}
+		});
+		const crash = assert.rejects(
 			() =>
 				spawnModule.spawnBrokerIfNeeded(
 					process.execPath,
-					["-e", `${BROKER_FIRST_ACT} console.error(${JSON.stringify(marker)}); process.exit(${code});`],
+					[
+						"-e",
+						[
+							`const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(`${identityPath}.tmp`)}, JSON.stringify({ pid: process.pid, created: process.platform === 'win32' ? require(${JSON.stringify(nativeModule)}).processCreationTime(process.pid) : '1' })); fs.renameSync(${JSON.stringify(`${identityPath}.tmp`)}, ${JSON.stringify(identityPath)});`,
+							BROKER_FIRST_ACT,
+							`setInterval(function () { if (fs.existsSync(${JSON.stringify(crashGate)})) { console.error(${JSON.stringify(marker)}); process.exit(${code}); } }, 20);`,
+						].join(" "),
+					],
 					PROMPT_EXIT_BOUND_MS,
 				),
 			(error: unknown) => {
@@ -663,6 +723,17 @@ describe("broker startup failures name the log", () => {
 				return true;
 			},
 		);
+		crash.catch(() => {});
+		await eventually(() => existsSync(identityPath), PROMPT_EXIT_BOUND_MS);
+		const identity = JSON.parse(readFileSync(identityPath, "utf8")) as { pid: number; created: string };
+		assert.equal(finished, false, "broker started after test cleanup");
+		release = await keepProcessPidByStartTime(identity.pid, identity.created);
+		if (finished) {
+			await release();
+			throw new Error("broker PID retention completed after test cleanup");
+		}
+		writeFileSync(crashGate, "");
+		await crash;
 		assert.ok(reported);
 		// The same wording on every platform: the broker exited, and it is not "still starting". Behind the Windows
 		// launcher the exit reaches the parent through the pid the broker announced rather than a child exit event.
