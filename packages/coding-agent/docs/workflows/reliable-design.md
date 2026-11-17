@@ -401,11 +401,11 @@ While implementing:
 
 At the end, report three things: what the contract was, evidence each criterion passes, and the deferred list. Scope changes belong in the report, never in the diff.
 
-### Protect the contract from compaction
+### Recover the contract after compaction
 
-Compaction ranks lines individually rather than preserving whole instructions. A repeated objective may survive while its one-line constraint is deleted. The remaining prompt can still read coherently, but no longer contain the prohibition that bounded the work.
+A long-running stage will be compacted. Compaction clears the stage's context window, and the stage then recovers what it needs from its session history. A stage that recovers its objective but not the one-line constraint that bounds it can read as coherent while it no longer holds the prohibition that limited the work.
 
-Wrap contract text in `keepContext` so it survives verbatim regardless of the compression ratio:
+Wrap contract text in `keepContext`:
 
 ```ts
 import { keepContext, workflow } from "@bastani/atomic/workflows";
@@ -416,9 +416,9 @@ const prompt = [
 ].join("\n\n");
 ```
 
-Every line in the span, including its tags, survives later compactions. Protect the constraint itself, not only a repeated objective.
+After a clear, the recovery instructions tell the stage to search its history for every `<keepContext>` span and recover each one verbatim and whole before anything else. The tags have no other effect: nothing is kept in context automatically, and a configured compactor model may or may not honour them. Tag the constraint itself, not only a repeated objective.
 
-Put tags on their own lines within one message. Both user and assistant messages can protect text. Stage prompts, run inputs, and steering arrive as user messages; a stage may also pin its own core information. Tags in tool results are inert, so file, page, or command output cannot mark itself unreclaimable.
+Put tags on their own lines. Stage prompts, run inputs, and steering arrive as user messages, so tags in them are found in the stage's history.
 
 `keepContext` is a pure string helper, not a `ctx.*` primitive: it creates no graph node and has no side effect, so call it anywhere a prompt is assembled. It is idempotent, so composing already-wrapped text will not nest.
 
@@ -429,11 +429,9 @@ Tag:
 - explicit prohibitions;
 - identifiers a stage must not lose, such as a target branch, worktree path, or run ID.
 
-Do not tag bulk context. Protected lines count against the keep target rather than raising it, so a large protected span makes the surrounding transcript compress harder. Tag the constraint, not the material it applies to — pass that through files and `reads`.
+Do not tag bulk context. Every tagged span is recovered first, so a large span delays the rest of the recovery. Tag the constraint, not the material it applies to — pass that through files and `reads`.
 
-Protection has a budget. Restating a constraint does not add protection: only the latest copy stays protected once spans exceed `compaction.keepContextShare` of the keep target, and past that the oldest spans are released first. See [Compaction](/compaction#keepcontext-tags) for the release order.
-
-Every builtin does this for its own invariants: the steering propagation contract, the literal objective contract, scope discipline, worktree discipline, per-run acceptance criteria, and the research/review role constraints are all protected. See [Compaction](/compaction#keepcontext-tags) for the retention mechanism.
+Every builtin does this for its own invariants: the steering propagation contract, the literal objective contract, scope discipline, worktree discipline, per-run acceptance criteria, and the research/review role constraints are all tagged. See [`keepContext` tags](/compaction#keepcontext-tags).
 
 For automatic model selection, a chat model reads the whole `model: "auto"` stage prompt; stating `taskNeeds` in the stage options saves that read. See [automatic stage model selection](/workflows/authoring#automatic-stage-model-selection).
 
@@ -450,16 +448,16 @@ workflow({ action: "run", workflow: "ralph", inputs: {
 }})
 ```
 
-Note what is tagged and what is not: the constraint and the criteria are protected, the quoted issue body is not. A launch prompt is usually mostly reference material, and protecting all of it would raise the keep target so far that stages lose the transcript evidence they need.
+Note what is tagged and what is not: the constraint and the criteria are tagged, the quoted issue body is not. A launch prompt is usually mostly reference material, and tagging all of it would leave a stage recovering the whole prompt before the clauses that matter.
 
-**Steering.** A `send` amendment is authoritative and stages must carry it forward, but it is one short message arriving late into an already-long session, competing against the entire transcript for retention. Tagging it keeps it alive until the stage acts on it:
+**Steering.** A `send` amendment is authoritative and stages must carry it forward, but it is one short message arriving late into an already-long session. Tagging it makes it one of the first things the stage recovers after a clear:
 
 ```
 intercom({ action: "send", to: "workflow:<rootRunId>/<stage>", message:
   "<keepContext>\nNew requirement: the fix must not change the public API.\n</keepContext>" })
 ```
 
-An agent launching or steering a run should make this call per message rather than tagging by habit — protect the clause that must hold, and leave the surrounding explanation to be compacted normally.
+An agent launching or steering a run should make this call per message rather than tagging by habit — tag the clause that must hold, and leave the surrounding explanation untagged.
 
 ### Practical consequences
 
@@ -951,7 +949,7 @@ Watch for these failure modes in long or multi-stage workflows:
 | Confusion | Similar instructions or duplicate facts conflict | Consolidate each shared contract into one canonical copy and name artifacts clearly |
 | Clash | User, system, or stage instructions disagree | Resolve conflicts before launching downstream stages |
 
-Use compaction, file references, and bounded loops before context fills. Attached stage chat shows `Compacting context...`, `Auto-compacting...`, or `Context overflow detected. Auto-compacting...` as appropriate, beside a still `∀` mark with elapsed time and the cancel key. Detaching and reattaching preserves the label and elapsed time. The label clears when compaction ends, leaving an expandable `∀ Context compacted` transcript boundary with the token counts before and after.
+Use compaction, file references, and bounded loops before context fills. Attached stage chat shows `Compacting context...`, `Auto-compacting...`, or `Context overflow detected. Auto-compacting...` as appropriate, beside a still `∀` mark with elapsed time and the cancel key. Detaching and reattaching preserves the label and elapsed time. The label clears when compaction ends, leaving one expandable boundary line: `⚛ Context cleared · <tokens before> tokens`, or `⚛ Context compacted · <model> · <before> → <after> tokens` when a compactor model ran.
 
 ### Compression and Artifact Handoffs
 

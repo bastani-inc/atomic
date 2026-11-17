@@ -75,7 +75,8 @@ test("startup migrates Azure config files atomically without replacing canonical
 				assert.equal(parsed.decisionModel, "azure/gpt-5.4");
 				assert.deepEqual(parsed.modelThinkingLevels, { "azure/gpt-5.4": "high" });
 				assert.deepEqual(parsed.modelRouting, { allowedProviders: ["azure"], excludedProviders: ["azure"] });
-				assert.deepEqual(parsed.compaction.modelOverrides, { "azure/gpt-5.4": { maxTokens: 1024 } });
+				// Removed compaction overrides are ignored, so the migration leaves them exactly as written.
+				assert.deepEqual(parsed.compaction.modelOverrides, { [`${legacy}/gpt-5.4`]: { maxTokens: 1024 } });
 			}
 			if (process.platform !== "win32")
 				assert.equal(statSync(path).mode & 0o777, path.endsWith("auth.json") ? 0o600 : 0o640);

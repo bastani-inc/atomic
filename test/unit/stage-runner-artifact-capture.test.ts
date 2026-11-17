@@ -22,7 +22,7 @@ test("artifact answers survive real pre-prompt compaction and later compaction",
 	const clarification = "Material clarification after compaction.";
 	const harness = await createHarnessWithExtensions({
 		settings: {
-			compaction: { enabled: true, reserveTokens: 100, preserve_recent: 2 },
+			compaction: { enabled: true, reserveTokens: 100 },
 			retry: { enabled: false },
 			sessionSummary: { enabled: false },
 		},
@@ -74,7 +74,7 @@ test("artifact answers survive real pre-prompt compaction and later compaction",
 		assert.ok(harness.session.messages.length < 10);
 		assert.equal(harness.session.getLastAssistantText(), report);
 		assert.equal(await readText(output), report);
-		await harness.session.compact({ preserve_recent: 0 });
+		await harness.session.compact();
 		assert.equal(compactions, 2);
 		assert.equal(harness.session.getLastAssistantText(), undefined);
 		await context.__continuePrompt("Clarify the report");
@@ -179,7 +179,7 @@ test("closed generation capture ignores retained chat and resets for the next au
 		assert.equal(captured.length, 1);
 		for (let index = 0; index < 8; index += 1) await harness.session.sendUserMessage(`Later question ${index}`);
 		assert.equal(harness.faux.callCount, 9);
-		await harness.session.compact({ preserve_recent: 0 });
+		await harness.session.compact();
 		assert.equal(harness.session.messages.filter((message) => message.role === "assistant").length, 0);
 		assert.deepEqual(controller.outputGenerationMessages(), captured, "closed capture must not retain later chat");
 		await controller.closeGeneration();

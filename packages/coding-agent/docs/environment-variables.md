@@ -64,7 +64,7 @@ Use `short` to opt back into shorter caching (five minutes on Anthropic), `none`
 
 With retention unset, OpenAI models without a known extended-retention capability (including GPT-4o) use ordinary caching, and Bedrock Claude models without known one-hour support (including Claude 3.7) use five-minute caching. Supported OpenAI models and Bedrock Claude 4.5+ models keep extended caching. For Bedrock application inference profiles, give the profile an accurate model name in `models.json` so Atomic can recognize its capability. Explicit `long` remains an opt-in request, not a guarantee of provider support; check the [OpenAI](https://developers.openai.com/api/docs/guides/prompt-caching) or [Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html) model limits before forcing it. Custom OpenAI-compatible models can declare `compat.supportsLongCacheRetention` in `models.json`.
 
-For SDK session requests, explicit `cacheRetention` takes precedence over `ATOMIC_CACHE_RETENTION`. Request-scoped `env` overrides credential-scoped environment, then the process environment is used. Requests that explicitly disable caching, such as compaction summaries, remain uncached by Atomic.
+For SDK session requests, explicit `cacheRetention` takes precedence over `ATOMIC_CACHE_RETENTION`. Request-scoped `env` overrides credential-scoped environment, then the process environment is used. Requests that explicitly disable caching, such as branch summaries, remain uncached by Atomic.
 
 [Anthropic's prompt-caching pricing](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#pricing) charges **2× base input price for one-hour writes**, versus **1.25× for five-minute writes**. Long retention can avoid rewrites when reusable prefixes are revisited after five minutes, but savings are not guaranteed. Short retention can be preferable when requests consistently reuse the cache within five minutes (hits refresh its lifetime without another write charge), or when prompts are unlikely to be reused. Compare your cache reads, writes, and billed usage before choosing.
 
@@ -74,7 +74,7 @@ Atomic sets `AI_AGENT=atomic` for itself and every subprocess it launches, repla
 
 ## Provider credentials
 
-Provider keys include `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, `GEMINI_API_KEY`, AWS/Bedrock credentials, and the variables listed in [Providers](/providers#environment-variables-or-auth-file). `ANTHROPIC_AUTH_TOKEN` is a distinct header-only bearer credential for Anthropic-compatible gateways: Atomic sends `Authorization: Bearer …` without requiring or inventing an API key, including normal turns, isolated execution, branch summaries, and Verbatim Compaction. Custom headers remain independent.
+Provider keys include `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, `GEMINI_API_KEY`, AWS/Bedrock credentials, and the variables listed in [Providers](/providers#environment-variables-or-auth-file). `ANTHROPIC_AUTH_TOKEN` is a distinct header-only bearer credential for Anthropic-compatible gateways: Atomic sends `Authorization: Bearer …` without requiring or inventing an API key, including normal turns, isolated execution, and branch summaries. Custom headers remain independent.
 
 ## Bash and PowerShell session environment
 

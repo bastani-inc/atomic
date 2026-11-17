@@ -3,7 +3,6 @@
  * cross-ref: spec §5.5
  */
 
-import type { SerializedBackgroundCompactionState } from "@bastani/atomic";
 import type { BudgetDimension, BudgetReport, DurationBudgetReport, UsageBudgetReport } from "./budget.js";
 import type { RunMeterCounters } from "./budget-meter.js";
 import type { RunExecutionState } from "./run-execution-state.js";
@@ -426,8 +425,6 @@ export interface StageSnapshot {
 	 * activity so the graph can show them without a live view of the stage (#3996).
 	 */
 	queuedUserMessageCount?: number;
-	/** Background compaction state of the stage's session (#4330), the same shape RPC `get_state` reports. */
-	compaction?: SerializedBackgroundCompactionState;
 	/**
 	 * The Intercom messages the stage's session `sessionId` took before its first turn, by message id, as the worker of
 	 * a pooled stage on a host that does not run its root publishes them: the root records their receipts when the

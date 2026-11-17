@@ -61,12 +61,5 @@ export function normalizeAzureSettings(settings: Settings): Settings {
 				}),
 			},
 		}),
-		...(isRecord(settings.compaction) &&
-			isRecord(settings.compaction.modelOverrides) && {
-				compaction: {
-					...settings.compaction,
-					modelOverrides: normalizeProviderKeys(settings.compaction.modelOverrides),
-				},
-			}),
 	};
 }

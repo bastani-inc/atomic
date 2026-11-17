@@ -17,27 +17,10 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
 const compactionMocks = vi.hoisted(() => ({
-	runVerbatimCompaction: vi.fn(async (..._args: unknown[]) => ({
-		text: "[User]: retained test context\n(filtered 1 lines)",
-		ranges: [{ start: 2, end: 2 }],
-		stats: {
-			linesBefore: 2,
-			linesDeleted: 1,
-			linesKept: 1,
-			rangeCount: 1,
-			tokensBefore: 190_000,
-			tokensAfter: 120_000,
-			percentReduction: 36.8,
-		},
-		rung: "planned" as const,
-		keptTail: true,
-		releasedRanges: [],
-	})),
 	estimateContextTokens: vi.fn(() => ({ tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null })),
 }));
-vi.mock("../src/core/compaction/index.js", () => ({
-	VERBATIM_COMPACTION_PROMPT_VERSION: 3,
-	VERBATIM_COMPACTION_STRATEGY: "verbatim-lines",
+vi.mock("../src/core/compaction/index.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/core/compaction/index.js")>()),
 	calculateContextTokens: (usage: {
 		input: number;
 		output: number;
@@ -46,28 +29,8 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		totalTokens?: number;
 	}) => usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
 	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
-	runVerbatimCompaction: compactionMocks.runVerbatimCompaction,
 	estimateContextTokens: compactionMocks.estimateContextTokens,
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
-	MIN_COMPACTABLE_REGION_LINES: 20,
-	prepareCompactionBoundary: (entries: Array<{ id: string }>) =>
-		entries[0]
-			? {
-					firstKeptEntryId: entries[0].id,
-					region: {
-						__brand: "NumberedRegion",
-						lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)],
-						headerLineNumbers: new Set([1]),
-						priorMarkerNs: new Map(),
-						tokenEstimate: 10,
-					},
-					regionEntryIds: [entries[0].id],
-					keptTailMessageCount: 1,
-					tokensBefore: 190_000,
-					parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
-					settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
-				}
-			: undefined,
 	shouldCompact: (
 		contextTokens: number,
 		contextWindow: number,
@@ -81,7 +44,6 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 	let tempDir: string;
 
 	beforeEach(async () => {
-		compactionMocks.runVerbatimCompaction.mockClear();
 		compactionMocks.estimateContextTokens.mockReset();
 		compactionMocks.estimateContextTokens.mockReturnValue({
 			tokens: 0,

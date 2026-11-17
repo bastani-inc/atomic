@@ -934,12 +934,12 @@ export declare function workflow<
 >(spec: AuthoredWorkflowSpec<TInputs, TOutputs, TActualOutputs>): AuthoredWorkflowDefinition<TInputs, TOutputs>;
 
 /**
- * Wrap prompt text so compaction protects it verbatim, regardless of the compression ratio.
+ * Wrap prompt text so an agent recovers it verbatim first after compaction clears its context window.
+ * The tag has no other effect: nothing is kept in context automatically.
  *
  * Reserve it for text whose loss silently changes behavior: role constraints, acceptance
  * criteria and immutable contracts, explicit prohibitions, and identifiers a stage must not
- * lose. Do not wrap bulk context — protected lines count against the keep target rather than
- * raising it, so a large span makes the surrounding transcript compress harder.
+ * lose. Do not wrap bulk context, so the tagged spans stay short enough to recover first.
  */
 export declare function keepContext(text: string): string;
 export declare const KEEP_CONTEXT_OPEN_TAG: string;

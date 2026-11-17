@@ -11,7 +11,7 @@ Edit directly or use `/settings` for common options. Choosing a model or thinkin
 
 For editor completion and validation, add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/settings.schema.json"` to `settings.json`. Atomic preserves `$schema` and settings it does not recognize, such as extension settings, when it saves.
 
-Atomic checks the type of each setting when it loads a settings file. A value of the wrong type, such as a string where a list belongs (`"extensions": "./my-ext.ts"` instead of `["./my-ext.ts"]`), is ignored: Atomic behaves as if it were not set, so the other settings file or the default applies. A list entry of the wrong type, such as a number in `fallbackModels` or in the legacy `skills.customDirectories` form, is dropped and the rest of the list is kept. Each settings file is checked on its own, so a wrong-typed value in an `.atomic` file lets the value in the matching `.pi` file apply. Each ignored value is reported once as a warning that names the file and the key, and again if it comes back after being fixed, for example `Invalid settings file ~/.atomic/agent/settings.json: "extensions" must be array of string; ignoring it.` Atomic never rewrites the file; fix the value to clear the warning. Values of the right type that break a narrower rule, such as an out-of-range number, are reported by the feature that uses them, as described for each setting below. So are wrong-typed values of settings that check their own values and stop the request instead of switching to something else: `decisionModel`, `compactionModel`, `modelRouting`, `storage`, `sessions`, `workflows`, `snapshots`, `httpIdleTimeoutMs`, `websocketConnectTimeoutMs` and `streamDeadlineMs`.
+Atomic checks the type of each setting when it loads a settings file. A value of the wrong type, such as a string where a list belongs (`"extensions": "./my-ext.ts"` instead of `["./my-ext.ts"]`), is ignored: Atomic behaves as if it were not set, so the other settings file or the default applies. A list entry of the wrong type, such as a number in `fallbackModels` or in the legacy `skills.customDirectories` form, is dropped and the rest of the list is kept. Each settings file is checked on its own, so a wrong-typed value in an `.atomic` file lets the value in the matching `.pi` file apply. Each ignored value is reported once as a warning that names the file and the key, and again if it comes back after being fixed, for example `Invalid settings file ~/.atomic/agent/settings.json: "extensions" must be array of string; ignoring it.` Atomic never rewrites the file; fix the value to clear the warning. Values of the right type that break a narrower rule, such as an out-of-range number, are reported by the feature that uses them, as described for each setting below. So are wrong-typed values of settings that check their own values and stop the request instead of switching to something else: `decisionModel`, `modelRouting`, `storage`, `sessions`, `workflows`, `snapshots`, `httpIdleTimeoutMs`, `websocketConnectTimeoutMs` and `streamDeadlineMs`.
 
 Saving an Atomic setting applies only the changed fields to the corresponding `.atomic` file; it does not copy untouched fallback fields out of `.pi`. Within an object setting such as `modelThinkingLevels` or `workflows`, only the changed key is written, so keys another running Atomic process saved are kept. To intentionally override an inherited array such as `packages`, set it in `.atomic`, including an explicit empty array (`"packages": []`) when the inherited list should be disabled.
 
@@ -67,7 +67,7 @@ See [Herdr](/herdr) for state aggregation, reporter conflicts, privacy, and Herd
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level. Anthropic, Google, and Bedrock use these natively. OpenAI-compatible models use them when `compat.thinkingTokenBudgetField` (or `supportsThinkingTokenBudget`) is set. |
 | `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses, billed compaction or branch-summary usage, and provider recovery diagnostics such as dropped Anthropic thinking blocks, including when a persisted transcript is resumed |
 | `cacheWarming` | `"off" \| "streaming" \| "idle"` | `"idle"` | Keep eligible provider prompt caches warm during active runs and, with `"idle"`, for up to 30 minutes between runs. `"streaming"` warms only during active runs; `"off"` never warms. Each refresh costs money. Global setting only; project settings are ignored. |
-| `fallbackModels` | string[] | - | Ordered fallback models, written as `"provider/model"` with optional model-supported reasoning suffixes such as `:high`, `:xhigh`, or `:max`. Used by main-chat turns and, since compaction fallback rungs, borrowed for compaction planner requests |
+| `fallbackModels` | string[] | - | Ordered fallback models, written as `"provider/model"` with optional model-supported reasoning suffixes such as `:high`, `:xhigh`, or `:max`. Used by main-chat turns |
 
 Cache warming runs only when the model declares a cache lifetime (`promptCache` in [Models Configuration](/models-configuration)) and Atomic estimates at least $0.05 in avoided cache-miss cost. Refreshes are recorded as usage entries and never enter the model's context. Extensions can override each decision with the `cache_warming_decision` event.
 
@@ -177,8 +177,6 @@ A failure that another request to the same model cannot repair — a rejected cr
 Context overflow keeps its normal recovery order: compaction runs first, and a compactable overflow costs no fallback candidate. Only once compaction is disabled, fails, or reports the overflow unresolved does Atomic advance to the next configured candidate, which is how a larger-context model gets a chance at the turn.
 
 Changing the reasoning level after fallback is not a model choice, so the fallback model stays active with the reasoning level you selected. Only an explicit `/model` selection or model cycle changes the session model.
-
-The same list is also **borrowed by compaction**. When the compaction range planner cannot produce a usable plan on the current model — a rate limit, quota exhaustion, provider error, context overflow, or an empty plan — Atomic runs one planner request against the next configured candidate, using that candidate's own credentials. **A configured fallback model may therefore receive the compaction transcript.** Borrowing is planner-only: it never changes the session model, thinking level, or model history, it appends no model-change entry, and it emits no fallback status. See [Compaction](/compaction#planning-rungs-and-failure-behavior).
 
 Fallback entries are written like `--model` and resolve the same way: `provider/model` or a bare model id, in any letter case, with an optional reasoning suffix. Ids that contain `/` or `:` themselves, such as OpenRouter's `qwen/qwen3-coder:exacto`, work as written. Fully qualified `provider/model` ids are clearest, because a bare id that several authenticated providers serve picks the current or default provider. Add a reasoning suffix to a candidate to override the effort for that fallback only; valid suffixes are `:off`, `:minimal`, `:low`, `:medium`, `:high`, `:xhigh`, and `:max`. Atomic clamps or hides levels that the selected model's capability map does not support.
 
@@ -327,50 +325,21 @@ On a genuine first run, Atomic previews available themes and asks whether to opt
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `compaction.enabled` | boolean | `true` | Enable automatic verbatim line compaction |
-| `compaction.reserveTokens` | number | `16384` | Free context tokens below which automatic compaction starts; does not limit summary output |
-| `compaction.compression_ratio` | number | `0.5` | Fraction of compactable transcript **lines to keep** (`0 < value < 1`) |
-| `compaction.preserve_recent` | number | `2` | Exact number of newest context-visible messages kept outside the compactable region; `0` keeps none |
-| `compaction.query` | string | last user message | Optional relevance focus for selecting older lines to retain |
-| `compaction.keepContextShare` | number | `0.5` | Share of the keep target that `<keepContext>` spans may fill (`0` to `1`). Past it, compaction releases whole spans, which are then compacted like other lines: older duplicates first, then the oldest spans, then the 3 most recent spans, then spans in the latest user message. See [keepContext tags](/compaction#keepcontext-tags) |
-| `compaction.planningTimeoutMs` | number or string | `300000` | Wall-clock limit on model planning in automatic compaction, covering every planner request, retry, overflow trim and borrowed fallback model and the credential lookups in between. When it runs out, post-tool and overflow compaction start a fresh context window so the turn continues, and threshold compaction fails without changing context. Accepts milliseconds, duration strings such as `5m`, or `"disabled"`/`0` to disable. See [Compaction](/compaction#planning-time-limit) |
-| `compaction.modelOverrides` | object | `{}` | Exact `"provider/modelId"` keys with optional `reserveTokens` and `preserve_recent` overrides |
-| `compaction.background` | boolean | `true` | Compact older context in the background while the agent keeps working; blocking compaction only on overflow or at the `reserveTokens` threshold when no background result is ready. `/settings`: **Background compaction**. See [Background compaction](/compaction#background-compaction) |
-| `compaction.backgroundThresholdPercent` | number | `75` | Percentage of the context window at which background compaction starts; above 0 and below 100. `/settings`: **Background compaction threshold** (50, 60, 70, 75, 80 or 90). While either background setting holds an invalid value, Atomic reports a settings warning on load or `/reload` and runs with background compaction off and the 75% default, and `/settings` shows those values until you pick valid ones |
-| `compaction.historyRecall` | boolean | `true` | Add a short `Recalled context` section to each compacted context: lines from this session's earlier history, the project's other sessions and workflow runs that match the current task, each with a `history://` source to `read`. It never adds more than 10% of the kept context or 1,500 tokens, gives up after 3 seconds, and leaves the compacted context unchanged on any failure. `false` turns it off. See [Recalled context](/compaction#recalled-context) |
+| `compaction.enabled` | boolean | `true` | Enable automatic compaction |
+| `compaction.reserveTokens` | number | `16384` | Free context tokens below which automatic compaction starts: it runs when context usage exceeds the model's context window minus this reserve. Must be a non-negative safe integer |
+| `compactionModel` | string | `"auto"` | `auto` or an empty value clears the context window and lets the agent recover from session history. An exact registered compactor model ID, such as `morph/morph-compactor`, compacts with that model instead. A saved chat or classifier model is reset to `auto` when a session starts. `/settings`: **Compaction model**. See [Compaction model](/compaction#compaction-model) |
 
 ```json
 {
+  "compactionModel": "auto",
   "compaction": {
     "enabled": true,
-    "reserveTokens": 16384,
-    "compression_ratio": 0.5,
-    "preserve_recent": 2,
-    "query": "optional focus"
+    "reserveTokens": 16384
   }
 }
 ```
 
-The model emits numbered line ranges only; Atomic reconstructs retained text mechanically. `preserve_recent` is enforced client-side and is not a provider parameter. Atomic does not widen this exact message count to a user-turn boundary or force a final logical turn to remain outside compaction.
-
-Per-model budgets use exact, case-sensitive provider/model IDs (including any slashes in the model ID), not patterns or reasoning suffixes:
-
-```json
-{
-  "compaction": {
-    "reserveTokens": 16384,
-    "preserve_recent": 2,
-    "modelOverrides": {
-      "anthropic/claude-sonnet-4-5": { "reserveTokens": 32768, "preserve_recent": 4 },
-      "openai/gpt-5": { "preserve_recent": 0 }
-    }
-  }
-}
-```
-
-Each field resolves independently: the active model's override, then the ordinary compaction setting, then the built-in default. Global and trusted-project settings merge overrides per model and per field. Model switches take effect on the next compaction check or manual call; borrowing a fallback planner does not change the selected budgets. Explicit manual `preserve_recent` parameters still take precedence.
-
-Both fields must be non-negative safe integers, including ordinary settings. Invalid ordinary values are reported even if a model override exists; malformed matching entries and invalid override values are reported when that model is used. `enabled`, `compression_ratio`, and `query` remain ordinary settings, not per-model overrides. Unlike upstream pi's token-based recent-history budget, Atomic uses the exact-message `preserve_recent` setting, not `keepRecentTokens`, and retains its verbatim line compactor.
+These compaction settings were removed and are ignored when present; settings still load without an error: `compaction.compression_ratio`, `compaction.preserve_recent`, `compaction.keepContextShare`, `compaction.query`, `compaction.planningTimeoutMs`, `compaction.modelOverrides`, `compaction.background`, `compaction.backgroundThresholdPercent` and `compaction.historyRecall`. See [Compaction](/compaction) for how compaction works now.
 
 ### Branch Summary
 
@@ -621,7 +590,7 @@ Only the selected setting is validated; invalid lower-precedence settings do not
 }
 ```
 
-`fallbackModels` is independent of `enabledModels`: it is consulted only after a retryable main-chat provider/model failure or a terminal compaction planner outcome.
+`fallbackModels` is independent of `enabledModels`: it is consulted only after a retryable main-chat provider/model failure.
 
 ### Markdown
 

@@ -211,17 +211,12 @@ export abstract class RpcClientApi {
 	async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
 		await this.request({ type: "set_follow_up_mode", mode });
 	}
-	async compact(): Promise<VerbatimCompactionResult> {
-		return this.data(await this.request({ type: "compact" }));
+	/** Compact the session; `instructions` say what to recover first and focus a compactor model. */
+	async compact(instructions?: string): Promise<VerbatimCompactionResult> {
+		return this.data(await this.request({ type: "compact", ...(instructions ? { instructions } : {}) }));
 	}
 	async setAutoCompaction(enabled: boolean): Promise<void> {
 		await this.request({ type: "set_auto_compaction", enabled });
-	}
-	async setBackgroundCompaction(enabled: boolean): Promise<void> {
-		this.data<void>(await this.request({ type: "set_background_compaction", enabled }));
-	}
-	async setBackgroundCompactionThreshold(percent: number): Promise<void> {
-		this.data<void>(await this.request({ type: "set_background_compaction_threshold", percent }));
 	}
 	/**
 	 * Say what extension UI this client can show. With `questionnaire`, `ask_user_question` arrives as one

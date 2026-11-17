@@ -99,7 +99,6 @@ const REHYDRATION_FAMILIES: Readonly<Record<string, string>> = {
 	rehydrateDecisionError: "decision",
 	rehydrateTaskEvictedError: "task-evicted",
 	rehydrateAgentRehydrateError: "agent-rehydrate",
-	rehydrateBackgroundCompactionError: "background-compaction",
 	deserializeGitHubCopilotError: "github-copilot",
 	rehydrateDebugError: "debug",
 	rehydrateEditToolError: "edit-tool",
@@ -155,11 +154,6 @@ test("a family error keeps a typed cause typed, and its own JSON form's other me
 	const rebuilt = rehydrateError(JSON.parse(JSON.stringify(workspace)));
 	assert.ok(isWorkspaceBindingError(rebuilt));
 	assert.equal(rebuilt.reason, "history-rewritten");
-
-	const compaction = serializeError(
-		SERIALIZABLE_FAMILY_CASES.find((kase) => kase.family === "background-compaction")!.make(),
-	);
-	assert.deepEqual(compaction.extra, { phase: "persist" });
 });
 
 test("the detail is the first error of a known family in the chain, outermost first, with what is below it (#4378)", () => {

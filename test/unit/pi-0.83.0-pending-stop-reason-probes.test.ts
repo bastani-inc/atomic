@@ -20,12 +20,11 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import type { StreamFn } from "@bastani/atomic-agent-core";
-import type { AssistantMessage, Model, StopReason } from "@bastani/atomic-ai/compat";
+import type { Api, AssistantMessage, Model, StopReason } from "@bastani/atomic-ai/compat";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { generateBranchSummary } from "../../packages/coding-agent/src/core/compaction/branch-summarization.js";
-import { planDeletedLineRanges } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import {
 	INTERACTIVE_ENGINE_PROTOCOL_VERSION,
 	parseInteractiveEngineCommand,
@@ -35,7 +34,6 @@ import { toJsonEvent } from "../../packages/coding-agent/src/modes/json-event.js
 import { attachJsonlLineReader, serializeJsonLine } from "../../packages/coding-agent/src/modes/rpc/jsonl.js";
 import type { RpcEvent } from "../../packages/coding-agent/src/modes/rpc/rpc-types.js";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
-import { borrowed, PARAMETERS, region, scriptedStream, testModel } from "./compaction-rung-support.js";
 
 /**
  * Every member of the union. Declared as a total `Record<StopReason, true>` so a
@@ -53,6 +51,20 @@ const STOP_REASON_COVERAGE = {
 } satisfies Record<StopReason, true>;
 
 const ALL_STOP_REASONS = Object.keys(STOP_REASON_COVERAGE) as StopReason[];
+
+function testModel(): Model<Api> {
+	return {
+		provider: "primary",
+		id: "summary-model",
+		api: "openai-responses",
+		baseUrl: "https://primary.example",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 100_000,
+		maxTokens: 4_096,
+	} as Model<Api>;
+}
 
 function assistantWith(stopReason: StopReason): AssistantMessage {
 	return { ...fauxAssistantMessage("body text", { stopReason }), timestamp: 1 };
@@ -210,35 +222,5 @@ test("branch summarization classifies every stop reason without an unhandled var
 		assert.equal(result.error, undefined, `${stopReason} must not become a summarization failure`);
 		assert.equal(result.aborted, undefined, `${stopReason} must not be reported as an abort`);
 		assert.match(result.summary ?? "", /body text/u, `${stopReason} lost the summary text`);
-	}
-});
-
-test("the compaction range planner classifies every stop reason without an unhandled variant", async () => {
-	for (const stopReason of ALL_STOP_REASONS) {
-		const stream = scriptedStream({ default: [{ text: "5,12\n", stopReason }] });
-		const plan = () =>
-			planDeletedLineRanges(region(40), PARAMETERS, borrowed(testModel(), "high"), 20, {
-				streamFn: stream.streamFn,
-			});
-
-		const outcome = await plan();
-		// Only the caller's own signal cancels; a provider-side abort is a failed request (#4977).
-		if (stopReason === "error" || stopReason === "aborted") {
-			assert.equal(outcome.kind, "providerError");
-			continue;
-		}
-		// `pending`, `stop` and `toolUse` all parse the ranges; `length` takes the
-		// truncation-recovery path. None may throw, and none may lose the range.
-		assert.ok(
-			outcome.kind === "ranked" || outcome.kind === "recovered",
-			`${stopReason} produced ${outcome.kind} instead of usable ranges`,
-		);
-		assert.deepEqual(
-			(outcome.ranges as ReadonlyArray<{ start: number; end: number }>).map((range) => ({
-				start: Number(range.start),
-				end: Number(range.end),
-			})),
-			[{ start: 5, end: 12 }],
-		);
 	}
 });

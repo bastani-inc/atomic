@@ -330,8 +330,8 @@ function shouldUseServerSideFallbackBeta(model: Model<"anthropic-messages">): bo
  * the affected thinking blocks and answers the turn instead of failing the session.
  *
  * This covers live prefix mismatches *between* compaction boundaries. It is not what handles
- * compaction itself: Atomic's client-side `preserve_recent` tail compaction serializes the
- * protected tail into a single boundary message, so no signed thinking block survives a
+ * compaction itself: Atomic's client-side compaction replaces the context with a single boundary
+ * message, so no signed thinking block survives a
  * boundary to be replayed behind it. That is Anthropic's documented keep-tail remedy applied
  * structurally rather than a case `drop_block` has to catch.
  * https://platform.claude.com/docs/en/build-with-claude/preserved-thinking

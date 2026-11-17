@@ -217,8 +217,9 @@ describe("session_compact_failed", () => {
 				},
 				...failed.extensionFactories,
 			],
-			models: [{ id: "faux-1", contextWindow: 100, maxTokens: 20 }],
-			settings: { compaction: { enabled: true, reserveTokens: 10, preserve_recent: 2 } },
+			// Room for the boundary message below the trigger, which the tool-expanded context crosses.
+			models: [{ id: "faux-1", contextWindow: 12_000, maxTokens: 20 }],
+			settings: { compaction: { enabled: true, reserveTokens: 4_000 } },
 		});
 		for (let index = 0; index < 10; index++) {
 			await harness.sessionManager.appendMessage({
@@ -235,7 +236,7 @@ describe("session_compact_failed", () => {
 
 		await expect(
 			harness.session._preflightPostToolContext([
-				{ role: "user", content: "x".repeat(500), timestamp: Date.now() + 100 },
+				{ role: "user", content: "x".repeat(40_000), timestamp: Date.now() + 100 },
 			]),
 		).rejects.toThrow("Post-tool context compaction failed before the next provider request: boundary write failed");
 

@@ -753,7 +753,7 @@ Selects the primary stage model. String values can carry the reasoning suffix de
 
 Use `model: "auto"` for prompt-based selection of an execution model and supported effort before session admission. Omission and concrete models keep prior behavior. Shared chain/parallel defaults accept `auto`; each stage receives one decision. The router sees the final supplied prompt, including interpolated inputs and supplied task context, rather than only a stage name.
 
-`modelConstraints?: ModelConstraints` applies hard restrictions to auto selection and execution/compaction fallbacks. Fields are `allowedModels?: string[]`, `allowedProviders?: string[]`, `excludedProviders?: string[]`, `allowedEfforts?: (string | null)[]`, `maxInputCost?: number`, `maxOutputCost?: number`, `minContextWindow?: number`, and `requiredInputs?: ("text" | "image")[]`. Model IDs are exact provider/model IDs. Costs are catalog USD per million tokens including pricing tiers, not task budgets; a `-fast` or `-ultrafast` model is compared at the service-tier price it is billed at. Efforts are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `null` for nonreasoning models. Empty allowlists admit nothing. Inherited and stage restrictions all hold; a task override cannot widen shared restrictions. Provider lists set on a stage or task itself replace the user's `modelRouting` provider settings; provider lists in shared `ctx.chain`/`ctx.parallel` options only narrow them. Use `allowedEfforts` to restrict automatic reasoning selection. The user's [`modelRouting.allowedModels` and `excludedModels`](/settings#modelrouting) settings also apply to every auto stage, including builtin stages that omit a model; `modelConstraints` cannot widen them, and a stage whose filters leave no eligible model fails before launch.
+`modelConstraints?: ModelConstraints` applies hard restrictions to auto selection and execution fallbacks. Fields are `allowedModels?: string[]`, `allowedProviders?: string[]`, `excludedProviders?: string[]`, `allowedEfforts?: (string | null)[]`, `maxInputCost?: number`, `maxOutputCost?: number`, `minContextWindow?: number`, and `requiredInputs?: ("text" | "image")[]`. Model IDs are exact provider/model IDs. Costs are catalog USD per million tokens including pricing tiers, not task budgets; a `-fast` or `-ultrafast` model is compared at the service-tier price it is billed at. Efforts are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `null` for nonreasoning models. Empty allowlists admit nothing. Inherited and stage restrictions all hold; a task override cannot widen shared restrictions. Provider lists set on a stage or task itself replace the user's `modelRouting` provider settings; provider lists in shared `ctx.chain`/`ctx.parallel` options only narrow them. Use `allowedEfforts` to restrict automatic reasoning selection. The user's [`modelRouting.allowedModels` and `excludedModels`](/settings#modelrouting) settings also apply to every auto stage, including builtin stages that omit a model; `modelConstraints` cannot widen them, and a stage whose filters leave no eligible model fails before launch.
 
 An auto stage has no session until it receives prompt text. Model-dependent operations such as `compact()` or `cycleModel()` before that point report an error; call `prompt()` first or deliberately select a concrete model with `setModel()`. Session operations after admission keep their normal behavior.
 
@@ -880,7 +880,7 @@ To send your own kind:
    ```typescript
    declare module "@bastani/atomic/workflows" {
      interface StageWakeKinds {
-       "compaction-ready": { readonly summaryEntryId: string };
+       "index-ready": { readonly indexPath: string };
      }
    }
    ```
@@ -890,15 +890,15 @@ To send your own kind:
    ```typescript
    import { deliverStageWake, registerStageWakeKind } from "@bastani/atomic/workflows";
 
-   const unregister = registerStageWakeKind("compaction-ready", async (wake, { runId, stageId, waiting, signal }) => {
-     await applySummary(runId, stageId, wake.summaryEntryId, signal);
+   const unregister = registerStageWakeKind("index-ready", async (wake, { runId, stageId, waiting, signal }) => {
+     await loadIndex(runId, stageId, wake.indexPath, signal);
    });
    ```
 
 3. Deliver messages by run and stage id:
 
    ```typescript
-   const { status } = deliverStageWake(runId, stageId, { kind: "compaction-ready", summaryEntryId });
+   const { status } = deliverStageWake(runId, stageId, { kind: "index-ready", indexPath });
    ```
 
 A stage handles each message in this order:
@@ -2272,7 +2272,7 @@ The public authoring declaration intentionally excludes runtime-only executor fi
 
 #### Typed failures of child workflows
 
-When a child workflow fails on a typed error, in this process or on a pooled worker of this machine or another one, the parent's error has the same class in its `cause` chain with its `code`, `hint`, `retryable`, fields and its own causes, so `instanceof`, guards such as `isWorkspaceBindingError(error)`, and finders such as `findStageWaitError(error)` match it. The failed child's `RunResult` and the failed stage's snapshot carry it as `failureDetail`; `error` keeps the text. `failureDetail` is a `SerializedError` (from `@bastani/atomic/workflows`): `name`, `code`, `message`, `hint`, `retryable`, `family`, `fields`, `cause`, `cleanupCause`, and, for members of a family's own JSON form that have no place of their own, `extra` (a workspace error's `reason`, a background compaction error's `phase`). It holds the first error of a family in the table below in the failure's cause chain, outermost first, with that error's own causes. `rehydrateError(failureDetail)` rebuilds it as its class; `serializeError(error)` makes one.
+When a child workflow fails on a typed error, in this process or on a pooled worker of this machine or another one, the parent's error has the same class in its `cause` chain with its `code`, `hint`, `retryable`, fields and its own causes, so `instanceof`, guards such as `isWorkspaceBindingError(error)`, and finders such as `findStageWaitError(error)` match it. The failed child's `RunResult` and the failed stage's snapshot carry it as `failureDetail`; `error` keeps the text. `failureDetail` is a `SerializedError` (from `@bastani/atomic/workflows`): `name`, `code`, `message`, `hint`, `retryable`, `family`, `fields`, `cause`, `cleanupCause`, and, for members of a family's own JSON form that have no place of their own, `extra` (such as a workspace error's `reason`). It holds the first error of a family in the table below in the failure's cause chain, outermost first, with that error's own causes. `rehydrateError(failureDetail)` rebuilds it as its class; `serializeError(error)` makes one.
 
 | `family` | Errors | Guard |
 | --- | --- | --- |
@@ -2287,7 +2287,6 @@ When a child workflow fails on a typed error, in this process or on a pooled wor
 | `decision` | `DecisionError` and its subclasses | `isDecisionError` |
 | `task-evicted` | `TaskEvictedError` | `isTaskEvictedError` |
 | `agent-rehydrate` | `AgentRehydrateError`, `AgentReleaseConfigError` | `isAgentRehydrateError` |
-| `background-compaction` | `BackgroundCompactionError` and its subclasses | `isBackgroundCompactionError` |
 | `github-copilot` | `GitHubCopilotError` and its subclasses | `isGitHubCopilotError` |
 | `debug` | `DebugError`, `DebugLogUnwritableError`, `DebugConfigError` | `isDebugError` |
 | `edit-tool` | `EditToolError` and its subclasses | `isEditToolError` |

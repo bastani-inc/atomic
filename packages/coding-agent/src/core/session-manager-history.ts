@@ -254,7 +254,9 @@ export function buildSessionProjection(
 	const edits = collectContextEdits(contextEntries);
 
 	const boundary = getLatestCompactionBoundaryEntry(path);
-	if (!boundary || boundary.details?.backend === "summary") {
+	// A summary boundary from an older release replays with its kept messages as structured messages.
+	const legacySummary = (boundary?.details as { backend?: string } | undefined)?.backend === "summary";
+	if (!boundary || legacySummary) {
 		const projected = contextEntries.map(
 			(sourceEntry): ProjectedSessionEntry => ({
 				sourceEntry,

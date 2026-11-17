@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import {
 	AgentRehydrateError,
-	BackgroundCompactionPersistError,
 	BlueprintStepFailedError,
 	DebugLogUnwritableError,
 	DecisionTimeoutError,
@@ -11,7 +10,6 @@ import {
 	GitUnavailableError,
 	IntercomBrokerSuccessorTimeoutError,
 	isAgentRehydrateError,
-	isBackgroundCompactionPersistError,
 	isBlueprintStepFailedError,
 	isDebugLogUnwritableError,
 	isDecisionTimeoutError,
@@ -39,7 +37,6 @@ import {
 	ShellTimeoutError,
 	StartupBenchmarkConfigError,
 	serializeAgentRehydrateError,
-	serializeBackgroundCompactionError,
 	serializeBlueprintError,
 	serializeDebugError,
 	serializeDecisionError,
@@ -260,13 +257,6 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 		type: AgentRehydrateError,
 		guard: isAgentRehydrateError,
 		facts: ownFacts(serializeAgentRehydrateError),
-	},
-	{
-		family: "background-compaction",
-		make: () => new BackgroundCompactionPersistError({ upToEntryId: "u3" }, { cause: new Error("disk full") }),
-		type: BackgroundCompactionPersistError,
-		guard: isBackgroundCompactionPersistError,
-		facts: ownFacts(serializeBackgroundCompactionError),
 	},
 	{
 		family: "github-copilot",

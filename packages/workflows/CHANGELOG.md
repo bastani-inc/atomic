@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `<keepContext>` tags no longer protect text from compaction. `keepContext()`, `KEEP_CONTEXT_OPEN_TAG` and `KEEP_CONTEXT_CLOSE_TAG` are unchanged, but compaction now clears a stage's context window, and the recovery instructions tell the stage to search its session history for every tagged span and recover it verbatim before anything else. Nothing is kept in context automatically. The builtin workflows' tagged contracts and the `workflow` tool's guidance describe the new meaning
+- Workflow stage status no longer has a `compaction` field: `workflow stages` and `workflow stage` stop reporting background compaction state, because background compaction was removed
+- The `background-compaction` family is gone from typed workflow errors, so `failureDetail.family` no longer takes that value
+
 ### Changed
 
 - The `workflow` tool's row in the chat now looks like every other tool's, instead of drawing its own rounded panels. A run reads `Workflow(<name> · <what it was asked>)` and the other actions `workflow <action> <target>`, each with one result line. A run's line follows the run until it ends (`∀ Running · 1/3 stages · ↓ 22.4k tokens`, `! Waiting for input at review`, `✓ Completed in 4s · 3 stages · 32.4k tokens`, `✗ Failed at review · <reason>`), and Ctrl+O expands the row to the run's inputs, stages and outputs ([#5224](https://github.com/bastani-inc/atomic/issues/5224))

@@ -242,16 +242,20 @@ describe("a compaction while a call is detached (#4580)", () => {
 		assert.equal(boundary?.coveredThroughEntryId, undefined);
 	});
 
-	test("a compaction with nothing before the call's turn to compact leaves the transcript as it is (#4580)", async () => {
+	test("a compaction with only the prompt before the call's turn clears the prompt and keeps the turn (#4580)", async () => {
 		const tool = waitTool();
 		const harness = await compactingHarness(tool);
 		harness.setResponses([waitForCiTurn("ci-1")]);
 		await settlesWithin(harness.session.prompt("watch ci"));
 
-		await assert.rejects(harness.session.compact(), /Nothing to compact/);
+		await harness.session.compact();
 
-		assert.deepEqual(compactionEntries(harness), []);
+		const [boundary] = compactionEntries(harness);
+		assert.ok(boundary?.coveredThroughEntryId, "the boundary covers only the prompt");
+		assert.deepEqual(projectedRoles(harness), ["custom", "assistant"]);
 		assert.equal(harness.session.hasPendingDetachedTurn(), true);
+		await assert.rejects(harness.session.compact(), /Nothing to compact/);
+		assert.equal(compactionEntries(harness).length, 1);
 	});
 
 	test("a continuation after a compaction does not start a turn while a call is detached (#4580)", async () => {

@@ -115,7 +115,10 @@ InteractiveModeBase.prototype.handleBashCommand = async function (
 	this.ui.requestRender();
 };
 
-InteractiveModeBase.prototype.handleCompactCommand = async function (this: InteractiveModeBase): Promise<void> {
+InteractiveModeBase.prototype.handleCompactCommand = async function (
+	this: InteractiveModeBase,
+	instructions = "",
+): Promise<void> {
 	// A manual /compact can take over automatic compaction, but must not start
 	// another manual compaction or overlap branch summarization.
 	const automaticCompaction =
@@ -139,7 +142,7 @@ InteractiveModeBase.prototype.handleCompactCommand = async function (this: Inter
 
 	this.manualCompactionTakeoverPending = true;
 	try {
-		await this.session.compact();
+		await this.session.compact(instructions.trim() ? { query: instructions.trim() } : {});
 	} catch (error) {
 		// Compaction failures arrive as events, so they stay ignored here — except
 		// a send the engine never accepted, which the submit handler turns back

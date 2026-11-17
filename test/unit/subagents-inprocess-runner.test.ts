@@ -889,8 +889,8 @@ async function createCompactedTailSession(
 	await writer.appendModelChange("anthropic", "claude-sonnet");
 	await writer.appendCompaction("summary", null, 100, {
 		strategy: "verbatim-lines",
-		promptVersion: 6,
-		parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+		promptVersion: 7,
+		parameters: { query: "" },
 		stats: {
 			linesBefore: 13,
 			linesDeleted: 13,
@@ -900,7 +900,7 @@ async function createCompactedTailSession(
 			tokensAfter: 10,
 			percentReduction: 90,
 		},
-		rung: "planned",
+		form: "cleared",
 	});
 	const leafId = await writer.appendMessage({ role: "user", content: "post-compaction", timestamp: 20 });
 	const tail = await SessionManager.open(writer.getSessionFile()!, undefined, root, { history: "tail" });

@@ -10,22 +10,13 @@ import type { SessionEntry, SessionProjection } from "../session-manager.ts";
 
 export interface CompactionSettings {
 	enabled: boolean;
+	/** Free context tokens below which automatic compaction starts. */
 	reserveTokens: number;
-	/** Fraction of compactable context to keep. 0.3 is aggressive, 0.7 is light. */
-	compression_ratio: number;
-	/** Number of recent context-eligible messages to preserve in standard mode. */
-	preserve_recent: number;
-	/** Focus query for relevance-based pruning; auto-detected when omitted in settings/options. */
-	query?: string;
-	/** Share of the keep target `<keepContext>` spans may fill before older spans are released; 0.5 when omitted. */
-	keepContextShare?: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
-	compression_ratio: 0.5,
-	preserve_recent: 2,
 };
 
 /**

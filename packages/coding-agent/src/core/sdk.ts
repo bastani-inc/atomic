@@ -29,6 +29,7 @@ import { getDefaultCacheRetention } from "./cache-retention.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
 import { inheritChildSessionOptions } from "./child-session-options.ts";
 import { getClientIdentity } from "./client-identity.ts";
+import { migrateCompactionModelSettings } from "./compaction/model-resolver.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { startupCleanupFailureMessage } from "./extension-startup-failure.ts";
 import type { ExtensionRunner } from "./extensions/index.js";
@@ -346,6 +347,7 @@ async function constructAgentSession(
 	await modelRuntime.refresh({ allowNetwork: false });
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	migrateCompactionModelSettings(settingsManager, modelRuntime.getAllModels());
 	let sessionManager = suppliedSession;
 	if (!sessionManager) {
 		const sessionStore =
@@ -884,7 +886,6 @@ async function constructAgentSession(
 			customTools: options.customTools,
 			modelRuntime,
 			cacheWarmer,
-			...(options.compactionWake ? { compactionWake: options.compactionWake } : {}),
 			initialActiveToolNames,
 			usesDefaultTools: (options.tools === undefined || toolModifiers !== undefined) && !options.noTools,
 			defaultToolModifiers: toolModifiers,

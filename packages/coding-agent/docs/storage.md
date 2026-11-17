@@ -824,7 +824,7 @@ A custom `SessionStore` can implement these optional methods to avoid loading wh
 |---|---|
 | `readTail(id, fromSeq)` | The header and entries from `fromSeq` on, in store order, plus earlier live state and omitted usage totals. |
 | `readRange(id, startSeq, endSeq)` | Entries in that inclusive sequence range, in store order, with `seqs`, `lastSeq` and `epoch`. |
-| `findLatestCompaction(id, leafId?)` | The latest verbatim compaction on the selected branch, its sequence and retained start. |
+| `findLatestCompaction(id, leafId?)` | The latest active compaction boundary on the selected branch, its sequence and retained start. |
 | `readResume(id, leafId?)` | One consistent snapshot containing the header, selected branch from its compaction boundary, live state, omitted totals, recovery ids, `lastSeq`, `lastEntryId`, `leafId` and `epoch`. |
 | `findEntrySeq(id, entryId)` | The entry's sequence, or `undefined` if it is absent. |
 

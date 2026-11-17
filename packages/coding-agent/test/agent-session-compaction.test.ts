@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, expect, it, test } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
-import { BackgroundCompactionRuntime } from "../src/core/agent-session-background-compaction.js";
 import { agentSessionCompactionMethods } from "../src/core/agent-session-compaction.js";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -25,10 +24,7 @@ test("RPC get_state round-trips the active compaction reason and start time (#52
 		sessionManager: SessionManager.inMemory(process.cwd()),
 		settingsManager: {
 			getCompactionEnabled: () => true,
-			getCompactionBackground: () => true,
-			getCompactionBackgroundThresholdPercent: () => 75,
 		},
-		_backgroundCompaction: new BackgroundCompactionRuntime(undefined),
 		_resourceLoader: { getExtensions: () => ({ extensions: [], overlaps: [] }) },
 		_scopedModels: [],
 		_steeringMessages: [],
@@ -60,11 +56,4 @@ test("RPC get_state round-trips the active compaction reason and start time (#52
 	assert.equal(response.data.isCompacting, true);
 	assert.equal(response.data.compactionReason, "threshold");
 	assert.equal(response.data.compactionStartedAt, 4_000);
-	assert.deepEqual(
-		response.data.compaction,
-		{ state: "idle" },
-		"background compaction never sets isCompacting (#4330)",
-	);
-	assert.equal(response.data.backgroundCompactionEnabled, true);
-	assert.equal(response.data.backgroundCompactionThresholdPercent, 75);
 });

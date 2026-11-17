@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- A subagent whose tools leave out `read` or `search` gets one read-only tool, `session_history`, after compaction first clears its context, so it can recover what it needs from its own session's history. It reaches no other session, file or project
+
 ### Fixed
 
 - Fixed Atomic exiting with `child-record-unreadable` ("which is not open in this process") when a workflow stage that had launched a background subagent finished, failed or had its run ended. Closing the stage reads each child's latest record to record it `stage-closed`. That record was read only through the copies of the stage's session registered for it, which are held weakly and which a later copy of the session can replace, and the error escaped from the stage's close listener and ended the process. The stage now also reads its children's records through its own session. When the copy that saved a newer record is gone, the stage ends the child from the record its own session holds, updated with where the child stands as Atomic last saw it. A child that is still running instead ends once its task settles, and a child that was already killed, gone or `stage-closed` is left as it is. A child it can read no record of is counted as a record that could not be saved, and the stage's other children still end. Nothing that goes wrong while a stage closes ends the process or fails the close.

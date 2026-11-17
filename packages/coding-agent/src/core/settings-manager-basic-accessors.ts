@@ -1,9 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { type Model, normalizeProviderId } from "@bastani/atomic-ai";
-import {
-	resolveBackgroundCompactionEnabled,
-	resolveBackgroundCompactionThresholdPercent,
-} from "./compaction/background-compaction.ts";
 import { DecisionConfigError } from "./decision/errors.js";
 import { parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
@@ -11,12 +7,7 @@ import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals, stringEntries } from "./settings-manager-internals.ts";
 import { resolveDefaultTools } from "./settings-merge.js";
 import type { Settings } from "./settings-schema.ts";
-import type {
-	CompactionModelOverride,
-	CompactionSettings,
-	ModelRoutingSettings,
-	TransportSetting,
-} from "./settings-types.ts";
+import type { CompactionSettings, ModelRoutingSettings, TransportSetting } from "./settings-types.ts";
 import { CACHE_WARMING_MODES, type CacheWarmingMode } from "./settings-types.ts";
 import type { WorktreePoolSettings } from "./worktree-snapshot/pool.ts";
 import { resolveWorktreeSnapshotSettings } from "./worktree-snapshot/settings.ts";
@@ -40,37 +31,14 @@ function routingList(value: unknown): string[] | undefined {
 	return [...new Set(value as string[])];
 }
 
-function resolveCompactionSetting(
-	compaction: CompactionSettings | undefined,
-	field: keyof CompactionModelOverride,
-	model?: CompactionModel,
-): number {
-	const ordinary = compaction?.[field];
-	if (ordinary !== undefined && (typeof ordinary !== "number" || !Number.isSafeInteger(ordinary) || ordinary < 0)) {
+function resolveReserveTokens(compaction: CompactionSettings | undefined): number {
+	const value = compaction?.reserveTokens;
+	if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)) {
 		throw new Error(
-			`Invalid compaction.${field} setting: ${String(ordinary)}. Expected a non-negative safe integer.`,
+			`Invalid compaction.reserveTokens setting: ${String(value)}. Expected a non-negative safe integer.`,
 		);
 	}
-	const modelKey = model ? `${model.provider}/${model.id}` : undefined;
-	const entry = modelKey === undefined ? undefined : compaction?.modelOverrides?.[modelKey];
-	if (entry !== undefined && (entry === null || typeof entry !== "object" || Array.isArray(entry))) {
-		throw new Error(
-			`Invalid compaction.modelOverrides["${modelKey}"] setting: ${String(entry)}. Expected an object.`,
-		);
-	}
-	const override = entry?.[field];
-	if (override !== undefined && (typeof override !== "number" || !Number.isSafeInteger(override) || override < 0)) {
-		throw new Error(
-			`Invalid compaction.modelOverrides["${modelKey}"].${field} setting: ${String(override)}. Expected a non-negative safe integer.`,
-		);
-	}
-	return (
-		override ??
-		ordinary ??
-		(field === "reserveTokens"
-			? SETTINGS_DEFAULTS.compaction.reserveTokens
-			: SETTINGS_DEFAULTS.compaction.preserve_recent)
-	);
+	return value ?? SETTINGS_DEFAULTS.compaction.reserveTokens;
 }
 
 interface SettingsManagerBasicAccessors {
@@ -134,29 +102,11 @@ interface SettingsManagerBasicAccessors {
 	setTransport(transport: TransportSetting): void;
 	getCompactionEnabled(): boolean;
 	setCompactionEnabled(enabled: boolean): void;
+	/** `model` is accepted for compatibility; per-model overrides were removed. */
 	getCompactionReserveTokens(model?: CompactionModel): number;
-	getCompactionCompressionRatio(): number;
-	getCompactionPreserveRecent(model?: CompactionModel): number;
-	getCompactionQuery(): string | undefined;
-	/** Share of the keep target `<keepContext>` spans may fill before older spans are released (#4794). */
-	getCompactionKeepContextShare(): number;
-	/** Wall-clock limit on automatic compaction's model planning; `undefined` when disabled. */
-	getCompactionPlanningTimeoutMs(): number | undefined;
-	/** Whether automatic compaction starts in the background at the soft threshold (#4330). */
-	getCompactionBackground(): boolean;
-	setCompactionBackground(enabled: boolean): void;
-	/** Percentage of the context window at which background compaction starts. */
-	getCompactionBackgroundThresholdPercent(): number;
-	setCompactionBackgroundThresholdPercent(percent: number): void;
-	/** Whether a compacted context gets a `Recalled context` section from earlier history (#4568). */
-	getCompactionHistoryRecall(): boolean;
 	getCompactionSettings(model?: CompactionModel): {
 		enabled: boolean;
 		reserveTokens: number;
-		compression_ratio: number;
-		preserve_recent: number;
-		query?: string;
-		keepContextShare: number;
 	};
 	getBranchSummarySettings(): { reserveTokens: number; skipPrompt: boolean };
 	getBranchSummarySkipPrompt(): boolean;
@@ -289,16 +239,12 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 
 	getCompactionModel() {
 		const value = settingsInternals(this).settings.compactionModel;
-		if (value === undefined) return "";
-		if (typeof value !== "string" || value.trim() !== value) {
-			throw new Error("Invalid compactionModel: expected an exact provider/model ID, auto, or an empty string.");
-		}
-		return value;
+		return typeof value === "string" ? value.trim() : "";
 	},
 
 	setCompactionModel(model, scope = "global") {
 		if (typeof model !== "string" || model.trim() !== model) {
-			throw new Error("Invalid compactionModel: expected an exact provider/model ID, auto, or an empty string.");
+			throw new Error("Invalid compactionModel: expected auto, an empty string, or an exact compactor model ID.");
 		}
 		const state = settingsInternals(this);
 		if (scope === "project") {
@@ -544,83 +490,14 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		state.save();
 	},
 
-	getCompactionReserveTokens(model) {
-		return resolveCompactionSetting(settingsInternals(this).settings.compaction, "reserveTokens", model);
+	getCompactionReserveTokens() {
+		return resolveReserveTokens(settingsInternals(this).settings.compaction);
 	},
 
-	getCompactionCompressionRatio() {
-		const value = settingsInternals(this).settings.compaction?.compression_ratio;
-		return typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1
-			? value
-			: SETTINGS_DEFAULTS.compaction.compression_ratio;
-	},
-
-	getCompactionPreserveRecent(model) {
-		return resolveCompactionSetting(settingsInternals(this).settings.compaction, "preserve_recent", model);
-	},
-
-	getCompactionQuery() {
-		const query = settingsInternals(this).settings.compaction?.query?.trim();
-		return query && query.length > 0 ? query : undefined;
-	},
-
-	getCompactionKeepContextShare() {
-		const value = settingsInternals(this).settings.compaction?.keepContextShare;
-		return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
-			? value
-			: SETTINGS_DEFAULTS.compaction.keepContextShare;
-	},
-
-	getCompactionPlanningTimeoutMs() {
-		const raw = settingsInternals(this).settings.compaction?.planningTimeoutMs;
-		// A positive fraction of a millisecond is still a limit: only 0 or "disabled" turn it off.
-		const configured = typeof raw === "number" && raw > 0 && raw < 1 ? 1 : parseHttpIdleTimeoutMs(raw);
-		const timeoutMs = configured ?? SETTINGS_DEFAULTS.compaction.planningTimeoutMs;
-		return timeoutMs > 0 ? timeoutMs : undefined;
-	},
-
-	getCompactionBackground() {
-		return resolveBackgroundCompactionEnabled(settingsInternals(this).settings.compaction?.background, "settings");
-	},
-
-	setCompactionBackground(enabled) {
-		const value = resolveBackgroundCompactionEnabled(enabled, "sdk");
-		const state = settingsInternals(this);
-		if (!state.globalSettings.compaction) state.globalSettings.compaction = {};
-		state.globalSettings.compaction.background = value;
-		state.markModified("compaction", "background");
-		state.save();
-	},
-
-	getCompactionBackgroundThresholdPercent() {
-		return resolveBackgroundCompactionThresholdPercent(
-			settingsInternals(this).settings.compaction?.backgroundThresholdPercent,
-			"settings",
-		);
-	},
-
-	setCompactionBackgroundThresholdPercent(percent) {
-		const value = resolveBackgroundCompactionThresholdPercent(percent, "sdk");
-		const state = settingsInternals(this);
-		if (!state.globalSettings.compaction) state.globalSettings.compaction = {};
-		state.globalSettings.compaction.backgroundThresholdPercent = value;
-		state.markModified("compaction", "backgroundThresholdPercent");
-		state.save();
-	},
-
-	getCompactionHistoryRecall() {
-		return settingsInternals(this).settings.compaction?.historyRecall ?? SETTINGS_DEFAULTS.compaction.historyRecall;
-	},
-
-	getCompactionSettings(model) {
-		const query = this.getCompactionQuery();
+	getCompactionSettings() {
 		return {
 			enabled: this.getCompactionEnabled(),
-			reserveTokens: this.getCompactionReserveTokens(model),
-			compression_ratio: this.getCompactionCompressionRatio(),
-			preserve_recent: this.getCompactionPreserveRecent(model),
-			...(query === undefined ? {} : { query }),
-			keepContextShare: this.getCompactionKeepContextShare(),
+			reserveTokens: this.getCompactionReserveTokens(),
 		};
 	},
 

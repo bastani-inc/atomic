@@ -367,7 +367,11 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "login", description: "Configure provider authentication", argumentHint: "<provider>" },
 	{ name: "logout", description: "Remove provider authentication", argumentHint: "<provider>" },
 	{ name: "new", description: "Start a new session" },
-	{ name: "compact", description: "Compact older context with verbatim line ranges" },
+	{
+		name: "compact",
+		description: "Clear the context window; the agent then recovers what it needs from session history",
+		argumentHint: "[instructions]",
+	},
 	{ name: "resume", description: "Resume another session" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
 	{ name: "exit", description: `Exit ${APP_NAME}` },

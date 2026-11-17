@@ -4,21 +4,35 @@ import { detachableTool, forgetDetachableTools } from "./agent-session-detached-
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { isWorkflowStageTaskOwner } from "./agent-session-tasks.js";
 import type { ToolDefinitionEntry } from "./agent-session-types.js";
+import { SESSION_HISTORY_TOOL_NAME } from "./compaction/context-clear.js";
 import { hostInputError } from "./extensions/host-input.js";
 import { ExtensionRunner, type ToolDefinition, wrapRegisteredTools } from "./extensions/index.js";
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { withWorktreeRootMappings } from "./resume/path-mapping.ts";
+import { getLatestCompactionBoundaryEntry } from "./session-manager-history.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { isRegisteredToolAllowed, activatesOnRegistration as toolActivatesOnRegistration } from "./tool-selection.ts";
 import { createLocalBashOperations } from "./tools/bash.js";
+import { createHistoryRouter } from "./tools/history-protocol.ts";
 import { createAllToolDefinitions, getDefaultToolNames } from "./tools/index.js";
 import { rejectMalformedToolArguments } from "./tools/malformed-tool-arguments.ts";
 import { createLocalPowerShellOperations } from "./tools/powershell.ts";
+import { createSessionHistoryToolDefinition } from "./tools/session-history.ts";
 import { resolveSessionTempDirPath } from "./tools/session-temp-dir.ts";
 import { scheduleToolExecution } from "./tools/tool-concurrency.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
+
+/** A resumed session without `read` or `search` that already crossed a clear-and-recover boundary keeps its history tool. */
+function resumedRestrictedAfterBoundary(
+	session: AgentSession,
+	registry: ReadonlyMap<string, ToolDefinitionEntry>,
+): boolean {
+	if (registry.has("read") && registry.has("search")) return false;
+	const boundary = getLatestCompactionBoundaryEntry(session.sessionManager.getBranch());
+	return boundary?.details?.form !== undefined;
+}
 
 export function _refreshToolRegistry(
 	this: AgentSession,
@@ -64,6 +78,26 @@ export function _refreshToolRegistry(
 			sourceInfo: tool.sourceInfo,
 		});
 	}
+	// After a compaction boundary, an agent without `read` or `search` reads its own session's history through this
+	// one tool, whatever its allowlist says; it reaches nothing else.
+	const historyTool =
+		(this._sessionHistoryToolEnabled || resumedRestrictedAfterBoundary(this, definitionRegistry)) &&
+		!definitionRegistry.has(SESSION_HISTORY_TOOL_NAME)
+			? {
+					definition: createSessionHistoryToolDefinition(SESSION_HISTORY_TOOL_NAME, {
+						sessionId: () => this.sessionManager.getSessionId(),
+						router: () =>
+							createHistoryRouter({
+								cwd: this._cwd,
+								currentSessionId: this.sessionManager.getSessionId(),
+								sessionStore: () => this.sessionManager.getSessionStore(),
+								workflows: () => undefined,
+							}),
+					}) as ToolDefinition,
+					sourceInfo: createSyntheticSourceInfo(`<builtin:${SESSION_HISTORY_TOOL_NAME}>`, { source: "builtin" }),
+				}
+			: undefined;
+	if (historyTool) definitionRegistry.set(SESSION_HISTORY_TOOL_NAME, historyTool);
 	this._toolDefinitions = definitionRegistry;
 	this._toolPromptSnippets = new Map(
 		Array.from(definitionRegistry.values())
@@ -93,12 +127,13 @@ export function _refreshToolRegistry(
 		runner,
 	);
 
+	const wrappedHistoryTools = historyTool ? wrapRegisteredTools([historyTool], runner) : [];
 	const toolRegistry = new Map<string, AgentTool>();
 	forgetDetachableTools(this);
 	// A built-in question belongs to the UI of the session that asks it, and ends with that session, except on a workflow
 	// stage, whose own UI keeps it: only there may it outlive its run.
 	const questionsDetach = isWorkflowStageTaskOwner(this);
-	for (const tool of [...wrappedBuiltInTools, ...(wrappedExtensionTools as AgentTool[])]) {
+	for (const tool of [...wrappedBuiltInTools, ...wrappedHistoryTools, ...(wrappedExtensionTools as AgentTool[])]) {
 		const builtInQuestion =
 			!this._baseToolsOverride && tool.name === "ask_user_question" && wrappedBuiltInTools.includes(tool);
 		const abortError = builtInQuestion
@@ -172,6 +207,7 @@ export function _refreshToolRegistry(
 	for (const name of this._pendingToolNames) {
 		if (isExposedTool(name) || selectedMcpNames.has(name)) nextActiveToolNames.push(name);
 	}
+	if (historyTool) nextActiveToolNames.push(SESSION_HISTORY_TOOL_NAME);
 
 	this._setActiveTools([...new Set(nextActiveToolNames)]);
 }

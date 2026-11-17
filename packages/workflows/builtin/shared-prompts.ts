@@ -1,5 +1,5 @@
 // Builtin prompts use the same public `keepContext` helper workflow authors do, so the
-// protection semantics cannot drift between builtin and user-authored workflows.
+// tagging cannot drift between builtin and user-authored workflows.
 import { keepContext } from "../src/authoring/keep-context.js";
 
 export { keepContext };
@@ -48,8 +48,8 @@ export const STEERING_PROPAGATION_CONTRACT = [
  * inserted immediately before that closing section rather than after it, so a
  * stage's final words remain its instruction.
  *
- * The contract is `keepContext`-protected because only the user may amend a run's contract,
- * and an amendment reaches later stages solely through this restatement duty. Compacted away,
+ * The contract is `keepContext`-tagged, so a stage recovers it verbatim first after a clear, because only the user
+ * may amend a run's contract and an amendment reaches later stages solely through this restatement duty. Lost,
  * the run silently reverts to the launch contract while the implementer builds to the amended
  * one — the exact split this pattern exists to prevent.
  */
@@ -138,7 +138,7 @@ export function renderE2eQaVideoReviewGuidance(
 }
 
 /**
- * `keepContext`-protected: this is the run's immutable contract and its central prohibition
+ * `keepContext`-tagged, so a stage recovers it verbatim first after a clear: this is the run's immutable contract and its central prohibition
  * ("You may never widen the contract yourself"). A prohibition deleted from context reads as
  * permission, so losing it turns scope creep into apparently sanctioned work.
  */
@@ -206,8 +206,8 @@ export const FINDINGS_CONSOLIDATION_CONTRACT = [
 ].join("\n");
 
 /**
- * `keepContext`-protected: every clause here is a prohibition, and prohibitions are the class
- * compaction erodes first — they are terse, stated once, and low-density next to the objective
+ * `keepContext`-tagged, so a stage recovers it verbatim first after a clear: every clause here is a prohibition,
+ * and prohibitions are the easiest to lose — they are terse, stated once, and low-density next to the objective
  * they bound. Losing this reads as license to keep going.
  */
 export const SCOPE_DISCIPLINE_CONTRACT = keepContext([
@@ -231,10 +231,10 @@ export const EVIDENCE_CLOSURE_POLICY = [
 ].join("\n");
 
 /**
- * `keepContext`-protected: this binds the stage to a specific checkout, and a checkout is
- * exactly the kind of identifier a stage must not lose. Compacted away during a long run, an
+ * `keepContext`-tagged, so a stage recovers it verbatim first after a clear: this binds the stage to a specific
+ * checkout, and a checkout is exactly the kind of identifier a stage must not lose. Lost during a long run, an
  * agent hitting a lock or dirty state invents a second worktree and the delivered delta lands
- * somewhere the reviewers never look. It is two lines, so protection costs almost nothing.
+ * somewhere the reviewers never look. It is two lines, so tagging it costs almost nothing.
  */
 export const WORKTREE_DISCIPLINE_CONTRACT = keepContext([
   "Work in the workflow-designated checkout. Do not create another worktree, clone, or repository copy unless the task requests it; conflicts, locks, dirty state, and failed commands do not authorize one.",
