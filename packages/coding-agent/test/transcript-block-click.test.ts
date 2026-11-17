@@ -16,6 +16,7 @@ import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import type { SessionEntry } from "../src/core/session-manager.js";
 import type { TaskCompletionEnvelope } from "../src/core/tasks/completion.js";
 import { taskCompletionMessage } from "../src/core/tasks/completion-message.js";
+import type { ClickExpandableBlock } from "../src/modes/interactive/components/transcript-block-clicks.js";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.js";
 import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
@@ -491,6 +492,57 @@ describe("clicking transcript blocks in the main chat", () => {
 			const again = chat.rowOf(/worker finished/);
 			chat.click(chat.columnOf(again, "worker"), again);
 			assert.ok(!shown(), chat.screen().join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a press and release split by a repaint that swapped in another block with the same text toggles nothing", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const header = chat.rowOf(/Bash\(second-command\)/);
+			const children = mode(chat).chatContainer.children;
+			const index = children.findIndex((child) => child.render(100).some((line) => line.includes("second-command")));
+			const original = children[index]!;
+			let toggled = false;
+			const lookalike: ClickExpandableBlock = {
+				expandsOnClick: true,
+				isExpanded: () => false,
+				setExpanded: () => {
+					toggled = true;
+				},
+				headerRows: () => [1],
+				render: (width) => original.render(width),
+				invalidate: () => {},
+			};
+			chat.press(chat.columnOf(header, "second-command"), header);
+			children.splice(index, 1, lookalike);
+			chat.tui.requestRender();
+			chat.tui.renderNow();
+			chat.release(chat.columnOf(header, "second-command"), header);
+			chat.tui.renderNow();
+			assert.equal(toggled, false, "the pressed block is no longer the one under the pointer");
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("a fast second click is a double-click even when an overlay opened elsewhere between the clicks", async () => {
+		const chat = await mountChat(100, 60);
+		try {
+			const header = chat.rowOf(/Bash\(first-command\)/);
+			const column = chat.columnOf(header, "first-command");
+			chat.click(column, header);
+			assert.ok(chat.expanded("first"));
+			chat.tui.showOverlay(
+				{ render: () => ["note"], invalidate: () => {} },
+				{ row: 0, col: 90, width: 8, nonCapturing: true },
+			);
+			chat.tui.renderNow();
+			const again = chat.rowOf(/Bash\(first-command\)/);
+			assert.equal(again, header);
+			chat.click(column, again);
+			assert.ok(chat.expanded("first"), "the second click inside the double-click window does not toggle back");
 		} finally {
 			chat.tui.stop();
 		}

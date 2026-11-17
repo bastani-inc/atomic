@@ -69,7 +69,11 @@ interface ActiveComponent {
 	/** The latest frame request from the host; a custom component pushes its frames only once the host laid it out. */
 	lastRequestId?: number;
 	/** The frame the host holds, so a repaint that changed nothing sends nothing. */
-	lastFrame?: { readonly lines: readonly string[]; readonly scrollRequest: WidgetScrollRequest | undefined };
+	lastFrame?: {
+		readonly lines: readonly string[];
+		readonly scrollRequest: WidgetScrollRequest | undefined;
+		readonly rowKeys: readonly string[] | undefined;
+	};
 	/** The next frame answers a host request and is sent even when it is unchanged. */
 	frameRequested?: boolean;
 	/** The number of the last frame sent; a click on any other frame is dropped. */
@@ -175,10 +179,21 @@ function sameFrame(
 	frame: NonNullable<ActiveComponent["lastFrame"]>,
 	lines: readonly string[],
 	scrollRequest: WidgetScrollRequest | undefined,
+	rowKeys: readonly string[] | undefined,
 ): boolean {
 	if (frame.lines.length !== lines.length) return false;
 	for (let index = 0; index < lines.length; index++) if (frame.lines[index] !== lines[index]) return false;
+	// The same text drawn for other items is another frame: a click on it must not act on the new item.
+	if ((frame.rowKeys === undefined) !== (rowKeys === undefined)) return false;
+	if (frame.rowKeys && rowKeys && frame.rowKeys.some((key, index) => key !== rowKeys[index])) return false;
 	return JSON.stringify(frame.scrollRequest) === JSON.stringify(scrollRequest);
+}
+
+/** What `component` reports it drew on each of its `count` rows, when it reports anything. */
+function rowKeysOf(component: Component, count: number): string[] | undefined {
+	const key = component.paintedRowKey;
+	if (key === undefined) return undefined;
+	return Array.from({ length: count }, (_, row) => key.call(component, row) ?? "");
 }
 
 function jsonResult(value: object | boolean | null | number | string | undefined): JsonValue | undefined {
@@ -464,8 +479,13 @@ export class EngineCustomUiService {
 				break;
 			}
 			case "engine_custom_click": {
-				// The component has drawn a newer frame than the one clicked: what was under the pointer may have moved.
-				if (command.frame !== record.frame) break;
+				// A component that names its rows takes the click while the clicked row still shows the item the host
+				// showed there, through frames that only animate. Otherwise a newer frame than the one clicked may have
+				// moved what was under the pointer, and the click is dropped.
+				const paintedRowKey = record.component.paintedRowKey;
+				if (paintedRowKey !== undefined && command.rowKey !== undefined) {
+					if (paintedRowKey.call(record.component, command.y) !== command.rowKey) break;
+				} else if (command.frame !== record.frame) break;
 				const { x, y, width, height } = command;
 				record.handlingInput = true;
 				try {
@@ -580,8 +600,10 @@ export class EngineCustomUiService {
 			this.sendRenderFailure(componentId, requestId, error);
 			return;
 		}
-		if (!requested && record.lastFrame !== undefined && sameFrame(record.lastFrame, lines, scrollRequest)) return;
-		record.lastFrame = { lines: [...lines], scrollRequest };
+		const rowKeys = rowKeysOf(record.component, lines.length);
+		if (!requested && record.lastFrame !== undefined && sameFrame(record.lastFrame, lines, scrollRequest, rowKeys))
+			return;
+		record.lastFrame = { lines: [...lines], scrollRequest, rowKeys };
 		this.sendFrame(componentId, requestId, record, lines);
 	}
 
@@ -612,6 +634,7 @@ export class EngineCustomUiService {
 
 	private sendFrame(componentId: string, requestId: number, record: ActiveComponent, lines: string[]): void {
 		const scrollRequest = (record.component as ScrollableWidgetComponent).getScrollRequest?.();
+		const rowKeys = rowKeysOf(record.component, lines.length);
 		record.frame = (record.frame ?? 0) + 1;
 		this.send({
 			type: "engine_custom_frame",
@@ -619,6 +642,7 @@ export class EngineCustomUiService {
 			requestId,
 			lines,
 			frame: record.frame,
+			...(rowKeys ? { rowKeys } : {}),
 			...(scrollRequest ? { scrollRequest } : {}),
 		});
 	}

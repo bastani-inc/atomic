@@ -215,3 +215,57 @@ test("a click opens the row that was painted under it, even after the rows chang
 		"the next paint moves the other run there",
 	);
 });
+
+test("a press and release on a panel row whose item was swapped for one with the same text opens nothing", async () => {
+	const { TuiAltScreen, stripTerminalSequences } = await import("@bastani/atomic-tui");
+	const { RecordingTerminal } = await import(
+		"../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts"
+	);
+	const opened: string[] = [];
+	let runs: AgentPanelItem[] = [workflow("run:x", "same-name")];
+	const listeners = new Set<() => void>();
+	const hub = new AgentPanelSourceHub();
+	hub.register({
+		items: () => runs,
+		subscribe: (listener) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		open: (id) => opened.push(id),
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const terminal = new RecordingTerminal();
+	terminal.columns = 80;
+	terminal.rows = 6;
+	const tui = new TuiAltScreen(terminal);
+	let widget: MouseComponent | undefined;
+	const dispose = bindAgentPanel(
+		session as never,
+		{
+			setWidget(_key: string, content: unknown) {
+				widget = typeof content === "function" ? (content({} as never, {} as never) as MouseComponent) : undefined;
+				if (widget) tui.addChild(widget);
+			},
+			requestRender: () => tui.requestRender(),
+		} as never,
+		undefined,
+		noInspector,
+	);
+	disposers.push(dispose);
+	try {
+		tui.start();
+		tui.renderNow();
+		const row = tui.getScreenLines().findIndex((line) => stripTerminalSequences(line).includes("same-name"));
+		assert.notEqual(row, -1);
+		terminal.input(`\x1b[<0;5;${row + 1}M`);
+		runs = [workflow("run:x2", "same-name")];
+		for (const listener of listeners) listener();
+		await new Promise<void>((resolve) => queueMicrotask(resolve));
+		tui.renderNow();
+		terminal.input(`\x1b[<0;5;${row + 1}m`);
+		tui.renderNow();
+		assert.deepEqual(opened, [], "the row now shows another item");
+	} finally {
+		tui.stop();
+	}
+});

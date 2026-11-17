@@ -13,6 +13,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 - Slash-command autocomplete suggestions can set `completeOnConfirm: false` to submit the typed input on Enter until the user navigates the suggestion list. Tab still accepts the highlighted completion ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `Markdown` accepts per-instance `hyperlinks: false` to display links as text and URLs without OSC 8, and `images: false` to display image placeholders. Other Markdown instances keep their existing behavior ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `Container.childAtRow(width, row)` returns the child drawn at a row of the container's last render at that width, the row inside that child and the child's height
+- Components can implement `paintedRowKey(row)` to name what their last render drew on a row, such as an item's id. The fullscreen renderer turns a press and release into a click only when that name, the row's text and the components drawn there are the same at both, so a repaint that puts another item with the same text under the pointer is not clicked
 
 ### Changed
 
@@ -20,7 +21,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 - A fuzzy `@` file suggestion no longer repeats its path as the description when the file's name already shows it; a nested file still names its folder ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - The fullscreen renderer no longer lays out the screen under an overlay that covers all of it, until the overlay stops covering it.
 - A focused component whose input handler returns a promise is repainted when the promise settles, rather than right after the key is routed.
-- In the fullscreen renderer, a press and release become a click only when the screen under the pointer did not change between them, and never on the pinned prompt row or the jump-to-latest row. A fast second click on empty space counts as a double-click, as on a word
+- In the fullscreen renderer, a press and release become a click only when the screen under the pointer did not change between them, and never on the pinned prompt row or the jump-to-latest row. A fast second click on empty space counts as a double-click, as on a word, and clicks count by screen position, so an overlay opening between two clicks does not split a double-click
 
 ### Fixed
 

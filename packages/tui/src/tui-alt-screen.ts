@@ -118,8 +118,8 @@ type SelectionGranularity = "character" | "word" | "line";
 interface ClickTarget {
 	timestamp: number;
 	count: number;
+	/** The screen row, so clicks count alike whether or not an overlay changed how the press was located. */
 	row: number;
-	scrollView?: ScrollView;
 	/** The word under the click, or the clicked cell when no word is there. */
 	wordStart: number;
 	wordEnd: number;
@@ -140,6 +140,8 @@ interface PointerFrame {
 		  }
 		| undefined;
 	readonly decorated: boolean;
+	/** The components drawn at the pointer, outermost first, then what the innermost reports for its row. */
+	readonly drawn: readonly unknown[];
 }
 
 /** Whether the same components are drawn at the pointer in the same places: the frame's geometry there. */
@@ -160,9 +162,42 @@ function samePointerGeometry(a: PointerFrame | undefined, b: PointerFrame): bool
 	);
 }
 
-/** The same geometry at the pointer, and the same painted row under it. */
+/** The same geometry at the pointer, and the same painted row under it, drawn by the same components. */
 function samePointerFrame(a: PointerFrame | undefined, b: PointerFrame): boolean {
-	return a !== undefined && a.line === b.line && samePointerGeometry(a, b);
+	return (
+		a !== undefined &&
+		a.line === b.line &&
+		a.drawn.length === b.drawn.length &&
+		a.drawn.every((item, index) => item === b.drawn[index]) &&
+		samePointerGeometry(a, b)
+	);
+}
+
+/** Bounds the walk into nested containers when recording what a frame drew at the pointer. */
+const MAX_DRAWN_DEPTH = 32;
+
+/** A component that stacks children, as `Container` does, and can say which child it drew on a row. */
+type ChildRows = Component & Pick<Container, "childAtRow">;
+
+function stacksChildren(component: Component): component is ChildRows {
+	return typeof (component as Partial<ChildRows>).childAtRow === "function";
+}
+
+/** The components a frame drew at `row` of `component`, laid out `width` wide, then the innermost one's row key. */
+function drawnAt(component: Component, width: number, row: number): unknown[] {
+	const drawn: unknown[] = [];
+	let current: Component = component;
+	let at = row;
+	for (let depth = 0; depth < MAX_DRAWN_DEPTH && stacksChildren(current); depth++) {
+		const hit = current.childAtRow(width, at);
+		if (!hit) break;
+		drawn.push(hit.component);
+		current = hit.component;
+		at = hit.row;
+	}
+	const innermost: Component = current;
+	drawn.push(innermost.paintedRowKey?.(at));
+	return drawn;
 }
 
 interface SgrMouseEvent {
@@ -320,13 +355,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		options: TuiAltScreenOptions = {},
 	) {
 		super(terminal, showHardwareCursor, logDirectory);
-		this.implicitDocument = {
+		const implicitDocument: ChildRows = {
 			render: (width) => super.render(width),
 			handleMouse: (event) => super.handleMouse(event),
+			childAtRow: (width, row) => super.childAtRow(width, row),
 			invalidate: () => {
 				for (const child of this.children) child.invalidate();
 			},
 		};
+		this.implicitDocument = implicitDocument;
 		this.implicitScrollView = new ScrollView(this.implicitDocument, { follow: "end", primary: true });
 		this.flashes = new AltScreenFlashContainer(() => this.requestRender());
 		this.wheelScroll = new WheelScrollAccelerator(options.wheelScrollLines ?? 1);
@@ -1396,18 +1433,18 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 	}
 
-	private getClickCount(point: SelectionPoint, word: SelectionRange | undefined): number {
+	private getClickCount(screenRow: number, point: SelectionPoint, word: SelectionRange | undefined): number {
 		const now = Date.now();
 		const previous = this.lastClick;
-		// A second click counts on the same word, or on the same cell where there is no word, so a fast second click
-		// on empty space is a double-click as well.
+		// Clicks count on the screen: a press located in the transcript and one located on the screen, because an
+		// overlay opened between them, are on the same spot. A second click counts on the same word, or on the same
+		// cell where there is no word, so a fast second click on empty space is a double-click as well.
 		const start = word?.start.col ?? point.col;
 		const end = word?.end.col ?? point.col;
 		const count =
 			previous &&
 			now - previous.timestamp <= DOUBLE_CLICK_INTERVAL_MS &&
-			previous.row === point.row &&
-			previous.scrollView === point.scrollView &&
+			previous.row === screenRow &&
 			previous.wordStart === start &&
 			previous.wordEnd === end
 				? (previous.count % 3) + 1
@@ -1415,8 +1452,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.lastClick = {
 			timestamp: now,
 			count,
-			row: point.row,
-			scrollView: point.scrollView,
+			row: screenRow,
 			wordStart: start,
 			wordEnd: end,
 		};
@@ -1427,15 +1463,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private pointerFrame(x: number, y: number): PointerFrame {
 		const decoration = this.decoratedRows.get(y);
 		const overlay = this.overlayAt(x, y);
+		const boxes = this.currentLayout ? getLayoutBoxesAt(this.currentLayout, x, y) : [];
+		const innermost = boxes[0];
 		return {
 			line: this.previousScreen[y],
-			boxes: this.currentLayout
-				? getLayoutBoxesAt(this.currentLayout, x, y).map((box) => ({
-						component: box.component,
-						x: box.rect.x,
-						y: box.rect.y,
-					}))
-				: [],
+			boxes: boxes.map((box) => ({ component: box.component, x: box.rect.x, y: box.rect.y })),
+			drawn: overlay
+				? drawnAt(overlay.component, overlay.width, y - overlay.row)
+				: innermost
+					? drawnAt(innermost.component, innermost.rect.width, y - innermost.rect.y)
+					: [],
 			overlay,
 			// An overlay drawn over the row takes its clicks; the decoration under it is hidden.
 			decorated:
@@ -1570,7 +1607,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				: undefined;
 		const anchor = this.getSelectionPoint(event, scrollView);
 		const word = this.getWordSelection(anchor);
-		const clickCount = this.getClickCount(anchor, word);
+		const clickCount = this.getClickCount(event.y, anchor, word);
 		const range = clickCount === 2 ? word : clickCount === 3 ? this.getLineSelection(anchor) : undefined;
 		this.selectionGranularity = range ? (clickCount === 2 ? "word" : "line") : "character";
 		this.selectionInitialRange = range;

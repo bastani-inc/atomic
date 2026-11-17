@@ -129,6 +129,13 @@ export interface Component {
 	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
 
 	/**
+	 * An identity for what the last render drew on `row`, such as the id of the item shown there. The fullscreen
+	 * renderer turns a press and release into a click only when it is the same at both, so a repaint that swaps in
+	 * another item with the same text is not clicked by mistake.
+	 */
+	paintedRowKey?(row: number): string | undefined;
+
+	/**
 	 * If true, component receives key release events (Kitty protocol).
 	 * Default is false - release events are filtered out.
 	 */
