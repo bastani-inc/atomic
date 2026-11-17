@@ -197,62 +197,80 @@ function sameOwner(a: PoolOwner, b: PoolOwner): boolean {
 	return a.kind === b.kind && a.id === b.id;
 }
 
-/** What a resume that set a worktree aside after its cancelled blueprint build recorded about it (#5379). */
 export interface SetAsideNote {
-	/** When the cancelled build started. */
 	readonly startedAt: string;
-	/** Where the cancelled build's step logs are. */
 	readonly logs: string;
 }
 
-/** The worktrees this process set aside, also those whose mark could not be written. */
-const setAsideHere = new Set<string>();
+const setAsideHere = new Map<string, string | undefined>();
 
 function setAsideFile(storeDir: string, path: string): string {
 	const key = createHash("sha256").update(resolve(path)).digest("hex").slice(0, 16);
 	return join(resolve(storeDir), "pool", "set-aside", `${key}.json`);
 }
 
-/**
- * Sets the restored worktree at `path` aside (#5379): its blueprint build was cancelled, and a step of that build no
- * process recorded may still run in it. From then on no session continues in it ({@link worktreeSetAside}), no claim
- * resets it for another session, and its slot's path is not given to a new restore; {@link evictIdleWorktrees} removes
- * a pooled one only once no process of this user works in it. This process treats it as set aside even when the mark
- * cannot be written, which rejects: other processes then do not know.
- */
+async function directoryIdentity(path: string): Promise<string | undefined> {
+	try {
+		const found = await stat(path);
+		return `${found.dev}:${found.ino}:${Math.trunc(found.birthtimeMs)}`;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+		throw error;
+	}
+}
+
 export async function setAsideWorktree(storeDir: string, path: string, note: SetAsideNote): Promise<void> {
-	setAsideHere.add(resolve(path));
+	const directory = await directoryIdentity(path).catch(() => undefined);
+	setAsideHere.set(resolve(path), directory);
 	const file = setAsideFile(storeDir, path);
 	await mkdir(dirname(file), { recursive: true });
 	const temporary = `${file}.${randomUUID()}.tmp`;
-	await writeFile(temporary, JSON.stringify({ path: resolve(path), ...note }), { mode: 0o600 });
+	await writeFile(temporary, JSON.stringify({ path: resolve(path), directory, ...note }), { mode: 0o600 });
 	await renameWithRetry(temporary, file);
 }
 
-/** When the cancelled build of the set-aside worktree at `path` started; undefined when its mark does not say. */
-async function setAsideSince(storeDir: string, path: string): Promise<number | undefined> {
+async function readSetAsideNote(
+	storeDir: string,
+	path: string,
+): Promise<(Partial<SetAsideNote> & { directory?: unknown }) | "absent" | "unreadable"> {
+	let text: string;
 	try {
-		const note = JSON.parse(await readFile(setAsideFile(storeDir, path), "utf8")) as Partial<SetAsideNote>;
-		const since = typeof note.startedAt === "string" ? Date.parse(note.startedAt) : Number.NaN;
-		return Number.isFinite(since) ? since : undefined;
+		text = await readFile(setAsideFile(storeDir, path), "utf8");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unreadable";
+	}
+	try {
+		const note = JSON.parse(text) as unknown;
+		return typeof note === "object" && note !== null ? note : {};
 	} catch {
-		return undefined;
+		return {};
 	}
 }
 
-/**
- * Whether the restored worktree at `path` was set aside after its blueprint build was cancelled ({@link
- * setAsideWorktree}). A mark that cannot be read counts as set aside. Never throws.
- */
-export async function worktreeSetAside(storeDir: string, path: string): Promise<boolean> {
-	if (setAsideHere.has(resolve(path))) return true;
+async function setAsideSince(storeDir: string, path: string): Promise<number | undefined> {
+	const note = await readSetAsideNote(storeDir, path);
+	if (typeof note === "string") return undefined;
+	const since = typeof note.startedAt === "string" ? Date.parse(note.startedAt) : Number.NaN;
+	return Number.isFinite(since) ? since : undefined;
+}
+
+async function sameDirectory(path: string, directory: unknown): Promise<boolean> {
+	if (typeof directory !== "string") return true;
 	try {
-		await stat(setAsideFile(storeDir, path));
+		return (await directoryIdentity(path)) === directory;
+	} catch {
 		return true;
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		return code !== "ENOENT" && code !== "ENOTDIR";
 	}
+}
+
+export async function worktreeSetAside(storeDir: string, path: string): Promise<boolean> {
+	if (setAsideHere.has(resolve(path)) && (await sameDirectory(path, setAsideHere.get(resolve(path))))) return true;
+	const note = await readSetAsideNote(storeDir, path);
+	if (note === "absent") return false;
+	if (note === "unreadable") return true;
+	return sameDirectory(path, note.directory);
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -948,9 +966,8 @@ function byNewestRelease(a: PoolSlotRecord, b: PoolSlotRecord): number {
  * leases it: a slot whose directory
  * is gone loses its record, and a slot still exactly in its last state loses its worktree and record. A slot that
  * changed since, which may hold work no snapshot recorded, is kept. A slot a claim stopped resetting holds nothing but
- * recorded states and is never claimed, so it goes whatever `maxIdle` says, and so does a slot set aside after its
- * blueprint build was cancelled ({@link setAsideWorktree}), but only once no process of this user works in it (#5379).
- * Resolves to the paths it removed; a failure keeps that slot and never throws.
+ * recorded states and is never claimed, so it goes whatever `maxIdle` says. Resolves to the paths it removed; a failure
+ * keeps that slot and never throws.
  */
 export async function evictIdleWorktrees(
 	storeDir: string,
@@ -966,8 +983,6 @@ export async function evictIdleWorktrees(
 		return [];
 	}
 	const removed: string[] = [];
-	// A worktree set aside after its build was cancelled is never claimed, so it goes whatever `maxIdle` says, but only
-	// once no process of this user works in it: a step of that build may still run there (#5379).
 	const setAside: PoolSlotRecord[] = [];
 	const usable: PoolSlotRecord[] = [];
 	for (const record of idle) ((await worktreeSetAside(storeDir, record.path)) ? setAside : usable).push(record);
@@ -1184,7 +1199,6 @@ async function claimSlot(
 				if (heldSlots.has(file) || (await otherLeases(file, true)) > 0) return "busy";
 				const before = await readRecord(file, storeDir, candidate.repository, candidate.slot);
 				if (before === undefined || before.resetting !== undefined) return "dirty";
-				// A step of a cancelled build may still run in a worktree set aside for it (#5379).
 				if (await worktreeSetAside(storeDir, before.path)) return "busy";
 				// Another repository's slot is never reset, nor marked: its record and files stay as they are (#4989).
 				if (!(await belongsTo(storeDir, before.path, stores, options.signal))) return "foreign";

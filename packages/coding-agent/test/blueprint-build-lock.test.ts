@@ -20,9 +20,12 @@ import {
 	setNativeProcessCreationTimeForTesting,
 	setProcessCreationTimeQueryForTesting,
 } from "../src/core/process-start-token.js";
+import { runBlueprintBuild } from "../src/core/resume/blueprint/build.ts";
 import { buildLockPath, settleOtherBuilds, withBuildLocks } from "../src/core/resume/blueprint/build-lock.ts";
+import { type BlueprintLedger, ledgerPath, rootKey } from "../src/core/resume/blueprint/ledger.ts";
 import { type ProcessExit, runLoggedProcess } from "../src/core/resume/blueprint/process.js";
 import { processStartToken } from "../src/core/worktree-snapshot/pool.ts";
+import { forThisHost } from "./helpers/blueprint-fixtures.ts";
 
 // Process creation is real; execFile is only watched, to tell when a build lock lists this host's processes.
 vi.mock("node:child_process", async (importOriginal) => {
@@ -97,6 +100,50 @@ function writeLock(lock: object): void {
 }
 
 describe("blueprint build locks (#4748)", () => {
+	test("a build that runs nothing writes no lock and says nothing, even where no lock can be written (#5379)", async () => {
+		mkdirSync(join(dir, "blueprint-builds"), { recursive: true });
+		writeFileSync(join(dir, "blueprint-builds", "locks"), "");
+		const told: string[] = [];
+		const built = await withBuildLocks(
+			dir,
+			[root()],
+			async () => "nothing ran",
+			(message) => told.push(message),
+		);
+		assert.equal(built, "nothing ran");
+		assert.deepEqual(told, []);
+	});
+
+	test("a blueprint build is named in its lock before the ledger says it builds the worktree (#5379)", async () => {
+		mkdirSync(join(root(), ".atomic"), { recursive: true });
+		writeFileSync(join(root(), ".atomic", "blueprint.yaml"), forThisHost("maintenance:\n  - run: echo built\n"));
+		mkdirSync(join(dir, "blueprint-builds"), { recursive: true });
+		writeFileSync(join(dir, "blueprint-builds", "locks"), "");
+		mkdirSync(join(dir, "home"), { recursive: true });
+		const stateWhenLocked: (string | undefined)[] = [];
+		const outcome = await withBuildLocks(
+			dir,
+			[root()],
+			() =>
+				runBlueprintBuild([{ root: root(), identity: "https://example.test/repo.git" }], {
+					agentDir: join(dir, "agent"),
+					storeDir: dir,
+					trusted: () => true,
+					homeDir: join(dir, "home"),
+					environment: { PATH: process.env.PATH ?? "", HOME: join(dir, "home") },
+				}),
+			() => {
+				const ledger = existsSync(ledgerPath(dir))
+					? (JSON.parse(readFileSync(ledgerPath(dir), "utf8")) as BlueprintLedger)
+					: undefined;
+				stateWhenLocked.push(ledger?.roots[rootKey(root())]?.state);
+			},
+		);
+		assert.equal(outcome.status, "success");
+		assert.equal(stateWhenLocked.length, 1, "the lock was written once the build started");
+		assert.notEqual(stateWhenLocked[0], "running", "before the ledger said the worktree was building");
+	});
+
 	test("a build whose lock cannot be written goes on, and the user is told once that a kill could go unnoticed (#5379)", async () => {
 		// A file where the locks' directory belongs: no lock can be written, also as root.
 		mkdirSync(join(dir, "blueprint-builds"), { recursive: true });
@@ -127,7 +174,7 @@ describe("blueprint build locks (#4748)", () => {
 		const gate = join(dir, "gate");
 		const seen: { pid: number; steps: number[] }[] = [];
 		await withBuildLocks(dir, [root()], async () => {
-			assert.deepEqual(lockOf().steps, [], "the lock names this process before anything of the build runs (#5379)");
+			assert.equal(existsSync(buildLockPath(dir, root())), false, "nothing is written before a step starts");
 			const quick = { command: process.execPath, args: ["-e", ""], cwd: dir, env: process.env };
 			await runLoggedProcess(quick, { fd, path: log }, { timeoutMs: 30_000 });
 			const waiting = {

@@ -29,7 +29,6 @@ export interface GlobalLedgerEntry {
 export interface RootLedgerEntry {
 	readonly state: "running" | "success" | "failed";
 	readonly at: string;
-	/** The id of a build that is `running`, which its step logs are named after (#5379). */
 	readonly build?: string;
 }
 

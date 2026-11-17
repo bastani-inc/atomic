@@ -43,6 +43,8 @@ export interface LoggedProcessOptions {
  */
 export const stepProcessWatcher = new AsyncLocalStorage<(pid: number, running: boolean) => void>();
 
+export const buildStartWatcher = new AsyncLocalStorage<() => void>();
+
 const STOPPED_PROCESS_TREE_WAIT_MS = 10_000;
 
 async function settleTree(tree: ProcessTreeContainment | undefined, stopped: boolean): Promise<void> {

@@ -2,20 +2,11 @@ import { execFile } from "node:child_process";
 import { readdir, readFile, readlink, realpath, stat } from "node:fs/promises";
 import { sep } from "node:path";
 
-/**
- * Whether a process of this user may still work in the directory at `path` (#5379): one has its working directory, its
- * root, or an open file inside it. On Linux each process is read from `/proc`; on macOS the user's open files are
- * listed with `lsof`. Where that cannot be told, as on other systems or when listing fails, it counts as in use, so
- * nothing that may be in use is removed. A Linux process of this user whose entries cannot be read, as one that is not
- * dumpable, counts as in use when it started at or after `since` (milliseconds since the epoch), or when `since` is
- * undefined: one that started before cannot be a step of a build that started then. Never throws.
- */
 export async function processesWorkIn(path: string, since?: number): Promise<boolean> {
 	let target: string;
 	try {
 		target = await realpath(path);
 	} catch (error) {
-		// A directory that is gone holds nothing anyone works in.
 		return (error as NodeJS.ErrnoException).code !== "ENOENT";
 	}
 	const inside = (link: string) => link === target || link.startsWith(target.endsWith(sep) ? target : target + sep);
@@ -26,10 +17,8 @@ export async function processesWorkIn(path: string, since?: number): Promise<boo
 	return true;
 }
 
-/** Linux reports process start times in clock ticks of 1/100 s since boot on every architecture it runs Atomic on. */
 const CLOCK_TICKS_PER_SECOND = 100;
 
-/** When process `pid` started, in milliseconds since the epoch; undefined when that cannot be read. */
 async function startedAt(pid: string): Promise<number | undefined> {
 	try {
 		const stat = await readFile(`/proc/${pid}/stat`, "utf8");
@@ -44,7 +33,6 @@ async function startedAt(pid: string): Promise<number | undefined> {
 
 async function linuxProcessesWorkIn(inside: (link: string) => boolean, since: number | undefined): Promise<boolean> {
 	const uid = process.getuid?.();
-	// A process that cannot be read may work anywhere, unless it started before the build whose steps are looked for.
 	const unreadable = async (pid: string) => {
 		if (since === undefined) return true;
 		const started = await startedAt(pid);
@@ -77,7 +65,6 @@ async function linuxProcessesWorkIn(inside: (link: string) => boolean, since: nu
 	return false;
 }
 
-/** The process, or one of its open files, ended while it was read. */
 function gone(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException).code;
 	return code === "ENOENT" || code === "ESRCH";
@@ -91,7 +78,8 @@ function openFilesInside(inside: (link: string) => boolean): Promise<boolean> {
 			["-w", "-n", "-P", "-u", uid, "-F", "n"],
 			{ encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 * 1024 },
 			(error, stdout) => {
-				if (error !== null && stdout === "") {
+				const complete = error === null || (error.code === 1 && !error.killed && error.signal == null);
+				if (!complete || stdout === "") {
 					resolve(true);
 					return;
 				}

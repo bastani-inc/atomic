@@ -405,9 +405,8 @@ async function holdsSessionWorktree(sessionManager: SessionManager, root: string
 
 /**
  * Whether the worktree at `root` is a pooled slot that another session owns (#4748), or that session `sessionId`
- * could not hold or lost while it was stalled (#4830), or a restored worktree set aside after its blueprint build was
- * cancelled (#5379): this session must not continue in it, and restores its checkout fresh as if the worktree were
- * gone. Reads only; false for any other unpooled path.
+ * could not hold or lost while it was stalled (#4830): this session must not continue in it, and restores its checkout
+ * fresh as if the worktree were gone. Reads only; true for a set-aside worktree, false for any other unpooled path.
  */
 export async function pooledWorktreeOwnedElsewhere(
 	storeDir: string,
@@ -1165,7 +1164,10 @@ export async function resumeSessionWorktree(
 		}
 		const continuing = mapRestoredPath(cwd, mappings);
 		const recordedHere = selected !== undefined && left.some((checkout) => checkout.root === selected!.root);
-		const launch = recordedHere && !existsSync(continuing) && options.fallbackCwd !== undefined;
+		const launch =
+			recordedHere &&
+			options.fallbackCwd !== undefined &&
+			(!existsSync(continuing) || (await worktreeSetAside(storeDir, selected!.root)));
 		continuedIn = launch ? resolve(options.fallbackCwd!) : continuing;
 		for (const checkout of left) {
 			const record = unrestoredRecord(
