@@ -51,3 +51,31 @@ test("a subagent chat's per-frame child lookups fold the owner session once per 
 	}
 	assert.equal(reads.mock.calls.length, 2, "an appended record is read on the next question");
 });
+
+test("a session manager without sequence, leaf or history accessors still answers from its current entries", () => {
+	const entries: Array<{ type: string; id: string; customType?: string; data?: unknown }> = [];
+	const manager = { getSessionId: () => "owner-session", getEntries: () => entries };
+	const record = (taskId: string, state: SubagentChildRecord["state"]): SubagentChildRecord => ({
+		version: 1,
+		childId: "run-1:0",
+		runId: "run-1",
+		index: 0,
+		agent: "worker",
+		state,
+		cwd: "/project",
+		owner: { kind: "session", sessionId: "owner-session" },
+		taskId,
+		...(state === "terminal" ? { terminalStatus: "killed" } : {}),
+	});
+	const append = (data: SubagentChildRecord) =>
+		entries.push({ type: "custom", id: `entry-${entries.length}`, customType: SUBAGENT_CHILD_RECORD_TYPE, data });
+	const ctx = { sessionManager: manager, orchestrationContext: undefined } as unknown as Parameters<
+		typeof subagentChildOfTask
+	>[0];
+
+	append(record("task-1", "running"));
+	assert.deepEqual(subagentChildOfTask(ctx, "task-1"), { childId: "run-1:0" });
+
+	append(record("task-1", "terminal"));
+	assert.equal(subagentChildOfTask(ctx, "task-1")?.readOnlyReason !== undefined, true);
+});

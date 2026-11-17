@@ -140,6 +140,12 @@ const ownedRecordReads = new WeakMap<object, OwnedRecordsRead>();
 function ownedRecords(ctx: ExtensionContext): ReadonlyMap<string, SubagentChildRecord> {
 	const manager = ctx.sessionManager;
 	const owner = subagentChildOwner(ctx).sessionId;
+	if (
+		typeof manager.getLastSeq !== "function" ||
+		typeof manager.getLeafId !== "function" ||
+		typeof manager.hasFullHistory !== "function"
+	)
+		return readSubagentChildRecords(manager.getEntries(), owner);
 	const state = {
 		sessionId: manager.getSessionId(),
 		owner,
