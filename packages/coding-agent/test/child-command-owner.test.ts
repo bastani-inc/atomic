@@ -150,11 +150,34 @@ describe("a child's completion route in its parent's command owner (#4326)", () 
 const message = (content: string) => ({
 	customType: "task_completion",
 	content,
-	details: {},
+	details: { completionId: content },
 	display: true as const,
 });
 
 describe("a task's notice reaches only the child session that launched it", () => {
+	test("retries share one kept delivery and never repeat an already taken completion (#5342)", async () => {
+		const host = new AgentTaskHost({
+			scope: { kind: "session", sessionId: crypto.randomUUID() },
+			authorizeLaunch() {},
+		});
+		cleanups.push(() => void host.close("session-close"));
+		const owner = createChildCommandTaskOwner(() => host);
+		const first = deliverToLaunchingSession(host, "child-a", "t-1" as TaskId, message("first done"));
+		const retry = deliverToLaunchingSession(host, "child-a", "t-1" as TaskId, message("first done"));
+		assert.strictEqual(retry, first);
+		assert.equal(keptChildNoticeCount(host, "child-a"), 1);
+		const delivered: string[] = [];
+		owner.bind(
+			"child-a",
+			{ isOpen: () => true, deliver: async (notice) => void delivered.push(notice.content) },
+			new ChildTaskWaits(),
+		);
+		await Promise.all([first, retry]);
+		await deliverToLaunchingSession(host, "child-a", "t-1" as TaskId, message("first done"));
+		await deliverToLaunchingSession(host, "child-a", "t-1" as TaskId, message("resumed task done"));
+		assert.deepEqual(delivered, ["first done", "resumed task done"]);
+	});
+
 	test("a child that cannot take it keeps it, in order, until it runs again; nothing else receives it", async () => {
 		const host = new AgentTaskHost({
 			scope: { kind: "session", sessionId: crypto.randomUUID() },
