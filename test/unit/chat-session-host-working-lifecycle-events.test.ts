@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { beforeAll, test } from "vitest";
+import { stripAnsi } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-utils.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
 	installLifecycleFakeClock,
@@ -223,8 +224,12 @@ test("public interrupt stops the working lifecycle and fences its captured callb
 
 test("turn and terminal stops immediately repaint and fence stale event throttles", () => {
 	const stopCases = [
-		{ name: "turn_end", stop: (host) => host.applyAgentEvent({ type: "turn_end" } as never) },
-		{ name: "agent_end", stop: (host) => host.applyAgentEvent({ type: "agent_end", messages: [] } as never) },
+		{ name: "turn_end", stop: (host) => host.applyAgentEvent({ type: "turn_end" } as never), after: [] },
+		{
+			name: "agent_end",
+			stop: (host) => host.applyAgentEvent({ type: "agent_end", messages: [] } as never),
+			after: ["", " ∀ Worked for 0s".padEnd(64)],
+		},
 	] as const;
 
 	for (const stopCase of stopCases) {
@@ -249,7 +254,7 @@ test("turn and terminal stops immediately repaint and fence stale event throttle
 			assert.equal(timers.timeoutCount(), 0, stopCase.name);
 			assert.equal(timers.intervalCount(), 0, stopCase.name);
 			assert.equal(host.hasAnimationTick(), false, stopCase.name);
-			assert.deepEqual(host.renderWorkingStatus(64), [], stopCase.name);
+			assert.deepEqual(host.renderWorkingStatus(64).map(stripAnsi), stopCase.after, stopCase.name);
 
 			staleThrottle();
 			timers.advanceBy(160);

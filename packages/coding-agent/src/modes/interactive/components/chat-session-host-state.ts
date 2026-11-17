@@ -21,7 +21,7 @@ import type { FooterComponent } from "./footer.ts";
 import { NewMessageCounter, pinnedPromptLine } from "./jump-to-latest.ts";
 import { keyText } from "./keybinding-hints.js";
 import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
-import { WorkingRunMeter } from "./working-run-meter.ts";
+import { WorkingRunMeter, type WorkingRunSnapshot } from "./working-run-meter.ts";
 
 export interface ChatSessionHostStateCallbacks<TExtraEntry extends ChatTranscriptEntryLike> {
 	renderEntry: (state: ChatSessionHostState<TExtraEntry>, entry: ChatSessionHostEntry<TExtraEntry>) => Component;
@@ -72,6 +72,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	/** Recorded pause failure consumed by the first submit after settlement. */
 	interruptFailureMessage: string | undefined;
 	workingMessage: string | undefined;
+	lastWorkingMessage: string | undefined = undefined;
+	workedRun: { readonly message: string | undefined; readonly snapshot: WorkingRunSnapshot } | undefined = undefined;
 	workingFrame = 0;
 	readonly newMessages = new NewMessageCounter();
 	compactionStartedAt: number | undefined;

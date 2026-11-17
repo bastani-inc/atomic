@@ -1,5 +1,5 @@
 import { join, sep } from "node:path";
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import { setThemeInstance, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
@@ -21,6 +21,13 @@ import {
 	setupRun,
 	stripAnsi,
 } from "./stage-chat-view-helpers.js";
+
+vi.mock("../../packages/coding-agent/src/modes/interactive/whimsical-messages.ts", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("../../packages/coding-agent/src/modes/interactive/whimsical-messages.ts")
+	>()),
+	pickWhimsicalWorkingMessage: () => "Schlepping...",
+}));
 
 /**
  * The mounted-stage working identity is asserted through its truecolor escape,
@@ -151,14 +158,14 @@ describe("StageChatView", () => {
 
 		try {
 			const lines = renderLifecycleOrigin(view, 96);
-			const workingIndex = lines.findIndex((line) => line.includes("Working..."));
+			const workingIndex = lines.findIndex((line) => line.includes("Schlepping..."));
 			assert.ok(workingIndex > 4, "expected Atomic working icon after transcript");
 			const previousContent = lines.slice(0, workingIndex - 1).findLast((line) => line.trim() !== "");
 			assert.match(previousContent ?? "", /msg-\d+/);
 			assert.equal(lines[workingIndex - 1]?.trim(), "");
-			assert.equal(lines[workingIndex]?.trimEnd(), " ∀ Working...");
+			assert.equal(lines[workingIndex]?.trimEnd(), " ∀ Schlepping...");
 			assert.deepEqual(lines[workingIndex]?.match(/∀/g), ["∀"]);
-			assert.equal(lines.join("\n").match(/Working\.\.\./g)?.length, 1);
+			assert.equal(lines.join("\n").match(/Schlepping\.\.\./g)?.length, 1);
 		} finally {
 			view.dispose();
 			if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
@@ -195,8 +202,8 @@ describe("StageChatView", () => {
 				lines.every((line) => line.length <= 64),
 				true,
 			);
-			const working = lines.find((line) => line.includes("Working..."));
-			assert.equal(working?.trimEnd(), " ∀ Working...");
+			const working = lines.find((line) => line.includes("Schlepping..."));
+			assert.equal(working?.trimEnd(), " ∀ Schlepping...");
 			assert.deepEqual(working?.match(/∀/g), ["∀"]);
 			assert.equal(
 				lines.some((line) => line.includes("❯")),
@@ -236,7 +243,7 @@ describe("StageChatView", () => {
 			piTheme: theme,
 		});
 		const workingColor = (): string | undefined => {
-			const line = view.render(64).find((candidate) => candidate.includes("Working...")) ?? "";
+			const line = view.render(64).find((candidate) => candidate.includes("Schlepping...")) ?? "";
 			const match = /\u001b\[38;2;(\d+);(\d+);(\d+)m∀/.exec(line);
 			return match ? match.slice(1).join(",") : undefined;
 		};
@@ -286,10 +293,10 @@ describe("StageChatView", () => {
 		const rendered = lines.join("\n");
 		assert.match(rendered, /\$0\.123/);
 		assert.match(rendered, /23\.4%\/200k/);
-		assert.match(rendered, /Working\.\.\./);
+		assert.match(rendered, /Schlepping\.\.\./);
 		assert.doesNotMatch(rendered, /╌/);
 
-		const workingIndex = lines.findIndex((line) => line.includes("Working..."));
+		const workingIndex = lines.findIndex((line) => line.includes("Schlepping..."));
 		const usageIndex = lines.findIndex((line) => line.includes("$0.123"));
 		const promptIndex = lines.findIndex((line) => line.includes("❯"));
 		const hintIndex = expectRightAlignedReturnHint(lines, 120);

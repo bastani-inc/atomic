@@ -379,7 +379,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.status = "";
 		if (!sessionChanged || session === undefined) return;
 		this.chat.hydrateStreamingAssistantMessage(session.getStreamingMessage?.());
-		this.hydrateRunningTurn(session);
+		this.hydrateRunningTurn(session, page.value.messages);
 		this.unsubscribe = session.subscribe?.((event) => {
 			this.chat.applyAgentEvent(event);
 			this.requestRender();
@@ -387,8 +387,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	/** A page opened mid-turn missed `agent_start` and `queue_update`, so it reads the turn and the queue now. */
-	private hydrateRunningTurn(session: TaskTranscriptSource): void {
-		if (session.isRunning?.() === true) this.chat.beginExternalPromptLifecycle();
+	private hydrateRunningTurn(session: TaskTranscriptSource, messages: TaskTranscriptView["messages"]): void {
+		if (session.isRunning?.() === true) {
+			this.chat.beginExternalPromptLifecycle();
+			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
+		}
 		const queued = session.getQueuedMessages?.();
 		if (queued === undefined) return;
 		this.chat.applyAgentEvent({ type: "queue_update", steering: queued.steering, followUp: queued.followUp });

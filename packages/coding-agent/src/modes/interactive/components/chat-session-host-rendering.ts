@@ -1,4 +1,5 @@
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
 import {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
@@ -66,7 +67,15 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	state: ChatSessionHostState<TExtraEntry>,
 	width: number,
 ): string[] {
-	if (!isChatSessionStreaming(state)) return [];
+	if (!isChatSessionStreaming(state)) {
+		const worked = state.workedRun;
+		if (worked === undefined || state.workingLifecycleActive || state.compacting || state.statusMessage) return [];
+		return new AtomicWorkedStatusComponent({
+			message: worked.message,
+			snapshot: worked.snapshot,
+			color: (text) => state.style.dim(text),
+		}).render(width);
+	}
 	if (state.statusMessage && !state.compacting) return [];
 	const palette = state.style.workingIndicatorPalette;
 	const useCallerStyling =
@@ -91,7 +100,7 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	if (!state.workingLifecycleActive) return [];
 	return new WorkingStatusComponent({
 		frame: state.workingFrame,
-		message: state.workingMessage ?? "Working...",
+		message: state.workingMessage ?? DEFAULT_WORKING_MESSAGE,
 		meta: state.workingRunMeter.snapshot(),
 		palette,
 		spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,

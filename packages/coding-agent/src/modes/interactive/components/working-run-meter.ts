@@ -10,6 +10,38 @@ export interface MeteredMessage {
 	readonly content?: readonly unknown[] | string;
 }
 
+export interface MeteredRunMessage extends MeteredMessage {
+	readonly timestamp?: number;
+	readonly stopReason?: string;
+}
+
+const RUN_CONTINUING_STOP_REASONS: ReadonlySet<string> = new Set(["toolUse", "pending", "deferred"]);
+
+export function runInProgress(
+	messages: readonly MeteredRunMessage[],
+	streaming?: MeteredRunMessage,
+): { readonly startedAt: number | undefined; readonly settledTokens: number } {
+	let start = messages.length;
+	while (start > 0) {
+		const message = messages[start - 1]!;
+		if (
+			message.role === "assistant" &&
+			message.stopReason !== undefined &&
+			!RUN_CONTINUING_STOP_REASONS.has(message.stopReason)
+		)
+			break;
+		start -= 1;
+	}
+	let startedAt: number | undefined;
+	let settledTokens = 0;
+	for (const message of messages.slice(start)) {
+		if (startedAt === undefined && typeof message.timestamp === "number") startedAt = message.timestamp;
+		if (message.role === "assistant") settledTokens += meteredOutputTokens(message);
+	}
+	if (startedAt === undefined && typeof streaming?.timestamp === "number") startedAt = streaming.timestamp;
+	return { startedAt, settledTokens };
+}
+
 const serializedArgumentLengths = new WeakMap<object, number>();
 
 function serializedArgumentsLength(args: unknown): number {
@@ -77,6 +109,13 @@ export class WorkingRunMeter {
 		this.cachedStreamingTokens = 0;
 	}
 
+	resume(startedAt: number | undefined, settledTokens: number): void {
+		this.startedAt = Math.min(startedAt ?? this.now(), this.now());
+		this.settledTokens = settledTokens;
+		this.streamingMessage = undefined;
+		this.cachedStreamingTokens = 0;
+	}
+
 	stop(): void {
 		this.startedAt = undefined;
 		this.streamingMessage = undefined;
@@ -110,10 +149,14 @@ export function formatWorkingTokens(tokens: number): string {
 	return `${(tokens / 1_000_000_000).toFixed(tokens < 99_950_000_000 ? 1 : 0)}B`;
 }
 
+export function formatWorkingTokenCount(tokens: number): string {
+	return `↓ ${formatWorkingTokens(tokens)} tokens`;
+}
+
 export function formatWorkingMeta(snapshot: WorkingRunSnapshot): string {
 	if (snapshot.elapsedMs < 1000 && snapshot.outputTokens <= 0 && !snapshot.note) return "";
 	const parts = [formatWorkingElapsed(snapshot.elapsedMs)];
-	if (snapshot.outputTokens > 0) parts.push(`↓ ${formatWorkingTokens(snapshot.outputTokens)} tokens`);
+	if (snapshot.outputTokens > 0) parts.push(formatWorkingTokenCount(snapshot.outputTokens));
 	if (snapshot.note) parts.push(snapshot.note);
 	return parts.join(" · ");
 }

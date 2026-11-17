@@ -12,7 +12,7 @@ import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runti
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { interruptedNotice } from "./components/assistant-message.ts";
-import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { AtomicWorkedStatusComponent, AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { compactionMeta } from "./components/working-run-meter.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
@@ -147,6 +147,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 
 		case "turn_start": {
 			this.workingMessage = pickWhimsicalWorkingMessage();
+			this.lastWorkingMessage = this.workingMessage;
 			if (this.loadingAnimation) {
 				if ("resetForTurn" in this.loadingAnimation) this.loadingAnimation.resetForTurn(this.workingMessage);
 				else this.loadingAnimation.setMessage(this.workingMessage);
@@ -371,12 +372,27 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "agent_end": {
+			const workedSnapshot = this.workingRunMeter.snapshot();
 			this.workingRunMeter.stop();
 			const compactionInProgress = this.compactionActive;
 			if (!compactionInProgress && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);
 			}
 			if (this.loadingAnimation) this.stopWorkingLoader();
+			if (
+				workedSnapshot !== undefined &&
+				this.workingVisible &&
+				!compactionInProgress &&
+				!this.loadingAnimation &&
+				!this.autoCompactionLoader &&
+				!this.retryLoader &&
+				!this.fallbackLoader
+			) {
+				this.statusContainer.clear();
+				this.statusContainer.addChild(
+					new AtomicWorkedStatusComponent({ message: this.lastWorkingMessage, snapshot: workedSnapshot }),
+				);
+			}
 			if (this.streamingComponent) {
 				this.chatContainer.removeChild(this.streamingComponent);
 				this.streamingComponent = undefined;

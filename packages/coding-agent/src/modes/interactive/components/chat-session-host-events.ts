@@ -200,8 +200,11 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.compactionPromptStarted?.();
 			break;
 		case "agent_end": {
-			state.workingRunMeter.stop();
 			const manualTakeoverPending = state.manualCompactionTakeoverPending;
+			const snapshot = state.workingRunMeter.snapshot();
+			if (snapshot !== undefined && !manualTakeoverPending)
+				state.workedRun = { message: state.lastWorkingMessage, snapshot };
+			state.workingRunMeter.stop();
 			state.sdkBusy = manualTakeoverPending;
 			state.compacting = manualTakeoverPending;
 			if (!manualTakeoverPending) state.compactionStartedAt = undefined;
@@ -219,6 +222,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		case "turn_start":
 			startChatSessionWorkingLifecycle(state);
 			state.workingMessage = pickWhimsicalWorkingMessage();
+			state.lastWorkingMessage = state.workingMessage;
 			changed = true;
 			break;
 		case "turn_end":
