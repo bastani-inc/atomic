@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { ExtensionAPI } from "@bastani/atomic";
 import { test } from "vitest";
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
+import { INTERCOM_CONNECTED_EVENT } from "../../packages/subagents/src/intercom/own-intercom-session.js";
 import { SUBAGENT_COMPLETE_EVENT } from "../../packages/subagents/src/shared/types.js";
 import {
 	buildSlashInitialResult,
@@ -70,6 +71,20 @@ function makeExtensionHarness(): ExtensionHarness {
 	});
 	return { ...base, shutdownHandlers };
 }
+test("the full extension tracks its own Intercom connection until its API shuts down (#5341)", () => {
+	const parent = makeExtensionHarness();
+	const stage = makeExtensionHarness();
+	registerSubagentExtension(parent.pi);
+	registerSubagentExtension(stage.pi);
+	assert.equal(parent.events.count(INTERCOM_CONNECTED_EVENT), 1);
+	assert.equal(stage.events.count(INTERCOM_CONNECTED_EVENT), 1);
+	stage.shutdownHandlers[0]?.();
+	assert.equal(stage.events.count(INTERCOM_CONNECTED_EVENT), 0);
+	assert.equal(parent.events.count(INTERCOM_CONNECTED_EVENT), 1);
+	parent.shutdownHandlers[0]?.();
+	assert.equal(parent.events.count(INTERCOM_CONNECTED_EVENT), 0);
+});
+
 test("full extension wiring keeps parent handlers alive across stage shutdown and reload", () => {
 	const parent = makeExtensionHarness();
 	const stage = makeExtensionHarness();
