@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setKeybindings } from "@bastani/atomic-tui";
-import { beforeAll, beforeEach, it } from "vitest";
+import { beforeAll, beforeEach, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 import type { TrustSelectorComponent } from "../src/modes/interactive/components/trust-selector.ts";
@@ -43,19 +43,22 @@ it.each(["cancel", "save"] as const)("/trust retries a failed save and can %s (#
 	};
 	try {
 		InteractiveModeBase.prototype.showTrustSelector.call(mode as never);
-		assert.ok(mounted);
+		// The selector mounts once the trust path is resolved, and each save settles asynchronously.
+		await vi.waitFor(() => assert.ok(mounted));
+		const selector = mounted!;
 		writeFileSync(agentDir, "blocks trust storage");
-		mounted.component.handleInput("\r");
-		assert.equal(errors.length, 1);
+		selector.component.handleInput("\r");
+		await vi.waitFor(() => assert.equal(errors.length, 1));
 		assert.equal(closed, false);
-		mounted.component.handleInput("\r");
-		assert.equal(errors.length, 2);
+		selector.component.handleInput("\r");
+		await vi.waitFor(() => assert.equal(errors.length, 2));
 		assert.equal(closed, false);
 		if (action === "cancel") {
-			mounted.component.handleInput("\x1b");
+			selector.component.handleInput("\x1b");
 		} else {
 			rmSync(agentDir);
-			mounted.component.handleInput("\r");
+			selector.component.handleInput("\r");
+			await vi.waitFor(() => assert.equal(closed, true));
 			assert.equal(new ProjectTrustStore(agentDir).get(directory), true);
 		}
 		assert.equal(closed, true);

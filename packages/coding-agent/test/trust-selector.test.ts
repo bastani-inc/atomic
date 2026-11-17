@@ -72,6 +72,7 @@ describe("TrustSelectorComponent", () => {
 		expect(onCancel).not.toHaveBeenCalled();
 		const numbered = new TrustSelectorComponent({
 			cwd: projectPath,
+			trustPath: projectPath,
 			savedDecision: null,
 			projectTrusted: false,
 			onSelect,
@@ -81,6 +82,7 @@ describe("TrustSelectorComponent", () => {
 		expect(onSelect).toHaveBeenLastCalledWith({ trusted: false, updates: [{ path: projectPath, decision: false }] });
 		const cancelled = new TrustSelectorComponent({
 			cwd: projectPath,
+			trustPath: projectPath,
 			savedDecision: null,
 			projectTrusted: false,
 			onSelect,
