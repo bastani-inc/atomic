@@ -72,6 +72,8 @@ interface ActiveComponent {
 	frameRequested?: boolean;
 	/** A hidden component changed and the host was told to ask for a frame once it shows it again. */
 	staleWhileHidden?: boolean;
+	handlingInput?: boolean;
+	paintAfterInput?: boolean;
 }
 
 /**
@@ -431,6 +433,7 @@ export class EngineCustomUiService {
 			case "engine_custom_input": {
 				// Keys run as soon as they arrive: a yield here would queue the reader's keystroke behind agent work.
 				let handled = false;
+				record.handlingInput = true;
 				try {
 					handled = runSynchronousCallback({ kind: "renderer", name: command.componentId }, () => {
 						if (isKeyRelease(command.data) && record.component.wantsKeyRelease !== true) return false;
@@ -441,6 +444,8 @@ export class EngineCustomUiService {
 					});
 				} catch {
 					handled = false;
+				} finally {
+					record.handlingInput = false;
 				}
 				this.send({
 					type: "engine_custom_input_result",
@@ -448,6 +453,10 @@ export class EngineCustomUiService {
 					requestId: command.requestId,
 					handled,
 				});
+				if (record.paintAfterInput === true) {
+					record.paintAfterInput = false;
+					this.paintComponent(command.componentId);
+				}
 				break;
 			}
 			case "engine_custom_copy_result":
@@ -503,6 +512,10 @@ export class EngineCustomUiService {
 	private paintComponent(componentId: string): void {
 		const record = this.active.get(componentId);
 		if (!record) return;
+		if (record.handlingInput === true) {
+			record.paintAfterInput = true;
+			return;
+		}
 		const requestId = record.lastRequestId;
 		if (requestId === undefined || record.hidden === true) {
 			if (record.staleWhileHidden === true) return;
