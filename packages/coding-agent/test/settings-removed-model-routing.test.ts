@@ -8,6 +8,10 @@ import { ENV_AGENT_DIR } from "../src/config.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { runMigrations } from "../src/migrations.js";
 import { clearDeprecationWarningsForTests, setDeprecationWarningSink } from "../src/utils/deprecation.js";
+import { runCliProcess } from "./cli-test-helpers.js";
+
+/** A real CLI process transpiles the CLI graph before it reads any settings. */
+const REAL_CLI_PROCESS_TIMEOUT_MS = 120_000;
 
 const ROUTING = { allowedProviders: ["anthropic"], excludedModels: ["*-mini"] };
 const REMOVED_GLOBAL =
@@ -124,4 +128,47 @@ describe("startup removes a saved modelRouting setting from the settings file on
 
 		assert.deepEqual(shown, [REMOVED_GLOBAL]);
 	});
+});
+
+describe("atomic -p with a saved modelRouting setting", () => {
+	it(
+		"says once that it removed the key on the first start, and nothing on the next",
+		async () => {
+			const root = mkdtempSync(join(tmpdir(), "atomic-removed-model-routing-cli-"));
+			try {
+				const agentDir = join(root, "agent");
+				const cwd = join(root, "project");
+				mkdirSync(agentDir, { recursive: true });
+				mkdirSync(cwd, { recursive: true });
+				writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark", modelRouting: ROUTING }));
+				const start = async () => {
+					const result = await runCliProcess(["-p", "hi", "--no-session", "--no-extensions", "--no-skills"], {
+						cwd,
+						timeoutMs: REAL_CLI_PROCESS_TIMEOUT_MS,
+						env: {
+							...process.env,
+							[ENV_AGENT_DIR]: agentDir,
+							ATOMIC_OFFLINE: "1",
+							ATOMIC_SKIP_VERSION_CHECK: "1",
+							ATOMIC_INTERACTIVE_ENGINE_CHILD: undefined,
+							ATOMIC_INTERCOM_GROUP: undefined,
+							PI_INTERCOM_GROUP: undefined,
+							NO_COLOR: "1",
+						},
+					});
+					assert.equal(result.timedOut, false, result.stderr);
+					return result.stderr.split("\n").filter((line) => line.includes('"modelRouting"'));
+				};
+
+				const first = await start();
+				assert.equal(first.length, 1, first.join("\n"));
+				assert.match(first[0]!, /Removed the "modelRouting" setting from global settings/);
+				assert.deepEqual(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")), { theme: "dark" });
+				assert.deepEqual(await start(), [], "the next start says nothing");
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+		REAL_CLI_PROCESS_TIMEOUT_MS * 2,
+	);
 });
