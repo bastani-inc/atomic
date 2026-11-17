@@ -3,6 +3,7 @@ import { storageSelectionKey } from "@bastani/atomic/storage";
 import type { DurableWorkflowBackend } from "./backend.js";
 import {
 	getDurableBackendProcessOwner,
+	type PendingDurableBackendOpen,
 	resetDurableBackendProcessOwner,
 	type SelectedDurableBackend,
 } from "./backend-process-owner.js";
@@ -110,8 +111,35 @@ async function openDurableBackend(
 	const choice = options.journal;
 	const agentDir = options.agentDir ?? getAgentDir();
 	const abandonedBefore = options.abandonSignal?.aborted === true;
-	const selection = await selectRunJournalAsync({ agentDir, journal: choice, settings });
 	const holder = options.holder;
+	// Selecting the journal yields, and the holder can be released meanwhile; see `PendingDurableBackendOpen`.
+	let settle = (): void => {};
+	let fail = (_error: unknown): void => {};
+	const pending: PendingDurableBackendOpen | undefined =
+		holder === undefined
+			? undefined
+			: {
+					holder,
+					released: false,
+					settled: new Promise<void>((resolve, reject) => {
+						settle = resolve;
+						fail = reject;
+					}),
+				};
+	if (pending !== undefined) {
+		owner.pendingOpens ??= new Set();
+		owner.pendingOpens.add(pending);
+	}
+	let selection: Awaited<ReturnType<typeof selectRunJournalAsync>>;
+	try {
+		selection = await selectRunJournalAsync({ agentDir, journal: choice, settings });
+	} catch (error) {
+		settle();
+		throw error;
+	} finally {
+		if (pending !== undefined) owner.pendingOpens?.delete(pending);
+	}
+	const releasedWhileSelecting = pending?.released === true;
 	const key =
 		"createRun" in selection
 			? selection
@@ -148,9 +176,23 @@ async function openDurableBackend(
 		holders: new Set(),
 		pinned: false,
 	};
-	if (existing === undefined) selected.set(key, entry);
-	if (holder === undefined) entry.pinned = true;
-	else entry.holders.add(holder);
+	if (!releasedWhileSelecting) {
+		if (existing === undefined) selected.set(key, entry);
+		if (holder === undefined) entry.pinned = true;
+		else entry.holders.add(holder);
+		settle();
+	} else if (existing !== undefined) {
+		settle();
+	} else {
+		// Released before it was registered: its holder holds nothing, so a backend opened for it alone is closed once
+		// ready, as releasing a registered holder closes it, and the release waits for that.
+		entry.ready
+			.then(
+				() => entry.close?.(),
+				() => undefined,
+			)
+			.then(settle, fail);
+	}
 	callersOfOpening.set(entry, (callersOfOpening.get(entry) ?? 0) + 1);
 	if (options.abandonSignal?.aborted && !abandonedBefore) abandonOpening(selected, key, entry);
 	else options.abandonSignal?.addEventListener("abort", () => abandonOpening(selected, key, entry), { once: true });

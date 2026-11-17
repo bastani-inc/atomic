@@ -15,10 +15,20 @@ export interface SelectedDurableBackend {
 	pinned: boolean;
 }
 
+/** An open for a holder whose journal is still being selected, so it is not among the selected backends yet. */
+export interface PendingDurableBackendOpen {
+	readonly holder: object;
+	/** Set when the holder is released before the open is registered: the open then registers no holder. */
+	released: boolean;
+	/** Settles once the open is registered or has failed, and once a backend opened for a released holder is closed. */
+	readonly settled: Promise<void>;
+}
+
 export interface DurableBackendProcessOwner {
 	readonly version: 1;
 	injectedBackend: DurableWorkflowBackend | undefined;
 	selectedBackends?: Map<string | object, SelectedDurableBackend>;
+	pendingOpens?: Set<PendingDurableBackendOpen>;
 }
 
 function emptyOwner(): DurableBackendProcessOwner {
@@ -54,20 +64,28 @@ export function resetDurableBackendProcessOwner(): void {
 }
 
 export async function releaseDurableBackendsHeldBy(holder: object): Promise<void> {
-	const selected = getDurableBackendProcessOwner().selectedBackends;
-	if (selected === undefined) return;
+	const owner = getDurableBackendProcessOwner();
+	// An open still selecting its journal is not registered yet: it must not register this holder once it is.
+	const pending = [...(owner.pendingOpens ?? [])].filter((open) => open.holder === holder);
+	for (const open of pending) open.released = true;
+	const selected = owner.selectedBackends;
+	if (selected === undefined) {
+		await Promise.all(pending.map((open) => open.settled));
+		return;
+	}
 	const released: SelectedDurableBackend[] = [];
 	for (const [key, entry] of selected) {
 		if (!entry.holders.delete(holder) || entry.holders.size > 0 || entry.pinned) continue;
 		selected.delete(key);
 		released.push(entry);
 	}
-	await Promise.all(
-		released.map((entry) =>
+	await Promise.all([
+		...released.map((entry) =>
 			entry.ready.then(
 				() => entry.close?.(),
 				() => undefined,
 			),
 		),
-	);
+		...pending.map((open) => open.settled),
+	]);
 }
