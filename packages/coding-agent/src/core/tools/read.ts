@@ -388,11 +388,12 @@ function appendReadSelectors(pathValue: string, selector: ReadLineSelector): str
 export function createReadToolDefinition(
 	cwd: string,
 	options?: ReadToolOptions,
-): ToolDefinition<typeof readSchema, ReadToolDetails | undefined, ReadRenderState> {
+): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const fallbackResizeOptions = options?.resizeOptions;
 	const ops = options?.operations ?? defaultReadOperations;
-	return {
+	// Its renderers keep a resolved path between renders; the public type stays the one SDK callers already use.
+	const definition: ToolDefinition<typeof readSchema, ReadToolDetails | undefined, ReadRenderState> = {
 		name: "read",
 		label: "read",
 		description:
@@ -947,6 +948,7 @@ export function createReadToolDefinition(
 			return text;
 		},
 	};
+	return definition as unknown as ToolDefinition<typeof readSchema, ReadToolDetails | undefined>;
 }
 export function createReadTool(cwd: string, options?: ReadToolOptions): AgentTool<typeof readSchema> {
 	return wrapToolDefinition(createReadToolDefinition(cwd, options));

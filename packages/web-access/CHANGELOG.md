@@ -4,10 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Web search and fetch calls show compact `WebSearch(...)` and `Fetch(...)` headers, concise result summaries and a shared expand hint. Expanded results retain all returned text, while fetched text cannot create terminal hyperlinks or control sequences ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ### Fixed
 
 - Web search, fetch and video tools read their configuration, browser cookies, media files and cloned GitHub repositories without blocking the session's event loop
-- GitHub clone settings honor the legacy web configuration when the primary file is absent, and use the primary file after a configuration reset when both files exist
 - On Windows, GitHub clone cache checks no longer pause the main thread. A configuration load still waiting for its private directory cannot restore old settings after the session resets its configuration ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 
 ## [0.9.88] - 2026-11-16

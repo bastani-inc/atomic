@@ -82,7 +82,7 @@ const project = (
  * running beside it would be measured too: with sharding's longest-first order it started beside about five other
  * pool files, and its p99 lag reached 105.6 ms of its 100 ms bound (run 40577049870). It is its own project with a
  * later `groupOrder`, so vitest runs it after every other integration file of the run (or shard) has finished, with
- * nothing beside it. `npm run test:integration` selects both projects.
+ * nothing beside it. `npm run test:integration` selects it with the integration and UI gate projects.
  */
 const loadGate = "test/integration/workflow-pool-load-gate.test.ts";
 

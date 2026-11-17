@@ -9,6 +9,7 @@ import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
 import { isGitProvisionError } from "../../utils/git-errors.ts";
 import { type HostChildProcess, spawnHostProcess } from "../../utils/host-spawn.ts";
+import { pathExists } from "../../utils/path-exists.ts";
 import { redactUrlCredentials } from "../error-contract.ts";
 import { containProcessTree, type ProcessTreeContainment } from "../process-tree-containment.ts";
 import {
@@ -281,15 +282,6 @@ async function unreadableDirectory(directory: string): Promise<WorkspaceSnapshot
 async function isDirectory(path: string): Promise<boolean> {
 	try {
 		return (await stat(path)).isDirectory();
-	} catch {
-		return false;
-	}
-}
-
-async function pathExists(path: string): Promise<boolean> {
-	try {
-		await stat(path);
-		return true;
 	} catch {
 		return false;
 	}
