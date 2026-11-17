@@ -158,6 +158,30 @@ for (const runtime of RUNTIMES) {
 			assert.doesNotMatch(stderr, /debugger/i);
 		});
 
+		test("counts a block in the phase it ran in when the phase ends in the same task", () => {
+			const log = join(temp, "blocks.jsonl");
+			const { report } = runChild(
+				runtime,
+				{ ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS), ATOMIC_EVENT_LOOP_BLOCK_LOG: log },
+				"phase-inside-block",
+			);
+			assert.equal(report?.started, true);
+			const records = readLog(log);
+			const [startup, session] = records.filter((record) => record.type === "delay");
+			assert.equal(startup?.phase, "startup");
+			assert.equal(session?.phase, "session");
+			const [long] = blocksNaming(records, "holdTheEventLoopForLong");
+			assert.ok(long, `no record of the long block:\n${JSON.stringify(records, null, 1)}`);
+			// Timestamps are whole milliseconds; the block ends as the session starts, not after.
+			const blockEnd = Date.parse(long.at) + (long.durationMs ?? 0);
+			assert.ok(
+				blockEnd <= Date.parse(session.at) + 1,
+				`the long block ends ${blockEnd - Date.parse(session.at)} ms into the session`,
+			);
+			assert.ok((startup.maxMs ?? 0) >= LONG_BLOCK_MS * 0.9, `startup max ${startup.maxMs} ms`);
+			assert.ok((session.maxMs ?? Infinity) < THRESHOLD_MS, `session max ${session.maxMs} ms`);
+		});
+
 		test("writes to event-loop-blocks.jsonl in the agent directory when no log is named", () => {
 			const { report } = runChild(runtime, { ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS) });
 			assert.equal(report?.started, true);

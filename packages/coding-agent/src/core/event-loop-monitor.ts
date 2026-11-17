@@ -454,8 +454,14 @@ const epochUs = () => Math.round((performance.timeOrigin + performance.now()) * 
 
 const PHASES: readonly EventLoopPhase[] = ["startup", "session", "shutdown"];
 
+function startDelayHistogram(): IntervalHistogram {
+	const histogram = monitorEventLoopDelay({ resolution: DELAY_RESOLUTION_MS });
+	histogram.enable();
+	return histogram;
+}
+
 class EventLoopMonitor {
-	private readonly histogram: IntervalHistogram;
+	private histogram: IntervalHistogram;
 	private readonly pending: string[] = [];
 	private draining: Promise<void> | undefined;
 	private readonly sampler: StackSampler;
@@ -473,8 +479,7 @@ class EventLoopMonitor {
 		this.logPath = logPath;
 		this.lastBeatUs = epochUs();
 		this.phaseStartedUs = this.lastBeatUs;
-		this.histogram = monitorEventLoopDelay({ resolution: DELAY_RESOLUTION_MS });
-		this.histogram.enable();
+		this.histogram = startDelayHistogram();
 		this.sampler = createSampler(thresholdMs, this.lastBeatUs);
 		this.sampler.beat(this.lastBeatUs);
 		setInterval(() => this.beat(), HEARTBEAT_MS).unref();
@@ -496,15 +501,20 @@ class EventLoopMonitor {
 	/** Writes the phase that ends here and starts `next`, unless the process is already past it. */
 	enter(next: EventLoopPhase): void {
 		if (PHASES.indexOf(next) <= PHASES.indexOf(this.phase)) return;
-		const ended = this.delayRecord();
+		// A block the phase ends inside belongs to this phase, but its histogram would count it only at its next tick. It
+		// is beaten and counted here, and the next phase gets a histogram of its own that starts after it.
+		const lateMs = this.beat();
+		const ended = this.delayRecord(lateMs);
 		if (next === "shutdown") this.writeAtQuit(ended);
 		else this.write(ended);
-		this.histogram.reset();
+		this.histogram.disable();
+		this.histogram = startDelayHistogram();
 		this.phase = next;
 		this.phaseStartedUs = epochUs();
 	}
 
-	private beat(): void {
+	/** Records a block that ends now, and returns how late this beat is in milliseconds. */
+	private beat(): number {
 		const nowUs = epochUs();
 		const sinceUs = this.lastBeatUs;
 		this.lastBeatUs = nowUs;
@@ -525,9 +535,11 @@ class EventLoopMonitor {
 			);
 		}
 		this.sampler.beat(nowUs);
+		return durationMs;
 	}
 
-	private delayRecord(): EventLoopRecord {
+	/** This phase's delay so far; `lateMs` is a late tick the histogram has not counted yet. */
+	private delayRecord(lateMs = 0): EventLoopRecord {
 		// Node records each tick's whole interval, Bun only how late it was.
 		const lagMs = (nanoseconds: number) =>
 			roundMs(Math.max(0, nanoseconds / 1e6 - (isBunRuntime ? 0 : DELAY_RESOLUTION_MS)));
@@ -542,7 +554,7 @@ class EventLoopMonitor {
 			ticks,
 			p50Ms: ticks === 0 ? 0 : lagMs(this.histogram.percentile(50)),
 			p99Ms: ticks === 0 ? 0 : lagMs(this.histogram.percentile(99)),
-			maxMs: ticks === 0 ? 0 : lagMs(this.histogram.max),
+			maxMs: Math.max(ticks === 0 ? 0 : lagMs(this.histogram.max), roundMs(lateMs)),
 		};
 	}
 

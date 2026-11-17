@@ -194,11 +194,14 @@ interface ScenarioResult {
 	readonly blocks: readonly BlockRecord[];
 }
 
-/** The phase a block was recorded in: the one it ended in, as the delay histogram records a block when it ends. */
+/**
+ * The phase a block ran in: the one it started in. A process ends any block still running when it enters a phase, and
+ * counts it in the phase it leaves, so no block runs across two.
+ */
 function phaseOf(block: BlockRecord, delays: ProcessDelays): Phase {
-	const end = Date.parse(block.at) + block.durationMs;
-	if (delays.shutdown !== undefined && end >= Date.parse(delays.shutdown.at)) return "shutdown";
-	return end >= Date.parse(delays.session.at) ? "session" : "startup";
+	const start = Date.parse(block.at);
+	if (delays.shutdown !== undefined && start >= Date.parse(delays.shutdown.at)) return "shutdown";
+	return start >= Date.parse(delays.session.at) ? "session" : "startup";
 }
 
 async function runScenario(
