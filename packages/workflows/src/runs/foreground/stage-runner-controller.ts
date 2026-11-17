@@ -2310,6 +2310,20 @@ export class StageSessionController {
 		walk: CandidateWalk,
 		start: number,
 	): Promise<number | undefined> {
+		for (;;) {
+			const index = await this.selectReadyCandidateByAvailability(candidates, walk, start);
+			// The primary candidate of an image-reading `auto` task already sees images; each fallback is checked now.
+			if (index === undefined || index === 0 || !this.autoTaskReadsImages()) return index;
+			if (await this.fallbackSeesImages(candidates[index]!)) return index;
+			walk.remaining.delete(index);
+		}
+	}
+
+	private async selectReadyCandidateByAvailability(
+		candidates: readonly WorkflowResolvedModelCandidate[],
+		walk: CandidateWalk,
+		start: number,
+	): Promise<number | undefined> {
 		while (walk.remaining.size > 0) {
 			this.opts.signal?.throwIfAborted();
 			let earliest: { index: number; delay: number } | undefined;
@@ -2653,51 +2667,54 @@ export class StageSessionController {
 
 	private modelCandidates(): Promise<WorkflowResolvedModelCandidate[]> {
 		// `auto` keeps the current model as its last fallback; a model the author named runs only its own chain.
-		this.candidatesPromise ??= this.primaryModel()
-			.then((primaryModel) =>
-				buildModelCandidatesFromCatalog({
-					primaryModel,
-					fallbackModels: this.effectiveStageOptions?.fallbackModels ?? [],
-					catalog: this.modelCatalog,
-					includeCurrentModel: this.autoModel !== undefined,
-				}),
-			)
-			// An `auto` task that reads images falls back only to models that see them, the appended session model
-			// included; its first candidate already does.
-			.then((candidates) =>
-				this.effectiveStageOptions?.model === "auto" && this.effectiveStageOptions.autoNeedsImageInput === true
-					? this.imageCapableCandidates(candidates)
-					: candidates,
-			);
+		this.candidatesPromise ??= this.primaryModel().then((primaryModel) =>
+			buildModelCandidatesFromCatalog({
+				primaryModel,
+				fallbackModels: this.effectiveStageOptions?.fallbackModels ?? [],
+				catalog: this.modelCatalog,
+				includeCurrentModel: this.autoModel !== undefined,
+			}),
+		);
+
 		return this.candidatesPromise;
 	}
 
+	/** Whether this is an `auto` task that reads images, whose every model must accept image input. */
+	private autoTaskReadsImages(): boolean {
+		return this.effectiveStageOptions?.model === "auto" && this.effectiveStageOptions.autoNeedsImageInput === true;
+	}
+
 	/**
-	 * The fallback candidates of a task that reads images, without the ones that cannot see them. A candidate named only by
-	 * ID is checked against the model it stands for in the stage's model runtime; one the stage cannot resolve is not
-	 * taken as seeing images, so it is skipped with a warning rather than run on placeholders.
+	 * Whether a fallback of an `auto` task that reads images can see them, judged when it is about to be tried: a candidate
+	 * named only by ID is looked up in the stage's model runtime as it is then (the task's `modelRuntime`, else the one an
+	 * earlier session opened with). One that does not accept images, or that cannot be looked up, is skipped with a
+	 * warning rather than run on placeholders.
 	 */
-	private async imageCapableCandidates(
-		candidates: WorkflowResolvedModelCandidate[],
-	): Promise<WorkflowResolvedModelCandidate[]> {
-		const runtime = this.effectiveStageOptions?.modelRuntime ?? this.sharedModelRuntime;
-		const unresolved = candidates.some((candidate, index) => index > 0 && typeof candidate.value === "string");
-		const known =
-			runtime !== undefined && unresolved
-				? new Map((await runtime.getAvailable()).map((model) => [`${model.provider}/${model.id}`, model]))
-				: undefined;
-		return candidates.filter((candidate, index) => {
-			if (index === 0) return true;
-			const model =
-				typeof candidate.value === "string"
-					? known?.get(splitReasoningSuffix(candidate.value).baseModel)
-					: candidate.value;
-			if (model !== undefined && acceptsImageInput(model)) return true;
-			this.modelWarnings.push(
-				`Skipped fallback model ${candidate.id}: ${model === undefined ? "its image support is unknown" : "it does not accept image input"}, and this task reads images.`,
-			);
-			return false;
-		});
+	private async fallbackSeesImages(candidate: WorkflowResolvedModelCandidate): Promise<boolean> {
+		let model: WorkflowModelValue | undefined = candidate.value;
+		if (typeof model === "string") {
+			const runtime = this.effectiveStageOptions?.modelRuntime ?? this.sharedModelRuntime;
+			const id = splitReasoningSuffix(model).baseModel;
+			model =
+				runtime === undefined
+					? undefined
+					: (await runtime.getAvailable()).find((available) => `${available.provider}/${available.id}` === id);
+		}
+		if (model !== undefined && acceptsImageInput(model)) return true;
+		const warning = `Skipped fallback model ${candidate.id}: ${model === undefined ? "its image support is unknown" : "it does not accept image input"}, and this task reads images.`;
+		if (!this.modelWarnings.includes(warning)) this.modelWarnings.push(warning);
+		return false;
+	}
+
+	/** The first candidate from `start` an `auto` task that reads images may try next, if any. */
+	private async nextImageCandidateIndex(
+		candidates: readonly WorkflowResolvedModelCandidate[],
+		start: number,
+	): Promise<number | undefined> {
+		for (let index = start; index < candidates.length; index += 1) {
+			if (index === 0 || (await this.fallbackSeesImages(candidates[index]!))) return index;
+		}
+		return undefined;
 	}
 
 	private async createInitialSession(consumer: AgentSessionConsumer): Promise<StageSessionRuntime> {
@@ -3477,6 +3494,8 @@ export class StageSessionController {
 			error: message,
 		});
 		let nextIndex: number | undefined = index + 1 < candidates.length ? index + 1 : undefined;
+		if (walk === undefined && nextIndex !== undefined && this.autoTaskReadsImages())
+			nextIndex = await this.nextImageCandidateIndex(candidates, nextIndex);
 		if (walk !== undefined) {
 			this.recordCandidateFailure(walk, index, err, candidates);
 			nextIndex = undefined;

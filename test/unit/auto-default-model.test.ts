@@ -112,7 +112,14 @@ interface ProviderRequest {
 }
 
 /** Three available models and one whose provider has no credentials; every request is recorded. */
-async function models(fixture: { readonly failing?: readonly string[]; readonly textOnly?: readonly string[] } = {}) {
+async function models(
+	fixture: {
+		readonly failing?: readonly string[];
+		readonly textOnly?: readonly string[];
+		/** The error the failing models' requests end with; a retryable overload by default. */
+		readonly failure?: string;
+	} = {},
+) {
 	const base: Model<"anthropic-messages"> = { ...getModel("anthropic", "claude-sonnet-4-5")!, reasoning: true };
 	const model = (provider: string, id: string): Model<"anthropic-messages"> => ({
 		...base,
@@ -137,7 +144,7 @@ async function models(fixture: { readonly failing?: readonly string[]; readonly 
 		const fullId = `${requestModel.provider}/${requestModel.id}`;
 		requests.push({ model: fullId, reasoning: options?.reasoning });
 		const stream = createAssistantMessageEventStream();
-		const failure = fixture.failing?.includes(fullId) ? UNAVAILABLE : undefined;
+		const failure = fixture.failing?.includes(fullId) ? (fixture.failure ?? UNAVAILABLE) : undefined;
 		const message: AssistantMessage = {
 			role: "assistant",
 			content: failure ? [] : [{ type: "text", text: `done on ${fullId}` }],
@@ -936,6 +943,61 @@ test(
 	},
 	REAL_SESSION_TIMEOUT_MS,
 );
+
+for (const fallbackSeesImages of [true, false]) {
+	test(
+		`without a model catalog, when an image task's first model turn fails, a fallback that ${fallbackSeesImages ? "sees images runs" : "cannot see images is refused"}`,
+		async () => {
+			const m = await models({
+				failing: [DEFAULT_ID],
+				failure: "404 model_not_found: unknown model",
+				textOnly: fallbackSeesImages ? [] : [FALLBACK_ID],
+			});
+			const cwd = tempDir("atomic-auto-default-sdk-prompt-fallback-");
+			mkdirSync(join(cwd, "agent"), { recursive: true });
+			const image = join(cwd, "reference.png");
+			writeFileSync(image, "png");
+			// The runtime reaches the stage only through the adapter: no catalog, no task-level runtime.
+			const sdk = createAgentSessionAdapter({
+				cwd,
+				agentDir: join(cwd, "agent"),
+				modelRuntime: m.runtime,
+				settingsManager: SettingsManager.inMemory({
+					...WITH_DEFAULT,
+					retry: { enabled: false },
+					compaction: { enabled: false },
+				}),
+				builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			});
+			const def = workflow({
+				name: "sdk-auto-image-prompt-fallback",
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					await ctx.task("design", {
+						prompt: "Match the reference.",
+						model: "auto",
+						reads: [image],
+						fallbackModels: [FALLBACK_ID],
+						tools: [],
+					});
+					return {};
+				},
+			});
+			const result = await run(def, {}, { store: createStore(), adapters: { agentSession: sdk } });
+			const requested = m.requests.map((request) => request.model);
+			if (fallbackSeesImages) {
+				assert.equal(result.status, "completed", result.error);
+				assert.deepEqual(requested, [DEFAULT_ID, FALLBACK_ID]);
+			} else {
+				assert.notEqual(result.status, "completed");
+				assert.deepEqual(requested, [DEFAULT_ID], "the text-only fallback never runs");
+			}
+		},
+		REAL_SESSION_TIMEOUT_MS,
+	);
+}
 
 test("an auto task that reads images never falls back to a model that cannot see them", async () => {
 	const f = await stageFixture(WITH_DEFAULT, { textOnly: [SESSION_ID] });
