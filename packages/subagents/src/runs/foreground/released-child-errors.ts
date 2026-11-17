@@ -71,7 +71,7 @@ function subjectFor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFiel
 		case "child-unrestorable":
 			return `Subagent ${fields.childId} cannot be restored: ${fields.reason}`;
 		case "record-append-failed":
-			return `The ${fields.state} record of subagent ${fields.childId} could not be saved`;
+			return `The ${fields.state === undefined ? "" : `${fields.state} `}record of subagent ${fields.childId} could not be saved`;
 		case "hold-failed":
 			return `Sends to released subagent ${fields.childName} cannot be held`;
 		case "completion-not-held":

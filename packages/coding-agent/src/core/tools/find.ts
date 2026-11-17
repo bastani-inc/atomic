@@ -3,11 +3,11 @@ import { stat as fsStat } from "node:fs/promises";
 import path, { type PlatformPath } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { Text } from "@bastani/atomic-tui";
-import { spawn } from "child_process";
 import { Minimatch } from "minimatch";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { spawnHostProcess } from "../../utils/host-spawn.ts";
 import { attachLineReader } from "../../utils/lines.ts";
 import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
@@ -747,7 +747,7 @@ export function createFindToolDefinition(
 							}
 							if (signal?.aborted) return false;
 							return await new Promise<boolean>((resolveTarget, rejectTarget) => {
-								const child = spawn(fdPath, args, {
+								const child = spawnHostProcess(fdPath, args, {
 									env: createChildProcessEnvironment(),
 									stdio: ["ignore", "pipe", "pipe"],
 								});
@@ -768,7 +768,7 @@ export function createFindToolDefinition(
 								child.stderr?.on("data", (chunk) => {
 									stderr += chunk.toString();
 								});
-								detachLines = attachLineReader(child.stdout, (rawLine) => {
+								detachLines = attachLineReader(child.stdout!, (rawLine) => {
 									if (windowsPathMatcher) {
 										const matchPath = relativizeFindResultPath(
 											cleanFdLine(rawLine).replaceAll("\\", "/"),
