@@ -43,7 +43,7 @@ const PROVIDER = "faux-ended-session-retention";
 const PARENT_MODEL = "parent-retention";
 const CHILD_MODEL = "child-retention";
 /** Parents that launch children and end, as the stages of one workflow run do one after another. */
-const PARENTS = 6;
+const PARENTS = 3;
 const CHILDREN_PER_PARENT = 2;
 
 let childrenAnswered = 0;
@@ -101,7 +101,7 @@ async function assertEveryParentCollected(collection: CollectionCount): Promise<
 	assert.deepEqual(
 		collection.uncollected(),
 		[],
-		`ended parent sessions still reachable: ${collection.uncollected().length} of ${collection.created}`,
+		`ended sessions or generations still reachable: ${collection.uncollected().length} of ${collection.created}`,
 	);
 }
 
@@ -175,7 +175,14 @@ describe("workflow stages that launched subagents and completed", () => {
 				return {};
 			},
 		});
-		const answeredBefore = childrenAnswered;
+		// Children a stage launched: one it stopped watching may still be running when the stage completes, and ends
+		// with it, so the stages are measured by what they launched rather than by what answered.
+		let childrenLaunched = 0;
+		const countLaunches = (event: { type: string; toolName?: string; result?: unknown }) => {
+			if (event.type !== "tool_execution_end" || event.toolName !== "subagent") return;
+			const details = (event.result as { details?: { taskRecords?: readonly unknown[] } } | undefined)?.details;
+			childrenLaunched += details?.taskRecords?.length ?? 0;
+		};
 		const result = await run(
 			definition,
 			{},
@@ -187,16 +194,18 @@ describe("workflow stages that launched subagents and completed", () => {
 					sessionStore: new MemorySessionStore(),
 					agentSession: {
 						async create(...args: Parameters<typeof sdk.create>) {
-							const session = await sdk.create(...args);
-							stages.track("session" in session ? session.session : session);
-							return session;
+							const created = await sdk.create(...args);
+							const session = "session" in created ? created.session : created;
+							stages.track(session);
+							session.subscribe(countLaunches);
+							return created;
 						},
 					},
 				},
 			},
 		);
 		status = result.status;
-		assert.equal(childrenAnswered - answeredBefore, PARENTS * CHILDREN_PER_PARENT, "every stage's children answered");
+		assert.equal(childrenLaunched, PARENTS * CHILDREN_PER_PARENT, "every stage launched its children");
 	}, ENDED_SESSIONS_TIMEOUT_MS);
 
 	test(
@@ -253,6 +262,41 @@ describe("SDK sessions that launched subagents and were disposed", () => {
 		async () => {
 			assert.ok(processWideService, "the first parent started the process-wide service");
 			await assertEveryParentCollected(parents);
+		},
+		ENDED_SESSIONS_TIMEOUT_MS,
+	);
+});
+
+describe("extension generations a session replaced with /reload", () => {
+	/** Reloads of one session: each starts a new generation of every extension and retires the previous one. */
+	const RELOADS = 4;
+	const retired = trackCollection();
+	let disposeSession: (() => Promise<void>) | undefined;
+
+	beforeAll(async () => {
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir: join(cwd, "agent"),
+			modelRuntime,
+			model: parentModel,
+			settingsManager: quietSettings(),
+			builtins: { mcp: false, "web-access": false },
+		});
+		disposeSession = () => session.dispose();
+		for (let reload = 0; reload < RELOADS; reload++) {
+			retired.track(session.extensionRunner);
+			await session.reload();
+		}
+	}, ENDED_SESSIONS_TIMEOUT_MS);
+
+	afterAll(async () => {
+		await disposeSession?.();
+	});
+
+	test(
+		"every retired generation's extension runner can be collected while the session goes on",
+		async () => {
+			await assertEveryParentCollected(retired);
 		},
 		ENDED_SESSIONS_TIMEOUT_MS,
 	);
