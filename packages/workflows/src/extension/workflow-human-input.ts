@@ -77,6 +77,8 @@ export function bindWorkflowHumanInput(
 				];
 				for (const { id, questionnaire, prompt } of presentations) {
 					if (id === undefined) continue;
+					if (prompt !== undefined && store.getStagePromptAnswer(run.id, stage.id)?.promptId === prompt.id)
+						continue;
 					const key = `${run.id}\0${stage.id}\0${id}`;
 					pending.add(key);
 					const childInput = questionnaire?.humanInput;

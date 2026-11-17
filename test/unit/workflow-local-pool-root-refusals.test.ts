@@ -31,7 +31,7 @@ import type {
 } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { type HeldPromptAnswers, promptIdentity } from "../../packages/workflows/src/workers/held-prompt-answers.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
-import type { PublishedRun } from "../../packages/workflows/src/workers/run-changes.js";
+import { type PublishedRun, RunChangesEncoder } from "../../packages/workflows/src/workers/run-changes.js";
 import { PoolStageHandoff, type PoolStageQueue } from "../../packages/workflows/src/workers/stage-handoff.js";
 import type { PooledStageQuestion } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { publicationRejected, staleWorkLease } from "../helpers/pool-errors.js";
@@ -513,6 +513,83 @@ test.each(["store", "SDK host"] as const)(
 				assert.equal(pool.commands("stage-answer").length, index, "an answered prompt is not delivered twice");
 			}
 			assert.deepEqual(asked, answerPath === "SDK host" ? ["Allow worker action 1?", "Allow worker action 2?"] : []);
+		} finally {
+			unbind();
+			await pool.dispose();
+		}
+	},
+);
+
+test.each(["SDK host", "store"] as const)(
+	"a worker dialog answered through the %s is not asked again by a queued full publication (#5354)",
+	async (answerPath) => {
+		const pool = await rootPool();
+		const broker = adoptStageUiBroker({}, false, pool.store);
+		const encoder = new RunChangesEncoder();
+		const replies: ReturnType<typeof Promise.withResolvers<boolean>>[] = [];
+		const unbind = bindWorkflowHumanInput(
+			pool.store,
+			{
+				hasUI: false,
+				hasHumanInput: true,
+				ui: {
+					confirm: async () => {
+						const reply = Promise.withResolvers<boolean>();
+						replies.push(reply);
+						return reply.promise;
+					},
+				},
+			},
+			broker,
+		);
+		try {
+			pool.known();
+			const prompt: PendingPrompt = {
+				id: "dialog-1",
+				kind: "confirm",
+				source: "stage-dialog",
+				message: "Allow worker action?",
+				createdAt: Date.now(),
+			};
+			const parallel = stage("parallel", {
+				workflowChildRun: { alias: "extra", workflow: "extra", runId: `${descriptor.childRunId}-extra` },
+			});
+			const publication = childRun([stage("ask", { status: "awaiting_input", pendingPrompt: prompt }), parallel]);
+			assert.deepEqual(await pool.publish(encoder.encode(pool.work, [publication])), []);
+			await settled();
+			assert.equal(replies.length, 1);
+			const extra = childRun([stage("extra")], {
+				id: `${descriptor.childRunId}-extra`,
+				parentRunId: descriptor.childRunId,
+				parentStageId: "parallel",
+			});
+			const queued = encoder.encode(pool.work, [publication, extra]);
+			if (answerPath === "SDK host") replies[0]!.resolve(true);
+			else assert.equal(pool.store.resolveStagePendingPrompt(descriptor.childRunId, "ask", prompt.id, true), true);
+			await settled();
+			assert.equal(pool.commands("stage-answer").length, 1);
+
+			assert.deepEqual(await pool.publish(queued), []);
+			await settled();
+			assert.equal(replies.length, 1, "the already answered dialog is not presented again");
+			assert.equal(pool.commands("stage-answer").length, 1);
+
+			const next = childRun([
+				stage("ask", { status: "awaiting_input", pendingPrompt: { ...prompt, id: "dialog-2" } }),
+				parallel,
+			]);
+			assert.deepEqual(await pool.publish(encoder.encode(pool.work, [next, extra])), []);
+			await settled();
+			assert.equal(replies.length, 2, "a genuinely new dialog with the same text is still presented");
+			replies[1]!.resolve(false);
+			await settled();
+			assert.deepEqual(
+				pool.commands("stage-answer").map(({ answer }) => answer),
+				[
+					{ kind: "prompt", promptId: "dialog-1", response: true },
+					{ kind: "prompt", promptId: "dialog-2", response: false },
+				],
+			);
 		} finally {
 			unbind();
 			await pool.dispose();
