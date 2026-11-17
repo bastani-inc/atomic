@@ -54,6 +54,9 @@ knowledge:
       these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
       Verify both localized recovery fixtures without system locales with:
       `(umask 022; LOCPATH=/nonexistent npx vitest run --project unit test/unit/subagents-named-worktree-locks.test.ts test/unit/subagents-named-worktree-recovery.test.ts)`.
+      Before real CLI captures, run `npm run build`; `npm run check` does not refresh the compiled CLI's
+      builtin assets. Exercise `/tasks` and stage chats too: direct component tests do not cover RPC-hosted
+      widget renderer resolution.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

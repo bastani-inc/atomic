@@ -1147,20 +1147,22 @@ ${ASK_USAGE}
 	pi.registerMessageRenderer?.("intercom_message", renderIntercomCustomMessage);
 	pi.registerToolRenderer?.((toolName, next) => {
 		const registered = next();
-		if (registered) return registered;
+		if (registered?.renderCall || registered?.renderResult || registered?.renderShell === "self") return registered;
 		if (toolName === "contact_supervisor") {
 			return {
+				...registered,
 				renderCall: renderContactSupervisorCall,
 				renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
 			};
 		}
 		if (toolName === "intercom") {
 			return {
+				...registered,
 				renderCall: renderIntercomCall,
 				renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args),
 			};
 		}
-		return undefined;
+		return registered;
 	});
 	if (hasSubagentIntercomEnv()) {
 		pi.registerTool({

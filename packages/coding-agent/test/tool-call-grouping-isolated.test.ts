@@ -165,13 +165,17 @@ test("a rebuilt isolated row never repaints a frame drawn for a different group 
 	const first = readRow(runtime, "rebuilt");
 	await frame(first, 80, /Read\(/);
 	first.dispose();
-	const silent = {
-		onEngineMessage: () => () => {},
-		sendEngineCommand: () => {},
-	} as unknown as IsolatedInteractiveRuntime;
-	const rebuilt = readRow(silent, "rebuilt");
-	rebuilt.setGroupRole({ kind: "head", clauses: [{ family: "read", count: 2 }] });
-	assert.deepEqual(rebuilt.render(80), []);
-	const standalone = readRow(silent, "rebuilt");
-	assert.ok(standalone.render(80).some((line) => /Read\(/.test(stripTerminalSequences(line))));
+	const send = runtime.sendEngineCommand;
+	runtime.sendEngineCommand = () => {};
+	const rebuilt = readRow(runtime, "rebuilt");
+	const standalone = readRow(runtime, "rebuilt");
+	try {
+		rebuilt.setGroupRole({ kind: "head", clauses: [{ family: "read", count: 2 }] });
+		assert.deepEqual(rebuilt.render(80), []);
+		assert.ok(standalone.render(80).some((line) => /Read\(/.test(stripTerminalSequences(line))));
+	} finally {
+		runtime.sendEngineCommand = send;
+		rebuilt.dispose();
+		standalone.dispose();
+	}
 });

@@ -8,7 +8,7 @@
 
 ### Changed
 
-- Foreground and background agent launches use the same compact block with their short task title, elapsed time, token count and live management hint. Completion notices name the agent and show its first result line; expansion shows the prompt, tool calls and full retained result without inherited fork history ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Agent launches and control calls use shared state-marked blocks. Foreground and background launches show the short task title, elapsed time, token count and live management hint. Completion notices name the agent and show its first result line; expansion shows the prompt, tool calls and full retained result without inherited fork history ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Fixed
 

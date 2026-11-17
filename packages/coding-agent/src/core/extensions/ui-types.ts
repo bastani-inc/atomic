@@ -10,6 +10,7 @@ import type {
 	TUI,
 	WheelScrollLines,
 } from "@bastani/atomic-tui";
+import type { ChatMessageRenderOptions } from "../../modes/interactive/components/chat-message-renderer.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { Keybinding, KeybindingsManager } from "../keybindings.ts";
@@ -147,6 +148,8 @@ export interface ChatRenderSettings {
 	fullscreenWheelScrollLines?: WheelScrollLines;
 	getToolDefinition(toolName: string): ToolRenderers | undefined;
 	getCustomMessageRenderer(customType: string): MessageRenderer | undefined;
+	createToolComponent?: ChatMessageRenderOptions["createToolComponent"];
+	createCustomMessageComponent?: ChatMessageRenderOptions["createCustomMessageComponent"];
 }
 
 /** Host-owned inline custom UI focus state exposed to overlays without prompt content. */
