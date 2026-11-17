@@ -135,7 +135,6 @@ export interface AgentProgress {
 	model?: string;
 	/** Effective thinking level for this live attempt. */
 	thinking?: string;
-	readonly routerSelection?: import("./model-constraints.js").ModelRouterOutput;
 	skills?: string[];
 	lastActivityAt?: number;
 	currentTool?: string;
@@ -204,11 +203,10 @@ export interface SingleResult {
 	model?: string;
 	thinking?: string;
 	/**
-	 * The model the launch asked for, as given (`provider/model[:effort]`): the one it named, the routed one, or the
-	 * parent's when it named none. `model` differs from it when the child ran on a fallback (#4188).
+	 * The model the launch asked for, as given (`provider/model[:effort]`): the one it named, the one `auto` stood
+	 * for, or the parent's when it named none. `model` differs from it when the child ran on a fallback (#4188).
 	 */
 	requestedModel?: string;
-	routerSelection?: import("./model-constraints.js").ModelRouterOutput;
 	attemptedModels?: string[];
 	modelAttempts?: ModelAttempt[];
 	controlEvents?: ControlEvent[];

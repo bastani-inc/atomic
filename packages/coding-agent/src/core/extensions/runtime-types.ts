@@ -218,7 +218,6 @@ export interface ExtensionContextActions {
 	getSkillCatalog?: () => SkillCatalog;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
 	getDecisionModel?: () => string;
-	getModelRouting?: () => import("../settings-types.ts").ModelRoutingSettings;
 	getHttpIdleTimeoutMs?: () => number;
 	executeTool?: (
 		callerId: string,

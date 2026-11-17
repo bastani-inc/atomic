@@ -12,8 +12,8 @@ import {
 import type { Static, TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { raceWithAbortSignal } from "../../utils/abort.js";
+import { reportDebug } from "../debug.ts";
 import { DecisionOutputError, DecisionProviderError, isDecisionError } from "../decision/errors.js";
-import { reportModelRoutingDebug } from "../model-routing-debug.js";
 import { type JsonObject, STRUCTURED_OUTPUT_TOOL_NAME } from "../tools/structured-output.ts";
 import { compileChoiceSchema } from "./choice-schema.js";
 import { abortFailure, type DecisionTrace, resolveDecisionDeadlineMs, withinDecisionDeadline } from "./deadline.js";
@@ -687,9 +687,9 @@ async function inferDecision<T extends TSchema>(
 						to: `${fallbackChat.provider}/${fallbackChat.id}`,
 						reason: new ClassifierDecisionError().message,
 					};
-					reportModelRoutingDebug(
-						`Classifier routing failed${error instanceof ClassifierDecisionError && error.detail ? ` (${error.detail})` : ""}; falling back to current chat model ${fallback.to} for this routing decision.`,
-					);
+					reportDebug("decision", "classifier-fallback", {
+						message: `Classifier decision failed${error instanceof ClassifierDecisionError && error.detail ? ` (${error.detail})` : ""}; falling back to current chat model ${fallback.to} for this decision.`,
+					});
 					selected = { kind: "chat", fullId: fallback.to, model: fallbackChat };
 					rejection = undefined;
 					attempt = 0;

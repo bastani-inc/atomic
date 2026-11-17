@@ -82,7 +82,6 @@ export function durableStageCheckpointMetadata(
 		...(stage.attemptedModels !== undefined ? { attemptedModels: [...stage.attemptedModels] } : {}),
 		...(stage.modelAttempts !== undefined ? { modelAttempts: [...stage.modelAttempts] } : {}),
 		...(stage.rateLimits !== undefined ? { rateLimits: [...stage.rateLimits] } : {}),
-		...(stage.routerSelection !== undefined ? { routerSelection: stage.routerSelection } : {}),
 		...(stage.structured !== undefined ? { structured: stage.structured } : {}),
 		...(stage.artifacts !== undefined ? { artifacts: [...stage.artifacts] } : {}),
 		...(stage.warnings !== undefined ? { warnings: [...stage.warnings] } : {}),
