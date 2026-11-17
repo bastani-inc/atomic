@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { afterEach, describe, test } from "vitest";
-import { processStartToken, setNativeProcessCreationTimeForTesting } from "../src/core/process-start-token.js";
+import {
+	processStartToken,
+	processStartTokenAsync,
+	setNativeProcessCreationTimeForTesting,
+} from "../src/core/process-start-token.js";
 
 const windows = process.platform === "win32";
 /** A process id no live process has: Windows assigns multiples of four, Linux ids stay below 2^22. */
@@ -58,6 +62,50 @@ describe("the start of a process of this host (#5141)", () => {
 			assert.equal(processStartToken(0), undefined);
 			assert.equal(processStartToken(-1), undefined);
 		},
+	);
+
+	test.skipIf(!windows && process.platform !== "linux")(
+		"the start read without blocking is the start read synchronously, and a gone process has none",
+		async () => {
+			const child = await runningChild();
+			const own = await processStartTokenAsync(process.pid);
+			const theirs = await processStartTokenAsync(child.pid);
+			assert.equal(theirs, processStartToken(child.pid));
+			await child.stop();
+			assert.match(own ?? "", /^[0-9a-f]{12}$/);
+			assert.equal(own, processStartToken(process.pid));
+			assert.notEqual(theirs, own);
+			assert.equal(await processStartTokenAsync(child.pid), undefined);
+			assert.equal(await processStartTokenAsync(MISSING_PID), undefined);
+			assert.equal(await processStartTokenAsync(0), undefined);
+			assert.equal(await processStartTokenAsync(-1), undefined);
+		},
+	);
+
+	test.skipIf(!windows)(
+		"without the native module, the start read without blocking is read alike by PowerShell (#5141)",
+		async () => {
+			const child = await runningChild();
+			try {
+				const native = await processStartTokenAsync(child.pid);
+				setNativeProcessCreationTimeForTesting(null);
+				assert.equal(await processStartTokenAsync(child.pid), native);
+				assert.equal(await processStartTokenAsync(MISSING_PID), undefined);
+				const path = process.env.PATH;
+				setNativeProcessCreationTimeForTesting(null);
+				process.env.PATH = "";
+				try {
+					assert.equal(await processStartTokenAsync(process.pid), undefined);
+				} finally {
+					process.env.PATH = path;
+				}
+				// PowerShell that could not be started is not tried again.
+				assert.equal(await processStartTokenAsync(child.pid), undefined);
+			} finally {
+				await child.stop();
+			}
+		},
+		60_000,
 	);
 
 	test.skipIf(!windows)(
