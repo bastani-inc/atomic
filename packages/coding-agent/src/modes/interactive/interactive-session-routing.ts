@@ -101,7 +101,10 @@ InteractiveModeBase.prototype.showTrustSelector = async function (this: Interact
 										`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
 									);
 								},
-								(error: unknown) => this.showError(error instanceof Error ? error.message : String(error)),
+								(error: unknown) => {
+									selector.selector.retrySelection();
+									this.showError(error instanceof Error ? error.message : String(error));
+								},
 							);
 						},
 						onCancel: () => {
