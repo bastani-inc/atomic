@@ -400,9 +400,9 @@ test("canonical native watch paths retain alias-cwd leases until the last releas
 	await writeFileEnsuringDir(join(target, ".git/HEAD"), "ref: refs/heads/stage\n");
 	await writeFileEnsuringDir(join(target, ".git/reftable/tables.list"), "0\n");
 	symlinkSync(target, cwd, "junction");
-	const watch = fsWatch.watchWithErrorHandler;
+	const watch = fsWatch.watchWithErrorHandlerAsync;
 	const canonicalWatch = vi
-		.spyOn(fsWatch, "watchWithErrorHandler")
+		.spyOn(fsWatch, "watchWithErrorHandlerAsync")
 		.mockImplementation((path, listener, onError) => watch(path, listener, onError, { platform: "win32" }));
 	const provider = new FooterDataProvider(directory);
 	const first = provider.onBranchChange(() => {}, cwd);

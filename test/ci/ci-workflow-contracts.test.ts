@@ -234,7 +234,8 @@ test("typecheck builds the forked packages before compiling dependents", async (
  * SQLite selectors must keep working on both runtimes, and their tests must
  * keep asserting on both.
  *
- * `src/core/tools/resource-selectors.ts` used to require `bun:sqlite`, which
+ * The selectors' loader (now the worker in `src/core/tools/sqlite-selector-connection.ts`,
+ * formerly `resource-selectors.ts`) used to require `bun:sqlite`, which
  * exists only under Bun. When the suite moved to Node, one SQLite test silently
  * became `it.skip` and eleven more kept their names, kept passing, and executed
  * no assertions behind `if (!sqlite) return`. Neither shows up in a pass/fail
@@ -245,12 +246,15 @@ test("typecheck builds the forked packages before compiling dependents", async (
  * guard that turns an unavailable module into a green no-op.
  */
 test("SQLite selectors resolve on either runtime and their tests cannot silently empty", async () => {
-	const selectors = await readText(join(root, "packages/coding-agent/src/core/tools/resource-selectors.ts"));
-	assert.ok(selectors.includes('requireModule("node:sqlite")'), "resource-selectors must load node:sqlite");
-	assert.ok(
-		!selectors.includes('requireModule("bun:sqlite")'),
-		"the bun:sqlite fallback was deleted with the Bun 1.4.0 floor and must not come back",
-	);
+	const tools = join(root, "packages/coding-agent/src/core/tools");
+	const connection = await readText(join(tools, "sqlite-selector-connection.ts"));
+	assert.ok(connection.includes('require("node:sqlite")'), "the SQLite selector connection must load node:sqlite");
+	for (const file of ["sqlite-selector-connection.ts", "resource-selectors.ts"]) {
+		assert.ok(
+			!(await readText(join(tools, file))).includes("bun:sqlite"),
+			`${file}: the bun:sqlite fallback was deleted with the Bun 1.4.0 floor and must not come back`,
+		);
+	}
 
 	// A single project: the runtime split existed only because the loader was
 	// Bun-only; it must not come back.
