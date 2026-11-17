@@ -140,6 +140,7 @@ export interface SessionSummary {
 	readonly summarizedThroughId?: string;
 	readonly searchText: string;
 	readonly location?: string;
+	readonly estimated?: true;
 }
 
 export interface SessionListQuery {
@@ -147,6 +148,7 @@ export interface SessionListQuery {
 	/** Only sessions whose id starts with this text, compared case-insensitively. */
 	readonly idPrefix?: string;
 	readonly includeInternal?: boolean;
+	readonly withoutSearchText?: boolean;
 	readonly signal?: AbortSignal;
 }
 
@@ -197,6 +199,69 @@ export interface SessionOpenMarkerStore {
 	list(sessionId: string): Promise<readonly SessionOpenMarkerAge[]>;
 }
 
+export interface SessionEntryAt {
+	readonly seq: number;
+	readonly entry: SessionEntry;
+	readonly rawChunks?: readonly Uint8Array[];
+	readonly rawFormatVersion?: number;
+}
+
+export interface SessionEntriesQuery {
+	readonly fromSeq: number;
+	readonly toSeq: number;
+	readonly maxChars?: number;
+	readonly largeEntryBytes?: number;
+	readonly skipTypes?: readonly string[];
+	readonly signal?: AbortSignal;
+}
+
+export interface SessionEntriesPage {
+	readonly lastSeq: number;
+	readonly entries: readonly SessionEntryAt[];
+	readonly throughSeq: number;
+}
+
+export interface SessionSearchText {
+	readonly seq: number;
+	readonly text?: string;
+	readonly parts?: readonly string[];
+	readonly oversized?: boolean;
+}
+
+export interface SessionSearchCoverage {
+	readonly indexedSeq: number;
+	readonly lastSeq: number;
+	readonly generation?: string;
+	readonly revision?: string;
+}
+
+export interface SessionSearchExtendOptions {
+	readonly generation?: string;
+	readonly revision?: string;
+	readonly signal?: AbortSignal;
+}
+
+export interface SessionSearchIndex {
+	coverage(sessionId: string, format: number): Promise<SessionSearchCoverage | undefined>;
+	extend(
+		sessionId: string,
+		format: number,
+		afterSeq: number,
+		throughSeq: number,
+		texts: readonly SessionSearchText[],
+		options?: SessionSearchExtendOptions,
+	): Promise<boolean>;
+	candidates(
+		sessionId: string,
+		anyOf: readonly (readonly string[])[],
+		fromSeq: number,
+		toSeq: number,
+		limit: number,
+		generation?: string,
+		signal?: AbortSignal,
+	): Promise<readonly number[] | undefined>;
+}
+
 export interface SessionStore {
 	readonly descriptor: StorageDescriptor;
 	/**
@@ -230,6 +295,8 @@ export interface SessionStore {
 		options: SessionWriteOptions,
 	): Promise<SessionWriteResult>;
 	load(sessionId: string): Promise<SessionSnapshot>;
+	readEntryRange?(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage>;
+	readonly searchIndex?: SessionSearchIndex;
 
 	readTail?(sessionId: string, fromSeq: number): Promise<SessionTail>;
 

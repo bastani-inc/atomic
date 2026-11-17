@@ -336,7 +336,7 @@ async function searchFileLineRanges(
 	return filterSearchOutputByLineRange(text, target.lineRanges, contextBefore, contextAfter);
 }
 
-const SEARCH_ROW_PATH = /^(.+?)(?::[^:]+: |:\d+: |-\d+- )/;
+const SEARCH_ROW_PATH = /^(.+?)(?::\d+: |-\d+- |:(?!\/\/)[^:]+: )/;
 
 function groupSearchOutput(text: string): SearchOutputGroup[] {
 	const groups: SearchOutputGroup[] = [];
@@ -351,7 +351,7 @@ function groupSearchOutput(text: string): SearchOutputGroup[] {
 			byPath.set(filePath, current);
 			groups.push(current);
 		}
-		if (!current.lines.includes(line)) current.lines.push(line);
+		if (filePath.startsWith("history://") || !current.lines.includes(line)) current.lines.push(line);
 	}
 	return groups;
 }
@@ -422,18 +422,31 @@ function applyDefaultSearchContext(text: string, before = 1, after = 3): string 
 	return output.join("\n");
 }
 
+const SEARCH_ROW_DELIMITER = /^.+?(?::(\d+): |-(\d+)- )/;
+const SEARCH_NONNUMERIC_MATCH_ROW = /^.+?:(?!\/\/)[^:]+: /;
+
 function isSearchMatchLine(line: string): boolean {
-	return /:\d+: /.test(line);
+	const match = SEARCH_ROW_DELIMITER.exec(line);
+	if (match) return match[1] !== undefined && Number.parseInt(match[1], 10) > 0;
+	return SEARCH_NONNUMERIC_MATCH_ROW.test(line);
+}
+function isHistoryCursorNoteLine(line: string): boolean {
+	return /^history:\/\/.+?(?::0: |-0- )\[/.test(line);
 }
 function sliceGroupLinesByMatchCount(lines: readonly string[], matchLimit: number): string[] {
 	if (matchLimit <= 0) return [];
 	let matches = 0;
+	let cut = false;
 	const output: string[] = [];
 	for (const line of lines) {
 		if (isSearchMatchLine(line)) {
-			if (matches >= matchLimit) break;
+			if (matches >= matchLimit) {
+				cut = true;
+				continue;
+			}
 			matches++;
 		}
+		if (cut && !isHistoryCursorNoteLine(line)) continue;
 		output.push(line);
 	}
 	return output;
@@ -445,12 +458,28 @@ function formatSearchGroups(groups: SearchOutputGroup[], limit: number, perFileL
 		.join("\n");
 }
 
+function filterTargetLineRanges(
+	text: string,
+	target: SearchTarget | undefined,
+	contextBefore: number,
+	contextAfter: number,
+): string {
+	if (target?.internal?.startsWith("history://")) return text;
+	return filterSearchOutputByLineRange(text, target?.lineRanges, contextBefore, contextAfter);
+}
+
 function dedupeRenderedSearchOutput(content: string): string {
 	const out: string[] = [],
 		seen = new Set<string>();
+	let blockCounts = new Map<string, number>();
 	let sawContinuationHint = false,
 		sawCapHint = false;
 	for (const line of content.split("\n")) {
+		if (line === "") {
+			blockCounts = new Map<string, number>();
+			out.push(line);
+			continue;
+		}
 		if (/^\[\d+ matching files shown\. Use skip=\d+ to view more\.\]$/.test(line)) {
 			if (sawContinuationHint) continue;
 			sawContinuationHint = true;
@@ -460,7 +489,19 @@ function dedupeRenderedSearchOutput(content: string): string {
 			sawCapHint = true;
 		}
 		const row = line.match(/^(.+?)(?::(\d+): |-(\d+)- )/);
-		const key = row ? `${row[1]}:${row[2] ?? row[3]}` : "";
+		let key = "";
+		if (row) {
+			const base = row[1]!.startsWith("history://")
+				? `${row[1]}:${row[2] ?? row[3]}:${line.slice(row[0].length)}`
+				: `${row[1]}:${row[2] ?? row[3]}`;
+			if (row[1]!.startsWith("history://")) {
+				const count = (blockCounts.get(base) ?? 0) + 1;
+				blockCounts.set(base, count);
+				key = `${base}#${count}`;
+			} else {
+				key = base;
+			}
+		}
 		if (key && seen.has(key)) continue;
 		if (key) seen.add(key);
 		out.push(line);
@@ -554,11 +595,12 @@ export function createSearchToolDefinition(
 									resourceCtx,
 									contextBefore,
 									contextAfter,
+									{
+										...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
+										...(signal === undefined ? {} : { signal }),
+									},
 								);
-					return (
-						groupSearchOutput(filterSearchOutputByLineRange(text, target.lineRanges, contextBefore, contextAfter))
-							.length > 0
-					);
+					return groupSearchOutput(filterTargetLineRanges(text, target, contextBefore, contextAfter)).length > 0;
 				}
 				const ranged = await searchFileLineRanges(
 					target,
@@ -622,6 +664,10 @@ export function createSearchToolDefinition(
 									resourceCtx,
 									contextBefore,
 									contextAfter,
+									{
+										...(target.lineRanges === undefined ? {} : { ranges: target.lineRanges }),
+										...(signal === undefined ? {} : { signal }),
+									},
 								);
 					if (archive && target.archive) text = text.split(archive.archivePath).join(target.archive.archivePath);
 					if (target.sqlite)
@@ -629,7 +675,7 @@ export function createSearchToolDefinition(
 							.split(target.sqlite.databasePath)
 							.join(target.path.match(/^(.+?\.(?:sqlite3?|db3?))/i)?.[1] ?? target.sqlite.databasePath);
 					text = text || "No matches found";
-					text = filterSearchOutputByLineRange(text, target.lineRanges, contextBefore, contextAfter);
+					text = filterTargetLineRanges(text, target, contextBefore, contextAfter);
 					const outputGroups = groupSearchOutput(text);
 					if (skip > 0)
 						groups.push(
@@ -777,7 +823,7 @@ export function createSearchToolDefinition(
 					.map((item) => (item.type === "text" ? item.text : undefined))
 					.filter((value): value is string => typeof value === "string")
 					.join("\n");
-				text = filterSearchOutputByLineRange(text, targets[0]?.lineRanges, contextBefore, contextAfter);
+				text = filterTargetLineRanges(text, targets[0], contextBefore, contextAfter);
 				if (!isVirtualSearchTarget(targets[0]) && text !== "No matches found")
 					text = applyDefaultSearchContext(text, contextBefore, contextAfter) || "No matches found";
 				const skipNotice = singleFileSkipIgnored
@@ -832,7 +878,7 @@ export function createSearchToolDefinition(
 						.map((item) => (item.type === "text" ? item.text : undefined))
 						.filter((value): value is string => typeof value === "string" && value.length > 0)
 						.join("\n");
-					text = filterSearchOutputByLineRange(text, targets[index]?.lineRanges, contextBefore, contextAfter);
+					text = filterTargetLineRanges(text, targets[index], contextBefore, contextAfter);
 					if (!isVirtualSearchTarget(targets[index]) && text !== "No matches found")
 						text = applyDefaultSearchContext(text, contextBefore, contextAfter);
 					if (!text || text === "No matches found") return `# ${targets[index]?.path ?? "."}\n${text}`;
