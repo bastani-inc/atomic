@@ -5,7 +5,7 @@ import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../../../
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../../core/tools/builtin-renderers.js";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.js";
-import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
+import { formatToolCallWithArgs, getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { ensurePngTranscoder } from "../../../utils/image-convert.ts";
 import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { theme } from "../theme/theme.js";
@@ -178,17 +178,25 @@ export class ToolExecutionComponent extends Container {
 
 	private createCallFallback(): Component {
 		const label = this.toolDefinition?.label?.trim() || this.builtInToolDefinition?.label || this.toolName;
-		const args =
-			typeof this.args === "object" && this.args !== null
+		const entries =
+			typeof this.args === "object" && this.args !== null && !Array.isArray(this.args)
 				? Object.entries(this.args)
-						.map(([key, value]) => `${key}=${typeof value === "string" ? value : (JSON.stringify(value) ?? "")}`)
-						.join(" · ")
-				: String(this.args ?? "");
-		return new Text(
-			`${theme.fg("toolTitle", theme.bold(label))}${theme.fg("text", `(${terminalDisplayText(args).replace(/[\r\n\t]/g, " ")})`)}`,
-			0,
-			0,
-		);
+				: this.args == null
+					? []
+					: [["args", this.args]];
+		const args = terminalDisplayText(
+			entries
+				.map(([key, value]) => {
+					const formatted =
+						typeof value === "string" && (key === "path" || key === "file_path")
+							? value
+							: (JSON.stringify(value) ?? String(value));
+					return `${key}=${formatted}`;
+				})
+				.join(" "),
+		).replace(/[\r\n\t]/g, " ");
+		const preview = args.length > 100 ? `${args.slice(0, 97)}...` : args;
+		return new Text(`${theme.fg("toolTitle", theme.bold(label))}${theme.fg("text", `(${preview})`)}`, 0, 0);
 	}
 
 	private createResultFallback(): Component | undefined {
@@ -446,7 +454,10 @@ export class ToolExecutionComponent extends Container {
 		}
 		const selfRendered =
 			this.hasRendererDefinition() && this.getRenderShell() === "self" && !(canonicalCall && canonicalResult);
-		const staticElapsed = formatToolBlockElapsed(this.currentElapsedMs(), { isRunning: true, subTenDecimal: false });
+		const staticElapsed = formatToolBlockElapsed(this.currentElapsedMs(), {
+			isRunning: true,
+			subTenDecimal: this.toolName === "bash" || this.toolName === "fetch_content",
+		});
 		const staticMeta = presentation?.meta?.filter((part) => part !== staticElapsed) ?? [];
 		if (details && isToolBlock(details)) this.contentContainer.addChild(details);
 		else if (isToolBlock(call)) this.contentContainer.addChild(call);
@@ -471,6 +482,14 @@ export class ToolExecutionComponent extends Container {
 						title: canonicalCall && presentation ? presentation.title : call,
 						args: canonicalCall ? presentation?.args : undefined,
 						meta,
+						body:
+							this.expanded && !canonicalCall && !callRenderer
+								? new Text(
+										formatToolCallWithArgs("", this.args, theme, true).split("\n").slice(1).join("\n"),
+										0,
+										0,
+									)
+								: undefined,
 						details,
 						outputPad: this.outputPad,
 					}).render(width);

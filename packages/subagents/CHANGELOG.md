@@ -2,13 +2,13 @@
 
 ## [Unreleased]
 
-### Changed
-
-- Foreground and background agent launches use the same compact block with their short task title, elapsed time, token count and live management hint. Completion notices name the agent and show its first result line; expansion shows the prompt, tool calls and full retained result without inherited fork history ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-
 ### Added
 
 - A subagent of a session created with the SDK's `intercom` option gets its own Intercom policy: its group is its home and it reaches nothing else. It starts in the session's home group, and a requested `group` (including `true`) is placed under it, as `<home>/<group>` ([#5352](https://github.com/bastani-inc/atomic/issues/5352))
+
+### Changed
+
+- Foreground and background agent launches use the same compact block with their short task title, elapsed time, token count and live management hint. Completion notices name the agent and show its first result line; expansion shows the prompt, tool calls and full retained result without inherited fork history ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Fixed
 

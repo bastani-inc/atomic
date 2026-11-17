@@ -174,7 +174,7 @@ function currentPanelItem(store: OwnerTaskStore | undefined, row: AgentPanelRow)
 function rankPanelSession(
 	session: AgentPanelSession & object,
 	options: { readonly start?: number; readonly limit?: number; readonly cap?: number } = {},
-): { readonly rows: AgentPanelRow[]; readonly total: number; readonly needsInput: number } {
+): { readonly rows: AgentPanelRow[]; readonly total: number; readonly needsInput: number; readonly expiresAt: number } {
 	const state = panelState(session);
 	const sharedViewed = viewedAgentPanelItems(session);
 	const dismissed = dismissedAgentPanelItems(session);
@@ -203,7 +203,8 @@ function rankPanelSession(
 		sameViewed(cached.viewed, state.viewed, sharedViewed)
 	) {
 		const end = Math.min(cached.rows.length, start + limit);
-		if (end <= start) return { rows: cached.rows, total: cached.total, needsInput: cached.needsInput };
+		if (end <= start)
+			return { rows: cached.rows, total: cached.total, needsInput: cached.needsInput, expiresAt: cached.expiresAt };
 		let rows: AgentPanelRow[] | undefined;
 		for (let index = start; index < end; index++) {
 			const current = cached.rows[index]!;
@@ -217,9 +218,10 @@ function rankPanelSession(
 			rows ??= cached.rows.slice();
 			rows[index] = next;
 		}
-		if (rows === undefined) return { rows: cached.rows, total: cached.total, needsInput: cached.needsInput };
+		if (rows === undefined)
+			return { rows: cached.rows, total: cached.total, needsInput: cached.needsInput, expiresAt: cached.expiresAt };
 		state.rankCaches?.set(cap, { ...cached, rows });
-		return { rows, total: cached.total, needsInput: cached.needsInput };
+		return { rows, total: cached.total, needsInput: cached.needsInput, expiresAt: cached.expiresAt };
 	}
 	const extItems = agentPanelExtensionItems(session, state.onSourceError);
 	const liveWorkflowIds = new Set<string>();
@@ -314,7 +316,7 @@ function rankPanelSession(
 		total,
 		needsInput,
 	});
-	return { rows, total, needsInput };
+	return { rows, total, needsInput, expiresAt };
 }
 
 export function agentPanelRows(
@@ -408,6 +410,7 @@ export function bindAgentPanel(
 	let disposed = false;
 	let dirty = false;
 	let currentHiddenBelow = 0;
+	let currentExpiresAt = Number.POSITIVE_INFINITY;
 	let lastTotal = -1;
 	let lastNeedsInput = -1;
 	let scheduled = false;
@@ -420,6 +423,7 @@ export function bindAgentPanel(
 	let cachedWidth = -1;
 	let cachedFrame = -1;
 	let cachedFaded = -1;
+	let cachedHiddenBelow = -1;
 	let cachedLines: string[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
 
@@ -441,7 +445,10 @@ export function bindAgentPanel(
 	};
 	const unmount = (resetCounts = true) => {
 		currentRows = [];
+		currentHiddenBelow = 0;
+		currentExpiresAt = Number.POSITIVE_INFINITY;
 		cachedRows = undefined;
+		cachedHiddenBelow = -1;
 		cachedLines = [];
 		const wasMounted = mounted;
 		mounted = false;
@@ -479,13 +486,14 @@ export function bindAgentPanel(
 			unmount(false);
 			return;
 		}
-		const { rows, total, needsInput } = idleRows();
+		const { rows, total, needsInput, expiresAt } = idleRows();
 		if (rows.length === 0) {
 			unmount(true);
 			return;
 		}
 		publishCounts(total, needsInput);
 		currentHiddenBelow = Math.max(0, total - rows.length);
+		currentExpiresAt = expiresAt;
 		if (!mounted || !sameUnfocusedRows(currentRows, rows, state.model)) {
 			currentRows = rows;
 		}
@@ -496,6 +504,7 @@ export function bindAgentPanel(
 				() => ({
 					invalidate() {
 						cachedRows = undefined;
+						cachedHiddenBelow = -1;
 						cachedLines = [];
 					},
 					render(width: number) {
@@ -513,12 +522,17 @@ export function bindAgentPanel(
 									dirty = false;
 									refreshes++;
 									try {
-										const { rows, total, needsInput } = idleRows();
+										const { rows, total, needsInput, expiresAt } = idleRows();
 										publishCounts(total, needsInput);
 										currentHiddenBelow = Math.max(0, total - rows.length);
+										currentExpiresAt = expiresAt;
 										if (!sameUnfocusedRows(currentRows, rows, state.model)) {
 											currentRows = rows;
 										}
+										if (rowsChangeWithTime(currentRows)) {
+											timer ??= setInterval(update, TICK_MS);
+											timer.unref?.();
+										} else stopTimer();
 									} finally {
 										spent += Math.max(0, performance.now() - now);
 									}
@@ -537,7 +551,8 @@ export function bindAgentPanel(
 								cachedRows === currentRows &&
 								cachedWidth === w &&
 								cachedFrame === frame &&
-								cachedFaded === fadedMask
+								cachedFaded === fadedMask &&
+								cachedHiddenBelow === currentHiddenBelow
 							) {
 								return cachedLines;
 							}
@@ -552,6 +567,7 @@ export function bindAgentPanel(
 							cachedWidth = w;
 							cachedFrame = frame;
 							cachedFaded = fadedMask;
+							cachedHiddenBelow = currentHiddenBelow;
 							cachedLines = lines;
 							return lines;
 						} catch (error) {
@@ -577,7 +593,7 @@ export function bindAgentPanel(
 				row.kind === "workflow" && row.viewed !== true && !state.viewed.has(row.id) && !sharedViewed.has(row.id);
 			if (!kept || !state.model.faded(row)) return true;
 		}
-		return currentHiddenBelow > 0;
+		return currentHiddenBelow > 0 && Number.isFinite(currentExpiresAt);
 	};
 	const scheduleUpdate = () => {
 		if (disposed) return;

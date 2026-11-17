@@ -248,7 +248,7 @@ test("Bash and Wait families render running tail, collapsed tail, preserved inde
 		}),
 	);
 	assert.deepEqual(runningRows, [
-		" ∀ Bash(for i in $(seq 1 12); do echo tick $i; sleep 1; done) · 3s · timeout 60s",
+		" ∀ Bash(for i in $(seq 1 12); do echo tick $i; sleep 1; d…) · 3.0s · timeout 60s",
 		"   ⎿  tick 1",
 		"      tick 2",
 		"      tick 3",

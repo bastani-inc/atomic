@@ -31,6 +31,7 @@ export function normalizeWorkingRunSnapshot(meta: WorkingRunMetaInput): WorkingR
 
 export interface MeteredMessage {
 	readonly role: string;
+	readonly stopReason?: string;
 	readonly usage?:
 		| {
 				readonly input?: number;
@@ -107,7 +108,9 @@ export class AgentTokenMeter {
 		this.outputTokens += meteredOutputTokens(message);
 		const usage = message.usage;
 		if (usage && (usage.input !== undefined || usage.cacheRead !== undefined || usage.cacheWrite !== undefined)) {
-			this.latestInputTokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+			const inputTokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+			const unbilledAbort = message.stopReason === "aborted" && inputTokens === 0 && (usage.output ?? 0) === 0;
+			if (!unbilledAbort) this.latestInputTokens = inputTokens;
 		}
 	}
 

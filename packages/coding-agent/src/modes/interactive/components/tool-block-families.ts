@@ -1,9 +1,10 @@
 import { sep } from "node:path";
-import { type Component, getImageDimensions, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import { type Component, getImageDimensions, Text, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { WaitOutcome } from "../../../core/tasks/contracts.js";
 import { generateDiffString } from "../../../core/tools/edit-diff.ts";
 import { splitReadLineSelector } from "../../../core/tools/read-selectors.ts";
-import { formatReadLineRange, replaceTabs } from "../../../core/tools/render-utils.ts";
+import { formatReadLineRange, linkPath, replaceTabs } from "../../../core/tools/render-utils.ts";
+import { formatTruncationNotice } from "../../../core/tools/shell-task-render.ts";
 import {
 	EMPTY_OUTPUT_TEXT,
 	presentTaskError,
@@ -24,7 +25,7 @@ import type { TruncationResult } from "../../../core/tools/truncate.ts";
 import { getCwdRelativePath, resolvePath, shortenHomePath } from "../../../utils/paths.ts";
 import { singleLineDisplayText, terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { getLanguageFromPath, highlightCode, theme } from "../theme/theme.js";
-import { collapseToolBlockLines, TOOL_BLOCK_LIMITS, type ToolBlockStatus } from "./tool-block.ts";
+import { collapseToolBlockLines, TOOL_BLOCK_LIMITS, ToolBlockRecords, type ToolBlockStatus } from "./tool-block.ts";
 import { formatWorkingElapsed } from "./working-run-meter.ts";
 
 export interface BuiltinToolBlockContentPart {
@@ -193,9 +194,7 @@ export function formatToolBlockElapsed(
 	options: { isRunning: boolean; subTenDecimal: boolean },
 ): string | undefined {
 	if (ms === undefined || !Number.isFinite(ms) || ms <= 0) return undefined;
-	if (options.isRunning) {
-		return ms >= 1000 ? formatWorkingElapsed(ms) : undefined;
-	}
+	if (options.isRunning && ms < 1000) return undefined;
 	if (options.subTenDecimal) {
 		if (ms < 10_000) {
 			const tenths = Math.max(1, Math.round(ms / 100)) / 10;
@@ -989,6 +988,32 @@ function classifySettledBashResult(input: BuiltinToolBlockInput, rawText: string
 
 	const noExitFooter = stripOwnedFooter(rawText, /(?:\n\n|^)Command terminated without an exit code\s*$/);
 	return { kind: "failure", output: noExitFooter.text };
+}
+
+function withBashOutputLocation(
+	input: BuiltinToolBlockInput,
+	presentation: BuiltinToolBlockPresentation,
+): BuiltinToolBlockPresentation {
+	if (!input.result || input.isPartial) return presentation;
+	const details = asRecord(input.result.details);
+	const truncation = details?.truncation as TruncationResult | undefined;
+	const fullOutputPath = asString(details?.fullOutputPath);
+	const notes = [
+		truncation?.truncated ? formatTruncationNotice(truncation) : undefined,
+		fullOutputPath ? "Full output:" : undefined,
+	].filter((note) => note !== undefined);
+	if (notes.length === 0) return presentation;
+	const noteLines = [theme.fg("dim", notes.join(" · "))];
+	if (fullOutputPath) {
+		noteLines.push(linkPath(theme.fg("dim", terminalDisplayText(fullOutputPath)), fullOutputPath, input.cwd));
+	}
+	return {
+		...presentation,
+		details: new ToolBlockRecords([
+			...(presentation.details ? [presentation.details] : []),
+			new Text(noteLines.join("\n"), 0, 0),
+		]),
+	};
 }
 
 function presentBash(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation {
@@ -1933,7 +1958,7 @@ export function builtinToolBlockPresentation(input: BuiltinToolBlockInput): Buil
 		case "ls":
 			return presentList(input);
 		case "bash":
-			return presentBash(input);
+			return withBashOutputLocation(input, presentBash(input));
 		case "wait":
 			return presentWait(input);
 		case "edit":
