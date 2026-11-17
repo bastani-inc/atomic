@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fsSynchronous, {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
@@ -183,7 +193,7 @@ test("migration leaves malformed config and locked files untouched", async () =>
 	}
 });
 
-test("migrateAzureProviderAsync and runMigrationsAsync preserve permissions and skip locked files", async () => {
+test("async Azure migration preserves permissions and reports locked files without blocking (#5377)", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-azure-async-"));
 	vi.stubEnv(ENV_AGENT_DIR, root);
 	vi.stubEnv("ATOMIC_DEBUG", "1");
@@ -195,10 +205,15 @@ test("migrateAzureProviderAsync and runMigrationsAsync preserve permissions and 
 		writeFileSync(join(root, "models.json"), "null");
 		writeFileSync(join(root, "settings.json"), "[]");
 		const release = lockfile.lockSync(path, { realpath: false });
+		const append = vi.spyOn(fsSynchronous, "appendFileSync");
+		syncBuiltinESMExports();
 		try {
 			await migrateAzureProviderAsync(root, { projectTrusted: false });
 			assert.equal(readFileSync(path, "utf-8"), content);
+			assert.equal(append.mock.calls.length, 0);
 		} finally {
+			append.mockRestore();
+			syncBuiltinESMExports();
 			release();
 		}
 		assert.deepEqual(await skippedMigrations(), [{ path, code: "ELOCKED" }]);

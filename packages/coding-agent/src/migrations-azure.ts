@@ -3,7 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import { getAgentConfigPaths, getProjectConfigPaths } from "./config.js";
 import { FileAuthStorageBackend } from "./core/auth-storage-backends.ts";
 import { normalizeAzureSettings, normalizeProviderKeys } from "./core/azure-provider-compat.js";
-import { failureDebugFields, reportDebug } from "./core/debug.ts";
+import { failureDebugFields, reportDebug, reportDebugAsync } from "./core/debug.ts";
 import type { Settings } from "./core/settings-types.ts";
 import { parseJsonFileContent, stripJsonComments } from "./utils/json.ts";
 
@@ -80,7 +80,7 @@ export async function migrateAzureProviderAsync(cwd: string, options?: { project
 					{ synchronousWait: true },
 				);
 			} catch (error) {
-				reportMigrationFailure(path, error);
+				await reportDebugAsync("storage", "azure-migration-skipped", { path, ...failureDebugFields(error) });
 			}
 		}
 	}

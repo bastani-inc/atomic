@@ -1120,12 +1120,14 @@ Use the asynchronous helpers in a host that must keep accepting input while it r
 | `loadMcpConfigAsync`, `updateMcpServerConfigAsync`, `addMcpServerConfigAsync`, `removeMcpServerConfigAsync` | Read and edit MCP configuration asynchronously; await edits before reading their result |
 | `AuthStorage.createAsync`, `SettingsManager.createAsync` | Load credential or settings storage asynchronously |
 | `ModelRuntime.getCompatibilityRequestConfigAsync`, `ModelRuntime.getCatalogInputsGenerationAsync` | Read provider request configuration or observe catalog input changes asynchronously |
-| `processSharedStorageSelectionAsync`, `processStorageEnvironmentAsync` | Read a team token file asynchronously when building storage selections or child environments |
+| `selectProcessStorageAsync`, `processSharedStorageSelectionAsync`, `processStorageEnvironmentAsync` | Read process storage inputs or a team token file asynchronously when building storage selections or child environments |
+| `storageHomeDirAsync`, `workflowsStorageDirAsync`, `defaultJournalStoreDirectoryAsync`, `defaultSessionDatabasePathAsync`, `defaultSharedStoragePathAsync`, `storagePathBaseDirAsync` from `@bastani/atomic/storage` | Resolve storage homes and paths asynchronously while preserving custom agent-directory isolation |
+| `readClaimFileAsync`, `claimFileAtomicallyAsync`, `sameDirectoryAsync`, `selectStorageAsync` from `@bastani/atomic/storage` | Read or publish ownership claims, compare directories or resolve a storage selection without blocking the host |
 | `takeTakeoverMutexAsync` | Acquire a takeover mutex asynchronously; await the returned mutex's `release()` |
-| `resolveInstalledGit` | Resolve an installed Git executable asynchronously without provisioning a missing one |
+| `resolveInstalledGit`, `getGitStatusAsync`, `AgentSession.getToolStatusAsync` | Resolve installed Git or collect Git and session tool status asynchronously without provisioning a missing tool |
 | `appendDebugRecordAsync`, `reportDebugAsync`, `flushDebugLog` | Append debug records off the host thread, or wait for queued records before inspecting their files |
 
-Await each operation before starting work that depends on its result. `emptySkillCatalog()` is synchronous because it does no I/O. `savedProjectTrust()` still returns a boolean predicate for synchronous SDK callers. For direct environment credential checks, `@bastani/atomic-ai` also exports `getEnvApiKeyAsync()` alongside synchronous `getEnvApiKey()`.
+Await each operation before starting work that depends on its result. MCP edits of one file are queued. A synchronous MCP edit rejects before changing a file while an asynchronous edit is pending; await that edit before retrying, or use the asynchronous forms throughout. `emptySkillCatalog()` is synchronous because it does no I/O. `savedProjectTrust()` still returns a boolean predicate for synchronous SDK callers. For direct environment credential checks, `@bastani/atomic-ai` also exports `getEnvApiKeyAsync()` alongside synchronous `getEnvApiKey()`.
 
 ## Private temp directories
 
@@ -1286,7 +1288,7 @@ type TaskMessageTimeoutPhase, type SerializedTaskMessageError
 // Detached tool call failures (see "Detachable tool calls")
 type DetachedCallFailure, type DetachedCallFailureCause
 // Git resolution (see "Resolving git")
-resolveGit, resolveGitSync, getGitStatus, GIT_MINIMUM_VERSION
+resolveGit, resolveGitSync, resolveInstalledGit, getGitStatus, getGitStatusAsync, GIT_MINIMUM_VERSION
 GitProvisionError, GitUnavailableError, GitProvisionTimeoutError, GitProvisionConfigError
 isGitProvisionError, isGitUnavailableError, isGitProvisionTimeoutError, isGitProvisionConfigError
 findGitProvisionError, isRetryableGitProvisionError, rehydrateGitProvisionError

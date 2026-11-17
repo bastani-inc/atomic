@@ -28,6 +28,11 @@ beforeAll(() => {
 	initTheme(undefined, false);
 });
 
+test("exports asynchronous Git status from the SDK (#5377)", async () => {
+	const sdk = await import("../src/index.js");
+	assert.equal(typeof Reflect.get(sdk, "getGitStatusAsync"), "function");
+});
+
 // The interactive engine binds before extensions load, then loads them with reload({ reason: "startup" }).
 test.each([
 	{ selectedBy: "the defaultTools setting", settings: { defaultTools: ["+codemode"] }, tools: undefined },

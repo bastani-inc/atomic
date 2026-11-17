@@ -336,6 +336,15 @@ export interface ReviewedEdge {
  */
 export const GUARDED_CALLS: readonly ReviewedEdge[] = [
 	{
+		from: { file: "packages/workflows/src/shared/stage-question-form.ts", name: "stageQuestionTool" },
+		to: {
+			file: "packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts",
+			name: "createAskUserQuestionToolDefinition",
+		},
+		reason:
+			"stage forms belong to sessions whose createAgentSession has already loaded ask_user_question configuration, so this call reads memory; only SDK callers creating the definition before any session use its synchronous first read",
+	},
+	{
 		from: { file: "packages/coding-agent/src/core/skill-catalog.ts", name: "getSkillCatalog" },
 		to: { file: "packages/coding-agent/src/core/skill-catalog.ts", name: "buildSkillCatalog" },
 		reason:

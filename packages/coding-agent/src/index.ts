@@ -1351,6 +1351,7 @@ export {
 	type GitToolStatus,
 	type GitUpdateStatus,
 	getGitStatus,
+	getGitStatusAsync,
 	type ResolvedGit,
 	type ResolvedGitSource,
 	type ResolveGitOptions,
