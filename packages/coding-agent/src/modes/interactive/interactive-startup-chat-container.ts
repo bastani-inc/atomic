@@ -1,5 +1,7 @@
+import type { TuiMouseDispatchResult, TuiMouseEvent } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { disposeRemoteRenderers } from "../interactive-engine/remote-renderer.ts";
+import { handleTranscriptBlockClick } from "./components/transcript-block-clicks.ts";
 import { type Component, Container } from "./interactive-mode-deps.ts";
 
 /**
@@ -15,6 +17,20 @@ export class StartupChatContainer extends Container {
 	constructor(isCounted: (child: Component) => boolean = () => false) {
 		super();
 		this.isCounted = isCounted;
+	}
+
+	/** A click on the header of a tool block, grouped-call summary or agent card expands or collapses it. */
+	override handleMouse(event: TuiMouseEvent): TuiMouseDispatchResult | undefined {
+		if (event.type === "click") {
+			const handled = handleTranscriptBlockClick(
+				this,
+				this.children,
+				(width, row) => this.childAtRow(width, row),
+				event,
+			);
+			if (handled) return handled;
+		}
+		return super.handleMouse(event);
 	}
 
 	countedChildren(): number {

@@ -185,6 +185,7 @@ export function disposeRemoteRenderers(components: readonly Component[]): void {
 }
 
 export class RemoteToolExecutionComponent extends RemoteRenderer {
+	readonly expandsOnClick = true;
 	private readonly toolName: string;
 	private readonly toolCallId: string;
 	private readonly rendererTaskId: string | undefined;
@@ -254,6 +255,12 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
 		this.changed();
+	}
+	isExpanded(): boolean {
+		return this.expanded;
+	}
+	getGroupRole(): ToolGroupRole {
+		return this.groupRole;
 	}
 	setShowImages(show: boolean): void {
 		this.showImages = show;

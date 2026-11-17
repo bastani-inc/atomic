@@ -19,6 +19,7 @@ import { truncateToVisualLines } from "./visual-truncate.ts";
 const PREVIEW_LINES = 20;
 
 export class BashExecutionComponent extends Container {
+	readonly expandsOnClick = true;
 	private command: string;
 	private outputLines: string[] = [];
 	private status: "running" | "complete" | "cancelled" | "error" = "running";
@@ -67,6 +68,10 @@ export class BashExecutionComponent extends Container {
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
 		this.updateDisplay();
+	}
+
+	isExpanded(): boolean {
+		return this.expanded;
 	}
 
 	setOutputPad(outputPad: number): void {

@@ -386,26 +386,31 @@ export class Container implements Component {
 		}
 	}
 
-	handleMouse(event: TuiMouseEvent): TuiMouseDispatchResult | undefined {
-		if (event.y < 0 || event.y >= event.height) return undefined;
+	/**
+	 * The child drawn at `row` of this container at `width`, with the row inside that child and the child's height.
+	 * Reads the row heights of the last render at `width`; another width renders the children to measure them.
+	 */
+	childAtRow(width: number, row: number): { component: Component; row: number; height: number } | undefined {
+		if (row < 0) return undefined;
 		const mouseChildren =
-			this.mouseLayout?.width === event.width
+			this.mouseLayout?.width === width
 				? this.mouseLayout.children
-				: this.children.map((component) => ({ component, height: component.render(event.width).length }));
+				: this.children.map((component) => ({ component, height: component.render(width).length }));
 		let childY = 0;
-		for (const { component: child, height: childHeight } of mouseChildren) {
-			if (event.y >= childY && event.y < childY + childHeight) {
-				const result = dispatchMouseEvent(child, {
-					...event,
-					y: event.y - childY,
-					height: childHeight,
-				});
-				if (result?.focus && (this as Component).handleInput) return { ...result, focusTarget: this };
-				return result;
-			}
-			childY += childHeight;
+		for (const { component, height } of mouseChildren) {
+			if (row >= childY && row < childY + height) return { component, row: row - childY, height };
+			childY += height;
 		}
 		return undefined;
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseDispatchResult | undefined {
+		if (event.y < 0 || event.y >= event.height) return undefined;
+		const hit = this.childAtRow(event.width, event.y);
+		if (!hit) return undefined;
+		const result = dispatchMouseEvent(hit.component, { ...event, y: hit.row, height: hit.height });
+		if (result?.focus && (this as Component).handleInput) return { ...result, focusTarget: this };
+		return result;
 	}
 
 	render(width: number): string[] {

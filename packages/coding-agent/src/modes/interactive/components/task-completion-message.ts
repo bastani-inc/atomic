@@ -540,6 +540,7 @@ function extractEntriesExpansion(
 }
 
 export class TaskCompletionMessage implements Component {
+	readonly expandsOnClick = true;
 	private readonly notices: readonly TaskCompletionNotice[];
 	private expanded: boolean;
 	private readonly options: TaskCompletionMessageOptions | undefined;
@@ -562,6 +563,10 @@ export class TaskCompletionMessage implements Component {
 				pendingNoticeLoads.delete(notice);
 			}
 		}
+	}
+
+	isExpanded(): boolean {
+		return this.expanded;
 	}
 
 	setExpanded(expanded: boolean): void {
