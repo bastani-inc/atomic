@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a subagent failing to start with `Extension startup failed: …intercom…: Invalid supervisor authorization` when the session that launched it had released or restarted since, as a workflow stage that finishes its turn does. The broker's refusal of a stale supervisor capability no longer ends the child's start: the child registers again without the capability, and `contact_supervisor` reaches its supervisor by name.
+
 ## [0.9.88] - 2026-11-16
 
 ### Added

@@ -474,7 +474,12 @@ export type BrokerMessage =
 			protocol?: { min: number; max: number };
 	  }
 	| { type: "workflow_invocation_claimed"; requestId: string; claimed: boolean }
-  | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode; requestId?: string }
+  | {
+      type: "registration_failed";
+      reason: string;
+      code?: LiveWorkflowStageRouteRefusalCode | "supervisor_authorization_refused";
+      requestId?: string;
+    }
   | { type: "question_target"; messageId: string; attemptId: string; sessionId: string }
  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[]; workflowFutureStages?: WorkflowFutureStageRosterEntry[]; restricted?: true }
 	| { type: "groups"; requestId: string; groups: GroupSummary[] }

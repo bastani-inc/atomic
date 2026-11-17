@@ -124,6 +124,7 @@ import { RouteRetryWaiters, scheduledRetryFailure } from "./route-retry-waiters.
 import { createConcurrencyGate, ROUTE_CLIENT_CONNECT_CONCURRENCY } from "./route-connect-gate.js";
 import { isReleasedStageAnnouncement, RELEASED_STAGE_EVENT, ReleasedStagePeers } from "./released-stage-peers.js";
 import { SupervisorAuthorizationRegistry } from "./supervisor-authorization-registry.js";
+import { isSupervisorAuthorizationRefusal } from "./supervisor-refusal.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
 }
@@ -237,10 +238,18 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const config: IntercomConfig = loadConfig();
   const legacyChildOrchestratorMetadata = readChildOrchestratorMetadata();
   let runtimeContext: ExtensionContext | null = null;
+  /**
+   * Why the broker refused the supervisor capability this child registered with, once it has: the child then
+   * registers without it, and reaches its supervisor by its orchestrator target instead of by the capability.
+   */
+  let supervisorRefusal: string | undefined;
   function currentChildOrchestratorMetadata() {
-    return runtimeContext?.subagentPolicy !== undefined
+    const metadata = runtimeContext?.subagentPolicy !== undefined
       ? readChildOrchestratorMetadata(runtimeContext.subagentPolicy)
       : legacyChildOrchestratorMetadata;
+    if (metadata === null || supervisorRefusal === undefined || metadata.supervisor === undefined) return metadata;
+    const { supervisor: _refused, ...unverified } = metadata;
+    return { ...unverified, supervisorRefusal };
   }
   let currentSessionId: string | null = null;
   let currentModel = "unknown";
@@ -1620,11 +1629,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 		});
           client = nextClient;
           attachClientHandlers(nextClient);
+          let childMetadata: ReturnType<typeof currentChildOrchestratorMetadata> = null;
           try {
             await testOverrides.beforeConnectAttempt?.(reason);
             await startBrokerIfNeeded(signal);
             const expectedRouting = await settleBrokerRouting(contextAtStart, generationAtStart, signal);
-            const childMetadata = currentChildOrchestratorMetadata();
+            childMetadata = currentChildOrchestratorMetadata();
             // Snapshot after startup awaits: execution may have ended while disconnected.
             // connect writes registration synchronously, so no abort can interleave before that write.
             await nextClient.connect(
@@ -1702,6 +1712,17 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
             // ordering `ensurePendingStageRouteClient` already uses. `connectFailed` is set before the
             // `finally` runs, so it reschedules however this disconnect behaves.
             try { await nextClient.disconnect(); } catch {}
+            // A supervisor capability the broker cannot honour, as when the session it was issued to has released or
+            // restarted since, never ends the child's start: it registers again at once without it.
+            if (
+              isSupervisorAuthorizationRefusal(error) &&
+              supervisorRefusal === undefined &&
+              childMetadata?.supervisor !== undefined &&
+              getLiveContext(contextAtStart, generationAtStart)
+            ) {
+              supervisorRefusal = error instanceof Error ? error.message : String(error);
+              continue;
+            }
             // #3904: the run's owner registers its route on its own connection, which can still be
             // connecting, backing off or re-registering after a reconnect when the stage starts. The
             // stage waits for that owner on a fresh connection instead of failing every Intercom call.

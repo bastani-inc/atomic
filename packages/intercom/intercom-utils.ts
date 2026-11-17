@@ -19,6 +19,8 @@ export interface ChildOrchestratorMetadata {
   index: string;
   sessionName?: string;
   supervisor?: SupervisorRegistration;
+  /** Why the broker refused `supervisor` when this child registered: it registered without it. */
+  supervisorRefusal?: string;
 }
 
 export interface InboundMessageEntry {

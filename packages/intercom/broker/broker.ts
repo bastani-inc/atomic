@@ -150,6 +150,7 @@ import {
 	LIVE_WORKFLOW_STAGE_ROUTE_REFUSAL_REASONS,
 	type LiveWorkflowStageRouteRefusalCode,
 } from "../live-route-refusal.js";
+import { SUPERVISOR_AUTHORIZATION_REFUSED_CODE, SUPERVISOR_AUTHORIZATION_REFUSED_REASON } from "../supervisor-refusal.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
 /** The socket clients reach the running broker on, until this broker chooses its own under the startup lock (#5040). */
@@ -2241,7 +2242,11 @@ class IntercomBroker {
             ? this.supervisorChannel.claim(clientMessage.supervisor.capability, childName)
             : undefined;
           if (!claimedSupervisorId || !this.sessions.has(claimedSupervisorId)) {
-            writeMessageIfOpen(socket, { type: "registration_failed", reason: "Invalid supervisor authorization" });
+            writeMessageIfOpen(socket, {
+              type: "registration_failed",
+              reason: SUPERVISOR_AUTHORIZATION_REFUSED_REASON,
+              code: SUPERVISOR_AUTHORIZATION_REFUSED_CODE,
+            });
             this.endRefusedConnection(socket, currentId, setId);
             return;
           }
