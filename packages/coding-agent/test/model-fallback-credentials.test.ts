@@ -9,6 +9,7 @@ import {
 import { afterEach, describe, test } from "vitest";
 import { parseArgs } from "../src/cli/args.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
+import type { VerbatimCompactionDetails } from "../src/core/compaction/compaction-types.js";
 import { isProviderCredentialRejection, normalizeModelFailureSignal } from "../src/core/model-fallback-failures.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { createAgentSession } from "../src/core/sdk.js";
@@ -197,14 +198,28 @@ describe("an auth failure takes its provider out of the chain", () => {
 		}
 	});
 
+	test("expired, leaked, and disabled API key codes block their provider even when the message is localized (#3326)", () => {
+		for (const code of ["API_KEY_INVALID", "API_KEY_EXPIRED", "API_KEY_DISABLED", "API_KEY_LEAKED"]) {
+			assert.equal(isProviderCredentialRejection({ status: 400, code, message: "localized" }), true, code);
+		}
+	});
+
 	test("generic authentication codes on a 403 do not prove a provider credential rejection", () => {
 		for (const code of ["authentication-failed", "unauthorized", "auth_required", "authentication_required"]) {
 			assert.equal(isProviderCredentialRejection({ status: 403, code, message: "localized" }), false, code);
 		}
 	});
 
-	for (const errorMessage of ["oauth_token_invalidated", "refresh_token_expired"]) {
-		test(`a raw token rejection blocks its provider: ${errorMessage}`, async () => {
+	for (const errorMessage of [
+		"oauth_token_invalidated",
+		"refresh_token_expired",
+		"invalidapikey",
+		'400 {"error":{"code":400,"message":"API key expired. Please renew the API key.","details":[{"reason":"API_KEY_INVALID"}]}}',
+		'403 {"error":{"code":403,"message":"Your API key was reported as leaked"}}',
+		"403 Your API key has been disabled",
+		"403 Your access token has expired",
+	]) {
+		test(`a raw credential rejection blocks its provider (#3326): ${errorMessage}`, async () => {
 			const { requests } = await runSession(
 				["--model", id(REVOKED), "--fallback-models", `${id(REVOKED, 1)},${id(WORKING)}`],
 				{},
@@ -280,5 +295,97 @@ describe("an auth failure takes its provider out of the chain", () => {
 		assert.deepEqual(change.fallback?.skipped, [
 			{ model: id(REVOKED, 1), provider: REVOKED.provider, reason: "auth-failed" },
 		]);
+	});
+
+	test("compaction borrowing on overflow after a 401 fallback does not pick another model on the rejected provider (#3326)", async () => {
+		const base = getModel("anthropic", "claude-sonnet-4-5")!;
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		const requests: string[] = [];
+		let workingACalls = 0;
+		for (const account of [REVOKED, WORKING]) {
+			const models: Model<"anthropic-messages">[] = account.ids.map((modelId) => ({
+				...base,
+				provider: account.provider,
+				id: modelId,
+				name: modelId,
+				reasoning: false,
+			}));
+			runtime.registerProvider(account.provider, {
+				api: base.api,
+				baseUrl: base.baseUrl,
+				apiKey: account.key,
+				models,
+				streamSimple: (requestModel) => {
+					const fullId = `${requestModel.provider}/${requestModel.id}`;
+					requests.push(fullId);
+					const call = fullId === id(WORKING) ? ++workingACalls : 0;
+					const failure =
+						account === REVOKED
+							? REVOKED_401
+							: fullId === id(WORKING) && call === 1
+								? "prompt is too long"
+								: undefined;
+					const failed = failure !== undefined;
+					const text = fullId === id(WORKING, 1) ? "1:1,3\n" : `answered by ${requestModel.id}`;
+					const message: AssistantMessage = {
+						role: "assistant",
+						content: failed ? [] : [{ type: "text", text }],
+						api: base.api,
+						provider: account.provider,
+						model: requestModel.id,
+						usage: usage(),
+						stopReason: failed ? "error" : "stop",
+						...(failed ? { errorMessage: failure } : {}),
+						timestamp: Date.now(),
+					};
+					const stream = createAssistantMessageEventStream();
+					if (failed) stream.push({ type: "error", reason: "error", error: message });
+					else stream.push({ type: "done", reason: "stop", message });
+					stream.end(message);
+					return stream;
+				},
+			});
+			cleanups.push(() => runtime.unregisterProvider(account.provider));
+		}
+		const settingsManager = SettingsManager.inMemory({
+			defaultProvider: WORKING.provider,
+			defaultModel: WORKING.ids[1],
+			retry: { enabled: true, maxRetries: 2, baseDelayMs: 1, maxAgentDelayMs: 1 },
+			compaction: { preserve_recent: 0 },
+		});
+		const { options } = buildSessionOptions(
+			parseArgs(["--model", id(REVOKED), "--fallback-models", `${id(WORKING)},${id(REVOKED, 1)},${id(WORKING, 1)}`]),
+			[],
+			false,
+			runtime,
+			settingsManager,
+		);
+		const sessionManager = SessionManager.inMemory();
+		const { session } = await createAgentSession({
+			...options,
+			cwd: process.cwd(),
+			modelRuntime: runtime,
+			settingsManager,
+			sessionManager,
+			resourceLoader: createTestResourceLoader(),
+			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+			tools: ["read"],
+		});
+		cleanups.push(() => session.dispose());
+
+		await session.prompt(Array.from({ length: 20 }, (_, index) => `context line ${index}`).join("\n"));
+
+		assert.deepEqual(requests, [id(REVOKED), id(WORKING), id(WORKING), id(WORKING, 1), id(WORKING)]);
+		const compaction = sessionManager.getEntries().find((entry) => entry.type === "compaction");
+		assert.ok(compaction && compaction.type === "compaction");
+		assert.deepEqual((compaction.details as VerbatimCompactionDetails | undefined)?.plannerModel, {
+			provider: WORKING.provider,
+			id: WORKING.ids[1],
+			thinkingLevel: "off",
+		});
 	});
 });

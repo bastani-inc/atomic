@@ -90,6 +90,23 @@ describe("a workflow stage's model chain and credentials", () => {
 		);
 	});
 
+	test("changing an active stage's thinking level does not record skipped credentials again (#3326)", async () => {
+		const created: string[] = [];
+		const ctx = createStageContext(stageOpts(["nokey/a", "working/a"], new Set(["working"]), created));
+		try {
+			assert.equal(await ctx.prompt("first"), "ok");
+			await ctx.setThinkingLevel("high");
+			assert.equal(await ctx.prompt("second"), "ok");
+			assert.deepEqual(created, ["working/a"]);
+			assert.deepEqual(
+				ctx.__modelFallbackMeta().modelAttempts?.filter((attempt) => attempt.model === "nokey/a"),
+				[{ model: "nokey/a", success: false, error: "Skipped nokey/a: provider 'nokey' has no credentials." }],
+			);
+		} finally {
+			await ctx.__dispose();
+		}
+	});
+
 	test("a chain with no model that has credentials fails at once, naming each model and its provider", async () => {
 		const created: string[] = [];
 		const ctx = createStageContext(stageOpts(["nokey/a", "other/b"], new Set(["working"]), created));
@@ -161,6 +178,36 @@ describe("a workflow stage's model chain and credentials", () => {
 		assert.equal(attempts[1]?.error, "Skipped revoked/b: provider 'revoked' rejected its credentials.");
 	});
 
+	for (const message of [
+		'400 {"error":{"code":400,"message":"API key expired. Please renew the API key.","details":[{"reason":"API_KEY_INVALID"}]}}',
+		'403 {"error":{"code":403,"message":"Your API key was reported as leaked"}}',
+		"403 Your API key has been disabled",
+		"403 Your access token has expired",
+	]) {
+		test(`initial and resumed stage prompts skip the provider after a credential rejection (#3326): ${message}`, async () => {
+			for (const resumed of [false, true]) {
+				const created: string[] = [];
+				const failures = new Map<string, Error>();
+				const ctx = createStageContext(
+					stageOpts(
+						["rejected/a", "rejected/b", "working/a"],
+						new Set(["rejected", "working"]),
+						created,
+						failures,
+					),
+				);
+				try {
+					if (resumed) assert.equal(await ctx.prompt("first"), "ok");
+					failures.set("rejected/a", new Error(message));
+					assert.equal(await ctx.prompt("run"), "ok");
+					assert.deepEqual(created, ["rejected/a", "working/a"]);
+				} finally {
+					await ctx.__dispose();
+				}
+			}
+		});
+	}
+
 	test("a model-scoped 403 on initial or resumed prompts advances to another model on the same provider", async () => {
 		const initialCreated: string[] = [];
 		const initialCtx = createStageContext(
@@ -187,6 +234,50 @@ describe("a workflow stage's model chain and credentials", () => {
 			assert.deepEqual(resumedCreated, ["scoped/a", "scoped/a", "scoped/b"]);
 		} finally {
 			await resumedCtx.__dispose();
+		}
+	});
+
+	test("explicit stage admission rechecks tightened constraints after awaiting route authority before creating a session (#3326)", async () => {
+		const created: string[] = [];
+		const waiting = Promise.withResolvers<void>();
+		const authority = Promise.withResolvers<void>();
+		const allowedProviders = ["p"];
+		const opts = stageOpts(["p/a:high"], new Set(["p"]), created, new Map(), {
+			modelConstraints: { allowedProviders },
+			settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
+		});
+		opts.routeAuthorityReady = () => {
+			waiting.resolve();
+			return { completion: authority.promise, assertCurrent() {} };
+		};
+		const ctx = createStageContext(opts);
+		try {
+			const prompting = ctx.prompt("run");
+			await waiting.promise;
+			allowedProviders.splice(0, 1, "q");
+			authority.resolve();
+			await assert.rejects(prompting, /modelConstraints/);
+			assert.deepEqual(created, []);
+		} finally {
+			authority.resolve();
+			await ctx.__dispose();
+		}
+	});
+
+	test("thinking effort requested before the first prompt overrides a candidate's suffix for stage constraints (#3326)", async () => {
+		const created: string[] = [];
+		const opts = stageOpts(["p/a:low"], new Set(["p"]), created, new Map(), {
+			modelConstraints: { allowedEfforts: ["high"] },
+		});
+		const ctx = createStageContext(opts);
+		try {
+			await ctx.setThinkingLevel("high");
+			assert.equal(await ctx.prompt("run"), "ok");
+			assert.deepEqual(created, ["p/a"]);
+			const attempts = ctx.__modelFallbackMeta().modelAttempts;
+			assert.equal(attempts?.at(-1)?.success, true);
+		} finally {
+			await ctx.__dispose();
 		}
 	});
 

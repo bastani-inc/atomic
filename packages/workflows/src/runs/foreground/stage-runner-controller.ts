@@ -2,6 +2,7 @@ import {
 	type AgentSession,
 	AutoRoutingInferenceError,
 	type CreateAgentSessionOptions,
+	clampThinkingLevel,
 	convertToLlm,
 	currentWorktreeRootMappings,
 	type DetachedToolCall,
@@ -9,6 +10,7 @@ import {
 	type ExtensionToolContext,
 	eligiblePair,
 	findToolDetachmentError,
+	getSupportedThinkingLevels,
 	isExtensionStartupFailure,
 	isProviderCredentialRejection,
 	isTaskCleanupError,
@@ -29,7 +31,6 @@ import {
 	setsProviders,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
-import { clampThinkingLevel, getSupportedThinkingLevels } from "@bastani/atomic-ai/compat";
 import { raceAbort } from "../../shared/abort.js";
 import type { StageWaitSnapshot } from "../../shared/authoring-contract-stage.js";
 import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
@@ -691,7 +692,7 @@ export class StageSessionController {
 		if (this.session) await this.session.setThinkingLevel(level);
 		else this.requestedThinkingLevel = level;
 		this.pendingThinkingLevel = level;
-		if (!this.modelRoute) this.candidatesPromise = undefined;
+		if (!this.modelRoute && !this.session) this.candidatesPromise = undefined;
 	}
 
 	get awaitingAutoPrompt(): boolean {

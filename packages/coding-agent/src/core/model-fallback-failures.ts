@@ -329,6 +329,10 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "unauthorized":
 		case "forbidden":
 		case "invalid_api_key":
+		case "api_key_invalid":
+		case "api_key_expired":
+		case "api_key_disabled":
+		case "api_key_leaked":
 		case "missing_api_key":
 		case "invalid_key":
 		case "token_expired":
@@ -469,7 +473,10 @@ const BILLING_EXHAUSTED_FAILURE_PATTERN =
 	/credit\s+balance\s+is\s+too\s+low|insufficient[_\s-]*(?:credits?|balance|funds)|(?:requires|purchase|buy|add)\s+more\s+credits|used\s+all\s+(?:of\s+)?(?:your\s+)?available\s+credits|out\s+of\s+(?:credits?|budget)|spending\s+limit|available\s+balance|check\s+your\s+plan\s+and\s+billing/i;
 
 const API_KEY_REJECTED_FAILURE_PATTERN =
-	/\binvalid[_\s-]?api[_\s-]?key\b|\bincorrect\s+api\s+key\b|\bapi\s+key\s+(?:not\s+valid|is\s+invalid|was\s+rejected)\b/i;
+	/\b(?:invalid|incorrect|expired|disabled|leaked)[_\s-]*api[_\s-]*key\b|\bapi[_\s-]+key[_\s-]+(?:(?:is|was|has|been)[_\s-]+){0,3}(?:not[_\s-]+valid|invalid|incorrect|expired|disabled|leaked|rejected|reported[_\s-]+as[_\s-]+leaked)\b/i;
+
+const TOKEN_REJECTED_FAILURE_PATTERN =
+	/\b(?:expired|revoked|invalidated)[_\s-]+(?:(?:oauth|auth|access|refresh)[_\s-]+)?token\b|\b(?:(?:oauth|auth|access|refresh)[_\s-]+)?token[_\s-]+(?:(?:is|was|has|been)[_\s-]+){0,3}(?:expired|revoked|invalidated)\b/i;
 
 function transportOutageKindFromMessage(message: string): ModelFallbackFailureKind | undefined {
 	return TRANSPORT_OUTAGE_FAILURE_PATTERNS.some((pattern) => pattern.test(message.trim()))
@@ -516,7 +523,8 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	const transportOutageKind = transportOutageKindFromMessage(message);
 	if (transportOutageKind !== undefined) return transportOutageKind;
 	if (BILLING_EXHAUSTED_FAILURE_PATTERN.test(message)) return "quota_exhausted";
-	if (API_KEY_REJECTED_FAILURE_PATTERN.test(message)) return "auth_on_candidate_provider";
+	if (API_KEY_REJECTED_FAILURE_PATTERN.test(message) || TOKEN_REJECTED_FAILURE_PATTERN.test(message))
+		return "auth_on_candidate_provider";
 	if (REQUEST_INCOMPATIBLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "request_incompatible";
 	const nameKind = kindFromCode(name);
 	if (nameKind !== undefined) return nameKind;
@@ -895,6 +903,10 @@ const AUTHENTICATION_FAILURE_CODES: ReadonlySet<string> = new Set([
 
 const CREDENTIAL_REJECTION_CODES: ReadonlySet<string> = new Set([
 	"invalid_api_key",
+	"api_key_invalid",
+	"api_key_expired",
+	"api_key_disabled",
+	"api_key_leaked",
 	"missing_api_key",
 	"invalid_key",
 	"token_expired",
@@ -925,12 +937,7 @@ export function isProviderCredentialRejection(error: unknown): boolean {
 	)
 		return true;
 	const message = `${signal.message}\n${typedFailure?.detail ?? stringField(error, "detail") ?? ""}`;
-	return (
-		API_KEY_REJECTED_FAILURE_PATTERN.test(message) ||
-		/\b(?:expired|revoked|invalidated)[_\s-]+(?:(?:oauth|auth|access|refresh)[_\s-]+)?token\b|\b(?:(?:oauth|auth|access|refresh)[_\s-]+)?token[_\s-]+(?:expired|revoked|invalidated)\b/i.test(
-			message,
-		)
-	);
+	return API_KEY_REJECTED_FAILURE_PATTERN.test(message) || TOKEN_REJECTED_FAILURE_PATTERN.test(message);
 }
 
 /** Whether a failure is a provider safety/refusal response: a content-filter refusal, or a refused tool call. */

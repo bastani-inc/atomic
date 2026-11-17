@@ -230,6 +230,7 @@ export {
 	type SerializedGitHubCopilotError,
 	serializeGitHubCopilotError,
 } from "@bastani/atomic-ai";
+export { clampThinkingLevel, getSupportedThinkingLevels } from "@bastani/atomic-ai/compat";
 export { type Args, parseArgs } from "./cli/args.ts";
 // Config paths
 export {

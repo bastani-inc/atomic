@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Pinned workflow stage models now obey inherited and stage `modelConstraints`, just like their fallbacks. Previously a named primary could run outside those restrictions. Update shared constraints to include the pinned provider/model, or choose a permitted model. For reasoning models restricted by `allowedEfforts`, specify an allowed effort with a model suffix such as `provider/model:high` or set the stage's `thinkingLevel`. An unverifiable or excluded candidate fails before making a request instead of being replaced by an undeclared model ([#3326](https://github.com/bastani-inc/atomic/issues/3326)).
+
 ### Changed
 
 - The `workflow` tool's row in the chat now looks like every other tool's, instead of drawing its own rounded panels. A run reads `Workflow(<name> · <what it was asked>)` and the other actions `workflow <action> <target>`, each with one result line. A run's line follows the run until it ends (`∀ Running · 1/3 stages · ↓ 22.4k tokens`, `! Waiting for input at review`, `✓ Completed in 4s · 3 stages · 32.4k tokens`, `✗ Failed at review · <reason>`), and Ctrl+O expands the row to the run's inputs, stages and outputs ([#5224](https://github.com/bastani-inc/atomic/issues/5224))

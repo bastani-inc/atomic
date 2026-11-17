@@ -23,7 +23,7 @@ Routing locally excludes models whose providers lack usable credentials, even wh
 A model chain is a pinned model followed by `fallbackModels` in a session, subagent, or workflow stage:
 
 - Candidates whose providers lack usable credentials are skipped before any request (`fallback.skipped` on session `model_change` entries; `modelAttempts` on subagents and stages).
-- A provider that rejects credentials (HTTP 401, an invalid API key error, or token invalidation) is skipped for the rest of that walk. A model-scoped HTTP 403 (such as missing model access or moderation) blocks only that model, leaving other models on that provider eligible.
+- A provider that rejects credentials (HTTP 401, an invalid, expired, leaked, or disabled API key, or an expired or invalidated token) is skipped for the rest of that walk. A model-scoped HTTP 403 (such as missing model access or moderation) blocks only that model, leaving other models on that provider eligible.
 - A chain with no usable model fails at once naming each model and missing provider, or blocks for resume in a workflow stage. A single pinned model with no fallbacks is never replaced.
 
 Applicable `modelConstraints` gate workflow-stage model chains and execution fallbacks; `modelRouting` gates `auto` selection and its fallbacks; skipping uncredentialed models never widens any allowed list. Image-requiring tasks keep that requirement on every execution fallback and restored routing choice and never degrade to a text-only model.
