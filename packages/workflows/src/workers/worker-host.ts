@@ -12,12 +12,16 @@ import {
 import { isPostgresUrl, type StorageNotificationSubscription, type StorageSelection } from "@bastani/atomic/storage";
 import { listenPoolReady, sqlPoolStorage } from "../durable/journal/internal.js";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
-import type { SharedPoolFleet } from "../durable/journal/shared-pool-types.js";
-import { classifySharedStoreHealth, withinStatusBudget } from "../durable/journal/shared-store-health.js";
-import { readFleetDemand, SqlFleetStore } from "../durable/journal/sql-fleet.js";
+import type { SharedPoolFleet, SharedPoolHostShipping } from "../durable/journal/shared-pool-types.js";
+import {
+	classifySharedStoreHealth,
+	withinStatusBudget,
+	withoutUrlCredentials,
+} from "../durable/journal/shared-store-health.js";
+import { type FleetRootRow, readFleetDemand, SqlFleetStore } from "../durable/journal/sql-fleet.js";
 import { openSqlPoolQueue, type PoolWork } from "../durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
-import { SqlRateBuckets } from "../durable/journal/sql-rate-buckets.js";
+import { readFleetRateUsage, SqlRateBuckets } from "../durable/journal/sql-rate-buckets.js";
 import {
 	readSharedPoolFleet,
 	type SharedPoolRoot,
@@ -28,6 +32,7 @@ import type { RunJournal } from "../durable/journal/types.js";
 import { resolveFleetPolicy } from "./autoscaler.js";
 import type { CoordinatorEvent, CoordinatorInbound, CoordinatorPort } from "./coordinator-protocol.js";
 import { definitionDigest, type WorkerDefinitionSource } from "./definitions.js";
+import { FleetRateCap } from "./fleet-rate-cap.js";
 import { fleetScaling } from "./fleet-scaling.js";
 import type { WorkerFleetPolicyOptions } from "./fleet-types.js";
 import { HostPollBackoff } from "./host-poll-backoff.js";
@@ -439,7 +444,8 @@ class WorkerHost implements WorkflowWorkerHost {
 		const { workers, busy } = this.workerCount();
 		const served = [...this.satellites.keys()].sort();
 		const now = performance.now();
-		const state = JSON.stringify([workers, served, this.draining, this.degraded === undefined]);
+		const shipping = this.shippingStatus();
+		const state = JSON.stringify([workers, served, this.draining, this.degraded === undefined, shipping?.lagging]);
 		if (this.reported !== undefined && this.reported.state === state && now - this.reported.at < HOST_REPORT_MS)
 			return false;
 		await this.shared.reportHost({
@@ -456,9 +462,33 @@ class WorkerHost implements WorkflowWorkerHost {
 				? {}
 				: { degraded: { failures: this.degraded.failures, error: this.degraded.error } }),
 			...(this.providerId === undefined ? {} : { providerId: this.providerId }),
+			...(shipping === undefined ? {} : { shipping }),
+			progress: [...this.satellites.values()].flatMap((satellite) => satellite.coordinator.childProgress(now)),
 		});
 		this.reported = { state, at: now };
 		return true;
+	}
+
+	private shippingStatus(): SharedPoolHostShipping | undefined {
+		let status: { lagMs: number; pending: number; lagging: boolean; error?: Error } | undefined;
+		for (const satellite of this.satellites.values()) {
+			const root = satellite.coordinator.shippingStatus();
+			if (root === undefined) continue;
+			status ??= { lagMs: 0, pending: 0, lagging: false };
+			status.lagMs = Math.max(status.lagMs, root.lagMs);
+			status.pending += root.pending;
+			status.lagging ||= root.lagging;
+			status.error ??= root.error;
+		}
+		if (status === undefined) return undefined;
+		return {
+			lagMs: Math.round(status.lagMs),
+			pending: status.pending,
+			...(status.lagging ? { lagging: true } : {}),
+			...(status.error === undefined
+				? {}
+				: { error: { name: status.error.name, message: withoutUrlCredentials(status.error.message) } }),
+		};
 	}
 
 	/** Reports this host, lets go of roots it no longer serves, and attaches to roots it can serve. */
@@ -636,6 +666,7 @@ class WorkerHost implements WorkflowWorkerHost {
 			...(this.lastHealth === undefined ? {} : { lastHealth: this.lastHealth }),
 			...(this.degraded === undefined ? {} : { degraded: this.degraded }),
 			...this.rateLimitStats(),
+			...((shipping) => (shipping === undefined ? {} : { shipping }))(this.shippingStatus()),
 		};
 	}
 
@@ -823,6 +854,23 @@ export async function migrateWorkflowStorage(
 	await (await openSelectedRunJournal(adapterSelection, agentDir)).close();
 }
 
+const rateHistories = new Map<string, FleetRateCap>();
+
+async function rateCapOf(
+	selection: StorageSelection,
+	journal: RunJournal,
+	roots: readonly FleetRootRow[],
+): Promise<FleetRateCap> {
+	const key = JSON.stringify(selection);
+	let history = rateHistories.get(key);
+	if (history === undefined) {
+		history = new FleetRateCap();
+		rateHistories.set(key, history);
+	}
+	history.observe(await readFleetRateUsage(journal), roots);
+	return history;
+}
+
 /**
  * The worker hosts registered in a shared journal, as each last reported itself, the pool stats of the running or
  * paused roots they serve, and the fleet's scaling signal under `policy` (#4768). The journal's setup is checked as
@@ -837,9 +885,10 @@ export async function readWorkflowWorkerFleet(
 		readonly agentDir?: string;
 		readonly policy?: WorkerFleetPolicyOptions;
 		readonly probeWrites?: boolean;
+		readonly rateHistory?: boolean;
 	} = {},
 ): Promise<SharedPoolFleet> {
-	resolveFleetPolicy(options.policy ?? {});
+	const resolvedPolicy = resolveFleetPolicy(options.policy ?? {});
 	const agentDir = options.agentDir ?? getAgentDir();
 	const selection = sharedJournalSelection(options.journal, { agentDir });
 	const [first, ...rest] = await sharedSelectionProblems(selection, agentDir);
@@ -852,8 +901,22 @@ export async function readWorkflowWorkerFleet(
 			// This journal serves the read alone, so it probes the store with a write that changes nothing (#4768).
 			// Before the fleet's read, whose write probe, last, may hold up any call after it.
 			const demand = await readFleetDemand(journal);
+			const rate = options.rateHistory === true ? await rateCapOf(adapterSelection, journal, demand) : undefined;
 			const read = await readSharedPoolFleet(journal, { probeWrites: options.probeWrites ?? true });
-			fleet = (read && { ...read, scaling: fleetScaling(demand, read.hosts, options.policy) }) ?? {
+			fleet = (read && {
+				...read,
+				scaling: fleetScaling(
+					demand,
+					read.hosts,
+					options.policy,
+					rate?.limit(
+						resolvedPolicy.workersPerHost,
+						read.hosts.filter(
+							(host) => host.state !== "stale" && host.state !== "draining" && host.draining !== true,
+						).length,
+					),
+				),
+			}) ?? {
 				hosts: [],
 				roots: [],
 				fleet: {

@@ -1,5 +1,9 @@
 import type { RunJournalOption } from "../durable/journal/resolution.js";
-import type { SharedPoolStats, WorkerHostGitSource } from "../durable/journal/shared-pool-types.js";
+import type {
+	SharedPoolHostShipping,
+	SharedPoolStats,
+	WorkerHostGitSource,
+} from "../durable/journal/shared-pool-types.js";
 import type { SerializedWorkerPlacementError } from "./placement-errors.js";
 import type { WorkspacePreference, WorkspaceRestore } from "./workspace-binding.js";
 
@@ -132,6 +136,11 @@ export interface WorkflowWorkerHostStats {
 	 * does not answer for one of them and this host meters model calls at its share of the limit instead.
 	 */
 	readonly rateLimit?: "store" | "local-fallback";
+	/**
+	 * This host's checkpoint shipping, while a root it serves ships checkpoints (#4768): the age of its oldest unshipped
+	 * checkpoint, how many it holds, whether it holds back its claims until it catches up, and the last delivery failure.
+	 */
+	readonly shipping?: SharedPoolHostShipping;
 }
 
 export interface WorkflowWorkerHost {

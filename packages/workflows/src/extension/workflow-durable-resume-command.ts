@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { Selector, type SelectorOptions } from "@bastani/atomic";
 import { getKeybindings } from "@bastani/atomic-tui";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
@@ -107,7 +107,7 @@ function resolveSavedSourcePath(
 	const baseCwd = recordedCwd ?? fallbackCwd ?? process.cwd();
 	if (recordedCwd !== undefined && fallbackCwd !== undefined && fallbackCwd !== recordedCwd) {
 		const rel = relative(recordedCwd, resolve(recordedCwd, savedPath));
-		if (rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel)) {
+		if (rel.length > 0 && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) {
 			const relocated = resolve(fallbackCwd, rel);
 			if (existsSync(relocated)) return relocated;
 		}

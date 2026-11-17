@@ -781,7 +781,7 @@ export class WorkflowToolResultBlock extends ToolBlockRecords implements PiRende
 	constructor(
 		private readonly source: WorkflowRunSource | undefined,
 		private readonly theme: WorkflowBlockTheme,
-		private readonly options: WorkflowBlockOptions = {},
+		private readonly renderOptions: WorkflowBlockOptions = {},
 	) {
 		super([]);
 	}
@@ -848,7 +848,7 @@ export class WorkflowToolResultBlock extends ToolBlockRecords implements PiRende
 	}
 
 	private now(): number {
-		return this.options.now?.() ?? Date.now();
+		return this.renderOptions.now?.() ?? Date.now();
 	}
 
 	private refreshRun(): void {
@@ -903,7 +903,7 @@ export class WorkflowToolResultBlock extends ToolBlockRecords implements PiRende
 		return undefined;
 	}
 
-	private summary(manage = this.options.agentPanel !== false): WorkflowResultSummary {
+	private summary(manage = this.renderOptions.agentPanel !== false): WorkflowResultSummary {
 		if (this.view.partial === true && (this.result === null || this.result === undefined)) {
 			return { tone: "running", text: "Starting" };
 		}

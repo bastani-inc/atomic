@@ -280,10 +280,11 @@ export class SelectorState<T> {
 		this.scrollToSelected();
 	}
 
+	/** Move one enabled row in the direction of `delta`, wrapping at the ends unless `wrap` is false and skipping disabled rows. */
 	move(delta: number, wrap = true): void {
 		if (!Number.isInteger(delta) || delta === 0) return;
 		const count = this.visible.length;
-		if (count === 0 || delta === 0) return;
+		if (count === 0) return;
 		this.revision++;
 		const step = Math.sign(delta) as -1 | 1;
 		if (!wrap) {

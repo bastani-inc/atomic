@@ -21,7 +21,7 @@ vi.mock("../../packages/coding-agent/src/modes/interactive/whimsical-messages.ts
 	...(await importOriginal<
 		typeof import("../../packages/coding-agent/src/modes/interactive/whimsical-messages.ts")
 	>()),
-	pickWhimsicalWorkingMessage: () => "Brewing...",
+	pickWhimsicalWorkingMessage: () => "Brewing…",
 }));
 
 const WIDTH = 96;
@@ -179,17 +179,17 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 		try {
 			await all({ type: "agent_start" });
 			await all({ type: "turn_start" });
-			assert.deepEqual(lines(), Array(3).fill("∀ Brewing..."));
+			assert.deepEqual(lines(), Array(3).fill("∀ Brewing…"));
 
 			vi.setSystemTime(1_005_000);
 			const message = assistant("checking the lock", 120);
 			await all({ type: "message_end", message });
-			assert.deepEqual(lines(), Array(3).fill("∀ Brewing... (5s · ↓ 120 tokens)"));
+			assert.deepEqual(lines(), Array(3).fill("∀ Brewing… (5s · ↓ 120 tokens)"));
 
 			await all({ type: "turn_end", message, toolResults: [] });
 			vi.setSystemTime(1_007_000);
 			await all({ type: "turn_start" });
-			assert.deepEqual(lines(), Array(3).fill("∀ Brewing... (7s · ↑ 120 tokens)"));
+			assert.deepEqual(lines(), Array(3).fill("∀ Brewing… (7s · ↑ 120 tokens)"));
 
 			vi.setSystemTime(1_009_000);
 			await all({ type: "turn_end", message, toolResults: [] });
@@ -227,7 +227,7 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 
 			vi.setSystemTime(1_004_000);
 			await sub.apply({ type: "turn_start" } as AgentSessionEvent);
-			assert.equal(sub.line(), "∀ Brewing... (4s · ↑ 120 tokens)");
+			assert.equal(sub.line(), "∀ Brewing… (4s · ↑ 120 tokens)");
 
 			const seed = {
 				...assistant("", 0),
@@ -238,16 +238,16 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 				type: "message_update",
 				assistantMessageEvent: { type: "text_start", contentIndex: 0 },
 			} as unknown as AgentSessionEvent);
-			assert.equal(sub.line(), "∀ Brewing... (4s · ↑ 120 tokens)");
+			assert.equal(sub.line(), "∀ Brewing… (4s · ↑ 120 tokens)");
 
 			await sub.apply({
 				type: "message_update",
 				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "abcdefgh" },
 			} as unknown as AgentSessionEvent);
-			assert.equal(sub.line(), "∀ Brewing... (4s · ↓ 122 tokens)");
+			assert.equal(sub.line(), "∀ Brewing… (4s · ↓ 122 tokens)");
 
 			reportedTaskTokens = 500;
-			assert.equal(sub.line(), "∀ Brewing... (4s · ↓ 502 tokens)");
+			assert.equal(sub.line(), "∀ Brewing… (4s · ↓ 502 tokens)");
 		} finally {
 			sub.dispose();
 		}
@@ -299,10 +299,10 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 			sub.host.beginExternalPromptLifecycle();
 			sub.host.hydrateRunningTurn(closedOldHistory as never);
 
-			assert.equal(sub.line(), "∀ Brewing... (0s · ↓ 509 tokens)");
+			assert.equal(sub.line(), "∀ Brewing… (0s · ↓ 509 tokens)");
 
 			vi.setSystemTime(10_003_000);
-			assert.equal(sub.line(), "∀ Brewing... (3s · ↓ 509 tokens)");
+			assert.equal(sub.line(), "∀ Brewing… (3s · ↓ 509 tokens)");
 		} finally {
 			sub.dispose();
 		}
@@ -324,7 +324,7 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 			await all({ type: "message_end", message });
 			assert.deepEqual(
 				views.map((view) => view.line()),
-				Array(3).fill("∀ Brewing... (14s · ↓ 800 tokens)"),
+				Array(3).fill("∀ Brewing… (14s · ↓ 800 tokens)"),
 			);
 
 			assert.equal(stage.view.handleInput("\x1b"), true);

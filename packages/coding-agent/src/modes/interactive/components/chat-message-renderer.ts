@@ -40,7 +40,14 @@ export interface PersistedMessageMeta {
 	timestamp: string;
 }
 export type ChatMessageEntry =
-	| { role: "assistant"; kind: "assistant"; message: AssistantMessage; messageId?: string; timestamp?: string }
+	| {
+			role: "assistant";
+			kind: "assistant";
+			message: AssistantMessage;
+			messageId?: string;
+			timestamp?: string;
+			interruptedActivity?: readonly string[];
+	  }
 	| {
 			role: "tool";
 			kind: "task";
@@ -147,6 +154,29 @@ function toolEntryRoleSink(entry: ToolChatEntry): (role: ToolGroupRole) => void 
 		entry.groupRole = role;
 	};
 }
+function inferInterruptedToolActivity(
+	message: AssistantMessage,
+	entries: readonly LiveChatEntry[],
+	beforeIndex: number,
+): readonly string[] | undefined {
+	if (message.stopReason !== "aborted") return undefined;
+	if (message.content.some((content) => content.type === "toolCall")) return undefined;
+	if (message.content.length > 0) return undefined;
+	const trailingTools: ToolChatEntry[] = [];
+	for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (!isChatMessageEntry(entry) || entry.kind !== "tool") break;
+		trailingTools.unshift(entry);
+	}
+	for (let index = beforeIndex + 1; index < entries.length; index += 1) {
+		const entry = entries[index];
+		if (!isChatMessageEntry(entry) || entry.kind !== "tool") break;
+		trailingTools.push(entry);
+	}
+	const interrupted = trailingTools.filter((entry) => entry.isPartial !== false || entry.result?.isError === true);
+	const names = [...new Set(interrupted.map((entry) => entry.toolName).filter(Boolean))];
+	return names.length > 0 ? names : undefined;
+}
 function buildChatEntries(
 	messages: readonly AgentMessage[],
 	messageMeta?: ReadonlyMap<AgentMessage, PersistedMessageMeta>,
@@ -158,12 +188,14 @@ function buildChatEntries(
 		switch (message.role) {
 			case "assistant": {
 				const meta = messageMeta?.get(message);
+				const interruptedActivity = inferInterruptedToolActivity(message, entries, entries.length);
 				entries.push({
 					role: "assistant",
 					kind: "assistant",
 					message,
 					messageId: meta?.id,
 					timestamp: meta?.timestamp,
+					...(interruptedActivity ? { interruptedActivity } : {}),
 				});
 				for (const content of message.content) {
 					if (content.type !== "toolCall") continue;
@@ -523,16 +555,29 @@ export class LiveChatEntriesController {
 		return changed || true;
 	}
 	private updateAssistantMessage(message: AssistantMessage, argsComplete = false): boolean {
-		if (
-			this.streamingAssistantIndex !== undefined &&
-			this.isAssistantEntry(this.entries[this.streamingAssistantIndex])
-		) {
-			this.entries[this.streamingAssistantIndex] = {
-				...(this.entries[this.streamingAssistantIndex] as Extract<ChatMessageEntry, { kind: "assistant" }>),
+		const existingIndex =
+			this.streamingAssistantIndex !== undefined && this.isAssistantEntry(this.entries[this.streamingAssistantIndex])
+				? this.streamingAssistantIndex
+				: undefined;
+		const interruptedActivity = inferInterruptedToolActivity(
+			message,
+			this.entries,
+			existingIndex ?? this.entries.length,
+		);
+		if (existingIndex !== undefined) {
+			const previous = this.entries[existingIndex] as Extract<ChatMessageEntry, { kind: "assistant" }>;
+			this.entries[existingIndex] = {
+				...previous,
 				message,
+				...(interruptedActivity ? { interruptedActivity } : {}),
 			};
 		} else {
-			this.entries.push({ role: "assistant", kind: "assistant", message });
+			this.entries.push({
+				role: "assistant",
+				kind: "assistant",
+				message,
+				...(interruptedActivity ? { interruptedActivity } : {}),
+			});
 			this.streamingAssistantIndex = this.entries.length - 1;
 		}
 		const calls = assistantCallBreaks(message.content, this.carriedToolBreak);
@@ -750,6 +795,7 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				options.renderLatex,
 				messageEntry.messageId,
 				messageEntry.timestamp,
+				messageEntry.interruptedActivity,
 			);
 		case "tool": {
 			if (options.createToolComponent) {

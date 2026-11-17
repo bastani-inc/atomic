@@ -104,6 +104,9 @@ describe("Atomic working status", () => {
 		try {
 			expect(plain(new AtomicWorkingStatusComponent().render(80).join("\n"))).toContain("∀ Working…");
 			expect(pickWhimsicalWorkingMessage()).toBe("Schlepping…");
+			expect(plain(new AtomicWorkingStatusComponent({ message: "Working..." }).render(80).join("\n"))).toContain(
+				"∀ Working...",
+			);
 			expect(plain(new AtomicWorkingStatusComponent({ message: "Custom..." }).render(80).join("\n"))).toContain(
 				"Custom...",
 			);
@@ -348,7 +351,7 @@ describe("Atomic working status", () => {
 		vi.useFakeTimers();
 		const requestRender = vi.fn();
 		const loader = new AtomicWorkingLoader({ requestRender } as never, undefined, String, "Working...");
-		expect(renderedContent(loader)).toBe(" ∀ Working…");
+		expect(renderedContent(loader)).toBe(" ∀ Working...");
 		vi.advanceTimersByTime(352);
 		expect(loader.render(64)[1]).toContain("\u001b[1m");
 		loader.setIndicator({ frames: ["X"] });
@@ -574,11 +577,11 @@ describe("Atomic working status", () => {
 		const workingRow = plain(
 			new WorkingStatusComponent({ message: "Working...", meta: legacyMeta }).render(80)[1]!,
 		).trimEnd();
-		expect(workingRow).toBe(" ∀ Working… (2m 14s · ↓ 18.4k tokens · esc to cancel)");
+		expect(workingRow).toBe(" ∀ Working... (2m 14s · ↓ 18.4k tokens · esc to cancel)");
 		const atomicRow = plain(
 			new AtomicWorkingStatusComponent({ message: "Working...", meta: legacyMeta }).render(80)[1]!,
 		).trimEnd();
-		expect(atomicRow).toBe(" ∀ Working… (2m 14s · ↓ 18.4k tokens · esc to cancel)");
+		expect(atomicRow).toBe(" ∀ Working... (2m 14s · ↓ 18.4k tokens · esc to cancel)");
 		const workedRow = plain(
 			new AtomicWorkedStatusComponent({ message: "Brewing...", snapshot: legacyMeta }).render(80)[1]!,
 		).trimEnd();
