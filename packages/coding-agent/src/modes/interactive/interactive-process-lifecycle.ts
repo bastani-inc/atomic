@@ -14,6 +14,7 @@ import {
 	showQueueRestoreFailure,
 	showSubmissionAsQueued,
 } from "./interactive-queueing.ts";
+import { chatHistoryBuilt } from "./interactive-startup-chat-container.ts";
 import { isWindowsSubshellActive, openWindowsSubshell } from "./interactive-windows-subshell.ts";
 
 /** A second Ctrl+C on an empty, idle editor within this window exits. */
@@ -123,7 +124,11 @@ InteractiveModeBase.prototype.shutdown = async function (
 	this.themeController.disableAutoSync();
 	await this.ui.terminal.drainInput(SHUTDOWN_INPUT_DRAIN_MAX_MS, SHUTDOWN_INPUT_DRAIN_IDLE_MS);
 
+	// The transcript printed on quitting holds the history a long session may still be building, a slice at a time.
+	await chatHistoryBuilt(this.chatContainer);
+	this.writeExitOutputInSlices = true;
 	this.stop();
+	await this.exitOutputWritten;
 	await this.runtimeHost.dispose();
 	const resumeCommand = await formatResumeCommand(this.sessionManager);
 	if (resumeCommand) {

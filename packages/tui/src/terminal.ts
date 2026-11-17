@@ -108,6 +108,9 @@ export interface Terminal {
 	// Write output to terminal
 	write(data: string): void;
 
+	/** Settles once everything written so far has reached the terminal. Without it, writes count as done at once. */
+	flush?(): Promise<void>;
+
 	// Get terminal dimensions
 	get columns(): number;
 	get rows(): number;
@@ -563,6 +566,12 @@ export class ProcessTerminal implements Terminal {
 	write(data: string): void {
 		process.stdout.write(data);
 		this.writeLog?.(data);
+	}
+
+	flush(): Promise<void> {
+		if (process.stdout.writableLength === 0 || process.stdout.destroyed) return Promise.resolve();
+		// The callback of a write runs once every write before it is done.
+		return new Promise((resolve) => process.stdout.write("", () => resolve()));
 	}
 
 	get columns(): number {
