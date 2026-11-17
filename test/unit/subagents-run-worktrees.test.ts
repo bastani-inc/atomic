@@ -193,7 +193,9 @@ test("cleanup unlinks a synthetic link named '..cache' before git removes the wo
 	symlinkSync(shared, link, process.platform === "win32" ? "junction" : "dir");
 	// A locked worktree survives `git worktree remove --force`, so the links cleanup removed stay observable.
 	await runGitChecked(repo, ["worktree", "lock", worktree.path]);
-	cleanups.push(async () => await runGitChecked(repo, ["worktree", "remove", "--force", "--force", worktree.path]));
+	cleanups.push(async () => {
+		await runGitChecked(repo, ["worktree", "remove", "--force", "--force", worktree.path]);
+	});
 
 	await cleanupWorktrees({ ...setup, worktrees: [{ ...worktree, syntheticPaths: ["..cache"] }] });
 
@@ -203,7 +205,7 @@ test("cleanup unlinks a synthetic link named '..cache' before git removes the wo
 });
 
 test("resuming while an async release sweep is in flight serializes behind the sweep and preserves edits (#3784)", async () => {
-	const repo = repositoryWithSetupSources();
+	const repo = await repositoryWithSetupSources();
 	const { runId, setup } = await worktreeRun(repo);
 	const worktree = setup.worktrees[0]!;
 	const diffsDir = join(repo, "..", "artifacts", "worktree-diffs-concurrent");
