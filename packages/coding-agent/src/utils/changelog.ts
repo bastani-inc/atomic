@@ -25,7 +25,8 @@ const GITHUB_REPO = "bastani-inc/atomic";
 const CHANGELOG_LINK_BASE_PATH = "packages/coding-agent";
 const LEGACY_REPO_RE = /^https:\/\/github\.com\/(?:badlogic|earendil-works)\/pi-mono(?=\/|$)/;
 const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
-const INLINE_MARKDOWN_LINK_RE = /(!?\[[^\]\n]+\]\()([^\s)]+)((?:\s+[^)]*)?\))/g;
+// `[^)]*` takes whitespace too, so one `\s` starts a link title: a long unclosed run is not split two ways.
+const INLINE_MARKDOWN_LINK_RE = /(!?\[[^\]\n]+\]\()([^\s)]+)((?:\s[^)]*)?\))/g;
 
 interface ParsedVersion extends VersionParts {
 	version: string;

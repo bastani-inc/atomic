@@ -1117,6 +1117,52 @@ Inline \(A_{sf}\)`,
 			});
 		});
 
+		describe("long runs of spaces", () => {
+			/**
+			 * Each source repeats a space this many times where a regular expression used to backtrack, which took
+			 * seconds per render; one pass over it takes milliseconds.
+			 */
+			const RUN = 100_000;
+			/** Rescanning a lazy body was cheaper per step, so the unclosed openers need a longer run to take seconds. */
+			const LONG_RUN = 4 * RUN;
+			/** Far above one render of these sources on a loaded machine, far below what the backtracking took. */
+			const RENDER_BUDGET_MS = 1_000;
+			const render = (source: string) =>
+				new Markdown(source, 0, 0, defaultMarkdownTheme).render(80).map((line) => stripAnsi(line).trimEnd());
+			const timedRender = (source: string) => {
+				const started = performance.now();
+				const lines = render(source);
+				const elapsedMs = performance.now() - started;
+				assert.ok(
+					elapsedMs < RENDER_BUDGET_MS,
+					`took ${elapsedMs.toFixed(0)} ms; the budget is ${RENDER_BUDGET_MS} ms`,
+				);
+				return lines;
+			};
+
+			it("renders an unclosed display-math opener followed by a long run of spaces in one pass", () => {
+				timedRender(`$$${" ".repeat(LONG_RUN)}`);
+				timedRender(`\\[${" ".repeat(LONG_RUN)}`);
+			});
+
+			it("renders a table delimiter row ending in a long run of spaces in one pass", () => {
+				timedRender(`$$\nh|\n-${" ".repeat(RUN)}x\n$$`);
+			});
+
+			it("still reads spaces around display math and at the end of a delimiter row", () => {
+				assert.deepStrictEqual(render("$$ x $$"), ["x"]);
+				assert.deepStrictEqual(render("$$   $$"), [""]);
+				assert.deepStrictEqual(render("$$  \n  z\n$$"), ["z"]);
+				assert.deepStrictEqual(render(["| A | B |", "|---|---|   ", "| 1 | 2 |"].join("\n")), [
+					"┌───┬───┐",
+					"│ A │ B │",
+					"├───┼───┤",
+					"│ 1 │ 2 │",
+					"└───┴───┘",
+				]);
+			});
+		});
+
 		it("switches from raw to rendered math when a streamed delimiter closes", () => {
 			const markdown = new Markdown(String.raw`Map $\mathbb{C}^3`, 0, 0, defaultMarkdownTheme);
 			assert.deepStrictEqual(

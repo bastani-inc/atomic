@@ -155,6 +155,67 @@ describe("patterns that never backtrack super-linearly", () => {
 	}
 });
 
+describe("shipped patterns rewritten to read each run once", () => {
+	const rewrites: [file: string, before: string, after: string, flags: string][] = [
+		[
+			"subagents/src/shared/utils.ts",
+			String.raw`exit(?:ed)?\s*(?:with\s*)?(?:code|status)?\s*[:\s]?\s*(\d+)`,
+			String.raw`exit(?:ed)?\s*(?:with\s*)?(?:(?:code|status)\s*)?(?::\s*)?(\d+)`,
+			"i",
+		],
+		[
+			"subagents/src/runs/shared/long-running-guard.ts",
+			String.raw`(^|[;&|()\s])sed\s+[^\n;&|]*\s-i\b`,
+			String.raw`(^|[;&|()\s])sed\s(?:[^\S\n]*\n)*[^\n;&|]*\s-i\b`,
+			"",
+		],
+		[
+			"subagents/src/tui/render-status-progress.ts",
+			String.raw`\[Write to:\s*([^\]\n]+)\]`,
+			String.raw`\[Write to:(?:[^\S\n]*\n)*([^\]\n]+)\]`,
+			"i",
+		],
+		[
+			"tui/src/components/markdown.ts",
+			String.raw`^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$`,
+			String.raw`^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*(?:\|[ \t]*)?$`,
+			"",
+		],
+		[
+			"tui/src/components/markdown.ts",
+			String.raw`^ {0,3}\$\$[ \t]*(?:\n)?([\s\S]*?)\$\$[ \t]*(?:\n|$)`,
+			String.raw`^ {0,3}\$\$[ \t]*(?:\n|(?![ \t]))([\s\S]*?)\$\$[ \t]*(?:\n|$)`,
+			"",
+		],
+		[
+			"workflows/builtin/verification-criteria.ts",
+			String.raw`^(.*?)\s*\{#([A-Za-z0-9_-]+)\}\s*$`,
+			String.raw`^(.*?)(?<!\s)\s*\{#([A-Za-z0-9_-]+)\}\s*$`,
+			"",
+		],
+		[
+			"intercom/intercom-utils.ts",
+			String.raw`${"```"}(?:json)?\s*([\s\S]*?)${"```"}`,
+			String.raw`${"```"}(?:json)?([\s\S]*?)${"```"}`,
+			"i",
+		],
+		[
+			"coding-agent/src/utils/changelog.ts",
+			String.raw`(!?\[[^\]\n]+\]\()([^\s)]+)((?:\s+[^)]*)?\))`,
+			String.raw`(!?\[[^\]\n]+\]\()([^\s)]+)((?:\s[^)]*)?\))`,
+			"g",
+		],
+	];
+	for (const [file, before, after, flags] of rewrites) {
+		test(`${file}: /${after}/${flags} has none of the polynomial risks of /${before}/${flags}`, () => {
+			const previous = risks(before, flags).map((risk) => risk.kind);
+			assert.ok(previous.length > 0);
+			assert.deepEqual(new Set(previous), new Set(["polynomial"]));
+			assert.deepEqual(summary(after, flags), []);
+		});
+	}
+});
+
 describe("pattern syntax", () => {
 	test("rejects a pattern that is not valid JavaScript", () => {
 		assert.throws(() => findBacktrackingRisks("(a", ""), SyntaxError);

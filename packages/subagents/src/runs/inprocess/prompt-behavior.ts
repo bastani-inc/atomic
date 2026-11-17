@@ -68,11 +68,44 @@ export function stripInheritedSkills(prompt: string): string {
 }
 
 export function stripSubagentOrchestrationSkill(prompt: string): string {
-	return prompt
-		.replace(/\n{0,2}<skill\s+name=["']subagent(?:@[^"']*)?["'][^>]*>[\s\S]*?<\/skill>\n{0,2}/g, "\n\n")
-		.replace(/[ \t]*<skill>\s*[\s\S]*?<\/skill>\s*/g, (block) =>
-			SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN.test(block) ? "" : block,
-		);
+	return stripSkillBlocksNamingSubagent(
+		prompt.replace(/\n{0,2}<skill\s+name=["']subagent(?:@[^"']*)?["'][^>]*>[\s\S]*?<\/skill>\n{0,2}/g, "\n\n"),
+	);
+}
+
+const SKILL_OPEN = "<skill>";
+const SKILL_CLOSE = "</skill>";
+const WHITESPACE_RUN = /\s*/y;
+
+/**
+ * Removes each `<skill>` block that names the subagent skill, together with the
+ * spaces and tabs before it and the whitespace after it. A block runs from a
+ * `<skill>` to the first `</skill>` after it, and blocks never overlap: exactly
+ * what a global search for `[ \t]*<skill>[\s\S]*?<\/skill>\s*` finds, but in one
+ * pass. That search restarted inside every run of spaces and at every unclosed
+ * `<skill>`, so a long run in an inherited prompt took seconds.
+ */
+function stripSkillBlocksNamingSubagent(prompt: string): string {
+	let output = "";
+	let copied = 0;
+	let searchFrom = 0;
+	while (true) {
+		const opening = prompt.indexOf(SKILL_OPEN, searchFrom);
+		if (opening === -1) break;
+		const closing = prompt.indexOf(SKILL_CLOSE, opening + SKILL_OPEN.length);
+		if (closing === -1) break;
+		let start = opening;
+		while (start > searchFrom && (prompt[start - 1] === " " || prompt[start - 1] === "\t")) start--;
+		WHITESPACE_RUN.lastIndex = closing + SKILL_CLOSE.length;
+		WHITESPACE_RUN.exec(prompt);
+		const end = WHITESPACE_RUN.lastIndex;
+		if (SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN.test(prompt.slice(start, end))) {
+			output += prompt.slice(copied, start);
+			copied = end;
+		}
+		searchFrom = end;
+	}
+	return output + prompt.slice(copied);
 }
 
 function stripChildBoundaryInstructions(prompt: string): string {
