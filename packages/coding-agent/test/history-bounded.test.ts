@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { getPriority, constants as osConstants, setPriority, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PerformanceObserver } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -30,7 +30,7 @@ import {
 	type WorkflowRunHistory,
 } from "../src/core/tools/history-protocol.js";
 import { matchLinesInWorker, renderRawEntryInWorker } from "../src/core/tools/history-regex-worker.js";
-import { HISTORY_TEXT_FORMAT } from "../src/core/tools/history-session.js";
+import { cutTextToUtf8Bytes, HISTORY_TEXT_FORMAT, oneLine } from "../src/core/tools/history-session.js";
 import { entryLines } from "../src/core/tools/history-transcript.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext, InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
@@ -66,7 +66,19 @@ function overlapMs(turn: Interval, pauses: readonly Interval[]): number {
 	);
 }
 
+function raiseProcessPriority(): () => void {
+	const before = getPriority();
+	if (before <= osConstants.priority.PRIORITY_HIGH) return () => {};
+	try {
+		setPriority(osConstants.priority.PRIORITY_HIGH);
+	} catch {
+		return () => {};
+	}
+	return () => setPriority(before);
+}
+
 function watchEventLoopTurns(): () => Promise<number[]> {
+	const restorePriority = raiseProcessPriority();
 	const turns: (Interval & { readonly cpu: number })[] = [];
 	const collections: Interval[] = [];
 	const collected = (entries: readonly PerformanceEntry[]) => {
@@ -87,12 +99,18 @@ function watchEventLoopTurns(): () => Promise<number[]> {
 	};
 	setImmediate(turn);
 	return async () => {
-		watching = false;
-		turn();
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		collected(observer.takeRecords());
-		observer.disconnect();
-		return turns.map((item) => Math.max(0, Math.min(item.end - item.start, item.cpu) - overlapMs(item, collections)));
+		try {
+			watching = false;
+			turn();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			collected(observer.takeRecords());
+			observer.disconnect();
+			return turns.map((item) =>
+				Math.max(0, Math.min(item.end - item.start, item.cpu) - overlapMs(item, collections)),
+			);
+		} finally {
+			restorePriority();
+		}
 	};
 }
 
@@ -167,7 +185,7 @@ function countingDatabase(database: SqliteDatabase): { database: SqliteDatabase;
 		get(target, key) {
 			if (key === "get" || key === "all") return wrap(target)[key];
 			if (key === "transaction")
-				return (body: (tx: SqliteExecutor) => Promise<unknown>, options?: object) =>
+				return <T>(body: (tx: SqliteExecutor) => Promise<T>, options?: object) =>
 					target.transaction((tx) => body(wrap(tx)), options as never);
 			const value = Reflect.get(target, key, target);
 			return typeof value === "function" ? value.bind(target) : value;
@@ -184,18 +202,21 @@ function busyFor(ms: number): void {
 function withSlowIndexQueries(store: SessionStore): { readonly store: SessionStore; readonly queries: () => number } {
 	const index = store.searchIndex!;
 	let queries = 0;
-	const slowIndex = new Proxy(index, {
-		get(target, key) {
-			const value = Reflect.get(target, key, target);
-			if (key === "coverage" || key === "candidates")
-				return (...args: unknown[]) => {
-					queries++;
-					busyFor(SLOW_INDEX_QUERY_MS);
-					return (value as (...args: unknown[]) => unknown).apply(target, args);
-				};
-			return typeof value === "function" ? value.bind(target) : value;
+	const slowIndex: SessionSearchIndex = {
+		coverage(...args) {
+			queries++;
+			busyFor(SLOW_INDEX_QUERY_MS);
+			return index.coverage(...args);
 		},
-	});
+		extend(...args) {
+			return index.extend(...args);
+		},
+		candidates(...args) {
+			queries++;
+			busyFor(SLOW_INDEX_QUERY_MS);
+			return index.candidates(...args);
+		},
+	};
 	const slowStore = new Proxy(store, {
 		get(target, key) {
 			if (key === "searchIndex") return slowIndex;
@@ -221,7 +242,7 @@ function abortingAfterFirstIndexInsert(database: SqliteDatabase, controller: Abo
 	return new Proxy(database, {
 		get(target, key) {
 			if (key === "transaction")
-				return (body: (tx: SqliteExecutor) => Promise<unknown>, options?: object) =>
+				return <T>(body: (tx: SqliteExecutor) => Promise<T>, options?: object) =>
 					target.transaction((tx) => body(wrap(tx)), options as never);
 			const value = Reflect.get(target, key, target);
 			return typeof value === "function" ? value.bind(target) : value;
@@ -398,14 +419,14 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			});
 			const { router } = historyOver(paged, { timeMs: 100 });
 			const first = await router.read!("history://sessions/big");
-			assert.match(first, /history:\/\/sessions\/big:1-1 \| [^|]+ \| user: task 1/);
+			assert.doesNotMatch(first, /history:\/\/sessions\/big:1-1 \| [^|]+ \| user: task 1/);
 			assert.match(first, /time budget ran out/);
 			const next = continuation(first);
 			assert.ok(next, first);
 			stalled = false;
 			const rest = await router.read!(next);
-			assert.doesNotMatch(rest, /user: task 1(?:\n|$)/);
-			assert.match(rest, /user: task 3(?:\n|$)/);
+			assert.match(rest, /history:\/\/sessions\/big:1-2 \| [^|]+ \| user: task 1(?:\n|$)/);
+			assert.match(rest, /history:\/\/sessions\/big:3-4 \| [^|]+ \| user: task 3(?:\n|$)/);
 		} finally {
 			await store.close();
 		}
@@ -1086,7 +1107,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 							isError: false,
 							timestamp: BASE,
 						},
-					} as unknown as SessionEntry,
+					} as never,
 				]);
 				const { router, read, request } = historyOver(store);
 				const stopWatching = watchEventLoopTurns();
@@ -1744,7 +1765,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 						isError: false,
 						timestamp: BASE,
 					},
-				} as unknown as SessionEntry,
+				} as never,
 				{
 					type: "message",
 					id: "m-tc",
@@ -1755,7 +1776,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 						content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }],
 						timestamp: BASE,
 					},
-				} as unknown as SessionEntry,
+				} as never,
 				{
 					type: "message",
 					id: "m-bash",
@@ -1770,7 +1791,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 						truncated: false,
 						timestamp: BASE,
 					},
-				} as unknown as SessionEntry,
+				} as never,
 				{
 					type: "message",
 					id: "m-cust",
@@ -1783,7 +1804,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 						display: true,
 						timestamp: BASE,
 					},
-				} as unknown as SessionEntry,
+				} as never,
 				{
 					type: "message",
 					id: "m-bs",
@@ -1795,7 +1816,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 						fromId: "a",
 						timestamp: BASE,
 					},
-				} as unknown as SessionEntry,
+				} as never,
 			],
 			thinking_level_change: [
 				{
@@ -1971,7 +1992,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 
 		const cold = await JsonlSessionStore.open(jsonlDir, { scanExisting: false });
 		try {
-			(cold as unknown as { readSnapshot: () => Promise<never> }).readSnapshot = async () => {
+			(cold as never as { readSnapshot: () => Promise<never> }).readSnapshot = async () => {
 				throw new Error("cold JSONL discovery must not load the whole session");
 			};
 			const { read } = historyOver(cold);
@@ -2332,6 +2353,42 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		LARGE_SESSION_TIMEOUT_MS,
 	);
 
+	it("still counts work that holds the event loop past the limit while it watches at raised priority (#5250)", async () => {
+		const blocked = new Set([100, 200, 300, 400]);
+		const before = getPriority();
+		const stopWatching = watchEventLoopTurns();
+		let turns: number[];
+		try {
+			for (let index = 0; index < 500; index++) {
+				busyFor(blocked.has(index) ? 25 : 0.2);
+				await new Promise((resolve) => setImmediate(resolve));
+			}
+		} finally {
+			turns = await stopWatching();
+		}
+		assert.equal(getPriority(), before);
+		assert.throws(
+			() => assertFewStalls(turns, TURN_LIMIT_MS, "the blocking work"),
+			/the blocking work held the event loop for more than 10 ms ([4-9]|\d{2,}) times/,
+		);
+	});
+
+	it("restores the process priority after watching the event loop, also when the watched work throws (#5250)", async () => {
+		const before = getPriority();
+		let during: number | undefined;
+		await assert.rejects(async () => {
+			const stopWatching = watchEventLoopTurns();
+			try {
+				during = getPriority();
+				throw new Error("the watched work failed");
+			} finally {
+				await stopWatching();
+			}
+		}, /the watched work failed/);
+		assert.ok(during !== undefined && during <= before, `watching lowered the priority from ${before} to ${during}`);
+		assert.equal(getPriority(), before);
+	});
+
 	it("yields the event loop between the sessions and index queries of a multi-session search (#5250)", async () => {
 		const { store, close } = await openSql(dir);
 		try {
@@ -2385,4 +2442,264 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		},
 		LARGE_SESSION_TIMEOUT_MS,
 	);
+
+	it("outline links cover their exact turn ranges across row-budget, time-budget, and multi-page single-turn cuts (#5250)", async () => {
+		const store = new MemorySessionStore();
+		try {
+			const perTurn = 3;
+			const turnCount = 720;
+			const entries: SessionEntry[] = [];
+			for (let seq = 1; seq <= turnCount * perTurn; seq++) {
+				const at = BASE + seq * 1000;
+				const turn = Math.ceil(seq / perTurn);
+				const isUser = seq % perTurn === 1;
+				entries.push(
+					isUser
+						? message(`e${seq}`, "user", `turn ${turn}`, at)
+						: message(`e${seq}`, "assistant", `reply ${turn}.${seq % perTurn}`, at),
+				);
+			}
+			await store.create(header("exact-turns"), entries);
+
+			const collectOutlineTurns = async (targetStore: SessionStore, budget: Partial<HistoryBudget>) => {
+				const { router } = historyOver(targetStore, budget);
+				let url: string | undefined = "history://sessions/exact-turns";
+				const listed = new Map<number, [number, number]>();
+				let pages = 0;
+				while (url !== undefined && pages < 400) {
+					const out = (await router.read!(url)) ?? "";
+					pages++;
+					for (const match of out.matchAll(
+						/^history:\/\/sessions\/exact-turns:(\d+)-(\d+) \| [^|]+ \| user: turn (\d+)$/gm,
+					)) {
+						listed.set(Number(match[3]), [Number(match[1]), Number(match[2])]);
+					}
+					url = continuation(out);
+				}
+				return { listed, pages };
+			};
+
+			const rowSplit = await collectOutlineTurns(store, { rows: 100 });
+			assert.ok(rowSplit.pages > 1, "row budget splits the outline across pages");
+			for (let turn = 1; turn <= turnCount; turn++) {
+				assert.deepEqual(rowSplit.listed.get(turn), [(turn - 1) * perTurn + 1, turn * perTurn]);
+			}
+
+			let callCount = 0;
+			const timePaged: SessionStore = new Proxy(store, {
+				get(target, key) {
+					if (key === "readEntryRange")
+						return async (id: string, query: Parameters<MemorySessionStore["readEntryRange"]>[1]) => {
+							callCount++;
+							if (callCount % 4 === 0) await new Promise((r) => setTimeout(r, 45));
+							return target.readEntryRange(id, query);
+						};
+					const value = Reflect.get(target, key, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const timeSplit = await collectOutlineTurns(timePaged, { timeMs: 30 });
+			assert.ok(timeSplit.pages > 1, "time budget splits the outline across pages");
+			for (let turn = 1; turn <= turnCount; turn++) {
+				assert.deepEqual(timeSplit.listed.get(turn), [(turn - 1) * perTurn + 1, turn * perTurn]);
+			}
+
+			const longTurnEntries: SessionEntry[] = [
+				message("lt-1", "user", "long turn 1", BASE),
+				...Array.from({ length: 6 }, (_, i) =>
+					message(`lt-a-${i}`, "assistant", `step ${i + 1}`, BASE + (i + 1) * 1000),
+				),
+				message("lt-8", "user", "turn 2", BASE + 8000),
+				message("lt-9", "assistant", "step 2.1", BASE + 9000),
+				...Array.from({ length: 2095 }, (_, i) =>
+					message(`lt-f-${i}`, i % 2 === 0 ? "user" : "assistant", `filler ${i}`, BASE + (i + 10) * 1000),
+				),
+			];
+			await store.create(header("long-turn"), longTurnEntries);
+			const { router: rowRouter } = historyOver(store, { rows: 2 });
+			const p1 = (await rowRouter.read!("history://sessions/long-turn")) ?? "";
+			const c1 = continuation(p1);
+			assert.equal(c1, "history://sessions/long-turn?cursor=3.0.0.1");
+			const p2 = (await rowRouter.read!(c1!)) ?? "";
+			const c2 = continuation(p2);
+			assert.equal(c2, "history://sessions/long-turn?cursor=5.0.0.1");
+			const p3 = (await rowRouter.read!(c2!)) ?? "";
+			const c3 = continuation(p3);
+			assert.equal(c3, "history://sessions/long-turn?cursor=7.0.0.1");
+			const p4 = (await rowRouter.read!(c3!)) ?? "";
+			assert.match(p4, /^history:\/\/sessions\/long-turn:1-7 \| [^|]+ \| user: long turn 1$/m);
+
+			let stallReload = true;
+			const stalledReloadStore: SessionStore = new Proxy(store, {
+				get(target, key) {
+					if (key === "readEntryRange")
+						return (id: string, query: Parameters<MemorySessionStore["readEntryRange"]>[1]) => {
+							if (stallReload && query.fromSeq === 1 && query.toSeq === 1) return new Promise<never>(() => {});
+							return target.readEntryRange(id, query);
+						};
+					const value = Reflect.get(target, key, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const stalledOut =
+				(await historyOver(stalledReloadStore, { timeMs: 25 }).router.read!(
+					"history://sessions/long-turn?cursor=3.0.0.1",
+				)) ?? "";
+			assert.doesNotMatch(stalledOut, /^entries 3-3:/m);
+			assert.match(
+				stalledOut,
+				/\[outline up to entry 3; the time budget ran out; continue with history:\/\/sessions\/long-turn\?cursor=3\.0\.0\.1\]/,
+			);
+			stallReload = false;
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("search tool keeps all 10 matches, the +N more cursor note, and 20 workflow matches when context contains file:line: text (#5250)", async () => {
+		const store = new MemorySessionStore();
+		try {
+			const entries: SessionEntry[] = [];
+			for (let seq = 1; seq <= 40; seq++) {
+				entries.push(
+					message(
+						`e${seq}`,
+						"user",
+						`needle ${seq}\nsrc/a.ts:${seq}: warning one\nsrc/b.ts:${seq}: warning two\nNote: summary:ok: value`,
+						BASE + seq * 1000,
+					),
+				);
+			}
+			await store.create(header("ctx-colons"), entries);
+			const workflows: WorkflowRunHistory = {
+				listRuns: async () =>
+					Array.from({ length: 30 }, (_, i) => ({
+						runId: `run-${i + 1}`,
+						name: "wf",
+						status: "completed" as const,
+						startedAt: BASE + (30 - i) * 1000,
+						elapsedMs: 1,
+						activeStages: [],
+						awaitingInputCount: 0,
+						awaitingInput: [],
+					})),
+				getRun: async (runId): Promise<WorkflowRunDetail | undefined> =>
+					runId === "run-1"
+						? {
+								runId: "run-1",
+								name: "wf",
+								status: "completed",
+								startedAt: BASE,
+								inputs: {},
+								stages: Array.from({ length: 20 }, (_, i) => ({
+									id: `s${i + 1}`,
+									name: `wf-needle-${i + 1}`,
+									status: "completed" as const,
+								})),
+							}
+						: {
+								runId,
+								name: "wf",
+								status: "completed",
+								startedAt: BASE,
+								inputs: {},
+								stages: [],
+							},
+			};
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => workflows });
+			const ctx = { internalResourceRouter: router, cwd: PROJECT } as InternalResourceContext;
+			const tool = createSearchToolDefinition(PROJECT);
+
+			const res = await tool.execute(
+				"search",
+				{ pattern: "needle", paths: "history://sessions/ctx-colons" },
+				undefined,
+				undefined,
+				ctx as never,
+			);
+			const out = res.content.map((b) => ("text" in b ? b.text : "")).join("\n");
+			const matched = out.split("\n").filter((line) => /^history:\/\/sessions\/ctx-colons:\d+: needle/.test(line));
+			assert.equal(matched.length, 10, out);
+			assert.match(out, /\+30 more in this session; search history:\/\/sessions\/ctx-colons\?cursor=11 for them/);
+
+			const wfRes = await tool.execute(
+				"search",
+				{ pattern: "wf-needle-", paths: "history://workflows" },
+				undefined,
+				undefined,
+				ctx as never,
+			);
+			const wfOut = wfRes.content.map((b) => ("text" in b ? b.text : "")).join("\n");
+			const wfMatched = wfOut
+				.split("\n")
+				.filter((line) => /^history:\/\/workflows\/run-1:\d+: .*wf-needle-/.test(line));
+			assert.equal(wfMatched.length, 20, wfOut);
+			assert.match(wfOut, /^history:\/\/workflows:0: \[searched workflows 1-25 of 30/m);
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("multi-line search covers its row budget per call instead of stopping after one entry (#5250)", async () => {
+		const store = new MemorySessionStore();
+		try {
+			const entries: SessionEntry[] = Array.from({ length: 400 }, (_, i) =>
+				message(`e${i + 1}`, "user", `line a ${i + 1}\nline b ${i + 1}`, BASE + i * 1000),
+			);
+			await store.create(header("row-cover"), entries);
+			const { router, request } = historyOver(store, { rows: 50 });
+			let url: string | undefined = "history://sessions/row-cover";
+			const spans: number[] = [];
+			let calls = 0;
+			while (url !== undefined && calls < 50) {
+				const out = (await router.search!(url, request("nomatch\\nmulti"))) ?? "";
+				calls++;
+				const match = /searched entries (\d+)-(\d+) of 400/.exec(out);
+				if (match) spans.push(Number(match[2]) - Number(match[1]) + 1);
+				url = continuation(out);
+			}
+			assert.equal(calls, 8, `expected 8 calls for 400 entries at 50 rows/call, got ${calls} (${spans.join(",")})`);
+			assert.deepEqual(spans, [50, 50, 50, 50, 50, 50, 50]);
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("truncates outline previews, 512-char search rows, and UTF-8 byte cuts without splitting surrogate pairs or exceeding small byte caps (#5250)", async () => {
+		assert.equal(cutTextToUtf8Bytes("😀", 0), "");
+		assert.equal(cutTextToUtf8Bytes("😀", 1), "");
+		assert.equal(cutTextToUtf8Bytes("😀", 2), "");
+		assert.equal(cutTextToUtf8Bytes("😀", 3), "");
+		assert.equal(cutTextToUtf8Bytes("😀", 4), "😀");
+		assert.equal(cutTextToUtf8Bytes("\ud800a", 3), "\ud800");
+		assert.equal(oneLine("\ud800a", 1), "\ud800…");
+		assert.equal(oneLine(`${" ".repeat(400)}hello world`, 72), "hello world");
+
+		const store = new MemorySessionStore();
+		try {
+			const entries: SessionEntry[] = Array.from({ length: 2100 }, (_, index) => {
+				const text =
+					index === 0
+						? `${"a".repeat(71)}😀 and more words after the emoji`
+						: index === 1
+							? `needle ${"a".repeat(504)}😀 tail`
+							: `plain ${index}`;
+				return message(`e${index + 1}`, "user", text, BASE + index * 1000);
+			});
+			await store.create(header("surrogate"), entries);
+			const { router, request } = historyOver(store);
+			const outline = (await router.read!("history://sessions/surrogate")) ?? "";
+			const previewLine = outline.split("\n").find((line) => line.includes("user: aaaa")) ?? "";
+			assert.ok(previewLine.length > 0, outline.slice(0, 400));
+			assert.equal(previewLine.isWellFormed(), true, previewLine);
+
+			const searched = (await router.search!("history://sessions/surrogate:2-2", request("needle"))) ?? "";
+			const matchLine =
+				searched.split("\n").find((line) => line.startsWith("history://sessions/surrogate:2: needle")) ?? "";
+			assert.ok(matchLine.length > 0, searched);
+			assert.equal(matchLine.isWellFormed(), true, matchLine);
+		} finally {
+			await store.close();
+		}
+	});
 });

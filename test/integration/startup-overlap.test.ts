@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "vitest";
 import { type Options, prepareBenchmarkState, runSample, type Target } from "../../scripts/perf/startup/benchmark.ts";
+import { removeFixtureTree } from "../helpers/fixture-removal.js";
 import { moduleDir } from "../helpers/runtime.js";
 
 const repoRoot = join(moduleDir(import.meta.url), "../..");
@@ -45,6 +48,10 @@ function writeAtomicShim(directory: string): void {
 	const shim = join(directory, "atomic");
 	writeFileSync(shim, `#!/bin/sh\nexec "${process.execPath}" "${cli}" "$@"\n`);
 	chmodSync(shim, 0o755);
+}
+
+function removeSampleTree(root: string): void {
+	removeFixtureTree(root);
 }
 
 test(
@@ -128,8 +135,23 @@ if (process.argv.some((arg) => arg === "--internal-engine-prewarm" || arg === "-
 			);
 		} finally {
 			for (const [name, value] of runnerVariables) process.env[name] = value;
-			rmSync(root, { recursive: true, force: true });
+			removeSampleTree(root);
 		}
 	},
 	TEST_TIMEOUT_MS,
 );
+
+test("removes the sample tree once a process that was still running in its working directory exits", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-startup-overlap-"));
+	const cwd = join(root, "cwd");
+	mkdirSync(cwd);
+	const holder = spawn(process.execPath, ["-e", "process.stdout.write('ready'); setTimeout(() => {}, 300);"], {
+		cwd,
+		stdio: ["ignore", "pipe", "ignore"],
+	});
+	const exited = once(holder, "exit");
+	await once(holder.stdout!, "data");
+	removeSampleTree(root);
+	assert.equal(existsSync(root), false);
+	assert.deepEqual(await exited, [0, null]);
+});

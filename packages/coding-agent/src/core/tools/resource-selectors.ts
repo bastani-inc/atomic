@@ -518,7 +518,12 @@ export function writeArchiveSelector(selector: ArchiveSelector, content: string)
 }
 const SEARCH_LINE_LIMIT = 512;
 function truncateSearchLine(line: string): string {
-	return line.length > SEARCH_LINE_LIMIT ? `${line.slice(0, SEARCH_LINE_LIMIT)}… [truncated]` : line;
+	if (line.length <= SEARCH_LINE_LIMIT) return line;
+	let end = SEARCH_LINE_LIMIT;
+	const high = line.charCodeAt(end - 1);
+	const low = line.charCodeAt(end);
+	if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) end--;
+	return `${line.slice(0, end)}… [truncated]`;
 }
 function stripExtendedRegexWhitespace(pattern: string): string {
 	let out = "",

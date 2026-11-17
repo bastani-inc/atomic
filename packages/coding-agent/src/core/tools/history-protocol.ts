@@ -17,8 +17,8 @@
  * which URL continues it.
  */
 
-import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
-import { resolvePath } from "../../utils/paths.ts";
+import { createSessionCwdMatcher } from "../../utils/canonical-path.js";
+import { resolvePath } from "../../utils/paths.js";
 import type {
 	WorkflowRunControl,
 	WorkflowRunDetail,
@@ -26,10 +26,10 @@ import type {
 	WorkflowRunJsonValue,
 	WorkflowRunSummary,
 } from "../extensions/workflow-run-control.js";
-import type { SessionEntry } from "../session-manager-types.ts";
+import type { SessionEntry } from "../session-manager-types.js";
 import type { SessionRecordHeader, SessionStore, SessionSummary } from "../storage/session/types.js";
-import { indexLiterals, isMultilineSearchPattern, type LiteralQuery } from "./history-literals.ts";
-import { type MultilineSpan, matchLinesInWorker, matchMultilineInWorker } from "./history-regex-worker.ts";
+import { indexLiterals, isMultilineSearchPattern, type LiteralQuery } from "./history-literals.js";
+import { type MultilineSpan, matchLinesInWorker, matchMultilineInWorker } from "./history-regex-worker.js";
 import {
 	type BudgetStop,
 	cutTextToUtf8Bytes,
@@ -54,20 +54,20 @@ import {
 	searchSession,
 	selectRegexEngine,
 	stopText,
-} from "./history-session.ts";
-import { entryLines, timestamp, transcriptHeaderLines, wrapLine } from "./history-transcript.ts";
-import { mergeReadRanges, splitReadLineSelector } from "./read-selectors.ts";
+} from "./history-session.js";
+import { entryLines, timestamp, transcriptHeaderLines, wrapLine } from "./history-transcript.js";
+import { mergeReadRanges, splitReadLineSelector } from "./read-selectors.js";
 import {
 	formatSearchTextLine,
 	type InternalReadSelection,
 	type InternalResourceRouter,
 	type InternalSearchRequest,
 	normalizeSearchPattern,
-} from "./resource-selectors.ts";
-import { splitLineRangeSelector } from "./search-line-ranges.ts";
-import { loadNativeSearchBinding } from "./search-native.ts";
+} from "./resource-selectors.js";
+import { splitLineRangeSelector } from "./search-line-ranges.js";
+import { loadNativeSearchBinding } from "./search-native.js";
 
-export type { HistoryBudget } from "./history-session.ts";
+export type { HistoryBudget } from "./history-session.js";
 
 function charged(budget: HistoryCallBudget, line: string): string {
 	budget.spend(lineBytes(line));
@@ -107,7 +107,7 @@ const DISCOVERY_TTL_MS = 60_000;
 const MAX_PARKED_DISCOVERIES = 16;
 const QUERY_KEYS: Readonly<Record<"sessions" | "workflows" | "root", readonly string[]>> = {
 	sessions: ["limit", "offset", "project", "cursor", "session"],
-	workflows: ["limit", "offset", "cursor"],
+	workflows: ["limit", "offset", "cursor", "run"],
 	root: ["limit", "offset", "project", "cursor"],
 };
 const CURSOR = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?$/;
@@ -121,12 +121,25 @@ interface HistoryTarget {
 	/** `undefined` selects the current project, `"all"` every project, anything else is a project directory. */
 	readonly project?: string;
 	readonly session?: string;
-	readonly cursor?: {
-		readonly first: number;
-		readonly second: number;
-		readonly third: number;
-		readonly fourth: number;
-	};
+	readonly run?: string;
+	readonly cursor?: HistoryCursor;
+}
+
+interface HistoryCursor {
+	readonly first: number;
+	readonly second: number;
+	readonly third: number;
+	readonly fourth: number;
+}
+
+function cursorText(cursor: HistoryCursor): string {
+	const parts = [cursor.first, cursor.second, cursor.third, cursor.fourth];
+	while (parts.length > 1 && parts.at(-1) === 0) parts.pop();
+	return parts.join(".");
+}
+
+function positionCursor(target: HistoryTarget): string | undefined {
+	return target.cursor !== undefined && target.cursor.first > 0 ? cursorText(target.cursor) : undefined;
 }
 
 interface ParkedDiscovery {
@@ -186,6 +199,8 @@ function parseTarget(url: string): HistoryTarget {
 	if (project === "") throw new Error("history project must be 'all' or a directory");
 	const session = params.get("session") ?? undefined;
 	if (session === "") throw new Error("history session must be a session id");
+	const run = params.get("run") ?? undefined;
+	if (run === "") throw new Error("history run must be a workflow run id");
 	const cursorText = params.get("cursor");
 	const cursorMatch = cursorText === null ? undefined : CURSOR.exec(cursorText);
 	if (cursorText !== null && !cursorMatch)
@@ -199,6 +214,7 @@ function parseTarget(url: string): HistoryTarget {
 		offset,
 		...(project === undefined ? {} : { project }),
 		...(session === undefined ? {} : { session }),
+		...(run === undefined ? {} : { run }),
 		...(cursorMatch
 			? {
 					cursor: {
@@ -244,16 +260,55 @@ function pageUrl(
 	offset: number,
 	cursor?: string,
 	ranges?: readonly SeqRange[],
-	session?: string,
+	pinned?: string,
 ): string {
 	const params = new URLSearchParams();
 	if (offset > 0) params.set("offset", String(offset));
 	if (target.limit !== DEFAULT_LIMIT) params.set("limit", String(target.limit));
 	if (domain === "sessions" && target.project !== undefined) params.set("project", target.project);
-	if (session !== undefined) params.set("session", session);
+	if (pinned !== undefined) params.set(domain === "sessions" ? "session" : "run", pinned);
 	if (cursor !== undefined) params.set("cursor", cursor);
 	const query = params.toString();
 	return `history://${domain}${query ? `?${query}` : ""}${ranges && ranges.length > 0 ? `:${rangeText(ranges)}` : ""}`;
+}
+
+function runPinBytes(runId: string): number {
+	return lineBytes(` in history://workflows/${runId}`) + lineBytes(`&${new URLSearchParams({ run: runId })}`);
+}
+
+function exactLineSuffix(selection: InternalReadSelection): string {
+	const ranges =
+		selection.ranges !== undefined && selection.ranges.length > 0
+			? mergeReadRanges(selection.ranges, Number.POSITIVE_INFINITY, selection.raw !== true)
+			: selection.offset !== undefined
+				? [
+						{
+							start: selection.offset,
+							end:
+								selection.limit === undefined
+									? Number.POSITIVE_INFINITY
+									: selection.offset + selection.limit - 1,
+						},
+					]
+				: [];
+	if (ranges.length === 0) return "";
+	return `:${ranges.map((range) => `${range.start}-${Number.isFinite(range.end) ? range.end : ""}`).join(",")}`;
+}
+
+function entrySuffix(selection: InternalReadSelection): string {
+	const ranges =
+		selection.ranges !== undefined && selection.ranges.length > 0
+			? selection.ranges
+			: selection.offset !== undefined
+				? [
+						{
+							start: selection.offset,
+							...(selection.limit === undefined ? {} : { end: selection.offset + selection.limit - 1 }),
+						},
+					]
+				: [];
+	const text = ranges.map((range) => `${range.start}-${range.end ?? ""}`).join(",");
+	return `${text === "" ? "" : `:${text}`}${selection.raw ? ":raw" : ""}`;
 }
 
 function windowText(total: number, offset: number, shown: number): string {
@@ -1143,7 +1198,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			byScope = new Map<string, ParkedDiscovery>();
 			parkedDiscoveries.set(store, byScope);
 		}
-		const isContinuation = target.cursor !== undefined && target.cursor.first === 0;
+		const isContinuation = target.cursor !== undefined;
 		let parked = isContinuation ? byScope.get(scopeKey) : undefined;
 		const previous = byScope.get(scopeKey);
 		if (previous) {
@@ -1245,13 +1300,15 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 
 	async function listSessions(
 		target: HistoryTarget,
+		selection: InternalReadSelection,
 		budget: HistoryCallBudget,
 	): Promise<{ readonly text: string; readonly preselected?: true }> {
 		const scope =
 			target.project === "all" ? "all projects" : target.project === undefined ? "this project" : target.project;
 		const discovered = await discoverSessions(target, budget);
 		if (discovered.stopped !== undefined) {
-			const contUrl = pageUrl("sessions", target, target.offset, `0.${discovered.stopped.scanned}`);
+			const cursor = positionCursor(target) ?? `0.${discovered.stopped.scanned}`;
+			const contUrl = `${pageUrl("sessions", target, target.offset, cursor)}${exactLineSuffix(selection)}`;
 			return {
 				text: `# sessions in ${scope}\n[scanned ${discovered.stopped.scanned} sessions so far; ${stopText(discovered.stopped.reason)}; continue with ${contUrl}]`,
 				preselected: true,
@@ -1267,7 +1324,8 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					[
 						sessionUrl(summary.id, target),
 						timestamp(summary.modifiedAt),
-						`${summary.messageCount} messages`,
+						`${summary.estimated ? "at least " : ""}${summary.messageCount} messages`,
+						...(summary.estimated ? ["metadata may be incomplete"] : []),
 						...(summary.id === sources.currentSessionId ? ["current session"] : []),
 						...(summary.workflow
 							? [`workflow stage ${summary.workflow.stageName} (run ${summary.workflow.runId})`]
@@ -1384,7 +1442,13 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					budget,
 				);
 			}
-			return outlineSession(place, headerLines, cursor.seq, budget);
+			return outlineSession(
+				place,
+				headerLines,
+				cursor.seq,
+				budget,
+				target.cursor !== undefined && target.cursor.fourth > 0 ? target.cursor.fourth : undefined,
+			);
 		}
 		return readWholeOrOutline(place, headerLines, budget, WHOLE_SESSION_ENTRY_LIMIT);
 	}
@@ -1397,11 +1461,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		shown: number,
 		unreadable: number,
 		ranges?: readonly SeqRange[],
+		nextPin?: string,
 	): string[] {
 		const end = target.offset + shown;
 		if (target.offset === 0 && end >= total && unreadable === 0) return [];
 		return [
-			`${pageUrl(domain, target, target.offset)}:0: [searched ${domain} ${windowText(total, target.offset, shown)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}${end < total ? `; continue with ${pageUrl(domain, target, end, undefined, ranges)}` : ""}]`,
+			`${pageUrl(domain, target, target.offset)}:0: [searched ${domain} ${windowText(total, target.offset, shown)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}${end < total ? `; continue with ${pageUrl(domain, target, end, undefined, ranges, nextPin)}` : ""}]`,
 		];
 	}
 
@@ -1418,10 +1483,6 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 	): string {
 		return `${pageUrl(domain, target, target.offset)}:0: [searched ${label} ${windowText(total, target.offset, searched)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}; ${stopText(reason)}${where}; continue with ${continuation}]`;
 	}
-
-	const rethrowAbort = (budget: HistoryCallBudget, error: unknown): void => {
-		if (budget.signal?.aborted) throw error;
-	};
 
 	async function searchOneSession(
 		id: string,
@@ -1525,7 +1586,15 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		}
 		const discovered = await discoverSessions(target, budget);
 		if (discovered.stopped !== undefined) {
-			const contUrl = pageUrl("sessions", target, target.offset, `0.${discovered.stopped.scanned}`, request.ranges);
+			const inSession = positionCursor(target);
+			const contUrl = pageUrl(
+				"sessions",
+				target,
+				target.offset,
+				inSession ?? `0.${discovered.stopped.scanned}`,
+				request.ranges,
+				inSession === undefined ? undefined : target.session,
+			);
 			return [
 				charged(
 					budget,
@@ -1650,7 +1719,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 						),
 					]);
 				}
-				rethrowAbort(budget, error);
+				if (budget.signal?.aborted) throw error;
 				unreadable++;
 			}
 		}
@@ -1717,20 +1786,23 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			const spent = budget.spent();
 			if (spent && (alreadyEmitted || lines.length > 0 || stageNumber > (start?.stage ?? 1)))
 				return { lines: withNote(lines), unreadable, stopped: { reason: spent, cursor: `${stageNumber}.1` } };
+			const resumesHere = start !== undefined && stageNumber === start.stage;
+			const from = {
+				seq: resumesHere ? Math.max(1, start.seq) : 1,
+				matchIndex: resumesHere ? start.matchIndex : 0,
+				lineOffset: resumesHere ? start.lineOffset : 0,
+			};
 			try {
 				if (!(await budget.race(store.readHeader(stage.sessionId)))) continue;
 				budget.takeRows(1);
-				const fromSeq = start !== undefined && stageNumber === start.stage ? Math.max(1, start.seq) : 1;
-				const fromMatchIndex = start !== undefined && stageNumber === start.stage ? start.matchIndex : 0;
-				const fromLineOffset = start !== undefined && stageNumber === start.stage ? start.lineOffset : 0;
 				const result = await searchSession({
 					place: placeOf(stage.sessionId, store, { limit: DEFAULT_LIMIT, offset: 0 }),
 					label: `history://sessions/${stage.sessionId}`,
 					request: { ...request, ranges: undefined },
 					prefilter,
-					fromSeq,
-					fromMatchIndex,
-					fromLineOffset,
+					fromSeq: from.seq,
+					fromMatchIndex: from.matchIndex,
+					fromLineOffset: from.lineOffset,
 					ranges: undefined,
 					budget,
 				});
@@ -1745,7 +1817,13 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					};
 				}
 			} catch (error) {
-				rethrowAbort(budget, error);
+				if (budget.signal?.aborted) throw error;
+				if (isHistoryDeadlineError(error))
+					return {
+						lines: withNote(lines),
+						unreadable,
+						stopped: { reason: "time", cursor: `${stageNumber}.${formatSearchCursor(from)}` },
+					};
 				unreadable++;
 			}
 		}
@@ -1787,67 +1865,78 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			];
 		}
 		const runs = await recentRuns(budget);
-		const window = runs.slice(target.offset, target.offset + target.limit);
-		const out: string[] = [];
-		let unreadable = 0;
-		for (const [index, run] of window.entries()) {
-			const spent = budget.spent();
-			if (spent && index > 0)
-				return [
+		const pinnedAt = target.run === undefined ? -1 : runs.findIndex((run) => run.runId === target.run);
+		const pinnedGone = target.run !== undefined && pinnedAt === -1;
+		const scope: HistoryTarget = pinnedAt === -1 ? target : { ...target, offset: pinnedAt };
+		const resume = pinnedGone ? undefined : start;
+		const resumeCursor = resume === undefined || target.cursor === undefined ? undefined : cursorText(target.cursor);
+		const window = runs.slice(scope.offset, scope.offset + scope.limit);
+		const nextRun = runs[scope.offset + window.length];
+		budget.spend(Math.max(0, ...[...window, ...(nextRun ? [nextRun] : [])].map((run) => runPinBytes(run.runId))));
+		const notes = pinnedGone
+			? [
 					charged(
 						budget,
-						stoppedCoverage(
-							"workflows",
-							"workflow runs",
-							target,
-							runs.length,
-							index,
-							unreadable,
-							spent,
-							pageUrl("workflows", target, target.offset + index, undefined, request.ranges),
-							"",
-						),
+						`${pageUrl("workflows", scope, scope.offset)}:0: [run ${target.run} is no longer listed, so the search could not resume in it; it continued with the runs after it]`,
 					),
-					...out,
-				];
+				]
+			: [];
+		const out: string[] = [];
+		let unreadable = 0;
+		const stoppedAt = (
+			index: number,
+			searched: number,
+			reason: BudgetStop,
+			inRun: boolean,
+			cursor?: string,
+		): string[] => {
+			const run = window[index]!;
+			return [
+				charged(
+					budget,
+					stoppedCoverage(
+						"workflows",
+						"workflow runs",
+						scope,
+						runs.length,
+						searched,
+						unreadable,
+						reason,
+						pageUrl("workflows", scope, scope.offset + index, cursor, request.ranges, run.runId),
+						inRun ? ` in history://workflows/${run.runId}` : "",
+					),
+				),
+				...notes,
+				...out,
+			];
+		};
+		for (const [index, run] of window.entries()) {
+			const spent = budget.spent();
+			if (spent && index > 0) return stoppedAt(index, index, spent, false);
 			try {
 				const found = await searchRun(
 					run.runId,
 					request,
 					prefilter,
-					index === 0 ? start : undefined,
+					index === 0 ? resume : undefined,
 					budget,
 					out.length > 0,
 				);
 				out.push(...found.lines);
 				unreadable += found.unreadable;
-				if (found.stopped)
-					return [
-						charged(
-							budget,
-							stoppedCoverage(
-								"workflows",
-								"workflow runs",
-								target,
-								runs.length,
-								index + 1,
-								unreadable,
-								found.stopped.reason,
-								pageUrl("workflows", target, target.offset + index, found.stopped.cursor, request.ranges),
-								` in history://workflows/${run.runId}`,
-							),
-						),
-						...out,
-					];
+				if (found.stopped) return stoppedAt(index, index + 1, found.stopped.reason, true, found.stopped.cursor);
 			} catch (error) {
-				rethrowAbort(budget, error);
+				if (budget.signal?.aborted) throw error;
+				if (isHistoryDeadlineError(error))
+					return stoppedAt(index, index, "time", true, index === 0 ? resumeCursor : undefined);
 				unreadable++;
 			}
 		}
 		return [
-			...coverage("workflows", target, runs.length, window.length, unreadable, request.ranges).map((line) =>
-				charged(budget, line),
+			...coverage("workflows", scope, runs.length, window.length, unreadable, request.ranges, nextRun?.runId).map(
+				(line) => charged(budget, line),
 			),
+			...notes,
 			...out,
 		];
 	}
@@ -1858,30 +1947,35 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const target = parseTarget(url);
 		if (target.domain === undefined) return bounded(HISTORY_HELP);
 		const budget = newBudget(selection.signal, noteBytes(url, target, selection.ranges));
+		const lineSelection: InternalReadSelection =
+			target.cursor === undefined ? selection : { ...selection, raw: true };
+		const lineCursor =
+			target.cursor && target.cursor.first > 0
+				? { line: target.cursor.first, char: target.cursor.second }
+				: undefined;
 		try {
 			if (target.domain === "sessions" && target.id !== undefined)
 				return bounded(await readSession(target, selection, budget));
 			if (target.domain === "sessions") {
-				const listed = await listSessions(target, budget);
+				const listed = await listSessions(target, lineSelection, budget);
 				if (listed.preselected) return bounded(listed.text);
-				const lineCursor =
-					target.cursor && target.cursor.first > 0
-						? { line: target.cursor.first, char: target.cursor.second }
-						: undefined;
-				return bounded(await selectLines(url, listed.text.split("\n"), selection, lineCursor, budget));
+				return bounded(await selectLines(url, listed.text.split("\n"), lineSelection, lineCursor, budget));
 			}
 			const lines =
 				target.id === undefined
 					? (await listWorkflows(target, budget)).split("\n")
 					: await readRun(target.id, budget);
-			const lineCursor =
-				target.cursor && target.cursor.first > 0
-					? { line: target.cursor.first, char: target.cursor.second }
-					: undefined;
-			return bounded(await selectLines(url, lines, selection, lineCursor, budget));
+			return bounded(await selectLines(url, lines, lineSelection, lineCursor, budget));
 		} catch (error) {
 			if (isHistoryDeadlineError(error)) {
-				return bounded(`[the time budget ran out waiting for the store; continue with ${rawUrl}]`);
+				const selected = exactLineSuffix(lineSelection);
+				const retry =
+					target.domain === "sessions" && target.id !== undefined
+						? `${url}${entrySuffix(selection)}`
+						: selected === ""
+							? url
+							: `${urlWithCursor(url, target.cursor === undefined ? "0" : cursorText(target.cursor))}${selected}`;
+				return bounded(`[the time budget ran out waiting for the store; continue with ${retry}]`);
 			}
 			throw error;
 		}
@@ -1908,7 +2002,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					return bounded((await searchWorkflows(target, request, prefilter, budget)).join("\n"));
 			} catch (error) {
 				if (isHistoryDeadlineError(error)) {
-					return bounded(`${url}:0: [the time budget ran out waiting for the store; continue with ${rawUrl}]`);
+					const ranges =
+						request.ranges !== undefined && request.ranges.length > 0 ? `:${rangeText(request.ranges)}` : "";
+					return bounded(
+						`${url}:0: [the time budget ran out waiting for the store; continue with ${url}${ranges}]`,
+					);
 				}
 				throw error;
 			}
@@ -1917,14 +2015,26 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				searchWorkflows(target, request, prefilter, budget),
 			]);
 			budget.signal?.throwIfAborted();
-			if (sessions.status === "rejected" && workflows.status === "rejected") throw sessions.reason;
+			if (
+				sessions.status === "rejected" &&
+				workflows.status === "rejected" &&
+				!isHistoryDeadlineError(sessions.reason) &&
+				!isHistoryDeadlineError(workflows.reason)
+			)
+				throw sessions.reason;
 			// Line 0 carries notes about the search itself, so a source that failed is named even beside matches.
-			const results = (domain: Domain, label: string, settled: PromiseSettledResult<string[]>): string[] =>
-				settled.status === "fulfilled"
-					? settled.value
-					: [
-							`history://${domain}:0: [${label} not searched: ${settled.reason instanceof Error ? settled.reason.message : String(settled.reason)}]`,
-						];
+			const results = (domain: Domain, label: string, settled: PromiseSettledResult<string[]>): string[] => {
+				if (settled.status === "fulfilled") return settled.value;
+				if (isHistoryDeadlineError(settled.reason)) {
+					const cursor = target.cursor === undefined ? undefined : cursorText(target.cursor);
+					return [
+						`history://${domain}:0: [${label} not searched: ${stopText("time")} waiting for the store; continue with ${pageUrl(domain, target, target.offset, cursor, request.ranges)}]`,
+					];
+				}
+				return [
+					`history://${domain}:0: [${label} not searched: ${settled.reason instanceof Error ? settled.reason.message : String(settled.reason)}]`,
+				];
+			};
 			return bounded(
 				[...results("sessions", "sessions", sessions), ...results("workflows", "workflow runs", workflows)].join(
 					"\n",

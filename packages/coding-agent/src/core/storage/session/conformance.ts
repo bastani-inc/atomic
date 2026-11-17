@@ -1152,6 +1152,20 @@ export function registerSessionStoreConformance(
 					capped.entries.map((item) => item.seq),
 					[1],
 				);
+				for (const maxChars of [0, -1]) {
+					const stopped = await store.readEntryRange!("session", { fromSeq: 2, toSeq: 4, maxChars });
+					assert.equal(stopped.throughSeq, 1);
+					assert.deepEqual(stopped.entries, []);
+				}
+				for (const [fromSeq, toSeq] of [
+					[1, 0],
+					[3, 2],
+				] as const) {
+					const total = await store.readEntryRange!("session", { fromSeq, toSeq });
+					assert.equal(total.lastSeq, 4);
+					assert.equal(total.throughSeq, fromSeq - 1);
+					assert.deepEqual(total.entries, []);
+				}
 				const empty = await store.readEntryRange!("session", { fromSeq: 5, toSeq: 8 });
 				assert.equal(empty.lastSeq, 4);
 				assert.deepEqual(empty.entries, []);

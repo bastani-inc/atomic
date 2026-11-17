@@ -140,6 +140,7 @@ export interface SessionSummary {
 	readonly summarizedThroughId?: string;
 	readonly searchText: string;
 	readonly location?: string;
+	readonly estimated?: true;
 }
 
 export interface SessionListQuery {

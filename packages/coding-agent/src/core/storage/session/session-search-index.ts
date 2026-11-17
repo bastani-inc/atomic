@@ -224,7 +224,7 @@ function withoutNul(text: string): string {
 }
 
 function foldForLike(text: string): string {
-	return withoutNul(text).replaceAll("\u017f", "s").replaceAll("\u212a", "k");
+	return withoutNul(text).toLowerCase().replaceAll("\u03c2", "\u03c3").replaceAll("\u017f", "s");
 }
 
 function likePattern(literal: string): string {
@@ -447,7 +447,7 @@ const postgresTrigrams: TrigramEngine = {
 				.map((all) => {
 					const literal = all[0]!;
 					params.push(likePattern(literal));
-					return `${likeColumn(literal)} ILIKE ? ESCAPE '\\'`;
+					return `${likeColumn(literal)} LIKE ? ESCAPE '\\'`;
 				})
 				.join(" OR ");
 			for (let from = fromSeq; from <= toSeq && seqs.length < limit; from += SEQ_WINDOW) {
@@ -474,7 +474,7 @@ const postgresTrigrams: TrigramEngine = {
 			for (const [setIndex, all] of sets.entries()) {
 				for (const [litIndex, literal] of all.entries()) {
 					arms.push(
-						`SELECT seq, ${setIndex} AS set_id, ${litIndex} AS lit_id, ${all.length} AS need FROM ${tables.entries} WHERE sid = ? AND seq >= ? AND seq <= ? AND ${likeColumn(literal)} ILIKE ? ESCAPE '\\'`,
+						`SELECT seq, ${setIndex} AS set_id, ${litIndex} AS lit_id, ${all.length} AS need FROM ${tables.entries} WHERE sid = ? AND seq >= ? AND seq <= ? AND ${likeColumn(literal)} LIKE ? ESCAPE '\\'`,
 					);
 					params.push(sid, from, winTo, likePattern(literal));
 				}

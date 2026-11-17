@@ -58,18 +58,26 @@ function timestamp(value) {
 	return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
 }
 
+function cutAt(text, end) {
+	if (text.length <= end) return text;
+	const high = text.charCodeAt(end - 1);
+	const low = text.charCodeAt(end);
+	const splitsPair = high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
+	return text.slice(0, splitsPair ? end - 1 : end);
+}
+
 function oneLine(text, limit) {
-	const flat = String(text ?? "").slice(0, limit * 4).replace(/\\s+/g, " ").trim();
-	return flat.length > limit ? flat.slice(0, limit) + "…" : flat;
+	const flat = cutAt(String(text ?? ""), limit * 4).replace(/\\s+/g, " ").trim();
+	return flat.length > limit ? cutAt(flat, limit) + "…" : flat;
 }
 
 function messageText(content, limit) {
-	if (typeof content === "string") return content.slice(0, limit * 4);
+	if (typeof content === "string") return cutAt(content, limit * 4);
 	if (!Array.isArray(content)) return "";
 	let out = "";
 	for (const block of content) {
 		if (block && block.type === "text" && typeof block.text === "string") {
-			out += (out ? " " : "") + block.text.slice(0, limit * 4);
+			out += (out ? " " : "") + cutAt(block.text, limit * 4);
 			if (out.length >= limit * 4) break;
 		}
 	}
@@ -245,14 +253,49 @@ parentPort.on("message", (msg) => {
 });
 `;
 
+interface WorkerReplies {
+	readonly lines: { readonly matchedIndices: readonly number[] };
+	readonly multiline: { readonly matches: readonly MultilineSpan[] };
+	readonly entry: { readonly outline: WorkerOutlineInfo; readonly renderedUtf8: Uint8Array };
+}
+
+interface PatternRequest {
+	readonly pattern: string;
+	readonly flags: string;
+	readonly ignoreCase: boolean;
+	readonly literal: boolean;
+}
+
+interface WorkerRequests {
+	readonly lines: PatternRequest & { readonly op: "lines"; readonly lines: readonly string[] };
+	readonly multiline: PatternRequest & {
+		readonly op: "multiline";
+		readonly text: string;
+		readonly ownedFrom: number;
+		readonly ownedTo: number;
+	};
+	readonly entry: {
+		readonly op: "entry";
+		readonly chunks: readonly Uint8Array[];
+		readonly previewChars: number;
+		readonly formatVersion: number | undefined;
+	};
+}
+
+type WorkerOp = keyof WorkerReplies;
+
+type WorkerReply = { readonly id: number; readonly error?: string } & Partial<
+	WorkerReplies["lines"] & WorkerReplies["multiline"] & WorkerReplies["entry"]
+>;
+
+type TaskOutcome = { readonly reply: WorkerReply } | { readonly timedOut: true } | { readonly error: Error };
+
 interface PendingTask {
 	readonly id: number;
-	readonly payload: Record<string, unknown>;
+	readonly payload: WorkerRequests[WorkerOp];
 	readonly transfer?: readonly ArrayBuffer[];
 	readonly deadline: number;
-	readonly settle: (
-		outcome: { readonly value: unknown } | { readonly timedOut: true } | { readonly error: unknown },
-	) => void;
+	readonly settle: (outcome: TaskOutcome) => void;
 	dispatched: boolean;
 }
 
@@ -264,18 +307,19 @@ let nextRequestId = 1;
 function getWorker(): Worker {
 	if (!activeWorker) {
 		const worker = new Worker(WORKER_SCRIPT, { eval: true });
-		worker.on("message", (message: { id?: number; error?: string }) => {
+		worker.on("message", (message: WorkerReply) => {
 			if (!activeTask || !message || message.id !== activeTask.id) return;
 			const task = activeTask;
 			activeTask = undefined;
 			if (message.error !== undefined) {
 				task.settle({ error: new Error(message.error) });
 			} else {
-				task.settle({ value: message });
+				task.settle({ reply: message });
 			}
 			pumpQueue();
 		});
 		worker.on("error", (error: Error) => {
+			if (worker !== activeWorker) return;
 			killActiveWorker();
 			const task = activeTask;
 			activeTask = undefined;
@@ -308,19 +352,19 @@ function pumpQueue(): void {
 	}
 }
 
-function runWorkerTask<T>(
-	payload: Record<string, unknown>,
+function runWorkerTask<Op extends WorkerOp>(
+	payload: WorkerRequests[Op],
 	timeoutMs: number,
 	signal: AbortSignal | undefined,
 	transfer?: readonly ArrayBuffer[],
-): Promise<{ readonly value: T } | { readonly timedOut: true }> {
+): Promise<{ readonly value: WorkerReplies[Op] } | { readonly timedOut: true }> {
 	if (signal?.aborted) {
 		return Promise.reject(signal.reason ?? new Error("Operation aborted"));
 	}
 	const effectiveMs = Math.max(5, timeoutMs);
 	const deadline = performance.now() + effectiveMs;
 	const id = nextRequestId++;
-	return new Promise<{ readonly value: T } | { readonly timedOut: true }>((resolve, reject) => {
+	return new Promise<{ readonly value: WorkerReplies[Op] } | { readonly timedOut: true }>((resolve, reject) => {
 		let settled = false;
 		const task: PendingTask = {
 			id,
@@ -335,10 +379,10 @@ function runWorkerTask<T>(
 				signal?.removeEventListener("abort", onAbort);
 				if ("error" in outcome) reject(outcome.error);
 				else if ("timedOut" in outcome) resolve(outcome);
-				else resolve({ value: outcome.value as T });
+				else resolve({ value: outcome.reply as WorkerReplies[Op] });
 			},
 		};
-		const removeOrCancel = (outcome: { readonly timedOut: true } | { readonly error: unknown }) => {
+		const removeOrCancel = (outcome: { readonly timedOut: true } | { readonly error: Error }) => {
 			if (settled) return;
 			if (!task.dispatched) {
 				const index = waitingQueue.indexOf(task);
@@ -374,7 +418,7 @@ export async function matchLinesInWorker(
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): Promise<{ readonly matchedIndices: readonly number[]; readonly timedOut: boolean }> {
-	const result = await runWorkerTask<{ matchedIndices: number[] }>(
+	const result = await runWorkerTask<"lines">(
 		{ op: "lines", lines, pattern, flags, ignoreCase, literal },
 		timeoutMs,
 		signal,
@@ -394,7 +438,7 @@ export async function matchMultilineInWorker(
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): Promise<{ readonly matches: readonly MultilineSpan[]; readonly timedOut: boolean }> {
-	const result = await runWorkerTask<{ matches: MultilineSpan[] }>(
+	const result = await runWorkerTask<"multiline">(
 		{ op: "multiline", text, ownedFrom, ownedTo, pattern, flags, ignoreCase, literal },
 		timeoutMs,
 		signal,
@@ -420,7 +464,7 @@ export async function renderRawEntryInWorker(
 			transfer.push(chunk.buffer);
 		}
 	}
-	const result = await runWorkerTask<{ outline: WorkerOutlineInfo; renderedUtf8: Uint8Array }>(
+	const result = await runWorkerTask<"entry">(
 		{ op: "entry", chunks: rawChunks, previewChars, formatVersion },
 		timeoutMs,
 		signal,

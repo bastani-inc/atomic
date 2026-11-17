@@ -55,8 +55,10 @@ function countingDatabase(database: SqliteDatabase): { database: SqliteDatabase;
 		get(target, key) {
 			if (key === "get" || key === "all") return wrap(target)[key];
 			if (key === "transaction")
-				return (body: (tx: SqliteExecutor) => Promise<unknown>, options?: object) =>
-					target.transaction((tx) => body(wrap(tx)), options as never);
+				return <T>(
+					body: (tx: SqliteExecutor) => Promise<T>,
+					options?: Parameters<SqliteDatabase["transaction"]>[1],
+				) => target.transaction((tx) => body(wrap(tx)), options);
 			const value = Reflect.get(target, key, target);
 			return typeof value === "function" ? value.bind(target) : value;
 		},

@@ -3,6 +3,7 @@ import { type BigIntStats, createReadStream, rmdir as rmdirCallback, stat as sta
 import {
 	appendFile,
 	copyFile,
+	type FileHandle,
 	link,
 	mkdir,
 	open,
@@ -21,6 +22,7 @@ import { createSessionCwdMatcher } from "../../../utils/canonical-path.ts";
 import { readLines } from "../../../utils/lines.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { validateSessionEntryStructure } from "./entry-structure.js";
+import { EntryTypeReader } from "./entry-type.js";
 import {
 	SessionConflictError,
 	SessionExistsError,
@@ -149,6 +151,9 @@ function parseUnterminated(line: string): SessionEntry | undefined {
 
 const RANGE_MARK_EVERY = 256;
 const RANGE_PROBE_BYTES = 64 * 1024;
+const RANGE_CHUNK_BYTES = 64 * 1024;
+const RANGE_READ_ATTEMPTS = 3;
+const WITNESS_BYTES = 64;
 const STUB_ENTRY: SessionEntry = {
 	type: "custom",
 	id: "",
@@ -165,12 +170,18 @@ interface RangeIndex {
 	total: { readonly size: number; readonly lastSeq: number } | undefined;
 	witness: Buffer;
 	witnessEnd: number;
+	seenStamp: string;
 }
 
-async function rangeWitnessHolds(path: string, index: RangeIndex): Promise<boolean> {
+async function witnessAt(file: FileHandle, end: number): Promise<Buffer> {
+	const from = Math.max(0, end - WITNESS_BYTES);
+	return readFrom(file, from, end - from);
+}
+
+async function rangeWitnessHolds(file: FileHandle, index: RangeIndex): Promise<boolean> {
 	if (index.witnessEnd === 0) return true;
 	try {
-		return (await readWitness(path, index.witnessEnd)).equals(index.witness);
+		return (await witnessAt(file, index.witnessEnd)).equals(index.witness);
 	} catch {
 		return false;
 	}
@@ -189,72 +200,162 @@ function isBlankParts(parts: readonly Buffer[]): boolean {
 	return true;
 }
 
+function hasVisibleAscii(bytes: Buffer): boolean {
+	for (const byte of bytes) if (byte > 0x20 && byte < 0x80) return true;
+	return false;
+}
+
 interface RangeCursor {
 	readonly offset: number;
 	readonly seq: number;
 	readonly header: boolean;
 }
 
+type LineAction = "read" | "pass";
+
+interface LineVisitor {
+	readonly skipTypes: readonly string[];
+	begin(seq: number): LineAction | "inspect" | "stop";
+	typed(seq: number, type: string | undefined): LineAction;
+	end(seq: number, parts: readonly Buffer[] | undefined, byteLength: number, terminated: boolean): boolean;
+}
+
 async function scanSessionLines(
-	path: string,
+	file: FileHandle,
 	size: number,
+	atEnd: boolean,
 	from: RangeCursor,
 	index: RangeIndex,
 	signal: AbortSignal | undefined,
-	onEntry: (seq: number, parts: readonly Buffer[], byteLength: number, terminated: boolean) => boolean,
+	visitor: LineVisitor,
 ): Promise<RangeCursor> {
 	if (from.offset >= size) return from;
 	let { seq, header } = from;
-	let offset = from.offset;
+	let tail = from.offset === 0 ? Buffer.alloc(0) : await witnessAt(file, from.offset);
+	let chunk = Buffer.allocUnsafe(Math.min(RANGE_CHUNK_BYTES, size - from.offset));
+	let retained = false;
+	let position = from.offset;
 	let lineOffset = from.offset;
-	let pieces: Buffer[] = [];
-	let piecesBytes = 0;
-	const input = createReadStream(path, { start: from.offset, end: size - 1 });
-	try {
-		for await (const chunk of input) {
-			signal?.throwIfAborted();
-			const bytes = typeof chunk === "string" ? Buffer.from(chunk) : (chunk as Buffer);
-			let lineStart = 0;
-			for (let newline = bytes.indexOf(10); newline !== -1; newline = bytes.indexOf(10, lineStart)) {
-				const slice = bytes.subarray(lineStart, newline);
-				const parts = pieces.length === 0 ? [slice] : [...pieces, slice];
-				const byteLength = piecesBytes + slice.length;
-				const at = pieces.length === 0 ? offset + lineStart : lineOffset;
-				lineStart = newline + 1;
-				pieces = [];
-				piecesBytes = 0;
-				lineOffset = offset + lineStart;
-				if (header) {
-					header = false;
-					continue;
-				}
-				if (isBlankParts(parts)) continue;
-				seq++;
-				if (seq % RANGE_MARK_EVERY === 1 && !index.marks.some((candidate) => candidate.seq === seq)) {
-					index.marks.push({ seq, offset: at });
-					index.marks.sort((a, b) => a.seq - b.seq);
-				}
-				if (seq > index.completeCount) {
-					index.completeCount = seq;
-					index.completeEnd = offset + lineStart;
-				}
-				if (onEntry(seq, parts, byteLength, true)) return { offset: offset + lineStart, seq, header: false };
-			}
-			if (lineStart < bytes.length) {
-				if (pieces.length === 0) lineOffset = offset + lineStart;
-				const tail = bytes.subarray(lineStart);
-				pieces.push(tail);
-				piecesBytes += tail.length;
-			}
-			offset += bytes.length;
+	let lineBytes = 0;
+	let parts: Buffer[] = [];
+	let reader: EntryTypeReader | undefined;
+	let mode = (header ? "header" : "blank") as "header" | "blank" | "typing" | LineAction;
+	const startLine = (offset: number): void => {
+		lineOffset = offset;
+		lineBytes = 0;
+		parts = [];
+		reader = undefined;
+		mode = header ? "header" : "blank";
+	};
+	const settle = (action: LineAction): void => {
+		mode = action;
+		reader = undefined;
+		if (action === "pass") parts = [];
+	};
+	const classify = (): boolean => {
+		const action = visitor.begin(seq + 1);
+		if (action === "stop") return false;
+		seq++;
+		if (action !== "inspect") {
+			settle(action);
+			return true;
 		}
-	} finally {
-		input.destroy();
+		const inspecting = new EntryTypeReader(visitor.skipTypes);
+		reader = inspecting;
+		mode = "typing";
+		for (const part of parts) if (inspecting.feed(part)) break;
+		if (inspecting.decided) settle(visitor.typed(seq, inspecting.finish()));
+		return true;
+	};
+	const take = (segment: Buffer): boolean => {
+		lineBytes += segment.length;
+		if (mode === "header" || mode === "pass") return true;
+		parts.push(segment);
+		retained = true;
+		if (mode === "typing" && reader !== undefined) {
+			if (reader.feed(segment)) settle(visitor.typed(seq, reader.finish()));
+			return true;
+		}
+		return mode !== "blank" || !hasVisibleAscii(segment) || classify();
+	};
+	const finishLine = (lineEnd: number): "next" | "stop-before" | "stop-after" => {
+		if (mode === "header") {
+			header = false;
+			return "next";
+		}
+		if (mode === "blank") {
+			if (isBlankParts(parts)) return "next";
+			if (!classify()) return "stop-before";
+		}
+		if (reader !== undefined) settle(visitor.typed(seq, reader.finish()));
+		if (seq % RANGE_MARK_EVERY === 1 && !index.marks.some((candidate) => candidate.seq === seq)) {
+			index.marks.push({ seq, offset: lineOffset });
+			index.marks.sort((a, b) => a.seq - b.seq);
+		}
+		if (seq > index.completeCount) {
+			index.completeCount = seq;
+			index.completeEnd = lineEnd;
+		}
+		return visitor.end(seq, mode === "read" ? parts : undefined, lineBytes, true) ? "stop-after" : "next";
+	};
+	const keepWitness = (bytes: Buffer, end: number | undefined): void => {
+		if (end === undefined) return;
+		index.witness =
+			end >= WITNESS_BYTES
+				? Buffer.from(bytes.subarray(end - WITNESS_BYTES, end))
+				: Buffer.concat([tail, bytes.subarray(0, end)]).subarray(-WITNESS_BYTES);
+		index.witnessEnd = index.completeEnd;
+	};
+	while (position < size) {
+		signal?.throwIfAborted();
+		if (retained) {
+			chunk = Buffer.allocUnsafe(Math.min(RANGE_CHUNK_BYTES, size - position));
+			retained = false;
+		}
+		const { bytesRead } = await file.read(chunk, 0, Math.min(chunk.length, size - position), position);
+		if (bytesRead === 0) break;
+		const bytes = chunk.subarray(0, bytesRead);
+		let start = 0;
+		let advancedAt: number | undefined;
+		for (let newline = bytes.indexOf(10); newline !== -1; newline = bytes.indexOf(10, start)) {
+			if (!take(bytes.subarray(start, newline))) {
+				keepWitness(bytes, advancedAt);
+				return { offset: lineOffset, seq, header: false };
+			}
+			start = newline + 1;
+			const completeEnd = index.completeEnd;
+			const outcome = finishLine(position + start);
+			if (index.completeEnd !== completeEnd) advancedAt = start;
+			if (outcome !== "next") {
+				keepWitness(bytes, advancedAt);
+				return outcome === "stop-before"
+					? { offset: lineOffset, seq, header: false }
+					: { offset: position + start, seq, header: false };
+			}
+			startLine(position + start);
+		}
+		if (start < bytes.length && !take(bytes.subarray(start))) {
+			keepWitness(bytes, advancedAt);
+			return { offset: lineOffset, seq, header: false };
+		}
+		keepWitness(bytes, advancedAt);
+		tail =
+			bytes.length >= WITNESS_BYTES
+				? Buffer.from(bytes.subarray(bytes.length - WITNESS_BYTES))
+				: Buffer.concat([tail, bytes]).subarray(-WITNESS_BYTES);
+		position += bytesRead;
 	}
-	if (piecesBytes > 0 && !header && !isBlankParts(pieces)) {
-		if (onEntry(seq + 1, pieces, piecesBytes, false)) seq++;
-	}
-	return { offset: size, seq, header: false };
+	if (lineBytes === 0 || mode === "header") return { offset: position, seq, header };
+	const counted = mode !== "blank";
+	if (!atEnd) return { offset: lineOffset, seq: counted ? seq - 1 : seq, header: false };
+	if (!counted && isBlankParts(parts)) return { offset: position, seq, header: false };
+	const whole = mode === "pass" ? await readFrom(file, lineOffset, lineBytes) : Buffer.concat(parts);
+	if (parseUnterminated(whole.toString("utf8")) === undefined)
+		return { offset: position, seq: counted ? seq - 1 : seq, header: false };
+	if (!counted && !classify()) return { offset: lineOffset, seq, header: false };
+	if (reader !== undefined) settle(visitor.typed(seq, reader.finish()));
+	visitor.end(seq, mode === "read" ? parts : undefined, lineBytes, false);
+	return { offset: position, seq, header: false };
 }
 
 /** Session files whose torn last line this process has already reported. */
@@ -443,7 +544,7 @@ export class JsonlSessionStore implements SessionStore {
 				throw cause;
 			}
 			const lastSeq = state.lastSeq + entries.length;
-			await this.remember(path, {
+			const appended = await this.remember(path, {
 				...state,
 				lastSeq,
 				lastEntryId: entries.at(-1)?.id,
@@ -454,6 +555,8 @@ export class JsonlSessionStore implements SessionStore {
 					? {}
 					: { summaryState: applySessionSummaryEntries(state.summaryState, entries).state }),
 			});
+			const rangeIndex = this.rangeIndexes.get(path);
+			if (rangeIndex?.seenStamp === state.stamp) rangeIndex.seenStamp = this.stamp(appended);
 			await this.indexAppended(path, state, entries, lines, offset + (state.terminated ? 0 : 1));
 			return { lastSeq };
 		});
@@ -504,7 +607,7 @@ export class JsonlSessionStore implements SessionStore {
 				query.signal?.throwIfAborted();
 				const located = await this.locate(sessionId);
 				if (!located) throw new SessionNotFoundError(sessionId);
-				return this.readRangeOf(located.path, query, located.stored, located.stats, located.state);
+				return this.readRangeOf(located.path, query, sessionId, located.state);
 			},
 			false,
 			query.signal,
@@ -515,10 +618,7 @@ export class JsonlSessionStore implements SessionStore {
 		return this.run(
 			async () => {
 				query.signal?.throwIfAborted();
-				const resolved = resolve(path);
-				const stored = await this.readFirstLine(resolved);
-				await this.readHeaderAt(resolved, stored);
-				return this.readRangeOf(resolved, query, stored);
+				return this.readRangeOf(resolve(path), query);
 			},
 			false,
 			query.signal,
@@ -528,19 +628,52 @@ export class JsonlSessionStore implements SessionStore {
 	private async readRangeOf(
 		path: string,
 		query: SessionEntriesQuery,
-		stored?: StoredSessionHeader,
-		stats?: BigIntStats,
+		sessionId?: string,
 		state?: SessionFileState,
 	): Promise<SessionEntriesPage> {
-		stats ??= await stat(path, { bigint: true });
-		const identity = `${stats.dev}:${stats.ino}:${stats.birthtimeNs}:${stored === undefined ? "" : JSON.stringify(stored)}`;
+		let file: FileHandle;
+		try {
+			file = await open(path, "r");
+		} catch (cause) {
+			if (sessionId !== undefined && (cause as NodeJS.ErrnoException).code === "ENOENT")
+				throw new SessionNotFoundError(sessionId);
+			throw cause;
+		}
+		try {
+			for (let attempt = 1; ; attempt++) {
+				const stats = await file.stat({ bigint: true });
+				const stored = await readFirstLineFrom(file, HEADER_READ_CHUNK_BYTES, 0);
+				await this.readHeaderAt(path, stored);
+				if (sessionId !== undefined && stored.id !== sessionId) throw new SessionNotFoundError(sessionId);
+				const page = await this.readRangeFrom(file, path, query, stored, stats, state);
+				if (this.stamp(await file.stat({ bigint: true })) === this.stamp(stats)) return page;
+				this.rangeIndexes.delete(path);
+				if (attempt === RANGE_READ_ATTEMPTS) throw new Error(`${path} changed while it was being read`);
+				query.signal?.throwIfAborted();
+			}
+		} finally {
+			await file.close();
+		}
+	}
+
+	private async readRangeFrom(
+		file: FileHandle,
+		path: string,
+		query: SessionEntriesQuery,
+		stored: StoredSessionHeader,
+		stats: BigIntStats,
+		state: SessionFileState | undefined,
+	): Promise<SessionEntriesPage> {
+		const identity = `${stats.dev}:${stats.ino}:${stats.birthtimeNs}:${JSON.stringify(stored)}`;
 		const size = Number(stats.size);
+		const stamp = this.stamp(stats);
 		let index = this.rangeIndexes.get(path);
 		if (
 			index === undefined ||
 			index.identity !== identity ||
+			index.seenStamp !== stamp ||
 			index.completeEnd > size ||
-			!(await rangeWitnessHolds(path, index))
+			!(await rangeWitnessHolds(file, index))
 		) {
 			index = {
 				identity,
@@ -550,49 +683,47 @@ export class JsonlSessionStore implements SessionStore {
 				total: undefined,
 				witness: Buffer.alloc(0),
 				witnessEnd: 0,
+				seenStamp: stamp,
 			};
 			this.rangeIndexes.set(path, index);
 		}
 		if (index.total?.size !== size) index.total = undefined;
 		const matchedState = state ?? this.fileStates.get(path);
-		if (matchedState !== undefined && matchedState.stamp === this.stamp(stats)) {
+		if (matchedState !== undefined && matchedState.stamp === stamp) {
 			index.total = { size, lastSeq: matchedState.lastSeq };
 			if (index.completeCount < matchedState.lastSeq) {
 				index.completeEnd = matchedState.size;
 				index.completeCount = matchedState.lastSeq;
+				index.witness = matchedState.witness;
+				index.witnessEnd = matchedState.size;
 			}
 		}
-		const legacyHeader = stored !== undefined && !isCurrentSessionHeader(stored) ? stored : undefined;
+		const legacyHeader = isCurrentSessionHeader(stored) ? undefined : stored;
 		const fromSeq = Math.max(1, query.fromSeq);
+		const reads = fromSeq <= query.toSeq && (query.maxChars === undefined || query.maxChars > 0);
 		const entries: SessionEntryAt[] = [];
-		let chars = 0;
 		let stopped: number | undefined;
-		let cursor: RangeCursor = { offset: 0, seq: 0, header: true };
-		if (fromSeq > index.completeCount && index.completeEnd > 0)
-			cursor = { offset: index.completeEnd, seq: index.completeCount, header: false };
-		else {
-			const mark = index.marks.findLast((candidate) => candidate.seq <= fromSeq);
-			if (mark) cursor = { offset: mark.offset, seq: mark.seq - 1, header: false };
-		}
-		const skipped = (query.skipTypes ?? []).map((type) => `{"type":${JSON.stringify(type)},`);
-		const isSkipped = (head: string): boolean => skipped.some((prefix) => head.startsWith(prefix));
-		const acceptUnterminated = (parts: readonly Buffer[]): SessionEntry | undefined => {
-			const text = (parts.length === 1 ? parts[0]! : Buffer.concat(parts)).toString("utf8");
-			return parseUnterminated(text);
-		};
-		if (fromSeq <= query.toSeq)
-			cursor = await scanSessionLines(
-				path,
-				size,
-				cursor,
-				index,
-				query.signal,
-				(seq, parts, byteLength, terminated) => {
-					if (!terminated && acceptUnterminated(parts) === undefined) return false;
-					if (seq < fromSeq) return !terminated;
-					if (seq > query.toSeq) return true;
-					const head = parts[0]!.subarray(0, Math.min(parts[0]!.length, 64)).toString("utf8");
-					if (!isSkipped(head)) {
+		if (reads) {
+			let cursor: RangeCursor = { offset: 0, seq: 0, header: true };
+			if (fromSeq > index.completeCount && index.completeEnd > 0)
+				cursor = { offset: index.completeEnd, seq: index.completeCount, header: false };
+			else {
+				const mark = index.marks.findLast((candidate) => candidate.seq <= fromSeq);
+				if (mark) cursor = { offset: mark.offset, seq: mark.seq - 1, header: false };
+			}
+			const skipTypes = query.skipTypes ?? [];
+			let chars = 0;
+			cursor = await scanSessionLines(file, size, true, cursor, index, query.signal, {
+				skipTypes,
+				begin: (seq) => {
+					if (seq < fromSeq) return "pass";
+					if (seq > query.toSeq) return "stop";
+					return skipTypes.length === 0 ? "read" : "inspect";
+				},
+				typed: (_seq, type) => (type !== undefined && skipTypes.includes(type) ? "pass" : "read"),
+				end: (seq, parts, byteLength) => {
+					if (seq < fromSeq) return false;
+					if (parts !== undefined) {
 						if (query.largeEntryBytes !== undefined && byteLength > query.largeEntryBytes) {
 							entries.push(
 								legacyHeader === undefined
@@ -609,7 +740,7 @@ export class JsonlSessionStore implements SessionStore {
 							const raw = JSON.parse(text) as SessionEntry;
 							const parsed =
 								legacyHeader === undefined ? raw : upgradeLegacySessionEntry(legacyHeader, raw, seq, path);
-							if (!(query.skipTypes ?? []).includes(parsed.type)) entries.push({ seq, entry: parsed });
+							if (!skipTypes.includes(parsed.type)) entries.push({ seq, entry: parsed });
 						}
 						chars += byteLength;
 						if (query.maxChars !== undefined && chars >= query.maxChars && seq < query.toSeq) {
@@ -617,29 +748,34 @@ export class JsonlSessionStore implements SessionStore {
 							return true;
 						}
 					}
-					return !terminated || seq >= query.toSeq;
+					return seq >= query.toSeq;
 				},
+			});
+			if (cursor.offset >= size) index.total = { size, lastSeq: cursor.seq };
+		} else if (index.total === undefined) {
+			const start: RangeCursor =
+				index.completeEnd > 0
+					? { offset: index.completeEnd, seq: index.completeCount, header: false }
+					: { offset: 0, seq: 0, header: true };
+			const end = Math.min(
+				size,
+				start.offset + Math.max(0, Math.min(query.maxChars ?? RANGE_PROBE_BYTES, RANGE_PROBE_BYTES)),
 			);
-		else if (fromSeq === 1 && query.toSeq === 0 && index.total === undefined) {
-			const end = Math.min(size, query.maxChars ?? RANGE_PROBE_BYTES, RANGE_PROBE_BYTES);
-			const probe = await scanSessionLines(
-				path,
-				end,
-				cursor,
-				index,
-				query.signal,
-				(_seq, parts, _len, terminated) => !terminated && end === size && acceptUnterminated(parts) !== undefined,
-			);
+			const probe = await scanSessionLines(file, end, end === size, start, index, query.signal, {
+				skipTypes: [],
+				begin: () => "pass",
+				typed: () => "pass",
+				end: () => false,
+			});
 			if (end === size) index.total = { size, lastSeq: probe.seq };
 		}
-		if (fromSeq <= query.toSeq && cursor.offset >= size) index.total = { size, lastSeq: cursor.seq };
 		if (index.witnessEnd !== index.completeEnd) {
-			index.witness = await readWitness(path, index.completeEnd);
+			index.witness = await witnessAt(file, index.completeEnd);
 			index.witnessEnd = index.completeEnd;
 		}
 		const lastSeq = index.total?.lastSeq ?? Number.POSITIVE_INFINITY;
-		const throughSeq = stopped ?? Math.min(query.toSeq, lastSeq);
-		return { lastSeq, entries, throughSeq: Math.max(throughSeq, fromSeq - 1) };
+		if (!reads) return { lastSeq, entries, throughSeq: fromSeq - 1 };
+		return { lastSeq, entries, throughSeq: Math.max(stopped ?? Math.min(query.toSeq, lastSeq), fromSeq - 1) };
 	}
 
 	loadFile(path: string): Promise<SessionSnapshot> {
@@ -1429,19 +1565,7 @@ export class JsonlSessionStore implements SessionStore {
 	private async readFirstLine(path: string, firstReadBytes = HEADER_READ_CHUNK_BYTES): Promise<StoredSessionHeader> {
 		const file = await open(path, "r");
 		try {
-			const chunks: Buffer[] = [];
-			for (let length = firstReadBytes; ; length = HEADER_READ_CHUNK_BYTES) {
-				const buffer = Buffer.allocUnsafe(length);
-				const { bytesRead } = await file.read(buffer, 0, length, null);
-				if (!bytesRead) break;
-				const newline = buffer.subarray(0, bytesRead).indexOf(10);
-				chunks.push(buffer.subarray(0, newline === -1 ? bytesRead : newline));
-				if (newline !== -1) break;
-			}
-			const value = JSON.parse(Buffer.concat(chunks).toString("utf8")) as JsonValue;
-			return value !== null && typeof value === "object" && !Array.isArray(value)
-				? (value as StoredSessionHeader)
-				: {};
+			return await readFirstLineFrom(file, firstReadBytes);
 		} finally {
 			await file.close();
 		}
@@ -1655,6 +1779,9 @@ export class JsonlSessionStore implements SessionStore {
 					terminated: bytes.at(end - 1) === 10,
 					torn,
 					witness: witnessOf(bytes.subarray(0, end)),
+					...(state.summaryState === undefined
+						? {}
+						: { summaryState: applySessionSummaryEntries(state.summaryState, entries).state }),
 				};
 				this.fileStates.set(path, state);
 			}
@@ -1735,6 +1862,26 @@ async function readFrom(
 		read += bytesRead;
 	}
 	return bytes;
+}
+
+async function readFirstLineFrom(
+	file: FileHandle,
+	firstReadBytes: number,
+	start: number | null = null,
+): Promise<StoredSessionHeader> {
+	const chunks: Buffer[] = [];
+	let position = start;
+	for (let length = firstReadBytes; ; length = HEADER_READ_CHUNK_BYTES) {
+		const buffer = Buffer.allocUnsafe(length);
+		const { bytesRead } = await file.read(buffer, 0, length, position);
+		if (!bytesRead) break;
+		if (position !== null) position += bytesRead;
+		const newline = buffer.subarray(0, bytesRead).indexOf(10);
+		chunks.push(buffer.subarray(0, newline === -1 ? bytesRead : newline));
+		if (newline !== -1) break;
+	}
+	const value = JSON.parse(Buffer.concat(chunks).toString("utf8")) as JsonValue;
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as StoredSessionHeader) : {};
 }
 
 async function readBytes(path: string, position: number, length: number): Promise<Buffer> {

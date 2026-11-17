@@ -1,11 +1,11 @@
 import { setImmediate } from "node:timers";
-import type { SessionEntry } from "../session-manager-types.ts";
+import type { SessionEntry } from "../session-manager-types.js";
 import {
 	MAX_INDEXED_ENTRY_CHARS,
 	SEARCH_PART_CHARS,
 	SEARCH_PART_OVERLAP,
 	splitSearchTextParts,
-} from "../storage/session/session-search-index.ts";
+} from "../storage/session/session-search-index.js";
 import type {
 	SessionEntriesPage,
 	SessionEntryAt,
@@ -13,17 +13,17 @@ import type {
 	SessionSearchText,
 	SessionStore,
 } from "../storage/session/types.js";
-import { isMultilineSearchPattern, type LiteralQuery } from "./history-literals.ts";
+import { isMultilineSearchPattern, type LiteralQuery } from "./history-literals.js";
 import {
 	type MultilineSpan,
 	matchLinesInWorker,
 	matchMultilineInWorker,
 	renderRawEntryInWorker,
 	type WorkerOutlineInfo,
-} from "./history-regex-worker.ts";
-import { entryLines, timestamp } from "./history-transcript.ts";
-import { formatSearchTextLine, type InternalSearchRequest, normalizeSearchPattern } from "./resource-selectors.ts";
-import { loadNativeSearchBinding } from "./search-native.ts";
+} from "./history-regex-worker.js";
+import { entryLines, timestamp } from "./history-transcript.js";
+import { formatSearchTextLine, type InternalSearchRequest, normalizeSearchPattern } from "./resource-selectors.js";
+import { loadNativeSearchBinding } from "./search-native.js";
 
 export interface HistoryBudget {
 	readonly bytes: number;
@@ -69,7 +69,7 @@ export class HistoryDeadlineError extends Error {
 	}
 }
 
-export function isHistoryDeadlineError(error: unknown): boolean {
+export function isHistoryDeadlineError<T>(error: T): boolean {
 	return error instanceof HistoryDeadlineError;
 }
 
@@ -203,23 +203,24 @@ export function lineBytes(line: string): number {
 	return Buffer.byteLength(line, "utf8") + 1;
 }
 
+function isSplitSurrogatePair(text: string, end: number): boolean {
+	if (end <= 0 || end >= text.length) return false;
+	const high = text.charCodeAt(end - 1);
+	const low = text.charCodeAt(end);
+	return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
+}
+
 export function cutTextToUtf8Bytes(text: string, maxBytes: number): string {
-	if (text.length === 0) return "";
-	let low = 1;
-	let high = Math.min(text.length, Math.max(1, maxBytes));
+	if (text.length === 0 || maxBytes <= 0) return "";
+	let low = 0;
+	let high = Math.min(text.length, maxBytes);
 	while (low < high) {
 		const mid = (low + high + 1) >> 1;
 		if (Buffer.byteLength(text.slice(0, mid), "utf8") <= maxBytes) low = mid;
 		else high = mid - 1;
 	}
 	let end = low;
-	if (end > 1 && end < text.length) {
-		const code = text.charCodeAt(end - 1);
-		if (code >= 0xd800 && code <= 0xdbff) end--;
-	} else if (end === 1 && text.length >= 2) {
-		const code = text.charCodeAt(0);
-		if (code >= 0xd800 && code <= 0xdbff) end = 2;
-	}
+	if (isSplitSurrogatePair(text, end)) end--;
 	return text.slice(0, end);
 }
 
@@ -252,9 +253,17 @@ export function renderedLines(entry: SessionEntry): string[] {
 	return entryLines(entry).flatMap((line) => line.split("\n"));
 }
 
+function sliceCodePoints(text: string, limit: number): string {
+	if (limit <= 0 || text.length === 0) return "";
+	if (text.length <= limit) return text;
+	let end = limit;
+	if (isSplitSurrogatePair(text, end)) end--;
+	return text.slice(0, end);
+}
+
 export function oneLine(text: string, limit: number): string {
 	const flat = text.replace(/\s+/g, " ").trim();
-	return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
+	return flat.length > limit ? `${sliceCodePoints(flat, limit)}…` : flat;
 }
 
 export interface RenderedEntry {
@@ -494,7 +503,8 @@ class RangeReader {
 			const size = lineBytes(text);
 			if (!this.budget.fits(size)) {
 				if (this.emitted) return { seq, line, char: charOffset, reason: "byte" };
-				const piece = cutTextToUtf8Bytes(text, Math.max(1, this.budget.bytesAvailable()));
+				const piece = cutTextToUtf8Bytes(text, this.budget.bytesAvailable() - 1);
+				if (piece.length === 0) return { seq, line, char: charOffset, reason: "byte" };
 				this.write(piece);
 				this.emitted = true;
 				const nextChar = charOffset + piece.length;
@@ -569,13 +579,11 @@ const COUNT_LABELS = [
 ] as const;
 type CountKey = (typeof COUNT_LABELS)[number][0];
 
-function messageText(content: unknown): string {
+function messageText(content: string | readonly { readonly type?: string; readonly text?: string }[]): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 	return content
-		.flatMap((block: { type?: string; text?: unknown }) =>
-			block.type === "text" && typeof block.text === "string" ? [block.text] : [],
-		)
+		.flatMap((block) => (block.type === "text" && typeof block.text === "string" ? [block.text] : []))
 		.join(" ");
 }
 
@@ -649,11 +657,19 @@ function formatCountsLine(fromSeq: number, covered: number, counts: ReadonlyMap<
 	}`;
 }
 
+function formatOutlineCursor(resumeSeq: number, pendingSeq?: number): string {
+	if (pendingSeq !== undefined && pendingSeq > 0 && pendingSeq < resumeSeq) {
+		return `${resumeSeq}.0.0.${pendingSeq}`;
+	}
+	return String(resumeSeq);
+}
+
 export async function outlineSession(
 	place: SessionPlace,
 	headerLines: readonly string[],
 	fromSeq: number,
 	budget: HistoryCallBudget,
+	pendingSeq?: number,
 ): Promise<string> {
 	const pager = entryPager(place.store, place.sessionId);
 	const counts = new Map<CountKey, number>();
@@ -664,34 +680,70 @@ export async function outlineSession(
 	let lastSeq = Number.POSITIVE_INFINITY;
 	let pos = fromSeq;
 	let stopped:
-		| { reason: BudgetStop; coveredSeq: number; resumeSeq: number; usedCounts: ReadonlyMap<CountKey, number> }
+		| {
+				reason: BudgetStop;
+				coveredSeq: number;
+				resumeSeq: number;
+				resumePendingSeq?: number;
+				usedCounts: ReadonlyMap<CountKey, number>;
+		  }
 		| undefined;
 	const headingReserve = 300;
 	const formatItem = (item: OutlineItem, endSeq: number): string =>
 		`${place.urlWith({}, [{ start: item.seq, end: endSeq }])} | ${item.at} | ${item.kind}: ${item.preview}`;
+	const stopAt = (reason: BudgetStop, stopSeq: number): void => {
+		if (pending !== undefined && pending.seq > fromSeq) {
+			stopped = {
+				reason,
+				coveredSeq: pending.seq - 1,
+				resumeSeq: pending.seq,
+				usedCounts: countsBeforePending,
+			};
+			pending = undefined;
+			return;
+		}
+		const resumePendingSeq = pending !== undefined ? pending.seq : undefined;
+		pending = undefined;
+		stopped = {
+			reason,
+			coveredSeq: stopSeq - 1,
+			resumeSeq: stopSeq,
+			...(resumePendingSeq !== undefined && resumePendingSeq < stopSeq ? { resumePendingSeq } : {}),
+			usedCounts: counts,
+		};
+	};
 
 	budget.holdProgressFloor();
+	if (pendingSeq !== undefined && pendingSeq > 0 && pendingSeq < fromSeq) {
+		let pendingPage: SessionEntriesPage | undefined;
+		try {
+			pendingPage = await pager.page(pendingSeq, pendingSeq, budget);
+		} catch (error) {
+			if (isHistoryDeadlineError(error)) {
+				pending = { seq: pendingSeq, at: "", kind: "user", preview: "" };
+				stopAt("time", fromSeq);
+			} else {
+				throw error;
+			}
+		}
+		if (pendingPage !== undefined) {
+			lastSeq = pendingPage.lastSeq;
+			const pendingEntry = pendingPage.entries.find((item) => item.seq === pendingSeq);
+			if (pendingEntry !== undefined) {
+				const info = await classifyEntryAt(pendingEntry, budget);
+				if ("timedOut" in info) {
+					pending = { seq: pendingSeq, at: "", kind: "user", preview: "" };
+					stopAt("time", fromSeq);
+				} else if (info.item !== undefined) {
+					pending = { seq: pendingSeq, ...info.item };
+				}
+			}
+		}
+	}
 	while (pos <= lastSeq && stopped === undefined) {
 		const reason = budget.spent();
 		if (reason && pos > fromSeq) {
-			if (pending !== undefined) {
-				const line = formatItem(pending, pos - 1);
-				if (budget.fits(headingReserve + itemBytes + lineBytes(line))) {
-					itemLines.push(line);
-					itemBytes += lineBytes(line);
-					pending = undefined;
-				} else {
-					stopped = {
-						reason: "byte",
-						coveredSeq: pending.seq - 1,
-						resumeSeq: pending.seq,
-						usedCounts: countsBeforePending,
-					};
-					pending = undefined;
-					break;
-				}
-			}
-			stopped = { reason, coveredSeq: pos - 1, resumeSeq: pos, usedCounts: counts };
+			stopAt(reason, pos);
 			break;
 		}
 		let page: SessionEntriesPage;
@@ -699,7 +751,7 @@ export async function outlineSession(
 			page = await pager.page(pos, pos + budget.rowAllowance(OUTLINE_PAGE_SEQS) - 1, budget);
 		} catch (error) {
 			if (isHistoryDeadlineError(error)) {
-				stopped = { reason: "time", coveredSeq: Math.max(fromSeq, pos - 1), resumeSeq: pos, usedCounts: counts };
+				stopAt("time", pos);
 				break;
 			}
 			throw error;
@@ -714,25 +766,18 @@ export async function outlineSession(
 			prevSeq = entryAt.seq;
 			const info = await classifyEntryAt(entryAt, budget);
 			if ("timedOut" in info) {
-				stopped = {
-					reason: "time",
-					coveredSeq: Math.max(fromSeq, entryAt.seq - 1),
-					resumeSeq: entryAt.seq,
-					usedCounts: counts,
-				};
+				stopAt("time", entryAt.seq);
 				break;
 			}
 			if (info.item !== undefined) {
 				if (pending !== undefined) {
 					const line = formatItem(pending, entryAt.seq - 1);
-					if (!budget.fits(headingReserve + itemBytes + lineBytes(line)) && itemLines.length > 0) {
-						stopped = {
-							reason: "byte",
-							coveredSeq: pending.seq - 1,
-							resumeSeq: pending.seq,
-							usedCounts: countsBeforePending,
-						};
-						pending = undefined;
+					if (
+						!budget.fits(headingReserve + itemBytes + lineBytes(line)) &&
+						itemLines.length > 0 &&
+						pending.seq > fromSeq
+					) {
+						stopAt("byte", entryAt.seq);
 						break;
 					}
 					itemLines.push(line);
@@ -753,21 +798,16 @@ export async function outlineSession(
 		await budget.pace();
 	}
 	if (fromSeq > lastSeq) return `Requested entry ${fromSeq} is beyond end of session (${lastSeq} entries total).`;
-	if (pending !== undefined) {
-		const line = formatItem(pending, stopped?.coveredSeq ?? pos - 1);
-		if (!budget.fits(headingReserve + itemBytes + lineBytes(line)) && itemLines.length > 0) {
-			stopped = {
-				reason: "byte",
-				coveredSeq: pending.seq - 1,
-				resumeSeq: pending.seq,
-				usedCounts: countsBeforePending,
-			};
+	if (stopped === undefined && pending !== undefined) {
+		const line = formatItem(pending, pos - 1);
+		if (!budget.fits(headingReserve + itemBytes + lineBytes(line)) && itemLines.length > 0 && pending.seq > fromSeq) {
+			stopAt("byte", pos);
 		} else {
 			itemLines.push(line);
 			itemBytes += lineBytes(line);
 		}
 	}
-	const covered = stopped ? Math.max(fromSeq, stopped.coveredSeq) : pos - 1;
+	const covered = stopped ? stopped.coveredSeq : pos - 1;
 	const activeCounts = stopped ? stopped.usedCounts : counts;
 	const totalText = Number.isFinite(lastSeq) ? `${lastSeq} entries, ` : "";
 	const ofTotal = Number.isFinite(lastSeq) ? ` of ${lastSeq}` : "";
@@ -778,14 +818,17 @@ export async function outlineSession(
 					...headerLines.slice(1),
 				]
 			: [`# session ${place.sessionId} outline from entry ${fromSeq}${ofTotal}`]),
-		formatCountsLine(fromSeq, covered, activeCounts),
+		...(covered >= fromSeq ? [formatCountsLine(fromSeq, covered, activeCounts)] : []),
 		...itemLines,
 	];
 	if (stopped !== undefined) {
 		const verb = stopped.reason === "byte" ? "lists" : "covers";
-		out.push(
-			`[outline ${verb} entries ${fromSeq}-${covered}${ofTotal}; ${stopText(stopped.reason)}; continue with ${place.urlWith({ cursor: String(stopped.resumeSeq) })}]`,
-		);
+		const cursor = formatOutlineCursor(stopped.resumeSeq, stopped.resumePendingSeq);
+		const progressText =
+			covered >= fromSeq
+				? `outline ${verb} entries ${fromSeq}-${covered}${ofTotal}`
+				: `outline up to entry ${fromSeq}${ofTotal}`;
+		out.push(`[${progressText}; ${stopText(stopped.reason)}; continue with ${place.urlWith({ cursor })}]`);
 	}
 	budget.spend(out.reduce((sum, line) => sum + lineBytes(line), 0));
 	return out.join("\n");
@@ -875,24 +918,22 @@ export function selectRegexEngine(
 	multiline: boolean,
 ): RegexEngine {
 	if (literal) return "literal";
-	let jsError: unknown;
 	try {
 		new RegExp(normalized.pattern, normalized.flags);
 		return "both";
 	} catch (error) {
-		jsError = error;
+		try {
+			const native = loadNativeSearchBinding()?.search?.("", {
+				pattern: normalized.flags.includes("s") ? `(?s)${normalized.pattern}` : normalized.pattern,
+				ignoreCase: normalized.flags.includes("i"),
+				multiline,
+				contextBefore: 0,
+				contextAfter: 0,
+			});
+			if (native && !native.error) return "native-only";
+		} catch {}
+		throw error;
 	}
-	try {
-		const native = loadNativeSearchBinding()?.search?.("", {
-			pattern: normalized.flags.includes("s") ? `(?s)${normalized.pattern}` : normalized.pattern,
-			ignoreCase: normalized.flags.includes("i"),
-			multiline,
-			contextBefore: 0,
-			contextAfter: 0,
-		});
-		if (native && !native.error) return "native-only";
-	} catch {}
-	throw jsError;
 }
 
 function lineNumberAt(newlines: readonly number[], index: number): number {
@@ -998,6 +1039,7 @@ class SessionSearcher {
 	private lastEmitted = { seq: 0, line: -1 };
 	private emittedAny = false;
 	private windowCut = false;
+	private windowRowsLeft = WINDOW_MAX_SEQS + 2 * CONTEXT_SPAN_SEQS;
 
 	constructor(search: SessionSearchRequest) {
 		this.search = search;
@@ -1143,7 +1185,7 @@ class SessionSearcher {
 	private async cacheEntryPage(fromSeq: number, toSeq: number): Promise<"ok" | "timedOut"> {
 		const from = Math.max(1, fromSeq);
 		const { budget } = this.search;
-		const rowsLeft = budget.spent() === undefined ? budget.rowAllowance(PAGE_SEQS) : PAGE_SEQS;
+		const rowsLeft = !this.multiline && budget.spent() === undefined ? budget.rowAllowance(PAGE_SEQS) : PAGE_SEQS;
 		const to = Math.min(this.lastSeq, toSeq, from + rowsLeft - 1);
 		if (from > to) return "ok";
 		let page: SessionEntriesPage;
@@ -1153,7 +1195,14 @@ class SessionSearcher {
 			if (isHistoryDeadlineError(error)) return "timedOut";
 			throw error;
 		}
-		budget.takeRows(page.throughSeq - from + 1);
+		const span = page.throughSeq - from + 1;
+		if (this.multiline) {
+			const coveredByWindow = Math.min(this.windowRowsLeft, span);
+			this.windowRowsLeft -= coveredByWindow;
+			if (span > coveredByWindow) budget.takeRows(span - coveredByWindow);
+		} else {
+			budget.takeRows(span);
+		}
 		let prev = from - 1;
 		for (const item of page.entries) {
 			for (let s = prev + 1; s < item.seq; s++) this.rememberEntry(s, null);
@@ -1277,21 +1326,32 @@ class SessionSearcher {
 				return { stop: { reason: "time", resume: { seq: pos, matchIndex: 0 } } };
 			}
 		}
-		const span = page.throughSeq - pos + 1;
-		budget.takeRows(span);
 		if (this.multiline) {
+			let chargedThrough = pos - 1;
 			for (const entry of rendered) {
+				if (entry.seq - 1 > chargedThrough) {
+					budget.takeRows(entry.seq - 1 - chargedThrough);
+					chargedThrough = entry.seq - 1;
+					this.coveredThroughSeq = chargedThrough;
+					this.countedThrough = chargedThrough;
+				}
 				const reason = budget.spent();
 				if (reason && (this.emittedAny || this.coveredThroughSeq >= this.coveredFromSeq))
 					return { stop: { reason, resume: { seq: entry.seq, matchIndex: 0 } } };
 				const step = await this.scanMultilineEntry(entry);
+				budget.takeRows(1);
+				chargedThrough = entry.seq;
 				if (step !== undefined) return { stop: step };
 				this.coveredThroughSeq = entry.seq;
 				this.countedThrough = entry.seq;
 				this.markExamined();
 				await budget.pace();
 			}
+			if (page.throughSeq > chargedThrough) {
+				budget.takeRows(page.throughSeq - chargedThrough);
+			}
 		} else {
+			budget.takeRows(page.throughSeq - pos + 1);
 			const pageMatches = await this.matchBatchEntries(rendered);
 			for (const entry of rendered) {
 				const matched = pageMatches.bySeq.get(entry.seq);
@@ -1486,7 +1546,17 @@ class SessionSearcher {
 					...(sliceStart > 0 ? { lineOffset: sliceStart } : {}),
 				},
 			});
-			const left = this.lookbehind ? await this.leftContext(entry, sliceStart) : [];
+			const left = this.lookbehind
+				? await this.leftContext(entry, sliceStart)
+				: sliceStart > 0
+					? [
+							{
+								seq: entry.seq,
+								lines: entry.sliceLines(sliceStart - 1, sliceStart - 1),
+								lineOffset: sliceStart - 1,
+							},
+						]
+					: [];
 			if (typeof left === "string") return sliceStop(left);
 			const ahead = await this.lookahead(entry, sliceEnd);
 			if (typeof ahead === "string") return sliceStop(ahead);

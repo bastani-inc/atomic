@@ -347,10 +347,13 @@ export function failingHistoryStore(store: SessionStore): { store: SessionStore;
 				};
 	const proxy = new Proxy(store, {
 		get(target, property) {
-			if (property === "load" || property === "readEntryRange") {
-				const read = Reflect.get(target, property, target) as ((...args: never[]) => Promise<unknown>) | undefined;
+			if (property === "load")
+				return (...args: Parameters<SessionStore["load"]>) => (armed ? unavailable() : target.load(...args));
+			if (property === "readEntryRange") {
+				const read = target.readEntryRange;
 				if (read === undefined) return undefined;
-				return (...args: never[]) => (armed ? unavailable() : read.apply(target, args));
+				return (...args: Parameters<NonNullable<SessionStore["readEntryRange"]>>) =>
+					armed ? unavailable() : read.call(target, ...args);
 			}
 			if (property === "searchIndex") return failingIndex;
 			const value = Reflect.get(target, property, target);

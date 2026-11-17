@@ -2,6 +2,7 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import { getErrnoCode } from "../../tools/errno.ts";
 import { SessionSpillError, type SessionSpillErrorCode, type SessionSpillErrorFields } from "../errors.js";
 import { sha256Hex } from "./blob-hash.js";
+import { EntryTypeReader } from "./entry-type.js";
 import {
 	SessionConflictError,
 	SessionExistsError,
@@ -61,6 +62,7 @@ export const SPILL_BLOCK_BYTES = 64 * 1024;
 const FNV_OFFSET = 0x811c9dc5;
 const SCAN_WINDOW_BYTES = 1024 * 1024;
 const RAW_CHUNK_BYTES = 1024 * 1024;
+const TYPE_WINDOW_BYTES = 64 * 1024;
 const STUB_ENTRY: SessionEntry = {
 	type: "custom",
 	id: "",
@@ -453,6 +455,8 @@ export class MemorySessionStore implements SessionStore {
 			const fromSeq = Math.max(1, query.fromSeq);
 			let throughSeq = Math.min(query.toSeq, lastSeq);
 			if (fromSeq > throughSeq) return { lastSeq, entries: [], throughSeq: Math.max(throughSeq, fromSeq - 1) };
+			if (query.maxChars !== undefined && query.maxChars <= 0)
+				return { lastSeq, entries: [], throughSeq: fromSeq - 1 };
 			const [start] = this.spanOf(held, fromSeq, fromSeq);
 			if (query.maxChars !== undefined) {
 				for (let seq = fromSeq; seq < throughSeq; seq++) {
@@ -486,6 +490,16 @@ export class MemorySessionStore implements SessionStore {
 		for (let seq = fromSeq; seq <= throughSeq; ) {
 			if (oversized(seq)) {
 				const [entryStart, entryEnd] = this.spanOf(held, seq, seq);
+				if (skipped !== undefined && skipped.size > 0) {
+					const typed = await this.whileHeld(sessionId, record, held, () =>
+						this.typeOf(sessionId, held, entryStart, entryEnd, [...skipped], query.signal),
+					);
+					if (typed === undefined) return undefined;
+					if (typed.type !== undefined && skipped.has(typed.type)) {
+						seq++;
+						continue;
+					}
+				}
 				const rawChunks = await this.whileHeld(sessionId, record, held, () =>
 					this.chunksOf(sessionId, held, entryStart, entryEnd, query.signal),
 				);
@@ -509,6 +523,30 @@ export class MemorySessionStore implements SessionStore {
 			seq = last + 1;
 		}
 		return entries;
+	}
+
+	private async typeOf(
+		sessionId: string,
+		held: HeldBytes,
+		start: number,
+		end: number,
+		types: readonly string[],
+		signal: AbortSignal | undefined,
+	): Promise<{ readonly type: string | undefined }> {
+		const reader = new EntryTypeReader(types);
+		const whole =
+			held.directory !== undefined && held.directory.readRange === undefined && start < held.spilledBytes
+				? await this.bytesOf(sessionId, held, start, end)
+				: undefined;
+		for (let offset = start; offset < end && !reader.decided; offset += TYPE_WINDOW_BYTES) {
+			signal?.throwIfAborted();
+			const windowEnd = Math.min(end, offset + TYPE_WINDOW_BYTES);
+			reader.feed(
+				whole?.subarray(offset - start, windowEnd - start) ??
+					(await this.bytesOf(sessionId, held, offset, windowEnd)),
+			);
+		}
+		return { type: reader.finish() };
 	}
 
 	private async chunksOf(

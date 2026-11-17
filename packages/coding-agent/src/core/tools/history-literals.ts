@@ -1,10 +1,11 @@
-import { normalizeSearchPattern } from "./resource-selectors.ts";
+import { normalizeSearchPattern } from "./resource-selectors.js";
 
 export type LiteralQuery = readonly (readonly string[])[];
 
 const MIN_LITERAL_CHARS = 3;
 const MAX_SETS = 16;
 const MAX_LITERALS_PER_SET = 8;
+const MAX_QUANTIFIER_CHARS = 24;
 const MULTILINE_ESCAPE = /\\(?:n|x0*[aA]|u0*00[aA]|u\{0*[aA]\}|c[jJ])/;
 const INLINE_MULTILINE_FLAG = /\(\?[imsUx-]*[ms]/;
 
@@ -107,21 +108,43 @@ class PatternReader {
 	}
 
 	private quantifier(): number | undefined {
+		const minimum = this.repetition();
+		if (minimum !== undefined && this.peek() === "{" && this.braceBounds() !== undefined)
+			throw new UnsupportedPattern();
+		return minimum;
+	}
+
+	private repetition(): number | undefined {
 		const next = this.peek();
 		let minimum: number | undefined;
 		if (next === "*" || next === "?") minimum = 0;
 		else if (next === "+") minimum = 1;
 		else if (next === "{") {
-			const bounds = /^\{(\d+)(?:,(\d*))?\}/.exec(this.chars.slice(this.index, this.index + 24).join(""));
-			if (!bounds) return undefined;
-			this.index += Array.from(bounds[0]).length;
-			minimum = Number(bounds[1]);
-			if (this.peek() === "?") this.index++;
-			return minimum;
+			const bounds = this.braceBounds();
+			if (bounds === undefined) return undefined;
+			this.index += bounds.length - 1;
+			minimum = bounds.minimum;
 		} else return undefined;
 		this.index++;
 		if (this.peek() === "?") this.index++;
 		return minimum;
+	}
+
+	private braceBounds(): { readonly length: number; readonly minimum: number } | undefined {
+		const isDigit = (char: string | undefined) => char !== undefined && char >= "0" && char <= "9";
+		const digitsFrom = this.index + 1;
+		let at = digitsFrom;
+		while (isDigit(this.chars[at])) at++;
+		if (at === digitsFrom) return undefined;
+		const minimum = Number(this.chars.slice(digitsFrom, at).join(""));
+		if (this.chars[at] === ",") {
+			at++;
+			while (isDigit(this.chars[at])) at++;
+		}
+		if (this.chars[at] !== "}") return undefined;
+		const length = at + 1 - this.index;
+		if (length > MAX_QUANTIFIER_CHARS) throw new UnsupportedPattern();
+		return { length, minimum };
 	}
 
 	private atom(): { kind: "char"; char: string } | { kind: "group"; requirement: Requirement } | { kind: "any" } {
@@ -150,33 +173,35 @@ class PatternReader {
 
 	private escape(): { kind: "char"; char: string } | { kind: "any" } {
 		const char = this.consume();
+		if (char === "<" || char === ">") return { kind: "any" };
 		if (/^[^A-Za-z0-9]$/.test(char)) return { kind: "char", char };
 		if (char === "t") return { kind: "char", char: "\t" };
 		if (/^[0-9]$/.test(char)) {
 			while (/^[0-9]$/.test(this.peek() ?? "")) this.index++;
 			return { kind: "any" };
 		}
-		if (char === "x" || char === "u") {
+		if (char === "x" || char === "u" || char === "U") {
+			const digits = char === "x" ? 2 : char === "u" ? 4 : 8;
 			if (this.peek() === "{") this.skipPast("}");
-			else
-				for (let digits = 0; digits < (char === "x" ? 2 : 4) && /^[0-9A-Fa-f]$/.test(this.peek() ?? ""); digits++)
-					this.index++;
+			else for (let read = 0; read < digits && /^[0-9A-Fa-f]$/.test(this.peek() ?? ""); read++) this.index++;
 			return { kind: "any" };
 		}
 		if (char === "p" || char === "P") {
 			if (this.peek() === "{") this.skipPast("}");
-			else this.consume();
+			else this.controlOrPropertyLetter();
 			return { kind: "any" };
 		}
 		if (char === "k" && this.peek() === "<") {
 			this.skipPast(">");
 			return { kind: "any" };
 		}
-		if (char === "c") {
-			this.consume();
-			return { kind: "any" };
-		}
+		if (char === "c") this.controlOrPropertyLetter();
 		return { kind: "any" };
+	}
+
+	private controlOrPropertyLetter(): void {
+		if (!/^[A-Za-z]$/.test(this.peek() ?? "")) throw new UnsupportedPattern();
+		this.index++;
 	}
 
 	private skipPast(closing: string): void {

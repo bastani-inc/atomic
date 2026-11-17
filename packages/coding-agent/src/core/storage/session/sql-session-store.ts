@@ -29,7 +29,7 @@ import {
 	sessionTailFrom,
 	stateSeqsBefore,
 } from "./session-resume.js";
-import { SqlSessionSearchIndex, yieldTurn } from "./session-search-index.ts";
+import { SqlSessionSearchIndex, yieldTurn } from "./session-search-index.js";
 import {
 	applySessionSummaryEntries,
 	materializeSessionSummaryMetadata,
@@ -137,6 +137,11 @@ type ListingRow = HeaderRow & {
 	revision: string;
 };
 type SummaryRow = ListingRow & { search_texts_json: string };
+type ListingWindowRow = ListingRow & {
+	upto: number | bigint | null;
+	ord: number | bigint | null;
+	fetched: number | bigint | null;
+};
 /** A row's key and how many characters its stored text holds, for reading rows in pages. */
 type SizedRow = SqliteRow & { size: number | bigint | null };
 /** Cumulative text (0 when the whole batch fits), batch text, and batch row count including lookahead. */
@@ -677,6 +682,7 @@ export class SqlSessionStore implements SessionStore {
 		const fromSeq = Math.max(1, query.fromSeq);
 		const toSeq = Math.min(query.toSeq, lastSeq);
 		if (fromSeq > toSeq) return { lastSeq, entries: [], throughSeq: Math.max(toSeq, fromSeq - 1) };
+		if (query.maxChars !== undefined && query.maxChars <= 0) return { lastSeq, entries: [], throughSeq: fromSeq - 1 };
 		const skippedSet = query.skipTypes === undefined ? undefined : new Set(query.skipTypes);
 		const skippedPrefixes = (query.skipTypes ?? []).map((type) => `{"type":${JSON.stringify(type)},`);
 		const largeBytes = query.largeEntryBytes ?? 0x7fffffff;
@@ -687,6 +693,7 @@ export class SqlSessionStore implements SessionStore {
 				entry_head: string;
 				chunks: number | bigint;
 				remaining: number | bigint;
+				entry_type: string | null;
 			}
 		>(
 			`WITH sized AS (
@@ -701,7 +708,9 @@ export class SqlSessionStore implements SessionStore {
 				FROM sized
 			)
 			SELECT p.seq, CASE WHEN p.chunks = 0 AND p.raw_bytes <= ? THEN e.entry_json END AS entry_json,
-				substr(e.entry_json, 1, 64) AS entry_head, p.chunks, p.remaining
+				substr(e.entry_json, 1, 64) AS entry_head, p.chunks, p.remaining,
+				CASE WHEN p.chunks = 0 AND p.raw_bytes > ? AND substr(e.entry_json, 1, 8) <> '{"type":'
+					THEN ${this.dialect.jsonText("e.entry_json", "type")} END AS entry_type
 			FROM paged p
 			JOIN ${this.tables.entries} e ON e.session_id = ? AND e.seq = p.seq
 			WHERE p.before_chars < ?
@@ -710,6 +719,7 @@ export class SqlSessionStore implements SessionStore {
 			sessionId,
 			fromSeq,
 			toSeq,
+			largeBytes,
 			largeBytes,
 			sessionId,
 			query.maxChars ?? Number.MAX_SAFE_INTEGER,
@@ -722,16 +732,20 @@ export class SqlSessionStore implements SessionStore {
 			}
 			const seq = Number(row.seq);
 			const chunks = Number(row.chunks);
-			if (chunks > 0 && query.largeEntryBytes !== undefined) {
+			if (chunks > 0) {
 				const rawChunks = await this.readRawEntryChunks(this.database, sessionId, seq, chunks, query.signal);
-				entries.push({ seq, entry: STUB_ENTRY, rawChunks });
+				const bytes = rawChunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+				if (bytes > largeBytes) entries.push({ seq, entry: STUB_ENTRY, rawChunks });
+				else {
+					const parsed = JSON.parse(Buffer.concat(rawChunks).toString("utf8")) as SessionEntry;
+					if (!skippedSet?.has(parsed.type)) entries.push({ seq, entry: parsed });
+				}
 			} else if (row.entry_json === null) {
+				if (row.entry_type !== null && skippedSet?.has(row.entry_type)) continue;
 				const rawChunks = await this.readInlineEntryBytes(sessionId, seq);
 				entries.push({ seq, entry: STUB_ENTRY, rawChunks });
 			} else {
-				const json =
-					chunks === 0 ? row.entry_json : await this.readEntryChunks(this.database, sessionId, seq, chunks);
-				const parsed = JSON.parse(json) as SessionEntry;
+				const parsed = JSON.parse(row.entry_json) as SessionEntry;
 				if (!skippedSet?.has(parsed.type)) entries.push({ seq, entry: parsed });
 			}
 		}
@@ -984,20 +998,40 @@ export class SqlSessionStore implements SessionStore {
 		const scope = await this.scopeOf(query, true);
 		if (scope === undefined) return;
 		const order = this.dialect.rowOrder();
-		const bound = await this.database.get<SqliteRow & { last: number | bigint | null }>(
-			`SELECT max(${order}) AS last FROM ${this.tables.sessions}`,
+		const bound = await this.database.get<SqliteRow & { upper: number | bigint | null }>(
+			`SELECT max(${order}) AS upper FROM ${this.tables.sessions}`,
 		);
-		const last = Number(bound?.last ?? 0);
-		for (let after = 0; after < last; after += LISTING_CWD_PAGE) {
+		const upper = Number(bound?.upper ?? 0);
+		for (let after = 0; after < upper; ) {
 			this.assertListing(query);
-			const rows = await this.database.all<ListingRow>(
-				`SELECT ${LISTING_COLUMNS} FROM ${this.tables.sessions}
-				WHERE (${scope.where}) AND ${order} > ? AND ${order} <= ? ORDER BY ${order}`,
-				...scope.params,
+			const rows = await this.database.all<ListingWindowRow>(
+				`WITH keyed AS MATERIALIZED (
+					SELECT ${order} AS ord FROM ${this.tables.sessions} WHERE ${order} > ? AND ${order} <= ?
+					ORDER BY ${order} LIMIT ?
+				), bound AS (SELECT max(ord) AS upto FROM keyed),
+				scoped AS MATERIALIZED (
+					SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size FROM ${this.tables.sessions}
+					WHERE ${order} > ? AND ${order} <= (SELECT upto FROM bound) AND (${scope.where})
+				), page AS (
+					SELECT ${LISTING_COLUMNS}, ord, count(*) OVER () AS fetched,
+						row_number() OVER (ORDER BY ord) AS page_row, sum(size) OVER (ORDER BY ord) AS page_chars
+					FROM scoped
+				)
+				SELECT bound.upto, page.* FROM bound LEFT JOIN page ON page.page_chars <= ? OR page.page_row = 1
+				ORDER BY page.ord`,
 				after,
-				after + LISTING_CWD_PAGE,
+				upper,
+				LISTING_CWD_PAGE,
+				after,
+				...scope.params,
+				SESSION_READ_PAGE_CHARS,
 			);
-			for (const row of rows) if (scope.inScope(row)) yield summaryFromRow({ ...row, search_texts_json: "[]" });
+			const upto = rows[0]?.upto;
+			if (upto === null || upto === undefined) break;
+			const listed = rows.filter((row) => row.ord !== null);
+			for (const row of listed) if (scope.inScope(row)) yield summaryFromRow({ ...row, search_texts_json: "[]" });
+			const last = listed.at(-1);
+			after = last !== undefined && listed.length < Number(last.fetched) ? Number(last.ord) : Number(upto);
 			await yieldTurn();
 		}
 		this.assertListing(query);
