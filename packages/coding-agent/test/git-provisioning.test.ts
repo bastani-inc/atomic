@@ -858,10 +858,12 @@ describe("git resolution (#4322)", () => {
 		assert.equal(tools.getGitStatus().source, "unavailable");
 	});
 
-	it("sweeps without a warning when another process removes an abandoned tree after it was listed", async () => {
+	it("sweeps without a warning when another process removes an abandoned tree after it was listed (#5332)", async () => {
 		const executable = makeProvisionedGit("2.56.0");
 		const binDir = join(agentDir, "bin");
-		const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
+		const exited = await keptExitedPid();
+		onTestFinished(() => exited.release());
+		const exitedPid = exited.pid;
 		const abandoned = join(binDir, `.git-staging-${hostTag()}-${exitedPid}-1`);
 		mkdirSync(abandoned, { recursive: true });
 		const actualFs = mocks.actualFs!;
@@ -879,6 +881,10 @@ describe("git resolution (#4322)", () => {
 		assert.deepEqual(statuses, []);
 		assert.equal(fetchMock.mock.calls.length, 0);
 		assert.equal(existsSync(abandoned), false);
+		assert.ok(
+			mocks.rmSync.mock.calls.some(([path]) => path === abandoned),
+			"the sweep attempted the listed tree",
+		);
 	});
 
 	it.each([

@@ -714,8 +714,8 @@ describe("socket replacement lock (#3505)", () => {
 				`const { existsSync, writeFileSync, rmSync } = require("node:fs");
 				writeFileSync(${JSON.stringify(liveReady)}, "");
 				const clear = () => {
-					rmSync(${JSON.stringify(liveToken)}, { force: true });
 					rmSync(${JSON.stringify(liveLock)}, { force: true });
+					rmSync(${JSON.stringify(liveToken)}, { force: true });
 					process.exit(0);
 				};
 				let fallback;

@@ -44,7 +44,22 @@ export async function keptExitedPid(): Promise<KeptExitedPid> {
 }
 
 export async function keepProcessPid(child: ChildProcess): Promise<() => Promise<void>> {
-	const pid = childPidWhileNodeOwnsHandle(child);
+	return keepWindowsProcessPid(childPidWhileNodeOwnsHandle(child), () => {
+		childPidWhileNodeOwnsHandle(child);
+	});
+}
+
+export async function keepProcessPidByStartTime(pid: number, creationTime: string): Promise<() => Promise<void>> {
+	assert.match(creationTime, /^[1-9]\d*$/u);
+	return keepWindowsProcessPid(pid, (openedCreationTime) => {
+		assert.equal(openedCreationTime, creationTime, `Process ${pid} start time changed before its PID could be kept`);
+	});
+}
+
+async function keepWindowsProcessPid(
+	pid: number,
+	confirmIdentity: (creationTime: string) => void,
+): Promise<() => Promise<void>> {
 	if (process.platform !== "win32") return async () => {};
 	const holder = spawn(
 		join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
@@ -52,7 +67,7 @@ export async function keepProcessPid(child: ChildProcess): Promise<() => Promise
 			"-NoProfile",
 			"-NonInteractive",
 			"-Command",
-			`$ErrorActionPreference = 'Stop'; $p = [System.Diagnostics.Process]::GetProcessById(${pid}); $null = $p.Handle; [Console]::Out.WriteLine('held'); $null = [Console]::In.ReadLine()`,
+			`$ErrorActionPreference = 'Stop'; $p = [System.Diagnostics.Process]::GetProcessById(${pid}); $null = $p.Handle; [Console]::Out.WriteLine($p.StartTime.ToFileTimeUtc().ToString()); $null = [Console]::In.ReadLine()`,
 		],
 		{ stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
 	);
@@ -68,9 +83,12 @@ export async function keepProcessPid(child: ChildProcess): Promise<() => Promise
 	};
 	try {
 		await new Promise<void>((resolve, reject) => {
-			holder.stdout.once("data", () => {
+			let output = "";
+			holder.stdout.on("data", (chunk: Buffer) => {
+				output += chunk.toString();
+				if (!output.includes("\n")) return;
 				try {
-					childPidWhileNodeOwnsHandle(child);
+					confirmIdentity(output.trim());
 					resolve();
 				} catch (error) {
 					reject(error);

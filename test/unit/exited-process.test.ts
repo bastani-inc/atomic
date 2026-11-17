@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { processCreationTime } from "@bastani/atomic-natives";
 import { afterEach, onTestFinished, test, vi } from "vitest";
-import { keepProcessPid } from "../helpers/exited-process.js";
+import { keepProcessPid, keepProcessPidByStartTime } from "../helpers/exited-process.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const original = await importOriginal<typeof import("node:child_process")>();
@@ -12,6 +13,86 @@ vi.mock("node:child_process", async (importOriginal) => {
 const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
 
 afterEach(() => vi.restoreAllMocks());
+
+for (const matches of [false, true]) {
+	test(`${matches ? "retains" : "refuses"} an opened PID ${matches ? "matching" : "different from"} its recorded start (#5332)`, async () => {
+		const recorded = "134077392000000001";
+		const opened = matches ? recorded : "134077392000000002";
+		const holder = childProcess.spawn(
+			process.execPath,
+			[
+				"-e",
+				`process.stdin.once("data", () => process.stdout.write("${opened}\\n")); process.stdin.once("end", () => process.exit(0));`,
+			],
+			{ stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
+		);
+		const holderClosed = once(holder, "close");
+		onTestFinished(async () => {
+			holder.kill("SIGKILL");
+			await holderClosed;
+		});
+		await once(holder, "spawn");
+		vi.mocked(spawn).mockReturnValueOnce(holder);
+		const platform = Object.getOwnPropertyDescriptor(process, "platform");
+		assert.ok(platform);
+		let keeping: ReturnType<typeof keepProcessPidByStartTime>;
+		try {
+			Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+			keeping = keepProcessPidByStartTime(process.pid, recorded);
+		} finally {
+			Object.defineProperty(process, "platform", platform);
+		}
+		try {
+			const outcome = matches
+				? keeping.then((release) => release())
+				: assert.rejects(keeping, /start time changed before its PID could be kept/u);
+			holder.stdin.write("report\\n");
+			await outcome;
+			assert.equal(holder.exitCode, 0);
+		} finally {
+			await keeping.then(
+				(release) => release(),
+				() => {},
+			);
+		}
+	});
+}
+
+for (const matches of [false, true]) {
+	test(`Windows handle ${matches ? "retains" : "refuses"} a real process by its recorded start (#5332)`, {
+		skip: process.platform !== "win32",
+	}, async () => {
+		const child = childProcess.spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+			stdio: "ignore",
+			windowsHide: true,
+		});
+		const childExited = once(child, "exit");
+		let release = async () => {};
+		onTestFinished(async () => {
+			try {
+				child.kill("SIGKILL");
+				await childExited;
+			} finally {
+				await release();
+			}
+		});
+		await once(child, "spawn");
+		assert.ok(child.pid !== undefined);
+		const recorded = processCreationTime(child.pid);
+		assert.ok(recorded !== null);
+		const keeping = keepProcessPidByStartTime(child.pid, matches ? recorded : String(BigInt(recorded) + 1n));
+		if (matches) {
+			release = await keeping;
+			child.kill("SIGKILL");
+			await childExited;
+			assert.throws(() => process.kill(child.pid!, 0), { code: "ESRCH" });
+		} else {
+			await assert.rejects(keeping, /start time changed before its PID could be kept/u);
+			assert.equal(child.exitCode, null);
+			assert.equal(child.signalCode, null);
+		}
+	});
+}
 
 test("refuses an exited child before its PID can name another process (#5332)", async () => {
 	const child = childProcess.spawn(process.execPath, ["-e", ""], { stdio: "ignore", windowsHide: true });
