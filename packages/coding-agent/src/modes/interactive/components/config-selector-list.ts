@@ -163,6 +163,7 @@ export class ResourceList implements Component, Focusable {
 	private searchInput: Input;
 	private maxVisible = 15;
 	private compactSearch = false;
+	private scrollIndicatorFits = true;
 	private settingsManager: SettingsManager;
 	private cwd: string;
 	private agentDir: string;
@@ -197,7 +198,9 @@ export class ResourceList implements Component, Focusable {
 	}
 	setViewportHeight(height: number): void {
 		this.compactSearch = height < 8;
-		this.maxVisible = Math.max(1, height - (this.compactSearch ? 3 : 7));
+		const searchAndHintRows = this.compactSearch ? 2 : 6;
+		this.scrollIndicatorFits = height - searchAndHintRows >= 2;
+		this.maxVisible = Math.max(1, height - searchAndHintRows - (this.scrollIndicatorFits ? 1 : 0));
 	}
 	getSearchQuery(): string {
 		return this.searchInput.getValue();
@@ -392,7 +395,7 @@ export class ResourceList implements Component, Focusable {
 		for (let i = endIndex; i < this.filteredItems.length; i++) {
 			if (this.filteredItems[i]?.type === "item") below++;
 		}
-		if (above > 0 || below > 0) {
+		if (this.scrollIndicatorFits && (above > 0 || below > 0)) {
 			const parts = [above > 0 ? `↑ ${above} more` : "", below > 0 ? `↓ ${below} more` : ""].filter(Boolean);
 			lines.push(theme.fg("dim", `  ${parts.join(" · ")}`));
 		}

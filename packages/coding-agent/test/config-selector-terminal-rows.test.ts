@@ -66,8 +66,12 @@ describe("atomic config follows the terminal's height", () => {
 			const lines = selector.render(80).map((line) => stripTerminalSequences(line));
 			assert.ok(lines.length <= rows, `rows=${rows}: ${lines.length} lines`);
 			assert.ok(
-				lines.some((line) => line.includes("Global Resources") && line.includes("esc close")),
+				lines.some((line) => line.includes("Global resources")),
 				`rows=${rows}: header`,
+			);
+			assert.ok(
+				lines.some((line) => line.includes("esc close")),
+				`rows=${rows}: key hints`,
 			);
 		}
 		selector.getResourceList().handleInput("\x1b");
