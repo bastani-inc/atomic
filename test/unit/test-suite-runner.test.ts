@@ -303,7 +303,7 @@ const REAL_CONFIG = [
 async function realVitestSuite(
 	files: Record<string, string>,
 	command: string[] | ((directory: string) => string[]),
-	options: { cwd?: string; parentDirectory?: string } = {},
+	options: { cwd?: string; parentDirectory?: string; env?: Record<string, string> } = {},
 ): Promise<{ code: number; output: string; durations: string; lostWorkers: string }> {
 	const dir = mkdtempSync(join(options.parentDirectory ?? root, ".tmp-test-suite-runner-real-"));
 	const diagnostics = join(dir, "diagnostics");
@@ -314,7 +314,7 @@ async function realVitestSuite(
 			[bunExecutable(), runner, "--label", "real suite", "--diagnostics-dir", diagnostics, "--", ...suiteCommand],
 			{
 				cwd: options.cwd ?? dir,
-				env: { ...process.env, GITHUB_STEP_SUMMARY: undefined },
+				env: { ...process.env, GITHUB_STEP_SUMMARY: undefined, ...options.env },
 				stdout: "pipe",
 				stderr: "pipe",
 			},
@@ -495,7 +495,13 @@ test(
 				"agent",
 				join(directory, "suite.test.ts"),
 			],
-			{ cwd: agentDirectory, parentDirectory: join(agentDirectory, "test") },
+			// The coding-agent config leaves scratch suites out of every run but one that asks for them, so a run globbing
+			// that suite in this checkout meanwhile does not collect this one.
+			{
+				cwd: agentDirectory,
+				parentDirectory: join(agentDirectory, "test"),
+				env: { ATOMIC_TEST_COLLECT_SCRATCH_SUITES: "1" },
+			},
 		);
 		assert.notEqual(result.code, 0);
 		assert.match(result.output, /Worker exited unexpectedly/);
