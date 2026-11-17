@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import { Selector, type SelectorOptions } from "@bastani/atomic";
 import { getKeybindings } from "@bastani/atomic-tui";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
@@ -14,7 +15,9 @@ import { resolveRunIdTarget } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { store as defaultStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
+import type { WorkflowDefinition } from "../shared/types.js";
 import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
+import { workflowDefinitionSource, workflowSource } from "../shared/workflow-source.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
 import { definitionDigest } from "../workers/definitions.js";
@@ -82,50 +85,112 @@ export function isEditedEntryModuleRefusal(message: string | undefined): boolean
 	) {
 		return true;
 	}
-	const sinceRoot = /Since root [^ ]+ started, ([^.]+)\./i.exec(message);
-	if (sinceRoot) {
-		const parts = sinceRoot[1]!
-			.split(";")
-			.map((part) => part.trim())
-			.filter(Boolean);
-		return (
-			parts.length > 0 &&
-			parts.every((part) => /^the entry module of (?:worker|workflow) definition .+ was edited\b/i.test(part))
-		);
-	}
+	const cleaned = cleanEntryChangeReason(message);
+	if (!cleaned || /Invalid worker placement configuration/i.test(cleaned)) return false;
+	const sinceRoot = /^Since root [^ ]+ started,\s*(.+?)\.?$/i.exec(cleaned);
+	const clauseList = sinceRoot ? sinceRoot[1]! : cleaned.replace(/\.$/, "");
+	const parts = clauseList
+		.split(";")
+		.map((part) => part.trim())
+		.filter(Boolean);
 	return (
-		/the entry module of (?:worker|workflow) definition .+ was edited\b/i.test(message) &&
-		!/\b(?:was added|is no longer listed|local workers were turned)\b/i.test(message)
+		parts.length > 0 &&
+		parts.every((part) => /^the entry module of (?:worker|workflow) definition .+ was edited\b/i.test(part))
 	);
+}
+
+function resolveSavedSourcePath(
+	savedPath: string,
+	recordedCwd: string | undefined,
+	fallbackCwd: string | undefined,
+): string {
+	const baseCwd = recordedCwd ?? fallbackCwd ?? process.cwd();
+	if (recordedCwd !== undefined && fallbackCwd !== undefined && fallbackCwd !== recordedCwd) {
+		const rel = relative(recordedCwd, resolve(recordedCwd, savedPath));
+		if (rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel)) {
+			const relocated = resolve(fallbackCwd, rel);
+			if (existsSync(relocated)) return relocated;
+		}
+	}
+	return resolve(baseCwd, savedPath);
+}
+
+function resolveWorkflowCandidatePath(
+	savedPath: string,
+	recordedCwd: string | undefined,
+	fallbackCwd: string | undefined,
+	registeredDef: WorkflowDefinition | undefined,
+): string {
+	const registeredPath = registeredDef !== undefined ? workflowSource(registeredDef) : undefined;
+	if (
+		registeredPath !== undefined &&
+		existsSync(registeredPath) &&
+		(fallbackCwd === undefined || recordedCwd === undefined || fallbackCwd === recordedCwd)
+	) {
+		return registeredPath;
+	}
+	const candidatePath = resolveSavedSourcePath(savedPath, recordedCwd, fallbackCwd);
+	if (!existsSync(candidatePath) && registeredPath !== undefined) {
+		return registeredPath;
+	}
+	return candidatePath;
 }
 
 export async function findEditedWorkerEntryModuleReason(
 	backend: DurableWorkflowBackend | undefined,
 	workflowId: string,
 	fallbackCwd?: string,
+	runtime?: Pick<ExtensionRuntime, "registry">,
 ): Promise<string | undefined> {
 	if (backend === undefined) return undefined;
 	const handle = backend.getWorkflow(workflowId);
-	const definitions = handle?.resources?.definitions;
-	if (!definitions || definitions.length === 0) return undefined;
-	const baseCwd = handle?.invocationCwd ?? fallbackCwd ?? process.cwd();
+	if (handle === undefined) return undefined;
+	const recordedCwd = handle.workflowCwd ?? handle.invocationCwd;
+	const registeredDef = runtime?.registry?.get?.(handle.name);
+	const workflowSourceEntry =
+		handle.definitionSource ?? (registeredDef !== undefined ? workflowDefinitionSource(registeredDef) : undefined);
 	const descriptions: string[] = [];
-	for (const source of definitions) {
+	if (workflowSourceEntry !== undefined) {
 		try {
-			const resolvedPath = resolve(baseCwd, source.path);
-			const currentDigest = await definitionDigest(resolvedPath);
-			if (currentDigest !== source.digest) {
-				const name = `${source.path}#${source.exportName || "default"}`;
+			const candidatePath = resolveWorkflowCandidatePath(
+				workflowSourceEntry.path,
+				recordedCwd,
+				fallbackCwd,
+				registeredDef,
+			);
+			const currentDigest = await definitionDigest(candidatePath);
+			if (currentDigest !== workflowSourceEntry.digest) {
 				descriptions.push(
-					`the entry module of worker definition ${name} was edited (sha256 ${source.digest.slice(0, 12)} to ${currentDigest.slice(0, 12)})`,
+					`the entry module of workflow definition ${handle.name} (${workflowSourceEntry.path}) was edited (sha256 ${workflowSourceEntry.digest.slice(0, 12)} to ${currentDigest.slice(0, 12)})`,
 				);
 			}
-		} catch {
-			return undefined;
+		} catch {}
+	}
+	const definitions = handle.resources?.definitions;
+	if (definitions && definitions.length > 0) {
+		for (const source of definitions) {
+			try {
+				const resolvedPath = resolveSavedSourcePath(source.path, recordedCwd, fallbackCwd);
+				const currentDigest = await definitionDigest(resolvedPath);
+				if (currentDigest !== source.digest) {
+					const name = `${source.path}#${source.exportName || "default"}`;
+					descriptions.push(
+						`the entry module of worker definition ${name} was edited (sha256 ${source.digest.slice(0, 12)} to ${currentDigest.slice(0, 12)})`,
+					);
+				}
+			} catch {
+				return undefined;
+			}
 		}
 	}
 	if (descriptions.length === 0) return undefined;
 	return `Since root ${handle.workflowId} started, ${descriptions.join("; ")}.`;
+}
+
+type SelectorKeybindings = NonNullable<SelectorOptions<boolean>["keybindings"]>;
+
+function isSelectorKeybindings(value: object | undefined): value is SelectorKeybindings {
+	return value !== undefined && "matches" in value && typeof value.matches === "function";
 }
 
 export async function confirmEditedWorkflowDefinition(
@@ -158,9 +223,9 @@ export async function confirmEditedWorkflowDefinition(
 				} else {
 					signal?.addEventListener("abort", onAbort, { once: true });
 				}
-				const baseKeybindings =
-					(keybindings as unknown as SelectorOptions<boolean>["keybindings"]) ?? getKeybindings();
-				const confirmKeybindings: NonNullable<SelectorOptions<boolean>["keybindings"]> = {
+				const candidate = typeof keybindings === "object" && keybindings !== null ? keybindings : undefined;
+				const baseKeybindings = isSelectorKeybindings(candidate) ? candidate : getKeybindings();
+				const confirmKeybindings: SelectorKeybindings = {
 					matches: (data, action) =>
 						action === "app.keys.help" ? false : (baseKeybindings?.matches(data, action) ?? false),
 					getKeys: (action) => (action === "app.keys.help" ? [] : (baseKeybindings?.getKeys?.(action) ?? [])),
@@ -332,7 +397,11 @@ export function deleteWorkflowResumeEntry(
 ): Promise<DurableWorkflowDeleteOutcome> {
 	return deleteDurableWorkflowIfSafe(requireStoreDurableBackend(store, workflowId), workflowId, (candidateId) => {
 		const run = store.run(candidateId);
-		return run !== undefined && run.status !== "completed" && (run.endedAt === undefined || run.status === "paused");
+		return (
+			run !== undefined &&
+			run.status !== "completed" &&
+			(run.endedAt === undefined || run.status === "paused" || run.exitReason === "quit")
+		);
 	});
 }
 
@@ -542,7 +611,7 @@ async function resumeDurableTarget(
 		}
 	})();
 	if (effectiveOptions.acceptEntryChanges !== true) {
-		const precheckReason = await findEditedWorkerEntryModuleReason(backend, workflowId, ctx.cwd);
+		const precheckReason = await findEditedWorkerEntryModuleReason(backend, workflowId, ctx.cwd, runtime);
 		if (precheckReason !== undefined) {
 			const decision = await confirmEditedWorkflowDefinition(ctx, precheckReason, deps.isGenerationCurrent);
 			if (decision === "unavailable") {
@@ -620,7 +689,7 @@ export async function resumeFailedRunWithConfirmation(
 		}
 	})();
 	if (effectiveOptions.acceptEntryChanges !== true) {
-		const precheckReason = await findEditedWorkerEntryModuleReason(backend, stageRunId, ctx.cwd);
+		const precheckReason = await findEditedWorkerEntryModuleReason(backend, stageRunId, ctx.cwd, runtime);
 		if (precheckReason !== undefined) {
 			const decision = await confirmEditedWorkflowDefinition(ctx, precheckReason, deps.isGenerationCurrent);
 			if (decision === "unavailable") {
