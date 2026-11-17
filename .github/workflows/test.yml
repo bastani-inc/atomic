@@ -25,10 +25,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# A draft pull request runs none of the work jobs: each skips itself, and the result gate below reports under another
+# name, so the required `test (all platforms)` context stays pending until the pull request is marked ready for review,
+# which starts a full run. See docs/ci.md ("Draft pull requests").
 on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 # The work runs as five independent jobs. Root suites duplicate setup so neither
 # waits for the other; no shared producer sits on their critical path.
@@ -53,6 +57,7 @@ on:
 jobs:
   unit-tests:
     name: unit-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/${{ matrix.shards }})
+    if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
         # Five shards on Linux and seven on Windows, balanced by per-OS file durations measured on CI
@@ -202,6 +207,7 @@ jobs:
 
   integration-tests:
     name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/5)
+    if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
         # Five shards per OS, balanced by per-OS file durations measured on CI (test/helpers/duration-sequencer.ts). The result
@@ -330,6 +336,7 @@ jobs:
   # files only. Linux only: service containers need a Linux runner. See docs/ci.md ("Storage backend matrix").
   storage-conformance:
     name: storage-conformance (linux-x64)
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.storage-conformance.linux-amd64
     # Setup as in an integration shard (about 5 min) plus the shared-pool scale cases, whose own budgets are 10 min
     # each; see docs/ci.md ("Per-job time limits").
@@ -460,6 +467,7 @@ jobs:
 
   agent-suite:
     name: agent-suite (${{ matrix.binary_platform }}, ${{ matrix.shard }}/${{ matrix.shards }})
+    if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
         # Three shards on Linux and five on Windows, each running its share of both the atomic-ai and the coding-agent
@@ -647,6 +655,7 @@ jobs:
 
   release-archive:
     name: release-archive (${{ matrix.binary_platform }})
+    if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
         include:
@@ -906,6 +915,7 @@ jobs:
 
   static-checks:
     name: static-checks (linux-x64)
+    if: ${{ !github.event.pull_request.draft }}
     # Platform-independent checks run once on Linux. The CI project's native
     # global setup still builds a missing binding, so a cold job needs Rust.
     runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.static-checks.linux-amd64
@@ -993,9 +1003,11 @@ jobs:
         run: npm run test:ci-contracts
 
   test:
-    name: test (all platforms)
+    # GitHub counts a skipped required check as satisfied, so in a draft this job is skipped under another name and
+    # never reports the required context; see docs/ci.md ("Draft pull requests").
+    name: ${{ github.event.pull_request.draft && 'test (draft, runs when marked ready)' || 'test (all platforms)' }}
     needs: [unit-tests, integration-tests, storage-conformance, agent-suite, release-archive, static-checks]
-    if: always()
+    if: ${{ always() && !github.event.pull_request.draft }}
     runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.result-gate.linux-amd64
     timeout-minutes: 1
     steps:

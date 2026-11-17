@@ -1,0 +1,60 @@
+name: Cancel closed pull request runs
+
+# A closed pull request's queued and running `Tests` runs can no longer gate anything, yet each one still holds or waits
+# for a full matrix of runners. Cancel them as soon as the pull request closes, merged or not. See docs/ci.md
+# ("Runs of a closed pull request").
+#
+# `pull_request_target`, not `pull_request`: it runs this file as committed on the base branch, with a token that can
+# cancel the runs of fork pull requests too, and it also runs for a pull request that closed with merge conflicts,
+# which gets no `pull_request` run. It never checks out or runs the pull request's code; it reads only the event.
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions: {}
+
+jobs:
+  cancel:
+    name: cancel closed pull request runs
+    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.run-cleanup.linux-amd64
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
+            const headRepoId = pr.head.repo?.id;
+            // A run's `pull_requests` lists only open pull requests, so once this one has closed it usually comes back
+            // empty and the run is matched by its head repository and branch. When it still names another open pull
+            // request from the same branch, the run is left alone.
+            const belongsToThisPullRequest = (run) => {
+              const linked = run.pull_requests ?? [];
+              if (linked.length > 0) return linked.some((linkedPr) => linkedPr.number === pr.number);
+              return headRepoId !== undefined && run.head_repository?.id === headRepoId && run.head_branch === pr.head.ref;
+            };
+            let cancelled = 0;
+            for (const status of ["queued", "in_progress", "waiting", "requested", "pending"]) {
+              const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                owner,
+                repo,
+                workflow_id: "test.yml",
+                event: "pull_request",
+                branch: pr.head.ref,
+                status,
+                per_page: 100,
+              });
+              for (const run of runs.filter(belongsToThisPullRequest)) {
+                try {
+                  await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
+                  cancelled += 1;
+                  core.info(`Cancelled run ${run.id} (${status}, ${run.head_sha.slice(0, 12)})`);
+                } catch (error) {
+                  if (error.status !== 409) throw error;
+                  core.info(`Run ${run.id} finished before it could be cancelled`);
+                }
+              }
+            }
+            core.info(`Cancelled ${cancelled} Tests run(s) of #${pr.number}`);
