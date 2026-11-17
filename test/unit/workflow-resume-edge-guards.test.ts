@@ -20,7 +20,11 @@ import {
 import { run as executeWorkflow } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { stageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
-import { workflowDefinitionSource, workflowSource } from "../../packages/workflows/src/shared/workflow-source.js";
+import {
+	recordWorkflowSource,
+	workflowDefinitionSource,
+	workflowSource,
+} from "../../packages/workflows/src/shared/workflow-source.js";
 import { definitionDigest } from "../../packages/workflows/src/workers/definitions.js";
 import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
@@ -242,6 +246,16 @@ describe("workflow resume confirmation and definition source guards (#5256)", ()
 			path: wfFile,
 			digest: digestV1,
 		});
+		const unnormalizedTarget = {};
+		recordWorkflowSource(unnormalizedTarget, `${wfDir}/./tracked-flow.ts`);
+		assert.equal(workflowSource(unnormalizedTarget), wfFile);
+		assert.deepEqual(workflowDefinitionSource(unnormalizedTarget), {
+			path: wfFile,
+			digest: digestV1,
+		});
+		const windowsTarget = {};
+		recordWorkflowSource(windowsTarget, "C:/w/0/.atomic/workflows/tracked-flow.ts");
+		assert.equal(workflowSource(windowsTarget), "C:\\w\\0\\.atomic\\workflows\\tracked-flow.ts");
 
 		writeTestWorkflowFile(wfFile, "v2");
 		const digestV2 = await definitionDigest(wfFile);
