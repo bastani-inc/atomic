@@ -1,7 +1,7 @@
 import { readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { type ConflictBlock, conflictEntries, refreshConflictFile } from "./conflict-registry.ts";
-import { withFileMutationQueue } from "./file-mutation-queue.ts";
+import { withFileMutationQueue, withResolvingFileMutationQueue } from "./file-mutation-queue.ts";
 import { WriteSelectorError } from "./file-tool-errors.ts";
 import {
 	type InternalResourceContext,
@@ -201,13 +201,16 @@ export function withWriteSelectors(
 				}));
 			const archive = parseArchiveSelector(path);
 			if (archive) {
-				const resolvedArchive = resolveArchiveSelector(archive, executionCwd);
-				await withFileMutationQueue(resolvedArchive.archivePath, () =>
-					writeArchiveSelector(resolvedArchive, content),
+				const archivePath = await withResolvingFileMutationQueue(
+					async () => (await resolveArchiveSelector(archive, executionCwd)).archivePath,
+					async (resolvedPath) => {
+						await writeArchiveSelector({ ...archive, archivePath: resolvedPath }, content);
+						return resolvedPath;
+					},
 				);
 				return {
 					content: [{ type: "text", text: `Successfully wrote to ${path}` }],
-					details: { resolvedPath: resolvedArchive.archivePath },
+					details: { resolvedPath: archivePath },
 				};
 			}
 			if (path.startsWith("conflict://")) return writeConflictSelector(path, content, executionCwd);

@@ -93,7 +93,7 @@ async function delimiterInExistingSearchGlobRoot(value: string, cwd: string): Pr
 async function archiveSelectorExists(value: string, cwd: string): Promise<boolean> {
 	const archive = parseArchiveSelector(value);
 	if (!archive) return false;
-	const resolved = resolveArchiveSelector(archive, cwd);
+	const resolved = await resolveArchiveSelector(archive, cwd);
 	if (!(await pathExists(resolved.archivePath))) return false;
 	if (!resolved.memberPath) return true;
 	try {
@@ -553,7 +553,7 @@ export function createSearchToolDefinition(
 			let remaining = limit;
 			const targetHasMatch = async (target: SearchTarget): Promise<boolean> => {
 				if (target.archive || target.sqlite || target.internal) {
-					const archive = target.archive ? resolveArchiveSelector(target.archive, executionCwd) : undefined;
+					const archive = target.archive ? await resolveArchiveSelector(target.archive, executionCwd) : undefined;
 					const text = archive
 						? await searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
 						: target.sqlite
@@ -621,7 +621,7 @@ export function createSearchToolDefinition(
 					continue;
 				}
 				if (target.archive || target.sqlite || target.internal) {
-					const archive = target.archive ? resolveArchiveSelector(target.archive, executionCwd) : undefined;
+					const archive = target.archive ? await resolveArchiveSelector(target.archive, executionCwd) : undefined;
 					let text = archive
 						? await searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
 						: target.sqlite

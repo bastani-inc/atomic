@@ -9,7 +9,7 @@ import {
 	inflateRaw as inflateRawCallback,
 } from "node:zlib";
 import { isPathInside } from "../../utils/path-inside.ts";
-import { resolvePhysicalPath } from "../../utils/physical-path.ts";
+import { resolvePhysicalPathAsync } from "../../utils/physical-path.ts";
 import { readConflictUrl } from "./conflict-registry.ts";
 import { pathExists } from "./path-utils.ts";
 import { loadNativeSearchBinding } from "./search-native.ts";
@@ -172,7 +172,7 @@ async function existingSqliteFile(path: string): Promise<boolean | undefined> {
 export async function sqliteSelectorForPath(value: string, cwd: string): Promise<SqliteSelector | undefined> {
 	const selector = parseSqliteSelector(value);
 	if (!selector) return undefined;
-	const absolute = resolveContainedLocalPath(cwd, selector.databasePath, "SQLite selector");
+	const absolute = await resolveContainedLocalPath(cwd, selector.databasePath, "SQLite selector");
 	if ((await existingSqliteFile(absolute)) !== true) return undefined;
 	return { ...selector, databasePath: absolute };
 }
@@ -202,8 +202,8 @@ export function parseArchiveSelector(value: string): ArchiveSelector | undefined
 	}
 	return undefined;
 }
-export function resolveArchiveSelector(selector: ArchiveSelector, cwd: string): ArchiveSelector {
-	return { ...selector, archivePath: resolveContainedLocalPath(cwd, selector.archivePath, "Archive selector") };
+export async function resolveArchiveSelector(selector: ArchiveSelector, cwd: string): Promise<ArchiveSelector> {
+	return { ...selector, archivePath: await resolveContainedLocalPath(cwd, selector.archivePath, "Archive selector") };
 }
 const SQLITE_SELECTOR_SUFFIX = /^(?:\?q=(.+)|:([^:?]+)(?:\?(.+))?(?::([^:?]+))?)?$/i;
 export function parseSqliteSelector(value: string): SqliteSelector | undefined {
@@ -707,15 +707,16 @@ async function resolveViaRouter(
 	if (resolved) return resolved;
 	return await resolveInternalSelector(value, cwd);
 }
-function resolveContainedPath(root: string, pathValue: string, label: string): string {
+async function resolveContainedPath(root: string, pathValue: string, label: string): Promise<string> {
 	const lexicalRoot = resolve(root),
 		resolved = resolve(root, pathValue);
 	if (!isPathInside(lexicalRoot, resolved)) throw new Error(`${label} escapes the workspace: ${pathValue}`);
-	if (!isPathInside(resolvePhysicalPath(lexicalRoot), resolvePhysicalPath(resolved)))
+	const physicalRoot = await resolvePhysicalPathAsync(lexicalRoot);
+	if (!isPathInside(physicalRoot, await resolvePhysicalPathAsync(resolved)))
 		throw new Error(`${label} escapes the workspace: ${pathValue}`);
 	return resolved;
 }
-function resolveContainedLocalPath(cwd: string, pathValue: string, label = "local:// resource"): string {
+function resolveContainedLocalPath(cwd: string, pathValue: string, label = "local:// resource"): Promise<string> {
 	return resolveContainedPath(cwd, pathValue, label);
 }
 
@@ -724,13 +725,15 @@ async function fallbackInternalPath(value: string, cwd: string): Promise<string 
 	if (skill) {
 		const name = skill[1] ?? "",
 			rest = skill[2] || "SKILL.md";
-		const candidates = [".agents/skills", "packages/subagents/skills", "packages/workflows/skills"].map((base) =>
-			resolveContainedPath(
-				resolveContainedLocalPath(cwd, base, "skill:// resource"),
-				`${name}/${rest}`,
-				"skill:// resource",
-			),
-		);
+		const candidates: string[] = [];
+		for (const base of [".agents/skills", "packages/subagents/skills", "packages/workflows/skills"])
+			candidates.push(
+				await resolveContainedPath(
+					await resolveContainedLocalPath(cwd, base, "skill:// resource"),
+					`${name}/${rest}`,
+					"skill:// resource",
+				),
+			);
 		for (const candidate of candidates) if (await pathExists(candidate)) return candidate;
 		return undefined;
 	}

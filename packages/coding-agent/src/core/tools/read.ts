@@ -358,7 +358,7 @@ async function archiveSelectorMemberExists(pathValue: string, cwd: string): Prom
 	const archive = parseArchiveSelector(pathValue);
 	if (!archive?.memberPath) return false;
 	try {
-		await readArchiveSelector(resolveArchiveSelector(archive, cwd));
+		await readArchiveSelector(await resolveArchiveSelector(archive, cwd));
 		return true;
 	} catch {
 		return false;
@@ -522,7 +522,7 @@ export function createReadToolDefinition(
 								return;
 							}
 							if (archive) {
-								const resolvedArchive = resolveArchiveSelector(archive, executionCwd);
+								const resolvedArchive = await resolveArchiveSelector(archive, executionCwd);
 								const textContent = await readArchiveSelector(resolvedArchive);
 								let allLines = textContent.split("\n");
 								if (conflictsOnly) {
