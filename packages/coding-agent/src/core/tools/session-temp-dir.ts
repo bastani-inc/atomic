@@ -450,7 +450,7 @@ function rememberPrivateTempDir(key: string, path: string, depth: number): strin
 			current = dirname(current);
 		}
 		const runtimeDir = process.env.XDG_RUNTIME_DIR;
-		if (process.platform !== "win32" && runtimeDir && current === join(runtimeDir)) {
+		if (process.platform !== "win32" && runtimeDir && current === resolve(runtimeDir)) {
 			directories.push(privateDirectoryIdentity(current));
 		}
 		privateTempDirs.set(key, { path, directories: directories.reverse() });
@@ -520,12 +520,13 @@ function privateTempDirAttempts(parts: readonly string[]): Array<() => string> {
 	const attempts: Array<() => string> = [];
 	const runtimeDir = process.env.XDG_RUNTIME_DIR;
 	if (process.platform !== "win32" && runtimeDir && isAbsolute(runtimeDir)) {
+		const root = resolve(runtimeDir);
 		attempts.push(() => {
-			if (!isUntouchablePrivateRoot(runtimeDir)) {
-				throw new TempDirRefusedError(runtimeDir, "it is not private to this account");
+			if (!isUntouchablePrivateRoot(root)) {
+				throw new TempDirRefusedError(root, "it is not private to this account");
 			}
 			const app = sanitizeTempPathComponent(APP_NAME, "atomic");
-			return ensurePrivateChain(runtimeDir, runtimeDir, [app, ...parts]);
+			return ensurePrivateChain(root, root, [app, ...parts]);
 		});
 	}
 	const cacheDir = resolve(getAgentDir(), "cache");

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- On Windows, `ensurePrivateTempDir()` and `assertPrivateDirectory()` no longer read a directory's owner and access list on the main thread. They accept a directory already checked in the process; otherwise they start the check in the background, and `assertPrivateDirectory()` throws `TempDirRefusedError` ("its ownership is still being verified") while `ensurePrivateTempDir()` returns another private directory. **Migration:** use `ensurePrivateTempDirAsync()` and `assertPrivateDirectoryAsync()` on Windows to wait for the check ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
+
 ### Added
 
 - `ATOMIC_STARTUP_TRACE` names a file to which Atomic appends each startup milestone (process start, first paint, engine ready, first provider request) with its wall-clock time; an interactive session's engine writes to the same file
@@ -18,7 +22,6 @@
 - Tasks that finish together reach the model in one request that starts one turn, instead of one turn each. A notice that arrives while the chat is working is read at that turn's next safe point and starts no turn of its own. Each finished task now shows as one line, such as `● Background command "npm test" completed (exit code 0) · 12s` or `◼ Task "sleep 300" was stopped by the user`, the same in the main chat, workflow stage chats and subagent views. Ctrl+O shows a shell's last output lines and an agent's full result ([#5342](https://github.com/bastani-inc/atomic/pull/5342))
 - Clarified in `codemode`'s description, system-prompt guidance, and `searchTools()`/`describeTool()` hints that `subagent`, `workflow`, and other model-only tools (plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script, and should be called directly as separate top-level tools when available in the session
 - `SessionStartStep` has a `registering-intercom` step, for a subagent start that waits for its Intercom registration, and `sessionStartStepText(step)` describes a step in words. `SubagentChildPolicy.startup` gives an extension the child's start signal, lets it name the step the start waits in, and says whether the child has yet to start its first turn.
-- On Windows, `ensurePrivateTempDir()` and `assertPrivateDirectory()` no longer read a directory's owner and access list on the main thread. They accept a directory already checked in the process; otherwise they start the check in the background, and `assertPrivateDirectory()` throws `TempDirRefusedError` ("its ownership is still being verified") while `ensurePrivateTempDir()` returns another private directory. Use the asynchronous forms to wait for the check ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 
 ### Fixed
 
@@ -32,7 +35,7 @@
 - Fixed each `/reload` keeping the extensions it replaced in memory for as long as the session ran: every new generation of the session's extensions kept the one before it, so each reload added about 10 MB that was never released.
 - On a busy Windows machine, a shell command or a subagent's named-worktree checkout that finished is no longer reported as failed with `Windows stdin worker stop was not confirmed` ([#5340](https://github.com/bastani-inc/atomic/pull/5340))
 - On Windows, Atomic no longer freezes while it checks that a temp directory is private. The PowerShell read of each private root's owner and access list held the main thread, for a quarter to half a second on an idle machine and for seconds on a busy one, and timers, hooks and the interface stalled with it. The read now runs in the background and starts when a session starts. Bash spill files, saved tool results, temporary extension installs, subagent artifacts, the GitHub clone cache and design workflow artifacts wait for it without blocking. Every directory refused before is still refused ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
-- Private temporary storage is no longer reused through a directory link or a replaced root, including a Windows replacement with the same creation time. Temporary installs and caches fall back to another private directory instead ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
+- Private temporary storage is no longer reused through a directory link, a runtime directory opened to other accounts, or a replaced root, including a Windows replacement with the same creation time. Runtime directory paths with trailing separators or `..` cannot bypass the checks. Temporary installs and caches fall back to another private directory instead ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 - Replacing a submission echo with a prompt rewritten by an `input` hook, or inserting a custom message ahead of a streaming reply, now touches only the tail of the chat container instead of scanning the whole transcript, keeping prompt swaps fast in long sessions ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 - Corrected new-message counts when a transcript insertion or removal is followed by another change that restores its earlier child count ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 

@@ -114,6 +114,37 @@ describe("temporary extension install directories", () => {
 		assertPrivateChain(root, runtime);
 	});
 
+	it.skipIf(!isPosix)("a runtime directory link with trailing separators is refused (#5285)", async () => {
+		const parent = mkdtempSync(join(sandbox, "run-parent-"));
+		const target = mkdtempSync(join(sandbox, "run-target-"));
+		const link = join(parent, "link");
+		symlinkSync(target, link, "dir");
+		process.env.XDG_RUNTIME_DIR = `${link}//`;
+
+		const root = await ensurePrivateTempDirAsync("extensions");
+
+		assert.ok(isPathInside(join(agentDir, "cache", "tmp"), root), "the agent cache is used instead");
+		assert.deepEqual(readdirSync(target), [], "nothing is created through the linked runtime directory");
+	});
+
+	it.skipIf(!isPosix)("runtime inspection checks the same normalized root used for creation (#5285)", async () => {
+		const lexicalRoot = mkdtempSync(join(sandbox, "run-lexical-"));
+		chmodSync(lexicalRoot, 0o755);
+		const privateTarget = mkdtempSync(join(sandbox, "run-private-"));
+		const inner = join(privateTarget, "inner");
+		mkdirSync(inner, { mode: 0o700 });
+		const link = join(lexicalRoot, "link");
+		symlinkSync(inner, link, "dir");
+		process.env.XDG_RUNTIME_DIR = `${link}/..`;
+		assert.equal(lstatSync(process.env.XDG_RUNTIME_DIR).mode & 0o777, 0o700);
+
+		const root = await ensurePrivateTempDirAsync("extensions");
+
+		assert.ok(isPathInside(join(agentDir, "cache", "tmp"), root), "the agent cache is used instead");
+		assert.deepEqual(readdirSync(lexicalRoot), ["link"], "nothing is created in the shared lexical root");
+		assert.equal(statSync(lexicalRoot).mode & 0o777, 0o755, "the runtime directory is not repaired");
+	});
+
 	it("without a runtime directory, temporary extension installs use the agent cache", async () => {
 		const root = await getNpmInstallRoot(context, "temporary", true);
 
@@ -303,6 +334,28 @@ describe("temporary extension install directories", () => {
 			assert.notEqual(reopened, dir, "the cached leaf does not make a linked ancestor trustworthy");
 			assert.ok(!isPathInside(root, reopened), "the replacement link is not followed");
 			assertPrivateChain(reopened, sandbox);
+		},
+	);
+
+	it.skipIf(!isPosix).each(["synchronous", "asynchronous"] as const)(
+		"%s callers recheck a runtime directory configured with trailing separators (#5285)",
+		async (caller) => {
+			const runtime = mkdtempSync(join(sandbox, "run-"));
+			process.env.XDG_RUNTIME_DIR = `${runtime}//`;
+			const dir = await ensurePrivateTempDirAsync("nested", "extensions");
+			assert.ok(isPathInside(runtime, dir), "the private runtime directory is preferred initially");
+			assert.equal(await ensurePrivateTempDirAsync("nested", "extensions"), dir);
+			chmodSync(runtime, 0o755);
+
+			const reopened =
+				caller === "synchronous"
+					? ensurePrivateTempDir("nested", "extensions")
+					: await ensurePrivateTempDirAsync("nested", "extensions");
+
+			assert.ok(!isPathInside(runtime, reopened), "the opened runtime directory is not reused");
+			assert.ok(isPathInside(join(agentDir, "cache", "tmp"), reopened), "the agent cache is used instead");
+			assertPrivateChain(reopened, agentDir);
+			assert.equal(statSync(runtime).mode & 0o777, 0o755, "the runtime directory is not repaired");
 		},
 	);
 
