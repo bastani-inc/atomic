@@ -240,14 +240,21 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			if (isSubagentChildSession(this)) throw new Error("Subagent delegation is not available inside a subagent");
 		},
 		onTaskSettled: (
-			...[ref, receipt]: Parameters<NonNullable<import("./tasks/supervisor.js").TrustedTaskHost["onTaskSettled"]>>
+			...[ref, receipt, timing]: Parameters<
+				NonNullable<import("./tasks/supervisor.js").TrustedTaskHost["onTaskSettled"]>
+			>
 		) => {
 			// Save the task's kind with the intent: a notice replayed after a restart has no task record to read it from.
 			const kind =
 				closingTaskKinds.get(this)?.get(receipt.taskId) ??
 				this._agentTaskHost?.taskRecords(new Set([receipt.taskId]))[0]?.kind;
 			this._agentTaskHost?.retainTaskRecord(receipt.taskId);
-			outbox.record(ref.ownerId, receipt, kind);
+			// The intent keeps how long a command ran, for its notice line.
+			outbox.record(
+				ref.ownerId,
+				timing?.elapsedMs === undefined ? receipt : { ...receipt, elapsedMs: timing.elapsedMs },
+				kind,
+			);
 			void outbox.flush();
 		},
 		onTaskCleanupQuarantined: (ref: C.NativeTaskRef, resources: readonly C.ResourceFailure[]) =>

@@ -171,8 +171,9 @@ export class WorkflowStageAdmissionBoundary {
 			authorizeCommandLaunch: (_intent, origin) => {
 				if (origin !== "subagent-child") refuseParkedLaunch();
 			},
-			onTaskSettled: (ref, receipt) => {
-				host.retainTaskRecord(receipt.taskId);
+			onTaskSettled: (ref, settled, timing) => {
+				host.retainTaskRecord(settled.taskId);
+				const receipt = timing?.elapsedMs === undefined ? settled : { ...settled, elapsedMs: timing.elapsedMs };
 				const task = settledTask(host, receipt);
 				const settlement: ParkedTaskSettlement = { ownerId: ref.ownerId, receipt, kind: task?.kind };
 				// The stage's own shells wait for its next session; a worker's shells reach that worker only.

@@ -183,7 +183,8 @@ export type TrustedTaskHost = {
 	resourceAdmission?: ResourceAdmission;
 	/** Internal host/test configuration only; never tool input or user settings. */
 	commandResources?: Pick<native.CommandResourceOptions, "terminationGraceMs">;
-	onTaskSettled?(ref: C.NativeTaskRef, receipt: C.SettlementReceipt): void;
+	/** `timing` is the host's own record of the task: how long a command ran, from its launch to its settlement. */
+	onTaskSettled?(ref: C.NativeTaskRef, receipt: C.SettlementReceipt, timing?: C.SettlementTiming): void;
 	/** Once per task whose result settled before its process cleanup was confirmed; that cleanup continues. */
 	onTaskCleanupQuarantined?(ref: C.NativeTaskRef, resources: readonly C.ResourceFailure[]): void;
 	/** Heartbeat cadence for a launch that names none, fixed on its record at admission; omitted, none is recorded. */
@@ -1166,14 +1167,17 @@ export class TaskSupervisor {
 		state.settledTasks.add(ref.taskId);
 		const launchedBy = state.launches.launchers.get(operation);
 		const launchedAt = state.launches.launchedAt.get(operation);
-		state.host.binding.onTaskSettled(ref, {
-			taskId: receipt.taskId as C.TaskId,
-			cursor: cursor(receipt.cursor),
-			result: taskResult(receipt.result, receipt.taskId, state.launches),
-			completionId: receipt.completionId,
-			...(launchedBy === undefined ? {} : { launchedBy }),
-			...(launchedAt === undefined ? {} : { elapsedMs: Math.max(0, Date.now() - launchedAt) }),
-		});
+		state.host.binding.onTaskSettled(
+			ref,
+			{
+				taskId: receipt.taskId as C.TaskId,
+				cursor: cursor(receipt.cursor),
+				result: taskResult(receipt.result, receipt.taskId, state.launches),
+				completionId: receipt.completionId,
+				...(launchedBy === undefined ? {} : { launchedBy }),
+			},
+			launchedAt === undefined ? undefined : { elapsedMs: Math.max(0, Date.now() - launchedAt) },
+		);
 	}
 	async startCommandTask(
 		owner: OwnerLease,
