@@ -358,6 +358,19 @@ export function subagentChildRecordOf(ownerSessionId: string, childId: string): 
 	return entry === undefined ? undefined : fullRecordOf(entry);
 }
 
+/**
+ * The latest record of one of `ownerSessionId`'s children, or undefined when it did not launch it or when the session
+ * holding that record is not open in this process. For callers that must not fail on a record they cannot read: a
+ * workflow stage's close, a restore that reads the owner's own session instead, a wake that only looks for results.
+ */
+export function readableSubagentChildRecordOf(
+	ownerSessionId: string,
+	childId: string,
+): SubagentChildRecord | undefined {
+	const entry = ownEntry(ownerSessionId, childId);
+	return entry === undefined ? undefined : readableRecordOf(entry);
+}
+
 /** The child of `ownerSessionId` that was launched with this Intercom name. Walks the index, as a wake by name is rare. */
 export function subagentChildRecordForTarget(
 	ownerSessionId: string,
@@ -370,10 +383,18 @@ export function subagentChildRecordForTarget(
 	return found === undefined ? undefined : fullRecordOf(found);
 }
 
-/** Every child of `ownerSessionId` in the index. Walks the whole index: for a restart or a reconnect, not a wake. */
+/**
+ * Every child of `ownerSessionId` in the index whose latest record can be read. Walks the whole index: for a restart or a
+ * reconnect, not a wake. A child whose record is in a session not open in this process is left out, so it does not stop
+ * the others from being reserved, reported ended or woken; a wake of it reads it again and reports why it cannot.
+ */
 export function subagentChildRecordsOf(ownerSessionId: string): SubagentChildRecord[] {
 	const records: SubagentChildRecord[] = [];
-	for (const entry of entries.values()) if (entry.ownerSessionId === ownerSessionId) records.push(fullRecordOf(entry));
+	for (const entry of entries.values()) {
+		if (entry.ownerSessionId !== ownerSessionId) continue;
+		const record = readableRecordOf(entry);
+		if (record !== undefined) records.push(record);
+	}
 	return records;
 }
 
@@ -389,7 +410,10 @@ export function subagentChildIndexSize(): number {
 	return entries.size;
 }
 
-/** What the index keeps of a child, by its child id; read by tests and the benchmark. */
+/**
+ * What the index keeps of a child, by its child id: where it stands even when its full record cannot be read, as a
+ * closing workflow stage needs. Read by tests and the benchmark too.
+ */
 export function subagentChildIndexEntry(childId: string): SubagentChildIndexEntry | undefined {
 	return entries.get(childId);
 }
