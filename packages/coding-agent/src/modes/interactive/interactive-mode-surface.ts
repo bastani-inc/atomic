@@ -342,7 +342,7 @@ declare module "./interactive-mode-base.ts" {
 		showSelector(
 			create: (done: () => void) => { component: Component; focus: Component; dispose?: () => void },
 		): void;
-		showSettingsSelector(): void;
+		showSettingsSelector(): Promise<void>;
 		handleModelCommand(searchTerm?: string): Promise<void>;
 		handleThinkingCommand(searchTerm?: string): Promise<void>;
 		selectThinkingLevel(level: ThinkingLevel): Promise<void>;

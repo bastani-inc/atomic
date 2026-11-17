@@ -179,6 +179,7 @@ export {
 	getMarkdownTheme,
 	getThemeByName,
 	onThemeChange,
+	refreshCustomThemes,
 	setRegisteredThemes,
 	stopThemeWatcher,
 	Theme,

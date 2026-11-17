@@ -343,8 +343,9 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				return;
 			}
 			if (bare("settings")) {
-				this.showSettingsSelector();
+				const shown = this.showSettingsSelector();
 				this.editor.setText("");
+				await shown;
 				return;
 			}
 			if (bare("scoped-models")) {
