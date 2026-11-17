@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { afterEach, test } from "vitest";
+import { SessionIntercomPolicy } from "../../packages/coding-agent/src/core/intercom-policy.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
@@ -43,6 +44,7 @@ function launcher(
 		readonly authorizeLaunch?: () => void;
 		readonly retryStart?: boolean;
 		readonly startError?: string;
+		readonly intercomPolicy?: SessionIntercomPolicy;
 	} = {},
 ) {
 	const cwd = makeTempDirectory("subagent-launch-target-");
@@ -50,7 +52,7 @@ function launcher(
 	const sessionId = randomUUID();
 	const emitter = new EventEmitter();
 	// The launching session's Intercom: it issues each child's capability and holds sends for it while it starts.
-	const holds: Array<{ readonly capability: string; readonly holdMs?: number }> = [];
+	const holds: Array<{ readonly capability: string; readonly holdMs?: number; readonly group?: string }> = [];
 	const releases: SubagentReleaseRestoringChildRequest[] = [];
 	const events = {
 		on(channel: string, handler: (payload: unknown) => void) {
@@ -71,6 +73,7 @@ function launcher(
 				holds.push({
 					capability: request.capability,
 					...(request.holdMs === undefined ? {} : { holdMs: request.holdMs }),
+					...(request.group === undefined ? {} : { group: request.group }),
 				});
 				request.completion = Promise.resolve();
 			}
@@ -113,6 +116,7 @@ function launcher(
 			getWorktreeRootMappings: () => [],
 		},
 		...(options.ownerless ? {} : { getAgentTaskHost: () => host }),
+		intercomPolicy: options.intercomPolicy,
 		isIdle: () => true,
 		isProjectTrusted: () => true,
 		ui: { notify() {} },
@@ -421,6 +425,27 @@ test("a launch or relaunch whose start fails releases its starting hold with the
 		refusal: `Subagent \`${first.intercomTarget}\` did not start: ${startError} The message was not sent.`,
 	});
 });
+
+for (const mode of ["single", "parallel"] as const) {
+	for (const group of ["team", true] as const) {
+		test(`a ${mode} child's startup hold and launch share its confined ${group === true ? "automatic" : "named"} group (#5352)`, async () => {
+			const parent = launcher({
+				intercomPolicy: SessionIntercomPolicy.fromOptions({ group: "home-5352", reachable: ["peer-5352"] }),
+			});
+			const task = { agent: "worker", task: "work", group };
+			await parent.call({
+				...(mode === "single" ? task : { tasks: [task] }),
+				wait: { kind: "background" },
+				artifacts: false,
+			});
+			const options = await parent.launched;
+			if (group === true) assert.match(options.intercomGroup!, /^home-5352\/[0-9a-f-]{36}$/);
+			else assert.equal(options.intercomGroup, "home-5352/team");
+			assert.equal(parent.holds.length, 1);
+			assert.equal(parent.holds[0]?.group, options.intercomGroup);
+		});
+	}
+}
 
 test("every child of a parallel launch has its sends held while it starts, for the length of its start", async () => {
 	const parent = launcher();
