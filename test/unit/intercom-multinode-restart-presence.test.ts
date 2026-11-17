@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +27,7 @@ import {
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
+import { keptExitedPid } from "../helpers/exited-process.js";
 import {
 	openMemoryHeldSendFixture,
 	openMemoryKnownSessionFixture,
@@ -634,8 +634,10 @@ test("a broker records its own process id, and a membership without one is never
 
 test("a process counts as alive while it runs and dead once it exited (#5038)", async () => {
 	assert.equal(isProcessAlive(process.pid), true);
-	const child = spawn(process.execPath, ["-e", ""]);
-	const pid = child.pid!;
-	await new Promise((resolve) => child.once("exit", resolve));
-	assert.equal(isProcessAlive(pid), false);
+	const exited = await keptExitedPid();
+	try {
+		assert.equal(isProcessAlive(exited.pid), false);
+	} finally {
+		await exited.release();
+	}
 });

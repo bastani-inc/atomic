@@ -283,6 +283,38 @@ describe("claiming an idle pooled worktree on resume (#4748)", () => {
 		assert.equal(readFileSync(join(slot(a, 0), "file.txt"), "utf8"), "A\n");
 	});
 
+	test("a claim cancelled during fetch gives its untouched slot back to its previous owner (#5320)", async () => {
+		const { a, b, clone } = await twoSnapshots();
+		const x = await idleSlotOfX(a, clone);
+		const before = recordOf(a, 0);
+		const controller = new AbortController();
+		const cancelled = new Error("cancelled while fetching the claim");
+		sandbox.write(join(slot(a, 0), "node_modules", "installed"), "installed\n");
+		sandbox.write(join(slot(a, 0), "build", "output"), "built\n");
+		const blobs = {
+			getBlob: async (hash: string) => {
+				controller.abort(cancelled);
+				return store.snapshotBlobs.getBlob(hash);
+			},
+		};
+
+		await assert.rejects(claimIdleWorktree(b, { ...claimOptions(), blobs, signal: controller.signal }), cancelled);
+
+		assert.deepEqual(recordOf(a, 0), before);
+		const owner = { kind: "session" as const, id: x.getSessionId() };
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), slot(a, 0)), { owner, held: false });
+		const held = await holdRestoredWorktree(storeDir(), slot(a, 0), owner);
+		assert.ok(held);
+		try {
+			assert.deepEqual(await pooledWorktreeHolder(storeDir(), slot(a, 0)), { owner, held: true });
+			assert.equal(readFileSync(join(slot(a, 0), "file.txt"), "utf8"), "A\n");
+			assert.equal(readFileSync(join(slot(a, 0), "node_modules", "installed"), "utf8"), "installed\n");
+			assert.equal(readFileSync(join(slot(a, 0), "build", "output"), "utf8"), "built\n");
+		} finally {
+			await releaseRestoredWorktree(held);
+		}
+	});
+
 	test.skipIf(process.platform === "win32")(
 		"a claim killed with SIGKILL mid-reset leaves a slot the next claim skips and eviction removes (#4748)",
 		async () => {

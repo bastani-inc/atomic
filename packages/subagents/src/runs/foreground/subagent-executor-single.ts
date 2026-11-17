@@ -211,7 +211,12 @@ export async function runSinglePath(
 			childIntercomTarget,
 			ctx.getChildSessionOptions?.({ tools: agentConfig.tools }),
 		);
-		const childIntercomGroup = resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined);
+		const childIntercomGroup = resolveChildIntercomGroup(
+			params.group,
+			inheritedIntercomGroup(ctx),
+			undefined,
+			ctx.intercomPolicy,
+		);
 		// Sends to the child wait for it to register, before its first turn, instead of finding no session.
 		startHold = await holdStartingChild({
 			events: deps.pi.events,

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { reservationAdmitsSender } from "../../packages/intercom/broker/group-membership.js";
 import type {
 	BrokerLeaseStore,
 	HeldSend,
@@ -543,7 +544,7 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 				(record) =>
 					isLive(record.renewedAt, staleAfterMs) &&
 					record.targets.includes(target) &&
-					(record.ownerSessionId === sender.sessionId || sender.groups.includes(record.group)),
+					(record.ownerSessionId === sender.sessionId || reservationAdmitsSender(sender, record.group)),
 			);
 			if (found === undefined) return { status: "none" };
 			return { status: found.gone === undefined ? "reserved" : "gone", reservation: reservation(found) };

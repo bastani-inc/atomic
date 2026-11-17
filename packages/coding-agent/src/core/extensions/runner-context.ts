@@ -51,6 +51,7 @@ export interface ExtensionContextSource {
 	getThinkingLevel(): ThinkingLevel | undefined;
 	getOrchestrationContext(): OrchestrationContext | undefined;
 	getSubagentPolicy(): SubagentChildPolicy | undefined;
+	getIntercomPolicy?(): import("../intercom-policy.ts").IntercomPolicyView | undefined;
 	isIdle(): boolean;
 	isProjectTrusted(): boolean;
 	getSignal(): AbortSignal | undefined;
@@ -327,6 +328,10 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 		get subagentPolicy() {
 			source.assertActive();
 			return source.getSubagentPolicy();
+		},
+		get intercomPolicy() {
+			source.assertActive();
+			return source.getIntercomPolicy?.();
 		},
 		isIdle: () => {
 			source.assertActive();

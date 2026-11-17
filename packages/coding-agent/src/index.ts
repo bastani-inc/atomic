@@ -545,6 +545,15 @@ export {
 	serializeIntercomBrokerError,
 } from "./core/intercom-broker-error.ts";
 export {
+	confinedIntercomChildGroup,
+	IntercomPolicyError,
+	type IntercomPolicyView,
+	type IntercomReachApplier,
+	type IntercomSessionOptions,
+	MAX_INTERCOM_REACHABLE_GROUPS,
+	type SessionIntercom,
+} from "./core/intercom-policy.ts";
+export {
 	isProjectGroupError,
 	ProjectGroupError,
 	type ProjectGroupErrorCode,
