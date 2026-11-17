@@ -19,6 +19,7 @@ import { workflowAnswerAction } from "../../packages/workflows/src/extension/wor
 import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/stage-prompt.js";
 import { adoptStageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { adoptStore } from "../../packages/workflows/src/shared/store-factory.js";
+import { renderFooterWithOrchestratorReturnHint } from "../../packages/workflows/src/tui/stage-chat-view-footer-status.js";
 import {
 	deriveGraphTheme,
 	makeFakeKeybindings,
@@ -438,6 +439,11 @@ test.each(["stage-chat", "workflow-answer", "escape"] as const)(
 		const prompt = store.run(runId)!.stages[0]!.pendingPrompt!;
 		const rendered = stripAnsi(view.render(80).join("\n"));
 		assert.match(rendered, /Nested confirmation\?/);
+		assert.match(rendered, /esc cancel/);
+		assert.doesNotMatch(rendered, /esc close/i);
+		const footer = stripAnsi(renderFooterWithOrchestratorReturnHint(view as never, 80, ["stage footer"]).join("\n"));
+		assert.match(footer, /esc cancel/);
+		assert.doesNotMatch(footer, /esc close/i);
 		assert.doesNotMatch(rendered, /CUSTOM-WAITING/);
 		if (answerer === "stage-chat") {
 			view.handleInput("\x1b[C");
@@ -521,7 +527,13 @@ test.each(["select", "input", "editor"] as const)(
 			})
 			.catch(() => {});
 		assert.equal(store.run(runId)?.stages[0]?.pendingPrompt?.kind, kind);
-		view.render(80);
+		const rendered = stripAnsi(view.render(80).join("\n"));
+		assert.match(rendered, /esc cancel/);
+		assert.doesNotMatch(rendered, /esc close/i);
+		assert.doesNotMatch(rendered, /← (?:return to )?graph/);
+		const footer = stripAnsi(renderFooterWithOrchestratorReturnHint(view as never, 80, ["stage footer"]).join("\n"));
+		assert.match(footer, /esc cancel/);
+		assert.doesNotMatch(footer, /esc close/i);
 		view.handleInput("\x1b");
 		await vi.waitFor(() => assert.equal(result, undefined));
 		assert.equal(await dialog, undefined);
