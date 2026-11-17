@@ -31,6 +31,7 @@ import {
 	NAV_CONFIRM_WINDOW_MS,
 	type NavKey,
 	navActionText,
+	navKeyText,
 	renderNavHintLine,
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
@@ -1588,31 +1589,42 @@ export class TaskInspector implements Component {
 				? cardChoices.slice(0, Math.max(0, start + room - firstChoiceLine))
 				: [];
 		this.drawnChoices = replying ? visibleChoices : undefined;
-		const keys: NavKey[] = this.filtering
-			? [
-					{ keys: "type", label: "filter" },
-					{ keys: "enter", label: "done" },
-					{ keys: "esc", label: "clear" },
-				]
-			: replying
+		const replyValue = this.reply.getValue();
+		const openNativeDetail = replying && selected?.kind === "task" && replyValue.trim() === "";
+		const openNativeKeys = [
+			...new Set(["enter", ...(getKeybindings().getKeys?.("app.list.open") ?? []).map(navKeyText)]),
+		].join("/");
+		const keys: NavKey[] = this.sending
+			? []
+			: this.filtering
 				? [
-						...(visibleChoices.length ? [{ keys: `1-${visibleChoices.length}`, label: "choose" }] : []),
-						{ keys: "enter", label: "send" },
-						{ keys: "esc", label: "close" },
+						{ keys: "↑↓", label: "select" },
+						{ keys: "type", label: "filter" },
+						{ keys: "enter", label: "done" },
+						{ keys: "esc", label: "clear" },
 					]
-				: listKeys()
-						.filter(
-							(key) =>
-								selected !== undefined ||
-								key.keys?.startsWith("esc") === true ||
-								key.action === "app.keys.help" ||
-								key.action === "app.list.filter",
-						)
-						.map((key) =>
-							key.action === "app.list.stop"
-								? { ...key, label: selected && rowFinished(selected) ? "dismiss" : "stop" }
-								: key,
-						);
+				: replying
+					? [
+							{ keys: "↑↓", label: "select" },
+							...(replyValue === "" && visibleChoices.length
+								? [{ keys: `1-${visibleChoices.length}`, label: "choose" }]
+								: []),
+							{ keys: openNativeDetail ? openNativeKeys : "enter", label: openNativeDetail ? "open" : "send" },
+							{ keys: this.reply.getCursor() === 0 ? escAndBack() : "esc", label: "close" },
+						]
+					: listKeys()
+							.filter(
+								(key) =>
+									selected !== undefined ||
+									key.keys?.startsWith("esc") === true ||
+									key.action === "app.keys.help" ||
+									key.action === "app.list.filter",
+							)
+							.map((key) =>
+								key.action === "app.list.stop"
+									? { ...key, label: selected && rowFinished(selected) ? "dismiss" : "stop" }
+									: key,
+							);
 		const hint = renderNavHintLine(keys, width, style, getKeybindings(), 2, { compact: true });
 		const footer = [...(notice ? [theme.fg("warning", clip(taskDisplayText(notice)))] : []), hint];
 		const recordPaintedRow = (row: TaskBoardRow, drawnTasks: TaskRecord[]) => {
