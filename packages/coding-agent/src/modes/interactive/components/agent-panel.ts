@@ -4,6 +4,8 @@ import {
 	type AgentPanelState,
 	agentPanelItemReadAt,
 	agentPanelTaskId,
+	isInterruptedPanelTask,
+	markInterruptedPanelTask,
 } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import {
@@ -75,7 +77,7 @@ function cachedWorkingGlyph(frame: number): string {
 }
 
 export function isFinishedPanelRow(row: Pick<AgentPanelRow, "state">): boolean {
-	return FINISHED.has(row.state);
+	return FINISHED.has(row.state) && !isInterruptedPanelTask(row);
 }
 
 function panelText(text: string): string {
@@ -223,10 +225,11 @@ export class AgentPanelModel {
 			row.elapsedMs,
 			running,
 			now,
-			FINISHED.has(state),
+			isFinishedPanelRow(row),
 		);
 		if (elapsedMs === undefined || elapsedMs === row.elapsedMs) return row;
 		const copy = { ...row, elapsedMs };
+		if (isInterruptedPanelTask(row)) markInterruptedPanelTask(copy);
 		return this.copyOf(row, sourceClocks === undefined ? copy : bindTaskClock(copy, sourceClocks));
 	}
 	baseOf(row: AgentPanelRow): AgentPanelRow {
@@ -250,7 +253,7 @@ export class AgentPanelModel {
 		for (const row of rows) {
 			const state = row.state;
 			states.set(row, state);
-			if (FINISHED.has(state)) {
+			if (isFinishedPanelRow(row)) {
 				if (!this.keepFinished(row.id, keep(row), now, pass)) continue;
 				finishedRows.push(row);
 			} else if (state === "input") inputRows.push(row);

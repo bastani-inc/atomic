@@ -439,12 +439,12 @@ test.each(["stage-chat", "workflow-answer", "escape"] as const)(
 		const prompt = store.run(runId)!.stages[0]!.pendingPrompt!;
 		const rendered = stripAnsi(view.render(80).join("\n"));
 		assert.match(rendered, /Nested confirmation\?/);
-		assert.match(rendered, /← graph · esc cancel/);
+		assert.match(rendered, /esc cancel/);
 		assert.doesNotMatch(rendered, /esc close/i);
 		const footerRows = renderFooterWithOrchestratorReturnHint(view as never, 80, ["stage footer"]);
 		assert.equal(footerRows.length, 1);
 		const footer = stripAnsi(footerRows[0]!);
-		assert.match(footer, /← graph · esc cancel/);
+		assert.match(footer, /esc cancel/);
 		assert.doesNotMatch(footer, /esc close/i);
 		assert.doesNotMatch(rendered, /CUSTOM-WAITING/);
 		if (answerer === "stage-chat") {
@@ -530,13 +530,13 @@ test.each(["select", "input", "editor"] as const)(
 			.catch(() => {});
 		assert.equal(store.run(runId)?.stages[0]?.pendingPrompt?.kind, kind);
 		const rendered = stripAnsi(view.render(80).join("\n"));
-		assert.match(rendered, /← graph · esc cancel/);
+		assert.match(rendered, /esc cancel/);
 		assert.doesNotMatch(rendered, /esc close/i);
-		assert.doesNotMatch(rendered, /← return to graph/);
+		assert.doesNotMatch(rendered, /← (?:return to )?graph/);
 		const footerRows = renderFooterWithOrchestratorReturnHint(view as never, 80, ["stage footer"]);
 		assert.equal(footerRows.length, 1);
 		const footer = stripAnsi(footerRows[0]!);
-		assert.match(footer, /← graph · esc cancel/);
+		assert.match(footer, /esc cancel/);
 		assert.doesNotMatch(footer, /esc close/i);
 		view.handleInput("\x1b");
 		await vi.waitFor(() => assert.equal(result, undefined));

@@ -587,9 +587,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.interruptedTurnSnapshot = interrupted;
 		if (!interrupted) return;
 		if (options?.resumeMeterForAgentEnd && interrupted.startedAt !== undefined) {
-			if (this.state.workingRunMeter.snapshot() === undefined) {
-				this.state.workingRunMeter.resume(interrupted.startedAt, interrupted.settledTokens, false);
-			}
+			const elapsedAtInterrupt = interrupted.workedRun?.snapshot.elapsedMs;
+			const startedAt = elapsedAtInterrupt !== undefined ? Date.now() - elapsedAtInterrupt : interrupted.startedAt;
+			this.state.workingRunMeter.resume(startedAt, interrupted.settledTokens, false);
 			if (this.state.lastWorkingMessage === undefined) {
 				this.state.lastWorkingMessage = interrupted.lastWorkingMessage;
 			}

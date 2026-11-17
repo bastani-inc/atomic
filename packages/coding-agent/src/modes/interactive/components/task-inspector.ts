@@ -187,6 +187,7 @@ export class TaskInspector implements Component {
 	private callerLabel = "back";
 	/** Typed shell input per task, kept when the reader leaves the input and restored when they return. */
 	private readonly inputDrafts = new Map<TaskId, string>();
+	private inputTask?: TaskRecord;
 	/** The open transcript of the selected task, on the shared chat stack. */
 	private transcript?: TaskTranscriptPage;
 	private status = "";
@@ -321,6 +322,7 @@ export class TaskInspector implements Component {
 			},
 			stdinAvailable: (task) => this.store.stdinAvailable(task.ref.taskId),
 			input: (task) => {
+				this.inputTask = task;
 				this.input.setValue(this.inputDrafts.get(task.ref.taskId) ?? "");
 			},
 			openQuestion: (route) => {
@@ -624,8 +626,22 @@ export class TaskInspector implements Component {
 		if (!task || task.execution.kind === "settled") return false;
 		return this.store.stdinAvailable(task.ref.taskId);
 	}
+	private inputTaskForSheet(): TaskRecord | undefined {
+		const focus = this.navigation.focus;
+		const taskId = focus.kind === "stdin" ? focus.taskId : this.navigation.selectedTaskId;
+		if (taskId === undefined) return this.inputTask;
+		const live =
+			this.store.taskRecord?.(taskId) ??
+			(!this.boardStale ? this.tasksById.get(taskId) : undefined) ??
+			this.store.backgroundTasks.find((task) => task.ref.taskId === taskId);
+		if (live !== undefined) {
+			this.inputTask = live;
+			return live;
+		}
+		return this.inputTask?.ref.taskId === taskId ? this.inputTask : undefined;
+	}
 	private async sendInput(text: string): Promise<void> {
-		const task = this.selected();
+		const task = this.navigation.focus.kind === "stdin" ? this.inputTaskForSheet() : this.selected();
 		if (!task) return;
 		const environment = this.transcriptEnvironment();
 		const result = await this.store.writeTaskInput(task.ref.taskId, text);
@@ -1546,8 +1562,12 @@ export class TaskInspector implements Component {
 
 	private renderInputSheet(width: number, budget: number): string[] {
 		const clip = (line: string) => truncateToWidth(line, Math.max(1, width));
-		const task = this.selected();
-		const name = task ? taskDisplayText(task.title || taskLabel(task)) : "";
+		const task = this.inputTaskForSheet();
+		const name = task
+			? taskDisplayText(task.title || taskLabel(task))
+			: this.navigation.focus.kind === "stdin"
+				? taskDisplayText(this.navigation.focus.taskId)
+				: "";
 		const summary = task ? `  ${taskDetailSummary(task)}` : "";
 		const entry = (this.input.render(Math.max(1, width - 4))[0] ?? "").replace(/^> /, "");
 		const notes = [
