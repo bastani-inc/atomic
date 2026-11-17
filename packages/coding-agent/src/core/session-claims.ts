@@ -210,14 +210,26 @@ function dropClaim(sessionId: string, claim: HeldClaim): void {
 	}
 }
 
-async function dropClaimAsync(sessionId: string, claim: HeldClaim): Promise<void> {
-	if (!forgetClaim(sessionId, claim)) return;
+const releasing = new Map<string, Promise<void>>();
+
+function dropClaimAsync(sessionId: string, claim: HeldClaim): Promise<void> {
+	if (!forgetClaim(sessionId, claim)) return Promise.resolve();
+	const removal: Promise<void> = removeOwnClaim(claim.path).finally(() => {
+		if (releasing.get(sessionId) === removal) releasing.delete(sessionId);
+	});
+	releasing.set(sessionId, removal);
+	return removal;
+}
+
+async function removeOwnClaim(path: string): Promise<void> {
 	try {
-		const current = await readClaimAsync(claim.path);
-		// Claimed again while this release read the file: the claim there, with this process's token, is the new one.
-		if (held.has(sessionId)) return;
-		if (current?.record?.token === PROCESS_TOKEN) await rm(claim.path);
+		if ((await readClaimAsync(path))?.record?.token === PROCESS_TOKEN) await rm(path);
 	} catch {}
+}
+
+async function releaseFinished(sessionId: string): Promise<void> {
+	for (let pending = releasing.get(sessionId); pending !== undefined; pending = releasing.get(sessionId))
+		await pending;
 }
 
 // A process that exits with claims removes them; one killed leaves them for the next resume to take over.
@@ -226,9 +238,11 @@ process.on("exit", () => {
 });
 
 export async function prepareSessionClaim(sessionId: string, options: { readonly agentDir: string }): Promise<void> {
+	await releaseFinished(sessionId);
 	const path = claimPath(options.agentDir, sessionId);
 	const holder = await claimHolderAsync(path);
 	await prepareTakeoverMutex(path, holder);
+	await releaseFinished(sessionId);
 }
 
 async function claimHolderAsync(path: string): Promise<ClaimRecord | undefined> {
@@ -241,14 +255,16 @@ async function claimHolderAsync(path: string): Promise<ClaimRecord | undefined> 
 
 /**
  * Claims `sessionId` for this process before a resume writes to it or restores its checkouts (#5135). Rejects with a
- * {@link SessionAlreadyOpenError} naming the holder, having changed nothing, when another live process holds it. A
- * claim this process holds already is kept as it is. Returns a release for a resume that stops before its session
+ * {@link SessionAlreadyOpenError} naming the holder, having changed nothing, when another live process holds it, or
+ * while this process still releases it ({@link prepareSessionClaim} waits for that release). A claim this process
+ * holds already is kept as it is. Returns a release for a resume that stops before its session
  * opens; once the session's open marker took the claim over (see {@link attachSessionClaim}) the release does
  * nothing, and the claim lasts until the session closes or this process exits.
  */
 export function claimSession(sessionId: string, options: { readonly agentDir: string }): () => void {
 	// Held by this process already: its holder keeps it.
 	if (held.has(sessionId)) return () => {};
+	if (releasing.has(sessionId)) throw new SessionAlreadyOpenError(sessionId, { pid: process.pid, host: hostname() });
 	const path = claimPath(options.agentDir, sessionId);
 	mkdirSync(join(options.agentDir, "session-claims"), { recursive: true });
 	const started = processStartToken(process.pid);

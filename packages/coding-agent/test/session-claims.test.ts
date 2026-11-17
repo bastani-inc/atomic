@@ -17,8 +17,10 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as realSleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { exitedProcess } from "../../../test/helpers/exited-process.js";
 import { setNativeLocksForTesting, TAKEOVER_MUTEX_STALE_MS, takeTakeoverMutex } from "../src/core/lock-takeover.js";
@@ -26,6 +28,10 @@ import { processStartToken } from "../src/core/process-start-token.js";
 import { attachSessionClaim, claimSession, prepareSessionClaim } from "../src/core/session-claims.js";
 import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "../src/core/session-manager-errors.ts";
 import { holdSessionOpenMarker } from "../src/core/session-open-markers.js";
+
+const moduleRequire = createRequire(import.meta.url);
+/** How long a test gives a claim's preparation to finish when nothing holds it back. */
+const PREPARE_SETTLE_MS = 500;
 
 let agentDir: string;
 const releases: (() => void)[] = [];
@@ -333,7 +339,7 @@ describe("session claims (#5135)", () => {
 		assert.equal(JSON.parse(readFileSync(claimFile(sessionId), "utf8")).pid, pid);
 	});
 
-	test("a claim taken again while the session's earlier release is still reading keeps its file (#5377)", async () => {
+	test("a claim taken again while the session's earlier release is still reading waits for it and keeps its file (#5377)", async () => {
 		const sessionId = newSessionId();
 		claim(sessionId);
 		const detach = attachSessionClaim(sessionId);
@@ -341,8 +347,46 @@ describe("session claims (#5135)", () => {
 
 		// The session closes, and a resume claims it again before the release has read the claim it removes.
 		const releasing = detach();
+		assert.throws(
+			() => claim(sessionId),
+			(error: unknown) => error instanceof SessionAlreadyOpenError && error.pid === process.pid,
+		);
+		await prepareSessionClaim(sessionId, { agentDir });
 		claim(sessionId);
 		await releasing;
+
+		assert.equal(existsSync(claimFile(sessionId)), true, "the new claim stays in place");
+		assert.equal(JSON.parse(readFileSync(claimFile(sessionId), "utf8")).pid, process.pid);
+	});
+
+	test("a claim prepared while the session's earlier release is removing its file waits for the removal and keeps its new file (#5377)", async () => {
+		const sessionId = newSessionId();
+		claim(sessionId);
+		const detach = attachSessionClaim(sessionId);
+		assert.ok(detach);
+		const removalStarted = Promise.withResolvers<void>();
+		const finishRemoval = Promise.withResolvers<void>();
+		const promises = moduleRequire("node:fs/promises") as typeof import("node:fs/promises");
+		const rm = promises.rm;
+		promises.rm = async (...args: Parameters<typeof rm>) => {
+			removalStarted.resolve();
+			await finishRemoval.promise;
+			return await rm(...args);
+		};
+		syncBuiltinESMExports();
+		try {
+			// The session closes; its release has checked the claim and submitted the removal when a resume claims it.
+			const releasing = detach();
+			await removalStarted.promise;
+			const claiming = prepareSessionClaim(sessionId, { agentDir }).then(() => claim(sessionId));
+			await Promise.race([claiming, realSleep(PREPARE_SETTLE_MS)]);
+			finishRemoval.resolve();
+			await releasing;
+			await claiming;
+		} finally {
+			promises.rm = rm;
+			syncBuiltinESMExports();
+		}
 
 		assert.equal(existsSync(claimFile(sessionId)), true, "the new claim stays in place");
 		assert.equal(JSON.parse(readFileSync(claimFile(sessionId), "utf8")).pid, process.pid);
