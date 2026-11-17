@@ -11,7 +11,7 @@ import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { VerbatimCompactionResult } from "../src/core/compaction/index.ts";
 import { convertToLlm } from "../src/core/messages.js";
-import { SessionManager } from "../src/core/session-manager.js";
+import { type SessionEntry, SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
@@ -111,7 +111,13 @@ describe("recovery from session history after a clear", () => {
 	async function clearedSession(
 		backend: StoreBackend,
 		options: { stage: boolean },
-	): Promise<{ session: AgentSession; cwd: string; result: VerbatimCompactionResult; linesBefore: string[] }> {
+	): Promise<{
+		session: AgentSession;
+		cwd: string;
+		result: VerbatimCompactionResult;
+		entriesBefore: number;
+		earlierEntries: SessionEntry[];
+	}> {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-history-recovery-"));
 		const opened = await backend.open(cwd);
 		const manager = opened.manager;
@@ -140,10 +146,10 @@ describe("recovery from session history after a clear", () => {
 		});
 		for (const message of conversation()) await manager.appendMessage(message);
 		session.agent.state.messages = manager.buildSessionContext().messages;
-		const router = historyRouter(session, cwd);
-		const linesBefore = String(await router.read?.(`history://sessions/${session.sessionId}`)).split("\n");
+		const entriesBefore = manager.getLastSeq();
+		const earlierEntries = structuredClone(manager.getEntries());
 		const result = await session.compact();
-		return { session, cwd, result, linesBefore };
+		return { session, cwd, result, entriesBefore, earlierEntries };
 	}
 
 	function historyRouter(session: AgentSession, cwd: string) {
@@ -186,8 +192,8 @@ describe("recovery from session history after a clear", () => {
 	for (const backend of STORES) {
 		for (const stage of [false, true]) {
 			const kind = stage ? "a workflow stage session" : "a session";
-			it(`advertises exact history line numbers for ${kind} in ${backend.name} storage`, async () => {
-				const { session, cwd, result, linesBefore } = await clearedSession(backend, { stage });
+			it(`advertises readable history entry positions for ${kind} in ${backend.name} storage (#5250)`, async () => {
+				const { session, cwd, result, entriesBefore, earlierEntries } = await clearedSession(backend, { stage });
 				const url = `history://sessions/${session.sessionId}`;
 				const text = boundaryText(session);
 				assert.equal(text, result.compactedText);
@@ -197,22 +203,28 @@ describe("recovery from session history after a clear", () => {
 				const history = result.history;
 				assert.ok(history, "the result says where the boundary sits");
 				assert.equal(history.sessionId, session.sessionId);
-				assert.equal(history.linesBefore, linesBefore.length);
-				assert.equal(history.boundaryLine, linesBefore.length + 1);
-				assert.ok(
-					text.includes(
-						`lines 1-${history.linesBefore} hold the earlier conversation, this boundary starts at line ${history.boundaryLine}, and the history has ${history.totalLines} lines now`,
-					),
-					text,
+				assert.ok(text.includes(`entries 1-${entriesBefore} hold the earlier conversation`), text);
+				assert.equal(history.entriesBefore, entriesBefore);
+				assert.equal(history.boundaryEntry, entriesBefore + 1);
+				assert.equal(history.totalEntries, entriesBefore + 1);
+				assert.equal(history.rangeUnit, "entries");
+				const router = historyRouter(session, cwd);
+				const before = await router.readSelected?.(url, { ranges: [{ start: 1, end: entriesBefore }] });
+				assert.ok(before?.includes(REQUIREMENT), before);
+				assert.ok(before?.includes(KEPT_SPAN), before);
+				const boundary = await router.readSelected?.(url, {
+					ranges: [{ start: history.boundaryEntry, end: history.boundaryEntry }],
+				});
+				assert.ok(boundary?.includes(result.compactedText), boundary);
+				assert.equal(session.sessionManager.getLastSeq(), history.totalEntries);
+				assert.deepEqual(
+					session.sessionManager.getEntries().slice(0, entriesBefore),
+					earlierEntries,
+					"every earlier entry is unchanged",
 				);
-
-				const after = String(await historyRouter(session, cwd).read?.(url)).split("\n");
-				assert.deepEqual(after.slice(0, linesBefore.length), linesBefore, "every earlier line is unchanged");
-				assert.match(after[history.boundaryLine - 1] ?? "", /^## \S+ compaction$/u);
-				assert.equal(after.length, history.totalLines);
 			});
 
-			it(`finds pre-boundary lines through the exact URL for ${kind} in ${backend.name} storage`, async () => {
+			it(`finds pre-boundary entries through the exact URL for ${kind} in ${backend.name} storage (#5250)`, async () => {
 				const { session, cwd } = await clearedSession(backend, { stage });
 				const url = `history://sessions/${session.sessionId}`;
 				const { search, read } = tools(session, cwd);
@@ -221,7 +233,7 @@ describe("recovery from session history after a clear", () => {
 				const match = /^:(\d+): /.exec(resultLine?.slice(url.length) ?? "");
 				assert.ok(match, `search finds the requirement in:\n${found}`);
 				const line = Number(match[1]);
-				assert.ok(line < (boundaryLineOf(session) ?? 0), "the match is before the boundary");
+				assert.ok(line < (boundaryEntryOf(session) ?? 0), "the match is before the boundary");
 				const opened = await read(`${url}:${line}-${line}`);
 				assert.ok(opened.includes(REQUIREMENT), `read opens the requirement in:\n${opened}`);
 				const tagged = await search("keepContext", url);
@@ -230,10 +242,10 @@ describe("recovery from session history after a clear", () => {
 		}
 	}
 
-	function boundaryLineOf(session: AgentSession): number | undefined {
+	function boundaryEntryOf(session: AgentSession): number | undefined {
 		const entry = session.sessionManager.getBranch().find((candidate) => candidate.type === "compaction");
-		return (entry as { details?: { history?: { boundaryLine?: number } } } | undefined)?.details?.history
-			?.boundaryLine;
+		return (entry as { details?: { history?: { boundaryEntry?: number } } } | undefined)?.details?.history
+			?.boundaryEntry;
 	}
 
 	it("a broad history search skips the current session, so the prompt names its exact URL", async () => {

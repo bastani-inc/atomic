@@ -10,7 +10,7 @@ import { createAgentSession } from "../src/core/sdk.js";
 import type { CreateAgentSessionOptions } from "../src/core/sdk-types.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
-import { childDeliveryCount, keptChildNoticeCount } from "../src/core/tasks/child-command-owner.js";
+import { childDeliveryCount, childLaunchCount, keptChildNoticeCount } from "../src/core/tasks/child-command-owner.js";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../src/core/tasks/completion.js";
 import type { OperationId, TaskId, TaskResult } from "../src/core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../src/core/tasks/owner-store.js";
@@ -245,6 +245,36 @@ test("a taken child notice retries until acknowledgement and is then forgotten (
 	);
 
 	assert.equal(completionNotices(child, shell), 1, "acknowledgement retry never repeats the notice");
+});
+
+test("a child's settled and acknowledged shells leave no launch record in the parent's owner", async () => {
+	const root = tempRoot();
+	const parent = await newSession(root);
+	const { child } = await childOf(parent, root);
+	const host = parent.getAgentTaskHost();
+	const background = [
+		await startBackground(child, nativeShell),
+		await startBackground(child, nativeShell),
+		await startBackground(child, nativeShell),
+	];
+	for (const index of [1, 2]) {
+		const foreground = await tool(child, nativeShell).execute(`foreground-${index}`, {
+			command: nativeShell === "powershell" ? "Write-Output done" : "printf done",
+			timeout: 20,
+		});
+		assert.match(text(foreground), /done/);
+	}
+	await vi.waitFor(() => assert.equal(childLaunchCount(host), background.length), { timeout: 10000 });
+
+	for (const shell of background) await release(parent, shell);
+	await vi.waitFor(
+		() => {
+			for (const shell of background) assert.ok(acknowledgedBy(parent, shell));
+			assert.equal(childLaunchCount(host), 0, "every settled and acknowledged shell released its launch record");
+		},
+		{ timeout: 10000 },
+	);
+	for (const shell of background) assert.equal(completionNotices(child, shell), 1);
 });
 
 test("a child acknowledgement forgets delivery in the host it used before replacement (#5342)", async () => {

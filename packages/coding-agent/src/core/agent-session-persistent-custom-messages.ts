@@ -389,17 +389,51 @@ export async function admitProtectedStreamingCustomMessage(
 	return admission.reconciliations[0];
 }
 
+const turnEndAdmissions = new WeakMap<AgentSession, Set<Promise<unknown>>>();
+
+export function openTurnEndAdmissions(session: AgentSession): void {
+	turnEndAdmissions.set(session, new Set());
+}
+
+export async function joinTurnEndAdmissions(session: AgentSession, signal?: AbortSignal): Promise<void> {
+	const admissions = turnEndAdmissions.get(session);
+	turnEndAdmissions.delete(session);
+	if (admissions === undefined || admissions.size === 0 || signal?.aborted) return;
+	const aborted = Promise.withResolvers<void>();
+	const onAbort = () => aborted.resolve();
+	signal?.addEventListener("abort", onAbort, { once: true });
+	try {
+		await Promise.race([Promise.allSettled(admissions), aborted.promise]);
+	} finally {
+		signal?.removeEventListener("abort", onAbort);
+	}
+}
+
+function trackTurnEndAdmission<T>(session: AgentSession, admission: Promise<T>): Promise<T> {
+	const admissions = turnEndAdmissions.get(resolveWorkflowStageDeliveryTarget(session));
+	if (admissions !== undefined) {
+		admissions.add(admission);
+		const release = () => admissions.delete(admission);
+		void admission.then(release, release);
+	}
+	return admission;
+}
+
 /** Queue one hidden turn before public listeners can transfer its ownership. */
-export async function queueProtectedStreamingCustomMessage(
+export function queueProtectedStreamingCustomMessage(
 	session: AgentSession,
 	message: CustomMessage,
 	delivery: ProtectedDelivery,
 	priority = false,
 ): Promise<void> {
-	const admission = await prepareProtectedAdmission(session, [message], delivery);
-	for (const reconciliation of admission.reconciliations)
-		admission.owner._queueAgentMessage(reconciliation, priority ? "interrupt" : delivery);
-	emitProtectedAdmission(admission);
+	return trackTurnEndAdmission(
+		session,
+		prepareProtectedAdmission(session, [message], delivery).then((admission) => {
+			for (const reconciliation of admission.reconciliations)
+				admission.owner._queueAgentMessage(reconciliation, priority ? "interrupt" : delivery);
+			emitProtectedAdmission(admission);
+		}),
+	);
 }
 
 /** Queue a whole hidden batch before public listeners can transfer ownership. */
@@ -409,18 +443,21 @@ export async function queueProtectedStreamingCustomMessages(
 	delivery: ProtectedDelivery,
 	queueing: ProtectedBatchQueueing = {},
 ): Promise<number> {
-	const admission = await prepareProtectedAdmission(
+	const admission = await trackTurnEndAdmission(
 		session,
-		messages,
-		delivery,
-		(admission) => {
-			for (const reconciliation of admission.reconciliations) {
-				admission.owner._queueAgentMessage(reconciliation, delivery);
-			}
-			emitProtectedAdmission(admission);
-			queueing.onQueued?.();
-		},
-		queueing.queuesSavedPrefix,
+		prepareProtectedAdmission(
+			session,
+			messages,
+			delivery,
+			(admission) => {
+				for (const reconciliation of admission.reconciliations) {
+					admission.owner._queueAgentMessage(reconciliation, delivery);
+				}
+				emitProtectedAdmission(admission);
+				queueing.onQueued?.();
+			},
+			queueing.queuesSavedPrefix,
+		),
 	);
 	return admission.reconciliations.length;
 }

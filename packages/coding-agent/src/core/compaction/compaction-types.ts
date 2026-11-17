@@ -56,12 +56,10 @@ export type CompactionBackend = "compactor" | "extension";
 /** Where the boundary sits in `history://sessions/<sessionId>`, as advertised to the agent. */
 export interface CompactionHistoryLocation {
 	sessionId: string;
-	/** The last line of the earlier conversation; the boundary starts on the next line. */
-	linesBefore: number;
-	/** The first line of the boundary entry. */
-	boundaryLine: number;
-	/** The number of lines in the history right after the boundary was written. */
-	totalLines: number;
+	rangeUnit: "entries";
+	entriesBefore: number;
+	boundaryEntry: number;
+	totalEntries: number;
 }
 
 /** How the agent reaches its history after a boundary: its own `read` and `search` tools, or the restricted history tool. */

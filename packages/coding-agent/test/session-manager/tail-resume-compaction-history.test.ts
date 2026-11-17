@@ -3,11 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
+import type { VerbatimCompactionDetails } from "../../src/core/compaction/compaction-types.js";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { CompactionEntry, SessionEntry } from "../../src/core/session-manager-types.ts";
 import { openNodeSqliteDatabase } from "../../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../../src/core/storage/session/sql-session-store.ts";
-import { renderHistoryTranscript } from "../../src/core/tools/history-transcript.ts";
 
 const stamp = "2026-11-16T00:00:00.000Z";
 const PAGE = 4096;
@@ -30,7 +30,7 @@ function user(id: string, parentId: string | null, lines = 1): SessionEntry {
 	};
 }
 
-test("counts the history lines of a tail-resumed session without loading its history (#5249)", async () => {
+test("locates a tail-resumed compaction by saved entry without reading older history (#5250)", async () => {
 	const entries: SessionEntry[] = [];
 	for (let i = 0; i < 2 * PAGE + 100; i++) entries.push(user(`h${i}`, entries.at(-1)?.id ?? null, (i % 3) + 1));
 	const boundary: CompactionEntry = {
@@ -68,15 +68,40 @@ test("counts the history lines of a tail-resumed session without loading its his
 	const load = vi.spyOn(store, "load");
 	const readRange = vi.spyOn(store, "readRange");
 
-	const count = await manager.historyLineCount();
+	const details: VerbatimCompactionDetails = {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "test" },
+		form: "cleared",
+		stats: {
+			linesBefore: 2,
+			linesDeleted: 2,
+			linesKept: 0,
+			rangeCount: 0,
+			tokensBefore: 100,
+			tokensAfter: 10,
+			percentReduction: 90,
+		},
+	};
+	const counts: number[] = [];
+	const appendBoundary = () =>
+		manager.appendCompaction(
+			(count) => {
+				counts.push(count);
+				return { text: "Context cleared.", details };
+			},
+			null,
+			100,
+			details,
+		);
+	const first = await appendBoundary();
+	assert.deepEqual(counts, [entries.length]);
+	assert.equal(manager.getEntrySeq(first), entries.length + 1);
+	const append = manager.appendMessage({ role: "user", content: "later\nnote", timestamp: 2 });
+	const boundaryAppend = appendBoundary();
+	await Promise.all([append, boundaryAppend]);
+	assert.deepEqual(counts, [entries.length, entries.length + 2]);
 	assert.equal(manager.hasFullHistory(), false);
 	assert.equal(load.mock.calls.length, 0);
-	assert.ok(readRange.mock.calls.length > 0);
-	for (const [, start, end] of readRange.mock.calls) assert.ok(end - start + 1 <= PAGE, `${start}-${end}`);
-	assert.equal(count, renderHistoryTranscript(header, entries, true).lines.length);
-
-	await manager.appendMessage({ role: "user", content: "later\nnote", timestamp: 2 });
-	const all = (await store.load("session")).entries;
-	assert.equal(await manager.historyLineCount(), renderHistoryTranscript(header, all, true).lines.length);
-	assert.equal(manager.hasFullHistory(), false);
+	assert.equal(readRange.mock.calls.length, 0);
 });

@@ -2,6 +2,7 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import { getErrnoCode } from "../../tools/errno.ts";
 import { SessionSpillError, type SessionSpillErrorCode, type SessionSpillErrorFields } from "../errors.js";
 import { sha256Hex } from "./blob-hash.js";
+import { EntryTypeReader } from "./entry-type.js";
 import {
 	SessionConflictError,
 	SessionExistsError,
@@ -24,11 +25,19 @@ import {
 	sessionTailFrom,
 	stateSeqsBefore,
 } from "./session-resume.js";
-import { summarizeSession } from "./session-summary.js";
+import {
+	applySessionSummaryEntries,
+	materializeSessionSummaryMetadata,
+	type SessionSummaryState,
+	summarizeSession,
+} from "./session-summary.js";
 import type {
 	SessionBlob,
 	SessionCompactionPoint,
 	SessionCwdMatcher,
+	SessionEntriesPage,
+	SessionEntriesQuery,
+	SessionEntryAt,
 	SessionEntryRange,
 	SessionListQuery,
 	SessionRecordHeader,
@@ -52,11 +61,21 @@ const NO_ENTRIES = new Uint8Array(0);
 export const SPILL_BLOCK_BYTES = 64 * 1024;
 const FNV_OFFSET = 0x811c9dc5;
 const SCAN_WINDOW_BYTES = 1024 * 1024;
+const RAW_CHUNK_BYTES = 1024 * 1024;
+const TYPE_WINDOW_BYTES = 64 * 1024;
+const STUB_ENTRY: SessionEntry = {
+	type: "custom",
+	id: "",
+	parentId: null,
+	timestamp: "1970-01-01T00:00:00.000Z",
+	customType: "",
+};
 
 interface StoredSession {
 	readonly header: Uint8Array;
 	/** The entries held in memory: everything after the bytes its spill file holds. */
 	entries: Uint8Array[];
+	summaryState: SessionSummaryState;
 	lastSeq: number;
 	/** The directory its file is in, from the first release that wrote one. */
 	directory: SessionHistoryDirectory | undefined;
@@ -279,6 +298,7 @@ export class MemorySessionStore implements SessionStore {
 		record.totalBytes = position - 1;
 		record.lastSeq += entries.length;
 		record.index = index;
+		record.summaryState = applySessionSummaryEntries(record.summaryState, entries).state;
 		return { lastSeq: record.lastSeq };
 	}
 
@@ -423,6 +443,149 @@ export class MemorySessionStore implements SessionStore {
 			const record = await this.settledRecord(sessionId);
 			const seq = await this.seqOfEntry(sessionId, record, entryId);
 			if (this.records.get(sessionId) === record) return seq;
+		}
+	}
+
+	async readEntryRange(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
+		for (;;) {
+			query.signal?.throwIfAborted();
+			const record = await this.settledRecord(sessionId);
+			const held = this.held(record);
+			const { lastSeq } = held;
+			const fromSeq = Math.max(1, query.fromSeq);
+			let throughSeq = Math.min(query.toSeq, lastSeq);
+			if (fromSeq > throughSeq) return { lastSeq, entries: [], throughSeq: Math.max(throughSeq, fromSeq - 1) };
+			if (query.maxChars !== undefined && query.maxChars <= 0)
+				return { lastSeq, entries: [], throughSeq: fromSeq - 1 };
+			const [start] = this.spanOf(held, fromSeq, fromSeq);
+			if (query.maxChars !== undefined) {
+				for (let seq = fromSeq; seq < throughSeq; seq++) {
+					if (this.spanOf(held, seq, seq)[1] - start >= query.maxChars) {
+						throughSeq = seq;
+						break;
+					}
+				}
+			}
+			const entries = await this.entriesIn(sessionId, record, held, fromSeq, throughSeq, query);
+			if (entries === undefined) continue;
+			return { lastSeq, entries, throughSeq };
+		}
+	}
+
+	private async entriesIn(
+		sessionId: string,
+		record: StoredSession,
+		held: HeldBytes,
+		fromSeq: number,
+		throughSeq: number,
+		query: SessionEntriesQuery,
+	): Promise<SessionEntryAt[] | undefined> {
+		const oversized = (seq: number): boolean => {
+			if (query.largeEntryBytes === undefined) return false;
+			const [entryStart, entryEnd] = this.spanOf(held, seq, seq);
+			return entryEnd - entryStart > query.largeEntryBytes;
+		};
+		const skipped = query.skipTypes === undefined ? undefined : new Set(query.skipTypes);
+		const entries: SessionEntryAt[] = [];
+		for (let seq = fromSeq; seq <= throughSeq; ) {
+			if (oversized(seq)) {
+				const [entryStart, entryEnd] = this.spanOf(held, seq, seq);
+				if (skipped !== undefined && skipped.size > 0) {
+					const typed = await this.whileHeld(sessionId, record, held, () =>
+						this.typeOf(sessionId, held, entryStart, entryEnd, [...skipped], query.signal),
+					);
+					if (typed === undefined) return undefined;
+					if (typed.type !== undefined && skipped.has(typed.type)) {
+						seq++;
+						continue;
+					}
+				}
+				const rawChunks = await this.whileHeld(sessionId, record, held, () =>
+					this.chunksOf(sessionId, held, entryStart, entryEnd, query.signal),
+				);
+				if (rawChunks === undefined) return undefined;
+				entries.push({ seq, entry: STUB_ENTRY, rawChunks });
+				seq++;
+				continue;
+			}
+			let last = seq;
+			while (last < throughSeq && !oversized(last + 1)) last++;
+			const [start, end] = this.spanOf(held, seq, last);
+			const bytes = await this.whileHeld(sessionId, record, held, () => this.bytesOf(sessionId, held, start, end));
+			if (bytes === undefined) return undefined;
+			query.signal?.throwIfAborted();
+			for (let at = seq; at <= last; at++) {
+				const [entryStart, entryEnd] = this.spanOf(held, at, at);
+				const raw = bytes.subarray(entryStart - start, entryEnd - start);
+				const entry = this.parseRun(sessionId, held, raw)[0] as SessionEntry;
+				if (!skipped?.has(entry.type)) entries.push({ seq: at, entry });
+			}
+			seq = last + 1;
+		}
+		return entries;
+	}
+
+	private async typeOf(
+		sessionId: string,
+		held: HeldBytes,
+		start: number,
+		end: number,
+		types: readonly string[],
+		signal: AbortSignal | undefined,
+	): Promise<{ readonly type: string | undefined }> {
+		const reader = new EntryTypeReader(types);
+		const whole =
+			held.directory !== undefined && held.directory.readRange === undefined && start < held.spilledBytes
+				? await this.bytesOf(sessionId, held, start, end)
+				: undefined;
+		for (let offset = start; offset < end && !reader.decided && !reader.typeSeen; offset += TYPE_WINDOW_BYTES) {
+			signal?.throwIfAborted();
+			const windowEnd = Math.min(end, offset + TYPE_WINDOW_BYTES);
+			reader.feed(
+				whole?.subarray(offset - start, windowEnd - start) ??
+					(await this.bytesOf(sessionId, held, offset, windowEnd)),
+			);
+		}
+		return { type: reader.finish() };
+	}
+
+	private async chunksOf(
+		sessionId: string,
+		held: HeldBytes,
+		start: number,
+		end: number,
+		signal: AbortSignal | undefined,
+	): Promise<Uint8Array[]> {
+		const whole =
+			held.directory !== undefined && held.directory.readRange === undefined && start < held.spilledBytes
+				? await this.bytesOf(sessionId, held, start, end)
+				: undefined;
+		const chunks: Uint8Array[] = [];
+		for (let offset = start; offset < end; offset += RAW_CHUNK_BYTES) {
+			signal?.throwIfAborted();
+			const chunkEnd = Math.min(end, offset + RAW_CHUNK_BYTES);
+			const part =
+				whole?.subarray(offset - start, chunkEnd - start) ??
+				(await this.bytesOf(sessionId, held, offset, chunkEnd));
+			chunks.push(new Uint8Array(part));
+			await nextTurn();
+		}
+		signal?.throwIfAborted();
+		return chunks;
+	}
+
+	private async whileHeld<T>(
+		sessionId: string,
+		record: StoredSession,
+		held: HeldBytes,
+		read: () => Promise<T>,
+	): Promise<T | undefined> {
+		try {
+			return await read();
+		} catch (error) {
+			this.assertOpen();
+			if (this.records.get(sessionId) !== record || record.file !== held.file) return undefined;
+			throw error;
 		}
 	}
 
@@ -640,6 +803,10 @@ export class MemorySessionStore implements SessionStore {
 			if (matchesCwd && !(await matchesCwd(header.cwd))) continue;
 			this.assertOpen();
 			query.signal?.throwIfAborted();
+			if (query.withoutSearchText) {
+				yield { ...materializeSessionSummaryMetadata(header, record.summaryState), searchText: "" };
+				continue;
+			}
 			let snapshot: SessionSnapshot | undefined;
 			try {
 				snapshot = await this.decode(sessionId, record);
@@ -802,6 +969,7 @@ export class MemorySessionStore implements SessionStore {
 		return {
 			header: headerBytes,
 			entries: encoded === undefined ? [] : [encoded.bytes],
+			summaryState: applySessionSummaryEntries(undefined, entries).state,
 			lastSeq: entries.length,
 			directory: undefined,
 			file: 0,
@@ -970,6 +1138,10 @@ function runsOf(seqs: readonly number[]): (readonly [number, number])[] {
 		else runs.push([seq, seq]);
 	}
 	return runs;
+}
+
+function nextTurn(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
 }
 
 function concatBytes(parts: readonly Uint8Array[]): Uint8Array {

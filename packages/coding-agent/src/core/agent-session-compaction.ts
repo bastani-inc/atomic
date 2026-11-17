@@ -122,16 +122,16 @@ function stats(planned: PlannedVerbatimCompaction, text: string): VerbatimCompac
 	};
 }
 
-/** The boundary text and durable details for a planned compaction, given the history's line count before it. */
+/** The boundary text and durable details for a planned compaction, given the history's last entry position. */
 export function buildPlannedBoundary(
 	planned: PlannedVerbatimCompaction,
 	sessionId: string,
-	historyLines: number,
+	historyEntries: number,
 ): { text: string; details: VerbatimCompactionDetails } {
 	const { text, history } = buildBoundaryTextWithLocation({
 		sessionId,
 		tokensBefore: planned.tokensBefore,
-		linesBefore: historyLines,
+		entriesBefore: historyEntries,
 		access: planned.access,
 		...(planned.instructions ? { instructions: planned.instructions } : {}),
 		...(planned.compacted
@@ -203,13 +203,8 @@ async function runCompactor(
 			stop: stop.signal,
 		});
 		if (output.usage) session._emit({ type: "compaction_usage", reason, usage: output.usage });
-		const model = session.model;
-		const trigger = model
-			? model.contextWindow - session.settingsManager.getCompactionSettings(model).reserveTokens
-			: 0;
-		const cap = compactedOutputTokenCap(trigger);
-		const tokens = estimateTextTokens(output.text);
-		if (tokens > cap) return { fallbackReason: `output too long (${tokens} > ${cap} tokens)` };
+		const oversized = oversizedCompactedText(session, output.text);
+		if (oversized !== undefined) return { fallbackReason: oversized };
 		return {
 			compacted: { text: output.text, backend: "compactor", model: selection.fullId },
 			...(output.usage ? { usage: output.usage } : {}),
@@ -224,6 +219,24 @@ async function runCompactor(
 	}
 }
 
+function oversizedCompactedText(session: AgentSession, text: string): string | undefined {
+	const model = session.model;
+	const trigger = model ? model.contextWindow - session.settingsManager.getCompactionSettings(model).reserveTokens : 0;
+	const cap = compactedOutputTokenCap(trigger);
+	const tokens = estimateTextTokens(text);
+	return tokens > cap ? `output too long (${tokens} > ${cap} tokens)` : undefined;
+}
+
+function overflowingBoundary(
+	session: AgentSession,
+	planned: Pick<PlannedVerbatimCompaction, "tokensBefore" | "access" | "systemTokens" | "instructions" | "compacted">,
+): string | undefined {
+	const after = contextAfterBoundary(session, planned);
+	return after.trigger !== undefined && after.tokens >= after.trigger
+		? `output too long for the context (${after.tokens} > ${after.trigger} tokens)`
+		: undefined;
+}
+
 /**
  * Estimated tokens of the context right after a boundary, and the automatic trigger: the system prompt plus the whole
  * boundary message, compacted text included. The trigger is undefined for a model with no known context window.
@@ -236,7 +249,7 @@ function contextAfterBoundary(
 		{
 			sessionId: session.sessionManager.getSessionId(),
 			tokensBefore: planned.tokensBefore,
-			linesBefore: 0,
+			entriesBefore: 0,
 			access: planned.access,
 			...(planned.instructions ? { instructions: planned.instructions } : {}),
 			...(planned.compacted
@@ -325,8 +338,13 @@ export async function planVerbatimCompaction(
 		}
 		// Empty or whitespace text is no override: the configured form runs instead (#4977).
 		if (hookResult?.compactedText !== undefined && hookResult.compactedText.trim().length > 0) {
+			const compacted: CompactedReplacement = { text: hookResult.compactedText, backend: "extension" };
+			const oversized =
+				oversizedCompactedText(this, compacted.text) ?? overflowingBoundary(this, { ...base, compacted });
+			if (oversized !== undefined)
+				return { ...base, fallbackReason: `extension failed: ${oversized}`, fromExtension: false };
 			options.onCompactionSource?.(true);
-			return { ...base, compacted: { text: hookResult.compactedText, backend: "extension" }, fromExtension: true };
+			return { ...base, compacted, fromExtension: true };
 		}
 	}
 
@@ -350,11 +368,11 @@ export async function planVerbatimCompaction(
 		return { ...base, fallbackReason: `${selection.fullId} failed: ${outcome.fallbackReason}`, fromExtension: false };
 	}
 	// The whole replacement, system prompt and recovery instructions included, must leave room below the trigger.
-	const after = contextAfterBoundary(this, { ...base, compacted: outcome.compacted });
-	if (after.trigger !== undefined && after.tokens >= after.trigger) {
+	const overflow = overflowingBoundary(this, { ...base, compacted: outcome.compacted });
+	if (overflow !== undefined) {
 		return {
 			...base,
-			fallbackReason: `${selection.fullId} failed: output too long for the context (${after.tokens} > ${after.trigger} tokens)`,
+			fallbackReason: `${selection.fullId} failed: ${overflow}`,
 			...(outcome.usage ? { usage: outcome.usage } : {}),
 			fromExtension: false,
 		};
@@ -393,8 +411,8 @@ async function writeBestEffortBackup(this: AgentSession, label: string): Promise
 }
 
 /**
- * Back up the session and append a planned compaction as one boundary. The boundary text, with the history line
- * numbers it advertises, is built inside the append's queued mutation. Nothing else changes, so a failure here leaves
+ * Back up the session and append a planned compaction as one boundary. The boundary text, with the history entry
+ * positions it advertises, is built inside the append's queued mutation. Nothing else changes, so a failure here leaves
  * history and the in-memory context as they were. `signal` is checked inside the mutation: the append is the commit
  * point, so a cancel that arrives before it leaves the session unchanged.
  */
@@ -408,8 +426,8 @@ export async function appendVerbatimBoundary(
 	const sessionId = this.sessionManager.getSessionId();
 	let built: { text: string; details: VerbatimCompactionDetails } | undefined;
 	const entryId = await this.sessionManager.appendCompaction(
-		(historyLines) => {
-			const boundary = buildPlannedBoundary(planned, sessionId, historyLines);
+		(historyEntries) => {
+			const boundary = buildPlannedBoundary(planned, sessionId, historyEntries);
 			built = { text: boundary.text, details: { ...boundary.details, ...(backupPath ? { backupPath } : {}) } };
 			return built;
 		},

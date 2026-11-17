@@ -17,6 +17,8 @@ import { summarizeSession } from "../src/core/storage/session/session-summary.js
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import {
 	SESSION_FORMAT_VERSION,
+	type SessionEntriesPage,
+	type SessionEntriesQuery,
 	type SessionRecordHeader,
 	type SessionSnapshot,
 	type SessionStore,
@@ -79,6 +81,19 @@ class CustomSessionStore implements SessionStore {
 		const found = this.sessions.get(sessionId);
 		if (!found) throw new Error(`no such session ${sessionId}`);
 		return found;
+	}
+	async readEntryRange(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
+		const found = this.sessions.get(sessionId);
+		if (!found) throw new Error(`no such session ${sessionId}`);
+		const from = Math.max(1, query.fromSeq);
+		const through = Math.min(query.toSeq, found.entries.length);
+		return {
+			lastSeq: found.entries.length,
+			entries: found.entries
+				.slice(from - 1, Math.max(from - 1, through))
+				.map((item, index) => ({ seq: from + index, entry: item })),
+			throughSeq: Math.max(through, from - 1),
+		};
 	}
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
 		return this.sessions.get(sessionId)?.header;
@@ -216,17 +231,16 @@ describe("history:// sessions through any SessionStore (#4252)", () => {
 			}
 		});
 
-		it("reads a session transcript, narrowed to a line range", async () => {
+		it("reads a session transcript, narrowed to an entry range", async () => {
 			const { read, close } = await seeded();
 			try {
 				const whole = await read("history://sessions/recent-session");
 				assertIncludes(whole, "investigate the flaky websocket reconnect test");
 				assertIncludes(whole, "the reconnect backoff resets too early");
-				const lines = whole.split("\n");
-				const line = lines.findIndex((value) => value.includes("backoff resets")) + 1;
-				const narrow = await read(`history://sessions/recent-session:${line}-${line}`);
+				const narrow = await read("history://sessions/recent-session:2-2");
 				assertIncludes(narrow, "the reconnect backoff resets too early");
-				assert.ok(narrow.split("\n").length < lines.length);
+				assertExcludes(narrow, "investigate the flaky websocket reconnect test");
+				assertExcludes(narrow, "patch the backoff");
 				assertExcludes(narrow, "billing");
 			} finally {
 				await close();
@@ -545,8 +559,7 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 			};
 			assert.equal(bodyOf(" user"), user);
 			assert.equal(bodyOf(" assistant"), assistant);
-			const last = lines.findIndex((line) => line.includes("END-ASSISTANT")) + 1;
-			assertIncludes(await read(`history://sessions/long:${last}-${last}`), "END-ASSISTANT");
+			assertIncludes(await read("history://sessions/long:2-2"), "END-ASSISTANT");
 		} finally {
 			await close();
 		}
@@ -604,10 +617,10 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 			}
 			const continuation = "searched sessions 1-25 of 26; continue with history://sessions?offset=25";
 			assertIncludes(await search("needle", "history://sessions:1-5"), continuation);
-			const matched = await search("record", "history://sessions:4-4");
+			const matched = await search("record", "history://sessions:1-1");
 			assertIncludes(matched, continuation);
-			assert.match(matched, /history:\/\/sessions\/ranged-25:4:/);
-			assertIncludes(await search("needle", "history://sessions?offset=25:1-5"), "history://sessions/ranged-0:4:");
+			assert.match(matched, /history:\/\/sessions\/ranged-25:1:/);
+			assertIncludes(await search("needle", "history://sessions?offset=25:1-5"), "history://sessions/ranged-0:1:");
 		} finally {
 			await close();
 		}
@@ -628,7 +641,7 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 				assert.ok(row, `listing row for ${query}`);
 				assertIncludes(row, query);
 				assertIncludes(await read(row), "secret roadmap");
-				assertIncludes(await read(`${row}:2-3`), "secret roadmap");
+				assertIncludes(await read(`${row}:1-2`), "secret roadmap");
 				const label = (await search("roadmap", `history://sessions${query}`)).match(
 					/(history:\/\/sessions\/beta-session\?project=[^:\s]+):(\d+):/,
 				);
@@ -821,5 +834,191 @@ describe("history:// in a session whose own transcript is kept apart from the pr
 		const { read } = await opened();
 		assertIncludes(await read("history://workflows"), "history://workflows/run-new | ");
 		assertIncludes(await read("history://workflows/run-new"), "transcript history://sessions/stage-session");
+	});
+});
+
+describe("history:// outlines of long sessions keep every turn across continuations (#5250)", () => {
+	const OUTLINE_ENTRIES = 2_100;
+	const TURN_SEQS = [1, 400, 800, 1_200, 1_600, 2_000, OUTLINE_ENTRIES];
+
+	async function outlineStore(id: string): Promise<MemorySessionStore> {
+		const store = new MemorySessionStore();
+		const turns = new Set(TURN_SEQS);
+		await store.create(
+			header(id, PROJECT, BASE),
+			Array.from({ length: OUTLINE_ENTRIES }, (_, index) => {
+				const seq = index + 1;
+				const role = turns.has(seq) ? "user" : "assistant";
+				return entry(
+					`e${seq}`,
+					`${role === "user" ? `turn ${seq}` : `reply ${seq}`} ${"w".repeat(60)}`,
+					BASE + seq,
+					role,
+				);
+			}),
+		);
+		return store;
+	}
+
+	function outlineRouter(store: SessionStore, bytes?: number, timeMs?: number) {
+		return createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => store,
+			workflows: () => undefined,
+			budget: { ...(bytes === undefined ? {} : { bytes }), ...(timeMs === undefined ? {} : { timeMs }) },
+		});
+	}
+
+	function nextUrl(page: string): string | undefined {
+		return /continue with (history:\/\/\S+?)\]$/m.exec(page)?.[1];
+	}
+
+	it("lists a turn that does not fit at the end of the session on the next page, with its entries counted once (#5250)", async () => {
+		const id = "outline-end";
+		const store = await outlineStore(id);
+		try {
+			const failures: string[] = [];
+			let endStops = 0;
+			for (let bytes = 500; bytes <= 1_400; bytes += 20) {
+				const router = outlineRouter(store, bytes);
+				const listed: number[] = [];
+				let counted = 0;
+				let url: string | undefined = `history://sessions/${id}`;
+				let pages = 0;
+				for (; url !== undefined && pages < 40; pages++) {
+					const page: string = String((await router.read?.(url)) ?? "");
+					for (const match of page.matchAll(new RegExp(`^history://sessions/${id}:(\\d+)-\\d+ \\| `, "gm")))
+						listed.push(Number(match[1]));
+					for (const match of page.matchAll(/^entries (\d+)-(\d+): (.*)$/gm)) {
+						const kinds = [...match[3]!.matchAll(/(\d+) [a-z]/g)].reduce((sum, kind) => sum + Number(kind[1]), 0);
+						if (kinds !== Number(match[2]) - Number(match[1]) + 1) failures.push(`${bytes}: ${match[0]}`);
+						counted += kinds;
+					}
+					const next = nextUrl(page);
+					if (
+						next !== undefined &&
+						page.includes(`; the byte budget ran out`) &&
+						!page.includes(`:${OUTLINE_ENTRIES}-`)
+					) {
+						if (next.endsWith(`?cursor=${OUTLINE_ENTRIES}`)) endStops++;
+					}
+					url = next;
+				}
+				if (url !== undefined) failures.push(`${bytes}: no end after ${pages} pages`);
+				if (listed.join(",") !== TURN_SEQS.join(","))
+					failures.push(`${bytes}: listed ${listed.join(",")} instead of ${TURN_SEQS.join(",")}`);
+				if (counted !== OUTLINE_ENTRIES) failures.push(`${bytes}: counted ${counted} entries`);
+			}
+			assert.deepEqual(failures, []);
+			assert.ok(endStops > 0, "no byte budget stopped at the last turn of the session");
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("keeps the open turn of an outline continuation when its first page read runs out of time (#5250)", async () => {
+		const id = "outline-stall";
+		const store = await outlineStore(id);
+		try {
+			let stalled = 0;
+			const stalling: SessionStore = new Proxy(store, {
+				get(target, key) {
+					if (key === "readEntryRange")
+						return (sessionId: string, query: SessionEntriesQuery) => {
+							if (query.fromSeq === 900) {
+								stalled++;
+								return new Promise<never>(() => {});
+							}
+							return target.readEntryRange(sessionId, query);
+						};
+					const value = Reflect.get(target, key, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const page = String(
+				(await outlineRouter(stalling, undefined, 25).read?.(`history://sessions/${id}?cursor=900.0.0.800`)) ?? "",
+			);
+			assert.equal(stalled, 1, page);
+			assert.equal(nextUrl(page), `history://sessions/${id}?cursor=900.0.0.800`, page);
+			const resumed = String((await outlineRouter(store).read?.(nextUrl(page)!)) ?? "");
+			assert.match(resumed, new RegExp(`^history://sessions/${id}:800-1199 \\| [^|]+ \\| user: turn 800 `, "m"));
+		} finally {
+			await store.close();
+		}
+	});
+});
+
+describe("history:// session searches cut to fit their byte budget lose no match (#5250)", () => {
+	const SWEEP_PAD = "p".repeat(90);
+
+	function hitLines(seq: number, hits: readonly number[], lineCount: number): string {
+		const wanted = new Set(hits);
+		return Array.from({ length: lineCount }, (_, line) => {
+			const fillerChars = line === 4 ? 800 : seq === 2 && line === 1 ? 500 : 96;
+			return wanted.has(line) ? `hit ${seq}.${line} ${SWEEP_PAD}` : `${"f".repeat(fillerChars)} ${line}`;
+		}).join("\n");
+	}
+
+	async function sweepStore(): Promise<MemorySessionStore> {
+		const store = new MemorySessionStore();
+		const entries: SessionEntry[] = [];
+		for (let seq = 1; seq <= 5; seq++) entries.push(entry(`m${seq}`, hitLines(seq, [0, 2, 3], 5), BASE + seq));
+		entries.push(entry("m6", hitLines(6, [1, 2, 640, 641, 1290, 1291], 1_300), BASE + 6));
+		entries.push(entry("m7", hitLines(7, [0, 1], 2), BASE + 7));
+		await store.create(header("sweep", PROJECT, BASE), entries);
+		await store.create(header("sweep-other", PROJECT, BASE - DAY), [entry("o1", "nothing here", BASE - DAY)]);
+		return store;
+	}
+
+	async function shownHits(store: SessionStore, pattern: string, bytes?: number): Promise<string[]> {
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => store,
+			workflows: () => undefined,
+			...(bytes === undefined ? {} : { budget: { bytes } }),
+		});
+		const hits = new Set<string>();
+		const queue = ["history://sessions"];
+		const seen = new Set<string>();
+		for (let calls = 0; queue.length > 0; calls++) {
+			if (calls > 300) throw new Error(`${bytes} bytes: no end after ${calls} calls`);
+			const url = queue.shift()!;
+			if (seen.has(url)) continue;
+			seen.add(url);
+			const out =
+				(await router.search?.(url, {
+					pattern,
+					ignoreCase: false,
+					literal: false,
+					contextBefore: 0,
+					contextAfter: 1,
+				})) ?? "";
+			for (const match of out.matchAll(/^history:\/\/sessions\/sweep:(\d+): hit (\d+\.\d+) /gm)) {
+				assert.equal(match[1], match[2]!.split(".")[0], `${bytes} bytes: ${match[0]}`);
+				hits.add(match[2]!);
+			}
+			for (const match of out.matchAll(/(?:continue with|; search) (history:\/\/\S+?)(?:\]| for them\])/g))
+				queue.push(match[1]!);
+		}
+		return [...hits].sort();
+	}
+
+	it("resumes a trimmed page at the next match of the same entry or entry slice (#5250)", async () => {
+		const store = await sweepStore();
+		try {
+			for (const pattern of ["hit \\d+\\.\\d+", "(?s)hit \\d+\\.\\d+"]) {
+				const expected = await shownHits(store, pattern);
+				assert.equal(expected.length, 23, `${pattern}: ${expected.join(",")}`);
+				const failures: string[] = [];
+				for (let bytes = 400; bytes <= 1_700; bytes += 9) {
+					const shown = await shownHits(store, pattern, bytes);
+					const lost = expected.filter((hit) => !shown.includes(hit));
+					if (lost.length > 0) failures.push(`${pattern} at ${bytes} bytes lost ${lost.join(",")}`);
+				}
+				assert.deepEqual(failures, []);
+			}
+		} finally {
+			await store.close();
+		}
 	});
 });
