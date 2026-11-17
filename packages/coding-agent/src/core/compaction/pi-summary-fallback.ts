@@ -22,6 +22,7 @@ import {
 	type FileOperations,
 	formatFileOperations,
 	normalizeFileOpPath,
+	normalizeFileOpsAsync,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversation,
 } from "./utils.ts";
@@ -358,8 +359,10 @@ export async function runPiSummaryFallback(
 	planner: BorrowedPlanner,
 	options: RangePlannerOptions & { signal?: AbortSignal; cwd?: string; plannedCut?: PiSummaryPlannedCut },
 ): Promise<PiSummaryResult> {
-	const preparation = preparePiSummaryCompaction(entries, settings, options.cwd, options.plannedCut);
-	if (!preparation) throw new Error("No compactable history for pi summary fallback");
+	// File operations are collected as written and resolved against the cwd afterwards, without blocking.
+	const collected = preparePiSummaryCompaction(entries, settings, undefined, options.plannedCut);
+	if (!collected) throw new Error("No compactable history for pi summary fallback");
+	const preparation = { ...collected, fileOps: await normalizeFileOpsAsync(collected.fileOps, options.cwd) };
 	const model = plannerRequestModel(planner);
 	const summarize = async (
 		messages: AgentMessage[],

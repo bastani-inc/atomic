@@ -5,7 +5,7 @@
 import { isAbsolute, relative, sep } from "node:path";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { Message } from "@bastani/atomic-ai/compat";
-import { resolveToCwd } from "../tools/path-utils.ts";
+import { resolveToCwd, resolveToCwdAsync } from "../tools/path-utils.ts";
 import { sliceHead } from "../tools/truncate.ts";
 import type { LineRange } from "./compaction-types.js";
 
@@ -63,11 +63,37 @@ function addFileOp(
 
 export function normalizeFileOpPath(path: string, cwd?: string): string {
 	if (cwd === undefined || /^[a-z][a-z0-9+.-]*:\/\//i.test(path)) return path;
-	const absolutePath = resolveToCwd(path, cwd);
+	return relativeFileOpPath(resolveToCwd(path, cwd), cwd);
+}
+
+/** {@link normalizeFileOpPath} without blocking the event loop. */
+async function normalizeFileOpPathAsync(path: string, cwd?: string): Promise<string> {
+	if (cwd === undefined || /^[a-z][a-z0-9+.-]*:\/\//i.test(path)) return path;
+	return relativeFileOpPath(await resolveToCwdAsync(path, cwd), cwd);
+}
+
+function relativeFileOpPath(absolutePath: string, cwd: string): string {
 	const relativePath = relative(cwd, absolutePath);
 	return relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)
 		? absolutePath
 		: relativePath || ".";
+}
+
+/**
+ * File operations collected without a `cwd`, normalized against `cwd` as collecting them with it would have: the same
+ * paths in the same order.
+ */
+export async function normalizeFileOpsAsync(fileOps: FileOperations, cwd?: string): Promise<FileOperations> {
+	const normalize = async (paths: Set<string>) => {
+		const normalized = new Set<string>();
+		for (const path of paths) normalized.add(await normalizeFileOpPathAsync(path, cwd));
+		return normalized;
+	};
+	return {
+		read: await normalize(fileOps.read),
+		written: await normalize(fileOps.written),
+		edited: await normalize(fileOps.edited),
+	};
 }
 
 /**

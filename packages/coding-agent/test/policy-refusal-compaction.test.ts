@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
@@ -146,6 +146,36 @@ test("pi summary fallback rejects incomplete summaries (#3470)", async () => {
 			}),
 			/incomplete|empty/,
 		);
+	}
+});
+
+test("pi fallback lists the files of tool calls relative to the session's cwd", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-summary-files-"));
+	try {
+		mkdirSync(join(cwd, "src"));
+		writeFileSync(join(cwd, "src", "auth.ts"), "");
+		const entries = history();
+		const prefix = entries[2]!;
+		if (prefix.type !== "message" || prefix.message.role !== "assistant") throw new Error("history changed");
+		prefix.message.content = [
+			{ type: "toolCall", id: "a", name: "read", arguments: { path: "@src/auth.ts" } },
+			{ type: "toolCall", id: "b", name: "read", arguments: { path: join(cwd, "src", "auth.ts") } },
+			{ type: "toolCall", id: "c", name: "edit", arguments: { path: join(tmpdir(), "elsewhere.ts") } },
+		];
+		const { streamFn } = createFauxStreamFn(["history summary", "prefix summary"]);
+		const result = await runPiSummaryFallback(
+			entries,
+			{ reserveTokens: 1000, keepRecentTokens: 10 },
+			planner(model, "off"),
+			{
+				streamFn,
+				cwd,
+			},
+		);
+		assert.deepEqual(result.readFiles, [join("src", "auth.ts")]);
+		assert.deepEqual(result.modifiedFiles, [join(tmpdir(), "elsewhere.ts")]);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
 	}
 });
 
