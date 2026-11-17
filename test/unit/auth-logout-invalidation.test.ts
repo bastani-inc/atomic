@@ -8,6 +8,7 @@ import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-
 import { AuthStorage, type AuthStorageData } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
+import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { formatLogoutStatus } from "../../packages/coding-agent/src/modes/interactive/interactive-auth-routing.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
@@ -361,6 +362,7 @@ describe("logout credential invalidation (#1919)", () => {
 			},
 			scopedModels: [],
 			sessionManager: await SessionManager.create(new MemorySessionStore(), process.cwd()),
+			settingsManager: SettingsManager.inMemory(),
 			refreshCurrentModelFromRegistry: () => {},
 		};
 		const client = {
