@@ -301,7 +301,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	this.disposeMarkitDiagnosticSink = setMarkitDiagnosticSink((message) => renderDiagnosticStatus(message, this));
 	// A deprecation found once the UI owns the terminal (a settings reload after trust, a tool call) is shown as a
 	// warning in the chat instead of being written over the screen.
-	this.disposeDeprecationWarningSink = setDeprecationWarningSink((message) => this.showWarning(message));
+	this.disposeDeprecationWarningSink = installDeprecationWarningSink(this);
 	this.footerDataProvider.onBranchChange(() => {
 		this.ui.requestRender();
 	});
@@ -384,6 +384,17 @@ InteractiveModeBase.prototype.updateTerminalTitle = function (this: InteractiveM
  * Shows how a resumed session's checkout was prepared with the startup notices, which survive the chat rebuild that
  * follows deferred startup.
  */
+/**
+ * Show deprecation warnings in the UI once it owns the terminal, instead of writing them over the screen. A warning
+ * raised while deferred startup is still pending (accepting startup project trust loads the project's settings) joins the
+ * retained startup notices: deferred startup rebuilds the chat before releasing it, and that rebuild would drop it.
+ */
+export function installDeprecationWarningSink(mode: InteractiveModeBase): () => void {
+	return setDeprecationWarningSink((message) =>
+		mode.showWarning(message, mode.deferredStartupPending ? mode.startupNoticesContainer : mode.chatContainer),
+	);
+}
+
 export function showResumeNotices(
 	mode: Pick<InteractiveModeBase, "startupNoticesContainer" | "showWarning">,
 	notices: readonly { readonly type: "info" | "warning"; readonly message: string }[] | undefined,

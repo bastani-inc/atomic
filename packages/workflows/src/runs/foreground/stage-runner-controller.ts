@@ -56,6 +56,7 @@ import {
 	isUnrecognizedModelFailure,
 	type ModelFallbackFailureOptions,
 	resolveScopedModelsFromCatalog,
+	splitReasoningSuffix,
 	type WorkflowResolvedModelCandidate,
 	type WorkflowResolvedScopedModel,
 	workflowModelId,
@@ -2665,10 +2666,38 @@ export class StageSessionController {
 			// included; its first candidate already does.
 			.then((candidates) =>
 				this.effectiveStageOptions?.model === "auto" && this.effectiveStageOptions.autoNeedsImageInput === true
-					? candidates.filter((candidate, index) => index === 0 || acceptsImageInput(candidate.value))
+					? this.imageCapableCandidates(candidates)
 					: candidates,
 			);
 		return this.candidatesPromise;
+	}
+
+	/**
+	 * The fallback candidates of a task that reads images, without the ones that cannot see them. A candidate named only by
+	 * ID is checked against the model it stands for in the stage's model runtime; one the stage cannot resolve is not
+	 * taken as seeing images, so it is skipped with a warning rather than run on placeholders.
+	 */
+	private async imageCapableCandidates(
+		candidates: WorkflowResolvedModelCandidate[],
+	): Promise<WorkflowResolvedModelCandidate[]> {
+		const runtime = this.effectiveStageOptions?.modelRuntime ?? this.sharedModelRuntime;
+		const unresolved = candidates.some((candidate, index) => index > 0 && typeof candidate.value === "string");
+		const known =
+			runtime !== undefined && unresolved
+				? new Map((await runtime.getAvailable()).map((model) => [`${model.provider}/${model.id}`, model]))
+				: undefined;
+		return candidates.filter((candidate, index) => {
+			if (index === 0) return true;
+			const model =
+				typeof candidate.value === "string"
+					? known?.get(splitReasoningSuffix(candidate.value).baseModel)
+					: candidate.value;
+			if (model !== undefined && acceptsImageInput(model)) return true;
+			this.modelWarnings.push(
+				`Skipped fallback model ${candidate.id}: ${model === undefined ? "its image support is unknown" : "it does not accept image input"}, and this task reads images.`,
+			);
+			return false;
+		});
 	}
 
 	private async createInitialSession(consumer: AgentSessionConsumer): Promise<StageSessionRuntime> {

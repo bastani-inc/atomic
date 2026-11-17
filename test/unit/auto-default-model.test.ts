@@ -805,6 +805,138 @@ test("through the SDK session adapter, an auto task that reads images runs on th
 	}
 });
 
+test(
+	"without a model catalog, an auto task that reads images never falls back to a listed model that cannot see them",
+	async () => {
+		const m = await models({ textOnly: [FALLBACK_ID] });
+		const cwd = tempDir("atomic-auto-default-sdk-image-fallback-");
+		mkdirSync(join(cwd, "agent"), { recursive: true });
+		const image = join(cwd, "reference.png");
+		writeFileSync(image, "png");
+		const sdk = createAgentSessionAdapter({
+			cwd,
+			agentDir: join(cwd, "agent"),
+			modelRuntime: m.runtime,
+			settingsManager: SettingsManager.inMemory({
+				...WITH_DEFAULT,
+				retry: { enabled: false },
+				compaction: { enabled: false },
+			}),
+			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		});
+		const attempts: string[] = [];
+		const def = workflow({
+			name: "sdk-auto-image-fallback",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.task("design", {
+					prompt: "Match the reference.",
+					model: "auto",
+					reads: [image],
+					fallbackModels: [FALLBACK_ID],
+				});
+				return {};
+			},
+		});
+		const result = await run(
+			def,
+			{},
+			{
+				store: createStore(),
+				adapters: {
+					agentSession: {
+						...sdk,
+						async create(options: import("./stage-runner-helpers.js").StageSessionCreateOptions, meta) {
+							const id =
+								typeof options.model === "string"
+									? options.model
+									: `${options.model?.provider}/${options.model?.id}`;
+							attempts.push(id);
+							if (id.startsWith(DEFAULT_ID)) throw new Error("404 model_not_found: unknown model");
+							return sdk.create(options, meta);
+						},
+					},
+				},
+			},
+		);
+		assert.notEqual(result.status, "completed", JSON.stringify(attempts));
+		assert.equal(
+			attempts.some((id) => id.startsWith(FALLBACK_ID)),
+			false,
+			`never admitted: ${attempts.join(", ")}`,
+		);
+		assert.deepEqual(m.requests, [], "no model turn runs on a model that cannot see the images");
+	},
+	REAL_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"without a model catalog, an auto task that reads images falls back to a listed model its runtime shows can see them",
+	async () => {
+		const m = await models();
+		const cwd = tempDir("atomic-auto-default-sdk-image-fallback-ok-");
+		mkdirSync(join(cwd, "agent"), { recursive: true });
+		const image = join(cwd, "reference.png");
+		writeFileSync(image, "png");
+		const sdk = createAgentSessionAdapter({
+			cwd,
+			agentDir: join(cwd, "agent"),
+			modelRuntime: m.runtime,
+			settingsManager: SettingsManager.inMemory({
+				...WITH_DEFAULT,
+				retry: { enabled: false },
+				compaction: { enabled: false },
+			}),
+			builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		});
+		const def = workflow({
+			name: "sdk-auto-image-fallback-ok",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.task("design", {
+					prompt: "Match the reference.",
+					model: "auto",
+					reads: [image],
+					fallbackModels: [FALLBACK_ID],
+					modelRuntime: m.runtime,
+					tools: [],
+				});
+				return {};
+			},
+		});
+		const result = await run(
+			def,
+			{},
+			{
+				store: createStore(),
+				adapters: {
+					agentSession: {
+						...sdk,
+						async create(options: import("./stage-runner-helpers.js").StageSessionCreateOptions, meta) {
+							const id =
+								typeof options.model === "string"
+									? options.model
+									: `${options.model?.provider}/${options.model?.id}`;
+							if (id.startsWith(DEFAULT_ID)) throw new Error("404 model_not_found: unknown model");
+							return sdk.create(options, meta);
+						},
+					},
+				},
+			},
+		);
+		assert.equal(result.status, "completed", result.error);
+		assert.deepEqual(
+			m.requests.map((request) => request.model),
+			[FALLBACK_ID],
+		);
+	},
+	REAL_SESSION_TIMEOUT_MS,
+);
+
 test("an auto task that reads images never falls back to a model that cannot see them", async () => {
 	const f = await stageFixture(WITH_DEFAULT, { textOnly: [SESSION_ID] });
 	const image = join(tempDir("atomic-auto-default-image-fallback-"), "reference.png");
