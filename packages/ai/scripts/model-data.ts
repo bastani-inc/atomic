@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 export const MODEL_DATA_SCHEMA_VERSION = 6;
 export const MODEL_DATA_MANIFEST_FILE = ".manifest.json";
@@ -11,8 +11,18 @@ export interface ModelDataManifest {
 	schemaVersion: number;
 	generatedAt: string;
 	structureHash: string;
+	/** Hash of the generator sources that produced the data; see {@link modelDataInputsHash}. */
+	inputsHash: string;
 	files: Record<string, string>;
 }
+
+/** The generator script whose relative-import closure produces the model data. */
+const MODEL_DATA_GENERATOR = join("scripts", "generate-models.ts");
+// `import`/`export … from "./x"` and `import "./x"` statements that begin a line. Multi-line import lists contain no
+// semicolon, and generated text such as `output += \`import …\`` does not begin a line. Type-only imports and
+// exports are erased before the generator runs, so they cannot change its output.
+const RELATIVE_IMPORT_PATTERN =
+	/^(?:import|export)(?!\s+type\b)\b[^;]*?\bfrom\s*["'](\.[^"']+)["']|^import\s*["'](\.[^"']+)["']/gm;
 
 const MODEL_DATA_IMPORT_PATTERN =
 	/^import \{ [A-Z][A-Z0-9_]*_CLASSIFIER_MODELS, [A-Z][A-Z0-9_]*_IMAGE_MODELS, [A-Z][A-Z0-9_]*_MODELS \} from "\.\/providers\/([^"/]+)\.models\.ts";$/gm;
@@ -134,15 +144,54 @@ export function modelDataStructureHash(structure: ModelDataStructure): string {
 	return sha256(JSON.stringify(normalized));
 }
 
+function isGeneratedModelSource(path: string): boolean {
+	return path.endsWith("models.generated.ts") || path.endsWith(".models.ts") || path.includes("/providers/data/");
+}
+
+function resolveRelativeImport(fromFile: string, specifier: string): string | undefined {
+	const target = resolve(dirname(fromFile), specifier);
+	const candidates = specifier.endsWith(".js") ? [target.slice(0, -".js".length) + ".ts", target] : [target];
+	return candidates.find((candidate) => existsSync(candidate) && statSync(candidate).isFile());
+}
+
+/**
+ * Hash of every source file the model data generator reads: `scripts/generate-models.ts` and its relative-import
+ * closure, which includes the catalog transform in `src/utils/models-dev-catalog.ts`. Generated catalog files are
+ * outputs, not inputs, and are left out. Paths are package-relative with `/` separators and line endings are LF,
+ * so the hash is the same on every OS.
+ */
+export function modelDataInputsHash(packageRoot: string): string {
+	const root = resolve(packageRoot);
+	const seen = new Set<string>();
+	const pending = [join(root, MODEL_DATA_GENERATOR)];
+	const entries: string[] = [];
+	while (pending.length > 0) {
+		const file = pending.pop()!;
+		const path = relative(root, file).split("\\").join("/");
+		if (seen.has(path) || isGeneratedModelSource(path)) continue;
+		seen.add(path);
+		const content = readFileSync(file, "utf8").replaceAll("\r\n", "\n");
+		entries.push(`${path}\0${content}`);
+		if (!file.endsWith(".ts")) continue;
+		for (const match of content.matchAll(RELATIVE_IMPORT_PATTERN)) {
+			const resolved = resolveRelativeImport(file, match[1] ?? match[2]!);
+			if (resolved) pending.push(resolved);
+		}
+	}
+	return sha256(entries.sort().join("\0"));
+}
+
 export function createModelDataManifest(
 	structure: ModelDataStructure,
 	fileContents: Readonly<Record<string, string>>,
 	generatedAt: string,
+	inputsHash: string,
 ): ModelDataManifest {
 	return {
 		schemaVersion: MODEL_DATA_SCHEMA_VERSION,
 		generatedAt,
 		structureHash: modelDataStructureHash(structure),
+		inputsHash,
 		files: sortedRecord(Object.entries(fileContents).map(([file, content]) => [file, sha256(content)] as const)),
 	};
 }
@@ -217,7 +266,7 @@ function throwValidationErrors(errors: string[]): never {
 	throw new Error(`Invalid generated model data:\n${visible.map((error) => `  - ${error}`).join("\n")}${suffix}`);
 }
 
-export function validateModelDataDirectory(structure: ModelDataStructure, dataDir: string): void {
+export function validateModelDataDirectory(structure: ModelDataStructure, dataDir: string, inputsHash?: string): void {
 	if (!existsSync(dataDir) || !statSync(dataDir).isDirectory()) {
 		throw new Error(`Generated model data directory does not exist: ${dataDir}`);
 	}
@@ -242,6 +291,9 @@ export function validateModelDataDirectory(structure: ModelDataStructure, dataDi
 	}
 	if (typeof manifest?.generatedAt !== "string" || Number.isNaN(Date.parse(manifest.generatedAt))) {
 		errors.push("model data manifest has an invalid generation timestamp");
+	}
+	if (inputsHash !== undefined && manifest?.inputsHash !== inputsHash) {
+		errors.push("model data was generated from different catalog sources than the current generator");
 	}
 	const expectedStructureHash = modelDataStructureHash(structure);
 	if (manifest?.structureHash !== expectedStructureHash) {
@@ -308,5 +360,5 @@ export function validateModelDataDirectory(structure: ModelDataStructure, dataDi
 
 export function validateGeneratedModelData(packageRoot: string): void {
 	const structure = readModelDataStructure(packageRoot);
-	validateModelDataDirectory(structure, join(packageRoot, "src", "providers", "data"));
+	validateModelDataDirectory(structure, join(packageRoot, "src", "providers", "data"), modelDataInputsHash(packageRoot));
 }
