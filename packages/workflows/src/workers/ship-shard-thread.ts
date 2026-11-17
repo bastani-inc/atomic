@@ -49,10 +49,12 @@ function switchToWriteAheadLog() {
 }
 
 function normalize(row) {
-	const result = {};
-	for (const [key, value] of Object.entries(row))
-		result[key] = typeof value === "bigint" && value >= -BigInt(Number.MAX_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value;
-	return result;
+	return Object.fromEntries(
+		Object.entries(row).map(([key, value]) => [
+			key,
+			typeof value === "bigint" && value >= -BigInt(Number.MAX_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value,
+		]),
+	);
 }
 
 const prepared = new Map();

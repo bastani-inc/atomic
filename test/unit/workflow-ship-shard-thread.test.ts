@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Worker } from "node:worker_threads";
+import { openNodeSqliteDatabase } from "@bastani/atomic";
 import {
 	type SqliteDatabase,
 	StorageInvalidTextError,
@@ -289,3 +290,20 @@ for (const grouped of [false, true])
 		if (behind !== undefined) await assert.rejects(behind, (error: unknown) => error === lost);
 		await assert.rejects(database.get("SELECT 1"), (error: unknown) => error === lost);
 	});
+
+test("a threaded connection returns a column named __proto__ as its own field, as the in-process adapter does (#5321)", async () => {
+	const path = itemsPath("nested");
+	const threaded = await openItems(undefined, path);
+	const inProcess = await openNodeSqliteDatabase(join(dirname(path), "in-process.sqlite"));
+	databases.push(inProcess);
+	const sql = `SELECT NULL AS "__proto__", 3 AS "constructor", 4 AS "toString"`;
+	const read = async (database: SqliteDatabase) => [await database.get(sql), ...(await database.all(sql))];
+	const [threadedRows, inProcessRows] = [await read(threaded), await read(inProcess)];
+	for (const row of [...threadedRows, ...inProcessRows]) {
+		assert.ok(row !== undefined);
+		assert.deepEqual(Object.keys(row), ["__proto__", "constructor", "toString"]);
+		assert.ok(Object.hasOwn(row, "__proto__"));
+		assert.equal(Object.getPrototypeOf(row), Object.prototype);
+	}
+	assert.deepStrictEqual(threadedRows, inProcessRows);
+});
