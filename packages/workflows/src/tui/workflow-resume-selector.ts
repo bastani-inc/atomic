@@ -44,7 +44,7 @@ export type WorkflowResumeRefresh = () => Promise<{
 	readonly catalog: WorkflowResumeCatalogRows;
 }>;
 
-interface WorkflowResumeSelectorItem {
+export interface WorkflowResumeSelectorItem {
 	readonly result: Exclude<WorkflowResumeSelectorResult, { kind: "close" }>;
 	readonly session: SessionInfo;
 }
@@ -294,7 +294,14 @@ const EMPTY_CATALOG: WorkflowResumeCatalogRows = { durable: [], completed: [] };
 
 export const WORKFLOW_RESUME_PICKER_UNAVAILABLE =
 	"The workflow resume picker requires the host session-picker capability (ctx.ui.hostSessionPicker), " +
-	"which this host does not expose. Update @bastani/atomic, or resume directly with: /workflow resume <id>";
+	'which this host does not expose. Update @bastani/atomic, or ask the agent to resume the run with workflow({ action: "resume", runId: "<id>" }).';
+
+export function toWorkflowPickerRow(item: WorkflowResumeSelectorItem): PiHostSessionPickerRow {
+	return {
+		...toPickerRow(item.session),
+		canDelete: item.result.kind !== "live",
+	};
+}
 
 function toPickerRow(session: SessionInfo): PiHostSessionPickerRow {
 	return {
@@ -315,7 +322,7 @@ function toPickerRow(session: SessionInfo): PiHostSessionPickerRow {
 }
 
 /**
- * Open the `/workflow resume` picker through the host session-picker
+ * Open the `/resume` workflow picker through the host session-picker
  * capability: the terminal host mounts the real `SessionSelectorComponent`,
  * so arrow-key navigation and search never cross the host⇄extension boundary
  * and stay instant even while this process hydrates the catalog or refreshes

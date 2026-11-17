@@ -1,8 +1,15 @@
 import { dirname } from "node:path";
 import { isResumeFailure } from "../../core/resume/failure.ts";
+import type { SessionInfo, SessionListProgress } from "../../core/session-manager.ts";
 import { worktreeRestoreNotices } from "../../core/session-worktree-snapshots.ts";
+import {
+	deleteWorkflowFromPicker,
+	listWorkflowResumeEntries,
+	resumeWorkflowFromPicker,
+} from "../../core/workflow-resume.ts";
 import { canonicalizePath } from "../../utils/paths.ts";
 import { withHostProjectTrustPrompt } from "../interactive-engine/extension-ui-bridge.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -23,6 +30,7 @@ import {
 import type { MissingCwdForkSource } from "./interactive-mode-surface.ts";
 import { showQueueRestoreFailure } from "./interactive-queueing.ts";
 import { clearChatForRerender } from "./interactive-render-chat.ts";
+import { resolveResumeTarget, workflowResumeSession } from "./resume-catalog.ts";
 import { showSessionNotices } from "./session-notices.ts";
 
 InteractiveModeBase.prototype.handleCloneCommand = async function (this: InteractiveModeBase): Promise<void> {
@@ -268,30 +276,65 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 
 InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveModeBase): void {
 	this.showSelector((done) => {
+		let closed = false;
+		let refreshTimer: ReturnType<typeof setInterval> | undefined;
+		let workflowCatalog: Promise<SessionInfo[]> | undefined;
+		const close = () => {
+			closed = true;
+			clearInterval(refreshTimer);
+			selector.dispose();
+			done();
+		};
+		const workflows = () => {
+			workflowCatalog ??= getResumeWorkflows(this).catch((error) => {
+				if (!closed) selector.getSessionList().onError?.(error instanceof Error ? error.message : String(error));
+				return [];
+			});
+			return workflowCatalog;
+		};
+		const load = async (all: boolean, onProgress?: SessionListProgress): Promise<SessionInfo[]> => {
+			let partial: readonly SessionInfo[] = [];
+			let runRows: SessionInfo[] = [];
+			const report = (loaded: number, total: number, sessions?: readonly SessionInfo[]) => {
+				if (sessions) partial = sessions;
+				onProgress?.(loaded + runRows.length, total + runRows.length, [...partial, ...runRows]);
+			};
+			const runs = workflows().then((rows) => {
+				runRows = rows;
+				report(partial.length, partial.length);
+				return rows;
+			});
+			const sessions = all
+				? SessionManager.listAll(this.sessionManager.getSessionStore(), report)
+				: SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionStore(), report);
+			const [sessionRows, workflowRows] = await Promise.all([sessions, runs]);
+			return [...sessionRows, ...workflowRows];
+		};
 		const selector = new SessionSelectorComponent(
-			(onProgress) =>
-				SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionStore(), onProgress),
-			(onProgress) => SessionManager.listAll(this.sessionManager.getSessionStore(), onProgress),
+			(onProgress) => load(false, onProgress),
+			(onProgress) => load(true, onProgress),
 			async (selected) => {
-				selector.dispose();
-				done();
-				const directory =
-					this.sessionManager.getSessionStore().descriptor.adapter === "jsonl"
-						? dirname(selected.path)
-						: undefined;
-				await this.handleResumeSession(selected.id, undefined, directory);
+				close();
+				await resumeCatalogSelection(this, selected);
 			},
 			() => {
-				selector.dispose();
-				done();
+				close();
 				this.ui.requestRender();
 			},
 			() => {
-				selector.dispose();
+				close();
 				void this.shutdown();
 			},
 			() => this.ui.requestRender(),
 			{
+				variant: "mixed",
+				title: "Resume",
+				deleteWorkflow: async (runId) => {
+					if (this.runtimeHost instanceof IsolatedInteractiveRuntime)
+						await this.runtimeHost.deleteWorkflowFromPicker(runId);
+					else await deleteWorkflowFromPicker(this.session, runId);
+					workflowCatalog = undefined;
+				},
 				deleteSession:
 					this.sessionManager.getSessionStore().descriptor.adapter === "jsonl"
 						? undefined
@@ -324,8 +367,105 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 
 			{ id: this.sessionManager.getSessionId(), directory: this.sessionManager.getSessionDir() },
 		);
-		return { component: selector, focus: selector };
+		if (this.runtimeHost) {
+			let refreshing = false;
+			refreshTimer = setInterval(() => {
+				if (closed || refreshing) return;
+				refreshing = true;
+				workflowCatalog = undefined;
+				void selector
+					.refreshSessions()
+					.catch((error) => {
+						if (!closed)
+							selector.getSessionList().onError?.(error instanceof Error ? error.message : String(error));
+					})
+					.finally(() => {
+						refreshing = false;
+					});
+			}, 5_000);
+			refreshTimer.unref?.();
+		}
+		return {
+			component: selector,
+			focus: selector,
+			dispose: () => {
+				closed = true;
+				clearInterval(refreshTimer);
+				selector.dispose();
+			},
+		};
 	});
+};
+
+async function getResumeWorkflows(mode: InteractiveModeBase, target?: string): Promise<SessionInfo[]> {
+	if (!mode.runtimeHost) return [];
+	await mode.ensureDeferredStartupComplete();
+	const rows =
+		mode.runtimeHost instanceof IsolatedInteractiveRuntime
+			? await mode.runtimeHost.getWorkflowResumeEntries(target)
+			: await listWorkflowResumeEntries(mode.session, target);
+	return rows.map(workflowResumeSession);
+}
+
+async function resumeCatalogSelection(mode: InteractiveModeBase, selected: SessionInfo): Promise<void> {
+	if (selected.resumeKind === "workflow") {
+		try {
+			const handled =
+				mode.runtimeHost instanceof IsolatedInteractiveRuntime
+					? await mode.runtimeHost.resumeWorkflowFromPicker(selected.id)
+					: await resumeWorkflowFromPicker(mode.session, selected.id);
+			if (!handled) mode.showError("Workflow resume is unavailable. Reload Atomic and try again.");
+		} catch (error) {
+			mode.showError(error instanceof Error ? error.message : String(error));
+		}
+		return;
+	}
+	const directory =
+		mode.sessionManager.getSessionStore().descriptor.adapter === "jsonl" ? dirname(selected.path) : undefined;
+	await mode.handleResumeSession(selected.id, undefined, directory);
+}
+
+InteractiveModeBase.prototype.handleResumeTarget = async function (
+	this: InteractiveModeBase,
+	target: string,
+): Promise<void> {
+	if (/\s/.test(target) || target.startsWith("-")) {
+		this.showError("Usage: /resume [session-or-run-id].");
+		return;
+	}
+	try {
+		const [sessions, runs] = await Promise.allSettled([
+			SessionManager.listAll(this.sessionManager.getSessionStore()),
+			getResumeWorkflows(this, target),
+		]);
+		if (sessions.status === "rejected") throw sessions.reason;
+		const resolution = resolveResumeTarget(target, [
+			...sessions.value,
+			...(runs.status === "fulfilled" ? runs.value : []),
+		]);
+		if (
+			runs.status === "rejected" &&
+			resolution.kind !== "ambiguous" &&
+			resolution.kind !== "invalid" &&
+			!(resolution.kind === "session" && resolution.session.id === target)
+		)
+			throw runs.reason;
+		if (resolution.kind === "session" || resolution.kind === "workflow") {
+			await resumeCatalogSelection(this, resolution.session);
+		} else if (resolution.kind === "ambiguous") {
+			this.showError(
+				`Resume id "${target}" is ambiguous: ${resolution.matches.map((entry) => `${entry.resumeKind === "workflow" ? "workflow" : "session"} ${entry.id}`).join(", ")}. Use /resume to choose an entry, or provide a unique full id.`,
+			);
+		} else {
+			this.showError(
+				resolution.kind === "invalid"
+					? "Use a full session or workflow id, or a unique 8-character prefix. Workflow resume does not accept flags."
+					: `No session or resumable workflow matches "${target}".`,
+			);
+		}
+	} catch (error) {
+		this.showError(error instanceof Error ? error.message : String(error));
+	}
 };
 
 InteractiveModeBase.prototype.handleResumeSession = async function (

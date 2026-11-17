@@ -431,9 +431,10 @@ describe("workflow resume selector host-picker path", () => {
 				assert.equal(error.message, WORKFLOW_RESUME_PICKER_UNAVAILABLE);
 				assert.match(
 					error.message,
-					/\/workflow resume <id>/,
+					/workflow\(\{ action: "resume", runId: "<id>" \}\)/,
 					"error tells the user the direct-resume escape hatch",
 				);
+				assert.doesNotMatch(error.message, /\/workflow resume/);
 				return true;
 			},
 		);

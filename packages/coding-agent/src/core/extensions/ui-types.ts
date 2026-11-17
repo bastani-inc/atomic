@@ -213,6 +213,7 @@ export interface HostSessionPickerRow {
 	title?: string;
 	/** The row's dim second line, in place of age · messages · summary. */
 	detail?: string;
+	canDelete?: boolean;
 }
 
 /** Request for {@link ExtensionUIContext.hostSessionPicker}. */

@@ -33,6 +33,7 @@ export function sessionInfoFromPickerRow(row: HostSessionPickerRow): SessionInfo
 		...(row.messageColor !== undefined ? { messageColor: row.messageColor } : {}),
 		...(row.title !== undefined ? { title: row.title } : {}),
 		...(row.detail !== undefined ? { detail: row.detail } : {}),
+		...(row.canDelete !== undefined ? { canDelete: row.canDelete } : {}),
 	};
 }
 

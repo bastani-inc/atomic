@@ -80,6 +80,7 @@ async function submit(text: string): Promise<Call[]> {
 		handleArminSaysHi: record("handleArminSaysHi"),
 		handleDementedDelves: record("handleDementedDelves"),
 		showSessionSelector: record("showSessionSelector"),
+		handleResumeTarget: record("handleResumeTarget"),
 		shutdown: record("shutdown"),
 		showWarning: record("showWarning"),
 	};
@@ -91,6 +92,7 @@ async function submit(text: string): Promise<Call[]> {
 /** Built-ins that read an argument, with the call each makes for `/name<separator><argument>`. */
 const ARGUMENT_COMMANDS: ReadonlyArray<{ name: string; argument: string; expected: Call }> = [
 	{ name: "tasks", argument: "agent-1", expected: ["openTaskInspector", "agent-1"] },
+	{ name: "resume", argument: "aaaaaaaa", expected: ["handleResumeTarget", "aaaaaaaa"] },
 	{ name: "model", argument: "opus", expected: ["handleModelCommand", "opus"] },
 	{ name: "thinking", argument: "high", expected: ["handleThinkingCommand", "high"] },
 	{ name: "export", argument: "out.jsonl", expected: ["export", "out.jsonl"] },
@@ -103,7 +105,7 @@ const ARGUMENT_COMMANDS: ReadonlyArray<{ name: string; argument: string; expecte
 ];
 
 /** Built-ins that take no argument, with the call each makes when submitted bare. */
-const BARE_COMMANDS: ReadonlyArray<{ name: string; expected: Call }> = [
+const BARE_COMMANDS: ReadonlyArray<{ name: string; expected: Call; withText?: Call }> = [
 	{ name: "settings", expected: ["showSettingsSelector"] },
 	{ name: "scoped-models", expected: ["showModelsSelector"] },
 	{ name: "share", expected: ["handleShareCommand"] },
@@ -118,7 +120,7 @@ const BARE_COMMANDS: ReadonlyArray<{ name: string; expected: Call }> = [
 	{ name: "trust", expected: ["showTrustSelector"] },
 	{ name: "new", expected: ["handleClearCommand"] },
 	{ name: "reload", expected: ["handleReloadCommand"] },
-	{ name: "resume", expected: ["showSessionSelector"] },
+	{ name: "resume", expected: ["showSessionSelector"], withText: ["handleResumeTarget", "extra"] },
 	{ name: "exit", expected: ["shutdown"] },
 	{ name: "quit", expected: ["shutdown"] },
 	{ name: "debug", expected: ["handleDebugCommand"] },
@@ -140,11 +142,11 @@ describe("built-in slash commands split their name at the first whitespace (#519
 			});
 		}
 
-		for (const { name, expected } of BARE_COMMANDS) {
-			test(`/${name} runs bare and leaves text after a ${label} to the session (#5192)`, async () => {
+		for (const { name, expected, withText: textHandler } of BARE_COMMANDS) {
+			test(`/${name} runs bare and routes text after a ${label} (#5192)`, async () => {
 				assert.deepEqual(await submit(`/${name}`), [expected]);
 				const withText = `/${name}${separator}extra`;
-				assert.deepEqual(await submit(withText), [["prompt", withText]]);
+				assert.deepEqual(await submit(withText), [textHandler ?? ["prompt", withText]]);
 			});
 		}
 	}

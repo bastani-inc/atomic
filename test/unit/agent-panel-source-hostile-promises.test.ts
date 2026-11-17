@@ -35,13 +35,16 @@ class SpeciesThrows extends Promise<unknown> {
 }
 
 let recursiveDepth = 0;
+const THEN_METHOD = "then";
 function recursiveThen(): object {
 	recursiveDepth++;
-	return {
-		get then() {
+	return Object.defineProperty({}, THEN_METHOD, {
+		configurable: true,
+		enumerable: true,
+		get() {
 			throw recursiveThen();
 		},
-	};
+	});
 }
 
 async function exercise(source: Partial<AgentPanelSource>) {

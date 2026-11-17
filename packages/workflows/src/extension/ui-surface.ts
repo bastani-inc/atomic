@@ -211,6 +211,7 @@ export interface PiHostSessionPickerRow {
 	title?: string;
 	/** The row's dim second line, in place of age · messages · summary. */
 	detail?: string;
+	canDelete?: boolean;
 }
 
 /** Request accepted by the host-native session picker capability. */

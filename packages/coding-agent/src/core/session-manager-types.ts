@@ -370,6 +370,8 @@ export interface SessionInfo {
 	title?: string;
 	/** Synthetic selector rows: the row's dim second line, in place of age · messages · summary. */
 	detail?: string;
+	resumeKind?: "workflow";
+	canDelete?: boolean;
 }
 
 export type SessionListProgress = (loaded: number, total: number, partialSessions?: readonly SessionInfo[]) => void;

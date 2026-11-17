@@ -10,6 +10,7 @@ import type {
 } from "../../core/extensions/ui-types.js";
 import type { WorkflowActivityFrame, WorkflowRootActivity } from "../../core/extensions/workflow-events.js";
 import type { KeyId } from "../../core/keybindings.ts";
+import { parseHostSessionPickerRows } from "../../core/workflow-resume.ts";
 
 /**
  * Version 4 separates minimal session binding from optional resource readiness.
@@ -367,73 +368,8 @@ function parseEngineTerminalControl(value: JsonValue | undefined): EngineTermina
 	return { kind: "autowrap", enabled: value.enabled };
 }
 
-const SESSION_PICKER_MESSAGE_COLORS = ["success", "warning", "accent", "error"] as const;
-
-function parseSessionPickerRow(value: JsonValue): HostSessionPickerRow | undefined {
-	if (!isJsonObject(value)) return undefined;
-	const {
-		path,
-		id,
-		cwd,
-		createdAt,
-		modifiedAt,
-		messageCount,
-		firstMessage,
-		summary,
-		allMessagesText,
-		name,
-		messageColor,
-		title,
-		detail,
-	} = value;
-	if (
-		typeof path !== "string" ||
-		typeof id !== "string" ||
-		typeof cwd !== "string" ||
-		typeof createdAt !== "number" ||
-		typeof modifiedAt !== "number" ||
-		typeof messageCount !== "number" ||
-		typeof firstMessage !== "string"
-	)
-		return undefined;
-	if (summary !== undefined && typeof summary !== "string") return undefined;
-	if (allMessagesText !== undefined && typeof allMessagesText !== "string") return undefined;
-	if (name !== undefined && typeof name !== "string") return undefined;
-	if (title !== undefined && typeof title !== "string") return undefined;
-	if (detail !== undefined && typeof detail !== "string") return undefined;
-	if (
-		messageColor !== undefined &&
-		!SESSION_PICKER_MESSAGE_COLORS.includes(messageColor as (typeof SESSION_PICKER_MESSAGE_COLORS)[number])
-	)
-		return undefined;
-	return {
-		path,
-		id,
-		cwd,
-		createdAt,
-		modifiedAt,
-		messageCount,
-		firstMessage,
-		...(summary !== undefined ? { summary } : {}),
-		...(allMessagesText !== undefined ? { allMessagesText } : {}),
-		...(name !== undefined ? { name } : {}),
-		...(messageColor !== undefined
-			? { messageColor: messageColor as (typeof SESSION_PICKER_MESSAGE_COLORS)[number] }
-			: {}),
-		...(title !== undefined ? { title } : {}),
-		...(detail !== undefined ? { detail } : {}),
-	};
-}
-
 function parseSessionPickerRows(value: JsonValue | undefined): HostSessionPickerRow[] | undefined {
-	if (!Array.isArray(value)) return undefined;
-	const rows: HostSessionPickerRow[] = [];
-	for (const entry of value) {
-		const row = parseSessionPickerRow(entry);
-		if (!row) return undefined;
-		rows.push(row);
-	}
-	return rows;
+	return parseHostSessionPickerRows(value);
 }
 
 const INPUT_FORM_FIELD_TYPES = ["string", "text", "number", "integer", "boolean", "select"] as const;

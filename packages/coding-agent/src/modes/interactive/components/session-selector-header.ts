@@ -17,6 +17,7 @@ export class SessionSelectorHeader implements Component {
 	private loadProgress: { loaded: number; total: number } | null = null;
 	private showPath = false;
 	private confirmingDeletePath: string | null = null;
+	private confirmingDeleteWorkflow = false;
 	private statusMessage: { type: "info" | "error"; message: string } | null = null;
 	private statusTimeout: ReturnType<typeof setTimeout> | null = null;
 	private variant: SessionListVariant = "sessions";
@@ -55,8 +56,9 @@ export class SessionSelectorHeader implements Component {
 		this.showPath = showPath;
 	}
 
-	setConfirmingDeletePath(path: string | null): void {
+	setConfirmingDeletePath(path: string | null, isWorkflow = false): void {
 		this.confirmingDeletePath = path;
+		this.confirmingDeleteWorkflow = path !== null && isWorkflow;
 	}
 
 	private clearStatusTimeout(): void {
@@ -90,7 +92,8 @@ export class SessionSelectorHeader implements Component {
 	/** The line under the list: the pending delete question, else a transient status. */
 	getNotice(): SessionListNotice | undefined {
 		if (this.confirmingDeletePath !== null) {
-			return { text: `Delete ${this.variant === "runs" ? "this workflow run" : "this session"}?`, tone: "error" };
+			const target = this.variant === "runs" || this.confirmingDeleteWorkflow ? "this workflow run" : "this session";
+			return { text: `Delete ${target}?`, tone: "error" };
 		}
 		if (this.statusMessage) {
 			return { text: this.statusMessage.message, tone: this.statusMessage.type === "error" ? "error" : "accent" };
@@ -100,10 +103,13 @@ export class SessionSelectorHeader implements Component {
 
 	render(width: number): string[] {
 		const inner = Math.max(1, width - 3);
-		const title = this.title ?? (this.variant === "runs" ? "Resume workflow run" : "Resume session");
+		const title =
+			this.title ??
+			(this.variant === "runs" ? "Resume workflow run" : this.variant === "mixed" ? "Resume" : "Resume session");
 		const facts: string[] = [];
-		if (this.variant === "sessions") facts.push(this.scope === "current" ? "this folder" : "all folders");
-		if (this.variant === "sessions" || this.sortMode !== "threaded") {
+		const hasSessions = this.variant === "sessions" || this.variant === "mixed";
+		if (hasSessions) facts.push(this.scope === "current" ? "this folder" : "all folders");
+		if (hasSessions || this.sortMode !== "threaded") {
 			facts.push(
 				this.sortMode === "threaded"
 					? "threaded"
@@ -112,8 +118,8 @@ export class SessionSelectorHeader implements Component {
 						: "best match first",
 			);
 		}
-		if (this.variant === "sessions" && this.nameFilter === "named") facts.push("named only");
-		if (this.variant === "sessions" && this.showPath) facts.push("showing paths");
+		if (hasSessions && this.nameFilter === "named") facts.push("named only");
+		if (hasSessions && this.showPath) facts.push("showing paths");
 		if (this.loading) {
 			facts.push(this.loadProgress ? `Loading ${this.loadProgress.loaded}/${this.loadProgress.total}` : "Loading…");
 		}

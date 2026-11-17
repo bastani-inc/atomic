@@ -1,3 +1,5 @@
+import type { ExtensionCommandContext } from "./context-types.js";
+import type { HostSessionPickerRow } from "./ui-types.js";
 import type {
 	WorkflowActivityObserver,
 	WorkflowActivitySubscription,
@@ -167,6 +169,9 @@ export interface WorkflowRunControl {
 	 * It never times out; race it against your own deadline.
 	 */
 	waitForSettled(runId: string): Promise<void>;
+	listResumeEntries?(target?: string): Promise<readonly HostSessionPickerRow[]>;
+	resumeFromPicker?(target: string, ctx: ExtensionCommandContext): Promise<void>;
+	deleteResumeEntry?(runId: string): Promise<void>;
 }
 
 /** `session.workflows`: run management plus observation of the workflow runs owned by one session. */
