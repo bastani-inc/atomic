@@ -28,7 +28,7 @@ test("the selected-store picker protects its active SQLite session from delete c
 		() => {},
 		() => {},
 		() => {},
-		{ initialSessions: rows, deleteSession: (id) => store.delete(id) },
+		{ initialSessions: rows, keybindings: new KeybindingsManager(), deleteSession: (id) => store.delete(id) },
 		{ id: manager.getSessionId(), directory: manager.getSessionDir() },
 	);
 	try {
@@ -81,7 +81,11 @@ test("confirmed deletion uses the selected ID rather than its display location a
 		() => {},
 		() => {},
 		() => {},
-		{ initialSessions: rows, deleteSession: (id) => (deletion = displayedStore.delete(id)) },
+		{
+			initialSessions: rows,
+			keybindings: new KeybindingsManager(),
+			deleteSession: (id) => (deletion = displayedStore.delete(id)),
+		},
 	);
 	try {
 		assert.equal(rows[0]?.path, "other");

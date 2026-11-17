@@ -1,5 +1,5 @@
 // NEVER convert to top-level imports - breaks browser/Vite builds
-let _existsSync: typeof import("node:fs").existsSync | null = null;
+let _access: typeof import("node:fs").promises.access | null = null;
 let _homedir: typeof import("node:os").homedir | null = null;
 let _join: typeof import("node:path").join | null = null;
 
@@ -12,14 +12,20 @@ const NODE_PATH_SPECIFIER = "node:" + "path";
 
 // Eagerly load in Node.js/Bun environment only
 if (typeof process !== "undefined" && (process.versions?.node || process.versions?.bun)) {
-	dynamicImport(NODE_FS_SPECIFIER).then((m) => {
-		_existsSync = (m as typeof import("node:fs")).existsSync;
-	});
-	dynamicImport(NODE_OS_SPECIFIER).then((m) => {
-		_homedir = (m as typeof import("node:os")).homedir;
-	});
-	dynamicImport(NODE_PATH_SPECIFIER).then((m) => {
-		_join = (m as typeof import("node:path")).join;
+	void Promise.all([
+		dynamicImport(NODE_FS_SPECIFIER).then((m) => {
+			_access = (m as typeof import("node:fs")).promises.access;
+		}),
+		dynamicImport(NODE_OS_SPECIFIER).then((m) => {
+			_homedir = (m as typeof import("node:os")).homedir;
+		}),
+		dynamicImport(NODE_PATH_SPECIFIER).then((m) => {
+			_join = (m as typeof import("node:path")).join;
+		}),
+	]).then(() => {
+		// Look for the credentials files ahead of the first request, so that request finds the answer waiting.
+		const gacPath = getProviderEnvValue("GOOGLE_APPLICATION_CREDENTIALS");
+		checkFileExists(gacPath ?? defaultAdcCredentialsPath());
 	});
 }
 
@@ -38,17 +44,42 @@ export const ANTHROPIC_WORKSPACE_ID_ENV = "ANTHROPIC_WORKSPACE_ID";
 
 let cachedVertexAdcCredentialsExists: boolean | null = null;
 
+/** Whether each file looked for exists, by path, as last found: the checks are asynchronous, so a lookup never waits. */
+const knownFileExists = new Map<string, boolean>();
+const fileChecks = new Set<string>();
+
+/** Looks for the file at `path` without blocking, for later lookups; nothing before node:fs has loaded. */
+function checkFileExists(path: string | undefined): void {
+	if (!path || !_access || fileChecks.has(path)) return;
+	fileChecks.add(path);
+	_access(path).then(
+		() => settleFileCheck(path, true),
+		() => settleFileCheck(path, false),
+	);
+}
+
+function settleFileCheck(path: string, exists: boolean): void {
+	knownFileExists.set(path, exists);
+	fileChecks.delete(path);
+}
+
+function defaultAdcCredentialsPath(): string | undefined {
+	return _homedir && _join ? _join(_homedir(), ".config", "gcloud", "application_default_credentials.json") : undefined;
+}
+
 function hasVertexAdcCredentials(env?: ProviderEnv): boolean {
 	const explicitCredentialsPath = env?.GOOGLE_APPLICATION_CREDENTIALS;
 	if (explicitCredentialsPath) {
-		return _existsSync ? _existsSync(explicitCredentialsPath) : false;
+		// The answer found last time, looked for again for the next request: a file created meanwhile counts from then.
+		checkFileExists(explicitCredentialsPath);
+		return knownFileExists.get(explicitCredentialsPath) ?? false;
 	}
 
 	if (cachedVertexAdcCredentialsExists === null) {
 		// If node modules haven't loaded yet (async import race at startup),
 		// return false WITHOUT caching so the next call retries once they're ready.
 		// Only cache false permanently in a browser environment where fs is never available.
-		if (!_existsSync || !_homedir || !_join) {
+		if (!_access || !_homedir || !_join) {
 			const isNode = typeof process !== "undefined" && (process.versions?.node || process.versions?.bun);
 			if (!isNode) {
 				// Definitively in a browser — safe to cache false permanently
@@ -57,16 +88,15 @@ function hasVertexAdcCredentials(env?: ProviderEnv): boolean {
 			return false;
 		}
 
-		// Check GOOGLE_APPLICATION_CREDENTIALS env var first (standard way)
-		const gacPath = getProviderEnvValue("GOOGLE_APPLICATION_CREDENTIALS", env);
-		if (gacPath) {
-			cachedVertexAdcCredentialsExists = _existsSync(gacPath);
-		} else {
-			// Fall back to default ADC path (lazy evaluation)
-			cachedVertexAdcCredentialsExists = _existsSync(
-				_join(_homedir(), ".config", "gcloud", "application_default_credentials.json"),
-			);
+		// Check GOOGLE_APPLICATION_CREDENTIALS env var first (standard way), else the default ADC path.
+		const path = getProviderEnvValue("GOOGLE_APPLICATION_CREDENTIALS", env) ?? defaultAdcCredentialsPath();
+		const exists = path === undefined ? undefined : knownFileExists.get(path);
+		// Until the file has been looked for, return false WITHOUT caching, as before node:fs loads.
+		if (exists === undefined) {
+			checkFileExists(path);
+			return false;
 		}
+		cachedVertexAdcCredentialsExists = exists;
 	}
 	return cachedVertexAdcCredentialsExists;
 }

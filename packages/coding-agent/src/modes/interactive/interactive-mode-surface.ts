@@ -267,7 +267,7 @@ declare module "./interactive-mode-base.ts" {
 		addCompactionBoundaryToChat(result: VerbatimCompactionResult): void;
 		addCompactionCostNotice(kind: "compaction" | "branch_summary", usage: Usage): void;
 		maybeShowAssistantDiagnostics(message: AssistantMessage): void;
-		maybeShowInstallChangeWarning(): boolean;
+		maybeShowInstallChangeWarning(): Promise<boolean>;
 		addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
 		addCustomEntryToChat(entry: CustomEntry): void;
 		renderSessionContext(

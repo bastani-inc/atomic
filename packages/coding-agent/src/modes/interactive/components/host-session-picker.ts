@@ -87,7 +87,7 @@ export function mountHostSessionPicker(
 	let activeLoad: Promise<SessionInfo[]> | undefined;
 	void ui
 		.custom<undefined>(
-			(_tui, _theme, _keybindings, done) => {
+			(_tui, _theme, keybindings, done) => {
 				const settle = (notify: () => void): void => {
 					if (!record || record.settled) return;
 					record.settled = true;
@@ -108,7 +108,7 @@ export function mountHostSessionPicker(
 					() => settle(() => delegate.onCancel()),
 					() => settle(() => delegate.onCancel()),
 					() => ui.requestRender(),
-					{ showRenameHint, initialSessions: [...currentRows] },
+					{ showRenameHint, keybindings, initialSessions: [...currentRows] },
 				);
 				// Owner-owned deletion: forward the confirmed request and keep the
 				// row until the owner replies with setRows (or showError).
