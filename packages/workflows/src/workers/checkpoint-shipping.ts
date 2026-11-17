@@ -1,7 +1,6 @@
 import type { PoolMutation } from "../durable/journal/pool-mutations.js";
 import { poolCheckpointUsage } from "../durable/journal/pool-stage-usage.js";
 import { checkpointKey, type PoolCommitReceipt, type PoolShipBatch } from "../durable/journal/sql-pool-queue.js";
-import type { PoolUsageReport } from "../durable/journal/sql-pool-usage.js";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleLeaseError } from "../durable/journal/types.js";
 import { serializeJson } from "../durable/journal/values.js";
@@ -111,17 +110,12 @@ function endsSessionStage(checkpoint: DurableCheckpoint | undefined): boolean {
 	);
 }
 
-/** Per commit: what the host does in the shared store as it accepts a write locally. */
+/** Per commit: what the worker's request carries besides the mutation. */
 export interface LocalCommitOptions {
 	/** The worker's identity of the commit, which every resend of it repeats: a session append's identity. */
 	readonly operation?: string;
 	/** Renews the attempt's lease, after the local journal found it expired while the attempt still owns its work. */
 	readonly renewAttempt?: () => Promise<void>;
-	/**
-	 * Records usage under the attempt's work lease in the shared store, through the heartbeat's fenced lane: a checkpoint
-	 * that bills usage is acknowledged only once its usage is recorded. Without it, such a checkpoint commits directly.
-	 */
-	readonly billUsage?: (reports: readonly PoolUsageReport[]) => Promise<void>;
 }
 
 /** How many times an attempt's checkpoints are shipped before its work is released without them. */
@@ -407,12 +401,14 @@ export class CheckpointShipping {
 	 *
 	 * - a session write is checked against the session's state after the attempt's earlier writes, as the shared store
 	 *   checks it, and its receipt carries the session's sequence after it;
-	 * - a checkpoint that bills usage records that usage in the shared store first, through `billUsage`, so the root's
-	 *   budget sees it as it is spent;
+	 * - a checkpoint that ends a stage and bills its model usage is acknowledged only once it is shipped, with everything
+	 *   the attempt kept before it: the batch records the usage under the attempt's fences, so the root's budget sees it
+	 *   as it is spent and an acknowledged step's usage is never lost, and the stage's transcript is in the shared
+	 *   journal when the stage ends. Spending of a stage still running reaches the budget through the heartbeat;
 	 * - a checkpoint that records worktree snapshots is kept only while the shared store holds every blob of them.
 	 *
-	 * What the host cannot do for a write (no `billUsage`, no `sessionState`, no `snapshotsStored`) commits it directly,
-	 * after what the attempt kept before it is shipped.
+	 * What the host cannot do for a write (no `sessionState`, no `snapshotsStored`) commits it directly, after what the
+	 * attempt kept before it is shipped.
 	 */
 	async commit(
 		lease: AttemptLease,
@@ -420,8 +416,7 @@ export class CheckpointShipping {
 		commitShared: () => Promise<PoolCommitReceipt>,
 		options: LocalCommitOptions | (() => Promise<void>) = {},
 	): Promise<PoolCommitReceipt> {
-		const { operation, renewAttempt, billUsage } =
-			typeof options === "function" ? { renewAttempt: options } : options;
+		const { operation, renewAttempt } = typeof options === "function" ? { renewAttempt: options } : options;
 		const fenced = this.attempts.get(lease.id)?.fenced;
 		if (fenced !== undefined && this.attempts.get(lease.id)?.lease.generation === lease.generation) throw fenced;
 		if (this.isSyncOnly(lease)) return this.commitDirect(lease, commitShared);
@@ -435,7 +430,6 @@ export class CheckpointShipping {
 			write.op !== "session-create" &&
 			(await this.knownSession(lease, write.session.session)) === false;
 		if (
-			(billed !== undefined && billUsage === undefined) ||
 			(snapshots.length > 0 && this.options.snapshotsStored === undefined) ||
 			(unknownSession && this.options.sessionState === undefined)
 		)
@@ -449,20 +443,10 @@ export class CheckpointShipping {
 		const accepted = await this.acceptWithRenewal(lease, write, renewAttempt);
 		if (accepted === undefined) return this.commitDirect(lease, commitShared);
 		if (accepted.accepted) this.noteAccepted(lease, accepted.localSeq);
-		// Spent usage reaches the root's budget before the step that spent it is acknowledged; the checkpoint bills it again
-		// when it ships, which changes nothing: usage is recorded per attempt and stage, keeping the larger of each.
-		if (billed !== undefined) {
-			try {
-				await billUsage!([billed]);
-			} catch (error) {
-				const attempt = this.attempts.get(lease.id);
-				const refused =
-					attempt?.lease.generation === lease.generation
-						? await this.fence(attempt, lease, error as Error)
-						: undefined;
-				throw refused ?? error;
-			}
-		}
+		// Spent usage reaches the root's budget before the step that spent it is acknowledged: the batch that ships the
+		// checkpoint records it. The heartbeat records the same usage of the stage too, which changes nothing: usage is
+		// kept per attempt and stage at the larger of each value.
+		if (billed !== undefined) await this.flush(lease, URGENT_BATCH_CAP);
 		const attempt = this.attempts.get(lease.id);
 		// A full batch ships at once, unless a shipment is queued already: it takes what has come since when it runs. So
 		// does a stage that ended with a session: its transcript reaches the shared store as the stage's end does.

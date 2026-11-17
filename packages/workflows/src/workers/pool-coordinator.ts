@@ -16,6 +16,7 @@ import { listenPoolReady, observeSqlPoolTransactions, sqlPoolStorage } from "../
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
 import "../durable/journal/workflows-host-module.js";
+import { poolCheckpointUsage } from "../durable/journal/pool-stage-usage.js";
 import {
 	openSqlPoolQueue,
 	type PoolClaimCandidate,
@@ -23,12 +24,7 @@ import {
 	type PoolWork,
 	type SqlPoolQueue,
 } from "../durable/journal/sql-pool-queue.js";
-import {
-	openSqlPoolUsage,
-	type PoolUsage,
-	type PoolUsageReport,
-	type SqlPoolUsage,
-} from "../durable/journal/sql-pool-usage.js";
+import { openSqlPoolUsage, type PoolUsage, type SqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
 import { SqlRateBuckets } from "../durable/journal/sql-rate-buckets.js";
 import {
 	type SharedPoolConfig,
@@ -2998,31 +2994,20 @@ export class PoolCoordinator {
 							});
 						const commitShared = () => queue.commit(lease, work, message.operation, message.mutation);
 						const shipping = this.shipping;
-						// A checkpoint the host keeps to ship later bills its usage through the heartbeat's fenced lane first, so the
-						// root's budget sees it as it is spent (#4768).
-						const billUsage = async (reports: readonly PoolUsageReport[]) => {
-							const beat = await leased(() =>
-								queue.heartbeat(
-									lease,
-									work,
-									options.leaseMs,
-									this.usageLedger!.recording(lease, work, reports),
-								),
-							);
-							extensions.adopt(beat.work);
-							await this.holdShipping(slot, beat.work, options.leaseMs);
-							this.noteUsage(beat.recorded);
-						};
 						const receipt = await leased(() =>
 							shipping === undefined
 								? commitShared()
 								: shipping.commit(work, message.mutation, commitShared, {
 										operation: message.operation,
 										renewAttempt: () => this.whileRootLate(queue, renewAttempt),
-										billUsage,
 									}),
 						);
-						if (message.mutation.kind !== "session-append" && receipt.local !== true)
+						// A checkpoint that bills usage is shipped by the time the host acknowledges it from its local journal.
+						if (
+							message.mutation.kind === "checkpoint"
+								? receipt.local !== true || poolCheckpointUsage(message.mutation.checkpoint) !== undefined
+								: message.mutation.kind !== "session-append" && receipt.local !== true
+						)
 							this.noteUsage(await this.usageLedger!.total(root));
 						return receipt;
 					}

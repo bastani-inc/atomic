@@ -397,14 +397,9 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 				const ledger = await openSqlPoolUsage(journal);
 				for (const [index, mutation] of sessionWrites(direct, "direct-session").entries())
 					await f.pool.commit(f.lease, directAttempt, `op-${index}`, mutation);
-				const { shipping, receipts } = await shippingHost(host, f.lease, shippedAttempt, maxBatch, ledger);
+				const { shipping, receipts } = await shippingHost(host, f.lease, shippedAttempt, maxBatch);
 				for (const [index, mutation] of sessionWrites(shipped, "shipped-session").entries())
-					receipts.push(
-						await shipping.commit(shippedAttempt, mutation, unshipped, {
-							operation: `op-${index}`,
-							billUsage: (reports) => ledger.report(f.lease, shippedAttempt, reports).then(() => {}),
-						}),
-					);
+					receipts.push(await shipping.commit(shippedAttempt, mutation, unshipped, { operation: `op-${index}` }));
 				assert.ok(
 					receipts.every((receipt) => receipt.local === true),
 					"the host acknowledged every write locally",
@@ -889,7 +884,6 @@ async function shippingHost(
 	lease: Lease,
 	attempt: PoolWork,
 	maxBatch: number,
-	ledger?: Awaited<ReturnType<typeof openSqlPoolUsage>>,
 ) {
 	const shard = await ShipShard.open(":memory:", "root");
 	const shipping = new CheckpointShipping(shard, {
@@ -902,7 +896,6 @@ async function shippingHost(
 		snapshotsStored: (checkpoint) => queue.assertSnapshotsStored(checkpoint),
 	});
 	await shipping.hold(attempt, 60_000);
-	void ledger;
 	return { shipping, receipts: [] as { readonly local?: true; readonly lastSeq?: number }[] };
 }
 

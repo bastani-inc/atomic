@@ -603,47 +603,42 @@ const billedStage = (id: string, extra: Record<string, unknown> = {}) =>
 		},
 	}) as unknown as PoolMutation;
 
-test("a checkpoint that bills usage records it under the attempt's lease before the step is acknowledged, and ships (#4768)", async () => {
+test("a checkpoint that bills usage is acknowledged once it ships, with everything the attempt kept before it (#4768)", async () => {
 	const { shard: local } = await shard();
 	const shared = fakeShared();
 	const shipping = shippingOf(local, shared.deliver);
 	await shipping.hold(LEASE, LEASE_MS);
-	const billed: unknown[] = [];
 	const direct = sharedCommit();
-	const receipt = await shipping.commit(LEASE, billedStage("a"), direct.commit, {
-		billUsage: async (reports) => {
-			billed.push(...reports);
-			assert.equal(await local.pendingCount(LEASE), 1, "the checkpoint is kept before its usage is recorded");
-		},
-	});
+	await shipping.commit(LEASE, checkpoint("kept"), direct.commit);
+	assert.equal(shared.recorded.length, 0, "a plain checkpoint waits for the interval");
+	const receipt = await shipping.commit(LEASE, billedStage("a"), direct.commit);
 	assert.equal(receipt.local, true);
 	assert.equal(direct.calls.length, 0);
-	assert.equal(billed.length, 1);
-	assert.match(String((billed[0] as { key: string }).key), /^stage:child:a$/);
-	assert.equal((billed[0] as { usage: { input: number } }).usage.input, 3);
-	await shipping.flush(LEASE);
-	assert.deepEqual(shared.recorded, [stageKeyOf("a")]);
-	// Without a way to record its usage, the host commits it directly.
-	const fallback = sharedCommit();
-	await shipping.commit(LEASE, billedStage("b"), fallback.commit);
-	assert.equal(fallback.calls.length, 1);
-});
-
-test("a refusal of the usage a checkpoint bills fences the attempt and drops what it kept (#4768)", async () => {
-	const { shard: local } = await shard();
-	const shipping = shippingOf(local, fakeShared().deliver);
-	await shipping.hold(LEASE, LEASE_MS);
-	await shipping.commit(LEASE, checkpoint("kept"), sharedCommit().commit);
-	const stale = new StaleWorkLeaseError({ root: ROOT, workId: LEASE.id, generation: 1, reason: "superseded" });
-	await assert.rejects(
-		shipping.commit(LEASE, billedStage("a"), sharedCommit().commit, {
-			billUsage: async () => {
-				throw stale;
-			},
-		}),
-		stale,
+	assert.deepEqual(
+		shared.recorded,
+		[keyOf("kept"), stageKeyOf("a")],
+		"the batch that records its usage shipped before the step was acknowledged",
 	);
 	assert.deepEqual(await local.pending(LEASE), []);
+});
+
+test("a shipment of a checkpoint that bills usage the store refuses fences the attempt, and one it cannot take keeps it for a retry (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver);
+	await shipping.hold(LEASE, LEASE_MS);
+	const unreachable = new StorageUnavailableError({ adapter: "test", location: "shared" }, new Error("unreachable"));
+	shared.state.failWith = unreachable;
+	await assert.rejects(shipping.commit(LEASE, billedStage("a"), sharedCommit().commit), unreachable);
+	assert.equal(await local.pendingCount(LEASE), 1, "kept, as a commit whose outcome is unknown");
+	shared.state.failWith = undefined;
+	// The worker sends the same commit again: the same checkpoint, now shipped.
+	assert.equal((await shipping.commit(LEASE, billedStage("a"), sharedCommit().commit)).local, true);
+	assert.deepEqual(shared.recorded, [stageKeyOf("a")]);
+	const stale = new StaleWorkLeaseError({ root: ROOT, workId: LEASE.id, generation: 1, reason: "superseded" });
+	shared.state.failWith = stale;
+	await assert.rejects(shipping.commit(LEASE, billedStage("b"), sharedCommit().commit), stale);
+	assert.deepEqual(await local.pending(LEASE), [], "a fenced attempt's checkpoints are dropped");
 	await assert.rejects(shipping.commit(LEASE, checkpoint("after"), sharedCommit().commit), stale);
 });
 

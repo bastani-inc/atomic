@@ -50,18 +50,6 @@ const checkpoint = (id: string, extra?: Record<string, unknown>): PoolMutation =
 	checkpoint: toolCheckpoint(id, extra),
 });
 
-/** A stage checkpoint that bills usage: without a way to bill it under the attempt's lease, it commits directly. */
-const billedCheckpoint = (id: string, extra?: Record<string, unknown>): PoolMutation => ({
-	kind: "checkpoint",
-	checkpoint: {
-		...toolCheckpoint(id, extra),
-		kind: "stage",
-		sessionId: "session",
-		modelAttempts: [{ model: "m", usage: { input: 1, output: 1 } }],
-		topology: { run: { runId: "child" }, stageId: id },
-	} as unknown as DurableCheckpoint,
-});
-
 const keyOf = (id: string) => JSON.stringify(["CheckpointRecorded", "tool", `scope:${id}`]);
 
 function sharedCommit(outcome: { receipt?: PoolCommitReceipt; failure?: Error } = {}) {
@@ -280,22 +268,19 @@ test("a non-stale shared failure retains locally acknowledged checkpoints for re
 	assert.deepEqual(shared.recorded, [keyOf("earlier")]);
 	assert.deepEqual(await local.pending(LEASE_G1), []);
 
-	const futureTimestamp = new Error("Pool checkpoint timestamp is in the future");
-	await assert.rejects(
-		shipping.commit(
-			LEASE_G1,
-			billedCheckpoint("same-key", { output: { attempt: 1 } }),
-			sharedCommit({ failure: futureTimestamp }).commit,
-		),
-		futureTimestamp,
-	);
+	// A session append without the worker's operation commits directly.
+	const direct = (seq: number): PoolMutation => ({
+		kind: "session-append",
+		sessionId: "session",
+		entries: [],
+		expectSeq: seq,
+	});
+	const refusal = new Error("Pool session scope mismatch");
+	await assert.rejects(shipping.commit(LEASE_G1, direct(0), sharedCommit({ failure: refusal }).commit), refusal);
 	assert.deepEqual(await local.pending(LEASE_G1), []);
 
 	const retryShared = sharedCommit();
-	assert.deepEqual(
-		await shipping.commit(LEASE_G1, billedCheckpoint("same-key", { output: { attempt: 2 } }), retryShared.commit),
-		{ seq: 7, at: 1 },
-	);
+	assert.deepEqual(await shipping.commit(LEASE_G1, direct(1), retryShared.commit), { seq: 7, at: 1 });
 	assert.equal(retryShared.calls.length, 1);
 	assert.deepEqual(await local.pending(LEASE_G1), []);
 });
