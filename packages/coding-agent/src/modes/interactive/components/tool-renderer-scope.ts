@@ -30,6 +30,10 @@ export function retainedToolRenderer(
 	resolve: ((toolName: string) => ToolRenderers | undefined) | undefined,
 ): ToolRenderers | undefined {
 	if (RETAINED_TOOL_RENDERERS.has(name)) return resolve?.(name);
+	return unavailableToolRenderer(name);
+}
+
+export function unavailableToolRenderer(name: string): ToolRenderers {
 	return {
 		renderCall: (_args, _theme, context) =>
 			new ToolBlock({

@@ -235,6 +235,57 @@ describe("WorkflowAttachPane", () => {
 		pane.dispose();
 	});
 
+	test.each([
+		{ kind: "stage dialog", source: "stage-dialog" },
+		{ kind: "workflow prompt", source: undefined },
+	] as const)("a $kind never moves an attached chat to another agent's question", async ({ source }) => {
+		const store = createStore();
+		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
+		const registry = createStageControlRegistry();
+		registry.register(makeHandle("run-1", "stage-a"));
+		registry.register(makeHandle("run-1", "stage-b"));
+		const prompt = makePendingPrompt({ id: "agent-a-dialog", source, kind: "confirm" });
+		assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", prompt), true);
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+			initialAttachStageId: "stage-a",
+		});
+		try {
+			store.editRun("run-1", (run) => {
+				run.stages[0]!.workerExecution = { worker: "first-worker", generation: 1, renewedAt: 0, expiresAt: 100 };
+				return { stageIds: ["stage-a"] };
+			});
+			pane.render(100);
+			await flush();
+			assert.equal(pane._mode, "stage-chat");
+			assert.equal(pane._lastAttachedStageId, "stage-a");
+			store.editRun("run-1", (run) => {
+				run.stages = [
+					{
+						...run.stages[0]!,
+						id: "stage-b",
+						name: "B",
+						pendingPrompt: { ...prompt, id: "agent-b-dialog", source: "stage-dialog" },
+						promptFootprint: { ...prompt, id: "agent-b-dialog", source: "stage-dialog" },
+						workerExecution: { worker: "second-worker", generation: 2, renewedAt: 0, expiresAt: 100 },
+					},
+				];
+				return { run: true, stageIds: ["stage-a", "stage-b"] };
+			});
+			pane.render(100);
+			await flush();
+			await flush();
+			assert.notEqual(pane._lastAttachedStageId, "stage-b");
+			assert.equal(store.run("run-1")!.stages[0]!.pendingPrompt?.id, "agent-b-dialog");
+		} finally {
+			pane.dispose();
+		}
+	});
+
 	test("direct stage attach does not immediately submit brokered custom UI", async () => {
 		const clock = makeClock();
 		const store = createStore();

@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { releaseLock } from "../lock-release.ts";
-import { takeTakeoverMutex } from "../lock-takeover.ts";
+import { prepareTakeoverMutex, takeTakeoverMutex } from "../lock-takeover.js";
 import { renameWithRetry } from "../rename-retry.ts";
 import { deferRestorePhase, noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
@@ -44,7 +44,7 @@ import {
 	stagingWorktreeName,
 } from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
-import { holderRuns, type ProcessHolder, thisProcess } from "./process-holder.ts";
+import { HOST, holderRuns, type ProcessHolder, thisProcess } from "./process-holder.js";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
 import { checkoutStoreIdOf, sameRemote, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import {
@@ -523,7 +523,7 @@ async function withRestoreRecord(
 		primary = error;
 		if (recorded) {
 			try {
-				await cleanRestoreRecord(record);
+				await withRepositoryLock(record.store, snapshotId, undefined, () => cleanRestoreRecord(record));
 				await rm(recordPath);
 			} catch (cleanupCause) {
 				if (error instanceof Error)
@@ -1139,7 +1139,7 @@ async function pullPendingLfs(worktree: GitRunOptions, pending: PendingLfs): Pro
 	const waiting: PendingLfs = { head: pending.head, tree: pending.tree, remotes: pending.remotes };
 	pullingHere.add(marker);
 	try {
-		await rewritePendingMark(marker, { ...waiting, holder: thisProcess() });
+		await rewritePendingMark(marker, { ...waiting, holder: await thisProcess() });
 		const pointers = await pullLfsObjects(worktree, pending.head, pending.tree, pending.remotes);
 		if (pointers.length === 0) await rm(marker, { force: true });
 		else await rewritePendingMark(marker, waiting);
@@ -1158,10 +1158,10 @@ async function lfsHolderRuns(marker: string, pending: PendingLfs): Promise<boole
 	const holder = pending.holder;
 	if (holder === undefined) return false;
 	// This process, when it is not downloading into the worktree, stopped the download that names it.
-	if (holder.host === thisProcess().host && holder.pid === process.pid) return false;
+	if (holder.host === HOST && holder.pid === process.pid) return false;
 	try {
 		const age = Date.now() - (await stat(marker)).mtimeMs;
-		return holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
+		return await holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
 		throw error;
@@ -1254,6 +1254,7 @@ type LfsClaim =
  */
 async function claimPendingLfs(git: GitRunOptions, marker: string): Promise<LfsClaim> {
 	const locks = await Promise.all(["HEAD.lock", "index.lock"].map((name) => worktreeGitPath(git, name)));
+	await prepareTakeoverMutex(marker);
 	const mutex = takeTakeoverMutex(marker, 0);
 	if (mutex === undefined) return { kind: "running" };
 	try {
@@ -1266,7 +1267,7 @@ async function claimPendingLfs(git: GitRunOptions, marker: string): Promise<LfsC
 		if (pending?.holder !== undefined) for (const lock of locks) await rm(lock, { force: true });
 		if (pending !== undefined) {
 			const { head, tree, remotes } = pending;
-			await rewritePendingMark(marker, { head, tree, remotes, holder: thisProcess() });
+			await rewritePendingMark(marker, { head, tree, remotes, holder: await thisProcess() });
 			pullingHere.add(marker);
 		}
 		return { kind: "claimed", pending };
@@ -1306,6 +1307,7 @@ function parsePendingLfs(text: string): PendingLfs | undefined {
 
 async function materialize(
 	git: GitRunOptions,
+	store: string,
 	target: string,
 	head: string,
 	tree: string,
@@ -1313,7 +1315,9 @@ async function materialize(
 	snapshotId: string | null,
 	signal?: AbortSignal,
 ): Promise<void> {
-	await runGit(["worktree", "add", "-q", "--detach", "--no-checkout", target, head], git);
+	await withRepositoryLock(store, snapshotId, signal, () =>
+		runGit(["worktree", "add", "-q", "--detach", "--no-checkout", target, head], git),
+	);
 	const attributes = join(scratch, "empty-attributes");
 	await writing(attributes, snapshotId, () => writeFile(attributes, ""));
 	const neutral: GitRunOptions = { cwd: target, signal, neutral: true, env: { GIT_LFS_SKIP_SMUDGE: "1" } };
@@ -2056,7 +2060,9 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 	const staging = stagingPath(storeDir, path, publish.into, id);
 	const record: RestoreRecord = { staging, target: path, store, createdTarget };
 	await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive) => {
-		await timeRestorePhase("materialize", () => materialize(git, staging, head, tree, scratch, snapshotId, signal));
+		await timeRestorePhase("materialize", () =>
+			materialize(git, store, staging, head, tree, scratch, snapshotId, signal),
+		);
 		assertActive();
 		const lfs = snapshot?.filters?.drivers.includes("lfs") ? snapshot.remotes : undefined;
 		const pending: PendingLfs | undefined = lfs === undefined ? undefined : { head, tree, remotes: lfs };
@@ -2072,7 +2078,11 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 			verifyRestoredTree(staging, path, head, tree, publish.verify, scratch, snapshotId, signal),
 		);
 		assertActive();
-		await timeRestorePhase("publish", () => moveIntoPlace(publish, staging, createdTarget, snapshotId));
+		await timeRestorePhase("publish", () =>
+			withRepositoryLock(store, snapshotId, signal, () =>
+				moveIntoPlace(publish, staging, createdTarget, snapshotId),
+			),
+		);
 		assertActive();
 		if (pending !== undefined && deferred !== undefined) {
 			const worktree: GitRunOptions = { cwd: path, signal };
@@ -2218,7 +2228,9 @@ export async function removeRestoredWorktree(
 	) {
 		throw new WorkspaceRestoreError("unsafe-target", { snapshotId: null, target, reason: "not-restored" });
 	}
-	await removeWorktree({ cwd: repositories, env: { GIT_DIR: store }, signal: options.signal }, target);
+	await withRepositoryLock(store, null, options.signal, () =>
+		removeWorktree({ cwd: repositories, env: { GIT_DIR: store }, signal: options.signal }, target),
+	);
 }
 
 function isWithin(parent: string, child: string): boolean {

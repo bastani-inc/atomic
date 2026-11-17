@@ -263,7 +263,7 @@ export function renderFooterWithOrchestratorReturnHint(
 	width: number,
 	footerLines: readonly string[],
 ): string[] {
-	if (closableQuestionCardOpen(ctx)) {
+	if (stackedStageDialogOpen(ctx) || closableQuestionCardOpen(ctx)) {
 		return [mergeOrchestratorReturnHintIntoLine(ctx, footerLines[0] ?? "", width)];
 	}
 	return [...footerLines, renderStageChatHintLine(ctx, width)];
@@ -299,7 +299,9 @@ export function embedCustomUiBackHint(
 	width: number,
 ): string[] {
 	const backKey = backToGraphKey(ctx);
-	if (!backKey || widgetLines.length < 2) return [...widgetLines];
+	if (!backKey || widgetLines.length < 2 || ctx.mountedCustomUi?.component.capturesBack?.() === true) {
+		return [...widgetLines];
+	}
 	let bottomBorderIndex = -1;
 	for (let index = widgetLines.length - 1; index >= 0; index -= 1) {
 		const plain = stripAnsi(widgetLines[index] ?? "").trim();
@@ -360,11 +362,13 @@ function mergeOrchestratorReturnHintIntoLine(
 		minimumPrefixWidth?: number;
 	} = {},
 ): string {
-	const cardOpen = closableQuestionCardOpen(ctx);
-	const backKey = backToGraphKey(ctx);
+	const stackedDialog = stackedStageDialogOpen(ctx);
+	const cardOpen = stackedDialog || closableQuestionCardOpen(ctx);
+	const backKey = stackedDialog ? "" : backToGraphKey(ctx);
 	if (!cardOpen && !backKey) return line;
 	const key = backKey || "esc";
-	const full = cardOpen ? (backKey ? " graph · esc close" : " close") : " return to graph";
+	const action = stackedDialog ? " cancel" : " close";
+	const full = cardOpen ? (backKey ? ` graph · esc${action}` : action) : " return to graph";
 	const compact = cardOpen ? full : " graph";
 	const fullHint = {
 		plain: `${key}${full}`,
@@ -455,6 +459,19 @@ export function closableQuestionCardOpen(
 	const prompt = ctx.promptState?.prompt;
 	return (
 		prompt !== undefined && prompt.kind !== "input" && prompt.kind !== "editor" && prompt.id !== ctx.dismissedPromptId
+	);
+}
+
+export function stackedStageDialogOpen(
+	ctx: Pick<StageChatViewContext, "promptState"> &
+		Partial<Pick<StageChatViewContext, "dismissedPromptId" | "mountedCustomUi">>,
+): boolean {
+	const prompt = ctx.promptState?.prompt;
+	return (
+		ctx.mountedCustomUi !== null &&
+		ctx.mountedCustomUi !== undefined &&
+		prompt?.source === "stage-dialog" &&
+		prompt.id !== ctx.dismissedPromptId
 	);
 }
 

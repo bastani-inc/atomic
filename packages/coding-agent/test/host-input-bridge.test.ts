@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { heldPromptInput, heldPrompts } from "../src/core/extensions/held-prompts.js";
 import {
 	type HostInput,
 	HostInputBridge,
@@ -116,3 +117,103 @@ for (const boundary of ["cancel", "close", "rebind", "owner"] as const) {
 		bridge.close();
 	});
 }
+
+for (const outcome of ["answered", "invalid", "failed"] as const) {
+	for (const route of ["host", "presentation", "stage-host"] as const) {
+		test(`a ${route} dialog ${outcome} by its own host retires without aborting the host signal (#5354)`, async () => {
+			const { host } = pendingHost();
+			let identity!: HostInputOptions;
+			host.select = async (_title, _choices, options) => {
+				identity = options;
+				if (outcome === "failed") throw new Error("host failed");
+				return outcome === "invalid" ? "not a choice" : "chosen";
+			};
+			const bridge = new HostInputBridge(
+				() => "stage-session",
+				() => undefined,
+			);
+			bridge.bind(host);
+			const ui = Object.assign(
+				{ ...noOpUIContext },
+				route === "stage-host"
+					? {
+							[Symbol.for("atomic-coding-agent/stage-dialog@1")]: (
+								_descriptor: { kind: string },
+								_identity: HostInputOptions,
+								answerWithHost: () => Promise<string | undefined>,
+							) => answerWithHost(),
+						}
+					: {},
+			);
+			const result = bridge.wrap(ui, route === "presentation" ? host : undefined).select("Where?", ["chosen"]);
+			if (outcome === "answered") assert.equal(await result, "chosen");
+			else if (outcome === "invalid") await assert.rejects(result, { code: "InvalidHostInput" });
+			else await assert.rejects(result, /host failed/);
+			assert.equal(identity.signal.aborted, false);
+			bridge.cancel();
+			bridge.close();
+			assert.equal(identity.signal.aborted, false);
+		});
+	}
+}
+
+for (const outcome of ["answered", "failed"] as const) {
+	test(`a stage dialog ${outcome} outside its SDK host dismisses that host (#5354)`, async () => {
+		const { host, requests } = pendingHost();
+		const bridge = new HostInputBridge(
+			() => "stage-session",
+			() => undefined,
+		);
+		bridge.bind(host);
+		let settle!: (value: string | undefined) => void;
+		let fail!: (error: Error) => void;
+		const external = new Promise<string | undefined>((resolve, reject) => {
+			settle = resolve;
+			fail = reject;
+		});
+		const ui = Object.assign(
+			{ ...noOpUIContext },
+			{
+				[Symbol.for("atomic-coding-agent/stage-dialog@1")]: (
+					_descriptor: { kind: string },
+					_identity: HostInputOptions,
+					answerWithHost: () => Promise<string | undefined>,
+				) => {
+					void answerWithHost().catch(() => undefined);
+					return external;
+				},
+			},
+		);
+		const result = bridge.wrap(ui).select("Where?", ["external"]);
+		assert.equal(requests.length, 1);
+		assert.equal(requests[0]!.signal.aborted, false);
+		if (outcome === "answered") {
+			settle("external");
+			assert.equal(await result, "external");
+		} else {
+			fail(new Error("request write refused"));
+			await assert.rejects(result, /request write refused/);
+		}
+		assert.equal(requests[0]!.signal.aborted, true);
+		bridge.close();
+	});
+}
+
+test("held dialogs keep their deadline and expire without accepting input (#5354)", async () => {
+	const sessionId = "held-deadline-session";
+	const bridge = new HostInputBridge(
+		() => sessionId,
+		() => undefined,
+	);
+	bridge.bind(heldPromptInput);
+	const started = Date.now();
+	const result = bridge.wrap(noOpUIContext).confirm("Continue?", "Waiting", { timeout: 20 });
+	const prompt = heldPrompts().current(sessionId);
+	assert.equal(await result, false);
+	assert.equal(heldPrompts().current(sessionId), undefined);
+	assert.ok(prompt?.expiresAt !== undefined);
+	assert.ok(prompt.expiresAt >= started + 20);
+	assert.ok(prompt.expiresAt <= Date.now() + 20);
+	assert.equal(heldPrompts().cancel({ sessionId, promptId: prompt.promptId }), false);
+	bridge.close();
+});

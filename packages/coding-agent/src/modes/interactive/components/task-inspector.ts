@@ -187,6 +187,7 @@ export class TaskInspector implements Component {
 	private callerLabel = "back";
 	/** Typed shell input per task, kept when the reader leaves the input and restored when they return. */
 	private readonly inputDrafts = new Map<TaskId, string>();
+	private inputTask?: TaskRecord;
 	/** The open transcript of the selected task, on the shared chat stack. */
 	private transcript?: TaskTranscriptPage;
 	private status = "";
@@ -321,6 +322,7 @@ export class TaskInspector implements Component {
 			},
 			stdinAvailable: (task) => this.store.stdinAvailable(task.ref.taskId),
 			input: (task) => {
+				this.inputTask = task;
 				this.input.setValue(this.inputDrafts.get(task.ref.taskId) ?? "");
 			},
 			openQuestion: (route) => {
@@ -624,17 +626,34 @@ export class TaskInspector implements Component {
 		if (!task || task.execution.kind === "settled") return false;
 		return this.store.stdinAvailable(task.ref.taskId);
 	}
+	private inputTaskForSheet(): TaskRecord | undefined {
+		const focus = this.navigation.focus;
+		const taskId = focus.kind === "stdin" ? focus.taskId : this.navigation.selectedTaskId;
+		if (taskId === undefined) return this.inputTask;
+		const live =
+			this.store.taskRecord?.(taskId) ??
+			(!this.boardStale ? this.tasksById.get(taskId) : undefined) ??
+			this.store.backgroundTasks.find((task) => task.ref.taskId === taskId);
+		if (live !== undefined) {
+			this.inputTask = live;
+			return live;
+		}
+		return this.inputTask?.ref.taskId === taskId ? this.inputTask : undefined;
+	}
 	private async sendInput(text: string): Promise<void> {
-		const task = this.selected();
+		const task = this.navigation.focus.kind === "stdin" ? this.inputTaskForSheet() : this.selected();
 		if (!task) return;
 		const environment = this.transcriptEnvironment();
 		const result = await this.store.writeTaskInput(task.ref.taskId, text);
 		const focus = this.navigation.focus;
 		const showingInput = focus.kind === "stdin" && focus.taskId === task.ref.taskId;
-		if (showingInput) {
-			this.status = result.ok ? `Sent ${result.value.acceptedBytes} bytes` : taskDisplayText(result.error.message);
-		} else if (!result.ok) {
-			this.reportLate(`Could not send input: ${taskDisplayText(result.error.message)}`, environment);
+		if (!result.ok) {
+			const message = taskDisplayText(result.error.message);
+			if (this.disposed || focus.kind === "composer")
+				this.reportLate(`Could not send input: ${message}`, environment);
+			else this.status = message;
+		} else if (showingInput) {
+			this.status = `Sent ${result.value.acceptedBytes} bytes`;
 		}
 		if (result.ok) {
 			if (showingInput && this.input.getValue() === text) this.input.setValue("");
@@ -905,12 +924,14 @@ export class TaskInspector implements Component {
 	private handleTranscriptInput(data: string, transcript: TaskTranscriptPage): boolean {
 		if (transcript.handlesBack()) return transcript.handleInput(data);
 		if (matchesKey(data, "escape")) {
+			if (transcript.takesEscape?.() === true) return transcript.handleInput(data);
 			if (transcript.interruptible()) void this.interruptTranscript(transcript);
 			this.requestRender();
 			return true;
 		}
 		const keys = getKeybindings();
-		if (keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
+		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
+		if (!matchesKey(data, "escape") && keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
 			if (this.chatFrom === "caller") {
 				this.closedByBack = true;
 				this.close();
@@ -1403,16 +1424,24 @@ export class TaskInspector implements Component {
 				].map(fitWidth);
 		const notes = [transcript.status, this.status].filter(Boolean).join(" · ");
 		const style = themedNavKeyStyle();
-		const interruptible = transcript.interruptible();
-		const hasTasks = transcript.hasTasks?.() === true;
+		const questionActive = transcript.takesEscape?.() === true;
+		const interruptible = !questionActive && transcript.interruptible();
+		const hasTasks = !questionActive && transcript.hasTasks?.() === true;
 		const expandable = transcript.expandable?.() === true;
 		const baseKeys = getKeybindings();
+		const backKeys = baseKeys
+			.getKeys("app.nav.back")
+			.filter((key) => !matchesKey("\x1b", key))
+			.map(navKeyText)
+			.join("/");
 		const chatKeybindings = {
 			matches: (data: string, action: string) =>
 				baseKeys.matches(data, action as Parameters<typeof baseKeys.matches>[1]),
 			getKeys: (action: string) => {
 				const resolved = baseKeys.getKeys(action as Parameters<typeof baseKeys.getKeys>[0]);
-				return action === "app.interrupt" ? resolved : resolved.filter((key) => key !== "esc" && key !== "escape");
+				return action === "app.interrupt"
+					? resolved
+					: resolved.filter((key) => key !== "esc" && key !== "escape" && !matchesKey("\x1b", key));
 			},
 		};
 		if (this.helpOpen)
@@ -1425,9 +1454,10 @@ export class TaskInspector implements Component {
 						if (entry.action === "app.thinking.toggle" && task?.kind !== "agent") return [];
 						if (entry.keys === "esc" && !interruptible) return [];
 						if (entry.action === "app.tools.expand" && !expandable) return [];
+						const mapped = entry.action === "app.nav.back" ? { keys: backKeys, label: entry.label } : entry;
 						if (entry.action === "app.nav.back" && hasTasks)
-							return [entry, { action: "app.agents.focus", label: "agents, on an empty prompt" }];
-						return [entry];
+							return [mapped, { action: "app.agents.focus", label: "agents, on an empty prompt" }];
+						return [mapped];
 					}),
 					width,
 					style,
@@ -1435,7 +1465,18 @@ export class TaskInspector implements Component {
 				),
 			].slice(0, Math.max(1, budget));
 		const back = this.chatFrom === "caller" ? this.callerLabel : this.chatFrom === "list" ? "tasks" : "task";
-		const chatKeys = taskChatKeys(back, interruptible, hasTasks, expandable);
+		const chatKeys = taskChatKeys(back, interruptible, hasTasks, expandable).flatMap((entry) => {
+			if (entry.action === "app.nav.back") {
+				return !questionActive || transcript.cursorAtStart()
+					? [questionActive ? { keys: backKeys, label: back } : entry]
+					: [];
+			}
+			if (entry.keys === "pgup/pgdn" && transcript.capturesPageScroll?.() === true) {
+				return [{ keys: "pgup/pgdn", label: "page" }];
+			}
+			if (questionActive && entry.action === "app.keys.help") return [];
+			return [entry];
+		});
 		const hint = renderNavHintLine(chatKeys, width, style, chatKeybindings);
 		const footer = [...(notes ? [fitWidth(theme.fg("dim", notes))] : []), hint];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
@@ -1521,8 +1562,12 @@ export class TaskInspector implements Component {
 
 	private renderInputSheet(width: number, budget: number): string[] {
 		const clip = (line: string) => truncateToWidth(line, Math.max(1, width));
-		const task = this.selected();
-		const name = task ? taskDisplayText(task.title || taskLabel(task)) : "";
+		const task = this.inputTaskForSheet();
+		const name = task
+			? taskDisplayText(task.title || taskLabel(task))
+			: this.navigation.focus.kind === "stdin"
+				? taskDisplayText(this.navigation.focus.taskId)
+				: "";
 		const summary = task ? `  ${taskDetailSummary(task)}` : "";
 		const entry = (this.input.render(Math.max(1, width - 4))[0] ?? "").replace(/^> /, "");
 		const notes = [

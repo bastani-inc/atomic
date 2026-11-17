@@ -20,6 +20,9 @@ import type {
 	ResourceType,
 } from "./package-manager-types.ts";
 import type { SettingsManager } from "./settings-manager.ts";
+import { coLocatesWorkflowStore } from "./storage/file-identity.js";
+
+const USER_WORKFLOW_STORE_DIRS: ReadonlySet<string> = new Set(["journal", "pool", "runs"]);
 
 export async function collectProjectLocalResources(
 	sourceRoot: string,
@@ -224,7 +227,14 @@ export async function addAutoDiscoveredResources(
 		);
 		addResources(
 			"workflows",
-			await collectResourceFiles(join(configDir, "workflows"), "workflows"),
+			await collectResourceFiles(
+				join(configDir, "workflows"),
+				"workflows",
+				metadata.configurationOrigin === "atomic" &&
+					coLocatesWorkflowStore(configDir, context.settingsManager.getSettings())
+					? USER_WORKFLOW_STORE_DIRS
+					: undefined,
+			),
 			metadata,
 			userOverrides.workflows,
 			configDir,

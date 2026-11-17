@@ -98,7 +98,7 @@ function assertInvariants(token: string, round: number): void {
 	if (settings.sessions?.storage !== undefined) assert.deepEqual(settings.sessions.storage, LOCAL_SESSIONS_STORAGE);
 	const reference = settings.storage?.secrets?.authToken?.file;
 	if (reference !== undefined) {
-		const path = resolve(root, reference);
+		const path = resolve(agentDir, reference);
 		assert.ok(existsSync(path), `round ${round}: the referenced token file exists`);
 		assert.equal(readFileSync(path, "utf8"), token, `round ${round}: the referenced token file holds the token`);
 	}

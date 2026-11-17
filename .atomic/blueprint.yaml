@@ -29,10 +29,18 @@ knowledge:
       Root suites run under vitest: `npm run test:unit`, `npm run test:integration`, or both with
       `npm run test:all`. The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
-      suites load the built packages. For focused root tests use `npm run test:unit -- test/unit/<file>.test.ts`;
+      suites load the built packages. After changing SDK imports used by workflow graph views, run
+      `npx vitest run --project unit test/unit/overlay-adapter-autowrap.test.ts test/unit/overlay-adapter-hidden-render.test.ts`:
+      these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
+      Focused TUI tests run with `node --test packages/tui/test/<name>.test.ts`;
+      the TUI workspace's npm test script always expands its full test glob, even when a filename is appended.
+      For focused root tests use `npm run test:unit -- test/unit/<file>.test.ts`;
       the test-suite-runner fixtures need npm's node_modules/.bin on PATH for their nested Vitest commands.
-      Focused TUI tests run with `node --test packages/tui/test/<name>.test.ts`; the TUI workspace's npm test
-      script always expands its full test glob, even when a filename is appended.
+      To select coding-agent files, run `cd packages/coding-agent && npx vitest run test/<name>.test.ts`;
+      its config resolves `test/` from that working directory.
+      For concurrent-session coverage, use
+      `npm run test --workspace=@bastani/atomic -- agent-session-concurrent-` to select the five
+      `.suite.ts` files; the `agent-session-concurrent.test.ts` wrapper is excluded.
       Finish `npm run check` and `npm run build` before running suites that import built packages:
       typechecking rebuilds dist in place and cleans provider data. Before real CLI captures, run `npm run build`
       to refresh builtin assets. Exercise `/tasks` and stage chats too: direct component tests do not cover
@@ -43,12 +51,14 @@ knowledge:
       Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
       require installed locales or a Git build with gettext support. Verify both files without system locales with:
       `(umask 022; LOCPATH=/nonexistent npx vitest run --project unit test/unit/subagents-named-worktree-locks.test.ts test/unit/subagents-named-worktree-recovery.test.ts)`.
-      After changing SDK imports used by workflow graph views, run
-      `npx vitest run --project unit test/unit/overlay-adapter-autowrap.test.ts test/unit/overlay-adapter-hidden-render.test.ts`:
-      these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
+      Before real CLI captures, run `npm run build`; `npm run check` does not refresh the compiled CLI's
+      builtin assets. Exercise `/tasks` and stage chats too: direct component tests do not cover RPC-hosted
+      widget renderer resolution.
       SDK tests that allocate an agentDir and load bundled packages call `linkSharedTranspileCache(agentDir)`
       from `packages/coding-agent/test/helpers/shared-transpile-cache.ts` to reuse the suite's warmed compilation cache;
       keep cold-cache coverage separate.
+      For isolated CLI UI checks, set ATOMIC_CODING_AGENT_DIR to a fresh temporary profile and pass
+      --offline. ATOMIC_AGENT_DIR does not select the CLI profile.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

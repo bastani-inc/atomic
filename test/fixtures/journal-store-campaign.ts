@@ -22,7 +22,7 @@ const [directory, label, peersText, checkpointsText] = process.argv.slice(2);
 assert.ok(directory && label && peersText && checkpointsText);
 const peers = Number(peersText);
 const checkpoints = Number(checkpointsText);
-const storeDirectory = join(directory, "workflows", "journal");
+const storeDirectory = join(directory, "agent", "workflows", "journal");
 const backend = await initializeDurableBackend({ cwd: directory });
 assert.ok(backend instanceof JournalDurableBackend);
 const journal = backend.journal;

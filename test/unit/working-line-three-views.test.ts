@@ -94,38 +94,55 @@ function stageChat() {
 	const store = createStore();
 	setupRun(store, "run-1", "stage-a", "running");
 	let streaming = false;
-	const { handle: baseHandle, emit } = makeHandle({
-		promptCalls: [],
-		steerCalls: [],
-		followUpCalls: [],
-		pauseCalls: 0,
-		resumeCalls: [],
-		get isStreaming() {
-			return streaming;
+	const messages: unknown[] = [];
+	const { handle: baseHandle, emit } = makeHandle(
+		{
+			promptCalls: [],
+			steerCalls: [],
+			followUpCalls: [],
+			pauseCalls: 0,
+			resumeCalls: [],
+			get isStreaming() {
+				return streaming;
+			},
 		},
-	});
+		messages as never,
+	);
 	const originalPause = baseHandle.pause.bind(baseHandle);
 	const handle = {
 		...baseHandle,
+		get isStreaming() {
+			return streaming;
+		},
 		async pause() {
 			streaming = false;
 			await originalPause();
 			store.recordStagePaused("run-1", "stage-a");
 		},
 	};
-	const view = new StageChatView({
-		store,
-		graphTheme: deriveGraphTheme({}),
-		runId: "run-1",
-		stageId: "stage-a",
-		workflowName: "test-wf",
-		handle,
-		onDetach: () => {},
-		onClose: () => {},
-	});
+	const open = () =>
+		new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
+	let view = open();
 	return {
-		view,
+		get view() {
+			return view;
+		},
+		status: () => store.run("run-1")?.stages[0]?.status,
+		reopen: () => {
+			view.dispose();
+			view = open();
+		},
 		apply: async (event: AgentSessionEvent) => {
+			if (event.type === "message_end") messages.push(event.message as never);
 			if (event.type === "agent_start") streaming = true;
 			else if (event.type === "agent_end") streaming = false;
 			await emit(event);
@@ -165,10 +182,19 @@ function rawStatusLine(rows: readonly string[]): string {
 describe("one working line in the main chat, a stage chat and a subagent view (#5224)", () => {
 	beforeAll(() => initTheme("dark", false));
 	beforeEach(() => {
+		vi.stubEnv("COLORTERM", "truecolor");
+		vi.stubEnv("ATOMIC_TRUE_COLOR", "1");
+		vi.stubEnv("FORCE_COLOR", "3");
+		vi.stubEnv("NO_COLOR", undefined);
+		initTheme("dark", false);
 		vi.useFakeTimers({ toFake: ["Date"] });
 		vi.setSystemTime(1_000_000);
 	});
-	afterEach(() => vi.useRealTimers());
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.unstubAllEnvs();
+		initTheme("dark", false);
+	});
 
 	test("the same events paint the same working line and end row in all three views; a stage chat and a subagent view count the agent's total (#5224)", async () => {
 		const views = [mainChat(), stageChat(), subagentView()];
@@ -307,7 +333,6 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 			sub.dispose();
 		}
 	});
-
 	test("interrupting a running turn with Esc in a stage chat prints the same past-tense end row as main chat and a subagent view (#5239)", async () => {
 		const main = mainChat();
 		const stage = stageChat();
@@ -327,12 +352,19 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 				Array(3).fill("∀ Brewing… (14s · ↓ 800 tokens)"),
 			);
 
+			const restored = vi.spyOn(ChatSessionHost.prototype, "restoreInterruptedTurn");
 			assert.equal(stage.view.handleInput("\x1b"), true);
 			await Promise.resolve();
 			await Promise.resolve();
+			assert.equal(restored.mock.calls.length, 1);
+			const [interruptedTurn, restoreOptions] = restored.mock.calls[0] ?? [];
+			assert.equal(interruptedTurn?.settledTokens, 800);
+			assert.equal(restoreOptions, undefined);
 
 			await all({ type: "turn_end", message, toolResults: [] });
 			await all({ type: "agent_end", messages: [message] });
+			assert.deepEqual(restored.mock.calls.at(-1), [interruptedTurn, { resumeMeterForAgentEnd: true }]);
+			restored.mockRestore();
 
 			assert.deepEqual(
 				views.map((view) => view.line()),
@@ -340,6 +372,28 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 			);
 		} finally {
 			for (const view of views) view.dispose();
+		}
+	});
+	test("a stage chat reopened after Esc interrupted its turn still ends on the interrupted turn's time and tokens (#5239)", async () => {
+		const stage = stageChat();
+		try {
+			await stage.apply({ type: "agent_start" } as AgentSessionEvent);
+			await stage.apply({ type: "turn_start" } as AgentSessionEvent);
+			vi.setSystemTime(1_014_000);
+			const message = assistant("inspecting locks", 800);
+			await stage.apply({ type: "message_end", message } as AgentSessionEvent);
+
+			assert.equal(stage.view.handleInput("\x1b"), true);
+			await vi.waitFor(() => assert.equal(stage.status(), "paused"));
+			stage.reopen();
+			vi.setSystemTime(1_020_000);
+
+			await stage.apply({ type: "turn_end", message, toolResults: [] } as AgentSessionEvent);
+			await stage.apply({ type: "agent_end", messages: [message] } as AgentSessionEvent);
+
+			assert.equal(stage.line(), "∀ Brewed for 14s · ↓ 800 tokens");
+		} finally {
+			stage.dispose();
 		}
 	});
 });

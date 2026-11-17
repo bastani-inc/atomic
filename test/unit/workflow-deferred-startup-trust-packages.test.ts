@@ -11,6 +11,8 @@ import { noOpUIContext } from "../../packages/coding-agent/src/core/extensions/r
 import type { ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import { resetSessionTempCleanupScheduleForTesting } from "../../packages/coding-agent/src/core/tools/session-temp-cleanup.js";
+import { waitForWindowsDirectorySecurityReadsForTesting } from "../../packages/coding-agent/src/core/tools/windows-directory-security.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import workflowExtension from "../../packages/workflows/src/extension/index.js";
 import type {
@@ -23,12 +25,15 @@ import type { WorkflowToolResult } from "../../packages/workflows/src/extension/
 import { toolContext } from "../helpers/tool-context.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
+const CLEANUP_RETRIES = { maxRetries: 20, retryDelay: 50 } as const;
 const roots: string[] = [];
 
 afterEach(async () => {
 	setDurableBackend(undefined);
+	resetSessionTempCleanupScheduleForTesting();
+	await waitForWindowsDirectorySecurityReadsForTesting();
 	vi.unstubAllEnvs();
-	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true, ...CLEANUP_RETRIES })));
 });
 
 const workflowFactory: ExtensionFactory = (pi) => workflowExtension(pi as unknown as ExtensionAPI);
