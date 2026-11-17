@@ -64,6 +64,8 @@ describe("subagent pre-spawn model candidate filtering", () => {
 
 			assert.equal(result.status, "error");
 			assert.match(result.error ?? "", /No spawnable subagent model candidates/);
+			assert.match(result.error ?? "", /provider-a\/stalled \(no credentials for provider-a\)/);
+			assert.match(result.error ?? "", /provider-b\/working \(no credentials for provider-b\)/);
 			assert.equal(existsSync(join(dir, "spawned")), false);
 			assert.deepEqual(
 				result.modelAttempts?.map((attempt) => attempt.model),

@@ -282,6 +282,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		this._recoverableLengthRecoveryAttempted = false;
 		this._fallbackAttemptedKeys.clear();
 		this._fallbackBlockedModels.length = 0;
+		this._fallbackBlockedProviders.clear();
 		if (consumedQueuedMessageEvents.delete(event)) this._emitQueueUpdate();
 		await normalizeQueuedMessageImages(this, event.message);
 	}
@@ -377,6 +378,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			if (!assistantFailed && assistantMsg.stopReason === "stop") {
 				this._fallbackAttemptedKeys.clear();
 				this._fallbackBlockedModels.length = 0;
+				this._fallbackBlockedProviders.clear();
 			}
 
 			// A non-truncated assistant response means the length-continuation loop

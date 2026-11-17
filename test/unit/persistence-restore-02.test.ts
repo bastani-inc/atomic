@@ -6,6 +6,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { isRouterSelection } from "../../packages/workflows/src/shared/model-checkpoint-validation.js";
 import type { InFlightRun, SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { restoreOnSessionStart } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -147,6 +148,61 @@ describe("restoreOnSessionStart", () => {
 		const stage = st.runs()[0]?.stages[0];
 		assert.equal(stage?.sessionId, "session-1");
 		assert.equal(stage?.sessionFile, "/tmp/session-1.jsonl");
+	});
+	test("restores stage routerSelection with requiredInputs and rejects malformed requiredInputs", () => {
+		const validSelection = {
+			model: "decision-test/vision",
+			effort: "high",
+			fallbacks: [{ model: "decision-test/fallback", effort: null }],
+			candidates: ["decision-test/vision", "decision-test/fallback"],
+			requiredInputs: ["image"],
+		};
+		const st = createStore();
+		const entries: SessionEntry[] = [
+			{ id: "e1", type: "workflow.run.start", payload: { runId: "r1", name: "wf", inputs: {}, ts: 1 } },
+			{
+				id: "e2",
+				type: "workflow.stage.start",
+				payload: { runId: "r1", stageId: "s1", name: "vision", parentIds: [], ts: 2 },
+			},
+			{
+				id: "e3",
+				type: "workflow.stage.end",
+				payload: {
+					runId: "r1",
+					stageId: "s1",
+					status: "completed",
+					routerSelection: validSelection,
+				},
+			},
+			{
+				id: "e4",
+				type: "workflow.stage.start",
+				payload: { runId: "r1", stageId: "s2", name: "invalid-vision", parentIds: ["s1"], ts: 3 },
+			},
+			{
+				id: "e5",
+				type: "workflow.stage.end",
+				payload: {
+					runId: "r1",
+					stageId: "s2",
+					status: "failed",
+					routerSelection: { ...validSelection, requiredInputs: ["audio"] },
+				},
+			},
+		];
+		restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+		const stages = st.runs()[0]?.stages ?? [];
+		assert.deepEqual(stages[0]?.routerSelection, validSelection);
+		assert.equal(stages[1]?.routerSelection, undefined);
+		assert.equal(isRouterSelection(validSelection), true);
+		assert.equal(
+			isRouterSelection({ model: "decision-test/vision", effort: null, requiredInputs: ["text", "image"] }),
+			true,
+		);
+		for (const requiredInputs of ["image", ["audio"], [1], [null]]) {
+			assert.equal(isRouterSelection({ ...validSelection, requiredInputs }), false);
+		}
 	});
 	test("stage snapshots are rebuilt from session entries", () => {
 		const st = createStore();
