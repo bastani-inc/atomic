@@ -10,7 +10,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
-import { keybindingIdentity } from "../../../core/keybinding-identity.ts";
+import { keybindingIdentity } from "../../../core/keybinding-identity.js";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { SessionInfo } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";

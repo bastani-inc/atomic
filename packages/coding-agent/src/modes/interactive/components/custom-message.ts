@@ -16,7 +16,7 @@ import {
 	type TaskCompletionMessageOptions,
 } from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
-import { ToolBlock } from "./tool-block.js";
+import { ToolBlock } from "./tool-block.ts";
 
 /**
  * Type guard ensuring a value returned by an extension's custom renderer is a

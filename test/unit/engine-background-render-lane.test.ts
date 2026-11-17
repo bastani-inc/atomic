@@ -7,6 +7,7 @@
  * These tests count renders and frames; none of them measure time.
  */
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { type Component, resetCapabilitiesCache, setCapabilities, type Terminal } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
@@ -15,7 +16,6 @@ import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/ex
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { presentQuestionnaire } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
 import { TabBar } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/tab-bar.ts";
-import { ToolBlock } from "../../packages/coding-agent/src/modes/interactive/components/tool-block.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
 	BackgroundRenderLane,
@@ -523,7 +523,11 @@ test("a transcript row that fails to render answers with a failure frame (#4333)
 	const [frame] = rowFrames(rows.messages);
 	assert.ok(frame?.type === "engine_custom_frame");
 	assert.equal(frame.requestId, 4);
-	assert.deepEqual(frame.lines, new ToolBlock({ status: "failure", title: "Tool renderer failed" }).render(80));
+	assert.deepEqual(
+		frame.lines.map((line) => stripVTControlCharacters(line)),
+		[" ✗ Tool renderer failed"],
+	);
+	assert.equal(frame.lines.join("\n").includes("Renderer session is not bound"), false);
 });
 
 test("every queued transcript row renders, and each one's repaint check runs (#4333)", async () => {

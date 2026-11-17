@@ -1,4 +1,4 @@
-import type { HostSessionPickerRow } from "../../core/extensions/ui-types.ts";
+import type { HostSessionPickerRow } from "../../core/extensions/ui-types.js";
 import type { SessionInfo } from "../../core/session-manager.ts";
 
 export type ResumeTargetResolution =
