@@ -483,7 +483,7 @@ describe("/debug (#4360)", () => {
 					return { aborted: false, errors: new Map() };
 				},
 				isNetworkRefreshEnabled: () => true,
-				getCatalogInputsGeneration: () => 0,
+				readCatalogInputsKey: async () => "0",
 			} as unknown as ModelRuntime;
 
 			const refreshTask = boundedInteractiveModelRefresh((options) => refreshModelCatalogs(runtime, options)).then(

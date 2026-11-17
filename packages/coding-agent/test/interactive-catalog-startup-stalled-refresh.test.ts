@@ -10,7 +10,7 @@ interface Harness {
 	modelRuntime: {
 		refresh: ReturnType<typeof vi.fn>;
 		isNetworkRefreshEnabled: () => boolean;
-		getCatalogInputsGeneration: () => number;
+		readCatalogInputsKey: () => Promise<string>;
 	};
 	refreshSignals: AbortSignal[];
 	refreshCalls: () => number;
@@ -27,7 +27,7 @@ function createStalledHarness(): Harness {
 	const modelRuntime = {
 		refresh,
 		isNetworkRefreshEnabled: () => true,
-		getCatalogInputsGeneration: () => 0,
+		readCatalogInputsKey: async () => "0",
 		getAvailableSnapshot: () => [{ provider: "anthropic" }, { provider: "openai" }],
 	};
 	const providerCounts: number[] = [];
@@ -67,6 +67,8 @@ describe("startup catalog refresh against a stalled registry", () => {
 		// releases only its own waiter.
 		const selector = new AbortController();
 		const selectorRefresh = refreshModelCatalogs(harness.modelRuntime, { signal: selector.signal });
+		// The selector joins once its catalog-input key is read.
+		await vi.advanceTimersByTimeAsync(0);
 		expect(harness.refreshCalls()).toBe(1);
 		selector.abort();
 		await expect(selectorRefresh).rejects.toMatchObject({ name: "AbortError" });
@@ -75,6 +77,7 @@ describe("startup catalog refresh against a stalled registry", () => {
 		// While startup is still legitimately waiting, a retry shares its pass.
 		const rejoin = new AbortController();
 		const rejoined = refreshModelCatalogs(harness.modelRuntime, { signal: rejoin.signal });
+		await vi.advanceTimersByTimeAsync(0);
 		expect(harness.refreshCalls()).toBe(1);
 		rejoin.abort();
 		await expect(rejoined).rejects.toMatchObject({ name: "AbortError" });
@@ -88,6 +91,7 @@ describe("startup catalog refresh against a stalled registry", () => {
 
 		const retry = new AbortController();
 		const retried = refreshModelCatalogs(harness.modelRuntime, { signal: retry.signal });
+		await vi.advanceTimersByTimeAsync(0);
 		expect(harness.refreshCalls()).toBe(2);
 		retry.abort();
 		await expect(retried).rejects.toMatchObject({ name: "AbortError" });
