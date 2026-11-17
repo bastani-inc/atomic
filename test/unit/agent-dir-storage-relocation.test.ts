@@ -199,6 +199,69 @@ test("a copy that used its own session directory keeps it after the adopting ori
 	}
 });
 
+test.each(["rename", "copy-then-remove"])(
+	"a used copy keeps its own session directory when it is moved before the adopting original is removed (%s) (#5242)",
+	async (move) => {
+		const parent = join(root, "P");
+		const original = join(parent, "a1");
+		const clone = join(parent, "a2");
+		const moved = join(parent, "a3");
+		const settings = { sessions: { storage: { dir: "sessions" } } };
+		mkdirSync(original, { recursive: true });
+		writeFileSync(join(original, "settings.json"), JSON.stringify(settings));
+		const localId = "00000000-0000-4000-8000-000000000000";
+		const parentId = "11111111-1111-4111-8111-111111111111";
+		const copyId = "22222222-2222-4222-8222-222222222222";
+		for (const [dir, id] of [
+			[join(original, "sessions"), localId],
+			[join(parent, "sessions"), parentId],
+		] as const) {
+			const store = await resolveSessionStore(root, { agentDir: original, sessionStore: { kind: "jsonl", dir } });
+			try {
+				await store.create({ id, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+			} finally {
+				await store.close();
+			}
+		}
+		mkdirSync(join(parent, "workflows"));
+		writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+		resetStorageHomeCacheForTests();
+		assert.deepEqual(selectSessionStorage(root, { agentDir: original, settings }), {
+			kind: "jsonl",
+			dir: join(parent, "sessions"),
+		});
+		cpSync(original, clone, { recursive: true });
+		resetStorageHomeCacheForTests();
+		const own = await resolveSessionStore(root, { agentDir: clone, settings });
+		try {
+			await own.create({ id: copyId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: root }, []);
+		} finally {
+			await own.close();
+		}
+		if (move === "rename") {
+			renameSync(clone, moved);
+		} else {
+			cpSync(clone, moved, { recursive: true });
+			rmSync(clone, { recursive: true });
+		}
+		rmSync(original, { recursive: true });
+		for (let start = 0; start < 2; start++) {
+			resetStorageHomeCacheForTests();
+			assert.deepEqual(selectSessionStorage(root, { agentDir: moved, settings }), {
+				kind: "jsonl",
+				dir: join(moved, "sessions"),
+			});
+			const reopened = await resolveSessionStore(root, { agentDir: moved, settings });
+			try {
+				assert.equal((await reopened.readHeader(copyId))?.id, copyId);
+				assert.equal(await reopened.readHeader(parentId), undefined);
+			} finally {
+				await reopened.close();
+			}
+		}
+	},
+);
+
 test.each([
 	"backup-copy",
 	"backup-copy-via-junction",

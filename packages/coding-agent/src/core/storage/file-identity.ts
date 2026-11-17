@@ -628,21 +628,17 @@ function storageTargetDecisionFile(agentPath: string, target: string): string {
 	return `${storageHomeDecisionFile(agentPath)}.target-${key}`;
 }
 
-/** Whether this directory settled `target` to another directory's store, so the local counterpart is its own. */
-function recordsForeignTargetOwner(agentPath: string, target: string): boolean {
-	const raw = readClaimFile(storageTargetDecisionFile(agentPath, target));
-	if (raw === undefined) return false;
-	let decision: StorageHomeDecision;
-	try {
-		decision = JSON.parse(raw) as StorageHomeDecision;
-	} catch {
-		return false;
-	}
-	if (typeof decision?.parentOwner !== "string") return false;
-	const owner = decision.relativePaths
-		? resolve(canonicalPath(agentPath), decision.parentOwner)
-		: decision.parentOwner;
-	return !sameDirectory(owner, agentPath);
+/**
+ * Marks that this directory uses its own copy of `target` because another directory owns the parent one. The marker
+ * lives in the directory and is keyed by the target relative to it, so it moves and is copied with the data it marks.
+ */
+function localTargetMarkerFile(agentPath: string, target: string): string {
+	const base = canonicalPath(agentPath);
+	const local = relative(base, resolve(base, target));
+	const key = createHash("sha256")
+		.update(process.platform === "win32" ? local.toLowerCase() : local)
+		.digest("hex");
+	return `${storageHomeDecisionFile(agentPath)}.local-${key}`;
 }
 
 function isDefaultStorageHome(home: string, configuredHome: string): boolean {
@@ -882,7 +878,7 @@ function currentStorageOwnerPath(
 					containsPath(physicalCandidate, canonicalPath(resolve(candidate, target))) &&
 					(claimedTarget === undefined ||
 						!pathsEqual(resolve(candidate, target), resolve(candidate, claimedTarget)) ||
-						recordsForeignTargetOwner(candidate, claimedTarget)),
+						existsSync(localTargetMarkerFile(candidate, claimedTarget))),
 			);
 			const legacyTargets = owner.legacyTargets;
 			const unownedTargets =
@@ -1298,6 +1294,10 @@ function applyStorageTargetDecision(targetDecision: StorageTargetDecision, setti
 			isSameFile(fallback, selected)
 		) {
 			throw new Error(`Relative storage target ${target} is owned by another agent directory`);
+		}
+		const marker = localTargetMarkerFile(agentPath, target);
+		if (settings !== undefined && isDirectory(agentPath) && !existsSync(marker)) {
+			claimFileAtomically(marker, `${JSON.stringify({ target })}\n`);
 		}
 		return agentPath;
 	}
