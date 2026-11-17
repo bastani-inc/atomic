@@ -125,14 +125,20 @@ export class HostInputBridge {
 			valid: (value: T) => boolean,
 			options: ExtensionUIDialogOptions | undefined,
 			onCallerCancel: () => T,
-		): Promise<T> =>
-			this.request(
+		): Promise<T> => {
+			let hostPending = false;
+			return this.request(
 				(host, identity) => {
 					if (!stageDialog) return invoke(host, identity);
 					const answerWithHost = async () => {
-						const value = await invoke(host, identity);
-						if (!valid(value)) throw hostInputError("InvalidHostInput");
-						return value;
+						hostPending = true;
+						try {
+							const value = await invoke(host, identity);
+							if (!valid(value)) throw hostInputError("InvalidHostInput");
+							return value;
+						} finally {
+							hostPending = false;
+						}
 					};
 					return stageDialog(
 						descriptor,
@@ -143,7 +149,9 @@ export class HostInputBridge {
 				valid,
 				{ ...options, ...scope },
 				onCallerCancel,
+				() => hostPending,
 			);
+		};
 		const wrapped: ExtensionUIContext = {
 			...ui,
 			confirm: (title, message, options) =>
@@ -214,6 +222,7 @@ export class HostInputBridge {
 		valid: (value: T) => boolean,
 		options?: ExtensionUIDialogOptions & WorkflowIdentity,
 		onCallerCancel?: () => T,
+		dismissUnsettledHost?: () => boolean,
 	): Promise<T> {
 		if (this.closed) return Promise.reject(hostInputError("SessionClosed"));
 		const host = this.adapter;
@@ -242,7 +251,7 @@ export class HostInputBridge {
 			ownerSignal?.removeEventListener("abort", abort);
 			if (onAbort) controller.signal.removeEventListener("abort", onAbort);
 			this.pending.delete(controller);
-			controller.abort();
+			if (dismissUnsettledHost?.()) controller.abort();
 		};
 		if (options?.signal?.aborted || ownerSignal?.aborted) {
 			if (options?.signal?.aborted) cancelCaller();

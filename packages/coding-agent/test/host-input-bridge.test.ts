@@ -118,6 +118,45 @@ for (const boundary of ["cancel", "close", "rebind", "owner"] as const) {
 	});
 }
 
+for (const outcome of ["answered", "invalid", "failed"] as const) {
+	for (const route of ["host", "presentation", "stage-host"] as const) {
+		test(`a ${route} dialog ${outcome} by its own host retires without aborting the host signal (#5354)`, async () => {
+			const { host } = pendingHost();
+			let identity!: HostInputOptions;
+			host.select = async (_title, _choices, options) => {
+				identity = options;
+				if (outcome === "failed") throw new Error("host failed");
+				return outcome === "invalid" ? "not a choice" : "chosen";
+			};
+			const bridge = new HostInputBridge(
+				() => "stage-session",
+				() => undefined,
+			);
+			bridge.bind(host);
+			const ui = Object.assign(
+				{ ...noOpUIContext },
+				route === "stage-host"
+					? {
+							[Symbol.for("atomic-coding-agent/stage-dialog@1")]: (
+								_descriptor: { kind: string },
+								_identity: HostInputOptions,
+								answerWithHost: () => Promise<string | undefined>,
+							) => answerWithHost(),
+						}
+					: {},
+			);
+			const result = bridge.wrap(ui, route === "presentation" ? host : undefined).select("Where?", ["chosen"]);
+			if (outcome === "answered") assert.equal(await result, "chosen");
+			else if (outcome === "invalid") await assert.rejects(result, { code: "InvalidHostInput" });
+			else await assert.rejects(result, /host failed/);
+			assert.equal(identity.signal.aborted, false);
+			bridge.cancel();
+			bridge.close();
+			assert.equal(identity.signal.aborted, false);
+		});
+	}
+}
+
 for (const outcome of ["answered", "failed"] as const) {
 	test(`a stage dialog ${outcome} outside its SDK host dismisses that host (#5354)`, async () => {
 		const { host, requests } = pendingHost();

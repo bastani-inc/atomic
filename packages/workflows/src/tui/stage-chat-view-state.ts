@@ -597,7 +597,8 @@ export function resolvePromptResponse(
 	resetPromptScroll(ctx);
 	const resolved = ctx.store.resolveStagePendingPrompt(ctx.runId, ctx.stageId, prompt.id, response);
 	ctx.requestRender?.();
-	if (resolved) ctx.onDetach("prompt-resolved", metadata);
+	if (resolved && ctx.mountedCustomUi === null && ctx.mountingRequestId === null)
+		ctx.onDetach("prompt-resolved", metadata);
 }
 
 export function viewLineCount(ctx: StageChatViewContext): number {

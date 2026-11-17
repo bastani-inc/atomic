@@ -430,6 +430,8 @@ export class StageUiBroker {
 			signal?.removeEventListener("abort", cancel);
 			cancel();
 			if (this.dialogs.get(hostKey) === prompt.id) this.dialogs.delete(hostKey);
+			const custom = this.pending.get(hostKey);
+			if (custom) this.store.recordStageAwaitingInput(runId, stageId, true, custom.createdAt);
 			if (journal !== undefined && this.dialogJournals.get(hostKey) === journal)
 				void writeDialogJournal(journal).catch(() => {});
 		}
@@ -460,7 +462,11 @@ export class StageUiBroker {
 			this.customTurns.delete(hostKey);
 			turn.release();
 		};
-		const open = () => this.openCustomUi(runId, stageId, factory, options, signal, sessionId, humanInput, release);
+		const open = () => {
+			const result = this.openCustomUi(runId, stageId, factory, options, signal, sessionId, humanInput, release);
+			turn.release();
+			return result;
+		};
 		if (turn.ready === undefined) return open();
 		return untilSettledOrAborted(turn.ready, signal).then(open, (error: unknown) => {
 			release();

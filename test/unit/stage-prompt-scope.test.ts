@@ -18,6 +18,13 @@ import { captureWorkflowOwnerResources } from "../../packages/workflows/src/exte
 import { workflowAnswerAction } from "../../packages/workflows/src/extension/workflow-tool-answer.js";
 import { adoptStageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { adoptStore } from "../../packages/workflows/src/shared/store-factory.js";
+import {
+	deriveGraphTheme,
+	makeFakeKeybindings,
+	makeTestTui,
+	StageChatView,
+	stripAnsi,
+} from "./stage-chat-view-helpers.js";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -324,6 +331,83 @@ test("aborting a stage dialog does not approve it or let a stale reply answer it
 	assert.equal(await next, "current");
 	assert.deepEqual(shown, ["confirm Main?"]);
 });
+
+test.each(["stage-chat", "workflow-answer"] as const)(
+	"a confirmation opened inside stage custom UI stacks above it and answers through %s (#5354)",
+	async (answerer) => {
+		const root = mkdtempSync(join(tmpdir(), "stage-nested-dialog-"));
+		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+		const shown: string[] = [];
+		const { session: main } = await createAgentSession(sessionOptions(root));
+		cleanups.push(() => main.dispose());
+		await main.bindExtensions({ uiContext: mainChat(shown), mode: "tui" });
+		const { stage, store, broker } = await workflowStage(root, main);
+		const runId = "3a8b8e63-2704-4212-af75-60bff16c299b";
+		let detaches = 0;
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId,
+			stageId: "stage-1",
+			workflowName: "prompt-scope",
+			onDetach() {
+				detaches++;
+			},
+			onClose() {},
+			piTui: makeTestTui(32),
+			piTheme: {},
+			piKeybindings: makeFakeKeybindings(),
+			stageUiBroker: broker,
+		});
+		cleanups.push(() => view.dispose());
+		const ui = stage.extensionRunner.createContext().ui;
+		let confirmed: boolean | undefined;
+		const customInputs: string[] = [];
+		const custom = ui.custom<boolean>((_tui, _theme, _keys, done) => ({
+			render: () => [confirmed === undefined ? "CUSTOM-WAITING" : "CUSTOM-CONFIRMED"],
+			invalidate() {},
+			handleInput(data) {
+				customInputs.push(data);
+				if (data === "ask") {
+					void ui
+						.confirm("Nested confirmation?", "Continue this component?")
+						.then((value) => {
+							confirmed = value;
+						})
+						.catch(() => {});
+				} else if (data === "\r") done(confirmed === true);
+				return true;
+			},
+		}));
+		void custom.catch(() => {});
+		await vi.waitFor(() => assert.match(stripAnsi(view.render(80).join("\n")), /CUSTOM-WAITING/));
+		view.handleInput("ask");
+		await vi.waitFor(() => assert.equal(store.run(runId)?.stages[0]?.pendingPrompt?.kind, "confirm"));
+		const prompt = store.run(runId)!.stages[0]!.pendingPrompt!;
+		const rendered = stripAnsi(view.render(80).join("\n"));
+		assert.match(rendered, /Nested confirmation\?/);
+		assert.doesNotMatch(rendered, /CUSTOM-WAITING/);
+		if (answerer === "stage-chat") {
+			view.handleInput("\x1b[C");
+			view.handleInput("\r");
+		} else {
+			const answered = await workflowAnswerAction(
+				{ action: "answer", runId, stageId: "stage-1", promptId: prompt.id, response: true },
+				{ ...captureWorkflowOwnerResources(), store, stageUiBroker: broker },
+			);
+			assert.equal(answered.status, "ok");
+		}
+		await vi.waitFor(() => assert.equal(confirmed, true));
+		assert.equal(detaches, 0, "answering the nested dialog keeps its custom component open");
+		assert.equal(store.run(runId)?.stages[0]?.status, "awaiting_input");
+		assert.match(stripAnsi(view.render(80).join("\n")), /CUSTOM-CONFIRMED/);
+		assert.deepEqual(customInputs, ["ask"]);
+		view.handleInput("\r");
+		assert.equal(await custom, true);
+		assert.equal(store.run(runId)?.stages[0]?.status, "running");
+		assert.deepEqual(shown, []);
+	},
+);
 
 test("a stage's custom prompt waits behind its live dialog instead of replacing it", async () => {
 	const root = mkdtempSync(join(tmpdir(), "stage-dialog-collision-"));

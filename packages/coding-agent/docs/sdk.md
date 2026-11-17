@@ -268,7 +268,7 @@ Pass `extensionBindings.humanInput` to answer extension dialogs and `ask_user_qu
 
 Each callback receives a `HostInputOptions` argument with a runtime-generated `requestId`, the originating `sessionId`, and an `AbortSignal`. Route the question to that session, not whichever chat is currently visible, and stop presenting it when the signal aborts. Child sessions inherit an explicitly supplied `humanInput` adapter. In the interactive CLI, subagent questions wait in their own task views and workflow stage questions wait in their stage chats. Plain RPC clients and SDK hosts that provide only `uiContext` keep receiving child dialogs through that presentation, including subagents launched by workflow stages, since they have no built-in task inspector. Setting `mode: "tui"` alone does not enable held task prompts.
 
-Dialog options include `timeout` in milliseconds when the caller supplied it. The signal aborts when a timeout, cancellation, session shutdown or an answer from a stage chat ends the request. Stop showing the dialog on abort even if your callback has not returned.
+Dialog options include `timeout` in milliseconds when the caller supplied it. The signal aborts when a timeout, cancellation, session shutdown or an answer from a stage chat or `workflow answer` ends a pending request. Stop showing the dialog on abort even if your callback has not returned. A settled host reply does not abort its signal, including when Atomic rejects that reply as invalid.
 
 For custom task views, see [Session-local task prompts](/sdk/reference#session-local-task-prompts).
 
