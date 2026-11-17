@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage } from "@bastani/atomic-ai";
 import { afterEach, describe, it, vi } from "vitest";
+import { COMPACTOR_REQUEST_TIMEOUT_MS } from "../src/core/compaction/compactor.ts";
 import {
 	buildCompactorMessages,
 	COMPACTOR_COMPRESSION_RATIO,
@@ -324,6 +325,7 @@ describe("compaction with a configured compactor model", () => {
 		["no credentials", () => json({ output: "unused" }), /failed: no credentials/u, false],
 		["an HTTP error", () => json({ error: { message: `invalid key ${API_KEY}` } }, 503), /failed: HTTP 503/u, true],
 		["empty output", () => json({ output: "" }), /failed: empty output/u, true],
+		["a malformed response", () => new Response("not json", { status: 200 }), /failed: malformed response/u, true],
 		["output over the cap", () => json({ output: "word ".repeat(200_000) }), /failed: output too long/u, true],
 	];
 	for (const [name, respond, reason, credentials] of fallbacks) {
@@ -344,6 +346,32 @@ describe("compaction with a configured compactor model", () => {
 			assert.ok(!everything.includes(API_KEY), "the key leaked into a result, event or entry");
 		});
 	}
+
+	it("falls back to clearing the context when the compactor request times out", async () => {
+		const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+		const timeout = vi
+			.spyOn(AbortSignal, "timeout")
+			.mockImplementation((ms) => realTimeout(ms === COMPACTOR_REQUEST_TIMEOUT_MS ? 20 : ms));
+		const fake = endpoint(() => new Promise<Response>(() => {}));
+		vi.stubGlobal(
+			"fetch",
+			((input: string | URL | Request, init?: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					void fake.fetch(input, { ...init, signal: undefined });
+					init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+				})) as typeof fetch,
+		);
+		harness = await compactorHarness(true);
+		const result = await harness.session.compact();
+		assert.ok(
+			timeout.mock.calls.some(([ms]) => ms === COMPACTOR_REQUEST_TIMEOUT_MS),
+			"the bounded wait was used",
+		);
+		timeout.mockRestore();
+		assert.equal(result.form, "cleared");
+		assert.match(result.fallbackReason ?? "", /timed out after/u);
+		assert.equal(fake.requests.length, 1);
+	});
 
 	async function budgetHarness(systemPrompt: string): Promise<Harness> {
 		const created = await createHarness({

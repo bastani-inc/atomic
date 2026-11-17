@@ -76,7 +76,7 @@ test("artifact answers survive real pre-prompt compaction and later compaction",
 		assert.equal(await readText(output), report);
 		await harness.session.compact();
 		assert.equal(compactions, 2);
-		assert.equal(harness.session.getLastAssistantText(), undefined);
+		assert.equal(harness.session.getLastAssistantText(), report, "the session's last answer outlives the boundary");
 		await context.__continuePrompt("Clarify the report");
 		await context.__closeGeneration();
 		assert.equal(await readText(output), `${report}\n\n## Supplement 1\n\n${clarification}`);

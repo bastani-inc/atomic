@@ -1182,7 +1182,10 @@ async function runQueuedInput(session: AgentSession): Promise<void> {
 	await session._agentEventQueue.catch(() => {});
 	await preparePriorityContinuation(session);
 	if (!canStartQueuedInputRun(session)) return;
-	const run = session.agent.continue();
+	const cleared = await session._compactBeforeContinuation();
+	if (!canStartQueuedInputRun(session)) return;
+	// After a clear the context ends with the boundary message, so the queued input is the next request's prompt.
+	const run = cleared ? session.agent.promptQueuedMessages().then(() => {}) : session.agent.continue();
 	if (!session.agent.state.isStreaming) return run;
 	session._activePromptCount += 1;
 	openRun(session);

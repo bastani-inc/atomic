@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/atomic-ai";
-import { afterEach, describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
@@ -96,6 +96,26 @@ describe("a completed turn keeps its answer for its readers", () => {
 		assert.equal(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction").length, 1);
 		assert.deepEqual(contexts, [["system", "user", "user"]], JSON.stringify(contexts));
 		assert.equal(harness.session.getLastAssistantText(), "follow-up answer");
+	});
+
+	it("input queued while the session is idle after a threshold-crossing answer goes out after a clear", async () => {
+		harness = await largeTurn();
+		const contexts: string[][] = [];
+		harness.setResponses([
+			fauxAssistantMessage(ANSWER),
+			(context) => {
+				contexts.push(roles(context));
+				return fauxAssistantMessage("queued answer");
+			},
+		]);
+		await harness.session.prompt(LARGE_PROMPT);
+
+		await harness.session.followUp("one more thing");
+		await vi.waitFor(() => assert.equal(harness?.session.getLastAssistantText(), "queued answer"));
+
+		assert.equal(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction").length, 1);
+		assert.deepEqual(contexts, [["system", "user", "user"]]);
+		assert.equal(harness.faux.state.callCount, 2, "the clear made no model call");
 	});
 
 	it("the last answer is still readable after a manual compaction", async () => {
