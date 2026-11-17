@@ -30,6 +30,7 @@ export function appendProcessLog(
 	stderr: Readable | null | undefined,
 	logPath: string,
 	onFailure: (failure: string) => void,
+	after: Promise<unknown> = Promise.resolve(),
 ): ProcessLog {
 	let log: WriteStream | undefined;
 	let failed = false;
@@ -44,7 +45,10 @@ export function appendProcessLog(
 		log?.end();
 		onFailure(logFailureOf(error));
 	};
-	let opening: Promise<void> = Promise.resolve();
+	let opening: Promise<void> = after.then(
+		() => {},
+		() => {},
+	);
 	const close = async (): Promise<void> => {
 		await opening;
 		drain();
@@ -57,15 +61,17 @@ export function appendProcessLog(
 	};
 	if (stderr === null || stderr === undefined) return { opened: opening, close };
 	stderr.on("error", fail);
-	opening = mkdir(dirname(logPath), { recursive: true }).then(
-		() => {
-			if (failed) return;
-			log = createWriteStream(logPath, { flags: "a" });
-			log.on("error", fail);
-			stderr.pipe(log);
-		},
-		(error: unknown) => fail(asError(error)),
-	);
+	opening = opening
+		.then(() => mkdir(dirname(logPath), { recursive: true }))
+		.then(
+			() => {
+				if (failed) return;
+				log = createWriteStream(logPath, { flags: "a" });
+				log.on("error", fail);
+				stderr.pipe(log);
+			},
+			(error: unknown) => fail(asError(error)),
+		);
 	return { opened: opening, close };
 }
 

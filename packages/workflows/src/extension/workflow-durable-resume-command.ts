@@ -163,7 +163,7 @@ export async function handleDurableResume(
 			...crossProjectConfirmation(ctx),
 			onBeforeResume: (runId, forkedFrom) =>
 				injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom, runtime.durableBackend()),
-			...releasedRunAdoption("workflowId" in resolved ? resolved.workflowId : target, ctx, runtime),
+			...(await releasedRunAdoption("workflowId" in resolved ? resolved.workflowId : target, ctx, runtime)),
 			...resumeOptions,
 		});
 		if (result.ok) {

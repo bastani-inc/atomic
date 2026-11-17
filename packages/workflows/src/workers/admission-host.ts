@@ -5,6 +5,8 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+const PROC_STAT_READS_AT_ONCE = 32;
+
 export const admissionHost = hostname();
 
 let bootIdentity: Promise<string | null> | undefined;
@@ -86,16 +88,20 @@ export async function scanProcessGroup(group: number): Promise<ProcessGroupScan>
 		} catch {
 			return { members, complete: false };
 		}
-		const stats = await Promise.all(
-			entries
-				.filter((entry) => /^\d+$/.test(entry))
-				.map(async (entry) => {
+		const pids = entries.filter((entry) => /^\d+$/.test(entry));
+		const stats: { readonly entry: string; readonly stat: string | undefined }[] = [];
+		let next = 0;
+		await Promise.all(
+			Array.from({ length: Math.min(PROC_STAT_READS_AT_ONCE, pids.length) }, async () => {
+				while (next < pids.length) {
+					const entry = pids[next++]!;
 					try {
-						return { entry, stat: await readFile(`/proc/${entry}/stat`, "utf8") };
+						stats.push({ entry, stat: await readFile(`/proc/${entry}/stat`, "utf8") });
 					} catch {
-						return { entry, stat: undefined };
+						stats.push({ entry, stat: undefined });
 					}
-				}),
+				}
+			}),
 		);
 		for (const { entry, stat } of stats) {
 			if (stat === undefined) {

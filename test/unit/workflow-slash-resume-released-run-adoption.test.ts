@@ -8,6 +8,7 @@ import type {
 	PiExecuteContext,
 } from "../../packages/workflows/src/extension/public-types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { handleDurableResume } from "../../packages/workflows/src/extension/workflow-durable-resume-command.js";
 import { WorkflowInstanceOwnershipError } from "../../packages/workflows/src/extension/workflow-instance-owner.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
@@ -175,6 +176,33 @@ describe("/workflow resume transfers ownership of a run released by the previous
 		assert.deepEqual(errors, []);
 		await vi.waitFor(() => assert.equal(backend.getWorkflow(runId)?.status, "completed"));
 		assert.equal(backend.getWorkflow(runId)?.modelOwner, SUCCESSOR_SESSION);
+	});
+
+	test.sequential("the slash command transfers ownership of a released run its resume catalog does not list yet (#3569)", async () => {
+		const runId = testRunId("slash-released-adoption-uncataloged");
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		await registerRun(backend, runId);
+		const { runtime } = setup();
+		const errors: string[] = [];
+
+		await handleDurableResume(
+			runId,
+			slashContext(SUCCESSOR_SESSION),
+			{ info: () => undefined, error: (message) => errors.push(message) },
+			{
+				pi: {},
+				overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+				runtimeForContext: () => runtime,
+				ensureWorkflowResourcesLoaded: () => undefined,
+			},
+			{ resumable: [], completed: [] },
+		);
+
+		assert.deepEqual(errors, []);
+		await vi.waitFor(() => assert.equal(backend.getWorkflow(runId)?.status, "completed"));
+		assert.equal(backend.getWorkflow(runId)?.modelOwner, SUCCESSOR_SESSION);
+		assert.equal(backend.getWorkflow(runId)?.releasedModelOwner, undefined);
 	});
 
 	test.sequential("slash resume of a run that was never released keeps its owner (#3569)", async () => {

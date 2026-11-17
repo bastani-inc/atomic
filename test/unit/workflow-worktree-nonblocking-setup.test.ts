@@ -107,6 +107,48 @@ test("a worktree-input run's stages run in the worktree, which is set up without
 	assert.deepEqual(syncGitSpawns, [], "no git command ran synchronously");
 });
 
+test("two stages started together with the same new gitWorktreeDir share the one worktree it creates", async () => {
+	const shared = join(root, "shared-new-wt");
+	const stageCwds = new Map<string, string | undefined>();
+	const def = workflow({
+		name: "worktree-two-stages-same-new-dir",
+		description: "",
+		inputs: {},
+		outputs: { errors: Type.Array(Type.String()) },
+		run: async (ctx) => {
+			const stages = [ctx.stage("left", { gitWorktreeDir: shared }), ctx.stage("right", { gitWorktreeDir: shared })];
+			const settled = await Promise.allSettled(stages.map((stage) => stage.complete("work")));
+			return {
+				errors: settled.flatMap((outcome) =>
+					outcome.status === "rejected"
+						? [outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)]
+						: [],
+				),
+			};
+		},
+	});
+	const result = await run(
+		def,
+		{},
+		{
+			runId: testRunId("worktree-two-stages-same-new-dir"),
+			cwd: sourceCwd,
+			store: createStore(),
+			durableBackend: await JournalTestBackend.create(),
+			adapters: recordingAdapters(stageCwds),
+		},
+	);
+
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(result.result?.errors, []);
+	assert.equal(stageCwds.get("left"), join(shared, "packages", "api"));
+	assert.equal(stageCwds.get("right"), join(shared, "packages", "api"));
+	const worktrees = (await runGitChecked(repo, ["worktree", "list", "--porcelain"]))
+		.split("\n")
+		.filter((line) => line.startsWith("worktree "));
+	assert.equal(worktrees.length, 2, worktrees.join("\n"));
+});
+
 test("a stage whose worktree cannot be set up fails its call with the setup error", async () => {
 	const notADirectory = join(root, "not-a-directory");
 	writeFileSync(notADirectory, "a file where the worktree belongs\n");

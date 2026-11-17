@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import {
 	claimRunWorktree,
 	holdRunWorktree,
@@ -31,6 +31,23 @@ import {
 	type WorktreeSetup,
 } from "../../packages/subagents/src/runs/shared/worktree.js";
 import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
+
+const sweepCapture = vi.hoisted((): { directory?: string; reached?: () => void; proceed?: Promise<void> } => ({}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	return {
+		...actual,
+		mkdir: vi.fn(async (...args: Parameters<typeof actual.mkdir>) => {
+			if (sweepCapture.directory !== undefined && args[0] === sweepCapture.directory) {
+				sweepCapture.directory = undefined;
+				sweepCapture.reached?.();
+				await sweepCapture.proceed;
+			}
+			return actual.mkdir(...args);
+		}),
+	};
+});
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
@@ -214,17 +231,22 @@ test("resuming while an async release sweep is in flight serializes behind the s
 	assert.ok(record);
 	writeFileSync(join(worktree.path, "seed.txt"), "seed\nin-flight edit\n");
 
-	// Start the release sweep without awaiting it, then immediately resume after the sweep has entered diff capture.
+	const reached = Promise.withResolvers<void>();
+	const proceed = Promise.withResolvers<void>();
+	Object.assign(sweepCapture, { directory: diffsDir, reached: reached.resolve, proceed: proceed.promise });
+	cleanups.push(() => proceed.resolve());
 	const releaseSweep = run.release();
-	await new Promise((resolve) => setTimeout(resolve, 5));
-	const releaseResume = await resumeRunWorktree({
+	await reached.promise;
+	const resuming = resumeRunWorktree({
 		runId,
 		index: 0,
 		cwd: worktree.agentCwd,
 		agent: "worker",
 		worktree: record,
 	});
+	proceed.resolve();
 	await releaseSweep;
+	const releaseResume = await resuming;
 	const resumedExecution = holdRunWorktree(runId, 0);
 	claimRunWorktree(runId, 0);
 	await releaseResume();

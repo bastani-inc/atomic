@@ -672,6 +672,7 @@ export class PoolCoordinator {
 	private readonly keptLogs = new Set<string>();
 	/** Why each worker log the pool could not write failed, by its path; the pool reports the first one. */
 	private readonly logFailures = new Map<string, string>();
+	private logsOpened: Promise<void> = Promise.resolve();
 	/** Workers that SIGKILL did not end within the bound, already reported. */
 	private readonly unconfirmedExits = new WeakSet<ChildProcess>();
 	/** Set once the pool reported its own failure to the root: close then keeps every worker's log. */
@@ -2558,7 +2559,13 @@ export class PoolCoordinator {
 		const logPath = join(this.logDirectory!, `${id}.log`);
 		this.logs.set(child, logPath);
 		// A worker whose log cannot be written still runs: its errors name the log and why it could not be written.
-		const log = appendProcessLog(child.stderr, logPath, (failure) => this.logUnwritable(logPath, failure));
+		const log = appendProcessLog(
+			child.stderr,
+			logPath,
+			(failure) => this.logUnwritable(logPath, failure),
+			this.logsOpened,
+		);
+		this.logsOpened = log.opened;
 		const startupTimeoutMs = options.startupTimeoutMs;
 		const spawnedAt = performance.now();
 		let timedOutAt: number | undefined;

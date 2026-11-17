@@ -78,37 +78,55 @@ function* gitWorktreeSetupCacheKey(request: GitWorktreeSetupRequest): WorktreeSt
  * run finds its checkout again instead of allocating another one.
  */
 export function createGitWorktreeSetupCache(ownerRunId?: string): GitWorktreeSetupCache {
-	const results = new Map<string, CachedGitWorktreeSetup>();
+	const results = new Map<string, Promise<CachedGitWorktreeSetup>>();
 	let disposed = false;
+	const assertOpen = (): void => {
+		if (disposed) throw new Error("Git worktree setup cache is already disposed");
+	};
 	return {
 		async get(options) {
-			if (disposed) throw new Error("Git worktree setup cache is already disposed");
+			assertOpen();
 			const request = await runWorktreeSteps(resolveGitWorktreeSetupRequest(options));
 			const key = await runWorktreeSteps(gitWorktreeSetupCacheKey(request));
-			const cached = results.get(key);
-			if (cached !== undefined) {
+			const existing = results.get(key);
+			if (existing !== undefined) {
+				const cached = await existing;
 				await assertCachedGitWorktreeIdentity(cached, options);
 				return cached.result;
 			}
-			const setup = await runWorktreeSteps(setupGitWorktreeFromRequest(request, ownerRunId));
-			results.set(key, { ...setup, identity: await captureGitWorktreeIdentity(setup) });
-			return setup.result;
+			assertOpen();
+			const setup = setupCachedGitWorktree(request, ownerRunId);
+			results.set(key, setup);
+			setup.catch(() => {
+				if (results.get(key) === setup) results.delete(key);
+			});
+			return (await setup).result;
 		},
 		async dispose() {
 			if (disposed) return;
 			disposed = true;
+			const setups = await Promise.allSettled(results.values());
+			results.clear();
 			let firstError: Error | undefined;
-			for (const cached of results.values()) {
+			for (const setup of setups) {
+				if (setup.status === "rejected") continue;
 				try {
-					await cached.identity.generation.dispose();
+					await setup.value.identity.generation.dispose();
 				} catch (error) {
 					firstError ??= error instanceof Error ? error : new Error(String(error));
 				}
 			}
-			results.clear();
 			if (firstError !== undefined) throw firstError;
 		},
 	};
+}
+
+async function setupCachedGitWorktree(
+	request: GitWorktreeSetupRequest,
+	ownerRunId: string | undefined,
+): Promise<CachedGitWorktreeSetup> {
+	const setup = await runWorktreeSteps(setupGitWorktreeFromRequest(request, ownerRunId));
+	return { ...setup, identity: await captureGitWorktreeIdentity(setup) };
 }
 
 export async function setupGitWorktreeCached(
