@@ -200,4 +200,56 @@ describe("a settings save keeps what an editor saved while it was writing", () =
 		);
 		assert.notEqual(readJson().theme, "solarized", "the editor's save stands");
 	});
+
+	it("keeps a save that gave up to an editor pending, and saves it at the next flush", async () => {
+		/** An editor saves the file on every attempt of the first two saves: a flush's write and its retry. */
+		class EditorSavesTwice extends FileSettingsStorage {
+			private busy = 2;
+			override async withPrimaryWriteLockAsync(
+				scope: SettingsScope,
+				fn: (currentPrimary: string | undefined) => string | undefined,
+			): Promise<void> {
+				const editing = this.busy > 0;
+				this.busy -= 1;
+				let save = 0;
+				await super.withPrimaryWriteLockAsync(scope, (current) => {
+					if (editing) editorSave({ theme: "light", save: ++save });
+					return fn(current);
+				});
+			}
+		}
+		const manager = SettingsManager.fromStorage(new EditorSavesTwice(cwd, agentDir));
+		manager.setDefaultThinkingLevel("high");
+		await manager.flush();
+		assert.equal(readJson().defaultThinkingLevel, undefined, "the save and the flush's retry gave up to the editor");
+		assert.match(String(manager.drainErrors()[0]?.error.message), /changed while it was being saved/);
+
+		await manager.flush();
+		assert.equal(readJson().defaultThinkingLevel, "high", "the next flush saved it");
+		assert.equal(readJson().theme, "light", "into the editor's file");
+	});
+});
+
+describe("a save keeps the keys it does not change exactly as they are on disk", () => {
+	it("keeps an ignored legacy routerModel and keys Atomic does not know when it saves another setting", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-settings-raw-keys-"));
+		try {
+			const agentDir = join(root, "agent");
+			mkdirSync(agentDir, { recursive: true });
+			const path = join(agentDir, "settings.json");
+			const saved = {
+				decisionModel: "auto",
+				routerModel: "openai/gpt-6.1-sol",
+				queueMode: "all",
+				extensionSetting: { nested: true },
+			};
+			writeFileSync(path, JSON.stringify(saved));
+			const manager = SettingsManager.create(join(root, "project"), agentDir);
+			manager.setTheme("light");
+			await manager.flush();
+			assert.deepEqual(JSON.parse(readFileSync(path, "utf-8")), { ...saved, theme: "light" });
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 });

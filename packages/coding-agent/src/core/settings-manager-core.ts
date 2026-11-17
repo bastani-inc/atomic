@@ -6,7 +6,12 @@ import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import { isDecisionConfigError } from "./decision/errors.js";
 import { deepMergeSettings, isPrototypeKey } from "./settings-merge.js";
-import { asyncSettingsStorage, FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
+import {
+	asyncSettingsStorage,
+	FileSettingsStorage,
+	InMemorySettingsStorage,
+	SettingsFileChangedError,
+} from "./settings-storage.ts";
 import type {
 	AsyncSettingsStorage,
 	PackageSource,
@@ -46,6 +51,11 @@ interface UnsavedWrite {
 	readonly manager: SettingsManager;
 	readonly scope: SettingsScope;
 	readonly persist: PersistSettings;
+	/**
+	 * The write gave up because something kept saving the file without the lock, such as an editor. It stays unsaved:
+	 * the next `flush()` tries it again, and so does the save at exit, which reports it on stderr when it fails again.
+	 */
+	gaveUp?: boolean;
 }
 
 const unsavedWrites: UnsavedWrite[] = [];
@@ -642,13 +652,19 @@ export class SettingsManager {
 	}
 
 	private enqueueWrite(scope: SettingsScope, persist: PersistSettings): void {
-		const owner = settingsWriteOwner.getStore() ?? ownedSettingsManagers.get(this);
 		const unsaved: UnsavedWrite = { manager: this, scope, persist };
 		unsavedWrites.push(unsaved);
 		if (!exitSaveRegistered) {
 			exitSaveRegistered = true;
 			process.once("exit", () => SettingsManager.saveUnsavedWritesAtExit());
 		}
+		this.runWrite(unsaved);
+	}
+
+	private runWrite(unsaved: UnsavedWrite): void {
+		const { scope, persist } = unsaved;
+		const owner = settingsWriteOwner.getStore() ?? ownedSettingsManagers.get(this);
+		unsaved.gaveUp = false;
 		this.writeQueue = this.writeQueue
 			.then(async () => {
 				if (scope === "project") {
@@ -661,12 +677,19 @@ export class SettingsManager {
 				await SettingsManager.writePrimary(this.asyncStorage, scope, persist);
 				this.clearModifiedScope(scope);
 				recordSettingsWrite(owner, scope);
+				// This write saved every field still modified in the scope, so an earlier one that gave up is done too.
+				for (const earlier of unsavedWrites.filter(
+					(write) => write.manager === this && write.scope === scope && write.gaveUp,
+				))
+					unsavedWrites.splice(unsavedWrites.indexOf(earlier), 1);
 			})
 			.catch((error) => {
 				this.recordError(scope, error);
 				recordSettingsWrite(owner, scope, error);
+				if (error instanceof SettingsFileChangedError) unsaved.gaveUp = true;
 			})
 			.finally(() => {
+				if (unsaved.gaveUp) return;
 				const index = unsavedWrites.indexOf(unsaved);
 				if (index >= 0) unsavedWrites.splice(index, 1);
 			});
@@ -691,8 +714,9 @@ export class SettingsManager {
 	}
 
 	private static async unsavedWritesSettled(): Promise<void> {
-		while (unsavedWrites.length > 0) {
-			await Promise.all([...new Set(unsavedWrites.map(({ manager }) => manager.writeQueue))]);
+		for (let writing = unsavedWrites.filter((write) => !write.gaveUp); writing.length > 0; ) {
+			await Promise.all([...new Set(writing.map(({ manager }) => manager.writeQueue))]);
+			writing = unsavedWrites.filter((write) => !write.gaveUp);
 		}
 	}
 
@@ -711,12 +735,8 @@ export class SettingsManager {
 		modifiedNestedFields: Map<keyof Settings, Set<string>>,
 	): void {
 		const persist = (currentPrimary: string | undefined): string => {
-			const currentFileSettings = currentPrimary
-				? SettingsManager.migrateSettings(parseJsonFileContent(currentPrimary) as Record<string, unknown>, {
-						quiet: true,
-					})
-				: {};
-			const mergedSettings: Settings = { ...currentFileSettings };
+			const { saved, migrated: currentFileSettings } = SettingsManager.readSavedFile(currentPrimary);
+			const mergedSettings = { ...saved } as Settings;
 			for (const field of modifiedFields) {
 				if (isPrototypeKey(field)) continue;
 				const value = snapshotSettings[field];
@@ -747,6 +767,21 @@ export class SettingsManager {
 		};
 
 		this.enqueueWrite(scope, persist);
+	}
+
+	/**
+	 * The settings file a save starts from: `saved` holds every key as it is on disk, legacy and unknown keys included,
+	 * except the removed `modelRouting` setting; `migrated` is how loading reads it, to merge a changed field into. A
+	 * save rewrites only the fields it changes, so it never drops a key the user saved.
+	 */
+	private static readSavedFile(currentPrimary: string | undefined): {
+		saved: Record<string, unknown>;
+		migrated: Settings;
+	} {
+		const raw = currentPrimary ? (parseJsonFileContent(currentPrimary) as Record<string, unknown>) : {};
+		const migrated = SettingsManager.migrateSettings(structuredClone(raw), { quiet: true });
+		const { modelRouting: _removed, ...saved } = raw;
+		return { saved, migrated };
 	}
 
 	private static async writePrimary(
@@ -803,21 +838,20 @@ export class SettingsManager {
 		if (scope === "project" ? this.projectSettingsLoadError : this.globalSettingsLoadError) return true;
 
 		const persist = (currentPrimary: string | undefined): string | undefined => {
-			const fileSettings = currentPrimary
-				? SettingsManager.migrateSettings(parseJsonFileContent(currentPrimary) as Record<string, unknown>, {
-						quiet: true,
-					})
-				: {};
-			const filePackages = update(fileSettings.packages ?? []);
-			return filePackages === undefined
-				? undefined
-				: JSON.stringify({ ...fileSettings, packages: filePackages }, null, 2);
+			const { saved, migrated } = SettingsManager.readSavedFile(currentPrimary);
+			const filePackages = update(migrated.packages ?? []);
+			return filePackages === undefined ? undefined : JSON.stringify({ ...saved, packages: filePackages }, null, 2);
 		};
 		this.enqueueWrite(scope, persist);
 		return true;
 	}
 
+	/** Wait for this manager's saves, trying again any that gave up to an editor saving the file meanwhile. */
 	async flush(): Promise<void> {
+		await this.writeQueue;
+		const gaveUp = unsavedWrites.filter((write) => write.manager === this && write.gaveUp);
+		if (gaveUp.length === 0) return;
+		for (const write of gaveUp) this.runWrite(write);
 		await this.writeQueue;
 	}
 

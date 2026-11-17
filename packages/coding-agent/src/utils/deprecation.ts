@@ -11,8 +11,10 @@ const EMITTED_KEY = "__atomicDeprecationWarnings";
 const SINK_KEY = "__atomicDeprecationSink";
 const UI_PENDING_KEY = "__atomicDeprecationWarningsForUi";
 const HELD_KEY = "__atomicDeprecationWarningsHeld";
-/** Shared with the bundled packages: whether a notice about a file's content was never shown before (see below). */
-const SHOW_ONCE_KEY = "__atomicShowNoticeOnce";
+/** Set in a process whose warnings go only to a sink installed later, such as the interactive engine's host. */
+const DEFERRED_KEY = "__atomicDeprecationWarningsDeferred";
+/** {@link warnDeprecation} itself, for the bundled packages, so their warnings take the same path as the host's. */
+const WARN_KEY = "__atomicWarnDeprecation";
 const SHOWN_STORE_KEY = "__atomicShownNotices";
 
 /** The file in Atomic's agent directory that records which notices about settings files were already shown. */
@@ -22,16 +24,19 @@ const SHOWN_NOTICES_LIMIT = 500;
 /** The record names which settings files Atomic read: readable by its owner only. */
 const SHOWN_NOTICES_MODE = 0o600;
 
-interface DeprecationOptions {
+export interface DeprecationOptions {
 	showInUi?: boolean;
 	/** Hold the warning while {@link holdDeprecationWarnings} holds this key. */
 	hold?: string;
 	/**
 	 * What the warning is about, such as a file and the value it ignores: shown once across starts while it stays the
-	 * same, once {@link loadShownDeprecationNotices} has loaded the record.
+	 * same, once {@link loadShownDeprecationNotices} has loaded the record. It is recorded as shown when it is delivered.
 	 */
 	once?: string;
 }
+
+/** Where warnings are shown while a UI owns the terminal. `once` identifies a notice shown once across starts. */
+export type DeprecationWarningSink = (message: string, notice: { once?: string }) => void;
 
 interface ShownNotices {
 	path: string;
@@ -41,11 +46,12 @@ interface ShownNotices {
 
 type DeprecationRegistry = typeof globalThis & {
 	[EMITTED_KEY]?: Set<string>;
-	[SINK_KEY]?: (message: string) => void;
-	/** Warnings written to stderr that the next UI shows again; `once` is recorded as shown when it does. */
-	[UI_PENDING_KEY]?: { message: string; once?: string }[];
+	[SINK_KEY]?: DeprecationWarningSink;
+	/** Warnings written to stderr (or deferred) that the next sink shows again; `once` is recorded when it does. */
+	[UI_PENDING_KEY]?: { message: string; once?: string; printed: boolean }[];
 	[HELD_KEY]?: Map<string, { message: string; options: DeprecationOptions }[]>;
-	[SHOW_ONCE_KEY]?: (identity: string) => boolean;
+	[DEFERRED_KEY]?: boolean;
+	[WARN_KEY]?: (message: string, options?: DeprecationOptions) => void;
 	[SHOWN_STORE_KEY]?: ShownNotices;
 };
 
@@ -66,30 +72,33 @@ export function warnDeprecation(message: string, options: DeprecationOptions = {
 		if (!held.some((warning) => warning.message === message)) held.push({ message, options });
 		return;
 	}
-	const once = options.once === undefined ? undefined : `${options.once}\0${message}`;
-	if (once !== undefined && state[SHOWN_STORE_KEY]?.shown.has(noticeHash(once))) return;
+	const once = options.once;
+	if (once !== undefined && state[SHOWN_STORE_KEY]?.shown.has(noticeHash(once, message))) return;
 	state[EMITTED_KEY] ??= new Set<string>();
 	if (state[EMITTED_KEY].has(message)) return;
 	state[EMITTED_KEY].add(message);
 	const sink = state[SINK_KEY];
 	if (sink !== undefined) {
-		sink(message);
-		recordShown(once);
+		sink(message, { once });
+		recordShown(once, message);
 		return;
 	}
-	console.warn(chalk.yellow(`Deprecation warning: ${message}`));
+	const deferred = state[DEFERRED_KEY] === true;
+	if (!deferred) console.warn(chalk.yellow(`Deprecation warning: ${message}`));
 	// A notice shown once across starts must reach the UI too, which clears what was printed before it started.
-	if (options.showInUi || once !== undefined) {
+	if (deferred || options.showInUi || once !== undefined) {
 		state[UI_PENDING_KEY] ??= [];
-		state[UI_PENDING_KEY].push({ message, once });
+		state[UI_PENDING_KEY].push({ message, once, printed: !deferred });
 	}
 }
 
+registry()[WARN_KEY] = warnDeprecation;
+
 /** Record a notice shown once across starts as shown, now that it was delivered. */
-function recordShown(once: string | undefined): void {
+function recordShown(once: string | undefined, message: string): void {
 	const store = registry()[SHOWN_STORE_KEY];
 	if (once === undefined || store === undefined) return;
-	const hash = noticeHash(once);
+	const hash = noticeHash(once, message);
 	if (store.shown.has(hash)) return;
 	store.shown.add(hash);
 	store.added.push(hash);
@@ -97,19 +106,30 @@ function recordShown(once: string | undefined): void {
 
 /**
  * Route deprecation warnings to a UI while it owns the terminal, instead of writing over it. Warnings kept for a UI
- * (`showInUi`) are shown through it first. Returns the function that restores the previous destination.
+ * (`showInUi`, a notice shown once across starts, or every warning of a deferred process) are shown through it first.
+ * Returns the function that restores the previous destination.
  */
-export function setDeprecationWarningSink(sink: (message: string) => void): () => void {
+export function setDeprecationWarningSink(sink: DeprecationWarningSink): () => void {
 	const state = registry();
 	const previous = state[SINK_KEY];
 	state[SINK_KEY] = sink;
 	for (const { message, once } of state[UI_PENDING_KEY]?.splice(0) ?? []) {
-		sink(message);
-		recordShown(once);
+		sink(message, { once });
+		recordShown(once, message);
 	}
 	return () => {
 		if (state[SINK_KEY] === sink) state[SINK_KEY] = previous;
 	};
+}
+
+/**
+ * Keep this process's deprecation warnings off stderr until a sink is installed, which then shows them: the
+ * interactive engine, whose stderr its host shows as diagnostics, sends them to the host instead. Warnings no sink
+ * took are written to stderr as the process exits.
+ */
+export function deferDeprecationWarnings(): void {
+	registry()[DEFERRED_KEY] = true;
+	registerExitHandler();
 }
 
 /** Clear deprecation warning state. Exported for tests. */
@@ -118,7 +138,7 @@ export function clearDeprecationWarningsForTests(): void {
 	state[EMITTED_KEY]?.clear();
 	state[UI_PENDING_KEY]?.splice(0);
 	state[HELD_KEY]?.clear();
-	delete state[SHOW_ONCE_KEY];
+	delete state[DEFERRED_KEY];
 	delete state[SHOWN_STORE_KEY];
 }
 
@@ -126,8 +146,6 @@ export function clearDeprecationWarningsForTests(): void {
 export function settingsFileNoticeKey(path: string): string {
 	return normalizePath(resolve(path));
 }
-
-let flushHeldAtExit = false;
 
 /**
  * Hold the warnings raised with this `hold` key until {@link releaseDeprecationWarnings} decides whether they still
@@ -138,9 +156,7 @@ export function holdDeprecationWarnings(key: string): void {
 	const state = registry();
 	state[HELD_KEY] ??= new Map();
 	if (!state[HELD_KEY].has(key)) state[HELD_KEY].set(key, []);
-	if (flushHeldAtExit) return;
-	flushHeldAtExit = true;
-	process.once("exit", showHeldDeprecationWarnings);
+	registerExitHandler();
 }
 
 /** Show every warning still held, as the process exits before anything released it (an early-exiting command). */
@@ -158,8 +174,32 @@ export function releaseDeprecationWarnings(key: string, show: boolean): void {
 	for (const { message, options } of held) warnDeprecation(message, { ...options, hold: undefined });
 }
 
-/** A short hash of `text` that needs no synchronous crypto. */
-function noticeHash(text: string): string {
+let exitHandlerRegistered = false;
+
+/** One exit handler, in order: show what is still held, print what no sink took, then save the shown-notice record. */
+function registerExitHandler(): void {
+	if (exitHandlerRegistered) return;
+	exitHandlerRegistered = true;
+	process.once("exit", finishDeprecationWarningsAtExit);
+}
+
+/** What the exit handler does. Exported for tests, which cannot let their process exit. */
+export function finishDeprecationWarningsAtExit(): void {
+	const state = registry();
+	showHeldDeprecationWarnings();
+	if (state[DEFERRED_KEY] === true && state[SINK_KEY] === undefined) {
+		for (const pending of state[UI_PENDING_KEY] ?? []) {
+			if (pending.printed) continue;
+			console.warn(chalk.yellow(`Deprecation warning: ${pending.message}`));
+			pending.printed = true;
+		}
+	}
+	saveShownDeprecationNotices();
+}
+
+/** A short hash of what a notice is about and what it says, that needs no synchronous crypto. */
+function noticeHash(once: string, message: string): string {
+	const text = `${once}\0${message}`;
 	let h1 = 0xdeadbeef;
 	let h2 = 0x41c6ce57;
 	for (let index = 0; index < text.length; index++) {
@@ -181,29 +221,14 @@ function readShownNotices(path: string): string[] {
 	}
 }
 
-let saveShownAtExit = false;
-
 /**
  * Load which notices about settings files Atomic already showed, from its agent directory, so a notice raised with
  * `once` is shown once across starts until what it is about changes. The record is saved as the process exits.
  */
 export function loadShownDeprecationNotices(agentDir: string): void {
-	const state = registry();
 	const path = join(agentDir, SHOWN_NOTICES_FILE);
-	const store: ShownNotices = { path, shown: new Set(readShownNotices(path)), added: [] };
-	state[SHOWN_STORE_KEY] = store;
-	state[SHOW_ONCE_KEY] = (identity) => {
-		if (store.shown.has(noticeHash(identity))) return false;
-		recordShown(identity);
-		return true;
-	};
-	if (saveShownAtExit) return;
-	saveShownAtExit = true;
-	process.once("exit", () => {
-		// The warnings still held are shown first, so the record includes them.
-		showHeldDeprecationWarnings();
-		saveShownDeprecationNotices();
-	});
+	registry()[SHOWN_STORE_KEY] = { path, shown: new Set(readShownNotices(path)), added: [] };
+	registerExitHandler();
 }
 
 /** Save the notices shown since {@link loadShownDeprecationNotices}, keeping what other processes saved meanwhile. */
@@ -212,7 +237,7 @@ export function saveShownDeprecationNotices(): void {
 	const store = state[SHOWN_STORE_KEY];
 	if (store === undefined) return;
 	// Written to stderr by a process no UI took over (print, JSON or RPC mode): the user saw them there.
-	for (const { once } of state[UI_PENDING_KEY] ?? []) recordShown(once);
+	for (const { message, once, printed } of state[UI_PENDING_KEY] ?? []) if (printed) recordShown(once, message);
 	if (store.added.length === 0) return;
 	const added = new Set(store.added);
 	const shown = [...readShownNotices(store.path).filter((hash) => !added.has(hash)), ...store.added].slice(

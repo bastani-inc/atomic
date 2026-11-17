@@ -156,7 +156,7 @@ import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engin
 import { announceBlueprintBuildWaits } from "./modes/print-mode.ts";
 import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
-import { loadShownDeprecationNotices } from "./utils/deprecation.js";
+import { deferDeprecationWarnings, loadShownDeprecationNotices } from "./utils/deprecation.js";
 import {
 	readInteractiveEngineBootstrap,
 	takeInteractiveEngineBootstrapArg,
@@ -434,6 +434,8 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 	const agentDir = getAgentDir();
 	loadShownDeprecationNotices(agentDir);
+	// The interactive engine sends its warnings to the host, which shows them, rather than writing them to its stderr.
+	if (engineEnv.child === "1") deferDeprecationWarnings();
 	// Before the first settings load, so a removed routing setting is not also reported as ignored. When another process
 	// holds the file, its migration below tries again, and the load's "ignored" warning waits for that.
 	removeSavedModelRoutingSettings(cwd, { retryLater: true });

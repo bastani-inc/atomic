@@ -1,6 +1,7 @@
 import { setCallbackActivityReporter } from "../../core/callback-activity.ts";
 import { findDecisionError, serializeDecisionError } from "../../core/decision/errors.js";
 import { writeRawStdoutControl } from "../../core/output-guard.ts";
+import { setDeprecationWarningSink } from "../../utils/deprecation.js";
 import { interactiveEngineStartupEnv } from "../../utils/interactive-engine-env.ts";
 import { startParentProcessGuardian } from "../../utils/shell.ts";
 import { INTERACTIVE_ENGINE_PROTOCOL_VERSION, serializeInteractiveEngineMessage } from "./protocol.ts";
@@ -37,6 +38,10 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 	const send = (message: Parameters<typeof serializeInteractiveEngineMessage>[0]) => {
 		write(serializeInteractiveEngineMessage(message));
 	};
+	// The host shows the engine's deprecation warnings as it shows its own: once, and in its UI.
+	const restoreDeprecationSink = setDeprecationWarningSink((message, { once }) =>
+		send({ type: "engine_deprecation_warning", message, ...(once === undefined ? {} : { once }) }),
+	);
 	setCallbackActivityReporter({
 		started: (activity) =>
 			writeRawStdoutControl(serializeInteractiveEngineMessage({ type: "engine_activity_started", activity })),
@@ -82,6 +87,7 @@ export function startInteractiveEngineLiveness(write: (line: string) => void): I
 		stop: () => {
 			clearInterval(heartbeat);
 			setCallbackActivityReporter(undefined);
+			restoreDeprecationSink();
 			void stopGuardian();
 			if (activeLiveness === liveness) activeLiveness = undefined;
 		},

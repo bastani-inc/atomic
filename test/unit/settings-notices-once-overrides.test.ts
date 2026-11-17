@@ -9,6 +9,7 @@ import {
 	clearDeprecationWarningsForTests,
 	loadShownDeprecationNotices,
 	saveShownDeprecationNotices,
+	setDeprecationWarningSink,
 } from "../../packages/coding-agent/src/utils/deprecation.js";
 import { discoverAgents } from "../../packages/subagents/src/agents/agents.js";
 
@@ -75,6 +76,24 @@ describe("override routing fields in settings files Atomic does not write are na
 		nextProcess();
 		await start(cwd);
 		assert.equal(notices().length, 1, "a changed value is named again");
+	});
+
+	it("shows a notice raised before the UI started in the UI, and records it once shown there", async () => {
+		const project = join(root, "project");
+		const cwd = join(project, "app");
+		mkdirSync(join(project, ".atomic"), { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(project, ".atomic", "settings.json"), overrides({ modelConstraints: CONSTRAINTS }));
+
+		await start(cwd);
+		const ui: string[] = [];
+		setDeprecationWarningSink((message) => ui.push(message))();
+		assert.equal(ui.filter((message) => message.includes('"modelConstraints"')).length, 1, "the UI shows it");
+		nextProcess();
+		await start(cwd);
+		const later: string[] = [];
+		setDeprecationWarningSink((message) => later.push(message))();
+		assert.deepEqual([...notices(), ...later], [], "a later start shows nothing, on stderr or in the UI");
 	});
 
 	it("from the legacy agent directory's settings", async () => {

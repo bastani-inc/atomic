@@ -200,6 +200,22 @@ describe("settings notices are shown once", () => {
 		assert.equal(statSync(join(agentDir, "shown-notices.json")).mode & 0o777, 0o600, "kept when it is replaced");
 	});
 
+	it("registers one exit handler that shows held warnings and then saves the record", async () => {
+		vi.resetModules();
+		const fresh = await import("../src/utils/deprecation.js");
+		const before = process.listenerCount("exit");
+		fresh.loadShownDeprecationNotices(agentDir);
+		fresh.holdDeprecationWarnings("settings.json");
+		fresh.deferDeprecationWarnings();
+		const added = process.listeners("exit").slice(before);
+		try {
+			assert.equal(added.length, 1);
+		} finally {
+			for (const listener of added) process.removeListener("exit", listener);
+			fresh.clearDeprecationWarningsForTests();
+		}
+	});
+
 	it("names an invalid routerModel once across starts", () => {
 		writeFileSync(globalPath(), JSON.stringify({ routerModel: " openai/gpt-6.1-sol " }));
 		start();

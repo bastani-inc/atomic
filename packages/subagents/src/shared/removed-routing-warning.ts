@@ -5,13 +5,13 @@
  */
 const EMITTED_KEY = "__atomicDeprecationWarnings";
 const SINK_KEY = "__atomicDeprecationSink";
-/** Installed by the host once it loaded which notices it already showed: whether this one is new. */
-const SHOW_ONCE_KEY = "__atomicShowNoticeOnce";
+/** The host's own warning function, when it is loaded: it shows a warning the way it shows its own. */
+const WARN_KEY = "__atomicWarnDeprecation";
 
 type DeprecationRegistry = typeof globalThis & {
 	[EMITTED_KEY]?: Set<string>;
-	[SINK_KEY]?: (message: string) => void;
-	[SHOW_ONCE_KEY]?: (identity: string) => boolean;
+	[SINK_KEY]?: (message: string, notice: { once?: string }) => void;
+	[WARN_KEY]?: (message: string, options?: { once?: string }) => void;
 };
 
 /**
@@ -21,11 +21,15 @@ type DeprecationRegistry = typeof globalThis & {
 export function warnRemovedRoutingOption(option: string, saved?: string): void {
 	const message = `"${option}" is ignored: automatic model routing was removed, so "auto" runs your default model and provider or model restrictions no longer limit "auto" or any fallback model.`;
 	const registry = globalThis as DeprecationRegistry;
-	if (saved !== undefined && registry[SHOW_ONCE_KEY]?.(`${saved}\0${message}`) === false) return;
+	const warn = registry[WARN_KEY];
+	if (warn !== undefined) {
+		warn(message, saved === undefined ? {} : { once: saved });
+		return;
+	}
 	registry[EMITTED_KEY] ??= new Set<string>();
 	if (registry[EMITTED_KEY].has(message)) return;
 	registry[EMITTED_KEY].add(message);
 	const sink = registry[SINK_KEY];
-	if (sink !== undefined) sink(message);
+	if (sink !== undefined) sink(message, {});
 	else console.warn(`Deprecation warning: ${message}`);
 }
