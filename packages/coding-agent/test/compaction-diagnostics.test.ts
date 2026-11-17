@@ -197,13 +197,13 @@ describe("compaction diagnostics: persisted sidecar", () => {
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
-	it("writes sidecar with correct content next to session file", () => {
+	it("writes sidecar with correct content next to session file", async () => {
 		const sessionFile = join(testDir, "2026-07-15_abc123.jsonl");
 		// Create an empty session file so the directory exists
 		const model = createMockModel();
 		const response = createMockResponse("some garbage", "stop");
 
-		const path = writeDiagnosticSidecar({
+		const path = await writeDiagnosticSidecar({
 			sessionFilePath: sessionFile,
 			model,
 			requestMaxTokens: 4096,
@@ -226,11 +226,11 @@ describe("compaction diagnostics: persisted sidecar", () => {
 		expect(content.model.provider).toBe("anthropic");
 	});
 
-	testPosixFileMode("sets 0600 file permissions on the sidecar", () => {
+	testPosixFileMode("sets 0600 file permissions on the sidecar", async () => {
 		const sessionFile = join(testDir, "session.jsonl");
 		const model = createMockModel();
 
-		const path = writeDiagnosticSidecar({
+		const path = await writeDiagnosticSidecar({
 			sessionFilePath: sessionFile,
 			model,
 			requestMaxTokens: 4096,
@@ -301,9 +301,9 @@ describe("compaction diagnostics: persisted sidecar", () => {
 // ============================================================================
 
 describe("compaction diagnostics: in-memory and write-failure fallback", () => {
-	it("returns undefined when sessionFilePath is undefined (in-memory session)", () => {
+	it("returns undefined when sessionFilePath is undefined (in-memory session)", async () => {
 		const model = createMockModel();
-		const path = writeDiagnosticSidecar({
+		const path = await writeDiagnosticSidecar({
 			sessionFilePath: undefined,
 			model,
 			requestMaxTokens: 4096,
@@ -316,9 +316,9 @@ describe("compaction diagnostics: in-memory and write-failure fallback", () => {
 		expect(path).toBeUndefined();
 	});
 
-	it("returns undefined when directory does not exist (write failure)", () => {
+	it("returns undefined when directory does not exist (write failure)", async () => {
 		const model = createMockModel();
-		const path = writeDiagnosticSidecar({
+		const path = await writeDiagnosticSidecar({
 			sessionFilePath: "/nonexistent/path/that/should/fail/session.jsonl",
 			model,
 			requestMaxTokens: 4096,

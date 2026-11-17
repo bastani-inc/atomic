@@ -13,7 +13,7 @@
 
 import { uuidv7 } from "@bastani/atomic-ai";
 import type { Api, AssistantMessage, Model, Usage } from "@bastani/atomic-ai/compat";
-import { chmodSync, mkdirSync, writeFileSync } from "fs";
+import { chmod, mkdir, writeFile } from "fs/promises";
 import { basename, dirname, join } from "path";
 import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import { reportDebug } from "../debug.ts";
@@ -75,13 +75,17 @@ function reportSidecarWriteFailure(path: string, error: unknown): void {
  * durable record per attempt. Retry on collision; every other failure stays
  * best-effort and never changes the planner outcome.
  */
-function writeSidecar(location: SidecarLocation, kind: string, buildPayload: () => unknown): string | undefined {
+async function writeSidecar(
+	location: SidecarLocation,
+	kind: string,
+	buildPayload: () => unknown,
+): Promise<string | undefined> {
 	const placement = sidecarPlacement(location);
 	if (!placement) return undefined;
 	const { dir, base, createDirectory } = placement;
 	if (createDirectory) {
 		try {
-			mkdirSync(dir, { recursive: true, mode: 0o700 });
+			await mkdir(dir, { recursive: true, mode: 0o700 });
 		} catch (error) {
 			reportSidecarWriteFailure(dir, error);
 			return undefined;
@@ -92,12 +96,10 @@ function writeSidecar(location: SidecarLocation, kind: string, buildPayload: () 
 	for (let attempt = 0; attempt < 4; attempt++) {
 		const filePath = join(dir, `${base}-compaction-${kind}-${timestamp}-${uuidv7()}.json`);
 		try {
-			writeFileSync(filePath, body, { encoding: "utf-8", mode: 0o600, flag: "wx" });
-			try {
-				chmodSync(filePath, 0o600);
-			} catch {
+			await writeFile(filePath, body, { encoding: "utf-8", mode: 0o600, flag: "wx" });
+			await chmod(filePath, 0o600).catch(() => {
 				/* best-effort on non-POSIX */
-			}
+			});
 			return filePath;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException)?.code === "EEXIST") continue;
@@ -251,7 +253,7 @@ export function diagnosticSidecarPath(sessionFilePath: string): string {
  * The file is written with mode 0o600 (owner-only read/write) on platforms
  * that support POSIX permissions.
  */
-export function writeDiagnosticSidecar(ctx: DiagnosticContext): string | undefined {
+export function writeDiagnosticSidecar(ctx: DiagnosticContext): Promise<string | undefined> {
 	return writeSidecar(ctx, "diagnostic", () => buildDiagnosticPayload(ctx));
 }
 
@@ -297,7 +299,7 @@ function buildRecoveryPayload(ctx: RecoveryDiagnosticContext): RecoveryDiagnosti
  * Returns the written path on success, or undefined if write fails or session is in-memory.
  * Write failures are silently swallowed — recovery success is never affected.
  */
-export function writeRecoveryDiagnosticSidecar(ctx: RecoveryDiagnosticContext): string | undefined {
+export function writeRecoveryDiagnosticSidecar(ctx: RecoveryDiagnosticContext): Promise<string | undefined> {
 	return writeSidecar(ctx, "recovery", () => buildRecoveryPayload(ctx));
 }
 
@@ -354,7 +356,7 @@ function buildSuccessPayload(ctx: SuccessDiagnosticContext): SuccessDiagnostic {
  * success. The filename uses a distinct `-compaction-success-<ts>.json` suffix so
  * it cannot collide with the primary model's failure sidecar.
  */
-export function writeSuccessDiagnosticSidecar(ctx: SuccessDiagnosticContext): string | undefined {
+export function writeSuccessDiagnosticSidecar(ctx: SuccessDiagnosticContext): Promise<string | undefined> {
 	return writeSidecar(ctx, "success", () => buildSuccessPayload(ctx));
 }
 
@@ -363,7 +365,7 @@ export { buildSuccessPayload };
 export function writeMorphDiagnosticSidecar(
 	location: SidecarLocation,
 	diagnostics: MorphRangeDiagnostics,
-): string | undefined {
+): Promise<string | undefined> {
 	return writeSidecar(location, "morph", () => ({
 		version: 1,
 		timestamp: new Date().toISOString(),

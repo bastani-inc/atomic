@@ -344,7 +344,7 @@ describe("startup (#4360)", () => {
 });
 
 describe("/debug (#4360)", () => {
-	it("appends its snapshot to the debug log, keeping what debug mode wrote before it", () => {
+	it("appends its snapshot to the debug log, keeping what debug mode wrote before it", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "atomic-debug-command-"));
 		try {
 			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
@@ -357,7 +357,7 @@ describe("/debug (#4360)", () => {
 				session: { messages: [] },
 				chatContainer: { addChild: () => {} },
 			};
-			Reflect.apply(InteractiveMode.prototype.handleDebugCommand, host, []);
+			await Reflect.apply(InteractiveMode.prototype.handleDebugCommand, host, []);
 			const written = readFileSync(path, "utf8");
 			assert.equal(written.startsWith(`${earlier}Debug output at `), true, written.slice(0, 200));
 			assert.match(written, /"rendered line"/);
@@ -456,7 +456,10 @@ describe("/debug (#4360)", () => {
 			session: { messages: [] },
 			chatContainer: new Container(),
 		};
-		tui.onDebug = () => Reflect.apply(InteractiveMode.prototype.handleDebugCommand, host, []);
+		let debugLogWrite: Promise<void> | undefined;
+		tui.onDebug = () => {
+			debugLogWrite = Reflect.apply(InteractiveMode.prototype.handleDebugCommand, host, []);
+		};
 		tui.setLayoutRoot(root);
 		tui.setFocus(picker);
 		tui.start();
@@ -510,6 +513,7 @@ describe("/debug (#4360)", () => {
 			terminal.input(`\x1b[<0;8;${listRow + 2}m`);
 			assert.deepEqual(chosen, ["openai/gpt-4o", "list:anthropic/claude-sonnet-4-5"]);
 
+			await debugLogWrite;
 			const written = readFileSync(join(agentDir, "atomic-debug.log"), "utf8");
 			assert.equal(written.includes("Model catalogs refreshed."), false);
 
@@ -526,9 +530,12 @@ describe("/debug (#4360)", () => {
 				session: { messages: [] },
 				chatContainer: new Container(),
 			};
-			mainTui.onDebug = () => Reflect.apply(InteractiveMode.prototype.handleDebugCommand, mainHost, []);
+			mainTui.onDebug = () => {
+				debugLogWrite = Reflect.apply(InteractiveMode.prototype.handleDebugCommand, mainHost, []);
+			};
 			mainTerminal.input("\x1b[100;6u");
 			mainTui.stop();
+			await debugLogWrite;
 
 			const afterMain = readFileSync(join(agentDir, "atomic-debug.log"), "utf8");
 			assert.match(afterMain, /"painted main line/);

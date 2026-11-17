@@ -670,11 +670,12 @@ async function runCompactionLadder(
 				apiKey: await untilAborted(Promise.resolve(request.resolveMorphApiKey?.()), timeLimit.signal),
 				signal: timeLimit.signal,
 				fetchFn: request.morphFetchFn,
-				onDiagnostics: (diagnostics) =>
-					writeMorphDiagnosticSidecar(
+				onDiagnostics: async (diagnostics) => {
+					await writeMorphDiagnosticSidecar(
 						{ sessionFilePath: request.sessionFilePath, sidecarDirectory: request.sidecarDirectory },
 						diagnostics,
-					),
+					);
+				},
 			});
 			const result: CompactionRungResult = {
 				...plannedResult(preparation, ranges, undefined, undefined, selection.fullId),
@@ -745,7 +746,7 @@ async function runCompactionLadder(
 			if (plannerModel) {
 				// Best-effort: the durable entry already records the borrowed model;
 				// a sidecar write failure never affects compaction success.
-				writeSuccessDiagnosticSidecar({
+				await writeSuccessDiagnosticSidecar({
 					sessionFilePath: request.sessionFilePath,
 					sidecarDirectory: request.sidecarDirectory,
 					model: planner.model,

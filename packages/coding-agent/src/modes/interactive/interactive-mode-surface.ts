@@ -407,9 +407,9 @@ declare module "./interactive-mode-base.ts" {
 		setFullscreenCopyOnSelect(enabled: boolean): void;
 		handleHotkeysCommand(): void;
 		handleClearCommand(): Promise<void>;
-		handleDebugCommand(): void;
+		handleDebugCommand(): Promise<void>;
 		handleArminSaysHi(): void;
-		handleDementedDelves(): void;
+		handleDementedDelves(): Promise<void>;
 		handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
 		handleCompactCommand(): Promise<void>;
 		stop(fullscreenExitOutput?: FullscreenExitOutput): void;

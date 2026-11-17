@@ -215,20 +215,20 @@ export function plannerRequestModel(planner: BorrowedPlanner): Model<Api> {
 export const NO_USABLE_RANGES_MESSAGE = "Compaction range planning produced no usable deleted ranges";
 export const MALFORMED_OUTPUT_MESSAGE = "Compaction range planning returned malformed output";
 
-function unusableOutcome(
+async function unusableOutcome(
 	options: RangePlannerOptions,
 	model: Model<Api>,
 	response: AssistantMessage,
 	text: string,
 	category: DiagnosticFailureCategory,
 	message: string,
-): PlannerOutcome {
-	const diagnosticPath = emitDiagnostic(options, model, response, text, category, message);
+): Promise<PlannerOutcome> {
+	const diagnosticPath = await emitDiagnostic(options, model, response, text, category, message);
 	return { kind: "unusable", category, excerpt: text.slice(0, 500), ...(diagnosticPath ? { diagnosticPath } : {}) };
 }
 
 /** Turn one failed planner response into its typed outcome and diagnostic record. */
-function providerFailureOutcome(
+async function providerFailureOutcome(
 	options: RangePlannerOptions,
 	model: Model<Api>,
 	response: AssistantMessage,
@@ -236,12 +236,12 @@ function providerFailureOutcome(
 	message: string,
 	transport: boolean,
 	retryWasScheduled: boolean,
-): PlannerOutcome {
+): Promise<PlannerOutcome> {
 	// A thrown transport failure has no real assistant response to record.
 	const recorded = transport ? undefined : response;
 	const failure = classifyPlannerFailure(response, model.contextWindow);
 	if (failure === "policy_refusal") {
-		const diagnosticPath = emitDiagnostic(options, model, recorded, text, "policy_refusal", message);
+		const diagnosticPath = await emitDiagnostic(options, model, recorded, text, "policy_refusal", message);
 		return {
 			kind: "policyRefusal",
 			phase: policyRefusalPhase(response),
@@ -257,18 +257,18 @@ function providerFailureOutcome(
 		// spent, and claiming otherwise would report work that never happened.
 		const category = failure;
 		const exhausted = category === "rate_limited" && retryWasScheduled;
-		const diagnosticPath = emitDiagnostic(options, model, recorded, text, category, message, exhausted);
+		const diagnosticPath = await emitDiagnostic(options, model, recorded, text, category, message, exhausted);
 		return { kind: "rateLimited", category, exhausted, message, ...(diagnosticPath ? { diagnosticPath } : {}) };
 	}
 	if (failure === "overflow") {
 		// Overflow is typed distinctly in code, so it must be distinct in the
 		// durable record too; `provider_error` would make it indistinguishable
 		// from an ordinary provider failure for anyone reading the sidecar.
-		const diagnosticPath = emitDiagnostic(options, model, recorded, text, "context_overflow", message);
+		const diagnosticPath = await emitDiagnostic(options, model, recorded, text, "context_overflow", message);
 		return { kind: "overflowed", ...(diagnosticPath ? { diagnosticPath } : {}) };
 	}
 	const category: DiagnosticFailureCategory = transport ? "stream_error" : "provider_error";
-	const diagnosticPath = emitDiagnostic(options, model, recorded, text, category, message);
+	const diagnosticPath = await emitDiagnostic(options, model, recorded, text, category, message);
 	return { kind: "providerError", message, ...(diagnosticPath ? { diagnosticPath } : {}) };
 }
 
@@ -414,7 +414,14 @@ export async function planDeletedLineRanges(
 		const recovered = recovery ? validateDeletedRanges(recovery.ranges, region, validationOptions) : undefined;
 		if (recovery && recovered && recovered.length > 0) {
 			// Silent success — write private recovery diagnostic, never surface it.
-			emitRecoveryDiagnostic(options, model, response, text, recovery.recoveredCount, recovery.skippedLineCount);
+			await emitRecoveryDiagnostic(
+				options,
+				model,
+				response,
+				text,
+				recovery.recoveredCount,
+				recovery.skippedLineCount,
+			);
 			return {
 				kind: "recovered",
 				ranges: [...recovered],
@@ -446,7 +453,7 @@ function emitDiagnostic(
 	failureCategory: DiagnosticFailureCategory,
 	failureMessage: string,
 	rateLimitExhausted?: boolean,
-): string | undefined {
+): Promise<string | undefined> {
 	return writeDiagnosticSidecar({
 		sessionFilePath: options.sessionFilePath,
 		sidecarDirectory: options.sidecarDirectory,
@@ -460,16 +467,16 @@ function emitDiagnostic(
 	});
 }
 
-function emitRecoveryDiagnostic(
+async function emitRecoveryDiagnostic(
 	options: RangePlannerOptions,
 	model: Model<Api>,
 	response: AssistantMessage,
 	rawResponseText: string,
 	recoveredRangeCount: number,
 	skippedLineCount: number,
-): void {
+): Promise<void> {
 	// Best-effort; write failures silently swallowed
-	writeRecoveryDiagnosticSidecar({
+	await writeRecoveryDiagnosticSidecar({
 		sessionFilePath: options.sessionFilePath,
 		sidecarDirectory: options.sidecarDirectory,
 		model,
