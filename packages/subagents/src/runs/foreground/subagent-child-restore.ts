@@ -54,7 +54,7 @@ import {
 	savedToolResultIds,
 } from "./released-children.js";
 import { resumeRunWorktree } from "./run-worktrees.js";
-import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
+import { indexSubagentChildOwner, readableSubagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
 import {
@@ -631,8 +631,8 @@ async function relaunchChild(
 			SUBAGENT_OWNER_GENERATION,
 			interruptedStillRunningResult,
 		);
-	// Read again: the owner's wakes may have held them first, after `record` was read.
-	const latest = subagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
+	// Read again: the owner's wakes may have held them first, after `record` was read. `record` when it cannot be read.
+	const latest = readableSubagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
 	// What its transcript already holds was delivered: a run that saved it stopped before it reported it (#5012).
 	const saved =
 		sessionManager && !fresh
@@ -961,8 +961,9 @@ export async function restoreSubagentChild(
 ): Promise<SubagentChildRestoreOutcome> {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	indexSubagentChildOwner(ctx);
+	// The owner's own session when the index's latest record is in a copy of it that is no longer open.
 	const record =
-		subagentChildRecordOf(ownerSessionId, id) ??
+		readableSubagentChildRecordOf(ownerSessionId, id) ??
 		findSubagentChildRecord(readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId), id);
 	if (!record) return { kind: "unrestorable", childId: id, reason: "this session has no record of that subagent" };
 	if (!isRestorableSubagentChild(record) && !resume) return { kind: "terminal", record };

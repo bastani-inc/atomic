@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, test } from "vitest";
+import { beforeAll, describe, test } from "vitest";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import {
@@ -21,17 +22,23 @@ interface CardComponent {
 	render(width: number): string[];
 }
 
+type NoticeRenderer = (payload: unknown, options?: { expanded: boolean }) => unknown;
+
+beforeAll(() => {
+	initTheme("dark");
+});
+
 function renderLifecycleCard(details: WorkflowLifecycleNoticeDetails): string {
-	let renderer: ((payload: unknown) => unknown) | undefined;
+	let renderer: NoticeRenderer | undefined;
 	registerLifecycleNoticeRenderer({
 		rendererHost: {},
 		registerMessageRenderer(_event, registered) {
-			renderer = registered as (payload: unknown) => unknown;
+			renderer = registered as NoticeRenderer;
 		},
 	});
-	const render = renderer as ((payload: unknown) => unknown) | undefined;
+	const render = renderer as NoticeRenderer | undefined;
 	assert.ok(render);
-	return (render({ details }) as CardComponent).render(80).join("\n");
+	return (render({ details }, { expanded: true }) as CardComponent).render(80).join("\n");
 }
 
 function installFailureNotices(store: ReturnType<typeof createStore>): { sent: SentNotice[]; unsubscribe: () => void } {

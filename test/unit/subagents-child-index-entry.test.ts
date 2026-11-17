@@ -14,6 +14,7 @@ import {
 	isUnsavedSubagentChildRecord,
 	observedSubagentRunIds,
 	observeSubagentChildRecord,
+	readableSubagentChildRecordOf,
 	registerSubagentChildRecordReader,
 	settleSubagentChildRecord,
 	subagentChildCardRecord,
@@ -21,6 +22,7 @@ import {
 	subagentChildIdsOf,
 	subagentChildIndexEntry,
 	subagentChildRecordOf,
+	subagentChildRecordsOf,
 	unsavedSubagentChildRecordsOf,
 	watchSubagentChildCard,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
@@ -106,8 +108,8 @@ function isChildEntry(entry: SessionEntry, childId: string): boolean {
 	);
 }
 
-/** Register the subagents extension on `at`'s session; returns what starts it, as a subagent at depth 1. */
-function startExtension(at: SessionManager, policy: { readonly depth: number }): () => void {
+/** Register the subagents extension on `at`'s session; returns what starts it, which settles once its start has. */
+function startExtension(at: SessionManager, policy: { readonly depth: number }): () => Promise<unknown> {
 	const handlers = new Map<string, (event: { reason?: string }, ctx: ExtensionContext) => unknown>();
 	const pi = {
 		events: { on: () => () => {}, emit() {} },
@@ -139,7 +141,7 @@ function startExtension(at: SessionManager, policy: { readonly depth: number }):
 		},
 	} as unknown as ExtensionContext;
 	cleanups.push(() => void handlers.get("session_shutdown")?.({ reason: "quit" }, ctx));
-	return () => void handlers.get("session_start")?.({ reason: "new" }, ctx);
+	return async () => handlers.get("session_start")?.({ reason: "new" }, ctx);
 }
 
 function unreadable(fields: ReleasedChildError["fields"]) {
@@ -630,6 +632,32 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 		assert.equal(findAppendedSubagentChildRecord(unregistered), undefined);
 	});
 
+	test("an owner's children are listed without one whose latest record no open session holds", () => {
+		const owner = session();
+		const ownerSessionId = owner.getSessionId();
+		registerSubagentChildRecordReader(owner, true);
+		observeSubagentChildRecord(record(owner, { childId: "ix-list-lost:0" }), false, {
+			entryId: "entry-of-a-closed-copy",
+			sessionId: ownerSessionId,
+		});
+		const readable = observeSubagentChildRecord(record(owner, { childId: "ix-list-kept:0" }));
+
+		assert.deepEqual(subagentChildRecordsOf(ownerSessionId), [readable]);
+		assert.equal(readableSubagentChildRecordOf(ownerSessionId, "ix-list-lost:0"), undefined);
+		assert.throws(() => subagentChildRecordOf(ownerSessionId, "ix-list-lost:0"), isReleasedChildError);
+	});
+
+	test("a session one of whose children's latest record no open session holds still starts", async () => {
+		const owner = session();
+		observeSubagentChildRecord(
+			record(owner, { childId: "ix-start-lost:0", state: "terminal", terminalStatus: SUBAGENT_RELEASED }),
+			false,
+			{ entryId: "entry-of-a-closed-copy", sessionId: owner.getSessionId() },
+		);
+
+		await startExtension(owner, { depth: 0 })();
+	});
+
 	test("the unsaved records of an owner are exactly its children's, whatever other records are unsaved", () => {
 		const owner = session();
 		const { owner: _owner, ...ownerless } = record(owner, { childId: "ix-unsaved-none:0" });
@@ -673,6 +701,39 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 		const plain = subagentChildRecordOf(ownerSessionId, "ix-clear-plain:0");
 		assert.deepEqual(plain?.heldToolResults, []);
 		assert.equal(Object.hasOwn(plain ?? {}, "waitingOn"), false);
+	});
+
+	test("clearing delivered results of a child whose record its session fails to read counts the failure and settles", async () => {
+		const owner = session();
+		const ownerSessionId = owner.getSessionId();
+		const storeFailed = new RangeError("the session's store failed");
+		const failingCopy = {
+			getSessionId: () => ownerSessionId,
+			getEntry: () => {
+				throw storeFailed;
+			},
+			getLeafEntry: () => undefined,
+		};
+		// Readers are held weakly: the test keeps this copy open until its end, as an open session keeps itself.
+		registerSubagentChildRecordReader(failingCopy, true);
+		observeSubagentChildRecord(record(owner, { childId: "ix-clear-fails:0" }), false, {
+			entryId: "e1",
+			sessionId: ownerSessionId,
+		});
+		const failures = subagentChildRecordFailures.count;
+
+		await clearSubagentChildHeldToolResults(writingHost(owner), ownerSessionId, "ix-clear-fails:0", ["ask-1"]);
+
+		assert.equal(subagentChildRecordFailures.count, failures + 1);
+		assert.deepEqual(
+			[
+				subagentChildRecordFailures.last?.code,
+				subagentChildRecordFailures.last?.fields.childId,
+				subagentChildRecordFailures.last?.cause,
+			],
+			["record-append-failed", "ix-clear-fails:0", storeFailed],
+		);
+		assert.equal(failingCopy.getSessionId(), ownerSessionId);
 	});
 
 	test("reporting a wake failure that is not there saves nothing", async () => {
@@ -729,6 +790,293 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 		assert.equal(ended.get("ix-stage-saved:0")?.terminalStatus, "stage-closed");
 		assert.equal(ended.get("ix-stage-newer:0")?.terminalStatus, "stage-closed");
 		assert.deepEqual(ended.get("ix-stage-newer:0")?.heldMessages?.messages, ["kept"]);
+	});
+
+	/**
+	 * A stage owner, and what watches its children for the close of its generation, on `stage`'s session; `reads` is the
+	 * session manager the stage's extensions see, `stage` itself unless given.
+	 */
+	function watchedStage(
+		stage: SessionManager,
+		name: string,
+		reads: ExtensionContext["sessionManager"] = stage as unknown as ExtensionContext["sessionManager"],
+	) {
+		const owner = {
+			kind: "workflow-stage" as const,
+			sessionId: stage.getSessionId(),
+			workflowRunId: `wf-${name}`,
+			workflowStageId: `stage-${name}`,
+			workflowStageName: name,
+		};
+		const close = new AbortController();
+		const extensionState = new Map<string, object>();
+		const ctx = {
+			sessionManager: reads,
+			orchestrationContext: {
+				kind: "workflow-stage",
+				workflowRunId: owner.workflowRunId,
+				workflowStageId: owner.workflowStageId,
+				workflowStageName: owner.workflowStageName,
+				messageAdmission: { boundary: { closeSignal: close.signal }, extensionState, isOpen: () => true },
+			},
+		} as unknown as Pick<ExtensionContext, "sessionManager" | "orchestrationContext">;
+		watchWorkflowStageSubagentChildren(writingHost(stage), ctx);
+		return {
+			ctx,
+			settled: (childId: string, extra: Partial<SubagentChildRecord> = {}): SubagentChildRecord => ({
+				...record(owner.sessionId, { childId, state: "terminal", terminalStatus: "ok", ...extra }),
+				owner,
+			}),
+			/** Close the generation for good; returns the errors that escaped its close to the process. */
+			closeForGood: async (): Promise<unknown[]> => {
+				const uncaught: unknown[] = [];
+				const recordUncaught = (error: unknown) => uncaught.push(error);
+				process.prependListener("uncaughtException", recordUncaught);
+				try {
+					extensionState.set(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE, {});
+					close.abort();
+					await new Promise<void>((resolve) => setImmediate(resolve));
+					await subagentChildRecordsAppended(owner.sessionId);
+				} finally {
+					process.removeListener("uncaughtException", recordUncaught);
+				}
+				return uncaught;
+			},
+		};
+	}
+
+	/** The records `stage`'s session holds of `childId`, oldest first. */
+	function childRecordsIn(stage: SessionManager, childId: string): SubagentChildRecord[] {
+		return stage
+			.getEntries()
+			.filter((entry) => isChildEntry(entry, childId))
+			.map((entry) => (entry as SessionEntry & { data: SubagentChildRecord }).data);
+	}
+
+	/** Point the index at a newer record of the child that a copy of the session saved, no longer open here. */
+	function observeUnreadable(stage: SessionManager, latest: SubagentChildRecord): void {
+		observeSubagentChildRecord(latest, false, { entryId: "entry-of-a-closed-copy", sessionId: stage.getSessionId() });
+	}
+
+	for (const ended of ["killed", "gone", "stage-closed"])
+		test(`a closing stage leaves a child whose latest record it cannot read as it is, once that record says ${ended}`, async () => {
+			const stage = session();
+			const watched = watchedStage(stage, `ix-stage-ended-${ended}`);
+			const childId = `ix-stage-ended-${ended}:0`;
+			await stage.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, watched.settled(childId, { taskId: "t-1" }));
+			observeUnreadable(stage, watched.settled(childId, { taskId: "t-2", terminalStatus: ended }));
+			const failures = subagentChildRecordFailures.count;
+
+			assert.deepEqual(await watched.closeForGood(), []);
+
+			assert.deepEqual(
+				childRecordsIn(stage, childId).map((saved) => [saved.terminalStatus, saved.taskId]),
+				[["ok", "t-1"]],
+			);
+			assert.equal(subagentChildRecordFailures.count, failures, "a child that has ended is no failure");
+		});
+
+	test("a closing stage leaves a running child whose latest record it cannot read to end once, when its task settles", async () => {
+		const stage = session();
+		const watched = watchedStage(stage, "ix-stage-running");
+		const sink = createSubagentChildRecordSink(writingHost(stage), watched.ctx);
+		const childId = "ix-stage-running:0";
+		await stage.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, watched.settled(childId, { taskId: "t-1" }));
+		observeUnreadable(
+			stage,
+			watched.settled(childId, { taskId: "t-2", state: "running", terminalStatus: undefined }),
+		);
+
+		assert.deepEqual(await watched.closeForGood(), []);
+		assert.equal(childRecordsIn(stage, childId).length, 1, "a running child ends when its task settles");
+		sink.record(
+			input({ runId: "ix-stage-running", state: "terminal", terminalStatus: "interrupted", taskId: "t-2" }),
+		);
+		await sink.flushed?.();
+		await subagentChildRecordsAppended(stage.getSessionId());
+
+		const closed = childRecordsIn(stage, childId).filter((saved) => saved.terminalStatus === "stage-closed");
+		assert.deepEqual(
+			closed.map((saved) => saved.taskId),
+			["t-2"],
+		);
+	});
+
+	test("a child that settles after its stage closed for good is saved whole, though its session's readers are gone", async () => {
+		const stage = session();
+		const watched = watchedStage(stage, "ix-stage-late");
+		const sink = createSubagentChildRecordSink(writingHost(stage), watched.ctx);
+		sink.record(input({ runId: "ix-stage-late", task: "the launch's task", taskId: "t-1" }));
+		await sink.flushed?.();
+		// A later copy of the session is bound in place of the stage's own, and holds none of its records.
+		registerSubagentChildRecordReader(
+			{ getSessionId: () => stage.getSessionId(), getEntry: () => undefined, getLeafEntry: () => undefined },
+			true,
+		);
+
+		assert.deepEqual(await watched.closeForGood(), []);
+		sink.record(input({ runId: "ix-stage-late", state: "terminal", terminalStatus: "interrupted", taskId: "t-1" }));
+		await sink.flushed?.();
+		await subagentChildRecordsAppended(stage.getSessionId());
+
+		assert.deepEqual(
+			childRecordsIn(stage, "ix-stage-late:0").map((saved) => [saved.terminalStatus, saved.task]),
+			[
+				[undefined, "the launch's task"],
+				["interrupted", "the launch's task"],
+				["stage-closed", "the launch's task"],
+			],
+		);
+	});
+
+	test("a stage whose session cannot list its entries as it closes still ends the children the index holds", async () => {
+		const stage = session();
+		const unlistable = {
+			getSessionId: () => stage.getSessionId(),
+			getEntry: (id: string) => stage.getEntry(id),
+			getLeafEntry: () => stage.getLeafEntry(),
+			getEntries: () => {
+				throw new Error("the session's store is gone");
+			},
+		} as unknown as ExtensionContext["sessionManager"];
+		const watched = watchedStage(stage, "ix-stage-unlistable", unlistable);
+		observeSubagentChildRecord(watched.settled("ix-stage-unlistable:0"));
+		const failures = subagentChildRecordFailures.count;
+
+		assert.deepEqual(await watched.closeForGood(), []);
+
+		assert.equal(childRecordsIn(stage, "ix-stage-unlistable:0").at(-1)?.terminalStatus, "stage-closed");
+		assert.equal(subagentChildRecordFailures.count, failures + 1);
+		assert.deepEqual(
+			[subagentChildRecordFailures.last?.code, (subagentChildRecordFailures.last?.cause as Error)?.message],
+			["record-append-failed", "the session's store is gone"],
+		);
+	});
+
+	test("a stage reopened in a new session ends its children through that session when it closes for good", async () => {
+		const store = new MemorySessionStore();
+		const cwd = makeTempDirectory("child-index-reopened-stage-");
+		cleanups.push(() => removeTempDirectory(cwd));
+		const first = await SessionManager.create(store, cwd);
+		const stageSessionId = first.getSessionId();
+		const owner = {
+			kind: "workflow-stage" as const,
+			sessionId: stageSessionId,
+			workflowRunId: "wf-ix-reopened",
+			workflowStageId: "stage-ix-reopened",
+			workflowStageName: "reopened",
+		};
+		// One admission boundary and extension state for every session of the stage generation, as a stage keeps them.
+		const close = new AbortController();
+		const extensionState = new Map<string, object>();
+		const ctxOf = (sessionManager: SessionManager) =>
+			({
+				sessionManager,
+				orchestrationContext: {
+					kind: "workflow-stage",
+					workflowRunId: owner.workflowRunId,
+					workflowStageId: owner.workflowStageId,
+					workflowStageName: owner.workflowStageName,
+					messageAdmission: { boundary: { closeSignal: close.signal }, extensionState, isOpen: () => true },
+				},
+			}) as unknown as Pick<ExtensionContext, "sessionManager" | "orchestrationContext">;
+		let firstReleased = false;
+		const firstHost = {
+			appendEntry: async (customType: string, data?: unknown) => {
+				if (firstReleased) throw new Error("This extension instance is stale after session replacement or reload.");
+				await first.appendCustomEntry(customType, data);
+			},
+		};
+		bindSubagentChildCards({ sessionManager: first });
+		watchWorkflowStageSubagentChildren(firstHost, ctxOf(first));
+		await first.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+			...record(stageSessionId, { childId: "ix-reopened:0", state: "terminal", terminalStatus: "ok" }),
+			owner,
+		});
+		// The stage gives its session up and reopens it from the store in a new one, whose extensions start afresh.
+		firstReleased = true;
+		const reopened = await SessionManager.open(store, stageSessionId, cwd);
+		bindSubagentChildCards({ sessionManager: reopened });
+		watchWorkflowStageSubagentChildren(writingHost(reopened), ctxOf(reopened));
+		// A child the reopened session launched and saved, which only that session holds.
+		const launchedLater = {
+			...record(stageSessionId, { childId: "ix-reopened:1", state: "terminal", terminalStatus: "ok" }),
+			owner,
+		};
+		const entryId = await reopened.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, launchedLater);
+		observeSubagentChildRecord(launchedLater, false, { entryId, sessionId: stageSessionId });
+		// A later copy of the session is bound in place of the reopened one, and holds none of its records.
+		registerSubagentChildRecordReader(
+			{ getSessionId: () => stageSessionId, getEntry: () => undefined, getLeafEntry: () => undefined },
+			true,
+		);
+		const failures = subagentChildRecordFailures.count;
+
+		extensionState.set(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE, {});
+		close.abort();
+		await subagentChildRecordsAppended(stageSessionId);
+
+		assert.equal(
+			subagentChildRecordFailures.count,
+			failures,
+			"every child ended through the reopened session, none through the released one",
+		);
+		const ended = readSubagentChildRecords(reopened.getEntries(), stageSessionId);
+		assert.deepEqual(
+			[ended.get("ix-reopened:0")?.terminalStatus, ended.get("ix-reopened:1")?.terminalStatus],
+			["stage-closed", "stage-closed"],
+		);
+		await store.close();
+	});
+
+	test("a stage closing for good ends a child whose latest record no open session holds from the record its own session holds", async () => {
+		const stage = session();
+		const stageSessionId = stage.getSessionId();
+		const watched = watchedStage(stage, "ix-stage-unreadable");
+		await stage.appendCustomEntry(
+			SUBAGENT_CHILD_RECORD_TYPE,
+			watched.settled("ix-stage-unreadable:0", { taskId: "t-1" }),
+		);
+		// Its latest record was saved by a copy of the stage's session that is not open in this process any more.
+		observeSubagentChildRecord(
+			watched.settled("ix-stage-unreadable:0", { taskId: "t-2", terminalStatus: "paused" }),
+			false,
+			{
+				entryId: "entry-of-a-closed-copy",
+				sessionId: stageSessionId,
+			},
+		);
+
+		assert.deepEqual(await watched.closeForGood(), []);
+
+		const ended = readSubagentChildRecords(stage.getEntries(), stageSessionId).get("ix-stage-unreadable:0");
+		// The record its own session holds, with where the child stands as the index last saw it.
+		assert.deepEqual([ended?.terminalStatus, ended?.taskId], ["stage-closed", "t-2"]);
+	});
+
+	test("a child a closing stage can read no record of is counted as not saved, and the stage's other children still end", async () => {
+		const stage = session();
+		const stageSessionId = stage.getSessionId();
+		const watched = watchedStage(stage, "ix-stage-lost");
+		observeSubagentChildRecord(watched.settled("ix-stage-lost:0"), false, {
+			entryId: "entry-of-a-closed-copy",
+			sessionId: stageSessionId,
+		});
+		await stage.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, watched.settled("ix-stage-lost:1"));
+		// Not saved yet, so read from memory; the index walks it after the child it cannot read.
+		observeSubagentChildRecord(watched.settled("ix-stage-lost:2"));
+		const before = subagentChildRecordFailures.count;
+
+		assert.deepEqual(await watched.closeForGood(), []);
+
+		assert.equal(subagentChildRecordFailures.count, before + 1);
+		assert.deepEqual(
+			[subagentChildRecordFailures.last?.code, subagentChildRecordFailures.last?.fields.childId],
+			["child-record-unreadable", "ix-stage-lost:0"],
+		);
+		const ended = readSubagentChildRecords(stage.getEntries(), stageSessionId);
+		assert.equal(ended.get("ix-stage-lost:1")?.terminalStatus, "stage-closed");
+		assert.equal(ended.get("ix-stage-lost:2")?.terminalStatus, "stage-closed");
 	});
 	test("a record already being saved is not saved again", async () => {
 		const owner = session();
@@ -913,7 +1261,7 @@ describe("what the index keeps besides entries (#4395)", () => {
 		const start = startExtension(childSession, { depth: 1 });
 		const before = subagentChildCardStateSizes();
 
-		start();
+		void start();
 
 		assert.deepEqual(subagentChildCardStateSizes(), before);
 	});
@@ -931,7 +1279,7 @@ describe("what the index keeps besides entries (#4395)", () => {
 		);
 		const folded = readSubagentChildRecords(owner.getEntries(), ownerSessionId).get("ix-started:0");
 
-		startExtension(owner, { depth: 0 })();
+		void startExtension(owner, { depth: 0 })();
 		await subagentChildRecordsAppended(ownerSessionId);
 
 		const entryId = subagentChildIndexEntry("ix-started:0")?.entryId;

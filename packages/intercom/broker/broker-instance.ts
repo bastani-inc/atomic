@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getIntercomDirPath } from "./paths.js";
@@ -36,10 +36,14 @@ const orUndefined = (read: () => string | undefined): string | undefined => {
  * A host command's output, run up to `HOST_COMMAND_ATTEMPTS` times while it fails to answer; undefined once it never
  * did. A command that is not installed is not run again.
  */
-function hostCommandOutput(sources: HostIdentitySources, command: string, args: readonly string[]): string | undefined {
+async function hostCommandOutput(
+	sources: HostIdentitySources,
+	command: string,
+	args: readonly string[],
+): Promise<string | undefined> {
 	for (let attempt = 1; attempt <= HOST_COMMAND_ATTEMPTS; attempt++) {
 		try {
-			const output = sources.run(command, args).trim();
+			const output = (await sources.run(command, args)).trim();
 			if (output !== "") return output;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
@@ -53,8 +57,8 @@ export interface HostIdentitySources {
 	readonly platform: NodeJS.Platform;
 	readFile(path: string): string;
 	readLink(path: string): string;
-	/** Runs a command and returns its standard output; throws when it fails. */
-	run(command: string, args: readonly string[]): string;
+	/** Runs a command and resolves to its standard output; rejects when it fails. */
+	run(command: string, args: readonly string[]): Promise<string>;
 	/** Writes a file only this user may read, failing when it already exists. */
 	writeNewPrivateFile(path: string, content: string): void;
 	readonly configDir: string;
@@ -66,11 +70,14 @@ export const systemSources = (configDir: string = getIntercomDirPath()): HostIde
 	readFile: (path) => readFileSync(path, "utf8"),
 	readLink: (path) => readlinkSync(path),
 	run: (command, args) =>
-		execFileSync(command, [...args], {
-			encoding: "utf8",
-			timeout: HOST_COMMAND_TIMEOUT_MS,
-			stdio: ["ignore", "pipe", "ignore"],
-			windowsHide: true,
+		new Promise<string>((resolve, reject) => {
+			const child = execFile(
+				command,
+				[...args],
+				{ encoding: "utf8", timeout: HOST_COMMAND_TIMEOUT_MS, windowsHide: true },
+				(error, stdout) => (error ? reject(error) : resolve(stdout)),
+			);
+			child.stdin?.end();
 		}),
 	writeNewPrivateFile: (path, content) => {
 		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -80,9 +87,9 @@ export const systemSources = (configDir: string = getIntercomDirPath()): HostIde
 });
 
 /** The OS's own id of this machine: the registry's MachineGuid on Windows, the IOPlatformUUID on macOS. */
-export function osMachineId(sources: HostIdentitySources): string | undefined {
+export async function osMachineId(sources: HostIdentitySources): Promise<string | undefined> {
 	if (sources.platform === "win32") {
-		const output = hostCommandOutput(sources, "reg", [
+		const output = await hostCommandOutput(sources, "reg", [
 			"query",
 			"HKLM\\SOFTWARE\\Microsoft\\Cryptography",
 			"/v",
@@ -91,7 +98,7 @@ export function osMachineId(sources: HostIdentitySources): string | undefined {
 		return output?.match(/MachineGuid\s+REG_SZ\s+(\S+)/)?.[1];
 	}
 	if (sources.platform === "darwin") {
-		const output = hostCommandOutput(sources, "ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]);
+		const output = await hostCommandOutput(sources, "ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]);
 		return output?.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/)?.[1];
 	}
 	return undefined;
@@ -113,14 +120,14 @@ export function persistedMachineId(sources: HostIdentitySources): string | undef
  * same moment: macOS's random boot session id, Windows' precise boot time. `undefined` where neither can be read,
  * including every other platform: a boot time any coarser could be shared by clones started together.
  */
-export function bootSession(sources: HostIdentitySources): string | undefined {
+export async function bootSession(sources: HostIdentitySources): Promise<string | undefined> {
 	if (sources.platform === "darwin") {
-		const session = hostCommandOutput(sources, "sysctl", ["-n", "kern.bootsessionuuid"]);
+		const session = await hostCommandOutput(sources, "sysctl", ["-n", "kern.bootsessionuuid"]);
 		return session === undefined ? undefined : `session-${session}`;
 	}
 	if (sources.platform === "win32") {
 		const [command, ...args] = WINDOWS_BOOT_TIME_COMMAND;
-		const bootTime = hostCommandOutput(sources, command, args);
+		const bootTime = await hostCommandOutput(sources, command, args);
 		return bootTime === undefined ? undefined : `boot-${bootTime}`;
 	}
 	return undefined;
@@ -133,14 +140,32 @@ export function bootSession(sources: HostIdentitySources): string | undefined {
  * machine's id (the OS's, or one saved in the config directory) with its `bootSession`. `undefined` otherwise, or when
  * any of these is missing: an earlier instance is then never retired early, and its leases go stale as before.
  */
-export function brokerHostIdentity(sources: HostIdentitySources = systemSources()): string | undefined {
+export function brokerHostIdentity(sources?: HostIdentitySources): Promise<string | undefined> {
+	if (sources !== undefined) return readHostIdentity(sources);
+	const system = systemSources();
+	const known = systemHostIdentities.get(system.configDir);
+	if (known !== undefined) return known;
+	const reading = readHostIdentity(system);
+	systemHostIdentities.set(system.configDir, reading);
+	void reading.then((identity) => {
+		if (identity === undefined && systemHostIdentities.get(system.configDir) === reading) {
+			systemHostIdentities.delete(system.configDir);
+		}
+	});
+	return reading;
+}
+
+/** #5252: this host's identity per config directory, read once per process: neither its machine id nor its boot changes. */
+const systemHostIdentities = new Map<string, Promise<string | undefined>>();
+
+async function readHostIdentity(sources: HostIdentitySources): Promise<string | undefined> {
 	const bootId = orUndefined(() => sources.readFile("/proc/sys/kernel/random/boot_id"));
 	if (bootId !== undefined) {
 		const pidNamespace = orUndefined(() => sources.readLink("/proc/self/ns/pid"));
 		return pidNamespace === undefined ? bootId : `${bootId}/${pidNamespace}`;
 	}
-	const session = bootSession(sources);
-	const machineId = session === undefined ? undefined : (osMachineId(sources) ?? persistedMachineId(sources));
+	const session = await bootSession(sources);
+	const machineId = session === undefined ? undefined : ((await osMachineId(sources)) ?? persistedMachineId(sources));
 	return machineId === undefined ? undefined : `${machineId}/${session}`;
 }
 
@@ -156,7 +181,10 @@ const WINDOWS_FILE_TIME_EPOCH_MS = 11_644_473_600_000;
  * another user, so it is no instance of this user's broker: it counts as started now. `null` elsewhere: ids are handed
  * out in sequence, the start is not read, and a running pid is taken for the instance.
  */
-export function processStartedAt(pid: number, sources: HostIdentitySources = systemSources()): number | null | undefined {
+export async function processStartedAt(
+	pid: number,
+	sources: HostIdentitySources = systemSources(),
+): Promise<number | null | undefined> {
 	if (sources.platform !== "win32") return null;
 	try {
 		process.kill(pid, 0);
@@ -164,7 +192,7 @@ export function processStartedAt(pid: number, sources: HostIdentitySources = sys
 		return (error as NodeJS.ErrnoException).code === "EPERM" ? Date.now() : undefined;
 	}
 	if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
-	const output = hostCommandOutput(sources, "powershell", [
+	const output = await hostCommandOutput(sources, "powershell", [
 		"-NoProfile",
 		"-NonInteractive",
 		"-Command",

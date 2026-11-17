@@ -115,6 +115,10 @@ struct WindowsLaunch {
 pub(super) fn raw(handle: &impl AsRawHandle) -> HANDLE {
 	handle.as_raw_handle()
 }
+/// How long a writer that missed the grace still has to report its stop. A host that stalls every thread at once (a
+/// paused virtual machine, a starved scheduler) can let the whole grace pass before the writer ran at all; once it
+/// runs it reports within a few of its polls, while a writer that is really stuck never does.
+const STDIN_WRITER_LATE_REPORT: Duration = Duration::from_millis(100);
 fn finish_stdin_writer(
 	stop_input: &AtomicBool,
 	writer: std::thread::JoinHandle<()>,
@@ -124,7 +128,12 @@ fn finish_stdin_writer(
 	let deadline = Instant::now() + timeout;
 	stop_input.store(true, Ordering::Release);
 	writer.thread().unpark();
-	let _ = writer_done.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+	// The writer reports its stop only after it closed the input and dropped the stdin handle, so from then on it
+	// holds nothing of the command and is left to end on its own: its thread's end is no cleanup of the command, and
+	// a command that ran to completion failed when that end came after the grace (#5202).
+	if writer_done.recv_timeout(deadline.saturating_duration_since(Instant::now())).is_ok() {
+		return (None, None);
+	}
 	while !writer.is_finished() && Instant::now() < deadline {
 		std::thread::yield_now();
 	}
@@ -133,6 +142,8 @@ fn finish_stdin_writer(
 		let failure =
 			writer.take().unwrap().join().err().map(|_| "Windows stdin worker panicked".into());
 		(None, failure)
+	} else if writer_done.recv_timeout(STDIN_WRITER_LATE_REPORT).is_ok() {
+		(None, None)
 	} else {
 		(writer, Some("Windows stdin worker stop was not confirmed".into()))
 	}
@@ -880,6 +891,47 @@ mod tests {
 		assert_eq!(failure.as_deref(), Some("Windows stdin worker stop was not confirmed"));
 		stall_release_tx.send(()).unwrap();
 		retained.unwrap().join().unwrap();
+	}
+	// A writer that reported its stop has closed the input and the stdin handle. Under load its thread can take longer
+	// than the grace to end, and a command that ran to completion must not fail on that.
+	#[test]
+	fn stdin_writer_that_reported_its_stop_is_confirmed_while_its_thread_still_ends() {
+		let stop_input = Arc::new(AtomicBool::new(false));
+		let (done_tx, done_rx) = std::sync::mpsc::channel();
+		let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+		let (ended_tx, ended_rx) = std::sync::mpsc::channel();
+		let writer = std::thread::spawn(move || {
+			done_tx.send(()).unwrap();
+			let _ = release_rx.recv_timeout(Duration::from_secs(5));
+			ended_tx.send(()).unwrap();
+		});
+		let started = Instant::now();
+		let (retained, failure) =
+			finish_stdin_writer(&stop_input, writer, &done_rx, Duration::from_millis(10));
+		assert!(started.elapsed() < Duration::from_millis(500));
+		assert_eq!(failure, None);
+		assert!(retained.is_none());
+		release_tx.send(()).unwrap();
+		ended_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+	}
+	// A host that stalls every thread lets the grace pass before the writer ran at all; the writer reports once it
+	// runs, and that stop is confirmed too.
+	#[test]
+	fn stdin_writer_that_reports_its_stop_just_after_the_grace_is_confirmed() {
+		let grace = Duration::from_millis(10);
+		let stop_input = Arc::new(AtomicBool::new(false));
+		let stopped = stop_input.clone();
+		let (done_tx, done_rx) = std::sync::mpsc::channel();
+		let writer = std::thread::spawn(move || {
+			while !stopped.load(Ordering::Acquire) {
+				std::thread::park_timeout(PROCESS_POLL);
+			}
+			std::thread::sleep(grace + STDIN_WRITER_LATE_REPORT / 4);
+			done_tx.send(()).unwrap();
+		});
+		let (retained, failure) = finish_stdin_writer(&stop_input, writer, &done_rx, grace);
+		assert_eq!(failure, None);
+		assert!(retained.is_none());
 	}
 }
 

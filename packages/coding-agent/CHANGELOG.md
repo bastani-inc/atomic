@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Changed
+
+- On Linux, starting a shell or one of Atomic's own processes (worktree snapshot Git, `pi.exec`, the search tools' `rg` and `fd`, worktree setup) no longer pauses Atomic for a time that grows with its memory. Each start copied the whole process with `fork()`, which took about 65 ms per GB it held. A session holding 8 GB that started five processes a second kept its main thread busy 99.9% of the time, so subagents took minutes to start and the screen and Intercom lagged; it now stays under 2% at any size. `ATOMIC_HOST_SPAWN=child-process` restores Node's `child_process` for Atomic's own processes.
+- Hosts running many agents stay responsive while they record worktree snapshots. A turn whose checkout did not change now starts 9 Git processes instead of 14, a changed one 17 instead of 21, and sessions that capture the same checkout at the same time compute its tree at most twice instead of once each. Each snapshot still records the checkout as it was after its turn.
+- Clarified in `codemode`'s description, system-prompt guidance, and `searchTools()`/`describeTool()` hints that `subagent`, `workflow`, and other model-only tools (plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script, and should be called directly as separate top-level tools when available in the session
+
+### Fixed
+
+- A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
+- Fixed a session that ended staying in memory for as long as a timer, connection or other long-lived resource that an extension started while the session was in use, as a service started once and shared by later sessions does.
+- Fixed each `/reload` keeping the extensions it replaced in memory for as long as the session ran: every new generation of the session's extensions kept the one before it, so each reload added about 10 MB that was never released.
+- On a busy Windows machine, a shell command or a subagent's named-worktree checkout that finished is no longer reported as failed with `Windows stdin worker stop was not confirmed` ([#5340](https://github.com/bastani-inc/atomic/pull/5340))
+
 ## [0.9.88] - 2026-11-16
 
 Atomic runs on its own libraries, workflows scale out to worker fleets on libSQL or PostgreSQL, and every screen shares one set of keys.
