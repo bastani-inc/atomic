@@ -344,44 +344,109 @@ async function waitForDeprecationKeypress(warnings: string[], stdin: KeypressInp
 	console.log();
 }
 
-function savesModelRouting(path: string): boolean {
+const ROUTING_REMOVED =
+	'automatic model routing was removed, so "auto" runs your default model and its provider and model restrictions no longer limit "auto" or any fallback model.';
+
+/** Subagent override fields of the removed automatic model routing. */
+const REMOVED_OVERRIDE_ROUTING_FIELDS = ["modelConstraints", "taskNeeds"] as const;
+
+type JsonObject = Record<string, unknown>;
+
+function isJsonObject(value: unknown): value is JsonObject {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** What `removeRoutingSettings` deleted from one settings file. */
+interface RemovedRoutingSettings {
+	modelRouting: boolean;
+	/** The override fields deleted, in `REMOVED_OVERRIDE_ROUTING_FIELDS` order. */
+	overrideFields: string[];
+	/** The subagents whose override lost a field, in file order. */
+	overrideAgents: string[];
+}
+
+/**
+ * Delete the saved settings of the removed automatic model routing from `settings`: `modelRouting`, and
+ * `modelConstraints` and `taskNeeds` in each `subagents.agentOverrides` entry. Every other key is kept.
+ */
+function removeRoutingSettings(settings: JsonObject): RemovedRoutingSettings {
+	const modelRouting = Object.hasOwn(settings, "modelRouting");
+	delete settings.modelRouting;
+	const fields = new Set<string>();
+	const overrideAgents: string[] = [];
+	const subagents = settings.subagents;
+	const overrides = isJsonObject(subagents) ? subagents.agentOverrides : undefined;
+	for (const [agent, override] of isJsonObject(overrides) ? Object.entries(overrides) : []) {
+		if (!isJsonObject(override)) continue;
+		const saved = REMOVED_OVERRIDE_ROUTING_FIELDS.filter((field) => Object.hasOwn(override, field));
+		if (saved.length === 0) continue;
+		for (const field of saved) {
+			delete override[field];
+			fields.add(field);
+		}
+		overrideAgents.push(agent);
+	}
+	const overrideFields = REMOVED_OVERRIDE_ROUTING_FIELDS.filter((field) => fields.has(field));
+	return { modelRouting, overrideFields, overrideAgents };
+}
+
+function removesAny(removed: RemovedRoutingSettings): boolean {
+	return removed.modelRouting || removed.overrideAgents.length > 0;
+}
+
+function savesRoutingSettings(path: string): boolean {
 	try {
 		const settings = parseJsonFileContent(readFileSync(path, "utf-8"));
-		return typeof settings === "object" && settings !== null && Object.hasOwn(settings, "modelRouting");
+		return isJsonObject(settings) && removesAny(removeRoutingSettings(settings));
 	} catch {
 		return false;
 	}
 }
 
+function quotedList(items: readonly string[]): string {
+	const quoted = items.map((item) => `"${item}"`);
+	return quoted.length <= 1 ? (quoted[0] ?? "") : `${quoted.slice(0, -1).join(", ")} and ${quoted.at(-1)}`;
+}
+
+function routingRemovalNotices(scope: SettingsScope, removed: RemovedRoutingSettings): string[] {
+	const notices: string[] = [];
+	if (removed.modelRouting)
+		notices.push(`Removed the "modelRouting" setting from ${scope} settings: ${ROUTING_REMOVED}`);
+	const { overrideFields: fields, overrideAgents: agents } = removed;
+	if (agents.length > 0)
+		notices.push(
+			`Removed the ${quotedList(fields)} ${fields.length === 1 ? "setting" : "settings"} from the subagent ${agents.length === 1 ? "override" : "overrides"} for ${quotedList(agents)} in ${scope} settings: ${ROUTING_REMOVED}`,
+		);
+	return notices;
+}
+
 /**
- * Delete the removed `modelRouting` setting from Atomic's global settings file and, when the project is trusted, from
- * its project settings file, and say so once. The file is rewritten under its settings lock, so settings another
- * process saves meanwhile are kept. A file that cannot be written keeps the key, which loading it reports as ignored.
+ * Delete the saved settings of the removed automatic model routing (`modelRouting`, and `modelConstraints` and
+ * `taskNeeds` in subagent overrides) from Atomic's global settings file and, when the project is trusted, from its
+ * project settings file, and say so once. The file is rewritten under its settings lock, so settings another process
+ * saves meanwhile are kept. A file that cannot be written keeps them, which loading it reports as ignored.
  */
-export function removeSavedModelRoutingSetting(cwd: string, options?: { projectTrusted?: boolean }): void {
+export function removeSavedModelRoutingSettings(cwd: string, options?: { projectTrusted?: boolean }): void {
 	const storage = new FileSettingsStorage(cwd, getAgentDir());
 	const files: [SettingsScope, string][] = [["global", join(getAgentDir(), "settings.json")]];
 	if (options?.projectTrusted === true) files.push(["project", join(cwd, CONFIG_DIR_NAME, "settings.json")]);
 	for (const [scope, path] of files) {
-		if (!savesModelRouting(path)) continue;
-		let removed = false;
+		if (!savesRoutingSettings(path)) continue;
+		let removed: RemovedRoutingSettings | undefined;
 		try {
 			storage.withPrimaryWriteLock(scope, (current) => {
 				const settings = current === undefined ? undefined : parseJsonFileContent(current);
-				if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return undefined;
-				if (!Object.hasOwn(settings, "modelRouting")) return undefined;
-				delete (settings as Record<string, unknown>).modelRouting;
-				removed = true;
+				if (!isJsonObject(settings)) return undefined;
+				const deleted = removeRoutingSettings(settings);
+				if (!removesAny(deleted)) return undefined;
+				removed = deleted;
 				return JSON.stringify(settings, null, 2);
 			});
 		} catch {
-			removed = false;
+			removed = undefined;
 		}
-		if (removed)
-			warnDeprecation(
-				`Removed the "modelRouting" setting from ${scope} settings: automatic model routing was removed, so "auto" runs your default model and its provider and model restrictions no longer limit "auto" or any fallback model.`,
-				{ showInUi: true },
-			);
+		if (removed === undefined) continue;
+		for (const notice of routingRemovalNotices(scope, removed)) warnDeprecation(notice, { showInUi: true });
 	}
 }
 
@@ -403,7 +468,7 @@ export function runMigrations(
 	migrateSessionsFromAgentRoot();
 	migrateToolsToBin();
 	migrateKeybindingsConfigFile();
-	removeSavedModelRoutingSetting(cwd, options);
+	removeSavedModelRoutingSettings(cwd, options);
 	const deprecationWarnings = migrateExtensionSystem(cwd, options);
 	return { migratedAuthProviders, deprecationWarnings };
 }

@@ -90,7 +90,7 @@ Subagents and workflow stages with `model: "auto"` run this default model when i
 
 `decisionModel` replaces the former `routerModel` setting. Global and trusted project settings files and SDK settings automatically migrate a valid legacy value when `decisionModel` is absent, without stopping startup. If both keys are present, `decisionModel` wins and Atomic warns once. Invalid legacy values (not a string, or with surrounding whitespace) are ignored with a one-time warning. Loading settings does not rewrite the file; use `decisionModel` in new configuration.
 
-The former `modelRouting` setting was removed with automatic model routing; `"auto"` runs your default model. When Atomic starts and finds `modelRouting` in your global settings or a trusted project's `.atomic/settings.json`, it deletes that key from the file, keeps every other setting, and tells you once. If the file cannot be written, Atomic ignores the key and warns once each time it starts.
+The former `modelRouting` setting was removed with automatic model routing; `"auto"` runs your default model. When Atomic starts and finds `modelRouting` in your global settings or a trusted project's `.atomic/settings.json`, it deletes that key from the file, keeps every other setting, and tells you once. If the file cannot be written, Atomic ignores the key and warns once each time it starts. The `modelConstraints` and `taskNeeds` fields of a builtin agent override (`subagents.agentOverrides.<agent>`) were removed with it and are deleted from the same files in the same way.
 
 The decision model is used by:
 
