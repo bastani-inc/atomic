@@ -5077,7 +5077,14 @@ test.each([false, true])(
 		);
 		try {
 			await admitted.promise;
-			await new Promise((resolve) => setTimeout(resolve, 25));
+			// Reload resolves resource paths asynchronously after the factories run. Wait until rollback has sealed the
+			// omitted set before releasing its admitted callback, rather than racing that I/O with a fixed delay.
+			await vi.waitFor(() =>
+				assert.throws(() => {
+					const unsubscribe = other.events.on("probe", () => {});
+					unsubscribe();
+				}, /closed|stale/i),
+			);
 			assert.deepEqual(log, [], "all omitted callbacks precede the first shutdown");
 			assert.equal(
 				(await selected.exec(process.execPath, ["-e", "process.stdout.write('selected')"])).stdout,
