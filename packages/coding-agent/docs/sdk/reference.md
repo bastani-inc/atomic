@@ -1093,7 +1093,7 @@ To pass one between processes, `serializeDebugError(error)` turns it into a `Ser
 
 ## Private temp directories
 
-`ensurePrivateTempDirAsync(...segments)` creates or reuses a directory that only the current account can use, and returns its path. `assertPrivateDirectoryAsync(path)` rejects with `TempDirRefusedError` unless `path` is a real directory owned by the current account that no other account can open. Neither blocks the main thread.
+`ensurePrivateTempDirAsync(...segments)` creates or reuses a directory that only the current account can use, and returns its path. `assertPrivateDirectoryAsync(path)` rejects with `TempDirRefusedError` unless `path` is a real directory owned by the current account that no other account can open. Relative paths are resolved against the working directory when the call starts. Neither blocks the main thread.
 
 On Windows, the check reads the directory's owner and access list with PowerShell, which can take seconds on a busy machine, so prefer the asynchronous forms. The synchronous `ensurePrivateTempDir()` and `assertPrivateDirectory()` never wait for that read. They accept a directory already checked in this process. Otherwise they start the check in the background: `assertPrivateDirectory()` throws `TempDirRefusedError` with the reason `its ownership is still being verified`, and `ensurePrivateTempDir()` returns another private directory. A later call accepts the directory once the check passes.
 

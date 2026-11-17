@@ -391,6 +391,51 @@ process.stdout.write(JSON.stringify(result));
 	});
 });
 
+it("async relative temp paths keep the caller's directory across verification waits (#5285)", () => {
+	const packageRoot = dirname(moduleDir(import.meta.url));
+	const scriptPath = join(sandbox, "relative-async-temp.ts");
+	writeFileSync(
+		scriptPath,
+		`
+import assert from "node:assert/strict";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+const temp = await import(${JSON.stringify(join(dirname(moduleDir(import.meta.url)), "src/core/tools/session-temp-dir.ts"))});
+const security = await import(${JSON.stringify(join(dirname(moduleDir(import.meta.url)), "src/core/tools/windows-directory-security.ts"))});
+const first = ${JSON.stringify(join(sandbox, "relative-first"))};
+const second = ${JSON.stringify(join(sandbox, "relative-second"))};
+mkdirSync(first);
+mkdirSync(second);
+Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+security.setWindowsDirectorySecurityReaderForTesting(async () => ({
+	currentSid: "S-1-5-21-1001", ownerSid: "S-1-5-21-1001", dacl: "D:", accessRules: [],
+}));
+process.chdir(first);
+const pending = temp.ensureTempDirAsync("leaf");
+process.chdir(second);
+assert.equal(await pending, join(first, "leaf"));
+security.resetWindowsDirectorySecurityStateForTesting();
+security.setWindowsDirectorySecurityReaderForTesting(async () => ({
+	currentSid: "S-1-5-21-1001", ownerSid: "S-1-5-21-1001", dacl: "D:", accessRules: [],
+}));
+process.chdir(first);
+const checked = temp.assertPrivateDirectoryAsync("leaf");
+process.chdir(second);
+await checked;
+assert.equal(process.cwd(), second);
+process.env.ATOMIC_CODING_AGENT_DIR = "agent";
+process.env.XDG_RUNTIME_DIR = "";
+process.chdir(first);
+const privatePending = temp.ensurePrivateTempDirAsync("extensions");
+process.chdir(second);
+assert.equal(await privatePending, join(first, "agent", "cache", "tmp", "extensions"));
+assert.equal(await temp.ensurePrivateTempDirAsync("extensions"), join(second, "agent", "cache", "tmp", "extensions"));
+`,
+	);
+	const child = spawnSyncCollect([bunExecutable(), scriptPath], { cwd: packageRoot });
+	assert.equal(child.exitCode, 0, child.stderr.toString());
+});
+
 describe("persisted tool-output files", () => {
 	it("creates spill files owner-only", async () => {
 		const dir = await getSessionTempDirAsync("file-mode");

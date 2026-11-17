@@ -19,7 +19,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, type Stats } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { dirname, isAbsolute, join, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { APP_NAME, getAgentDir } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
@@ -429,7 +429,7 @@ export async function ensurePrivateTempDirAsync(...segments: string[]): Promise<
 }
 
 function privateTempDirKey(parts: readonly string[]): string {
-	return JSON.stringify([process.env.XDG_RUNTIME_DIR ?? "", getAgentDir(), tmpdir(), parts]);
+	return JSON.stringify([process.env.XDG_RUNTIME_DIR ?? "", resolve(getAgentDir()), resolve(tmpdir()), parts]);
 }
 
 function rememberedPrivateTempDir(key: string): string | undefined {
@@ -528,8 +528,8 @@ function privateTempDirAttempts(parts: readonly string[]): Array<() => string> {
 			return ensurePrivateChain(runtimeDir, runtimeDir, [app, ...parts]);
 		});
 	}
+	const cacheDir = resolve(getAgentDir(), "cache");
 	attempts.push(() => {
-		const cacheDir = join(getAgentDir(), "cache");
 		mkdirSync(cacheDir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
 		return ensurePrivateChain(cacheDir, cacheDir, ["tmp", ...parts]);
 	});
@@ -583,7 +583,8 @@ export function assertPrivateDirectory(path: string): void {
 }
 
 export function assertPrivateDirectoryAsync(path: string): Promise<void> {
-	return afterVerification(() => assertPrivateDirectory(path));
+	const resolvedPath = resolve(path);
+	return afterVerification(() => assertPrivateDirectory(resolvedPath));
 }
 
 /**
@@ -681,7 +682,8 @@ export function ensureSessionTempDir(explicitDir?: string): string {
 }
 
 export function ensureTempDirAsync(dir: string, options: { preserveExistingLeaf?: boolean } = {}): Promise<string> {
-	return afterVerification(() => ensureTempDir(dir, options));
+	const resolvedDir = resolve(dir);
+	return afterVerification(() => ensureTempDir(resolvedDir, options));
 }
 
 export function getSessionTempDirAsync(sessionId?: string): Promise<string> {
