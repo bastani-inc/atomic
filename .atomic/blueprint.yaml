@@ -33,7 +33,8 @@ knowledge:
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
       suites load the built packages. Filter coding-agent tests with
       `npm run test --workspace=@bastani/atomic -- test/history-bounded.test.ts` (the package script
-      already passes `--run`; run from its workspace, not the root with only `--config`).
+      already passes `--run`; run from its workspace, not the root with only `--config`). The TUI autocomplete suite's @ cases need `fd`
+      on PATH; if the system provides `fdfind`, expose it as `fd` for that run so those cases do not skip.
       After changing SDK imports used by workflow graph views, run
       `npx vitest run --project unit test/unit/overlay-adapter-autowrap.test.ts test/unit/overlay-adapter-hidden-render.test.ts`:
       these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
