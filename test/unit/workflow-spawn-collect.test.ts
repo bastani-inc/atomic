@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as realSleep } from "node:timers/promises";
 import { test, vi } from "vitest";
 
 const containment = vi.hoisted(() => ({
@@ -80,6 +84,57 @@ test.skipIf(process.platform === "win32")(
 	},
 	GENEROUS_TIMEOUT_MS,
 );
+
+// Once the command exited, its pid may name another process: a hangup signals only its process group (#5377).
+test.skipIf(process.platform === "win32")(
+	"a hangup after the command exited while a process it started still holds its output never signals the command's pid (#5377)",
+	async () => {
+		const directory = mkdtempSync(join(tmpdir(), "spawn-collect-exited-root-"));
+		const pids = join(directory, "pids");
+		const running = spawnCollect(
+			node,
+			[
+				"-e",
+				`const { spawn } = require("node:child_process"); const g = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit", detached: true }); require("node:fs").writeFileSync(${JSON.stringify(pids)}, process.pid + " " + g.pid); process.exit(0);`,
+			],
+			{ cwd: process.cwd(), env: process.env, timeout: GENEROUS_TIMEOUT_MS, maxBuffer: 1024 },
+		);
+		let rootPid = 0;
+		let outputHolderPid = 0;
+		try {
+			while (!existsSync(pids) || readFileSync(pids, "utf8").split(" ").length < 2) await realSleep(10);
+			[rootPid, outputHolderPid] = readFileSync(pids, "utf8").split(" ").map(Number) as [number, number];
+			while (processExists(rootPid)) await realSleep(10);
+			const signalled: number[] = [];
+			const kill = process.kill.bind(process);
+			const spy = vi.spyOn(process, "kill").mockImplementation((pid: number, signal?: string | number) => {
+				signalled.push(pid);
+				return kill(pid, signal);
+			});
+			try {
+				killTrackedDetachedChildren();
+			} finally {
+				spy.mockRestore();
+			}
+			assert.ok(signalled.includes(-rootPid), "its process group is signalled");
+			assert.equal(signalled.includes(rootPid), false, "the exited command's pid is not");
+		} finally {
+			if (outputHolderPid > 0) process.kill(outputHolderPid, "SIGKILL");
+			await running;
+			rmSync(directory, { recursive: true, force: true });
+		}
+	},
+	GENEROUS_TIMEOUT_MS,
+);
+
+function processExists(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 test("hands the process its input on stdin", async () => {
 	const result = await spawnCollect(node, ["-e", "process.stdin.pipe(process.stdout)"], {

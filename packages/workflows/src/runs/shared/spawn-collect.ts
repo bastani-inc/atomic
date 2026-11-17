@@ -3,6 +3,7 @@ import {
 	containProcessTree,
 	killChildProcessTree,
 	killProcessTree,
+	markDetachedChildExited,
 	type ProcessTreeContainment,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
@@ -146,6 +147,7 @@ export function spawnCollect(
 		});
 		child.on("exit", (status, signal) => {
 			exited = true;
+			if (detachedPid !== undefined) markDetachedChildExited(detachedPid);
 			if (error === undefined && signal !== null && Date.now() - startedAt >= options.timeout) {
 				stop(codedError(command, "ETIMEDOUT"));
 			}

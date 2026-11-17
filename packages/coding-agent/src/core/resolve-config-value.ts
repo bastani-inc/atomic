@@ -9,6 +9,7 @@ import {
 	getShellConfig,
 	getShellConfigAsync,
 	killChildProcessTree,
+	markDetachedChildExited,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../utils/shell.ts";
@@ -355,6 +356,7 @@ function runCommand(
 		});
 		child.on("exit", (status, signal) => {
 			exited = true;
+			if (detachedPid !== undefined) markDetachedChildExited(detachedPid);
 			if (stopped || error !== undefined || signal !== null) {
 				stop(Object.assign(new Error(`spawn ${file} ETIMEDOUT`), { code: "ETIMEDOUT" }));
 				finish(status);

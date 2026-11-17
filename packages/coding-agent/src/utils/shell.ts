@@ -398,7 +398,7 @@ export async function getShellEnvAsync(): Promise<NodeJS.ProcessEnv> {
 }
 
 interface DetachedChildGuardian {
-	postMessage(message: { action: "track" | "untrack"; pid: number }): void;
+	postMessage(message: { action: "track" | "exited" | "untrack"; pid: number }): void;
 	terminate(): Promise<number>;
 	unref(): void;
 }
@@ -410,13 +410,15 @@ const { parentPort, workerData } = require("node:worker_threads");
 const { spawn } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const { join } = require("node:path");
-const tracked = new Set();
+const tracked = new Map();
 parentPort.on("message", ({ action, pid }) => {
-  if (action === "track") tracked.add(pid);
+  if (action === "track") tracked.set(pid, false);
+  else if (action === "exited") { if (tracked.has(pid)) tracked.set(pid, true); }
   else tracked.delete(pid);
 });
-function killTree(pid) {
+function killTree(pid, exited) {
   if (process.platform === "win32") {
+    if (exited) return;
     // Same System32 hardening as killProcessTree: PATH is not trusted here, and an
     // unconsumed async "error" from a failed spawn would take the guardian thread
     // down and leak every detached child it exists to reap.
@@ -427,14 +429,14 @@ function killTree(pid) {
     return;
   }
   try { process.kill(-pid, "SIGKILL"); }
-  catch { try { process.kill(pid, "SIGKILL"); } catch {} }
+  catch { if (!exited) { try { process.kill(pid, "SIGKILL"); } catch {} } }
 }
 const timer = setInterval(() => {
   let parentAlive = true;
   try { process.kill(workerData.parentPid, 0); } catch { parentAlive = false; }
   if (parentAlive && (!workerData.stopFile || !existsSync(workerData.stopFile))) return;
-  for (const pid of tracked) killTree(pid);
-  killTree(process.pid);
+  for (const [pid, exited] of tracked) killTree(pid, exited);
+  killTree(process.pid, false);
 }, 50);
 timer.unref?.();
 `;
@@ -446,7 +448,10 @@ export function startParentProcessGuardian(parentPid: number, stopFile?: string)
 		workerData: { parentPid, stopFile, aiAgent: createChildProcessEnvironment().AI_AGENT },
 	});
 	detachedChildGuardian = guardian;
-	for (const pid of trackedDetachedChildPids) guardian.postMessage({ action: "track", pid });
+	for (const [pid, exited] of trackedDetachedChildPids) {
+		guardian.postMessage({ action: "track", pid });
+		if (exited) guardian.postMessage({ action: "exited", pid });
+	}
 	guardian.unref();
 	return async () => {
 		if (detachedChildGuardian !== guardian) return;
@@ -459,11 +464,17 @@ export function startParentProcessGuardian(parentPid: number, stopFile?: string)
  * Detached child processes must be tracked so they can be killed on parent
  * shutdown signals (SIGHUP/SIGTERM).
  */
-const trackedDetachedChildPids = new Set<number>();
+const trackedDetachedChildPids = new Map<number, boolean>();
 
 export function trackDetachedChildPid(pid: number): void {
-	trackedDetachedChildPids.add(pid);
+	trackedDetachedChildPids.set(pid, false);
 	detachedChildGuardian?.postMessage({ action: "track", pid });
+}
+
+export function markDetachedChildExited(pid: number): void {
+	if (!trackedDetachedChildPids.has(pid)) return;
+	trackedDetachedChildPids.set(pid, true);
+	detachedChildGuardian?.postMessage({ action: "exited", pid });
 }
 
 export function untrackDetachedChildPid(pid: number): void {
@@ -472,8 +483,13 @@ export function untrackDetachedChildPid(pid: number): void {
 }
 
 export function killTrackedDetachedChildren(): void {
-	for (const pid of trackedDetachedChildPids) {
-		killProcessTree(pid);
+	for (const [pid, exited] of trackedDetachedChildPids) {
+		if (!exited) killProcessTree(pid);
+		else if (process.platform !== "win32") {
+			try {
+				process.kill(-pid, "SIGKILL");
+			} catch {}
+		}
 		detachedChildGuardian?.postMessage({ action: "untrack", pid });
 	}
 	trackedDetachedChildPids.clear();

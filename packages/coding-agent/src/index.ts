@@ -1371,6 +1371,7 @@ export {
 	getShellConfig,
 	killChildProcessTree,
 	killProcessTree,
+	markDetachedChildExited,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "./utils/shell.ts";

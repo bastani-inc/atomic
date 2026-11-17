@@ -10,6 +10,7 @@ import {
 	createGitEnvironment,
 	isPathInside,
 	killChildProcessTree,
+	markDetachedChildExited,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "@bastani/atomic";
@@ -212,6 +213,7 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 		}
 		child.on("exit", (code, signal) => {
 			exited = true;
+			if (detachedPid !== undefined) markDetachedChildExited(detachedPid);
 			if (
 				!spawnError &&
 				signal !== null &&
