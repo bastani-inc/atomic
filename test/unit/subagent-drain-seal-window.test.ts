@@ -451,13 +451,34 @@ test.each(promptSenders)(
 );
 
 const BATCH_SECOND_TEXT = "the other message in the released batch";
-const releaseSenders: Array<Sender & { readonly cardType?: string; readonly texts?: readonly string[] }> = [
+const releaseSenders: Array<
+	Sender & { readonly cardType?: string; readonly texts?: readonly string[]; readonly excludeFromContext?: boolean }
+> = [
 	...senders
 		.filter(({ id }) => id === "intercom" || id === "extension" || id === "user-message" || id === "steer")
 		.map((sender) => ({
 			...sender,
 			cardType: sender.id === "intercom" || sender.id === "extension" ? card.customType : undefined,
 		})),
+	...[false, true].flatMap((batch) =>
+		([undefined, "followUp"] as const).map((deliverAs) => ({
+			id: `excluded-${batch ? "batch" : "single"}-${deliverAs ?? "default"}`,
+			name: `an extension's context-excluded ${batch ? "batch" : "message"} with ${deliverAs ?? "default"} delivery`,
+			cardType: card.customType,
+			excludeFromContext: true,
+			texts: batch ? [LATE_TEXT, BATCH_SECOND_TEXT] : [LATE_TEXT],
+			send: ({ pi }: Receiver) =>
+				Promise.resolve(
+					batch
+						? pi.sendMessages([card, { ...card, content: BATCH_SECOND_TEXT }], {
+								triggerTurn: true,
+								excludeFromContext: true,
+								deliverAs,
+							})
+						: pi.sendMessage(card, { triggerTurn: true, excludeFromContext: true, deliverAs }),
+				),
+		})),
+	),
 	{
 		id: "subagent-notify",
 		name: "a background grandchild's completion notice",
@@ -486,7 +507,7 @@ const releaseSenders: Array<Sender & { readonly cardType?: string; readonly text
 ];
 
 test.each(releaseSenders)(
-	"$name sent while a subagent is being released is kept and answered on wake (#5318)",
+	"$name sent while a subagent is being released is saved and respects context delivery on wake (#5318)",
 	async (sender) => {
 		const env = await liveChildEnvironment(cleanups);
 		const store = new MemorySessionStore();
@@ -550,7 +571,13 @@ test.each(releaseSenders)(
 					);
 			} else assert.deepEqual(released.pendingMessages, expectedTexts, "input is kept for the wake");
 
-			env.faux.setResponses(Array.from({ length: 4 }, () => answerPendingInput()));
+			const receivedContexts: string[] = [];
+			env.faux.setResponses(
+				Array.from({ length: 4 }, () => (context, options, state, model) => {
+					receivedContexts.push(JSON.stringify(context.messages));
+					return answerPendingInput()(context, options, state, model);
+				}),
+			);
 			let wokenSession: AgentSession | undefined;
 			const woken = await runSingleInProcess(env.root, agent, "Resume: deploy now.", {
 				...env.options(`releasing-${sender.id}`, {
@@ -572,12 +599,19 @@ test.each(releaseSenders)(
 				}),
 			});
 			assert.equal(woken.status ?? "ok", "ok");
-			for (const text of expectedTexts)
-				assert.equal(
-					assistantTexts(wokenSession!).join("\n").split(text).length - 1,
-					1,
-					`the woken child answers the message once: ${text}`,
-				);
+			assert.ok(receivedContexts.length > 0, "the woken model received context");
+			for (const text of expectedTexts) {
+				if (sender.excludeFromContext) {
+					for (const context of receivedContexts)
+						assert.equal(context.includes(text), false, `excluded text never reaches the model: ${text}`);
+				} else {
+					assert.equal(
+						assistantTexts(wokenSession!).join("\n").split(text).length - 1,
+						1,
+						`the woken child answers the message once: ${text}`,
+					);
+				}
+			}
 			if (sender.cardType !== undefined) {
 				const afterWake = await SessionManager.open(store, childSession.getSessionId());
 				for (const text of expectedTexts)

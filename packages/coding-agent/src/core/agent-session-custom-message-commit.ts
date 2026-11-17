@@ -3,6 +3,7 @@ import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts"
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import {
 	admitProtectedStreamingCustomMessage,
+	queueHeldCustomMessages,
 	queueProtectedStreamingCustomMessage,
 	queueProtectedStreamingCustomMessages,
 	triggerProtectedStreamingCustomMessages,
@@ -144,13 +145,14 @@ export async function commitAdmittedCustomMessage<T>(
 	) {
 		if (options?.triggerTurn === true) {
 			const delivery = options.deliverAs === "followUp" ? "followUp" : "steer";
-			if (useProtectedReconciliation || holdsTurnsForDetachedResults(self)) {
-				await queueProtectedStreamingCustomMessage(self, appMessage, delivery);
-				startTurnIfPauseReleasedDuringAdmission(self, appMessage);
+			let queued = true;
+			if (useProtectedReconciliation || holdsTurnsForDetachedResults(self) || options.excludeFromContext === true) {
+				queued = (await queueHeldCustomMessages(self, [appMessage], delivery)) > 0;
+				if (queued) startTurnIfPauseReleasedDuringAdmission(self, appMessage);
 			} else {
 				self._queueAgentMessage(appMessage, delivery);
 			}
-			startTurnAfterInterrupt(self, appMessage);
+			if (queued) startTurnAfterInterrupt(self, appMessage);
 		} else if (self.isStreaming || self._isPreparingRun) {
 			self._pendingCustomMessages.push(appMessage);
 		} else {
@@ -198,6 +200,7 @@ export async function commitAdmittedCustomMessage<T>(
 					options?.deliverAs === "followUp" ? "followUp" : "steer",
 				)
 			: appMessage;
+		if (promptMessage === undefined) return;
 		// Durable admission may yield while another turn takes ownership.
 		if (useProtectedReconciliation && (self.isStreaming || self._isPreparingRun)) {
 			self._queueAgentMessage(promptMessage, options.deliverAs === "followUp" ? "followUp" : "steer");
@@ -258,13 +261,14 @@ export async function commitAdmittedCustomMessages<T>(
 		(self._subagentPolicy?.executionEnded !== undefined && options?.triggerTurn)
 	) {
 		if (options?.triggerTurn === true) {
-			if (useProtectedReconciliation || holdsTurnsForDetachedResults(self)) {
-				await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
-				startTurnIfPauseReleasedDuringAdmission(self, appMessages[0]!);
+			let queued = true;
+			if (useProtectedReconciliation || holdsTurnsForDetachedResults(self) || options.excludeFromContext === true) {
+				queued = (await queueHeldCustomMessages(self, appMessages, delivery)) > 0;
+				if (queued) startTurnIfPauseReleasedDuringAdmission(self, appMessages[0]!);
 			} else {
 				for (const item of appMessages) self._queueAgentMessage(item, delivery);
 			}
-			startTurnAfterInterrupt(self, appMessages[0]!);
+			if (queued) startTurnAfterInterrupt(self, appMessages[0]!);
 		} else if (self.isStreaming || self._isPreparingRun) {
 			self._pendingCustomMessages.push(...appMessages);
 		} else {
@@ -290,8 +294,10 @@ export async function commitAdmittedCustomMessages<T>(
 		if (useProtectedReconciliation) {
 			await triggerProtectedStreamingCustomMessages(self, appMessages, delivery);
 		} else {
+			const held = holdsTurnsForDetachedResults(self);
 			const turn = self._runAgentPrompt(appMessages);
-			void turn.catch(() => {});
+			if (held) await turn;
+			else void turn.catch(() => {});
 		}
 	} else {
 		for (const item of appMessages) await self._appendCustomMessage(item);

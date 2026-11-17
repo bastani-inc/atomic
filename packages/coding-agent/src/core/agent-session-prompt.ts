@@ -15,7 +15,7 @@ import {
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import {
 	isProtectedStreamingCustomMessage,
-	queueProtectedStreamingCustomMessage,
+	queueHeldCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import type { PromptDisposition, PromptOptions, QueuedInputDisposition } from "./agent-session-types.js";
 import {
@@ -24,7 +24,7 @@ import {
 	formatUnresolvedModelMessage,
 } from "./auth-guidance.ts";
 import { runCallback } from "./callback-activity.ts";
-import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
+import type { CustomMessage } from "./messages.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import {
 	isInsideInputHook,
@@ -704,8 +704,7 @@ export async function _runAgentPrompt(
 		// (#4580). It joins the turn the hand-back continues, as input does for a paused queue.
 		if (!prepared && holdsTurnsForDetachedResults(this)) {
 			const items = Array.isArray(messages) ? messages : [messages];
-			const keys = new Set<string>();
-			for (const message of items) await holdForDetachedResults(this, message, keys);
+			await holdForDetachedResults(this, items);
 			return;
 		}
 		if (customMessage?.role === "custom") {
@@ -783,24 +782,18 @@ export async function _runAgentPrompt(
 	}
 }
 
-/**
- * Hold a delivery for the turn the hand-back continues. An unprotected custom message gets a durable card and a hidden
- * turn, like a protected delivery, so it survives the session being released before the results arrive (#4580). The
- * messages of one batch share an admission key, and a card is found again by its key, so only the first of them keeps it.
- */
-async function holdForDetachedResults(session: AgentSession, message: AgentMessage, keys: Set<string>): Promise<void> {
-	if (message.role !== "custom" || isProtectedStreamingCustomMessage(session, message)) {
+async function holdForDetachedResults(session: AgentSession, messages: AgentMessage[]): Promise<void> {
+	let custom: CustomMessage[] = [];
+	for (const message of messages) {
+		if (message.role === "custom" && !isProtectedStreamingCustomMessage(session, message)) {
+			custom.push(message);
+			continue;
+		}
+		if (custom.length > 0) await queueHeldCustomMessages(session, custom, "steer");
+		custom = [];
 		session._queueAgentMessage(message, "steer");
-		return;
 	}
-	const { stageAdmissionKey } = message as StageAdmittedCustomMessage;
-	const repeated = stageAdmissionKey !== undefined && keys.has(stageAdmissionKey);
-	if (stageAdmissionKey !== undefined) keys.add(stageAdmissionKey);
-	await queueProtectedStreamingCustomMessage(
-		session,
-		repeated ? ({ ...message, stageAdmissionKey: undefined } as StageAdmittedCustomMessage) : message,
-		"steer",
-	);
+	if (custom.length > 0) await queueHeldCustomMessages(session, custom, "steer");
 }
 
 async function settleAgentRun(session: AgentSession, keepMessageAdmissionOpen = false): Promise<void> {

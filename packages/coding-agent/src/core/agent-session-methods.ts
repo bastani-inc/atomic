@@ -536,6 +536,7 @@ export interface AgentSessionPublicSurface
 		| "steer"
 		| "followUp"
 		| "sendCustomMessage"
+		| "sendCustomMessages"
 		| "sendUserMessage"
 		| "clearQueue"
 		| "getSteeringMessages"
