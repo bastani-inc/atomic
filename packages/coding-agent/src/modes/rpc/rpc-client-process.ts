@@ -55,7 +55,6 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 				...(options.interactiveEngineApiKey ? { apiKey: options.interactiveEngineApiKey } : {}),
 			})
 		: undefined;
-	if (options.interactiveEngine) flushPersistentCompileCache();
 	const cliArgs = bootstrap
 		? [...options.cliArgs, INTERACTIVE_ENGINE_BOOTSTRAP_FLAG, bootstrap.path]
 		: options.cliArgs;
@@ -64,8 +63,11 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 		if (options.interactiveEngine) markLifecycleTiming("interactive-engine-spawn");
 		const launch = engineLaunch(options);
 		// A child prewarmed exactly as this one would start has already loaded the application.
+		const prewarmed = options.interactiveEngine ? adoptPrewarmedEngine(launch, cliArgs) : undefined;
+		// A fresh engine loads the same module graph as this host: let it start from this host's compile cache.
+		if (options.interactiveEngine && !prewarmed) flushPersistentCompileCache();
 		child =
-			(options.interactiveEngine ? adoptPrewarmedEngine(launch, cliArgs) : undefined) ??
+			prewarmed ??
 			spawn(launch.command, [...launch.args, ...cliArgs], {
 				cwd: launch.cwd,
 				env: launch.env,

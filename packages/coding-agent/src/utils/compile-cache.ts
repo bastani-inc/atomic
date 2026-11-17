@@ -12,7 +12,8 @@ interface CompileCacheApi {
 	flushCompileCache?: () => void;
 }
 
-const compileCacheApi: CompileCacheApi = nodeModule;
+/** Bun answers these calls too, but has no V8 compile cache to fill: its flush alone took about 65 ms on Windows. */
+const compileCacheApi: CompileCacheApi = "bun" in process.versions ? {} : nodeModule;
 
 export function enablePersistentCompileCache(): void {
 	try {
