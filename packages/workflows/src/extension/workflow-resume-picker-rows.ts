@@ -17,7 +17,7 @@ import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { RunSnapshot } from "../shared/store-types.js";
-import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
+import { refreshWorkflowArtifactPresence, workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import type { WorkflowResumeRefresh } from "../tui/workflow-resume-selector.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import { prepareWorkflowResumeCatalog } from "./workflow-durable-resume-command.js";
@@ -105,6 +105,7 @@ export function resumePickerLiveUpdateOptions(
 		watch: (onChange) => subscribeStoreInvalidation(runStore, onChange),
 		sessionRuns: () => runStore.runs(),
 		refresh: async () => {
+			await refreshWorkflowArtifactPresence(runStore.runs());
 			const current = collectResumePickerLiveRuns(runStore, deps);
 			const catalog = await prepareWorkflowResumeCatalog(runtime, current.suppressedLiveIds);
 			return {

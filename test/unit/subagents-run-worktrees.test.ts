@@ -39,19 +39,19 @@ afterEach(async () => {
 });
 
 /** A repository whose main checkout has the files Atomic's worktree setup adds to every new worktree. */
-function repositoryWithSetupSources(): string {
+async function repositoryWithSetupSources(): Promise<string> {
 	const root = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-run-worktrees-")));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 	const repo = join(root, "repo");
 	mkdirSync(repo);
-	runGitChecked(repo, ["init", "-b", "main"]);
-	runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
-	runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
+	await runGitChecked(repo, ["init", "-b", "main"]);
+	await runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
+	await runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
 	// Git for Windows defaults core.autocrlf to true, which checks the LF commits below out as CRLF.
-	runGitChecked(repo, ["config", "core.autocrlf", "false"]);
+	await runGitChecked(repo, ["config", "core.autocrlf", "false"]);
 	writeFileSync(join(repo, "seed.txt"), "seed\n");
-	runGitChecked(repo, ["add", "seed.txt"]);
-	runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
+	await runGitChecked(repo, ["add", "seed.txt"]);
+	await runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
 	mkdirSync(join(repo, "node_modules", "dependency"), { recursive: true });
 	writeFileSync(join(repo, "node_modules", "dependency", "index.js"), "module.exports = 1;\n");
 	mkdirSync(join(repo, ".atomic"), { recursive: true });
@@ -76,7 +76,7 @@ function assertAtomicSetupPresent(worktreePath: string, why: string): void {
 }
 
 test("resuming a paused child in its kept worktree restores the node_modules link and settings its run's diff removed (#3784)", async () => {
-	const repo = repositoryWithSetupSources();
+	const repo = await repositoryWithSetupSources();
 	const { runId, setup } = await worktreeRun(repo);
 	const worktree = setup.worktrees[0]!;
 	assertAtomicSetupPresent(worktree.path, "a new worktree");
@@ -108,12 +108,12 @@ test("resuming a paused child in its kept worktree restores the node_modules lin
 });
 
 test("after a restart, resuming a child whose worktree was removed recreates it on its branch from the child's record (#3784)", async () => {
-	const repo = repositoryWithSetupSources();
+	const repo = await repositoryWithSetupSources();
 	const { runId, setup } = await worktreeRun(repo);
 	const worktree = setup.worktrees[0]!;
 	writeFileSync(join(worktree.path, "work.md"), "committed work\n");
-	runGitChecked(worktree.path, ["add", "work.md"]);
-	runGitChecked(worktree.path, ["commit", "--no-gpg-sign", "-m", "child work"]);
+	await runGitChecked(worktree.path, ["add", "work.md"]);
+	await runGitChecked(worktree.path, ["commit", "--no-gpg-sign", "-m", "child work"]);
 	// What the child record carries, as `runWorktreeRecord` writes it while the run is tracked.
 	const record: SubagentChildWorktree = {
 		repo: setup.cwd,
@@ -124,7 +124,7 @@ test("after a restart, resuming a child whose worktree was removed recreates it 
 	};
 	// Git for Windows keeps a junction (and the worktree directory above it), so the link goes first, as on cleanup.
 	unlinkSync(join(worktree.path, "node_modules"));
-	runGitChecked(repo, ["worktree", "remove", "--force", worktree.path]);
+	await runGitChecked(repo, ["worktree", "remove", "--force", worktree.path]);
 	assert.equal(existsSync(worktree.path), false);
 	assert.equal(runWorktreeRecord(runId, 0), undefined, "this process does not track the run, as after a restart");
 
@@ -139,7 +139,7 @@ test("after a restart, resuming a child whose worktree was removed recreates it 
 	claimRunWorktree(runId, 0);
 	await releaseResume();
 	assert.equal(existsSync(worktree.path), true, "resume recreated the worktree at its recorded path");
-	assert.equal(runGitChecked(worktree.path, ["branch", "--show-current"]).trim(), worktree.branch);
+	assert.equal((await runGitChecked(worktree.path, ["branch", "--show-current"])).trim(), worktree.branch);
 	assert.equal(readFileSync(join(worktree.path, "work.md"), "utf8"), "committed work\n", "its branch's commits");
 	assertAtomicSetupPresent(worktree.path, "the recreated worktree");
 	assert.equal(runWorktreeRecord(runId, 0)?.path, worktree.path, "the run is tracked again from the record");
@@ -149,7 +149,7 @@ test("after a restart, resuming a child whose worktree was removed recreates it 
 });
 
 test("after a restart, a resumed child's tracked and untracked edits are saved as a patch before its worktree is removed (#3784)", async () => {
-	const repo = repositoryWithSetupSources();
+	const repo = await repositoryWithSetupSources();
 	const { runId, setup } = await worktreeRun(repo);
 	const worktree = setup.worktrees[0]!;
 	const diffsDir = join(repo, "..", "artifacts", "worktree-diffs");
@@ -183,7 +183,7 @@ test("after a restart, a resumed child's tracked and untracked edits are saved a
 });
 
 test("cleanup unlinks a synthetic link named '..cache' before git removes the worktree (#4836)", async () => {
-	const repo = repositoryWithSetupSources();
+	const repo = await repositoryWithSetupSources();
 	const { setup } = await worktreeRun(repo);
 	const worktree = setup.worktrees[0]!;
 	const shared = join(repo, "shared-cache");
@@ -192,10 +192,8 @@ test("cleanup unlinks a synthetic link named '..cache' before git removes the wo
 	const link = join(worktree.path, "..cache");
 	symlinkSync(shared, link, process.platform === "win32" ? "junction" : "dir");
 	// A locked worktree survives `git worktree remove --force`, so the links cleanup removed stay observable.
-	runGitChecked(repo, ["worktree", "lock", worktree.path]);
-	cleanups.push(() => {
-		runGitChecked(repo, ["worktree", "remove", "--force", "--force", worktree.path]);
-	});
+	await runGitChecked(repo, ["worktree", "lock", worktree.path]);
+	cleanups.push(async () => await runGitChecked(repo, ["worktree", "remove", "--force", "--force", worktree.path]));
 
 	await cleanupWorktrees({ ...setup, worktrees: [{ ...worktree, syntheticPaths: ["..cache"] }] });
 

@@ -29,6 +29,7 @@ import { sleepOrAbort } from "../shared/retry.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
 import { sameStringSet } from "./executor-continuation.js";
 import {
+	assertStageGitWorktreeOptions,
 	type GitWorktreeSetupCache,
 	stageOptionsWithGitWorktree,
 	stageOptionsWithInputDefaults,
@@ -97,7 +98,7 @@ export function createWorkflowStageFactory(input: {
 	readonly budget: RunBudgetController;
 	readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
 	readonly createMcpScope: (stageId: string, options: StageOptions | undefined) => StageMcpScope;
-	readonly takeTerminalArtifacts?: (replayKey: string) => readonly WorkflowArtifact[] | undefined;
+	readonly takeTerminalArtifacts?: (replayKey: string) => Promise<readonly WorkflowArtifact[]> | undefined;
 	readonly assertLiveWorkAllowed?: () => void;
 	readonly wakeDispatcher: StageWakeDispatcher;
 	readonly stageResidency?: RunStageResidency | undefined;
@@ -105,7 +106,7 @@ export function createWorkflowStageFactory(input: {
 	name: string,
 	options?: StageOptions,
 	stageFailFastScope?: ParallelFailFastScope,
-	prepareLiveOptions?: () => StageOptions | undefined,
+	prepareLiveOptions?: () => Promise<StageOptions | undefined>,
 ) => StageContextWithMeta {
 	const runReleasePolicy = parseReleaseWhenWaiting(input.opts.releaseWhenWaiting);
 	const wakeDispatcher = input.wakeDispatcher;
@@ -145,30 +146,49 @@ export function createWorkflowStageFactory(input: {
 		const replaySource = replayDecision.kind === "replay" ? replayDecision.source : undefined;
 		const executeReplaySource = replayDecision.kind === "execute" ? replayDecision.source : undefined;
 		const shouldReplay = replaySource !== undefined;
+		/**
+		 * The options of a live stage whose worktree is set up after it spawns: the stage spawns at once, and its
+		 * session, tools and prompts wait for them. A replayed stage never sets anything up.
+		 */
+		let liveOptions: Promise<StageOptions | undefined> | undefined;
 		if (!shouldReplay) {
 			input.assertLiveWorkAllowed?.();
-			options = stageOptionsWithGitWorktree(
-				prepareLiveOptions?.() ?? options,
-				input.workflowInvocationCwd,
-				input.gitWorktreeSetupCache,
-			);
+			if (prepareLiveOptions !== undefined || typeof options?.gitWorktreeDir === "string") {
+				assertStageGitWorktreeOptions(options);
+				const spawnOptions = options;
+				liveOptions = (async () =>
+					stageOptionsWithGitWorktree(
+						(await prepareLiveOptions?.()) ?? spawnOptions,
+						input.workflowInvocationCwd,
+						input.gitWorktreeSetupCache,
+					))();
+				options =
+					spawnOptions === undefined
+						? undefined
+						: { ...spawnOptions, gitWorktreeDir: undefined, baseBranch: undefined };
+			}
 		}
-		const replayStageOptions: StageOptions | undefined =
+		const replayOptionsOf = (stageOptions: StageOptions | undefined): StageOptions | undefined =>
 			executeReplaySource?.sessionId === undefined
-				? options
+				? stageOptions
 				: {
-						...(options ?? {}),
+						...(stageOptions ?? {}),
 						routerSelection: executeReplaySource.routerSelection,
-						context: options?.context ?? "fork",
-						forkFromSessionId: options?.forkFromSessionId ?? executeReplaySource.sessionId,
-						forkFromEntryId: options?.forkFromSessionId === undefined ? undefined : options.forkFromEntryId,
+						context: stageOptions?.context ?? "fork",
+						forkFromSessionId: stageOptions?.forkFromSessionId ?? executeReplaySource.sessionId,
+						forkFromEntryId:
+							stageOptions?.forkFromSessionId === undefined ? undefined : stageOptions.forkFromEntryId,
 					};
+		// One group for the stage: resolving a boolean subgroup again would name another.
 		const intercomGroup =
-			options?.durableIntercomGroup ?? resolveStageGroup(replayStageOptions, input.workflowIntercomGroup);
-		const stageOptionsForContext =
-			replayStageOptions?.group === undefined || intercomGroup === undefined
+			options?.durableIntercomGroup ?? resolveStageGroup(replayOptionsOf(options), input.workflowIntercomGroup);
+		const contextOptionsOf = (stageOptions: StageOptions | undefined): StageOptions | undefined => {
+			const replayStageOptions = replayOptionsOf(stageOptions);
+			return replayStageOptions?.group === undefined || intercomGroup === undefined
 				? replayStageOptions
 				: { ...replayStageOptions, group: intercomGroup };
+		};
+		const stageOptionsForContext = contextOptionsOf(options);
 		const pendingStageDeliveryAvailable = stageCanUseWorkflowPendingStageRoute(
 			stageOptionsForContext,
 			input.workflowIntercomGroup,
@@ -204,6 +224,10 @@ export function createWorkflowStageFactory(input: {
 			attachable: !shouldReplay,
 		};
 		setStageWorkingDirectory(stageSnapshot, options?.cwd);
+		const stageOptionsReady = liveOptions?.then((resolved) => {
+			setStageWorkingDirectory(stageSnapshot, resolved?.cwd);
+			return contextOptionsOf(resolved);
+		});
 
 		if (shouldReplay) {
 			return createReplayStageContext({
@@ -446,6 +470,7 @@ export function createWorkflowStageFactory(input: {
 			workflowIntercomGroup: input.workflowIntercomGroup,
 			signal: input.signal,
 			stageOptions: stageOptionsForContext,
+			...(stageOptionsReady === undefined ? {} : { stageOptionsReady }),
 			...(pendingStageDeliveryAvailable
 				? {
 						routeAuthorityReady: () => workflowPendingStageRouteReady(input.activeStore, input.runId),
@@ -684,16 +709,18 @@ export function createWorkflowStageFactory(input: {
 				if (runEndedInFlightStages(input.activeStore, input.runId)) await persistStageEnd();
 				return false;
 			}
+			state.stageFinalized = true;
+			// A task's worktree diffs are read before the stage ends in the store, which then names them.
+			const pendingArtifacts = input.takeTerminalArtifacts?.(replayKey);
+			const artifacts = pendingArtifacts === undefined ? undefined : await pendingArtifacts;
 			if (state.skippedForParallelFailFast) {
 				stageSnapshot.status = "skipped";
 				stageSnapshot.skippedReason = "fail-fast";
 			}
-			state.stageFinalized = true;
 			runtime.unregisterWorkflowExitCleanup();
 			stageSnapshot.endedAt = Date.now();
 			stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
 			applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
-			const artifacts = input.takeTerminalArtifacts?.(replayKey);
 			if (artifacts !== undefined && artifacts.length > 0) stageSnapshot.artifacts = artifacts;
 			input.activeStore.recordStageEnd(input.runId, stageSnapshot);
 			input.stageUiBroker.cancelStagePrompt(

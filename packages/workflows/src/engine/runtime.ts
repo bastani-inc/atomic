@@ -64,7 +64,7 @@ export interface EngineSpawnAgentStageOptions {
 	readonly options?: StageOptions;
 	readonly failFastScope?: ParallelFailFastScope;
 	/** Resolve side-effecting task setup only after replay and live admission. */
-	readonly prepareLiveOptions?: () => StageOptions | undefined;
+	readonly prepareLiveOptions?: () => Promise<StageOptions | undefined>;
 }
 
 export interface EngineSpawnWorkflowBoundaryOptions {
@@ -109,12 +109,12 @@ export class EngineRuntime {
 	private readonly replayIndex: ContinuationReplayIndex;
 	/** The run's one owner of waiting stages. */
 	readonly wakeDispatcher: StageWakeDispatcher;
-	private readonly terminalArtifactCollectors = new Map<string, () => readonly WorkflowArtifact[]>();
+	private readonly terminalArtifactCollectors = new Map<string, () => Promise<readonly WorkflowArtifact[]>>();
 	private readonly spawnAgentStage: (
 		name: string,
 		options?: StageOptions,
 		stageFailFastScope?: ParallelFailFastScope,
-		prepareLiveOptions?: () => StageOptions | undefined,
+		prepareLiveOptions?: () => Promise<StageOptions | undefined>,
 	) => StageContextWithMeta;
 	private readonly spawnWorkflowBoundary: (
 		name: string,
@@ -205,11 +205,11 @@ export class EngineRuntime {
 		);
 	}
 
-	registerTerminalArtifactCollector(replayKey: string, collect: () => readonly WorkflowArtifact[]): void {
+	registerTerminalArtifactCollector(replayKey: string, collect: () => Promise<readonly WorkflowArtifact[]>): void {
 		this.terminalArtifactCollectors.set(replayKey, collect);
 	}
 
-	private takeTerminalArtifacts(replayKey: string): readonly WorkflowArtifact[] | undefined {
+	private takeTerminalArtifacts(replayKey: string): Promise<readonly WorkflowArtifact[]> | undefined {
 		const collect = this.terminalArtifactCollectors.get(replayKey);
 		if (collect === undefined) return undefined;
 		this.terminalArtifactCollectors.delete(replayKey);

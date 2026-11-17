@@ -1,6 +1,5 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -49,6 +48,7 @@ import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-se
 import { rehydrateError, type SerializedError, serializeError } from "../shared/error-codec.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import { runSnapshotsFromRecord } from "../shared/legacy-waiting-status.js";
+import { pathExists } from "../shared/path-exists.js";
 import {
 	rotateWorkflowPendingStageRouteCapability,
 	workflowPendingStageRouteCapability,
@@ -1026,7 +1026,7 @@ export class PoolCoordinator {
 		if (options.shared !== undefined)
 			this.journal ??= await this.countedJournal(await openDurableJournal(options.durable));
 		else {
-			if (options.journalShard !== undefined && !existsSync(options.journalPath))
+			if (options.journalShard !== undefined && !(await pathExists(options.journalPath)))
 				throw new JournalShardUnavailableError({
 					code: "shard-missing",
 					shardId: options.journalShard,
@@ -2497,7 +2497,7 @@ export class PoolCoordinator {
 		const logPath = join(this.logDirectory!, `${id}.log`);
 		this.logs.set(child, logPath);
 		// A worker whose log cannot be written still runs: its errors name the log and why it could not be written.
-		appendProcessLog(child.stderr, logPath, (failure) => this.logUnwritable(logPath, failure));
+		const log = appendProcessLog(child.stderr, logPath, (failure) => this.logUnwritable(logPath, failure));
 		const startupTimeoutMs = options.startupTimeoutMs;
 		const spawnedAt = performance.now();
 		let timedOutAt: number | undefined;
@@ -2527,7 +2527,8 @@ export class PoolCoordinator {
 				if (retired) return;
 				retired = true;
 				slot.exited.abort();
-				void Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]).then(() =>
+				// The errors name why the log could not be written, which its opening says.
+				void Promise.all([Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]), log.opened]).then(() =>
 					reject(
 						timedOutAt === undefined
 							? new WorkerStartupError({ logPath, logFailure: this.logFailures.get(logPath) })
@@ -2570,7 +2571,7 @@ export class PoolCoordinator {
 				if (held) this.held.add(held.id);
 				// Set when the reap leaves process groups running: the worker's health event, never its child's failure.
 				let unconfirmed: WorkerCleanupUnconfirmedError | undefined;
-				const cleanup = disconnected
+				const cleanup = Promise.all([disconnected, log.opened])
 					.then(() => lanes.settled())
 					.then(async () => {
 						try {
@@ -3648,10 +3649,10 @@ export class PoolCoordinator {
 		for (;;) {
 			await Promise.race([exit, delay(WORKER_EXIT_POLL_MS)]);
 			if (exited()) return true;
-			if (workerProcessExited(pid)) return confirmed();
+			if (await workerProcessExited(pid)) return confirmed();
 			this.observeResponsiveness();
 			if (performance.now() - since - (this.stalledMs - stalledAt) >= WORKER_EXIT_CONFIRMATION_MS)
-				return exited() || (workerProcessExited(pid, true) && confirmed());
+				return exited() || ((await workerProcessExited(pid, true)) && confirmed());
 		}
 	}
 

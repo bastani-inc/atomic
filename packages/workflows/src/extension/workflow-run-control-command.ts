@@ -8,7 +8,7 @@ import { pauseAllRuns, pauseRun, resumeRun } from "../runs/background/status.js"
 import { workflowHasPausedStages, workflowHasPausedState } from "../runs/background/workflow-lifecycle-aggregate.js";
 import { isRunIdPrefix } from "../shared/run-id.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
-import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
+import { refreshWorkflowArtifactPresence, workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
 import type { PiCommandContext } from "./public-types.js";
 import { bulkAlreadyPausedCount, bulkFailedRuns, bulkFailureMessage } from "./workflow-bulk-control.js";
@@ -245,6 +245,7 @@ export async function handleRunControlCommand(
 			// first frame; durable/completed rows hydrate asynchronously and merge in.
 			// The RPC prompt carrying this slash command no longer times out while the
 			// picker awaits (long-lived command classification in RpcClient).
+			await refreshWorkflowArtifactPresence(store.runs());
 			const initial = collectResumePickerLiveRuns(store, shadowDeps);
 			const runtime = deps.runtimeForContext(ctx);
 			const hydrate = async (): Promise<ResumePickerCatalogRows> => {
@@ -289,6 +290,7 @@ export async function handleRunControlCommand(
 				);
 				const isPaused = run !== undefined && workflowHasPausedState(store, resolved.runId);
 				const isDurableAuthorExit = run?.exited === true && run.status === "failed" && run.resumable === true;
+				if (run !== undefined) await refreshWorkflowArtifactPresence([run], store.runs());
 				const isResumableContinuation =
 					run !== undefined &&
 					!isPaused &&
@@ -427,6 +429,7 @@ export async function handleRunControlCommand(
 						backend.isWorkflowLoadable(run.id) &&
 						!reconcileDurableResumeShadow(run, store, { ...shadowDeps, backend }),
 				);
+				await refreshWorkflowArtifactPresence(loadableRuns, store.runs());
 				const combined = resolveWorkflowResumeTarget(
 					target,
 					loadableRuns,
@@ -468,6 +471,7 @@ export async function handleRunControlCommand(
 		const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
 		const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
 		const isDurableAuthorExit = run?.exited === true && run.status === "failed" && run.resumable === true;
+		if (run !== undefined) await refreshWorkflowArtifactPresence([run], store.runs());
 		const isResumableContinuation =
 			run !== undefined &&
 			!isPaused &&

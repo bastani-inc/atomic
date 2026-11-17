@@ -10,24 +10,37 @@ import {
 	isGitTimeoutResult,
 	runGitChecked,
 	setupGitWorktree,
+	setupGitWorktreeCached,
 } from "../../packages/workflows/src/runs/shared/worktree-git.js";
+import type {
+	GitWorktreeSetupOptions,
+	GitWorktreeSetupResult,
+} from "../../packages/workflows/src/runs/shared/worktree-types.js";
 
-function createGitRepo(): { readonly root: string; readonly repo: string } {
+/** The SDK's synchronous setup and the engine's non-blocking one run the same steps; each scenario runs on both. */
+const SETUP_DRIVERS: ReadonlyArray<
+	readonly [string, (options: GitWorktreeSetupOptions) => Promise<GitWorktreeSetupResult>]
+> = [
+	["the synchronous SDK setup", async (options) => setupGitWorktree(options)],
+	["the engine's non-blocking setup", (options) => setupGitWorktreeCached(options)],
+];
+
+async function createGitRepo(): Promise<{ readonly root: string; readonly repo: string }> {
 	const root = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-goal-worktree-test-")));
 	const repo = join(root, "repo");
 	mkdirSync(repo);
-	runGitChecked(repo, ["init", "-b", "main"]);
-	runGitChecked(repo, ["config", "user.email", "test@example.com"]);
-	runGitChecked(repo, ["config", "user.name", "Test User"]);
-	runGitChecked(repo, ["config", "commit.gpgsign", "false"]);
+	await runGitChecked(repo, ["init", "-b", "main"]);
+	await runGitChecked(repo, ["config", "user.email", "test@example.com"]);
+	await runGitChecked(repo, ["config", "user.name", "Test User"]);
+	await runGitChecked(repo, ["config", "commit.gpgsign", "false"]);
 	writeFileSync(join(repo, "README.md"), "main\n");
-	runGitChecked(repo, ["add", "README.md"]);
-	runGitChecked(repo, ["commit", "-m", "initial"]);
-	runGitChecked(repo, ["checkout", "-b", "goal-base"]);
+	await runGitChecked(repo, ["add", "README.md"]);
+	await runGitChecked(repo, ["commit", "-m", "initial"]);
+	await runGitChecked(repo, ["checkout", "-b", "goal-base"]);
 	writeFileSync(join(repo, "base-only.txt"), "created from base branch\n");
-	runGitChecked(repo, ["add", "base-only.txt"]);
-	runGitChecked(repo, ["commit", "-m", "base marker"]);
-	runGitChecked(repo, ["checkout", "main"]);
+	await runGitChecked(repo, ["add", "base-only.txt"]);
+	await runGitChecked(repo, ["commit", "-m", "base marker"]);
+	await runGitChecked(repo, ["checkout", "main"]);
 	mkdirSync(join(repo, "packages", "api"), { recursive: true });
 	return { root, repo };
 }
@@ -60,12 +73,14 @@ describe("goal git_worktree_dir input", () => {
 			/Timed out while validating gitWorktreeDir \/tmp\/reused-wt.*ETIMEDOUT/,
 		);
 	});
+});
 
-	test("creates missing relative worktrees from base_branch and reuses existing ones", () => {
-		const { root, repo } = createGitRepo();
+describe.each(SETUP_DRIVERS)("git_worktree_dir setup through %s", (_driver, setup) => {
+	test("creates missing relative worktrees from base_branch and reuses existing ones", async () => {
+		const { root, repo } = await createGitRepo();
 		try {
 			const sourceCwd = join(repo, "packages", "api");
-			const created = setupGitWorktree({
+			const created = await setup({
 				cwd: sourceCwd,
 				gitWorktreeDir: "../goal-created-wt",
 				baseBranch: "goal-base",
@@ -76,7 +91,7 @@ describe("goal git_worktree_dir input", () => {
 			assert.equal(created.cwd, join(root, "goal-created-wt", "packages", "api"));
 			assert.equal(existsSync(join(created.worktreeRoot, "base-only.txt")), true);
 
-			const reused = setupGitWorktree({
+			const reused = await setup({
 				cwd: sourceCwd,
 				gitWorktreeDir: "../goal-created-wt",
 				baseBranch: "main",
@@ -90,13 +105,13 @@ describe("goal git_worktree_dir input", () => {
 		}
 	});
 
-	test("rejects an existing file instead of overwriting it", () => {
-		const { root, repo } = createGitRepo();
+	test("rejects an existing file instead of overwriting it", async () => {
+		const { root, repo } = await createGitRepo();
 		try {
 			const partialRoot = join(root, "partial-wt");
 			writeFileSync(partialRoot, "not a directory\n");
-			assert.throws(
-				() => setupGitWorktree({ cwd: repo, gitWorktreeDir: partialRoot, baseBranch: "main" }),
+			await assert.rejects(
+				() => setup({ cwd: repo, gitWorktreeDir: partialRoot, baseBranch: "main" }),
 				/already exists but is not a directory/,
 			);
 			assert.equal(existsSync(partialRoot), true);
@@ -105,11 +120,11 @@ describe("goal git_worktree_dir input", () => {
 		}
 	});
 
-	test("rejects the invoking checkout as a reusable worktree target", () => {
-		const { root, repo } = createGitRepo();
+	test("rejects the invoking checkout as a reusable worktree target", async () => {
+		const { root, repo } = await createGitRepo();
 		try {
-			assert.throws(
-				() => setupGitWorktree({ cwd: repo, gitWorktreeDir: repo, baseBranch: "main" }),
+			await assert.rejects(
+				() => setup({ cwd: repo, gitWorktreeDir: repo, baseBranch: "main" }),
 				/gitWorktreeDir must not resolve to the invoking checkout/,
 			);
 		} finally {
@@ -117,12 +132,11 @@ describe("goal git_worktree_dir input", () => {
 		}
 	});
 
-	test("rejects reusable worktrees nested inside the invoking checkout", () => {
-		const { root, repo } = createGitRepo();
+	test("rejects reusable worktrees nested inside the invoking checkout", async () => {
+		const { root, repo } = await createGitRepo();
 		try {
-			assert.throws(
-				() =>
-					setupGitWorktree({ cwd: repo, gitWorktreeDir: join(repo, ".atomic", "nested-wt"), baseBranch: "main" }),
+			await assert.rejects(
+				() => setup({ cwd: repo, gitWorktreeDir: join(repo, ".atomic", "nested-wt"), baseBranch: "main" }),
 				/gitWorktreeDir must be outside the invoking checkout/,
 			);
 		} finally {
@@ -130,13 +144,13 @@ describe("goal git_worktree_dir input", () => {
 		}
 	});
 
-	test("rejects missing worktrees whose symlinked parent resolves inside the invoking checkout", () => {
-		const { root, repo } = createGitRepo();
+	test("rejects missing worktrees whose symlinked parent resolves inside the invoking checkout", async () => {
+		const { root, repo } = await createGitRepo();
 		const alias = join(root, "repo-alias");
 		symlinkSync(repo, alias, process.platform === "win32" ? "junction" : "dir");
 		try {
-			assert.throws(
-				() => setupGitWorktree({ cwd: repo, gitWorktreeDir: join(alias, "nested-wt"), baseBranch: "main" }),
+			await assert.rejects(
+				() => setup({ cwd: repo, gitWorktreeDir: join(alias, "nested-wt"), baseBranch: "main" }),
 				/gitWorktreeDir must be outside the invoking checkout/,
 			);
 		} finally {
@@ -144,11 +158,11 @@ describe("goal git_worktree_dir input", () => {
 		}
 	});
 
-	test("uses absolute git_worktree_dir paths as-is", () => {
-		const { root, repo } = createGitRepo();
+	test("uses absolute git_worktree_dir paths as-is", async () => {
+		const { root, repo } = await createGitRepo();
 		try {
 			const absoluteWorktree = join(root, "absolute-goal-wt");
-			const created = setupGitWorktree({
+			const created = await setup({
 				cwd: repo,
 				gitWorktreeDir: absoluteWorktree,
 				baseBranch: "goal-base",

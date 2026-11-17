@@ -32,6 +32,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.ts";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
 import {
 	ENV_WORKFLOW_ARTIFACT_DIR,
+	refreshWorkflowArtifactPresence,
 	workflowRunResumeCandidate,
 } from "../../packages/workflows/src/shared/workflow-artifacts.ts";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
@@ -161,6 +162,7 @@ test("resume picker matches live eligibility when only a stage result references
 		const fullRun = store.runs()[0]!;
 		const projectedRun = store.graphSnapshot().runs[0]!;
 		assert.equal(projectedRun.stages[0]?.result, undefined);
+		await refreshWorkflowArtifactPresence([fullRun]);
 		const fullEligibility = isWorkflowRunResumable(workflowRunResumeCandidate(fullRun));
 		assert.equal(fullEligibility, false);
 

@@ -1,5 +1,5 @@
 import { availableStoreDurableBackend } from "../durable/store-backend.js";
-import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
+import { refreshWorkflowArtifactPresence, workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 /**
  * Mount adapter for the workflow session picker.
  *
@@ -130,6 +130,13 @@ export function openSessionPicker(
 				pickerRevision++;
 				tui.requestRender?.();
 			});
+			// Resume rows hide runs whose artifacts are gone: read them now and show the rows again once read.
+			if (intent === "resume")
+				void refreshWorkflowArtifactPresence(store.runs()).then(() => {
+					if (settled) return;
+					pickerRevision++;
+					tui.requestRender?.();
+				});
 			return {
 				render: (width: number) => {
 					const rows = selectRows();

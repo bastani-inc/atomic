@@ -2,7 +2,7 @@ import { createGitWorktreeSetupCache, type GitWorktreeSetupCache } from "./workt
 
 export interface GitWorktreeSetupCacheOwner {
 	readonly cache: GitWorktreeSetupCache;
-	release(finalizer: () => void): void;
+	release(finalizer: () => void): Promise<void>;
 }
 
 export function createGitWorktreeSetupCacheOwner(
@@ -14,9 +14,9 @@ export function createGitWorktreeSetupCacheOwner(
 	let released = false;
 	return {
 		cache,
-		release(finalizer) {
+		async release(finalizer) {
 			try {
-				if (!released && ownsCache) cache.dispose();
+				if (!released && ownsCache) await cache.dispose();
 				released = true;
 			} finally {
 				finalizer();

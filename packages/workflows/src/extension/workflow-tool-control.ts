@@ -16,7 +16,7 @@ import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowExecutionPolicy, WorkflowToolNodeIdentity } from "../shared/types.js";
-import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
+import { refreshWorkflowArtifactPresence, workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
@@ -581,6 +581,7 @@ async function resolveExplicitDurableTarget(
 		return controlFailure("resume", target, error);
 	}
 	deps.signal?.throwIfAborted();
+	await refreshWorkflowArtifactPresence(liveRuns, deps.owner?.store.runs());
 	const resolved = resolveWorkflowResumeTarget(
 		target,
 		liveRuns,
@@ -739,6 +740,7 @@ export async function workflowResumeAction(
 	const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
 	const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
 	const isDurableAuthorExit = run?.exited === true && run.status === "failed" && run.resumable === true;
+	if (run !== undefined) await refreshWorkflowArtifactPresence([run], store.runs());
 	const isResumableContinuation =
 		run !== undefined &&
 		!isPaused &&

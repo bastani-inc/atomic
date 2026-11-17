@@ -82,16 +82,16 @@ vi.mock("node:child_process", async (importOriginal) => {
 	return { ...actual, spawn, spawnSync };
 });
 
-function createRepository(prefix: string): { root: string; repo: string } {
+async function createRepository(prefix: string): Promise<{ root: string; repo: string }> {
 	const root = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
 	const repo = join(root, "repo");
 	mkdirSync(repo);
-	runGitChecked(repo, ["init", "-b", "main"]);
-	runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
-	runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
+	await runGitChecked(repo, ["init", "-b", "main"]);
+	await runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
+	await runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
 	writeFileSync(join(repo, "tracked.txt"), "tracked\n");
-	runGitChecked(repo, ["add", "."]);
-	runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
+	await runGitChecked(repo, ["add", "."]);
+	await runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
 	return { root, repo };
 }
 
@@ -132,7 +132,7 @@ function assertSetupHookSpawn(hookPath: string, timeout: number): void {
 }
 
 test("subagent worktree Git and setup-hook spawns receive Atomic attribution", async () => {
-	const { root, repo } = createRepository("atomic-ai-agent-subagent-spawn-");
+	const { root, repo } = await createRepository("atomic-ai-agent-subagent-spawn-");
 	const hook = join(root, "setup-hook");
 	writeFileSync(hook, "placeholder\n");
 	let setup: Awaited<ReturnType<typeof createSubagentWorktrees>> | undefined;
@@ -151,15 +151,15 @@ test("subagent worktree Git and setup-hook spawns receive Atomic attribution", a
 	}
 });
 
-test("workflow worktree Git and setup-hook spawns receive Atomic attribution", () => {
-	const { root, repo } = createRepository("atomic-ai-agent-workflow-spawn-");
+test("workflow worktree Git and setup-hook spawns receive Atomic attribution", async () => {
+	const { root, repo } = await createRepository("atomic-ai-agent-workflow-spawn-");
 	const hook = join(root, "setup-hook");
 	writeFileSync(hook, "placeholder\n");
-	let setup: ReturnType<typeof createWorkflowWorktrees> | undefined;
+	let setup: Awaited<ReturnType<typeof createWorkflowWorktrees>> | undefined;
 	try {
 		observations.length = 0;
-		withCallerEnvironment(() => {
-			setup = createWorkflowWorktrees(repo, "env/workflow", 1, {
+		await withCallerEnvironment(async () => {
+			setup = await createWorkflowWorktrees(repo, "env/workflow", 1, {
 				baseBranch: "main",
 				symlinkDirectories: [],
 				setupHook: { hookPath: hook, timeoutMs: 1_234 },
@@ -170,7 +170,7 @@ test("workflow worktree Git and setup-hook spawns receive Atomic attribution", (
 			assertSetupHookSpawn(hook, 1_234);
 		});
 	} finally {
-		if (setup) cleanupWorkflowWorktrees(setup);
+		if (setup) await cleanupWorkflowWorktrees(setup);
 		rmSync(root, { recursive: true, force: true });
 	}
 });

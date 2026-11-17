@@ -802,21 +802,21 @@ test("a child released just as pause stops it is paused, not released (#4326)", 
 	);
 });
 
-function repositoryWithSeed(): string {
+async function repositoryWithSeed(): Promise<string> {
 	const root = makeTempDirectory("subagent-wake-worktree-");
 	cleanups.push(() => removeTempDirectory(root));
-	runGitChecked(root, ["init", "-b", "main"]);
-	runGitChecked(root, ["config", "user.name", "Atomic Test"]);
-	runGitChecked(root, ["config", "user.email", "atomic@example.com"]);
-	runGitChecked(root, ["config", "core.autocrlf", "false"]);
+	await runGitChecked(root, ["init", "-b", "main"]);
+	await runGitChecked(root, ["config", "user.name", "Atomic Test"]);
+	await runGitChecked(root, ["config", "user.email", "atomic@example.com"]);
+	await runGitChecked(root, ["config", "core.autocrlf", "false"]);
 	writeFileSync(join(root, "seed.txt"), "seed\n");
-	runGitChecked(root, ["add", "seed.txt"]);
-	runGitChecked(root, ["commit", "--no-gpg-sign", "-m", "initial"]);
+	await runGitChecked(root, ["add", "seed.txt"]);
+	await runGitChecked(root, ["commit", "--no-gpg-sign", "-m", "initial"]);
 	return root;
 }
 
 async function childWithDirtyWorktree(h: Harness, runId: string) {
-	const repo = repositoryWithSeed();
+	const repo = await repositoryWithSeed();
 	const setup = await createWorktrees(repo, runId, 1);
 	const worktree = setup.worktrees[0];
 	assert.ok(worktree);

@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
 	type GitProvisionError,
@@ -25,6 +24,7 @@ import {
 	type WorkerHostGitSource,
 } from "../durable/journal/sql-shared-pool.js";
 import type { RunJournal } from "../durable/journal/types.js";
+import { pathExists } from "../shared/path-exists.js";
 import { resolveFleetPolicy } from "./autoscaler.js";
 import type { CoordinatorEvent, CoordinatorInbound, CoordinatorPort } from "./coordinator-protocol.js";
 import { definitionDigest, type WorkerDefinitionSource } from "./definitions.js";
@@ -236,7 +236,7 @@ async function runnableSources(root: SharedPoolRoot): Promise<readonly WorkerDef
 	const sources: WorkerDefinitionSource[] = [];
 	for (const source of root.config.definitions) {
 		// A definition this host does not have is the root's to run elsewhere.
-		if (!existsSync(source.path)) continue;
+		if (!(await pathExists(source.path))) continue;
 		const digest = await definitionDigest(source.path);
 		if (digest === source.digest)
 			sources.push({ path: source.path, exportName: source.exportName, digest: source.digest });
@@ -770,7 +770,7 @@ export async function startWorkflowWorkerHost(options: WorkflowWorkerHostOptions
 		const queue = await openSqlPoolQueue(journal);
 		const shared = await SqlSharedPool.open(journal, queue);
 		return new WorkerHost(
-			options.hostId ?? poolHostId(durable.agentDir),
+			options.hostId ?? (await poolHostId(durable.agentDir)),
 			journal,
 			shared,
 			durable,
