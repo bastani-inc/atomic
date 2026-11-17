@@ -19,6 +19,7 @@ import {
 } from "../../packages/intercom/broker/restoring-recipients.js";
 import { INTERCOM_CONNECTED_EVENT } from "../../packages/subagents/src/intercom/own-intercom-session.js";
 import {
+	holdChildTargets,
 	holdStartingChild,
 	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
@@ -65,6 +66,24 @@ test("a send to a starting subagent waits as long as its owner asks, within the 
 	recipients.reserve("capability-4", "owner", "subagent-worker-4", "default", []);
 	const restoring = recipients.admit("subagent-worker-4", SENDER, heldSend("m4"), true);
 	assert.deepEqual(restoring, { kind: "held", timeoutMs: RESTORING_RECIPIENT_HOLD_MS });
+});
+
+test("an existing restoring reservation upgraded to a starting hold waits for the requested start duration (#5341)", () => {
+	vi.useFakeTimers();
+	const expired: string[] = [];
+	const recipients = new RestoringRecipients((held, reason) => expired.push(`${held.messageId}: ${reason}`));
+	recipients.reserve("capability", "owner", CHILD, "default", [], { dormant: false });
+	assert.deepEqual(recipients.admit(CHILD, SENDER, heldSend("m0"), true), {
+		kind: "held",
+		timeoutMs: RESTORING_RECIPIENT_HOLD_MS,
+	});
+	recipients.reserve("capability", "owner", CHILD, "default", [], { dormant: false, holdMs: 12 * 60_000 });
+	assert.deepEqual(recipients.admit(CHILD, SENDER, heldSend("m1"), true), {
+		kind: "held",
+		timeoutMs: 12 * 60_000,
+	});
+	vi.advanceTimersByTime(12 * 60_000);
+	assert.match(expired.at(-1) ?? "", /^m1: Subagent `subagent-worker-1a2b3c4d-1` is still starting/);
 });
 
 function ownerBus() {
@@ -130,6 +149,48 @@ test("a launching child's hold is made again when its owner reconnects and when 
 	events.emit(INTERCOM_CONNECTED_EVENT, { sessionId: "owner" });
 	await hold.renew();
 	assert.equal(events.reserved.length, 3, "an ended hold is never made again");
+});
+
+test("an early restoring hold upgraded with holdWhileStarting is made again when its owner reconnects (#5341)", async () => {
+	const events = ownerBus();
+	const holdMs = subagentStartHoldMs(undefined);
+	const hold = await holdChildTargets(
+		events,
+		{ intercomTarget: CHILD, childSessionId: "child-session-1" },
+		"default",
+		{ authorization: { capability: "relaunch-capability", supervisorSessionId: "owner", childName: CHILD } },
+	);
+	assert.ok(hold);
+	assert.deepEqual(
+		events.reserved.map(({ capability, aliases, holdMs: requested }) => ({
+			capability,
+			aliases,
+			holdMs: requested,
+		})),
+		[{ capability: "relaunch-capability", aliases: ["child-session-1"], holdMs: undefined }],
+	);
+
+	await hold.holdWhileStarting(holdMs);
+	assert.equal(events.reserved.length, 2);
+	assert.deepEqual(events.reserved.at(-1), {
+		capability: "relaunch-capability",
+		aliases: ["child-session-1"],
+		group: "default",
+		holdMs,
+	});
+
+	events.emit(INTERCOM_CONNECTED_EVENT, { sessionId: "owner" });
+	assert.equal(events.reserved.length, 3);
+	assert.deepEqual(events.reserved.at(-1), {
+		capability: "relaunch-capability",
+		aliases: ["child-session-1"],
+		group: "default",
+		holdMs,
+	});
+
+	await hold.release();
+	events.emit(INTERCOM_CONNECTED_EVENT, { sessionId: "owner" });
+	assert.equal(events.reserved.length, 3);
 });
 
 test("the hold covers both start attempts of the configured budget", () => {
