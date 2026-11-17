@@ -5,7 +5,38 @@ import { join } from "node:path";
 import { test, vi } from "vitest";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
-const config = vi.hoisted(() => ({ path: "" }));
+interface ConfigReadGate {
+	entered: () => void;
+	resumed: Promise<void>;
+}
+
+const config = vi.hoisted(() => ({
+	path: "",
+	readGate: undefined as ConfigReadGate | undefined,
+	accessGate: undefined as ConfigReadGate | undefined,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const fs = await importOriginal<typeof import("node:fs/promises")>();
+	const pause = async (gate: ConfigReadGate | undefined): Promise<void> => {
+		gate?.entered();
+		await gate?.resumed;
+	};
+	return {
+		...fs,
+		readFile: (async (...args: Parameters<typeof fs.readFile>) => {
+			const content = await fs.readFile(...args);
+			if (String(args[0]) === config.path) await pause(config.readGate);
+			return content;
+		}) as typeof fs.readFile,
+		access: async (...args: Parameters<typeof fs.access>) => {
+			try {
+				await fs.access(...args);
+			} finally {
+				if (String(args[0]) === config.path) await pause(config.accessGate);
+			}
+		},
+	};
+});
 vi.mock("../../packages/web-access/config-paths.ts", () => ({
 	findReadableConfigPath: () => config.path,
 	EXA_USAGE_PATH: "",
@@ -29,9 +60,15 @@ test("a pending GitHub configuration load cannot repopulate its owner's reset ca
 			writeFileSync(config.path, JSON.stringify({ githubClone: { clonePath: directory, maxRepoSizeMB } }));
 		writeConfig(100);
 		assert.equal((await context.run(second, loadGitHubConfig)).maxRepoSizeMB, 100);
+		const read = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		config.readGate = { entered: read.resolve, resumed: resume.promise };
 		const pending = context.run(first, loadGitHubConfig);
+		await read.promise;
 		context.run(first, resetGitHubConfig);
 		writeConfig(200);
+		config.readGate = undefined;
+		resume.resolve();
 		assert.equal((await pending).maxRepoSizeMB, 100, "the earlier caller keeps its own configuration");
 		assert.equal(
 			(await context.run(first, loadGitHubConfig)).maxRepoSizeMB,
@@ -44,6 +81,7 @@ test("a pending GitHub configuration load cannot repopulate its owner's reset ca
 			"another owner's cache is unchanged",
 		);
 	} finally {
+		config.readGate = undefined;
 		host[key] = previous;
 		removeTempDirectory(directory);
 		vi.resetModules();
@@ -60,13 +98,20 @@ test("a reset discards the pending default GitHub clone path and missing-file co
 		const { chosenDefaultGitHubClonePath, loadGitHubConfig, resetGitHubConfig } = await import(
 			"../../packages/web-access/github-config.js"
 		);
+		const checked = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		config.accessGate = { entered: checked.resolve, resumed: resume.promise };
 		const pending = loadGitHubConfig();
+		await checked.promise;
 		resetGitHubConfig();
 		writeFileSync(config.path, JSON.stringify({ githubClone: { clonePath: directory, maxRepoSizeMB: 200 } }));
+		config.accessGate = undefined;
+		resume.resolve();
 		assert.equal((await pending).maxRepoSizeMB, 350, "the earlier caller keeps the missing-file defaults");
 		assert.equal(chosenDefaultGitHubClonePath(), null, "the earlier default-path read cannot repopulate the cache");
 		assert.equal((await loadGitHubConfig()).maxRepoSizeMB, 200, "the next load reads the new configuration");
 	} finally {
+		config.accessGate = undefined;
 		vi.unstubAllEnvs();
 		removeTempDirectory(directory);
 		vi.resetModules();

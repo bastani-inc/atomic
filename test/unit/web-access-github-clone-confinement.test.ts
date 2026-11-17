@@ -90,13 +90,13 @@ beforeEach(async () => {
 	boundary.failClone = false;
 	boundary.api = {};
 	writeFileSync(boundary.configPath, JSON.stringify({ githubClone: { clonePath } }));
-	clearCloneCache();
+	await clearCloneCache();
 	// Never run against the default clone directory.
 	assert.equal((await loadGitHubConfig()).clonePath, clonePath);
 });
 
-afterEach(() => {
-	clearCloneCache();
+afterEach(async () => {
+	await clearCloneCache();
 	removeTempDirectory(sandbox);
 });
 
@@ -240,9 +240,22 @@ test("normal tree and blob URLs, including refs with slashes, clone inside the c
 		new RegExp(`Repository cloned to: ${cloneTargets()[0]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
 	);
 
-	clearCloneCache();
+	await clearCloneCache();
 	for (const target of cloneTargets()) assert.equal(existsSync(target), false);
 	assert.equal(existsSync(clonePath), true);
+});
+
+test("clearing a clone cache yields for deletion and a new clone waits for that deletion", async () => {
+	await extractGitHub("https://github.com/octo/widgets", undefined, true);
+	const [target] = cloneTargets();
+	const clearing = clearCloneCache();
+	assert.equal(existsSync(target!), true, "clearing does not delete the checkout on the caller's turn");
+	boundary.files = { "README.md": "Fresh checkout after clearing" };
+	const replacing = extractGitHub("https://github.com/octo/widgets", undefined, true);
+	await clearing;
+	const result = await replacing;
+	assert.match(result!.content, /Fresh checkout after clearing/);
+	assert.equal(await fileExists(join(target!, "README.md")), true);
 });
 
 test("a clone left by an earlier run is replaced", async () => {
@@ -252,7 +265,7 @@ test("a clone left by an earlier run is replaced", async () => {
 	const leftover = join(sandbox, "leftover");
 	writeFileSync(join(first!, "stale.txt"), "stale");
 	cpSync(directory, leftover, { recursive: true });
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(existsSync(first!), false);
 	cpSync(leftover, directory, { recursive: true });
 	boundary.calls = [];
@@ -265,14 +278,14 @@ test("a clone left by an earlier run is replaced", async () => {
 test("a directory the tool did not create is never removed", async () => {
 	await extractGitHub("https://github.com/octo/widgets", undefined, true);
 	const [target] = cloneTargets();
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(existsSync(target!), false);
 
 	mkdirSync(target!, { recursive: true });
 	writeFileSync(join(target!, "keep.txt"), "user data");
 	boundary.calls = [];
 	await extractGitHub("https://github.com/octo/widgets", undefined, true);
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(await readText(join(target!, "keep.txt")), "user data");
 	assert.deepEqual(cloneTargets(), []);
 });
@@ -283,7 +296,7 @@ test("a symlinked clone directory that escapes the clone directory is refused", 
 	symlinkSync(victim, join(clonePath, "octo"), LINK_TYPE);
 
 	await extractGitHub("https://github.com/octo/widgets", undefined, true);
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(await readText(join(victim, "widgets", "keep.txt")), "keep");
 	assert.equal(await readText(join(victim, "keep.txt")), "keep");
 	assert.deepEqual(cloneTargets(), []);
@@ -296,12 +309,12 @@ test("a clone directory symlinked outside the clone directory is refused", async
 	// A real clone directory, moved outside the clone directory and linked back in.
 	const outside = join(sandbox, "outside-clone");
 	cpSync(directory, outside, { recursive: true });
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(existsSync(directory), false);
 	symlinkSync(outside, directory, LINK_TYPE);
 	boundary.calls = [];
 	await extractGitHub("https://github.com/octo/widgets", undefined, true);
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(await readText(join(outside, relative(directory, target!), "README.md")), "Repository readme");
 	assert.deepEqual(cloneTargets(), []);
 });
@@ -413,7 +426,7 @@ test("clearing the cache leaves a clone moved outside the clone directory alone"
 	const outside = join(sandbox, "outside-owner");
 	renameSync(join(clonePath, "octo"), outside);
 	symlinkSync(outside, join(clonePath, "octo"), LINK_TYPE);
-	clearCloneCache();
+	await clearCloneCache();
 	assert.equal(
 		await readText(join(outside, relative(join(clonePath, "octo"), target!), "README.md")),
 		"Repository readme",
@@ -473,7 +486,7 @@ test("a dangling link that points outside the clone is not followed", async () =
 	assert.match(tree!.content, /Path `docs\/sub` not found in clone/);
 
 	// A clone directory reached through a dangling link outside the clone directory is refused.
-	clearCloneCache();
+	await clearCloneCache();
 	boundary.calls = [];
 	symlinkSync(join(victim, "elsewhere"), join(clonePath, "other"), LINK_TYPE);
 	await extractGitHub("https://github.com/other/widgets", undefined, true);
