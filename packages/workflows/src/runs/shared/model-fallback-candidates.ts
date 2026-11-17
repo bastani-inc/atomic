@@ -9,6 +9,7 @@ import type {
 export interface WorkflowResolvedModelCandidate {
 	readonly id: string;
 	readonly value: WorkflowModelValue;
+	readonly provider?: string;
 	readonly reasoningLevel?: WorkflowThinkingLevel;
 }
 
@@ -16,10 +17,12 @@ function makeCandidate(
 	id: string,
 	value: WorkflowModelValue,
 	level: WorkflowThinkingLevel | undefined,
+	provider?: string,
 ): WorkflowResolvedModelCandidate {
 	return {
 		id,
 		value,
+		...(provider === undefined ? {} : { provider }),
 		...(level !== undefined ? { reasoningLevel: level } : {}),
 	};
 }
@@ -113,8 +116,8 @@ function resolveStringModel(
 	if (!input) return { input: rawInput, reason: "empty model id" };
 	const { baseModel, level } = splitReasoningSuffix(input);
 
-	const candidate = (id: string, value: WorkflowModelValue): WorkflowResolvedModelCandidate =>
-		makeCandidate(id, value, level);
+	const candidate = (id: string, value: WorkflowModelValue, provider?: string): WorkflowResolvedModelCandidate =>
+		makeCandidate(id, value, level, provider);
 
 	if (availableModels === undefined) {
 		return candidate(baseModel, baseModel);
@@ -123,7 +126,7 @@ function resolveStringModel(
 	const models = uniqueByFullId(availableModels);
 	const explicit = models.find((model) => model.fullId === baseModel);
 	if (explicit !== undefined) {
-		return candidate(explicit.fullId, explicit.model ?? explicit.fullId);
+		return candidate(explicit.fullId, explicit.model ?? explicit.fullId, explicit.provider);
 	}
 
 	if (baseModel.includes("/")) {
@@ -146,13 +149,13 @@ function resolveStringModel(
 	}
 	if (byBareId.length === 1) {
 		const only = byBareId[0]!;
-		return candidate(only.fullId, only.model ?? only.fullId);
+		return candidate(only.fullId, only.model ?? only.fullId, only.provider);
 	}
 
 	const preferred =
 		preferredProvider === undefined ? undefined : byBareId.find((model) => model.provider === preferredProvider);
 	if (preferred !== undefined) {
-		return candidate(preferred.fullId, preferred.model ?? preferred.fullId);
+		return candidate(preferred.fullId, preferred.model ?? preferred.fullId, preferred.provider);
 	}
 
 	return {

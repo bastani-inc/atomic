@@ -31,8 +31,8 @@ knowledge:
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
       suites load the built packages. For focused root tests use `npm run test:unit -- test/unit/<file>.test.ts`;
       the test-suite-runner fixtures need npm's node_modules/.bin on PATH for their nested Vitest commands.
-      Finish `npm run check` before running suites that import built packages: typechecking rebuilds dist in place
-      and cleans provider data. `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions
+      Finish `npm run check` and `npm run build` before running suites that import built packages:
+      typechecking rebuilds dist in place and cleans provider data. `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions
       in child processes with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
       Validate named-worktree permissions with a private default umask:
       `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.

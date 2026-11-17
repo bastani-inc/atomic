@@ -327,6 +327,7 @@ export class InteractiveModeBase {
 
 	disposeInteractiveEngineHost: () => void = () => {};
 	disposeMarkitDiagnosticSink: () => void = () => {};
+	disposeDeprecationWarningSink: () => void = () => {};
 
 	version: string;
 
@@ -682,6 +683,7 @@ export class InteractiveModeBase {
 		// shell contents reappear and shutdown prints only the resume line.
 		this.ui.stop({ preserveScreen: isFullscreen && fullscreenExitOutput === "resume-hint" });
 		this.disposeMarkitDiagnosticSink();
+		this.disposeDeprecationWarningSink();
 	}
 
 	declare options: InteractiveModeOptions;

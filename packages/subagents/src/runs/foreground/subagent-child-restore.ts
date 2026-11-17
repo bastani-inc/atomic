@@ -742,11 +742,10 @@ async function relaunchChild(
 		...(inherited.modelProvider ? { preferredModelProvider: inherited.modelProvider } : {}),
 		// A launch that named its model keeps to that model and its own chain: when the model it continues on is gone, it
 		// asks for the named one again, which fails clearly when that is gone too. One that ran its parent's keeps the
-		// parent's (#4188). Either keeps the model its original launch asked for and its constraints.
+		// parent's (#4188). Either keeps the model its original launch asked for.
 		...((ownModel ?? record.namedModel) ? { modelOverride: ownModel ?? record.namedModel } : {}),
 		...(record.namedModel === undefined ? { runsNamedModel: false as const } : {}),
 		...(record.requestedModel ? { requestedModel: record.requestedModel } : {}),
-		...(record.modelConstraints ? { modelConstraints: record.modelConstraints } : {}),
 		...(inheritedModel ? { currentModel: inheritedModel } : {}),
 		...(inherited.thinkingLevel ? { currentThinkingLevel: inherited.thinkingLevel } : {}),
 	};

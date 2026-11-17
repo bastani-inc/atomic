@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `model: "auto"`, which every builtin agent declares, now runs your default model at its default thinking level, or at the agent's own `thinking` when it sets one, and runs the launching session's model and thinking level when no default model is configured. No routing model is asked, so an `auto` launch starts without a routing request. An `auto` launch still falls back to the agent's `fallbackModels` and then to the session's model.
+- Removed `taskNeeds` and `modelConstraints` from the `subagent` tool, agent frontmatter, agent configs and builtin agent overrides, and `routerSelection` from subagent results. Tool calls, agent files and overrides that still set them keep working with the fields ignored and a one-time warning, and an agent file that agent management rewrites drops them. Provider and model restrictions set through `modelConstraints` no longer limit `auto` or any fallback model.
+
 ### Added
 
 - A subagent of a session created with the SDK's `intercom` option gets its own Intercom policy: its group is its home and it reaches nothing else. It starts in the session's home group, and a requested `group` (including `true`) is placed under it, as `<home>/<group>` ([#5352](https://github.com/bastani-inc/atomic/issues/5352))
@@ -19,6 +24,7 @@
 - Subagent artifact storage for sessions without a session file is created only when a subagent needs it, not at every session start. On Windows, it waits for its private-directory check, using the native module with an asynchronous PowerShell fallback, without pausing the main thread. A subagent cancelled during that check creates no child storage or supervisor authorization, and a storage failure returns a tool error. Startup artifact cleanup stays single-flight until its asynchronous work finishes, even if the session that started it ends ([#5285](https://github.com/bastani-inc/atomic/issues/5285), [#5324](https://github.com/bastani-inc/atomic/issues/5324))
 
 - A background subagent's final answer stays visible in `/tasks`, its transcript and completion card when saving it fails, even while its session is still shutting down ([#5210](https://github.com/bastani-inc/atomic/issues/5210))
+- A subagent launch whose model chain has no credentials now names each skipped model and its provider in the error. A provider that rejects credentials is skipped for the rest of the child's fallback walk ([#5353](https://github.com/bastani-inc/atomic/pull/5353)).
 
 ## [0.9.88] - 2026-11-16
 

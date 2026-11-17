@@ -263,14 +263,10 @@ describe("buildSystemPrompt", () => {
 		}
 	});
 
-	test("routes model advice and automation requests to evidence and domain-specific tools", () => {
+	test("routes automation requests to domain-specific tools and sends no one to model benchmarks", () => {
 		const prompt = buildSystemPrompt({ cwd: process.cwd(), contextFiles: [], skills: [] });
-		assert.match(prompt, /When the user asks which model to choose for a task/);
-		assert.match(prompt, /models\/model-selection\.md/);
-		assert.match(prompt, /models\/evals\.md/);
-		assert.match(prompt, /https:\/\/artificialanalysis\.ai\//);
-		assert.match(prompt, /relevant benchmark charts and methodology/);
-		assert.match(prompt, /If live evidence is unavailable, label the dated docs snapshot/);
+		assert.doesNotMatch(prompt, /When the user asks which model to choose for a task/);
+		assert.doesNotMatch(prompt, /model-selection\.md|evals\.md|artificialanalysis\.ai|benchmark/);
 		assert.match(
 			prompt,
 			/For computer use on native desktop apps and OS dialogs on macOS, Windows and Linux, use the bundled agent-desktop skill and one-shot `agent-desktop` commands/,
