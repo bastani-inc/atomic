@@ -2,17 +2,22 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import type { QuestionnaireResult } from "../../packages/coding-agent/src/index.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { bindRunDurableBackend } from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import type { PiUISurface } from "../../packages/workflows/src/extension/ui-surface.js";
+import { bindWorkflowHumanInput } from "../../packages/workflows/src/extension/workflow-human-input.js";
 import {
 	rehydrateError,
 	type SerializedError,
 	serializeError,
 } from "../../packages/workflows/src/shared/error-codec.js";
+import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/stage-prompt.js";
+import { adoptStageUiBroker, type StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
@@ -26,8 +31,9 @@ import type {
 } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { type HeldPromptAnswers, promptIdentity } from "../../packages/workflows/src/workers/held-prompt-answers.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
-import type { PublishedRun } from "../../packages/workflows/src/workers/run-changes.js";
+import { type PublishedRun, RunChangesEncoder } from "../../packages/workflows/src/workers/run-changes.js";
 import { PoolStageHandoff, type PoolStageQueue } from "../../packages/workflows/src/workers/stage-handoff.js";
+import type { PooledStageQuestion, PromptResult } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { publicationRejected, staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { testRunId } from "../helpers/run-id.js";
@@ -70,6 +76,7 @@ interface PoolInternals {
 	store?: Store;
 	coordinator?: { readonly port: { send(message: CoordinatorInbound): void } };
 	handoff?: PoolStageHandoff;
+	questionBroker?: StageUiBroker;
 	readonly works: Map<string, PoolWork>;
 	readonly heldAnswers: HeldPromptAnswers;
 	queueView(): PoolStageQueue;
@@ -82,6 +89,8 @@ type RequestReply = Extract<CoordinatorInbound, { readonly kind: "request-reply"
 interface RootPoolOptions {
 	/** Whether the root has a store, and so a stage handoff; without one it only keeps a coordinator's work. */
 	readonly handoff?: boolean;
+	readonly question?: PooledStageQuestion;
+	readonly answerResult?: () => PromptResult;
 }
 
 /** A pool bound to a root whose journal holds one claimed work, with a coordinator that only records what it is sent. */
@@ -135,9 +144,20 @@ async function rootPool(options: RootPoolOptions = {}) {
 		port: {
 			send(message) {
 				sent.push(message);
-				// The coordinator answers every command the pool sends it as having succeeded.
 				if ("id" in message && "kind" in message && message.kind !== "request-reply")
-					queueMicrotask(() => void internals.receive({ kind: "reply", id: message.id, value: { ok: true } }));
+					queueMicrotask(
+						() =>
+							void internals.receive({
+								kind: "reply",
+								id: message.id,
+								value:
+									message.kind === "stage-question"
+										? options.question
+										: message.kind === "stage-answer"
+											? (options.answerResult?.() ?? { ok: true })
+											: { ok: true },
+							}),
+					);
 			},
 		},
 	};
@@ -379,6 +399,539 @@ test("a prompt failure held for an earlier attempt fails the replacement's route
 		await pool.dispose();
 	}
 });
+
+test.each([true, false])("an SDK host answers a worker-published stage dialog with %s (#5354)", async (response) => {
+	const pool = await rootPool();
+	const broker = adoptStageUiBroker({}, false, pool.store);
+	const asked: string[] = [];
+	const reply = Promise.withResolvers<boolean>();
+	const unbind = bindWorkflowHumanInput(
+		pool.store,
+		{
+			hasUI: false,
+			hasHumanInput: true,
+			ui: {
+				confirm: async (title, message) => {
+					asked.push(`${title}:${message}`);
+					return reply.promise;
+				},
+			},
+		},
+		broker,
+	);
+	try {
+		pool.known();
+		const prompt: PendingPrompt = {
+			id: "dialog-1",
+			kind: "confirm",
+			source: "stage-dialog",
+			message: "Allow worker action?",
+			createdAt: Date.now(),
+		};
+		assert.deepEqual(
+			await pool.publish([childRun([stage("ask", { status: "awaiting_input", pendingPrompt: prompt })])]),
+			[],
+		);
+		await settled();
+		assert.equal(broker.hasStageDialog(descriptor.childRunId, "ask"), false);
+		assert.deepEqual(asked, ["Workflow approval:Allow worker action?"]);
+		assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.pendingPrompt?.id, prompt.id);
+		assert.deepEqual(pool.commands("stage-answer"), []);
+
+		reply.resolve(response);
+		await settled();
+		const [answer] = pool.commands("stage-answer");
+		assert.ok(answer, "the host's answer reaches the waiting worker");
+		assert.equal(answer.runId, descriptor.childRunId);
+		assert.equal(answer.stageId, "ask");
+		assert.deepEqual(answer.answer, { kind: "prompt", promptId: prompt.id, response });
+		assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.pendingPrompt, undefined);
+		assert.equal(pool.commands("stage-answer").length, 1);
+		assert.deepEqual(asked, ["Workflow approval:Allow worker action?"]);
+	} finally {
+		unbind();
+		await pool.dispose();
+	}
+});
+
+test.each(["store", "SDK host"] as const)(
+	"a worker receives consecutive dialog answers in one attempt through the %s (#5354)",
+	async (answerPath) => {
+		const pool = await rootPool();
+		const broker = adoptStageUiBroker({}, false, pool.store);
+		const asked: string[] = [];
+		const replies: ReturnType<typeof Promise.withResolvers<boolean>>[] = [];
+		const unbind =
+			answerPath === "SDK host"
+				? bindWorkflowHumanInput(
+						pool.store,
+						{
+							hasUI: false,
+							hasHumanInput: true,
+							ui: {
+								confirm: async (_title, message) => {
+									asked.push(message);
+									const reply = Promise.withResolvers<boolean>();
+									replies.push(reply);
+									return reply.promise;
+								},
+							},
+						},
+						broker,
+					)
+				: () => {};
+		try {
+			pool.known();
+			for (const index of [1, 2]) {
+				const prompt: PendingPrompt = {
+					id: `dialog-${index}`,
+					kind: "confirm",
+					source: "stage-dialog",
+					message: `Allow worker action ${index}?`,
+					createdAt: Date.now(),
+				};
+				const publication = childRun([stage("ask", { status: "awaiting_input", pendingPrompt: prompt })]);
+				assert.deepEqual(await pool.publish([publication]), []);
+				await settled();
+				assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.pendingPrompt?.id, prompt.id);
+				const response = index === 1;
+				if (answerPath === "SDK host") {
+					assert.equal(replies.length, index);
+					replies[index - 1]!.resolve(response);
+				} else {
+					assert.equal(
+						pool.store.resolveStagePendingPrompt(descriptor.childRunId, "ask", prompt.id, response),
+						true,
+					);
+				}
+				await settled();
+				assert.deepEqual(
+					pool.commands("stage-answer").map(({ answer }) => answer),
+					[
+						{ kind: "prompt", promptId: "dialog-1", response: true },
+						...(index === 2 ? [{ kind: "prompt", promptId: "dialog-2", response: false }] : []),
+					],
+				);
+				assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.pendingPrompt, undefined);
+				assert.deepEqual(await pool.publish([childRun([stage("ask")])]), []);
+				await settled();
+				assert.equal(pool.commands("stage-answer").length, index, "an answered prompt is not delivered twice");
+			}
+			assert.deepEqual(asked, answerPath === "SDK host" ? ["Allow worker action 1?", "Allow worker action 2?"] : []);
+		} finally {
+			unbind();
+			await pool.dispose();
+		}
+	},
+);
+
+test.each(["SDK host", "store"] as const)(
+	"a worker dialog answered through the %s is not asked again by a queued full publication (#5354)",
+	async (answerPath) => {
+		const pool = await rootPool();
+		const broker = adoptStageUiBroker({}, false, pool.store);
+		const encoder = new RunChangesEncoder();
+		const replies: ReturnType<typeof Promise.withResolvers<boolean>>[] = [];
+		const unbind = bindWorkflowHumanInput(
+			pool.store,
+			{
+				hasUI: false,
+				hasHumanInput: true,
+				ui: {
+					confirm: async () => {
+						const reply = Promise.withResolvers<boolean>();
+						replies.push(reply);
+						return reply.promise;
+					},
+				},
+			},
+			broker,
+		);
+		try {
+			pool.known();
+			const prompt: PendingPrompt = {
+				id: "dialog-1",
+				kind: "confirm",
+				source: "stage-dialog",
+				message: "Allow worker action?",
+				createdAt: Date.now(),
+			};
+			const parallel = stage("parallel", {
+				workflowChildRun: { alias: "extra", workflow: "extra", runId: `${descriptor.childRunId}-extra` },
+			});
+			const publication = childRun([stage("ask", { status: "awaiting_input", pendingPrompt: prompt }), parallel]);
+			assert.deepEqual(await pool.publish(encoder.encode(pool.work, [publication])), []);
+			await settled();
+			assert.equal(replies.length, 1);
+			const extra = childRun([stage("extra")], {
+				id: `${descriptor.childRunId}-extra`,
+				parentRunId: descriptor.childRunId,
+				parentStageId: "parallel",
+			});
+			const queued = encoder.encode(pool.work, [publication, extra]);
+			if (answerPath === "SDK host") replies[0]!.resolve(true);
+			else assert.equal(pool.store.resolveStagePendingPrompt(descriptor.childRunId, "ask", prompt.id, true), true);
+			await settled();
+			assert.equal(pool.commands("stage-answer").length, 1);
+
+			assert.deepEqual(await pool.publish(queued), []);
+			await settled();
+			assert.equal(replies.length, 1, "the already answered dialog is not presented again");
+			assert.equal(pool.commands("stage-answer").length, 1);
+
+			const next = childRun([
+				stage("ask", { status: "awaiting_input", pendingPrompt: { ...prompt, id: "dialog-2" } }),
+				parallel,
+			]);
+			assert.deepEqual(await pool.publish(encoder.encode(pool.work, [next, extra])), []);
+			await settled();
+			assert.equal(replies.length, 2, "a genuinely new dialog with the same text is still presented");
+			replies[1]!.resolve(false);
+			await settled();
+			assert.deepEqual(
+				pool.commands("stage-answer").map(({ answer }) => answer),
+				[
+					{ kind: "prompt", promptId: "dialog-1", response: true },
+					{ kind: "prompt", promptId: "dialog-2", response: false },
+				],
+			);
+		} finally {
+			unbind();
+			await pool.dispose();
+		}
+	},
+);
+
+test.each(["question-first", "dialog-first", "same-publication"] as const)(
+	"an SDK host keeps a worker's stacked requests live in %s order (#5354)",
+	async (order) => {
+		const question: PooledStageQuestion = {
+			promptId: "question-1",
+			kind: "ask_user_question",
+			params: {
+				questions: [
+					{
+						question: "Choose",
+						header: "Choice",
+						options: [
+							{ label: "A", description: "First" },
+							{ label: "B", description: "Second" },
+						],
+					},
+				],
+			},
+		};
+		const pool = await rootPool({ question });
+		const broker = adoptStageUiBroker({}, false, pool.store);
+		pool.internals.questionBroker = broker;
+		const dialogReply = Promise.withResolvers<boolean>();
+		const nextDialogReply = Promise.withResolvers<boolean>();
+		const questionReply = Promise.withResolvers<QuestionnaireResult>();
+		const dialogSignals: AbortSignal[] = [];
+		const questionSignals: AbortSignal[] = [];
+		const scopedSessions: Array<string | undefined> = [];
+		const confirm = async (_title: string, _message: string, options?: { signal?: AbortSignal }) => {
+			assert.ok(options?.signal);
+			dialogSignals.push(options.signal);
+			return dialogSignals.length === 1 ? dialogReply.promise : nextDialogReply.promise;
+		};
+		const ui = {
+			confirm,
+			[Symbol.for("atomic-coding-agent/workflow-input@1")]: {
+				active: () => true,
+				available: () => true,
+				bindingRevision: () => 0,
+				subscribe: () => () => {},
+				scope: (_runId: string, _stageId: string, sessionId?: string) => {
+					scopedSessions.push(sessionId);
+					return {
+						ui: { confirm },
+						questionnaire: (_params: typeof question.params, signal: AbortSignal) => {
+							questionSignals.push(signal);
+							return questionReply.promise;
+						},
+					};
+				},
+			},
+		} as PiUISurface;
+		const unbind = bindWorkflowHumanInput(pool.store, { hasUI: false, hasHumanInput: true, ui }, broker);
+		const prompt: PendingPrompt = {
+			id: "dialog-1",
+			kind: "confirm",
+			source: "stage-dialog",
+			message: "Allow worker action?",
+			createdAt: Date.now(),
+		};
+		const inputRequest = buildStagePromptAdapter(
+			question.promptId,
+			question.kind,
+			question.params,
+			Date.now(),
+		)!.prompt;
+		const publish = async (withQuestion: boolean, withDialog: boolean, dialog = prompt) => {
+			assert.deepEqual(
+				await pool.publish([
+					childRun([
+						stage("ask", {
+							sessionId: "worker-session",
+							status: withQuestion || withDialog ? "awaiting_input" : "running",
+							...(withQuestion ? { inputRequest } : {}),
+							...(withDialog ? { pendingPrompt: dialog } : {}),
+						}),
+					]),
+				]),
+				[],
+			);
+			await settled();
+		};
+		try {
+			pool.known();
+			if (order === "question-first") {
+				await publish(true, false);
+				assert.equal(questionSignals.length, 1);
+			} else if (order === "dialog-first") {
+				await publish(false, true);
+				assert.equal(dialogSignals.length, 1);
+			}
+			await publish(true, true);
+			assert.equal(questionSignals.length, 1);
+			assert.equal(dialogSignals.length, 1, "the worker dialog is presented alongside its question");
+			assert.equal(questionSignals[0]!.aborted, false);
+			assert.equal(dialogSignals[0]!.aborted, false, "adding the question must not withdraw the pending dialog");
+			assert.deepEqual(scopedSessions, ["worker-session", "worker-session"]);
+
+			const answer: QuestionnaireResult = {
+				cancelled: false,
+				answers: [{ questionIndex: 0, question: "Choose", kind: "option", answer: "A" }],
+			};
+			if (order === "question-first") {
+				dialogReply.resolve(true);
+				await settled();
+				assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.status, "awaiting_input");
+				assert.equal(
+					questionSignals[0]!.aborted,
+					false,
+					"the questionnaire stays presented after the dialog answer",
+				);
+				assert.equal(questionSignals.length, 1);
+				questionReply.resolve(answer);
+			} else {
+				questionReply.resolve(answer);
+				await settled();
+				assert.equal(dialogSignals[0]!.aborted, false);
+				assert.equal(dialogSignals.length, 1, "answering the question must not ask the dialog again");
+				assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.pendingPrompt?.id, prompt.id);
+				dialogReply.resolve(true);
+			}
+			await settled();
+			const inputAnswer = {
+				runId: descriptor.childRunId,
+				stageId: "ask",
+				answer: { kind: "input", promptId: question.promptId, answer: { raw: answer } },
+			};
+			const dialogAnswer = {
+				runId: descriptor.childRunId,
+				stageId: "ask",
+				answer: { kind: "prompt", promptId: prompt.id, response: true },
+			};
+			assert.deepEqual(
+				pool.commands("stage-answer").map(({ runId, stageId, answer }) => ({ runId, stageId, answer })),
+				order === "question-first" ? [dialogAnswer, inputAnswer] : [inputAnswer, dialogAnswer],
+			);
+			assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.pendingPrompt, undefined);
+			assert.equal(dialogSignals.length, 1);
+
+			await publish(false, false);
+			const nextPrompt: PendingPrompt = { ...prompt, id: "dialog-2", message: "Allow the next worker action?" };
+			await publish(false, true, nextPrompt);
+			assert.equal(dialogSignals.length, 2);
+			assert.equal(dialogSignals[1]!.aborted, false);
+			nextDialogReply.resolve(false);
+			await settled();
+			assert.deepEqual(
+				pool.commands("stage-answer").map(({ answer }) => answer),
+				[
+					...(order === "question-first"
+						? [dialogAnswer.answer, inputAnswer.answer]
+						: [inputAnswer.answer, dialogAnswer.answer]),
+					{ kind: "prompt", promptId: nextPrompt.id, response: false },
+				],
+			);
+			assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.pendingPrompt, undefined);
+			assert.equal(questionSignals.length, 1);
+		} finally {
+			unbind();
+			broker.cancelStagePrompt(descriptor.childRunId, "ask", new Error("cleanup"));
+			await pool.dispose();
+		}
+	},
+);
+
+test.each([
+	["question-then-dialog", "question-only"],
+	["dialog-then-question", "question-only"],
+	["question-then-dialog", "question-first"],
+	["dialog-then-question", "question-first"],
+	["question-then-dialog", "dialog-first"],
+	["dialog-then-question", "dialog-first"],
+	["question-then-dialog", "stacked"],
+	["dialog-then-question", "stacked"],
+] as const)(
+	"a replacement receives a held question answer once with %s SDK answers and a %s publication (#4022)",
+	async (order, replacementRequests) => {
+		const question: PooledStageQuestion = {
+			promptId: "question-1",
+			kind: "ask_user_question",
+			params: {
+				questions: [
+					{
+						question: "Choose",
+						header: "Choice",
+						options: [
+							{ label: "A", description: "First" },
+							{ label: "B", description: "Second" },
+						],
+					},
+				],
+			},
+		};
+		let replacementLive = false;
+		const pool = await rootPool({
+			question,
+			answerResult: () => (replacementLive ? { ok: true } : { ok: false, refusal: "StaleAttempt" }),
+		});
+		const broker = adoptStageUiBroker({}, false, pool.store);
+		pool.internals.questionBroker = broker;
+		const dialogReply = Promise.withResolvers<boolean>();
+		const questionReply = Promise.withResolvers<QuestionnaireResult>();
+		const replacementDialogReply = Promise.withResolvers<boolean>();
+		let questionPresentations = 0;
+		let dialogPresentations = 0;
+		const confirm = async () => {
+			dialogPresentations++;
+			return dialogPresentations === 1 ? dialogReply.promise : replacementDialogReply.promise;
+		};
+		const ui = {
+			confirm,
+			[Symbol.for("atomic-coding-agent/workflow-input@1")]: {
+				active: () => true,
+				available: () => true,
+				bindingRevision: () => 0,
+				subscribe: () => () => {},
+				scope: () => ({
+					ui: { confirm },
+					questionnaire: () => {
+						questionPresentations++;
+						return questionReply.promise;
+					},
+				}),
+			},
+		} as PiUISurface;
+		const unbind = bindWorkflowHumanInput(pool.store, { hasUI: false, hasHumanInput: true, ui }, broker);
+		const prompt: PendingPrompt = {
+			id: "dialog-1",
+			kind: "confirm",
+			source: "stage-dialog",
+			message: "Allow worker action?",
+			createdAt: Date.now(),
+		};
+		const inputRequest = buildStagePromptAdapter(
+			question.promptId,
+			question.kind,
+			question.params,
+			Date.now(),
+		)!.prompt;
+		const answer: QuestionnaireResult = {
+			cancelled: false,
+			answers: [{ questionIndex: 0, question: "Choose", kind: "option", answer: "A" }],
+		};
+		try {
+			pool.known();
+			assert.deepEqual(
+				await pool.publish([childRun([stage("ask", { status: "awaiting_input", pendingPrompt: prompt })])]),
+				[],
+			);
+			await settled();
+			assert.equal(dialogPresentations, 1);
+			assert.deepEqual(
+				await pool.publish([
+					childRun([stage("ask", { status: "awaiting_input", inputRequest, pendingPrompt: prompt })]),
+				]),
+				[],
+			);
+			await settled();
+			assert.equal(questionPresentations, 1);
+			assert.equal(dialogPresentations, 1);
+			assert.equal(pool.commands("stage-answer").length, 0);
+
+			if (order === "question-then-dialog") questionReply.resolve(answer);
+			else dialogReply.resolve(true);
+			await settled();
+			assert.equal(pool.commands("stage-answer").length, 1, "the dead attempt refused the first answer");
+			if (order === "question-then-dialog") dialogReply.resolve(true);
+			else questionReply.resolve(answer);
+			await settled();
+			assert.deepEqual(
+				pool.commands("stage-answer").map(({ answer }) => answer.kind),
+				order === "question-then-dialog" ? ["input", "prompt"] : ["prompt", "input"],
+			);
+
+			replacementLive = true;
+			const replacement = pool.tokenOf({ generation: 2 });
+			const replacementDialog: PendingPrompt = { ...prompt, id: "dialog-replacement" };
+			if (replacementRequests === "question-first") {
+				assert.deepEqual(
+					await pool.publish([childRun([stage("ask", { status: "awaiting_input", inputRequest })])], replacement),
+					[],
+				);
+				await settled();
+			} else if (replacementRequests === "dialog-first") {
+				assert.deepEqual(
+					await pool.publish(
+						[childRun([stage("ask", { status: "awaiting_input", pendingPrompt: replacementDialog })])],
+						replacement,
+					),
+					[],
+				);
+				await settled();
+				assert.equal(dialogPresentations, 2);
+				assert.equal(questionPresentations, 1);
+			}
+			const publication = childRun([
+				stage("ask", {
+					status: "awaiting_input",
+					inputRequest,
+					...(replacementRequests === "question-only" ? {} : { pendingPrompt: replacementDialog }),
+				}),
+			]);
+			assert.deepEqual(await pool.publish([publication], replacement), []);
+			await settled();
+			assert.equal(questionPresentations, 1, "the replacement must reuse the held answer without asking again");
+			assert.equal(dialogPresentations, replacementRequests === "question-only" ? 1 : 2);
+			assert.deepEqual(
+				pool
+					.commands("stage-answer")
+					.slice(2)
+					.map(({ runId, stageId, answer }) => ({ runId, stageId, answer })),
+				[
+					{
+						runId: descriptor.childRunId,
+						stageId: "ask",
+						answer: { kind: "input", promptId: question.promptId, answer: { raw: answer } },
+					},
+				],
+			);
+			assert.deepEqual(await pool.publish([publication], replacement), []);
+			await settled();
+			assert.equal(questionPresentations, 1);
+			assert.equal(pool.commands("stage-answer").length, 3, "the held question answer reaches the replacement once");
+		} finally {
+			unbind();
+			broker.cancelStagePrompt(descriptor.childRunId, "ask", new Error("cleanup"));
+			await pool.dispose();
+		}
+	},
+);
 
 test("a reply to a command nobody waits for any more is ignored (#4327)", async () => {
 	const pool = await rootPool();
