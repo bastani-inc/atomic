@@ -1083,7 +1083,6 @@ function settledTranscript(
 	commands: TranscriptCommands | undefined,
 	inherited: string | null,
 	unsaved: SessionEntry | undefined,
-	disposed?: Promise<unknown>,
 ): TranscriptSource {
 	const sessionId = manager.getSessionId();
 	const sessionFile = manager.getSessionFile();
@@ -1100,7 +1099,6 @@ function settledTranscript(
 			? [...manager.getEntries()]
 			: undefined;
 	const read = async (): Promise<SessionEntry[]> => {
-		await disposed;
 		const entries = store
 			? [...(await store.load(sessionId)).entries]
 			: sessionFile !== undefined
@@ -2704,14 +2702,12 @@ export class SubagentControlRuntime {
 				session === undefined || transcriptManager === undefined
 					? undefined
 					: settledCommands(sessionCommands(session, transcriptManager.getCwd()));
-			let earlyBound = false;
 			const settleTranscript = async (): Promise<void> => {
 				statusesOpen = false;
 				stopHeldPromptAttention?.();
 				taskHooks?.clearExtensionStatuses?.();
 				if (transcriptManager === undefined) return;
 				const commands = await keptCommands;
-				if (earlyBound && commands === undefined) return;
 				taskHooks?.bindTranscript?.(
 					releasedAttempt
 						? releasedTranscript(transcriptManager.getSessionId(), commands)
@@ -2746,12 +2742,6 @@ export class SubagentControlRuntime {
 					await settleTranscript();
 				}
 			})();
-			if (unsavedAnswer !== undefined && !releasedAttempt && transcriptManager !== undefined) {
-				earlyBound = true;
-				taskHooks?.bindTranscript?.(
-					settledTranscript(transcriptManager, undefined, openedThroughId, unsavedAnswer, disposal),
-				);
-			}
 			onDisposal(disposal);
 			void Promise.allSettled([disposal, ...abandoned]).then(() => released.resolve());
 			if (releasedAttempt) await disposal;
