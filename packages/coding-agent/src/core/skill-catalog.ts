@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, dirname, sep } from "node:path";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
-import { canonicalizePath } from "../utils/paths.ts";
+import { canonicalizePath, canonicalizePathAsync } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { ResourceLoader } from "./resource-loader-types.ts";
 import type { Skill } from "./skills.ts";
@@ -49,7 +49,9 @@ function candidateId(canonicalPath: string): string {
 	return `skill_${createHash("sha256").update(canonicalPath).digest("hex").slice(0, 20)}`;
 }
 
-function createCanonicalPathLookup(): (path: string) => string {
+export type SkillPathResolver = (path: string) => string;
+
+function createCanonicalPathLookup(): SkillPathResolver {
 	const resolved = new Map<string, string>();
 	return (path) => {
 		let canonicalPath = resolved.get(path);
@@ -61,11 +63,36 @@ function createCanonicalPathLookup(): (path: string) => string {
 	};
 }
 
-function sourceFamily(skill: Skill): string {
+function skillCatalogPaths(skills: readonly Skill[], diagnostics: readonly ResourceDiagnostic[]): Set<string> {
+	const paths = new Set<string>();
+	for (const skill of skills) {
+		paths.add(skill.filePath);
+		paths.add(dirname(skill.filePath));
+	}
+	for (const diagnostic of diagnostics) {
+		if (diagnostic.type !== "collision" || diagnostic.collision?.resourceType !== "skill") continue;
+		paths.add(diagnostic.collision.winnerPath);
+		paths.add(diagnostic.collision.loserPath);
+	}
+	return paths;
+}
+
+export async function resolveSkillCatalogPaths(
+	skills: readonly Skill[],
+	diagnostics: readonly ResourceDiagnostic[] = [],
+): Promise<SkillPathResolver> {
+	const paths = [...skillCatalogPaths(skills, diagnostics)];
+	const resolved = new Map(
+		await Promise.all(paths.map(async (path) => [path, await canonicalizePathAsync(path)] as const)),
+	);
+	return (path) => resolved.get(path) ?? path;
+}
+
+function sourceFamily(skill: Skill, realPathOf: SkillPathResolver): string {
 	if (skill.sourceInfo.configurationOrigin === "bundled") return "builtin";
 	if (skill.sourceInfo.scope === "project") return "project";
 	if (skill.sourceInfo.scope === "user") return "user";
-	return sourceLabel(skill);
+	return sourceLabel(skill, realPathOf);
 }
 
 function npmPackageName(source: string): string | undefined {
@@ -84,7 +111,7 @@ function readableToken(value: string): string {
 	return value.replace(/^[./\\]+|[./\\]+$/g, "").replace(/[^a-zA-Z0-9._/\\-]+/g, "-") || "source";
 }
 
-function sourceLabel(skill: Skill): string {
+function sourceLabel(skill: Skill, realPathOf: SkillPathResolver): string {
 	const npmName = npmPackageName(skill.sourceInfo.source);
 	if (npmName) return readableToken(npmName);
 	const source = skill.sourceInfo.source;
@@ -99,7 +126,7 @@ function sourceLabel(skill: Skill): string {
 	if (source !== "local" && source !== "auto" && source !== "path") {
 		return readableToken(basename(source));
 	}
-	const pathParts = canonicalizePath(skill.filePath).split(sep).filter(Boolean);
+	const pathParts = realPathOf(skill.filePath).split(sep).filter(Boolean);
 	const configPart = [...pathParts]
 		.reverse()
 		.find((part) => part === ".atomic" || part === ".pi" || part === ".agents");
@@ -108,8 +135,8 @@ function sourceLabel(skill: Skill): string {
 		: readableToken(basename(skill.sourceInfo.baseDir ?? dirname(skill.filePath)));
 }
 
-function uniquePathLabels(candidates: readonly CandidateDraft[]): Map<string, string> {
-	const labels = new Map(candidates.map((candidate) => [candidate.id, sourceLabel(candidate.skill)]));
+function uniquePathLabels(candidates: readonly CandidateDraft[], realPathOf: SkillPathResolver): Map<string, string> {
+	const labels = new Map(candidates.map((candidate) => [candidate.id, sourceLabel(candidate.skill, realPathOf)]));
 	const byLabel = new Map<string, CandidateDraft[]>();
 	for (const candidate of candidates) {
 		const label = labels.get(candidate.id) ?? "source";
@@ -120,7 +147,7 @@ function uniquePathLabels(candidates: readonly CandidateDraft[]): Map<string, st
 	for (const [label, matching] of byLabel) {
 		if (matching.length === 1) continue;
 		const pathParts = matching.map((candidate) =>
-			canonicalizePath(dirname(candidate.skill.filePath)).split(sep).filter(Boolean),
+			realPathOf(dirname(candidate.skill.filePath)).split(sep).filter(Boolean),
 		);
 		for (let depth = 1; depth <= Math.max(...pathParts.map((parts) => parts.length)); depth++) {
 			const suffixes = pathParts.map((parts) => parts.slice(-depth).join("/"));
@@ -134,20 +161,26 @@ function uniquePathLabels(candidates: readonly CandidateDraft[]): Map<string, st
 		}
 		if (matching.some((candidate) => labels.get(candidate.id) === label)) {
 			for (const candidate of matching) {
-				labels.set(candidate.id, readableToken(`${sourceFamily(candidate.skill)}-${candidate.id.slice(-8)}`));
+				labels.set(
+					candidate.id,
+					readableToken(`${sourceFamily(candidate.skill, realPathOf)}-${candidate.id.slice(-8)}`),
+				);
 			}
 		}
 	}
 	return labels;
 }
 
-function buildQualifiedSelectors(group: readonly CandidateDraft[]): {
+function buildQualifiedSelectors(
+	group: readonly CandidateDraft[],
+	realPathOf: SkillPathResolver,
+): {
 	selectors: Map<string, string>;
 	ambiguousAliases: Map<string, CandidateDraft[]>;
 } {
 	const byFamily = new Map<string, CandidateDraft[]>();
 	for (const candidate of group) {
-		const family = sourceFamily(candidate.skill);
+		const family = sourceFamily(candidate.skill, realPathOf);
 		const familyCandidates = byFamily.get(family) ?? [];
 		familyCandidates.push(candidate);
 		byFamily.set(family, familyCandidates);
@@ -161,42 +194,61 @@ function buildQualifiedSelectors(group: readonly CandidateDraft[]): {
 			continue;
 		}
 		ambiguousAliases.set(family, familyCandidates);
-		const labels = uniquePathLabels(familyCandidates);
+		const labels = uniquePathLabels(familyCandidates, realPathOf);
 		for (const candidate of familyCandidates) qualifiers.set(candidate.id, labels.get(candidate.id) ?? family);
 	}
 	for (const candidate of group) {
 		const qualifier = qualifiers.get(candidate.id);
 		if (qualifier && ambiguousAliases.has(qualifier)) {
-			qualifiers.set(candidate.id, `${sourceLabel(candidate.skill)}/${qualifier}`);
+			qualifiers.set(candidate.id, `${sourceLabel(candidate.skill, realPathOf)}/${qualifier}`);
 		}
 	}
 
 	const byQualifier = new Map<string, CandidateDraft[]>();
 	for (const candidate of group) {
-		const qualifier = qualifiers.get(candidate.id) ?? sourceFamily(candidate.skill);
+		const qualifier = qualifiers.get(candidate.id) ?? sourceFamily(candidate.skill, realPathOf);
 		const matching = byQualifier.get(qualifier) ?? [];
 		matching.push(candidate);
 		byQualifier.set(qualifier, matching);
 	}
 	for (const [qualifier, matching] of byQualifier) {
 		if (matching.length === 1) continue;
-		for (const candidate of matching) qualifiers.set(candidate.id, `${sourceFamily(candidate.skill)}/${qualifier}`);
+		for (const candidate of matching)
+			qualifiers.set(candidate.id, `${sourceFamily(candidate.skill, realPathOf)}/${qualifier}`);
 	}
 	return { selectors: qualifiers, ambiguousAliases };
 }
 
 export function buildSkillCatalog(allSkills: readonly Skill[], winners?: readonly Skill[]): SkillCatalog {
-	const canonicalPathOf = createCanonicalPathLookup();
+	return buildSkillCatalogWith(allSkills, winners, createCanonicalPathLookup());
+}
+
+export async function buildSkillCatalogAsync(
+	allSkills: readonly Skill[],
+	winners?: readonly Skill[],
+): Promise<SkillCatalog> {
+	return buildSkillCatalogWith(allSkills, winners, await resolveSkillCatalogPaths([...allSkills, ...(winners ?? [])]));
+}
+
+export function emptySkillCatalog(): SkillCatalog {
+	return buildSkillCatalogWith([], undefined, (path) => path);
+}
+
+export function buildSkillCatalogWith(
+	allSkills: readonly Skill[],
+	winners: readonly Skill[] | undefined,
+	realPathOf: SkillPathResolver,
+): SkillCatalog {
 	const candidateSkills: Skill[] = [];
 	const candidateIndexByPath = new Map<string, number>();
 	for (const skill of allSkills) {
-		const canonicalPath = canonicalPathOf(skill.filePath);
+		const canonicalPath = realPathOf(skill.filePath);
 		if (candidateIndexByPath.has(canonicalPath)) continue;
 		candidateIndexByPath.set(canonicalPath, candidateSkills.length);
 		candidateSkills.push(skill);
 	}
 	for (const winner of winners ?? []) {
-		const canonicalPath = canonicalPathOf(winner.filePath);
+		const canonicalPath = realPathOf(winner.filePath);
 		const candidateIndex = candidateIndexByPath.get(canonicalPath);
 		if (candidateIndex === undefined) {
 			candidateIndexByPath.set(canonicalPath, candidateSkills.length);
@@ -206,7 +258,7 @@ export function buildSkillCatalog(allSkills: readonly Skill[], winners?: readonl
 		}
 	}
 	const drafts: CandidateDraft[] = candidateSkills.map((skill) => ({
-		id: candidateId(canonicalPathOf(skill.filePath)),
+		id: candidateId(realPathOf(skill.filePath)),
 		skill,
 		selector: skill.name,
 	}));
@@ -229,7 +281,7 @@ export function buildSkillCatalog(allSkills: readonly Skill[], winners?: readonl
 		const group = groups.get(winner.name);
 		if (!group?.length) continue;
 		const winnerCandidate = group.find(
-			(candidate) => canonicalPathOf(candidate.skill.filePath) === canonicalPathOf(winner.filePath),
+			(candidate) => realPathOf(candidate.skill.filePath) === realPathOf(winner.filePath),
 		);
 		if (!winnerCandidate) {
 			throw new Error(`Skill catalog winner "${winner.name}" is not represented by a candidate`);
@@ -243,12 +295,12 @@ export function buildSkillCatalog(allSkills: readonly Skill[], winners?: readonl
 			skill: winnerCandidate.skill,
 		});
 		if (group.length === 1) continue;
-		const qualified = buildQualifiedSelectors(group);
+		const qualified = buildQualifiedSelectors(group, realPathOf);
 		for (const [family, candidates] of qualified.ambiguousAliases) {
 			resolutions.set(`${winner.name}@${family}`, candidates);
 		}
 		for (const candidate of group) {
-			const qualifier = qualified.selectors.get(candidate.id) ?? sourceFamily(candidate.skill);
+			const qualifier = qualified.selectors.get(candidate.id) ?? sourceFamily(candidate.skill, realPathOf);
 			candidate.selector = `${candidate.skill.name}@${qualifier}`;
 			resolutions.set(candidate.selector, [candidate]);
 			commands.push({
@@ -315,11 +367,11 @@ export interface SkillExpansionError {
  * command, or names no skill, is returned as typed; `onError` hears why an ambiguous selector or an unreadable
  * skill file was left as typed.
  */
-export function expandSkillCommand(
+export async function expandSkillCommand(
 	catalog: SkillCatalog,
 	text: string,
 	onError: (error: SkillExpansionError) => void = () => {},
-): string {
+): Promise<string> {
 	if (!text.startsWith("/skill:")) return text;
 
 	const command = parseSlashCommand(text);
@@ -333,7 +385,7 @@ export function expandSkillCommand(
 	const { skill, id } = resolution.candidate;
 
 	try {
-		const content = readFileSync(skill.filePath, "utf-8");
+		const content = await readFile(skill.filePath, "utf-8");
 		const body = stripFrontmatter(content).trim();
 		const skillBlock = `<skill name="${selector}" location="${skill.filePath}" candidate="${id}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
 		return args ? `${skillBlock}\n\n${args}` : skillBlock;
@@ -346,14 +398,13 @@ export function expandSkillCommand(
 export function decorateSkillDiagnostics(
 	diagnostics: readonly ResourceDiagnostic[],
 	catalog: SkillCatalog,
+	realPathOf: SkillPathResolver,
 ): ResourceDiagnostic[] {
-	const byPath = new Map(
-		catalog.candidates.map((candidate) => [canonicalizePath(candidate.skill.filePath), candidate]),
-	);
+	const byPath = new Map(catalog.candidates.map((candidate) => [realPathOf(candidate.skill.filePath), candidate]));
 	return diagnostics.map((diagnostic) => {
 		if (diagnostic.type !== "collision" || diagnostic.collision?.resourceType !== "skill") return diagnostic;
-		const winner = byPath.get(canonicalizePath(diagnostic.collision.winnerPath));
-		const loser = byPath.get(canonicalizePath(diagnostic.collision.loserPath));
+		const winner = byPath.get(realPathOf(diagnostic.collision.winnerPath));
+		const loser = byPath.get(realPathOf(diagnostic.collision.loserPath));
 		return {
 			...diagnostic,
 			collision: {

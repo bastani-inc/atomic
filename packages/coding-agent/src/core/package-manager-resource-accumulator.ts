@@ -6,7 +6,7 @@ import type {
 	ResourceMap,
 	ResourceType,
 } from "./package-manager-types.ts";
-import { getResourcePathKey } from "./source-info.ts";
+import { getResourcePathKeyAsync } from "./source-info.ts";
 
 function resourcePrecedenceRank(m: PathMetadata): number {
 	if (m.source === "builtin") return 6;
@@ -51,8 +51,8 @@ export function createAccumulator(): ResourceAccumulator {
 	};
 }
 
-export function toResolvedPaths(accumulator: ResourceAccumulator): ResolvedPaths {
-	const mapToResolved = (entries: ResourceMap): ResolvedResource[] => {
+export async function toResolvedPaths(accumulator: ResourceAccumulator): Promise<ResolvedPaths> {
+	const mapToResolved = async (entries: ResourceMap): Promise<ResolvedResource[]> => {
 		const resolved = Array.from(entries.entries()).map(([path, { metadata, enabled }]) => ({
 			path,
 			enabled,
@@ -60,21 +60,22 @@ export function toResolvedPaths(accumulator: ResourceAccumulator): ResolvedPaths
 		}));
 		resolved.sort((a, b) => resourcePrecedenceRank(a.metadata) - resourcePrecedenceRank(b.metadata));
 
+		const pathKeys = await Promise.all(resolved.map((entry) => getResourcePathKeyAsync(entry.path)));
 		const seen = new Set<string>();
-		return resolved.filter((entry) => {
-			const pathKey = getResourcePathKey(entry.path);
+		return resolved.filter((_entry, index) => {
+			const pathKey = pathKeys[index]!;
 			if (seen.has(pathKey)) return false;
 			seen.add(pathKey);
 			return true;
 		});
 	};
 
-	return {
-		extensions: mapToResolved(accumulator.extensions),
-		skills: mapToResolved(accumulator.skills),
-		prompts: mapToResolved(accumulator.prompts),
-		themes: mapToResolved(accumulator.themes),
-		workflows: mapToResolved(accumulator.workflows),
-		mcpServers: [...accumulator.mcpServers.values()],
-	};
+	const [extensions, skills, prompts, themes, workflows] = await Promise.all([
+		mapToResolved(accumulator.extensions),
+		mapToResolved(accumulator.skills),
+		mapToResolved(accumulator.prompts),
+		mapToResolved(accumulator.themes),
+		mapToResolved(accumulator.workflows),
+	]);
+	return { extensions, skills, prompts, themes, workflows, mcpServers: [...accumulator.mcpServers.values()] };
 }

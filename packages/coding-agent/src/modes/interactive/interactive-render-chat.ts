@@ -23,7 +23,7 @@ import { ThemedText } from "./components/themed-text.js";
 import type { ToolGroupRole } from "./components/tool-block.ts";
 import { assistantCallBreaks, type ToolGroupMemberState, ToolGroupTracker } from "./components/tool-group-tracker.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
-import { countChatMessages, InteractiveModeBase } from "./interactive-mode-base.ts";
+import { countChatMessages, InteractiveModeBase, isChatMessageComponent } from "./interactive-mode-base.ts";
 import {
 	type AgentMessage,
 	APP_NAME,
@@ -35,13 +35,16 @@ import {
 	type ChatMessageRenderOptions,
 	CompactionBoundaryMessageComponent,
 	type Component,
+	Container,
 	CustomMessageComponent,
 	chatEntriesFromAgentMessages,
-	hasTrustRequiringProjectResources,
+	getChangelogPath,
+	hasTrustRequiringProjectResourcesAsync,
 	Markdown,
 	type Message,
 	type PersistedMessageMeta,
 	parseSkillBlock,
+	preloadChangelog,
 	recordTimeSinceReset,
 	renderChatMessageEntry,
 	type SessionContext,
@@ -54,6 +57,7 @@ import {
 	UserMessageComponent,
 	type VerbatimCompactionResult,
 } from "./interactive-mode-deps.ts";
+import { StartupChatContainer, trackChatHistoryBuild } from "./interactive-startup-chat-container.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import { refreshInteractiveTasks } from "./interactive-task-projection.js";
 
@@ -752,6 +756,149 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 	this.ui.requestRender();
 };
 
+type TranscriptStep =
+	| { readonly kind: "entry"; readonly entry: ChatMessageEntry }
+	| { readonly kind: "custom"; readonly entry: CustomEntry }
+	| { readonly kind: "cost"; readonly type: "compaction" | "branch_summary"; readonly usage: Usage };
+
+const TAIL_STEPS = 128;
+const HISTORY_SLICE_BUDGET_MS = 8;
+const HISTORY_SLICE_STEPS = 24;
+
+function planTranscript(
+	mode: InteractiveModeBase,
+	sessionEntries: SessionEntry[],
+	options: { populateHistory?: boolean; suppressCompactionBoundary?: VerbatimCompactionResult },
+): TranscriptStep[] {
+	const steps: TranscriptStep[] = [];
+	const grouping = mainToolGrouping(mode);
+	resetMainToolGroup(mode);
+	let messageBuffer: AgentMessage[] = [];
+	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
+	let firstMessage = true;
+	const flushMessages = (): void => {
+		if (options.suppressCompactionBoundary && firstMessage) {
+			// A boundary replays after the system prompt it recorded, so the boundary is the first non-system message.
+			const boundaryIndex = messageBuffer.findIndex((message) => message.role !== "system");
+			if (isSynthesizedCompactionBoundary(messageBuffer[boundaryIndex], options.suppressCompactionBoundary)) {
+				messageBuffer = messageBuffer.filter((_, index) => index !== boundaryIndex);
+			}
+		}
+		firstMessage = false;
+		breakMainToolGroup(mode);
+		for (const entry of chatEntriesFromAgentMessages(messageBuffer, messageMeta, { tracker: grouping.tracker })) {
+			if (entry.kind === "tool" && entry.isPartial !== false) {
+				const startedAt = grouping.starts.get(entry.toolCallId);
+				if (startedAt !== undefined) {
+					entry.executionStarted = true;
+					entry.startedAt = startedAt;
+					entry.argsComplete = true;
+				}
+			}
+			if (entry.kind === "assistant")
+				grouping.carriedBreak = assistantCallBreaks(entry.message.content, grouping.carriedBreak).trailing;
+			else if (entry.kind !== "tool") grouping.carriedBreak = false;
+			steps.push({ kind: "entry", entry });
+			if (options.populateHistory && entry.kind === "user") mode.editor.addToHistory?.(entry.text);
+		}
+		messageBuffer = [];
+	};
+	for (const entry of sessionEntries) {
+		if (entry.type === "custom") {
+			// An unrendered record between a tool call and its result must not split them into two cards.
+			if (!mode.session.extensionRunner.getEntryRenderer(entry.customType)) continue;
+			flushMessages();
+			steps.push({ kind: "custom", entry });
+		} else {
+			const messages = sessionEntryToContextMessages(entry);
+			for (const message of messages) messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
+			messageBuffer.push(...messages);
+			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
+				flushMessages();
+				const suppressedLiveBoundary =
+					entry.type === "compaction" &&
+					options.suppressCompactionBoundary !== undefined &&
+					entry.summary === options.suppressCompactionBoundary.compactedText &&
+					entry.tokensBefore === options.suppressCompactionBoundary.tokensBefore;
+				if (!suppressedLiveBoundary) steps.push({ kind: "cost", type: entry.type, usage: entry.usage });
+			}
+		}
+	}
+	flushMessages();
+	return steps;
+}
+
+function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, latest = true): void {
+	if (step.kind === "custom") {
+		mode.addCustomEntryToChat(step.entry);
+		return;
+	}
+	if (step.kind === "cost") {
+		mode.addCompactionCostNotice(step.type, step.usage);
+		return;
+	}
+	const { entry } = step;
+	const component = mode.addRenderedChatEntry(entry);
+	if (entry.kind === "tool" && isGroupedToolComponent(component)) {
+		const grouping = mainToolGrouping(mode);
+		grouping.tracker.bind(entry.toolCallId, (role) => {
+			entry.groupRole = role;
+			component.setGroupRole(role);
+		});
+		if (latest) grouping.lastMember = component;
+	}
+	if (entry.kind === "assistant") addServiceTierWarnings(mode, entry.message);
+	if (entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
+		mode.pendingTools.set(entry.toolCallId, component);
+	}
+}
+
+function buildHistoryInSlices(mode: InteractiveModeBase, history: readonly TranscriptStep[], end: Component): void {
+	const chat = mode.chatContainer;
+	let remaining = history.length;
+	let before = end;
+	const build = (budgetMs: number, maxSteps: number): boolean => {
+		const at = chat.children.indexOf(before);
+		if (at < 0 || remaining === 0) return false;
+		const deadline = performance.now() + budgetMs;
+		const built: Component[][] = [];
+		const preceding = new Spacer(0);
+		const scratch = new Container();
+		mode.chatContainer = scratch;
+		try {
+			for (let steps = 0; remaining > 0 && steps < maxSteps; steps++) {
+				scratch.children = [preceding];
+				addTranscriptStep(mode, history[--remaining]!, false);
+				built.push(scratch.children.slice(1));
+				if (performance.now() >= deadline) break;
+			}
+		} finally {
+			mode.chatContainer = chat;
+		}
+		const components = built.reverse().flat();
+		if (components.length > 0) {
+			if (chat instanceof StartupChatContainer) chat.insertChildren(at, components);
+			else chat.children.splice(at, 0, ...components);
+			before = components[0]!;
+			const messages = components.filter(isChatMessageComponent).length;
+			if (messages > 0) (mode.ui as AltScreenMessageCounterHost).newMessages?.historyPrepended(messages);
+			mode.ui.requestRender();
+		}
+		if (remaining > 0) return true;
+		chat.removeChild(end);
+		return false;
+	};
+	const tracked = trackChatHistoryBuild(chat, () => {
+		build(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
+		tracked.done();
+	});
+	const slice = (): void => {
+		if (build(HISTORY_SLICE_BUDGET_MS, HISTORY_SLICE_STEPS)) setImmediate(slice);
+		else tracked.done();
+	};
+	setImmediate(slice);
+}
+
 InteractiveModeBase.prototype.renderSessionEntries = function (
 	this: InteractiveModeBase,
 	sessionEntries: SessionEntry[],
@@ -768,53 +915,14 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
 	}
-	const grouping = mainToolGrouping(this);
-	resetMainToolGroup(this);
-	let messageBuffer: AgentMessage[] = [];
-	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
-	let firstMessage = true;
-	const flushMessages = (): void => {
-		if (options.suppressCompactionBoundary && firstMessage) {
-			// A boundary replays after the system prompt it recorded, so the boundary is the first non-system message.
-			const boundaryIndex = messageBuffer.findIndex((message) => message.role !== "system");
-			if (isSynthesizedCompactionBoundary(messageBuffer[boundaryIndex], options.suppressCompactionBoundary)) {
-				messageBuffer = messageBuffer.filter((_, index) => index !== boundaryIndex);
-			}
-		}
-		firstMessage = false;
-		breakMainToolGroup(this);
-		const entries = chatEntriesFromAgentMessages(messageBuffer, messageMeta, { tracker: grouping.tracker });
-		renderGroupedChatEntries(this, entries, (entry, component) => {
-			if (entry.kind === "assistant") addServiceTierWarnings(this, entry.message);
-			if (entry.kind === "tool" && entry.isPartial !== false && component instanceof ToolExecutionComponent) {
-				this.pendingTools.set(entry.toolCallId, component);
-			}
-			if (options.populateHistory && entry.kind === "user") this.editor.addToHistory?.(entry.text);
-		});
-		messageBuffer = [];
-	};
-	for (const entry of sessionEntries) {
-		if (entry.type === "custom") {
-			// An unrendered record between a tool call and its result must not split them into two cards.
-			if (!this.session.extensionRunner.getEntryRenderer(entry.customType)) continue;
-			flushMessages();
-			this.addCustomEntryToChat(entry);
-		} else {
-			const messages = sessionEntryToContextMessages(entry);
-			for (const message of messages) messageMeta.set(message, { id: entry.id, timestamp: entry.timestamp });
-			messageBuffer.push(...messages);
-			if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
-				flushMessages();
-				const suppressedLiveBoundary =
-					entry.type === "compaction" &&
-					options.suppressCompactionBoundary !== undefined &&
-					entry.summary === options.suppressCompactionBoundary.compactedText &&
-					entry.tokensBefore === options.suppressCompactionBoundary.tokensBefore;
-				if (!suppressedLiveBoundary) this.addCompactionCostNotice(entry.type, entry.usage);
-			}
-		}
+	const steps = planTranscript(this, sessionEntries, options);
+	const tailStart = this.ui.mode === "fullscreen" ? Math.max(0, steps.length - TAIL_STEPS) : 0;
+	if (tailStart > 0) {
+		const historyEnd = new Spacer(0);
+		this.chatContainer.addChild(historyEnd);
+		buildHistoryInSlices(this, steps.slice(0, tailStart), historyEnd);
 	}
-	flushMessages();
+	for (let index = tailStart; index < steps.length; index++) addTranscriptStep(this, steps[index]!);
 	if (this.settingsManager.getShowCacheMissNotices()) {
 		for (const miss of collectCacheMisses(
 			sessionEntries,
@@ -872,23 +980,36 @@ InteractiveModeBase.prototype.renderInitialMessages = function (this: Interactiv
 };
 
 function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
-	if (mode.settingsManager.isProjectTrusted() || !hasTrustRequiringProjectResources(mode.sessionManager.getCwd())) {
+	if (mode.settingsManager.isProjectTrusted()) {
 		return;
 	}
-	if (mode.chatContainer.children.length > 0) {
-		mode.chatContainer.addChild(new Spacer(1));
-	}
-	mode.chatContainer.addChild(
-		new ThemedText(
-			() =>
-				theme.fg(
-					"warning",
-					`This project is not trusted. Project ${CONFIG_DIR_NAME} resources and packages are ignored. Use /trust to save a trust decision, then restart ${APP_NAME}.`,
-				),
-			1,
-			0,
-		),
-	);
+	const chat = mode.chatContainer;
+	const separated = chat.children.length > 0;
+	const slot = new Container();
+	chat.addChild(slot);
+	const settle = (requiresTrust: boolean) => {
+		if (!chat.children.includes(slot)) return;
+		if (!requiresTrust) {
+			chat.removeChild(slot);
+			return;
+		}
+		if (separated) {
+			slot.addChild(new Spacer(1));
+		}
+		slot.addChild(
+			new ThemedText(
+				() =>
+					theme.fg(
+						"warning",
+						`This project is not trusted. Project ${CONFIG_DIR_NAME} resources and packages are ignored. Use /trust to save a trust decision, then restart ${APP_NAME}.`,
+					),
+				1,
+				0,
+			),
+		);
+		mode.ui.requestRender();
+	};
+	void hasTrustRequiringProjectResourcesAsync(mode.sessionManager.getCwd()).then(settle, () => settle(false));
 }
 
 InteractiveModeBase.prototype.getUserInput = async function (
@@ -916,12 +1037,13 @@ InteractiveModeBase.prototype.getUserInput = async function (
 				markLifecycleTiming("interactive-input-handler-ready");
 				void (async () => {
 					await yieldToEventLoop();
+					this.footerDataProvider.startGitWatcher();
 					// pi parity: the changelog/first-run notices need nothing from
 					// extensions — render them right after the input handler is ready
 					// instead of gating them behind the deferred extension reload (or,
 					// when the user types immediately, behind the whole agent turn).
+					await preloadChangelog(getChangelogPath());
 					this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
-					this.footerDataProvider.startGitWatcher();
 					if (this.deferredStartupPending) {
 						await this.ensureDeferredStartupComplete();
 					}

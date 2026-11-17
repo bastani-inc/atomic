@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -802,22 +803,22 @@ test("a child released just as pause stops it is paused, not released (#4326)", 
 	);
 });
 
-function repositoryWithSeed(): string {
+async function repositoryWithSeed(): Promise<string> {
 	const root = makeTempDirectory("subagent-wake-worktree-");
 	cleanups.push(() => removeTempDirectory(root));
-	runGitChecked(root, ["init", "-b", "main"]);
-	runGitChecked(root, ["config", "user.name", "Atomic Test"]);
-	runGitChecked(root, ["config", "user.email", "atomic@example.com"]);
-	runGitChecked(root, ["config", "core.autocrlf", "false"]);
+	await runGitChecked(root, ["init", "-b", "main"]);
+	await runGitChecked(root, ["config", "user.name", "Atomic Test"]);
+	await runGitChecked(root, ["config", "user.email", "atomic@example.com"]);
+	await runGitChecked(root, ["config", "core.autocrlf", "false"]);
 	writeFileSync(join(root, "seed.txt"), "seed\n");
-	runGitChecked(root, ["add", "seed.txt"]);
-	runGitChecked(root, ["commit", "--no-gpg-sign", "-m", "initial"]);
+	await runGitChecked(root, ["add", "seed.txt"]);
+	await runGitChecked(root, ["commit", "--no-gpg-sign", "-m", "initial"]);
 	return root;
 }
 
 async function childWithDirtyWorktree(h: Harness, runId: string) {
-	const repo = repositoryWithSeed();
-	const setup = createWorktrees(repo, runId, 1);
+	const repo = await repositoryWithSeed();
+	const setup = await createWorktrees(repo, runId, 1);
 	const worktree = setup.worktrees[0];
 	assert.ok(worktree);
 	const run = registerRunWorktrees(runId, setup);
@@ -829,7 +830,7 @@ async function childWithDirtyWorktree(h: Harness, runId: string) {
 	assert.equal(runWorktreeRecord(runId, 0)?.path, worktree.path);
 	const draft = join(worktree.agentCwd, "draft.md");
 	writeFileSync(draft, "unsaved work\n");
-	return { taskId, worktree, draft };
+	return { taskId, worktree, draft, repo };
 }
 
 test("a released child's worktree with unsaved work is kept for its wake (#4326)", async () => {
@@ -848,12 +849,14 @@ test("a released child's worktree with unsaved work is kept for its wake (#4326)
 test("a child that finishes normally does not keep its worktree (#4326)", async () => {
 	const h = harness();
 	h.original = "completes";
-	const { taskId, worktree, draft } = await childWithDirtyWorktree(h, "wt-finished");
+	const { taskId, worktree, draft, repo } = await childWithDirtyWorktree(h, "wt-finished");
 	h.originalGate?.resolve();
 	await settled(h, taskId);
 	await h.waitForLatest("wt-finished:0", (record) => record.terminalStatus === "ok");
+	const branchListed = () =>
+		execFileSync("git", ["branch", "--list", worktree.branch], { cwd: repo, encoding: "utf8" }).trim() !== "";
 	const deadline = Date.now() + RECORD_WAIT_MS;
-	while (existsSync(worktree.path) && Date.now() < deadline) await sleep(10);
+	while ((existsSync(worktree.path) || branchListed()) && Date.now() < deadline) await sleep(10);
 
 	assert.equal(existsSync(draft), false, "a finished child's worktree goes with its run");
 });

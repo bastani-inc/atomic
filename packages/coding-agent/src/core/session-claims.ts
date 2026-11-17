@@ -20,9 +20,9 @@ import {
 	renameSync,
 	rmSync,
 	statSync,
-	utimesSync,
 	writeSync,
 } from "node:fs";
+import { readFile, rm, stat, utimes } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { prepareTakeoverMutex, putBack, removeAside, takeTakeoverMutex } from "./lock-takeover.js";
@@ -61,7 +61,12 @@ function claimPath(agentDir: string, sessionId: string): string {
 	return join(agentDir, "session-claims", `${sessionId}.json`);
 }
 
-function readClaim(path: string): { readonly record: ClaimRecord | undefined; readonly ageMs: number } | undefined {
+interface ReadClaim {
+	readonly record: ClaimRecord | undefined;
+	readonly ageMs: number;
+}
+
+function readClaim(path: string): ReadClaim | undefined {
 	let text: string;
 	let ageMs: number;
 	try {
@@ -71,6 +76,23 @@ function readClaim(path: string): { readonly record: ClaimRecord | undefined; re
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw error;
 	}
+	return parseClaim(text, ageMs);
+}
+
+async function readClaimAsync(path: string): Promise<ReadClaim | undefined> {
+	let text: string;
+	let ageMs: number;
+	try {
+		ageMs = Date.now() - (await stat(path)).mtimeMs;
+		text = await readFile(path, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+	return parseClaim(text, ageMs);
+}
+
+function parseClaim(text: string, ageMs: number): ReadClaim {
 	let parsed: Partial<ClaimRecord> | undefined;
 	try {
 		parsed = JSON.parse(text) as Partial<ClaimRecord>;
@@ -160,11 +182,8 @@ function removeDeadClaim(path: string, token: string | undefined): void {
 function refreshClaims(): void {
 	const now = new Date();
 	for (const claim of held.values()) {
-		try {
-			utimesSync(claim.path, now, now);
-		} catch {
-			// Best effort: only a holder on another host is judged by its heartbeat.
-		}
+		// Best effort: only a holder on another host is judged by its heartbeat.
+		utimes(claim.path, now, now).catch(() => {});
 	}
 }
 
@@ -172,18 +191,45 @@ function ownClaim(path: string): boolean {
 	return readClaim(path)?.record?.token === PROCESS_TOKEN;
 }
 
-function dropClaim(sessionId: string, claim: HeldClaim): void {
-	if (held.get(sessionId) !== claim) return;
+function forgetClaim(sessionId: string, claim: HeldClaim): boolean {
+	if (held.get(sessionId) !== claim) return false;
 	held.delete(sessionId);
 	if (held.size === 0 && heartbeat !== undefined) {
 		clearInterval(heartbeat);
 		heartbeat = undefined;
 	}
+	return true;
+}
+
+function dropClaim(sessionId: string, claim: HeldClaim): void {
+	if (!forgetClaim(sessionId, claim)) return;
 	try {
 		if (ownClaim(claim.path)) rmSync(claim.path);
 	} catch {
 		// Gone already; a claim left behind is taken over once this process is gone.
 	}
+}
+
+const releasing = new Map<string, Promise<void>>();
+
+function dropClaimAsync(sessionId: string, claim: HeldClaim): Promise<void> {
+	if (!forgetClaim(sessionId, claim)) return Promise.resolve();
+	const removal: Promise<void> = removeOwnClaim(claim.path).finally(() => {
+		if (releasing.get(sessionId) === removal) releasing.delete(sessionId);
+	});
+	releasing.set(sessionId, removal);
+	return removal;
+}
+
+async function removeOwnClaim(path: string): Promise<void> {
+	try {
+		if ((await readClaimAsync(path))?.record?.token === PROCESS_TOKEN) await rm(path);
+	} catch {}
+}
+
+async function releaseFinished(sessionId: string): Promise<void> {
+	for (let pending = releasing.get(sessionId); pending !== undefined; pending = releasing.get(sessionId))
+		await pending;
 }
 
 // A process that exits with claims removes them; one killed leaves them for the next resume to take over.
@@ -192,14 +238,16 @@ process.on("exit", () => {
 });
 
 export async function prepareSessionClaim(sessionId: string, options: { readonly agentDir: string }): Promise<void> {
+	await releaseFinished(sessionId);
 	const path = claimPath(options.agentDir, sessionId);
-	const holder = claimHolder(path);
+	const holder = await claimHolderAsync(path);
 	await prepareTakeoverMutex(path, holder);
+	await releaseFinished(sessionId);
 }
 
-function claimHolder(path: string): ClaimRecord | undefined {
+async function claimHolderAsync(path: string): Promise<ClaimRecord | undefined> {
 	try {
-		return readClaim(path)?.record;
+		return (await readClaimAsync(path))?.record;
 	} catch {
 		return undefined;
 	}
@@ -207,14 +255,16 @@ function claimHolder(path: string): ClaimRecord | undefined {
 
 /**
  * Claims `sessionId` for this process before a resume writes to it or restores its checkouts (#5135). Rejects with a
- * {@link SessionAlreadyOpenError} naming the holder, having changed nothing, when another live process holds it. A
- * claim this process holds already is kept as it is. Returns a release for a resume that stops before its session
+ * {@link SessionAlreadyOpenError} naming the holder, having changed nothing, when another live process holds it, or
+ * while this process still releases it ({@link prepareSessionClaim} waits for that release). A claim this process
+ * holds already is kept as it is. Returns a release for a resume that stops before its session
  * opens; once the session's open marker took the claim over (see {@link attachSessionClaim}) the release does
  * nothing, and the claim lasts until the session closes or this process exits.
  */
 export function claimSession(sessionId: string, options: { readonly agentDir: string }): () => void {
 	// Held by this process already: its holder keeps it.
 	if (held.has(sessionId)) return () => {};
+	if (releasing.has(sessionId)) throw new SessionAlreadyOpenError(sessionId, { pid: process.pid, host: hostname() });
 	const path = claimPath(options.agentDir, sessionId);
 	mkdirSync(join(options.agentDir, "session-claims"), { recursive: true });
 	const started = processStartToken(process.pid);
@@ -249,11 +299,11 @@ export function claimSession(sessionId: string, options: { readonly agentDir: st
 
 /**
  * Hands the claim this process holds for `sessionId`, if any, to the session's open marker (#5135): the claim then
- * lasts until the returned function is called, when the session closes.
+ * lasts until the returned function is called, when the session closes. That function never rejects.
  */
-export function attachSessionClaim(sessionId: string): (() => void) | undefined {
+export function attachSessionClaim(sessionId: string): (() => Promise<void>) | undefined {
 	const claim = held.get(sessionId);
 	if (claim === undefined || claim.attached) return undefined;
 	claim.attached = true;
-	return () => dropClaim(sessionId, claim);
+	return () => dropClaimAsync(sessionId, claim);
 }

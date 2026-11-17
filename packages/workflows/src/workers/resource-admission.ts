@@ -983,16 +983,20 @@ async function settleProcessGroups(
 			groups.set(identity.id, [...(groups.get(identity.id) ?? []), row.operation]);
 		else if (!unprobeable.includes(identity.id)) unprobeable.push(identity.id);
 	}
-	const alive = () => [...groups.keys()].filter((group) => processGroupState(group) === "alive");
+	const alive = async () => {
+		const living: number[] = [];
+		for (const group of groups.keys()) if ((await processGroupState(group)) === "alive") living.push(group);
+		return living;
+	};
 	const settle = async (grace: number) => {
-		let remaining = alive();
+		let remaining = await alive();
 		for (let waited = 0; remaining.length > 0 && waited < grace; waited += REAP_POLL_MS) {
 			await reapPause(REAP_POLL_MS);
-			remaining = alive();
+			remaining = await alive();
 		}
 		return remaining;
 	};
-	let survivors = alive();
+	let survivors = await alive();
 	if (reap && survivors.length > 0) {
 		for (const group of survivors) signalProcessGroup(group, "SIGTERM");
 		survivors = await settle(REAP_TERM_GRACE_MS);

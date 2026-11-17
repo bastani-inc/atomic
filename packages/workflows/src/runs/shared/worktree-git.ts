@@ -1,4 +1,4 @@
-import * as fs from "node:fs";
+import type { Stats } from "node:fs";
 import * as path from "node:path";
 import { isPathInside } from "@bastani/atomic";
 import {
@@ -8,15 +8,25 @@ import {
 	removeEmptyWorktreeBucket,
 } from "./worktree-allocation.js";
 import { type GitWorktreeGenerationAnchor, openGitWorktreeGenerationAnchor } from "./worktree-generation.js";
-import { gitFailureMessage, isGitTimeoutResult, runGit, runGitReadOnlyProbe } from "./worktree-git-runner.js";
-import { findCanonicalGitRoot, resolveGitHeadBranch } from "./worktree-root.js";
+import { gitFailureMessage, isGitTimeoutResult } from "./worktree-git-runner.js";
+import {
+	gitReadOnlyProbeSteps,
+	gitSteps,
+	io,
+	runWorktreeSteps,
+	runWorktreeStepsSync,
+	type WorktreeSteps,
+} from "./worktree-io.js";
+import { findCanonicalGitRootSteps, resolveGitHeadBranchSteps } from "./worktree-root.js";
 import type { GitResult, GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./worktree-types.js";
 
-export function resolveInvocationGitBranch(cwd: string): string | undefined {
-	return resolveGitHeadBranch(cwd, (repoRoot) => {
-		const result = runGitReadOnlyProbe(repoRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
-		return result.status === 0 ? result.stdout.trim() : undefined;
-	});
+export function resolveInvocationGitBranch(cwd: string): Promise<string | undefined> {
+	return runWorktreeSteps(
+		resolveGitHeadBranchSteps(cwd, function* (repoRoot) {
+			const result = yield* gitReadOnlyProbeSteps(repoRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+			return result.status === 0 ? result.stdout.trim() : undefined;
+		}),
+	);
 }
 
 export { withWorktreeBucketIdsForTest } from "./worktree-allocation.js";
@@ -31,8 +41,8 @@ export {
 } from "./worktree-git-runner.js";
 
 export interface GitWorktreeSetupCache {
-	get(options: GitWorktreeSetupOptions): GitWorktreeSetupResult;
-	dispose(): void;
+	get(options: GitWorktreeSetupOptions): Promise<GitWorktreeSetupResult>;
+	dispose(): Promise<void>;
 }
 
 /** The Git checkout that contains the workflow's invoking cwd, when there is one. */
@@ -64,10 +74,10 @@ interface CachedGitWorktreeSetup extends ResolvedGitWorktreeSetup {
 	readonly identity: GitWorktreeIdentity;
 }
 
-function gitWorktreeSetupCacheKey(request: GitWorktreeSetupRequest): string {
+function* gitWorktreeSetupCacheKey(request: GitWorktreeSetupRequest): WorktreeSteps<string> {
 	return JSON.stringify([
-		comparablePathThroughExistingAncestor(request.options.cwd),
-		comparablePathThroughExistingAncestor(request.target),
+		yield* comparablePathThroughExistingAncestor(request.options.cwd),
+		yield* comparablePathThroughExistingAncestor(request.target),
 	]);
 }
 
@@ -77,44 +87,64 @@ function gitWorktreeSetupCacheKey(request: GitWorktreeSetupRequest): string {
  * run finds its checkout again instead of allocating another one.
  */
 export function createGitWorktreeSetupCache(ownerRunId?: string): GitWorktreeSetupCache {
-	const results = new Map<string, CachedGitWorktreeSetup>();
+	const results = new Map<string, Promise<CachedGitWorktreeSetup>>();
 	let disposed = false;
+	const assertOpen = (): void => {
+		if (disposed) throw new Error("Git worktree setup cache is already disposed");
+	};
 	return {
-		get(options) {
-			if (disposed) throw new Error("Git worktree setup cache is already disposed");
-			const request = resolveGitWorktreeSetupRequest(options);
-			const key = gitWorktreeSetupCacheKey(request);
-			const cached = results.get(key);
-			if (cached !== undefined) {
-				assertCachedGitWorktreeIdentity(cached, options);
+		async get(options) {
+			assertOpen();
+			const request = await runWorktreeSteps(resolveGitWorktreeSetupRequest(options));
+			const key = await runWorktreeSteps(gitWorktreeSetupCacheKey(request));
+			const existing = results.get(key);
+			if (existing !== undefined) {
+				const cached = await existing;
+				await assertCachedGitWorktreeIdentity(cached, options);
 				return cached.result;
 			}
-			const setup = setupGitWorktreeFromRequest(request, ownerRunId);
-			results.set(key, { ...setup, identity: captureGitWorktreeIdentity(setup) });
-			return setup.result;
+			assertOpen();
+			const setup = setupCachedGitWorktree(request, ownerRunId);
+			results.set(key, setup);
+			setup.catch(() => {
+				if (results.get(key) === setup) results.delete(key);
+			});
+			return (await setup).result;
 		},
-		dispose() {
+		async dispose() {
 			if (disposed) return;
 			disposed = true;
+			const setups = await Promise.allSettled(results.values());
+			results.clear();
 			let firstError: Error | undefined;
-			for (const cached of results.values()) {
+			for (const setup of setups) {
+				if (setup.status === "rejected") continue;
 				try {
-					cached.identity.generation.dispose();
+					await setup.value.identity.generation.dispose();
 				} catch (error) {
 					firstError ??= error instanceof Error ? error : new Error(String(error));
 				}
 			}
-			results.clear();
 			if (firstError !== undefined) throw firstError;
 		},
 	};
 }
 
-export function setupGitWorktreeCached(
+async function setupCachedGitWorktree(
+	request: GitWorktreeSetupRequest,
+	ownerRunId: string | undefined,
+): Promise<CachedGitWorktreeSetup> {
+	const setup = await runWorktreeSteps(setupGitWorktreeFromRequest(request, ownerRunId));
+	return { ...setup, identity: await captureGitWorktreeIdentity(setup) };
+}
+
+export async function setupGitWorktreeCached(
 	options: GitWorktreeSetupOptions,
 	cache?: GitWorktreeSetupCache,
-): GitWorktreeSetupResult {
-	return cache?.get(options) ?? setupGitWorktree(options);
+): Promise<GitWorktreeSetupResult> {
+	return cache === undefined
+		? (await runWorktreeSteps(setupGitWorktreeSteps(options))).result
+		: await cache.get(options);
 }
 
 function quoteShellArg(value: string): string {
@@ -144,46 +174,47 @@ function pathAncestors(value: string): string[] {
 	}
 }
 
-function shouldPreserveLogicalPath(logicalPath: string): boolean {
-	return pathAncestors(logicalPath).some((ancestor) => {
+function* shouldPreserveLogicalPath(logicalPath: string): WorktreeSteps<boolean> {
+	for (const ancestor of pathAncestors(logicalPath)) {
 		try {
-			return fs.lstatSync(ancestor).isSymbolicLink() && hasGrandparent(ancestor);
-		} catch {
-			return false;
-		}
-	});
+			if ((yield* io("lstat", ancestor)).isSymbolicLink() && hasGrandparent(ancestor)) return true;
+		} catch {}
+	}
+	return false;
 }
 
-function canonicalizePreservingSymlinks(value: string): string {
+function* canonicalizePreservingSymlinks(value: string): WorktreeSteps<string> {
 	const logicalPath = path.resolve(value);
-	const preserveLogicalPath = shouldPreserveLogicalPath(logicalPath);
+	const preserveLogicalPath = yield* shouldPreserveLogicalPath(logicalPath);
 	try {
-		const canonical = fs.realpathSync.native(logicalPath);
+		const canonical = yield* io("realpath", logicalPath);
 		return preserveLogicalPath && canonical !== logicalPath ? logicalPath : canonical;
 	} catch {
 		return logicalPath;
 	}
 }
 
-function resolveGitWorktreePath(value: string, baseDir: string): string {
+function* resolveGitWorktreePath(value: string, baseDir: string): WorktreeSteps<string> {
 	const trimmed = value.trim();
 	if (!trimmed) throw new Error("gitWorktreeDir cannot be empty");
 	if (trimmed.includes("\0")) {
 		throw new Error("gitWorktreeDir contains an unusable null byte; provide a valid path or omit gitWorktreeDir.");
 	}
-	return canonicalizePreservingSymlinks(path.isAbsolute(trimmed) ? trimmed : path.resolve(baseDir, trimmed));
+	return yield* canonicalizePreservingSymlinks(path.isAbsolute(trimmed) ? trimmed : path.resolve(baseDir, trimmed));
 }
 
-function comparableRealPath(value: string): string {
-	const realpath = fs.realpathSync.native(value).replace(/\\/g, "/");
+function* comparableRealPath(value: string): WorktreeSteps<string> {
+	const realpath = (yield* io("realpath", value)).replace(/\\/g, "/");
 	return process.platform === "win32" ? realpath.toLowerCase() : realpath;
 }
 
 /** Split `value` into its nearest existing ancestor and the missing components below it. */
-function nearestExistingAncestor(value: string): { readonly existing: string; readonly missing: readonly string[] } {
+function* nearestExistingAncestor(
+	value: string,
+): WorktreeSteps<{ readonly existing: string; readonly missing: readonly string[] }> {
 	let existing = path.resolve(value);
 	const missing: string[] = [];
-	while (!pathExistsSync(existing)) {
+	while (!(yield* pathExists(existing))) {
 		const parent = path.dirname(existing);
 		if (parent === existing) break;
 		missing.unshift(path.basename(existing));
@@ -192,24 +223,24 @@ function nearestExistingAncestor(value: string): { readonly existing: string; re
 	return { existing, missing };
 }
 
-function comparablePathThroughExistingAncestor(value: string): string {
-	const { existing, missing } = nearestExistingAncestor(value);
-	const resolved = path.resolve(comparableRealPath(existing), ...missing).replace(/\\/g, "/");
+function* comparablePathThroughExistingAncestor(value: string): WorktreeSteps<string> {
+	const { existing, missing } = yield* nearestExistingAncestor(value);
+	const resolved = path.resolve(yield* comparableRealPath(existing), ...missing).replace(/\\/g, "/");
 	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-function isFileOrLink(value: string): boolean {
+function* isFileOrLink(value: string): WorktreeSteps<boolean> {
 	try {
-		const entry = fs.lstatSync(value);
+		const entry = yield* io("lstat", value);
 		return entry.isFile() || entry.isSymbolicLink();
 	} catch {
 		return false;
 	}
 }
 
-function isDirectory(value: string): boolean {
+function* isDirectory(value: string): WorktreeSteps<boolean> {
 	try {
-		return fs.statSync(value).isDirectory();
+		return (yield* io("stat", value)).isDirectory();
 	} catch {
 		return false;
 	}
@@ -221,27 +252,27 @@ function isDirectory(value: string): boolean {
  * worktree's admin directory) or `objects` and `refs` (a main, bare or separate
  * Git directory).
  */
-function looksLikeGitDirectory(directory: string): boolean {
-	if (!isDirectory(directory)) return false;
+function* looksLikeGitDirectory(directory: string): WorktreeSteps<boolean> {
+	if (!(yield* isDirectory(directory))) return false;
 	if (path.basename(directory) === ".git") return true;
-	if (!isFileOrLink(path.join(directory, "HEAD"))) return false;
-	if (isFileOrLink(path.join(directory, "commondir"))) return true;
-	return isDirectory(path.join(directory, "objects")) && isDirectory(path.join(directory, "refs"));
+	if (!(yield* isFileOrLink(path.join(directory, "HEAD")))) return false;
+	if (yield* isFileOrLink(path.join(directory, "commondir"))) return true;
+	return (yield* isDirectory(path.join(directory, "objects"))) && (yield* isDirectory(path.join(directory, "refs")));
 }
 
 /** The Git directory that contains `target` (or would contain it once created), if any. */
-function enclosingGitMetadataDirectory(target: string): string | undefined {
-	const { existing } = nearestExistingAncestor(target);
+function* enclosingGitMetadataDirectory(target: string): WorktreeSteps<string | undefined> {
+	const { existing } = yield* nearestExistingAncestor(target);
 	let realExisting = existing;
 	try {
-		realExisting = fs.realpathSync.native(existing);
+		realExisting = yield* io("realpath", existing);
 	} catch {
 		// Keep the logical spelling when the ancestor cannot be resolved.
 	}
 	for (const candidate of new Set([...pathAncestors(existing), ...pathAncestors(realExisting)])) {
-		if (looksLikeGitDirectory(candidate)) return candidate;
+		if (yield* looksLikeGitDirectory(candidate)) return candidate;
 	}
-	const insideGitDir = runGitReadOnlyProbe(existing, ["rev-parse", "--is-inside-git-dir"]);
+	const insideGitDir = yield* gitReadOnlyProbeSteps(existing, ["rev-parse", "--is-inside-git-dir"]);
 	if (insideGitDir.status !== 0 && isGitTimeoutResult(insideGitDir)) {
 		throw new Error(
 			`Timed out while validating gitWorktreeDir ${target}. Git reported: ${gitFailureMessage(insideGitDir)}`,
@@ -259,26 +290,26 @@ function enclosingGitMetadataDirectory(target: string): string | undefined {
  * reuse; empty, missing and container paths below a working tree are rejected so
  * no checkout is nested inside another repository.
  */
-function assertSafeGitWorktreeTarget(target: string, invokingRoot: string | undefined): void {
-	const gitDirectory = enclosingGitMetadataDirectory(target);
+function* assertSafeGitWorktreeTarget(target: string, invokingRoot: string | undefined): WorktreeSteps<void> {
+	const gitDirectory = yield* enclosingGitMetadataDirectory(target);
 	if (gitDirectory !== undefined) {
 		throw new Error(
 			`gitWorktreeDir must not be inside Git metadata: ${target} is inside the Git directory ${gitDirectory}. Choose a worktree root or a plain directory outside Git metadata.`,
 		);
 	}
-	if (invokingRoot !== undefined) validateWorktreeOutsideInvokingCheckout(target, invokingRoot);
-	const { existing, missing } = nearestExistingAncestor(target);
-	const workingTree = gitTopLevel(existing);
+	if (invokingRoot !== undefined) yield* validateWorktreeOutsideInvokingCheckout(target, invokingRoot);
+	const { existing, missing } = yield* nearestExistingAncestor(target);
+	const workingTree = yield* gitTopLevel(existing);
 	if (workingTree === undefined) return;
-	if (missing.length === 0 && comparableRealPath(target) === comparableRealPath(workingTree)) return;
+	if (missing.length === 0 && (yield* comparableRealPath(target)) === (yield* comparableRealPath(workingTree))) return;
 	throw new Error(
 		`gitWorktreeDir must not be inside another Git working tree: ${target} is inside ${workingTree}. Pass that checkout's root to reuse it, or a path outside every Git checkout.`,
 	);
 }
 
-function validateWorktreeOutsideInvokingCheckout(worktreeRoot: string, repoRoot: string): void {
-	const repository = comparableRealPath(repoRoot);
-	const candidate = comparablePathThroughExistingAncestor(worktreeRoot);
+function* validateWorktreeOutsideInvokingCheckout(worktreeRoot: string, repoRoot: string): WorktreeSteps<void> {
+	const repository = yield* comparableRealPath(repoRoot);
+	const candidate = yield* comparablePathThroughExistingAncestor(worktreeRoot);
 	const relativePath = path.relative(repository, candidate);
 	if (relativePath === "") {
 		throw new Error(
@@ -298,13 +329,13 @@ function gitPathFromOutput(value: string, cwd: string): string | undefined {
 	return path.isAbsolute(trimmed) ? path.resolve(trimmed) : path.resolve(cwd, trimmed);
 }
 
-function pathExistsSync(value: string): boolean {
-	return pathStatSync(value) !== undefined;
+function* pathExists(value: string): WorktreeSteps<boolean> {
+	return (yield* pathStat(value)) !== undefined;
 }
 
-function pathStatSync(value: string): fs.Stats | undefined {
+function* pathStat(value: string): WorktreeSteps<Stats | undefined> {
 	try {
-		return fs.statSync(value);
+		return yield* io("stat", value);
 	} catch (error) {
 		const code =
 			error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
@@ -317,10 +348,10 @@ function pathStatSync(value: string): fs.Stats | undefined {
  * Identify the checkout that contains the invoking cwd. A cwd outside any Git
  * checkout is not an error here: existing worktrees can still be reused from it.
  */
-function probeInvokingRepository(
+function* probeInvokingRepository(
 	cwd: string,
-): { readonly repository: InvokingRepository } | { readonly failure: string } {
-	const result = runGitReadOnlyProbe(cwd, ["rev-parse", "--show-toplevel"]);
+): WorktreeSteps<{ readonly repository: InvokingRepository } | { readonly failure: string }> {
+	const result = yield* gitReadOnlyProbeSteps(cwd, ["rev-parse", "--show-toplevel"]);
 	if (result.status !== 0) {
 		if (isGitTimeoutResult(result)) {
 			throw new Error(
@@ -335,22 +366,22 @@ function probeInvokingRepository(
 			`gitWorktreeDir could not resolve the repository top level from ${cwd}: git returned an empty path.`,
 		);
 	}
-	return { repository: { root, ...cwdWithinGitRepository(cwd, root) } };
+	return { repository: { root, ...(yield* cwdWithinGitRepository(cwd, root)) } };
 }
 
-function resolveGitWorktreeSetupRequest(options: GitWorktreeSetupOptions): GitWorktreeSetupRequest {
-	const probe = probeInvokingRepository(options.cwd);
+function* resolveGitWorktreeSetupRequest(options: GitWorktreeSetupOptions): WorktreeSteps<GitWorktreeSetupRequest> {
+	const probe = yield* probeInvokingRepository(options.cwd);
 	if ("repository" in probe) {
 		return {
 			options,
 			repository: probe.repository,
-			target: resolveGitWorktreePath(options.gitWorktreeDir, probe.repository.logicalRoot),
+			target: yield* resolveGitWorktreePath(options.gitWorktreeDir, probe.repository.logicalRoot),
 		};
 	}
 	return {
 		options,
 		repositoryProbeFailure: probe.failure,
-		target: resolveGitWorktreePath(options.gitWorktreeDir, canonicalizePreservingSymlinks(options.cwd)),
+		target: yield* resolveGitWorktreePath(options.gitWorktreeDir, yield* canonicalizePreservingSymlinks(options.cwd)),
 	};
 }
 
@@ -364,16 +395,16 @@ export function gitTopLevelFromResult(result: GitResult, cwd: string, descriptio
 	return gitPathFromOutput(result.stdout, cwd);
 }
 
-function gitTopLevel(cwd: string): string | undefined {
+function* gitTopLevel(cwd: string): WorktreeSteps<string | undefined> {
 	return gitTopLevelFromResult(
-		runGitReadOnlyProbe(cwd, ["rev-parse", "--show-toplevel"]),
+		yield* gitReadOnlyProbeSteps(cwd, ["rev-parse", "--show-toplevel"]),
 		cwd,
 		`gitWorktreeDir ${cwd}`,
 	);
 }
 
-function gitCommonDirForWorktree(cwd: string): string {
-	const result = runGitReadOnlyProbe(cwd, ["rev-parse", "--git-common-dir"]);
+function* gitCommonDirForWorktree(cwd: string): WorktreeSteps<string> {
+	const result = yield* gitReadOnlyProbeSteps(cwd, ["rev-parse", "--git-common-dir"]);
 	if (result.status !== 0) {
 		if (isGitTimeoutResult(result)) {
 			throw new Error(
@@ -400,12 +431,15 @@ function dirnameForEachRelativeComponent(base: string, relativePath: string): st
 	return current;
 }
 
-function cwdWithinGitRepository(cwd: string, repoRoot: string): { relativeCwd: string; logicalRoot: string } {
-	const sourceCwd = fs.realpathSync.native(cwd);
-	const sourceRepoRoot = fs.realpathSync.native(repoRoot);
+function* cwdWithinGitRepository(
+	cwd: string,
+	repoRoot: string,
+): WorktreeSteps<{ relativeCwd: string; logicalRoot: string }> {
+	const sourceCwd = yield* io("realpath", cwd);
+	const sourceRepoRoot = yield* io("realpath", repoRoot);
 	const relativeCwd = path.relative(sourceRepoRoot, sourceCwd);
 	const safeRelativeCwd = isPathInside(sourceRepoRoot, sourceCwd) ? relativeCwd : "";
-	const logicalCwd = canonicalizePreservingSymlinks(cwd);
+	const logicalCwd = yield* canonicalizePreservingSymlinks(cwd);
 	return {
 		relativeCwd: safeRelativeCwd,
 		logicalRoot: dirnameForEachRelativeComponent(logicalCwd, safeRelativeCwd) ?? repoRoot,
@@ -420,17 +454,17 @@ function workspaceCwdForGitWorktreeRoot(worktreeRoot: string, relativeCwd: strin
  * Validate that `worktreeRoot` is the top level of a Git checkout and return the
  * checkout's own Git common directory, which identifies its repository.
  */
-function validateGitWorktreeRoot(worktreeRoot: string): string {
-	const topLevel = gitTopLevel(worktreeRoot);
+function* validateGitWorktreeRoot(worktreeRoot: string): WorktreeSteps<string> {
+	const topLevel = yield* gitTopLevel(worktreeRoot);
 	if (topLevel === undefined) {
 		throw new Error(`gitWorktreeDir already exists but is not a Git worktree: ${worktreeRoot}`);
 	}
-	if (comparableRealPath(worktreeRoot) !== comparableRealPath(topLevel)) {
+	if ((yield* comparableRealPath(worktreeRoot)) !== (yield* comparableRealPath(topLevel))) {
 		throw new Error(
 			`gitWorktreeDir already exists but is not a Git worktree root: ${worktreeRoot}. Git top-level checkout is ${topLevel}`,
 		);
 	}
-	return gitCommonDirForWorktree(topLevel);
+	return yield* gitCommonDirForWorktree(topLevel);
 }
 
 /**
@@ -439,17 +473,22 @@ function validateGitWorktreeRoot(worktreeRoot: string): string {
  * it is a worktree root, or `undefined` when it is outside every Git checkout.
  * Subdirectories of a checkout are rejected so no workflow writes into them.
  */
-function existingGitWorktreeCommonDir(directory: string): string | undefined {
-	return gitTopLevel(directory) === undefined ? undefined : validateGitWorktreeRoot(directory);
+function* existingGitWorktreeCommonDir(directory: string): WorktreeSteps<string | undefined> {
+	return (yield* gitTopLevel(directory)) === undefined ? undefined : yield* validateGitWorktreeRoot(directory);
 }
 
-function sameGitCommonDir(left: string, right: string): boolean {
-	return comparableRealPath(left) === comparableRealPath(right);
+function* sameGitCommonDir(left: string, right: string): WorktreeSteps<boolean> {
+	return (yield* comparableRealPath(left)) === (yield* comparableRealPath(right));
 }
 
-function validateCreatedGitWorktree(worktreeRoot: string, repository: InvokingRepository): void {
-	assertSafeGitWorktreeTarget(worktreeRoot, repository.root);
-	if (!sameGitCommonDir(validateGitWorktreeRoot(worktreeRoot), gitCommonDirForWorktree(repository.root))) {
+function* validateCreatedGitWorktree(worktreeRoot: string, repository: InvokingRepository): WorktreeSteps<void> {
+	yield* assertSafeGitWorktreeTarget(worktreeRoot, repository.root);
+	if (
+		!(yield* sameGitCommonDir(
+			yield* validateGitWorktreeRoot(worktreeRoot),
+			yield* gitCommonDirForWorktree(repository.root),
+		))
+	) {
 		throw new Error(`gitWorktreeDir does not belong to the invoking Git repository: ${worktreeRoot}`);
 	}
 }
@@ -467,8 +506,8 @@ interface GitWorktreeIdentity extends GitWorktreeIdentitySnapshot {
 	readonly generation: GitWorktreeGenerationAnchor;
 }
 
-function gitDirectoryForWorktree(cwd: string): string {
-	const result = runGitReadOnlyProbe(cwd, ["rev-parse", "--absolute-git-dir"]);
+function* gitDirectoryForWorktree(cwd: string): WorktreeSteps<string> {
+	const result = yield* gitReadOnlyProbeSteps(cwd, ["rev-parse", "--absolute-git-dir"]);
 	if (result.status !== 0) {
 		throw new Error(
 			`Failed to validate Git directory for gitWorktreeDir ${cwd}. Git reported: ${gitFailureMessage(result)}`,
@@ -479,31 +518,36 @@ function gitDirectoryForWorktree(cwd: string): string {
 	return gitDir;
 }
 
-function captureGitWorktreeIdentitySnapshot(setup: ResolvedGitWorktreeSetup): GitWorktreeIdentitySnapshot {
+function* captureGitWorktreeIdentitySnapshot(
+	setup: ResolvedGitWorktreeSetup,
+): WorktreeSteps<GitWorktreeIdentitySnapshot> {
 	const { worktreeRoot, repositoryRoot } = setup.result;
-	assertSafeGitWorktreeTarget(worktreeRoot, setup.invokingRoot);
-	const commonDir = validateGitWorktreeRoot(worktreeRoot);
-	const stats = fs.statSync(worktreeRoot);
+	yield* assertSafeGitWorktreeTarget(worktreeRoot, setup.invokingRoot);
+	const commonDir = yield* validateGitWorktreeRoot(worktreeRoot);
+	const stats = yield* io("stat", worktreeRoot);
 	return {
-		worktreeRealPath: comparableRealPath(worktreeRoot),
-		repositoryRealPath: comparableRealPath(repositoryRoot),
-		gitDirRealPath: comparableRealPath(gitDirectoryForWorktree(worktreeRoot)),
-		commonDirRealPath: comparableRealPath(commonDir),
+		worktreeRealPath: yield* comparableRealPath(worktreeRoot),
+		repositoryRealPath: yield* comparableRealPath(repositoryRoot),
+		gitDirRealPath: yield* comparableRealPath(yield* gitDirectoryForWorktree(worktreeRoot)),
+		commonDirRealPath: yield* comparableRealPath(commonDir),
 		device: stats.dev,
 		inode: stats.ino,
 	};
 }
 
-function captureGitWorktreeIdentity(setup: ResolvedGitWorktreeSetup): GitWorktreeIdentity {
-	const snapshot = captureGitWorktreeIdentitySnapshot(setup);
-	return { ...snapshot, generation: openGitWorktreeGenerationAnchor(setup.result.worktreeRoot) };
+async function captureGitWorktreeIdentity(setup: ResolvedGitWorktreeSetup): Promise<GitWorktreeIdentity> {
+	const snapshot = await runWorktreeSteps(captureGitWorktreeIdentitySnapshot(setup));
+	return { ...snapshot, generation: await openGitWorktreeGenerationAnchor(setup.result.worktreeRoot) };
 }
 
-function assertCachedGitWorktreeIdentity(cached: CachedGitWorktreeSetup, options: GitWorktreeSetupOptions): void {
+async function assertCachedGitWorktreeIdentity(
+	cached: CachedGitWorktreeSetup,
+	options: GitWorktreeSetupOptions,
+): Promise<void> {
 	let current: GitWorktreeIdentitySnapshot;
 	try {
-		current = captureGitWorktreeIdentitySnapshot(cached);
-		cached.identity.generation.assertCurrent();
+		current = await runWorktreeSteps(captureGitWorktreeIdentitySnapshot(cached));
+		await cached.identity.generation.assertCurrent();
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Cached gitWorktreeDir changed before reuse: ${options.gitWorktreeDir}. Reason: ${message}`);
@@ -534,20 +578,23 @@ function requireInvokingRepository(request: GitWorktreeSetupRequest, action: str
 	);
 }
 
-function setupGitWorktreeFromRequest(request: GitWorktreeSetupRequest, ownerRunId?: string): ResolvedGitWorktreeSetup {
+function* setupGitWorktreeFromRequest(
+	request: GitWorktreeSetupRequest,
+	ownerRunId?: string,
+): WorktreeSteps<ResolvedGitWorktreeSetup> {
 	const { repository, target } = request;
-	assertSafeGitWorktreeTarget(target, repository?.root);
-	const entry = pathStatSync(target);
-	if (entry === undefined) return createGitWorktreeAtPath(request, false);
+	yield* assertSafeGitWorktreeTarget(target, repository?.root);
+	const entry = yield* pathStat(target);
+	if (entry === undefined) return yield* createGitWorktreeAtPath(request, false);
 	if (!entry.isDirectory()) throw new Error(`gitWorktreeDir already exists but is not a directory: ${target}`);
-	if (fs.readdirSync(target).length === 0) return createGitWorktreeAtPath(request, true);
+	if ((yield* io("readdir", target)).length === 0) return yield* createGitWorktreeAtPath(request, true);
 
-	const commonDir = existingGitWorktreeCommonDir(target);
-	if (commonDir === undefined) return allocateGitWorktree(request, ownerRunId);
+	const commonDir = yield* existingGitWorktreeCommonDir(target);
+	if (commonDir === undefined) return yield* allocateGitWorktree(request, ownerRunId);
 	// An existing worktree carries its own repository identity. The invoking cwd
 	// only contributes its relative subdirectory when it is the same repository.
 	const sameRepository =
-		repository !== undefined && sameGitCommonDir(commonDir, gitCommonDirForWorktree(repository.root));
+		repository !== undefined && (yield* sameGitCommonDir(commonDir, yield* gitCommonDirForWorktree(repository.root)));
 	return {
 		result: {
 			worktreeRoot: target,
@@ -559,26 +606,26 @@ function setupGitWorktreeFromRequest(request: GitWorktreeSetupRequest, ownerRunI
 	};
 }
 
-function createGitWorktreeAtPath(
+function* createGitWorktreeAtPath(
 	request: GitWorktreeSetupRequest,
 	existingEmptyDirectory: boolean,
-): ResolvedGitWorktreeSetup {
+): WorktreeSteps<ResolvedGitWorktreeSetup> {
 	const { target: worktreeRoot } = request;
 	const repository = requireInvokingRepository(request, `create a new worktree at ${worktreeRoot}`);
-	const mainRoot = findCanonicalGitRoot(repository.root);
+	const mainRoot = yield* findCanonicalGitRootSteps(repository.root);
 	if (mainRoot === undefined) {
 		throw new Error(`Unable to resolve the canonical main Git repository root from ${repository.root}.`);
 	}
 	if (!existingEmptyDirectory) {
 		try {
-			fs.mkdirSync(path.dirname(worktreeRoot), { recursive: true });
+			yield* io("mkdir", path.dirname(worktreeRoot), true);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			throw new Error(`Failed to create parent directory for requested gitWorktreeDir ${worktreeRoot}: ${message}`);
 		}
 	}
 	const baseRef = request.options.baseBranch?.trim() || "HEAD";
-	const result = runGit(mainRoot, ["worktree", "add", "--detach", worktreeRoot, baseRef]);
+	const result = yield* gitSteps(mainRoot, ["worktree", "add", "--detach", worktreeRoot, baseRef]);
 	if (result.status !== 0) {
 		throw new Error(
 			[
@@ -588,10 +635,10 @@ function createGitWorktreeAtPath(
 		);
 	}
 	try {
-		validateCreatedGitWorktree(worktreeRoot, repository);
+		yield* validateCreatedGitWorktree(worktreeRoot, repository);
 	} catch (error) {
 		// Best-effort rollback of a target that changed while Git was creating it.
-		runGit(mainRoot, ["worktree", "remove", "--force", worktreeRoot]);
+		yield* gitSteps(mainRoot, ["worktree", "remove", "--force", worktreeRoot]);
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Created gitWorktreeDir failed post-creation validation: ${message}`);
 	}
@@ -607,21 +654,21 @@ function createGitWorktreeAtPath(
 }
 
 /** Workspace cwd inside `checkout`, rejected when it is missing or resolves outside the checkout. */
-function containedWorktreeCwd(checkout: string, relativeCwd: string): string {
+function* containedWorktreeCwd(checkout: string, relativeCwd: string): WorktreeSteps<string> {
 	const cwd = workspaceCwdForGitWorktreeRoot(checkout, relativeCwd);
 	let resolved: string;
 	try {
-		resolved = fs.realpathSync.native(cwd);
+		resolved = yield* io("realpath", cwd);
 	} catch {
 		resolved = "";
 	}
-	const relative = resolved === "" ? undefined : path.relative(fs.realpathSync.native(checkout), resolved);
+	const relative = resolved === "" ? undefined : path.relative(yield* io("realpath", checkout), resolved);
 	if (
 		relative === undefined ||
 		relative === ".." ||
 		relative.startsWith(`..${path.sep}`) ||
 		path.isAbsolute(relative) ||
-		!fs.statSync(resolved).isDirectory()
+		!(yield* io("stat", resolved)).isDirectory()
 	) {
 		throw new Error(
 			`The selected base does not contain a working directory ${relativeCwd || "."} inside the worktree ${checkout}.`,
@@ -630,15 +677,15 @@ function containedWorktreeCwd(checkout: string, relativeCwd: string): string {
 	return cwd;
 }
 
-function allocatedGitWorktreeSetup(
+function* allocatedGitWorktreeSetup(
 	checkout: string,
 	repository: InvokingRepository,
 	created: boolean,
-): ResolvedGitWorktreeSetup {
+): WorktreeSteps<ResolvedGitWorktreeSetup> {
 	return {
 		result: {
 			worktreeRoot: checkout,
-			cwd: containedWorktreeCwd(checkout, repository.relativeCwd),
+			cwd: yield* containedWorktreeCwd(checkout, repository.relativeCwd),
 			repositoryRoot: repository.root,
 			created,
 		},
@@ -647,31 +694,32 @@ function allocatedGitWorktreeSetup(
 }
 
 /** Validate a checkout this run allocated earlier: a linked worktree of the invoking repository whose Git directory points back to it. */
-function validateOwnedGitWorktree(checkout: string, repository: InvokingRepository): void {
-	validateCreatedGitWorktree(checkout, repository);
-	const gitDir = gitDirectoryForWorktree(checkout);
-	if (sameGitCommonDir(gitDir, gitCommonDirForWorktree(checkout))) {
+function* validateOwnedGitWorktree(checkout: string, repository: InvokingRepository): WorktreeSteps<void> {
+	yield* validateCreatedGitWorktree(checkout, repository);
+	const gitDir = yield* gitDirectoryForWorktree(checkout);
+	if (yield* sameGitCommonDir(gitDir, yield* gitCommonDirForWorktree(checkout))) {
 		throw new Error(`${checkout} is not a linked worktree`);
 	}
-	const backlink = fs.readFileSync(path.join(gitDir, "gitdir"), "utf8").trim();
+	const backlink = (yield* io("readFile", path.join(gitDir, "gitdir"))).trim();
 	if (
 		!backlink ||
-		comparableRealPath(path.resolve(gitDir, backlink)) !== comparableRealPath(path.join(checkout, ".git"))
+		(yield* comparableRealPath(path.resolve(gitDir, backlink))) !==
+			(yield* comparableRealPath(path.join(checkout, ".git")))
 	) {
 		throw new Error(`the Git directory of ${checkout} belongs to another checkout`);
 	}
 }
 
-function findOwnedGitWorktree(
+function* findOwnedGitWorktree(
 	root: string,
 	repository: InvokingRepository,
 	ownerRunId: string,
-): ResolvedGitWorktreeSetup | undefined {
-	const [checkout] = findOwnedWorktreeCheckouts(root, path.basename(repository.root), ownerRunId);
+): WorktreeSteps<ResolvedGitWorktreeSetup | undefined> {
+	const [checkout] = yield* findOwnedWorktreeCheckouts(root, path.basename(repository.root), ownerRunId);
 	if (checkout === undefined) return undefined;
 	try {
-		validateOwnedGitWorktree(checkout, repository);
-		return allocatedGitWorktreeSetup(checkout, repository, false);
+		yield* validateOwnedGitWorktree(checkout, repository);
+		return yield* allocatedGitWorktreeSetup(checkout, repository, false);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(
@@ -686,15 +734,23 @@ function findOwnedGitWorktree(
  * repository, populate it, and record which run owns it. Any failure rolls the
  * checkout and its bucket back.
  */
-function allocateGitWorktree(request: GitWorktreeSetupRequest, ownerRunId?: string): ResolvedGitWorktreeSetup {
+function* allocateGitWorktree(
+	request: GitWorktreeSetupRequest,
+	ownerRunId?: string,
+): WorktreeSteps<ResolvedGitWorktreeSetup> {
 	const { target: root } = request;
 	const repository = requireInvokingRepository(request, `create a new worktree under ${root}`);
 	if (ownerRunId !== undefined) {
-		const owned = findOwnedGitWorktree(root, repository, ownerRunId);
+		const owned = yield* findOwnedGitWorktree(root, repository, ownerRunId);
 		if (owned !== undefined) return owned;
 	}
 	const baseRef = request.options.baseBranch?.trim() || "HEAD";
-	const revision = runGit(repository.root, ["rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`]);
+	const revision = yield* gitSteps(repository.root, [
+		"rev-parse",
+		"--verify",
+		"--end-of-options",
+		`${baseRef}^{commit}`,
+	]);
 	const commit = revision.status === 0 ? revision.stdout.trim() : "";
 	if (commit === "") {
 		throw new Error(
@@ -702,27 +758,33 @@ function allocateGitWorktree(request: GitWorktreeSetupRequest, ownerRunId?: stri
 		);
 	}
 
-	const checkout = allocateWorktreeCheckoutPath(root, path.basename(repository.root));
-	const add = runGit(repository.root, ["worktree", "add", "--detach", "--no-checkout", checkout, commit]);
+	const checkout = yield* allocateWorktreeCheckoutPath(root, path.basename(repository.root));
+	const add = yield* gitSteps(repository.root, ["worktree", "add", "--detach", "--no-checkout", checkout, commit]);
 	if (add.status !== 0) {
-		removeEmptyWorktreeBucket(checkout);
+		yield* removeEmptyWorktreeBucket(checkout);
 		throw new Error(
 			`Failed to create git worktree at ${checkout} under gitWorktreeDir ${root} from ${baseRef}. Git reported: ${gitFailureMessage(add)}`,
 		);
 	}
 	try {
-		const gitDir = gitDirectoryForWorktree(checkout);
+		const gitDir = yield* gitDirectoryForWorktree(checkout);
 		// Pin this checkout's own config only, then materialize files from the commit.
-		runGitOrThrow(checkout, ["config", "--file", path.join(gitDir, "config.worktree"), "core.worktree", checkout]);
-		runGitOrThrow(checkout, ["--work-tree=.", "reset", "--hard", "--no-recurse-submodules", commit]);
-		validateCreatedGitWorktree(checkout, repository);
-		const setup = allocatedGitWorktreeSetup(checkout, repository, true);
-		if (ownerRunId !== undefined) bindWorktreeOwner(gitDir, ownerRunId);
+		yield* runGitOrThrow(checkout, [
+			"config",
+			"--file",
+			path.join(gitDir, "config.worktree"),
+			"core.worktree",
+			checkout,
+		]);
+		yield* runGitOrThrow(checkout, ["--work-tree=.", "reset", "--hard", "--no-recurse-submodules", commit]);
+		yield* validateCreatedGitWorktree(checkout, repository);
+		const setup = yield* allocatedGitWorktreeSetup(checkout, repository, true);
+		if (ownerRunId !== undefined) yield* bindWorktreeOwner(gitDir, ownerRunId);
 		return setup;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		const removal = runGit(repository.root, ["worktree", "remove", "--force", checkout]);
-		removeEmptyWorktreeBucket(checkout);
+		const removal = yield* gitSteps(repository.root, ["worktree", "remove", "--force", checkout]);
+		yield* removeEmptyWorktreeBucket(checkout);
 		const rollback =
 			removal.status === 0
 				? ""
@@ -733,11 +795,15 @@ function allocateGitWorktree(request: GitWorktreeSetupRequest, ownerRunId?: stri
 	}
 }
 
-function runGitOrThrow(cwd: string, args: readonly string[]): void {
-	const result = runGit(cwd, args);
+function* runGitOrThrow(cwd: string, args: readonly string[]): WorktreeSteps<void> {
+	const result = yield* gitSteps(cwd, args);
 	if (result.status !== 0) throw new Error(gitFailureMessage(result));
 }
 
+function* setupGitWorktreeSteps(options: GitWorktreeSetupOptions): WorktreeSteps<ResolvedGitWorktreeSetup> {
+	return yield* setupGitWorktreeFromRequest(yield* resolveGitWorktreeSetupRequest(options));
+}
+
 export function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeSetupResult {
-	return setupGitWorktreeFromRequest(resolveGitWorktreeSetupRequest(options)).result;
+	return runWorktreeStepsSync(setupGitWorktreeSteps(options)).result;
 }

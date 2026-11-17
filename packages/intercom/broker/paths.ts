@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
-import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { type BigIntStats, lstatSync, mkdirSync, readFileSync, renameSync, type Stats, writeFileSync } from "fs";
+import { lstat, mkdir, readFile } from "node:fs/promises";
 import { homedir, tmpdir } from "os";
 import { basename, dirname, join, resolve } from "path";
 
@@ -120,17 +121,36 @@ export function getBrokerSocketPathRecordPath(agentDir: string = getAgentDir()):
   return join(getIntercomDirPath(agentDir), "broker.sock.path");
 }
 
+function inspectPrivateDirectoryStats(
+  stats: Stats | BigIntStats,
+  uid: number | undefined,
+): string | undefined {
+  if (!stats.isDirectory()) return "it is not a directory (or is a symbolic link)";
+  if (stats.uid !== uid) return `it is owned by uid ${stats.uid}, not ${uid}`;
+  if ((Number(stats.mode) & 0o077) !== 0) {
+    return `its mode ${(Number(stats.mode) & 0o777).toString(8)} lets other users in (expected 700)`;
+  }
+  return undefined;
+}
+
 function privateDirectoryProblem(directory: string, uid: number | undefined): string | undefined {
-  let stats;
+  let stats: Stats;
   try {
     stats = lstatSync(directory);
   } catch {
     return "it does not exist";
   }
-  if (!stats.isDirectory()) return "it is not a directory (or is a symbolic link)";
-  if (stats.uid !== uid) return `it is owned by uid ${stats.uid}, not ${uid}`;
-  if ((stats.mode & 0o077) !== 0) return `its mode ${(stats.mode & 0o777).toString(8)} lets other users in (expected 700)`;
-  return undefined;
+  return inspectPrivateDirectoryStats(stats, uid);
+}
+
+async function privateDirectoryProblemAsync(directory: string, uid: number | undefined): Promise<string | undefined> {
+  let stats: Stats;
+  try {
+    stats = await lstat(directory);
+  } catch {
+    return "it does not exist";
+  }
+  return inspectPrivateDirectoryStats(stats, uid);
 }
 
 /**
@@ -149,12 +169,35 @@ function privateSocketDirectory(): string {
   return directory;
 }
 
+async function privateSocketDirectoryAsync(): Promise<string> {
+  const uid = process.getuid?.();
+  const directory = join(process.env.XDG_RUNTIME_DIR || tmpdir(), `atomic-intercom-${uid}`);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const problem = await privateDirectoryProblemAsync(directory, uid);
+  if (problem !== undefined) {
+    throw new Error(`Intercom refuses the broker socket directory ${directory}: ${problem}`);
+  }
+  return directory;
+}
+
 function inDirectorySocketPath(agentDir: string): string {
   return join(getIntercomDirPath(agentDir), "broker.sock");
 }
 
 function fitsUnixSocketPath(socketPath: string, platform: NodeJS.Platform): boolean {
   return Buffer.byteLength(socketPath) <= maxUnixSocketPathBytes(platform);
+}
+
+export function directBrokerSocketPath(
+  platform: NodeJS.Platform = process.platform,
+  agentDir: string = getAgentDir(),
+): string | undefined {
+  if (platform === "win32") {
+    const pipe = `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(agentDir)}`;
+    return pipe.length <= MAX_PIPE_NAME_LENGTH ? pipe : `\\\\.\\pipe\\pi-intercom-${agentDirDigest(agentDir)}`;
+  }
+  const socketPath = inDirectorySocketPath(agentDir);
+  return fitsUnixSocketPath(socketPath, platform) ? socketPath : undefined;
 }
 
 /**
@@ -184,6 +227,28 @@ function recordedSocketPath(agentDir: string): string | undefined {
   }
 }
 
+async function recordedSocketPathAsync(agentDir: string): Promise<string | undefined> {
+  let recorded: string;
+  try {
+    recorded = (await readFile(getBrokerSocketPathRecordPath(agentDir), "utf-8")).trim();
+  } catch {
+    return undefined;
+  }
+  const uid = process.getuid?.();
+  const directory = dirname(recorded);
+  const wellFormed =
+    resolve(recorded) === recorded &&
+    basename(recorded) === `${agentDirDigest(agentDir)}.sock` &&
+    basename(directory) === `atomic-intercom-${uid}`;
+  if (!wellFormed || (await privateDirectoryProblemAsync(directory, uid)) !== undefined) return undefined;
+  try {
+    const stats = await lstat(recorded);
+    return stats.isSocket() && stats.uid === uid ? recorded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The socket path a broker started by this process chooses. A path in the agent directory longer than the platform
  * allows moves to this process's per-user runtime or temp directory, named after a digest of the agent directory.
@@ -192,14 +257,28 @@ export function chooseBrokerSocketPath(
   platform: NodeJS.Platform = process.platform,
   agentDir: string = getAgentDir(),
 ): string {
-  if (platform === "win32") {
-    const pipe = `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(agentDir)}`;
-    return pipe.length <= MAX_PIPE_NAME_LENGTH ? pipe : `\\\\.\\pipe\\pi-intercom-${agentDirDigest(agentDir)}`;
-  }
+  const direct = directBrokerSocketPath(platform, agentDir);
+  if (direct !== undefined) return direct;
 
   const socketPath = inDirectorySocketPath(agentDir);
-  if (fitsUnixSocketPath(socketPath, platform)) return socketPath;
   const shortPath = join(privateSocketDirectory(), `${agentDirDigest(agentDir)}.sock`);
+  if (!fitsUnixSocketPath(shortPath, platform)) {
+    throw new Error(
+      `Intercom broker socket paths ${socketPath} and ${shortPath} are both longer than the ${maxUnixSocketPathBytes(platform)} bytes a Unix socket path allows`,
+    );
+  }
+  return shortPath;
+}
+
+export async function chooseBrokerSocketPathAsync(
+  platform: NodeJS.Platform = process.platform,
+  agentDir: string = getAgentDir(),
+): Promise<string> {
+  const direct = directBrokerSocketPath(platform, agentDir);
+  if (direct !== undefined) return direct;
+
+  const socketPath = inDirectorySocketPath(agentDir);
+  const shortPath = join(await privateSocketDirectoryAsync(), `${agentDirDigest(agentDir)}.sock`);
   if (!fitsUnixSocketPath(shortPath, platform)) {
     throw new Error(
       `Intercom broker socket paths ${socketPath} and ${shortPath} are both longer than the ${maxUnixSocketPathBytes(platform)} bytes a Unix socket path allows`,
@@ -218,11 +297,22 @@ export function getBrokerSocketPath(
   platform: NodeJS.Platform = process.platform,
   agentDir: string = getAgentDir(),
 ): string {
-  if (platform !== "win32" && !fitsUnixSocketPath(inDirectorySocketPath(agentDir), platform)) {
-    const recorded = recordedSocketPath(agentDir);
-    if (recorded !== undefined) return recorded;
-  }
+  const direct = directBrokerSocketPath(platform, agentDir);
+  if (direct !== undefined) return direct;
+  const recorded = recordedSocketPath(agentDir);
+  if (recorded !== undefined) return recorded;
   return chooseBrokerSocketPath(platform, agentDir);
+}
+
+export async function getBrokerSocketPathAsync(
+  platform: NodeJS.Platform = process.platform,
+  agentDir: string = getAgentDir(),
+): Promise<string> {
+  const direct = directBrokerSocketPath(platform, agentDir);
+  if (direct !== undefined) return direct;
+  const recorded = await recordedSocketPathAsync(agentDir);
+  if (recorded !== undefined) return recorded;
+  return chooseBrokerSocketPathAsync(platform, agentDir);
 }
 
 /** Records the socket path a starting broker chose, when it is not the one in the agent directory; atomically. */

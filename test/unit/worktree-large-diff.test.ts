@@ -69,11 +69,11 @@ const cases: Array<{ runtime: Runtime; module: WorktreeModule }> = [
 ];
 
 describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) => {
-	test("a worktree change over 1 MiB is saved in full before the worktree is removed (#4876)", () => {
+	test("a worktree change over 1 MiB is saved in full before the worktree is removed (#4876)", async () => {
 		const root = tempRoot();
 		const result =
 			runtime === "Node"
-				? runLargeDiffScenario(root, module)
+				? await runLargeDiffScenario(root, module)
 				: inBun<LargeDiffScenarioResult>("large", root, module);
 		assert.ok(result.largeFileBytes > 1024 * 1024 * 1.5, "the change is well over the 1 MiB output cap");
 		assert.equal(result.largePatchApplied, true, `the large patch applies: ${result.largePatchStderr}`);
@@ -85,11 +85,11 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 		assert.equal(result.worktreesRemoved, true, "worktrees whose diffs were saved are removed");
 	});
 
-	test("a worktree whose diff capture failed is kept and reported with its path (#4876)", () => {
+	test("a worktree whose diff capture failed is kept and reported with its path (#4876)", async () => {
 		const root = tempRoot();
 		const result =
 			runtime === "Node"
-				? runFailedCaptureScenario(root, module)
+				? await runFailedCaptureScenario(root, module)
 				: inBun<FailedCaptureScenarioResult>("failed", root, module);
 		assert.equal(result.worktreeKept, true, "the worktree is not removed");
 		assert.equal(result.workKept, true, "the child's work is still in it");
@@ -106,11 +106,11 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 
 	test("a .worktreeinclude file is copied into a new worktree when the ignored files list to over 1 MiB (#4876)", {
 		timeout: INCLUDE_SCENARIO_TIMEOUT_MS,
-	}, () => {
+	}, async () => {
 		const root = tempRoot();
 		const result =
 			runtime === "Node"
-				? runWorktreeIncludeScenario(root, module)
+				? await runWorktreeIncludeScenario(root, module)
 				: inBun<WorktreeIncludeScenarioResult>("include", root, module);
 		assert.ok(result.ignoredListingBytes > 1024 * 1024, "the ignored-file listing is over the 1 MiB output cap");
 		assert.equal(result.envCopied, true, ".env reaches the new worktree");
@@ -122,8 +122,8 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 	test.runIf(runtime === "Node")(
 		"a worktree change of so many files that its numstat is over 1 MiB is saved in full (#4876)",
 		{ timeout: MANY_FILES_SCENARIO_TIMEOUT_MS },
-		() => {
-			const result = runManyFilesScenario(tempRoot(), module);
+		async () => {
+			const result = await runManyFilesScenario(tempRoot(), module);
 			assert.ok(result.numstatBytes > 1024 * 1024, "the numstat is over the 1 MiB output cap");
 			assert.match(
 				result.summary,
@@ -138,11 +138,11 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 	// Git for Windows reads a directory as an empty exclude file instead of failing.
 	test.skipIf(process.platform === "win32")(
 		"a .worktreeinclude git cannot read still creates the worktree and warns with git's reason (#4876)",
-		() => {
+		async () => {
 			const root = tempRoot();
 			const result =
 				runtime === "Node"
-					? runBrokenIncludeScenario(root, module)
+					? await runBrokenIncludeScenario(root, module)
 					: inBun<BrokenIncludeScenarioResult>("broken", root, module);
 			assert.equal(result.error, undefined, "worktree creation does not fail");
 			assert.equal(result.worktreeCreated, true);
@@ -164,11 +164,11 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 	// The hook is a POSIX shell script; Windows runs hooks only as executables.
 	test.skipIf(process.platform === "win32")(
 		"a setup hook that logs over 1 MiB still sets up its worktree (#4876)",
-		() => {
+		async () => {
 			const root = tempRoot();
 			const result =
 				runtime === "Node"
-					? runNoisyHookScenario(root, module)
+					? await runNoisyHookScenario(root, module)
 					: inBun<NoisyHookScenarioResult>("hook", root, module);
 			assert.equal(result.error, undefined);
 			assert.equal(result.created, true);

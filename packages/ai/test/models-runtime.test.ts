@@ -367,6 +367,35 @@ describe("Models runtime", () => {
 		expect(second.errors.get("flaky")?.message).toBe("fetch failed");
 	});
 
+	it("reports refresh failures in registration order, not the order they settle", async () => {
+		const models = createModels();
+		const slowFailure = Promise.withResolvers<void>();
+		models.setProvider(
+			testProvider({
+				id: "slow",
+				refreshModels: async ({ allowNetwork }) => {
+					if (!allowNetwork) return;
+					await slowFailure.promise;
+					throw new Error("slow failed");
+				},
+			}),
+		);
+		models.setProvider(
+			testProvider({
+				id: "fast",
+				refreshModels: async ({ allowNetwork }) => {
+					if (!allowNetwork) return;
+					setTimeout(() => slowFailure.resolve(), 0);
+					throw new Error("fast failed");
+				},
+			}),
+		);
+
+		const result = await models.refresh();
+
+		expect([...result.errors.keys()]).toEqual(["slow", "fast"]);
+	});
+
 	it("restricts refresh work to selected providers", async () => {
 		const calls: string[] = [];
 		const models = createModels();

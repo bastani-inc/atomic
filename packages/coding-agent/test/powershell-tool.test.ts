@@ -40,6 +40,10 @@ vi.mock("../src/utils/shell.ts", async (importOriginal) => {
 			shellOverride.path
 				? { shell: shellOverride.path, args: [...actual.POWERSHELL_ARGS] }
 				: actual.getPowerShellConfig(),
+		getPowerShellConfigAsync: async () =>
+			shellOverride.path
+				? { shell: shellOverride.path, args: [...actual.POWERSHELL_ARGS] }
+				: actual.getPowerShellConfigAsync(),
 	};
 });
 

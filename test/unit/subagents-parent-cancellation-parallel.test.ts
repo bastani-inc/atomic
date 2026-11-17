@@ -134,7 +134,7 @@ test("parallel parent abort reports each child cancelled instead of failed", asy
 			assert.equal(result.progress?.status, "interrupted");
 			assert.match(result.envelope ?? "", /Run cancelled by parent/);
 		}
-		const payload = buildSubagentResultIntercomPayload({
+		const payload = await buildSubagentResultIntercomPayload({
 			to: "orchestrator",
 			runId: "cancel-parallel-parent",
 			mode: "parallel",
@@ -385,8 +385,8 @@ test("an error whose cause is abort does not hide a sibling user interrupt", asy
 		removeTempDirectory(root);
 	}
 });
-test("parent receipts label cancelled children instead of failed", () => {
-	const payload = buildSubagentResultIntercomPayload({
+test("parent receipts label cancelled children instead of failed", async () => {
+	const payload = await buildSubagentResultIntercomPayload({
 		to: "orchestrator",
 		runId: "cancel-receipt",
 		mode: "parallel",
@@ -403,7 +403,7 @@ test("parent receipts label cancelled children instead of failed", () => {
 			{ agent: "worker", status: "completed", summary: "done", artifactPath: "/no/out", sessionPath: "/no/sess" },
 		],
 	});
-	const receipt = formatSubagentResultReceipt({ mode: "parallel", runId: "cancel-receipt", payload });
+	const receipt = await formatSubagentResultReceipt({ mode: "parallel", runId: "cancel-receipt", payload });
 	assert.match(receipt, /cancelled/);
 	assert.doesNotMatch(receipt, /failed/);
 	assert.match(receipt, /Artifacts:[\s\S]*worker \[completed\]: \/no\/out[\s\S]*Sessions:/);
@@ -544,7 +544,7 @@ test("artifacts-disabled parallel cancel cites the surviving shared progress.md"
 				runSync: async (_cwd, _agents, agentName, task, options) => {
 					if (options.progressPath)
 						writeTextSync(options.progressPath, "# Progress\n\n- Shared parallel finding\n");
-					const recovered = recoverCancelledChildOutput({
+					const recovered = await recoverCancelledChildOutput({
 						progressPath: options.progressPath,
 						progressArtifactPath: options.progressArtifactPath,
 						toolCount: 4,
@@ -614,7 +614,7 @@ test("parallel cancel cites a precreated progress.md only because the file exist
 			discoverAgents: () => ({ agents: [{ ...sampleAgent(), defaultProgress: true }] }),
 			runtime: {
 				runSync: async (_cwd, _agents, agentName, task, options) => {
-					const recovered = recoverCancelledChildOutput({
+					const recovered = await recoverCancelledChildOutput({
 						progressPath: options.progressPath,
 						progressArtifactPath: options.progressArtifactPath,
 					});

@@ -18,10 +18,10 @@ import type { WriteOperations } from "./write.ts";
  */
 export const localEditOperations: EditOperations = {
 	readFile: async (path) =>
-		isNotebookPath(path) ? Buffer.from(readEditableNotebookText(path, path), "utf-8") : readFile(path),
+		isNotebookPath(path) ? Buffer.from(await readEditableNotebookText(path, path), "utf-8") : readFile(path),
 	writeFile: async (path, content) => {
 		const persisted = isNotebookPath(path)
-			? serializeEditedNotebookText(path, path, normalizeToLF(stripBom(content)))
+			? await serializeEditedNotebookText(path, path, normalizeToLF(stripBom(content)))
 			: content;
 		await writeFile(path, persisted, "utf-8");
 		invalidateNativeSearchCache(path);

@@ -1,6 +1,6 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { getAgentDir } from "../../config.js";
-import { resolvePhysicalPath } from "../../utils/physical-path.ts";
+import { resolvePhysicalPath, resolvePhysicalPathAsync } from "../../utils/physical-path.ts";
 import { sha256Hex } from "./env-hash.ts";
 import { unreadablePathError, WorkspaceRestoreError } from "./errors.ts";
 
@@ -29,6 +29,47 @@ export function canonicalizeWorktreePath(path: string): string {
 	} catch (error) {
 		throw unreadablePathError(absolute, error);
 	}
+}
+
+export async function canonicalizeWorktreePathAsync(path: string): Promise<string> {
+	const absolute = resolve(path);
+	try {
+		return await resolvePhysicalPathAsync(absolute);
+	} catch (error) {
+		throw unreadablePathError(absolute, error);
+	}
+}
+
+export type CanonicalSteps<T> = Generator<string, T, string>;
+
+export type CanonicalPaths = (path: string) => Promise<string>;
+
+export function canonicalPaths(): CanonicalPaths {
+	const read = new Map<string, Promise<string>>();
+	return (path) => {
+		const absolute = resolve(path);
+		let canonical = read.get(absolute);
+		if (canonical === undefined) {
+			canonical = canonicalizeWorktreePathAsync(absolute);
+			read.set(absolute, canonical);
+		}
+		return canonical;
+	};
+}
+
+export function runCanonicalSteps<T>(steps: CanonicalSteps<T>): T {
+	let step = steps.next();
+	while (!step.done) step = steps.next(canonicalizeWorktreePath(step.value));
+	return step.value;
+}
+
+export async function runCanonicalStepsAsync<T>(
+	steps: CanonicalSteps<T>,
+	canonical: CanonicalPaths = canonicalPaths(),
+): Promise<T> {
+	let step = steps.next();
+	while (!step.done) step = steps.next(await canonical(step.value));
+	return step.value;
 }
 
 /**

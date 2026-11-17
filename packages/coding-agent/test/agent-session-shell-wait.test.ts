@@ -20,12 +20,17 @@ vi.mock("../src/utils/shell.js", async (importOriginal) => {
 		...shell,
 		// Exercise both registry branches even when PowerShell cannot launch on this host.
 		isPowerShellAvailable: () => true,
+		isPowerShellAvailableAsync: async () => true,
 		// Only replace OS executable discovery for portable PowerShell. The session
 		// registry, local operations, encoded transport and native supervisor are real.
 		getPowerShellConfig: () =>
 			process.platform !== "win32" && process.env.ATOMIC_TEST_PWSH
 				? { shell: process.env.ATOMIC_TEST_PWSH, args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"] }
 				: shell.getPowerShellConfig(),
+		getPowerShellConfigAsync: async () =>
+			process.platform !== "win32" && process.env.ATOMIC_TEST_PWSH
+				? { shell: process.env.ATOMIC_TEST_PWSH, args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"] }
+				: shell.getPowerShellConfigAsync(),
 	};
 });
 

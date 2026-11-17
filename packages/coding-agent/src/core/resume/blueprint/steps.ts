@@ -1,6 +1,5 @@
-import { writeSync } from "node:fs";
 import { join } from "node:path";
-import { getPowerShellConfig, getShellConfig, type ShellConfig } from "../../../utils/shell.ts";
+import { getPowerShellConfigAsync, getShellConfigAsync, type ShellConfig } from "../../../utils/shell.ts";
 import { recordBlueprintStep } from "../timings.ts";
 import { type ActionFetcher, runAction } from "./actions.ts";
 import { bashPath, evaluateEnvrc, shellQuote } from "./envrc.ts";
@@ -13,6 +12,7 @@ import {
 	BlueprintStepTimedOutError,
 } from "./errors.ts";
 import {
+	appendToLog,
 	buildProcessStarting,
 	type LoggedProcess,
 	logTail,
@@ -109,10 +109,6 @@ export function bashProcess(step: RunStep, context: StepContext, bash: ShellConf
 	};
 }
 
-function append(log: StepLog, text: string): void {
-	writeSync(log.fd, text);
-}
-
 async function startStep(
 	step: BlueprintStep,
 	location: BlueprintStepLocation,
@@ -121,7 +117,7 @@ async function startStep(
 	log: StepLog,
 ): Promise<ProcessExit> {
 	buildProcessStarting();
-	append(
+	await appendToLog(
 		log,
 		[
 			`# started: ${new Date().toISOString()}`,
@@ -154,9 +150,13 @@ async function startStep(
 	const options = { timeoutMs: context.timeoutMs, signal: context.signal };
 	if (runsInPowerShell(context.shell, context.platform)) {
 		const evaluated = await evaluateEnvrc(context.envrcPath, context.environment);
-		return runLoggedProcess(powerShellProcess(step, context, getPowerShellConfig(), evaluated), log, options);
+		return runLoggedProcess(
+			powerShellProcess(step, context, await getPowerShellConfigAsync(), evaluated),
+			log,
+			options,
+		);
 	}
-	return runLoggedProcess(bashProcess(step, context, getShellConfig()), log, options);
+	return runLoggedProcess(bashProcess(step, context, await getShellConfigAsync()), log, options);
 }
 
 function describeExit(exit: ProcessExit, timeoutMs: number): string {
@@ -220,12 +220,12 @@ export async function runSection(
 		try {
 			log = await openStepLog(logPath);
 			const exit = await startStep(step, location, steps.length, context, log);
-			append(log, `\n${describeExit(exit, context.timeoutMs)}\n${describeEnd(started)}`);
+			await appendToLog(log, `\n${describeExit(exit, context.timeoutMs)}\n${describeEnd(started)}`);
 			error = failureOf(exit, location, logPath, context.timeoutMs);
 		} catch (thrown) {
 			if (context.signal?.aborted) throw thrown;
 			const cause = thrown instanceof Error ? thrown : new Error(String(thrown));
-			if (log !== undefined) append(log, `\n# failed: ${cause.message}\n${describeEnd(started)}`);
+			if (log !== undefined) await appendToLog(log, `\n# failed: ${cause.message}\n${describeEnd(started)}`);
 			error =
 				thrown instanceof BlueprintError
 					? thrown

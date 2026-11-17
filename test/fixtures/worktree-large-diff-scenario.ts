@@ -119,16 +119,16 @@ function modules(module: WorktreeModule) {
  * Two worktree tasks, one adding a ~2 MB file and one a small file; their diffs are captured and their worktrees
  * removed, as a run does when it returns. The large task's patch is then applied to a clean checkout.
  */
-export function runLargeDiffScenario(root: string, module: WorktreeModule): LargeDiffScenarioResult {
+export async function runLargeDiffScenario(root: string, module: WorktreeModule): Promise<LargeDiffScenarioResult> {
 	const repo = createScenarioRepository(root);
 	const api = modules(module);
 	// The third task changes nothing.
-	const setup = api.create(repo, `large-${module}`, 3);
+	const setup = await api.create(repo, `large-${module}`, 3);
 	const large = largeGeneratedFile();
 	writeFileSync(join(setup.worktrees[0]!.path, "generated.lock"), large);
 	writeFileSync(join(setup.worktrees[1]!.path, "small.txt"), "small change\n");
-	const diffs = api.diff(setup, ["large", "small", "unchanged"], join(root, "diffs"));
-	api.cleanup(setup);
+	const diffs = await api.diff(setup, ["large", "small", "unchanged"], join(root, "diffs"));
+	await api.cleanup(setup);
 	const clean = join(root, "clean");
 	git(repo, ["worktree", "add", "--detach", clean, "HEAD"]);
 	const applied = spawnSync("git", ["-C", clean, "apply", "--whitespace=nowarn", diffs[0]!.patchPath], {
@@ -155,21 +155,24 @@ export function runLargeDiffScenario(root: string, module: WorktreeModule): Larg
  * One worktree task with work whose diff capture fails (its index is locked), captured and then released as a parallel
  * subagent run does when it returns.
  */
-export function runFailedCaptureScenario(root: string, module: WorktreeModule): FailedCaptureScenarioResult {
+export async function runFailedCaptureScenario(
+	root: string,
+	module: WorktreeModule,
+): Promise<FailedCaptureScenarioResult> {
 	const repo = createScenarioRepository(root);
 	const api = modules(module);
 	const runId = `failed-${module}`;
-	const setup = api.create(repo, runId, 1);
+	const setup = await api.create(repo, runId, 1);
 	const worktree = setup.worktrees[0]!;
 	writeFileSync(join(worktree.path, "work.txt"), "the child's work\n");
 	const gitDir = git(worktree.path, ["rev-parse", "--absolute-git-dir"]).trim();
 	writeFileSync(join(gitDir, "index.lock"), "");
 	const diffsDir = join(root, "diffs");
-	const diffs = api.diff(setup, ["worker"], diffsDir);
+	const diffs = await api.diff(setup, ["worker"], diffsDir);
 	if (module === "subagents") {
-		registerRunWorktrees(runId, setup, { diffsDir, agents: ["worker"] }).release();
+		await registerRunWorktrees(runId, setup, { diffsDir, agents: ["worker"] }).release();
 	} else {
-		api.cleanup(setup);
+		await api.cleanup(setup);
 	}
 	const diff = diffs[0] as { captureError?: string } | undefined;
 	const result = {
@@ -182,7 +185,7 @@ export function runFailedCaptureScenario(root: string, module: WorktreeModule): 
 	if (module === "workflows") return result;
 	// The index unlocks; the next execution's release sweeps the run again.
 	rmSync(join(gitDir, "index.lock"));
-	holdRunWorktree(runId, 0)();
+	await holdRunWorktree(runId, 0)();
 	const patch = join(diffsDir, "task-0-worker.patch");
 	const laterSweepSavedWork =
 		!existsSync(worktree.path) && existsSync(patch) && readFileSync(patch, "utf-8").includes("the child's work");
@@ -194,7 +197,10 @@ export function runFailedCaptureScenario(root: string, module: WorktreeModule): 
  * `.worktreeinclude`: a new worktree must still receive `.env`.
  */
 export const INCLUDED_CONFIG_FILES = 199;
-export function runWorktreeIncludeScenario(root: string, module: WorktreeModule): WorktreeIncludeScenarioResult {
+export async function runWorktreeIncludeScenario(
+	root: string,
+	module: WorktreeModule,
+): Promise<WorktreeIncludeScenarioResult> {
 	const repo = createScenarioRepository(root);
 	writeFileSync(join(repo, ".gitignore"), "node_modules/\n.env\nconfig/\nbuild.log\n");
 	writeFileSync(join(repo, ".worktreeinclude"), ".env\nconfig/\n");
@@ -218,7 +224,7 @@ export function runWorktreeIncludeScenario(root: string, module: WorktreeModule)
 	}
 	const listing = git(repo, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"]);
 	const api = modules(module);
-	const setup = api.create(repo, `include-${module}`, 1);
+	const setup = await api.create(repo, `include-${module}`, 1);
 	const envPath = join(setup.worktrees[0]!.path, ".env");
 	const envCopied = existsSync(envPath) && readFileSync(envPath, "utf-8") === "SECRET=1\n";
 	let includedFilesCopied = 0;
@@ -227,7 +233,7 @@ export function runWorktreeIncludeScenario(root: string, module: WorktreeModule)
 		if (existsSync(copied) && readFileSync(copied, "utf-8") === `${file}\n`) includedFilesCopied++;
 	}
 	const notIncludedCopied = existsSync(join(setup.worktrees[0]!.path, "build.log"));
-	api.cleanup(setup);
+	await api.cleanup(setup);
 	return { ignoredListingBytes: Buffer.byteLength(listing), envCopied, includedFilesCopied, notIncludedCopied };
 }
 
@@ -236,13 +242,13 @@ export function runWorktreeIncludeScenario(root: string, module: WorktreeModule)
  * it as a four-character octal escape, so a path of 240 CJK characters takes 2,880 bytes on its numstat line.
  */
 export const MANY_FILES = 400;
-export function runManyFilesScenario(root: string, module: WorktreeModule): ManyFilesScenarioResult {
+export async function runManyFilesScenario(root: string, module: WorktreeModule): Promise<ManyFilesScenarioResult> {
 	const repo = createScenarioRepository(root);
 	// Quoting is git's default; set it so a global `core.quotePath false` cannot shrink the listing under 1 MiB.
 	// The paths are longer than Windows' 260 characters, which Git for Windows handles only with this setting.
 	git(repo, ["config", "core.longpaths", "true"]);
 	const api = modules(module);
-	const setup = api.create(repo, `many-${module}`, 1);
+	const setup = await api.create(repo, `many-${module}`, 1);
 	// Each component is 240 UTF-8 bytes, under the 255-byte file name limit; the whole path stays under macOS' 1,024.
 	const component = "語".repeat(80);
 	const directoryName = join(component, component, component);
@@ -251,8 +257,8 @@ export function runManyFilesScenario(root: string, module: WorktreeModule): Many
 	for (let file = 0; file < MANY_FILES; file++) writeFileSync(join(directory, `f-${file}.txt`), `${file}\n`);
 	git(setup.worktrees[0]!.path, ["add", "-A"]);
 	const numstat = git(setup.worktrees[0]!.path, ["diff", "--cached", "--numstat", "HEAD"]);
-	const diffs = api.diff(setup, ["many"], join(root, "diffs"));
-	api.cleanup(setup);
+	const diffs = await api.diff(setup, ["many"], join(root, "diffs"));
+	await api.cleanup(setup);
 	const clean = join(root, "clean");
 	git(repo, ["worktree", "add", "--detach", clean, "HEAD"]);
 	const applied = spawnSync("git", ["-C", clean, "apply", diffs[0]!.patchPath], { encoding: "utf-8" });
@@ -271,15 +277,15 @@ export function runManyFilesScenario(root: string, module: WorktreeModule): Many
 }
 
 /** A setup hook that logs over 1 MiB to stderr before printing its JSON result (POSIX shell). */
-export function runNoisyHookScenario(root: string, module: WorktreeModule): NoisyHookScenarioResult {
+export async function runNoisyHookScenario(root: string, module: WorktreeModule): Promise<NoisyHookScenarioResult> {
 	const repo = createScenarioRepository(root);
 	const hook = join(root, "noisy-hook.sh");
 	writeFileSync(hook, "#!/bin/sh\nhead -c 2000000 /dev/zero | tr '\\0' x >&2\necho '{}'\n", { mode: 0o755 });
 	const api = modules(module);
 	try {
-		const setup = api.create(repo, `hook-${module}`, 1, { setupHook: { hookPath: hook } });
+		const setup = await api.create(repo, `hook-${module}`, 1, { setupHook: { hookPath: hook } });
 		const created = existsSync(setup.worktrees[0]!.path);
-		api.cleanup(setup);
+		await api.cleanup(setup);
 		return { created, error: undefined };
 	} catch (error) {
 		return { created: false, error: error instanceof Error ? error.message : String(error) };
@@ -290,21 +296,24 @@ export function runNoisyHookScenario(root: string, module: WorktreeModule): Nois
  * A `.worktreeinclude` git cannot read (a directory): the worktree is still created, without the included files, and
  * its diff and the summary carry a warning.
  */
-export function runBrokenIncludeScenario(root: string, module: WorktreeModule): BrokenIncludeScenarioResult {
+export async function runBrokenIncludeScenario(
+	root: string,
+	module: WorktreeModule,
+): Promise<BrokenIncludeScenarioResult> {
 	const repo = createScenarioRepository(root);
 	mkdirSync(join(repo, ".worktreeinclude"));
 	const api = modules(module);
-	let setup: ReturnType<typeof api.create>;
+	let setup: Awaited<ReturnType<typeof api.create>>;
 	try {
-		setup = api.create(repo, `broken-${module}`, 1);
+		setup = await api.create(repo, `broken-${module}`, 1);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return { error: message, worktreePath: "", worktreeCreated: false, setupWarnings: undefined, summary: "" };
 	}
 	const worktreePath = setup.worktrees[0]!.path;
 	const worktreeCreated = existsSync(worktreePath);
-	const diffs = api.diff(setup, ["worker"], join(root, "diffs"));
-	api.cleanup(setup);
+	const diffs = await api.diff(setup, ["worker"], join(root, "diffs"));
+	await api.cleanup(setup);
 	return {
 		error: undefined,
 		worktreePath,

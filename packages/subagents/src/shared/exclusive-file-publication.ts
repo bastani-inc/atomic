@@ -1,9 +1,10 @@
-import * as fs from "node:fs";
+import { constants } from "node:fs";
+import * as fs from "node:fs/promises";
 
 export interface ExclusivePublicationFs {
-	linkSync?: typeof fs.linkSync;
-	copyFileSync?: typeof fs.copyFileSync;
-	unlinkSync: typeof fs.unlinkSync;
+	link?: typeof fs.link;
+	copyFile?: typeof fs.copyFile;
+	unlink: typeof fs.unlink;
 }
 
 export function errorCode(error: unknown): string | undefined {
@@ -13,13 +14,13 @@ export function errorCode(error: unknown): string | undefined {
 }
 
 /** Publish an existing file without ever replacing the destination. */
-export function publishFileExclusive(
+export async function publishFileExclusive(
 	source: string,
 	destination: string,
 	fsApi: ExclusivePublicationFs = fs,
-): "published" | "exists" {
+): Promise<"published" | "exists"> {
 	try {
-		(fsApi.linkSync ?? fs.linkSync)(source, destination);
+		await (fsApi.link ?? fs.link)(source, destination);
 		return "published";
 	} catch (error) {
 		const code = errorCode(error);
@@ -27,7 +28,7 @@ export function publishFileExclusive(
 		if (code !== "EPERM" && code !== "EACCES" && code !== "ENOTSUP" && code !== "EXDEV") throw error;
 	}
 	try {
-		(fsApi.copyFileSync ?? fs.copyFileSync)(source, destination, fs.constants.COPYFILE_EXCL);
+		await (fsApi.copyFile ?? fs.copyFile)(source, destination, constants.COPYFILE_EXCL);
 		return "published";
 	} catch (error) {
 		if (errorCode(error) === "EEXIST") return "exists";
@@ -35,9 +36,9 @@ export function publishFileExclusive(
 	}
 }
 
-export function unlinkIfPresent(file: string, fsApi: Pick<typeof fs, "unlinkSync"> = fs): void {
+export async function unlinkIfPresent(file: string, fsApi: Pick<typeof fs, "unlink"> = fs): Promise<void> {
 	try {
-		fsApi.unlinkSync(file);
+		await fsApi.unlink(file);
 	} catch (error) {
 		if (errorCode(error) !== "ENOENT") throw error;
 	}

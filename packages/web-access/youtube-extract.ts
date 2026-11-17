@@ -1,15 +1,11 @@
-import { existsSync, readFileSync } from "node:fs";
 import { activityMonitor } from "./activity.js";
 import { isGeminiWebAvailable, queryWithCookies } from "./gemini-web.js";
+import { createAsyncOwnerState, readWebSearchConfigFile } from "./gemini-web-config.ts";
 import { isGeminiApiAvailable, queryGeminiApiWithVideo } from "./gemini-api.js";
 import { searchWithPerplexity } from "./perplexity.js";
 import { extractHeadingTitle, type ExtractedContent, type FrameResult, type VideoFrame } from "./extract.js";
 import { formatSeconds, readExecError, isTimeoutError, trimErrorText, mapFfmpegError } from "./utils.js";
-import { findReadableConfigPath } from "./config-paths.ts";
 import { runBunSubprocess } from "./subprocess.ts";
-import { createOwnerState } from "./owner-state.js";
-
-const CONFIG_PATH = findReadableConfigPath();
 
 const YOUTUBE_PROMPT = `Extract the complete content of this YouTube video. Include:
 1. Video title, channel name, and duration
@@ -43,17 +39,9 @@ function normalizeEnabled(value: unknown, fallback: boolean): boolean {
 }
 
 const defaults: YouTubeConfig = { enabled: true, preferredModel: "gemini-3-flash-preview" };
-const loadYouTubeConfig = createOwnerState<YouTubeConfig>(() => {
-	if (!existsSync(CONFIG_PATH)) return { ...defaults };
-
-	const rawText = readFileSync(CONFIG_PATH, "utf-8");
-	let raw: { youtube?: { enabled?: boolean; preferredModel?: string } };
-	try {
-		raw = JSON.parse(rawText) as { youtube?: { enabled?: boolean; preferredModel?: string } };
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`Failed to parse ${CONFIG_PATH}: ${message}`);
-	}
+const loadYouTubeConfig = createAsyncOwnerState<YouTubeConfig>(async () => {
+	const raw = await readWebSearchConfigFile<{ youtube?: { enabled?: boolean; preferredModel?: string } }>();
+	if (!raw) return { ...defaults };
 
 	const yt = raw.youtube ?? {};
 	return {
@@ -76,8 +64,8 @@ export function isYouTubeURL(url: string): { isYouTube: boolean; videoId: string
 	return { isYouTube: true, videoId: match[1] };
 }
 
-export function isYouTubeEnabled(): boolean {
-	return loadYouTubeConfig().enabled;
+export async function isYouTubeEnabled(): Promise<boolean> {
+	return (await loadYouTubeConfig()).enabled;
 }
 
 export async function extractYouTube(
@@ -86,7 +74,7 @@ export async function extractYouTube(
 	prompt?: string,
 	model?: string,
 ): Promise<ExtractedContent | null> {
-	const config = loadYouTubeConfig();
+	const config = await loadYouTubeConfig();
 	const { videoId } = isYouTubeURL(url);
 	const canonicalUrl = videoId
 		? `https://www.youtube.com/watch?v=${videoId}`
@@ -245,7 +233,7 @@ async function tryGeminiApi(
 	signal?: AbortSignal,
 ): Promise<ExtractedContent | null> {
 	try {
-		if (!isGeminiApiAvailable()) return null;
+		if (!(await isGeminiApiAvailable())) return null;
 
 		if (signal?.aborted) return null;
 

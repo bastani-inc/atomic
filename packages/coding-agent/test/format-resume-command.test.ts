@@ -64,12 +64,12 @@ function createSessionManager(options: {
 }
 
 describe("formatResumeCommand", () => {
-	it("includes the JSONL directory even when it is the default", () => {
+	it("includes the JSONL directory even when it is the default", async () => {
 		setStdoutIsTTY(true);
 		const sessionFile = createTempFile();
 		const sessionManager = createSessionManager({ sessionFile, sessionId: "test-session" });
 
-		expect(formatResumeCommand(sessionManager, "linux")).toBe(
+		expect(await formatResumeCommand(sessionManager, "linux")).toBe(
 			`${APP_NAME} --session-dir /tmp/atomic-sessions --session test-session`,
 		);
 	});
@@ -78,15 +78,15 @@ describe("formatResumeCommand", () => {
 		["", "''"],
 		[" raw session ID ", "' raw session ID '"],
 		["session's ID", "'session'\\''s ID'"],
-	])("preserves stored session ID %j in the shell resume command", (sessionId, argument) => {
+	])("preserves stored session ID %j in the shell resume command", async (sessionId, argument) => {
 		setStdoutIsTTY(true);
 		const sessionManager = createSessionManager({ sessionFile: createTempFile(), sessionId });
-		expect(formatResumeCommand(sessionManager, "linux")).toBe(
+		expect(await formatResumeCommand(sessionManager, "linux")).toBe(
 			`${APP_NAME} --session-dir /tmp/atomic-sessions --session ${argument}`,
 		);
 	});
 
-	it("includes unquoted safe session dirs for non-default session dirs", () => {
+	it("includes unquoted safe session dirs for non-default session dirs", async () => {
 		setStdoutIsTTY(true);
 		const sessionFile = createTempFile();
 		const sessionManager = createSessionManager({
@@ -96,12 +96,12 @@ describe("formatResumeCommand", () => {
 			usesDefaultSessionDir: false,
 		});
 
-		expect(formatResumeCommand(sessionManager, "linux")).toBe(
+		expect(await formatResumeCommand(sessionManager, "linux")).toBe(
 			`${APP_NAME} --session-dir /tmp/custom-atomic-sessions --session test-session`,
 		);
 	});
 
-	it("quotes session dirs containing spaces", () => {
+	it("quotes session dirs containing spaces", async () => {
 		setStdoutIsTTY(true);
 		const sessionFile = createTempFile();
 		const sessionManager = createSessionManager({
@@ -111,12 +111,12 @@ describe("formatResumeCommand", () => {
 			usesDefaultSessionDir: false,
 		});
 
-		expect(formatResumeCommand(sessionManager, "linux")).toBe(
+		expect(await formatResumeCommand(sessionManager, "linux")).toBe(
 			`${APP_NAME} --session-dir '/tmp/custom atomic sessions' --session test-session`,
 		);
 	});
 
-	it("quotes session dirs containing single quotes", () => {
+	it("quotes session dirs containing single quotes", async () => {
 		setStdoutIsTTY(true);
 		const sessionFile = createTempFile();
 		const sessionManager = createSessionManager({
@@ -126,39 +126,39 @@ describe("formatResumeCommand", () => {
 			usesDefaultSessionDir: false,
 		});
 
-		expect(formatResumeCommand(sessionManager, "linux")).toBe(
+		expect(await formatResumeCommand(sessionManager, "linux")).toBe(
 			`${APP_NAME} --session-dir '/tmp/custom atomic'\\''s sessions' --session test-session`,
 		);
 	});
 
-	it("returns undefined when stdout is not a TTY", () => {
+	it("returns undefined when stdout is not a TTY", async () => {
 		setStdoutIsTTY(false);
 		const sessionFile = createTempFile();
 		const sessionManager = createSessionManager({ sessionFile });
 
-		expect(formatResumeCommand(sessionManager)).toBeUndefined();
+		expect(await formatResumeCommand(sessionManager)).toBeUndefined();
 	});
 
-	it("returns undefined for in-memory sessions", () => {
+	it("returns undefined for in-memory sessions", async () => {
 		setStdoutIsTTY(true);
 		const sessionFile = createTempFile();
 		const sessionManager = createSessionManager({ persisted: false, sessionFile });
 
-		expect(formatResumeCommand(sessionManager)).toBeUndefined();
+		expect(await formatResumeCommand(sessionManager)).toBeUndefined();
 	});
 
-	it("returns undefined when the session file is missing", () => {
+	it("returns undefined when the session file is missing", async () => {
 		setStdoutIsTTY(true);
 		const sessionManager = createSessionManager({ sessionFile: "/tmp/atomic-missing-session.jsonl" });
 
-		expect(formatResumeCommand(sessionManager)).toBeUndefined();
+		expect(await formatResumeCommand(sessionManager)).toBeUndefined();
 	});
 
-	it("returns undefined when the session file is not set", () => {
+	it("returns undefined when the session file is not set", async () => {
 		setStdoutIsTTY(true);
 		const sessionManager = createSessionManager({ sessionFile: undefined });
 
-		expect(formatResumeCommand(sessionManager)).toBeUndefined();
+		expect(await formatResumeCommand(sessionManager)).toBeUndefined();
 	});
 
 	it.each([
@@ -179,7 +179,10 @@ describe("formatResumeCommand", () => {
 		try {
 			const manager = await SessionManager.create(store, dir, { id: "selected-session" });
 			const selection = ` --session-store ${quoteIfNeeded(path)}${prefix ? ` --session-prefix ${prefix}` : ""}`;
-			assert.equal(formatResumeCommand(manager, "linux"), `${APP_NAME}${selection} --session selected-session`);
+			assert.equal(
+				await formatResumeCommand(manager, "linux"),
+				`${APP_NAME}${selection} --session selected-session`,
+			);
 		} finally {
 			await store.close();
 			vi.unstubAllEnvs();
@@ -197,7 +200,7 @@ describe("formatResumeCommand", () => {
 		try {
 			const manager = await SessionManager.create(store, dir, { id: "selected-session" });
 			assert.equal(
-				formatResumeCommand(manager, "linux"),
+				await formatResumeCommand(manager, "linux"),
 				`${APP_NAME} --session-store ${quoteIfNeeded(path)} --session-prefix kept_ --session selected-session`,
 			);
 		} finally {
@@ -223,7 +226,7 @@ describe("formatResumeCommand", () => {
 		try {
 			const manager = await SessionManager.create(store, cwd, { id: "selected-session" });
 			assert.equal(
-				formatResumeCommand(manager, "linux"),
+				await formatResumeCommand(manager, "linux"),
 				`${APP_NAME} --session-store ${quoteIfNeeded(path)} --session-prefix kept_ --session selected-session`,
 			);
 		} finally {
@@ -246,14 +249,14 @@ describe("resume commands on Windows (#4095)", () => {
 		expect(quoteForShell(value, "win32")).toBe(quoted);
 	});
 
-	it("never single-quotes a path, which cmd.exe would pass through as part of it", () => {
+	it("never single-quotes a path, which cmd.exe would pass through as part of it", async () => {
 		setStdoutIsTTY(true);
 		const sessionManager = createSessionManager({
 			sessionFile: createTempFile(),
 			sessionId: "01a17743-3aec-778b-911e-6312704ca32b",
 			sessionDir: "C:\\Users\\Jane Doe\\.atomic\\sessions",
 		});
-		expect(formatResumeCommand(sessionManager, "win32")).toBe(
+		expect(await formatResumeCommand(sessionManager, "win32")).toBe(
 			`${APP_NAME} --session-dir "C:\\Users\\Jane Doe\\.atomic\\sessions" --session 01a17743-3aec-778b-911e-6312704ca32b`,
 		);
 		const plain = createSessionManager({
@@ -261,7 +264,7 @@ describe("resume commands on Windows (#4095)", () => {
 			sessionId: "01a17743-3aec-778b-911e-6312704ca32b",
 			sessionDir: "C:\\Users\\me\\.atomic\\sessions",
 		});
-		expect(formatResumeCommand(plain, "win32")).toBe(
+		expect(await formatResumeCommand(plain, "win32")).toBe(
 			`${APP_NAME} --session-dir C:\\Users\\me\\.atomic\\sessions --session 01a17743-3aec-778b-911e-6312704ca32b`,
 		);
 	});

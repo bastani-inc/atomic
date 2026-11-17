@@ -202,7 +202,7 @@ async function emitForegroundResultIntercom(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	results: SingleResult[];
-}): Promise<{ payload: ReturnType<typeof buildSubagentResultIntercomPayload>; confirmed: boolean } | null> {
+}): Promise<{ payload: Awaited<ReturnType<typeof buildSubagentResultIntercomPayload>>; confirmed: boolean } | null> {
 	if (!input.intercomBridge.active || !input.intercomBridge.orchestratorTarget) return null;
 	const children = input.results.flatMap((result, index) =>
 		result.detached
@@ -225,7 +225,7 @@ async function emitForegroundResultIntercom(input: {
 				],
 	);
 	if (children.length === 0) return null;
-	const payload = buildSubagentResultIntercomPayload({
+	const payload = await buildSubagentResultIntercomPayload({
 		to: input.intercomBridge.orchestratorTarget,
 		runId: input.runId,
 		mode: input.mode,
@@ -252,7 +252,7 @@ export async function maybeBuildForegroundIntercomReceipt(input: {
 	});
 	if (!delivery) return null;
 	return {
-		text: formatSubagentResultReceipt({ mode: input.mode, runId: input.runId, ...delivery }),
+		text: await formatSubagentResultReceipt({ mode: input.mode, runId: input.runId, ...delivery }),
 		details: stripDetailsOutputsForIntercomReceipt(input.details),
 	};
 }

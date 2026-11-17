@@ -17,6 +17,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import {
 	CONSOLE_LOG_RETENTION_MS,
+	flushWorkflowConsoleOutput,
 	MAX_CONSOLE_LOG_DIRECTORY_BYTES,
 	MAX_PROCESS_CONSOLE_LOG_BYTES,
 	MAX_RUN_CONSOLE_BYTES,
@@ -32,11 +33,14 @@ import { createToolControlRegistry } from "../../packages/workflows/src/engine/r
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
+import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
 type Method = "log" | "warn" | "error";
 const terminal: Array<{ readonly method: Method; readonly text: string }> = [];
 const saved = { log: console.log, warn: console.warn, error: console.error };
 const root = mkdtempSync(join(tmpdir(), "atomic-run-console-"));
+const EXIT_CHILD = join(moduleDir(import.meta.url), "..", "fixtures", "workflow-run-console-exit-child.ts");
+const CHILD_PROCESS_TIMEOUT_MS = 60_000;
 let directories = 0;
 const opened: RunRejectionScope[] = [];
 
@@ -53,9 +57,9 @@ function routeToFreshDirectory(): string {
 	return directory;
 }
 
-afterEach(() => {
+afterEach(async () => {
 	for (const scope of opened.splice(0)) scope.close();
-	stopRoutingWorkflowConsoleOutput();
+	await stopRoutingWorkflowConsoleOutput();
 	terminal.length = 0;
 });
 
@@ -79,8 +83,8 @@ function quitAbort(runId: string): Error {
 	return Object.assign(new Error(`atomic-workflows: run ${runId} suspended by workflow quit`), { name: "AbortError" });
 }
 
-/** The log's lines as `<run> <method> <text>`, without their timestamps. */
-function logLines(): string[] {
+async function logLines(): Promise<string[]> {
+	await flushWorkflowConsoleOutput();
 	const path = workflowConsoleLogPath();
 	assert.ok(path);
 	return readFileSync(path, "utf8")
@@ -97,12 +101,12 @@ test("a run's console output goes to the process's workflow log, and the chat ge
 		console.log("still going");
 	});
 
+	const lines = await logLines();
 	const path = workflowConsoleLogPath();
 	assert.ok(path);
 	assert.equal(dirname(path), directory);
 	assert.match(basename(path), new RegExp(`^${process.pid}-\\d+\\.log$`));
 	assert.deepEqual(terminal, [{ method: "warn", text: `atomic-workflows: run run-a console output is in ${path}` }]);
-	const lines = logLines();
 	assert.equal(lines.length, 41);
 	assert.equal(lines[0], "run-a error dispatcher: save-1 failed");
 	assert.equal(lines[40], "run-a log still going");
@@ -124,33 +128,58 @@ test("cancellations from quitting a run, even after its scope closed, are logged
 	run.close();
 	await Promise.all(pending);
 
+	assert.equal((await logLines()).filter((line) => line.includes("suspended by workflow quit")).length, 3);
 	assert.deepEqual(terminal, []);
-	assert.equal(logLines().filter((line) => line.includes("suspended by workflow quit")).length, 3);
 });
 
-test("a nested run's output is tagged with its root run, and is on disk as soon as it is logged", () => {
+test(
+	"lines a run logs right before its process exits are in the log, and its announcement reaches the terminal",
+	() => {
+		const directory = join(root, `exiting-${++directories}`);
+		const child = spawnSyncCollect([bunExecutable(), EXIT_CHILD, directory]);
+		assert.equal(child.exitCode, 0, child.stderr.toString());
+
+		const [name, ...others] = readdirSync(directory);
+		assert.deepEqual(others, []);
+		assert.ok(name);
+		const path = join(directory, name);
+		const lines = readFileSync(path, "utf8")
+			.trimEnd()
+			.split("\n")
+			.map((line) => line.slice(line.indexOf(" ") + 1));
+		assert.deepEqual(lines, ["exiting-run error line 1", "exiting-run error line 2", "exiting-run error line 3"]);
+		assert.equal(child.stderr.toString().trim(), `atomic-workflows: run exiting-run console output is in ${path}`);
+	},
+	CHILD_PROCESS_TIMEOUT_MS,
+);
+
+test("a nested run's output is tagged with its root run", async () => {
 	routeToFreshDirectory();
 	open("root-run");
 	open("child-run", "root-run").run(() => console.warn("from the child"));
 
-	assert.deepEqual(logLines(), ["root-run warn from the child"]);
+	assert.deepEqual(await logLines(), ["root-run warn from the child"]);
 });
 
-test("runs whose owner does not route their output keep writing to the terminal", () => {
+test("runs whose owner does not route their output keep writing to the terminal", async () => {
 	routeToFreshDirectory();
 	open("other-owner-run", undefined, false).run(() => console.error("from another owner's run"));
 	open("owned-run").run(() => console.error("from an owned run"));
 
 	assert.equal(terminal[0]?.text, "from another owner's run");
-	assert.deepEqual(logLines(), ["owned-run error from an owned run"]);
+	assert.deepEqual(await logLines(), ["owned-run error from an owned run"]);
 });
 
-test("a log that cannot be written is reported once, and later output is dropped, not sent to the chat", () => {
+test("a log that cannot be written is reported once, and later output is dropped, not sent to the chat", async () => {
 	const directory = routeToFreshDirectory();
+	await flushWorkflowConsoleOutput();
 	rmSync(directory, { recursive: true });
 	writeFileSync(directory, "not a directory");
 	const run = open("run-unwritable");
 	for (let index = 0; index < 20; index += 1) run.run(() => console.error(`line ${index}`));
+	await flushWorkflowConsoleOutput();
+	run.run(() => console.error("after the failure"));
+	await flushWorkflowConsoleOutput();
 
 	assert.equal(terminal.length, 1);
 	assert.match(
@@ -159,7 +188,7 @@ test("a log that cannot be written is reported once, and later output is dropped
 	);
 });
 
-test("a run filling its share of the log gets one marker, and other runs keep logging", () => {
+test("a run filling its share of the log gets one marker, and other runs keep logging", async () => {
 	routeToFreshDirectory();
 	const megabyte = "y".repeat(1024 * 1024);
 	const noisy = open("run-noisy");
@@ -167,7 +196,7 @@ test("a run filling its share of the log gets one marker, and other runs keep lo
 		noisy.run(() => console.error(megabyte));
 	open("run-quiet").run(() => console.error("still logged"));
 
-	const lines = logLines();
+	const lines = await logLines();
 	assert.equal(
 		lines.filter((line) => line === "run-noisy run log limit reached; its later output is dropped").length,
 		1,
@@ -175,7 +204,7 @@ test("a run filling its share of the log gets one marker, and other runs keep lo
 	assert.equal(lines.at(-1), "run-quiet error still logged");
 });
 
-test("the process log stops at its limit with one marker", () => {
+test("the process log stops at its limit with one marker", async () => {
 	routeToFreshDirectory();
 	const megabyte = "z".repeat(1024 * 1024);
 	const runsNeeded = Math.ceil(MAX_PROCESS_CONSOLE_LOG_BYTES / (MAX_RUN_CONSOLE_BYTES - megabyte.length)) + 1;
@@ -185,7 +214,7 @@ test("the process log stops at its limit with one marker", () => {
 			scope.run(() => console.error(megabyte));
 	}
 
-	const lines = logLines();
+	const lines = await logLines();
 	assert.equal(
 		lines.filter((line) => line === "log limit reached; later workflow console output is dropped").length,
 		1,
@@ -193,7 +222,7 @@ test("the process log stops at its limit with one marker", () => {
 	assert.equal(lines.at(-1), "log limit reached; later workflow console output is dropped");
 });
 
-test("a call its run cannot afford caps that run only, even near the process limit", () => {
+test("a call its run cannot afford caps that run only, even near the process limit", async () => {
 	routeToFreshDirectory();
 	const sevenMegabytes = "w".repeat(7 * 1024 * 1024);
 	const runs = Array.from({ length: 9 }, (_, index) => open(`run-${index}`));
@@ -201,16 +230,17 @@ test("a call its run cannot afford caps that run only, even near the process lim
 	runs[8]?.run(() => console.error("v".repeat(2 * 1024 * 1024)));
 	open("run-quiet").run(() => console.error("still logged"));
 
-	const lines = logLines().map((line) => line.slice(0, 80));
+	const lines = (await logLines()).map((line) => line.slice(0, 80));
 	assert.equal(lines.filter((line) => line === "run-8 run log limit reached; its later output is dropped").length, 1);
 	assert.equal(lines.filter((line) => line.startsWith("log limit reached")).length, 0);
 	assert.equal(lines.at(-1), "run-quiet error still logged");
 });
 
-test("run-limit markers never push the log past its limit", () => {
+test("run-limit markers never push the log past its limit", async () => {
 	routeToFreshDirectory();
 	const sevenMegabytes = "w".repeat(7 * 1024 * 1024);
 	for (let run = 0; run < 9; run += 1) open(`filler-${run}`).run(() => console.error(sevenMegabytes));
+	await flushWorkflowConsoleOutput();
 	const path = workflowConsoleLogPath();
 	assert.ok(path);
 	const room = MAX_PROCESS_CONSOLE_LOG_BYTES - statSync(path).size;
@@ -218,18 +248,20 @@ test("run-limit markers never push the log past its limit", () => {
 	const oversized = "o".repeat(MAX_RUN_CONSOLE_BYTES + 1);
 	for (let run = 0; run < 50; run += 1) open(`oversized-${run}`).run(() => console.error(oversized));
 
+	const lines = await logLines();
 	assert.ok(statSync(path).size <= MAX_PROCESS_CONSOLE_LOG_BYTES, `${statSync(path).size} bytes`);
-	const markers = logLines().filter((line) => line.startsWith("log limit reached"));
+	const markers = lines.filter((line) => line.startsWith("log limit reached"));
 	assert.equal(markers.length, 1);
-	assert.equal(logLines().at(-1), "log limit reached; later workflow console output is dropped");
+	assert.equal(lines.at(-1), "log limit reached; later workflow console output is dropped");
 });
 
-test("a log directory that cannot be created is reported once, and routed output is dropped, not sent to the chat", () => {
+test("a log directory that cannot be created is reported once, and routed output is dropped, not sent to the chat", async () => {
 	const blocked = join(root, `blocked-${++directories}`);
 	writeFileSync(blocked, "a file where the log directory should be");
 	routeWorkflowConsoleOutput(blocked);
 	const run = open("run-without-a-directory");
 	for (let index = 0; index < 20; index += 1) run.run(() => console.error(`line ${index}`));
+	await flushWorkflowConsoleOutput();
 	console.error("outside any run");
 
 	assert.equal(terminal.length, 2);
@@ -237,14 +269,15 @@ test("a log directory that cannot be created is reported once, and routed output
 	assert.equal(terminal[1]?.text, "outside any run");
 });
 
-test("a run started again by an owner that does not route its output makes its own decision", () => {
+test("a run started again by an owner that does not route its output makes its own decision", async () => {
 	routeToFreshDirectory();
 	const first = open("resumed-run");
 	first.run(() => console.error("routed by its terminal-UI owner"));
 	first.close();
+	await flushWorkflowConsoleOutput();
 	open("resumed-run", undefined, false).run(() => console.error("resumed by a headless owner"));
 
-	assert.deepEqual(logLines(), ["resumed-run error routed by its terminal-UI owner"]);
+	assert.deepEqual(await logLines(), ["resumed-run error routed by its terminal-UI owner"]);
 	assert.equal(terminal.at(-1)?.text, "resumed by a headless owner");
 });
 
@@ -306,7 +339,7 @@ test("abort listeners of a run's steps log to the run's log when the host cancel
 		terminal.filter(({ text }) => text.includes("step aborted")),
 		[],
 	);
-	const listenerLines = logLines().filter((line) => line.includes("step aborted"));
+	const listenerLines = (await logLines()).filter((line) => line.includes("step aborted"));
 	assert.equal(listenerLines.length, 3);
 	assert.ok(listenerLines.every((line) => line.startsWith(`${runId} error listener `)));
 });
@@ -354,12 +387,13 @@ async function untilActive(tools: ReturnType<typeof createToolControlRegistry>, 
 		await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
-function listenerLinesFor(runId: string): string[] {
+async function listenerLinesFor(runId: string): Promise<string[]> {
+	const lines = await logLines();
 	assert.deepEqual(
 		terminal.filter(({ text }) => text.includes("step aborted")),
 		[],
 	);
-	return logLines().filter((line) => line.startsWith(`${runId} error listener `));
+	return lines.filter((line) => line.startsWith(`${runId} error listener `));
 }
 
 test("abort listeners log to the run's log when the run drains its steps after a recorded failure", async () => {
@@ -369,7 +403,7 @@ test("abort listeners log to the run's log when the run drains its steps after a
 		() => undefined,
 	);
 
-	assert.equal(listenerLinesFor(runId).length, 3);
+	assert.equal((await listenerLinesFor(runId)).length, 3);
 });
 
 test("abort listeners log to the run's log when a host cancellation registry aborts a run without a caller signal", async () => {
@@ -387,19 +421,19 @@ test("abort listeners log to the run's log when a host cancellation registry abo
 	cancellation.abort(runId, new Error("cancelled by the host"));
 	await settled;
 
-	assert.equal(listenerLinesFor(runId).length, 3);
+	assert.equal((await listenerLinesFor(runId)).length, 3);
 });
 
-test("a logged value that cannot be inspected is written without turning the console call into a failure", () => {
+test("a logged value that cannot be inspected is written without turning the console call into a failure", async () => {
 	routeToFreshDirectory();
 	const { proxy, revoke } = Proxy.revocable({ kind: "resource" }, {});
 	revoke();
 
 	assert.doesNotThrow(() => open("run-revoked-proxy").run(() => console.error(proxy)));
-	assert.equal(logLines().length, 1);
+	assert.equal((await logLines()).length, 1);
 });
 
-test("an error whose metadata throws when read is logged without turning the console call into a failure", () => {
+test("an error whose metadata throws when read is logged without turning the console call into a failure", async () => {
 	routeToFreshDirectory();
 	const hostile = new Error("a failure with an unreadable cause");
 	Object.defineProperty(hostile, "cause", {
@@ -409,10 +443,10 @@ test("an error whose metadata throws when read is logged without turning the con
 	});
 
 	assert.doesNotThrow(() => open("run-hostile-error").run(() => console.error(hostile)));
-	assert.match(logLines()[0] ?? "", /^run-hostile-error error .*a failure with an unreadable cause/);
+	assert.match((await logLines())[0] ?? "", /^run-hostile-error error .*a failure with an unreadable cause/);
 });
 
-test("starting to route deletes exited processes' logs past retention, then the oldest until the directory fits", () => {
+test("starting to route deletes exited processes' logs past retention, then the oldest until the directory fits", async () => {
 	const directory = join(root, "retention");
 	mkdirSync(directory);
 	const now = Date.now();
@@ -430,14 +464,15 @@ test("starting to route deletes exited processes' logs past retention, then the 
 	write("notes.log", 10, CONSOLE_LOG_RETENTION_MS + 1000);
 
 	routeWorkflowConsoleOutput(directory, now);
+	await flushWorkflowConsoleOutput();
 
 	assert.deepEqual(readdirSync(directory).sort(), [`${exited + 2}-3.log`, `${process.pid}-4.log`, "notes.log"].sort());
 });
 
-test("console output outside any run, or with routing off, still reaches the terminal", () => {
+test("console output outside any run, or with routing off, still reaches the terminal", async () => {
 	routeToFreshDirectory();
 	console.error("host message");
-	stopRoutingWorkflowConsoleOutput();
+	await stopRoutingWorkflowConsoleOutput();
 	open("run-off").run(() => console.error("run message while routing is off"));
 
 	assert.deepEqual(terminal, [

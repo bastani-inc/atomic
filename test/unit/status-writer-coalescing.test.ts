@@ -23,6 +23,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 		unlink: async (path: string) => {
 			await unlinkHook?.(path);
 		},
+		stat: async (path: string) => {
+			throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: "ENOENT" });
+		},
 	};
 });
 

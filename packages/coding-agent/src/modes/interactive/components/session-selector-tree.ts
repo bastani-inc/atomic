@@ -1,5 +1,5 @@
 import type { SessionInfo } from "../../../core/session-manager.ts";
-import { getSessionPathKey } from "./session-selector-utils.ts";
+import { getSessionPathKey, isSessionPathKeyResolved } from "./session-selector-utils.ts";
 
 /** A session tree node for hierarchical display */
 interface SessionTreeNode {
@@ -22,7 +22,7 @@ function sessionPathKey(session: SessionInfo): string {
 	const cached = pathKeys.get(session);
 	if (cached?.path === session.path) return cached.key;
 	const key = getSessionPathKey(session.path);
-	pathKeys.set(session, { path: session.path, key });
+	if (isSessionPathKeyResolved(session.path)) pathKeys.set(session, { path: session.path, key });
 	return key;
 }
 

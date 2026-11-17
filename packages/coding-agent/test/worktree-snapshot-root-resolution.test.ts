@@ -2,19 +2,19 @@ import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 
 const lstats = vi.hoisted(() => ({ count: 0 }));
-vi.mock("node:fs", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:fs")>();
-	const lstatSync = ((...args: Parameters<typeof actual.lstatSync>) => {
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const lstat = ((...args: Parameters<typeof actual.lstat>) => {
 		lstats.count++;
-		return actual.lstatSync(...args);
-	}) as typeof actual.lstatSync;
-	return { ...actual, default: { ...actual, lstatSync }, lstatSync };
+		return actual.lstat(...args);
+	}) as typeof actual.lstat;
+	return { ...actual, default: { ...actual, lstat }, lstat };
 });
 
 import { currentWorktreeSnapshots } from "../src/core/session-worktree-snapshots.ts";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.ts";
 
-function lstatsForSnapshots(count: number): number {
+async function lstatsForSnapshots(count: number): Promise<number> {
 	const branch = Array.from({ length: count }, (_, i) => ({
 		type: "worktree_snapshot" as const,
 		id: `snapshot-${i}`,
@@ -25,7 +25,7 @@ function lstatsForSnapshots(count: number): number {
 	}));
 	const records = new Map(branch.map((entry) => [entry.snapshotId, { id: entry.snapshotId } as WorktreeSnapshot]));
 	lstats.count = 0;
-	const current = currentWorktreeSnapshots({
+	const current = await currentWorktreeSnapshots({
 		getBranch: () => branch,
 		getWorktreeRootMappings: () => [
 			{ from: "/work/original", to: "/work/checkout", snapshotId: "s0", tree: "t", restoredAt: "t" },
@@ -36,6 +36,6 @@ function lstatsForSnapshots(count: number): number {
 	return lstats.count;
 }
 
-test("resolves each recorded checkout root once however many snapshots the session holds (#5249)", () => {
-	assert.equal(lstatsForSnapshots(2_000), lstatsForSnapshots(10));
+test("resolves each recorded checkout root once however many snapshots the session holds (#5249)", async () => {
+	assert.equal(await lstatsForSnapshots(2_000), await lstatsForSnapshots(10));
 });

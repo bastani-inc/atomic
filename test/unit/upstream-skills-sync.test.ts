@@ -250,9 +250,9 @@ function assertFiles(base: string, paths: readonly string[]): void {
 const BUILTIN_LOADER_RELOAD_TIMEOUT_MS = 120_000;
 
 describe("synced upstream skill trees", () => {
-	test("discovers the renamed subagent skills and removes the old name", () => {
+	test("discovers the renamed subagent skills and removes the old name", async () => {
 		clearSkillCache();
-		const result = resolveSkills(["agent-browser", "agent-desktop", "liteparse", "effective-liteparse"], root);
+		const result = await resolveSkills(["agent-browser", "agent-desktop", "liteparse", "effective-liteparse"], root);
 		assert.deepEqual(result.resolved.map((skill) => skill.name).sort(), [
 			"agent-browser",
 			"agent-desktop",

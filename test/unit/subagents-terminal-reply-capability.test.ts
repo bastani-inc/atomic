@@ -111,7 +111,7 @@ for (const outcome of ["completed", "failed", "interrupted", "cancelled"] as con
 				filePath: join(root, "worker.md"),
 			};
 			runtime.registerAgents([agent]);
-			const admission = runtime.admitChildSession({ taskName: "fixture", task: "fixture", agent, cwd: root });
+			const admission = await runtime.admitChildSession({ taskName: "fixture", task: "fixture", agent, cwd: root });
 			assert.ok(admission.admitted);
 			const running = runtime.runChildAttempt(
 				admission.admitted,

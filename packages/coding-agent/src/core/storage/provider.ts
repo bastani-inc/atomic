@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Jiti, JitiResolveOptions } from "jiti";
-import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
+import { createSessionCwdMatcherAsync } from "../../utils/canonical-path.ts";
+import { pathExists } from "../../utils/path-exists.ts";
 import { abortSnapshotCollectionsOn, runningSnapshotCollectionsOn } from "../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteValue, StorageDescriptor } from "./database.js";
 import {
@@ -14,7 +15,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import { storageHomeDir } from "./file-identity.js";
+import { storageHomeDir, storageHomeDirAsync } from "./file-identity.js";
 import { legacyDefaultJournalPath } from "./journal-adoption.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { validateStoragePrefix } from "./prefix.js";
@@ -44,7 +45,21 @@ let lastRelativeSecretPaths: RelativeSecretPaths | undefined;
 /** Where a `secrets` `{ file }` reference points: an absolute path, or a path relative to Atomic home. */
 export function secretFilePath(file: string, agentDir: string): string {
 	if (isAbsolute(file)) return file;
-	const home = storageHomeDir(agentDir);
+	const paths = relativeSecretPaths(file, agentDir, storageHomeDir(agentDir));
+	if (paths.primary === paths.legacy) return paths.primary;
+	if (!existsSync(paths.legacy) && !paths.managedLegacyToken) return paths.primary;
+	return existsSync(paths.primary) ? paths.primary : paths.legacy;
+}
+
+export async function secretFilePathAsync(file: string, agentDir: string): Promise<string> {
+	if (isAbsolute(file)) return file;
+	const paths = relativeSecretPaths(file, agentDir, await storageHomeDirAsync(agentDir));
+	if (paths.primary === paths.legacy) return paths.primary;
+	if (!(await pathExists(paths.legacy)) && !paths.managedLegacyToken) return paths.primary;
+	return (await pathExists(paths.primary)) ? paths.primary : paths.legacy;
+}
+
+function relativeSecretPaths(file: string, agentDir: string, home: string): RelativeSecretPaths {
 	const cwd = isAbsolute(agentDir) ? undefined : process.cwd();
 	let paths = lastRelativeSecretPaths;
 	if (
@@ -71,9 +86,7 @@ export function secretFilePath(file: string, agentDir: string): string {
 		};
 		lastRelativeSecretPaths = paths;
 	}
-	if (paths.primary === paths.legacy) return paths.primary;
-	if (!existsSync(paths.legacy) && !paths.managedLegacyToken) return paths.primary;
-	return existsSync(paths.primary) ? paths.primary : paths.legacy;
+	return paths;
 }
 export type AdapterOptions = Readonly<Record<string, SqliteValue | boolean>>;
 export type RunJournalOption =
@@ -349,7 +362,7 @@ async function readSecret(
 	}
 	let text: string;
 	try {
-		text = await readFile(secretFilePath(ref.file, agentDir), "utf8");
+		text = await readFile(await secretFilePathAsync(ref.file, agentDir), "utf8");
 	} catch (cause) {
 		throw new StorageUnavailableError(
 			{ adapter: selection.module, location: ref.file },
@@ -451,7 +464,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 		return this.open<SessionStore>(selection, context, {
 			memory: async () =>
 				new (await import("./session/memory-session-store.js")).MemorySessionStore(
-					createSessionCwdMatcher,
+					createSessionCwdMatcherAsync,
 					(await import("./session/released-history-files.js")).releasedHistoryFiles(
 						context.agentDir || (await import("../../config.js")).getAgentDir(),
 					),
@@ -463,7 +476,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 			sql: async (database, options) =>
 				(await import("./session/sql-session-store.js")).SqlSessionStore.open(database, {
 					...options,
-					cwdMatcher: createSessionCwdMatcher,
+					cwdMatcher: createSessionCwdMatcherAsync,
 				}),
 		});
 	}

@@ -441,11 +441,11 @@ describe("session selector path/delete interactions", () => {
 			() => {},
 			{ keybindings },
 		);
-		await flushPromises();
-
-		const output = stripAnsi(selector.render(120).join("\n"));
-		expect(output).toContain("Parent");
-		expect(output).toContain("└─ Child");
+		await vi.waitFor(() => {
+			const output = stripAnsi(selector.render(120).join("\n"));
+			expect(output).toContain("Parent");
+			expect(output).toContain("└─ Child");
+		});
 	});
 
 	it("treats the current session as active across symlink aliases", async () => {

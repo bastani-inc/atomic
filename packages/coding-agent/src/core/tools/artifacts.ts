@@ -7,8 +7,9 @@
  * existing files so a resumed session keeps a contiguous id space. Subagents
  * that share a session dir share the same manager/id space.
  */
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pathExists } from "./path-utils.ts";
 
 export interface AllocatedArtifact {
 	path: string;
@@ -18,7 +19,7 @@ export interface AllocatedArtifact {
 export class ArtifactManager {
 	#nextId = 0;
 	readonly #dir: string;
-	#initialized = false;
+	#initialized: Promise<void> | undefined;
 
 	constructor(dir: string) {
 		this.#dir = dir;
@@ -28,52 +29,52 @@ export class ArtifactManager {
 		return this.#dir;
 	}
 
-	#init(): void {
-		if (this.#initialized) return;
-		this.#initialized = true;
-		let max = -1;
-		if (existsSync(this.#dir)) {
-			for (const name of readdirSync(this.#dir)) {
-				const match = name.match(/^(\d+)\..*\.log$/);
-				if (match) {
-					const id = Number.parseInt(match[1] ?? "0", 10);
-					if (id > max) max = id;
+	#init(): Promise<void> {
+		this.#initialized ??= (async () => {
+			let max = -1;
+			if (await pathExists(this.#dir)) {
+				for (const name of await readdir(this.#dir)) {
+					const match = name.match(/^(\d+)\..*\.log$/);
+					if (match) {
+						const id = Number.parseInt(match[1] ?? "0", 10);
+						if (id > max) max = id;
+					}
 				}
 			}
-		}
-		this.#nextId = max + 1;
+			this.#nextId = max + 1;
+		})();
+		return this.#initialized;
 	}
 
-	allocate(toolType: string): AllocatedArtifact {
-		this.#init();
+	async allocate(toolType: string): Promise<AllocatedArtifact> {
+		await this.#init();
 		const id = String(this.#nextId++);
 		const path = join(this.#dir, `${id}.${toolType}.log`);
 		return { path, id };
 	}
 
-	save(content: string, toolType: string): string {
-		this.#init();
-		const { path, id } = this.allocate(toolType);
-		if (!existsSync(this.#dir)) mkdirSync(this.#dir, { recursive: true });
-		writeFileSync(path, content, "utf8");
+	async save(content: string, toolType: string): Promise<string> {
+		const { path, id } = await this.allocate(toolType);
+		if (!(await pathExists(this.#dir))) await mkdir(this.#dir, { recursive: true });
+		await writeFile(path, content, "utf8");
 		return id;
 	}
 
 	/** Resolve a numeric id to its artifact file path, matching by `${id}.` prefix. */
-	resolve(id: string): string | undefined {
-		this.#init();
-		if (!existsSync(this.#dir)) return undefined;
+	async resolve(id: string): Promise<string | undefined> {
+		await this.#init();
+		if (!(await pathExists(this.#dir))) return undefined;
 		const prefix = `${id}.`;
-		for (const name of readdirSync(this.#dir))
+		for (const name of await readdir(this.#dir))
 			if (name.startsWith(prefix) && name.endsWith(".log")) return join(this.#dir, name);
 		return undefined;
 	}
 
-	list(): string[] {
-		this.#init();
-		if (!existsSync(this.#dir)) return [];
+	async list(): Promise<string[]> {
+		await this.#init();
+		if (!(await pathExists(this.#dir))) return [];
 		const ids: number[] = [];
-		for (const name of readdirSync(this.#dir)) {
+		for (const name of await readdir(this.#dir)) {
 			const match = name.match(/^(\d+)\..*\.log$/);
 			if (match) ids.push(Number.parseInt(match[1] ?? "0", 10));
 		}

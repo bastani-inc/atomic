@@ -312,6 +312,32 @@ describe("DefaultPackageManager", () => {
 			expect(packageManager.getInstalledPath("npm:legacy-pkg", "user")).toBe(managedPath);
 		});
 
+		it("looks up the global npm root once while update checks of legacy installs run concurrently", async () => {
+			const legacyRoot = join(tempDir, "legacy-global", "node_modules");
+			const names = ["legacy-a", "legacy-b", "legacy-c"];
+			for (const name of names) {
+				mkdirSync(join(legacyRoot, name), { recursive: true });
+				writeFileSync(join(legacyRoot, name, "package.json"), JSON.stringify({ name, version: "1.0.0" }));
+			}
+			settingsManager.setPackages(names.map((name) => `npm:${name}`));
+			const managerWithInternals = packageManager as object as PackageManagerInternals;
+			const runCommandCaptureSpy = vi
+				.spyOn(managerWithInternals, "runCommandCapture")
+				.mockImplementation(async (_command, args) => {
+					if (args[0] !== "root") return '"2.0.0"';
+					await new Promise((resolve) => setTimeout(resolve, 100));
+					return legacyRoot;
+				});
+
+			const updates = await packageManager.checkForAvailableUpdates();
+
+			expect(updates.map((update) => update.source).sort()).toEqual(names.map((name) => `npm:${name}`));
+			const rootLookups = runCommandCaptureSpy.mock.calls.filter(([, args]) => args[0] === "root");
+			expect(rootLookups).toEqual([
+				["npm", ["root", "-g"], expect.objectContaining({ timeoutMs: expect.any(Number) })],
+			]);
+		});
+
 		it("should batch npm updates per scope and run git updates in parallel while skipping pinned npm and current packages", async () => {
 			const userOldPath = join(agentDir, "npm", "node_modules", "user-old");
 			const userCurrentPath = join(agentDir, "npm", "node_modules", "user-current");

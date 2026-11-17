@@ -57,9 +57,9 @@ describe("Coding Agent Tools", () => {
 			vi.unstubAllEnvs();
 		});
 
-		it.skipIf(!requireProvisionedRipgrep)("finds the ripgrep installed before the suite (#4389)", () => {
+		it.skipIf(!requireProvisionedRipgrep)("finds the ripgrep installed before the suite (#4389)", async () => {
 			assert.notEqual(
-				getToolPath("rg"),
+				await getToolPath("rg"),
 				null,
 				"ATOMIC_REQUIRE_PROVISIONED_RIPGREP=1 needs ripgrep on PATH or in Atomic's bin directory before the suite starts",
 			);

@@ -141,6 +141,7 @@ export {
 	currentWorktreeRestoreNotices,
 	currentWorktreeRootMappings,
 	mapPathForCwd,
+	mapPathForCwdAsync,
 	withWorktreeRestoreNotices,
 	withWorktreeRootMappings,
 } from "./path-mapping.ts";
@@ -163,12 +164,15 @@ export {
 	continueSessionWhereItWorked,
 	type DirtyCheckoutChoice,
 	type DirtyCheckoutPrompt,
+	latestSessionSnapshot,
+	latestSessionSnapshotAsync,
 	type PreparedSessionResume,
 	type PrepareSessionResumeOptions,
 	prepareSessionResume,
 	type ResumeNotice,
 	resumeStoreDir,
 	savedProjectTrust,
+	savedProjectTrustAsync,
 	sessionResumeOptions,
 	worktreeNeedsRestore,
 } from "./session-resume.ts";

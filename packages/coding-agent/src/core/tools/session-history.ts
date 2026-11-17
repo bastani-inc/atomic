@@ -44,7 +44,7 @@ function clampSpanEnd(start: number, end: number): number {
 }
 
 function parseEntryRange(value: string, label: string, capSpan: boolean): { start: number; end: number } {
-	const match = /^\s*(\d+)\s*(?:-\s*(\d+))?\s*$/.exec(value);
+	const match = /^(\d+)(?:\s*-\s*(\d+))?$/.exec(value.trim());
 	if (!match) throw new Error(`Invalid lines "${label}": use an entry range such as "120-260".`);
 	const start = Number(match[1]);
 	const end = match[2] === undefined ? start : Number(match[2]);

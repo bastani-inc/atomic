@@ -108,7 +108,7 @@ describe("interactive resume recovery (#3760)", () => {
 				configurable: true,
 				value: {
 					reload: async () => order.push("reload"),
-					getToolStatus: () => ({ missing: [] }),
+					getToolStatusAsync: () => ({ missing: [] }),
 					resourceLoader: { getThemes: () => ({ themes: [] }) },
 					extensionRunner: {},
 					modelRuntime: { getError: () => undefined, getWarning: () => undefined },
@@ -150,7 +150,7 @@ describe("interactive resume recovery (#3760)", () => {
 		Object.defineProperty(mode, "session", {
 			configurable: true,
 			value: {
-				getToolStatus: () => ({ missing: [{ name: "subagent", reason: "nothing registered it" }] }),
+				getToolStatusAsync: () => ({ missing: [{ name: "subagent", reason: "nothing registered it" }] }),
 			},
 		});
 		Object.assign(mode, {
@@ -185,7 +185,7 @@ describe("interactive resume recovery (#3760)", () => {
 			configurable: true,
 			value: {
 				reload: async () => {},
-				getToolStatus: () => {
+				getToolStatusAsync: () => {
 					throw new Error("status exploded");
 				},
 				resourceLoader: { getThemes: () => ({ themes: [] }) },

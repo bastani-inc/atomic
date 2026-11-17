@@ -42,6 +42,13 @@ async function flushAutocomplete(): Promise<void> {
 	await new Promise((resolve) => setImmediate(resolve));
 }
 
+async function waitForText(editor: Editor, expected: string): Promise<void> {
+	const deadline = Date.now() + 5000;
+	while (editor.getText() !== expected && Date.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
 describe("Editor component", () => {
 	describe("Prompt history navigation", () => {
 		it("does nothing on Up arrow when history is empty", () => {
@@ -2405,11 +2412,11 @@ describe("Editor component", () => {
 				const before = editor.getText();
 				editor.handleInput("文");
 				editor.handleInput("\t");
-				await flushAutocomplete();
+				await waitForText(editor, `${before}文档/`);
 				assert.strictEqual(editor.getText(), `${before}文档/`);
 				editor.handleInput("说");
 				editor.handleInput("\t");
-				await flushAutocomplete();
+				await waitForText(editor, `${before}文档/说明.md`);
 				assert.strictEqual(editor.getText(), `${before}文档/说明.md`);
 				assert.deepStrictEqual(editor.getCursor(), { line: 0, col: editor.getText().length });
 			}

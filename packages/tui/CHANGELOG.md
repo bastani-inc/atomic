@@ -6,6 +6,8 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Added
 
+- `WindowedContainer`, a vertical list a fullscreen `ScrollView` lays out by its visible window: frames render only the children on screen and one viewport around them, the rest render in bounded background slices, and the view stays in place while content above it changes height
+- `TuiStopOptions.writeInSlices` and `TUI.whenStopped()`, so stopping the fullscreen renderer can write the transcript to the main screen in bounded slices across event-loop turns; terminals may implement the optional `Terminal.flush()`
 - `EditorTheme.autocompleteHint` draws one hint line under the editor's open autocomplete menu from the entries the editor passes: select (when there is more than one row), complete, run or insert, and close. An entry's optional `resolvedKeys` names keys that reach the menu when an app handles shortcuts first. The `/` menu names `run` only for a confirm key that also submits the prompt. `Editor.getHistory()` returns the prompt history, newest first, and `SelectList.getItemCount()` the number of rows after its filter ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `TUI.requestImmediateRender()` renders on the next tick, ahead of the frame pacing `requestRender()` applies, for a frame that answers the user's own keystroke.
 - Slash-command autocomplete suggestions can set `completeOnConfirm: false` to submit the typed input on Enter until the user navigates the suggestion list. Tab still accepts the highlighted completion ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
@@ -14,6 +16,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Changed
 
+- `turnPromptAbove` accepts any `WindowRows` (arrays still work), and `ScrollLayoutState` adds `isFollowingEnd` and an optional anchored scroll position for `updateLayout`
 - A fuzzy `@` file suggestion no longer repeats its path as the description when the file's name already shows it; a nested file still names its folder ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - The fullscreen renderer no longer lays out the screen under an overlay that covers all of it, until the overlay stops covering it.
 - A focused component whose input handler returns a promise is repainted when the promise settles, rather than right after the key is routed.
@@ -21,6 +24,9 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Fixed
 
+- Fuzzy matching stays fast when a long query recurs throughout an item's text, with the same scores, and select lists lowercase their filter once instead of once per item
+- Markdown rendering no longer stalls for seconds when an unclosed `$$` or `\[` opener, or a table delimiter row, is followed by a long run of spaces
+- Path completion reads directories, the terminal write log is appended, and tmux hyperlink support is detected without blocking the event loop
 - F1–F5 and Page Up/Down sent as `ESC [ [ …` (libuv on Windows, the Linux console) are read as one key instead of typing their final letter into the editor
 
 ## [0.9.88] - 2026-11-16

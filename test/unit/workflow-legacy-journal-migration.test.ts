@@ -329,7 +329,7 @@ function stageCheckpoint(overrides: Partial<DurableStageCheckpoint>): DurableSta
 	} as DurableStageCheckpoint;
 }
 
-test("resolves a path-only stage checkpoint to its transcript header ID, not its file name", () => {
+test("resolves a path-only stage checkpoint to its transcript header ID, not its file name", async () => {
 	const directory = tempDirectory();
 	const sessionFile = join(directory, "2026-10-13T17-06-16-398Z_01a1363a-a8ce-7ee4-8cea-1c498f2a706d.jsonl");
 	writeTextSync(
@@ -337,18 +337,18 @@ test("resolves a path-only stage checkpoint to its transcript header ID, not its
 		`${JSON.stringify({ type: "session", version: 3, id: "01a1363a-b000-7000-8000-000000000001", timestamp: "2026-10-13T17:06:16.398Z", cwd: "/projects/legacy" })}\n`,
 	);
 
-	const migrated = migrateStageSessionCheckpoint(stageCheckpoint({ sessionFile }));
+	const migrated = await migrateStageSessionCheckpoint(stageCheckpoint({ sessionFile }));
 
 	assert.equal(migrated.sessionId, "01a1363a-b000-7000-8000-000000000001");
 	assert.equal(migrated.sessionFile, sessionFile);
 });
 
-test("keeps stage checkpoints that already carry a session ID or whose transcript is gone", () => {
+test("keeps stage checkpoints that already carry a session ID or whose transcript is gone", async () => {
 	const withId = stageCheckpoint({ sessionId: "current-id", sessionFile: "/missing/session.jsonl" });
-	assert.equal(migrateStageSessionCheckpoint(withId), withId);
+	assert.equal(await migrateStageSessionCheckpoint(withId), withId);
 
 	const missing = stageCheckpoint({ sessionFile: join(tempDirectory(), "missing.jsonl") });
-	assert.equal(migrateStageSessionCheckpoint(missing).sessionId, undefined);
+	assert.equal((await migrateStageSessionCheckpoint(missing)).sessionId, undefined);
 });
 
 test("resumes a pre-#3700 stage from its transcript when the selected store has never seen it", async () => {

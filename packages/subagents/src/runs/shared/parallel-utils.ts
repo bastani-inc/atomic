@@ -1,28 +1,155 @@
 import { isParentCancellation } from "./cancellation-recovery.js";
 
+export type ExecutionTicket = ((dispatch: () => Promise<void>) => void) & {
+	readonly limit?: number;
+	readonly scheduler: ExecutionScheduler;
+	readonly admitted: Promise<void>;
+	readonly onObserved: () => void;
+	readonly onEntered: () => void;
+	readonly release: () => void;
+};
+
 /** Dispatches at most `limit` at a time, in order; `limit` lets a child record its run's limit as plain data (#4856). */
-export type ExecutionScheduler = ((dispatch: () => Promise<void>) => void) & { readonly limit?: number };
+export type ExecutionScheduler = ((dispatch: () => Promise<void>) => void) & {
+	readonly limit?: number;
+	readonly reserve?: () => ExecutionTicket;
+};
+
+export function isExecutionTicket(
+	schedule: ((dispatch: () => Promise<void>) => void) | undefined,
+): schedule is ExecutionTicket {
+	return typeof schedule === "function" && "admitted" in schedule && "release" in schedule && "scheduler" in schedule;
+}
+
+interface SchedulerEntry {
+	state: "reserved" | "ready" | "released" | "dispatched";
+	observed: boolean;
+	entered: boolean;
+	dispatch?: () => Promise<void>;
+	resolveAdmission: () => void;
+}
 
 /** A slot belongs to the dispatch lifetime, not its caller's observation. */
 export function createExecutionScheduler(limit: number): ExecutionScheduler {
 	let active = 0;
-	const queued: Array<() => Promise<void>> = [];
+	const queued: SchedulerEntry[] = [];
+	const unsettledAdmissions = new Set<Promise<void>>();
+
 	const pump = (): void => {
+		while (queued.length > 0 && queued[0]!.state === "released") {
+			queued.shift();
+		}
 		while (active < limit && queued.length > 0) {
-			const dispatch = queued.shift()!;
+			const head = queued[0]!;
+			if (head.state === "released") {
+				queued.shift();
+				continue;
+			}
+			if (head.state === "reserved") {
+				break;
+			}
+			queued.shift();
+			head.state = "dispatched";
+			if (head.entered) head.resolveAdmission();
+			const dispatch = head.dispatch!;
+			head.dispatch = undefined;
 			active++;
-			const release = () => {
+			const releaseSlot = () => {
 				active--;
 				pump();
 			};
-			void dispatch().then(release, release);
+			void dispatch().then(releaseSlot, releaseSlot);
+		}
+		for (const entry of queued) {
+			if (entry.state === "reserved") break;
+			if (entry.state === "ready" && entry.observed) {
+				entry.resolveAdmission();
+			}
 		}
 	};
+
 	const schedule = (dispatch: () => Promise<void>): void => {
-		queued.push(dispatch);
+		queued.push({
+			state: "ready",
+			observed: true,
+			entered: true,
+			dispatch,
+			resolveAdmission: () => {},
+		});
 		pump();
 	};
-	return Object.assign(schedule, { limit });
+
+	const reserve = (): ExecutionTicket => {
+		const ownAdmission = Promise.withResolvers<void>();
+		let admissionSettled = false;
+		const resolveAdmission = (): void => {
+			if (admissionSettled) return;
+			admissionSettled = true;
+			unsettledAdmissions.delete(ownAdmission.promise);
+			ownAdmission.resolve();
+		};
+		unsettledAdmissions.add(ownAdmission.promise);
+		const snapshot = [...unsettledAdmissions];
+		const admitted = Promise.all(snapshot).then(() => undefined);
+
+		const entry: SchedulerEntry = {
+			state: "reserved",
+			observed: false,
+			entered: false,
+			resolveAdmission,
+		};
+		queued.push(entry);
+
+		const onObserved = (): void => {
+			if (entry.observed) return;
+			entry.observed = true;
+			if (entry.state === "released" || (entry.state === "dispatched" && entry.entered)) {
+				entry.resolveAdmission();
+				return;
+			}
+			pump();
+		};
+		const onEntered = (): void => {
+			if (entry.entered) return;
+			entry.entered = true;
+			if (entry.state === "dispatched" || entry.state === "released") {
+				entry.resolveAdmission();
+			}
+		};
+		const release = (): void => {
+			if (entry.state === "reserved") {
+				entry.state = "released";
+				entry.resolveAdmission();
+				pump();
+				return;
+			}
+			if (entry.state === "ready") {
+				onObserved();
+				return;
+			}
+			onEntered();
+		};
+		const ticket = (dispatch: () => Promise<void>): void => {
+			if (entry.state === "reserved") {
+				entry.state = "ready";
+				entry.dispatch = dispatch;
+				pump();
+				return;
+			}
+			schedule(dispatch);
+		};
+		return Object.assign(ticket, {
+			limit,
+			scheduler,
+			admitted,
+			onObserved,
+			onEntered,
+			release,
+		});
+	};
+
+	const scheduler: ExecutionScheduler = Object.assign(schedule, { limit, reserve });
+	return scheduler;
 }
 
 export async function mapConcurrent<T, R>(

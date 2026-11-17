@@ -14,7 +14,7 @@ import {
 import { ResumePreconditionError, type ResumePreconditionProblem } from "./errors.ts";
 import { isInside } from "./path-mapping.ts";
 import { defaultResumePreflightIo, gitUnavailableProblem, type ResumePreflightIo } from "./preflight.ts";
-import { resumeStoreDir, savedProjectTrust } from "./session-resume.ts";
+import { resumeStoreDir, savedProjectTrustAsync } from "./session-resume.ts";
 
 /** A checkout a workflow run's resume restores, with the remotes its snapshot recorded. */
 export interface RunWorktreeTarget {
@@ -36,13 +36,13 @@ export interface RunResumeSetupOptions {
  * The blueprint build configuration of an agent directory. `resume.setupCommand` and the default project trust are
  * global settings, so no project's settings are read.
  */
-function runBlueprintConfig(agentDir = getAgentDir()): BlueprintBuildConfig {
-	const settings = SettingsManager.create(agentDir, agentDir, { projectTrusted: false });
+async function runBlueprintConfig(agentDir = getAgentDir()): Promise<BlueprintBuildConfig> {
+	const settings = await SettingsManager.createAsync(agentDir, agentDir, { projectTrusted: false });
 	return {
 		agentDir,
 		storeDir: resumeStoreDir(agentDir),
 		setupCommand: settings.getResumeSetupCommand(),
-		trusted: savedProjectTrust(agentDir, settings),
+		trusted: savedProjectTrustAsync(agentDir, settings),
 	};
 }
 
@@ -147,7 +147,7 @@ async function buildRunWorktrees(
 	removableOnCancel: readonly RunWorktreeTarget[],
 	options: RunResumeSetupOptions,
 ): Promise<ResumedBlueprints> {
-	const config = runBlueprintConfig(options.agentDir);
+	const config = await runBlueprintConfig(options.agentDir);
 	try {
 		const blueprints = await setUpResumedBlueprints({ restored: targets, config, signal: options.signal });
 		if (blueprints.notices.length > 0) options.onNotices?.(blueprints.notices);

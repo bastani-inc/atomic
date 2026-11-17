@@ -506,7 +506,7 @@ export type BlueprintBuildConfigRootExport = Assert<
 		{
 			readonly agentDir: string;
 			readonly storeDir: string;
-			readonly trusted: (worktree: string) => boolean;
+			readonly trusted: (worktree: string) => boolean | Promise<boolean>;
 			readonly setupCommand?: string;
 			readonly platform?: BlueprintPlatform;
 			readonly homeDir?: string;

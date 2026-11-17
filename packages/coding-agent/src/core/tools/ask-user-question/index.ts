@@ -15,4 +15,7 @@
  *  - ../index.ts (registers via createAllToolDefinitions)
  *  - ./ask-user-question.ts (tool definition + execute pipeline)
  */
-export { createAskUserQuestionToolDefinition } from "./ask-user-question.js";
+export {
+	createAskUserQuestionToolDefinition,
+	createLoadedAskUserQuestionToolDefinition,
+} from "./ask-user-question.js";

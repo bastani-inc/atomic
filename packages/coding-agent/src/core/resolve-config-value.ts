@@ -3,12 +3,21 @@
  * Used by auth-storage.ts and model-registry.ts.
  */
 
-import { execSync, spawnSync } from "child_process";
+import { execSync, spawn, spawnSync } from "child_process";
 import { createChildProcessEnvironment } from "../utils/child-process.ts";
-import { getShellConfig } from "../utils/shell.ts";
+import {
+	getShellConfig,
+	getShellConfigAsync,
+	killChildProcessTree,
+	markDetachedChildExited,
+	trackDetachedChildPid,
+	untrackDetachedChildPid,
+} from "../utils/shell.ts";
+import { containProcessTree } from "./process-tree-containment.ts";
 
 // Cache for shell command results (persists for process lifetime)
 const commandResultCache = new Map<string, string | undefined>();
+const commandRuns = new Map<string, Promise<string | undefined>>();
 // Last observed uncached result, used only for privacy screening, never auth resolution.
 const observedCommandResults = new Map<string, string>();
 const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -158,6 +167,17 @@ export function resolveConfigValue(config: string, env?: Record<string, string>)
 	return resolveTemplate(reference.parts, env);
 }
 
+export async function resolveConfigValueAsync(
+	config: string,
+	env?: Record<string, string>,
+): Promise<string | undefined> {
+	const reference = parseConfigValueReference(config);
+	if (reference.type === "command") {
+		return executeCommandAsync(reference.config);
+	}
+	return resolveTemplate(reference.parts, env);
+}
+
 /** Inspect only known values: never execute a command just to screen routing context. */
 export function containsConfiguredValue(serialized: string, config: string, env?: Record<string, string>): boolean {
 	const reference = parseConfigValueReference(config);
@@ -170,11 +190,29 @@ export function containsConfiguredValue(serialized: string, config: string, env?
 				];
 	return values.some((value) => {
 		if (!value?.trim()) return false;
-		const token = /^(?:Bearer|Basic)\s+(.+)$/i.exec(value)?.[1];
+		const token = authorizationCredential(value);
 		return [value, token].some(
 			(candidate) => !!candidate && serialized.includes(JSON.stringify(candidate).slice(1, -1)),
 		);
 	});
+}
+
+const LINE_TERMINATORS = new Set(["\n", "\r", "\u2028", "\u2029"]);
+
+function authorizationCredential(value: string): string | undefined {
+	const scheme = /^(?:Bearer|Basic)/i.exec(value);
+	if (scheme === null) return undefined;
+	let end = scheme[0].length;
+	while (end < value.length && /\s/.test(value[end] as string)) end++;
+	const whitespace = end - scheme[0].length;
+	if (whitespace === 0) return undefined;
+	const credential = value.slice(end);
+	if (credential.length > 0) {
+		for (const character of credential) if (LINE_TERMINATORS.has(character)) return undefined;
+		return credential;
+	}
+	const last = value[end - 1] as string;
+	return whitespace >= 2 && !LINE_TERMINATORS.has(last) ? last : undefined;
 }
 
 function executeWithConfiguredShell(command: string): { executed: boolean; value: string | undefined } {
@@ -247,6 +285,155 @@ function executeCommand(commandConfig: string): string | undefined {
 	return result;
 }
 
+const COMMAND_TIMEOUT_MS = 10_000;
+const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
+
+interface CommandOutcome {
+	readonly error?: NodeJS.ErrnoException;
+	readonly status: number | null;
+	readonly stdout: string;
+}
+
+function runCommand(
+	file: string,
+	args: readonly string[],
+	options: { readonly shell: boolean; readonly windowsHide: boolean; readonly input?: string },
+): Promise<CommandOutcome> {
+	return new Promise((resolve) => {
+		const chunks: Buffer[] = [];
+		let size = 0;
+		let error: NodeJS.ErrnoException | undefined;
+		let settled = false;
+		let exited = false;
+		let stopped = false;
+		const finish = (status: number | null) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			if (!stopped && error === undefined && status === 0) tree?.release();
+			tree?.close();
+			if (detachedPid !== undefined) untrackDetachedChildPid(detachedPid);
+			resolve({ error, status, stdout: Buffer.concat(chunks).toString("utf-8") });
+		};
+		const stop = (failure: NodeJS.ErrnoException) => {
+			stopped = true;
+			error ??= failure;
+			child.stdin?.destroy();
+			child.stdout?.destroy();
+			if (!tree?.terminate()) {
+				killChildProcessTree(child, exited);
+			}
+			if (exited || child.pid === undefined) finish(null);
+		};
+		const child = spawn(file, args, {
+			stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "ignore"],
+			timeout: COMMAND_TIMEOUT_MS,
+			shell: options.shell,
+			windowsHide: options.windowsHide,
+			detached: process.platform !== "win32",
+			env: createChildProcessEnvironment(),
+		});
+		const tree = child.pid === undefined || child.pid === process.pid ? undefined : containProcessTree(child.pid);
+		const detachedPid =
+			process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid ? child.pid : undefined;
+		if (detachedPid !== undefined) trackDetachedChildPid(detachedPid);
+		const timer = setTimeout(
+			() => stop(Object.assign(new Error(`spawn ${file} ETIMEDOUT`), { code: "ETIMEDOUT" })),
+			COMMAND_TIMEOUT_MS,
+		);
+		child.on("error", (failure: NodeJS.ErrnoException) => {
+			error ??= failure;
+			if (child.pid === undefined) finish(null);
+		});
+		child.stdout?.on("data", (chunk: Buffer) => {
+			size += chunk.length;
+			if (size <= MAX_COMMAND_OUTPUT_BYTES) {
+				chunks.push(chunk);
+				return;
+			}
+			stop(Object.assign(new Error("stdout maxBuffer length exceeded"), { code: "ENOBUFS" }));
+		});
+		child.on("exit", (status, signal) => {
+			exited = true;
+			if (detachedPid !== undefined) markDetachedChildExited(detachedPid);
+			if (stopped || error !== undefined || signal !== null) {
+				stop(Object.assign(new Error(`spawn ${file} ETIMEDOUT`), { code: "ETIMEDOUT" }));
+				finish(status);
+			}
+		});
+		child.on("close", (status) => finish(status));
+		if (options.input !== undefined) {
+			child.stdin?.on("error", () => {});
+			child.stdin?.end(options.input);
+		}
+	});
+}
+
+async function executeWithConfiguredShellAsync(
+	command: string,
+): Promise<{ executed: boolean; value: string | undefined }> {
+	try {
+		const { shell, args, commandTransport } = await getShellConfigAsync();
+		const commandFromStdin = commandTransport === "stdin";
+		const result = await runCommand(shell, commandFromStdin ? args : [...args, command], {
+			shell: false,
+			windowsHide: true,
+			input: commandFromStdin ? command : undefined,
+		});
+		if (result.error) {
+			return { executed: result.error.code !== "ENOENT", value: undefined };
+		}
+		if (result.status !== 0) {
+			return { executed: true, value: undefined };
+		}
+		const value = result.stdout.trim();
+		return { executed: true, value: value || undefined };
+	} catch {
+		return { executed: false, value: undefined };
+	}
+}
+
+async function executeWithDefaultShellAsync(command: string): Promise<string | undefined> {
+	try {
+		const result = await runCommand(command, [], { shell: true, windowsHide: false });
+		if (result.error || result.status !== 0) return undefined;
+		return result.stdout.trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function executeCommandUncachedAsync(commandConfig: string): Promise<string | undefined> {
+	const command = commandConfig.slice(1);
+	let result: string | undefined;
+	if (process.platform === "win32") {
+		const configuredResult = await executeWithConfiguredShellAsync(command);
+		result = configuredResult.executed ? configuredResult.value : await executeWithDefaultShellAsync(command);
+	} else {
+		result = await executeWithDefaultShellAsync(command);
+	}
+	if (result) observedCommandResults.set(commandConfig, result);
+	return result;
+}
+
+async function executeCommandAsync(commandConfig: string): Promise<string | undefined> {
+	if (commandResultCache.has(commandConfig)) {
+		return commandResultCache.get(commandConfig);
+	}
+	let run = commandRuns.get(commandConfig);
+	if (run === undefined) {
+		run = executeCommandUncachedAsync(commandConfig).then((result) => {
+			if (commandRuns.get(commandConfig) === run) {
+				commandResultCache.set(commandConfig, result);
+				commandRuns.delete(commandConfig);
+			}
+			return result;
+		});
+		commandRuns.set(commandConfig, run);
+	}
+	return run;
+}
+
 /**
  * Resolve all header values using the same resolution logic as API keys.
  */
@@ -258,28 +445,54 @@ export function resolveConfigValueUncached(config: string, env?: Record<string, 
 	return resolveTemplate(reference.parts, env);
 }
 
+export async function resolveConfigValueUncachedAsync(
+	config: string,
+	env?: Record<string, string>,
+): Promise<string | undefined> {
+	const reference = parseConfigValueReference(config);
+	if (reference.type === "command") {
+		return executeCommandUncachedAsync(reference.config);
+	}
+	return resolveTemplate(reference.parts, env);
+}
+
 export function resolveConfigValueOrThrow(config: string, description: string, env?: Record<string, string>): string {
 	const resolvedValue = resolveConfigValueUncached(config, env);
 	if (resolvedValue !== undefined) {
 		return resolvedValue;
 	}
+	throw unresolvedConfigValueError(config, description, env);
+}
 
+export async function resolveConfigValueOrThrowAsync(
+	config: string,
+	description: string,
+	env?: Record<string, string>,
+): Promise<string> {
+	const resolvedValue = await resolveConfigValueUncachedAsync(config, env);
+	if (resolvedValue !== undefined) {
+		return resolvedValue;
+	}
+	throw unresolvedConfigValueError(config, description, env);
+}
+
+function unresolvedConfigValueError(config: string, description: string, env?: Record<string, string>): Error {
 	const reference = parseConfigValueReference(config);
 	if (reference.type === "command") {
-		throw new Error(`Failed to resolve ${description} from shell command: ${reference.config.slice(1)}`);
+		return new Error(`Failed to resolve ${description} from shell command: ${reference.config.slice(1)}`);
 	}
 
 	if (reference.type === "template") {
 		const missingEnvVars = getMissingConfigValueEnvVarNames(config, env);
 		if (missingEnvVars.length === 1) {
-			throw new Error(`Failed to resolve ${description} from environment variable: ${missingEnvVars[0]}`);
+			return new Error(`Failed to resolve ${description} from environment variable: ${missingEnvVars[0]}`);
 		}
 		if (missingEnvVars.length > 1) {
-			throw new Error(`Failed to resolve ${description} from environment variables: ${missingEnvVars.join(", ")}`);
+			return new Error(`Failed to resolve ${description} from environment variables: ${missingEnvVars.join(", ")}`);
 		}
 	}
 
-	throw new Error(`Failed to resolve ${description}`);
+	return new Error(`Failed to resolve ${description}`);
 }
 
 /**
@@ -313,8 +526,22 @@ export function resolveHeadersOrThrow(
 	return Object.keys(resolved).length > 0 ? resolved : undefined;
 }
 
+export async function resolveHeadersOrThrowAsync(
+	headers: Record<string, string> | undefined,
+	description: string,
+	env?: Record<string, string>,
+): Promise<Record<string, string> | undefined> {
+	if (!headers) return undefined;
+	const resolved: Record<string, string> = {};
+	for (const [key, value] of Object.entries(headers)) {
+		resolved[key] = await resolveConfigValueOrThrowAsync(value, `${description} header "${key}"`, env);
+	}
+	return Object.keys(resolved).length > 0 ? resolved : undefined;
+}
+
 /** Clear the config value command cache. Exported for testing. */
 export function clearConfigValueCache(): void {
 	commandResultCache.clear();
 	observedCommandResults.clear();
+	commandRuns.clear();
 }

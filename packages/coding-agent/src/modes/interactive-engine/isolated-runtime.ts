@@ -22,7 +22,7 @@ import type { ToolStatusReport } from "../../core/tool-status.js";
 import { validateWorkflowResumeEntries } from "../../core/workflow-resume.ts";
 import { captureHerdrEnvironment } from "../../extensions/herdr/environment.js";
 import { releaseUnownedPaneRegistration } from "../../extensions/herdr/pane-owner.js";
-import { canonicalizePath } from "../../utils/paths.ts";
+import { canonicalizePathAsync } from "../../utils/paths.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { AgentPanelCounts } from "../rpc/agent-panel-bridge.ts";
@@ -373,8 +373,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (
 				(super.session.sessionManager.isPersisted() && state.sessionId !== super.session.sessionId) ||
 				(state.sessionLocation &&
-					canonicalizePath(dirname(state.sessionLocation)) !==
-						canonicalizePath(super.session.sessionManager.getSessionDir()))
+					(await canonicalizePathAsync(dirname(state.sessionLocation))) !==
+						(await canonicalizePathAsync(super.session.sessionManager.getSessionDir())))
 			) {
 				await super.switchSession(state.sessionId, {
 					sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
@@ -388,7 +388,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				session.settingsManager.isProjectTrusted() !== state.projectTrusted
 			) {
 				// The child owns trust hooks/decisions. The host only mirrors their result.
-				session.settingsManager.setProjectTrusted(state.projectTrusted);
+				await session.settingsManager.setProjectTrustedAsync(state.projectTrusted);
 				await session.settingsManager.reload();
 				await session.resourceLoader.reload();
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;

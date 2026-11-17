@@ -4,7 +4,9 @@ import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { type TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.js";
 import { theme } from "../theme/theme.js";
 import { AGENT_PANEL_IDLE_ROWS, renderAgentPanelRows } from "./agent-panel.ts";
-import { TaskRow, taskLabel, taskTitle } from "./task-row.js";
+import { countTasksBy, TaskRow, taskLabel, taskSiblings, taskTitle } from "./task-row.js";
+
+const labelAndTitle = (task: TaskRecord): string => JSON.stringify([taskLabel(task), taskTitle(task)]);
 
 /** Complete projection; viewport owners, not this list, decide how much to mount. */
 export class TaskList implements Component {
@@ -16,11 +18,11 @@ export class TaskList implements Component {
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
-		return this.tasks.flatMap((task) => {
-			const duplicate =
-				this.tasks.filter((item) => taskLabel(item) === taskLabel(task) && taskTitle(item) === taskTitle(task))
-					.length > 1;
-			return new TaskRow(task, { expanded: this.expanded, duplicate, siblings: this.tasks }).render(width);
+		const siblings = taskSiblings(this.tasks);
+		const copies = countTasksBy(siblings, labelAndTitle);
+		return siblings.flatMap((task) => {
+			const duplicate = (copies.get(labelAndTitle(task)) ?? 0) > 1;
+			return new TaskRow(task, { expanded: this.expanded, duplicate, siblings }).render(width);
 		});
 	}
 }

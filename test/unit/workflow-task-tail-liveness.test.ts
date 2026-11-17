@@ -33,6 +33,7 @@ import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowTaskResult } from "../../packages/workflows/src/shared/types.js";
+import { untilRunRegistered } from "../helpers/fake-timer-io.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { structuredOutputMockSession } from "./executor-shared.js";
 import { assistantMessageWithUsage } from "./stage-runner-helpers.js";
@@ -220,6 +221,7 @@ describe("ctx.task tail liveness", () => {
 				adapters: { prompt: { prompt: async () => "review done" } },
 			},
 		);
+		await untilRunRegistered(store, backend);
 		await vi.advanceTimersByTimeAsync(0);
 		const snapshotAfterTask = store.runs().find((candidate) => candidate.name === taskThenTool.name);
 		assert.equal(
@@ -292,6 +294,7 @@ describe("ctx.task tail liveness", () => {
 				adapters,
 			},
 		);
+		await untilRunRegistered(store, backend);
 		await vi.advanceTimersByTimeAsync(0);
 		assert.equal(backend.taskCheckpoints, 2);
 		await vi.advanceTimersByTimeAsync(20);
@@ -399,6 +402,7 @@ describe("ctx.task tail liveness", () => {
 				adapters,
 			},
 		);
+		await untilRunRegistered(store, backend);
 		await vi.advanceTimersByTimeAsync(0);
 		assert.equal(backend.taskCheckpoints, 2);
 		await vi.advanceTimersByTimeAsync(20);
@@ -618,6 +622,7 @@ describe("ctx.task tail liveness", () => {
 				},
 			},
 		);
+		await untilRunRegistered(store, backend);
 		await vi.advanceTimersByTimeAsync(0);
 		assert.equal(backend.taskCheckpoints, 1);
 		await vi.advanceTimersByTimeAsync(20);
@@ -1218,12 +1223,12 @@ describe("ctx.task tail liveness", () => {
 
 	test("live worktree artifacts survive after the task-result persist is dropped", async () => {
 		const repo = mkdtempSync(join(tmpdir(), "atomic-task-artifacts-"));
-		runGitChecked(repo, ["init", "-b", "main"]);
-		runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
-		runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
+		await runGitChecked(repo, ["init", "-b", "main"]);
+		await runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
+		await runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
 		writeFileSync(join(repo, "tracked.txt"), "base\n");
-		runGitChecked(repo, ["add", "."]);
-		runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
+		await runGitChecked(repo, ["add", "."]);
+		await runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
 		const { firstFailed, replayed, prompts } = await replayAfterDroppedTaskPersist(
 			"live-worktree-artifacts",
 			{ prompt: "review", worktree: true },
@@ -1408,6 +1413,7 @@ describe("ctx.task tail liveness", () => {
 				adapters: { prompt: { prompt: async () => "review done" } },
 			},
 		);
+		await untilRunRegistered(store, backend);
 		await vi.advanceTimersByTimeAsync(0);
 		const snapshotAfterTask = store.runs().find((candidate) => candidate.name === taskThenTool.name);
 		assert.ok(snapshotAfterTask);

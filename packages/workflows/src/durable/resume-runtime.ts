@@ -37,7 +37,7 @@ import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
 import { availableRunDurableBackend } from "./run-owner-backend.js";
 import { restorePreconditionsChecked, resumeClaim, resumeLaunchCwd } from "./run-restore-preconditions.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
-import { canonicalDirectory, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
+import { canonicalDirectoryAsync, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
 import { durableWaitingStages } from "./stage-primitive.js";
 import { requireStoreDurableBackend } from "./store-backend.js";
 import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
@@ -165,7 +165,7 @@ export async function resumeDurableWorkflow(
 	if (
 		handle?.invocationCwd !== undefined &&
 		currentCwd !== undefined &&
-		canonicalDirectory(handle.invocationCwd) !== canonicalDirectory(currentCwd) &&
+		(await canonicalDirectoryAsync(handle.invocationCwd)) !== (await canonicalDirectoryAsync(currentCwd)) &&
 		!(await hasWorktreeSnapshots(backend, id))
 	)
 		return resumeIntoFork(handle, currentCwd, { ...deps, durableBackend: backend });

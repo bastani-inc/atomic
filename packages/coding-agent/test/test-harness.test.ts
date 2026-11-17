@@ -6,7 +6,7 @@
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHarness, createHarnessWithExtensions, type Harness } from "./test-harness.ts";
 
 describe("test harness", () => {
@@ -337,5 +337,22 @@ describe("test harness", () => {
 		const entries = harness.sessionManager.getEntries();
 		const messageEntries = entries.filter((e) => e.type === "message");
 		expect(messageEntries.length).toBeGreaterThanOrEqual(2); // user + assistant
+	});
+
+	it("cleanup swallows async flush or removal errors without an unhandled rejection", async () => {
+		harness = await createHarness({ responses: ["ok"] });
+		vi.spyOn(harness.settingsManager, "flush").mockRejectedValueOnce(new Error("EBUSY"));
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			harness.cleanup();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(unhandled).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
 	});
 });

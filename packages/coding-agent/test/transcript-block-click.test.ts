@@ -10,6 +10,7 @@ import {
 	Text,
 	type TuiAltScreen,
 	VStack,
+	WindowedContainer,
 } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import type { SessionEntry } from "../src/core/session-manager.js";
@@ -171,7 +172,7 @@ async function mountChat(columns: number, rows: number, outputs: { readonly seco
 		() => tui.requestRender(),
 		() => transcript,
 	);
-	const document = new Container();
+	const document = new WindowedContainer();
 	document.addChild(mode.chatContainer);
 	transcript = new ScrollView(document, { follow: "end", primary: true });
 	const editor = new Text("editor", 0, 0);

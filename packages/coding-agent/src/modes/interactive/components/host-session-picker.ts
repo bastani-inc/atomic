@@ -133,7 +133,7 @@ export function mountHostSessionPicker(
 	};
 	void ui
 		.custom<undefined>(
-			(_tui, _theme, _keybindings, done) => {
+			(_tui, _theme, keybindings, done) => {
 				const settle = (notify: () => void): void => {
 					if (!record || record.settled) return;
 					record.settled = true;
@@ -157,6 +157,7 @@ export function mountHostSessionPicker(
 					() => ui.requestRender(),
 					{
 						showRenameHint: presentation.showRenameHint,
+						keybindings,
 						initialSessions: [...currentRows],
 						canDelete: presentation.canDelete,
 						...(presentation.title !== undefined ? { title: presentation.title } : {}),

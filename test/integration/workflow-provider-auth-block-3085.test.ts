@@ -20,6 +20,7 @@ import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifact-env.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { advanceFakeStep } from "../helpers/fake-timer-io.js";
 import { moduleDir, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 import {
 	createIssue3085Definition,
@@ -124,7 +125,7 @@ test(
 				.then((result) => {
 					started = result;
 				});
-			for (let i = 0; i < 100 && started === undefined; i++) await vi.advanceTimersByTimeAsync(1);
+			for (let i = 0; i < 100 && started === undefined; i++) await advanceFakeStep(1);
 			assert.ok(started, "detached dispatch must acknowledge");
 			await starting;
 			const startedRun = started;

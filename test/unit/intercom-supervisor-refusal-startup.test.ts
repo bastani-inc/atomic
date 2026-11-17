@@ -149,6 +149,25 @@ function startChild(refusal: Error, refusals = Number.POSITIVE_INFINITY) {
 
 afterEach(() => vi.useRealTimers());
 
+const realSetTimeout = globalThis.setTimeout;
+const realNow = performance.now.bind(performance);
+const FIRST_REGISTRATION_WAIT_MS = 10_000;
+
+async function advanceUntil(
+	child: { readonly registrations: readonly object[] },
+	done: () => boolean,
+	limitMs: number,
+	stepMs: number,
+): Promise<void> {
+	const deadline = realNow() + FIRST_REGISTRATION_WAIT_MS;
+	while (child.registrations.length === 0 && !done() && realNow() < deadline)
+		await new Promise((resolve) => realSetTimeout(resolve, 5));
+	for (let waited = 0; !done() && waited < limitMs; waited += stepMs) {
+		await new Promise((resolve) => realSetTimeout(resolve, 1));
+		await vi.advanceTimersByTimeAsync(stepMs);
+	}
+}
+
 for (const [label, refusal] of [
 	["a broker that names the refusal", undefined],
 	["an older broker that gives only the reason", new Error("Invalid supervisor authorization")],
@@ -161,8 +180,7 @@ for (const [label, refusal] of [
 			const starting = child.emit({ type: "session_start", reason: "startup" }).finally(() => {
 				settled = true;
 			});
-			for (let waited = 0; !settled && waited < SUPERVISOR_REFUSAL_RETRY_MS + 10_000; waited += 1_000)
-				await vi.advanceTimersByTimeAsync(1_000);
+			await advanceUntil(child, () => settled, SUPERVISOR_REFUSAL_RETRY_MS + 10_000, 1_000);
 			const reported = await starting;
 			assert.deepEqual(reported, [], "the child's extensions start");
 			const offered = child.registrations.filter((registration) => registration.supervisor !== undefined);
@@ -179,8 +197,11 @@ test("a supervisor capability refused only until its supervisor is back, as afte
 	// The broker refuses the capability twice, until the supervisor reconnects and restores it.
 	const child = startChild(new IntercomSupervisorAuthorizationRefusedError(), 2);
 	try {
-		const starting = child.emit({ type: "session_start", reason: "startup" });
-		await vi.advanceTimersByTimeAsync(5_000);
+		let settled = false;
+		const starting = child.emit({ type: "session_start", reason: "startup" }).finally(() => {
+			settled = true;
+		});
+		await advanceUntil(child, () => settled, 5_000, 250);
 		assert.deepEqual(await starting, []);
 		assert.equal(child.registrations.length, 3);
 		assert.ok(
@@ -200,16 +221,14 @@ test("a child that registered without its refused supervisor capability offers i
 		const starting = child.emit({ type: "session_start", reason: "startup" }).finally(() => {
 			settled = true;
 		});
-		for (let waited = 0; !settled && waited < SUPERVISOR_REFUSAL_RETRY_MS + 10_000; waited += 1_000)
-			await vi.advanceTimersByTimeAsync(1_000);
+		await advanceUntil(child, () => settled, SUPERVISOR_REFUSAL_RETRY_MS + 10_000, 1_000);
 		assert.deepEqual(await starting, []);
 		assert.equal(child.registrations.at(-1)?.supervisor, undefined);
 
 		const before = child.registrations.length;
 		child.restoreSupervisor();
 		child.disconnect();
-		for (let waited = 0; child.registrations.length === before && waited < 60_000; waited += 500)
-			await vi.advanceTimersByTimeAsync(500);
+		await advanceUntil(child, () => child.registrations.length > before, 60_000, 500);
 		assert.ok(child.registrations.length > before);
 		assert.deepEqual(child.registrations[before]?.supervisor, policy.intercom?.supervisor);
 	} finally {

@@ -1,19 +1,24 @@
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpath as realpathCallback, realpathSync, statSync } from "node:fs";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
+import { promisify } from "node:util";
 import chalk from "chalk";
 import { getAgentDir, getAgentDirs } from "../config.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
-import { findGitPaths } from "./footer-data-provider.ts";
+import { findGitPaths, findGitPathsAsync } from "./footer-data-provider.ts";
 
-export function resolvePromptInput(input: string | undefined, description: string): string | undefined {
+type ContextFile = { path: string; content: string };
+
+export async function resolvePromptInput(input: string | undefined, description: string): Promise<string | undefined> {
 	if (!input) {
 		return undefined;
 	}
 
-	if (existsSync(input)) {
+	if (await exists(input)) {
 		try {
-			return stripBom(readFileSync(input, "utf-8"));
+			return stripBom(await readFile(input, "utf-8"));
 		} catch (error) {
 			console.error(chalk.yellow(`Warning: Could not read ${description} file ${input}: ${error}`));
 			return input;
@@ -27,19 +32,19 @@ export function resolvePromptInput(input: string | undefined, description: strin
  * Path of a system-prompt input that is a real file, for startup disclosure.
  * `resolvePromptInput` also accepts literal prompt text, which has no path.
  */
-export function resolveExistingPromptSourcePath(input: string | undefined): string | undefined {
-	return input && existsSync(input) ? resolvePath(input) : undefined;
+export async function resolveExistingPromptSourcePath(input: string | undefined): Promise<string | undefined> {
+	return input && (await exists(input)) ? resolvePath(input) : undefined;
 }
 
-export function resolveExistingPromptSourcePaths(inputs: readonly string[]): string[] {
-	return inputs
-		.map((input) => resolveExistingPromptSourcePath(input))
-		.filter((path): path is string => path !== undefined);
+export async function resolveExistingPromptSourcePaths(inputs: readonly string[]): Promise<string[]> {
+	const paths = await Promise.all(inputs.map((input) => resolveExistingPromptSourcePath(input)));
+	return paths.filter((path): path is string => path !== undefined);
 }
 
-function loadContextFileFromDir(dir: string): { path: string; content: string } | null {
-	const candidates = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
-	for (const filename of candidates) {
+const CONTEXT_FILE_NAMES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+
+function loadContextFileFromDir(dir: string): ContextFile | null {
+	for (const filename of CONTEXT_FILE_NAMES) {
 		const filePath = join(dir, filename);
 		if (existsSync(filePath)) {
 			try {
@@ -47,6 +52,24 @@ function loadContextFileFromDir(dir: string): { path: string; content: string } 
 				return {
 					path: filePath,
 					content: stripBom(readFileSync(filePath, "utf-8")),
+				};
+			} catch (error) {
+				console.error(chalk.yellow(`Warning: Could not read ${filePath}: ${error}`));
+			}
+		}
+	}
+	return null;
+}
+
+async function loadContextFileFromDirAsync(dir: string): Promise<ContextFile | null> {
+	for (const filename of CONTEXT_FILE_NAMES) {
+		const filePath = join(dir, filename);
+		if (await exists(filePath)) {
+			try {
+				if (!(await stat(filePath)).isFile()) continue;
+				return {
+					path: filePath,
+					content: stripBom(await readFile(filePath, "utf-8")),
 				};
 			} catch (error) {
 				console.error(chalk.yellow(`Warning: Could not read ${filePath}: ${error}`));
@@ -83,6 +106,16 @@ function realPath(path: string): string {
 		return realpathSync.native(path);
 	} catch {
 		return canonicalizePath(path);
+	}
+}
+
+const realpathJs = promisify(realpathCallback);
+
+async function realPathAsync(path: string): Promise<string> {
+	try {
+		return await realpath(path);
+	} catch {
+		return realpathJs(path).catch(() => path);
 	}
 }
 
@@ -135,35 +168,62 @@ function findShadowedContextFile(cwd: string): string | undefined {
 	return join(mainRepoRoot, basename(worktreeContextFile.path));
 }
 
-export function loadProjectContextFiles(options: {
+async function findShadowedContextFileAsync(cwd: string): Promise<string | undefined> {
+	const gitPaths = await findGitPathsAsync(cwd);
+	if (!gitPaths) return undefined;
+	const commonGitDir = await realPathAsync(gitPaths.commonGitDir);
+	const worktreeRoot = await realPathAsync(gitPaths.repoDir);
+	const mainRepoRoot = dirname(commonGitDir);
+	if (!isDescendantOf(mainRepoRoot, worktreeRoot)) return undefined;
+	if (!samePath(await realPathAsync(join(mainRepoRoot, ".git")), commonGitDir)) return undefined;
+	const worktreeContextFile = await loadContextFileFromDirAsync(worktreeRoot);
+	if (!worktreeContextFile) return undefined;
+	if (basename(worktreeContextFile.path) === "AGENTS.override.md") {
+		const mainRepoContextFile = await loadContextFileFromDirAsync(mainRepoRoot);
+		return mainRepoContextFile ? join(mainRepoRoot, basename(mainRepoContextFile.path)) : undefined;
+	}
+	return join(mainRepoRoot, basename(worktreeContextFile.path));
+}
+
+interface ProjectContextFileOptions {
 	cwd: string;
 	agentDir: string;
 	projectTrusted?: boolean;
-}): Array<{ path: string; content: string }> {
-	const resolvedCwd = resolvePath(options.cwd);
-	const resolvedAgentDir = resolvePath(options.agentDir);
+}
 
-	const contextFiles: Array<{ path: string; content: string }> = [];
+function contextAgentDirs(agentDir: string): string[] {
+	return Array.from(new Set(agentDir === getAgentDir() ? getAgentDirs() : [agentDir])).reverse();
+}
+
+function orderContextFiles(
+	agentContextFiles: ReadonlyArray<ContextFile | null>,
+	ancestorContextFiles: ReadonlyArray<ContextFile | null>,
+): ContextFile[] {
+	const contextFiles: ContextFile[] = [];
 	const seenPaths = new Set<string>();
-
-	const contextAgentDirs = Array.from(
-		new Set(resolvedAgentDir === getAgentDir() ? getAgentDirs() : [resolvedAgentDir]),
-	).reverse();
-	for (const agentDir of contextAgentDirs) {
-		const context = loadContextFileFromDir(agentDir);
-		if (context && !seenPaths.has(context.path)) {
-			contextFiles.push(context);
-			seenPaths.add(context.path);
+	for (const contextFile of agentContextFiles) {
+		if (contextFile && !seenPaths.has(contextFile.path)) {
+			contextFiles.push(contextFile);
+			seenPaths.add(contextFile.path);
 		}
 	}
-
-	const ancestorContextFiles: Array<{ path: string; content: string }> = [];
-	if (options.projectTrusted === false) {
-		return contextFiles;
+	const ancestors: ContextFile[] = [];
+	for (const contextFile of ancestorContextFiles) {
+		if (contextFile && !seenPaths.has(contextFile.path)) {
+			ancestors.unshift(contextFile);
+			seenPaths.add(contextFile.path);
+		}
 	}
+	return [...contextFiles, ...ancestors];
+}
+
+export function loadProjectContextFiles(options: ProjectContextFileOptions): Array<{ path: string; content: string }> {
+	const resolvedCwd = resolvePath(options.cwd);
+	const agentContextFiles = contextAgentDirs(resolvePath(options.agentDir)).map((dir) => loadContextFileFromDir(dir));
+	if (options.projectTrusted === false) return orderContextFiles(agentContextFiles, []);
 
 	const shadowedContextFile = findShadowedContextFile(resolvedCwd);
-	for (const currentDir of getAncestorDirectories(resolvedCwd)) {
+	const ancestorContextFiles = getAncestorDirectories(resolvedCwd).map((currentDir) => {
 		const contextFile = loadContextFileFromDir(currentDir);
 		// A nested linked worktree's context file and the main repo's selected copy
 		// occupy one logical repository scope; skip the main repo's copy so it is not loaded twice.
@@ -173,13 +233,28 @@ export function loadProjectContextFiles(options: {
 			shadowedContextFile !== undefined &&
 			contextFile !== null &&
 			samePath(join(realPath(currentDir), basename(contextFile.path)), shadowedContextFile);
-		if (contextFile && !isShadowed && !seenPaths.has(contextFile.path)) {
-			ancestorContextFiles.unshift(contextFile);
-			seenPaths.add(contextFile.path);
-		}
-	}
+		return isShadowed ? null : contextFile;
+	});
+	return orderContextFiles(agentContextFiles, ancestorContextFiles);
+}
 
-	contextFiles.push(...ancestorContextFiles);
+export async function loadProjectContextFilesAsync(options: ProjectContextFileOptions): Promise<ContextFile[]> {
+	const resolvedCwd = resolvePath(options.cwd);
+	const agentContextFiles = await Promise.all(
+		contextAgentDirs(resolvePath(options.agentDir)).map((dir) => loadContextFileFromDirAsync(dir)),
+	);
+	if (options.projectTrusted === false) return orderContextFiles(agentContextFiles, []);
 
-	return contextFiles;
+	const shadowedContextFile = await findShadowedContextFileAsync(resolvedCwd);
+	const ancestorContextFiles = await Promise.all(
+		getAncestorDirectories(resolvedCwd).map(async (currentDir) => {
+			const contextFile = await loadContextFileFromDirAsync(currentDir);
+			const isShadowed =
+				shadowedContextFile !== undefined &&
+				contextFile !== null &&
+				samePath(join(await realPathAsync(currentDir), basename(contextFile.path)), shadowedContextFile);
+			return isShadowed ? null : contextFile;
+		}),
+	);
+	return orderContextFiles(agentContextFiles, ancestorContextFiles);
 }

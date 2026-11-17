@@ -555,7 +555,9 @@ test("every queued transcript row renders, and each one's repaint check runs (#4
 test("background renders report their callback activity like the renders they replace (#4333)", async () => {
 	const started: Array<{ kind: string; name: string }> = [];
 	setCallbackActivityReporter({
-		started: (activity) => started.push({ kind: activity.kind, name: activity.name }),
+		started: (activity) => {
+			started.push({ kind: activity.kind, name: activity.name });
+		},
 		finished() {},
 	});
 	const engine = engineHarness();

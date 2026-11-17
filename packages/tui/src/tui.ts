@@ -470,6 +470,7 @@ export type TuiMode = "regular" | "fullscreen";
 export interface TuiStopOptions {
 	/** Leave renderer output in place for another TUI taking over the same terminal. */
 	preserveScreen?: boolean;
+	writeInSlices?: boolean;
 }
 
 export interface TUI extends Component {
@@ -491,6 +492,7 @@ export interface TUI extends Component {
 	hasOverlay(): boolean;
 	start(): void;
 	stop(options?: TuiStopOptions): void;
+	whenStopped(): Promise<void>;
 	renderNow(force?: boolean): void;
 	requestRender(force?: boolean): void;
 	/**
@@ -536,6 +538,7 @@ export abstract class TuiBase extends Container implements TUI {
 	private clearOnShrink = false;
 	protected fullRedrawCount = 0;
 	protected stopped = false;
+	protected stopOutput: Promise<void> = Promise.resolve();
 	/**
 	 * Color queries waiting for their DA1 reply, oldest first. Terminals answer in order, so color
 	 * replies belong to the oldest one. Queries stay here after a timeout to collect late replies.
@@ -1041,6 +1044,10 @@ export abstract class TuiBase extends Container implements TUI {
 		this.terminal.showCursor();
 		this.terminal.stop();
 		this.afterTerminalStop(options);
+	}
+
+	whenStopped(): Promise<void> {
+		return this.stopOutput;
 	}
 
 	renderNow(force = false): void {

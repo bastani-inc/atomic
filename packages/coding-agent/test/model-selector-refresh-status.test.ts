@@ -31,7 +31,7 @@ function createSelector(refresh: ModelRuntime["refresh"]): ModelSelectorComponen
 	const runtime = {
 		refresh,
 		isNetworkRefreshEnabled: () => true,
-		getCatalogInputsGeneration: () => 0,
+		readCatalogInputsKey: async () => "0",
 		getError: () => undefined,
 		getAvailableSnapshot: () => [model],
 		getModel: () => model,

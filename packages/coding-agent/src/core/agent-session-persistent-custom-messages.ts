@@ -357,6 +357,8 @@ function registerProtectedAdmission(
 		return true;
 	});
 	const cards = unread.map((entry) => entry.card);
+	if (owner._disposed && resolveWorkflowStageDeliveryTarget(owner) === owner)
+		return { owner, cards, reconciliations: [] };
 	const reconciliations = unread.map((entry) => entry.reconciliation);
 	protectedMessages(owner).push(
 		...reconciliations.map((message) => ({ message, delivery, phase: "queued" as const })),

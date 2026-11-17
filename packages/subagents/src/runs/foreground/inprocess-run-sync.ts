@@ -1,4 +1,3 @@
-import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
 	formatNoUsableModelMessage,
@@ -12,6 +11,7 @@ import {
 import type { Cleanup } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
+import { checkLaunchCwd } from "../../shared/launch-cwd.js";
 import { splitKnownThinkingSuffix, splitUnknownThinkingSuffix, THINKING_LEVELS } from "../../shared/model-info.js";
 import type {
 	AgentProgress,
@@ -236,11 +236,53 @@ function unknownModelResult(agent: AgentConfig, task: string, candidate: string,
 	);
 }
 
+interface AdmissionTurn {
+	readonly ahead: Promise<void> | undefined;
+	release(): void;
+}
+
+const admissionQueues = new Map<string, { pending: number; tail: Promise<void> }>();
+
+function takeAdmissionTurn(runId: string): AdmissionTurn {
+	const queue = admissionQueues.get(runId) ?? { pending: 0, tail: Promise.resolve() };
+	const ahead = queue.pending > 0 ? queue.tail : undefined;
+	const released = Promise.withResolvers<void>();
+	queue.pending += 1;
+	queue.tail = queue.tail.then(() => released.promise);
+	admissionQueues.set(runId, queue);
+	let open = true;
+	return {
+		ahead,
+		release() {
+			if (!open) return;
+			open = false;
+			released.resolve();
+			queue.pending -= 1;
+			if (queue.pending === 0 && admissionQueues.get(runId) === queue) admissionQueues.delete(runId);
+		},
+	};
+}
+
 export async function runSingleInProcess(
 	runtimeCwd: string,
 	agent: AgentConfig,
 	task: string,
 	options: RunSyncOptions,
+): Promise<SingleResult> {
+	const turn = takeAdmissionTurn(options.runId);
+	try {
+		return await launchSingleInProcess(runtimeCwd, agent, task, options, turn);
+	} finally {
+		turn.release();
+	}
+}
+
+async function launchSingleInProcess(
+	runtimeCwd: string,
+	agent: AgentConfig,
+	task: string,
+	options: RunSyncOptions,
+	turn: AdmissionTurn,
 ): Promise<SingleResult> {
 	const sessionStartTimeoutMs = parseSessionStartTimeoutMs(
 		options.sessionStartTimeoutMs,
@@ -248,9 +290,9 @@ export async function runSingleInProcess(
 		"sessionStartTimeoutMs",
 	);
 	const cwd = options.cwd ?? runtimeCwd;
-	if (!existsSync(cwd)) return refusedResult(agent, task, missingCwdMessage(cwd));
-	if (!statSync(cwd).isDirectory()) return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
-	// An agent whose model is `auto` names none of its own: its launch resolves `auto` into `modelOverride`.
+	const cwdVerdict = options.cwdVerdict?.path === cwd ? options.cwdVerdict : await checkLaunchCwd(cwd);
+	if (cwdVerdict.state === "missing") return refusedResult(agent, task, missingCwdMessage(cwd));
+	if (cwdVerdict.state === "not-directory") return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
 	const agentModel = agent.model === "auto" ? undefined : agent.model;
 	const launchModel = options.modelOverride ?? agentModel ?? "";
 	// #4188: a launch that names a concrete model, in its call or its agent, runs that model and the fallbackModels its
@@ -342,7 +384,7 @@ export async function runSingleInProcess(
 		THINKING_LEVELS.find((level) => level === requestedSuffix) ??
 		(launchModel ? options.resolveCandidateModel?.(launchModel)?.unknownEffort : undefined);
 	const orchestrationContext = workflowOrchestrationContext(options);
-	const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
+	const outputSnapshot = options.outputPath ? await captureSingleOutputSnapshot(options.outputPath) : undefined;
 
 	const parent: ParentContext = {
 		path: options.runId,
@@ -371,8 +413,8 @@ export async function runSingleInProcess(
 		options.artifactConfig?.enabled === false ||
 		(options.artifactsDir === undefined && options.artifactConfig === undefined);
 	if (artifactsDir && artifactPaths && options.artifactConfig?.includeInput !== false) {
-		ensureArtifactsDir(artifactsDir);
-		writeArtifact(artifactPaths.inputPath, `# Task for ${agent.name}\n\n${task}`);
+		await ensureArtifactsDir(artifactsDir);
+		await writeArtifact(artifactPaths.inputPath, `# Task for ${agent.name}\n\n${task}`);
 	}
 	const testSession = options.testSession ?? defaultTestSession();
 	// Where the child is in its start, across its attempts, until its first turn starts: never merely "running".
@@ -477,7 +519,9 @@ export async function runSingleInProcess(
 				}
 			: undefined,
 	};
-	const admission = control.admitChildSession(spec, parent);
+	if (turn.ahead) await turn.ahead;
+	const admission = control.admitCheckedChildSession(spec, cwdVerdict, parent);
+	turn.release();
 	if (!admission.admitted) return refusedResult(agent, task, admission.refusal?.reason ?? "child admission refused");
 	const startedAt = Date.now();
 	const neverAbort = new AbortController().signal;
@@ -519,7 +563,7 @@ export async function runSingleInProcess(
 		if (releasedInTime && !stopped) await options.onStartRetry?.();
 		const again =
 			releasedInTime && !stopped
-				? control.admitChildSession(
+				? await control.admitChildSession(
 						carried.length === 0 ? spec : { ...spec, startContext: [...(spec.startContext ?? []), ...carried] },
 						parent,
 					)
@@ -619,7 +663,7 @@ export async function runSingleInProcess(
 					recovered.finalOutput = deliveredOutput;
 				}
 				forgetIfReleased(control, continuedOutcome);
-				persistRequestedOutput(recovered, options, outputSnapshot);
+				await persistRequestedOutput(recovered, options, outputSnapshot);
 				options.onDetachedExit?.(recovered);
 			})
 			.catch((error: unknown) => {
@@ -691,7 +735,10 @@ export async function runSingleInProcess(
 		result.finalOutput = deliveredOutput;
 	}
 	forgetIfReleased(control, outcome);
-	persistRequestedOutput(result, options, outputSnapshot);
+	result.outputMode = options.outputMode ?? "inline";
+	if (options.outputPath && result.status === "ok") {
+		await persistRequestedOutput(result, options, outputSnapshot);
+	}
 	const update: SubagentToolResult = {
 		content: [{ type: "text", text: result.finalOutput ?? "(no output)" }],
 		details: {
@@ -745,14 +792,14 @@ function forgetIfReleased(control: SubagentControlRuntime, outcome: AttemptOutco
 	if (control.holdsNothing()) unregisterSubagentControl(control);
 }
 
-function persistRequestedOutput(
+async function persistRequestedOutput(
 	result: SingleResult,
 	options: RunSyncOptions,
 	outputSnapshot: SingleOutputSnapshot | undefined,
-): void {
+): Promise<void> {
 	result.outputMode = options.outputMode ?? "inline";
 	if (!options.outputPath || result.status !== "ok") return;
-	const resolved = resolveSingleOutput(options.outputPath, result.finalOutput ?? "", outputSnapshot);
+	const resolved = await resolveSingleOutput(options.outputPath, result.finalOutput ?? "", outputSnapshot);
 	result.savedOutputPath = resolved.savedPath;
 	result.outputSaveError = resolved.saveError;
 	if (!resolved.savedPath) return;

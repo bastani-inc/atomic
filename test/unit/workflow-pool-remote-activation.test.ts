@@ -53,7 +53,7 @@ test.skipIf(process.platform === "win32")(
 			const pool = await activatePublicPool(backend, options);
 			assert.ok(pool);
 			try {
-				const host = poolHostId(agentDir);
+				const host = await poolHostId(agentDir);
 				assert.deepEqual(options.effectiveResources?.coordinator, {
 					host,
 					database: coordinationDatabase(poolDurableJournal(backend.journal)),

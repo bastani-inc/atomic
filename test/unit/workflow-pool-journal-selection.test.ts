@@ -171,39 +171,52 @@ test("a journal's coordination database is the same on this machine every time, 
 	);
 });
 
-test("this machine's pool identity is made once and kept", () => {
+test("this machine's pool identity is made once and kept", async () => {
 	const directory = makeTempDirectory("pool-host-id-");
 	try {
 		const agentDir = join(directory, "home", "agent");
-		const id = poolHostId(agentDir);
+		const id = await poolHostId(agentDir);
 		assert.match(id, /^[0-9a-f-]{36}$/);
-		assert.equal(poolHostId(agentDir), id);
-		assert.notEqual(poolHostId(join(directory, "other", "agent")), id);
+		assert.equal(await poolHostId(agentDir), id);
+		assert.notEqual(await poolHostId(join(directory, "other", "agent")), id);
 	} finally {
 		removeTempDirectory(directory);
 	}
 });
 
-test("two agent directories under one parent each keep a pool identity of their own, inside the directory (#5219)", () => {
+test("calls made at the same time in one process get the same pool identity", async () => {
+	const directory = makeTempDirectory("pool-host-id-concurrent-");
+	try {
+		const agentDir = join(directory, "agent");
+		const ids = await Promise.all(Array.from({ length: 8 }, () => poolHostId(agentDir)));
+		assert.match(ids[0] ?? "", /^[0-9a-f-]{36}$/);
+		assert.deepEqual(new Set(ids), new Set([ids[0]]));
+		assert.equal(await poolHostId(agentDir), ids[0]);
+	} finally {
+		removeTempDirectory(directory);
+	}
+});
+
+test("two agent directories under one parent each keep a pool identity of their own, inside the directory (#5219)", async () => {
 	const directory = makeTempDirectory("pool-host-id-siblings-");
 	try {
 		const first = join(directory, "a1");
 		const second = join(directory, "a2");
-		const id = poolHostId(first);
-		assert.notEqual(poolHostId(second), id);
-		assert.equal(poolHostId(first), id);
+		const id = await poolHostId(first);
+		assert.notEqual(await poolHostId(second), id);
+		assert.equal(await poolHostId(first), id);
 		for (const agentDir of [first, second]) {
 			const kept = readdirSync(agentDir, { recursive: true, withFileTypes: true })
 				.filter((entry) => entry.isFile())
 				.map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8").trim());
-			assert.ok(kept.includes(poolHostId(agentDir)), `${agentDir} keeps its identity`);
+			assert.ok(kept.includes(await poolHostId(agentDir)), `${agentDir} keeps its identity`);
 		}
 	} finally {
 		removeTempDirectory(directory);
 	}
 });
 
-test("an identity an earlier build kept beside the agent directories is adopted by one of them only (#5219)", () => {
+test("an identity an earlier build kept beside the agent directories is adopted by one of them only (#5219)", async () => {
 	const directory = makeTempDirectory("pool-host-id-upgrade-");
 	try {
 		const legacy = "0b9f3c3e-6a8e-4f3c-9a4e-2f6d8c1b7a55";
@@ -211,12 +224,12 @@ test("an identity an earlier build kept beside the agent directories is adopted 
 		writeFileSync(join(directory, "workflows", "pool", "host-id"), `${legacy}\n`);
 		const first = join(directory, "a1");
 		const second = join(directory, "a2");
-		assert.equal(poolHostId(first), legacy, "the first directory to start keeps the identity it had");
-		assert.notEqual(poolHostId(second), legacy, "its sibling does not adopt it too");
-		assert.equal(poolHostId(first), legacy);
+		assert.equal(await poolHostId(first), legacy, "the first directory to start keeps the identity it had");
+		assert.notEqual(await poolHostId(second), legacy, "its sibling does not adopt it too");
+		assert.equal(await poolHostId(first), legacy);
 		// A crash after claiming the identity and before keeping it: the claimant adopts it on its next start.
 		for (const entry of readdirSync(first)) rmSync(join(first, entry), { recursive: true });
-		assert.equal(poolHostId(first), legacy);
+		assert.equal(await poolHostId(first), legacy);
 		assert.deepEqual(
 			readdirSync(join(directory, "workflows", "pool")).sort(),
 			["host-id", "host-id.adopted-by"],

@@ -8,6 +8,7 @@ import {
 	isLifecycleTimingEnabled,
 	type LifecycleTimingRecord,
 	type LifecycleTraceLine,
+	lifecycleTraceWritten,
 	markLifecycleTiming,
 } from "../src/core/lifecycle-timings.ts";
 
@@ -44,7 +45,7 @@ describe("lifecycle timing seams", () => {
 		expect(isLifecycleTimingEnabled()).toBe(false);
 	});
 
-	it("appends the process start and each mark to the ATOMIC_STARTUP_TRACE file in wall-clock time", () => {
+	it("appends the process start and each mark to the ATOMIC_STARTUP_TRACE file in wall-clock time", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-startup-trace-"));
 		const file = join(directory, "trace.jsonl");
 		// The trace's clock: wall-clock time at process start plus monotonic time since. Date.now() is a separate clock
@@ -58,6 +59,7 @@ describe("lifecycle timing seams", () => {
 			markLifecycleTiming("process-entry");
 			markLifecycleTiming("tui-start");
 			markLifecycleTiming("tui-start");
+			await lifecycleTraceWritten();
 			const lines = readFileSync(file, "utf8")
 				.trim()
 				.split("\n")
@@ -73,5 +75,26 @@ describe("lifecycle timing seams", () => {
 		}
 		expect(isLifecycleTimingEnabled()).toBe(false);
 		expect(installLifecycleTraceFromEnv({})).toBeUndefined();
+	});
+
+	it("writes a mark to the trace file after the mark returns, so marking never waits for the disk", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "atomic-startup-trace-"));
+		const file = join(directory, "trace.jsonl");
+		const restore = installLifecycleTraceFromEnv({ ATOMIC_STARTUP_TRACE: file });
+		try {
+			await lifecycleTraceWritten();
+			const written = readFileSync(file, "utf8");
+			markLifecycleTiming("engine-ready");
+			expect(readFileSync(file, "utf8")).toBe(written);
+			await lifecycleTraceWritten();
+			const labels = readFileSync(file, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => (JSON.parse(line) as LifecycleTraceLine).label);
+			expect(labels).toEqual(["process-start", "engine-ready"]);
+		} finally {
+			restore?.();
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 });

@@ -4,6 +4,7 @@
 
 import chalk from "chalk";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentConfigPaths, getAgentDir, getBinDir } from "./config.js";
 import { migrateKeybindingsConfig } from "./core/keybindings.ts";
@@ -13,7 +14,14 @@ import {
 	keepStartupDialogDraft,
 	withEarlyInputHeldForStartupDialog,
 } from "./main-early-input.ts";
-import { migrateAzureProvider } from "./migrations-azure.js";
+import { migrateAzureProvider, migrateAzureProviderAsync } from "./migrations-azure.js";
+import {
+	migrateAuthJsonConfigValues,
+	migrateAuthJsonConfigValuesAsync,
+	migrateModelsJsonConfigValues,
+	migrateModelsJsonConfigValuesAsync,
+} from "./migrations-config-values.ts";
+import { pathExists } from "./utils/path-exists.ts";
 import { stripBom } from "./utils/text.ts";
 
 const EXTENSIONS_DOC_URL = "https://docs.bastani.ai/extensions";
@@ -77,7 +85,52 @@ export function migrateAuthToAuthJson(): string[] {
 	return providers;
 }
 
-import { migrateAuthJsonConfigValues, migrateModelsJsonConfigValues } from "./migrations-config-values.ts";
+export async function migrateAuthToAuthJsonAsync(): Promise<string[]> {
+	const agentDir = getAgentDir();
+	const authPath = join(agentDir, "auth.json");
+	const oauthPath = join(agentDir, "oauth.json");
+	const settingsPath = join(agentDir, "settings.json");
+
+	if (await pathExists(authPath)) return [];
+
+	const migrated: Record<string, unknown> = {};
+	const providers: string[] = [];
+
+	if (await pathExists(oauthPath)) {
+		try {
+			const oauth = JSON.parse(stripBom(await readFile(oauthPath, "utf-8")));
+			for (const [provider, cred] of Object.entries(oauth)) {
+				migrated[provider] = { type: "oauth", ...(cred as object) };
+				providers.push(provider);
+			}
+			await rename(oauthPath, `${oauthPath}.migrated`);
+		} catch {}
+	}
+
+	if (await pathExists(settingsPath)) {
+		try {
+			const content = await readFile(settingsPath, "utf-8");
+			const settings = JSON.parse(stripBom(content));
+			if (settings.apiKeys && typeof settings.apiKeys === "object") {
+				for (const [provider, key] of Object.entries(settings.apiKeys)) {
+					if (!migrated[provider] && typeof key === "string") {
+						migrated[provider] = { type: "api_key", key };
+						providers.push(provider);
+					}
+				}
+				delete settings.apiKeys;
+				await writeFile(settingsPath, JSON.stringify(settings, null, 2));
+			}
+		} catch {}
+	}
+
+	if (Object.keys(migrated).length > 0) {
+		await mkdir(dirname(authPath), { recursive: true });
+		await writeFile(authPath, JSON.stringify(migrated, null, 2), { mode: 0o600 });
+	}
+
+	return providers;
+}
 
 function getAgentDirsForConfigMigration(): string[] {
 	const dirs = new Set<string>();
@@ -87,11 +140,7 @@ function getAgentDirsForConfigMigration(): string[] {
 	return [...dirs];
 }
 
-function migrateExplicitEnvVarConfigValues(): void {
-	const migrations = getAgentDirsForConfigMigration().flatMap((agentDir) => [
-		...migrateAuthJsonConfigValues(agentDir),
-		...migrateModelsJsonConfigValues(agentDir),
-	]);
+function logEnvVarConfigMigrations(migrations: Array<{ location: string; from: string; to: string }>): void {
 	if (migrations.length === 0) return;
 
 	const details = migrations.map((migration) => `  - ${migration.location}: ${migration.from} -> ${migration.to}`);
@@ -103,6 +152,25 @@ function migrateExplicitEnvVarConfigValues(): void {
 			].join("\n"),
 		),
 	);
+}
+
+function migrateExplicitEnvVarConfigValues(): void {
+	const migrations = getAgentDirsForConfigMigration().flatMap((agentDir) => [
+		...migrateAuthJsonConfigValues(agentDir),
+		...migrateModelsJsonConfigValues(agentDir),
+	]);
+	logEnvVarConfigMigrations(migrations);
+}
+
+async function migrateExplicitEnvVarConfigValuesAsync(): Promise<void> {
+	const migrations: Array<{ location: string; from: string; to: string }> = [];
+	for (const agentDir of getAgentDirsForConfigMigration()) {
+		migrations.push(
+			...(await migrateAuthJsonConfigValuesAsync(agentDir)),
+			...(await migrateModelsJsonConfigValuesAsync(agentDir)),
+		);
+	}
+	logEnvVarConfigMigrations(migrations);
 }
 
 /**
@@ -163,6 +231,45 @@ export function migrateSessionsFromAgentRoot(): void {
 	}
 }
 
+export async function migrateSessionsFromAgentRootAsync(): Promise<void> {
+	const agentDir = getAgentDir();
+
+	let files: string[];
+	try {
+		files = (await readdir(agentDir)).filter((f) => f.endsWith(".jsonl")).map((f) => join(agentDir, f));
+	} catch {
+		return;
+	}
+
+	if (files.length === 0) return;
+
+	for (const file of files) {
+		try {
+			const content = await readFile(file, "utf8");
+			const firstLine = stripBom(content).split("\n")[0];
+			if (!firstLine?.trim()) continue;
+
+			const header = JSON.parse(firstLine);
+			if (header.type !== "session" || !header.cwd) continue;
+
+			const cwd: string = header.cwd;
+			const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+			const correctDir = join(agentDir, "sessions", safePath);
+
+			if (!(await pathExists(correctDir))) {
+				await mkdir(correctDir, { recursive: true });
+			}
+
+			const fileName = file.split("/").pop() || file.split("\\").pop();
+			const newPath = join(correctDir, fileName!);
+
+			if (await pathExists(newPath)) continue;
+
+			await rename(file, newPath);
+		} catch {}
+	}
+}
+
 /**
  * Migrate commands/ to prompts/ if needed.
  * Works for both regular directories and symlinks.
@@ -174,6 +281,26 @@ function migrateCommandsToPrompts(baseDir: string, label: string): boolean {
 	if (existsSync(commandsDir) && !existsSync(promptsDir)) {
 		try {
 			renameSync(commandsDir, promptsDir);
+			console.log(chalk.green(`Migrated ${label} commands/ → prompts/`));
+			return true;
+		} catch (err) {
+			console.log(
+				chalk.yellow(
+					`Warning: Could not migrate ${label} commands/ to prompts/: ${err instanceof Error ? err.message : err}`,
+				),
+			);
+		}
+	}
+	return false;
+}
+
+async function migrateCommandsToPromptsAsync(baseDir: string, label: string): Promise<boolean> {
+	const commandsDir = join(baseDir, "commands");
+	const promptsDir = join(baseDir, "prompts");
+
+	if ((await pathExists(commandsDir)) && !(await pathExists(promptsDir))) {
+		try {
+			await rename(commandsDir, promptsDir);
 			console.log(chalk.green(`Migrated ${label} commands/ → prompts/`));
 			return true;
 		} catch (err) {
@@ -202,6 +329,20 @@ function migrateKeybindingsConfigFile(): void {
 	} catch {
 		// Ignore malformed files during migration
 	}
+}
+
+async function migrateKeybindingsConfigFileAsync(): Promise<void> {
+	const configPath = join(getAgentDir(), "keybindings.json");
+	try {
+		const content = await readFile(configPath, "utf-8");
+		const parsed = JSON.parse(stripBom(content)) as unknown;
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			return;
+		}
+		const { config, migrated } = migrateKeybindingsConfig(parsed as Record<string, unknown>);
+		if (!migrated) return;
+		await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+	} catch {}
 }
 
 /**
@@ -248,6 +389,51 @@ function migrateToolsToBin(): void {
 	}
 }
 
+async function migrateToolsToBinAsync(): Promise<void> {
+	const agentDir = getAgentDir();
+	const toolsDir = join(agentDir, "tools");
+	const binDir = getBinDir();
+
+	if (!(await pathExists(toolsDir))) return;
+
+	const binaries = ["fd", "rg", "fd.exe", "rg.exe"];
+	let movedAny = false;
+
+	for (const bin of binaries) {
+		const oldPath = join(toolsDir, bin);
+		const newPath = join(binDir, bin);
+
+		if (await pathExists(oldPath)) {
+			if (!(await pathExists(binDir))) {
+				await mkdir(binDir, { recursive: true });
+			}
+			if (!(await pathExists(newPath))) {
+				try {
+					await rename(oldPath, newPath);
+					movedAny = true;
+				} catch {}
+			} else {
+				try {
+					await rm(oldPath, { force: true });
+				} catch {}
+			}
+		}
+	}
+
+	if (movedAny) {
+		console.log(chalk.green(`Migrated managed binaries tools/ → bin/`));
+	}
+}
+
+function hasCustomTools(entries: string[]): boolean {
+	return entries.some((e) => {
+		const lower = e.toLowerCase();
+		return (
+			lower !== "fd" && lower !== "rg" && lower !== "fd.exe" && lower !== "rg.exe" && !e.startsWith(".") // Ignore .DS_Store and other hidden files
+		);
+	});
+}
+
 /**
  * Check for deprecated hooks/ and tools/ directories.
  * Note: tools/ may contain fd/rg binaries extracted by pi, so only warn if it has other files.
@@ -265,13 +451,30 @@ function checkDeprecatedExtensionDirs(baseDir: string, label: string): string[] 
 		// Check if tools/ contains anything other than fd/rg (which are auto-extracted binaries)
 		try {
 			const entries = readdirSync(toolsDir);
-			const customTools = entries.filter((e) => {
-				const lower = e.toLowerCase();
-				return (
-					lower !== "fd" && lower !== "rg" && lower !== "fd.exe" && lower !== "rg.exe" && !e.startsWith(".") // Ignore .DS_Store and other hidden files
+			if (hasCustomTools(entries)) {
+				warnings.push(
+					`${label} tools/ directory contains custom tools. Custom tools have been merged into extensions.`,
 				);
-			});
-			if (customTools.length > 0) {
+			}
+		} catch {}
+	}
+
+	return warnings;
+}
+
+async function checkDeprecatedExtensionDirsAsync(baseDir: string, label: string): Promise<string[]> {
+	const hooksDir = join(baseDir, "hooks");
+	const toolsDir = join(baseDir, "tools");
+	const warnings: string[] = [];
+
+	if (await pathExists(hooksDir)) {
+		warnings.push(`${label} hooks/ directory found. Hooks have been renamed to extensions.`);
+	}
+
+	if (await pathExists(toolsDir)) {
+		try {
+			const entries = await readdir(toolsDir);
+			if (hasCustomTools(entries)) {
 				warnings.push(
 					`${label} tools/ directory contains custom tools. Custom tools have been merged into extensions.`,
 				);
@@ -304,6 +507,21 @@ function migrateExtensionSystem(cwd: string, options?: { projectTrusted?: boolea
 	];
 
 	return warnings;
+}
+
+async function migrateExtensionSystemAsync(cwd: string, options?: { projectTrusted?: boolean }): Promise<string[]> {
+	const agentDir = getAgentDir();
+	const projectDir = join(cwd, CONFIG_DIR_NAME);
+
+	await migrateCommandsToPromptsAsync(agentDir, "Global");
+	if (options?.projectTrusted !== false) {
+		await migrateCommandsToPromptsAsync(projectDir, "Project");
+	}
+
+	return [
+		...(await checkDeprecatedExtensionDirsAsync(agentDir, "Global")),
+		...(options?.projectTrusted === false ? [] : await checkDeprecatedExtensionDirsAsync(projectDir, "Project")),
+	];
 }
 
 type KeypressInput = Pick<NodeJS.ReadStream, "resume" | "pause" | "once"> & { setRawMode?(mode: boolean): unknown };
@@ -359,5 +577,22 @@ export function runMigrations(
 	migrateToolsToBin();
 	migrateKeybindingsConfigFile();
 	const deprecationWarnings = migrateExtensionSystem(cwd, options);
+	return { migratedAuthProviders, deprecationWarnings };
+}
+
+export async function runMigrationsAsync(
+	cwd: string,
+	options?: { projectTrusted?: boolean },
+): Promise<{
+	migratedAuthProviders: string[];
+	deprecationWarnings: string[];
+}> {
+	const migratedAuthProviders = await migrateAuthToAuthJsonAsync();
+	await migrateExplicitEnvVarConfigValuesAsync();
+	await migrateAzureProviderAsync(cwd, options);
+	await migrateSessionsFromAgentRootAsync();
+	await migrateToolsToBinAsync();
+	await migrateKeybindingsConfigFileAsync();
+	const deprecationWarnings = await migrateExtensionSystemAsync(cwd, options);
 	return { migratedAuthProviders, deprecationWarnings };
 }

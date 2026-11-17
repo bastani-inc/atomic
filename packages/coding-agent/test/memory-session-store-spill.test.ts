@@ -1147,10 +1147,9 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 	test("across many stores and releases, boot identity and the process's start time are read once and its directory created once", async () => {
 		vi.resetModules();
 		const fresh = await import("../src/core/storage/session/released-history-files.js");
-		const freshFs = vi.mocked(await import("node:fs"));
 		const freshChildProcess = vi.mocked(await import("node:child_process"));
 		const freshPromises = vi.mocked(await import("node:fs/promises"));
-		for (const mock of [freshFs.readFileSync, freshChildProcess.execFile, freshPromises.mkdir]) mock.mockClear();
+		for (const mock of [freshPromises.readFile, freshChildProcess.execFile, freshPromises.mkdir]) mock.mockClear();
 		let securityChecks = 0;
 		setWindowsDirectorySecurityReaderForTesting(() => {
 			securityChecks += 1;
@@ -1170,7 +1169,7 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 				}
 			// Boot identity and process start time each launch their own command on Windows and macOS.
 			const bootIdentityLookups =
-				freshFs.readFileSync.mock.calls.filter(([path]) => String(path) === "/proc/sys/kernel/random/boot_id")
+				freshPromises.readFile.mock.calls.filter(([path]) => String(path) === "/proc/sys/kernel/random/boot_id")
 					.length +
 				freshChildProcess.execFile.mock.calls.filter(
 					([command, args]) =>
@@ -1181,7 +1180,7 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 							(command === "sysctl" && args.join(" ") === "-n kern.boottime")),
 				).length;
 			const startTimeLookups =
-				freshFs.readFileSync.mock.calls.filter(([path]) => String(path) === `/proc/${process.pid}/stat`).length +
+				freshPromises.readFile.mock.calls.filter(([path]) => String(path) === `/proc/${process.pid}/stat`).length +
 				freshChildProcess.execFile.mock.calls.filter(
 					([command, args]) =>
 						Array.isArray(args) &&
