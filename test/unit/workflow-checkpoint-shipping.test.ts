@@ -11,11 +11,11 @@ import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-
 import {
 	BACKPRESSURE_SHARE,
 	CheckpointShipping,
+	localWrite,
 	RELEASE_FLUSH_ATTEMPTS,
 	SHIP_CONCURRENCY,
 	type ShipDelivery,
 	type ShippingFallback,
-	shippableCheckpoint,
 } from "../../packages/workflows/src/workers/checkpoint-shipping.js";
 import { WorkerPlacementConfigError } from "../../packages/workflows/src/workers/placement-errors.js";
 import {
@@ -154,28 +154,30 @@ test("a resume may change checkpointShipping (#4768)", () => {
 	);
 });
 
-test("only plain checkpoints without a session or a worktree snapshot ship (#4768)", () => {
-	assert.equal(shippableCheckpoint(checkpoint("a")), true);
-	assert.equal(shippableCheckpoint(checkpoint("a", { worktreeSnapshots: [] })), true);
-	assert.equal(shippableCheckpoint(checkpoint("a", { worktreeSnapshots: [{ id: "s" }] })), false);
-	assert.equal(
-		shippableCheckpoint({
-			kind: "checkpoint",
-			checkpoint: { ...toolCheckpoint("a"), kind: "stage", sessionId: "session" } as unknown as DurableCheckpoint,
-		}),
-		false,
-	);
-	assert.equal(
-		shippableCheckpoint({
-			kind: "checkpoint",
-			checkpoint: { ...toolCheckpoint("a"), kind: "stage" } as unknown as DurableCheckpoint,
-		}),
-		true,
-	);
-	assert.equal(
-		shippableCheckpoint({ kind: "session-append", sessionId: "s", entries: [], expectSeq: 0 } as PoolMutation),
-		false,
-	);
+test("every well-formed checkpoint and session write is kept locally, and a session write the store would refuse is not (#4768)", () => {
+	assert.equal(localWrite(checkpoint("a"))?.op, "checkpoint");
+	assert.equal(localWrite(checkpoint("a", { worktreeSnapshots: [{ id: "s" }] }))?.op, "checkpoint");
+	const stage = { ...toolCheckpoint("a"), kind: "stage", sessionId: "session", replayKey: "scope:stage" };
+	assert.equal(localWrite({ kind: "checkpoint", checkpoint: stage } as unknown as PoolMutation)?.op, "checkpoint");
+	const header = { id: "session", version: 4, createdAt: "2026-01-01T00:00:00Z", cwd: "/" };
+	const create = { kind: "session-create", checkpoint: stage, header, entries: [] } as unknown as PoolMutation;
+	assert.deepEqual(localWrite(create)?.session, {
+		op: "session-create",
+		session: "session",
+		replayKey: "scope:stage",
+		entries: 0,
+	});
+	assert.equal(localWrite({ ...create, header: { ...header, id: "other" } } as PoolMutation), undefined);
+	const append = { kind: "session-append", sessionId: "s", entries: [], expectSeq: 0 } as PoolMutation;
+	// A session append's identity is its operation: without one, the host cannot tell a resend from a new append.
+	assert.equal(localWrite(append), undefined);
+	assert.deepEqual(localWrite(append, "op-1")?.session, {
+		op: "session-append",
+		session: "s",
+		expectSeq: 0,
+		entries: 0,
+	});
+	assert.notEqual(localWrite(append, "op-1")?.key, localWrite(append, "op-2")?.key);
 });
 
 test("a local commit is refused unless the host holds the attempt's lease, renewed within its duration (#4768)", async () => {
@@ -308,6 +310,7 @@ function shippingOf(
 }
 
 const keyOf = (id: string) => JSON.stringify(["CheckpointRecorded", "tool", `scope:${id}`]);
+const stageKeyOf = (id: string) => JSON.stringify(["CheckpointRecorded", "stage", `scope:${id}`]);
 
 test("a shippable checkpoint is acknowledged from the local journal and reaches the shared journal when shipped (#4768)", async () => {
 	const { shard: local } = await shard();
@@ -403,6 +406,7 @@ test("a mutation that does not ship commits only after what the attempt accepted
 		shippedBefore = [...shared.recorded];
 		return { at: 2, lastSeq: 3 };
 	};
+	// A session append without the worker's operation has no identity in the local journal.
 	assert.deepEqual(
 		await shipping.commit(
 			LEASE,
@@ -585,18 +589,62 @@ test("a key the attempt recorded with another payload is an identity conflict, n
 	assert.deepEqual(fallbacks, []);
 });
 
-test("a checkpoint that bills model usage commits, so the root's budget sees it at once (#4768)", () => {
-	const billed = {
+/** A stage checkpoint that ends its stage and bills the model usage of its attempts. */
+const billedStage = (id: string, extra: Record<string, unknown> = {}) =>
+	({
 		kind: "checkpoint",
 		checkpoint: {
-			...toolCheckpoint("a"),
+			...toolCheckpoint(id),
 			kind: "stage",
 			output: "done",
-			modelAttempts: [{ model: "m", usage: { input: 1, output: 1 } }],
-			topology: { run: { runId: "child" }, stageId: "s" },
+			modelAttempts: [{ model: "m", usage: { input: 3, output: 4 } }],
+			topology: { run: { runId: "child" }, stageId: id },
+			...extra,
 		},
-	} as unknown as PoolMutation;
-	assert.equal(shippableCheckpoint(billed), false);
+	}) as unknown as PoolMutation;
+
+test("a checkpoint that bills usage records it under the attempt's lease before the step is acknowledged, and ships (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver);
+	await shipping.hold(LEASE, LEASE_MS);
+	const billed: unknown[] = [];
+	const direct = sharedCommit();
+	const receipt = await shipping.commit(LEASE, billedStage("a"), direct.commit, {
+		billUsage: async (reports) => {
+			billed.push(...reports);
+			assert.equal(await local.pendingCount(LEASE), 1, "the checkpoint is kept before its usage is recorded");
+		},
+	});
+	assert.equal(receipt.local, true);
+	assert.equal(direct.calls.length, 0);
+	assert.equal(billed.length, 1);
+	assert.match(String((billed[0] as { key: string }).key), /^stage:child:a$/);
+	assert.equal((billed[0] as { usage: { input: number } }).usage.input, 3);
+	await shipping.flush(LEASE);
+	assert.deepEqual(shared.recorded, [stageKeyOf("a")]);
+	// Without a way to record its usage, the host commits it directly.
+	const fallback = sharedCommit();
+	await shipping.commit(LEASE, billedStage("b"), fallback.commit);
+	assert.equal(fallback.calls.length, 1);
+});
+
+test("a refusal of the usage a checkpoint bills fences the attempt and drops what it kept (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shipping = shippingOf(local, fakeShared().deliver);
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("kept"), sharedCommit().commit);
+	const stale = new StaleWorkLeaseError({ root: ROOT, workId: LEASE.id, generation: 1, reason: "superseded" });
+	await assert.rejects(
+		shipping.commit(LEASE, billedStage("a"), sharedCommit().commit, {
+			billUsage: async () => {
+				throw stale;
+			},
+		}),
+		stale,
+	);
+	assert.deepEqual(await local.pending(LEASE), []);
+	await assert.rejects(shipping.commit(LEASE, checkpoint("after"), sharedCommit().commit), stale);
 });
 
 test("each root of each shared journal has a local journal of its own on the host (#4768)", () => {
@@ -650,18 +698,22 @@ test("a host whose local journal cannot take an attempt's lease commits that att
 	assert.deepEqual(await local.pending(LEASE), []);
 });
 
-test("a stage checkpoint with a session never ships (#4768)", async () => {
+test("a stage checkpoint with a session ships like any other, at once when it ends the stage (#4768)", async () => {
 	const { shard: local } = await shard();
-	const shipping = shippingOf(local, fakeShared().deliver);
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver);
 	await shipping.hold(LEASE, LEASE_MS);
-	const stage = {
-		kind: "checkpoint",
-		checkpoint: { ...toolCheckpoint("s"), kind: "stage", sessionId: "session" },
-	} as unknown as PoolMutation;
+	const stage = (id: string, extra: Record<string, unknown> = {}) =>
+		({
+			kind: "checkpoint",
+			checkpoint: { ...toolCheckpoint(id), kind: "stage", sessionId: "session", ...extra },
+		}) as unknown as PoolMutation;
 	const direct = sharedCommit();
-	await shipping.commit(LEASE, stage, direct.commit);
-	assert.equal(direct.calls.length, 1);
-	assert.deepEqual(await local.pending(LEASE), []);
+	assert.equal((await shipping.commit(LEASE, stage("running"), direct.commit)).local, true);
+	assert.deepEqual(shared.recorded, [], "a stage still running waits for the interval");
+	assert.equal((await shipping.commit(LEASE, stage("ended", { output: "done" }), direct.commit)).local, true);
+	await vi.waitFor(() => assert.deepEqual(shared.recorded, [stageKeyOf("running"), stageKeyOf("ended")]));
+	assert.equal(direct.calls.length, 0);
 });
 
 test("an attempt whose oldest unshipped checkpoint reached the backpressure point acknowledges no step until it is shipped (#4768)", async () => {

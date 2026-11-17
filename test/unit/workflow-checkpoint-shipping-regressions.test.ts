@@ -50,12 +50,15 @@ const checkpoint = (id: string, extra?: Record<string, unknown>): PoolMutation =
 	checkpoint: toolCheckpoint(id, extra),
 });
 
-const stageCheckpoint = (id: string, extra?: Record<string, unknown>): PoolMutation => ({
+/** A stage checkpoint that bills usage: without a way to bill it under the attempt's lease, it commits directly. */
+const billedCheckpoint = (id: string, extra?: Record<string, unknown>): PoolMutation => ({
 	kind: "checkpoint",
 	checkpoint: {
 		...toolCheckpoint(id, extra),
 		kind: "stage",
 		sessionId: "session",
+		modelAttempts: [{ model: "m", usage: { input: 1, output: 1 } }],
+		topology: { run: { runId: "child" }, stageId: id },
 	} as unknown as DurableCheckpoint,
 });
 
@@ -281,7 +284,7 @@ test("a non-stale shared failure retains locally acknowledged checkpoints for re
 	await assert.rejects(
 		shipping.commit(
 			LEASE_G1,
-			stageCheckpoint("same-key", { output: { attempt: 1 } }),
+			billedCheckpoint("same-key", { output: { attempt: 1 } }),
 			sharedCommit({ failure: futureTimestamp }).commit,
 		),
 		futureTimestamp,
@@ -290,7 +293,7 @@ test("a non-stale shared failure retains locally acknowledged checkpoints for re
 
 	const retryShared = sharedCommit();
 	assert.deepEqual(
-		await shipping.commit(LEASE_G1, stageCheckpoint("same-key", { output: { attempt: 2 } }), retryShared.commit),
+		await shipping.commit(LEASE_G1, billedCheckpoint("same-key", { output: { attempt: 2 } }), retryShared.commit),
 		{ seq: 7, at: 1 },
 	);
 	assert.equal(retryShared.calls.length, 1);

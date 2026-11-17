@@ -23,7 +23,12 @@ import {
 	type PoolWork,
 	type SqlPoolQueue,
 } from "../durable/journal/sql-pool-queue.js";
-import { openSqlPoolUsage, type PoolUsage, type SqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
+import {
+	openSqlPoolUsage,
+	type PoolUsage,
+	type PoolUsageReport,
+	type SqlPoolUsage,
+} from "../durable/journal/sql-pool-usage.js";
 import { SqlRateBuckets } from "../durable/journal/sql-rate-buckets.js";
 import {
 	type SharedPoolConfig,
@@ -1304,6 +1309,8 @@ export class PoolCoordinator {
 			host: shared.host,
 			deliver: (attempt, batch) => queue.shipBatch(this.lease!, attempt, batch),
 			rootStanding: () => queue.rootLease(this.lease!, COORDINATOR_LEASE_MS),
+			sessionState: (attempt, session) => queue.poolSessionState(attempt.id, session),
+			snapshotsStored: (checkpoint) => queue.assertSnapshotsStored(checkpoint),
 			onFallback: ({ workId, error }) =>
 				this.port.send({
 					kind: "health",
@@ -2972,6 +2979,12 @@ export class PoolCoordinator {
 							this.deliveryRequests.delete(id);
 						}
 					}
+					// The worker reads a session it wrote from the shared journal, which holds what it wrote once it is shipped.
+					if (message.kind === "session-sync") {
+						const shipping = this.shipping;
+						if (shipping !== undefined) await leased(() => shipping.flushSession(work, message.sessionId));
+						return;
+					}
 					if (message.kind === "commit") {
 						if (
 							message.attempt !== undefined &&
@@ -2985,12 +2998,29 @@ export class PoolCoordinator {
 							});
 						const commitShared = () => queue.commit(lease, work, message.operation, message.mutation);
 						const shipping = this.shipping;
+						// A checkpoint the host keeps to ship later bills its usage through the heartbeat's fenced lane first, so the
+						// root's budget sees it as it is spent (#4768).
+						const billUsage = async (reports: readonly PoolUsageReport[]) => {
+							const beat = await leased(() =>
+								queue.heartbeat(
+									lease,
+									work,
+									options.leaseMs,
+									this.usageLedger!.recording(lease, work, reports),
+								),
+							);
+							extensions.adopt(beat.work);
+							await this.holdShipping(slot, beat.work, options.leaseMs);
+							this.noteUsage(beat.recorded);
+						};
 						const receipt = await leased(() =>
 							shipping === undefined
 								? commitShared()
-								: shipping.commit(work, message.mutation, commitShared, () =>
-										this.whileRootLate(queue, renewAttempt),
-									),
+								: shipping.commit(work, message.mutation, commitShared, {
+										operation: message.operation,
+										renewAttempt: () => this.whileRootLate(queue, renewAttempt),
+										billUsage,
+									}),
 						);
 						if (message.mutation.kind !== "session-append" && receipt.local !== true)
 							this.noteUsage(await this.usageLedger!.total(root));
