@@ -263,3 +263,67 @@ export const scaleChild = workflow({
 		return { host: host() };
 	},
 });
+
+/**
+ * A pooled child whose agent stage holds in its model call (#4768): by then the stage's session holds its prompt, which
+ * a host that ships checkpoints keeps in its local journal, until the test lets the stage go (`release`). Its reply
+ * names the host, child and process that answered, so a test can tell which attempt's transcript the journal holds.
+ */
+export const sessionChild = workflow({
+	name: "shared-pool-session-child",
+	description: "A pooled child whose stage session stays on its host until the stage is let go (#4768)",
+	inputs: { directory: Type.String(), index: Type.Number() },
+	outputs: { firstHost: Type.String(), finalHost: Type.String(), reply: Type.String() },
+	async run(ctx) {
+		const { directory, index } = ctx.inputs;
+		const first = await ctx.tool("first", { index }, async () => ({ ...processIdentity(), host: host() }));
+		const options = await poolStageOptions(ctx.cwd ?? process.cwd(), false, "never");
+		options.modelRuntime.registerProvider("pool-fixture", {
+			api: "openai-completions",
+			baseUrl: "https://example.invalid",
+			apiKey: "fixture",
+			models: [
+				{
+					id: "fixture",
+					name: "Fixture",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 100000,
+					maxTokens: 1000,
+				},
+			],
+			streamSimple(model) {
+				const stream = createAssistantMessageEventStream();
+				void (async () => {
+					writeFileSync(join(directory, `holding-${host()}-${index}-${process.pid}`), "");
+					while (!existsSync(join(directory, "release"))) await delay(20);
+					const message: AssistantMessage = {
+						role: "assistant",
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						timestamp: Date.now(),
+						content: [{ type: "text", text: `reply-${host()}-${index}-${process.pid}` }],
+						stopReason: "stop",
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+					};
+					stream.push({ type: "done", reason: "stop", message });
+					stream.end();
+				})();
+				return stream;
+			},
+		});
+		const stage = ctx.stage("agent", options as never);
+		const reply = await stage.complete(`Prompt of child ${index}`);
+		const final = await ctx.tool("final", { index }, async () => ({ host: host() }));
+		return { firstHost: first.host, finalHost: final.host, reply: String(reply) };
+	},
+});

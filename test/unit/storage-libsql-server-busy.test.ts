@@ -52,15 +52,32 @@ test("a statement the server answered busy on the reused stream runs again on th
 	);
 });
 
+/**
+ * The longest wait between two asks of a server that keeps answering busy (the adapter's `SERVER_BUSY_LAST_WAIT_MS`).
+ * The waits begin far shorter and double, so three busy answers wait 10 + 20 + 40 ms. Waits that began at the longest
+ * would take three of them however idle the machine, so that is the bound, and the rest of it is headroom for a loaded
+ * machine's requests and timer wakes.
+ */
+const LONGEST_BUSY_WAIT_MS = 200;
+/** How many times the busy insert runs. The quickest decides, so a machine that stalls during one does not. */
+const SHORT_WAIT_ROUNDS = 3;
+
 test("a server busy for a moment is asked again within a few short waits", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
 	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
-	fake.fail(BUSY, BUSY, BUSY);
-	const started = performance.now();
-	await database.run("INSERT INTO events VALUES (1)");
-	assert.ok(performance.now() - started < 400, "three busy answers cost three short waits");
-	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
+	const took: number[] = [];
+	for (let round = 1; round <= SHORT_WAIT_ROUNDS; round++) {
+		fake.fail(BUSY, BUSY, BUSY);
+		const started = performance.now();
+		await database.run(`INSERT INTO events VALUES (${round})`);
+		took.push(performance.now() - started);
+	}
+	assert.ok(
+		Math.min(...took) < 3 * LONGEST_BUSY_WAIT_MS,
+		`three busy answers cost three short waits, not ${took.map(Math.round).join(", ")} ms`,
+	);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), SHORT_WAIT_ROUNDS);
 });
 
 test("a batch that the server answered busy runs again and writes once", async () => {
