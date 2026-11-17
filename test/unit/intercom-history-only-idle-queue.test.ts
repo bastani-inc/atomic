@@ -321,13 +321,15 @@ const consumers: ConsumerCase[] = [
 		replyContexts: ["live-a"],
 	},
 	{
-		consumer: "foreground-detach handoff surfaces only its own fresh message",
+		// One sender's messages keep their order: the child's earlier queued message is written just before its fresh one.
+		consumer: "foreground-detach handoff surfaces its own fresh message after the same child's earlier one",
 		between: (runtime) => runtime.foregroundDetach(liveChild, message("fresh")),
 		shown: [
+			{ ids: ["live-a"], mode: "history" },
 			{ ids: ["fresh"], mode: "turn" },
-			{ ids: ["live-a", "gone-b", "live-c", "gone-d"], mode: "turn" },
+			{ ids: ["gone-b", "live-c", "gone-d"], mode: "turn" },
 		],
-		replyContexts: ["fresh", "live-a"],
+		replyContexts: ["fresh", "live-c"],
 	},
 	{
 		consumer: "shutdown drains the queue before the idle flush",
