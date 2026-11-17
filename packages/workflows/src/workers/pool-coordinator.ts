@@ -539,6 +539,10 @@ function holding(slot: WorkerSlot): boolean {
 	return slot.work !== undefined || slot.claiming === true;
 }
 
+function workerEndsCleanly(slot: WorkerSlot): boolean {
+	return slot.leaving === true || slot.recycled === true || slot.retired === true;
+}
+
 interface WorkerSlot {
 	readonly worker: string;
 	readonly child: ChildProcess;
@@ -562,6 +566,7 @@ interface WorkerSlot {
 	worktree?: string;
 	/** The pool had more workers than its waiting attempts needed: this idle worker ends, and nothing replaces it. */
 	retired?: boolean;
+	leaving?: boolean;
 	readonly idle: IdleClaimBackoff;
 }
 
@@ -1196,9 +1201,9 @@ export class PoolCoordinator {
 		this.idleClaims.wakeAll();
 		const message: WorkerPoolControl = { kind: "pool-control", control };
 		for (const slot of this.slots)
-			if (this.readyWorkers.has(slot.worker) && slot.child.connected)
+			if (this.readyWorkers.has(slot.worker) && slot.child.connected && !workerEndsCleanly(slot))
 				slot.child.send(message, (error) => {
-					if (error) slot.child.kill("SIGKILL");
+					if (error && !workerEndsCleanly(slot)) slot.child.kill("SIGKILL");
 				});
 	}
 
@@ -2515,7 +2520,7 @@ export class PoolCoordinator {
 			child.kill("SIGKILL");
 		};
 		const replied = (error: Error | null) => {
-			if (error) terminate();
+			if (error && !workerEndsCleanly(slot)) terminate();
 		};
 		return new Promise((resolve, reject) => {
 			const startup = setTimeout(() => {
@@ -3053,7 +3058,8 @@ export class PoolCoordinator {
 					void handled.then(answered, answered);
 				}
 				void response.then(
-					(value) =>
+					(value) => {
+						if (!child.connected && workerEndsCleanly(slot)) return;
 						child.send(
 							{
 								id: message.id,
@@ -3061,13 +3067,16 @@ export class PoolCoordinator {
 								...(slot.retired === true ? { retire: true } : {}),
 							},
 							replied,
-						),
+						);
+					},
 					(error: unknown) => {
 						// The root's lease is gone (a late one was waited out above): workers end without counting as crashes.
 						if (isStaleLeaseError(error)) {
 							this.rootLeaseLost = true;
+							slot.leaving = true;
 							this.detach(error);
 						}
+						if (!child.connected && workerEndsCleanly(slot)) return;
 						child.send({ id: message.id, error: serializeError(error) }, replied);
 					},
 				);
