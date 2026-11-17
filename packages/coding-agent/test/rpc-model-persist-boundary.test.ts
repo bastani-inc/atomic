@@ -7,6 +7,7 @@ import type { RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import { RpcClientApi, type RpcCommandBody } from "../src/modes/rpc/rpc-client-api.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 import type { RpcEvent, RpcResponse } from "../src/modes/rpc/rpc-types.ts";
+import { createEngineHostPair, type EngineHostPair } from "./helpers/in-process-engine-pair.ts";
 import { createHarness, type Harness, type HarnessOptions } from "./suite/harness.ts";
 
 const unusedCreateRuntime = (async () => {
@@ -90,13 +91,18 @@ function engineBridgeClient(handle: ReturnType<typeof createRpcCommandHandler>) 
 			assertRpcSuccess(response, command.type);
 			return "data" in response ? response.data : undefined;
 		},
-		async setModel(provider: string, modelId: string, options?: { persist?: boolean }) {
+		async setModel(
+			provider: string,
+			modelId: string,
+			options?: { persist?: boolean; thinkingLevel?: AgentSession["thinkingLevel"] },
+		) {
 			const response = await handle({
 				id: "set-model",
 				type: "set_model",
 				provider,
 				modelId,
 				...(options?.persist === true ? { persist: true } : {}),
+				...(options?.thinkingLevel !== undefined ? { thinkingLevel: options.thinkingLevel } : {}),
 			});
 			assertRpcSuccess(response, "set_model");
 			return response.data;
@@ -132,8 +138,10 @@ function engineBridgeClient(handle: ReturnType<typeof createRpcCommandHandler>) 
 
 describe("RPC persist boundary", () => {
 	const harnesses: Harness[] = [];
+	const pairs: EngineHostPair[] = [];
 
-	afterEach(() => {
+	afterEach(async () => {
+		while (pairs.length > 0) await pairs.pop()?.cleanup();
 		while (harnesses.length > 0) harnesses.pop()?.cleanup();
 	});
 
@@ -582,5 +590,145 @@ describe("RPC persist boundary", () => {
 		} finally {
 			vi.restoreAllMocks();
 		}
+	});
+
+	it.each(["true", "false", 1])("reports no saved defaults for non-boolean persist %j (#5237)", async (persist) => {
+		const harness = await twoModelHarness();
+		const current = harness.getModel("faux-1")!;
+		const next = harness.getModel("faux-2")!;
+		const handle = persistHandler(harness);
+		const saved = await handle({
+			type: "set_model",
+			provider: current.provider,
+			modelId: current.id,
+			thinkingLevel: "low",
+			persist: true,
+		});
+		assertRpcSuccess(saved, "save defaults");
+		assert.ok(saved.data && "persistedDefaults" in saved.data);
+
+		for (const command of [
+			{ type: "set_model", provider: next.provider, modelId: next.id, thinkingLevel: "high", persist },
+			{ type: "cycle_model", direction: "backward", persist },
+		] as const) {
+			const response = await handle(command as never);
+			assertRpcSuccess(response, command.type);
+			assert.ok(response.data);
+			assert.equal("persistedDefaults" in response.data, false);
+			assert.equal(harness.settingsManager.getGlobalSettings().defaultModel, current.id);
+			assert.equal(harness.settingsManager.getGlobalSettings().defaultThinkingLevel, "low");
+		}
+	});
+
+	it("forwards thinkingLevel on set_model and rejects invalid thinkingLevel values (#5237)", async () => {
+		const client = new RecordingRpcClient();
+		await client.setModel("anthropic", "claude-sonnet-4-5", { persist: true, thinkingLevel: "high" });
+		assert.deepEqual(client.commands, [
+			{
+				type: "set_model",
+				provider: "anthropic",
+				modelId: "claude-sonnet-4-5",
+				persist: true,
+				thinkingLevel: "high",
+			},
+		]);
+
+		const harness = await twoModelHarness();
+		const current = harness.getModel("faux-1")!;
+		const next = harness.getModel("faux-2")!;
+		await harness.session.setModel(current);
+		await harness.session.setThinkingLevel("low");
+		const handle = persistHandler(harness);
+
+		for (const invalidLevel of ["bogus", 123] as const) {
+			const invalid = await handle({
+				id: "bad-level",
+				type: "set_model",
+				provider: next.provider,
+				modelId: next.id,
+				persist: true,
+				thinkingLevel: invalidLevel as never,
+			});
+			assert.equal(invalid?.success, false);
+			if (invalid && !invalid.success) {
+				assert.match(invalid.error, /Invalid thinkingLevel/);
+			}
+			assert.equal(harness.session.model?.id, "faux-1");
+			assert.equal(harness.session.thinkingLevel, "low");
+			assert.equal(harness.settingsManager.getModelThinkingLevel(next.provider, next.id), undefined);
+		}
+	});
+
+	it("applies and persists the setModel thinkingLevel across a real isolated engine/host pair (#5237)", async () => {
+		const pair = await createEngineHostPair({
+			models: [
+				{ id: "current-model", name: "Current Model", reasoning: true },
+				{ id: "other-model", name: "Other Model", reasoning: true },
+				{ id: "plain-model", name: "Plain Model", reasoning: false },
+			],
+		});
+		pairs.push(pair);
+		await pair.engine.session.bindExtensions({ shutdownHandler: () => {} });
+		await pair.runtime.session.bindExtensions({ shutdownHandler: () => {} });
+		await pair.runtime.initializeFromEngine();
+
+		const host = pair.runtime.session;
+		const current = pair.engine.getModel("current-model")!;
+		const other = pair.engine.getModel("other-model")!;
+		const plain = pair.engine.getModel("plain-model")!;
+		await host.setModel(current);
+		await host.setThinkingLevel("low");
+		await pair.drain();
+
+		await host.setModel(other, { persist: true, thinkingLevel: "high" });
+		assert.equal(host.model?.id, "other-model");
+		assert.equal(host.thinkingLevel, "high");
+		assert.equal(pair.engine.session.model?.id, "other-model");
+		assert.equal(pair.engine.session.thinkingLevel, "high");
+		assert.equal(pair.engine.settingsManager.getModelThinkingLevel(other.provider, "other-model"), "high");
+		assert.equal(pair.hostHarness.settingsManager.getModelThinkingLevel(other.provider, "other-model"), "high");
+		assert.equal(pair.engine.settingsManager.getDefaultThinkingLevel(), "high");
+		assert.equal(pair.hostHarness.settingsManager.getDefaultThinkingLevel(), "high");
+		const setModelCommands = pair.commandsReceived.filter((command) => command.type === "set_model");
+		assert.partialDeepStrictEqual(setModelCommands.at(-1), {
+			type: "set_model",
+			provider: other.provider,
+			modelId: "other-model",
+			persist: true,
+			thinkingLevel: "high",
+		});
+
+		await host.setModel(plain, { persist: true, thinkingLevel: "high" });
+		assert.equal(host.model?.id, "plain-model");
+		assert.equal(host.thinkingLevel, "off");
+		assert.equal(pair.engine.session.thinkingLevel, "off");
+		assert.equal(pair.engine.settingsManager.getModelThinkingLevel(plain.provider, "plain-model"), "off");
+		assert.equal(pair.hostHarness.settingsManager.getModelThinkingLevel(plain.provider, "plain-model"), "off");
+	});
+
+	it("applies the engine's resulting thinkingLevel on the isolated host within setModel without event stream (#5237)", async () => {
+		const { engine, host, runtime } = await isolatedPair();
+		const current = engine.getModel("faux-1")!;
+		const next = engine.getModel("faux-2")!;
+
+		await runtime.session.setModel(next, { persist: true, thinkingLevel: "high" });
+		assert.equal(engine.session.thinkingLevel, "high");
+		assert.equal(runtime.session.thinkingLevel, "high");
+		assert.equal(host.settingsManager.getModelThinkingLevel(next.provider, next.id), "high");
+
+		let levelDuringModelSelect: string | undefined;
+		const originalEmitModelSelect = engine.session._emitModelSelect.bind(engine.session);
+		vi.spyOn(engine.session, "_emitModelSelect").mockImplementationOnce(async (nextModel, previousModel, source) => {
+			levelDuringModelSelect = engine.session.thinkingLevel;
+			await originalEmitModelSelect(nextModel, previousModel, source);
+			await engine.session.setThinkingLevel("low", { persist: true });
+		});
+
+		await runtime.session.setModel(current, { persist: true, thinkingLevel: "high" });
+		assert.equal(levelDuringModelSelect, "high");
+		assert.equal(engine.session.thinkingLevel, "low");
+		assert.equal(runtime.session.thinkingLevel, "low");
+		assert.equal(engine.settingsManager.getModelThinkingLevel(current.provider, current.id), "low");
+		assert.equal(host.settingsManager.getModelThinkingLevel(current.provider, current.id), "low");
 	});
 });
