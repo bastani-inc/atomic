@@ -30,6 +30,7 @@ import {
 	resolveIntercomBridge,
 	resolveIntercomSessionTarget,
 } from "../../intercom/intercom-bridge.js";
+import { ownIntercomSessionId } from "../../intercom/own-intercom-session.js";
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
 import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
@@ -131,7 +132,10 @@ export {
 	type WorkflowDormantRunSubagentHoldRequest,
 } from "./subagent-child-hold.js";
 
-export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "pi" | "config" | "discoverAgents" | "runtime">;
+export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "pi" | "config" | "discoverAgents" | "runtime"> & {
+	/** The owner's own Intercom identity, which a relaunched child's bridge names as its supervisor. */
+	readonly state?: Pick<ExecutorDeps["state"], "ownIntercomSession">;
+};
 
 /** How an explicit `subagent({ action: "resume" })` reopens a child, instead of session recovery after a restart. */
 export interface SubagentChildResumeRequest {
@@ -525,6 +529,7 @@ async function relaunchChild(
 				orchestratorTarget: resolveIntercomSessionTarget(
 					deps.pi.getSessionName(),
 					ctx.sessionManager.getSessionId(),
+					ownIntercomSessionId(deps.state ?? {}, ctx.sessionManager),
 				),
 				cwd,
 			})

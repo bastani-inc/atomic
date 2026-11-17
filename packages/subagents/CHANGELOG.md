@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `contact_supervisor` reaching the wrong session. A background subagent named as its supervisor whichever session in the Atomic process had connected to Intercom last, such as another subagent or a workflow stage hosted in that process, instead of the session that launched it. Its updates and questions went to that session and never reached its parent. A child now names the Intercom id its launching session registered under, or that session's own name until it has one, and a child relaunched after a restart does the same.
+
 ## [0.9.88] - 2026-11-16
 
 ### Added
