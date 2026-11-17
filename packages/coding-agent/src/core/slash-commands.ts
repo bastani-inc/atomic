@@ -372,7 +372,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 		description: "Clear or compact the context window; the agent recovers what it needs from session history",
 		argumentHint: "[instructions]",
 	},
-	{ name: "resume", description: "Resume another session" },
+	{ name: "resume", description: "Resume a session or workflow run" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
 	{ name: "exit", description: `Exit ${APP_NAME}` },
 	{ name: "quit", description: `Quit ${APP_NAME}` },

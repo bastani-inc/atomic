@@ -254,6 +254,11 @@ function rootSnapshot(
 		...(handle.failedToolNodeId !== undefined ? { failedToolNodeId: handle.failedToolNodeId } : {}),
 		...runResultFields(backend, handle),
 		...(handle.forkedFrom !== undefined ? { forkedFrom: { ...handle.forkedFrom } } : {}),
+		...(handle.branch !== undefined
+			? { branch: handle.branch }
+			: handle.workspace?.branch !== undefined
+				? { branch: handle.workspace.branch }
+				: {}),
 		resumable: isDurableWorkflowResumable(handle),
 	};
 }
