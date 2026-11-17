@@ -350,8 +350,6 @@ interface ProcessRequest {
 	readonly args: readonly string[];
 	readonly cwd: string;
 	readonly stdin?: string;
-	/** Whether the process starts only once its host has recorded it (#4748), as a `LoggedProcess.gated` one does. */
-	readonly gated?: boolean;
 	readonly env: Readonly<Record<string, string>>;
 }
 
@@ -814,7 +812,6 @@ async function runProcess(
 					GITHUB_STEP_SUMMARY: files.summary,
 				},
 				...(request.stdin === undefined ? {} : { stdin: request.stdin }),
-				...(request.gated === true ? { gated: true } : {}),
 			},
 			context.options.log,
 			{ timeoutMs: remaining, signal: context.options.signal },
@@ -859,7 +856,6 @@ async function runNodeAction(
 			shown: `node ${phase.script}`,
 			executable: node,
 			args: [phase.path],
-			gated: true,
 			cwd: context.options.cwd,
 			env: {
 				...frame.env,
@@ -879,21 +875,15 @@ export interface ShellInvocation {
 	readonly executable: string;
 	readonly args: readonly string[];
 	readonly stdin?: string;
-	/** Whether the process starts only once its host has recorded it (#4748), as a `LoggedProcess.gated` one does. */
-	readonly gated?: boolean;
 }
 
-/**
- * How `config`'s bash runs `script` as a `bash` or `sh` step: failing at the first failing command, as GitHub does.
- * Given as an argument, the script's process starts only once its host has recorded it (#4748); on stdin, the script
- * only comes after that.
- */
+/** How `config`'s bash runs `script` as a `bash` or `sh` step: failing at the first failing command, as GitHub does. */
 export function bashInvocation(config: ShellConfig, name: string, script: string): ShellInvocation {
 	const strict = name === "bash" && basename(config.shell).toLowerCase().startsWith("bash") ? "-eo pipefail" : "-e";
 	const text = `set ${strict}\n${script}`;
 	return config.commandTransport === "stdin"
 		? { executable: config.shell, args: config.args, stdin: text }
-		: { executable: config.shell, args: [...config.args, text], gated: true };
+		: { executable: config.shell, args: [...config.args, text] };
 }
 
 /** How `config`'s PowerShell runs `script` as a `pwsh` or `powershell` step. */

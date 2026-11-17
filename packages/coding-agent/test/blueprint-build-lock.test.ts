@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	openSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -14,11 +15,16 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { takeTakeoverMutex } from "../src/core/lock-takeover.ts";
 import { buildLockPath, settleOtherBuilds, withBuildLocks } from "../src/core/resume/blueprint/build-lock.ts";
-import { runLoggedProcess } from "../src/core/resume/blueprint/process.ts";
+import { runLoggedProcess, stepProcessWatcher } from "../src/core/resume/blueprint/process.ts";
+import { bashProcess, type StepContext } from "../src/core/resume/blueprint/steps.ts";
+import type { RunStep } from "../src/core/resume/blueprint/types.ts";
 import { processStartToken } from "../src/core/worktree-snapshot/pool.ts";
+import { getShellConfig } from "../src/utils/shell.ts";
+import { bunExecutable } from "./cli-test-helpers.ts";
 
 // Process creation is real; spawnSync is only watched, to tell when a build lock lists this host's processes.
 vi.mock("node:child_process", async (importOriginal) => {
@@ -474,6 +480,164 @@ describe("blueprint build locks (#4748)", () => {
 			} finally {
 				if (runs(orphan)) process.kill(orphan);
 			}
+		},
+	);
+});
+
+describe("a build whose process died before it recorded a step (#4748)", () => {
+	/** Whether process `pid` has ended: gone, or on Linux a zombie its new parent has not reaped yet. */
+	function ended(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code === "ESRCH";
+		}
+		if (process.platform !== "linux") return false;
+		try {
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+			return /^[ZX]/.test(stat.slice(stat.lastIndexOf(")") + 2));
+		} catch {
+			return true;
+		}
+	}
+
+	const source = (module: string) =>
+		pathToFileURL(join(import.meta.dirname, "..", "src", "core", "resume", "blueprint", module)).href;
+
+	// On Windows a step's process is in a job object that ends with the process that started it.
+	test.skipIf(process.platform === "win32")(
+		"the next build stops a step's process that the dead build never recorded (#4748)",
+		async () => {
+			const markers = join(dir, "markers");
+			const recorded = join(dir, "step-pid");
+			const host = join(dir, "host.ts");
+			writeFileSync(
+				host,
+				[
+					'import { writeFileSync } from "node:fs";',
+					"const [locks, processes, storeDir, root, recorded] = process.argv.slice(2);",
+					"const { withBuildLocks } = await import(locks);",
+					"const { openStepLog, runLoggedProcess, stepProcessWatcher } = await import(processes);",
+					'const log = await openStepLog(storeDir + "/step.log");',
+					// In place of the build recording the step's process, the host dies as soon as that process exists.
+					"const dies = (pid: number, running: boolean) => {",
+					"\tif (!running) return;",
+					"\twriteFileSync(recorded, String(pid));",
+					'\tprocess.kill(process.pid, "SIGKILL");',
+					"};",
+					`const script = 'echo started >> "$MARKERS"; while :; do sleep 0.05; done';`,
+					'const run = { command: "bash", args: ["-c", script], cwd: storeDir, env: process.env };',
+					"const step = () => stepProcessWatcher.run(dies, () => runLoggedProcess(run, log, { timeoutMs: 60_000 }));",
+					"await withBuildLocks(storeDir, [root], step);",
+					"",
+				].join("\n"),
+			);
+			const child = spawn(
+				bunExecutable(),
+				[host, source("build-lock.ts"), source("process.ts"), dir, root(), recorded],
+				{
+					env: { ...process.env, MARKERS: markers },
+					stdio: "ignore",
+				},
+			);
+			children.push(child);
+			await exited(child);
+			const step = Number(readFileSync(recorded, "utf8"));
+			try {
+				assert.equal(ended(step), false, "the step's process outlived its build");
+				assert.deepEqual(await settle([root()]), []);
+				assert.equal(ended(step), true, "the next build stopped it");
+			} finally {
+				if (!ended(step)) process.kill(step, "SIGKILL");
+			}
+		},
+	);
+
+	// Linux lists every process's command line in /proc, readable by other users, unlike its environment.
+	test.skipIf(process.platform !== "linux")(
+		"no value of the environment a step inherits shows in any process's command line while the step runs (#4748)",
+		async () => {
+			const secret = `secret-${process.pid}-${Date.now()}`;
+			const log = join(dir, "step.log");
+			const fd = openSync(log, "a");
+			const gate = join(dir, "gate");
+			const seen: string[] = [];
+			/** Every process whose command line shows the secret, named by when it was looked for. */
+			const look = (when: string) => {
+				for (const name of readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))) {
+					try {
+						if (readFileSync(`/proc/${name}/cmdline`, "utf8").includes(secret)) seen.push(`${when}: ${name}`);
+					} catch {}
+				}
+			};
+			// A blueprint `run` step's process, as a build starts it.
+			const step: RunStep = {
+				kind: "run",
+				name: undefined,
+				run: 'echo running > "$MARKER"; while [ ! -f "$GATE" ]; do sleep 0.05; done',
+				env: { MARKER: join(dir, "running"), GATE: gate },
+			};
+			const context = {
+				cwd: dir,
+				environment: { ...process.env, SECRET: secret },
+				envrcPath: join(dir, "build.envrc"),
+			} as StepContext;
+			try {
+				await withBuildLocks(dir, [root()], async () => {
+					// Looked for as soon as the step's process exists, before anything lets it go on, and while it runs.
+					const started = (_pid: number, running: boolean) => {
+						if (running) look("started");
+					};
+					const run = stepProcessWatcher.run(started, () =>
+						runLoggedProcess(
+							bashProcess(step, context, getShellConfig()),
+							{ fd, path: log },
+							{ timeoutMs: 30_000 },
+						),
+					);
+					while (!existsSync(join(dir, "running"))) await new Promise((resolve) => setTimeout(resolve, 20));
+					look("running");
+					writeFileSync(gate, "");
+					await run;
+				});
+			} finally {
+				closeSync(fd);
+			}
+			assert.deepEqual(seen, []);
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"every process that carries a dead build's token is stopped, one that left the step's process group too, and no other (#4748)",
+		async () => {
+			const carrying = (token: string, detached: boolean) => {
+				const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+					detached,
+					stdio: "ignore",
+					env: { ...process.env, ATOMIC_BLUEPRINT_BUILD: token },
+				});
+				children.push(child);
+				return child;
+			};
+			const step = carrying("dead-build", true);
+			const leftGroup = carrying("dead-build", true);
+			const otherBuild = carrying("live-build", true);
+			const unrelated = sleeper();
+			writeLock({ ...(await deadProcess()), steps: [], token: "dead-build" });
+			assert.deepEqual(await settle([root()]), []);
+			const stopped = (child: ChildProcess) =>
+				Promise.race([
+					exited(child).then(() => true),
+					new Promise((resolve) => setTimeout(() => resolve(false), 10_000)),
+				]);
+			assert.deepEqual(
+				await Promise.all([stopped(step), stopped(leftGroup)]),
+				[true, true],
+				"the dead build's processes",
+			);
+			assert.equal(otherBuild.exitCode, null);
+			assert.equal(otherBuild.signalCode, null, "a process of another build still runs");
+			assert.equal(unrelated.signalCode, null, "a process of no build still runs");
 		},
 	);
 });

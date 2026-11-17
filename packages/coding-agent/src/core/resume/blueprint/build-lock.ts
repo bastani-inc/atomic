@@ -2,10 +2,9 @@
  * Build locks (#4748): a process that builds the blueprints of a restored worktree records itself and the processes
  * its steps start in `<storeDir>/blueprint-builds/locks/<root key>.json`. A later build of the same worktree in another
  * process waits while that process runs, and stops the step processes a process that died without stopping them (a
- * SIGKILL) left behind, so two builds never run in one worktree at once. A step's process starts only once it is
- * recorded (`LoggedProcess.gated`), so a process killed between starting a step and recording it leaves nothing running;
- * on Windows, where steps are not gated, the job object Atomic puts a step's process in right after starting it ends it
- * with that process. A lock that cannot be written records nothing, and the step starts anyway.
+ * SIGKILL) left behind, so two builds never run in one worktree at once. Before the first of them starts, the lock also
+ * records a token that every process of the build carries in its environment (`BUILD_TOKEN_ENV`, not on Windows): a
+ * process the dead build had not recorded yet is found and stopped by it.
  *
  * One process at a time settles and builds a worktree: it holds the lock's takeover mutex, an advisory lock the kernel
  * releases when its holder dies (#5193), from before it looks at the lock until its build settled. A process that
@@ -14,15 +13,24 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { accessSync, constants, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+	accessSync,
+	constants,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { killProcessTree } from "../../../utils/shell.ts";
 import { type TakeoverMutex, takeTakeoverMutex } from "../../lock-takeover.ts";
 import { processStartToken } from "../../worktree-snapshot/pool.ts";
 import { rootKey } from "./ledger.ts";
-import { stepProcessWatcher } from "./process.ts";
+import { BUILD_TOKEN_ENV, stepBuildToken, stepProcessWatcher } from "./process.ts";
 
 interface LockedProcess {
 	readonly pid: number;
@@ -35,6 +43,11 @@ interface LockedProcess {
 interface BuildLock extends LockedProcess {
 	readonly host: string;
 	readonly steps: readonly LockedProcess[];
+	/**
+	 * What every process of the build carries in {@link BUILD_TOKEN_ENV} (#4748), written before the first of them
+	 * starts: absent on Windows, where a job object ends a step's processes with the process that started them.
+	 */
+	readonly token?: string;
 }
 
 /** How often a build waiting for another process's build of the same worktree looks again. */
@@ -78,7 +91,14 @@ function readLockFile(file: string): ReadLock {
 		const lock = JSON.parse(text) as Partial<BuildLock> | null;
 		const steps = lock?.steps;
 		const host = lock?.host;
-		if (isLockedProcess(lock) && typeof host === "string" && Array.isArray(steps) && steps.every(isLockedProcess)) {
+		const token = lock?.token;
+		if (
+			isLockedProcess(lock) &&
+			typeof host === "string" &&
+			Array.isArray(steps) &&
+			steps.every(isLockedProcess) &&
+			(token === undefined || typeof token === "string")
+		) {
 			return { kind: "lock", lock: lock as BuildLock };
 		}
 	} catch {}
@@ -197,6 +217,60 @@ async function stopProven(
 	}
 }
 
+/**
+ * The processes of this user that carry `token` in {@link BUILD_TOKEN_ENV}, each with its start, so the wait for it to
+ * end follows that process; undefined where they cannot be listed. Linux reads each process's environment from
+ * `/proc`; other POSIX systems list them with `ps`, which shows the environment of a user's own processes.
+ */
+function processesCarrying(token: string): LockedProcess[] | undefined {
+	const entry = `${BUILD_TOKEN_ENV}=${token}`;
+	const found: LockedProcess[] = [];
+	if (process.platform === "linux") {
+		let names: string[];
+		try {
+			names = readdirSync("/proc");
+		} catch {
+			return undefined;
+		}
+		for (const name of names) {
+			if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
+			let environment: string;
+			try {
+				environment = readFileSync(`/proc/${name}/environ`, "latin1");
+			} catch {
+				continue;
+			}
+			if (environment.split("\0").includes(entry)) found.push(locked(Number(name)));
+		}
+		return found;
+	}
+	const listed = spawnSync("ps", ["-axeww", "-o", "pid=,command="], { encoding: "utf8", timeout: 30_000 });
+	if (listed.status !== 0 || typeof listed.stdout !== "string") return undefined;
+	for (const line of listed.stdout.split("\n")) {
+		const [, pid, rest] = /^\s*(\d+)\s+(.*)$/.exec(line) ?? [];
+		if (pid === undefined || Number(pid) === process.pid) continue;
+		if (rest?.split(/\s+/).includes(entry)) found.push(locked(Number(pid)));
+	}
+	return found;
+}
+
+/**
+ * Stops every process that carries `token`, with its process tree, and waits briefly until they ended, looking again
+ * for ones started meanwhile. False when the processes could not be listed, so what carries it may still run.
+ */
+async function stopCarrying(token: string, signal: AbortSignal | undefined): Promise<boolean> {
+	for (let look = 0; look < 5; look++) {
+		const carrying = processesCarrying(token);
+		if (carrying === undefined) return false;
+		if (carrying.length === 0) return true;
+		for (const carrier of carrying) killProcessTree(carrier.pid);
+		for (let waited = 0; waited < 50 && carrying.some((carrier) => identity(carrier) === "same"); waited++) {
+			await delay(BUILD_LOCK_POLL_MS / 2, signal);
+		}
+	}
+	return processesCarrying(token)?.length === 0;
+}
+
 /** How long a build waits for another process's build of the same worktree before it builds anyway, with a warning. */
 export const BUILD_LOCK_WAIT_MS = 5 * 60_000;
 
@@ -252,6 +326,8 @@ async function settleLock(
 	wait: (why: string) => Promise<boolean>,
 ): Promise<string[]> {
 	let stopped = false;
+	// Whether every process that carries the dead build's token was found and stopped.
+	let carriersStopped = true;
 	for (;;) {
 		const read = readLockFile(file);
 		if (read.kind === "none") return [];
@@ -277,6 +353,8 @@ async function settleLock(
 			stopped = true;
 			// Stopped once: the Windows scan lists every process, and a later look only waits on what could not be proven.
 			await stopProven(steps, options.signal, process.platform === "win32" ? orphanedChildren(steps) : []);
+			// Its processes, the ones it had not recorded yet included, carry its token (#4748).
+			if (lock.token !== undefined) carriersStopped = await stopCarrying(lock.token, options.signal);
 		}
 		const unproven = steps.filter((step) => identity(step) === "unknown");
 		if (unproven.length > 0) {
@@ -291,7 +369,7 @@ async function settleLock(
 		// A step recorded without its start cannot be told from what it left running (on Windows, Git's bash.exe ends
 		// before the shell it started), so the user hears that the earlier build may still run.
 		const unidentified = steps.filter((step) => step.start === undefined);
-		if (unidentified.length > 0) {
+		if (unidentified.length > 0 || !carriersStopped) {
 			return [
 				`An earlier blueprint build of ${root} was interrupted, and processes it started could not be identified to stop them; they may still be running while the worktree is built again.`,
 			];
@@ -372,8 +450,9 @@ export async function settleOtherBuilds(
 
 /**
  * Runs `build` of the worktrees at `roots` under their build locks: from the first step process `build` starts until it
- * settles, records this process and the step processes that run. Callers settle other processes' builds of them first
- * ({@link settleOtherBuilds}), and release them once this resolves.
+ * settles, records this process, the step processes that run and, before the first of them starts, the build's token,
+ * which they all carry (#4748). Callers settle other processes' builds of them first ({@link settleOtherBuilds}), and
+ * release them once this resolves.
  * A lock that cannot be written never stops the build.
  */
 export async function withBuildLocks<T>(
@@ -383,8 +462,17 @@ export async function withBuildLocks<T>(
 ): Promise<T> {
 	const files = [...new Set(roots.map((root) => buildLockPath(storeDir, root)))];
 	const steps = new Map<number, LockedProcess>();
+	// On Windows a step's processes are in a job object that ends with this process, so they carry no token.
+	const token = process.platform === "win32" ? undefined : randomUUID();
+	let written = false;
 	const write = () => {
-		const lock: BuildLock = { host: HOST, ...locked(process.pid), steps: [...steps.values()] };
+		written = true;
+		const lock: BuildLock = {
+			host: HOST,
+			...locked(process.pid),
+			steps: [...steps.values()],
+			...(token === undefined ? {} : { token }),
+		};
 		for (const file of files) {
 			try {
 				writeLock(file, lock);
@@ -397,8 +485,13 @@ export async function withBuildLocks<T>(
 		else steps.delete(pid);
 		write();
 	};
+	// Written before the first step's process starts, so the token is recorded before any process carries it.
+	const starting = () => {
+		if (token !== undefined && !written) write();
+		return token;
+	};
 	try {
-		return await stepProcessWatcher.run(watch, build);
+		return await stepBuildToken.run(starting, () => stepProcessWatcher.run(watch, build));
 	} finally {
 		for (const file of files) if (readLock(file)?.pid === process.pid) removeLock(file);
 	}

@@ -2788,19 +2788,17 @@ describe("steps that name a shell", () => {
 		}
 	});
 
-	test("builds the command line of each kind of shell, a bash script given as an argument starting once recorded (#4588, #4748)", () => {
+	test("builds the command line of each kind of shell (#4588)", () => {
 		const script = "echo hi";
 		const argv: ShellConfig = { shell: "/usr/bin/bash", args: ["-c"] };
 
 		assert.deepEqual(bashInvocation(argv, "bash", script), {
 			executable: "/usr/bin/bash",
 			args: ["-c", "set -eo pipefail\necho hi"],
-			gated: true,
 		});
 		assert.deepEqual(bashInvocation(argv, "sh", script), {
 			executable: "/usr/bin/bash",
 			args: ["-c", "set -e\necho hi"],
-			gated: true,
 		});
 		assert.deepEqual(bashInvocation({ shell: "/usr/bin/BASH.EXE", args: ["-c"] }, "bash", script).args, [
 			"-c",
@@ -2813,7 +2811,6 @@ describe("steps that name a shell", () => {
 		assert.deepEqual(bashInvocation({ shell: "sh", args: ["-c"] }, "bash", script), {
 			executable: "sh",
 			args: ["-c", "set -e\necho hi"],
-			gated: true,
 		});
 		assert.deepEqual(
 			bashInvocation({ shell: "/bin/bash", args: ["-s"], commandTransport: "stdin" }, "bash", script),

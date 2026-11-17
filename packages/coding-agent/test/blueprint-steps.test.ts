@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import {
 	closeSync,
 	existsSync,
@@ -11,12 +9,10 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
-	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import type { ActionFetcher } from "../src/core/resume/blueprint/actions.ts";
 import { bashPath, evaluateEnvrc } from "../src/core/resume/blueprint/envrc.ts";
@@ -26,7 +22,6 @@ import {
 	BlueprintStepTimedOutError,
 	BlueprintUsesUnsupportedError,
 } from "../src/core/resume/blueprint/errors.ts";
-import { stepProcessWatcher } from "../src/core/resume/blueprint/process.ts";
 import {
 	bashProcess,
 	powerShellProcess,
@@ -38,7 +33,6 @@ import {
 import type { RunStep, UsesStep } from "../src/core/resume/blueprint/types.ts";
 import { ResumeTimingsRecorder } from "../src/core/resume/timings.js";
 import type { ShellConfig } from "../src/utils/shell.ts";
-import { bunExecutable } from "./cli-test-helpers.ts";
 import { WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
 import { shellPath } from "./helpers/hook-commands.ts";
 
@@ -389,214 +383,6 @@ describe("cancelling a section (#4588)", () => {
 	});
 });
 
-describe("a host that dies while it starts a step (#4748)", () => {
-	/** How long a test's host stays stalled before it records a step's process, unless the step runs meanwhile. */
-	const RECORDING_STALL_MS = 1_500;
-	const stall = new Int32Array(new SharedArrayBuffer(4));
-
-	/** Whether process `pid` has ended: gone, or on Linux a zombie its new parent has not reaped yet. */
-	function ended(pid: number): boolean {
-		try {
-			process.kill(pid, 0);
-		} catch (error) {
-			return (error as NodeJS.ErrnoException).code === "ESRCH";
-		}
-		if (process.platform !== "linux") return false;
-		try {
-			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-			return /^[ZX]/.test(stat.slice(stat.lastIndexOf(")") + 2));
-		} catch {
-			return true;
-		}
-	}
-
-	/**
-	 * A host that runs `step` in a section and records each process it starts, as a build lock does, and that is killed
-	 * as soon as it has recorded the first one: before it can let that process go on. `files` make up the action a
-	 * `uses` step fetches; `environment` is added to the steps'. Resolves the id of the process it recorded once the host
-	 * has exited.
-	 */
-	async function hostKilledAfterRecording(
-		step: RunStep | UsesStep,
-		files: Record<string, string> = {},
-		environment: Record<string, string> = {},
-	) {
-		const host = path("host.ts");
-		const recorded = path("recorded-pid");
-		writeFileSync(
-			host,
-			[
-				'import { mkdirSync, writeFileSync } from "node:fs";',
-				'import { dirname, join } from "node:path";',
-				"const [steps, processes, input, recorded] = process.argv.slice(2);",
-				"const { runSection } = await import(steps);",
-				"const { stepProcessWatcher } = await import(processes);",
-				"const { step, files, context } = JSON.parse(input);",
-				"const fetchAction = async ({ destination }: { destination: string }) => {",
-				"\tfor (const [name, content] of Object.entries(files as Record<string, string>)) {",
-				"\t\tmkdirSync(dirname(join(destination, name)), { recursive: true });",
-				"\t\twriteFileSync(join(destination, name), content);",
-				"\t}",
-				"};",
-				"const record = (pid: number, running: boolean) => {",
-				"\tif (!running) return;",
-				"\twriteFileSync(recorded, String(pid));",
-				'\tprocess.kill(process.pid, "SIGKILL");',
-				"};",
-				'await stepProcessWatcher.run(record, () => runSection("maintenance", [step], { ...context, fetchAction }));',
-				"",
-			].join("\n"),
-		);
-		const source = (module: string) =>
-			pathToFileURL(join(import.meta.dirname, "..", "src", "core", "resume", "blueprint", module)).href;
-		const input = JSON.stringify({
-			step,
-			files,
-			context: context({ environment: { ...context().environment, ...environment } }),
-		});
-		const child = spawn(bunExecutable(), [host, source("steps.ts"), source("process.ts"), input, recorded], {
-			cwd: sandbox,
-			stdio: "ignore",
-		});
-		await once(child, "exit");
-		assert.equal(existsSync(recorded), true, "the host recorded a process before it was killed");
-		return Number(readFileSync(recorded, "utf8"));
-	}
-
-	// On Windows steps are not gated: a job object ends them with their host instead.
-	test.skipIf(process.platform === "win32")(
-		"a step's process gets going only once its host has recorded it, however long recording takes (#4748)",
-		async () => {
-			const ranBeforeRecorded: boolean[] = [];
-			const record = (_pid: number, running: boolean) => {
-				if (!running) return;
-				// A host stalled between starting the step's process and recording it, as one under load can be.
-				const until = Date.now() + RECORDING_STALL_MS;
-				while (!existsSync(markers()) && Date.now() < until) Atomics.wait(stall, 0, 0, 20);
-				ranBeforeRecorded.push(existsSync(markers()));
-			};
-			const result = await stepProcessWatcher.run(record, () =>
-				runSection("maintenance", [run('echo ran >> "$MARKERS"')], context()),
-			);
-			assert.deepEqual(result, { completed: 1 });
-			assert.deepEqual(ranBeforeRecorded, [false], "nothing ran before the host recorded the process");
-			assert.deepEqual(lines(markers()), ["ran"], "the step ran once recorded");
-		},
-	);
-
-	const composite = [
-		"name: Fixture",
-		"runs:",
-		"  using: composite",
-		"  steps:",
-		"    - shell: bash",
-		'      run: echo ran >> "$MARKERS"',
-		"",
-	].join("\n");
-	const nodeAction = {
-		"action.yml": ["name: Fixture", "runs:", "  using: node20", "  main: main.js", ""].join("\n"),
-		"main.js": 'require("node:fs").appendFileSync(process.env.MARKERS, "ran\\n");\n',
-	};
-
-	// Bash runs ~/.bashrc instead of BASH_ENV when its stdin is a socket and SHLVL is below 2, so the gate keeps stdin.
-	test.skipIf(process.platform === "win32")(
-		"a gated step's bash still reads BASH_ENV, and not ~/.bashrc without SHLVL, and keeps it and its null stdin (#4748)",
-		async () => {
-			writeFileSync(path(".bashrc"), 'echo bashrc >> "$MARKERS"\n');
-			writeFileSync(path("bash-env"), 'echo bash-env >> "$MARKERS"\n');
-			const environment = { ...context().environment, BASH_ENV: path("bash-env") };
-			assert.equal("SHLVL" in environment, false);
-			const stdin = '[ "$(readlink /proc/self/fd/0 2>/dev/null || echo /dev/null)" = /dev/null ]';
-			const step = run(`${stdin} && [ "$BASH_ENV" = "${path("bash-env")}" ] && echo step >> "$MARKERS"`);
-			assert.deepEqual(await runSection("maintenance", [step], context({ environment })), { completed: 1 });
-			assert.deepEqual(lines(markers()), ["bash-env", "step"]);
-		},
-	);
-
-	/** NODE_OPTIONS that preloads a module which leaves a marker, as a user's NODE_OPTIONS may preload their own. */
-	const preloading = (): Record<string, string> => {
-		writeFileSync(path("preload.cjs"), 'require("node:fs").appendFileSync(process.env.MARKERS, "preloaded\\n");\n');
-		return { NODE_OPTIONS: `--require ${JSON.stringify(path("preload.cjs"))}` };
-	};
-
-	/** BASH_ENV naming a file that leaves a marker, which bash runs before the step's script, as from a shell (SHLVL). */
-	const bashEnvironment = (): Record<string, string> => {
-		writeFileSync(path("bash-env"), 'echo bash-env >> "$MARKERS"\n');
-		return { BASH_ENV: path("bash-env"), SHLVL: "1" };
-	};
-
-	/** Exported bash functions named after the builtins a gate would use, as a user's environment may export. */
-	const exportedFunctions = (): Record<string, string> => ({
-		"BASH_FUNC_read%%": "() { return 0; }",
-		"BASH_FUNC_exec%%": '() { builtin exec "$@"; }',
-		SHLVL: "1",
-	});
-
-	for (const [kind, step, files, environment] of [
-		["a run step", run('echo ran >> "$MARKERS"'), {}, () => ({})],
-		["a run step whose BASH_ENV runs a command", run('echo ran >> "$MARKERS"'), {}, bashEnvironment],
-		["a run step whose environment exports read and exec", run('echo ran >> "$MARKERS"'), {}, exportedFunctions],
-		[
-			"a bash step of a composite action",
-			uses("github.com/acme/compose@v1"),
-			{ "action.yml": composite },
-			() => ({}),
-		],
-		// On Windows a Node.js action is not gated: its process is in a job object that ends with its host.
-		["a Node.js action", uses("github.com/acme/node@v1"), nodeAction, () => ({})],
-		[
-			"a Node.js action whose NODE_OPTIONS preloads a module",
-			uses("github.com/acme/node@v1"),
-			nodeAction,
-			preloading,
-		],
-	] as const) {
-		test(`${kind} runs nothing until its host has recorded its process, so a host killed in between leaves nothing running (#4748)`, async () => {
-			const recorded = await hostKilledAfterRecording(step, files, environment());
-			await waitFor(() => ended(recorded), "the recorded process to end");
-			assert.deepEqual(lines(markers()), [], "the step ran nothing");
-		});
-	}
-
-	// With --preserve-symlinks, a module's path is not resolved through the symlink the action cache is reached by.
-	for (const [how, setup] of [
-		["", () => ({})],
-		[
-			", also with --preserve-symlinks in NODE_OPTIONS and an action cache reached through a symlink",
-			() => {
-				mkdirSync(path("actions-real"));
-				symlinkSync(path("actions-real"), path("actions-link"), "dir");
-				const environment = { ...context().environment, NODE_OPTIONS: "--preserve-symlinks" };
-				return { actionsCacheDir: path("actions-link"), environment };
-			},
-		],
-	] as const) {
-		test(`the threads and processes a Node.js action starts run at once, without waiting to be let go as the action was${how} (#4748)`, async () => {
-			const main = [
-				'const { fork } = require("node:child_process");',
-				'const fs = require("node:fs");',
-				'const { Worker } = require("node:worker_threads");',
-				'if (process.argv[2] === "child") fs.appendFileSync(process.env.MARKERS, "forked\\n");',
-				"else",
-				'\tnew Worker(\'require("node:fs").appendFileSync(process.env.MARKERS, "thread\\\\n")\', { eval: true }).on("exit", () => {',
-				'\t\tfork(__filename, ["child"]).on("exit", (code) => {',
-				'\t\t\tfs.appendFileSync(process.env.MARKERS, "ran after its fork exited " + code + "\\n");',
-				"\t\t});",
-				"\t});",
-				"",
-			].join("\n");
-			const files = { ...nodeAction, "main.js": main };
-			const fetchAction: ActionFetcher = async ({ destination }) => {
-				for (const [name, content] of Object.entries(files)) writeFileSync(join(destination, name), content);
-			};
-			const step = uses("github.com/acme/node@v1");
-			const result = await runSection("maintenance", [step], context({ fetchAction, ...setup() }));
-			assert.deepEqual(result, { completed: 1 });
-			assert.deepEqual(lines(markers()), ["thread", "forked", "ran after its fork exited 0"]);
-		});
-	}
-});
-
 describe("step timings (#4748)", () => {
 	test("each step reports its section, name, duration and how it ended to the resume it runs in (#4748)", async () => {
 		const recorder = new ResumeTimingsRecorder();
@@ -786,7 +572,7 @@ describe("which shell runs a step (#4588)", () => {
 		);
 	});
 
-	test("the bash process takes its script as the last argument, starts once recorded, and sources the ENVRC before the step's variables (#4588, #4748)", () => {
+	test("the bash process takes its script as the last argument and sources the ENVRC before the step's variables (#4588)", () => {
 		const script = [
 			"set -a",
 			'[ -f "$ENVRC" ] && . "$ENVRC"',
@@ -802,17 +588,15 @@ describe("which shell runs a step (#4588)", () => {
 			args: ["-c", script],
 			cwd: path("repo"),
 			env: { ...context().environment, A: "1", ENVRC: bashPath(path("build.envrc")) },
-			gated: true,
 		});
 	});
 
-	test("a bash that cannot take its command as an argument gets the script on stdin, which is its gate (#4588, #4748)", () => {
+	test("a bash that cannot take its command as an argument gets the script on stdin (#4588)", () => {
 		const legacy: ShellConfig = { shell: "C:\\Windows\\System32\\bash.exe", args: ["-s"], commandTransport: "stdin" };
 		const legacyProcess = bashProcess(run("echo hi"), context(), legacy);
 		assert.equal(legacyProcess.command, legacy.shell);
 		assert.deepEqual(legacyProcess.args, ["-s"]);
 		assert.equal(legacyProcess.stdin, 'set -a\n[ -f "$ENVRC" ] && . "$ENVRC"\nset +a\nset -e\necho hi\n');
-		assert.equal("gated" in legacyProcess, false);
 		const argv = bashProcess(run("echo hi"), context(), {
 			shell: "/bin/bash",
 			args: ["-c"],

@@ -1,9 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
-import { existsSync, writeSync } from "node:fs";
+import { writeSync } from "node:fs";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { Writable } from "node:stream";
 import { waitForChildProcess } from "../../../utils/child-process.ts";
 import { killProcessTree } from "../../../utils/shell.ts";
 import { containProcessTree, type ProcessTreeContainment, processTreeEnded } from "../../process-tree-containment.ts";
@@ -22,59 +21,6 @@ export interface LoggedProcess {
 	readonly env: NodeJS.ProcessEnv;
 	/** Written to the process's stdin, for shells that take the command that way; otherwise stdin is closed. */
 	readonly stdin?: string;
-	/**
-	 * Whether the process starts only once {@link stepProcessWatcher} has recorded it (#4748), so a host that dies before
-	 * recording it leaves nothing of it running: not even code its environment would run first, such as a shell's
-	 * `BASH_ENV` and exported functions or the modules `NODE_OPTIONS` preloads. Where {@link gatesSteps} says so, it is
-	 * started by {@link START_GATE_SHELL} with an empty environment, which waits for one line on file descriptor
-	 * {@link START_GATE_FD} and then becomes the process through {@link START_GATE_ENV}, so it keeps its id, arguments
-	 * and environment. Elsewhere it starts at once.
-	 */
-	readonly gated?: boolean;
-}
-
-/** The shell that holds a gated process until its host has recorded it (#4748). */
-export const START_GATE_SHELL = "/bin/sh";
-
-/** What gives a gated process its environment back once it may start (#4748), `env -i` with every variable. */
-export const START_GATE_ENV = "/usr/bin/env";
-
-/**
- * The file descriptor a gated process's start line comes on (#4748): not stdin, which stays as it was, since bash runs
- * `~/.bashrc` instead of `BASH_ENV` when its stdin is a socket, as a pipe from Node.js or Bun is.
- */
-export const START_GATE_FD = 3;
-
-/**
- * What {@link START_GATE_SHELL} runs, with the command line to become as `$@`: it waits for the line, ends at once,
- * having run nothing, when its host died first, closes the descriptor so nothing the process starts inherits it, and
- * becomes the process.
- */
-const START_GATE_SCRIPT = `IFS= read -r _ <&${START_GATE_FD} || exit 1; exec ${START_GATE_FD}<&-; exec "$@"`;
-
-/**
- * Whether steps on `platform` are gated (#4748). On Windows they are not: Atomic puts each step's process in a job
- * object right after starting it, which ends it when Atomic ends, and Git Bash takes no file descriptor past stderr
- * from its host.
- */
-export function gatesSteps(platform: NodeJS.Platform): boolean {
-	return platform !== "win32";
-}
-
-/**
- * How `run` is spawned so that it starts only once released (#4748): {@link START_GATE_SHELL} with no environment at
- * all, so nothing in it runs before the gate, which then runs `env -i` with each of `run`'s variables and the command.
- * Undefined where it cannot be: off the platforms {@link gatesSteps} names, without the shell or `env`, or for a command
- * `env` would take for a variable; a variable `env` could take for an option is left out.
- */
-function startGated(run: LoggedProcess): { command: string; args: string[]; env: NodeJS.ProcessEnv } | undefined {
-	if (!gatesSteps(process.platform) || run.command.includes("=")) return undefined;
-	if (!existsSync(START_GATE_SHELL) || !existsSync(START_GATE_ENV)) return undefined;
-	const variables = Object.entries(run.env).flatMap(([name, value]) =>
-		value === undefined || name === "" || name.startsWith("-") ? [] : [`${name}=${value}`],
-	);
-	const line = [START_GATE_ENV, "-i", ...variables, run.command, ...run.args];
-	return { command: START_GATE_SHELL, args: ["-c", START_GATE_SCRIPT, "start-gate", ...line], env: {} };
 }
 
 export interface ProcessExit {
@@ -96,6 +42,20 @@ export interface LoggedProcessOptions {
  * them so a later process can stop them when this one dies without stopping them (#4748).
  */
 export const stepProcessWatcher = new AsyncLocalStorage<(pid: number, running: boolean) => void>();
+
+/**
+ * The environment variable a step's process carries the token of the build that starts it in (#4748), as do the
+ * processes it starts that keep its environment. A later build finds what a build whose process died left running by it,
+ * also a process that died build never recorded.
+ */
+export const BUILD_TOKEN_ENV = "ATOMIC_BLUEPRINT_BUILD";
+
+/**
+ * Asked, right before a step's process is started, for the token of the build that starts it (#4748). The build has
+ * recorded the token by the time it returns it, so no process of it runs before that; undefined starts the process
+ * without one.
+ */
+export const stepBuildToken = new AsyncLocalStorage<() => string | undefined>();
 
 const STOPPED_PROCESS_TREE_WAIT_MS = 10_000;
 
@@ -131,18 +91,17 @@ export async function runLoggedProcess(
 	options.signal?.throwIfAborted();
 	const startedAt = Date.now();
 	const copiesOutput = copiesOutputToLog(process.platform);
-	const gated = run.gated === true ? startGated(run) : undefined;
+	const token = stepBuildToken.getStore()?.();
 	return new Promise<ProcessExit>((resolveExit, reject) => {
-		const child = spawn(gated?.command ?? run.command, gated?.args ?? [...run.args], {
+		const child = spawn(run.command, [...run.args], {
 			cwd: run.cwd,
-			env: gated?.env ?? run.env,
+			env: token === undefined ? run.env : { ...run.env, [BUILD_TOKEN_ENV]: token },
 			detached: startsProcessGroup(process.platform),
 			windowsHide: true,
 			stdio: [
 				run.stdin === undefined ? "ignore" : "pipe",
 				copiesOutput ? "pipe" : log.fd,
 				copiesOutput ? "pipe" : log.fd,
-				...(gated === undefined ? [] : ["pipe" as const]),
 			],
 		});
 		const tree = child.pid === undefined ? undefined : containProcessTree(child.pid);
@@ -227,11 +186,6 @@ export async function runLoggedProcess(
 			child.once("close", ended);
 		}
 		if (run.stdin !== undefined) child.stdin?.end(run.stdin);
-		// Only now, after the watcher above recorded the process: a gated process starts its work on this line (#4748). A
-		// process that ended before reading it, as one stopped at once, never needs it, so failing to write it is no error.
-		const release = gated === undefined ? undefined : (child.stdio[START_GATE_FD] as Writable | null | undefined);
-		release?.on("error", () => {});
-		release?.end("\n");
 	});
 }
 

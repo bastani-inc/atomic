@@ -95,11 +95,7 @@ export function powerShellProcess(
 	};
 }
 
-/**
- * The bash process of a `run` step: its script is the last argument, or on stdin for a bash that cannot take it there.
- * Given as an argument, the process is {@link LoggedProcess.gated}: the step runs nothing, its startup files included,
- * before the build that starts it has recorded its process (#4748). On stdin, the script itself comes only after that.
- */
+/** The bash process of a `run` step: its script is the last argument, or on stdin for a bash that cannot take it there. */
 export function bashProcess(step: RunStep, context: StepContext, bash: ShellConfig): LoggedProcess {
 	const script = bashScript(step);
 	const byStdin = bash.commandTransport === "stdin";
@@ -108,7 +104,7 @@ export function bashProcess(step: RunStep, context: StepContext, bash: ShellConf
 		args: byStdin ? bash.args : [...bash.args, script],
 		cwd: context.cwd,
 		env: { ...context.environment, ...step.env, ENVRC: bashPath(context.envrcPath) },
-		...(byStdin ? { stdin: script } : { gated: true }),
+		...(byStdin ? { stdin: script } : {}),
 	};
 }
 
