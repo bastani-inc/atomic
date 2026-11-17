@@ -34,14 +34,14 @@ The result starts with `Script completed` or `Script failed`, the wall time, and
 | `exit()` | End the script successfully. |
 | `store(key, value)` / `load(key)` | Keep small JSON values across `codemode` calls. See [Store values](#store-values). |
 | `ALL_TOOLS` | Every script-callable tool as `{ name, description }`, including tools the description does not list. [Model-only tools](#model-only-tools) are excluded. |
-| `searchTools(query, { limit?, namespace? })` | Rank script-callable tools by relevance (BM25, default limit 8). Resolves to `{ name, description }[]`. A query that is a tool's name, or the part after a `__` separator such as `thread_read` for `mcp__app__thread_read`, ranks that tool first. A query that names an active model-only tool exactly returns it first with a hint to call it directly. |
-| `describeTool(name)` | Resolves to a script-callable tool's description and TypeScript declaration, a hint for an active model-only tool, or `undefined`. |
+| `searchTools(query, { limit?, namespace? })` | Rank script-callable tools by relevance (BM25, default limit 8). Resolves to `{ name, description }[]`. A query that is a tool's name, or the part after a `__` separator such as `thread_read` for `mcp__app__thread_read`, ranks that tool first. A query that names an active model-only tool exactly returns it first with a hint to call it directly as a top-level tool. |
+| `describeTool(name)` | Resolves to a script-callable tool's description and TypeScript declaration, a hint to call an active model-only tool directly as a top-level tool, or `undefined`. |
 | `describeNamespace(name)` | Resolves to `{ name, description?, instructions?, tools }` for a namespace such as an MCP server, or `undefined`. |
 | `models` | List and run non-LLM models. See [Models](#models). |
 
 ## Call tools
 
-Every tool the session can call is a method of `tools`, named by its identifier: characters that are not valid in a JavaScript identifier become `_`, so the MCP tool `mcp__dev-docs__search` is `tools.mcp__dev_docs__search`. Each method takes one object with the tool's arguments.
+Every script-callable tool in the session is a method of `tools`, named by its identifier: characters that are not valid in a JavaScript identifier become `_`, so the MCP tool `mcp__dev-docs__search` is `tools.mcp__dev_docs__search`. Each method takes one object with the tool's arguments.
 
 What a call resolves to depends on the tool:
 
@@ -54,11 +54,11 @@ A call that fails, is blocked, or gets invalid arguments rejects with an `Error`
 
 The `codemode` description lists tools with their TypeScript declarations, grouped by namespace (for example one MCP server). Tools with `deferred` exposure are not listed, so the description stays the same while they register. Listed declarations share a budget of 3000 estimated tokens (`codemode.inlineBudget` in [settings](/settings#tools)). Scripts find the other tools with `searchTools()`, `describeTool()`, `describeNamespace()`, or by filtering `ALL_TOOLS`.
 
-While `codemode` is active, `codemode.mode` in [settings](/settings#tools) decides how the other tools are presented. With `on` (default) declared tools stay declared, and their descriptions say in one line how scripts call them and what the call resolves to. With `only` they are hidden from the model and listed in the `codemode` description instead, so the model calls them through scripts. Tool declarations in the `codemode` description, `describeTool()`, and `ALL_TOOLS` carry the tools' prompt guidelines, since the system prompt rules only cover declared tools.
+While `codemode` is active, `codemode.mode` in [settings](/settings#tools) decides how the other tools are presented. With `on` (default) declared tools stay declared, and their descriptions say in one line how scripts call them and what the call resolves to. With `only` ordinary direct tools are hidden from the model and listed in the `codemode` description instead, so the model calls them through scripts; active model-only tools such as `subagent` and `workflow` stay declared as top-level tools. Tool declarations in the `codemode` description, `describeTool()`, and `ALL_TOOLS` carry the tools' prompt guidelines, since the system prompt rules only cover declared tools.
 
 ### Model-only tools
 
-Model-only tools, such as `subagent`, `workflow`, and `ask_user_question`, are not in `tools` or `ALL_TOOLS`, and `searchTools()` never ranks them as matches. Scripts cannot call them, but the model can call them directly, so a missing entry does not mean the tool is unavailable. While such a tool is active, `searchTools()` and `describeTool()` answer its exact name, such as `searchTools("subagent")`, with a hint to call it directly. The hint does not make the tool callable from scripts.
+Model-only tools, such as `subagent`, `workflow`, and `ask_user_question`, are not in `tools` or `ALL_TOOLS`, and `searchTools()` never ranks them as matches. They cannot be called from inside a `codemode` script; when one is needed and available in the session, the model calls that separate top-level tool directly instead of trying to reach it through `codemode`, so a missing entry in `tools` does not mean the tool is unavailable. While such a tool is active, `searchTools()` and `describeTool()` answer its exact name, such as `searchTools("subagent")` or `describeTool("workflow")`, with a hint to call it directly as a top-level tool, not from a script. The hint does not make the tool callable from scripts.
 
 Some model-only tools let scripts use part of them. `intercom` is in `tools` with `list`, `status`, `pending`, and `send` to an exact target, each resolving to a structured value; its other actions, and sends to globs or `subagents:` targets, fail with a message to call the tool directly. See [Intercom from codemode scripts](/intercom/reference#from-codemode-scripts).
 
