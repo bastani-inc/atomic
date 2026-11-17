@@ -113,6 +113,7 @@ const pidPath = pathsModule.getBrokerPidPath();
 const directBrokers = new Map<number, SpawnedProcess>();
 const liveClients: InstanceType<typeof IntercomClient>[] = [];
 let brokerControl: BrokerProcessControl;
+let finishControlSetup: (() => void) | undefined;
 
 beforeAll(() => {
 	makeDirectorySync(gateDir, { recursive: true });
@@ -120,7 +121,16 @@ beforeAll(() => {
 });
 
 beforeEach(async () => {
-	brokerControl = await createBrokerProcessControl(gateDir, BROKER_BUDGET_MS);
+	let finished = false;
+	finishControlSetup = () => {
+		finished = true;
+	};
+	const control = await createBrokerProcessControl(gateDir, BROKER_BUDGET_MS);
+	if (finished) {
+		await control.close();
+		throw new Error("broker control setup completed after test cleanup");
+	}
+	brokerControl = control;
 });
 
 function isAlive(pid: number): boolean {
@@ -189,6 +199,7 @@ async function terminateDirectBroker(broker: SpawnedProcess): Promise<void> {
 
 // Terminating each broker left running waits for it within BROKER_BUDGET_MS.
 afterEach(async () => {
+	finishControlSetup?.();
 	for (const client of liveClients.splice(0)) {
 		try {
 			await client.disconnect();

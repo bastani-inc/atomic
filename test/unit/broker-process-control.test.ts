@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { onTestFinished, test } from "vitest";
-import { createBrokerProcessControl } from "../helpers/broker-process-control.js";
+import { type BrokerProcessControl, createBrokerProcessControl } from "../helpers/broker-process-control.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const CONTROL_SHUTDOWN_MS = 10_000;
@@ -24,16 +24,25 @@ function childProcess(args: string[]): {
 	return { child, closed };
 }
 
-async function controlFixture() {
+async function controlFixture(relativeDirectory?: string) {
 	const directory = makeTempDirectory("broker-control-");
-	const control = await createBrokerProcessControl(directory, CONTROL_SHUTDOWN_MS);
+	let control: BrokerProcessControl | undefined;
+	let finished = false;
 	onTestFinished(async () => {
+		finished = true;
 		try {
-			await control.close();
+			await control?.close();
 		} finally {
 			removeTempDirectory(directory);
 		}
 	});
+	const controlledDirectory = relativeDirectory === undefined ? directory : join(directory, relativeDirectory);
+	mkdirSync(controlledDirectory, { recursive: true });
+	control = await createBrokerProcessControl(controlledDirectory, CONTROL_SHUTDOWN_MS);
+	if (finished) {
+		await control.close();
+		throw new Error("broker control setup completed after test cleanup");
+	}
 	return { directory, control };
 }
 
@@ -59,17 +68,7 @@ test("broker cleanup stops only its connected child (#5332)", async () => {
 });
 
 test("an unreferenced broker control connection preserves natural exit in long quoted directories (#5332)", async () => {
-	const directory = makeTempDirectory("broker-control-");
-	const longDirectory = join(directory, `${"x".repeat(150)} 'quoted'`);
-	mkdirSync(longDirectory);
-	const control = await createBrokerProcessControl(longDirectory, CONTROL_SHUTDOWN_MS);
-	onTestFinished(async () => {
-		try {
-			await control.close();
-		} finally {
-			removeTempDirectory(directory);
-		}
-	});
+	const { control } = await controlFixture(`${"x".repeat(150)} 'quoted'`);
 	const owned = childProcess(["--import", control.preloadUrl, "-e", "process.exitCode = 0"]);
 	assert.deepEqual(await owned.closed, [0, null]);
 });
