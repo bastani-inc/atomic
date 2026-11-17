@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
@@ -16,6 +16,24 @@ import {
 	setWorktreeSnapshotGit,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
 import { removeTestDirectory } from "./test-directory-removal.js";
+
+/**
+ * The most one real git process may take on a loaded CI host. Windows starts one in about 90 ms when idle, several times
+ * that beside other suites. A test that starts many budgets them at this each, and asserts it starts no more.
+ */
+export const GIT_PROCESS_BUDGET_MS = 300;
+
+/**
+ * The git processes started since `trace` was named as their `GIT_TRACE2_EVENT` target, each with its arguments; the git
+ * processes git starts for itself count too.
+ */
+export function startedGitProcesses(trace: string): { readonly argv?: readonly string[] }[] {
+	return readFileSync(trace, "utf8")
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line) as { event: string; argv?: string[] })
+		.filter((event) => event.event === "start");
+}
 
 /** The error code for a path below a regular file: POSIX systems say ENOTDIR, Windows reports the path as missing. */
 export const BELOW_FILE_ERRNO = process.platform === "win32" ? "ENOENT" : "ENOTDIR";
@@ -131,6 +149,14 @@ export class GitSandbox {
 		await this.git(cwd, "add", "-A");
 		await this.git(cwd, "commit", "-q", "-m", message);
 		return this.git(cwd, "rev-parse", "HEAD");
+	}
+
+	/** Traces every git process the snapshot runner starts from now on, and those they start; returns the trace's path. */
+	traceGitProcesses(): string {
+		const trace = this.path("git-trace.jsonl");
+		const executable = { ...this.executable, env: { ...this.executable.env, GIT_TRACE2_EVENT: trace } };
+		setWorktreeSnapshotGit(async () => executable);
+		return trace;
 	}
 
 	dispose(): void {

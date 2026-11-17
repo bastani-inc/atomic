@@ -2,11 +2,12 @@
  * System prompt construction and project context loading
  */
 
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { getSystemMessageText } from "@bastani/atomic-ai";
 import { getAgentDir, getDocsPath, getExamplesPath, getReadmePath } from "../config.js";
 import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
+import { workflowsStorageDir } from "./storage/file-identity.js";
 
 const DEFAULT_PROMPT_TOOLS = ["read", "bash", "edit", "write", "find", "search", "ask_user_question", "todo"] as const;
 
@@ -112,7 +113,7 @@ function renderProjectContext(contextFiles: Array<{ path: string; content: strin
 export function buildSessionMemoryGuideline(tools: readonly string[], cwd: string): string | undefined {
 	if (!tools.includes("read")) return undefined;
 	const agentDir = getAgentDir();
-	const workflowsDir = join(dirname(agentDir), "workflows");
+	const workflowsDir = workflowsStorageDir(agentDir);
 	return [
 		"**Session memory**: Atomic records past sessions and workflow runs, so earlier work is available as memory even in a fresh session. Recall it through `history://` rather than searching storage files on disk: the default store is SQLite, which `rg` cannot read.",
 		"  - Look when the user refers to earlier or recent work or asks what was being worked on, when a task resembles one done before, when prior work would help the current task, and before choosing between a workflow and inline work, how to verify a change, or how long it will take: comparable earlier sessions and runs, and the preferences the user stated in them, guide those choices. Missing or sparse history is not by itself a reason to work inline.",
@@ -241,14 +242,13 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 		promptSections.tools = `Available tools:\n${toolsList}\n\nAdditional tools may be available.`;
 		promptSections.rules = `Guidelines:\n${buildRules(declaredTools, toolGuidelines, promptGuidelines, cwd)}`;
 		promptSections.docs = `
-Atomic documentation (read when the user asks about model choice, computer use or automation, MCP, web access, intercom, subagents, or customizing Atomic itself, its SDK, creating workflows, packages, extensions, themes, skills, or TUI):
+Atomic documentation (read when the user asks about computer use or automation, MCP, web access, intercom, subagents, or customizing Atomic itself, its SDK, creating workflows, packages, extensions, themes, skills, or TUI):
 - Main documentation: ${readmePath}
 - Additional docs: ${docsPath}
 - Examples: ${examplesPath} (extensions, custom tools, SDK)
 - Docs/examples references above must be resolved against these absolute roots; e.g. docs/foo.md means ${docsPath}/foo.md and examples/bar means ${examplesPath}/bar.
 - When asked about: atomic workflows (docs/workflows.md), extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), atomic packages (docs/packages.md), codemode scripts and non-LLM models such as classifiers and image models (docs/codemode.md)
 - Bundled integrations use the same docs root in npm and binary installations: MCP servers (docs/mcp-servers.md), web access (docs/web-access.md), intercom (docs/intercom.md), subagents (docs/subagents.md), workflows (docs/workflows.md). Read these guides rather than guessing paths inside builtin packages.
-- When the user asks which model to choose for a task, read ${docsPath}/models/model-selection.md and ${docsPath}/models/evals.md, then consult https://artificialanalysis.ai/ for the relevant benchmark charts and methodology. Match the task to individual evaluations rather than an aggregate winner. Cite the benchmark, source date, exact model/effort and cost or latency tradeoff; distinguish measured results from recommendations. If live evidence is unavailable, label the dated docs snapshot instead of claiming a refresh. Check the configured catalog before giving an exact provider/model or thinking setting; catalog presence is not proof of live access.
 - For computer use on native desktop apps and OS dialogs on macOS, Windows and Linux, use the bundled agent-desktop skill and one-shot \`agent-desktop\` commands. Before the first action run \`agent-desktop status\`, \`agent-desktop skills get desktop\` and \`agent-desktop skills get platform\` and follow them; they match the installed binary. When workflow TypeScript code owns the sequence and postcondition, call the CLI from inside ctx.tool, one process per command, parsing its JSON envelope, forwarding the signal, with a finite timeoutMs. If \`agent-desktop version\` fails, make one bounded \`npm install -g agent-desktop\` attempt and report its side effects. Atomic bundles the skill: never run \`npx skills add\` for it or copy a skill into other agent directories, and leave existing user-level skills alone. Let the user grant permissions (\`agent-desktop permissions --guide\` on macOS; on Linux a graphical session with an AT-SPI bus); never script around a consent dialog. See ${docsPath}/computer-use.md. Prefer the agent-browser skill for what it covers, because its text snapshots cost far fewer tokens: websites and web apps in Chrome/Chromium, Mobile Safari in the iOS Simulator (\`agent-browser -p ios\`), Electron and other CDP-exposing apps, Slack, and cloud browsers. Use agent-desktop for everything native and whenever agent-browser hits a limitation. agent-desktop reads accessibility trees, not pixels, and has no native iOS or Android support: say what stayed unverified, and use \`xcrun simctl\`, Appium or \`adb\` for native mobile apps. For terminal automation/testing, prefer herdr on macOS, Linux and Windows; install it if missing when network access and permissions permit, and fall back to tmux or native Windows psmux if installation or use is not possible. Load the matching skill and ${docsPath}/workflows/verification.md. Preserve the pinned herdr skill's explicit-request and HERDR_ENV=1 requirements; never control a focused session from outside Herdr. Check installed capabilities, use dedicated sessions, respect desktop permissions, and stop before destructive actions. These CLIs are not interchangeable, and skills do not grant tools or authorization.
 - Before implementing harness changes, read the relevant docs and examples in full, following related cross-references.`;
 	}

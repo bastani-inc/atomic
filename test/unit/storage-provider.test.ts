@@ -50,7 +50,8 @@ test("module adapter resolves secrets and shares one connection between domain s
 	const provider = new StorageProvider({ memory: () => new MemoryRunJournal(), sql: SqlRunJournal.open });
 	const path = join(root, "adapter.sqlite");
 	const lifecycle = join(root, "lifecycle.txt");
-	await writeFileEnsuringDir(join(root, "secret.txt"), " secret with newline\n");
+	const agentDir = join(root, "agent");
+	await writeFileEnsuringDir(join(agentDir, "secret.txt"), " secret with newline\n");
 	const selection = {
 		kind: "adapter",
 		module: join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"),
@@ -59,7 +60,7 @@ test("module adapter resolves secrets and shares one connection between domain s
 		prefix: "custom_",
 	} as const;
 	try {
-		const context = { agentDir: join(root, "agent") };
+		const context = { agentDir };
 		const [sessions, journal] = await Promise.all([
 			provider.openSessionStore(selection, { ...context, domain: "sessions" }),
 			provider.openRunJournal({ ...selection, prefix: "journal_" }, { ...context, domain: "journal" }),

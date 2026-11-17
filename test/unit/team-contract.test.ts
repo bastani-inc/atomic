@@ -317,11 +317,11 @@ describe("the Intercom selection follows the broker's rules (#4320)", () => {
 		assert.equal(selectIntercomStorage(agentDir, { path: ":memory:" }), undefined);
 		assert.deepEqual(selectIntercomStorage(agentDir, { path: "shared.sqlite" }), {
 			kind: "sqlite",
-			path: join(root, "shared.sqlite"),
+			path: join(agentDir, "shared.sqlite"),
 		});
 		assert.deepEqual(selectIntercomStorage(agentDir, { path: "" }), {
 			kind: "sqlite",
-			path: join(root, "storage.sqlite"),
+			path: join(agentDir, "storage.sqlite"),
 		});
 		assert.deepEqual(selectIntercomStorage(agentDir, { path: join(root, "abs.sqlite") }), {
 			kind: "sqlite",
@@ -346,7 +346,7 @@ describe("joining and leaving at the SDK level (#4320)", () => {
 				{ url: databaseUrl, token: "sdk-token", prefix: "t_", agentDir, cwd: project, pinLocalSessions: false },
 				"sdk",
 			);
-			const reference = `agent/${tokenFiles()[0]}`;
+			const reference = `${tokenFiles()[0]}`;
 			assert.deepEqual(first, {
 				settingsPath: join(agentDir, "settings.json"),
 				storage: {

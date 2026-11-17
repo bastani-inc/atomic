@@ -495,6 +495,7 @@ export interface WorkerHostModule {
 		readonly agentDir: string;
 		readonly policy?: WorkerFleetPolicy;
 		readonly probeWrites?: boolean;
+		readonly rateHistory?: boolean;
 	}): Promise<WorkerFleet>;
 	/** The fleet as status lines, the same lines `/workflow status` shows of it. */
 	workflowWorkerFleetLines(fleet: WorkerFleet): string[];
@@ -798,6 +799,7 @@ async function metrics(
 			policy: command.policy,
 			// A scrape only reads: it never takes the store's write lock.
 			probeWrites: false,
+			rateHistory: true,
 		});
 	let server: WorkerMetricsServer;
 	try {

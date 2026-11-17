@@ -216,7 +216,7 @@ test("a deterministic extension startup failure fails the stage promptly and nam
 			// The primary session was retired for the fallback that never started; the
 			// failed stage must still close its store, or Windows cannot remove the file.
 			assert.deepEqual(
-				openDescriptorsTo(join(harness.cwd, "workflows", "journal.sqlite")),
+				openDescriptorsTo(join(harness.cwd, "agent", "workflows", "journal.sqlite")),
 				[],
 				"no session store stays open after the stage fails",
 			);

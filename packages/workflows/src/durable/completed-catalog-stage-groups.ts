@@ -30,7 +30,6 @@ export interface StageDraft {
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: DurableStageCheckpoint["modelAttempts"];
 	readonly rateLimits?: DurableStageCheckpoint["rateLimits"];
-	readonly routerSelection?: DurableStageCheckpoint["routerSelection"];
 	readonly worktreeSnapshots?: DurableStageCheckpoint["worktreeSnapshots"];
 	readonly topology?: DurableStageCheckpoint["topology"];
 }
@@ -374,7 +373,6 @@ export function mergeStageDraft(
 		...valueOrExisting("attemptedModels", checkpoint, existing),
 		...valueOrExisting("modelAttempts", checkpoint, existing),
 		...valueOrExisting("rateLimits", checkpoint, existing),
-		...valueOrExisting("routerSelection", checkpoint, existing),
 		...valueOrExisting("worktreeSnapshots", checkpoint, existing),
 		...(topology !== undefined ? { topology } : {}),
 	};

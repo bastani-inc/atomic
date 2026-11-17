@@ -14,7 +14,7 @@ import { ensureWorkflowSummaryService, type WorkflowSummaryContext } from "./wor
 
 import { type DurableWorkflowBackend, resumableEntryFromHandle } from "../durable/backend.js";
 import { initializeDurableBackend } from "../durable/factory.js";
-import type { RunJournalOption, RunJournalSettings } from "../durable/journal/resolution.js";
+import type { RunJournalOption } from "../durable/journal/resolution.js";
 import { resumeDurableWorkflow } from "../durable/resume-runtime.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
@@ -64,7 +64,7 @@ export interface ExtensionRuntimeOpts {
 	/** Read when the journal first opens; used when `journal` is absent. */
 	resolveJournal?: () => RunJournalOption | undefined;
 	/** Read when the journal first opens; used when no journal option applies. Defaults to the on-disk settings. */
-	resolveJournalSettings?: () => RunJournalSettings | undefined;
+	resolveJournalSettings?: () => import("./workflow-model-catalog.js").WorkflowHostSettings | undefined;
 	/** The agent directory the owning session resolved its storage against. */
 	resolveStorageAgentDir?: () => string | undefined;
 	isProjectTrusted?: () => boolean;

@@ -51,7 +51,6 @@ const PAYLOAD_KEYS = [
 	"heldMessages",
 	"heldToolResults",
 	"inherited",
-	"modelConstraints",
 	"waitingOn",
 	"wakeFailure",
 	"worktree",

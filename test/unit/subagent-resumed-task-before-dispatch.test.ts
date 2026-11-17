@@ -140,3 +140,65 @@ test.each([
 	},
 	LIVE,
 );
+
+test(
+	"a resumed subagent answers an extension's interrupt and its task when the interrupt's turn still runs as the task is sent (#5318)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const first = await SessionManager.create(store, env.root);
+		env.faux.setResponses([answerPendingInput()]);
+		const finished = await runSingleInProcess(env.root, agent(), "first task", {
+			...env.options("resumed-task-busy", { sessionManager: first }),
+		});
+		assert.equal(finished.status ?? "ok", "ok");
+		env.faux.setResponses(Array.from({ length: 6 }, () => answerPendingInput()));
+		let chat: AgentSession | undefined;
+		let interruptSent = false;
+		const extensionFactory = (pi: ExtensionAPI) => {
+			pi.on("input", () => {
+				if (!interruptSent) {
+					interruptSent = true;
+					void pi.sendMessage(
+						{ customType: "intercom_message", content: "extension interrupt", display: true },
+						{ triggerTurn: true, deliverAs: "interrupt" },
+					);
+				}
+				return { action: "continue" as const };
+			});
+		};
+		const stop = new AbortController();
+		const resumed = runSingleInProcess(env.root, agent(), "the resumed task", {
+			...env.options("resumed-task-busy", {
+				signal: stop.signal,
+				sessionManager: await SessionManager.open(store, first.getSessionId()),
+				resumeSession: true,
+				resumeFollowUps: ["held message"],
+				resourceLoaderInheritanceSnapshot: { extensionFactories: [extensionFactory] },
+				taskExecution: {
+					signal: stop.signal,
+					reportActivity() {},
+					bindTranscript(bound: TaskTranscriptSource) {
+						if (bound.chatSession !== undefined) chat = bound.chatSession as AgentSession;
+					},
+					onExecution() {},
+					yieldTaskWait() {},
+					isParentObserving: () => false,
+				},
+			}),
+		});
+		try {
+			const outcome = await Promise.race([resumed, sleep(30_000).then(() => "timeout" as const)]);
+			assert.notEqual(outcome, "timeout", "the resumed child completes");
+			if (outcome === "timeout") return;
+			assert.equal(outcome.status ?? "ok", "ok", outcome.error);
+			const answered = assistantTexts(chat).join("\n");
+			for (const text of ["extension interrupt", "the resumed task", "held message"])
+				assert.ok(answered.includes(text), `the resumed child answers ${text}`);
+		} finally {
+			stop.abort("user");
+			await resumed.catch(() => undefined);
+		}
+	},
+	LIVE,
+);

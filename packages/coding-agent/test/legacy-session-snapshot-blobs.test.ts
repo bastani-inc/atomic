@@ -79,7 +79,7 @@ async function defaultStoreWithSupersededSnapshot() {
 			{ ...snapshotEntry("entry-2", snapshotOf("latest", kept.hash)), parentId: "entry-1" } as SessionEntry,
 		],
 	);
-	const databasePath = join(root, "workflows", "journal.sqlite");
+	const databasePath = join(agentDir, "workflows", "journal.sqlite");
 	const database = await openNodeSqliteDatabase(databasePath);
 	cleanups.push(() => database.close());
 	await database.run("UPDATE snapshot_blobs SET created_at = created_at - 7200");

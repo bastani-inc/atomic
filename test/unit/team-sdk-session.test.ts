@@ -66,7 +66,7 @@ test(
 		try {
 			assert.equal(
 				plain.sessionManager.getSessionStore().descriptor.location,
-				join(root, "workflows", "journal.sqlite"),
+				join(agentDir, "workflows", "journal.sqlite"),
 			);
 			assert.equal((plain as unknown as { _workflowJournal?: object })._workflowJournal, undefined);
 		} finally {

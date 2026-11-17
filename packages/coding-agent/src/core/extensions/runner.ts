@@ -303,7 +303,6 @@ export class ExtensionRunner {
 		normalizeBuildSystemPromptOptions({ cwd: this.cwd });
 	private getSkillCatalogFn: ExtensionContextActions["getSkillCatalog"] = undefined;
 	private getDecisionModelFn: ExtensionContextActions["getDecisionModel"] = undefined;
-	private getModelRoutingFn: ExtensionContextActions["getModelRouting"] = undefined;
 	private getHttpIdleTimeoutMsFn: ExtensionContextActions["getHttpIdleTimeoutMs"] = undefined;
 	private executeToolFn: ExtensionContextActions["executeTool"];
 	private getCallableToolsFn: NonNullable<ExtensionContextActions["getCallableTools"]> = () => [];
@@ -391,7 +390,6 @@ export class ExtensionRunner {
 			contextActions.getSystemPromptOptions ?? (() => normalizeBuildSystemPromptOptions({ cwd: this.cwd }));
 		this.getSkillCatalogFn = contextActions.getSkillCatalog;
 		this.getDecisionModelFn = contextActions.getDecisionModel;
-		this.getModelRoutingFn = contextActions.getModelRouting;
 		this.getHttpIdleTimeoutMsFn = contextActions.getHttpIdleTimeoutMs;
 		this.executeToolFn = contextActions.executeTool;
 		this.getCallableToolsFn = contextActions.getCallableTools ?? (() => []);
@@ -978,7 +976,6 @@ export class ExtensionRunner {
 			getSystemPrompt: () => this.getSystemPromptFn(),
 			...(this.getSkillCatalogFn ? { getSkillCatalog: () => this.getSkillCatalogFn!() } : {}),
 			...(this.getDecisionModelFn ? { getDecisionModel: () => this.getDecisionModelFn!() } : {}),
-			...(this.getModelRoutingFn ? { getModelRouting: () => this.getModelRoutingFn!() } : {}),
 			...(this.getHttpIdleTimeoutMsFn ? { getHttpIdleTimeoutMs: () => this.getHttpIdleTimeoutMsFn!() } : {}),
 			getSystemPromptOptions: () => this.getSystemPromptOptionsFn(),
 			waitForIdle: () => this.waitForIdleFn(),

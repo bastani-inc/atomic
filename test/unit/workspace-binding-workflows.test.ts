@@ -1479,12 +1479,7 @@ const testModel = {
 } as const;
 const routedModels: WorkflowModelCatalogPort = {
 	listModels: async () => [{ provider: "test", id: "model", fullId: "test/model", model: testModel }],
-	routeModel: async () => ({
-		routerSelection: { model: "test/model", effort: null },
-		modelOverride: "test/model",
-		assertCurrent() {},
-		allowsModel: () => true,
-	}),
+	autoModel: () => ({ model: testModel }),
 } as unknown as WorkflowModelCatalogPort;
 
 describe("nested builtin Goals bound to unrelated repositories (#3109)", () => {
@@ -1693,7 +1688,7 @@ describe("read-only reviewers in a workflow (#3109)", () => {
 					cost: registered.cost,
 				})),
 			});
-			const agentDir = join(dirs.home, "agent");
+			const agentDir = dirs.home;
 			mkdirSync(agentDir, { recursive: true });
 			const agentSession = createAgentSessionAdapter({
 				cwd: dirs.root,
@@ -2582,10 +2577,7 @@ describe("unbound children and binding failures (#3109)", () => {
 		assert.equal(steps, 1, "the recorded step is not run again");
 		assert.equal(resumed.result?.notes, "uncommitted step work\n");
 		assert.notEqual(resumed.result?.cwd, recorded.worktree);
-		assert.ok(
-			String(resumed.result?.cwd).startsWith(join(dirs.home, "agent", "worktree-snapshots")),
-			resumed.result?.cwd,
-		);
+		assert.ok(String(resumed.result?.cwd).startsWith(join(dirs.home, "worktree-snapshots")), resumed.result?.cwd);
 		assert.equal(existsSync(recorded.worktree), false, "the recorded path is left alone");
 	});
 
