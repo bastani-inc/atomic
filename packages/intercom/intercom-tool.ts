@@ -15,7 +15,6 @@ import type { Attachment, BrokerMultiNodeStatus, Message, SessionInfo, SessionDi
 import { OutboundAsks } from "./outbound-asks.js";
 import { HELD_FOR_AWAY_ASKER_TARGET, OFFLINE_SESSION_TARGET } from "./broker/held-reply-targets.js";
 import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema, parseAskWait } from "./ask-wait.js";
-import { RETURN_PATH_TOOL_NOTE } from "./broker/return-paths.js";
 import { PeerDisconnectedError } from "./peer-disconnect-routing.js";
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
 import { appendEntryUnlessReleased, intercomCallMayDetach } from "./detachable-calls.js";
@@ -35,7 +34,7 @@ import type { ReplyTracker } from "./reply-tracker.js";
 import { awaitSubagentChildRestoration } from "./session-recovery.js";
 import { resolveSessionTarget, resolveSessionTargetId, resolveSessionTargetIdIn, sessionTargetFailureReason } from "./session-target.js";
 import { createConcurrencyGate } from "./route-connect-gate.js";
-import { DEFAULT_GROUP, normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
+import { DEFAULT_GROUP, normalizeGroup, normalizeGroups, RETURN_PATH_TOOL_NOTE, validateRuntimeGroup } from "./group.js";
 import { DEFAULT_GROUP_WARNING } from "./project-group.js";
 import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from "./workflow-stage-target.js";
 import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";

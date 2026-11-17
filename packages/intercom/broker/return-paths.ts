@@ -1,195 +1,209 @@
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 import { parseWorkflowStageTarget } from "../workflow-stage-target.js";
+import { RETURN_PATH_MESSAGE_LIMIT, RETURN_PATH_WINDOW_MS } from "../group.js";
+
+export { RETURN_PATH_MESSAGE_LIMIT, RETURN_PATH_TOOL_NOTE, RETURN_PATH_WINDOW_MS, returnPathClosedReason } from "../group.js";
+
+/** Return paths, and the queued messages still to reach a stage, this broker keeps at once; the oldest goes first. */
+export const RETURN_PATH_MAX_ENTRIES = 10_000;
+/**
+ * Inbound messages remembered as having opened a return path, so a retried, replayed or re-forwarded message never
+ * opens one again. Kept apart from the paths and four times as many: dropping a path does not forget what opened it.
+ */
+export const RETURN_PATH_SEEN_OPENINGS = 4 * RETURN_PATH_MAX_ENTRIES;
 
 /**
- * How long a return path stays open after the message that opened it reached the recipient. A message queued for a
- * workflow stage reaches it when the stage starts.
+ * One end of a return path: its current broker session id, and the stable identity of its registration (its return
+ * address and registration group). A session registered without a return address has no stable identity, so it can
+ * neither open nor use a return path: a later session given the same id or name could not be told apart from it.
  */
-export const RETURN_PATH_WINDOW_MS = 30 * 60_000;
-/** Messages a recipient may send back after the latest message that reached it: an answer, a correction and a final result. */
-export const RETURN_PATH_MESSAGE_LIMIT = 3;
-/** Return paths, and answer counts, this broker keeps at once; the oldest is dropped first. */
-export const RETURN_PATH_MAX_ENTRIES = 10_000;
-
-/** How the intercom tool tells the model about return paths, after "cross-group sends are rejected by the broker". */
-export const RETURN_PATH_TOOL_NOTE = `except an answer to a sender outside your groups whose message reached you (up to ${RETURN_PATH_MESSAGE_LIMIT} messages within ${Math.round(RETURN_PATH_WINDOW_MS / 60_000)} minutes of its latest one)`;
-
-/** Why a send to a sender whose return path has closed is refused. */
-export function returnPathClosedReason(sender: string): string {
-	const minutes = Math.round(RETURN_PATH_WINDOW_MS / 60_000);
-	return `${sender} is outside your intercom groups and its return path has closed: a session outside your groups can be answered with up to ${RETURN_PATH_MESSAGE_LIMIT} messages within ${minutes} minutes of its latest message to you. It reopens when ${sender} writes to you again.`;
-}
-
-/** The session sending back, and the workflow stage routes it holds. */
-export interface ReturnPathResponder {
+export interface ReturnPathParty {
 	readonly sessionId: string;
-	/** Each live workflow stage route this session holds, and when this session first took it. */
-	readonly stageRoutes: readonly { readonly target: string; readonly registeredAt: number }[];
+	readonly identity: string | undefined;
 }
 
-type ReturnPath =
-	| { readonly kind: "session"; readonly responderId: string; readonly senderId: string; readonly openedAt: number }
-	| {
-			readonly kind: "stage";
-			readonly rootRunId: string;
-			readonly segments: readonly string[];
-			readonly senderId: string;
-			readonly openedAt: number;
-	  };
+/** A sender `responder` holds a return path to, open or closed. */
+export interface ReturnPathSender {
+	readonly identity: string;
+	/** The broker session id that sender last wrote from. */
+	readonly sessionId: string;
+}
 
-/** Answers one responder sent one sender since the message that reached it at `openedAt`. */
-interface AnswerCount {
-	readonly openedAt: number;
-	/** Distinct message ids: a retried message is counted once. */
-	readonly messageIds: Set<string>;
+interface ReturnPath {
+	readonly responderIdentity: string;
+	readonly senderIdentity: string;
+	senderId: string;
+	/** When the opening message reached the responder, on the broker's monotonic clock. */
+	openedAt: number;
+	/** Answers counted against this opening: distinct message ids, so a retried answer counts once. */
+	used: Set<string>;
+}
+
+interface QueuedOpening {
+	readonly rootRunId: string;
+	readonly segments: readonly string[];
+	readonly senderIdentity: string;
+	readonly senderId: string;
+	readonly operationId: string;
+	/** The stage identities it already reached: it reaches each once, however often that stage takes its route. */
+	readonly reached: Set<string>;
 }
 
 /**
  * Response permissions across intercom groups, after NATS `allow_responses`: a session that received a message from
  * a sender outside its groups may send back to that sender, and only to it, with at most
  * {@link RETURN_PATH_MESSAGE_LIMIT} messages within {@link RETURN_PATH_WINDOW_MS} of the latest message from that
- * sender that reached it. Group membership, listing and pattern sends are unchanged; nothing here lets a recipient
- * reach a third session.
+ * sender that reached it. Both ends are bound to stable registration identities, so a later session that takes an
+ * ended sender's id or name inherits nothing. Dropping a path to stay within {@link RETURN_PATH_MAX_ENTRIES} removes
+ * its permission with its count: a dropped path is closed, never reopened.
  */
 export class ReturnPaths {
 	private readonly paths = new Map<string, ReturnPath>();
-	/** The keys of the paths back to each sender. */
-	private readonly bySender = new Map<string, Set<string>>();
-	private readonly answers = new Map<string, AnswerCount>();
+	private readonly queued = new Map<string, QueuedOpening>();
+	/** The inbound messages that opened a path, per path: kept when the path itself is dropped. */
+	private readonly seen = new Map<string, true>();
 
 	constructor(
+		private readonly now: () => number = () => performance.now(),
 		private readonly windowMs = RETURN_PATH_WINDOW_MS,
 		private readonly messageLimit = RETURN_PATH_MESSAGE_LIMIT,
 		private readonly maxEntries = RETURN_PATH_MAX_ENTRIES,
 	) {}
 
-	/** A message from `senderId` reached `responderId`, which shares none of its groups. */
-	openForSession(responderId: string, senderId: string, at = Date.now()): void {
-		if (responderId === senderId) return;
-		this.set(`session\0${responderId}\0${senderId}`, { kind: "session", responderId, senderId, openedAt: at });
-	}
-
-	/** A message from `senderId` was queued for the workflow stages `target` names; it reaches each when it starts. */
-	openForStageTarget(target: string, senderId: string, at = Date.now()): void {
-		const parsed = parseWorkflowStageTarget(target);
-		if (parsed === undefined) return;
-		this.set(`stage\0${parsed.rootRunId}\0${parsed.segments.join("/")}\0${senderId}`, {
-			kind: "stage",
-			rootRunId: parsed.rootRunId,
-			segments: parsed.segments,
-			senderId,
-			openedAt: at,
+	/**
+	 * The inbound message `operationId` from `sender` reached `responder`, which shares none of its groups. The same
+	 * message reaching it again (a retry, a replay, a re-forward) changes nothing.
+	 */
+	open(responder: ReturnPathParty, sender: ReturnPathParty, operationId: string): void {
+		if (responder.identity === undefined || sender.identity === undefined) return;
+		if (responder.identity === sender.identity) return;
+		const key = pathKey(responder.identity, sender.identity);
+		const opening = `${key}\0${operationId}`;
+		if (this.seen.has(opening)) return;
+		this.seen.set(opening, true);
+		this.bound(this.seen, RETURN_PATH_SEEN_OPENINGS);
+		this.paths.delete(key);
+		this.paths.set(key, {
+			responderIdentity: responder.identity,
+			senderIdentity: sender.identity,
+			senderId: sender.sessionId,
+			openedAt: this.now(),
+			used: new Set(),
 		});
-	}
-
-	/** Whether any return path leads back to `senderId`, for whichever responder. */
-	leadsTo(senderId: string): boolean {
-		return this.bySender.has(senderId);
-	}
-
-	/** Whether `responder` may send `messageId` to `senderId`; a message already counted is always allowed again. */
-	allows(responder: ReturnPathResponder, senderId: string, messageId: string, at = Date.now()): boolean {
-		return this.open(responder, senderId, messageId, at) !== undefined;
-	}
-
-	/** Counts `messageId` as an answer to `senderId`; false when no open return path allows it. */
-	use(responder: ReturnPathResponder, senderId: string, messageId: string, at = Date.now()): boolean {
-		const count = this.open(responder, senderId, messageId, at);
-		if (count === undefined) return false;
-		count.messageIds.add(messageId);
-		const key = answerKey(responder.sessionId, senderId);
-		this.answers.delete(key);
-		this.answers.set(key, count);
-		while (this.answers.size > this.maxEntries) {
-			const oldest = this.answers.keys().next().value as string | undefined;
-			if (oldest === undefined) break;
-			this.answers.delete(oldest);
-		}
-		return true;
-	}
-
-	/** Whether `responder` had a return path to `senderId` that has closed: used up, or past its window. */
-	closed(responder: ReturnPathResponder, senderId: string, at = Date.now()): boolean {
-		const openedAt = this.latestOpening(responder, senderId);
-		return openedAt !== undefined && this.open(responder, senderId, undefined, at) === undefined;
-	}
-
-	/** A run ended: its stage return paths go with it. */
-	forgetRun(rootRunId: string): void {
-		for (const [key, path] of this.paths) {
-			if (path.kind === "stage" && path.rootRunId === rootRunId) this.delete(key);
-		}
+		this.bound(this.paths);
 	}
 
 	/**
-	 * The answer count to add `messageId` to, when the latest message from `senderId` that reached `responder` still
-	 * allows it. Only that message counts: an older one's path never adds answers.
+	 * The inbound message `operationId` from `sender` was queued for the workflow stages `target` names. It reaches a
+	 * stage when that stage takes its route ({@link stageStarted}); queuing the same message again changes nothing.
 	 */
-	private open(
-		responder: ReturnPathResponder,
-		senderId: string,
-		messageId: string | undefined,
-		at: number,
-	): AnswerCount | undefined {
-		const openedAt = this.latestOpening(responder, senderId);
-		if (openedAt === undefined) return undefined;
-		const counted = this.answers.get(answerKey(responder.sessionId, senderId));
-		const count =
-			counted !== undefined && counted.openedAt === openedAt ? counted : { openedAt, messageIds: new Set<string>() };
-		if (messageId !== undefined && count.messageIds.has(messageId)) return count;
-		if (at - openedAt > this.windowMs || count.messageIds.size >= this.messageLimit) return undefined;
-		return count;
+	queue(target: string, sender: ReturnPathParty, operationId: string): void {
+		const parsed = parseWorkflowStageTarget(target);
+		if (parsed === undefined || sender.identity === undefined) return;
+		const key = `${parsed.rootRunId}\0${parsed.segments.join("/")}\0${sender.identity}\0${operationId}`;
+		if (this.queued.has(key)) return;
+		this.queued.set(key, {
+			rootRunId: parsed.rootRunId,
+			segments: parsed.segments,
+			senderIdentity: sender.identity,
+			senderId: sender.sessionId,
+			operationId,
+			reached: new Set(),
+		});
+		this.bound(this.queued);
 	}
 
-	/** When the latest message from `senderId` reached `responder`, or undefined when none did. */
-	private latestOpening(responder: ReturnPathResponder, senderId: string): number | undefined {
-		let latest: number | undefined;
-		for (const key of this.bySender.get(senderId) ?? []) {
-			const path = this.paths.get(key);
-			const opened = path === undefined ? undefined : openingFor(path, responder);
-			if (opened !== undefined && (latest === undefined || opened > latest)) latest = opened;
+	/**
+	 * `stage` took the route `target`: every message queued for a path that names it reaches it now, and opens its
+	 * path back to that message's sender unless `sharesGroup` says the two can already reach each other.
+	 */
+	stageStarted(stage: ReturnPathParty, target: string, sharesGroup: (sender: ReturnPathSender) => boolean): void {
+		const parsed = parseWorkflowStageTarget(target);
+		if (parsed === undefined || stage.identity === undefined) return;
+		for (const opening of this.queued.values()) {
+			if (opening.rootRunId !== parsed.rootRunId || !matchStagePathSegments(opening.segments, parsed.segments)) continue;
+			if (opening.reached.has(stage.identity)) continue;
+			opening.reached.add(stage.identity);
+			const sender = { identity: opening.senderIdentity, sessionId: opening.senderId };
+			if (sharesGroup(sender)) continue;
+			this.open(stage, sender, opening.operationId);
 		}
-		return latest;
 	}
 
-	private set(key: string, path: ReturnPath): void {
-		this.delete(key);
-		this.paths.set(key, path);
-		const keys = this.bySender.get(path.senderId) ?? new Set<string>();
-		keys.add(key);
-		this.bySender.set(path.senderId, keys);
-		while (this.paths.size > this.maxEntries) {
-			const oldest = this.paths.keys().next().value as string | undefined;
+	/** Whether `responder` holds a return path to `sender`, open or closed: such a sender resolves by name. */
+	holds(responder: ReturnPathParty, sender: ReturnPathParty): boolean {
+		return this.path(responder, sender) !== undefined;
+	}
+
+	/** Whether `responder` may send `messageId` to `sender`; an answer already counted is always allowed again. */
+	allows(responder: ReturnPathParty, sender: ReturnPathParty, messageId: string): boolean {
+		const path = this.path(responder, sender);
+		return path !== undefined && this.allowsOn(path, messageId);
+	}
+
+	/** Counts `messageId` as an answer to `sender`; false when no open return path allows it. */
+	use(responder: ReturnPathParty, sender: ReturnPathParty, messageId: string): boolean {
+		const path = this.path(responder, sender);
+		if (path === undefined || !this.allowsOn(path, messageId)) return false;
+		path.used.add(messageId);
+		return true;
+	}
+
+	/** Whether `responder` holds a return path to `sender` that has closed: used up, or past its window. */
+	closed(responder: ReturnPathParty, sender: ReturnPathParty): boolean {
+		const path = this.path(responder, sender);
+		return path !== undefined && !this.allowsOn(path, undefined);
+	}
+
+	/** The senders `responder` holds return paths to, open or closed. */
+	sendersOf(responder: ReturnPathParty): ReturnPathSender[] {
+		if (responder.identity === undefined) return [];
+		const senders: ReturnPathSender[] = [];
+		for (const path of this.paths.values()) {
+			if (path.responderIdentity === responder.identity) {
+				senders.push({ identity: path.senderIdentity, sessionId: path.senderId });
+			}
+		}
+		return senders;
+	}
+
+	/** A registration ended for good: every return path it opened or holds goes with it. */
+	revoke(identity: string): void {
+		for (const [key, path] of this.paths) {
+			if (path.responderIdentity === identity || path.senderIdentity === identity) this.paths.delete(key);
+		}
+		for (const [key, opening] of this.queued) {
+			if (opening.senderIdentity === identity) this.queued.delete(key);
+		}
+	}
+
+	/** A run ended: the messages still queued for its stages never reach them. */
+	forgetRun(rootRunId: string): void {
+		for (const [key, opening] of this.queued) {
+			if (opening.rootRunId === rootRunId) this.queued.delete(key);
+		}
+	}
+
+	private path(responder: ReturnPathParty, sender: ReturnPathParty): ReturnPath | undefined {
+		if (responder.identity === undefined || sender.identity === undefined) return undefined;
+		return this.paths.get(pathKey(responder.identity, sender.identity));
+	}
+
+	private allowsOn(path: ReturnPath, messageId: string | undefined): boolean {
+		if (messageId !== undefined && path.used.has(messageId)) return true;
+		const elapsed = this.now() - path.openedAt;
+		return elapsed >= 0 && elapsed <= this.windowMs && path.used.size < this.messageLimit;
+	}
+
+	private bound<V>(entries: Map<string, V>, limit = this.maxEntries): void {
+		while (entries.size > limit) {
+			const oldest = entries.keys().next().value as string | undefined;
 			if (oldest === undefined) break;
-			this.delete(oldest);
+			entries.delete(oldest);
 		}
 	}
-
-	private delete(key: string): void {
-		const path = this.paths.get(key);
-		if (path === undefined) return;
-		this.paths.delete(key);
-		const keys = this.bySender.get(path.senderId);
-		keys?.delete(key);
-		if (keys?.size === 0) this.bySender.delete(path.senderId);
-	}
 }
 
-function answerKey(responderId: string, senderId: string): string {
-	return `${responderId}\0${senderId}`;
-}
-
-/** When `path`'s message reached `responder`, or undefined when it did not reach it. */
-function openingFor(path: ReturnPath, responder: ReturnPathResponder): number | undefined {
-	if (path.kind === "session") return path.responderId === responder.sessionId ? path.openedAt : undefined;
-	let opened: number | undefined;
-	for (const route of responder.stageRoutes) {
-		const parsed = parseWorkflowStageTarget(route.target);
-		if (parsed === undefined || parsed.rootRunId !== path.rootRunId) continue;
-		if (!matchStagePathSegments(path.segments, parsed.segments)) continue;
-		// A message queued before the stage started reaches it as it starts.
-		const reached = Math.max(path.openedAt, route.registeredAt);
-		opened = opened === undefined ? reached : Math.max(opened, reached);
-	}
-	return opened;
+function pathKey(responderIdentity: string, senderIdentity: string): string {
+	return `${responderIdentity}\0${senderIdentity}`;
 }

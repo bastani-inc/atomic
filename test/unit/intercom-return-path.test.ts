@@ -7,11 +7,7 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test } from "vitest";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
-import {
-	RETURN_PATH_MESSAGE_LIMIT,
-	RETURN_PATH_WINDOW_MS,
-	returnPathClosedReason,
-} from "../../packages/intercom/broker/return-paths.js";
+import { RETURN_PATH_MESSAGE_LIMIT, returnPathClosedReason } from "../../packages/intercom/broker/return-paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import type { BrokerMessage, ClientMessage } from "../../packages/intercom/types.js";
 
@@ -80,12 +76,23 @@ class WireClient {
 		return await this.settled(id);
 	}
 
+	/** The broker's outcome for message `id`: delivered, failed or queued, whichever it answered. */
 	async settled(id: string): Promise<BrokerMessage> {
-		return await Promise.race([
-			this.next("delivered", (frame) => frame.messageId === id),
-			this.next("delivery_failed", (frame) => frame.messageId === id),
-			this.next("queued", (frame) => frame.messageId === id),
-		]);
+		const deadline = Date.now() + 5_000;
+		while (Date.now() < deadline) {
+			const index = this.received.findIndex(
+				(frame, candidate) =>
+					!this.consumed.has(candidate) &&
+					(frame.type === "delivered" || frame.type === "delivery_failed" || frame.type === "queued") &&
+					frame.messageId === id,
+			);
+			if (index >= 0) {
+				this.consumed.add(index);
+				return this.received[index]!;
+			}
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+		}
+		throw new Error(`Timed out waiting for the outcome of ${id}: ${JSON.stringify(this.received)}`);
 	}
 }
 
@@ -106,10 +113,17 @@ async function waitForBroker(): Promise<void> {
 	throw new Error(`Broker socket did not become ready: ${brokerOutput}`);
 }
 
-async function register(client: WireClient, name: string, group: string): Promise<string> {
+/** A host session registers with its return address, the stable identity a return path binds. */
+async function register(
+	client: WireClient,
+	name: string,
+	group: string,
+	returnAddress = `host:${name}`,
+): Promise<string> {
 	await client.connected();
 	client.send({
 		type: "register",
+		returnAddress,
 		session: { name, group, cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 },
 	});
 	return (await client.next("registered")).sessionId;
@@ -130,8 +144,11 @@ interface Run {
 	readonly launcherName: string;
 }
 
-/** A workflow run whose launcher, registered outside the run's group, holds the launcher claim (#4006). */
-async function launchedRun(label: string, runId: string, stageIds: readonly string[]): Promise<Run> {
+/**
+ * A workflow run whose launcher, registered outside the run's group, holds the launcher claim (#4006). With `subgroup`,
+ * its stages are declared in an isolated subgroup of the invocation.
+ */
+async function launchedRun(label: string, runId: string, stageIds: readonly string[], subgroup = false): Promise<Run> {
 	const group = `workflow:${runId}`;
 	const routeCapability = `${label}-route-capability`;
 	const launcherCapability = `${label}-launcher-capability`;
@@ -152,7 +169,7 @@ async function launchedRun(label: string, runId: string, stageIds: readonly stri
 			target: `${group}/${stageId}`,
 			lifecycle: "pending" as const,
 			routeEligible: true,
-			group,
+			group: subgroup ? `${group}/isolated` : group,
 		})),
 	});
 	await listed(owner, `${label}-route`);
@@ -166,9 +183,9 @@ async function launchedRun(label: string, runId: string, stageIds: readonly stri
 	return { runId, group, routeCapability, owner, launcher, launcherId, launcherName };
 }
 
-async function startStage(run: Run, stageId: string): Promise<WireClient> {
+async function startStage(run: Run, stageId: string, subgroup = false): Promise<WireClient> {
 	const stage = new WireClient();
-	await register(stage, `${run.runId.slice(0, 8)}-${stageId}`, run.group);
+	await register(stage, `${run.runId.slice(0, 8)}-${stageId}`, subgroup ? `${run.group}/isolated` : run.group);
 	stage.send({
 		type: "register_live_workflow_stage_route",
 		requestId: `${stageId}-live-route`,
@@ -281,7 +298,6 @@ test("the return path is bounded in messages and closes with a reason that names
 	await again;
 	await stage.next("message", (frame) => frame.message.id === "bounded-follow-up");
 	assert.equal((await stage.sendTo(run.launcherName, "bounded-reopened", "Sure")).type, "delivered");
-	assert.ok(RETURN_PATH_WINDOW_MS > 0);
 });
 
 test("a stage that started after the launcher queued a message for it can answer that launcher", async () => {
@@ -340,4 +356,182 @@ test("two messages that reached a stage give it one budget, counted from the lat
 	});
 	// A retried answer is the same message: it is not counted again.
 	assert.equal((await stage.sendTo(run.launcherName, "one-budget-1", "answer 1")).type, "delivered");
+});
+
+/** Unregistering and registering ten thousand sessions is the structural cost of evicting every retired id binding. */
+const ID_CHURN_TEST_TIMEOUT_MS = 120_000;
+
+test(
+	"a session that takes an ended sender's id and name after the broker forgot it inherits no return path",
+	async () => {
+		const run = await launchedRun("id-churn", "5a1e0006-0000-4000-8000-000000000006", ["stage"]);
+		const stage = await startStage(run, "stage");
+		const forwarded = ownerAnswers(run, "forward");
+		run.launcher.send({
+			type: "send",
+			to: `${run.group}/stage`,
+			message: { id: "id-churn-note", timestamp: Date.now(), content: { text: "original sender" } },
+		});
+		await forwarded;
+		await stage.next("message", (frame) => frame.message.id === "id-churn-note");
+		run.launcher.send({ type: "unregister" });
+		await new Promise<void>((done) => {
+			run.launcher.socket.once("close", () => done());
+			run.launcher.socket.end();
+		});
+		// Enough registrations to evict every retired id binding, with no Intercom message among them.
+		const churn = new WireClient();
+		await churn.connected();
+		for (let index = 0; index < 10_001; index++) {
+			churn.send({
+				type: "register",
+				session: {
+					name: `churn-${index}`,
+					group: "churn-only",
+					cwd: "/repo",
+					model: "test",
+					pid: 1,
+					startedAt: 1,
+					lastActivity: 1,
+					recipientPurpose: "control",
+				},
+			});
+			churn.send({ type: "unregister" });
+			if (index % 500 === 0) await new Promise((done) => setTimeout(done, 0));
+		}
+		// The broker has handled every one of them before the next session registers.
+		churn.send({
+			type: "register",
+			session: {
+				name: "churn-final",
+				group: "churn-only",
+				cwd: "/repo",
+				model: "test",
+				pid: 1,
+				startedAt: 1,
+				lastActivity: 1,
+				recipientPurpose: "control",
+			},
+		});
+		churn.send({ type: "list", requestId: "churn-done" });
+		await churn.next("sessions", (frame) => frame.requestId === "churn-done");
+		const taker = new WireClient();
+		await taker.connected();
+		taker.send({
+			type: "register",
+			preferredSessionId: run.launcherId,
+			returnAddress: "another-host",
+			session: {
+				name: run.launcherName,
+				group: "default",
+				cwd: "/repo",
+				model: "test",
+				pid: 1,
+				startedAt: 1,
+				lastActivity: 1,
+			},
+		});
+		await taker.next("registered", (frame) => frame.sessionId === run.launcherId);
+		assert.equal(
+			(await stage.sendTo(run.launcherName, "id-churn-by-name", "only for the original sender")).type,
+			"delivery_failed",
+		);
+		assert.equal(
+			(await stage.sendTo(run.launcherId, "id-churn-by-id", "only for the original sender")).type,
+			"delivery_failed",
+		);
+		assert.equal(
+			taker.received.some((frame) => frame.type === "message"),
+			false,
+		);
+	},
+	ID_CHURN_TEST_TIMEOUT_MS,
+);
+
+test("a session that only reuses an ended sender's name inherits no return path", async () => {
+	const run = await launchedRun("name-reuse", "5a1e0007-0000-4000-8000-000000000007", ["stage"]);
+	const stage = await startStage(run, "stage");
+	const forwarded = ownerAnswers(run, "forward");
+	run.launcher.send({
+		type: "send",
+		to: `${run.group}/stage`,
+		message: { id: "name-reuse-note", timestamp: Date.now(), content: { text: "original sender" } },
+	});
+	await forwarded;
+	await stage.next("message", (frame) => frame.message.id === "name-reuse-note");
+	run.launcher.send({ type: "unregister" });
+	await new Promise<void>((done) => {
+		run.launcher.socket.once("close", () => done());
+		run.launcher.socket.end();
+	});
+	const replacement = new WireClient();
+	const replacementId = await register(replacement, run.launcherName, "default", "replacement-host");
+	assert.notEqual(replacementId, run.launcherId);
+	assert.equal(
+		(await stage.sendTo(run.launcherName, "name-reuse-reply", "only for the original sender")).type,
+		"delivery_failed",
+	);
+	assert.equal(
+		replacement.received.some((frame) => frame.type === "message"),
+		false,
+	);
+});
+
+test("the launcher's retry of a message its stage already received opens no new answers", async () => {
+	const run = await launchedRun("retry-budget", "5a1e0008-0000-4000-8000-000000000008", ["later"]);
+	const original = {
+		type: "send" as const,
+		to: `${run.group}/later`,
+		message: { id: "retry-budget-note", timestamp: Date.now(), content: { text: "one original message" } },
+	};
+	run.launcher.send(original);
+	await ownerAnswers(run, "queued");
+	assert.equal((await run.launcher.settled(original.message.id)).type, "queued");
+	const stage = await startStage(run, "later");
+	for (let index = 0; index < RETURN_PATH_MESSAGE_LIMIT; index++) {
+		assert.equal((await stage.sendTo(run.launcherId, `retry-budget-answer-${index}`, "answer")).type, "delivered");
+	}
+	assert.equal((await stage.sendTo(run.launcherId, "retry-budget-closed", "over")).type, "delivery_failed");
+	// The host already handed that message over: it answers the identical retry without delivering anything new.
+	for (const outcome of ["delivered", "queued"] as const) {
+		run.launcher.send(original);
+		const retry = await run.owner.next("pending_stage_message", (frame) => frame.message.id === original.message.id);
+		run.owner.send({
+			type: "pending_stage_message_result",
+			requestId: retry.requestId,
+			outcome,
+			...(outcome === "queued" ? { position: 1 } : {}),
+		});
+		await run.launcher.settled(original.message.id);
+		assert.equal(
+			(await stage.sendTo(run.launcherId, `retry-budget-after-${outcome}`, "still closed")).type,
+			"delivery_failed",
+		);
+	}
+	// The stage reconnecting under its own identity does not receive that message again either.
+	stage.send({
+		type: "register_live_workflow_stage_route",
+		requestId: "later-live-route-again",
+		runId: run.runId,
+		stageKeys: ["later"],
+		capability: run.routeCapability,
+	});
+	await stage.next("live_workflow_stage_route_registered", (frame) => frame.requestId === "later-live-route-again");
+	assert.equal(
+		(await stage.sendTo(run.launcherId, "retry-budget-after-route", "still closed")).type,
+		"delivery_failed",
+	);
+});
+
+test("an isolated stage answers the invocation member whose queued message it received", async () => {
+	const run = await launchedRun("subgroup", "5a1e0009-0000-4000-8000-000000000009", ["isolated-stage"], true);
+	run.launcher.send({ type: "join_group", requestId: "join-subgroup-root", group: run.group });
+	await run.launcher.next("membership_ack", (frame) => frame.requestId === "join-subgroup-root");
+	const queued = ownerAnswers(run, "queued");
+	const outcome = run.launcher.sendTo(`${run.group}/isolated-stage`, "subgroup-note", "start later");
+	await queued;
+	assert.equal((await outcome).type, "queued");
+	const stage = await startStage(run, "isolated-stage", true);
+	const answer = await stage.sendTo(run.launcherName, "subgroup-answer", "got your queued message");
+	assert.equal(answer.type, "delivered", JSON.stringify(answer));
 });

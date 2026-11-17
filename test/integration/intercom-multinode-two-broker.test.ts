@@ -154,6 +154,63 @@ test("a supervisor on the other broker answers its child in another group with a
 	assert.deepEqual(bystander.received, []);
 });
 
+/** A supervisor on broker b whose child, in another group on broker a, has written to it across nodes. */
+async function crossGroupPair(): Promise<{ child: TwoBrokerClient; supervisor: TwoBrokerClient }> {
+	const supervisorGroup = unique("pair-supervisor-group");
+	const first = await harness.connect("a", unique("pair-supervisor"), {
+		group: supervisorGroup,
+		supervisorOwnerToken: randomUUID(),
+	});
+	const childName = unique("pair-child");
+	const authorization = await first.client.authorizeSupervisorChild(childName);
+	const child = await harness.connect("a", childName, {
+		group: unique("pair-child-group"),
+		supervisor: authorization,
+	});
+	const supervisorId = first.sessionId;
+	await harness.disconnect(first);
+	const supervisor = await harness.connect("b", first.name, {
+		group: supervisorGroup,
+		returnAddress: first.returnAddress,
+		preferredSessionId: supervisorId,
+	});
+	const report = await child.client.sendToSupervisor(supervisorId, { text: "progress" });
+	assert.equal(report.delivered, true, JSON.stringify(report));
+	await waitForMessage(supervisor, report.id);
+	return { child, supervisor };
+}
+
+test("across brokers, a closed return path is refused by name with the reason it closed", async ({ annotate }) => {
+	if (!harness.multiNodeRouting) {
+		await annotate("multi-node routing not advertised: nothing crosses brokers");
+		return;
+	}
+	const { child, supervisor } = await crossGroupPair();
+	for (let index = 0; index < 3; index++) {
+		const answer = await supervisor.client.send(child.name, { text: `answer-${index}` });
+		assert.equal(answer.delivered, true, JSON.stringify(answer));
+	}
+	const closed = await supervisor.client.send(child.name, { text: "one too many" });
+	assert.equal(closed.delivered, false);
+	assert.match(closed.reason ?? "", /return path has closed/, JSON.stringify(closed));
+});
+
+test("across brokers, a child that went offline is still answered by the name its message showed", async ({
+	annotate,
+}) => {
+	if (!harness.multiNodeRouting) {
+		await annotate("multi-node routing not advertised: nothing crosses brokers");
+		return;
+	}
+	const { child, supervisor } = await crossGroupPair();
+	const childId = child.sessionId;
+	await harness.disconnect(child);
+	const byName = await supervisor.client.send(child.name, { text: "answer by name while offline" });
+	assert.equal(byName.queued, true, JSON.stringify(byName));
+	const byId = await supervisor.client.send(childId, { text: "answer by id while offline" });
+	assert.equal(byId.queued, true, JSON.stringify(byId));
+});
+
 test(
 	"harness self-test: two brokers on separate sockets each serve only their own clients and share one storage file",
 	async () => {

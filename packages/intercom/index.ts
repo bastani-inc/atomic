@@ -43,7 +43,7 @@ import type { SessionInfo } from "./types.js";
 import { answerReleasedReplyFormatRequests } from "./released-reply-format.js";
 import { intercomScriptAccess } from "./codemode-access.js";
 import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema } from "./ask-wait.js";
-import { RETURN_PATH_TOOL_NOTE } from "./broker/return-paths.js";
+import { RETURN_PATH_TOOL_NOTE } from "./group.js";
 import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
 import {
 	createForwardedHandlerMap,

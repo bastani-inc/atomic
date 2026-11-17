@@ -221,9 +221,11 @@ Supervisor coordination is granted by the launching parent and can cross groups 
 
 A message can reach a session from a sender outside its groups: the session that launched a workflow run writes to the run's stages, a supervisor answers its child, or a child reports to its supervisor. The recipient can answer that sender with `send` or `ask`, using the name or ID its message shows, without joining any group. This return path is narrow:
 
-- It leads only to the sender whose message reached you. It never lets you reach anyone else, and it does not add the sender to your `intercom list`, glob sends, or `subagents:` sends.
-- You can send at most **3 messages** within **30 minutes** of the sender's latest message to you. Each new message from that sender opens the path again with a fresh count and window. A retried send of the same message is not counted twice.
-- A message queued for a workflow stage that has not started reaches it when the stage starts, so the 30 minutes count from the stage's start. Only the stages the message addressed can answer; a sibling stage it did not address cannot.
+- It leads only to the session whose message reached you. It never lets you reach anyone else, and it does not add the sender to your `intercom list`. Only an explicit `send` or `ask` to that sender uses it: a pattern send such as a name glob or `subagents:*` never does.
+- It belongs to that session, not to its name or ID. When the sender quits for good the path closes, and a different session that later takes the same name or ID cannot be reached through it.
+- You can send at most **3 messages** within **30 minutes** of the sender's latest message to you. Each new message from that sender opens the path again with a fresh count and window. A message the sender retries, or one handed to you again, is not a new message and opens nothing. A retried answer of yours is counted once.
+- A message queued for a workflow stage that has not started reaches it when the stage starts, so the 30 minutes count from the stage's start. Only the stages the message addressed can answer; a sibling stage it did not address cannot. A stage that reconnects does not receive the message again.
+- With [multi-node routing](/intercom/operations#running-intercom-across-machines), it works the same across machines, and an answer to a sender that went offline waits for it like any other message.
 
 Once the path has closed, a send to that sender is refused with `<sender> is outside your intercom groups and its return path has closed`, and it reopens when the sender writes to you again. For a longer exchange, the sender can join your group, or a run's launcher can keep steering the run's stages as described above.
 

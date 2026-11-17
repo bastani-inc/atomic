@@ -507,6 +507,11 @@ export type BrokerMessage =
        * Set only between brokers, on outbox rows; never sent to a client.
        */
       returnPath?: true;
+      /**
+       * Multi-node: the stable registration identity of `from`, written by the origin broker, which the recipient's
+       * broker binds a return path to. Set only between brokers, on outbox rows; never sent to a client.
+       */
+      senderIdentity?: string;
     }
 	| { type: "pending_stage_notification"; requestId: string; from: SessionInfo; message: Message }
 	| {
