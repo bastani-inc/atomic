@@ -293,13 +293,13 @@ describe("workflow resume branch persistence and live row age (#5256)", () => {
 		assert.equal(await forkBranch(nonGitDir), undefined);
 	});
 
-	test.skipIf(!gitSupportsReftable())("reads the branch of a reftable repository through git", () => {
+	test.skipIf(!gitSupportsReftable())("reads the branch of a reftable repository through git", async () => {
 		const repoDir = makeTempDirectory("resume-reftable-");
 		dirs.push(repoDir);
 		execFileSync("git", ["init", "-q", "--ref-format=reftable", "-b", "feat/reftable"], {
 			cwd: repoDir,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
-		assert.equal(resolveInvocationGitBranch(repoDir), "feat/reftable");
+		assert.equal(await resolveInvocationGitBranch(repoDir), "feat/reftable");
 	});
 });

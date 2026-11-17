@@ -375,6 +375,14 @@ test("PARALLEL declines terminal parent handoff and completes every original chi
 	}
 });
 
+/** How long children with worktrees may take to start: Git sets up each worktree in its own processes first. */
+const WORKTREE_CHILDREN_START_MS = 20_000;
+
+async function untilChildrenStarted(started: () => boolean, limitMs: number): Promise<void> {
+	const deadline = performance.now() + limitMs;
+	while (!started() && performance.now() < deadline) await sleep(1);
+}
+
 test("PARALLEL retains dirty worktrees through parent coordination and cleans them after all children finish", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-parent-handoff-worktrees-"));
 	const events = new TestEvents();
@@ -426,7 +434,7 @@ test("PARALLEL retains dirty worktrees through parent coordination and cleans th
 			undefined,
 			context(root),
 		);
-		for (let attempt = 0; attempt < 200 && optionsByIndex.size < 2; attempt++) await sleep(1);
+		await untilChildrenStarted(() => optionsByIndex.size >= 2, WORKTREE_CHILDREN_START_MS);
 		const asker = optionsByIndex.get(0);
 		assert.ok(asker?.intercomSessionName && asker.orchestratorIntercomTarget);
 		const worktreePaths = [optionsByIndex.get(0)?.cwd, optionsByIndex.get(1)?.cwd];
