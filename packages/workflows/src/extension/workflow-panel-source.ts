@@ -13,6 +13,7 @@ import {
 	usageTokens,
 	viewedWorkflowRuns,
 } from "../tui/panel-runs.js";
+import { subscribeViewedWorkflowRuns } from "../tui/viewed-runs.js";
 import type { WorkflowOwnerResources } from "./workflow-owner-resources.js";
 
 export interface WorkflowPanelSourceDeps {
@@ -30,6 +31,7 @@ export function workflowPanelSource(owner: WorkflowOwnerResources, deps: Workflo
 	const pendingStageLocations = new WeakMap<RunSnapshot, ReadonlyMap<string, number>>();
 	const listeners = new Set<() => void>();
 	let unsubscribeStore: (() => void) | undefined;
+	let unsubscribeViewed: (() => void) | undefined;
 	const handleSubscriptions = new Map<StageControlHandle, () => void>();
 	let notifyScheduled = false;
 
@@ -148,12 +150,19 @@ export function workflowPanelSource(owner: WorkflowOwnerResources, deps: Workflo
 					notifyListeners();
 				});
 			}
+			if (unsubscribeViewed === undefined) {
+				unsubscribeViewed = subscribeViewedWorkflowRuns(owner.store, () => {
+					notifyListeners();
+				});
+			}
 			syncHandleSubscriptions(readGraphStoreSnapshot(owner.store));
 			return () => {
 				listeners.delete(listener);
 				if (listeners.size === 0) {
 					unsubscribeStore?.();
 					unsubscribeStore = undefined;
+					unsubscribeViewed?.();
+					unsubscribeViewed = undefined;
 					clearHandleSubscriptions();
 				}
 			};
