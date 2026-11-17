@@ -92,8 +92,11 @@ test("every manifest builtin uses the builtin-only context and none pins model f
 	}
 });
 
-test("every shipped builtin agent runs the default model without pinned fallback chains", () => {
-	const { agents, diagnostics } = loadAgentsFromDirWithDiagnostics(resolve("packages/subagents/agents"), "builtin");
+test("every shipped builtin agent runs the default model without pinned fallback chains", async () => {
+	const { agents, diagnostics } = await loadAgentsFromDirWithDiagnostics(
+		resolve("packages/subagents/agents"),
+		"builtin",
+	);
 	assert.deepEqual(diagnostics, []);
 	assert.equal(agents.length, 9);
 	for (const agent of agents) {

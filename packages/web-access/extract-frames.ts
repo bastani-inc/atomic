@@ -78,9 +78,9 @@ async function extractLocalFrames(
 	return { frames, error: frames.length === 0 && firstError ? firstError.error : null };
 }
 
-function safeVideoInfo(url: string): { info: ReturnType<typeof isVideoFile>; error?: string } {
+async function safeVideoInfo(url: string): Promise<{ info: Awaited<ReturnType<typeof isVideoFile>>; error?: string }> {
 	try {
-		return { info: isVideoFile(url) };
+		return { info: await isVideoFile(url) };
 	} catch (err) {
 		return { info: null, error: errorMessage(err) };
 	}
@@ -110,7 +110,7 @@ export async function extractRequestedFrames(
 			return buildFrameResult(url, label, timestamps.length, result.frames, result.error, streamInfo.duration);
 		}
 
-		const localVideo = safeVideoInfo(url);
+		const localVideo = await safeVideoInfo(url);
 		if (localVideo.error) {
 			return { url, title: "", content: "", error: localVideo.error };
 		}
@@ -193,7 +193,7 @@ export async function extractRequestedFrames(
 			return { url, title: `Frame at ${options.timestamp}`, content: `Video frame at ${options.timestamp}`, error: null, thumbnail: frame };
 		}
 
-		const localVideo = safeVideoInfo(url);
+		const localVideo = await safeVideoInfo(url);
 		if (localVideo.error) {
 			return { url, title: "", content: "", error: localVideo.error };
 		}

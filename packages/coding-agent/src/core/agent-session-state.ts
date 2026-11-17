@@ -1,11 +1,11 @@
 import type { AgentMessage, ThinkingLevel } from "@bastani/atomic-agent-core";
 import { getCurrentSystemMessage, getCurrentTools, type SystemMessage } from "@bastani/atomic-ai";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
-import { getGitStatus } from "../utils/tools-manager.ts";
+import { type GitToolStatus, getGitStatus, getGitStatusAsync } from "../utils/tools-manager.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getCallableTools } from "./agent-session-nested-tools.js";
 import { syncSessionHistoryTool } from "./agent-session-tool-registry.ts";
-import { failureDebugFields, reportDebug } from "./debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.js";
 import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
@@ -70,7 +70,9 @@ export function getToolDefinition(this: AgentSession, name: string): ToolDefinit
 
 function toolSelectionSource(session: AgentSession): ToolSelectionSource {
 	if (session._usesDefaultTools) {
-		return session.settingsManager.getDefaultTools() === undefined ? "built-in-defaults" : "default-tools-setting";
+		return session.settingsManager.getDefaultToolsWith([]) === undefined
+			? "built-in-defaults"
+			: "default-tools-setting";
 	}
 	if (session._allowedToolNames) return session._allowedToolNames.size === 0 ? "no-tools" : "tools-allowlist";
 	return (session._initialActiveToolNames?.length ?? 0) > 0 ? "explicit-selection" : "no-built-in-tools";
@@ -81,26 +83,36 @@ function toolSelectionSource(session: AgentSession): ToolSelectionSource {
  * and which selected names nothing registered. Format it with `formatToolStatus()`.
  */
 export function getToolStatus(this: AgentSession): ToolStatusReport {
-	const source = toolSelectionSource(this);
-	const modifiers = [...this._defaultToolModifiers];
+	return toolStatusReport(this, getGitStatus());
+}
+
+export async function getToolStatusAsync(this: AgentSession): Promise<ToolStatusReport> {
+	const git = await getGitStatusAsync();
+	return toolStatusReport(this, git);
+}
+
+function toolStatusReport(session: AgentSession, git: GitToolStatus): ToolStatusReport {
+	const source = toolSelectionSource(session);
+	const modifiers = [...session._defaultToolModifiers];
 	return buildToolStatusReport({
-		tools: [...this._toolDefinitions.values()],
-		activeToolNames: this.getActiveToolNames(),
+		tools: [...session._toolDefinitions.values()],
+		activeToolNames: session.getActiveToolNames(),
 		selection: {
 			source,
 			description: describeToolSelection(source, modifiers),
-			names: [...selectedToolNames(this)],
+			names: [...selectedToolNames(session)],
 			modifiers,
 		},
-		isExcluded: this._excludedTools,
-		isAllowed: this._allowedTools,
-		recordedActiveNames: recordedToolLoadout(this)?.current.filter(
+		isExcluded: session._excludedTools,
+		isAllowed: session._allowedTools,
+		recordedActiveNames: recordedToolLoadout(session)?.current.filter(
 			(name) =>
 				!isMcpToolName(name) &&
-				(!this._resourceLoader.getInheritanceSnapshot?.().noExtensions || this._baseToolDefinitions.has(name)) &&
-				(!this._usesDefaultTools || applyToolModifiers([name], this._defaultToolModifiers).includes(name)),
+				(!session._resourceLoader.getInheritanceSnapshot?.().noExtensions ||
+					session._baseToolDefinitions.has(name)) &&
+				(!session._usesDefaultTools || applyToolModifiers([name], session._defaultToolModifiers).includes(name)),
 		),
-		git: getGitStatus(),
+		git,
 	});
 }
 
@@ -465,6 +477,7 @@ export const agentSessionStateMethods = {
 	getAllTools,
 	getToolDefinition,
 	getToolStatus,
+	getToolStatusAsync,
 	setActiveToolsByName,
 	_setActiveTools,
 	setScopedModels,

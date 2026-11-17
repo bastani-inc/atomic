@@ -299,7 +299,7 @@ test.skipIf(process.platform === "win32")(
 	"a process group that survives the bounded reap is the worker's health event: its child replays, and a later close reports the group (#3986)",
 	async () => {
 		// The probe never reports the group gone, signals are dropped, and the reap's pauses take no time.
-		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockResolvedValue("alive");
 		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
 		try {
@@ -364,7 +364,7 @@ test.skipIf(process.platform === "win32")(
 	async () => {
 		// Four children in turn each leave a process group that never disappears, on a single worker. A fifth, unrelated
 		// child is enqueued only after all four have settled.
-		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockResolvedValue("alive");
 		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
 		process.env.ATOMIC_TEST_ORPHAN_CHILDREN = "4";
@@ -456,7 +456,7 @@ function assertQuarantineRefusal(error: unknown, group: number): void {
  * pauses take no time. Its permit, the only one `admission.limits.process` = 1 allows, stays quarantined.
  */
 function survivingReap(): () => void {
-	const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+	const probe = vi.spyOn(admissionHost, "processGroupState").mockResolvedValue("alive");
 	const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 	const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
 	process.env.ATOMIC_TEST_ORPHAN_REPLAY_PERMIT = "1";
@@ -574,7 +574,7 @@ test.skipIf(process.platform === "win32")(
 test.skipIf(process.platform === "win32")(
 	"a close that starts while a surviving process group is reaped reports it (#3986)",
 	async () => {
-		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockResolvedValue("alive");
 		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 		const barrier = reapBarrier();
 		try {
@@ -614,7 +614,7 @@ for (const mode of ["exit", "stall"] as const)
 			let reaped = false;
 			const probe = vi
 				.spyOn(admissionHost, "processGroupState")
-				.mockImplementation(() => (reaped ? "gone" : "alive"));
+				.mockImplementation(async () => (reaped ? "gone" : "alive"));
 			const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 			// The reap holds at its first pause until the test has observed claims refused.
 			const barrier = reapBarrier();
@@ -708,7 +708,7 @@ async function quarantineThenResume(
 	const root = testRunId("pool-orphan-resume-root");
 	const opened: Awaited<ReturnType<typeof openOrphanPool>>[] = [];
 	try {
-		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockResolvedValue("alive");
 		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
 		// The worker goes silent once its group runs, so the root's quit, not the worker's exit, ends the attempt.
@@ -787,7 +787,7 @@ test.skipIf(process.platform === "win32")(
 			let reaped = false;
 			const probe = vi
 				.spyOn(admissionHost, "processGroupState")
-				.mockImplementation(() => (reaped ? "gone" : "alive"));
+				.mockImplementation(async () => (reaped ? "gone" : "alive"));
 			const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 			// The resumed coordinator's reap of the retained attempt holds until the root has enqueued it.
 			const barrier = reapBarrier();
@@ -843,7 +843,7 @@ test.skipIf(process.platform === "win32")(
 	async () => {
 		await quarantineThenResume(async ({ directory, path, root, group, quarantined, resumeRoot }) => {
 			// The probe never reports the group gone, signals are dropped, and the reap's pauses take no time.
-			const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+			const probe = vi.spyOn(admissionHost, "processGroupState").mockResolvedValue("alive");
 			const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 			const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
 			try {

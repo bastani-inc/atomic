@@ -1,7 +1,8 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
-import { isLocalPath, resolvePath } from "../utils/paths.ts";
+import { pathExists as exists } from "../utils/path-exists.ts";
+import { canonicalizePathAsync, isLocalPath, resolvePath } from "../utils/paths.ts";
 import { getAllBuiltinPackageLocations, getMandatoryBuiltinExtensionPaths } from "./builtin-packages.ts";
 import { filterSupersededHerdrIntegrationPaths } from "./extensions/herdr-file-integration.ts";
 import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader.ts";
@@ -9,13 +10,14 @@ import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "./mandatory-runtime-tools.ts";
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
+import { hostStoragePackagesRegistered } from "./package-manager-storage-adapters.js";
 import {
 	updatePromptsFromPathsAsync,
 	updateSkillsFromPathsAsync,
 	updateThemesFromPathsAsync,
 } from "./resource-loader-assets.ts";
 import {
-	loadProjectContextFiles,
+	loadProjectContextFilesAsync,
 	resolveExistingPromptSourcePath,
 	resolveExistingPromptSourcePaths,
 	resolvePromptInput,
@@ -45,29 +47,29 @@ import {
 import { mergeResourcePaths, resolveResourcePath } from "./resource-loader-paths.ts";
 import { applyExtensionSourceInfo } from "./resource-loader-source-info.ts";
 import type { ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
-import { buildSkillCatalog } from "./skill-catalog.ts";
+import { buildSkillCatalogAsync } from "./skill-catalog.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 import { endTimingSpan, resetTimings, startTimingSpan } from "./timings.ts";
 
-function filterDisabledBuiltinExtensionPaths(paths: string[], disabled: Set<string>): string[] {
+async function filterDisabledBuiltinExtensionPaths(paths: string[], disabled: Set<string>): Promise<string[]> {
 	if (disabled.size === 0) return paths;
-	const canonical = (path: string): string => {
-		try {
-			return realpathSync(path);
-		} catch {
-			return path;
-		}
-	};
-	const roots = getAllBuiltinPackageLocations()
-		.filter((location) => disabled.has(location.distDirName))
-		.map((location) => canonical(location.packageDir));
-	return paths.filter((path) => {
-		if (path.startsWith(BUILTIN_PATH_PREFIX)) return !disabled.has(path.slice(BUILTIN_PATH_PREFIX.length));
-		return !roots.some((root) => {
-			const child = relative(root, canonical(path));
-			return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
-		});
-	});
+	const roots = await Promise.all(
+		getAllBuiltinPackageLocations()
+			.filter((location) => disabled.has(location.distDirName))
+			.map((location) => canonicalizePathAsync(location.packageDir)),
+	);
+	const kept = await Promise.all(
+		paths.map(async (path) => {
+			if (path.startsWith(BUILTIN_PATH_PREFIX)) return !disabled.has(path.slice(BUILTIN_PATH_PREFIX.length));
+			if (roots.length === 0) return true;
+			const canonicalPath = await canonicalizePathAsync(path);
+			return !roots.some((root) => {
+				const child = relative(root, canonicalPath);
+				return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
+			});
+		}),
+	);
+	return paths.filter((_path, index) => kept[index]);
 }
 
 function getEnabledResources(
@@ -100,15 +102,15 @@ function getBuiltinExtensionPaths(
 	return noExtensions ? [] : resources.filter((resource) => resource.enabled).map((resource) => resource.path);
 }
 
-function mapSkillPath(
+async function mapSkillPath(
 	resource: { path: string; metadata: PathMetadata },
 	metadataByPath: Map<string, PathMetadata>,
-): string {
+): Promise<string> {
 	if (resource.metadata.source !== "auto" && resource.metadata.origin !== "package") {
 		return resource.path;
 	}
 	try {
-		const stats = statSync(resource.path);
+		const stats = await stat(resource.path);
 		if (!stats.isDirectory()) {
 			return resource.path;
 		}
@@ -116,7 +118,7 @@ function mapSkillPath(
 		return resource.path;
 	}
 	const skillFile = join(resource.path, "SKILL.md");
-	if (existsSync(skillFile)) {
+	if (await exists(skillFile)) {
 		if (!metadataByPath.has(skillFile)) {
 			metadataByPath.set(skillFile, resource.metadata);
 		}
@@ -138,9 +140,18 @@ function addCliMetadata(cliExtensionPaths: ResolvedPaths, metadataByPath: Map<st
 	}
 }
 
+async function resolvePromptInputs(inputs: readonly string[]): Promise<string[]> {
+	const resolved: string[] = [];
+	for (const input of inputs) {
+		const prompt = await resolvePromptInput(input, "append system prompt");
+		if (prompt !== undefined) resolved.push(prompt);
+	}
+	return resolved;
+}
+
 export async function loadProjectTrustExtensions(loader: DefaultResourceLoader): Promise<LoadExtensionsResult> {
 	const state = resourceInternals(loader);
-	state.settingsManager.setProjectTrusted(false);
+	await state.settingsManager.setProjectTrustedAsync(false);
 	await state.settingsManager.reload();
 	const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await resolvePackageResourcePaths(loader, {
 		includeCliProjectLocalResources: false,
@@ -160,9 +171,9 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
 	// The builtin Herdr reporter supersedes the installed file integration in a
 	// Herdr pane; see extensions/herdr-file-integration.ts.
-	const extensionPaths = filterDisabledBuiltinExtensionPaths(
+	const extensionPaths = await filterDisabledBuiltinExtensionPaths(
 		filterSupersededHerdrIntegrationPaths(
-			mergeResourcePaths(
+			await mergeResourcePaths(
 				state.cwd,
 				cliEnabledExtensions,
 				state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
@@ -170,7 +181,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 		).filter((path) => !path.startsWith(BUILTIN_PATH_PREFIX)),
 		state.disabledBuiltinExtensions,
 	);
-	const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
+	const packageWarnings = await collectExtensionPackageWarnings(extensionPaths, metadataByPath);
 	const installWarnings = collectPackageInstallWarnings(
 		resolvedPaths.installFailures,
 		cliExtensionPaths.installFailures,
@@ -194,7 +205,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	for (const extension of extensionsResult.extensions) {
 		if (mandatoryPaths.has(extension.resolvedPath)) markTrustedMandatoryRuntimeExtension(extension);
 	}
-	applyExtensionSourceInfo(loader, extensionsResult.extensions, metadataByPath);
+	await applyExtensionSourceInfo(loader, extensionsResult.extensions, metadataByPath);
 	return extensionsResult;
 }
 
@@ -213,6 +224,7 @@ export async function prepareDefaultResourceLoaderReload(
 ): Promise<() => Promise<void>> {
 	const state = resourceInternals(loader);
 	resetTimings("extensions");
+	await hostStoragePackagesRegistered();
 	if (state.loaded) {
 		clearExtensionCache();
 	}
@@ -224,9 +236,9 @@ export async function prepareDefaultResourceLoaderReload(
 	const resolveTrust = async () => {
 		if (options?.resolveProjectTrust && preTrustExtensions) {
 			const projectTrusted = await options.resolveProjectTrust({ extensionsResult: preTrustExtensions });
-			state.settingsManager.setProjectTrusted(projectTrusted);
+			await state.settingsManager.setProjectTrustedAsync(projectTrusted);
 		} else if (preTrustExtensions) {
-			state.settingsManager.setProjectTrusted(initialProjectTrusted);
+			await state.settingsManager.setProjectTrustedAsync(initialProjectTrusted);
 		}
 		if (options?.resolveBorrowedProjectTrust) {
 			state.trustedBorrowedProjectLocalSources = await resolveTrustedBorrowedProjectLocalSources(
@@ -246,9 +258,13 @@ export async function prepareDefaultResourceLoaderReload(
 				errors: [],
 				runtime: createExtensionRuntime(),
 			};
-			state.extensionsResult = state.extensionsOverride
+			const extensionsResult = state.extensionsOverride
 				? state.extensionsOverride(deferredExtensions)
 				: deferredExtensions;
+			const emptySkills = state.skillsOverride ? state.skillsOverride({ skills: [], diagnostics: [] }) : undefined;
+			const skills = emptySkills?.skills ?? [];
+			const skillCatalog = await buildSkillCatalogAsync(skills);
+			state.extensionsResult = extensionsResult;
 			state.extensionSkillSourceInfos = new Map();
 			state.extensionPromptSourceInfos = new Map();
 			state.extensionThemeSourceInfos = new Map();
@@ -256,10 +272,9 @@ export async function prepareDefaultResourceLoaderReload(
 			state.mcpServerContributions = [];
 			state.resourceMetadataByPath = new Map();
 			state.lastSkillPaths = [];
-			const emptySkills = state.skillsOverride ? state.skillsOverride({ skills: [], diagnostics: [] }) : undefined;
-			state.skills = emptySkills?.skills ?? [];
+			state.skills = skills;
 			state.skillDiagnostics = emptySkills?.diagnostics ?? [];
-			state.skillCatalog = buildSkillCatalog(state.skills);
+			state.skillCatalog = skillCatalog;
 			state.lastPromptPaths = [];
 			const emptyPrompts = state.promptsOverride
 				? state.promptsOverride({ prompts: [], diagnostics: [] })
@@ -275,20 +290,20 @@ export async function prepareDefaultResourceLoaderReload(
 				? state.agentsFilesOverride(emptyAgentsFiles).agentsFiles
 				: emptyAgentsFiles.agentsFiles;
 			const baseSystemPrompt = state.systemPromptSource
-				? resolvePromptInput(state.systemPromptSource, "system prompt")
+				? await resolvePromptInput(state.systemPromptSource, "system prompt")
 				: undefined;
+			const systemPromptSourcePath = await resolveExistingPromptSourcePath(state.systemPromptSource);
+			const appendSources = state.appendSystemPromptSource ?? [];
+			const baseAppend = await resolvePromptInputs(appendSources);
+			const appendSystemPromptSourcePaths = await resolveExistingPromptSourcePaths(appendSources);
 			state.systemPrompt = state.systemPromptOverride
 				? state.systemPromptOverride(baseSystemPrompt)
 				: baseSystemPrompt;
-			state.systemPromptSourcePath = resolveExistingPromptSourcePath(state.systemPromptSource);
-			const appendSources = state.appendSystemPromptSource ?? [];
-			const baseAppend = appendSources
-				.map((s) => resolvePromptInput(s, "append system prompt"))
-				.filter((s): s is string => s !== undefined);
+			state.systemPromptSourcePath = systemPromptSourcePath;
 			state.appendSystemPrompt = state.appendSystemPromptOverride
 				? state.appendSystemPromptOverride(baseAppend)
 				: baseAppend;
-			state.appendSystemPromptSourcePaths = resolveExistingPromptSourcePaths(appendSources);
+			state.appendSystemPromptSourcePaths = appendSystemPromptSourcePaths;
 			state.loaded = true;
 			return;
 		}
@@ -324,10 +339,12 @@ export async function prepareDefaultResourceLoaderReload(
 			: getEnabledPaths(builtinPackagePaths.prompts, metadataByPath);
 		const builtinEnabledThemes = state.noThemes ? [] : getEnabledPaths(builtinPackagePaths.themes, metadataByPath);
 
-		const enabledSkills = enabledSkillResources.map((resource) => mapSkillPath(resource, metadataByPath));
-		const builtinEnabledSkills = builtinEnabledSkillResources.map((resource) =>
-			mapSkillPath(resource, metadataByPath),
-		);
+		const enabledSkills: string[] = [];
+		for (const resource of enabledSkillResources) enabledSkills.push(await mapSkillPath(resource, metadataByPath));
+		const builtinEnabledSkills: string[] = [];
+		for (const resource of builtinEnabledSkillResources) {
+			builtinEnabledSkills.push(await mapSkillPath(resource, metadataByPath));
+		}
 
 		addCliMetadata(cliExtensionPaths, metadataByPath);
 
@@ -346,9 +363,9 @@ export async function prepareDefaultResourceLoaderReload(
 
 		// The builtin Herdr reporter supersedes the installed file integration in a
 		// Herdr pane; see extensions/herdr-file-integration.ts.
-		const extensionPaths = filterDisabledBuiltinExtensionPaths(
+		const extensionPaths = await filterDisabledBuiltinExtensionPaths(
 			filterSupersededHerdrIntegrationPaths(
-				mergeResourcePaths(
+				await mergeResourcePaths(
 					state.cwd,
 					cliEnabledExtensions,
 					state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
@@ -358,7 +375,7 @@ export async function prepareDefaultResourceLoaderReload(
 		);
 
 		const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
-		const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
+		const packageWarnings = await collectExtensionPackageWarnings(extensionPaths, metadataByPath);
 		const installWarnings = collectPackageInstallWarnings(
 			resolvedPaths.installFailures,
 			cliExtensionPaths.installFailures,
@@ -390,13 +407,16 @@ export async function prepareDefaultResourceLoaderReload(
 		for (const p of state.additionalExtensionPaths) {
 			if (isLocalPath(p)) {
 				const resolved = resolveResourcePath(state.cwd, p);
-				if (!existsSync(resolved)) {
+				if (!(await exists(resolved))) {
 					extensionsResult.errors.push({ path: resolved, error: `Extension path does not exist: ${resolved}` });
 				}
 			}
 		}
-		state.extensionsResult = state.extensionsOverride ? state.extensionsOverride(extensionsResult) : extensionsResult;
-		applyExtensionSourceInfo(loader, state.extensionsResult.extensions, metadataByPath);
+		const resolvedExtensionsResult = state.extensionsOverride
+			? state.extensionsOverride(extensionsResult)
+			: extensionsResult;
+		await applyExtensionSourceInfo(loader, resolvedExtensionsResult.extensions, metadataByPath);
+		state.extensionsResult = resolvedExtensionsResult;
 		if (options?.deferProjectTrust && preTrustExtensions) {
 			for (const extension of preTrustExtensions.extensions) {
 				if (!extensionsResult.extensions.includes(extension)) extensionsResult.extensions.push(extension);
@@ -411,8 +431,8 @@ export async function prepareDefaultResourceLoaderReload(
 		resolveInheritedExtensionOverlaps(state.extensionsResult);
 
 		const skillPaths = state.noSkills
-			? mergeResourcePaths(state.cwd, cliEnabledSkills, state.additionalSkillPaths)
-			: mergeResourcePaths(
+			? await mergeResourcePaths(state.cwd, cliEnabledSkills, state.additionalSkillPaths)
+			: await mergeResourcePaths(
 					state.cwd,
 					[...cliEnabledSkills, ...enabledSkills, ...builtinEnabledSkills],
 					state.additionalSkillPaths,
@@ -427,15 +447,15 @@ export async function prepareDefaultResourceLoaderReload(
 		for (const p of state.additionalSkillPaths) {
 			if (isLocalPath(p)) {
 				const resolved = resolveResourcePath(state.cwd, p);
-				if (!existsSync(resolved) && !state.skillDiagnostics.some((d) => d.path === resolved)) {
+				if (!(await exists(resolved)) && !state.skillDiagnostics.some((d) => d.path === resolved)) {
 					state.skillDiagnostics.push({ type: "error", message: "Skill path does not exist", path: resolved });
 				}
 			}
 		}
 
 		const promptPaths = state.noPromptTemplates
-			? mergeResourcePaths(state.cwd, cliEnabledPrompts, state.additionalPromptTemplatePaths)
-			: mergeResourcePaths(
+			? await mergeResourcePaths(state.cwd, cliEnabledPrompts, state.additionalPromptTemplatePaths)
+			: await mergeResourcePaths(
 					state.cwd,
 					[...cliEnabledPrompts, ...enabledPrompts, ...builtinEnabledPrompts],
 					state.additionalPromptTemplatePaths,
@@ -450,7 +470,7 @@ export async function prepareDefaultResourceLoaderReload(
 		for (const p of state.additionalPromptTemplatePaths) {
 			if (isLocalPath(p)) {
 				const resolved = resolveResourcePath(state.cwd, p);
-				if (!existsSync(resolved) && !state.promptDiagnostics.some((d) => d.path === resolved)) {
+				if (!(await exists(resolved)) && !state.promptDiagnostics.some((d) => d.path === resolved)) {
 					state.promptDiagnostics.push({
 						type: "error",
 						message: "Prompt template path does not exist",
@@ -461,8 +481,8 @@ export async function prepareDefaultResourceLoaderReload(
 		}
 
 		const themePaths = state.noThemes
-			? mergeResourcePaths(state.cwd, cliEnabledThemes, state.additionalThemePaths)
-			: mergeResourcePaths(
+			? await mergeResourcePaths(state.cwd, cliEnabledThemes, state.additionalThemePaths)
+			: await mergeResourcePaths(
 					state.cwd,
 					[...cliEnabledThemes, ...enabledThemes, ...builtinEnabledThemes],
 					state.additionalThemePaths,
@@ -476,7 +496,7 @@ export async function prepareDefaultResourceLoaderReload(
 		await yieldToEventLoopIfSlow(themesStartedAt);
 		for (const p of state.additionalThemePaths) {
 			const resolved = resolveResourcePath(state.cwd, p);
-			if (!existsSync(resolved) && !state.themeDiagnostics.some((d) => d.path === resolved)) {
+			if (!(await exists(resolved)) && !state.themeDiagnostics.some((d) => d.path === resolved)) {
 				state.themeDiagnostics.push({ type: "error", message: "Theme path does not exist", path: resolved });
 			}
 		}
@@ -486,7 +506,7 @@ export async function prepareDefaultResourceLoaderReload(
 		const agentsFiles = {
 			agentsFiles: state.noContextFiles
 				? []
-				: loadProjectContextFiles({
+				: await loadProjectContextFilesAsync({
 						cwd: state.cwd,
 						agentDir: state.agentDir,
 						projectTrusted: state.settingsManager.isProjectTrusted(),
@@ -499,20 +519,20 @@ export async function prepareDefaultResourceLoaderReload(
 
 		const promptFilesStartedAt = Date.now();
 		const promptFilesSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePromptFiles");
-		const systemPromptSource = state.systemPromptSource ?? discoverSystemPromptFile(loader);
-		const baseSystemPrompt = resolvePromptInput(systemPromptSource, "system prompt");
-		state.systemPrompt = state.systemPromptOverride ? state.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
-		state.systemPromptSourcePath = resolveExistingPromptSourcePath(systemPromptSource);
+		const systemPromptSource = state.systemPromptSource ?? (await discoverSystemPromptFile(loader));
+		const baseSystemPrompt = await resolvePromptInput(systemPromptSource, "system prompt");
+		const systemPromptSourcePath = await resolveExistingPromptSourcePath(systemPromptSource);
 
-		const discoveredAppend = discoverAppendSystemPromptFile(loader);
+		const discoveredAppend = await discoverAppendSystemPromptFile(loader);
 		const appendSources = state.appendSystemPromptSource ?? (discoveredAppend ? [discoveredAppend] : []);
-		const baseAppend = appendSources
-			.map((s) => resolvePromptInput(s, "append system prompt"))
-			.filter((s): s is string => s !== undefined);
+		const baseAppend = await resolvePromptInputs(appendSources);
+		const appendSystemPromptSourcePaths = await resolveExistingPromptSourcePaths(appendSources);
+		state.systemPrompt = state.systemPromptOverride ? state.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
+		state.systemPromptSourcePath = systemPromptSourcePath;
 		state.appendSystemPrompt = state.appendSystemPromptOverride
 			? state.appendSystemPromptOverride(baseAppend)
 			: baseAppend;
-		state.appendSystemPromptSourcePaths = resolveExistingPromptSourcePaths(appendSources);
+		state.appendSystemPromptSourcePaths = appendSystemPromptSourcePaths;
 		state.loaded = true;
 		endTimingSpan(promptFilesSpan);
 		await yieldToEventLoopIfSlow(promptFilesStartedAt);

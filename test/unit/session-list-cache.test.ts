@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdirSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setImmediate as nextTurn } from "node:timers/promises";
@@ -7,12 +8,16 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import type { SessionEntry, SessionInfo } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import {
 	LISTING_FETCH_BATCH,
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionRecordHeader } from "../../packages/coding-agent/src/core/storage/session/types.js";
-import { createSessionCwdMatcher } from "../../packages/coding-agent/src/utils/canonical-path.js";
+import {
+	createSessionCwdMatcher,
+	createSessionCwdMatcherAsync,
+} from "../../packages/coding-agent/src/utils/canonical-path.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
 /** A real Bun child process that opens the store, writes once and exits. */
@@ -336,5 +341,21 @@ describe("/resume session list cache", () => {
 		await other.delete("beta");
 		await assert.rejects(store.load("beta"), { name: "SessionNotFoundError" });
 		assert.equal(await store.readHeader("beta"), undefined);
+	});
+
+	test("async cwd matchers match symlinked project directories in SQL and memory session stores", async () => {
+		mkdirSync(cwd, { recursive: true });
+		const linkedCwd = join(dir, "project-link");
+		symlinkSync(cwd, linkedCwd, "junction");
+		const asyncSql = await SqlSessionStore.open(database, { cwdMatcher: createSessionCwdMatcherAsync });
+		opened.push(asyncSql);
+		assert.deepEqual(ids(await SessionManager.list(linkedCwd, asyncSql)), ["alpha", "beta"]);
+		assert.deepEqual(ids(await SessionManager.list(linkedCwd, asyncSql)), ["alpha", "beta"]);
+
+		const memory = new MemorySessionStore(createSessionCwdMatcherAsync);
+		opened.push(memory);
+		await memory.create(header("mem-alpha", cwd), [message("m1", "in real cwd")]);
+		await memory.create(header("mem-other", join(dir, "other")), [message("m2", "elsewhere")]);
+		assert.deepEqual(ids(await SessionManager.list(linkedCwd, memory)), ["mem-alpha"]);
 	});
 });

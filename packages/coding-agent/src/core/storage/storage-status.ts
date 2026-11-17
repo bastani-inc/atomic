@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { ENV_SESSION_DIR, isBunBinary } from "../../config.js";
 import { resolvePath } from "../../utils/paths.ts";
 import type { BrokerMultiNodeStatus, IntercomBrokerControl } from "../intercom-broker-control.js";
-import { selectSessionStorage } from "../session-storage.js";
+import { selectSessionStorageWithSettings } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
 import type { Settings } from "../settings-schema.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "../trust-manager.ts";
@@ -630,7 +630,7 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 		try {
 			const chosen =
 				domain === "sessions"
-					? selectSessionStorage(cwd, { agentDir, settings: merged })
+					? selectSessionStorageWithSettings(cwd, { agentDir, settings: merged })
 					: selectJournal(agentDir, merged);
 			const selection = chosen as StorageSelection;
 			if (selection.kind === "sqlite" || selection.kind === "jsonl" || selection.kind === "sharded")

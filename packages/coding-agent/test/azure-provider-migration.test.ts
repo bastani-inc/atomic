@@ -1,14 +1,36 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fsSynchronous, {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import { test, vi } from "vitest";
-import { ENV_AGENT_DIR, getAgentConfigPaths, getProjectConfigPaths } from "../src/config.js";
-import { runMigrations } from "../src/migrations.js";
-import { migrateAzureProvider } from "../src/migrations-azure.js";
+import { ENV_AGENT_DIR, getAgentConfigPaths, getDebugLogPath, getProjectConfigPaths } from "../src/config.js";
+import { flushDebugLog } from "../src/core/debug.js";
+import { runMigrations, runMigrationsAsync } from "../src/migrations.js";
+import { migrateAzureProvider, migrateAzureProviderAsync } from "../src/migrations-azure.js";
 
 const legacy = "azure-openai-responses";
+
+async function skippedMigrations(): Promise<Array<{ path: string; code: string }>> {
+	await flushDebugLog();
+	if (!existsSync(getDebugLogPath())) return [];
+	return readFileSync(getDebugLogPath(), "utf8")
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line) as { event: string; data: { path: string; code: string } })
+		.filter((record) => record.event === "azure-migration-skipped")
+		.map((record) => ({ path: record.data.path, code: record.data.code }));
+}
 
 test("startup migrates Azure config files atomically without replacing canonical entries or sessions", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-azure-migration-"));
@@ -144,9 +166,10 @@ test("migration preserves legacy-only Azure credentials and models across both g
 	}
 });
 
-test("migration leaves malformed config and locked files untouched", () => {
+test("migration leaves malformed config and locked files untouched", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-azure-locked-"));
 	vi.stubEnv(ENV_AGENT_DIR, root);
+	vi.stubEnv("ATOMIC_DEBUG", "1");
 	try {
 		const path = join(root, "auth.json");
 		const content = JSON.stringify({ [legacy]: { type: "api_key", key: "old" } });
@@ -160,10 +183,69 @@ test("migration leaves malformed config and locked files untouched", () => {
 		} finally {
 			release();
 		}
+		assert.deepEqual(await skippedMigrations(), [{ path, code: "ELOCKED" }]);
 		assert.equal(readFileSync(join(root, "models.json"), "utf-8"), "null");
 		assert.equal(readFileSync(join(root, "settings.json"), "utf-8"), "[]");
 		migrateAzureProvider(root, { projectTrusted: false });
 		assert.deepEqual(JSON.parse(readFileSync(path, "utf-8")), { azure: { type: "api_key", key: "old" } });
+	} finally {
+		vi.unstubAllEnvs();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("async Azure migration preserves permissions and reports locked files without blocking (#5377)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-azure-async-"));
+	vi.stubEnv(ENV_AGENT_DIR, root);
+	vi.stubEnv("ATOMIC_DEBUG", "1");
+	try {
+		const path = join(root, "auth.json");
+		const content = JSON.stringify({ [legacy]: { type: "api_key", key: "old" } });
+		writeFileSync(path, content);
+		chmodSync(path, 0o600);
+		writeFileSync(join(root, "models.json"), "null");
+		writeFileSync(join(root, "settings.json"), "[]");
+		const release = lockfile.lockSync(path, { realpath: false });
+		const append = vi.spyOn(fsSynchronous, "appendFileSync");
+		syncBuiltinESMExports();
+		try {
+			await migrateAzureProviderAsync(root, { projectTrusted: false });
+			assert.equal(readFileSync(path, "utf-8"), content);
+			assert.equal(append.mock.calls.length, 0);
+		} finally {
+			append.mockRestore();
+			syncBuiltinESMExports();
+			release();
+		}
+		assert.deepEqual(await skippedMigrations(), [{ path, code: "ELOCKED" }]);
+		await runMigrationsAsync(root, { projectTrusted: false });
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf-8")), { azure: { type: "api_key", key: "old" } });
+		if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
+		assert.equal(readFileSync(join(root, "models.json"), "utf-8"), "null");
+		assert.equal(readFileSync(join(root, "settings.json"), "utf-8"), "[]");
+		assert.deepEqual(await skippedMigrations(), [{ path, code: "ELOCKED" }]);
+	} finally {
+		vi.unstubAllEnvs();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("the async migration does not lock a file that needs no migration, so another process's lock on it is never reported (#5377)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-azure-async-clean-"));
+	vi.stubEnv(ENV_AGENT_DIR, root);
+	vi.stubEnv("ATOMIC_DEBUG", "1");
+	try {
+		const path = join(root, "models.json");
+		const content = JSON.stringify({ providers: { azure: { api: legacy, baseUrl: "canonical" } } });
+		writeFileSync(path, content);
+		const release = lockfile.lockSync(path, { realpath: false });
+		try {
+			await migrateAzureProviderAsync(root, { projectTrusted: false });
+		} finally {
+			release();
+		}
+		assert.equal(readFileSync(path, "utf-8"), content);
+		assert.deepEqual(await skippedMigrations(), []);
 	} finally {
 		vi.unstubAllEnvs();
 		rmSync(root, { recursive: true, force: true });

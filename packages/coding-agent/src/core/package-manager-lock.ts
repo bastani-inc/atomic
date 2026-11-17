@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { APP_NAME } from "../config.js";
@@ -15,7 +15,7 @@ const INSTALL_LOCK_RETRIES = { retries: 600, minTimeout: 100, maxTimeout: 1_000,
  */
 export async function withInstallLock<T>(installPath: string, operation: () => Promise<T>): Promise<T> {
 	const parent = dirname(installPath);
-	mkdirSync(parent, { recursive: true });
+	await mkdir(parent, { recursive: true });
 	const release = await lockfile.lock(installPath, {
 		realpath: false,
 		lockfilePath: join(parent, `.${basename(installPath)}.${APP_NAME}-install.lock`),

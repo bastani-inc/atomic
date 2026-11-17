@@ -23,10 +23,10 @@ vi.mock("node:child_process", async (importOriginal) => {
 	);
 });
 
-vi.mock("node:fs", async (importOriginal) => {
+vi.mock("node:fs/promises", async (importOriginal) => {
 	const { withFilesystemFaults } = await import("../helpers/worktree-snapshot-faults.js");
-	return withFilesystemFaults(await importOriginal<typeof import("node:fs")>(), "sync", ["accessSync"], () =>
-		faults.unreadable.map((path): FilesystemFault => ({ call: "accessSync", path, code: "EACCES" })),
+	return withFilesystemFaults(await importOriginal<typeof import("node:fs/promises")>(), "promises", ["access"], () =>
+		faults.unreadable.map((path): FilesystemFault => ({ call: "access", path, code: "EACCES" })),
 	);
 });
 

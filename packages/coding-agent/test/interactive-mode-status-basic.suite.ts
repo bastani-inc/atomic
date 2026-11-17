@@ -129,7 +129,7 @@ describe("InteractiveMode.handleEvent model changes", () => {
 
 describe("InteractiveMode /trust", () => {
 	// #2873: the host trust selector runs through the active session's prompt lifecycle.
-	test("uses the active runtime agentDir for saved decisions", () => {
+	test("uses the active runtime agentDir for saved decisions", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "atomic-trust-selector-agent-dir-"));
 		try {
 			const cwd = path.join(root, "project");
@@ -157,8 +157,10 @@ describe("InteractiveMode /trust", () => {
 				),
 			};
 
-			(InteractiveMode as any).prototype.showTrustSelector.call(fakeThis);
+			const shown = (InteractiveMode as any).prototype.showTrustSelector.call(fakeThis);
+			await vi.waitFor(() => expect(createdSelector).toBeDefined());
 			createdSelector?.handleInput("\n");
+			await shown;
 
 			expect(new ProjectTrustStore(runtimeAgentDir).get(cwd)).toBe(true);
 			expect(fakeThis.showStatus).toHaveBeenCalledWith(expect.stringContaining("Saved trust decision: trusted"));
@@ -169,7 +171,7 @@ describe("InteractiveMode /trust", () => {
 });
 
 describe("InteractiveMode reload project trust", () => {
-	test("persists implicit startup trust after reload creates project config", () => {
+	test("persists implicit startup trust after reload creates project config", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "atomic-reload-trust-"));
 		try {
 			const cwd = path.join(root, "project");
@@ -185,7 +187,7 @@ describe("InteractiveMode reload project trust", () => {
 				showWarning: vi.fn(),
 			};
 
-			const saved = (InteractiveMode as any).prototype.maybeSaveImplicitProjectTrustAfterReload.call(fakeThis);
+			const saved = await (InteractiveMode as any).prototype.maybeSaveImplicitProjectTrustAfterReload.call(fakeThis);
 
 			expect(saved).toBe(true);
 			expect(new ProjectTrustStore(agentDir).get(cwd)).toBe(true);
@@ -196,7 +198,7 @@ describe("InteractiveMode reload project trust", () => {
 		}
 	});
 
-	test("does not persist implicit startup trust after reload creates only inert project state", () => {
+	test("does not persist implicit startup trust after reload creates only inert project state", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "atomic-reload-trust-inert-"));
 		try {
 			const cwd = path.join(root, "project");
@@ -212,7 +214,7 @@ describe("InteractiveMode reload project trust", () => {
 				showWarning: vi.fn(),
 			};
 
-			const saved = (InteractiveMode as any).prototype.maybeSaveImplicitProjectTrustAfterReload.call(fakeThis);
+			const saved = await (InteractiveMode as any).prototype.maybeSaveImplicitProjectTrustAfterReload.call(fakeThis);
 
 			expect(saved).toBe(false);
 			expect(new ProjectTrustStore(agentDir).get(cwd)).toBe(null);
@@ -222,7 +224,7 @@ describe("InteractiveMode reload project trust", () => {
 		}
 	});
 
-	test("persists implicit startup trust after reload creates a non-global .agents skills trust input", () => {
+	test("persists implicit startup trust after reload creates a non-global .agents skills trust input", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "atomic-reload-trust-skills-"));
 		try {
 			const cwd = path.join(root, "project");
@@ -238,7 +240,7 @@ describe("InteractiveMode reload project trust", () => {
 				showWarning: vi.fn(),
 			};
 
-			const saved = (InteractiveMode as any).prototype.maybeSaveImplicitProjectTrustAfterReload.call(fakeThis);
+			const saved = await (InteractiveMode as any).prototype.maybeSaveImplicitProjectTrustAfterReload.call(fakeThis);
 
 			expect(saved).toBe(true);
 			expect(new ProjectTrustStore(agentDir).get(cwd)).toBe(true);
@@ -248,7 +250,7 @@ describe("InteractiveMode reload project trust", () => {
 		}
 	});
 
-	test("does not persist implicit startup trust before project config exists", () => {
+	test("does not persist implicit startup trust before project config exists", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "atomic-reload-trust-no-config-"));
 		try {
 			const cwd = path.join(root, "project");
@@ -264,7 +266,7 @@ describe("InteractiveMode reload project trust", () => {
 				showWarning: vi.fn(),
 			};
 
-			const saved = (InteractiveMode as any).prototype.maybeSaveImplicitProjectTrustAfterReload.call(fakeThis);
+			const saved = await (InteractiveMode as any).prototype.maybeSaveImplicitProjectTrustAfterReload.call(fakeThis);
 
 			expect(saved).toBe(false);
 			expect(new ProjectTrustStore(agentDir).get(cwd)).toBe(null);
@@ -274,7 +276,7 @@ describe("InteractiveMode reload project trust", () => {
 		}
 	});
 
-	test("does not persist implicit startup trust for an untrusted session", () => {
+	test("does not persist implicit startup trust for an untrusted session", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "atomic-reload-trust-untrusted-"));
 		try {
 			const cwd = path.join(root, "project");
@@ -290,7 +292,7 @@ describe("InteractiveMode reload project trust", () => {
 				showWarning: vi.fn(),
 			};
 
-			const saved = (InteractiveMode as any).prototype.maybeSaveImplicitProjectTrustAfterReload.call(fakeThis);
+			const saved = await (InteractiveMode as any).prototype.maybeSaveImplicitProjectTrustAfterReload.call(fakeThis);
 
 			expect(saved).toBe(false);
 			expect(new ProjectTrustStore(agentDir).get(cwd)).toBe(null);

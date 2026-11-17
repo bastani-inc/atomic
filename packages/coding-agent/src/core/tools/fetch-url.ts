@@ -656,7 +656,7 @@ export function buildUrlReadOutput(result: RenderedUrl): string {
 	return `${header}\n\n---\n\n${result.content}`;
 }
 
-function persistReadUrlArtifact(artifactsDir: string | undefined, output: string): string | undefined {
+async function persistReadUrlArtifact(artifactsDir: string | undefined, output: string): Promise<string | undefined> {
 	if (!artifactsDir) return undefined;
 	return getArtifactManager(artifactsDir).save(output, "read");
 }
@@ -693,7 +693,7 @@ export async function loadReadUrlOutput(
 	if (!entry) {
 		const rendered = await renderUrl(parsed.url, raw, signal);
 		const output = raw ? rendered.content : buildUrlReadOutput(rendered);
-		const artifactId = persistReadUrlArtifact(artifactsDir, output);
+		const artifactId = await persistReadUrlArtifact(artifactsDir, output);
 		const details: ReadUrlToolDetails = {
 			url: parsed.url,
 			finalUrl: rendered.finalUrl,
@@ -728,7 +728,7 @@ export async function executeReadUrl(
 	if (byteTruncated) content = content.slice(0, fetchDefaultBytes);
 	const truncated = lineTruncated || byteTruncated;
 	let artifactId = entry.artifactId;
-	if (truncated && !artifactId) artifactId = persistReadUrlArtifact(artifactsDir, entry.output);
+	if (truncated && !artifactId) artifactId = await persistReadUrlArtifact(artifactsDir, entry.output);
 	const outputLines = content.length === 0 ? 0 : content.split("\n").length;
 	const truncation: TruncationResult | undefined = truncated
 		? {

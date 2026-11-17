@@ -1,8 +1,17 @@
 import type { Component, Container, TUI } from "@bastani/atomic-tui";
-import type { TaskId } from "../../core/tasks/contracts.js";
+import type { TaskId, TaskRecord } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../core/tasks/owner-store.js";
 import { messageComponents } from "./chat-message-count.ts";
-import { TaskRow } from "./components/task-row.js";
+import { countTasksBy, TaskRow, taskNameAndTitle, taskSiblings } from "./components/task-row.js";
+
+function taskSnapshot(tasks: readonly TaskRecord[]) {
+	const siblings = taskSiblings(tasks);
+	return {
+		siblings,
+		byId: new Map(siblings.map((task) => [task.ref.taskId, task])),
+		copies: countTasksBy(siblings, taskNameAndTitle),
+	};
+}
 
 type InteractiveTaskHost = {
 	session: object;
@@ -33,25 +42,26 @@ export function refreshInteractiveTasks(mode: InteractiveTaskHost): void {
 	bindings.delete(mode);
 	if (!store) return;
 	const mounted = new Map<TaskId, Component>();
+	let snapshot = taskSnapshot(store.tasks);
 	const update = () => {
+		snapshot = taskSnapshot(store.tasks);
 		if (mode.taskRowsInChat === false) {
 			mode.ui.requestRender();
 			return;
 		}
-		for (const task of store.tasks) {
+		const attached = mounted.size > 0 ? new Set(mode.chatContainer.children) : undefined;
+		for (const task of snapshot.siblings) {
 			const anchor = mounted.get(task.ref.taskId);
-			if (anchor && mode.chatContainer.children.includes(anchor)) continue;
+			if (anchor && attached?.has(anchor)) continue;
 			const component: Component = {
 				invalidate() {},
 				render(width: number) {
-					const current = store.tasks.find((item) => item.ref.taskId === task.ref.taskId) ?? task;
-					const duplicate =
-						store.tasks.filter((item) => item.agentName === current.agentName && item.title === current.title)
-							.length > 1;
+					const current = snapshot.byId.get(task.ref.taskId) ?? task;
+					const duplicate = (snapshot.copies.get(taskNameAndTitle(current)) ?? 0) > 1;
 					return new TaskRow(current, {
 						expanded: mode.toolOutputExpanded,
 						duplicate,
-						siblings: store.tasks,
+						siblings: snapshot.siblings,
 						activity: store.recentActivity(current.ref.taskId),
 						activityOmitted: store.activityOmitted(current.ref.taskId),
 					}).render(width);

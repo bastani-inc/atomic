@@ -29,8 +29,8 @@
  * with `codemode` exposure connects. A project value overrides the global one.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, promises as fsPromises, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { CONFIG_DIR_NAME } from "../../config.js";
 import {
 	type McpExposure,
@@ -38,6 +38,13 @@ import {
 	mcpNamespace,
 	validateMcpServerConfig,
 } from "../../core/mcp-servers.ts";
+import {
+	settingsFileTarget,
+	settingsFileTargetAsync,
+	writeSettingsFile,
+	writeSettingsFileAsync,
+} from "../../core/settings-storage.ts";
+import { pathExists } from "../../core/tools/path-utils.ts";
 import { stripBom } from "../../utils/text.ts";
 
 export type {
@@ -91,16 +98,13 @@ interface McpConfigState {
 	errors: string[];
 }
 
-function readConfigFile(path: string, scope: "global" | "project", state: McpConfigState): void {
+function applyParsedConfigFile(
+	path: string,
+	parsed: unknown,
+	scope: "global" | "project",
+	state: McpConfigState,
+): void {
 	const { servers, errors } = state;
-	if (!existsSync(path)) return;
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(stripBom(readFileSync(path, "utf8")));
-	} catch {
-		errors.push(`${path}: failed to read or parse MCP configuration`);
-		return;
-	}
 	if (!isRecord(parsed) || (parsed.mcpServers !== undefined && !isRecord(parsed.mcpServers))) {
 		errors.push(`${path}: expected an object with an "mcpServers" object`);
 		return;
@@ -141,15 +145,31 @@ function readConfigFile(path: string, scope: "global" | "project", state: McpCon
 	}
 }
 
-/**
- * Load global and (when trusted) project MCP configuration. Disabled servers are included with
- * `enabled: false`, so they can be enabled again.
- */
-export function loadMcpConfig(options: { agentDir: string; cwd: string; projectTrusted: boolean }): LoadedMcpConfig {
-	const state: McpConfigState = { servers: new Map(), errors: [] };
-	readConfigFile(join(options.agentDir, "mcp.json"), "global", state);
-	const projectConfig = options.projectTrusted ? join(options.cwd, CONFIG_DIR_NAME, "mcp.json") : undefined;
-	if (projectConfig) readConfigFile(projectConfig, "project", state);
+function readConfigFileSync(path: string, scope: "global" | "project", state: McpConfigState): void {
+	if (!existsSync(path)) return;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(stripBom(readFileSync(path, "utf8")));
+	} catch {
+		state.errors.push(`${path}: failed to read or parse MCP configuration`);
+		return;
+	}
+	applyParsedConfigFile(path, parsed, scope, state);
+}
+
+async function readConfigFile(path: string, scope: "global" | "project", state: McpConfigState): Promise<void> {
+	if (!(await pathExists(path))) return;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(stripBom(await fsPromises.readFile(path, "utf8")));
+	} catch {
+		state.errors.push(`${path}: failed to read or parse MCP configuration`);
+		return;
+	}
+	applyParsedConfigFile(path, parsed, scope, state);
+}
+
+function finalizeLoadedMcpConfig(state: McpConfigState, projectConfig: string | undefined): LoadedMcpConfig {
 	return {
 		servers: [...state.servers.values()],
 		...(state.autoEnableCodemode === undefined ? {} : { autoEnableCodemode: state.autoEnableCodemode }),
@@ -158,26 +178,43 @@ export function loadMcpConfig(options: { agentDir: string; cwd: string; projectT
 	};
 }
 
+/**
+ * Load global and (when trusted) project MCP configuration. Disabled servers are included with
+ * `enabled: false`, so they can be enabled again.
+ */
+export function loadMcpConfig(options: { agentDir: string; cwd: string; projectTrusted: boolean }): LoadedMcpConfig {
+	const state: McpConfigState = { servers: new Map(), errors: [] };
+	readConfigFileSync(join(options.agentDir, "mcp.json"), "global", state);
+	const projectConfig = options.projectTrusted ? join(options.cwd, CONFIG_DIR_NAME, "mcp.json") : undefined;
+	if (projectConfig) readConfigFileSync(projectConfig, "project", state);
+	return finalizeLoadedMcpConfig(state, projectConfig);
+}
+
+export async function loadMcpConfigAsync(options: {
+	agentDir: string;
+	cwd: string;
+	projectTrusted: boolean;
+}): Promise<LoadedMcpConfig> {
+	const state: McpConfigState = { servers: new Map(), errors: [] };
+	await readConfigFile(join(options.agentDir, "mcp.json"), "global", state);
+	const projectConfig = options.projectTrusted ? join(options.cwd, CONFIG_DIR_NAME, "mcp.json") : undefined;
+	if (projectConfig) await readConfigFile(projectConfig, "project", state);
+	return finalizeLoadedMcpConfig(state, projectConfig);
+}
+
 /** Settings `/mcp` changes. `enabled: true` and `exposure: "codemode"` are the defaults and remove the key. */
 export interface McpServerConfigPatch {
 	enabled?: boolean;
 	exposure?: McpExposure;
 }
 
-/**
- * Change one server's settings in the `mcp.json` that defines or overrides it. With `override`, a
- * missing entry is added as an override. Overrides keep default values, since they replace the global
- * server's. Other content is kept; the file is rewritten with its indentation.
- */
-export function updateMcpServerConfig(
+function patchMcpServerEntry(
 	path: string,
 	name: string,
 	patch: McpServerConfigPatch,
-	options: { override?: boolean } = {},
-): void {
-	if (RESERVED_SERVER_NAMES.has(name))
-		throw new Error(`Invalid MCP server name "${name}": reserved object property names are not allowed`);
-	editMcpServers(path, (servers, parsed) => {
+	options: { override?: boolean },
+): (servers: Record<string, unknown> | undefined, parsed: Record<string, unknown>) => boolean {
+	return (servers, parsed) => {
 		let server: unknown = servers && Object.hasOwn(servers, name) ? servers[name] : undefined;
 		if (server === undefined && options.override) {
 			server = {};
@@ -194,7 +231,34 @@ export function updateMcpServerConfig(
 			else server.exposure = patch.exposure;
 		}
 		return true;
-	});
+	};
+}
+
+/**
+ * Change one server's settings in the `mcp.json` that defines or overrides it. With `override`, a
+ * missing entry is added as an override. Overrides keep default values, since they replace the global
+ * server's. Other content is kept; the file is rewritten with its indentation.
+ */
+export function updateMcpServerConfig(
+	path: string,
+	name: string,
+	patch: McpServerConfigPatch,
+	options: { override?: boolean } = {},
+): void {
+	if (RESERVED_SERVER_NAMES.has(name))
+		throw new Error(`Invalid MCP server name "${name}": reserved object property names are not allowed`);
+	editMcpServersSync(path, patchMcpServerEntry(path, name, patch, options));
+}
+
+export async function updateMcpServerConfigAsync(
+	path: string,
+	name: string,
+	patch: McpServerConfigPatch,
+	options: { override?: boolean } = {},
+): Promise<void> {
+	if (RESERVED_SERVER_NAMES.has(name))
+		throw new Error(`Invalid MCP server name "${name}": reserved object property names are not allowed`);
+	await editMcpServers(path, patchMcpServerEntry(path, name, patch, options));
 }
 
 /**
@@ -203,9 +267,21 @@ export function updateMcpServerConfig(
  */
 export function addMcpServerConfig(path: string, name: string, config: McpServerConfig): boolean {
 	let replaced = false;
-	editMcpServers(path, (servers, parsed) => {
+	editMcpServersSync(path, (servers, parsed) => {
 		const target = servers ?? {};
-		replaced = target[name] !== undefined;
+		replaced = Object.hasOwn(target, name) && target[name] !== undefined;
+		target[name] = config;
+		parsed.mcpServers = target;
+		return true;
+	});
+	return replaced;
+}
+
+export async function addMcpServerConfigAsync(path: string, name: string, config: McpServerConfig): Promise<boolean> {
+	let replaced = false;
+	await editMcpServers(path, (servers, parsed) => {
+		const target = servers ?? {};
+		replaced = Object.hasOwn(target, name) && target[name] !== undefined;
 		target[name] = config;
 		parsed.mcpServers = target;
 		return true;
@@ -215,10 +291,11 @@ export function addMcpServerConfig(path: string, name: string, config: McpServer
 
 /** Remove a server from an `mcp.json`. Returns false when the file does not define it. */
 export function removeMcpServerConfig(path: string, name: string): boolean {
+	assertNoPendingAsyncEdit(path);
 	if (!existsSync(path)) return false;
 	let removed = false;
-	editMcpServers(path, (servers) => {
-		if (!servers || servers[name] === undefined) return false;
+	editMcpServersSync(path, (servers) => {
+		if (!servers || !Object.hasOwn(servers, name) || servers[name] === undefined) return false;
 		delete servers[name];
 		removed = true;
 		return true;
@@ -226,22 +303,126 @@ export function removeMcpServerConfig(path: string, name: string): boolean {
 	return removed;
 }
 
-/**
- * Read an `mcp.json` (an empty config when missing), let `edit` change its `mcpServers`, and write
- * it back with its indentation when `edit` returns true. Other content is kept.
- */
-function editMcpServers(
+export async function removeMcpServerConfigAsync(path: string, name: string): Promise<boolean> {
+	let removed = false;
+	await editMcpServers(path, (servers) => {
+		if (!servers || !Object.hasOwn(servers, name) || servers[name] === undefined) return false;
+		delete servers[name];
+		removed = true;
+		return true;
+	});
+	return removed;
+}
+
+function serializeEditedMcpServers(
 	path: string,
+	text: string | undefined,
 	edit: (servers: Record<string, unknown> | undefined, parsed: Record<string, unknown>) => boolean,
-): void {
-	const text = existsSync(path) ? stripBom(readFileSync(path, "utf8")) : undefined;
+): string | undefined {
 	const parsed: unknown = text === undefined ? {} : JSON.parse(text);
 	if (!isRecord(parsed) || (parsed.mcpServers !== undefined && !isRecord(parsed.mcpServers))) {
 		throw new Error(`${path}: expected an object with an "mcpServers" object`);
 	}
 	const servers = isRecord(parsed.mcpServers) ? parsed.mcpServers : undefined;
-	if (!edit(servers, parsed)) return;
+	if (!edit(servers, parsed)) return undefined;
 	const indent = (text && /^([ \t]+)\S/m.exec(text)?.[1]) || "  ";
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(parsed, null, indent)}\n`);
+	return `${JSON.stringify(parsed, null, indent)}\n`;
+}
+
+const pendingAsyncPaths = new Map<string, number>();
+
+function trackPendingAsyncPath(path: string, delta: 1 | -1): void {
+	const next = (pendingAsyncPaths.get(path) ?? 0) + delta;
+	if (next <= 0) pendingAsyncPaths.delete(path);
+	else pendingAsyncPaths.set(path, next);
+}
+
+function assertNoPendingAsyncEdit(path: string): void {
+	if (pendingAsyncPaths.size === 0) return;
+	const resolvedPath = resolve(path);
+	const target = settingsFileTarget(resolvedPath);
+	const conflicted =
+		pendingAsyncPaths.has(resolvedPath) ||
+		pendingAsyncPaths.has(target) ||
+		[...pendingAsyncPaths.keys()].some((pendingPath) => {
+			try {
+				return settingsFileTarget(pendingPath) === target;
+			} catch {
+				return pendingPath === resolvedPath;
+			}
+		});
+	if (conflicted) {
+		throw new Error(
+			`Cannot synchronously edit ${path} while an asynchronous MCP configuration edit is in progress; await addMcpServerConfigAsync, updateMcpServerConfigAsync, or removeMcpServerConfigAsync instead`,
+		);
+	}
+}
+
+function editMcpServersSync(
+	path: string,
+	edit: (servers: Record<string, unknown> | undefined, parsed: Record<string, unknown>) => boolean,
+): void {
+	assertNoPendingAsyncEdit(path);
+	const target = settingsFileTarget(resolve(path));
+	const text = existsSync(target) ? stripBom(readFileSync(target, "utf8")) : undefined;
+	const output = serializeEditedMcpServers(path, text, edit);
+	if (output === undefined) return;
+	mkdirSync(dirname(target), { recursive: true });
+	writeSettingsFile(target, output);
+}
+
+const pendingEdits = new Map<string, Promise<void>>();
+let editRegistrationQueue = Promise.resolve();
+
+function editMcpServers(
+	path: string,
+	edit: (servers: Record<string, unknown> | undefined, parsed: Record<string, unknown>) => boolean,
+): Promise<void> {
+	const resolvedPath = resolve(path);
+	trackPendingAsyncPath(resolvedPath, 1);
+	const registration = editRegistrationQueue.then(async () => {
+		const target = await settingsFileTargetAsync(resolvedPath);
+		trackPendingAsyncPath(target, 1);
+		const previous = pendingEdits.get(target) ?? Promise.resolve();
+		let releaseNext!: () => void;
+		const nextGate = new Promise<void>((resolveGate) => {
+			releaseNext = resolveGate;
+		});
+		const chained = previous.then(() => nextGate);
+		pendingEdits.set(target, chained);
+		return { target, previous, chained, releaseNext };
+	});
+	editRegistrationQueue = registration.then(
+		() => undefined,
+		() => undefined,
+	);
+	return (async () => {
+		let registered: Awaited<typeof registration> | undefined;
+		try {
+			registered = await registration;
+			await registered.previous;
+			await rewriteMcpServers(path, registered.target, edit);
+		} finally {
+			trackPendingAsyncPath(resolvedPath, -1);
+			if (registered !== undefined) {
+				trackPendingAsyncPath(registered.target, -1);
+				registered.releaseNext();
+				if (pendingEdits.get(registered.target) === registered.chained) {
+					pendingEdits.delete(registered.target);
+				}
+			}
+		}
+	})();
+}
+
+async function rewriteMcpServers(
+	path: string,
+	target: string,
+	edit: (servers: Record<string, unknown> | undefined, parsed: Record<string, unknown>) => boolean,
+): Promise<void> {
+	const text = (await pathExists(target)) ? stripBom(await fsPromises.readFile(target, "utf8")) : undefined;
+	const output = serializeEditedMcpServers(path, text, edit);
+	if (output === undefined) return;
+	await fsPromises.mkdir(dirname(target), { recursive: true });
+	await writeSettingsFileAsync(target, output);
 }

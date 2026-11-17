@@ -1,8 +1,19 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { JsonWireValue } from "./framing.js";
 import { BROKER_STORAGE_ENV } from "./paths.js";
+
+function normalizeSharedStorageSetting(parsed: JsonWireValue | undefined): Record<string, JsonWireValue> | undefined {
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+	const selection = parsed;
+	if (selection.adapter === undefined) {
+		if (selection.memory === true && !selection.path) return undefined;
+		if (selection.path === ":memory:") return undefined;
+	}
+	return selection;
+}
 
 /**
  * The raw shared `storage` selection, read without the host package so the broker stays self-contained: the
@@ -28,13 +39,24 @@ export function readSharedStorageSetting(
 	} catch {
 		return undefined;
 	}
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-	const selection = parsed;
-	if (selection.adapter === undefined) {
-		if (selection.memory === true && !selection.path) return undefined;
-		if (selection.path === ":memory:") return undefined;
+	return normalizeSharedStorageSetting(parsed);
+}
+
+export async function readSharedStorageSettingAsync(
+	agentDir: string,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<Record<string, JsonWireValue> | undefined> {
+	const processSelection = env[BROKER_STORAGE_ENV];
+	let parsed: JsonWireValue | undefined;
+	try {
+		parsed =
+			processSelection === undefined || processSelection.length === 0
+				? (JSON.parse(await readFile(join(agentDir, "settings.json"), "utf8")) as { storage?: JsonWireValue }).storage
+				: JSON.parse(processSelection);
+	} catch {
+		return undefined;
 	}
-	return selection;
+	return normalizeSharedStorageSetting(parsed);
 }
 
 /** Where `readSharedStorageSetting` takes the selection from in this environment. */

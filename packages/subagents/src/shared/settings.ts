@@ -1,6 +1,6 @@
 /** Shared behavior, progress, and task instruction helpers. */
 
-import * as fs from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentConfig } from "../agents/agents.js";
 import { INITIAL_PROGRESS_CONTENT } from "./progress-content.js";
@@ -80,9 +80,9 @@ export function buildReadInstruction(reads: string[] | false | undefined, cwd: s
 	return `[Read from: ${files.join(", ")}]`;
 }
 
-export function writeInitialProgressFile(progressDir: string): void {
-	fs.mkdirSync(progressDir, { recursive: true });
-	fs.writeFileSync(path.join(progressDir, "progress.md"), INITIAL_PROGRESS_CONTENT);
+export async function writeInitialProgressFile(progressDir: string): Promise<void> {
+	await mkdir(progressDir, { recursive: true });
+	await writeFile(path.join(progressDir, "progress.md"), INITIAL_PROGRESS_CONTENT);
 }
 
 export function injectSingleProgressInstruction(task: string, progressDir: string): string {

@@ -190,14 +190,15 @@ function formatListRecord(
 	const lines = rawText.split("\n");
 	const sessionEntries: { name: string; status: string; isSelf: boolean }[] = [];
 	for (const line of lines) {
-		const match = line.match(/^- `([^`]+)`(?:\s+\[([^\]]+)\])?.*?(?:\s+name:\s+(\S+))?$/);
+		const match = line.match(/^- `([^`]+)`(?:\s+\[([^\]]+)\])?/);
 		if (!match) continue;
+		const named = /\sname:\s+(\S+)$/.exec(line.slice(match[0].length));
 		const id = match[1] ?? "";
 		const tags = (match[2] ?? "")
 			.split(",")
 			.map((tag) => tag.trim())
 			.filter(Boolean);
-		const name = terminalSafeLabel(match[3] ?? id.slice(0, 8));
+		const name = terminalSafeLabel(named?.[1] ?? id.slice(0, 8));
 		const isSelf = tags.includes("self");
 		const status = tags.some((tag) => tag === "idle")
 			? "idle"

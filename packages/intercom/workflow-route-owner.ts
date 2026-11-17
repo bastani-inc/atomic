@@ -9,7 +9,7 @@ import {
 } from "./broker/client.js";
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
 import { registerWithBrokerSuccessor } from "./broker-successor-retry.js";
-import { loadConfig } from "./config.js";
+import { loadConfigAsync } from "./config.js";
 import { jitteredReconnectDelayMs } from "./reconnect-backoff.js";
 import { isIntercomBrokerRetiring } from "./recoverable-disconnect.js";
 import type {
@@ -80,7 +80,7 @@ function closedError(): Error {
 
 export function createWorkflowRouteOwner(cwd: string) {
 	const events = createEventBus();
-	const config = loadConfig();
+	const configPromise = loadConfigAsync();
 	const id = randomUUID();
 	const routes = new Map<string, RouteState>();
 	const connections = new Map<string, RouteConnection>();
@@ -144,6 +144,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 	/** One registration of a new client for `connection`, after spawning the broker when none is running. */
 	async function register(connection: RouteConnection, extensionDir: string): Promise<IntercomClient> {
 		if (connections.get(connection.key) !== connection) throw closedError();
+		const config = await configPromise;
 		await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs, extensionDir);
 		if (connections.get(connection.key) !== connection) throw closedError();
 		const client = new IntercomClient(`${id}:pending-stage-route:${connection.key}`, {

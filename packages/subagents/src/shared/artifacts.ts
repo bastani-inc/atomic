@@ -1,8 +1,9 @@
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { ensurePrivateTempDirAsync, getAgentConfigPaths } from "@bastani/atomic";
 import { appendToActiveEventWriter } from "./event-jsonl-writer.js";
 import { publishFileExclusive, unlinkIfPresent } from "./exclusive-file-publication.js";
+import { pathExists as exists } from "./path-exists.js";
 import type { ArtifactPaths } from "./types.js";
 
 const CLEANUP_MARKER_FILE = ".last-cleanup";
@@ -39,66 +40,66 @@ export function getArtifactPaths(artifactsDir: string, runId: string, agent: str
 	};
 }
 
-export function ensureArtifactsDir(dir: string): void {
-	fs.mkdirSync(dir, { recursive: true });
+export async function ensureArtifactsDir(dir: string): Promise<void> {
+	await fs.mkdir(dir, { recursive: true });
 }
 
-export function writeArtifact(filePath: string, content: string): void {
-	fs.writeFileSync(filePath, content, "utf-8");
+export async function writeArtifact(filePath: string, content: string): Promise<void> {
+	await fs.writeFile(filePath, content, "utf-8");
 }
 
-export function writeMetadata(filePath: string, metadata: object): void {
-	fs.writeFileSync(filePath, JSON.stringify(metadata, null, 2), "utf-8");
+export async function writeMetadata(filePath: string, metadata: object): Promise<void> {
+	await fs.writeFile(filePath, JSON.stringify(metadata, null, 2), "utf-8");
 }
 
-export function appendJsonl(filePath: string, line: string): void {
-	if (!appendToActiveEventWriter(filePath, line)) fs.appendFileSync(filePath, `${line}\n`);
+export async function appendJsonl(filePath: string, line: string): Promise<void> {
+	if (!appendToActiveEventWriter(filePath, line)) await fs.appendFile(filePath, `${line}\n`);
 }
 
-function cleanupOldArtifactEntry(entryPath: string, cutoff: number): void {
+async function cleanupOldArtifactEntry(entryPath: string, cutoff: number): Promise<void> {
 	try {
-		const stat = fs.lstatSync(entryPath);
+		const stat = await fs.lstat(entryPath);
 		if (stat.isDirectory()) {
-			for (const child of fs.readdirSync(entryPath)) {
-				cleanupOldArtifactEntry(path.join(entryPath, child), cutoff);
+			for (const child of await fs.readdir(entryPath)) {
+				await cleanupOldArtifactEntry(path.join(entryPath, child), cutoff);
 			}
-			if (fs.readdirSync(entryPath).length === 0 && stat.mtimeMs < cutoff) {
-				fs.rmSync(entryPath, { recursive: true, force: true });
+			if ((await fs.readdir(entryPath)).length === 0 && stat.mtimeMs < cutoff) {
+				await fs.rmdir(entryPath);
 			}
 			return;
 		}
-		if (stat.mtimeMs < cutoff) fs.unlinkSync(entryPath);
+		if (stat.mtimeMs < cutoff) await fs.unlink(entryPath);
 	} catch {
 		// Artifact cleanup is best-effort housekeeping. Skip entries that disappear
 		// or become unreadable while scanning so one bad entry does not block the rest.
 	}
 }
 
-export function cleanupOldArtifacts(dir: string, maxAgeDays: number): void {
-	if (!fs.existsSync(dir)) return;
+export async function cleanupOldArtifacts(dir: string, maxAgeDays: number): Promise<void> {
+	if (!(await exists(dir))) return;
 
 	const markerPath = path.join(dir, CLEANUP_MARKER_FILE);
 	const now = Date.now();
 
-	if (fs.existsSync(markerPath)) {
-		const stat = fs.statSync(markerPath);
+	if (await exists(markerPath)) {
+		const stat = await fs.stat(markerPath);
 		if (now - stat.mtimeMs < CLEANUP_INTERVAL_MS) return;
 	}
 
 	const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
 	const cutoff = now - maxAgeMs;
 
-	for (const file of fs.readdirSync(dir)) {
+	for (const file of await fs.readdir(dir)) {
 		if (file === CLEANUP_MARKER_FILE) continue;
-		cleanupOldArtifactEntry(path.join(dir, file), cutoff);
+		await cleanupOldArtifactEntry(path.join(dir, file), cutoff);
 	}
 
-	fs.writeFileSync(markerPath, String(now));
+	await fs.writeFile(markerPath, String(now));
 }
 
-function markerIsFresh(markerPath: string, now: number): boolean {
+async function markerIsFresh(markerPath: string, now: number): Promise<boolean> {
 	try {
-		return now - fs.statSync(markerPath).mtimeMs < CLEANUP_INTERVAL_MS;
+		return now - (await fs.stat(markerPath)).mtimeMs < CLEANUP_INTERVAL_MS;
 	} catch {
 		return false;
 	}
@@ -111,29 +112,29 @@ function markerIsFresh(markerPath: string, now: number): boolean {
  * carries the caller's token, so a holder whose stale lock was taken over cannot
  * erase the new holder's lock.
  */
-function acquireCleanupLock(lockPath: string, now: number): string | null {
+async function acquireCleanupLock(lockPath: string, now: number): Promise<string | null> {
 	const token = `${process.pid}.${now}.${Math.random().toString(36).slice(2)}`;
 	const source = `${lockPath}.${token}.tmp`;
 	try {
-		fs.writeFileSync(source, token);
+		await fs.writeFile(source, token);
 		for (let attempt = 0; attempt < 2; attempt++) {
-			if (publishFileExclusive(source, lockPath) === "published") return token;
+			if ((await publishFileExclusive(source, lockPath)) === "published") return token;
 			let lockMtimeMs: number;
 			try {
-				lockMtimeMs = fs.statSync(lockPath).mtimeMs;
+				lockMtimeMs = (await fs.stat(lockPath)).mtimeMs;
 			} catch {
 				// The holder released between publish and stat; retry once.
 				continue;
 			}
 			if (now - lockMtimeMs < CLEANUP_LOCK_STALE_MS) return null;
-			if (!breakStaleLock(lockPath, lockMtimeMs)) return null;
+			if (!(await breakStaleLock(lockPath, lockMtimeMs))) return null;
 		}
 		return null;
 	} catch {
 		return null;
 	} finally {
 		try {
-			unlinkIfPresent(source);
+			await unlinkIfPresent(source);
 		} catch {
 			// Lock acquisition is best-effort; a leftover temp source is harmless.
 		}
@@ -146,65 +147,65 @@ function acquireCleanupLock(lockPath: string, now: number): string | null {
  * belongs to a new holder: it is handed back and the takeover is treated as
  * contention instead of deleting the fresh lock.
  */
-function breakStaleLock(lockPath: string, observedMtimeMs: number): boolean {
+async function breakStaleLock(lockPath: string, observedMtimeMs: number): Promise<boolean> {
 	const breakPath = `${lockPath}.break.${process.pid}.${Math.random().toString(36).slice(2)}`;
 	try {
-		fs.renameSync(lockPath, breakPath);
+		await fs.rename(lockPath, breakPath);
 	} catch {
 		// Another activation released or broke the lock first; contend for publish.
 		return false;
 	}
 	let displacedFreshLock = false;
 	try {
-		displacedFreshLock = fs.statSync(breakPath).mtimeMs !== observedMtimeMs;
+		displacedFreshLock = (await fs.stat(breakPath)).mtimeMs !== observedMtimeMs;
 	} catch {
 		displacedFreshLock = false;
 	}
 	try {
-		if (displacedFreshLock) publishFileExclusive(breakPath, lockPath);
+		if (displacedFreshLock) await publishFileExclusive(breakPath, lockPath);
 	} catch {
 		// Best-effort hand-back. A holder whose lock could not be restored notices the
 		// loss at its next ownership recheck and aborts its scan.
 	}
 	try {
-		unlinkIfPresent(breakPath);
+		await unlinkIfPresent(breakPath);
 	} catch {
 		// A leftover break file is harmless.
 	}
 	return !displacedFreshLock;
 }
 
-function ownsCleanupLock(lockPath: string, token: string): boolean {
+async function ownsCleanupLock(lockPath: string, token: string): Promise<boolean> {
 	try {
-		return fs.readFileSync(lockPath, "utf-8") === token;
+		return (await fs.readFile(lockPath, "utf-8")) === token;
 	} catch {
 		return false;
 	}
 }
 
-function releaseCleanupLock(lockPath: string, token: string): void {
+async function releaseCleanupLock(lockPath: string, token: string): Promise<void> {
 	try {
-		if (fs.readFileSync(lockPath, "utf-8") === token) fs.unlinkSync(lockPath);
+		if ((await fs.readFile(lockPath, "utf-8")) === token) await fs.unlink(lockPath);
 	} catch {
 		// Lock release is best-effort; a failure only means the lock goes stale and is
 		// broken by a later scan, and must never abort cleanup of the remaining roots.
 	}
 }
 
-function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
-	if (!fs.existsSync(sessionsBase)) return;
+async function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): Promise<void> {
+	if (!(await exists(sessionsBase))) return;
 
 	const now = Date.now();
 	const markerPath = path.join(sessionsBase, CLEANUP_MARKER_FILE);
-	if (markerIsFresh(markerPath, now)) return;
+	if (await markerIsFresh(markerPath, now)) return;
 
 	const lockPath = path.join(sessionsBase, CLEANUP_LOCK_FILE);
-	const lockToken = acquireCleanupLock(lockPath, now);
+	const lockToken = await acquireCleanupLock(lockPath, now);
 	if (lockToken === null) return;
 	try {
 		let dirs: string[];
 		try {
-			dirs = fs.readdirSync(sessionsBase);
+			dirs = await fs.readdir(sessionsBase);
 		} catch {
 			// Session artifact cleanup is best-effort. If the sessions root cannot be read,
 			// skip cleanup instead of failing extension startup.
@@ -217,10 +218,10 @@ function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
 			// lock back must not keep deleting alongside the new lock owner; recheck
 			// ownership before every destructive per-session cleanup and abort the
 			// scan as soon as the lock is lost.
-			if (!ownsCleanupLock(lockPath, lockToken)) return;
+			if (!(await ownsCleanupLock(lockPath, lockToken))) return;
 			const artifactsDir = path.join(sessionsBase, dir, "subagent-artifacts");
 			try {
-				cleanupOldArtifacts(artifactsDir, maxAgeDays);
+				await cleanupOldArtifacts(artifactsDir, maxAgeDays);
 			} catch {
 				// Session cleanup is best-effort. Keep going so one unreadable session dir
 				// does not block cleanup for the rest.
@@ -228,12 +229,12 @@ function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
 		}
 
 		try {
-			if (ownsCleanupLock(lockPath, lockToken)) fs.writeFileSync(markerPath, String(now));
+			if (await ownsCleanupLock(lockPath, lockToken)) await fs.writeFile(markerPath, String(now));
 		} catch {
 			// Failing to record the marker only means the scan may repeat sooner.
 		}
 	} finally {
-		releaseCleanupLock(lockPath, lockToken);
+		await releaseCleanupLock(lockPath, lockToken);
 	}
 }
 
@@ -242,11 +243,11 @@ export async function cleanupAllArtifactDirs(maxAgeDays: number, sessionsRoots?:
 	// leaking into the real global (and legacy) session roots; only the env/global
 	// derivation scans those.
 	for (const sessionsBase of sessionsRoots ?? getAgentConfigPaths("sessions")) {
-		cleanupSessionsRoot(sessionsBase, maxAgeDays);
+		await cleanupSessionsRoot(sessionsBase, maxAgeDays);
 	}
 
 	try {
-		cleanupOldArtifacts(await sessionlessArtifactsDir(), maxAgeDays);
+		await cleanupOldArtifacts(await sessionlessArtifactsDir(), maxAgeDays);
 	} catch {
 		// No private session-less artifact directory; there is nothing of ours to clean.
 	}

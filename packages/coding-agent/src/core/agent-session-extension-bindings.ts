@@ -1,6 +1,7 @@
 import { basename, dirname } from "node:path";
 import type { Provider } from "@bastani/atomic-ai";
 import { clampThinkingLevel, resetApiProviders } from "@bastani/atomic-ai/compat";
+import { isPowerShellAvailableAsync } from "../utils/shell.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { authForStream } from "./agent-session-models.ts";
@@ -56,7 +57,7 @@ import type { SlashCommandInfo } from "./slash-commands.js";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { notifyAgentPanelSourceHubRebound } from "./tasks/agent-panel-source.ts";
 import { activatesOnRegistration, isRegisteredToolAllowed, isToolActivatable } from "./tool-selection.ts";
-import { getDefaultToolNames } from "./tools/index.js";
+import { defaultToolNamesFor } from "./tools/index.js";
 import { trackTerminalWorkflowSummary } from "./workflow-summary-lifecycle.ts";
 
 class ExtensionPublicationGate {
@@ -904,8 +905,10 @@ async function reloadOwnedGeneration(
 		await this.settingsManager.reload();
 		resetApiProviders();
 		await this._resourceLoader.reload();
+		const powerShellAvailable = await isPowerShellAvailableAsync();
+		const builtinDefaultToolNames = defaultToolNamesFor(powerShellAvailable);
 		const defaultTools = applyToolModifiers(
-			this.settingsManager.getDefaultTools() ?? getDefaultToolNames(),
+			this.settingsManager.getDefaultToolsWith(builtinDefaultToolNames) ?? builtinDefaultToolNames,
 			this._defaultToolModifiers,
 		);
 		for (const name of this.getActiveToolNames()) this._pendingToolNames.add(name);
@@ -914,6 +917,7 @@ async function reloadOwnedGeneration(
 			activeToolNames: activeToolsAfterReload(defaultTools),
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
+			powerShellAvailable,
 		});
 		if (reason === "startup") this._restoreToolsFromTranscript({ startup: true });
 		this._appliedDefaultTools = new Set(defaultTools);
@@ -940,8 +944,10 @@ async function reloadOwnedGeneration(
 
 	const settingsTransaction = await this.settingsManager.prepareReload();
 	const resourceTransaction = await prepareResourceReload(settingsTransaction.settingsManager);
+	const powerShellAvailable = await isPowerShellAvailableAsync();
+	const builtinDefaultToolNames = defaultToolNamesFor(powerShellAvailable);
 	const defaultTools = applyToolModifiers(
-		settingsTransaction.settingsManager.getDefaultTools() ?? getDefaultToolNames(),
+		settingsTransaction.settingsManager.getDefaultToolsWith(builtinDefaultToolNames) ?? builtinDefaultToolNames,
 		this._defaultToolModifiers,
 	);
 	const errors = resourceTransaction.loader.getExtensions().errors;
@@ -1068,6 +1074,7 @@ async function reloadOwnedGeneration(
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 			preserveRunner: true,
+			powerShellAvailable,
 		});
 		if (reason === "startup") this._restoreToolsFromTranscript({ startup: true });
 		this._appliedDefaultTools = new Set(defaultTools);
@@ -1111,6 +1118,7 @@ async function reloadOwnedGeneration(
 export async function completeStartupResources(this: AgentSession, resourceLoader: ResourceLoader): Promise<void> {
 	assertSessionOpen(this);
 	return trackSessionWork(this, async () => {
+		const powerShellAvailable = await isPowerShellAvailableAsync();
 		this._resourceLoader = resourceLoader;
 		const startNewcomers = this._extensionRunner.attachStartupExtensions(resourceLoader.getExtensions().extensions);
 		const recorded = preservesInitialToolLoadout(this) ? undefined : recordedToolLoadout(this);
@@ -1120,6 +1128,7 @@ export async function completeStartupResources(this: AgentSession, resourceLoade
 			activeToolNames: this.getActiveToolNames(),
 			includeAllExtensionTools: !recorded,
 			preserveRunner: true,
+			powerShellAvailable,
 		});
 		if (recorded) {
 			// Tools this completion registers for the first time were registered after the branch recorded its

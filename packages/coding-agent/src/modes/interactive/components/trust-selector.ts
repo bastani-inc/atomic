@@ -1,8 +1,7 @@
 import {
-	getProjectTrustOptions,
-	getProjectTrustPath,
 	type ProjectTrustOption,
 	type ProjectTrustStoreEntry,
+	projectTrustOptionsFor,
 } from "../../../core/trust-manager.ts";
 import { FramedSelector } from "./selector.ts";
 
@@ -10,18 +9,19 @@ export type TrustSelection = Pick<ProjectTrustOption, "trusted" | "updates">;
 
 export interface TrustSelectorOptions {
 	cwd: string;
+	trustPath: string;
 	savedDecision: ProjectTrustStoreEntry | null;
 	projectTrusted: boolean;
 	onSelect: (selection: TrustSelection) => void;
 	onCancel: () => void;
 }
 
-function formatDecision(cwd: string, decision: ProjectTrustStoreEntry | null): string {
+function formatDecision(trustPath: string, decision: ProjectTrustStoreEntry | null): string {
 	if (decision === null) {
 		return "none";
 	}
 	const label = decision.decision ? "trusted" : "untrusted";
-	if (decision.path !== getProjectTrustPath(cwd)) {
+	if (decision.path !== trustPath) {
 		return `${label} (inherited from ${decision.path})`;
 	}
 	return `${label} (${decision.path})`;
@@ -37,13 +37,13 @@ function isSavedOption(option: ProjectTrustOption, savedDecision: ProjectTrustSt
 
 export class TrustSelectorComponent extends FramedSelector<ProjectTrustOption> {
 	constructor(options: TrustSelectorOptions) {
-		const trustOptions = getProjectTrustOptions(options.cwd);
+		const trustOptions = projectTrustOptionsFor(options.trustPath);
 		const anySaved = trustOptions.some((option) => isSavedOption(option, options.savedDecision));
 		super({
 			title: "Project trust",
 			subtitle: [
 				options.cwd,
-				`Saved decision: ${formatDecision(options.cwd, options.savedDecision)}`,
+				`Saved decision: ${formatDecision(options.trustPath, options.savedDecision)}`,
 				`Current session: ${options.projectTrusted ? "trusted" : "untrusted"}`,
 			].join("\n"),
 			numbered: true,

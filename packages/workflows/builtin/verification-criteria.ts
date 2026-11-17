@@ -66,7 +66,7 @@ export class EmptyCriterion extends RubricError {
   }
 }
 
-const CRITERION_ID_ANCHOR = /^(.*?)\s*\{#([A-Za-z0-9_-]+)\}\s*$/;
+const CRITERION_ID_ANCHOR = /^(.*?)(?<!\s)\s*\{#([A-Za-z0-9_-]+)\}\s*$/;
 const SLUG_MAX_LENGTH = 40;
 
 function slug_id(text: string): string {

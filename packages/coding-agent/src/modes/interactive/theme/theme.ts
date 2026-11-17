@@ -39,6 +39,7 @@ export {
 	getThemeByName,
 	loadThemeFromContent,
 	loadThemeFromPath,
+	refreshCustomThemes,
 	setRegisteredThemes,
 	type ThemeInfo,
 } from "./theme-loading.ts";

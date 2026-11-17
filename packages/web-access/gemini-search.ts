@@ -1,12 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import { getApiKey, API_BASE, DEFAULT_MODEL } from "./gemini-api.js";
 import { isGeminiWebAvailable, queryWithCookies } from "./gemini-web.js";
+import { createAsyncOwnerState, readWebSearchConfigFile } from "./gemini-web-config.ts";
 import { isPerplexityAvailable, searchWithPerplexity, type SearchResult, type SearchResponse, type SearchOptions } from "./perplexity.js";
 import { hasExaApiKey, isExaAvailable, searchWithExa } from "./exa.js";
-import { findReadableConfigPath } from "./config-paths.ts";
-import { createOwnerState } from "./owner-state.js";
 
 export type SearchProvider = "auto" | "perplexity" | "gemini" | "exa";
 export type ResolvedSearchProvider = Exclude<SearchProvider, "auto">;
@@ -15,27 +13,13 @@ export interface AttributedSearchResponse extends SearchResponse {
 	provider: ResolvedSearchProvider;
 }
 
-const CONFIG_PATH = findReadableConfigPath();
-
-const getSearchConfig = createOwnerState<{ searchProvider: SearchProvider; searchModel?: string }>(() => {
-	if (!existsSync(CONFIG_PATH)) return { searchProvider: "auto" };
-
-	const rawText = readFileSync(CONFIG_PATH, "utf-8");
-	let raw: {
+const getSearchConfig = createAsyncOwnerState<{ searchProvider: SearchProvider; searchModel?: string }>(async () => {
+	const raw = await readWebSearchConfigFile<{
 		searchProvider?: SearchProvider;
 		provider?: SearchProvider;
 		searchModel?: unknown;
-	};
-	try {
-		raw = JSON.parse(rawText) as {
-			searchProvider?: SearchProvider;
-			provider?: SearchProvider;
-			searchModel?: unknown;
-		};
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`Failed to parse ${CONFIG_PATH}: ${message}`);
-	}
+	}>();
+	if (!raw) return { searchProvider: "auto" };
 
 	return {
 		searchProvider: normalizeSearchProvider(raw.searchProvider ?? raw.provider),
@@ -112,7 +96,7 @@ async function searchWithGemini(
 }
 
 export async function search(query: string, options: FullSearchOptions = {}): Promise<AttributedSearchResponse> {
-	const config = getSearchConfig();
+	const config = await getSearchConfig();
 	const provider = options.provider ?? config.searchProvider;
 
 	if (provider === "perplexity") {
@@ -131,7 +115,7 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 	}
 
 	if (provider === "exa") {
-		const exaApiKeyConfigured = hasExaApiKey();
+		const exaApiKeyConfigured = await hasExaApiKey();
 		try {
 			const result = await searchWithExa(query, options);
 			if (result && "exhausted" in result) {
@@ -154,7 +138,7 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 
 	const fallbackErrors: string[] = [];
 
-	if (provider !== "exa" && isExaAvailable()) {
+	if (provider !== "exa" && (await isExaAvailable())) {
 		try {
 			const result = await searchWithExa(query, options);
 			if (result && "answer" in result) return { ...result, provider: "exa" };
@@ -164,7 +148,7 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 		}
 	}
 
-	if (isPerplexityAvailable()) {
+	if (await isPerplexityAvailable()) {
 		try {
 			const result = await searchWithPerplexity(query, options);
 			return { ...result, provider: "perplexity" };
@@ -190,13 +174,13 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 }
 
 async function searchWithGeminiApi(query: string, options: SearchOptions = {}): Promise<SearchResponse | null> {
-	const apiKey = getApiKey();
+	const apiKey = await getApiKey();
 	if (!apiKey) return null;
 
 	const activityId = activityMonitor.logStart({ type: "api", query });
 
 	try {
-		const model = getSearchConfig().searchModel ?? DEFAULT_MODEL;
+		const model = (await getSearchConfig()).searchModel ?? DEFAULT_MODEL;
 		const body = {
 			contents: [{ parts: [{ text: query }] }],
 			tools: [{ google_search: {} }],

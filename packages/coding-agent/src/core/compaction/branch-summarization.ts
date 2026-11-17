@@ -21,12 +21,13 @@ import type { ContextEditEntry, ReadonlySessionManager, SessionEntry } from "../
 import { applyContextEdit } from "../session-manager-history.ts";
 import { estimateTokens } from "./compaction.ts";
 import {
+	collectFileOpsFromMessage,
 	computeFileLists,
 	createFileOps,
-	extractFileOpsFromMessage,
 	type FileOperations,
 	formatFileOperations,
 	normalizeFileOpPath,
+	normalizeFileOpsAsync,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversation,
 	truncateForSummary,
@@ -237,6 +238,18 @@ export function prepareBranchEntries(
 	tokenBudget: number = 0,
 	cwd?: string,
 ): BranchPreparation {
+	return collectBranchEntries(entries, tokenBudget, (path) => normalizeFileOpPath(path, cwd));
+}
+
+export function prepareBranchEntriesAsWritten(entries: SessionEntry[], tokenBudget: number = 0): BranchPreparation {
+	return collectBranchEntries(entries, tokenBudget, (path) => path);
+}
+
+function collectBranchEntries(
+	entries: SessionEntry[],
+	tokenBudget: number,
+	normalize: (path: string) => string,
+): BranchPreparation {
 	const messages: AgentMessage[] = [];
 	const fileOps = createFileOps();
 	const filteredEntries = entries;
@@ -249,12 +262,12 @@ export function prepareBranchEntries(
 		if (entry.type === "branch_summary" && !entry.fromHook && entry.details) {
 			const details = entry.details as BranchSummaryDetails;
 			if (Array.isArray(details.readFiles)) {
-				for (const f of details.readFiles) fileOps.read.add(normalizeFileOpPath(f, cwd));
+				for (const f of details.readFiles) fileOps.read.add(normalize(f));
 			}
 			if (Array.isArray(details.modifiedFiles)) {
 				// Modified files go into both edited and written for proper deduplication
 				for (const f of details.modifiedFiles) {
-					fileOps.edited.add(normalizeFileOpPath(f, cwd));
+					fileOps.edited.add(normalize(f));
 				}
 			}
 		}
@@ -273,7 +286,7 @@ export function prepareBranchEntries(
 		if (!message) continue;
 
 		// Extract file ops from assistant messages (tool calls)
-		extractFileOpsFromMessage(message, fileOps, cwd);
+		collectFileOpsFromMessage(message, fileOps, normalize);
 
 		const tokens = estimateTokens(message);
 
@@ -364,11 +377,12 @@ export async function generateBranchSummary(
 	const contextWindow = model.contextWindow || 128000;
 	const tokenBudget = contextWindow - reserveTokens;
 
-	const { messages, fileOps } = prepareBranchEntries(entries, tokenBudget, options.cwd);
+	const { messages, fileOps: writtenFileOps } = prepareBranchEntriesAsWritten(entries, tokenBudget);
 
 	if (messages.length === 0) {
 		return { summary: "No content to summarize" };
 	}
+	const fileOps = await normalizeFileOpsAsync(writtenFileOps, options.cwd);
 
 	// Transform to LLM-compatible messages, then serialize to text
 	// Serialization prevents the model from treating it as a conversation to continue

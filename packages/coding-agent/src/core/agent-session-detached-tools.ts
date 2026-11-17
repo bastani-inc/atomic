@@ -11,7 +11,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
 import { finalizeToolResult } from "./agent-session-tool-hooks.ts";
 import { uniquifyToolCallIds } from "./context-tool-pairing.js";
-import { reportDebug } from "./debug.ts";
+import { reportDebugAsync as reportDebug } from "./debug.ts";
 import { type ErrorFieldValue, serializeErrorCause } from "./error-contract.ts";
 import type { ExtensionToolContext } from "./extensions/context-types.ts";
 import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";

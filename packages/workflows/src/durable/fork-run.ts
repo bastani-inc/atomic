@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import {
 	assertSessionBlobStore,
@@ -184,26 +184,64 @@ function forkJournal(backend: DurableWorkflowBackend): JournalDurableBackend & {
 	};
 }
 
+interface ForkOptionsToValidate {
+	readonly fromStage?: unknown;
+	readonly inputs?: unknown;
+	readonly cwd?: unknown;
+	readonly carryMessages?: unknown;
+	readonly definition?: unknown;
+	readonly signal?: unknown;
+	/** Process-bound run options passed together with `localWorkers`, which a worker pool refuses. */
+	readonly processBound?: readonly string[];
+}
+
+interface ForkCwdCheck {
+	readonly directory: boolean;
+	readonly cause?: Error;
+}
+
+async function checkForkCwd(cwd: unknown): Promise<ForkCwdCheck> {
+	if (typeof cwd !== "string" || cwd.length === 0) return { directory: false };
+	try {
+		return { directory: (await stat(resolve(cwd))).isDirectory() };
+	} catch (error) {
+		return { directory: false, cause: error as Error };
+	}
+}
+
 /**
  * Checks `forkRun` options in one pass before any journal or session I/O, reporting every invalid
  * option together. The run id is resolved against the journal afterwards.
  */
-export function validateForkOptions(
+export async function validateForkOptions(
 	source: ForkConfigSource,
 	runId: unknown,
-	options: {
-		readonly fromStage?: unknown;
-		readonly inputs?: unknown;
-		readonly cwd?: unknown;
-		readonly carryMessages?: unknown;
-		readonly definition?: unknown;
-		readonly signal?: unknown;
-		/** Process-bound run options passed together with `localWorkers`, which a worker pool refuses. */
-		readonly processBound?: readonly string[];
-	},
+	options: ForkOptionsToValidate,
+): Promise<void> {
+	throwForkOptionIssues(
+		source,
+		runId,
+		options,
+		options.cwd === undefined ? undefined : await checkForkCwd(options.cwd),
+	);
+}
+
+export function validateForkOptionsWithoutCwd(
+	source: ForkConfigSource,
+	runId: unknown,
+	options: Omit<ForkOptionsToValidate, "cwd">,
+): void {
+	throwForkOptionIssues(source, runId, options, undefined);
+}
+
+function throwForkOptionIssues(
+	source: ForkConfigSource,
+	runId: unknown,
+	options: ForkOptionsToValidate,
+	cwd: ForkCwdCheck | undefined,
 ): void {
 	const issues: ForkConfigIssue[] = [];
-	let cause: Error | undefined;
+	const cause = cwd?.cause;
 	if (typeof runId !== "string" || runId.trim().length === 0)
 		issues.push({ field: "runId", expected: "a run id or 8-character prefix" });
 	if (options.fromStage !== undefined && (typeof options.fromStage !== "string" || options.fromStage.length === 0))
@@ -213,17 +251,7 @@ export function validateForkOptions(
 		(typeof options.inputs !== "object" || options.inputs === null || Array.isArray(options.inputs))
 	)
 		issues.push({ field: "inputs", expected: "an object of workflow inputs" });
-	if (options.cwd !== undefined) {
-		let directory = false;
-		if (typeof options.cwd === "string" && options.cwd.length > 0) {
-			try {
-				directory = statSync(resolve(options.cwd)).isDirectory();
-			} catch (error) {
-				cause = error as Error;
-			}
-		}
-		if (!directory) issues.push({ field: "cwd", expected: "an existing directory" });
-	}
+	if (cwd !== undefined && !cwd.directory) issues.push({ field: "cwd", expected: "an existing directory" });
 	if (options.carryMessages !== undefined && options.carryMessages !== "before" && options.carryMessages !== "all")
 		issues.push({ field: "carryMessages", expected: `"before" or "all"` });
 	if (options.definition !== undefined && !isWorkflowDefinition(options.definition))
@@ -1210,14 +1238,14 @@ function forkMessageEvent(entry: JournalEntry, ids: ForkIdentities): RunJournalS
 	} as RunEvent);
 }
 
-function forkHandle(
+async function forkHandle(
 	source: DurableWorkflowHandle,
 	ids: ForkIdentities,
 	request: ResolvedForkRequest,
 	selection: ForkSelection,
 	inputs: WorkflowInputValues,
 	definitionSource?: DurableWorkflowDefinitionSource,
-): DurableWorkflowHandle {
+): Promise<DurableWorkflowHandle> {
 	const {
 		transitionClaimId: _transitionClaimId,
 		rootWorkflowId: _rootWorkflowId,
@@ -1244,7 +1272,7 @@ function forkHandle(
 		...carried
 	} = source;
 	const sameCwd = forkKeepsWorkspace(source, request.cwd);
-	const branch = sameCwd ? sourceBranch : resolveInvocationGitBranch(request.cwd);
+	const branch = sameCwd ? sourceBranch : await resolveInvocationGitBranch(request.cwd);
 	const now = Date.now();
 	return {
 		...carried,
@@ -1359,7 +1387,7 @@ export async function forkDurableRun<
 	typedRequest: DurableForkRequest<WorkflowDefinition<TInputs, TOutputs, TRunInputs>>,
 ): Promise<DurableForkResult> {
 	const forkRequest = typedRequest as never as DurableForkRequest;
-	validateForkOptions(forkRequest.source, forkRequest.runId, { ...forkRequest, cwd: undefined });
+	validateForkOptionsWithoutCwd(forkRequest.source, forkRequest.runId, forkRequest);
 	if (forkRequest.cwd !== undefined && (typeof forkRequest.cwd !== "string" || forkRequest.cwd.length === 0))
 		throw new ForkConfigError({ source: forkRequest.source, field: "cwd", expected: "a directory path" });
 	let request = forkRequest as ResolvedForkRequest;
@@ -1390,7 +1418,7 @@ export async function forkDurableRun<
 			const checkpoints = selection.checkpoints.map((checkpoint) => forkCheckpoint(checkpoint, ids));
 			const messages = selection.messageEvents.map((entry) => forkMessageEvent(entry, ids));
 			const definitionSource = await resolveWorkflowDefinitionSource(definition, source.handle.definitionSource);
-			const handle = forkHandle(source.handle, ids, request, selection, inputs, definitionSource);
+			const handle = await forkHandle(source.handle, ids, request, selection, inputs, definitionSource);
 			const events: RunJournalSeedEvent[] = [
 				{ event: { type: E.runStarted, payload: handle as unknown as RunEvent["payload"] } as RunEvent },
 				...checkpoints.map((checkpoint) => ({

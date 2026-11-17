@@ -146,7 +146,9 @@ test("publisher retirement during the callback reporting yield fences the hook",
 	);
 	const runner = new ExtensionRunner([extension], runtime, process.cwd(), {} as never, {} as never);
 	setCallbackActivityReporter({
-		started: () => calls.push("reporting started"),
+		started: () => {
+			calls.push("reporting started");
+		},
 		finished: () => calls.push("reporting finished"),
 	});
 	try {

@@ -18,7 +18,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import lockfile from "proper-lockfile";
-import { createSessionCwdMatcher } from "../../../utils/canonical-path.ts";
+import { createSessionCwdMatcherAsync } from "../../../utils/canonical-path.ts";
 import { readLines } from "../../../utils/lines.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { validateSessionEntryStructure } from "./entry-structure.js";
@@ -1351,7 +1351,7 @@ export class JsonlSessionStore implements SessionStore {
 
 	async *list(query: SessionListQuery): AsyncIterable<SessionSummary> {
 		this.checkAbort(query.signal);
-		const matchesCwd = query.cwd === undefined ? undefined : createSessionCwdMatcher(query.cwd);
+		const matchesCwd = query.cwd === undefined ? undefined : createSessionCwdMatcherAsync(query.cwd);
 		const paths = await this.run(() => this.paths(), true, query.signal);
 		for (const path of paths) {
 			const cached = query.withoutSearchText ? this.fileStates.get(path) : undefined;
@@ -1364,7 +1364,7 @@ export class JsonlSessionStore implements SessionStore {
 							if (cached.stamp === this.stamp(stats)) {
 								const header = JSON.parse(cached.headerStamp) as SessionRecordHeader;
 								if (!matchesSessionIdPrefix(header.id, query.idPrefix)) return undefined;
-								if (matchesCwd && !matchesCwd(header.cwd)) return undefined;
+								if (matchesCwd && !(await matchesCwd(header.cwd))) return undefined;
 								if (!query.includeInternal && header.internal) return undefined;
 								return {
 									...materializeSessionSummaryMetadata(header, cached.summaryState),
@@ -1377,7 +1377,7 @@ export class JsonlSessionStore implements SessionStore {
 							const stored = await this.readFirstLine(path);
 							const header = await this.readHeaderAt(path, stored);
 							if (!matchesSessionIdPrefix(header.id, query.idPrefix)) return undefined;
-							if (matchesCwd && !matchesCwd(header.cwd)) return undefined;
+							if (matchesCwd && !(await matchesCwd(header.cwd))) return undefined;
 							if (!query.includeInternal && header.internal) return undefined;
 							if (query.withoutSearchText) {
 								const stats = await stat(path, { bigint: true });

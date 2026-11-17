@@ -758,6 +758,12 @@ export interface PtyStartOptions {
  */
 export declare function renameNoReplace(from: string, to: string): boolean
 
+/**
+ * Asynchronous form of {@link renameNoReplace}: renames `from` to `to` without replacing an existing destination on a
+ * worker thread without blocking the JavaScript event loop.
+ */
+export declare function renameNoReplaceAsync(from: string, to: string): Promise<boolean>
+
 export interface ReportReceipt {
   reportId: string
   cursor: Cursor
@@ -909,6 +915,12 @@ export type TerminationCause = 'abort' | 'interrupt' | 'fail-fast-skip' | 'paren
  * or locked.
  */
 export declare function tryAdvisoryLock(path: string, waitMs: number): AdvisoryLock | null
+
+/**
+ * Asynchronous form of {@link tryAdvisoryLock}: acquires the exclusive advisory lock on a worker thread without
+ * blocking the JavaScript event loop.
+ */
+export declare function tryAdvisoryLockAsync(path: string, waitMs: number): Promise<AdvisoryLock | null>
 
 /**
  * Takes a shared advisory lock on the file at `path` (#5317): `flock` on Unix, `LockFileEx` on Windows. The file is

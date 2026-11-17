@@ -1090,7 +1090,8 @@ These helpers let extensions and SDK code follow [debug mode](/development#debug
 
 - `isDebugEnabled(area?, env?)` returns whether debug output is on: in debug mode for every area, and for `area` also while its own variable is set. Without `area`, only debug mode counts. `env` defaults to `process.env`.
 - `reportDebug(area, event, fields, ownOutput?, env?)` records one event. In debug mode it appends a JSON line to the debug log, with credentials redacted and long text cut to 2,000 characters. `fields` holds strings, numbers, booleans, `null` or lists of strings and numbers, never objects. While the area's own variable is set, `ownOutput` is called with the variable's value to write the event where that variable always has.
-- `appendDebugRecord(path, record)` appends one redacted JSON line to another debug file, such as a trace file.
+- `appendDebugRecord(path, record)` appends one redacted JSON line to another debug file, such as a trace file. It and `reportDebug()` retain their synchronous write and immediate failure-reporting behavior.
+- `appendDebugRecordAsync(path, record)` and `reportDebugAsync(area, event, fields, ownOutput?, env?)` provide the same redaction and reporting without blocking the host. Await their promises to observe the completed write, or call `flushDebugLog()` to wait for all queued debug records.
 - `DEBUG_AREA_VARIABLES` maps each area (`workflow`, `decision`, `pooled-watch`, `pool`, `storage`) to its own environment variable, or `undefined`. `decision`, `pool` and `storage` have none; they write only in debug mode.
 - `getDebugLogFailure()` returns the first `DebugLogUnwritableError` of this process, if writing a debug log ever failed.
 - `setDebugSetting(enabled)` turns debug mode on or off for this process and for child processes it starts afterwards. It does not save the `debug` setting.
@@ -1106,6 +1107,28 @@ These helpers let extensions and SDK code follow [debug mode](/development#debug
 Both extend `DebugError`, whose `code` is a `DebugErrorCode` and whose `fields()` returns the fields above. Branch on the class or `code`, not the message. `isDebugError`, `isDebugLogUnwritableError` and `isDebugConfigError` recognize them, including an error that crossed a process boundary as a plain object with the same `name` and `code`.
 
 To pass one between processes, `serializeDebugError(error)` turns it into a `SerializedDebugError` (`name`, `code`, `message`, `hint`, `retryable`, `fields`, and a cause chain of at most eight errors), and `rehydrateDebugError(serialized)` rebuilds the same class with the same fields. An unknown `name` comes back as a `DebugError` that keeps its `name`, `code`, `fields` and `retryable`. The RPC client does this for you: when the engine refuses `set_debug`, `setDebug()` rejects with the `DebugConfigError`.
+
+## Nonblocking helpers
+
+Use the asynchronous helpers in a host that must keep accepting input while it reads files, checks trust or resolves tools. Existing synchronous SDK forms remain available.
+
+| Helpers | Purpose |
+| --- | --- |
+| `getProjectTrustOptionsAsync`, `hasProjectTrustInputsAsync`, `hasTrustRequiringProjectResourcesAsync`, `savedProjectTrustAsync` | Read project trust inputs without synchronous file access; `savedProjectTrustAsync()` returns a predicate whose trust result must be awaited |
+| `buildSkillCatalogAsync`, `emptySkillCatalog` | Load a skill catalog asynchronously, or create an empty catalog without reading files |
+| `latestSessionSnapshotAsync`, `mapPathForCwdAsync`, `mapRestoredPathAsync`, `workspaceSessionCwdAsync` | Read snapshot metadata and resolve restored paths and workspace working directories asynchronously |
+| `loadMcpConfigAsync`, `updateMcpServerConfigAsync`, `addMcpServerConfigAsync`, `removeMcpServerConfigAsync` | Read and edit MCP configuration asynchronously; await edits before reading their result |
+| `AuthStorage.createAsync`, `SettingsManager.createAsync` | Load credential or settings storage asynchronously |
+| `ModelRuntime.getCompatibilityRequestConfigAsync`, `ModelRuntime.getCatalogInputsGenerationAsync` | Read provider request configuration or observe catalog input changes asynchronously |
+| `selectProcessStorageAsync`, `processSharedStorageSelectionAsync`, `processStorageEnvironmentAsync` | Read process storage inputs or a team token file asynchronously when building storage selections or child environments |
+| `storageHomeDirAsync`, `workflowsStorageDirAsync`, `defaultJournalStoreDirectoryAsync`, `defaultSessionDatabasePathAsync`, `defaultSharedStoragePathAsync`, `storagePathBaseDirAsync` from `@bastani/atomic/storage` | Resolve storage homes and paths asynchronously while preserving custom agent-directory isolation |
+| `readClaimFileAsync`, `claimFileAtomicallyAsync`, `sameDirectoryAsync`, `selectStorageAsync` from `@bastani/atomic/storage` | Read or publish ownership claims, compare directories or resolve a storage selection without blocking the host |
+| `takeTakeoverMutexAsync` | Acquire a takeover mutex asynchronously; await the returned mutex's `release()` |
+| `resolveInstalledGit`, `getGitStatusAsync`, `AgentSession.getToolStatusAsync` | Resolve installed Git or collect Git and session tool status asynchronously without provisioning a missing tool |
+| `appendDebugRecordAsync`, `reportDebugAsync`, `flushDebugLog` | Append debug records off the host thread, or wait for queued records before inspecting their files |
+| `containProcessTree`, `processTreeEnded`, `killProcessTree` | Contain a child tree on Windows, wait for a contained tree to end, or terminate an owned process group across platforms |
+
+Await each operation before starting work that depends on its result. MCP edits of one file are queued. A synchronous MCP edit rejects before changing a file while an asynchronous edit is pending; await that edit before retrying, or use the asynchronous forms throughout. `emptySkillCatalog()` is synchronous because it does no I/O. `savedProjectTrust()` still returns a boolean predicate for synchronous SDK callers. For direct environment credential checks, `@bastani/atomic-ai/compat` also exports `getEnvApiKeyAsync()` alongside synchronous `getEnvApiKey()`. Use process-containment helpers only with child process IDs your integration owns. `containProcessTree()` returns `undefined` off Windows; release a retained containment before closing it on normal completion, or terminate it before closing it on cancellation.
 
 ## Private temp directories
 
@@ -1266,7 +1289,7 @@ type TaskMessageTimeoutPhase, type SerializedTaskMessageError
 // Detached tool call failures (see "Detachable tool calls")
 type DetachedCallFailure, type DetachedCallFailureCause
 // Git resolution (see "Resolving git")
-resolveGit, resolveGitSync, getGitStatus, GIT_MINIMUM_VERSION
+resolveGit, resolveGitSync, resolveInstalledGit, getGitStatus, getGitStatusAsync, GIT_MINIMUM_VERSION
 GitProvisionError, GitUnavailableError, GitProvisionTimeoutError, GitProvisionConfigError
 isGitProvisionError, isGitUnavailableError, isGitProvisionTimeoutError, isGitProvisionConfigError
 findGitProvisionError, isRetryableGitProvisionError, rehydrateGitProvisionError

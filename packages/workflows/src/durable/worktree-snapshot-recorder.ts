@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
-	canonicalizeWorktreePath,
+	canonicalizeWorktreePathAsync,
 	captureWorktreeSnapshot,
 	isGitUnavailableError,
 	isWorkspaceGitError,
@@ -142,7 +142,7 @@ export function createWorkflowSnapshotRecorder(input: {
 			const workflowCwd = resolve(input.cwd());
 			for (const directory of new Set([workflowCwd, ...directories.map((path) => resolve(workflowCwd, path))])) {
 				try {
-					const physical = canonicalizeWorktreePath(directory);
+					const physical = await canonicalizeWorktreePathAsync(directory);
 					const previous = [...latest.values()]
 						.filter((snapshot) => containsDirectory(snapshot.root, physical))
 						.sort((a, b) => b.root.length - a.root.length)[0];

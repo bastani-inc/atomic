@@ -43,16 +43,16 @@ describe("extension loader pi-ai compat aliases", () => {
 		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 	);
 
-	it("maps root and compat specifiers to the same jiti alias path", () => {
-		const aliases = extensionLoaderTestHooks.getAliases();
+	it("maps root and compat specifiers to the same jiti alias path", async () => {
+		const aliases = await extensionLoaderTestHooks.getAliases();
 
 		expect(aliases["@bastani/atomic-ai"]).toBe(aliases["@bastani/atomic-ai/compat"]);
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@mariozechner/pi-ai/compat"]);
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@bastani/atomic-ai/compat"]);
 	});
 
-	it("maps the Codex Responses API before the broad pi-ai compat alias", () => {
-		const aliases = extensionLoaderTestHooks.getAliases();
+	it("maps the Codex Responses API before the broad pi-ai compat alias", async () => {
+		const aliases = await extensionLoaderTestHooks.getAliases();
 		const target = aliases["@bastani/atomic-ai/api/openai-codex-responses"];
 
 		expect(target).toMatch(/[\\/]dist[\\/]api[\\/]openai-codex-responses\.js$/);
@@ -60,10 +60,10 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(target).not.toBe(aliases["@bastani/atomic-ai"]);
 	});
 
-	it("maps the llama.cpp classifier API before the broad pi-ai compat alias", () => {
+	it("maps the llama.cpp classifier API before the broad pi-ai compat alias", async () => {
 		// The llama.cpp provider imports this subpath, and jiti re-evaluates host sources when a
 		// workflow imports `@bastani/atomic`; without its own key it resolves as compat.js/api/...
-		const aliases = extensionLoaderTestHooks.getAliases();
+		const aliases = await extensionLoaderTestHooks.getAliases();
 		const target = aliases["@bastani/atomic-ai/api/llama-cpp-classify.lazy"];
 
 		expect(target).toMatch(/[\\/]dist[\\/]api[\\/]llama-cpp-classify\.lazy\.js$/);
@@ -237,7 +237,7 @@ export default function extension() {}
 					for (const prefix of [name, ...legacyNames]) specifiers.push(`${prefix}${specifier.slice(name.length)}`);
 				}
 			}
-			const aliases = extensionLoaderTestHooks.getAliases();
+			const aliases = await extensionLoaderTestHooks.getAliases();
 			const loadable = specifiers.filter((specifier) => {
 				const canonical = Object.entries(FORKED_PACKAGE_LEGACY_NAMES).reduce(
 					(value, [name, legacyNames]) =>
@@ -280,7 +280,7 @@ export default function extension() {}
 				"@earendil-works/pi-tui/dist/layout.js",
 				"@mariozechner/pi-tui/dist/layout.js",
 			] as const;
-			const aliases = extensionLoaderTestHooks.getAliases();
+			const aliases = await extensionLoaderTestHooks.getAliases();
 			const modules = await extensionLoaderTestHooks.loadVirtualModules();
 			for (const specifier of specifiers) {
 				expect(aliases[specifier]).toMatch(/[\\/]layout\.js$/);
@@ -302,7 +302,7 @@ export default function extension() {}
 			// PR #3022: a root pi-tui alias must not turn this subpath into index.js/dist/...
 			const specifier = "@earendil-works/pi-tui/dist/layout-node.js";
 			const native = await import("@bastani/atomic-tui/dist/layout-node.js");
-			const aliases = extensionLoaderTestHooks.getAliases();
+			const aliases = await extensionLoaderTestHooks.getAliases();
 			assert.match(aliases[specifier]!, /[\\/]dist[\\/]layout-node\.js$/);
 			assert.equal(fs.existsSync(aliases[specifier]!), true);
 			const modules = await extensionLoaderTestHooks.loadVirtualModules();
@@ -321,7 +321,7 @@ export default function extension() {}
 				"@bastani/atomic-ai/api/cloudflare-gateway-binding",
 				"@mariozechner/pi-ai/api/cloudflare-gateway-binding",
 			] as const;
-			const aliases = extensionLoaderTestHooks.getAliases();
+			const aliases = await extensionLoaderTestHooks.getAliases();
 			const modules = await extensionLoaderTestHooks.loadVirtualModules();
 			for (const specifier of specifiers) {
 				expect(aliases[specifier]).toMatch(/[\\/]cloudflare-gateway-binding\.js$/);
@@ -348,7 +348,7 @@ export default function extension() {}
 });
 
 describe("extension loader package-root resolution", () => {
-	it("locates a package root without consulting its exports map", () => {
+	it("locates a package root without consulting its exports map", async () => {
 		// Regression guard for #1600/#1609: pi-ai does not export
 		// "./package.json", so require.resolve("<pkg>/package.json") throws
 		// ERR_PACKAGE_PATH_NOT_EXPORTED under Node and broke every builtin
@@ -368,7 +368,9 @@ describe("extension loader package-root resolution", () => {
 				}),
 			);
 
-			const resolved = extensionLoaderTestHooks.findPackageRoot("@scope/esm-only", [path.join(tmp, "node_modules")]);
+			const resolved = await extensionLoaderTestHooks.findPackageRoot("@scope/esm-only", [
+				path.join(tmp, "node_modules"),
+			]);
 
 			expect(resolved).toBe(packageRoot);
 		} finally {
@@ -376,22 +378,22 @@ describe("extension loader package-root resolution", () => {
 		}
 	});
 
-	it("resolves the real pi-ai package root from the loader's node_modules chain", () => {
-		const root = extensionLoaderTestHooks.findPackageRoot("@bastani/atomic-ai");
+	it("resolves the real pi-ai package root from the loader's node_modules chain", async () => {
+		const root = await extensionLoaderTestHooks.findPackageRoot("@bastani/atomic-ai");
 
 		expect(fs.existsSync(path.join(root, "package.json"))).toBe(true);
 		expect(fs.existsSync(path.join(root, "dist", "compat.js"))).toBe(true);
 		expect(fs.existsSync(path.join(root, "dist", "oauth.js"))).toBe(true);
 	});
 
-	it("throws a descriptive error for unknown packages", () => {
-		expect(() => extensionLoaderTestHooks.findPackageRoot("@scope/definitely-missing", [])).toThrow(
+	it("throws a descriptive error for unknown packages", async () => {
+		await expect(extensionLoaderTestHooks.findPackageRoot("@scope/definitely-missing", [])).rejects.toThrow(
 			/Cannot locate package directory/,
 		);
 	});
 
-	it("maps every alias to an existing file (installed-fallback contract)", () => {
-		const aliases = extensionLoaderTestHooks.getAliases();
+	it("maps every alias to an existing file (installed-fallback contract)", async () => {
+		const aliases = await extensionLoaderTestHooks.getAliases();
 
 		for (const [specifier, target] of Object.entries(aliases)) {
 			// When running from src/, the host-package alias uses the TypeScript
@@ -401,8 +403,8 @@ describe("extension loader package-root resolution", () => {
 		}
 	});
 
-	it("creates the versioned jiti fsCache directory before extension imports", () => {
-		const cacheDir = extensionLoaderTestHooks.getTranspileCacheDir();
+	it("creates the versioned jiti fsCache directory before extension imports", async () => {
+		const cacheDir = await extensionLoaderTestHooks.getTranspileCacheDir();
 
 		expect(fs.existsSync(cacheDir)).toBe(true);
 		expect(fs.statSync(cacheDir).isDirectory()).toBe(true);

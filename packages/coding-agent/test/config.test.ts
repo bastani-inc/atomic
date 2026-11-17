@@ -5,6 +5,7 @@ import { delimiter, join } from "path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
 	detectInstallChange,
+	detectInstallChangeAsync,
 	detectInstallMethod,
 	getConfiguredSelfUpdateArgv,
 	getSelfUpdateCommand,
@@ -402,18 +403,21 @@ describe("detectInstallMethod", () => {
 	});
 });
 
-test("detects changed installs without falling back to an unrelated parent package (#3429)", () => {
+test("detects changed installs without falling back to an unrelated parent package (#3429)", async () => {
 	tempDir = mkdtempSync(join(tmpdir(), "atomic-install-change-"));
 	const installDir = join(tempDir, "global", "hash");
 	mkdirSync(installDir, { recursive: true });
 	const path = join(installDir, "package.json");
 	writeFileSync(path, JSON.stringify({ version: VERSION }));
 	assert.equal(detectInstallChange(path), undefined);
+	assert.equal(await detectInstallChangeAsync(path), undefined);
 	writeFileSync(path, JSON.stringify({ version: "3429.0.0" }));
 	assert.deepEqual(detectInstallChange(path), { kind: "updated", version: "3429.0.0" });
+	assert.deepEqual(await detectInstallChangeAsync(path), { kind: "updated", version: "3429.0.0" });
 	writeFileSync(join(tempDir, "package.json"), JSON.stringify({ version: "0.0.1" }));
 	rmSync(installDir, { recursive: true, force: true });
 	assert.deepEqual(detectInstallChange(path), { kind: "removed" });
+	assert.deepEqual(await detectInstallChangeAsync(path), { kind: "removed" });
 });
 
 describe("configured self-update command", () => {

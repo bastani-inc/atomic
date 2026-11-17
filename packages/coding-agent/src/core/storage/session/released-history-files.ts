@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { constants, readFileSync, readlinkSync, rmdirSync, rmSync } from "node:fs";
-import { copyFile, mkdir, open, readdir, readFile, rename, rm, rmdir } from "node:fs/promises";
+import { constants, rmdirSync, rmSync } from "node:fs";
+import { copyFile, mkdir, open, readdir, readFile, readlink, rename, rm, rmdir } from "node:fs/promises";
 import { hostname, release } from "node:os";
 import { join } from "node:path";
 import { BroadcastChannel, isMainThread, receiveMessageOnPort } from "node:worker_threads";
@@ -36,14 +36,14 @@ function namespaceIdentity(): Promise<string | undefined> {
 	identity ??= (async () => {
 		if (process.platform === "linux") {
 			try {
-				const ownNamespace = readlinkSync("/proc/self/ns/pid");
+				const ownNamespace = await readlink("/proc/self/ns/pid");
 				// NSpid lists IDs from the proc mount's namespace down to ours. More than one means a foreign view,
 				// even if the numeric IDs happen to coincide. Missing/unreadable status is not proof of a matching view.
-				const status = readFileSync("/proc/self/status", "utf8");
+				const status = await readFile("/proc/self/status", "utf8");
 				const procPid = /^NSpid:[ \t]+([0-9]+)[ \t]*$/m.exec(status);
 				if (procPid?.[1] !== String(process.pid)) return undefined;
 				const namespace = /^pid:\[([0-9]+)\]$/.exec(ownNamespace);
-				const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+				const boot = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
 				if (namespace === null || boot.length === 0) return undefined;
 				return `linux-${namespace[1]}-${boot}`;
 			} catch {
@@ -96,7 +96,7 @@ async function processStartTime(pid: number): Promise<string | null | undefined>
 		if ((await namespaceIdentity()) === undefined) return null;
 		try {
 			// Clock ticks from boot to the process's start. `/proc` is answered by the kernel, never from a disk.
-			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+			const stat = await readFile(`/proc/${pid}/stat`, "utf8");
 			const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
 			return start !== undefined && /^[0-9]+$/.test(start) ? start : null;
 		} catch {

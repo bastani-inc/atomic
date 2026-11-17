@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { getPackageDir, isBunBinary } from "../config.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { moduleDirFromMetaUrl } from "../utils/split-launcher.ts";
 import { stripBom } from "../utils/text.ts";
 import { type BuiltinPackageDirName, requiredEntriesForBuiltin } from "./builtin-install-layout.ts";
@@ -57,10 +59,17 @@ const BUILTIN_PACKAGES: readonly BuiltinPackageDescriptor[] = WORKSPACE_BUILTINS
 	}),
 );
 
+function packageNameOf(packageJson: string): string | undefined {
+	try {
+		return (JSON.parse(stripBom(packageJson)) as { name?: string }).name;
+	} catch {
+		return undefined;
+	}
+}
+
 function readPackageName(packageJsonPath: string): string | undefined {
 	try {
-		const pkg = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8"))) as { name?: string };
-		return pkg.name;
+		return packageNameOf(readFileSync(packageJsonPath, "utf-8"));
 	} catch {
 		return undefined;
 	}
@@ -73,21 +82,11 @@ function isPackageDir(dir: string, descriptor: BuiltinPackageDescriptor): boolea
 	);
 }
 
-function firstExistingPackageDir(candidates: string[], descriptor: BuiltinPackageDescriptor): string | undefined {
-	const seen = new Set<string>();
-
-	for (const candidate of candidates) {
-		const resolved = resolve(candidate);
-		if (seen.has(resolved)) {
-			continue;
-		}
-		seen.add(resolved);
-		if (isPackageDir(resolved, descriptor)) {
-			return resolved;
-		}
-	}
-
-	return undefined;
+async function isPackageDirAsync(dir: string, descriptor: BuiltinPackageDescriptor): Promise<boolean> {
+	const entries = await Promise.all(descriptor.requiredEntries.map((entry) => exists(join(dir, entry))));
+	if (!entries.includes(true)) return false;
+	const packageJson = await readFile(join(dir, "package.json"), "utf-8").catch(() => undefined);
+	return packageJson !== undefined && packageNameOf(packageJson) === descriptor.packageName;
 }
 
 function distCandidates(context: BuiltinPackageCandidateContext, descriptor: BuiltinPackageDescriptor): string[] {
@@ -98,31 +97,112 @@ function distCandidates(context: BuiltinPackageCandidateContext, descriptor: Bui
 		join(packageDir, "dist", "builtin", descriptor.distDirName),
 	];
 }
-function getBuiltinPackageCandidateContext(): BuiltinPackageCandidateContext {
-	const packageDir = getPackageDir();
+
+function builtinCandidates(context: BuiltinPackageCandidateContext, descriptor: BuiltinPackageDescriptor): string[] {
+	return [
+		...new Set(
+			[...descriptor.sourceCandidates(context), ...distCandidates(context, descriptor)].map((path) => resolve(path)),
+		),
+	];
+}
+
+function getBuiltinPackageCandidateContext(
+	packageDir: string,
+	isSourceCheckout: boolean,
+): BuiltinPackageCandidateContext {
 	// A compiled binary's app.js keeps the build machine's module URL. Where that
 	// build tree still exists it would win over the shipped `builtin/` beside the
 	// executable, so binaries resolve builtins from the package dir only (#3917).
 	const here = isBunBinary ? undefined : moduleDirFromMetaUrl(import.meta.url);
-	return {
-		here,
-		packageDir,
-		isSourceCheckout: existsSync(join(packageDir, "src", "main.ts")),
-	};
+	return { here, packageDir, isSourceCheckout };
 }
+
+interface BuiltinPackageDiscovery {
+	readonly roots: ReadonlyMap<BuiltinPackageDescriptor, readonly string[]>;
+	readonly mandatoryExtensionPaths: readonly string[];
+}
+
+const builtinPackageDiscoveries = new Map<string, BuiltinPackageDiscovery>();
+
+function mandatoryRoots(roots: BuiltinPackageDiscovery["roots"]): string[] {
+	return BUILTIN_PACKAGES.filter((descriptor) => descriptor.mandatory).flatMap(
+		(descriptor) => roots.get(descriptor)?.slice(0, 1) ?? [],
+	);
+}
+
+function manifestExtensionPathsOf(packageDir: string, packageJson: string): string[] {
+	try {
+		const manifest = JSON.parse(stripBom(packageJson)) as {
+			atomic?: { extensions?: string[] };
+			pi?: { extensions?: string[] };
+		};
+		return (manifest.atomic?.extensions ?? manifest.pi?.extensions ?? []).map((entry) => resolve(packageDir, entry));
+	} catch {
+		return [];
+	}
+}
+
+function readManifestExtensionPaths(packageDir: string): string[] {
+	try {
+		return manifestExtensionPathsOf(packageDir, readFileSync(join(packageDir, "package.json"), "utf-8"));
+	} catch {
+		return [];
+	}
+}
+
+function discoverBuiltinPackages(): BuiltinPackageDiscovery {
+	const packageDir = getPackageDir();
+	const known = builtinPackageDiscoveries.get(packageDir);
+	if (known) return known;
+	const context = getBuiltinPackageCandidateContext(packageDir, existsSync(join(packageDir, "src", "main.ts")));
+	const roots = new Map(
+		BUILTIN_PACKAGES.map(
+			(descriptor) =>
+				[
+					descriptor,
+					builtinCandidates(context, descriptor).filter((path) => isPackageDir(path, descriptor)),
+				] as const,
+		),
+	);
+	const discovery = { roots, mandatoryExtensionPaths: mandatoryRoots(roots).flatMap(readManifestExtensionPaths) };
+	builtinPackageDiscoveries.set(packageDir, discovery);
+	return discovery;
+}
+
+async function preloadBuiltinPackages(): Promise<void> {
+	const packageDir = getPackageDir();
+	if (builtinPackageDiscoveries.has(packageDir)) return;
+	const context = getBuiltinPackageCandidateContext(packageDir, await exists(join(packageDir, "src", "main.ts")));
+	const roots = new Map(
+		await Promise.all(
+			BUILTIN_PACKAGES.map(async (descriptor) => {
+				const candidates = builtinCandidates(context, descriptor);
+				const verified = await Promise.all(candidates.map((path) => isPackageDirAsync(path, descriptor)));
+				return [descriptor, candidates.filter((_path, index) => verified[index])] as const;
+			}),
+		),
+	);
+	const manifests = await Promise.all(
+		mandatoryRoots(roots).map(async (root) =>
+			manifestExtensionPathsOf(root, await readFile(join(root, "package.json"), "utf-8").catch(() => "")),
+		),
+	);
+	if (!builtinPackageDiscoveries.has(packageDir)) {
+		builtinPackageDiscoveries.set(packageDir, { roots, mandatoryExtensionPaths: manifests.flat() });
+	}
+}
+
+void preloadBuiltinPackages().catch(() => {});
 
 /** Atomic-owned builtin package roots paired with their verified descriptors. */
 export function getBuiltinPackageLocations(
 	required = false,
 	builtins?: Partial<Record<AtomicBuiltin, boolean>>,
 ): BuiltinPackageLocation[] {
-	const context = getBuiltinPackageCandidateContext();
+	const { roots } = discoverBuiltinPackages();
 	return BUILTIN_PACKAGES.flatMap((descriptor) => {
 		if (builtins?.[descriptor.distDirName] === false) return [];
-		const packageDir = firstExistingPackageDir(
-			[...descriptor.sourceCandidates(context), ...distCandidates(context, descriptor)],
-			descriptor,
-		);
+		const packageDir = roots.get(descriptor)?.[0];
 		if (!packageDir && required) {
 			throw Object.assign(new Error(`Builtin unavailable: ${descriptor.packageName}`), {
 				code: "BuiltinUnavailable",
@@ -136,19 +216,14 @@ export function getBuiltinPackageLocations(
 
 /** Every verified shipped root, including alternate source/dist locations in a built checkout. */
 export function getAllBuiltinPackageLocations(): BuiltinPackageLocation[] {
-	const context = getBuiltinPackageCandidateContext();
-	return BUILTIN_PACKAGES.flatMap((descriptor) => {
-		const candidates = new Set(
-			[...descriptor.sourceCandidates(context), ...distCandidates(context, descriptor)].map((path) => resolve(path)),
-		);
-		return [...candidates]
-			.filter((path) => isPackageDir(path, descriptor))
-			.map((packageDir) => ({
-				packageName: descriptor.packageName,
-				distDirName: descriptor.distDirName,
-				packageDir,
-			}));
-	});
+	const { roots } = discoverBuiltinPackages();
+	return BUILTIN_PACKAGES.flatMap((descriptor) =>
+		(roots.get(descriptor) ?? []).map((packageDir) => ({
+			packageName: descriptor.packageName,
+			distDirName: descriptor.distDirName,
+			packageDir,
+		})),
+	);
 }
 
 /**
@@ -169,29 +244,10 @@ export function getBuiltinPackagePaths(builtins?: Partial<Record<AtomicBuiltin, 
 
 /** Built-in package roots whose extensions Atomic must load in every model session. */
 export function getMandatoryBuiltinPackagePaths(): string[] {
-	const context = getBuiltinPackageCandidateContext();
-	return BUILTIN_PACKAGES.filter((descriptor) => descriptor.mandatory).flatMap((descriptor) => {
-		const packageDir = firstExistingPackageDir(
-			[...descriptor.sourceCandidates(context), ...distCandidates(context, descriptor)],
-			descriptor,
-		);
-		return packageDir ? [packageDir] : [];
-	});
+	return mandatoryRoots(discoverBuiltinPackages().roots);
 }
 
 /** Trusted extension entries resolved from Atomic's mandatory bundled packages. */
 export function getMandatoryBuiltinExtensionPaths(): string[] {
-	return getMandatoryBuiltinPackagePaths().flatMap((packageDir) => {
-		try {
-			const manifest = JSON.parse(stripBom(readFileSync(join(packageDir, "package.json"), "utf-8"))) as {
-				atomic?: { extensions?: string[] };
-				pi?: { extensions?: string[] };
-			};
-			return (manifest.atomic?.extensions ?? manifest.pi?.extensions ?? []).map((entry) =>
-				resolve(packageDir, entry),
-			);
-		} catch {
-			return [];
-		}
-	});
+	return [...discoverBuiltinPackages().mandatoryExtensionPaths];
 }

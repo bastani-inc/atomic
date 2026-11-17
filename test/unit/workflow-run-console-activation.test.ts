@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import {
+	flushWorkflowConsoleOutput,
 	stopRoutingWorkflowConsoleOutput,
 	workflowConsoleLogPath,
 } from "../../packages/workflows/src/engine/run-console.js";
@@ -23,8 +24,8 @@ const { default: factory } = await import("../../packages/workflows/src/extensio
 type Handler = (event: object, ctx: object) => unknown;
 const logs = join(agentDir, "workflow-logs");
 
-afterAll(() => {
-	stopRoutingWorkflowConsoleOutput();
+afterAll(async () => {
+	await stopRoutingWorkflowConsoleOutput();
 	Object.assign(console, saved);
 	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
@@ -111,6 +112,7 @@ test("under a terminal UI, a dispatched run its owner routes logs to the workflo
 	await startSession("tui");
 	terminal.length = 0;
 	const routed = await dispatchChatty(true);
+	await flushWorkflowConsoleOutput();
 	await dispatchChatty(false);
 
 	const path = workflowConsoleLogPath();

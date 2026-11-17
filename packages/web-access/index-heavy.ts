@@ -1,13 +1,13 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
-import { appendFileSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { getActiveGoogleEmail, isGeminiWebAvailable } from "./gemini-web.js";
 import { isBrowserCookieAccessAllowed } from "./gemini-web-config.ts";
 import { createResultStorage } from "./storage.js";
 import { loadConfigForExtensionInit, resolveWorkflow, saveConfig, type WebSearchWorkflow } from "./web-search-config.js";
 
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE) {
-	appendFileSync(process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE, "web-access\n");
+	void appendFile(process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE, "web-access\n");
 }
 
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
@@ -15,10 +15,10 @@ if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
 }
 import { registerWebSearchFeatures } from "./web-search-features.js";
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
 	const storage = createResultStorage();
 	const { deleteResult, getAllResults } = storage;
-	const initConfig = loadConfigForExtensionInit();
+	const initConfig = await loadConfigForExtensionInit();
 	registerWebSearchFeatures(pi, initConfig, storage);
 	pi.registerCommand("curator", {
 		description: "Toggle or configure the search curator workflow",
@@ -27,7 +27,7 @@ export default function (pi: ExtensionAPI) {
 
 			let newWorkflow: WebSearchWorkflow;
 			if (arg.length === 0) {
-				const current = resolveWorkflow(loadConfigForExtensionInit().workflow, true);
+				const current = resolveWorkflow((await loadConfigForExtensionInit()).workflow, true);
 				newWorkflow = current === "none" ? "summary-review" : "none";
 			} else if (arg === "on") {
 				newWorkflow = "summary-review";
@@ -41,7 +41,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			try {
-				saveConfig({ workflow: newWorkflow });
+				await saveConfig({ workflow: newWorkflow });
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				ctx.ui.notify(`Failed to save config: ${message}`, "error");
@@ -63,7 +63,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("google-account", {
 		description: "Show the active Google account for Gemini Web",
 		handler: async () => {
-			if (!isBrowserCookieAccessAllowed()) {
+			if (!(await isBrowserCookieAccessAllowed())) {
 				pi.sendMessage({
 					customType: "google-account",
 					content: [{ type: "text", text: `Gemini Web browser cookie access is disabled. Set allowBrowserCookies: true in ~/${CONFIG_DIR_NAME}/web-search.json to enable it.` }],

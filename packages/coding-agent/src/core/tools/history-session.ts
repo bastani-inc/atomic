@@ -52,7 +52,7 @@ const CONTEXT_SPAN_SEQS = 64;
 const ENTRY_CACHE_SEQS = 2 * WINDOW_MAX_SEQS + 2 * CONTEXT_SPAN_SEQS;
 const LOOKBEHIND_SYNTAX = /\(\?<[=!]/;
 const LOOKAHEAD_SYNTAX = /\(\?[=!]/;
-const MULTILINE_MODIFIER_SYNTAX = /\(\?[a-zA-Z]*m[a-zA-Z]*(?:-[a-zA-Z]*)?:/;
+const MULTILINE_MODIFIER_SYNTAX = /\(\?[a-ln-zA-Z]*m[a-zA-Z]*(?:-[a-zA-Z]*)?:/;
 const CANDIDATE_PAGE = 64;
 const EXTRA_COUNT_SEQS = 500;
 const SKIPPED_TYPES: readonly string[] = ["custom", "worktree_snapshot"];

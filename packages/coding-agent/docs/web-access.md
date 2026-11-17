@@ -40,6 +40,8 @@ It needs an interactive session with a person at a browser. Subagents, workflow 
 
 Atomic's bundled `fetch_content` tool reads webpages, PDFs, GitHub repositories, YouTube videos, and local video files.
 
+GitHub clone settings come from `githubClone` in `~/.atomic/web-search.json`, falling back to `~/.pi/web-search.json` when the primary file is absent. When both files exist, Atomic reads the primary file without merging settings from the legacy file.
+
 ### Arguments
 
 Always pass the lowercase `urls` field as a nonempty array of strings, even for one URL:

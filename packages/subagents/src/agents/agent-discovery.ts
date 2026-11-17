@@ -1,7 +1,7 @@
-import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getEnvValue } from "@bastani/atomic";
+import { pathExists } from "../shared/path-exists.js";
 import { type AgentLoadDiagnostic, loadAgentsFromDir, loadAgentsFromDirWithDiagnostics } from "./agent-loaders.js";
 import { applyBuiltinOverrides, readMergedSubagentSettings } from "./agent-overrides.js";
 import {
@@ -38,48 +38,58 @@ export function contextAgentDiscoveryOptions(ctx: { isProjectTrusted?: () => boo
 }
 
 /** Nothing of the project is read when it is not trusted. */
-function projectAgentSources(
+async function projectAgentSources(
 	cwd: string,
 	projectTrusted: boolean,
-): {
+): Promise<{
 	readDirs: string[];
 	preferredDir: string | null;
 	settingsPaths: string[];
-} {
-	const { readDirs, preferredDir } = resolveNearestProjectAgentDirs(cwd);
+}> {
+	const { readDirs, preferredDir } = await resolveNearestProjectAgentDirs(cwd);
 	return projectTrusted
-		? { readDirs, preferredDir, settingsPaths: getProjectAgentSettingsPaths(cwd) }
+		? { readDirs, preferredDir, settingsPaths: await getProjectAgentSettingsPaths(cwd) }
 		: { readDirs: [], preferredDir, settingsPaths: [] };
 }
 
-export function discoverAgents(cwd: string, scope: AgentScope, options: AgentDiscoveryOptions): AgentDiscoveryResult {
+async function loadAgentsFromDirs(dirs: readonly string[], source: "user" | "project"): Promise<AgentConfig[]> {
+	const agents: AgentConfig[] = [];
+	for (const dir of dirs) agents.push(...(await loadAgentsFromDir(dir, source)));
+	return agents;
+}
+
+export async function discoverAgents(
+	cwd: string,
+	scope: AgentScope,
+	options: AgentDiscoveryOptions,
+): Promise<AgentDiscoveryResult> {
 	const userDirOld = getUserAgentDirs();
 	const userDirNew = path.join(os.homedir(), ".agents");
 	const {
 		readDirs: projectAgentDirs,
 		preferredDir: projectAgentsDir,
 		settingsPaths: projectSettingsPaths,
-	} = projectAgentSources(cwd, options.projectTrusted);
-	const userSettingsLoad = readMergedSubagentSettings(getUserAgentSettingsPaths());
-	const projectSettingsLoad = readMergedSubagentSettings(projectSettingsPaths);
+	} = await projectAgentSources(cwd, options.projectTrusted);
+	const userSettingsLoad = await readMergedSubagentSettings(getUserAgentSettingsPaths());
+	const projectSettingsLoad = await readMergedSubagentSettings(projectSettingsPaths);
 	const userSettingsPath = userSettingsLoad.path ?? getUserAgentSettingsPath();
-	const projectSettingsPath = projectSettingsLoad.path ?? getProjectAgentSettingsPath(cwd);
+	const projectSettingsPath = projectSettingsLoad.path ?? (await getProjectAgentSettingsPath(cwd));
 	const userSettings = scope === "project" ? EMPTY_SUBAGENT_SETTINGS : userSettingsLoad.settings;
 	const projectSettings = scope === "user" ? EMPTY_SUBAGENT_SETTINGS : projectSettingsLoad.settings;
 
 	const builtinAgents = applyBuiltinOverrides(
-		loadAgentsFromDir(BUILTIN_AGENTS_DIR, "builtin"),
+		await loadAgentsFromDir(BUILTIN_AGENTS_DIR, "builtin"),
 		userSettings,
 		projectSettings,
 		userSettingsPath,
 		projectSettingsPath,
 	);
 
-	const userAgentsOld = scope === "project" ? [] : userDirOld.flatMap((dir) => loadAgentsFromDir(dir, "user"));
-	const userAgentsNew = scope === "project" ? [] : loadAgentsFromDir(userDirNew, "user");
+	const userAgentsOld = scope === "project" ? [] : await loadAgentsFromDirs(userDirOld, "user");
+	const userAgentsNew = scope === "project" ? [] : await loadAgentsFromDir(userDirNew, "user");
 	const userAgents = [...userAgentsOld, ...userAgentsNew];
 
-	const projectAgents = scope === "user" ? [] : projectAgentDirs.flatMap((dir) => loadAgentsFromDir(dir, "project"));
+	const projectAgents = scope === "user" ? [] : await loadAgentsFromDirs(projectAgentDirs, "project");
 	const agents = mergeAgentsForScope(scope, userAgents, projectAgents, builtinAgents).filter(
 		(agent) => agent.disabled !== true,
 	);
@@ -87,10 +97,10 @@ export function discoverAgents(cwd: string, scope: AgentScope, options: AgentDis
 	return { agents, projectAgentsDir };
 }
 
-export function discoverAgentsAll(
+export async function discoverAgentsAll(
 	cwd: string,
 	options: AgentDiscoveryOptions,
-): {
+): Promise<{
 	builtin: AgentConfig[];
 	user: AgentConfig[];
 	project: AgentConfig[];
@@ -99,39 +109,40 @@ export function discoverAgentsAll(
 	userSettingsPath: string;
 	projectSettingsPath: string | null;
 	diagnostics: AgentLoadDiagnostic[];
-} {
+}> {
 	const userDirOld = getUserAgentDirs();
 	const userDirNew = path.join(os.homedir(), ".agents");
 	const {
 		readDirs: projectDirs,
 		preferredDir: projectDir,
 		settingsPaths: projectSettingsPaths,
-	} = projectAgentSources(cwd, options.projectTrusted);
-	const userSettingsLoad = readMergedSubagentSettings(getUserAgentSettingsPaths());
-	const projectSettingsLoad = readMergedSubagentSettings(projectSettingsPaths);
+	} = await projectAgentSources(cwd, options.projectTrusted);
+	const userSettingsLoad = await readMergedSubagentSettings(getUserAgentSettingsPaths());
+	const projectSettingsLoad = await readMergedSubagentSettings(projectSettingsPaths);
 	const userSettingsPath = userSettingsLoad.path ?? getUserAgentSettingsPath();
-	const projectSettingsPath = projectSettingsLoad.path ?? getProjectAgentSettingsPath(cwd);
+	const projectSettingsPath = projectSettingsLoad.path ?? (await getProjectAgentSettingsPath(cwd));
 	const userSettings = userSettingsLoad.settings;
 	const projectSettings = projectSettingsLoad.settings;
 
 	const diagnostics: AgentLoadDiagnostic[] = [];
-	const loadDir = (dir: string, source: "builtin" | "user" | "project"): AgentConfig[] => {
-		const result = loadAgentsFromDirWithDiagnostics(dir, source);
+	const loadDir = async (dir: string, source: "builtin" | "user" | "project"): Promise<AgentConfig[]> => {
+		const result = await loadAgentsFromDirWithDiagnostics(dir, source);
 		diagnostics.push(...result.diagnostics);
 		return result.agents;
 	};
 
 	const builtin = applyBuiltinOverrides(
-		loadDir(BUILTIN_AGENTS_DIR, "builtin"),
+		await loadDir(BUILTIN_AGENTS_DIR, "builtin"),
 		userSettings,
 		projectSettings,
 		userSettingsPath,
 		projectSettingsPath,
 	);
-	const user = [...userDirOld.flatMap((dir) => loadDir(dir, "user")), ...loadDir(userDirNew, "user")];
+	const user: AgentConfig[] = [];
+	for (const dir of [...userDirOld, userDirNew]) user.push(...(await loadDir(dir, "user")));
 	const projectMap = new Map<string, AgentConfig>();
 	for (const dir of projectDirs) {
-		for (const agent of loadDir(dir, "project")) {
+		for (const agent of await loadDir(dir, "project")) {
 			projectMap.set(agent.name, agent);
 		}
 	}
@@ -141,7 +152,7 @@ export function discoverAgentsAll(
 	// ATOMIC_CODING_AGENT_DIR is already applied by getUserAgentDirs(); prefer that resolved path over ~/.agents.
 	const userDir = getEnvValue("ATOMIC_CODING_AGENT_DIR")
 		? legacyUserAgentDir
-		: fs.existsSync(userDirNew)
+		: (await pathExists(userDirNew))
 			? userDirNew
 			: legacyUserAgentDir;
 

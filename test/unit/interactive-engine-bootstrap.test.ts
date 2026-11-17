@@ -18,10 +18,25 @@ import {
 	INTERACTIVE_ENGINE_BOOTSTRAP_VERSION,
 	readInteractiveEngineBootstrap,
 	removeOwnedInteractiveEngineBootstrap,
+	removeOwnedInteractiveEngineBootstrapAsync,
 	takeInteractiveEngineBootstrapArg,
 	writeInteractiveEngineBootstrap,
-} from "../../packages/coding-agent/src/utils/interactive-engine-bootstrap.ts";
+	writeInteractiveEngineBootstrapAsync,
+} from "../../packages/coding-agent/src/utils/interactive-engine-bootstrap.js";
 import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
+
+const WRITERS = [
+	{
+		write: async (record: Parameters<typeof writeInteractiveEngineBootstrap>[0]) =>
+			writeInteractiveEngineBootstrap(record),
+		remove: async (handle: Parameters<typeof removeOwnedInteractiveEngineBootstrap>[0]) =>
+			removeOwnedInteractiveEngineBootstrap(handle),
+	},
+	{
+		write: writeInteractiveEngineBootstrapAsync,
+		remove: removeOwnedInteractiveEngineBootstrapAsync,
+	},
+] as const;
 
 /**
  * The engine's startup metadata cannot travel in the environment: under Bun a
@@ -35,58 +50,64 @@ import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.j
  * the writer received when it created the directory.
  */
 
-test("a bootstrap record round-trips and the reader consumes only the named file", () => {
-	const handle = writeInteractiveEngineBootstrap({
-		hostPid: 4242,
-		guardFile: "/tmp/atomic-engine-guardian-4242",
-		apiKey: "sk-never-in-an-environment",
-	});
-	try {
-		assert.ok(existsSync(handle.path));
-		assert.deepEqual(readInteractiveEngineBootstrap(handle.path), {
-			version: INTERACTIVE_ENGINE_BOOTSTRAP_VERSION,
+test("a bootstrap record round-trips and the reader consumes only the named file", async () => {
+	for (const writer of WRITERS) {
+		const handle = await writer.write({
 			hostPid: 4242,
 			guardFile: "/tmp/atomic-engine-guardian-4242",
 			apiKey: "sk-never-in-an-environment",
 		});
-		assert.equal(existsSync(handle.path), false, "the record must not outlive the handshake");
-		assert.equal(existsSync(handle.directory), true, "the reader must not remove a directory it does not own");
-		assert.equal(readInteractiveEngineBootstrap(handle.path), undefined, "a consumed record cannot be replayed");
-	} finally {
-		removeOwnedInteractiveEngineBootstrap(handle);
-	}
-	assert.equal(existsSync(handle.directory), false, "the owner's handle removes the directory it created");
-});
-
-test("a bootstrap record is owner-only and its filename carries no secret", () => {
-	const handle = writeInteractiveEngineBootstrap({
-		hostPid: 1,
-		guardFile: "/tmp/guard",
-		apiKey: "sk-secret-material",
-	});
-	try {
-		// POSIX mode bits do not exist on Windows: writeFileSync's mode option
-		// maps only to the read-only attribute, and stat reports 0o666 for any
-		// writable file. There the record's protection is the per-user temp
-		// directory ACL, so only the POSIX platforms can assert owner-only bits.
-		if (process.platform !== "win32") {
-			assert.equal(statSync(handle.path).mode & 0o777, 0o600);
+		try {
+			assert.ok(existsSync(handle.path));
+			assert.deepEqual(readInteractiveEngineBootstrap(handle.path), {
+				version: INTERACTIVE_ENGINE_BOOTSTRAP_VERSION,
+				hostPid: 4242,
+				guardFile: "/tmp/atomic-engine-guardian-4242",
+				apiKey: "sk-never-in-an-environment",
+			});
+			assert.equal(existsSync(handle.path), false, "the record must not outlive the handshake");
+			assert.equal(existsSync(handle.directory), true, "the reader must not remove a directory it does not own");
+			assert.equal(readInteractiveEngineBootstrap(handle.path), undefined, "a consumed record cannot be replayed");
+		} finally {
+			await writer.remove(handle);
 		}
-		assert.ok(!handle.path.includes("sk-secret-material"));
-		assert.ok(!handle.directory.includes("sk-secret-material"));
-	} finally {
-		removeOwnedInteractiveEngineBootstrap(handle);
+		assert.equal(existsSync(handle.directory), false, "the owner's handle removes the directory it created");
 	}
 });
 
-test("a bootstrap record without an API key omits the field", () => {
-	const handle = writeInteractiveEngineBootstrap({ hostPid: 7, guardFile: "/tmp/guard-7" });
-	try {
-		const record = readInteractiveEngineBootstrap(handle.path);
-		assert.equal(record?.apiKey, undefined);
-		assert.ok(record && !("apiKey" in record));
-	} finally {
-		removeOwnedInteractiveEngineBootstrap(handle);
+test("a bootstrap record is owner-only and its filename carries no secret", async () => {
+	for (const writer of WRITERS) {
+		const handle = await writer.write({
+			hostPid: 1,
+			guardFile: "/tmp/guard",
+			apiKey: "sk-secret-material",
+		});
+		try {
+			// POSIX mode bits do not exist on Windows: writeFileSync's mode option
+			// maps only to the read-only attribute, and stat reports 0o666 for any
+			// writable file. There the record's protection is the per-user temp
+			// directory ACL, so only the POSIX platforms can assert owner-only bits.
+			if (process.platform !== "win32") {
+				assert.equal(statSync(handle.path).mode & 0o777, 0o600);
+			}
+			assert.ok(!handle.path.includes("sk-secret-material"));
+			assert.ok(!handle.directory.includes("sk-secret-material"));
+		} finally {
+			await writer.remove(handle);
+		}
+	}
+});
+
+test("a bootstrap record without an API key omits the field", async () => {
+	for (const writer of WRITERS) {
+		const handle = await writer.write({ hostPid: 7, guardFile: "/tmp/guard-7" });
+		try {
+			const record = readInteractiveEngineBootstrap(handle.path);
+			assert.equal(record?.apiKey, undefined);
+			assert.ok(record && !("apiKey" in record));
+		} finally {
+			await writer.remove(handle);
+		}
 	}
 });
 
@@ -157,7 +178,7 @@ test("the CLI consumes a hostile --internal-engine-bootstrap path without touchi
 	assert.deepEqual(readdirSync(victim), ["important.txt"]);
 });
 
-test("a failed publication leaves no temporary file, no directory, and no secret", () => {
+test("a failed publication leaves no temporary file, no directory, and no secret", async () => {
 	// Scope the observed temp root: under vitest other test files run in
 	// parallel and create their own atomic-engine-bootstrap-* directories in the
 	// shared tmpdir, so a before/after snapshot of the real tmpdir races.
@@ -172,16 +193,18 @@ test("a failed publication leaves no temporary file, no directory, and no secret
 				throw new Error("serialization failed");
 			},
 		};
-		assert.throws(
-			() =>
-				writeInteractiveEngineBootstrap({
-					hostPid: 1,
-					guardFile: "/tmp/guard",
-					apiKey: unwritable as unknown as string,
-				}),
-			/serialization failed/,
-		);
-		assert.deepEqual(readdirSync(scoped), [], "a failed publication must not leave its owned directory behind");
+		for (const writer of WRITERS) {
+			await assert.rejects(
+				() =>
+					writer.write({
+						hostPid: 1,
+						guardFile: "/tmp/guard",
+						apiKey: unwritable as unknown as string,
+					}),
+				/serialization failed/,
+			);
+			assert.deepEqual(readdirSync(scoped), [], "a failed publication must not leave its owned directory behind");
+		}
 	} finally {
 		for (const [key, value] of Object.entries(saved)) {
 			if (value === undefined) delete process.env[key];
@@ -191,12 +214,13 @@ test("a failed publication leaves no temporary file, no directory, and no secret
 	}
 });
 
-test("a missing record reads as undefined without throwing", () => {
+test("a missing record reads as undefined without throwing", async () => {
 	assert.equal(
 		readInteractiveEngineBootstrap(join(tmpdir(), "atomic-bootstrap-does-not-exist", "bootstrap.json")),
 		undefined,
 	);
 	removeOwnedInteractiveEngineBootstrap(undefined);
+	await removeOwnedInteractiveEngineBootstrapAsync(undefined);
 });
 
 test("the private argument is stripped before normal CLI parsing", () => {
@@ -235,18 +259,20 @@ test("engine mode is selected by the bootstrap argument, which nothing inherits"
 	assert.equal(hasInteractiveEngineBootstrapArg([]), false);
 });
 
-test("the published path never exposes partially written content", () => {
+test("the published path never exposes partially written content", async () => {
 	// Publication is temp-file + rename, so a reader polling for existence of the
 	// final path can only ever observe complete JSON.
-	for (let attempt = 0; attempt < 25; attempt += 1) {
-		const handle = writeInteractiveEngineBootstrap({ hostPid: attempt, guardFile: `/tmp/guard-${attempt}` });
-		assert.deepEqual(JSON.parse(readFileSync(handle.path, "utf8")), {
-			version: INTERACTIVE_ENGINE_BOOTSTRAP_VERSION,
-			hostPid: attempt,
-			guardFile: `/tmp/guard-${attempt}`,
-		});
-		assert.equal(existsSync(`${handle.path}.tmp`), false, "the temporary sibling must not survive");
-		assert.equal(dirname(handle.path), handle.directory);
-		removeOwnedInteractiveEngineBootstrap(handle);
+	for (const writer of WRITERS) {
+		for (let attempt = 0; attempt < 25; attempt += 1) {
+			const handle = await writer.write({ hostPid: attempt, guardFile: `/tmp/guard-${attempt}` });
+			assert.deepEqual(JSON.parse(readFileSync(handle.path, "utf8")), {
+				version: INTERACTIVE_ENGINE_BOOTSTRAP_VERSION,
+				hostPid: attempt,
+				guardFile: `/tmp/guard-${attempt}`,
+			});
+			assert.equal(existsSync(`${handle.path}.tmp`), false, "the temporary sibling must not survive");
+			assert.equal(dirname(handle.path), handle.directory);
+			await writer.remove(handle);
+		}
 	}
 });

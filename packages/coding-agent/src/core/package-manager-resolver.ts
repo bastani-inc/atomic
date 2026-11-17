@@ -1,6 +1,7 @@
-import { access, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { CONFIG_DIR_NAME } from "../config.js";
+import { pathExists as exists } from "../utils/path-exists.ts";
 import { addAutoDiscoveredResources, collectProjectLocalResources } from "./package-manager-auto-resources.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import { refreshTemporaryGitSource, resolveGitInstallPath } from "./package-manager-git.ts";
@@ -39,15 +40,6 @@ import type {
 } from "./package-manager-types.ts";
 import type { PackageSource } from "./settings-manager.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
-
-async function exists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 export async function resolvePackages(
 	context: PackageManagerContext,
@@ -123,7 +115,7 @@ export async function resolvePackages(
 			projectEnabled ?? isEnabledByOverrides(path, globalSettings.extensions ?? [], globalBaseDir),
 		);
 	}
-	return { ...toResolvedPaths(accumulator), installFailures };
+	return { ...(await toResolvedPaths(accumulator)), installFailures };
 }
 
 async function resolveConfiguredLocalEntries(
@@ -182,7 +174,7 @@ export async function resolveExtensionSources(
 	const installFailures = await resolvePackageSources(context, packageSources, accumulator, undefined, {
 		includeProjectLocalResources: options?.includeProjectLocalResources === true,
 	});
-	return { ...toResolvedPaths(accumulator), installFailures };
+	return { ...(await toResolvedPaths(accumulator)), installFailures };
 }
 
 async function resolvePackageSources(

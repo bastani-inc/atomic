@@ -22,7 +22,27 @@ vi.mock("os", async () => {
 
 vi.mock("child_process", async () => {
 	const actual = await vi.importActual<typeof import("child_process")>("child_process");
-	return { ...actual, spawnSync: mocks.spawnSync };
+	const execFile = (
+		command: string,
+		args: readonly string[],
+		options: unknown,
+		callback?: (error: Error | null, stdout: string, stderr: string) => void,
+	) => {
+		const cb = typeof options === "function" ? (options as typeof callback) : callback;
+		const result = mocks.spawnSync(command, args);
+		if (result.error) {
+			cb?.(result.error, "", "");
+		} else if (result.status !== 0 && result.status !== null) {
+			cb?.(
+				Object.assign(new Error(`exit status ${result.status}`), { code: result.status }),
+				String(result.stdout ?? ""),
+				String(result.stderr ?? ""),
+			);
+		} else {
+			cb?.(null, String(result.stdout ?? ""), String(result.stderr ?? ""));
+		}
+	};
+	return { ...actual, spawnSync: mocks.spawnSync, execFile };
 });
 
 describe("managed tool downloads", () => {
