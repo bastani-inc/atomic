@@ -368,7 +368,7 @@ describe("an auth failure takes its provider out of the chain", () => {
 		]);
 	});
 
-	test("compaction borrowing on overflow after a 401 fallback does not pick another model on the rejected provider (#3326)", async () => {
+	test("compaction on overflow after a 401 fallback clears the context and sends nothing to the rejected provider (#3326)", async () => {
 		const base = getModel("anthropic", "claude-sonnet-4-5")!;
 		const runtime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory(),
@@ -426,7 +426,6 @@ describe("an auth failure takes its provider out of the chain", () => {
 			defaultProvider: WORKING.provider,
 			defaultModel: WORKING.ids[1],
 			retry: { enabled: true, maxRetries: 2, baseDelayMs: 1, maxAgentDelayMs: 1 },
-			compaction: { preserve_recent: 0 },
 		});
 		const { options } = buildSessionOptions(
 			parseArgs(["--model", id(REVOKED), "--fallback-models", `${id(WORKING)},${id(REVOKED, 1)},${id(WORKING, 1)}`]),
@@ -450,13 +449,10 @@ describe("an auth failure takes its provider out of the chain", () => {
 
 		await session.prompt(Array.from({ length: 20 }, (_, index) => `context line ${index}`).join("\n"));
 
-		assert.deepEqual(requests, [id(REVOKED), id(WORKING), id(WORKING), id(WORKING, 1), id(WORKING)]);
+		// Compaction makes no model request, so nothing can reach the provider that rejected its key.
+		assert.deepEqual(requests, [id(REVOKED), id(WORKING), id(WORKING)]);
 		const compaction = sessionManager.getEntries().find((entry) => entry.type === "compaction");
 		assert.ok(compaction && compaction.type === "compaction");
-		assert.deepEqual((compaction.details as VerbatimCompactionDetails | undefined)?.plannerModel, {
-			provider: WORKING.provider,
-			id: WORKING.ids[1],
-			thinkingLevel: "off",
-		});
+		assert.equal((compaction.details as VerbatimCompactionDetails | undefined)?.form, "cleared");
 	});
 });
