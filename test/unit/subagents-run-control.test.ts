@@ -101,6 +101,7 @@ import {
 	takeStoppedQueuedSubagentChild,
 } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { createExecutionScheduler } from "../../packages/subagents/src/runs/shared/parallel-utils.js";
+import { subagentStartHoldMs } from "../../packages/subagents/src/runs/shared/start-progress.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import {
 	type RunSyncOptions,
@@ -180,6 +181,8 @@ interface Harness {
 		| { drop: string[]; gone?: string; refusal?: string }
 		| { acknowledge: string }
 	>;
+	/** The hold of each starting child, as its capability and how long it holds sends. */
+	readonly startHolds: Array<{ readonly reserve: string; readonly holdMs: number }>;
 	readonly holds: Array<
 		{ reserve: string; aliases: readonly string[]; dormant?: true } | { release: string; gone?: string }
 	>;
@@ -251,6 +254,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 	const runs: Harness["runs"] = [];
 	const authorizations: string[] = [];
 	const holds: Harness["holds"] = [];
+	const startHolds: Harness["startHolds"] = [];
 	const releasedChildRequests: Harness["releasedChildRequests"] = [];
 	const notices: Harness["notices"] = [];
 	const firstNotice = Promise.withResolvers<void>();
@@ -274,11 +278,14 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 			}
 			if (channel === SUBAGENT_RESERVE_RESTORING_CHILD_EVENT) {
 				const request = data as SubagentReserveRestoringChildRequest;
-				holds.push({
-					reserve: request.capability,
-					aliases: request.aliases,
-					...(request.dormant === true ? { dormant: true as const } : {}),
-				});
+				if (request.holdMs !== undefined) startHolds.push({ reserve: request.capability, holdMs: request.holdMs });
+				// A launch holds sends to its starting child until it registers; run control's holds are the subject here.
+				if (request.holdMs === undefined || request.aliases.length > 0 || request.dormant === true)
+					holds.push({
+						reserve: request.capability,
+						aliases: request.aliases,
+						...(request.dormant === true ? { dormant: true as const } : {}),
+					});
 				request.completion = Promise.resolve();
 			}
 			if (channel === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT)
@@ -365,6 +372,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		authorizations,
 		releasedChildRequests,
 		holds,
+		startHolds,
 		settleAs: "ok",
 		completesWhenStopped: false,
 		resumedRunsWait: false,
@@ -707,6 +715,11 @@ test("quit stops a running child gracefully and resume without a message continu
 	await settled(h, newTaskId);
 	assert.equal(h.runs.at(-1)?.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
 	assert.equal(h.runs.at(-1)?.options.supervisorAuthorization?.capability, "fresh-capability-1");
+	assert.deepEqual(
+		h.startHolds,
+		[{ reserve: "fresh-capability-1", holdMs: subagentStartHoldMs(undefined) }],
+		"sends to the resumed child wait for it through its start",
+	);
 	const final = await h.waitForLatest(
 		record.childId,
 		(candidate) => candidate.taskId === newTaskId && candidate.state === "terminal",

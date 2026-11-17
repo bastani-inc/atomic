@@ -14,6 +14,7 @@
 - The standalone binary for the build's own platform (Linux x64, Windows x64) ships a bytecode cache of its application bundle, so every process it starts, including `-p`, `--mode rpc`, subagents and workflow workers, loads in about 150 ms instead of 360 ms
 - On Windows, finding PowerShell on `PATH` no longer starts `where` and waits for it, which cost every start about 25–40 ms before its first frame
 - Clarified in `codemode`'s description, system-prompt guidance, and `searchTools()`/`describeTool()` hints that `subagent`, `workflow`, and other model-only tools (plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script, and should be called directly as separate top-level tools when available in the session
+- `SessionStartStep` has a `registering-intercom` step, for a subagent start that waits for its Intercom registration, and `sessionStartStepText(step)` describes a step in words. `SubagentChildPolicy.startup` gives an extension the child's start signal, lets it name the step the start waits in, and says whether the child has yet to start its first turn.
 
 ### Fixed
 

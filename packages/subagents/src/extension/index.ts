@@ -21,6 +21,7 @@ import {
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
 import { discoverAgents } from "../agents/agents.js";
+import { trackOwnIntercomSession } from "../intercom/own-intercom-session.js";
 import { answerIntercomChildrenRequests } from "../runs/foreground/intercom-children.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
 import { bindReleasedChildWakes } from "../runs/foreground/released-child-wakes.js";
@@ -445,6 +446,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			});
 		};
 		const eventUnsubscribes: Array<() => void> = [];
+		// The children this session launches name its own Intercom id as their supervisor.
+		eventUnsubscribes.push(trackOwnIntercomSession(pi.events, state));
 		const unsubscribeControl = pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler);
 		eventUnsubscribes.push(unsubscribeControl);
 		registrationFailureCleanups.push(unsubscribeControl);

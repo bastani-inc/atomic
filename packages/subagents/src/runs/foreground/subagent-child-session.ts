@@ -5,8 +5,10 @@ import type { SubagentChildRecord } from "./subagent-child-records.js";
 /** Intercom's entry recording the Intercom id a session registered under (`packages/intercom/session-identity.ts`). */
 const INTERCOM_SESSION_IDENTITY_ENTRY = "intercom_session_identity";
 
-/** The Intercom id the child's own Intercom extension recorded for its session before the restart. */
-export function readPreviousIntercomId(sessionManager: SessionManager): string | undefined {
+/** The Intercom id the session's own Intercom extension last recorded for it, as before a restart. */
+export function readPreviousIntercomId(
+	sessionManager: Pick<SessionManager, "getSessionId" | "getEntries">,
+): string | undefined {
 	const sessionId = sessionManager.getSessionId();
 	const entries = sessionManager.getEntries();
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
