@@ -255,17 +255,18 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike> imp
 	}
 
 	/**
-	 * The entries whose blocks a single click on row `row` of the transcript at `width` expands or collapses, and
-	 * whether it expands them. Undefined unless the row is part of a block's header; only a windowed transcript, one
-	 * built with a cache key, can tell.
+	 * The entries whose blocks a single click on row `row` of the transcript, as last laid out at `width`, expands or
+	 * collapses, and whether it expands them. Undefined unless the row is a block's header; only a windowed transcript,
+	 * one built with a cache key, can tell.
 	 */
 	clickedEntries(
 		width: number,
 		row: number,
 	): { readonly entries: readonly TEntry[]; readonly expand: boolean } | undefined {
 		if (!this.supportsRowWindow || row < 0) return undefined;
-		this.measureRows(width);
+		// The rows as last laid out, which is what the reader saw: entries that arrived since are not drawn yet.
 		const blocks = this.blockCache;
+		if (blocks.some((candidate) => candidate !== undefined && candidate.width !== width)) return undefined;
 		const index = indexAtOrBefore(this.layout.starts, row);
 		const block = blocks[index];
 		if (block === undefined) return undefined;
