@@ -246,6 +246,8 @@ function factory(pi: ExtensionAPI): void {
 	registerWorkflowSlashCommand(pi, workflowCommands, {
 		owner,
 		overlay,
+		ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
+		discoveryDiagnostics: () => runtimeState.discoveryRef.current?.errors ?? [],
 	});
 	registerWorkflowMessageRenderers(pi);
 	registerWorkflowLifecycleHandlers(pi, {

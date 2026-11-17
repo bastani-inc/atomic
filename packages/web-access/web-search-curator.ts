@@ -123,12 +123,10 @@ export async function openCuratorBrowser(
 					const normalized = normalizeProviderInput(provider);
 					if (!normalized || normalized === "auto") return;
 					pc.defaultProvider = normalized;
-					try {
-						saveConfig({ provider: normalized });
-					} catch (err) {
+					void saveConfig({ provider: normalized }).catch((err) => {
 						const message = err instanceof Error ? err.message : String(err);
 						if (!reportOwnedWebDiagnostic()) console.error(`Failed to persist default provider: ${message}`);
-					}
+					});
 				},
 				async onAddSearch(query, queryIndex, provider) {
 					if (deps.state.pendingCurate !== pc) throw new Error("Curator session is no longer active.");

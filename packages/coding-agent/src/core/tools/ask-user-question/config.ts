@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stripBom } from "../../../utils/text.ts";
@@ -11,14 +12,59 @@ interface GuidanceFields {
 	promptGuidelines?: string[];
 }
 
-interface AskUserQuestionConfig {
+export interface AskUserQuestionConfig {
 	guidance?: GuidanceFields;
 }
 
+let loaded: AskUserQuestionConfig | undefined;
+let reading: Promise<AskUserQuestionConfig> | undefined;
+
+export function refreshConfig(): Promise<AskUserQuestionConfig> {
+	reading ??= readConfig().then((config) => {
+		loaded = config;
+		reading = undefined;
+		return config;
+	});
+	return reading;
+}
+
 export function loadConfig(): AskUserQuestionConfig {
-	if (!existsSync(CONFIG_PATH)) return {};
+	if (loaded === undefined) {
+		loaded = readConfigSync();
+		return loaded;
+	}
+	void refreshConfig();
+	return loaded;
+}
+
+export function loadedConfig(): AskUserQuestionConfig {
+	void refreshConfig();
+	return loaded ?? {};
+}
+
+function readConfigSync(): AskUserQuestionConfig {
+	let text: string;
 	try {
-		const parsed = JSON.parse(stripBom(readFileSync(CONFIG_PATH, "utf-8"))) as unknown;
+		text = readFileSync(CONFIG_PATH, "utf-8");
+	} catch {
+		return {};
+	}
+	return parseConfig(text);
+}
+
+async function readConfig(): Promise<AskUserQuestionConfig> {
+	let text: string;
+	try {
+		text = await readFile(CONFIG_PATH, "utf-8");
+	} catch {
+		return {};
+	}
+	return parseConfig(text);
+}
+
+function parseConfig(text: string): AskUserQuestionConfig {
+	try {
+		const parsed = JSON.parse(stripBom(text)) as unknown;
 		if (parsed === null || typeof parsed !== "object") return {};
 		return parsed as AskUserQuestionConfig;
 	} catch {

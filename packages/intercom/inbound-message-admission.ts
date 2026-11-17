@@ -1,4 +1,4 @@
-import { DeliveredMessageCache } from "./broker/delivered-message-cache.js";
+import { InMemoryDeliveredMessageCache } from "./broker/delivered-message-cache.js";
 import { isMessage, isSessionInfo } from "./broker/client-message-validation.js";
 import type { Message, SessionInfo } from "./types.js";
 
@@ -29,7 +29,7 @@ export interface PersistedInboundMessageEntry {
 
 /** Deduplicates broker deliveries before reply-tracker or turn-context side effects. */
 export class InboundMessageAdmission {
-  private readonly delivered = new DeliveredMessageCache();
+  private readonly delivered = new InMemoryDeliveredMessageCache();
   private readonly pending = new Map<string, PendingInboundMessage>();
   private readonly persistentlyDelivered = new Set<string>();
 

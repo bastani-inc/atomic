@@ -86,7 +86,10 @@ function resolveGroupedStatus(children: SubagentResultIntercomChild[]): Subagent
 	return "failed";
 }
 
-function citedChildPath(child: SubagentResultIntercomChild, pathValue: string | undefined): string | undefined {
+async function citedChildPath(
+	child: SubagentResultIntercomChild,
+	pathValue: string | undefined,
+): Promise<string | undefined> {
 	if (presentCancelledStatus(child.status, child.cause) !== "cancelled") return pathValue;
 	return existingArtifactPath(pathValue);
 }
@@ -107,12 +110,12 @@ function groupedParentCancelCause(children: SubagentResultIntercomChild[]): stri
 	return undefined;
 }
 
-function formatSubagentResultIntercomMessage(input: {
+async function formatSubagentResultIntercomMessage(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	status: SubagentResultStatus;
 	children: SubagentResultIntercomChild[];
-}): string {
+}): Promise<string> {
 	const lines: string[] = [
 		"subagent results",
 		"",
@@ -132,17 +135,17 @@ function formatSubagentResultIntercomMessage(input: {
 		const child = input.children[index]!;
 		lines.push("", `${index + 1}. ${child.agent} — ${presentCancelledStatus(child.status, child.cause)}`);
 		if (child.intercomTarget) lines.push(`Run intercom target: ${child.intercomTarget}`);
-		if (citedChildPath(child, child.artifactPath)) lines.push(`Output artifact: ${child.artifactPath}`);
-		if (citedChildPath(child, child.sessionPath)) lines.push(`Session: ${child.sessionPath}`);
+		if (await citedChildPath(child, child.artifactPath)) lines.push(`Output artifact: ${child.artifactPath}`);
+		if (await citedChildPath(child, child.sessionPath)) lines.push(`Session: ${child.sessionPath}`);
 		lines.push("Summary:", child.summary);
 	}
 
 	return lines.join("\n");
 }
 
-export function buildSubagentResultIntercomPayload(
+export async function buildSubagentResultIntercomPayload(
 	input: GroupedResultIntercomMessageInput,
-): SubagentResultIntercomPayload {
+): Promise<SubagentResultIntercomPayload> {
 	const children = input.children.map((child) => ({
 		...child,
 		summary: child.summary.trim() || "(no output)",
@@ -163,7 +166,7 @@ export function buildSubagentResultIntercomPayload(
 		...(firstChild?.sessionPath ? { sessionPath: firstChild.sessionPath } : {}),
 		message: "",
 	};
-	payload.message = formatSubagentResultIntercomMessage(payload);
+	payload.message = await formatSubagentResultIntercomMessage(payload);
 	return payload;
 }
 
@@ -279,13 +282,13 @@ export function stripDetailsOutputsForIntercomReceipt(details: Details): Details
 	};
 }
 
-export function formatSubagentResultReceipt(input: {
+export async function formatSubagentResultReceipt(input: {
 	mode: SubagentRunMode;
 	runId: string;
 	payload: SubagentResultIntercomPayload;
 	/** False when the relay took the result but could not confirm it arrived. */
 	confirmed?: boolean;
-}): string {
+}): Promise<string> {
 	const modeLabel = input.mode === "single" ? "single subagent result" : "parallel subagent results";
 	const confirmed = input.confirmed !== false;
 	const lines = [
@@ -296,7 +299,10 @@ export function formatSubagentResultReceipt(input: {
 		`Children: ${formatStatusCounts(input.payload.children)}`,
 	];
 
-	const artifacts = input.payload.children.filter((child) => citedChildPath(child, child.artifactPath));
+	const artifacts: SubagentResultIntercomChild[] = [];
+	for (const child of input.payload.children) {
+		if (await citedChildPath(child, child.artifactPath)) artifacts.push(child);
+	}
 	if (artifacts.length > 0) {
 		lines.push("Artifacts:");
 		for (const child of artifacts) {
@@ -312,7 +318,10 @@ export function formatSubagentResultReceipt(input: {
 		}
 	}
 
-	const sessions = input.payload.children.filter((child) => citedChildPath(child, child.sessionPath));
+	const sessions: SubagentResultIntercomChild[] = [];
+	for (const child of input.payload.children) {
+		if (await citedChildPath(child, child.sessionPath)) sessions.push(child);
+	}
 	if (sessions.length > 0) {
 		lines.push("Sessions:");
 		for (const child of sessions) {

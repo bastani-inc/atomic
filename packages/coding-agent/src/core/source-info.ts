@@ -1,4 +1,4 @@
-import { canonicalizePath, getPathComparisonKey } from "../utils/paths.ts";
+import { canonicalizePath, canonicalizePathAsync, getPathComparisonKey } from "../utils/paths.ts";
 import type { PathMetadata, ResourceConfigurationOrigin } from "./package-manager.ts";
 
 export type SourceScope = "user" | "project" | "temporary";
@@ -28,6 +28,10 @@ export function isSyntheticPath(path: string): boolean {
 /** Key for deduplicating resource paths: synthetic paths as-is, file paths via realpath and platform casing. */
 export function getResourcePathKey(path: string): string {
 	return isSyntheticPath(path) ? path : getPathComparisonKey(canonicalizePath(path));
+}
+
+export async function getResourcePathKeyAsync(path: string): Promise<string> {
+	return isSyntheticPath(path) ? path : getPathComparisonKey(await canonicalizePathAsync(path));
 }
 
 export function createSourceInfo(path: string, metadata: PathMetadata): SourceInfo {

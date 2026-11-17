@@ -721,10 +721,14 @@ for (const wait of [undefined, { kind: "background" }, { kind: "foreground", bud
 						),
 					STATE_POLL,
 				);
-				assert.equal(
-					current.git("branch", "--format=%(refname)"),
-					originalBranches,
-					"child branches must be removed too",
+				await vi.waitFor(
+					() =>
+						assert.equal(
+							current.git("branch", "--format=%(refname)"),
+							originalBranches,
+							"child branches must be removed too",
+						),
+					STATE_POLL,
 				);
 			} finally {
 				await current.close();

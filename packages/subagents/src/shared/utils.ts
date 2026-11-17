@@ -170,6 +170,8 @@ export function compactForegroundDetails(details: Details): Details {
 	};
 }
 
+const EXIT_CODE_PATTERN = /exit(?:ed)?\s*(?:with\s*)?(?:(?:code|status)\s*)?(?::\s*)?(\d+)/i;
+
 /**
  * Detect errors in subagent execution from messages (only errors with no subsequent success)
  */
@@ -201,7 +203,7 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 		if (isError) {
 			const text = msg.content.find((c) => c.type === "text");
 			const details = text && "text" in text ? text.text : undefined;
-			const exitMatch = details?.match(/exit(?:ed)?\s*(?:with\s*)?(?:code|status)?\s*[:\s]?\s*(\d+)/i);
+			const exitMatch = details?.match(EXIT_CODE_PATTERN);
 			return {
 				hasError: true,
 				exitCode: exitMatch ? parseInt(exitMatch[1], 10) : 1,
@@ -216,7 +218,7 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 		if (!text || !("text" in text)) continue;
 		const output = text.text;
 
-		const exitMatch = output.match(/exit(?:ed)?\s*(?:with\s*)?(?:code|status)?\s*[:\s]?\s*(\d+)/i);
+		const exitMatch = output.match(EXIT_CODE_PATTERN);
 		if (exitMatch) {
 			const code = parseInt(exitMatch[1], 10);
 			if (code !== 0) {

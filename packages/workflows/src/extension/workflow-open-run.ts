@@ -1,10 +1,11 @@
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
+import { inertDisplayLine, inertDisplayText, withoutStackFrames } from "../tui/display-text.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { renderSessionList } from "../tui/session-list.js";
-import { openWorkflowsListing } from "../tui/workflows-listing.js";
+import { openWorkflowsListing, type WorkflowsListingInvalidDefinition } from "../tui/workflows-listing.js";
 import type { PiCommandContext } from "./public-types.js";
 import { tokenizeWorkflowArgs, type WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
@@ -19,6 +20,26 @@ export interface OpenWorkflowRunOptions {
 export interface WorkflowsCommandDeps {
 	readonly overlay: GraphOverlayPort;
 	readonly store: Store;
+	readonly invalidDefinitions?: () => readonly WorkflowsListingInvalidDefinition[];
+}
+
+export function formatInvalidDefinitionDetails(definition: WorkflowsListingInvalidDefinition): string {
+	const { kept, frames } = withoutStackFrames(inertDisplayText(definition.message.replace(/\r\n?/g, "\n")));
+	const first = kept.findIndex((line) => line.trim() !== "");
+	const allDetail = kept.filter((line, index) => index !== first && line.trim() !== "");
+	const detail = allDetail.slice(0, 8);
+	const omitted = allDetail.length - detail.length;
+	const lines = [
+		`✗ Workflow "${inertDisplayLine(definition.name)}" could not be loaded (${inertDisplayLine(definition.code)})`,
+		"",
+	];
+	if (definition.source !== undefined) lines.push(`file    ${inertDisplayLine(definition.source)}`);
+	lines.push(`reason  ${inertDisplayLine(definition.reason)}`);
+	for (const line of detail) lines.push(`        ${line}`);
+	if (omitted > 0) lines.push(`        +${omitted} more`);
+	if (frames > 0) lines.push(`        (${frames} stack ${frames === 1 ? "frame" : "frames"} hidden)`);
+	lines.push("", "Fix the file, then run /reload to load it again.");
+	return lines.join("\n");
 }
 
 export function openWorkflowRun(
@@ -72,7 +93,7 @@ export async function handleWorkflowsCommand(
 	const runs = topLevelWorkflowRuns(store.runs());
 	if (runs.length === 0 && !interactive) return reporter.info("No workflows in this session.");
 	if (!interactive) return reporter.info(renderSessionList(store.runs(), { theme, includeAll: true }));
-	if (runs.length === 1) {
+	if (runs.length === 1 && (deps.invalidDefinitions?.().length ?? 0) === 0) {
 		openWorkflowRun(runs[0]!.id, ctx, deps);
 		return;
 	}
@@ -89,14 +110,17 @@ async function showWorkflowsListing(
 ): Promise<void> {
 	const { store } = deps;
 	const reopen = (): void => {
-		showWorkflowsListing(ctx, reporter, deps, picked?.runId).catch((error: unknown) =>
-			reporter.error(`/workflows failed: ${error instanceof Error ? error.message : String(error)}`),
+		showWorkflowsListing(ctx, reporter, deps, picked?.kind === "run" ? picked.runId : undefined).catch(
+			(error: unknown) =>
+				reporter.error(`/workflows failed: ${error instanceof Error ? error.message : String(error)}`),
 		);
 	};
 	const picked = await openWorkflowsListing(ctx.ui, {
 		runs: () => store.runs(),
+		invalidDefinitions: deps.invalidDefinitions,
 		subscribe: (listener) => subscribeStoreInvalidation(store, listener),
 		selectRunId,
 	});
 	if (picked?.kind === "run") openWorkflowRun(picked.runId, ctx, deps, { onReturn: reopen });
+	else if (picked?.kind === "invalid-definition") reporter.info(formatInvalidDefinitionDetails(picked.definition));
 }

@@ -1,5 +1,5 @@
-import * as fs from "node:fs";
 import * as path from "node:path";
+import { pathExists } from "../../shared/path-exists.js";
 import type { ResolvedStepBehavior } from "../../shared/settings.js";
 import type { ExtensionConfig, SubagentToolResult } from "../../shared/types.js";
 import { resolveChildCwd } from "../../shared/utils.js";
@@ -24,18 +24,18 @@ export function buildParallelModeError(message: string): SubagentToolResult {
 	};
 }
 
-export function createParallelWorktreeSetup(
+export async function createParallelWorktreeSetup(
 	enabled: boolean | undefined,
 	cwd: string,
 	runId: string,
 	tasks: TaskParam[],
 	setupHook: ExtensionConfig["worktreeSetupHook"],
 	setupHookTimeoutMs: ExtensionConfig["worktreeSetupHookTimeoutMs"],
-): { setup?: WorktreeSetup; errorResult?: SubagentToolResult } {
+): Promise<{ setup?: WorktreeSetup; errorResult?: SubagentToolResult }> {
 	if (!enabled) return {};
 	try {
 		return {
-			setup: createWorktrees(cwd, runId, tasks.length, {
+			setup: await createWorktrees(cwd, runId, tasks.length, {
 				agents: tasks.map((task) => task.agent),
 				setupHook: setupHook ? { hookPath: setupHook, timeoutMs: setupHookTimeoutMs } : undefined,
 			}),
@@ -46,11 +46,11 @@ export function createParallelWorktreeSetup(
 	}
 }
 
-export function buildParallelWorktreeTaskCwdError(
+export async function buildParallelWorktreeTaskCwdError(
 	tasks: ReadonlyArray<{ agent: string; cwd?: string }>,
 	sharedCwd: string,
-): string | undefined {
-	const conflict = findWorktreeTaskCwdConflict(tasks, sharedCwd);
+): Promise<string | undefined> {
+	const conflict = await findWorktreeTaskCwdConflict(tasks, sharedCwd);
 	if (!conflict) return undefined;
 	return formatWorktreeTaskCwdConflict(conflict, sharedCwd);
 }
@@ -70,15 +70,15 @@ export function parallelWorktreeDiffsDir(artifactsDir: string, runId: string): s
 	return path.join(artifactsDir, "worktree-diffs", runId.replaceAll("/", "+"));
 }
 
-export function buildParallelWorktreeSuffix(
+export async function buildParallelWorktreeSuffix(
 	worktreeSetup: WorktreeSetup | undefined,
 	artifactsDir: string,
 	runId: string,
 	tasks: TaskParam[],
-): string {
+): Promise<string> {
 	if (!worktreeSetup) return "";
 	const diffsDir = parallelWorktreeDiffsDir(artifactsDir, runId);
-	const diffs = diffWorktrees(
+	const diffs = await diffWorktrees(
 		worktreeSetup,
 		tasks.map((task) => task.agent),
 		diffsDir,
@@ -139,7 +139,13 @@ export async function prepareNamedWorktrees(
 	const callCwd = params.cwd ?? runtimeCwd;
 	const tasks = params.tasks ?? [];
 	const cwds = [callCwd, ...tasks.map((task) => resolveRequestedCwd(callCwd, task.cwd))];
-	const missing = cwds.find((cwd) => !fs.existsSync(cwd));
+	let missing: string | undefined;
+	for (const cwd of cwds) {
+		if (!(await pathExists(cwd))) {
+			missing = cwd;
+			break;
+		}
+	}
 	if (missing !== undefined) return { error: launchError(params, missingCwdMessage(missing)) };
 	const topLevel = typeof params.worktree === "object" ? params.worktree : undefined;
 	if (params.worktree === true && tasks.some((task) => task.worktree !== undefined))

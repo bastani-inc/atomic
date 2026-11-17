@@ -23,7 +23,10 @@ import { collectResumePickerLiveRuns } from "../../packages/workflows/src/extens
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { workflowResumeAction } from "../../packages/workflows/src/extension/workflow-tool-control.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
-import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
+import {
+	ENV_WORKFLOW_ARTIFACT_DIR,
+	refreshWorkflowArtifactPresence,
+} from "../../packages/workflows/src/shared/workflow-artifacts.js";
 import { testRunId } from "../helpers/run-id.js";
 import {
 	currentStoreBackend,
@@ -1542,6 +1545,7 @@ describe("/workflow resume completed target", () => {
 				resumable: true,
 				result: { transcript_path: join(tempDir, "runs", runId, "transcripts", "stage.md") },
 			});
+			await refreshWorkflowArtifactPresence(store.runs());
 			const source = collectResumePickerLiveRuns(store);
 			assert.equal(
 				source.liveRuns.some((run) => run.id === runId),

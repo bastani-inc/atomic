@@ -15,14 +15,14 @@ const child: SingleResult = {
 	usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 };
 
-test("evicting a retained task output deletes its private copy (#3294)", () => {
+test("evicting a retained task output deletes its private copy (#3294)", async () => {
 	const owner = `owner-eviction-${process.pid}`;
-	retainTaskOutput(child, "first", { ownerId: owner, taskId: "task-0" });
+	await retainTaskOutput(child, "first", { ownerId: owner, taskId: "task-0" });
 	const firstCopy = retainedTaskOutput(owner, "task-0")?.path;
 	assert.ok(firstCopy && existsSync(firstCopy));
 
 	for (let index = 1; index <= 256; index++) {
-		retainTaskOutput(child, `output ${index}`, { ownerId: owner, taskId: `task-${index}` });
+		await retainTaskOutput(child, `output ${index}`, { ownerId: owner, taskId: `task-${index}` });
 	}
 
 	assert.equal(retainedTaskOutput(owner, "task-0"), undefined);

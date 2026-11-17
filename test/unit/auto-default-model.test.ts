@@ -413,7 +413,7 @@ for (const mode of LAUNCH_MODES) {
 	});
 }
 
-test("agent files and agent config updates that still set taskNeeds or modelConstraints load with them ignored", () => {
+test("agent files and agent config updates that still set taskNeeds or modelConstraints load with them ignored", async () => {
 	const dir = tempDir("atomic-auto-default-agents-");
 	writeFileSync(
 		join(dir, "legacy.md"),
@@ -431,7 +431,7 @@ test("agent files and agent config updates that still set taskNeeds or modelCons
 			"Body",
 		].join("\n"),
 	);
-	const { agents, diagnostics } = loadAgentsFromDirWithDiagnostics(dir, "user");
+	const { agents, diagnostics } = await loadAgentsFromDirWithDiagnostics(dir, "user");
 	assert.deepEqual(diagnostics, []);
 	const legacy = agents.find((agent) => agent.name === "legacy");
 	assert.equal(legacy?.model, "auto");
@@ -459,7 +459,7 @@ test("subagent calls that still pass modelConstraints or taskNeeds warn once per
 	assert.equal(routingWarnings(warn).length, 2, "a call without removed fields does not warn");
 });
 
-test("agent files that still set modelConstraints or taskNeeds warn once that the fields are ignored", () => {
+test("agent files that still set modelConstraints or taskNeeds warn once that the fields are ignored", async () => {
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 	const dir = tempDir("atomic-auto-default-agent-warning-");
 	writeFileSync(
@@ -478,8 +478,8 @@ test("agent files that still set modelConstraints or taskNeeds warn once that th
 			"Body",
 		].join("\n"),
 	);
-	loadAgentsFromDirWithDiagnostics(dir, "user");
-	loadAgentsFromDirWithDiagnostics(dir, "user");
+	await loadAgentsFromDirWithDiagnostics(dir, "user");
+	await loadAgentsFromDirWithDiagnostics(dir, "user");
 	const warnings = routingWarnings(warn);
 	assert.equal(warnings.length, 2, warnings.join("\n"));
 	assert.ok(warnings.some((message) => message.includes('"modelConstraints"')));
@@ -751,38 +751,46 @@ test("an auto stage keeps the effort its author sets", async () => {
 	assert.equal(f.thinkingChanges.at(-1), "minimal");
 });
 
-test("prompt and complete adapters of an auto stage see the model it stands for, never auto", async () => {
+test("prompt and complete adapters of an auto stage see the model it stands for, never auto (#5377)", async () => {
 	for (const method of ["prompt", "complete"] as const) {
-		const f = await stageFixture(WITH_DEFAULT);
-		let selected: string | undefined;
-		const ctx = createStageContext(
-			makeOpts({
-				models: f.models,
-				stageOptions: { model: "auto" },
-				adapters:
-					method === "prompt"
-						? {
-								prompt: {
-									async prompt(_text, meta) {
-										selected = String(meta?.stageOptions?.model);
-										return "done";
+		for (const deferred of [false, true]) {
+			const f = await stageFixture(WITH_DEFAULT);
+			const preparedCwd = join(tempDir("atomic-auto-default-prepared-worktree-"), "prepared-worktree");
+			let selected: string | undefined;
+			let selectedCwd: string | undefined;
+			const ctx = createStageContext(
+				makeOpts({
+					models: f.models,
+					stageOptions: { model: "auto" },
+					...(deferred ? { stageOptionsReady: Promise.resolve({ model: "auto", cwd: preparedCwd }) } : {}),
+					adapters:
+						method === "prompt"
+							? {
+									prompt: {
+										async prompt(_text, meta) {
+											selected = String(meta?.stageOptions?.model);
+											selectedCwd = meta?.stageOptions?.cwd;
+											return "done";
+										},
+									},
+								}
+							: {
+									complete: {
+										async complete(_text, _options, meta) {
+											selected = String(meta?.stageOptions?.model);
+											selectedCwd = meta?.stageOptions?.cwd;
+											return "done";
+										},
 									},
 								},
-							}
-						: {
-								complete: {
-									async complete(_text, _options, meta) {
-										selected = String(meta?.stageOptions?.model);
-										return "done";
-									},
-								},
-							},
-			}),
-		);
-		assert.equal(await ctx[method]("Adapter task"), "done");
-		assert.equal(selected, `${DEFAULT_ID}:high`);
-		assert.deepEqual(f.requests, []);
-		await ctx.__dispose();
+				}),
+			);
+			assert.equal(await ctx[method]("Adapter task"), "done");
+			assert.equal(selected, `${DEFAULT_ID}:high`);
+			if (deferred) assert.equal(selectedCwd, preparedCwd);
+			assert.deepEqual(f.requests, []);
+			await ctx.__dispose();
+		}
 	}
 });
 
@@ -1607,6 +1615,43 @@ test("the admission and worker session adapters resolve auto through the adapter
 	]);
 });
 
+test("the SDK session adapter resolves auto settings asynchronously when no settingsManager is supplied (#5377)", async () => {
+	const m = await models();
+	const root = tempDir("atomic-auto-default-sdk-async-settings-");
+	const cwd = join(root, "project");
+	const agentDir = join(root, "agent");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify(WITH_DEFAULT));
+	const createSyncSpy = vi.spyOn(SettingsManager, "create");
+	const createAsyncSpy = vi.spyOn(SettingsManager, "createAsync");
+
+	const suppliedAdapter = createAgentSessionAdapter({
+		cwd,
+		agentDir,
+		modelRuntime: m.runtime,
+		settingsManager: SettingsManager.inMemory(WITH_DEFAULT),
+	});
+	const fromSupplied = await suppliedAdapter.autoModel?.({});
+	assert.ok(fromSupplied && typeof fromSupplied.model !== "string");
+	assert.equal(`${fromSupplied.model.provider}/${fromSupplied.model.id}`, DEFAULT_ID);
+	assert.equal(fromSupplied?.thinkingLevel, "high");
+	assert.equal(createSyncSpy.mock.calls.length, 0);
+	assert.equal(createAsyncSpy.mock.calls.length, 0);
+
+	const diskAdapter = createAgentSessionAdapter({
+		cwd,
+		agentDir,
+		modelRuntime: m.runtime,
+	});
+	const fromDisk = await diskAdapter.autoModel?.({});
+	assert.ok(fromDisk && typeof fromDisk.model !== "string");
+	assert.equal(`${fromDisk.model.provider}/${fromDisk.model.id}`, DEFAULT_ID);
+	assert.equal(fromDisk?.thinkingLevel, "high");
+	assert.equal(createSyncSpy.mock.calls.length, 0);
+	assert.equal(createAsyncSpy.mock.calls.length, 1);
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------------------------------------------
@@ -1657,7 +1702,7 @@ test("a modelRouting setting is dropped with one warning that its restrictions n
 	assert.equal(routingWarnings(warn).length, 1, "settings without the key do not warn");
 });
 
-test("saved builtin agent overrides that still set modelConstraints warn once that it is ignored", () => {
+test("saved builtin agent overrides that still set modelConstraints warn once that it is ignored", async () => {
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 	const file = join(tempDir("atomic-auto-default-override-"), "settings.json");
 	writeFileSync(
@@ -1668,8 +1713,8 @@ test("saved builtin agent overrides that still set modelConstraints warn once th
 			},
 		}),
 	);
-	const first = readMergedSubagentSettings([file]);
-	readMergedSubagentSettings([file]);
+	const first = await readMergedSubagentSettings([file]);
+	await readMergedSubagentSettings([file]);
 	assert.equal(first.settings.overrides.worker?.model, "auto");
 	assert.equal(Object.hasOwn(first.settings.overrides.worker!, "modelConstraints"), false);
 	const warnings = routingWarnings(warn);

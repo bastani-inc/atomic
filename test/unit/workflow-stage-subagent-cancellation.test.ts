@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { closeWorkflowStageGeneration } from "../../packages/coding-agent/src/core/agent-session-message-queue.js";
 import type { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
@@ -210,7 +210,9 @@ test("closing a workflow stage cancels its detached single child without a late 
 		await closeStage(boundary);
 		assert.equal(run.detachedResults.length, 1, "repeated close is idempotent");
 		assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
-		assert.equal(fileExistsSync(join(root, "subagent-artifacts", "progress", launched.runId)), false);
+		await vi.waitFor(() =>
+			assert.equal(fileExistsSync(join(root, "subagent-artifacts", "progress", launched.runId)), false),
+		);
 	} finally {
 		gate.resolve();
 		run.unregisterNotify();

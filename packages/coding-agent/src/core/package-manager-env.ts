@@ -3,10 +3,7 @@ import { basename } from "node:path";
 import { ENV_OFFLINE, getEnvValue } from "../config.js";
 import { createGitEnvironment } from "../utils/git-env.ts";
 
-export function getEnv(): NodeJS.ProcessEnv {
-	if (process.platform !== "linux" || Object.keys(process.env).length > 0) {
-		return process.env;
-	}
+function readProcessStartEnvironment(): NodeJS.ProcessEnv | undefined {
 	try {
 		const data = readFileSync("/proc/self/environ", "utf-8");
 		const env: NodeJS.ProcessEnv = {};
@@ -18,8 +15,18 @@ export function getEnv(): NodeJS.ProcessEnv {
 		}
 		return env;
 	} catch {
+		return undefined;
+	}
+}
+
+const processStartEnvironment =
+	process.platform === "linux" && Object.keys(process.env).length === 0 ? readProcessStartEnvironment() : undefined;
+
+export function getEnv(): NodeJS.ProcessEnv {
+	if (process.platform !== "linux" || Object.keys(process.env).length > 0) {
 		return process.env;
 	}
+	return processStartEnvironment ?? process.env;
 }
 
 export function isOfflineModeEnabled(): boolean {

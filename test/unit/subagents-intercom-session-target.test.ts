@@ -37,8 +37,8 @@ test("uses the full session ID for an unnamed Intercom alias", () => {
 	}
 });
 
-test("detects Atomic's bundled Intercom extension in a source checkout", () => {
-	const bridge = resolveIntercomBridge({
+test("detects Atomic's bundled Intercom extension in a source checkout", async () => {
+	const bridge = await resolveIntercomBridge({
 		config: undefined,
 		context: "fresh",
 		orchestratorTarget: "parent",

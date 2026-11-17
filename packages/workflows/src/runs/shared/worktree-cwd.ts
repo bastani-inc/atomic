@@ -1,4 +1,5 @@
 import { lstatSync, realpathSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { GitWorktreeSetupResult } from "./worktree-types.js";
 
@@ -48,6 +49,15 @@ function existingRealPath(path: string, description: string): string {
 	}
 }
 
+async function existingRealPathAsync(path: string, description: string): Promise<string> {
+	try {
+		return await realpath(path);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`atomic-workflows: cannot resolve ${description} ${path}: ${message}`);
+	}
+}
+
 export function resolveWorktreeStageCwd(cwd: string | undefined, setup: GitWorktreeSetupResult): string | undefined {
 	const worktreeRoot = existingRealPath(setup.worktreeRoot, "gitWorktreeDir");
 	const repositoryRoot = existingRealPath(setup.repositoryRoot, "invoking checkout");
@@ -84,6 +94,55 @@ export function resolveWorktreeStageCwd(cwd: string | undefined, setup: GitWorkt
 	}
 	const mappedCwd = resolve(setup.worktreeRoot, repositoryRelative);
 	const mappedRealPath = existingRealPath(mappedCwd, "remapped worktree cwd");
+	if (relativePathWithin(worktreeRoot, mappedRealPath) === undefined) {
+		throw new Error(
+			`atomic-workflows: cwd ${cwd} remaps through a path that resolves outside gitWorktreeDir ${setup.worktreeRoot}; remove the escaping symlink or omit cwd.`,
+		);
+	}
+	return mappedCwd;
+}
+
+export async function resolveWorktreeStageCwdAsync(
+	cwd: string | undefined,
+	setup: GitWorktreeSetupResult,
+): Promise<string | undefined> {
+	const [worktreeRoot, repositoryRoot] = await Promise.all([
+		existingRealPathAsync(setup.worktreeRoot, "gitWorktreeDir"),
+		existingRealPathAsync(setup.repositoryRoot, "invoking checkout"),
+	]);
+	if (cwd === undefined || cwd.length === 0) return undefined;
+
+	const absoluteInput = isAbsolute(cwd);
+	const candidate = absoluteInput ? cwd : resolve(setup.cwd, cwd);
+	if (!absoluteInput && relativePathWithin(setup.worktreeRoot, candidate) === undefined) {
+		throw new Error(
+			`atomic-workflows: relative cwd ${cwd} escapes gitWorktreeDir ${setup.worktreeRoot}; choose a cwd inside the worktree.`,
+		);
+	}
+	const candidateRealPath = await existingRealPathAsync(candidate, "cwd");
+	const worktreeRelative = relativePathWithin(worktreeRoot, candidateRealPath);
+	if (worktreeRelative !== undefined) return resolve(setup.worktreeRoot, worktreeRelative);
+	if (!isAbsolute(cwd)) {
+		throw new Error(
+			`atomic-workflows: relative cwd ${cwd} escapes gitWorktreeDir ${setup.worktreeRoot}; choose a path that remains inside the selected worktree.`,
+		);
+	}
+	if (relativePathWithin(setup.worktreeRoot, candidate) !== undefined) {
+		throw new Error(
+			`atomic-workflows: cwd ${cwd} resolves outside gitWorktreeDir ${setup.worktreeRoot}; remove the escaping symlink or choose a cwd inside the worktree.`,
+		);
+	}
+
+	const repositoryRelative = absoluteInput ? relativePathWithin(repositoryRoot, candidateRealPath) : undefined;
+	if (repositoryRelative === undefined) {
+		throw new Error(
+			repositoryRoot === worktreeRoot
+				? `atomic-workflows: cwd ${cwd} is outside gitWorktreeDir ${setup.worktreeRoot}, which belongs to a different repository than the invoking cwd; choose a cwd inside the worktree, or omit cwd.`
+				: `atomic-workflows: cwd ${cwd} is outside gitWorktreeDir ${setup.worktreeRoot}; use a cwd inside the invoking repository so Atomic can remap it, or omit cwd.`,
+		);
+	}
+	const mappedCwd = resolve(setup.worktreeRoot, repositoryRelative);
+	const mappedRealPath = await existingRealPathAsync(mappedCwd, "remapped worktree cwd");
 	if (relativePathWithin(worktreeRoot, mappedRealPath) === undefined) {
 		throw new Error(
 			`atomic-workflows: cwd ${cwd} remaps through a path that resolves outside gitWorktreeDir ${setup.worktreeRoot}; remove the escaping symlink or omit cwd.`,

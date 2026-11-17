@@ -8,7 +8,7 @@
  */
 
 import { createPrivateKey } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { sliceHead } from "@bastani/atomic";
 import { redactSecrets, WorkerProvisionerError } from "./cli.js";
@@ -123,14 +123,14 @@ function ghEnv(host: string, token: string): Record<string, string> {
 }
 
 /** The private key in `file`, after checking that only its owner can read it. Its content never reaches an error. */
-function readPrivateKey(file: string): string {
+async function readPrivateKey(file: string): Promise<string> {
 	const refused = (reason: string) =>
 		new WorkerProvisionerError("auth", `The GitHub App private key file ${file} ${reason}.`);
 	let pem: string;
 	try {
-		if (process.platform !== "win32" && (statSync(file).mode & 0o077) !== 0)
+		if (process.platform !== "win32" && ((await stat(file)).mode & 0o077) !== 0)
 			throw refused("is readable by other users; restrict it with chmod 600");
-		pem = readFileSync(file, "utf8");
+		pem = await readFile(file, "utf8");
 	} catch (error) {
 		if (error instanceof WorkerProvisionerError) throw error;
 		throw refused(`cannot be read (${(error as NodeJS.ErrnoException).code ?? "error"})`);
@@ -191,7 +191,7 @@ export class GitHubAppCredentials {
 
 	private async token(): Promise<string> {
 		if (this.current !== undefined && Date.now() < this.current.refreshAt) return this.current.token;
-		const privateKey = readPrivateKey(this.app.privateKeyFile);
+		const privateKey = await readPrivateKey(this.app.privateKeyFile);
 		const [{ createAppAuth }, { request }] = await Promise.all([
 			import("@octokit/auth-app"),
 			import("@octokit/request"),

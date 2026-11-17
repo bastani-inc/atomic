@@ -1,4 +1,4 @@
-import { failureDebugFields, reportDebug } from "./debug.ts";
+import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts";
 
 /**
  * Releases a proper-lockfile lock without letting a failed release replace the guarded operation's outcome (#5090).

@@ -1,5 +1,6 @@
 // NEVER convert to top-level imports - breaks browser/Vite builds
 let _existsSync: typeof import("node:fs").existsSync | null = null;
+let _access: typeof import("node:fs").promises.access | null = null;
 let _homedir: typeof import("node:os").homedir | null = null;
 let _join: typeof import("node:path").join | null = null;
 
@@ -10,17 +11,37 @@ const NODE_FS_SPECIFIER = "node:" + "fs";
 const NODE_OS_SPECIFIER = "node:" + "os";
 const NODE_PATH_SPECIFIER = "node:" + "path";
 
+let nodeModulesLoaded: Promise<void> | undefined;
+
 // Eagerly load in Node.js/Bun environment only
 if (typeof process !== "undefined" && (process.versions?.node || process.versions?.bun)) {
-	dynamicImport(NODE_FS_SPECIFIER).then((m) => {
-		_existsSync = (m as typeof import("node:fs")).existsSync;
-	});
-	dynamicImport(NODE_OS_SPECIFIER).then((m) => {
-		_homedir = (m as typeof import("node:os")).homedir;
-	});
-	dynamicImport(NODE_PATH_SPECIFIER).then((m) => {
-		_join = (m as typeof import("node:path")).join;
-	});
+	const getBuiltin = (process as { getBuiltinModule?: (id: string) => unknown }).getBuiltinModule;
+	if (typeof getBuiltin === "function") {
+		const fsModule = getBuiltin.call(process, NODE_FS_SPECIFIER) as typeof import("node:fs") | undefined;
+		const osModule = getBuiltin.call(process, NODE_OS_SPECIFIER) as typeof import("node:os") | undefined;
+		const pathModule = getBuiltin.call(process, NODE_PATH_SPECIFIER) as typeof import("node:path") | undefined;
+		if (fsModule) {
+			_existsSync = fsModule.existsSync;
+			_access = fsModule.promises.access;
+		}
+		if (osModule) _homedir = osModule.homedir;
+		if (pathModule) _join = pathModule.join;
+	}
+	if (!_existsSync || !_access || !_homedir || !_join) {
+		nodeModulesLoaded = Promise.all([
+			dynamicImport(NODE_FS_SPECIFIER).then((m) => {
+				const fsModule = m as typeof import("node:fs");
+				_existsSync = fsModule.existsSync;
+				_access = fsModule.promises.access;
+			}),
+			dynamicImport(NODE_OS_SPECIFIER).then((m) => {
+				_homedir = (m as typeof import("node:os")).homedir;
+			}),
+			dynamicImport(NODE_PATH_SPECIFIER).then((m) => {
+				_join = (m as typeof import("node:path")).join;
+			}),
+		]).then(() => undefined);
+	}
 }
 
 import { normalizeProviderId } from "./provider-id.ts";
@@ -37,6 +58,18 @@ export const ANTHROPIC_IDENTITY_TOKEN_FILE_ENV = "ANTHROPIC_IDENTITY_TOKEN_FILE"
 export const ANTHROPIC_WORKSPACE_ID_ENV = "ANTHROPIC_WORKSPACE_ID";
 
 let cachedVertexAdcCredentialsExists: boolean | null = null;
+
+function defaultAdcCredentialsPath(): string | undefined {
+	return _homedir && _join ? _join(_homedir(), ".config", "gcloud", "application_default_credentials.json") : undefined;
+}
+
+function fileExistsAsync(path: string | undefined): Promise<boolean> {
+	if (!path || !_access) return Promise.resolve(false);
+	return _access(path).then(
+		() => true,
+		() => false,
+	);
+}
 
 function hasVertexAdcCredentials(env?: ProviderEnv): boolean {
 	const explicitCredentialsPath = env?.GOOGLE_APPLICATION_CREDENTIALS;
@@ -57,16 +90,34 @@ function hasVertexAdcCredentials(env?: ProviderEnv): boolean {
 			return false;
 		}
 
-		// Check GOOGLE_APPLICATION_CREDENTIALS env var first (standard way)
 		const gacPath = getProviderEnvValue("GOOGLE_APPLICATION_CREDENTIALS", env);
 		if (gacPath) {
 			cachedVertexAdcCredentialsExists = _existsSync(gacPath);
 		} else {
-			// Fall back to default ADC path (lazy evaluation)
 			cachedVertexAdcCredentialsExists = _existsSync(
 				_join(_homedir(), ".config", "gcloud", "application_default_credentials.json"),
 			);
 		}
+	}
+	return cachedVertexAdcCredentialsExists;
+}
+
+async function hasVertexAdcCredentialsAsync(env?: ProviderEnv): Promise<boolean> {
+	if (nodeModulesLoaded) await nodeModulesLoaded;
+	const explicitCredentialsPath = env?.GOOGLE_APPLICATION_CREDENTIALS;
+	if (explicitCredentialsPath) {
+		return fileExistsAsync(explicitCredentialsPath);
+	}
+	if (cachedVertexAdcCredentialsExists === null) {
+		if (!_access || !_homedir || !_join) {
+			const isNode = typeof process !== "undefined" && (process.versions?.node || process.versions?.bun);
+			if (!isNode) {
+				cachedVertexAdcCredentialsExists = false;
+			}
+			return false;
+		}
+		const path = getProviderEnvValue("GOOGLE_APPLICATION_CREDENTIALS", env) ?? defaultAdcCredentialsPath();
+		cachedVertexAdcCredentialsExists = await fileExistsAsync(path);
 	}
 	return cachedVertexAdcCredentialsExists;
 }
@@ -163,6 +214,32 @@ export function findEnvKeys(provider: string, env?: ProviderEnv): string[] | und
 	return found.length > 0 ? found : undefined;
 }
 
+export function getDirectEnvApiKey(provider: string, env?: ProviderEnv): string | undefined {
+	const envKeys = findEnvKeys(provider, env);
+	if (!envKeys?.[0]) return undefined;
+	const apiKeyEnv = provider === "anthropic" ? envKeys.find((key) => key !== ANTHROPIC_AUTH_TOKEN_ENV) : envKeys[0];
+	return apiKeyEnv ? getProviderEnvValue(apiKeyEnv, env) : undefined;
+}
+
+function hasVertexProjectAndLocation(env?: ProviderEnv): boolean {
+	const hasProject = !!(
+		getProviderEnvValue("GOOGLE_CLOUD_PROJECT", env) || getProviderEnvValue("GCLOUD_PROJECT", env)
+	);
+	const hasLocation = !!getProviderEnvValue("GOOGLE_CLOUD_LOCATION", env);
+	return hasProject && hasLocation;
+}
+
+function hasBedrockAmbientAuth(env?: ProviderEnv): boolean {
+	return !!(
+		getProviderEnvValue("AWS_PROFILE", env) ||
+		(getProviderEnvValue("AWS_ACCESS_KEY_ID", env) && getProviderEnvValue("AWS_SECRET_ACCESS_KEY", env)) ||
+		getProviderEnvValue("AWS_BEARER_TOKEN_BEDROCK", env) ||
+		getProviderEnvValue("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", env) ||
+		getProviderEnvValue("AWS_CONTAINER_CREDENTIALS_FULL_URI", env) ||
+		getProviderEnvValue("AWS_WEB_IDENTITY_TOKEN_FILE", env)
+	);
+}
+
 /**
  * Get API key for provider from known environment variables, e.g. OPENAI_API_KEY.
  *
@@ -171,44 +248,38 @@ export function findEnvKeys(provider: string, env?: ProviderEnv): string[] | und
 export function getEnvApiKey(provider: KnownProvider, env?: ProviderEnv): string | undefined;
 export function getEnvApiKey(provider: string, env?: ProviderEnv): string | undefined;
 export function getEnvApiKey(provider: string, env?: ProviderEnv): string | undefined {
-	const envKeys = findEnvKeys(provider, env);
-	if (envKeys?.[0]) {
-		const apiKeyEnv = provider === "anthropic" ? envKeys.find((key) => key !== ANTHROPIC_AUTH_TOKEN_ENV) : envKeys[0];
-		if (apiKeyEnv) return getProviderEnvValue(apiKeyEnv, env);
-	}
+	const directKey = getDirectEnvApiKey(provider, env);
+	if (directKey) return directKey;
 
 	// Vertex AI supports either an explicit API key or Application Default Credentials.
 	// Auth is configured via `gcloud auth application-default login`.
 	if (provider === "google-vertex") {
-		const hasCredentials = hasVertexAdcCredentials(env);
-		const hasProject = !!(
-			getProviderEnvValue("GOOGLE_CLOUD_PROJECT", env) || getProviderEnvValue("GCLOUD_PROJECT", env)
-		);
-		const hasLocation = !!getProviderEnvValue("GOOGLE_CLOUD_LOCATION", env);
-
-		if (hasCredentials && hasProject && hasLocation) {
+		if (hasVertexAdcCredentials(env) && hasVertexProjectAndLocation(env)) {
 			return "<authenticated>";
 		}
 	}
 
-	if (provider === "amazon-bedrock") {
-		// Amazon Bedrock supports multiple credential sources:
-		// 1. AWS_PROFILE - named profile from ~/.aws/credentials
-		// 2. AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY - standard IAM keys
-		// 3. AWS_BEARER_TOKEN_BEDROCK - Bedrock bearer token
-		// 4. AWS_CONTAINER_CREDENTIALS_RELATIVE_URI - ECS task roles
-		// 5. AWS_CONTAINER_CREDENTIALS_FULL_URI - ECS task roles (full URI)
-		// 6. AWS_WEB_IDENTITY_TOKEN_FILE - IRSA (IAM Roles for Service Accounts)
-		if (
-			getProviderEnvValue("AWS_PROFILE", env) ||
-			(getProviderEnvValue("AWS_ACCESS_KEY_ID", env) && getProviderEnvValue("AWS_SECRET_ACCESS_KEY", env)) ||
-			getProviderEnvValue("AWS_BEARER_TOKEN_BEDROCK", env) ||
-			getProviderEnvValue("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", env) ||
-			getProviderEnvValue("AWS_CONTAINER_CREDENTIALS_FULL_URI", env) ||
-			getProviderEnvValue("AWS_WEB_IDENTITY_TOKEN_FILE", env)
-		) {
+	if (provider === "amazon-bedrock" && hasBedrockAmbientAuth(env)) {
+		return "<authenticated>";
+	}
+
+	return undefined;
+}
+
+export function getEnvApiKeyAsync(provider: KnownProvider, env?: ProviderEnv): Promise<string | undefined>;
+export function getEnvApiKeyAsync(provider: string, env?: ProviderEnv): Promise<string | undefined>;
+export async function getEnvApiKeyAsync(provider: string, env?: ProviderEnv): Promise<string | undefined> {
+	const directKey = getDirectEnvApiKey(provider, env);
+	if (directKey) return directKey;
+
+	if (provider === "google-vertex") {
+		if (hasVertexProjectAndLocation(env) && (await hasVertexAdcCredentialsAsync(env))) {
 			return "<authenticated>";
 		}
+	}
+
+	if (provider === "amazon-bedrock" && hasBedrockAmbientAuth(env)) {
+		return "<authenticated>";
 	}
 
 	return undefined;

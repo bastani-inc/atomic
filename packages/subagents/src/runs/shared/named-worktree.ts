@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import * as fs from "node:fs";
+import { constants as fsConstants } from "node:fs";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { renameNoReplace, tryAdvisoryLock } from "@bastani/atomic-natives";
+import { type AdvisoryLock, renameNoReplaceAsync, tryAdvisoryLockAsync } from "@bastani/atomic-natives";
+import { pathExists } from "../../shared/path-exists.js";
 import { addNamedWorktree } from "./named-worktree-git.js";
 import { ensureWorktreeIgnore, runGit } from "./worktree.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
@@ -91,8 +93,8 @@ export class WorktreeBusyError extends Error {
 	}
 }
 
-function gitChecked(cwd: string, args: string[]): string {
-	const result = runGit(cwd, args, { LC_ALL: "C", LANGUAGE: "C" });
+async function gitChecked(cwd: string, args: string[]): Promise<string> {
+	const result = await runGit(cwd, args, { LC_ALL: "C", LANGUAGE: "C" });
 	if (result.status !== 0)
 		throw new GitFailure(result.stderr.trim() || result.stdout.trim() || `git ${args.join(" ")} failed`);
 	return result.stdout;
@@ -107,23 +109,23 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	}
 }
 
-function comparablePath(value: string): string {
+async function comparablePath(value: string): Promise<string> {
 	const resolved = path.resolve(value);
 	let canonical: string;
 	try {
-		canonical = fs.realpathSync(resolved);
+		canonical = await fs.realpath(resolved);
 	} catch {
 		const parent = path.dirname(resolved);
-		canonical = parent === resolved ? resolved : path.join(comparablePath(parent), path.basename(resolved));
+		canonical = parent === resolved ? resolved : path.join(await comparablePath(parent), path.basename(resolved));
 	}
 	return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }
 
-function commonGitDirectory(repo: string): string {
-	const key = comparablePath(repo);
+async function commonGitDirectory(repo: string): Promise<string> {
+	const key = await comparablePath(repo);
 	const cached = commonDirectories.get(key);
-	if (cached !== undefined && fs.existsSync(cached)) return cached;
-	const commonDir = path.resolve(repo, gitChecked(repo, ["rev-parse", "--git-common-dir"]).trim());
+	if (cached !== undefined && (await pathExists(cached))) return cached;
+	const commonDir = path.resolve(repo, (await gitChecked(repo, ["rev-parse", "--git-common-dir"])).trim());
 	commonDirectories.set(key, commonDir);
 	return commonDir;
 }
@@ -134,52 +136,58 @@ interface CheckoutState {
 	readonly blocker: string | null | undefined;
 }
 
-function checkoutState(gitDir: string, commonDir: string, branch: string): CheckoutState {
+async function checkoutState(gitDir: string, commonDir: string, branch: string): Promise<CheckoutState> {
 	let reason = "";
 	try {
-		reason = fs.readFileSync(path.join(gitDir, "locked"), "utf8").trim();
+		reason = (await fs.readFile(path.join(gitDir, "locked"), "utf8")).trim();
 	} catch {}
 	const ownedAdd = reason.startsWith(OWNED_ADD_LOCK_PREFIX);
 	const initializing = ownedAdd || INITIALIZING_LOCK_REASONS.has(reason);
 	const indexLock = path.join(gitDir, "index.lock");
-	if (fs.existsSync(indexLock)) return { gitDir, ownedAdd, blocker: indexLock };
+	if (await pathExists(indexLock)) return { gitDir, ownedAdd, blocker: indexLock };
 	if (initializing) {
 		for (const lock of [path.join(gitDir, "HEAD.lock"), path.join(commonDir, "refs", "heads", `${branch}.lock`)]) {
-			if (fs.existsSync(lock)) return { gitDir, ownedAdd, blocker: lock };
+			if (await pathExists(lock)) return { gitDir, ownedAdd, blocker: lock };
 		}
 	}
 	let head: string;
 	try {
-		head = fs.readFileSync(path.join(gitDir, "HEAD"), "utf8").trim();
+		head = (await fs.readFile(path.join(gitDir, "HEAD"), "utf8")).trim();
 	} catch {
 		return { gitDir, ownedAdd, blocker: initializing ? null : undefined };
 	}
-	if (/^(?:0{40}|0{64})$/.test(head) || (initializing && !fs.existsSync(path.join(gitDir, "index"))))
+	if (/^(?:0{40}|0{64})$/.test(head) || (initializing && !(await pathExists(path.join(gitDir, "index")))))
 		return { gitDir, ownedAdd, blocker: null };
 	return { gitDir, ownedAdd, blocker: undefined };
 }
 
-function targetCheckoutState(commonDir: string, worktreePath: string, branch: string): CheckoutState | undefined {
+async function targetCheckoutState(
+	commonDir: string,
+	worktreePath: string,
+	branch: string,
+): Promise<CheckoutState | undefined> {
 	const gitFile = path.join(worktreePath, ".git");
-	if (comparablePath(gitFile) === comparablePath(commonDir)) return checkoutState(commonDir, commonDir, branch);
+	if ((await comparablePath(gitFile)) === (await comparablePath(commonDir)))
+		return checkoutState(commonDir, commonDir, branch);
 	try {
-		const pointer = fs.readFileSync(gitFile, "utf8");
+		const pointer = await fs.readFile(gitFile, "utf8");
 		if (!pointer.startsWith("gitdir:")) return undefined;
 		const entry = path.resolve(worktreePath, pointer.slice("gitdir:".length).trim());
-		if (comparablePath(path.dirname(entry)) !== comparablePath(path.join(commonDir, "worktrees"))) return undefined;
-		const back = fs.readFileSync(path.join(entry, "gitdir"), "utf8").trim();
-		if (comparablePath(path.resolve(entry, back)) !== comparablePath(gitFile)) return undefined;
+		if ((await comparablePath(path.dirname(entry))) !== (await comparablePath(path.join(commonDir, "worktrees"))))
+			return undefined;
+		const back = (await fs.readFile(path.join(entry, "gitdir"), "utf8")).trim();
+		if ((await comparablePath(path.resolve(entry, back))) !== (await comparablePath(gitFile))) return undefined;
 		return checkoutState(entry, commonDir, branch);
 	} catch {
 		return undefined;
 	}
 }
 
-function repositoryLockModes(commonDir: string): { dirMode: number; gid: number | undefined } {
+async function repositoryLockModes(commonDir: string): Promise<{ dirMode: number; gid: number | undefined }> {
 	if (process.platform === "win32") return { dirMode: 0o700, gid: undefined };
 	for (const directory of [path.join(commonDir, "objects", "info"), path.join(commonDir, "worktrees"), commonDir]) {
 		try {
-			const stat = fs.statSync(directory);
+			const stat = await fs.stat(directory);
 			const groupMode = (stat.mode & 0o020) !== 0 ? 0o2070 : 0;
 			const otherMode = (stat.mode & 0o002) !== 0 ? 0o007 : 0;
 			return { dirMode: 0o700 | (stat.mode & 0o2000) | groupMode | otherMode, gid: stat.gid };
@@ -193,8 +201,8 @@ function isReadonlyLocationError(error: unknown): boolean {
 	return code === "EACCES" || code === "EPERM" || code === "EROFS";
 }
 
-function validateFallbackLockDirectory(targetDir: string, gid: number | undefined): void {
-	const stat = fs.lstatSync(targetDir);
+async function validateFallbackLockDirectory(targetDir: string, gid: number | undefined): Promise<void> {
+	const stat = await fs.lstat(targetDir);
 	if (!stat.isDirectory()) throw new Error(`${targetDir}: lock directory is not a directory`);
 	if (process.platform === "win32") return;
 	if ((stat.mode & 0o002) !== 0) throw new Error(`${targetDir}: lock directory must not be world-writable`);
@@ -204,68 +212,68 @@ function validateFallbackLockDirectory(targetDir: string, gid: number | undefine
 	if (!ownedByCurrent && !sharedWithGroup) throw new Error(`${targetDir}: lock directory is owned by another user`);
 }
 
-function createLockDirectory(targetDir: string, dirMode: number, gid: number | undefined): void {
-	if (fs.existsSync(targetDir)) return;
+async function createLockDirectory(targetDir: string, dirMode: number, gid: number | undefined): Promise<void> {
+	if (await pathExists(targetDir)) return;
 	const parentDir = path.dirname(targetDir);
-	if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true, mode: dirMode });
-	if (fs.existsSync(targetDir)) return;
-	const temporary = fs.mkdtempSync(`${targetDir}-`);
+	if (!(await pathExists(parentDir))) await fs.mkdir(parentDir, { recursive: true, mode: dirMode });
+	if (await pathExists(targetDir)) return;
+	const temporary = await fs.mkdtemp(`${targetDir}-`);
 	try {
 		if (process.platform !== "win32") {
 			if (gid !== undefined) {
 				try {
-					fs.chownSync(temporary, -1, gid);
+					await fs.chown(temporary, -1, gid);
 				} catch {}
 			}
 			try {
-				fs.chmodSync(temporary, dirMode);
+				await fs.chmod(temporary, dirMode);
 			} catch {
-				fs.chmodSync(temporary, dirMode & 0o777);
+				await fs.chmod(temporary, dirMode & 0o777);
 			}
 		}
-		if (!renameNoReplace(temporary, targetDir) && !fs.existsSync(targetDir)) {
+		if (!(await renameNoReplaceAsync(temporary, targetDir)) && !(await pathExists(targetDir))) {
 			try {
-				fs.renameSync(temporary, targetDir);
+				await fs.rename(temporary, targetDir);
 			} catch (error) {
-				if (!fs.existsSync(targetDir)) throw error;
+				if (!(await pathExists(targetDir))) throw error;
 			}
 		}
 	} finally {
-		fs.rmSync(temporary, { recursive: true, force: true });
+		await fs.rm(temporary, { recursive: true, force: true });
 	}
 }
 
-function resolveLockDirectory(commonDir: string): string {
-	const canonicalCommon = comparablePath(commonDir);
+async function resolveLockDirectory(commonDir: string): Promise<string> {
+	const canonicalCommon = await comparablePath(commonDir);
 	const primary = path.join(canonicalCommon, "objects", "info", "atomic-named-worktree-locks");
-	if (fs.existsSync(primary)) return primary;
+	if (await pathExists(primary)) return primary;
 	const fallback = path.join(
 		os.tmpdir(),
 		`atomic-named-worktree-locks-${createHash("sha256").update(canonicalCommon).digest("hex")}`,
 	);
-	const { dirMode, gid } = repositoryLockModes(canonicalCommon);
-	if (fs.existsSync(fallback)) {
-		validateFallbackLockDirectory(fallback, gid);
+	const { dirMode, gid } = await repositoryLockModes(canonicalCommon);
+	if (await pathExists(fallback)) {
+		await validateFallbackLockDirectory(fallback, gid);
 		return fallback;
 	}
 	try {
-		createLockDirectory(primary, dirMode, gid);
+		await createLockDirectory(primary, dirMode, gid);
 		return primary;
 	} catch (error) {
-		if (fs.existsSync(primary)) return primary;
+		if (await pathExists(primary)) return primary;
 		if (!isReadonlyLocationError(error)) throw error;
-		createLockDirectory(fallback, dirMode, gid);
-		validateFallbackLockDirectory(fallback, gid);
+		await createLockDirectory(fallback, dirMode, gid);
+		await validateFallbackLockDirectory(fallback, gid);
 		return fallback;
 	}
 }
 
-function lockPaths(commonDir: string, branch: string, worktreePath: string): string[] {
-	const lockDir = resolveLockDirectory(commonDir);
+async function lockPaths(commonDir: string, branch: string, worktreePath: string): Promise<string[]> {
+	const lockDir = await resolveLockDirectory(commonDir);
 	const key = (kind: string, value: string): string =>
 		path.join(lockDir, `${kind}-${createHash("sha256").update(value).digest("hex")}.lock`);
 	return [
-		key("path", comparablePath(worktreePath)),
+		key("path", await comparablePath(worktreePath)),
 		key("branch", process.platform === "win32" ? branch.toLowerCase() : branch),
 	];
 }
@@ -281,27 +289,27 @@ function inheritedLocks(): string[] {
 	}
 }
 
-function lockFileMode(lockDir: string): number {
+async function lockFileMode(lockDir: string): Promise<number> {
 	if (process.platform === "win32") return 0o600;
 	try {
-		return 0o600 | (fs.statSync(lockDir).mode & 0o066);
+		return 0o600 | ((await fs.stat(lockDir)).mode & 0o066);
 	} catch {}
 	return 0o600;
 }
 
-function acquireTargetLock(lockPath: string, fileMode: number): ReturnType<typeof tryAdvisoryLock> {
+async function acquireTargetLock(lockPath: string, fileMode: number): Promise<AdvisoryLock | null> {
 	try {
-		if (process.platform !== "win32" && fileMode !== 0o600 && !fs.existsSync(lockPath)) {
+		if (process.platform !== "win32" && fileMode !== 0o600 && !(await pathExists(lockPath))) {
 			try {
-				const fd = fs.openSync(
+				const handle = await fs.open(
 					lockPath,
-					fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
+					fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
 					fileMode,
 				);
 				try {
-					fs.fchmodSync(fd, fileMode);
+					await handle.chmod(fileMode);
 				} finally {
-					fs.closeSync(fd);
+					await handle.close();
 				}
 			} catch (error) {
 				const code =
@@ -309,7 +317,7 @@ function acquireTargetLock(lockPath: string, fileMode: number): ReturnType<typeo
 				if (code !== "EEXIST") throw error;
 			}
 		}
-		return tryAdvisoryLock(lockPath, 0);
+		return await tryAdvisoryLockAsync(lockPath, 0);
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
 		throw new Error(detail.includes(lockPath) ? detail : `${lockPath}: ${detail}`, { cause: error });
@@ -324,20 +332,20 @@ async function withTargetLocks<T>(
 	create: (env: NodeJS.ProcessEnv) => Promise<T>,
 ): Promise<T> {
 	const inherited = inheritedLocks();
-	const inheritedSet = new Set(inherited.map(comparablePath));
-	const fileMode = lockFileMode(path.dirname(paths[0]!));
-	const held: NonNullable<ReturnType<typeof tryAdvisoryLock>>[] = [];
+	const inheritedSet = new Set(await Promise.all(inherited.map(comparablePath)));
+	const fileMode = await lockFileMode(path.dirname(paths[0]!));
+	const held: AdvisoryLock[] = [];
 	try {
 		for (;;) {
 			options.signal?.throwIfAborted();
 			for (const lockPath of paths) {
-				const lock = acquireTargetLock(lockPath, fileMode);
+				const lock = await acquireTargetLock(lockPath, fileMode);
 				if (lock === null) {
 					for (const acquired of held.splice(0).reverse()) acquired.release();
-					if (inheritedSet.has(comparablePath(lockPath))) throw new WorktreeReentryError(worktreePath);
+					if (inheritedSet.has(await comparablePath(lockPath))) throw new WorktreeReentryError(worktreePath);
 					for (const otherPath of paths) {
-						if (otherPath === lockPath || !inheritedSet.has(comparablePath(otherPath))) continue;
-						const probe = acquireTargetLock(otherPath, fileMode);
+						if (otherPath === lockPath || !inheritedSet.has(await comparablePath(otherPath))) continue;
+						const probe = await acquireTargetLock(otherPath, fileMode);
 						if (probe === null) throw new WorktreeReentryError(worktreePath);
 						probe.release();
 					}
@@ -356,9 +364,9 @@ async function withTargetLocks<T>(
 	}
 }
 
-function listWorktrees(repo: string): ListedWorktree[] {
+async function listWorktrees(repo: string): Promise<ListedWorktree[]> {
 	const listed: ListedWorktree[] = [];
-	for (const block of gitChecked(repo, ["worktree", "list", "--porcelain"]).split(/\r?\n\r?\n/)) {
+	for (const block of (await gitChecked(repo, ["worktree", "list", "--porcelain"])).split(/\r?\n\r?\n/)) {
 		const lines = block.split(/\r?\n/);
 		const worktreePath = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
 		if (!worktreePath) continue;
@@ -368,53 +376,54 @@ function listWorktrees(repo: string): ListedWorktree[] {
 	return listed;
 }
 
-function defaultBase(cwd: string): string {
-	const upstream = runGit(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
+async function defaultBase(cwd: string): Promise<string> {
+	const upstream = await runGit(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
 	return upstream.status === 0 ? upstream.stdout.trim() : "HEAD";
 }
 
-function resolveCommitRevision(cwd: string, revision: string): string {
+async function resolveCommitRevision(cwd: string, revision: string): Promise<string> {
 	const target = revision.startsWith(":/")
-		? gitChecked(cwd, ["rev-parse", "--verify", "--end-of-options", revision]).trim()
+		? (await gitChecked(cwd, ["rev-parse", "--verify", "--end-of-options", revision])).trim()
 		: revision;
-	return gitChecked(cwd, ["rev-parse", "--verify", "--end-of-options", `${target}^{commit}`]).trim();
+	return (await gitChecked(cwd, ["rev-parse", "--verify", "--end-of-options", `${target}^{commit}`])).trim();
 }
 
-function isEmptyDirectory(target: string): boolean {
-	return fs.statSync(target).isDirectory() && fs.readdirSync(target).length === 0;
+async function isEmptyDirectory(target: string): Promise<boolean> {
+	return (await fs.stat(target)).isDirectory() && (await fs.readdir(target)).length === 0;
 }
 
-function withAgentCwd(worktreePath: string, cwdRelative: string): string {
+async function withAgentCwd(worktreePath: string, cwdRelative: string): Promise<string> {
 	const nested = path.join(worktreePath, cwdRelative);
-	return fs.existsSync(nested) ? nested : worktreePath;
+	return (await pathExists(nested)) ? nested : worktreePath;
 }
 
-function siblingRegistrationEntry(
+async function siblingRegistrationEntry(
 	repo: string,
 	commonDir: string,
 	worktreePath: string,
 	message: string,
-): string | undefined {
+): Promise<string | undefined> {
 	const metadata = message.match(SIBLING_REGISTRATION_FAILURE)?.[1];
 	if (metadata === undefined) return undefined;
 	const entry = path.dirname(path.resolve(repo, metadata));
-	if (comparablePath(path.dirname(entry)) !== comparablePath(path.join(commonDir, "worktrees"))) return undefined;
-	const name = path.basename(comparablePath(entry));
-	if (name === path.basename(comparablePath(worktreePath))) return undefined;
+	if ((await comparablePath(path.dirname(entry))) !== (await comparablePath(path.join(commonDir, "worktrees"))))
+		return undefined;
+	const name = path.basename(await comparablePath(entry));
+	if (name === path.basename(await comparablePath(worktreePath))) return undefined;
 	return path.basename(entry);
 }
 
-function addWasCleanedUp(commonDir: string, worktreePath: string, siblingEntry: string): boolean {
-	if (fs.existsSync(worktreePath) && !isEmptyDirectory(worktreePath)) return false;
+async function addWasCleanedUp(commonDir: string, worktreePath: string, siblingEntry: string): Promise<boolean> {
+	if ((await pathExists(worktreePath)) && !(await isEmptyDirectory(worktreePath))) return false;
 	const entriesDir = path.join(commonDir, "worktrees");
-	if (!fs.existsSync(entriesDir)) return true;
-	const target = comparablePath(path.join(worktreePath, ".git"));
+	if (!(await pathExists(entriesDir))) return true;
+	const target = await comparablePath(path.join(worktreePath, ".git"));
 	try {
-		for (const name of fs.readdirSync(entriesDir)) {
+		for (const name of await fs.readdir(entriesDir)) {
 			const entry = path.join(entriesDir, name);
 			try {
-				const gitFile = fs.readFileSync(path.join(entry, "gitdir"), "utf8").trim();
-				if (comparablePath(path.resolve(entry, gitFile)) === target) return false;
+				const gitFile = (await fs.readFile(path.join(entry, "gitdir"), "utf8")).trim();
+				if ((await comparablePath(path.resolve(entry, gitFile))) === target) return false;
 			} catch {
 				if (name !== siblingEntry) return false;
 			}
@@ -432,7 +441,7 @@ export async function ensureNamedWorktree(
 ): Promise<NamedWorktree> {
 	options.signal?.throwIfAborted();
 	const branch = request.branch;
-	const formatted = runGit(cwd, ["check-ref-format", "--branch", branch]);
+	const formatted = await runGit(cwd, ["check-ref-format", "--branch", branch]);
 	if (formatted.status !== 0 || formatted.stdout.trim() !== branch || branch.includes("@{"))
 		throw new Error(`worktree.branch "${request.branch}" is not a valid branch name.`);
 	let deadline = performance.now() + CONCURRENT_ADD_WAIT_MS;
@@ -456,12 +465,12 @@ export async function ensureNamedWorktree(
 			}
 		}
 	};
-	const { cwdRelative, repo, commonDir } = await retried(`could not find the repository of ${cwd}`, () => {
-		const toplevel = path.resolve(gitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim());
-		const cwdRelative = path.relative(fs.realpathSync(toplevel), fs.realpathSync(cwd));
-		const repo = findCanonicalGitRoot(toplevel);
+	const { cwdRelative, repo, commonDir } = await retried(`could not find the repository of ${cwd}`, async () => {
+		const toplevel = path.resolve((await gitChecked(cwd, ["rev-parse", "--show-toplevel"])).trim());
+		const cwdRelative = path.relative(await fs.realpath(toplevel), await fs.realpath(cwd));
+		const repo = await findCanonicalGitRoot(toplevel);
 		if (repo === undefined) throw new Error(`unable to resolve canonical main Git repository root from ${toplevel}`);
-		const commonDir = commonGitDirectory(repo);
+		const commonDir = await commonGitDirectory(repo);
 		return { cwdRelative, repo, commonDir };
 	});
 	const defaultPath = request.path === undefined;
@@ -478,16 +487,16 @@ export async function ensureNamedWorktree(
 		nextNotice = performance.now() + 2_000;
 	};
 	try {
-		const targetLocks = lockPaths(commonDir, branch, worktreePath);
+		const targetLocks = await lockPaths(commonDir, branch, worktreePath);
 		return await withTargetLocks(targetLocks, worktreePath, options, notifyWaiting, async (env) => {
 			deadline = performance.now() + CONCURRENT_ADD_WAIT_MS;
 			const ready = async (): Promise<NamedWorktree> => ({
 				repo,
 				path: worktreePath,
-				agentCwd: withAgentCwd(worktreePath, cwdRelative),
+				agentCwd: await withAgentCwd(worktreePath, cwdRelative),
 				branch,
-				baseCommit: await retried(checkingOut, () =>
-					gitChecked(worktreePath, ["rev-parse", "--verify", "HEAD^{commit}"]).trim(),
+				baseCommit: await retried(checkingOut, async () =>
+					(await gitChecked(worktreePath, ["rev-parse", "--verify", "HEAD^{commit}"])).trim(),
 				),
 			});
 			let addFailure:
@@ -504,14 +513,14 @@ export async function ensureNamedWorktree(
 			let siblingDeadline = Number.POSITIVE_INFINITY;
 			for (;;) {
 				options.signal?.throwIfAborted();
-				const previous = targetCheckoutState(commonDir, worktreePath, branch);
+				const previous = await targetCheckoutState(commonDir, worktreePath, branch);
 				if (previous?.ownedAdd) {
 					if (previous.blocker !== undefined)
 						throw new WorktreeBusyError(worktreePath, previous.blocker, true, [
 							path.join(previous.gitDir, "HEAD.lock"),
 							path.join(commonDir, "refs", "heads", `${branch}.lock`),
 						]);
-					fs.rmSync(path.join(previous.gitDir, "locked"));
+					await fs.rm(path.join(previous.gitDir, "locked"));
 				}
 				if (
 					addFailure?.retrySibling === false ||
@@ -527,9 +536,10 @@ export async function ensureNamedWorktree(
 					const cause = error instanceof Error ? error.cause : undefined;
 					const siblingEntry =
 						cause instanceof GitFailure
-							? siblingRegistrationEntry(repo, commonDir, worktreePath, cause.message)
+							? await siblingRegistrationEntry(repo, commonDir, worktreePath, cause.message)
 							: undefined;
-					if (siblingEntry === undefined || !addWasCleanedUp(commonDir, worktreePath, siblingEntry)) throw error;
+					if (siblingEntry === undefined || !(await addWasCleanedUp(commonDir, worktreePath, siblingEntry)))
+						throw error;
 					if (siblingFailures === 0) siblingDeadline = performance.now() + SIBLING_REGISTRATION_WAIT_MS;
 					siblingFailures++;
 					const backoff = Math.min(20 * 2 ** (siblingFailures - 1), 200);
@@ -545,7 +555,8 @@ export async function ensureNamedWorktree(
 					continue;
 				}
 				if (decision.kind === "reuse") return ready();
-				const branchExists = runGit(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
+				const branchExists =
+					(await runGit(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).status === 0;
 				if (
 					addFailure !== undefined &&
 					addFailure.retrySibling !== true &&
@@ -556,7 +567,7 @@ export async function ensureNamedWorktree(
 				)
 					throw failed(checkingOut, new GitFailure(addFailure.message));
 				if (!branchExists && startPoint === undefined) {
-					const baseRevision = request.base ?? defaultBase(cwd);
+					const baseRevision = request.base ?? (await defaultBase(cwd));
 					startPoint = await retried(`${checkingOut}: invalid reference: ${baseRevision}`, () =>
 						resolveCommitRevision(cwd, baseRevision),
 					);
@@ -565,7 +576,7 @@ export async function ensureNamedWorktree(
 				if (
 					addFailure?.retrySibling === true &&
 					(performance.now() >= siblingDeadline ||
-						!addWasCleanedUp(commonDir, worktreePath, addFailure.siblingEntry ?? ""))
+						!(await addWasCleanedUp(commonDir, worktreePath, addFailure.siblingEntry ?? "")))
 				)
 					throw failed(checkingOut, new GitFailure(addFailure.message));
 				const lockReason = `${OWNED_ADD_LOCK_PREFIX}${process.pid}`;
@@ -578,16 +589,16 @@ export async function ensureNamedWorktree(
 					env,
 					options.signal,
 				);
-				const completed = targetCheckoutState(commonDir, worktreePath, branch);
+				const completed = await targetCheckoutState(commonDir, worktreePath, branch);
 				if (completed?.ownedAdd && completed.blocker === undefined)
-					fs.rmSync(path.join(completed.gitDir, "locked"));
+					await fs.rm(path.join(completed.gitDir, "locked"));
 				if (added.status === 0) return ready();
 				const message = added.stderr.trim() || added.stdout.trim() || "git worktree add failed";
 				const diagnostic = [worktreePath, repo].reduce(
 					(text, operand) => text.replaceAll(operand.replaceAll("\\", "/"), "<path>"),
 					message.replaceAll("\\", "/"),
 				);
-				const siblingEntry = siblingRegistrationEntry(repo, commonDir, worktreePath, message);
+				const siblingEntry = await siblingRegistrationEntry(repo, commonDir, worktreePath, message);
 				if (siblingEntry !== undefined) {
 					if (siblingFailures === 0) siblingDeadline = performance.now() + SIBLING_REGISTRATION_WAIT_MS;
 					siblingFailures++;
@@ -595,7 +606,7 @@ export async function ensureNamedWorktree(
 					const retrySibling =
 						siblingFailures < SIBLING_REGISTRATION_ATTEMPTS &&
 						performance.now() + backoff < siblingDeadline &&
-						addWasCleanedUp(commonDir, worktreePath, siblingEntry);
+						(await addWasCleanedUp(commonDir, worktreePath, siblingEntry));
 					addFailure = { message, diagnostic, branchExisted: branchExists, retrySibling, siblingEntry };
 					if (retrySibling) await sleep(backoff, options.signal);
 				} else {
@@ -614,21 +625,32 @@ export async function ensureNamedWorktree(
 
 type WorktreeDecision = { kind: "reuse" | "create" } | { kind: "wait"; indexLock: string | null };
 
-function decideWorktree(repo: string, commonDir: string, branch: string, worktreePath: string): WorktreeDecision {
-	const before = targetCheckoutState(commonDir, worktreePath, branch)?.blocker;
+async function decideWorktree(
+	repo: string,
+	commonDir: string,
+	branch: string,
+	worktreePath: string,
+): Promise<WorktreeDecision> {
+	const before = (await targetCheckoutState(commonDir, worktreePath, branch))?.blocker;
 	if (before !== undefined) return { kind: "wait", indexLock: before };
-	const target = comparablePath(worktreePath);
-	const worktrees = listWorktrees(repo);
-	const after = targetCheckoutState(commonDir, worktreePath, branch)?.blocker;
+	const target = await comparablePath(worktreePath);
+	const worktrees = await listWorktrees(repo);
+	const after = (await targetCheckoutState(commonDir, worktreePath, branch))?.blocker;
 	if (after !== undefined) return { kind: "wait", indexLock: after };
-	const atPath = worktrees.find((worktree) => comparablePath(worktree.path) === target);
+	let atPath: ListedWorktree | undefined;
+	for (const worktree of worktrees) {
+		if ((await comparablePath(worktree.path)) === target) {
+			atPath = worktree;
+			break;
+		}
+	}
 	if (atPath?.branch === branch) return { kind: "reuse" };
 	const elsewhere = worktrees.find((worktree) => worktree.branch === branch);
 	if (elsewhere)
 		throw new Error(
 			`worktree: branch "${branch}" is already checked out at ${path.resolve(elsewhere.path)}, so it cannot be checked out at ${worktreePath}. Pass that path as worktree.path to reuse it, or name another branch.`,
 		);
-	if (atPath || (fs.existsSync(worktreePath) && !isEmptyDirectory(worktreePath)))
+	if (atPath || ((await pathExists(worktreePath)) && !(await isEmptyDirectory(worktreePath))))
 		throw new Error(
 			`worktree: ${worktreePath} already exists and is not the worktree of branch "${branch}". Choose another worktree.path or branch.`,
 		);

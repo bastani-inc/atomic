@@ -287,7 +287,7 @@ function formatReadArgs(
 	args: Record<string, unknown> | undefined,
 	cwd: string,
 ): { display: string; startLine: number; basePath: string } {
-	const rawPath = asString(args?.path) ?? asString(args?.file_path) ?? "";
+	const rawPath = (asString(args?.path) ?? asString(args?.file_path) ?? "").replace(/^@/, "");
 	if (!rawPath) return { display: "", startLine: 1, basePath: "" };
 	try {
 		const selector = splitReadLineSelector(rawPath);
@@ -315,7 +315,7 @@ function parseReadLinesAndNumbers(
 	fallbackStartLine: number,
 ): { lines: string[]; lineNumbers: number[] } {
 	const withoutFooter = rawText.replace(
-		/\n\n\[(?:Showing lines \d+-\d+ of \d+[^\]]*|\d+ more lines in file\. Continue with path selector :\d+\.)\]\s*$/,
+		/\n\n\[(?:Showing lines \d+-\d+ of \d+(?:[^\]\d][^\]]*)?|\d+ more lines in file\. Continue with path selector :\d+\.)\]\s*$/,
 		"",
 	);
 	const rawLines = splitContentLines(withoutFooter);
@@ -802,12 +802,13 @@ function presentWait(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 			truncated: truncation?.truncated === true,
 			fullOutputPath,
 		});
-		const stripped = (rawText.endsWith(tail) ? rawText.slice(0, -tail.length) : rawText)
-			.replace(
-				/\n\nTask \S+ (?:completed with exit code \d+|is still running[^\n]*|exited with code \d+|ended without an exit code|failed[^\n]*|was cancelled[^\n]*)\.?\s*$/,
-				"",
-			)
-			.replace(/\n+$/, "");
+		const untailed = rawText.endsWith(tail) ? rawText.slice(0, -tail.length) : rawText;
+		const trimmed = untailed.trimEnd();
+		const statusFooter =
+			/\n\nTask \S+ (?:completed with exit code \d+|is still running[^\n]*|exited with code \d+|ended without an exit code|failed[^\n]*|was cancelled[^\n]*)\.?$/.exec(
+				trimmed,
+			);
+		const stripped = (statusFooter === null ? untailed : trimmed.slice(0, statusFooter.index)).replace(/\n+$/, "");
 		const hasOutput = stripped.trim() !== "" && stripped.trim() !== EMPTY_OUTPUT_TEXT;
 		const statusLine = formatWaitTaskStatusLine(observation, hasOutput);
 		const outputLines = hasOutput
@@ -869,7 +870,9 @@ type SettledBashState =
 	| { readonly kind: "success"; readonly output: string };
 
 function stripBashTruncationFooter(rawText: string): string {
-	return rawText.replace(/\n\n\[Showing (?:last [^\]]+|lines \d+-\d+ of \d+[^\]]*)\]\s*$/, "").replace(/\n+$/, "");
+	return rawText
+		.replace(/\n\n\[Showing (?:last [^\]]+|lines \d+-\d+ of \d+(?:[^\]\d][^\]]*)?)\]\s*$/, "")
+		.replace(/\n+$/, "");
 }
 
 function stripOwnedFooter(rawText: string, pattern: RegExp): { text: string; match: RegExpExecArray | null } {
@@ -1727,7 +1730,7 @@ export function parseWebSearchSources(
 	}
 
 	if (sources.length === 0 && rawText) {
-		const numberedPattern = /^\d+\.\s+([^\n]+)\n\s+(https?:\/\/\S+)/gm;
+		const numberedPattern = /^\d+\.\s+(\S[^\n]*)\n\s+(https?:\/\/\S+)/gm;
 		for (let match = numberedPattern.exec(rawText); match !== null; match = numberedPattern.exec(rawText)) {
 			addSource(match[1]!, match[2]!);
 		}

@@ -27,7 +27,7 @@ test("a detached node keeps its parents but never joins the frontier (#4311)", (
 	assert.deepEqual(tracker.currentParents(), ["event-child"]);
 });
 
-test("a workflow whose only tracked call is ctx.subscribe or ctx.events passes discovery and names no stage (#4311)", () => {
+test("a workflow whose only tracked call is ctx.subscribe or ctx.events passes discovery and names no stage (#4311)", async () => {
 	const path = join(TEST_DIR, "subscribe-only.ts");
 	writeTextSync(
 		path,
@@ -42,7 +42,7 @@ test("a workflow whose only tracked call is ctx.subscribe or ctx.events passes d
 		});
 	`,
 	);
-	const result = scanPossibleStagesFromSource(path);
+	const result = await scanPossibleStagesFromSource(path);
 	assert.equal(result.hasTrackedNodes, true);
 	assert.deepEqual(result.stages, []);
 	const eventsOnly = join(TEST_DIR, "events-only.ts");
@@ -50,11 +50,11 @@ test("a workflow whose only tracked call is ctx.subscribe or ctx.events passes d
 		eventsOnly,
 		"export default workflow({ run: async (ctx) => { for await (const e of ctx.events(s)) {} } });",
 	);
-	const inline = scanPossibleStagesFromSource(eventsOnly);
+	const inline = await scanPossibleStagesFromSource(eventsOnly);
 	assert.deepEqual({ tracked: inline.hasTrackedNodes, stages: [...inline.stages] }, { tracked: true, stages: [] });
 });
 
-test("discovery names stage, task, chain and parallel steps beside ctx.subscribe, but never a tool or subscription (#4311)", () => {
+test("discovery names stage, task, chain and parallel steps beside ctx.subscribe, but never a tool or subscription (#4311)", async () => {
 	const path = join(TEST_DIR, "mixed.ts");
 	writeTextSync(
 		path,
@@ -72,7 +72,7 @@ test("discovery names stage, task, chain and parallel steps beside ctx.subscribe
 		});
 	`,
 	);
-	const result = scanPossibleStagesFromSource(path);
+	const result = await scanPossibleStagesFromSource(path);
 	assert.equal(result.hasTrackedNodes, true);
 	assert.deepEqual([...result.stages].sort(), ["build", "lint", "plan", "test"]);
 	const singleCalls: ReadonlyArray<readonly [string, string, readonly string[]]> = [
@@ -82,7 +82,7 @@ test("discovery names stage, task, chain and parallel steps beside ctx.subscribe
 	for (const [file, call, stages] of singleCalls) {
 		const only = join(TEST_DIR, file);
 		writeTextSync(only, `export default workflow({ run: async (ctx) => { ${call} } });`);
-		const scanned = scanPossibleStagesFromSource(only);
+		const scanned = await scanPossibleStagesFromSource(only);
 		assert.deepEqual({ tracked: scanned.hasTrackedNodes, stages: [...scanned.stages] }, { tracked: true, stages });
 	}
 });

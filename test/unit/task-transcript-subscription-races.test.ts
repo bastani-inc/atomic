@@ -203,7 +203,7 @@ async function queuedRunner() {
 		inheritProjectContext: false,
 	};
 	runtime.registerAgents([agent]);
-	const admission = runtime.admitChildSession({ taskName: "race", task: "Stream a response", cwd: root, agent });
+	const admission = await runtime.admitChildSession({ taskName: "race", task: "Stream a response", cwd: root, agent });
 	assert.ok(admission.admitted);
 	const running = runtime.runChildAttempt(
 		admission.admitted,

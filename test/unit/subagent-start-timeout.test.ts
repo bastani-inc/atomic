@@ -66,7 +66,13 @@ const SATURATED_TURN_MS = 20;
  */
 const START_LOOP_TURN_BOUND = 200;
 /** The fs requests a child's start makes up to its first provider request: 861 before #4319. */
-const START_FS_OPERATION_BOUND = 200;
+const SYNCHRONOUS_CHECK_START_FS_OPERATION_BOUND = 200;
+/**
+ * The checks a child's start used to make synchronously, which the count did not see, now made as fs requests: 116
+ * counted before and 300 after on this fixture.
+ */
+const ASYNCHRONOUS_CHECK_FS_OPERATIONS = 300 - 116;
+const START_FS_OPERATION_BOUND = SYNCHRONOUS_CHECK_START_FS_OPERATION_BOUND + ASYNCHRONOUS_CHECK_FS_OPERATIONS;
 
 /**
  * The start budget of a child launched against an injected stall. It runs only once the child reaches its stall (see
@@ -793,7 +799,7 @@ test("a child runs with task hooks that bind neither its transcript nor its sess
 	};
 	const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, root);
 	control.registerAgents([agent]);
-	const { admitted } = control.admitChildSession(
+	const { admitted } = await control.admitChildSession(
 		{ taskName: "worker", task: "reply done", agent, cwd: root, testSession: { output: "done" } },
 		{ path: "parent", depth: 0 },
 	);
@@ -838,7 +844,7 @@ async function testSessionAttempt(
 	};
 	const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, root);
 	control.registerAgents([agent]);
-	const { admitted } = control.admitChildSession(
+	const { admitted } = await control.admitChildSession(
 		{
 			taskName: "worker",
 			task: "reply done",

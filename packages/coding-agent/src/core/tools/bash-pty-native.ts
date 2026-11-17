@@ -1,7 +1,7 @@
 import { setTimeout as poll } from "node:timers/promises";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createModuleRequire } from "../../utils/module-require.js";
-import { getShellConfig, getShellEnv, type ShellConfig } from "../../utils/shell.ts";
+import { getShellConfigAsync, getShellEnvAsync, type ShellConfig } from "../../utils/shell.ts";
 import type { OperationId, TaskId, WaitOutcome, WaitPolicy } from "../tasks/contracts.js";
 import type { CommandLaunchOrigin, OwnerLease, TaskLease, TaskSupervisor, WaitLease } from "../tasks/supervisor.js";
 import { OutputAccumulator, type OutputAccumulatorOptions } from "./output-accumulator.ts";
@@ -220,14 +220,14 @@ export async function executeSupervisedCommand(
 	if (options.signal?.aborted) throw new Error("aborted");
 	const context = options.taskOwner;
 	if (!context) throw new Error("Supervised command requires its task owner");
-	const shell = options.shellConfig ?? getShellConfig(options.shellPath);
+	const shell = options.shellConfig ?? (await getShellConfigAsync(options.shellPath));
 	if (process.platform === "win32" && shell.commandTransport === "stdin")
 		throw new Error("ContainmentUnavailable: run Atomic inside WSL to supervise Linux guest commands");
 	const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 	const invocation = [shell.shell, ...shell.args].map(quote).join(" ");
 	const environment = createChildProcessEnvironment(
 		pty ? { TERM: "xterm-256color" } : undefined,
-		options.env ?? getShellEnv(),
+		options.env ?? (await getShellEnvAsync()),
 	);
 	// Windows names are case-insensitive. Resolve ordered JS overrides before
 	// crossing into the unordered native map, including explicit removals.
@@ -346,8 +346,9 @@ export async function executeNativePty(
 	if (options.taskOwner) return executeSupervisedCommand(command, cwd, options, true);
 	const loaded = loadNativePtyBinding();
 	if (!loaded.ok) throw loaded.error;
+	const shellConfig = options.shellConfig ?? (await getShellConfigAsync(options.shellPath));
+	const shellEnv = await getShellEnvAsync();
 	if (options.signal?.aborted) throw new Error("aborted");
-	const shellConfig = options.shellConfig ?? getShellConfig(options.shellPath);
 	const session = new loaded.binding.PtySession();
 	const onAbort = () => {
 		try {
@@ -362,10 +363,7 @@ export async function executeNativePty(
 				cwd,
 				env: Object.fromEntries(
 					Object.entries(
-						createChildProcessEnvironment(
-							{ TERM: "xterm-256color" },
-							{ ...getShellEnv(), ...(options.env ?? {}) },
-						),
+						createChildProcessEnvironment({ TERM: "xterm-256color" }, { ...shellEnv, ...(options.env ?? {}) }),
 					).filter((entry): entry is [string, string] => entry[1] !== undefined),
 				),
 				timeoutMs: options.timeout !== undefined ? Math.max(1, Math.floor(options.timeout * 1000)) : undefined,

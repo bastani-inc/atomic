@@ -1,5 +1,6 @@
-import { realpathSync } from "node:fs";
-import { isAbsolute, relative, sep } from "node:path";
+import { realpath } from "node:fs";
+import { dirname, isAbsolute, relative, sep } from "node:path";
+import { promisify } from "node:util";
 import { getAllBuiltinPackageLocations, getBuiltinPackageLocations } from "./builtin-packages.ts";
 import { getExtensionRuntimeEventBus, instantiateExtensions, loadExtensions } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
@@ -15,16 +16,10 @@ import type {
 import type { AtomicBuiltin } from "./sdk-types.ts";
 import { lifecycleScopeForOwner, sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import { SettingsManager } from "./settings-manager.ts";
-import { buildSkillCatalog } from "./skill-catalog.ts";
+import { buildSkillCatalogWith } from "./skill-catalog.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 
-function canonical(path: string): string {
-	try {
-		return realpathSync(path);
-	} catch {
-		return path;
-	}
-}
+const realpathJs = promisify(realpath);
 
 /** Adds shipped resources without changing the caller's loader or its discovery options. */
 class BuiltinResourceLoader implements ResourceLoader {
@@ -34,12 +29,41 @@ class BuiltinResourceLoader implements ResourceLoader {
 	private readonly cwd: string;
 	private readonly agentDir: string;
 	private readonly builtins: Partial<Record<AtomicBuiltin, boolean>>;
-	private readonly disabledRoots: string[];
+	private disabledRoots: string[] = [];
 	private readonly disableWorkflowExtension: boolean;
 	private readonly ownsDiscovery: boolean;
+	private readonly realPaths = new Map<string, string>();
+	private canonical(path: string): string {
+		const known = this.realPaths.get(path);
+		if (known !== undefined) return known;
+		this.realPaths.set(path, path);
+		void this.resolveRealPaths([path]);
+		return path;
+	}
+	private async resolveRealPaths(paths: Iterable<string>): Promise<void> {
+		const unique = [...new Set(paths)];
+		const resolved = await Promise.all(unique.map((path) => realpathJs(path).catch(() => path)));
+		unique.forEach((path, index) => {
+			this.realPaths.set(path, resolved[index]!);
+		});
+	}
+	private async resolveResourceRealPaths(): Promise<void> {
+		await this.resolveRealPaths([
+			...(this.delegate.getWorkflowResources?.() ?? []).map((resource) => resource.path),
+			...[this.delegate.getSkills(), this.assets.getSkills()].flatMap(({ skills }) =>
+				skills.flatMap((skill) => [skill.filePath, dirname(skill.filePath)]),
+			),
+			...[this.delegate.getPrompts(), this.assets.getPrompts()].flatMap(({ prompts }) =>
+				prompts.map((prompt) => prompt.filePath),
+			),
+			...[this.delegate.getThemes(), this.assets.getThemes()].flatMap(({ themes }) =>
+				themes.flatMap((theme) => (theme.sourcePath ? [theme.sourcePath] : [])),
+			),
+		]);
+	}
 	private isDisabledPath(path: string): boolean {
 		return this.disabledRoots.some((root) => {
-			const child = relative(root, canonical(path));
+			const child = relative(root, this.canonical(path));
 			return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
 		});
 	}
@@ -63,9 +87,6 @@ class BuiltinResourceLoader implements ResourceLoader {
 		for (const name of ["workflows", "subagents", "mcp", "web-access", "intercom"] as const) {
 			if (builtins && name in builtins) this.builtins[name] = builtins[name];
 		}
-		this.disabledRoots = getAllBuiltinPackageLocations()
-			.filter((location) => this.builtins[location.distDirName] === false)
-			.map((location) => canonical(location.packageDir));
 		this.assets = new DefaultResourceLoader({
 			cwd,
 			agentDir,
@@ -78,8 +99,17 @@ class BuiltinResourceLoader implements ResourceLoader {
 		});
 	}
 	async initialize(): Promise<void> {
+		const disabledLocations = getAllBuiltinPackageLocations().filter(
+			(location) => this.builtins[location.distDirName] === false,
+		);
 		const locations = getBuiltinPackageLocations(true, this.builtins);
 		const discovered = this.delegate.getExtensions();
+		await this.resolveRealPaths([
+			...disabledLocations.map((location) => location.packageDir),
+			...locations.map((location) => location.packageDir),
+			...discovered.extensions.map((extension) => extension.resolvedPath),
+		]);
+		this.disabledRoots = disabledLocations.map((location) => this.canonical(location.packageDir));
 		const scope = lifecycleScopeForOwner(this);
 		const identities = new Set<string>();
 		const inlineBuiltinPaths = new Set<string>();
@@ -90,9 +120,9 @@ class BuiltinResourceLoader implements ResourceLoader {
 				return true;
 			}
 			if (this.isDisabledPath(extension.resolvedPath)) return false;
-			const path = canonical(extension.resolvedPath);
+			const path = this.canonical(extension.resolvedPath);
 			const builtin = locations.find((location) => {
-				const child = relative(canonical(location.packageDir), path);
+				const child = relative(this.canonical(location.packageDir), path);
 				return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
 			});
 			if (!builtin) return true;
@@ -117,6 +147,7 @@ class BuiltinResourceLoader implements ResourceLoader {
 			locations.map((location) => location.packageDir),
 			{ temporary: true },
 		);
+		await this.resolveRealPaths([...resources.extensions, ...resources.workflows].map((resource) => resource.path));
 		const paths = resources.extensions.filter(
 			(resource) =>
 				resource.enabled &&
@@ -124,13 +155,13 @@ class BuiltinResourceLoader implements ResourceLoader {
 					(location) =>
 						(identities.has(location.packageName) ||
 							(this.disableWorkflowExtension && location.distDirName === "workflows")) &&
-						canonical(resource.path).startsWith(`${canonical(location.packageDir)}${sep}`),
+						this.canonical(resource.path).startsWith(`${this.canonical(location.packageDir)}${sep}`),
 				),
 		);
 		const mergeWorkflows = (caller: ResolvedResource[]) => {
 			const workflows = new Map<string, ResolvedResource>();
 			for (const resource of [...resources.workflows, ...caller]) {
-				if (!this.isDisabledPath(resource.path)) workflows.set(canonical(resource.path), resource);
+				if (!this.isDisabledPath(resource.path)) workflows.set(this.canonical(resource.path), resource);
 			}
 			return [...workflows.values()];
 		};
@@ -140,10 +171,12 @@ class BuiltinResourceLoader implements ResourceLoader {
 			getExtensionRuntimeEventBus(target.runtime),
 			{
 				get: () => mergeWorkflows(this.delegate.getWorkflowResources?.() ?? []),
-				refresh: async () =>
-					mergeWorkflows(
-						(await this.delegate.refreshWorkflowResources?.()) ?? this.delegate.getWorkflowResources?.() ?? [],
-					),
+				refresh: async () => {
+					const caller =
+						(await this.delegate.refreshWorkflowResources?.()) ?? this.delegate.getWorkflowResources?.() ?? [];
+					await this.resolveRealPaths(caller.map((resource) => resource.path));
+					return mergeWorkflows(caller);
+				},
 				getMcpServers: () => this.delegate.getMcpServerContributions?.() ?? [],
 			},
 			target.runtime,
@@ -168,6 +201,7 @@ class BuiltinResourceLoader implements ResourceLoader {
 			promptPaths: entries(resources.prompts),
 			themePaths: entries(resources.themes),
 		});
+		await this.resolveResourceRealPaths();
 	}
 	getExtensions() {
 		return this.extensions;
@@ -179,22 +213,22 @@ class BuiltinResourceLoader implements ResourceLoader {
 		const caller = this.delegate.getSkills();
 		const builtin = this.assets.getSkills();
 		const skills = caller.skills.filter((skill) => !this.isDisabledPath(skill.filePath));
-		const paths = new Set(skills.map((skill) => canonical(skill.filePath)));
+		const paths = new Set(skills.map((skill) => this.canonical(skill.filePath)));
 		return {
-			skills: [...skills, ...builtin.skills.filter((skill) => !paths.has(canonical(skill.filePath)))],
+			skills: [...skills, ...builtin.skills.filter((skill) => !paths.has(this.canonical(skill.filePath)))],
 			diagnostics: [...caller.diagnostics, ...builtin.diagnostics],
 		};
 	}
 	getSkillCatalog() {
-		return buildSkillCatalog(this.getSkills().skills);
+		return buildSkillCatalogWith(this.getSkills().skills, undefined, (path) => this.canonical(path));
 	}
 	getPrompts(): ReturnType<ResourceLoader["getPrompts"]> {
 		const caller = this.delegate.getPrompts();
 		const builtin = this.assets.getPrompts();
 		const prompts = caller.prompts.filter((prompt) => !this.isDisabledPath(prompt.filePath));
-		const paths = new Set(prompts.map((prompt) => canonical(prompt.filePath)));
+		const paths = new Set(prompts.map((prompt) => this.canonical(prompt.filePath)));
 		return {
-			prompts: [...prompts, ...builtin.prompts.filter((prompt) => !paths.has(canonical(prompt.filePath)))],
+			prompts: [...prompts, ...builtin.prompts.filter((prompt) => !paths.has(this.canonical(prompt.filePath)))],
 			diagnostics: [...caller.diagnostics, ...builtin.diagnostics],
 		};
 	}
@@ -225,6 +259,11 @@ class BuiltinResourceLoader implements ResourceLoader {
 		return this.delegate.getAppendSystemPromptSources();
 	}
 	async extendResources(paths: ResourceExtensionPaths): Promise<void> {
+		await this.resolveRealPaths(
+			(["skillPaths", "promptPaths", "themePaths"] as const).flatMap((kind) =>
+				(paths[kind] ?? []).map((entry) => entry.path),
+			),
+		);
 		const bundled: ResourceExtensionPaths = {};
 		const caller: ResourceExtensionPaths = {};
 		for (const kind of ["skillPaths", "promptPaths", "themePaths"] as const) {
@@ -244,6 +283,7 @@ class BuiltinResourceLoader implements ResourceLoader {
 			}
 		}
 		await this.assets.extendResources(bundled);
+		await this.resolveResourceRealPaths();
 	}
 	async reload(options?: ResourceLoaderReloadOptions): Promise<void> {
 		await this.delegate.reload(options);
@@ -277,6 +317,7 @@ class BuiltinResourceLoader implements ResourceLoader {
 		const publish = () => {
 			this.extensions = candidate.extensions;
 			this.assets = candidate.assets;
+			for (const [path, realPath] of candidate.realPaths) this.realPaths.set(path, realPath);
 		};
 		return {
 			...transaction,

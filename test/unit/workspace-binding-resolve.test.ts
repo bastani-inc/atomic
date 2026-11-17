@@ -1039,6 +1039,47 @@ describe("workspace git runner (#3109)", () => {
 	);
 
 	test.skipIf(process.platform === "win32")(
+		"what the started process's pid is recorded with settles before the run ends, and its failure stops the process",
+		async () => {
+			const order: string[] = [];
+			const outcome = await runWorkspaceProcess({
+				path: "sh",
+				args: ["-c", "exit 0"],
+				cwd: dirs.root,
+				env: process.env,
+				onSpawn: async () => {
+					await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+					order.push("recorded");
+				},
+			});
+			order.push(outcome.kind);
+			assert.deepEqual(order, ["recorded", "exited"]);
+
+			const PID_FILE_WAIT_MS = 5_000;
+			const PID_FILE_POLL_MS = 10;
+			const pidFile = join(dirs.root, "unrecorded.pid");
+			const error = await rejection(
+				runWorkspaceProcess({
+					path: "sh",
+					args: ["-c", `echo $$ > '${pidFile}'; exec sleep 30`],
+					cwd: dirs.root,
+					env: process.env,
+					onSpawn: async () => {
+						const deadline = Date.now() + PID_FILE_WAIT_MS;
+						while (!existsSync(pidFile) || readFileSync(pidFile, "utf-8").trim().length === 0) {
+							assert.ok(Date.now() < deadline, "the child did not write its pid file in time");
+							await new Promise((resolveWait) => setTimeout(resolveWait, PID_FILE_POLL_MS));
+						}
+						throw new Error("could not record the process");
+					},
+				}),
+			);
+			assert.match(String(error), /could not record the process/);
+			assert.equal(processAlive(Number(readFileSync(pidFile, "utf-8"))), false);
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
 		"a git that will not stop is killed with everything it started once the grace is over (#3109)",
 		async () => {
 			const pidFile = join(dirs.root, "stubborn.pid");

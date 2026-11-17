@@ -5,7 +5,7 @@ import {
 import { IntercomBrokerRetiringError } from "../recoverable-disconnect.js";
 import { isBrokerStatusReport } from "./broker-status.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js";
-import { getBrokerSocketPath } from "./paths.js";
+import { getBrokerSocketPathAsync } from "./paths.js";
 import { type BrokerProtocolRange, protocolRangeOf } from "./protocol-version.js";
 
 export interface BrokerRouting {
@@ -18,7 +18,7 @@ export interface BrokerRouting {
 export async function queryBrokerRouting(agentDir: string): Promise<BrokerRouting> {
 	const startedAt = Date.now();
 	const answer = await controlRequest(
-		getBrokerSocketPath(process.platform, agentDir),
+		await getBrokerSocketPathAsync(process.platform, agentDir),
 		"broker_status",
 		"broker_status",
 		BROKER_CONTROL_TIMEOUT_MS,

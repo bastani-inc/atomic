@@ -473,8 +473,8 @@ describe("prediction policy (#4359)", () => {
 		assert.doesNotMatch(plan.questions.site0!.instructions, /hunter2secret/);
 	});
 
-	test("each offered option's origin is in the state, so a computed name is told from a literal (#4359)", () => {
-		const scan = scanPossibleStagesFromSource(fixtureEntry("helper-names"));
+	test("each offered option's origin is in the state, so a computed name is told from a literal (#4359)", async () => {
+		const scan = await scanPossibleStagesFromSource(fixtureEntry("helper-names"));
 		const plan = scanQuestionPlan(scan);
 		assert.deepEqual(plan.questions.site0?.criteria, {
 			c0: "stage review",
@@ -525,7 +525,7 @@ describe("prediction policy (#4359)", () => {
 					"",
 				].join("\n"),
 			);
-			const scan = scanPossibleStagesFromSource(entry);
+			const scan = await scanPossibleStagesFromSource(entry);
 			assert.ok(
 				scan.uncertainties.some((site) =>
 					site.candidates.some((candidate) => candidate.stages.includes("sk-abcdefghijklmnop1234")),
@@ -1145,7 +1145,7 @@ describe("launch and delivery never wait for a prediction (#4359)", () => {
 				registry: createRegistry([definition]),
 				store,
 				adapters: { prompt: { prompt: async () => "ok" } },
-				resolvePossibleStageEntry: () => fixtureEntry(name),
+				resolvePossibleStageEntry: async () => fixtureEntry(name),
 				...(decisions === undefined ? {} : { decisions }),
 				stagePredictor: predictor,
 			},
@@ -1179,7 +1179,7 @@ describe("launch and delivery never wait for a prediction (#4359)", () => {
 		const { port, counts } = stalledPort();
 		const predictor = new StagePredictor();
 		const store = createStore();
-		const scan = scanPossibleStagesFromSource(fixtureEntry("helper-names"));
+		const scan = await scanPossibleStagesFromSource(fixtureEntry("helper-names"));
 		store.recordRunStart(rootRun({ id: ROOT, possibleStages: ["review"] }));
 		const backend = await createMemoryTestBackend();
 		await backend.commitWorkflowRegistration({
@@ -1236,7 +1236,7 @@ describe("launch and delivery never wait for a prediction (#4359)", () => {
 		const { port, requests } = recordedPort({ "stage review-1": 0.94, "stage summary-2": 0.93 }, () => 0.05);
 		const predictor = new StagePredictor();
 		const store = createStore();
-		const scan = scanPossibleStagesFromSource(fixtureEntry("helper-names"));
+		const scan = await scanPossibleStagesFromSource(fixtureEntry("helper-names"));
 		store.recordRunStart(rootRun({ id: ROOT, possibleStages: scan.stages }));
 		const backend = await createMemoryTestBackend();
 		await backend.commitWorkflowRegistration({
@@ -1344,7 +1344,7 @@ export default workflow({ name: "repro", run: async (ctx) => {
 }});
 `,
 				);
-				const scan = scanPossibleStagesFromSource(entry);
+				const scan = await scanPossibleStagesFromSource(entry);
 				assert.deepEqual(scan.stages, ["*"]);
 				assert.deepEqual(
 					scan.uncertainties.map((uncertainty) => uncertainty.placeholder),
@@ -1429,7 +1429,7 @@ export default workflow({ name: "repro", run: async (ctx) => {
 		const { port } = recordedPort({ "stage review-1": 0.94, "stage summary-2": 0.93 });
 		const predictor = new StagePredictor();
 		const store = createStore();
-		const scan = scanPossibleStagesFromSource(fixtureEntry("helper-names"));
+		const scan = await scanPossibleStagesFromSource(fixtureEntry("helper-names"));
 		store.recordRunStart(rootRun({ id: ROOT, possibleStages: scan.stages }));
 		const backend = await createMemoryTestBackend();
 		await backend.commitWorkflowRegistration({
@@ -1676,7 +1676,7 @@ describe("the host decision service as the prediction port (#4359)", () => {
 				registry: createRegistry([definition]),
 				store,
 				adapters: { prompt: { prompt: async () => "ok" } },
-				resolvePossibleStageEntry: () => fixtureEntry("data-driven-loop"),
+				resolvePossibleStageEntry: async () => fixtureEntry("data-driven-loop"),
 				models: catalog(async (request) => {
 					requests.push(request);
 					const question = request.questions.site0!;

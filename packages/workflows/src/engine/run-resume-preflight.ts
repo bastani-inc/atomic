@@ -1,8 +1,8 @@
-import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { JsonlSessionStore, resolveSessionStore, type SessionStore } from "@bastani/atomic";
 import type { DurableWaitingStage } from "../durable/stage-primitive.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner-types.js";
+import { pathExists } from "../shared/path-exists.js";
 import { isStageRehydrationError, StageRehydrationError } from "../shared/stage-wait-errors.js";
 
 /** The session storage a run's stages reopen from, as the run was started. */
@@ -68,7 +68,7 @@ export async function assertWaitingStageSessionsExist(
 			if (checked.has(stage.sessionId)) continue;
 			checked.add(stage.sessionId);
 			if ((await opened.store.readHeader(stage.sessionId)) !== undefined) continue;
-			if (stage.sessionFile !== undefined && isAbsolute(stage.sessionFile) && existsSync(stage.sessionFile))
+			if (stage.sessionFile !== undefined && isAbsolute(stage.sessionFile) && (await pathExists(stage.sessionFile)))
 				continue;
 			missing.push(stage.sessionId);
 		}

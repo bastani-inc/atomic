@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { ExtensionContext } from "../extensions/types.ts";
+import { pathExists } from "./path-utils.ts";
 import { withTodoLock } from "./todos-locks.ts";
 import { clearAssignmentIfClosed, formatTodoId, splitTodosByAssignment, validateTodoId } from "./todos-model.ts";
 import { claimTodoAssignment, deleteTodo, releaseTodoAssignment } from "./todos-mutations.ts";
@@ -133,7 +133,7 @@ async function executeUpdateAction(
 	const normalizedId = validated.id;
 	const displayId = formatTodoId(normalizedId);
 	const filePath = getTodoPath(todosDir, normalizedId);
-	if (!existsSync(filePath)) {
+	if (!(await pathExists(filePath))) {
 		return todoActionResult("update", `Todo ${displayId} not found`, "not found");
 	}
 	const result = await withTodoLock<TodoRecord>(todosDir, normalizedId, ctx, async () => {
@@ -171,7 +171,7 @@ async function executeAppendAction(
 	const normalizedId = validated.id;
 	const displayId = formatTodoId(normalizedId);
 	const filePath = getTodoPath(todosDir, normalizedId);
-	if (!existsSync(filePath)) {
+	if (!(await pathExists(filePath))) {
 		return todoActionResult("append", `Todo ${displayId} not found`, "not found");
 	}
 	const result = await withTodoLock<TodoRecord>(todosDir, normalizedId, ctx, async () => {

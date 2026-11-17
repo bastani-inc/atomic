@@ -198,7 +198,7 @@ function asDeferredStartupContext(probe: DraftProbe): DeferredStartupProbeContex
 		bindCurrentSessionExtensions: vi.fn(async () => {}),
 		session: {
 			reload: vi.fn(async () => {}),
-			getToolStatus: () => ({ missing: [] }),
+			getToolStatusAsync: () => ({ missing: [] }),
 			resourceLoader: { getThemes: () => ({ themes: [] as [] }) },
 			extensionRunner: {},
 			modelRuntime: { getError: () => undefined, getWarning: () => undefined },

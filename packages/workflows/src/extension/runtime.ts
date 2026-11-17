@@ -13,7 +13,7 @@ import { ensureWorkflowSummaryService, type WorkflowSummaryContext } from "./wor
  */
 
 import { type DurableWorkflowBackend, resumableEntryFromHandle } from "../durable/backend.js";
-import { initializeDurableBackend } from "../durable/factory.js";
+import { initializeDurableBackendReadingSettings } from "../durable/factory.js";
 import type { RunJournalOption } from "../durable/journal/resolution.js";
 import { resumeDurableWorkflow } from "../durable/resume-runtime.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
@@ -112,7 +112,7 @@ export interface ExtensionRuntimeOpts {
 	 * scan at launch (discovery filePath, else the builtin source probe).
 	 * When absent, launch skips the scan and the run simply has no set.
 	 */
-	resolvePossibleStageEntry?: (normalizedName: string) => string | undefined;
+	resolvePossibleStageEntry?: (normalizedName: string) => Promise<string | undefined>;
 	/** The owning session's stage-name predictor, forwarded to dispatch. */
 	stagePredictor?: StagePredictor;
 	/** Seed lifecycle state before historical completed snapshots are restored. */
@@ -221,7 +221,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		if (ready !== undefined) return ready;
 		ready = (
 			presetBackend === undefined
-				? initializeDurableBackend({
+				? initializeDurableBackendReadingSettings({
 						cwd: runtimeCwd,
 						journal: opts.journal ?? opts.resolveJournal?.(),
 						settings: opts.resolveJournalSettings?.(),

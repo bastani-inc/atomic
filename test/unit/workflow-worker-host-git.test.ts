@@ -29,7 +29,7 @@ vi.mock("@bastani/atomic", async (importOriginal) => ({
 		git.resolutions++;
 		return git.resolve();
 	},
-	resolveGitSync: () => {
+	resolveInstalledGit: async () => {
 		git.lookups++;
 		return git.present();
 	},

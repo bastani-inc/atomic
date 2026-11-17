@@ -206,7 +206,7 @@ describe("capture timings (#4748)", () => {
 			declaresWrites: () => false,
 			onUnavailable: () => {},
 		});
-		assert.equal(describeLastCapture(manager, clone), undefined);
+		assert.equal(await describeLastCapture(manager, clone), undefined);
 		const turn = (path: string) =>
 			fauxAssistantMessage([fauxToolCall("write", { path, content: "" })], { stopReason: "toolUse" });
 		sandbox.write(join(clone, "a.txt"), "a\n");
@@ -221,7 +221,7 @@ describe("capture timings (#4748)", () => {
 		const ms = captures[1]!.captureMs;
 		assert.equal(typeof ms, "number");
 		assert.ok(ms! <= wallMs, `capture ${ms} ms within the turn's ${wallMs} ms`);
-		assert.equal(describeLastCapture(manager, clone), `last capture took ${(ms! / 1000).toFixed(1)} s`);
+		assert.equal(await describeLastCapture(manager, clone), `last capture took ${(ms! / 1000).toFixed(1)} s`);
 
 		// On another machine the capture is still the checkout's last, under the worktree it was restored into.
 		renameReplacing(clone, sandbox.path("node-a-gone"));
@@ -229,9 +229,9 @@ describe("capture timings (#4748)", () => {
 		const [restored] = prepared.sessionManager.getWorktreeRootMappings();
 		assert.ok(restored);
 		assert.equal(
-			describeLastCapture(prepared.sessionManager, restored.to),
+			await describeLastCapture(prepared.sessionManager, restored.to),
 			`last capture took ${(ms! / 1000).toFixed(1)} s`,
 		);
-		assert.equal(describeLastCapture(prepared.sessionManager, sandbox.path("elsewhere")), undefined);
+		assert.equal(await describeLastCapture(prepared.sessionManager, sandbox.path("elsewhere")), undefined);
 	});
 });

@@ -82,7 +82,7 @@ export default function (pi) {
 				expect.soft(observed.Type).toBe(Type);
 				expect(observed.value).toBe(value);
 				// Deterministic cost guard: host sources must not join the editable graph.
-				const files = Object.keys(extensionLoaderTestHooks.readExtensionGraphManifest(entry)!.files);
+				const files = Object.keys((await extensionLoaderTestHooks.readExtensionGraphManifest(entry))!.files);
 				expect.soft(files.filter((file) => /[/\\]coding-agent[/\\]src[/\\]/.test(file))).toEqual([]);
 			}
 			expect(observations).toHaveLength(2);

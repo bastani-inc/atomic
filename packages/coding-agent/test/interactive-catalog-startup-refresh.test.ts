@@ -20,7 +20,7 @@ function fakeMode(overrides?: { refreshRejects?: boolean }): { mode: Interactive
 					return { aborted: false, errors: new Map() };
 				},
 				isNetworkRefreshEnabled: () => true,
-				getCatalogInputsGeneration: () => 0,
+				readCatalogInputsKey: async () => "0",
 				getAvailableSnapshot: () => [{ provider: "anthropic" }, { provider: "openai" }, { provider: "openai" }],
 			},
 		},

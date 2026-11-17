@@ -57,10 +57,10 @@ test("classified worktree commands use a stable locale while runGit preserves am
 	vi.stubEnv("LANG", "de_DE.UTF-8");
 	vi.stubEnv("LC_ALL", "de_DE.UTF-8");
 	git(repo, "config", "alias.atomic-locale", '!printf \'%s/%s\' "$LC_ALL" "$LANGUAGE"');
-	const ambient = worktreeGit.runGit(repo, ["atomic-locale"]);
+	const ambient = await worktreeGit.runGit(repo, ["atomic-locale"]);
 	assert.equal(ambient.status, 0, ambient.stderr);
 	assert.equal(ambient.stdout, "de_DE.UTF-8/de");
-	const classified = worktreeGit.runGit(repo, ["atomic-locale"], { LC_ALL: "C", LANGUAGE: "C" });
+	const classified = await worktreeGit.runGit(repo, ["atomic-locale"], { LC_ALL: "C", LANGUAGE: "C" });
 	assert.equal(classified.status, 0, classified.stderr);
 	assert.equal(classified.stdout, "C/C");
 	const seen: Array<{ args: string[]; env: NodeJS.ProcessEnv | undefined }> = [];
@@ -133,7 +133,7 @@ test("reftable reference contention is retried before creating a named worktree 
 	const repo = makeRepo();
 	const realRunGit = worktreeGit.runGit;
 	let attempts = 0;
-	vi.spyOn(worktreeGit, "runGit").mockImplementation((cwd, args, env) => {
+	vi.spyOn(worktreeGit, "runGit").mockImplementation(async (cwd, args, env) => {
 		if (args[0] === "worktree" && args[1] === "list" && ++attempts === 1)
 			return { status: 1, stdout: "", stderr: "fatal: cannot lock references\n" };
 		return realRunGit(cwd, args, env);
@@ -177,8 +177,8 @@ test.skipIf(process.platform === "win32")(
 		let attempts = 0;
 		let observedListingRace = false;
 		let restore: ReturnType<typeof setTimeout> | undefined;
-		vi.spyOn(worktreeGit, "runGit").mockImplementation((cwd, args, env) => {
-			const result = realRunGit(cwd, args, env);
+		vi.spyOn(worktreeGit, "runGit").mockImplementation(async (cwd, args, env) => {
+			const result = await realRunGit(cwd, args, env);
 			if (attempts === 1 && args[0] === "worktree" && args[1] === "list" && result.status !== 0) {
 				assert.match(result.stderr, /commondir/);
 				observedListingRace = true;
@@ -280,7 +280,7 @@ test("named-worktree reuse resolves each repository's common directory once and 
 	let common = firstCommon;
 	let resolutions = 0;
 	const realRunGit = worktreeGit.runGit;
-	vi.spyOn(worktreeGit, "runGit").mockImplementation((cwd, args, env) => {
+	vi.spyOn(worktreeGit, "runGit").mockImplementation(async (cwd, args, env) => {
 		if (args[0] === "rev-parse" && args[1] === "--git-common-dir") {
 			resolutions++;
 			return { status: 0, stdout: `${common}\n`, stderr: "" };

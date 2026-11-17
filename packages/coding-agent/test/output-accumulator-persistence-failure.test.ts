@@ -19,6 +19,10 @@ const persistedFileMock = vi.hoisted(() => ({
 
 vi.mock("../src/core/tools/persisted-output-file.ts", () => ({
 	PersistedOutputFile: class {
+		static async create() {
+			return new this();
+		}
+
 		constructor() {
 			persistedFileMock.constructorCalls++;
 			if (persistedFileMock.mode === "construct") {

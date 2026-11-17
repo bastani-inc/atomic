@@ -5,8 +5,13 @@ import { join } from "node:path";
 import { afterEach, test } from "vitest";
 import {
 	canonicalDirectory,
+	canonicalDirectoryAsync,
 	isProjectRootRun,
+	isProjectRootRunAsync,
 	isSdkDurableRunInScope,
+	isSdkDurableRunInScopeAsync,
+	isSdkReleasedRunAdoptable,
+	isSdkReleasedRunAdoptableAsync,
 } from "../../packages/workflows/src/durable/sdk-recovery-scope.js";
 
 const roots: string[] = [];
@@ -53,8 +58,8 @@ test("startup recovery keeps distinct project directories apart", () => {
 	assert.notEqual(canonicalDirectory(real), canonicalDirectory(join(real, "..")));
 });
 
-test("a project root run needs no model owner, while SDK recovery scope still does (#4252)", () => {
-	const { real } = symlinkedProject();
+test("a project root run needs no model owner, while SDK recovery scope still does (#4252)", async () => {
+	const { real, link } = symlinkedProject();
 	const handle = { workflowId: "run-1", invocationCwd: real };
 	assert.equal(isProjectRootRun(handle, real), true);
 	assert.equal(isSdkDurableRunInScope({ ...handle, modelOwner: undefined }, real), false);
@@ -62,4 +67,30 @@ test("a project root run needs no model owner, while SDK recovery scope still do
 	assert.equal(isProjectRootRun({ ...handle, rootWorkflowId: "parent" }, real), false);
 	assert.equal(isProjectRootRun({ ...handle, invocationCwd: undefined }, real), false);
 	assert.equal(isProjectRootRun(handle, join(real, "..")), false);
+
+	assert.equal(await canonicalDirectoryAsync(link), await canonicalDirectoryAsync(real));
+	assert.notEqual(await canonicalDirectoryAsync(real), await canonicalDirectoryAsync(join(real, "..")));
+	assert.equal(await isProjectRootRunAsync({ ...handle, invocationCwd: link }, real), true);
+	assert.equal(
+		await isSdkDurableRunInScopeAsync({ ...handle, invocationCwd: link, modelOwner: undefined }, real),
+		false,
+	);
+	assert.equal(
+		await isSdkDurableRunInScopeAsync({ ...handle, invocationCwd: link, modelOwner: "session" }, real),
+		true,
+	);
+	const released = {
+		workflowId: "run-1",
+		name: "wf",
+		inputs: {},
+		status: "paused" as const,
+		createdAt: 1,
+		updatedAt: 1,
+		completedCheckpoints: 1,
+		pendingPrompts: 0,
+		modelOwner: "session",
+		releasedModelOwner: "session",
+		invocationCwd: link,
+	};
+	assert.equal(await isSdkReleasedRunAdoptableAsync(released, real), isSdkReleasedRunAdoptable(released, real));
 });

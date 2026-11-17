@@ -1,9 +1,11 @@
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getDocsPath, keyHintIfBound, ToolBlock, ToolBlockMarkdown } from "@bastani/atomic";
 import { stripTerminalSequences, Text } from "@bastani/atomic-tui";
 import { summarizeFailureText } from "../tui/display-text.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
+import { invalidDefinitionsFromDiagnostics } from "../tui/workflows-listing.js";
+import type { DiscoveryDiagnostic } from "./discovery.js";
 import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
 import { completeToken, runIdItems } from "./workflow-command-completions.js";
 import {
@@ -24,6 +26,8 @@ export const REMOVED_WORKFLOW_COMMAND_NOTICE =
 export interface WorkflowSlashCommandDeps {
 	overlay: GraphOverlayPort;
 	owner?: WorkflowOwnerResources;
+	ensureWorkflowResourcesLoaded?: () => Promise<void>;
+	discoveryDiagnostics?: () => readonly DiscoveryDiagnostic[];
 }
 
 function authoringHeaderTitle(): string {
@@ -54,8 +58,8 @@ export function registerWorkflowAuthoringMessageRenderer(pi: ExtensionAPI): void
 	authoringRendererRegisteredHosts.add(pi);
 }
 
-function readWorkflowAuthoringReference(): string {
-	return readFileSync(join(getDocsPath(), "workflows", "authoring.md"), "utf8");
+function readWorkflowAuthoringReference(): Promise<string> {
+	return readFile(join(getDocsPath(), "workflows", "authoring.md"), "utf8");
 }
 
 function safeErrorReason(error: unknown): string {
@@ -75,7 +79,7 @@ async function handleWorkflowAuthoringCommand(args: string, ctx: PiCommandContex
 	}
 	let content: string;
 	try {
-		content = readWorkflowAuthoringReference();
+		content = await readWorkflowAuthoringReference();
 	} catch (error) {
 		reporter.error(`Could not load workflow authoring reference: ${safeErrorReason(error)}`);
 		return;
@@ -124,9 +128,16 @@ export function registerWorkflowSlashCommand(
 			description: WORKFLOWS_COMMAND_DESCRIPTION,
 			handler: async (args, ctx) => {
 				const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);
+				try {
+					if (owner.store.runs().length === 0) await deps.ensureWorkflowResourcesLoaded?.();
+				} catch (error) {
+					reporter.error(`Could not load workflow definitions: ${safeErrorReason(error)}`);
+					return;
+				}
 				await handleWorkflowsCommand(args, ctx, reporter, {
 					overlay,
 					store: owner.store,
+					invalidDefinitions: () => invalidDefinitionsFromDiagnostics(deps.discoveryDiagnostics?.() ?? []),
 				});
 			},
 			getArgumentCompletions: (partial) =>

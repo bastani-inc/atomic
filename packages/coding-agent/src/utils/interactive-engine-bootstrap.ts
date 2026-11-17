@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -76,6 +77,31 @@ export function writeInteractiveEngineBootstrap(
 export function removeOwnedInteractiveEngineBootstrap(handle: InteractiveEngineBootstrapHandle | undefined): void {
 	if (!handle) return;
 	rmSync(handle.directory, { recursive: true, force: true });
+}
+
+export async function writeInteractiveEngineBootstrapAsync(
+	record: Omit<InteractiveEngineBootstrap, "version">,
+): Promise<InteractiveEngineBootstrapHandle> {
+	const directory = await mkdtemp(join(tmpdir(), "atomic-engine-bootstrap-"));
+	const path = join(directory, "bootstrap.json");
+	const tempPath = `${path}.tmp`;
+	const payload: InteractiveEngineBootstrap = { version: INTERACTIVE_ENGINE_BOOTSTRAP_VERSION, ...record };
+	try {
+		await writeFile(tempPath, JSON.stringify(payload), { encoding: "utf8", mode: 0o600 });
+		await rename(tempPath, path);
+	} catch (error) {
+		await rm(tempPath, { force: true }).catch(() => {});
+		await rm(directory, { recursive: true, force: true }).catch(() => {});
+		throw error;
+	}
+	return { path, directory };
+}
+
+export async function removeOwnedInteractiveEngineBootstrapAsync(
+	handle: InteractiveEngineBootstrapHandle | undefined,
+): Promise<void> {
+	if (!handle) return;
+	await rm(handle.directory, { recursive: true, force: true }).catch(() => {});
 }
 
 /**

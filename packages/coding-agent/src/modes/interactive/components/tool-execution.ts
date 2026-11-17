@@ -16,7 +16,7 @@ import type { TSchema } from "typebox";
 import type { ToolDefinition, ToolRenderContext, ToolRenderers } from "../../../core/extensions/types.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { isBuiltinToolCallRenderer, isBuiltinToolResultRenderer } from "../../../core/tools/builtin-renderers.js";
-import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.js";
+import { allToolNames, createLoadedToolDefinition, type ToolName } from "../../../core/tools/index.js";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { ensurePngTranscoder } from "../../../utils/image-convert.ts";
 import { terminalDisplayText } from "../../../utils/terminal-text.ts";
@@ -111,7 +111,9 @@ export class ToolExecutionComponent extends Container {
 		this.toolCallId = toolCallId;
 		this.args = args;
 		this.toolDefinition = toolDefinition;
-		this.builtInToolDefinition = createAllToolDefinitions(cwd)[toolName as ToolName];
+		this.builtInToolDefinition = allToolNames.has(toolName as ToolName)
+			? createLoadedToolDefinition(toolName as ToolName, cwd)
+			: undefined;
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 		this.outputPad = options.outputPad ?? 1;

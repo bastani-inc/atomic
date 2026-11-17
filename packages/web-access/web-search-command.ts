@@ -165,12 +165,10 @@ export function registerWebSearchCommand(pi: ExtensionAPI, deps: RegisterWebSear
 							const normalized = normalizeProviderInput(provider);
 							if (!normalized || normalized === "auto") return;
 							currentProvider = normalized;
-							try {
-								saveConfig({ provider: normalized });
-							} catch (err) {
+							void saveConfig({ provider: normalized }).catch((err) => {
 								const message = err instanceof Error ? err.message : String(err);
 								if (!reportOwnedWebDiagnostic()) console.error(`Failed to persist default provider: ${message}`);
-							}
+							});
 						},
 						async onAddSearch(query, queryIndex, provider) {
 							if (commandHandle && deps.state.activeCurator !== commandHandle) {

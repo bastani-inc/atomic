@@ -17,6 +17,10 @@ export function ignoredProjectSettingsWarning(
 	run: { readonly trusted: boolean; readonly appMode: AppMode; readonly interactiveEngineChild: boolean },
 ): string | undefined {
 	if (run.trusted || run.appMode === "interactive" || run.interactiveEngineChild) return undefined;
+	return untrustedProjectSettingsWarning(cwd);
+}
+
+function untrustedProjectSettingsWarning(cwd: string): string | undefined {
 	const ignored = getProjectConfigPaths(cwd, "settings.json").filter((path) => existsSync(path));
 	if (ignored.length === 0) return undefined;
 	return `Ignoring ${ignored.join(" and ")}: this project is not trusted. Pass --approve (-a) to trust it for this run.`;

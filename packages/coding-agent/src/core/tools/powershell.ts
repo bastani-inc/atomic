@@ -2,8 +2,8 @@ import { win32 } from "node:path";
 import { APP_NAME } from "../../config.js";
 import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/child-process.ts";
 import {
-	getPowerShellConfig,
-	getShellEnv,
+	getPowerShellConfigAsync,
+	getShellEnvAsync,
 	killProcessTree,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
@@ -63,7 +63,7 @@ export function createLocalPowerShellOperations(binding?: {
 			validateBashWait(options.wait, !!binding?.taskOwner);
 			if (options.timeout !== undefined) validateExplicitTimeoutSeconds(options.timeout);
 			if (options.signal?.aborted) throw new Error("aborted");
-			const { shell, args } = getPowerShellConfig();
+			const { shell, args } = await getPowerShellConfigAsync();
 			const script = `${UTF8_OUTPUT_PREFIX}${command}${windowsPowerShellExitSuffix(shell, command)}`;
 			const pty = !!options.pty && process.env.PI_NO_PTY !== "1" && process.env.ATOMIC_NO_PTY !== "1";
 			if (binding?.taskOwner || pty) {
@@ -80,10 +80,11 @@ export function createLocalPowerShellOperations(binding?: {
 					: executeNativePty(encoded, cwd, execution);
 			}
 			const { spawn } = await import("node:child_process");
+			const shellEnv = options.env ?? (await getShellEnvAsync());
 			if (options.signal?.aborted) throw new Error("aborted");
 			const child = spawn(shell, [...args, script], {
 				cwd,
-				env: createChildProcessEnvironment(undefined, options.env ?? getShellEnv()),
+				env: createChildProcessEnvironment(undefined, shellEnv),
 				windowsHide: true,
 			});
 			if (child.pid) trackDetachedChildPid(child.pid);

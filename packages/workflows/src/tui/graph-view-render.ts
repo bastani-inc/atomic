@@ -1,5 +1,6 @@
 import { renderNavKeyOverlay } from "@bastani/atomic";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import { elapsedRunMs } from "../shared/timing.js";
 import { fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { GraphViewGraphRenderer } from "./graph-view-graph-render.js";
 import { GRAPH_HEADER_ROWS, GraphViewLayout, graphLayoutNaturalHeight } from "./graph-view-layout.js";
@@ -8,6 +9,7 @@ import type { GraphViewOpts } from "./graph-view-types.js";
 import { renderHeader, renderOutlinePill } from "./header.js";
 import { isKeybindingsLike } from "./keybindings-adapter.js";
 import { NODE_H } from "./layout.js";
+import { type RunOutcome, renderRunOutcome } from "./run-outcome.js";
 import { runStateColor, runStateIndicator } from "./run-state-indicator.js";
 import { renderStageFailureDetailLines } from "./stage-failure-detail.js";
 import { renderSwitcher } from "./switcher.js";
@@ -41,6 +43,7 @@ interface ToolDetailFrame {
 	readonly blockWidth: number;
 	readonly leftPad: number;
 	readonly lines: readonly string[];
+	readonly selectedRow?: number;
 }
 
 /** Overlay/widget rendering orchestration for GraphView. */
@@ -51,7 +54,20 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	private renderRun: RunSnapshot | null | undefined;
 	private detailFrame: ToolDetailFrame | null = null;
 
-	private stageDetailFrame: { frame: ToolDetailFrame; stage: object; logs: boolean } | null = null;
+	private stageDetailFrame: {
+		frame: ToolDetailFrame;
+		stage: object;
+		modelAttempts: StageSnapshot["modelAttempts"];
+		logs: boolean;
+	} | null = null;
+	private runDetailFrame: {
+		frame: ToolDetailFrame;
+		run: object;
+		outcome: RunOutcome;
+		logs: boolean;
+		selected: number;
+		elapsedSecond: number;
+	} | null = null;
 	constructor(opts: GraphViewOpts) {
 		super(opts);
 		this.graphLayout = new GraphViewLayout({
@@ -138,6 +154,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			}
 			this._renderKeysHelpOverlay(lines, frameWidth, bodyStart, bodyRows);
 			this.graphLayout.paintScrollbar(lines, frameWidth);
+			this._recordPaintedState();
 
 			return lines;
 		} finally {
@@ -197,26 +214,27 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 
 	private _openDetailFrame(width: number): ToolDetailFrame | null {
 		if (this.toolDetail !== null) return this._toolDetailFrame(this.toolDetail, width);
+		if (this.runDetail !== null) return this._runDetailFrame(width);
 		const stage = this._stageDetailStage();
 		if (this.stageDetail === null || stage === undefined) return null;
-		const fullStage =
-			stage.modelAttempts !== undefined
-				? stage
-				: (this.store.run?.(this.stageDetail.runId)?.stages.find((s) => s.id === this.stageDetail!.stageId) ??
-					stage);
-		const detailStage =
-			fullStage === stage || fullStage.modelAttempts === undefined
-				? stage
-				: { ...stage, modelAttempts: fullStage.modelAttempts };
 		const safeWidth = Math.max(1, Math.floor(width));
+		const fullAttempts =
+			stage.modelAttempts ??
+			this.store.run(this.stageDetail.runId)?.stages.find((candidate) => candidate.id === this.stageDetail?.stageId)
+				?.modelAttempts;
 		const cached = this.stageDetailFrame;
 		if (
 			cached !== null &&
 			cached.frame.width === safeWidth &&
 			cached.stage === stage &&
+			cached.modelAttempts === fullAttempts &&
 			cached.logs === this.stageDetail.logs
 		)
 			return cached.frame;
+		const detailStage =
+			fullAttempts === undefined || fullAttempts === stage.modelAttempts
+				? stage
+				: { ...stage, modelAttempts: fullAttempts };
 		const frame: ToolDetailFrame = {
 			width: safeWidth,
 			blockWidth: safeWidth,
@@ -227,7 +245,42 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 				logs: this.stageDetail.logs,
 			}),
 		};
-		this.stageDetailFrame = { frame, stage, logs: this.stageDetail.logs };
+		this.stageDetailFrame = { frame, stage, modelAttempts: fullAttempts, logs: this.stageDetail.logs };
+		return frame;
+	}
+
+	private _runDetailFrame(width: number): ToolDetailFrame | null {
+		const detail = this.runDetail;
+		const run = this._currentRenderRun();
+		if (detail === null || run === null) return null;
+		const safeWidth = Math.max(1, Math.floor(width));
+		const outcome = this._runOutcomeFor(run);
+		const selected = this._resolveRunDetailSelection(outcome.blockers);
+		const elapsedMs = elapsedRunMs(run, Date.now());
+		const elapsedSecond = Math.floor(elapsedMs / 1000);
+		const cached = this.runDetailFrame;
+		if (
+			cached !== null &&
+			cached.frame.width === safeWidth &&
+			cached.run === run &&
+			cached.outcome === outcome &&
+			cached.logs === detail.logs &&
+			cached.selected === selected &&
+			cached.elapsedSecond === elapsedSecond
+		)
+			return cached.frame;
+		const rendered = renderRunOutcome(
+			{ ...outcome, elapsedMs },
+			{ theme: this.graphTheme, width: safeWidth, logs: detail.logs, selected },
+		);
+		const frame: ToolDetailFrame = {
+			width: safeWidth,
+			blockWidth: safeWidth,
+			leftPad: 0,
+			lines: rendered.lines,
+			...(rendered.selectedRow === undefined ? {} : { selectedRow: rendered.selectedRow }),
+		};
+		this.runDetailFrame = { frame, run, outcome, logs: detail.logs, selected, elapsedSecond };
 		return frame;
 	}
 
@@ -253,6 +306,18 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		if (this._detailOpen()) {
 			if (this.pendingEnsureFocusedVisible) scrollView.scrollToStart();
 			this.pendingEnsureFocusedVisible = false;
+			if (this.runDetailRevealSelected) {
+				this.runDetailRevealSelected = false;
+				const selectedRow = this.runDetailFrame?.frame.selectedRow;
+				if (selectedRow !== undefined) {
+					const innerRows = Math.max(0, viewportRows - toolDetailViewportPad(viewportRows) * 2);
+					const bottom = selectedRow + Math.min(2, innerRows);
+					let next = scrollView.scrollTop;
+					if (selectedRow < next) next = selectedRow;
+					else if (bottom > next + innerRows) next = bottom - innerRows;
+					scrollView.scrollTo(next);
+				}
+			}
 			return;
 		}
 		if (!run || this.cachedRenderGeometry.totalRows <= 0) {
@@ -387,7 +452,11 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		if (!this.keysHelpOpen) return;
 		const boxWidth = Math.min(56, Math.max(24, frameWidth - 8));
 		const help = renderNavKeyOverlay(
-			this._detailOpen() ? "keys \u00b7 stage detail" : "keys \u00b7 workflow graph",
+			this.runDetail !== null
+				? "keys \u00b7 run details"
+				: this._detailOpen()
+					? "keys \u00b7 stage detail"
+					: "keys \u00b7 workflow graph",
 			this._graphKeys(),
 			boxWidth,
 			this._navKeyStyle(),

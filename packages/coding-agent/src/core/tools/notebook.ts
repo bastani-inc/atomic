@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { pathExists } from "./path-utils.ts";
 
 /**
  * Editable notebook projection, mirrored from oh-my-pi's
@@ -146,16 +147,20 @@ export function applyNotebookEditableText(
 	return next;
 }
 
-export function readEditableNotebookText(absolutePath: string, displayPath: string): string {
-	const notebook = existsSync(absolutePath)
-		? parseNotebookSafe(readFileSync(absolutePath, "utf8"), displayPath)
+export async function readEditableNotebookText(absolutePath: string, displayPath: string): Promise<string> {
+	const notebook = (await pathExists(absolutePath))
+		? parseNotebookSafe(await readFile(absolutePath, "utf8"), displayPath)
 		: emptyNotebook();
 	return notebookToEditableText(notebook);
 }
 
-export function serializeEditedNotebookText(absolutePath: string, displayPath: string, text: string): string {
-	const notebook = existsSync(absolutePath)
-		? parseNotebookSafe(readFileSync(absolutePath, "utf8"), displayPath)
+export async function serializeEditedNotebookText(
+	absolutePath: string,
+	displayPath: string,
+	text: string,
+): Promise<string> {
+	const notebook = (await pathExists(absolutePath))
+		? parseNotebookSafe(await readFile(absolutePath, "utf8"), displayPath)
 		: emptyNotebook();
 	const next = applyNotebookEditableText(notebook, text, displayPath);
 	return JSON.stringify(next, null, 1);

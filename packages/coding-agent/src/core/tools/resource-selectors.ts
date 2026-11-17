@@ -1,13 +1,25 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { deflateRawSync, gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
+import { promisify } from "node:util";
+import {
+	deflateRaw as deflateRawCallback,
+	gunzip as gunzipCallback,
+	gzip as gzipCallback,
+	inflateRaw as inflateRawCallback,
+} from "node:zlib";
 import { isPathInside } from "../../utils/path-inside.ts";
-import { resolvePhysicalPath } from "../../utils/physical-path.ts";
+import { resolvePhysicalPathAsync } from "../../utils/physical-path.ts";
 import { readConflictUrl } from "./conflict-registry.ts";
+import { pathExists } from "./path-utils.ts";
 import { loadNativeSearchBinding } from "./search-native.ts";
 import { plainShellWordMask } from "./shell-plain-words.ts";
+import { SqliteSelectorConnection, type SqliteSelectorValue } from "./sqlite-selector-connection.ts";
 import { listTarMembers, writeTarMember } from "./tar-archive.ts";
+
+const deflateRaw = promisify(deflateRawCallback);
+const gunzip = promisify(gunzipCallback);
+const gzip = promisify(gzipCallback);
+const inflateRaw = promisify(inflateRawCallback);
 
 export interface ArchiveSelector {
 	archivePath: string;
@@ -74,96 +86,25 @@ export function isInternalUrl(value: string): boolean {
 export function isUrlLike(value: string): boolean {
 	return URL_LIKE_PREFIX.test(value);
 }
-type SqliteValue = string | number | boolean | null;
-interface SqliteQuery {
-	all(...params: SqliteValue[]): Record<string, SqliteValue>[];
-	get?(...params: SqliteValue[]): Record<string, SqliteValue> | undefined;
-	iterate?(): Iterable<Record<string, SqliteValue>>;
-	run(...params: SqliteValue[]): { changes?: number; lastInsertRowid?: number | bigint };
-}
-interface SqliteDatabase {
-	query(sql: string): SqliteQuery;
-	close(): void;
-}
-type SqliteDatabaseConstructor = new (path: string, options?: { readonly?: boolean }) => SqliteDatabase;
-/**
- * SQLite via `node:sqlite`.
- *
- * It is unflagged from Node v22.13.0, it is the module upstream pi uses, and
- * Bun ships it from 1.4.0 (oven-sh/bun#32498), before the current 1.4.2 floor,
- * so both runtimes provide it. The `bun:sqlite` fallback that covered older
- * Bun binaries was removed with the earlier 1.4.0 floor.
- *
- * `better-sqlite3` was evaluated and rejected: it segfaults Bun 1.3.14 on
- * construction, which is worse than a catchable missing-module error.
- *
- * The adapter keeps the `bun:sqlite`-shaped API these selectors were written
- * against and normalizes the deltas: `node:sqlite` spells the option
- * `readOnly` and rejects it when passed explicitly as `undefined`, and it
- * refuses to bind booleans, which are stored as integer 1/0.
- */
-interface NodeSqliteStatement {
-	all(...params: unknown[]): Record<string, SqliteValue>[];
-	get(...params: unknown[]): Record<string, SqliteValue> | undefined;
-	iterate(...params: unknown[]): Iterable<Record<string, SqliteValue>>;
-	run(...params: unknown[]): { changes?: number | bigint; lastInsertRowid?: number | bigint };
-}
-interface NodeSqliteDatabase {
-	prepare(sql: string): NodeSqliteStatement;
-	close(): void;
-}
-type NodeSqliteConstructor = new (path: string, options?: { readOnly?: boolean }) => NodeSqliteDatabase;
-
-/** Callers may pass booleans; `node:sqlite` refuses to bind them, so store integer 1/0. */
-export function toSqliteBindValues(params: readonly SqliteValue[]): unknown[] {
-	return params.map((param) => (typeof param === "boolean" ? (param ? 1 : 0) : param));
-}
-
-function nodeSqliteAdapter(DatabaseSync: NodeSqliteConstructor): SqliteDatabaseConstructor {
-	return class NodeSqliteAdapter implements SqliteDatabase {
-		private readonly db: NodeSqliteDatabase;
-		constructor(path: string, options?: { readonly?: boolean }) {
-			// Passing `undefined` explicitly fails node:sqlite's arity validation.
-			this.db = options?.readonly === true ? new DatabaseSync(path, { readOnly: true }) : new DatabaseSync(path);
-		}
-		query(sql: string): SqliteQuery {
-			const statement = this.db.prepare(sql);
-			return {
-				all: (...params: SqliteValue[]) => statement.all(...toSqliteBindValues(params)),
-				get: (...params: SqliteValue[]) => statement.get(...toSqliteBindValues(params)),
-				iterate: () => statement.iterate(),
-				run: (...params: SqliteValue[]) => {
-					const result = statement.run(...toSqliteBindValues(params));
-					return { changes: Number(result.changes ?? 0), lastInsertRowid: result.lastInsertRowid };
-				},
-			};
-		}
-		close(): void {
-			this.db.close();
-		}
-	};
-}
-
-function sqliteDatabase(): SqliteDatabaseConstructor {
-	const requireModule = createRequire(import.meta.url);
+type SqliteValue = SqliteSelectorValue;
+type SqliteDatabase = SqliteSelectorConnection;
+const SQLITE_HEADER = "SQLite format 3\0";
+async function existingSqliteFile(path: string): Promise<boolean | undefined> {
+	if (!(await pathExists(path))) return undefined;
+	const file = await open(path, "r");
 	try {
-		const { DatabaseSync } = requireModule("node:sqlite") as { DatabaseSync: NodeSqliteConstructor };
-		return nodeSqliteAdapter(DatabaseSync);
-	} catch {
-		throw new Error(
-			"SQLite selectors need node:sqlite (Node >= 22.13 or Bun >= 1.4.2); this runtime does not provide it.",
-		);
+		const header = Buffer.alloc(SQLITE_HEADER.length);
+		const { bytesRead } = await file.read(header, 0, header.length, 0);
+		return header.subarray(0, bytesRead).toString("binary") === SQLITE_HEADER;
+	} finally {
+		await file.close();
 	}
 }
-function existingSqliteFile(path: string): boolean | undefined {
-	if (!existsSync(path)) return undefined;
-	return readFileSync(path).subarray(0, 16).toString("binary") === "SQLite format 3\0";
-}
-export function sqliteSelectorForPath(value: string, cwd: string): SqliteSelector | undefined {
+export async function sqliteSelectorForPath(value: string, cwd: string): Promise<SqliteSelector | undefined> {
 	const selector = parseSqliteSelector(value);
 	if (!selector) return undefined;
-	const absolute = resolveContainedLocalPath(cwd, selector.databasePath, "SQLite selector");
-	if (existingSqliteFile(absolute) !== true) return undefined;
+	const absolute = await resolveContainedLocalPath(cwd, selector.databasePath, "SQLite selector");
+	if ((await existingSqliteFile(absolute)) !== true) return undefined;
 	return { ...selector, databasePath: absolute };
 }
 
@@ -192,8 +133,8 @@ export function parseArchiveSelector(value: string): ArchiveSelector | undefined
 	}
 	return undefined;
 }
-export function resolveArchiveSelector(selector: ArchiveSelector, cwd: string): ArchiveSelector {
-	return { ...selector, archivePath: resolveContainedLocalPath(cwd, selector.archivePath, "Archive selector") };
+export async function resolveArchiveSelector(selector: ArchiveSelector, cwd: string): Promise<ArchiveSelector> {
+	return { ...selector, archivePath: await resolveContainedLocalPath(cwd, selector.archivePath, "Archive selector") };
 }
 const SQLITE_SELECTOR_SUFFIX = /^(?:\?q=(.+)|:([^:?]+)(?:\?(.+))?(?::([^:?]+))?)?$/i;
 export function parseSqliteSelector(value: string): SqliteSelector | undefined {
@@ -266,7 +207,7 @@ function zipEntryPayload(
 	assertZipRange(buf, start, compressedSize, label);
 	return buf.subarray(start, start + compressedSize);
 }
-export function readZipEntriesFromBuffer(buf: Buffer, label: string): Map<string, Buffer> {
+export async function readZipEntriesFromBuffer(buf: Buffer, label: string): Promise<Map<string, Buffer>> {
 	const entries = new Map<string, Buffer>();
 	let eocd = -1;
 	for (let i = buf.length - 22; i >= 0; i--)
@@ -298,7 +239,7 @@ export function readZipEntriesFromBuffer(buf: Buffer, label: string): Map<string
 			method === 0
 				? Buffer.from(data)
 				: method === 8
-					? inflateRawSync(data, { maxOutputLength: MAX_ARCHIVE_MEMBER_BYTES })
+					? await inflateRaw(data, { maxOutputLength: MAX_ARCHIVE_MEMBER_BYTES })
 					: (() => {
 							throw new Error(`Unsupported zip compression method ${method} for ${name}`);
 						})(),
@@ -306,16 +247,16 @@ export function readZipEntriesFromBuffer(buf: Buffer, label: string): Map<string
 	}
 	return entries;
 }
-export function readZipEntries(path: string): Map<string, Buffer> {
-	return readZipEntriesFromBuffer(readFileSync(path), path);
+export async function readZipEntries(path: string): Promise<Map<string, Buffer>> {
+	return readZipEntriesFromBuffer(await readFile(path), path);
 }
-function writeZipEntries(path: string, entries: Map<string, Buffer>): void {
+async function writeZipEntries(path: string, entries: Map<string, Buffer>): Promise<void> {
 	const locals: Buffer[] = [],
 		centrals: Buffer[] = [];
 	let offset = 0;
 	for (const [name, data] of entries) {
 		const nameBuf = Buffer.from(name),
-			compressed = deflateRawSync(data),
+			compressed = await deflateRaw(data),
 			crc = crc32(data);
 		const local = Buffer.alloc(30);
 		local.writeUInt32LE(0x04034b50, 0);
@@ -346,18 +287,18 @@ function writeZipEntries(path: string, entries: Map<string, Buffer>): void {
 	eocd.writeUInt16LE(entries.size, 10);
 	eocd.writeUInt32LE(centralSize, 12);
 	eocd.writeUInt32LE(offset, 16);
-	writeFileSync(path, Buffer.concat([...locals, ...centrals, eocd]));
+	await writeFile(path, Buffer.concat([...locals, ...centrals, eocd]));
 }
-function readTarBuffer(path: string): Buffer {
-	const raw = readFileSync(path);
+async function readTarBuffer(path: string): Promise<Buffer> {
+	const raw = await readFile(path);
 	if (raw.length > MAX_TAR_ARCHIVE_BYTES) throw new Error(`Archive too large: ${path}`);
-	const buf = isGzipTar(path) ? gunzipSync(raw, { maxOutputLength: MAX_TAR_ARCHIVE_BYTES }) : raw;
+	const buf = isGzipTar(path) ? await gunzip(raw, { maxOutputLength: MAX_TAR_ARCHIVE_BYTES }) : raw;
 	if (buf.length > MAX_TAR_ARCHIVE_BYTES) throw new Error(`Archive too large: ${path}`);
 	return buf;
 }
-function parseTar(path: string): Map<string, Buffer> {
+async function parseTar(path: string): Promise<Map<string, Buffer>> {
 	const entries = new Map<string, Buffer>();
-	for (const member of listTarMembers(readTarBuffer(path), path).members) {
+	for (const member of listTarMembers(await readTarBuffer(path), path).members) {
 		if (member.type === "5" || member.type === "g" || !member.name) continue;
 		if (member.data.length > MAX_ARCHIVE_MEMBER_BYTES) throw new Error(`Archive member too large: ${member.name}`);
 		entries.set(member.name, Buffer.from(member.data));
@@ -376,8 +317,8 @@ function listArchiveDirectory(names: Iterable<string>, memberPath: string): stri
 	return [...children].sort().slice(0, MAX_ARCHIVE_DIRECTORY_ENTRIES).join("\n");
 }
 
-function readZipSelector(path: string, memberPath: string): string {
-	const buf = readFileSync(path);
+async function readZipSelector(path: string, memberPath: string): Promise<string> {
+	const buf = await readFile(path);
 	let eocd = -1;
 	for (let i = buf.length - 22; i >= 0; i--)
 		if (buf.readUInt32LE(i) === 0x06054b50) {
@@ -411,7 +352,7 @@ function readZipSelector(path: string, memberPath: string): string {
 			method === 0
 				? Buffer.from(data)
 				: method === 8
-					? inflateRawSync(data, { maxOutputLength: MAX_ARCHIVE_MEMBER_BYTES })
+					? await inflateRaw(data, { maxOutputLength: MAX_ARCHIVE_MEMBER_BYTES })
 					: (() => {
 							throw new Error(`Unsupported zip compression method ${method} for ${name}`);
 						})()
@@ -423,9 +364,9 @@ function readZipSelector(path: string, memberPath: string): string {
 	throw new Error(`Archive member not found: ${memberPath}`);
 }
 
-export function readArchiveSelector(selector: ArchiveSelector): string {
+export async function readArchiveSelector(selector: ArchiveSelector): Promise<string> {
 	if (isZipArchive(selector.archivePath)) return readZipSelector(selector.archivePath, selector.memberPath);
-	const entries = parseTar(selector.archivePath);
+	const entries = await parseTar(selector.archivePath);
 	if (!selector.memberPath) return listArchiveDirectory(entries.keys(), "");
 	const data = entries.get(selector.memberPath);
 	if (data) {
@@ -440,8 +381,8 @@ function validateArchiveMemberPath(memberPath: string): void {
 	if (!memberPath || memberPath.startsWith("/") || memberPath.endsWith("/") || memberPath.split("/").includes(".."))
 		throw new Error(`Invalid archive member path: ${memberPath}`);
 }
-function writeZipEntrySelective(path: string, memberPath: string, data: Buffer): void {
-	const source = existsSync(path) ? readFileSync(path) : Buffer.alloc(0);
+async function writeZipEntrySelective(path: string, memberPath: string, data: Buffer): Promise<void> {
+	const source = (await pathExists(path)) ? await readFile(path) : Buffer.alloc(0);
 	const locals: Buffer[] = [],
 		centrals: Buffer[] = [];
 	let offset = 0;
@@ -483,9 +424,9 @@ function writeZipEntrySelective(path: string, memberPath: string, data: Buffer):
 		}
 	}
 	const tmp = `${path}.atomic-entry-${Date.now()}`;
-	writeZipEntries(tmp, new Map([[memberPath, data]]));
-	const built = readFileSync(tmp);
-	rmSync(tmp, { force: true });
+	await writeZipEntries(tmp, new Map([[memberPath, data]]));
+	const built = await readFile(tmp);
+	await rm(tmp, { force: true });
 	const eocdStart = built.length - 22,
 		localLen = built.readUInt32LE(eocdStart + 16),
 		centralSizeOne = built.readUInt32LE(eocdStart + 12);
@@ -501,20 +442,20 @@ function writeZipEntrySelective(path: string, memberPath: string, data: Buffer):
 	eocd.writeUInt16LE(centrals.length, 10);
 	eocd.writeUInt32LE(centralSize, 12);
 	eocd.writeUInt32LE(offset, 16);
-	writeFileSync(path, Buffer.concat([...locals, ...centrals, eocd]));
+	await writeFile(path, Buffer.concat([...locals, ...centrals, eocd]));
 }
 
-export function writeArchiveSelector(selector: ArchiveSelector, content: string): void {
+export async function writeArchiveSelector(selector: ArchiveSelector, content: string): Promise<void> {
 	validateArchiveMemberPath(selector.memberPath);
-	mkdirSync(dirname(selector.archivePath), { recursive: true });
+	await mkdir(dirname(selector.archivePath), { recursive: true });
 	if (isZipArchive(selector.archivePath)) {
-		writeZipEntrySelective(selector.archivePath, selector.memberPath, Buffer.from(content));
+		await writeZipEntrySelective(selector.archivePath, selector.memberPath, Buffer.from(content));
 		return;
 	}
 	const path = selector.archivePath;
-	const source = existsSync(path) ? readTarBuffer(path) : Buffer.alloc(0);
+	const source = (await pathExists(path)) ? await readTarBuffer(path) : Buffer.alloc(0);
 	const out = writeTarMember(source, selector.memberPath, Buffer.from(content), path);
-	writeFileSync(path, isGzipTar(path) ? gzipSync(out) : out);
+	await writeFile(path, isGzipTar(path) ? await gzip(out) : out);
 }
 const SEARCH_LINE_LIMIT = 512;
 function truncateSearchLine(line: string): string {
@@ -655,18 +596,18 @@ export function searchTextSelectorLines(
 	);
 }
 
-export function searchArchiveSelector(
+export async function searchArchiveSelector(
 	selector: ArchiveSelector,
 	pattern: string,
 	ignoreCase = false,
 	literal = false,
 	contextBefore = 1,
 	contextAfter = 3,
-): string {
+): Promise<string> {
 	if (isZipArchive(selector.archivePath) && selector.memberPath)
 		return searchTextSelectorLines(
 			`${selector.archivePath}:${selector.memberPath}`,
-			readArchiveSelector(selector),
+			await readArchiveSelector(selector),
 			pattern,
 			ignoreCase,
 			literal,
@@ -674,8 +615,8 @@ export function searchArchiveSelector(
 			contextAfter,
 		).join("\n");
 	const entries = isZipArchive(selector.archivePath)
-		? readZipEntries(selector.archivePath)
-		: parseTar(selector.archivePath);
+		? await readZipEntries(selector.archivePath)
+		: await parseTar(selector.archivePath);
 	const out: string[] = [];
 	for (const [name, data] of entries) {
 		if (selector.memberPath && name !== selector.memberPath) continue;
@@ -725,40 +666,43 @@ async function resolveViaRouter(
 	if (routed) return routed;
 	const resolved = await context?.resolveInternalUrl?.(value);
 	if (resolved) return resolved;
-	return resolveInternalSelector(value, cwd);
+	return await resolveInternalSelector(value, cwd);
 }
-function resolveContainedPath(root: string, pathValue: string, label: string): string {
+async function resolveContainedPath(root: string, pathValue: string, label: string): Promise<string> {
 	const lexicalRoot = resolve(root),
 		resolved = resolve(root, pathValue);
 	if (!isPathInside(lexicalRoot, resolved)) throw new Error(`${label} escapes the workspace: ${pathValue}`);
-	if (!isPathInside(resolvePhysicalPath(lexicalRoot), resolvePhysicalPath(resolved)))
+	const physicalRoot = await resolvePhysicalPathAsync(lexicalRoot);
+	if (!isPathInside(physicalRoot, await resolvePhysicalPathAsync(resolved)))
 		throw new Error(`${label} escapes the workspace: ${pathValue}`);
 	return resolved;
 }
-function resolveContainedLocalPath(cwd: string, pathValue: string, label = "local:// resource"): string {
+function resolveContainedLocalPath(cwd: string, pathValue: string, label = "local:// resource"): Promise<string> {
 	return resolveContainedPath(cwd, pathValue, label);
 }
 
-function fallbackInternalPath(value: string, cwd: string): string | undefined {
+async function fallbackInternalPath(value: string, cwd: string): Promise<string | undefined> {
 	const skill = value.match(/^skill:\/\/([^/]+)(?:\/(.*))?$/);
 	if (skill) {
 		const name = skill[1] ?? "",
 			rest = skill[2] || "SKILL.md";
-		return [".agents/skills", "packages/subagents/skills", "packages/workflows/skills"]
-			.map((base) =>
-				resolveContainedPath(
-					resolveContainedLocalPath(cwd, base, "skill:// resource"),
+		const candidates: string[] = [];
+		for (const base of [".agents/skills", "packages/subagents/skills", "packages/workflows/skills"])
+			candidates.push(
+				await resolveContainedPath(
+					await resolveContainedLocalPath(cwd, base, "skill:// resource"),
 					`${name}/${rest}`,
 					"skill:// resource",
 				),
-			)
-			.find((candidate) => existsSync(candidate));
+			);
+		for (const candidate of candidates) if (await pathExists(candidate)) return candidate;
+		return undefined;
 	}
 	const local = value.match(/^local:\/\/(.+)$/);
 	if (local) return resolveContainedLocalPath(cwd, local[1] ?? "");
 	return undefined;
 }
-export function resolveInternalSelector(value: string, cwd: string): string | undefined {
+export async function resolveInternalSelector(value: string, cwd: string): Promise<string | undefined> {
 	return fallbackInternalPath(value, cwd);
 }
 export async function readInternalSelector(
@@ -772,9 +716,9 @@ export async function readInternalSelector(
 	if (Buffer.isBuffer(routed)) return routed.toString("utf8");
 	if (value.startsWith("conflict://")) return readConflictUrl(value, cwd);
 	const resolved = await resolveViaRouter(value, cwd, context);
-	if (!resolved || !existsSync(resolved))
+	if (!resolved || !(await pathExists(resolved)))
 		throw new Error(`Internal resource not found or no session router supports it: ${value}`);
-	return readFileSync(resolved, "utf8");
+	return readFile(resolved, "utf8");
 }
 export async function readInternalSelected(
 	value: string,
@@ -798,8 +742,8 @@ export async function writeInternalSelector(
 	if (scheme) throw new Error(`${scheme}:// resources are read-only: ${value}`);
 	const resolved = await resolveViaRouter(value, cwd, context);
 	if (!resolved) throw new Error(`Unsupported writable internal resource without a session router: ${value}`);
-	mkdirSync(dirname(resolved), { recursive: true });
-	writeFileSync(resolved, content);
+	await mkdir(dirname(resolved), { recursive: true });
+	await writeFile(resolved, content);
 }
 export async function searchInternalSelector(
 	value: string,
@@ -1047,29 +991,18 @@ function validateRawSqliteQuery(query: string): string {
 	return trimmed;
 }
 
-function readRawSqliteRows(query: SqliteQuery): Record<string, SqliteValue>[] {
-	const rows: Record<string, SqliteValue>[] = [];
-	const iterable = query.iterate?.();
-	if (!iterable) return query.all().slice(0, MAX_RAW_QUERY_ROWS);
-	for (const row of iterable) {
-		if (rows.length >= MAX_RAW_QUERY_ROWS) break;
-		rows.push(row);
-	}
-	return rows;
-}
-
-function sqliteTableColumns(db: SqliteDatabase, table: string): string[] {
-	return (db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name?: string }>)
+async function sqliteTableColumns(db: SqliteDatabase, table: string): Promise<string[]> {
+	return ((await db.all(`pragma table_info(${quoteSqliteIdent(table)})`)) as Array<{ name?: string }>)
 		.map((row) => String(row.name ?? ""))
 		.filter(Boolean);
 }
 
-function boundedSqliteRowCount(db: SqliteDatabase, table: string): string | number {
-	const row = db
-		.query(
+async function boundedSqliteRowCount(db: SqliteDatabase, table: string): Promise<string | number> {
+	const row = (
+		await db.all(
 			`select count(*) as count from (select 1 from ${quoteSqliteIdent(table)} limit ${ROW_COUNT_PROBE_CAP + 1})`,
 		)
-		.all()[0];
+	)[0];
 	const count = Number(row?.count ?? 0);
 	return count > ROW_COUNT_PROBE_CAP ? `${ROW_COUNT_PROBE_CAP}+` : count;
 }
@@ -1080,9 +1013,9 @@ function normalizeSqliteWriteValue(value: unknown, column: string): SqliteValue 
 }
 
 /** The columns that identify one row: the complete primary key in key order, or `rowid` for a table without one. */
-function sqliteRowKey(db: SqliteDatabase, table: string): string[] {
+async function sqliteRowKey(db: SqliteDatabase, table: string): Promise<string[]> {
 	const columns = (
-		db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name: string; pk: number }>
+		(await db.all(`pragma table_info(${quoteSqliteIdent(table)})`)) as unknown as Array<{ name: string; pk: number }>
 	)
 		.filter((row) => row.pk > 0)
 		.sort((a, b) => a.pk - b.pk)
@@ -1094,13 +1027,21 @@ function sqliteRowKey(db: SqliteDatabase, table: string): string[] {
  * compares, but a column declared without a type (or as BLOB) compares exactly, so a stored `2` never equals the text
  * `'2'`: such a column binds a canonical number as a number.
  */
-function sqliteSingleKeyValue(db: SqliteDatabase, table: string, column: string, rowId: string): SqliteValue {
+async function sqliteSingleKeyValue(
+	db: SqliteDatabase,
+	table: string,
+	column: string,
+	rowId: string,
+): Promise<SqliteValue> {
 	const value = Number(rowId);
 	if (!Number.isFinite(value) || String(value) !== rowId) return rowId;
 	const type = (
-		(db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name: string; type: string }>).find(
-			(row) => row.name === column,
-		)?.type ?? ""
+		(
+			(await db.all(`pragma table_info(${quoteSqliteIdent(table)})`)) as unknown as Array<{
+				name: string;
+				type: string;
+			}>
+		).find((row) => row.name === column)?.type ?? ""
 	).toUpperCase();
 	// SQLite's affinity rules: INT, then CHAR/CLOB/TEXT, then BLOB or no type, which is the only one without affinity.
 	return !/INT|CHAR|CLOB|TEXT/.test(type) && (type === "" || type.includes("BLOB")) ? value : rowId;
@@ -1110,8 +1051,13 @@ function sqliteSingleKeyValue(db: SqliteDatabase, table: string, column: string,
  * JSON array with one value per key column, in key order, such as `["acme",2]`. Anything else is refused, because
  * matching on part of a composite key would select several rows.
  */
-function sqliteRowKeyValues(db: SqliteDatabase, key: string[], rowId: string, table: string): SqliteValue[] {
-	if (key.length === 1) return [sqliteSingleKeyValue(db, table, key[0] as string, rowId)];
+async function sqliteRowKeyValues(
+	db: SqliteDatabase,
+	key: string[],
+	rowId: string,
+	table: string,
+): Promise<SqliteValue[]> {
+	if (key.length === 1) return [await sqliteSingleKeyValue(db, table, key[0] as string, rowId)];
 	let values: unknown;
 	try {
 		values = JSON.parse(rowId);
@@ -1128,7 +1074,7 @@ function sqliteRowKeyWhere(key: string[]): string {
 	return key.map((column) => `${quoteSqliteIdent(column)} = ?`).join(" and ");
 }
 /** Runs a row update or delete that changes at most one row, refusing (and changing nothing) when more match. */
-function runSingleRowWrite(
+async function runSingleRowWrite(
 	db: SqliteDatabase,
 	table: string,
 	rowId: string,
@@ -1136,51 +1082,49 @@ function runSingleRowWrite(
 	keyValues: SqliteValue[],
 	statement: string,
 	params: SqliteValue[],
-): number {
-	db.query("begin immediate").run();
+): Promise<number> {
+	await db.run("begin immediate");
 	let committed = false;
 	try {
 		const matched = Number(
-			db.query(`select count(*) as count from ${quoteSqliteIdent(table)} where ${where}`).all(...keyValues)[0]
-				?.count,
+			(await db.all(`select count(*) as count from ${quoteSqliteIdent(table)} where ${where}`, keyValues))[0]?.count,
 		);
 		if (matched > 1)
 			throw new Error(
 				`SQLite row selector '${rowId}' matches ${matched} rows in ${table}; refusing to change more than one row. Select the row by its complete primary key.`,
 			);
-		const changes = db.query(statement).run(...params).changes ?? 0;
-		db.query("commit").run();
+		const changes = (await db.run(statement, params)).changes;
+		await db.run("commit");
 		committed = true;
 		return changes;
 	} finally {
-		if (!committed) db.query("rollback").run();
+		if (!committed) await db.run("rollback");
 	}
 }
 function sqliteRowKeyText(key: string[], row: Record<string, unknown>, fallback: number): string {
 	if (key.length > 1) return JSON.stringify(key.map((column) => row[column]));
 	return String(row[key[0] as string] ?? fallback);
 }
-export function readSqliteSelector(selector: SqliteSelector): string {
-	const Database = sqliteDatabase();
-	const db = new Database(selector.databasePath, { readonly: true });
+export async function readSqliteSelector(selector: SqliteSelector): Promise<string> {
+	const db = await SqliteSelectorConnection.open(selector.databasePath, { readonly: true });
 	try {
-		if (selector.query) return rowsToJsonLines(readRawSqliteRows(db.query(validateRawSqliteQuery(selector.query))));
+		if (selector.query)
+			return rowsToJsonLines(await db.rows(validateRawSqliteQuery(selector.query), MAX_RAW_QUERY_ROWS));
 		if (!selector.table) {
-			const tables = db
-				.query("select name from sqlite_master where type='table' and name not like 'sqlite_%' order by name")
-				.all()
-				.slice(0, 500);
-			return tables
-				.map((row) => {
-					const name = String(row.name ?? "");
-					return JSON.stringify({ table: name, rows: boundedSqliteRowCount(db, name) });
-				})
-				.join("\n");
+			const tables = (
+				await db.all("select name from sqlite_master where type='table' and name not like 'sqlite_%' order by name")
+			).slice(0, 500);
+			const lines: string[] = [];
+			for (const row of tables) {
+				const name = String(row.name ?? "");
+				lines.push(JSON.stringify({ table: name, rows: await boundedSqliteRowCount(db, name) }));
+			}
+			return lines.join("\n");
 		}
-		const schemaRows = db.query(`pragma table_info(${quoteSqliteIdent(selector.table)})`).all();
+		const schemaRows = await db.all(`pragma table_info(${quoteSqliteIdent(selector.table)})`);
 		if (selector.schema) return rowsToJsonLines(schemaRows);
-		const key = sqliteRowKey(db, selector.table);
-		const keyValues = selector.rowId ? sqliteRowKeyValues(db, key, selector.rowId, selector.table) : [];
+		const key = await sqliteRowKey(db, selector.table);
+		const keyValues = selector.rowId ? await sqliteRowKeyValues(db, key, selector.rowId, selector.table) : [];
 		const where = selector.rowId ? sqliteRowKeyWhere(key) : validateSqliteWhere(selector.where);
 		const order = formatSqliteOrder(selector.order);
 		const isQuery = selector.limit !== undefined || selector.offset !== undefined || selector.where || selector.order;
@@ -1194,11 +1138,11 @@ export function readSqliteSelector(selector: SqliteSelector): string {
 		]
 			.filter(Boolean)
 			.join(" ");
-		const rows = db.query(sql).all(...keyValues, limit, offset);
+		const rows = await db.all(sql, [...keyValues, limit, offset]);
 		if (selector.rowId || isQuery || selector.sampleRows !== undefined) return rowsToJsonLines(rows);
 		return [`# ${selector.table}`, "Schema:", rowsToJsonLines(schemaRows), "Rows:", rowsToJsonLines(rows)].join("\n");
 	} finally {
-		db.close();
+		await db.close();
 	}
 }
 function stripJson5Comments(input: string): string {
@@ -1308,19 +1252,19 @@ function parseLooseJsonObject(content: string): Record<string, SqliteValue> {
 		]),
 	);
 }
-export function writeSqliteSelector(selector: SqliteSelector, content: string): string {
+export async function writeSqliteSelector(selector: SqliteSelector, content: string): Promise<string> {
 	if (!selector.table) throw new Error("SQLite write target must include a table name");
-	if (!existsSync(selector.databasePath)) throw new Error(`SQLite database does not exist: ${selector.databasePath}`);
+	if (!(await pathExists(selector.databasePath)))
+		throw new Error(`SQLite database does not exist: ${selector.databasePath}`);
 	if (content.trim() === "") {
 		if (!selector.rowId) throw new Error("SQLite empty content deletes a row only when a row id is present.");
-		const Database = sqliteDatabase();
-		const db = new Database(selector.databasePath);
+		const db = await SqliteSelectorConnection.open(selector.databasePath);
 		try {
 			const table = selector.table;
-			const key = sqliteRowKey(db, table);
-			const keyValues = sqliteRowKeyValues(db, key, selector.rowId, table);
+			const key = await sqliteRowKey(db, table);
+			const keyValues = await sqliteRowKeyValues(db, key, selector.rowId, table);
 			const where = sqliteRowKeyWhere(key);
-			const changes = runSingleRowWrite(
+			const changes = await runSingleRowWrite(
 				db,
 				table,
 				selector.rowId,
@@ -1333,18 +1277,17 @@ export function writeSqliteSelector(selector: SqliteSelector, content: string): 
 				? `Deleted row '${selector.rowId}' in ${table}`
 				: `No row deleted for '${selector.rowId}' in ${table}`;
 		} finally {
-			db.close();
+			await db.close();
 		}
 	}
 	const data = parseLooseJsonObject(content);
-	const Database = sqliteDatabase();
-	const db = new Database(selector.databasePath);
+	const db = await SqliteSelectorConnection.open(selector.databasePath);
 	try {
 		const table = selector.table;
 		const quotedTable = quoteSqliteIdent(table);
-		const key = sqliteRowKey(db, table);
-		const keyValues = selector.rowId ? sqliteRowKeyValues(db, key, selector.rowId, table) : [];
-		const validColumns = new Set(sqliteTableColumns(db, table));
+		const key = await sqliteRowKey(db, table);
+		const keyValues = selector.rowId ? await sqliteRowKeyValues(db, key, selector.rowId, table) : [];
+		const validColumns = new Set(await sqliteTableColumns(db, table));
 		const [single = ""] = key;
 		if (!selector.rowId && key.length === 1 && Object.hasOwn(data, "id") && !Object.hasOwn(data, single)) {
 			data[single] = data.id;
@@ -1355,21 +1298,22 @@ export function writeSqliteSelector(selector: SqliteSelector, content: string): 
 			if (!validColumns.has(column)) throw new Error(`SQLite table '${table}' has no column named '${column}'`);
 		if (columns.length === 0) {
 			if (!selector.rowId) {
-				db.query(`insert into ${quotedTable} default values`).run();
+				await db.run(`insert into ${quotedTable} default values`);
 				return `Inserted row into ${table}`;
 			}
 			throw new Error("SQLite update content must include at least one column.");
 		}
 		if (!selector.rowId) {
 			const quoted = columns.map(quoteSqliteIdent).join(", ");
-			db.query(`insert into ${quotedTable} (${quoted}) values (${columns.map(() => "?").join(", ")})`).run(
-				...columns.map((column) => data[column]),
+			await db.run(
+				`insert into ${quotedTable} (${quoted}) values (${columns.map(() => "?").join(", ")})`,
+				columns.map((column) => data[column] as SqliteValue),
 			);
 			return `Inserted row into ${table}`;
 		}
 		const assignments = columns.map((column) => `${quoteSqliteIdent(column)} = ?`).join(", ");
 		const where = sqliteRowKeyWhere(key);
-		const changes = runSingleRowWrite(
+		const changes = await runSingleRowWrite(
 			db,
 			table,
 			selector.rowId,
@@ -1382,33 +1326,32 @@ export function writeSqliteSelector(selector: SqliteSelector, content: string): 
 			? `Updated row '${selector.rowId}' in ${table}`
 			: `No row updated for '${selector.rowId}' in ${table}`;
 	} finally {
-		db.close();
+		await db.close();
 	}
 }
-export function searchSqliteSelector(
+export async function searchSqliteSelector(
 	selector: SqliteSelector,
 	pattern: string,
 	ignoreCase = false,
 	contextBefore = 1,
 	contextAfter = 3,
-): string {
+): Promise<string> {
 	const normalized = normalizeSearchPattern(pattern, ignoreCase);
 	const matcher = new RegExp(normalized.pattern, normalized.flags);
 	if (!selector.table || selector.query)
 		return searchTextSelectorLines(
 			`${selector.databasePath}:${selector.table ?? "tables"}`,
-			readSqliteSelector(selector),
+			await readSqliteSelector(selector),
 			pattern,
 			ignoreCase,
 			false,
 			contextBefore,
 			contextAfter,
 		).join("\n");
-	const Database = sqliteDatabase();
-	const db = new Database(selector.databasePath, { readonly: true });
+	const db = await SqliteSelectorConnection.open(selector.databasePath, { readonly: true });
 	try {
-		const key = sqliteRowKey(db, selector.table);
-		const keyValues = selector.rowId ? sqliteRowKeyValues(db, key, selector.rowId, selector.table) : [];
+		const key = await sqliteRowKey(db, selector.table);
+		const keyValues = selector.rowId ? await sqliteRowKeyValues(db, key, selector.rowId, selector.table) : [];
 		const where = selector.rowId ? sqliteRowKeyWhere(key) : validateSqliteWhere(selector.where);
 		const order = formatSqliteOrder(selector.order);
 		const limit = selector.sampleRows ?? selector.limit ?? 1000;
@@ -1424,7 +1367,7 @@ export function searchSqliteSelector(
 		]
 			.filter(Boolean)
 			.join(" ");
-		const rows = db.query(sql).all(...keyValues, limit, offset);
+		const rows = await db.all(sql, [...keyValues, limit, offset]);
 		return rows
 			.map((rawRow, index) => {
 				const row = rawRow as Record<string, unknown>;
@@ -1441,6 +1384,6 @@ export function searchSqliteSelector(
 			)
 			.join("\n");
 	} finally {
-		db.close();
+		await db.close();
 	}
 }

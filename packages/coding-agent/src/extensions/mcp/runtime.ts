@@ -10,7 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { VERSION } from "../../config.js";
 import { resolveMcpServerUrl } from "../../core/mcp-servers.ts";
-import { resolveConfigValueOrThrow, resolveHeadersOrThrow } from "../../core/resolve-config-value.ts";
+import { resolveConfigValueOrThrowAsync, resolveHeadersOrThrowAsync } from "../../core/resolve-config-value.ts";
 import { sliceTail } from "../../core/tools/truncate.ts";
 import {
 	type AuthProvider,
@@ -83,7 +83,7 @@ export type McpTransportFactory = (
 	entry: McpServerEntry,
 	cwd: string,
 	authProvider: AuthProvider | undefined,
-) => McpTransport;
+) => McpTransport | Promise<McpTransport>;
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -169,18 +169,18 @@ function expandHome(value: string): string {
 	return value;
 }
 
-export function createDefaultTransport(
+export async function createDefaultTransport(
 	entry: McpServerEntry,
 	cwd: string,
 	authProvider: AuthProvider | undefined,
-): McpTransport {
+): Promise<McpTransport> {
 	const { config, name } = entry;
 	if ("url" in config) {
 		const url = resolveMcpServerUrl(config.url);
 		if (config.auth) validateProviderDestination(url);
 		return new StreamableHttpTransport({
 			url,
-			headers: resolveHeadersOrThrow(config.headers, `MCP server "${name}"`),
+			headers: await resolveHeadersOrThrowAsync(config.headers, `MCP server "${name}"`),
 			authProvider,
 			fetch: config.auth ? providerFetch(url) : undefined,
 		});
@@ -188,7 +188,7 @@ export function createDefaultTransport(
 	if (!config.command) throw new Error(`MCP server "${name}" has no command or url`);
 	const env: Record<string, string> = {};
 	for (const [key, value] of Object.entries(config.env ?? {})) {
-		env[key] = resolveConfigValueOrThrow(value, `MCP server "${name}" env "${key}"`);
+		env[key] = await resolveConfigValueOrThrowAsync(value, `MCP server "${name}" env "${key}"`);
 	}
 	return new StdioTransport({
 		command: expandHome(config.command),
@@ -301,7 +301,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		return "url" in this.entry.config && usesOAuth(this.entry) ? this.entry.config.url : undefined;
 	}
 
-	oauthSettings(): McpOAuthSettings {
+	async oauthSettings(): Promise<McpOAuthSettings> {
 		const oauth = "url" in this.entry.config ? this.entry.config.oauth : undefined;
 		if (!oauth) return {};
 		return {
@@ -309,7 +309,10 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 			clientSecret:
 				oauth.clientSecret === undefined
 					? undefined
-					: resolveConfigValueOrThrow(oauth.clientSecret, `MCP server "${this.entry.name}" oauth.clientSecret`),
+					: await resolveConfigValueOrThrowAsync(
+							oauth.clientSecret,
+							`MCP server "${this.entry.name}" oauth.clientSecret`,
+						),
 			callbackPort: oauth.callbackPort,
 			callbackUrl: oauth.callbackUrl,
 			scope: oauth.scope,
@@ -504,7 +507,7 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		this.shutdown.signal.addEventListener("abort", closeClient, { once: true });
 		let transport: McpTransport | undefined;
 		try {
-			transport = this.createTransport(this.entry, this.cwd, this.authProvider);
+			transport = await this.createTransport(this.entry, this.cwd, this.authProvider);
 			this.initializingTransport = transport;
 			if (this.closed) throw new Error("shut down while connecting");
 			await client.connect(transport);
