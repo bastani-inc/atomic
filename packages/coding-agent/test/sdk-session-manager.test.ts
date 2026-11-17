@@ -83,6 +83,7 @@ describe("createAgentSession session manager defaults", () => {
 		if (previousMissingApiKey === undefined) delete process.env[missingApiKeyEnv];
 		else process.env[missingApiKeyEnv] = previousMissingApiKey;
 		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
 		if (tempDir && existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -111,6 +112,27 @@ describe("createAgentSession session manager defaults", () => {
 
 		await session.dispose();
 		await assert.rejects(session.sessionManager.getSessionStore().load(session.sessionId), StoreClosedError);
+	});
+
+	it("uses merged SDK settings before choosing the default session database's legacy home (#5242)", async () => {
+		vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", "");
+		writeFileSync(join(tempDir, "legacy-workflows.sqlite"), "");
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory({ workflows: { journal: { path: "legacy-workflows.sqlite" } } }),
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			builtins: NO_BUILTINS,
+		});
+		try {
+			assert.deepEqual(session.sessionManager.getSessionStore().descriptor, {
+				adapter: "node-sqlite",
+				location: join(tempDir, "workflows", "journal.sqlite"),
+			});
+			assert.equal(existsSync(join(agentDir, "workflows", "journal.sqlite")), false);
+		} finally {
+			await session.dispose();
+		}
 	});
 
 	it("rejects an unavailable default database without choosing memory", async () => {

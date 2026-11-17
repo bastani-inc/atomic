@@ -82,17 +82,20 @@ interface SettledStorageHome {
 	readonly provisionalWithoutSettings?: boolean;
 }
 
-const fastStorageHomes = new Map<string, SettledStorageHome>();
+interface StorageHomeCacheKey {
+	readonly platform: NodeJS.Platform;
+	readonly rawHome: string;
+	readonly rawAgentDir: string;
+	readonly cwd: string | undefined;
+}
+
+interface CachedStorageHome extends StorageHomeCacheKey {
+	readonly entry: SettledStorageHome;
+}
+
+const fastStorageHomes = new Map<string, CachedStorageHome>();
 const settledStorageHomes = new Map<string, SettledStorageHome>();
-let lastStorageHome:
-	| {
-			readonly platform: NodeJS.Platform;
-			readonly rawHome: string;
-			readonly rawAgentDir: string;
-			readonly cwd: string | undefined;
-			readonly entry: SettledStorageHome;
-	  }
-	| undefined;
+let lastStorageHome: CachedStorageHome | undefined;
 
 /**
  * What a file is, whatever path names it: its device and inode (a hard link shares both, a symlink resolves to them),
@@ -117,9 +120,13 @@ export function isSameFile(left: string, right: string): boolean {
 
 function getHomeDir(platform = process.platform): string {
 	if (platform === "win32") {
-		if (process.env.USERPROFILE) return process.env.USERPROFILE;
-		if (process.env.HOMEDRIVE && process.env.HOMEPATH) return `${process.env.HOMEDRIVE}${process.env.HOMEPATH}`;
-		if (process.env.HOME) return process.env.HOME;
+		const profile = process.env.USERPROFILE;
+		if (profile) return profile;
+		const drive = process.env.HOMEDRIVE;
+		const path = process.env.HOMEPATH;
+		if (drive && path) return `${drive}${path}`;
+		const home = process.env.HOME;
+		if (home) return home;
 		return homedir();
 	}
 	return process.env.HOME || process.env.USERPROFILE || homedir();
@@ -150,11 +157,15 @@ function expandAgentPathInput(input: string, home: string): string {
 	return normalized;
 }
 
+let configuredDefaultAgentDir: { readonly home: string; readonly path: string } | undefined;
+
 function resolveConfiguredAgentDir(home: string): string {
-	const envDir =
-		process.env[ENV_AGENT_DIR] !== undefined ? process.env[ENV_AGENT_DIR] : process.env[LEGACY_ENV_AGENT_DIR];
+	const envDir = process.env[ENV_AGENT_DIR] ?? process.env[LEGACY_ENV_AGENT_DIR];
 	if (envDir) return expandAgentPathInput(envDir, home);
-	return join(home, CONFIG_DIR_NAME, "agent");
+	if (configuredDefaultAgentDir?.home !== home) {
+		configuredDefaultAgentDir = { home, path: join(home, CONFIG_DIR_NAME, "agent") };
+	}
+	return configuredDefaultAgentDir.path;
 }
 
 function getPathComparisonKey(path: string): string {
@@ -413,19 +424,25 @@ function hasParentStoreEntries(parent: string, agentPath: string, relativeTarget
 	return hasRelativeTargetEntries(parent, agentPath, relativeTargets, true);
 }
 
-function readConfigurationObject(path: string): object | undefined {
+function readConfigurationObject(path: string): object | null | undefined {
+	let raw: string;
 	try {
-		const raw = readFileSync(path, "utf8");
-		const value: object | null = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
-		return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+		raw = readFileSync(path, "utf8");
 	} catch {
 		return undefined;
 	}
+	try {
+		const value: object | null = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
+		return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+	} catch {
+		return null;
+	}
 }
 
-function hasAtomicConfiguration(path: string, name: string): boolean {
+function hasAtomicConfiguration(path: string, name: string): boolean | undefined {
 	const value = readConfigurationObject(path);
-	if (value === undefined) return false;
+	if (value === undefined) return undefined;
+	if (value === null) return false;
 	if (name === "settings.json") return Object.keys(value).some((key) => ATOMIC_SETTING_KEYS.has(key));
 	if (name === "models.json") {
 		return (
@@ -453,30 +470,66 @@ function hasAtomicConfiguration(path: string, name: string): boolean {
 	});
 }
 
+interface PriorUseSnapshot {
+	readonly directoryVersion: string;
+	readonly configurationVersions: readonly { readonly path: string; readonly version: string | undefined }[];
+	readonly tier: 1 | 2;
+}
+
+const priorUseSnapshots = new Map<string, PriorUseSnapshot>();
+
+function filesystemVersion(path: string, directory = false): string | undefined {
+	try {
+		const stat = statSync(path, { bigint: true });
+		if (directory && !stat.isDirectory()) return undefined;
+		return `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}:${stat.mode}`;
+	} catch {
+		return undefined;
+	}
+}
+
 function agentDirectoryPriorUseTier(dirPath: string): 0 | 1 | 2 {
-	if (!isDirectory(dirPath)) return 0;
+	const directoryVersion = filesystemVersion(dirPath, true);
+	if (directoryVersion === undefined) return 0;
+	const cached = priorUseSnapshots.get(dirPath);
+	if (
+		cached?.directoryVersion === directoryVersion &&
+		cached.configurationVersions.every(({ path, version }) => filesystemVersion(path) === version)
+	)
+		return cached.tier;
+	const configurationVersions: { path: string; version: string | undefined }[] = [];
+	let tier: 1 | 2 = 1;
+	let cacheable = true;
+	let completed = false;
 	let dir: ReturnType<typeof opendirSync> | undefined;
 	try {
 		dir = opendirSync(dirPath);
-		for (let count = 0; count < 256; count++) {
-			const entry = dir.readSync();
-			if (entry === null) break;
-			if (
-				AGENT_DIR_STATE_ENTRIES.has(entry.name) ||
-				entry.name.startsWith("storage-token.") ||
-				(["settings.json", "auth.json", "models.json"].includes(entry.name) &&
-					hasAtomicConfiguration(join(dirPath, entry.name), entry.name))
-			) {
-				return 2;
+		for (let entry = dir.readSync(); entry !== null; entry = dir.readSync()) {
+			if (AGENT_DIR_STATE_ENTRIES.has(entry.name) || entry.name.startsWith("storage-token.")) {
+				tier = 2;
+				break;
+			}
+			if (["settings.json", "auth.json", "models.json"].includes(entry.name)) {
+				const path = join(dirPath, entry.name);
+				const version = filesystemVersion(path);
+				configurationVersions.push({ path, version });
+				const atomicConfiguration = hasAtomicConfiguration(path, entry.name);
+				if (version === undefined || atomicConfiguration === undefined) cacheable = false;
+				if (atomicConfiguration) {
+					tier = 2;
+					break;
+				}
 			}
 		}
+		completed = true;
 	} catch {
 	} finally {
 		try {
 			dir?.closeSync();
 		} catch {}
 	}
-	return 1;
+	if (completed && cacheable) priorUseSnapshots.set(dirPath, { directoryVersion, configurationVersions, tier });
+	return tier;
 }
 
 function canClaimParentStore(parent: string, agentPath: string, defaultAgent: string, rawHome: string): boolean {
@@ -486,9 +539,7 @@ function canClaimParentStore(parent: string, agentPath: string, defaultAgent: st
 	let dir: ReturnType<typeof opendirSync> | undefined;
 	try {
 		dir = opendirSync(parent);
-		for (let count = 0; count < 1024; count++) {
-			const entry = dir.readSync();
-			if (entry === null) break;
+		for (let entry = dir.readSync(); entry !== null; entry = dir.readSync()) {
 			const name = entry.name;
 			if (name === "repos" || name === "worktrees" || (parentIsDefaultAgent && AGENT_DIR_STATE_ENTRIES.has(name))) {
 				continue;
@@ -516,18 +567,22 @@ function canClaimParentStore(parent: string, agentPath: string, defaultAgent: st
 	return true;
 }
 
-function recordSettledStorageHome(fastKey: string, cacheKey: string, settled: SettledStorageHome): SettledStorageHome {
+function recordSettledStorageHome(
+	fastKey: StorageHomeCacheKey,
+	cacheKey: string,
+	settled: SettledStorageHome,
+): SettledStorageHome {
 	lastStorageHome = undefined;
 	if (!settled.provisionalWithoutSettings) {
 		for (const [key, entry] of settledStorageHomes) {
 			if (entry.provisionalWithoutSettings) settledStorageHomes.delete(key);
 		}
-		for (const [key, entry] of fastStorageHomes) {
-			if (entry.provisionalWithoutSettings) fastStorageHomes.delete(key);
+		for (const [key, cached] of fastStorageHomes) {
+			if (cached.entry.provisionalWithoutSettings) fastStorageHomes.delete(key);
 		}
 	}
 	settledStorageHomes.set(cacheKey, settled);
-	fastStorageHomes.set(fastKey, settled);
+	fastStorageHomes.set(fastKey.rawAgentDir, { ...fastKey, entry: settled });
 	return settled;
 }
 
@@ -537,6 +592,14 @@ interface StorageHomeDecision {
 	readonly parentOwner?: string;
 	readonly targets?: readonly string[];
 }
+
+interface StorageTargetDecision {
+	readonly agentPath: string;
+	readonly target: string;
+	readonly decision: StorageHomeDecision;
+}
+
+let storageTargetDecisions = new WeakMap<SettledStorageHome, Map<string, StorageTargetDecision>>();
 
 function canonicalPath(path: string): string {
 	try {
@@ -727,13 +790,18 @@ function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettin
 	) {
 		return last.entry;
 	}
-	const fastKey =
-		cwd === undefined ? `${platform}\0${rawHome}\0${rawAgentDir}` : `${platform}\0${rawHome}\0${cwd}\0${rawAgentDir}`;
-	const fastHit = fastStorageHomes.get(fastKey);
-	if (fastHit !== undefined && (!fastHit.provisionalWithoutSettings || settings === undefined)) {
-		lastStorageHome = { platform, rawHome, rawAgentDir, cwd, entry: fastHit };
-		return fastHit;
+	const fastHit = fastStorageHomes.get(rawAgentDir);
+	if (
+		fastHit !== undefined &&
+		fastHit.platform === platform &&
+		fastHit.rawHome === rawHome &&
+		fastHit.cwd === cwd &&
+		(!fastHit.entry.provisionalWithoutSettings || settings === undefined)
+	) {
+		lastStorageHome = fastHit;
+		return fastHit.entry;
 	}
+	const fastKey = { platform, rawHome, rawAgentDir, cwd };
 
 	const agentPath = normalizeAgentDirPath(rawAgentDir);
 	const defaultHome = normalizeAgentDirPath(join(rawHome, CONFIG_DIR_NAME));
@@ -741,7 +809,7 @@ function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettin
 	const cacheKey = `${getPathComparisonKey(defaultHome)}\0${getPathComparisonKey(agentPath)}`;
 	const cached = settledStorageHomes.get(cacheKey);
 	if (cached !== undefined && (!cached.provisionalWithoutSettings || settings === undefined)) {
-		fastStorageHomes.set(fastKey, cached);
+		fastStorageHomes.set(rawAgentDir, { ...fastKey, entry: cached });
 		return cached;
 	}
 
@@ -887,7 +955,11 @@ function preferredTargetOwner(agentPath: string, target: string): string {
 }
 
 export function storagePathBaseDir(path: string, agentDir: string, settings?: StorageHomeSettings): string {
-	const home = storageHomeDir(agentDir, settings);
+	const entry = resolveStorageHomeEntry(agentDir, settings);
+	const targetCacheKey = `${agentDir}\0${path}`;
+	const cached = storageTargetDecisions.get(entry)?.get(targetCacheKey);
+	if (cached !== undefined) return applyStorageTargetDecision(cached, settings);
+	const home = entry.home;
 	const target = normalizeRelativeTarget(path, getHomeDir());
 	if (target === undefined) return home;
 	const agentPath = normalizeAgentDirPath(agentDir);
@@ -907,16 +979,32 @@ export function storagePathBaseDir(path: string, agentDir: string, settings?: St
 			decision = settleStorageDecision(decisionFile, decision);
 		}
 	}
+	const resolved = { agentPath, target, decision };
+	if (!entry.provisionalWithoutSettings && settings !== undefined && isDirectory(agentPath)) {
+		let targets = storageTargetDecisions.get(entry);
+		if (targets === undefined) {
+			targets = new Map();
+			storageTargetDecisions.set(entry, targets);
+		}
+		targets.set(targetCacheKey, resolved);
+	}
+	return applyStorageTargetDecision(resolved, settings);
+}
+
+function applyStorageTargetDecision(
+	{ agentPath, target, decision }: StorageTargetDecision,
+	settings?: StorageHomeSettings,
+): string {
 	if (decision.parentOwner === undefined) return decision.home;
 	const selected = resolve(decision.home, target);
 	for (const claim of targetClaimFiles(agentPath, selected)) {
-		if (settings !== undefined && isDirectory(agentPath)) {
+		let owner = readStorageOwner(claim);
+		if (owner === undefined && settings !== undefined && isDirectory(agentPath)) {
 			mkdirSync(dirname(claim), { recursive: true });
 			claimFileAtomically(claim, `${JSON.stringify(storageOwner(decision.parentOwner))}\n`);
+			owner = readStorageOwner(claim);
 		}
-		const owner =
-			readStorageOwner(claim) ??
-			(settings === undefined || !isDirectory(agentPath) ? storageOwner(decision.parentOwner) : undefined);
+		owner ??= settings === undefined || !isDirectory(agentPath) ? storageOwner(decision.parentOwner) : undefined;
 		if (owner === undefined) throw new Error(`Cannot claim storage target at ${claim}`);
 		if (sameDirectory(currentStorageOwnerPath(owner), agentPath)) continue;
 		const fallback = resolve(agentPath, target);
@@ -925,7 +1013,7 @@ export function storagePathBaseDir(path: string, agentDir: string, settings?: St
 			pathsEqual(canonicalPath(fallback), canonicalPath(selected)) ||
 			isSameFile(fallback, selected)
 		) {
-			throw new Error(`Relative storage target ${path} is owned by another agent directory`);
+			throw new Error(`Relative storage target ${target} is owned by another agent directory`);
 		}
 		return agentPath;
 	}
@@ -966,5 +1054,7 @@ export function takeStorageAdoptionNotice(agentDir?: string, settings?: StorageH
 export function resetStorageHomeCacheForTests(): void {
 	fastStorageHomes.clear();
 	settledStorageHomes.clear();
+	storageTargetDecisions = new WeakMap();
+	priorUseSnapshots.clear();
 	lastStorageHome = undefined;
 }

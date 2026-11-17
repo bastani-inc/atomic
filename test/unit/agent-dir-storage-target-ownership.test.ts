@@ -86,3 +86,19 @@ for (const alias of ["symlink", "hardlink"] as const) {
 		assert.deepEqual(select(second, secondTarget), { kind: "sqlite", path: join(second, secondTarget) });
 	});
 }
+
+test("a cached isolated target cannot become a hard-link alias of a sibling's claimed history (#5242)", () => {
+	const first = join(root, "a1");
+	const second = join(root, "a2");
+	for (const agent of [first, second]) mkdirSync(agent);
+	const shared = join(root, "history.sqlite");
+	writeFileSync(shared, "history");
+	const settings = { sessions: { storage: { path: "history.sqlite" } } };
+	assert.deepEqual(selectSessionStorage(root, { agentDir: first, settings }), { kind: "sqlite", path: shared });
+	assert.deepEqual(selectSessionStorage(root, { agentDir: second, settings }), {
+		kind: "sqlite",
+		path: join(second, "history.sqlite"),
+	});
+	linkSync(shared, join(second, "history.sqlite"));
+	assert.throws(() => selectSessionStorage(root, { agentDir: second, settings }), /owned by another agent directory/);
+});
