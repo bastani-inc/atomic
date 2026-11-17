@@ -1,9 +1,3 @@
-/**
- * #5352: a session created with the `intercom` option keeps its workflow and subagent extensions. A real
- * `createAgentSession` runs a project workflow whose stage, and then a project subagent, use Intercom on a scripted
- * model against a real broker: each gets its own group as home, reaches nothing it was not given, and cannot join the
- * group its parent reaches.
- */
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -30,7 +24,6 @@ import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
-/** Structural: a real workflow stage and a real subagent each open a session and use a real broker process. */
 const REAL_STAGE_AND_SUBAGENT_TIMEOUT_MS = 120_000;
 const PROVIDER = "faux-reach-5352";
 const MAIN_MODEL = "main-5352";
@@ -60,7 +53,6 @@ function resultText(message: ToolResultMessage): string {
 	return message.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 }
 
-/** Each prober runs the probe calls in turn on its own model, then answers; the main model delegates once. */
 function scriptedModel(probes: Map<Prober, readonly ToolResultMessage[]>): FauxResponseFactory {
 	return (context, _options, _state, model) => {
 		const prober: Prober | undefined =

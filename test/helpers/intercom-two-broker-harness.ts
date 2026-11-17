@@ -76,7 +76,6 @@ export interface TwoBrokerConnectOptions {
 	 * read in the same chunk is emitted before `connect` resolves.
 	 */
 	readonly beforeConnect?: (client: TwoBrokerClient) => void;
-	/** #5352: register with a reach policy whose home is `group` and which reaches these other groups. */
 	readonly reachable?: readonly string[];
 }
 

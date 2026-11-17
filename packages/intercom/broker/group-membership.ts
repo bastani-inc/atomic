@@ -2,7 +2,7 @@ import { hasGroup, normalizeGroup, normalizeGroups } from "../group.js";
 import type { GroupSummary, SessionInfo } from "../types.js";
 import type { BrokerConnectedSession } from "./send-handler.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
-import { type IntercomReachPolicy, reachesAnyGroup, reachGroups } from "../reach-policy.js";
+import { type IntercomReachPolicy, isSubgroupOf, reachesAnyGroup, reachGroups } from "../reach-policy.js";
 
 export interface ReachSubject {
 	readonly info: SessionInfo;
@@ -47,6 +47,26 @@ export interface HoldSender extends ReachSubject {
 export function holdAdmitsSender(sender: HoldSender, group: string): boolean {
 	if (sender.answersAsk === true && sender.reach !== undefined) return true;
 	return reachesGroups(sender, [group]);
+}
+
+export interface ReservationSender {
+	readonly sessionId: string;
+	readonly groups: readonly string[];
+	readonly home?: string;
+}
+
+export function reservationSender(sender: ReachSubject): ReservationSender {
+	const groups = new Set(sessionGroups(sender.info));
+	if (sender.reach === undefined) return { sessionId: sender.info.id, groups: [...groups] };
+	for (const group of reachGroups(sender.reach)) groups.add(normalizeGroup(group));
+	return { sessionId: sender.info.id, groups: [...groups], home: normalizeGroup(sender.reach.home) };
+}
+
+export function reservationAdmitsSender(
+	sender: { readonly groups: readonly string[]; readonly home?: string },
+	group: string,
+): boolean {
+	return sender.groups.includes(group) || (sender.home !== undefined && isSubgroupOf(sender.home, group));
 }
 
 export function reachesSession(sender: ReachSubject, target: SessionInfo): boolean {

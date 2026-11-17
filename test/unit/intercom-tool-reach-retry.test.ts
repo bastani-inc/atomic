@@ -52,7 +52,6 @@ afterEach(() => vi.useRealTimers());
 
 const context = { sessionManager: { getSessionId: () => "host-session" }, hasUI: false };
 
-/** An intercom tool whose first send loses its connection, so its outcome is unknown and it is retried. */
 function fixture(reach: { current: IntercomReachPolicy }) {
 	let tool: Tool | undefined;
 	const sent: SendOptions[] = [];

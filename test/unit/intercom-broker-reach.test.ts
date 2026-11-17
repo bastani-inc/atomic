@@ -39,7 +39,6 @@ function message(id: string, extra: Partial<Message> = {}): Message {
 	return { id, timestamp: 1, content: { text: id }, ...extra };
 }
 
-/** A broker's session table with the reach rule, and every frame it writes. */
 function broker(definitions: Record<string, Definition>) {
 	const sessions = new Map<string, BrokerConnectedSession>();
 	const sockets: Record<string, net.Socket> = {};

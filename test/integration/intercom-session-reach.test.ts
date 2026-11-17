@@ -1,8 +1,3 @@
-/**
- * #5352: a top-level session's Intercom group and reach, against a real broker process. Sessions with the option are
- * real `createAgentSession` sessions driving the real `intercom` tool; their peers are Intercom clients, some of them
- * registered with a reach policy, one of them in a second process.
- */
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -28,7 +23,6 @@ import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
-/** Structural: each test starts real sessions with the bundled extensions against a real broker process. */
 const REAL_BROKER_SESSION_TIMEOUT_MS = 90_000;
 const BROKER_START_TIMEOUT_MS = 30_000;
 const SETTLE_MS = 300;
@@ -444,7 +438,6 @@ interface RawRegistration {
 	next(matches: (frame: BrokerMessage) => boolean): Promise<BrokerMessage>;
 }
 
-/** A registered connection that writes frames itself, as a modified client would. */
 async function rawRegistration(home: string): Promise<RawRegistration> {
 	const socket = net.connect(getBrokerSocketPath());
 	const frames: BrokerMessage[] = [];

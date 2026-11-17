@@ -392,8 +392,8 @@ await session.intercom.setReachable(["doc-1907", "doc-2011"]);
 
 - `group` is the session's home group. It takes precedence over `ATOMIC_INTERCOM_GROUP`, the Intercom `config.json` `"group"` and the project group. The session stays an ordinary top-level session and keeps its workflow extension.
 - `reachable` lists the other groups the session may reach. Missing or empty means none; up to 1,000 groups.
-- The session can `list`, `send` to and `ask` only sessions in `group` and `reachable`, plus the workflow stages and subagents it starts. A send or ask to any other session is refused with a reason and is not queued.
-- `groups` shows only `group` and `reachable`, `join` accepts only those names, `leave` can't remove `group`, and a `list` or `status` peek is limited to them.
+- The session can `list`, `send` to and `ask` only sessions in `group`, `reachable`, or a subgroup under `group`, plus the workflow stages it starts. A send or ask to any other session is refused with a reason and is not queued.
+- `groups` shows only `group` and `reachable`, `join` accepts only those names, and `leave` can't remove `group`. A `list` or `status` peek is limited to groups the session reaches, including subgroups under its home.
 - Reach is one way: listing B's group lets the session reach B, not B reach the session. B can still reply to the session's asks.
 - Workflow stages keep their own subgroups under the run's `workflow:<rootRunId>` group, and the session keeps its control over them. A subagent launched with `group: "x"` is placed in `<group>/x`, which the session can reach. Stages and subagents never get the session's `reachable` groups: each reaches only its own group and the subgroups under it.
 - The Intercom broker holds and enforces the policy, so a client that skips the `intercom` tool cannot get around it. The policy is registered again after a reconnect or a broker restart.

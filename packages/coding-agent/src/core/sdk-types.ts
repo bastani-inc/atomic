@@ -132,8 +132,8 @@ export interface CreateAgentSessionOptions {
 	/**
 	 * The session's Intercom home group and the other groups it may reach. `group` replaces the group from
 	 * `ATOMIC_INTERCOM_GROUP`, Intercom `config.json` and the project; the session keeps its workflow extension. The session
-	 * lists, sends to and asks only sessions in `group` and `reachable` (and the workflow stages and subagents it starts),
-	 * `join`s only those groups and can't leave `group`. Reach is one way. The Intercom broker enforces it. Change
+	 * lists, sends to and asks only sessions in `group`, `reachable`, or subgroups under `group`, and the workflow stages
+	 * it starts. It joins only `group` and `reachable` and can't leave `group`. Reach is one way. The broker enforces it. Change
 	 * `reachable` later with `session.intercom.setReachable(groups)`. Invalid values throw `IntercomPolicyError`.
 	 */
 	intercom?: import("./intercom-policy.ts").IntercomSessionOptions;

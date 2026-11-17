@@ -1,9 +1,3 @@
-/**
- * #5352: a send whose refusal never reached its sender is not delivered later under a widened reach. The real broker
- * runs behind `IntercomWireProxy`, which drops the broker's refusal of one send and closes the sender's connection, as
- * a broker crash would; meanwhile the host widens the sender's reach. The sender is the real Intercom extension and
- * tool, which would otherwise send the same message again after reconnecting and have it delivered.
- */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync } from "node:fs";
@@ -35,14 +29,12 @@ process.env.ATOMIC_CODING_AGENT_DIR = frontAgentDir;
 delete process.env.PI_CODING_AGENT_DIR;
 mkdirSync(join(frontAgentDir, "intercom"), { recursive: true });
 
-// The client resolves its socket path on load, so everything that reaches it is imported after the override.
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { getJitiCliPath } = await vi.importActual<typeof import("../../packages/intercom/broker/spawn.js")>(
 	"../../packages/intercom/broker/spawn.js",
 );
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
 
-/** Structural: a real broker started through jiti and a real extension that reconnects through the proxy. */
 const REAL_BROKER_TEST_TIMEOUT_MS = 90_000;
 const BROKER_STARTUP_TIMEOUT_MS = 60_000;
 const SETTLE_MS = 500;

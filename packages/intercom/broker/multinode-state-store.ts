@@ -410,6 +410,7 @@ export interface RestoringReservationSender {
 	readonly sessionId: string;
 	/** The sender's normalized groups. */
 	readonly groups: readonly string[];
+	readonly home?: string;
 }
 
 export interface RestoringReservationRegistration {

@@ -1,7 +1,3 @@
-/**
- * #5352: a second process holding an Intercom session with a reach policy. It connects to the broker of the agent
- * directory it inherits, reports what it can and cannot do, then reports what it received. Lines on stdout are JSON.
- */
 import { IntercomClient } from "../../../packages/intercom/broker/client.js";
 
 const [home, hostId, hostHome] = process.argv.slice(2);

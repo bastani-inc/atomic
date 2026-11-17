@@ -18,8 +18,14 @@ import type { DeliveryFailureReasonCode, Message, SessionInfo } from "../types.j
 import { ASK_FAILURE_QUEUED, crashPoint } from "./crash-points.js";
 import type { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { sameGroup } from "./group-isolation.js";
-import { reachesGroups, reachesSession, type ReachSubject, sessionGroups } from "./group-membership.js";
-import { outsideReachReason, reachesAnyGroup, reachGroups } from "../reach-policy.js";
+import {
+	reachesGroups,
+	reachesSession,
+	type ReservationSender,
+	reservationSender,
+	sessionGroups,
+} from "./group-membership.js";
+import { outsideReachReason, reachesAnyGroup } from "../reach-policy.js";
 import {
 	BROKER_LEASE_RENEW_INTERVAL_MS,
 	BROKER_LEASE_STALE_AFTER_MS,
@@ -267,7 +273,7 @@ interface Waiter {
 	readonly attemptId?: string;
 	readonly senderSessionId: string;
 	/** The sender's groups: the released child's reservation it may read when its send is queued (#4512). */
-	readonly senderGroups: readonly string[];
+	readonly sender: ReservationSender;
 	readonly expectsReply: boolean;
 	readonly resolveReplyTarget: boolean;
 	readonly targetSessionId: string;
@@ -401,16 +407,6 @@ function forgottenSessionIdentities(id: string, group: string): readonly string[
 /** #4997: one ask's route, as a set key. */
 function askKey(question: PendingQuestion): string {
 	return JSON.stringify([question.senderSessionId, question.targetSessionId, question.messageId]);
-}
-
-/**
- * #5352: the groups a shared reservation admits a send from: the sender's memberships, and with a reach policy its home
- * and reachable groups too.
- */
-function reservationGroups(sender: ReachSubject): string[] {
-	const groups = new Set(sessionGroups(sender.info));
-	if (sender.reach !== undefined) for (const group of reachGroups(sender.reach)) groups.add(group);
-	return [...groups];
 }
 
 export class MultiNodeRouter {
@@ -2014,7 +2010,6 @@ export class MultiNodeRouter {
 					type: "message",
 					from: from.info,
 					message,
-					// #5352: the recipient's broker checks the delivery against the reach the origin decided it under.
 					...(from.reach === undefined
 						? {}
 						: { senderReach: { home: from.reach.home, reachable: [...from.reach.reachable] } }),
@@ -2150,7 +2145,7 @@ export class MultiNodeRouter {
 			socket: request.socket,
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			senderSessionId: request.from.info.id,
-			senderGroups: reservationGroups(request.from),
+			sender: reservationSender(request.from),
 			expectsReply: message.expectsReply === true,
 			resolveReplyTarget: request.resolveReplyTarget,
 			targetSessionId: target.sessionId,
@@ -2224,10 +2219,13 @@ export class MultiNodeRouter {
 	 * the two checks never wake the child twice for one send.
 	 */
 	private async wakeReleasedRecipient(waiter: Waiter): Promise<void> {
-		const sender = { sessionId: waiter.senderSessionId, groups: waiter.senderGroups };
 		for (const id of [waiter.targetSessionId, returnAddressOf(waiter.targetIdentity)]) {
 			if (id === undefined) continue;
-			const lookup = await this.state.reservations.lookup(normalizeTarget(id), sender, BROKER_LEASE_STALE_AFTER_MS);
+			const lookup = await this.state.reservations.lookup(
+				normalizeTarget(id),
+				waiter.sender,
+				BROKER_LEASE_STALE_AFTER_MS,
+			);
 			if (lookup.status !== "reserved") continue;
 			const { reservation } = lookup;
 			if (!reservation.wake) return;
@@ -2272,7 +2270,7 @@ export class MultiNodeRouter {
 		const { from, message } = request;
 		const lookup = await this.state.reservations.lookup(
 			normalizeTarget(request.target),
-			{ sessionId: from.info.id, groups: reservationGroups(from) },
+			reservationSender(from),
 			BROKER_LEASE_STALE_AFTER_MS,
 		);
 		if (lookup.status === "none" || lookup.status === "invalid") return false;
