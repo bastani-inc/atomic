@@ -15,6 +15,8 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, parse, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { SqliteDatabase } from "./database.js";
+import type { StorageInputSelection, StorageSettingsSelection } from "./selection.js";
 
 const CONFIG_DIR_NAME = ".atomic";
 const ENV_AGENT_DIR = "ATOMIC_CODING_AGENT_DIR";
@@ -67,14 +69,20 @@ const AGENT_DIR_STATE_ENTRIES: ReadonlySet<string> = new Set([
 	"blueprint-actions",
 ]);
 
+interface StorageHomeSelection extends StorageSettingsSelection {
+	readonly dir?: string;
+	readonly database?: SqliteDatabase;
+}
+
 export interface StorageHomeSettings {
-	readonly storage?: unknown;
-	readonly sessions?: { readonly storage?: unknown } | null;
-	readonly workflows?: { readonly journal?: unknown } | unknown[] | null;
+	readonly storage?: StorageInputSelection | { readonly dir: string };
+	readonly sessions?: { readonly storage?: StorageInputSelection | { readonly dir: string } } | null;
+	readonly workflows?: { readonly journal?: StorageInputSelection } | string[] | null;
 }
 
 interface SettledStorageHome {
 	readonly home: string;
+	readonly defaultHome?: boolean;
 	readonly workflowsDir: string;
 	readonly journalStoreDir: string;
 	readonly sessionDatabasePath: string;
@@ -196,6 +204,10 @@ function createStorageHomeEntry(
 	};
 }
 
+function createDefaultStorageHomeEntry(home: string, provisionalWithoutSettings?: boolean): SettledStorageHome {
+	return { ...createStorageHomeEntry(home, undefined, provisionalWithoutSettings), defaultHome: true };
+}
+
 export function readClaimFile(file: string): string | undefined {
 	try {
 		let raw = readFileSync(file, "utf8");
@@ -210,15 +222,25 @@ export function readClaimFile(file: string): string | undefined {
 	}
 }
 
+type ClaimPublication = "claimed" | "exists" | "read-only" | "failed";
+
+function isReadOnlyStorageError(error: NodeJS.ErrnoException): boolean {
+	return error.code === "EACCES" || error.code === "EPERM" || error.code === "EROFS";
+}
+
 export function claimFileAtomically(file: string, contents: string): boolean {
+	return publishClaimFile(file, contents) === "claimed";
+}
+
+function publishClaimFile(file: string, contents: string): ClaimPublication {
 	const staged = `${file}.${randomUUID()}`;
 	try {
 		writeFileSync(staged, contents, { flag: "wx" });
 		try {
 			linkSync(staged, file);
-			return true;
+			return "claimed";
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") return "exists";
 		}
 		if (renameClaimWithoutReplacing === undefined) {
 			renameClaimWithoutReplacing = null;
@@ -234,11 +256,11 @@ export function claimFileAtomically(file: string, contents: string): boolean {
 				} catch {}
 			}
 		}
-		if (renameClaimWithoutReplacing !== null) return renameClaimWithoutReplacing(staged, file);
+		if (renameClaimWithoutReplacing !== null) return renameClaimWithoutReplacing(staged, file) ? "claimed" : "exists";
 		writeFileSync(file, contents, { flag: "wx" });
-		return true;
-	} catch {
-		return false;
+		return "claimed";
+	} catch (error) {
+		return isReadOnlyStorageError(error as NodeJS.ErrnoException) ? "read-only" : "failed";
 	} finally {
 		rmSync(staged, { force: true });
 	}
@@ -256,7 +278,7 @@ export function sameDirectory(first: string, second: string): boolean {
 	return pathsEqual(first, second) || isSameFile(first, second);
 }
 
-function normalizeRelativeTarget(value: unknown, home: string): string | undefined {
+function normalizeRelativeTarget(value: string | undefined, home: string): string | undefined {
 	if (typeof value !== "string" || value === "" || value === ":memory:") return undefined;
 	try {
 		const expanded = expandAgentPathInput(value, home);
@@ -266,15 +288,9 @@ function normalizeRelativeTarget(value: unknown, home: string): string | undefin
 	}
 }
 
-function selectsDefaultSharedStorage(selection: unknown): boolean {
+function selectsDefaultSharedStorage(selection: StorageHomeSelection): boolean {
 	if (selection === null || typeof selection !== "object" || Array.isArray(selection)) return false;
-	const record = selection as {
-		readonly path?: unknown;
-		readonly dir?: unknown;
-		readonly memory?: unknown;
-		readonly adapter?: unknown;
-		readonly database?: unknown;
-	};
+	const record = selection;
 	if (
 		record.dir !== undefined ||
 		record.memory === true ||
@@ -286,13 +302,18 @@ function selectsDefaultSharedStorage(selection: unknown): boolean {
 	return record.path === undefined || record.path === "";
 }
 
-function pushSelectionTargets(targets: Set<string>, selection: unknown, home: string, isShared = false): void {
+function pushSelectionTargets(
+	targets: Set<string>,
+	selection: StorageHomeSelection | undefined,
+	home: string,
+	isShared = false,
+): void {
 	if (selection === null || typeof selection !== "object" || Array.isArray(selection)) return;
 	if (isShared && selectsDefaultSharedStorage(selection)) {
 		targets.add("storage.sqlite");
 		return;
 	}
-	const record = selection as { readonly path?: unknown; readonly dir?: unknown };
+	const record = selection;
 	const pathTarget = normalizeRelativeTarget(record.path, home);
 	if (pathTarget !== undefined) targets.add(pathTarget);
 	const dirTarget = normalizeRelativeTarget(record.dir, home);
@@ -322,14 +343,14 @@ function configuredRelativeTargets(
 ): readonly string[] {
 	const targets = new Set<string>();
 	const cli = includeProcessSelections
-		? (globalThis as Record<symbol, { readonly value?: unknown } | undefined>)[CLI_SELECTION]
+		? (globalThis as Record<symbol, { readonly value?: StorageInputSelection } | undefined>)[CLI_SELECTION]
 		: undefined;
-	const environment: Partial<Record<(typeof STORAGE_ENV_NAMES)[number], object>> = {};
+	const environment: Partial<Record<(typeof STORAGE_ENV_NAMES)[number], StorageHomeSelection>> = {};
 	for (const envName of includeProcessSelections ? STORAGE_ENV_NAMES : []) {
 		const raw = process.env[envName];
 		if (raw === undefined || raw === "") continue;
 		try {
-			environment[envName] = JSON.parse(raw) as object;
+			environment[envName] = JSON.parse(raw) as StorageHomeSelection;
 		} catch {}
 	}
 	let fileSettings: StorageHomeSettings | undefined;
@@ -566,6 +587,8 @@ function recordSettledStorageHome(
 }
 
 interface StorageHomeDecision {
+	readonly id?: string;
+	readonly relativePaths?: boolean;
 	readonly home: string;
 	readonly defaultHome?: boolean;
 	readonly parentOwner?: string;
@@ -615,33 +638,97 @@ function readStorageHomeDecision(file: string): StorageHomeDecision | undefined 
 		if (existsSync(file)) throw new Error(`Cannot read storage home decision at ${file}`);
 		return undefined;
 	}
-	const decision = JSON.parse(raw) as StorageHomeDecision;
+	let decision = JSON.parse(raw) as StorageHomeDecision;
 	if (
 		decision === null ||
 		typeof decision !== "object" ||
 		typeof decision.home !== "string" ||
-		!isAbsolute(decision.home) ||
+		(decision.id !== undefined && typeof decision.id !== "string") ||
+		(decision.relativePaths !== undefined && typeof decision.relativePaths !== "boolean") ||
+		(!decision.relativePaths && !isAbsolute(decision.home)) ||
 		(decision.defaultHome !== undefined && typeof decision.defaultHome !== "boolean") ||
 		(decision.parentOwner !== undefined &&
-			(typeof decision.parentOwner !== "string" || !isAbsolute(decision.parentOwner))) ||
+			(typeof decision.parentOwner !== "string" ||
+				(!decision.relativePaths && !isAbsolute(decision.parentOwner)))) ||
 		(decision.targets !== undefined &&
 			(!Array.isArray(decision.targets) || decision.targets.some((target) => typeof target !== "string")))
 	) {
 		throw new Error(`Invalid storage home decision at ${file}`);
 	}
+	const agentPath = canonicalPath(dirname(file));
+	const parent = canonicalPath(dirname(dirname(file)));
+	if (decision.relativePaths) {
+		decision = {
+			...decision,
+			home: resolve(agentPath, decision.home),
+			...(decision.parentOwner === undefined ? {} : { parentOwner: resolve(agentPath, decision.parentOwner) }),
+		};
+	}
+	if (decision.parentOwner === undefined) return decision;
+	if (basename(file) === HOME_DECISION_FILE) {
+		const owner = readStorageOwner(join(parent, PARENT_CLAIM_FILE));
+		if (owner !== undefined) {
+			const currentOwner = currentStorageOwnerPath(owner, parent);
+			if (
+				pathsEqual(decision.parentOwner, owner.path) ||
+				(currentOwner !== undefined && sameDirectory(decision.parentOwner, currentOwner))
+			) {
+				return { ...decision, home: parent, parentOwner: currentOwner ?? owner.path };
+			}
+		}
+	} else {
+		const homeFile = storageHomeDecisionFile(dirname(file));
+		const recorded = readClaimFile(homeFile);
+		if (recorded !== undefined) {
+			const original = JSON.parse(recorded) as StorageHomeDecision;
+			const recordedHome = original.relativePaths ? resolve(agentPath, original.home) : original.home;
+			if (pathsEqual(decision.home, recordedHome)) {
+				const current = readStorageHomeDecision(homeFile);
+				if (current !== undefined && !pathsEqual(current.home, recordedHome)) {
+					const originalOwner = original.parentOwner;
+					const owner =
+						originalOwner === undefined
+							? undefined
+							: original.relativePaths
+								? resolve(agentPath, originalOwner)
+								: originalOwner;
+					return {
+						...decision,
+						home: current.home,
+						...(owner !== undefined && pathsEqual(decision.parentOwner, owner)
+							? { parentOwner: current.parentOwner }
+							: {}),
+					};
+				}
+			}
+		}
+	}
 	return decision;
 }
 
 function settleStorageDecision(file: string, decision: StorageHomeDecision): StorageHomeDecision {
+	const agentPath = canonicalPath(dirname(file));
 	const canonical = {
 		...decision,
-		home: canonicalPath(decision.home),
-		...(decision.parentOwner === undefined ? {} : { parentOwner: canonicalPath(decision.parentOwner) }),
+		id: decision.id ?? randomUUID(),
+		relativePaths: true,
+		home: relative(agentPath, canonicalPath(decision.home)) || ".",
+		...(decision.parentOwner === undefined
+			? {}
+			: { parentOwner: relative(agentPath, canonicalPath(decision.parentOwner)) || "." }),
 	};
-	mkdirSync(dirname(file), { recursive: true });
-	claimFileAtomically(file, `${JSON.stringify(canonical)}\n`);
+	try {
+		mkdirSync(dirname(file), { recursive: true });
+	} catch (error) {
+		if (isReadOnlyStorageError(error as NodeJS.ErrnoException)) return readStorageHomeDecision(file) ?? decision;
+		throw error;
+	}
+	const publication = publishClaimFile(file, `${JSON.stringify(canonical)}\n`);
 	const winner = readStorageHomeDecision(file);
-	if (winner === undefined) throw new Error(`Cannot settle storage decision at ${file}`);
+	if (winner === undefined) {
+		if (publication === "read-only") return decision;
+		throw new Error(`Cannot settle storage decision at ${file}`);
+	}
 	return winner;
 }
 
@@ -657,15 +744,34 @@ function eligibleLegacyHostOwner(parentWorkflows: string, rawHome: string): stri
 
 interface StorageOwner {
 	readonly path: string;
+	readonly relativePath?: string;
 	readonly identity?: string;
+	readonly directoryIdentity?: string;
+	readonly decisionId?: string;
 	readonly homeIdentity?: boolean;
 }
 
-function storageOwner(path: string): StorageOwner {
+function storageDecisionId(path: string): string | undefined {
+	const contents = readClaimFile(storageHomeDecisionFile(path));
+	if (contents === undefined) return undefined;
+	try {
+		const decision = JSON.parse(contents) as Pick<StorageHomeDecision, "id"> | null;
+		return decision !== null && typeof decision.id === "string" ? decision.id : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function storageOwner(path: string, claimDirectory?: string): StorageOwner {
+	const physical = canonicalPath(path);
 	const homeIdentity = fileIdentity(storageHomeDecisionFile(path));
+	const relativePath = claimDirectory === undefined ? undefined : relative(canonicalPath(claimDirectory), physical);
 	return {
-		path: canonicalPath(path),
+		path: physical,
+		...(relativePath === undefined || isAbsolute(relativePath) ? {} : { relativePath: relativePath || "." }),
 		identity: homeIdentity ?? fileIdentity(path),
+		decisionId: storageDecisionId(path),
+		directoryIdentity: fileIdentity(path),
 		homeIdentity: homeIdentity !== undefined,
 	};
 }
@@ -686,7 +792,11 @@ function readStorageOwner(file: string): StorageOwner | undefined {
 		typeof owner !== "object" ||
 		typeof owner.path !== "string" ||
 		!isAbsolute(owner.path) ||
+		(owner.relativePath !== undefined &&
+			(typeof owner.relativePath !== "string" || isAbsolute(owner.relativePath))) ||
 		(owner.identity !== undefined && typeof owner.identity !== "string") ||
+		(owner.directoryIdentity !== undefined && typeof owner.directoryIdentity !== "string") ||
+		(owner.decisionId !== undefined && typeof owner.decisionId !== "string") ||
 		(owner.homeIdentity !== undefined && typeof owner.homeIdentity !== "boolean")
 	) {
 		throw new Error(`Invalid storage owner at ${file}`);
@@ -694,48 +804,65 @@ function readStorageOwner(file: string): StorageOwner | undefined {
 	return owner;
 }
 
-function currentStorageOwnerPath(owner: StorageOwner): string {
+function currentStorageOwnerPath(owner: StorageOwner, claimDirectory = dirname(owner.path)): string | undefined {
+	const path = owner.relativePath === undefined ? owner.path : resolve(claimDirectory, owner.relativePath);
 	if (
 		owner.identity === undefined ||
-		fileIdentity(owner.homeIdentity ? storageHomeDecisionFile(owner.path) : owner.path) === owner.identity
+		fileIdentity(owner.homeIdentity ? storageHomeDecisionFile(path) : path) === owner.identity ||
+		(owner.directoryIdentity !== undefined && fileIdentity(path) === owner.directoryIdentity) ||
+		(owner.decisionId !== undefined && storageDecisionId(path) === owner.decisionId)
 	)
-		return owner.path;
+		return path;
 	let directory: ReturnType<typeof opendirSync> | undefined;
 	let found: string | undefined;
+	let ambiguous = false;
 	try {
-		directory = opendirSync(dirname(owner.path));
+		directory = opendirSync(claimDirectory);
 		for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
-			const candidate = join(dirname(owner.path), entry.name);
+			const candidate = join(claimDirectory, entry.name);
 			if (!isDirectory(candidate)) continue;
 			const identity = fileIdentity(owner.homeIdentity ? storageHomeDecisionFile(candidate) : candidate);
-			if (identity !== owner.identity) continue;
-			if (found !== undefined && !sameDirectory(found, candidate))
-				throw new Error("Ambiguous storage owner identity");
+			if (
+				identity !== owner.identity &&
+				(owner.decisionId === undefined || storageDecisionId(candidate) !== owner.decisionId) &&
+				(owner.directoryIdentity === undefined || fileIdentity(candidate) !== owner.directoryIdentity)
+			)
+				continue;
+			if (found !== undefined && !sameDirectory(found, candidate)) ambiguous = true;
 			found = candidate;
 		}
+	} catch {
+		return undefined;
 	} finally {
-		directory?.closeSync();
+		try {
+			directory?.closeSync();
+		} catch {}
 	}
-	return found ?? owner.path;
+	if (ambiguous) throw new Error("Ambiguous storage owner identity");
+	return found;
 }
 
 function parentStorageOwner(parent: string): string | undefined {
 	const owner = readStorageOwner(join(parent, PARENT_CLAIM_FILE));
 	return owner === undefined
 		? readClaimFile(join(parent, "workflows", ADOPTION_CLAIM_FILE))
-		: currentStorageOwnerPath(owner);
+		: (currentStorageOwnerPath(owner, parent) ?? join(parent, PARENT_CLAIM_FILE));
 }
 
 function applyStorageHomeDecision(decision: StorageHomeDecision, agentPath: string): SettledStorageHome {
-	if (decision.defaultHome) return createStorageHomeEntry(decision.home);
+	if (decision.defaultHome) {
+		const home =
+			defaultHomeForAgent(agentPath, join(getHomeDir(), CONFIG_DIR_NAME)) ?? dirname(canonicalPath(agentPath));
+		return createDefaultStorageHomeEntry(home);
+	}
 	if (decision.parentOwner === undefined) return createStorageHomeEntry(agentPath);
 	const workflows = join(decision.home, "workflows");
 	const claim = join(decision.home, PARENT_CLAIM_FILE);
 	const preferred = canonicalPath(parentStorageOwner(decision.home) ?? decision.parentOwner);
-	claimFileAtomically(claim, `${JSON.stringify(storageOwner(preferred))}\n`);
+	claimFileAtomically(claim, `${JSON.stringify(storageOwner(preferred, decision.home))}\n`);
 	const winner = readStorageOwner(claim);
 	if (winner === undefined) throw new Error(`Cannot claim storage home at ${claim}`);
-	const winnerPath = currentStorageOwnerPath(winner);
+	const winnerPath = currentStorageOwnerPath(winner, decision.home);
 	if (isDirectory(workflows) || !pathsEqual(canonicalPath(workflows), canonicalPath(agentPath))) {
 		mkdirSync(workflows, { recursive: true });
 		const legacyClaim = join(workflows, ADOPTION_CLAIM_FILE);
@@ -743,12 +870,13 @@ function applyStorageHomeDecision(decision: StorageHomeDecision, agentPath: stri
 		const legacyOwner = readClaimFile(legacyClaim);
 		if (
 			legacyOwner === undefined ||
-			(!sameDirectory(legacyOwner, winner.path) && !sameDirectory(legacyOwner, winnerPath))
+			(!sameDirectory(legacyOwner, winner.path) &&
+				(winnerPath === undefined || !sameDirectory(legacyOwner, winnerPath)))
 		) {
 			throw new Error(`Conflicting storage home ownership at ${legacyClaim}`);
 		}
 	}
-	return sameDirectory(winnerPath, agentPath)
+	return winnerPath !== undefined && sameDirectory(winnerPath, agentPath)
 		? createStorageHomeEntry(decision.home, claim)
 		: createStorageHomeEntry(agentPath);
 }
@@ -808,7 +936,7 @@ function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettin
 		if (!aliasHasHistory) {
 			const entry =
 				settings === undefined || !isDirectory(agentPath)
-					? createStorageHomeEntry(matchedDefaultHome, undefined, true)
+					? createDefaultStorageHomeEntry(matchedDefaultHome, true)
 					: applyStorageHomeDecision(
 							settleStorageDecision(file, { home: matchedDefaultHome, defaultHome: true }),
 							agentPath,
@@ -967,8 +1095,18 @@ export function storagePathBaseDir(path: string, agentDir: string, settings?: St
 					: preferredTargetOwner(agentPath, base, selected);
 			decision = { home: base, parentOwner };
 		}
+		if (entry.defaultHome && sameDirectory(base, home)) decision = { ...decision, defaultHome: true };
 		if (settings !== undefined && isDirectory(agentPath)) {
 			decision = settleStorageDecision(decisionFile, decision);
+		}
+	}
+	if (entry.defaultHome) {
+		const recorded = decision.defaultHome ? undefined : readStorageHomeDecision(storageHomeDecisionFile(agentPath));
+		if (decision.defaultHome || (recorded?.defaultHome && pathsEqual(decision.home, recorded.home))) {
+			const selected = resolve(home, target);
+			decision = containsPath(canonicalPath(agentPath), canonicalPath(selected))
+				? { home, defaultHome: true }
+				: { home, defaultHome: true, parentOwner: preferredTargetOwner(agentPath, claimDir, selected) };
 		}
 	}
 	const resolved = { agentPath, target, decision };
@@ -993,12 +1131,13 @@ function applyStorageTargetDecision(
 		let owner = readStorageOwner(claim);
 		if (owner === undefined && settings !== undefined && isDirectory(agentPath)) {
 			mkdirSync(dirname(claim), { recursive: true });
-			claimFileAtomically(claim, `${JSON.stringify(storageOwner(decision.parentOwner))}\n`);
+			claimFileAtomically(claim, `${JSON.stringify(storageOwner(decision.parentOwner, dirname(claim)))}\n`);
 			owner = readStorageOwner(claim);
 		}
 		owner ??= settings === undefined || !isDirectory(agentPath) ? storageOwner(decision.parentOwner) : undefined;
 		if (owner === undefined) throw new Error(`Cannot claim storage target at ${claim}`);
-		if (sameDirectory(currentStorageOwnerPath(owner), agentPath)) continue;
+		const ownerPath = currentStorageOwnerPath(owner, dirname(claim));
+		if (ownerPath !== undefined && sameDirectory(ownerPath, agentPath)) continue;
 		const fallback = resolve(agentPath, target);
 		if (
 			!containsPath(canonicalPath(agentPath), canonicalPath(fallback)) ||

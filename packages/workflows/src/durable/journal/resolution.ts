@@ -35,7 +35,7 @@ export interface RunJournalSettings {
 				autoAdvanceAfterSteer?: boolean;
 		  };
 	sessions?: {
-		storage?: unknown;
+		storage?: StorageSettingsSelection | { readonly dir: string };
 	};
 	storage?: StorageSettingsSelection;
 	snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
