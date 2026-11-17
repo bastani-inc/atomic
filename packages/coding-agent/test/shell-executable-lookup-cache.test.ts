@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type * as Fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { accessSync, existing, spawnSync } = vi.hoisted(() => {
@@ -12,14 +13,14 @@ const { accessSync, existing, spawnSync } = vi.hoisted(() => {
 	};
 });
 
-vi.mock("child_process", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("child_process")>();
-	return { ...actual, spawnSync };
-});
+vi.mock("node:fs", async (importOriginal) => ({
+	...(await importOriginal<typeof Fs>()),
+	accessSync,
+}));
 
-vi.mock("node:fs", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:fs")>();
-	return { ...actual, accessSync };
+vi.mock("child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	return { ...actual, spawnSync };
 });
 
 const { getPowerShellConfig } = await import("../src/utils/shell.ts");

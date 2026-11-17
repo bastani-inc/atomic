@@ -89,8 +89,9 @@ export class AttemptRequests {
 	/** Sends `message` for the attempt it belongs to, again while the store refuses it within the attempt's lease. */
 	async send(message: WorkerRequestBody): Promise<WorkerReply["value"]> {
 		// A commit belongs to the attempt that may still write, which outlasts the worker's hold on it while a fenced
-		// attempt's stage sessions close and write their last entries; any other request belongs to the attempt held.
-		const owner = () => (message.kind === "commit" ? this.writable : this.held);
+		// attempt's stage sessions close and write their last entries, and so does a read of what it wrote (#4768); any
+		// other request belongs to the attempt held.
+		const owner = () => (message.kind === "commit" || message.kind === "session-sync" ? this.writable : this.held);
 		const held = owner();
 		const attempt = held === undefined ? undefined : { workId: held.id, generation: held.generation };
 		// Every send, the first included, is for the attempt that made the request, while it is still that attempt's to

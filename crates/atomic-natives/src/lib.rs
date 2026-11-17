@@ -5,8 +5,11 @@ pub mod fs_cache;
 pub mod glob;
 mod glob_util;
 pub mod grep;
+pub mod host_process;
 pub mod process_start;
 pub mod pty;
+#[cfg(target_os = "linux")]
+pub(crate) mod spawn;
 pub mod subagent_control;
 pub mod task;
 pub mod task_supervisor;

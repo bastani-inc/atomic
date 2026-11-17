@@ -52,7 +52,7 @@ PowerShell discovery checks these locations in order:
 3. `powershell.exe` on `PATH`
 4. `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`
 
-On `PATH`, Atomic checks each directory in order and skips a directory that has the executable's name. A relative entry is taken relative to the directory Atomic started in, and the current directory is not searched unless it is on `PATH`.
+Atomic searches the current directory before `PATH`, as Windows shell discovery does. It checks each `PATH` directory in order and skips a directory that has the executable's name. Relative entries resolve against Atomic's current working directory, and the selected shell path is absolute so commands can run from a different directory.
 
 ## Custom Shell Path
 

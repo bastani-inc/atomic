@@ -5,6 +5,9 @@
 ### Added
 
 - Added `windowsDirectorySecurity(path)`: on Windows, reads a file or directory's owner SID, its DACL in SDDL form and the SID of each allow and deny entry, along with the current user's SID, without starting a process. It returns `null` where the descriptor cannot be read, and on other platforms ([#5324](https://github.com/bastani-inc/atomic/issues/5324)).
+### Fixed
+
+- On Windows, `TaskSupervisor` no longer reports a command that ran to completion as failed with `Windows stdin worker stop was not confirmed` when its input thread, on a loaded or briefly stalled machine, closed the command's stdin just after the cleanup grace or ended later than it. A stop the thread reported counts as confirmed; one it never reports still fails the cleanup ([#5340](https://github.com/bastani-inc/atomic/pull/5340))
 
 ## [0.9.88] - 2026-11-16
 

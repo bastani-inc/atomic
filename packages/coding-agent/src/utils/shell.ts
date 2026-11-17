@@ -84,20 +84,23 @@ function findExecutableOnPath(executable: string): string | null {
 	return path;
 }
 
-function lookupWindowsExecutableOnPath(executable: string): string | null {
-	for (const entry of (process.env.PATH ?? "").split(win32.delimiter)) {
+function scanWindowsPath(executable: string): string | null {
+	const extensions = win32.extname(executable)
+		? [""]
+		: (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+	for (const entry of [process.cwd(), ...(process.env.PATH ?? "").split(win32.delimiter)]) {
 		const directory = entry.trim().replace(/^"(.*)"$/, "$1");
-		if (directory.length === 0) continue;
-		const candidate = win32.resolve(process.cwd(), directory, executable);
-		if (executableCandidateExists(candidate)) return candidate;
+		if (!directory) continue;
+		for (const extension of extensions) {
+			const candidate = win32.resolve(process.cwd(), directory, `${executable}${extension}`);
+			if (executableCandidateExists(candidate)) return candidate;
+		}
 	}
 	return null;
 }
 
 function lookupExecutableOnPath(executable: string): string | null {
-	if (process.platform === "win32") {
-		return lookupWindowsExecutableOnPath(executable);
-	}
+	if (process.platform === "win32") return scanWindowsPath(executable);
 
 	// Unix: Use 'which' and trust its output (handles Termux and special filesystems)
 	try {

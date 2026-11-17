@@ -150,6 +150,7 @@ import {
 	LIVE_WORKFLOW_STAGE_ROUTE_REFUSAL_REASONS,
 	type LiveWorkflowStageRouteRefusalCode,
 } from "../live-route-refusal.js";
+import { SUPERVISOR_AUTHORIZATION_REFUSED_CODE, SUPERVISOR_AUTHORIZATION_REFUSED_REASON } from "../supervisor-refusal.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
 /** The socket clients reach the running broker on, until this broker chooses its own under the startup lock (#5040). */
@@ -2241,7 +2242,11 @@ class IntercomBroker {
             ? this.supervisorChannel.claim(clientMessage.supervisor.capability, childName)
             : undefined;
           if (!claimedSupervisorId || !this.sessions.has(claimedSupervisorId)) {
-            writeMessageIfOpen(socket, { type: "registration_failed", reason: "Invalid supervisor authorization" });
+            writeMessageIfOpen(socket, {
+              type: "registration_failed",
+              reason: SUPERVISOR_AUTHORIZATION_REFUSED_REASON,
+              code: SUPERVISOR_AUTHORIZATION_REFUSED_CODE,
+            });
             this.endRefusedConnection(socket, currentId, setId);
             return;
           }
@@ -2369,7 +2374,9 @@ class IntercomBroker {
           typeof clientMessage.capability !== "string" || !clientMessage.capability ||
           (clientMessage.group !== undefined && typeof clientMessage.group !== "string") ||
           (clientMessage.dormant !== undefined && typeof clientMessage.dormant !== "boolean") ||
-          (clientMessage.aliases !== undefined && !isRestoringRecipientAliasList(clientMessage.aliases))
+          (clientMessage.aliases !== undefined && !isRestoringRecipientAliasList(clientMessage.aliases)) ||
+          (clientMessage.holdMs !== undefined &&
+            (typeof clientMessage.holdMs !== "number" || !Number.isInteger(clientMessage.holdMs) || clientMessage.holdMs <= 0))
         ) {
           throw new Error("Invalid reserve_restoring_recipient message");
         }
@@ -2394,7 +2401,10 @@ class IntercomBroker {
           childName,
           normalizeGroup(typeof clientMessage.group === "string" ? clientMessage.group : owner.registrationGroup),
           aliases,
-          { dormant: clientMessage.dormant === true },
+          {
+            dormant: clientMessage.dormant === true,
+            ...(typeof clientMessage.holdMs === "number" ? { holdMs: clientMessage.holdMs } : {}),
+          },
         );
         this.dispatchHeldSends(this.departedChildren.supersede(currentId, childName));
         writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
@@ -3384,7 +3394,7 @@ class IntercomBroker {
     childName: string,
     group: string,
     aliases: readonly string[],
-    options: { readonly dormant: boolean; readonly wake?: boolean; readonly replaceAliases?: true },
+    options: { readonly dormant: boolean; readonly wake?: boolean; readonly replaceAliases?: true; readonly holdMs?: number },
   ): void {
     const wake = this.restoringRecipients.reserve(key, ownerSessionId, childName, group, aliases, options);
     this.multiNode?.restoringReserved(key, ownerSessionId, childName, group, aliases, options.dormant, {

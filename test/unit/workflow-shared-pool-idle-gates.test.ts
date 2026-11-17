@@ -18,7 +18,7 @@ import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool
 import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
 import { poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
 import { IdleClaimBackoff, IdleReadyProbe } from "../../packages/workflows/src/workers/pool-wake-ups.js";
-import { RestoreBackoff } from "../../packages/workflows/src/workers/restore-backoff.js";
+import { RESTORE_BACKOFF, RestoreBackoff } from "../../packages/workflows/src/workers/restore-backoff.js";
 import { workspaceAffinityKey } from "../../packages/workflows/src/workers/workspace-binding.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { sleep } from "../helpers/runtime.js";
@@ -61,7 +61,18 @@ const childPath = fileURLToPath(new URL("../fixtures/shared-pool-child.ts", impo
 const stubWorker = fileURLToPath(new URL("../fixtures/shared-pool-stub-worker.mjs", import.meta.url));
 const IDLE_SETTLE_MS = 7_500;
 const CLEAR_AFTER_MS = 50;
-const GATE_CLEAR_BOUND_MS = 1_000;
+/**
+ * The idle pause these tests stub while they wait for one wake-up: far longer than any wake-up takes, so only the
+ * wake-up, not the pause running out, ends the wait in time.
+ */
+const STUBBED_IDLE_PAUSE_MS = 10_000;
+/**
+ * How long a claim may follow the event that should wake its idle worker. The wake-up itself comes at once or on the
+ * coordinator's next 500 ms recovery tick or retry timer, but the worker's reply, its next claim and the store's claim
+ * follow it, and on a loaded runner those take far longer than on an idle one. Half the stubbed pause, so a claim
+ * within it still proves that a wake-up, not the pause running out, ended the wait.
+ */
+const GATE_CLEAR_BOUND_MS = STUBBED_IDLE_PAUSE_MS / 2;
 
 function listeningNotifications() {
 	const listeners: { channel: string; listener: (event: StorageNotificationEvent) => void; open: boolean }[] = [];
@@ -145,7 +156,7 @@ async function openNoticeRelay(directory: string) {
 }
 
 test(
-	"an idle satellite claims a ready bound child within one second after a fleet drain clears (#5230)",
+	"an idle satellite claims a ready bound child on a wake-up, not at the end of its idle pause, after a fleet drain clears (#5230)",
 	async () => {
 		const directory = makeLibsqlDirectory("idle-gate-drain-");
 		const log = join(directory, "stub.log");
@@ -231,6 +242,7 @@ test(
 			});
 			while (!firstDone) await sleep(25);
 			await sleep(IDLE_SETTLE_MS);
+			vi.spyOn(IdleClaimBackoff.prototype, "next").mockReturnValue(STUBBED_IDLE_PAUSE_MS);
 			const runs = relay.poll.tables.runs;
 			const refused: number[] = [];
 			const claim = SqlPoolQueue.prototype.claim;
@@ -362,7 +374,7 @@ test(
 				},
 			});
 			while (!firstDone) await sleep(25);
-			vi.spyOn(IdleClaimBackoff.prototype, "next").mockReturnValue(10_000);
+			vi.spyOn(IdleClaimBackoff.prototype, "next").mockReturnValue(STUBBED_IDLE_PAUSE_MS);
 			vi.spyOn(IdleReadyProbe.prototype, "tick").mockResolvedValue();
 			await sleep(100);
 			const runs = relay.poll.tables.runs;
@@ -394,7 +406,7 @@ test(
 			assert.equal(restores.length, 2);
 			assert.ok(restores[1]! - failedAt >= 950);
 			assert.ok(
-				restores[1]! - failedAt < 1_600,
+				restores[1]! - failedAt < RESTORE_BACKOFF.firstMs + GATE_CLEAR_BOUND_MS,
 				`the shared retry timer claimed ${Math.round(restores[1]! - failedAt)} ms after the overlapped drain and restore backoff`,
 			);
 		} finally {
@@ -412,7 +424,7 @@ test(
 );
 
 test(
-	"an idle root pool claims a ready child within one second after background checkpoint shipping clears its lag (#5230)",
+	"an idle root pool claims a ready child on a wake-up, not at the end of its idle pause, after background checkpoint shipping clears its lag (#5230)",
 	async () => {
 		const directory = makeLibsqlDirectory("idle-gate-lag-root-");
 		const log = join(directory, "stub.log");
@@ -465,6 +477,7 @@ test(
 		try {
 			while (!firstDone) await sleep(25);
 			await sleep(IDLE_SETTLE_MS);
+			vi.spyOn(IdleClaimBackoff.prototype, "next").mockReturnValue(STUBBED_IDLE_PAUSE_MS);
 			const taken: number[] = [];
 			const claim = SqlPoolQueue.prototype.claim;
 			vi.spyOn(SqlPoolQueue.prototype, "claim").mockImplementation(async function (this: SqlPoolQueue, ...args) {
@@ -492,6 +505,12 @@ test(
 			assert.equal(result.status, "completed");
 			const claimedAt = taken.find((at) => at >= clearAt);
 			assert.notEqual(claimedAt, undefined);
+			// The pause the cleared gate should end began after the first gated check: a claim at its end, however late
+			// the lag cleared, comes a whole stubbed pause after that check.
+			assert.ok(
+				claimedAt! - gated[0]! < STUBBED_IDLE_PAUSE_MS,
+				`the ready child waited out its idle pause: claimed ${Math.round(claimedAt! - gated[0]!)} ms after the gate closed`,
+			);
 			assert.ok(
 				claimedAt! - clearAt < GATE_CLEAR_BOUND_MS,
 				`the ready child waited ${Math.round(claimedAt! - clearAt)} ms after checkpoint shipping lag cleared`,
@@ -509,7 +528,7 @@ test(
 );
 
 test(
-	"an idle satellite claims a waiting bound child within one second after a sibling worker's restore clears its binding backoff (#5230)",
+	"an idle satellite claims a waiting bound child on a wake-up, not at the end of its idle pause, after a sibling worker's restore clears its binding backoff (#5230)",
 	async () => {
 		const directory = makeLibsqlDirectory("idle-gate-restore-cleared-");
 		const log = join(directory, "stub.log");
@@ -617,6 +636,7 @@ test(
 			rmSync(releaseFile, { force: true });
 			for (let failure = 0; failure < 3; failure++) backoff.failed(key);
 			await sleep(IDLE_SETTLE_MS);
+			vi.spyOn(IdleClaimBackoff.prototype, "next").mockReturnValue(STUBBED_IDLE_PAUSE_MS);
 			openGate();
 			for (let waited = 0; restores.length < 4; waited++) {
 				if (waited > 2_000) {
@@ -760,7 +780,7 @@ test(
 				},
 			});
 			while (!firstDone) await sleep(25);
-			vi.spyOn(IdleClaimBackoff.prototype, "next").mockReturnValue(10_000);
+			vi.spyOn(IdleClaimBackoff.prototype, "next").mockReturnValue(STUBBED_IDLE_PAUSE_MS);
 			vi.spyOn(IdleReadyProbe.prototype, "tick").mockResolvedValue();
 			await sleep(100);
 			relay.hold(true);

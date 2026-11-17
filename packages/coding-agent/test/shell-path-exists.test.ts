@@ -50,7 +50,10 @@ function stubPlatform(platform: string) {
 beforeEach(async () => {
 	vi.stubEnv("ProgramFiles", undefined);
 	vi.stubEnv("ProgramFiles(x86)", undefined);
-	accessSyncMock.mockReset();
+	accessSyncMock.mockReset().mockImplementation((path: string) => {
+		if (win32.dirname(path) === win32.resolve(process.cwd()))
+			throw Object.assign(new Error("not found"), { code: "ENOENT" });
+	});
 	spawnSyncMock.mockReset();
 	// Atomic memoizes PATH lookups per module instance; start each test without them.
 	vi.resetModules();

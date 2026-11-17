@@ -9,6 +9,7 @@ import type {
 	WaitError,
 	WatchError,
 } from "./contracts.js";
+import { sessionTasks } from "./session-scope.js";
 import type { OwnerLease, TaskLease, TaskSubscription, TaskSupervisor } from "./supervisor.js";
 
 /** Activity previews are bounded independently of authoritative session history. */
@@ -27,7 +28,11 @@ function isBackground(observation: TaskRecord["observation"] | undefined): boole
 	return observation?.kind === "background" && observation.reason !== "not-observed";
 }
 
-/** A view subscription owns neither the owner nor its executions. */
+/**
+ * A session's view of its task owner. A subagent running in this owner launches its shells here too; the view lists
+ * only this session's own tasks (its shells, and the subagents it launched), and `ownerTasks` all of the owner's.
+ * A view subscription owns neither the owner nor its executions.
+ */
 export class OwnerTaskStore {
 	private subscription?: TaskSubscription;
 	private listeners = new Set<() => void>();
@@ -52,14 +57,24 @@ export class OwnerTaskStore {
 	get cursor(): Cursor | undefined {
 		return this.current?.cursor;
 	}
+	/** This session's own tasks: its shells and the subagents it launched, never a subagent's shells. */
 	get tasks(): TaskRecord[] {
+		return sessionTasks(this.ownerTasks, undefined);
+	}
+	/** This session's own background tasks. Background membership survives foreground waits and terminal cleanup. */
+	get backgroundTasks(): TaskRecord[] {
+		return this.tasks.filter((task) => this.inBackground(task));
+	}
+	/** Every task of the owner, including the shells subagents running in it launched. */
+	get ownerTasks(): TaskRecord[] {
 		return [...this.records.values()];
 	}
-	/** Background membership survives foreground waits and terminal observation cleanup. */
-	get backgroundTasks(): TaskRecord[] {
-		return this.tasks.filter(
-			(task) => task.wasBackground || isBackground(task.observation) || this.backgroundIds.has(task.ref.taskId),
-		);
+	/** Every background task of the owner, including subagents' shells. */
+	get ownerBackgroundTasks(): TaskRecord[] {
+		return this.ownerTasks.filter((task) => this.inBackground(task));
+	}
+	private inBackground(task: TaskRecord): boolean {
+		return task.wasBackground === true || isBackground(task.observation) || this.backgroundIds.has(task.ref.taskId);
 	}
 	/**
 	 * Journal sequence at which each task settled; higher is more recent. Tasks first seen settled in a

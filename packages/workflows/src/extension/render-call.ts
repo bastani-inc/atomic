@@ -1,8 +1,9 @@
 /**
- * Render the workflow tool call as a compact string for display in chat.
- * cross-ref: pi-subagents src/extension/index.ts renderCall slot
+ * The workflow tool call's header, as every tool shows its call: `Workflow(<name> · <what it was asked>)` for a run,
+ * like `Agent(<agent> · <task>)`, and `workflow <action> <target>` for the other actions, like `subagent <action>`.
  */
 
+import { stripVTControlCharacters } from "node:util";
 import type { WorkflowInputValues } from "../shared/types.js";
 import { truncateToWidth } from "../tui/text-helpers.js";
 
@@ -27,16 +28,77 @@ export interface WorkflowToolArgs {
 		| "reload"
 		| "inputs";
 	runId?: string;
+	stageId?: string;
 }
 
-function runTarget(args: WorkflowToolArgs): string | undefined {
-	if (args.workflow !== undefined && args.workflow.trim().length > 0) return args.workflow;
-	if (args.runId !== undefined && args.runId.trim().length > 0) return args.runId;
+/** The header's parts: `title`, then `target` and `detail` inside parentheses for a run, after a space otherwise. */
+export interface WorkflowCallLabel {
+	readonly title: string;
+	readonly target?: string;
+	readonly detail?: string;
+	readonly run: boolean;
+}
+
+/** The input keys that usually say what a run was asked to do, in the order they are preferred. */
+const ASK_INPUT_KEYS = ["prompt", "objective", "task", "goal", "request", "question", "description"] as const;
+const ASK_DETAIL_LIMIT = 100;
+
+/** One line of display text: no terminal controls, no line breaks. */
+export function displayLine(value: string): string {
+	return stripVTControlCharacters(value)
+		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
+		.replace(/ {2,}/g, " ")
+		.trim();
+}
+
+function nonEmpty(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	const line = displayLine(value);
+	return line.length > 0 ? line : undefined;
+}
+
+function firstLine(text: string): string | undefined {
+	for (const line of text.split(/\r?\n/)) {
+		const shown = nonEmpty(line);
+		if (shown !== undefined) return shown;
+	}
 	return undefined;
 }
 
-function quoted(name: string | undefined): string {
-	return name === undefined ? "" : `"${name}"`;
+/** The first line of the input that says what the run was asked to do: a preferred key, else the first text input. */
+export function runAskLine(inputs: WorkflowInputValues | undefined): string | undefined {
+	if (inputs === undefined || inputs === null || typeof inputs !== "object") return undefined;
+	const values = inputs as Readonly<Record<string, unknown>>;
+	const preferred = ASK_INPUT_KEYS.map((key) => values[key]).find(
+		(value): value is string => typeof value === "string" && firstLine(value) !== undefined,
+	);
+	const text =
+		preferred ??
+		Object.values(values).find(
+			(value): value is string => typeof value === "string" && firstLine(value) !== undefined,
+		);
+	if (text === undefined) return undefined;
+	const line = firstLine(text);
+	return line === undefined ? undefined : truncateToWidth(line, ASK_DETAIL_LIMIT, "…");
+}
+
+function actionTarget(args: WorkflowToolArgs): string | undefined {
+	const target = nonEmpty(args.runId) ?? nonEmpty(args.workflow);
+	const stage = nonEmpty(args.stageId);
+	if (target !== undefined && stage !== undefined) return `${target}/${stage}`;
+	return target ?? stage;
+}
+
+/** What the header says for these arguments. */
+export function workflowCallLabel(args: WorkflowToolArgs): WorkflowCallLabel {
+	const action = args.action ?? "run";
+	if (action === "run") {
+		const target = nonEmpty(args.workflow) ?? "?";
+		const detail = runAskLine(args.inputs);
+		return { title: "Workflow", target, ...(detail === undefined ? {} : { detail }), run: true };
+	}
+	const target = actionTarget(args);
+	return { title: `workflow ${action}`, ...(target === undefined ? {} : { target }), run: false };
 }
 
 export interface RenderCallOpts {
@@ -44,72 +106,11 @@ export interface RenderCallOpts {
 	width?: number;
 }
 
-function fitLine(line: string, width?: number): string {
-	if (width === undefined || width <= 0) return line;
-	return truncateToWidth(line, width, "…");
-}
-
-/**
- * Returns a compact human-readable string describing the tool invocation.
- * Used in the renderCall slot of the workflow tool registration.
- */
+/** The header as plain text, as a log or a screen reader reads it. */
 export function renderCall(args: WorkflowToolArgs, opts: RenderCallOpts = {}): string {
-	const action = args.action ?? "run";
-	const name = runTarget(args);
-
-	let line: string;
-	switch (action) {
-		case "list":
-			line = "workflow: list registered workflows";
-			break;
-		case "status":
-			line = "workflow: list retained runs";
-			break;
-		case "inputs":
-			line = name === undefined ? "workflow: show inputs" : `workflow: show inputs for ${quoted(name)}`;
-			break;
-		case "run":
-			line = name === undefined ? "workflow: run" : `workflow: run ${quoted(name)}`;
-			break;
-		case "stages":
-			line = name === undefined ? "workflow: list stages" : `workflow: list stages for ${quoted(name)}`;
-			break;
-		case "stage":
-			line = name === undefined ? "workflow: inspect stage" : `workflow: inspect stage in ${quoted(name)}`;
-			break;
-		case "transcript":
-			line =
-				name === undefined
-					? "workflow: read stage transcript"
-					: `workflow: read stage transcript in ${quoted(name)}`;
-			break;
-		case "answer":
-			line = name === undefined ? "workflow: answer prompt" : `workflow: answer prompt in ${quoted(name)}`;
-			break;
-		case "pause":
-			line = name === undefined ? "workflow: pause run" : `workflow: pause run ${quoted(name)}`;
-			break;
-		case "reload":
-			line = "workflow: reload runtime";
-			break;
-		case "quit":
-			line = name === undefined ? "workflow: quit run" : `workflow: quit run ${quoted(name)}`;
-			break;
-		case "resume":
-			line = name === undefined ? "workflow: resume run" : `workflow: resume run ${quoted(name)}`;
-			break;
-		case "fork":
-			line = name === undefined ? "workflow: fork run" : `workflow: fork run ${quoted(name)}`;
-			break;
-		case "get":
-			line = name === undefined ? "workflow: get" : `workflow: get ${quoted(name)}`;
-			break;
-		case "models":
-			line = "workflow: list configured models";
-			break;
-		default:
-			line = name === undefined ? `workflow: ${action}` : `workflow: ${action} ${quoted(name)}`;
-			break;
-	}
-	return fitLine(line, opts.width);
+	const label = workflowCallLabel(args);
+	const line = label.run
+		? `${label.title}(${label.target ?? "?"}${label.detail === undefined ? "" : ` · ${label.detail}`})`
+		: `${label.title}${label.target === undefined ? "" : ` ${label.target}`}`;
+	return opts.width === undefined || opts.width <= 0 ? line : truncateToWidth(line, opts.width, "…");
 }

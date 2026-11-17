@@ -4,13 +4,19 @@ import { afterEach, beforeEach, describe, it, vi } from "vitest";
 
 type ShellModule = typeof import("../src/utils/shell.js");
 
-const { accessSyncMock } = vi.hoisted(() => ({
+const { accessSyncMock, spawnSyncMock } = vi.hoisted(() => ({
 	accessSyncMock: vi.fn(),
+	spawnSyncMock: vi.fn(),
 }));
 
 vi.mock("node:fs", async (importOriginal) => ({
 	...(await importOriginal<typeof Fs>()),
 	accessSync: accessSyncMock,
+}));
+
+vi.mock("child_process", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:child_process")>()),
+	spawnSync: spawnSyncMock,
 }));
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -28,6 +34,7 @@ beforeEach(async () => {
 	vi.stubEnv("SystemRoot", "E:\\WinNT");
 	vi.stubEnv("PATH", "");
 	accessSyncMock.mockReset().mockImplementation(notFound);
+	spawnSyncMock.mockReset();
 	// Atomic memoizes PATH lookups per module instance; start each test without them.
 	vi.resetModules();
 	shellModule = await import("../src/utils/shell.js");
@@ -43,7 +50,9 @@ describe("getPowerShellConfig", () => {
 	it("prefers PowerShell 7 on PATH over known installation locations (#9490)", () => {
 		const shell = "E:\\Tools\\pwsh.exe";
 		vi.stubEnv("PATH", "E:\\Tools");
-		accessSyncMock.mockReturnValue(undefined);
+		accessSyncMock.mockImplementation((path: string) => {
+			if (![shell, pwsh7, windowsPowerShell].includes(path)) notFound();
+		});
 
 		assert.deepEqual(shellModule.getPowerShellConfig(), { shell, args: [...shellModule.POWERSHELL_ARGS] });
 	});
@@ -67,8 +76,8 @@ describe("getPowerShellConfig", () => {
 		assert.deepEqual(shellModule.getPowerShellConfig(), { shell, args: [...shellModule.POWERSHELL_ARGS] });
 	});
 
-	it("finds Windows PowerShell under SystemRoot when PATH names no PowerShell (#9490)", () => {
-		vi.stubEnv("PATH", "E:\\Tools");
+	it("finds Windows PowerShell under SystemRoot when it is not on PATH (#9490)", () => {
+		vi.stubEnv("PATH", "");
 		accessSyncMock.mockImplementation((path: string) => {
 			if (path !== windowsPowerShell) notFound();
 		});
@@ -77,6 +86,16 @@ describe("getPowerShellConfig", () => {
 			shell: windowsPowerShell,
 			args: [...shellModule.POWERSHELL_ARGS],
 		});
+	});
+
+	it("looks PowerShell up without starting another process", () => {
+		vi.stubEnv("PATH", "E:\\Tools");
+		accessSyncMock.mockImplementation((path: string) => {
+			if (path !== windowsPowerShell) notFound();
+		});
+
+		shellModule.getPowerShellConfig();
+		assert.equal(spawnSyncMock.mock.calls.length, 0);
 	});
 
 	it("reports an error when no PowerShell installation exists (#9490)", () => {

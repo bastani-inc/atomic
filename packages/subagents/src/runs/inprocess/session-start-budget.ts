@@ -6,6 +6,14 @@ import {
 	SessionStartTimeoutError,
 } from "@bastani/atomic";
 
+/**
+ * How long a child may take to start: open its session, load its resources, create its agent session, including any
+ * wait for a resource-admission permit, register on Intercom, and dispatch its task. A start still under way then is
+ * retried once; a retry still under way then fails with a `SessionStartTimeoutError`. Waiting for a running slot does
+ * not count.
+ */
+export const SUBAGENT_SESSION_START_TIMEOUT_MS = 5 * 60_000;
+
 /** How often a starting child samples its event loop: a timer that turns at most once per loop turn. */
 export const START_PROBE_INTERVAL_MS = 100;
 
@@ -23,6 +31,7 @@ const STEP_PHASE: Readonly<Record<SessionStartStep, SessionStartPhase>> = {
 	"loading-resources": "setup",
 	"creating-session": "setup",
 	"awaiting-admission": "admission",
+	"registering-intercom": "setup",
 	"dispatching-task": "dispatch",
 };
 
@@ -36,9 +45,17 @@ export function sessionStartPhase(step: SessionStartStep, loop: SessionStartEven
 	return starved && phase !== "admission" ? "event-loop" : phase;
 }
 
+/** Where a start is: its step, and when the start and that step began (`Date.now()` time). */
+export interface SessionStartProgress {
+	readonly step: SessionStartStep;
+	readonly startedAt: number;
+	readonly stepStartedAt: number;
+}
+
 /**
  * The start budget of one child attempt. Its signal aborts with a {@link SessionStartTimeoutError} naming the step the
- * start was in, the phase that blocked it, and how the event loop turned meanwhile.
+ * start was in, the phase that blocked it, and how the event loop turned meanwhile. `onProgress` hears every step it
+ * enters, and `undefined` once the start is over, so a start is never shown as merely running.
  */
 export class SessionStartBudget {
 	private readonly controller = new AbortController();
@@ -53,14 +70,47 @@ export class SessionStartBudget {
 	private lastTurnAt = this.startedAt;
 	private turns = 0;
 	private longestTurnMs = 0;
+	private readonly startedAtWall = Date.now();
+	private stepStartedAtWall = this.startedAtWall;
+	private ended = false;
+	private readonly onProgress: ((progress: SessionStartProgress | undefined) => void) | undefined;
 
-	constructor(subject: string, timeoutMs: number, step: SessionStartStep) {
+	constructor(
+		subject: string,
+		timeoutMs: number,
+		step: SessionStartStep,
+		onProgress?: (progress: SessionStartProgress | undefined) => void,
+	) {
 		this.subject = subject;
 		this.timeoutMs = timeoutMs;
 		this.step = step;
+		this.onProgress = onProgress;
 		this.deadline = setTimeout(() => this.expire(), timeoutMs);
 		this.probe = setInterval(() => this.sampleTurn(), START_PROBE_INTERVAL_MS);
 		this.probe.unref();
+		this.report();
+	}
+
+	/** The step the start is in now. */
+	get currentStep(): SessionStartStep {
+		return this.step;
+	}
+
+	/** Whether the start is still under way: it has neither ended nor run out of its budget. */
+	get active(): boolean {
+		return !this.ended;
+	}
+
+	private report(): void {
+		try {
+			this.onProgress?.(
+				this.ended
+					? undefined
+					: { step: this.step, startedAt: this.startedAtWall, stepStartedAt: this.stepStartedAtWall },
+			);
+		} catch {
+			// Reporting where a start is never decides how it goes.
+		}
 	}
 
 	get signal(): AbortSignal {
@@ -69,11 +119,13 @@ export class SessionStartBudget {
 
 	/** The start moves on to `step`; the step it leaves keeps how long it ran. */
 	enter(step: SessionStartStep): void {
-		if (step === this.step) return;
+		if (step === this.step || this.ended) return;
 		const now = performance.now();
 		this.timings.push({ step: this.step, elapsedMs: Math.round(now - this.stepStartedAt) });
 		this.step = step;
 		this.stepStartedAt = now;
+		this.stepStartedAtWall = Date.now();
+		this.report();
 	}
 
 	/** The agent session starts, or stops, waiting for its resource-admission permit. */
@@ -83,8 +135,16 @@ export class SessionStartBudget {
 
 	/** The start is over, started or failed: its budget no longer runs. */
 	end(): void {
+		this.stop(true);
+	}
+
+	/** Stop the budget; a start that ran out of it is not over, so its progress stays where it stalled. */
+	private stop(reportEnd: boolean): void {
 		clearTimeout(this.deadline);
 		clearInterval(this.probe);
+		if (this.ended) return;
+		this.ended = true;
+		if (reportEnd) this.report();
 	}
 
 	private sampleTurn(): void {
@@ -119,7 +179,7 @@ export class SessionStartBudget {
 			steps: [...this.timings, { step: this.step, elapsedMs: stepElapsedMs }],
 			eventLoop,
 		});
-		this.end();
+		this.stop(false);
 		this.controller.abort(error);
 	}
 }
