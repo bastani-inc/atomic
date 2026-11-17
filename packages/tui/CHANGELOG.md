@@ -8,6 +8,11 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 - `TUI.requestImmediateRender()` renders on the next tick, ahead of the frame pacing `requestRender()` applies, for a frame that answers the user's own keystroke.
 
+### Changed
+
+- The fullscreen renderer no longer lays out the screen under an overlay that covers all of it, until the overlay stops covering it.
+- A focused component whose input handler returns a promise is repainted when the promise settles, rather than right after the key is routed.
+
 ## [0.9.88] - 2026-11-16
 
 ### Added
