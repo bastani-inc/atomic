@@ -317,6 +317,7 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 	if (normalizedCode === undefined) return undefined;
 	const refusalKind = refusalKindFromCode(code);
 	if (refusalKind !== undefined) return refusalKind;
+	if (CREDENTIAL_REJECTION_CODES.has(normalizedCode)) return "auth_on_candidate_provider";
 	const httpStatusKind = kindFromStatus(integerFrom(code));
 	if (httpStatusKind !== undefined) return httpStatusKind;
 	const requestIncompatibleKind = requestIncompatibleKindFromCode(code);
@@ -328,17 +329,6 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "authentication_required":
 		case "unauthorized":
 		case "forbidden":
-		case "invalid_api_key":
-		case "api_key_invalid":
-		case "api_key_expired":
-		case "api_key_disabled":
-		case "api_key_leaked":
-		case "missing_api_key":
-		case "invalid_key":
-		case "token_expired":
-		case "token_revoked":
-		case "token_invalidated":
-		case "oauth_token_invalidated":
 			return "auth_on_candidate_provider";
 		case "etimedout":
 		case "econnreset":
@@ -476,7 +466,7 @@ const API_KEY_REJECTED_FAILURE_PATTERN =
 	/\b(?:invalid|incorrect|expired|disabled|leaked)[_\s-]*api[_\s-]*key\b|\bapi[_\s-]+key[_\s-]+(?:(?:is|was|has|been)[_\s-]+){0,3}(?:not[_\s-]+valid|invalid|incorrect|expired|disabled|leaked|rejected|reported[_\s-]+as[_\s-]+leaked)\b/i;
 
 const TOKEN_REJECTED_FAILURE_PATTERN =
-	/\b(?:expired|revoked|invalidated)[_\s-]+(?:(?:oauth|auth|access|refresh)[_\s-]+)?token\b|\b(?:(?:oauth|auth|access|refresh)[_\s-]+)?token[_\s-]+(?:(?:is|was|has|been)[_\s-]+){0,3}(?:expired|revoked|invalidated)\b/i;
+	/\b(?:expired|revoked|invalidated)[_\s-]+(?:(?:oauth|auth|access|refresh)[_\s-]+)?token\b|\b(?:(?:oauth|auth|access|refresh)[_\s-]+)?token[_\s-]+(?:(?:is|was|has|been)[_\s-]+){0,3}(?:expired|revoked|invalidated)\b|\bsecurity\s+token\s+(?:included\s+in\s+the\s+request\s+)?(?:is|has)\s+(?:expired|invalid)\b/i;
 
 function transportOutageKindFromMessage(message: string): ModelFallbackFailureKind | undefined {
 	return TRANSPORT_OUTAGE_FAILURE_PATTERNS.some((pattern) => pattern.test(message.trim()))
@@ -523,7 +513,11 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	const transportOutageKind = transportOutageKindFromMessage(message);
 	if (transportOutageKind !== undefined) return transportOutageKind;
 	if (BILLING_EXHAUSTED_FAILURE_PATTERN.test(message)) return "quota_exhausted";
-	if (API_KEY_REJECTED_FAILURE_PATTERN.test(message) || TOKEN_REJECTED_FAILURE_PATTERN.test(message))
+	if (
+		API_KEY_REJECTED_FAILURE_PATTERN.test(message) ||
+		TOKEN_REJECTED_FAILURE_PATTERN.test(message) ||
+		CREDENTIAL_REJECTION_CODE_PATTERN.test(message)
+	)
 		return "auth_on_candidate_provider";
 	if (REQUEST_INCOMPATIBLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "request_incompatible";
 	const nameKind = kindFromCode(name);
@@ -913,7 +907,15 @@ const CREDENTIAL_REJECTION_CODES: ReadonlySet<string> = new Set([
 	"token_revoked",
 	"token_invalidated",
 	"oauth_token_invalidated",
+	"expired_token_exception",
+	"expiredtokenexception",
+	"unrecognized_client_exception",
+	"unrecognizedclientexception",
+	"consumer_suspended",
+	"api_key_service_blocked",
 ]);
+
+const CREDENTIAL_REJECTION_CODE_PATTERN = new RegExp(`\\b(?:${[...CREDENTIAL_REJECTION_CODES].join("|")})\\b`, "i");
 
 export function isProviderCredentialRejection(error: unknown): boolean {
 	const signal = normalizeModelFailureSignal(error);
@@ -930,14 +932,23 @@ export function isProviderCredentialRejection(error: unknown): boolean {
 	if (status === 401 || integerFrom(signal.code) === 401) return true;
 	if (signal.kind !== "auth_on_candidate_provider") return false;
 	const typedFailure = findGitHubCopilotError(error);
-	const code = normalizeCode(typedFailure?.providerCode ?? stringField(error, "providerCode") ?? signal.code);
+	const codes = [typedFailure?.providerCode ?? stringField(error, "providerCode"), signal.code, signal.name];
 	if (
-		code !== undefined &&
-		(CREDENTIAL_REJECTION_CODES.has(code) || (status !== 403 && AUTHENTICATION_FAILURE_CODES.has(code)))
+		codes.some((value) => {
+			const code = normalizeCode(value);
+			return (
+				code !== undefined &&
+				(CREDENTIAL_REJECTION_CODES.has(code) || (status !== 403 && AUTHENTICATION_FAILURE_CODES.has(code)))
+			);
+		})
 	)
 		return true;
 	const message = `${signal.message}\n${typedFailure?.detail ?? stringField(error, "detail") ?? ""}`;
-	return API_KEY_REJECTED_FAILURE_PATTERN.test(message) || TOKEN_REJECTED_FAILURE_PATTERN.test(message);
+	return (
+		API_KEY_REJECTED_FAILURE_PATTERN.test(message) ||
+		TOKEN_REJECTED_FAILURE_PATTERN.test(message) ||
+		CREDENTIAL_REJECTION_CODE_PATTERN.test(message)
+	);
 }
 
 /** Whether a failure is a provider safety/refusal response: a content-filter refusal, or a refused tool call. */

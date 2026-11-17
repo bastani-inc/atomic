@@ -419,6 +419,7 @@ function splitStageContent(content: StageUserMessageContent): { text: string; im
 
 export class StageSessionController {
 	private session: StageSessionRuntime | undefined;
+	private hasHadSession = false;
 	private activeCreation: Promise<StageSessionRuntime> | undefined;
 	/** The creation promise a candidate walk still owns, if one is advancing. */
 	private ownedCreationPromise: Promise<StageSessionRuntime> | undefined;
@@ -692,7 +693,7 @@ export class StageSessionController {
 		if (this.session) await this.session.setThinkingLevel(level);
 		else this.requestedThinkingLevel = level;
 		this.pendingThinkingLevel = level;
-		if (!this.modelRoute && !this.session) this.candidatesPromise = undefined;
+		if (!this.modelRoute && !this.hasHadSession) this.candidatesPromise = undefined;
 	}
 
 	get awaitingAutoPrompt(): boolean {
@@ -3326,6 +3327,7 @@ export class StageSessionController {
 		if (this.generationSealed) result.session.sealWorkflowStageGeneration?.();
 		this.residency.replacement.adopt(result.session);
 		this.session = result.session;
+		this.hasHadSession = true;
 		this.applyToolDetachment(result.session);
 		this.sessionSettingsManager = result.settingsManager ?? result.session.settingsManager;
 		if (this.sharedModelRuntime === undefined) {

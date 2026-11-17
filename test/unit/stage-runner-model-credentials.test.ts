@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
-import { SettingsManager } from "@bastani/atomic";
+import { type SessionManager, SettingsManager } from "@bastani/atomic";
 import type { Model } from "@bastani/atomic-ai";
 import { describe, test } from "vitest";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type {
 	StageRunnerOpts,
 	StageSessionCreateOptions,
 	StageSessionRuntime,
 } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import {
+	StageWakeDispatcher,
+	stageWakeKey,
+} from "../../packages/workflows/src/runs/foreground/stage-wake-dispatcher.js";
 import type { StageOptions } from "../../packages/workflows/src/shared/types.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 
@@ -30,6 +35,7 @@ function stageOpts(
 	extraStageOptions: Partial<StageOptions> = {},
 ): StageRunnerOpts {
 	const [model, ...fallbackModels] = chain;
+	let savedModel: StageSessionCreateOptions["model"];
 	return {
 		stageId: "stage-credentials",
 		stageName: "Reviewer",
@@ -47,13 +53,20 @@ function stageOpts(
 		adapters: {
 			agentSession: {
 				async create(options: StageSessionCreateOptions): Promise<StageSessionRuntime> {
+					const rawModel = options?.model ?? savedModel;
+					savedModel = rawModel;
 					const id =
-						typeof options?.model === "object" && options.model !== null
-							? `${options.model.provider}/${options.model.id}`
-							: String(options?.model);
+						typeof rawModel === "object" && rawModel !== null
+							? `${rawModel.provider}/${rawModel.id}`
+							: String(rawModel);
 					created.push(id);
+					const manager = options?.sessionManager as SessionManager | undefined;
+					if (manager !== undefined && manager.getEntries().length === 0) {
+						await manager.appendMessage({ role: "user", content: "init", timestamp: 1 });
+					}
 					let thinkingLevel: StageSessionRuntime["thinkingLevel"] = options.thinkingLevel ?? "medium";
 					const { session } = makeMockSession({
+						...(manager === undefined ? {} : { sessionId: manager.getSessionId() }),
 						setThinkingLevel(level) {
 							thinkingLevel = level;
 						},
@@ -98,6 +111,45 @@ describe("a workflow stage's model chain and credentials", () => {
 			await ctx.setThinkingLevel("high");
 			assert.equal(await ctx.prompt("second"), "ok");
 			assert.deepEqual(created, ["working/a"]);
+			assert.deepEqual(
+				ctx.__modelFallbackMeta().modelAttempts?.filter((attempt) => attempt.model === "nokey/a"),
+				[{ model: "nokey/a", success: false, error: "Skipped nokey/a: provider 'nokey' has no credentials." }],
+			);
+		} finally {
+			await ctx.__dispose();
+		}
+	});
+
+	test("changing a released stage's thinking level does not record skipped credentials again (#3326)", async () => {
+		const created: string[] = [];
+		const store = new MemorySessionStore();
+		const dispatcher = new StageWakeDispatcher("run-credentials", undefined);
+		const wakeKey = stageWakeKey("run-credentials", "stage-credentials");
+		dispatcher.open({ runId: "run-credentials", stageId: "stage-credentials", wakeKey });
+		const opts = stageOpts(["nokey/a", "working/a"], new Set(["working"]), created, new Map(), {
+			sessionStore: store,
+		});
+		opts.adapters.sessionStore = store;
+		opts.waiting = {
+			policy: { afterMs: 0 },
+			dispatcher,
+			wakeKey,
+			async enter() {},
+			async recordResults() {},
+			resultsInTranscript() {},
+			async leave() {},
+			async reopenFailed() {},
+			async rehydrated() {},
+			resident() {},
+		};
+		const ctx = createStageContext(opts);
+		try {
+			assert.equal(await ctx.prompt("first"), "ok");
+			await ctx.release();
+			await ctx.setThinkingLevel("high");
+			assert.equal(await ctx.prompt("second"), "ok");
+			assert.equal(ctx.thinkingLevel, "high");
+			assert.deepEqual(created, ["working/a", "working/a"]);
 			assert.deepEqual(
 				ctx.__modelFallbackMeta().modelAttempts?.filter((attempt) => attempt.model === "nokey/a"),
 				[{ model: "nokey/a", success: false, error: "Skipped nokey/a: provider 'nokey' has no credentials." }],
@@ -183,6 +235,13 @@ describe("a workflow stage's model chain and credentials", () => {
 		'403 {"error":{"code":403,"message":"Your API key was reported as leaked"}}',
 		"403 Your API key has been disabled",
 		"403 Your access token has expired",
+		"400 ExpiredTokenException: The security token included in the request is expired",
+		"400 ExpiredTokenException: The security token included in the request has expired",
+		"403 UnrecognizedClientException: The security token included in the request is invalid",
+		"403 The security token included in the request is invalid",
+		"400 The security token included in the request has expired",
+		'403 {"error":{"code":403,"details":[{"reason":"CONSUMER_SUSPENDED"}]}}',
+		'403 {"error":{"code":403,"details":[{"reason":"API_KEY_SERVICE_BLOCKED"}]}}',
 	]) {
 		test(`initial and resumed stage prompts skip the provider after a credential rejection (#3326): ${message}`, async () => {
 			for (const resumed of [false, true]) {
@@ -276,6 +335,25 @@ describe("a workflow stage's model chain and credentials", () => {
 			assert.deepEqual(created, ["p/a"]);
 			const attempts = ctx.__modelFallbackMeta().modelAttempts;
 			assert.equal(attempts?.at(-1)?.success, true);
+		} finally {
+			await ctx.__dispose();
+		}
+	});
+
+	test("changing thinking effort after failed stage constraints re-filters the unstarted chain (#3326)", async () => {
+		const created: string[] = [];
+		const ctx = createStageContext(
+			stageOpts(["p/a:low"], new Set(["p"]), created, new Map(), {
+				modelConstraints: { allowedModels: ["p/a"], allowedEfforts: ["high"] },
+			}),
+		);
+		try {
+			await assert.rejects(ctx.prompt("first"), /modelConstraints/);
+			assert.deepEqual(created, []);
+			await ctx.setThinkingLevel("high");
+			assert.equal(await ctx.prompt("second"), "ok");
+			assert.equal(ctx.thinkingLevel, "high");
+			assert.deepEqual(created, ["p/a"]);
 		} finally {
 			await ctx.__dispose();
 		}

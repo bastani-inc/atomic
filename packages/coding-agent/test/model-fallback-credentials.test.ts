@@ -204,6 +204,25 @@ describe("an auth failure takes its provider out of the chain", () => {
 		}
 	});
 
+	test("credential rejection codes and exception names block their provider without relying on English messages (#3326)", () => {
+		for (const code of [
+			"expired_token_exception",
+			"ExpiredTokenException",
+			"unrecognized_client_exception",
+			"UnrecognizedClientException",
+			"consumer_suspended",
+			"api_key_service_blocked",
+		]) {
+			for (const failure of [
+				{ status: 403, code, message: "localized" },
+				Object.assign(new Error("localized"), { name: code, status: 403 }),
+				{ code, message: "localized" },
+			]) {
+				assert.equal(isProviderCredentialRejection(failure), true, JSON.stringify(failure));
+			}
+		}
+	});
+
 	test("generic authentication codes on a 403 do not prove a provider credential rejection", () => {
 		for (const code of ["authentication-failed", "unauthorized", "auth_required", "authentication_required"]) {
 			assert.equal(isProviderCredentialRejection({ status: 403, code, message: "localized" }), false, code);
@@ -218,6 +237,13 @@ describe("an auth failure takes its provider out of the chain", () => {
 		'403 {"error":{"code":403,"message":"Your API key was reported as leaked"}}',
 		"403 Your API key has been disabled",
 		"403 Your access token has expired",
+		"400 ExpiredTokenException: The security token included in the request is expired",
+		"400 ExpiredTokenException: The security token included in the request has expired",
+		"403 UnrecognizedClientException: The security token included in the request is invalid",
+		"403 The security token included in the request is invalid",
+		"400 The security token included in the request has expired",
+		'403 {"error":{"code":403,"details":[{"reason":"CONSUMER_SUSPENDED"}]}}',
+		'403 {"error":{"code":403,"details":[{"reason":"API_KEY_SERVICE_BLOCKED"}]}}',
 	]) {
 		test(`a raw credential rejection blocks its provider (#3326): ${errorMessage}`, async () => {
 			const { requests } = await runSession(
