@@ -13,6 +13,13 @@ interface RateSample {
 	readonly waitingMs: number;
 	readonly busy: number;
 	readonly intervalMs: number;
+	readonly scheduledAt?: number;
+}
+
+interface ScopeHistory {
+	readonly samples: RateSample[];
+	observedSince: number;
+	uncountedAt?: number;
 }
 
 export interface FleetRateCapScope {
@@ -38,7 +45,7 @@ interface ScopeCapacity {
 }
 
 export class FleetRateCap {
-	private readonly samples = new Map<string, RateSample[]>();
+	private readonly scopes = new Map<string, ScopeHistory>();
 	private roots: readonly FleetRateRoot[] = [];
 
 	constructor(private readonly maxGapMs = RATE_CAP_MAX_GAP_MS) {}
@@ -58,8 +65,10 @@ export class FleetRateCap {
 				waitingMs: row?.waitingMs ?? 0,
 				busy: running,
 				intervalMs: row?.intervalMs ?? 0,
+				...(row?.scheduledAt === undefined ? {} : { scheduledAt: row.scheduledAt }),
 			};
-			const history = this.samples.get(scope) ?? [];
+			const state = this.scopes.get(scope) ?? { samples: [], observedSince: sample.at };
+			const history = state.samples;
 			const last = history.at(-1);
 			if (
 				last !== undefined &&
@@ -68,8 +77,22 @@ export class FleetRateCap {
 					sample.at < last.at ||
 					sample.at - last.at > this.maxGapMs ||
 					sample.intervalMs !== last.intervalMs)
-			)
+			) {
 				history.length = 0;
+				state.observedSince = sample.at;
+				delete state.uncountedAt;
+			}
+			if (
+				last?.scheduledAt !== undefined &&
+				sample.scheduledAt !== undefined &&
+				history.length > 0 &&
+				sample.scheduledAt > last.scheduledAt &&
+				(sample.acquired === last.acquired ||
+					sample.scheduledAt >
+						Math.max(last.scheduledAt, sample.at) +
+							(sample.acquired - last.acquired) * Math.ceil(sample.intervalMs))
+			)
+				state.uncountedAt = sample.at;
 			if (last !== undefined && history.length > 0 && sample.at === last.at) history[history.length - 1] = sample;
 			else history.push(sample);
 			const start = sample.at - RATE_CAP_WINDOW_MS;
@@ -79,18 +102,29 @@ export class FleetRateCap {
 					(history[1]!.acquired === history[0]!.acquired && history[1]!.waitingMs === history[0]!.waitingMs))
 			)
 				history.shift();
-			this.samples.set(scope, history);
+			this.scopes.set(scope, state);
 		}
-		for (const scope of this.samples.keys()) if (!busy.has(scope)) this.samples.delete(scope);
+		for (const scope of this.scopes.keys()) if (!busy.has(scope)) this.scopes.delete(scope);
+	}
+
+	private hasUncountedDraws(state: ScopeHistory): boolean {
+		return state.uncountedAt !== undefined && state.samples.at(-1)!.at - state.uncountedAt <= RATE_CAP_WINDOW_MS;
 	}
 
 	private warmingScopes(): Set<string> {
 		return new Set(
-			[...this.samples].flatMap(([scope, history]) =>
-				history.at(-1)!.intervalMs <= 0 || history.at(-1)!.at - history[0]!.at < RATE_CAP_MIN_SPAN_MS
-					? [scope]
-					: [],
-			),
+			[...this.scopes].flatMap(([scope, state]) => {
+				if (this.hasUncountedDraws(state)) return [];
+				const history = state.samples;
+				const first = history[0]!;
+				const last = history.at(-1)!;
+				const drew = last.acquired > first.acquired || last.waitingMs > first.waitingMs;
+				const observedMs = last.at - state.observedSince;
+				return (!drew && observedMs >= RATE_CAP_MIN_SPAN_MS) ||
+					(last.intervalMs > 0 && last.at - first.at >= RATE_CAP_MIN_SPAN_MS)
+					? []
+					: [scope];
+			}),
 		);
 	}
 
@@ -135,7 +169,7 @@ export class FleetRateCap {
 	limit(workersPerHost: number, servingHosts: number): number | undefined {
 		const capacities = this.capacities(workersPerHost);
 		const warming = this.warmingScopes();
-		if (capacities.length === 0 && warming.size === 0) return undefined;
+		if (this.scopes.size === 0) return undefined;
 		const demand = this.constrainedDemand(capacities, warming);
 		const hosts = Math.ceil(demand.workers / workersPerHost);
 		if (warming.size === 0) return Math.max(1, hosts);
@@ -155,7 +189,9 @@ export class FleetRateCap {
 
 	private capacities(workersPerHost: number): ScopeCapacity[] {
 		const capacities: ScopeCapacity[] = [];
-		for (const [scope, history] of [...this.samples].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+		for (const [scope, state] of [...this.scopes].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+			if (this.hasUncountedDraws(state)) continue;
+			const history = state.samples;
 			const first = history[0];
 			const last = history.at(-1);
 			if (first === undefined || last === undefined || !(last.intervalMs > 0)) continue;

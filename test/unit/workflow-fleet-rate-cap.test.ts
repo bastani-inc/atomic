@@ -118,6 +118,7 @@ test("the tightest limited scope sets the rate cap, by the last 10 minutes only,
 	);
 	shifting.observe([bucket("anthropic", 600, 3, 20 * MINUTE + 10_000)], [limited(8, "anthropic")]);
 	assert.equal(shifting.estimate(4), undefined, "a count that went back starts the history over");
+	assert.equal(shifting.limit(4, 2), 2, "a counter reset holds new growth until its fresh history warms");
 	assert.ok(acquired > 3);
 });
 
@@ -144,6 +145,28 @@ test("rate observations start over after a gap, a clock reversal or a limit chan
 	}
 });
 
+test("a reset or retired root cannot carry an old uncounted-draw allowance into a new warm-up (#4768)", () => {
+	for (const reset of ["gap", "clock", "counter", "limit", "retired"] as const) {
+		const cap = new FleetRateCap();
+		const roots = [limited(4, "p")];
+		cap.observe([{ ...bucket("p", 600, 100, 0), scheduledAt: START + 1_000 }], roots);
+		cap.observe([{ ...bucket("p", 600, 100, 10_000), scheduledAt: START + 11_000 }], roots);
+		assert.equal(cap.limit(4, 2), 251, "uncounted draws do not restrict demand");
+		if (reset === "retired") cap.observe([], []);
+		const at = reset === "gap" ? MINUTE : reset === "clock" ? 5_000 : 20_000;
+		cap.observe(
+			[
+				{
+					...bucket("p", reset === "limit" ? 300 : 600, reset === "counter" ? 0 : 101, at),
+					scheduledAt: START + at + 100,
+				},
+			],
+			roots,
+		);
+		assert.equal(cap.limit(4, 2), 2, reset);
+	}
+});
+
 test("rate estimates weight each busy count by its observed time and report the actual span (#4768)", () => {
 	const cap = new FleetRateCap();
 	for (let at = 0; at <= MINUTE; at += 10_000)
@@ -165,19 +188,19 @@ test("a rate-limited fleet holds growth while warming every scope, bootstraps an
 	assert.equal(cap.limit(4, 1), 1, "a scope without readings holds growth too");
 	const idle = new FleetRateCap();
 	observeSteady(idle, "p", 600, 0, 4, 0, MINUTE);
-	assert.equal(idle.limit(4, 1), 1, "an unchanged bucket counter is not evidence of usable capacity");
+	assert.equal(idle.limit(4, 1), 251, "an unused scope supplies no restriction on the root's full demand");
 	idle.observe([], []);
 	assert.equal(idle.limit(4, 1), undefined, "a scope no running root limits is forgotten");
 });
 
-test("a configured scope without bucket observations keeps its startup hold until real rate history exists (#4768)", () => {
+test("a configured scope without bucket observations releases its startup hold after a minute without draws (#4768)", () => {
 	const cap = new FleetRateCap();
 	const now = vi.spyOn(Date, "now");
 	try {
 		for (let at = 0; at <= 5 * MINUTE; at += 10_000) {
 			now.mockReturnValue(START + at);
 			cap.observe([], [limited(4, "p")]);
-			assert.equal(cap.limit(4, 1), 1, `setup work has not reached its model call after ${at}ms`);
+			assert.equal(cap.limit(4, 1), at < MINUTE ? 1 : 251, `unused scope observed for ${at}ms`);
 		}
 		observeSteady(cap, "p", 600, 300, 4, 5 * MINUTE, 6 * MINUTE);
 		assert.equal(cap.limit(4, 1), 2);
@@ -190,7 +213,7 @@ test("an existing but idle bucket cannot make setup-only samples look like a min
 	const cap = new FleetRateCap();
 	for (let at = 0; at <= 5 * MINUTE; at += 10_000) {
 		cap.observe([bucket("p", 600, 100, at)], [limited(4, "p")]);
-		assert.equal(cap.limit(4, 1), 1, `the previous run's unchanged counter supplies no rate data at ${at}ms`);
+		assert.equal(cap.limit(4, 1), at < MINUTE ? 1 : 251, `the previous run's counter is idle at ${at}ms`);
 	}
 	observeSteady(cap, "p", 600, 300, 4, 5 * MINUTE, 6 * MINUTE, 100);
 	assert.equal(cap.limit(4, 1), 2);
@@ -245,7 +268,9 @@ test("fractional capacity for unrelated scopes cannot round warming hosts upward
 		].map(([leased, ready]) => ({ leased: leased!, ready: ready!, blocked: false, rateScopes: ["p"] })),
 		{ leased: 2, ready: 10_000, blocked: false, rateScopes: ["q"] },
 	];
-	for (let at = 0; at <= MINUTE; at += 10_000) cap.observe([bucket("q", 414, (at / 10_000) * 21, at)], roots);
+	for (let at = 0; at <= MINUTE; at += 10_000)
+		cap.observe([bucket("q", 414, (at / 10_000) * 21, at)], [roots.at(-1)!]);
+	cap.observe([bucket("q", 414, 147, MINUTE + 10_000)], roots);
 	let serving = 30;
 	for (let tick = 0; tick < 5; tick++) {
 		serving = cap.limit(8, serving)!;

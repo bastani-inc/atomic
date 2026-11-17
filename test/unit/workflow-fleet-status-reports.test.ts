@@ -7,10 +7,12 @@ import { afterEach, test, vi } from "vitest";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import type { PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { readFleetRateUsage } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
 import { readSharedPoolStats, SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { definitionDigest } from "../../packages/workflows/src/workers/definitions.js";
+import type { FleetRateLimits } from "../../packages/workflows/src/workers/fleet-rate-limits.js";
 import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
 import { poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
 import type { FakeWorker } from "../helpers/fake-pool-worker.js";
@@ -160,7 +162,11 @@ function checkpointOf(
 	};
 }
 
-async function rootCoordinator(directory: string) {
+async function rootCoordinator(
+	directory: string,
+	options: { readonly workers?: number; readonly rateLimits?: FleetRateLimits } = {},
+) {
+	const workers = options.workers ?? 1;
 	const stateDirectory = join(directory, "state");
 	mkdirSync(stateDirectory);
 	const journal = await resolveRunJournal({ journal: { path: join(directory, "shared.sqlite") } });
@@ -174,8 +180,13 @@ async function rootCoordinator(directory: string) {
 		lease: acquired.lease,
 		options: {
 			durable: poolDurableJournal(journal),
-			shared: { stateDirectory, host: "host-a", claimWindowMs: 60_000 },
-			workers: 1,
+			shared: {
+				stateDirectory,
+				host: "host-a",
+				claimWindowMs: 60_000,
+				...(options.rateLimits === undefined ? {} : { rateLimits: options.rateLimits }),
+			},
+			workers,
 			leaseMs: 60_000,
 			heartbeatMs: 15_000,
 			startupTimeoutMs: 30_000,
@@ -183,8 +194,8 @@ async function rootCoordinator(directory: string) {
 		},
 	});
 	const starting = host.command({ kind: "start", sources: [SOURCE], cwd: directory, publish: false });
-	while (forked.length === 0) await sleep(5);
-	await forked[0]!.request({ kind: "ready" });
+	while (forked.length < workers) await sleep(5);
+	for (const worker of forked.slice(0, workers)) await worker.request({ kind: "ready" });
 	await starting;
 	const enqueue = async (id: string) => {
 		const { work, boundary } = poolWorkFixture(id);
@@ -198,6 +209,7 @@ async function rootCoordinator(directory: string) {
 	return {
 		host,
 		journal,
+		lease: acquired.lease,
 		enqueue,
 		async close() {
 			await host.command({ kind: "close" });
@@ -209,11 +221,11 @@ async function rootCoordinator(directory: string) {
 
 test("session appends advance a child's progress without counting another checkpoint, and a replay starts over (#4768)", async () => {
 	const directory = makeTempDirectory("fleet-progress-session-");
-	const root = await rootCoordinator(directory);
+	const root = await rootCoordinator(directory, { workers: 2 });
 	const time = vi.spyOn(performance, "now");
 	try {
 		const boundary = await root.enqueue("session-progress");
-		const worker = forked[0]!;
+		const [worker, replacement] = forked as [FakeWorker, FakeWorker];
 		const held = (await worker.request({ kind: "claim" })).value as PoolWork;
 		assert.ok(held);
 		time.mockReturnValue(10_000);
@@ -257,15 +269,17 @@ test("session appends advance a child's progress without counting another checkp
 		});
 		assert.equal(appended.error, undefined);
 		assert.deepEqual(root.host.coordinator.childProgress(16_000), [{ work: held.id, agoMs: 1_000, checkpoints: 1 }]);
-		assert.equal((await worker.request({ kind: "fenced" })).error, undefined);
-		const replay = (await worker.request({ kind: "claim" })).value as PoolWork;
+		const queue = await openSqlPoolQueue(root.journal);
+		assert.equal(await queue.releaseExited(root.lease, held), true);
+		const replay = (await replacement.request({ kind: "claim" })).value as PoolWork;
 		assert.equal(replay.generation, held.generation + 1);
 		assert.deepEqual(
-			root.host.coordinator.childProgress(),
+			root.host.coordinator.childProgress(16_000),
 			[],
 			"an earlier attempt's progress is never reported as its replay's",
 		);
-		const committed = await worker.request({
+		assert.equal((await worker.request({ kind: "fenced" })).error, undefined);
+		const committed = await replacement.request({
 			kind: "commit",
 			operation: "replay-checkpoint",
 			mutation: { kind: "checkpoint", checkpoint: checkpointOf(replay, boundary, "replayed") },
@@ -274,6 +288,63 @@ test("session appends advance a child's progress without counting another checkp
 		assert.deepEqual(root.host.coordinator.childProgress(16_000), [
 			{ work: replay.id, agoMs: 1_000, checkpoints: 1 },
 		]);
+	} finally {
+		time.mockRestore();
+		await root.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("a coordinator ends a worker's token wait when the request is released, its attempt ends or the worker exits (#4768)", async () => {
+	const directory = makeTempDirectory("fleet-rate-release-");
+	let now = 10_000;
+	const time = vi.spyOn(performance, "now").mockImplementation(() => now);
+	const root = await rootCoordinator(directory, {
+		rateLimits: { p: { requestsPerMinute: 1, burst: 1, prefetch: 1 } },
+	});
+	try {
+		const worker = forked[0]!;
+		assert.equal(
+			(await worker.request({ kind: "rate-acquire", provider: "p", model: "m", request: "burst" })).value,
+			0,
+		);
+		assert.ok(
+			((await worker.request({ kind: "rate-acquire", provider: "p", model: "m", request: "released" }))
+				.value as number) > 10_000,
+		);
+		now = 11_000;
+		assert.equal((await worker.request({ kind: "rate-release", request: "released" })).value, 0);
+		now = 14_000;
+		await root.enqueue("attempt-end");
+		const held = (await worker.request({ kind: "claim" })).value as PoolWork;
+		assert.ok(held);
+		assert.ok(
+			((await worker.request({ kind: "rate-acquire", provider: "p", model: "m", request: "attempt" }))
+				.value as number) > 10_000,
+		);
+		now = 15_000;
+		assert.equal(
+			(
+				await worker.request({
+					kind: "complete",
+					result: { runId: held.childRunId, status: "completed", stages: [], toolNodes: [] },
+				})
+			).error,
+			undefined,
+		);
+		now = 19_000;
+		assert.ok(
+			((await worker.request({ kind: "rate-acquire", provider: "p", model: "m", request: "exited" }))
+				.value as number) > 10_000,
+		);
+		now = 20_000;
+		worker.exit(1);
+		while (forked.length < 2) await sleep(5);
+		await forked[1]!.request({ kind: "ready" });
+		now = 26_000;
+		await root.host.command({ kind: "close" });
+		await root.host.coordinator.shutdown();
+		assert.equal((await readFleetRateUsage(root.journal))[0]?.waitingMs, 3_000);
 	} finally {
 		time.mockRestore();
 		await root.close();

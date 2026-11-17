@@ -140,9 +140,10 @@ test("a released worker cannot regain waiting time from an acquire still in flig
 });
 
 test("a canceled provider gate ends its recorded token wait (#4768)", async () => {
+	let answer = async (): Promise<RateAcquireOutcome> => ({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 });
 	const reports: (readonly RateBucketWaiting[])[] = [];
 	const { store } = fakeStore(
-		async () => ({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 }),
+		() => answer(),
 		undefined,
 		async (waiting) => {
 			reports.push(waiting);
@@ -151,7 +152,7 @@ test("a canceled provider gate ends its recorded token wait (#4768)", async () =
 	);
 	const limiter = new FleetRateLimiter({
 		store,
-		limits: { p: { requestsPerMinute: 60 } },
+		limits: { p: { requestsPerMinute: 60, burst: 1, prefetch: 1 } },
 		slots: 1,
 		shareCooldowns: false,
 		applyCooldowns: () => {},
@@ -172,6 +173,25 @@ test("a canceled provider gate ends its recorded token wait (#4768)", async () =
 		await vi.advanceTimersByTimeAsync(1_000);
 		await limiter.poll();
 		assert.deepEqual(reports.flat(), [], "a canceled request contributes no later wait");
+
+		await vi.advanceTimersByTimeAsync(60_000);
+		const inFlight = Promise.withResolvers<RateAcquireOutcome>();
+		answer = () => inFlight.promise;
+		const canceledInFlight = new AbortController();
+		const asking = fleetRateGate(
+			["p"],
+			(provider, model, request) => limiter.acquire(provider, model, "a", request),
+			async (request) => limiter.releaseRequest("a", request),
+		)("p", "m", canceledInFlight.signal);
+		canceledInFlight.abort(new Error("stop in flight"));
+		inFlight.resolve({ granted: 1 });
+		await asking;
+		answer = async () => ({ granted: 0, waitMs: 60_000, fits: 1, cooldownMs: 0 });
+		assert.equal(
+			await limiter.acquire("p", "m", "b"),
+			0,
+			"a gate canceled while its acquire is in flight releases the request and refunds its token",
+		);
 	} finally {
 		vi.useRealTimers();
 	}

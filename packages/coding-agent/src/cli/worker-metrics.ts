@@ -73,7 +73,7 @@ export function prometheusText(fleet: WorkerMetricsFleet): string {
 		);
 		if (scaling.rateCapHosts !== undefined)
 			lines.push(
-				"# HELP atomic_fleet_rate_cap_hosts Most hosts the fleet-wide rate limits keep busy, by the last 10 minutes of tokens.",
+				"# HELP atomic_fleet_rate_cap_hosts Hosts the fleet can keep busy under its rate limits across all roots; current hosts for warming work. Present when a running root sets rate limits and history is retained, even when not binding.",
 				"# TYPE atomic_fleet_rate_cap_hosts gauge",
 				`atomic_fleet_rate_cap_hosts ${scaling.rateCapHosts}`,
 			);

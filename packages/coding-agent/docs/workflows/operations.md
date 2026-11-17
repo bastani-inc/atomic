@@ -1118,7 +1118,7 @@ workers: {
 
 A call waits for its turn before it is sent; it never fails because of a fleet limit. If the shared journal does not answer within one second, the host meters that provider at its share of the rate (the rate divided by the live worker hosts) until the journal answers again, and `host.stats().rateLimit` and the pool's coordination stats show `"local-fallback"`. Both settings are saved with the root, and a resume may change them. Without `rateLimits` and `shareCooldowns`, nothing changes.
 
-The [fleet controller and metrics server](/guides/worker-hosts#the-scaling-signal) also use granted calls and token-waiting worker time to estimate a host cap. They hold growth while a minute of recent history warms. SDK readers opt into the same behavior with `readWorkflowWorkerFleet({ rateHistory: true })`; call it at least once every 30 seconds. A one-shot status read does not keep rate history.
+The [fleet controller and metrics server](/guides/worker-hosts#the-scaling-signal) also use granted calls and token-waiting worker time to estimate a host cap across every root. They hold limited growth while a minute of recent history warms. A scope with no draws during that minute no longer holds growth, so an unused provider or model does not freeze work using another scope. Bucket movement not explained by counted draws, as with older hosts, also disables that scope's cap for the observation window. SDK readers opt into the same behavior with `readWorkflowWorkerFleet({ rateHistory: true })`; call it at least once every 30 seconds. A one-shot status read does not keep rate history.
 
 What differs for a child that runs on another host:
 

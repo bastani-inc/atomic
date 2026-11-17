@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
@@ -9,14 +10,17 @@ import type { RateBucketUsage } from "../../packages/workflows/src/durable/journ
 import { readSharedPoolStats, SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import type { Lease, RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import type { ProvisionedHost, WorkerHostProvisioner } from "../../packages/workflows/src/workers/autoscaler.js";
+import { definitionDigest } from "../../packages/workflows/src/workers/definitions.js";
 import {
 	startWorkflowFleetController,
 	type WorkflowFleetController,
 } from "../../packages/workflows/src/workers/fleet-controller.js";
-import { readWorkflowWorkerFleet } from "../../packages/workflows/src/workers/worker-host.js";
+import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
+import { readWorkflowWorkerFleet, startWorkflowWorkerHost } from "../../packages/workflows/src/workers/worker-host.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { sleep } from "../helpers/runtime.js";
+import { childPath } from "../helpers/workflow-shared-pool-coordinator.js";
 
 const usage = vi.hoisted(() => ({ next: (): RateBucketUsage[] => [] }));
 
@@ -107,6 +111,30 @@ test.skipIf(process.platform === "win32")(
 			roots: ["root"],
 			busy: 4,
 		});
+		await shared.reportHost({
+			host: "h-draining",
+			labels: {},
+			git: "unavailable",
+			restore: false,
+			workers: 4,
+			maxWorkers: 4,
+			roots: ["root"],
+			busy: 0,
+			draining: true,
+		});
+		await shared.reportHost({
+			host: "h-stale",
+			labels: {},
+			git: "unavailable",
+			restore: false,
+			workers: 4,
+			maxWorkers: 4,
+			roots: ["root"],
+			busy: 0,
+		});
+		await sqlPoolStorage(journal)!.transaction((tx) =>
+			tx.run("UPDATE acme_wf_runs_pool_hosts SET heartbeat_at = heartbeat_at - 60000 WHERE host = 'h-stale'"),
+		);
 		usage.next = bucketReadings(() => LIMIT_PER_MINUTE / 4);
 		const options = {
 			journal: selection(),
@@ -115,7 +143,11 @@ test.skipIf(process.platform === "win32")(
 			policy: { workersPerHost: 4, maxHosts: 20 },
 		};
 		const first = await readWorkflowWorkerFleet({ ...options, rateHistory: true });
-		assert.equal(first.scaling?.desiredHosts, 1, "a cold metrics reader holds growth until its history matures");
+		assert.deepEqual(
+			[first.scaling?.desiredHosts, first.scaling?.rateCapHosts],
+			[1, 1],
+			"a cold metrics reader holds growth at the live non-draining host count until its history matures",
+		);
 		await readWorkflowWorkerFleet({ ...options, rateHistory: true });
 		const warm = await readWorkflowWorkerFleet({ ...options, rateHistory: true });
 		assert.deepEqual([warm.scaling?.desiredHosts, warm.scaling?.rateCapHosts], [2, 2]);
@@ -161,9 +193,20 @@ test.skipIf(process.platform === "win32")(
 			busy: 4,
 			providerId: "vm-1",
 		});
+		const store = await SqlFleetStore.open(journal);
+		const seeded = await store.acquire("seed", undefined, 60_000);
+		if (!seeded.held) assert.fail("seed controller lease was not acquired");
+		await store.carryDrain({ holder: "seed", epoch: seeded.epoch }, "h-draining", "vm-draining");
+		await store.release({ holder: "seed", epoch: seeded.epoch });
 		let saturated = true;
 		usage.next = bucketReadings(() => (saturated ? LIMIT_PER_MINUTE / 2 : LIMIT_PER_MINUTE / 20));
-		const hosts: ProvisionedHost[] = [{ id: "vm-1", state: "running", since: 0 }];
+		const hosts: ProvisionedHost[] = [
+			{ id: "vm-1", state: "running", since: 0 },
+			{ id: "vm-draining", state: "running", since: 0 },
+			{ id: "vm-provider-draining", state: "draining", since: 0 },
+			{ id: "vm-failed", state: "failed", since: 0 },
+			{ id: "vm-stopped", state: "stopped", since: 0 },
+		];
 		const targets: number[] = [];
 		const provisioner: WorkerHostProvisioner = {
 			kind: "fake",
@@ -175,7 +218,10 @@ test.skipIf(process.platform === "win32")(
 				while (hosts.length < target)
 					hosts.push({ id: `vm-${hosts.length + 1}`, state: "pending", since: Date.now() });
 			},
-			async drain() {},
+			async drain(id) {
+				const index = hosts.findIndex((host) => host.id === id);
+				if (index >= 0) hosts.splice(index, 1);
+			},
 		};
 		const running = await startWorkflowFleetController({
 			journal: selection(),
@@ -191,7 +237,6 @@ test.skipIf(process.platform === "win32")(
 		await sleep(20 * TICK_MS);
 		assert.deepEqual(targets, [], "a saturated limit holds the fleet at the hosts it feeds");
 		assert.deepEqual([running.status().target, running.status().rateCapHosts], [1, 1]);
-		const store = await SqlFleetStore.open(journal);
 		const capped = (await store.recent(20)).filter((event) => event.kind === "rate-cap");
 		assert.deepEqual(
 			capped.map((event) => [event.target, event.live]),
@@ -221,5 +266,68 @@ test.skipIf(process.platform === "win32")(
 					event.reason === "the rate limits no longer hold the fleet below what its queue wants",
 			),
 		);
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"a worker host strips URL credentials from its shipping error before reporting to the registry or stats (#4768)",
+	async () => {
+		const journal = await resolveRunJournal({ journal: selection(), agentDir: join(directory, "agent") });
+		journals.push(journal);
+		const queue = await openSqlPoolQueue(journal);
+		const shared = await SqlSharedPool.open(journal, queue);
+		const definition = { path: childPath, exportName: "boundChild", digest: await definitionDigest(childPath) };
+		await journal.createRun({ runId: "root", name: "root", cwd: directory, createdAt: 0, status: "running" });
+		const acquired = await journal.acquire("root", "owner");
+		if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
+		await queue.initialize(acquired.lease, 60_000);
+		await shared.publishConfig(acquired.lease, {
+			definitions: [definition],
+			leaseMs: 30_000,
+			heartbeatMs: 7_500,
+			startupTimeoutMs: 30_000,
+			claimWindowMs: 60_000,
+			checkpointShipping: { intervalMs: 60_000, maxBatch: 64, maxLagMs: 600_000 },
+		});
+		const attach = vi.spyOn(PoolCoordinator.prototype, "attachSatellite").mockResolvedValue(undefined);
+		const shipping = vi.spyOn(PoolCoordinator.prototype, "shippingStatus").mockReturnValue({
+			lagMs: 120,
+			pending: 2,
+			lagging: true,
+			error: Object.assign(new Error("fetch libsql://me:pw@db.example/x?authToken=s3cret failed"), {
+				name: "StorageError",
+			}),
+		});
+		let host: Awaited<ReturnType<typeof startWorkflowWorkerHost>> | undefined;
+		try {
+			host = await startWorkflowWorkerHost({
+				journal: selection(),
+				agentDir: join(directory, "host"),
+				maxWorkers: 1,
+				restore: false,
+				hostId: "h-ship",
+			});
+			const expected = {
+				lagMs: 120,
+				pending: 2,
+				lagging: true,
+				error: { name: "StorageError", message: "fetch libsql://db.example/x failed" },
+			};
+			const rawShipping = async () => {
+				const row = await sqlPoolStorage(journal)!.read((executor) =>
+					executor.get<{ shipping: string | null }>(
+						"SELECT shipping FROM acme_wf_runs_pool_hosts WHERE host = 'h-ship'",
+					),
+				);
+				return row?.shipping ? (JSON.parse(row.shipping) as typeof expected) : undefined;
+			};
+			await until("the host to report its redacted shipping error", async () => (await rawShipping()) !== undefined);
+			assert.deepEqual(await rawShipping(), expected);
+			assert.deepEqual((await host.stats()).shipping, expected);
+		} finally {
+			await host?.stop();
+			shipping.mockRestore();
+			attach.mockRestore();
+		}
 	},
 );

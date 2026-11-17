@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
+import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
-import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
+import { readFleetRateUsage, SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import { FleetController } from "../../packages/workflows/src/workers/fleet-controller.js";
+import { FleetRateCap } from "../../packages/workflows/src/workers/fleet-rate-cap.js";
 import { FleetRateLimiter } from "../../packages/workflows/src/workers/fleet-rate-limits.js";
 import type { ProvisionedHost, WorkerHostProvisioner } from "../../packages/workflows/src/workers/fleet-types.js";
+import { registerSqlPoolStorage as registerOlderStorage } from "../fixtures/shared-pool-0.9.88/durable/journal/internal.js";
+import { SqlRateBuckets as OlderRateBuckets } from "../fixtures/shared-pool-0.9.88/durable/journal/sql-rate-buckets.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 
 const clock = vi.hoisted(() => ({ now: 1_800_000_000_000 }));
@@ -23,8 +27,13 @@ vi.mock("node:sqlite", async (importOriginal) => {
 	return { ...actual, DatabaseSync: FleetClockDatabase };
 });
 
-for (const initialHosts of [3, 8]) {
-	test(`a fleet starting with ${initialHosts} hosts follows real token-waiting traffic with the default growth delay and through failover (#4768)`, async () => {
+for (const [initialHosts, unusedScope] of [
+	[3, false],
+	[8, false],
+	[1, false],
+	[1, true],
+] as const) {
+	test(`a fleet starting with ${initialHosts} hosts${unusedScope ? " and an unused quota" : ""} follows real token-waiting traffic with the default growth delay and through failover (#4768)`, async () => {
 		clock.now = 1_800_000_000_000;
 		vi.useFakeTimers({
 			toFake: ["Date", "performance", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
@@ -40,12 +49,15 @@ for (const initialHosts of [3, 8]) {
 			if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
 			const lease = acquired.lease;
 			const queue = await openSqlPoolQueue(journal);
-			await queue.initialize(lease, 600_000);
+			await queue.initialize(lease, 3_600_000);
 			const shared = await SqlSharedPool.open(journal, queue);
-			const limits = { p: { requestsPerMinute: 60, burst: 1, prefetch: 1 } };
+			const limits = {
+				p: { requestsPerMinute: 60, burst: 1, prefetch: 1 },
+				...(unusedScope ? { q: { requestsPerMinute: 60, burst: 1, prefetch: 1 } } : {}),
+			};
 			await shared.publishConfig(lease, {
 				definitions: [],
-				leaseMs: 600_000,
+				leaseMs: 3_600_000,
 				heartbeatMs: 15_000,
 				startupTimeoutMs: 60_000,
 				claimWindowMs: 60_000,
@@ -90,7 +102,7 @@ for (const initialHosts of [3, 8]) {
 					limiters.push(limiter);
 					for (let slot = 0; slot < 4; slot++) {
 						const worker = `h${index}/w${slot}`;
-						const work = await queue.claim(lease, worker, [poolWorkFixture().work], 600_000);
+						const work = await queue.claim(lease, worker, [poolWorkFixture().work], 3_600_000);
 						assert.ok(work);
 						workers.push({ worker, work, limiter, due: clock.now, active: true });
 					}
@@ -115,7 +127,7 @@ for (const initialHosts of [3, 8]) {
 					provisioner,
 					maxHosts: 20,
 					workersPerHost: 4,
-					idleDrainMs: 600_000,
+					idleDrainMs: 3_600_000,
 					drainIdleOnStop: true,
 				});
 				controllers.push(controller);
@@ -136,8 +148,13 @@ for (const initialHosts of [3, 8]) {
 					if (clock.now % 10_000 === 0) for (let index = 0; index < hosts.length; index++) await report(index);
 				}
 			};
-			await advance(120);
-			assert.deepEqual(targets, [], "history warms before the default 20-second delay can over-provision");
+			await advance(unusedScope ? 600 : 120);
+			assert.ok(
+				targets.every((target) => target <= 3),
+				"startup cannot grow beyond the quota's capacity",
+			);
+			if (initialHosts === 1) assert.equal(hosts.length, 3, "an unused quota cannot hold back active work");
+			else assert.deepEqual(targets, [], "history warms before the default 20-second delay can over-provision");
 			assert.equal(leader.status().rateCapHosts, 3, "60 calls/minute feed ten workers calling once per ten seconds");
 			assert.equal(leader.status().target, 3, "extra leased workers waiting for tokens cannot raise the cap");
 			const standby = start();
@@ -148,7 +165,12 @@ for (const initialHosts of [3, 8]) {
 			await advance(10);
 			assert.equal(standby.status().role, "active");
 			assert.equal(standby.status().rateCapHosts, 3);
-			assert.deepEqual(targets, [], "takeover keeps the standby's observations rather than growing uncapped");
+			if (initialHosts === 1)
+				assert.ok(
+					targets.every((target) => target <= 3),
+					"takeover keeps the standby's observations rather than growing uncapped",
+				);
+			else assert.deepEqual(targets, [], "takeover never adds hosts to an already quota-sized fleet");
 			if (initialHosts > 3) {
 				for (const worker of workers.slice(12)) {
 					worker.active = false;
@@ -174,6 +196,39 @@ for (const initialHosts of [3, 8]) {
 			await journal.close();
 			await database.close();
 			vi.useRealTimers();
+		}
+	});
+}
+
+for (const [upgraded, countedCalls] of [
+	[false, false],
+	[true, false],
+	[true, true],
+] as const) {
+	test(`older hosts drawing tokens cannot freeze a fleet${upgraded ? " after the counter upgrade" : " before the counter upgrade"}${countedCalls ? " alongside counted calls" : ""} (#4768)`, async () => {
+		clock.now = 1_800_000_000_000;
+		const database = await openNodeSqliteDatabase(":memory:");
+		const journal = await SqlRunJournal.open(database);
+		try {
+			registerOlderStorage(journal, sqlPoolStorage(journal)!);
+			const older = await OlderRateBuckets.open(journal);
+			const current = upgraded ? await SqlRateBuckets.open(journal) : undefined;
+			const cap = new FleetRateCap();
+			const roots = [{ leased: 8, ready: 80, blocked: false, rateScopes: ["p"] }];
+			const shape = { intervalMs: 100, burst: 60 };
+			assert.deepEqual(await older.acquire("p", 50, shape), { granted: 50 });
+			cap.observe(await readFleetRateUsage(journal), roots);
+			assert.equal(cap.limit(4, 2), 2);
+			for (let seconds = 10; seconds <= 300; seconds += 10) {
+				clock.now += 10_000;
+				assert.deepEqual(await older.acquire("p", 50, shape), { granted: 50 });
+				if (countedCalls) assert.deepEqual(await current!.acquire("p", 1), { granted: 1 });
+				cap.observe(await readFleetRateUsage(journal), roots);
+				assert.equal(cap.limit(4, 2), 22, `uncounted draws at ${seconds}s cannot restrict the full queue demand`);
+			}
+		} finally {
+			await journal.close();
+			await database.close();
 		}
 	});
 }

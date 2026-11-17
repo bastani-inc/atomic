@@ -779,7 +779,7 @@ async function controller(
 
 /** The scaling signal as one status line. */
 function scalingLine(scaling: WorkerFleetScaling): string {
-	return `Scaling: wants ${scaling.desiredHosts} hosts (${scaling.desiredWorkers} workers) for ${scaling.demand} children, ${scaling.queueDepth} queued${scaling.rateCapHosts === undefined ? "" : `, rate limits keep at most ${scaling.rateCapHosts} hosts busy`}; ${scaling.hosts} hosts live, ${scaling.busySlots} busy and ${scaling.idleSlots} idle slots`;
+	return `Scaling: wants ${scaling.desiredHosts} hosts (${scaling.desiredWorkers} workers) for ${scaling.demand} children, ${scaling.queueDepth} queued; ${scaling.hosts} hosts live, ${scaling.busySlots} busy and ${scaling.idleSlots} idle slots`;
 }
 
 async function metrics(

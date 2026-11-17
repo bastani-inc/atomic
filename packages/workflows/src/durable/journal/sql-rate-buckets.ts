@@ -57,6 +57,7 @@ export interface RateBucketWaiting {
 
 export interface RateBucketUsage {
 	readonly scope: string;
+	readonly scheduledAt?: number;
 	readonly acquired: number;
 	readonly waitingMs: number;
 	readonly intervalMs: number;
@@ -71,7 +72,7 @@ export async function readRateBucketUsage(
 	const probe = storage.dialect.tableExists(table);
 	if ((await executor.get(probe.sql, ...probe.params)) === undefined) return [];
 	const column = storage.dialect.columnExists(table, RATE_BUCKET_ACQUIRED);
-	if ((await executor.get(column.sql, ...column.params)) === undefined) return [];
+	const acquired = (await executor.get(column.sql, ...column.params)) === undefined ? "0" : RATE_BUCKET_ACQUIRED;
 	const waitingTable = `${storage.tables.runs}_${RATE_BUCKET_WAITING}`;
 	const waitingProbe = storage.dialect.tableExists(waitingTable);
 	const retiredColumn = storage.dialect.columnExists(table, "waiting_ms");
@@ -81,13 +82,14 @@ export async function readRateBucketUsage(
 			? retired
 			: `${retired} + (SELECT COALESCE(SUM(total_ms), 0) FROM ${waitingTable} WHERE scope = ${table}.scope)`;
 	const rows = await executor.all<
-		SqliteRow & { scope: string; acquired: number; waiting_ms: number; interval_ms: number; now: number }
+		SqliteRow & { scope: string; tat: number; acquired: number; waiting_ms: number; interval_ms: number; now: number }
 	>(
-		`SELECT scope, ${RATE_BUCKET_ACQUIRED} AS acquired, ${waiting} AS waiting_ms, interval_ms, ${storage.dialect.nowMs} AS now FROM ${table}
+		`SELECT scope, tat, ${acquired} AS acquired, ${waiting} AS waiting_ms, interval_ms, ${storage.dialect.nowMs} AS now FROM ${table}
 		WHERE interval_ms > 0 ORDER BY scope`,
 	);
 	return rows.map((row) => ({
 		scope: row.scope,
+		scheduledAt: Number(row.tat),
 		acquired: Number(row.acquired),
 		waitingMs: Number(row.waiting_ms),
 		intervalMs: Number(row.interval_ms),
@@ -190,14 +192,13 @@ export class SqlRateBuckets {
 		// One reading of the clock: PostgreSQL's moves on between two, and a check reading it twice fits more than the burst.
 		const now = "(SELECT now FROM clock)";
 		const next = `${d.greatest("tat", now)} + ? * interval_ms`;
-		// The schedule is kept in whole milliseconds, rounded up: rounded down, as a cast does on SQLite and can on
-		// PostgreSQL, an interval that is not a whole number of milliseconds would grant more than the rate (#4768).
 		const whole = `CAST(${next} AS ${d.types.int})`;
+		const roundedUpSchedule = `CASE WHEN ${next} > ${whole} THEN ${whole} + 1 ELSE ${whole} END`;
 		const statements: SqliteStatement[] = [
 			...(shape === undefined ? [] : [this.shape(scope, shape)]),
 			{
 				sql: `WITH clock AS (SELECT ${this.now} AS now)
-					UPDATE ${this.table} SET tat = CASE WHEN ${next} > ${whole} THEN ${whole} + 1 ELSE ${whole} END,
+					UPDATE ${this.table} SET tat = ${roundedUpSchedule},
 					${RATE_BUCKET_ACQUIRED} = ${RATE_BUCKET_ACQUIRED} + ?, updated_at = ${now}
 					WHERE scope = ? AND ${next} - ${now} <= burst * interval_ms AND cooldown_until <= ${now}
 					RETURNING tat`,
