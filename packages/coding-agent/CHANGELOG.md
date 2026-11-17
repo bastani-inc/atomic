@@ -29,6 +29,8 @@
 - Fixed a session that ended staying in memory for as long as a timer, connection or other long-lived resource that an extension started while the session was in use, as a service started once and shared by later sessions does.
 - Fixed each `/reload` keeping the extensions it replaced in memory for as long as the session ran: every new generation of the session's extensions kept the one before it, so each reload added about 10 MB that was never released.
 - On a busy Windows machine, a shell command or a subagent's named-worktree checkout that finished is no longer reported as failed with `Windows stdin worker stop was not confirmed` ([#5340](https://github.com/bastani-inc/atomic/pull/5340))
+- Replacing a submission echo with a prompt rewritten by an `input` hook, or inserting a custom message ahead of a streaming reply, now touches only the tail of the chat container instead of scanning the whole transcript, keeping prompt swaps fast in long sessions ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
+- Corrected new-message counts when a transcript insertion or removal is followed by another change that restores its earlier child count ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
 
 ## [0.9.88] - 2026-11-16
 
