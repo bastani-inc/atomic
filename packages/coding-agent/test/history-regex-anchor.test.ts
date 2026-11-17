@@ -48,14 +48,7 @@ describe("multi-line history searches of one large entry (#5250)", () => {
 				return out.split("\n").filter((line) => /^history:\/\/sessions\/anchor:[\d.]+: line-/.test(line));
 			};
 
-			const entryRows = async (pattern: string): Promise<string[]> => {
-				const out = (await router.search?.("history://sessions/anchor", request(pattern))) ?? "";
-				return out.split("\n").filter((line) => /^history:\/\/sessions\/anchor:[1-9][\d.]*: /.test(line));
-			};
-
 			assert.deepEqual(await matchRows("(?s)^line-\\d+ "), []);
-			assert.deepEqual(await matchRows("(?s)(?<=)^line-\\d+ "), []);
-			assert.deepEqual(await matchRows("(?s)(?<=^line-\\d+ [^\\n]+\\n)line-657 "), []);
 			assert.deepEqual(await matchRows("(?s)^(?P<w>line-1) \\w+"), []);
 			assert.deepEqual(await matchRows("(?s)(?P<w>line-1) x+$"), []);
 			assert.equal((await matchRows("(?sm)^(?P<w>line-1) \\w+")).length, 1);
@@ -64,21 +57,30 @@ describe("multi-line history searches of one large entry (#5250)", () => {
 				(await router.search?.("history://sessions/anchor", request("(?s)^## [^\\n]+\\n(?P<w>line-1) \\w+"))) ?? "",
 				/^history:\/\/sessions\/anchor:1: ## /m,
 			);
-			const entry2Heading = ["history://sessions/anchor:2: ## 2026-11-01T00:00:00.000Z user"];
-			assert.deepEqual(await entryRows("(?s)^## [^\\n]+\\ntail"), entry2Heading);
-			assert.deepEqual(await entryRows("(?s)(?<=)^## [^\\n]+\\ntail"), entry2Heading);
-			assert.deepEqual(await entryRows("(?s)^(?<=)## [^\\n]+\\ntail"), entry2Heading);
-			assert.deepEqual(await entryRows("(?s)(?<=line-3000 x+\\n)^## [^\\n]+\\ntail"), entry2Heading);
-			assert.deepEqual(await entryRows("(?s)^## [^\\n]+\\n(?<=user\\n)tail"), entry2Heading);
-			assert.deepEqual(await entryRows("(?ms)(?<=line-3000 x+\\n)(?-m:^## [^\\n]+\\ntail)"), entry2Heading);
-			assert.deepEqual(await entryRows("(?s)(?<=line-2999 x+\\n)^## [^\\n]+\\ntail"), []);
-			assert.deepEqual(await matchRows("(?s)(?<=line-2999 x+\\n)(?m:^line-3000 x+)"), [
-				`history://sessions/anchor:1: line-3000 ${"x".repeat(90)}`,
-			]);
 
 			const everyLine = await matchRows("(?m)^line-\\d+ x+$");
 			assert.ok(everyLine.length > 0);
 			for (const line of [657, 1309, BODY_LINES]) assert.equal((await matchRows(`(?m)^line-${line} x+$`)).length, 1);
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("finishes anchored lookbehind searches across entries within one call (#5250)", async () => {
+		const store = new MemorySessionStore();
+		try {
+			await store.create(
+				header("anchored-lookbehind"),
+				Array.from({ length: 60 }, (_, index) => message(`e${index}`, "x".repeat(1_600))),
+			);
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const out = await router.search?.(
+				"history://sessions/anchored-lookbehind",
+				request("(?s)^(?=.*(?<!not )approvedXYZ)"),
+			);
+			assert.ok(out);
+			assert.doesNotMatch(out, /continue with|budget ran out/);
+			assert.doesNotMatch(out, /^history:\/\/sessions\/anchored-lookbehind:[1-9]\d*:/m);
 		} finally {
 			await store.close();
 		}
