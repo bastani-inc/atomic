@@ -97,6 +97,7 @@ describe("the @ and / menus' hint line in Atomic's theme (#5224)", () => {
 	it("keeps menu keys routed through history overrides, but skips copy and undo (#5347)", async () => {
 		const keybindings = new KeybindingsManager({
 			"tui.editor.historyPrevious": "ctrl+p",
+			"tui.editor.undo": "ctrl+-",
 			"tui.select.up": ["ctrl+p", "up"],
 			"tui.select.cancel": ["ctrl+c", "ctrl+-", "ctrl+q"],
 		});
