@@ -449,6 +449,7 @@ export class StageSessionController {
 	private pendingDisposal = false;
 	private disposalPromise: Promise<void> | undefined;
 	private pendingThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
+	private thinkingLevelRevision = 0;
 	private requestedThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
 	private readonly pendingListeners = new Set<(event: StageSessionEvent) => void>();
 	private readonly pauseControl = new StageSessionPause(
@@ -694,6 +695,7 @@ export class StageSessionController {
 		if (this.session) await this.session.setThinkingLevel(level);
 		else this.requestedThinkingLevel = level;
 		this.pendingThinkingLevel = level;
+		this.thinkingLevelRevision++;
 		if (
 			!this.modelRoute &&
 			!this.hasAdmittedSession &&
@@ -702,6 +704,15 @@ export class StageSessionController {
 			this.ownedCreationPromise === undefined
 		)
 			this.candidatesPromise = undefined;
+	}
+
+	async cycleThinkingLevel(): ReturnType<StageSessionRuntime["cycleThinkingLevel"]> {
+		const level = await this.requireSession("cycleThinkingLevel").cycleThinkingLevel();
+		if (level !== undefined) {
+			this.pendingThinkingLevel = level;
+			this.thinkingLevelRevision++;
+		}
+		return level;
 	}
 
 	get awaitingAutoPrompt(): boolean {
@@ -2840,7 +2851,7 @@ export class StageSessionController {
 		session: StageSessionRuntime,
 		candidate?: WorkflowResolvedModelCandidate,
 	): void {
-		if (this.modelRoute) return;
+		if (this.modelRoute || !this.hasExplicitModelFallbackConfig) return;
 		const constraints = this.explicitModelConstraints();
 		if (constraints.length === 0) return;
 		const selectedValue = session.model ?? candidate?.value ?? this.currentModelValue();
@@ -2853,7 +2864,11 @@ export class StageSessionController {
 			value === undefined ||
 			id === undefined ||
 			!this.candidateSatisfiesConstraints(
-				{ id, value, reasoningLevel: session.thinkingLevel ?? candidate?.reasoningLevel },
+				{
+					id,
+					value,
+					reasoningLevel: session.thinkingLevel ?? this.pendingThinkingLevel ?? candidate?.reasoningLevel,
+				},
 				constraints,
 			)
 		)
@@ -3313,7 +3328,9 @@ export class StageSessionController {
 				this.requestedThinkingLevel ??
 				(asAgentSession(attachedSession) === undefined ? this.pendingThinkingLevel : undefined);
 			if (thinkingLevel !== undefined) {
+				const thinkingLevelRevision = this.thinkingLevelRevision;
 				await attachedSession.setThinkingLevel(thinkingLevel);
+				if (this.thinkingLevelRevision === thinkingLevelRevision) this.pendingThinkingLevel = thinkingLevel;
 				this.requestedThinkingLevel = undefined;
 			}
 			await this.sharedOrchestrationContext?.pendingStageDelivery?.ready(attachedSession.sessionId);

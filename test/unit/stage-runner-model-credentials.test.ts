@@ -342,6 +342,53 @@ describe("a workflow stage's model chain and credentials", () => {
 		}
 	});
 
+	for (const scope of ["own", "inherited"] as const) {
+		for (const constraints of [{ allowedProviders: ["openai"] }, { allowedEfforts: ["high" as const] }]) {
+			test(`a stage without a declared model keeps the session default under ${scope} ${Object.keys(constraints)[0]} constraints (#3326)`, async () => {
+				const model: Model<"openai-completions"> = {
+					type: "chat",
+					provider: "anthropic",
+					id: "default",
+					name: "default",
+					api: "openai-completions",
+					baseUrl: "https://example.invalid",
+					reasoning: true,
+					input: ["text"],
+					cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 100_000,
+					maxTokens: 1_000,
+				};
+				let requests = 0;
+				const opts = stageOpts(
+					[],
+					new Set(),
+					[],
+					new Map(),
+					scope === "own" ? { modelConstraints: constraints } : { inheritedModelConstraints: [constraints] },
+				);
+				opts.adapters.agentSession = {
+					async create() {
+						return makeMockSession({
+							model,
+							async prompt() {
+								requests++;
+								return "ok";
+							},
+						}).session;
+					},
+				};
+				const ctx = createStageContext(opts);
+				try {
+					assert.equal(await ctx.prompt("first"), "ok");
+					assert.equal(await ctx.prompt("second"), "ok");
+					assert.equal(requests, 2);
+				} finally {
+					await ctx.__dispose();
+				}
+			});
+		}
+	}
+
 	test("explicit stage admission rechecks tightened constraints after awaiting route authority before creating a session (#3326)", async () => {
 		const created: string[] = [];
 		const waiting = Promise.withResolvers<void>();
@@ -385,6 +432,87 @@ describe("a workflow stage's model chain and credentials", () => {
 			await ctx.__dispose();
 		}
 	});
+
+	for (const reportsModel of [false, true]) {
+		test(`an adapter that ${reportsModel ? "reports" : "omits"} its model and omits thinking level retains the applied stage effort (#3326)`, async () => {
+			const model: Model<"openai-completions"> = {
+				type: "chat",
+				provider: "p",
+				id: "a",
+				name: "a",
+				api: "openai-completions",
+				baseUrl: "https://example.invalid",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 100_000,
+				maxTokens: 1_000,
+			};
+			const store = new MemorySessionStore();
+			const dispatcher = new StageWakeDispatcher("run-credentials", undefined);
+			const wakeKey = stageWakeKey("run-credentials", "stage-credentials");
+			dispatcher.open({ runId: "run-credentials", stageId: "stage-credentials", wakeKey });
+			const opts = stageOpts(["p/a:low"], new Set(["p"]), [], new Map(), {
+				modelConstraints: { allowedEfforts: ["high"] },
+				sessionStore: store,
+			});
+			opts.adapters.sessionStore = store;
+			opts.waiting = {
+				policy: { afterMs: 0 },
+				dispatcher,
+				wakeKey,
+				async enter() {},
+				async recordResults() {},
+				resultsInTranscript() {},
+				async leave() {},
+				async reopenFailed() {},
+				async rehydrated() {},
+				resident() {},
+			};
+			opts.models = {
+				listModels: async () => [{ provider: "p", id: "a", fullId: "p/a", model }],
+				hasCredentials: () => true,
+			};
+			let appliedEffort: StageSessionRuntime["thinkingLevel"];
+			const requestedEfforts: StageSessionRuntime["thinkingLevel"][] = [];
+			opts.adapters.agentSession = {
+				async create(options) {
+					const manager = options.sessionManager as SessionManager;
+					if (manager.getEntries().length === 0)
+						await manager.appendMessage({ role: "user", content: "init", timestamp: 1 });
+					return makeMockSession({
+						sessionId: manager.getSessionId(),
+						model: reportsModel ? model : undefined,
+						thinkingLevel: undefined,
+						setThinkingLevel(level) {
+							appliedEffort = level;
+						},
+						async prompt() {
+							requestedEfforts.push(appliedEffort);
+							return "ok";
+						},
+					}).session;
+				},
+			};
+			const ctx = createStageContext(opts);
+			try {
+				await ctx.setThinkingLevel("high");
+				assert.equal(await ctx.prompt("first"), "ok");
+				await ctx.setThinkingLevel("low");
+				await assert.rejects(ctx.prompt("excluded"), /modelConstraints/);
+				assert.deepEqual(requestedEfforts, ["high"]);
+				await ctx.setThinkingLevel("high");
+				assert.equal(await ctx.prompt("allowed"), "ok");
+				assert.deepEqual(requestedEfforts, ["high", "high"]);
+				await ctx.release();
+				await ctx.setThinkingLevel("high");
+				assert.equal(await ctx.prompt("reopened"), "ok");
+				assert.deepEqual(requestedEfforts, ["high", "high", "high"]);
+			} finally {
+				await ctx.__dispose();
+			}
+		});
+	}
 
 	test("changing thinking effort after failed stage constraints re-filters the unstarted chain (#3326)", async () => {
 		const created: string[] = [];
