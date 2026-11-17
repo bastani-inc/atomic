@@ -46,31 +46,18 @@ See [Writing a Workflow](#writing-a-workflow) for the full `workflow({...})` API
 
 ### Automatic stage model selection
 
-When the user delegates the choice of the best stage model, author `model: "auto"` instead of guessing a concrete model or effort. Keep explicit user model, effort, and constraint requests intact. Omitted model settings retain their existing defaults.
+`model: "auto"` runs a stage on the user's default model: the `defaultProvider` and `defaultModel` settings, which hold the model last chosen with `/model`, when that model has credentials. The stage runs it at the thinking level set with `stage.setThinkingLevel()`, otherwise at that model's `modelThinkingLevels` entry, then `defaultThinkingLevel`, then `medium`. When no default model is configured or it is unavailable, the stage runs the launching session's model and thinking level. No model is asked to choose, and the prompt does not affect which model runs.
 
 ```ts
 const result = await ctx.task("analyze", {
   model: "auto",
   prompt: `Analyze ${String(ctx.inputs.path)} against the supplied requirements.`,
-  modelConstraints: { minContextWindow: 32000, maxInputCost: 5 },
 });
 ```
 
-`ctx.stage("analyze", { model: "auto" }).prompt(text)` works too. Set `model: "auto"` in chain or parallel shared options to route each stage separately. The decision uses the actual supplied prompt after input interpolation and chain context expansion, eligible models and efforts, and compact dated evaluation evidence rather than full guides. It ranks up to three distinct models with an effort for each, trying them in order before remaining configured fallbacks and the current chat model. File references remain references, not guessed file contents. See [automatic model selection](/subagents/reference#automatic-model-selection) for ranking and limits.
+`ctx.stage("analyze", { model: "auto" }).prompt(text)` works too, and `model: "auto"` is accepted in chain or parallel shared options. Keep explicit user model and effort requests as concrete `provider/model[:effort]` values. Omitted model settings retain their existing defaults. An `auto` stage keeps a fallback chain: its `fallbackModels`, then, in a session, the launching session's model. The `taskNeeds`, `modelConstraints` and `parallelSlot` options of earlier releases are ignored when they are still passed.
 
-A chat model reads the complete stage prompt to answer the routing questions; a classifier router such as Jev never sees it. Hard `modelConstraints` remain enforced independently. Set `taskNeeds` in the stage options when you already know the task's kind of work, difficulty, mistake cost, or need for images, a very large context or a fast answer; stating all six skips the chat model's read, and list the contenders in `modelConstraints.allowedModels` to choose them yourself.
-
-Parallel `auto` stages that do the same job, such as two reviewers of one change, can be routed to different model families so they do not share one model's blind spots. Give each a `parallelSlot` with its position and the number of stages, for example `parallelSlot: { index: 0, count: 2 }` and `parallelSlot: { index: 1, count: 2 }`. Each position takes a different family from the ranking (Claude, GPT, Gemini and so on) when enough families are eligible; otherwise the stage routes among every eligible model. The builtin `ralph` workflow's two reviewers do this.
-
-```ts
-const prompt = [
-  keepContext("Review only. Do not edit files. Report findings as JSON."),
-  `Reference material:\n${ctx.inputs.issueBody}`,
-  `Task: review the change for issue #${ctx.inputs.issue} and report defects.`,
-].join("\n\n");
-```
-
-An explicit `decisionModel` chooses the routing decision provider. An unset or `auto` value uses the current chat model; saved classifier credentials do not change that choice. The setting does not choose which workflow to launch. A classifier can make the routing decision but never executes the stage. See [automatic stage operation](/workflows/operations#automatic-stage-models) for failures and resume behavior.
+See [automatic stage models](/workflows/operations#automatic-stage-models) for resume behavior.
 
 **Write workflow code for both Atomic hosts.** Standalone binaries run under Bun; npm installs run under Node. A `Bun.*` global is available only when Atomic itself runs under Bun. Otherwise it fails with `Bun is not defined`, even if Bun is installed separately.
 
@@ -681,7 +668,7 @@ A `verified` result is cached durably, so a resumed run does not click again. A 
 
 ### Classifier and image models in `ctx.tool`
 
-Workflow stages run chat language models. For a schema-backed decision, use the stage's `schema` and `structured_output` tool; write only the task in the prompt, because Atomic ends every schema-backed prompt with the instruction to finish by calling the tool exactly once and, if the model skips the call, runs the same inference itself from the stage's final answer. It resolves an exact chat or registered classifier ID through the stage model registry and falls back on a classifier runtime failure. The direct `@bastani/atomic-ai` examples below are for cases that need the classifier's probabilities or image generation from workflow TypeScript inside `ctx.tool(name, args, fn, { timeoutMs })`. Those calls are durable, replayable nodes. `model: "auto"` selects only chat language models for stage execution; `decisionModel` may select a classifier for routing, but a classifier never executes a chat stage.
+Workflow stages run chat language models. For a schema-backed decision, use the stage's `schema` and `structured_output` tool; write only the task in the prompt, because Atomic ends every schema-backed prompt with the instruction to finish by calling the tool exactly once and, if the model skips the call, runs the same inference itself from the stage's final answer. It resolves an exact chat or registered classifier ID through the stage model registry and falls back on a classifier runtime failure. The direct `@bastani/atomic-ai` examples below are for cases that need the classifier's probabilities or image generation from workflow TypeScript inside `ctx.tool(name, args, fn, { timeoutMs })`. Those calls are durable, replayable nodes. A classifier `decisionModel` can answer decisions, but a classifier never executes a chat stage.
 
 Atomic provides `@bastani/atomic/workflows`, `typebox`, and the exact imports `@bastani/atomic`, `@bastani/atomic-ai`, and `@bastani/atomic-ai/providers/all` to workflow files. The latter three use the running CLI's module instances and version, including `AuthStorage`. These examples need no project-local package installation, in npm or standalone-binary installs. A project copy does not override these host-provided imports.
 

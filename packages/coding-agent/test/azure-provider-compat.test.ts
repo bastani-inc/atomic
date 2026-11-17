@@ -33,7 +33,6 @@ test("Azure settings normalization preserves invalid shapes for settings validat
 			decisionModel: typeof invalid === "string" ? 7 : invalid,
 			enabledModels: invalid,
 			fallbackModels: invalid,
-			modelRouting: { allowedProviders: invalid, excludedProviders: invalid },
 		};
 		assert.deepEqual(normalizeAzureSettings(settings as never), { ...settings, defaultProvider: "azure" });
 	}
@@ -246,10 +245,6 @@ test("mixed-case legacy Azure references resolve in CLI, scopes and saved settin
 				"azure/MixedCaseDeployment": "high",
 				"Azure-OpenAI-Responses/OtherDeployment": "medium",
 			},
-			modelRouting: {
-				allowedProviders: ["AZURE-OPENAI-RESPONSES"],
-				excludedProviders: ["Azure-OpenAI-Responses"],
-			},
 		});
 		writeFileSync(path, content);
 		const settings = SettingsManager.create(root, root);
@@ -261,7 +256,6 @@ test("mixed-case legacy Azure references resolve in CLI, scopes and saved settin
 			"azure/MixedCaseDeployment": "high",
 			"azure/OtherDeployment": "medium",
 		});
-		assert.deepEqual(settings.getModelRouting(), { allowedProviders: ["azure"], excludedProviders: ["azure"] });
 		assert.equal(readFileSync(path, "utf-8"), content);
 	} finally {
 		rmSync(root, { recursive: true, force: true });

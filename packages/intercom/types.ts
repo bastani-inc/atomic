@@ -512,7 +512,23 @@ export type BrokerMessage =
 	| { type: "reach_failed"; requestId: string; reason: string }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }
   /** `hostedRecipient` names the hosted session the message is for, written only to the connection hosting it (#4642). */
-  | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor"; hostedRecipient?: string }
+  | {
+      type: "message";
+      from: SessionInfo;
+      message: Message;
+      channel?: "supervisor";
+      hostedRecipient?: string;
+      /**
+       * Multi-node: the origin broker carried this answer on a return path (its recipient wrote to its sender first).
+       * Set only between brokers, on outbox rows; never sent to a client.
+       */
+      returnPath?: true;
+      /**
+       * Multi-node: the stable registration identity of `from`, written by the origin broker, which the recipient's
+       * broker binds a return path to. Set only between brokers, on outbox rows; never sent to a client.
+       */
+      senderIdentity?: string;
+    }
 	| { type: "pending_stage_notification"; requestId: string; from: SessionInfo; message: Message }
 	| {
 			type: "pending_stage_message";

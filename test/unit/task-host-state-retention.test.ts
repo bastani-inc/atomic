@@ -35,12 +35,11 @@ const RELEASED_SESSIONS = 64;
 const SDK_RELEASE_TEST_TIMEOUT_MS = 120_000;
 
 const LAUNCH_METADATA = {
-	routerSelection: { model: "provider/model", effort: "low" },
 	requestedModel: "provider/model:low",
 	heartbeatMs: 60_000,
 } as const;
 
-type LaunchMetadataSizes = { routerSelections: number; requestedModels: number; launchHeartbeats: number };
+type LaunchMetadataSizes = { requestedModels: number; launchHeartbeats: number };
 
 function value<T, E>(result: C.Result<T, E>): T {
 	assert.equal(result.ok, true, result.ok ? undefined : JSON.stringify(result.error));
@@ -49,12 +48,12 @@ function value<T, E>(result: C.Result<T, E>): T {
 }
 
 function launchMetadataSizes(owner: OwnerLease): LaunchMetadataSizes {
-	const { routerSelections, requestedModels, launchHeartbeats } = taskHostStateSizesForTesting(owner);
-	return { routerSelections, requestedModels, launchHeartbeats };
+	const { requestedModels, launchHeartbeats } = taskHostStateSizesForTesting(owner);
+	return { requestedModels, launchHeartbeats };
 }
 
-function launchMetadataOf({ routerSelection, requestedModel, heartbeatMs }: C.TaskRecord) {
-	return { routerSelection, requestedModel, heartbeatMs };
+function launchMetadataOf({ requestedModel, heartbeatMs }: C.TaskRecord) {
+	return { requestedModel, heartbeatMs };
 }
 
 function finishedExecution(): FakeExecution {
@@ -121,7 +120,6 @@ test(
 							kind: "agent",
 							agent: "worker",
 							task: `task ${index}`,
-							routerSelection: { model: "provider/model", effort: "low" },
 							requestedModel: "provider/model:low",
 							heartbeatMs: 60_000,
 						},
@@ -152,7 +150,6 @@ test(
 				unconfirmedCleanups: 0,
 				permits: 0,
 				commandStarts: 0,
-				routerSelections: FINISHED_TASK_RETENTION,
 				requestedModels: FINISHED_TASK_RETENTION,
 				launchHeartbeats: FINISHED_TASK_RETENTION,
 				executionTimeouts: 0,
@@ -220,7 +217,6 @@ test("closing a host reconciles held finished records before its watchers stop, 
 			unconfirmedCleanups: 0,
 			permits: 0,
 			commandStarts: 0,
-			routerSelections: 0,
 			requestedModels: 0,
 			launchHeartbeats: 0,
 			executionTimeouts: 0,
@@ -228,7 +224,7 @@ test("closing a host reconciles held finished records before its watchers stop, 
 		});
 		assert.deepEqual(
 			launchMetadataSizes(control),
-			{ routerSelections: CONTROL_TASKS, requestedModels: CONTROL_TASKS, launchHeartbeats: CONTROL_TASKS },
+			{ requestedModels: CONTROL_TASKS, launchHeartbeats: CONTROL_TASKS },
 			"a live owner keeps its own launch metadata",
 		);
 		const watched = value(supervisor.watchOwnerTasks(control));
@@ -246,7 +242,6 @@ test("closing a host reconciles held finished records before its watchers stop, 
 });
 
 test.each([
-	{ map: "routerSelections", metadata: { routerSelection: LAUNCH_METADATA.routerSelection } },
 	{ map: "requestedModels", metadata: { requestedModel: LAUNCH_METADATA.requestedModel } },
 	{ map: "launchHeartbeats", metadata: { heartbeatMs: LAUNCH_METADATA.heartbeatMs } },
 ] as const)("a closed owner keeps no $map entry of its finished tasks (#4451)", async ({ map, metadata }) => {
@@ -255,7 +250,7 @@ test.each([
 	await finishAgentTasks(supervisor, owner, PROBE_TASKS, metadata, { prefix: map });
 	const live = launchMetadataSizes(owner);
 	value(await supervisor.closeTaskOwner(owner, "session-close"));
-	const none = { routerSelections: 0, requestedModels: 0, launchHeartbeats: 0 };
+	const none = { requestedModels: 0, launchHeartbeats: 0 };
 	assert.deepEqual(
 		{ live, closed: launchMetadataSizes(owner) },
 		{ live: { ...none, [map]: PROBE_TASKS }, closed: none },
@@ -298,8 +293,8 @@ test(
 				released.push(owner);
 				counts.push({ live, released: launchMetadataSizes(owner) });
 			}
-			const ran = { routerSelections: PROBE_TASKS, requestedModels: PROBE_TASKS, launchHeartbeats: PROBE_TASKS };
-			const none = { routerSelections: 0, requestedModels: 0, launchHeartbeats: 0 };
+			const ran = { requestedModels: PROBE_TASKS, launchHeartbeats: PROBE_TASKS };
+			const none = { requestedModels: 0, launchHeartbeats: 0 };
 			assert.deepEqual(
 				counts,
 				counts.map(() => ({ live: ran, released: none })),

@@ -357,37 +357,6 @@ const HerdrSettingsSchema = Type.Object({
 	),
 });
 
-const ModelRoutingSettingsSchema = Type.Object(
-	{
-		allowedProviders: Type.Optional(
-			Type.Array(Type.String(), {
-				description: "When nonempty, only models from these provider IDs are routing candidates.",
-			}),
-		),
-		excludedProviders: Type.Optional(
-			Type.Array(Type.String(), {
-				description: "Provider IDs that are never routing candidates. Applied after allowedProviders.",
-			}),
-		),
-		allowedModels: Type.Optional(
-			Type.Array(Type.String(), {
-				description:
-					"When nonempty, only models matching these full-ID or glob patterns, as in enabledModels, are routing candidates.",
-			}),
-		),
-		excludedModels: Type.Optional(
-			Type.Array(Type.String(), {
-				description:
-					"Models matching these full-ID or glob patterns are never routing candidates. Applied after allowedModels.",
-			}),
-		),
-	},
-	{
-		description:
-			'Provider and model filters for the candidates model "auto" may route to. Does not affect decisionModel.',
-	},
-);
-
 function thinkingBudgetsSettings(options?: TSchemaOptions) {
 	return Type.Object(
 		{
@@ -711,7 +680,7 @@ export const SettingsSchema = Type.Object(
 		decisionModel: Type.Optional(
 			Type.String({
 				description:
-					'The model every decision uses: workflow-stage and subagent model: "auto" selection, structured_output calls without their own model, readiness after a steer, and decide(). An exact provider/model selects a registered chat or classifier model; "auto" and an empty string use the current chat model.',
+					'The model every decision uses: structured_output calls without their own model, workflow stage predictions, readiness after a steer, and decide(). An exact provider/model selects a registered chat or classifier model; "auto" and an empty string use the current chat model.',
 				default: SETTINGS_DEFAULTS.decisionModel,
 			}),
 		),
@@ -721,7 +690,6 @@ export const SettingsSchema = Type.Object(
 					'Compaction model: "auto" or an empty string uses the session model, and an exact provider/model selects a registered chat model, classifier, or compactor.',
 			}),
 		),
-		modelRouting: Type.Optional(ModelRoutingSettingsSchema),
 		defaultThinkingLevel: Type.Optional(ModelThinkingLevelSchema),
 		modelThinkingLevels: Type.Optional(
 			Type.Record(Type.String(), ModelThinkingLevelSchema, {
@@ -1002,7 +970,6 @@ export interface RetrySettings extends Omit<Static<typeof RetrySettingsSchema>, 
 export interface TerminalSettings extends Static<typeof TerminalSettingsSchema> {}
 export interface ImageSettings extends Static<typeof ImageSettingsSchema> {}
 export interface SearchSettings extends Static<typeof SearchSettingsSchema> {}
-export interface ModelRoutingSettings extends Static<typeof ModelRoutingSettingsSchema> {}
 export interface ThinkingBudgetsSettings extends Static<typeof ThinkingBudgetsSettingsSchema> {}
 export type MermaidRenderingMode = NonNullable<Static<typeof MarkdownSettingsSchema>["mermaid"]>;
 export interface MarkdownSettings extends Static<typeof MarkdownSettingsSchema> {}

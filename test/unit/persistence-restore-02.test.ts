@@ -148,6 +148,60 @@ describe("restoreOnSessionStart", () => {
 		assert.equal(stage?.sessionId, "session-1");
 		assert.equal(stage?.sessionFile, "/tmp/session-1.jsonl");
 	});
+	test("restores stages whose end entries still carry a legacy routerSelection, ignoring it", () => {
+		const validSelection = {
+			model: "decision-test/vision",
+			effort: "high",
+			fallbacks: [{ model: "decision-test/fallback", effort: null }],
+			candidates: ["decision-test/vision", "decision-test/fallback"],
+			requiredInputs: ["image"],
+		};
+		const st = createStore();
+		const entries: SessionEntry[] = [
+			{ id: "e1", type: "workflow.run.start", payload: { runId: "r1", name: "wf", inputs: {}, ts: 1 } },
+			{
+				id: "e2",
+				type: "workflow.stage.start",
+				payload: { runId: "r1", stageId: "s1", name: "vision", parentIds: [], ts: 2 },
+			},
+			{
+				id: "e3",
+				type: "workflow.stage.end",
+				payload: {
+					runId: "r1",
+					stageId: "s1",
+					status: "completed",
+					routerSelection: validSelection,
+				},
+			},
+			{
+				id: "e4",
+				type: "workflow.stage.start",
+				payload: { runId: "r1", stageId: "s2", name: "invalid-vision", parentIds: ["s1"], ts: 3 },
+			},
+			{
+				id: "e5",
+				type: "workflow.stage.end",
+				payload: {
+					runId: "r1",
+					stageId: "s2",
+					status: "failed",
+					routerSelection: { ...validSelection, requiredInputs: ["audio"] },
+				},
+			},
+		];
+		restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
+		const stages = st.runs()[0]?.stages ?? [];
+		// Automatic routing was removed: a recorded selection, valid or not, restores nothing and breaks nothing.
+		assert.deepEqual(
+			stages.map((stage) => [stage.name, stage.status]),
+			[
+				["vision", "completed"],
+				["invalid-vision", "failed"],
+			],
+		);
+		for (const stage of stages) assert.equal(Object.hasOwn(stage, "routerSelection"), false);
+	});
 	test("stage snapshots are rebuilt from session entries", () => {
 		const st = createStore();
 		const entries: SessionEntry[] = [

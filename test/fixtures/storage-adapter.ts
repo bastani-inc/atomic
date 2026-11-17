@@ -60,6 +60,36 @@ function withRegistrationGate(database: SqliteDatabase, gate: string): SqliteDat
 }
 
 /**
+ * Parks the first read of a presence lease whose key contains the text in the file at `gate`, until the file is removed;
+ * later reads go through. Once it has parked the read, it appends the text to `<gate>.parked`, the signal a test waits
+ * for.
+ */
+function withPresenceReadGate(database: SqliteDatabase, gate: string): SqliteDatabase {
+	let parked = false;
+	const parkIfNamed = async (sql: string, params: readonly SqliteValue[]): Promise<void> => {
+		if (parked || params[0] !== "presence" || !/\bholder_id IS NOT NULL\b/u.test(sql)) return;
+		const text = await readFile(gate, "utf8").catch(() => "");
+		if (text === "" || !String(params[1]).includes(text)) return;
+		parked = true;
+		await appendFile(`${gate}.parked`, `${text}\n`);
+		while ((await readFile(gate, "utf8").catch(() => "")) !== "") {
+			await new Promise<void>((resolveWait) => setTimeout(resolveWait, 20));
+		}
+	};
+	return {
+		descriptor: database.descriptor,
+		exec: (sql) => database.exec(sql),
+		run: (sql, ...params) => database.run(sql, ...params),
+		get: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => (
+			await parkIfNamed(sql, params), database.get<T>(sql, ...params)
+		),
+		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => database.all<T>(sql, ...params),
+		transaction: (callback) => database.transaction(callback),
+		close: () => database.close(),
+	};
+}
+
+/**
  * Holds the Intercom broker's opening (domain "intercom") on the file at `gate`: missing, it waits; `fail`, the
  * opening fails; `open`, it proceeds.
  */
@@ -95,8 +125,12 @@ export default {
 				}
 			};
 		}
-		const gated =
+		const registrationGated =
 			typeof options.registrationGate === "string" ? withRegistrationGate(database, options.registrationGate) : database;
+		const gated =
+			typeof options.presenceReadGate === "string"
+				? withPresenceReadGate(registrationGated, options.presenceReadGate)
+				: registrationGated;
 		if (typeof options.callDelayMs === "number") return withCallDelay(gated, options.callDelayMs);
 		return gated;
 	},
