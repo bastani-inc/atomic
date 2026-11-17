@@ -523,7 +523,7 @@ async function withRestoreRecord(
 		primary = error;
 		if (recorded) {
 			try {
-				await cleanRestoreRecord(record);
+				await withRepositoryLock(record.store, snapshotId, undefined, () => cleanRestoreRecord(record));
 				await rm(recordPath);
 			} catch (cleanupCause) {
 				if (error instanceof Error)
@@ -1306,6 +1306,7 @@ function parsePendingLfs(text: string): PendingLfs | undefined {
 
 async function materialize(
 	git: GitRunOptions,
+	store: string,
 	target: string,
 	head: string,
 	tree: string,
@@ -1313,7 +1314,9 @@ async function materialize(
 	snapshotId: string | null,
 	signal?: AbortSignal,
 ): Promise<void> {
-	await runGit(["worktree", "add", "-q", "--detach", "--no-checkout", target, head], git);
+	await withRepositoryLock(store, snapshotId, signal, () =>
+		runGit(["worktree", "add", "-q", "--detach", "--no-checkout", target, head], git),
+	);
 	const attributes = join(scratch, "empty-attributes");
 	await writing(attributes, snapshotId, () => writeFile(attributes, ""));
 	const neutral: GitRunOptions = { cwd: target, signal, neutral: true, env: { GIT_LFS_SKIP_SMUDGE: "1" } };
@@ -2056,7 +2059,9 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 	const staging = stagingPath(storeDir, path, publish.into, id);
 	const record: RestoreRecord = { staging, target: path, store, createdTarget };
 	await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive) => {
-		await timeRestorePhase("materialize", () => materialize(git, staging, head, tree, scratch, snapshotId, signal));
+		await timeRestorePhase("materialize", () =>
+			materialize(git, store, staging, head, tree, scratch, snapshotId, signal),
+		);
 		assertActive();
 		const lfs = snapshot?.filters?.drivers.includes("lfs") ? snapshot.remotes : undefined;
 		const pending: PendingLfs | undefined = lfs === undefined ? undefined : { head, tree, remotes: lfs };
@@ -2072,7 +2077,11 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 			verifyRestoredTree(staging, path, head, tree, publish.verify, scratch, snapshotId, signal),
 		);
 		assertActive();
-		await timeRestorePhase("publish", () => moveIntoPlace(publish, staging, createdTarget, snapshotId));
+		await timeRestorePhase("publish", () =>
+			withRepositoryLock(store, snapshotId, signal, () =>
+				moveIntoPlace(publish, staging, createdTarget, snapshotId),
+			),
+		);
 		assertActive();
 		if (pending !== undefined && deferred !== undefined) {
 			const worktree: GitRunOptions = { cwd: path, signal };
@@ -2218,7 +2227,9 @@ export async function removeRestoredWorktree(
 	) {
 		throw new WorkspaceRestoreError("unsafe-target", { snapshotId: null, target, reason: "not-restored" });
 	}
-	await removeWorktree({ cwd: repositories, env: { GIT_DIR: store }, signal: options.signal }, target);
+	await withRepositoryLock(store, null, options.signal, () =>
+		removeWorktree({ cwd: repositories, env: { GIT_DIR: store }, signal: options.signal }, target),
+	);
 }
 
 function isWithin(parent: string, child: string): boolean {

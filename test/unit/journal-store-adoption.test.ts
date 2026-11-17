@@ -95,7 +95,7 @@ async function withCatalog<T>(body: (catalog: JournalCatalog) => Promise<T>): Pr
 }
 
 test("the store's paths derive from the agent directory (#4325)", () => {
-	assert.equal(defaultJournalStoreDirectory(join(root, "agent")), join(root, "workflows", "journal"));
+	assert.equal(defaultJournalStoreDirectory(join(root, "agent")), join(root, "agent", "workflows", "journal"));
 	assert.equal(legacyDefaultJournalPath(store), join(root, "workflows", "journal.sqlite"));
 });
 

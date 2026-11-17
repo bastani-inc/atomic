@@ -40,7 +40,7 @@ test("SessionManager defaults to the journal SQLite file", async () => {
 		try {
 			assert.deepEqual(manager.getSessionStore().descriptor, {
 				adapter: "node-sqlite",
-				location: join(root, "workflows", "journal.sqlite"),
+				location: join(root, "agent", "workflows", "journal.sqlite"),
 			});
 		} finally {
 			await manager.getSessionStore().close();
@@ -84,15 +84,15 @@ test("session selection honors SDK, CLI, environment, domain and shared settings
 		process.env.ATOMIC_CODING_AGENT_SESSION_DIR = "";
 		assert.deepEqual(selectSessionStorage(root, { agentDir, settings }), {
 			kind: "sqlite",
-			path: join(root, "sessions.sqlite"),
+			path: join(agentDir, "sessions.sqlite"),
 		});
 		assert.deepEqual(selectSessionStorage(root, { agentDir, settings: { storage: settings.storage } }), {
 			kind: "sqlite",
-			path: join(root, "shared.sqlite"),
+			path: join(agentDir, "shared.sqlite"),
 		});
 		assert.deepEqual(selectSessionStorage(root, { agentDir, settings: {} }), {
 			kind: "sqlite",
-			path: join(root, "workflows", "journal.sqlite"),
+			path: join(agentDir, "workflows", "journal.sqlite"),
 		});
 		const memory = await createSessionManager(
 			parseArgs(["--no-session"]),
@@ -206,7 +206,7 @@ test("the default sessions file and the default journal store keep separate file
 		});
 		const stored = (await journal.getRun(first.getSessionId()))?.storage;
 		assert.equal(stored?.adapter, "node-sqlite");
-		assert.equal(dirname(stored!.location), join(root, "workflows", "journal"));
+		assert.equal(dirname(stored!.location), join(root, "agent", "workflows", "journal"));
 		assert.notEqual(stored?.location, first.getSessionStore().descriptor.location);
 		assert.equal((await journal.getRun(first.getSessionId()))?.name, "journal only");
 		assert.equal((await first.getSessionStore().load(first.getSessionId())).entries.length, 1);
@@ -574,21 +574,21 @@ test("a sessions setting resolves against the Atomic home, defaults by its field
 	try {
 		assert.deepEqual(selectSessionSetting({ dir: "sessions" }, "sessions.storage", agentDir), {
 			kind: "jsonl",
-			dir: join(root, "sessions"),
+			dir: join(agentDir, "sessions"),
 		});
 		assert.deepEqual(selectSessionSetting({ path: "mine.sqlite", prefix: "me_" }, "sessions.storage", agentDir), {
 			kind: "sqlite",
-			path: join(root, "mine.sqlite"),
+			path: join(agentDir, "mine.sqlite"),
 			prefix: "me_",
 		});
 		assert.deepEqual(selectSessionSetting({ prefix: "t_" }, "storage", agentDir), {
 			kind: "sqlite",
-			path: join(root, "storage.sqlite"),
+			path: join(agentDir, "storage.sqlite"),
 			prefix: "t_",
 		});
 		assert.deepEqual(selectSessionSetting({ prefix: "t_" }, "sessions.storage", agentDir), {
 			kind: "sqlite",
-			path: join(root, "workflows", "journal.sqlite"),
+			path: join(agentDir, "workflows", "journal.sqlite"),
 			prefix: "t_",
 		});
 		const invalid: [object, "sessions.storage" | "storage", string][] = [

@@ -65,6 +65,7 @@ export async function collectFiles(
 	skipNodeModules = true,
 	ignoreMatcher?: IgnoreMatcher,
 	rootDir?: string,
+	excludeTopLevel?: ReadonlySet<string>,
 ): Promise<string[]> {
 	const files: string[] = [];
 	if (!(await exists(dir))) return files;
@@ -76,6 +77,7 @@ export async function collectFiles(
 		for (const entry of entries) {
 			await yieldToEventLoopIfSlow(startedAt, RESOURCE_DISCOVERY_YIELD_AFTER_MS);
 			if (entry.name.startsWith(".") || (skipNodeModules && entry.name === "node_modules")) continue;
+			if (dir === root && excludeTopLevel?.has(entry.name)) continue;
 			const info = await getEntryInfo(dir, entry.name, entry.isDirectory(), entry.isFile(), entry.isSymbolicLink());
 			if (!info) continue;
 			const relPath = toPosixPath(relative(root, info.fullPath));
@@ -239,10 +241,14 @@ export async function collectAutoExtensionEntries(dir: string): Promise<string[]
 	return entries;
 }
 
-export async function collectResourceFiles(dir: string, resourceType: ResourceType): Promise<string[]> {
+export async function collectResourceFiles(
+	dir: string,
+	resourceType: ResourceType,
+	excludeTopLevel?: ReadonlySet<string>,
+): Promise<string[]> {
 	if (resourceType === "skills") return collectSkillEntries(dir, "pi");
 	if (resourceType === "extensions") return collectAutoExtensionEntries(dir);
-	return collectFiles(dir, FILE_PATTERNS[resourceType]);
+	return collectFiles(dir, FILE_PATTERNS[resourceType], true, undefined, undefined, excludeTopLevel);
 }
 
 export function isPathUnder(target: string, root: string): boolean {
