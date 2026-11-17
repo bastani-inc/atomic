@@ -67,9 +67,10 @@ export function bindWorkflowHumanInput(
 		for (const run of store.runs()) {
 			if (run.status !== "running" && run.status !== "paused") continue;
 			for (const stage of run.stages) {
-				if (stage.status !== "awaiting_input") continue;
-				if (stageUiBroker.hasStageDialog(run.id, stage.id)) continue;
-				const prompt = stage.pendingPrompt;
+				const hasDialog = stageUiBroker.hasStageDialog(run.id, stage.id);
+				if (stage.status !== "awaiting_input" && !(stage.status === "running" && hasDialog)) continue;
+				const prompt =
+					hasDialog || stage.pendingPrompt?.source === "stage-dialog" ? undefined : stage.pendingPrompt;
 				const questionnaire = stageUiBroker.peekStageQuestionnaire(run.id, stage.id);
 				if (!prompt && !questionnaire) continue;
 				const key = `${run.id}\0${stage.id}\0${questionnaire?.requestId ?? prompt!.id}`;

@@ -16,6 +16,7 @@ import { createTestResourceLoader } from "../../packages/coding-agent/test/utili
 import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
 import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
 import { workflowAnswerAction } from "../../packages/workflows/src/extension/workflow-tool-answer.js";
+import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/stage-prompt.js";
 import { adoptStageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { adoptStore } from "../../packages/workflows/src/shared/store-factory.js";
 import {
@@ -230,6 +231,55 @@ test("a stage's confirmation waits as a stage prompt and workflow answer resolve
 	assert.deepEqual(shown, []);
 });
 
+test.each([true, false])(
+	"workflow answer without a prompt id answers a dialog above a questionnaire with stage specified %s (#5354)",
+	async (specifyStage) => {
+		const root = mkdtempSync(join(tmpdir(), "stage-stacked-questionnaire-"));
+		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+		const shown: string[] = [];
+		const { session: main } = await createAgentSession(sessionOptions(root));
+		cleanups.push(() => main.dispose());
+		await main.bindExtensions({ uiContext: mainChat(shown), mode: "tui" });
+		const { stage, store, broker } = await workflowStage(root, main);
+		const runId = "3a8b8e63-2704-4212-af75-60bff16c299b";
+		const params = {
+			questions: [{ question: "Which path?", options: [{ label: "Left" }, { label: "Right" }] }],
+		};
+		const adapter = buildStagePromptAdapter("question-1", "ask_user_question", params, Date.now());
+		assert.ok(adapter);
+		broker.provideStagePrompt(runId, "stage-1", adapter);
+		const ask = stage.agent.state.tools.find((tool) => tool.name === "ask_user_question");
+		assert.ok(ask);
+		const questionnaire = ask.execute("question-1", params);
+		void questionnaire.catch(() => {});
+		await vi.waitFor(() => assert.ok(broker.peekStageQuestionnaire(runId, "stage-1")));
+		const dialog = stage.extensionRunner.createContext().ui.confirm("Allow?", "Continue this form?");
+		void dialog.catch(() => {});
+		const prompt = store.run(runId)!.stages[0]!.pendingPrompt!;
+		assert.equal(prompt.source, "stage-dialog");
+		assert.equal(prompt.kind, "confirm");
+		assert.equal(broker.peekStagePrompt(runId, "stage-1")?.id, "question-1");
+		const owner = { ...captureWorkflowOwnerResources(), store, stageUiBroker: broker };
+		const answered = await workflowAnswerAction(
+			{ action: "answer", runId, ...(specifyStage ? { stageId: "stage-1" } : {}), response: true },
+			owner,
+		);
+		assert.equal(answered.status, "ok");
+		assert.equal(answered.message, `Answered prompt ${prompt.id}.`);
+		assert.equal(await dialog, true);
+		assert.equal(broker.peekStagePrompt(runId, "stage-1")?.id, "question-1");
+		assert.ok(broker.peekStageQuestionnaire(runId, "stage-1"));
+		assert.equal(
+			(await workflowAnswerAction({ action: "answer", runId, stageId: "stage-1", response: "Right" }, owner)).status,
+			"ok",
+		);
+		const result = await questionnaire;
+		assert.equal(result.details?.cancelled, false);
+		assert.equal(result.details?.answers[0]?.answer, "Right");
+		assert.deepEqual(shown, []);
+	},
+);
+
 test.each(["select", "input", "editor"] as const)(
 	"a stage's %s dialog can only be answered in its own session",
 	async (kind) => {
@@ -332,8 +382,8 @@ test("aborting a stage dialog does not approve it or let a stale reply answer it
 	assert.deepEqual(shown, ["confirm Main?"]);
 });
 
-test.each(["stage-chat", "workflow-answer"] as const)(
-	"a confirmation opened inside stage custom UI stacks above it and answers through %s (#5354)",
+test.each(["stage-chat", "workflow-answer", "escape"] as const)(
+	"a confirmation opened inside stage custom UI stacks above it and settles through %s (#5354)",
 	async (answerer) => {
 		const root = mkdtempSync(join(tmpdir(), "stage-nested-dialog-"));
 		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -364,7 +414,9 @@ test.each(["stage-chat", "workflow-answer"] as const)(
 		let confirmed: boolean | undefined;
 		const customInputs: string[] = [];
 		const custom = ui.custom<boolean>((_tui, _theme, _keys, done) => ({
-			render: () => [confirmed === undefined ? "CUSTOM-WAITING" : "CUSTOM-CONFIRMED"],
+			render: () => [
+				confirmed === undefined ? "CUSTOM-WAITING" : confirmed ? "CUSTOM-CONFIRMED" : "CUSTOM-CANCELLED",
+			],
 			invalidate() {},
 			handleInput(data) {
 				customInputs.push(data);
@@ -390,6 +442,8 @@ test.each(["stage-chat", "workflow-answer"] as const)(
 		if (answerer === "stage-chat") {
 			view.handleInput("\x1b[C");
 			view.handleInput("\r");
+		} else if (answerer === "escape") {
+			view.handleInput("\x1b");
 		} else {
 			const answered = await workflowAnswerAction(
 				{ action: "answer", runId, stageId: "stage-1", promptId: prompt.id, response: true },
@@ -397,15 +451,86 @@ test.each(["stage-chat", "workflow-answer"] as const)(
 			);
 			assert.equal(answered.status, "ok");
 		}
-		await vi.waitFor(() => assert.equal(confirmed, true));
-		assert.equal(detaches, 0, "answering the nested dialog keeps its custom component open");
+		const expected = answerer !== "escape";
+		await vi.waitFor(() => assert.equal(confirmed, expected));
+		assert.equal(detaches, 0, "settling the nested dialog keeps its custom component open");
 		assert.equal(store.run(runId)?.stages[0]?.status, "awaiting_input");
-		assert.match(stripAnsi(view.render(80).join("\n")), /CUSTOM-CONFIRMED/);
+		assert.equal(store.run(runId)?.stages[0]?.pendingPrompt, undefined);
+		assert.match(stripAnsi(view.render(80).join("\n")), expected ? /CUSTOM-CONFIRMED/ : /CUSTOM-CANCELLED/);
 		assert.deepEqual(customInputs, ["ask"]);
+		view.handleInput("x");
 		view.handleInput("\r");
-		assert.equal(await custom, true);
+		assert.equal(await custom, expected);
+		assert.deepEqual(customInputs, ["ask", "x", "\r"]);
 		assert.equal(store.run(runId)?.stages[0]?.status, "running");
 		assert.deepEqual(shown, []);
+	},
+);
+
+test.each(["select", "input", "editor"] as const)(
+	"Escape cancels a stacked %s dialog without selecting or submitting its initial value (#5354)",
+	async (kind) => {
+		const root = mkdtempSync(join(tmpdir(), "stage-custom-dialog-cancel-"));
+		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+		const { session: main } = await createAgentSession(sessionOptions(root));
+		cleanups.push(() => main.dispose());
+		await main.bindExtensions({ uiContext: mainChat([]), mode: "tui" });
+		const { stage, store, broker } = await workflowStage(root, main);
+		const runId = "3a8b8e63-2704-4212-af75-60bff16c299b";
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId,
+			stageId: "stage-1",
+			workflowName: "prompt-scope",
+			onDetach() {
+				assert.fail("the custom component stays attached");
+			},
+			onClose() {
+				assert.fail("the stage chat stays open");
+			},
+			piTui: makeTestTui(32),
+			piTheme: {},
+			piKeybindings: makeFakeKeybindings(),
+			stageUiBroker: broker,
+		});
+		cleanups.push(() => view.dispose());
+		const inputs: string[] = [];
+		const ui = stage.extensionRunner.createContext().ui;
+		const custom = ui.custom<boolean>((_tui, _theme, _keys, done) => ({
+			render: () => ["CUSTOM-WAITING"],
+			invalidate() {},
+			handleInput(data) {
+				inputs.push(data);
+				if (data === "\r") done(true);
+				return true;
+			},
+		}));
+		void custom.catch(() => {});
+		await vi.waitFor(() => assert.match(stripAnsi(view.render(80).join("\n")), /CUSTOM-WAITING/));
+		let result: string | undefined = "pending";
+		const dialog =
+			kind === "select"
+				? ui.select("Choose", ["Approve", "Reject"])
+				: kind === "input"
+					? ui.input("Name")
+					: ui.editor("Edit", "initial");
+		void dialog
+			.then((value) => {
+				result = value;
+			})
+			.catch(() => {});
+		assert.equal(store.run(runId)?.stages[0]?.pendingPrompt?.kind, kind);
+		view.render(80);
+		view.handleInput("\x1b");
+		await vi.waitFor(() => assert.equal(result, undefined));
+		assert.equal(await dialog, undefined);
+		assert.equal(store.run(runId)?.stages[0]?.pendingPrompt, undefined);
+		assert.match(stripAnsi(view.render(80).join("\n")), /CUSTOM-WAITING/);
+		view.handleInput("x");
+		view.handleInput("\r");
+		assert.equal(await custom, true);
+		assert.deepEqual(inputs, ["x", "\r"]);
 	},
 );
 

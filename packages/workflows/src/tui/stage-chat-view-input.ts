@@ -42,6 +42,14 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	const readOnlyPromptArchive = readOnlyArchive && isWorkflowPromptStage(stage);
 
 	if (ctx.promptState && promptCardShown(ctx)) {
+		if (ctx.mountedCustomUi && ctx.promptState.prompt.source === "stage-dialog" && matchesKey(data, Key.escape)) {
+			resolvePromptResponse(
+				ctx,
+				ctx.promptState.prompt.id,
+				ctx.promptState.prompt.kind === "confirm" ? false : undefined,
+			);
+			return true;
+		}
 		// Esc closes a choice or yes/no question back to the chat's prompt; the question stays pending (#5224).
 		if (isClosableQuestion(ctx.promptState.prompt.kind) && matchesKey(data, Key.escape)) {
 			ctx.dismissedPromptId = ctx.promptState.prompt.id;
