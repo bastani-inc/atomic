@@ -5,6 +5,7 @@ import { type ChatRequest, messageText, type ScriptedReply } from "./scripted-ch
 
 export const STREAM_MARKER = "GUARD-STREAM";
 export const SUBAGENTS_MARKER = "GUARD-SUBAGENTS";
+export const WORKFLOW_MARKER = "GUARD-WORKFLOW";
 const CHILD_MARKER = "GUARD-CHILD";
 const STAGE_MARKER = "GUARD-STAGE";
 const PROVIDER = "guard-loopback";
@@ -33,6 +34,18 @@ export function guardReply(request: ChatRequest): GuardReply {
 	const prompt = messageText(lastUser);
 	if (last?.role === "tool" && prompt.includes(SUBAGENTS_MARKER)) {
 		return { label: "parent-final", text: `${SUBAGENTS_MARKER}-DONE.`, chunks: 4, chunkDelayMs: 20 };
+	}
+	if (last?.role === "tool" && prompt.includes(WORKFLOW_MARKER)) {
+		return { label: "other", text: `${WORKFLOW_MARKER}-STARTED.`, chunks: 1, chunkDelayMs: 0 };
+	}
+	if (prompt.includes(WORKFLOW_MARKER)) {
+		return {
+			label: "other",
+			text: "Running the workflow.",
+			chunks: 1,
+			chunkDelayMs: 0,
+			toolCalls: [{ name: "workflow", arguments: { action: "run", workflow: GUARD_WORKFLOW, inputs: {} } }],
+		};
 	}
 	if (prompt.includes(STREAM_MARKER)) {
 		return { label: "stream", text: `${longMarkdown(24)}\n\n${STREAM_MARKER}-END`, chunks: 300, chunkDelayMs: 20 };

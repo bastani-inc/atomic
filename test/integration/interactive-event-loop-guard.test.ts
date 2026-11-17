@@ -10,7 +10,6 @@ import {
 	type DelayRecord,
 	delayOf,
 	describeBlock,
-	GUARD_WORKFLOW,
 	GUARD_WORKFLOW_STAGES,
 	type GuardReply,
 	guardReply,
@@ -22,6 +21,7 @@ import {
 	readRecords,
 	STREAM_MARKER,
 	SUBAGENTS_MARKER,
+	WORKFLOW_MARKER,
 	writeLargeSession,
 } from "../helpers/event-loop-guard-fixture.js";
 import { LAG_TAIL_SAMPLES } from "../helpers/event-loop-lag.js";
@@ -361,7 +361,7 @@ describe("the interactive host and engine keep their event loops responsive", ()
 		async () => {
 			const from = server.completed.length;
 			const result = await runScenario("workflow", {}, async (program) => {
-				await typeText(program, `/workflow ${GUARD_WORKFLOW}`, TYPING_INTERVAL_MS);
+				await typeText(program, `${WORKFLOW_MARKER} run the guard workflow`, TYPING_INTERVAL_MS);
 				await sleep(300);
 				program.write("\r");
 				await waitForReplies(program, "stage", GUARD_WORKFLOW_STAGES, from);
