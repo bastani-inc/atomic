@@ -135,6 +135,7 @@ export function createStatusWriter(
 	let pending = initialWrite;
 	let changeSeq = 0;
 	let unchangedFailures = 0;
+	let activeFlushCount = 0;
 	let recordingOwnNotice = false;
 	let cancelDrainSleep: (() => void) | null = null;
 	let cancelFlushSleep: (() => void) | null = null;
@@ -204,6 +205,11 @@ export function createStatusWriter(
 		}
 		lastHoldError = err;
 		holdStartedAt ??= Date.now();
+		if (activeFlushCount > 0) {
+			unchangedFailures =
+				changeSeq === seqBefore ? Math.min(unchangedFailures + 1, STATUS_WRITE_RETRY_DELAYS_MS.length) : 0;
+			return;
+		}
 		unchangedFailures = changeSeq === seqBefore ? unchangedFailures + 1 : 0;
 		if (unchangedFailures > STATUS_WRITE_RETRY_DELAYS_MS.length || Date.now() - holdStartedAt >= PERSISTENT_HOLD_MS) {
 			recordPersistentHoldError(err);
@@ -303,38 +309,43 @@ export function createStatusWriter(
 
 	return {
 		async flush() {
+			activeFlushCount++;
 			const deadline = Date.now() + STATUS_FLUSH_HOLD_BUDGET_MS;
 			let failedAttempts = 0;
-			while (active && (pending || inFlightWrite !== null)) {
-				const seqBefore = changeSeq;
-				let ok: boolean;
-				if (inFlightWrite !== null) {
-					ok = await inFlightWrite;
-				} else {
-					cancelDrainSleep?.();
-					initialWrite = false;
-					ok = await runWriteOnce();
-				}
-				if (ok) {
-					failedAttempts = 0;
-					continue;
-				}
-				failedAttempts++;
-				if (holdStartedAt !== null) {
-					const remainingMs = deadline - Date.now();
-					if (remainingMs <= 0) {
-						recordPersistentHoldError(lastHoldError);
+			try {
+				while (active && (pending || inFlightWrite !== null)) {
+					const seqBefore = changeSeq;
+					let ok: boolean;
+					if (inFlightWrite !== null) {
+						ok = await inFlightWrite;
+					} else {
+						cancelDrainSleep?.();
+						initialWrite = false;
+						ok = await runWriteOnce();
+					}
+					if (ok) {
+						failedAttempts = 0;
+						continue;
+					}
+					failedAttempts++;
+					if (lastHoldError !== null) {
+						const remainingMs = deadline - Date.now();
+						if (remainingMs <= 0) {
+							recordPersistentHoldError(lastHoldError);
+							break;
+						}
+						await sleepFlush(Math.min(STATUS_WRITE_INTERVAL_MS, remainingMs));
+						continue;
+					}
+					if (failedAttempts >= 2 || changeSeq === seqBefore) {
 						break;
 					}
-					await sleepFlush(Math.min(STATUS_WRITE_INTERVAL_MS, remainingMs));
-					continue;
 				}
-				if (failedAttempts >= 2 || changeSeq === seqBefore) {
-					break;
+			} finally {
+				activeFlushCount--;
+				if (canScheduleDrain()) {
+					void ensureDrain();
 				}
-			}
-			if (canScheduleDrain()) {
-				void ensureDrain();
 			}
 		},
 		unsubscribe() {

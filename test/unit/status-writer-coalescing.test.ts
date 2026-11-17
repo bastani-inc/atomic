@@ -685,6 +685,241 @@ test("unsubscribe during a flush hold sleep settles flush promptly without recor
 	}
 });
 
+test.each([
+	[2_000, "EPERM"],
+	[5_000, "EPERM"],
+	[10_000, "EPERM"],
+	[2_000, "EBUSY"],
+	[5_000, "EBUSY"],
+	[10_000, "EBUSY"],
+] as const)(
+	"flush starting %dms into an existing %s reader hold waits out a reader releasing within its budget without a warning (#5322)",
+	async (priorHoldMs, code) => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		vi.resetModules();
+		const { createStatusWriter } = await import("../../packages/workflows/src/extension/status-writer.js");
+		const store = createStore();
+		store.recordRunStart({ ...makeRun([makeStage("stage")]), id: "live", status: "running" });
+		const stagedByPath = new Map<string, string>();
+		const publishedByPath = new Map<string, string>();
+		let failRename = false;
+		writeFileHook = async (path, content) => {
+			const text = typeof content === "string" ? content : Array.from(content).join("");
+			stagedByPath.set(path, text);
+		};
+		renameHook = async (oldPath, newPath) => {
+			if (failRename) {
+				throw Object.assign(new Error(`${code}: rename refused`), { code });
+			}
+			const staged = stagedByPath.get(oldPath);
+			assert.notEqual(staged, undefined);
+			stagedByPath.delete(oldPath);
+			publishedByPath.set(newPath, staged!);
+		};
+		unlinkHook = async (path) => {
+			stagedByPath.delete(path);
+		};
+		const statusFileName = `status-older-hold-${priorHoldMs}-${code.toLowerCase()}.json`;
+		const targetPath = resolve(statusFileName);
+		const tmpPath = `${targetPath}.tmp`;
+		const writer = createStatusWriter(store, {
+			maxDepth: 4,
+			defaultConcurrency: 4,
+			persistRuns: true,
+			resumeInFlight: "ask",
+			statusFile: true,
+			statusFilePath: statusFileName,
+		});
+		try {
+			await vi.advanceTimersByTimeAsync(50);
+			failRename = true;
+			const expectedSummary = `held-${priorHoldMs}-${code}`;
+			store.recordRunSummary!("live", expectedSummary, 1);
+			await vi.advanceTimersByTimeAsync(priorHoldMs);
+			assert.equal(store.notices().length, 0);
+
+			const flushStartedAt = Date.now();
+			let settledAt: number | null = null;
+			const flushing = writer.flush().then(() => {
+				settledAt = Date.now() - flushStartedAt;
+			});
+			await vi.advanceTimersByTimeAsync(600);
+			assert.equal(settledAt, null, "flush must not settle before the reader releases");
+			assert.equal(store.notices().length, 0);
+
+			failRename = false;
+			await vi.advanceTimersByTimeAsync(500);
+			await flushing;
+			assert.notEqual(settledAt, null);
+			assert.ok(settledAt! >= 600 && settledAt! < ENGINE_SHUTDOWN_GRACE_MS, `settledAt=${settledAt}ms`);
+			assert.equal(
+				store.notices().filter((notice) => notice.message.includes("status file write failed")).length,
+				0,
+			);
+			assert.equal(stagedByPath.has(tmpPath), false);
+			const published = JSON.parse(publishedByPath.get(targetPath) ?? "{}") as {
+				runs: Array<{ id: string; summary?: string }>;
+			};
+			assert.equal(published.runs[0]?.summary, expectedSummary);
+		} finally {
+			writer.unsubscribe();
+			await vi.runAllTimersAsync();
+			writeFileHook = undefined;
+			renameHook = undefined;
+			unlinkHook = undefined;
+			vi.useRealTimers();
+		}
+	},
+);
+
+test.each([2_000, 5_000, 10_000])(
+	"flush starting %dms into a persistent reader hold uses its full retry window before recording one warning (#5322)",
+	async (priorHoldMs) => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		vi.resetModules();
+		const { createStatusWriter } = await import("../../packages/workflows/src/extension/status-writer.js");
+		const store = createStore();
+		store.recordRunStart({ ...makeRun([makeStage("stage")]), id: "live", status: "running" });
+		const stagedByPath = new Map<string, string>();
+		let failRename = false;
+		let writeAttempts = 0;
+		writeFileHook = async (path, content) => {
+			writeAttempts++;
+			const text = typeof content === "string" ? content : Array.from(content).join("");
+			stagedByPath.set(path, text);
+		};
+		renameHook = async (oldPath) => {
+			if (failRename) {
+				throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+			}
+			stagedByPath.delete(oldPath);
+		};
+		unlinkHook = async (path) => {
+			stagedByPath.delete(path);
+		};
+		const writer = createStatusWriter(store, {
+			maxDepth: 4,
+			defaultConcurrency: 4,
+			persistRuns: true,
+			resumeInFlight: "ask",
+			statusFile: true,
+			statusFilePath: `status-older-persistent-${priorHoldMs}.json`,
+		});
+		try {
+			await vi.advanceTimersByTimeAsync(50);
+			failRename = true;
+			store.recordRunSummary!("live", `persistent-${priorHoldMs}`, 1);
+			await vi.advanceTimersByTimeAsync(priorHoldMs);
+			assert.equal(store.notices().length, 0);
+
+			const flushStartedAt = Date.now();
+			let settledAt: number | null = null;
+			const flushing = writer.flush().then(() => {
+				settledAt = Date.now() - flushStartedAt;
+			});
+			await vi.advanceTimersByTimeAsync(900);
+			assert.equal(settledAt, null, "background quota must not cut flush short before its 1s window");
+			assert.equal(store.notices().length, 0);
+
+			await vi.advanceTimersByTimeAsync(600);
+			await flushing;
+			assert.notEqual(settledAt, null);
+			assert.ok(settledAt! >= 1_000 && settledAt! < ENGINE_SHUTDOWN_GRACE_MS, `settledAt=${settledAt}ms`);
+			const notices = store.notices().filter((notice) => notice.message.includes("status file write failed"));
+			assert.equal(notices.length, 1);
+			assert.equal(notices[0]?.level, "warning");
+
+			const attemptsAtFlushEnd = writeAttempts;
+			writer.unsubscribe();
+			await vi.advanceTimersByTimeAsync(60_000);
+			assert.equal(writeAttempts, attemptsAtFlushEnd);
+			assert.equal(store.notices().length, 1);
+		} finally {
+			writer.unsubscribe();
+			await vi.runAllTimersAsync();
+			writeFileHook = undefined;
+			renameHook = undefined;
+			unlinkHook = undefined;
+			vi.useRealTimers();
+		}
+	},
+);
+
+test("flush joining an in-flight background write at the exhaustion boundary waits out a reader releasing within its window (#5322)", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+	vi.resetModules();
+	const { createStatusWriter } = await import("../../packages/workflows/src/extension/status-writer.js");
+	const store = createStore();
+	store.recordRunStart({ ...makeRun([makeStage("stage")]), id: "live", status: "running" });
+	const stagedByPath = new Map<string, string>();
+	const publishedByPath = new Map<string, string>();
+	let failRename = true;
+	let writeAttempts = 0;
+	writeFileHook = async (path, content) => {
+		writeAttempts++;
+		const text = typeof content === "string" ? content : Array.from(content).join("");
+		stagedByPath.set(path, text);
+	};
+	renameHook = async (oldPath, newPath) => {
+		if (failRename) {
+			throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+		}
+		const staged = stagedByPath.get(oldPath);
+		assert.notEqual(staged, undefined);
+		stagedByPath.delete(oldPath);
+		publishedByPath.set(newPath, staged!);
+	};
+	unlinkHook = async (path) => {
+		stagedByPath.delete(path);
+	};
+	const targetPath = resolve("status-inflight-boundary.json");
+	const writer = createStatusWriter(store, {
+		maxDepth: 4,
+		defaultConcurrency: 4,
+		persistRuns: true,
+		resumeInFlight: "ask",
+		statusFile: true,
+		statusFilePath: "status-inflight-boundary.json",
+	});
+	try {
+		await vi.advanceTimersByTimeAsync(160);
+		await vi.advanceTimersByTimeAsync(250 + 160);
+		await vi.advanceTimersByTimeAsync(1_000 + 160);
+		await vi.advanceTimersByTimeAsync(4_000 + 160);
+		assert.equal(writeAttempts, 4);
+		assert.equal(store.notices().length, 0);
+
+		await vi.advanceTimersByTimeAsync(16_000 + 50);
+		assert.equal(writeAttempts, 5, "5th background write is in flight inside renameStatusFile");
+
+		let settled = false;
+		const flushing = writer.flush().then(() => {
+			settled = true;
+		});
+		await vi.advanceTimersByTimeAsync(500);
+		assert.equal(settled, false);
+		assert.equal(store.notices().length, 0);
+
+		failRename = false;
+		await vi.advanceTimersByTimeAsync(500);
+		await flushing;
+		assert.equal(settled, true);
+		assert.equal(store.notices().length, 0);
+		const published = JSON.parse(publishedByPath.get(targetPath) ?? "{}") as {
+			runs: Array<{ id: string; status: string }>;
+		};
+		assert.equal(published.runs[0]?.id, "live");
+		assert.equal(published.runs[0]?.status, "running");
+	} finally {
+		writer.unsubscribe();
+		await vi.runAllTimersAsync();
+		writeFileHook = undefined;
+		renameHook = undefined;
+		unlinkHook = undefined;
+		vi.useRealTimers();
+	}
+});
+
 test("retries persistent write failures with growing delays, stops after four backoff attempts, and resets on store change (#5234)", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 	vi.resetModules();
