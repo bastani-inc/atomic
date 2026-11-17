@@ -676,7 +676,7 @@ export class TaskCompletionMessage implements Component {
 				const detailWidth = Math.max(1, width - 1);
 				return [
 					...(line === undefined ? [] : [line]),
-					...records.render(detailWidth).map((row) => truncateToWidth(` ${row}`, width, "…")),
+					...records.render(detailWidth).map((row) => previewRow(truncateToWidth(` ${row}`, width, "…"))),
 				];
 			}
 			if (!preview) return line === undefined ? [] : [line];

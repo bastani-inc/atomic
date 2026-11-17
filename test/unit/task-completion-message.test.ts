@@ -468,7 +468,7 @@ test("agent completion notices render agent-name finished/failed/stopped with el
 	setKeybindings(new KeybindingsManager());
 });
 
-test("agent completion previews emit no colour under NO_COLOR, like their notice line", () => {
+test("agent completion previews emit no colour under NO_COLOR, like their notice line", async () => {
 	vi.stubEnv("NO_COLOR", "1");
 	onTestFinished(() => {
 		vi.unstubAllEnvs();
@@ -485,6 +485,19 @@ test("agent completion previews emit no colour under NO_COLOR, like their notice
 		assert.ok(rows.length > 1, `expanded=${expanded}: preview rows`);
 		assert.deepEqual(rows, rows.map(stripVTControlCharacters), `expanded=${expanded}`);
 	}
+	let rendered = 0;
+	const loaded = new TaskCompletionMessage(notice, true, {
+		loadTranscript: () =>
+			[{ type: "message", message: { role: "user", content: "Fix **the lock**", timestamp: 1 } }] as never,
+		requestRender: () => {
+			rendered += 1;
+		},
+	});
+	loaded.render(80);
+	for (let i = 0; i < 20 && rendered === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+	const transcriptRows = loaded.render(80);
+	assert.match(transcriptRows.join("\n"), /Prompt[\s\S]*the lock[\s\S]*Tool calls[\s\S]*Result/);
+	assert.deepEqual(transcriptRows, transcriptRows.map(stripVTControlCharacters), "loaded transcript");
 });
 
 test.each([20, 80, 160])("expanded agent notices show every retained result line at width %i (#5342)", (width) => {

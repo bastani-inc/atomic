@@ -745,6 +745,71 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 		assert.match(WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT, / · enter .+ · esc .+$/);
 		assert.ok(themedLines[0]!.includes(theme.fg("warning", WORKFLOW_DEFINITION_CHANGED_TITLE)), "themed title");
 
+		const remapped = new KeybindingsManager({
+			"tui.select.confirm": ["right", "enter"],
+			"tui.select.cancel": ["q"],
+			"app.list.open": ["left"],
+		});
+		const remappedRuns: Array<Array<boolean | undefined>> = [];
+		for (const keys of [["\x1b[C", "\x1b[D", "q", "\r"], ["\x1b"], ["\x03"]]) {
+			const remappedCtx: PiCommandContext = {
+				hasUI: true,
+				cwd: workDir,
+				ui: {
+					notify: () => undefined,
+					custom: async (factory) => {
+						let result: boolean | undefined;
+						const component = await factory({} as never, theme as never, remapped as never, (val) => {
+							result = val === true;
+						});
+						const afterEachKey: Array<boolean | undefined> = [];
+						for (const key of keys) {
+							if (result === undefined) component.handleInput?.(key);
+							afterEachKey.push(result);
+						}
+						remappedRuns.push(afterEachKey);
+						if (result === undefined) component.handleInput?.("\x1b");
+						return result;
+					},
+				},
+			};
+			await provider.resumeFromPicker(editedRunId, remappedCtx);
+		}
+		assert.deepEqual(
+			remappedRuns,
+			[[undefined, undefined, undefined, true], [false], [false]],
+			"only Enter accepts and Esc or Ctrl+C cancels, whatever the confirm and cancel bindings are",
+		);
+		assert.equal(resumeSpy.mock.calls.length, 1);
+		resumeSpy.mockClear();
+
+		vi.stubEnv("NO_COLOR", "1");
+		try {
+			let plainLines: string[] = [];
+			const noColorCtx: PiCommandContext = {
+				hasUI: true,
+				cwd: workDir,
+				ui: {
+					notify: () => undefined,
+					custom: async (factory) => {
+						const component = await factory(
+							{} as never,
+							theme as never,
+							new KeybindingsManager() as never,
+							() => {},
+						);
+						plainLines = component.render(160);
+						component.handleInput?.("\x1b");
+						return false;
+					},
+				},
+			};
+			await provider.resumeFromPicker(editedRunId, noColorCtx);
+			assert.deepEqual(plainLines, [`  ${WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT}`], "NO_COLOR prompt");
+		} finally {
+			vi.unstubAllEnvs();
+		}
+
 		const confirmCalls: string[][] = [];
 		const confirmCtx: PiCommandContext = {
 			hasUI: true,
