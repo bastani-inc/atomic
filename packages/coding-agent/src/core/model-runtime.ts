@@ -85,6 +85,7 @@ import {
 	configuredRequestAuthStatus,
 	type ProviderConfigInput,
 	resolveCompatibilityRequestConfig,
+	resolveCompatibilityRequestConfigAsync,
 	resolveConfiguredModelHeaders,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
@@ -664,6 +665,15 @@ export class ModelRuntime implements Models {
 	getCompatibilityRequestConfig(model: Model<Api>): CompatibilityRequestConfig {
 		model = normalizeModelProvider(model);
 		return resolveCompatibilityRequestConfig(
+			model,
+			this.config.getProvider(model.provider),
+			this.extensionProviders.get(model.provider),
+		);
+	}
+	/** @internal {@link ModelRuntime.getCompatibilityRequestConfig} without blocking the event loop. */
+	getCompatibilityRequestConfigAsync(model: Model<Api>): Promise<CompatibilityRequestConfig> {
+		model = normalizeModelProvider(model);
+		return resolveCompatibilityRequestConfigAsync(
 			model,
 			this.config.getProvider(model.provider),
 			this.extensionProviders.get(model.provider),

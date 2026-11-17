@@ -639,7 +639,7 @@ async function constructAgentSession(
 					env: streamOptions?.env,
 					signal: streamOptions?.signal,
 				});
-				const compatibility = authResult ? undefined : modelRuntime.getCompatibilityRequestConfig(model);
+				const compatibility = authResult ? undefined : await modelRuntime.getCompatibilityRequestConfigAsync(model);
 				if (!authResult && compatibility?.authHeader) {
 					throw new Error(`No API key found for "${model.provider}"`);
 				}
