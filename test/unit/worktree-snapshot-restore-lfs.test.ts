@@ -4,6 +4,7 @@ import { cpSync, mkdirSync, readFileSync, readlinkSync, symlinkSync } from "node
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
+import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 import type { SpawnRequest } from "../helpers/worktree-snapshot-faults.js";
 
 /**
@@ -37,6 +38,8 @@ import {
 import { pendingLfsDownload } from "../../packages/coding-agent/src/core/worktree-snapshot/restore.ts";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 import { gitCommand } from "../helpers/worktree-snapshot-faults.js";
+
+startHostProcessesThroughChildProcess();
 
 const sha256 = (content: string): string => createHash("sha256").update(content).digest("hex");
 
