@@ -12,7 +12,8 @@ export const PARKED_STAGE_TASKS_TYPE = "workflow-stage-parked-tasks";
 interface ParkedStageTasks {
 	/** The stage generation, in the process that released the stage. */
 	readonly attemptId: string;
-	readonly tasks: readonly { readonly ownerId: OwnerId; readonly taskId: TaskId }[];
+	/** `launchedBy` names the worker whose shell it is; absent for the stage's own. */
+	readonly tasks: readonly { readonly ownerId: OwnerId; readonly taskId: TaskId; readonly launchedBy?: string }[];
 }
 
 /** Save the stage's running shells as the stage is released, before its session lets go of the store. */
@@ -25,7 +26,11 @@ export async function recordParkedStageTasks(
 	if (!watched?.ok) return;
 	const tasks = watched.value.snapshot.tasks
 		.filter((task) => task.kind === "command" && task.execution.kind !== "settled")
-		.map((task) => ({ ownerId: task.ref.ownerId, taskId: task.ref.taskId }));
+		.map((task) => ({
+			ownerId: task.ref.ownerId,
+			taskId: task.ref.taskId,
+			...(task.launchedBy === undefined ? {} : { launchedBy: task.launchedBy }),
+		}));
 	watched.value.dispose();
 	if (tasks.length === 0) return;
 	const marker: ParkedStageTasks = { attemptId: boundary.attemptId, tasks };
@@ -58,7 +63,7 @@ export async function recordTasksInterruptedByRestart(
 						: [],
 				),
 		);
-		for (const { ownerId, taskId } of marker.tasks) {
+		for (const { ownerId, taskId, launchedBy } of marker.tasks) {
 			if (notified.has(taskKey({ ownerId, taskId }))) continue;
 			interrupted.push({
 				completionId: `restart-interrupted:${marker.attemptId}:${ownerId}:${taskId}`,
@@ -69,6 +74,8 @@ export async function recordTasksInterruptedByRestart(
 				display: false,
 				taskKind: "command",
 				interruptedByRestart: true,
+				// A worker's shell is that worker's to hear of, never the stage's.
+				...(launchedBy === undefined ? {} : { launchedBy }),
 			});
 		}
 	}
