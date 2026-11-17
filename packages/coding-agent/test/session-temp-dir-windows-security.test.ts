@@ -19,10 +19,9 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, join, sep } from "node:path";
-import { monitorEventLoopDelay } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
-import { LAG_RESOLUTION_MS } from "../../../test/helpers/event-loop-lag.ts";
+import { longestMainThreadBlockMs } from "../../../test/helpers/main-thread-work.ts";
 import {
 	bunExecutable,
 	moduleDir,
@@ -661,19 +660,6 @@ function installFakePowerShell(mode: FakePowerShellMode, pwshMode: FakePowerShel
 			rmSync(bin, { recursive: true, force: true });
 		},
 	};
-}
-
-async function longestMainThreadBlockMs(work: () => Promise<void>): Promise<number> {
-	const histogram = monitorEventLoopDelay({ resolution: LAG_RESOLUTION_MS });
-	histogram.enable();
-	try {
-		await sleep(LAG_RESOLUTION_MS * 4);
-		await work();
-		await sleep(LAG_RESOLUTION_MS * 4);
-	} finally {
-		histogram.disable();
-	}
-	return Math.max(0, histogram.max / 1e6 - LAG_RESOLUTION_MS);
 }
 
 function processIsAlive(pid: number): boolean {
