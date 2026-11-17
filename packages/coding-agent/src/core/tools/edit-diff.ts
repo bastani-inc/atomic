@@ -602,9 +602,17 @@ export interface EditDiff {
 const DIFF_WINDOW_MARGIN_LINES = 32;
 
 /**
+ * Line edits beyond which a window is shown as its changed lines replaced whole. jsdiff's search compares lines on
+ * every diagonal it reaches, so two long blocks with little in common cost the product of their lengths. Stopping at
+ * this many edits bounds that cost, and a change this large reads as a replaced block anyway.
+ */
+const MAX_LINE_EDITS = 256;
+
+/**
  * Diff an edit only around its replacements, so time and memory follow the size of the change instead of
  * the file. The result matches generateDiffString and generateUnifiedPatch over the whole contents, except
- * that jsdiff may align runs of repeated lines differently within a window.
+ * that jsdiff may align runs of repeated lines differently within a window, and a window that needs more than
+ * MAX_LINE_EDITS line edits shows the lines between its unchanged first and last lines replaced whole.
  */
 export function generateEditDiff(
 	path: string,
@@ -621,20 +629,14 @@ export function generateEditDiff(
 	for (const window of getDiffWindows(baseContent, replacements)) {
 		const oldText = baseContent.slice(window.oldStart, window.oldEnd);
 		const newText = newContent.slice(window.newStart, window.newEnd);
-		const shown = formatDisplayDiff(
-			Diff.diffLines(oldText, newText),
-			window.oldLine + 1,
-			window.newLine + 1,
-			lineNumWidth,
-			contextLines,
-		);
+		const diff = diffWindow(path, oldText, newText, contextLines);
+		const shown = formatDisplayDiff(diff.parts, window.oldLine + 1, window.newLine + 1, lineNumWidth, contextLines);
 		firstChangedLine ??= shown.firstChangedLine;
 		// Both windows around a run of unchanged lines mark it as skipped; the whole-file diff shows one marker.
 		if (output.at(-1) === skipMarker && shown.output[0] === skipMarker) shown.output.shift();
 		// A loop, not push(...lines): spreading a replacement of many lines overflows the call stack.
 		for (const line of shown.output) output.push(line);
-		const patch = Diff.structuredPatch(path, path, oldText, newText, undefined, undefined, { context: contextLines });
-		for (const hunk of patch.hunks) {
+		for (const hunk of diff.hunks) {
 			hunks.push({ ...hunk, oldStart: hunk.oldStart + window.oldLine, newStart: hunk.newStart + window.newLine });
 		}
 	}
@@ -643,6 +645,93 @@ export function generateEditDiff(
 		Diff.FILE_HEADERS_ONLY,
 	);
 	return { diff: output.join("\n"), patch, firstChangedLine };
+}
+
+/** Line changes and patch hunks of one window, numbered from its first line. */
+interface WindowDiff {
+	parts: Diff.ChangeObject<string>[];
+	hunks: Diff.StructuredPatchHunk[];
+}
+
+/** jsdiff's line diff of a window, or its changed lines replaced whole when it needs more than MAX_LINE_EDITS edits. */
+function diffWindow(path: string, oldText: string, newText: string, contextLines: number): WindowDiff {
+	const options = { context: contextLines, maxEditLength: MAX_LINE_EDITS };
+	const parts = Diff.diffLines(oldText, newText, options);
+	const patch = parts && Diff.structuredPatch(path, path, oldText, newText, undefined, undefined, options);
+	return parts && patch ? { parts, hunks: patch.hunks } : replacedBlockDiff(oldText, newText, contextLines);
+}
+
+/** Lines of `text` as jsdiff's line diff splits them, each with its line feed. */
+function splitLinesWithFeeds(text: string): string[] {
+	const lines: string[] = [];
+	let start = 0;
+	for (let feed = text.indexOf("\n"); feed !== -1; feed = text.indexOf("\n", start)) {
+		lines.push(text.slice(start, feed + 1));
+		start = feed + 1;
+	}
+	if (start < text.length) lines.push(text.slice(start));
+	return lines;
+}
+
+/**
+ * The diff that keeps the lines the two texts start and end with in common and replaces every line between them, in
+ * the form jsdiff gives a diff and a patch: removed lines before added ones, one hunk with up to `contextLines`
+ * unchanged lines on each side, and a marker after a last line without a line feed.
+ */
+function replacedBlockDiff(oldText: string, newText: string, contextLines: number): WindowDiff {
+	const oldLines = splitLinesWithFeeds(oldText);
+	const newLines = splitLinesWithFeeds(newText);
+	const shorter = Math.min(oldLines.length, newLines.length);
+	let common = 0;
+	while (common < shorter && oldLines[common] === newLines[common]) common++;
+	let trailing = 0;
+	while (
+		trailing < shorter - common &&
+		oldLines[oldLines.length - 1 - trailing] === newLines[newLines.length - 1 - trailing]
+	)
+		trailing++;
+	const leading = oldLines.slice(0, common);
+	const removed = oldLines.slice(common, oldLines.length - trailing);
+	const added = newLines.slice(common, newLines.length - trailing);
+	const following = oldLines.slice(oldLines.length - trailing);
+
+	const parts: Diff.ChangeObject<string>[] = [];
+	for (const [lines, change] of [
+		[leading, "kept"],
+		[removed, "removed"],
+		[added, "added"],
+		[following, "kept"],
+	] as const) {
+		if (lines.length === 0) continue;
+		parts.push({
+			value: lines.join(""),
+			added: change === "added",
+			removed: change === "removed",
+			count: lines.length,
+		});
+	}
+
+	const before = leading.slice(Math.max(0, leading.length - contextLines));
+	const after = following.slice(0, contextLines);
+	const lines: string[] = [];
+	for (const [prefix, text] of [
+		...before.map((line) => [" ", line] as const),
+		...removed.map((line) => ["-", line] as const),
+		...added.map((line) => ["+", line] as const),
+		...after.map((line) => [" ", line] as const),
+	]) {
+		if (text.endsWith("\n")) lines.push(prefix + text.slice(0, -1));
+		else lines.push(prefix + text, "\\ No newline at end of file");
+	}
+	const start = common - before.length + 1;
+	const hunk: Diff.StructuredPatchHunk = {
+		oldStart: start,
+		oldLines: before.length + removed.length + after.length,
+		newStart: start,
+		newLines: before.length + added.length + after.length,
+		lines,
+	};
+	return { parts, hunks: [hunk] };
 }
 
 /** Matching ranges of the old and new contents around one or more replacements: offsets and 0-based first lines. */
