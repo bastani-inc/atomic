@@ -115,17 +115,21 @@ Foreground subagent launches and explicit `action: "wait"` calls also yield when
 
 ### Completion messages
 
-Completion creates a shaded notification card in the owning chat without depending on a model reply. It uses the chat theme's card background and padding, with a colored outcome, the agent or shell name, and an available result preview:
+Completion adds one notice line to the owning chat without depending on a model reply. Its marker and colour give the outcome: `●` completed, `✗` failed, `◼` stopped, `!` timed out, `⏸` paused or waiting. The line names the task, says how it ended and how long it ran. An agent's line is followed by the first line of its result:
 
 ```text
-✓ Subagent codebase-analyzer completed: Trace the authentication flow.
-⎿ Authentication starts in …
-(ctrl+o for the full result) · /tasks to inspect
+● Background command "npm run build" completed (exit code 0) · 3m 2s
+◼ Task "Sleep 300 seconds in background" was stopped by the user
+● Agent "Trace the authentication flow" finished · 1h 31m
+  ⎿  Authentication starts in …
+     (ctrl+o for the full result)
 ```
+
+The main chat, a workflow stage's chat and a subagent's view show the same line.
 
 The parent model also receives the result context. Delivery retries do not relaunch the child. Workflow completions stay in their owning stage chat, not the main conversation.
 
-A notice goes only to the session that launched the task: the main chat, a workflow stage, or a subagent. It never goes to another session. Notices that finish together, or while that chat is working, are joined into one message, and the chat reads it after its current turn, so a burst of finished tasks costs one message and one turn. An idle chat starts that turn at once. A chat waiting for your next message after an interrupt keeps the notice until you send one. A notice restored after a restart joins the transcript without starting a turn.
+A notice goes only to the session that launched the task: the main chat, a workflow stage, or a subagent. It never goes to another session. Tasks that finish together reach the model in one request, which starts one turn in an idle chat. A notice that arrives while the chat is working is read at that turn's next safe point and starts no turn of its own. A chat waiting for your next message after an interrupt keeps the notice until you send one. A notice restored after a restart joins the transcript without starting a turn.
 
 Supervisor progress messages are labelled **Historical supervisor update** with their original `Sent:` timestamp. They describe the child's state when sent, not its current status, and can arrive after completion. Prefer a later correction or final result over an earlier progress hypothesis; use `/tasks` for the current task state.
 
@@ -137,7 +141,7 @@ Repeated stop requests or late child results do not duplicate the notice or over
 
 Restored completions may have only an outcome and task identity if the original live task or transcript is unavailable. Atomic does not invent missing output. Excerpts are bounded; inspect retained history for more detail.
 
-A collapsed subagent notice shows the first wrapped line of its result; a shell notice shows the last three wrapped lines of retained output. Use the expand-tools key, normally Ctrl+O, for more of the retained preview, or `/tasks` to inspect. Missing model metadata does not change a subagent notice's layout.
+A collapsed subagent notice shows the first wrapped line of its result; a shell notice shows only its line. Use the expand-tools key, normally Ctrl+O, for the shell's last output lines or the agent's full retained result, or `/tasks` to inspect.
 
 Long titles and previews are truncated or wrapped within the card width. Its background covers the ellipsis, expand hint, and trailing padding on every row.
 

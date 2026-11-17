@@ -5,7 +5,8 @@
 ### Changed
 
 - A background shell a subagent starts now belongs to that subagent. Its completion notice reaches only the subagent: while it runs, through its wake while it is released, and otherwise when it next runs. It is never sent to the chat or workflow stage that launched the subagent. The shell is listed in the subagent's own `/tasks`, not the launcher's, though it still runs in the launcher's task owner, so it outlives the subagent and Ctrl+X Ctrl+K still stops it ([#5342](https://github.com/bastani-inc/atomic/pull/5342))
-- Finished-task notices that arrive together, or while a chat or workflow stage is working, are joined into one message that starts one turn once the chat is idle, instead of one message and one turn each ([#5342](https://github.com/bastani-inc/atomic/pull/5342))
+- Tasks that finish together reach the model in one request that starts one turn, instead of one turn each. A notice that arrives while the chat is working is read at that turn's next safe point and starts no turn of its own. Each finished task now shows as one line, such as `● Background command "npm test" completed (exit code 0) · 12s` or `◼ Task "sleep 300" was stopped by the user`, the same in the main chat, workflow stage chats and subagent views. Ctrl+O shows a shell's last output lines and an agent's full result ([#5342](https://github.com/bastani-inc/atomic/pull/5342))
+- Clarified in `codemode`'s description, system-prompt guidance, and `searchTools()`/`describeTool()` hints that `subagent`, `workflow`, and other model-only tools (plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script, and should be called directly as separate top-level tools when available in the session
 
 ### Fixed
 
