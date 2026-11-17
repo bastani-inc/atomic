@@ -17,8 +17,11 @@ export interface WorkspaceProcessRun {
 	readonly timeoutMs?: number;
 	/** The failure of a run that exceeded `timeoutMs`, given how long it ran. Required with `timeoutMs`. */
 	readonly timeoutError?: (elapsedMs: number) => Error;
-	/** Called once the process started, with its pid. A throw stops the process and becomes the run's failure. */
-	readonly onSpawn?: (pid: number) => void;
+	/**
+	 * Called once the process started, with its pid. A throw or rejection stops the process and becomes the run's
+	 * failure; the run ends only once what it returned settled.
+	 */
+	readonly onSpawn?: (pid: number) => void | Promise<void>;
 }
 
 export type WorkspaceProcessOutcome =
@@ -124,7 +127,9 @@ export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<Workspace
 		child.on("exit", () => {
 			if (stopped !== undefined) settleWhenStopped();
 		});
-		child.on("close", (code) => {
+		/** What `onSpawn` returned, while it may still fail the run. */
+		let spawning: Promise<void> | undefined;
+		const closed = (code: number | null): void => {
 			if (stopped !== undefined) {
 				settleWhenStopped();
 				return;
@@ -137,10 +142,16 @@ export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<Workspace
 					status: code,
 				}),
 			);
+		};
+		child.on("close", (code) => {
+			if (spawning === undefined) closed(code);
+			else void spawning.then(() => closed(code));
 		});
 		if (child.pid !== undefined && run.onSpawn !== undefined) {
 			try {
-				run.onSpawn(child.pid);
+				const spawned = run.onSpawn(child.pid);
+				// A rejection stops the run as a throw does; it then fails once the process and its group are gone.
+				if (spawned !== undefined) spawning = spawned.catch((error: unknown) => stop(() => reject(error)));
 			} catch (error) {
 				stop(() => reject(error));
 			}

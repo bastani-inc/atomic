@@ -29,14 +29,14 @@ describe("resource write parity edges", () => {
 		expect(readFileSync(join(testDir, "copy.txt"), "utf8")).toBe(content);
 	});
 
-	it("rejects malformed zip member bounds", () => {
+	it("rejects malformed zip member bounds", async () => {
 		const buf = Buffer.alloc(22);
 		buf.writeUInt32LE(0x06054b50, 0);
 		buf.writeUInt16LE(1, 8);
 		buf.writeUInt16LE(1, 10);
 		buf.writeUInt32LE(46, 12);
 		buf.writeUInt32LE(22, 16);
-		expect(() => readZipEntriesFromBuffer(buf, "bad.zip")).toThrow(/Invalid zip entry bounds/);
+		await expect(readZipEntriesFromBuffer(buf, "bad.zip")).rejects.toThrow(/Invalid zip entry bounds/);
 	});
 	it("rejects archive directory write targets", async () => {
 		await expect(

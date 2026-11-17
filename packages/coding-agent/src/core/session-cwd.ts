@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 
 export interface SessionCwdIssue {
 	sessionFile?: string;
@@ -11,25 +12,47 @@ interface SessionCwdSource {
 	getSessionFile(): string | undefined;
 }
 
-export function getMissingSessionCwdIssue(
-	sessionManager: SessionCwdSource,
-	fallbackCwd: string,
-): SessionCwdIssue | undefined {
+/** The session file and the working directory it records, for a session kept in a file that records one. */
+function fileSessionCwd(sessionManager: SessionCwdSource): { sessionFile: string; sessionCwd: string } | undefined {
 	const sessionFile = sessionManager.getSessionFile();
 	if (!sessionFile) {
 		return undefined;
 	}
-
 	const sessionCwd = sessionManager.getCwd();
-	if (!sessionCwd || existsSync(sessionCwd)) {
+	return sessionCwd ? { sessionFile, sessionCwd } : undefined;
+}
+
+/** Whether `path` exists, as `existsSync` answers: any error means it does not. */
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function getMissingSessionCwdIssue(
+	sessionManager: SessionCwdSource,
+	fallbackCwd: string,
+): SessionCwdIssue | undefined {
+	const recorded = fileSessionCwd(sessionManager);
+	if (!recorded || existsSync(recorded.sessionCwd)) {
 		return undefined;
 	}
+	return { ...recorded, fallbackCwd };
+}
 
-	return {
-		sessionFile,
-		sessionCwd,
-		fallbackCwd,
-	};
+/** {@link getMissingSessionCwdIssue} without blocking the event loop. */
+async function getMissingSessionCwdIssueAsync(
+	sessionManager: SessionCwdSource,
+	fallbackCwd: string,
+): Promise<SessionCwdIssue | undefined> {
+	const recorded = fileSessionCwd(sessionManager);
+	if (!recorded || (await pathExists(recorded.sessionCwd))) {
+		return undefined;
+	}
+	return { ...recorded, fallbackCwd };
 }
 
 export function formatMissingSessionCwdError(issue: SessionCwdIssue): string {
@@ -176,8 +199,8 @@ export function rehydrateMissingSessionCwdError(
 	return new MissingSessionCwdError(issue, { cause: rebuilt });
 }
 
-export function assertSessionCwdExists(sessionManager: SessionCwdSource, fallbackCwd: string): void {
-	const issue = getMissingSessionCwdIssue(sessionManager, fallbackCwd);
+export async function assertSessionCwdExists(sessionManager: SessionCwdSource, fallbackCwd: string): Promise<void> {
+	const issue = await getMissingSessionCwdIssueAsync(sessionManager, fallbackCwd);
 	if (issue) {
 		throw new MissingSessionCwdError(issue);
 	}
@@ -192,14 +215,19 @@ interface StoredSessionCwdSource extends SessionCwdSource {
  * The missing-cwd issue for a resumed session kept in database storage, which has no session file: its recorded cwd
  * may be another machine's path. New sessions and in-memory sessions have none.
  */
+/** The working directory a resumed session kept in database storage records, if it records one. */
+function storedSessionCwd(sessionManager: StoredSessionCwdSource): string | undefined {
+	if (sessionManager.getSessionFile() || !sessionManager.isPersisted() || sessionManager.getEntries().length === 0) {
+		return undefined;
+	}
+	return sessionManager.getCwd() || undefined;
+}
+
 export function getMissingStoredSessionCwdIssue(
 	sessionManager: StoredSessionCwdSource,
 	fallbackCwd: string,
 ): SessionCwdIssue | undefined {
-	if (sessionManager.getSessionFile() || !sessionManager.isPersisted() || sessionManager.getEntries().length === 0) {
-		return undefined;
-	}
-	const sessionCwd = sessionManager.getCwd();
+	const sessionCwd = storedSessionCwd(sessionManager);
 	if (!sessionCwd || existsSync(sessionCwd)) return undefined;
 	return { sessionCwd, fallbackCwd };
 }
@@ -216,4 +244,16 @@ export function findMissingSessionCwdIssue(
 		getMissingSessionCwdIssue(sessionManager, fallbackCwd) ??
 		getMissingStoredSessionCwdIssue(sessionManager, fallbackCwd)
 	);
+}
+
+/** {@link findMissingSessionCwdIssue} without blocking the event loop. */
+export async function findMissingSessionCwdIssueAsync(
+	sessionManager: StoredSessionCwdSource,
+	fallbackCwd: string,
+): Promise<SessionCwdIssue | undefined> {
+	const issue = await getMissingSessionCwdIssueAsync(sessionManager, fallbackCwd);
+	if (issue) return issue;
+	const sessionCwd = storedSessionCwd(sessionManager);
+	if (!sessionCwd || (await pathExists(sessionCwd))) return undefined;
+	return { sessionCwd, fallbackCwd };
 }

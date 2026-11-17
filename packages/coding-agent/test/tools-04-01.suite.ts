@@ -206,6 +206,14 @@ describe("Coding Agent Tools", () => {
 			const result = await bashWithPrefix.execute("test-prefix-2", { command: "echo command-output" });
 			expect(getTextOutput(result).trim()).toBe("prefix-output\ncommand-output");
 		});
+		it("applies a promised command prefix, and adds nothing for one that resolves to undefined", async () => {
+			const promised = createBashTool(testDir, { commandPrefix: Promise.resolve("export TEST_VAR=promised") });
+			const result = await promised.execute("test-prefix-4", { command: "echo $TEST_VAR" });
+			expect(getTextOutput(result).trim()).toBe("promised");
+			const none = createBashTool(testDir, { commandPrefix: Promise.resolve(undefined) });
+			const plain = await none.execute("test-prefix-5", { command: "echo only-command" });
+			expect(getTextOutput(plain).trim()).toBe("only-command");
+		});
 		it("should work without command prefix", async () => {
 			const bashWithoutPrefix = createBashTool(testDir, {});
 

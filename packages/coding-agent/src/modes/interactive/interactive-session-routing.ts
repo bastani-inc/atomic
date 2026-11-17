@@ -8,7 +8,7 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	APP_NAME,
 	type ExtensionCommandContext,
-	hasTrustRequiringProjectResources,
+	hasTrustRequiringProjectResourcesAsync,
 	keyText,
 	Loader,
 	MissingSessionCwdError,
@@ -48,22 +48,24 @@ InteractiveModeBase.prototype.handleCloneCommand = async function (this: Interac
 	}
 };
 
-InteractiveModeBase.prototype.maybeSaveImplicitProjectTrustAfterReload = function (this: InteractiveModeBase): boolean {
+InteractiveModeBase.prototype.maybeSaveImplicitProjectTrustAfterReload = async function (
+	this: InteractiveModeBase,
+): Promise<boolean> {
 	const cwd = this.sessionManager.getCwd();
 	if (this.autoTrustOnReloadCwd !== cwd) {
 		return false;
 	}
-	if (!this.settingsManager.isProjectTrusted() || !hasTrustRequiringProjectResources(cwd)) {
+	if (!this.settingsManager.isProjectTrusted() || !(await hasTrustRequiringProjectResourcesAsync(cwd))) {
 		return false;
 	}
 
 	const trustStore = new ProjectTrustStore(this.runtimeHost.services.agentDir);
 	try {
-		if (trustStore.get(cwd) !== null) {
+		if ((await trustStore.getAsync(cwd)) !== null) {
 			this.autoTrustOnReloadCwd = undefined;
 			return false;
 		}
-		trustStore.set(cwd, true);
+		await trustStore.setAsync(cwd, true);
 		this.autoTrustOnReloadCwd = undefined;
 		return true;
 	} catch (error) {
@@ -74,11 +76,11 @@ InteractiveModeBase.prototype.maybeSaveImplicitProjectTrustAfterReload = functio
 	}
 };
 
-InteractiveModeBase.prototype.showTrustSelector = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.showTrustSelector = async function (this: InteractiveModeBase): Promise<void> {
 	const cwd = this.sessionManager.getCwd();
 	const trustStore = new ProjectTrustStore(this.runtimeHost.services.agentDir);
-	const savedDecision = trustStore.getEntry(cwd);
-	void withHostProjectTrustPrompt(
+	const savedDecision = await trustStore.getEntryAsync(cwd);
+	await withHostProjectTrustPrompt(
 		this.runtimeHost,
 		"select",
 		"Project trust",
@@ -90,15 +92,14 @@ InteractiveModeBase.prototype.showTrustSelector = function (this: InteractiveMod
 						savedDecision,
 						projectTrusted: this.settingsManager.isProjectTrusted(),
 						onSelect: (selection) => {
-							try {
-								trustStore.setMany(selection.updates);
-							} catch (error) {
-								this.showError(error instanceof Error ? error.message : String(error));
-								return;
-							}
-							done();
-							this.showStatus(
-								`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
+							trustStore.setManyAsync(selection.updates).then(
+								() => {
+									done();
+									this.showStatus(
+										`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
+									);
+								},
+								(error: unknown) => this.showError(error instanceof Error ? error.message : String(error)),
 							);
 						},
 						onCancel: () => {

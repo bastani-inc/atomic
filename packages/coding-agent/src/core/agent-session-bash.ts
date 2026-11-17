@@ -52,7 +52,7 @@ async function executeBashOperation(
 		}
 	}
 	// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
-	const prefix = shellCommandPrefixFor(this, this.settingsManager.getShellCommandPrefix());
+	const prefix = await shellCommandPrefixFor(this, this.settingsManager.getShellCommandPrefix());
 	const shellPath = this.settingsManager.getShellPath();
 	const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
 	const env = { ...getShellEnv() };

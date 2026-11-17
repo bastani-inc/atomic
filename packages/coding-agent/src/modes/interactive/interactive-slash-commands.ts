@@ -93,7 +93,7 @@ InteractiveModeBase.prototype.handleReloadCommand = async function (this: Intera
 		this.setupExtensionShortcuts(runner);
 		this.rebuildChatFromMessages({ resetStartupDisclosure: true });
 		dismissReloadBox(this.editor as Component);
-		const savedImplicitProjectTrust = this.maybeSaveImplicitProjectTrustAfterReload();
+		const savedImplicitProjectTrust = await this.maybeSaveImplicitProjectTrustAfterReload();
 		this.showLoadedResources({
 			force: false,
 			showDiagnosticsWhenQuiet: true,

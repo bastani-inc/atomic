@@ -19,7 +19,9 @@ import {
 import {
 	hasProcessStorageSelection,
 	processSharedStorageSelection,
+	processSharedStorageSelectionAsync,
 	processStorageEnvironment,
+	processStorageEnvironmentAsync,
 	selectProcessStorage,
 	setCliStorageSelection,
 	validateProcessStorage,
@@ -31,6 +33,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/provider.js";
 import {
 	environmentTeamProfile,
+	environmentTeamProfileAsync,
 	getTeamProfile,
 	inMemorySecret,
 	LIBSQL_ADAPTER_PACKAGE,
@@ -182,6 +185,31 @@ describe("ATOMIC_PROFILE=ci (#4320)", () => {
 			adapter: LIBSQL_ADAPTER_PACKAGE,
 			options: { url: "file:///srv/team.sqlite" },
 		});
+	});
+
+	test("the selection read without blocking is the one read synchronously, and fails the same way", async () => {
+		const token = join(project, "token");
+		writeFileSync(token, "file-token\n");
+		ciProfile({ ATOMIC_TEAM_URL: TEAM_URL, ATOMIC_TEAM_TOKEN_FILE: token });
+		assert.deepEqual(await environmentTeamProfileAsync(), environmentTeamProfile());
+		assert.equal(await processSharedStorageSelectionAsync(), processSharedStorageSelection());
+		assert.equal((await processStorageEnvironmentAsync()).ATOMIC_STORAGE, processStorageEnvironment().ATOMIC_STORAGE);
+
+		for (const [content, code] of [
+			[undefined, "unreadable-token-file"],
+			[" \n", "empty-token"],
+		] as const) {
+			const path = join(project, `token-${code}`);
+			if (content !== undefined) writeFileSync(path, content);
+			vi.stubEnv("ATOMIC_TEAM_TOKEN_FILE", path);
+			const sync = rejects(() => environmentTeamProfile(), "env", "ATOMIC_TEAM_TOKEN_FILE", code);
+			await assert.rejects(processSharedStorageSelectionAsync(), (error: Error) => {
+				assert.ok(isTeamProfileConfigError(error));
+				assert.equal(error.message, sync.message);
+				assert.equal(error.code, code);
+				return true;
+			});
+		}
 	});
 
 	test("more specific process selections outrank the profile (#4320)", async () => {

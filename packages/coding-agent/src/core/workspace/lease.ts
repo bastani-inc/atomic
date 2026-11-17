@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { SqliteExecutor } from "../storage/database.js";
@@ -7,7 +6,7 @@ import { findStorageWriteLockTimeoutError } from "../storage/errors.js";
 import { openNodeSqliteDatabase } from "../storage/node-sqlite.js";
 import { isSqliteBusy } from "../storage/write-ahead-log.js";
 import { attachCleanupCause, isWorkspaceError, WorkspaceBindingError, WorkspaceTimeoutError } from "./errors.ts";
-import { gitOutput } from "./git.ts";
+import { gitOutput, pathExists } from "./git.ts";
 import type { BoundWorkspace } from "./resolve.ts";
 
 /** Who holds a worktree's writer lease. */
@@ -211,7 +210,7 @@ export async function acquireWorkspaceWriterLease(
 		holder,
 		async release(): Promise<void> {
 			heldTokens.delete(holder.token);
-			if (!existsSync(lockFile)) return;
+			if (!(await pathExists(lockFile))) return;
 			const opened = await openLeaseDatabase(lockFile, lockWaitMs);
 			await closeAfter(opened, async () => {
 				await opened.run("DELETE FROM writer WHERE id = 1 AND token = ?", holder.token);

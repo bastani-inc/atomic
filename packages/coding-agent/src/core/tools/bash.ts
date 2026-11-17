@@ -348,8 +348,11 @@ export interface BashToolOptions {
 	taskOwner?: SupervisedCommandOwner;
 	/** Expose the execution-time Atomic session snapshot and PI compatibility aliases. Default: true. */
 	exposeSessionEnvironment?: boolean;
-	/** Prefix prepended to every shell command before execution; read again for each command. */
-	readonly commandPrefix?: string;
+	/**
+	 * Prefix prepended to every shell command before execution; read again for each command. A promise is awaited, and
+	 * one that resolves to undefined adds nothing.
+	 */
+	readonly commandPrefix?: string | Promise<string | undefined>;
 	/** Override shell executable resolution for local bash operations. */
 	shellPath?: string;
 	/** Dialect for generated internal-URL path literals. Defaults to POSIX; does not select the executable. */
@@ -519,7 +522,7 @@ export function createBashToolDefinition(
 			)
 				strippedExpandedContext = undefined;
 			// Read per command: a blueprint build that ran behind the first turn writes its `$ENVRC` after the tool exists.
-			const commandPrefix = options?.commandPrefix;
+			const commandPrefix = await options?.commandPrefix;
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${expandedCommand}` : expandedCommand;
 			const spawnContext = resolveSpawnContext(resolvedCommand, requestedCwd, sessionEnvironment, spawnHook);
 			const strippedCdContext = strippedExpandedContext

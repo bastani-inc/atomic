@@ -54,7 +54,7 @@ export interface BlueprintBuildConfig {
 	/** Host directory that holds the build ledger, logs and `$ENVRC` files. */
 	readonly storeDir: string;
 	/** Whether the project at a worktree is trusted: only trusted projects run build steps. */
-	readonly trusted: (worktree: string) => boolean;
+	readonly trusted: (worktree: string) => boolean | Promise<boolean>;
 	/** The deprecated `resume.setupCommand`, run as one global maintenance step in each restored repository root. */
 	readonly setupCommand?: string;
 	readonly platform?: BlueprintPlatform;
@@ -516,12 +516,22 @@ async function writeSessionEnvironment(run: BuildRun, roots: readonly BlueprintR
 }
 
 /** Whether `config` trusts `root`. A trust check that fails leaves the repository untrusted rather than failing the build. */
-function isTrusted(config: BlueprintBuildConfig, root: string): boolean {
+async function isTrusted(config: BlueprintBuildConfig, root: string): Promise<boolean> {
 	try {
-		return config.trusted(root);
+		return await config.trusted(root);
 	} catch {
 		return false;
 	}
+}
+
+/** Those of `repositories` that `config` trusts, in order. */
+async function trustedOf(
+	repositories: readonly BlueprintRepository[],
+	config: BlueprintBuildConfig,
+): Promise<BlueprintRepository[]> {
+	const trusted: BlueprintRepository[] = [];
+	for (const repository of repositories) if (await isTrusted(config, repository.root)) trusted.push(repository);
+	return trusted;
 }
 
 function statusOf(run: BuildRun, globalFailed: boolean): BlueprintBuildStatus {
@@ -536,7 +546,7 @@ async function executeBuild(
 ): Promise<BlueprintBuildOutcome> {
 	const platform = config.platform ?? hostPlatform();
 	const now = config.now ?? Date.now;
-	const trusted = repositories.filter((repository) => isTrusted(config, repository.root));
+	const trusted = await trustedOf(repositories, config);
 	const untrusted = repositories.filter((repository) => !trusted.includes(repository));
 	const global = await loadGlobal(config, platform);
 	const alias = config.setupCommand?.trim() || undefined;
@@ -700,7 +710,7 @@ async function layersOfCrashedBuild(
 		state: failedState,
 	};
 	try {
-		const trusted = repositories.filter((repository) => isTrusted(config, repository.root));
+		const trusted = await trustedOf(repositories, config);
 		const untrusted = repositories.filter((repository) => !trusted.includes(repository));
 		const described = [
 			...(await describeBlueprints(trusted, config, "build-failed")),

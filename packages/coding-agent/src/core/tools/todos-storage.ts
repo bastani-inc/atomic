@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
-import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathExists } from "./path-utils.ts";
 import { sortTodos } from "./todos-model.ts";
 import { getTodoPath } from "./todos-paths.ts";
 import type { TodoFrontMatter, TodoRecord } from "./todos-types.ts";
@@ -147,7 +147,7 @@ export async function generateTodoId(todosDir: string): Promise<string> {
 	for (let attempt = 0; attempt < 10; attempt += 1) {
 		const id = crypto.randomBytes(4).toString("hex");
 		const todoPath = getTodoPath(todosDir, id);
-		if (!existsSync(todoPath)) return id;
+		if (!(await pathExists(todoPath))) return id;
 	}
 	throw new Error("Failed to generate unique todo id");
 }
@@ -186,7 +186,7 @@ export async function listTodos(todosDir: string): Promise<TodoFrontMatter[]> {
 }
 
 export async function ensureTodoExists(filePath: string, id: string): Promise<TodoRecord | null> {
-	if (!existsSync(filePath)) return null;
+	if (!(await pathExists(filePath))) return null;
 	return readTodoFile(filePath, id);
 }
 

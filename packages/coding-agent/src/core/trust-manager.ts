@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { access, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAMES } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { canonicalizePath, getHomeDir, pathsEqual, resolvePath } from "../utils/paths.ts";
-import { releaseLockSync } from "./lock-release.ts";
-import { waitForLockSync } from "./lock-wait.ts";
-import { renameReplacing } from "./rename-retry.ts";
+import { releaseLock, releaseLockSync } from "./lock-release.ts";
+import { inLockTurn, type LockWait, waitForLock, waitForLockSync } from "./lock-wait.ts";
+import { renameReplacing, renameReplacingAsync } from "./rename-retry.ts";
 
 export type ProjectTrustDecision = boolean | null;
 
@@ -148,7 +149,22 @@ function readTrustFileStrict(path: string): TrustFile {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
 		throw error;
 	}
+	return parseTrustFile(path, content);
+}
 
+/** {@link readTrustFileStrict} without blocking the event loop. */
+async function readTrustFileStrictAsync(path: string): Promise<TrustFile> {
+	let content: string;
+	try {
+		content = await readFile(path, "utf-8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+		throw error;
+	}
+	return parseTrustFile(path, content);
+}
+
+function parseTrustFile(path: string, content: string): TrustFile {
 	let parsed: unknown;
 	try {
 		parsed = parseJsonFileContent(content);
@@ -184,6 +200,16 @@ function readTrustFileForRead(path: string): TrustFile {
 	}
 }
 
+/** {@link readTrustFileForRead} without blocking the event loop. */
+async function readTrustFileForReadAsync(path: string): Promise<TrustFile> {
+	try {
+		return await readTrustFileStrictAsync(path);
+	} catch (error) {
+		reportCorruptTrustFile(path, error instanceof Error ? error : new Error(String(error)));
+		return {};
+	}
+}
+
 /**
  * Reads trust.json under the writer lock before a save. A corrupt store is reported and replaced; a file that cannot
  * be read at all fails the save rather than overwriting decisions that may still be there.
@@ -198,8 +224,18 @@ function readTrustFileForWrite(path: string): TrustFile {
 	}
 }
 
-/** Replaces trust.json whole: a sibling temporary file renamed over it, so a crash leaves the old or the new file. */
-function writeTrustFile(path: string, data: TrustFile): void {
+/** {@link readTrustFileForWrite} without blocking the event loop. */
+async function readTrustFileForWriteAsync(path: string): Promise<TrustFile> {
+	try {
+		return await readTrustFileStrictAsync(path);
+	} catch (error) {
+		if (!(error instanceof CorruptTrustFileError)) throw error;
+		reportCorruptTrustFile(path, error);
+		return {};
+	}
+}
+
+function serializeTrustFile(data: TrustFile): string {
 	const sorted: TrustFile = {};
 	for (const key of Object.keys(data).sort()) {
 		const value = data[key];
@@ -207,15 +243,43 @@ function writeTrustFile(path: string, data: TrustFile): void {
 			sorted[key] = value;
 		}
 	}
+	return `${JSON.stringify(sorted, null, 2)}\n`;
+}
+
+/** Replaces trust.json whole: a sibling temporary file renamed over it, so a crash leaves the old or the new file. */
+function writeTrustFile(path: string, data: TrustFile): void {
 	// Replace the file a symbolic link names, not the link.
 	const target = existsSync(path) ? realpathSync(path) : path;
 	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
 	try {
-		writeFileSync(temporary, `${JSON.stringify(sorted, null, 2)}\n`);
+		writeFileSync(temporary, serializeTrustFile(data));
 		renameReplacing(temporary, target);
 	} catch (error) {
 		rmSync(temporary, { force: true });
 		throw error;
+	}
+}
+
+/** {@link writeTrustFile} without blocking the event loop. */
+async function writeTrustFileAsync(path: string, data: TrustFile): Promise<void> {
+	const target = (await pathExists(path)) ? await realpath(path) : path;
+	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		await writeFile(temporary, serializeTrustFile(data));
+		await renameReplacingAsync(temporary, target);
+	} catch (error) {
+		await rm(temporary, { force: true });
+		throw error;
+	}
+}
+
+/** Whether something is at `path`, as `existsSync` answers it. */
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -230,29 +294,51 @@ function acquireTrustLockSync(path: string): () => void {
 	const lockPath = `${path}.lock`;
 	return waitForLockSync(
 		(fs) => lockfile.lockSync(trustDir, { realpath: false, lockfilePath: lockPath, stale: TRUST_LOCK_STALE_MS, fs }),
-		{
-			lockPath,
-			staleMs: TRUST_LOCK_STALE_MS,
-			holderWaitMs: TRUST_LOCK_WAIT_MS,
-			pollMinMs: TRUST_LOCK_POLL_MIN_MS,
-			pollMaxMs: TRUST_LOCK_POLL_MAX_MS,
-			retryable: (error) => {
-				const code = (error as NodeJS.ErrnoException).code;
-				// Windows reports a lock directory another process is creating or removing as EPERM, as for auth.json.
-				return code === "ELOCKED" || (code === "EPERM" && process.platform === "win32");
-			},
-			stuck: (error) =>
-				new Error(
-					`Could not save the trust decision: ${path} is locked by another process (waited ${TRUST_LOCK_WAIT_MS / 1000} s)`,
-					{ cause: error },
-				),
-			contended: (error, waitedMs) =>
-				new Error(
-					`Could not save the trust decision: other processes kept saving to ${path} for ${Math.round(waitedMs / 1000)} s`,
-					{ cause: error },
-				),
-		},
+		trustLockWait(path),
 	);
+}
+
+/** {@link acquireTrustLockSync} without blocking the event loop. */
+async function acquireTrustLock(path: string): Promise<() => Promise<void>> {
+	const trustDir = dirname(path);
+	await mkdir(trustDir, { recursive: true });
+	const lockPath = `${path}.lock`;
+	return waitForLock(
+		(fs) =>
+			lockfile.lock(trustDir, {
+				realpath: false,
+				lockfilePath: lockPath,
+				stale: TRUST_LOCK_STALE_MS,
+				retries: 0,
+				fs,
+			}),
+		trustLockWait(path),
+	);
+}
+
+function trustLockWait(path: string): Omit<LockWait, "takeOver"> {
+	return {
+		lockPath: `${path}.lock`,
+		staleMs: TRUST_LOCK_STALE_MS,
+		holderWaitMs: TRUST_LOCK_WAIT_MS,
+		pollMinMs: TRUST_LOCK_POLL_MIN_MS,
+		pollMaxMs: TRUST_LOCK_POLL_MAX_MS,
+		retryable: (error) => {
+			const code = (error as NodeJS.ErrnoException).code;
+			// Windows reports a lock directory another process is creating or removing as EPERM, as for auth.json.
+			return code === "ELOCKED" || (code === "EPERM" && process.platform === "win32");
+		},
+		stuck: (error) =>
+			new Error(
+				`Could not save the trust decision: ${path} is locked by another process (waited ${TRUST_LOCK_WAIT_MS / 1000} s)`,
+				{ cause: error },
+			),
+		contended: (error, waitedMs) =>
+			new Error(
+				`Could not save the trust decision: other processes kept saving to ${path} for ${Math.round(waitedMs / 1000)} s`,
+				{ cause: error },
+			),
+	};
 }
 
 function withTrustFileLock<T>(path: string, fn: () => T): T {
@@ -262,6 +348,18 @@ function withTrustFileLock<T>(path: string, fn: () => T): T {
 	} finally {
 		releaseLockSync(release, `${path}.lock`);
 	}
+}
+
+/** {@link withTrustFileLock} without blocking the event loop; saves in this process take the lock in turn. */
+function withTrustFileLockAsync<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	return inLockTurn(path, async () => {
+		const release = await acquireTrustLock(path);
+		try {
+			return await fn();
+		} finally {
+			await releaseLock(release, `${path}.lock`);
+		}
+	});
 }
 
 export function hasProjectConfigDir(cwd: string): boolean {
@@ -368,6 +466,113 @@ export function hasProjectTrustInputs(cwd: string): boolean {
 	}
 }
 
+/** {@link hasProjectConfigDir} without blocking the event loop. */
+export async function hasProjectConfigDirAsync(cwd: string): Promise<boolean> {
+	const projectCwd = canonicalizePath(resolvePath(cwd));
+	return someAsync(CONFIG_DIR_NAMES, (configDirName) => pathExists(join(projectCwd, configDirName)));
+}
+
+/** {@link hasTrustRequiringProjectResources} without blocking the event loop. */
+export async function hasTrustRequiringProjectResourcesAsync(cwd: string): Promise<boolean> {
+	if ((await hasTrustRequiringConfigResourcesAsync(cwd)) || (await hasNearestProjectRootAgentResourcesAsync(cwd))) {
+		return true;
+	}
+
+	const userGlobalSkillsDir = canonicalizePath(resolvePath(join(getHomeDir(), ".agents", "skills")));
+	let currentDir = canonicalizePath(resolvePath(cwd));
+	while (true) {
+		const skillsDir = canonicalizePath(resolvePath(join(currentDir, ".agents", "skills")));
+		if (!pathsEqual(skillsDir, userGlobalSkillsDir) && (await pathExists(skillsDir))) {
+			return true;
+		}
+
+		const parentDir = dirname(currentDir);
+		if (parentDir === currentDir) {
+			return false;
+		}
+		currentDir = parentDir;
+	}
+}
+
+/** {@link hasProjectTrustInputs} without blocking the event loop. */
+export async function hasProjectTrustInputsAsync(cwd: string): Promise<boolean> {
+	let currentDir = canonicalizePath(resolvePath(cwd));
+	if (
+		(await hasTrustRequiringConfigResourcesAsync(currentDir)) ||
+		(await hasNearestProjectRootAgentResourcesAsync(currentDir))
+	) {
+		return true;
+	}
+	const userGlobalSkillsDir = canonicalizePath(resolvePath(join(getHomeDir(), ".agents", "skills")));
+	const contextFileNames = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+
+	while (true) {
+		for (const contextFileName of contextFileNames) {
+			if (await pathExists(join(currentDir, contextFileName))) {
+				return true;
+			}
+		}
+
+		const skillsDir = canonicalizePath(resolvePath(join(currentDir, ".agents", "skills")));
+		if (!pathsEqual(skillsDir, userGlobalSkillsDir) && (await pathExists(skillsDir))) {
+			return true;
+		}
+
+		const parentDir = dirname(currentDir);
+		if (parentDir === currentDir) {
+			return false;
+		}
+		currentDir = parentDir;
+	}
+}
+
+async function hasTrustRequiringConfigResourcesAsync(cwd: string): Promise<boolean> {
+	const projectCwd = canonicalizePath(resolvePath(cwd));
+	return someAsync(CONFIG_DIR_NAMES, (configDirName) => {
+		const configDir = join(projectCwd, configDirName);
+		return someAsync(TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES, (entry) => pathExists(join(configDir, entry)));
+	});
+}
+
+async function isDirectoryAsync(path: string): Promise<boolean> {
+	try {
+		return (await stat(path)).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+async function hasNearestProjectRootAgentResourcesAsync(cwd: string): Promise<boolean> {
+	const homeDir = canonicalizePath(resolvePath(getHomeDir()));
+	let currentDir = canonicalizePath(resolvePath(cwd));
+	while (true) {
+		const configDirs = CONFIG_DIR_NAMES.map((configDirName) => join(currentDir, configDirName));
+		const legacyAgentsDir = join(currentDir, ".agents");
+		if ((await someAsync(configDirs, isDirectoryAsync)) || (await isDirectoryAsync(legacyAgentsDir))) {
+			if (pathsEqual(currentDir, homeDir)) return false;
+			return (
+				(await isDirectoryAsync(legacyAgentsDir)) ||
+				(await someAsync(
+					configDirs,
+					async (configDir) =>
+						(await pathExists(join(configDir, "agents"))) || (await pathExists(join(configDir, "settings.json"))),
+				))
+			);
+		}
+		const parentDir = dirname(currentDir);
+		if (parentDir === currentDir) return false;
+		currentDir = parentDir;
+	}
+}
+
+/** Whether `test` holds for any of `items`, tried in order until one does, as `Array.prototype.some`. */
+async function someAsync<T>(items: readonly T[], test: (item: T) => Promise<boolean>): Promise<boolean> {
+	for (const item of items) {
+		if (await test(item)) return true;
+	}
+	return false;
+}
+
 export class ProjectTrustStore {
 	private trustPath: string;
 
@@ -383,23 +588,49 @@ export class ProjectTrustStore {
 		return findNearestTrustEntry(readTrustFileForRead(this.trustPath), cwd);
 	}
 
+	/** {@link ProjectTrustStore.get} without blocking the event loop. */
+	async getAsync(cwd: string): Promise<ProjectTrustDecision> {
+		return (await this.getEntryAsync(cwd))?.decision ?? null;
+	}
+
+	/** {@link ProjectTrustStore.getEntry} without blocking the event loop. */
+	async getEntryAsync(cwd: string): Promise<ProjectTrustStoreEntry | null> {
+		return findNearestTrustEntry(await readTrustFileForReadAsync(this.trustPath), cwd);
+	}
+
 	set(cwd: string, decision: ProjectTrustDecision): void {
 		this.setMany([{ path: cwd, decision }]);
 	}
 
+	/** {@link ProjectTrustStore.set} without blocking the event loop. */
+	async setAsync(cwd: string, decision: ProjectTrustDecision): Promise<void> {
+		await this.setManyAsync([{ path: cwd, decision }]);
+	}
+
 	setMany(decisions: ProjectTrustUpdate[]): void {
 		withTrustFileLock(this.trustPath, () => {
-			const data = readTrustFileForWrite(this.trustPath);
-			for (const { path, decision } of decisions) {
-				const key = normalizeCwd(path);
-				for (const existingKey of findTrustFileKeys(data, key)) {
-					delete data[existingKey];
-				}
-				if (decision !== null) {
-					data[key] = decision;
-				}
-			}
-			writeTrustFile(this.trustPath, data);
+			writeTrustFile(this.trustPath, applyTrustUpdates(readTrustFileForWrite(this.trustPath), decisions));
 		});
 	}
+
+	/** {@link ProjectTrustStore.setMany} without blocking the event loop. */
+	async setManyAsync(decisions: ProjectTrustUpdate[]): Promise<void> {
+		await withTrustFileLockAsync(this.trustPath, async () => {
+			const data = await readTrustFileForWriteAsync(this.trustPath);
+			await writeTrustFileAsync(this.trustPath, applyTrustUpdates(data, decisions));
+		});
+	}
+}
+
+function applyTrustUpdates(data: TrustFile, decisions: ProjectTrustUpdate[]): TrustFile {
+	for (const { path, decision } of decisions) {
+		const key = normalizeCwd(path);
+		for (const existingKey of findTrustFileKeys(data, key)) {
+			delete data[existingKey];
+		}
+		if (decision !== null) {
+			data[key] = decision;
+		}
+	}
+	return data;
 }
