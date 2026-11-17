@@ -59,6 +59,22 @@ describe("working line end row (#5224)", () => {
 });
 
 describe("working line token direction (#5224)", () => {
+	test("empty text and thinking starts keep the request arrow pointing up until content arrives", () => {
+		const meter = new WorkingRunMeter(() => 3_000);
+		meter.start();
+		meter.settled(assistant(120, "toolUse", 1));
+		meter.requestStarted();
+		for (const content of [[{ type: "text", text: "" }], [{ type: "thinking", thinking: "" }]]) {
+			meter.streaming({ role: "assistant", content });
+			assert.equal(meter.snapshot()?.requesting, true);
+		}
+		meter.streaming({ role: "assistant", content: [{ type: "thinking", thinking: "checking" }] });
+		assert.equal(meter.snapshot()?.requesting, undefined);
+		meter.requestStarted();
+		meter.streaming({ role: "assistant", content: [{ type: "toolCall", name: "read", arguments: {} }] });
+		assert.equal(meter.snapshot()?.requesting, undefined);
+	});
+
 	test("a request waiting for its first block points up with the count frozen, then down once content streams", () => {
 		let now = 0;
 		const meter = new WorkingRunMeter(() => now);

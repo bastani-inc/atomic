@@ -235,6 +235,8 @@ subagent({ agent: "codebase-analyzer", task: "Trace the auth flow with file refe
 
 Use [run control](#run-control) to stop, hold, or continue a child.
 
+Main chat, workflow stage chats and subagent chats show the same `∀` working line. Its changing verb is followed by elapsed time and a token count; `↑` means a request is waiting for content, and `↓` means content has arrived. Zero token counts stay hidden. After the run ends, a dim past-tense row keeps its time and tokens visible until the next run. Opening a chat mid-run preserves its elapsed time instead of restarting the clock.
+
 Cancelling the parent turn stops a running foreground child. This is terminal cancellation, not completion or a retryable failure. Atomic returns labelled partial findings from the run's modified `progress.md`, the last assistant text, or a cancellation notice with available artifact paths. Parallel siblings do not each receive duplicate copies of shared progress.
 
 Use the returned task or run ID for status and run control. Expand status cards to see every child, full paths, task, parent, and any recorded termination cause; status inspection does not start work.

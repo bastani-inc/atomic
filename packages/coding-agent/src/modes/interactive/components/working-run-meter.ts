@@ -61,7 +61,15 @@ function isTimestamp(value: number | undefined): value is number {
 
 function hasContent(message: MeteredMessage | undefined): boolean {
 	const content = message?.content;
-	return typeof content === "string" ? content.length > 0 : (content?.length ?? 0) > 0;
+	if (typeof content === "string") return content.length > 0;
+	return (content ?? []).some((block) => {
+		if (typeof block !== "object" || block === null) return false;
+		if ("type" in block && block.type === "toolCall") return true;
+		return (
+			("text" in block && typeof block.text === "string" && block.text.length > 0) ||
+			("thinking" in block && typeof block.thinking === "string" && block.thinking.length > 0)
+		);
+	});
 }
 
 export function agentTokenTotal(messages: readonly MeteredMessage[], streaming?: MeteredMessage): number {

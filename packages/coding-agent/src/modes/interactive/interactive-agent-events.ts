@@ -112,6 +112,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 
 	switch (event.type) {
 		case "agent_start":
+			this.lastWorkingMessage = this.workingMessage;
 			this.workingRunMeter.start();
 			this.pendingTools.clear();
 			if (this.settingsManager.getShowTerminalProgress()) {

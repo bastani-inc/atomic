@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Main chat, workflow stage chats and subagent chats share the same working line, with a whimsical verb, elapsed time and token count. A finished run leaves a dim past-tense summary until the next run. Chats opened mid-run pick up its elapsed time and output, and a request's token arrow points up while waiting for content and down as content arrives ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- The jump-to-latest control is one centered, rounded line in main chat, stage chats and subagent chats. Narrow terminals keep the label without the frame ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ### Fixed
 
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
