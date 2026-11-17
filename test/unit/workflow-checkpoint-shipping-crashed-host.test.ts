@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
+import type { SqliteDatabase } from "@bastani/atomic/storage";
+import { tryAdvisoryLock } from "@bastani/atomic-natives";
 import { afterEach, test, vi } from "vitest";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { openSqlPoolQueue, SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
@@ -44,6 +46,56 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 const CRASHED_HOST_PROCESSES_TIMEOUT_MS = 120_000;
+
+test("retiring through a symlink never unlinks a concurrent connection's lifetime lock twice (#5317)", async () => {
+	const directory = makeTempDirectory("ship-retire-alias-");
+	let late: SqliteDatabase | undefined;
+	try {
+		const target = join(directory, "real-agent");
+		const agentDir = join(directory, "linked-agent");
+		mkdirSync(target);
+		symlinkSync(target, agentDir, process.platform === "win32" ? "junction" : "dir");
+		const path = shipShardPath(agentDir, "journal", "root");
+		const shard = await ShipShard.open(path, "root");
+		const location = realpathSync(path);
+		shardRemovals.before = {
+			prefix: `${path}-open.lock`,
+			run: async () => {
+				late = await openNodeSqliteDatabase(location);
+			},
+		};
+		await shard.close({ retire: true });
+		late ??= await openNodeSqliteDatabase(location);
+		const exclusive = tryAdvisoryLock(`${location}-open.lock`, 0);
+		exclusive?.release();
+		assert.equal(exclusive, null, "the late connection keeps its shared lifetime fence");
+	} finally {
+		shardRemovals.before = undefined;
+		await late?.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test(
+	"a host reached through a symlink keeps concurrent connections fenced during crashed journal cleanup (#5317)",
+	async () => {
+		const directory = makeTempDirectory("ship-crashed-symlink-");
+		try {
+			const target = join(directory, "real-agent");
+			const agentDir = join(directory, "linked-agent");
+			mkdirSync(target);
+			symlinkSync(target, agentDir, process.platform === "win32" ? "junction" : "dir");
+			await crashHostThenRestart({
+				selection: { path: join(directory, "shared.sqlite") },
+				agentDir,
+				restart: restartAsRoot(agentDir),
+			});
+		} finally {
+			removeTempDirectory(directory);
+		}
+	},
+	CRASHED_HOST_PROCESSES_TIMEOUT_MS,
+);
 
 afterEach(() => {
 	vi.restoreAllMocks();

@@ -15,7 +15,7 @@ for (const { path, root, work, readOnly, uri } of shards) {
 	if (readOnly === true) {
 		const target = uri === true ? pathToFileURL(path).href : path;
 		const database = await openNodeSqliteDatabase(target, { readOnly: true });
-		await database.get("SELECT COUNT(*) AS n FROM ship_events");
+		await database.get("SELECT COUNT(*) AS n FROM ship_rows");
 		opened.push(database);
 		continue;
 	}

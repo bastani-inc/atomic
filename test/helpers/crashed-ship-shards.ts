@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -73,7 +73,7 @@ export function shardFiles(path: string): string[] {
 export async function unshippedCheckpoints(path: string): Promise<number> {
 	const database = await openNodeSqliteDatabase(path, { readOnly: true });
 	try {
-		const row = await database.get<SqliteRow & { n: number }>(`SELECT COUNT(*) AS n FROM ship_events`);
+		const row = await database.get<SqliteRow & { n: number }>(`SELECT COUNT(*) AS n FROM ship_rows`);
 		return Number(row?.n ?? 0);
 	} finally {
 		await database.close();
@@ -291,18 +291,18 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 		await setRunStatus(journal, shards.pending.root, "pending");
 		await setRunStatus(journal, shards.paused.root, "paused");
 		connection = await openNodeSqliteDatabase(shards.connected.path);
-		await connection.get(`SELECT COUNT(*) AS n FROM ship_events`);
+		await connection.get(`SELECT COUNT(*) AS n FROM ship_rows`);
 		rawWrapped = new DatabaseSync(shards.wrapped.path);
 		wrapped = wrapNodeSqliteDatabase(rawWrapped);
 		retiredReader = await openNodeSqliteDatabase(shards.retiredReader.path, { readOnly: true });
 		assert.equal(
-			Number((await retiredReader.get<SqliteRow & { n: number }>(`SELECT COUNT(*) AS n FROM ship_events`))?.n),
+			Number((await retiredReader.get<SqliteRow & { n: number }>(`SELECT COUNT(*) AS n FROM ship_rows`))?.n),
 			1,
 		);
 		retiredWriter = await openNodeSqliteDatabase(shards.retiredWriter.path);
 		legacyReader = await openNodeSqliteDatabase(shards.legacyReader.path, { readOnly: true });
 		assert.equal(
-			Number((await legacyReader.get<SqliteRow & { n: number }>(`SELECT COUNT(*) AS n FROM ship_events`))?.n),
+			Number((await legacyReader.get<SqliteRow & { n: number }>(`SELECT COUNT(*) AS n FROM ship_rows`))?.n),
 			1,
 		);
 		legacyWriter = await openNodeSqliteDatabase(shards.legacyWriter.path);
@@ -313,7 +313,7 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 			readOnly: true,
 		});
 		assert.equal(
-			Number((await uriSelectedReader.get<SqliteRow & { n: number }>(`SELECT COUNT(*) AS n FROM ship_events`))?.n),
+			Number((await uriSelectedReader.get<SqliteRow & { n: number }>(`SELECT COUNT(*) AS n FROM ship_rows`))?.n),
 			1,
 		);
 		uriWriter = await openNodeSqliteDatabase(pathToFileURL(shards.uriWriter.path).href);
@@ -321,14 +321,14 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 		rawRollbackReader = new DatabaseSync(shards.rawRollbackReader.path, { readOnly: true });
 		assert.equal(
 			Number(
-				(rawRollbackReader.prepare(`SELECT COUNT(*) AS n FROM ship_events`).get() as { n: number } | undefined)?.n,
+				(rawRollbackReader.prepare(`SELECT COUNT(*) AS n FROM ship_rows`).get() as { n: number } | undefined)?.n,
 			),
 			1,
 		);
 		rawRollbackWriter = new DatabaseSync(shards.rawRollbackWriter.path);
 		assert.equal(
 			Number(
-				(rawRollbackWriter.prepare(`SELECT COUNT(*) AS n FROM ship_events`).get() as { n: number } | undefined)?.n,
+				(rawRollbackWriter.prepare(`SELECT COUNT(*) AS n FROM ship_rows`).get() as { n: number } | undefined)?.n,
 			),
 			1,
 		);
@@ -339,16 +339,16 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 		let lateUriOpening: Promise<SqliteDatabase> | undefined;
 		let lateReadOnlyOpening: Promise<SqliteDatabase> | undefined;
 		shardRemovals.before = {
-			prefix: shards.lateOpened.path,
+			prefix: realpathSync(shards.lateOpened.path),
 			run: async () => {
 				lateOpening = openNodeSqliteDatabase(shards.lateOpened.path).then(async (database) => {
-					await database.all(`SELECT * FROM ship_events`).catch(() => []);
+					await database.all(`SELECT * FROM ship_rows`).catch(() => []);
 					openedBeforeUnlink = true;
 					return database;
 				});
 				lateUriOpening = openNodeSqliteDatabase(pathToFileURL(shards.lateOpened.path).href).then(
 					async (database) => {
-						await database.all(`SELECT * FROM ship_events`).catch(() => []);
+						await database.all(`SELECT * FROM ship_rows`).catch(() => []);
 						openedBeforeUnlink = true;
 						return database;
 					},
@@ -384,7 +384,7 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 			] as const) {
 				assert.ok(existsSync(shard.path), `a ${label} journal a read-only connection holds is kept`);
 				assert.equal(
-					Number((await reader.get<SqliteRow & { n: number }>(`SELECT COUNT(*) AS n FROM ship_events`))?.n),
+					Number((await reader.get<SqliteRow & { n: number }>(`SELECT COUNT(*) AS n FROM ship_rows`))?.n),
 					1,
 				);
 			}
@@ -395,7 +395,7 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 				["file: URI", uriWriter, shards.uriWriter],
 			] as const) {
 				assert.ok(existsSync(shard.path), `a ${label} journal a writable connection opened is kept`);
-				assert.equal((await writer.run(`UPDATE ship_events SET at = 2`)).changes, 1);
+				assert.equal((await writer.run(`UPDATE ship_rows SET at = 2`)).changes, 1);
 				assert.equal(await unshippedCheckpoints(shard.path), 1);
 			}
 			for (const [label, shard] of [
@@ -410,9 +410,7 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 			] as const) {
 				assert.ok(existsSync(shard.path), `a ${label} journal a raw read-only handle holds is kept`);
 				assert.equal(
-					Number(
-						(rawReader.prepare(`SELECT COUNT(*) AS n FROM ship_events`).get() as { n: number } | undefined)?.n,
-					),
+					Number((rawReader.prepare(`SELECT COUNT(*) AS n FROM ship_rows`).get() as { n: number } | undefined)?.n),
 					1,
 				);
 			}
@@ -420,7 +418,7 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 				existsSync(shards.rawRollbackWriter.path),
 				"a raw rollback journal a raw writable handle holds is kept",
 			);
-			assert.equal(rawRollbackWriter.prepare(`UPDATE ship_events SET at = 3`).run().changes, 1);
+			assert.equal(rawRollbackWriter.prepare(`UPDATE ship_rows SET at = 3`).run().changes, 1);
 			assert.ok(lateOpening !== undefined && lateUriOpening !== undefined && lateReadOnlyOpening !== undefined);
 			assert.equal(openedDuringRemoval, false, "a late opener waits while the journal is being removed");
 			await assert.rejects(lateReadOnlyOpening, /unable to open database file/i);
@@ -428,7 +426,7 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 			lateUriConnection = await lateUriOpening;
 			assert.ok(existsSync(shards.lateOpened.path), "the late opener's file exists on disk");
 			assert.equal(
-				await lateConnection.get(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ship_events'`),
+				await lateConnection.get(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ship_rows'`),
 				undefined,
 				"the late opener opened a fresh file after the ended journal was removed",
 			);
