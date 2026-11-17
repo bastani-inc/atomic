@@ -249,13 +249,6 @@ async function readSetAsideNote(
 	}
 }
 
-async function setAsideSince(storeDir: string, path: string): Promise<number | undefined> {
-	const note = await readSetAsideNote(storeDir, path);
-	if (typeof note === "string") return undefined;
-	const since = typeof note.startedAt === "string" ? Date.parse(note.startedAt) : Number.NaN;
-	return Number.isFinite(since) ? since : undefined;
-}
-
 async function sameDirectory(path: string, directory: unknown): Promise<boolean> {
 	if (typeof directory !== "string") return true;
 	try {
@@ -987,7 +980,7 @@ export async function evictIdleWorktrees(
 	const usable: PoolSlotRecord[] = [];
 	for (const record of idle) ((await worktreeSetAside(storeDir, record.path)) ? setAside : usable).push(record);
 	for (const record of setAside) {
-		if (await processesWorkIn(record.path, await setAsideSince(storeDir, record.path))) continue;
+		if (await processesWorkIn(record.path)) continue;
 		if (await evictSlot(storeDir, record, options)) {
 			removed.push(record.path);
 			setAsideHere.delete(resolve(record.path));

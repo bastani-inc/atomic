@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -37,17 +38,17 @@ describe.skipIf(process.platform === "win32")(
 	() => {
 		test("a process whose working directory is inside it keeps it (#5379)", async () => {
 			lsofListing(`p101\nfcwd\nn${worktree()}\nf3\nn/dev/null\n`);
-			assert.equal(await processesWorkIn(worktree(), undefined, "darwin"), true);
+			assert.equal(await processesWorkIn(worktree(), "darwin"), true);
 		});
 
 		test("a complete listing with nothing inside it lets it go (#5379)", async () => {
 			lsofListing(`p101\nfcwd\nn${dir}\nf3\nn/dev/null\n`);
-			assert.equal(await processesWorkIn(worktree(), undefined, "darwin"), false);
+			assert.equal(await processesWorkIn(worktree(), "darwin"), false);
 		});
 
 		test("a listing that ends with an error counts as in use, whatever it lists (#5379)", async () => {
 			lsofListing(`p101\nfcwd\nn${dir}\n`, 1);
-			assert.equal(await processesWorkIn(worktree(), undefined, "darwin"), true);
+			assert.equal(await processesWorkIn(worktree(), "darwin"), true);
 		});
 
 		for (const unreadable of [
@@ -56,8 +57,35 @@ describe.skipIf(process.platform === "win32")(
 		]) {
 			test(`a process whose files cannot be read (${unreadable.split(" info")[0]}) counts as in use (#5379)`, async () => {
 				lsofListing(`p101\nfcwd\nn${dir}\np202\nfNOFD\nn${unreadable}\n`);
-				assert.equal(await processesWorkIn(worktree(), undefined, "darwin"), true);
+				assert.equal(await processesWorkIn(worktree(), "darwin"), true);
 			});
 		}
+	},
+);
+
+const python = spawnSync("python3", ["-c", "import ctypes"], { stdio: "ignore" }).status === 0;
+
+describe.skipIf(process.platform !== "linux" || !python)(
+	"whether a process works in a set-aside worktree on Linux (#5379)",
+	() => {
+		test("a process of this user that cannot be read keeps it, however long before the cancelled build it started (#5379)", async () => {
+			const ready = join(dir, "ready");
+			// A process that makes itself non-dumpable, so its working directory and open files cannot be read, then waits there.
+			const child = spawn(
+				"python3",
+				[
+					"-c",
+					`import ctypes, time, pathlib\nctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\npathlib.Path(${JSON.stringify(ready)}).write_text("")\ntime.sleep(60)`,
+				],
+				{ cwd: worktree(), stdio: "ignore" },
+			);
+			try {
+				while (!existsSync(ready)) await new Promise((resolve) => setTimeout(resolve, 20));
+				await new Promise((resolve) => setTimeout(resolve, 2_200));
+				assert.equal(await processesWorkIn(worktree()), true);
+			} finally {
+				child.kill("SIGKILL");
+			}
+		});
 	},
 );

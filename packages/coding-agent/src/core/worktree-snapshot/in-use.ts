@@ -1,12 +1,8 @@
 import { execFile } from "node:child_process";
-import { readdir, readFile, readlink, realpath, stat } from "node:fs/promises";
+import { readdir, readlink, realpath, stat } from "node:fs/promises";
 import { sep } from "node:path";
 
-export async function processesWorkIn(
-	path: string,
-	since?: number,
-	platform: NodeJS.Platform = process.platform,
-): Promise<boolean> {
+export async function processesWorkIn(path: string, platform: NodeJS.Platform = process.platform): Promise<boolean> {
 	let target: string;
 	try {
 		target = await realpath(path);
@@ -15,33 +11,14 @@ export async function processesWorkIn(
 	}
 	const inside = (link: string) => link === target || link.startsWith(target.endsWith(sep) ? target : target + sep);
 	try {
-		if (platform === "linux") return await linuxProcessesWorkIn(inside, since);
+		if (platform === "linux") return await linuxProcessesWorkIn(inside);
 		if (platform === "darwin") return await openFilesInside(inside);
 	} catch {}
 	return true;
 }
 
-const CLOCK_TICKS_PER_SECOND = 100;
-
-async function startedAt(pid: string): Promise<number | undefined> {
-	try {
-		const stat = await readFile(`/proc/${pid}/stat`, "utf8");
-		const ticks = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
-		const boot = /^btime (\d+)$/m.exec(await readFile("/proc/stat", "utf8"))?.[1];
-		if (!Number.isFinite(ticks) || boot === undefined) return undefined;
-		return Number(boot) * 1000 + (ticks * 1000) / CLOCK_TICKS_PER_SECOND;
-	} catch {
-		return undefined;
-	}
-}
-
-async function linuxProcessesWorkIn(inside: (link: string) => boolean, since: number | undefined): Promise<boolean> {
+async function linuxProcessesWorkIn(inside: (link: string) => boolean): Promise<boolean> {
 	const uid = process.getuid?.();
-	const unreadable = async (pid: string) => {
-		if (since === undefined) return true;
-		const started = await startedAt(pid);
-		return started === undefined || started >= since - 1_000;
-	};
 	for (const entry of await readdir("/proc")) {
 		if (!/^\d+$/.test(entry)) continue;
 		const base = `/proc/${entry}`;
@@ -55,14 +32,13 @@ async function linuxProcessesWorkIn(inside: (link: string) => boolean, since: nu
 			links.push(...(await readdir(`${base}/fd`)).map((fd) => `${base}/fd/${fd}`));
 		} catch (error) {
 			if (gone(error)) continue;
-			if (await unreadable(entry)) return true;
-			continue;
+			return true;
 		}
 		for (const link of links) {
 			try {
 				if (inside(await readlink(link))) return true;
 			} catch (error) {
-				if (!gone(error) && (await unreadable(entry))) return true;
+				if (!gone(error)) return true;
 			}
 		}
 	}

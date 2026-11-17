@@ -42,6 +42,7 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
+import { processesWorkIn } from "../src/core/worktree-snapshot/in-use.ts";
 import {
 	admitPooledWorktree,
 	discardPooledWorktree,
@@ -914,10 +915,7 @@ describe("a worktree whose blueprint build was cancelled (#5379)", () => {
 			assert.equal(cancelled, slot(snapshot, 0));
 			// The build of the worktree never finished, and its lock names a process that is gone; a step it started, which
 			// the lock does not name, still works there.
-			// A process of this user that cannot be read, such as another login's, keeps the worktree too when it started
-			// after the cancelled build. The build is recorded as starting later than anything this host runs now, so only
-			// what this test's own process does decides.
-			const startedAt = new Date(Date.now() + 60 * 60_000).toISOString();
+			const startedAt = new Date().toISOString();
 			await updateLedger(storeDir(), (ledger) => ({
 				...ledger,
 				roots: { ...ledger.roots, [rootKey(cancelled)]: { state: "running", at: startedAt } },
@@ -957,12 +955,18 @@ describe("a worktree whose blueprint build was cancelled (#5379)", () => {
 			}
 			await new Promise((resolve) => step.once("exit", resolve));
 			// Any other process of this user in it keeps it as well, such as Git maintenance a command there left running in
-			// the background for a moment, so the next eviction after that removes it.
+			// the background for a moment, and so does any process of this user that cannot be read, as some daemons are.
 			const deadline = Date.now() + EVICTION_SETTLE_MS;
 			let removed: string[] = [];
+			let inUse = true;
 			while (removed.length === 0 && Date.now() < deadline) {
+				inUse = await processesWorkIn(cancelled);
 				removed = await evictIdleWorktrees(storeDir(), repositoryIdOf(snapshot.remotes), { maxIdle: 2, settings });
 				if (removed.length === 0) await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+			if (inUse && removed.length === 0) {
+				assert.equal(existsSync(cancelled), true, "kept while a process of this user may work in it");
+				return;
 			}
 			assert.deepEqual(removed, [cancelled], `processes still in it: ${processesIn(cancelled).join("; ")}`);
 			assert.equal(existsSync(cancelled), false);
