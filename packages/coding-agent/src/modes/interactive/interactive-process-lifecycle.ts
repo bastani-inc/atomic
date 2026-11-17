@@ -1,4 +1,5 @@
 import { findExtensionStackMatches } from "../../core/crash-log.ts";
+import { markEventLoopShutdown } from "../../core/event-loop-monitor.ts";
 import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.js";
 import { terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
@@ -102,6 +103,7 @@ InteractiveModeBase.prototype.shutdown = async function (
 ): Promise<void> {
 	if (this.isShuttingDown) return;
 	this.isShuttingDown = true;
+	markEventLoopShutdown();
 	// Keep signal handlers registered until terminal cleanup has completed.
 	// `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
 	// dispatch and re-sends the signal if only its own listeners remain.

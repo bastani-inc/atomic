@@ -1,8 +1,8 @@
 /**
  * Child process of test/unit/event-loop-block-monitor.test.ts, run on Node (through jiti) or on Bun with the
  * diagnostic's variables set or unset by the test. It starts the monitor as the interactive host does, holds the event
- * loop once for long and once briefly in functions the test looks for by name, ends the startup phase and exits on its
- * own. It prints one JSON line: whether the monitor started and, on Node, the async resources starting it created.
+ * loop once for long and once briefly in functions the test looks for by name, ends the startup phase, then the
+ * session phase, and exits on its own. It prints one JSON line: whether the monitor started and, on Node, the async resources starting it created.
  *
  * With `exit-inside-block` as the fourth argument it instead exits at the end of the long block, in the same task, as
  * a quit that ends in a long synchronous step does.
@@ -10,6 +10,7 @@
 import { createHook } from "node:async_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+	markEventLoopShutdown,
 	markEventLoopStartupComplete,
 	startEventLoopMonitor,
 } from "../../packages/coding-agent/src/core/event-loop-monitor.js";
@@ -46,5 +47,7 @@ await delay(Number(settleMs));
 holdTheEventLoopBriefly(Number(shortBlockMs));
 await delay(Number(settleMs));
 markEventLoopStartupComplete();
+await delay(Number(settleMs));
+markEventLoopShutdown();
 await delay(Number(settleMs));
 console.log(JSON.stringify({ started, created }));

@@ -57,7 +57,7 @@ const HOST_LOOP_DELAY_MAX_BUDGET_MS = 150;
  * Engine budgets. The engine runs the agent, its tools and extensions; its stalls hold back streamed text, tool
  * progress and extension frames on their way to the host, and the host's requests (custom UI input, renders) waiting
  * on them. Measured as above: p99 0.6–14, max 62–98, the largest a workflow-discovery scan as the session starts.
- * Its startup, a one-time extension load of 0.7–1.3 s while the host keeps the terminal responsive, is reported in
+ * Its startup, a one-time extension load of 0.6–1.6 s while the host keeps the terminal responsive, is reported in
  * the failure message but not held to these budgets.
  */
 const ENGINE_LOOP_DELAY_P99_BUDGET_MS = 50;
@@ -147,13 +147,32 @@ async function waitForRecords(
 	}
 }
 
-const bothWrote = (phase: Phase) => (records: readonly LogRecord[]) =>
-	delayOf(records, "host", phase) !== undefined && delayOf(records, "engine", phase) !== undefined;
+const bothReady = (records: readonly LogRecord[]) =>
+	delayOf(records, "host", "startup") !== undefined && delayOf(records, "engine", "startup") !== undefined;
+/**
+ * The records quitting leaves: the host's last phase, written as it exits, and the engine's session, written when the
+ * host announces the quit. The engine's shutdown record is written only where it exits on its own: Windows ends it.
+ */
+const quitRecorded = (records: readonly LogRecord[]) =>
+	delayOf(records, "host", "shutdown") !== undefined && delayOf(records, "engine", "session") !== undefined;
+
+interface ProcessDelays {
+	readonly startup: DelayRecord;
+	readonly session: DelayRecord;
+	readonly shutdown: DelayRecord | undefined;
+}
 
 interface ScenarioResult {
 	readonly name: string;
-	readonly delays: Readonly<Record<ProcessRole, Readonly<Record<Phase, DelayRecord>>>>;
+	readonly delays: Readonly<Record<ProcessRole, ProcessDelays>>;
 	readonly blocks: readonly BlockRecord[];
+}
+
+/** The phase a block was recorded in: the one it ended in, as the delay histogram records a block when it ends. */
+function phaseOf(block: BlockRecord, delays: ProcessDelays): Phase {
+	const end = Date.parse(block.at) + block.durationMs;
+	if (delays.shutdown !== undefined && end >= Date.parse(delays.shutdown.at)) return "shutdown";
+	return end >= Date.parse(delays.session.at) ? "session" : "startup";
 }
 
 async function runScenario(
@@ -188,7 +207,7 @@ async function runScenario(
 		rows: ROWS,
 	});
 	try {
-		await waitForRecords(log, bothWrote("startup"), STARTUP_BUDGET_MS, `${name}: host and engine ready`, program);
+		await waitForRecords(log, bothReady, STARTUP_BUDGET_MS, `${name}: host and engine ready`, program);
 		await program.waitForScreen((screen) => screen.includes("❯"), STARTUP_BUDGET_MS, "the editor");
 		const drivenAt = Date.now();
 		await drive(program);
@@ -197,10 +216,11 @@ async function runScenario(
 		await sleep(200);
 		program.write("\r");
 		await program.exited;
-		const records = await waitForRecords(log, bothWrote("session"), EXIT_BUDGET_MS, `${name}: exit records`, program);
-		const delays = (role: ProcessRole) => ({
+		const records = await waitForRecords(log, quitRecorded, EXIT_BUDGET_MS, `${name}: quit records`, program);
+		const delays = (role: ProcessRole): ProcessDelays => ({
 			startup: delayOf(records, role, "startup") as DelayRecord,
 			session: delayOf(records, role, "session") as DelayRecord,
+			shutdown: delayOf(records, role, "shutdown"),
 		});
 		const result: ScenarioResult = {
 			name,
@@ -216,22 +236,26 @@ async function runScenario(
 	}
 }
 
-/** Fails naming every budget a scenario broke, with the blocks of that process and phase and their stacks. */
+/**
+ * Fails naming every budget a scenario broke, with the blocks of that process and phase and their stacks. Quitting is
+ * a one-time transition like the engine's startup: its phase is reported in the failure message but not budgeted.
+ */
 function assertWithinBudgets(result: ScenarioResult): void {
 	const violations: string[] = [];
-	const check = (role: ProcessRole, phase: Phase, p99BudgetMs: number | undefined, maxBudgetMs: number) => {
-		const delay = result.delays[role][phase];
+	const check = (
+		role: ProcessRole,
+		phase: "startup" | "session",
+		p99BudgetMs: number | undefined,
+		maxBudgetMs: number,
+	) => {
+		const delays = result.delays[role];
+		const delay = delays[phase];
 		const broken = [
 			p99BudgetMs !== undefined && !(delay.p99Ms < p99BudgetMs) ? `p99 ${delay.p99Ms} ms ≥ ${p99BudgetMs} ms` : "",
 			!(delay.maxMs < maxBudgetMs) ? `max ${delay.maxMs} ms ≥ ${maxBudgetMs} ms` : "",
 		].filter(Boolean);
 		if (broken.length === 0) return;
-		// A block counts in the phase its delay was recorded in: the one it ended in.
-		const sessionAt = Date.parse(result.delays[role].session.at);
-		const blocks = result.blocks.filter(
-			(block) =>
-				block.role === role && (phase === "session") === Date.parse(block.at) + block.durationMs >= sessionAt,
-		);
+		const blocks = result.blocks.filter((block) => block.role === role && phaseOf(block, delays) === phase);
 		violations.push(
 			`${result.name}: ${role} ${phase} ${broken.join(", ")} (p50 ${delay.p50Ms} ms, ${delay.ticks} ticks over ${delay.durationMs} ms)`,
 			...blocks.map((block) => `  ${describeBlock(block)}`),
@@ -242,8 +266,16 @@ function assertWithinBudgets(result: ScenarioResult): void {
 	check("host", "session", HOST_LOOP_DELAY_P99_BUDGET_MS, HOST_LOOP_DELAY_MAX_BUDGET_MS);
 	check("engine", "session", ENGINE_LOOP_DELAY_P99_BUDGET_MS, ENGINE_LOOP_DELAY_MAX_BUDGET_MS);
 	if (violations.length > 0) {
-		const engineStartup = result.delays.engine.startup;
-		violations.push(`(engine startup, not budgeted: p99 ${engineStartup.p99Ms} ms, max ${engineStartup.maxMs} ms)`);
+		const unbudgeted = (role: ProcessRole, phase: Phase) => {
+			const delay = result.delays[role][phase];
+			return delay === undefined ? [] : [`${role} ${phase}: p99 ${delay.p99Ms} ms, max ${delay.maxMs} ms`];
+		};
+		const notes = [
+			...unbudgeted("engine", "startup"),
+			...unbudgeted("host", "shutdown"),
+			...unbudgeted("engine", "shutdown"),
+		];
+		violations.push(`(not budgeted: ${notes.join("; ")})`);
 		assert.fail(violations.join("\n"));
 	}
 	for (const role of ["host", "engine"] as const) {

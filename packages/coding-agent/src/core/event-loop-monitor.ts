@@ -7,8 +7,10 @@
  * - `start`: the process started watching its event loop;
  * - `block`: the event loop turned that many milliseconds or more after it was due, with the stacks of the code that
  *   held it;
- * - `delay`: the process's event-loop delay (p50, p99, max) over its startup, written once it is ready for input, and
- *   over the rest of its life, written as it exits.
+ * - `delay`: the process's event-loop delay (p50, p99, max) over each phase of its life: its startup, written once it
+ *   is ready for input; its session, written once it starts to quit; and its shutdown, written as it exits. A process
+ *   that never becomes ready, or is ended before it can quit (as Windows ends the engine), writes the phase it was in
+ *   as far as it got.
  *
  * Unset, nothing here runs: no timer, worker, profiler or histogram.
  *
@@ -53,6 +55,9 @@ export interface EventLoopHotFrame {
 	readonly frame: string;
 }
 
+/** The phases a process's event-loop delay is recorded in. */
+export type EventLoopPhase = "startup" | "session" | "shutdown";
+
 /** A process's event-loop delay over one phase of its life, in milliseconds past each due turn. */
 export interface EventLoopDelaySummary {
 	readonly durationMs: number;
@@ -87,7 +92,7 @@ export type EventLoopRecord =
 			/** The most frequent identical stacks. */
 			readonly stacks: readonly EventLoopBlockStack[];
 	  })
-	| (RecordBase & { readonly type: "delay"; readonly phase: "startup" | "session" } & EventLoopDelaySummary);
+	| (RecordBase & { readonly type: "delay"; readonly phase: EventLoopPhase } & EventLoopDelaySummary);
 
 /** How often the main thread stamps the heartbeat. A blocked loop delays the next beat by as long as it is blocked. */
 const HEARTBEAT_MS = 20;
@@ -445,11 +450,13 @@ function createSampler(thresholdMs: number, nowUs: number): StackSampler {
 
 const epochUs = () => Math.round((performance.timeOrigin + performance.now()) * 1000);
 
+const PHASES: readonly EventLoopPhase[] = ["startup", "session", "shutdown"];
+
 class EventLoopMonitor {
 	private readonly histogram: IntervalHistogram;
 	private readonly sampler: StackSampler;
 	private lastBeatUs: number;
-	private phase: "startup" | "session" = "startup";
+	private phase: EventLoopPhase = "startup";
 	private phaseStartedUs: number;
 
 	private readonly role: EventLoopProcessRole;
@@ -482,11 +489,12 @@ class EventLoopMonitor {
 		});
 	}
 
-	ready(): void {
-		if (this.phase !== "startup") return;
+	/** Writes the phase that ends here and starts `next`, unless the process is already past it. */
+	enter(next: EventLoopPhase): void {
+		if (PHASES.indexOf(next) <= PHASES.indexOf(this.phase)) return;
 		this.writeDelay();
 		this.histogram.reset();
-		this.phase = "session";
+		this.phase = next;
 		this.phaseStartedUs = epochUs();
 	}
 
@@ -569,5 +577,13 @@ export function startEventLoopMonitor(role: EventLoopProcessRole, env: NodeJS.Pr
 
 /** Ends the startup phase of the event-loop delay record: the process is ready for input. */
 export function markEventLoopStartupComplete(): void {
-	monitor?.ready();
+	monitor?.enter("session");
+}
+
+/**
+ * Ends the session phase of the event-loop delay record: the process has started to quit. The engine calls it when the
+ * host announces a quit, because Windows ends the engine without letting it exit on its own.
+ */
+export function markEventLoopShutdown(): void {
+	monitor?.enter("shutdown");
 }

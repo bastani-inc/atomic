@@ -197,7 +197,7 @@ export function writeLargeSession(directory: string, cwd: string, id: string, tu
 }
 
 export type ProcessRole = "host" | "engine";
-export type Phase = "startup" | "session";
+export type Phase = "startup" | "session" | "shutdown";
 
 /** A `delay` record of the event-loop diagnostic. */
 export interface DelayRecord {

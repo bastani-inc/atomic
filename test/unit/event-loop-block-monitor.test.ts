@@ -38,8 +38,8 @@ const SHORT_BLOCK_MS = 20;
  */
 const SETTLE_MS = 500;
 /**
- * One child: loading the module through jiti (about 1 s on Node idle), four settles and the blocks, 3.3 s in all
- * idle. The budget leaves a loaded runner six times that and still ends the child before the test's own timeout.
+ * One child: loading the module through jiti (about 1 s on Node idle), five settles and the blocks, 3.8 s in all
+ * idle. The budget leaves a loaded runner five times that and still ends the child before the test's own timeout.
  */
 const CHILD_TIMEOUT_MS = 20_000;
 
@@ -138,15 +138,17 @@ for (const runtime of RUNTIMES) {
 				`the long block's record is under the threshold: ${long[0]?.durationMs} ms`,
 			);
 			assert.equal(long[0]?.pid, start?.pid);
-			// Every sample of the block passed through the function, and the hot frames say so.
-			const hot = long[0]?.hotFrames?.find((entry) => entry.frame.startsWith("holdTheEventLoopForLong "));
-			assert.equal(hot?.count, long[0]?.samples);
+			// The hot frames name it too. Not in every sample: an optimized loop can be reported as its caller.
+			assert.ok(
+				long[0]?.hotFrames?.some((entry) => entry.frame.startsWith("holdTheEventLoopForLong ")),
+				`the hot frames do not name the function: ${JSON.stringify(long[0]?.hotFrames)}`,
+			);
 			assert.deepEqual(blocksNaming(records, "holdTheEventLoopBriefly"), []);
 
 			const delays = records.filter((record) => record.type === "delay");
 			assert.deepEqual(
 				delays.map((record) => record.phase),
-				["startup", "session"],
+				["startup", "session", "shutdown"],
 			);
 			const [startup, session] = delays;
 			assert.ok((startup?.maxMs ?? 0) >= LONG_BLOCK_MS * 0.9, `startup max ${startup?.maxMs} ms`);
