@@ -150,6 +150,7 @@ export const DETACHED_CALLBACKS: readonly SinkSpec[] = [
 export interface OwnedArea {
 	readonly paths?: readonly string[];
 	readonly functions?: readonly FunctionSelector[];
+	readonly sampledCallersOfOwnedCalls?: readonly FunctionSelector[];
 	readonly owner: string;
 }
 
@@ -173,6 +174,12 @@ export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
 			// The open's shared lock: a non-waiting open and flock, with no form off the event loop yet.
 			"acquireOpenLock",
 		].map((name) => ({ file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name })),
+		sampledCallersOfOwnedCalls: ["NodeSqliteDatabase.commitAlone", "NodeSqliteDatabase.commitMembers"].map(
+			(name) => ({
+				file: "packages/coding-agent/src/core/storage/node-sqlite.ts",
+				name,
+			}),
+		),
 	},
 ];
 
