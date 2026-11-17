@@ -627,7 +627,7 @@ async function login(
 		await signInMcpServer({
 			serverUrl: url,
 			store: credentials.forServer(name, url),
-			settings: connection.oauthSettings(),
+			settings: await connection.oauthSettings(),
 			challenge: connection.challenge,
 			prompt: {
 				showAuthorizationUrl: (authorizationUrl) => {

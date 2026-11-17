@@ -215,7 +215,9 @@ export class ModelRuntime implements Models {
 		this.rebuildProviders();
 	}
 	static async create(options: CreateModelRuntimeOptions = {}): Promise<ModelRuntime> {
-		const credentials = new RuntimeCredentials(options.credentials ?? DefaultAuthStorage.create(options.authPath));
+		const credentials = new RuntimeCredentials(
+			options.credentials ?? (await DefaultAuthStorage.createAsync(options.authPath)),
+		);
 		const modelsPath =
 			options.modelsPath === null ? undefined : (options.modelsPath ?? join(getAgentDir(), "models.json"));
 		const config = await ModelConfig.load(modelsPath);
