@@ -3371,7 +3371,12 @@ export class SqlPoolQueue {
 	async endedShipRoots(
 		roots: readonly string[],
 		works: readonly string[],
-	): Promise<{ readonly roots: ReadonlySet<string>; readonly works: ReadonlySet<string> }> {
+		includeUnidentified = false,
+	): Promise<{
+		readonly roots: ReadonlySet<string>;
+		readonly works: ReadonlySet<string>;
+		readonly liveRoots: ReadonlySet<string>;
+	}> {
 		const running = `status IN ('pending', 'running', 'paused')`;
 		const listed = `IN (SELECT value FROM ${this.dialect.jsonValues("?")})`;
 		return this.storage.read(async (executor) => {
@@ -3381,10 +3386,15 @@ export class SqlPoolQueue {
 					: new Set(
 							(await executor.all<SqliteRow & { id: string }>(sql, JSON.stringify(ids))).map((row) => row.id),
 						);
-			const liveRoots = await live(
-				`SELECT run_id AS id FROM ${this.journal.runs} WHERE ${running} AND run_id ${listed}`,
-				roots,
-			);
+			const liveRoots = includeUnidentified
+				? new Set(
+						(
+							await executor.all<SqliteRow & { id: string }>(
+								`SELECT run_id AS id FROM ${this.journal.runs} WHERE ${running}`,
+							)
+						).map((row) => row.id),
+					)
+				: await live(`SELECT run_id AS id FROM ${this.journal.runs} WHERE ${running} AND run_id ${listed}`, roots);
 			const liveWorks = await live(
 				`SELECT w.id AS id FROM ${this.work} w JOIN ${this.journal.runs} r ON r.run_id = w.root WHERE r.${running} AND w.id ${listed}`,
 				works,
@@ -3392,6 +3402,7 @@ export class SqlPoolQueue {
 			return {
 				roots: new Set(roots.filter((root) => !liveRoots.has(root))),
 				works: new Set(works.filter((work) => !liveWorks.has(work))),
+				liveRoots,
 			};
 		});
 	}

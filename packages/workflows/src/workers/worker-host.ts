@@ -772,7 +772,7 @@ export async function startWorkflowWorkerHost(options: WorkflowWorkerHostOptions
 		const shared = await SqlSharedPool.open(journal, queue);
 		await retireEndedShipShards(
 			shipJournalDirectory(poolStateDirectory(durable.agentDir), durableJournalIdentity(durable)),
-			(roots, works) => queue.endedShipRoots(roots, works),
+			(roots, works, unidentified) => queue.endedShipRoots(roots, works, unidentified),
 		).catch(() => {});
 		return new WorkerHost(
 			options.hostId ?? poolHostId(durable.agentDir),

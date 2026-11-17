@@ -87,8 +87,8 @@ export async function setRunStatus(journal: RunJournal, root: string, status: st
 	);
 }
 
-const ENDED_WHILE_DOWN = ["completed", "failed", "deleted"] as const;
-const LIVE_WHILE_DOWN = ["pending", "running", "paused"] as const;
+const ENDED_WHILE_DOWN = ["completed", "failed", "deleted", "legacyIdleEnded"] as const;
+const LIVE_WHILE_DOWN = ["pending", "running", "paused", "legacyIdleRunning"] as const;
 const IN_USE = [
 	"held",
 	"connected",
@@ -248,11 +248,24 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 			"rawRollbackWriter",
 		]);
 		const killedCases = cases.filter((name) => name !== "held" && !retiredCases.has(name));
-		const crashed = await holdShards(killedCases.map((name) => shards[name]));
+		const legacyIdle = new Set<ShardCase>(["legacyIdleEnded", "legacyIdleRunning"]);
+		const crashed = await holdShards(
+			killedCases.map((name) =>
+				legacyIdle.has(name) ? { path: shards[name].path, root: shards[name].root } : shards[name],
+			),
+		);
 		await crashed.kill();
 		assert.equal(crashed.process.signalCode, "SIGKILL");
 		for (const name of killedCases)
 			assert.ok(existsSync(`${shards[name].path}-wal`), `the crashed host left ${name}'s journal mid-write`);
+		for (const name of legacyIdle) {
+			const database = await openNodeSqliteDatabase(shards[name].path);
+			try {
+				await database.exec("DROP TABLE ship_root");
+			} finally {
+				await database.close();
+			}
+		}
 
 		await retireWithUnshippedCheckpoint(shards.retiredReader);
 		await retireWithUnshippedCheckpoint(shards.retiredWriter);
@@ -355,7 +368,11 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 				assert.deepEqual(shardFiles(shards[name].path), [], `the ${name} root's local journal is removed`);
 			for (const name of LIVE_WHILE_DOWN) {
 				assert.ok(existsSync(shards[name].path), `the ${name} root's local journal is kept`);
-				assert.equal(await unshippedCheckpoints(shards[name].path), 1, `the ${name} root keeps its checkpoint`);
+				assert.equal(
+					await unshippedCheckpoints(shards[name].path),
+					name === "legacyIdleRunning" ? 0 : 1,
+					`the ${name} root keeps its checkpoints`,
+				);
 			}
 			assert.ok(existsSync(shards.held.path), "a journal another process holds open is kept");
 			assert.ok(existsSync(shards.connected.path), "a journal another connection uses is kept");
@@ -470,7 +487,11 @@ export async function crashHostThenRestart(scenario: CrashedHostScenario): Promi
 			for (const name of [...ENDED_WHILE_DOWN, ...IN_USE])
 				assert.deepEqual(shardFiles(shards[name].path), [], `the ${name} root's local journal is removed`);
 			for (const name of LIVE_WHILE_DOWN)
-				assert.equal(await unshippedCheckpoints(shards[name].path), 1, `the ${name} root keeps its checkpoint`);
+				assert.equal(
+					await unshippedCheckpoints(shards[name].path),
+					name === "legacyIdleRunning" ? 0 : 1,
+					`the ${name} root keeps its checkpoints`,
+				);
 		} finally {
 			await stop();
 		}

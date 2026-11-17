@@ -1277,8 +1277,9 @@ export class PoolCoordinator {
 		if (this.closed || durable === undefined) return undefined;
 		const identity = durableJournalIdentity(durable);
 		if (this.remote === undefined)
-			await retireEndedShipShards(shipJournalDirectory(shared.stateDirectory, identity), (roots, works) =>
-				queue.endedShipRoots(roots, works),
+			await retireEndedShipShards(
+				shipJournalDirectory(shared.stateDirectory, identity),
+				(roots, works, unidentified) => queue.endedShipRoots(roots, works, unidentified),
 			).catch(() => {});
 		if (this.closed || shared.checkpointShipping === undefined) return undefined;
 		if (this.remote !== undefined)

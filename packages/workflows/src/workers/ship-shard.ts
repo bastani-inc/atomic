@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readdir, readlink, realpath, rm, rmdir, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
@@ -26,9 +26,12 @@ export function shipJournalDirectory(stateDirectory: string, journalIdentity: st
 	return join(stateDirectory, "ship", createHash("sha256").update(journalIdentity).digest("hex").slice(0, 24));
 }
 
+function shipRootFile(root: string): string {
+	return `${createHash("sha256").update(root).digest("hex").slice(0, 32)}.sqlite`;
+}
+
 export function shipShardPath(stateDirectory: string, journalIdentity: string, root: string): string {
-	const file = createHash("sha256").update(root).digest("hex").slice(0, 32);
-	return join(shipJournalDirectory(stateDirectory, journalIdentity), `${file}.sqlite`);
+	return join(shipJournalDirectory(stateDirectory, journalIdentity), shipRootFile(root));
 }
 
 /**
@@ -739,9 +742,14 @@ async function underJournalLock<T>(directory: string, operation: () => Promise<T
 export interface EndedShipRoots {
 	readonly roots: ReadonlySet<string>;
 	readonly works: ReadonlySet<string>;
+	readonly liveRoots?: ReadonlySet<string>;
 }
 
-export type FindEndedShipRoots = (roots: readonly string[], works: readonly string[]) => Promise<EndedShipRoots>;
+export type FindEndedShipRoots = (
+	roots: readonly string[],
+	works: readonly string[],
+	includeUnidentified: boolean,
+) => Promise<EndedShipRoots>;
 
 interface ShardOwner {
 	readonly root: string | undefined;
@@ -967,10 +975,14 @@ export async function retireEndedShipShards(directory: string, findEnded: FindEn
 	if (idle.length === 0) return;
 	const roots = idle.flatMap((shard) => (shard.root === undefined ? [] : [shard.root]));
 	const works = idle.flatMap((shard) => (shard.root === undefined && shard.work !== undefined ? [shard.work] : []));
-	const ended = await findEnded(roots, works);
-	const retired = idle.filter((shard) =>
-		shard.root !== undefined ? ended.roots.has(shard.root) : shard.work === undefined || ended.works.has(shard.work),
-	);
+	const unidentified = idle.some((shard) => shard.root === undefined && shard.work === undefined);
+	const ended = await findEnded(roots, works, unidentified);
+	const liveFiles = ended.liveRoots === undefined ? undefined : new Set([...ended.liveRoots].map(shipRootFile));
+	const retired = idle.filter((shard) => {
+		if (shard.root !== undefined) return ended.roots.has(shard.root);
+		if (shard.work !== undefined) return ended.works.has(shard.work);
+		return liveFiles !== undefined && !liveFiles.has(basename(shard.path));
+	});
 	if (retired.length === 0) return;
 	await underJournalLock(directory, async () => {
 		let otherOpen: Promise<ReadonlySet<string>> | undefined;

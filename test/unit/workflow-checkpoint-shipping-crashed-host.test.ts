@@ -149,9 +149,17 @@ test(
 			const running = shard("running", await claimedAttempt(journal, queue, "running"));
 			await journal.createRun({ runId: "idle", name: "idle", cwd: "/", createdAt: 0, status: "running" });
 			const idle = shard("idle");
-			const crashed = await holdShards([ended, deleted, running, idle]);
+			await journal.createRun({
+				runId: "running-idle",
+				name: "running-idle",
+				cwd: "/",
+				createdAt: 0,
+				status: "running",
+			});
+			const runningIdle = shard("running-idle");
+			const crashed = await holdShards([ended, deleted, running, idle, runningIdle]);
 			await crashed.kill();
-			for (const { path } of [ended, deleted, running, idle]) {
+			for (const { path } of [ended, deleted, running, idle, runningIdle]) {
 				const database = await openNodeSqliteDatabase(path);
 				try {
 					await database.exec(`DROP TABLE IF EXISTS ship_root`);
@@ -169,6 +177,7 @@ test(
 					assert.deepEqual(shardFiles(path), [], `the ${root} root's local journal is removed`);
 				assert.ok(existsSync(running.path), "a running root's local journal is kept");
 				assert.equal(await unshippedCheckpoints(running.path), 1);
+				assert.ok(existsSync(runningIdle.path), "a running root's empty legacy journal is kept");
 			} finally {
 				await stop();
 			}
