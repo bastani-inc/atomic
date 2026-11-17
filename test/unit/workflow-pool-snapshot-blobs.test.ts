@@ -7,7 +7,7 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
-import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
+import { registerSqlPoolStorage, sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { PoolRemoteJournal } from "../../packages/workflows/src/durable/journal/pool-remote-journal.js";
@@ -298,6 +298,7 @@ async function claimedAttempt(subject: (typeof commitSubjects)[number]) {
 	};
 	return {
 		blobs,
+		journal,
 		kept,
 		commit,
 		keys,
@@ -420,6 +421,70 @@ for (const subject of commitSubjects)
 			"the collected snapshot is reported",
 		);
 	});
+
+test("a shipped snapshot batch excludes database-wide collection on a fenced backend (#5344)", async () => {
+	const { journal, lease, attempt, tool, stored } = await claimedAttempt(commitSubjects[1]);
+	const storage = sqlPoolStorage(journal)!;
+	const exclusions: (boolean | undefined)[] = [];
+	registerSqlPoolStorage(journal, {
+		...storage,
+		batch: undefined,
+		fenced: async (statements, _audit, excludesSerial) => {
+			exclusions.push(excludesSerial);
+			return storage.batch!(statements);
+		},
+	});
+	const queue = await openSqlPoolQueue(journal);
+	const checkpoint = tool(1, [stored]);
+	await queue.shipBatch(lease, attempt, {
+		id: "snapshot-lock",
+		host: "host",
+		events: [
+			{
+				localSeq: 1,
+				key: JSON.stringify(["CheckpointRecorded", "tool", checkpoint.checkpointId]),
+				payload: JSON.stringify(checkpoint),
+			},
+		],
+	});
+	assert.deepEqual(exclusions, [true]);
+});
+
+test("a shipped batch whose snapshot blob is collected between planning and writing records no dangling snapshot (#5344)", async () => {
+	const { blobs, queue, lease, attempt, tool, recorded, stored } = await claimedAttempt(commitSubjects[1]);
+	const missingBlob = blobs.missingBlob.bind(blobs);
+	let collected = false;
+	vi.spyOn(blobs, "missingBlob").mockImplementation(async (read, snapshots) => {
+		const missing = await missingBlob(read, snapshots);
+		if (!collected && snapshots.length > 0) {
+			assert.equal(missing, undefined);
+			collected = true;
+			await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
+		}
+		return missing;
+	});
+	const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+	const checkpoint = tool(1, [stored]);
+	await queue.shipBatch(lease, attempt, {
+		id: "collected-after-plan",
+		host: "host",
+		events: [
+			{
+				localSeq: 1,
+				key: JSON.stringify(["CheckpointRecorded", "tool", checkpoint.checkpointId]),
+				payload: JSON.stringify(checkpoint),
+			},
+		],
+	});
+	assert.equal(collected, true);
+	assert.deepEqual(
+		(await recorded()).map((entry) => entry.worktreeSnapshots),
+		[undefined],
+	);
+	assert.ok(
+		warnings.mock.calls.some(([warning]) => (warning as Error & { code?: string }).code === "blobs-collected"),
+	);
+});
 
 /** A root on `subject` whose pool is in another database, as a local pool over a remote journal keeps it. */
 async function rootWithSeparatePool(subject: (typeof commitSubjects)[number]) {
