@@ -7,7 +7,7 @@ import { type Static, Type } from "typebox";
 import { isPathInside } from "../../utils/path-inside.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { markBuiltinToolRenderers } from "./builtin-renderers.js";
+import { withBuiltinToolBlockRenderers } from "./builtin-renderers.js";
 import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { resolveToCwd } from "./path-utils.ts";
@@ -493,7 +493,7 @@ export function createSearchToolDefinition(
 	options?: SearchToolOptions,
 ): ToolDefinition<typeof searchSchema, SearchToolDetails | undefined> {
 	const grepDefinition = createGrepToolDefinition(cwd, { ...options, nativeCache: false });
-	return markBuiltinToolRenderers<ToolDefinition<typeof searchSchema, SearchToolDetails | undefined>>({
+	return withBuiltinToolBlockRenderers<ToolDefinition<typeof searchSchema, SearchToolDetails | undefined>>({
 		...grepDefinition,
 		name: "search",
 		label: "search",

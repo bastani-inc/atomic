@@ -8,7 +8,7 @@ import { createAllToolDefinitions, type ToolName } from "../../../core/tools/ind
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { ensurePngTranscoder } from "../../../utils/image-convert.ts";
 import { terminalDisplayText } from "../../../utils/terminal-text.ts";
-import { theme } from "../theme/theme.js";
+import { CodeHighlighter, theme } from "../theme/theme.js";
 import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
 import { keyHint, keyHintIfBound, keyText } from "./keybinding-hints.js";
 import {
@@ -16,6 +16,7 @@ import {
 	componentNeedsWorkingClock,
 	isToolBlock,
 	ToolBlock,
+	ToolBlockRecords,
 	type ToolBlockStatus,
 	type ToolGroupRole,
 } from "./tool-block.ts";
@@ -51,6 +52,7 @@ const SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY = "subagentResultAnimationCleanup";
 
 export class ToolExecutionComponent extends Container {
 	private contentContainer: Container;
+	private readonly codeHighlighter = new CodeHighlighter();
 	private readonly taskRecordReader: ToolExecutionOptions["getTaskRecord"];
 	private readonly toolRendererReader: ToolExecutionOptions["getToolDefinition"];
 	private stopWorkingClock: (() => void) | undefined;
@@ -181,7 +183,11 @@ export class ToolExecutionComponent extends Container {
 		const args =
 			typeof this.args === "object" && this.args !== null
 				? Object.entries(this.args)
-						.map(([key, value]) => `${key}=${typeof value === "string" ? value : (JSON.stringify(value) ?? "")}`)
+						.map(([key, value]) => {
+							const raw = typeof value === "string" ? value : (JSON.stringify(value) ?? "");
+							const text = terminalDisplayText(raw).replace(/[\r\n\t]/g, " ");
+							return `${terminalDisplayText(key)}=${text.length > 64 ? `${text.slice(0, 63)}…` : text}`;
+						})
 						.join(" · ")
 				: String(this.args ?? "");
 		return new Text(
@@ -407,6 +413,8 @@ export class ToolExecutionComponent extends Container {
 			executionStarted: this.executionStarted,
 			argsComplete: this.argsComplete,
 			elapsedMs: this.currentElapsedMs(),
+			highlighter: this.codeHighlighter,
+			canManageTask: (taskId) => this.taskRecordReader?.(taskId as TaskId) !== undefined,
 		});
 		const canonicalCall = presentation !== undefined && (!callRenderer || isBuiltinToolCallRenderer(callRenderer));
 		const canonicalResult =
@@ -443,6 +451,22 @@ export class ToolExecutionComponent extends Container {
 					details = new Text(theme.fg("warning", "Result renderer failed"), 0, 0);
 				}
 			} else details = this.createResultFallback();
+		}
+		if (
+			this.expanded &&
+			!callRenderer &&
+			typeof this.args === "object" &&
+			this.args !== null &&
+			Object.keys(this.args).length > 0
+		) {
+			const argumentLines = Object.entries(this.args)
+				.map(
+					([key, value]) =>
+						`${key}: ${typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? "")}`,
+				)
+				.join("\n");
+			const argumentsComponent = new Text(terminalDisplayText(argumentLines), 0, 0);
+			details = new ToolBlockRecords([argumentsComponent, ...(details ? [details] : [])]);
 		}
 		const selfRendered =
 			this.hasRendererDefinition() && this.getRenderShell() === "self" && !(canonicalCall && canonicalResult);

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Tool `renderCall` output is now a single header. Move multiline previews into `renderResult`, or return a `ToolBlock` with a body and result records. Atomic supplies the state glyph, elapsed metadata and connectors for ordinary renderers; explicit `renderShell: "self"` renderers keep their own framing ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ### Added
 
 - Extensions can use `ToolBlock`, `ToolBlockRecords`, `ToolBlockGroup` and `ToolBlockMarkdown` to render transcript items with shared state glyphs, indentation and safe Markdown ([#5224](https://github.com/bastani-inc/atomic/issues/5224))

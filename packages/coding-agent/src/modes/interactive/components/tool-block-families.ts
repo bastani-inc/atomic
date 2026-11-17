@@ -1,9 +1,15 @@
 import { sep } from "node:path";
-import { type Component, getImageDimensions, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import {
+	type Component,
+	getImageDimensions,
+	getKeybindings,
+	truncateToWidth,
+	wrapTextWithAnsi,
+} from "@bastani/atomic-tui";
 import type { WaitOutcome } from "../../../core/tasks/contracts.js";
 import { generateDiffString } from "../../../core/tools/edit-diff.ts";
 import { splitReadLineSelector } from "../../../core/tools/read-selectors.ts";
-import { formatReadLineRange, replaceTabs } from "../../../core/tools/render-utils.ts";
+import { formatReadLineRange, linkPath, replaceTabs } from "../../../core/tools/render-utils.ts";
 import {
 	EMPTY_OUTPUT_TEXT,
 	presentTaskError,
@@ -23,8 +29,9 @@ import type { TodoFrontMatter, TodoRecord, TodoToolDetails } from "../../../core
 import type { TruncationResult } from "../../../core/tools/truncate.ts";
 import { getCwdRelativePath, resolvePath, shortenHomePath } from "../../../utils/paths.ts";
 import { singleLineDisplayText, terminalDisplayText } from "../../../utils/terminal-text.ts";
-import { getLanguageFromPath, highlightCode, theme } from "../theme/theme.js";
-import { collapseToolBlockLines, TOOL_BLOCK_LIMITS, type ToolBlockStatus } from "./tool-block.ts";
+import { type CodeHighlighter, getLanguageFromPath, highlightCode, theme } from "../theme/theme.js";
+import { navEntryKeys } from "./nav-keys.ts";
+import { collapseToolBlockLines, TOOL_BLOCK_LIMITS, ToolBlockRecords, type ToolBlockStatus } from "./tool-block.ts";
 import { formatWorkingElapsed } from "./working-run-meter.ts";
 
 export interface BuiltinToolBlockContentPart {
@@ -51,6 +58,8 @@ export interface BuiltinToolBlockInput {
 	readonly executionStarted: boolean;
 	readonly argsComplete: boolean;
 	readonly elapsedMs?: number;
+	readonly highlighter?: CodeHighlighter;
+	readonly canManageTask?: (taskId: string) => boolean;
 }
 
 export interface BuiltinToolBlockPresentation {
@@ -252,13 +261,20 @@ function renderGutteredLines(
 	startLine: number,
 	rawPath?: string,
 	lineNumbers?: readonly number[],
+	highlighter?: CodeHighlighter,
 ): Component {
 	if (lines.length === 0) return new ToolBlockLines([]);
-	const maxLine = lineNumbers?.length ? Math.max(...lineNumbers) : startLine + lines.length - 1;
+	const maxLine = lineNumbers?.length
+		? lineNumbers.reduce((maximum, line) => Math.max(maximum, line), 0)
+		: startLine + lines.length - 1;
 	const gutterWidth = Math.max(1, String(maxLine).length);
 	const lang = rawPath ? getLanguageFromPath(rawPath) : undefined;
 	const normalizedSource = lines.map((line) => replaceTabs(line)).join("\n");
-	const highlighted = lang ? highlightCode(normalizedSource, lang) : undefined;
+	const highlighted = lang
+		? highlighter
+			? highlighter.highlight(normalizedSource, lang)
+			: highlightCode(normalizedSource, lang)
+		: undefined;
 	const entries = lines.map((line, index) => ({
 		lineNumber: lineNumbers?.[index] ?? startLine + index,
 		body: highlighted?.[index] ?? theme.fg("toolOutput", replaceTabs(line)),
@@ -367,7 +383,7 @@ function presentRead(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 			args: display,
 			status: "failure",
 			meta: [reason, ...(elapsed ? [elapsed] : [])],
-			details: errorLines.length > 0 ? new ToolBlockLines(errorLines) : undefined,
+			details: errorLines.length > 0 ? new ToolBlockLines(errorLines, true) : undefined,
 		};
 	}
 
@@ -413,7 +429,7 @@ function presentRead(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 		args: display,
 		status: "success",
 		meta: elapsed ? [elapsed] : undefined,
-		details: renderGutteredLines(lines, startLine, basePath, lineNumbers),
+		details: renderGutteredLines(lines, startLine, basePath, lineNumbers, input.highlighter),
 	};
 }
 
@@ -504,7 +520,7 @@ function presentSearch(input: BuiltinToolBlockInput): BuiltinToolBlockPresentati
 			args: display,
 			status: "failure",
 			meta: ["failed", ...(elapsed ? [elapsed] : [])],
-			details: errorLines.length > 0 ? new ToolBlockLines(errorLines) : undefined,
+			details: errorLines.length > 0 ? new ToolBlockLines(errorLines, true) : undefined,
 		};
 	}
 
@@ -594,7 +610,7 @@ function presentFind(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 			args: display,
 			status: "failure",
 			meta: [/ENOENT|not found/i.test(rawText) ? "not found" : "failed", ...(elapsed ? [elapsed] : [])],
-			details: errorLines.length > 0 ? new ToolBlockLines(errorLines) : undefined,
+			details: errorLines.length > 0 ? new ToolBlockLines(errorLines, true) : undefined,
 		};
 	}
 
@@ -672,7 +688,7 @@ function presentList(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 			args: display,
 			status: "failure",
 			meta: [/ENOENT|not found/i.test(rawText) ? "not found" : "failed", ...(elapsed ? [elapsed] : [])],
-			details: errorLines.length > 0 ? new ToolBlockLines(errorLines) : undefined,
+			details: errorLines.length > 0 ? new ToolBlockLines(errorLines, true) : undefined,
 		};
 	}
 
@@ -763,7 +779,7 @@ function presentWait(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 			args: taskId,
 			status: "failure",
 			meta: ["failed", ...(elapsed ? [elapsed] : [])],
-			details: errorLines.length > 0 ? new ToolBlockLines(errorLines) : undefined,
+			details: errorLines.length > 0 ? new ToolBlockLines(errorLines, true) : undefined,
 		};
 	}
 
@@ -790,7 +806,7 @@ function presentWait(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 					input.expanded,
 					true,
 				)
-			: [];
+			: [theme.fg("muted", EMPTY_OUTPUT_TEXT)];
 		const blockStatus: ToolBlockStatus =
 			observation.kind === "settled"
 				? observation.result.kind === "completed"
@@ -1046,7 +1062,12 @@ function presentBash(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 	const classified = classifySettledBashResult(input, rawText);
 
 	if (classified.kind === "background") {
-		const bgLine = `${theme.fg("text", "Running in background")}${theme.fg("dim", " · ↓ to manage")}`;
+		const taskId = asString(asRecord(asRecord(input.result?.details)?.observation)?.taskId);
+		const key =
+			taskId && input.canManageTask?.(taskId)
+				? navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" })
+				: "";
+		const bgLine = `${theme.fg("text", "Running in background")}${key ? theme.fg("dim", ` · ${key} to manage`) : ""}`;
 		const hasOutput = classified.output !== "" && classified.output !== EMPTY_OUTPUT_TEXT;
 		const outputLines = hasOutput
 			? collapseToolBlockLines(
@@ -1331,7 +1352,7 @@ function presentEdit(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 			args: display,
 			status: "failure",
 			meta: [reason, ...(elapsed ? [elapsed] : [])],
-			details: errorLines.length > 0 ? new ToolBlockLines(errorLines) : undefined,
+			details: errorLines.length > 0 ? new ToolBlockLines(errorLines, true) : undefined,
 		};
 	}
 
@@ -1417,7 +1438,7 @@ function presentWrite(input: BuiltinToolBlockInput): BuiltinToolBlockPresentatio
 			args: display,
 			status: "failure",
 			meta: [reason, ...(elapsed ? [elapsed] : [])],
-			details: errorLines.length > 0 ? new ToolBlockLines(errorLines) : undefined,
+			details: errorLines.length > 0 ? new ToolBlockLines(errorLines, true) : undefined,
 		};
 	}
 
@@ -1456,7 +1477,7 @@ function presentWrite(input: BuiltinToolBlockInput): BuiltinToolBlockPresentatio
 		args: display,
 		status: "success",
 		meta: elapsed ? [elapsed] : undefined,
-		details: renderGutteredLines(contentLines, 1, rawPath),
+		details: renderGutteredLines(contentLines, 1, rawPath, undefined, input.highlighter),
 	};
 }
 
@@ -1921,7 +1942,11 @@ function presentFetch(input: BuiltinToolBlockInput): BuiltinToolBlockPresentatio
 	};
 }
 
-export function builtinToolBlockPresentation(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation | undefined {
+function baseBuiltinToolBlockPresentation(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation | undefined {
+	if (input.toolName === "powershell") {
+		const shell = presentBash(input);
+		return { ...shell, title: shell.title === "Wait" ? "Wait" : "PowerShell" };
+	}
 	switch (input.toolName) {
 		case "read":
 			return presentRead(input);
@@ -1949,4 +1974,27 @@ export function builtinToolBlockPresentation(input: BuiltinToolBlockInput): Buil
 		default:
 			return undefined;
 	}
+}
+
+export function builtinToolBlockPresentation(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation | undefined {
+	const view = baseBuiltinToolBlockPresentation(input);
+	if (!view || !["bash", "powershell", "wait"].includes(input.toolName)) return view;
+	const details = asRecord(input.result?.details);
+	const path = asString(details?.fullOutputPath);
+	if (!path) return view;
+	const truncation = asRecord(details?.truncation);
+	const total = asNumber(truncation?.totalLines);
+	const retained = asNumber(truncation?.outputLines);
+	const label =
+		total !== undefined && retained !== undefined
+			? `Truncated: showing ${retained} of ${total} lines. Full output:`
+			: "Full output:";
+	return {
+		...view,
+		details: new ToolBlockRecords([
+			...(view.details ? [view.details] : []),
+			new ToolBlockLines([theme.fg("dim", label)], true),
+			new ToolBlockLines([linkPath(path, terminalDisplayText(path), input.cwd)], true),
+		]),
+	};
 }
