@@ -74,6 +74,7 @@
 
 ### Fixed
 
+- Agent completion notices no longer color their result preview or expand hint when `NO_COLOR` is set, matching their notice line ([#5396](https://github.com/bastani-inc/atomic/pull/5396))
 - A workflow or task notice sent as a turn ends now joins the next request of that run however long saving its card takes, instead of depending on the save finishing within a few internal steps and otherwise costing an extra request. Notices whose save is still pending from earlier in the turn do not hold up the next request
 - A subagent's shells no longer leave a record per shell in the parent's task owner for as long as the parent runs: the record is released once the shell has finished and its completion notice is acknowledged, and the subagent can still wait on and read a finished shell while its result is kept
 - Read results keep image-capability warnings visible and use the chat's theme, including custom renderer hosts ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
