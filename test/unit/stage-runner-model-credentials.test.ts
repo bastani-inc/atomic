@@ -52,13 +52,18 @@ function stageOpts(
 							? `${options.model.provider}/${options.model.id}`
 							: String(options?.model);
 					created.push(id);
+					let thinkingLevel: StageSessionRuntime["thinkingLevel"] = options.thinkingLevel ?? "medium";
 					const { session } = makeMockSession({
+						setThinkingLevel(level) {
+							thinkingLevel = level;
+						},
 						async prompt() {
 							const failure = failing.get(id);
 							if (failure) throw failure;
 							return "ok";
 						},
 					});
+					Object.defineProperty(session, "thinkingLevel", { get: () => thinkingLevel });
 					return session;
 				},
 			},
@@ -182,6 +187,63 @@ describe("a workflow stage's model chain and credentials", () => {
 			assert.deepEqual(resumedCreated, ["scoped/a", "scoped/a", "scoped/b"]);
 		} finally {
 			await resumedCtx.__dispose();
+		}
+	});
+
+	test("explicit stage admission rechecks an effort changed while its session is being created (#3326)", async () => {
+		const model: Model<"openai-completions"> = {
+			type: "chat",
+			provider: "p",
+			id: "a",
+			name: "a",
+			api: "openai-completions",
+			baseUrl: "https://example.invalid",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 100_000,
+			maxTokens: 1_000,
+		};
+		const started = Promise.withResolvers<void>();
+		const finishCreation = Promise.withResolvers<void>();
+		let thinkingLevel: StageSessionRuntime["thinkingLevel"] = "high";
+		let requests = 0;
+		const opts = stageOpts(["p/a:high"], new Set(["p"]), [], new Map(), {
+			modelConstraints: { allowedModels: ["p/a"], allowedEfforts: ["high"] },
+		});
+		opts.models = {
+			listModels: async () => [{ provider: "p", id: "a", fullId: "p/a", model }],
+			hasCredentials: () => true,
+		};
+		opts.adapters.agentSession = {
+			async create() {
+				const { session } = makeMockSession({
+					model,
+					async prompt() {
+						requests++;
+						return "ok";
+					},
+					setThinkingLevel(level) {
+						thinkingLevel = level;
+					},
+				});
+				Object.defineProperty(session, "thinkingLevel", { get: () => thinkingLevel });
+				started.resolve();
+				await finishCreation.promise;
+				return session;
+			},
+		};
+		const ctx = createStageContext(opts);
+		try {
+			const prompting = ctx.prompt("run");
+			await started.promise;
+			await ctx.setThinkingLevel("low");
+			finishCreation.resolve();
+			await assert.rejects(prompting, /modelConstraints/);
+			assert.equal(requests, 0);
+		} finally {
+			finishCreation.resolve();
+			await ctx.__dispose();
 		}
 	});
 

@@ -3287,6 +3287,17 @@ export class StageSessionController {
 			await this.opts.onSessionReady?.();
 			if (this.disposed || this.opts.signal?.aborted || this.abortGeneration !== startGeneration)
 				throw this.staleCreationReason(startGeneration);
+			if (!this.modelRoute && candidate) {
+				const constraints = this.explicitModelConstraints();
+				const model = attachedSession.model ?? candidate.value;
+				const admitted: WorkflowResolvedModelCandidate = {
+					id: workflowModelId(model) ?? candidate.id,
+					value: model,
+					reasoningLevel: attachedSession.thinkingLevel ?? candidate.reasoningLevel,
+				};
+				if (constraints.length > 0 && !this.candidateSatisfiesConstraints(admitted, constraints))
+					throw new Error("No workflow stage model candidate satisfies the stage's modelConstraints.");
+			}
 		} catch (reason) {
 			// Attachment is not readiness. The retained creation owns cleanup on
 			// both rejection and cancellation; never expose this identity for reuse.
