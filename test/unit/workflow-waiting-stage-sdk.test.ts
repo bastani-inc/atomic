@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import v8 from "node:v8";
 import vm from "node:vm";
@@ -139,7 +140,11 @@ test(
 				outputs: {},
 				run: async (ctx) => {
 					const tasks = Array.from({ length: STAGES }, (_, index) =>
-						ctx.task(`stage-${index}`, { prompt: `ship change ${index}`, customTools: [ci.tool] }),
+						ctx.task(`stage-${index}`, {
+							prompt: `ship change ${index}`,
+							builtins: BUILTINS,
+							customTools: [ci.tool],
+						}),
 					);
 					await allWaiting.promise;
 					liveWhileWaiting = live;
@@ -191,6 +196,7 @@ test(
 			assert.equal(ci.calls, STAGES);
 			assert.equal(faux.state.callCount, 2 * STAGES);
 			for (const stage of store.runs()[0]!.stages) {
+				assert.equal(stage.pendingStageDeliveryAvailable, false, stage.name);
 				const saved = await sessionStore.load(stage.sessionId!);
 				const roles = saved.entries
 					.flatMap((entry) => (entry.type === "message" ? [entry.message.role] : []))
@@ -198,6 +204,11 @@ test(
 				assert.deepEqual(roles, ["user", "assistant", "toolResult", "assistant"], stage.name);
 				assert.equal(stage.result, "ci passed; merging");
 			}
+			assert.equal(
+				existsSync(join(process.env.ATOMIC_CODING_AGENT_DIR ?? "", "intercom", "broker.pid")),
+				false,
+				"stages with intercom disabled must not spawn a standalone Intercom broker",
+			);
 			assert.equal(events.filter((event) => event.type === "stage_rehydrated").length, STAGES);
 		} finally {
 			await sessionStore.close();

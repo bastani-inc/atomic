@@ -13,7 +13,7 @@ import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { nextTurnSettled } from "../../packages/subagents/src/runs/inprocess/runner.js";
 import type { TaskExecutionHooks, TestSessionQueue } from "../../packages/subagents/src/shared/types.js";
-import { liveChildEnvironment } from "../helpers/live-child-environment.js";
+import { LIVE_CHILD_START_WAIT_MS, liveChildEnvironment } from "../helpers/live-child-environment.js";
 
 function agent(): AgentConfig {
 	return {
@@ -30,8 +30,8 @@ function agent(): AgentConfig {
 
 const CONDITION_WAIT_MS = 20_000;
 
-async function until(predicate: () => boolean): Promise<void> {
-	const deadline = Date.now() + CONDITION_WAIT_MS;
+async function until(predicate: () => boolean, timeoutMs = CONDITION_WAIT_MS): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
 	while (!predicate() && Date.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 5));
 	assert.ok(predicate(), "condition never held");
 }
@@ -213,7 +213,7 @@ test(
 		}).finally(() => {
 			settled = true;
 		});
-		await until(() => env.blockStarted());
+		await until(() => env.blockStarted(), LIVE_CHILD_START_WAIT_MS);
 		const sessionId = source!.getSessionId();
 		await source!.interruptTurn!();
 		await new Promise<void>((resolve) => setTimeout(resolve, 50));
@@ -263,7 +263,7 @@ test.each(["background work", "a queued message"] as const)(
 		});
 		let unsubscribe: (() => void) | undefined;
 		try {
-			await until(() => env.blockStarted());
+			await until(() => env.blockStarted(), LIVE_CHILD_START_WAIT_MS);
 			const session = source!.chatSession as AgentSession;
 			const wake = Promise.withResolvers<void>();
 			if (wakeSource === "background work") {
@@ -331,7 +331,7 @@ test(
 		let waking: Promise<void> | undefined;
 		let unsubscribe: (() => void) | undefined;
 		try {
-			await until(() => env.blockStarted());
+			await until(() => env.blockStarted(), LIVE_CHILD_START_WAIT_MS);
 			const session = source!.chatSession as AgentSession;
 			let ends = 0;
 			let drainStarted = false;
@@ -416,7 +416,7 @@ test(
 		let waking: Promise<void> | undefined;
 		let interrupting: Promise<void> | undefined;
 		try {
-			await until(() => env.blockStarted());
+			await until(() => env.blockStarted(), LIVE_CHILD_START_WAIT_MS);
 			const session = source!.chatSession as AgentSession;
 			const sessionId = source!.getSessionId();
 			await source!.interruptTurn!();
@@ -571,7 +571,7 @@ test.each(["initial", "woken", "fallback-end"] as const)(
 		let waking: Promise<void> | undefined;
 		try {
 			if (turnKind === "woken") {
-				await until(() => env.blockStarted());
+				await until(() => env.blockStarted(), LIVE_CHILD_START_WAIT_MS);
 				await source!.interruptTurn!();
 				await until(() => source!.isRunning?.() === false);
 				assert.equal(settled, false);

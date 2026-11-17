@@ -12,9 +12,12 @@ import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.j
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { resetSessionTempCleanupScheduleForTesting } from "../../packages/coding-agent/src/core/tools/session-temp-cleanup.js";
 import { waitForWindowsDirectorySecurityReadsForTesting } from "../../packages/coding-agent/src/core/tools/windows-directory-security.js";
+import { linkSharedTranspileCache } from "../../packages/coding-agent/test/helpers/shared-transpile-cache.js";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
 import { settle } from "../../scripts/perf/idle-agents/scripted-model.js";
 import { removeTempRootReleasingBroker } from "./detached-broker.js";
+
+export const LIVE_CHILD_START_WAIT_MS = 60_000;
 
 export interface LiveChildOptions {
 	readonly models?: ReadonlyArray<{ readonly id: string; readonly reasoning?: boolean }>;
@@ -25,6 +28,7 @@ export async function liveChildEnvironment(cleanups: Array<() => void>, liveOpti
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-release-"));
 	const agentDir = join(root, "agent");
 	mkdirSync(agentDir, { recursive: true });
+	linkSharedTranspileCache(agentDir);
 	const names = getEnvNames(ENV_AGENT_DIR);
 	const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
 	for (const name of names) process.env[name] = agentDir;
@@ -107,7 +111,8 @@ export async function liveChildEnvironment(cleanups: Array<() => void>, liveOpti
 	 * the background whose credential checks each hold a timer until they finish: those refreshes are waited for. Every
 	 * new session also arms the one process-wide temp-directory sweep, a single debounced timer that is armed or not by
 	 * timing alone: that timer is cancelled. On Windows a new session also starts verifying the private temp roots in the
-	 * background, a PowerShell process until the read ends: those reads are waited for. Then the counts must repeat.
+	 * background, using PowerShell only if the native reader cannot read them: those reads are waited for. Then the
+	 * counts must repeat.
 	 */
 	const settleResources = async () => {
 		await modelRuntime.whenRegistrationRefreshesSettled();

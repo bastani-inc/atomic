@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { OrchestrationContext } from "./extensions/context-types.ts";
 import { AgentTaskHost, type AgentTaskHostBinding } from "./tasks/agent-adapter.js";
-import { deliverToLaunchingSession } from "./tasks/child-command-owner.js";
+import { deliverToLaunchingSession, forgetChildDelivery } from "./tasks/child-command-owner.js";
 import { taskCompletionEnvelope } from "./tasks/completion.js";
 import { commandOutputExcerpt, taskCompletionMessage } from "./tasks/completion-message.js";
 import type { OwnerId, OwnerScope, SettlementReceipt, TaskRecord } from "./tasks/contracts.js";
@@ -79,6 +79,7 @@ async function deliverToWorker(
 	// The notice holds what it reports: the record need not outlive a worker that takes it only when it runs again.
 	host.releaseTaskRecord(settlement.receipt.taskId);
 	await deliverToLaunchingSession(host, worker, settlement.receipt.taskId, message);
+	forgetChildDelivery(host, envelope.completionId);
 }
 
 /**
