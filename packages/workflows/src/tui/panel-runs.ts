@@ -1,7 +1,6 @@
 import type { AgentPanelActionResult, AgentPanelAnswerOptions, AgentPanelItem, AgentPanelState } from "@bastani/atomic";
 import type { WorkflowOwnerResources } from "../extension/workflow-owner-resources.js";
 import { workflowAnswerAction } from "../extension/workflow-tool-answer.js";
-import { createWorkflowGraphExpander, settledStageCount } from "../shared/expanded-workflow-graph.js";
 import { graphSnapshotLineage } from "../shared/graph-store-snapshot.js";
 import {
 	coercePrimitivePromptAnswer,
@@ -10,11 +9,18 @@ import {
 } from "../shared/prompt-answer.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { createRunIndicatorStatusResolver } from "../shared/run-indicator-status.js";
+import { runStageIndex } from "../shared/run-stage-index.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot, RunStatus, StageSnapshot, StoreSnapshot, WorkflowNotice } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { sanitizeToolDisplayText } from "../shared/tool-payload-bounds.js";
-import { findSnapshotRun, findSnapshotStage, isPublishedSnapshotArray } from "../shared/workflow-run-ownership.js";
+import {
+	authoritativeWorkflowChildRunId,
+	findSnapshotRun,
+	findSnapshotStage,
+	isPublishedSnapshotArray,
+	reciprocalWorkflowRootRunId,
+} from "../shared/workflow-run-ownership.js";
 import {
 	type PendingInputAffordance,
 	pendingInputAffordance,
@@ -103,6 +109,99 @@ export function panelRunId(id: string): string | undefined {
 	return id.startsWith(PANEL_RUN_PREFIX) ? id.slice(PANEL_RUN_PREFIX.length) : undefined;
 }
 
+const frozenProgressByRuns = new WeakMap<
+	readonly RunSnapshot[],
+	Map<string, { readonly done: number; readonly total: number }>
+>();
+
+/**
+ * A run's stage progress with each child workflow a stage delegates to counted in place of that stage, so nested,
+ * dynamic and fan-out runs count every stage. A child with no stages of its own (only tools) leaves its delegating
+ * stage counted. Reads only unfinished stages of each run, so a long run's repaint does not walk its finished ones.
+ */
+function expandedRunProgress(
+	root: RunSnapshot,
+	runs: readonly RunSnapshot[],
+	childrenByParent: ReadonlyMap<string, readonly RunSnapshot[]> | undefined,
+	runById: ReadonlyMap<string, RunSnapshot> | undefined,
+): { readonly done: number; readonly total: number } {
+	const frozen = Object.isFrozen(runs);
+	let memo = frozen ? frozenProgressByRuns.get(runs) : undefined;
+	const cached = memo?.get(root.id);
+	if (cached !== undefined) return cached;
+	const remember = (progress: { readonly done: number; readonly total: number }) => {
+		if (frozen) {
+			if (memo === undefined) {
+				memo = new Map();
+				frozenProgressByRuns.set(runs, memo);
+			}
+			memo.set(root.id, progress);
+		}
+		return progress;
+	};
+	if (childrenByParent === undefined || !childrenByParent.has(root.id) || runById === undefined) {
+		return remember({ done: runStageIndex(root).settled, total: root.stages.length });
+	}
+	const visiting = new Set<string>();
+	const expandedChildren = new Set<string>();
+	const rootOwnerByRunId = new Map<string, string | undefined>();
+	const rootOwnerFor = (runId: string): string | undefined => {
+		if (rootOwnerByRunId.has(runId)) return rootOwnerByRunId.get(runId);
+		const owner = reciprocalWorkflowRootRunId(runById, runId);
+		rootOwnerByRunId.set(runId, owner);
+		return owner;
+	};
+	const visit = (run: RunSnapshot): { done: number; total: number } => {
+		if (visiting.has(run.id)) return { done: 0, total: 0 };
+		visiting.add(run.id);
+		const index = runStageIndex(run);
+		let done = index.settled;
+		let total = run.stages.length;
+		const children = childrenByParent.get(run.id);
+		if (children !== undefined) {
+			const runRoot = rootOwnerFor(run.id);
+			for (const childRun of children) {
+				if (expandedChildren.has(childRun.id) || childRun.parentStageId === undefined) continue;
+				if (childRun.stages.length === 0) continue;
+				if (runRoot === undefined || rootOwnerFor(childRun.id) !== runRoot) continue;
+				const parentStage =
+					index.unfinished.find((stage) => stage.id === childRun.parentStageId) ??
+					findSnapshotStage(run.stages, childRun.parentStageId);
+				if (parentStage === undefined || authoritativeWorkflowChildRunId(parentStage) !== childRun.id) continue;
+				expandedChildren.add(childRun.id);
+				const child = visit(childRun);
+				const parentSettled =
+					parentStage.status === "completed" ||
+					parentStage.status === "failed" ||
+					parentStage.status === "skipped";
+				done += child.done - (parentSettled ? 1 : 0);
+				total += child.total - 1;
+			}
+		}
+		visiting.delete(run.id);
+		return { done, total };
+	};
+	return remember(visit(root));
+}
+
+/**
+ * The stage a run is at, following a stage that delegates to a child workflow into that child's own current stage, as
+ * the expanded graph shows it.
+ */
+function currentExpandedStage(
+	run: RunSnapshot,
+	runById: ReadonlyMap<string, RunSnapshot> | undefined,
+	seen: Set<string> = new Set(),
+): StageSnapshot | undefined {
+	seen.add(run.id);
+	const stage = currentStage(runStageIndex(run).unfinished);
+	if (stage === undefined || runById === undefined) return stage;
+	const childId = authoritativeWorkflowChildRunId(stage);
+	const child = childId === undefined || seen.has(childId) ? undefined : runById.get(childId);
+	if (child === undefined || child.parentRunId !== run.id || child.stages.length === 0) return stage;
+	return currentExpandedStage(child, runById, seen) ?? stage;
+}
+
 interface CachedPanelRun {
 	readonly run: RunSnapshot;
 	readonly item: AgentPanelItem;
@@ -171,11 +270,18 @@ export function panelItemsFromSnapshot(
 
 	const runs = snapshot.runs;
 	const indicator = createRunIndicatorStatusResolver(runs);
-	const expand = createWorkflowGraphExpander(snapshot);
+	let childrenByParent: Map<string, RunSnapshot[]> | undefined;
+	for (const candidate of runs) {
+		if (candidate.parentRunId === undefined) continue;
+		childrenByParent ??= new Map();
+		const list = childrenByParent.get(candidate.parentRunId);
+		if (list === undefined) childrenByParent.set(candidate.parentRunId, [candidate]);
+		else list.push(candidate);
+	}
+	const runById = childrenByParent === undefined ? undefined : new Map(runs.map((run) => [run.id, run]));
 
 	const built: CachedPanelRun[] = topLevelWorkflowRuns(runs).map((run): CachedPanelRun => {
-		const stages = expand(run.id).stages;
-		const stage = currentStage(stages);
+		const stage = currentExpandedStage(run, runById);
 		const status = effectiveRunStatus(run);
 		const quit = run.exitReason === "quit" || run.quitAt !== undefined;
 		const state = panelState(status, !quit && indicator(run) === "awaiting_input", run.endedAt === undefined);
@@ -187,7 +293,9 @@ export function panelItemsFromSnapshot(
 			state === "failed"
 				? oneLine(
 						run.error ??
-							stages.find((candidate) => candidate.status === "failed")?.error ??
+							(run.failedStageId === undefined
+								? undefined
+								: findSnapshotStage(run.stages, run.failedStageId)?.error) ??
 							run.stages.find((candidate) => candidate.status === "failed")?.error ??
 							run.exitReason,
 					)
@@ -199,8 +307,11 @@ export function panelItemsFromSnapshot(
 				: state === "failed"
 					? (reason ?? "failed")
 					: (stageLabel ?? "");
-		const total = stages.length;
-		const showProgress = (state === "running" || state === "paused" || state === "done") && total > 0;
+		const progress =
+			state === "running" || state === "paused" || state === "done"
+				? expandedRunProgress(run, runs, childrenByParent, runById)
+				: undefined;
+		const showProgress = progress !== undefined && progress.total > 0;
 		const item: AgentPanelItem = {
 			id: `${PANEL_RUN_PREFIX}${run.id}`,
 			kind: "workflow",
@@ -208,7 +319,7 @@ export function panelItemsFromSnapshot(
 			name: inertLine(run.name),
 			task,
 			elapsedMs: elapsedRunMs(run, run.endedAt ?? now),
-			...(showProgress ? { progress: { done: settledStageCount(stages), total } } : {}),
+			...(showProgress ? { progress: { done: progress.done, total: progress.total } } : {}),
 			...(question === undefined ? {} : { question }),
 			...(state === "input" && choices?.length ? { choices } : {}),
 			...(promptId === undefined ? {} : { promptId }),

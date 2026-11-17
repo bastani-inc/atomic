@@ -199,6 +199,10 @@ export class AgentPanelSourceHub {
 	all(): readonly AgentPanelSource[] {
 		return [...this.sources.keys()];
 	}
+	/** The sources whose subscription failed, which are not registered, with why. */
+	failures(): readonly (readonly [AgentPanelSource, Error])[] {
+		return [...this.failedSources];
+	}
 	/**
 	 * Calls `listener` when a source registers, leaves or reports a change, and `onError` once for each source whose
 	 * subscription failed, including one that failed before this call.
@@ -926,7 +930,11 @@ export function agentPanelExtensionItems(
 	const report = onSourceError ?? sourceErrorReporter(session);
 	const dismissed = dismissedAgentPanelItems(session);
 	const hasDismissed = dismissed.size > 0;
-	const sources = hubOf(session)?.all() ?? [];
+	const hub = hubOf(session);
+	const sources = hub?.all() ?? [];
+	if (report !== undefined && hub !== undefined) {
+		for (const [source, error] of hub.failures()) reportSourceOnce(source, error, report);
+	}
 	const items: AgentPanelItem[] = [];
 	const seenIds = sources.length > 1 ? new Set<string>() : undefined;
 	for (const source of sources) {
@@ -949,7 +957,14 @@ export function agentPanelExtensionItems(
 		clockIds ??= new Set();
 		clockIds.add(item.id);
 		bindTaskClock(item, owned);
-		owned.elapsedMs(item.id, item.elapsedMs, taskClockRunning(item.state), agentPanelItemReadAt(item));
+		const state = item.state;
+		owned.elapsedMs(
+			item.id,
+			item.elapsedMs,
+			taskClockRunning(state),
+			agentPanelItemReadAt(item),
+			state === "done" || state === "failed" || state === "stopped",
+		);
 	}
 	if (clockIds !== undefined) extensionClocksBySession.get(session)?.prune(clockIds);
 	else clocks?.clear();
@@ -1093,12 +1108,21 @@ export function openAgentPanelItem(
 						},
 					};
 		bumpSourceVersion(source);
+		const report = sourceErrorReporter(session);
 		let opened: unknown;
-		const called = safelyCall(() => {
+		try {
 			opened = Reflect.apply(open, source, [id, wrappedOptions]);
-			return opened;
-		});
-		if (!called || opened === false) return false;
+		} catch (error) {
+			drainCaught(error);
+			report?.(sourceError(error));
+			return false;
+		}
+		if (opened === false) return false;
+		if (drainThenable(opened)) {
+			settleSourceResult(opened).catch((error: unknown) => {
+				report?.(sourceError(error));
+			});
+		}
 		viewedAgentPanelItems(session).add(id);
 		return true;
 	} catch (error) {

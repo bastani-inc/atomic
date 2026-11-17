@@ -32,7 +32,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { answerPanelRun, panelItemsFromSnapshot } from "../../packages/workflows/src/tui/panel-runs.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
-test("throwing source.subscribe keeps readable items and reports an extension error (#5224)", () => {
+test("a source whose subscribe throws is not listed and is reported once as an extension error (#5224)", () => {
 	const hub = new AgentPanelSourceHub();
 	const errors: string[] = [];
 	const session = {
@@ -56,15 +56,9 @@ test("throwing source.subscribe keeps readable items and reports an extension er
 			throw new Error("subscribe failed\x1b[2J\x1b]2;title\x07\u202e");
 		},
 	});
-	assert.deepEqual(
-		agentPanelExtensionItems(session).map((entry) => entry.id),
-		["run:sub-throws"],
-	);
+	assert.deepEqual(agentPanelExtensionItems(session), []);
 	assert.deepEqual(errors, ["subscribe failed"]);
-	assert.deepEqual(
-		agentPanelItems(session).map((entry) => entry.id),
-		["run:sub-throws"],
-	);
+	assert.deepEqual(agentPanelItems(session), []);
 	assert.equal(errors.length, 1);
 	reg.dispose();
 	assert.deepEqual(agentPanelExtensionItems(session), []);
@@ -230,6 +224,7 @@ test("bindAgentPanel rebinds to the new extension hub across a real session.relo
 			task: "stage verify",
 		});
 		for (const listener of listenersByGeneration[1] ?? []) listener();
+		await Promise.resolve();
 		const mounted = currentWidget();
 		assert.ok(mounted, "panel widget mounts when the reloaded hub source emits an item");
 		const rendered = mounted

@@ -239,6 +239,8 @@ test("a paused extension agent or shell row keeps its running clock on resume (#
 	assert.equal(model.rows([{ ...base, state: "running" }])[0]?.elapsedMs, 10_000);
 	assert.equal(model.rows([{ ...base, state: "paused" }])[0]?.elapsedMs, 10_000);
 	now += 10_000;
+	assert.equal(model.rows([{ ...base, state: "running" }])[0]?.elapsedMs, 10_000, "time spent paused is not counted");
+	now += 10_000;
 	assert.equal(model.rows([{ ...base, state: "running" }])[0]?.elapsedMs, 20_000);
 });
 
