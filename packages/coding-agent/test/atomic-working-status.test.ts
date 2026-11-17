@@ -402,7 +402,7 @@ describe("Atomic working status", () => {
 			const loader = new AtomicWorkingLoader({ requestRender } as never, undefined, String, "Working...", {
 				frames: ["*"],
 			});
-			loader.setMeta(() => ({ elapsedMs: 3_000, outputTokens: 0 }));
+			loader.setMeta(() => ({ elapsedMs: 3_000, tokens: 0 }));
 			expect(renderedContent(loader)).toBe(" * Working...");
 			const callsAfterSetup = requestRender.mock.calls.length;
 			vi.advanceTimersByTime(3_000);

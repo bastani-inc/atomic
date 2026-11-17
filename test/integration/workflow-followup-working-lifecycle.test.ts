@@ -23,6 +23,7 @@ import type { StageSessionRuntime } from "../../packages/workflows/src/runs/fore
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
+import { WORKED_LINE, WORKING_MESSAGE } from "../helpers/working-line.ts";
 
 const activeRuns: Promise<unknown>[] = [];
 
@@ -224,8 +225,8 @@ test("workflow-authored follow-up after a terminated stream shows Working immedi
 		gates.finishTurn.resolve();
 		const completed = await runPromise;
 		assert.equal(completed.status, "completed");
-		assert.doesNotMatch(renderText(view), WORKING_ROW);
-		assert.doesNotMatch(renderText(view), /Working/);
+		assert.doesNotMatch(renderText(view), WORKING_MESSAGE);
+		assert.match(renderText(view), WORKED_LINE);
 		assert.equal(view._hasAnimationTick, false);
 	} finally {
 		gates.publishAgentStart.resolve();
@@ -326,7 +327,8 @@ test("a chat attached mid-delivery shows Working without waiting for agent_start
 		gates.finishTurn.resolve();
 		const completed = await runPromise;
 		assert.equal(completed.status, "completed");
-		assert.doesNotMatch(renderText(view), WORKING_ROW);
+		assert.doesNotMatch(renderText(view), WORKING_MESSAGE);
+		assert.match(renderText(view), WORKED_LINE);
 		assert.equal(view._hasAnimationTick, false);
 		assert.deepEqual(promptCalls, ["first turn", "automatic second turn"]);
 	} finally {

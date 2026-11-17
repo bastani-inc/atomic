@@ -31,6 +31,7 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { WORKED_LINE, WORKING_LINE, WORKING_MESSAGE } from "../helpers/working-line.ts";
 import { makeTestTui } from "../support/fake-tui.js";
 
 const ESCAPE = "\x1b";
@@ -495,13 +496,62 @@ describe("a live subagent's chat box (#4640)", () => {
 
 	test("shows the working line from a turn already under way when the page opens, until the turn ends (#4640)", async () => {
 		const { page, live } = await livePage({ isRunning: () => true });
-		assert.ok(plain(page.render(100, 20)).some((row) => row.includes("Working")));
+		assert.ok(plain(page.render(100, 20)).some((row) => WORKING_LINE.test(row)));
 		for (const listener of live.listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
-		assert.ok(!plain(page.render(100, 20)).some((row) => row.includes("Working")));
+		assert.ok(!plain(page.render(100, 20)).some((row) => WORKING_MESSAGE.test(row)));
+		assert.ok(plain(page.render(100, 20)).some((row) => WORKED_LINE.test(row)));
 		page.dispose();
 		const idle = await livePage({ isRunning: () => false });
-		assert.ok(!plain(idle.page.render(100, 20)).some((row) => row.includes("Working")));
+		assert.ok(!plain(idle.page.render(100, 20)).some((row) => WORKING_MESSAGE.test(row)));
 		idle.page.dispose();
+	});
+
+	test("a running subagent's working line counts the same tokens as its task row (#5224)", async () => {
+		let tokenCount = 87_400;
+		const live = { ...session("child", "subagent-worker-aabcf28b-1"), isRunning: () => true };
+		const baseSource = treeSource(tree(), new Map([["child", live]]));
+		const source = {
+			...baseSource,
+			get tasks() {
+				return tree().map((task) => (task.ref.taskId === "child" ? { ...task, metrics: { tokenCount } } : task));
+			},
+		};
+		const page = subagentPage(
+			source,
+			"child",
+			environment({ footerData, createChat: (opts) => new ChatSessionHost(opts) }),
+		);
+		await page.load();
+		const working = () => plain(page.render(100, 20)).find((row) => WORKING_LINE.test(row)) ?? "";
+		assert.match(working().trimEnd(), / · [↑↓] 87\.4k tokens\)$/);
+
+		for (const listener of live.listeners) {
+			listener({ type: "turn_start" } as AgentSessionEvent);
+			listener({
+				type: "message_start",
+				message: { role: "assistant", content: [] },
+			} as unknown as AgentSessionEvent);
+			listener({
+				type: "message_update",
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x".repeat(800) },
+			} as unknown as AgentSessionEvent);
+		}
+		assert.match(working().trimEnd(), / · ↓ 87\.6k tokens\)$/);
+
+		tokenCount = 12_000;
+		for (const listener of live.listeners) {
+			listener({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "x".repeat(800) }],
+					usage: { input: 10_000, output: 2_000, cacheRead: 0, cacheWrite: 0 },
+					stopReason: "stop",
+				},
+			} as unknown as AgentSessionEvent);
+		}
+		assert.match(working().trimEnd(), / · ↓ 12k tokens\)$/);
+		page.dispose();
 	});
 
 	test("shows the messages already queued for the subagent when the page opens (#4640)", async () => {

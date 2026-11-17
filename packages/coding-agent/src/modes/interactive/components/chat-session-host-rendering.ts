@@ -1,5 +1,7 @@
+import type { AssistantMessage } from "@bastani/atomic-ai";
 import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
+import { AtomicWorkedStatusComponent, DEFAULT_WORKING_MESSAGE } from "./atomic-working-status.ts";
 import {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,
@@ -12,7 +14,7 @@ import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import { cacheKey, isChatMessageEntry, stripAnsi, tailStreamingText } from "./chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { FooterComponent, UsageMeterComponent } from "./footer.ts";
-import { compactionMeta } from "./working-run-meter.ts";
+import { AgentTokenMeter, agentTokenTotal, compactionMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 import { WorkingStatusComponent } from "./working-status.ts";
 
 export function renderChatSessionBody<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -63,11 +65,88 @@ export function renderChatSessionPendingMessages<TExtraEntry extends ChatTranscr
 	return lines;
 }
 
+interface TranscriptTokenCache {
+	firstEntry: ChatTranscriptEntryLike | undefined;
+	lastSettledEntry: ChatTranscriptEntryLike | undefined;
+	settledCount: number;
+	meter: AgentTokenMeter;
+}
+
+const transcriptTokenCaches = new WeakMap<object, TranscriptTokenCache>();
+
+function readTranscriptTokens<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): { readonly settledTokens: number; readonly streamingTokens: number } {
+	let cache = transcriptTokenCaches.get(state);
+	if (
+		!cache ||
+		state.transcript.length < cache.settledCount ||
+		state.transcript[0] !== cache.firstEntry ||
+		(cache.settledCount > 0 && state.transcript[cache.settledCount - 1] !== cache.lastSettledEntry)
+	) {
+		cache = {
+			firstEntry: state.transcript[0],
+			lastSettledEntry: undefined,
+			settledCount: 0,
+			meter: new AgentTokenMeter(),
+		};
+		transcriptTokenCaches.set(state, cache);
+	}
+	let streaming: AssistantMessage | undefined;
+	let sawStreaming = false;
+	for (let index = cache.settledCount; index < state.transcript.length; index += 1) {
+		const entry = state.transcript[index]!;
+		if (isChatMessageEntry(entry) && entry.kind === "assistant") {
+			if (state.liveChat.isStreamingAssistantEntry(entry)) {
+				streaming = entry.message;
+				sawStreaming = true;
+				continue;
+			}
+			if (!sawStreaming) {
+				cache.meter.settled(entry.message);
+			}
+		}
+		if (!sawStreaming) {
+			if (cache.settledCount === 0) cache.firstEntry = state.transcript[0];
+			cache.settledCount = index + 1;
+			cache.lastSettledEntry = entry;
+		}
+	}
+	return {
+		settledTokens: cache.meter.total(),
+		streamingTokens: streaming === undefined ? 0 : agentTokenTotal([], streaming),
+	};
+}
+
+export function chatSessionTokenCount<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): number {
+	const { settledTokens, streamingTokens } = readTranscriptTokens(state);
+	const counted = state.workingTokenCount?.();
+	if (counted !== undefined && counted > 0) return counted + streamingTokens;
+	return settledTokens + streamingTokens;
+}
+
+export function chatSessionWorkingMeta<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+): WorkingRunSnapshot | undefined {
+	const snapshot = state.workingRunMeter.snapshot();
+	return snapshot === undefined ? undefined : { ...snapshot, tokens: chatSessionTokenCount(state) };
+}
+
 export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	width: number,
 ): string[] {
-	if (!isChatSessionStreaming(state)) return [];
+	if (!isChatSessionStreaming(state)) {
+		const worked = state.workedRun;
+		if (worked === undefined || state.workingLifecycleActive || state.compacting || state.statusMessage) return [];
+		return new AtomicWorkedStatusComponent({
+			message: worked.message,
+			snapshot: worked.snapshot,
+			color: (text) => state.style.dim(text),
+		}).render(width);
+	}
 	if (state.statusMessage && !state.compacting) return [];
 	const palette = state.style.workingIndicatorPalette;
 	const useCallerStyling =
@@ -92,8 +171,8 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	if (!state.workingLifecycleActive) return [];
 	return new WorkingStatusComponent({
 		frame: state.workingFrame,
-		message: state.workingMessage ?? "Working...",
-		meta: state.workingRunMeter.snapshot(),
+		message: state.workingMessage ?? DEFAULT_WORKING_MESSAGE,
+		meta: chatSessionWorkingMeta(state),
 		palette,
 		spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
 		spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,

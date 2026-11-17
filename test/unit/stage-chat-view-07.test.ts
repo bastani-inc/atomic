@@ -4,6 +4,7 @@ import { setThemeInstance, theme } from "../../packages/coding-agent/src/modes/i
 import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 import { useAnsiColorEnvironment } from "../helpers/ansi-color-env.ts";
+import { WHOLE_WORKING_LINE, WORKING_LINE, WORKING_MESSAGE } from "../helpers/working-line.ts";
 import {
 	assert,
 	assistantTextMessage,
@@ -151,14 +152,14 @@ describe("StageChatView", () => {
 
 		try {
 			const lines = renderLifecycleOrigin(view, 96);
-			const workingIndex = lines.findIndex((line) => line.includes("Working..."));
+			const workingIndex = lines.findIndex((line) => WORKING_LINE.test(line));
 			assert.ok(workingIndex > 4, "expected Atomic working icon after transcript");
 			const previousContent = lines.slice(0, workingIndex - 1).findLast((line) => line.trim() !== "");
 			assert.match(previousContent ?? "", /msg-\d+/);
 			assert.equal(lines[workingIndex - 1]?.trim(), "");
-			assert.equal(lines[workingIndex]?.trimEnd(), " ∀ Working...");
+			assert.match(lines[workingIndex]?.trimEnd() ?? "", WHOLE_WORKING_LINE);
 			assert.deepEqual(lines[workingIndex]?.match(/∀/g), ["∀"]);
-			assert.equal(lines.join("\n").match(/Working\.\.\./g)?.length, 1);
+			assert.equal(lines.filter((line) => WORKING_LINE.test(line)).length, 1);
 		} finally {
 			view.dispose();
 			if (previousReducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
@@ -195,8 +196,8 @@ describe("StageChatView", () => {
 				lines.every((line) => line.length <= 64),
 				true,
 			);
-			const working = lines.find((line) => line.includes("Working..."));
-			assert.equal(working?.trimEnd(), " ∀ Working...");
+			const working = lines.find((line) => WORKING_LINE.test(line));
+			assert.match(working?.trimEnd() ?? "", WHOLE_WORKING_LINE);
 			assert.deepEqual(working?.match(/∀/g), ["∀"]);
 			assert.equal(
 				lines.some((line) => line.includes("❯")),
@@ -236,7 +237,7 @@ describe("StageChatView", () => {
 			piTheme: theme,
 		});
 		const workingColor = (): string | undefined => {
-			const line = view.render(64).find((candidate) => candidate.includes("Working...")) ?? "";
+			const line = view.render(64).find((candidate) => WORKING_MESSAGE.test(stripAnsi(candidate))) ?? "";
 			const match = /\u001b\[38;2;(\d+);(\d+);(\d+)m∀/.exec(line);
 			return match ? match.slice(1).join(",") : undefined;
 		};
@@ -286,10 +287,10 @@ describe("StageChatView", () => {
 		const rendered = lines.join("\n");
 		assert.match(rendered, /\$0\.123/);
 		assert.match(rendered, /23\.4%\/200k/);
-		assert.match(rendered, /Working\.\.\./);
+		assert.match(rendered, WORKING_MESSAGE);
 		assert.doesNotMatch(rendered, /╌/);
 
-		const workingIndex = lines.findIndex((line) => line.includes("Working..."));
+		const workingIndex = lines.findIndex((line) => WORKING_LINE.test(line));
 		const usageIndex = lines.findIndex((line) => line.includes("$0.123"));
 		const promptIndex = lines.findIndex((line) => line.includes("❯"));
 		const hintIndex = expectRightAlignedReturnHint(lines, 120);

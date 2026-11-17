@@ -180,6 +180,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			requestRender,
 			taskRowsInChat: false,
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
+			workingTokenCount: () => source.tasks.find((task) => task.ref.taskId === taskId)?.metrics?.tokenCount,
 			// A finished subagent's chat stays live, and a message resumes it; one stopped for good is read-only.
 			isDisabled: () => source.sendTaskMessage === undefined || this.readOnlyReason() !== undefined,
 			onNearTop: () => this.loadEarlier(),
@@ -419,7 +420,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.status = "";
 		if (!sessionChanged || session === undefined) return;
 		this.chat.hydrateStreamingAssistantMessage(session.getStreamingMessage?.());
-		this.hydrateRunningTurn(session);
+		this.hydrateRunningTurn(session, page.value.messages);
 		this.unsubscribe = session.subscribe?.((event) => {
 			this.chat.applyAgentEvent(event);
 			this.requestRender();
@@ -427,8 +428,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	/** A page opened mid-turn missed `agent_start` and `queue_update`, so it reads the turn and the queue now. */
-	private hydrateRunningTurn(session: TaskTranscriptSource): void {
-		if (session.isRunning?.() === true) this.chat.beginExternalPromptLifecycle();
+	private hydrateRunningTurn(session: TaskTranscriptSource, messages: TaskTranscriptView["messages"]): void {
+		if (session.isRunning?.() === true) {
+			this.chat.beginExternalPromptLifecycle();
+			this.chat.hydrateRunningTurn(messages, session.getStreamingMessage?.());
+		}
 		const queued = session.getQueuedMessages?.();
 		if (queued === undefined) return;
 		this.chat.applyAgentEvent({ type: "queue_update", steering: queued.steering, followUp: queued.followUp });

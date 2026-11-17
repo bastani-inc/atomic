@@ -6,6 +6,7 @@ import type { SessionStore } from "../../../core/storage/session/types.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import {
 	abortChatSessionBash,
 	abortChatSessionCompaction,
@@ -52,6 +53,7 @@ import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
 import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
+import { type MeteredRunMessage, runInProgress } from "./working-run-meter.ts";
 
 export type {
 	ChatSessionHostBashRequest,
@@ -173,6 +175,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.compactionStartedAt = undefined;
 		this.state.sdkBusy = false;
 		this.state.workingMessage = undefined;
+		this.state.lastWorkingMessage = undefined;
+		this.state.workedRun = undefined;
 		if (this.state.statusMessage !== this.state.lastWarningMessage) this.state.statusMessage = "";
 		this.state.pendingSteeringMessages = [];
 		this.state.pendingFollowUpMessages = [];
@@ -493,6 +497,24 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 */
 	beginExternalPromptLifecycle(): number | undefined {
 		return startChatSessionExternalPromptLifecycle(this.state);
+	}
+
+	/**
+	 * Picks up the run a followed session is part-way through: its working line names a verb and counts the run's
+	 * elapsed time and output from where it began, as a chat that saw its `agent_start` does.
+	 */
+	hydrateRunningTurn(messages: readonly MeteredRunMessage[], streaming?: MeteredRunMessage): void {
+		if (this.state.disposed) return;
+		if (this.state.workingRunMeter.snapshot() === undefined) {
+			const run = runInProgress(messages, streaming);
+			this.state.workingRunMeter.resume(run.startedAt, run.settledTokens, run.requesting);
+			if (streaming !== undefined) this.state.workingRunMeter.streaming(streaming);
+		}
+		if (this.state.workingMessage === undefined) {
+			this.state.workingMessage = pickWhimsicalWorkingMessage();
+			this.state.lastWorkingMessage = this.state.workingMessage;
+		}
+		this.state.requestRender?.();
 	}
 
 	/**

@@ -1,6 +1,6 @@
-import { keyHintIfBound } from "@bastani/atomic";
-import { type Component, Container, Text } from "@bastani/atomic-tui";
-import { formatDuration, formatTokens, shortenPath } from "../shared/formatters.js";
+import { formatTokenSegment, keyHintIfBound, navEntryKeys } from "@bastani/atomic";
+import { type Component, Container, getKeybindings, Text } from "@bastani/atomic-tui";
+import { formatDuration, shortenPath } from "../shared/formatters.js";
 import type { AgentProgress, Details } from "../shared/types.js";
 import { getSingleResultOutput } from "../shared/utils.js";
 import { modelThinkingBadge } from "./render-event-formatting.js";
@@ -29,13 +29,28 @@ export function renderSingleCompact(
 	now?: number,
 	pulseFrame?: number,
 ): Component {
+	return {
+		render(width) {
+			if (width < 1) return [];
+			return renderSingleCompactAtWidth(d, r, theme, Math.floor(width), now, pulseFrame).render(width);
+		},
+		invalidate() {},
+	};
+}
+
+function renderSingleCompactAtWidth(
+	d: Details,
+	r: Details["results"][number],
+	theme: Theme,
+	width: number,
+	now?: number,
+	pulseFrame?: number,
+): Component {
 	const output = r.truncation?.text || getSingleResultOutput(r);
 	const progress = r.progress || r.progressSummary;
 	const isRunning = r.progress?.status === "running";
 	const contextBadge = d.context === "fork" ? theme.fg("warning", " [fork]") : "";
 	const c = new Container();
-	const width = getTermWidth() - 4;
-	const modelDisplay = modelThinkingBadge(theme, r.model, r.thinking);
 	const glyph = resultGlyph(r, output, theme, isRunning, pulseFrame);
 
 	if (isRunning && r.progress) {
@@ -55,12 +70,16 @@ export function renderSingleCompact(
 		});
 		const elapsedMs = displayProgressDurationMs(r.progress, now);
 		const running = statJoin(theme, [
-			`Running${contextBadge}`,
+			"Running",
 			elapsedMs >= 1000 ? formatDuration(elapsedMs) : "",
-			r.progress.tokens > 0 ? `↓ ${formatTokens(r.progress.tokens)} tokens` : "",
+			formatTokenSegment({
+				mode: "receiving",
+				count: r.progress.tokens,
+			}),
 		]);
-		const hint = keyHintIfBound("app.tools.expand", "for live detail");
-		const runningLine = `${glyph} ${running}${modelDisplay}${hint ? ` ${theme.fg("dim", "·")} ${hint}` : ""}`;
+		const manageKey = navEntryKeys(getKeybindings(), { action: "app.agents.focus", label: "to manage" });
+		const hint = manageKey ? `${manageKey} to manage` : keyHintIfBound("app.tools.expand", "for live detail");
+		const runningLine = `${running}${hint ? ` ${theme.fg("dim", "·")} ${theme.fg("dim", hint)}` : ""}`;
 		c.addChild(new Text(truncLine(`  ${theme.fg("dim", "⎿")}  ${runningLine}`, width), 0, 0));
 		if (r.artifactPaths)
 			c.addChild(
@@ -73,15 +92,15 @@ export function renderSingleCompact(
 		return c;
 	}
 
-	const outcome = r.status === "ok" && !r.detached ? "finished" : resultStatusLine(r, output).toLowerCase();
-	const stats = statJoin(theme, [
-		r.usage?.turns ? `⟳ ${r.usage.turns}` : "",
-		formatProgressStats(theme, progress, true, now),
-	]);
+	const finished = r.status === "ok" && !r.detached && !r.interrupted;
+	const outcome = finished ? "finished" : resultStatusLine(r, output).toLowerCase();
+	const durationMs = progress ? displayProgressDurationMs(progress, now) : 0;
+	const stats = durationMs > 0 ? theme.fg("dim", formatDuration(durationMs)) : "";
+	const outcomeGlyph = finished ? theme.fg("dim", "⏺") : glyph;
 	c.addChild(
 		new Text(
 			truncLine(
-				`${glyph} ${theme.fg("toolTitle", themeBold(theme, r.agent))}${modelDisplay}${contextBadge} ${theme.fg("dim", outcome)}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
+				`${outcomeGlyph} ${theme.fg("toolTitle", themeBold(theme, r.agent))}${contextBadge} ${theme.fg("dim", outcome)}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
 				width,
 			),
 			0,

@@ -14,6 +14,7 @@ import {
 } from "../../../core/messages.ts";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
 import { confirmQueuedChatSessionMessages, flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts";
+import { chatSessionWorkingMeta } from "./chat-session-host-rendering.ts";
 import {
 	afterChatSessionEvent,
 	decrementOptimisticUserSignature,
@@ -23,6 +24,7 @@ import {
 import { type ChatSessionHostState, countableTranscriptLength } from "./chat-session-host-state.ts";
 import {
 	extractMessageText,
+	isChatMessageEntry,
 	isMessageLike,
 	isUserMessageLike,
 	userMessageSignature,
@@ -172,16 +174,18 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			}
 		}
 	}
-	if (type === "message_update" || type === "message_end") {
+	if (type === "message_end") {
 		const message = (event as { message?: unknown }).message;
 		if (typeof message === "object" && message !== null && "role" in message) {
-			const metered = message as { role: string };
-			if (type === "message_update") state.workingRunMeter.streaming(metered);
-			else state.workingRunMeter.settled(metered);
+			state.workingRunMeter.settled(message as { role: string });
 		}
 	}
 	if (isSharedLiveChatEvent(type)) {
 		const changed = state.liveChat.applyEvent(event);
+		if (type === "message_update") {
+			const hasDelta = (event as { assistantMessageEvent?: unknown }).assistantMessageEvent !== undefined;
+			meterStreamingAssistant(state, (event as { message?: unknown }).message, !hasDelta);
+		}
 		const toolCallEvent = assistantToolCallEvent(event);
 		const changedByToolCall = toolCallEvent !== undefined ? state.liveChat.applyEvent(toolCallEvent) : false;
 		afterChatSessionEvent(state, changed || changedByToolCall);
@@ -200,8 +204,11 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.compactionPromptStarted?.();
 			break;
 		case "agent_end": {
-			state.workingRunMeter.stop();
 			const manualTakeoverPending = state.manualCompactionTakeoverPending;
+			const snapshot = chatSessionWorkingMeta(state);
+			if (snapshot !== undefined && !manualTakeoverPending)
+				state.workedRun = { message: state.lastWorkingMessage, snapshot };
+			state.workingRunMeter.stop();
 			state.sdkBusy = manualTakeoverPending;
 			state.compacting = manualTakeoverPending;
 			if (!manualTakeoverPending) state.compactionStartedAt = undefined;
@@ -218,7 +225,9 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		}
 		case "turn_start":
 			startChatSessionWorkingLifecycle(state);
+			state.workingRunMeter.requestStarted();
 			state.workingMessage = pickWhimsicalWorkingMessage();
+			state.lastWorkingMessage = state.workingMessage;
 			changed = true;
 			break;
 		case "turn_end":
@@ -252,6 +261,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		case "thinking_delta":
 		case "thinking":
 			changed = state.liveChat.applyEvent(legacyThinkingEvent(event));
+			if (changed) meterStreamingAssistant(state);
 			break;
 		case "compaction_start": {
 			const compaction = event as Extract<AgentSessionEvent, { type: "compaction_start" }>;
@@ -386,6 +396,29 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	}
 	afterChatSessionEvent(state, changed);
 	return changed;
+}
+
+function meterStreamingAssistant<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	rawMessage?: unknown,
+	preferRaw = false,
+): void {
+	if (!preferRaw) {
+		for (let index = state.transcript.length - 1; index >= 0; index -= 1) {
+			const entry = state.transcript[index]!;
+			if (
+				isChatMessageEntry(entry) &&
+				entry.kind === "assistant" &&
+				state.liveChat.isStreamingAssistantEntry(entry)
+			) {
+				state.workingRunMeter.streaming(entry.message);
+				return;
+			}
+		}
+	}
+	if (typeof rawMessage === "object" && rawMessage !== null && "role" in rawMessage) {
+		state.workingRunMeter.streaming(rawMessage as { role: string });
+	}
 }
 
 function isSharedLiveChatEvent(type: string): boolean {
