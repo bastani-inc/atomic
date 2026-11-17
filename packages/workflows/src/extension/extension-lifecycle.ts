@@ -29,16 +29,26 @@ interface WorkflowLifetime {
 	startupStarted?: boolean;
 	/** Runs the departing session released on a session switch, until the successor announces them. */
 	releasedRunIds?: readonly string[];
-	/** A session switch owes its notice of the released runs until the newest session start gives it. */
-	releasedRunNoticeOwed?: boolean;
+	/**
+	 * Released runs the current session has not been told about. A run stays owed until a notice names it or a
+	 * finished check finds that it cannot be adopted; the next reload or session switch announces it.
+	 */
+	owedRunIds?: ReadonlySet<string>;
 	/** Counts session starts: only the newest start announces released runs or drops them. */
 	sessionStarts?: number;
-	/** Adoptability checks in flight, by run and directory, which overlapping session starts share. */
-	adoptabilityChecks?: Map<string, Promise<boolean | undefined>>;
+	/** Adoptability checks in flight, by run release and directory, which overlapping session starts share. */
+	releasedRunChecks?: Map<string, ReleasedRunCheck>;
 	/** The most recently started generation's quit-and-release handoff; a successor completes it before starting. */
 	pendingSwitchHandoff?: () => Promise<void>;
 	/** A handoff already running, so that closing the lifetime never overlaps it. */
 	activeSwitchHandoff?: Promise<void>;
+}
+
+/** One adoptability check, and the starts waiting for it, each for at most {@link RELEASED_RUN_CHECK_WAIT_MS}. */
+interface ReleasedRunCheck {
+	settled: boolean;
+	adoptable?: boolean;
+	readonly waiters: Set<() => void>;
 }
 
 type QuitGenerationRuns = (boundary?: "quit" | "switch") => Promise<void>;
@@ -375,34 +385,56 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			async () => {
 				const released = await releasePausedRunsOfSession(sessionCaller, store);
 				lifetime.releasedRunIds = [...new Set([...(lifetime.releasedRunIds ?? []), ...released])];
+				lifetime.owedRunIds = new Set([...(lifetime.owedRunIds ?? []), ...released]);
 			},
 		]);
 		lifetime.activeSwitchHandoff = switchHandoff;
 		return switchHandoff;
 	};
-	const checkReleasedRunAdoptable = (
+	const releaseIdentity = (handle: DurableWorkflowHandle, cwd: string | undefined): string =>
+		JSON.stringify([
+			handle.workflowId,
+			cwd ?? null,
+			handle.status,
+			handle.modelOwner ?? null,
+			handle.releasedModelOwner ?? null,
+			handle.invocationCwd ?? null,
+			handle.rootWorkflowId ?? null,
+		]);
+	const checkReleasedRunAdoptable = async (
 		handle: DurableWorkflowHandle,
 		cwd: string | undefined,
 	): Promise<boolean | undefined> => {
-		lifetime.adoptabilityChecks ??= new Map();
-		const checks = lifetime.adoptabilityChecks;
-		const key = `${handle.workflowId}\0${cwd ?? ""}`;
+		lifetime.releasedRunChecks ??= new Map();
+		const checks = lifetime.releasedRunChecks;
+		const key = releaseIdentity(handle, cwd);
 		let check = checks.get(key);
 		if (check === undefined) {
-			const started: Promise<boolean | undefined> = isSdkReleasedRunAdoptableAsync(handle, cwd).then(
-				(adoptable) => adoptable,
-				() => undefined,
-			);
-			check = started;
-			checks.set(key, started);
-			void started.then(() => {
+			const started: ReleasedRunCheck = { settled: false, waiters: new Set() };
+			const settle = (adoptable: boolean | undefined) => {
+				started.adoptable = adoptable;
+				started.settled = true;
 				if (checks.get(key) === started) checks.delete(key);
+				for (const wake of [...started.waiters]) wake();
+			};
+			void isSdkReleasedRunAdoptableAsync(handle, cwd).then(settle, () => settle(undefined));
+			checks.set(key, started);
+			check = started;
+		}
+		const waiting = check;
+		if (!waiting.settled) {
+			await new Promise<void>((resolve) => {
+				const wake = () => {
+					clearTimeout(timer);
+					waiting.waiters.delete(wake);
+					resolve();
+				};
+				const timer = setTimeout(wake, RELEASED_RUN_CHECK_WAIT_MS);
+				timer.unref?.();
+				waiting.waiters.add(wake);
 			});
 		}
-		const waited = Promise.withResolvers<undefined>();
-		const timer = setTimeout(() => waited.resolve(undefined), RELEASED_RUN_CHECK_WAIT_MS);
-		timer.unref?.();
-		return Promise.race([check, waited.promise]).finally(() => clearTimeout(timer));
+		return waiting.settled ? waiting.adoptable : undefined;
 	};
 	const announceReleasedRuns = async (
 		reason: string | undefined,
@@ -411,41 +443,41 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		isNewest: () => boolean,
 	): Promise<void> => {
 		if (!isNewest()) return;
-		if (reason === "reload") {
-			if (lifetime.releasedRunNoticeOwed !== true) return;
-		} else if (!isSessionSwitch(reason)) {
+		if (reason !== "reload" && !isSessionSwitch(reason)) {
 			lifetime.releasedRunIds = undefined;
-			lifetime.releasedRunNoticeOwed = undefined;
+			lifetime.owedRunIds = undefined;
 			return;
 		}
-		const pending = lifetime.releasedRunIds ?? [];
-		if (pending.length === 0) {
-			lifetime.releasedRunNoticeOwed = undefined;
-			return;
-		}
+		const pending = new Set(lifetime.releasedRunIds ?? []);
+		const owed = [...(lifetime.owedRunIds ?? [])].filter((runId) => pending.has(runId));
+		if (owed.length === 0) return;
 		const cwd = resolveCwd();
 		const backend = availableStoreDurableBackend(store);
 		const checked = await Promise.all(
-			pending.map(async (runId) => {
+			owed.map(async (runId) => {
 				const handle = backend?.getWorkflow(runId);
-				const adoptable = handle === undefined ? false : await checkReleasedRunAdoptable(handle, cwd);
-				return { runId, name: handle?.name ?? runId, adoptable };
+				if (handle === undefined) return { runId, name: runId, adoptable: false };
+				const adoptable = await checkReleasedRunAdoptable(handle, cwd);
+				const current = backend?.getWorkflow(runId);
+				const unchanged = current !== undefined && releaseIdentity(current, cwd) === releaseIdentity(handle, cwd);
+				return { runId, name: handle.name, adoptable: unchanged ? adoptable : undefined };
 			}),
 		);
 		if (!isNewest()) return;
 		// Runs nobody adopted stay announced to the next successor; a reload keeps them unannounced.
 		const dropped = new Set(checked.filter((run) => run.adoptable === false).map((run) => run.runId));
 		lifetime.releasedRunIds = (lifetime.releasedRunIds ?? []).filter((runId) => !dropped.has(runId));
-		lifetime.releasedRunNoticeOwed = undefined;
-		const adoptable = checked
-			.filter((run) => run.adoptable === true)
-			.map((run) => ({ id: run.runId, name: run.name }));
-		if (adoptable.length > 0) ctx?.ui?.notify?.(releasedRunsNotice(adoptable), "info");
+		const adoptable = checked.filter((run) => run.adoptable === true);
+		if (adoptable.length > 0)
+			ctx?.ui?.notify?.(releasedRunsNotice(adoptable.map((run) => ({ id: run.runId, name: run.name }))), "info");
+		const answered = new Set([...dropped, ...adoptable.map((run) => run.runId)]);
+		lifetime.owedRunIds = new Set([...(lifetime.owedRunIds ?? [])].filter((runId) => !answered.has(runId)));
 	};
 	pi.on("session_start", async (event, ctx) => {
 		const sessionStart = (lifetime.sessionStarts ?? 0) + 1;
 		lifetime.sessionStarts = sessionStart;
-		if (isSessionSwitch(eventReason(event))) lifetime.releasedRunNoticeOwed = true;
+		if (isSessionSwitch(eventReason(event)))
+			lifetime.owedRunIds = new Set([...(lifetime.owedRunIds ?? []), ...(lifetime.releasedRunIds ?? [])]);
 		let retired = false;
 		const contextCwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.();
 		const isNewest = () => !retired && lifetime.sessionStarts === sessionStart;

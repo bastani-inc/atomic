@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { promiseHooks } from "node:v8";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.ts";
 import {
@@ -54,6 +55,13 @@ const START_DEADLINE_MS = 15_000;
 /** A session start's wait for a hung adoptability check, then the rest of its start, with headroom. */
 const HUNG_CHECK_TEST_TIMEOUT_MS = 60_000;
 const THIRD_RELEASED_RUN = "33333333-3333-4333-8333-333333333333";
+/** Starts that wait on one hung check before and after the measured ones. */
+const FEW_WAITING_STARTS = 2;
+const MANY_WAITING_STARTS = 8;
+/** Promises a start may leave pending for reasons other than the hung check. */
+const PENDING_PROMISE_SLACK = 2;
+/** Sequential starts that each may wait out a hung check, with headroom. */
+const WAITING_STARTS_TEST_TIMEOUT_MS = 90_000;
 
 beforeEach(() => {
 	const scope = createEventBus();
@@ -154,16 +162,15 @@ function startSession(scope: object, sessionId: string, reason: string, notices:
 	};
 }
 
-/** Settles with whether `started` settled within {@link START_DEADLINE_MS}. */
+/** Settles with whether `started` settled within {@link START_DEADLINE_MS}, leaving no timer or promise pending. */
 async function settlesInTime(started: Promise<unknown>): Promise<boolean> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const late = new Promise<false>((resolve) => {
-		timer = setTimeout(() => resolve(false), START_DEADLINE_MS);
-	});
+	const late = Promise.withResolvers<false>();
+	const timer = setTimeout(() => late.resolve(false), START_DEADLINE_MS);
 	try {
-		return await Promise.race([started.then(() => true), late]);
+		return await Promise.race([started.then(() => true), late.promise]);
 	} finally {
 		clearTimeout(timer);
+		late.resolve(false);
 	}
 }
 
@@ -312,3 +319,102 @@ test("a start that a later switch replaced while it waited keeps every pending r
 		assert.match(fourthNotices[0]!, new RegExp(`/resume ${runId}\\b`));
 	assert.deepEqual([...secondNotices, ...thirdNotices], [], "replaced sessions are not told");
 });
+
+test(
+	"a run whose check timed out stays owed, so the next reload announces it once the check recovers (#5377)",
+	async () => {
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		await registerPausedOwnedRun(backend, FIRST_RELEASED_RUN, "session-a");
+		const scope = {};
+
+		const first = startSession(scope, "session-a", "startup", []);
+		await first.started;
+		await first.handlers.get("session_shutdown")!({ reason: "new" });
+
+		heldAdoptabilityChecks.runs.add(FIRST_RELEASED_RUN);
+		const switchedNotices: string[] = [];
+		const switched = startSession(scope, "session-b", "new", switchedNotices);
+		assert.equal(await settlesInTime(switched.started), true);
+		assert.deepEqual(switchedNotices, [], "a run whose check did not finish is not announced yet");
+
+		heldAdoptabilityChecks.runs.clear();
+		heldAdoptabilityChecks.release.resolve();
+		await switched.handlers.get("session_shutdown")!({ reason: "reload" });
+		const reloadedNotices: string[] = [];
+		const reloaded = startSession(scope, "session-b", "reload", reloadedNotices);
+		await reloaded.started;
+		assert.equal(reloadedNotices.length, 1, "the reload gives the notice the switch still owed");
+		assert.match(reloadedNotices[0]!, new RegExp(`/resume ${FIRST_RELEASED_RUN}\\b`));
+
+		await reloaded.handlers.get("session_shutdown")!({ reason: "reload" });
+		const again: string[] = [];
+		await startSession(scope, "session-b", "reload", again).started;
+		assert.deepEqual(again, [], "a delivered notice is not repeated");
+	},
+	HUNG_CHECK_TEST_TIMEOUT_MS,
+);
+
+test("the owner that reclaims its run during another session's check is not told the run was released (#5377)", async () => {
+	const backend = await createMemoryTestBackend();
+	setDurableBackend(backend);
+	await registerPausedOwnedRun(backend, FIRST_RELEASED_RUN, "session-a");
+	const scope = {};
+
+	const owner = startSession(scope, "session-a", "startup", []);
+	await owner.started;
+	await owner.handlers.get("session_shutdown")!({ reason: "new" });
+	assert.equal(backend.getWorkflow(FIRST_RELEASED_RUN)?.releasedModelOwner, "session-a");
+
+	heldAdoptabilityChecks.runs.add(FIRST_RELEASED_RUN);
+	const away = startSession(scope, "session-b", "new", []);
+	await vi.waitFor(() => assert.ok(heldAdoptabilityChecks.entered.has(FIRST_RELEASED_RUN)));
+	await away.handlers.get("session_shutdown")!({ reason: "resume" });
+	heldAdoptabilityChecks.runs.clear();
+	const returnedNotices: string[] = [];
+	const returned = startSession(scope, "session-a", "resume", returnedNotices);
+	await vi.waitFor(() => assert.equal(backend.getWorkflow(FIRST_RELEASED_RUN)?.releasedModelOwner, undefined));
+	heldAdoptabilityChecks.release.resolve();
+	await Promise.all([away.started, returned.started]);
+
+	assert.deepEqual(returnedNotices, [], "the owner is not told about its own reclaimed run");
+});
+
+test(
+	"session starts waiting on one hung check leave no promise behind for each wait (#5377)",
+	async () => {
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		await registerPausedOwnedRun(backend, FIRST_RELEASED_RUN, "session-a");
+		const scope = {};
+
+		const first = startSession(scope, "session-a", "startup", []);
+		await first.started;
+		await first.handlers.get("session_shutdown")!({ reason: "new" });
+		heldAdoptabilityChecks.runs.add(FIRST_RELEASED_RUN);
+
+		const pending = new Set<Promise<unknown>>();
+		const stop = promiseHooks.createHook({
+			init: (promise) => pending.add(promise),
+			settled: (promise) => pending.delete(promise),
+		});
+		try {
+			let previous = first;
+			const pendingAfter: number[] = [];
+			for (let index = 1; index <= MANY_WAITING_STARTS; index++) {
+				const next = startSession(scope, `session-waiting-${index}`, "new", []);
+				assert.equal(await settlesInTime(next.started), true);
+				await previous.handlers.get("session_shutdown")!({ reason: "new" }).catch(() => undefined);
+				previous = next;
+				pendingAfter[index] = pending.size;
+			}
+			assert.ok(
+				pendingAfter[MANY_WAITING_STARTS]! - pendingAfter[FEW_WAITING_STARTS]! <= PENDING_PROMISE_SLACK,
+				`pending promises grew with each wait: ${pendingAfter.slice(1).join(", ")}`,
+			);
+		} finally {
+			stop();
+		}
+	},
+	WAITING_STARTS_TEST_TIMEOUT_MS,
+);
