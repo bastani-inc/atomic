@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { spawn } from "child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { startHostProcessesThroughChildProcess } from "../../../test/helpers/host-spawn.js";
 
 const mocks = vi.hoisted(() => ({
 	ensureTool: vi.fn(),
@@ -27,6 +28,8 @@ vi.mock("../src/utils/tools-manager.ts", () => ({
 
 import { FileToolAbortedError, isFileToolAbortedError } from "../src/core/tools/file-tool-errors.ts";
 import { createFindToolDefinition } from "../src/core/tools/find.ts";
+
+startHostProcessesThroughChildProcess();
 
 const mockedSpawn = vi.mocked(spawn);
 
