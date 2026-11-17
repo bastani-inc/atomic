@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
@@ -9,6 +10,8 @@ import { StatusSnapshotSerializer } from "./status-snapshot-serializer.js";
 const DEFAULT_STATUS_SUBPATH = join(CONFIG_DIR_NAME, "workflows", "status.json");
 const STATUS_WRITE_INTERVAL_MS = 250;
 const STATUS_WRITE_RETRY_DELAYS_MS = [STATUS_WRITE_INTERVAL_MS, 1_000, 4_000, 16_000];
+const PERSISTENT_HOLD_MS = STATUS_WRITE_RETRY_DELAYS_MS.reduce((sum, delayMs) => sum + delayMs, 0);
+const STATUS_FLUSH_HOLD_BUDGET_MS = 1_000;
 const RENAME_RETRY_DELAYS_MS = [5, 10, 20, 40, 80];
 const RETRYABLE_RENAME_CODES: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EBUSY"]);
 const STATUS_WRITE_QUEUE_KEY = Symbol.for("atomic-workflows/status-write-queue@1");
@@ -37,19 +40,48 @@ const processState = globalThis as typeof globalThis & {
 processState[STATUS_WRITE_QUEUE_KEY] ??= new Map<string, Promise<void>>();
 const pathWrites = processState[STATUS_WRITE_QUEUE_KEY];
 
+const retryableRenameFailures = new WeakSet<object>();
+
 function isRetryableRenameError(err: unknown): boolean {
 	if (err === null || typeof err !== "object" || !("code" in err)) return false;
 	return typeof err.code === "string" && RETRYABLE_RENAME_CODES.has(err.code);
 }
 
+function isTransientRenameHold(err: unknown): boolean {
+	return err !== null && typeof err === "object" && retryableRenameFailures.has(err);
+}
+
+function isExistingDirectory(path: string): boolean {
+	try {
+		return statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+	} catch {
+		return false;
+	}
+}
+
+function markRetryableRenameFailure(err: unknown): void {
+	if (err !== null && typeof err === "object") {
+		retryableRenameFailures.add(err);
+	}
+}
+
 async function renameStatusFile(tmpPath: string, targetPath: string): Promise<void> {
+	let targetIsDirectory: boolean | undefined;
 	for (let attempt = 0; ; attempt++) {
 		try {
 			await rename(tmpPath, targetPath);
 			return;
 		} catch (err: unknown) {
+			if (!isRetryableRenameError(err)) {
+				throw err;
+			}
+			targetIsDirectory ??= isExistingDirectory(targetPath);
+			if (targetIsDirectory) {
+				throw err;
+			}
 			const delayMs = RENAME_RETRY_DELAYS_MS[attempt];
-			if (delayMs === undefined || !isRetryableRenameError(err)) {
+			if (delayMs === undefined) {
+				markRetryableRenameFailure(err);
 				throw err;
 			}
 			await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
@@ -95,13 +127,18 @@ export function createStatusWriter(
 
 	const filePath = resolveStatusFilePath(config, opts);
 	let lastErrorMessage: string | null = null;
+	let lastHoldError: unknown = null;
+	let holdStartedAt: number | null = null;
 	let active = true;
 	let writing = false;
 	let initialWrite = true;
 	let pending = initialWrite;
 	let changeSeq = 0;
 	let unchangedFailures = 0;
+	let activeFlushCount = 0;
+	let recordingOwnNotice = false;
 	let cancelDrainSleep: (() => void) | null = null;
+	let cancelFlushSleep: (() => void) | null = null;
 	let drainPromise: Promise<void> | null = null;
 	let inFlightWrite: Promise<boolean> | null = null;
 	const serializer = new StatusSnapshotSerializer();
@@ -132,6 +169,53 @@ export function createStatusWriter(
 		});
 	}
 
+	function sleepFlush(delayMs: number): Promise<void> {
+		return new Promise<void>((resolve) => {
+			const timer = setTimeout(() => {
+				cancelFlushSleep = null;
+				resolve();
+			}, delayMs);
+			cancelFlushSleep = () => {
+				clearTimeout(timer);
+				cancelFlushSleep = null;
+				resolve();
+			};
+		});
+	}
+
+	function recordPersistentHoldError(err: unknown): void {
+		holdStartedAt = null;
+		lastHoldError = null;
+		recordingOwnNotice = true;
+		try {
+			recordWriteError(err);
+		} finally {
+			recordingOwnNotice = false;
+		}
+	}
+
+	function handleWriteFailure(err: unknown, seqBefore: number): void {
+		pending = true;
+		if (!isTransientRenameHold(err)) {
+			holdStartedAt = null;
+			lastHoldError = null;
+			recordWriteError(err);
+			unchangedFailures = changeSeq === seqBefore ? unchangedFailures + 1 : 0;
+			return;
+		}
+		lastHoldError = err;
+		holdStartedAt ??= Date.now();
+		if (activeFlushCount > 0) {
+			unchangedFailures =
+				changeSeq === seqBefore ? Math.min(unchangedFailures + 1, STATUS_WRITE_RETRY_DELAYS_MS.length) : 0;
+			return;
+		}
+		unchangedFailures = changeSeq === seqBefore ? unchangedFailures + 1 : 0;
+		if (unchangedFailures > STATUS_WRITE_RETRY_DELAYS_MS.length || Date.now() - holdStartedAt >= PERSISTENT_HOLD_MS) {
+			recordPersistentHoldError(err);
+		}
+	}
+
 	async function writeOnce(): Promise<boolean> {
 		const seqBefore = changeSeq;
 		pending = false;
@@ -145,13 +229,13 @@ export function createStatusWriter(
 			if (!active) return false;
 			await atomicWriteJson(filePath, content);
 			lastErrorMessage = null;
+			lastHoldError = null;
+			holdStartedAt = null;
 			unchangedFailures = 0;
 			return true;
 		} catch (err: unknown) {
 			if (active) {
-				pending = true;
-				recordWriteError(err);
-				unchangedFailures = changeSeq === seqBefore ? unchangedFailures + 1 : 0;
+				handleWriteFailure(err, seqBefore);
 			}
 			return false;
 		}
@@ -187,9 +271,11 @@ export function createStatusWriter(
 					}
 				}
 				initialWrite = false;
-				if (inFlightWrite !== null) await inFlightWrite;
-				if (!active || !pending) break;
-				await runWriteOnce();
+				if (inFlightWrite !== null) {
+					await inFlightWrite;
+				} else {
+					await runWriteOnce();
+				}
 			}
 		} finally {
 			writing = false;
@@ -206,6 +292,7 @@ export function createStatusWriter(
 	}
 
 	const unsubscribeStore = store.subscribeInvalidation(() => {
+		if (recordingOwnNotice) return;
 		changeSeq++;
 		const hadBackoff = unchangedFailures > 0;
 		unchangedFailures = 0;
@@ -222,29 +309,52 @@ export function createStatusWriter(
 
 	return {
 		async flush() {
+			activeFlushCount++;
+			const deadline = Date.now() + STATUS_FLUSH_HOLD_BUDGET_MS;
 			let failedAttempts = 0;
-			while (active && (pending || inFlightWrite !== null)) {
-				const seqBefore = changeSeq;
-				let ok: boolean;
-				if (inFlightWrite !== null) {
-					ok = await inFlightWrite;
-				} else {
-					initialWrite = false;
-					ok = await runWriteOnce();
+			try {
+				while (active && (pending || inFlightWrite !== null)) {
+					const seqBefore = changeSeq;
+					let ok: boolean;
+					if (inFlightWrite !== null) {
+						ok = await inFlightWrite;
+					} else {
+						cancelDrainSleep?.();
+						initialWrite = false;
+						ok = await runWriteOnce();
+					}
+					if (ok) {
+						failedAttempts = 0;
+						continue;
+					}
+					failedAttempts++;
+					if (lastHoldError !== null) {
+						const remainingMs = deadline - Date.now();
+						if (remainingMs <= 0) {
+							recordPersistentHoldError(lastHoldError);
+							break;
+						}
+						await sleepFlush(Math.min(STATUS_WRITE_INTERVAL_MS, remainingMs));
+						continue;
+					}
+					if (failedAttempts >= 2 || changeSeq === seqBefore) {
+						break;
+					}
 				}
-				failedAttempts = ok ? 0 : failedAttempts + 1;
-				if (!ok && (failedAttempts >= 2 || changeSeq === seqBefore)) {
-					break;
+			} finally {
+				activeFlushCount--;
+				if (canScheduleDrain()) {
+					void ensureDrain();
 				}
-			}
-			if (canScheduleDrain()) {
-				void ensureDrain();
 			}
 		},
 		unsubscribe() {
 			active = false;
 			pending = false;
+			holdStartedAt = null;
+			lastHoldError = null;
 			cancelDrainSleep?.();
+			cancelFlushSleep?.();
 			unsubscribeStore();
 			serializer.close();
 		},

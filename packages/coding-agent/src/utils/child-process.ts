@@ -17,6 +17,7 @@ import crossSpawn from "cross-spawn";
 import { applyDebugSettingToChildEnvironment } from "../core/debug-setting.ts";
 import { HOST_STORAGE_ADAPTERS_ENV, hostStorageAdaptersEnvironment } from "../core/storage/host-adapters.ts";
 import { ATOMIC_AI_AGENT } from "./agent-attribution.ts";
+import type { HostChildProcess } from "./host-spawn.ts";
 
 const EXIT_STDIO_IDLE_GRACE_MS = 100;
 const EXIT_STDIO_ACTIVE_DRAIN_HARD_CAP_MS = 5_000;
@@ -121,7 +122,7 @@ function mapSignalExitCode(
  * so an endlessly noisy descendant cannot keep the wait pending forever.
  */
 export function waitForChildProcess(
-	child: ChildProcess,
+	child: HostChildProcess,
 	options: WaitForChildProcessOptions = {},
 ): Promise<number | null> {
 	return new Promise((resolve, reject) => {

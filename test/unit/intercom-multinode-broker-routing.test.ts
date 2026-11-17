@@ -1871,6 +1871,12 @@ function sendAndSettle(node: Node, from: BrokerConnectedSession, to: string, sen
 const QUEUED_SEND_BUDGET_MS = 60;
 /** The flood's budget: every send it makes at `QUEUED_SEND_BUDGET_MS`, then its setup and its delivery, each a hop. */
 const FLOOD_BUDGET_MS = (OUTBOX_TARGET_MAX_ROWS + 1) * QUEUED_SEND_BUDGET_MS + 2 * CROSS_NODE_WAIT_MS;
+/**
+ * #4992: a test that fills an away asker's queue queues `OUTBOX_TARGET_MAX_ROWS` messages, each at
+ * `QUEUED_SEND_BUDGET_MS`, and waits seven hops around them: two for its ask, one for the asker going away, one for
+ * the failure's row and three for the queue delivered when the asker returns.
+ */
+const FULL_QUEUE_BUDGET_MS = (OUTBOX_TARGET_MAX_ROWS + 1) * QUEUED_SEND_BUDGET_MS + 7 * CROSS_NODE_WAIT_MS;
 
 test(
 	"flooding an offline known session through another broker stops at the per-target outbox cap and keeps every queued message (#4896)",
@@ -2237,7 +2243,7 @@ test(
 		);
 		assert.equal(failuresOf(back, ask.id).length, 1);
 	},
-	4 * CROSS_NODE_WAIT_MS,
+	FULL_QUEUE_BUDGET_MS,
 );
 
 test(
@@ -2279,7 +2285,7 @@ test(
 		assert.ok(failure.type === "message");
 		assert.equal(failure.message.replyError, TERMINAL_CHILD_ASK_REFUSAL);
 	},
-	4 * CROSS_NODE_WAIT_MS,
+	FULL_QUEUE_BUDGET_MS,
 );
 
 test("an ask whose replier ends right after replying gets only the reply on another node (#4992)", async () => {

@@ -30,6 +30,7 @@ import {
 	resolveIntercomBridge,
 	resolveIntercomSessionTarget,
 } from "../../intercom/intercom-bridge.js";
+import { ownIntercomSessionId } from "../../intercom/own-intercom-session.js";
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
 import { collectKnownModelProviders, toModelInfo } from "../../shared/model-info.js";
 import { createCandidateModelResolver } from "../../shared/model-resolution.js";
@@ -43,6 +44,7 @@ import {
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler, type ExecutionScheduler } from "../shared/parallel-utils.js";
+import { subagentStartHoldMs } from "../shared/start-progress.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
 import {
@@ -54,7 +56,7 @@ import {
 	savedToolResultIds,
 } from "./released-children.js";
 import { resumeRunWorktree } from "./run-worktrees.js";
-import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
+import { indexSubagentChildOwner, readableSubagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
 import {
@@ -131,7 +133,10 @@ export {
 	type WorkflowDormantRunSubagentHoldRequest,
 } from "./subagent-child-hold.js";
 
-export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "pi" | "config" | "discoverAgents" | "runtime">;
+export type SubagentChildRestoreDeps = Pick<ExecutorDeps, "pi" | "config" | "discoverAgents" | "runtime"> & {
+	/** The owner's own Intercom identity, which a relaunched child's bridge names as its supervisor. */
+	readonly state?: Pick<ExecutorDeps["state"], "ownIntercomSession">;
+};
 
 /** How an explicit `subagent({ action: "resume" })` reopens a child, instead of session recovery after a restart. */
 export interface SubagentChildResumeRequest {
@@ -227,30 +232,91 @@ async function awaitIntercomPeer(
  * latest change the child's own session recorded after launch wins, then what the launch record says it started
  * on, and only then whatever the session's entries say.
  */
+function hasPartialHistory(sessionManager: SessionManager): boolean {
+	if (typeof sessionManager.hasFullHistory === "function" && !sessionManager.hasFullHistory()) return true;
+	if (typeof sessionManager.getHeldTail === "function" && sessionManager.getHeldTail().fromSeq > 1) return true;
+	return false;
+}
+
+async function entriesAfterLaunch(
+	sessionManager: SessionManager,
+	branch: ReturnType<SessionManager["getBranch"]>,
+	record: SubagentChildRecord,
+): Promise<ReturnType<SessionManager["getBranch"]>> {
+	const branchLaunchIndex =
+		typeof record.launchLeafId === "string" ? branch.findIndex((entry) => entry.id === record.launchLeafId) : -1;
+	const launchIndex =
+		record.launchLeafId === undefined
+			? branch.length
+			: record.launchLeafId === null
+				? 0
+				: branchLaunchIndex === -1
+					? branch.length
+					: branchLaunchIndex + 1;
+	if (typeof sessionManager.getEntrySeq === "function") {
+		const launchSeq =
+			record.launchLeafSeq ??
+			(record.launchLeafId === null
+				? 0
+				: typeof record.launchLeafId === "string"
+					? typeof sessionManager.findEntrySeq === "function"
+						? await sessionManager.findEntrySeq(record.launchLeafId)
+						: sessionManager.getEntrySeq(record.launchLeafId)
+					: undefined);
+		return launchSeq === undefined
+			? branch.slice(launchIndex)
+			: branch.filter((entry) => (sessionManager.getEntrySeq(entry.id) ?? 0) > launchSeq);
+	}
+	if (
+		(record.launchLeafId === null && (record.launchLeafSeq === undefined || record.launchLeafSeq <= 0)) ||
+		branchLaunchIndex !== -1
+	) {
+		return branch.slice(launchIndex);
+	}
+	if (typeof sessionManager.findEntrySeq === "function") {
+		const launchSeq =
+			record.launchLeafSeq ??
+			(record.launchLeafId === null
+				? 0
+				: typeof record.launchLeafId === "string"
+					? await sessionManager.findEntrySeq(record.launchLeafId)
+					: undefined);
+		if (launchSeq === undefined) return branch.slice(launchIndex);
+		const branchSeqs = await Promise.all(branch.map((entry) => sessionManager.findEntrySeq(entry.id)));
+		if (branchSeqs.every((seq) => seq !== undefined)) {
+			return branch.filter((_entry, index) => (branchSeqs[index] ?? 0) > launchSeq);
+		}
+	}
+	if (hasPartialHistory(sessionManager)) {
+		if (typeof sessionManager.loadFullHistory === "function") await sessionManager.loadFullHistory();
+		if (hasPartialHistory(sessionManager)) return branch.slice(launchIndex);
+	}
+	const entries = typeof sessionManager.getEntries === "function" ? sessionManager.getEntries() : [];
+	const seqById = new Map<string, number>();
+	for (let index = 0; index < entries.length; index += 1) {
+		const entry = entries[index];
+		if (entry !== undefined) seqById.set(entry.id, index + 1);
+	}
+	const launchSeq =
+		record.launchLeafSeq ?? (typeof record.launchLeafId === "string" ? seqById.get(record.launchLeafId) : undefined);
+	if (launchSeq !== undefined && branch.every((entry) => seqById.has(entry.id))) {
+		return branch.filter((entry) => (seqById.get(entry.id) ?? 0) > launchSeq);
+	}
+	if (entries.length === 0 && record.launchLeafId === undefined && record.launchLeafSeq !== undefined) {
+		return branch.filter((_entry, index) => index + 1 > record.launchLeafSeq!);
+	}
+	return branch.slice(launchIndex);
+}
+
 async function ownSessionModelCandidate(
 	sessionManager: SessionManager,
 	record: SubagentChildRecord,
 	resolveCandidateModel: ReturnType<typeof createCandidateModelResolver>,
 ): Promise<string | undefined> {
 	const branch = sessionManager.getBranch();
-	const launchSeq =
-		record.launchLeafSeq ??
-		(record.launchLeafId === null
-			? 0
-			: typeof record.launchLeafId === "string"
-				? await sessionManager.findEntrySeq(record.launchLeafId)
-				: undefined);
-	const launchIndex =
-		record.launchLeafId === undefined
-			? branch.length
-			: record.launchLeafId === null
-				? 0
-				: branch.findIndex((entry) => entry.id === record.launchLeafId) + 1 || branch.length;
 	let changedModel: string | undefined;
 	let changedThinking: string | undefined;
-	for (const entry of launchSeq === undefined
-		? branch.slice(launchIndex)
-		: branch.filter((entry) => (sessionManager.getEntrySeq(entry.id) ?? 0) > launchSeq)) {
+	for (const entry of await entriesAfterLaunch(sessionManager, branch, record)) {
 		if (entry.type === "model_change") changedModel = `${entry.provider}/${entry.modelId}`;
 		else if (entry.type === "thinking_level_change") changedThinking = entry.thinkingLevel;
 	}
@@ -525,6 +591,7 @@ async function relaunchChild(
 				orchestratorTarget: resolveIntercomSessionTarget(
 					deps.pi.getSessionName(),
 					ctx.sessionManager.getSessionId(),
+					ownIntercomSessionId(deps.state ?? {}, ctx.sessionManager),
 				),
 				cwd,
 			})
@@ -570,8 +637,8 @@ async function relaunchChild(
 			SUBAGENT_OWNER_GENERATION,
 			interruptedStillRunningResult,
 		);
-	// Read again: the owner's wakes may have held them first, after `record` was read.
-	const latest = subagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
+	// Read again: the owner's wakes may have held them first, after `record` was read. `record` when it cannot be read.
+	const latest = readableSubagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
 	// What its transcript already holds was delivered: a run that saved it stopped before it reported it (#5012).
 	const saved =
 		sessionManager && !fresh
@@ -631,6 +698,8 @@ async function relaunchChild(
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
+		// A retried start of the relaunched child holds sends to it again, until the retry registers.
+		onStartRetry: () => hold?.holdWhileStarting(subagentStartHoldMs(deps.config.sessionStartTimeoutMs)),
 		getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 		resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 		cwd: cwd,
@@ -738,10 +807,11 @@ async function relaunchChild(
 		forked: record.forked === true,
 		...(record.heartbeatMs === undefined ? {} : { heartbeatMs: record.heartbeatMs }),
 		...(schedule ? { schedule } : {}),
-		onTerminal: () => {
+		onTerminal: (child) => {
 			release();
-			// Normally the child consumed the hold when it registered; one that never did must not keep it.
-			void hold?.release();
+			// Normally the child consumed the hold when it registered; one that never did must not keep it, and tells the
+			// senders still held why when its start failed.
+			void hold?.release(startFailureRefusal(record.intercomTarget, child));
 		},
 	});
 	const outcome = await relaunched(
@@ -769,6 +839,17 @@ function wakePrompts(base: ResumePrompts, lateMessages: readonly string[], promp
 /** A restored child that had no session started fresh on its launch rather than resuming one. */
 function startedFresh(outcome: SubagentChildRestoreOutcome): SubagentChildRestoreOutcome {
 	return outcome.kind === "restored" ? { ...outcome, fresh: true } : outcome;
+}
+
+/** What senders still held for a relaunched child are told when its start failed; undefined routes them normally. */
+function startFailureRefusal(
+	intercomTarget: string | undefined,
+	child: { readonly status: string; readonly error?: string },
+): string | undefined {
+	const reason = child.status === "error" ? child.error?.trim() : undefined;
+	return reason && intercomTarget
+		? `Subagent \`${intercomTarget}\` did not start: ${reason} The message was not sent.`
+		: undefined;
 }
 
 /** Start a child that pause or quit stopped while it was still queued, on its original launch (#3760). */
@@ -900,8 +981,9 @@ export async function restoreSubagentChild(
 ): Promise<SubagentChildRestoreOutcome> {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	indexSubagentChildOwner(ctx);
+	// The owner's own session when the index's latest record is in a copy of it that is no longer open.
 	const record =
-		subagentChildRecordOf(ownerSessionId, id) ??
+		readableSubagentChildRecordOf(ownerSessionId, id) ??
 		findSubagentChildRecord(readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId), id);
 	if (!record) return { kind: "unrestorable", childId: id, reason: "this session has no record of that subagent" };
 	if (!isRestorableSubagentChild(record) && !resume) return { kind: "terminal", record };
@@ -955,11 +1037,13 @@ export async function restoreSubagentChild(
 		// When the session already holds them since it started, that hold carries on under the same capability:
 		// what it holds stays held, and no moment passes without a hold.
 		const earlier = await takeEarlyChildHold(key);
+		// Sends to the relaunched child wait through its start, until it registers, instead of a brief hold.
+		const holdMs = subagentStartHoldMs(deps.config.sessionStartTimeoutMs);
 		if (earlier) {
 			hold = earlier;
-			await hold.refresh();
+			await hold.holdWhileStarting(holdMs);
 		} else {
-			hold = await holdChildTargets(deps.pi.events, record, launchIntercomGroup(record, ctx));
+			hold = await holdChildTargets(deps.pi.events, record, launchIntercomGroup(record, ctx), { holdMs });
 		}
 		// The child follows the restores of the session that owns it, after those it was launched in: a wake comes from
 		// outside any work, so neither is in scope here.
@@ -1146,8 +1230,8 @@ export async function awaitSubagentChildRestoration(
 		if (!outcome)
 			return `Subagent \`${label}\` is still being restored after the restart. The message was not sent; try again shortly.`;
 		if (outcome.kind === "unrestorable") return goneChildRefusal(label, active.record, outcome.reason);
-		if (outcome.kind === "restored" && outcome.intercomLive === false)
-			return `Subagent \`${label}\` was relaunched after the restart but has not reconnected to Intercom. The message was not sent; its result will still arrive as a task completion.`;
+		// A relaunched child that has not registered yet is still starting: its hold keeps the send for it until it
+		// registers, before its first turn, so the send goes out.
 		return undefined;
 	}
 	for (const reported of goneChildren.values()) {
@@ -1187,7 +1271,7 @@ export function subagentChildRestoreNotices(outcomes: readonly SubagentChildRest
 			: "relaunched from its own session";
 		if (outcome.intercomLive === false)
 			return [
-				`${label} was ${how} as task ${outcome.taskId}, but it did not reconnect to Intercom. Treat it as unreachable until it reconnects; its result will still arrive as a task completion.`,
+				`${label} was ${how} as task ${outcome.taskId} and is still starting: it has not registered on Intercom yet. Messages sent to it now wait for it and reach it before its first turn; \`subagent({ action: "status", id: "${outcome.taskId}" })\` shows where its start is. Its result arrives as a task completion.`,
 			];
 		return [
 			`${label} was interrupted by the restart and has been ${how} as task ${outcome.taskId}${outcome.intercomLive ? "; it is live on Intercom under the same name" : ""}.`,

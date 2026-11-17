@@ -533,7 +533,7 @@ describe("a live subagent's chat box (#4640)", () => {
 				},
 			} as unknown as AgentSessionEvent);
 		}
-		assert.match(working().trimEnd(), / · ↓ 12\.0k tokens\)$/);
+		assert.match(working().trimEnd(), / · ↓ 12k tokens\)$/);
 		page.dispose();
 	});
 

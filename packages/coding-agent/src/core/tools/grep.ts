@@ -1,11 +1,11 @@
 import { stat as fsStat } from "node:fs/promises";
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { Text } from "@bastani/atomic-tui";
-import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { spawnHostProcess } from "../../utils/host-spawn.ts";
 import { attachLineReader } from "../../utils/lines.ts";
 import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
@@ -389,7 +389,7 @@ export function createGrepToolDefinition(
 						if (contentMode && contextAfterValue > 0) args.push("--after-context", String(contextAfterValue));
 						args.push("--", pattern, isDirectory ? "." : searchPath);
 
-						const child = spawn(rgPath, args, {
+						const child = spawnHostProcess(rgPath, args, {
 							cwd: isDirectory ? searchPath : undefined,
 							env: createChildProcessEnvironment(),
 							stdio: ["ignore", "pipe", "pipe"],
@@ -524,7 +524,7 @@ export function createGrepToolDefinition(
 							if (matchCount >= effectiveLimit) limitHit = true;
 						};
 
-						detachLines = attachLineReader(child.stdout, (line) => {
+						detachLines = attachLineReader(child.stdout!, (line) => {
 							if (done || !line.trim() || (mode === "filesWithMatches" && matchCount >= effectiveLimit)) return;
 							let event: unknown;
 							try {

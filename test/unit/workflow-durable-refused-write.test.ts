@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { StorageUnavailableError } from "@bastani/atomic/storage";
-import { afterEach, describe, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { workflowResumeAction } from "../../packages/workflows/src/extension/workflow-tool-control.js";
@@ -15,7 +18,7 @@ import type { RunSnapshot } from "../../packages/workflows/src/shared/store-type
 import { INTERACTIVE_WORKFLOW_POLICY, type WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
-import { sleep } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
@@ -24,13 +27,64 @@ import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
  * attempt, the run stays inspectable and resumable, and completes once resumed.
  */
 
-let answering: ReturnType<typeof setInterval> | undefined;
-afterEach(() => {
-	if (answering !== undefined) clearInterval(answering);
-	answering = undefined;
+const releases: (() => Promise<void> | void)[] = [];
+async function releaseRuns(): Promise<void> {
+	for (const release of releases.splice(0)) await release();
+}
+afterEach(async () => {
+	await releaseRuns();
 	store.clear();
 	setDurableBackend(undefined);
 });
+
+let projectDir: string;
+beforeAll(() => {
+	projectDir = makeTempDirectory("refused-write-project-");
+});
+afterAll(() => removeTempDirectory(projectDir));
+
+type ReopenableBackend = JournalDurableBackend & { reopen(): Promise<ReopenableBackend> };
+
+function openMemoryJournal(): Promise<ReopenableBackend> {
+	const connection = new DatabaseSync(":memory:");
+	const opened: JournalDurableBackend[] = [];
+	releases.push(async () => {
+		for (const backend of opened) await backend.close();
+		connection.close();
+	});
+	const open = async (): Promise<ReopenableBackend> => {
+		const backend: ReopenableBackend = Object.assign(
+			await JournalDurableBackend.open(await openSqlRunJournal(connection)),
+			{
+				async reopen(): Promise<ReopenableBackend> {
+					await backend.close();
+					return open();
+				},
+			},
+		);
+		opened.push(backend);
+		return backend;
+	};
+	return open();
+}
+
+function answerPromptsAsTheyOpen(): void {
+	let scheduled = false;
+	const answer = () => {
+		scheduled = false;
+		for (const live of store.runs())
+			for (const stage of live.stages)
+				if (stage.pendingPrompt !== undefined)
+					store.resolveStagePendingPrompt(live.id, stage.id, stage.pendingPrompt.id, true);
+	};
+	releases.push(
+		store.subscribeInvalidation(() => {
+			if (scheduled) return;
+			scheduled = true;
+			queueMicrotask(answer);
+		}),
+	);
+}
 
 /** Where an attempt fails on purpose: tool t2 throws, or the run fails at its end (s2's prompt, or plain code). */
 interface Plan {
@@ -158,9 +212,11 @@ async function runWithRefusal(
 		readonly restart?: boolean;
 		/** Also refuse, once, the write of the run's failed status in the refused attempt. */
 		readonly refuseFailedStatus?: boolean;
+		readonly journal?: "file" | "memory";
 	} = {},
 ): Promise<{
 	refused: string | undefined;
+	reached: number;
 	errors: readonly string[];
 	/** The live and durable views of the run after each of its attempts. */
 	views: readonly { readonly live: unknown; readonly durable: unknown }[];
@@ -169,16 +225,19 @@ async function runWithRefusal(
 	/** The run's durable status after each failed attempt. */
 	durableStatuses: readonly (string | undefined)[];
 }> {
+	await releaseRuns();
 	const shape = options.shape ?? "full";
 	let attempt = 0;
 	let commits = 0;
+	let reached = 0;
 	let refused: string | undefined;
 	let refusedCount = 0;
 	let statusRefused = false;
-	const instrument = (opened: JournalTestBackend): JournalTestBackend => {
+	const instrument = (opened: ReopenableBackend): ReopenableBackend => {
 		const commit = opened.commitCheckpoint.bind(opened);
 		opened.commitCheckpoint = ((checkpoint: DurableCheckpoint, signal?: { readonly signal?: AbortSignal }) => {
 			commits += 1;
+			if (attempt === refusal.attempt) reached = Math.max(reached, commits);
 			const hit =
 				(refused === undefined || ("times" in refusal && refusedCount < (refusal.times ?? 1))) &&
 				attempt === refusal.attempt &&
@@ -216,13 +275,15 @@ async function runWithRefusal(
 		setDurableBackend(opened);
 		return opened;
 	};
-	let backend = instrument(await JournalTestBackend.create());
+	let backend = instrument(await (options.journal === "memory" ? openMemoryJournal() : JournalTestBackend.create()));
 
 	const plan = { current: plans[0]! };
 	const { parent, child } = definitions(shape, plan);
 	const makeRuntime = () =>
 		createExtensionRuntime({
 			store,
+			cwd: projectDir,
+			resolveJournalSettings: () => ({ snapshots: { enabled: false } }),
 			registry: createRegistry([parent, child]),
 			adapters: {
 				prompt: {
@@ -241,12 +302,7 @@ async function runWithRefusal(
 		backend = instrument(await backend.reopen());
 		runtime = makeRuntime();
 	};
-	answering = setInterval(() => {
-		for (const live of store.runs())
-			for (const stage of live.stages)
-				if (stage.pendingPrompt !== undefined)
-					store.resolveStagePendingPrompt(live.id, stage.id, stage.pendingPrompt.id, true);
-	}, 2);
+	answerPromptsAsTheyOpen();
 
 	const started = await runtime.dispatch({ action: "run", workflow: parent.name, inputs: {} });
 	assert.ok("runId" in started, JSON.stringify(started));
@@ -311,7 +367,7 @@ async function runWithRefusal(
 			source: "sdk",
 			runId,
 			fromStage: "s2",
-			cwd: process.cwd(),
+			cwd: projectDir,
 			carryMessages: "before",
 			definition: parent,
 		});
@@ -331,7 +387,7 @@ async function runWithRefusal(
 	const reopened = await backend.reopen();
 	assert.deepEqual(durableGraph(reopened, runId), expected, `${where()}: the reopened durable view is the live one`);
 	await forkCheck(reopened);
-	return { refused, errors, views, failedStages, durableStatuses };
+	return { refused, reached, errors, views, failedStages, durableStatuses };
 }
 
 /** The attempts of a fork of the completed run are numbered from here. */
@@ -697,18 +753,22 @@ describe("one refusal at every checkpoint write (#5027)", () => {
 				["a first attempt", 0, COMPLETES],
 				["a resumed attempt", 1, RESUMED],
 			] as const) {
-				test(`one refused write in ${label} of the ${shape} workflow${restart ? ", resumed after a restart," : ""} leaves the run inspectable, resumable and completing (#5027)`, {
-					timeout: 300_000,
-				}, async () => {
+				test(`one refused write in ${label} of the ${shape} workflow${restart ? ", resumed after a restart," : ""} leaves the run inspectable, resumable and completing (#5027)`, async () => {
 					const refusedIds: string[] = [];
-					for (let nth = 1; nth <= SWEEP; nth++) {
-						const { refused } = await runWithRefusal({ attempt, nth }, plans, { shape, restart });
+					let reachedByAnyRun = 0;
+					for (let nth = 1; ; nth++) {
+						assert.ok(nth <= SWEEP, `the sweep covers every write: ${refusedIds.join(", ")}`);
+						const { refused, reached } = await runWithRefusal({ attempt, nth }, plans, {
+							shape,
+							restart,
+							journal: "memory",
+						});
 						if (refused !== undefined) refusedIds.push(refused);
+						reachedByAnyRun = Math.max(reachedByAnyRun, reached);
 						store.clear();
 						setDurableBackend(undefined);
+						if (refused === undefined && nth > reachedByAnyRun) break;
 					}
-					// The sweep reached past the attempt's last write, so it refused each of them once.
-					assert.ok(refusedIds.length < SWEEP, `the sweep covers every write: ${refusedIds.length}`);
 				});
 			}
 });
