@@ -1,13 +1,13 @@
 ---
 name: impeccable
 description: "Use when the user wants to design, redesign, shape, critique, audit, polish, simplify, harden, animate, or otherwise improve a frontend interface: websites, landing pages, dashboards, product UI, components, forms, settings, onboarding, empty states, and native iOS or Android screens. Handles UX review, hierarchy, layout, typography, color, motion, UX copy, accessibility, responsive behavior, edge cases, and capturing or documenting design systems (DESIGN.md, tokens). Also for making bland UI bolder, loud UI quieter, or ambitious visual effects. Not for backend-only or non-UI tasks."
-version: 4.8.2
+version: 4.9.1
 license: Apache 2.0
 metadata:
     github-repo: https://github.com/pbakaus/impeccable
     github-path: .pi/skills/impeccable
-    github-ref: refs/tags/skill-v4.8.2
-    github-tree-sha: 130fde11eff1474bfa3b3efb82a3f206e350e0f9
+    github-ref: refs/tags/skill-v4.9.1
+    github-tree-sha: f6a534b7ea9b5b189495c4b4af819f7c2bc9b083
 allowed-tools:
   - Bash(npx impeccable *)
   - Bash(.pi/skills/impeccable/scripts/impeccable *)
@@ -90,5 +90,7 @@ After init writes PRODUCT.md, resume without rerunning `impeccable context`; ini
 **Hooks:** `/impeccable hooks <on|off|status|ignore-rule|ignore-file|ignore-value|reset>` manages the design detector hook for this project (auto-runs the detector after UI file edits and surfaces findings). Load [reference/hooks.md](reference/hooks.md) when the user invokes it with any argument.
 
 **Doctor:** `/impeccable doctor` reports and repairs drift between this project's Impeccable artifacts (PRODUCT.md, DESIGN.md and its sidecar, config, surface briefs, the hook) and what this version reads. Load [reference/doctor.md](reference/doctor.md) when the user invokes it, or when they ask what is out of date, stale, or needs refreshing. A `CONTEXT_STALE` directive in Setup's output is the cheap subset of the same report; act on it there per its own instructions rather than running doctor unasked.
+
+**Foundations:** `/impeccable foundations` runs `.pi/skills/impeccable/scripts/impeccable foundations` and walks the user through the product-foundations roadmap (secrets, 404 page, icons, CI and more); `/impeccable foundations <id>` fixes that one item. Load [reference/foundations.md](reference/foundations.md) when the user invokes it.
 
 **Never repair drift as a side effect of a design task.** A `CONTEXT_STALE` finding is reported, not acted on, unless the user asks. The one exception is a finding marked `auto`, which the next write to that file performs anyway.

@@ -520,13 +520,6 @@ export function isJournalDurableBackend(backend: unknown): backend is JournalDur
 	);
 }
 
-function hasJournalDurableBackendInstance(this: unknown, value: unknown): boolean {
-	return (
-		Function.prototype[Symbol.hasInstance].call(this, value) ||
-		(this === JournalDurableBackend && isJournalDurableBackend(value))
-	);
-}
-
 export class JournalDurableBackend<Journal extends RunJournal = RunJournal> implements DurableWorkflowBackend {
 	readonly [JOURNAL_DURABLE_BACKEND] = true;
 	readonly persistent: boolean;
@@ -2020,10 +2013,6 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		}
 	}
 }
-
-Object.defineProperty(JournalDurableBackend, Symbol.hasInstance, {
-	value: hasJournalDurableBackendInstance,
-});
 
 /**
  * A sticky entry's deliveries written as a change to the same entry in the run's previous event: drop these

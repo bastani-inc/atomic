@@ -217,7 +217,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 		if (
 			isOverlay &&
 			options?.purpose === "navigation" &&
-			!this.session?.isStreaming &&
+			!this.runtimeHost?.session?.isStreaming &&
 			this.workingRunMeter?.snapshot() === undefined
 		) {
 			this.promptTurnWorkingLoaderActive = false;
