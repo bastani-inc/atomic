@@ -108,6 +108,7 @@ export class WorkflowStageAdmissionBoundary {
 	private taskScope: Extract<OwnerScope, { kind: "workflow-stage" }> | undefined;
 	private taskHost: AgentTaskHost | undefined;
 	private readonly messageDeliveryContext = new AsyncLocalStorage<{ active: boolean }>();
+	private readonly awaitedTurnContext = new AsyncLocalStorage<{ active: boolean }>();
 	private readonly messageAdmissionContext = new AsyncLocalStorage<{ active: boolean }>();
 	private readonly messageDeliveries = new Set<Promise<void>>();
 	private messageDeliveryTail: Promise<void> | undefined;
@@ -259,12 +260,17 @@ export class WorkflowStageAdmissionBoundary {
 	}
 
 	/**
-	 * True while the caller runs inside a message delivery that has not settled yet. Every other registered delivery
-	 * is then queued behind it, so a turn that delivery starts and awaits must not wait for them. A turn that outlives
-	 * its delivery waits as any other.
+	 * Starts a turn that the current message delivery awaits before it settles. That turn must not wait for the
+	 * registered deliveries: its own delivery is among them, and every other one is queued behind it.
 	 */
-	isInsideActiveMessageDelivery(): boolean {
-		return this.messageDeliveryContext.getStore()?.active === true;
+	runAwaitedTurn<T>(start: () => T): T {
+		const delivery = this.messageDeliveryContext.getStore();
+		return delivery ? this.awaitedTurnContext.run(delivery, start) : start();
+	}
+
+	/** True inside a turn started by {@link runAwaitedTurn} while its delivery is still in flight. */
+	startsAwaitedTurn(): boolean {
+		return this.awaitedTurnContext.getStore()?.active === true;
 	}
 
 	/** Excludes tracked model turns: joining those from a native poll would deadlock. */

@@ -158,6 +158,12 @@ function startTurnAfterInterrupt(session: AgentSession, starter: CustomMessage):
 }
 
 /** Commit one delivery whose source generation already granted admission. */
+/** Starts a turn this commit awaits, so its preparation does not wait for the commit's own message delivery. */
+function startAwaitedTurn(session: AgentSession, start: () => Promise<void>): Promise<void> {
+	const boundary = session._subagentMessageAdmission ?? session._workflowStageAdmission;
+	return boundary ? boundary.runAwaitedTurn(start) : start();
+}
+
 export function commitAdmittedCustomMessage<T>(
 	session: AgentSession,
 	appMessage: CustomMessage<T>,
@@ -273,7 +279,7 @@ async function commitCustomMessage<T>(
 		const admission = new Promise<void>((resolve) => {
 			resolveAdmission = resolve;
 		});
-		const turn = self._runAgentPrompt(promptMessage, resolveAdmission);
+		const turn = startAwaitedTurn(self, () => self._runAgentPrompt(promptMessage, resolveAdmission));
 		try {
 			await Promise.race([admission, turn]);
 		} catch (error) {
@@ -394,7 +400,9 @@ async function commitCustomMessages<T>(
 			await triggerProtectedStreamingCustomMessages(self, appMessages, delivery);
 		} else {
 			const held = holdsTurnsForDetachedResults(self);
-			const turn = self._runAgentPrompt(appMessages);
+			const turn = held
+				? startAwaitedTurn(self, () => self._runAgentPrompt(appMessages))
+				: self._runAgentPrompt(appMessages);
 			if (held) await turn;
 			else void turn.catch(() => {});
 		}

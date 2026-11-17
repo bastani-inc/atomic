@@ -680,7 +680,7 @@ export async function _runAgentPrompt(
 			}
 		}
 		releaseMessageAdmission();
-		const pendingPriority = preparePriorityContinuation(this);
+		const pendingPriority = preparePriorityContinuation(this, true);
 		if (pendingPriority) await pendingPriority;
 		if (this._agentRunAbortRequested) {
 			if (this.agent.state.isStreaming || this._queuedMessagesPaused) {
@@ -998,14 +998,17 @@ export async function _runAgentContinuation(
 	});
 }
 
-/** Restore priority input the moment the native loop can poll it again. */
-function preparePriorityContinuation(session: AgentSession): Promise<void> | undefined {
+/**
+ * Restore priority input the moment the native loop can poll it again. `startsOwnTurn` marks a prompt run's own
+ * start, which skips the wait when its message delivery started it and awaits it.
+ */
+function preparePriorityContinuation(session: AgentSession, startsOwnTurn = false): Promise<void> | undefined {
 	const boundary = session._subagentMessageAdmission ?? session._workflowStageAdmission;
 	// Explicit SDK interrupts own a native turn and the shared hold. An admitted
 	// receiver's task must join that owner before checking its priority input;
 	// otherwise it can settle before the interrupt finalizer restores the queue.
 	if (boundary && session._pendingInterruptDeliveries > 0) {
-		return session._interruptDeliveryQueue.then(() => preparePriorityContinuation(session));
+		return session._interruptDeliveryQueue.then(() => preparePriorityContinuation(session, startsOwnTurn));
 	}
 	const restore = (): void => {
 		if (!session._priorityInterruptPending) return;
@@ -1014,14 +1017,14 @@ function preparePriorityContinuation(session: AgentSession): Promise<void> | und
 		session._restoreAndClearActiveInterruptQueueHold();
 	};
 	// Keep the idle prompt start synchronous unless a producer commit is still in flight. A turn its own delivery
-	// started and awaits skips the wait: every other delivery is queued behind that one and cannot settle first.
-	if (!boundary?.hasMessageDeliveries() || boundary.isInsideActiveMessageDelivery()) {
+	// started and awaits skips the wait: that delivery is the one in flight, and the rest are queued behind it.
+	if (!boundary?.hasMessageDeliveries() || (startsOwnTurn && boundary.startsAwaitedTurn())) {
 		restore();
 		return undefined;
 	}
 	// A producer can enqueue an explicit SDK interrupt while this await yields.
 	// Recheck its ownership before restoring the shared hold.
-	return boundary.waitForMessageDeliveries().then(() => preparePriorityContinuation(session));
+	return boundary.waitForMessageDeliveries().then(() => preparePriorityContinuation(session, startsOwnTurn));
 }
 
 export async function _continueQueuedAgentMessages(this: AgentSession): Promise<void> {
