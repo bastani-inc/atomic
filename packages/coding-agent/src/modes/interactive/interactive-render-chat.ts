@@ -608,12 +608,12 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
 	let firstMessage = true;
 	const flushMessages = (): void => {
-		if (
-			options.suppressCompactionBoundary &&
-			firstMessage &&
-			isSynthesizedCompactionBoundary(messageBuffer[0], options.suppressCompactionBoundary)
-		) {
-			messageBuffer = messageBuffer.slice(1);
+		if (options.suppressCompactionBoundary && firstMessage) {
+			// A boundary replays after the system prompt it recorded, so the boundary is the first non-system message.
+			const boundaryIndex = messageBuffer.findIndex((message) => message.role !== "system");
+			if (isSynthesizedCompactionBoundary(messageBuffer[boundaryIndex], options.suppressCompactionBoundary)) {
+				messageBuffer = messageBuffer.filter((_, index) => index !== boundaryIndex);
+			}
 		}
 		firstMessage = false;
 		for (const entry of chatEntriesFromAgentMessages(messageBuffer, messageMeta)) {

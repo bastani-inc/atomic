@@ -141,7 +141,8 @@ async function appendDisplayCardOccurrence(
 	message: CustomMessage,
 	delivery: ProtectedDelivery | undefined,
 ): Promise<DurableDisplayCard> {
-	await refreshFailedCustomMessageWrites(session);
+	const refresh = refreshFailedCustomMessageWrites(session);
+	if (refresh !== undefined) await refresh;
 	const card = { ...message, excludeFromContext: true } satisfies CustomMessage & { excludeFromContext: true };
 	const admitted = message as StageAdmittedCustomMessage;
 	// A retry after a failed flush must complete the already-appended occurrence

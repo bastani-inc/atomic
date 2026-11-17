@@ -1,15 +1,16 @@
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { isContextOverflow, isRecoverableLength } from "@bastani/atomic-ai/compat";
 import { emitSessionCompactFailed } from "./agent-session-compaction.ts";
-import type { AgentSessionInternalSurface as AgentSession, AutoCompactionRunOutcome } from "./agent-session-methods.ts";
-import { authForStream } from "./agent-session-models.ts";
+import type {
+	AgentSessionInternalSurface as AgentSession,
+	AutoCompactionRunOutcome,
+	AutoCompactionUrgency as CompactionUrgency,
+} from "./agent-session-methods.ts";
 import {
-	type CompactionUrgency,
 	calculateContextTokens,
 	estimateContextTokens,
 	estimateProjectedContextTokens,
 	shouldCompact,
-	type VerbatimCompactionResult,
 } from "./compaction/index.ts";
 import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "./openai-responses-payload-sanitizer.ts";
 import { type ContextEditEntry, getLatestCompactionBoundaryEntry } from "./session-manager.ts";
@@ -147,18 +148,11 @@ export async function _checkCompaction(
 		const boundaryIndex = branch.findIndex((entry) => entry.id === compactionBoundaryEntry.id);
 		return branch.findIndex((entry) => entry.id === entryId) < boundaryIndex;
 	};
-	const assistantIsFromBeforeCompactionBoundary = isFromBeforeCompactionBoundary(assistantMessage);
-	const backgroundBoundary = () => this._runBackgroundCompactionBoundary(!isLiveTurnCompletion);
-	if (assistantIsFromBeforeCompactionBoundary) {
-		await backgroundBoundary();
-		return;
-	}
+	if (isFromBeforeCompactionBoundary(assistantMessage)) return;
 
 	// Case 1: Recoverable failure. Explicit/silent context overflow still uses
 	// context metadata. A length stop below the model's original requested output
 	// cap instead receives one compact-and-retry independent of context metadata.
-	// This recovers a chat response; `truncated-range-recovery` separately parses
-	// deletion records from a compaction planner response and is not involved here.
 	const desiredMaxOutput = this.model?.maxTokens ?? 0;
 	const recoverableLength =
 		isLiveTurnCompletion &&
@@ -168,6 +162,8 @@ export async function _checkCompaction(
 	if (contextOverflow || recoverableLength) {
 		const willRetry = assistantMessage.stopReason !== "stop";
 		if (!willRetry) {
+			// A complete answer stays the session's last answer for its readers; the clear runs before the next request.
+			if (isLiveTurnCompletion) return;
 			await this._runAutoCompaction("overflow", false);
 			return;
 		}
@@ -247,15 +243,15 @@ export async function _checkCompaction(
 		// Only usage-backed estimates need the stale pre-compaction check.
 		if (estimate.lastUsageIndex !== null) {
 			const usageMsg = messages[estimate.lastUsageIndex];
-			if (usageMsg.role === "assistant" && isFromBeforeCompactionBoundary(usageMsg as AssistantMessage)) {
-				await backgroundBoundary();
-				return;
-			}
+			if (usageMsg.role === "assistant" && isFromBeforeCompactionBoundary(usageMsg as AssistantMessage)) return;
 		}
 		contextTokens = estimate.tokens;
 	}
 	if (shouldCompact(contextTokens, contextWindow, settings)) {
 		const willRetry = shouldRetryAfterThresholdCompaction(assistantMessage, desiredMaxOutput, isLiveTurnCompletion);
+		// A turn that is not retried keeps its answer as the session's last answer for its readers (the caller, RPC,
+		// a workflow stage). The clear runs just before the next model request instead.
+		if (!willRetry && isLiveTurnCompletion) return;
 		if (willRetry && isRetryWorthyOutputBudgetError(assistantMessage)) {
 			if (this._outputBudgetErrorContinuationAttempts >= MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS) {
 				const errorMessage =
@@ -282,8 +278,6 @@ export async function _checkCompaction(
 		await this._runAutoCompaction("threshold", willRetry);
 		return;
 	}
-	if (!(await backgroundBoundary())) this._maybeStartBackgroundCompaction(contextTokens);
-
 	// A length stop that reached its requested output cap is not the
 	// context-limited truncation recovered above. Preserve Atomic's bounded
 	// direct-continuation policy for that distinct case.
@@ -586,47 +580,14 @@ export async function _runAutoCompaction(
 			return manualTakeoverPending ? "deferred" : "failed";
 		}
 
-		const ready = await this._useReadyBackgroundCompaction(this.model);
-		// Resolve auth only after extension hooks have had an opportunity to cancel
-		// compaction or provide compacted text, so local extension compaction does not
-		// require provider credentials. Missing auth then fails model-driven compaction
-		// before persistence or continuation, matching other provider-call failures.
-		let foregroundError: unknown;
-		let result: VerbatimCompactionResult | undefined;
-		if (ready?.sufficient === true) result = ready.result;
-		else {
-			try {
-				result =
-					(await this._applyVerbatimCompaction({
-						resolvePlannerAuth: async (candidate, signal) => {
-							const authResult = await this._getRequiredRequestAuth(candidate, signal ?? controller.signal);
-							return authResult.apiKey || authResult.headers ? authForStream(this, authResult) : undefined;
-						},
-						abortController: controller,
-						backupLabel: urgency === "load_bearing" ? "overflow-auto-compact" : "auto-compact",
-						reason,
-						urgency,
-						onCompactionSource: (value) => {
-							fromExtension = value;
-						},
-						// Only an actual context overflow proved the context cannot fit. A
-						// recoverable length stop must never reach the fresh-context fallback,
-						// and neither may an overflow that a committed background result
-						// already brought under the hard limit (#4977).
-						...(urgency === "load_bearing" &&
-						(ready === undefined || ready.projectedTokens > (this.model?.contextWindow ?? 0))
-							? { allowSmallRegion: true }
-							: {}),
-					})) ?? ready?.result;
-			} catch (error) {
-				// The committed background boundary is already in context: report it together with
-				// the foreground failure instead of a plain failure (#4977).
-				if (ready === undefined) throw error;
-				foregroundError = error;
-				result = ready.result;
-			}
-		}
-		const fromBackground = ready !== undefined && result === ready.result;
+		const result = await this._applyVerbatimCompaction({
+			abortController: controller,
+			backupLabel: urgency === "load_bearing" ? "overflow-auto-compact" : "auto-compact",
+			reason,
+			onCompactionSource: (value) => {
+				fromExtension = value;
+			},
+		});
 		if (!result) {
 			const manualTakeoverPending = hasPendingManualCompactionTakeover.call(this);
 			this._emit({
@@ -647,22 +608,6 @@ export async function _runAutoCompaction(
 			return manualTakeoverPending ? "deferred" : "not_compactable";
 		}
 
-		const foregroundAborted = foregroundError !== undefined && controller.signal.aborted;
-		if (foregroundAborted) {
-			const manualTakeoverPending = hasPendingManualCompactionTakeover.call(this);
-			this._emit({
-				type: "compaction_end",
-				reason,
-				result,
-				aborted: true,
-				willRetry: false,
-				...(manualTakeoverPending ? { manualTakeoverPending: true } : {}),
-				background: true,
-				...(ready?.cacheMiss ? { cacheMiss: ready.cacheMiss } : {}),
-			});
-			return manualTakeoverPending ? "deferred" : "failed";
-		}
-
 		if (willRetry) {
 			this._dropTrailingAutoCompactionRetryAssistantIfPresent();
 		}
@@ -673,12 +618,7 @@ export async function _runAutoCompaction(
 			result,
 			aborted: false,
 			willRetry,
-			...(foregroundError === undefined
-				? {}
-				: { errorMessage: autoCompactionFailureMessage(reason, urgency, foregroundError) }),
 			...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
-			...(fromBackground ? { background: true as const } : {}),
-			...(fromBackground && ready.cacheMiss ? { cacheMiss: ready.cacheMiss } : {}),
 		});
 		if (!hasPendingManualCompactionTakeover.call(this)) {
 			this._schedulePostAutoCompactionContinuationProbe(reason, willRetry);
@@ -721,7 +661,39 @@ export async function _runAutoCompaction(
  * Toggle auto-compaction setting.
  */
 
+/**
+ * Clear the context just before a continuation sends its next request, when it is over the automatic trigger. A turn
+ * that ended over the trigger left its answer in context for its readers; this is where that clear happens for queued
+ * messages and for a detached tool's result, as the prompt check does for a new prompt. Resolves whether it cleared.
+ */
+export async function _compactBeforeContinuation(this: AgentSession): Promise<boolean> {
+	const model = this.model;
+	if (!model) return false;
+	const settings = this.settingsManager.getCompactionSettings(model);
+	if (!settings.enabled) return false;
+	if (
+		this._compactionAbortController !== undefined ||
+		this._manualCompactionPromise !== undefined ||
+		this._autoCompactionAbortController !== undefined
+	)
+		return false;
+	if (!shouldCompact(estimateContextTokens(this.agent.state.messages).tokens, model.contextWindow, settings))
+		return false;
+	return (await this._runAutoCompaction("threshold", false)) === "compacted";
+}
+
+/**
+ * Continue the agent after the pre-request check. After a clear, queued input is the next request's prompt, as a new
+ * prompt would be, rather than waiting behind a turn over the cleared context.
+ */
+export async function _continueAgentAfterCompactionCheck(this: AgentSession): Promise<void> {
+	if ((await this._compactBeforeContinuation()) && (await this.agent.promptQueuedMessages())) return;
+	await this.agent.continue();
+}
+
 export const agentSessionAutoCompactionMethods = {
+	_compactBeforeContinuation,
+	_continueAgentAfterCompactionCheck,
 	_awaitPendingPostCompactionContinuation,
 	_checkCompaction,
 	_dropTrailingAutoCompactionRetryAssistantIfPresent,

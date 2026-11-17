@@ -12,28 +12,8 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
-const compactionMocks = vi.hoisted(() => ({
-	runVerbatimCompaction: vi.fn(async (..._args: unknown[]) => ({
-		text: "[User]: retained test context\n(filtered 1 lines)",
-		ranges: [{ start: 2, end: 2 }],
-		stats: {
-			linesBefore: 2,
-			linesDeleted: 1,
-			linesKept: 1,
-			rangeCount: 1,
-			tokensBefore: 100,
-			tokensAfter: 50,
-			percentReduction: 50,
-		},
-		rung: "planned" as const,
-		keptTail: true,
-		releasedRanges: [],
-	})),
-}));
-
-vi.mock("../src/core/compaction/index.js", () => ({
-	VERBATIM_COMPACTION_PROMPT_VERSION: 3,
-	VERBATIM_COMPACTION_STRATEGY: "verbatim-lines",
+vi.mock("../src/core/compaction/index.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/core/compaction/index.js")>()),
 	calculateContextTokens: (usage: {
 		input: number;
 		output: number;
@@ -42,7 +22,6 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		totalTokens?: number;
 	}) => usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
 	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
-	runVerbatimCompaction: compactionMocks.runVerbatimCompaction,
 	estimateContextTokens: (
 		messages: Array<{
 			role: string;
@@ -62,25 +41,6 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		return { tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null };
 	},
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
-	MIN_COMPACTABLE_REGION_LINES: 20,
-	prepareCompactionBoundary: (entries: Array<{ id: string }>) =>
-		entries[0]
-			? {
-					firstKeptEntryId: entries[0].id,
-					region: {
-						__brand: "NumberedRegion",
-						lines: ["[User]: test", ...Array.from({ length: 24 }, (_, index) => `body ${index + 1}`)],
-						headerLineNumbers: new Set([1]),
-						priorMarkerNs: new Map(),
-						tokenEstimate: 10,
-					},
-					regionEntryIds: [entries[0].id],
-					keptTailMessageCount: 1,
-					tokensBefore: 100,
-					parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
-					settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
-				}
-			: undefined,
 	shouldCompact: (
 		contextTokens: number,
 		contextWindow: number,
@@ -93,7 +53,6 @@ describe("AgentSession auto-compaction queue resume", () => {
 	let tempDir: string;
 
 	beforeEach(async () => {
-		compactionMocks.runVerbatimCompaction.mockClear();
 		tempDir = join(tmpdir(), `pi-auto-compaction-queue-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 		vi.useFakeTimers();
@@ -198,7 +157,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(errors).toEqual(["Post-compaction continuation failed: boom"]);
 	});
 
-	it("should trigger threshold compaction for error messages using last successful usage", async () => {
+	it("should trigger threshold compaction before the next request for error messages using last successful usage", async () => {
 		const model = session.model!;
 
 		// A successful assistant message with high token usage (near context limit)
@@ -263,11 +222,14 @@ describe("AgentSession auto-compaction queue resume", () => {
 			}
 		)._checkCompaction.bind(session);
 
+		// The turn that ended keeps the context; the clear is decided again before the next request.
 		await checkCompaction(errorAssistant);
+		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
 
+		await checkCompaction(errorAssistant, false);
 		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
 	});
-	it("should compact but not retry successful responses that report overflow-sized usage", async () => {
+	it("should compact before the next request, without a retry, after a successful response that reports overflow-sized usage", async () => {
 		const model = session.model!;
 		const successfulOverflow: AssistantMessage = {
 			role: "assistant",
@@ -305,10 +267,13 @@ describe("AgentSession auto-compaction queue resume", () => {
 			}
 		)._checkCompaction.bind(session);
 
+		// The completed answer stays in context for its readers; the clear runs before the next request.
 		await checkCompaction(successfulOverflow);
-
-		expect(runAutoCompactionSpy).toHaveBeenCalledWith("overflow", false);
+		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
 		expect(session.agent.state.messages.at(-1)).toBe(successfulOverflow);
+
+		await checkCompaction(successfulOverflow, false);
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("overflow", false);
 	});
 
 	it("should not trigger threshold compaction for error messages when no prior usage exists", async () => {

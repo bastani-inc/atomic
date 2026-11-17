@@ -9,17 +9,6 @@ export const SETTINGS_DEFAULTS = {
 	compaction: {
 		enabled: true,
 		reserveTokens: 16384,
-		compression_ratio: 0.5,
-		preserve_recent: 2,
-		/** Share of the keep target `<keepContext>` spans may fill before older spans are released (#4794). */
-		keepContextShare: 0.5,
-		/** Wall-clock limit on automatic compaction's model planning, so it cannot block a turn (#4198). */
-		planningTimeoutMs: 300_000,
-		/** Compact a frozen prefix in the background past the soft threshold; commit at a turn boundary (#4330). */
-		background: true,
-		backgroundThresholdPercent: 75,
-		/** Add lines from earlier history that match the current task to each compacted context (#4568). */
-		historyRecall: true,
 	},
 	branchSummary: {
 		reserveTokens: 16384,

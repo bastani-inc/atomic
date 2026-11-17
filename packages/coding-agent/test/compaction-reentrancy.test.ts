@@ -85,12 +85,11 @@ function createCommittedAutomaticGate() {
 	const released = new Promise<void>((resolve) => {
 		release = resolve;
 	});
-	const calls: Array<{ reason: string; preserveRecent: number; query: string }> = [];
+	const calls: Array<{ reason: string; query: string }> = [];
 	const factory: ExtensionFactory = (pi) => {
 		pi.on("session_before_compact", (event) => {
 			calls.push({
 				reason: event.reason,
-				preserveRecent: event.parameters.preserve_recent,
 				query: event.parameters.query,
 			});
 			return {
@@ -208,10 +207,10 @@ describe("manual compaction re-entrancy", () => {
 		const gate = createGate();
 		const harness = await createHarness(gate.factory);
 
-		const first = harness.session.compact({ preserve_recent: 2 });
+		const first = harness.session.compact();
 		await gate.started;
 		expect(harness.session.isCompacting).toBe(true);
-		const second = harness.session.compact({ preserve_recent: 2 });
+		const second = harness.session.compact();
 		gate.release();
 		const [firstResult, secondResult] = await Promise.all([first, second]);
 
@@ -240,9 +239,9 @@ describe("manual compaction re-entrancy", () => {
 		};
 		const harness = await createHarness(abortable);
 
-		const first = harness.session.compact({ preserve_recent: 2 });
+		const first = harness.session.compact();
 		await started;
-		const second = harness.session.compact({ preserve_recent: 2 });
+		const second = harness.session.compact();
 		harness.session.abortCompaction();
 
 		await expect(first).rejects.toThrow(/Compaction cancelled/);
@@ -263,7 +262,7 @@ describe("manual compaction re-entrancy", () => {
 		void rejectedQueue.catch(() => {});
 		(harness.session as unknown as { _agentEventQueue: Promise<void> })._agentEventQueue = rejectedQueue;
 
-		await expect(harness.session.compact({ preserve_recent: 2 })).rejects.toThrow(failure.message);
+		await expect(harness.session.compact()).rejects.toThrow(failure.message);
 
 		expect(harness.eventsOfType("compaction_start")).toEqual([]);
 		expect(harness.eventsOfType("compaction_end")).toEqual([
@@ -298,7 +297,7 @@ describe("manual compaction re-entrancy", () => {
 
 		let manual: Promise<unknown> | undefined;
 		try {
-			manual = harness.session.compact({ preserve_recent: 2 });
+			manual = harness.session.compact();
 			void manual.catch(() => {});
 			await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			expect(unhandledRejections).toEqual([]);
@@ -319,7 +318,7 @@ describe("manual compaction re-entrancy", () => {
 		const responseGate = createResponseGate();
 		const harness = await createHarnessWithExtensions({
 			model: { ...fauxModel, contextWindow: 1_000_000, maxTokens: 100 },
-			settings: { compaction: { enabled: true, reserveTokens: 100, preserve_recent: 2 } },
+			settings: { compaction: { enabled: true, reserveTokens: 100 } },
 			tools: [noopTool],
 			responses: [
 				{ toolCalls: [{ id: "noop-1", name: "noop", args: {} }], usage: { input: 100, output: 10 } },
@@ -356,7 +355,7 @@ describe("manual compaction re-entrancy", () => {
 		expect(abortedResponseIndex).toBeGreaterThanOrEqual(0);
 		expect(compactionIndex).toBeGreaterThan(abortedResponseIndex);
 		expect(entries.filter((entry) => entry.type === "compaction")).toHaveLength(1);
-		expect(manualResult.compactedText).toBe("manual summary");
+		expect(manualResult.compactedText).toContain("<compacted-context>\nmanual summary\n</compacted-context>");
 	});
 
 	it("cancels an in-flight automatic compaction before running the manual request", async () => {
@@ -365,12 +364,14 @@ describe("manual compaction re-entrancy", () => {
 		const automatic = (harness.session as AutoCompactionRunner)._runAutoCompaction("threshold", false);
 		await gate.started;
 
-		const manual = harness.session.compact({ preserve_recent: 2 });
+		const manual = harness.session.compact();
 		gate.release();
 		const manualResult = await manual;
 		await automatic;
 
-		expect(manualResult.compactedText).toBe("[User]: retained exactly\n(filtered 3 lines)");
+		expect(manualResult.compactedText).toContain(
+			"<compacted-context>\n[User]: retained exactly\n(filtered 3 lines)\n</compacted-context>",
+		);
 		expect(gate.calls).toEqual(["threshold", "manual"]);
 		expect(harness.eventsOfType("compaction_start").map((event) => event.reason)).toEqual(["threshold", "manual"]);
 		expect(harness.eventsOfType("compaction_end")).toEqual([
@@ -393,25 +394,20 @@ describe("manual compaction re-entrancy", () => {
 			);
 			await gate.committed;
 
-			const manual = harness.session.compact({ preserve_recent: 0, query: "manual-only-query" });
+			const manual = harness.session.compact({ query: "manual-only-query" });
 			gate.release();
-			const manualResult = await manual;
+			// The automatic boundary already cleared the context, so the manual request finds nothing new.
+			await expect(manual).rejects.toThrow(/Nothing to compact/u);
 			await automatic;
 			await vi.advanceTimersByTimeAsync(100);
 
 			expect(continueSpy).not.toHaveBeenCalled();
-			expect(manualResult.compactedText).toBe("manual summary");
-			expect(gate.calls.at(-1)).toEqual({
-				reason: "manual",
-				preserveRecent: 0,
-				query: "manual-only-query",
-			});
 			expect(harness.eventsOfType("compaction_start").map((event) => event.reason)).toEqual(["threshold", "manual"]);
 			expect(harness.eventsOfType("compaction_end")).toEqual([
 				expect.objectContaining({ reason: "threshold", aborted: false, manualTakeoverPending: true }),
 				expect.objectContaining({ reason: "manual", aborted: false }),
 			]);
-			expect(boundaryCount(harness)).toBe(2);
+			expect(boundaryCount(harness)).toBe(1);
 		} finally {
 			gate.release();
 			continueSpy.mockRestore();
@@ -435,7 +431,7 @@ describe("manual compaction re-entrancy", () => {
 			const autoStartedAt = harness.session.compactionStartedAt;
 			expect(autoStartedAt).toBeTypeOf("number");
 			await vi.advanceTimersByTimeAsync(5_000);
-			const manual = harness.session.compact({ preserve_recent: 0, query: "manual-only-query" });
+			const manual = harness.session.compact({ query: "manual-only-query" });
 			expect(harness.session.compactionStartedAt).toBe(autoStartedAt);
 			await vi.advanceTimersByTimeAsync(3_000);
 			let manualStartedAt: number | undefined;
@@ -445,7 +441,7 @@ describe("manual compaction re-entrancy", () => {
 				}
 			});
 			gate.release();
-			await manual;
+			await manual.catch(() => undefined);
 			unsub();
 			await automatic;
 			await vi.advanceTimersByTimeAsync(100);
@@ -478,7 +474,7 @@ describe("manual compaction re-entrancy", () => {
 			);
 			await automatic;
 
-			await harness.session.compact({ preserve_recent: 0 });
+			await expect(harness.session.compact()).rejects.toThrow(/Nothing to compact/u);
 			await vi.advanceTimersByTimeAsync(100);
 
 			expect(continueSpy).not.toHaveBeenCalled();
@@ -492,7 +488,7 @@ describe("manual compaction re-entrancy", () => {
 		const gate = createGate();
 		const harness = await createHarness(gate.factory);
 
-		const manual = harness.session.compact({ preserve_recent: 2 });
+		const manual = harness.session.compact();
 		await gate.started;
 
 		expect((harness.session as unknown as { _unsubscribeAgent?: () => void })._unsubscribeAgent).toBeTypeOf(
@@ -515,7 +511,7 @@ describe("manual compaction re-entrancy", () => {
 			queuedPrompt = harness.session.prompt("queued after compaction");
 		});
 
-		const manual = harness.session.compact({ preserve_recent: 2 });
+		const manual = harness.session.compact();
 		await gate.started;
 		gate.release();
 		await manual;
@@ -537,11 +533,11 @@ describe("manual compaction re-entrancy", () => {
 			requestedFollowUp = true;
 			followUp = (async () => {
 				await seedTranscript(harness);
-				return harness.session.compact({ preserve_recent: 2 });
+				return harness.session.compact();
 			})();
 		});
 
-		const first = harness.session.compact({ preserve_recent: 2 });
+		const first = harness.session.compact();
 		await gate.started;
 		gate.release();
 		await first;
@@ -557,7 +553,7 @@ describe("manual compaction re-entrancy", () => {
 	it("compacts and resumes a response truncated below its requested output limit", async () => {
 		const harness = await createHarnessWithExtensions({
 			model: { ...fauxModel, contextWindow: 1_000_000, maxTokens: 100 },
-			settings: { compaction: { enabled: true, reserveTokens: 0, preserve_recent: 2 } },
+			settings: { compaction: { enabled: true, reserveTokens: 0 } },
 			responses: [
 				{ text: "partial response", stopReason: "length", usage: { input: 100, output: 50, totalTokens: 150 } },
 				{ text: "completed response", stopReason: "stop", usage: { input: 100, output: 50, totalTokens: 150 } },
@@ -589,7 +585,7 @@ describe("manual compaction re-entrancy", () => {
 	it("stops after one compact-and-retry when a second response is truncated", async () => {
 		const harness = await createHarnessWithExtensions({
 			model: { ...fauxModel, contextWindow: 1_000_000, maxTokens: 100 },
-			settings: { compaction: { enabled: true, reserveTokens: 0, preserve_recent: 2 } },
+			settings: { compaction: { enabled: true, reserveTokens: 0 } },
 			responses: [
 				{
 					text: "first partial response",
@@ -628,7 +624,7 @@ describe("manual compaction re-entrancy", () => {
 	it("limits an uncompactable below-cap response to one recovery retry", async () => {
 		const harness = await createHarnessWithExtensions({
 			model: { ...fauxModel, contextWindow: 1_000_000, maxTokens: 100 },
-			settings: { compaction: { enabled: true, reserveTokens: 0, preserve_recent: 2 } },
+			settings: { compaction: { enabled: true, reserveTokens: 0 } },
 			responses: [
 				{
 					text: "first partial response",
@@ -665,7 +661,7 @@ describe("manual compaction re-entrancy", () => {
 	it("still runs load-bearing overflow recovery after an uncompactable below-cap retry", async () => {
 		const harness = await createHarnessWithExtensions({
 			model: { ...fauxModel, contextWindow: 1_000_000, maxTokens: 100 },
-			settings: { compaction: { enabled: true, reserveTokens: 0, preserve_recent: 2 } },
+			settings: { compaction: { enabled: true, reserveTokens: 0 } },
 			responses: [
 				{
 					text: "partial response",
@@ -711,7 +707,7 @@ describe("manual compaction re-entrancy", () => {
 		const gate = createGate();
 		const harness = await createHarness(gate.factory);
 
-		const first = harness.session.compact({ preserve_recent: 2 });
+		const first = harness.session.compact();
 		await gate.started;
 		gate.release();
 		await first;
@@ -719,9 +715,9 @@ describe("manual compaction re-entrancy", () => {
 
 		// Fresh transcript so the released latch can own a second physical run.
 		await seedTranscript(harness);
-		const second = await harness.session.compact({ preserve_recent: 2 });
+		const second = await harness.session.compact();
 
-		expect(second.rung).toBe("extension");
+		expect(second.backend).toBe("extension");
 		expect(gate.calls).toEqual(["manual", "manual"]);
 		expect(harness.eventsOfType("compaction_start")).toHaveLength(2);
 		expect(boundaryCount(harness)).toBe(2);
@@ -729,7 +725,7 @@ describe("manual compaction re-entrancy", () => {
 	test("records and clears the active reason for manual and automatic compaction", async () => {
 		const manualGate = createGate();
 		const manualHarness = await createHarness(manualGate.factory);
-		const manual = manualHarness.session.compact({ preserve_recent: 2 });
+		const manual = manualHarness.session.compact();
 		await manualGate.started;
 		assert.equal(manualHarness.session.compactionReason, "manual");
 		manualGate.release();

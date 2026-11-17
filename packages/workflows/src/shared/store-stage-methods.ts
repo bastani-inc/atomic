@@ -1,4 +1,3 @@
-import type { SerializedBackgroundCompactionState } from "@bastani/atomic";
 import {
 	cannotAwaitInput,
 	cannotBlock,
@@ -22,7 +21,6 @@ type StageStoreMethods = Pick<
 	| "recordStageEnd"
 	| "recordStageSession"
 	| "recordStageAttachable"
-	| "recordStageCompaction"
 	| "recordStageAttached"
 	| "recordStageAwaitingInput"
 	| "recordStageInputRequest"
@@ -167,17 +165,6 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			} else {
 				stage.attachable = next;
 			}
-			context.bumpAndNotify({ runId, stageId });
-			return true;
-		},
-
-		recordStageCompaction(runId: string, stageId: string, compaction: SerializedBackgroundCompactionState): boolean {
-			const run = context.findRun(runId);
-			if (!run) return false;
-			const stage = context.findStage(run, stageId);
-			if (!stage) return false;
-			if (compaction.state === "idle" && stage.compaction === undefined) return false;
-			stage.compaction = compaction;
 			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},

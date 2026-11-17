@@ -47,8 +47,11 @@ describe("#8328 zero-usage auto-compaction", () => {
 		const internals = sessionInternals(harness.session);
 		const run = vi.spyOn(internals, "_runAutoCompaction").mockResolvedValue("failed");
 
+		// The turn that just ended keeps its answer; the clear is decided again before the next request.
 		await internals._checkCompaction(assistant);
+		expect(run).not.toHaveBeenCalled();
 
+		await internals._checkCompaction(assistant, false);
 		expect(run).toHaveBeenCalledWith("threshold", false);
 	});
 });

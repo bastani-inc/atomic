@@ -387,7 +387,11 @@ describe("settings.json schema", () => {
 		);
 		assert.equal(validator.Check({ cacheWarming: "always" }), false);
 		assert.equal(validator.Check({ workflows: { journal: { path: "runs.sqlite", memory: true } } }), false);
-		assert.equal(validator.Check({ compaction: { compression_ratio: 1 } }), false);
+		// Removed compaction keys are ignored, so a stale value never makes settings invalid.
+		assert.equal(
+			validator.Check({ compaction: { compression_ratio: 1, background: "yes", planningTimeoutMs: -1 } }),
+			true,
+		);
 	});
 
 	it("validates public workflow worker and admission settings (#3869)", () => {
@@ -468,12 +472,7 @@ describe("settings.json schema", () => {
 		const validator = Compile(SettingsSchema);
 		const invalidSettings = [
 			{ compaction: { reserveTokens: -1 } },
-			{ compaction: { preserve_recent: 1.5 } },
-			{
-				compaction: {
-					modelOverrides: { "provider/model": { reserveTokens: Number.MAX_SAFE_INTEGER + 1 } },
-				},
-			},
+			{ compaction: { reserveTokens: 1.5 } },
 			{ httpIdleTimeoutMs: -1 },
 			{ websocketConnectTimeoutMs: -1 },
 			{ httpIdleTimeoutMs: "bogus" },
@@ -484,11 +483,11 @@ describe("settings.json schema", () => {
 			assert.equal(validator.Check(invalid), false, JSON.stringify(invalid));
 		}
 		assert.throws(() => SettingsManager.inMemory(invalidSettings[0]).getCompactionReserveTokens());
-		assert.throws(() => SettingsManager.inMemory(invalidSettings[1]).getCompactionPreserveRecent());
-		assert.throws(() => SettingsManager.inMemory(invalidSettings[3]).getHttpIdleTimeoutMs());
-		assert.throws(() => SettingsManager.inMemory(invalidSettings[4]).getWebSocketConnectTimeoutMs());
-		assert.throws(() => SettingsManager.inMemory(invalidSettings[5]).getHttpIdleTimeoutMs());
-		assert.throws(() => SettingsManager.inMemory(invalidSettings[6]).getStreamDeadlineMs());
+		assert.throws(() => SettingsManager.inMemory(invalidSettings[1]).getCompactionReserveTokens());
+		assert.throws(() => SettingsManager.inMemory(invalidSettings[2]).getHttpIdleTimeoutMs());
+		assert.throws(() => SettingsManager.inMemory(invalidSettings[3]).getWebSocketConnectTimeoutMs());
+		assert.throws(() => SettingsManager.inMemory(invalidSettings[4]).getHttpIdleTimeoutMs());
+		assert.throws(() => SettingsManager.inMemory(invalidSettings[5]).getStreamDeadlineMs());
 		assert.equal(
 			validator.Check({
 				compaction: {
@@ -554,13 +553,7 @@ describe("settings.json schema", () => {
 		assert.equal(settings.getTransport(), defaults.transport);
 		assert.equal(settings.getSteeringMode(), defaults.steeringMode);
 		assert.equal(settings.getFollowUpMode(), defaults.followUpMode);
-		const { planningTimeoutMs, background, backgroundThresholdPercent, historyRecall, ...compactionDefaults } =
-			defaults.compaction;
-		assert.deepEqual(settings.getCompactionSettings(), compactionDefaults);
-		assert.equal(settings.getCompactionHistoryRecall(), historyRecall);
-		assert.equal(settings.getCompactionPlanningTimeoutMs(), planningTimeoutMs);
-		assert.equal(settings.getCompactionBackground(), background);
-		assert.equal(settings.getCompactionBackgroundThresholdPercent(), backgroundThresholdPercent);
+		assert.deepEqual(settings.getCompactionSettings(), defaults.compaction);
 		assert.deepEqual(settings.getBranchSummarySettings(), defaults.branchSummary);
 		assert.deepEqual(settings.getSessionSummarySettings(), defaults.sessionSummary);
 		assert.deepEqual(settings.getRetrySettings(), {
