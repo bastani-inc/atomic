@@ -57,37 +57,39 @@ export function questionIdentity(question: PooledStageQuestion): string {
  * replacement then asks again.
  */
 export class HeldPromptAnswers {
-	private readonly held = new Map<string, HeldAnswer & { readonly runId: string }>();
+	private readonly held = new Map<string, HeldAnswer & { readonly runId: string; readonly stageId: string }>();
 
 	hold(runId: string, stageId: string, answer: HeldAnswer): void {
-		this.held.set(JSON.stringify([runId, stageId]), { ...answer, runId });
+		this.held.set(JSON.stringify([runId, stageId, answer.kind]), { ...answer, runId, stageId });
 	}
 
 	/** Discards a held answer the stage's latest publication, by attempt `generation`, shows is no longer wanted. */
 	settle(runId: string, stage: StageSnapshot, generation: number): void {
-		const key = JSON.stringify([runId, stage.id]);
-		const held = this.held.get(key);
-		if (held === undefined) return;
-		if (held.kind === "prompt" && held.delivered === true && generation <= held.generation) return;
-		if (isTerminalStageStatus(stage.status)) {
-			this.held.delete(key);
-			return;
-		}
-		// The attempt that refused it is live and no longer asks it: it was answered there after all.
-		if (generation === held.generation) {
-			if (stage.pendingPrompt?.id !== held.promptId && stage.inputRequest?.id !== held.promptId)
+		for (const kind of ["prompt", "question"] as const) {
+			const key = JSON.stringify([runId, stage.id, kind]);
+			const held = this.held.get(key);
+			if (held === undefined) continue;
+			if (held.kind === "prompt" && held.delivered === true && generation <= held.generation) continue;
+			if (isTerminalStageStatus(stage.status)) {
 				this.held.delete(key);
-			return;
+				continue;
+			}
+			if (generation === held.generation) {
+				const promptId = held.kind === "prompt" ? stage.pendingPrompt?.id : stage.inputRequest?.id;
+				if (promptId !== held.promptId) this.held.delete(key);
+				continue;
+			}
+			if (generation < held.generation) continue;
+			const asksOther =
+				held.kind === "prompt"
+					? stage.pendingPrompt !== undefined
+						? promptIdentity(stage.pendingPrompt) !== held.identity
+						: stage.inputRequest !== undefined
+					: stage.inputRequest !== undefined
+						? stage.inputRequest.id !== held.promptId
+						: stage.pendingPrompt !== undefined;
+			if (asksOther) this.held.delete(key);
 		}
-		if (generation < held.generation) return;
-		// A later attempt asks something else first: show that, never answer it with this.
-		const asksOther =
-			held.kind === "prompt"
-				? stage.inputRequest !== undefined ||
-					(stage.pendingPrompt !== undefined && promptIdentity(stage.pendingPrompt) !== held.identity)
-				: stage.pendingPrompt !== undefined ||
-					(stage.inputRequest !== undefined && stage.inputRequest.id !== held.promptId);
-		if (asksOther) this.held.delete(key);
 	}
 
 	/**
@@ -98,9 +100,9 @@ export class HeldPromptAnswers {
 	settleRun(runId: string, stages: readonly StageSnapshot[], generation: number): void {
 		const asking = stages.some((stage) => stage.pendingPrompt !== undefined || stage.inputRequest !== undefined);
 		if (!asking) return;
-		const present = new Set(stages.map((stage) => JSON.stringify([runId, stage.id])));
+		const present = new Set(stages.map((stage) => stage.id));
 		for (const [key, held] of this.held)
-			if (held.runId === runId && generation > held.generation && !present.has(key)) this.held.delete(key);
+			if (held.runId === runId && generation > held.generation && !present.has(held.stageId)) this.held.delete(key);
 	}
 
 	/**
@@ -108,7 +110,7 @@ export class HeldPromptAnswers {
 	 * outcome is held for a later attempt's prompt, and this attempt's view of it is out of date.
 	 */
 	awaitsLaterAttempt(runId: string, stageId: string, promptId: string, generation: number): boolean {
-		const held = this.held.get(JSON.stringify([runId, stageId]));
+		const held = this.held.get(JSON.stringify([runId, stageId, "prompt"]));
 		return (
 			held !== undefined &&
 			(generation < held.generation || (generation === held.generation && promptId === held.promptId))
@@ -122,7 +124,7 @@ export class HeldPromptAnswers {
 		prompt: PendingPrompt,
 		generation: number,
 	): HeldPromptOutcome | undefined {
-		const key = JSON.stringify([runId, stageId]);
+		const key = JSON.stringify([runId, stageId, "prompt"]);
 		const held = this.held.get(key);
 		if (held === undefined || generation <= held.generation) return undefined;
 		this.held.delete(key);
@@ -137,7 +139,7 @@ export class HeldPromptAnswers {
 		question: PooledStageQuestion,
 		generation: number,
 	): HeldQuestionOutcome | undefined {
-		const key = JSON.stringify([runId, stageId]);
+		const key = JSON.stringify([runId, stageId, "question"]);
 		const held = this.held.get(key);
 		if (held === undefined || generation <= held.generation) return undefined;
 		this.held.delete(key);

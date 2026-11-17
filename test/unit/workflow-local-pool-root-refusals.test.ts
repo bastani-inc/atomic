@@ -33,7 +33,7 @@ import { type HeldPromptAnswers, promptIdentity } from "../../packages/workflows
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { type PublishedRun, RunChangesEncoder } from "../../packages/workflows/src/workers/run-changes.js";
 import { PoolStageHandoff, type PoolStageQueue } from "../../packages/workflows/src/workers/stage-handoff.js";
-import type { PooledStageQuestion } from "../../packages/workflows/src/workers/stage-watch-types.js";
+import type { PooledStageQuestion, PromptResult } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { publicationRejected, staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { testRunId } from "../helpers/run-id.js";
@@ -90,6 +90,7 @@ interface RootPoolOptions {
 	/** Whether the root has a store, and so a stage handoff; without one it only keeps a coordinator's work. */
 	readonly handoff?: boolean;
 	readonly question?: PooledStageQuestion;
+	readonly answerResult?: () => PromptResult;
 }
 
 /** A pool bound to a root whose journal holds one claimed work, with a coordinator that only records what it is sent. */
@@ -143,14 +144,18 @@ async function rootPool(options: RootPoolOptions = {}) {
 		port: {
 			send(message) {
 				sent.push(message);
-				// The coordinator answers every command the pool sends it as having succeeded.
 				if ("id" in message && "kind" in message && message.kind !== "request-reply")
 					queueMicrotask(
 						() =>
 							void internals.receive({
 								kind: "reply",
 								id: message.id,
-								value: message.kind === "stage-question" ? options.question : { ok: true },
+								value:
+									message.kind === "stage-question"
+										? options.question
+										: message.kind === "stage-answer"
+											? (options.answerResult?.() ?? { ok: true })
+											: { ok: true },
 							}),
 					);
 			},
@@ -754,6 +759,143 @@ test.each(["question-first", "dialog-first", "same-publication"] as const)(
 			);
 			assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.pendingPrompt, undefined);
 			assert.equal(questionSignals.length, 1);
+		} finally {
+			unbind();
+			broker.cancelStagePrompt(descriptor.childRunId, "ask", new Error("cleanup"));
+			await pool.dispose();
+		}
+	},
+);
+
+test.each([
+	["question-then-dialog", "question-only"],
+	["dialog-then-question", "question-only"],
+	["question-then-dialog", "stacked"],
+	["dialog-then-question", "stacked"],
+] as const)(
+	"a replacement receives a held question answer once with %s SDK answers and a %s publication (#4022)",
+	async (order, replacementRequests) => {
+		const question: PooledStageQuestion = {
+			promptId: "question-1",
+			kind: "ask_user_question",
+			params: {
+				questions: [
+					{
+						question: "Choose",
+						header: "Choice",
+						options: [
+							{ label: "A", description: "First" },
+							{ label: "B", description: "Second" },
+						],
+					},
+				],
+			},
+		};
+		let replacementLive = false;
+		const pool = await rootPool({
+			question,
+			answerResult: () => (replacementLive ? { ok: true } : { ok: false, refusal: "StaleAttempt" }),
+		});
+		const broker = adoptStageUiBroker({}, false, pool.store);
+		pool.internals.questionBroker = broker;
+		const dialogReply = Promise.withResolvers<boolean>();
+		const questionReply = Promise.withResolvers<QuestionnaireResult>();
+		const replacementDialogReply = Promise.withResolvers<boolean>();
+		let questionPresentations = 0;
+		let dialogPresentations = 0;
+		const confirm = async () => {
+			dialogPresentations++;
+			return dialogPresentations === 1 ? dialogReply.promise : replacementDialogReply.promise;
+		};
+		const ui = {
+			confirm,
+			[Symbol.for("atomic-coding-agent/workflow-input@1")]: {
+				active: () => true,
+				available: () => true,
+				bindingRevision: () => 0,
+				subscribe: () => () => {},
+				scope: () => ({
+					ui: { confirm },
+					questionnaire: () => {
+						questionPresentations++;
+						return questionReply.promise;
+					},
+				}),
+			},
+		} as PiUISurface;
+		const unbind = bindWorkflowHumanInput(pool.store, { hasUI: false, hasHumanInput: true, ui }, broker);
+		const prompt: PendingPrompt = {
+			id: "dialog-1",
+			kind: "confirm",
+			source: "stage-dialog",
+			message: "Allow worker action?",
+			createdAt: Date.now(),
+		};
+		const inputRequest = buildStagePromptAdapter(
+			question.promptId,
+			question.kind,
+			question.params,
+			Date.now(),
+		)!.prompt;
+		const answer: QuestionnaireResult = {
+			cancelled: false,
+			answers: [{ questionIndex: 0, question: "Choose", kind: "option", answer: "A" }],
+		};
+		try {
+			pool.known();
+			assert.deepEqual(
+				await pool.publish([
+					childRun([stage("ask", { status: "awaiting_input", inputRequest, pendingPrompt: prompt })]),
+				]),
+				[],
+			);
+			await settled();
+			assert.equal(questionPresentations, 1);
+			assert.equal(dialogPresentations, 1);
+			assert.equal(pool.commands("stage-answer").length, 0);
+
+			if (order === "question-then-dialog") questionReply.resolve(answer);
+			else dialogReply.resolve(true);
+			await settled();
+			assert.equal(pool.commands("stage-answer").length, 1, "the dead attempt refused the first answer");
+			if (order === "question-then-dialog") dialogReply.resolve(true);
+			else questionReply.resolve(answer);
+			await settled();
+			assert.deepEqual(
+				pool.commands("stage-answer").map(({ answer }) => answer.kind),
+				order === "question-then-dialog" ? ["input", "prompt"] : ["prompt", "input"],
+			);
+
+			replacementLive = true;
+			const replacement = pool.tokenOf({ generation: 2 });
+			const publication = childRun([
+				stage("ask", {
+					status: "awaiting_input",
+					inputRequest,
+					...(replacementRequests === "stacked" ? { pendingPrompt: { ...prompt, id: "dialog-replacement" } } : {}),
+				}),
+			]);
+			assert.deepEqual(await pool.publish([publication], replacement), []);
+			await settled();
+			assert.equal(questionPresentations, 1, "the replacement must reuse the held answer without asking again");
+			assert.equal(dialogPresentations, replacementRequests === "stacked" ? 2 : 1);
+			assert.deepEqual(
+				pool
+					.commands("stage-answer")
+					.slice(2)
+					.map(({ runId, stageId, answer }) => ({ runId, stageId, answer })),
+				[
+					{
+						runId: descriptor.childRunId,
+						stageId: "ask",
+						answer: { kind: "input", promptId: question.promptId, answer: { raw: answer } },
+					},
+				],
+			);
+			assert.deepEqual(await pool.publish([publication], replacement), []);
+			await settled();
+			assert.equal(questionPresentations, 1);
+			assert.equal(pool.commands("stage-answer").length, 3, "the held question answer reaches the replacement once");
 		} finally {
 			unbind();
 			broker.cancelStagePrompt(descriptor.childRunId, "ask", new Error("cleanup"));
