@@ -31,7 +31,7 @@ description: The intercom tool contract and every intercom setting.
 | `reply` | Replies to the intercom-triggered message of the current turn; otherwise falls back to the single unresolved inbound ask. With multiple pending asks, pass `to` or inspect with `pending` first. |
 | `pending` | Lists unresolved inbound asks with sender, message ID, elapsed time, and a short preview, and your own asks still waiting for a reply with ask ID, target, elapsed time, and the question. |
 | `cancel` | Cancels one of your pending asks by `askId`. A reply that still arrives is shown once, marked late. |
-| `status` | Shows connection status, session ID, every group this session belongs to, the count of active sessions visible through those memberships, and the broker's multi-node routing state with the number of other brokers live in the shared database. A `group` filter remains a read-only peek. |
+| `status` | Shows connection status, session ID, every group this session belongs to (and, with a [reach policy](#reach-policies), its reachable groups), the count of active sessions visible through those memberships, and the broker's multi-node routing state with the number of other brokers live in the shared database. A `group` filter remains a read-only peek. |
 
 To give two plain chat sessions a private shared membership, have both call:
 

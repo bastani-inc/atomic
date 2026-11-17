@@ -1696,7 +1696,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             return {
               content: [{
                 type: "text",
-                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroups: ${ownGroups.join(", ")}\nActive visible sessions: ${sessions.length}${selectedSection}${multiNodeSection}\nYour asks awaiting a reply: ${outboundAsks().pending().length}`,
+                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroups: ${ownGroups.join(", ")}${reach === undefined ? "" : `\nReachable groups: ${reach.reachable.join(", ") || "none"}`}\nActive visible sessions: ${sessions.length}${selectedSection}${multiNodeSection}\nYour asks awaiting a reply: ${outboundAsks().pending().length}`,
               }],
               isError: false,
               structuredContent: {
