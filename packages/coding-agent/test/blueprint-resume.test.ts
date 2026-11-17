@@ -525,26 +525,26 @@ describe("recording the blueprint context in the session (#4588)", () => {
 });
 
 describe("finding the repository a directory is in (#4588)", () => {
-	test("the nearest directory upward that has a .git, whether a directory or a file (#4588)", () => {
+	test("the nearest directory upward that has a .git, whether a directory or a file (#4588)", async () => {
 		mkdirSync(sandbox.path("outer", ".git"), { recursive: true });
 		mkdirSync(sandbox.path("outer", "pkg", "src"), { recursive: true });
 		sandbox.write(sandbox.path("outer", "linked", ".git"), "gitdir: elsewhere\n");
 		mkdirSync(sandbox.path("outer", "linked", "deep", "er"), { recursive: true });
-		assert.equal(enclosingRepositoryRoot(sandbox.path("outer")), sandbox.path("outer"));
-		assert.equal(enclosingRepositoryRoot(sandbox.path("outer", "pkg", "src")), sandbox.path("outer"));
+		assert.equal(await enclosingRepositoryRoot(sandbox.path("outer")), sandbox.path("outer"));
+		assert.equal(await enclosingRepositoryRoot(sandbox.path("outer", "pkg", "src")), sandbox.path("outer"));
 		assert.equal(
-			enclosingRepositoryRoot(sandbox.path("outer", "linked", "deep", "er")),
+			await enclosingRepositoryRoot(sandbox.path("outer", "linked", "deep", "er")),
 			sandbox.path("outer", "linked"),
 		);
 	});
 
-	test("a directory outside any repository, a filesystem root and a relative path end the search (#4588)", () => {
+	test("a directory outside any repository, a filesystem root and a relative path end the search (#4588)", async () => {
 		mkdirSync(sandbox.path("plain", "a", "b"), { recursive: true });
-		const found = enclosingRepositoryRoot(sandbox.path("plain", "a", "b"));
+		const found = await enclosingRepositoryRoot(sandbox.path("plain", "a", "b"));
 		assert.ok(found === undefined || !found.startsWith(sandbox.root));
 		const root = parse(sandbox.root).root;
-		assert.equal(enclosingRepositoryRoot(root), existsSync(join(root, ".git")) ? root : undefined);
-		assert.equal(enclosingRepositoryRoot("."), existsSync(".git") ? "." : undefined);
+		assert.equal(await enclosingRepositoryRoot(root), existsSync(join(root, ".git")) ? root : undefined);
+		assert.equal(await enclosingRepositoryRoot("."), existsSync(".git") ? "." : undefined);
 	});
 });
 
