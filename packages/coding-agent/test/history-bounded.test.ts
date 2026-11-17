@@ -30,7 +30,12 @@ import {
 	type WorkflowRunHistory,
 } from "../src/core/tools/history-protocol.js";
 import { matchLinesInWorker, renderRawEntryInWorker } from "../src/core/tools/history-regex-worker.js";
-import { cutTextToUtf8Bytes, HISTORY_TEXT_FORMAT, oneLine } from "../src/core/tools/history-session.js";
+import {
+	cutTextToUtf8Bytes,
+	DEFAULT_HISTORY_BUDGET,
+	HISTORY_TEXT_FORMAT,
+	oneLine,
+} from "../src/core/tools/history-session.js";
 import { entryLines } from "../src/core/tools/history-transcript.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext, InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
@@ -48,6 +53,8 @@ const STALL_CEILING_MS = 100;
 const PACED_SESSIONS = 40;
 const SLOW_INDEX_QUERY_MS = 4;
 const PACED_TURN_LIMIT_MS = 3 * SLOW_INDEX_QUERY_MS;
+const LONG_SESSION_ENTRIES = 3000;
+const LONG_SESSION_SEARCH_ROWS = 100;
 
 function cpuMs(): number {
 	const used = typeof process.threadCpuUsage === "function" ? process.threadCpuUsage() : process.cpuUsage();
@@ -442,13 +449,34 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			try {
 				await store.create(
 					header("big"),
-					numbered(3000, (seq) => `${seq === 2500 ? "the buried needle" : `filler ${seq}`} ${"q".repeat(120)}`),
+					numbered(
+						LONG_SESSION_ENTRIES,
+						(seq) => `${seq === 2500 ? "the buried needle" : `filler ${seq}`} ${"q".repeat(120)}`,
+					),
 				);
-				const { router, read, request } = historyOver(withoutWholeLoads(store));
+				const { read } = historyOver(withoutWholeLoads(store));
 				assert.ok((await read("history://sessions/big:2499-2501")).includes("the buried needle"));
 				assert.match(await read("history://sessions/big"), /3000 entries[\s\S]*\d+ user turns/);
-				const found = (await router.search?.("history://sessions/big", request("buried needle"))) ?? "";
-				assert.match(found, /^history:\/\/sessions\/big:2500: the buried needle/m);
+				const { router, request } = historyOver(withoutWholeLoads(store), { rows: LONG_SESSION_SEARCH_ROWS });
+				const callBound = 2 * Math.ceil(LONG_SESSION_ENTRIES / LONG_SESSION_SEARCH_ROWS) + 2;
+				const visited = new Set<string>();
+				const pages: string[] = [];
+				for (let url: string | undefined = "history://sessions/big"; url !== undefined; ) {
+					assert.ok(pages.length < callBound, `the search did not finish within ${callBound} calls`);
+					assert.ok(!visited.has(url), `the search repeated ${url}`);
+					visited.add(url);
+					const page = (await router.search?.(url, request("buried needle"))) ?? "";
+					assert.ok(
+						Buffer.byteLength(page) <= DEFAULT_HISTORY_BUDGET.bytes,
+						`a page held ${Buffer.byteLength(page)} bytes`,
+					);
+					pages.push(page);
+					url = continuation(page);
+				}
+				assert.ok(pages.length > 1, "the row allowance split the search into several calls");
+				assert.doesNotMatch(pages.at(-1)!, /continue with/);
+				const found = pages.join("\n");
+				assert.equal(found.match(/^history:\/\/sessions\/big:2500: the buried needle/gm)?.length, 1, found);
 			} finally {
 				await close();
 			}

@@ -56,4 +56,19 @@ describe("outline previews of large entries (#5250)", () => {
 			assert.equal(text!.isWellFormed(), true, JSON.stringify(text));
 		}
 	});
+
+	it("renders an entry whose raw chunks repeat one buffer, handing each buffer over once (#5250)", async () => {
+		const encoder = new TextEncoder();
+		const head = encoder.encode('{"type":"message",');
+		const gap = new Uint8Array([0x20, 0x0a, 0x20]);
+		const middle = encoder.encode('"id":"u1","parentId":null,');
+		const tail = encoder.encode(
+			`"timestamp":"${new Date(AT).toISOString()}","message":{"role":"user","content":"shared gap","timestamp":${AT}}}`,
+		);
+		const rendered = await renderRawEntryInWorker([head, gap, middle, gap, tail], PREVIEW_CHARS, WORKER_TIMEOUT_MS);
+		assert.ok(!("timedOut" in rendered));
+		assert.equal(rendered.outline.item?.preview, "shared gap");
+		assert.match(new TextDecoder().decode(rendered.renderedUtf8), /user\nshared gap$/);
+		for (const chunk of [head, gap, middle, tail]) assert.equal(chunk.byteLength, 0);
+	});
 });

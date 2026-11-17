@@ -454,21 +454,21 @@ export async function renderRawEntryInWorker(
 	signal?: AbortSignal,
 	formatVersion?: number,
 ): Promise<{ readonly outline: WorkerOutlineInfo; readonly renderedUtf8: Uint8Array } | { readonly timedOut: true }> {
-	const transfer: ArrayBuffer[] = [];
+	const transfer = new Set<ArrayBuffer>();
 	for (const chunk of rawChunks) {
 		if (
 			chunk.buffer instanceof ArrayBuffer &&
 			chunk.byteOffset === 0 &&
 			chunk.byteLength === chunk.buffer.byteLength
 		) {
-			transfer.push(chunk.buffer);
+			transfer.add(chunk.buffer);
 		}
 	}
 	const result = await runWorkerTask<"entry">(
 		{ op: "entry", chunks: rawChunks, previewChars, formatVersion },
 		timeoutMs,
 		signal,
-		transfer,
+		[...transfer],
 	);
 	if ("timedOut" in result) return result;
 	return { outline: result.value.outline, renderedUtf8: result.value.renderedUtf8 };
