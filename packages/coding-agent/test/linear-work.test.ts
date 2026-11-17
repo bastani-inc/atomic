@@ -8,6 +8,7 @@ import { generateEditDiff, generateUnifiedPatch } from "../src/core/tools/edit-d
 import { renderDiff } from "../src/modes/interactive/components/diff.ts";
 import { SelectorState } from "../src/modes/interactive/components/selector.ts";
 import { filterAndSortSessions } from "../src/modes/interactive/components/session-selector-search.ts";
+import { appendNewChildrenBeforeAttachedChild } from "../src/modes/interactive/interactive-child-ordering.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import { reconcileQueuedSubmissions, showSubmissionAsQueued } from "../src/modes/interactive/interactive-queueing.ts";
 import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.ts";
@@ -32,6 +33,11 @@ const WORD_COMPARISONS_PER_WORD = 4;
  * few per line.
  */
 const LINE_COMPARISONS_PER_LINE = 32;
+/**
+ * Reads of the transcript's children per child when a prompt's replacement is appended before its echo: the children
+ * are collected once, searched for the echo, filtered for the new ones, and scanned once to move them.
+ */
+const SWAP_READS_PER_CHILD = 8;
 /** Classifications per child appended to the transcript: the appended child is classified once. */
 const CLASSIFICATIONS_PER_CHILD = 2;
 /**
@@ -154,6 +160,29 @@ describe("transcript append does work linear in the transcript", () => {
 			}
 			const bound = CLASSIFICATIONS_PER_CHILD * count;
 			assert.ok(classifications <= bound, `${count} children: ${classifications} classifications`);
+		}
+	});
+
+	it("appending a prompt's replacement before its echo reads the transcript a bounded number of times", () => {
+		for (const count of SIZES) {
+			const chat = new StartupChatContainer();
+			const child = (index: number) => ({ render: () => [`message ${index}`], invalidate() {} });
+			for (let index = 0; index < count; index++) chat.addChild(child(index));
+			const echo = child(count);
+			chat.addChild(echo);
+			const reads = { count: 0 };
+			chat.children = new Proxy(chat.children, {
+				get(target, property, receiver) {
+					if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property)) reads.count++;
+					return Reflect.get(target, property, receiver);
+				},
+			});
+			const replacement = child(count + 1);
+			appendNewChildrenBeforeAttachedChild(chat, echo, () => chat.addChild(replacement));
+			assert.equal(chat.children.at(-2), replacement);
+			assert.equal(chat.children.at(-1), echo);
+			const bound = SWAP_READS_PER_CHILD * chat.children.length;
+			assert.ok(reads.count <= bound, `${count} children: ${reads.count} child reads, bound ${bound}`);
 		}
 	});
 });
