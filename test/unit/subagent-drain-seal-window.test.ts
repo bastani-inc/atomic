@@ -7,6 +7,8 @@ import type {
 	ExtensionContext,
 	SendMessageOptions,
 } from "../../packages/coding-agent/src/core/extensions/index.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { untilStarted, waitForCiTurn, waitTool } from "../../packages/coding-agent/test/helpers/detached-tools.js";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
@@ -21,6 +23,7 @@ const LIVE_CHILD_TIMEOUT_MS = 120_000;
 const STEP_TIMEOUT_MS = 20_000;
 const WAITING_OBSERVATION_MS = 300;
 const MAX_MICROTASKS_AFTER_SETTLED = 200;
+const MAX_MICROTASKS_AFTER_LATE_END = 64;
 const LATE_TEXT = "a message arriving as the attempt ends";
 const REFUSED = /Subagent execution is terminal and cannot accept messages|Session is closed|SessionClosed/;
 
@@ -115,6 +118,16 @@ const senders: Sender[] = [
 		id: "user-message-steer",
 		name: "a user message delivered as steering",
 		send: ({ session }) => session.sendUserMessage(LATE_TEXT, { deliverAs: "steer" }),
+	},
+];
+
+const promptSenders: Sender[] = [
+	...senders.filter(({ id }) => id === "user-message" || id === "user-message-steer"),
+	{ id: "prompt", name: "a prompt", send: ({ session }) => session.prompt(LATE_TEXT) },
+	{
+		id: "prompt-steer",
+		name: "a prompt delivered as steering",
+		send: ({ session }) => session.prompt(LATE_TEXT, { streamingBehavior: "steer" }),
 	},
 ];
 
@@ -354,63 +367,182 @@ test(
 	LIVE_CHILD_TIMEOUT_MS,
 );
 
-test(
-	"a message that reaches a subagent while it is being released is refused or kept for its wake, never dropped (#5318)",
-	async () => {
+test.each(promptSenders)(
+	"$name sent after a late turn ends is answered or refused throughout settlement (#5318)",
+	async (sender) => {
 		const env = await liveChildEnvironment(cleanups);
+		const outcomes: Outcome[] = [];
+		const lost: string[] = [];
+		for (let microtasks = 0; microtasks <= MAX_MICROTASKS_AFTER_LATE_END; microtasks++) {
+			env.faux.setResponses(Array.from({ length: 5 }, () => answerPendingInput()));
+			let pi: ExtensionAPI | undefined;
+			let context: ExtensionContext | undefined;
+			let session: AgentSession | undefined;
+			let endedTurns = 0;
+			let lateSent: Promise<unknown> | undefined;
+			let sent: Promise<string | undefined> | undefined;
+			const delivery = Promise.withResolvers<void>();
+			const key = `late-end-${sender.id}-${microtasks}`;
+			const result = await runSingleInProcess(env.root, agent, "the task", {
+				...env.options(key, {
+					resourceLoaderInheritanceSnapshot: {
+						extensionFactories: [
+							(api: ExtensionAPI) => {
+								pi = api;
+								api.on("session_start", (_event, ctx) => {
+									context = ctx;
+								});
+							},
+						],
+					},
+					taskExecution: {
+						signal: new AbortController().signal,
+						reportActivity() {},
+						bindTranscript(source: TaskTranscriptSource) {
+							session ??= source.chatSession as AgentSession | undefined;
+							if (session === undefined) return;
+							session.subscribe((event) => {
+								if (event.type === "agent_end") {
+									endedTurns += 1;
+									if (endedTurns === 2)
+										afterMicrotasks(microtasks, () => {
+											sent = sender.send({ pi: pi!, context: context!, session: session! }, key).then(
+												() => undefined,
+												(error: unknown) => (error instanceof Error ? error.message : String(error)),
+											);
+											delivery.resolve();
+										});
+								}
+								if (event.type === "agent_settled" && lateSent === undefined)
+									onceDrained(session!, () => {
+										lateSent = viaIntercom({ triggerTurn: true }, "first late")(
+											{ pi: pi!, context: context!, session: session! },
+											`first-${key}`,
+										);
+									});
+							});
+						},
+						onExecution() {},
+						yieldTaskWait() {},
+						isParentObserving: () => false,
+					},
+				}),
+			});
+			await lateSent;
+			await within(delivery.promise, "the late turn never ended");
+			assert.ok(sent, `the message was sent ${microtasks} microtasks after the late turn ended`);
+			const refusal = await sent;
+			const detail = `${sender.id} sent ${microtasks} microtasks after the late turn ended: ${refusal ?? "accepted"}; final output ${JSON.stringify(result.finalOutput)}`;
+			assert.equal(result.status ?? "ok", "ok", detail);
+			if (refusal !== undefined) {
+				assert.match(refusal, REFUSED, detail);
+				outcomes.push("refused");
+			} else if (assistantTexts(session!).some((text) => text.includes(LATE_TEXT))) outcomes.push("answered");
+			else {
+				outcomes.push("lost");
+				lost.push(detail);
+			}
+		}
+		assert.deepEqual(lost, [], "no accepted input went unanswered while the late turn settled");
+		assert.ok(outcomes.includes("answered"), "the sweep includes an answered message");
+		assert.ok(outcomes.includes("refused"), "the sweep includes a refused message");
+	},
+	LIVE_CHILD_SWEEP_TIMEOUT_MS,
+);
+
+test.each(senders.filter(({ id }) => id === "intercom" || id === "user-message" || id === "steer"))(
+	"$name sent while a subagent is being released is kept and answered on wake (#5318)",
+	async (sender) => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const childSession = await SessionManager.create(store, env.root);
 		env.faux.setResponses([
 			fauxAssistantMessage([fauxToolCall("wait_for_ci", { run: "ci-1" }, { id: "ci-1" })], {
 				stopReason: "toolUse",
 			}),
-			answerPendingInput(),
 		]);
+		let pi: ExtensionAPI | undefined;
+		let context: ExtensionContext | undefined;
 		let session: AgentSession | undefined;
-		const outcomes: Record<string, string> = {};
-		const settle = (work: Promise<unknown>) =>
-			work.then(
-				() => "accepted",
-				(error: unknown) => (error instanceof Error ? error.message : String(error)),
-			);
-		const result = await runSingleInProcess(env.root, agent, "watch CI", {
-			...env.options("releasing", {
-				releaseWhenWaiting: { afterMs: 0 },
-				onBeforeRelease: async () => {
-					const [userMessage, steering] = await Promise.all([
-						settle(session!.sendUserMessage("a user message while it is released")),
-						settle(session!.steer("a steering message while it is released")),
-					]);
-					outcomes.userMessage = userMessage;
-					outcomes.steering = steering;
-				},
-				taskExecution: {
-					signal: new AbortController().signal,
-					reportActivity() {},
-					bindTranscript(source: TaskTranscriptSource) {
-						session ??= source.chatSession as AgentSession | undefined;
+		let outcome = "never sent";
+		try {
+			const released = await runSingleInProcess(env.root, agent, "watch CI", {
+				...env.options(`releasing-${sender.id}`, {
+					sessionManager: childSession,
+					resumeSession: true,
+					releaseWhenWaiting: { afterMs: 0 },
+					resourceLoaderInheritanceSnapshot: {
+						extensionFactories: [
+							(api: ExtensionAPI) => {
+								pi = api;
+								api.on("session_start", (_event, ctx) => {
+									context = ctx;
+								});
+							},
+						],
 					},
-					onExecution() {},
-					yieldTaskWait() {},
-					isParentObserving: () => false,
-				},
-			}),
-		});
-
-		assert.deepEqual(
-			result.released?.waitingOn.map((call) => call.toolCallId),
-			["ci-1"],
-		);
-		const kept = result.pendingMessages ?? [];
-		for (const [name, text] of [
-			["userMessage", "a user message while it is released"],
-			["steering", "a steering message while it is released"],
-		] as const) {
-			const outcome = outcomes[name] ?? "never sent";
-			assert.ok(
-				REFUSED.test(outcome) || (outcome === "accepted" && kept.includes(text)),
-				`${name} was ${outcome} and ${kept.includes(text) ? "kept" : "not kept"} for the wake`,
+					onBeforeRelease: async () => {
+						outcome = await outcomeOf(
+							sender.send({ pi: pi!, context: context!, session: session! }, "release-wake"),
+						);
+					},
+					taskExecution: childHooks(new AbortController().signal, (opened) => {
+						session ??= opened;
+					}),
+				}),
+			});
+			assert.deepEqual(
+				released.released?.waitingOn.map((call) => call.toolCallId),
+				["ci-1"],
 			);
+			assert.equal(outcome, "accepted", "a releasing child is not terminal");
+			const saved = await SessionManager.open(store, childSession.getSessionId());
+			if (sender.id === "intercom") {
+				assert.equal(
+					saved
+						.getEntries()
+						.filter(
+							(entry) =>
+								entry.type === "custom_message" &&
+								entry.customType === "intercom_message" &&
+								entry.display &&
+								entry.content === LATE_TEXT,
+						).length,
+					1,
+					"the Intercom card is saved once before release",
+				);
+			} else assert.deepEqual(released.pendingMessages, [LATE_TEXT], "input is kept for the wake");
+
+			env.faux.setResponses(Array.from({ length: 4 }, () => answerPendingInput()));
+			let wokenSession: AgentSession | undefined;
+			const woken = await runSingleInProcess(env.root, agent, "Resume: deploy now.", {
+				...env.options(`releasing-${sender.id}`, {
+					sessionManager: saved,
+					resumeSession: true,
+					resumeToolResults: [
+						{
+							toolCallId: "ci-1",
+							toolName: "wait_for_ci",
+							result: { content: [{ type: "text", text: "green" }], details: undefined },
+							isError: false,
+						},
+					],
+					resumeFollowUps: [...(released.pendingMessages ?? [])],
+					resumeTaskLiteral: true,
+					taskExecution: childHooks(new AbortController().signal, (opened) => {
+						wokenSession ??= opened;
+					}),
+				}),
+			});
+			assert.equal(woken.status ?? "ok", "ok");
+			assert.equal(
+				assistantTexts(wokenSession!).filter((text) => text.includes(LATE_TEXT)).length,
+				1,
+				"the woken child answers the message once",
+			);
+		} finally {
+			env.answers[0]?.({ content: [{ type: "text", text: "green" }], details: undefined });
 		}
-		env.answers[0]?.({ content: [{ type: "text", text: "green" }], details: undefined });
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );

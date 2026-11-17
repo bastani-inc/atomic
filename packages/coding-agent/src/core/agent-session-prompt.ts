@@ -671,6 +671,7 @@ export async function _runAgentPrompt(
 			preparation.resolve();
 		}
 	};
+	const releaseMessageAdmission = holdSubagentMessageAdmission(this);
 	this._activePromptCount += 1;
 	openRun(this);
 	try {
@@ -681,6 +682,7 @@ export async function _runAgentPrompt(
 				return;
 			}
 		}
+		releaseMessageAdmission();
 		const pendingPriority = preparePriorityContinuation(this);
 		if (pendingPriority) await pendingPriority;
 		if (this._agentRunAbortRequested) {
@@ -776,6 +778,7 @@ export async function _runAgentPrompt(
 		releasePreparation();
 		if (ownsPreparation && !preparation) this._isPreparingRun = false;
 		this._runSystemPromptOptions = undefined;
+		releaseMessageAdmission();
 		await settleAgentRun(this);
 	}
 }
@@ -944,7 +947,7 @@ export function _sealMessageAdmissionIfDrained(this: AgentSession): boolean {
 	)
 		return false;
 	const admission = this._subagentMessageAdmission;
-	if (admission === undefined || !admission.isOpen()) return true;
+	if (admission === undefined || !admission.isOpen() || holdsTurnsForDetachedResults(this)) return true;
 	if (awaitsSubagentAnswer(this, admission)) {
 		void this._runAgentContinuation(async () => {}, "settle").catch(() => {});
 		return false;
