@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -353,4 +353,34 @@ describe("agent management lookups", () => {
 			assert.match(managementText(result), /^Agent 'project-helper' not found\./);
 			assert.equal(existsSync(join(project, ".atomic", "agents", "project-helper.md")), true);
 		});
+
+	test("concurrent create calls for the same agent name create it once and reject the duplicate", async () => {
+		const project = makeProject();
+		const [first, second] = await Promise.all([
+			handleManagementAction(
+				"create",
+				{ config: { name: "concurrent-agent", description: "first description", scope: "project" } },
+				context(project, true),
+			),
+			handleManagementAction(
+				"create",
+				{ config: { name: "concurrent-agent", description: "second description", scope: "project" } },
+				context(project, true),
+			),
+		]);
+		const outcomes = [first, second];
+		const succeeded = outcomes.filter((outcome) => !outcome.isError);
+		const failed = outcomes.filter((outcome) => outcome.isError);
+		assert.equal(succeeded.length, 1);
+		assert.equal(failed.length, 1);
+		assert.equal(
+			managementText(failed[0]!),
+			"Name 'concurrent-agent' already exists in project scope. Use update instead.",
+		);
+		const winningDescription = succeeded[0] === first ? "first description" : "second description";
+		assert.match(
+			readFileSync(join(project, ".atomic", "agents", "concurrent-agent.md"), "utf8"),
+			new RegExp(winningDescription),
+		);
+	});
 });

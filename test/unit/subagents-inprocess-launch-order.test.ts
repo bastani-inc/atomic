@@ -143,3 +143,55 @@ test.each([
 		assert.deepEqual(history, ["history-parent/first", "history-parent/second"]);
 	},
 );
+
+test("a failed artifact write during a concurrent child-result delivery rejects only the caller without an unhandled rejection", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-history-reject-"));
+	roots.push(root);
+	const artifactsDir = join(root, "artifacts");
+	mkdirSync(join(artifactsDir, "history-parent_second_output.md"), { recursive: true });
+	const control = createSubagentControl({ path: "history-parent", depth: 0 }, join(root, "sessions"));
+	const stats = {
+		sessionFile: undefined,
+		sessionId: "child-session",
+		userMessages: 1,
+		assistantMessages: 1,
+		toolCalls: 0,
+		toolResults: 0,
+		totalMessages: 2,
+		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		cost: 0,
+	};
+	const released = Promise.withResolvers<void>();
+	slow.writeText = "first result";
+	slow.release = released.promise;
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => {
+		unhandled.push(reason);
+	};
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		const first = control.deliverChildResult({
+			path: "history-parent/first",
+			status: "ok",
+			stats,
+			envelope: "first result",
+			timestamp: 0,
+			artifactsDir,
+		});
+		const second = control.deliverChildResult({
+			path: "history-parent/second",
+			status: "ok",
+			stats,
+			envelope: "second result",
+			timestamp: 1,
+			artifactsDir,
+		});
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		released.resolve();
+		assert.equal(await first, "first result");
+		await assert.rejects(second, { code: "EISDIR" });
+		assert.deepEqual(unhandled, []);
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+});

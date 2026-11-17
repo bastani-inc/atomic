@@ -2,6 +2,7 @@ import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { errorCode } from "../shared/exclusive-file-publication.js";
 import { pathExists } from "../shared/path-exists.js";
 import type { SubagentToolResult } from "../shared/types.js";
 import {
@@ -184,10 +185,11 @@ export async function handleCreate(params: ManagementParams, ctx: ManagementCont
 	const d = await discoverAgentsAll(ctx.cwd, contextAgentDiscoveryOptions(ctx));
 	const targetDir = scope === "user" ? d.userDir : (d.projectDir ?? path.join(ctx.cwd, CONFIG_DIR_NAME, "agents"));
 	await mkdir(targetDir, { recursive: true });
+	const targetPath = path.join(targetDir, `${runtimeName}.md`);
+	const hadTargetPath = await pathExists(targetPath);
 	if (await nameExistsInScope(ctx.cwd, contextAgentDiscoveryOptions(ctx), scope, runtimeName))
 		return result(`Name '${runtimeName}' already exists in ${scope} scope. Use update instead.`, true);
-	const targetPath = path.join(targetDir, `${runtimeName}.md`);
-	if (await pathExists(targetPath))
+	if (hadTargetPath)
 		return result(
 			`File already exists at ${targetPath} but is not a valid agent definition. Remove or rename it first.`,
 			true,
@@ -215,7 +217,13 @@ export async function handleCreate(params: ManagementParams, ctx: ManagementCont
 	if (fmw) warnings.push(fmw);
 	const sw = await skillsWarning(ctx.cwd, agent.skills, ctx.getSkillCatalog?.());
 	if (sw) warnings.push(sw);
-	await writeFile(targetPath, serializeAgent(agent), "utf-8");
+	try {
+		await writeFile(targetPath, serializeAgent(agent), { encoding: "utf-8", flag: "wx" });
+	} catch (error) {
+		if (errorCode(error) === "EEXIST")
+			return result(`Name '${runtimeName}' already exists in ${scope} scope. Use update instead.`, true);
+		throw error;
+	}
 	return result([`Created agent '${runtimeName}' at ${targetPath}.`, ...warnings].join("\n"));
 }
 

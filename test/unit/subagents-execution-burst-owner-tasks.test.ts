@@ -484,7 +484,6 @@ test("burst admission grants concurrency slots in call order even when an earlie
 	const release = Promise.withResolvers<void>();
 	const launched: string[] = [];
 	let authCalls = 0;
-	let holdCalls = 0;
 	const { call } = harness(
 		async (_cwd, _agents, _agent, task) => {
 			launched.push(task);
@@ -505,7 +504,9 @@ test("burst admission grants concurrency slots in call order even when an earlie
 						completion?: Promise<{ capability: string; supervisorSessionId: string; childName: string }>;
 					};
 					req.completion = (async () => {
-						if (index % 2 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 20));
+						if (index % 2 === 0 || req.childName.endsWith("-1")) {
+							await new Promise<void>((resolve) => setTimeout(resolve, 20));
+						}
 						return {
 							capability: `cap-${index}`,
 							supervisorSessionId: "parent",
@@ -514,10 +515,9 @@ test("burst admission grants concurrency slots in call order even when an earlie
 					})();
 				}
 				if (eventName === "subagent:reserve-restoring-child" && payload && typeof payload === "object") {
-					const index = holdCalls++;
-					const req = payload as { completion?: Promise<void> };
+					const req = payload as { capability?: string; completion?: Promise<void> };
 					req.completion = (async () => {
-						if (index % 2 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 20));
+						if (req.capability === "cap-0") await new Promise<void>((resolve) => setTimeout(resolve, 20));
 					})();
 				}
 			},
@@ -541,11 +541,25 @@ test("burst admission grants concurrency slots in call order even when an earlie
 	assert.equal(single(parallelSecond).observation.kind, "settled");
 	assert.deepEqual(launched, ["foreground", "background", "p1", "p2"]);
 
+	const parallelCall = await call("parallel-ordered", {
+		tasks: [
+			{ agent: "echo", task: "t1" },
+			{ agent: "echo", task: "t2" },
+		],
+		concurrency: 1,
+		wait: { kind: "foreground" },
+	});
+	assert.deepEqual(
+		parallel(parallelCall).slots.map((slot) => slot.outcome.kind),
+		["admitted", "admitted"],
+	);
+	assert.deepEqual(launched, ["foreground", "background", "p1", "p2", "t1", "t2"]);
+
 	const [failedSetup, afterFailed] = await Promise.all([
 		call("bad", { agent: "nonexistent", task: "bad", wait: { kind: "background" } }),
 		call("good", { agent: "echo", task: "good", wait: { kind: "foreground" } }),
 	]);
 	assert.equal(failedSetup.isError, true);
 	assert.equal(single(afterFailed).observation.kind, "settled");
-	assert.deepEqual(launched, ["foreground", "background", "p1", "p2", "good"]);
+	assert.deepEqual(launched, ["foreground", "background", "p1", "p2", "t1", "t2", "good"]);
 });

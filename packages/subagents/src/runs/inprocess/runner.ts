@@ -1610,6 +1610,7 @@ const runHistoryAppends = new Map<string, Promise<void>>();
 
 /** Appends `line` to the run history `file` once `ready` settles, after every append asked for before it. */
 function appendRunHistory(file: string, line: string, ready: Promise<void>): Promise<void> {
+	void ready.catch(() => undefined);
 	const appended = (runHistoryAppends.get(file) ?? Promise.resolve())
 		.then(() => ready)
 		.then(() => appendFile(file, line, "utf8"));

@@ -442,12 +442,14 @@ async function createHarnessWithResourceLoader(
 
 	const cleanup = () => {
 		session.dispose();
-		// Settings are saved asynchronously: the directory goes once the saves already made have landed.
-		void settingsManager.flush().then(() => {
-			if (existsSync(tempDir)) {
-				rmSync(tempDir, { recursive: true });
-			}
-		});
+		void settingsManager
+			.flush()
+			.then(() => {
+				if (existsSync(tempDir)) {
+					rmSync(tempDir, { recursive: true, force: true });
+				}
+			})
+			.catch(() => undefined);
 	};
 
 	return {
