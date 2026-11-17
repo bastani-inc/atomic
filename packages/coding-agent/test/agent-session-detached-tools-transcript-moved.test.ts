@@ -60,7 +60,7 @@ async function compactingHarness(
 		resourceLoader: createTestResourceLoader({ extensionsResult, systemPrompt: SYSTEM_PROMPT }),
 		models: [{ id: "faux-small", contextWindow: CONTEXT_WINDOW }],
 		settings: {
-			compaction: { enabled: true, reserveTokens: 1_000, compression_ratio: 0.5, preserve_recent: 2 },
+			compaction: { enabled: true, reserveTokens: 1_000 },
 			retry: { enabled: false },
 		},
 	});
@@ -116,7 +116,7 @@ async function untilIdle(harness: Harness): Promise<void> {
 }
 
 describe("a compaction while a call is detached (#4580)", () => {
-	test("an automatic compaction at the end of the detaching run keeps the call's turn, so its result is handed back (#4580)", async () => {
+	test("no boundary is written while a call waits; the hand-back clears the context before its continuation (#4580)", async () => {
 		const tool = waitTool();
 		const harness = await compactingHarness(tool);
 		await exchange(harness, 3);
@@ -124,82 +124,64 @@ describe("a compaction while a call is detached (#4580)", () => {
 
 		await settlesWithin(harness.session.prompt(`watch ci\n${lines(110, 4_400)}`));
 
-		assert.equal(compactionEntries(harness).length, 1, "the run's end crossed the compaction threshold");
+		assert.equal(compactionEntries(harness).length, 0, "nothing is cleared while the call waits for its result");
 		assert.equal(harness.session.hasPendingDetachedTurn(), true);
 		assert.deepEqual(
 			harness.session.takeDetachedToolCalls().map((call) => call.toolCallId),
 			["ci-1"],
 		);
-		harness.setResponses([fauxAssistantMessage("ci passed")]);
+		const continued: string[][] = [];
+		harness.setResponses([
+			(context) => {
+				continued.push(
+					context.messages.filter((message) => message.role !== "system").map((message) => message.role),
+				);
+				return fauxAssistantMessage("ci passed");
+			},
+		]);
 		await harness.session.resumeDetachedTurn([detachedResult("ci-1", "passed")]);
+
+		assert.deepEqual(continued, [["user"]], "the continuation carries only the boundary message");
+		const entries = harness.sessionManager.getEntries();
+		const boundary = entries.findIndex((entry) => entry.type === "compaction");
+		const result = entries.findIndex((entry) => entry.type === "message" && entry.message.role === "toolResult");
+		assert.ok(result >= 0 && result < boundary, "the call and its result are both before the boundary");
+		assert.equal(compactionEntries(harness)[0]?.coveredThroughEntryId, undefined);
 		assert.deepEqual(recordedResultIds(harness), ["ci-1"]);
 		assert.equal(lastAnswer(harness), "ci passed");
 	});
 
-	test("a manual compaction keeps the call's turn, so its result is handed back (#4580)", async () => {
+	test("a manual compaction while a call waits writes nothing and says why (#4580)", async () => {
 		const tool = waitTool();
 		const harness = await compactingHarness(tool);
 		await exchange(harness, 3);
 		harness.setResponses([waitForCiTurn("ci-1")]);
 		await settlesWithin(harness.session.prompt("watch ci"));
 
-		await harness.session.compact();
+		await assert.rejects(harness.session.compact(), /still waiting for its result/);
 
+		assert.deepEqual(compactionEntries(harness), []);
 		assert.equal(harness.session.hasPendingDetachedTurn(), true);
-		assert.deepEqual(projectedRoles(harness).slice(-1), ["assistant"], "the call's turn is still a message");
 		harness.session.takeDetachedToolCalls();
 		harness.setResponses([fauxAssistantMessage("ci passed")]);
 		await harness.session.resumeDetachedTurn([detachedResult("ci-1", "passed")]);
 		assert.deepEqual(recordedResultIds(harness), ["ci-1"]);
 		assert.equal(lastAnswer(harness), "ci passed");
-	});
-
-	test("the boundary covers what came before the call's turn and leaves that turn out (#4580)", async () => {
-		const tool = waitTool();
-		const planned: string[][] = [];
-		const harness = await compactingHarness(tool, (pi) => {
-			pi.on("session_before_compact", (event) => {
-				planned.push(event.branchEntries.map((entry) => entry.id));
-			});
-		});
-		await exchange(harness, 3);
-		harness.setResponses([waitForCiTurn("ci-1")]);
-		await settlesWithin(harness.session.prompt("watch ci"));
-		const entries = harness.sessionManager.getEntries();
-		const callTurn = entries.findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
-		const beforeCall = entries[entries.indexOf(callTurn!) - 1];
-
 		await harness.session.compact();
-
-		const [boundary] = compactionEntries(harness);
-		assert.equal(boundary?.coveredThroughEntryId, beforeCall?.id);
-		assert.deepEqual(
-			planned,
-			[entries.slice(0, entries.indexOf(callTurn!)).map((entry) => entry.id)],
-			"the planner saw what precedes the call's turn and nothing of it",
-		);
+		assert.equal(compactionEntries(harness).length, 1, "once the result is in, a manual compaction clears");
 	});
 
-	/** The entry before the turn of the call `harness` waits on: what a boundary may cover. */
-	function entryBeforeCallTurn(harness: Harness) {
-		const entries = harness.sessionManager.getEntries();
-		const callTurn = entries.findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
-		return entries[entries.indexOf(callTurn!) - 1];
-	}
-
-	test("a notification held after the call leaves the call's turn out of a manual compaction (#4580)", async () => {
+	test("a notification held after the call does not let a manual compaction split the call from its result (#4580)", async () => {
 		const tool = waitTool();
 		const harness = await compactingHarness(tool);
 		await exchange(harness, 3);
 		harness.setResponses([waitForCiTurn("ci-1")]);
 		await settlesWithin(harness.session.prompt("watch ci"));
-		const beforeCall = entryBeforeCallTurn(harness);
 		await harness.session.sendCustomMessage(NOTIFICATION, NOTIFICATION_OPTIONS);
 
-		await harness.session.compact();
+		await assert.rejects(harness.session.compact(), /still waiting for its result/);
 
-		const [boundary] = compactionEntries(harness);
-		assert.equal(boundary?.coveredThroughEntryId, beforeCall?.id);
+		assert.deepEqual(compactionEntries(harness), []);
 		assert.equal(harness.session.hasPendingDetachedTurn(), true);
 		assert.equal(harness.session.takeDetachedToolCalls().length, 1, "the call was not dropped as stale");
 		assert.deepEqual(tool.aborts, []);
@@ -209,22 +191,20 @@ describe("a compaction while a call is detached (#4580)", () => {
 		assert.equal(lastAnswer(harness), "ci passed, child finished");
 	});
 
-	test("a message in the context after the call leaves the call's turn out of a manual compaction (#4580)", async () => {
+	test("a message in the context after the call does not let a manual compaction split the call from its result (#4580)", async () => {
 		const tool = waitTool();
 		const harness = await compactingHarness(tool);
 		await exchange(harness, 3);
 		harness.setResponses([waitForCiTurn("ci-1")]);
 		await settlesWithin(harness.session.prompt("watch ci"));
-		const beforeCall = entryBeforeCallTurn(harness);
 		await harness.session.sendCustomMessage(
 			{ customType: "note", content: "fyi", display: true },
 			{ triggerTurn: false },
 		);
 
-		await harness.session.compact();
+		await assert.rejects(harness.session.compact(), /still waiting for its result/);
 
-		const [boundary] = compactionEntries(harness);
-		assert.equal(boundary?.coveredThroughEntryId, beforeCall?.id);
+		assert.deepEqual(compactionEntries(harness), []);
 		assert.equal(harness.session.takeDetachedToolCalls().length, 1, "the call was not dropped as stale");
 		harness.setResponses([fauxAssistantMessage("ci passed")]);
 		await harness.session.resumeDetachedTurn([detachedResult("ci-1", "passed")]);
@@ -240,18 +220,6 @@ describe("a compaction while a call is detached (#4580)", () => {
 
 		const [boundary] = compactionEntries(harness);
 		assert.equal(boundary?.coveredThroughEntryId, undefined);
-	});
-
-	test("a compaction with nothing before the call's turn to compact leaves the transcript as it is (#4580)", async () => {
-		const tool = waitTool();
-		const harness = await compactingHarness(tool);
-		harness.setResponses([waitForCiTurn("ci-1")]);
-		await settlesWithin(harness.session.prompt("watch ci"));
-
-		await assert.rejects(harness.session.compact(), /Nothing to compact/);
-
-		assert.deepEqual(compactionEntries(harness), []);
-		assert.equal(harness.session.hasPendingDetachedTurn(), true);
 	});
 
 	test("a continuation after a compaction does not start a turn while a call is detached (#4580)", async () => {

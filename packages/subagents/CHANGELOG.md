@@ -9,6 +9,7 @@
 
 ### Added
 
+- A subagent whose tools leave out `read` or `search` gets one read-only tool, `session_history`, after compaction first clears its context, so it can recover what it needs from its own session's history. It reaches no other session, file or project
 - A subagent of a session created with the SDK's `intercom` option gets its own Intercom policy: its group is its home and it reaches nothing else. It starts in the session's home group, and a requested `group` (including `true`) is placed under it, as `<home>/<group>` ([#5352](https://github.com/bastani-inc/atomic/issues/5352))
 
 ### Fixed

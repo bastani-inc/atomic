@@ -21,7 +21,7 @@ Look up exact commands, settings, types, and tool contracts here. For a walkthro
 
 - [Provider reference](/providers/reference) — stop reasons and credential resolution order.
 - [Model configuration reference](/models/reference) — provider and model fields, overrides, variants, and API compatibility.
-- [Compaction reference](/compaction/reference) — parameters, persistence, hooks, formats, settings, and historical formats.
+- [Compaction reference](/compaction/reference) — parameters, saved boundaries, hooks, exports, formats, settings, and historical formats.
 - [Extension API reference](/extensions/api-reference) — `ExtensionContext`, `ExtensionCommandContext`, and `ExtensionAPI` methods.
 - [Extension events](/extensions/events) — every event and its payload.
 - [SDK API reference](/sdk/reference) — options, loaders, return values, run modes, and exports.

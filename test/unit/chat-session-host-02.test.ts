@@ -328,7 +328,7 @@ test("ChatSessionHost refreshes successful compacted transcripts exactly once fo
 				.renderBody(200, 20)
 				.map(stripAnsi)
 				.join("\n")
-				.match(/∀ Context compacted/g)?.length,
+				.match(/⚛ Context compacted/g)?.length,
 			1,
 		);
 		assert.match(host.renderBody(200, 20).join("\n"), /extension host state/);
@@ -358,7 +358,7 @@ test("ChatSessionHost refreshes successful compacted transcripts exactly once fo
 				.renderBody(200, 20)
 				.map(stripAnsi)
 				.join("\n")
-				.match(/∀ Context compacted/g)?.length,
+				.match(/⚛ Context compacted/g)?.length,
 			1,
 		);
 		assert.match(host.renderBody(200, 20).join("\n"), /extension host state/);
@@ -382,9 +382,9 @@ test("ChatSessionHost renders a type-safe compaction boundary when the refreshed
 			tokensAfter: 50,
 			percentReduction: 50,
 		},
-		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "" },
+		parameters: { query: "" },
 		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
-		rung: "planned",
+		form: "compacted",
 	};
 
 	const event = {
@@ -408,7 +408,7 @@ test("ChatSessionHost renders a type-safe compaction boundary when the refreshed
 			.renderBody(200, 20)
 			.map(stripAnsi)
 			.join("\n")
-			.match(/∀ Context compacted/g)?.length,
+			.match(/⚛ Context compacted/g)?.length,
 		1,
 	);
 	assert.equal(

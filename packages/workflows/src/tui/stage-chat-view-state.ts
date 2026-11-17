@@ -695,17 +695,17 @@ async function handleSlashCommand(ctx: StageChatViewContext, text: string): Prom
 		case "/tasks":
 			return ctx.chatHost.openTasks(rest.join(" ") || undefined);
 		case "/compact": {
-			if (rest.length > 0) return true;
+			const instructions = rest.join(" ");
 			const handle = liveHandle(ctx);
 			if (!handle) return false;
 			await handle.ensureAttached();
 			// A stage on a local worker compacts its session there; its compaction events reach this chat.
 			const compact =
 				handle.agentSession !== undefined
-					? () => handle.agentSession!.compact()
+					? () => handle.agentSession!.compact(instructions ? { query: instructions } : {})
 					: handle.compact === undefined
 						? undefined
-						: () => handle.compact!();
+						: () => handle.compact!(instructions || undefined);
 			if (compact === undefined) return false;
 			try {
 				await compact();

@@ -13,10 +13,8 @@ import type { AssistantMessage, ToolResultMessage } from "@bastani/atomic-ai/com
 import { isDetachedToolCall } from "./agent-session-detached-tools.ts";
 import { persistenceStopError } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { COMPACTION_AUTO_QUERY } from "./compaction/compaction-parameters.js";
 import {
-	DEFAULT_COMPRESSION_RATIO,
-	DEFAULT_PRESERVE_RECENT,
+	autoDetectCompactionQuery,
 	estimateProjectedContextTokens,
 	serializeConversationForCompaction,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
@@ -199,11 +197,7 @@ function extensionCompactionDetails(
 	return {
 		strategy: VERBATIM_COMPACTION_STRATEGY,
 		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
-		parameters: {
-			compression_ratio: DEFAULT_COMPRESSION_RATIO,
-			preserve_recent: DEFAULT_PRESERVE_RECENT,
-			query: COMPACTION_AUTO_QUERY,
-		},
+		parameters: { query: autoDetectCompactionQuery(manager.getBranch()) },
 		stats: {
 			linesBefore,
 			linesDeleted: Math.max(0, linesBefore - linesKept),
@@ -213,7 +207,8 @@ function extensionCompactionDetails(
 			tokensAfter,
 			percentReduction: tokensBefore === 0 ? 0 : Math.round((1 - tokensAfter / tokensBefore) * 1000) / 10,
 		},
-		rung: "extension",
+		form: "compacted",
+		backend: "extension",
 	};
 }
 

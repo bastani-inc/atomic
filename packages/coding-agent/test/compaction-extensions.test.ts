@@ -4,8 +4,6 @@ import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/compaction.ts";
-import { getKeptTailTokenEstimate, prepareCompactionBoundary } from "../src/core/compaction/compaction-boundary.ts";
 import {
 	createExtensionRuntime,
 	type Extension,
@@ -18,7 +16,6 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
-import { createPlannerStreamFn as createFauxStreamFn, plannerRequest } from "./structured-planner-test-helpers.js";
 import { createTestResourceLoader } from "./utilities.ts";
 
 function assistant(text: string, timestamp: number): AssistantMessage {
@@ -41,7 +38,12 @@ function assistant(text: string, timestamp: number): AssistantMessage {
 	};
 }
 
-describe("verbatim compaction extension hooks", () => {
+/** Compaction makes no model call; any request fails the test. */
+const refusingStream: StreamFn = () => {
+	throw new Error("compaction called a model");
+};
+
+describe("compaction extension hooks", () => {
 	let session: AgentSession;
 	let before: SessionBeforeCompactEvent[];
 	let after: SessionCompactEvent[];
@@ -85,7 +87,7 @@ describe("verbatim compaction extension hooks", () => {
 		};
 	}
 
-	async function create(ext: Extension, streamFn?: StreamFn): Promise<void> {
+	async function create(ext: Extension, streamFn: StreamFn = refusingStream): Promise<void> {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		const manager = SessionManager.inMemory();
 		const agent = new Agent({
@@ -119,27 +121,19 @@ describe("verbatim compaction extension hooks", () => {
 		agent.state.messages = manager.buildSessionContext().messages;
 	}
 
-	function independentPreparation(preserveRecent: number) {
-		const preparation = prepareCompactionBoundary(session.sessionManager.getBranch(), DEFAULT_COMPACTION_SETTINGS, {
-			preserve_recent: preserveRecent,
-		});
-		expect(preparation).toBeDefined();
-		return preparation!;
-	}
-
-	it("accepts a non-empty offline compactedText override and emits observe-only result", async () => {
+	it("accepts a non-empty compactedText override, freezes the preparation and emits an observe-only result", async () => {
 		await create(
 			extension((event) => {
-				const headers = event.preparation.region.headerLineNumbers as Set<number>;
-				const markers = event.preparation.region.priorMarkerNs as Map<number, number>;
-				expect(() => headers.add(999)).toThrow("Cannot mutate frozen compaction preparation");
-				expect(() => markers.set(999, 1)).toThrow("Cannot mutate frozen compaction preparation");
-				return { compactedText: "[User]: retained exactly\n(filtered 3 lines)" };
+				const lines = event.preparation.region.lines;
+				expect(() => lines.push("x")).toThrow();
+				return { compactedText: "[User]: retained exactly" };
 			}),
 		);
-		const result = await session.compact({ preserve_recent: 2 });
-		expect(result.rung).toBe("extension");
-		expect(result.compactedText).toBe("[User]: retained exactly\n(filtered 3 lines)");
+		const result = await session.compact();
+		expect(result.form).toBe("compacted");
+		expect(result.backend).toBe("extension");
+		expect(result.compactedText).toContain("<compacted-context>\n[User]: retained exactly\n</compacted-context>");
+		expect(result.compactedText).toContain(`history://sessions/${session.sessionId}`);
 		expect(Object.isFrozen(before[0].preparation)).toBe(true);
 		expect(after).toHaveLength(1);
 		expect(after[0].compactionEntry.type).toBe("compaction");
@@ -147,94 +141,30 @@ describe("verbatim compaction extension hooks", () => {
 		expect(after[0].fromExtension).toBe(true);
 	});
 
-	it("widens extension stats with the kept tail symmetrically (#2052)", async () => {
-		const compactedText = "[User]: retained exactly\n(filtered 3 lines)";
-		await create(extension(() => ({ compactedText })));
-
-		const independent = independentPreparation(2);
-		const tail = getKeptTailTokenEstimate(independent);
-		expect(tail).toBeGreaterThan(0);
-
-		const compacted = await session.compact({ preserve_recent: 2 });
-		expect(compacted.rung).toBe("extension");
-		expect(compacted.stats.tokensBefore).toBe(independent.region.tokenEstimate + tail);
-		expect(compacted.stats.tokensAfter).toBe(Math.ceil(compactedText.length / 4) + tail);
-		expect(compacted.stats.percentReduction).toBe(
-			Math.round((1 - compacted.stats.tokensAfter / compacted.stats.tokensBefore) * 1000) / 10,
-		);
-		expect(compacted.stats.tokensAfter).toBeLessThan(compacted.stats.tokensBefore);
-		expect(compacted.tokensBefore).toBe(independent.tokensBefore);
-		expect(after[0].compactionEntry.tokensBefore).toBe(independent.tokensBefore);
+	it("hands the hook the whole context since the last boundary, with no kept tail", async () => {
+		await create(extension(() => undefined));
+		await session.compact({ query: "focus on task 4" });
+		const preparation = before[0].preparation;
+		expect(preparation.firstKeptEntryId).toBeNull();
+		expect(preparation.keptTailMessageCount).toBe(0);
+		expect(preparation.parameters).toEqual({ query: "focus on task 4" });
+		expect(before[0].parameters).toEqual({ query: "focus on task 4" });
+		expect(preparation.region.lines.join("\n")).toContain("task 0");
+		expect(preparation.region.lines.join("\n")).toContain("answer 4");
+		expect(preparation.regionEntryIds).toHaveLength(10);
 	});
 
-	it("preserves a negative percentReduction when the extension replacement expands the region (#2052)", async () => {
-		const compactedText = Array.from(
-			{ length: 80 },
-			(_, index) => `expanded retained line ${index} with extra padding`,
-		).join("\n");
-		await create(extension(() => ({ compactedText })));
-
-		const independent = independentPreparation(2);
-		const tail = getKeptTailTokenEstimate(independent);
-		const expectedBefore = independent.region.tokenEstimate + tail;
-		const expectedAfter = Math.ceil(compactedText.length / 4) + tail;
-		expect(expectedAfter).toBeGreaterThan(expectedBefore);
-
-		const compacted = await session.compact({ preserve_recent: 2 });
-		expect(compacted.rung).toBe("extension");
-		expect(compacted.stats.tokensBefore).toBe(expectedBefore);
-		expect(compacted.stats.tokensAfter).toBe(expectedAfter);
-		expect(compacted.stats.percentReduction).toBe(Math.round((1 - expectedAfter / expectedBefore) * 1000) / 10);
-		expect(compacted.stats.percentReduction).toBeLessThan(0);
-	});
-
-	it("persists zero retention and includes that durable summary on repeated compaction", async () => {
-		const compactedText = "[User]: retained exactly\n(filtered 30 lines)";
-		await create(extension(() => ({ compactedText })));
-
-		const independent = independentPreparation(0);
-		expect(getKeptTailTokenEstimate(independent)).toBe(0);
-		expect(independent.firstKeptEntryId).toBeNull();
-
-		const first = await session.compact({ preserve_recent: 0 });
-		expect(first.firstKeptEntryId).toBeNull();
-		expect(first.stats.tokensBefore).toBe(independent.region.tokenEstimate);
-		expect(first.stats.tokensAfter).toBe(Math.ceil(compactedText.length / 4));
-		expect(session.sessionManager.buildSessionContext().messages).toHaveLength(1);
-
-		const long = Array.from({ length: 20 }, (_, index) => `new line ${index}`).join("\n");
-		await session.sessionManager.appendMessage({ role: "user", content: long, timestamp: Date.now() });
-		const tailId = await session.sessionManager.appendMessage(assistant("new tail", Date.now() + 1));
+	it("passes the previous boundary text first on a repeated compaction", async () => {
+		await create(extension(() => undefined));
+		const first = await session.compact();
+		expect(first.form).toBe("cleared");
+		await session.sessionManager.appendMessage({ role: "user", content: "new request", timestamp: Date.now() });
 		session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
-
-		const second = await session.compact({ preserve_recent: 1 });
-		expect(second.firstKeptEntryId).toBe(tailId);
-		expect(before[1].preparation.keptTailMessageCount).toBe(1);
-		expect(before[1].preparation.region.lines.slice(0, 2)).toEqual(compactedText.split("\n"));
-		expect(before[1].preparation.region.lines.join("\n")).toContain(long);
-	});
-
-	it("sends the prior durable summary through the planner on repeated compaction", async () => {
-		const faux = createFauxStreamFn(["2,2\n", "2,2\n"]);
-		await create(
-			extension(() => undefined),
-			faux.streamFn,
-		);
-
-		const first = await session.compact({ preserve_recent: 0 });
-		expect(first.promptVersion).toBe(6);
-		const long = Array.from({ length: 20 }, (_, index) => `planner line ${index}`).join("\n");
-		await session.sessionManager.appendMessage({ role: "user", content: long, timestamp: Date.now() });
-		await session.sessionManager.appendMessage(assistant("planner tail", Date.now() + 1));
-		session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
-
-		await session.compact({ preserve_recent: 1 });
-		expect(faux.state.callCount).toBe(2);
-		const secondRequest = plannerRequest(faux.state.contexts[1]);
-		const lines = secondRequest.messages.flatMap((message) => message.lines);
-		expect(lines.slice(0, 2)).toEqual(["[User]: task 0", "(filtered 1 lines)"]);
-		expect(lines).toContain("planner line 19");
-		expect(lines).not.toContain("[Assistant]: planner tail");
+		await session.compact();
+		const region = before[1].preparation.region;
+		expect(region.messageSpans?.[0]?.previousSummary).toBe(true);
+		expect(region.lines[0]).toBe(first.compactedText.split("\n")[0]);
+		expect(region.lines.join("\n")).toContain("new request");
 	});
 
 	it("cancels without persistence", async () => {
@@ -243,46 +173,13 @@ describe("verbatim compaction extension hooks", () => {
 		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
 	});
 
-	it("treats whitespace extension text as no override and plans the region itself (#4977)", async () => {
-		const faux = createFauxStreamFn(["1:1,2"]);
-		await create(
-			extension(() => ({ compactedText: "  \n" })),
-			faux.streamFn,
-		);
+	it("treats whitespace extension text as no override and clears the context with no model call (#4977)", async () => {
+		await create(extension(() => ({ compactedText: "  \n" })));
 		const result = await session.compact();
-		expect(faux.state.callCount).toBe(1);
-		expect(result.rung).toBe("planned");
-		expect(result.compactedText.trim()).not.toBe("");
+		expect(result.form).toBe("cleared");
+		expect(result.compactedText.startsWith("Context cleared.")).toBe(true);
 	});
 
-	it.each([
-		["malformed", "not valid records"],
-		["empty", ""],
-	])("does not persist a compaction entry after one %s planner response", async (_label, response) => {
-		const faux = createFauxStreamFn([response]);
-		await create(
-			extension(() => undefined),
-			faux.streamFn,
-		);
-		await expect(session.compact()).rejects.toThrow(/Compaction range planning/);
-		expect(faux.state.callCount).toBe(1);
-		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
-	});
-
-	it("does not persist after a provider failure", async () => {
-		let calls = 0;
-		const failingStream: StreamFn = () => {
-			calls++;
-			throw new Error("provider unavailable");
-		};
-		await create(
-			extension(() => undefined),
-			failingStream,
-		);
-		await expect(session.compact()).rejects.toThrow("provider unavailable");
-		expect(calls).toBe(1);
-		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
-	});
 	it("isolates errors from the post-commit observer", async () => {
 		await create(
 			extension(
@@ -292,7 +189,7 @@ describe("verbatim compaction extension hooks", () => {
 				},
 			),
 		);
-		await expect(session.compact()).resolves.toMatchObject({ rung: "extension" });
+		await expect(session.compact()).resolves.toMatchObject({ form: "compacted", backend: "extension" });
 		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(true);
 	});
 });

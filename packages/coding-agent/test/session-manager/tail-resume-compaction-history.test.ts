@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
-import { historyLocation } from "../../src/core/agent-session-compaction.ts";
+import type { VerbatimCompactionDetails } from "../../src/core/compaction/compaction-types.js";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { CompactionEntry, SessionEntry } from "../../src/core/session-manager-types.ts";
 import { openNodeSqliteDatabase } from "../../src/core/storage/node-sqlite.ts";
@@ -30,7 +30,7 @@ function user(id: string, parentId: string | null, lines = 1): SessionEntry {
 	};
 }
 
-test("plans a verbatim compaction of a tail-resumed session without loading its history (#5249)", async () => {
+test("locates a tail-resumed compaction by saved entry without reading older history (#5250)", async () => {
 	const entries: SessionEntry[] = [];
 	for (let i = 0; i < 2 * PAGE + 100; i++) entries.push(user(`h${i}`, entries.at(-1)?.id ?? null, (i % 3) + 1));
 	const boundary: CompactionEntry = {
@@ -67,26 +67,41 @@ test("plans a verbatim compaction of a tail-resumed session without loading its 
 	);
 	const load = vi.spyOn(store, "load");
 	const readRange = vi.spyOn(store, "readRange");
-	const session = { sessionManager: manager } as never;
 
-	const location = historyLocation(session);
-	assert.ok(location);
+	const details: VerbatimCompactionDetails = {
+		strategy: "verbatim-lines",
+		promptVersion: 7,
+		parameters: { query: "test" },
+		form: "cleared",
+		stats: {
+			linesBefore: 2,
+			linesDeleted: 2,
+			linesKept: 0,
+			rangeCount: 0,
+			tokensBefore: 100,
+			tokensAfter: 10,
+			percentReduction: 90,
+		},
+	};
+	const counts: number[] = [];
+	const appendBoundary = () =>
+		manager.appendCompaction(
+			(count) => {
+				counts.push(count);
+				return { text: "Context cleared.", details };
+			},
+			null,
+			100,
+			details,
+		);
+	const first = await appendBoundary();
+	assert.deepEqual(counts, [entries.length]);
+	assert.equal(manager.getEntrySeq(first), entries.length + 1);
+	const append = manager.appendMessage({ role: "user", content: "later\nnote", timestamp: 2 });
+	const boundaryAppend = appendBoundary();
+	await Promise.all([append, boundaryAppend]);
+	assert.deepEqual(counts, [entries.length, entries.length + 2]);
 	assert.equal(manager.hasFullHistory(), false);
 	assert.equal(load.mock.calls.length, 0);
 	assert.equal(readRange.mock.calls.length, 0);
-	const entryRange = (all: readonly SessionEntry[], id: string) => {
-		const seq = all.findIndex((entry) => entry.id === id) + 1;
-		return { start: seq, end: seq };
-	};
-	for (const entry of manager.getEntries())
-		assert.deepEqual(location.entryRanges.get(entry.id), entryRange(entries, entry.id));
-	assert.equal(location.entryRanges.has("abandoned"), false);
-
-	await manager.appendMessage({ role: "user", content: "later\nnote", timestamp: 2 });
-	const later = historyLocation(session);
-	assert.equal(readRange.mock.calls.length, 0);
-	const all = (await store.load("session")).entries;
-	for (const entry of manager.getEntries())
-		assert.deepEqual(later?.entryRanges.get(entry.id), entryRange(all, entry.id));
-	assert.equal(manager.hasFullHistory(), false);
 });

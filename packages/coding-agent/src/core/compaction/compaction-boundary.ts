@@ -1,113 +1,34 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
-import type { Message } from "@bastani/atomic-ai/compat";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,
 	createCustomMessage,
 	messageIsLlmVisible,
 	messageStartsLlmUserTurn,
-	toolBatchCutStart,
 } from "../messages.ts";
 import { normalizeDerivedSessionEntries } from "../session-entry-normalization.ts";
 import { applyContextEdit, buildSessionProjection, collectContextEdits } from "../session-manager-history.ts";
 import type { CompactionEntry, ContextEditEntry, SessionEntry } from "../session-manager-types.ts";
-import type { HistoryEntryRange } from "../tools/history-transcript.js";
-import { type CompactionSettings, estimateProjectedContextTokens, estimateTokens } from "./compaction.ts";
+import { type CompactionSettings, estimateProjectedContextTokens } from "./compaction.ts";
 import {
-	COMPACTION_AUTO_QUERY,
-	normalizeCompactionParameters,
-	normalizeCompactionQuery,
-} from "./compaction-parameters.js";
-import {
-	MIN_COMPACTABLE_REGION_LINES,
 	THINKING_FREE_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
 } from "./compaction-types.js";
-import { normalizeKeepContextShare, releaseKeepContextSpans } from "./keep-context-release.js";
-import {
-	createConversationRegion,
-	type FullOutputLocators,
-	omitLegacyThinkingSections,
-} from "./transcript-serialization.js";
+import { createConversationRegion, omitLegacyThinkingSections } from "./transcript-serialization.js";
+
+/** The query used when no user request is found: compaction is focused on the latest request. */
+export const COMPACTION_AUTO_QUERY = "the latest user request";
 
 interface VisibleEntry {
 	entry: SessionEntry;
-	index: number;
 	message: AgentMessage;
 }
 
-const keptTailTokensByPreparation = new WeakMap<VerbatimCompactionPreparation, number>();
-const keptTailFitTokensByPreparation = new WeakMap<VerbatimCompactionPreparation, number>();
-
-/**
- * Tokens `estimateTokens` misses for text outside ASCII. Its chars/4 rate fits English, but dense
- * text such as CJK costs about one token per character, up to four times the estimate (#4977).
- */
-function denseTextSurcharge(message: AgentMessage): number {
-	if (estimateTokens(message) === 0) return 0;
-	const serialized = JSON.stringify((message as { content?: unknown }).content ?? "") ?? "";
-	let dense = 0;
-	for (let index = 0; index < serialized.length; index++) {
-		if (serialized.charCodeAt(index) > 0x7f) dense++;
-	}
-	return Math.ceil((dense * 3) / 4);
-}
-
-/**
- * An upper bound on the kept tail's cost, for deciding whether it fits a window: the tail estimate
- * plus a token for every dense character it counted as a quarter. A preparation without a
- * registered bound uses the tail estimate.
- */
-export function getKeptTailFitTokenEstimate(preparation: VerbatimCompactionPreparation): number {
-	return keptTailFitTokensByPreparation.get(preparation) ?? getKeptTailTokenEstimate(preparation);
-}
-
-/**
- * Return the independently estimated cost of the protected tail.
- *
- * Only the explicit estimate recorded by `prepareCompactionBoundary` (or a test)
- * is returned. The old fallback of `tokensBefore - region.tokenEstimate` was
- * removed because it mixed the authoritative whole-context count with the
- * heuristic region estimate; when no explicit estimate exists the tail simply
- * contributes nothing rather than a wrong-numbered value. Whether an estimate is
- * registered at all is visible through `hasKeptTailTokenEstimate`, which the
- * fresh rung uses to decide a tail whose size is unknown (P1 #3010).
- */
-export function getKeptTailTokenEstimate(preparation: VerbatimCompactionPreparation): number {
-	const registered = keptTailTokensByPreparation.get(preparation);
-	return registered === undefined ? 0 : registered;
-}
-
-/**
- * Whether an independent tail estimate is registered for this preparation.
- *
- * A preparation built by `prepareCompactionBoundary` always has one. A directly
- * constructed preparation may not; the fresh rung treats a kept tail whose size
- * is unregistered as unknown and drops it conservatively rather than assuming it
- * fits (P1 #3010).
- */
-export function hasKeptTailTokenEstimate(preparation: VerbatimCompactionPreparation): boolean {
-	return keptTailTokensByPreparation.has(preparation);
-}
-
-/**
- * Record the independent tail estimate for a preparation.
- *
- * `prepareCompactionBoundary` does this itself from the kept-tail messages;
- * this setter is for test preparations built directly and for any other code
- * that constructs a `VerbatimCompactionPreparation` without the boundary
- * preparer. The estimate lives in a module-private map and is never persisted.
- */
-export function setKeptTailTokenEstimate(preparation: VerbatimCompactionPreparation, estimate: number): void {
-	keptTailTokensByPreparation.set(preparation, Math.max(0, estimate));
-	keptTailFitTokensByPreparation.delete(preparation);
-}
-
 function messageFromEntry(entry: SessionEntry): AgentMessage | undefined {
-	// Prompt state is replayed separately at the boundary, never offered for deletion.
+	// Prompt state is replayed separately at the boundary.
 	if (entry.type === "message") return entry.message.role === "system" ? undefined : entry.message;
 	if (entry.type === "custom_message") {
 		return createCustomMessage(
@@ -132,15 +53,15 @@ function activeBoundary(entry: SessionEntry): entry is CompactionEntry<VerbatimC
 }
 
 /** Context-visible entries from `start`, with append-only context edits applied to their content. */
-function visibleEntries(entries: SessionEntry[], start = 0, edits?: Map<string, ContextEditEntry>): VisibleEntry[] {
+function visibleEntries(entries: SessionEntry[], start: number, edits: Map<string, ContextEditEntry>): VisibleEntry[] {
 	const visible: VisibleEntry[] = [];
 	for (let index = start; index < entries.length; index++) {
 		const entry = entries[index];
 		const raw = messageFromEntry(entry);
 		if (!raw) continue;
-		const edit = edits?.get(entry.id);
+		const edit = edits.get(entry.id);
 		const message = edit ? applyContextEdit([raw], edit)[0] : raw;
-		if (message && messageIsLlmVisible(message)) visible.push({ entry, index, message });
+		if (message && messageIsLlmVisible(message)) visible.push({ entry, message });
 	}
 	return visible;
 }
@@ -157,13 +78,14 @@ function messageText(message: AgentMessage): string {
 		.join("\n");
 }
 
+/** The text of the latest user request on the path, or {@link COMPACTION_AUTO_QUERY} when there is none. */
 export function autoDetectCompactionQuery(entries: readonly SessionEntry[]): string {
 	const normalized = normalizeDerivedSessionEntries(entries);
 	for (let index = normalized.length - 1; index >= 0; index--) {
 		const message = messageFromEntry(normalized[index]);
 		if (!message || !messageStartsLlmUserTurn(message)) continue;
 		const text = messageText(message).trim();
-		if (text) return normalizeCompactionQuery(text, COMPACTION_AUTO_QUERY);
+		if (text) return text;
 	}
 	return COMPACTION_AUTO_QUERY;
 }
@@ -179,12 +101,8 @@ function latestActiveBoundary(
 }
 
 /**
- * The previous boundary's durable text in the current transcript grammar.
- *
- * Boundaries written before `THINKING_FREE_PROMPT_VERSION` serialized thinking as
- * `[Assistant thinking]: ` sections, so those sections are dropped before the text
- * reaches the planner again. A current boundary is used as written: any such line in
- * it is quoted payload, not a section header.
+ * The previous boundary's durable text in the current transcript grammar. Boundaries written before
+ * `THINKING_FREE_PROMPT_VERSION` serialized thinking as `[Assistant thinking]: ` sections, which are dropped.
  */
 function previousSummaryText(boundary: CompactionEntry<VerbatimCompactionDetails>): string {
 	const { promptVersion } = boundary.details as { promptVersion?: number };
@@ -193,120 +111,55 @@ function previousSummaryText(boundary: CompactionEntry<VerbatimCompactionDetails
 		: omitLegacyThinkingSections(boundary.summary);
 }
 
-/**
- * Planner eligibility, kept separate from boundary preparation.
- *
- * `MIN_COMPACTABLE_REGION_LINES` exists to stop repeated pointless *planned*
- * compaction. A load-bearing caller has a different problem: one oversized tool
- * result can blow the context window while producing fewer than 20 compactable
- * lines, and refusing to prepare a boundary there makes the "always completes"
- * guarantee hollow — the fresh rung and its tail-drop rule become unreachable.
- */
-export interface CompactionBoundaryControl {
-	/**
-	 * Prepare a boundary even when the region is below the planner minimum.
-	 * Only `load_bearing` callers set this; the runner routes such a region
-	 * straight to the fresh rung without invoking a planner.
-	 */
-	allowSmallRegion?: boolean;
-	/**
-	 * Where this session's own entries sit in its `history://sessions/<sessionId>` view. A truncated tool result of
-	 * an entry listed here says where its full output can be read; without it the marker only says the output is
-	 * in the session's history.
-	 */
-	history?: {
-		sessionId: string;
-		entryRanges: ReadonlyMap<string, HistoryEntryRange>;
-	};
+/** Index in `entries` of the first entry the previous boundary does not cover. */
+function regionStartAfter(
+	entries: readonly SessionEntry[],
+	previous: CompactionEntry<VerbatimCompactionDetails> | undefined,
+): number {
+	if (!previous) return 0;
+	const keptIndex =
+		previous.firstKeptEntryId === null ? -1 : entries.findIndex((entry) => entry.id === previous.firstKeptEntryId);
+	if (keptIndex >= 0) return keptIndex;
+	const coveredIndex =
+		previous.coveredThroughEntryId === undefined
+			? -1
+			: entries.findIndex((entry) => entry.id === previous.coveredThroughEntryId);
+	if (coveredIndex >= 0) return coveredIndex + 1;
+	const boundaryIndex = entries.findIndex((entry) => entry.id === previous.id);
+	// A boundary written after every entry of `entries` covers all of them.
+	return boundaryIndex >= 0 ? boundaryIndex + 1 : entries.length;
 }
 
 /**
- * Locate each tool result of a converted region in the session's history view.
+ * Describe the context a boundary would replace: everything context-visible since the previous boundary, serialized
+ * for extension hooks. Returns undefined when nothing new is in context since that boundary, so a context that was
+ * just cleared is never cleared again.
  *
- * Conversion drops orphan results, inserts synthetic ones and clones renamed ones, so messages are matched to
- * entries by their content array in order rather than by position. A result whose content a context edit rewrote
- * has no locator: history holds the original output, not what the model saw.
+ * `pathEntries` ends where the new boundary may cut, which is before a turn that still waits on a tool result. The
+ * previous boundary is looked up on `branch`, the whole branch, because it may have been written after that turn.
  */
-function fullOutputLocators(
-	items: readonly VisibleEntry[],
-	converted: readonly Message[],
-	history: NonNullable<CompactionBoundaryControl["history"]>,
-): FullOutputLocators {
-	const locators = new Map<Message, string>();
-	let cursor = 0;
-	for (const message of converted) {
-		if (message.role !== "toolResult") continue;
-		for (let index = cursor; index < items.length; index++) {
-			const item = items[index];
-			if (item.message.role !== "toolResult" || item.message.content !== message.content) continue;
-			cursor = index + 1;
-			const range = history.entryRanges.get(item.entry.id);
-			const unedited = item.entry.type === "message" && item.entry.message === item.message;
-			if (range && unedited)
-				locators.set(message, `history://sessions/${history.sessionId}:${range.start}-${range.end}`);
-			break;
-		}
-	}
-	return locators;
-}
-
-/** Prepare the complete compactable transcript and its exact context-visible message tail. */
 export function prepareCompactionBoundary(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
 	options: Partial<VerbatimCompactionParameters> = {},
-	control: CompactionBoundaryControl = {},
+	branch: readonly SessionEntry[] = pathEntries,
 ): VerbatimCompactionPreparation | undefined {
 	const entries = normalizeDerivedSessionEntries(pathEntries);
-	const previous = latestActiveBoundary(entries);
-	let regionStart = 0;
-	if (previous) {
-		const keptIndex =
-			previous.entry.firstKeptEntryId === null
-				? -1
-				: entries.findIndex((entry) => entry.id === previous.entry.firstKeptEntryId);
-		const coveredIndex = entries.findIndex(
-			(entry, index) => index < previous.index && entry.id === previous.entry.coveredThroughEntryId,
-		);
-		regionStart = keptIndex >= 0 ? keptIndex : coveredIndex >= 0 ? coveredIndex + 1 : previous.index + 1;
-	}
-
+	const previous = latestActiveBoundary(normalizeDerivedSessionEntries([...branch]));
+	const regionStart = regionStartAfter(entries, previous?.entry);
 	const visible = visibleEntries(entries, regionStart, collectContextEdits(entries));
-	const parameters = normalizeCompactionParameters({ ...settings, ...options }, autoDetectCompactionQuery(entries));
-	// A cut never separates tool calls from their results: the tail starts at the assistant that made them.
-	const tailStart = toolBatchCutStart(visible, Math.max(0, visible.length - parameters.preserve_recent), (item) => [
-		item.message,
-	]);
-	const regionMessages = visible.slice(0, tailStart);
-	const tailMessages = visible.slice(tailStart);
-
-	const regionConversation = convertToLlm(regionMessages.map((item) => item.message));
-	const conversationRegion = createConversationRegion(
-		regionConversation,
-		previous ? previousSummaryText(previous.entry) : undefined,
-		control.history && fullOutputLocators(regionMessages, regionConversation, control.history),
-	);
-	const region = releaseKeepContextSpans(
-		conversationRegion,
-		Math.round(conversationRegion.lines.length * parameters.compression_ratio),
-		normalizeKeepContextShare(settings.keepContextShare),
-	);
-	if (!control.allowSmallRegion && region.lines.length < MIN_COMPACTABLE_REGION_LINES) return undefined;
-
-	const preparation: VerbatimCompactionPreparation = {
-		firstKeptEntryId: tailMessages[0]?.entry.id ?? null,
-		region,
-		regionEntryIds: regionMessages.map((item) => item.entry.id),
-		keptTailMessageCount: tailMessages.length,
+	if (visible.length === 0) return undefined;
+	const query = options.query?.trim() || autoDetectCompactionQuery(entries);
+	return {
+		firstKeptEntryId: null,
+		region: createConversationRegion(
+			convertToLlm(visible.map((item) => item.message)),
+			previous ? previousSummaryText(previous.entry) : undefined,
+		),
+		regionEntryIds: visible.map((item) => item.entry.id),
+		keptTailMessageCount: 0,
 		tokensBefore: estimateProjectedContextTokens(buildSessionProjection(entries), entries).tokens,
-		parameters,
+		parameters: { query },
 		settings,
 	};
-	const tailTokens = tailMessages.reduce((sum, item) => sum + estimateTokens(item.message), 0);
-	keptTailTokensByPreparation.set(preparation, tailTokens);
-	keptTailFitTokensByPreparation.set(
-		preparation,
-		tailMessages.reduce((sum, item) => sum + denseTextSurcharge(item.message), tailTokens),
-	);
-	return preparation;
 }

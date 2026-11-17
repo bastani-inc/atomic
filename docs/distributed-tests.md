@@ -137,7 +137,7 @@ Before any scenario, the gate checks and records:
 | `restore-cold` | #4245 | skips: no `GitProvisionError` export |
 | `team-ci` | #4320 | skips: no `TeamProfileError` export |
 | `pool-scale` | #4312 | skips as pending |
-| `compaction` | #4330 | skips: no `AgentSession.awaitBackgroundCompaction` |
+| `compaction` | #4330 | skips as pending |
 
 A skip is a result with `status: "skipped"` and a typed reason: `feature-unavailable` when the deployed ref does not
 export the interface, `scenario-pending` when it does but the suite's scenarios have not been written yet. A failed

@@ -122,7 +122,7 @@ export interface StageControlHandle {
 	): Promise<BashResult>;
 	abortBash?(): void;
 	readonly isBashRunning?: boolean;
-	compact?(): Promise<void>;
+	compact?(instructions?: string): Promise<void>;
 	abortCompaction?(): void;
 	/**
 	 * Pending steering/follow-up text on this stage's session, kept current from

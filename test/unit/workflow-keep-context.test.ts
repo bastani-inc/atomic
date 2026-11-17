@@ -5,17 +5,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { validateDeletedRanges } from "../../packages/coding-agent/src/core/compaction/deleted-ranges.js";
-import { createNumberedRegion } from "../../packages/coding-agent/src/core/compaction/transcript-serialization.js";
+import { buildBoundaryText } from "../../packages/coding-agent/src/core/compaction/context-clear.js";
 import { keepContext } from "../../packages/workflows/src/authoring/keep-context.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
 /**
- * The helper is only worth anything if what it emits is what compaction protects. These assert
- * the round trip rather than the string shape, so a change to either side fails here.
+ * The helper is only worth anything if what it emits is what the recovery instructions tell an agent to search for
+ * after a clear. These assert the round trip rather than the string shape, so a change to either side fails here.
  */
 describe("keepContext authoring primitive", () => {
-	test("wraps text in the tags compaction protects", () => {
+	test("wraps text in the tags the recovery instructions name", () => {
 		assert.equal(keepContext("Research only."), "<keepContext>\nResearch only.\n</keepContext>");
 	});
 
@@ -32,26 +31,18 @@ describe("keepContext authoring primitive", () => {
 		assert.equal(keepContext("first\nsecond"), "<keepContext>\nfirst\nsecond\n</keepContext>");
 	});
 
-	test("every emitted line is protected by compaction", () => {
-		const prompt = `noise before\n${keepContext("Research only.\nDo not implement code changes.")}\nnoise after`;
-		const region = createNumberedRegion(prompt);
-
-		assert.deepEqual(
-			[...(region.protectedLineNumbers ?? [])].sort((a, b) => a - b),
-			[2, 3, 4, 5],
+	test("the recovery instructions search for the tag the helper emits, first and verbatim", () => {
+		const recovery = buildBoundaryText(
+			{ sessionId: "session-1", tokensBefore: 100, entriesBefore: 10, access: "read-search" },
+			20,
 		);
-	});
-
-	test("a whole-region deletion request cannot remove the wrapped span", () => {
-		const prompt = `noise before\n${keepContext("Do not implement code changes.")}\nnoise after`;
-		const region = createNumberedRegion(prompt);
-
-		const ranges = [...validateDeletedRanges([{ start: 1, end: region.lines.length }], region)];
-
-		assert.deepEqual(ranges, [
-			{ start: 1, end: 1 },
-			{ start: 5, end: 5 },
-		]);
+		const tag = keepContext("Research only.").split("\n")[0];
+		assert.equal(tag, "<keepContext>");
+		assert.ok(
+			recovery.includes(
+				`1. Every ${tag} span, verbatim and whole: search history://sessions/session-1 for "keepContext".`,
+			),
+		);
 	});
 });
 

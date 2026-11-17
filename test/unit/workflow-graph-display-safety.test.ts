@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { BackgroundCompactionPersistError } from "@bastani/atomic";
 import { StoragePayloadTooLargeError, StorageRollbackError, StorageUnavailableError } from "@bastani/atomic/storage";
 import {
 	type Component,
@@ -523,10 +522,8 @@ test("failure logs render a storage error's rollbackCause and extra envelope fie
 		new StorageUnavailableError({ adapter: "sqlite", location: "journal.sqlite" }, new Error("commit failed")),
 		rollbackFailure,
 	);
-	const compactionError = new BackgroundCompactionPersistError({ upToEntryId: "u3" }, { cause: rollbackError });
-	const detail = typedFailureDetail(compactionError);
+	const detail = typedFailureDetail(rollbackError);
 	assert.ok(detail !== undefined);
-	assert.deepEqual(detail.extra, { phase: "persist" });
 	const stage: StageSnapshot = {
 		...makeStage("verify"),
 		status: "failed",
@@ -535,14 +532,12 @@ test("failure logs render a storage error's rollbackCause and extra envelope fie
 		failureDetail: detail,
 	};
 	const lines = stageFailureLogLines(stage);
-	assert.ok(lines.some((line) => line.includes('"phase":"persist"')));
 	const rollbackHeadingIndex = lines.findIndex((line) => line.trim() === "during rollback:");
 	assert.ok(rollbackHeadingIndex >= 0, "expected during rollback: heading");
 	assert.ok(lines[rollbackHeadingIndex + 1]?.includes("StoragePayloadTooLargeError (payload-too-large)"));
 	const rendered = renderStageFailureDetailLines(stage, { theme: defaultTheme, width: 120, logs: true })
 		.map(stripTerminalSequences)
 		.join("\n");
-	assert.ok(rendered.includes('"phase":"persist"'));
 	assert.ok(rendered.includes("during rollback:"));
 	assert.ok(rendered.includes("StoragePayloadTooLargeError (payload-too-large)"));
 });

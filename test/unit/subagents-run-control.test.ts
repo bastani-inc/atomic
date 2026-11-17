@@ -2156,8 +2156,8 @@ test("restoring a compacted forked child keeps launch-relative model changes wit
 				await source.appendThinkingLevelChange("low");
 				await source.appendCompaction("summary", null, 100, {
 					strategy: "verbatim-lines",
-					promptVersion: 6,
-					parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+					promptVersion: 7,
+					parameters: { query: "" },
 					stats: {
 						linesBefore: 1,
 						linesDeleted: 1,
@@ -2167,7 +2167,7 @@ test("restoring a compacted forked child keeps launch-relative model changes wit
 						tokensAfter: 10,
 						percentReduction: 90,
 					},
-					rung: "planned",
+					form: "cleared",
 				});
 				childId = source.getSessionId();
 			},
@@ -2200,8 +2200,8 @@ test("restoring a compacted forked child keeps launch-relative model changes wit
 				await source.appendMessage({ role: "user", content: "old turn", timestamp: 1 });
 				await source.appendCompaction("summary", null, 100, {
 					strategy: "verbatim-lines",
-					promptVersion: 6,
-					parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+					promptVersion: 7,
+					parameters: { query: "" },
 					stats: {
 						linesBefore: 1,
 						linesDeleted: 1,
@@ -2211,7 +2211,7 @@ test("restoring a compacted forked child keeps launch-relative model changes wit
 						tokensAfter: 10,
 						percentReduction: 90,
 					},
-					rung: "planned",
+					form: "cleared",
 				});
 				childId = source.getSessionId();
 			},
@@ -2394,8 +2394,8 @@ test("launching and restoring subagent children tolerate a SessionManager withou
 	await compactedParent.appendThinkingLevelChange("high");
 	await compactedParent.appendCompaction("summary", null, 100, {
 		strategy: "verbatim-lines",
-		promptVersion: 6,
-		parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+		promptVersion: 7,
+		parameters: { query: "" },
 		stats: {
 			linesBefore: 13,
 			linesDeleted: 13,
@@ -2405,7 +2405,7 @@ test("launching and restoring subagent children tolerate a SessionManager withou
 			tokensAfter: 10,
 			percentReduction: 90,
 		},
-		rung: "planned",
+		form: "cleared",
 	});
 	await compactedParent.appendMessage({ role: "user", content: "after compaction", timestamp: 20 });
 	const tailFork = await SessionManager.open(
@@ -2445,8 +2445,8 @@ test("launching and restoring subagent children tolerate a SessionManager withou
 			);
 			await source.appendCompaction("child summary", null, 100, {
 				strategy: "verbatim-lines",
-				promptVersion: 6,
-				parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+				promptVersion: 7,
+				parameters: { query: "" },
 				stats: {
 					linesBefore: 1,
 					linesDeleted: 1,
@@ -2456,7 +2456,7 @@ test("launching and restoring subagent children tolerate a SessionManager withou
 					tokensAfter: 10,
 					percentReduction: 90,
 				},
-				rung: "planned",
+				form: "cleared",
 			});
 		},
 	);
@@ -2497,8 +2497,8 @@ test("launching and restoring subagent children tolerate a SessionManager withou
 				);
 				await source.appendCompaction("child summary", null, 100, {
 					strategy: "verbatim-lines",
-					promptVersion: 6,
-					parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+					promptVersion: 7,
+					parameters: { query: "" },
 					stats: {
 						linesBefore: 1,
 						linesDeleted: 1,
@@ -2508,7 +2508,7 @@ test("launching and restoring subagent children tolerate a SessionManager withou
 						tokensAfter: 10,
 						percentReduction: 90,
 					},
-					rung: "planned",
+					form: "cleared",
 				});
 			},
 		);

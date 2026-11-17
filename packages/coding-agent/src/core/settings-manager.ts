@@ -11,7 +11,6 @@ export { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage
 export type {
 	BranchSummarySettings,
 	CodemodeMode,
-	CompactionModelOverride,
 	CompactionSettings,
 	DefaultProjectTrust,
 	FullscreenExitOutput,

@@ -827,8 +827,13 @@ export class SessionManager {
 			return entry.id;
 		});
 	}
+	/**
+	 * Append a compaction boundary. `compactedText` may be a builder that receives the history's last entry position right
+	 * before the boundary, computed inside this queued mutation so no concurrent append can shift it, and returns the
+	 * boundary text with the details to store.
+	 */
 	appendCompaction(
-		compactedText: string,
+		compactedText: string | ((historyEntries: number) => { text: string; details: VerbatimCompactionDetails }),
 		firstKeptEntryId: string | null,
 		tokensBefore: number,
 		details: VerbatimCompactionDetails,
@@ -840,11 +845,14 @@ export class SessionManager {
 			precondition?.();
 			if (firstKeptEntryId !== null) await this.requireEntry(firstKeptEntryId);
 			if (coveredThroughEntryId !== undefined) await this.requireEntry(coveredThroughEntryId);
+			const built =
+				typeof compactedText === "string" ? { text: compactedText, details } : compactedText(this.getLastSeq());
+			precondition?.();
 			const entry = createCompactionEntry(
-				compactedText,
+				built.text,
 				firstKeptEntryId,
 				tokensBefore,
-				details,
+				built.details,
 				usage,
 				this.byId,
 				this.leafId,
