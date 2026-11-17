@@ -45,6 +45,9 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	if (mode.keybindings) {
 		bindMainComposerAgentRows(mode.keybindings, () => mainComposerPanelCounts(mode));
 	}
+	// The footer paints the engine's panel counts; repaint when they change, panel widget or not.
+	if (mode.runtimeHost instanceof IsolatedInteractiveRuntime)
+		mode.runtimeHost.onAgentPanelCountsChanged(() => mode.ui.requestRender());
 	mode.addTuiInputListener(() =>
 		mode.builtInHeader instanceof StartupIdentityComponent ? void mode.builtInHeader.settle() : undefined,
 	);
