@@ -37,6 +37,7 @@ import {
 	runExtensionCleanup,
 	sealExtensionWork,
 } from "./extension-work.ts";
+import { heldPromptInput, isHeldPromptInput } from "./held-prompts.ts";
 import {
 	copyHostQuestionnaire,
 	type HostDiagnostic,
@@ -263,11 +264,18 @@ export class ExtensionRunner {
 	/**
 	 * The host bindings a child session (a subagent, a workflow stage) or a replacement session inherits: the host's own
 	 * `humanInput` adapter, which is told the asking session's id with each request, and never this session's
-	 * presentation. This session's chat answers only its own prompts; a child's prompts stay with the child.
+	 * presentation. Under an interactive session (one with a presentation, or one whose own prompts are held) a child
+	 * gets the held-prompt input instead: its prompts wait in its own session, shown in its own view and on its
+	 * launcher's `/tasks`. This session's chat answers only its own prompts.
 	 */
 	getChildHostBindings(): import("../agent-session-types.js").ExtensionBindings {
 		return {
-			humanInput: this.humanInput,
+			humanInput:
+				this.humanInput !== undefined
+					? this.humanInput
+					: this.presentationInput !== undefined
+						? heldPromptInput
+						: undefined,
 			onDiagnostic: this.onDiagnostic,
 		};
 	}
@@ -503,13 +511,20 @@ export class ExtensionRunner {
 		this.refreshHostInput();
 	}
 
+	/**
+	 * Where this session's prompts go: a host's own adapter; else this session's presentation; else, held in this
+	 * session when its launcher gave it the held-prompt input. `null` withdraws input.
+	 */
+	private resolvedHostInput(): HostInput | undefined {
+		const bound = this.humanInput;
+		if (bound === null) return undefined;
+		if (bound === undefined) return this.presentationInput;
+		return isHeldPromptInput(bound) ? (this.presentationInput ?? bound) : bound;
+	}
+
 	private refreshHostInput(): void {
 		const ui = this.presentationUI;
-		this.inputBridge.bind(
-			this.humanInput === undefined ? this.presentationInput : (this.humanInput ?? undefined),
-			this.humanInput,
-			this.humanInputBindingRevision,
-		);
+		this.inputBridge.bind(this.resolvedHostInput(), this.humanInput, this.humanInputBindingRevision);
 		const bridged = this.inputBridge.wrap(
 			ui ?? {
 				...noOpUIContext,

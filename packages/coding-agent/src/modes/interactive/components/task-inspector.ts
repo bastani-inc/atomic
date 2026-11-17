@@ -470,6 +470,8 @@ export class TaskInspector implements Component {
 			return true;
 		}
 		if (matchesKey(data, "escape")) {
+			// Esc on the subagent's own question cancels that question, not its turn.
+			if (transcript.takesEscape?.() === true) return transcript.handleInput(data);
 			if (transcript.interruptible()) void this.interruptTranscript(transcript);
 			this.requestRender();
 			return true;

@@ -1,4 +1,5 @@
 import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bastani/atomic-tui";
+import { type HeldPrompt, heldPrompts } from "../../../core/extensions/held-prompts.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
@@ -14,6 +15,7 @@ import { theme } from "../theme/theme.js";
 import type { ChatSessionHost } from "./chat-session-host.ts";
 import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-host-types.ts";
 import { ScrollableComponentViewport } from "./chat-transcript.js";
+import { type HeldPromptForm, heldPromptForm } from "./held-prompt-form.ts";
 import { applyInputLabelToEditorTopRule } from "./input-label.ts";
 import { taskDisplayText } from "./task-row.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
@@ -63,6 +65,8 @@ export interface TaskTranscriptPage {
 	cursorAtStart(): boolean;
 	/** Whether the page takes Escape and Left itself, as while its own task list is open. */
 	handlesBack(): boolean;
+	/** Whether Escape belongs to the page now, as while it shows its session's own question (Esc cancels it). */
+	takesEscape?(): boolean;
 	/** Whether Esc would interrupt the task's current turn now. */
 	interruptible(): boolean;
 	/** Interrupts the task's current turn; the task keeps running and waits for its next message. */
@@ -151,6 +155,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	/** A history-only transcript changed while the reader was away from its end; it is read again when they return. */
 	private behind = false;
 	private disposed = false;
+	private readonly unsubscribePrompts: () => void;
 
 	private readonly reportLate: (reason: string) => void;
 
@@ -198,6 +203,34 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		});
 		this.restoreDraft();
 		this.restoreUndelivered();
+		// The subagent's own question shows here, in its view, and nowhere in the chat that opened it.
+		this.unsubscribePrompts = heldPrompts().subscribe((sessionId) => {
+			if (sessionId === this.childSessionId()) this.requestRender();
+		});
+	}
+
+	/** The subagent's session: the one its task's question names, else the session this page follows. */
+	private childSessionId(): string | undefined {
+		const task = this.source.tasks.find((candidate) => candidate.ref.taskId === this.taskId);
+		if (task?.attention.kind === "input-needed") return task.attention.route.sessionId;
+		return this.followed?.getSessionId() ?? this.source.followTaskTranscript(this.taskId)?.session?.getSessionId();
+	}
+
+	/** The question the subagent waits on, held in its own session, if any. */
+	heldPrompt(): HeldPrompt | undefined {
+		const sessionId = this.childSessionId();
+		return sessionId === undefined ? undefined : heldPrompts().current(sessionId);
+	}
+
+	/** The held question's form, kept while it waits: opening this view again shows it exactly as it was left. */
+	private heldForm(): HeldPromptForm | undefined {
+		const prompt = this.heldPrompt();
+		if (prompt === undefined) return undefined;
+		return heldPromptForm(prompt, {
+			...(this.env.tui === undefined ? {} : { tui: this.env.tui }),
+			...(this.env.keybindings === undefined ? {} : { keybindings: this.env.keybindings }),
+			requestRender: this.requestRender,
+		});
 	}
 
 	/** Restores what was typed here before the reader left. */
@@ -270,6 +303,13 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.requestRender();
 			return true;
 		}
+		// The subagent's question is modal in its view while it waits: it takes every key, and Esc cancels it.
+		const form = this.chat.hasTaskInspector ? undefined : this.heldForm();
+		if (form !== undefined) {
+			form.handleInput(data);
+			this.requestRender();
+			return true;
+		}
 		// A read-only chat scrolls and keeps its keys, but takes no typing: nothing it sends could reach the task.
 		if (!this.chat.hasTaskInspector && this.readOnlyReason() !== undefined && isTyping(data)) return true;
 		// The subagent's own task list is modal while it is open, as in a stage chat.
@@ -293,8 +333,16 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			remaining -= shown.length;
 			return shown;
 		};
+		const form = this.heldForm();
 		const editor = reserve(
-			applyInputLabelToEditorTopRule(this.env.style, "subagent", this.sessionName(), this.chat.renderEditor(width)),
+			form !== undefined
+				? form.render(width)
+				: applyInputLabelToEditorTopRule(
+						this.env.style,
+						"subagent",
+						this.sessionName(),
+						this.chat.renderEditor(width),
+					),
 		);
 		const footer = reserve(this.chat.renderFooter(width));
 		const pending = reserve(this.chat.renderPendingMessages(width));
@@ -323,21 +371,31 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keptDrafts.set(this.source, kept);
 		}
 		this.disposed = true;
+		this.unsubscribePrompts();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		this.chat.dispose();
 	}
 
 	hasDraft(): boolean {
+		// A question's form takes every key it uses, `?` among them.
+		if (!this.chat.hasTaskInspector && this.heldPrompt() !== undefined) return true;
 		return this.chat.hasInputText();
 	}
 
 	cursorAtStart(): boolean {
+		// ← leaves a waiting question without answering or cancelling it, except where its form moves with ←.
+		const form = this.chat.hasTaskInspector ? undefined : this.heldForm();
+		if (form !== undefined) return form.capturesBack?.() !== true;
 		return this.chat.inputCursorAtStart();
 	}
 
 	handlesBack(): boolean {
 		return this.chat.hasTaskInspector;
+	}
+
+	takesEscape(): boolean {
+		return !this.chat.hasTaskInspector && this.heldPrompt() !== undefined;
 	}
 
 	interruptible(): boolean {

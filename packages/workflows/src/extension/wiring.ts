@@ -25,6 +25,7 @@ import { join } from "node:path";
 import {
 	type CreateAgentSessionOptions,
 	type DefaultResourceLoaderInheritanceSnapshot,
+	isHeldPromptInput,
 	isStaleExtensionContextError,
 	ModelRuntime,
 	noOpUIContext,
@@ -628,6 +629,12 @@ export function buildRuntimeAdapters(
 					pi.getChildSessionOptions?.(stripWorkflowOnlyOptions(stageOptions) ?? {}) ??
 					stripWorkflowOnlyOptions(stageOptions) ??
 					{};
+				// A stage asks in its own stage chat, never held as a subagent's prompts are: the held-prompt input its
+				// launcher would give a child is not the stage's.
+				if (isHeldPromptInput(inheritedOptions.extensionBindings?.humanInput)) {
+					const { humanInput: _held, ...bindings } = inheritedOptions.extensionBindings ?? {};
+					inheritedOptions.extensionBindings = bindings;
+				}
 				await resolveStageModel(
 					inheritedOptions,
 					stageOptions.model === undefined && stageOptions.sessionManager !== undefined,

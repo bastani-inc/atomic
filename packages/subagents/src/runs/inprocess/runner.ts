@@ -29,6 +29,7 @@ import {
 	type Skill,
 	type SubagentIntercomIdentity,
 	sliceHead,
+	watchHeldPromptAttention,
 } from "@bastani/atomic";
 import {
 	type Api,
@@ -1676,6 +1677,7 @@ export class SubagentControlRuntime {
 		let unsavedAnswer: AssistantMessage | undefined;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
 		let statusesOpen = true;
+		let stopHeldPromptAttention: (() => void) | undefined;
 		let attemptedModels: string[] = candidateModelId ? [candidateModelId] : [];
 		// Background receipts can precede capacity acquisition and session loading. Publish
 		// only the concrete selection handed to createAgentSession, not a requested ID
@@ -1953,6 +1955,11 @@ export class SubagentControlRuntime {
 			};
 			taskHooks?.bindChildSession?.(childSession);
 			admitted.spec.onChildSession?.(childSession);
+			// The child's own prompts wait in its session; its task shows them as needing input, attributed to it.
+			if (taskHooks !== undefined)
+				stopHeldPromptAttention = watchHeldPromptAttention(childSession.sessionId, (report) =>
+					taskHooks.reportActivity(report),
+				);
 			if (workflow) await beforeStartDeadline(sessionManager.markSessionInternal(workflow));
 			const launchLeafId = sessionManager.getLeafId();
 			ownMessages = () => messagesSinceLaunch(sessionManager, launchLeafId);
@@ -2462,6 +2469,7 @@ export class SubagentControlRuntime {
 					: settledCommands(sessionCommands(session, transcriptManager.getCwd()));
 			const settleTranscript = (): void => {
 				statusesOpen = false;
+				stopHeldPromptAttention?.();
 				taskHooks?.clearExtensionStatuses?.();
 				if (transcriptManager === undefined) return;
 				taskHooks?.bindTranscript?.(

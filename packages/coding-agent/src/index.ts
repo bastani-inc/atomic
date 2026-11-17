@@ -7,6 +7,18 @@ export {
 } from "./core/cache-warmer.ts";
 export * from "./core/event-subscriptions/index.js";
 export type { ExecuteToolOptions, ExtensionToolContext } from "./core/extensions/context-types.ts";
+export {
+	type HeldPrompt,
+	type HeldPromptAnswer,
+	type HeldPromptKind,
+	type HeldPromptResult,
+	type HeldPrompts,
+	type HeldPromptValue,
+	heldPrompts,
+	isHeldPromptInput,
+	routeNamesPrompt,
+	watchHeldPromptAttention,
+} from "./core/extensions/held-prompts.ts";
 export type {
 	HostDiagnostic,
 	HostInput,

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
+import { heldPrompts } from "../src/core/extensions/held-prompts.js";
 import type { HostInput, HostInputOptions } from "../src/core/extensions/host-input.js";
 import type { ExtensionUIContext, SubagentChildPolicy } from "../src/core/extensions/index.js";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.js";
@@ -194,4 +195,59 @@ test("an SDK host still answers a subagent's prompts, told which session asks", 
 			["questionnaire", childId],
 		],
 	);
+});
+
+test("a subagent's dialog waits in its own session, and a reply meant for an earlier prompt never answers it", async () => {
+	const root = tempRoot();
+	const parentChat: string[] = [];
+	const parent = await newSession(root);
+	await parent.bindExtensions({ uiContext: chatUi(parentChat), mode: "tui" });
+	const child = await subagentOf(parent, root);
+	const childId = child.sessionManager.getSessionId();
+	const ui = child.extensionRunner.createContext().ui;
+
+	const first = ui.confirm("Delete the branch?", "first");
+	const firstPrompt = heldPrompts().current(childId);
+	assert.ok(firstPrompt, "the confirmation is held in the subagent's session");
+	assert.equal(firstPrompt.kind, "confirm");
+	const firstRoute = { sessionId: childId, promptId: firstPrompt.promptId };
+	// Esc in the subagent's view cancels exactly this prompt.
+	assert.equal(heldPrompts().cancel(firstRoute), true);
+	assert.equal(await first, false);
+
+	const second = ui.confirm("Delete the tag?", "second");
+	const secondPrompt = heldPrompts().current(childId);
+	assert.ok(secondPrompt);
+	assert.notEqual(secondPrompt.promptId, firstPrompt.promptId);
+	assert.equal(heldPrompts().answer(firstRoute, { text: "yes" }).ok, false, "a stale reply is refused");
+	assert.equal(heldPrompts().cancel(firstRoute), false);
+	assert.equal(heldPrompts().current(childId)?.promptId, secondPrompt.promptId, "the later prompt still waits");
+	assert.equal(
+		heldPrompts().answer({ sessionId: childId, promptId: secondPrompt.promptId }, { text: "yes" }).ok,
+		true,
+	);
+	assert.equal(await second, true);
+	assert.deepEqual(parentChat, []);
+});
+
+test("a subagent's held prompt ends with its session, never moved to its parent", async () => {
+	const root = tempRoot();
+	const parentChat: string[] = [];
+	const parent = await newSession(root);
+	await parent.bindExtensions({ uiContext: chatUi(parentChat), mode: "tui" });
+	const child = await subagentOf(parent, root);
+	const childId = child.sessionManager.getSessionId();
+
+	const pending = child.extensionRunner
+		.createContext()
+		.ui.select("Pick", ["a", "b"])
+		.then(
+			() => "settled",
+			(error: Error & { code?: string }) => error.code ?? error.message,
+		);
+	assert.equal(heldPrompts().current(childId)?.kind, "select");
+	child.dispose();
+	assert.notEqual(await pending, "settled");
+	assert.equal(heldPrompts().current(childId), undefined);
+	assert.deepEqual(parentChat, []);
 });
