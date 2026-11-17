@@ -3,13 +3,17 @@ import { hasToolDetachment, waitsOnDetachedResults } from "./agent-session-detac
 import { pendingCustomMessageSaved } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-custom-messages.ts";
-import { deliverTaskNotice, type TaskNoticeSend } from "./agent-session-task-notices.ts";
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
 import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import { AgentTaskHost } from "./tasks/agent-adapter.js";
-import { type ChildTaskCompletionRoute, deliverToLaunchingSession } from "./tasks/child-command-owner.js";
-import { type TaskCompletionEnvelope, TaskCompletionOutbox, taskNoticeCompletionIds } from "./tasks/completion.js";
+import {
+	type ChildTaskCompletionRoute,
+	deliverToLaunchingSession,
+	type TaskCompletionMessage,
+} from "./tasks/child-command-owner.js";
+import { type AdmittedTaskCompletion, type TaskCompletionEnvelope, TaskCompletionOutbox } from "./tasks/completion.js";
 import { commandOutputExcerpt, taskCompletionMessage } from "./tasks/completion-message.js";
+import type { TaskCompletionSource } from "./tasks/completion-ordering.js";
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
 import type * as C from "./tasks/contracts.js";
 import { TASK_HEARTBEAT_MESSAGE_TYPE, type TaskHeartbeatDelivery } from "./tasks/heartbeat.js";
@@ -58,6 +62,21 @@ export function childCommandTaskHost(session: AgentSession): AgentTaskHost {
 	return stageTaskAdmission(session)?.agentTaskHost() ?? session.getAgentTaskHost();
 }
 
+/** A finished task's notice, built and ready to deliver. */
+interface PreparedNotice {
+	readonly envelope: TaskCompletionEnvelope;
+	readonly message: TaskCompletionMessage;
+	/** Whether the task's record was read: a notice without one starts no turn. */
+	readonly hasTask: boolean;
+	readonly completionSource: TaskCompletionSource | undefined;
+}
+
+/** {@link childCommandTaskHost} when the session already holds it, without opening one. */
+export function openChildCommandTaskHost(session: AgentSession): AgentTaskHost | undefined {
+	if (session._disposed) return undefined;
+	return stageTaskAdmission(session)?.agentTaskHost() ?? session._agentTaskHost;
+}
+
 export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 	if (this._disposed || sessionGenerationClosing.has(this)) throw new Error("Task owner is closed");
 	if (this._agentTaskHost) return this._agentTaskHost;
@@ -70,96 +89,125 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			this.sessionManager.getSessionRecoveryState?.().admissionKeys,
 		);
 	this._taskAdmission = admission;
+	/** A settled task's notice, read from the owner's snapshot; undefined for a foreground shell, which has none. */
+	const prepare = async (envelope: TaskCompletionEnvelope): Promise<PreparedNotice | undefined> => {
+		// Settlement can precede the UI projection's next drain. Read the owner
+		// snapshot, not the display store, when attaching completion context.
+		const host = this._agentTaskHost;
+		const task = host
+			?.taskRecords(new Set([envelope.taskId as C.TaskId]))
+			.find((item) => item.ref.ownerId === envelope.ownerId && settledWithCompletion(host, envelope));
+		// Foreground shell results already return through their tool call. Do not
+		// create a second model turn or background card for that same execution.
+		if (task?.kind === "command" && !task.wasBackground) return undefined;
+		const lease = task ? host?.resolveTask(envelope.taskId) : undefined;
+		const source = lease?.ok ? taskTranscriptSource(lease.value) : undefined;
+		// A finished child keeps its history in its session store, not in memory (#5186).
+		const ownEntries = lease?.ok ? await loadTaskOwnTranscriptEntries(lease.value) : undefined;
+		const response = ownEntries
+			? ownEntries
+					.slice()
+					.reverse()
+					.find(
+						(entry) =>
+							entry.type === "message" &&
+							entry.message.role === "assistant" &&
+							entry.message.content.some((block) => block.type === "text" && block.text.trim()),
+					)
+			: undefined;
+		let output =
+			response?.type === "message" && response.message.role === "assistant"
+				? response.message.content
+						.filter((block) => block.type === "text")
+						.map((block) => block.text)
+						.join("\n")
+				: undefined;
+		if (task?.kind === "command" && lease?.ok && host) output = await commandOutputExcerpt(host, lease.value, task);
+		return {
+			envelope,
+			message: taskCompletionMessage(envelope, task, output),
+			hasTask: task !== undefined,
+			completionSource: source?.ok ? source.value.session.completionSource : undefined,
+		};
+	};
+	/**
+	 * The notices of tasks that finished together reach their session as one message, so as one turn. A shell a subagent
+	 * launched in this owner belongs to that subagent's session: its notice goes there, now or when it runs again, and
+	 * never to this session; it is acknowledged here once the subagent took it. This session's own notices reach it or
+	 * wait for it: a closed stage keeps them rather than sending them on to the chat that launched the workflow.
+	 */
+	const admitBatch = async (
+		envelopes: readonly TaskCompletionEnvelope[],
+		restored: boolean,
+	): Promise<AdmittedTaskCompletion[]> => {
+		const prepared = await Promise.all(envelopes.map(prepare));
+		const admitted: AdmittedTaskCompletion[] = envelopes.map(() => undefined);
+		const own: PreparedNotice[] = [];
+		const launched = new Map<string, PreparedNotice[]>();
+		for (const notice of prepared) {
+			if (notice === undefined) continue;
+			const launcher = notice.envelope.launchedBy;
+			if (launcher === undefined) own.push(notice);
+			else launched.set(launcher, [...(launched.get(launcher) ?? []), notice]);
+		}
+		const host = this._agentTaskHost;
+		for (const [launcher, notices] of launched) {
+			if (host === undefined) throw new Error("Task owner is closed");
+			for (const notice of notices)
+				admitted[envelopes.indexOf(notice.envelope)] = {
+					saved: deliverToLaunchingSession(host, launcher, notice.envelope.taskId, notice.message),
+				};
+		}
+		if (own.length === 0) return admitted;
+		for (const notice of own) {
+			if (notice.completionSource === undefined) continue;
+			await flushTaskCompletionMessages(
+				getExtensionRuntimeEventBus(this._resourceLoader.getExtensions().runtime),
+				notice.completionSource,
+				notice.envelope.completionId,
+			);
+		}
+		const key = own[0]!.envelope.completionId;
+		// A restored notice, or one whose task is gone, joins the transcript without starting a turn. Notices admitted
+		// together reach the model in one request, which they start as one turn.
+		const live = !restored && own.some((notice) => notice.hasTask);
+		const options = {
+			triggerTurn: live,
+			...(live ? { persistWhenStreaming: true } : {}),
+			stageAdmissionKey: key,
+			stayInSession: true,
+		};
+		const deliver = () =>
+			own.length === 1
+				? this.sendCustomMessage(own[0]!.message, options)
+				: this.sendCustomMessages(
+						own.map((notice) => notice.message),
+						// Each notice keeps its own entry, recognized by its own completion after a restart.
+						{ ...options, stageAdmissionKeys: own.map((notice) => notice.envelope.completionId) },
+					);
+		if (stageAdmission) await deliver();
+		else
+			await admission.admit(key, deliver, () => {
+				throw new Error("Task owner is closed");
+			}).completion;
+		// Without a turn, a notice admitted mid-turn waits in memory for that turn's end; it is acknowledged once saved (#5047).
+		if (!live)
+			for (const notice of own) {
+				const saved = pendingCustomMessageSaved(this, notice.envelope.completionId);
+				if (saved !== undefined) admitted[envelopes.indexOf(notice.envelope)] = { saved };
+			}
+		return admitted;
+	};
 	const outbox = new TaskCompletionOutbox(
 		this.sessionManager,
 		() => !this._disposed && admission.isOpen(),
-		async (envelope, restored) => {
-			// Settlement can precede the UI projection's next drain. Read the owner
-			// snapshot, not the display store, when attaching completion context.
-			const host = this._agentTaskHost;
-			const task = host
-				?.taskRecords(new Set([envelope.taskId as C.TaskId]))
-				.find((item) => item.ref.ownerId === envelope.ownerId && settledWithCompletion(host, envelope));
-			// Foreground shell results already return through their tool call. Do not
-			// create a second model turn or background card for that same execution.
-			if (task?.kind === "command" && !task.wasBackground) return;
-			const lease = task ? host?.resolveTask(envelope.taskId) : undefined;
-			const source = lease?.ok ? taskTranscriptSource(lease.value) : undefined;
-			// A finished child keeps its history in its session store, not in memory (#5186).
-			const ownEntries = lease?.ok ? await loadTaskOwnTranscriptEntries(lease.value) : undefined;
-			const response = ownEntries
-				? ownEntries
-						.slice()
-						.reverse()
-						.find(
-							(entry) =>
-								entry.type === "message" &&
-								entry.message.role === "assistant" &&
-								entry.message.content.some((block) => block.type === "text" && block.text.trim()),
-						)
-				: undefined;
-			let output =
-				response?.type === "message" && response.message.role === "assistant"
-					? response.message.content
-							.filter((block) => block.type === "text")
-							.map((block) => block.text)
-							.join("\n")
-					: undefined;
-			if (task?.kind === "command" && lease?.ok && host)
-				output = await commandOutputExcerpt(host, lease.value, task);
-			const message = taskCompletionMessage(envelope, task, output);
-			// A shell a subagent launched in this owner belongs to that subagent's session: its notice goes there, now or
-			// when it runs again, and never to this session. It is acknowledged here once the subagent took it.
-			if (envelope.launchedBy !== undefined) {
-				if (host === undefined) throw new Error("Task owner is closed");
-				return { saved: deliverToLaunchingSession(host, envelope.launchedBy, envelope.taskId, message) };
-			}
-			const completionSource = source?.ok ? source.value.session.completionSource : undefined;
-			if (completionSource) {
-				await flushTaskCompletionMessages(
-					getExtensionRuntimeEventBus(this._resourceLoader.getExtensions().runtime),
-					completionSource,
-					envelope.completionId,
-				);
-			}
-			// Notices that finish together, or while this session works, reach it as one message once it is idle, and that
-			// message starts one turn. A notice reaches this session or waits for it: a closed stage keeps it rather than
-			// sending it on to the chat that launched the workflow. It is acknowledged once saved (#5047).
-			const send: TaskNoticeSend = (joined, { triggerTurn, stageAdmissionKey, busy }) => {
-				const deliver = () =>
-					this.sendCustomMessage(joined, {
-						triggerTurn,
-						stageAdmissionKey,
-						stayInSession: true,
-						// Admitted while a turn runs after all, it waits durably for that turn's next safe boundary.
-						...(triggerTurn && busy ? { persistWhenStreaming: true } : {}),
-					});
-				if (stageAdmission) return deliver();
-				return admission.admit(stageAdmissionKey, deliver, () => {
-					throw new Error("Task owner is closed");
-				}).completion;
-			};
-			// A restored notice, or one whose task is gone, joins the transcript at once without starting a turn; mid-turn
-			// it waits in memory for the turn to end, and is acknowledged once saved (#5047).
-			if (restored || task === undefined) {
-				await send(message, { triggerTurn: false, stageAdmissionKey: envelope.completionId, busy: false });
-				const saved = pendingCustomMessageSaved(this, envelope.completionId);
-				return saved === undefined ? undefined : { saved };
-			}
-			return {
-				saved: deliverTaskNotice(this, message, {
-					completionId: envelope.completionId,
-					triggerTurn: true,
-					send,
-					afterTurn: true,
-				}),
-			};
-		},
+		async (envelope, restored) => (await admitBatch([envelope], restored))[0],
 		// Each notice holds its task's record until it is delivered, so a burst of finishes cannot evict what the
 		// notice is built from (#4385).
 		(envelope) => this._agentTaskHost?.releaseTaskRecord(envelope.taskId),
 		() => !waitsOnDetachedResults(this),
 		(envelope) => releaseDeliveredTaskRecord(this._agentTaskHost, envelope),
+		{ admitBatch },
 	);
 	this._taskCompletionOutbox = outbox;
 	const heartbeat: TaskHeartbeatDelivery = {
@@ -269,20 +317,11 @@ export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner
 	if (!this._parentCommandTaskOwner || this._disposed) return undefined;
 	const route: ChildTaskCompletionRoute = {
 		isOpen: () => !this._disposed && this._subagentPolicy?.messageAdmission?.isOpen() === true,
-		// A running subagent reads its shells' notices within its turn, those that finish together as one message.
-		deliver: (message) =>
-			deliverTaskNotice(this, message, {
-				completionId: taskNoticeCompletionIds(message.details)[0],
-				triggerTurn: true,
-				afterTurn: false,
-				send: async (joined) => {
-					const admission = this._subagentPolicy?.messageAdmission;
-					if (!admission) throw new Error("Subagent execution cannot accept messages");
-					await admission.run(() =>
-						this.sendCustomMessage(joined, { triggerTurn: true, persistWhenStreaming: true }),
-					);
-				},
-			}),
+		deliver: async (message) => {
+			const admission = this._subagentPolicy?.messageAdmission;
+			if (!admission) throw new Error("Subagent execution cannot accept messages");
+			await admission.run(() => this.sendCustomMessage(message, { triggerTurn: true, persistWhenStreaming: true }));
+		},
 	};
 	return waitingUntilSettled(
 		this._parentCommandTaskOwner.bind(this.sessionManager.getSessionId(), route, this._childTaskWaits),
@@ -296,6 +335,8 @@ export function _getCommandTaskOwner(this: AgentSession): SupervisedCommandOwner
  */
 export function bindChildTaskNotices(session: AgentSession): void {
 	if (!isSubagentChildSession(session) || session._parentCommandTaskOwner === undefined) return;
+	// Only a child something waits for binds now; the others bind at their first shell call, as before.
+	if (!session._parentCommandTaskOwner.hasKeptNotices(session.sessionManager.getSessionId())) return;
 	try {
 		session._getCommandTaskOwner();
 	} catch {

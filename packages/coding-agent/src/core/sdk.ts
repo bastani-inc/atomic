@@ -20,7 +20,7 @@ import {
 	parseReleaseWhenIdle,
 	type ReleaseWhenIdleOptions,
 } from "./agent-session-release.ts";
-import { bindChildTaskNotices, childCommandTaskHost } from "./agent-session-tasks.js";
+import { bindChildTaskNotices, childCommandTaskHost, openChildCommandTaskHost } from "./agent-session-tasks.js";
 import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { getBuiltinPackageLocations, getBuiltinPackagePaths } from "./builtin-packages.ts";
@@ -819,8 +819,9 @@ async function constructAgentSession(
 
 	const providerRollback = modelRuntime.createExtensionProviderTransaction();
 	let session: AgentSession;
-	const childCommandTaskOwner = createChildCommandTaskOwner(() =>
-		childCommandTaskHost(session as unknown as AgentSessionInternalSurface),
+	const childCommandTaskOwner = createChildCommandTaskOwner(
+		() => childCommandTaskHost(session as unknown as AgentSessionInternalSurface),
+		() => openChildCommandTaskHost(session as unknown as AgentSessionInternalSurface),
 	);
 	const childHistory: ProjectHistory = {
 		sessionStore: () => session.extensionRunner.getProjectHistory().sessionStore(),

@@ -62,6 +62,13 @@ export type SendMessagesOptions = Omit<
 	"deliverAs" | "interruptAbortMessage" | "wakeIdleSession"
 > & {
 	deliverAs?: "steer" | "followUp" | "nextTurn";
+	/**
+	 * Each message's own stable identity, in order, where the batch is admitted under `stageAdmissionKey`. Task notices
+	 * that finished together use it, so each keeps its own visible entry.
+	 *
+	 * @internal
+	 */
+	stageAdmissionKeys?: readonly (string | undefined)[];
 };
 
 export interface MessageRenderOptions extends KeybindingHints {

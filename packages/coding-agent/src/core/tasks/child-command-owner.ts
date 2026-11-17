@@ -32,6 +32,8 @@ export interface ChildCommandTaskOwner {
 	 * `route`, and the route is forgotten once none runs or waits. Returns false, binding nothing, when there is none.
 	 */
 	routeReleased(childId: string, route: ChildTaskCompletionRoute): boolean;
+	/** Whether notices of shells the child launched wait for it, in an owner its parent already holds. */
+	hasKeptNotices(childId: string): boolean;
 }
 
 /** A completion notice kept for a child that could not take it, until it is bound again or released. */
@@ -91,9 +93,9 @@ class ChildCommandTaskRoutes {
 	 * The task completed: hand its notice to the child that launched it, now if its session takes it, or once it is bound
 	 * again or released. Resolves when the child took it; nothing else ever receives it.
 	 */
-	deliver(childId: string, taskId: TaskId, message: TaskCompletionMessage): Promise<void> {
+	deliver(childId: string, taskIds: readonly TaskId[], message: TaskCompletionMessage): Promise<void> {
 		const running = this.running.get(childId);
-		running?.delete(taskId);
+		for (const taskId of taskIds) running?.delete(taskId);
 		if (running?.size === 0) this.running.delete(childId);
 		return new Promise<void>((taken) => {
 			const kept = this.kept.get(childId);
@@ -167,16 +169,16 @@ function routesFor(host: AgentTaskHost): ChildCommandTaskRoutes {
 }
 
 /**
- * Deliver the completion notice of a task the child session `childId` launched in `host`'s owner to that child only:
+ * Deliver the completion notice of tasks the child session `childId` launched in `host`'s owner to that child only:
  * now while it takes messages, or once it runs again or is released. Resolves when the child took it.
  */
 export function deliverToLaunchingSession(
 	host: AgentTaskHost,
 	childId: string,
-	taskId: TaskId,
+	taskIds: TaskId | readonly TaskId[],
 	message: TaskCompletionMessage,
 ): Promise<void> {
-	return routesFor(host).deliver(childId, taskId, message);
+	return routesFor(host).deliver(childId, typeof taskIds === "string" ? [taskIds] : taskIds, message);
 }
 
 /** How many children have a completion route in this host's owner. */
@@ -207,7 +209,11 @@ function runningSubagentTask(host: AgentTaskHost, childId: string): TaskId | und
  * route is dropped from the owner it was bound to, which stays known while the child is bound: unbinding needs no
  * live parent, so a child closing after its parent closed or was retired still leaves nothing behind.
  */
-export function createChildCommandTaskOwner(resolveHost: () => AgentTaskHost): ChildCommandTaskOwner {
+export function createChildCommandTaskOwner(
+	resolveHost: () => AgentTaskHost,
+	/** The parent's owner when it already holds one, without opening it. */
+	peekHost: () => AgentTaskHost | undefined = () => undefined,
+): ChildCommandTaskOwner {
 	const boundHosts = new Map<string, AgentTaskHost>();
 	const dropRoute = (childId: string): void => {
 		const host = boundHosts.get(childId);
@@ -217,6 +223,10 @@ export function createChildCommandTaskOwner(resolveHost: () => AgentTaskHost): C
 	return {
 		unbind: dropRoute,
 		routeReleased: (childId, route) => routesFor(resolveHost()).routeReleased(childId, route),
+		hasKeptNotices(childId) {
+			const host = peekHost();
+			return host !== undefined && (routesByHost.get(host)?.keptCount(childId) ?? 0) > 0;
+		},
 		bind(childId, route, waits) {
 			const host = resolveHost();
 			if (boundHosts.get(childId) !== host) dropRoute(childId);

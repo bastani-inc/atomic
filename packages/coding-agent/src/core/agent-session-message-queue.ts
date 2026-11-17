@@ -229,19 +229,19 @@ async function admittedCustomMessages<T>(
 ): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	const timestamp = Date.now();
-	const appMessages = messages.map(
-		(message) =>
-			({
-				role: "custom" as const,
-				customType: message.customType,
-				content: message.content ?? [],
-				display: message.display,
-				details: message.details,
-				timestamp,
-				...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
-				...(options?.stageAdmissionKey === undefined ? {} : { stageAdmissionKey: options.stageAdmissionKey }),
-			}) satisfies CustomMessage<T> & { stageAdmissionKey?: string },
-	);
+	const appMessages = messages.map((message, index) => {
+		const stageAdmissionKey = options?.stageAdmissionKeys?.[index] ?? options?.stageAdmissionKey;
+		return {
+			role: "custom" as const,
+			customType: message.customType,
+			content: message.content ?? [],
+			display: message.display,
+			details: message.details,
+			timestamp,
+			...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
+			...(stageAdmissionKey === undefined ? {} : { stageAdmissionKey }),
+		} satisfies CustomMessage<T> & { stageAdmissionKey?: string };
+	});
 	if (appMessages.length === 0) return;
 	const boundary = this._subagentMessageAdmission ?? this._workflowStageAdmission;
 	const commit = async (): Promise<void> => {

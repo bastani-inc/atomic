@@ -49,6 +49,21 @@ export function taskCompletionEnvelope(
 	};
 }
 
+/**
+ * The one notice line a finished task shows in the transcript: what it is, its name, how it ended and how long it ran.
+ * Status reads as the line's marker: success ●, failure ✗, stopped ◼, warning !, paused ⏸.
+ */
+export type TaskNoticeLine = {
+	status: "success" | "failure" | "stopped" | "warning" | "paused";
+	/** `Background command`, `Agent` or `Task`. */
+	label: string;
+	/** The task's description or command, quoted on the line. */
+	subject?: string;
+	/** `completed (exit code 0)`, `finished`, `failed (exit code 1)`, `was stopped by the user`. */
+	outcome: string;
+	elapsedMs?: number;
+};
+
 export type TaskCompletionNotice = {
 	title: string;
 	preview: string;
@@ -59,7 +74,54 @@ export type TaskCompletionNotice = {
 	thinking?: string;
 	/** The model the launch asked for, when the task records one. */
 	requestedModel?: string;
+	/** The notice's line; notices saved by earlier versions lack it and show their title. */
+	line?: TaskNoticeLine;
 };
+
+/** The line of a finished task's notice: what it is, its name, how it ended, and how long it ran. */
+export function taskNoticeLine(
+	envelope: TaskCompletionEnvelope,
+	task?: Partial<Pick<TaskRecord, "kind" | "title" | "metrics">>,
+): TaskNoticeLine {
+	const kind = task?.kind ?? envelope.taskKind;
+	const result = envelope.result;
+	const subject = task?.title ? task.title.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 240) : undefined;
+	const facts = {
+		...(subject ? { subject } : {}),
+		...(task?.metrics?.elapsedMs === undefined ? {} : { elapsedMs: task.metrics.elapsedMs }),
+	};
+	const label = kind === "agent" ? "Agent" : kind === "command" ? "Background command" : "Task";
+	const exitCode =
+		result.kind !== "cancelled" && result.exitCode !== undefined ? ` (exit code ${result.exitCode})` : "";
+	// A command that exits non-zero completed, and failed.
+	if (result.kind !== "cancelled" && taskOutcomeStatus(result, kind) === "completed")
+		return { status: "success", label, outcome: kind === "agent" ? "finished" : `completed${exitCode}`, ...facts };
+	if (result.kind !== "cancelled") return { status: "failure", label, outcome: `failed${exitCode}`, ...facts };
+	const waitingOn = releasedWaitingOn(result);
+	if (waitingOn !== undefined) return { status: "paused", label, outcome: `is waiting on ${waitingOn}`, ...facts };
+	if (envelope.interruptedByRestart === true)
+		return { status: "stopped", label, outcome: "was interrupted by a restart", ...facts };
+	if (result.cause === "pause" && kind !== "agent")
+		return { status: "stopped", label, outcome: "was interrupted by a pause", ...facts };
+	if (kind === "agent" && isResumableStop(result))
+		return {
+			status: "paused",
+			label,
+			outcome: result.cause === "quit" ? "quit · awaiting resume" : "paused · awaiting resume",
+			...facts,
+		};
+	if (result.cause === "user")
+		return { status: "stopped", label: "Task", outcome: "was stopped by the user", ...facts };
+	if (result.cause === "execution-timeout")
+		return { status: "warning", label, outcome: cancelReasonText(result), ...facts };
+	const reason = result.cause === "owner-close" ? cancelReasonText(result) : undefined;
+	return {
+		status: "stopped",
+		label,
+		outcome: reason === undefined ? "was stopped" : `was stopped (${reason})`,
+		...facts,
+	};
+}
 
 /**
  * The model-facing line saying an agent ran on another model than its launch asked for, or undefined when it ran on
@@ -80,7 +142,7 @@ export function ranOnModelLine(
 export function taskCompletionNotice(
 	envelope: TaskCompletionEnvelope,
 	task?: Pick<TaskRecord, "kind" | "title" | "agentName" | "model" | "thinking"> &
-		Partial<Pick<TaskRecord, "requestedModel">>,
+		Partial<Pick<TaskRecord, "requestedModel" | "metrics">>,
 	output?: string,
 ): TaskCompletionNotice {
 	const exitCode =
@@ -98,6 +160,7 @@ export function taskCompletionNotice(
 		...(task?.kind === "agent" && task.model !== undefined ? { model: task.model } : {}),
 		...(task?.kind === "agent" && task.thinking !== undefined ? { thinking: task.thinking } : {}),
 		...(task?.kind === "agent" && task.requestedModel !== undefined ? { requestedModel: task.requestedModel } : {}),
+		line: taskNoticeLine(envelope, task),
 	};
 }
 
@@ -222,6 +285,17 @@ export function formatTaskCompletion(
 /** An admission whose notice is not yet saved in the session: the intent is acknowledged once `saved` settles. */
 export type AdmittedTaskCompletion = { readonly saved: Promise<void> } | undefined;
 
+/** Admits several intents at once, as one message where they share a session; one admission per envelope, in order. */
+export type AdmitTaskCompletions = (
+	envelopes: readonly TaskCompletionEnvelope[],
+	restored: boolean,
+) => Promise<readonly AdmittedTaskCompletion[]>;
+
+export interface TaskCompletionOutboxOptions {
+	/** Admits each flush's ready intents together; without it each is admitted alone. */
+	readonly admitBatch?: AdmitTaskCompletions;
+}
+
 /**
  * Session history retains intent even when model admission or its acknowledgement fails.
  * Intents restored from an earlier process wait for `flushRestored()`; they never ride a live flush.
@@ -246,6 +320,7 @@ export class TaskCompletionOutbox {
 	private readonly delivered: (envelope: TaskCompletionEnvelope) => void;
 	private readonly canAdmit: () => boolean;
 	private readonly restoredDelivered: (envelope: TaskCompletionEnvelope) => void;
+	private readonly admitBatch: AdmitTaskCompletions | undefined;
 
 	constructor(
 		session: SessionManager,
@@ -254,6 +329,7 @@ export class TaskCompletionOutbox {
 		delivered: (envelope: TaskCompletionEnvelope) => void = () => {},
 		canAdmit: () => boolean = () => true,
 		restoredDelivered: (envelope: TaskCompletionEnvelope) => void = () => {},
+		options: TaskCompletionOutboxOptions = {},
 	) {
 		this.session = session;
 		this.isOpen = isOpen;
@@ -261,6 +337,7 @@ export class TaskCompletionOutbox {
 		this.delivered = delivered;
 		this.canAdmit = canAdmit;
 		this.restoredDelivered = restoredDelivered;
+		this.admitBatch = options.admitBatch;
 		for (const envelope of pendingTaskCompletionIntents(session)) {
 			this.entries.set(envelope.completionId, envelope);
 			this.restored.add(envelope.completionId);
@@ -307,52 +384,97 @@ export class TaskCompletionOutbox {
 		return before - this.restored.size;
 	}
 
+	/**
+	 * Admit the intents ready now as one batch: those that finish together reach the model in one request, one turn. Intents
+	 * recorded while a batch is admitted form the next one; an intent whose admission failed waits for the next flush.
+	 */
 	private async deliver(restored: boolean): Promise<void> {
-		for (const envelope of this.entries.values()) {
-			if (this.saving.has(envelope.completionId)) continue;
-			if (this.restored.has(envelope.completionId) !== restored) continue;
-			try {
-				const persisted = this.session
-					.getEntries()
-					.some(
-						(entry) =>
-							entry.type === "custom" &&
-							entry.customType === "task-completion-intent" &&
-							(entry.data as TaskCompletionEnvelope | undefined)?.completionId === envelope.completionId,
-					);
-				if (!persisted) await this.session.appendCustomEntry("task-completion-intent", envelope);
-				// Saved, it waits for a later flush, or the next open of a closed session (#5079); the rest are saved too.
-				if (!this.isOpen() || !this.canAdmit()) continue;
-				const admitted = this.noticeSaved(envelope.completionId) ? undefined : await this.admit(envelope, restored);
-				if (admitted !== undefined) {
+		const attempted = new Set<string>();
+		for (;;) {
+			const ready: TaskCompletionEnvelope[] = [];
+			for (const envelope of this.entries.values()) {
+				if (this.saving.has(envelope.completionId) || attempted.has(envelope.completionId)) continue;
+				if (this.restored.has(envelope.completionId) !== restored) continue;
+				attempted.add(envelope.completionId);
+				try {
+					const persisted = this.session
+						.getEntries()
+						.some(
+							(entry) =>
+								entry.type === "custom" &&
+								entry.customType === "task-completion-intent" &&
+								(entry.data as TaskCompletionEnvelope | undefined)?.completionId === envelope.completionId,
+						);
+					if (!persisted) await this.session.appendCustomEntry("task-completion-intent", envelope);
+					// Saved, it waits for a later flush, or the next open of a closed session (#5079); the rest are saved too.
+					if (!this.isOpen() || !this.canAdmit()) continue;
+					if (this.noticeSaved(envelope.completionId)) await this.acknowledge(envelope, restored);
+					else ready.push(envelope);
+				} catch {
+					// Execution stays terminal. Explicit retry uses this same envelope and identity.
+				}
+			}
+			if (ready.length === 0) return;
+			for (const [envelope, pending] of await this.admitReady(ready, restored)) {
+				try {
+					if (pending === undefined) {
+						await this.acknowledge(envelope, restored);
+						continue;
+					}
 					const { completionId } = envelope;
 					this.saving.add(completionId);
 					this.restored.delete(completionId);
-					void admitted.saved
+					void pending.saved
 						.then(() => this.acknowledge(envelope, restored))
 						// The notice is saved: a later flush acknowledges it without admitting it again.
 						.catch(() => restored && this.restored.add(completionId))
 						.finally(() => this.saving.delete(completionId));
-					continue;
+				} catch {
+					// Execution stays terminal. Explicit retry uses this same envelope and identity.
 				}
-				await this.acknowledge(envelope, restored);
+			}
+		}
+	}
+
+	/**
+	 * Admit `ready` together through the batch admission, or each alone. An admission that failed leaves its intents
+	 * out of the result: they wait for the next flush.
+	 */
+	private async admitReady(
+		ready: readonly TaskCompletionEnvelope[],
+		restored: boolean,
+	): Promise<[TaskCompletionEnvelope, AdmittedTaskCompletion][]> {
+		if (this.admitBatch !== undefined) {
+			try {
+				const admitted = await this.admitBatch(ready, restored);
+				return ready.map((envelope, index) => [envelope, admitted[index]]);
+			} catch {
+				// Execution stays terminal. Explicit retry uses these same envelopes and identities.
+				return [];
+			}
+		}
+		const admitted: [TaskCompletionEnvelope, AdmittedTaskCompletion][] = [];
+		for (const envelope of ready) {
+			try {
+				admitted.push([envelope, await this.admit(envelope, restored)]);
 			} catch {
 				// Execution stays terminal. Explicit retry uses this same envelope and identity.
 			}
 		}
+		return admitted;
 	}
 
 	/** Whether the notice of a completion is in this session, as when a process ended before acknowledging it. */
 	private noticeSaved(completionId: string): boolean {
 		if (this.session.getSessionRecoveryState?.().admissionKeys.includes(completionId)) return true;
-		return this.session
-			.getEntries()
-			.some(
-				(entry) =>
-					entry.type === "custom_message" &&
-					(entry.stageAdmissionKey === completionId ||
-						taskNoticeCompletionIds(entry.details).includes(completionId)),
-			);
+		return this.session.getEntries().some(
+			(entry) =>
+				entry.type === "custom_message" &&
+				// A notice admitted with others carries the batch's key; each names its own completion.
+				(entry.stageAdmissionKey === completionId ||
+					(entry.customType === TASK_COMPLETION_MESSAGE_TYPE &&
+						(entry.details as { completionId?: unknown } | undefined)?.completionId === completionId)),
+		);
 	}
 
 	private async acknowledge(envelope: TaskCompletionEnvelope, restored: boolean): Promise<void> {
@@ -362,15 +484,6 @@ export class TaskCompletionOutbox {
 		if (restored) this.restoredDelivered(envelope);
 		else this.delivered(envelope);
 	}
-}
-
-/** The completion ids a saved notice carries: its own, or those of every notice it joined. */
-export function taskNoticeCompletionIds(details: unknown): string[] {
-	if (details === null || typeof details !== "object") return [];
-	const joined = (details as { notices?: unknown }).notices;
-	if (Array.isArray(joined)) return joined.flatMap((notice) => taskNoticeCompletionIds(notice));
-	const id = (details as { completionId?: unknown }).completionId;
-	return typeof id === "string" ? [id] : [];
 }
 
 /** Completion intents recorded in this session history without an acknowledgement. */

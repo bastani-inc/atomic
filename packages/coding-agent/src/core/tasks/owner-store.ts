@@ -63,7 +63,7 @@ export class OwnerTaskStore {
 	}
 	/** This session's own background tasks. Background membership survives foreground waits and terminal cleanup. */
 	get backgroundTasks(): TaskRecord[] {
-		return sessionTasks(this.ownerBackgroundTasks, undefined);
+		return this.tasks.filter((task) => this.inBackground(task));
 	}
 	/** Every task of the owner, including the shells subagents running in it launched. */
 	get ownerTasks(): TaskRecord[] {
@@ -71,9 +71,10 @@ export class OwnerTaskStore {
 	}
 	/** Every background task of the owner, including subagents' shells. */
 	get ownerBackgroundTasks(): TaskRecord[] {
-		return this.ownerTasks.filter(
-			(task) => task.wasBackground || isBackground(task.observation) || this.backgroundIds.has(task.ref.taskId),
-		);
+		return this.ownerTasks.filter((task) => this.inBackground(task));
+	}
+	private inBackground(task: TaskRecord): boolean {
+		return task.wasBackground === true || isBackground(task.observation) || this.backgroundIds.has(task.ref.taskId);
 	}
 	/**
 	 * Journal sequence at which each task settled; higher is more recent. Tasks first seen settled in a

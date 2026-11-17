@@ -3,7 +3,7 @@ import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../src/core/tasks/completion.js";
-import type { OperationId, TaskId } from "../src/core/tasks/contracts.js";
+import type { OperationId, TaskId, TaskResult } from "../src/core/tasks/contracts.js";
 import type { BashToolDetails } from "../src/core/tools/bash.js";
 import { createHarness, type Harness } from "./suite/harness.js";
 
@@ -72,65 +72,81 @@ function noticedTasks(text: string): string[] {
 	return [...text.matchAll(/Task: (task-[\w-]+)/g)].map((match) => match[1]!);
 }
 
-test("background shells that finish together reach an idle chat as one notice message and start one turn", async () => {
+/** The task ids the notices at the end of a model request named: those it was started with. */
+function requestNotices(messages: readonly { role: string; content?: unknown }[]): string[] {
+	const trailing: string[] = [];
+	for (const message of [...messages].reverse()) {
+		const tasks = noticedTasks(JSON.stringify(message.content ?? ""));
+		if (message.role !== "user" || tasks.length === 0) break;
+		trailing.unshift(...tasks);
+	}
+	return trailing;
+}
+
+test("tasks that finish together reach an idle chat in one request and start one turn", async () => {
 	const harness = await chat();
 	const seen: string[][] = [];
 	harness.setResponses([
 		(context) => {
-			const last = context.messages.at(-1);
-			seen.push(noticedTasks(JSON.stringify(last?.content ?? "")));
-			return fauxAssistantMessage("All three shells finished.");
+			seen.push(requestNotices(context.messages));
+			return fauxAssistantMessage("All three tasks finished.");
 		},
 	]);
-	const ids = [
-		await startBackground(harness.session),
-		await startBackground(harness.session),
-		await startBackground(harness.session),
-	];
+	const host = harness.session.getAgentTaskHost();
+	const gates: PromiseWithResolvers<TaskResult>[] = [];
+	const ids: TaskId[] = [];
+	for (let index = 0; index < 3; index++) {
+		const gate = Promise.withResolvers<TaskResult>();
+		gates.push(gate);
+		const started = await host.startAgentTask(
+			{ kind: "agent", agent: "worker", task: `task ${index}` },
+			`together-${index}` as OperationId,
+			() => ({ result: gate.promise, cleanup: Promise.resolve({ kind: "reaped" as const }) }),
+		);
+		assert.ok(started.ok);
+		ids.push(started.value.taskId);
+		await host.observeAgentLaunch(started.value.taskId, { kind: "background" });
+	}
 
-	await Promise.all(ids.map((id) => finish(harness.session, id)));
+	for (const gate of gates) gate.resolve({ kind: "failed", code: "fixture", message: "done" });
 	await vi.waitFor(() => assert.equal(acknowledged(harness), 3), { timeout: 15000 });
 	await harness.session.agent.waitForIdle();
 
-	const entries = noticeEntries(harness);
-	assert.equal(entries.length, 1, "one notice message in the transcript");
-	assert.equal(harness.faux.state.callCount, 1, "one turn");
-	assert.equal(harness.eventsOfType("agent_start").length, 1);
-	assert.deepEqual(seen, [ids], "the model read every notice in that one message");
+	assert.equal(noticeEntries(harness).length, 3, "one notice line per task");
+	assert.equal(harness.faux.state.callCount, 1, "one model request");
+	assert.equal(harness.eventsOfType("agent_start").length, 1, "one turn");
+	assert.deepEqual(seen, [ids], "the request carried every notice");
 });
 
-test("notices that arrive while the chat works wait for its turn, then reach it as one message and one turn", async () => {
+test("notices that arrive while the chat works are read within its turn, with no turn of their own", async () => {
 	const harness = await chat();
 	const ids = [await startBackground(harness.session), await startBackground(harness.session)];
 	const answering = Promise.withResolvers<void>();
 	const answer = Promise.withResolvers<void>();
-	const seen: string[][] = [];
+	const seen = new Set<string>();
 	harness.setResponses([
 		async () => {
 			answering.resolve();
 			await answer.promise;
 			return fauxAssistantMessage("Working on your request.");
 		},
-		(context) => {
-			seen.push(noticedTasks(JSON.stringify(context.messages.at(-1)?.content ?? "")));
-			return fauxAssistantMessage("Both shells finished.");
-		},
+		...Array.from({ length: 2 }, () => (context: { messages: readonly { role: string; content?: unknown }[] }) => {
+			for (const id of requestNotices(context.messages)) seen.add(id);
+			return fauxAssistantMessage("Read the notice.");
+		}),
 	]);
 
 	const turn = harness.session.prompt("do something long");
 	await answering.promise;
 	await finish(harness.session, ids[0]!);
-	await vi.waitFor(() => assert.ok(harness.sessionManager.getEntries().some((entry) => entry.type === "custom")));
-	await new Promise((resolve) => setTimeout(resolve, 200));
+	await vi.waitFor(() => assert.equal(acknowledged(harness), 1), { timeout: 15000 });
 	await finish(harness.session, ids[1]!);
-	await new Promise((resolve) => setTimeout(resolve, 200));
-	assert.equal(noticeEntries(harness).length, 0, "nothing reaches the chat while its turn runs");
+	await vi.waitFor(() => assert.equal(acknowledged(harness), 2), { timeout: 15000 });
 	answer.resolve();
 	await turn;
-	await vi.waitFor(() => assert.equal(acknowledged(harness), 2), { timeout: 15000 });
 	await harness.session.agent.waitForIdle();
 
-	assert.equal(noticeEntries(harness).length, 1, "one notice message");
-	assert.equal(harness.faux.state.callCount, 2, "the user's turn, then one turn for both notices");
-	assert.deepEqual(seen, [ids]);
+	assert.equal(noticeEntries(harness).length, 2, "one notice line per shell");
+	assert.equal(harness.eventsOfType("agent_start").length, 1, "they started no turn of their own");
+	assert.deepEqual([...seen].sort(), [...ids].sort(), "the turn read both");
 });
