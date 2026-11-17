@@ -3,7 +3,10 @@ import { linkSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { selectSessionStorage } from "../../packages/coding-agent/src/core/session-storage.js";
-import { resetStorageHomeCacheForTests } from "../../packages/coding-agent/src/core/storage/file-identity.js";
+import {
+	resetStorageHomeCacheForTests,
+	storageHomeDir,
+} from "../../packages/coding-agent/src/core/storage/file-identity.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
 let root: string;
@@ -101,4 +104,108 @@ test("a cached isolated target cannot become a hard-link alias of a sibling's cl
 	});
 	linkSync(shared, join(second, "history.sqlite"));
 	assert.throws(() => selectSessionStorage(root, { agentDir: second, settings }), /owned by another agent directory/);
+});
+
+test("an adopted agent retains a legacy relative target beside its alias when its home has no matching target (#5242)", () => {
+	const parent = join(root, "adopted");
+	const agent = join(parent, "agent");
+	const aliasParent = join(root, "alias-parent");
+	const alias = join(aliasParent, "alias");
+	mkdirSync(agent, { recursive: true });
+	mkdirSync(aliasParent);
+	mkdirSync(join(parent, "workflows"));
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	assert.equal(storageHomeDir(agent, {}), parent);
+	symlinkSync(agent, alias, "junction");
+	const legacy = join(aliasParent, "legacy.sqlite");
+	writeFileSync(legacy, "history");
+	assert.deepEqual(
+		selectSessionStorage(root, { agentDir: alias, settings: { sessions: { storage: { path: "legacy.sqlite" } } } }),
+		{ kind: "sqlite", path: legacy },
+	);
+	assert.equal(storageHomeDir(agent, {}), parent);
+});
+
+test("an alias-parent legacy target keeps the owner's recorded reservation before its first target lookup (#5242)", () => {
+	const parent = join(root, "adopted");
+	const agent = join(parent, "agent");
+	const aliasParent = join(root, "reserved-parent");
+	const owner = join(aliasParent, "owner");
+	const alias = join(aliasParent, "alias");
+	for (const directory of [agent, owner, join(parent, "workflows"), join(aliasParent, "workflows")])
+		mkdirSync(directory, { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	writeFileSync(join(aliasParent, "workflows", "journal.sqlite"), "");
+	writeFileSync(join(aliasParent, "team.sqlite"), "history");
+	const settings = { sessions: { storage: { path: "team.sqlite" } } };
+	assert.equal(storageHomeDir(agent, {}), parent);
+	assert.equal(storageHomeDir(owner, settings), aliasParent);
+	symlinkSync(agent, alias, "junction");
+	assert.deepEqual(selectSessionStorage(root, { agentDir: alias, settings }), {
+		kind: "sqlite",
+		path: join(alias, "team.sqlite"),
+	});
+	assert.deepEqual(selectSessionStorage(root, { agentDir: owner, settings }), {
+		kind: "sqlite",
+		path: join(aliasParent, "team.sqlite"),
+	});
+});
+
+test("an adopted agent reopened through an external alias and a default-agent alias share target claims with siblings (#5242)", () => {
+	const parent = join(root, "parent");
+	const other = join(root, "other");
+	const first = join(parent, "first");
+	const second = join(parent, "second");
+	const alias = join(other, "alias");
+	const secondAlias = join(other, "second-alias");
+	for (const dir of [first, second, other, join(parent, "workflows")]) mkdirSync(dir, { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	writeFileSync(join(parent, "team.sqlite"), "history");
+	assert.equal(storageHomeDir(first, {}), parent);
+	symlinkSync(first, alias, "junction");
+	symlinkSync(second, secondAlias, "junction");
+	const settings = { sessions: { storage: { path: "team.sqlite" } } };
+	assert.deepEqual(selectSessionStorage(root, { agentDir: alias, settings }), {
+		kind: "sqlite",
+		path: join(parent, "team.sqlite"),
+	});
+	assert.deepEqual(selectSessionStorage(root, { agentDir: second, settings }), {
+		kind: "sqlite",
+		path: join(second, "team.sqlite"),
+	});
+	assert.deepEqual(selectSessionStorage(root, { agentDir: secondAlias, settings }), {
+		kind: "sqlite",
+		path: join(secondAlias, "team.sqlite"),
+	});
+
+	const home = join(root, "default-alias-home");
+	const canonical = join(home, ".atomic", "agent");
+	const defaultAlias = join(home, "link-agent");
+	const homeSibling = join(home, "sibling");
+	const atomicSibling = join(home, ".atomic", "custom");
+	for (const dir of [canonical, homeSibling, atomicSibling, join(home, "workflows")])
+		mkdirSync(dir, { recursive: true });
+	writeFileSync(join(home, "workflows", "journal.sqlite"), "");
+	writeFileSync(join(home, "team.sqlite"), "history");
+	symlinkSync(canonical, defaultAlias, "junction");
+	vi.stubEnv("HOME", home);
+	vi.stubEnv("USERPROFILE", home);
+	resetStorageHomeCacheForTests();
+	assert.equal(storageHomeDir(defaultAlias, {}), home);
+	assert.deepEqual(selectSessionStorage(root, { agentDir: canonical, settings }), {
+		kind: "sqlite",
+		path: join(home, "team.sqlite"),
+	});
+	assert.deepEqual(selectSessionStorage(root, { agentDir: homeSibling, settings }), {
+		kind: "sqlite",
+		path: join(homeSibling, "team.sqlite"),
+	});
+	assert.throws(
+		() =>
+			selectSessionStorage(root, {
+				agentDir: atomicSibling,
+				settings: { sessions: { storage: { path: "../team.sqlite" } } },
+			}),
+		/owned by another agent directory/,
+	);
 });

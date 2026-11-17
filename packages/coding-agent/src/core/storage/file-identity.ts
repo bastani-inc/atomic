@@ -4,6 +4,7 @@ import {
 	linkSync,
 	mkdirSync,
 	opendirSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -424,25 +425,18 @@ function hasParentStoreEntries(parent: string, agentPath: string, relativeTarget
 	return hasRelativeTargetEntries(parent, agentPath, relativeTargets, true);
 }
 
-function readConfigurationObject(path: string): object | null | undefined {
-	let raw: string;
+function parseConfigurationObject(contents: string): object | undefined {
 	try {
-		raw = readFileSync(path, "utf8");
+		const value: object | null = JSON.parse(contents.charCodeAt(0) === 0xfeff ? contents.slice(1) : contents);
+		return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 	} catch {
 		return undefined;
 	}
-	try {
-		const value: object | null = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
-		return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
-	} catch {
-		return null;
-	}
 }
 
-function hasAtomicConfiguration(path: string, name: string): boolean | undefined {
-	const value = readConfigurationObject(path);
-	if (value === undefined) return undefined;
-	if (value === null) return false;
+function hasAtomicConfiguration(contents: string, name: string): boolean {
+	const value = parseConfigurationObject(contents);
+	if (value === undefined) return false;
 	if (name === "settings.json") return Object.keys(value).some((key) => ATOMIC_SETTING_KEYS.has(key));
 	if (name === "models.json") {
 		return (
@@ -472,63 +466,48 @@ function hasAtomicConfiguration(path: string, name: string): boolean | undefined
 
 interface PriorUseSnapshot {
 	readonly directoryVersion: string;
-	readonly configurationVersions: readonly { readonly path: string; readonly version: string | undefined }[];
+	readonly configurationVersions: readonly string[];
 	readonly tier: 1 | 2;
 }
 
 const priorUseSnapshots = new Map<string, PriorUseSnapshot>();
 
-function filesystemVersion(path: string, directory = false): string | undefined {
-	try {
-		const stat = statSync(path, { bigint: true });
-		if (directory && !stat.isDirectory()) return undefined;
-		return `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}:${stat.mode}`;
-	} catch {
-		return undefined;
-	}
-}
-
 function agentDirectoryPriorUseTier(dirPath: string): 0 | 1 | 2 {
-	const directoryVersion = filesystemVersion(dirPath, true);
-	if (directoryVersion === undefined) return 0;
+	let names: string[];
+	try {
+		names = readdirSync(dirPath).sort();
+	} catch {
+		return 0;
+	}
+	if (names.some((name) => AGENT_DIR_STATE_ENTRIES.has(name) || name.startsWith("storage-token."))) return 2;
+	const directoryVersion = names.join("\0");
+	const configurations: { name: string; contents: string; version: string }[] = [];
+	let cacheable = true;
+	for (const name of names) {
+		if (!["settings.json", "auth.json", "models.json"].includes(name)) continue;
+		try {
+			const contents = readFileSync(join(dirPath, name), "utf8");
+			configurations.push({ name, contents, version: createHash("sha256").update(contents).digest("hex") });
+		} catch {
+			cacheable = false;
+		}
+	}
 	const cached = priorUseSnapshots.get(dirPath);
 	if (
+		cacheable &&
 		cached?.directoryVersion === directoryVersion &&
-		cached.configurationVersions.every(({ path, version }) => filesystemVersion(path) === version)
+		cached.configurationVersions.length === configurations.length &&
+		cached.configurationVersions.every((version, index) => version === configurations[index]!.version)
 	)
 		return cached.tier;
-	const configurationVersions: { path: string; version: string | undefined }[] = [];
-	let tier: 1 | 2 = 1;
-	let cacheable = true;
-	let completed = false;
-	let dir: ReturnType<typeof opendirSync> | undefined;
-	try {
-		dir = opendirSync(dirPath);
-		for (let entry = dir.readSync(); entry !== null; entry = dir.readSync()) {
-			if (AGENT_DIR_STATE_ENTRIES.has(entry.name) || entry.name.startsWith("storage-token.")) {
-				tier = 2;
-				break;
-			}
-			if (["settings.json", "auth.json", "models.json"].includes(entry.name)) {
-				const path = join(dirPath, entry.name);
-				const version = filesystemVersion(path);
-				configurationVersions.push({ path, version });
-				const atomicConfiguration = hasAtomicConfiguration(path, entry.name);
-				if (version === undefined || atomicConfiguration === undefined) cacheable = false;
-				if (atomicConfiguration) {
-					tier = 2;
-					break;
-				}
-			}
-		}
-		completed = true;
-	} catch {
-	} finally {
-		try {
-			dir?.closeSync();
-		} catch {}
+	const tier = configurations.some(({ name, contents }) => hasAtomicConfiguration(contents, name)) ? 2 : 1;
+	if (cacheable) {
+		priorUseSnapshots.set(dirPath, {
+			directoryVersion,
+			configurationVersions: configurations.map(({ version }) => version),
+			tier,
+		});
 	}
-	if (completed && cacheable) priorUseSnapshots.set(dirPath, { directoryVersion, configurationVersions, tier });
 	return tier;
 }
 
@@ -915,20 +894,24 @@ function containsPath(directory: string, target: string): boolean {
 	return inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
 }
 
-function targetClaimFiles(agentPath: string, target: string): readonly string[] {
+function targetClaimFiles(agentPath: string, home: string, target: string): readonly string[] {
+	const containers = [dirname(canonicalPath(agentPath))];
+	const decisionHome = canonicalPath(home);
+	if (!pathsEqual(containers[0]!, decisionHome)) containers.push(decisionHome);
 	const identities = [getPathComparisonKey(canonicalPath(target))];
 	try {
 		const stat = statSync(target, { bigint: true });
 		if (stat.ino !== 0n) identities.push(`file:${stat.dev}:${stat.ino}:${stat.birthtimeNs}`);
 	} catch {}
-	return identities.map((identity) => {
-		const key = createHash("sha256").update(identity).digest("hex");
-		return join(canonicalPath(dirname(agentPath)), `.atomic-storage-target-${key}`);
-	});
+	return containers.flatMap((container) =>
+		identities.map((identity) => {
+			const key = createHash("sha256").update(identity).digest("hex");
+			return join(container, `.atomic-storage-target-${key}`);
+		}),
+	);
 }
 
-function preferredTargetOwner(agentPath: string, target: string): string {
-	const parent = dirname(agentPath);
+function preferredTargetOwner(agentPath: string, parent: string, target: string): string {
 	const physical = canonicalPath(target);
 	const defaultHome = join(getHomeDir(), CONFIG_DIR_NAME);
 	const parentOwner =
@@ -964,17 +947,26 @@ export function storagePathBaseDir(path: string, agentDir: string, settings?: St
 	if (target === undefined) return home;
 	const agentPath = normalizeAgentDirPath(agentDir);
 	const parent = dirname(agentPath);
+	const claimDir = sameDirectory(home, agentPath) ? dirname(canonicalPath(agentPath)) : canonicalPath(home);
 	const key = createHash("sha256")
 		.update(getPathComparisonKey(resolve(canonicalPath(agentPath), target)))
 		.digest("hex");
 	const decisionFile = `${storageHomeDecisionFile(agentPath)}.target-${key}`;
 	let decision = readStorageHomeDecision(decisionFile);
 	if (decision === undefined) {
-		const base = pathsEqual(home, parent) || !existsSync(resolve(parent, target)) ? home : parent;
+		const parentCandidates = sameDirectory(home, agentPath) ? [claimDir, parent] : [home, parent];
+		const base = parentCandidates.find((candidate) => existsSync(resolve(candidate, target))) ?? home;
 		const selected = resolve(base, target);
-		decision = containsPath(canonicalPath(agentPath), canonicalPath(selected))
-			? { home: base }
-			: { home: base, parentOwner: preferredTargetOwner(agentPath, selected) };
+		if (containsPath(canonicalPath(agentPath), canonicalPath(selected))) {
+			decision = { home: base };
+		} else {
+			const reservedOwner = preferredTargetOwner(agentPath, claimDir, selected);
+			const parentOwner =
+				sameDirectory(base, claimDir) || !sameDirectory(reservedOwner, agentPath)
+					? reservedOwner
+					: preferredTargetOwner(agentPath, base, selected);
+			decision = { home: base, parentOwner };
+		}
 		if (settings !== undefined && isDirectory(agentPath)) {
 			decision = settleStorageDecision(decisionFile, decision);
 		}
@@ -997,7 +989,7 @@ function applyStorageTargetDecision(
 ): string {
 	if (decision.parentOwner === undefined) return decision.home;
 	const selected = resolve(decision.home, target);
-	for (const claim of targetClaimFiles(agentPath, selected)) {
+	for (const claim of targetClaimFiles(agentPath, decision.home, selected)) {
 		let owner = readStorageOwner(claim);
 		if (owner === undefined && settings !== undefined && isDirectory(agentPath)) {
 			mkdirSync(dirname(claim), { recursive: true });

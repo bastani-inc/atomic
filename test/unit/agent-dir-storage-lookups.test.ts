@@ -6,16 +6,33 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const filesystemWork = vi.hoisted(() => ({
 	reads: 0,
+	readPaths: [] as string[],
 	writes: 0,
 	directoryOpens: 0,
+	bulkDirectoryReads: 0,
 	transientReadPath: undefined as string | undefined,
+	fixedVersionDirectory: undefined as string | undefined,
+	fixedVersionFile: undefined as string | undefined,
 }));
 vi.mock("node:fs", async (original) => {
 	const fs = await original<typeof import("node:fs")>();
 	return {
 		...fs,
+		readdirSync: (...args: Parameters<typeof fs.readdirSync>) => {
+			filesystemWork.bulkDirectoryReads++;
+			return fs.readdirSync(...args);
+		},
+		statSync: (...args: Parameters<typeof fs.statSync>) => {
+			const stat = fs.statSync(...args);
+			if (args[0] === filesystemWork.fixedVersionDirectory || args[0] === filesystemWork.fixedVersionFile) {
+				Object.defineProperties(stat, { mtimeNs: { value: 0n }, ctimeNs: { value: 0n } });
+				if (args[0] === filesystemWork.fixedVersionDirectory) Object.defineProperty(stat, "size", { value: 0n });
+			}
+			return stat;
+		},
 		readFileSync: (...args: Parameters<typeof fs.readFileSync>) => {
 			filesystemWork.reads++;
+			if (typeof args[0] === "string") filesystemWork.readPaths.push(args[0]);
 			if (args[0] === filesystemWork.transientReadPath) {
 				filesystemWork.transientReadPath = undefined;
 				throw Object.assign(new Error("Transient configuration read failure"), { code: "EIO" });
@@ -42,6 +59,8 @@ beforeEach(() => {
 	root = makeTempDirectory("storage-lookups-");
 	resetStorageHomeCacheForTests();
 	filesystemWork.transientReadPath = undefined;
+	filesystemWork.fixedVersionDirectory = undefined;
+	filesystemWork.fixedVersionFile = undefined;
 	for (const name of [
 		"ATOMIC_STORAGE",
 		"ATOMIC_SESSIONS_STORAGE",
@@ -59,8 +78,10 @@ afterEach(() => {
 
 function resetFilesystemWork(): void {
 	filesystemWork.reads = 0;
+	filesystemWork.readPaths.length = 0;
 	filesystemWork.writes = 0;
 	filesystemWork.directoryOpens = 0;
+	filesystemWork.bulkDirectoryReads = 0;
 }
 
 test("repeated relative selections reuse a settled local target without rereading its decision (#5242)", () => {
@@ -76,7 +97,7 @@ test("repeated relative selections reuse a settled local target without rereadin
 	assert.equal(filesystemWork.writes, 0);
 });
 
-test("unsettled workflow resource discovery reuses unchanged prior-use scans without settling storage (#5242)", () => {
+test("unsettled workflow resource discovery uses bulk profile reads without settling storage (#5242)", () => {
 	const agent = join(root, "fresh");
 	mkdirSync(agent);
 	mkdirSync(join(root, "original", "extensions"), { recursive: true });
@@ -87,27 +108,54 @@ test("unsettled workflow resource discovery reuses unchanged prior-use scans wit
 	resetFilesystemWork();
 	assert.equal(coLocatesWorkflowStore(agent, {}), true);
 	assert.ok(filesystemWork.directoryOpens <= 1, `${filesystemWork.directoryOpens} directories reopened`);
+	assert.ok(filesystemWork.bulkDirectoryReads > 0);
 	assert.equal(filesystemWork.writes, 0);
 	mkdirSync(join(root, "original", "workflows"));
 	writeFileSync(join(root, "original", "workflows", "journal.sqlite"), "");
 	assert.equal(coLocatesWorkflowStore(agent, {}), false);
 });
 
-test("workflow discovery notices existing configuration edits and new state after a cached prior-use scan (#5242)", () => {
+test("workflow discovery notices configuration and entry changes even when filesystem timestamps do not change (#5242)", () => {
 	const agent = join(root, "fresh");
 	const original = join(root, "original");
 	mkdirSync(agent);
 	mkdirSync(original);
 	mkdirSync(join(root, "workflows"));
 	writeFileSync(join(root, "workflows", "journal.sqlite"), "");
-	writeFileSync(join(original, "settings.json"), JSON.stringify({ theme: "dark" }));
+	const settingsPath = join(original, "settings.json");
+	filesystemWork.fixedVersionDirectory = original;
+	filesystemWork.fixedVersionFile = settingsPath;
+	writeFileSync(settingsPath, JSON.stringify({ ignoredModel: "configured" }));
 	assert.equal(coLocatesWorkflowStore(agent, {}), false);
-	writeFileSync(join(original, "settings.json"), JSON.stringify({ defaultModel: "configured" }));
+	writeFileSync(settingsPath, JSON.stringify({ defaultModel: "configured" }));
 	assert.equal(coLocatesWorkflowStore(agent, {}), true);
-	writeFileSync(join(original, "settings.json"), JSON.stringify({ theme: "light" }));
+	writeFileSync(settingsPath, JSON.stringify({ ignoredModel: "configured" }));
 	assert.equal(coLocatesWorkflowStore(agent, {}), false);
 	mkdirSync(join(original, "skills"));
 	assert.equal(coLocatesWorkflowStore(agent, {}), true);
+});
+
+test("unchanged prior-use configuration is read fresh without reparsing (#5242)", () => {
+	const agent = join(root, "fresh");
+	mkdirSync(agent);
+	mkdirSync(join(root, "original"));
+	mkdirSync(join(root, "workflows"));
+	writeFileSync(join(root, "workflows", "journal.sqlite"), "");
+	const settingsPath = join(root, "original", "settings.json");
+	writeFileSync(settingsPath, JSON.stringify({ ignoredModel: "configured" }));
+	const parse = vi.spyOn(JSON, "parse");
+	try {
+		assert.equal(coLocatesWorkflowStore(agent, {}), false);
+		assert.ok(parse.mock.calls.length > 0);
+		parse.mockClear();
+		resetFilesystemWork();
+		assert.equal(coLocatesWorkflowStore(agent, {}), false);
+		assert.equal(parse.mock.calls.length, 0);
+		assert.ok(filesystemWork.bulkDirectoryReads > 0);
+		assert.ok(filesystemWork.readPaths.includes(settingsPath));
+	} finally {
+		parse.mockRestore();
+	}
 });
 
 test("a transient configuration read failure cannot cache away an established profile's adoption priority (#5242)", () => {
