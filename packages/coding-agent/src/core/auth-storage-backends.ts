@@ -1,17 +1,7 @@
 import { createHash } from "node:crypto";
 import { type Credential, OAUTH_REFRESH_LOCK_HOLD_MS, OAUTH_REFRESH_TIMEOUT_MS } from "@bastani/atomic-ai";
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	realpathSync,
-	renameSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from "fs";
-import { access, chmod, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "fs/promises";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { access, chmod, mkdir, readFile, realpath, rm, stat, writeFile } from "fs/promises";
 import { basename, dirname, join } from "path";
 import lockfile, { type LockOptions } from "proper-lockfile";
 import { getAgentDir } from "../config.js";
@@ -22,6 +12,7 @@ import { normalizeProviderKeys } from "./azure-provider-compat.js";
 import { releaseLock, releaseLockSync } from "./lock-release.ts";
 import { guardLockRemoval } from "./lock-takeover.ts";
 import { type LockWait, waitForLock, waitForLockSync } from "./lock-wait.ts";
+import { renameReplacing, renameReplacingAsync } from "./rename-retry.ts";
 
 export type LockResult<T> = {
 	result: T;
@@ -453,7 +444,8 @@ export class FileAuthStorageBackend implements AuthStorageBackend, AsyncAuthStor
 			// Creation mode is filtered through umask; restore the exact managed mode
 			// before publishing the replacement inode.
 			chmodSync(tempPath, mode);
-			renameSync(tempPath, path);
+			// Reads take no lock, and Windows refuses for a moment to rename over a file another process is reading.
+			renameReplacing(tempPath, path);
 		} catch (error) {
 			try {
 				if (existsSync(tempPath)) rmSync(tempPath, { force: true });
@@ -475,7 +467,8 @@ export class FileAuthStorageBackend implements AuthStorageBackend, AsyncAuthStor
 		try {
 			await writeFile(tempPath, content, { ...AUTH_FILE_WRITE_OPTIONS, mode });
 			await chmod(tempPath, mode);
-			await rename(tempPath, path);
+			// Reads take no lock, and Windows refuses for a moment to rename over a file another process is reading.
+			await renameReplacingAsync(tempPath, path);
 		} catch (error) {
 			try {
 				if (await pathExists(tempPath)) await rm(tempPath, { force: true });

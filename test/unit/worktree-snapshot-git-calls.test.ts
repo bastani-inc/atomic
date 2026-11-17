@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 
 const recorded = vi.hoisted(() => ({
 	spawns: [] as { args: readonly string[]; cwd: string }[],
@@ -64,6 +65,8 @@ import {
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/index.ts";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
+
+startHostProcessesThroughChildProcess();
 
 let sandbox: GitSandbox;
 beforeEach(() => {

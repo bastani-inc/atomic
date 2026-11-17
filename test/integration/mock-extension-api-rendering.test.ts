@@ -202,41 +202,37 @@ describe("MockExtensionAPI — no CLI flag registration", () => {
 // ---------------------------------------------------------------------------
 
 describe("renderCall — all action branches", () => {
-	test("action='list' returns list string", () => {
-		assert.equal(renderCall({ action: "list" }), "workflow: list registered workflows");
-	});
-
-	test("action='status' returns status string", () => {
-		assert.equal(renderCall({ action: "status" }), "workflow: list retained runs");
-	});
-
-	test("action='inputs' includes workflow", () => {
-		assert.ok(renderCall({ workflow: "wf-a", action: "inputs" }).includes("wf-a"));
-	});
-
-	test("action='run' names the workflow when supplied", () => {
-		assert.equal(renderCall({ action: "run" }), "workflow: run");
-		assert.equal(renderCall({ workflow: "wf-b", action: "run" }), 'workflow: run "wf-b"');
-	});
-
-	test("action='pause' includes runId", () => {
-		assert.ok(renderCall({ runId: "run-1", action: "pause" }).includes("run-1"));
-	});
-
-	test("action='quit' includes runId", () => {
-		assert.ok(renderCall({ runId: "run-quit", action: "quit" }).includes("run-quit"));
-	});
-
-	test("action='resume' includes runId", () => {
-		assert.ok(renderCall({ runId: "run-2", action: "resume" }).includes("run-2"));
-	});
-
-	test("action='models' returns models string", () => {
-		assert.equal(renderCall({ action: "models" }), "workflow: list configured models");
+	test("a run reads like every tool call: Workflow(<name> · <what it was asked>)", () => {
+		assert.equal(renderCall({ action: "run" }), "Workflow(?)");
+		assert.equal(renderCall({ workflow: "wf-b", action: "run" }), "Workflow(wf-b)");
+		assert.equal(
+			renderCall({ workflow: "wf-b", inputs: { prompt: "\n  fix the login bug\nthen ship it" } }),
+			"Workflow(wf-b · fix the login bug)",
+		);
+		assert.equal(
+			renderCall({ workflow: "wf-b", inputs: { count: 2, topic: "caching" } }),
+			"Workflow(wf-b · caching)",
+		);
 	});
 
 	test("defaults to 'run' when action omitted", () => {
-		assert.equal(renderCall({ workflow: "wf-c" }), 'workflow: run "wf-c"');
+		assert.equal(renderCall({ workflow: "wf-c" }), "Workflow(wf-c)");
+	});
+
+	test("the other actions read `workflow <action> <target>`", () => {
+		assert.equal(renderCall({ action: "list" }), "workflow list");
+		assert.equal(renderCall({ action: "status" }), "workflow status");
+		assert.equal(renderCall({ action: "models" }), "workflow models");
+		assert.equal(renderCall({ workflow: "wf-a", action: "inputs" }), "workflow inputs wf-a");
+		assert.equal(renderCall({ runId: "run-1", action: "pause" }), "workflow pause run-1");
+		assert.equal(renderCall({ runId: "run-quit", action: "quit" }), "workflow quit run-quit");
+		assert.equal(renderCall({ runId: "run-2", action: "resume" }), "workflow resume run-2");
+		assert.equal(renderCall({ runId: "run-2", stageId: "review", action: "answer" }), "workflow answer run-2/review");
+	});
+
+	test("a call's text never carries terminal controls or line breaks", () => {
+		const out = renderCall({ workflow: "wf\u001b[31m-x", inputs: { prompt: "a\u0007b\rc" } });
+		assert.doesNotMatch(out, /[\u0000-\u001f]/);
 	});
 
 	test("respects host render width", () => {

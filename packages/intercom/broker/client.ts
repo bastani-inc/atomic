@@ -77,6 +77,7 @@ import {
 	VERIFIED_REGISTRATION_PROTOCOL,
 } from "./protocol-version.js";
 import { IntercomLiveRouteRefusedError, isLiveWorkflowStageRouteRefusalCode } from "../live-route-refusal.js";
+import { IntercomSupervisorAuthorizationRefusedError, SUPERVISOR_AUTHORIZATION_REFUSED_CODE } from "../supervisor-refusal.js";
 import { SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
 import {
 	isWorkflowFutureStagePredictionFields,
@@ -966,6 +967,8 @@ export class IntercomClient extends EventEmitter {
           ? new IntercomBrokerRetiringError(brokerMessage.reason)
           : brokerMessage.code === BROKER_ROUTING_CHANGED_CODE
           ? new IntercomRoutingChangedError(this.registrationExpectedRouting?.acrossMachines ?? false)
+          : brokerMessage.code === SUPERVISOR_AUTHORIZATION_REFUSED_CODE
+          ? new IntercomSupervisorAuthorizationRefusedError(brokerMessage.reason)
           : new Error(brokerMessage.reason);
         if (this._sessionId === null) {
           // Still registering: `connect()` owns the failure and its own cleanup.
@@ -1654,7 +1657,7 @@ export class IntercomClient extends EventEmitter {
    */
   reserveRestoringRecipient(
     capability: string,
-    options: { group?: string; aliases?: readonly string[]; dormant?: boolean } = {},
+    options: { group?: string; aliases?: readonly string[]; dormant?: boolean; holdMs?: number } = {},
   ): Promise<void> {
     return this.restoringRecipientRequest({
       type: "reserve_restoring_recipient",
@@ -1662,6 +1665,7 @@ export class IntercomClient extends EventEmitter {
       ...(options.group === undefined ? {} : { group: options.group }),
       ...(options.aliases === undefined ? {} : { aliases: [...options.aliases] }),
       ...(options.dormant === true ? { dormant: true } : {}),
+      ...(options.holdMs === undefined ? {} : { holdMs: options.holdMs }),
     });
   }
 

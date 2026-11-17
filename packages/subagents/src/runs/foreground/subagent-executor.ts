@@ -11,6 +11,8 @@ import {
 } from "../../shared/types.js";
 import { inspectInProcessChildStatus } from "../inprocess/control-status.js";
 import { registerNamedRunWorktrees } from "./run-worktrees.js";
+import { subagentChildRecordsOf } from "./subagent-child-card-state.js";
+import { subagentChildOwner } from "./subagent-child-records.js";
 import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
@@ -35,6 +37,7 @@ import {
 	settledOutputsFromRecords,
 	settledTaskOutputText,
 	subagentTaskResultLabel,
+	subagentTaskStatusRecord,
 	taskResponseRecords,
 } from "./task-execution.js";
 
@@ -152,11 +155,26 @@ async function handleManagementRequest(input: {
 				const records = watched.value.snapshot.tasks.filter((task) => task.ref.taskId === taskId);
 				watched.value.dispose();
 				const settledOutput = await settledTaskOutputText(host, settledOutputsFromRecords(records));
+				const ownerSessionId = subagentChildOwner(ctx).sessionId;
+				const shown = records.map((record) =>
+					subagentTaskStatusRecord(
+						record,
+						subagentChildRecordsOf(ownerSessionId).find((child) => child.taskId === record.ref.taskId)
+							?.intercomTarget,
+					),
+				);
+				const starting = shown.flatMap((record) =>
+					record.start === undefined
+						? []
+						: [
+								`${record.ref.taskId}${record.intercomTarget ? ` (${record.intercomTarget})` : ""} is ${record.start.summary}.`,
+							],
+				);
 				return {
 					content: [
 						{
 							type: "text",
-							text: `${awaitingResume.length > 0 ? `${awaitingResume.join("\n")}\n` : ""}${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(records)}${settledOutput}`,
+							text: `${awaitingResume.length > 0 ? `${awaitingResume.join("\n")}\n` : ""}${starting.length > 0 ? `${starting.join("\n")}\n` : ""}${records.some((task) => task.execution.kind === "settled" && subagentTaskResultLabel(task.execution.result) === "killed (non-resumable)") ? "Killed. This child cannot be resumed. Underlying host records:\n" : ""}${JSON.stringify(shown)}${settledOutput}`,
 						},
 					],
 					details: { mode: "management", results: [], taskRecords: records },

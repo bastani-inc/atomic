@@ -5,8 +5,10 @@ import type { SubagentChildRecord } from "./subagent-child-records.js";
 /** Intercom's entry recording the Intercom id a session registered under (`packages/intercom/session-identity.ts`). */
 const INTERCOM_SESSION_IDENTITY_ENTRY = "intercom_session_identity";
 
-/** The Intercom id the child's own Intercom extension recorded for its session before the restart. */
-export function readPreviousIntercomId(sessionManager: SessionManager): string | undefined {
+/** The Intercom id the session's own Intercom extension last recorded for it, as before a restart. */
+export function readPreviousIntercomId(
+	sessionManager: Pick<SessionManager, "getSessionId" | "getEntries">,
+): string | undefined {
 	const sessionId = sessionManager.getSessionId();
 	const entries = sessionManager.getEntries();
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -25,17 +27,22 @@ export function readPreviousIntercomId(sessionManager: SessionManager): string |
  * (forked children live in the store of the session that launched them, which is a database by default and has no
  * session file).
  */
+/** Where a child's session is reopened from: only the session store, never the session that asks. */
+export interface SessionStoreSource {
+	readonly sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionStore">;
+}
+
 export async function reopenChildSession(
-	ctx: Pick<ExtensionContext, "sessionManager">,
+	ctx: SessionStoreSource,
 	record: Pick<SubagentChildRecord, "childSessionId" | "childSessionFile" | "cwd">,
 ): Promise<{ readonly sessionManager: SessionManager } | { readonly reason: string }> {
+	const openOptions =
+		typeof SessionManager.prototype.getEntrySeq === "function" ? ({ history: "tail" } as const) : undefined;
 	try {
 		if (record.childSessionFile && !(await pathExists(record.childSessionFile)))
 			return { reason: `its session file is missing: ${record.childSessionFile}` };
 		if (record.childSessionFile) {
-			const sessionManager = await SessionManager.open(record.childSessionFile, undefined, record.cwd, {
-				history: "tail",
-			});
+			const sessionManager = await SessionManager.open(record.childSessionFile, undefined, record.cwd, openOptions);
 			return record.childSessionId !== undefined && sessionManager.getSessionId() !== record.childSessionId
 				? { reason: "its session file now belongs to a different session" }
 				: { sessionManager };
@@ -46,7 +53,7 @@ export async function reopenChildSession(
 				ctx.sessionManager.getSessionStore(),
 				record.childSessionId,
 				record.cwd,
-				{ history: "tail" },
+				openOptions,
 			),
 		};
 	} catch (error) {

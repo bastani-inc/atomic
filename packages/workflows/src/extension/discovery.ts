@@ -275,8 +275,10 @@ async function applyBatch(
 }
 
 /**
- * Merge bundled startup candidates with shape-only validation to keep startup seeding synchronous. The zero-stage lint
- * reads definition sources, so it is left to {@link discoverWorkflows}, which validates the bundled definitions too.
+ * Merge bundled startup candidates with shape-only validation to keep startup seeding synchronous. Bundled definitions
+ * skip the zero-stage lint: they ship with this build, and `workflow-bundled-discovery.test.ts` checks that the static
+ * scan finds stages in every one of them, so scanning their sources on every start (synchronously, before the first
+ * request) could only ever report nothing.
  */
 function applyBatchShapeOnly(
 	candidates: WorkflowModuleCandidateRecord[],
@@ -467,7 +469,24 @@ export function discoverStartupWorkflowsSync(): DiscoveryResult {
 	return discoverBundledManifest();
 }
 
+interface ValidatedBundledManifest {
+	readonly definitions: readonly WorkflowDefinition[];
+	readonly sources: readonly DiscoverySource[];
+	readonly errors: readonly DiscoveryDiagnostic[];
+}
+
+let validatedBundledManifest: ValidatedBundledManifest | undefined;
+
 function discoverBundledManifest(): DiscoveryResult {
+	validatedBundledManifest ??= validateBundledManifest();
+	return {
+		registry: createRegistry([...validatedBundledManifest.definitions]),
+		sources: [...validatedBundledManifest.sources],
+		errors: [...validatedBundledManifest.errors],
+	};
+}
+
+function validateBundledManifest(): ValidatedBundledManifest {
 	const manifest = bundledManifest as Record<string, unknown>;
 	const diagnostics: DiscoveryDiagnostic[] = [];
 	const sources: DiscoverySource[] = [];
@@ -481,7 +500,7 @@ function discoverBundledManifest(): DiscoveryResult {
 
 	registry = applyBatchShapeOnly(candidates, registry, sources, diagnostics);
 
-	return { registry, sources, errors: diagnostics };
+	return { definitions: registry.all(), sources, errors: diagnostics };
 }
 
 // ---------------------------------------------------------------------------

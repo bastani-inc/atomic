@@ -225,7 +225,7 @@ export function runOwnerlessChild(input: {
 						...(started.model ? { launchModel: started.model } : {}),
 						...(started.thinking ? { launchThinkingLevel: started.thinking } : {}),
 						launchLeafId: started.leafId,
-						launchLeafSeq: started.leafSeq,
+						...(started.leafSeq === undefined ? {} : { launchLeafSeq: started.leafSeq }),
 					};
 					record("running");
 				},

@@ -15,6 +15,8 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"CommandTaskKind",
 	"FileType",
 	"GrepOutputMode",
+	"HostProcess",
+	"HostProcessEventKind",
 	"HostSession",
 	"NapiSubagentControl",
 	"NapiTaskSupervisor",
@@ -42,6 +44,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"renameNoReplace",
 	"renameNoReplaceAsync",
 	"search",
+	"startHostProcess",
 	"tryAdvisoryLock",
 	"tryAdvisoryLockAsync",
 ] as const;

@@ -18,6 +18,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 - Fuzzy matching stays fast when a long query recurs throughout an item's text, with the same scores, and select lists lowercase their filter once instead of once per item
 - Markdown rendering no longer stalls for seconds when an unclosed `$$` or `\[` opener, or a table delimiter row, is followed by a long run of spaces
 - Path completion reads directories, the terminal write log is appended, and tmux hyperlink support is detected without blocking the event loop
+- F1–F5 and Page Up/Down sent as `ESC [ [ …` (libuv on Windows, the Linux console) are read as one key instead of typing their final letter into the editor
 
 ## [0.9.88] - 2026-11-16
 

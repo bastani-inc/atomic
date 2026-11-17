@@ -1,5 +1,12 @@
 import { join } from "node:path";
-import { parseSessionStartTimeoutMs, serializeSessionStartError } from "@bastani/atomic";
+import {
+	isSessionStartTimeoutError,
+	parseSessionStartTimeoutMs,
+	type SessionStartTimeoutError,
+	serializeSessionStartError,
+	sessionStartStepText,
+} from "@bastani/atomic";
+import type { Cleanup } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
 import { checkLaunchCwd } from "../../shared/launch-cwd.js";
@@ -12,11 +19,13 @@ import type {
 	RunSyncOptions,
 	SingleResult,
 	SubagentToolResult,
+	TaskExecutionHooks,
 	Usage,
 } from "../../shared/types.js";
 import { resolveTopLevelParallelRunningCapacity } from "../../shared/types.js";
 import { getOrCreateSubagentControl, unregisterSubagentControl } from "../inprocess/control-registry.js";
 import type { AttemptOutcome, ChildSpec, ParentContext, SubagentControlRuntime } from "../inprocess/runner.js";
+import type { SessionStartProgress } from "../inprocess/session-start-budget.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { filterSpawnableModelCandidates, skippedModelAttempt } from "../shared/model-candidate-filter.js";
 import {
@@ -31,6 +40,7 @@ import {
 	resolveSingleOutput,
 	type SingleOutputSnapshot,
 } from "../shared/single-output.js";
+import { SUBAGENT_START_ATTEMPTS, type SubagentStartProgress } from "../shared/start-progress.js";
 import { registerExecutionIntercomDetach } from "./execution-intercom-detach.js";
 import { registerExecutionParentAskHandoff } from "./execution-parent-ask-handoff.js";
 import { missingCwdMessage } from "./subagent-executor-cwd.js";
@@ -445,6 +455,22 @@ async function launchSingleInProcess(
 		writeArtifact(artifactPaths.inputPath, `# Task for ${agent.name}\n\n${task}`);
 	}
 	const testSession = options.testSession ?? defaultTestSession();
+	// Where the child is in its start, across its attempts, until its first turn starts: never merely "running".
+	const launchedAt = Date.now();
+	let startAttempt = 1;
+	let stalledStart: SubagentStartProgress["stalled"];
+	const reportStart = (progress: SessionStartProgress | undefined, awaitingRelease = false) =>
+		options.taskExecution?.reportStart?.(
+			progress === undefined
+				? undefined
+				: {
+						...progress,
+						attempt: startAttempt,
+						launchedAt,
+						...(stalledStart === undefined ? {} : { stalled: stalledStart }),
+						...(awaitingRelease ? { awaitingRelease: true } : {}),
+					},
+		);
 	const spec: ChildSpec = {
 		taskName: agent.name,
 		childId: `${options.runId}:${options.index ?? 0}`,
@@ -471,6 +497,7 @@ async function launchSingleInProcess(
 				: {}),
 		...(artifactPaths?.outputPath ? { outputArtifactPath: artifactPaths.outputPath } : {}),
 		sessionStartTimeoutMs,
+		onStartProgress: (progress) => reportStart(progress),
 		...(requestedThinking === undefined ? {} : { requestedThinking }),
 		...(options.resolveCandidateModel ? { resolveCandidateModel: options.resolveCandidateModel } : {}),
 		tools: agent.tools,
@@ -539,15 +566,64 @@ async function launchSingleInProcess(
 	if (!admission.admitted) return refusedResult(agent, task, admission.refusal?.reason ?? "child admission refused");
 	const startedAt = Date.now();
 	const neverAbort = new AbortController().signal;
-	const running = control.startAttempt(
-		admission.admitted,
-		{ model: resolvedCandidate?.model, modelId: candidate, thinkingLevel: spec.thinkingLevel },
-		{
-			abort: options.taskExecution?.signal ?? options.signal ?? neverAbort,
-			interrupt: options.interruptSignal ?? neverAbort,
-		},
-		options.taskExecution,
-	);
+	const attemptCandidate = { model: resolvedCandidate?.model, modelId: candidate, thinkingLevel: spec.thinkingLevel };
+	const attemptSignals = {
+		abort: options.taskExecution?.signal ?? options.signal ?? neverAbort,
+		interrupt: options.interruptSignal ?? neverAbort,
+	};
+	// The task's execution is the child's start and run, a retried start included: its cleanup is the last attempt's.
+	let attemptCleanup: Promise<Cleanup> | undefined;
+	const attemptHooks: TaskExecutionHooks | undefined =
+		options.taskExecution === undefined
+			? undefined
+			: {
+					...options.taskExecution,
+					onExecution: (execution) => {
+						attemptCleanup = execution.cleanup;
+					},
+				};
+	let running = control.startAttempt(admission.admitted, attemptCandidate, attemptSignals, attemptHooks);
+	// A start that runs out of its budget is retried once, as soon as it has let go of its session; a retry that runs
+	// out of its budget too fails, naming the step each attempt stalled in.
+	const settled = (async (): Promise<AttemptOutcome> => {
+		const first = await running.promise;
+		const stall = startStall(first);
+		if (stall === undefined || first.status !== "error" || startAttempt >= SUBAGENT_START_ATTEMPTS) return first;
+		stalledStart = { step: stall.step, afterMs: stall.elapsedMs };
+		startAttempt += 1;
+		reportStart({ step: stall.step, startedAt: Date.now(), stepStartedAt: Date.now() }, true);
+		const releasedInTime = await settledWithin(
+			first.startReleased ?? Promise.resolve(),
+			Math.min((sessionStartTimeoutMs ?? SUBAGENT_START_RELEASE_WAIT_MS) / 2, SUBAGENT_START_RELEASE_WAIT_MS),
+		);
+		const stopped = attemptSignals.abort.aborted || attemptSignals.interrupt.aborted;
+		// A launch's retry starts in a fresh session: what the stalled start received as context for its first turn
+		// goes with it. A retry that reopens the child's own session finds it there already.
+		const carried = releasedInTime && spec.sessionManager === undefined ? await (first.startContext ?? []) : [];
+		// Sends to the child wait for the retry, now that the stalled start registered and took the earlier ones.
+		if (releasedInTime && !stopped) await options.onStartRetry?.();
+		const again =
+			releasedInTime && !stopped
+				? await control.admitChildSession(
+						carried.length === 0 ? spec : { ...spec, startContext: [...(spec.startContext ?? []), ...carried] },
+						parent,
+					)
+				: undefined;
+		if (again?.admitted === undefined) {
+			reportStart(undefined);
+			if (stopped) return first;
+			const cause = `${first.cause} It was not retried: ${releasedInTime ? (again?.refusal?.reason ?? "its retry was refused") : "the stalled start did not let go of its session in time"}.`;
+			return { ...first, cause, envelope: cause };
+		}
+		control.supersedeStalledStart(first.path);
+		running = control.startAttempt(again.admitted, attemptCandidate, attemptSignals, attemptHooks);
+		const second = await running.promise;
+		const retryStall = startStall(second);
+		if (retryStall === undefined || second.status !== "error") return second;
+		const cause =
+			`Subagent did not start: its start stalled ${sessionStartStepText(stall.step)} after ${Math.round(stall.elapsedMs / 1000)}s and was retried once; the retry stalled ${sessionStartStepText(retryStall.step)} after ${Math.round(retryStall.elapsedMs / 1000)}s. ${retryStall.hint ?? ""}`.trim();
+		return { ...second, cause, envelope: cause };
+	})();
 	if (options.onUpdate) {
 		const launchModel = running.currentModel ?? candidate;
 		spec.onProgress?.({
@@ -584,12 +660,17 @@ async function launchSingleInProcess(
 		agent: agent.name,
 		isUnavailable: () => running.status !== "running" || detached,
 	});
-	const terminal = running.promise.then((value) => ({ kind: "terminal" as const, value }));
+	const lastCleanup = (): Promise<Cleanup> => attemptCleanup ?? Promise.resolve({ kind: "reaped" });
+	options.taskExecution?.onExecution({
+		result: settled,
+		cleanup: settled.then(lastCleanup, lastCleanup),
+	});
+	const terminal = settled.then((value) => ({ kind: "terminal" as const, value }));
 	const winner = await Promise.race([terminal, continuation.then(() => ({ kind: "continued" as const }))]);
 	if (winner.kind === "continued") {
 		detachCleanup();
 		parentAskCleanup();
-		void running.promise
+		void settled
 			.then(async (continuedOutcome) => {
 				const recovered = resultFromOutcome(
 					agent,
@@ -711,6 +792,40 @@ async function launchSingleInProcess(
 	};
 	options.onUpdate?.(update);
 	return result;
+}
+
+/**
+ * The longest a retry waits for a stalled start to let go of its session (half its start budget, at most this). A start
+ * still holding its session then, as one whose extension never returns, is not retried: two starts never share one
+ * session.
+ */
+const SUBAGENT_START_RELEASE_WAIT_MS = 30_000;
+
+/** The start-budget timeout an attempt failed with, if it did not start in time. */
+function startStall(outcome: AttemptOutcome): SessionStartTimeoutError | undefined {
+	return outcome.status === "error" &&
+		outcome.startError !== undefined &&
+		isSessionStartTimeoutError(outcome.startError)
+		? outcome.startError
+		: undefined;
+}
+
+/** Whether `promise` settled within `timeoutMs`. */
+function settledWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => resolve(false), timeoutMs);
+		timer.unref?.();
+		void promise.then(
+			() => {
+				clearTimeout(timer);
+				resolve(true);
+			},
+			() => {
+				clearTimeout(timer);
+				resolve(true);
+			},
+		);
+	});
 }
 
 function forgetIfReleased(control: SubagentControlRuntime, outcome: AttemptOutcome): void {
