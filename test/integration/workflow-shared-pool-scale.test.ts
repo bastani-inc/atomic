@@ -46,6 +46,7 @@ const CLEANUP_HEADROOM_MS = 30_000;
  */
 const WORKER_STARTUP_TIMEOUT_MS = 240_000;
 const SCALE_MAX_SEMI_SPACE_MB = 1;
+const SCALE_MAX_OLD_SPACE_MB = 128;
 
 interface Outcome {
 	readonly status: string;
@@ -99,7 +100,11 @@ async function runScale(url: string, hosts: number): Promise<void> {
 		mkdirSync(agentDir, { recursive: true });
 		return {
 			...process.env,
-			NODE_OPTIONS: [process.env.NODE_OPTIONS, `--max-semi-space-size=${SCALE_MAX_SEMI_SPACE_MB}`]
+			NODE_OPTIONS: [
+				process.env.NODE_OPTIONS,
+				`--max-semi-space-size=${SCALE_MAX_SEMI_SPACE_MB}`,
+				`--max-old-space-size=${SCALE_MAX_OLD_SPACE_MB}`,
+			]
 				.filter(Boolean)
 				.join(" "),
 			SHARED_POOL_HOST: name,
