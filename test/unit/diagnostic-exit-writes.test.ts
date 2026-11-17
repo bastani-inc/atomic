@@ -28,7 +28,7 @@ function run(mode: string): Record<string, string>[] {
 test("debug exit flush writes each landed or queued record exactly once (#5377)", () => {
 	assert.deepEqual(
 		run("debug").map(({ event }) => event),
-		["first", "second", "third"],
+		["hold", "first", "second", "third"],
 	);
 	assert.deepEqual(run("debug-landed"), [{ step: "same" }, { step: "same" }, { step: "last" }]);
 });

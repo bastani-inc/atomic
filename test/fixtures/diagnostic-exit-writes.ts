@@ -1,18 +1,16 @@
-import fs, { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
 const [mode, file] = process.argv.slice(2);
 if (!file) throw new Error("missing output file");
-const original = fs.promises.appendFile;
-fs.promises.appendFile = async (...args: Parameters<typeof original>): Promise<void> => {
-	await original(...args);
-	process.exit(0);
-};
-syncBuiltinESMExports();
+/** A record large enough to keep the diagnostic writer thread busy while the records after it are queued. */
+const HOLDING_RECORD_CHARS = 8 * 1024 * 1024;
 
 if (mode === "debug") {
 	const { reportDebugAsync } = await import("../../packages/coding-agent/src/core/debug.js");
+	// The writer thread is still writing this when the process exits, with the records after it queued behind it.
+	void reportDebugAsync("pool", "hold", { padding: "x".repeat(HOLDING_RECORD_CHARS) });
 	for (const event of ["first", "second", "third"]) void reportDebugAsync("pool", event, {});
+	process.exit(0);
 } else if (mode === "lifecycle") {
 	const { installLifecycleTraceFromEnv, markLifecycleTiming } = await import(
 		"../../packages/coding-agent/src/core/lifecycle-timings.js"
@@ -20,6 +18,7 @@ if (mode === "debug") {
 	installLifecycleTraceFromEnv({ ATOMIC_STARTUP_TRACE: file });
 	markLifecycleTiming("process-entry");
 	markLifecycleTiming("engine-ready");
+	process.exit(0);
 } else if (mode === "monitor") {
 	const { startEventLoopMonitor, markEventLoopStartupComplete, markEventLoopShutdown } = await import(
 		"../../packages/coding-agent/src/core/event-loop-monitor.js"
