@@ -588,6 +588,71 @@ async function stageFixture(settings: Settings, fixture: Parameters<typeof model
 	return { ...m, models: catalog, admissions, thinkingChanges, adapters, store: createStore() };
 }
 
+test("an image task whose only model that sees images lacks credentials fails, naming why each model was skipped", async () => {
+	const base: Model<"anthropic-messages"> = getModel("anthropic", "claude-sonnet-4-5")!;
+	const vision: Model<"anthropic-messages"> = { ...base, provider: "logged-out", id: "vision", name: "vision" };
+	const text: Model<"anthropic-messages"> = {
+		...base,
+		provider: "working",
+		id: "text",
+		name: "text",
+		input: ["text"] as Model<"anthropic-messages">["input"],
+	};
+	const registry = {
+		getAvailable: () => [text],
+		getAll: () => [vision, text],
+		hasConfiguredAuth: (model: { readonly provider: string }) => model.provider === "working",
+	};
+	const catalog = workflowModelCatalogFromContext(
+		{ model: vision, thinkingLevel: "low", modelRegistry: registry as never },
+		undefined,
+		() => ({ defaultProvider: "working", defaultModel: "text" }),
+	);
+	const image = join(tempDir("atomic-auto-default-image-credentials-"), "reference.png");
+	writeFileSync(image, "png");
+	let creations = 0;
+	const def = workflow({
+		name: "auto-image-credentials",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.task("design", {
+				prompt: "Match the reference.",
+				model: "auto",
+				reads: [image],
+				fallbackModels: ["working/text"],
+			});
+			return {};
+		},
+	});
+	const result = await run(
+		def,
+		{},
+		{
+			models: catalog,
+			store: createStore(),
+			adapters: {
+				agentSession: {
+					async create() {
+						creations++;
+						return makeMockSession({
+							async prompt() {
+								return "done";
+							},
+						}).session;
+					},
+				},
+			},
+		},
+	);
+	assert.equal(result.status, "failed", "a task no model can run never completes");
+	assert.match(result.error ?? "", /reads images/);
+	assert.match(result.error ?? "", /working\/text.*does not accept image input/);
+	assert.match(result.error ?? "", /logged-out\/vision.*no credentials/);
+	assert.equal(creations, 0, "no session opens");
+});
+
 test("auto never resolves to a default model whose provider has no credentials, even from a stale availability list", async () => {
 	const m = await models();
 	// The availability list still names the logged-out provider's default model; its credentials are gone.

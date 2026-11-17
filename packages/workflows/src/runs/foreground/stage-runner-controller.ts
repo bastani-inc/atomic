@@ -2355,14 +2355,31 @@ export class StageSessionController {
 		walk: CandidateWalk,
 		start: number,
 	): Promise<number | undefined> {
+		const withoutImages: string[] = [];
 		for (;;) {
 			const index = await this.selectReadyCandidateByAvailability(candidates, walk, start);
+			// Nothing left because every remaining candidate failed the image check: that is a failure the stage reports,
+			// never the normal end of a walk (a pause without a replacement prompt also ends it without a candidate).
+			if (index === undefined && withoutImages.length > 0 && walk.remaining.size === 0)
+				throw new Error(this.noImageCandidateMessage(withoutImages));
 			// The primary model of an image-reading `auto` task already sees images; every other candidate is checked now.
 			if (index === undefined || !this.autoTaskReadsImages()) return index;
 			const candidate = candidates[index]!;
 			if (candidate.id === this.verifiedPrimaryId || (await this.fallbackSeesImages(candidate))) return index;
+			withoutImages.push(candidate.id);
 			walk.remaining.delete(index);
 		}
+	}
+
+	/** Why no model can run an image-reading `auto` task: each candidate skipped, and the settings that fix it. */
+	private noImageCandidateMessage(withoutImages: readonly string[]): string {
+		const reasons = [
+			...this.modelAttempts.flatMap((attempt) =>
+				!attempt.success && attempt.error?.startsWith("Skipped ") ? [attempt.error.slice("Skipped ".length)] : [],
+			),
+			...withoutImages.map((id) => `${id} does not accept image input`),
+		];
+		return `No model can run this task: it reads images, and ${reasons.join("; ")}. Set an image-capable default model with /model or the "defaultProvider" and "defaultModel" settings, give the task an image-capable model, or sign in to the provider of one.`;
 	}
 
 	private async selectReadyCandidateByAvailability(
