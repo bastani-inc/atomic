@@ -17,8 +17,8 @@
  * which URL continues it.
  */
 
-import { createSessionCwdMatcher } from "../../utils/canonical-path.js";
-import { resolvePath } from "../../utils/paths.js";
+import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
+import { resolvePath } from "../../utils/paths.ts";
 import type {
 	WorkflowRunControl,
 	WorkflowRunDetail,
@@ -26,7 +26,7 @@ import type {
 	WorkflowRunJsonValue,
 	WorkflowRunSummary,
 } from "../extensions/workflow-run-control.js";
-import type { SessionEntry } from "../session-manager-types.js";
+import type { SessionEntry } from "../session-manager-types.ts";
 import type { SessionRecordHeader, SessionStore, SessionSummary } from "../storage/session/types.js";
 import { indexLiterals, isMultilineSearchPattern, type LiteralQuery } from "./history-literals.js";
 import { type MultilineSpan, matchLinesInWorker, matchMultilineInWorker } from "./history-regex-worker.js";
@@ -56,16 +56,16 @@ import {
 	stopText,
 } from "./history-session.js";
 import { entryLines, timestamp, transcriptHeaderLines, wrapLine } from "./history-transcript.js";
-import { mergeReadRanges, splitReadLineSelector } from "./read-selectors.js";
+import { mergeReadRanges, splitReadLineSelector } from "./read-selectors.ts";
 import {
 	formatSearchTextLine,
 	type InternalReadSelection,
 	type InternalResourceRouter,
 	type InternalSearchRequest,
 	normalizeSearchPattern,
-} from "./resource-selectors.js";
-import { splitLineRangeSelector } from "./search-line-ranges.js";
-import { loadNativeSearchBinding } from "./search-native.js";
+} from "./resource-selectors.ts";
+import { splitLineRangeSelector } from "./search-line-ranges.ts";
+import { loadNativeSearchBinding } from "./search-native.ts";
 
 export type { HistoryBudget } from "./history-session.js";
 
@@ -106,7 +106,7 @@ const WHOLE_SESSION_ENTRY_LIMIT = 2_000;
 const DISCOVERY_TTL_MS = 60_000;
 const MAX_PARKED_DISCOVERIES = 16;
 const QUERY_KEYS: Readonly<Record<"sessions" | "workflows" | "root", readonly string[]>> = {
-	sessions: ["limit", "offset", "project", "cursor", "session"],
+	sessions: ["limit", "offset", "project", "cursor", "session", "after"],
 	workflows: ["limit", "offset", "cursor", "run"],
 	root: ["limit", "offset", "project", "cursor"],
 };
@@ -122,7 +122,33 @@ interface HistoryTarget {
 	readonly project?: string;
 	readonly session?: string;
 	readonly run?: string;
+	readonly after?: SessionKey;
 	readonly cursor?: HistoryCursor;
+}
+
+interface SessionKey {
+	readonly activeMs: number;
+	readonly createdMs: number;
+	readonly id: string;
+}
+
+const SESSION_KEY = /^(-?\d+)\.(-?\d+)(?:\.(.+))?$/s;
+
+function timeMs(text: string): number {
+	const ms = Date.parse(text);
+	return Number.isNaN(ms) ? 0 : ms;
+}
+
+function sessionKey(summary: SessionSummary): SessionKey {
+	return { activeMs: timeMs(summary.modifiedAt), createdMs: timeMs(summary.createdAt), id: summary.id };
+}
+
+function compareSessionKeys(a: SessionKey, b: SessionKey): number {
+	return b.activeMs - a.activeMs || b.createdMs - a.createdMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+function sessionKeyText(key: SessionKey, pinned?: string): string {
+	return key.id === pinned ? `${key.activeMs}.${key.createdMs}` : `${key.activeMs}.${key.createdMs}.${key.id}`;
 }
 
 interface HistoryCursor {
@@ -145,7 +171,7 @@ function positionCursor(target: HistoryTarget): string | undefined {
 interface ParkedDiscovery {
 	readonly iterator: AsyncIterator<SessionSummary>;
 	readonly controller: AbortController;
-	readonly items: { readonly summary: SessionSummary; readonly modifiedMs: number }[];
+	readonly items: { readonly summary: SessionSummary; readonly key: SessionKey }[];
 	pending?: Promise<IteratorResult<SessionSummary>>;
 	timer?: ReturnType<typeof setTimeout>;
 }
@@ -201,6 +227,11 @@ function parseTarget(url: string): HistoryTarget {
 	if (session === "") throw new Error("history session must be a session id");
 	const run = params.get("run") ?? undefined;
 	if (run === "") throw new Error("history run must be a workflow run id");
+	const afterText = params.get("after");
+	const afterMatch = afterText === null ? undefined : SESSION_KEY.exec(afterText);
+	const afterId = afterMatch?.[3] ?? session;
+	if (afterText !== null && (!afterMatch || afterId === undefined))
+		throw new Error(`history after must be the position a session search gave: ${afterText}`);
 	const cursorText = params.get("cursor");
 	const cursorMatch = cursorText === null ? undefined : CURSOR.exec(cursorText);
 	if (cursorText !== null && !cursorMatch)
@@ -215,6 +246,9 @@ function parseTarget(url: string): HistoryTarget {
 		...(project === undefined ? {} : { project }),
 		...(session === undefined ? {} : { session }),
 		...(run === undefined ? {} : { run }),
+		...(afterMatch && afterId !== undefined
+			? { after: { activeMs: Number(afterMatch[1]), createdMs: Number(afterMatch[2]), id: afterId } }
+			: {}),
 		...(cursorMatch
 			? {
 					cursor: {
@@ -261,6 +295,7 @@ function pageUrl(
 	cursor?: string,
 	ranges?: readonly SeqRange[],
 	pinned?: string,
+	after?: SessionKey,
 ): string {
 	const params = new URLSearchParams();
 	if (offset > 0) params.set("offset", String(offset));
@@ -268,8 +303,17 @@ function pageUrl(
 	if (domain === "sessions" && target.project !== undefined) params.set("project", target.project);
 	if (pinned !== undefined) params.set(domain === "sessions" ? "session" : "run", pinned);
 	if (cursor !== undefined) params.set("cursor", cursor);
+	if (after !== undefined) params.set("after", sessionKeyText(after, pinned));
 	const query = params.toString();
 	return `history://${domain}${query ? `?${query}` : ""}${ranges && ranges.length > 0 ? `:${rangeText(ranges)}` : ""}`;
+}
+
+function sessionPinBytes(id: string, target: HistoryTarget): number {
+	const widest = Number.MAX_SAFE_INTEGER;
+	return (
+		lineBytes(` at entry ${widest} of ${widest} in ${sessionUrl(id, target)}`) +
+		lineBytes(`&${new URLSearchParams({ session: id, after: `-${widest}.-${widest}` })}`)
+	);
 }
 
 function runPinBytes(runId: string): number {
@@ -293,6 +337,14 @@ function exactLineSuffix(selection: InternalReadSelection): string {
 				: [];
 	if (ranges.length === 0) return "";
 	return `:${ranges.map((range) => `${range.start}-${Number.isFinite(range.end) ? range.end : ""}`).join(",")}`;
+}
+
+function lineSuffix(selection: InternalReadSelection): string {
+	if (selection.ranges !== undefined && selection.ranges.length > 0)
+		return `:${selection.ranges.map((range) => `${range.start}-${range.end ?? ""}`).join(",")}${selection.raw ? ":raw" : ""}`;
+	if (selection.offset === undefined) return selection.raw ? ":raw" : "";
+	const end = selection.limit === undefined ? "" : String(selection.offset + selection.limit - 1);
+	return `:${selection.offset}-${end}${selection.raw || end !== "" ? ":raw" : ""}`;
 }
 
 function entrySuffix(selection: InternalReadSelection): string {
@@ -1186,25 +1238,28 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 	async function discoverSessions(
 		target: HistoryTarget,
 		budget: HistoryCallBudget,
+		pin?: string,
 	): Promise<
-		| { readonly sessions: SessionSummary[]; readonly stopped?: undefined }
-		| { readonly sessions?: undefined; readonly stopped: { readonly reason: BudgetStop; readonly scanned: number } }
+		| { readonly sessions: SessionSummary[]; readonly keys: SessionKey[]; readonly stopped?: undefined }
+		| {
+				readonly sessions?: undefined;
+				readonly stopped: { readonly reason: BudgetStop; readonly scanned: number; readonly cursor: string };
+		  }
 	> {
 		const store = requireStore();
 		const scope = projectScope(target);
-		const scopeKey = JSON.stringify([scope.cwd ?? null]);
-		let byScope = parkedDiscoveries.get(store);
-		if (!byScope) {
-			byScope = new Map<string, ParkedDiscovery>();
-			parkedDiscoveries.set(store, byScope);
+		const keyOf = (cursor: string) => JSON.stringify([scope.cwd ?? null, cursor, pin ?? null]);
+		let parkedHere = parkedDiscoveries.get(store);
+		if (!parkedHere) {
+			parkedHere = new Map<string, ParkedDiscovery>();
+			parkedDiscoveries.set(store, parkedHere);
 		}
-		const isContinuation = target.cursor !== undefined;
-		let parked = isContinuation ? byScope.get(scopeKey) : undefined;
-		const previous = byScope.get(scopeKey);
-		if (previous) {
-			clearTimeout(previous.timer);
-			byScope.delete(scopeKey);
-			if (previous !== parked) closeDiscovery(previous);
+		const byKey = parkedHere;
+		const requestKey = target.cursor === undefined ? undefined : keyOf(cursorText(target.cursor));
+		let parked = requestKey === undefined ? undefined : byKey.get(requestKey);
+		if (parked && requestKey !== undefined) {
+			clearTimeout(parked.timer);
+			byKey.delete(requestKey);
 		}
 		if (!parked) {
 			const controller = new AbortController();
@@ -1212,57 +1267,52 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			parked = { iterator: iterable[Symbol.asyncIterator](), controller, items: [] };
 		}
 		const active = parked;
-		const park = () => {
-			const replaced = byScope.get(scopeKey);
+		const park = (reason: BudgetStop) => {
+			const position = positionCursor(target);
+			const cursor = position ?? `0.${active.items.length}`;
+			const key = keyOf(position ?? cursorText({ first: 0, second: active.items.length, third: 0, fourth: 0 }));
+			const replaced = byKey.get(key);
 			if (replaced && replaced !== active) closeDiscovery(replaced);
-			byScope.delete(scopeKey);
-			while (byScope.size >= MAX_PARKED_DISCOVERIES) {
-				const oldestKey = byScope.keys().next().value;
+			byKey.delete(key);
+			while (byKey.size >= MAX_PARKED_DISCOVERIES) {
+				const oldestKey = byKey.keys().next().value;
 				if (oldestKey === undefined) break;
-				const oldest = byScope.get(oldestKey)!;
-				byScope.delete(oldestKey);
+				const oldest = byKey.get(oldestKey)!;
+				byKey.delete(oldestKey);
 				closeDiscovery(oldest);
 			}
 			active.timer = setTimeout(() => {
-				if (byScope.get(scopeKey) !== active) return;
-				byScope.delete(scopeKey);
+				if (byKey.get(key) !== active) return;
+				byKey.delete(key);
 				closeDiscovery(active);
 			}, DISCOVERY_TTL_MS);
 			active.timer.unref?.();
-			byScope.set(scopeKey, active);
+			byKey.set(key, active);
+			return { stopped: { reason, scanned: active.items.length, cursor } };
 		};
 		let progressed = false;
 		try {
 			for (;;) {
 				const reason = budget.spent();
-				if (reason && progressed) {
-					park();
-					return { stopped: { reason, scanned: parked.items.length } };
-				}
+				if (reason && progressed) return park(reason);
 				parked.pending ??= parked.iterator.next();
 				const next = await budget.race(parked.pending);
 				parked.pending = undefined;
 				progressed = true;
 				if (next.done) break;
 				const summary = next.value;
-				const modifiedMs = Date.parse(summary.modifiedAt);
-				parked.items.push({ summary, modifiedMs: Number.isNaN(modifiedMs) ? 0 : modifiedMs });
+				parked.items.push({ summary, key: sessionKey(summary) });
 				budget.takeRows(1);
 				if (parked.items.length % 64 === 0) await budget.pace();
 			}
 		} catch (error) {
-			if (isHistoryDeadlineError(error)) {
-				park();
-				return { stopped: { reason: "time", scanned: parked.items.length } };
-			}
+			if (isHistoryDeadlineError(error)) return park("time");
 			closeDiscovery(parked);
 			throw error;
 		}
 		await budget.pace();
-		parked.items.sort(
-			(a, b) => b.modifiedMs - a.modifiedMs || b.summary.createdAt.localeCompare(a.summary.createdAt),
-		);
-		return { sessions: parked.items.map((item) => item.summary) };
+		parked.items.sort((a, b) => compareSessionKeys(a.key, b.key));
+		return { sessions: parked.items.map((item) => item.summary), keys: parked.items.map((item) => item.key) };
 	}
 
 	async function recentRuns(budget: HistoryCallBudget): Promise<WorkflowRunSummary[]> {
@@ -1307,8 +1357,8 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			target.project === "all" ? "all projects" : target.project === undefined ? "this project" : target.project;
 		const discovered = await discoverSessions(target, budget);
 		if (discovered.stopped !== undefined) {
-			const cursor = positionCursor(target) ?? `0.${discovered.stopped.scanned}`;
-			const contUrl = `${pageUrl("sessions", target, target.offset, cursor)}${exactLineSuffix(selection)}`;
+			const suffix = positionCursor(target) === undefined ? lineSuffix(selection) : exactLineSuffix(selection);
+			const contUrl = `${pageUrl("sessions", target, target.offset, discovered.stopped.cursor)}${suffix}`;
 			return {
 				text: `# sessions in ${scope}\n[scanned ${discovered.stopped.scanned} sessions so far; ${stopText(discovered.stopped.reason)}; continue with ${contUrl}]`,
 				preselected: true,
@@ -1396,7 +1446,9 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 
 	async function readRun(id: string, budget: HistoryCallBudget): Promise<AsyncIterable<string>> {
 		const runId = await authorizedRunId(id, budget);
+		budget.holdProgressFloor();
 		const detail = await budget.race(requireWorkflows().getRun(runId));
+		budget.markProgress();
 		budget.takeRows(1);
 		return runLines(detail, { budget });
 	}
@@ -1462,11 +1514,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		unreadable: number,
 		ranges?: readonly SeqRange[],
 		nextPin?: string,
+		after?: SessionKey,
 	): string[] {
 		const end = target.offset + shown;
 		if (target.offset === 0 && end >= total && unreadable === 0) return [];
 		return [
-			`${pageUrl(domain, target, target.offset)}:0: [searched ${domain} ${windowText(total, target.offset, shown)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}${end < total ? `; continue with ${pageUrl(domain, target, end, undefined, ranges, nextPin)}` : ""}]`,
+			`${pageUrl(domain, target, target.offset)}:0: [searched ${domain} ${windowText(total, target.offset, shown)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}${end < total ? `; continue with ${pageUrl(domain, target, end, undefined, ranges, nextPin, after)}` : ""}]`,
 		];
 	}
 
@@ -1494,6 +1547,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		fromLineOffset: number,
 		budget: HistoryCallBudget,
 		store = requireStore(id),
+		emittedBefore = false,
 	) {
 		const place = placeOf(id, store, target);
 		return searchSession({
@@ -1506,6 +1560,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			fromLineOffset,
 			ranges: request.ranges,
 			budget,
+			emittedBefore,
 		});
 	}
 
@@ -1584,16 +1639,17 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				...result.lines,
 			];
 		}
-		const discovered = await discoverSessions(target, budget);
+		const pin = positionCursor(target) === undefined ? undefined : target.session;
+		const discovered = await discoverSessions(target, budget, pin);
 		if (discovered.stopped !== undefined) {
-			const inSession = positionCursor(target);
 			const contUrl = pageUrl(
 				"sessions",
 				target,
 				target.offset,
-				inSession ?? `0.${discovered.stopped.scanned}`,
+				discovered.stopped.cursor,
 				request.ranges,
-				inSession === undefined ? undefined : target.session,
+				pin,
+				target.after,
 			);
 			return [
 				charged(
@@ -1603,28 +1659,52 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			];
 		}
 		const store = requireStore();
-		const candidates = discovered.sessions.filter((summary) => summary.id !== sources.currentSessionId);
+		const candidateKeys: SessionKey[] = [];
+		const candidates = discovered.sessions.filter((summary, index) => {
+			if (summary.id === sources.currentSessionId) return false;
+			candidateKeys.push(discovered.keys[index]!);
+			return true;
+		});
 		const resuming = target.cursor !== undefined && target.cursor.first > 0;
-		const pinned =
+		const pinnedAt =
 			resuming && target.session !== undefined
-				? candidates.find((summary) => summary.id === target.session)
-				: undefined;
-		const pinnedGone = resuming && target.session !== undefined && pinned === undefined;
-		const window =
-			pinned === undefined
-				? candidates.slice(target.offset, target.offset + target.limit)
-				: [
-						pinned,
-						...candidates
-							.slice(target.offset + 1, target.offset + target.limit)
-							.filter((summary) => summary.id !== pinned.id),
-					];
+				? candidates.findIndex((summary) => summary.id === target.session)
+				: -1;
+		const pinnedGone = resuming && target.session !== undefined && pinnedAt === -1;
+		const pinned = pinnedAt === -1 ? undefined : candidates[pinnedAt];
+		const after = target.after;
+		const restStart =
+			after !== undefined
+				? candidateKeys.findIndex((key) => compareSessionKeys(key, after) > 0)
+				: pinned !== undefined
+					? Math.max(target.offset, pinnedAt) + 1
+					: target.offset;
+		const restFrom = restStart === -1 ? candidates.length : restStart;
+		const scope: HistoryTarget = { ...target, offset: pinned === undefined ? restFrom : Math.max(0, restFrom - 1) };
+		const rest = candidates
+			.slice(restFrom)
+			.filter((summary) => summary.id !== pinned?.id)
+			.slice(0, target.limit - (pinned === undefined ? 0 : 1));
+		const window = pinned === undefined ? rest : [pinned, ...rest];
+		const positionOf = (index: number): SessionKey | undefined =>
+			index === 0 && pinned !== undefined ? (after ?? candidateKeys[restFrom - 1]) : sessionKey(window[index]!);
+		const requestPins =
+			(target.session === undefined ? 0 : lineBytes(sessionUrl(target.session, target))) +
+			lineBytes(
+				`&${new URLSearchParams({
+					...(target.session === undefined ? {} : { session: target.session }),
+					...(target.after === undefined ? {} : { after: sessionKeyText(target.after, target.session) }),
+				})}`,
+			);
+		budget.spend(
+			Math.max(0, Math.max(0, ...window.map((summary) => sessionPinBytes(summary.id, target))) - requestPins),
+		);
 		const out: string[] = [];
 		const notes: string[] = pinnedGone
 			? [
 					charged(
 						budget,
-						`${pageUrl("sessions", target, target.offset)}:0: [session ${target.session} is no longer listed, so the search could not resume in it; it continued with the sessions after it]`,
+						`${pageUrl("sessions", scope, scope.offset)}:0: [session ${target.session} is no longer listed, so the search could not resume in it; it continued with the sessions after it]`,
 					),
 				]
 			: [];
@@ -1634,7 +1714,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			...lines,
 			...notes,
 			...(windowCut
-				? [charged(budget, `${pageUrl("sessions", target, target.offset)}:0: [${MULTILINE_WINDOW_NOTE}]`)]
+				? [charged(budget, `${pageUrl("sessions", scope, scope.offset)}:0: [${MULTILINE_WINDOW_NOTE}]`)]
 				: []),
 			...out,
 		];
@@ -1647,12 +1727,20 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 						stoppedCoverage(
 							"sessions",
 							"sessions",
-							target,
+							scope,
 							candidates.length,
 							index,
 							unreadable,
 							spent,
-							pageUrl("sessions", target, target.offset + index, undefined, request.ranges),
+							pageUrl(
+								"sessions",
+								scope,
+								scope.offset + index,
+								undefined,
+								request.ranges,
+								undefined,
+								positionOf(index - 1),
+							),
 							"",
 						),
 					),
@@ -1672,6 +1760,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					fromLineOffset,
 					budget,
 					store,
+					out.length > 0,
 				);
 				out.push(...result.lines);
 				windowCut ||= result.windowCut;
@@ -1684,12 +1773,20 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 							stoppedCoverage(
 								"sessions",
 								"sessions",
-								target,
+								scope,
 								candidates.length,
 								index + 1,
 								unreadable,
 								result.stopped.reason,
-								pageUrl("sessions", target, target.offset + index, cursor, request.ranges, summary.id),
+								pageUrl(
+									"sessions",
+									scope,
+									scope.offset + index,
+									cursor,
+									request.ranges,
+									summary.id,
+									positionOf(index),
+								),
 								` at entry ${result.stopped.resume.seq}${totalText} in ${sessionUrl(summary.id, target)}`,
 							),
 						),
@@ -1708,12 +1805,20 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 							stoppedCoverage(
 								"sessions",
 								"sessions",
-								target,
+								scope,
 								candidates.length,
 								index + 1,
 								unreadable,
 								"time",
-								pageUrl("sessions", target, target.offset + index, cursor, request.ranges, summary.id),
+								pageUrl(
+									"sessions",
+									scope,
+									scope.offset + index,
+									cursor,
+									request.ranges,
+									summary.id,
+									positionOf(index),
+								),
 								` in ${sessionUrl(summary.id, target)}`,
 							),
 						),
@@ -1724,9 +1829,16 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			}
 		}
 		return finished(
-			coverage("sessions", target, candidates.length, window.length, unreadable, request.ranges).map((line) =>
-				charged(budget, line),
-			),
+			coverage(
+				"sessions",
+				scope,
+				candidates.length,
+				window.length,
+				unreadable,
+				request.ranges,
+				undefined,
+				window.length === 0 ? after : positionOf(window.length - 1),
+			).map((line) => charged(budget, line)),
 		);
 	}
 
@@ -1743,11 +1855,13 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			| undefined,
 		budget: HistoryCallBudget,
 		alreadyEmitted = false,
+		firstRecord = true,
 	): Promise<{
 		readonly lines: string[];
 		readonly unreadable: number;
 		readonly stopped?: { readonly reason: BudgetStop; readonly cursor: string };
 	}> {
+		if (firstRecord) budget.holdProgressFloor();
 		const detail = await budget.race(requireWorkflows().getRun(runId));
 		budget.takeRows(1);
 		const lines: string[] = [];
@@ -1757,6 +1871,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			windowNote ??= charged(budget, `history://workflows/${runId}:0: [${MULTILINE_WINDOW_NOTE}]`);
 		};
 		if (start === undefined || start.stage === 0) {
+			if (firstRecord) budget.markProgress();
 			const own = await searchRunLinesBounded(
 				runId,
 				`history://workflows/${runId}`,
@@ -1805,6 +1920,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					fromLineOffset: from.lineOffset,
 					ranges: undefined,
 					budget,
+					emittedBefore: alreadyEmitted || lines.length > 0,
 				});
 				lines.push(...result.lines);
 				if (result.windowCut) noteWindowCut();
@@ -1921,6 +2037,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					index === 0 ? resume : undefined,
 					budget,
 					out.length > 0,
+					index === 0,
 				);
 				out.push(...found.lines);
 				unreadable += found.unreadable;
@@ -1948,7 +2065,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		if (target.domain === undefined) return bounded(HISTORY_HELP);
 		const budget = newBudget(selection.signal, noteBytes(url, target, selection.ranges));
 		const lineSelection: InternalReadSelection =
-			target.cursor === undefined ? selection : { ...selection, raw: true };
+			positionCursor(target) === undefined ? selection : { ...selection, raw: true };
 		const lineCursor =
 			target.cursor && target.cursor.first > 0
 				? { line: target.cursor.first, char: target.cursor.second }
@@ -1968,13 +2085,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			return bounded(await selectLines(url, lines, lineSelection, lineCursor, budget));
 		} catch (error) {
 			if (isHistoryDeadlineError(error)) {
-				const selected = exactLineSuffix(lineSelection);
 				const retry =
 					target.domain === "sessions" && target.id !== undefined
 						? `${url}${entrySuffix(selection)}`
-						: selected === ""
-							? url
-							: `${urlWithCursor(url, target.cursor === undefined ? "0" : cursorText(target.cursor))}${selected}`;
+						: positionCursor(target) === undefined
+							? `${url}${lineSuffix(selection)}`
+							: `${url}${exactLineSuffix(lineSelection)}`;
 				return bounded(`[the time budget ran out waiting for the store; continue with ${retry}]`);
 			}
 			throw error;

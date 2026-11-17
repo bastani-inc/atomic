@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, it, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type {
@@ -352,6 +353,61 @@ test("SQL replace and delete remove search text before reusing a session ID (#36
 				{ id: "other", searchText: "unaffected" },
 				{ id: header.id, searchText: "" },
 			],
+		);
+		await store.close();
+	});
+});
+
+test("SQL light listing bounds its key scan by size and fetches wide columns per page (#5250)", async () => {
+	await withNodeSqliteDatabase(async ({ database }) => {
+		const store = await SqlSessionStore.open(database);
+		const sessions = 200;
+		for (let index = 0; index < sessions; index++) {
+			const id = `s-${String(index).padStart(4, "0")}`;
+			await store.create({ ...header, id }, [
+				message(`${id}-m`, "x".repeat(60_000)),
+				{
+					type: "session_summary",
+					id: `${id}-sum`,
+					parentId: `${id}-m`,
+					timestamp: header.createdAt,
+					summary: "y".repeat(200_000),
+					summarizedThroughId: `${id}-m`,
+				},
+			]);
+		}
+		let longLengths = 0;
+		const configured = new WeakSet<DatabaseSync>();
+		const prepare = DatabaseSync.prototype.prepare;
+		DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+			if (!configured.has(this)) {
+				configured.add(this);
+				this.function("length", { deterministic: true }, (value) => {
+					if (value === null) return null;
+					if (typeof value === "string") {
+						if (value.length >= 10_000) longLengths++;
+						return [...value].length;
+					}
+					return value instanceof Uint8Array ? value.byteLength : String(value).length;
+				});
+			}
+			return prepare.call(this, sql);
+		} as typeof prepare;
+		const listed: SessionSummary[] = [];
+		try {
+			for await (const summary of store.list({ includeInternal: true, withoutSearchText: true })) {
+				listed.push(summary);
+			}
+		} finally {
+			DatabaseSync.prototype.prepare = prepare;
+		}
+		assert.deepEqual(
+			listed.map((summary) => summary.id),
+			Array.from({ length: sessions }, (_, index) => `s-${String(index).padStart(4, "0")}`),
+		);
+		assert.ok(
+			longLengths <= 8 * sessions,
+			`light listing measured ${longLengths} long values across ${sessions} sessions`,
 		);
 		await store.close();
 	});

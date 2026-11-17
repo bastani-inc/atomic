@@ -49,6 +49,7 @@ function seededRandom(seed: number): Random {
 const LETTERS = ["a", "b", "c", "k", "s", "x", "z", "A", "B", "K", "S", "é", "É", "ſ", "\u212a", "ß", "😀", "日"];
 const PADDING = [...LETTERS, " ", "-", ".", "<", ">", "0", "7", "_", "{", "}", "\\"];
 const ESCAPES: readonly (readonly [string, readonly string[]])[] = [
+	["\\t", ["\t"]],
 	["\\.", ["."]],
 	["\\(", ["("]],
 	["\\{", ["{"]],
@@ -74,6 +75,8 @@ const ENGINE_SPECIFIC_ESCAPES: readonly (readonly [string, readonly string[]])[]
 	["\\c{0,2}", ["\\", "\\cc"]],
 	["\\p", ["p"]],
 	["\\p[ab]", ["pa", "pb"]],
+	["\ud800", ["\ud800", "\ufffd"]],
+	["\udfff", ["\udfff", "\ufffd"]],
 ];
 const CLASSES: readonly (readonly [string, readonly string[]])[] = [
 	["[abc]", ["a", "b", "c"]],
@@ -131,7 +134,7 @@ function atom(random: Random, depth: number): GeneratedPattern {
 function group(random: Random, depth: number): GeneratedPattern {
 	const first = sequence(random, depth);
 	const second = random.below(3) === 0 ? sequence(random, depth) : undefined;
-	const opening = random.pick(["(", "(?:", "(?:", "(?i:", "(?=", "(?!"]);
+	const opening = random.pick(["(", "(?:", "(?:", "(?i:", "(?-i:", "(?=", "(?!"]);
 	const lookaround = opening === "(?=" || opening === "(?!";
 	const branches = second === undefined ? [first] : [first, second];
 	return {
@@ -142,7 +145,8 @@ function group(random: Random, depth: number): GeneratedPattern {
 			...(second === undefined ? [] : ["alternation"]),
 			...branches.flatMap((branch) => branch.features),
 		],
-		sample: (ignoreCase) => (lookaround ? "" : random.pick(branches).sample(ignoreCase || opening === "(?i:")),
+		sample: (ignoreCase) =>
+			lookaround ? "" : random.pick(branches).sample(opening === "(?-i:" ? false : ignoreCase || opening === "(?i:"),
 	};
 }
 
@@ -208,6 +212,7 @@ describe("index literals of a search pattern (#5250)", () => {
 		assert.deepEqual(sets("sync the latest origin/main"), [["sync the latest origin/main"]]);
 		assert.deepEqual(sets("zephyr-ne+dle"), [["dle", "zephyr-n"]]);
 		assert.deepEqual(sets("foo\\.bar\\(x\\)"), [["foo.bar(x)"]]);
+		assert.deepEqual(sets("foo\\tbar"), [["foo\tbar"]]);
 		assert.deepEqual(sets("ab"), undefined);
 	});
 
@@ -243,6 +248,14 @@ describe("index literals of a search pattern (#5250)", () => {
 		assert.deepEqual(sets("prefix(?i:aꟋb)"), [["prefix"]]);
 		assert.equal(sets("(?:(?i)aꟋb)|other"), undefined);
 		assert.deepEqual(sets("(?i:alpha)(?-i:aꟋb)"), [["alpha", "aꟋb"].sort()]);
+		assert.deepEqual(sets("(?-i:aꟋb)cꟋd", true), [["aꟋb"]]);
+		assert.deepEqual(sets("(?i)(?-i:aꟋb)cꟋd"), [["aꟋb"]]);
+	});
+
+	it("splits literal runs at lone surrogates in regex and literal modes (#5250)", () => {
+		assert.deepEqual(sets("foo\ud800bar\udfffbaz"), [["bar", "baz", "foo"]]);
+		assert.deepEqual(sets("foo\ud800bar\udfffbaz", false, true), [["bar", "baz", "foo"]]);
+		assert.equal(sets("ab\ud800cd"), undefined);
 	});
 
 	it("gives up on syntax whose meaning differs between engines", () => {

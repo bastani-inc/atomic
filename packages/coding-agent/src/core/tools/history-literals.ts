@@ -1,4 +1,4 @@
-import { normalizeSearchPattern } from "./resource-selectors.js";
+import { normalizeSearchPattern } from "./resource-selectors.ts";
 
 export type LiteralQuery = readonly (readonly string[])[];
 

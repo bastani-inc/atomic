@@ -1,5 +1,5 @@
 import { setImmediate } from "node:timers";
-import type { SessionEntry } from "../session-manager-types.js";
+import type { SessionEntry } from "../session-manager-types.ts";
 import {
 	MAX_INDEXED_ENTRY_CHARS,
 	SEARCH_PART_CHARS,
@@ -22,8 +22,8 @@ import {
 	type WorkerOutlineInfo,
 } from "./history-regex-worker.js";
 import { entryLines, timestamp } from "./history-transcript.js";
-import { formatSearchTextLine, type InternalSearchRequest, normalizeSearchPattern } from "./resource-selectors.js";
-import { loadNativeSearchBinding } from "./search-native.js";
+import { formatSearchTextLine, type InternalSearchRequest, normalizeSearchPattern } from "./resource-selectors.ts";
+import { loadNativeSearchBinding } from "./search-native.ts";
 
 export interface HistoryBudget {
 	readonly bytes: number;
@@ -80,6 +80,7 @@ export function yieldTurn(): Promise<void> {
 export class HistoryCallBudget {
 	readonly signal: AbortSignal | undefined;
 	private readonly callSignal: AbortSignal;
+	private readonly timeMs: number;
 	private readonly deadline: number;
 	private floor: { readonly until: number; readonly signal: AbortSignal } | undefined;
 	private bytesLeft: number;
@@ -88,8 +89,9 @@ export class HistoryCallBudget {
 
 	constructor(budget: HistoryBudget, signal: AbortSignal | undefined, noteBytes = NOTE_RESERVE_BYTES) {
 		this.signal = signal;
+		this.timeMs = Math.max(STORE_WAIT_MIN_MS, budget.timeMs);
 		this.deadline = performance.now() + budget.timeMs;
-		this.callSignal = this.withCaller(AbortSignal.timeout(Math.max(STORE_WAIT_MIN_MS, budget.timeMs)));
+		this.callSignal = this.withCaller(AbortSignal.timeout(this.timeMs));
 		const reserve = Math.max(
 			Math.min(NOTE_RESERVE_BYTES, Math.floor(budget.bytes * 0.25)) + Math.max(0, noteBytes - NOTE_RESERVE_BYTES),
 			budget.bytes < NOTE_RESERVE_BYTES ? Math.min(noteBytes, Math.floor(budget.bytes / 2)) : 0,
@@ -104,9 +106,9 @@ export class HistoryCallBudget {
 	}
 
 	holdProgressFloor(): void {
-		const until = performance.now() + PROGRESS_FLOOR_MS;
-		if (until <= this.deadline) return;
-		this.floor = { until, signal: this.withCaller(AbortSignal.timeout(PROGRESS_FLOOR_MS)) };
+		const floorMs = Math.max(PROGRESS_FLOOR_MS, this.timeMs);
+		const until = performance.now() + floorMs;
+		this.floor = { until, signal: this.withCaller(AbortSignal.timeout(floorMs)) };
 	}
 
 	markProgress(): void {
@@ -262,7 +264,22 @@ function sliceCodePoints(text: string, limit: number): string {
 }
 
 export function oneLine(text: string, limit: number): string {
-	const flat = text.replace(/\s+/g, " ").trim();
+	const source = String(text ?? "");
+	let flat = "";
+	let pendingSpace = false;
+	for (let i = 0; i < source.length && flat.length <= limit; i++) {
+		const ch = source[i]!;
+		if (/\s/.test(ch)) {
+			if (flat.length > 0) pendingSpace = true;
+			continue;
+		}
+		if (pendingSpace) {
+			flat += " ";
+			pendingSpace = false;
+			if (flat.length > limit) break;
+		}
+		flat += ch;
+	}
 	return flat.length > limit ? `${sliceCodePoints(flat, limit)}…` : flat;
 }
 
@@ -713,33 +730,8 @@ export async function outlineSession(
 		};
 	};
 
+	let pendingLoaded = !(pendingSeq !== undefined && pendingSeq > 0 && pendingSeq < fromSeq);
 	budget.holdProgressFloor();
-	if (pendingSeq !== undefined && pendingSeq > 0 && pendingSeq < fromSeq) {
-		let pendingPage: SessionEntriesPage | undefined;
-		try {
-			pendingPage = await pager.page(pendingSeq, pendingSeq, budget);
-		} catch (error) {
-			if (isHistoryDeadlineError(error)) {
-				pending = { seq: pendingSeq, at: "", kind: "user", preview: "" };
-				stopAt("time", fromSeq);
-			} else {
-				throw error;
-			}
-		}
-		if (pendingPage !== undefined) {
-			lastSeq = pendingPage.lastSeq;
-			const pendingEntry = pendingPage.entries.find((item) => item.seq === pendingSeq);
-			if (pendingEntry !== undefined) {
-				const info = await classifyEntryAt(pendingEntry, budget);
-				if ("timedOut" in info) {
-					pending = { seq: pendingSeq, at: "", kind: "user", preview: "" };
-					stopAt("time", fromSeq);
-				} else if (info.item !== undefined) {
-					pending = { seq: pendingSeq, ...info.item };
-				}
-			}
-		}
-	}
 	while (pos <= lastSeq && stopped === undefined) {
 		const reason = budget.spent();
 		if (reason && pos > fromSeq) {
@@ -751,10 +743,40 @@ export async function outlineSession(
 			page = await pager.page(pos, pos + budget.rowAllowance(OUTLINE_PAGE_SEQS) - 1, budget);
 		} catch (error) {
 			if (isHistoryDeadlineError(error)) {
+				if (!pendingLoaded && pendingSeq !== undefined) {
+					pending = { seq: pendingSeq, at: "", kind: "user", preview: "" };
+				}
 				stopAt("time", pos);
 				break;
 			}
 			throw error;
+		}
+		if (!pendingLoaded && pendingSeq !== undefined && pos <= page.lastSeq) {
+			pendingLoaded = true;
+			budget.holdProgressFloor();
+			let pendingPage: SessionEntriesPage | undefined;
+			try {
+				pendingPage = await pager.page(pendingSeq, pendingSeq, budget);
+			} catch (error) {
+				if (isHistoryDeadlineError(error)) {
+					pending = { seq: pendingSeq, at: "", kind: "user", preview: "" };
+					stopAt("time", fromSeq);
+					break;
+				}
+				throw error;
+			}
+			const pendingEntry = pendingPage.entries.find((item) => item.seq === pendingSeq);
+			if (pendingEntry !== undefined) {
+				const info = await classifyEntryAt(pendingEntry, budget);
+				if ("timedOut" in info) {
+					pending = { seq: pendingSeq, at: "", kind: "user", preview: "" };
+					stopAt("time", fromSeq);
+					break;
+				}
+				if (info.item !== undefined) {
+					pending = { seq: pendingSeq, ...info.item };
+				}
+			}
 		}
 		lastSeq = page.lastSeq;
 		if (pos > lastSeq) break;
@@ -923,8 +945,13 @@ export function selectRegexEngine(
 		return "both";
 	} catch (error) {
 		try {
+			const flagPrefix = multiline
+				? `(?${normalized.flags.includes("s") ? "s" : ""}${normalized.flags.includes("m") ? "m" : "-m"})`
+				: normalized.flags.includes("s")
+					? "(?s)"
+					: "";
 			const native = loadNativeSearchBinding()?.search?.("", {
-				pattern: normalized.flags.includes("s") ? `(?s)${normalized.pattern}` : normalized.pattern,
+				pattern: `${flagPrefix}${normalized.pattern}`,
 				ignoreCase: normalized.flags.includes("i"),
 				multiline,
 				contextBefore: 0,
@@ -934,6 +961,264 @@ export function selectRegexEngine(
 		} catch {}
 		throw error;
 	}
+}
+
+interface MultilineGroupFrame {
+	m: boolean;
+	x: boolean;
+	readonly isOuterNegativeLookaround: boolean;
+	readonly outStartIndex: number;
+	hasEndOfText: boolean;
+}
+
+function applyInlineFlag(current: boolean, flagsText: string, flag: string): boolean {
+	let state = current;
+	let enabling = true;
+	for (let i = 0; i < flagsText.length; i++) {
+		const ch = flagsText[i]!;
+		if (ch === "-") enabling = false;
+		else if (ch === flag) state = enabling;
+	}
+	return state;
+}
+
+function scanCharacterClass(pattern: string, start: number, nativeOnly: boolean): number {
+	if (!nativeOnly) {
+		let j = start + 1;
+		while (j < pattern.length) {
+			const c = pattern[j]!;
+			if (c === "\\") {
+				j += 2;
+				continue;
+			}
+			if (c === "]") return j + 1;
+			j++;
+		}
+		return j;
+	}
+	let j = start;
+	let depth = 0;
+	while (j < pattern.length) {
+		const c = pattern[j]!;
+		if (c === "\\") {
+			j += 2;
+			continue;
+		}
+		if (c === "[") {
+			if (depth > 0 && pattern[j + 1] === ":") {
+				const closePosix = pattern.indexOf(":]", j + 2);
+				if (closePosix !== -1) {
+					j = closePosix + 2;
+					continue;
+				}
+			}
+			depth++;
+			j++;
+			if (pattern[j] === "^") j++;
+			if (pattern[j] === "]") j++;
+			continue;
+		}
+		if (c === "]") {
+			depth--;
+			j++;
+			if (depth <= 0) break;
+			continue;
+		}
+		j++;
+	}
+	return j;
+}
+
+function rewriteMultilineWindowPattern(
+	pattern: string,
+	initialMultiline: boolean,
+	windowCut: boolean,
+	nativeOnly: boolean,
+): string {
+	const stack: MultilineGroupFrame[] = [
+		{
+			m: initialMultiline,
+			x: false,
+			isOuterNegativeLookaround: false,
+			outStartIndex: 0,
+			hasEndOfText: false,
+		},
+	];
+	const inNegativeLookaround = (): boolean => stack.some((frame) => frame.isOuterNegativeLookaround);
+	const markNegativeLookaroundEndOfText = (): void => {
+		for (const frame of stack) {
+			if (frame.isOuterNegativeLookaround) frame.hasEndOfText = true;
+		}
+	};
+	let out = "";
+	for (let i = 0; i < pattern.length; ) {
+		const top = stack[stack.length - 1]!;
+		const ch = pattern[i]!;
+		if (top.x && ch === "#") {
+			const nl = pattern.indexOf("\n", i + 1);
+			if (nl === -1) {
+				out += pattern.slice(i);
+				break;
+			}
+			out += pattern.slice(i, nl + 1);
+			i = nl + 1;
+			continue;
+		}
+		if (ch === "\\") {
+			if (i + 1 >= pattern.length) {
+				out += ch;
+				break;
+			}
+			const next = pattern[i + 1]!;
+			if (next === "Q") {
+				const endQuote = pattern.indexOf("\\E", i + 2);
+				if (endQuote === -1) {
+					out += pattern.slice(i);
+					break;
+				}
+				out += pattern.slice(i, endQuote + 2);
+				i = endQuote + 2;
+				continue;
+			}
+			if (next === "k" && pattern[i + 2] === "<") {
+				const endName = pattern.indexOf(">", i + 3);
+				if (endName !== -1) {
+					out += pattern.slice(i, endName + 1);
+					i = endName + 1;
+					continue;
+				}
+			}
+			if (next === "z") {
+				if (windowCut) {
+					if (inNegativeLookaround()) {
+						markNegativeLookaroundEndOfText();
+						out += nativeOnly ? "\\z" : "(?![\\s\\S])";
+					} else {
+						out += "(?:\\b\\B)";
+					}
+				} else {
+					out += nativeOnly ? "\\z" : "(?![\\s\\S])";
+				}
+				i += 2;
+				continue;
+			}
+			if (next === "A" && !nativeOnly) {
+				out += "(?<![\\s\\S])";
+				i += 2;
+				continue;
+			}
+			out += ch + next;
+			i += 2;
+			continue;
+		}
+		if (ch === "[") {
+			const end = scanCharacterClass(pattern, i, nativeOnly);
+			out += pattern.slice(i, end);
+			i = end;
+			continue;
+		}
+		if (ch === "(") {
+			if (pattern.slice(i, i + 3) === "(?!" || pattern.slice(i, i + 4) === "(?<!") {
+				const prefix = pattern[i + 2] === "<" ? "(?<!" : "(?!";
+				stack.push({
+					m: top.m,
+					x: top.x,
+					isOuterNegativeLookaround: !inNegativeLookaround(),
+					outStartIndex: out.length,
+					hasEndOfText: false,
+				});
+				out += prefix;
+				i += prefix.length;
+				continue;
+			}
+			if (pattern.slice(i, i + 3) === "(?=" || pattern.slice(i, i + 4) === "(?<=") {
+				const prefix = pattern[i + 2] === "<" ? "(?<=" : "(?=";
+				stack.push({
+					m: top.m,
+					x: top.x,
+					isOuterNegativeLookaround: false,
+					outStartIndex: out.length,
+					hasEndOfText: false,
+				});
+				out += prefix;
+				i += prefix.length;
+				continue;
+			}
+			if (pattern[i + 1] === "?") {
+				const namedMatch = /^\(\?(?:P?<[^>]*>|'[^']*')/.exec(pattern.slice(i));
+				if (namedMatch) {
+					stack.push({
+						m: top.m,
+						x: top.x,
+						isOuterNegativeLookaround: false,
+						outStartIndex: out.length,
+						hasEndOfText: false,
+					});
+					out += namedMatch[0];
+					i += namedMatch[0].length;
+					continue;
+				}
+				const flagMatch = /^\(\?([imsUx-]+)([:)])/.exec(pattern.slice(i));
+				if (flagMatch) {
+					const nextM = applyInlineFlag(top.m, flagMatch[1]!, "m");
+					const nextX = applyInlineFlag(top.x, flagMatch[1]!, "x");
+					if (flagMatch[2] === ":") {
+						stack.push({
+							m: nextM,
+							x: nextX,
+							isOuterNegativeLookaround: false,
+							outStartIndex: out.length,
+							hasEndOfText: false,
+						});
+					} else {
+						top.m = nextM;
+						top.x = nextX;
+					}
+					out += flagMatch[0];
+					i += flagMatch[0].length;
+					continue;
+				}
+			}
+			stack.push({
+				m: top.m,
+				x: top.x,
+				isOuterNegativeLookaround: false,
+				outStartIndex: out.length,
+				hasEndOfText: false,
+			});
+			out += ch;
+			i++;
+			continue;
+		}
+		if (ch === ")") {
+			out += ch;
+			i++;
+			if (stack.length > 1) {
+				const popped = stack.pop()!;
+				if (windowCut && popped.isOuterNegativeLookaround && popped.hasEndOfText) {
+					out = `${out.slice(0, popped.outStartIndex)}(?:\\b\\B${out.slice(popped.outStartIndex)})`;
+				}
+			}
+			continue;
+		}
+		if (ch === "$") {
+			if (windowCut && !top.m) {
+				if (inNegativeLookaround()) {
+					markNegativeLookaroundEndOfText();
+					out += "$";
+				} else {
+					out += "(?:\\b\\B)";
+				}
+			} else {
+				out += "$";
+			}
+			i++;
+			continue;
+		}
+		out += ch;
+		i++;
+	}
+	return out;
 }
 
 function lineNumberAt(newlines: readonly number[], index: number): number {
@@ -953,12 +1238,16 @@ export function matchMultilineNative(
 	normalized: { readonly pattern: string; readonly flags: string },
 	ignoreCase: boolean,
 	maxCount: number,
+	windowCut = false,
 ): MultilineSpan[] {
 	const newlines: number[] = [];
 	for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) newlines.push(i);
 	const maxStartLine = lineNumberAt(newlines, Math.max(0, firstEntryChars - 1));
+	const multiline = normalized.flags.includes("m");
+	const pattern = rewriteMultilineWindowPattern(normalized.pattern, multiline, windowCut, true);
+	const flagPrefix = `(?${normalized.flags.includes("s") ? "s" : ""}${multiline ? "m" : "-m"})`;
 	const native = loadNativeSearchBinding()?.search?.(text.replaceAll("\0", "\ufffd"), {
-		pattern: normalized.flags.includes("s") ? `(?s)${normalized.pattern}` : normalized.pattern,
+		pattern: `${flagPrefix}${pattern}`,
 		ignoreCase,
 		multiline: true,
 		contextBefore: 0,
@@ -996,6 +1285,7 @@ export interface SessionSearchRequest {
 	readonly fromLineOffset?: number;
 	readonly ranges: readonly SeqRange[] | undefined;
 	readonly budget: HistoryCallBudget;
+	readonly emittedBefore?: boolean;
 }
 
 interface EntryMatchUnit {
@@ -1037,12 +1327,13 @@ class SessionSearcher {
 	private coveredFromSeq = 1;
 	private coveredThroughSeq = 0;
 	private lastEmitted = { seq: 0, line: -1 };
-	private emittedAny = false;
+	private emittedAny: boolean;
 	private windowCut = false;
 	private windowRowsLeft = WINDOW_MAX_SEQS + 2 * CONTEXT_SPAN_SEQS;
 
 	constructor(search: SessionSearchRequest) {
 		this.search = search;
+		this.emittedAny = search.emittedBefore === true;
 		this.pager = entryPager(search.place.store, search.place.sessionId);
 		this.index = search.place.store.searchIndex;
 		this.normalized = normalizeSearchPattern(search.request.pattern, search.request.ignoreCase);
@@ -1582,13 +1873,28 @@ class SessionSearcher {
 			const windowText = windowParts.flatMap((part) => part.lines).join("\n");
 			let matchedSpans: readonly MultilineSpan[];
 			if (this.engine === "native-only") {
-				matchedSpans = matchMultilineNative(windowText, ownedTo, this.normalized, this.ignoreCase, totalLines + 1);
+				matchedSpans = matchMultilineNative(
+					windowText,
+					ownedTo,
+					this.normalized,
+					this.ignoreCase,
+					totalLines + 1,
+					ahead.cut,
+				);
 			} else {
+				const windowPattern = request.literal
+					? this.normalized.pattern
+					: rewriteMultilineWindowPattern(
+							this.normalized.pattern,
+							this.normalized.flags.includes("m"),
+							ahead.cut,
+							false,
+						);
 				const res = await matchMultilineInWorker(
 					windowText,
 					ownedFrom,
 					ownedTo,
-					this.normalized.pattern,
+					windowPattern,
 					this.normalized.flags,
 					this.ignoreCase,
 					request.literal,

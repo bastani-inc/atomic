@@ -40,6 +40,17 @@ function message(id: string, text: string): SessionEntry {
 	};
 }
 
+function pageFillingSummary(id: string): SessionEntry {
+	return {
+		type: "session_summary",
+		id: `${id}-summary`,
+		parentId: "e1",
+		timestamp: "2026-11-16T00:00:00.000Z",
+		summary: `${id} ${"x".repeat(PAGE_FILLING_CHARS)}`,
+		summarizedThroughId: "e1",
+	};
+}
+
 function textChars(rows: readonly SqliteRow[]): number {
 	let chars = 0;
 	for (const row of rows) for (const value of Object.values(row)) if (typeof value === "string") chars += value.length;
@@ -130,20 +141,26 @@ for (const backend of storageBackends) {
 			}
 		});
 
-		run("lists each session that existed when the listing started, once (#5250)", async () => {
+		run("keeps the initial listing window and never repeats recreated sessions (#5250)", async () => {
 			const scope = await backend.openScope();
 			try {
 				const store = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
-				for (const id of ["first", "second"])
-					await store.create(header(id), [message("e1", `${id} ${"x".repeat(PAGE_FILLING_CHARS)}`)]);
+				for (const id of ["first", "second", "third", "fourth"])
+					await store.create(header(id), [message("e1", id), pageFillingSummary(id)]);
 				const listing = store.list({ includeInternal: true, withoutSearchText: true })[Symbol.asyncIterator]();
 				const listed: string[] = [];
 				const head = await listing.next();
 				if (!head.done) listed.push(head.value.id);
-				await store.append(listed[0]!, [message("e2", "appended while listing")], { expectSeq: 1 });
+				await store.delete("fourth");
+				await store.delete("first");
+				await store.create(header("first"), [message("e1", "recreated while listing")]);
+				await store.append("second", [message("e2", "appended while listing")], { expectSeq: 2 });
 				await store.create(header("later"), [message("e1", "created while listing")]);
+				const second = await listing.next();
+				if (!second.done) listed.push(second.value.id);
+				await store.create(header("later-2"), [message("e1", "created after second page")]);
 				for (let next = await listing.next(); !next.done; next = await listing.next()) listed.push(next.value.id);
-				assert.deepEqual(listed, ["first", "second"]);
+				assert.deepEqual(listed, ["first", "second", "third"]);
 			} finally {
 				await scope.close();
 			}
@@ -156,6 +173,14 @@ for (const backend of storageBackends) {
 			try {
 				const store = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
 				const chunked = message("chunked", "x".repeat(SESSION_ENTRY_CHUNK_BYTES + 1_000));
+				const chunkedSkipped: SessionEntry = {
+					type: "custom",
+					id: "chunked-custom",
+					parentId: null,
+					timestamp: "2026-11-16T00:00:00.000Z",
+					customType: "snapshot",
+					data: "z".repeat(SESSION_ENTRY_CHUNK_BYTES + 1_000),
+				};
 				const typeLater: SessionEntry = {
 					id: "type-later",
 					parentId: null,
@@ -164,7 +189,13 @@ for (const backend of storageBackends) {
 					customType: "snapshot",
 					data: "y".repeat(LARGE_ENTRY_BYTES * 3),
 				};
-				await store.create(header("s"), [message("e1", "small"), chunked, typeLater, message("e4", "small")]);
+				await store.create(header("s"), [
+					message("e1", "small"),
+					chunked,
+					chunkedSkipped,
+					typeLater,
+					message("e5", "small"),
+				]);
 				const whole = await store.readEntryRange("s", { fromSeq: 2, toSeq: 2 });
 				assert.equal(whole.entries[0]?.rawChunks, undefined, "the chunked entry is parsed");
 				assert.ok(
@@ -173,17 +204,17 @@ for (const backend of storageBackends) {
 				);
 				const skipped = await store.readEntryRange("s", {
 					fromSeq: 1,
-					toSeq: 4,
+					toSeq: 5,
 					largeEntryBytes: LARGE_ENTRY_BYTES,
 					skipTypes: ["custom"],
 				});
-				assert.equal(skipped.throughSeq, 4);
+				assert.equal(skipped.throughSeq, 5);
 				assert.deepEqual(
 					skipped.entries.map((item) => [item.seq, item.rawChunks !== undefined]),
 					[
 						[1, false],
 						[2, true],
-						[4, false],
+						[5, false],
 					],
 				);
 			} finally {

@@ -39,7 +39,7 @@ import type {
 	SessionCompactFailedEvent,
 } from "./extensions/index.js";
 import { assertSessionOpen as assertCompactionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
-import type { CompactionEntry, SessionEntry } from "./session-manager.js";
+import type { CompactionEntry, SessionEntry } from "./session-manager.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 import { createHistoryRouter, transcriptEntryLines } from "./tools/history-protocol.ts";
 import { historyEntryRanges } from "./tools/history-transcript.js";

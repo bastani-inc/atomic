@@ -538,7 +538,7 @@ export class MemorySessionStore implements SessionStore {
 			held.directory !== undefined && held.directory.readRange === undefined && start < held.spilledBytes
 				? await this.bytesOf(sessionId, held, start, end)
 				: undefined;
-		for (let offset = start; offset < end && !reader.decided; offset += TYPE_WINDOW_BYTES) {
+		for (let offset = start; offset < end && !reader.decided && !reader.typeSeen; offset += TYPE_WINDOW_BYTES) {
 			signal?.throwIfAborted();
 			const windowEnd = Math.min(end, offset + TYPE_WINDOW_BYTES);
 			reader.feed(

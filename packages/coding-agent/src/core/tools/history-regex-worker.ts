@@ -67,18 +67,35 @@ function cutAt(text, end) {
 }
 
 function oneLine(text, limit) {
-	const flat = cutAt(String(text ?? ""), limit * 4).replace(/\\s+/g, " ").trim();
+	const source = String(text ?? "");
+	let flat = "";
+	let pendingSpace = false;
+	for (let i = 0; i < source.length && flat.length <= limit; i++) {
+		const ch = source[i];
+		if (/\\s/.test(ch)) {
+			if (flat.length > 0) pendingSpace = true;
+			continue;
+		}
+		if (pendingSpace) {
+			flat += " ";
+			pendingSpace = false;
+			if (flat.length > limit) break;
+		}
+		flat += ch;
+	}
 	return flat.length > limit ? cutAt(flat, limit) + "…" : flat;
 }
 
 function messageText(content, limit) {
-	if (typeof content === "string") return cutAt(content, limit * 4);
+	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 	let out = "";
 	for (const block of content) {
 		if (block && block.type === "text" && typeof block.text === "string") {
-			out += (out ? " " : "") + cutAt(block.text, limit * 4);
-			if (out.length >= limit * 4) break;
+			const piece = oneLine(block.text, limit + 1);
+			if (!piece) continue;
+			out += (out ? " " : "") + piece;
+			if (out.length > limit + 1) break;
 		}
 	}
 	return out;
@@ -345,10 +362,16 @@ function pumpQueue(): void {
 			next.settle({ timedOut: true });
 			continue;
 		}
-		next.dispatched = true;
-		activeTask = next;
-		const worker = getWorker();
-		worker.postMessage({ ...next.payload, id: next.id }, next.transfer ? [...next.transfer] : []);
+		try {
+			const worker = getWorker();
+			worker.postMessage({ ...next.payload, id: next.id }, next.transfer ? [...next.transfer] : []);
+			next.dispatched = true;
+			activeTask = next;
+		} catch (error) {
+			activeTask = undefined;
+			next.dispatched = false;
+			next.settle({ error: error instanceof Error ? error : new Error(String(error)) });
+		}
 	}
 }
 
@@ -447,6 +470,10 @@ export async function matchMultilineInWorker(
 	return { matches: result.value.matches, timedOut: false };
 }
 
+/**
+ * Parse and render a raw JSON entry in the worker thread.
+ * Whole-buffer `ArrayBuffer`s backing `rawChunks` are transferred to the worker and detached in the caller.
+ */
 export async function renderRawEntryInWorker(
 	rawChunks: readonly Uint8Array[],
 	previewChars: number,

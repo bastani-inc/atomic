@@ -34,6 +34,7 @@ import {
 	cutTextToUtf8Bytes,
 	DEFAULT_HISTORY_BUDGET,
 	HISTORY_TEXT_FORMAT,
+	HistoryDeadlineError,
 	oneLine,
 } from "../src/core/tools/history-session.js";
 import { entryLines } from "../src/core/tools/history-transcript.js";
@@ -2513,6 +2514,17 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 				assert.deepEqual(rowSplit.listed.get(turn), [(turn - 1) * perTurn + 1, turn * perTurn]);
 			}
 
+			const firstRowPage =
+				(await historyOver(store, { rows: 100 }).router.read!("history://sessions/exact-turns")) ?? "";
+			assert.match(firstRowPage, /^entries 1-99: 33 user turns, 66 assistant messages$/m);
+			assert.equal(continuation(firstRowPage), "history://sessions/exact-turns?cursor=100");
+
+			const byteSplit = await collectOutlineTurns(store, { bytes: 900 });
+			assert.ok(byteSplit.pages > 1, "byte budget splits the outline across pages");
+			for (let turn = 1; turn <= turnCount; turn++) {
+				assert.deepEqual(byteSplit.listed.get(turn), [(turn - 1) * perTurn + 1, turn * perTurn]);
+			}
+
 			let callCount = 0;
 			const timePaged: SessionStore = new Proxy(store, {
 				get(target, key) {
@@ -2579,6 +2591,28 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 				/\[outline up to entry 3; the time budget ran out; continue with history:\/\/sessions\/long-turn\?cursor=3\.0\.0\.1\]/,
 			);
 			stallReload = false;
+
+			const usedBySignal = new WeakMap<AbortSignal, number>();
+			const halfBudgetStore: SessionStore = new Proxy(store, {
+				get(target, key) {
+					if (key === "readEntryRange")
+						return async (id: string, query: Parameters<MemorySessionStore["readEntryRange"]>[1]) => {
+							if (query.signal) {
+								const used = (usedBySignal.get(query.signal) ?? 0) + 60;
+								usedBySignal.set(query.signal, used);
+								if (used > 100) throw new HistoryDeadlineError();
+							}
+							return target.readEntryRange(id, query);
+						};
+					const value = Reflect.get(target, key, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const halfBudgetOut =
+				(await historyOver(halfBudgetStore, { timeMs: 100 }).router.read!(
+					"history://sessions/long-turn?cursor=33.0.0.1",
+				)) ?? "";
+			assert.notEqual(continuation(halfBudgetOut), "history://sessions/long-turn?cursor=33.0.0.1", halfBudgetOut);
 		} finally {
 			await store.close();
 		}

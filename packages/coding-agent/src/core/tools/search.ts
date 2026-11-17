@@ -421,13 +421,13 @@ function applyDefaultSearchContext(text: string, before = 1, after = 3): string 
 	return output.join("\n");
 }
 
-const SEARCH_ROW_DELIMITER = /^(.+?)(?::(\d+): |-(\d+)- |:(?!\/\/)([^:]+): )/;
+const SEARCH_ROW_DELIMITER = /^.+?(?::(\d+): |-(\d+)- )/;
+const SEARCH_NONNUMERIC_MATCH_ROW = /^.+?:(?!\/\/)[^:]+: /;
 
 function isSearchMatchLine(line: string): boolean {
 	const match = SEARCH_ROW_DELIMITER.exec(line);
-	if (!match) return false;
-	if (match[2] !== undefined) return Number.parseInt(match[2], 10) > 0;
-	return match[4] !== undefined;
+	if (match) return match[1] !== undefined && Number.parseInt(match[1], 10) > 0;
+	return SEARCH_NONNUMERIC_MATCH_ROW.test(line);
 }
 function isHistoryCursorNoteLine(line: string): boolean {
 	return /^history:\/\/.+?(?::0: |-0- )\[/.test(line);

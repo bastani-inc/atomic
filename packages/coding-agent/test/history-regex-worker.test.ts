@@ -71,4 +71,24 @@ describe("outline previews of large entries (#5250)", () => {
 		assert.match(new TextDecoder().decode(rendered.renderedUtf8), /user\nshared gap$/);
 		for (const chunk of [head, gap, middle, tail]) assert.equal(chunk.byteLength, 0);
 	});
+
+	it("collapses leading whitespace while cutting so a turn after >288 blanks keeps its preview (#5250)", async () => {
+		const leadingBlanks = `${" \n\t ".repeat(80)}real question after blank lines`;
+		const raw = new TextEncoder().encode(JSON.stringify(userEntry(leadingBlanks)));
+		const rendered = await renderRawEntryInWorker([raw], 72, WORKER_TIMEOUT_MS);
+		assert.ok(!("timedOut" in rendered));
+		assert.equal(rendered.outline.item?.preview, "real question after blank lines");
+
+		const blockRaw = new TextEncoder().encode(
+			JSON.stringify(
+				userEntry([
+					{ type: "text", text: " \n".repeat(160) },
+					{ type: "text", text: leadingBlanks },
+				]),
+			),
+		);
+		const blockRendered = await renderRawEntryInWorker([blockRaw], 72, WORKER_TIMEOUT_MS);
+		assert.ok(!("timedOut" in blockRendered));
+		assert.equal(blockRendered.outline.item?.preview, "real question after blank lines");
+	});
 });

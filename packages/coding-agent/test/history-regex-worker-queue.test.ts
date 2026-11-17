@@ -9,6 +9,7 @@ interface PostedMessage {
 interface FakeWorker extends EventEmitter {
 	readonly posted: PostedMessage[];
 	terminated: boolean;
+	failNextPost?: Error;
 }
 
 const workers = vi.hoisted((): FakeWorker[] => []);
@@ -18,11 +19,17 @@ vi.mock("node:worker_threads", async () => {
 	class Worker extends EventEmitter {
 		readonly posted: PostedMessage[] = [];
 		terminated = false;
+		failNextPost?: Error;
 		constructor() {
 			super();
 			workers.push(this);
 		}
 		postMessage(message: { readonly id: number }): void {
+			if (this.failNextPost) {
+				const error = this.failNextPost;
+				this.failNextPost = undefined;
+				throw error;
+			}
 			this.posted.push({ message });
 		}
 		terminate(): Promise<number> {
@@ -63,5 +70,18 @@ describe("history regex worker (#5250)", () => {
 		assert.equal(queuedOutcome, "pending");
 		replacement.emit("message", { id: replacement.posted[0]!.message.id, matchedIndices: [0] });
 		assert.deepEqual((await queued).matchedIndices, [0]);
+	});
+
+	it("clears activeTask when postMessage throws so the next request dispatches immediately (#5250)", async () => {
+		const { matchLinesInWorker } = await import("../src/core/tools/history-regex-worker.js");
+		const worker = workers.at(-1)!;
+		worker.failNextPost = new Error("postMessage transfer failed");
+		await assert.rejects(matchLinesInWorker(["a"], "a", "", false, false, 10_000), /postMessage transfer failed/);
+
+		const postedBefore = worker.posted.length;
+		const next = matchLinesInWorker(["b"], "b", "", false, false, 10_000);
+		assert.equal(worker.posted.length, postedBefore + 1);
+		worker.emit("message", { id: worker.posted.at(-1)!.message.id, matchedIndices: [0] });
+		assert.deepEqual((await next).matchedIndices, [0]);
 	});
 });

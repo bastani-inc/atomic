@@ -22,7 +22,7 @@ import { createSessionCwdMatcher } from "../../../utils/canonical-path.ts";
 import { readLines } from "../../../utils/lines.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { validateSessionEntryStructure } from "./entry-structure.js";
-import { EntryTypeReader } from "./entry-type.js";
+import { EntryTypeReader, JsonTextChecker } from "./entry-type.js";
 import {
 	SessionConflictError,
 	SessionExistsError,
@@ -153,7 +153,9 @@ const RANGE_MARK_EVERY = 256;
 const RANGE_PROBE_BYTES = 64 * 1024;
 const RANGE_CHUNK_BYTES = 64 * 1024;
 const RANGE_READ_ATTEMPTS = 3;
+const TYPING_RETAIN_BYTES = 1024 * 1024;
 const WITNESS_BYTES = 64;
+const MARK_CHECK_READS = 32;
 const STUB_ENTRY: SessionEntry = {
 	type: "custom",
 	id: "",
@@ -162,15 +164,22 @@ const STUB_ENTRY: SessionEntry = {
 	customType: "",
 };
 
+interface RangeMark {
+	readonly seq: number;
+	readonly offset: number;
+	readonly prefixWitness: Buffer;
+}
+
 interface RangeIndex {
 	readonly identity: string;
-	readonly marks: { readonly seq: number; readonly offset: number }[];
+	readonly marks: RangeMark[];
 	completeEnd: number;
 	completeCount: number;
 	total: { readonly size: number; readonly lastSeq: number } | undefined;
 	witness: Buffer;
 	witnessEnd: number;
 	seenStamp: string;
+	seenSize: number;
 }
 
 async function witnessAt(file: FileHandle, end: number): Promise<Buffer> {
@@ -178,13 +187,32 @@ async function witnessAt(file: FileHandle, end: number): Promise<Buffer> {
 	return readFrom(file, from, end - from);
 }
 
-async function rangeWitnessHolds(file: FileHandle, index: RangeIndex): Promise<boolean> {
-	if (index.witnessEnd === 0) return true;
-	try {
-		return (await witnessAt(file, index.witnessEnd)).equals(index.witness);
-	} catch {
-		return false;
+async function boundaryHolds(
+	file: FileHandle,
+	boundary: { readonly witness: Buffer; readonly witnessEnd: number },
+): Promise<boolean> {
+	if (boundary.witnessEnd === 0) return true;
+	const witness = await witnessAt(file, boundary.witnessEnd).catch(() => undefined);
+	return witness?.equals(boundary.witness) === true;
+}
+
+async function rangeIndexHolds(
+	file: FileHandle,
+	index: RangeIndex,
+	marks: boolean,
+	signal: AbortSignal | undefined,
+): Promise<boolean> {
+	if (!(await boundaryHolds(file, index))) return false;
+	if (!marks) return true;
+	for (let at = 0; at < index.marks.length; at += MARK_CHECK_READS) {
+		signal?.throwIfAborted();
+		const batch = index.marks.slice(at, at + MARK_CHECK_READS);
+		const heads = await Promise.all(
+			batch.map((mark) => readFrom(file, mark.offset, mark.prefixWitness.length).catch(() => undefined)),
+		);
+		if (!heads.every((head, offset) => head?.equals(batch[offset]!.prefixWitness) === true)) return false;
 	}
+	return true;
 }
 
 function isBlankLine(line: Buffer): boolean {
@@ -237,20 +265,45 @@ async function scanSessionLines(
 	let position = from.offset;
 	let lineOffset = from.offset;
 	let lineBytes = 0;
+	const linePrefix = Buffer.alloc(WITNESS_BYTES);
+	let linePrefixBytes = 0;
 	let parts: Buffer[] = [];
+	let partsBytes = 0;
+	let completeLineRetained = true;
 	let reader: EntryTypeReader | undefined;
 	let mode = (header ? "header" : "blank") as "header" | "blank" | "typing" | LineAction;
 	const startLine = (offset: number): void => {
 		lineOffset = offset;
 		lineBytes = 0;
+		linePrefixBytes = 0;
 		parts = [];
+		partsBytes = 0;
+		completeLineRetained = true;
 		reader = undefined;
 		mode = header ? "header" : "blank";
+	};
+	const drop = (): void => {
+		parts = [];
+		partsBytes = 0;
+		completeLineRetained = false;
+	};
+	const keep = (segment: Buffer): void => {
+		if (!completeLineRetained) return;
+		parts.push(segment);
+		partsBytes += segment.length;
+		retained = true;
 	};
 	const settle = (action: LineAction): void => {
 		mode = action;
 		reader = undefined;
-		if (action === "pass") parts = [];
+		if (action === "pass") drop();
+	};
+	const judge = (inspecting: EntryTypeReader): void => {
+		if (inspecting.decided) {
+			settle(visitor.typed(seq, inspecting.finish()));
+			return;
+		}
+		if (partsBytes > TYPING_RETAIN_BYTES) drop();
 	};
 	const classify = (): boolean => {
 		const action = visitor.begin(seq + 1);
@@ -264,21 +317,27 @@ async function scanSessionLines(
 		reader = inspecting;
 		mode = "typing";
 		for (const part of parts) if (inspecting.feed(part)) break;
-		if (inspecting.decided) settle(visitor.typed(seq, inspecting.finish()));
+		judge(inspecting);
 		return true;
 	};
 	const take = (segment: Buffer): boolean => {
 		lineBytes += segment.length;
+		if (linePrefixBytes < linePrefix.length) linePrefixBytes += segment.copy(linePrefix, linePrefixBytes);
 		if (mode === "header" || mode === "pass") return true;
-		parts.push(segment);
-		retained = true;
+		keep(segment);
 		if (mode === "typing" && reader !== undefined) {
-			if (reader.feed(segment)) settle(visitor.typed(seq, reader.finish()));
+			reader.feed(segment);
+			judge(reader);
 			return true;
 		}
 		return mode !== "blank" || !hasVisibleAscii(segment) || classify();
 	};
-	const finishLine = (lineEnd: number): "next" | "stop-before" | "stop-after" => {
+	const rereadLine = async (): Promise<void> => {
+		parts = [await readFrom(file, lineOffset, lineBytes)];
+		partsBytes = lineBytes;
+		completeLineRetained = true;
+	};
+	const finishLine = (lineEnd: number): "next" | "stop-before" | "stop-after" | "reread" => {
 		if (mode === "header") {
 			header = false;
 			return "next";
@@ -288,8 +347,13 @@ async function scanSessionLines(
 			if (!classify()) return "stop-before";
 		}
 		if (reader !== undefined) settle(visitor.typed(seq, reader.finish()));
+		if (mode === "read" && !completeLineRetained) return "reread";
 		if (seq % RANGE_MARK_EVERY === 1 && !index.marks.some((candidate) => candidate.seq === seq)) {
-			index.marks.push({ seq, offset: lineOffset });
+			index.marks.push({
+				seq,
+				offset: lineOffset,
+				prefixWitness: Buffer.from(linePrefix.subarray(0, linePrefixBytes)),
+			});
 			index.marks.sort((a, b) => a.seq - b.seq);
 		}
 		if (seq > index.completeCount) {
@@ -324,7 +388,11 @@ async function scanSessionLines(
 			}
 			start = newline + 1;
 			const completeEnd = index.completeEnd;
-			const outcome = finishLine(position + start);
+			let outcome = finishLine(position + start);
+			if (outcome === "reread") {
+				await rereadLine();
+				outcome = finishLine(position + start);
+			}
 			if (index.completeEnd !== completeEnd) advancedAt = start;
 			if (outcome !== "next") {
 				keepWitness(bytes, advancedAt);
@@ -349,11 +417,22 @@ async function scanSessionLines(
 	const counted = mode !== "blank";
 	if (!atEnd) return { offset: lineOffset, seq: counted ? seq - 1 : seq, header: false };
 	if (!counted && isBlankParts(parts)) return { offset: position, seq, header: false };
-	const whole = mode === "pass" ? await readFrom(file, lineOffset, lineBytes) : Buffer.concat(parts);
-	if (parseUnterminated(whole.toString("utf8")) === undefined)
-		return { offset: position, seq: counted ? seq - 1 : seq, header: false };
+	const checker = new JsonTextChecker();
+	if (completeLineRetained) for (const part of parts) checker.feed(part);
+	else {
+		const buffer = Buffer.allocUnsafe(Math.min(RANGE_CHUNK_BYTES, lineBytes));
+		for (let at = 0; at < lineBytes; ) {
+			signal?.throwIfAborted();
+			const { bytesRead } = await file.read(buffer, 0, Math.min(buffer.length, lineBytes - at), lineOffset + at);
+			if (bytesRead === 0) throw new Error(`Session file ended before byte ${lineOffset + lineBytes}`);
+			checker.feed(buffer.subarray(0, bytesRead));
+			at += bytesRead;
+		}
+	}
+	if (!checker.finish()) return { offset: position, seq: counted ? seq - 1 : seq, header: false };
 	if (!counted && !classify()) return { offset: lineOffset, seq, header: false };
 	if (reader !== undefined) settle(visitor.typed(seq, reader.finish()));
+	if (mode === "read" && !completeLineRetained) await rereadLine();
 	visitor.end(seq, mode === "read" ? parts : undefined, lineBytes, false);
 	return { offset: position, seq, header: false };
 }
@@ -556,7 +635,10 @@ export class JsonlSessionStore implements SessionStore {
 					: { summaryState: applySessionSummaryEntries(state.summaryState, entries).state }),
 			});
 			const rangeIndex = this.rangeIndexes.get(path);
-			if (rangeIndex?.seenStamp === state.stamp) rangeIndex.seenStamp = this.stamp(appended);
+			if (rangeIndex?.seenStamp === state.stamp) {
+				rangeIndex.seenStamp = this.stamp(appended);
+				rangeIndex.seenSize = Number(appended.size);
+			}
 			await this.indexAppended(path, state, entries, lines, offset + (state.terminated ? 0 : 1));
 			return { lastSeq };
 		});
@@ -645,8 +727,20 @@ export class JsonlSessionStore implements SessionStore {
 				const stored = await readFirstLineFrom(file, HEADER_READ_CHUNK_BYTES, 0);
 				await this.readHeaderAt(path, stored);
 				if (sessionId !== undefined && stored.id !== sessionId) throw new SessionNotFoundError(sessionId);
-				const page = await this.readRangeFrom(file, path, query, stored, stats, state);
-				if (this.stamp(await file.stat({ bigint: true })) === this.stamp(stats)) return page;
+				const { page, boundary } = await this.readRangeFrom(file, path, query, stored, stats, state);
+				const after = await file.stat({ bigint: true });
+				if (this.stamp(after) === this.stamp(stats)) return page;
+				const index = this.rangeIndexes.get(path);
+				if (
+					index !== undefined &&
+					after.size > stats.size &&
+					(await boundaryHolds(file, boundary)) &&
+					(await rangeIndexHolds(file, index, true, query.signal))
+				) {
+					index.seenStamp = this.stamp(after);
+					index.seenSize = Number(after.size);
+					return page;
+				}
 				this.rangeIndexes.delete(path);
 				if (attempt === RANGE_READ_ATTEMPTS) throw new Error(`${path} changed while it was being read`);
 				query.signal?.throwIfAborted();
@@ -663,7 +757,7 @@ export class JsonlSessionStore implements SessionStore {
 		stored: StoredSessionHeader,
 		stats: BigIntStats,
 		state: SessionFileState | undefined,
-	): Promise<SessionEntriesPage> {
+	): Promise<{ readonly page: SessionEntriesPage; readonly boundary: { witness: Buffer; witnessEnd: number } }> {
 		const identity = `${stats.dev}:${stats.ino}:${stats.birthtimeNs}:${JSON.stringify(stored)}`;
 		const size = Number(stats.size);
 		const stamp = this.stamp(stats);
@@ -671,9 +765,9 @@ export class JsonlSessionStore implements SessionStore {
 		if (
 			index === undefined ||
 			index.identity !== identity ||
-			index.seenStamp !== stamp ||
+			(index.seenStamp !== stamp && index.seenSize >= size) ||
 			index.completeEnd > size ||
-			!(await rangeWitnessHolds(file, index))
+			!(await rangeIndexHolds(file, index, index.seenStamp !== stamp, query.signal))
 		) {
 			index = {
 				identity,
@@ -684,9 +778,12 @@ export class JsonlSessionStore implements SessionStore {
 				witness: Buffer.alloc(0),
 				witnessEnd: 0,
 				seenStamp: stamp,
+				seenSize: size,
 			};
 			this.rangeIndexes.set(path, index);
 		}
+		index.seenStamp = stamp;
+		index.seenSize = size;
 		if (index.total?.size !== size) index.total = undefined;
 		const matchedState = state ?? this.fileStates.get(path);
 		if (matchedState !== undefined && matchedState.stamp === stamp) {
@@ -698,6 +795,7 @@ export class JsonlSessionStore implements SessionStore {
 				index.witnessEnd = matchedState.size;
 			}
 		}
+		const boundary = { witness: index.witness, witnessEnd: index.witnessEnd };
 		const legacyHeader = isCurrentSessionHeader(stored) ? undefined : stored;
 		const fromSeq = Math.max(1, query.fromSeq);
 		const reads = fromSeq <= query.toSeq && (query.maxChars === undefined || query.maxChars > 0);
@@ -774,8 +872,11 @@ export class JsonlSessionStore implements SessionStore {
 			index.witnessEnd = index.completeEnd;
 		}
 		const lastSeq = index.total?.lastSeq ?? Number.POSITIVE_INFINITY;
-		if (!reads) return { lastSeq, entries, throughSeq: fromSeq - 1 };
-		return { lastSeq, entries, throughSeq: Math.max(stopped ?? Math.min(query.toSeq, lastSeq), fromSeq - 1) };
+		if (!reads) return { page: { lastSeq, entries, throughSeq: fromSeq - 1 }, boundary };
+		return {
+			page: { lastSeq, entries, throughSeq: Math.max(stopped ?? Math.min(query.toSeq, lastSeq), fromSeq - 1) },
+			boundary,
+		};
 	}
 
 	loadFile(path: string): Promise<SessionSnapshot> {

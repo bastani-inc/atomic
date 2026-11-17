@@ -140,7 +140,10 @@ type SummaryRow = ListingRow & { search_texts_json: string };
 type ListingWindowRow = ListingRow & {
 	upto: number | bigint | null;
 	ord: number | bigint | null;
+	key_row: number | bigint | null;
 	fetched: number | bigint | null;
+	batch_chars: number | bigint | null;
+	page_chars: number | bigint | null;
 };
 /** A row's key and how many characters its stored text holds, for reading rows in pages. */
 type SizedRow = SqliteRow & { size: number | bigint | null };
@@ -251,6 +254,9 @@ async function migrateLegacyBlobBatch(
 /** Every listing column except search text, so an unchanged row keeps its cached summary. */
 const LISTING_COLUMNS =
 	"id, cwd, internal, header_json, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, revision";
+const LISTING_SELECT_COLUMNS = LISTING_COLUMNS.split(", ")
+	.map((column) => `s.${column}`)
+	.join(", ");
 /** The characters a listing row holds, its search text aside, for reading listings in pages (#4954). */
 const LISTING_SIZE =
 	"length(id) + length(cwd) + length(header_json) + length(modified_at) + length(first_message) + COALESCE(length(name), 0) + COALESCE(length(summary), 0) + COALESCE(length(summarized_through_id), 0) + length(revision) + 256";
@@ -1002,36 +1008,58 @@ export class SqlSessionStore implements SessionStore {
 			`SELECT max(${order}) AS upper FROM ${this.tables.sessions}`,
 		);
 		const upper = Number(bound?.upper ?? 0);
-		for (let after = 0; after < upper; ) {
+		const seen = new Set<string>();
+		for (let after = 0, limit: number = SESSION_READ_FETCH.first; after < upper; ) {
 			this.assertListing(query);
 			const rows = await this.database.all<ListingWindowRow>(
 				`WITH keyed AS MATERIALIZED (
-					SELECT ${order} AS ord FROM ${this.tables.sessions} WHERE ${order} > ? AND ${order} <= ?
+					SELECT ${order} AS ord, row_number() OVER (ORDER BY ${order}) AS key_row,
+						CASE WHEN ${scope.where} THEN ${LISTING_SIZE} END AS size
+					FROM ${this.tables.sessions} WHERE ${order} > ? AND ${order} <= ?
 					ORDER BY ${order} LIMIT ?
 				), bound AS (SELECT max(ord) AS upto FROM keyed),
-				scoped AS MATERIALIZED (
-					SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size FROM ${this.tables.sessions}
-					WHERE ${order} > ? AND ${order} <= (SELECT upto FROM bound) AND (${scope.where})
-				), page AS (
-					SELECT ${LISTING_COLUMNS}, ord, count(*) OVER () AS fetched,
-						row_number() OVER (ORDER BY ord) AS page_row, sum(size) OVER (ORDER BY ord) AS page_chars
-					FROM scoped
+				page AS (
+					SELECT ord, key_row, count(*) OVER () AS fetched,
+						row_number() OVER (ORDER BY ord) AS page_row,
+						sum(size) OVER () AS batch_chars,
+						sum(size) OVER (ORDER BY ord) AS page_chars
+					FROM keyed WHERE size IS NOT NULL
+				), kept AS MATERIALIZED (
+					SELECT ord, key_row, fetched, batch_chars, page_chars FROM page
+					WHERE page_chars <= ? OR page_row = 1
 				)
-				SELECT bound.upto, page.* FROM bound LEFT JOIN page ON page.page_chars <= ? OR page.page_row = 1
-				ORDER BY page.ord`,
+				SELECT bound.upto, kept.ord, kept.key_row, kept.fetched, kept.batch_chars, kept.page_chars,
+					${LISTING_SELECT_COLUMNS}
+				FROM bound
+				LEFT JOIN kept ON 1 = 1
+				LEFT JOIN ${this.tables.sessions} AS s ON ${this.dialect.rowOrder("s")} = kept.ord
+				ORDER BY kept.ord`,
+				...scope.params,
 				after,
 				upper,
-				LISTING_CWD_PAGE,
-				after,
-				...scope.params,
+				limit,
 				SESSION_READ_PAGE_CHARS,
 			);
 			const upto = rows[0]?.upto;
 			if (upto === null || upto === undefined) break;
 			const listed = rows.filter((row) => row.ord !== null);
-			for (const row of listed) if (scope.inScope(row)) yield summaryFromRow({ ...row, search_texts_json: "[]" });
+			for (const row of listed) {
+				if (!seen.has(row.id) && scope.inScope(row)) {
+					seen.add(row.id);
+					yield summaryFromRow({ ...row, search_texts_json: "[]" });
+				}
+			}
 			const last = listed.at(-1);
-			after = last !== undefined && listed.length < Number(last.fetched) ? Number(last.ord) : Number(upto);
+			const clipped = last !== undefined && listed.length < Number(last.fetched);
+			after = clipped ? Number(last.ord) : Number(upto);
+			const batchChars = Number(listed[0]?.batch_chars ?? 0);
+			const pageChars = Number(last?.page_chars ?? 0);
+			const next = !clipped
+				? limit * 4
+				: batchChars - pageChars <= SESSION_READ_PAGE_CHARS * 4
+					? limit
+					: Math.max(SESSION_READ_FETCH.min, Number(last.key_row) * 2);
+			limit = Math.min(SESSION_READ_FETCH.max, next);
 			await yieldTurn();
 		}
 		this.assertListing(query);
