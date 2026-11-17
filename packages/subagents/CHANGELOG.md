@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- A subagent of a session created with the SDK's `intercom` option gets its own Intercom policy: its group is its home and it reaches nothing else. It starts in the session's home group, and a requested `group` (including `true`) is placed under it, as `<home>/<group>` ([#5352](https://github.com/bastani-inc/atomic/issues/5352))
+
 ### Changed
 
 - A subagent attempt whose session directory cannot be created now fails that attempt instead of rejecting the launch call

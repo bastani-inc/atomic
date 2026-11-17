@@ -17,7 +17,7 @@ import {
 import { open } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, onTestFinished, test } from "vitest";
 import {
 	assertWorkspaceGitAvailable,
 	observeWorkspaceGitCommands,
@@ -50,6 +50,7 @@ import {
 	worktreeAdderRecord,
 } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
 import { classifyRepository } from "../../packages/coding-agent/src/core/workspace/spec.ts";
+import { keepProcessPid } from "../helpers/exited-process.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 import {
 	commitFile,
@@ -1387,7 +1388,7 @@ describe("interrupted worktree additions (#3109)", () => {
 			commitFile(repo, "app.txt", "app\n");
 			const path = autoWorktree(repo, "feat/cut");
 			interruptedWorktree(repo, path, "feat/cut", marker, { checkedOut });
-			if (marker === WORKTREE_ADDING_REASON) recordExitedAdder(repo, path);
+			if (marker === WORKTREE_ADDING_REASON) await recordExitedAdder(repo, path);
 			const { result, commands } = await countGitCommands(() =>
 				resolveWorkspace(workspace({ repo, branch: "feat/cut" })),
 			);
@@ -1410,7 +1411,7 @@ describe("interrupted worktree additions (#3109)", () => {
 		const binding = await resolveWorkspace(workspace({ repo, branch: "feat/resume" }));
 		git(repo, "worktree", "remove", "--force", binding.worktree);
 		interruptedWorktree(repo, binding.worktree, "feat/resume", WORKTREE_ADDING_REASON, { newBranch: false });
-		recordExitedAdder(repo, binding.worktree);
+		await recordExitedAdder(repo, binding.worktree);
 		const { result, commands } = await countGitCommands(() => restoreWorkspace(binding));
 		assert.equal(result, binding.worktree);
 		assert.equal(countOf(commands, "worktree", "remove", "--force", "--force"), 1);
@@ -1422,6 +1423,8 @@ describe("interrupted worktree additions (#3109)", () => {
 		const path = autoWorktree(repo, "feat/busy");
 		const adminDir = resolvePath(interruptedWorktree(repo, path, "feat/busy", WORKTREE_ADDING_REASON));
 		const adder = await liveProcess();
+		onTestFinished(() => stopProcess(adder));
+		onTestFinished(await keepProcessPid(adder));
 		try {
 			recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
 			const { result: error, commands } = await countGitCommands(() =>
@@ -1624,6 +1627,8 @@ describe("interrupted worktree additions (#3109)", () => {
 		const path = autoWorktree(repo, "feat/wait");
 		interruptedWorktree(repo, path, "feat/wait", WORKTREE_ADDING_REASON);
 		const adder = await liveProcess();
+		onTestFinished(() => stopProcess(adder));
+		onTestFinished(await keepProcessPid(adder));
 		const restoreWait = setWorktreeAdditionWait({ probes: 1_000, intervalMs: 10 });
 		try {
 			recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
@@ -1876,7 +1881,7 @@ describe("interrupted worktree additions (#3109)", () => {
 		const repo = createRepository(dirs.root, "other-branch-cut");
 		const path = join(dirs.root, "shared-path");
 		const adminDir = interruptedWorktree(repo, path, "feat/a", WORKTREE_ADDING_REASON, { checkedOut: true });
-		recordExitedAdder(repo, path);
+		await recordExitedAdder(repo, path);
 		writeFileSync(join(path, "notes.txt"), "work on a\n");
 		const { result: error, commands } = await countGitCommands(() =>
 			rejection(resolveWorkspace(workspace({ repo, branch: "feat/b", worktree: path }))),
@@ -1894,7 +1899,7 @@ describe("interrupted worktree additions (#3109)", () => {
 		const repo = createRepository(dirs.root, "callers-ours");
 		const path = join(dirs.root, "callers-ours-worktree");
 		interruptedWorktree(repo, path, "feat/ours", WORKTREE_ADDING_REASON);
-		recordExitedAdder(repo, path);
+		await recordExitedAdder(repo, path);
 		const binding = await resolveWorkspace(workspace({ repo, branch: "feat/ours", worktree: path }));
 		assertCompleteWorktree(path, binding.tree);
 	});
@@ -1905,7 +1910,7 @@ describe("interrupted worktree additions (#3109)", () => {
 			const repo = createRepository(dirs.root, "stuck");
 			const path = autoWorktree(repo, "feat/stuck");
 			interruptedWorktree(repo, path, "feat/stuck", WORKTREE_ADDING_REASON);
-			recordExitedAdder(repo, path);
+			await recordExitedAdder(repo, path);
 			const error = await withInjectedGit(dirs.root, { FAKE_GIT_MODE: "remove-fails" }, () =>
 				rejection(resolveWorkspace(workspace({ repo, branch: "feat/stuck" }))),
 			);
@@ -1980,7 +1985,7 @@ describe("bindings racing an addition or its repair (#4429)", () => {
 			const path = autoWorktree(repo, "feat/early");
 			const adminDir = interruptedWorktree(repo, path, "feat/early", WORKTREE_ADDING_REASON);
 			writeAdminHead(adminDir, head);
-			recordExitedAdder(repo, path);
+			await recordExitedAdder(repo, path);
 			const { result, commands } = await countGitCommands(() =>
 				resolveWorkspace(workspace({ repo, branch: "feat/early" })),
 			);
@@ -2009,7 +2014,7 @@ describe("bindings racing an addition or its repair (#4429)", () => {
 			const repo = createRepository(dirs.root, "stuck-early");
 			const path = autoWorktree(repo, "feat/stuck-early");
 			writeAdminHead(interruptedWorktree(repo, path, "feat/stuck-early", WORKTREE_ADDING_REASON), undefined);
-			recordExitedAdder(repo, path);
+			await recordExitedAdder(repo, path);
 			chmodSync(dirname(path), 0o555);
 			try {
 				const error = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/stuck-early" })));
@@ -2090,6 +2095,8 @@ describe("bindings racing an addition or its repair (#4429)", () => {
 		git(repo, "worktree", "add", "-q", "-b", "feat/exited", path);
 		writeFileSync(join(path, "notes.txt"), "kept\n");
 		const adder = await liveProcess();
+		onTestFinished(() => stopProcess(adder));
+		onTestFinished(await keepProcessPid(adder));
 		try {
 			recordAdder(repo, path, { host: hostname(), pid: adder.pid!, startTime: null });
 			const busy = await rejection(resolveWorkspace(workspace({ repo, branch: "feat/exited" })));
@@ -2110,7 +2117,7 @@ describe("bindings racing an addition or its repair (#4429)", () => {
 		const repo = createRepository(dirs.root, "linkless");
 		const path = autoWorktree(repo, "feat/linkless");
 		mkdirSync(path, { recursive: true });
-		recordExitedAdder(repo, path);
+		await recordExitedAdder(repo, path);
 		const { result, commands } = await countGitCommands(() =>
 			resolveWorkspace(workspace({ repo, branch: "feat/linkless" })),
 		);

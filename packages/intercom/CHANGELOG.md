@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- Reach policies: a session whose SDK host set `createAgentSession({ intercom: { group, reachable } })` registers its home and reachable groups with the broker, which refuses every list, peek, `groups`, join, leave, presence update, send and ask outside them, never queues a refused send, and keeps reach one way while always delivering a reply to a received ask. The policy is registered again after a reconnect or broker restart, a live `setReachable` applies from the session's next call, and the session's workflow stages and subagents reach only their own groups. Sends and asks keep the reach in force when the broker reads them, including while held for a starting or restoring subagent across machines, and an unknown outcome is not retried under a different reach. Narrowing reach during registration does not prevent connecting. Broker protocol 4; an older broker is replaced, and one that can't be fails the session's connection with `IntercomReachUnsupportedError` ([#5352](https://github.com/bastani-inc/atomic/issues/5352))
+
 ### Fixed
 
 - Starting or reaching the broker, its spawn lock and its configuration no longer block the session's event loop

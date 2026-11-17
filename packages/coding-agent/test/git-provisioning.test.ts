@@ -19,7 +19,8 @@ import { hostname, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, relative } from "node:path";
 import type { SpawnSyncReturns } from "child_process";
 import lockfile from "proper-lockfile";
-import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, onTestFinished, vi } from "vitest";
+import { keptExitedPid } from "../../../test/helpers/exited-process.js";
 import { ENV_AGENT_DIR, ENV_OFFLINE, VERSION } from "../src/config.js";
 import { isPathInside } from "../src/utils/path-inside.js";
 import { getPiUserAgent } from "../src/utils/pi-user-agent.js";
@@ -917,10 +918,12 @@ describe("git resolution (#4322)", () => {
 		assert.equal(tools.getGitStatus().source, "unavailable");
 	});
 
-	it("sweeps without a warning when another process removes an abandoned tree after it was listed", async () => {
+	it("sweeps without a warning when another process removes an abandoned tree after it was listed (#5332)", async () => {
 		const executable = makeProvisionedGit("2.56.0");
 		const binDir = join(agentDir, "bin");
-		const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
+		const exited = await keptExitedPid();
+		onTestFinished(() => exited.release());
+		const exitedPid = exited.pid;
 		const abandoned = join(binDir, `.git-staging-${hostTag()}-${exitedPid}-1`);
 		mkdirSync(abandoned, { recursive: true });
 		const actualFs = mocks.actualFs!;
@@ -938,6 +941,10 @@ describe("git resolution (#4322)", () => {
 		assert.deepEqual(statuses, []);
 		assert.equal(fetchMock.mock.calls.length, 0);
 		assert.equal(existsSync(abandoned), false);
+		assert.ok(
+			mocks.rmSync.mock.calls.some(([path]) => path === abandoned),
+			"the sweep attempted the listed tree",
+		);
 	});
 
 	it.each([
@@ -2817,8 +2824,9 @@ describe("git install command on this machine (#4322)", () => {
 		tools.resetGitProvisionStateForTest();
 		assert.equal(tools.resolveGitSync().version, "2.57.0");
 
-		const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
-		const leftover = join(agentDir, "bin", `.git-staging-${hostTag()}-${exitedPid}-1`);
+		const exited = await keptExitedPid();
+		onTestFinished(() => exited.release());
+		const leftover = join(agentDir, "bin", `.git-staging-${hostTag()}-${exited.pid}-1`);
 		mkdirSync(leftover, { recursive: true });
 		await tools.resolveGit();
 		assert.equal(existsSync(leftover), false);
