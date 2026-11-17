@@ -13,6 +13,7 @@ import { isDetachedToolCall } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
+import { joinTurnEndAdmissions, openTurnEndAdmissions } from "./agent-session-persistent-custom-messages.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import {
 	awaitBlueprintReady,
@@ -280,6 +281,7 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 
 	const previousFinishTurn = this.agent.finishTurn;
 	this.agent.finishTurn = async (turn, signal) => {
+		openTurnEndAdmissions(this);
 		// shouldStopAfterTurn previously ran only for normal responses. finishTurn
 		// also fires for error/aborted turns, but those stay hard exits whose
 		// decisions agent-core ignores, so skip the side effects there too.
@@ -333,6 +335,7 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		const options = this._currentRunSystemPromptOptions();
 		const updateMessage = this._preparePromptAndToolLoadout(options, previousContext.messages);
 		this._runSystemPromptOptions = options;
+		await joinTurnEndAdmissions(this, signal);
 
 		return {
 			...previousSnapshot,

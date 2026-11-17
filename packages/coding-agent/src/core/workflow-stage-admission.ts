@@ -79,7 +79,7 @@ async function deliverToWorker(
 	// The notice holds what it reports: the record need not outlive a worker that takes it only when it runs again.
 	host.releaseTaskRecord(settlement.receipt.taskId);
 	await deliverToLaunchingSession(host, worker, settlement.receipt.taskId, message);
-	forgetChildDelivery(host, envelope.completionId);
+	forgetChildDelivery(host, envelope.completionId, settlement.receipt.taskId);
 }
 
 /**
