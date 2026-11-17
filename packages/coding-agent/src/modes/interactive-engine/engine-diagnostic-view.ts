@@ -1,5 +1,6 @@
 import { reportDebugAsync as reportDebug } from "../../core/debug.ts";
 import { stripAnsi } from "../../utils/ansi.js";
+import { warnDeprecation } from "../../utils/deprecation.js";
 import { type ActivityWatchdogDiagnostic, shouldRenderEngineDiagnosticAsChatError } from "./activity-watchdog.ts";
 
 export interface EngineDiagnosticView {
@@ -15,6 +16,22 @@ export function renderDiagnosticStatus(message: string, view: Pick<EngineDiagnos
 	view.showStatus(text, true);
 }
 
+const DEPRECATION_LINE = /^Deprecation warning: (.+)$/;
+
+/**
+ * Show the engine's stderr as status, except its deprecation warnings: those go through this process's deprecation
+ * warnings, so a warning both processes raise about the same settings file is shown once.
+ */
+function renderEngineStderr(message: string, view: Pick<EngineDiagnosticView, "showStatus">): void {
+	const rest: string[] = [];
+	for (const line of message.split(/\r?\n/)) {
+		const deprecation = DEPRECATION_LINE.exec(stripAnsi(line).trim());
+		if (deprecation) warnDeprecation(deprecation[1]!);
+		else rest.push(line);
+	}
+	if (rest.some((line) => line.trim() !== "")) renderDiagnosticStatus(rest.join("\n"), view);
+}
+
 /**
  * Host presentation policy for interactive-engine diagnostics.
  *
@@ -26,7 +43,7 @@ export function renderDiagnosticStatus(message: string, view: Pick<EngineDiagnos
  */
 export function renderEngineDiagnostic(diagnostic: ActivityWatchdogDiagnostic, view: EngineDiagnosticView): void {
 	if (diagnostic.source === "stderr") {
-		renderDiagnosticStatus(diagnostic.message, view);
+		renderEngineStderr(diagnostic.message, view);
 		return;
 	}
 	if (diagnostic.source === "recovery") {

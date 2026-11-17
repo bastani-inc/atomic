@@ -101,3 +101,40 @@ test("bounds diagnostic history while preserving ordinary chat, recent duplicate
 		expect(rendered).not.toContain("old ordinary status");
 	}
 });
+
+test("shows a deprecation warning the engine also prints on stderr once, through the host's warnings", async () => {
+	const { clearDeprecationWarningsForTests, setDeprecationWarningSink, warnDeprecation } = await import(
+		"../src/utils/deprecation.js"
+	);
+	clearDeprecationWarningsForTests();
+	const warnings: string[] = [];
+	const restore = setDeprecationWarningSink((message) => warnings.push(message));
+	try {
+		const statuses: string[] = [];
+		const view = {
+			showStatus: (message: string) => statuses.push(message),
+			showError: vi.fn(),
+			stopWorkingLoader: vi.fn(),
+		};
+		warnDeprecation('Ignored legacy "routerModel" because "decisionModel" is already set.');
+		renderEngineDiagnostic(
+			{
+				activity: undefined,
+				elapsedMs: 0,
+				level: "blocking",
+				source: "stderr",
+				message:
+					'\u001b[33mDeprecation warning: Ignored legacy "routerModel" because "decisionModel" is already set.\u001b[39m\nDeprecation warning: an engine-only notice\nengine diagnostic\n',
+			},
+			view,
+		);
+		expect(warnings).toEqual([
+			'Ignored legacy "routerModel" because "decisionModel" is already set.',
+			"an engine-only notice",
+		]);
+		expect(statuses).toEqual(["engine diagnostic\n"]);
+	} finally {
+		restore();
+		clearDeprecationWarningsForTests();
+	}
+});
