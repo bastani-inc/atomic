@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { describe, it } from "vitest";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
 
-const CWD = `/projects/${Array(20).fill("界".repeat(50)).join("/")}`;
+const CWD = resolve(`/projects/${Array(20).fill("界".repeat(50)).join("/")}`);
 const SCOPES = [
 	{ name: "Unicode", cwd: CWD },
 	{
 		name: "Unicode and spaces",
-		cwd: `/projects/${Array(20)
-			.fill(`${" ".repeat(147)}界`)
-			.join("/")}`,
+		cwd: resolve(
+			`/projects/${Array(20)
+				.fill(`${" ".repeat(147)}界`)
+				.join("/")}`,
+		),
 	},
 ];
 const BASE = Date.parse("2026-11-01T00:00:00Z");
