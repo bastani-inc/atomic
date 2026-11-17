@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { exitedProcess } from "../../../test/helpers/exited-process.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { thisProcess } from "../src/core/worktree-snapshot/process-holder.ts";
 import { pendingLfsDownload } from "../src/core/worktree-snapshot/restore.ts";
@@ -228,7 +229,9 @@ describe("an LFS download an interrupted resume left pending (#5099)", () => {
 		assert.ok(pull);
 		const waiting = pull();
 		await new Promise((resolve) => setTimeout(resolve, 300));
-		writeFileSync(mark, JSON.stringify({ head, tree, remotes: [remote], holder: { ...parent, pid: exitedPid() } }));
+		const stopped = exitedProcess();
+		const holder = { ...parent, pid: stopped.pid, start: stopped.started };
+		writeFileSync(mark, JSON.stringify({ head, tree, remotes: [remote], holder }));
 		assert.deepEqual(await waiting, []);
 		assert.equal(existsSync(mark), false, "it finished the download itself");
 	});
