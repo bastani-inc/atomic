@@ -3,6 +3,7 @@ import {
 	type AutocompleteProvider,
 	Editor,
 	type EditorAutocompleteHintEntry,
+	type KeybindingsConfig,
 	setKeybindings,
 	stripTerminalSequences,
 	TuiMainScreen,
@@ -42,8 +43,9 @@ describe("the @ and / menus' hint line in Atomic's theme (#5224)", () => {
 
 	it("skips app-owned keys and names the first key that reaches the open menu (#5347)", async () => {
 		const keybindings = new KeybindingsManager({
-			"tui.select.cancel": ["ctrl+g", "ctrl+q"],
+			"tui.select.cancel": ["ctrl+shift+p", "ctrl+g", "ctrl+q"],
 			"tui.select.up": ["ctrl+p", "up"],
+			"app.model.cycleBackward": "shift+ctrl+p",
 		});
 		setKeybindings(keybindings);
 		const editor = new CustomEditor(new TuiMainScreen(new RecordingTerminal()), getEditorTheme(), keybindings);
@@ -51,6 +53,7 @@ describe("the @ and / menus' hint line in Atomic's theme (#5224)", () => {
 		let modelCycles = 0;
 		editor.onAction("app.editor.external", () => externalEdits++);
 		editor.onAction("app.model.cycleForward", () => modelCycles++);
+		editor.onAction("app.model.cycleBackward", () => modelCycles++);
 		editor.setAutocompleteProvider({
 			getSuggestions: async () => ({
 				items: [
@@ -66,6 +69,9 @@ describe("the @ and / menus' hint line in Atomic's theme (#5224)", () => {
 		assert.equal(plain(editor.render(120).at(-1) ?? ""), "↑↓ select · tab complete · enter run · ctrl+q close");
 		editor.handleInput("\x10");
 		assert.equal(modelCycles, 1);
+		assert.equal(editor.isShowingAutocomplete(), true);
+		editor.handleInput("\x1b[112;6u");
+		assert.equal(modelCycles, 2);
 		assert.equal(editor.isShowingAutocomplete(), true);
 		editor.handleInput("\x07");
 		assert.equal(externalEdits, 1);
@@ -117,6 +123,54 @@ describe("the @ and / menus' hint line in Atomic's theme (#5224)", () => {
 		editor.handleInput("\x11");
 		assert.equal(editor.isShowingAutocomplete(), false);
 	});
+
+	for (const [name, overrides, hint] of [
+		[
+			"confirm falls back after tab",
+			{ "tui.select.confirm": ["tab", "enter"] },
+			"↑↓ select · tab complete · enter run · esc close",
+		],
+		["confirm is shadowed by tab", { "tui.select.confirm": ["tab"] }, "↑↓ select · tab complete · esc close"],
+		[
+			"tab falls back after page up",
+			{ "tui.input.tab": ["pageup", "tab"] },
+			"↑↓ select · tab complete · enter run · esc close",
+		],
+		[
+			"up falls back after cancel",
+			{ "tui.select.up": ["escape", "up"] },
+			"↑↓ select · tab complete · enter run · esc close",
+		],
+	] satisfies Array<[string, KeybindingsConfig, string]>) {
+		it(`names only keys that reach their menu action when ${name} (#5347)`, async () => {
+			const keybindings = new KeybindingsManager(overrides);
+			setKeybindings(keybindings);
+			const editor = new CustomEditor(new TuiMainScreen(new RecordingTerminal()), getEditorTheme(), keybindings);
+			let sent = 0;
+			editor.onSubmit = () => sent++;
+			editor.setAutocompleteProvider({
+				getSuggestions: async () => ({
+					items: [
+						{ value: "/tree", label: "tree" },
+						{ value: "/trust", label: "trust" },
+					],
+					prefix: "/",
+				}),
+				applyCompletion: (_lines, cursorLine, _cursorCol, item) => ({
+					lines: [item.value],
+					cursorLine,
+					cursorCol: item.value.length,
+				}),
+			});
+			editor.handleInput("/");
+			await flushAutocomplete();
+			assert.equal(plain(editor.render(120).at(-1) ?? ""), hint);
+			editor.handleInput("\t");
+			assert.equal(editor.getText(), "/tree");
+			assert.equal(editor.isShowingAutocomplete(), false);
+			assert.equal(sent, 0, "Tab completes rather than running a selected command");
+		});
+	}
 
 	it("leaves out an entry whose keys are all unbound, so it never names a dead key", () => {
 		const unbound = new KeybindingsManager({ "tui.input.tab": [] });

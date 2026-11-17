@@ -1059,7 +1059,10 @@ export class TaskInspector implements Component {
 		if (this.chatFrom === "caller" && back === "agents")
 			chatKeys.splice(1, 0, { action: "app.agents.focus", label: "agents" });
 		const hint = renderNavHintLine(chatKeys, width, style, getKeybindings());
-		const footer = [...(notes ? [fitWidth(theme.fg("dim", notes))] : []), hint];
+		const footer = [
+			...(notes ? [fitWidth(theme.fg("dim", notes))] : []),
+			...(transcript.handlesBack() ? [] : [hint]),
+		];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
 		const statusRows = this.taskStatusRows(width);
 		const room = Math.max(1, budget - header.length - footer.length - failure.length - statusRows.length);

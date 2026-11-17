@@ -7,6 +7,7 @@ import {
 	renderChatMessageEntry,
 } from "./chat-message-renderer.ts";
 import {
+	hasChatSessionTransientModal,
 	setEditorBorderColor,
 	setEditorFocused,
 	setEditorPlaceholder,
@@ -155,7 +156,7 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	if (state.disposed) return [];
 	const agentSession = state.getAgentSession?.();
 	const session = agentSession ?? state.getChatBoxSession?.();
-	state.footerNavigationActive = navigationActive || agentSession === undefined;
+	state.footerNavigationActive = navigationActive || agentSession === undefined || hasChatSessionTransientModal(state);
 	if (session && state.footerData) {
 		const taskSource = () => {
 			const currentAgent = state.getAgentSession?.();

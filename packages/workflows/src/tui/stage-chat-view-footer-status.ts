@@ -171,6 +171,7 @@ export function renderFooterWithOrchestratorReturnHint(
 	width: number,
 	footerLines: readonly string[],
 ): string[] {
+	if (ctx.chatHost?.hasTransientModal) return [...footerLines];
 	if (footerLines.length === 0) {
 		return [mergeOrchestratorReturnHintIntoLine(ctx, "", width)];
 	}

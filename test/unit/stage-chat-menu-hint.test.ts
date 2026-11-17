@@ -124,6 +124,7 @@ test("a workflow stage chat's / menu ends with the main chat's hint line and esc
 		try {
 			chat.view.handleInput("/");
 			await vi.waitFor(() => assert.match(chat.screen(), /↑↓ select · tab complete · enter run · esc close/));
+			assert.doesNotMatch(chat.screen(), /esc to interrupt|return to graph/);
 			chat.view.handleInput("\x1b");
 			assert.equal(chat.state.pauseCalls, 0);
 			assert.doesNotMatch(chat.screen(), /esc close/);
@@ -142,6 +143,7 @@ test("ctrl+r in a stage chat routes Esc and ← to the prompt search and reads l
 			chat.view.handleInput("\x12");
 			await vi.waitFor(() => assert.match(chat.screen(), /Search prompts/));
 			assert.match(chat.screen(), /review the hint line.*3m ago/);
+			assert.doesNotMatch(chat.screen(), /esc to interrupt|return to graph/);
 			for (const ch of "hint") chat.view.handleInput(ch);
 			chat.view.handleInput("\x1b[D");
 			assert.equal(chat.detached(), 0);
