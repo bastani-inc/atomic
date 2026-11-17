@@ -32,7 +32,11 @@ knowledge:
       `npm run test:all`. The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). The TUI package uses
       `npm run test --workspace=@bastani/atomic-tui` (`node --test`), not a Vitest config.
-      Build first: several suites load the built packages.
+      Build first: several suites load the built packages. Validate named-worktree permissions with a private default umask:
+      `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.
+      Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
+      require installed locales or a Git build with gettext support. Finish `npm run check` before running
+      suites that import built packages: typechecking rebuilds dist in place and cleans provider data.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run
