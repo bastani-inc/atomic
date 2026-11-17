@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Hosts running many agents stay responsive while they record worktree snapshots. A turn whose checkout did not change now starts 9 Git processes instead of 14, a changed one 17 instead of 21, and sessions that capture the same checkout at the same time compute its tree at most twice instead of once each. Each snapshot still records the checkout as it was after its turn.
+
 ### Fixed
 
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
