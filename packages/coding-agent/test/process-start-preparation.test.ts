@@ -156,6 +156,23 @@ test("an older background answer stays discarded after the newer start expires a
 	assert.equal(reads, 3);
 });
 
+test("a failed start query's output is refused until a successful retry after cache expiry (#5315)", async () => {
+	let queries = 0;
+	setProcessCreationTimeQueryForTesting({
+		file: process.execPath,
+		args: () => ["-e", `console.log("${CREATION_TIME}"); process.exitCode = ${queries++ === 0 ? 1 : 0};`],
+	});
+	const pid = 2 ** 22 + 8;
+	assert.equal(await readProcessStartToken(pid), undefined);
+	assert.equal(processStartToken(pid), undefined);
+	assert.equal(await readProcessStartToken(pid), undefined);
+	assert.equal(queries, 1);
+	const now = Date.now();
+	vi.spyOn(Date, "now").mockReturnValue(now + CACHE_EXPIRY_MS);
+	assert.match((await readProcessStartToken(pid)) ?? "", /^[0-9a-f]{12}$/);
+	assert.equal(queries, 2);
+});
+
 test("a timed-out start read is remembered before another query is allowed (#5315)", async () => {
 	let queries = 0;
 	setProcessCreationTimeQueryForTesting({

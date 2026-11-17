@@ -195,7 +195,7 @@ function queryCreationTime(pid: number): Promise<FallbackAnswer> {
 					runningQueries.delete(child);
 					const output = stdout.trim();
 					answer({
-						created: CREATION_TIME.test(output) ? output : undefined,
+						created: error === null && CREATION_TIME.test(output) ? output : undefined,
 						unstartable: (error as NodeJS.ErrnoException | null)?.code === "ENOENT",
 					});
 				},
