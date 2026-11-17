@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { Config } from "@libsql/client";
-import { test, vi } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { useFakeLibsqlServers } from "../helpers/fake-libsql-server.js";
 import { sleep } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -27,11 +27,14 @@ vi.mock("@libsql/client", async (importOriginal) => {
 
 useTemporaryAgentDir();
 const { server, open } = useFakeLibsqlServers();
+afterEach(() => {
+	vi.useRealTimers();
+});
 
 /** The adapter's wait before its first resend of a kept close; each unanswered resend of its timer doubles it. */
 const CLOSE_FIRST_WAIT_MS = 250;
-/** How soon a waiting request settles once its caller aborts it. */
-const ABORT_BOUND_MS = 1_000;
+/** How long a test waits, in real time, for a request that should settle without the adapter's clock moving. */
+const SETTLE_BOUND_MS = 10_000;
 
 /** A pipeline request body that only closes a stream, in JSON. */
 const CLOSE_ONLY = /^\{"baton":"([^"]*)","requests":\[\{"type":"close"\}\]\}$/;
@@ -95,26 +98,59 @@ async function until(condition: () => boolean, what: string) {
 
 const unanswered = () => ({ error: Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } }) });
 
+/**
+ * Puts the timers the adapter sets from now on onto a clock the test moves, so a test reads the wait the adapter set
+ * before each resend exactly, however late a loaded machine runs real timers. Requests and their answers still run in
+ * real time; the clock moves only when a test moves it.
+ */
+function holdTheClock() {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+}
+
+/**
+ * Waits for `request` to fail with an `AbortError` while the adapter's clock stands still: no wait the adapter set can
+ * have ended, so the abort itself ended the request.
+ */
+async function abortedWithoutTheClock(request: Promise<Response>, what: string) {
+	const late = sleep(SETTLE_BOUND_MS).then(() => {
+		throw new Error(`${what} did not settle while the adapter's clock stood still`);
+	});
+	await Promise.race([assert.rejects(request, { name: "AbortError" }), late]);
+}
+
+/**
+ * Checks that the adapter's next resend of a kept close comes exactly `wait` ms after the clock's current time: none
+ * when the clock is moved to just before it, one when it reaches it.
+ */
+async function nextResendAfter(sent: readonly SentClose[], wait: number) {
+	// Whatever the last round started settles first: the adapter plans the next one at the current time.
+	await sleep(20);
+	const before = sent.length;
+	await vi.advanceTimersByTimeAsync(wait - 1);
+	await sleep(20);
+	assert.equal(sent.length, before, `no resend before ${wait} ms`);
+	await vi.advanceTimersByTimeAsync(1);
+	await until(() => sent.length > before, `the resend ${wait} ms on`);
+}
+
 test("a write whose caller aborts it while it waits for a kept close fails at once, and the close goes on (#5114)", async () => {
 	const { url, clientFetch, sent, control } = await client();
+	holdTheClock();
 	// The client's own close of a stream it gave up on fails, so the adapter keeps it.
 	await assert.rejects(clientFetch(closeOf(url, "kept")));
 	control.mode = "hold";
 	const aborted = new AbortController();
 	aborted.abort();
-	const startedAborted = performance.now();
-	await assert.rejects(clientFetch(statementOf(url, "INSERT INTO events VALUES (1)"), { signal: aborted.signal }), {
-		name: "AbortError",
-	});
-	assert.ok(performance.now() - startedAborted < ABORT_BOUND_MS, "a write aborted before it starts fails at once");
+	await abortedWithoutTheClock(
+		clientFetch(statementOf(url, "INSERT INTO events VALUES (1)"), { signal: aborted.signal }),
+		"a write aborted before it starts",
+	);
 	const caller = new AbortController();
 	const write = clientFetch(statementOf(url, "INSERT INTO events VALUES (2)"), { signal: caller.signal });
 	await until(() => sent.some((close) => close.settle !== undefined), "the kept close to be under way");
 	await sleep(50);
-	const abortedAt = performance.now();
 	caller.abort();
-	await assert.rejects(write, { name: "AbortError" });
-	assert.ok(performance.now() - abortedAt < ABORT_BOUND_MS, "the aborted write failed at once");
+	await abortedWithoutTheClock(write, "the aborted write");
 	const held = sent.find((close) => close.settle !== undefined)!;
 	assert.equal(held.signal?.aborted, false, "aborting a waiting write does not abort the kept close");
 	held.settle!({ response: new Response("{}", { status: 200 }) });
@@ -124,59 +160,46 @@ test("a write whose caller aborts it while it waits for a kept close fails at on
 
 test("a write whose request carries the caller's signal stops waiting for a kept close once that signal aborts (#5114)", async () => {
 	const { url, clientFetch, sent, control } = await client();
+	holdTheClock();
 	await assert.rejects(clientFetch(closeOf(url, "kept")));
 	control.mode = "hold";
 	const caller = new AbortController();
 	const write = clientFetch(new Request(statementOf(url, "INSERT INTO events VALUES (1)"), { signal: caller.signal }));
 	await until(() => sent.some((close) => close.settle !== undefined), "the kept close to be under way");
 	await sleep(50);
-	const abortedAt = performance.now();
 	caller.abort();
-	await assert.rejects(write, { name: "AbortError" });
-	assert.ok(performance.now() - abortedAt < ABORT_BOUND_MS, "the aborted write failed at once");
+	await abortedWithoutTheClock(write, "the aborted write");
 }, 30_000);
 
 test("a close kept while the timer's resend is under way adds no second resend, so one unanswered resend doubles the wait once (#5114)", async () => {
 	const { url, clientFetch, sent, control } = await client();
+	holdTheClock();
 	await assert.rejects(clientFetch(closeOf(url, "first")));
 	control.mode = "hold";
-	await until(() => sent.length === 2, "the timer's resend of the kept close");
+	await nextResendAfter(sent, CLOSE_FIRST_WAIT_MS);
 	control.mode = "fail";
-	// Another close is kept while the resend is under way; a second timer would fire meanwhile and join that resend.
+	// Another close is kept while the resend is under way; a second timer would come due meanwhile and join that resend.
 	await assert.rejects(clientFetch(closeOf(url, "second")));
-	await sleep(2 * CLOSE_FIRST_WAIT_MS);
+	await vi.advanceTimersByTimeAsync(2 * CLOSE_FIRST_WAIT_MS);
 	sent[1].settle!(unanswered());
-	const settledCount = sent.length;
-	// Each round stops at the first close, which fails: the next rounds come after 2 and then 4 first waits.
-	await until(
-		() => sent.filter((close, index) => index >= settledCount && close.baton === "first").length >= 2,
-		"two more rounds",
-	);
-	const [next, after] = sent.slice(settledCount).filter((close) => close.baton === "first");
-	const gap = after.at - next.at;
-	assert.ok(gap < 6 * CLOSE_FIRST_WAIT_MS, `the round after next came ${Math.round(gap)} ms after the next one`);
+	// Each unanswered round of the timer doubles the wait once: the next rounds come 2 and then 4 first waits apart.
+	await nextResendAfter(sent, 2 * CLOSE_FIRST_WAIT_MS);
+	await nextResendAfter(sent, 4 * CLOSE_FIRST_WAIT_MS);
 }, 30_000);
 
 test("the timer joining a resend a request started does not double the wait when it goes unanswered (#5114)", async () => {
 	const { url, clientFetch, sent, control } = await client();
+	holdTheClock();
 	await assert.rejects(clientFetch(closeOf(url, "first")));
 	control.mode = "hold";
-	// A read sends the kept close ahead of itself; the timer comes due while that resend is under way.
+	// A read sends the kept close ahead of itself; the timer comes due while that resend is under way, and joins it.
 	const read = clientFetch(statementOf(url, "SELECT n FROM events"));
 	await until(() => sent.length === 2, "the read's resend of the kept close");
-	await sleep(2 * CLOSE_FIRST_WAIT_MS);
+	await vi.advanceTimersByTimeAsync(2 * CLOSE_FIRST_WAIT_MS);
 	control.mode = "fail";
-	const releasedAt = performance.now();
 	sent[1].settle!(unanswered());
 	await read.catch(() => {});
-	await until(() => sent.length >= 4, "two timer rounds");
-	const [next, after] = sent.slice(2);
-	assert.ok(
-		next.at - releasedAt < 3 * CLOSE_FIRST_WAIT_MS,
-		`the next round came ${Math.round(next.at - releasedAt)} ms after the resend failed`,
-	);
-	assert.ok(
-		after.at - next.at < 3 * CLOSE_FIRST_WAIT_MS,
-		`the round after it came ${Math.round(after.at - next.at)} ms later`,
-	);
+	// The joined round left the wait as it was; the timer's own unanswered round then doubles it.
+	await nextResendAfter(sent, CLOSE_FIRST_WAIT_MS);
+	await nextResendAfter(sent, 2 * CLOSE_FIRST_WAIT_MS);
 }, 30_000);
