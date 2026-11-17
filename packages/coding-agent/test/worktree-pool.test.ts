@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -853,6 +862,22 @@ describe("worktree pool lease edges (#4748)", () => {
 	);
 });
 
+/** On Linux, the command lines of the processes whose working directory is inside `path`, to explain a failure. */
+function processesIn(path: string): string[] {
+	if (process.platform !== "linux") return [];
+	const found: string[] = [];
+	for (const pid of readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))) {
+		try {
+			if (!readlinkSync(`/proc/${pid}/cwd`).startsWith(path)) continue;
+			found.push(`${pid} ${readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ")}`);
+		} catch {}
+	}
+	return found;
+}
+
+/** How long a set-aside worktree whose own processes ended may wait for the eviction that removes it. */
+const EVICTION_SETTLE_MS = 20_000;
+
 describe("a worktree whose blueprint build was cancelled (#5379)", () => {
 	// On Windows a build's steps end with the process that started them, and the worktree is built again in place.
 	test.skipIf(process.platform === "win32")(
@@ -906,11 +931,15 @@ describe("a worktree whose blueprint build was cancelled (#5379)", () => {
 				step.kill("SIGKILL");
 			}
 			await new Promise((resolve) => step.once("exit", resolve));
-			const removed = await evictIdleWorktrees(storeDir(), repositoryIdOf(snapshot.remotes), {
-				maxIdle: 2,
-				settings,
-			});
-			assert.deepEqual(removed, [cancelled]);
+			// Any other process of this user in it keeps it as well, such as Git maintenance a command there left running in
+			// the background for a moment, so the next eviction after that removes it.
+			const deadline = Date.now() + EVICTION_SETTLE_MS;
+			let removed: string[] = [];
+			while (removed.length === 0 && Date.now() < deadline) {
+				removed = await evictIdleWorktrees(storeDir(), repositoryIdOf(snapshot.remotes), { maxIdle: 2, settings });
+				if (removed.length === 0) await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+			assert.deepEqual(removed, [cancelled], `processes still in it: ${processesIn(cancelled).join("; ")}`);
 			assert.equal(existsSync(cancelled), false);
 		},
 	);
