@@ -48,10 +48,6 @@ export interface ModelRoutingContext {
 		"getAll" | "getAvailable" | "streamSimple" | "containsConfiguredCredential"
 	> &
 		Partial<Pick<ModelRegistry, "getProviderAuthStatus" | "getProviderAuth" | "getClassifierModel" | "classify">> & {
-			/**
-			 * Whether the model's provider has usable credentials now: the registry's local check, which also sees a login
-			 * or logout another process saved after `getAvailable()` was last refreshed. Absent trusts `getAvailable()`.
-			 */
 			hasConfiguredAuth?(model: { readonly provider: string }): boolean;
 		};
 	readonly model?: Model<Api>;
@@ -259,9 +255,6 @@ export async function routeExecutionModel(input: {
 	// uses `allowsModel` as its fallback gate after model fallback retired the session that launched it, and a
 	// retired extension context throws on every read. The registry is the session-independent model runtime's.
 	const { modelRegistry } = ctx;
-	// A model whose provider has no usable credentials is never offered, read with, or picked: the routing call is
-	// not spent on a model that cannot run. The registry's own check is current even when the availability list
-	// still lists a provider another process logged out of.
 	const credentialed = (provider: string) =>
 		modelRegistry.hasConfiguredAuth?.({ provider }) ??
 		modelRegistry.getAvailable().some((model) => model.provider === provider);
@@ -306,7 +299,6 @@ export async function routeExecutionModel(input: {
 			...(excludedModels.length ? ["modelRouting.excludedModels"] : []),
 		];
 		const noun = gateSettings.length === 1 && !providerSettings ? "setting" : "settings";
-		// Models every gate and constraint allows but whose provider has no credentials, named so the fix is clear.
 		const uncredentialed = gatedModels(modelRegistry.getAll())
 			.filter((model) => !credentialed(model.provider))
 			.filter((model) =>
@@ -315,7 +307,12 @@ export async function routeExecutionModel(input: {
 				),
 			)
 			.map((model) => `${model.provider}/${model.id} (no credentials for ${model.provider})`);
-		const lacking = uncredentialed.length ? `: ${uncredentialed.join(", ")}` : "";
+		const diagnosticLimit = 8;
+		const credentialSummary = uncredentialed.slice(0, diagnosticLimit).join(", ");
+		const omitted = uncredentialed.length - diagnosticLimit;
+		const lacking = uncredentialed.length
+			? `: ${credentialSummary}${omitted > 0 ? `, and ${omitted} more` : ""}`
+			: "";
 		throw new Error(
 			gateSettings.length
 				? `Auto routing has no eligible model/effort pairs${lacking}. Check configured providers, modelConstraints, and the ${new Intl.ListFormat("en", { type: "conjunction" }).format(gateSettings)} ${noun}.`
@@ -403,8 +400,6 @@ export async function routeExecutionModel(input: {
 		const fallBackToCurrentModel = async (message: string): Promise<never> => {
 			throw new AutoRoutingInferenceError(message, await currentModelRoute().catch(() => undefined));
 		};
-		// A chat decision model without credentials cannot route: say so before any request rather than spend the
-		// call. A classifier router already hands its decision to the current chat model when it cannot answer.
 		if (router.kind === "chat" && !credentialed(router.model.provider))
 			await fallBackToCurrentModel(
 				`Auto routing cannot use the decision model ${router.fullId}: no credentials for ${router.model.provider}. Log in to ${router.model.provider} or set decisionModel to a model you have credentials for.`,

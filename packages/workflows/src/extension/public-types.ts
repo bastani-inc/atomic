@@ -91,7 +91,6 @@ export interface PiRuntimeModelRegistry
 		>
 	> {
 	getAvailable(): PiRuntimeModel[];
-	/** Whether the model's provider has usable credentials; the registry reads only `provider`. */
 	hasConfiguredAuth?(model: { readonly provider: string }): boolean;
 }
 

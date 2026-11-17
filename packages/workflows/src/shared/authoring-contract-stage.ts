@@ -151,13 +151,7 @@ export interface WorkflowModelCatalogPort {
 	readonly currentModel?: WorkflowModelValue;
 	readonly preferredProvider?: string;
 	recordWarning?: (warning: string) => void;
-	/**
-	 * False when the registry lists `provider` and it has no usable credentials, by the same local check `listModels`
-	 * uses; no request is made. A stage skips such candidates before it tries its model chain. A provider the registry
-	 * does not list is not known to lack credentials, so it answers true.
-	 */
 	hasCredentials?(provider: string): boolean;
-	/** Resolve an exact provider identity, including URL-derived IDs absent from the available catalog. */
 	resolveProvider?(reference: string): string | undefined;
 }
 

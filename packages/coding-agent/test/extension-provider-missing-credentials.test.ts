@@ -93,7 +93,6 @@ describe("an extension provider without credentials gets the built-in missing-ke
 			[BUILTIN, EXTENSION].map((provider) => ({
 				provider,
 				select: `No API key for ${provider}/${runtime.getModels(provider)[0]?.id}`,
-				// A pinned model without credentials fails naming itself and the provider it lacks.
 				prompt: formatNoUsableModelMessage([
 					{
 						model: `${provider}/${runtime.getModels(provider)[0]?.id}`,

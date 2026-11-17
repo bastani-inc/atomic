@@ -1038,7 +1038,6 @@ describe("quit pauses and clears without closing the shared journal", () => {
 			parentIds: [],
 			toolEvents: [],
 		});
-		// What a stage whose model chain has no credentials leaves: a blocked, resumable run with nothing executing.
 		assert.equal(
 			store.recordRunBlocked("blocked-run", "No API key found for anthropic", {
 				failureKind: "auth",

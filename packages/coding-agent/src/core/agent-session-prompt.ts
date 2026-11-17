@@ -502,8 +502,6 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 						`Run '/login ${this.model.provider}' to re-authenticate.`,
 				);
 			}
-			// A chain moves to its first model whose provider has credentials, with no request to the ones it skips; a
-			// single pinned model, or a chain with none, fails naming each model and the provider it lacks.
 			await this._selectModelWithCredentials();
 			assertCurrent();
 		}

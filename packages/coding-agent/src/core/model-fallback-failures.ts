@@ -468,9 +468,6 @@ const QUOTA_EXHAUSTED_FAILURE_PATTERN =
 const BILLING_EXHAUSTED_FAILURE_PATTERN =
 	/credit\s+balance\s+is\s+too\s+low|insufficient[_\s-]*(?:credits?|balance|funds)|(?:requires|purchase|buy|add)\s+more\s+credits|used\s+all\s+(?:of\s+)?(?:your\s+)?available\s+credits|out\s+of\s+(?:credits?|budget)|spending\s+limit|available\s+balance|check\s+your\s+plan\s+and\s+billing/i;
 
-// A provider's own word that it rejected the request's API key. OpenAI files `invalid_api_key` under the generic
-// `invalid_request_error` type and Gemini files "API key not valid" under `INVALID_ARGUMENT`, so this wording outranks
-// the request-error grammar: the provider rejects its key for every model it serves, and the chain must move past it.
 const API_KEY_REJECTED_FAILURE_PATTERN =
 	/\binvalid[_\s-]?api[_\s-]?key\b|\bincorrect\s+api\s+key\b|\bapi\s+key\s+(?:not\s+valid|is\s+invalid|was\s+rejected)\b/i;
 
@@ -887,6 +884,53 @@ export function normalizeModelFailureSignal(error: unknown): ModelFallbackFailur
 		source: "string_fallback",
 		...(name !== undefined ? { name } : {}),
 	};
+}
+
+const AUTHENTICATION_FAILURE_CODES: ReadonlySet<string> = new Set([
+	"auth_required",
+	"authentication_required",
+	"authentication_failed",
+	"unauthorized",
+]);
+
+const CREDENTIAL_REJECTION_CODES: ReadonlySet<string> = new Set([
+	"invalid_api_key",
+	"missing_api_key",
+	"invalid_key",
+	"token_expired",
+	"token_revoked",
+	"token_invalidated",
+	"oauth_token_invalidated",
+]);
+
+export function isProviderCredentialRejection(error: unknown): boolean {
+	const signal = normalizeModelFailureSignal(error);
+	if (isRefusalSignal(signal)) return false;
+	const leadingStatus = LEADING_HTTP_STATUS_PATTERN.exec(signal.message);
+	const status =
+		signal.status ??
+		integerFrom(
+			leadingStatus?.[1] ??
+				leadingStatus?.[2] ??
+				/^HTTP(?:\/\d(?:\.\d)?)?\s+(\d{3})\b/i.exec(signal.message)?.[1] ??
+				JSON_ERROR_CODE_PATTERN.exec(signal.message)?.[1],
+		);
+	if (status === 401 || integerFrom(signal.code) === 401) return true;
+	if (signal.kind !== "auth_on_candidate_provider") return false;
+	const typedFailure = findGitHubCopilotError(error);
+	const code = normalizeCode(typedFailure?.providerCode ?? stringField(error, "providerCode") ?? signal.code);
+	if (
+		code !== undefined &&
+		(CREDENTIAL_REJECTION_CODES.has(code) || (status !== 403 && AUTHENTICATION_FAILURE_CODES.has(code)))
+	)
+		return true;
+	const message = `${signal.message}\n${typedFailure?.detail ?? stringField(error, "detail") ?? ""}`;
+	return (
+		API_KEY_REJECTED_FAILURE_PATTERN.test(message) ||
+		/\b(?:expired|revoked|invalidated)[_\s-]+(?:(?:oauth|auth|access|refresh)[_\s-]+)?token\b|\b(?:(?:oauth|auth|access|refresh)[_\s-]+)?token[_\s-]+(?:expired|revoked|invalidated)\b/i.test(
+			message,
+		)
+	);
 }
 
 /** Whether a failure is a provider safety/refusal response: a content-filter refusal, or a refused tool call. */

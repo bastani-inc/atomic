@@ -13,6 +13,7 @@ import {
 import { NoUsableModelError, type SkippedModel } from "./model-credential-filter.ts";
 import {
 	isContentFilterRefusal,
+	isProviderCredentialRejection,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
 	isSafetyRefusalFailure,
@@ -56,7 +57,6 @@ function resolveFallbackModel(
 	);
 }
 
-/** The model a fallback entry names when its provider has no usable credentials; see `resolveFallbackModelWithoutCredentials`. */
 function resolveFallbackModelLackingCredentials(this: AgentSession, value: string): Model<Api> | undefined {
 	return resolveFallbackModelWithoutCredentials(
 		value,
@@ -65,7 +65,6 @@ function resolveFallbackModelLackingCredentials(this: AgentSession, value: strin
 	)?.model;
 }
 
-/** Record `model` as skipped without a request, once. */
 function noteSkipped(skipped: SkippedModel[], model: Model<Api>, reason: SkippedModel["reason"]): void {
 	const label = modelLabel(model);
 	if (!skipped.some((entry) => entry.model === label))
@@ -318,15 +317,12 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 			this._fallbackBlockedModels.push(currentModel);
 		}
 	}
-	// A provider that rejected its credentials rejects them for every model it serves: the chain moves past all of
-	// them at once instead of asking that provider again with the same credentials.
-	if (normalizeModelFailureSignal(message).kind === "auth_on_candidate_provider") {
+	if (isProviderCredentialRejection(message)) {
 		this._fallbackBlockedProviders.add(currentModel.provider);
 	}
 
 	const currentThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
 	const fromModel = currentModel;
-	// Chain models passed over without a request, recorded with the change so the session says why.
 	const skipped: SkippedModel[] = [];
 	for (const rawCandidate of this._fallbackModels) {
 		const candidate = resolveFallbackModel.call(this, rawCandidate);
@@ -442,12 +438,6 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 	return false;
 }
 
-/**
- * Before a request: when the session model's provider has no usable credentials, move to the chain's first model that
- * has them, with no request to the skipped providers, and record the move and every model skipped on the way. A
- * session without a chain (a single pinned model), or a chain with no usable model, fails at once with a
- * {@link NoUsableModelError} naming each model and the provider it lacks; no other model runs in its place.
- */
 export async function _selectModelWithCredentials(this: AgentSession): Promise<void> {
 	const currentModel = this.agent.state.model ?? this.model;
 	if (currentModel === undefined || this._modelRuntime.hasConfiguredAuth(currentModel.provider)) return;

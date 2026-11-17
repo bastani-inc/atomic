@@ -6,7 +6,6 @@ import type { AvailableModelInfo } from "./model-fallback.js";
 export interface FilteredModelCandidates {
 	candidates: string[];
 	skippedAttempts: ModelAttempt[];
-	/** The skipped candidates and the provider each lacks credentials for, in chain order. */
 	skippedModels: SkippedModel[];
 }
 

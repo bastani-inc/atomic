@@ -213,7 +213,6 @@ function noSpawnableCandidatesResult(
 	skippedAttempts: ModelAttempt[],
 	skippedModels: readonly SkippedModel[],
 ): SingleResult {
-	// Each skipped model and the provider it lacks, so the refusal says what to log in to.
 	const reason = `No spawnable subagent model candidates after pre-spawn filtering. ${
 		skippedModels.length > 0 ? formatNoUsableModelMessage(skippedModels) : ""
 	}`.trim();

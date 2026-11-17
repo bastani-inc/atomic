@@ -70,8 +70,6 @@ const agent: AgentConfig = {
 async function fixture() {
 	const infer = vi.fn<Parameters<typeof registeredDecisionRuntime>[0]>(chatRouter());
 	const { registry } = await registeredDecisionRuntime(infer);
-	// Tests stand in a catalog by mocking `getAvailable`; the registry's credential check agrees with it, as it does in a
-	// real registry whose availability list is current.
 	const credentialed = registry.hasConfiguredAuth.bind(registry);
 	vi.spyOn(registry, "hasConfiguredAuth").mockImplementation(
 		(model) =>

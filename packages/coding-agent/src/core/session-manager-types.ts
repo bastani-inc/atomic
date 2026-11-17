@@ -79,10 +79,6 @@ export interface ModelFallbackRecord {
 	from: string;
 	/** The failure that moved the session on. */
 	reason: string;
-	/**
-	 * Chain models passed over without a request on the way to this one: their provider has no credentials, or it
-	 * rejected its credentials earlier in the turn. Absent when none was.
-	 */
 	skipped?: { model: string; provider: string; reason: "no-credentials" | "auth-failed" }[];
 }
 

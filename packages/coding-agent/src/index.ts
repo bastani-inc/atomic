@@ -603,6 +603,7 @@ export type {
 } from "./core/model-fallback-failures.ts";
 export {
 	errorMessage,
+	isProviderCredentialRejection,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
 	isUnrecognizedModelFailure,

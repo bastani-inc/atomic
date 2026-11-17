@@ -7,8 +7,10 @@ import {
 	type DetachedToolCall,
 	type DetachedToolResult,
 	type ExtensionToolContext,
+	eligiblePair,
 	findToolDetachmentError,
 	isExtensionStartupFailure,
+	isProviderCredentialRejection,
 	isTaskCleanupError,
 	isTransientExtensionStartupFailure,
 	type ModelConstraints,
@@ -27,6 +29,7 @@ import {
 	setsProviders,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
+import { clampThinkingLevel, getSupportedThinkingLevels } from "@bastani/atomic-ai/compat";
 import { raceAbort } from "../../shared/abort.js";
 import type { StageWaitSnapshot } from "../../shared/authoring-contract-stage.js";
 import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
@@ -63,7 +66,6 @@ import {
 	isRetryableSameModelFailure,
 	isUnrecognizedModelFailure,
 	type ModelFallbackFailureOptions,
-	normalizeModelFailureSignal,
 	resolveScopedModelsFromCatalog,
 	type WorkflowResolvedModelCandidate,
 	type WorkflowResolvedScopedModel,
@@ -689,6 +691,7 @@ export class StageSessionController {
 		if (this.session) await this.session.setThinkingLevel(level);
 		else this.requestedThinkingLevel = level;
 		this.pendingThinkingLevel = level;
+		if (!this.modelRoute) this.candidatesPromise = undefined;
 	}
 
 	get awaitingAutoPrompt(): boolean {
@@ -2335,10 +2338,8 @@ export class StageSessionController {
 			walk.rateLimited.add(index);
 		}
 		walk.remaining.delete(index);
-		// A provider that rejected its credentials rejects them for every model it serves: the walk drops the rest of
-		// that provider's candidates instead of asking it again with the same credentials.
 		const provider = this.candidateProvider(candidates[index]);
-		if (provider !== undefined && normalizeModelFailureSignal(error).kind === "auth_on_candidate_provider") {
+		if (provider !== undefined && isProviderCredentialRejection(error)) {
 			for (const other of new Set([...walk.remaining, ...walk.rateLimited])) {
 				const candidate = candidates[other];
 				if (candidate === undefined || this.candidateProvider(candidate) !== provider) continue;
@@ -2725,38 +2726,100 @@ export class StageSessionController {
 				],
 				catalog: this.modelCatalog,
 				includeCurrentModel: this.modelRoute !== undefined,
-			}).then((candidates) => this.withCredentials(candidates));
+			});
 			this.candidatesPromise = this.modelRoute
-				? resolved.then((candidates) => {
-						if (!this.modelRoute) return candidates;
-						this.modelRoute.assertCurrent();
-						const effort = this.modelRoute.routerSelection.effort ?? undefined;
-						const seenModels = new Set<string>();
-						const allowed = candidates
-							.filter((candidate) => {
-								if (
-									typeof candidate.value === "string" ||
-									!this.modelRoute!.allowsModel(candidate.value, candidate.reasoningLevel ?? effort)
-								)
-									return false;
-								const id = `${candidate.value.provider}/${candidate.value.id}`;
-								if (seenModels.has(id)) return false;
-								seenModels.add(id);
-								return true;
-							})
-							.map((candidate) => ({
-								...candidate,
-								...(candidate.reasoningLevel === undefined && effort !== undefined
-									? { reasoningLevel: effort as WorkflowResolvedModelCandidate["reasoningLevel"] }
-									: {}),
-							}));
-						if (allowed.length === 0)
-							throw new Error("Workflow stage auto has no eligible execution candidates.");
-						return allowed;
-					})
-				: resolved;
+				? resolved
+						.then((candidates) => this.withCredentials(candidates))
+						.then((candidates) => {
+							if (!this.modelRoute) return candidates;
+							this.modelRoute.assertCurrent();
+							const effort = this.modelRoute.routerSelection.effort ?? undefined;
+							const seenModels = new Set<string>();
+							const allowed = candidates
+								.filter((candidate) => {
+									if (
+										typeof candidate.value === "string" ||
+										!this.modelRoute!.allowsModel(candidate.value, candidate.reasoningLevel ?? effort)
+									)
+										return false;
+									const id = `${candidate.value.provider}/${candidate.value.id}`;
+									if (seenModels.has(id)) return false;
+									seenModels.add(id);
+									return true;
+								})
+								.map((candidate) => ({
+									...candidate,
+									...(candidate.reasoningLevel === undefined && effort !== undefined
+										? { reasoningLevel: effort as WorkflowResolvedModelCandidate["reasoningLevel"] }
+										: {}),
+								}));
+							if (allowed.length === 0)
+								throw new Error("Workflow stage auto has no eligible execution candidates.");
+							return allowed;
+						})
+				: resolved
+						.then((candidates) => this.withExplicitConstraints(candidates))
+						.then((candidates) => this.withCredentials(candidates));
 		}
 		return this.candidatesPromise;
+	}
+
+	private explicitModelConstraints(): ModelConstraints[] {
+		const options = this.effectiveStageOptions;
+		return [
+			...(options?.inheritedModelConstraints ?? []).map((constraint) => parseModelConstraints(constraint)),
+			parseModelConstraints(options?.modelConstraints),
+		].filter((constraint): constraint is ModelConstraints => constraint !== undefined);
+	}
+
+	private withExplicitConstraints(candidates: WorkflowResolvedModelCandidate[]): WorkflowResolvedModelCandidate[] {
+		const constraints = this.explicitModelConstraints();
+		if (constraints.length === 0 || candidates.length === 0) return candidates;
+		const allowed = candidates.filter((candidate) => this.candidateSatisfiesConstraints(candidate, constraints));
+		if (allowed.length === 0)
+			throw new Error("No workflow stage model candidate satisfies the stage's modelConstraints.");
+		return allowed;
+	}
+
+	private candidateSatisfiesConstraints(
+		candidate: WorkflowResolvedModelCandidate,
+		constraints: readonly ModelConstraints[],
+	): boolean {
+		const stageThinkingLevel = (
+			this.effectiveStageOptions as
+				| { readonly thinkingLevel?: WorkflowResolvedModelCandidate["reasoningLevel"] }
+				| undefined
+		)?.thinkingLevel;
+		const effort = this.requestedThinkingLevel ?? candidate.reasoningLevel ?? stageThinkingLevel;
+		if (typeof candidate.value !== "string") {
+			const model = candidate.value;
+			if (!model.reasoning) {
+				return eligiblePair(model, { model: candidate.id, effort: null }, constraints);
+			}
+			if (effort === undefined) {
+				if (constraints.some((constraint) => constraint.allowedEfforts !== undefined)) return false;
+				return getSupportedThinkingLevels(model).some((level) =>
+					eligiblePair(model, { model: candidate.id, effort: level }, constraints),
+				);
+			}
+			return eligiblePair(model, { model: candidate.id, effort: clampThinkingLevel(model, effort) }, constraints);
+		}
+		const provider = this.candidateProvider(candidate);
+		return constraints.every(
+			(constraint) =>
+				constraint.maxInputCost === undefined &&
+				constraint.maxOutputCost === undefined &&
+				constraint.minContextWindow === undefined &&
+				(constraint.requiredInputs === undefined || constraint.requiredInputs.length === 0) &&
+				(constraint.allowedModels === undefined || constraint.allowedModels.includes(candidate.id)) &&
+				(constraint.allowedProviders === undefined ||
+					(provider !== undefined && constraint.allowedProviders.includes(provider))) &&
+				(constraint.excludedProviders === undefined ||
+					constraint.excludedProviders.length === 0 ||
+					(provider !== undefined && !constraint.excludedProviders.includes(provider))) &&
+				(constraint.allowedEfforts === undefined ||
+					(effort !== undefined && constraint.allowedEfforts.some((allowed) => allowed === effort))),
+		);
 	}
 
 	private candidateProvider(candidate: WorkflowResolvedModelCandidate | undefined): string | undefined {
@@ -2769,11 +2832,6 @@ export class StageSessionController {
 		);
 	}
 
-	/**
-	 * The candidates whose provider has usable credentials, in order. The others are skipped before any session or
-	 * request and listed in the stage's model attempts; a chain with none fails at once naming each model and the
-	 * provider it lacks.
-	 */
 	private withCredentials(candidates: WorkflowResolvedModelCandidate[]): WorkflowResolvedModelCandidate[] {
 		const catalog = this.modelCatalog;
 		if (catalog?.hasCredentials === undefined) return candidates;
@@ -3158,6 +3216,11 @@ export class StageSessionController {
 					!this.modelRoute.allowsModel(candidate.value, candidate.reasoningLevel))
 			)
 				throw new Error("Workflow stage execution candidate is no longer eligible.");
+			if (!this.modelRoute && candidate) {
+				const constraints = this.explicitModelConstraints();
+				if (constraints.length > 0 && !this.candidateSatisfiesConstraints(candidate, constraints))
+					throw new Error("No workflow stage model candidate satisfies the stage's modelConstraints.");
+			}
 			const adapter = this.opts.adapters.agentSession ?? missingAdapter(consumer);
 			const createOptions = (await stripWorkflowOnlyOptions(
 				stageOptions,
@@ -3510,7 +3573,7 @@ export class StageSessionController {
 				this.notifyModelFallbackMetaChange();
 				throw err;
 			}
-			if (isWorkflowRateLimit(err) || normalizeModelFailureSignal(err).kind === "auth_on_candidate_provider") {
+			if (isWorkflowRateLimit(err) || isProviderCredentialRejection(err)) {
 				for (let index = 0; index < currentIndex; index++) walk.remaining.add(index);
 				this.recordCandidateFailure(walk, currentIndex, err, candidates);
 				if (walk.remaining.size === 0) {

@@ -64,7 +64,6 @@ describe("subagent pre-spawn model candidate filtering", () => {
 
 			assert.equal(result.status, "error");
 			assert.match(result.error ?? "", /No spawnable subagent model candidates/);
-			// The refusal names each model and the provider it lacks, not only that something was filtered.
 			assert.match(result.error ?? "", /provider-a\/stalled \(no credentials for provider-a\)/);
 			assert.match(result.error ?? "", /provider-b\/working \(no credentials for provider-b\)/);
 			assert.equal(existsSync(join(dir, "spawned")), false);

@@ -49,11 +49,6 @@ export function resolveFallbackModel(
 	return candidate && lookup.hasConfiguredAuth(candidate.model.provider) ? candidate : undefined;
 }
 
-/**
- * The model a configured fallback entry names when its provider has no usable credentials, so a chain walk can say
- * which model it skipped and why. `undefined` when the entry resolves to a usable model (see {@link resolveFallbackModel}),
- * names no model, or is ambiguous between providers none of which is preferred.
- */
 export function resolveFallbackModelWithoutCredentials(
 	value: string,
 	lookup: FallbackModelLookup,

@@ -130,8 +130,6 @@ test("workflow fallback replacements keep explicit model and effort labels throu
 										graphTheme: deriveGraphTheme({}),
 									});
 									frames.push(stripVTControlCharacters(view.render(140).join("\n")));
-									// openai/model-a fails on its own request, not its provider's credentials: a rejected openai key
-									// would take every openai model out of the chain, and this walk must still reach openai/model-c.
 									if (model === "openai/model-a") throw new Error("400 context length exceeded");
 									if (model !== "openai/model-c") throw new Error("401 invalid API key");
 									return undefined;

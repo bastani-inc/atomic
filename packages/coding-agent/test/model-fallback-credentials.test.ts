@@ -1,12 +1,5 @@
-/**
- * A model chain or routing list that names a model whose provider has no usable credentials skips it before any
- * request: the chain runs on its first model that has credentials, an auth failure takes the failing provider out of
- * the chain, and a chain without any usable model fails at once naming every model and the provider it lacks. Real CLI
- * option building and real AgentSession fallback machinery; fake providers record every request, so a request to a
- * provider without credentials, or a second request to a provider that refused its key, is visible. No network.
- */
-
 import assert from "node:assert/strict";
+import { GitHubCopilotAuthenticationError } from "@bastani/atomic-ai";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
@@ -16,7 +9,7 @@ import {
 import { afterEach, describe, test } from "vitest";
 import { parseArgs } from "../src/cli/args.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
-import { normalizeModelFailureSignal } from "../src/core/model-fallback-failures.js";
+import { isProviderCredentialRejection, normalizeModelFailureSignal } from "../src/core/model-fallback-failures.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -24,14 +17,8 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import { buildSessionOptions } from "../src/main-session-options.js";
 import { createTestResourceLoader } from "./utilities.js";
 
-/** How long skipping models without credentials may take before the first request: a local check, no waiting. */
-const CREDENTIAL_SKIP_BUDGET_MS = 1_500;
-
-/** A provider registered without any credential. */
 const NO_KEY = { provider: "nokey-acct", ids: ["nokey-a", "nokey-b"], key: undefined };
-/** A provider whose key the server refuses with a 401. */
 const REVOKED = { provider: "revoked-acct", ids: ["revoked-a", "revoked-b"], key: "revoked-key" };
-/** A provider whose key works. */
 const WORKING = { provider: "working-acct", ids: ["working-a", "working-b"], key: "working-key" };
 const ACCOUNTS = [NO_KEY, REVOKED, WORKING];
 const REVOKED_401 =
@@ -55,7 +42,11 @@ function usage(): AssistantMessage["usage"] {
 
 const id = (account: (typeof ACCOUNTS)[number], index = 0) => `${account.provider}/${account.ids[index]}`;
 
-async function runSession(args: string[], settings: Record<string, unknown> = {}) {
+async function runSession(
+	args: string[],
+	settings: Record<string, unknown> = {},
+	failures?: ReadonlyMap<string, string>,
+) {
 	const base = getModel("anthropic", "claude-sonnet-4-5")!;
 	const runtime = await ModelRuntime.create({
 		credentials: AuthStorage.inMemory(),
@@ -78,7 +69,12 @@ async function runSession(args: string[], settings: Record<string, unknown> = {}
 			models,
 			streamSimple: (requestModel) => {
 				requests.push(`${requestModel.provider}/${requestModel.id}`);
-				const failed = account === REVOKED;
+				const failure = failures
+					? failures.get(`${requestModel.provider}/${requestModel.id}`)
+					: account === REVOKED
+						? REVOKED_401
+						: undefined;
+				const failed = failure !== undefined;
 				const message: AssistantMessage = {
 					role: "assistant",
 					content: failed ? [] : [{ type: "text", text: `answered by ${requestModel.id}` }],
@@ -87,7 +83,7 @@ async function runSession(args: string[], settings: Record<string, unknown> = {}
 					model: requestModel.id,
 					usage: usage(),
 					stopReason: failed ? "error" : "stop",
-					...(failed ? { errorMessage: REVOKED_401 } : {}),
+					...(failed ? { errorMessage: failure } : {}),
 					timestamp: Date.now(),
 				};
 				const stream = createAssistantMessageEventStream();
@@ -118,21 +114,21 @@ async function runSession(args: string[], settings: Record<string, unknown> = {}
 		tools: ["read"],
 	});
 	cleanups.push(() => session.dispose());
-	const started = performance.now();
+	const eventTypes: string[] = [];
+	session.subscribe((event) => eventTypes.push(event.type));
 	const outcome = await session.prompt("Say which model you are.").then(
 		() => undefined,
 		(error: unknown) => error,
 	);
-	const elapsedMs = performance.now() - started;
 	const last = session.state.messages.findLast((message) => message.role === "assistant") as
 		| AssistantMessage
 		| undefined;
-	return { requests, last, sessionManager, outcome, elapsedMs, session };
+	return { requests, last, sessionManager, outcome, eventTypes, session };
 }
 
 describe("a model chain skips models whose provider has no credentials", () => {
 	test("a chain whose first model has no credentials starts on its first model that has them, without asking the skipped provider", async () => {
-		const { requests, last, sessionManager, elapsedMs, outcome } = await runSession([
+		const { requests, last, sessionManager, eventTypes, outcome } = await runSession([
 			"--model",
 			id(NO_KEY),
 			"--fallback-models",
@@ -142,10 +138,7 @@ describe("a model chain skips models whose provider has no credentials", () => {
 		assert.equal(outcome, undefined);
 		assert.deepEqual(requests, [id(WORKING)]);
 		assert.equal(last?.stopReason, "stop");
-		assert.ok(
-			elapsedMs < CREDENTIAL_SKIP_BUDGET_MS,
-			`skipping took ${elapsedMs.toFixed(0)} ms, over ${CREDENTIAL_SKIP_BUDGET_MS}`,
-		);
+		assert.ok(!eventTypes.includes("auto_retry_start"));
 		const change = sessionManager
 			.getEntries()
 			.findLast((entry) => entry.type === "model_change" && entry.provider === WORKING.provider);
@@ -159,7 +152,7 @@ describe("a model chain skips models whose provider has no credentials", () => {
 	});
 
 	test("a chain with no model that has credentials fails at once, naming each model and the provider it lacks", async () => {
-		const { requests, outcome, elapsedMs } = await runSession([
+		const { requests, outcome, eventTypes } = await runSession([
 			"--model",
 			id(NO_KEY),
 			"--fallback-models",
@@ -172,7 +165,7 @@ describe("a model chain skips models whose provider has no credentials", () => {
 		assert.match(outcome.message, /nokey-acct\/nokey-a .*nokey-acct/);
 		assert.match(outcome.message, /nokey-acct\/nokey-b/);
 		assert.match(outcome.message, /No API key found/);
-		assert.ok(elapsedMs < CREDENTIAL_SKIP_BUDGET_MS);
+		assert.ok(!eventTypes.includes("auto_retry_start"));
 	});
 
 	test("a single pinned model without credentials fails naming it, and no other model runs in its place", async () => {
@@ -189,6 +182,66 @@ describe("a model chain skips models whose provider has no credentials", () => {
 });
 
 describe("an auth failure takes its provider out of the chain", () => {
+	test("typed authentication failures distinguish permission denials from rejected credentials", () => {
+		for (const [context, expected] of [
+			[{ status: 403, detail: "Project does not have access to model a" }, false],
+			[{ status: 403, providerCode: "invalid_api_key" }, true],
+			[{ status: 403, detail: "Incorrect API key provided" }, true],
+		] as const) {
+			const failure = new GitHubCopilotAuthenticationError({
+				modelId: "model-a",
+				api: "openai-completions",
+				...context,
+			});
+			assert.equal(isProviderCredentialRejection(failure), expected, JSON.stringify(context));
+		}
+	});
+
+	test("generic authentication codes on a 403 do not prove a provider credential rejection", () => {
+		for (const code of ["authentication-failed", "unauthorized", "auth_required", "authentication_required"]) {
+			assert.equal(isProviderCredentialRejection({ status: 403, code, message: "localized" }), false, code);
+		}
+	});
+
+	for (const errorMessage of ["oauth_token_invalidated", "refresh_token_expired"]) {
+		test(`a raw token rejection blocks its provider: ${errorMessage}`, async () => {
+			const { requests } = await runSession(
+				["--model", id(REVOKED), "--fallback-models", `${id(REVOKED, 1)},${id(WORKING)}`],
+				{},
+				new Map([[id(REVOKED), errorMessage]]),
+			);
+
+			assert.deepEqual(requests, [id(REVOKED), id(WORKING)]);
+		});
+	}
+
+	test("401 credential rejections survive generic request codes and status-only messages", () => {
+		for (const failure of [
+			{ status: 401, code: "invalid_request_error", message: "localized" },
+			"HTTP 401: Unauthorized",
+			'{"error":{"code":401,"message":"localized"}}',
+		]) {
+			assert.equal(isProviderCredentialRejection(failure), true, JSON.stringify(failure));
+		}
+	});
+	for (const errorMessage of [
+		'403 {"error":{"message":"Project does not have access to model revoked-a","code":"model_not_found"}}',
+		'403 {"error":{"message":"Input was flagged by moderation","code":403}}',
+		'403 {"error":{"message":"Invalid token count for model revoked-a"}}',
+	]) {
+		test(`a model-scoped rejection keeps other models on its provider available: ${errorMessage}`, async () => {
+			const { requests, last } = await runSession(
+				["--model", id(REVOKED), "--fallback-models", `${id(REVOKED, 1)},${id(WORKING)}`],
+				{},
+				new Map([[id(REVOKED), errorMessage]]),
+			);
+
+			assert.deepEqual(requests, [id(REVOKED), id(REVOKED, 1)]);
+			assert.equal(last?.model, REVOKED.ids[1]);
+			assert.equal(last?.stopReason, "stop");
+		});
+	}
+
 	test("a rejected API key filed under OpenAI's invalid_request_error is an auth failure, not an incompatible request", () => {
 		for (const errorMessage of [
 			REVOKED_401,
@@ -201,7 +254,6 @@ describe("an auth failure takes its provider out of the chain", () => {
 				errorMessage,
 			);
 		}
-		// A request error that names no credential stays an incompatible request.
 		assert.equal(
 			normalizeModelFailureSignal({
 				role: "assistant",

@@ -1,9 +1,3 @@
-/**
- * Auto routing only ever offers, reads with and picks models whose provider has usable credentials, by the registry's
- * own check, and never spends its routing call on a decision model without them. A stale availability list (another
- * process logged a provider out) must not reach the router.
- */
-
 import assert from "node:assert/strict";
 import type { Api, ClassifierContext, ClassifierModel, ClassifierResult, Model } from "@bastani/atomic-ai";
 import { getBuiltinClassifierModel } from "@bastani/atomic-ai/providers/all";
@@ -39,7 +33,6 @@ function chatModel(provider: string, id: string): Model<Api> {
 const CURRENT = chatModel("github-copilot", "claude-opus-5.5");
 const LOGGED_OUT = chatModel("anthropic", "claude-fable-5-1");
 const OTHER = chatModel("openrouter", "openai/gpt-6-astra");
-/** The availability list as an earlier read left it: it still lists the provider that has since logged out. */
 const STALE_AVAILABLE = [CURRENT, LOGGED_OUT, OTHER];
 
 function routingContext(options: { decisionModel?: string; modelRouting?: ModelRoutingSettings } = {}) {
@@ -146,6 +139,32 @@ test("missing-credential diagnostics name allowed models omitted from the availa
 	assert.deepEqual(requested, []);
 });
 
+test("missing-credential diagnostics stay bounded for a large image-model catalog", async () => {
+	const { ctx, requested } = routingContext();
+	const models = Array.from({ length: 2_000 }, (_, index) => ({
+		...chatModel("logged-out", `image-model-${index}`),
+		input: ["text", "image"] as Model<Api>["input"],
+	}));
+	const error = await route(
+		{
+			...ctx,
+			modelRegistry: {
+				...ctx.modelRegistry,
+				getAvailable: () => [],
+				getAll: () => models,
+				hasConfiguredAuth: () => false,
+			},
+		},
+		[{ requiredInputs: ["image"] }],
+	).catch((caught: Error) => caught);
+
+	assert.ok(error instanceof Error);
+	assert.ok(error.message.length < 2_000, `diagnostic has ${error.message.length} characters`);
+	assert.match(error.message, /logged-out\/image-model-0/);
+	assert.match(error.message, /and 1992 more/);
+	assert.deepEqual(requested, []);
+});
+
 test("a decision model without credentials fails routing at once naming it and its provider, and no request is sent", async () => {
 	const { ctx, requested } = routingContext({ decisionModel: "anthropic/claude-fable-5-1" });
 
@@ -158,7 +177,6 @@ test("a decision model without credentials fails routing at once naming it and i
 	assert.match(error.message, /anthropic\/claude-fable-5-1/);
 	assert.match(error.message, /no credentials for anthropic/);
 	assert.deepEqual(requested, []);
-	// The run may still degrade to the current chat model, which has credentials and passes every constraint.
 	assert.equal(error.currentModelRoute?.routerSelection.model, "github-copilot/claude-opus-5.5");
 });
 

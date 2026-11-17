@@ -121,11 +121,7 @@ export function workflowModelCatalogFromContext(
 			),
 		hasCredentials: (provider: string): boolean => {
 			const registry = live().modelRegistry;
-			// Only a provider the registry lists can be known to lack credentials. One it does not list yet, such as an
-			// auth.json account a stage session clones from its provider when it is created, is left to that session.
 			if (!registry?.getAll?.().some((model) => String(model.provider) === provider)) return true;
-			// The registry's own check, which also sees a login or logout another process saved since the catalog was
-			// last read; the catalog is the fallback for a host without it.
 			if (registry.hasConfiguredAuth) return registry.hasConfiguredAuth({ provider });
 			return registry.getAvailable().some((model) => String(model.provider) === provider);
 		},
