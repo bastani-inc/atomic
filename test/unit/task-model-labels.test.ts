@@ -100,11 +100,18 @@ for (const background of [false, true]) {
 						() => {},
 						() => {},
 					);
-					assert.match(
-						stripVTControlCharacters(inspector.renderPicker(100, 24).join("\n")),
-						/provider\/fallback {2}off/,
-					);
-					inspector.dispose();
+					try {
+						assert.doesNotMatch(
+							stripVTControlCharacters(inspector.renderViewport(100, 24).join("\n")),
+							/provider\//,
+						);
+						assert.equal(inspector.handleInput(" "), true);
+						const peek = stripVTControlCharacters(inspector.renderViewport(100, 24).join("\n"));
+						assert.match(peek, /provider\/fallback {2}off/);
+						assert.doesNotMatch(peek, /provider\/first/);
+					} finally {
+						inspector.dispose();
+					}
 				}
 			}
 		} finally {
