@@ -53,6 +53,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed `/workflows` never finishing when the host closed its picker without showing it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Run details open the selected blocker in its owning run even when a nested workflow reuses the stage name. Large nested output previews now inspect only their display budget rather than serializing the full result, and run details honor `NO_COLOR` ([#5255](https://github.com/bastani-inc/atomic/pull/5255))
 - Fixed workflow lifecycle notices writing terminal control sequences from workflow names, run IDs and error text to the terminal. Those sequences are now inert, including in narrow layouts, without deleting the ordinary text after them ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed workflow input listings and tool results throwing on defaults that JSON cannot encode, such as BigInt values ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Workflow rows in the agent panel count expanded nested, dynamic and fan-out stages, include in-flight attempt tokens once, omit full stage bars while tool work continues, and retain the last step when stopped. Numbered replies preserve the original option even when display labels look alike. Run and stage names display terminal controls as inert text, and unchanged progress is reused between refreshes ([#5224](https://github.com/bastani-inc/atomic/issues/5224))

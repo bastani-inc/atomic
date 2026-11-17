@@ -1,13 +1,16 @@
 import { stripVTControlCharacters } from "node:util";
 import { sliceHead } from "@bastani/atomic";
-import type { WorkflowArtifact, WorkflowSerializableValue } from "../shared/authoring-contract-stage.js";
+import type { WorkflowArtifact } from "../shared/authoring-contract-stage.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import {
+	boundedToolPayloadRecord,
+	boundedToolPayloadText,
 	boundedToolText,
 	TOOL_PAYLOAD_TRUNCATION_MARKER,
 	TOOL_PAYLOAD_VALUE_LIMIT,
+	type ToolPayloadValue,
 } from "../shared/tool-payload-bounds.js";
 import type { RunsById } from "../shared/workflow-run-ownership.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
@@ -140,18 +143,14 @@ function outcomeState(run: RunSnapshot, runsById: RunsById): RunOutcomeState {
 	}
 }
 
-export function outputValueLine(value: WorkflowSerializableValue | undefined): string {
+export function outputValueLine(value: ToolPayloadValue, limit = TOOL_PAYLOAD_VALUE_LIMIT): string {
 	if (typeof value === "string") {
 		const line = firstLineOf(value);
-		return inertDisplayLine(
-			line.length > TOOL_PAYLOAD_VALUE_LIMIT ? sliceHead(line, TOOL_PAYLOAD_VALUE_LIMIT) : line,
-		);
+		return inertDisplayLine(line.length > limit ? sliceHead(line, limit) : line);
 	}
 	try {
-		const json = JSON.stringify(value) ?? String(value);
-		return inertDisplayLine(
-			json.length > TOOL_PAYLOAD_VALUE_LIMIT ? sliceHead(json, TOOL_PAYLOAD_VALUE_LIMIT) : json,
-		);
+		const json = value === undefined ? String(value) : boundedToolPayloadText(value, limit);
+		return inertDisplayLine(json);
 	} catch {
 		return inertDisplayLine(String(value));
 	}
@@ -160,7 +159,10 @@ export function outputValueLine(value: WorkflowSerializableValue | undefined): s
 function outputsOf(run: RunSnapshot): RunOutcomeOutput[] {
 	const result = run.result;
 	if (result === undefined || result === null || typeof result !== "object") return [];
-	return Object.entries(result).map(([key, value]) => ({ key: inertDisplayLine(key), value: outputValueLine(value) }));
+	return Object.entries(boundedToolPayloadRecord(result)).map(([key, value]) => ({
+		key: inertDisplayLine(key),
+		value: outputValueLine(value),
+	}));
 }
 
 function artifactDetail(artifact: WorkflowArtifact): string | undefined {
@@ -481,7 +483,7 @@ export function renderRunOutcome(
 	opts: RunOutcomeRenderOpts,
 ): { lines: string[]; selectedRow?: number } {
 	const width = Math.max(1, Math.floor(opts.width));
-	const t = opts.theme;
+	const t = process.env.NO_COLOR === undefined ? opts.theme : undefined;
 	const paint = (color: string | undefined, text: string, bold = false): string =>
 		t === undefined || color === undefined ? text : `${hexToAnsi(color)}${bold ? BOLD : ""}${text}${RESET}`;
 	const stateColor: Record<RunOutcomeState, string | undefined> = {

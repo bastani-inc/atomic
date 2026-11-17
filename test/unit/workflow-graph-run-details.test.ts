@@ -260,24 +260,31 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 
 	it("an open run details view builds the run's outcome once per snapshot, not once per frame or key (#5224)", () => {
 		const marker = { counted: true };
-		const stringify = JSON.stringify;
 		let builds = 0;
-		JSON.stringify = (value, ...rest) => {
-			if (value === marker) builds++;
-			return Reflect.apply(stringify, JSON, [value, ...rest]);
-		};
+		Object.defineProperty(marker, "toJSON", {
+			value: () => {
+				builds++;
+				return { counted: true };
+			},
+		});
+		const graph = view([stage("verify", "failed", { error: "boom" }), stage("check", "failed", { error: "bang" })], {
+			status: "failed",
+			error: "boom",
+			result: { data: marker },
+		});
 		try {
-			const graph = view(
-				[stage("verify", "failed", { error: "boom" }), stage("check", "failed", { error: "bang" })],
-				{ status: "failed", error: "boom", result: { data: marker } },
-			);
 			graph.handleInput("o");
+			const first = screen(graph);
+			assert.match(first, /Outputs/);
+			assert.match(first, /data\s+\{"counted":true\}/);
+			const firstBuilds = builds;
+			assert.ok(firstBuilds > 0, "opening the run details inspects its output");
 			for (let frame = 0; frame < 30; frame++) graph.render(frame % 2 === 0 ? 80 : 160);
 			for (let press = 0; press < 10; press++) graph.handleInput(press % 2 === 0 ? DOWN : "\x1b[A");
 			for (let frame = 0; frame < 10; frame++) graph.render(120);
-			assert.ok(builds <= 1, `the outcome was built ${builds} times for one snapshot`);
+			assert.equal(builds, firstBuilds, "frames and selection reuse the already built outcome");
 		} finally {
-			JSON.stringify = stringify;
+			graph.dispose();
 		}
 	});
 

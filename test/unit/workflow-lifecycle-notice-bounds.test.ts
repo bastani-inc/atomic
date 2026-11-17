@@ -120,6 +120,100 @@ describe("workflow lifecycle notice bounds and caching (#5224)", () => {
 		assert.deepEqual(afterInvalidate, narrowRender);
 	});
 
+	test("bounds nested completion output inspection by the notice display budget (#5255)", () => {
+		const chunk = "x".repeat(64);
+		for (const wrap of [(rows: string[]) => rows, (rows: string[]) => ({ rows })]) {
+			let inspected = 0;
+			const rows = new Proxy(new Array<string>(100_000).fill(chunk), {
+				get(target, property, receiver) {
+					if (typeof property === "string" && /^\d+$/.test(property)) inspected++;
+					return Reflect.get(target, property, receiver);
+				},
+			});
+			const run: RunSnapshot = {
+				id: "bounded-notice",
+				name: "bounded",
+				status: "completed",
+				startedAt: 1,
+				endedAt: 2,
+				inputs: {},
+				stages: [],
+				toolNodes: [],
+				result: { data: wrap(rows) },
+			};
+			const sent: WorkflowLifecycleNoticeDetails[] = [];
+			const dispose = installWorkflowLifecycleNotifications({
+				store: {
+					...createStore(),
+					graphSnapshot: () => ({ runs: [run], notices: [], version: 1 }),
+					run: () => run,
+				},
+				seedExisting: false,
+				config: { enabled: true, notifyOn: ["completed"] },
+				sendMessage(message) {
+					sent.push(message.details as WorkflowLifecycleNoticeDetails);
+				},
+			});
+			try {
+				assert.equal(sent.length, 1);
+				assert.match(sent[0]?.outputsPreview ?? "", /data:.*x{20}/);
+				assert.ok((sent[0]?.outputsPreview?.length ?? 0) <= NOTICE_SNIPPET_LIMIT);
+				assert.ok(
+					inspected <= Math.ceil(NOTICE_SNIPPET_LIMIT / chunk.length) + 1,
+					`${inspected} entries inspected`,
+				);
+			} finally {
+				dispose();
+			}
+		}
+	});
+
+	test("bounds wide completion output entry inspection before composing its preview (#5255)", () => {
+		let descriptors = 0;
+		let reads = 0;
+		const original = Object.fromEntries(Array.from({ length: 10_000 }, (_, index) => [`output_${index}`, "value"]));
+		const result = new Proxy(original, {
+			getOwnPropertyDescriptor(target, key) {
+				descriptors++;
+				return Reflect.getOwnPropertyDescriptor(target, key);
+			},
+			get(target, key, receiver) {
+				if (typeof key === "string" && key.startsWith("output_")) reads++;
+				return Reflect.get(target, key, receiver);
+			},
+		});
+		const run: RunSnapshot = {
+			id: "wide-notice",
+			name: "wide",
+			status: "completed",
+			startedAt: 1,
+			endedAt: 2,
+			inputs: {},
+			stages: [],
+			toolNodes: [],
+			result,
+		};
+		const sent: WorkflowLifecycleNoticeDetails[] = [];
+		const dispose = installWorkflowLifecycleNotifications({
+			store: { ...createStore(), graphSnapshot: () => ({ runs: [run], notices: [], version: 1 }), run: () => run },
+			seedExisting: false,
+			config: { enabled: true, notifyOn: ["completed"] },
+			sendMessage(message) {
+				sent.push(message.details as WorkflowLifecycleNoticeDetails);
+			},
+		});
+		try {
+			assert.equal(sent.length, 1);
+			assert.match(sent[0]?.outputsPreview ?? "", /output_0: value/);
+			assert.ok((sent[0]?.outputsPreview?.length ?? 0) <= NOTICE_SNIPPET_LIMIT);
+			assert.ok(descriptors <= NOTICE_SNIPPET_LIMIT, `${descriptors} descriptors inspected`);
+			assert.ok(reads <= NOTICE_SNIPPET_LIMIT, `${reads} output values inspected`);
+			assert.equal(Object.keys(original).length, 10_000);
+		} finally {
+			dispose();
+		}
+	});
+
 	test("formats completed run outputs once and summarizes artifacts without inspecting unshown stage artifacts (#5224)", async () => {
 		const { store, sent, componentFor } = createHarness();
 		let outputSerializeCalls = 0;

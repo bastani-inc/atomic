@@ -695,9 +695,7 @@ export abstract class GraphViewState {
 	protected _focusBlockerNode(node: "stage" | "tool", id: string): boolean {
 		const index = this.cachedLayout.findIndex((layoutNode) => {
 			if ((layoutNode.stage.nodeKind === "tool") !== (node === "tool")) return false;
-			return (
-				layoutNode.stage.id === id || expandedStageTarget(this.expandedGraph, layoutNode.stage.id)?.stageId === id
-			);
+			return layoutNode.stage.id === id;
 		});
 		if (index < 0) return false;
 		this.runDetailReturn = this.runDetail;

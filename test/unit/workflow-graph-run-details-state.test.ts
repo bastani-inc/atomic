@@ -414,6 +414,76 @@ describe("workflow graph run details state and painted input (#5224)", () => {
 		}
 	});
 
+	it("opens the selected root blocker rather than a child stage with the same id (#5255)", () => {
+		const root: RunSnapshot = {
+			id: "root-run",
+			name: "parent",
+			inputs: {},
+			status: "running",
+			startedAt: now,
+			stages: [
+				makeStage("deploy", {
+					status: "running",
+					workflowChildRun: { alias: "child", workflow: "child-wf", runId: "child-run" },
+				}),
+				makeStage(
+					"approve",
+					{
+						status: "awaiting_input",
+						pendingPrompt: {
+							id: "root-question",
+							kind: "confirm",
+							message: "Approve ROOT deployment?",
+							createdAt: now,
+						},
+					},
+					["deploy"],
+				),
+			],
+			toolNodes: [],
+		};
+		const child: RunSnapshot = {
+			...root,
+			id: "child-run",
+			name: "child-wf",
+			parentRunId: root.id,
+			parentStageId: "deploy",
+			rootRunId: root.id,
+			stages: [
+				makeStage("approve", {
+					status: "awaiting_input",
+					pendingPrompt: {
+						id: "child-question",
+						kind: "confirm",
+						message: "Approve CHILD deployment?",
+						createdAt: now,
+					},
+				}),
+			],
+		};
+		const attached: string[] = [];
+		const graph = new GraphView({
+			piKeybindings: makeFakeKeybindings(),
+			mode: "overlay",
+			runId: root.id,
+			store: h.makeStore({ runs: [root, child], notices: [], version: 1 }),
+			graphTheme: h.defaultTheme,
+			piTui: h.makeTestTui(30),
+			onStageAttach: (runId, stageId) => attached.push(`${runId}/${stageId}`),
+		});
+		try {
+			graph.handleInput("o");
+			graph.render(140);
+			graph.handleInput(DOWN);
+			const screen = strip(graph.render(140).join("\n"));
+			assert.match(screen, /❯ ◆ approve\s+Approve ROOT deployment\?/);
+			graph.handleInput(ENTER);
+			assert.deepEqual(attached, ["root-run/approve"]);
+		} finally {
+			graph.dispose();
+		}
+	});
+
 	it("focuses and activates nested child workflow stage and tool blockers from run details (#5224)", () => {
 		const store = createStore();
 		const root: RunSnapshot = {

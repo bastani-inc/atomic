@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, it, vi } from "vitest";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { TOOL_PAYLOAD_VALUE_LIMIT } from "../../packages/workflows/src/shared/tool-payload-bounds.js";
+import {
+	TOOL_PAYLOAD_MAX_KEYS,
+	TOOL_PAYLOAD_TRUNCATION_MARKER,
+	TOOL_PAYLOAD_VALUE_LIMIT,
+} from "../../packages/workflows/src/shared/tool-payload-bounds.js";
 import {
 	buildRunOutcome,
 	renderRunOutcomeLines,
@@ -169,6 +173,48 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 		assert.match(lines, /diff\s+\/repo\/\.atomic\/artifacts\/impl\.patch · 3 files · \+40 −2/);
 	});
 
+	it("bounds nested output inspection by the run-details display budget (#5255)", () => {
+		const chunk = "x".repeat(1_024);
+		for (const wrap of [(rows: string[]) => rows, (rows: string[]) => ({ rows })]) {
+			let inspected = 0;
+			const rows = new Proxy(new Array<string>(100_000).fill(chunk), {
+				get(target, property, receiver) {
+					if (typeof property === "string" && /^\d+$/.test(property)) inspected++;
+					return Reflect.get(target, property, receiver);
+				},
+			});
+			const outcome = buildRunOutcome(run("completed", [], { result: { data: wrap(rows) } }), 2_000);
+			assert.equal(outcome.outputs[0]?.key, "data");
+			assert.match(outcome.outputs[0]?.value ?? "", /x{100}/);
+			assert.ok((outcome.outputs[0]?.value.length ?? 0) <= TOOL_PAYLOAD_VALUE_LIMIT);
+			assert.ok(
+				inspected <= Math.ceil(TOOL_PAYLOAD_VALUE_LIMIT / chunk.length) + 1,
+				`${inspected} entries inspected`,
+			);
+		}
+	});
+
+	it("bounds wide output entry inspection and reports omitted run details (#5255)", () => {
+		let descriptors = 0;
+		let reads = 0;
+		const original = Object.fromEntries(Array.from({ length: 10_000 }, (_, index) => [`output_${index}`, "value"]));
+		const result = new Proxy(original, {
+			getOwnPropertyDescriptor(target, key) {
+				descriptors++;
+				return Reflect.getOwnPropertyDescriptor(target, key);
+			},
+			get(target, key, receiver) {
+				if (typeof key === "string" && key.startsWith("output_")) reads++;
+				return Reflect.get(target, key, receiver);
+			},
+		});
+		const outcome = buildRunOutcome(run("completed", [], { result }), 2_000);
+		assert.ok(descriptors <= TOOL_PAYLOAD_MAX_KEYS, `${descriptors} descriptors inspected`);
+		assert.ok(reads <= TOOL_PAYLOAD_MAX_KEYS, `${reads} output values inspected`);
+		assert.ok(outcome.outputs.some((output) => output.value.includes(TOOL_PAYLOAD_TRUNCATION_MARKER)));
+		assert.equal(Object.keys(original).length, 10_000);
+	});
+
 	it("uses a stage's recorded failure message when the run has no error text (#5224)", () => {
 		for (const failedStageId of [undefined, "verify"]) {
 			const outcome = buildRunOutcome(
@@ -210,24 +256,51 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 		assert.ok(runOutcomeLogLines(r).some((line) => line.includes("at async runStage")));
 	});
 
+	it("renders run summaries and logs without ANSI when NO_COLOR is set even with a theme (#5255)", () => {
+		vi.stubEnv("NO_COLOR", "1");
+		try {
+			const outcome = buildRunOutcome(
+				run("failed", [stage("verify", "failed", { error: "boom" })], {
+					error: "boom",
+					result: { summary: "retained output" },
+					endedAt: 2_000,
+				}),
+				2_000,
+			);
+			for (const logs of [false, true]) {
+				const lines = renderRunOutcomeLines(outcome, { theme: defaultTheme, width: 100, logs, selected: 0 });
+				assert.doesNotMatch(lines.join("\n"), /\x1b/);
+				assert.match(lines.join("\n"), logs ? /Log/ : /Outputs/);
+				assert.match(lines.join("\n"), /boom/);
+			}
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
 	it("failed and stopped runs read differently: ✗ red failed, ◼ muted stopped", () => {
-		const failed = renderRunOutcomeLines(buildRunOutcome(run("failed", [], { error: "boom" }), 2_000), {
-			theme: defaultTheme,
-			width: 80,
-			logs: false,
-			selected: 0,
-		});
-		const stopped = renderRunOutcomeLines(buildRunOutcome(run("killed", [], { endedAt: 2_000 }), 2_000), {
-			theme: defaultTheme,
-			width: 80,
-			logs: false,
-			selected: 0,
-		});
-		const quit = buildRunOutcome(run("paused", [], { quitAt: 2_000 }), 2_000);
-		assert.match(stripAnsi(failed[0] ?? ""), /✗ ralph · failed/);
-		assert.match(stripAnsi(stopped[0] ?? ""), /◼ ralph · stopped/);
-		assert.equal(quit.state, "stopped");
-		assert.notEqual(failed[0]?.match(/\x1b\[[0-9;]*m/)?.[0], stopped[0]?.match(/\x1b\[[0-9;]*m/)?.[0]);
+		vi.stubEnv("NO_COLOR", undefined);
+		try {
+			const failed = renderRunOutcomeLines(buildRunOutcome(run("failed", [], { error: "boom" }), 2_000), {
+				theme: defaultTheme,
+				width: 80,
+				logs: false,
+				selected: 0,
+			});
+			const stopped = renderRunOutcomeLines(buildRunOutcome(run("killed", [], { endedAt: 2_000 }), 2_000), {
+				theme: defaultTheme,
+				width: 80,
+				logs: false,
+				selected: 0,
+			});
+			const quit = buildRunOutcome(run("paused", [], { quitAt: 2_000 }), 2_000);
+			assert.match(stripAnsi(failed[0] ?? ""), /✗ ralph · failed/);
+			assert.match(stripAnsi(stopped[0] ?? ""), /◼ ralph · stopped/);
+			assert.equal(quit.state, "stopped");
+			assert.notEqual(failed[0]?.match(/\x1b\[[0-9;]*m/)?.[0], stopped[0]?.match(/\x1b\[[0-9;]*m/)?.[0]);
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 
 	it("lists every blocker: a question waiting, a blocked stage and a failed tool, each with its next action", () => {

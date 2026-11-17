@@ -22,7 +22,12 @@ import type {
 	StoreSnapshot,
 	WorkflowActor,
 } from "../shared/store-types.js";
-import { boundedToolPayloadText, boundedToolText } from "../shared/tool-payload-bounds.js";
+import {
+	boundedToolPayloadRecord,
+	boundedToolPayloadText,
+	boundedToolText,
+	type ToolPayloadValue,
+} from "../shared/tool-payload-bounds.js";
 import type { WorkflowOutputValues } from "../shared/types.js";
 import { inertDisplayLine, inertDisplayText } from "../tui/display-text.js";
 import { runFailureText } from "../tui/run-display-state.js";
@@ -921,7 +926,7 @@ function lifecycleOutcomeHints(details: WorkflowLifecycleNoticeDetails): string[
 	return [];
 }
 
-function cardOutputValueSlice(value: WorkflowOutputValues[string]): string {
+function cardOutputValueSlice(value: ToolPayloadValue): string {
 	if (typeof value === "string" && value.length > SNIPPET_SCAN_WINDOW) {
 		const head = value.slice(0, SNIPPET_SCAN_WINDOW);
 		const firstBreak = head.search(/[\r\n]/);
@@ -931,12 +936,12 @@ function cardOutputValueSlice(value: WorkflowOutputValues[string]): string {
 			return preview;
 		}
 	}
-	return outputValueLine(value);
+	return outputValueLine(value, LIFECYCLE_NOTICE_SNIPPET_LIMIT);
 }
 
 function formatCardOutputs(result: WorkflowOutputValues | undefined): string | undefined {
 	if (result === undefined) return undefined;
-	const entries = Object.entries(result);
+	const entries = Object.entries(boundedToolPayloadRecord(result, LIFECYCLE_NOTICE_SNIPPET_LIMIT));
 	if (entries.length === 0) return undefined;
 	const parts: string[] = [];
 	let length = 0;
