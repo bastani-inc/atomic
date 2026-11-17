@@ -41,7 +41,6 @@ const BUN_TYPES = "/node_modules/bun-types/";
 const BLOCKING_NATIVE_FUNCTIONS = new Set([
 	"tryAdvisoryLock",
 	"renameNoReplace",
-	"processCreationTime",
 	"containProcessTree",
 	"killSupervisedProcessTrees",
 ]);

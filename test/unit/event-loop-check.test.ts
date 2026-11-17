@@ -85,6 +85,7 @@ describe("event-loop check", () => {
 			"src/stores.ts FileStore.save fs.writeFileSync",
 			"src/values.ts countEntries fs.readdirSync",
 			"src/values.ts existsByElement fs.existsSync",
+			"src/values.ts nativeProcessQueries natives.tryAdvisoryLock",
 			"src/values.ts openDatabase new DatabaseSync",
 			"src/values.ts readThroughCast fs.readFileSync",
 		]);
@@ -222,6 +223,7 @@ describe("event-loop check", () => {
 			[
 				"countEntries fs.readdirSync",
 				"existsByElement fs.existsSync",
+				"nativeProcessQueries natives.tryAdvisoryLock",
 				"openDatabase new DatabaseSync",
 				"readThroughCast fs.readFileSync",
 			],

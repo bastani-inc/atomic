@@ -9,7 +9,7 @@ import { scheduleStartupWork } from "./startup.ts";
 import { queryStatement, recordDurably } from "./statements.ts";
 import { FileStore, type Store } from "./stores.ts";
 import { Terminal } from "./terminal.ts";
-import { countEntries, existsByElement, openDatabase, readThroughCast } from "./values.ts";
+import { countEntries, existsByElement, nativeProcessQueries, openDatabase, readThroughCast } from "./values.ts";
 
 const store: Store = new FileStore();
 
@@ -58,6 +58,7 @@ function handleKey(data: string): void {
 	openDatabase(data);
 	readThroughCast(data);
 	existsByElement(data);
+	nativeProcessQueries(data.length);
 	queryStatement(data);
 	recordDurably();
 }

@@ -25,3 +25,11 @@ export function readThroughCast(path: string): string {
 export function existsByElement(path: string): boolean {
 	return fs["existsSync"](path);
 }
+
+export function nativeProcessQueries(pid: number): unknown[] {
+	const natives = requireModule("@bastani/atomic-natives") as {
+		processCreationTime(pid: number): string | null;
+		tryAdvisoryLock(path: string): unknown;
+	};
+	return [natives.processCreationTime(pid), natives.tryAdvisoryLock("held.lock")];
+}
