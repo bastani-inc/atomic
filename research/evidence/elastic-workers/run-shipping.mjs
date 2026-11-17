@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { localShipRows } from "./local-ship-rows.mjs";
 import { percentile, summarize } from "./stats.mjs";
 import { startTraceProxy } from "./trace-proxy.mjs";
 
@@ -316,7 +317,7 @@ function busiestHost(work, count) {
 			for (const file of readdirSync(ship, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".sqlite"))) {
 				try {
 					const local = new DatabaseSync(join(ship, file), { readOnly: true });
-					held += Number(local.prepare("SELECT COUNT(*) AS n FROM ship_events").get().n);
+					held += localShipRows(local).reduce((total, row) => total + Number(row.n), 0);
 					local.close();
 				} catch (error) {
 					process.stderr.write(`cannot read ${file}: ${error.message}\n`);
@@ -464,7 +465,7 @@ async function trial(hosts, shipping) {
 				for (const file of readdirSync(ship, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".sqlite")))
 					try {
 						const local = new DatabaseSync(join(ship, file), { readOnly: true });
-						held.push({ host: `h${index}`, rows: local.prepare("SELECT work, generation, COUNT(*) AS n FROM ship_events GROUP BY work, generation").all() });
+						held.push({ host: `h${index}`, rows: localShipRows(local) });
 						local.close();
 					} catch {}
 			}
@@ -516,7 +517,7 @@ async function trial(hosts, shipping) {
 				name.endsWith(".sqlite"),
 			)) {
 				const local = new DatabaseSync(join(killedShip, file), { readOnly: true });
-				for (const row of local.prepare("SELECT COUNT(*) AS n FROM ship_events GROUP BY work, generation").all())
+				for (const row of localShipRows(local))
 					unshippedAtKill.push(Number(row.n));
 				local.close();
 			}
