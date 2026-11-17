@@ -6,12 +6,11 @@ import { test, vi } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { FooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
 import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
-import { bindEngineTaskWidget } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
+import { bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import {
 	createProductionFullscreenContext,
 	getLayoutFrame,
 } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.js";
-import { installStoreWidget } from "../../packages/workflows/src/tui/store-widget-installer.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import {
 	createStore,
@@ -24,8 +23,8 @@ import {
 	setupRun,
 } from "../unit/stage-chat-view-helpers.js";
 
-test.each(["main", "stage", "engine-workflow-first", "engine-tasks-first"] as const)(
-	"%s composed chat keeps active tasks below MCP and removes stale terminal counts",
+test.each(["stage", "engine"] as const)(
+	"%s chat lists its active tasks below MCP and drops them once they finish (#5224)",
 	async (surface) => {
 		const tasks = taskFixture();
 		const emptyTasks = taskFixture();
@@ -55,46 +54,14 @@ test.each(["main", "stage", "engine-workflow-first", "engine-tasks-first"] as co
 						onDetach() {},
 					})
 				: undefined;
-		let removeWidget = () => {};
 		let removeTasks = () => {};
-		const mountWorkflow = () => {
-			assert.ok(main);
-			removeWidget = installStoreWidget(
-				{
-					ui: {
-						setWidget: (key, factory) =>
-							main.context.setExtensionWidget(
-								key,
-								factory
-									? (tui, theme) => {
-											const widget = factory(tui, theme);
-											// #3015: viewport methods live on the prototype and need their receiver.
-											return {
-												render: (width) => widget.render(width),
-												invalidate: () => widget.invalidate?.(),
-												dispose: () => widget.dispose?.(),
-											};
-										}
-									: undefined,
-								{ placement: "belowEditor" },
-							),
-						requestRender: () => main.tui.requestRender(),
-					},
-				},
-				store,
-			);
-		};
 		if (main) {
 			main.context.footerContainer.clear();
-			main.context.footerContainer.addChild(
-				new FooterComponent(surface === "main" ? session : fakeFooterAgentSession(), footerData),
-			);
-			if (surface !== "engine-tasks-first") mountWorkflow();
-			if (surface.startsWith("engine"))
-				removeTasks = bindEngineTaskWidget(session, {
-					setWidget: main.context.setExtensionWidget.bind(main.context),
-					requestRender: () => main.tui.requestRender(),
-				} as ExtensionUIContext);
+			main.context.footerContainer.addChild(new FooterComponent(fakeFooterAgentSession(), footerData));
+			removeTasks = bindAgentPanel(session, {
+				setWidget: main.context.setExtensionWidget.bind(main.context),
+				requestRender: () => main.tui.requestRender(),
+			} as ExtensionUIContext);
 		}
 		const render = () => {
 			if (stage) return stripVTControlCharacters(stage.render(100).join("\n"));
@@ -102,54 +69,44 @@ test.each(["main", "stage", "engine-workflow-first", "engine-tasks-first"] as co
 			main.tui.renderNow();
 			return stripVTControlCharacters(getLayoutFrame(main.tui).lines.join("\n"));
 		};
-		const assertOrder = (expected: RegExp, workflow = surface !== "stage") => {
+		const taskRows = (screen: string) => screen.split("\n").filter((row) => /^ {2}[∀✓✗] worker /.test(row));
+		const assertOrder = (expected: readonly RegExp[]) => {
 			const screen = render();
 			const rows = screen.split("\n");
 			const mcp = rows.findIndex((row) => row.includes("MCP "));
-			const task = rows.findIndex((row) => row.includes("Tasks  "));
-			const background = rows.findIndex((row) => row.includes("BACKGROUND"));
+			const shown = taskRows(screen);
 			assert.ok(mcp >= 0, screen);
-			assert.equal(rows.filter((row) => row.includes("Tasks  ")).length, 1, screen);
-			assert.match(rows[task]!, expected);
-			assert.ok(task > mcp, `Task status must follow MCP:\n${screen}`);
-			if (workflow) assert.ok(background > task, `BACKGROUND must follow task status:\n${screen}`);
-			else assert.equal(background, -1, screen);
+			assert.equal(shown.length, expected.length, screen);
+			for (const [index, row] of shown.entries()) assert.match(row, expected[index]!);
+			assert.ok(rows.indexOf(shown[0]!) > mcp, `Task rows must follow MCP:\n${screen}`);
 		};
 		try {
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			assert.match(render(), /MCP /);
-			assert.doesNotMatch(render(), /Tasks {2}/);
-			if (main && surface !== "engine-tasks-first") assert.match(render(), /BACKGROUND/);
+			assert.deepEqual(taskRows(render()), []);
 			await tasks.start("will fail");
 			await tasks.start("keeps running");
-			if (surface === "engine-tasks-first") mountWorkflow();
-			assertOrder(/2 local agents running/);
+			assertOrder([/keeps running/, /will fail/]);
 			tasks.runners[0].result.resolve({ kind: "failed", code: "fixture", message: "Retained failure" });
 			await vi.waitFor(() => {
 				tasks.store.drain();
 				assert.equal(tasks.store.tasks[0]?.execution.kind, "settled");
 			});
-			assertOrder(/1 local agent running/);
-			assert.doesNotMatch(render(), /1 failed/);
+			// A stage chat lists only active tasks; the main panel keeps a finished row a while, marked ✗.
+			assertOrder(surface === "stage" ? [/keeps running/] : [/keeps running/, /✗ worker {2}will fail .*failed/]);
 			if (stage) {
 				const narrow = stripVTControlCharacters(stage.render(40).join("\n"));
-				assert.match(narrow, /Tasks {2}1 local agent running.*\/tasks/);
+				assert.match(narrow, /∀ worker/);
 				assert.match(narrow, /← (?:return to )?graph/);
 			}
 			await tasks.settle(1);
-			assert.doesNotMatch(render(), /Tasks {2}/);
+			if (stage) assert.deepEqual(taskRows(render()), []);
 			assert.equal(tasks.store.backgroundTasks.length, 2, "terminal history remains inspectable");
-			if (main) {
-				removeWidget();
-				main.context.setExtensionWidget("workflow.run", undefined);
-			}
-			assert.doesNotMatch(render(), /Tasks {2}/);
 			bindOwnerTaskStore(session, emptyTasks.store);
 			assert.match(render(), /MCP /);
-			assert.doesNotMatch(render(), /Tasks {2}|BACKGROUND/);
+			assert.deepEqual(taskRows(render()), []);
 		} finally {
 			removeTasks();
-			removeWidget();
 			stage?.dispose();
 			if (main) {
 				main.resolveTheme();

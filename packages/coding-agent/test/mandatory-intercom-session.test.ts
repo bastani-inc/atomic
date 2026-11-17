@@ -14,6 +14,7 @@ import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 
 const tempDirs: string[] = [];
 
@@ -25,6 +26,7 @@ const tempDirs: string[] = [];
  * (`EADDRINUSE` on `\\.\pipe\pi-intercom-…-atomic-agent`).
  */
 const isolatedBrokerAgentDir = mkdtempSync(join(tmpdir(), "ic-mandatory-broker-"));
+linkSharedTranspileCache(isolatedBrokerAgentDir);
 const previousAgentDirEnv = {
 	atomic: process.env.ATOMIC_CODING_AGENT_DIR,
 	pi: process.env.PI_CODING_AGENT_DIR,
@@ -34,6 +36,7 @@ delete process.env.PI_CODING_AGENT_DIR;
 
 function createTempDir(prefix: string): string {
 	const dir = mkdtempSync(join(tmpdir(), prefix));
+	linkSharedTranspileCache(join(dir, "agent"));
 	tempDirs.push(dir);
 	return dir;
 }

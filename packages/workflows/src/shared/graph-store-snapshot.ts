@@ -251,6 +251,7 @@ interface ProjectedRun {
 	/** Positions of the stages that had not settled, which are checked field by field on every build. */
 	readonly unsettled: Set<number>;
 	readonly toolNodes: ReadonlyMap<ToolNodeSnapshot, ProjectedToolNode>;
+	settledPrefixEpoch: object;
 	compact: RunSnapshot;
 }
 
@@ -304,19 +305,20 @@ function freezeCompactRun(run: RunSnapshot, full = false): void {
 	Object.freeze(run);
 }
 
-/** The builder that built each graph snapshot, so derived views can reuse what they derived from its earlier ones. */
 const snapshotLineages = new WeakMap<StoreSnapshot, object>();
+const runSettledPrefixEpochs = new WeakMap<RunSnapshot, object>();
 
-/**
- * The builder of a graph snapshot. Snapshots with the same lineage are versions of one store, so an unchanged stage
- * is the same frozen object in each; undefined for a snapshot no builder made.
- */
 export function graphSnapshotLineage(snapshot: StoreSnapshot): object | undefined {
 	return snapshotLineages.get(snapshot);
 }
 
+export function settledPrefixEpochOf(run: RunSnapshot): object | undefined {
+	return runSettledPrefixEpochs.get(run);
+}
+
 export class GraphStoreSnapshotBuilder {
 	private readonly full: boolean;
+	private readonly lineage = {};
 
 	constructor(options: { readonly fullPayloads?: boolean } = {}) {
 		this.full = options.fullPayloads ?? false;
@@ -347,6 +349,8 @@ export class GraphStoreSnapshotBuilder {
 	}
 
 	removeRun(runId: string): void {
+		const existing = this.projected.get(runId);
+		if (existing !== undefined) runSettledPrefixEpochs.delete(existing.source);
 		this.projected.delete(runId);
 		this.changedRuns.delete(runId);
 		this.changedStages.delete(runId);
@@ -354,6 +358,7 @@ export class GraphStoreSnapshotBuilder {
 	}
 
 	clear(): void {
+		for (const existing of this.projected.values()) runSettledPrefixEpochs.delete(existing.source);
 		this.projected.clear();
 		this.recheckSettledStages = false;
 		this.changedRuns.clear();
@@ -382,7 +387,7 @@ export class GraphStoreSnapshotBuilder {
 
 	publish(runs: RunSnapshot[], notices: readonly WorkflowNotice[], version: number): StoreSnapshot {
 		const snapshot: StoreSnapshot = Object.freeze({ runs: Object.freeze(runs), notices, version });
-		snapshotLineages.set(snapshot, this);
+		snapshotLineages.set(snapshot, this.lineage);
 		return snapshot;
 	}
 
@@ -451,13 +456,16 @@ export class GraphStoreSnapshotBuilder {
 		const previous = projected.compact;
 		const appendedFrom = sources.length;
 		const compactStages = previous.stages.slice();
+		let settledStageChanged = false;
 		for (const position of changed) {
+			if (projected.stages[position]?.settled) settledStageChanged = true;
 			const stage = projectStage(sources[position]!, this.full);
 			projected.stages[position] = stage;
 			compactStages[position] = stage.compact;
 			if (stage.settled) projected.unsettled.delete(position);
 			else projected.unsettled.add(position);
 		}
+		if (settledStageChanged) projected.settledPrefixEpoch = {};
 		for (let position = sources.length; position < run.stages.length; position++) {
 			const source = run.stages[position]!;
 			const stage = projectStage(source, this.full);
@@ -471,12 +479,32 @@ export class GraphStoreSnapshotBuilder {
 		const compact: RunSnapshot = { ...previous, stages: compactStages };
 		freezeCompactRun(compact, this.full);
 		indexRunFrom(compact, previous, changed, appendedFrom);
+		runSettledPrefixEpochs.set(compact, projected.settledPrefixEpoch);
+		runSettledPrefixEpochs.set(run, projected.settledPrefixEpoch);
 		projected.compact = compact;
 		return projected;
 	}
 
 	private projectRun(run: RunSnapshot, previous: ProjectedRun | undefined): ProjectedRun {
 		const changedStages = this.changedStages.get(run.id);
+		let settledPrefixUnchanged = previous !== undefined && run.stages.length >= previous.stageSources.length;
+		if (settledPrefixUnchanged && previous !== undefined) {
+			for (let index = 0; index < previous.stageSources.length; index++) {
+				const prevStage = previous.stages[index]!;
+				if (!prevStage.settled) break;
+				const currentSource = run.stages[index];
+				if (
+					currentSource === undefined ||
+					currentSource !== previous.stageSources[index] ||
+					changedStages?.has(currentSource.id) === true ||
+					!stageUnchanged(currentSource, prevStage)
+				) {
+					settledPrefixUnchanged = false;
+					break;
+				}
+			}
+		}
+		const settledPrefixEpoch = settledPrefixUnchanged && previous !== undefined ? previous.settledPrefixEpoch : {};
 		const previousStages = new Map<StageSnapshot, ProjectedStage>();
 		if (previous !== undefined)
 			for (let index = 0; index < previous.stageSources.length; index++)
@@ -512,6 +540,8 @@ export class GraphStoreSnapshotBuilder {
 		}
 		const compact = compactRun(run, compactStages, compactToolNodes, this.full);
 		freezeCompactRun(compact, this.full);
+		runSettledPrefixEpochs.set(compact, settledPrefixEpoch);
+		runSettledPrefixEpochs.set(run, settledPrefixEpoch);
 		return {
 			source: run,
 			shape: sourceShape(run),
@@ -521,6 +551,7 @@ export class GraphStoreSnapshotBuilder {
 			duplicateStageIds,
 			unsettled,
 			toolNodes,
+			settledPrefixEpoch,
 			compact,
 		};
 	}

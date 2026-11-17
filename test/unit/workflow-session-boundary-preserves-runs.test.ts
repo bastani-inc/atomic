@@ -86,7 +86,6 @@ function captureHandlers(lifecycleScope: object = {}): Map<string, SessionEventH
 				setNotificationsActive() {},
 				updateHostStageSessionDir() {},
 			} as unknown as WorkflowExtensionRuntimeState,
-			storeWidgetRef: { current: null },
 			intercomControlRef: { current: null },
 		},
 	);

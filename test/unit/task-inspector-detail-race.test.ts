@@ -55,8 +55,9 @@ async function withInspector(
 	const render = vi.fn();
 	const inspector = new TaskInspector(store, render, () => {});
 	try {
-		// Space peeks at the selected task's detail page; Enter would open its chat (#5224).
+		// Space peeks at the selected task's card, then Enter opens its detail page (#5224).
 		inspector.handleInput(" ");
+		inspector.handleInput("\r");
 		await check(inspector, finish, fail, render);
 	} finally {
 		inspector.dispose();
@@ -73,6 +74,7 @@ test("inspector discards command output after selection changes", async () => {
 		inspector.handleInput("\u001b");
 		inspector.handleInput("\u001b[B");
 		inspector.handleInput(" ");
+		inspector.handleInput("\r");
 		finish(output);
 		await settle();
 		assert.ok(text(inspector).includes("Task second"));
@@ -89,7 +91,10 @@ for (const transition of ["back", "reinspect", "dispose", "transcript"] as const
 				else if (transition === "transcript") inspector.handleInput("\r");
 				else {
 					inspector.handleInput("\u001b");
-					if (transition === "reinspect") inspector.handleInput(" ");
+					if (transition === "reinspect") {
+						inspector.handleInput(" ");
+						inspector.handleInput("\r");
+					}
 				}
 				await settle();
 				render.mockClear();
@@ -154,6 +159,7 @@ test("store updates do not replace a pending shell transcript with a detail refr
 	);
 	try {
 		inspector.handleInput(" ");
+		inspector.handleInput("\r");
 		await settle();
 		inspector.handleInput("\r");
 		notify();

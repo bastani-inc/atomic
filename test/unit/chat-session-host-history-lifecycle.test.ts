@@ -14,6 +14,7 @@ import type {
 } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import type { ChatSessionHostOpts } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-types.js";
+import { stripAnsi } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-utils.ts";
 import type { ChatTranscriptEntryLike } from "../../packages/coding-agent/src/modes/interactive/components/chat-transcript.js";
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
@@ -300,7 +301,7 @@ test("switching the followed session in /tasks or hydrating idle compaction stat
 			host.applyAgentEvent({ type: "agent_start" });
 			host.applyAgentEvent({ type: "agent_end", messages: [] });
 			assert.equal(host.isCompacting(), false);
-			assert.deepEqual(host.renderWorkingStatus(80), []);
+			assert.deepEqual(host.renderWorkingStatus(80).map(stripAnsi), ["", " ∀ Worked for 0s".padEnd(80)]);
 		} finally {
 			host.dispose();
 		}

@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
-import { visibleWidth } from "@bastani/atomic-tui";
+import { Container, type TUI, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { MarkdownTransformContext } from "../src/core/extensions/types.ts";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
-import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import {
+	chatEntriesFromAgentMessages,
+	LiveChatEntriesController,
+	renderChatMessageEntry,
+} from "../src/modes/interactive/components/chat-message-renderer.ts";
+import "../src/modes/interactive/interactive-agent-events.ts";
+import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
+import { getMarkdownTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -252,7 +259,7 @@ describe("AssistantMessageComponent", () => {
 		);
 	});
 
-	test("wraps long aborted assistant messages to the render width", () => {
+	test("bounds long aborted assistant notices to one header row (#5350)", () => {
 		initTheme("dark");
 		const width = 48;
 		const component = new AssistantMessageComponent(
@@ -265,13 +272,14 @@ describe("AssistantMessageComponent", () => {
 
 		const lines = component.render(width);
 
-		expect(lines.length).toBeGreaterThan(2);
+		expect(lines.length).toBe(2);
+		assert.match(stripAnsi(lines.at(-1) ?? ""), /^ ◼ Interrupted/);
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
 	});
 
-	test("an interrupted response ends with a muted 'Interrupted by user' line, whatever the provider or retry loop called it", () => {
+	test("an interrupted response ends with a stopped notice independent of provider wording (#5350)", () => {
 		initTheme("dark");
 		for (const errorMessage of [
 			undefined,
@@ -285,8 +293,9 @@ describe("AssistantMessageComponent", () => {
 			);
 			const lines = component.render(80);
 			const last = lines.filter((line) => stripAnsi(line).trim() !== "").at(-1) ?? "";
-			assert.equal(stripAnsi(last).trim(), "Interrupted by user", String(errorMessage));
-			assert.equal(last.includes(theme.fg("error", "Interrupted by user")), false, "not drawn as an error");
+			assert.equal(stripAnsi(last).trim(), "◼ Interrupted · response", String(errorMessage));
+			assert.equal(last.includes(theme.fg("error", "◼")), false, "not drawn as an error");
+			assert.ok(last.includes(theme.fg("muted", "◼")), "stopped marker is muted");
 		}
 		const retried = new AssistantMessageComponent(
 			createAssistantMessage([], { stopReason: "aborted", errorMessage: "Aborted after 2 retry attempts" }),
@@ -295,7 +304,435 @@ describe("AssistantMessageComponent", () => {
 			.render(80)
 			.map((line) => stripAnsi(line).trim())
 			.filter(Boolean);
-		assert.deepEqual(retriedText.slice(-1), ["Interrupted by user"], "an interrupt during retries reads the same");
+		assert.deepEqual(
+			retriedText.slice(-1),
+			["◼ Interrupted · response"],
+			"an interrupt during retries reads the same",
+		);
+	});
+
+	test("an empty aborted post-tool turn names the interrupted tool across replay, live, and main entries even with native empty text/thinking blocks (#5350)", async () => {
+		initTheme("dark");
+		const toolTurn = createAssistantMessage(
+			[
+				{
+					type: "toolCall",
+					id: "mx-1794924149595562253-0",
+					name: "bash",
+					arguments: {
+						command: "echo started; sleep 40; echo finished",
+						timeout: 60,
+						wait: {
+							kind: "foreground",
+							budgetMs: 60000,
+						},
+					},
+				},
+			],
+			{ stopReason: "toolUse" },
+		);
+		const toolResult = {
+			role: "toolResult" as const,
+			toolCallId: "mx-1794924149595562253-0",
+			toolName: "bash",
+			details: {},
+			content: [{ type: "text" as const, text: "started\n\n\nCommand aborted" }],
+			isError: true,
+			timestamp: Date.now(),
+		};
+		const abortedTurn = createAssistantMessage([{ type: "text", text: "" }], {
+			stopReason: "aborted",
+			errorMessage: "This operation was aborted",
+		});
+		const snapshot = structuredClone(abortedTurn);
+
+		const replayEntries = chatEntriesFromAgentMessages([
+			{ role: "user", content: "run it", timestamp: Date.now() },
+			toolTurn,
+			toolResult,
+			abortedTurn,
+		]);
+		const replayAssistant = replayEntries.filter((entry) => entry.kind === "assistant").at(-1);
+		assert.ok(replayAssistant);
+		const replayRendered = renderChatMessageEntry(replayAssistant, {
+			ui: { requestRender() {} } as Pick<TUI, "requestRender">,
+			cwd: "/project",
+		})
+			.render(80)
+			.map((line) => stripAnsi(line).trim())
+			.filter(Boolean);
+		assert.deepEqual(replayRendered, ["◼ Interrupted · bash"]);
+
+		const liveEntries: Parameters<typeof renderChatMessageEntry>[0][] = [];
+		const controller = new LiveChatEntriesController(liveEntries);
+		controller.appendUserText("run it");
+		controller.applyEvent({ type: "message_start", message: toolTurn });
+		controller.applyEvent({ type: "message_end", message: toolTurn });
+		controller.applyEvent({
+			type: "tool_execution_start",
+			toolCallId: "mx-1794924149595562253-0",
+			toolName: "bash",
+			args: {
+				command: "echo started; sleep 40; echo finished",
+				timeout: 60,
+				wait: { kind: "foreground", budgetMs: 60000 },
+			},
+		});
+		controller.applyEvent({
+			type: "tool_execution_end",
+			toolCallId: "mx-1794924149595562253-0",
+			toolName: "bash",
+			result: { details: {}, content: [{ type: "text", text: "started\n\n\nCommand aborted" }] },
+			isError: true,
+		});
+		controller.applyEvent({ type: "message_start", message: { ...abortedTurn, stopReason: "stop" } });
+		controller.applyEvent({ type: "message_end", message: abortedTurn });
+		const liveAssistant = liveEntries.filter((entry) => entry.kind === "assistant").at(-1);
+		assert.ok(liveAssistant);
+		const liveRendered = renderChatMessageEntry(liveAssistant, {
+			ui: { requestRender() {} } as Pick<TUI, "requestRender">,
+			cwd: "/project",
+		})
+			.render(80)
+			.map((line) => stripAnsi(line).trim())
+			.filter(Boolean);
+		assert.deepEqual(liveRendered, ["◼ Interrupted · bash"]);
+
+		const chatContainer = new Container();
+		const mode = {
+			isInitialized: true,
+			footer: { invalidate() {} },
+			programStatus: { handleEvent() {} },
+			workingRunMeter: {
+				start() {},
+				requestStarted() {},
+				streaming() {},
+				settled() {},
+				stop() {},
+				snapshot: () => undefined,
+			},
+			pendingTools: new Map(),
+			settingsManager: {
+				getShowTerminalProgress: () => false,
+				getShowImages: () => false,
+				getImageWidthCells: () => 60,
+				getLatexRenderingEnabled: () => false,
+				getShowCacheMissNotices: () => false,
+			},
+			stopWorkingLoader() {},
+			workingVisible: false,
+			ui: { requestRender() {}, terminal: { setProgress() {} } },
+			hideThinkingBlock: false,
+			getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+			hiddenThinkingLabel: "Thinking...",
+			outputPad: 1,
+			getMarkdownTransformers: () => [],
+			chatContainer,
+			toolOutputExpanded: false,
+			session: {},
+			getRegisteredToolDefinition: () => undefined,
+			sessionManager: { getCwd: () => "/project", getEntries: () => [] },
+			maybeShowInstallChangeWarning: () => false,
+			maybeShowAssistantDiagnostics() {},
+			checkShutdownRequested: async () => {},
+			compactionQueuedMessages: [],
+		} as unknown as InteractiveModeBase;
+		const emit = (event: unknown) => InteractiveModeBase.prototype.handleEvent.call(mode, event as never);
+		await emit({ type: "agent_start" });
+		await emit({ type: "message_start", message: { ...toolTurn, content: [] } });
+		await emit({
+			type: "message_update",
+			message: toolTurn,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "" },
+		});
+		await emit({ type: "message_end", message: toolTurn });
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "mx-1794924149595562253-0",
+			toolName: "bash",
+			args: {
+				command: "echo started; sleep 40; echo finished",
+				timeout: 60,
+				wait: { kind: "foreground", budgetMs: 60000 },
+			},
+		});
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "mx-1794924149595562253-0",
+			toolName: "bash",
+			result: { details: {}, content: [{ type: "text", text: "started\n\n\nCommand aborted" }] },
+			isError: true,
+		});
+		await emit({ type: "message_start", message: { ...abortedTurn, stopReason: "stop" } });
+		await emit({ type: "message_end", message: { ...abortedTurn } });
+		const mainInterruptLines = chatContainer
+			.render(80)
+			.map((line) => stripAnsi(line).trim())
+			.filter((line) => line.startsWith("◼ Interrupted"));
+		assert.deepEqual(mainInterruptLines, ["◼ Interrupted · bash"]);
+
+		controller.appendUserText("next question");
+		const freshAborted = createAssistantMessage(
+			[
+				{ type: "thinking", thinking: "" },
+				{ type: "text", text: "" },
+			],
+			{
+				stopReason: "aborted",
+				errorMessage: "This operation was aborted",
+			},
+		);
+		controller.applyEvent({ type: "message_start", message: { ...freshAborted, stopReason: "stop" } });
+		controller.applyEvent({ type: "message_end", message: freshAborted });
+		const freshAssistant = liveEntries.filter((entry) => entry.kind === "assistant").at(-1);
+		assert.ok(freshAssistant);
+		const freshRendered = renderChatMessageEntry(freshAssistant, {
+			ui: { requestRender() {} } as Pick<TUI, "requestRender">,
+			cwd: "/project",
+		})
+			.render(80)
+			.map((line) => stripAnsi(line).trim())
+			.filter(Boolean);
+		assert.deepEqual(freshRendered, ["◼ Interrupted · response"]);
+		assert.deepEqual(abortedTurn, snapshot);
+	});
+
+	test("excludes earlier settled tools when a later tool aborts across main, replay, and live entries (#5350)", async () => {
+		initTheme("dark");
+		const settledReadCall = {
+			type: "toolCall" as const,
+			id: "call-read-1",
+			name: "read",
+			arguments: { path: "a.ts" },
+		};
+		const settledFindCall = {
+			type: "toolCall" as const,
+			id: "call-find-1",
+			name: "find",
+			arguments: { paths: ["*"] },
+		};
+		const abortedBashCall = {
+			type: "toolCall" as const,
+			id: "call-bash-2",
+			name: "bash",
+			arguments: { command: "sleep 40" },
+		};
+		const turn1 = createAssistantMessage([settledReadCall, settledFindCall], { stopReason: "toolUse" });
+		const readResult = {
+			role: "toolResult" as const,
+			toolCallId: "call-read-1",
+			toolName: "read",
+			content: [{ type: "text" as const, text: "ok" }],
+			isError: false,
+			timestamp: Date.now(),
+		};
+		const findResult = {
+			role: "toolResult" as const,
+			toolCallId: "call-find-1",
+			toolName: "find",
+			content: [{ type: "text" as const, text: "a.ts" }],
+			isError: false,
+			timestamp: Date.now(),
+		};
+		const turn2 = createAssistantMessage([settledReadCall, abortedBashCall], { stopReason: "toolUse" });
+		const bashAbortedResult = {
+			role: "toolResult" as const,
+			toolCallId: "call-bash-2",
+			toolName: "bash",
+			content: [{ type: "text" as const, text: "Command aborted" }],
+			isError: true,
+			timestamp: Date.now(),
+		};
+		const abortedTurn = createAssistantMessage([], {
+			stopReason: "aborted",
+			errorMessage: "Request was aborted",
+		});
+
+		const replayEntries = chatEntriesFromAgentMessages([
+			{ role: "user", content: "check and run", timestamp: Date.now() },
+			turn1,
+			readResult,
+			findResult,
+			turn2,
+			readResult,
+			bashAbortedResult,
+			abortedTurn,
+		]);
+		const replayAssistant = replayEntries.filter((entry) => entry.kind === "assistant").at(-1);
+		assert.ok(replayAssistant);
+		const replayLines = renderChatMessageEntry(replayAssistant, {
+			ui: { requestRender() {} } as Pick<TUI, "requestRender">,
+			cwd: "/project",
+		})
+			.render(80)
+			.map((line) => stripAnsi(line).trim())
+			.filter(Boolean);
+		assert.deepEqual(replayLines, ["◼ Interrupted · bash"]);
+
+		const chatContainer = new Container();
+		const mode = {
+			isInitialized: true,
+			footer: { invalidate() {} },
+			programStatus: { handleEvent() {} },
+			workingRunMeter: {
+				start() {},
+				requestStarted() {},
+				streaming() {},
+				settled() {},
+				stop() {},
+				snapshot: () => undefined,
+			},
+			pendingTools: new Map(),
+			settingsManager: {
+				getShowTerminalProgress: () => false,
+				getShowImages: () => false,
+				getImageWidthCells: () => 60,
+				getLatexRenderingEnabled: () => false,
+				getShowCacheMissNotices: () => false,
+			},
+			stopWorkingLoader() {},
+			workingVisible: false,
+			ui: { requestRender() {}, terminal: { setProgress() {} } },
+			hideThinkingBlock: false,
+			getMarkdownThemeWithSettings: () => getMarkdownTheme(),
+			hiddenThinkingLabel: "Thinking...",
+			outputPad: 1,
+			getMarkdownTransformers: () => [],
+			chatContainer,
+			toolOutputExpanded: false,
+			session: {},
+			getRegisteredToolDefinition: () => undefined,
+			sessionManager: { getCwd: () => "/project", getEntries: () => [] },
+			maybeShowInstallChangeWarning: () => false,
+			maybeShowAssistantDiagnostics() {},
+			checkShutdownRequested: async () => {},
+			compactionQueuedMessages: [],
+		} as unknown as InteractiveModeBase;
+		const emit = (event: unknown) => InteractiveModeBase.prototype.handleEvent.call(mode, event as never);
+
+		await emit({ type: "agent_start" });
+		await emit({ type: "message_start", message: { ...turn1, content: [] } });
+		await emit({
+			type: "message_update",
+			message: turn1,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "" },
+		});
+		await emit({ type: "message_end", message: turn1 });
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "call-read-1",
+			toolName: "read",
+			args: { path: "a.ts" },
+		});
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "call-read-1",
+			toolName: "read",
+			result: { content: [{ type: "text", text: "ok" }] },
+			isError: false,
+		});
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "call-find-1",
+			toolName: "find",
+			args: { paths: ["*"] },
+		});
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "call-find-1",
+			toolName: "find",
+			result: { content: [{ type: "text", text: "a.ts" }] },
+			isError: false,
+		});
+		await emit({ type: "message_start", message: { ...turn2, content: [] } });
+		await emit({
+			type: "message_update",
+			message: turn2,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "" },
+		});
+		await emit({ type: "message_end", message: turn2 });
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "call-read-1",
+			toolName: "read",
+			args: { path: "a.ts" },
+		});
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "call-read-1",
+			toolName: "read",
+			result: { content: [{ type: "text", text: "ok" }] },
+			isError: false,
+		});
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: "call-bash-2",
+			toolName: "bash",
+			args: { command: "sleep 40" },
+		});
+		await emit({
+			type: "tool_execution_end",
+			toolCallId: "call-bash-2",
+			toolName: "bash",
+			result: { content: [{ type: "text", text: "Command aborted" }] },
+			isError: true,
+		});
+		await emit({ type: "message_start", message: { ...abortedTurn, stopReason: "stop" } });
+		await emit({ type: "message_end", message: abortedTurn });
+
+		const mainInterruptLines = chatContainer
+			.render(80)
+			.map((line) => stripAnsi(line).trim())
+			.filter((line) => line.startsWith("◼ Interrupted"));
+		assert.deepEqual(mainInterruptLines, ["◼ Interrupted · bash"]);
+	});
+
+	test("does not name an incomplete tool from before a user boundary when a new response aborts empty (#5350)", () => {
+		initTheme("dark");
+		const oldIncompleteTurn = createAssistantMessage(
+			[{ type: "toolCall", id: "stale-read", name: "read", arguments: { path: "stale.ts" } }],
+			{ stopReason: "toolUse" },
+		);
+		const newAbortedTurn = createAssistantMessage([], {
+			stopReason: "aborted",
+			errorMessage: "Request was aborted",
+		});
+
+		const replayEntries = chatEntriesFromAgentMessages([
+			{ role: "user", content: "old turn", timestamp: Date.now() - 1000 },
+			oldIncompleteTurn,
+			{ role: "user", content: "new turn", timestamp: Date.now() },
+			newAbortedTurn,
+		]);
+		const replayAssistant = replayEntries.filter((entry) => entry.kind === "assistant").at(-1);
+		assert.ok(replayAssistant);
+		const replayLines = renderChatMessageEntry(replayAssistant, {
+			ui: { requestRender() {} } as Pick<TUI, "requestRender">,
+			cwd: "/project",
+		})
+			.render(80)
+			.map((line) => stripAnsi(line).trim())
+			.filter(Boolean);
+		assert.deepEqual(replayLines, ["◼ Interrupted · response"]);
+
+		const liveEntries: Parameters<typeof renderChatMessageEntry>[0][] = [];
+		const controller = new LiveChatEntriesController(liveEntries);
+		controller.appendUserText("old turn");
+		controller.applyEvent({ type: "message_start", message: oldIncompleteTurn });
+		controller.applyEvent({ type: "message_end", message: oldIncompleteTurn });
+		controller.appendUserText("new turn");
+		controller.applyEvent({ type: "message_start", message: { ...newAbortedTurn, stopReason: "stop" } });
+		controller.applyEvent({ type: "message_end", message: newAbortedTurn });
+		const liveAssistant = liveEntries.filter((entry) => entry.kind === "assistant").at(-1);
+		assert.ok(liveAssistant);
+		const liveLines = renderChatMessageEntry(liveAssistant, {
+			ui: { requestRender() {} } as Pick<TUI, "requestRender">,
+			cwd: "/project",
+		})
+			.render(80)
+			.map((line) => stripAnsi(line).trim())
+			.filter(Boolean);
+		assert.deepEqual(liveLines, ["◼ Interrupted · response"]);
 	});
 
 	test("renders neutral truncation wording for a length stop", () => {

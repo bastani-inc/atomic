@@ -131,6 +131,7 @@ test("x stops a task only on a second press within three seconds, and dismisses 
 	assert.equal(nav.focus.kind, "tasks");
 	second.execution = { kind: "settled", result: { kind: "failed", code: "fixture", message: "done" } };
 	await nav.activate("input");
+	nav.paint([second]);
 	nav.handleInput("x", "tasks");
 	assert.equal(nav.focus.kind, "tasks");
 	assert.deepEqual(cancelled, [second.ref.taskId]);

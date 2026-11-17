@@ -7,6 +7,8 @@ import type {
 	ExtensionWidgetOptions,
 	HostInputFormRequest,
 	HostSessionPickerRequest,
+	MessageRenderer,
+	ToolRenderers,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.js";
 import type { FooterDataProvider } from "../../core/footer-data-provider.ts";
@@ -39,6 +41,8 @@ interface CreateRpcExtensionUIContextOptions {
 	inputForm?: EngineInputFormService;
 	footerDataProvider?: FooterDataProvider;
 	capabilities?: RpcExtensionUICapabilities;
+	getToolDefinition?: (toolName: string) => ToolRenderers | undefined;
+	getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 }
 
 interface DialogPromiseOptions<T> extends CreateRpcExtensionUIContextOptions {
@@ -105,6 +109,8 @@ export function createRpcExtensionUIContext({
 	inputForm,
 	footerDataProvider,
 	capabilities,
+	getToolDefinition,
+	getCustomMessageRenderer,
 }: CreateRpcExtensionUIContextOptions): ExtensionUIContext {
 	const unsupportedWarnings = new Set<string>();
 	let toolsExpanded = false;
@@ -384,8 +390,8 @@ export function createRpcExtensionUIContext({
 				showImages: false,
 				imageWidthCells: 60,
 				markdownTransformers: [],
-				getToolDefinition: () => undefined,
-				getCustomMessageRenderer: () => undefined,
+				getToolDefinition: getToolDefinition ?? (() => undefined),
+				getCustomMessageRenderer: getCustomMessageRenderer ?? (() => undefined),
 			};
 		},
 	};

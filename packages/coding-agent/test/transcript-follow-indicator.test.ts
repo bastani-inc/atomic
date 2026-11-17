@@ -11,7 +11,7 @@ import {
 	handleFocusedOverlayInternalUiAction,
 	handleUrlActivation,
 } from "../src/modes/interactive/interactive-tui.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { openBrowser } from "../src/utils/open-browser.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";
 
@@ -27,9 +27,9 @@ describe("TranscriptFollowIndicator", () => {
 		expect(indicator.render(80)).toEqual([]);
 	});
 
-	test("renders a centered linked highlight row with the live key label", () => {
+	test("renders a centered linked rounded pill with the live key label (#5224)", () => {
 		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "ctrl+end" });
-		const highlight = " ↓ jump to bottom · ctrl+end ";
+		const highlight = "╭─ ↓ jump to bottom · ctrl+end ─╮";
 		const highlightWidth = visibleWidth(highlight);
 		for (const width of [80, 41]) {
 			const rows = indicator.render(width);
@@ -47,6 +47,25 @@ describe("TranscriptFollowIndicator", () => {
 		expect(rows[0]).toContain(BG_MARKER);
 	});
 
+	test("fills only the pill so overlaid transcript text cannot bleed through its spaces (#5350)", () => {
+		for (const name of ["dark", "light"] as const) {
+			initTheme(name, false);
+			const indicator = new TranscriptFollowIndicator({
+				isFollowing: () => false,
+				keyLabel: () => "ctrl+end",
+				newCount: () => 3,
+			});
+			const row = indicator.render(80)[0]!;
+			const bg = theme.getBgAnsi("selectedBg");
+			const at = row.indexOf(bg);
+			expect(at).toBeGreaterThanOrEqual(0);
+			const label = "╭─ ↓ 3 new messages · ctrl+end ─╮";
+			expect(stripTerminalSequences(row.slice(0, at))).toBe(" ".repeat(Math.floor((80 - visibleWidth(label)) / 2)));
+			expect(stripTerminalSequences(row.slice(row.lastIndexOf("\x1b[49m") + 5))).toBe("");
+		}
+		initTheme("dark", false);
+	});
+
 	test("truncates the row to a narrow viewport and omits an empty key suffix", () => {
 		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "" });
 		const rows = indicator.render(8);
@@ -62,14 +81,19 @@ describe("TranscriptFollowIndicator", () => {
 		}
 	});
 
-	test("keeps the highlight unbroken across the truncation ellipsis", () => {
+	test("keeps the narrowed label and ellipsis inside one jump link without a background band (#5224)", () => {
 		const indicator = new TranscriptFollowIndicator({ isFollowing: () => false, keyLabel: () => "End" });
 		const row = indicator.render(20)[0] ?? "";
 
 		expect(row).toContain("...");
-		for (const segment of row.split("\x1b[0m").slice(1)) {
-			expect(segment.startsWith(BG_MARKER)).toBe(true);
-		}
+		expect(row).toContain(BG_MARKER);
+		for (const segment of row.split("\x1b[0m").slice(1))
+			expect(segment.startsWith(theme.getBgAnsi("selectedBg"))).toBe(true);
+		expect(stripTerminalSequences(row)).not.toContain("╭");
+		expect(visibleWidth(row)).toBeLessThanOrEqual(20);
+		expect(row.match(/\u001b\]8;;/g)).toHaveLength(2);
+		expect(row.indexOf(TRANSCRIPT_JUMP_TO_END_URL)).toBeLessThan(row.indexOf("..."));
+		expect(row.lastIndexOf("\x1b]8;;\x1b\\")).toBeGreaterThan(row.indexOf("..."));
 	});
 });
 

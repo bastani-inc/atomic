@@ -1,16 +1,20 @@
-import { Container, Spacer, Text } from "@bastani/atomic-tui";
+import { type Component, Container, Text, truncateToWidth } from "@bastani/atomic-tui";
 import type { ToolDefinition } from "../../core/extensions/types.ts";
+import { getTextOutput, replaceTabs, str } from "../../core/tools/render-utils.ts";
+import { keyHintIfBound } from "../../modes/interactive/components/keybinding-hints.js";
 import {
-	getTextOutput,
-	replaceTabs,
-	startToolTimer,
-	str,
-	type ToolTimerState,
-	toolTimerText,
-} from "../../core/tools/render-utils.ts";
-import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
-import { VisualLinePreview } from "../../modes/interactive/components/visual-truncate.ts";
+	collapseToolBlockLines,
+	TOOL_BLOCK_LIMITS,
+	ToolBlock,
+	ToolBlockGroup,
+	ToolBlockRecords,
+} from "../../modes/interactive/components/tool-block.ts";
+import {
+	builtinToolBlockPresentation,
+	formatToolBlockElapsed,
+} from "../../modes/interactive/components/tool-block-families.ts";
 import { CodeHighlighter, type Theme } from "../../modes/interactive/theme/theme.js";
+import { singleLineDisplayText, terminalDisplayText } from "../../utils/terminal-text.ts";
 import type { CodemodeNestedCall, CodemodeToolDetails, codemodeSchema } from "./tool.js";
 
 interface CodemodeRenderState {
@@ -18,111 +22,144 @@ interface CodemodeRenderState {
 }
 
 const SCRIPT_HEADER = /^Script (completed|failed)\nWall time [\d.]+ seconds\nOutput:\n$/;
-function hint(theme: Theme, count: number, noun: string): string {
-	return `${theme.fg("muted", `... (${count} more ${noun},`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
+const NESTED_CALL_LIMIT = 8;
+
+class CodemodeCall implements Component {
+	private readonly code: string | null;
+	private readonly theme: Theme;
+	constructor(code: string | null, theme: Theme) {
+		this.code = code;
+		this.theme = theme;
+	}
+	invalidate(): void {}
+	render(width: number): string[] {
+		if (width < 1) return [];
+		const code = this.code === null ? "[invalid arg]" : singleLineDisplayText(this.code.split("\n")[0]);
+		const summary = `${code}${this.code?.includes("\n") ? "…" : ""}`;
+		const name = this.theme.fg("toolTitle", this.theme.bold("codemode"));
+		return [truncateToWidth(`${name}(${truncateToWidth(summary, Math.max(0, width - 10), "…")})`, width, "…")];
+	}
 }
+
 function cost(value: number): string {
 	return `$${value >= 0.01 ? value.toFixed(2) : value.toPrecision(2)}`;
 }
-function formatCall(call: CodemodeNestedCall, theme: Theme, expanded: boolean): string {
-	const icon =
-		call.status === "running"
-			? theme.fg("warning", "…")
-			: call.status === "ok"
-				? theme.fg("success", "✓")
-				: call.status === "error"
-					? theme.fg("error", "✗")
-					: theme.fg("muted", "⊘");
-	const args = !expanded && call.args.length > 80 ? `${call.args.slice(0, 77)}...` : call.args;
-	let text = `${icon} ${theme.fg("toolTitle", call.name)}${args ? ` ${theme.fg("muted", args)}` : ""}`;
-	if (call.durationMs !== undefined)
-		text += ` ${theme.fg("dim", call.durationMs < 1000 ? `${Math.round(call.durationMs)}ms` : `${(call.durationMs / 1000).toFixed(1)}s`)}`;
-	if (call.cost) text += ` ${theme.fg("dim", cost(call.cost))}`;
-	if (expanded && call.error) text += `\n    ${theme.fg("error", call.error.split("\n").join("\n    "))}`;
-	return text;
+
+function outputPreview(text: string, expanded: boolean): Component {
+	const component = new Text(text, 0, 0);
+	return {
+		invalidate: () => component.invalidate(),
+		render: (width) => collapseToolBlockLines(component.render(width), TOOL_BLOCK_LIMITS.bash, expanded),
+	};
 }
-/**
- * The result lists the nested tool calls with their status as they run and the cost of its model calls,
- * followed by the script output without the "Script completed" header, and the time the script has been
- * running (`Elapsed`) or took (`Took`), like bash rows.
- */
+
+function nestedCall(call: CodemodeNestedCall, theme: Theme, expanded: boolean, cwd: string): ToolBlock {
+	let args: unknown;
+	try {
+		args = JSON.parse(call.args);
+	} catch {
+		args = undefined;
+	}
+	const presentation = builtinToolBlockPresentation({
+		toolName: call.name,
+		args,
+		expanded: false,
+		isPartial: false,
+		cwd,
+		executionStarted: true,
+		argsComplete: true,
+	});
+	const records: Component[] = [];
+	if (expanded && call.args) records.push(new Text(terminalDisplayText(replaceTabs(call.args)), 0, 0));
+	if (call.error)
+		records.push(outputPreview(theme.fg("error", terminalDisplayText(replaceTabs(call.error))), expanded));
+	const meta: string[] = [];
+	const elapsed = formatToolBlockElapsed(call.durationMs, {
+		isRunning: call.status === "running",
+		subTenDecimal: call.name === "bash" || call.name === "fetch_content",
+	});
+	if (elapsed) meta.push(elapsed);
+	if (call.cost !== undefined) meta.push(cost(call.cost));
+	return new ToolBlock({
+		status:
+			call.status === "ok"
+				? "success"
+				: call.status === "error"
+					? "failure"
+					: call.status === "cancelled"
+						? "stopped"
+						: "running",
+		title: presentation?.title ?? singleLineDisplayText(call.name),
+		args: presentation?.args ?? singleLineDisplayText(call.args),
+		meta,
+		details: records.length ? new ToolBlockRecords(records) : undefined,
+		outputPad: 0,
+	});
+}
+
 export const codemodeRenderers: Pick<
-	ToolDefinition<typeof codemodeSchema, CodemodeToolDetails, ToolTimerState>,
+	ToolDefinition<typeof codemodeSchema, CodemodeToolDetails>,
 	"renderCall" | "renderResult"
 > = {
-	renderCall(args, theme, context) {
-		startToolTimer(context);
-		const code = str(args?.code);
-		const title = theme.fg("toolTitle", theme.bold("codemode"));
-		const component = (context.lastComponent as Container | undefined) ?? new Container();
-		component.clear();
-		if (code === null) {
-			component.addChild(new Text(`${title} ${theme.fg("error", "[invalid arg]")}`, 0, 0));
-			return component;
-		}
-		component.addChild(new Text(title, 0, 0));
-		if (code) {
-			const state = context.state as CodemodeRenderState;
-			state.scriptHighlighter ??= new CodeHighlighter();
-			const highlighted = state.scriptHighlighter
-				.highlight(replaceTabs(code.replace(/\r/g, "").trimEnd()), "javascript")
-				.join("\n");
-			component.addChild(
-				context.expanded
-					? new Text(highlighted, 0, 0)
-					: new VisualLinePreview({
-							text: highlighted,
-							maxVisualLines: 10,
-							keep: "start",
-							formatHint: (hidden) => hint(theme, hidden, "lines"),
-						}),
-			);
-		}
-		return component;
+	renderCall(args, theme) {
+		return new CodemodeCall(str(args?.code), theme);
 	},
 	renderResult(result, options, theme, context) {
-		const timerText = toolTimerText(context, options.isPartial);
-		const component = (context.lastComponent as Container | undefined) ?? new Container();
-		component.clear();
+		const records: Component[] = [];
+		const code = str(context.args?.code);
+		if (options.expanded && code) {
+			const state = context.state as CodemodeRenderState;
+			state.scriptHighlighter ??= new CodeHighlighter();
+			records.push(
+				new Text(
+					state.scriptHighlighter.highlight(terminalDisplayText(replaceTabs(code)), "javascript").join("\n"),
+					0,
+					0,
+				),
+			);
+		}
 		const calls = result.details?.calls ?? [];
 		if (calls.length) {
-			const shown = options.expanded ? calls : calls.slice(-8);
-			const lines = shown.map((call) => formatCall(call, theme, options.expanded));
-			if (shown.length < calls.length) lines.unshift(hint(theme, calls.length - shown.length, "earlier calls"));
-			const priced = calls.filter((call) => call.cost);
-			if (priced.length > 1)
-				lines.push(
-					theme.fg("muted", `Model calls: ${cost(priced.reduce((sum, call) => sum + (call.cost ?? 0), 0))}`),
+			const shown = options.expanded ? calls : calls.slice(-NESTED_CALL_LIMIT);
+			const nested = new Container();
+			if (shown.length < calls.length) {
+				const binding = keyHintIfBound("app.tools.expand", "to expand");
+				nested.addChild(
+					new Text(
+						theme.fg("dim", `… +${calls.length - shown.length} earlier calls${binding ? ` (${binding})` : ""}`),
+						0,
+						0,
+					),
 				);
-			component.addChild(new Spacer(1));
-			component.addChild(new Text(lines.join("\n"), 0, 0));
+			}
+			nested.addChild(
+				new ToolBlockGroup(shown.map((call) => nestedCall(call, theme, options.expanded, context.cwd))),
+			);
+			records.push(nested);
+			const priced = calls.filter((call) => call.cost !== undefined);
+			if (priced.length > 1)
+				records.push(
+					new Text(
+						theme.fg("muted", `Model calls: ${cost(priced.reduce((sum, call) => sum + (call.cost ?? 0), 0))}`),
+						0,
+						0,
+					),
+				);
 		}
 		const [first, ...rest] = result.content;
 		const content = first?.type === "text" && SCRIPT_HEADER.test(first.text) ? rest : result.content;
 		const output = options.isPartial ? "" : getTextOutput({ ...result, content }, context.showImages).trim();
 		if (output) {
-			const styled = replaceTabs(output)
+			const styled = terminalDisplayText(replaceTabs(output))
 				.split("\n")
 				.map((line) => theme.fg(context.isError ? "error" : "toolOutput", line))
 				.join("\n");
-			component.addChild(new Spacer(1));
-			component.addChild(
-				options.expanded
-					? new Text(styled, 0, 0)
-					: new VisualLinePreview({
-							text: styled,
-							maxVisualLines: 5,
-							keep: "start",
-							formatHint: (hidden) => hint(theme, hidden, "lines"),
-						}),
+			records.push(outputPreview(styled, options.expanded));
+		}
+		if (result.details?.fullOutputPath)
+			records.push(
+				new Text(theme.fg("muted", `Full output: ${terminalDisplayText(result.details.fullOutputPath)}`), 0, 0),
 			);
-			if (result.details?.fullOutputPath && !options.expanded)
-				component.addChild(new Text(theme.fg("muted", `Full output: ${result.details.fullOutputPath}`), 0, 0));
-		}
-		if (timerText) {
-			component.addChild(new Spacer(1));
-			component.addChild(new Text(theme.fg("muted", timerText), 0, 0));
-		}
-		return component;
+		return new ToolBlockRecords(records);
 	},
 };
