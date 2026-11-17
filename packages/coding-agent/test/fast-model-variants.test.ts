@@ -661,11 +661,18 @@ describe("ModelRuntime fast model catalog", () => {
 				.map((entry) => entry.id)
 				.sort();
 
-		assert.deepEqual(routed("openai-codex", "ultrafast"), ["gpt-6-astra-ultrafast", "gpt-6.1-sol-ultrafast"]);
+		assert.deepEqual(routed("openai-codex", "ultrafast"), [
+			"gpt-6-astra-ultrafast",
+			"gpt-6.1-sol-ultrafast",
+			"gpt-6.2-astra-ultrafast",
+			"gpt-6.2-sol-ultrafast",
+		]);
 		assert.deepEqual(routed("openai", "ultrafast"), [
 			"gpt-5.6-sol-ultrafast",
 			"gpt-6-astra-ultrafast",
 			"gpt-6.1-sol-ultrafast",
+			"gpt-6.2-astra-ultrafast",
+			"gpt-6.2-sol-ultrafast",
 		]);
 		assert.deepEqual(routed("openai-codex", "priority"), [
 			"gpt-5.6-luna-fast",
@@ -675,6 +682,8 @@ describe("ModelRuntime fast model catalog", () => {
 			"gpt-6-luna-fast",
 			"gpt-6-sol-fast",
 			"gpt-6.1-sol-fast",
+			"gpt-6.2-astra-fast",
+			"gpt-6.2-sol-fast",
 		]);
 		assert.ok(runtime.getModel("openai", "gpt-4o-fast"));
 		for (const id of ["gpt-5-nano-fast", "gpt-5-pro-fast", "o1-fast", "gpt-5.3-codex-spark-fast"]) {

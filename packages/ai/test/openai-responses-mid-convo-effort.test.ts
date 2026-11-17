@@ -230,7 +230,15 @@ it("sends reasoning.effort for a subscription bearer token behind a custom base 
 
 it("enables GPT-6 effort updates in bundled OpenAI and Atomic API-key catalogs", () => {
 	for (const provider of [openaiProvider(), openaiApiProvider()]) {
-		for (const id of ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra"]) {
+		for (const id of [
+			"gpt-6-astra",
+			"gpt-6-sol",
+			"gpt-6-luna",
+			"gpt-6.1-sol",
+			"gpt-6.1-terra",
+			"gpt-6.2-astra",
+			"gpt-6.2-sol",
+		]) {
 			const model = provider.getModels().find((entry) => entry.id === id);
 			expect(model?.compat?.supportsMidConvoEffort).toBe(true);
 		}
