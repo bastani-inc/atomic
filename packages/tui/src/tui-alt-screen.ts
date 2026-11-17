@@ -112,8 +112,31 @@ interface ClickTarget {
 	count: number;
 	row: number;
 	scrollView?: ScrollView;
+	/** The word under the click, or the clicked cell when no word is there. */
 	wordStart: number;
 	wordEnd: number;
+}
+
+/** What the screen showed at a pointer position: the painted row and the components drawn there. */
+interface PointerFrame {
+	readonly line: string | undefined;
+	readonly boxes: readonly { readonly component: Component; readonly x: number; readonly y: number }[];
+	readonly overlay: Component | undefined;
+	readonly decorated: boolean;
+}
+
+function samePointerFrame(a: PointerFrame | undefined, b: PointerFrame): boolean {
+	return (
+		a !== undefined &&
+		a.line === b.line &&
+		a.overlay === b.overlay &&
+		a.decorated === b.decorated &&
+		a.boxes.length === b.boxes.length &&
+		a.boxes.every(
+			(box, index) =>
+				box.component === b.boxes[index]?.component && box.x === b.boxes[index]?.x && box.y === b.boxes[index]?.y,
+		)
+	);
 }
 
 interface SgrMouseEvent {
@@ -233,6 +256,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private scrollToEndIndicatorRect?: ScrollToEndIndicatorRect;
 	private activeSearch?: ActiveSearch;
 	private pressedUrl?: string;
+	/** What the screen showed under the pointer when the left button went down. */
+	private pressFrame?: PointerFrame;
+	/** Rows of the primary transcript that a drawn-over row covers: the pinned prompt and the jump-to-latest row. */
+	private decoratedRows = new Map<number, { readonly x: number; readonly width: number }>();
 	private selectionDragged = false;
 	private mouseCapture?: TuiMouseDispatchTarget;
 	private mousePressTarget?: TuiMouseDispatchTarget;
@@ -1265,27 +1292,45 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private getClickCount(point: SelectionPoint, word: SelectionRange | undefined): number {
 		const now = Date.now();
 		const previous = this.lastClick;
+		// A second click counts on the same word, or on the same cell where there is no word, so a fast second click
+		// on empty space is a double-click as well.
+		const start = word?.start.col ?? point.col;
+		const end = word?.end.col ?? point.col;
 		const count =
-			word &&
 			previous &&
 			now - previous.timestamp <= DOUBLE_CLICK_INTERVAL_MS &&
 			previous.row === point.row &&
 			previous.scrollView === point.scrollView &&
-			previous.wordStart === word.start.col &&
-			previous.wordEnd === word.end.col
+			previous.wordStart === start &&
+			previous.wordEnd === end
 				? (previous.count % 3) + 1
 				: 1;
-		this.lastClick = word
-			? {
-					timestamp: now,
-					count,
-					row: point.row,
-					scrollView: point.scrollView,
-					wordStart: word.start.col,
-					wordEnd: word.end.col,
-				}
-			: undefined;
+		this.lastClick = {
+			timestamp: now,
+			count,
+			row: point.row,
+			scrollView: point.scrollView,
+			wordStart: start,
+			wordEnd: end,
+		};
 		return count;
+	}
+
+	/** What the screen shows at `x`, `y`: the painted row, the layout boxes and overlay drawn there. */
+	private pointerFrame(x: number, y: number): PointerFrame {
+		const decoration = this.decoratedRows.get(y);
+		return {
+			line: this.previousScreen[y],
+			boxes: this.currentLayout
+				? getLayoutBoxesAt(this.currentLayout, x, y).map((box) => ({
+						component: box.component,
+						x: box.rect.x,
+						y: box.rect.y,
+					}))
+				: [],
+			overlay: this.overlayAt(x, y),
+			decorated: decoration !== undefined && x >= decoration.x && x < decoration.x + decoration.width,
+		};
 	}
 
 	private updateSelectionAutoScroll(event: SgrMouseEvent): void {
@@ -1354,11 +1399,16 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.stopSelectionAutoScroll();
 			if (!this.selectionAnchor) return;
 			this.updateSelectionFocus(point);
+			const releaseFrame = this.pointerFrame(event.x, event.y);
 			const isClick =
 				!this.selectionDragged &&
 				this.selectionAnchor.scrollView === point.scrollView &&
 				this.selectionAnchor.row === point.row &&
 				this.selectionAnchor.col === point.col;
+			// A click acts on what the screen showed when it was pressed: a repaint that changed what is under the
+			// pointer before the release makes it no click at all.
+			const samePaint = samePointerFrame(this.pressFrame, releaseFrame);
+			this.pressFrame = undefined;
 			const clickedUrl = isClick ? this.pressedUrl : undefined;
 			this.pressedUrl = undefined;
 			if (clickedUrl && this.openUrl) {
@@ -1372,7 +1422,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.requestRender();
 				return;
 			}
-			if (isClick) {
+			if (isClick && samePaint && !releaseFrame.decorated) {
 				const clickEvent = this.createMouseEvent("click", event.button, event.x, event.y, {
 					clickCount: this.lastClick?.count ?? 1,
 				});
@@ -1414,6 +1464,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.selectionAnchor = range?.start ?? anchor;
 		this.selectionFocus = range?.end ?? anchor;
 		this.selectionDragged = false;
+		this.pressFrame = this.pointerFrame(event.x, event.y);
 		this.pressedUrl = range
 			? undefined
 			: getOsc8LinkAtColumn(
@@ -1665,6 +1716,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private compositeScrollToEndIndicator(screen: string[], layout: LayoutFrame, width: number): string[] {
 		this.scrollToEndIndicatorRect = undefined;
+		this.decoratedRows = new Map();
 		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
 		if (!this.scrollToEndIndicator || !scrollView.followEnd || scrollView.isFollowingEnd) return screen;
 		const box = getScrollViewBox(layout, scrollView);
@@ -1684,6 +1736,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const result = [...screen];
 		result[row] = compositeTuiLine(result[row] ?? "", text, column, textWidth, width);
 		this.scrollToEndIndicatorRect = { row, column, width: textWidth };
+		// The rest of the row still shows the transcript, but its row is half covered: no click reaches it.
+		this.decoratedRows.set(row, { x: clip.x, width: clip.width });
 		return result;
 	}
 
@@ -1768,6 +1822,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const padded = text + " ".repeat(Math.max(0, available - textWidth));
 		const result = [...screen];
 		result[row] = compositeTuiLine(result[row] ?? "", padded, clip.x, available, width);
+		this.decoratedRows.set(row, { x: clip.x, width: available });
 		return result;
 	}
 

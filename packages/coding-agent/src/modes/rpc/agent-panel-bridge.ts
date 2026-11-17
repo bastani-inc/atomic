@@ -499,6 +499,8 @@ export function bindAgentPanel(
 	let cachedFaded = -1;
 	let cachedHiddenBelow = -1;
 	let cachedMain = false;
+	/** The rows the widget last drew, which a click is resolved against. */
+	let painted: { rows: readonly AgentPanelRow[]; hiddenBelow: number; main: boolean } | undefined;
 	let cachedLines: string[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
 
@@ -589,16 +591,18 @@ export function bindAgentPanel(
 						cachedLines = [];
 					},
 					handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-						if (!visible || inspector === undefined || !isSingleLeftClick(event)) return undefined;
+						if (!visible || inspector === undefined || painted === undefined || !isSingleLeftClick(event))
+							return undefined;
+						// The rows the reader saw: the panel's rows can change before it paints them again.
 						const id = agentPanelRowIdAtLine(
-							currentRows,
-							{ hiddenBelow: currentHiddenBelow, showMain: currentMain },
+							painted.rows,
+							{ hiddenBelow: painted.hiddenBelow, showMain: painted.main },
 							event.y,
 						);
 						if (id === undefined) return undefined;
 						// The main row is the chat the reader is already in.
 						if (id === AGENT_PANEL_MAIN_ID) return { handled: true };
-						const row = currentRows.find((candidate) => candidate.id === id);
+						const row = painted.rows.find((candidate) => candidate.id === id);
 						if (row === undefined) return undefined;
 						openPanelRow(session, inspector, materializePanelItem(row), report).catch(report);
 						return { handled: true };
@@ -635,6 +639,7 @@ export function bindAgentPanel(
 									}
 								}
 							}
+							painted = { rows: currentRows, hiddenBelow: currentHiddenBelow, main: currentMain };
 							if (!Number.isFinite(w)) {
 								return renderAgentPanelRows(currentRows, w, THEMED_STYLE, {
 									frame: atomicWorkingFrame(),
@@ -825,6 +830,10 @@ export async function showAgentPanel(
 				let cachedSelectedId: string | undefined;
 				let cachedScroll = -1;
 				let cachedMain = false;
+				/** The rows and view the focused panel last drew, which a click is resolved against. */
+				let paintedFocus:
+					| { rows: readonly AgentPanelRow[]; selectedId: string; scroll: number; showMain: boolean }
+					| undefined;
 				let cachedFrame = -1;
 				let cachedFaded = -1;
 				let cachedRowLines: string[] = [];
@@ -925,12 +934,10 @@ export async function showAgentPanel(
 						cachedRowLines = [];
 					},
 					handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-						if (focus.helpOpen || !isSingleLeftClick(event)) return undefined;
-						const id = agentPanelRowIdAtLine(
-							currentRows,
-							{ selectedId: focus.selectedId, scroll: focus.scroll, showMain: focus.showMain },
-							event.y,
-						);
+						if (focus.helpOpen || paintedFocus === undefined || !isSingleLeftClick(event)) return undefined;
+						// The rows the reader saw: the panel's rows can change before it paints them again.
+						const { rows, ...view } = paintedFocus;
+						const id = agentPanelRowIdAtLine(rows, view, event.y);
 						if (id === undefined) return undefined;
 						try {
 							focus.click(id);
@@ -949,6 +956,7 @@ export async function showAgentPanel(
 								refreshRows();
 								syncTick();
 							}
+							paintedFocus = undefined;
 							if (focus.helpOpen)
 								return renderNavKeyOverlay(
 									"keys · agents",
@@ -1006,6 +1014,12 @@ export async function showAgentPanel(
 								}
 							}
 							focus.notePainted(currentRows.slice(focus.scroll, focus.scroll + AGENT_PANEL_FOCUSED_ROWS));
+							paintedFocus = {
+								rows: currentRows,
+								selectedId: focus.selectedId,
+								scroll: focus.scroll,
+								showMain: focus.showMain,
+							};
 							return [...rowLines, truncateToWidth(renderAgentPanelHint(focus, w, style, keys), w)];
 						} catch (error) {
 							report(error);

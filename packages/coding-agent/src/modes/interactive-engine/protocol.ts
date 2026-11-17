@@ -117,6 +117,8 @@ export type InteractiveEngineMessage =
 			requestId: number;
 			lines: string[];
 			scrollRequest?: WidgetScrollRequest;
+			/** The frame's number, counting the component's frames from 1; a click names the frame it landed on. */
+			frame?: number;
 	  }
 	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
 	| { type: "engine_custom_invalidate"; componentId: string }
@@ -210,8 +212,19 @@ export type InteractiveEngineCommand =
 			hostMode?: TuiMode;
 	  }
 	| { type: "engine_custom_input"; componentId: string; requestId: number; data: string }
-	/** A single left click the host drew on the component, at the row and column within it and its drawn size. */
-	| { type: "engine_custom_click"; componentId: string; x: number; y: number; width: number; height: number }
+	/**
+	 * A single left click the host drew on the component, at the row and column within it and its drawn size, on the
+	 * frame numbered `frame`. A click on a frame the engine has since replaced is dropped.
+	 */
+	| {
+			type: "engine_custom_click";
+			componentId: string;
+			frame: number;
+			x: number;
+			y: number;
+			width: number;
+			height: number;
+	  }
 	| { type: "engine_custom_copy_result"; componentId: string; requestId: number; error?: string }
 	| { type: "engine_custom_scroll"; componentId: string; state: WidgetScrollState }
 	| { type: "engine_custom_dispose"; componentId: string }
@@ -640,6 +653,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						componentId: value.componentId,
 						requestId: value.requestId,
 						lines: value.lines,
+						...(isCellCount(value.frame) ? { frame: value.frame } : {}),
 						...(isJsonObject(value.scrollRequest) &&
 						typeof value.scrollRequest.version === "number" &&
 						typeof value.scrollRequest.scrollTop === "number"
@@ -801,6 +815,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		return { type: value.type, componentId: value.componentId, requestId: value.requestId, data: value.data };
 	if (
 		value.type === "engine_custom_click" &&
+		isCellCount(value.frame) &&
 		isCellCount(value.x) &&
 		isCellCount(value.y) &&
 		isCellCount(value.width) &&
@@ -809,6 +824,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		return {
 			type: value.type,
 			componentId: value.componentId,
+			frame: value.frame,
 			x: value.x,
 			y: value.y,
 			width: value.width,

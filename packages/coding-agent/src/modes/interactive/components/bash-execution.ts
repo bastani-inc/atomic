@@ -74,6 +74,13 @@ export class BashExecutionComponent extends Container {
 		return this.expanded;
 	}
 
+	/** The `$ command` row, under the spacer and the top border the component starts with. */
+	headerRows(width: number): readonly number[] {
+		const [spacer, border] = this.children;
+		const above = (spacer?.render(width).length ?? 0) + (border?.render(width).length ?? 0);
+		return this.render(width).length > above ? [above] : [];
+	}
+
 	setOutputPad(outputPad: number): void {
 		this.outputPad = outputPad;
 		this.updateDisplay();

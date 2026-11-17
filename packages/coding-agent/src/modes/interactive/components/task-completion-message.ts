@@ -569,6 +569,20 @@ export class TaskCompletionMessage implements Component {
 		return this.expanded;
 	}
 
+	/** Each notice's first row, its `● … finished` line; notices after the first follow a blank row. */
+	headerRows(width: number): readonly number[] {
+		if (width < 1) return [];
+		const rows: number[] = [];
+		let row = 0;
+		for (const [index, notice] of this.notices.entries()) {
+			if (index > 0) row += 1;
+			const lines = this.renderNotice(notice, width);
+			if (lines.length > 0) rows.push(row);
+			row += lines.length;
+		}
+		return rows;
+	}
+
 	setExpanded(expanded: boolean): void {
 		if (this.expanded === expanded) return;
 		this.expanded = expanded;
