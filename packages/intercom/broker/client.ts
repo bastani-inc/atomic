@@ -160,7 +160,8 @@ const HELD_SEND_GRACE_MS = 5000;
 const HEARD_OUTCOMES_MAX = 1_000;
 
 /** #5352: whether two reach policies hold the same home and reachable groups, in the same order. */
-function sameReach(left: IntercomReachPolicy, right: IntercomReachPolicy): boolean {
+export function sameReachPolicy(left: IntercomReachPolicy | undefined, right: IntercomReachPolicy | undefined): boolean {
+	if (left === undefined || right === undefined) return left === right;
 	return (
 		left.home === right.home &&
 		left.reachable.length === right.reachable.length &&
@@ -1636,7 +1637,7 @@ export class IntercomClient extends EventEmitter {
   syncReach(): Promise<void> {
     const reach = this.reachSource?.();
     const sent = this.sentReach;
-    if (reach === undefined || sent === undefined || !this._sessionId || sameReach(sent, reach)) return Promise.resolve();
+    if (reach === undefined || sent === undefined || !this._sessionId || sameReachPolicy(sent, reach)) return Promise.resolve();
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
