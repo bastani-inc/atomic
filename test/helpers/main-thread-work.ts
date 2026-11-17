@@ -1,8 +1,34 @@
 import { createHook } from "node:async_hooks";
+import { constants, getPriority, setPriority } from "node:os";
 import { clearInterval, setInterval } from "node:timers";
 
 const SAMPLE_INTERVAL_MS = 5;
 const INITIAL_CALLBACK_ID = -1;
+const isWindows = process.platform === "win32";
+
+let measurementsInProgress = 0;
+let restorePriority: (() => void) | undefined;
+
+function runAheadOfOtherProcesses(): () => void {
+	if (!isWindows) return () => {};
+	measurementsInProgress += 1;
+	if (measurementsInProgress === 1) {
+		try {
+			const previous = getPriority();
+			if (previous > constants.priority.PRIORITY_HIGH) {
+				setPriority(constants.priority.PRIORITY_HIGH);
+				restorePriority = () => setPriority(previous);
+			}
+		} catch {}
+	}
+	return () => {
+		measurementsInProgress -= 1;
+		if (measurementsInProgress > 0) return;
+		const restore = restorePriority;
+		restorePriority = undefined;
+		restore?.();
+	};
+}
 
 export async function longestMainThreadBlockMs(work: () => Promise<void>): Promise<number> {
 	const callbacks: number[] = [];
@@ -24,8 +50,9 @@ export async function longestMainThreadBlockMs(work: () => Promise<void>): Promi
 		occupiedMs = 0;
 	}, SAMPLE_INTERVAL_MS);
 	sampler.unref();
-	hook.enable();
+	const finishMeasurement = runAheadOfOtherProcesses();
 	try {
+		hook.enable();
 		let pending: Promise<void>;
 		before(INITIAL_CALLBACK_ID);
 		try {
@@ -39,5 +66,6 @@ export async function longestMainThreadBlockMs(work: () => Promise<void>): Promi
 	} finally {
 		hook.disable();
 		clearInterval(sampler);
+		finishMeasurement();
 	}
 }

@@ -1220,6 +1220,9 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 		},
 	);
 
+	// In a 12-iteration, six-way parallel Windows run, repeated bursts at normal priority reached about 90 ms in
+	// continuations that recorded no thread CPU time, while bursts at high priority under the same load stayed within
+	// 3 ms. That excess is waiting for a CPU, so the measurement runs this process ahead of other processes.
 	it.skipIf(!isWindows)(
 		"a burst of new session temp directories reads the private root once without blocking the main thread (#5285)",
 		async () => {
