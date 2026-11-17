@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- Web search, fetch and video tools read their configuration, browser cookies and media files without blocking the session's event loop
+- Web search, fetch and video tools read their configuration, browser cookies, media files and cloned GitHub repositories without blocking the session's event loop
 - On Windows, GitHub clone cache checks no longer pause the main thread. A configuration load still waiting for its private directory cannot restore old settings after the session resets its configuration ([#5285](https://github.com/bastani-inc/atomic/issues/5285))
 
 ## [0.9.88] - 2026-11-16
