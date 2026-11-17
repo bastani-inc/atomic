@@ -4,17 +4,32 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { processStartToken, setNativeProcessCreationTimeForTesting } from "../src/core/process-start-token.ts";
+import { lockHolderPath } from "../src/core/lock-holder.ts";
+import {
+	lockHolder,
+	setNativeLocksForTesting,
+	takeoverMutexPath,
+	takeTakeoverMutex,
+} from "../src/core/lock-takeover.ts";
+import {
+	processStartToken,
+	readProcessStartToken,
+	setNativeProcessCreationTimeForTesting,
+} from "../src/core/process-start-token.ts";
 import { claimSession, prepareSessionClaim } from "../src/core/session-claims.ts";
 import {
 	findSessionOpenHolder,
 	holdSessionOpenMarker,
 	prepareSessionOpenMarkers,
 } from "../src/core/session-open-markers.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
+import { FileSettingsStorage } from "../src/core/settings-storage.ts";
+import type { SettingsScope } from "../src/core/settings-types.ts";
 import { HOST, holderRuns, thisProcess } from "../src/core/worktree-snapshot/process-holder.ts";
 
 const windows = process.platform === "win32";
 const GONE_START = "abcdefabcdef";
+const MISSING_PID = 2 ** 22 + 7;
 const UNSTARTED_LIMIT_MS = 60_000;
 const POWERSHELL_READS_TIMEOUT_MS = 60_000;
 
@@ -27,6 +42,7 @@ beforeEach(() => {
 
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
+	setNativeLocksForTesting(undefined);
 	setNativeProcessCreationTimeForTesting(undefined);
 	rmSync(agentDir, { recursive: true, force: true });
 });
@@ -130,6 +146,145 @@ describe("callers reading starts without the native module (#5315)", () => {
 				true,
 			);
 			assert.equal((await thisProcess()).start, own);
+		},
+		POWERSHELL_READS_TIMEOUT_MS,
+	);
+
+	test.skipIf(!windows)(
+		"a settings save takes over a dead holder whose process id a running process now has, without the native start reader (#5315)",
+		async () => {
+			const later = await runningProcess();
+			const settingsPath = join(agentDir, "settings.json");
+			const lockPath = `${settingsPath}.lock`;
+			writeFileSync(settingsPath, "{}");
+			mkdirSync(lockPath, { recursive: true });
+			writeFileSync(
+				lockHolderPath(lockPath),
+				JSON.stringify({ host: hostname(), pid: later.pid, started: GONE_START, lock: lockHolder(lockPath) }),
+			);
+			setNativeProcessCreationTimeForTesting(null);
+
+			const manager = SettingsManager.fromStorage(new FileSettingsStorage(agentDir, agentDir));
+			manager.setTheme("dark");
+			await manager.flush();
+
+			assert.deepEqual(manager.drainErrors(), []);
+			assert.equal((JSON.parse(readFileSync(settingsPath, "utf8")) as { theme?: string }).theme, "dark");
+		},
+		POWERSHELL_READS_TIMEOUT_MS,
+	);
+
+	test.skipIf(!windows)(
+		"a settings lock's holder record names this process's start without the native start reader (#5315)",
+		async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			const lockPath = `${settingsPath}.lock`;
+			let holder: { pid?: number; started?: string } | undefined;
+			class InspectingSettingsStorage extends FileSettingsStorage {
+				override withPrimaryWriteLock(
+					scope: SettingsScope,
+					fn: (currentPrimary: string | undefined) => string | undefined,
+				): void {
+					super.withPrimaryWriteLock(scope, (current) => {
+						holder = JSON.parse(readFileSync(lockHolderPath(lockPath), "utf8")) as {
+							pid?: number;
+							started?: string;
+						};
+						return fn(current);
+					});
+				}
+			}
+			setNativeProcessCreationTimeForTesting(null);
+
+			const manager = SettingsManager.fromStorage(new InspectingSettingsStorage(agentDir, agentDir));
+			manager.setTheme("dark");
+			await manager.flush();
+
+			assert.deepEqual(manager.drainErrors(), []);
+			assert.equal(holder?.pid, process.pid);
+			assert.equal(holder?.started, await readProcessStartToken(process.pid));
+		},
+		POWERSHELL_READS_TIMEOUT_MS,
+	);
+
+	test.skipIf(!windows)(
+		"a lock takeover removes a dead mutex owner whose process id a running process now has, and names this process's start (#5315)",
+		async () => {
+			const own = processStartToken(process.pid);
+			const laterLockMutex = await runningProcess();
+			const laterClaimMutex = await runningProcess();
+			const settingsPath = join(agentDir, "settings.json");
+			const lockPath = `${settingsPath}.lock`;
+			writeFileSync(settingsPath, "{}");
+			mkdirSync(lockPath, { recursive: true });
+			writeFileSync(
+				lockHolderPath(lockPath),
+				JSON.stringify({ host: hostname(), pid: MISSING_PID, started: GONE_START, lock: lockHolder(lockPath) }),
+			);
+			const settingsMutexPath = takeoverMutexPath(lockPath);
+			mkdirSync(settingsMutexPath, { recursive: true });
+			writeFileSync(
+				join(settingsMutexPath, "owner"),
+				JSON.stringify({
+					id: "dead-settings-mutex",
+					host: hostname(),
+					pid: laterLockMutex.pid,
+					started: GONE_START,
+				}),
+			);
+			let mutexOwner: { pid?: number; started?: string } | undefined;
+			class InspectingMutexStorage extends FileSettingsStorage {
+				override withPrimaryWriteLock(
+					scope: SettingsScope,
+					fn: (currentPrimary: string | undefined) => string | undefined,
+				): void {
+					super.withPrimaryWriteLock(scope, (current) => {
+						const mutex = takeTakeoverMutex(lockPath);
+						assert.ok(mutex, "this process took the directory mutex");
+						try {
+							mutexOwner = JSON.parse(readFileSync(join(settingsMutexPath, "owner"), "utf8")) as {
+								pid?: number;
+								started?: string;
+							};
+						} finally {
+							mutex.release();
+						}
+						return fn(current);
+					});
+				}
+			}
+			setNativeLocksForTesting(null);
+			setNativeProcessCreationTimeForTesting(null);
+
+			const manager = SettingsManager.fromStorage(new InspectingMutexStorage(agentDir, agentDir));
+			manager.setTheme("dark");
+			await manager.flush();
+
+			assert.deepEqual(manager.drainErrors(), []);
+			assert.equal(mutexOwner?.pid, process.pid);
+			assert.equal(mutexOwner?.started, own);
+
+			const sessionId = "55555555-5555-4555-8555-555555555555";
+			const claimFilePath = join(agentDir, "session-claims", `${sessionId}.json`);
+			mkdirSync(join(agentDir, "session-claims"), { recursive: true });
+			writeFileSync(
+				claimFilePath,
+				JSON.stringify({ token: "gone", pid: MISSING_PID, host: hostname(), started: GONE_START }),
+			);
+			const claimMutexPath = takeoverMutexPath(claimFilePath);
+			mkdirSync(claimMutexPath, { recursive: true });
+			writeFileSync(
+				join(claimMutexPath, "owner"),
+				JSON.stringify({ id: "dead-claim-mutex", host: hostname(), pid: laterClaimMutex.pid, started: GONE_START }),
+			);
+			setNativeProcessCreationTimeForTesting(null);
+
+			await prepareSessionClaim(sessionId, { agentDir });
+			cleanups.push(claimSession(sessionId, { agentDir }));
+
+			const claim = JSON.parse(readFileSync(claimFilePath, "utf8")) as { pid: number; started?: string };
+			assert.equal(claim.pid, process.pid);
+			assert.equal(claim.started, own);
 		},
 		POWERSHELL_READS_TIMEOUT_MS,
 	);
