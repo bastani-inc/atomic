@@ -329,7 +329,7 @@ test("keeps the untrusted warning when the startup trust prompt is declined", as
 
 	await mode.init();
 
-	assert.equal(transcript(chatContainer).includes(TRUST_WARNING), true);
+	await vi.waitFor(() => assert.equal(transcript(chatContainer).includes(TRUST_WARNING), true));
 });
 
 test("input typed before the startup trust prompt waits in the editor as a draft, with a notice", async () => {

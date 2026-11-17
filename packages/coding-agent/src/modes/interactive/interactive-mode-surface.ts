@@ -358,8 +358,8 @@ declare module "./interactive-mode-base.ts" {
 		showModelsSelector(): void;
 		showUserMessageSelector(): Promise<void>;
 		handleCloneCommand(): Promise<void>;
-		maybeSaveImplicitProjectTrustAfterReload(): boolean;
-		showTrustSelector(): void;
+		maybeSaveImplicitProjectTrustAfterReload(): Promise<boolean>;
+		showTrustSelector(): Promise<void>;
 		showTreeSelector(initialSelectedId?: string): Promise<void>;
 		showSessionSelector(): void;
 		handleResumeSession(
