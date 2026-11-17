@@ -754,12 +754,20 @@ interface StorageOwner {
 	readonly homeIdentity?: boolean;
 }
 
-function storageDecisionId(path: string): string | undefined {
+function storageDecisionMetadata(path: string): Pick<StorageHomeDecision, "id" | "targets"> | undefined {
 	const contents = readClaimFile(storageHomeDecisionFile(path));
 	if (contents === undefined) return undefined;
 	try {
-		const decision = JSON.parse(contents) as Pick<StorageHomeDecision, "id"> | null;
-		return decision !== null && typeof decision.id === "string" ? decision.id : undefined;
+		const decision = JSON.parse(contents) as Pick<StorageHomeDecision, "id" | "targets"> | null;
+		if (
+			decision === null ||
+			typeof decision !== "object" ||
+			(decision.id !== undefined && typeof decision.id !== "string") ||
+			(decision.targets !== undefined &&
+				(!Array.isArray(decision.targets) || decision.targets.some((target) => typeof target !== "string")))
+		)
+			return undefined;
+		return decision;
 	} catch {
 		return undefined;
 	}
@@ -773,7 +781,7 @@ function storageOwner(path: string, claimDirectory?: string): StorageOwner {
 		path: physical,
 		...(relativePath === undefined || isAbsolute(relativePath) ? {} : { relativePath: relativePath || "." }),
 		identity: homeIdentity ?? fileIdentity(path),
-		decisionId: storageDecisionId(path),
+		decisionId: storageDecisionMetadata(path)?.id,
 		directoryIdentity: fileIdentity(path),
 		homeIdentity: homeIdentity !== undefined,
 	};
@@ -811,28 +819,47 @@ function currentStorageOwnerPath(owner: StorageOwner, claimDirectory = dirname(o
 	const path = owner.relativePath === undefined ? owner.path : resolve(claimDirectory, owner.relativePath);
 	if (
 		owner.identity === undefined ||
-		fileIdentity(owner.homeIdentity ? storageHomeDecisionFile(path) : path) === owner.identity ||
-		(owner.directoryIdentity !== undefined && fileIdentity(path) === owner.directoryIdentity) ||
-		(owner.decisionId !== undefined && storageDecisionId(path) === owner.decisionId)
+		fileIdentity(owner.homeIdentity ? storageHomeDecisionFile(path) : path) === owner.identity
 	)
 		return path;
-	let directory: ReturnType<typeof opendirSync> | undefined;
-	let found: string | undefined;
-	let ambiguous = false;
-	try {
-		directory = opendirSync(claimDirectory);
-		for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
-			const candidate = join(claimDirectory, entry.name);
-			if (!isDirectory(candidate)) continue;
-			const identity = fileIdentity(owner.homeIdentity ? storageHomeDecisionFile(candidate) : candidate);
+	const exact: string[] = [];
+	const fallback: string[] = [];
+	const consider = (candidate: string): void => {
+		if (!isDirectory(candidate)) return;
+		const identity = fileIdentity(owner.homeIdentity ? storageHomeDecisionFile(candidate) : candidate);
+		let matches: string[];
+		if (identity === owner.identity) {
+			matches = exact;
+		} else {
+			const metadata = storageDecisionMetadata(candidate);
 			if (
-				identity !== owner.identity &&
-				(owner.decisionId === undefined || storageDecisionId(candidate) !== owner.decisionId) &&
+				(owner.decisionId === undefined || metadata?.id !== owner.decisionId) &&
 				(owner.directoryIdentity === undefined || fileIdentity(candidate) !== owner.directoryIdentity)
 			)
-				continue;
-			if (found !== undefined && !sameDirectory(found, candidate)) ambiguous = true;
-			found = candidate;
+				return;
+			const targets = [
+				...(metadata?.targets ?? []),
+				...configuredRelativeTargets(candidate, getHomeDir(), undefined, false),
+			];
+			const physicalCandidate = canonicalPath(candidate);
+			const ownTargets = targets.filter((target) =>
+				containsPath(physicalCandidate, canonicalPath(resolve(candidate, target))),
+			);
+			if (
+				hasOwnStoreEntries(candidate, claimDirectory, []) ||
+				hasRelativeTargetEntries(candidate, candidate, ownTargets, true)
+			)
+				return;
+			matches = fallback;
+		}
+		if (!matches.some((match) => sameDirectory(match, candidate))) matches.push(candidate);
+	};
+	let directory: ReturnType<typeof opendirSync> | undefined;
+	try {
+		consider(path);
+		directory = opendirSync(claimDirectory);
+		for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+			consider(join(claimDirectory, entry.name));
 		}
 	} catch {
 		return undefined;
@@ -841,8 +868,8 @@ function currentStorageOwnerPath(owner: StorageOwner, claimDirectory = dirname(o
 			directory?.closeSync();
 		} catch {}
 	}
-	if (ambiguous) throw new Error("Ambiguous storage owner identity");
-	return found;
+	const matches = exact.length > 0 ? exact : fallback;
+	return matches.length === 1 ? matches[0] : undefined;
 }
 
 function parentStorageOwner(parent: string): string | undefined {
@@ -1048,7 +1075,9 @@ function preferredTargetOwner(agentPath: string, parent: string, target: string)
 	if (parentOwner !== undefined && !sameDirectory(parentOwner, agentPath)) {
 		if (containsPath(canonicalPath(parentOwner), physical)) return parentOwner;
 		const decision = readStorageHomeDecision(storageHomeDecisionFile(parentOwner));
-		const ownerHome = decision?.home ?? parent;
+		const ownerHome = decision?.defaultHome
+			? (defaultHomeForAgent(parentOwner, defaultHome) ?? parent)
+			: (decision?.home ?? parent);
 		if (
 			containsPath(canonicalPath(join(ownerHome, "workflows")), physical) ||
 			pathsEqual(canonicalPath(join(ownerHome, "storage.sqlite")), physical)
