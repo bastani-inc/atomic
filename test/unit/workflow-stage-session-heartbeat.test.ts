@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { setImmediate as realTurn } from "node:timers/promises";
 import { afterEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
@@ -13,6 +14,16 @@ import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
 
 const HEARTBEAT_MS = 30_000;
+/** Bound on the real event-loop turns a fake-timer test gives a file-backed journal's writes to land. */
+const JOURNAL_IO_TURNS = 2_000;
+
+/** Waits, without moving fake time, until `predicate` holds: a journal on disk writes through real file I/O. */
+async function untilJournalHas(predicate: () => boolean): Promise<void> {
+	for (let turn = 0; turn < JOURNAL_IO_TURNS && !predicate(); turn++) {
+		await vi.advanceTimersByTimeAsync(0);
+		await realTurn();
+	}
+}
 const SERIAL_CONFIG = {
 	defaultConcurrency: 1,
 	maxDepth: 10,
@@ -246,26 +257,23 @@ describe("active workflow stage session durability", () => {
 				adapters: { agentSession: { create: async () => session } },
 			},
 		);
-		await vi.advanceTimersByTimeAsync(0);
-		const initial = backend
-			.listCheckpoints(rootId)
-			.filter(
-				(checkpoint): checkpoint is DurableStageCheckpoint =>
-					checkpoint.kind === "stage" && checkpoint.sessionFile === session.sessionFile,
-			);
+		const stageCheckpoints = () =>
+			backend
+				.listCheckpoints(rootId)
+				.filter(
+					(checkpoint): checkpoint is DurableStageCheckpoint =>
+						checkpoint.kind === "stage" && checkpoint.sessionFile === session.sessionFile,
+				);
+		await untilJournalHas(() => stageCheckpoints().length > 0);
+		const initial = stageCheckpoints();
 		assert.equal(initial.length, 1);
 		assert.notEqual(initial[0]?.topology?.run?.runId, rootId);
 		assert.equal(initial[0]?.workflowId, rootId);
 		const firstUpdatedAt = backend.getWorkflow(rootId)?.updatedAt;
 
 		await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
-		assert.equal(
-			backend
-				.listCheckpoints(rootId)
-				.filter((checkpoint) => checkpoint.kind === "stage" && checkpoint.sessionFile === session.sessionFile)
-				.length,
-			2,
-		);
+		await untilJournalHas(() => stageCheckpoints().length > 1);
+		assert.equal(stageCheckpoints().length, 2);
 		assert.ok((backend.getWorkflow(rootId)?.updatedAt ?? 0) > (firstUpdatedAt ?? 0));
 
 		release.resolve("done");
