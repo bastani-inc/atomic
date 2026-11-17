@@ -88,31 +88,28 @@ export function sessionRowTitle(session: SessionInfo): string {
 }
 
 const RESUME_HINT_DROP_ORDER = [
-	"to search",
-	"keys",
 	"path",
 	"hide path",
 	"named",
 	"all names",
 	"sort",
+	"delete",
+	"rename",
 	"scope",
 	"all",
 	"this folder",
-	"rename",
-	"delete",
+	"to search",
 	"select",
 	"preview",
 	"close preview",
+	"resume",
+	"keys",
+	"keep",
 ];
 
 function entryWidth(entry: NavKey, keybindings: NavKeybindings): number {
 	const keys = entry.action !== undefined ? navActionText(keybindings, entry.action) : (entry.keys ?? "");
 	return keys ? visibleWidth(`${keys} ${entry.label}`) : 0;
-}
-
-function joinedHintWidth(entries: readonly NavKey[], keybindings: NavKeybindings): number {
-	const widths = entries.map((entry) => entryWidth(entry, keybindings)).filter((width) => width > 0);
-	return widths.reduce((sum, width) => sum + width, 0) + visibleWidth(" · ") * Math.max(0, widths.length - 1);
 }
 
 function fitResumeHint(entries: readonly NavKey[], room: number, keybindings: NavKeybindings): NavKey[] {
@@ -121,13 +118,31 @@ function fitResumeHint(entries: readonly NavKey[], room: number, keybindings: Na
 	const kept = entries.map((_, index) => index);
 	let total = widths.reduce((sum, width) => sum + width, 0) + separator * Math.max(0, entries.length - 1);
 	for (const label of RESUME_HINT_DROP_ORDER) {
-		if (total <= room) break;
-		const at = kept.findIndex((index) => entries[index]!.label === label);
+		if (total <= room || kept.length <= 1) break;
+		const at = kept.findIndex(
+			(index) =>
+				entries[index]!.label === label && (entries[index]!.action !== "tui.select.confirm" || label === "resume"),
+		);
 		if (at < 0) continue;
 		total -= widths[kept[at]!]! + (kept.length > 1 ? separator : 0);
 		kept.splice(at, 1);
 	}
 	return kept.map((index) => entries[index]!);
+}
+
+function isSearchEditingKey(key: KeyId): boolean {
+	const id = keybindingIdentity(key);
+	if (id.length === 1) return true;
+	if (id.startsWith("shift+") && id.length === 7) return true;
+	return (
+		id === "space" ||
+		id === "backspace" ||
+		id === "delete" ||
+		id === "left" ||
+		id === "right" ||
+		id === "home" ||
+		id === "end"
+	);
 }
 
 /**
@@ -174,7 +189,7 @@ export class SessionList implements Component, Focusable {
 	public onDeleteSession?: (sessionPath: string, session: SessionInfo) => Promise<void>;
 	public onRenameSession?: (session: SessionInfo) => void;
 	public onError?: (message: string) => void;
-	private maxVisible: number = 6; // Max sessions visible (two lines each)
+	private maxVisible: number = 6;
 	private variant: SessionListVariant = "sessions";
 	private canDelete = true;
 	private canRename = false;
@@ -269,8 +284,15 @@ export class SessionList implements Component, Focusable {
 	}
 
 	setNameFilter(nameFilter: NameFilter): void {
+		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		this.nameFilter = nameFilter;
 		this.filterSessions(this.searchInput.getValue());
+		const index = this.findSessionIndex(
+			selected?.path,
+			selected?.id,
+			selected ? this.isWorkflowSession(selected) : undefined,
+		);
+		if (index >= 0) this.selectedIndex = index;
 	}
 
 	setSessions(sessions: SessionInfo[], showCwd: boolean, partial = false): void {
@@ -490,7 +512,15 @@ export class SessionList implements Component, Focusable {
 	render(width: number): string[] {
 		if (this.showingHelp) {
 			const kb = this.activeKeybindings();
-			return renderNavKeyOverlay("keys · resume", this.helpEntries(), width, HINT_STYLE, kb).map((line) =>
+			const helpKeys = this.availableHelpKeys().map(navKeyText);
+			const overlayKb: NavKeybindings =
+				helpKeys.length > 0
+					? {
+							matches: (data, action) => kb.matches(data, action),
+							getKeys: (action) => (action === "app.keys.help" ? helpKeys : (kb.getKeys?.(action) ?? [])),
+						}
+					: kb;
+			return renderNavKeyOverlay("keys · resume", this.helpEntries(), width, HINT_STYLE, overlayKb).map((line) =>
 				visibleWidth(line) > width ? truncateToWidth(line, width) : line,
 			);
 		}
@@ -681,11 +711,11 @@ export class SessionList implements Component, Focusable {
 	}
 
 	private availableHelpKeys(): readonly KeyId[] {
-		if (this.variant !== "mixed" || this.searchInput.getValue()) return [];
+		if (this.variant !== "mixed") return [];
 		const kb = this.activeKeybindings();
+		const query = this.searchInput.getValue();
 		const selected = this.filteredSessions[this.selectedIndex]?.session;
 		const isSession = selected !== undefined && !this.isWorkflowSession(selected);
-		const canUseSessionControls = selected === undefined || isSession;
 		const claimed = new Set([keybindingIdentity("ctrl+c")]);
 		const actionKeys = (action: string): readonly KeyId[] => (kb.getKeys?.(action) ?? []) as readonly KeyId[];
 		const claim = (action: string, enabled: boolean): void => {
@@ -697,9 +727,9 @@ export class SessionList implements Component, Focusable {
 		}
 		const canResume = selected !== undefined && !this.isDeleting(selected);
 		claim("tui.select.confirm", canResume);
-		claim("app.list.open", canResume);
-		if (selected) claimed.add(keybindingIdentity("space"));
-		claim("tui.input.tab", canUseSessionControls);
+		claim("app.list.open", canResume && !query);
+		if (selected && !query) claimed.add(keybindingIdentity("space"));
+		claim("tui.input.tab", true);
 		claim("app.session.rename", isSession && this.canRename && !this.isDeleting(selected!));
 		const canDelete =
 			selected !== undefined &&
@@ -709,10 +739,15 @@ export class SessionList implements Component, Focusable {
 			!this.isCurrentSession(selected);
 		claim("app.session.delete", canDelete);
 		claim("app.session.deleteNoninvasive", canDelete);
-		claim("app.session.toggleSort", this.filteredSessions.length > 1);
-		claim("app.session.toggleNamedFilter", canUseSessionControls);
+		claim("app.session.toggleSort", this.filteredSessions.length > 1 || Boolean(query));
+		claim("app.session.toggleNamedFilter", true);
 		claim("app.session.togglePath", isSession);
-		return actionKeys("app.keys.help").filter((key) => !claimed.has(keybindingIdentity(key)));
+		const configured = actionKeys("app.keys.help").filter(
+			(key) => !claimed.has(keybindingIdentity(key)) && (!query || !isSearchEditingKey(key)),
+		);
+		if (configured.length > 0) return configured;
+		if (query && !claimed.has(keybindingIdentity("f1"))) return ["f1" as KeyId];
+		return [];
 	}
 
 	private mixedHintParts(): { core: NavKey[]; extras: NavKey[]; help?: NavKey } {
@@ -730,9 +765,7 @@ export class SessionList implements Component, Focusable {
 		core.push({ keys: cancel, label: this.previewOpen ? "close" : query ? "clear" : "cancel" });
 
 		const extras: NavKey[] = [];
-		if (selectedIsSession || selected === undefined) {
-			extras.push({ action: "tui.input.tab", label: "scope" });
-		}
+		extras.push({ action: "tui.input.tab", label: "scope" });
 		if (selectedIsSession && this.canRename && !selectedDeleting) {
 			extras.push({ action: "app.session.rename", label: "rename" });
 		}
@@ -748,12 +781,10 @@ export class SessionList implements Component, Focusable {
 		if (this.filteredSessions.length > 1 || query) {
 			extras.push({ action: "app.session.toggleSort", label: "sort" });
 		}
-		if (selectedIsSession || selected === undefined) {
-			extras.push({
-				action: "app.session.toggleNamedFilter",
-				label: this.nameFilter === "named" ? "all names" : "named",
-			});
-		}
+		extras.push({
+			action: "app.session.toggleNamedFilter",
+			label: this.nameFilter === "named" ? "all names" : "named",
+		});
 		if (selectedIsSession) {
 			extras.push({ action: "app.session.togglePath", label: this.showPath ? "hide path" : "path" });
 		}
@@ -835,15 +866,6 @@ export class SessionList implements Component, Focusable {
 	private renderHint(width: number): string {
 		const kb = this.activeKeybindings();
 		const room = Math.max(1, width - 2);
-		if (this.variant === "mixed" && this.confirmingDeleteSession === null) {
-			const { core, extras, help } = this.mixedHintParts();
-			const full = [...core, ...extras, ...(help ? [help] : [])];
-			if (joinedHintWidth(full, kb) <= room) {
-				return renderNavHintLine(full, width, HINT_STYLE, kb);
-			}
-			const compact = [...core, ...(help ? [help] : [])];
-			return renderNavHintLine(fitResumeHint(compact, room, kb), width, HINT_STYLE, kb);
-		}
 		return renderNavHintLine(fitResumeHint(this.hintEntries(), room, kb), width, HINT_STYLE, kb);
 	}
 
@@ -872,7 +894,11 @@ export class SessionList implements Component, Focusable {
 				this.onCancel?.();
 				return true;
 			}
-			if (kb.matches(keyData, "tui.select.cancel") || kb.matches(keyData, "app.keys.help")) {
+			if (
+				kb.matches(keyData, "tui.select.cancel") ||
+				kb.matches(keyData, "app.keys.help") ||
+				this.availableHelpKeys().some((key) => matchesKey(keyData, keybindingIdentity(key) as KeyId))
+			) {
 				this.showingHelp = false;
 			}
 			return true;
@@ -880,6 +906,11 @@ export class SessionList implements Component, Focusable {
 
 		// Handle delete confirmation state first - intercept all keys
 		if (this.confirmingDeleteSession !== null) {
+			if (matchesKey(keyData, "ctrl+c")) {
+				this.setConfirmingDeleteSession(null);
+				this.onCancel?.();
+				return true;
+			}
 			if (kb.matches(keyData, "tui.select.confirm")) {
 				const session = this.confirmingDeleteSession;
 				this.setConfirmingDeleteSession(null);
@@ -910,9 +941,7 @@ export class SessionList implements Component, Focusable {
 		}
 
 		const selected = this.filteredSessions[this.selectedIndex];
-		const canUseSessionControls =
-			this.variant === "sessions" ||
-			(this.variant === "mixed" && (!selected || !this.isWorkflowSession(selected.session)));
+		const canUseSessionControls = this.variant !== "runs";
 
 		if (kb.matches(keyData, "tui.input.tab")) {
 			if (canUseSessionControls) this.onToggleScope?.();
@@ -1006,7 +1035,7 @@ export class SessionList implements Component, Focusable {
 			(kb.matches(keyData, "app.list.open") && !this.searchInput.getValue())
 		) {
 			this.selectSession();
-		} else if (kb.matches(keyData, "tui.select.cancel")) {
+		} else if (kb.matches(keyData, "tui.select.cancel") || matchesKey(keyData, "ctrl+c")) {
 			if (this.searchInput.getValue() && !matchesKey(keyData, "ctrl+c")) this.clearSearch();
 			else this.onCancel?.();
 		}

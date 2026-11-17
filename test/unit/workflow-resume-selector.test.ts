@@ -362,7 +362,7 @@ describe("workflow resume selector row presentation", () => {
 describe("workflow resume picker rows: a title and one detail line (#5224)", () => {
 	const NOW = 10_000_000;
 
-	test("a live run's title names the workflow and its identity; its detail is status · stage · elapsed · cost", () => {
+	test("a live run's title names the workflow and its identity; its detail is status · stage · age · elapsed · cost", () => {
 		const run: RunSnapshot = {
 			...pausedLiveRun("run-ship", NOW - 60_000),
 			name: "ralph",
@@ -380,7 +380,7 @@ describe("workflow resume picker rows: a title and one detail line (#5224)", () 
 		};
 		const [item] = workflowResumeSelectorItems([run], [], [], undefined, undefined, NOW);
 		assert.equal(item?.session.title, "ralph · fix the shipping benchmark");
-		assert.equal(item?.session.detail, "paused · stage 3/5 implement · 41m · $1.84");
+		assert.equal(item?.session.detail, "paused · stage 3/5 implement · 1m ago · 41m · $1.84");
 	});
 
 	test("a finished run's detail says how long ago it ended; a failed run's says why", () => {
@@ -636,7 +636,7 @@ describe("workflow resume picker rows: a title and one detail line (#5224)", () 
 		);
 		const byId = new Map(items.map((item) => [item.session.id, item]));
 
-		assert.equal(byId.get("quit-live")?.session.detail, "paused · stage 2/3 build · 1m");
+		assert.equal(byId.get("quit-live")?.session.detail, "paused · stage 2/3 build · just now · 1m");
 		assert.equal(byId.get("quit-live")?.session.messageColor, "warning");
 		assert.equal(toWorkflowPickerRow(byId.get("quit-live")!).canDelete, false);
 

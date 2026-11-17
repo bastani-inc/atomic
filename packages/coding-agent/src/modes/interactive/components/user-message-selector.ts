@@ -6,12 +6,9 @@ interface UserMessageItem {
 	timestamp?: string; // Optional timestamp if available
 }
 
-/**
- * The fork picker: the session's user messages as two-line rows (the message, then its place in the history), newest
- * selected, with type-to-search. Enter forks from the chosen message.
- */
 export class UserMessageSelectorComponent extends FramedSelector<string> {
-	readonly onSelect: (entryId: string) => void;
+	onSelect: (entryId: string) => void;
+	onCancel: () => void;
 
 	constructor(
 		messages: UserMessageItem[],
@@ -19,12 +16,17 @@ export class UserMessageSelectorComponent extends FramedSelector<string> {
 		onCancel: () => void,
 		initialSelectedId?: string,
 	) {
-		const items: SelectorItem<string>[] = messages.map((message, index) => ({
-			id: message.id,
-			value: message.id,
-			label: message.text.replace(/\s+/g, " ").trim(),
-			description: `message ${index + 1} of ${messages.length}`,
-		}));
+		const items: SelectorItem<string>[] = messages.map((message, index) => {
+			const label = message.text.replace(/\s+/g, " ").trim();
+			return {
+				id: message.id,
+				value: message.id,
+				label,
+				description: `message ${index + 1} of ${messages.length}`,
+				searchText: label,
+				searchTextMode: "replace",
+			};
+		});
 		const fallback = messages.at(-1)?.id;
 		super({
 			title: "Fork from message",
@@ -40,14 +42,15 @@ export class UserMessageSelectorComponent extends FramedSelector<string> {
 				: fallback !== undefined
 					? { initialId: fallback }
 					: {}),
-			onSelect: (item) => onSelect(item.value),
-			onCancel,
+			onSelect: (item) => this.onSelect(item.value),
+			onCancel: () => this.onCancel(),
 		});
 		this.onSelect = onSelect;
+		this.onCancel = onCancel;
 
 		// Auto-cancel if no messages
 		if (messages.length === 0) {
-			setTimeout(() => onCancel(), 100);
+			setTimeout(() => this.onCancel(), 100);
 		}
 	}
 

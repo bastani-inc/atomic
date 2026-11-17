@@ -78,6 +78,7 @@ test("one dim hint line names exactly the screen's keys and fits 80 and 160 colu
 	// Narrow terminals drop whole entries from the end instead of cutting one mid-word.
 	const narrow = renderNavHintLine(KEYS, 37, plainStyle, keys);
 	assert.equal(narrow, "  esc back to prompt · ? keys");
+	assert.ok(visibleWidth(renderNavHintLine(KEYS, 8, plainStyle, keys)) <= 8);
 	for (const width of [1, 2, 8]) {
 		const single = [{ keys: "esc", label: "cancel this picker" }];
 		assert.ok(visibleWidth(renderNavHintLine(single, width, plainStyle, keys)) <= width);

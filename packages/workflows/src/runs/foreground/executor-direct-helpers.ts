@@ -16,10 +16,12 @@ import {
 	type WorktreeSetup,
 } from "../shared/worktree.js";
 import { resolveWorktreeStageCwd } from "../shared/worktree-cwd.js";
+import { resolveInvocationGitBranch } from "../shared/worktree-git.js";
 import { withoutUndefinedProperties, withSharedDefaults } from "./executor-task-prompts.js";
 
 export type { GitWorktreeSetupCache } from "../shared/worktree.js";
 export { createGitWorktreeSetupCache, createGitWorktreeSetupCacheOwner } from "../shared/worktree.js";
+export { resolveInvocationGitBranch } from "../shared/worktree-git.js";
 
 export function positiveConcurrency(value: number | undefined): number | undefined {
 	if (typeof value !== "number" || !Number.isFinite(value) || value < 1) return undefined;
@@ -227,14 +229,17 @@ export function workflowInvocationMetadata(
 	readonly workflowCwd?: string;
 	readonly repositoryRoot?: string;
 	readonly gitWorktreeRoot?: string;
+	readonly branch?: string;
 	readonly origin?: WorkflowActor;
 } {
 	const setup = setupWorkflowInputGitWorktree(inputDefaults, workflowInvocationCwd, cache);
+	const branch = resolveInvocationGitBranch(setup?.cwd ?? workflowInvocationCwd);
 	return {
 		invocationCwd: workflowInvocationCwd,
 		...(setup !== undefined
 			? { workflowCwd: setup.cwd, repositoryRoot: setup.repositoryRoot, gitWorktreeRoot: setup.worktreeRoot }
 			: {}),
+		...(branch !== undefined ? { branch } : {}),
 		...(origin !== undefined ? { origin } : {}),
 	};
 }

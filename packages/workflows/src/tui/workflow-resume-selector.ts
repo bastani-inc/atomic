@@ -221,10 +221,12 @@ function resolveRunBranch(
 ): string | undefined {
 	const branch =
 		handle?.workspace?.branch ??
+		handle?.branch ??
 		(entry as { readonly workspace?: { readonly branch?: string } } | undefined)?.workspace?.branch ??
+		entry?.branch ??
 		(run as { readonly workspace?: { readonly branch?: string }; readonly branch?: string } | undefined)?.workspace
 			?.branch ??
-		(run as { readonly branch?: string } | undefined)?.branch;
+		run?.branch;
 	return branch?.trim() || undefined;
 }
 
@@ -363,6 +365,11 @@ function cachedDurableRunSnapshot(
 					: priorDurationMs !== undefined
 						? { accumulatedDurationMs: priorDurationMs }
 						: {}),
+				...(handle.branch !== undefined
+					? { branch: handle.branch }
+					: entry.branch !== undefined
+						? { branch: entry.branch }
+						: {}),
 				resumable: entry.resumable ?? true,
 			};
 		}
@@ -475,7 +482,7 @@ function liveRunSession(
 	const detail = joinDetail([
 		presentation.label,
 		runStageText(run, run.possibleStages ?? handle?.possibleStages),
-		run.endedAt !== undefined ? shortAgo(now - run.endedAt) : undefined,
+		shortAgo(now - modified.getTime()),
 		shortDuration(elapsedRunMs(run, now)),
 		cost,
 		branch,

@@ -509,6 +509,59 @@ describe("workflow resume selector host-picker path", () => {
 		await flush();
 		assert.equal(picker.updates.length, 0, "late hydration pushes no update after settle");
 	});
+
+	test("settling while refresh is in flight suppresses the late refresh update and keeps the settled catalog (#5256)", async () => {
+		const picker = makeFakeHostPicker();
+		let onChange: (() => void) | undefined;
+		let beginRefresh!: () => void;
+		let resolveRefresh!: (next: { liveRuns: readonly RunSnapshot[]; catalog: WorkflowResumeCatalogRows }) => void;
+		const refreshStarted = new Promise<void>((resolve) => {
+			beginRefresh = resolve;
+		});
+		const promise = openWorkflowResumeSelector(
+			{ hostSessionPicker: picker.hostSessionPicker },
+			[],
+			async () => ({ durable: [entry("durable-a", "paused")], completed: [] }),
+			{
+				refreshIntervalMs: 0,
+				watch: (change) => {
+					onChange = change;
+					return () => {};
+				},
+				refresh: () => {
+					beginRefresh();
+					return new Promise((resolve) => {
+						resolveRefresh = resolve;
+					});
+				},
+			},
+		);
+		await flush();
+		assert.ok(onChange);
+		const updatesAfterHydrate = picker.updates.length;
+
+		onChange();
+		await refreshStarted;
+
+		picker.cancel();
+		const outcome = await promise;
+		assert.deepEqual(outcome.result, { kind: "close" });
+		assert.deepEqual(
+			outcome.catalog.durable.map((row) => row.workflowId),
+			["durable-a"],
+		);
+
+		resolveRefresh({
+			liveRuns: [pausedLiveRun("late-live", 300)],
+			catalog: { durable: [entry("late-durable", "paused")], completed: [] },
+		});
+		await flush();
+		assert.equal(picker.updates.length, updatesAfterHydrate, "late refresh pushes no update after settle");
+		assert.deepEqual(
+			outcome.catalog.durable.map((row) => row.workflowId),
+			["durable-a"],
+		);
+	});
 });
 
 describe("workflow resume selector host-picker end-to-end (real engine bridge)", () => {

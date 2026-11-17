@@ -469,6 +469,7 @@ When external data used by a custom `style` or an extra key's `enabled` callback
 `SelectorState` holds a picker's search, selection and checked rows without drawing anything, and `selectorHintEntries(state, options)` returns the keys its hint line lists, so you can test a picker's behaviour without rendering it. `themeSelectorStyle()` returns the active theme's picker colours; pass `style: PLAIN_SELECTOR_STYLE` for output without colour.
 
 For live lists, call `selector.setItems(nextItems)` and then `tui.requestRender()`. Updates keep the search text and selected item by its `id`. If that item disappears, becomes disabled, or no longer matches the search, selection moves to the first enabled match. Checked items that disappear are removed from the selection.
+`UserMessageSelectorComponent` is the `/fork` picker built on the same `Selector`. `new UserMessageSelectorComponent(messages, onSelect, onCancel, initialSelectedId?)` takes the session's user messages oldest first as `{ id, text }`, shows each as a two-line row, selects `initialSelectedId` or else the newest message, and filters by message text as you type. It is a selector component rather than a `Container` holding a list, so focus the component itself. `getMessageList()` returns the component, and `onSelect` and `onCancel` are assignable properties that Enter and Esc call.
 
 ### Pattern 1b: Selection Dialog (SelectList)
 

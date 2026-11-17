@@ -21,6 +21,7 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { presentQuestionnaire } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { linkSharedTranspileCache } from "../../packages/coding-agent/test/helpers/shared-transpile-cache.ts";
 
 /**
  * Structural cost, not a slow test: each case constructs a real InteractiveMode
@@ -156,6 +157,8 @@ async function seedTranscript(mode: InteractiveMode): Promise<void> {
 async function createCompactingMode(): Promise<CompactingMode> {
 	process.env[ENV_OFFLINE] = "1";
 	const agentDir = mkdtempSync(join(tmpdir(), "atomic-compaction-views-agent-"));
+	// Each mode loads the builtin packages; the run's shared cache spares compiling their graph again every time.
+	linkSharedTranspileCache(agentDir);
 	process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 	setKeybindings(KeybindingsManager.create(agentDir));
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-compaction-views-cwd-"));

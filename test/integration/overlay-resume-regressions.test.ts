@@ -219,7 +219,7 @@ describe("workflow resume — durable regression coverage", () => {
 		assert.ok(customCalls.length >= 1);
 		const rendered = visibleText(customCalls[0]!.component.render(100));
 		assert.match(rendered, /Resume workflow run/);
-		assert.match(rendered, /durable-tree-wf\s+paused · /);
+		assert.match(rendered, /durable-tree-wf\s+paused · just now/);
 		assert.doesNotMatch(rendered, /Resumable workflows/);
 
 		customCalls[0]!.component.handleInput?.("\u001b");
@@ -263,7 +263,7 @@ describe("workflow resume — durable regression coverage", () => {
 		const rendered = visibleText(customCalls[0]!.component.render(100));
 		assert.doesNotMatch(rendered, /old-missing-definition/);
 		assert.doesNotMatch(rendered, /old-running-definition/);
-		assert.match(rendered, /visible-paused-definition\s+paused · /);
+		assert.match(rendered, /visible-paused-definition\s+paused · just now/);
 
 		customCalls[0]!.component.handleInput?.("\u001b");
 		await handlerPromise;
@@ -441,7 +441,7 @@ describe("workflow resume — durable regression coverage", () => {
 		let resumeCalls = 0;
 		const runtime = {
 			durableBackend: currentStoreBackend,
-			registry: { has: () => true },
+			registry: { has: () => true, get: () => undefined },
 			prepareDurableResumable: async () => [entry],
 			prepareCompletedDurable: async () => [],
 			resumeDurableWorkflow: () => {

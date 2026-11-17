@@ -441,7 +441,9 @@ test.each(["stage-chat", "workflow-answer", "escape"] as const)(
 		assert.match(rendered, /Nested confirmation\?/);
 		assert.match(rendered, /esc cancel/);
 		assert.doesNotMatch(rendered, /esc close/i);
-		const footer = stripAnsi(renderFooterWithOrchestratorReturnHint(view as never, 80, ["stage footer"]).join("\n"));
+		const footerRows = renderFooterWithOrchestratorReturnHint(view as never, 80, ["stage footer"]);
+		assert.equal(footerRows.length, 1);
+		const footer = stripAnsi(footerRows[0]!);
 		assert.match(footer, /esc cancel/);
 		assert.doesNotMatch(footer, /esc close/i);
 		assert.doesNotMatch(rendered, /CUSTOM-WAITING/);
@@ -531,7 +533,9 @@ test.each(["select", "input", "editor"] as const)(
 		assert.match(rendered, /esc cancel/);
 		assert.doesNotMatch(rendered, /esc close/i);
 		assert.doesNotMatch(rendered, /← (?:return to )?graph/);
-		const footer = stripAnsi(renderFooterWithOrchestratorReturnHint(view as never, 80, ["stage footer"]).join("\n"));
+		const footerRows = renderFooterWithOrchestratorReturnHint(view as never, 80, ["stage footer"]);
+		assert.equal(footerRows.length, 1);
+		const footer = stripAnsi(footerRows[0]!);
 		assert.match(footer, /esc cancel/);
 		assert.doesNotMatch(footer, /esc close/i);
 		view.handleInput("\x1b");

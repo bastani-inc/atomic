@@ -12,6 +12,7 @@ import { theme } from "../theme/theme.js";
 import { formatKeyText } from "./keybinding-hints.js";
 import type { TreeList } from "./tree-selector-list.ts";
 
+/** Component that displays the current search query */
 export class SearchLine implements Component, Focusable {
 	focused = false;
 	private readonly treeList: TreeList;
@@ -51,6 +52,7 @@ export class SearchLine implements Component, Focusable {
 	}
 }
 
+/** Component that renders tree help as semantic rows with chunk-aware wrapping */
 export class TreeHelp implements Component {
 	invalidate(): void {}
 

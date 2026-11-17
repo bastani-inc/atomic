@@ -1,4 +1,13 @@
-import { type Component, Container, type Focusable, getKeybindings, Input, Spacer, Text } from "@bastani/atomic-tui";
+import {
+	type Component,
+	Container,
+	type Focusable,
+	getKeybindings,
+	Input,
+	matchesKey,
+	Spacer,
+	Text,
+} from "@bastani/atomic-tui";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { SessionInfo, SessionListProgress } from "../../../core/session-manager.ts";
 import { assertSessionNotOpenElsewhere } from "../../../core/session-open-markers.js";
@@ -22,6 +31,11 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	handleInput(data: string): boolean {
 		if (this.mode === "rename") {
 			const kb = getKeybindings();
+			if (matchesKey(data, "ctrl+c")) {
+				this.exitRenameMode();
+				this.sessionList.onCancel?.();
+				return true;
+			}
 			if (kb.matches(data, "tui.select.cancel")) {
 				this.exitRenameMode();
 				return true;
@@ -238,7 +252,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 							? "Session moved to trash"
 							: "Session deleted";
 				this.header.setStatusMessage({ type: "info", message: msg }, 2000);
-				await this.refreshSessionsAfterMutation();
+				if (!this.isWorkflowRow(session)) void this.refreshSessionsAfterMutation();
 			} else {
 				const errorMessage = result.error ?? "Unknown error";
 				this.header.setStatusMessage({ type: "error", message: `Failed to delete: ${errorMessage}` }, 3000);
@@ -316,6 +330,17 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			return `workflow:${session.id}`;
 		}
 		return this.deleteSession ? `session-id:${session.id}` : `session-path:${session.path}`;
+	}
+
+	private isWorkflowRow(session: SessionInfo): boolean {
+		return session.resumeKind === "workflow" || this.variant === "runs";
+	}
+
+	private replaceWorkflowRows(existing: readonly SessionInfo[], workflowRows: readonly SessionInfo[]): SessionInfo[] {
+		return [
+			...existing.filter((session) => !this.isWorkflowRow(session) && !this.isDeletedSession(session)),
+			...workflowRows,
+		];
 	}
 
 	private isDeletedSession(session: SessionInfo): boolean {
@@ -433,6 +458,23 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	public async refreshSessions(): Promise<void> {
 		if (this.disposed) return;
 		await this.refreshSessionsAfterMutation();
+	}
+
+	public updateWorkflowSessions(rows: readonly SessionInfo[]): void {
+		if (this.disposed) return;
+		const workflowRows = this.filterLoadedSessions(rows).filter((session) => this.isWorkflowRow(session));
+		if (this.currentSessions !== null) {
+			this.currentSessions = this.replaceWorkflowRows(this.currentSessions, workflowRows);
+		}
+		if (this.allSessions !== null) {
+			this.allSessions = this.replaceWorkflowRows(this.allSessions, workflowRows);
+		}
+		const activeSessions = this.scope === "all" ? this.allSessions : this.currentSessions;
+		const activeLoading = this.scope === "all" ? this.allLoading : this.currentLoading;
+		if (activeSessions !== null) {
+			this.sessionList.setSessions(activeSessions, this.scope === "all", activeLoading);
+			this.requestRender();
+		}
 	}
 
 	private toggleScope(): void {
