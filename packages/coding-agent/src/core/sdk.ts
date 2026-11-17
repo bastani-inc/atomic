@@ -79,6 +79,7 @@ import { assertTeamAdapterInstalled } from "./storage/team.js";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
 import { createToolNameMatcher } from "./tool-selection.ts";
+import { refreshConfig as refreshAskUserQuestionConfig } from "./tools/ask-user-question/config.ts";
 import type { ProjectHistory } from "./tools/history-protocol.ts";
 import { allToolNames, getDefaultToolNames } from "./tools/index.js";
 import {
@@ -817,6 +818,8 @@ async function constructAgentSession(
 		}
 	}
 
+	// The session's ask_user_question definition takes its guidance from this read.
+	await refreshAskUserQuestionConfig();
 	const providerRollback = modelRuntime.createExtensionProviderTransaction();
 	let session: AgentSession;
 	const childCommandTaskOwner = createChildCommandTaskOwner(() =>

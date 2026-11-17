@@ -10,7 +10,7 @@ import { mapRestoredPath } from "./session-worktree-snapshots.ts";
  * `$ENVRC` (#4588); undefined when the session has no such worktree or no agent directory to look in. A stage of a resumed workflow run and a pooled child have
  * no restores of their own on their session: theirs come from the run, or from the restored worktree they run in.
  */
-export function blueprintEnvironmentPrefix(session: AgentSession): string | undefined {
+export async function blueprintEnvironmentPrefix(session: AgentSession): Promise<string | undefined> {
 	const agentDir = session._storageAgentDir;
 	if (agentDir === undefined) return undefined;
 	const storeDir = resumeStoreDir(agentDir);
@@ -21,8 +21,11 @@ export function blueprintEnvironmentPrefix(session: AgentSession): string | unde
 }
 
 /** `prefix`, the user's `shellCommandPrefix`, and the blueprint environment prefix, joined as one bash prefix. */
-export function shellCommandPrefixFor(session: AgentSession, userPrefix: string | undefined): string | undefined {
-	const joined = [userPrefix, blueprintEnvironmentPrefix(session)]
+export async function shellCommandPrefixFor(
+	session: AgentSession,
+	userPrefix: string | undefined,
+): Promise<string | undefined> {
+	const joined = [userPrefix, await blueprintEnvironmentPrefix(session)]
 		.filter((part): part is string => part !== undefined && part !== "")
 		.join("\n");
 	return joined === "" ? undefined : joined;

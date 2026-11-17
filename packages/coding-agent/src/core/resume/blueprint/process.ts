@@ -1,8 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
-import { writeSync } from "node:fs";
+import { write } from "node:fs";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { promisify } from "node:util";
 import { waitForChildProcess } from "../../../utils/child-process.ts";
 import { killProcessTree } from "../../../utils/shell.ts";
 import { containProcessTree, type ProcessTreeContainment, processTreeEnded } from "../../process-tree-containment.ts";
@@ -95,6 +96,8 @@ export async function runLoggedProcess(
 		let timedOut = false;
 		let stopped = false;
 		let writeError: Error | undefined;
+		/** The copied output still being written to the log, in the order it was read. */
+		let copying = Promise.resolve();
 		const stop = () => {
 			stopped = true;
 			if (tree?.terminate()) return;
@@ -115,11 +118,14 @@ export async function runLoggedProcess(
 			};
 			const copy = (chunk: Buffer) => {
 				if (writeError !== undefined) return;
-				try {
-					writeFully(log.fd, chunk);
-				} catch (error) {
-					fail("written to", error as Error);
-				}
+				copying = copying.then(async () => {
+					if (writeError !== undefined) return;
+					try {
+						await appendToLog(log, chunk);
+					} catch (error) {
+						fail("written to", error as Error);
+					}
+				});
 			};
 			for (const stream of [child.stdout, child.stderr]) {
 				stream?.on("data", copy);
@@ -153,6 +159,7 @@ export async function runLoggedProcess(
 			clearTimeout(timer);
 			options.signal?.removeEventListener("abort", onAbort);
 			await settleTree(tree, stopped);
+			await copying;
 			settle();
 			if (options.signal?.aborted) {
 				reject(options.signal.reason);
@@ -174,12 +181,16 @@ export async function runLoggedProcess(
 	});
 }
 
-function writeFully(fd: number, chunk: Buffer): void {
+const writeToFd = promisify(write);
+
+/** Appends all of `data` to `log`. */
+export async function appendToLog(log: StepLog, data: string | Buffer): Promise<void> {
+	const chunk = typeof data === "string" ? Buffer.from(data) : data;
 	let written = 0;
 	while (written < chunk.length) {
-		const count = writeSync(fd, chunk, written);
-		if (count <= 0) throw new Error("the log accepted no bytes");
-		written += count;
+		const { bytesWritten } = await writeToFd(log.fd, chunk, written, chunk.length - written, null);
+		if (bytesWritten <= 0) throw new Error("the log accepted no bytes");
+		written += bytesWritten;
 	}
 }
 

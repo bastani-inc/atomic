@@ -5,7 +5,11 @@ import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { SessionManager, SessionOpenElsewhereError } from "../src/core/session-manager.js";
-import { assertSessionNotOpenElsewhere, holdSessionOpenMarker } from "../src/core/session-open-markers.js";
+import {
+	assertSessionNotOpenElsewhere,
+	findSessionOpenHolder,
+	holdSessionOpenMarker,
+} from "../src/core/session-open-markers.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
@@ -16,8 +20,10 @@ const PROCESS_TIMEOUT_MS = 60_000;
 
 /** Another process that marks `sessionId` open under `agentDir`, as a running Atomic process does (#4971). */
 async function holdInAnotherProcess(agentDir: string, sessionId: string): Promise<ChildProcess> {
-	const script = `const { holdSessionOpenMarker } = await import(${JSON.stringify(markersModule)});
+	const script = `const { findSessionOpenHolder, holdSessionOpenMarker } = await import(${JSON.stringify(markersModule)});
 holdSessionOpenMarker(${JSON.stringify(sessionId)}, { agentDir: ${JSON.stringify(agentDir)} });
+// The mark is written once this process finds it.
+await findSessionOpenHolder(${JSON.stringify(sessionId)}, { agentDir: ${JSON.stringify(agentDir)} });
 console.log("held");
 setInterval(() => {}, 1000);`;
 	const child = spawn(bunExecutable(), ["-e", script], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -288,6 +294,8 @@ describe("a session open in this process (#4971)", () => {
 		const running = await saved("running");
 		const deleter = await saved("deleter");
 		hold(running);
+		// The mark is written once this process finds it.
+		await findSessionOpenHolder(running.getSessionId());
 		const markers = markersOf(running.getSessionId());
 		const [marker] = readdirSync(markers);
 		const twoMinutesAgo = new Date(Date.now() - 120_000);

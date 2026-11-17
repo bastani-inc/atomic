@@ -33,7 +33,7 @@ import {
   type ReleasedChildWakeNotice,
   waitForIntercomPeer,
 } from "./session-recovery.js";
-import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, reportDebug, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
+import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironmentAsync, reportDebug, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
 import { randomUUID } from "node:crypto";
 import { appendFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -490,7 +490,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   ): Promise<ExpectedRouting> {
     await configReady;
     const agentDir = dirname(getIntercomDirPath());
-    const selectedShared = await multiNodeSelectedAsync(agentDir, processStorageEnvironment());
+    const selectedShared = await multiNodeSelectedAsync(agentDir, await processStorageEnvironmentAsync());
     selectedSharedStorage = selectedShared;
     let routing: BrokerRouting | undefined;
     let unverified: IntercomRoutingUnavailableError | undefined;
@@ -2011,7 +2011,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       }
       inboundDeliveries.restore(value.sessionManager.getBranch(),value.sessionManager.getSessionRecoveryState?.().admissionKeys.filter(key=>key.startsWith("intercom:")).map(key=>key.slice("intercom:".length)));
       await configReady;
-      selectedSharedStorage = await multiNodeSelectedAsync(dirname(getIntercomDirPath()), processStorageEnvironment());
+      selectedSharedStorage = await multiNodeSelectedAsync(dirname(getIntercomDirPath()), await processStorageEnvironmentAsync());
       try {
         await warmProjectGroup(value);
         sessionHomeGroup = resolveHomeGroup(config, value, projectGroupOf(value));

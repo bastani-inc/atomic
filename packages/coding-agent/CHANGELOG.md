@@ -2,9 +2,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- Set `ATOMIC_EVENT_LOOP_BLOCK_MS` to a number of milliseconds to log every stall of the interactive UI or its engine at least that long, with the functions that were running and each process's event-loop delay for startup, the session and shutdown, to `event-loop-blocks.jsonl` in the agent directory or the file `ATOMIC_EVENT_LOOP_BLOCK_LOG` names. Nothing starts while it is unset. See [Finding what freezes the UI](/development#finding-what-freezes-the-ui)
+- SDK: `BashToolOptions.commandPrefix` accepts a promise, awaited for each command, and asynchronous forms of helpers that used to block: `resolveInstalledGit`, `processSharedStorageSelectionAsync` and `processStorageEnvironmentAsync`
+
+### Changed
+
+- SDK: a blueprint build's trust check (`BlueprintBuildConfig.trusted`) may return a promise
+- An edit preview or result whose change needs more than 256 line edits shows the changed block replaced as a whole, and a modified line that differs by more than 64 word edits is shown without word highlights, instead of freezing the interface while the full diff is computed
+
 ### Fixed
 
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
+- The interface and its engine no longer stop responding while Atomic reads or writes files and runs short commands in the background of a session: settings, credentials, project trust, keybindings and debug logs; session lists, headers, claims and markers; skills, prompts, themes, context files and resource reloads; package installs and updates; tool artifacts, archives, notebooks and todos; blueprint builds and workspaces; git lookups for the footer and worktrees; the clipboard, the external editor, `/share`, `/changelog` and `/import`; MCP configuration, logs and OAuth locks; and model catalog refreshes. Each now runs without blocking the event loop, so typing, rendering and streamed output keep going
+- The session picker no longer resolves each listed session's path on the disk every time it draws or filters; it resolves symlinks once, off the event loop
+- Sessions with many background tasks or queued messages stay responsive: task rows, the task list and queued-message confirmation take time proportional to the number of tasks or messages, not its square
+- On Windows, the isolated engine no longer freezes while the terminal is busy drawing, for example a long resumed session, and RPC mode no longer stalls while its client reads stdout slowly: records are written to stdout off the event loop
 
 ## [0.9.88] - 2026-11-16
 

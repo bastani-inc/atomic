@@ -5,7 +5,7 @@
 import { isAbsolute, relative, sep } from "node:path";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { Message } from "@bastani/atomic-ai/compat";
-import { resolveToCwd } from "../tools/path-utils.ts";
+import { resolveToCwd, resolveToCwdAsync } from "../tools/path-utils.ts";
 import { sliceHead } from "../tools/truncate.ts";
 import type { LineRange } from "./compaction-types.js";
 
@@ -31,8 +31,17 @@ export function createFileOps(): FileOperations {
  * Extract file operations from direct and recorded nested tool calls.
  */
 export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperations, cwd?: string): void {
+	collectFileOpsFromMessage(message, fileOps, (path) => normalizeFileOpPath(path, cwd));
+}
+
+/** {@link extractFileOpsFromMessage} with each path given as `normalize` returns it. */
+export function collectFileOpsFromMessage(
+	message: AgentMessage,
+	fileOps: FileOperations,
+	normalize: (path: string) => string,
+): void {
 	if (message.role === "toolResult") {
-		for (const call of message.nestedCalls?.calls ?? []) addFileOp(call.name, call.arguments, fileOps, cwd);
+		for (const call of message.nestedCalls?.calls ?? []) addFileOp(call.name, call.arguments, fileOps, normalize);
 		return;
 	}
 	if (message.role !== "assistant") return;
@@ -43,7 +52,7 @@ export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOp
 		if (!("type" in block) || block.type !== "toolCall") continue;
 		if (!("arguments" in block) || !("name" in block)) continue;
 
-		addFileOp(block.name, block.arguments as Record<string, unknown> | undefined, fileOps, cwd);
+		addFileOp(block.name, block.arguments as Record<string, unknown> | undefined, fileOps, normalize);
 	}
 }
 
@@ -51,11 +60,11 @@ function addFileOp(
 	name: string,
 	args: Record<string, unknown> | undefined,
 	fileOps: FileOperations,
-	cwd?: string,
+	normalize: (path: string) => string,
 ): void {
 	const path = typeof args?.path === "string" ? args.path : undefined;
 	if (!path) return;
-	const normalizedPath = normalizeFileOpPath(path, cwd);
+	const normalizedPath = normalize(path);
 	if (name === "read") fileOps.read.add(normalizedPath);
 	else if (name === "write") fileOps.written.add(normalizedPath);
 	else if (name === "edit") fileOps.edited.add(normalizedPath);
@@ -63,11 +72,37 @@ function addFileOp(
 
 export function normalizeFileOpPath(path: string, cwd?: string): string {
 	if (cwd === undefined || /^[a-z][a-z0-9+.-]*:\/\//i.test(path)) return path;
-	const absolutePath = resolveToCwd(path, cwd);
+	return relativeFileOpPath(resolveToCwd(path, cwd), cwd);
+}
+
+/** {@link normalizeFileOpPath} without blocking the event loop. */
+async function normalizeFileOpPathAsync(path: string, cwd?: string): Promise<string> {
+	if (cwd === undefined || /^[a-z][a-z0-9+.-]*:\/\//i.test(path)) return path;
+	return relativeFileOpPath(await resolveToCwdAsync(path, cwd), cwd);
+}
+
+function relativeFileOpPath(absolutePath: string, cwd: string): string {
 	const relativePath = relative(cwd, absolutePath);
 	return relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)
 		? absolutePath
 		: relativePath || ".";
+}
+
+/**
+ * File operations collected without a `cwd`, normalized against `cwd` as collecting them with it would have: the same
+ * paths in the same order.
+ */
+export async function normalizeFileOpsAsync(fileOps: FileOperations, cwd?: string): Promise<FileOperations> {
+	const normalize = async (paths: Set<string>) => {
+		const normalized = new Set<string>();
+		for (const path of paths) normalized.add(await normalizeFileOpPathAsync(path, cwd));
+		return normalized;
+	};
+	return {
+		read: await normalize(fileOps.read),
+		written: await normalize(fileOps.written),
+		edited: await normalize(fileOps.edited),
+	};
 }
 
 /**

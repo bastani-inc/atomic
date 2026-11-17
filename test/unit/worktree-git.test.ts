@@ -19,6 +19,10 @@ import {
 } from "../../packages/subagents/src/runs/shared/worktree-root.js";
 import { createGitWorktreeSetupCacheOwner } from "../../packages/workflows/src/runs/shared/worktree-cache-lifecycle.js";
 import {
+	resolveWorktreeStageCwd,
+	resolveWorktreeStageCwdAsync,
+} from "../../packages/workflows/src/runs/shared/worktree-cwd.js";
+import {
 	createGitWorktreeSetupCache,
 	type GitRunner,
 	gitFailureMessage,
@@ -377,6 +381,33 @@ describe("workflow reusable git worktree git runner", () => {
 			assert.equal(setup.cwd, join(reusable, "packages", "api"));
 			assert.equal(await findCanonicalGitRoot(reusable), repo);
 			await runGitChecked(repo, ["worktree", "remove", "--force", reusable]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("resolves worktree stage cwd asynchronously with the same containment checks as the sync helper", async () => {
+		const { root, repo, worktree } = await createGitRepository();
+		try {
+			await runGitChecked(repo, ["worktree", "add", "--detach", worktree]);
+			mkdirSync(join(repo, "packages", "api"), { recursive: true });
+			mkdirSync(join(worktree, "packages", "api"), { recursive: true });
+			const setup = {
+				created: false,
+				repositoryRoot: repo,
+				worktreeRoot: worktree,
+				cwd: worktree,
+			};
+			assert.equal(await resolveWorktreeStageCwdAsync(undefined, setup), resolveWorktreeStageCwd(undefined, setup));
+			assert.equal(
+				await resolveWorktreeStageCwdAsync("packages/api", setup),
+				resolveWorktreeStageCwd("packages/api", setup),
+			);
+			assert.equal(
+				await resolveWorktreeStageCwdAsync(join(repo, "packages", "api"), setup),
+				resolveWorktreeStageCwd(join(repo, "packages", "api"), setup),
+			);
+			await assert.rejects(() => resolveWorktreeStageCwdAsync("../outside", setup), /escapes gitWorktreeDir/);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

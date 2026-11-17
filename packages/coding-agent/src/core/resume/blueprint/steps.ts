@@ -1,4 +1,3 @@
-import { writeSync } from "node:fs";
 import { join } from "node:path";
 import { getPowerShellConfig, getShellConfig, type ShellConfig } from "../../../utils/shell.ts";
 import { recordBlueprintStep } from "../timings.ts";
@@ -13,6 +12,7 @@ import {
 	BlueprintStepTimedOutError,
 } from "./errors.ts";
 import {
+	appendToLog,
 	type LoggedProcess,
 	logTail,
 	openStepLog,
@@ -108,10 +108,6 @@ export function bashProcess(step: RunStep, context: StepContext, bash: ShellConf
 	};
 }
 
-function append(log: StepLog, text: string): void {
-	writeSync(log.fd, text);
-}
-
 async function startStep(
 	step: BlueprintStep,
 	location: BlueprintStepLocation,
@@ -119,7 +115,7 @@ async function startStep(
 	context: StepContext,
 	log: StepLog,
 ): Promise<ProcessExit> {
-	append(
+	await appendToLog(
 		log,
 		[
 			`# started: ${new Date().toISOString()}`,
@@ -218,12 +214,12 @@ export async function runSection(
 		try {
 			log = await openStepLog(logPath);
 			const exit = await startStep(step, location, steps.length, context, log);
-			append(log, `\n${describeExit(exit, context.timeoutMs)}\n${describeEnd(started)}`);
+			await appendToLog(log, `\n${describeExit(exit, context.timeoutMs)}\n${describeEnd(started)}`);
 			error = failureOf(exit, location, logPath, context.timeoutMs);
 		} catch (thrown) {
 			if (context.signal?.aborted) throw thrown;
 			const cause = thrown instanceof Error ? thrown : new Error(String(thrown));
-			if (log !== undefined) append(log, `\n# failed: ${cause.message}\n${describeEnd(started)}`);
+			if (log !== undefined) await appendToLog(log, `\n# failed: ${cause.message}\n${describeEnd(started)}`);
 			error =
 				thrown instanceof BlueprintError
 					? thrown

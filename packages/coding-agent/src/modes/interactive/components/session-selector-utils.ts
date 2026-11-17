@@ -1,5 +1,6 @@
+import { dirname } from "node:path";
 import { sliceByColumn, visibleWidth } from "@bastani/atomic-tui";
-import { canonicalizePath, getPathComparisonKey, shortenHomePath } from "../../../utils/paths.ts";
+import { canonicalizePathAsync, getPathComparisonKey, shortenHomePath } from "../../../utils/paths.ts";
 
 export function shortenPath(path: string): string {
 	return shortenHomePath(path);
@@ -29,7 +30,49 @@ export function formatSessionDate(date: Date): string {
 	return `${Math.floor(diffDays / 365)}y`;
 }
 
-/** Comparison key for a session file path; follows symlinks and ignores case on Windows. */
+const canonicalPathKeys = new Map<string, string>();
+
+/**
+ * Resolves the symlinks of these paths off the event loop, so {@link getSessionPathKey} can answer from memory while
+ * the picker renders and filters. Resolves to whether any path's key differs from its spelling's.
+ */
+export async function resolveSessionPathKeys(paths: Iterable<string | undefined>): Promise<boolean> {
+	const pending = [...new Set(paths)].filter(
+		(path): path is string => path !== undefined && !canonicalPathKeys.has(path),
+	);
+	let changed = false;
+	await Promise.all(
+		pending.map(async (path) => {
+			const key = getPathComparisonKey(await canonicalizePathAsync(path));
+			canonicalPathKeys.set(path, key);
+			if (key !== getPathComparisonKey(path)) changed = true;
+		}),
+	);
+	return changed;
+}
+
+/** The paths a picker compares for these sessions: each file, its directory and its parent session's file. */
+export function sessionComparisonPaths(
+	sessions: Iterable<{ readonly path: string; readonly parentSessionPath?: string }>,
+	currentDirectory?: string,
+): string[] {
+	const paths: string[] = currentDirectory === undefined ? [] : [currentDirectory];
+	for (const session of sessions) {
+		paths.push(session.path, dirname(session.path));
+		if (session.parentSessionPath !== undefined) paths.push(session.parentSessionPath);
+	}
+	return paths;
+}
+
+/** Whether {@link resolveSessionPathKeys} has resolved this path's symlinks. */
+export function isSessionPathKeyResolved(path: string): boolean {
+	return canonicalPathKeys.has(path);
+}
+
+/**
+ * Comparison key for a session file path; follows symlinks and ignores case on Windows. Answers from the keys
+ * {@link resolveSessionPathKeys} resolved; a path it has not seen yet compares by its spelling.
+ */
 export function getSessionPathKey(path: string): string {
-	return getPathComparisonKey(canonicalizePath(path));
+	return canonicalPathKeys.get(path) ?? getPathComparisonKey(path);
 }

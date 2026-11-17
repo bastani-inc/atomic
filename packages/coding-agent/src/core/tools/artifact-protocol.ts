@@ -7,8 +7,9 @@
  * then any other registered active dirs (so subagents can see parent
  * artifacts). Artifacts are immutable reads.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { getArtifactManager } from "./artifacts.ts";
+import { pathExists } from "./path-utils.ts";
 import type { InternalResourceRouter } from "./resource-selectors.ts";
 
 const activeArtifactDirs = new Set<string>();
@@ -31,7 +32,7 @@ function isValidId(id: string): boolean {
 }
 
 /** Resolve an artifact:// url to a backing file path across known dirs. */
-export function resolveArtifactUrl(url: string, pinnedDirs: readonly string[] = []): string | undefined {
+export async function resolveArtifactUrl(url: string, pinnedDirs: readonly string[] = []): Promise<string | undefined> {
 	const id = artifactIdFromUrl(url);
 	if (id === undefined) throw new Error("artifact:// URL requires a numeric ID: artifact://0");
 	if (!isValidId(id)) throw new Error(`artifact:// ID must be numeric, got: ${id}`);
@@ -40,38 +41,38 @@ export function resolveArtifactUrl(url: string, pinnedDirs: readonly string[] = 
 	for (const dir of ordered) {
 		if (seen.has(dir)) continue;
 		seen.add(dir);
-		const resolved = getArtifactManager(dir).resolve(id);
+		const resolved = await getArtifactManager(dir).resolve(id);
 		if (resolved) return resolved;
 	}
-	const available = [...new Set([...pinnedDirs, ...activeArtifactDirs])].flatMap((dir) =>
-		getArtifactManager(dir).list(),
-	);
+	const available: string[] = [];
+	for (const dir of new Set([...pinnedDirs, ...activeArtifactDirs]))
+		available.push(...(await getArtifactManager(dir).list()));
 	throw new Error(`Artifact ${id} not found. Available: ${available.join(", ") || "none"}`);
 }
 
 /** Build an InternalResourceRouter that resolves/reads artifact:// urls. */
 export function createArtifactRouter(getPinnedDirs: () => readonly string[]): InternalResourceRouter {
 	return {
-		resolve: (url) => {
+		resolve: async (url) => {
 			if (!/^artifact:\/\//i.test(url)) return undefined;
 			try {
-				return resolveArtifactUrl(url, getPinnedDirs());
+				return await resolveArtifactUrl(url, getPinnedDirs());
 			} catch {
 				return undefined;
 			}
 		},
-		read: (url) => {
+		read: async (url) => {
 			if (!/^artifact:\/\//i.test(url)) return undefined;
-			const path = resolveArtifactUrl(url, getPinnedDirs());
-			if (!path || !existsSync(path)) throw new Error(`Artifact not found: ${url}`);
-			return readFileSync(path, "utf8");
+			const path = await resolveArtifactUrl(url, getPinnedDirs());
+			if (!path || !(await pathExists(path))) throw new Error(`Artifact not found: ${url}`);
+			return readFile(path, "utf8");
 		},
 	};
 }
 
 /** Resolve and read an artifact directly from a context's artifact dirs. */
-export function readArtifactUrl(url: string, dirs: readonly string[] = []): string {
-	const path = resolveArtifactUrl(url, dirs);
-	if (!path || !existsSync(path)) throw new Error(`Artifact not found: ${url}`);
-	return readFileSync(path, "utf8");
+export async function readArtifactUrl(url: string, dirs: readonly string[] = []): Promise<string> {
+	const path = await resolveArtifactUrl(url, dirs);
+	if (!path || !(await pathExists(path))) throw new Error(`Artifact not found: ${url}`);
+	return readFile(path, "utf8");
 }

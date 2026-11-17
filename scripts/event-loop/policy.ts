@@ -253,10 +253,72 @@ export const STARTUP_ONLY: readonly ReviewedSelector[] = [
 ];
 
 /**
+ * Reviewed exceptions: hooks a synchronous module loader calls while it evaluates an extension's modules (jiti's
+ * transform and `require`, which read their files synchronously themselves). They cannot return a promise. Extensions
+ * load before the first frame, and again when the user reloads them or opens another session, while the interface
+ * shows the reload in progress. Making extension loading itself non-blocking (serving the module graph from an
+ * asynchronously read snapshot) is separate work. The walk does not enter them.
+ */
+export const SYNCHRONOUS_LOADER_HOOKS: readonly ReviewedSelector[] = [
+	{
+		file: "packages/coding-agent/src/core/extensions/loader-virtual-modules.ts",
+		name: "installReadFileSyncObserver/wrapped",
+		reason:
+			"stands in for fs.readFileSync while jiti reads an extension's files, recording what it read for the module graph cache; it adds no read of its own",
+	},
+	{
+		file: "packages/coding-agent/src/core/extensions/ts-source-specifiers.ts",
+		name: "typeScriptSourceSpecifier",
+		reason:
+			"jiti's synchronous transform asks it which TypeScript source a .js import names while it evaluates a module",
+	},
+	{
+		file: "packages/coding-agent/src/core/extensions/ts-source-specifiers.ts",
+		name: "readCached",
+		reason: "reads the transform cache inside jiti's synchronous transform of a module",
+	},
+	{
+		file: "packages/coding-agent/src/core/extensions/reloadable-scripts.ts",
+		name: "evaluate",
+		reason: "jiti's synchronous require of a reloadable script reads its source as the module is evaluated",
+	},
+	{
+		file: "packages/coding-agent/src/core/extensions/reloadable-scripts.ts",
+		name: "packageTypeOf",
+		reason: "decides CommonJS or ESM for a module jiti is requiring synchronously from its nearest package.json",
+	},
+];
+
+/**
+ * Reviewed exceptions: a small synchronous write whose ordering before the next side effect is a crash-consistency
+ * contract: if the process is killed right after it, the record must already be on disk. The walk does not enter them.
+ */
+export const DURABLE_RECORDS: readonly ReviewedSelector[] = [
+	{
+		file: "packages/coding-agent/src/core/resume/blueprint/build-lock.ts",
+		name: "recordStepProcessDurably",
+		reason:
+			"names a blueprint step's process in its build lock as the step starts and ends, so a host killed mid-step always leaves a lock that lets the next resume stop the step's leftovers (#4748)",
+	},
+];
+
+/**
  * Reviewed exceptions: functions that only run as the process exits or after an error that ends the session, when a
  * blocking write is the only way the record lands. The walk does not enter them.
  */
 export const EXIT_ONLY: readonly ReviewedSelector[] = [
+	{
+		file: "packages/coding-agent/src/core/tasks/supervisor.ts",
+		name: "killSupervisedProcessTrees",
+		reason:
+			"only the interactive mode's emergency terminal exit and uncaught-crash handler call it, immediately before process.exit, so supervised process trees die with the process",
+	},
+	{
+		file: "packages/coding-agent/src/core/event-loop-monitor.ts",
+		name: "EventLoopMonitor.writeAtQuit",
+		reason:
+			"the opt-in event-loop diagnostic's last records, written once the quit has begun or at exit; Windows ends the engine as soon as its host quits, before an asynchronous write could land",
+	},
 	{
 		file: "packages/tui/src/tui-main-screen.ts",
 		name: "writeRenderCrashLog",
@@ -290,6 +352,8 @@ export interface EventLoopPolicy {
 	readonly ownedElsewhere: readonly OwnedArea[];
 	readonly startupOnly: readonly ReviewedSelector[];
 	readonly exitOnly: readonly ReviewedSelector[];
+	readonly synchronousLoaderHooks: readonly ReviewedSelector[];
+	readonly durableRecords: readonly ReviewedSelector[];
 	readonly reviewedRegexes: readonly ReviewedRegex[];
 }
 
@@ -304,5 +368,7 @@ export const INTERACTIVE_HOST_POLICY: EventLoopPolicy = {
 	ownedElsewhere: OWNED_ELSEWHERE,
 	startupOnly: STARTUP_ONLY,
 	exitOnly: EXIT_ONLY,
+	synchronousLoaderHooks: SYNCHRONOUS_LOADER_HOOKS,
+	durableRecords: DURABLE_RECORDS,
 	reviewedRegexes: REVIEWED_REGEXES,
 };

@@ -1,7 +1,7 @@
-import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import type { SessionManager } from "../../session-manager.ts";
+import { pathExists } from "../../tools/path-utils.ts";
 import {
 	type BlueprintBuildConfig,
 	type BlueprintBuildOutcome,
@@ -215,10 +215,10 @@ export async function recordBlueprintContext(
 }
 
 /** The root of the repository `directory` is in, found by looking for `.git` upward; undefined outside a repository. */
-export function enclosingRepositoryRoot(directory: string): string | undefined {
+export async function enclosingRepositoryRoot(directory: string): Promise<string | undefined> {
 	let current = directory;
 	for (;;) {
-		if (existsSync(join(current, ".git"))) return current;
+		if (await pathExists(join(current, ".git"))) return current;
 		const parent = dirname(current);
 		if (parent === current || current === parse(current).root) return undefined;
 		current = parent;

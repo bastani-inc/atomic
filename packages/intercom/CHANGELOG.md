@@ -4,6 +4,11 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Starting or reaching the broker, its spawn lock and its configuration no longer block the session's event loop
+- A supervisor reply with a long run of whitespace after a code fence no longer stalls reply parsing
+
 ## [0.9.88] - 2026-11-16
 
 ### Added

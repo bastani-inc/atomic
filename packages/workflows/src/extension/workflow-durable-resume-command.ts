@@ -4,7 +4,7 @@ import { openCompletedDurableWorkflow } from "../durable/completed-inspection.js
 import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import { type DurableWorkflowDeleteOutcome, deleteDurableWorkflowIfSafe } from "../durable/retention-policy.js";
-import { isSdkReleasedRunAdoptable } from "../durable/sdk-recovery-scope.js";
+import { isSdkReleasedRunAdoptableAsync } from "../durable/sdk-recovery-scope.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { resolveRunIdTarget } from "../shared/run-id.js";
@@ -273,13 +273,15 @@ function isExplicitResumeCandidate(
 }
 
 /** A run released by its previous session moves to the session resuming it; every other run keeps its owner. */
-function releasedRunAdoption(
+async function releasedRunAdoption(
 	workflowId: string,
 	ctx: PiEventContext,
 	runtime: ExtensionRuntime,
-): { readonly modelOwner?: string } {
+): Promise<{ readonly modelOwner?: string }> {
 	const handle = runtime.durableBackend().getLoadableWorkflow(workflowId);
-	return handle !== undefined && isSdkReleasedRunAdoptable(handle, ctx.cwd) ? { modelOwner: workflowCaller(ctx) } : {};
+	return handle !== undefined && (await isSdkReleasedRunAdoptableAsync(handle, ctx.cwd))
+		? { modelOwner: workflowCaller(ctx) }
+		: {};
 }
 
 function crossProjectConfirmation(ctx: PiEventContext): {
@@ -316,7 +318,7 @@ async function resumeDurableTarget(
 		...crossProjectConfirmation(ctx),
 		onBeforeResume: (runId, forkedFrom) =>
 			injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom, runtime.durableBackend()),
-		...releasedRunAdoption(workflowId, ctx, runtime),
+		...(await releasedRunAdoption(workflowId, ctx, runtime)),
 		...resumeOptions,
 	});
 	if (!result.ok) reporter.error(result.message);

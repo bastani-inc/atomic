@@ -1,4 +1,4 @@
-import { createChildProcessEnvironment, createGitEnvironment, resolveGitSync } from "@bastani/atomic";
+import { createChildProcessEnvironment, createGitEnvironment, resolveInstalledGit } from "@bastani/atomic";
 import { type OutputPage, type OwnerLease, TaskSupervisor } from "@bastani/atomic-natives";
 
 interface SupervisedOwner {
@@ -34,7 +34,7 @@ export async function addNamedWorktree(
 	signal?: AbortSignal,
 ): Promise<{ status: number; stdout: string; stderr: string }> {
 	signal?.throwIfAborted();
-	const git = resolveGitSync();
+	const git = await resolveInstalledGit();
 	let { supervisor, owner } = getSupervisedOwner();
 	const environment: Record<string, string> = {};
 	for (const [key, value] of Object.entries(

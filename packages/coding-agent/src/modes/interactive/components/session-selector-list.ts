@@ -13,7 +13,13 @@ import { theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
 import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode } from "./session-selector-search.ts";
 import { buildSessionTree, type FlatSessionNode, flattenSessionTree } from "./session-selector-tree.ts";
-import { formatSessionDate, getSessionPathKey, shortenPath, truncatePathStart } from "./session-selector-utils.ts";
+import {
+	formatSessionDate,
+	getSessionPathKey,
+	isSessionPathKeyResolved,
+	shortenPath,
+	truncatePathStart,
+} from "./session-selector-utils.ts";
 
 /**
  * Custom session list component with multi-line items and search
@@ -159,13 +165,17 @@ export class SessionList implements Component, Focusable {
 		this.setConfirmingDeleteSession(selected.session);
 	}
 
+	/**
+	 * Same id, in the same directory once both directories' symlinks are resolved; before that, the same id is enough,
+	 * so the active session is never offered for deletion while its aliases are still being resolved.
+	 */
 	private isCurrentSession(session: SessionInfo): boolean {
-		return (
-			this.currentSession !== undefined &&
-			session.id === this.currentSession.id &&
-			(this.currentSession.directory === undefined ||
-				getSessionPathKey(dirname(session.path)) === getSessionPathKey(this.currentSession.directory))
-		);
+		if (this.currentSession === undefined || session.id !== this.currentSession.id) return false;
+		const directory = this.currentSession.directory;
+		if (directory === undefined) return true;
+		const sessionDirectory = dirname(session.path);
+		if (!isSessionPathKeyResolved(sessionDirectory) || !isSessionPathKeyResolved(directory)) return true;
+		return getSessionPathKey(sessionDirectory) === getSessionPathKey(directory);
 	}
 
 	invalidate(): void {}

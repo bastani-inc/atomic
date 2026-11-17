@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { setTimeout as realDelay } from "node:timers/promises";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
@@ -126,6 +127,10 @@ function realSessionContext(
 	return { ctx, sessions };
 }
 
+/** A real pause for file I/O the prompt awaits between fake timers, and how many such pauses one prompt may take. */
+const REAL_IO_WAIT_MS = 10;
+const MAX_REAL_IO_WAITS = 1_000;
+
 async function settle<T>(pending: Promise<T>): Promise<{ value: T } | { error: unknown }> {
 	const settled = pending.then(
 		(value) => ({ value }),
@@ -135,8 +140,18 @@ async function settle<T>(pending: Promise<T>): Promise<{ value: T } | { error: u
 	void settled.then(() => {
 		done = true;
 	});
-	// Bounded in fake time: a prompt that never settles fails here instead of hanging the test.
-	for (let i = 0; i < 1_000 && !done; i++) await vi.advanceTimersByTimeAsync(5_000);
+	// Bounded in fake time: a prompt that never settles fails here instead of hanging the test. While no fake timer is
+	// pending the prompt is waiting on real I/O (its session and settings files), which only real time completes.
+	let realWaits = 0;
+	for (let advances = 0; advances < 1_000 && realWaits < MAX_REAL_IO_WAITS && !done; ) {
+		if (vi.getTimerCount() === 0) {
+			realWaits++;
+			await realDelay(REAL_IO_WAIT_MS);
+			continue;
+		}
+		await vi.advanceTimersByTimeAsync(5_000);
+		advances++;
+	}
 	assert.ok(done, "the prompt settles within the bounded cooldown budget");
 	return settled;
 }

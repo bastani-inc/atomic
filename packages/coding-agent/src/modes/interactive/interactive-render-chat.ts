@@ -2,6 +2,7 @@ import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { TUI } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
 import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
+import { markEventLoopStartupComplete } from "../../core/event-loop-monitor.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
@@ -777,6 +778,7 @@ InteractiveModeBase.prototype.getUserInput = async function (
 					if (this.deferredStartupPending) {
 						await this.ensureDeferredStartupComplete();
 					}
+					markEventLoopStartupComplete();
 				})().catch((error) => {
 					const message = error instanceof Error ? error.message : String(error);
 					console.error(`Deferred input-readiness startup task failed: ${message}`);

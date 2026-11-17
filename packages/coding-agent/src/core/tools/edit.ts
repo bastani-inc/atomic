@@ -12,9 +12,9 @@ import {
 	generateEditDiff,
 	normalizeToLF,
 } from "./edit-diff.ts";
-import { withFileMutationQueue } from "./file-mutation-queue.ts";
+import { withResolvingFileMutationQueue } from "./file-mutation-queue.ts";
 import { EditInputError, EditTargetError, FileToolAbortedError } from "./file-tool-errors.ts";
-import { resolveToCwd } from "./path-utils.ts";
+import { resolveToCwdAsync } from "./path-utils.ts";
 import { type EditRenderState, editRenderers } from "./renderers/edit.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -162,69 +162,71 @@ export function createEditToolDefinition(
 		prepareArguments: prepareEditArguments,
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
 			const { path, edits } = validateEditInput(input);
-			const absolutePath = resolveToCwd(path, ctx?.cwd || cwd);
+			return withResolvingFileMutationQueue(
+				() => resolveToCwdAsync(path, ctx?.cwd || cwd),
+				async (absolutePath) => {
+					// Do not reject from an abort event listener here: that would release the
+					// mutation queue while an in-flight filesystem operation may still finish.
+					// Checking signal.aborted after each await observes the same aborts while
+					// keeping the queue locked until the current operation has settled.
+					const throwIfAborted = (): void => {
+						if (signal?.aborted) throw new FileToolAbortedError(signal.reason);
+					};
 
-			return withFileMutationQueue(absolutePath, async () => {
-				// Do not reject from an abort event listener here: that would release the
-				// mutation queue while an in-flight filesystem operation may still finish.
-				// Checking signal.aborted after each await observes the same aborts while
-				// keeping the queue locked until the current operation has settled.
-				const throwIfAborted = (): void => {
-					if (signal?.aborted) throw new FileToolAbortedError(signal.reason);
-				};
-
-				throwIfAborted();
-
-				// Check if file exists.
-				try {
-					await ops.access(absolutePath);
-				} catch (error: unknown) {
 					throwIfAborted();
-					const errnoCode = error instanceof Error && "code" in error ? String(error.code) : undefined;
-					const errorMessage = errnoCode !== undefined ? `Error code: ${errnoCode}` : String(error);
-					throw new EditTargetError(
-						"target-inaccessible",
-						`Could not edit file: ${path}. ${errorMessage}.`,
-						{ path, ...(errnoCode !== undefined ? { errnoCode } : {}) },
-						{ cause: error },
+
+					// Check if file exists.
+					try {
+						await ops.access(absolutePath);
+					} catch (error: unknown) {
+						throwIfAborted();
+						const errnoCode = error instanceof Error && "code" in error ? String(error.code) : undefined;
+						const errorMessage = errnoCode !== undefined ? `Error code: ${errnoCode}` : String(error);
+						throw new EditTargetError(
+							"target-inaccessible",
+							`Could not edit file: ${path}. ${errorMessage}.`,
+							{ path, ...(errnoCode !== undefined ? { errnoCode } : {}) },
+							{ cause: error },
+						);
+					}
+					throwIfAborted();
+
+					// Read the file.
+					const buffer = await ops.readFile(absolutePath);
+					throwIfAborted();
+					const rawContent = decodeUtf8ForEdit(buffer, path);
+
+					// Strip BOM before matching. The model will not include an invisible BOM in oldText.
+					const { bom, text: content } = splitBom(rawContent);
+					const normalizedContent = normalizeToLF(content);
+					const { baseContent, newContent, replacements } = applyEditsToNormalizedContent(
+						normalizedContent,
+						edits,
+						path,
 					);
-				}
-				throwIfAborted();
+					// Diff before writing, so diff computation cannot fail after the write.
+					const editDiff = generateEditDiff(path, baseContent, newContent, replacements);
+					throwIfAborted();
 
-				// Read the file.
-				const buffer = await ops.readFile(absolutePath);
-				throwIfAborted();
-				const rawContent = decodeUtf8ForEdit(buffer, path);
+					// Splice into the original text, so untouched lines keep their line endings. Without any CR
+					// the original is the normalized text, and the normalized result is already final.
+					const finalContent =
+						bom +
+						(content === normalizedContent ? newContent : applyReplacementsToOriginal(content, replacements));
+					await ops.writeFile(absolutePath, finalContent);
+					throwIfAborted();
 
-				// Strip BOM before matching. The model will not include an invisible BOM in oldText.
-				const { bom, text: content } = splitBom(rawContent);
-				const normalizedContent = normalizeToLF(content);
-				const { baseContent, newContent, replacements } = applyEditsToNormalizedContent(
-					normalizedContent,
-					edits,
-					path,
-				);
-				// Diff before writing, so diff computation cannot fail after the write.
-				const editDiff = generateEditDiff(path, baseContent, newContent, replacements);
-				throwIfAborted();
-
-				// Splice into the original text, so untouched lines keep their line endings. Without any CR
-				// the original is the normalized text, and the normalized result is already final.
-				const finalContent =
-					bom + (content === normalizedContent ? newContent : applyReplacementsToOriginal(content, replacements));
-				await ops.writeFile(absolutePath, finalContent);
-				throwIfAborted();
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Successfully replaced ${edits.length} block(s) in ${path}.`,
-						},
-					],
-					details: editDiff,
-				};
-			});
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Successfully replaced ${edits.length} block(s) in ${path}.`,
+							},
+						],
+						details: editDiff,
+					};
+				},
+			);
 		},
 		...editRenderers,
 	};

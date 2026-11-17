@@ -19,7 +19,7 @@ vi.mock("child_process", async (importOriginal) => ({
 
 vi.mock("../src/utils/tools-manager.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../src/utils/tools-manager.js")>()),
-	resolveGitSync: git.resolve,
+	resolveInstalledGit: async () => git.resolve(),
 }));
 
 import { FooterDataProvider } from "../src/core/footer-data-provider.js";

@@ -1,10 +1,10 @@
 import { getSupportedThinkingLevels } from "@bastani/atomic-ai/compat";
 import { crossProjectResumeMessage } from "../durable/resume-runtime.js";
 import {
-	canonicalDirectory,
+	canonicalDirectoryAsync,
 	isSdkCrashedRunAdoptable,
-	isSdkDurableRunInScope,
-	isSdkReleasedRunAdoptable,
+	isSdkDurableRunInScopeAsync,
+	isSdkReleasedRunAdoptableAsync,
 } from "../durable/sdk-recovery-scope.js";
 import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import { inspectRun } from "../runs/background/status.js";
@@ -129,16 +129,16 @@ export function makeExecuteWorkflowTool(
 			};
 		}
 		const recoveryCwd = typeof ctx.cwd === "string" ? ctx.cwd : undefined;
-		const adoptsReleasedRun = (id: string): boolean => {
+		const adoptsReleasedRun = async (id: string): Promise<boolean> => {
 			const handle = requireStoreDurableBackend(store, id).getLoadableWorkflow(id);
-			return handle !== undefined && isSdkReleasedRunAdoptable(handle, recoveryCwd);
+			return handle !== undefined && (await isSdkReleasedRunAdoptableAsync(handle, recoveryCwd));
 		};
 		const authorize = async (id: string): Promise<void> => {
 			const handle = requireStoreDurableBackend(store, id).getLoadableWorkflow(id);
 			if (
 				(action === "resume" || action === "status" || action === "stages") &&
 				handle !== undefined &&
-				isSdkReleasedRunAdoptable(handle, recoveryCwd)
+				(await isSdkReleasedRunAdoptableAsync(handle, recoveryCwd))
 			)
 				return;
 			if (
@@ -151,7 +151,7 @@ export function makeExecuteWorkflowTool(
 						(await isSdkCrashedRunAdoptable(handle, recoveryCwd, requireStoreDurableBackend(store, id))))) &&
 				store.run(id) === undefined &&
 				handle !== undefined &&
-				isSdkDurableRunInScope(handle, recoveryCwd)
+				(await isSdkDurableRunInScopeAsync(handle, recoveryCwd))
 			)
 				return;
 			assertWorkflowInstanceOwner(id, ctx, store);
@@ -159,7 +159,7 @@ export function makeExecuteWorkflowTool(
 				action === "resume" &&
 				recoveryCwd !== undefined &&
 				handle?.invocationCwd !== undefined &&
-				canonicalDirectory(recoveryCwd) !== canonicalDirectory(handle.invocationCwd)
+				(await canonicalDirectoryAsync(recoveryCwd)) !== (await canonicalDirectoryAsync(handle.invocationCwd))
 			) {
 				throw new Error(crossProjectResumeMessage(id, handle.invocationCwd));
 			}
@@ -194,7 +194,9 @@ export function makeExecuteWorkflowTool(
 					);
 					return resolved.resumeDurableWorkflow(
 						id,
-						access === "sdk" || adoptsReleasedRun(id) ? { ...options, modelOwner: workflowCaller(ctx) } : options,
+						access === "sdk" || (await adoptsReleasedRun(id))
+							? { ...options, modelOwner: workflowCaller(ctx) }
+							: options,
 					);
 				},
 			};

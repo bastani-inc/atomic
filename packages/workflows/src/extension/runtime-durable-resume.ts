@@ -18,7 +18,7 @@ import {
 } from "../durable/resume-runtime.js";
 import { hasActiveLiveRun } from "../durable/run-claims.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
-import { canonicalDirectory } from "../durable/sdk-recovery-scope.js";
+import { canonicalDirectoryAsync } from "../durable/sdk-recovery-scope.js";
 import { bindStoreDurableBackend, DurableBackendNotInitializedError } from "../durable/store-backend.js";
 import { inspectTargetedDurableWorkflow, type TargetedDurableInspection } from "../durable/targeted-inspection.js";
 import type { DurableWorkflowHandle, ResumableWorkflowEntry, WorkflowForkedFrom } from "../durable/types.js";
@@ -175,7 +175,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		confirmProjectTrust: ((projectDir: string) => Promise<boolean>) | undefined,
 	) => {
 		const discoveryCwd = cwd ?? deps.runtimeCwd;
-		if (canonicalDirectory(discoveryCwd) === canonicalDirectory(deps.runtimeCwd))
+		if ((await canonicalDirectoryAsync(discoveryCwd)) === (await canonicalDirectoryAsync(deps.runtimeCwd)))
 			return discover(name, discoveryCwd, deps.isProjectTrusted?.());
 		if ((await new ProjectTrustStore(getAgentDir()).getAsync(discoveryCwd)) === true)
 			return discover(name, discoveryCwd, true);

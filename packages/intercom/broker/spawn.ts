@@ -45,6 +45,7 @@ import {
   isBunBinary,
   isIntercomBrokerStopTimeoutError,
   processSharedStorageSelection,
+  processSharedStorageSelectionAsync,
   takeTakeoverMutex,
   takeTakeoverMutexAsync,
 } from "@bastani/atomic";
@@ -307,7 +308,8 @@ export function getBrokerLaunchSpec(
  * `--storage-file` or `ATOMIC_STORAGE`), passed as `ATOMIC_STORAGE`; without one it reads settings.
  * With `announcement` it also gets the file and token it announces its pid with (`start-announcement.ts`).
  */
-export function getBrokerSpawnOptions(
+function buildBrokerSpawnOptions(
+  storage: string | undefined,
   extensionDir: string = EXTENSION_DIR,
   stderr: number | "ignore" = "ignore",
   announcement?: BrokerStartAnnouncement,
@@ -318,7 +320,6 @@ export function getBrokerSpawnOptions(
   env: NodeJS.ProcessEnv;
   windowsHide: true;
 } {
-  const storage = processSharedStorageSelection();
   return {
     detached: true,
     stdio: ["ignore", "ignore", stderr],
@@ -332,6 +333,34 @@ export function getBrokerSpawnOptions(
     }),
     windowsHide: true,
   };
+}
+
+export function getBrokerSpawnOptions(
+  extensionDir: string = EXTENSION_DIR,
+  stderr: number | "ignore" = "ignore",
+  announcement?: BrokerStartAnnouncement,
+): {
+  detached: true;
+  stdio: ["ignore", "ignore", number | "ignore"];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  windowsHide: true;
+} {
+  return buildBrokerSpawnOptions(processSharedStorageSelection(), extensionDir, stderr, announcement);
+}
+
+export async function getBrokerSpawnOptionsAsync(
+  extensionDir: string = EXTENSION_DIR,
+  stderr: number | "ignore" = "ignore",
+  announcement?: BrokerStartAnnouncement,
+): Promise<{
+  detached: true;
+  stdio: ["ignore", "ignore", number | "ignore"];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  windowsHide: true;
+}> {
+  return buildBrokerSpawnOptions(await processSharedStorageSelectionAsync(), extensionDir, stderr, announcement);
 }
 
 /**
@@ -539,10 +568,11 @@ async function spawnBrokerHoldingLock(
     const logHandle = launch.kind === "direct" ? await open(getBrokerLogPath(), "a") : undefined;
     let child: ReturnType<typeof spawn>;
     try {
+      const spawnOptions = await getBrokerSpawnOptionsAsync(extensionDir, logHandle?.fd ?? "ignore", announcement);
       child = spawn(
         launch.command,
         launch.args,
-        getBrokerSpawnOptions(extensionDir, logHandle?.fd ?? "ignore", announcement),
+        spawnOptions,
       );
     } finally {
       if (logHandle !== undefined) await logHandle.close();
@@ -762,7 +792,7 @@ export async function upgradeBroker(
 /** The digest of the shared storage selection a broker started from this process reads, as its `broker_status` reports it. */
 async function successorStorageDigestAsync(): Promise<string | undefined> {
   const setting = await readSharedStorageSettingAsync(dirname(getIntercomDirPath()), {
-    [BROKER_STORAGE_ENV]: processSharedStorageSelection() ?? "",
+    [BROKER_STORAGE_ENV]: (await processSharedStorageSelectionAsync()) ?? "",
   });
   return setting === undefined ? undefined : sharedStorageDigest(setting);
 }

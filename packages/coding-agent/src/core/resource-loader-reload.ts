@@ -9,7 +9,7 @@ import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
 import { withMandatoryResourceLoader } from "./mandatory-resource-loader.ts";
 import { isTrustedMandatoryRuntimeTool, markTrustedMandatoryRuntimeExtension } from "./mandatory-runtime-tools.ts";
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
-import { hostStoragePackagesRegistered } from "./package-manager-storage-adapters.ts";
+import { hostStoragePackagesRegistered } from "./package-manager-storage-adapters.js";
 import {
 	updatePromptsFromPathsAsync,
 	updateSkillsFromPathsAsync,

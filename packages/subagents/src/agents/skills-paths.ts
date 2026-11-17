@@ -205,7 +205,7 @@ function isSafePackagePath(value: string): boolean {
 function parseNpmPackageName(source: string): string | undefined {
 	const spec = source.slice(4).trim();
 	if (!spec) return undefined;
-	const match = spec.match(/^(@?[^@]+(?:\/[^@]+)?)(?:@(.+))?$/);
+	const match = spec.match(/^(@?[^@]+)(?:@(.+))?$/);
 	const packageName = match?.[1] ?? spec;
 	return isSafePackagePath(packageName) ? packageName : undefined;
 }

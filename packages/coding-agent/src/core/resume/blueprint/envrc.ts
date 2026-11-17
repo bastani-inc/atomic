@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
 import { join, resolve, win32 } from "node:path";
 import { getShellConfig } from "../../../utils/shell.ts";
+import { pathExists } from "../../tools/path-utils.ts";
 
 /** `value` as one single-quoted bash word. */
 export function shellQuote(value: string): string {
@@ -32,10 +32,10 @@ export function sessionEnvrcPath(storeDir: string, root: string): string {
  * The bash prefix that gives a command the variables the builds of the worktrees at `roots` wrote to `$ENVRC`:
  * undefined when none did. The files are sourced with every assignment exported, as a step sees them.
  */
-export function sessionEnvironmentPrefix(storeDir: string, roots: Iterable<string>): string | undefined {
-	const files = [...new Set([...roots].map((root) => sessionEnvrcPath(storeDir, root)))].filter((file) =>
-		existsSync(file),
-	);
+export async function sessionEnvironmentPrefix(storeDir: string, roots: Iterable<string>): Promise<string | undefined> {
+	const files: string[] = [];
+	for (const file of new Set([...roots].map((root) => sessionEnvrcPath(storeDir, root))))
+		if (await pathExists(file)) files.push(file);
 	if (files.length === 0) return undefined;
 	return ["set -a", ...files.map((file) => `. ${shellQuote(bashPath(file))}`), "set +a"].join("; ");
 }

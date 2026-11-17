@@ -1,6 +1,5 @@
-import { existsSync } from "node:fs";
-import { stat } from "node:fs/promises";
-import { createSessionCwdMatcher } from "../../../utils/canonical-path.ts";
+import { access, stat } from "node:fs/promises";
+import { createSessionCwdMatcherAsync } from "../../../utils/canonical-path.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 import type { SqliteDatabase } from "../database.js";
@@ -231,11 +230,11 @@ export class LegacySessionStore implements SessionStore {
 		readonly idPrefix?: string;
 		readonly includeInternal?: boolean;
 	}): AsyncIterable<JsonlSessionFile> {
-		const matchesCwd = query.cwd === undefined ? undefined : createSessionCwdMatcher(query.cwd);
+		const matchesCwd = query.cwd === undefined ? undefined : createSessionCwdMatcherAsync(query.cwd);
 		for (const [file] of (await this.legacyIndex()).values()) {
 			if (file === undefined) continue;
 			if (!matchesSessionIdPrefix(file.header.id, query.idPrefix)) continue;
-			if (matchesCwd && !matchesCwd(file.header.cwd)) continue;
+			if (matchesCwd && !(await matchesCwd(file.header.cwd))) continue;
 			if (!query.includeInternal && file.header.internal) continue;
 			if (await this.isDeleted(file.header.id)) continue;
 			yield file;
@@ -299,9 +298,10 @@ export class LegacySessionStore implements SessionStore {
 	}
 
 	private legacyStore(): Promise<JsonlSessionStore | undefined> {
-		this.legacy ??= existsSync(this.legacyDirectory)
-			? JsonlSessionStore.open(this.legacyDirectory, { scanExisting: false }).catch(() => undefined)
-			: Promise.resolve(undefined);
+		this.legacy ??= access(this.legacyDirectory).then(
+			() => JsonlSessionStore.open(this.legacyDirectory, { scanExisting: false }).catch(() => undefined),
+			() => undefined,
+		);
 		return this.legacy;
 	}
 

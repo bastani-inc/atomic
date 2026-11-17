@@ -86,9 +86,16 @@ const project = (
 const loadGate = "test/integration/workflow-pool-load-gate.test.ts";
 
 /**
+ * The interactive event-loop guard holds the event-loop delay of a real CLI and its engine to fixed budgets, so it too
+ * must not share the runner, with other files or with the load gate's 150 workers. Its project runs after the load
+ * gate's (`groupOrder: 2`); `npm run test:integration` selects it with the others.
+ */
+const uiGate = "test/integration/interactive-event-loop-guard.test.ts";
+
+/**
  * One project per suite directory, so the CI job split and the
  * diagnostics artifact names all survive the move off `bun test <dir>`
- * unchanged, plus the integration load gate on its own (above).
+ * unchanged, plus the two integration gates on their own (above).
  *
  * All projects use native setup: the CI project now executes the minified
  * extension/native binary boundary instead of limiting itself to source inspection.
@@ -104,10 +111,11 @@ export default defineConfig({
 		projects: [
 			project("unit", "test/unit/**/*.test.ts"),
 			project("integration", "test/integration/**/*.test.ts", {
-				exclude: [loadGate],
+				exclude: [loadGate, uiGate],
 				extraSetupFiles: [packagedWorkerSetup],
 			}),
 			project("integration-load-gate", loadGate, { groupOrder: 1 }),
+			project("integration-ui-gate", uiGate, { groupOrder: 2 }),
 			project("ci", "test/ci/**/*.test.ts"),
 		],
 	},

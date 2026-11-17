@@ -67,6 +67,24 @@ export function resolveToCwd(filePath: string, cwd: string): string {
 	return normalized;
 }
 
+/**
+ * {@link resolveToCwd} where no existence check can change its answer: when the literal and normalised spellings are
+ * the same path. Undefined when they differ.
+ */
+export function resolveToCwdIfUnambiguous(filePath: string, cwd: string): string | undefined {
+	const { literal, normalized } = resolveLiteralAndNormalized(filePath, cwd);
+	return literal === normalized ? literal : undefined;
+}
+
+/** {@link resolveToCwd} without blocking the event loop on its existence checks. */
+export async function resolveToCwdAsync(filePath: string, cwd: string): Promise<string> {
+	const { literal, normalized } = resolveLiteralAndNormalized(filePath, cwd);
+	if (await pathExists(literal)) return literal;
+	if (await pathExists(normalized)) return normalized;
+	if (await pathExists(dirname(literal))) return literal;
+	return normalized;
+}
+
 /** macOS filename variants of the literal and normalised spellings, in the order they are tried. */
 function readPathVariants(filePath: string, cwd: string): string[] {
 	const { literal, normalized } = resolveLiteralAndNormalized(filePath, cwd);
@@ -95,7 +113,7 @@ export function resolveReadPath(filePath: string, cwd: string): string {
 }
 
 export async function resolveReadPathAsync(filePath: string, cwd: string): Promise<string> {
-	const resolved = resolveToCwd(filePath, cwd);
+	const resolved = await resolveToCwdAsync(filePath, cwd);
 	if (await pathExists(resolved)) return resolved;
 	for (const variant of readPathVariants(filePath, cwd)) {
 		if (await pathExists(variant)) return variant;

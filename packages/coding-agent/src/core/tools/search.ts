@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import { join, relative, resolve as resolvePath, sep } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
@@ -9,7 +8,7 @@ import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
-import { resolveToCwd } from "./path-utils.ts";
+import { pathExists, resolveToCwdAsync } from "./path-utils.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
 import {
 	type InternalResourceContext,
@@ -77,42 +76,54 @@ export type SearchToolOptions = GrepToolOptions & {
 	contextAfter?: number;
 };
 /** An existing path is used exactly, so `app/[id]/page.tsx` is that file, not the pattern `app/[id]` (#5177). */
-function splitSearchPath(value: string, cwd: string): ReturnType<typeof splitPathLikeGlob> {
-	return existsSync(resolveToCwd(normalizePathLikeInput(value), cwd))
+async function splitSearchPath(value: string, cwd: string): Promise<ReturnType<typeof splitPathLikeGlob>> {
+	return (await pathExists(await resolveToCwdAsync(normalizePathLikeInput(value), cwd)))
 		? literalPathLike(value)
 		: splitPathLikeGlob(value);
 }
-function delimiterInExistingSearchGlobRoot(value: string, cwd: string): boolean {
+async function delimiterInExistingSearchGlobRoot(value: string, cwd: string): Promise<boolean> {
 	const selector = splitLineRangeSelector(value);
 	const parsed = splitPathLikeGlob(selector.path);
-	return !!parsed.glob && /[;,\s]/.test(parsed.basePath) && existsSync(resolveToCwd(parsed.basePath, cwd));
+	return (
+		!!parsed.glob &&
+		/[;,\s]/.test(parsed.basePath) &&
+		(await pathExists(await resolveToCwdAsync(parsed.basePath, cwd)))
+	);
 }
-function archiveSelectorExists(value: string, cwd: string): boolean {
+async function archiveSelectorExists(value: string, cwd: string): Promise<boolean> {
 	const archive = parseArchiveSelector(value);
 	if (!archive) return false;
-	const resolved = resolveArchiveSelector(archive, cwd);
-	if (!existsSync(resolved.archivePath)) return false;
+	const resolved = await resolveArchiveSelector(archive, cwd);
+	if (!(await pathExists(resolved.archivePath))) return false;
 	if (!resolved.memberPath) return true;
 	try {
-		readArchiveSelector(resolved);
+		await readArchiveSelector(resolved);
 		return true;
 	} catch {
 		return false;
 	}
 }
-function searchPathResolvable(value: string, cwd: string): boolean {
+async function searchPathResolvable(value: string, cwd: string): Promise<boolean> {
 	const selector = splitLineRangeSelector(value),
 		archive = parseArchiveSelector(selector.path);
 	if (archive) return archiveSelectorExists(selector.path, cwd);
-	const sqlite = sqliteSelectorForPath(selector.path, cwd);
+	const sqlite = await sqliteSelectorForPath(selector.path, cwd);
 	return (
 		!!sqlite ||
 		isInternalUrl(selector.path) ||
-		existsSync(resolveToCwd(splitSearchPath(selector.path, cwd).basePath, cwd))
+		(await pathExists(await resolveToCwdAsync((await splitSearchPath(selector.path, cwd)).basePath, cwd)))
 	);
 }
+async function someResolvable(parts: readonly string[], cwd: string): Promise<boolean> {
+	for (const part of parts) if (await searchPathResolvable(part, cwd)) return true;
+	return false;
+}
+async function everyResolvable(parts: readonly string[], cwd: string): Promise<boolean> {
+	for (const part of parts) if (!(await searchPathResolvable(part, cwd))) return false;
+	return true;
+}
 
-function normalizePaths(pathsValue: string | string[] | undefined, cwd: string): string[] {
+async function normalizePaths(pathsValue: string | string[] | undefined, cwd: string): Promise<string[]> {
 	const inputs = Array.isArray(pathsValue)
 		? pathsValue.length > 0
 			? pathsValue
@@ -129,9 +140,9 @@ function normalizePaths(pathsValue: string | string[] | undefined, cwd: string):
 		}
 		const resourceLike = /^[a-z]+:\/\//i.test(raw) || /^[^:]+\.(?:zip|jar|tar|tgz|gz|sqlite|db):/i.test(raw);
 		if (
-			existsSync(resolveToCwd(splitLineRangeSelector(raw).path, cwd)) ||
-			delimiterInExistingSearchGlobRoot(raw, cwd) ||
-			archiveSelectorExists(raw, cwd)
+			(await pathExists(await resolveToCwdAsync(splitLineRangeSelector(raw).path, cwd))) ||
+			(await delimiterInExistingSearchGlobRoot(raw, cwd)) ||
+			(await archiveSelectorExists(raw, cwd))
 		) {
 			expanded.push(raw);
 			continue;
@@ -140,13 +151,12 @@ function normalizePaths(pathsValue: string | string[] | undefined, cwd: string):
 			.split(/[;\s]+/)
 			.map(normalizePathLikeInput)
 			.filter(Boolean);
-		const parts = chunks.flatMap((chunk) =>
-			searchPathResolvable(chunk, cwd) ? [chunk] : chunk.split(",").map(normalizePathLikeInput).filter(Boolean),
-		);
+		const parts: string[] = [];
+		for (const chunk of chunks)
+			if (await searchPathResolvable(chunk, cwd)) parts.push(chunk);
+			else parts.push(...chunk.split(",").map(normalizePathLikeInput).filter(Boolean));
 		const commaOrSemicolon = /[;,]/.test(raw),
-			canSplit = commaOrSemicolon
-				? parts.some((part) => searchPathResolvable(part, cwd))
-				: parts.every((part) => searchPathResolvable(part, cwd));
+			canSplit = commaOrSemicolon ? await someResolvable(parts, cwd) : await everyResolvable(parts, cwd);
 		if (parts.length > 1 && canSplit) expanded.push(...parts);
 		else if (resourceLike) expanded.push(raw);
 		else expanded.push(raw);
@@ -215,33 +225,37 @@ function isResourceSelector(value: string): boolean {
 	);
 }
 
-function normalizeSearchTargets(pathsValue: string | string[] | undefined, cwd: string): SearchTarget[] {
-	return normalizePaths(pathsValue, cwd).map((searchPath) => {
-		const directSqlite = sqliteSelectorForPath(searchPath, cwd);
-		if (directSqlite?.rowId) return { path: searchPath, sqlite: directSqlite };
-		if (archiveSelectorExists(searchPath, cwd)) {
-			const archive = parseArchiveSelector(searchPath)!;
-			return { path: searchPath, archive };
+async function normalizeSearchTargets(pathsValue: string | string[] | undefined, cwd: string): Promise<SearchTarget[]> {
+	const targets: SearchTarget[] = [];
+	for (const searchPath of await normalizePaths(pathsValue, cwd))
+		targets.push(await normalizeSearchTarget(searchPath, cwd));
+	return targets;
+}
+async function normalizeSearchTarget(searchPath: string, cwd: string): Promise<SearchTarget> {
+	const directSqlite = await sqliteSelectorForPath(searchPath, cwd);
+	if (directSqlite?.rowId) return { path: searchPath, sqlite: directSqlite };
+	if (await archiveSelectorExists(searchPath, cwd)) {
+		const archive = parseArchiveSelector(searchPath)!;
+		return { path: searchPath, archive };
+	}
+	const selector = splitLineRangeSelector(searchPath);
+	const sqliteDirect = await sqliteSelectorForPath(selector.path, cwd);
+	if (sqliteDirect) return { path: selector.path, lineRanges: selector.lineRanges, sqlite: sqliteDirect };
+	const archive = parseArchiveSelector(selector.path);
+	if (archive) return { path: selector.path, lineRanges: selector.lineRanges, archive };
+	if (selector.path.startsWith("local://")) {
+		const sourcePath = await resolveInternalSelector(selector.path, cwd);
+		if (sourcePath) {
+			const parsed = await splitSearchPath(sourcePath, cwd);
+			return { path: parsed.basePath, glob: parsed.glob, lineRanges: selector.lineRanges };
 		}
-		const selector = splitLineRangeSelector(searchPath);
-		const sqliteDirect = sqliteSelectorForPath(selector.path, cwd);
-		if (sqliteDirect) return { path: selector.path, lineRanges: selector.lineRanges, sqlite: sqliteDirect };
-		const archive = parseArchiveSelector(selector.path);
-		if (archive) return { path: selector.path, lineRanges: selector.lineRanges, archive };
-		if (selector.path.startsWith("local://")) {
-			const sourcePath = resolveInternalSelector(selector.path, cwd);
-			if (sourcePath) {
-				const parsed = splitSearchPath(sourcePath, cwd);
-				return { path: parsed.basePath, glob: parsed.glob, lineRanges: selector.lineRanges };
-			}
-		}
-		if (isInternalUrl(selector.path))
-			return { path: selector.path, lineRanges: selector.lineRanges, internal: selector.path };
-		if (isResourceSelector(selector.path))
-			throw new Error(`Search resource selectors are not supported by this filesystem backend: ${searchPath}`);
-		const parsed = splitSearchPath(selector.path, cwd);
-		return { path: parsed.basePath, glob: parsed.glob, lineRanges: selector.lineRanges };
-	});
+	}
+	if (isInternalUrl(selector.path))
+		return { path: selector.path, lineRanges: selector.lineRanges, internal: selector.path };
+	if (isResourceSelector(selector.path))
+		throw new Error(`Search resource selectors are not supported by this filesystem backend: ${searchPath}`);
+	const parsed = await splitSearchPath(selector.path, cwd);
+	return { path: parsed.basePath, glob: parsed.glob, lineRanges: selector.lineRanges };
 }
 
 function stripExtendedRegexWhitespace(pattern: string): string {
@@ -300,7 +314,7 @@ async function searchFileLineRanges(
 ): Promise<string | undefined> {
 	if (!target.lineRanges?.length || target.glob || target.archive || target.sqlite || target.internal)
 		return undefined;
-	const absolutePath = resolveToCwd(target.path, cwd);
+	const absolutePath = await resolveToCwdAsync(target.path, cwd);
 	if (
 		!(await fsStat(absolutePath)
 			.then((stat) => stat.isFile())
@@ -368,14 +382,14 @@ function displaySearchPath(absolutePath: string, cwd: string): string {
 async function cwdRelativeSearchOutput(text: string, cwd: string, targetPath: string): Promise<string> {
 	const groups = groupSearchOutput(text);
 	if (groups.length === 0) return text;
-	const searchRoot = resolveToCwd(targetPath, cwd);
+	const searchRoot = await resolveToCwdAsync(targetPath, cwd);
 	const targetIsFile = await fsStat(searchRoot)
 		.then((stat) => stat.isFile())
 		.catch(() => false);
 	const displayPaths = new Map<string, string>();
 	for (const group of groups) {
 		const rootPath = targetIsFile ? searchRoot : join(searchRoot, group.path);
-		const absolutePath = existsSync(rootPath) ? rootPath : resolvePath(cwd, group.path);
+		const absolutePath = (await pathExists(rootPath)) ? rootPath : resolvePath(cwd, group.path);
 		displayPaths.set(group.path, displaySearchPath(absolutePath, cwd));
 	}
 	return text
@@ -505,14 +519,14 @@ export function createSearchToolDefinition(
 			const resourceCtx = ctx as InternalResourceContext | undefined;
 			const executionCwd = ctx?.cwd || cwd;
 			if (params.pattern.trim() === "") throw new Error("Pattern must not be empty");
-			const targets = normalizeSearchTargets(params.paths, executionCwd);
+			const targets = await normalizeSearchTargets(params.paths, executionCwd);
 			const ignoreCase = params.i === true || params.case === false;
 			const contextBefore = options?.contextBefore ?? 1,
 				contextAfter = options?.contextAfter ?? 3,
 				searchContext = Math.max(contextBefore, contextAfter);
 			const isSingleFileSearch =
 				targets.length === 1 &&
-				(await fsStat(resolveToCwd(targets[0]!.path, executionCwd))
+				(await fsStat(await resolveToCwdAsync(targets[0]!.path, executionCwd))
 					.then((stat) => stat.isFile())
 					.catch(() => false));
 			const limit = isSingleFileSearch ? SINGLE_FILE_MATCHES : DEFAULT_LIMIT;
@@ -523,7 +537,7 @@ export function createSearchToolDefinition(
 				if (target.archive || target.sqlite || target.internal) continue;
 				if (
 					target.lineRanges &&
-					!(await fsStat(resolveToCwd(target.path, executionCwd))
+					!(await fsStat(await resolveToCwdAsync(target.path, executionCwd))
 						.then((stat) => stat.isFile())
 						.catch(() => false))
 				) {
@@ -539,9 +553,9 @@ export function createSearchToolDefinition(
 			let remaining = limit;
 			const targetHasMatch = async (target: SearchTarget): Promise<boolean> => {
 				if (target.archive || target.sqlite || target.internal) {
-					const archive = target.archive ? resolveArchiveSelector(target.archive, executionCwd) : undefined;
+					const archive = target.archive ? await resolveArchiveSelector(target.archive, executionCwd) : undefined;
 					const text = archive
-						? searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
+						? await searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
 						: target.sqlite
 							? searchSqliteSelector(target.sqlite, params.pattern, ignoreCase, contextBefore, contextAfter)
 							: await searchInternalSelector(
@@ -593,7 +607,7 @@ export function createSearchToolDefinition(
 						!target.sqlite &&
 						!target.internal &&
 						targets.length > 1 &&
-						(await fsStat(resolveToCwd(target.path, executionCwd))
+						(await fsStat(await resolveToCwdAsync(target.path, executionCwd))
 							.then(() => false)
 							.catch(() => true))
 					) {
@@ -607,9 +621,9 @@ export function createSearchToolDefinition(
 					continue;
 				}
 				if (target.archive || target.sqlite || target.internal) {
-					const archive = target.archive ? resolveArchiveSelector(target.archive, executionCwd) : undefined;
+					const archive = target.archive ? await resolveArchiveSelector(target.archive, executionCwd) : undefined;
 					let text = archive
-						? searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
+						? await searchArchiveSelector(archive, params.pattern, ignoreCase, false, contextBefore, contextAfter)
 						: target.sqlite
 							? searchSqliteSelector(target.sqlite, params.pattern, ignoreCase, contextBefore, contextAfter)
 							: await searchInternalSelector(
@@ -654,7 +668,7 @@ export function createSearchToolDefinition(
 				}
 				if (
 					targets.length > 1 &&
-					(await fsStat(resolveToCwd(target.path, executionCwd))
+					(await fsStat(await resolveToCwdAsync(target.path, executionCwd))
 						.then(() => false)
 						.catch(() => true))
 				) {

@@ -54,6 +54,7 @@ import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { inheritsDebugSetting, setDebugSetting } from "./core/debug-setting.ts";
 import { DEFAULT_THINKING_LEVEL } from "./core/defaults.ts";
+import { startEventLoopMonitor } from "./core/event-loop-monitor.ts";
 import type { LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
@@ -512,6 +513,8 @@ export async function main(argv: string[], options?: MainOptions) {
 		: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
 	let isolateInteractiveHost =
 		appMode === "interactive" && !isPlainRuntimeMetadataCommand(parsed) && engineEnv.child !== "1";
+	if (engineEnv.child === "1") startEventLoopMonitor("engine");
+	else if (appMode === "interactive" && !isPlainRuntimeMetadataCommand(parsed)) startEventLoopMonitor("host");
 	let startupBenchmark: boolean;
 	try {
 		startupBenchmark = resolveStartupBenchmark(appMode, engineEnv);
@@ -523,7 +526,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	const shouldTakeOverStdout = appMode !== "interactive";
 	const shouldRestoreStdoutForMetadata = isPlainRuntimeMetadataCommand(parsed);
 	if (shouldTakeOverStdout) {
-		takeOverStdout();
+		takeOverStdout({ nonBlockingPipe: appMode === "rpc" });
 	}
 	const engineLiveness = engineEnv.child === "1" ? startInteractiveEngineLiveness(writeRawStdout) : undefined;
 	engineLiveness?.ready();

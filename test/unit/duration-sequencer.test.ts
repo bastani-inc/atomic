@@ -109,7 +109,7 @@ interface ShardedSuite {
 
 const SHARDED_SUITES: readonly ShardedSuite[] = [
 	{ name: "unit", projects: ["unit"] },
-	{ name: "integration", projects: ["integration", "integration-load-gate"] },
+	{ name: "integration", projects: ["integration", "integration-load-gate", "integration-ui-gate"] },
 	{ name: "coding-agent", root: "packages/coding-agent" },
 ];
 
@@ -164,6 +164,10 @@ for (const suite of SHARDED_SUITES) {
 						all.some((file) => file.endsWith("workflow-pool-load-gate.test.ts")),
 						"the load gate is not sharded",
 					);
+					assert.ok(
+						all.some((file) => file.endsWith("interactive-event-loop-guard.test.ts")),
+						"the interactive event-loop guard is not sharded",
+					);
 				}
 				assert.ok(
 					shards.every((shard) => shard.length > 0),
@@ -194,10 +198,13 @@ test(
 			)[process.platform === "win32" ? "win32" : "linux"];
 			const sorted = await sequencer.sort([...specifications]);
 			assert.equal(sorted.length, specifications.length);
-			// The load gate's project runs after the rest (its later groupOrder), so it comes last.
-			assert.equal(sorted.at(-1)?.project.name, "integration-load-gate");
+			// The gates' projects run after the rest, in their groupOrder: the load gate, then the event-loop guard.
+			assert.deepEqual(
+				sorted.slice(-2).map((specification) => specification.project.name),
+				["integration-load-gate", "integration-ui-gate"],
+			);
 			const weights = sorted
-				.slice(0, -1)
+				.slice(0, -2)
 				.map(
 					(specification) =>
 						record[relative(vitest.config.root, specification.moduleId).replaceAll("\\", "/")] ?? UNKNOWN_FILE_MS,

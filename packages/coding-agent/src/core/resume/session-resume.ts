@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { type GitUnavailableError, isGitUnavailableError } from "../../utils/git-errors.ts";
@@ -22,6 +21,7 @@ import {
 } from "../session-worktree-snapshots.ts";
 import type { SettingsManager } from "../settings-manager.ts";
 import { recordTimingLines } from "../timings.ts";
+import { pathExists } from "../tools/path-utils.ts";
 import { ProjectTrustStore } from "../trust-manager.ts";
 import { locateCheckout, readRepositoryConfig } from "../worktree-snapshot/capture.ts";
 import {
@@ -290,7 +290,7 @@ async function returnToStartingCheckout(
 	if (restore === undefined || restore.snapshotId !== match.snapshot.id) return undefined;
 	const checkout = resolve(restore.from);
 	const cwd = resolve(checkout, relative(match.root, match.cwd));
-	if (isInside(storeDir, checkout) || !existsSync(cwd)) return undefined;
+	if (isInside(storeDir, checkout) || !(await pathExists(cwd))) return undefined;
 	// When the checkout cannot be examined, the project the session started in is still where it goes back to.
 	const examined = await orFallBack(options, "return-to-checkout-verify", undefined, async () => ({
 		holdsCommit: await workedInCheckout(match.snapshot, checkout, sessionManager.getSessionId(), options.signal),
@@ -671,7 +671,7 @@ async function continueWithoutRecords(
 	options: PrepareSessionResumeOptions,
 ): Promise<PreparedSessionResume> {
 	const recorded = mapRestoredPath(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
-	const cwd = existsSync(recorded) ? recorded : resolve(options.launchCwd);
+	const cwd = (await pathExists(recorded)) ? recorded : resolve(options.launchCwd);
 	const opened = await openResumedSession(sessionManager, cwd, [], options.sessionDirectory);
 	const context = await describeBlueprintsInPlace(opened.sessionManager, storeDir, options);
 	const notices = missing.map((record) => ({ type: "warning" as const, message: formatMissingRecordNotice(record) }));
@@ -697,7 +697,7 @@ async function describeBlueprintsInPlace(
 	options: PrepareSessionResumeOptions,
 ): Promise<string | undefined> {
 	if (options.blueprints === "skip") return undefined;
-	const root = enclosingRepositoryRoot(resolve(sessionManager.getCwd()));
+	const root = await enclosingRepositoryRoot(resolve(sessionManager.getCwd()));
 	const blueprints = await setUpResumedBlueprints({
 		restored: [],
 		inPlace: root === undefined ? [] : [{ root, remotes: [] }],
@@ -1097,7 +1097,7 @@ async function setUpCheckoutBlueprints(
 				warnings: [
 					`Could not check for an earlier blueprint build of these worktrees (${error instanceof Error ? describeFailure(error) : String(error)}); building them anyway.`,
 				],
-				release: () => {},
+				release: async () => {},
 			};
 		});
 		// No other process builds them until this build settled, and then the ledger says whether they still need it.
@@ -1118,7 +1118,7 @@ async function setUpCheckoutBlueprints(
 					}),
 			);
 		} finally {
-			settled.release();
+			await settled.release();
 		}
 		// The warnings of LFS downloads that end after their restores were recorded come with the build's (#5099).
 		const downloads = await lfs.notices([...restoredHere, ...earlier].map((checkout) => checkout.root));
@@ -1261,7 +1261,7 @@ async function checkoutsWorkedHere(
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	const own = new Set<string>();
 	for (const [root, snapshot] of checkouts) {
-		if (!existsSync(isInside(root, cwd) ? cwd : root)) continue;
+		if (!(await pathExists(isInside(root, cwd) ? cwd : root))) continue;
 		const holder = await pooledWorktreeHolder(storeDir, root);
 		if (holder !== "unpooled") {
 			// Slots share their repository's object store, so only the pool record tells whose work a slot holds, and a
@@ -1291,7 +1291,7 @@ async function partialRestores(
 	for (const mapping of sessionManager.getWorktreeRootMappings()) {
 		const degraded = mapping.degraded;
 		const snapshot = current.get(mapping.to);
-		if (degraded === undefined || snapshot?.id !== mapping.snapshotId || !existsSync(mapping.to)) continue;
+		if (degraded === undefined || snapshot?.id !== mapping.snapshotId || !(await pathExists(mapping.to))) continue;
 		const restored = {
 			remotes: [...snapshot.remotes],
 			head: degraded.head,
@@ -1372,9 +1372,9 @@ function planRestores(
 export function savedProjectTrust(
 	agentDir: string,
 	settings: Pick<SettingsManager, "getDefaultProjectTrust">,
-): (worktree: string) => boolean {
+): (worktree: string) => Promise<boolean> {
 	const trustStore = new ProjectTrustStore(agentDir);
-	return (worktree) => trustStore.get(worktree) ?? settings.getDefaultProjectTrust() === "always";
+	return async (worktree) => (await trustStore.getAsync(worktree)) ?? settings.getDefaultProjectTrust() === "always";
 }
 
 /** Where restored worktrees, the blueprint build ledger and logs live for the agent directory `agentDir`. */
@@ -1399,7 +1399,7 @@ export function sessionResumeOptions(
 		SettingsManager,
 		"getWorktreeSnapshotSettings" | "getWorktreePoolSettings" | "getResumeSetupCommand" | "getResumeWaitForBlueprint"
 	>,
-	trusted: (worktree: string) => boolean,
+	trusted: (worktree: string) => boolean | Promise<boolean>,
 	interactive = true,
 ): PrepareSessionResumeOptions {
 	return {

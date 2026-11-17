@@ -22,9 +22,9 @@ import { applyContextEdit } from "../session-manager-history.ts";
 import { estimateTokens } from "./compaction.ts";
 import { resolvePlannerRequest } from "./range-planner.js";
 import {
+	collectFileOpsFromMessage,
 	computeFileLists,
 	createFileOps,
-	extractFileOpsFromMessage,
 	type FileOperations,
 	formatFileOperations,
 	normalizeFileOpPath,
@@ -238,6 +238,19 @@ export function prepareBranchEntries(
 	tokenBudget: number = 0,
 	cwd?: string,
 ): BranchPreparation {
+	return collectBranchEntries(entries, tokenBudget, (path) => normalizeFileOpPath(path, cwd));
+}
+
+/** {@link prepareBranchEntries} without a cwd: the paths of its file operations are kept as written. */
+export function prepareBranchEntriesAsWritten(entries: SessionEntry[], tokenBudget: number = 0): BranchPreparation {
+	return collectBranchEntries(entries, tokenBudget, (path) => path);
+}
+
+function collectBranchEntries(
+	entries: SessionEntry[],
+	tokenBudget: number,
+	normalize: (path: string) => string,
+): BranchPreparation {
 	const messages: AgentMessage[] = [];
 	const fileOps = createFileOps();
 	const filteredEntries = entries;
@@ -250,12 +263,12 @@ export function prepareBranchEntries(
 		if (entry.type === "branch_summary" && !entry.fromHook && entry.details) {
 			const details = entry.details as BranchSummaryDetails;
 			if (Array.isArray(details.readFiles)) {
-				for (const f of details.readFiles) fileOps.read.add(normalizeFileOpPath(f, cwd));
+				for (const f of details.readFiles) fileOps.read.add(normalize(f));
 			}
 			if (Array.isArray(details.modifiedFiles)) {
 				// Modified files go into both edited and written for proper deduplication
 				for (const f of details.modifiedFiles) {
-					fileOps.edited.add(normalizeFileOpPath(f, cwd));
+					fileOps.edited.add(normalize(f));
 				}
 			}
 		}
@@ -274,7 +287,7 @@ export function prepareBranchEntries(
 		if (!message) continue;
 
 		// Extract file ops from assistant messages (tool calls)
-		extractFileOpsFromMessage(message, fileOps, cwd);
+		collectFileOpsFromMessage(message, fileOps, normalize);
 
 		const tokens = estimateTokens(message);
 

@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- A stage or task that uses `gitWorktreeDir` or `worktree: true` shows its worktree as its working directory once the worktree is ready, rather than as it starts, and a worktree setup failure now fails that stage's call instead of throwing from `ctx.stage()`
+
+### Fixed
+
+- Workflow worktree setup, git commands, worktree setup hooks, worker pools and workflow console logs no longer block the terminal UI while they run; the SDK's `setupGitWorktree` is unchanged
+- A long run of spaces in a rubric criterion heading no longer stalls rubric parsing
+
 ## [0.9.88] - 2026-11-16
 
 ### Breaking Changes

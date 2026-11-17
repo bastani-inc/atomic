@@ -14,7 +14,7 @@ import type { Api, Model, SimpleStreamOptions, Usage } from "@bastani/atomic-ai/
 import { completeSimple } from "@bastani/atomic-ai/compat";
 import { convertToLlm } from "../messages.ts";
 import type { SessionEntry } from "../session-manager.ts";
-import { prepareBranchEntries } from "./branch-summarization.ts";
+import { prepareBranchEntriesAsWritten } from "./branch-summarization.ts";
 import { SUMMARIZATION_SYSTEM_PROMPT, serializeConversation } from "./utils.ts";
 
 // ============================================================================
@@ -80,7 +80,7 @@ export async function generateSessionSummary(
 	entries: SessionEntry[],
 	options: GenerateSessionSummaryOptions,
 ): Promise<SessionSummaryResult> {
-	const { messages } = prepareBranchEntries(entries, SESSION_SUMMARY_INPUT_TOKENS);
+	const { messages } = prepareBranchEntriesAsWritten(entries, SESSION_SUMMARY_INPUT_TOKENS);
 	if (messages.length === 0) {
 		return {};
 	}
