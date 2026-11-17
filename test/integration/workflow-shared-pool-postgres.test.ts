@@ -169,7 +169,7 @@ test.skipIf(postgresSkipReason !== undefined || process.platform === "win32")(
 				for (const table of ["work", "pool", "resource_permits", "stage_workspaces", "stage_inputs", "pool_hosts"])
 					assert.ok(tables.includes(`${PREFIX}wf_runs_${table}`), table);
 				for (const host of ["A", "B"]) {
-					const state = join(directory, host, "workflows", "pool");
+					const state = join(directory, host, "agent", "workflows", "pool");
 					const databases = existsSync(state) ? readdirSync(state).filter((file) => file.endsWith(".sqlite")) : [];
 					assert.deepEqual(databases, [], `host ${host} kept no coordination database`);
 				}

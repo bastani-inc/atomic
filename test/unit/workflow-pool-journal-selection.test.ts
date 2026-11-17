@@ -149,7 +149,7 @@ test("a journal's coordination database is the same on this machine every time, 
 	});
 	const first = coordinationPath(select({ url: "libsql://a" }));
 	assert.equal(first, coordinationPath(select({ url: "libsql://a" })));
-	assert.ok(first.startsWith(join("/tmp", "pool-home", "workflows", "pool")), first);
+	assert.ok(first.startsWith(join("/tmp", "pool-home", "agent", "workflows", "pool")), first);
 	assert.match(first, /\.sqlite$/);
 	// A credential reference names where a secret is read from, not which database it opens: renaming it keeps the database.
 	const withToken = (env: string) => ({

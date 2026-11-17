@@ -7,6 +7,7 @@ import { createSessionCwdMatcher, normalizePath, pathsEqual, resolvePath } from 
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { SessionHistoryIndex } from "./session-history-index.ts";
+import { appendFailureWroteNothing } from "./session-manager-append-errors.ts";
 import { createBranchedSessionState } from "./session-manager-archive.ts";
 import { classifiedWorkflowMetadata, validSessionWorkflowMetadata } from "./session-manager-classification.ts";
 import {
@@ -79,15 +80,12 @@ import {
 	isStorageTransientError,
 	SessionBlobError,
 	type StorageFailureCause,
-	StoragePayloadTooLargeError,
 	StorageRollbackError,
 } from "./storage/errors.js";
 import {
 	SessionConflictError,
 	SessionFormatVersionError,
 	SessionIdMismatchError,
-	SessionInvalidTextError,
-	SessionInvalidTimestampError,
 	type SessionJsonValue,
 	SessionNotFoundError,
 	StorageUnavailableError,
@@ -107,21 +105,6 @@ import type {
 import { historyEntryLineCount, renderHistoryTranscript } from "./tools/history-transcript.ts";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeUnrestored } from "./worktree-snapshot/types.ts";
-
-/**
- * Whether a failed append certainly wrote nothing, so the store need not be read back (#4970): the storage layer
- * says so, or the store refused the entries or was closed before writing.
- */
-function wroteNothing(error: unknown): boolean {
-	return (
-		(isStorageTransientError(error) && error.outcome === "not-applied") ||
-		error instanceof SessionInvalidTextError ||
-		error instanceof SessionInvalidTimestampError ||
-		error instanceof StoragePayloadTooLargeError ||
-		// The session store's and the database's closed-store errors.
-		(error instanceof Error && error.name === "StoreClosedError")
-	);
-}
 
 /** How many times one append reads the store's new tail and tries again before its failure stands (#4970). */
 const MAX_APPEND_RECONCILES = 3;
@@ -333,7 +316,11 @@ export class SessionManager {
 		this.leafId = leafId;
 	}
 
-	async refreshFromStore(): Promise<boolean> {
+	refreshFromStore(): Promise<boolean> {
+		return this.runMutation(() => this.refreshStoredTail());
+	}
+
+	private async refreshStoredTail(): Promise<boolean> {
 		const { store, sessionId, lastSeq, historyEpoch, lastEntryId } = this;
 		const range = await readSessionRange(store, sessionId, Math.max(1, lastSeq), Number.MAX_SAFE_INTEGER);
 		if (this.sessionId !== sessionId || this.store !== store || this.lastSeq !== lastSeq) return false;
@@ -672,7 +659,7 @@ export class SessionManager {
 					this.deletedFromStore = true;
 					throw new SessionDeletedError(this.sessionId, { cause: error });
 				}
-				if (wroteNothing(error) || attempt > MAX_APPEND_RECONCILES) throw error;
+				if (appendFailureWroteNothing(error) || attempt > MAX_APPEND_RECONCILES) throw error;
 				const unknown = isStorageTransientError(error) && error.outcome === "unknown";
 				if (await this.reconcileAppend(entries, error, unknown, expectSeq)) return;
 				continue;

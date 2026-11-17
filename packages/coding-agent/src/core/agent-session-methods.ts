@@ -287,6 +287,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	abort(options?: SessionAbortOptions): Promise<void>;
 	/** Ends the current turn without closing the session to further messages, as Esc does in a subagent's chat. */
 	interruptTurn(): Promise<void>;
+	_sealMessageAdmissionIfDrained(): boolean;
 	setSteeringMode(mode: "all" | "one-at-a-time"): void;
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void;
 
@@ -501,6 +502,7 @@ export interface AgentSessionPublicSurface
 		| "steer"
 		| "followUp"
 		| "sendCustomMessage"
+		| "sendCustomMessages"
 		| "sendUserMessage"
 		| "clearQueue"
 		| "getSteeringMessages"

@@ -1,4 +1,4 @@
-import { basename, dirname, join, relative, sep } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@bastani/atomic-agent-core";
 import { getOpenCodeSessionHeaders } from "@bastani/atomic-ai";
 import {
@@ -74,6 +74,7 @@ import { releaseSessionWorktrees } from "./session-worktree-snapshots.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
+import { defaultSessionDatabasePath } from "./storage/file-identity.js";
 import { validateProcessStorage } from "./storage/process-selection.js";
 import { selectStorage } from "./storage/selection.js";
 import type { SessionStore } from "./storage/session/types.js";
@@ -359,16 +360,19 @@ async function constructAgentSession(
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	migrateCompactionModelSettings(settingsManager, modelRuntime.getAllModels());
+	const effectiveSettings = settingsManager.getSettings();
 	let sessionManager = suppliedSession;
 	if (!sessionManager) {
 		const sessionStore =
 			options.sessionStore ??
 			(options.storage === undefined
 				? undefined
-				: selectStorage(options.storage, "sdk", "storage", join(dirname(agentDir), "workflows", "journal.sqlite")));
+				: selectStorage(options.storage, "sdk", "storage", () =>
+						defaultSessionDatabasePath(agentDir, effectiveSettings),
+					));
 		const store = await resolveSessionStore(cwd, {
 			agentDir,
-			settings: settingsManager.getSettings(),
+			settings: effectiveSettings,
 			sessionStore,
 		});
 		if (store !== options.sessionStore) acquisition.store = store;

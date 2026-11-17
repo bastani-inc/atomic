@@ -1,23 +1,34 @@
-import { dirname, join } from "node:path";
+import { mkdirSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import { getAgentDir, openNodeSqliteDatabase, validateStoragePrefix, wrapNodeSqliteDatabase } from "@bastani/atomic";
+import {
+	defaultSessionDatabasePath,
+	getAgentDir,
+	openNodeSqliteDatabase,
+	SettingsManager,
+	validateStoragePrefix,
+	wrapNodeSqliteDatabase,
+} from "@bastani/atomic";
+import type { StorageHomeSettings } from "@bastani/atomic/storage";
 import { SqlRunJournal } from "./sql-run-journal.js";
 
 export { JOURNAL_READ_PAGE_SIZE, SqlRunJournal } from "./sql-run-journal.js";
 
-export function workflowJournalPath(): string {
+export function workflowJournalPath(settings?: StorageHomeSettings): string {
 	const override = process.env.ATOMIC_WORKFLOW_JOURNAL_PATH;
 	return override !== undefined && override.length > 0
 		? override
-		: join(dirname(getAgentDir()), "workflows", "journal.sqlite");
+		: defaultSessionDatabasePath(getAgentDir(), settings);
 }
 
 export async function openSqlRunJournal(
-	source: string | DatabaseSync = workflowJournalPath(),
+	source?: string | DatabaseSync,
 	options: { readonly prefix?: string } = {},
 ): Promise<SqlRunJournal> {
 	validateStoragePrefix(options.prefix);
-	const database = typeof source === "string" ? await openNodeSqliteDatabase(source) : wrapNodeSqliteDatabase(source);
+	if (source === undefined) mkdirSync(getAgentDir(), { recursive: true });
+	const selected = source ?? workflowJournalPath(SettingsManager.create(process.cwd(), getAgentDir()).getSettings());
+	const database =
+		typeof selected === "string" ? await openNodeSqliteDatabase(selected) : wrapNodeSqliteDatabase(selected);
 	try {
 		const journal = await SqlRunJournal.open(database, options);
 		const close = journal.close.bind(journal);

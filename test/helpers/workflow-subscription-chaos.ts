@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { defaultSessionDatabasePath } from "../../packages/coding-agent/src/core/storage/file-identity.js";
 import { fileExists, moduleDir, readText, type SpawnedProcess, sleep, spawnSyncCollect } from "./runtime.js";
 
 export const ROOT = resolve(moduleDir(import.meta.url), "../..");
@@ -142,7 +143,7 @@ export function writeLockFree(path: string): boolean {
 
 /** The run journal and the store the scripted event children keep their sessions in. */
 export async function storageWriteLocksFree(directory: string): Promise<boolean> {
-	for (const path of [join(directory, "journal.sqlite"), join(directory, "workflows", "journal.sqlite")]) {
+	for (const path of [join(directory, "journal.sqlite"), defaultSessionDatabasePath(join(directory, "agent"), {})]) {
 		if ((await fileExists(path)) && !writeLockFree(path)) return false;
 	}
 	return true;

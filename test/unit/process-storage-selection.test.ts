@@ -95,22 +95,22 @@ test("session storage follows SDK, session flags, --storage, session variables, 
 	});
 	assert.deepEqual(select({ noSession: true }), { kind: "memory" });
 	assert.deepEqual(select({ sessionDir: "dir" }), { kind: "jsonl", dir: join(project, "dir") });
-	assert.deepEqual(select(), { kind: "sqlite", path: join(root, "cli.sqlite") });
+	assert.deepEqual(select(), { kind: "sqlite", path: join(agentDir, "cli.sqlite") });
 	setCliStorageSelection(undefined);
-	assert.deepEqual(select(), { kind: "sqlite", path: join(root, "sessions-env.sqlite"), prefix: "env_" });
+	assert.deepEqual(select(), { kind: "sqlite", path: join(agentDir, "sessions-env.sqlite"), prefix: "env_" });
 	vi.stubEnv(SESSIONS_STORAGE_ENV, JSON.stringify({ dir: "env-sessions" }));
-	assert.deepEqual(select(), { kind: "jsonl", dir: join(root, "env-sessions") });
+	assert.deepEqual(select(), { kind: "jsonl", dir: join(agentDir, "env-sessions") });
 	vi.stubEnv(SESSIONS_STORAGE_ENV, "");
-	assert.deepEqual(select(), { kind: "sqlite", path: join(root, "shared-env.sqlite") });
+	assert.deepEqual(select(), { kind: "sqlite", path: join(agentDir, "shared-env.sqlite") });
 	vi.stubEnv(SESSION_DIR_ENV, "legacy-sessions");
 	assert.deepEqual(select(), { kind: "jsonl", dir: join(project, "legacy-sessions") });
 	vi.stubEnv(SESSION_DIR_ENV, "");
 	vi.stubEnv(STORAGE_ENV, JSON.stringify({}));
-	assert.deepEqual(select(), { kind: "sqlite", path: join(root, "storage.sqlite") });
+	assert.deepEqual(select(), { kind: "sqlite", path: join(agentDir, "storage.sqlite") });
 	assert.equal(hasProcessStorageSelection("sessions"), true);
 	vi.stubEnv(STORAGE_ENV, "");
 	assert.equal(hasProcessStorageSelection("sessions"), false);
-	assert.deepEqual(select(), { kind: "sqlite", path: join(root, "settings-sessions.sqlite") });
+	assert.deepEqual(select(), { kind: "sqlite", path: join(agentDir, "settings-sessions.sqlite") });
 });
 
 test("the workflow journal follows SDK journal, --storage, journal variables, ATOMIC_STORAGE, then settings (#3783)", () => {
@@ -125,29 +125,36 @@ test("the workflow journal follows SDK journal, --storage, journal variables, AT
 		kind: "sqlite",
 		path: "sdk.sqlite",
 	});
-	assert.deepEqual(selectRunJournal({ settings }), { kind: "sqlite", path: join(root, "cli.sqlite"), prefix: "cli_" });
+	assert.deepEqual(selectRunJournal({ settings }), {
+		kind: "sqlite",
+		path: join(agentDir, "cli.sqlite"),
+		prefix: "cli_",
+	});
 	setCliStorageSelection(undefined);
 	assert.deepEqual(selectRunJournal({ settings }), { kind: "memory" });
 	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, JSON.stringify({}));
-	assert.deepEqual(selectRunJournal({ settings }), { kind: "sharded", dir: join(root, "workflows", "journal") });
+	assert.deepEqual(selectRunJournal({ settings }), { kind: "sharded", dir: join(agentDir, "workflows", "journal") });
 	assert.deepEqual(selectProcessStorage("journal", agentDir), {
-		selection: { kind: "sharded", dir: join(root, "workflows", "journal") },
+		selection: { kind: "sharded", dir: join(agentDir, "workflows", "journal") },
 		source: "env",
 		field: WORKFLOWS_JOURNAL_ENV,
 	});
 	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, JSON.stringify({ prefix: "env_" }));
 	assert.deepEqual(selectRunJournal({ settings }), {
 		kind: "sqlite",
-		path: join(root, "workflows", "journal.sqlite"),
+		path: join(agentDir, "workflows", "journal.sqlite"),
 		prefix: "env_",
 	});
 	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, "");
-	assert.deepEqual(selectRunJournal({ settings }), { kind: "sqlite", path: join(root, "shared-env.sqlite") });
+	assert.deepEqual(selectRunJournal({ settings }), { kind: "sqlite", path: join(agentDir, "shared-env.sqlite") });
 	vi.stubEnv(WORKFLOW_JOURNAL_PATH_ENV, "legacy.sqlite");
 	assert.deepEqual(selectRunJournal({ settings }), { kind: "sqlite", path: "legacy.sqlite" });
 	vi.stubEnv(WORKFLOW_JOURNAL_PATH_ENV, "");
 	vi.stubEnv(STORAGE_ENV, "");
-	assert.deepEqual(selectRunJournal({ settings }), { kind: "sqlite", path: join(root, "settings-journal.sqlite") });
+	assert.deepEqual(selectRunJournal({ settings }), {
+		kind: "sqlite",
+		path: join(agentDir, "settings-journal.sqlite"),
+	});
 });
 
 test("session flags beat --storage for sessions while --storage still selects the journal (#3783)", () => {
@@ -158,7 +165,7 @@ test("session flags beat --storage for sessions while --storage still selects th
 		kind: "jsonl",
 		dir: join(project, "flag-sessions"),
 	});
-	assert.deepEqual(selectRunJournal(), { kind: "sqlite", path: join(root, "cli.sqlite") });
+	assert.deepEqual(selectRunJournal(), { kind: "sqlite", path: join(agentDir, "cli.sqlite") });
 });
 
 test("--storage and --storage-file are exclusive, need a value, and read files relative to the working directory (#3783)", async () => {
@@ -173,10 +180,10 @@ test("--storage and --storage-file are exclusive, need a value, and read files r
 	assert.deepEqual(parseArgs(["--storage", "{}"]).storage, { flag: "--storage", value: "{}" });
 	await writeFileEnsuringDir(join(project, "selection.json"), JSON.stringify({ path: "from-file.sqlite" }));
 	setCliStorageSelection(parseArgs(["--storage-file", "selection.json"]).storage, project);
-	assert.deepEqual(selectRunJournal(), { kind: "sqlite", path: join(root, "from-file.sqlite") });
+	assert.deepEqual(selectRunJournal(), { kind: "sqlite", path: join(agentDir, "from-file.sqlite") });
 	assert.deepEqual(selectSessionStorage(project, { agentDir }), {
 		kind: "sqlite",
-		path: join(root, "from-file.sqlite"),
+		path: join(agentDir, "from-file.sqlite"),
 	});
 	assertConfigError(
 		() => {
@@ -361,7 +368,7 @@ test("process adapter selections resolve { env } and { file } secrets and never 
 	const envSecret = "env-secret-3783";
 	const fileSecret = "file-secret-3783";
 	vi.stubEnv("ISSUE_3783_TOKEN", envSecret);
-	await writeFileEnsuringDir(join(root, "password.txt"), fileSecret);
+	await writeFileEnsuringDir(join(agentDir, "password.txt"), fileSecret);
 	const adapter = (path: string, secrets: object) => JSON.stringify({ adapter: ADAPTER, options: { path }, secrets });
 	vi.stubEnv(SESSIONS_STORAGE_ENV, adapter(join(root, "sessions.sqlite"), { token: { env: "ISSUE_3783_TOKEN" } }));
 	vi.stubEnv(WORKFLOWS_JOURNAL_ENV, adapter(join(root, "journal.sqlite"), { password: { file: "password.txt" } }));
