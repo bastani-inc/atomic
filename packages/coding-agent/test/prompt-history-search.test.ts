@@ -381,7 +381,9 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 			);
 			assert.ok(
 				entries.every(
-					(entry) => entry.text === "shorthand check" || (typeof entry.sentAt === "number" && Number.isFinite(entry.sentAt)),
+					(entry) =>
+						entry.text === "shorthand check" ||
+						(typeof entry.sentAt === "number" && Number.isFinite(entry.sentAt)),
 				),
 			);
 			assert.deepEqual(
@@ -490,7 +492,10 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 			const resumedHistory = [...getUserTexts(harness)].reverse();
 			const searchResults = promptHistoryEntries(resumedHistory, sessionPrompts);
 			assert.ok(!JSON.stringify(searchResults).includes(secret), JSON.stringify(searchResults));
-			const rendered = lines(new PromptHistorySelectorComponent(searchResults, { onSelect: () => {}, onCancel: () => {} }), 100);
+			const rendered = lines(
+				new PromptHistorySelectorComponent(searchResults, { onSelect: () => {}, onCancel: () => {} }),
+				100,
+			);
 			assert.ok(!rendered.some((line) => line.includes(secret)), rendered.join("\n"));
 		} finally {
 			release.resolve();
