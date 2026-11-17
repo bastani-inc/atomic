@@ -18,6 +18,7 @@ import {
 import type { DurableStageCheckpoint, DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { infrastructureFaultOf } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import {
+	IDLE_CLAIM_FALLBACK_MS,
 	IdleClaimBackoff,
 	IdleClaimWaits,
 	IdleReadyProbe,
@@ -27,6 +28,16 @@ import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 const { work, boundary } = poolWorkFixture();
+const LONG_IDLE_PAUSE_MS = 60_000;
+const RECOVERY_BOUND_MS = 10_000;
+
+class LongIdleClaimBackoff extends IdleClaimBackoff {
+	override next(): number {
+		const pause = super.next();
+		return pause < IDLE_CLAIM_FALLBACK_MS ? pause : LONG_IDLE_PAUSE_MS;
+	}
+}
+
 const run = { ...boundary.topology!.boundary!.child };
 const tool: DurableToolCheckpoint = {
 	kind: "tool",
@@ -595,7 +606,7 @@ test("a recovered remote journal claim passes a coalesced wake to another long-i
 	let refused = 0;
 	const claimed: string[] = [];
 	const workers = ["worker-first", "worker-second"].map(async (worker) => {
-		const backoff = new IdleClaimBackoff(() => 0);
+		const backoff = new LongIdleClaimBackoff(() => 0);
 		for (let index = 0; index < 8; index++) backoff.next();
 		while (running) {
 			const taken = await waits.claim(backoff, async () => {
@@ -621,7 +632,6 @@ test("a recovered remote journal claim passes a coalesced wake to another long-i
 		waits.wakeOne();
 		while (refused < 2) await sleep(1);
 		outage.mockRestore();
-		const RECOVERY_BOUND_MS = 300;
 		const recoveredAt = performance.now();
 		while (claimed.length < 2 && performance.now() - recoveredAt < RECOVERY_BOUND_MS) await sleep(5);
 		assert.equal(
@@ -654,7 +664,7 @@ test("a claim held back by undelivered remote journal events resets its idle pau
 			mark: () => f.pool.readyMark("root"),
 		});
 		probeTimer = setInterval(() => void probe.tick(), 250);
-		const backoff = new IdleClaimBackoff();
+		const backoff = new LongIdleClaimBackoff();
 		for (let index = 0; index < 8; index++) backoff.next();
 		let blocked = 0;
 		let refused = 0;
@@ -677,11 +687,12 @@ test("a claim held back by undelivered remote journal events resets its idle pau
 		await sleep(300);
 		const recoveredAt = performance.now();
 		outage.mockRestore();
-		await worker;
+		await Promise.race([worker, sleep(RECOVERY_BOUND_MS)]);
 		assert.ok(blocked > 0);
 		assert.ok(refused > 0);
+		assert.equal(claimed.length, 1, `ready work was not claimed ${RECOVERY_BOUND_MS} ms after the journal recovered`);
 		assert.ok(
-			claimed[0]!.at - recoveredAt < 300,
+			claimed[0]!.at - recoveredAt < RECOVERY_BOUND_MS,
 			`ready work waited ${Math.round(claimed[0]!.at - recoveredAt)} ms after the journal recovered`,
 		);
 		const blockedAfterDrain = blocked;
@@ -735,8 +746,7 @@ test("an unavailable remote journal with a pending outbox row bounds idle claim 
 	const workers = 4;
 	const outageMs = 3_000;
 	const IDLE_OUTAGE_RETRY_MS = 1_000;
-	const APPEND_ONLY_BOUND_MS = 1_000;
-	const RECOVERY_BOUND_MS = 1_200;
+	const APPEND_ONLY_BOUND_MS = RECOVERY_BOUND_MS;
 	const f = await fixture();
 	const other = poolWorkFixture("other");
 	const waits = new IdleClaimWaits();
@@ -763,7 +773,7 @@ test("an unavailable remote journal with a pending outbox row bounds idle claim 
 		for (const key of Object.keys(counts) as (keyof typeof counts)[]) counts[key] = 0;
 		const claimed: { at: number; id: string }[] = [];
 		loops = Array.from({ length: workers }, async (_, index) => {
-			const backoff = new IdleClaimBackoff();
+			const backoff = new LongIdleClaimBackoff();
 			for (let step = 0; step < 8; step++) backoff.next();
 			while (running) {
 				let taken: Awaited<ReturnType<typeof f.pool.claim>>;
@@ -814,7 +824,7 @@ test("an unavailable remote journal with a pending outbox row bounds idle claim 
 		const snapshot = { ...counts };
 		const recoveredAt = performance.now();
 		vi.restoreAllMocks();
-		while (claimed.length === 0 && performance.now() - recoveredAt < 1_500) await sleep(10);
+		while (claimed.length === 0 && performance.now() - recoveredAt < RECOVERY_BOUND_MS) await sleep(10);
 		running = false;
 		waits.wakeAll();
 		await Promise.all(loops);
