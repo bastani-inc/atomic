@@ -153,28 +153,7 @@ export interface OwnedArea {
 	readonly owner: string;
 }
 
-export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
-	{
-		owner: "#5376 (node:sqlite statements off the event loop)",
-		paths: ["packages/workflows/src/workers/ship-shard.ts"],
-		functions: [
-			"databaseNow",
-			"NodeSqliteDatabase.tryBegin/this.driver()",
-			"NodeSqliteDatabase.dataVersion/this.driver()",
-			"NodeSqliteDatabase.createExecutor/statement",
-			"NodeSqliteDatabase.createExecutor/<returned>.exec/execute()",
-			"NodeSqliteDatabase.createExecutor/<returned>.run/execute()",
-			"NodeSqliteDatabase.createExecutor/<returned>.get/execute()",
-			"NodeSqliteDatabase.createExecutor/<returned>.all/execute()",
-			"NodeSqliteDatabase.close/this.tail.then()/this.driver()",
-			"openConnection",
-			"openNodeSqliteDatabase",
-			"openNodeSqliteDatabase/switchToWriteAheadLog()",
-			// The open's shared lock: a non-waiting open and flock, with no form off the event loop yet.
-			"acquireOpenLock",
-		].map((name) => ({ file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name })),
-	},
-];
+export const OWNED_ELSEWHERE: readonly OwnedArea[] = [];
 
 export const STARTUP_ONLY: readonly ReviewedSelector[] = [
 	{
@@ -284,6 +263,12 @@ export interface ReviewedEdge {
 }
 
 export const GUARDED_CALLS: readonly ReviewedEdge[] = [
+	{
+		from: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "NodeSqliteDatabase.call" },
+		to: { file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name: "CallerThreadChannel.request" },
+		reason:
+			"only a connection passed to wrapNodeSqliteDatabase runs its statements on the caller's thread, where the caller's own DatabaseSync belongs; every connection Atomic opens comes from openNodeSqliteDatabase, which runs it on a thread of its own (#5376)",
+	},
 	{
 		from: { file: "packages/coding-agent/src/core/agent-session.ts", name: "AgentSessionBase.constructor" },
 		to: { file: "packages/coding-agent/src/utils/shell.ts", name: "isPowerShellAvailable" },

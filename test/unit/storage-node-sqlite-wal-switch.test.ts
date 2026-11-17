@@ -24,11 +24,15 @@ import {
 	spawnProcess,
 	spawnSyncCollect,
 } from "../helpers/runtime.js";
+import { interceptConnectionRequests, type RequestInterception } from "../helpers/sqlite-connection-requests.js";
 import { holdSqliteWriteLock } from "../helpers/sqlite-lock-holder.js";
 
 const directories: string[] = [];
 
+const interceptions: RequestInterception[] = [];
+
 afterEach(() => {
+	for (const interception of interceptions.splice(0).reverse()) interception.restore();
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 	for (const directory of directories.splice(0)) removeTempDirectory(directory);
@@ -115,16 +119,30 @@ function sqliteFailure(fields: Record<string, unknown>): Error {
 	return Object.assign(new Error("disk I/O error"), fields);
 }
 
+/**
+ * Fails the first `failures` switches to the write-ahead log, on a wrapped connection (the caller's thread) and on an
+ * opened one (its own thread) alike, and counts every attempt.
+ */
 function failWalSwitches(failures: number, errcode = SQLITE_IOERR_TRUNCATE): () => number {
 	let attempts = 0;
+	const failure = () => sqliteFailure({ code: "ERR_SQLITE_ERROR", errcode, errstr: "disk I/O error" });
 	const exec = DatabaseSync.prototype.exec;
 	vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql: string) {
 		if (sql.startsWith("PRAGMA journal_mode")) {
 			attempts += 1;
-			if (attempts <= failures) throw sqliteFailure({ code: "ERR_SQLITE_ERROR", errcode, errstr: "disk I/O error" });
+			if (attempts <= failures) throw failure();
 		}
 		return exec.call(this, sql);
 	});
+	interceptions.push(
+		interceptConnectionRequests((request, send) => {
+			if (request.kind === "exec" && request.sql.startsWith("PRAGMA journal_mode")) {
+				attempts += 1;
+				if (attempts <= failures) return Promise.reject(failure());
+			}
+			return send(request);
+		}),
+	);
 	return () => attempts;
 }
 

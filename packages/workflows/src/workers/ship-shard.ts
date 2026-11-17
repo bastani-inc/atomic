@@ -2,14 +2,13 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readlink, realpath, rm, rmdir, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
-import { type SqliteDatabase, type SqliteRow, sqliteFilePath } from "@bastani/atomic/storage";
+import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
 import type { AdvisoryLock } from "@bastani/atomic-natives";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
-import { openThreadedSqliteDatabase } from "./ship-shard-thread.js";
+import { openPlainThreadedConnection, openThreadedSqliteDatabase } from "./ship-shard-thread.js";
 
 /** The root's own lock, held while its shard is open: one process at a time opens a root's local journal. */
 async function tryRootLock(path: string): Promise<AdvisoryLock | null> {
@@ -648,7 +647,7 @@ export class ShipShard {
 	private async retire(): Promise<void> {
 		if (!(await holdsNothing(this.database))) return;
 		await this.database.close();
-		await removeConfirmedShard(this.path, this.lock, holdsNothingSync);
+		await removeConfirmedShard(this.path, this.lock, holdsNothing);
 	}
 
 	private staleError(
@@ -691,7 +690,7 @@ export class ShipShard {
 	}
 }
 
-async function holdsNothing(database: SqliteDatabase): Promise<boolean> {
+async function holdsNothing(database: Pick<SqliteDatabase, "get">): Promise<boolean> {
 	try {
 		return (await database.get(`SELECT 1 AS present FROM ship_rows LIMIT 1`)) === undefined;
 	} catch {
@@ -699,18 +698,11 @@ async function holdsNothing(database: SqliteDatabase): Promise<boolean> {
 	}
 }
 
-function holdsNothingSync(connection: DatabaseSync): boolean {
+/** Whether `connection` is the file's only one: leaving the write-ahead log needs every other connection gone. */
+async function onlyConnection(connection: Pick<SqliteDatabase, "exec" | "get">): Promise<boolean> {
 	try {
-		return connection.prepare(`SELECT 1 AS present FROM ship_rows LIMIT 1`).get() === undefined;
-	} catch {
-		return false;
-	}
-}
-
-function onlyConnectionSync(connection: DatabaseSync): boolean {
-	try {
-		connection.exec("PRAGMA busy_timeout=0");
-		const mode = connection.prepare("PRAGMA journal_mode=DELETE").get() as { journal_mode?: string } | undefined;
+		await connection.exec("PRAGMA busy_timeout=0");
+		const mode = await connection.get<SqliteRow & { journal_mode?: string }>("PRAGMA journal_mode=DELETE");
 		return mode?.journal_mode === "delete";
 	} catch {
 		return false;
@@ -754,7 +746,7 @@ async function fileIdentity(path: string): Promise<string> {
 	return `${stats.ino}:${stats.birthtimeNs}`;
 }
 
-async function shardOwner(database: SqliteDatabase): Promise<ShardOwner> {
+async function shardOwner(database: Pick<SqliteDatabase, "get" | "all">): Promise<ShardOwner> {
 	const tables = new Set(
 		(await database.all<SqliteRow & { name: string }>(`SELECT name FROM sqlite_master WHERE type = 'table'`)).map(
 			(row) => row.name,
@@ -771,28 +763,6 @@ async function shardOwner(database: SqliteDatabase): Promise<ShardOwner> {
 			: await database.get<SqliteRow & { work: string }>(
 					`${held.map((table) => `SELECT work FROM ${table}`).join(" UNION ALL ")} LIMIT 1`,
 				);
-	return { root: undefined, opens: 0, work: attempt?.work };
-}
-
-function shardOwnerSync(connection: DatabaseSync): ShardOwner {
-	const tables = new Set(
-		(connection.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: string }[]).map(
-			(row) => row.name,
-		),
-	);
-	const owner = tables.has("ship_root")
-		? (connection.prepare(`SELECT root, opens FROM ship_root LIMIT 1`).get() as
-				| { root: string; opens: number }
-				| undefined)
-		: undefined;
-	if (owner !== undefined) return { root: owner.root, opens: Number(owner.opens), work: undefined };
-	const held = ["ship_lease", "ship_rows", "ship_events"].filter((table) => tables.has(table));
-	const attempt =
-		held.length === 0
-			? undefined
-			: (connection
-					.prepare(`${held.map((table) => `SELECT work FROM ${table}`).join(" UNION ALL ")} LIMIT 1`)
-					.get() as { work: string } | undefined);
 	return { root: undefined, opens: 0, work: attempt?.work };
 }
 
@@ -896,7 +866,7 @@ async function idleShard(path: string): Promise<IdleShard | undefined> {
 async function removeConfirmedShard(
 	path: string,
 	rootLock: AdvisoryLock | undefined,
-	confirm: (connection: DatabaseSync) => boolean | Promise<boolean>,
+	confirm: (connection: SqliteDatabase) => Promise<boolean>,
 	openInOtherProcesses?: (location: string) => Promise<boolean>,
 ): Promise<void> {
 	let openLock: AdvisoryLock | null = null;
@@ -909,13 +879,13 @@ async function removeConfirmedShard(
 		if (openLock === null) return;
 		if (await selfHasOpenFile(location)) return;
 		if (await openInOtherProcesses?.(location)) return;
-		const { DatabaseSync } = await import("node:sqlite");
-		const connection = new DatabaseSync(sqliteFilePath(location));
+		// Inspected on a thread of its own, so the reads and the switch out of the write-ahead log never hold this one.
+		const connection = await openPlainThreadedConnection(location);
 		let confirmed = false;
 		try {
-			confirmed = Boolean(await confirm(connection)) && onlyConnectionSync(connection);
+			confirmed = (await confirm(connection)) && (await onlyConnection(connection));
 		} finally {
-			connection.close();
+			await connection.close();
 		}
 		if (!confirmed || (await selfHasOpenFile(location))) return;
 		removed = await removeShardFiles(location, path);
@@ -944,7 +914,7 @@ async function removeUnchanged(
 		lock,
 		async (connection) =>
 			(await fileIdentity(shard.path).catch(() => undefined)) === shard.file &&
-			sameOwner(shardOwnerSync(connection), shard),
+			sameOwner(await shardOwner(connection), shard),
 		openInOtherProcesses,
 	);
 }

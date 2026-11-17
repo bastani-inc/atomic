@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { getAgentDir } from "@bastani/atomic";
 import { isJournalCatalogError } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import { ThreadConnection } from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
 import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
 import { initializeDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -368,7 +368,7 @@ for (const entry of ["SDK", "engine", "background", "TUI slash", "CLI slash", "w
 				JSON.stringify({ workflows: { journal: { path: paths[index] } } }),
 			);
 		}
-		const exec = vi.spyOn(DatabaseSync.prototype, "exec");
+		const exec = vi.spyOn(ThreadConnection.prototype, "request");
 		try {
 			const first = await launchFresh(entry, owner, projects[0]!);
 			const second = await launchFresh(entry, owner, projects[1]!);
@@ -379,7 +379,12 @@ for (const entry of ["SDK", "engine", "background", "TUI slash", "CLI slash", "w
 			assert.ok(backendB instanceof JournalDurableBackend);
 			assert.notEqual(backendA, backendB);
 			assert.equal(availableStoreDurableBackend(owner.store, third), backendB);
-			assert.equal(exec.mock.calls.filter(([sql]) => sql.includes("CREATE TABLE IF NOT EXISTS wf_meta")).length, 2);
+			assert.equal(
+				exec.mock.calls.filter(
+					([request]) => request.kind === "exec" && request.sql.includes("CREATE TABLE IF NOT EXISTS wf_meta"),
+				).length,
+				2,
+			);
 			await backendA.close();
 			await backendB.close();
 			for (const [index, path] of paths.entries()) {

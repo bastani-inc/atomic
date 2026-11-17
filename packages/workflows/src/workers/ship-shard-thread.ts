@@ -96,9 +96,11 @@ function failure(error) {
 
 try {
 	database = new DatabaseSync(workerData.path);
-	database.exec("PRAGMA busy_timeout=" + workerData.busyTimeoutMs);
-	switchToWriteAheadLog();
-	database.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
+	if (!workerData.plain) {
+		database.exec("PRAGMA busy_timeout=" + workerData.busyTimeoutMs);
+		switchToWriteAheadLog();
+		database.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
+	}
 	parentPort.postMessage({ id: workerData.opened });
 } catch (error) {
 	try { database?.close(); } catch {}
@@ -183,13 +185,13 @@ class ThreadedSqliteDatabase implements SqliteDatabase {
 	private closed?: Promise<void>;
 	private lost?: Error;
 
-	constructor(path: string) {
+	constructor(path: string, plain = false) {
 		this.descriptor = { adapter: "node-sqlite", location: path };
 		this.executor = this.createExecutor(() => true);
 		this.worker = new Worker(CONNECTION_SOURCE, {
 			eval: true,
 			execArgv: [],
-			workerData: { path: sqliteOpenPath(path), busyTimeoutMs: BUSY_TIMEOUT_MS, opened: OPENED },
+			workerData: { path: sqliteOpenPath(path), busyTimeoutMs: BUSY_TIMEOUT_MS, opened: OPENED, plain },
 		});
 		this.opened = new Promise<StatementValue>((resolve, reject) =>
 			this.replies.set(OPENED, { resolve, reject }),
@@ -439,6 +441,21 @@ class ThreadedSqliteDatabase implements SqliteDatabase {
 	async terminate(): Promise<void> {
 		await this.worker.terminate();
 	}
+}
+
+/**
+ * A connection to an existing file on its own thread, as opened: no busy timeout, journal mode or other setting is
+ * changed, so a caller can inspect a file it is about to remove and then claim it with `journal_mode=DELETE`.
+ */
+export async function openPlainThreadedConnection(path: string): Promise<SqliteDatabase> {
+	const database = new ThreadedSqliteDatabase(path, true);
+	try {
+		await database.opened;
+	} catch (error) {
+		await database.terminate();
+		throw error;
+	}
+	return database;
 }
 
 export async function openThreadedSqliteDatabase(path: string): Promise<SqliteDatabase> {

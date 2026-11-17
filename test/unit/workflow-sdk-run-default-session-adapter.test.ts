@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { ThreadConnection } from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
 import { StorageProvider } from "../../packages/coding-agent/src/core/storage/provider.js";
 import { AuthStorage, ModelRuntime, SessionManager, SettingsManager } from "../../packages/coding-agent/src/index.js";
 import { DurableNestedTopologyError } from "../../packages/workflows/src/durable/boundary-topology.js";
@@ -134,7 +134,7 @@ test("run() executes a ctx.task stage without RunOpts.adapters (#3472)", async (
 test("standalone run releases its default stage session store before returning", async () => {
 	const cwd = makeTempDirectory("atomic-sdk-run-store-release-");
 	const acquisitions = vi.spyOn(StorageProvider.prototype, "openSessionStore");
-	const databaseClose = vi.spyOn(DatabaseSync.prototype, "close");
+	const databaseClose = vi.spyOn(ThreadConnection.prototype, "close");
 	try {
 		const outcome = await runOneTaskStage(cwd, (dir) => ({ cwd: dir }));
 		assert.equal(outcome.status, "completed", outcome.error);
@@ -156,7 +156,7 @@ test("standalone run releases its default stage session store before returning",
 test("terminally failed standalone runs release their stage handles and native connections", async () => {
 	const cwd = makeTempDirectory("atomic-sdk-failed-store-release-");
 	const acquisitions = vi.spyOn(StorageProvider.prototype, "openSessionStore");
-	const databaseClose = vi.spyOn(DatabaseSync.prototype, "close");
+	const databaseClose = vi.spyOn(ThreadConnection.prototype, "close");
 	try {
 		const outcome = await runOneTaskStage(
 			cwd,
@@ -193,7 +193,7 @@ for (const status of ["cancelled", "skipped", "blocked", "killed"] as const) {
 	test(`${status} standalone runs release completed task sessions`, async () => {
 		const cwd = makeTempDirectory("atomic-sdk-terminal-store-release-");
 		const controller = new AbortController();
-		const databaseClose = vi.spyOn(DatabaseSync.prototype, "close");
+		const databaseClose = vi.spyOn(ThreadConnection.prototype, "close");
 		try {
 			const outcome = await runOneTaskStage(
 				cwd,
@@ -244,7 +244,7 @@ for (const retention of ["caller-owned registry", "resumable failure", "graceful
 		const cwd = makeTempDirectory("atomic-sdk-retained-failure-store-");
 		const callerOwned = retention === "caller-owned registry";
 		const registry = callerOwned ? createStageControlRegistry() : stageControlRegistry;
-		const databaseClose = vi.spyOn(DatabaseSync.prototype, "close");
+		const databaseClose = vi.spyOn(ThreadConnection.prototype, "close");
 		try {
 			const outcome = await runOneTaskStage(
 				cwd,

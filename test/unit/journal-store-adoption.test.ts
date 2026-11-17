@@ -37,6 +37,7 @@ import { afterEach, beforeEach, test } from "vitest";
 import { ShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { interceptConnectionRequests, type RequestInterception } from "../helpers/sqlite-connection-requests.js";
 import { expireWorkflowLease } from "../helpers/workflow-lease.js";
 
 let root: string;
@@ -2424,20 +2425,18 @@ test("recovery leaves alone a run deleted from its source while it looks it up, 
 
 async function consolidateInterferingBeforeTransaction(path: string, interfere: () => void) {
 	const target = realpathSync(path);
-	const exec = DatabaseSync.prototype.exec;
 	let interfered = false;
-	DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string) {
-		const location = this.location();
-		if (!interfered && sql === "BEGIN IMMEDIATE" && location !== null && realpathSync(location) === target) {
+	const requests = interceptConnectionRequests((request, send, connection) => {
+		if (!interfered && request.kind === "begin" && realpathSync(connection.path) === target) {
 			interfered = true;
 			interfere();
 		}
-		exec.call(this, sql);
-	} as typeof exec;
+		return send(request);
+	});
 	try {
 		return await consolidateJournalStore(store);
 	} finally {
-		DatabaseSync.prototype.exec = exec;
+		requests.restore();
 	}
 }
 
@@ -2471,7 +2470,7 @@ test("recovery never moves the catalog off a destination that gained the run aft
 
 for (const repointed of [true, false])
 	test(`an undo never deletes a destination copy whose source was deleted after it read the source, ${repointed ? "by a consolidation that moved it" : "with the catalog still on it"} (#4402)`, async () => {
-		const prepare = DatabaseSync.prototype.prepare;
+		const interceptions: RequestInterception[] = [];
 		try {
 			const result = await consolidateWithInterference({
 				after: {
@@ -2480,22 +2479,23 @@ for (const repointed of [true, false])
 						const target = realpathSync(source);
 						let readEvents = false;
 						let moved = false;
-						DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
-							const location = this.location();
-							if (!moved && location !== null && realpathSync(location) === target) {
-								if (readEvents) {
-									moved = true;
-									if (repointed)
-										raw(
-											join(store, "catalog.sqlite"),
-											"UPDATE catalog_runs SET shard = (SELECT id FROM catalog_shards WHERE kind = 'native') WHERE run_id = 'r'",
-										);
-									for (const table of ["wf_events", "wf_leases", "wf_runs"])
-										raw(source, `DELETE FROM ${table} WHERE run_id = 'r'`);
-								} else readEvents = sql.startsWith("SELECT * FROM wf_events");
-							}
-							return prepare.call(this, sql);
-						} as typeof prepare;
+						interceptions.push(
+							interceptConnectionRequests((request, send, connection) => {
+								if (!moved && realpathSync(connection.path) === target) {
+									if (readEvents) {
+										moved = true;
+										if (repointed)
+											raw(
+												join(store, "catalog.sqlite"),
+												"UPDATE catalog_runs SET shard = (SELECT id FROM catalog_shards WHERE kind = 'native') WHERE run_id = 'r'",
+											);
+										for (const table of ["wf_events", "wf_leases", "wf_runs"])
+											raw(source, `DELETE FROM ${table} WHERE run_id = 'r'`);
+									} else readEvents = "sql" in request && request.sql.startsWith("SELECT * FROM wf_events");
+								}
+								return send(request);
+							}),
+						);
 					},
 				},
 			});
@@ -2510,7 +2510,7 @@ for (const repointed of [true, false])
 			);
 			await assertEveryEventSelected(Number(scalar(result.destination, EVENTS)), lastKey);
 		} finally {
-			DatabaseSync.prototype.prepare = prepare;
+			for (const interception of interceptions.splice(0).reverse()) interception.restore();
 		}
 	});
 
@@ -2538,17 +2538,15 @@ test("a journal and a store whose database paths pass 240 characters adopt and c
 	});
 	// What a reader of a connection's location sees, as the interference hooks above read it with `realpathSync`.
 	const locations = new Set<string>();
-	const exec = DatabaseSync.prototype.exec;
-	DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string) {
-		const location = this.location();
-		if (location !== null) locations.add(location);
-		exec.call(this, sql);
-	} as typeof exec;
+	const requests = interceptConnectionRequests((request, send, connection) => {
+		locations.add(connection.path);
+		return send(request);
+	});
 	let consolidated: Awaited<ReturnType<typeof consolidateJournalStore>>;
 	try {
 		consolidated = await consolidateJournalStore(store);
 	} finally {
-		DatabaseSync.prototype.exec = exec;
+		requests.restore();
 	}
 	assert.ok(locations.size > 0);
 	for (const location of locations) {

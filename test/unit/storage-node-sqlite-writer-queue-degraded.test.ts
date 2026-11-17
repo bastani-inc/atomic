@@ -13,7 +13,6 @@ import {
 	isStorageWriterQueueUnusableError,
 	type StorageWriterQueueDegradedError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
-import { databaseNow, freezeDatabaseClock } from "../helpers/database-clock.js";
 import { areaRecords, withDebugLog } from "../helpers/debug-mode.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -63,6 +62,8 @@ vi.resetModules();
 const { getWriterQueueDegradation, getWriterQueueStats, openNodeSqliteDatabase, wrapNodeSqliteDatabase } = await import(
 	"../../packages/coding-agent/src/core/storage/node-sqlite.js"
 );
+// The clock helper intercepts the connection threads of the copy loaded above, so it is loaded after it too.
+const { databaseNow, freezeDatabaseClock } = await import("../helpers/database-clock.js");
 // The adapter loads debug output at its first degradation. Load it now, in the same module graph, so each test's
 // degradations are reported while that test runs rather than when a slow first load finishes.
 const { flushDebugLog } = await import("../../packages/coding-agent/src/core/debug.js");

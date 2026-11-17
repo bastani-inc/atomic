@@ -13,6 +13,10 @@ import {
 	openNodeSqliteDatabase,
 	wrapNodeSqliteDatabase,
 } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import {
+	type ConnectionRequest,
+	ThreadConnection,
+} from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import {
 	openSqlPoolQueue,
@@ -129,9 +133,13 @@ function readOnlyRequests(f: PooledRoot) {
 }
 const READS_PER_ROUND = 8;
 
+/**
+ * Records the statements every connection executes and the connections closed: the primary, a wrapped connection on
+ * this thread, and the readers the journal opens, which run on threads of their own.
+ */
 function countExecutedStatements(primary: DatabaseSync | undefined) {
-	const statements: { readonly connection: DatabaseSync; readonly sql: string }[] = [];
-	const closed: DatabaseSync[] = [];
+	const statements: { readonly connection: object; readonly sql: string }[] = [];
+	const closed: object[] = [];
 	const exec = DatabaseSync.prototype.exec;
 	const close = DatabaseSync.prototype.close;
 	vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql: string) {
@@ -141,6 +149,19 @@ function countExecutedStatements(primary: DatabaseSync | undefined) {
 	vi.spyOn(DatabaseSync.prototype, "close").mockImplementation(function (this: DatabaseSync) {
 		closed.push(this);
 		return close.call(this);
+	});
+	const request = ThreadConnection.prototype.request;
+	const closeThread = ThreadConnection.prototype.close;
+	vi.spyOn(ThreadConnection.prototype, "request").mockImplementation(function (
+		this: ThreadConnection,
+		next: ConnectionRequest,
+	) {
+		if (next.kind === "exec") statements.push({ connection: this, sql: next.sql });
+		return request.call(this, next);
+	});
+	vi.spyOn(ThreadConnection.prototype, "close").mockImplementation(function (this: ThreadConnection) {
+		closed.push(this);
+		return closeThread.call(this);
 	});
 	const count = (onPrimary: boolean, sql: string) =>
 		statements.filter((statement) => (statement.connection === primary) === onPrimary && statement.sql === sql)
@@ -321,26 +342,27 @@ test("the pool reader refuses writes (#4314)", async () => {
  * Fails the next ROLLBACK on a reader connection. With `leaveOpen` the statement never runs, so that reader stays
  * inside its read transaction; with `failClose` closing that reader also fails, after it closed.
  */
-function failNextReaderRollback(
-	f: PooledRoot,
-	options: { readonly leaveOpen?: boolean; readonly failClose?: boolean } = {},
-) {
-	const exec = DatabaseSync.prototype.exec;
-	const close = DatabaseSync.prototype.close;
-	const failed: { reader?: DatabaseSync } = {};
-	const readers = new Set<DatabaseSync>();
-	const closed: DatabaseSync[] = [];
-	vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql: string) {
-		if (this === f.connection) return exec.call(this, sql);
+function failNextReaderRollback(options: { readonly leaveOpen?: boolean; readonly failClose?: boolean } = {}) {
+	// The readers the journal opens run on threads of their own; the root's primary connection runs on this one.
+	const request = ThreadConnection.prototype.request;
+	const close = ThreadConnection.prototype.close;
+	const failed: { reader?: ThreadConnection } = {};
+	const readers = new Set<ThreadConnection>();
+	const closed: ThreadConnection[] = [];
+	vi.spyOn(ThreadConnection.prototype, "request").mockImplementation(async function (
+		this: ThreadConnection,
+		next: ConnectionRequest,
+	) {
 		readers.add(this);
-		if (sql !== "ROLLBACK" || failed.reader !== undefined) return exec.call(this, sql);
+		if (next.kind !== "exec" || next.sql !== "ROLLBACK" || failed.reader !== undefined)
+			return request.call(this, next);
 		failed.reader = this;
-		if (!options.leaveOpen) exec.call(this, sql);
+		if (!options.leaveOpen) await request.call(this, next);
 		throw Object.assign(new Error("disk I/O error"), { errcode: SQLITE_IOERR });
 	});
-	vi.spyOn(DatabaseSync.prototype, "close").mockImplementation(function (this: DatabaseSync) {
+	vi.spyOn(ThreadConnection.prototype, "close").mockImplementation(async function (this: ThreadConnection) {
 		closed.push(this);
-		close.call(this);
+		await close.call(this);
 		if (options.failClose && this === failed.reader)
 			throw Object.assign(new Error("unable to close due to unfinalized statements"), { errcode: SQLITE_BUSY });
 	});
@@ -357,7 +379,7 @@ test("a failed read keeps its own error when its rollback fails too, with the ro
 	const f = await pooledRoot();
 	try {
 		await f.pool.assertCurrent(f.lease, f.attempt);
-		failNextReaderRollback(f);
+		failNextReaderRollback();
 		const refused = await f.pool.assertCurrent(f.lease, { ...f.attempt, generation: 0 }).then(
 			() => assert.fail("a stale attempt was authorized"),
 			(error: unknown) => error,
@@ -382,7 +404,7 @@ test("a read that fails with something other than an Error, and whose rollback f
 	const f = await pooledRoot();
 	try {
 		await f.pool.assertCurrent(f.lease, f.attempt);
-		failNextReaderRollback(f);
+		failNextReaderRollback();
 		const thrown = { reason: "not an Error" };
 		const refused = await sqlPoolStorage(f.journal)!
 			.read(() => Promise.reject(thrown))
@@ -405,7 +427,7 @@ test("a reader whose rollback fails is closed and replaced, so the reads queued 
 	const f = await pooledRoot();
 	try {
 		await f.pool.assertCurrent(f.lease, f.attempt);
-		const { failed, readers, closed } = failNextReaderRollback(f, { leaveOpen: true });
+		const { failed, readers, closed } = failNextReaderRollback({ leaveOpen: true });
 		const [refused, control] = await Promise.all([
 			f.pool.assertCurrent(f.lease, { ...f.attempt, generation: 0 }).then(
 				() => assert.fail("a stale attempt was authorized"),
@@ -430,7 +452,7 @@ test("a retired reader that also fails to close keeps the read's error, with the
 	const f = await pooledRoot();
 	try {
 		await f.pool.assertCurrent(f.lease, f.attempt);
-		const { failed, closed } = failNextReaderRollback(f, { leaveOpen: true, failClose: true });
+		const { failed, closed } = failNextReaderRollback({ leaveOpen: true, failClose: true });
 		const refused = await f.pool.assertCurrent(f.lease, { ...f.attempt, generation: 0 }).then(
 			() => assert.fail("a stale attempt was authorized"),
 			(error: unknown) => error,

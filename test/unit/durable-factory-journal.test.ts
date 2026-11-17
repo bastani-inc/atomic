@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { setImmediate as nextMacrotask } from "node:timers/promises";
 import { afterEach, test, vi } from "vitest";
+import { ThreadConnection } from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
 import {
 	getDurableBackendProcessOwner,
 	releaseDurableBackendsHeldBy,
@@ -85,7 +85,7 @@ test("cached SQLite selection initializes storage only once (#3674)", async () =
 	const directory = mkdtempSync(join(tmpdir(), "journal-cache-"));
 	directories.push(directory);
 	process.env.ATOMIC_WORKFLOW_JOURNAL_PATH = join(directory, "journal.sqlite");
-	const exec = vi.spyOn(DatabaseSync.prototype, "exec");
+	const exec = vi.spyOn(ThreadConnection.prototype, "request");
 	try {
 		const first = await initializeDurableBackend();
 		assert.equal(await initializeDurableBackend(), first);
@@ -93,7 +93,12 @@ test("cached SQLite selection initializes storage only once (#3674)", async () =
 			await initializeDurableBackend({ journal: { path: process.env.ATOMIC_WORKFLOW_JOURNAL_PATH } }),
 			first,
 		);
-		assert.equal(exec.mock.calls.filter(([sql]) => sql.includes("CREATE TABLE IF NOT EXISTS wf_meta")).length, 1);
+		assert.equal(
+			exec.mock.calls.filter(
+				([request]) => request.kind === "exec" && request.sql.includes("CREATE TABLE IF NOT EXISTS wf_meta"),
+			).length,
+			1,
+		);
 	} finally {
 		exec.mockRestore();
 	}

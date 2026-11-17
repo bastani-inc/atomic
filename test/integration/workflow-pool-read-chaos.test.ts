@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import {
+	type ConnectionRequest,
+	ThreadConnection,
+} from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import {
 	openSqlPoolQueue,
@@ -229,11 +232,14 @@ test(
 			for (let index = 0; index < CONCURRENT_WRITERS; index++)
 				writers.push(chaosWriter(["fence", f.path, f.attempt.id, stopPath]));
 			for (const writer of writers) assert.equal(await readLine(writer), "ready");
-			const exec = DatabaseSync.prototype.exec;
+			const request = ThreadConnection.prototype.request;
 			let writeLocksTaken = 0;
-			vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql: string) {
-				if (sql === "BEGIN IMMEDIATE") writeLocksTaken += 1;
-				return exec.call(this, sql);
+			vi.spyOn(ThreadConnection.prototype, "request").mockImplementation(function (
+				this: ThreadConnection,
+				next: ConnectionRequest,
+			) {
+				if (next.kind === "begin") writeLocksTaken += 1;
+				return request.call(this, next);
 			});
 			const refusedGenerations = new Set<number>();
 			let lastRevision = start.revision;

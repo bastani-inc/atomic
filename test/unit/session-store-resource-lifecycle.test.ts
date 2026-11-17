@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test, vi } from "vitest";
 import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";
+import { ThreadConnection } from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
 import { StorageProvider } from "../../packages/coding-agent/src/core/storage/provider.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import {
@@ -50,7 +50,7 @@ for (const scenario of ["success", "failure", "borrowed destination"] as const) 
 		});
 		const borrowed = scenario === "borrowed destination" ? await resolveSessionStore(cwd) : undefined;
 		const acquisitions = vi.spyOn(StorageProvider.prototype, "openSessionStore");
-		const databaseClose = vi.spyOn(DatabaseSync.prototype, "close");
+		const databaseClose = vi.spyOn(ThreadConnection.prototype, "close");
 		const copy = vi.spyOn(backend.journal, "createRunWithEvents");
 		if (scenario === "failure") copy.mockRejectedValue(new Error("commit failed"));
 		try {
@@ -109,7 +109,7 @@ test("completed workflow inspection releases its temporary session store", async
 		completedAt: 2,
 	});
 	const acquisitions = vi.spyOn(StorageProvider.prototype, "openSessionStore");
-	const databaseClose = vi.spyOn(DatabaseSync.prototype, "close");
+	const databaseClose = vi.spyOn(ThreadConnection.prototype, "close");
 	try {
 		await completedWorkflowRunSnapshots(backend, listCompletedFromBackend(backend)[0]!);
 		assert.equal(acquisitions.mock.results.length, 1);

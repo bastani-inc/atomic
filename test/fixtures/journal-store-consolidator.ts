@@ -17,9 +17,10 @@
 import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { consolidateJournalStore, isJournalCatalogError, JournalCatalog } from "@bastani/atomic/storage";
+// The module the storage entry point above runs its connections' threads through.
+import { ThreadConnection } from "../../packages/coding-agent/dist/core/storage/node-sqlite-thread.js";
 import { openSelectedRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 
 const [mode, store, ...rest] = process.argv.slice(2);
@@ -57,21 +58,18 @@ function onCommittedWrites(reach: (point: string) => void): void {
 		committed = undefined;
 		if (point !== undefined) reach(point);
 	};
-	const prepare = DatabaseSync.prototype.prepare;
-	DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+	const request = ThreadConnection.prototype.request;
+	ThreadConnection.prototype.request = async function (this: ThreadConnection, next) {
 		fire();
+		const sql = "sql" in next ? next.sql : "";
 		if (sql.startsWith("INSERT INTO wf_runs(run_id, name")) writing = "copy";
 		else if (sql.startsWith("DELETE FROM wf_runs WHERE")) writing = "deletion";
-		return prepare.call(this, sql);
-	} as typeof prepare;
-	const exec = DatabaseSync.prototype.exec;
-	DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string) {
-		fire();
-		exec.call(this, sql);
-		if (sql === "COMMIT" && writing !== undefined)
+		const value = await request.call(this, next);
+		if (next.kind === "exec" && sql === "COMMIT" && writing !== undefined)
 			committed = writing === "deletion" ? "deleted" : ++copies === 1 ? "copied" : "recopied";
-		if (sql === "COMMIT" || sql === "ROLLBACK") writing = undefined;
-	} as typeof exec;
+		if (next.kind === "exec" && (sql === "COMMIT" || sql === "ROLLBACK")) writing = undefined;
+		return value;
+	};
 }
 
 if (mode === "consolidate") {

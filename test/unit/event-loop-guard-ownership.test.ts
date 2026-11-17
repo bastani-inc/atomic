@@ -1,11 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { OWNED_ELSEWHERE } from "../../scripts/event-loop/policy.js";
+import type { OwnedArea } from "../../scripts/event-loop/policy.js";
 import { type BlockRecord, blockOwner } from "../helpers/event-loop-guard-fixture.js";
 
 const areas = [
 	{ owner: "#5285", paths: ["packages/coding-agent/src/core/tools/windows-directory-security.ts"] },
 	{ owner: "#5345", paths: ["packages/coding-agent/src/core/worktree-snapshot/"] },
+];
+
+const SQLITE_OWNER = "#5376 (node:sqlite statements off the event loop)";
+
+/** An area owned by a change, by file and by function, as `OWNED_ELSEWHERE` listed the node:sqlite driver's (#5376). */
+const sqliteArea: readonly OwnedArea[] = [
+	{
+		owner: SQLITE_OWNER,
+		paths: ["packages/workflows/src/workers/ship-shard.ts"],
+		functions: [
+			"databaseNow",
+			"NodeSqliteDatabase.createExecutor/statement",
+			"NodeSqliteDatabase.createExecutor/<returned>.all/execute()",
+		].map((name) => ({ file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name })),
+	},
 ];
 
 function block(...stacks: string[][]): BlockRecord {
@@ -38,16 +53,13 @@ test("a block whose every stack runs in another change's area belongs to that ch
 	);
 	assert.equal(blockOwner(block(["capture file:///x/dist/core/worktree-snapshot/capture.js:1"]), areas), "#5345");
 	for (const frame of [
-		"holdsNothingSync (file:///repo/packages/workflows/src/workers/ship-shard.ts:704:5)",
-		"onlyConnectionSync (file:///pkg/dist/builtin/workflows/src/workers/ship-shard.js:712:5)",
-		"shardOwnerSync (file:///pkg/dist/builtin/workflows/src/extension/index.bundle.mjs:86828:5)",
+		"holdsNothing (file:///repo/packages/workflows/src/workers/ship-shard.ts:704:5)",
+		"onlyConnection (file:///pkg/dist/builtin/workflows/src/workers/ship-shard.js:712:5)",
+		"shardOwner (file:///pkg/dist/builtin/workflows/src/extension/index.bundle.mjs:86828:5)",
 		"statement (file:///pkg/dist/core/storage/node-sqlite.js:1164:5)",
 		"databaseNow (file:///pkg/dist/core/storage/node-sqlite.js:45:5)",
 	]) {
-		assert.equal(
-			blockOwner(block(["prepare (node:sqlite:1:1)", frame]), OWNED_ELSEWHERE),
-			"#5376 (node:sqlite statements off the event loop)",
-		);
+		assert.equal(blockOwner(block(["prepare (node:sqlite:1:1)", frame]), sqliteArea), SQLITE_OWNER);
 	}
 	assert.equal(
 		blockOwner(
@@ -60,7 +72,7 @@ test("a block whose every stack runs in another change's area belongs to that ch
 			]),
 			[
 				{
-					owner: "#5376 (node:sqlite statements off the event loop)",
+					owner: SQLITE_OWNER,
 					functions: [
 						{
 							file: "packages/coding-agent/src/core/storage/node-sqlite.ts",
@@ -70,7 +82,7 @@ test("a block whose every stack runs in another change's area belongs to that ch
 				},
 			],
 		),
-		"#5376 (node:sqlite statements off the event loop)",
+		SQLITE_OWNER,
 	);
 });
 
@@ -118,7 +130,7 @@ test("a block with any stack in this code's own modules, or in two areas, is not
 					},
 				],
 			},
-			OWNED_ELSEWHERE,
+			sqliteArea,
 		),
 		undefined,
 	);
@@ -130,6 +142,6 @@ test("a block with any stack in this code's own modules, or in two areas, is not
 		["closeSync (node:fs:1:1)", "close (file:///pkg/dist/core/storage/node-sqlite.js:465:5)"],
 		["prepare (node:sqlite:1:1)", "(anonymous) (file:///pkg/dist/core/storage/node-sqlite.js:1175:30)"],
 	]) {
-		assert.equal(blockOwner(block(frames), OWNED_ELSEWHERE), undefined);
+		assert.equal(blockOwner(block(frames), sqliteArea), undefined);
 	}
 });

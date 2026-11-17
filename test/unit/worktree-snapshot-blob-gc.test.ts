@@ -6,6 +6,10 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import {
+	type ConnectionRequest,
+	ThreadConnection,
+} from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
+import {
 	MemorySnapshotBlobStore,
 	SNAPSHOT_COLLECTION_BATCH,
 	SqlSnapshotBlobStore,
@@ -117,6 +121,19 @@ describe("the grace window protects blobs whose reference is not published yet (
 		vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
 			return prepare.call(this, sql.replaceAll("unixepoch()", String(now)));
 		} as typeof prepare);
+		// A connection the adapter opened reads the clock on its own thread.
+		const request = ThreadConnection.prototype.request;
+		vi.spyOn(ThreadConnection.prototype, "request").mockImplementation(function (
+			this: ThreadConnection,
+			next: ConnectionRequest,
+		) {
+			return request.call(
+				this,
+				"sql" in next
+					? ({ ...next, sql: next.sql.replaceAll("unixepoch()", String(now)) } as ConnectionRequest)
+					: next,
+			);
+		});
 		const [sameSecond, secondBefore] = await put("stored in the boundary second", "stored a second earlier");
 		const age = (hash: string, createdAt: number) =>
 			shared.database.run(`UPDATE ${blobs().table} SET created_at = ? WHERE hash = ?`, createdAt, hash);
