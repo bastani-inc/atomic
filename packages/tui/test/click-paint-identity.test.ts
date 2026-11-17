@@ -1,6 +1,9 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import type { Component, TuiMouseEvent, TuiMouseEventResult } from "../src/tui.ts";
+import { HStack } from "../src/components/h-stack.ts";
+import { ScrollView } from "../src/components/scroll-view.ts";
+import { Text } from "../src/components/text.ts";
+import { type Component, Container, type TuiMouseEvent, type TuiMouseEventResult } from "../src/tui.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -25,6 +28,28 @@ class RecordingOverlay implements Component {
 		if (event.type === "move") return undefined;
 		this.events.push({ type: event.type, y: event.y });
 		return this.handles.has(event.type) ? { handled: true } : undefined;
+	}
+}
+
+/** A child that takes the press and keeps the gesture: its drag and release come to it wherever the pointer goes. */
+class CapturingChild implements Component {
+	readonly events: string[] = [];
+	private readonly label: string;
+
+	constructor(label: string) {
+		this.label = label;
+	}
+
+	render(): string[] {
+		return [this.label];
+	}
+
+	invalidate(): void {}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type === "move") return undefined;
+		this.events.push(event.type);
+		return event.type === "press" ? { handled: true, capture: true } : { handled: true };
 	}
 }
 
@@ -109,6 +134,118 @@ describe("a click acts on the frame painted at the press", () => {
 			overlay.events.map((event) => event.type),
 			["press", "release", "click"],
 		);
+		tui.stop();
+	});
+
+	it("gives a captured target that was replaced before the release its release but no click", async () => {
+		const terminal = new VirtualTerminal(20, 10);
+		const tui = new TuiAltScreen(terminal);
+		const list = new Container();
+		const pressed = new CapturingChild("same text");
+		list.addChild(new CapturingChild("first row"));
+		list.addChild(pressed);
+		tui.addChild(list);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput(press(1, 1));
+		// Another child that looks the same takes the pressed child's place before the release.
+		const replacement = new CapturingChild("same text");
+		list.children[1] = replacement;
+		list.invalidate();
+		tui.requestRender();
+		await terminal.waitForRender();
+		terminal.sendInput(release(1, 1));
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(pressed.events, ["press", "release"], "the removed child ends its gesture, unclicked");
+		assert.deepStrictEqual(replacement.events, []);
+		tui.stop();
+	});
+
+	it("counts a fast second click in a scroll view drawn away from the screen's left edge as a double-click when an overlay opened between them", async () => {
+		const terminal = new VirtualTerminal(40, 4);
+		const tui = new TuiAltScreen(terminal);
+		const clickCounts: number[] = [];
+		const words: Component = {
+			render: () => ["alpha beta gamma"],
+			invalidate: () => {},
+			handleMouse: (event) => {
+				if (event.type !== "click") return undefined;
+				clickCounts.push(event.clickCount ?? 0);
+				return { handled: true };
+			},
+		};
+		tui.setLayoutRoot(
+			new HStack([
+				{ component: new Text("left", 0, 0), basis: 10, shrink: 0 },
+				{ component: new ScrollView(words, { primary: true }), basis: 30, shrink: 0 },
+			]),
+		);
+		tui.start();
+		await terminal.waitForRender();
+
+		// "beta" starts at column 16 of the screen: column 6 of the scroll view.
+		terminal.sendInput(press(16, 0));
+		terminal.sendInput(release(16, 0));
+		await terminal.waitForRender();
+		// An overlay elsewhere changes how the next press is located, not where it lands.
+		tui.showOverlay(
+			{ render: () => ["note"], invalidate: () => {} },
+			{ row: 3, col: 34, width: 6, nonCapturing: true },
+		);
+		await terminal.waitForRender();
+		terminal.sendInput(press(16, 0));
+		terminal.sendInput(release(16, 0));
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(clickCounts, [1, 2]);
+		tui.stop();
+	});
+
+	it("starts counting clicks again when another item is drawn under the pointer between them", async () => {
+		const terminal = new VirtualTerminal(20, 4);
+		const copied: string[] = [];
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			copySelection: async (text) => {
+				copied.push(text);
+				return true;
+			},
+		});
+		// A single click reaches the item drawn there; a double-click selects and copies a word, a triple a line.
+		const clicked: string[] = [];
+		const item = (name: string): Component => ({
+			render: () => ["same text"],
+			invalidate: () => {},
+			handleMouse: (event) => {
+				if (event.type !== "click") return undefined;
+				clicked.push(name);
+				return { handled: true };
+			},
+		});
+		const list = new Container();
+		list.addChild(item("first"));
+		tui.addChild(list);
+		tui.start();
+		await terminal.waitForRender();
+		const doubleClick = async () => {
+			for (let click = 0; click < 2; click++) {
+				terminal.sendInput(press(1, 0));
+				terminal.sendInput(release(1, 0));
+			}
+			await terminal.waitForRender();
+		};
+
+		await doubleClick();
+		// Another item that reads the same takes the row before the next two fast clicks.
+		list.children[0] = item("second");
+		list.invalidate();
+		tui.requestRender();
+		await terminal.waitForRender();
+		await doubleClick();
+
+		assert.deepStrictEqual(clicked, ["first", "second"], "each item's first click is a single click");
+		assert.deepStrictEqual(copied, ["same", "same"], "each item's second click is a double-click");
 		tui.stop();
 	});
 });
