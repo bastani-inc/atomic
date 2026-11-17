@@ -61,6 +61,7 @@ knowledge:
       SDK tests that allocate an agentDir and load bundled packages call `linkSharedTranspileCache(agentDir)`
       from `packages/coding-agent/test/helpers/shared-transpile-cache.ts` to reuse the suite's warmed compilation cache;
       keep cold-cache coverage separate.
+      Measure task-list key-to-paint latency with `bun run scripts/perf/tasks-board/benchmark.ts 100,1000,10000 30`.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

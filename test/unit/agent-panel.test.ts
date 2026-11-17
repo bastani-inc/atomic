@@ -698,7 +698,7 @@ test("an attached composer preserves cursor markers and terminal styling around 
 		["❯   \x1b[31m\x1b[0m", "❯\x1b[31m\x1b[0m hint"],
 		["❯\t   \x1b[m", "❯\t\x1b[m hint"],
 		["❯   \x1b[0K", "❯   \x1b[0K hint"],
-		["❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07", "❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07 hint"],
+		["❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07", "❯ \x1b_pi:c\x07\x1b_pi:fc\x07 \x1b_pi:/fc\x07hint"],
 		["❯ \x1b_outer\x1b_inner\x07", "❯ \x1b_outer\x1b_inner\x07 hint"],
 		["❯ \x1b_unterminated", "❯ \x1b_unterminated"],
 		["❯ typed", "❯ typed"],
