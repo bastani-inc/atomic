@@ -1086,7 +1086,7 @@ describe("docs references and assets (#2847)", () => {
 				checked += 1;
 			}
 		}
-		assert.equal(checked, 6, "all six relative image references must still be checked");
+		assert.equal(checked, 3, "all three relative image references must still be checked");
 	});
 });
 

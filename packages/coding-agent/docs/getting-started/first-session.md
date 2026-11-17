@@ -45,7 +45,7 @@ With a session working, these are the fuller capabilities to reach for next. Non
 
 ### Try the built-in workflows
 
-Atomic ships with nine workflows you can run immediately. Ask the agent which workflows are installed and what inputs one takes, or open `/workflows` to browse the definitions.
+Atomic ships with nine workflows you can run immediately. Ask the agent which workflows are installed and what inputs one takes; it checks them with the `workflow` tool.
 
 | Workflow | When to use | Example request |
 |---|---|---|
@@ -58,8 +58,6 @@ Atomic ships with nine workflows you can run immediately. Ask the agent which wo
 | `goal` | Autonomous work that needs a durable ledger, bounded sub-agent orchestration, receipts, and reviewer-gated completion. | `Run goal to update the CLI docs, add one example, and validate the docs build` |
 | `ralph` | Research-first autonomous work with prompt refinement, delegated implementation, and iterative multi-model review. | `Run ralph to implement specs/rate-limit.md and validate burst traffic` |
 | `open-claude-design` | UI and design-system work with one generated preview, one live review session, and export. | `Run open-claude-design to refresh the settings page hierarchy as a page` |
-
-<p align="center"><img src="../images/workflow-list.png" alt="Workflow List" width="600" /></p>
 
 The agent starts a workflow with the `workflow` tool, passing inputs as typed JSON values. Goal and Ralph support `git_worktree_dir` only when you explicitly want a reusable worktree, and skip PR creation unless you set `create_pr` to `true` for the post-approval final stage.
 
