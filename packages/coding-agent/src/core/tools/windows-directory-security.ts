@@ -26,6 +26,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { type ChildProcess, spawn } from "node:child_process";
 import { statSync } from "node:fs";
+import { stat as statAsync } from "node:fs/promises";
 import type { Socket } from "node:net";
 import { dirname, resolve } from "node:path";
 import type { Readable } from "node:stream";
@@ -235,7 +236,26 @@ const outsideAnyCaller = AsyncLocalStorage.snapshot();
 
 const sharedReads = new Map<string, SharedSecurityRead>();
 const currentReadOwner = new AsyncLocalStorage<AbortSignal>();
-const ownedReads = new WeakMap<AbortSignal, Set<Promise<WindowsDirectorySecurity | undefined>>>();
+const ownedReads = new WeakMap<AbortSignal, Set<Promise<void>>>();
+const activeReads = new Set<Promise<void>>();
+
+export function trackWindowsDirectorySecurityWork<T>(operation: () => Promise<T>): Promise<T> {
+	const owner = currentReadOwner.getStore();
+	const result = operation();
+	const settled = result.then(
+		() => undefined,
+		() => undefined,
+	);
+	activeReads.add(settled);
+	const pending = owner ? (ownedReads.get(owner) ?? new Set<Promise<void>>()) : undefined;
+	if (owner && pending) ownedReads.set(owner, pending);
+	pending?.add(settled);
+	void settled.then(() => {
+		activeReads.delete(settled);
+		pending?.delete(settled);
+	});
+	return result;
+}
 const closingReads = new Set<SharedSecurityRead>();
 
 export function withWindowsDirectorySecurityOwner<T>(
@@ -422,26 +442,22 @@ export function readWindowsDirectorySecurityAsync(
 	path: string,
 	options: ReadWindowsDirectorySecurityOptions = {},
 ): Promise<WindowsDirectorySecurity | undefined> {
-	const owner = currentReadOwner.getStore();
-	const signal = owner && options.signal ? AbortSignal.any([owner, options.signal]) : (owner ?? options.signal);
-	if (signal?.aborted) return Promise.resolve(undefined);
-	const resolvedPath = resolve(path);
-	const identity = options.identity ?? identityOf(resolvedPath);
-	if (identity === undefined) return Promise.resolve(undefined);
-	const key = `${identity}\0${resolvedPath}`;
-	let read = sharedReads.get(key);
-	if (read === undefined) {
-		read = new SharedSecurityRead(resolvedPath, key);
-		sharedReads.set(key, read);
-	}
-	const result = read.join(options.timeoutMs ?? READ_SECURITY_TIMEOUT_MS, signal, options.background ?? false);
-	if (owner) {
-		const pending = ownedReads.get(owner) ?? new Set<Promise<WindowsDirectorySecurity | undefined>>();
-		ownedReads.set(owner, pending);
-		pending.add(result);
-		void result.then(() => pending.delete(result));
-	}
-	return result;
+	return trackWindowsDirectorySecurityWork(async () => {
+		const owner = currentReadOwner.getStore();
+		const signal = owner && options.signal ? AbortSignal.any([owner, options.signal]) : (owner ?? options.signal);
+		if (signal?.aborted) return undefined;
+		const generation = stateGeneration;
+		const resolvedPath = resolve(path);
+		const identity = options.identity ?? (await identityOfAsync(resolvedPath));
+		if (identity === undefined || signal?.aborted || generation !== stateGeneration) return undefined;
+		const key = `${identity}\0${resolvedPath}`;
+		let read = sharedReads.get(key);
+		if (read === undefined) {
+			read = new SharedSecurityRead(resolvedPath, key);
+			sharedReads.set(key, read);
+		}
+		return read.join(options.timeoutMs ?? READ_SECURITY_TIMEOUT_MS, signal, options.background ?? false);
+	});
 }
 
 function parseSecurityOutput(stdout: string): WindowsDirectorySecurity | undefined {
@@ -489,6 +505,15 @@ function identityOf(path: string): string | undefined {
 	}
 }
 
+async function identityOfAsync(path: string): Promise<string | undefined> {
+	try {
+		const stat = await statAsync(path, { bigint: true });
+		return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
+	} catch {
+		return undefined;
+	}
+}
+
 /** True when `path` was verified in this process and is still the directory verified there. */
 function stillVerified(path: string, identity: string | undefined): boolean {
 	return identity !== undefined && verifiedPaths.get(path) === identity;
@@ -522,39 +547,35 @@ function verifiedWithoutReading(path: string, identity: string): boolean {
  * The symlink/directory checks in `session-temp-dir.ts` still run on every use. A failure is never cached, so a
  * transient read error does not permanently disable spills.
  */
-export async function verifyWindowsDirectorySecurityAsync(
+export function verifyWindowsDirectorySecurityAsync(
 	path: string,
 	signal?: AbortSignal,
 	options: { background?: boolean } = {},
 ): Promise<string | undefined> {
-	const resolvedPath = resolve(path);
-	const identity = identityOf(resolvedPath);
-	if (identity === undefined) {
-		return "its ownership could not be verified";
-	}
-	if (verifiedWithoutReading(resolvedPath, identity)) {
-		return undefined;
-	}
-	const generation = stateGeneration;
-	const security = await securityReader(resolvedPath, { signal, background: options.background, identity });
-	if (security === undefined) {
-		return "its ownership could not be verified";
-	}
-	const refusal = evaluateWindowsDirectorySecurity(security);
-	if (generation !== stateGeneration) {
-		return refusal ?? "its ownership could not be verified";
-	}
-	if (refusal !== undefined) {
-		if (verifiedPaths.get(resolvedPath) === identity) {
-			verifiedPaths.delete(resolvedPath);
+	return trackWindowsDirectorySecurityWork(async () => {
+		const generation = stateGeneration;
+		const resolvedPath = resolve(path);
+		const identity = await identityOfAsync(resolvedPath);
+		if (identity === undefined || generation !== stateGeneration) return "its ownership could not be verified";
+		if (stillVerified(resolvedPath, identity)) return undefined;
+		const parent = dirname(resolvedPath);
+		const inherited = parent !== resolvedPath && stillVerified(parent, await identityOfAsync(parent));
+		if (generation !== stateGeneration) return "its ownership could not be verified";
+		if (!inherited) {
+			const security = await securityReader(resolvedPath, { signal, background: options.background, identity });
+			if (security === undefined) return "its ownership could not be verified";
+			const refusal = evaluateWindowsDirectorySecurity(security);
+			if (generation !== stateGeneration) return refusal ?? "its ownership could not be verified";
+			if (refusal !== undefined) {
+				if (verifiedPaths.get(resolvedPath) === identity) verifiedPaths.delete(resolvedPath);
+				return refusal;
+			}
 		}
-		return refusal;
-	}
-	if (identityOf(resolvedPath) !== identity) {
-		return "its ownership could not be verified";
-	}
-	verifiedPaths.set(resolvedPath, identity);
-	return undefined;
+		if ((await identityOfAsync(resolvedPath)) !== identity || generation !== stateGeneration)
+			return "its ownership could not be verified";
+		verifiedPaths.set(resolvedPath, identity);
+		return undefined;
+	});
 }
 
 export function verifyWindowsDirectorySecurity(
@@ -576,7 +597,9 @@ export function verifyWindowsDirectorySecurity(
 }
 
 export async function waitForWindowsDirectorySecurityReadsForTesting(): Promise<void> {
-	await Promise.all([...sharedReads.values(), ...closingReads].map((read) => read.result));
+	while (activeReads.size || sharedReads.size || closingReads.size) {
+		await Promise.all([...activeReads, ...[...sharedReads.values(), ...closingReads].map((read) => read.result)]);
+	}
 }
 
 /** Test seam: substitute the descriptor reader; pass `undefined` to restore. */

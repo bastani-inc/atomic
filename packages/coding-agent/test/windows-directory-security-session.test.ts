@@ -43,6 +43,7 @@ vi.mock("../src/utils/module-require.js", async (importOriginal) => {
 const { AgentSessionRuntime } = await import("../src/core/agent-session-runtime.js");
 const { trackSessionWork } = await import("../src/core/session-lifecycle-work.js");
 const {
+	readWindowsDirectorySecurityAsync,
 	resetWindowsDirectorySecurityStateForTesting,
 	verifyWindowsDirectorySecurity,
 	waitForWindowsDirectorySecurityReadsForTesting,
@@ -96,7 +97,14 @@ test.each(["session", "runtime", "nested session", "nested runtime"] as const)(
 	"host disposal cancels an owned %s ACL fallback and waits for its child to close (#5324)",
 	async (owner) => {
 		const child = pendingChild();
-		spawn.mockReturnValue(child);
+		let started!: () => void;
+		const childStarted = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		spawn.mockImplementation(() => {
+			started();
+			return child;
+		});
 		const { harness, runtime } = await host();
 		const path = directory();
 		try {
@@ -107,7 +115,7 @@ test.each(["session", "runtime", "nested session", "nested runtime"] as const)(
 				if (owner.startsWith("nested")) await trackSessionWork({}, start);
 				else await start();
 			});
-			await setImmediate();
+			await childStarted;
 			assert.ok(spawn.mock.calls.length > 0);
 			let closed = false;
 			const closing = runtime.dispose().then(() => {
@@ -131,16 +139,24 @@ test.each(["session", "runtime", "nested session", "nested runtime"] as const)(
 
 test("closing one host leaves another host's shared ACL read running (#5324)", async () => {
 	const child = pendingChild();
-	spawn.mockReturnValue(child);
+	let started!: () => void;
+	const childStarted = new Promise<void>((resolve) => {
+		started = resolve;
+	});
+	spawn.mockImplementation(() => {
+		started();
+		return child;
+	});
 	const first = await host();
 	const second = await host();
 	const path = directory();
 	try {
 		for (const { harness } of [first, second]) {
 			await trackSessionWork(harness.session, async () => {
-				verifyWindowsDirectorySecurity(path);
+				void readWindowsDirectorySecurityAsync(path, { identity: "shared-directory" });
 			});
 		}
+		await childStarted;
 		await first.runtime.dispose();
 		assert.equal(child.kill.mock.calls.length, 0, "the second host still owns its read");
 		const closing = second.runtime.dispose();

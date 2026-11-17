@@ -16,7 +16,17 @@
  */
 
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, type Stats } from "node:fs";
+import {
+	type BigIntStats,
+	chmodSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	type Stats,
+} from "node:fs";
+import { lstat, mkdir, realpath, rm } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
@@ -24,6 +34,7 @@ import { APP_NAME, getAgentDir } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
 	resetWindowsDirectorySecurityStateForTesting,
+	trackWindowsDirectorySecurityWork,
 	VERIFICATION_PENDING_REASON,
 	verifyWindowsDirectorySecurity,
 	verifyWindowsDirectorySecurityAsync,
@@ -170,7 +181,7 @@ function baseTempDirs(): BaseTempDirs {
 /** `<tmpdir>/<APP_NAME>-<owner>` — the root every session temp tree lives under. */
 export function getTempRootDir(): string {
 	const app = sanitizeTempPathComponent(APP_NAME, "atomic");
-	return join(baseTempDirs().raw, `${app}-${ownerComponent()}`);
+	return join(tmpdir(), `${app}-${ownerComponent()}`);
 }
 
 /**
@@ -586,7 +597,9 @@ export function assertPrivateDirectory(path: string): void {
 
 export function assertPrivateDirectoryAsync(path: string): Promise<void> {
 	const resolvedPath = resolve(path);
-	return afterVerification(() => assertPrivateDirectory(resolvedPath));
+	return process.platform === "win32"
+		? verifyWindowsOwnedDirectoryAsync(resolvedPath)
+		: afterVerification(() => assertPrivateDirectory(resolvedPath));
 }
 
 /**
@@ -683,9 +696,83 @@ export function ensureSessionTempDir(explicitDir?: string): string {
 	return ensureTempDir(explicitDir ?? resolveSessionTempDirPath());
 }
 
-export function ensureTempDirAsync(dir: string, options: { preserveExistingLeaf?: boolean } = {}): Promise<string> {
+async function verifyWindowsOwnedDirectoryAsync(path: string): Promise<void> {
+	const before = await lstat(path, { bigint: true });
+	assertRealDirectory(path, before);
+	const refusal = await verifyWindowsDirectorySecurityAsync(path);
+	if (refusal !== undefined) throw new TempDirRefusedError(path, refusal);
+	const after = await lstat(path, { bigint: true });
+	assertRealDirectory(path, after);
+	if (before.dev !== after.dev || before.ino !== after.ino || before.birthtimeNs !== after.birthtimeNs)
+		throw new TempDirRefusedError(path, "its ownership could not be verified");
+}
+
+function assertRealDirectory(path: string, stat: Stats | BigIntStats): void {
+	if (stat.isSymbolicLink()) throw new TempDirRefusedError(path, "it is a symbolic link");
+	if (!stat.isDirectory()) throw new TempDirRefusedError(path, "it is not a directory");
+}
+
+async function ensureWindowsOwnedDirectoryAsync(path: string): Promise<void> {
+	try {
+		await lstat(path);
+	} catch {
+		try {
+			await mkdir(path, { mode: SESSION_TEMP_DIR_MODE });
+		} catch (error) {
+			if (getErrnoCode(error) !== "EEXIST") throw new TempDirRefusedError(path, "it could not be created");
+		}
+	}
+	await verifyWindowsOwnedDirectoryAsync(path);
+}
+
+async function ensureWindowsLeafDirectoryAsync(path: string, preserveExistingLeaf: boolean): Promise<void> {
+	if (!preserveExistingLeaf) {
+		try {
+			if (!(await lstat(path)).isDirectory()) await rm(path, { force: true });
+		} catch {}
+	}
+	await ensureWindowsOwnedDirectoryAsync(path);
+}
+
+async function baseTempDirsAsync(): Promise<BaseTempDirs> {
+	const raw = tmpdir();
+	if (cachedBaseTempDirs?.raw === raw) return cachedBaseTempDirs;
+	let canonical: string;
+	try {
+		canonical = await realpath(raw);
+	} catch {
+		canonical = raw;
+	}
+	cachedBaseTempDirs = { raw, canonical };
+	return cachedBaseTempDirs;
+}
+
+export async function ensureTempDirAsync(
+	dir: string,
+	options: { preserveExistingLeaf?: boolean } = {},
+): Promise<string> {
 	const resolvedDir = resolve(dir);
-	return afterVerification(() => ensureTempDir(resolvedDir, options));
+	if (process.platform !== "win32") return afterVerification(() => ensureTempDir(resolvedDir, options));
+	await yieldToEventLoop();
+	const base = await baseTempDirsAsync();
+	const checkedDir = canonicalTempChild(resolvedDir, base);
+	if (checkedDir !== undefined) {
+		const parts = checkedDir
+			.slice(base.canonical.length + sep.length)
+			.split(sep)
+			.filter(Boolean);
+		let current = base.canonical;
+		for (const part of parts.slice(0, -1)) {
+			current = join(current, part);
+			await ensureWindowsOwnedDirectoryAsync(current);
+		}
+		await ensureWindowsLeafDirectoryAsync(checkedDir, options.preserveExistingLeaf ?? false);
+	} else {
+		await mkdir(dirname(resolvedDir), { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+		await ensureWindowsLeafDirectoryAsync(resolvedDir, options.preserveExistingLeaf ?? false);
+	}
+	ensuredDirs.add(resolvedDir);
+	return resolvedDir;
 }
 
 export function getSessionTempDirAsync(sessionId?: string): Promise<string> {
@@ -755,13 +842,17 @@ export function setActiveSessionTempId(sessionId: string): string {
 }
 
 function startPrivateRootVerification(): void {
-	try {
-		const ownerRoot = canonicalTempChild(getTempRootDir(), baseTempDirs());
-		if (ownerRoot !== undefined) ensureOwnedDirectory(ownerRoot);
-	} catch {}
-	try {
-		verifyOwnedDirectory(join(getAgentDir(), "cache", "tmp"), undefined, true);
-	} catch {}
+	void trackWindowsDirectorySecurityWork(async () => {
+		try {
+			const ownerRoot = canonicalTempChild(getTempRootDir(), await baseTempDirsAsync());
+			if (ownerRoot !== undefined) await ensureWindowsOwnedDirectoryAsync(ownerRoot);
+		} catch {}
+	}).catch(() => undefined);
+	void trackWindowsDirectorySecurityWork(async () => {
+		try {
+			await verifyWindowsOwnedDirectoryAsync(join(getAgentDir(), "cache", "tmp"));
+		} catch {}
+	}).catch(() => undefined);
 }
 
 /** Directories this process must not reap: session temp trees and live tool-results. */
