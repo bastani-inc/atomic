@@ -47,24 +47,24 @@ test("provider configuration is cached per lifecycle owner and survives reporter
 		const { loadGitHubConfig, resetGitHubConfig } = await import("../../packages/web-access/github-config.js");
 		const { isYouTubeEnabled } = await import("../../packages/web-access/youtube-extract.js");
 		const { isVideoFile } = await import("../../packages/web-access/video-extract.js");
-		const videoEnabled = () => {
+		const videoEnabled = async () => {
 			try {
-				return isVideoFile(video) !== null;
+				return (await isVideoFile(video)) !== null;
 			} catch (err) {
 				assert.match(String(err), /video extraction is disabled \(video\.enabled\)/);
 				return false;
 			}
 		};
-		const readVideo = () => [isYouTubeEnabled(), videoEnabled()];
-		assert.deepEqual(context.run(reporter(scope), readVideo), [false, false]);
-		const read = () => [
-			isPerplexityAvailable(),
-			hasExaApiKey(),
-			getChromeProfileFromConfig(),
+		const readVideo = () => Promise.all([isYouTubeEnabled(), videoEnabled()]);
+		assert.deepEqual(await context.run(reporter(scope), readVideo), [false, false]);
+		const read = async () => [
+			await isPerplexityAvailable(),
+			await hasExaApiKey(),
+			await getChromeProfileFromConfig(),
 			loadGitHubConfig().maxRepoSizeMB,
 		];
-		assert.deepEqual(context.run(reporter(scope), read), [true, true, "first-profile", 100]);
-		assert.equal(context.run(reporter(scope), getApiKey), "first-key");
+		assert.deepEqual(await context.run(reporter(scope), read), [true, true, "first-profile", 100]);
+		assert.equal(await context.run(reporter(scope), getApiKey), "first-key");
 		const urls: string[] = [];
 		vi.stubGlobal("fetch", async (url: string) => {
 			urls.push(url);
@@ -77,13 +77,13 @@ test("provider configuration is cached per lifecycle owner and survives reporter
 			config.path,
 			JSON.stringify({ searchModel: "second-model", geminiApiKey: "second-key" }),
 		);
-		assert.equal(context.run(reporter({}), getApiKey), "second-key");
-		assert.deepEqual(context.run(reporter({}), read), [false, false, undefined, 350]);
+		assert.equal(await context.run(reporter({}), getApiKey), "second-key");
+		assert.deepEqual(await context.run(reporter({}), read), [false, false, undefined, 350]);
 		context.run(reporter({}), resetGitHubConfig);
-		assert.deepEqual(context.run(reporter(scope), read), [true, true, "first-profile", 100]);
-		assert.equal(context.run(reporter(scope), getApiKey), "first-key");
-		assert.deepEqual(context.run(reporter({}), readVideo), [true, true]);
-		assert.deepEqual(context.run(reporter(scope), readVideo), [false, false]);
+		assert.deepEqual(await context.run(reporter(scope), read), [true, true, "first-profile", 100]);
+		assert.equal(await context.run(reporter(scope), getApiKey), "first-key");
+		assert.deepEqual(await context.run(reporter({}), readVideo), [true, true]);
+		assert.deepEqual(await context.run(reporter(scope), readVideo), [false, false]);
 		await context.run(reporter({}), () => search("query", { provider: "gemini" }));
 		assert.match(urls.pop()!, /second-model/);
 		await context.run(reporter(scope), () => search("query", { provider: "gemini" }));

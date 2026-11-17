@@ -1,14 +1,56 @@
-import { existsSync, readFileSync } from "node:fs";
-import { APP_NAME } from "@bastani/atomic";
+import { readFile } from "node:fs/promises";
+import { APP_NAME, getUserConfigPaths } from "@bastani/atomic";
 import { findReadableConfigPath } from "./config-paths.ts";
 import { createOwnerState } from "./owner-state.js";
 
-const CONFIG_PATH = findReadableConfigPath();
 const ALLOW_BROWSER_COOKIES_ENV = `${APP_NAME.toUpperCase()}_ALLOW_BROWSER_COOKIES`;
 
 interface GeminiWebConfig {
 	chromeProfile?: string;
 	allowBrowserCookies?: boolean;
+}
+
+export function createAsyncOwnerState<T>(load: () => Promise<T>): () => Promise<T> {
+	const state = createOwnerState<{ promise?: Promise<T> }>(() => ({}));
+	return () => {
+		const holder = state();
+		holder.promise ??= load().catch((err) => {
+			holder.promise = undefined;
+			throw err;
+		});
+		return holder.promise;
+	};
+}
+
+export async function readWebSearchConfigFile<T extends object>(): Promise<T | null> {
+	const primaryPath = findReadableConfigPath();
+	const userPaths = getUserConfigPaths("web-search.json");
+	const candidates =
+		primaryPath && (userPaths.length === 0 || primaryPath !== userPaths[0])
+			? [primaryPath]
+			: userPaths.length > 0
+				? userPaths
+				: primaryPath
+					? [primaryPath]
+					: [];
+
+	for (const configPath of candidates) {
+		if (!configPath) continue;
+		let rawText: string;
+		try {
+			rawText = await readFile(configPath, "utf-8");
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw err;
+		}
+		try {
+			return JSON.parse(rawText) as T;
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			throw new Error(`Failed to parse ${configPath}: ${message}`);
+		}
+	}
+	return null;
 }
 
 export function normalizeChromeProfile(value: unknown): string | undefined {
@@ -17,17 +59,9 @@ export function normalizeChromeProfile(value: unknown): string | undefined {
 	return normalized.length > 0 ? normalized : undefined;
 }
 
-const loadConfig = createOwnerState<GeminiWebConfig>(() => {
-	if (!existsSync(CONFIG_PATH)) return {};
-
-	const rawText = readFileSync(CONFIG_PATH, "utf-8");
-	let raw: { chromeProfile?: unknown; allowBrowserCookies?: unknown };
-	try {
-		raw = JSON.parse(rawText) as { chromeProfile?: unknown; allowBrowserCookies?: unknown };
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`Failed to parse ${CONFIG_PATH}: ${message}`);
-	}
+const loadConfig = createAsyncOwnerState<GeminiWebConfig>(async () => {
+	const raw = await readWebSearchConfigFile<{ chromeProfile?: unknown; allowBrowserCookies?: unknown }>();
+	if (!raw) return {};
 
 	return {
 		chromeProfile: normalizeChromeProfile(raw.chromeProfile),
@@ -35,13 +69,13 @@ const loadConfig = createOwnerState<GeminiWebConfig>(() => {
 	};
 });
 
-export function getChromeProfileFromConfig(): string | undefined {
-	return loadConfig().chromeProfile;
+export async function getChromeProfileFromConfig(): Promise<string | undefined> {
+	return (await loadConfig()).chromeProfile;
 }
 
-export function isBrowserCookieAccessAllowed(): boolean {
+export async function isBrowserCookieAccessAllowed(): Promise<boolean> {
 	if (process.env[ALLOW_BROWSER_COOKIES_ENV] === "1") {
 		return true;
 	}
-	return loadConfig().allowBrowserCookies === true;
+	return (await loadConfig()).allowBrowserCookies === true;
 }

@@ -18,7 +18,7 @@ export async function extractWithUrlContext(
 	url: string,
 	signal?: AbortSignal,
 ): Promise<ExtractedContent | null> {
-	const apiKey = getApiKey();
+	const apiKey = await getApiKey();
 	if (!apiKey) return null;
 
 	const activityId = activityMonitor.logStart({ type: "api", query: `url_context: ${url}` });

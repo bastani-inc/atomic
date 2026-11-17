@@ -1,6 +1,6 @@
 import { reportOwnedWebDiagnostic } from "./diagnostics.js";
 import type { ExtensionAPI } from "@bastani/atomic";
-import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { platform } from "node:os";
 import { join } from "node:path";
@@ -44,7 +44,8 @@ async function findGlimpseMjs(): Promise<string | null> {
 			maxStdoutBytes: 64 * 1024,
 		});
 		const entry = join(stdout.toString("utf8").trim(), "glimpseui", "src", "glimpse.mjs");
-		if (existsSync(entry)) return entry;
+		await access(entry);
+		return entry;
 	} catch {
 		// npm may be unavailable.
 	}
