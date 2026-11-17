@@ -44,8 +44,10 @@ export interface CollectSnapshotGarbageOptions {
  * and references, never the length of a journal. A database written before the index existed has its existing rows
  * indexed first, once, in short transactions, and nothing is deleted until that is done. Batches commit one at a
  * time; stopping part way leaves only garbage.
- * Legacy blobs with unknown ages are stamped in short batches after sweeping and kept for a full grace window
- * starting at that collection, even when upgrading and opening the journal happened much earlier.
+ * Legacy blobs with unknown ages are stamped after sweeping and kept for a full grace window starting at that
+ * collection, even when upgrading and opening the journal happened much earlier. Inline blobs over 1 MiB are moved
+ * to chunks regardless of age. Stamping and chunk writes handle at most 16 MiB per transaction; publishing chunks
+ * also frees the old inline pages under the write lock, with time proportional to the blob's size.
  *
  * Rejects before reading anything: with {@link WorkspaceSnapshotError} (`blob-store-unsupported`) when `store` is not a
  * {@link SqlSnapshotBlobStore}, which has no reference index to collect by, or is missing, as for storage that holds
