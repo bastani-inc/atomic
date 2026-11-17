@@ -82,6 +82,7 @@ export function handleTranscriptBlockClick(
 	siblings: readonly Component[],
 	locate: (width: number, row: number) => { readonly component: Component; readonly row: number } | undefined,
 	event: TuiMouseEvent,
+	onToggled?: (expanded: boolean) => void,
 ): ContainerMouseResult {
 	if (!isSingleLeftClick(event)) return undefined;
 	const hit = locate(event.width, event.y);
@@ -91,6 +92,7 @@ export function handleTranscriptBlockClick(
 	if (!unit || !isHeaderRow(hit.component.render(event.width), hit.row)) return undefined;
 	const expand = !unit[0]!.isExpanded();
 	for (const block of unit) block.setExpanded(expand);
+	onToggled?.(expand);
 	return {
 		handled: true,
 		target: {

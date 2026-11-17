@@ -35,8 +35,8 @@ afterEach(() => {
 	resetCapabilitiesCache();
 });
 
-function makeMode(requestRender: () => void) {
-	const chatContainer = new StartupChatContainer(isChatMessageComponent, requestRender);
+function makeMode(requestRender: () => void, transcriptView: () => ScrollView | undefined) {
+	const chatContainer = new StartupChatContainer(isChatMessageComponent, transcriptView);
 	chatContainer.releaseStartupOutput();
 	const entries = (): SessionEntry[] => [];
 	const proto = (name: string) => Reflect.get(InteractiveMode.prototype, name);
@@ -163,10 +163,14 @@ async function mountChat(columns: number, rows: number) {
 		copyOnSelect: true,
 		copySelection: copied,
 	}) as TuiAltScreen;
-	const mode = makeMode(() => tui.requestRender());
+	let transcript: ScrollView | undefined;
+	const mode = makeMode(
+		() => tui.requestRender(),
+		() => transcript,
+	);
 	const document = new Container();
 	document.addChild(mode.chatContainer);
-	const transcript = new ScrollView(document, { follow: "end", primary: true });
+	transcript = new ScrollView(document, { follow: "end", primary: true });
 	const editor = new Text("editor", 0, 0);
 	tui.addChild(editor);
 	tui.setLayoutRoot(
@@ -352,6 +356,26 @@ describe("clicking transcript blocks in the main chat", () => {
 			assert.equal(browser.openBrowser.mock.calls.length, 1);
 			assert.match(browser.openBrowser.mock.calls[0]?.[0] ?? "", /^file:.*first-full\.log$/);
 			assert.ok(!chat.expanded("first"), chat.transcriptText().join("\n"));
+		} finally {
+			chat.tui.stop();
+		}
+	});
+
+	test("expanding a block while the chat follows its end keeps the header under the pointer", async () => {
+		const chat = await mountChat(100, 12);
+		try {
+			assert.equal(chat.transcript.isFollowingEnd, true);
+			const header = chat.rowOf(/Bash\(second-command\)/);
+			chat.click(chat.columnOf(header, "second-command"), header);
+			assert.ok(chat.expanded("second"), chat.transcriptText().join("\n"));
+			assert.equal(chat.rowOf(/Bash\(second-command\)/), header, chat.screen().join("\n"));
+			assert.equal(chat.transcript.isFollowingEnd, false, "new output waits behind the jump-to-latest pill");
+
+			// A second click on the same spot right away is a double-click, which selects instead.
+			vi.advanceTimersByTime(1_000);
+			chat.click(chat.columnOf(header, "second-command"), header);
+			assert.ok(!chat.expanded("second"), chat.transcriptText().join("\n"));
+			assert.equal(chat.transcript.isFollowingEnd, true, "folding it back returns to the live end");
 		} finally {
 			chat.tui.stop();
 		}

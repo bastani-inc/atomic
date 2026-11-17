@@ -742,7 +742,7 @@ export class InteractiveModeBase {
 		this.headerContainer = new Container();
 		this.documentContainer = new Container();
 		this.documentContainer.addChild(this.headerContainer);
-		this.chatContainer = new StartupChatContainer(isChatMessageComponent);
+		this.chatContainer = new StartupChatContainer(isChatMessageComponent, () => this.transcriptScrollView);
 		this.documentContainer.addChild(this.chatContainer);
 		this.resourceDisclosureContainer = new Container();
 		this.startupNoticesContainer = new Container();
