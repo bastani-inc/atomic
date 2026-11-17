@@ -306,7 +306,14 @@ export class SessionList implements Component, Focusable {
 	}
 
 	setSessions(sessions: SessionInfo[], showCwd: boolean, partial = false): void {
-		if (showCwd !== this.showCwd) this.selectionSettled = false;
+		if (showCwd !== this.showCwd) {
+			this.selectionSettled = false;
+			if (!this.selectionTouched) {
+				this.pendingSelectedPath = undefined;
+				this.pendingSelectedId = undefined;
+				this.pendingSelectedWorkflow = undefined;
+			}
+		}
 		this.replaceSessions(sessions, showCwd, partial);
 		this.listComplete = !partial;
 		if (this.paintedSelection === undefined) return;
