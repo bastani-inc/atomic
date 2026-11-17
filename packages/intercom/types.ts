@@ -241,6 +241,11 @@ export interface ReleasedChildRefusal {
 
 export type IntercomDeliveryMode = "steer" | "followUp" | "interrupt";
 
+export interface MessageDisplayRange {
+  readonly start: number;
+  readonly end: number;
+}
+
 export interface Message {
   id: string;
   timestamp: number;
@@ -269,6 +274,7 @@ export interface Message {
   content: {
     text: string;
     attachments?: Attachment[];
+    displayRanges?: readonly MessageDisplayRange[];
   };
 }
 

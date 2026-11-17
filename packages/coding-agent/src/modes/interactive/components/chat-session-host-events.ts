@@ -434,7 +434,7 @@ function isSharedLiveChatEvent(type: string): boolean {
 
 function assistantToolCallEvent(event: AgentSessionEvent):
 	| {
-			type: "tool_execution_start";
+			type: "tool_call_args";
 			toolCallId: string;
 			toolName: string;
 			args: unknown;
@@ -465,7 +465,7 @@ function assistantToolCallEvent(event: AgentSessionEvent):
 
 function toolCallPayload(value: unknown):
 	| {
-			type: "tool_execution_start";
+			type: "tool_call_args";
 			toolCallId: string;
 			toolName: string;
 			args: unknown;
@@ -476,7 +476,7 @@ function toolCallPayload(value: unknown):
 	if (candidate.type !== "toolCall") return undefined;
 	if (typeof candidate.id !== "string" || typeof candidate.name !== "string") return undefined;
 	return {
-		type: "tool_execution_start",
+		type: "tool_call_args",
 		toolCallId: candidate.id,
 		toolName: candidate.name,
 		args: candidate.arguments ?? {},

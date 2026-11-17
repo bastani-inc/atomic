@@ -173,7 +173,25 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			keybindings: env.keybindings,
 			editorTheme: env.editorTheme,
 			editorFactory: env.editorFactory,
-			getChatRenderSettings: env.getChatRenderSettings,
+			getChatRenderSettings: () => {
+				const inherited = env.getChatRenderSettings?.();
+				return {
+					...inherited,
+					getToolDefinition: (toolName) => {
+						const session = this.followed?.chatSession;
+						return (
+							session?.extensionRunner?.resolveToolRenderers?.(toolName, () =>
+								session.getToolDefinition?.(toolName),
+							) ??
+							session?.getToolDefinition?.(toolName) ??
+							inherited?.getToolDefinition?.(toolName)
+						);
+					},
+					getCustomMessageRenderer: (customType) =>
+						this.followed?.chatSession?.extensionRunner?.getMessageRenderer?.(customType) ??
+						inherited?.getCustomMessageRenderer?.(customType),
+				};
+			},
 			...(env.footerData === undefined ? {} : { footerData: withoutExtensionStatuses(env.footerData) }),
 			getChatBoxSession: () => this.followed?.chatSession,
 			requestRender,
@@ -372,6 +390,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.chat.resetFollowedSession();
 		}
 		this.chat.replaceMessages(page.value.messages);
+		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
 		this.chat.hydrateCompactionStatus(
 			page.value.compactionReason,
 			page.value.compactionStartedAt ?? session?.chatSession?.compactionStartedAt,

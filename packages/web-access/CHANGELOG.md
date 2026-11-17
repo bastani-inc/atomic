@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Web search and fetch calls show compact `WebSearch(...)` and `Fetch(...)` headers, concise result summaries and a shared expand hint. Expanded results retain all returned text, while fetched text cannot create terminal hyperlinks or control sequences ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ## [0.9.88] - 2026-11-16
 
 ### Fixed

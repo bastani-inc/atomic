@@ -201,26 +201,24 @@ function renderCard(params: SubagentParamsLike, result: SubagentToolResult, expa
 		invalidate() {},
 		isError: result.isError === true,
 	};
-	const call = renderSubagentToolCall(params, theme, context);
+	renderSubagentToolCall(params, theme, context);
 	const body = renderSubagentToolResult(result, { expanded, isPartial: false }, theme, context);
-	const lines = [...call.render(width), ...body.render(width)];
+	const lines = body.render(width);
 	return { lines, text: lines.map((line) => stripVTControlCharacters(line).trimEnd()).join("\n") };
 }
 
-test("partial failure keeps every child row, marks the failed child and summarizes counts in the header (#4697)", async () => {
+test("partial failure keeps every child row and marks the failed child (#4697)", async () => {
 	const h = harness({ host: true, failing: new Set([3]) });
 	const result = await h.call();
 	const collapsed = renderCard(h.params, result, false, 100).text;
-	assert.match(collapsed.split("\n")[0]!, /^subagent parallel \(5\) · 4 done · 1 failed$/);
-	assert.match(collapsed, /├─ ✓ 1\. echo · Completed/);
-	assert.match(collapsed, /├─ ✗ 3\. echo · Not started\n {3}Supervisor authorization timeout/);
-	assert.match(collapsed, /└─ ✓ 5\. echo · Completed/);
+	assert.match(collapsed, /● Agent\(echo · T1\)\n {3}⎿ {2}Done/);
+	assert.match(collapsed, /✗ Agent\(echo · T3\)\n {3}⎿ {2}Failed · Supervisor authorization timeout/);
+	assert.match(collapsed, /● Agent\(echo · T5\)\n {3}⎿ {2}Done/);
 	assert.doesNotMatch(collapsed, /^✗ Supervisor authorization timeout$/m, "no single collapsed error");
 
 	const expanded = renderCard(h.params, result, true, 100).text;
-	assert.match(expanded, /4 done · 1 failed/);
-	assert.match(expanded, /✗ 3\. echo · Not started\n {3}Supervisor authorization timeout/);
-	assert.equal((expanded.match(/✓ \d\. echo · Completed/g) ?? []).length, 4);
+	assert.match(expanded, /✗ Agent\(echo · T3\)\n {3}⎿ {2}Failed · Supervisor authorization timeout/);
+	assert.equal((expanded.match(/● Agent\(echo · T\d\)/g) ?? []).length, 4);
 });
 
 test("a failed child's error is one truncated line collapsed and wraps in full expanded at narrow widths (#4697)", async () => {
@@ -235,37 +233,37 @@ test("a failed child's error is one truncated line collapsed and wraps in full e
 			);
 			const errorLines = rendered
 				.split("\n")
-				.filter((line) => line.includes("Supervisor") || line.includes("timeout"));
+				.filter((line) => line.includes("Supervisor") || line.includes("timeout") || line.includes("Fail"));
 			if (!expanded) {
-				const collapsedError = rendered.split("\n").filter((line) => /^ {3}Sup/.test(line));
+				const collapsedError = rendered.split("\n").filter((line) => /^ {3}⎿ {2}Fail/.test(line));
 				assert.equal(collapsedError.length, 1, `collapsed error stays one line at ${width}`);
-				if (width < `   ${AUTH_TIMEOUT}`.length) assert.match(collapsedError[0]!, /…$/);
-				else assert.equal(collapsedError[0], `   ${AUTH_TIMEOUT}`);
+				if (width < `   ⎿  Failed · ${AUTH_TIMEOUT}`.length) assert.match(collapsedError[0]!, /…$/);
 			} else assert.ok(errorLines.length >= 1);
 		}
 	const wide = renderCard(h.params, result, true, 24).text;
 	assert.match(wide.replace(/\s+/g, " "), /Supervisor authorization timeout/);
 });
 
-test("all-success and all-failed parallel cards keep their rows and header counts (#4697)", async () => {
+test("all-success and all-failed parallel cards keep every child block (#4697)", async () => {
 	const ok = harness({ host: true, failing: new Set() });
 	const okText = renderCard(ok.params, await ok.call(), false, 100).text;
-	assert.match(okText.split("\n")[0]!, /^subagent parallel \(5\) · 5 done$/);
-	assert.equal((okText.match(/✓ \d\. echo · Completed/g) ?? []).length, 5);
-	assert.doesNotMatch(okText, /failed|✗/);
+	assert.equal((okText.match(/● Agent\(echo · T\d\)\n {3}⎿ {2}Done/g) ?? []).length, 5);
+	assert.doesNotMatch(okText, /Failed|✗/);
 
 	const failed = harness({ host: true, failing: new Set([1, 2, 3, 4, 5]) });
 	const failedText = renderCard(failed.params, await failed.call(), false, 100).text;
-	assert.match(failedText.split("\n")[0]!, /^subagent parallel \(5\) · 5 failed$/);
-	assert.equal((failedText.match(/✗ \d\. echo · Not started\n {3}Supervisor authorization timeout/g) ?? []).length, 5);
+	assert.equal(
+		(failedText.match(/✗ Agent\(echo · T\d\)\n {3}⎿ {2}Failed · Supervisor authorization timeout/g) ?? []).length,
+		5,
+	);
 });
 
-test("without a task host the partial and all-failed cards render per-child rows, not one error (#4697)", async () => {
+test("without a task host the partial and all-failed cards render per-child blocks, not one error (#4697)", async () => {
 	for (const failing of [new Set([2]), new Set([1, 2, 3, 4, 5])]) {
 		const h = harness({ host: false, failing });
 		const rendered = renderCard(h.params, await h.call(), false, 100).text;
 		assert.doesNotMatch(rendered, /^✗ Supervisor authorization timeout$/m);
-		assert.match(rendered, /echo/);
-		assert.match(rendered, failing.size === 5 ? /0\/5 done/ : /4\/5 done/);
+		assert.match(rendered, /Agent\(echo · T1\)/);
+		assert.equal((rendered.match(/● Agent\(echo · T\d\)/g) ?? []).length, failing.size === 5 ? 0 : 4);
 	}
 });

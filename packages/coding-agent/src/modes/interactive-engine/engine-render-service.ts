@@ -2,6 +2,8 @@ import type { Terminal, TUI } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import { runSynchronousCallback } from "../../core/callback-activity.ts";
 import type { CustomMessage } from "../../core/messages.ts";
+import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
+import { loadTaskOwnTranscriptHistory, taskTranscriptSource } from "../../core/tasks/supervisor.js";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { CustomMessageComponent } from "../interactive/components/custom-message.ts";
 import { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
@@ -166,7 +168,14 @@ export class EngineRenderService {
 				command.toolName,
 				command.toolCallId,
 				command.args,
-				{ showImages: command.showImages, imageWidthCells: command.imageWidthCells, outputPad: command.outputPad },
+				{
+					showImages: command.showImages,
+					imageWidthCells: command.imageWidthCells,
+					outputPad: command.outputPad,
+					getTaskRecord: (taskId) => getOwnerTaskStore(session)?.getTask(taskId),
+					getToolDefinition: (name) =>
+						session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),
+				},
 				session.extensionRunner.resolveToolRenderers(command.toolName, () =>
 					session.getToolDefinition(command.toolName),
 				),
@@ -184,9 +193,10 @@ export class EngineRenderService {
 			record.component.setOutputPad(command.outputPad ?? 1);
 		}
 		const tool = record.component;
-		if (command.executionStarted) tool.markExecutionStarted();
+		if (command.executionStarted) tool.markExecutionStarted(command.executionStartedAt);
 		if (command.argsComplete) tool.setArgsComplete();
 		tool.setExpanded(command.expanded);
+		tool.setGroupRole(command.groupRole ?? { kind: "standalone" });
 		if (command.result) {
 			tool.updateResult(
 				command.result as unknown as Parameters<ToolExecutionComponent["updateResult"]>[0],
@@ -214,6 +224,24 @@ export class EngineRenderService {
 				session.extensionRunner.getMessageRenderer(message.customType),
 				undefined,
 				command.outputPad,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					hasTranscript: (taskId) => {
+						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
+						return lease?.ok ? taskTranscriptSource(lease.value).ok : false;
+					},
+					loadTranscript: async (taskId) => {
+						const lease = getOwnerTaskStore(session)?.resolveTask(taskId);
+						return lease?.ok ? loadTaskOwnTranscriptHistory(lease.value) : undefined;
+					},
+					getToolDefinition: (name) =>
+						session.extensionRunner.resolveToolRenderers(name, () => session.getToolDefinition(name)),
+					cwd: session.sessionManager.getCwd(),
+					requestRender: () => tui.requestRender(),
+				},
 			);
 			tui.addChild(component);
 			record = { kind: "message", component, terminal, tui, runner: session.extensionRunner };
@@ -230,7 +258,7 @@ export class EngineRenderService {
 		const record = this.records.get(id);
 		if (!record) return;
 		this.records.delete(id);
-		if (record.kind === "tool") record.component.dispose();
+		record.component.dispose();
 		record.tui.stop();
 	}
 

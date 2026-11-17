@@ -32,7 +32,7 @@ describe("subagent explicit fast-model UI labels", () => {
 
 		const text = renderSubagentResult(result, { expanded: false }, theme).render(120).join("\n");
 
-		assert.match(text, /openai-codex\/gpt-5\.6-sol-fast {2}medium/);
+		assert.doesNotMatch(text, /openai-codex\/gpt-5\.6-sol-fast/);
 		const expanded = renderSubagentResult(result, { expanded: true }, theme).render(120).join("\n");
 		assert.match(expanded, /openai-codex\/gpt-5\.6-sol-fast {2}medium/);
 		assert.equal(expanded.match(/gpt-5\.6-sol-fast/g)?.length, 1);
@@ -63,7 +63,7 @@ describe("subagent explicit fast-model UI labels", () => {
 			},
 		};
 
-		const text = renderSubagentResult(result, { expanded: false }, theme).render(120).join("\n");
+		const text = renderSubagentResult(result, { expanded: true }, theme).render(120).join("\n");
 
 		assert.match(text, /gpt-5\.1-codex {2}medium/);
 		assert.doesNotMatch(text, / · fast/);

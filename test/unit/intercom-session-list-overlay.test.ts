@@ -130,8 +130,8 @@ test("inline-message marks clipped full sender and reply IDs with visible ellips
 	const rendered = plain(new InlineMessageComponent(from, message, theme).render(34));
 	const output = rendered.join("\n");
 
-	assert.match(output, /From: .*…/);
-	assert.match(output, /Reply to .*…/);
+	assert.match(output, /Reply from.*…/);
+	assert.doesNotMatch(output, new RegExp(REPLY_ID));
 	for (const line of rendered) {
 		assert.ok(visibleWidth(line) <= 34, `inline-message row exceeds 34 columns: ${line}`);
 	}

@@ -686,7 +686,7 @@ test("a subagent's view shows a finished task's notice with the main chat's noti
 			"the subagent's view shows the notice line",
 		);
 		const main = new TaskCompletionMessage(notice, false).render(80).map((row) => stripVTControlCharacters(row));
-		assert.deepEqual(main, [line], "the main chat renders the same line");
+		assert.deepEqual(main, [` ${line}`], "the main chat renders the same line");
 	} finally {
 		await host.dispose();
 	}

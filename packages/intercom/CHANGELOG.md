@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Changed
+
+- Incoming messages and Intercom/Supervisor calls use shared compact transcript blocks. Message bodies render Markdown with inert links, long bodies expand with the configured tool-output key, and supervisor framing stays in the header instead of repeating machine instructions in the body. Older peers and saved messages without display metadata retain their full sanitized body ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ### Fixed
 
 - Fixed a multi-node Intercom broker on Windows freezing for seconds as it started, up to 30 s on a loaded host ([#5252](https://github.com/bastani-inc/atomic/issues/5252)). It read its host's identity and the start time of an earlier instance's process by running PowerShell and `reg` synchronously, so nothing else in the broker ran meanwhile, including the sessions connecting to it. These commands now run without blocking it. A process reads its host's identity once and every broker it starts uses it.

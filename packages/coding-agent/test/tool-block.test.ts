@@ -50,6 +50,35 @@ test("notices share the prose column and the tool block's connector indentation 
 	assert.deepEqual(plain(notice.render(80)), [' ● Workflow "sample" completed · 12s', "   ⎿  first", "      second"]);
 });
 
+test("notice fields render bidirectional controls inert without changing the saved text (#5224)", () => {
+	const spec = {
+		status: "success",
+		label: "Agent",
+		subject: "worker\u202eexe\u202c",
+		outcome: "finished",
+		detail: "result\u2066hidden\u2069",
+	} as const;
+	const notice = new NoticeLine(spec, true);
+	const text = plain(notice.render(80)).join("\n");
+	assert.doesNotMatch(text, /[\u202a-\u202e\u2066-\u2069]/u);
+	assert.match(text, /<U\+202E>/);
+	assert.match(text, /<U\+2066>/);
+	assert.equal(spec.subject, "worker\u202eexe\u202c");
+});
+
+test("large expanded results keep every row without overflowing a render call (#5224)", () => {
+	const count = 150_000;
+	const block = new ToolBlock({
+		status: "success",
+		title: "Sample",
+		details: { render: () => Array<string>(count).fill("value"), invalidate() {} },
+	});
+	const rows = plain(block.render(40));
+	assert.equal(rows.length, count + 1);
+	assert.equal(rows[1], "   ⎿  value");
+	assert.equal(rows.at(-1), "      value");
+});
+
 test("tool header arguments shorten before the closing parenthesis and state metadata (#5224)", () => {
 	const block = new ToolBlock({ status: "failure", title: "Bash", args: "x".repeat(300), meta: ["exit 2", "12s"] });
 	for (const width of [20, 80, 160]) {

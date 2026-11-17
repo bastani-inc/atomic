@@ -7,6 +7,28 @@ export interface WorkingRunSnapshot {
 	readonly note?: string;
 }
 
+export interface LegacyWorkingRunSnapshot {
+	readonly elapsedMs: number;
+	readonly outputTokens: number;
+	readonly requesting?: boolean;
+	readonly note?: string;
+}
+
+export type WorkingRunMetaInput = WorkingRunSnapshot | LegacyWorkingRunSnapshot;
+
+export function normalizeWorkingRunSnapshot(meta: WorkingRunMetaInput): WorkingRunSnapshot {
+	if ("tokens" in meta && typeof meta.tokens === "number") {
+		return meta;
+	}
+	const legacy = meta as LegacyWorkingRunSnapshot;
+	return {
+		elapsedMs: legacy.elapsedMs,
+		tokens: legacy.outputTokens,
+		...(legacy.requesting === undefined ? {} : { requesting: legacy.requesting }),
+		...(legacy.note === undefined ? {} : { note: legacy.note }),
+	};
+}
+
 export interface MeteredMessage {
 	readonly role: string;
 	readonly usage?:
@@ -216,7 +238,8 @@ export function formatWorkingTokens(tokens: number): string {
 	return `${(tokens / 1_000_000_000).toFixed(tokens < 99_950_000_000 ? 1 : 0)}B`;
 }
 
-export function formatWorkingMeta(snapshot: WorkingRunSnapshot): string {
+export function formatWorkingMeta(input: WorkingRunMetaInput): string {
+	const snapshot = normalizeWorkingRunSnapshot(input);
 	if (snapshot.elapsedMs < 1000 && snapshot.tokens <= 0 && !snapshot.note) return "";
 	const parts = [formatWorkingElapsed(snapshot.elapsedMs)];
 	const tokens = formatTokenSegment({

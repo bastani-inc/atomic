@@ -28,6 +28,7 @@ export type {
 	ToolLoadout,
 	ToolLoadoutChanges,
 	ToolNamespace,
+	ToolRenderContext,
 	ToolRendererResolver,
 	ToolRenderers,
 	ToolScriptAccess,
@@ -188,6 +189,14 @@ export {
 	type ToolBlockSpec,
 	type ToolBlockStatus,
 } from "./modes/interactive/components/tool-block.ts";
+export {
+	type BuiltinToolBlockContentPart,
+	type BuiltinToolBlockInput,
+	type BuiltinToolBlockPresentation,
+	type BuiltinToolBlockResult,
+	builtinToolBlockPresentation,
+} from "./modes/interactive/components/tool-block-families.ts";
+export { formatToolActionSummary } from "./modes/interactive/components/tool-block-summary.ts";
 export {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,

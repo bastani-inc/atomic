@@ -286,6 +286,13 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		return applyChatSessionAgentEvent(this.state, event);
 	}
 
+	hydrateToolExecutionStarts(starts: readonly { readonly toolCallId: string; readonly startedAt: number }[]): void {
+		let changed = false;
+		for (const start of starts)
+			changed = this.state.liveChat.markToolExecutionStarted(start.toolCallId, start.startedAt) || changed;
+		if (changed) this.state.requestRender?.();
+	}
+
 	/**
 	 * Restore the factual compaction indicator on a host mounted after the
 	 * `compaction_start` it never saw. The label resolves through the same

@@ -1,5 +1,5 @@
-import { stripVTControlCharacters } from "node:util";
 import { type Component, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { type ThemeColor, theme } from "../theme/theme.js";
 import { ToolBlock } from "./tool-block.ts";
 
@@ -40,7 +40,7 @@ export const DETAIL_PREFIX = "     ";
 
 /** One line of display text: no terminal controls, no line breaks. */
 function oneLine(value: string): string {
-	return stripVTControlCharacters(value)
+	return terminalDisplayText(value)
 		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
 		.replace(/ {2,}/g, " ")
 		.trim();
@@ -96,7 +96,8 @@ export class NoticeLine implements Component {
 		if (width < 1) return [];
 		const subject = fittedSubject(this.spec, Math.max(1, width - 1));
 		const title = `${oneLine(this.spec.label)}${quoted(subject)}${outcomeText(this.spec.outcome)}`;
-		const detail = this.spec.detail === undefined ? "" : stripVTControlCharacters(this.spec.detail).trimEnd();
+		const detail =
+			this.spec.detail === undefined ? "" : terminalDisplayText(this.spec.detail).replaceAll("\t", "    ").trimEnd();
 		const safeDetail = detail.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, " ");
 		return new ToolBlock({
 			status: this.spec.status,
