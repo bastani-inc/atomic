@@ -272,12 +272,38 @@ function busyFor(ms: number): void {
 	while (performance.now() < end) {}
 }
 
+/** An OS read that completes this long after it starts, far longer than a startup dialog waits for typed input. */
+const SLOW_READ_MS = 200;
+/** An OS read that completes this soon after it starts, as a terminal's usually does. */
+const PROMPT_READ_MS = 10;
+
 describe("early startup input held for a startup dialog (#5241)", () => {
 	it("captures input typed while startup does not yield, before a dialog takes stdin", async () => {
 		const stdin = new OsStdin(5);
 		const capture = startEarlyInputCapture({ enabled: true, stdin, process: new FakeProcess() });
 		stdin.type("hello");
 		busyFor(20);
+		const snapshot = await withEarlyInputHeldForStartupDialog(async () => consumeStartupInput(capture));
+		expect(snapshot).toEqual({ text: "hello", submissions: [], heldForStartupDecision: true });
+	});
+
+	// The capture starts the OS read as it starts, so a read that takes long is already done when startup, busy all
+	// that while, opens a dialog. A read started only once startup yields would complete after the dialog took stdin.
+	it("captures input typed while startup does not yield, however long the OS takes to complete a read", async () => {
+		const stdin = new OsStdin(SLOW_READ_MS);
+		const capture = startEarlyInputCapture({ enabled: true, stdin, process: new FakeProcess() });
+		stdin.type("hello");
+		busyFor(SLOW_READ_MS + 50);
+		const snapshot = await withEarlyInputHeldForStartupDialog(async () => consumeStartupInput(capture));
+		expect(snapshot).toEqual({ text: "hello", submissions: [], heldForStartupDecision: true });
+	});
+
+	// A dialog waits a moment for input already typed before it takes stdin, so a read the OS completes just after the
+	// dialog starts still reaches the draft instead of answering the dialog.
+	it("captures input whose read completes just after a dialog starts", async () => {
+		const stdin = new OsStdin(PROMPT_READ_MS);
+		const capture = startEarlyInputCapture({ enabled: true, stdin, process: new FakeProcess() });
+		stdin.type("hello");
 		const snapshot = await withEarlyInputHeldForStartupDialog(async () => consumeStartupInput(capture));
 		expect(snapshot).toEqual({ text: "hello", submissions: [], heldForStartupDecision: true });
 	});

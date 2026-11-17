@@ -123,6 +123,19 @@ const NON_INTERACTIVE_FLAGS = new Set([
 	"--list-models",
 ]);
 
+/** What decides whether a host prewarms: its terminals and how many CPUs it can load both processes on. */
+export interface PrewarmHost {
+	readonly stdinIsTTY: boolean;
+	readonly stdoutIsTTY: boolean;
+	readonly cpus: number;
+}
+
+/** This process as a host, and the engine child it would start, unless given. */
+export interface PrewarmOptions {
+	readonly host?: PrewarmHost;
+	readonly launch?: EngineLaunch;
+}
+
 /**
  * Whether this process is an interactive host about to start an engine child: a terminal on both ends, at least two
  * CPUs to load both at once, and arguments that are only options (a subcommand or a prompt argument is never
@@ -130,7 +143,7 @@ const NON_INTERACTIVE_FLAGS = new Set([
  */
 export function shouldPrewarmInteractiveEngine(
 	args: readonly string[],
-	host: { readonly stdinIsTTY: boolean; readonly stdoutIsTTY: boolean; readonly cpus: number } = {
+	host: PrewarmHost = {
 		stdinIsTTY: process.stdin.isTTY === true,
 		stdoutIsTTY: process.stdout.isTTY === true,
 		cpus: availableParallelism(),
@@ -150,12 +163,13 @@ function setReferenced(child: ChildProcess, referenced: boolean): void {
 }
 
 /** Start the engine child this interactive host will most likely run, before the host has loaded its own code. */
-export function prewarmInteractiveEngine(args: readonly string[]): void {
-	if (prewarmState[PREWARM_KEY] || !shouldPrewarmInteractiveEngine(args)) return;
+export function prewarmInteractiveEngine(args: readonly string[], options: PrewarmOptions = {}): void {
+	if (prewarmState[PREWARM_KEY] || !shouldPrewarmInteractiveEngine(args, options.host)) return;
 	let launch: EngineLaunch;
 	let child: ChildProcess;
 	try {
-		launch = engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
+		launch =
+			options.launch ?? engineLaunch({ ...interactiveEngineClientOptions(process.cwd()), interactiveEngine: true });
 		child = spawn(launch.command, [...launch.args, INTERACTIVE_ENGINE_PREWARM_FLAG], {
 			cwd: launch.cwd,
 			env: launch.env,

@@ -1,17 +1,21 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import {
 	adoptPrewarmedEngine,
 	discardPrewarmedEngine,
 	type EngineLaunch,
 	engineLaunch,
+	prewarmInteractiveEngine,
 	sameEngineLaunch,
 	shouldPrewarmInteractiveEngine,
 } from "../src/modes/interactive-engine/engine-prewarm.ts";
+
+/** How long a stand-in engine may take to start, or to be gone once stopped, on a loaded runner. */
+const ENGINE_START_OR_EXIT_WAIT_MS = 30_000;
 
 const tempDirs: string[] = [];
 const children: ChildProcess[] = [];
@@ -23,8 +27,8 @@ afterEach(() => {
 });
 
 /**
- * A stand-in engine child: it reads its arguments as a prewarmed engine does, then reads stdin with the RPC
- * reader, as the engine does, and reports both on stdout.
+ * A stand-in engine child: it writes its pid to `pid` beside it, reads its arguments as a prewarmed engine does, then
+ * reads stdin with the RPC reader, as the engine does, and reports both on stdout.
  */
 function writeEngineScript(): string {
 	const dir = mkdtempSync(join(tmpdir(), "atomic-prewarm-"));
@@ -34,7 +38,9 @@ function writeEngineScript(): string {
 	const jsonl = new URL("../src/modes/rpc/jsonl.ts", import.meta.url).href;
 	writeFileSync(
 		path,
-		`import { readPrewarmedEngineArgs } from ${JSON.stringify(prewarm)};\n` +
+		`import { writeFileSync } from "node:fs";\n` +
+			`writeFileSync(${JSON.stringify(join(dir, "pid"))}, String(process.pid));\n` +
+			`import { readPrewarmedEngineArgs } from ${JSON.stringify(prewarm)};\n` +
 			`import { attachJsonlLineReader } from ${JSON.stringify(jsonl)};\n` +
 			"const args = await readPrewarmedEngineArgs();\n" +
 			'process.stdout.write(JSON.stringify({ args, argv: process.argv.slice(2) }) + "\\n");\n' +
@@ -114,6 +120,61 @@ describe("adopting a prewarmed engine child", () => {
 		assert.equal(adoptPrewarmedEngine(launch(), ["--mode", "rpc"]), undefined);
 	});
 
+	const terminal = { stdinIsTTY: true, stdoutIsTTY: true, cpus: 8 };
+	/** Prewarms the stand-in engine as `launch` starts it, and returns its pid once it runs. */
+	async function prewarm(script: string, launch: EngineLaunch): Promise<number> {
+		prewarmInteractiveEngine([], { host: terminal, launch });
+		const pidFile = join(script, "..", "pid");
+		await vi.waitFor(() => assert.ok(existsSync(pidFile) && readFileSync(pidFile, "utf8")), {
+			timeout: ENGINE_START_OR_EXIT_WAIT_MS,
+		});
+		return Number(readFileSync(pidFile, "utf8"));
+	}
+	function running(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+	const standIn = (script: string): EngineLaunch => ({
+		command: "bun",
+		args: [script],
+		cwd: tmpdir(),
+		env: Object.fromEntries(
+			Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+		),
+		detached: false,
+	});
+
+	test("adopts the child prewarmed with the very launch the host would start, and runs it as the host's engine", async () => {
+		const script = writeEngineScript();
+		const prewarmed = standIn(script);
+		const pid = await prewarm(script, prewarmed);
+		const child = adoptPrewarmedEngine({ ...prewarmed, env: { ...prewarmed.env } }, ["--mode", "rpc"]);
+		assert.ok(child, "the prewarmed child is adopted");
+		children.push(child);
+		assert.equal(child.pid, pid);
+		const output = readLines(child, 2);
+		child.stdin!.write('{"id":"1"}\n');
+		assert.deepEqual(await output, [{ args: ["--mode", "rpc"], argv: ["--mode", "rpc"] }, { line: '{"id":"1"}' }]);
+	});
+
+	// The host's environment may change between the prewarm at its first line and the engine it settles on. A child
+	// started with any other value of any variable must not run as its engine.
+	test("stops, and adopts nothing, a child prewarmed with another value of one environment variable", async () => {
+		const script = writeEngineScript();
+		const prewarmed = standIn(script);
+		const pid = await prewarm(script, prewarmed);
+		const [name] = Object.keys(prewarmed.env);
+		assert.ok(name);
+		const settled = { ...prewarmed, env: { ...prewarmed.env, [name]: `${prewarmed.env[name]}-changed` } };
+		assert.equal(adoptPrewarmedEngine(settled, ["--mode", "rpc"]), undefined);
+		assert.equal(adoptPrewarmedEngine(prewarmed, ["--mode", "rpc"]), undefined, "the prewarmed child was discarded");
+		await vi.waitFor(() => assert.equal(running(pid), false), { timeout: ENGINE_START_OR_EXIT_WAIT_MS });
+	});
+
 	test("a launch differs from another in any of its executable, arguments, directory, environment or group", () => {
 		const base = launch();
 		assert.equal(sameEngineLaunch(base, launch()), true);
@@ -122,6 +183,7 @@ describe("adopting a prewarmed engine child", () => {
 			launch({ args: [...base.args, "--max-old-space-size=8192"] }),
 			launch({ cwd: join(tmpdir(), "elsewhere") }),
 			launch({ env: { ...base.env, ATOMIC_OFFLINE: "1" } }),
+			launch({ env: { ...base.env, AI_AGENT: `${base.env.AI_AGENT}-changed` } }),
 			launch({ env: Object.fromEntries(Object.entries(base.env).slice(1)) }),
 			launch({ detached: !base.detached }),
 		]) {
