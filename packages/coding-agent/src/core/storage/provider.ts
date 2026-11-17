@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Jiti, JitiResolveOptions } from "jiti";
-import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
+import { createSessionCwdMatcherAsync } from "../../utils/canonical-path.ts";
 import { abortSnapshotCollectionsOn, runningSnapshotCollectionsOn } from "../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteValue, StorageDescriptor } from "./database.js";
 import {
@@ -408,7 +408,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 		return this.open<SessionStore>(selection, context, {
 			memory: async () =>
 				new (await import("./session/memory-session-store.js")).MemorySessionStore(
-					createSessionCwdMatcher,
+					createSessionCwdMatcherAsync,
 					(await import("./session/released-history-files.js")).releasedHistoryFiles(
 						context.agentDir || (await import("../../config.js")).getAgentDir(),
 					),
@@ -420,7 +420,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 			sql: async (database, options) =>
 				(await import("./session/sql-session-store.js")).SqlSessionStore.open(database, {
 					...options,
-					cwdMatcher: createSessionCwdMatcher,
+					cwdMatcher: createSessionCwdMatcherAsync,
 				}),
 		});
 	}

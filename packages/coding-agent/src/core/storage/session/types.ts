@@ -5,7 +5,7 @@ import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 export const SESSION_FORMAT_VERSION = 4;
 
 /** @internal Platform-owned stores inject filesystem identity without coupling portable adapters to it. */
-export type SessionCwdMatcher = (cwd: string) => (candidate: string | undefined) => boolean;
+export type SessionCwdMatcher = (cwd: string) => (candidate: string | undefined) => boolean | Promise<boolean>;
 
 export interface StorageDescriptor {
 	readonly adapter: string;

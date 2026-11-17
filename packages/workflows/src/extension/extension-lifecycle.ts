@@ -1,7 +1,7 @@
 import { registerExtensionContextRetirementEffect, sessionScopedExtensionState } from "@bastani/atomic";
 import { releaseDurableBackendsHeldBy } from "../durable/backend-process-owner.js";
 import { reclaimReleasedRunsOwnedBy, releasePausedRunsOwnedBy } from "../durable/sdk-owner-release.js";
-import { canonicalDirectory, isSdkReleasedRunAdoptable } from "../durable/sdk-recovery-scope.js";
+import { canonicalDirectoryAsync, isSdkReleasedRunAdoptableAsync } from "../durable/sdk-recovery-scope.js";
 import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { settleEndedRuns } from "../runs/background/ended-run-settlement.js";
@@ -229,7 +229,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			const catalog = await runtimeState.runtimeForContext(ctx).prepareDurableResumable();
 			if (!isCurrent()) return;
 			const backend = requireStoreDurableBackend(store);
-			const currentCwd = canonicalDirectory(
+			const currentCwd = await canonicalDirectoryAsync(
 				ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd(),
 			);
 			const isInterruptedInProject = async (entry: ResumableWorkflowEntry): Promise<boolean> => {
@@ -239,7 +239,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 					(handle.pendingPrompts ?? entry.pendingPrompts) === 0 &&
 					(await backend.workflowOwnership(entry.workflowId)) === "available" &&
 					handle.invocationCwd !== undefined &&
-					canonicalDirectory(handle.invocationCwd) === currentCwd
+					(await canonicalDirectoryAsync(handle.invocationCwd)) === currentCwd
 				);
 			};
 			const interrupted: ResumableWorkflowEntry[] = [];
@@ -385,12 +385,13 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			if (isSessionSwitch(reason) && releasedRunIds !== undefined && releasedRunIds.length > 0) {
 				const backend = availableStoreDurableBackend(store);
 				const cwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd();
-				const adoptable = releasedRunIds.flatMap((runId) => {
+				const adoptable: { id: string; name: string }[] = [];
+				for (const runId of releasedRunIds) {
 					const handle = backend?.getWorkflow(runId);
-					return handle !== undefined && isSdkReleasedRunAdoptable(handle, cwd)
-						? [{ id: runId, name: handle.name }]
-						: [];
-				});
+					if (handle !== undefined && (await isSdkReleasedRunAdoptableAsync(handle, cwd))) {
+						adoptable.push({ id: runId, name: handle.name });
+					}
+				}
 				// Runs nobody adopted stay announced to the next successor; a reload keeps them unannounced.
 				lifetime.releasedRunIds = adoptable.map((run) => run.id);
 				if (adoptable.length > 0) ctx?.ui?.notify?.(releasedRunsNotice(adoptable), "info");

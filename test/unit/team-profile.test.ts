@@ -46,7 +46,7 @@ import {
 	type StorageStatus,
 } from "../../packages/coding-agent/src/core/storage/storage-status.js";
 import { readSharedStorageSetting } from "../../packages/intercom/broker/shared-storage-setting.js";
-import { getBrokerSpawnOptions } from "../../packages/intercom/broker/spawn.js";
+import { getBrokerSpawnOptions, getBrokerSpawnOptionsAsync } from "../../packages/intercom/broker/spawn.js";
 import type { RunOpts } from "../../packages/workflows/src/authoring.js";
 import { resolveRunJournal, selectRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
@@ -194,6 +194,7 @@ describe("ATOMIC_PROFILE=ci (#4320)", () => {
 		assert.deepEqual(await environmentTeamProfileAsync(), environmentTeamProfile());
 		assert.equal(await processSharedStorageSelectionAsync(), processSharedStorageSelection());
 		assert.equal((await processStorageEnvironmentAsync()).ATOMIC_STORAGE, processStorageEnvironment().ATOMIC_STORAGE);
+		assert.equal((await getBrokerSpawnOptionsAsync()).env.ATOMIC_STORAGE, getBrokerSpawnOptions().env.ATOMIC_STORAGE);
 
 		for (const [content, code] of [
 			[undefined, "unreadable-token-file"],

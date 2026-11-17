@@ -636,8 +636,10 @@ export class MemorySessionStore implements SessionStore {
 			query.signal?.throwIfAborted();
 			if (!matchesSessionIdPrefix(sessionId, query.idPrefix)) continue;
 			const header = decodeHeader(record);
-			if (matchesCwd && !matchesCwd(header.cwd)) continue;
 			if (!query.includeInternal && header.internal) continue;
+			if (matchesCwd && !(await matchesCwd(header.cwd))) continue;
+			this.assertOpen();
+			query.signal?.throwIfAborted();
 			let snapshot: SessionSnapshot | undefined;
 			try {
 				snapshot = await this.decode(sessionId, record);
