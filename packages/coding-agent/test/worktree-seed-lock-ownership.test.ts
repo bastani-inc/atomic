@@ -93,6 +93,71 @@ test("withSeedLock rejects observed compromise even when its action returns succ
 	assert.equal(finished, true);
 });
 
+test.each(["manifest", "seed-directory"] as const)(
+	"adoption stays completed when seed-lock loss is observed after removing the %s (#5320)",
+	async (commitBoundary) => {
+		const { clone } = await sandbox.remoteWithClone("repo", { ".gitignore": "build/\n", "README.md": "first\n" });
+		const captured = await captureWorktreeSnapshot(clone, {
+			settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+			blobs: new MemorySnapshotBlobStore(),
+		});
+		if (captured.status !== "captured") throw new Error(captured.status);
+		const snapshot = captured.snapshot;
+		const storeDir = sandbox.path("store");
+		const repository = repositoryIdOf(snapshot.remotes);
+		const slot = pooledWorktreePath(storeDir, repository, 0 as SlotNumber);
+		const seeds = seedDirectory(storeDir, repository);
+		const manifestFile = seedManifestPath(storeDir, repository);
+		const manifest: SeedManifest = {
+			version: 1,
+			repository,
+			head: snapshot.head,
+			tree: snapshot.tree,
+			envHash: snapshot.envHash,
+			paths: ["build"],
+			worktree: slot,
+			parkedAt: "2026-01-01T00:00:00.000Z",
+		};
+		await mkdir(join(seeds, "build"), { recursive: true });
+		await writeFile(join(seeds, "build", "out.txt"), "first generation\n");
+		await writeSeedManifest(storeDir, manifest);
+		const compromised = new Promise<void>((resolve) => {
+			boundary.onCompromised = (path) => {
+				if (path === manifestFile) resolve();
+			};
+		});
+		const realSetTimeout = globalThis.setTimeout;
+		vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+			fn: (...args: unknown[]) => void,
+			ms?: number,
+			...args: unknown[]
+		) => realSetTimeout(fn, typeof ms === "number" && ms >= 1_000 ? 40 : ms, ...args)) as typeof setTimeout);
+		let replaced = false;
+		boundary.afterRemove = async (path) => {
+			if (path !== (commitBoundary === "manifest" ? manifestFile : seeds) || replaced) return;
+			replaced = true;
+			await rm(`${manifestFile}.lock`, { recursive: true, force: true });
+			await compromised;
+			await withSeedLock(storeDir, repository, true, async () => {
+				await mkdir(join(seeds, "build"), { recursive: true });
+				await writeFile(join(seeds, "build", "out.txt"), "replacement generation\n");
+				await writeSeedManifest(storeDir, { ...manifest, parkedAt: "2026-01-02T00:00:00.000Z" });
+			});
+		};
+
+		const result = await adoptPrebuiltSeed(snapshot, { storeDir });
+		assert.equal(replaced, true);
+		assert.deepEqual(result, { adopted: true, path: slot, moved: ["build"], skipped: [] });
+		assert.equal(readFileSync(join(slot, "build", "out.txt"), "utf8"), "first generation\n");
+		assert.equal(readFileSync(join(seeds, "build", "out.txt"), "utf8"), "replacement generation\n");
+		assert.equal((await readSeedManifest(storeDir, repository))?.parkedAt, "2026-01-02T00:00:00.000Z");
+		assert.deepEqual(await pooledWorktreeHolder(storeDir, slot), {
+			owner: { kind: "prebuild", id: "seed" },
+			held: false,
+		});
+	},
+);
+
 test("adoption that loses its seed lock leaves a replacement generation untouched (#5320)", async () => {
 	const { clone } = await sandbox.remoteWithClone("repo", { ".gitignore": "build/\n", "README.md": "first\n" });
 	const captured = await captureWorktreeSnapshot(clone, {

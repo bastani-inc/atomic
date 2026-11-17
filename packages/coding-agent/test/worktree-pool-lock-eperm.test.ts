@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -36,6 +36,25 @@ import {
 } from "../src/core/worktree-snapshot/seeds.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
+
+const pollClock = vi.hoisted(() => ({
+	enabled: false,
+	elapsedMs: 0,
+	delays: [] as number[],
+	onSleep: undefined as (() => void) | undefined,
+}));
+
+vi.mock("node:timers/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:timers/promises")>();
+	const setTimeout: typeof actual.setTimeout = async (delay, value, options) => {
+		if (!pollClock.enabled) return actual.setTimeout(delay, value, options);
+		pollClock.delays.push(delay ?? 0);
+		pollClock.elapsedMs += delay ?? 0;
+		pollClock.onSleep?.();
+		return actual.setTimeout(0, value, options);
+	};
+	return { ...actual, setTimeout };
+});
 
 const lockRefusals = vi.hoisted(() => ({
 	remaining: 0,
@@ -144,6 +163,11 @@ beforeEach(() => {
 
 afterEach(() => {
 	setPlatform(originalPlatform);
+	pollClock.enabled = false;
+	pollClock.elapsedMs = 0;
+	pollClock.delays = [];
+	pollClock.onSleep = undefined;
+	vi.restoreAllMocks();
 	lockRefusals.remaining = 0;
 	lockRefusals.refused = 0;
 	lockRefusals.attempts = 0;
@@ -279,7 +303,156 @@ async function measureRefusedOperation<T>(
 	);
 }
 
+function usePollClock(): void {
+	const startedAt = Date.now();
+	pollClock.enabled = true;
+	vi.spyOn(Date, "now").mockImplementation(() => startedAt + pollClock.elapsedMs);
+}
+
 describe("worktree pool and seed locks on Windows when a lock directory is briefly refused with EPERM (#5320)", () => {
+	test.each([
+		"seed",
+		"slot",
+		"lease",
+		"admission-repository",
+		"admission-slot",
+		"admission-lease",
+		"eviction",
+	] as const)("cancelling %s acquisition interrupts persistent Windows EPERM polling (#5320)", async (target) => {
+		const storeDir = sandbox.path("store");
+		const { snapshot, repository } = await parkedSeed(storeDir);
+		const owner = { kind: "session" as const, id: "owner" };
+		const state = { snapshotId: snapshot.id, head: snapshot.head, tree: snapshot.tree };
+		const adopting = target === "seed" || target.startsWith("admission-");
+		if (!adopting) {
+			const admitted = await admitPooledWorktree(
+				{ storeDir, remotes: snapshot.remotes, root: snapshot.root, lastState: state, envHash: snapshot.envHash },
+				owner,
+			);
+			await restoreWorktreeAt(snapshot, admitted.path, { storeDir });
+			await releaseRestoredWorktree(admitted, state);
+		}
+		setPlatform("win32");
+		lockRefusals.suffix =
+			target === "seed"
+				? `${repository}.json.lock`
+				: target === "admission-repository"
+					? `${repository}.lock`
+					: target.endsWith("lease")
+						? ".lease.lock"
+						: "0.json.lock";
+		lockRefusals.remaining = Number.POSITIVE_INFINITY;
+		const controller = new AbortController();
+		usePollClock();
+		pollClock.onSleep = () => {
+			if (pollClock.elapsedMs >= 200) controller.abort();
+		};
+		if (target === "eviction") {
+			assert.deepEqual(
+				await evictIdleWorktrees(storeDir, repository, {
+					settings,
+					maxIdle: 0,
+					signal: controller.signal,
+				}),
+				[],
+			);
+		} else {
+			const action = adopting
+				? adoptPrebuiltSeed(snapshot, { storeDir, signal: controller.signal })
+				: claimIdleWorktree(snapshot, { storeDir, owner, settings, signal: controller.signal });
+			await assert.rejects(action, { name: "AbortError" });
+		}
+		assert.equal(pollClock.elapsedMs, 200);
+		assert.equal(lockRefusals.refused, 4);
+		assert.equal(existsSync(join(storeDir, "pool", repository, "0.json.lock")), false);
+		if (adopting) assert.equal(existsSync(seedManifestPath(storeDir, repository)), true);
+		else {
+			const record = JSON.parse(
+				readFileSync(join(storeDir, "pool", repository, "0.json"), "utf8"),
+			) as PoolSlotRecord;
+			assert.equal(record.resetting, undefined);
+			assert.ok(record.releasedAt);
+		}
+	});
+
+	test.each(["repository", "slot", "seed"] as const)(
+		"waiting for a live %s lock stops at its held-lock budget with 50 ms polls (#5320)",
+		async (target) => {
+			const storeDir = sandbox.path("store");
+			const remotes = ["https://example.com/acme/repo.git"];
+			const repository = repositoryIdOf(remotes);
+			const owner = { kind: "session" as const, id: "owner" };
+			const state = { snapshotId: null, head: "a".repeat(40), tree: "b".repeat(40) };
+			const admission = { storeDir, remotes, lastState: state, envHash: "env" };
+			const slot = target === "slot" ? await admitPooledWorktree(admission, owner) : undefined;
+			if (slot !== undefined) await releaseRestoredWorktree(slot, state);
+			const lock =
+				target === "seed"
+					? `${seedManifestPath(storeDir, repository)}.lock`
+					: target === "slot"
+						? join(storeDir, "pool", repository, "0.json.lock")
+						: join(storeDir, "pool", `${repository}.lock`);
+			mkdirSync(lock, { recursive: true });
+			const realNow = Date.now.bind(Date);
+			lockRefusals.targets.add(lock);
+			lockRefusals.onAttempt = (attempt) => {
+				const refreshed = new Date(realNow() + attempt);
+				utimesSync(lock, refreshed, refreshed);
+				return false;
+			};
+			const expectedWaitMs = target === "seed" ? 120_000 : 60_000;
+			usePollClock();
+			pollClock.onSleep = () =>
+				assert.ok(pollClock.elapsedMs <= expectedWaitMs, "held-lock wait exceeded its budget");
+			const action =
+				target === "seed"
+					? withSeedLock(storeDir, repository, true, async () => "acquired")
+					: target === "slot"
+						? holdRestoredWorktree(storeDir, slot!.path, owner)
+						: admitPooledWorktree(admission, owner);
+			await assert.rejects(action, { code: "ELOCKED" });
+			assert.equal(pollClock.elapsedMs, expectedWaitMs);
+			assert.ok(pollClock.delays.every((delay) => delay === 50));
+			assert.equal(existsSync(lock), true);
+		},
+	);
+
+	test.each(["repository", "slot", "seed"] as const)(
+		"waiting for a stopped %s lock holder outlasts its stale time and acquires it (#5320)",
+		async (target) => {
+			const storeDir = sandbox.path("store");
+			const remotes = ["https://example.com/acme/repo.git"];
+			const repository = repositoryIdOf(remotes);
+			const owner = { kind: "session" as const, id: "owner" };
+			const state = { snapshotId: null, head: "a".repeat(40), tree: "b".repeat(40) };
+			const admission = { storeDir, remotes, lastState: state, envHash: "env" };
+			const slot = target === "slot" ? await admitPooledWorktree(admission, owner) : undefined;
+			if (slot !== undefined) await releaseRestoredWorktree(slot, state);
+			const lock =
+				target === "seed"
+					? `${seedManifestPath(storeDir, repository)}.lock`
+					: target === "slot"
+						? join(storeDir, "pool", repository, "0.json.lock")
+						: join(storeDir, "pool", `${repository}.lock`);
+			mkdirSync(lock, { recursive: true });
+			usePollClock();
+			pollClock.onSleep = () => assert.ok(pollClock.elapsedMs <= 30_100, "stale holder was not replaced");
+			if (target === "seed") {
+				assert.equal(await withSeedLock(storeDir, repository, true, async () => "acquired"), "acquired");
+			} else {
+				const lease =
+					target === "slot"
+						? await holdRestoredWorktree(storeDir, slot!.path, owner)
+						: await admitPooledWorktree(admission, owner);
+				assert.ok(lease);
+				await releaseRestoredWorktree(lease, state);
+			}
+			assert.ok(pollClock.elapsedMs >= 30_000);
+			assert.ok(pollClock.delays.every((delay) => delay === 50));
+			assert.equal(existsSync(lock), false);
+		},
+	);
+
 	test("admitPooledWorktree waits out transient Windows EPERM on the repository, slot, and lease locks (#5320)", async () => {
 		const storeDir = sandbox.path("store");
 		const remotes = ["https://example.com/acme/repo.git"];

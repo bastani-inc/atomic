@@ -93,7 +93,8 @@ export async function writeSeedManifest(storeDir: string, manifest: SeedManifest
 /** Why no seed was adopted. */
 /**
  * `missing`: no seed of the repository. `busy`: a prebuild is replacing it. `path-taken`: the worktree path it was
- * built at is in use. `restore-failed`: its commit could not be restored. `unavailable`: its lock could not be taken.
+ * built at is in use. `restore-failed`: its commit could not be restored. `unavailable`: its lock could not be taken
+ * or was observed lost before adoption committed by removing the manifest.
  */
 export type NoSeedReason = "missing" | "busy" | "path-taken" | "restore-failed" | "unavailable";
 
@@ -116,11 +117,17 @@ function seedHeldAndWaiting(error: unknown, wait: boolean, startedAt: number): b
 	return wait && (error as NodeJS.ErrnoException).code === "ELOCKED" && Date.now() - startedAt < SEED_LOCK_WAIT_MS;
 }
 
-async function lockSeed(file: string, wait: boolean, onLost: (error: Error) => void): Promise<() => Promise<void>> {
+async function lockSeed(
+	file: string,
+	wait: boolean,
+	onLost: (error: Error) => void,
+	signal?: AbortSignal,
+): Promise<() => Promise<void>> {
 	await mkdir(dirname(file), { recursive: true });
 	const startedAt = Date.now();
 	let refusedSince: number | undefined;
 	for (;;) {
+		signal?.throwIfAborted();
 		try {
 			return await lockShared(file, {
 				realpath: false,
@@ -138,14 +145,15 @@ async function lockSeed(file: string, wait: boolean, onLost: (error: Error) => v
 			else if (seedHeldAndWaiting(error, wait, startedAt)) refusedSince = undefined;
 			else throw error;
 		}
-		await sleep(SEED_LOCK_POLL_MS);
+		await sleep(SEED_LOCK_POLL_MS, undefined, { signal });
 	}
 }
 
 /**
  * Runs `action` holding the seed lock of `repository`, which serializes parking a seed and adopting it, so an adoption
  * never moves the output of another generation than its manifest names. With `wait`, a held lock is waited for, for
- * up to about two minutes; without, it rejects with `ELOCKED`.
+ * up to two minutes, polling every 50 ms; without, it rejects with `ELOCKED`. Rejects if lock loss is observed before
+ * the action completes. Adoption checks ownership itself and keeps its completed result after removing the manifest.
  */
 export async function withSeedLock<T>(
 	storeDir: string,
@@ -153,7 +161,11 @@ export async function withSeedLock<T>(
 	wait: boolean,
 	action: () => Promise<T>,
 ): Promise<T> {
-	return withSeedLockHeld(storeDir, repository, wait, () => action());
+	return withSeedLockHeld(storeDir, repository, wait, async (assertHeld) => {
+		const result = await action();
+		assertHeld();
+		return result;
+	});
 }
 
 async function withSeedLockHeld<T>(
@@ -161,19 +173,23 @@ async function withSeedLockHeld<T>(
 	repository: RepositoryId,
 	wait: boolean,
 	action: (assertHeld: () => void) => Promise<T>,
+	signal?: AbortSignal,
 ): Promise<T> {
 	const file = seedManifestPath(storeDir, repository);
 	let lost: Error | undefined;
-	const unlock = await lockSeed(file, wait, (error) => {
-		lost ??= error;
-	});
+	const unlock = await lockSeed(
+		file,
+		wait,
+		(error) => {
+			lost ??= error;
+		},
+		signal,
+	);
 	const assertHeld = () => {
 		if (lost !== undefined) throw lost;
 	};
 	try {
-		const result = await action(assertHeld);
-		assertHeld();
-		return result;
+		return await action(assertHeld);
 	} finally {
 		await releaseLock(unlock, file);
 	}
@@ -213,8 +229,12 @@ export async function adoptPrebuiltSeed(
 		return { adopted: false, reason: "missing" };
 	}
 	try {
-		return await withSeedLockHeld(storeDir, repository, false, (assertHeld) =>
-			adoptLocked(snapshot, storeDir, repository, options, assertHeld),
+		return await withSeedLockHeld(
+			storeDir,
+			repository,
+			false,
+			(assertHeld) => adoptLocked(snapshot, storeDir, repository, options, assertHeld),
+			options.signal,
 		);
 	} catch (error) {
 		options.signal?.throwIfAborted();
@@ -239,7 +259,14 @@ async function adoptLocked(
 	let lease: Awaited<ReturnType<typeof admitPooledWorktree>> | undefined;
 	try {
 		lease = await admitPooledWorktree(
-			{ storeDir, remotes: snapshot.remotes, root: snapshot.root, lastState: state, envHash: manifest.envHash },
+			{
+				storeDir,
+				remotes: snapshot.remotes,
+				root: snapshot.root,
+				lastState: state,
+				envHash: manifest.envHash,
+				signal: options.signal,
+			},
 			SEED_OWNER,
 		);
 		if (lease.path !== resolve(manifest.worktree)) {
@@ -267,8 +294,13 @@ async function adoptLocked(
 		);
 		assertHeld();
 		await rm(seedManifestPath(storeDir, repository), { force: true }).catch(() => {});
-		assertHeld();
-		await rm(seedDirectory(storeDir, repository), { recursive: true, force: true }).catch(() => {});
+		const removeSeeds = async () => {
+			assertHeld();
+			await rm(seedDirectory(storeDir, repository), { recursive: true, force: true });
+		};
+		await removeSeeds().catch((error) => {
+			reportDebug("storage", "worktree-seed-cleanup-skipped", { repository, ...failureDebugFields(error) });
+		});
 		return { adopted: true, path: slot, moved, skipped };
 	} finally {
 		await releaseRestoredWorktree(lease, state);
