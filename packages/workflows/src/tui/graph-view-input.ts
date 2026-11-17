@@ -43,7 +43,8 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			matchesKey(data, Key.escape) &&
 			paintedView !== this._currentViewKind() &&
 			((paintedView === "stage" && this.stageDetail === null) ||
-				(paintedView === "tool" && this.toolDetail === null))
+				(paintedView === "tool" && this.toolDetail === null) ||
+				(paintedView === "run" && this._currentViewKind() === "graph"))
 		) {
 			return true;
 		}

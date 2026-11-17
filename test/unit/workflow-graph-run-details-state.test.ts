@@ -358,6 +358,57 @@ describe("workflow graph run details state and painted input (#5224)", () => {
 		}
 	});
 
+	it("keeps the graph open when a second Esc reaches painted run details before the next paint (#5224)", async () => {
+		const store = createStore();
+		store.recordRunStart(structuredClone(makeFailedRunSnapshot()));
+		const left: string[] = [];
+		const terminal = new ScreenTerminal(120, 30);
+		const tui = new TuiMainScreen(terminal);
+		const graph = new GraphView({
+			piKeybindings: makeFakeKeybindings(),
+			mode: "overlay",
+			runId: "run-1",
+			store,
+			graphTheme: h.defaultTheme,
+			piTui: tui,
+			requestRender: () => tui.requestRender(),
+			onDetach: () => left.push("detach"),
+		});
+		const unsubscribe = store.subscribeInvalidation(() => tui.requestRender());
+		tui.addChild(graph);
+		tui.setFocus(graph);
+		tui.start();
+		let renderCount = 0;
+		const originalRender = graph.render.bind(graph);
+		graph.render = (width: number) => {
+			renderCount += 1;
+			return originalRender(width);
+		};
+		const settle = async () => {
+			await new Promise((resolve) => setTimeout(resolve, 60));
+			return (await terminal.flushAndGetViewport()).join("\n");
+		};
+		try {
+			terminal.sendInput("o");
+			assert.match(await settle(), /Blockers · 2/);
+			renderCount = 0;
+			terminal.sendInput(ESC);
+			terminal.sendInput(ESC);
+			assert.equal(renderCount, 0, "both Escapes arrive before the graph is painted again");
+			const graphScreen = await settle();
+			assert.deepEqual(left, [], "the second Esc does not leave a graph that was never painted");
+			assert.doesNotMatch(graphScreen, /Blockers ·/);
+
+			terminal.sendInput(ESC);
+			await settle();
+			assert.deepEqual(left, ["detach"], "Esc over the painted graph leaves it");
+		} finally {
+			unsubscribe();
+			tui.stop();
+			graph.dispose();
+		}
+	});
+
 	it("scrolls run details with ↑ and ↓ when only one blocker is listed (#5224)", () => {
 		const stages: StageSnapshot[] = Array.from({ length: 12 }, (_, index) =>
 			makeStage(`s${index}`, {

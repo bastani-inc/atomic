@@ -95,6 +95,7 @@ When opening a PR:
 - External contributors must link the approved issue with `Closes #<issue-number>` or `Related: #<issue-number>`.
 - Include test output or explain why tests were not run.
 - Call out breaking changes, migration steps, or follow-up work.
+- Open the PR as a draft while it is still changing. A draft runs no test jobs; mark it ready for review when it is done, and the full test run starts then.
 
 ## Workflows contributions
 
