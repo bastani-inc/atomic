@@ -8,7 +8,12 @@ import { cancelHeldInput, heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
+	confirmCustomMessageWrite,
+	hasUncertainCustomMessageWrite,
 	isProtectedStreamingCustomMessage,
+	markCustomMessageDisplayed,
+	recordFailedCustomMessageWrite,
+	refreshFailedCustomMessageWrites,
 	restoreProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import { markQueuedMessageImages, waitForCustomMessagePreparation } from "./agent-session-prompt.ts";
@@ -296,18 +301,41 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 		return;
 	}
 	const stageAdmissionMessage = message as StageAdmittedCustomMessage;
-	const entryId = await this.sessionManager.appendCustomMessageEntry(
-		message.customType,
-		message.content,
-		message.display,
-		message.details,
-		customMessageExcludesContext(message),
-		undefined,
-		stageAdmissionMessage.stageAdmissionKey,
-	);
+	const manager = this.sessionManager;
+	const key = stageAdmissionMessage.stageAdmissionKey;
+	await refreshFailedCustomMessageWrites(this);
+	let entryId =
+		key === undefined || !hasUncertainCustomMessageWrite(manager, key)
+			? undefined
+			: manager
+					.getBranch()
+					.find(
+						(entry) =>
+							entry.type === "custom_message" &&
+							entry.stageAdmissionKey === key &&
+							entry.protectedReconciliation === undefined,
+					)?.id;
+	if (entryId === undefined) {
+		try {
+			entryId = await manager.appendCustomMessageEntry(
+				message.customType,
+				message.content,
+				message.display,
+				message.details,
+				customMessageExcludesContext(message),
+				undefined,
+				key,
+			);
+		} catch (error) {
+			if (key !== undefined) recordFailedCustomMessageWrite(manager, error, key);
+			throw error;
+		}
+	}
+	confirmCustomMessageWrite(manager, key);
 	this._entryIdsByMessage.set(message, entryId);
 	pendingCustomMessageSaves.get(message)?.resolve();
 	this._refreshFinalizedContext();
+	markCustomMessageDisplayed(this, entryId);
 	this._emit({ type: "message_start", message });
 	this._emit({ type: "message_end", message });
 }

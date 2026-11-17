@@ -7,6 +7,19 @@ export {
 } from "./core/cache-warmer.ts";
 export * from "./core/event-subscriptions/index.js";
 export type { ExecuteToolOptions, ExtensionToolContext } from "./core/extensions/context-types.ts";
+export {
+	type HeldPrompt,
+	type HeldPromptAnswer,
+	type HeldPromptKind,
+	type HeldPromptResult,
+	type HeldPrompts,
+	type HeldPromptValue,
+	heldPrompts,
+	isHeldPromptInput,
+	isPresentationHostInput,
+	routeNamesPrompt,
+	watchHeldPromptAttention,
+} from "./core/extensions/held-prompts.ts";
 export type {
 	HostDiagnostic,
 	HostInput,
@@ -33,7 +46,7 @@ export type {
 	ToolRenderers,
 	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
-export { type TakeoverMutex, takeTakeoverMutex } from "./core/lock-takeover.ts";
+export { type TakeoverMutex, takeTakeoverMutex } from "./core/lock-takeover.js";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export * from "./core/resume/index.ts";
 export type { UsageEntry } from "./core/session-manager.ts";

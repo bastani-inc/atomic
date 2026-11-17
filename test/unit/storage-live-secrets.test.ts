@@ -44,7 +44,7 @@ test("a live secret is re-read on every context.secret call and never reaches op
 			"",
 		].join("\n"),
 	);
-	await writeFileEnsuringDir(join(home, "password"), "first\n");
+	await writeFileEnsuringDir(join(agentDir, "password"), "first\n");
 	probe.database = await openNodeSqliteDatabase(join(home, "sessions.sqlite"));
 	const provider = new StorageProvider();
 	try {
@@ -61,7 +61,7 @@ test("a live secret is re-read on every context.secret call and never reaches op
 		const secret = probe.context?.secret;
 		assert.ok(secret);
 		assert.equal(await secret("password"), "first");
-		await writeFileEnsuringDir(join(home, "password"), "rotated\r\n");
+		await writeFileEnsuringDir(join(agentDir, "password"), "rotated\r\n");
 		assert.equal(await secret("password"), "rotated");
 		await assert.rejects(secret("missing"), (error: StorageConfigError) => error.field === "secrets.missing");
 		await store.close();

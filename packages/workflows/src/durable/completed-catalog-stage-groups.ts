@@ -20,6 +20,10 @@ export interface StageDraft {
 	readonly sessionFile?: string;
 	readonly startedAt?: number;
 	readonly endedAt?: number;
+	readonly awaitingInputSince?: number;
+	readonly pendingPrompt?: DurableStageCheckpoint["pendingPrompt"];
+	readonly promptFootprint?: DurableStageCheckpoint["promptFootprint"];
+	readonly promptAnswerState?: DurableStageCheckpoint["promptAnswerState"];
 	readonly durationMs?: number;
 	readonly model?: string;
 	readonly thinkingLevel?: string;
@@ -327,6 +331,21 @@ export function mergeStageDraft(
 	checkpoint: DurableStageCheckpoint,
 	sequence: number,
 ): StageDraft {
+	const topology =
+		existing?.topology?.run !== undefined && checkpoint.topology?.run === undefined
+			? existing.topology
+			: checkpoint.topology !== undefined
+				? checkpoint.topology
+				: existing?.topology;
+	const awaitingInput = topology?.status === "awaiting_input";
+	const pendingPrompt = awaitingInput ? (checkpoint.pendingPrompt ?? existing?.pendingPrompt) : undefined;
+	const awaitingInputSince = awaitingInput
+		? (checkpoint.awaitingInputSince ?? existing?.awaitingInputSince)
+		: undefined;
+	const promptAnswerState =
+		checkpoint.promptFootprint !== undefined
+			? checkpoint.promptAnswerState
+			: (checkpoint.promptAnswerState ?? existing?.promptAnswerState);
 	return {
 		replayKey: checkpoint.replayKey,
 		name: existing?.name ?? checkpoint.name,
@@ -344,6 +363,10 @@ export function mergeStageDraft(
 		...valueOrExisting("sessionFile", checkpoint, existing),
 		...valueOrExisting("startedAt", checkpoint, existing),
 		...valueOrExisting("endedAt", checkpoint, existing),
+		...(awaitingInputSince !== undefined ? { awaitingInputSince } : {}),
+		...(pendingPrompt !== undefined ? { pendingPrompt } : {}),
+		...valueOrExisting("promptFootprint", checkpoint, existing),
+		...(promptAnswerState !== undefined ? { promptAnswerState } : {}),
 		...valueOrExisting("durationMs", checkpoint, existing),
 		...valueOrExisting("model", checkpoint, existing),
 		...valueOrExisting("thinkingLevel", checkpoint, existing),
@@ -351,15 +374,7 @@ export function mergeStageDraft(
 		...valueOrExisting("modelAttempts", checkpoint, existing),
 		...valueOrExisting("rateLimits", checkpoint, existing),
 		...valueOrExisting("worktreeSnapshots", checkpoint, existing),
-		// A task result can settle after its stage checkpoint with only the
-		// envelope's synthetic root topology. It must not erase owning-run identity.
-		...(existing?.topology?.run !== undefined && checkpoint.topology?.run === undefined
-			? { topology: existing.topology }
-			: checkpoint.topology !== undefined
-				? { topology: checkpoint.topology }
-				: existing?.topology !== undefined
-					? { topology: existing.topology }
-					: {}),
+		...(topology !== undefined ? { topology } : {}),
 	};
 }
 

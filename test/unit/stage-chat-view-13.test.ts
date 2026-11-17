@@ -374,6 +374,34 @@ describe("StageChatView", () => {
 		assert.match(archived, /Archived prompt question\?/);
 		view.dispose();
 	});
+	test("an agent stage that asked a dialog keeps its archived transcript", async () => {
+		const { store, view } = await makeReadOnlyArchiveStageChatFixture(20);
+		try {
+			const stage = store.runs()[0]!.stages[0]!;
+			store.recordStageEnd("run-1", {
+				...stage,
+				replayKey: "stage:worker:1",
+				status: "running",
+				endedAt: undefined,
+			});
+			const prompt = makePendingPrompt({
+				id: "permission",
+				kind: "confirm",
+				source: "stage-dialog",
+				message: "Allow generated cleanup?",
+			});
+			assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", prompt), true);
+			assert.equal(store.resolveStagePendingPrompt("run-1", "stage-a", prompt.id, true), true);
+			store.recordStageEnd("run-1", { ...stage, status: "completed", endedAt: Date.now() });
+			const rendered = view.render(96).map(stripTerminalSequences).join("\n");
+			assert.match(rendered, /follow-msg-17/);
+			assert.match(rendered, /READ-ONLY SESSION/);
+			assert.doesNotMatch(rendered, /QUESTION ASKED/);
+		} finally {
+			view.dispose();
+		}
+	});
+
 	test("drops the read-only archive indicator before its callout rows in a tight viewport", async () => {
 		let rows = 16;
 		const { view } = await makeReadOnlyArchiveStageChatFixture(() => rows);

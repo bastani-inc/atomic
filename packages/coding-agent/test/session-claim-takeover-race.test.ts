@@ -70,8 +70,8 @@ vi.mock("node:fs", async (importOriginal) => {
 	};
 });
 
-const { claimSession } = await import("../src/core/session-claims.ts");
-const { setNativeLocksForTesting } = await import("../src/core/lock-takeover.ts");
+const { claimSession } = await import("../src/core/session-claims.js");
+const { setNativeLocksForTesting } = await import("../src/core/lock-takeover.js");
 const { SessionAlreadyOpenError } = await import("../src/core/session-manager-errors.ts");
 
 const SESSION_CLAIMS_MODULE = fileURLToPath(new URL("../src/core/session-claims.ts", import.meta.url));

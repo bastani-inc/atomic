@@ -38,6 +38,11 @@ knowledge:
       the TUI workspace's npm test script always expands its full test glob, even when a filename is appended.
       For focused root tests use `npm run test:unit -- test/unit/<file>.test.ts`;
       the test-suite-runner fixtures need npm's node_modules/.bin on PATH for their nested Vitest commands.
+      To select coding-agent files, run `cd packages/coding-agent && npx vitest run test/<name>.test.ts`;
+      its config resolves `test/` from that working directory.
+      For concurrent-session coverage, use
+      `npm run test --workspace=@bastani/atomic -- agent-session-concurrent-` to select the five
+      `.suite.ts` files; the `agent-session-concurrent.test.ts` wrapper is excluded.
       Finish `npm run check` and `npm run build` before running suites that import built packages:
       typechecking rebuilds dist in place and cleans provider data. Before real CLI captures, run `npm run build`
       to refresh builtin assets. Exercise `/tasks` and stage chats too: direct component tests do not cover
@@ -55,6 +60,8 @@ knowledge:
       SDK tests that allocate an agentDir and load bundled packages call `linkSharedTranspileCache(agentDir)`
       from `packages/coding-agent/test/helpers/shared-transpile-cache.ts` to reuse the suite's warmed compilation cache;
       keep cold-cache coverage separate.
+      For isolated CLI UI checks, set ATOMIC_CODING_AGENT_DIR to a fresh temporary profile and pass
+      --offline. ATOMIC_AGENT_DIR does not select the CLI profile.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

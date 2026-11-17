@@ -37,6 +37,22 @@ import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 const REAL_PROCESS_TIMEOUT_MS = 120_000;
 
+/**
+ * The collection grace window of the capture and collection race below. It has to cover the gap between a writer
+ * storing a blob and recording the checkpoint that references it: well under a second on an idle machine, but a loaded
+ * Windows runner stalled one writer for about 3 s, longer than the 2 s window the race used to give it, so collection
+ * rightly removed the blob and the journal refused the checkpoint. A stall longer than the test's own timeout fails the
+ * test anyway, so a window that long covers every stall of a run that can pass. The race ages each blob past it once
+ * its reference is recorded, so collection still keeps every recorded blob by its references alone.
+ */
+const RACE_GRACE_SECONDS = REAL_PROCESS_TIMEOUT_MS / 1000;
+
+/** The stall that loaded runner had between storing a blob and recording its checkpoint, rounded up. */
+const OBSERVED_STALL_SECONDS = 4;
+
+/** The grace window the race used before, shorter than {@link OBSERVED_STALL_SECONDS}. */
+const SHORT_GRACE_SECONDS = 2;
+
 const CAPTURE_CHILD = `
 import { openNodeSqliteDatabase } from "./packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { SqlSnapshotBlobStore } from "./packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
@@ -185,10 +201,44 @@ test(
 	REAL_PROCESS_TIMEOUT_MS,
 );
 
+test.each([
+	{ graceSeconds: SHORT_GRACE_SECONDS, outcome: "refused" },
+	{ graceSeconds: RACE_GRACE_SECONDS, outcome: "recorded" },
+] as const)(
+	"a capture that stalls between storing its blob and recording it, under a $graceSeconds s grace window, is $outcome (#4245)",
+	async ({ graceSeconds, outcome }) => {
+		const directory = await mkdtemp(join(tmpdir(), "workflow-snapshot-gc-stall-"));
+		const database = await openNodeSqliteDatabase(join(directory, "shared.sqlite"));
+		let journal: SqlRunJournal | undefined;
+		try {
+			journal = await SqlRunJournal.open(database);
+			const lease = await startRun(journal, "stalled");
+			await journal.append(lease, statusEvent("stalled", { status: "running" }, "RunStarted"));
+			const entry = textBlob("stored before the stall");
+			await journal.snapshotBlobs.putBlobs([entry]);
+			// The stall, on the database clock: collection runs once the unreferenced blob is that much older.
+			await ageBlobs(database, journal.snapshotBlobs.table, OBSERVED_STALL_SECONDS);
+			await collectSnapshotGarbage(journal.snapshotBlobs, { graceSeconds });
+			const recording = journal.append(lease, checkpointEvent([syntheticSnapshot(entry.hash, [entry.hash])]));
+			if (outcome === "recorded") {
+				await recording;
+				assert.deepEqual(await journal.snapshotBlobs.getBlob(entry.hash), entry.data);
+			} else {
+				// Collection took the blob during the stall, so the journal records nothing rather than an unrestorable snapshot.
+				await assert.rejects(recording, (error: Error & { code?: string }) => error.code === "blobs-collected");
+				assert.equal(await journal.snapshotBlobs.getBlob(entry.hash), undefined);
+			}
+		} finally {
+			await journal?.close();
+			await database.close();
+			await rm(directory, { recursive: true, force: true });
+		}
+	},
+);
+
 test(
 	"concurrent captures and garbage collection on one SQLite file never lose a blob that a capture referenced (#4245, #4355)",
 	async () => {
-		const GRACE_SECONDS = 2;
 		const WRITERS = 6;
 		const CAPTURES_PER_WRITER = 100;
 		const directory = await mkdtemp(join(tmpdir(), "workflow-snapshot-gc-race-"));
@@ -219,12 +269,20 @@ test(
 				}
 			};
 			// Collection runs back to back while references are published. Blobs nobody references (stored, never
-			// published) are the garbage it exists to remove.
+			// published) are the garbage it exists to remove. Before each pass, the orphan and every blob whose reference
+			// is published are aged past the grace window, so the pass keeps published blobs by their references alone; a
+			// blob not yet published keeps its age, which the grace window covers.
 			const orphan = textBlob("never referenced");
 			await journals[WRITERS]!.snapshotBlobs.putBlobs([orphan]);
+			const collectorBlobs = journals[WRITERS + 1]!.snapshotBlobs;
 			const collector = async () => {
 				while (writing) {
-					await collectSnapshotGarbage(journals[WRITERS + 1]!.snapshotBlobs, { graceSeconds: GRACE_SECONDS });
+					await connections[WRITERS + 1]!.run(
+						`UPDATE ${collectorBlobs.table} SET created_at = min(created_at, unixepoch() - ?) WHERE hash IN (SELECT value FROM json_each(?))`,
+						RACE_GRACE_SECONDS + 1,
+						JSON.stringify([...new Set([orphan.hash, ...publishedBlobs])]),
+					);
+					await collectSnapshotGarbage(collectorBlobs, { graceSeconds: RACE_GRACE_SECONDS });
 					await new Promise((resolve) => setTimeout(resolve, 5));
 				}
 			};
@@ -241,7 +299,7 @@ test(
 					`published blob ${hash} was collected`,
 				);
 			}
-			// The orphan outlived the grace window while the writers ran, so collection removed it, and only it.
+			// The orphan was past the grace window while the writers ran, so collection removed it, and only it.
 			assert.equal(
 				await journals[0]!.snapshotBlobs.getBlob(orphan.hash),
 				undefined,

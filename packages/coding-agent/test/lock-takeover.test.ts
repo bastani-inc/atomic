@@ -27,9 +27,9 @@ import {
 	takeoverLockPath,
 	takeoverMutexPath,
 	takeTakeoverMutex,
-} from "../src/core/lock-takeover.ts";
+} from "../src/core/lock-takeover.js";
 import { lockHolder } from "../src/core/lock-wait.ts";
-import { processStartToken } from "../src/core/process-start-token.ts";
+import { processStartToken } from "../src/core/process-start-token.js";
 import { FileSettingsStorage } from "../src/core/settings-storage.ts";
 import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 

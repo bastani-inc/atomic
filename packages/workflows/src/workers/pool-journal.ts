@@ -1,8 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createChildProcessEnvironment } from "@bastani/atomic";
-import { type AdapterOptions, type StorageSelection, storageSelectionKey } from "@bastani/atomic/storage";
+import {
+	type AdapterOptions,
+	claimFileAtomically,
+	readClaimFile,
+	type StorageSelection,
+	sameDirectory,
+	storageHomeDir,
+	storageSelectionKey,
+	workflowsStorageDir,
+} from "@bastani/atomic/storage";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import "../durable/journal/workflows-host-module.js";
 import { openSelectedRunJournal, resolveRunJournal, runJournalOrigin } from "../durable/journal/resolution.js";
@@ -118,9 +127,16 @@ export function openDurableJournal(durable: PoolDurableJournal): Promise<RunJour
 	return openSelectedRunJournal(decodeSelection(durable.selection), durable.agentDir);
 }
 
-/** The directory of machine-local pool state, beside the default journal: `<agent dir's parent>/workflows/pool`. */
+const poolStateDirectories = new Map<string, string>();
+
 export function poolStateDirectory(agentDir: string): string {
-	return join(dirname(agentDir), "workflows", "pool");
+	const workflowsDir = workflowsStorageDir(agentDir);
+	let directory = poolStateDirectories.get(workflowsDir);
+	if (directory === undefined) {
+		directory = join(workflowsDir, "pool");
+		poolStateDirectories.set(workflowsDir, directory);
+	}
+	return directory;
 }
 
 /**
@@ -229,22 +245,15 @@ function readId(file: string): string | undefined {
  * recorded there adopts it, again after a crash before it kept the id. The file stays for an older build.
  */
 function adoptedHostId(agentDir: string): string | undefined {
-	const legacy = join(poolStateDirectory(agentDir), "host-id");
+	const legacy = join(dirname(agentDir), "workflows", "pool", "host-id");
 	const id = readId(legacy);
 	if (id === undefined) return undefined;
+	if (!sameDirectory(storageHomeDir(agentDir), dirname(agentDir))) return undefined;
 	const claim = `${legacy}.adopted-by`;
 	const self = resolve(agentDir);
-	// Written whole beside the claim and linked into place, so the claim is never seen, or left by a crash, empty: a
-	// link fails when the claim exists, so one directory claims it.
-	const staged = `${claim}.${randomUUID()}`;
-	try {
-		writeFileSync(staged, `${self}\n`, { flag: "wx" });
-		linkSync(staged, claim);
-	} catch {
-	} finally {
-		rmSync(staged, { force: true });
-	}
-	return readId(claim) === self ? id : undefined;
+	claimFileAtomically(claim, `${self}\n`);
+	const owner = readClaimFile(claim);
+	return owner !== undefined && sameDirectory(owner, self) ? id : undefined;
 }
 
 /**

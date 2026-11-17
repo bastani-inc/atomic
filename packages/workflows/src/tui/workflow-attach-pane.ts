@@ -19,6 +19,7 @@ import type { PostMortemUnavailableReason } from "../runs/foreground/postmortem-
 import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
 import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
+import { isWorkflowPromptStage } from "../shared/stage-prompt.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
@@ -515,7 +516,7 @@ export class WorkflowAttachPane implements Component {
 		if (stage !== undefined) {
 			const index = run.stages.indexOf(stage);
 			this.attachedPromptPosition =
-				stage.promptFootprint !== undefined && stage.workerExecution !== undefined && index >= 0
+				isWorkflowPromptStage(stage) && stage.workerExecution !== undefined && index >= 0
 					? { index, generation: stage.workerExecution.generation }
 					: null;
 			return;
@@ -525,6 +526,7 @@ export class WorkflowAttachPane implements Component {
 		const successor = run.stages[position.index];
 		if (
 			successor === undefined ||
+			!isWorkflowPromptStage(successor) ||
 			successor.pendingPrompt === undefined ||
 			(successor.workerExecution?.generation ?? 0) <= position.generation
 		)

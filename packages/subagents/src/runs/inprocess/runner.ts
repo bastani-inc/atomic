@@ -31,6 +31,7 @@ import {
 	type Skill,
 	type SubagentIntercomIdentity,
 	sliceHead,
+	watchHeldPromptAttention,
 } from "@bastani/atomic";
 import {
 	type Api,
@@ -640,19 +641,30 @@ export function inProcessChildResourceLoaderOptions(input: {
 }
 
 /**
- * Resolves once the session has no turn running or starting and no interrupt delivery pending, or a stop fires.
+ * Resolves when the session can complete or release with no turn running or starting and no interrupt delivery pending,
+ * or once a stop fires. Normal completion seals message admission in the same synchronous check; interrupted turns
+ * waiting for input and children waiting on detached results keep it open.
  * `subscribeDrained` is told each time the session's count of running turns returns to zero.
  */
 export async function sessionDrained(
-	session: Pick<AgentSession, "subscribe" | "isStreaming" | "_activePromptCount" | "_pendingInterruptDeliveries">,
+	session: Pick<
+		AgentSession,
+		| "subscribe"
+		| "isStreaming"
+		| "_activePromptCount"
+		| "_pendingInterruptDeliveries"
+		| "_sealMessageAdmissionIfDrained"
+	>,
 	stops: readonly AbortSignal[],
 	subscribeDrained: (listener: () => void) => () => void,
+	waitsForNextTurn: () => boolean = () => false,
 ): Promise<void> {
 	// A session that does not count its turns has none running here.
 	const drained = () =>
 		(session._activePromptCount ?? 0) === 0 &&
 		(session._pendingInterruptDeliveries ?? 0) === 0 &&
-		!session.isStreaming;
+		!session.isStreaming &&
+		(waitsForNextTurn() || (session._sealMessageAdmissionIfDrained?.() ?? true));
 	while (!drained() && !stops.some((stop) => stop.aborted)) {
 		await new Promise<void>((resolve) => {
 			const unsubscribeDrained = subscribeDrained(() => done());
@@ -1792,6 +1804,7 @@ export class SubagentControlRuntime {
 		let unsavedAnswer: AssistantMessage | undefined;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
 		let statusesOpen = true;
+		let stopHeldPromptAttention: (() => void) | undefined;
 		let attemptedModels: string[] = candidateModelId ? [candidateModelId] : [];
 		// Background receipts can precede capacity acquisition and session loading. Publish
 		// only the concrete selection handed to createAgentSession, not a requested ID
@@ -2083,6 +2096,10 @@ export class SubagentControlRuntime {
 			};
 			taskHooks?.bindChildSession?.(childSession);
 			admitted.spec.onChildSession?.(childSession);
+			if (taskHooks !== undefined)
+				stopHeldPromptAttention = watchHeldPromptAttention(childSession.sessionId, (report) =>
+					taskHooks.reportActivity(report),
+				);
 			if (workflow) await beforeStartDeadline(sessionManager.markSessionInternal(workflow));
 			const launchLeafId = sessionManager.getLeafId();
 			ownMessages = () => messagesSinceLaunch(sessionManager, launchLeafId);
@@ -2188,6 +2205,13 @@ export class SubagentControlRuntime {
 					},
 				);
 				await transcriptSession.interruptTurn();
+			};
+			const settleInterruptedTurns = async (): Promise<void> => {
+				while (interruptedTurnSettlement !== undefined && termination === undefined) {
+					const settlement = interruptedTurnSettlement;
+					interruptedTurnSettlement = undefined;
+					await settlement;
+				}
 			};
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
 			let observedStreamingMessage: AssistantMessage | undefined;
@@ -2349,7 +2373,10 @@ export class SubagentControlRuntime {
 				if (termination) break;
 				await session.sendCustomMessage(message);
 			}
-			if (!termination && admitted.spec.resumeSession) await recoverChildSession(session, admitted.spec);
+			if (!termination && admitted.spec.resumeSession) {
+				await recoverChildSession(session, admitted.spec);
+				await settleInterruptedTurns();
+			}
 			const redispatched =
 				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
 			if (redispatched !== undefined) {
@@ -2398,10 +2425,10 @@ export class SubagentControlRuntime {
 						taskPending = false;
 						startBudget.end();
 					} else {
-						const prompting = session.prompt(
-							admitted.spec.task,
-							admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
-						);
+						const prompting = session.prompt(admitted.spec.task, {
+							streamingBehavior: "steer",
+							...(admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : {}),
+						});
 						// Its task is dispatched once its agent starts; a prompt that settles first, refused or handled by an
 						// extension, ends dispatch too.
 						void prompting.then(markTaskDispatched, markTaskDispatched);
@@ -2416,18 +2443,19 @@ export class SubagentControlRuntime {
 				}
 			}
 			do {
-				while (interruptedTurnSettlement !== undefined && termination === undefined) {
-					const settlement = interruptedTurnSettlement;
-					interruptedTurnSettlement = undefined;
-					await settlement;
-				}
+				await settleInterruptedTurns();
 				// A turn that settled while the task was pending left message admission open: what it admitted since is
 				// answered before the execution ends and seals it.
 				if (prepared !== undefined && redispatched === undefined && termination === undefined)
-					await sessionDrained(session, [signals.abort, signals.interrupt], (listener) => {
-						turnDrainedListeners.add(listener);
-						return () => turnDrainedListeners.delete(listener);
-					});
+					await sessionDrained(
+						session,
+						[signals.abort, signals.interrupt],
+						(listener) => {
+							turnDrainedListeners.add(listener);
+							return () => turnDrainedListeners.delete(listener);
+						},
+						() => interruptedTurnSettlement !== undefined,
+					);
 			} while (interruptedTurnSettlement !== undefined && termination === undefined);
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
@@ -2615,6 +2643,7 @@ export class SubagentControlRuntime {
 					: settledCommands(sessionCommands(session, transcriptManager.getCwd()));
 			const settleTranscript = (): void => {
 				statusesOpen = false;
+				stopHeldPromptAttention?.();
 				taskHooks?.clearExtensionStatuses?.();
 				if (transcriptManager === undefined) return;
 				taskHooks?.bindTranscript?.(

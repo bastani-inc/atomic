@@ -272,7 +272,10 @@ describe("installRealHomeStorageGuard", () => {
 				resolveSessionStore(scratch, { agentDir: join(root, "agent"), settings: {} }),
 				(error: StorageUnavailableError) => {
 					assert.ok(error instanceof StorageUnavailableError);
-					return isGuardRejection(journal, root)(error.cause as RealHomeStorageOpenError);
+					return isGuardRejection(
+						join(root, "agent", "workflows", "journal.sqlite"),
+						root,
+					)(error.cause as RealHomeStorageOpenError);
 				},
 			);
 			assert.equal(existsSync(journal), false);
@@ -353,7 +356,7 @@ test(
 		const agentDir = run.outcome.agentDir ?? "";
 		assert.match(relative(artifacts, agentDir), /^agent-home-[^/\\]+[/\\]\.atomic[/\\]agent$/u);
 		assert.deepEqual(run.outcome, { opened: true, agentDir });
-		assert.equal(existsSync(join(dirname(agentDir), "workflows", "journal.sqlite")), true);
+		assert.equal(existsSync(join(agentDir, "workflows", "journal.sqlite")), true);
 		assert.equal(existsSync(journal), false);
 	},
 	CHILD_VITEST_TIMEOUT_MS,

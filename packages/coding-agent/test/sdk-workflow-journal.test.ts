@@ -112,7 +112,7 @@ async function runIdsAt(path: string): Promise<string[]> {
 	}
 }
 
-const defaultJournal = (): string => join(root, "workflows", "journal.sqlite");
+const defaultJournal = (): string => join(root, "agent", "workflows", "journal.sqlite");
 
 const retainedBackendCount = (): number =>
 	(globalThis as typeof globalThis & Record<symbol, DurableBackendProcessOwner | undefined>)[DURABLE_BACKENDS]
@@ -379,7 +379,7 @@ test(
 		});
 		sessions.push(session);
 		const runId = await runProbe(session);
-		const shared = join(root, "tenant", "shared.sqlite");
+		const shared = join(agentDir, "shared.sqlite");
 		const database = new DatabaseSync(shared, { readOnly: true });
 		try {
 			const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all();
@@ -391,6 +391,7 @@ test(
 			database.close();
 		}
 		assert.deepEqual(await runIdsAt(shared), [runId]);
+		assert.equal(existsSync(join(root, "tenant", "shared.sqlite")), false);
 		assert.equal(existsSync(join(root, "shared.sqlite")), false);
 	},
 	REAL_SDK_WORKFLOW_TIMEOUT_MS,

@@ -847,7 +847,7 @@ export class LocalWorkerPool {
 					const key = JSON.stringify([run.id, stage.id, prompt.id]);
 					if (this.routedPrompts.has(key)) continue;
 					// Its outcome is held for a later attempt: this attempt's view of the prompt is out of date.
-					if (this.heldAnswers.awaitsLaterAttempt(run.id, stage.id, generation)) continue;
+					if (this.heldAnswers.awaitsLaterAttempt(run.id, stage.id, prompt.id, generation)) continue;
 					this.routedPrompts.add(key);
 					// The user already answered this prompt, or its UI failed, while the attempt that asked it
 					// first was dying.

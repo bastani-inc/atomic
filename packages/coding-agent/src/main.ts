@@ -78,6 +78,7 @@ import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { recordStartupThinkingLevel, savedConversationThinkingLevel } from "./core/startup-thinking-level.ts";
 import { isTeamProfileError, StorageConfigError } from "./core/storage/errors.js";
+import { takeStorageAdoptionNotice } from "./core/storage/file-identity.js";
 import {
 	hasProcessStorageSelection,
 	processSharedStorageSelection,
@@ -1244,10 +1245,13 @@ export async function main(argv: string[], options?: MainOptions) {
 	const scopedModels = [...session.scopedModels];
 	time("resolveModelScope");
 	const storageWarning = await sharedStorageWarning;
+	const storageAdoptionNotice =
+		engineEnv.child === "1" ? undefined : takeStorageAdoptionNotice(agentDir, startupSettingsManager.getSettings());
 	const startupDiagnostics = deduplicateDiagnostics([
 		...startupSettingsDiagnostics,
 		...startupResumeDiagnostics(appMode, worktreeRestoreDiagnostics, engineEnv.child === "1"),
 		...runtime.diagnostics,
+		...(storageAdoptionNotice === undefined ? [] : [{ type: "info" as const, message: storageAdoptionNotice }]),
 		...(storageWarning === undefined ? [] : [{ type: "warning" as const, message: storageWarning }]),
 	]);
 	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");

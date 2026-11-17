@@ -558,7 +558,6 @@ describe("one restore at a time per shared store", () => {
 			"the queued restore waits for the store",
 		);
 		firstGate.open();
-		await holder;
 		await until(() => secondGate.entered);
 
 		reset();
@@ -571,7 +570,7 @@ describe("one restore at a time per shared store", () => {
 		const startedWhileHeld = spawned.calls.map(command);
 		events.push("store released");
 		secondGate.open();
-		await Promise.all([queued, late]);
+		await Promise.all([holder, queued, late]);
 		assert.deepEqual(startedWhileHeld, []);
 		assert.deepEqual(events, ["store released", "late restore finished"]);
 	});

@@ -327,11 +327,11 @@ export class TaskInspector implements Component {
 				if (openQuestion) {
 					this.close();
 					openQuestion(route);
-					return;
-				}
-				this.chatFrom = "detail";
-				this.detailGeneration++;
-				this.openTranscript();
+				} else if (this.transcriptEnvironment() !== undefined) {
+					this.chatFrom = "detail";
+					this.detailGeneration++;
+					this.openTranscript();
+				} else this.status = "Question is available in its owning session.";
 			},
 			currentTask: (taskId) => {
 				if (!this.boardStale) return this.tasksById.get(taskId);
@@ -905,12 +905,13 @@ export class TaskInspector implements Component {
 	private handleTranscriptInput(data: string, transcript: TaskTranscriptPage): boolean {
 		if (transcript.handlesBack()) return transcript.handleInput(data);
 		if (matchesKey(data, "escape")) {
+			if (transcript.takesEscape?.() === true) return transcript.handleInput(data);
 			if (transcript.interruptible()) void this.interruptTranscript(transcript);
 			this.requestRender();
 			return true;
 		}
 		const keys = getKeybindings();
-		if (keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
+		if (!matchesKey(data, "escape") && keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
 			if (this.chatFrom === "caller") {
 				this.closedByBack = true;
 				this.close();
@@ -1403,8 +1404,9 @@ export class TaskInspector implements Component {
 				].map(fitWidth);
 		const notes = [transcript.status, this.status].filter(Boolean).join(" · ");
 		const style = themedNavKeyStyle();
-		const interruptible = transcript.interruptible();
-		const hasTasks = transcript.hasTasks?.() === true;
+		const questionActive = transcript.takesEscape?.() === true;
+		const interruptible = !questionActive && transcript.interruptible();
+		const hasTasks = !questionActive && transcript.hasTasks?.() === true;
 		const expandable = transcript.expandable?.() === true;
 		const baseKeys = getKeybindings();
 		const chatKeybindings = {
@@ -1412,7 +1414,9 @@ export class TaskInspector implements Component {
 				baseKeys.matches(data, action as Parameters<typeof baseKeys.matches>[1]),
 			getKeys: (action: string) => {
 				const resolved = baseKeys.getKeys(action as Parameters<typeof baseKeys.getKeys>[0]);
-				return action === "app.interrupt" ? resolved : resolved.filter((key) => key !== "esc" && key !== "escape");
+				return action === "app.interrupt"
+					? resolved
+					: resolved.filter((key) => key !== "esc" && key !== "escape" && !matchesKey("\x1b", key));
 			},
 		};
 		if (this.helpOpen)
@@ -1435,7 +1439,16 @@ export class TaskInspector implements Component {
 				),
 			].slice(0, Math.max(1, budget));
 		const back = this.chatFrom === "caller" ? this.callerLabel : this.chatFrom === "list" ? "tasks" : "task";
-		const chatKeys = taskChatKeys(back, interruptible, hasTasks, expandable);
+		const chatKeys = taskChatKeys(back, interruptible, hasTasks, expandable).flatMap((entry) => {
+			if (entry.action === "app.nav.back") {
+				return !questionActive || transcript.cursorAtStart() ? [entry] : [];
+			}
+			if (entry.keys === "pgup/pgdn" && transcript.capturesPageScroll?.() === true) {
+				return [{ keys: "pgup/pgdn", label: "page" }];
+			}
+			if (questionActive && entry.action === "app.keys.help") return [];
+			return [entry];
+		});
 		const hint = renderNavHintLine(chatKeys, width, style, chatKeybindings);
 		const footer = [...(notes ? [fitWidth(theme.fg("dim", notes))] : []), hint];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
