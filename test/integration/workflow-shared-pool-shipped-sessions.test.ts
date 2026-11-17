@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
@@ -184,6 +184,8 @@ for (const backend of backends)
 					);
 					// Host C drains on SIGTERM, as `atomic worker start` does.
 					const hostC = startHost("C", 2, { SHARED_POOL_DRAIN_ON_TERM: "1" });
+					// A host takes SIGTERM as a drain only once it is ready: before, the signal ends it.
+					await until("host C", deadline, () => existsSync(join(directory, "host-ready-C")), [hostC, rootA]);
 					await until(
 						"every child to hold in its stage",
 						deadline,
@@ -221,8 +223,12 @@ for (const backend of backends)
 					await expectExitedCleanly(hostC);
 					// Host B starts again from its local journal: what it kept for attempts another host took over is refused and
 					// dropped, and it serves the root again.
+					rmSync(join(directory, "host-ready-B"));
 					const restartedB = startHost("B", 2);
 					await expectExitedCleanly(rootA);
+					await until("host B's restart", deadline, () => existsSync(join(directory, "host-ready-B")), [
+						restartedB,
+					]);
 					restartedB.process.kill("SIGTERM");
 					await expectExitedCleanly(restartedB);
 
