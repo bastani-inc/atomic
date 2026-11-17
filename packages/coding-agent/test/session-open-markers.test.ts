@@ -243,6 +243,16 @@ describe("a session open in this process (#4971)", () => {
 
 	const markersOf = (sessionId: string) => join(agentDir, "open-sessions", sessionId);
 
+	test("a session held again while its last hold is being released stays marked open (#4971)", async () => {
+		const running = await saved("running");
+		const deleter = await saved("deleter");
+		const releasing = running.holdOpen()();
+		hold(running);
+		await releasing;
+
+		await assert.rejects(deleter.deleteSession(running.getSessionId()), SessionOpenElsewhereError);
+	});
+
 	test("a session another running session holds is refused until every hold is released (#4971)", async () => {
 		const running = await saved("running");
 		const sameSession = await SessionManager.open(running.getSessionFile()!, sessionDir);

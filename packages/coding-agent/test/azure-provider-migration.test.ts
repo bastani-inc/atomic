@@ -169,7 +169,7 @@ test("migration leaves malformed config and locked files untouched", () => {
 	}
 });
 
-test("migrateAzureProviderAsync and runMigrationsAsync preserve permissions and skip locked files", async () => {
+test("migrateAzureProviderAsync waits for another process's lock on a file and preserves its permissions", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-azure-async-"));
 	vi.stubEnv(ENV_AGENT_DIR, root);
 	try {
@@ -180,15 +180,19 @@ test("migrateAzureProviderAsync and runMigrationsAsync preserve permissions and 
 		writeFileSync(join(root, "models.json"), "null");
 		writeFileSync(join(root, "settings.json"), "[]");
 		const release = lockfile.lockSync(path, { realpath: false });
+		const migrating = migrateAzureProviderAsync(root, { projectTrusted: false });
 		try {
-			await migrateAzureProviderAsync(root, { projectTrusted: false });
+			await new Promise((resolve) => setTimeout(resolve, 100));
 			assert.equal(readFileSync(path, "utf-8"), content);
 		} finally {
 			release();
 		}
-		await runMigrationsAsync(root, { projectTrusted: false });
+		await migrating;
 		assert.deepEqual(JSON.parse(readFileSync(path, "utf-8")), { azure: { type: "api_key", key: "old" } });
 		if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
+		await runMigrationsAsync(root, { projectTrusted: false });
+		assert.equal(readFileSync(join(root, "models.json"), "utf-8"), "null");
+		assert.equal(readFileSync(join(root, "settings.json"), "utf-8"), "[]");
 	} finally {
 		vi.unstubAllEnvs();
 		rmSync(root, { recursive: true, force: true });

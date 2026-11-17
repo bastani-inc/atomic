@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +16,7 @@ interface AskUserQuestionConfig {
 	guidance?: GuidanceFields;
 }
 
-let loaded: AskUserQuestionConfig = {};
+let loaded: AskUserQuestionConfig | undefined;
 let reading: Promise<AskUserQuestionConfig> | undefined;
 
 /** Reads the config file again without blocking; {@link loadConfig} serves what it read. */
@@ -29,12 +30,27 @@ export function refreshConfig(): Promise<AskUserQuestionConfig> {
 }
 
 /**
- * The config as last read, served from memory so a tool definition is created without file I/O. Each call refreshes it
- * in the background, so an edited file applies to the definitions created after that read.
+ * The config as last read, served from memory so a tool definition is created without file I/O once a read has finished;
+ * a call before any read reads the file. Each later call refreshes it in the background, so an edited file applies to the
+ * definitions created after that read.
  */
 export function loadConfig(): AskUserQuestionConfig {
+	if (loaded === undefined) {
+		loaded = readConfigSync();
+		return loaded;
+	}
 	void refreshConfig();
 	return loaded;
+}
+
+function readConfigSync(): AskUserQuestionConfig {
+	let text: string;
+	try {
+		text = readFileSync(CONFIG_PATH, "utf-8");
+	} catch {
+		return {};
+	}
+	return parseConfig(text);
 }
 
 async function readConfig(): Promise<AskUserQuestionConfig> {
@@ -44,6 +60,10 @@ async function readConfig(): Promise<AskUserQuestionConfig> {
 	} catch {
 		return {};
 	}
+	return parseConfig(text);
+}
+
+function parseConfig(text: string): AskUserQuestionConfig {
 	try {
 		const parsed = JSON.parse(stripBom(text)) as unknown;
 		if (parsed === null || typeof parsed !== "object") return {};

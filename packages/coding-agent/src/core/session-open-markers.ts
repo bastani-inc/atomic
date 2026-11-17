@@ -234,6 +234,7 @@ export function holdSessionOpenMarker(
 			heartbeat = undefined;
 		}
 		await releasingClaim;
+		if (held.get(markers)?.has(sessionId)) return;
 		await markers.remove(sessionId, PROCESS_TOKEN).catch(() => {});
 	};
 }

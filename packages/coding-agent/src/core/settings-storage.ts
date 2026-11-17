@@ -309,12 +309,15 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 			(fs) => lockfile.lock(path, { realpath: false, stale: SETTINGS_LOCK_STALE_MS, retries: 0, fs }),
 			{ ...this.lockWait(path), takeOver: () => takeOverDeadHolderAsync(lockPath) },
 		);
-		await recordLockHolderAsync(lockPath);
 		locksHeldAsynchronously.add(path);
+		await recordLockHolderAsync(lockPath);
 		return async () => {
-			locksHeldAsynchronously.delete(path);
-			await clearLockHolderAsync(lockPath);
-			await release();
+			try {
+				await clearLockHolderAsync(lockPath);
+				await release();
+			} finally {
+				locksHeldAsynchronously.delete(path);
+			}
 		};
 	}
 

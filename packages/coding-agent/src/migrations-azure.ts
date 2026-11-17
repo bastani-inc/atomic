@@ -1,7 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { chmod, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import lockfile from "proper-lockfile";
+import { readFile } from "node:fs/promises";
 import { getAgentConfigPaths, getProjectConfigPaths } from "./config.js";
 import { FileAuthStorageBackend } from "./core/auth-storage-backends.ts";
 import { normalizeAzureSettings, normalizeProviderKeys } from "./core/azure-provider-compat.js";
@@ -45,34 +43,6 @@ export function migrateAzureProvider(cwd: string, options?: { projectTrusted?: b
 	}
 }
 
-async function replaceAzureConfigFileAtomic(path: string, filename: string): Promise<void> {
-	const initialContent = await readFile(path, "utf-8");
-	if (transformAzureConfigContent(filename, initialContent) === undefined) return;
-	const resolvedPath = await realpath(path).catch(() => path);
-	const release = await lockfile.lock(resolvedPath, { realpath: false, retries: 0 });
-	try {
-		const currentContent = await readFile(resolvedPath, "utf-8");
-		const nextContent = transformAzureConfigContent(filename, currentContent);
-		if (nextContent === undefined) return;
-		const fileStats = await stat(resolvedPath);
-		const mode = fileStats.mode & 0o777;
-		const tempPath = join(
-			dirname(resolvedPath),
-			`.auth.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`,
-		);
-		try {
-			await writeFile(tempPath, nextContent, { encoding: "utf-8", mode });
-			await chmod(tempPath, mode);
-			await rename(tempPath, resolvedPath);
-		} catch (error) {
-			await rm(tempPath, { force: true }).catch(() => {});
-			throw error;
-		}
-	} finally {
-		await release().catch(() => {});
-	}
-}
-
 export async function migrateAzureProviderAsync(cwd: string, options?: { projectTrusted?: boolean }): Promise<void> {
 	for (const filename of ["auth.json", "settings.json", "models.json"]) {
 		const paths = [
@@ -81,7 +51,14 @@ export async function migrateAzureProviderAsync(cwd: string, options?: { project
 		];
 		for (const path of new Set(paths)) {
 			try {
-				await replaceAzureConfigFileAtomic(path, filename);
+				if (transformAzureConfigContent(filename, await readFile(path, "utf-8")) === undefined) continue;
+				await new FileAuthStorageBackend(path, []).withLockAsync(async () => {
+					const next = transformAzureConfigContent(filename, await readFile(path, "utf-8"));
+					return {
+						result: undefined,
+						...(next !== undefined && { next }),
+					};
+				});
 			} catch {}
 		}
 	}
