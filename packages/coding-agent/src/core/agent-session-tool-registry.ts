@@ -259,6 +259,7 @@ export function _buildRuntime(
 			new ModelRegistry(this._modelRuntime),
 			this._orchestrationContext,
 			this._subagentPolicy,
+			this._intercomPolicy,
 		);
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;

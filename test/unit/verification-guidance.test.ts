@@ -107,7 +107,7 @@ function verificationContract(prompt: string, cwd: string): void {
 	assert.doesNotMatch(prompt, /PyAutoGUI|pyautogui/i);
 	assert.doesNotMatch(prompt, /uv run --with pyautogui/);
 	const guidance = prompt.replaceAll(cwd.replaceAll("\\", "\\\\"), "").replaceAll(cwd, "");
-	assert.doesNotMatch(guidance, /cua/i);
+	assert.doesNotMatch(guidance, /\bcua\b/i);
 	assert.doesNotMatch(prompt, /`workflow resume` re-runs the preflight/);
 	assert.match(
 		prompt,
@@ -285,7 +285,7 @@ test("authoring guidance states the agent-desktop face rule for custom workflows
 	assert.match(prompt, /prefer herdr for terminal automation\/testing[\s\S]*fall back to tmux\/native Windows psmux/);
 	assert.doesNotMatch(prompt, /PyAutoGUI|pyautogui/i);
 	assert.doesNotMatch(prompt, /uv run --with pyautogui/);
-	assert.doesNotMatch(prompt, /cua/i);
+	assert.doesNotMatch(prompt, /\bcua\b/i);
 });
 
 test("default constructed guidance lets the agent interpret scoped intent itself", () => {

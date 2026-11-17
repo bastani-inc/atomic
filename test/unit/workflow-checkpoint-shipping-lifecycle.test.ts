@@ -101,7 +101,12 @@ test("a local checkpoint journal is kept when it still holds a checkpoint, anoth
 		assert.ok(existsSync(sharedPath), "a connection still open keeps the file");
 		await second.close();
 		const reopened = await ShipShard.open(sharedPath, "shared");
+		const unreadReader = await openNodeSqliteDatabase(sharedPath, { readOnly: true });
 		await reopened.close({ retire: true });
+		assert.ok(existsSync(sharedPath), "a read-only connection that has not read yet still keeps the file (#5317)");
+		await unreadReader.close();
+		const finalShard = await ShipShard.open(sharedPath, "shared");
+		await finalShard.close({ retire: true });
 		assert.ok(!existsSync(sharedPath), "the last connection removes it");
 
 		const keptPath = shipShardPath(directory, "journal", "kept");

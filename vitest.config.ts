@@ -45,6 +45,7 @@ const packagedWorkerSetup = "./test/setup-packaged-local-worker.ts";
  * single `existsSync`, so CI — which builds the binding in an explicit step
  * first — and any warm worktree pay nothing.
  */
+const lostWorkersSetup = "./test/global-setup-lost-workers.ts";
 const herdrSetup = "./test/global-setup-herdr-isolation.ts";
 const providerCredentialSetup = "./test/global-setup-provider-credential-isolation.ts";
 const debugSetup = "./test/global-setup-debug-isolation.ts";
@@ -70,7 +71,7 @@ const project = (
 		exclude: ["**/node_modules/**", ...(options.exclude ?? [])],
 		sequence: { groupOrder: options.groupOrder ?? 0 },
 		setupFiles: [...setupFiles, ...(options.extraSetupFiles ?? [])],
-		globalSetup: [herdrSetup, providerCredentialSetup, debugSetup, artifactSetup, nativeSetup],
+		globalSetup: [lostWorkersSetup, herdrSetup, providerCredentialSetup, debugSetup, artifactSetup, nativeSetup],
 		testTimeout: TEST_TIMEOUT_MS,
 		hookTimeout: TEST_TIMEOUT_MS,
 	},

@@ -1593,10 +1593,12 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 			".atomic/blueprint.yaml": forThisHost(`maintenance: echo hook >> "${shellPath(marker)}"\n`),
 		});
 		const store = await storeFor(selection);
-		await createOn({
+		const session = await createOn({
 			settingsManager: SettingsManager.inMemory({ defaultProjectTrust: "always" }),
 			sessionManager: await SessionManager.open(store, sessionId),
 		});
+		// Without a UI the build runs behind the first turn (#4748).
+		await blueprintBuildSettled(session.sessionManager.getSessionId());
 		assert.equal(readFileSync(marker, "utf8").trim(), "hook");
 	});
 
@@ -1612,6 +1614,8 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 			sessionManager: await SessionManager.open(store, sessionId),
 		});
 		assert.ok(session.sessionManager.getCwd().startsWith(sandbox.path("agent", "worktree-snapshots", "worktrees")));
+		// The build runs behind the first turn (#4748): only once it has settled does the missing marker mean it never ran.
+		await blueprintBuildSettled(session.sessionManager.getSessionId());
 		assert.equal(existsSync(marker), false);
 	});
 

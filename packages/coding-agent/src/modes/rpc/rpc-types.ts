@@ -120,8 +120,21 @@ export type RpcCommand =
 	| { id?: string; type: "open_agent_panel" }
 
 	// Model
-	| { id?: string; type: "set_model"; provider: string; modelId: string; persist?: boolean }
+	| {
+			id?: string;
+			type: "set_model";
+			provider: string;
+			modelId: string;
+			persist?: boolean;
+			thinkingLevel?: ThinkingLevel;
+	  }
 	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward"; persist?: boolean }
+	| {
+			id?: string;
+			type: "set_scoped_models";
+			models: Array<{ provider: string; modelId: string; thinkingLevel?: ThinkingLevel }>;
+			enabledModels?: string[] | null;
+	  }
 	| { id?: string; type: "get_available_models"; allowPartialResources?: boolean }
 	| { id?: string; type: "login_provider"; provider: string; authType?: "api_key" | "oauth"; loginId?: string }
 	| {
@@ -282,7 +295,13 @@ export interface RpcLogoutProviderResult {
 // RPC Responses (stdout)
 // ============================================================================
 
-// Success responses with data
+export interface RpcPersistedModelDefaults {
+	provider: string;
+	modelId: string;
+	thinkingLevel: ThinkingLevel;
+	defaultThinkingLevel: ThinkingLevel;
+}
+
 export type RpcResponse =
 	// Prompting
 	| { id?: string; type: "response"; command: "prompt"; success: true; data: { disposition: PromptDisposition } }
@@ -333,14 +352,26 @@ export type RpcResponse =
 			type: "response";
 			command: "set_model";
 			success: true;
-			data: Model<Api>;
+			data: Model<Api> & { persistedDefaults?: RpcPersistedModelDefaults };
 	  }
 	| {
 			id?: string;
 			type: "response";
 			command: "cycle_model";
 			success: true;
-			data: { model: Model<Api>; thinkingLevel: ThinkingLevel; isScoped: boolean } | null;
+			data: {
+				model: Model<Api>;
+				thinkingLevel: ThinkingLevel;
+				isScoped: boolean;
+				persistedDefaults?: RpcPersistedModelDefaults;
+			} | null;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_scoped_models";
+			success: true;
+			data: RpcModelCatalog;
 	  }
 	| {
 			id?: string;

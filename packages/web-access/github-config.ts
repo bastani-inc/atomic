@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { ensurePrivateTempDir } from "@bastani/atomic";
+import { ensurePrivateTempDirAsync } from "@bastani/atomic";
 import { findReadableConfigPath } from "./config-paths.ts";
 import { createOwnerState } from "./owner-state.js";
 
@@ -46,19 +46,23 @@ export interface GitHubCloneConfig {
 }
 
 const configState = createOwnerState(() => ({
+	generation: 0,
 	cachedConfig: null as GitHubCloneConfig | null,
 	defaultClonePath: null as string | null,
 }));
 
 /**
  * The default clone cache: a directory only the current account owns (see
- * `ensurePrivateTempDir`), never a fixed name in the shared temp directory.
+ * `ensurePrivateTempDirAsync`), never a fixed name in the shared temp directory.
  * Created on first use and kept for the life of the owner.
  */
-export function defaultGitHubClonePath(): string {
+export async function defaultGitHubClonePath(): Promise<string> {
 	const state = configState();
-	state.defaultClonePath ??= ensurePrivateTempDir(DEFAULT_GITHUB_CLONE_DIR);
-	return state.defaultClonePath;
+	if (state.defaultClonePath !== null) return state.defaultClonePath;
+	const generation = state.generation;
+	const clonePath = await ensurePrivateTempDirAsync(DEFAULT_GITHUB_CLONE_DIR);
+	if (state.generation !== generation) return clonePath;
+	return state.defaultClonePath ??= clonePath;
 }
 
 /** The default clone cache if one was chosen, else `null`. */
@@ -75,15 +79,16 @@ function normalizePositiveNumber(value: unknown, fallback: number): number {
 	return value > 0 ? value : fallback;
 }
 
-function normalizeClonePath(value: unknown, fallback: () => string): string {
+async function normalizeClonePath(value: unknown, fallback: () => Promise<string>): Promise<string> {
 	if (typeof value !== "string") return fallback();
 	const normalized = value.trim();
 	return normalized.length > 0 ? normalized : fallback();
 }
 
-export function loadGitHubConfig(): GitHubCloneConfig {
+export async function loadGitHubConfig(): Promise<GitHubCloneConfig> {
 	const state = configState();
 	if (state.cachedConfig) return state.cachedConfig;
+	const generation = state.generation;
 
 	const defaults = {
 		enabled: true,
@@ -92,8 +97,9 @@ export function loadGitHubConfig(): GitHubCloneConfig {
 	};
 
 	if (!existsSync(CONFIG_PATH)) {
-		state.cachedConfig = { ...defaults, clonePath: defaultGitHubClonePath() };
-		return state.cachedConfig;
+		const config = { ...defaults, clonePath: await defaultGitHubClonePath() };
+		if (state.generation === generation) state.cachedConfig = config;
+		return config;
 	}
 
 	const rawText = readFileSync(CONFIG_PATH, "utf-8");
@@ -106,13 +112,15 @@ export function loadGitHubConfig(): GitHubCloneConfig {
 	}
 
 	const gc = raw.githubClone ?? {};
-	state.cachedConfig = {
+	const clonePath = await normalizeClonePath(gc.clonePath, defaultGitHubClonePath);
+	const config = {
 		enabled: normalizeEnabled(gc.enabled, defaults.enabled),
 		maxRepoSizeMB: normalizePositiveNumber(gc.maxRepoSizeMB, defaults.maxRepoSizeMB),
 		cloneTimeoutSeconds: normalizePositiveNumber(gc.cloneTimeoutSeconds, defaults.cloneTimeoutSeconds),
-		clonePath: normalizeClonePath(gc.clonePath, defaultGitHubClonePath),
+		clonePath,
 	};
-	return state.cachedConfig;
+	if (state.generation === generation) state.cachedConfig = config;
+	return config;
 }
 
 const NON_CODE_SEGMENTS = new Set([
@@ -215,6 +223,8 @@ export function parseGitHubUrl(url: string): GitHubUrlInfo | null {
 }
 
 export function resetGitHubConfig(): void {
-	configState().cachedConfig = null;
-	configState().defaultClonePath = null;
+	const state = configState();
+	state.generation += 1;
+	state.cachedConfig = null;
+	state.defaultClonePath = null;
 }

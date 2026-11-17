@@ -21,7 +21,7 @@ try {
 
 `exec`, `run`, `get`, and `all` return promises. Bind values through positional `?` parameters; `run` returns `{ changes }`, `get` returns a row or `undefined`, and `all` returns an array. Values may be null, number, bigint, string, or Uint8Array. Binary values are copied when the call is made, so reusing a buffer afterward does not change queued work. INTEGER values inside the safe integer range are returned as numbers; larger values are returned as bigints.
 
-The node adapter creates parent directories and enables WAL, full synchronization, and foreign keys. Its busy timeout defaults to 5000 ms; override it with `openNodeSqliteDatabase(path, { busyTimeoutMs: 1000 })`. Use `:memory:` for an ephemeral database. Pass `{ readOnly: true }` to inspect an existing file without creating it or changing its journal mode.
+The node adapter creates parent directories and enables WAL, full synchronization, and foreign keys. Its busy timeout defaults to 5000 ms; override it with `openNodeSqliteDatabase(path, { busyTimeoutMs: 1000 })`. Use `:memory:` for an ephemeral database. Pass `{ readOnly: true }` to inspect an existing file without creating it or changing its journal mode. `openNodeSqliteDatabase` and `wrapNodeSqliteDatabase` connections hold a shared lock on `<file>-open.lock` while they are open, `file:` URIs included, so Atomic removes a local checkpoint journal only when none of them has it open. An `openNodeSqliteDatabase` read-only connection takes the lock only beside a database that has a `<file>-holders` directory, a `<file>-open.lock` or a `<file>.lock` file, and goes without it where it cannot create the lock file, such as in a read-only directory. `wrapNodeSqliteDatabase` attempts the lock for every file-backed connection, including a read-only connection to an untouched database, because the caller's connection does not expose its read-only setting. It removes the lock file when the last connection releases it. Wrapping also works without the lock when the lock file is not writable, including when a Windows directory's permissions refuse new files. Journal cleanup never removes a file while an Atomic-created or Atomic-wrapped connection uses it. Tools that open checkpoint journal files directly outside Atomic do not take this lock; do not run them against a crashed host's journal while a new host starts.
 
 Transactions from separate `openNodeSqliteDatabase` connections to the same file queue asynchronously within one process; symlink paths refer to the same queue. Separate in-memory databases remain independent. Wrap a caller-owned connection consistently: its transaction queue is shared by wrappers of that connection, not by other connections to its file.
 
@@ -559,8 +559,13 @@ You can also implement `SqliteDatabase` yourself by following the same rules. Ei
 
 This module is a complete adapter. Install `@libsql/client` where the module can import it, for example as a dependency of an [Atomic package](#adapters-from-atomic-packages). It accepts caller-provided credentials only. For a local file, create its parent directory first; no network or credentials are needed.
 
+Keep `closeEachConnectionOnce` and `releaseClosedConnections` when you copy the example. For a local file, `@libsql/client` 0.18 uses the native `libsql` 0.5 driver, which closes a connection's SQLite handle twice when no statement still holds the connection. The second close reads freed memory, and on Windows the process can then exit without an error message. `closeEachConnectionOnce` prepares a statement before each close and holds it until the close returns, so the handle closes once, when the statement is garbage-collected. For a local file, `close()` therefore runs two garbage collections before it resolves, so the database's files are released when it returns and Windows can delete them. `@bastani/atomic-storage-libsql` does the same.
+
 {/* custom-driver-example */}
 ```ts
+import { createRequire } from "node:module";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import type { Client, Transaction } from "@libsql/client";
 import {
 	createSqliteDatabase,
@@ -598,6 +603,76 @@ function urlCredentials(url: string): string[] {
 	return secrets;
 }
 
+const closesOnce = Symbol.for("@bastani/atomic-storage-libsql.closesOnce");
+
+interface LibsqlConnection {
+	open: boolean;
+	close(): void;
+	prepare(sql: string): object;
+}
+
+interface LibsqlConnectionClass {
+	prototype: LibsqlConnection & { [closesOnce]?: true };
+}
+
+const statementsHeldWhileClosing = new Set<object>();
+
+function statementHoldingConnection(connection: LibsqlConnection): object | undefined {
+	if (!connection.open) return undefined;
+	try {
+		return connection.prepare("SELECT 1");
+	} catch {
+		return undefined;
+	}
+}
+
+function closeEachConnectionOnce(): void {
+	const client = createRequire(import.meta.url).resolve("@libsql/client");
+	const Connection = createRequire(client)("libsql") as LibsqlConnectionClass;
+	if (Connection.prototype[closesOnce]) return;
+	const close = Connection.prototype.close;
+	Connection.prototype.close = function (this: LibsqlConnection) {
+		const statement = statementHoldingConnection(this);
+		if (statement) statementsHeldWhileClosing.add(statement);
+		try {
+			close.call(this);
+		} finally {
+			if (statement) statementsHeldWhileClosing.delete(statement);
+		}
+	};
+	Connection.prototype[closesOnce] = true;
+}
+
+interface GarbageCollectingRuntime {
+	gc?: () => void;
+	Bun?: { gc(force: boolean): void };
+}
+
+function exposedGc(): () => void {
+	setFlagsFromString("--expose-gc");
+	try {
+		return runInNewContext("gc") as () => void;
+	} finally {
+		setFlagsFromString("--no-expose-gc");
+	}
+}
+
+function collectGarbage(): void {
+	const runtime = globalThis as GarbageCollectingRuntime;
+	if (runtime.gc) runtime.gc();
+	else if (runtime.Bun) runtime.Bun.gc(true);
+	else exposedGc()();
+}
+
+const COLLECTION_PASSES = 2;
+
+async function releaseClosedConnections(): Promise<void> {
+	for (let pass = 0; pass < COLLECTION_PASSES; pass++) {
+		collectGarbage();
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+}
+
 function statements(connection: () => Client | Transaction): SqliteDriverExecutor {
 	return {
 		async execute(sql, params) {
@@ -612,6 +687,7 @@ export async function openLibsqlDatabase({ url, authToken }: LibsqlDatabaseOptio
 	let createClient: typeof import("@libsql/client").createClient;
 	try {
 		({ createClient } = await import("@libsql/client"));
+		closeEachConnectionOnce();
 	} catch (cause) {
 		throw new StorageAdapterLoadError("@libsql/client", cause as StorageFailureCause);
 	}
@@ -631,7 +707,10 @@ export async function openLibsqlDatabase({ url, authToken }: LibsqlDatabaseOptio
 				close: () => transaction.close(),
 			};
 		},
-		close: () => client?.close(),
+		async close() {
+			client?.close();
+			if (/^file:/i.test(url)) await releaseClosedConnections();
+		},
 	});
 	try {
 		await database.exec("PRAGMA foreign_keys = ON");
