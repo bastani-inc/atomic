@@ -351,6 +351,7 @@ export function blockOwner(
 		readonly owner: string;
 		readonly paths?: readonly string[];
 		readonly functions?: readonly { readonly file: string; readonly name: string }[];
+		readonly sampledCallersOfOwnedCalls?: readonly { readonly file: string; readonly name: string }[];
 	}[],
 ): string | undefined {
 	const compiled = areas.map((area) => {
@@ -359,7 +360,7 @@ export function blockOwner(
 		const hasShipShard = rawPaths.some(
 			(path) => path.replaceAll("\\", "/").replace(/\.(?:[cm]?[jt]s)$/, "") === SHIP_SHARD_PATH,
 		);
-		const functionSelectors = area.functions ?? [];
+		const functionSelectors = [...(area.functions ?? []), ...(area.sampledCallersOfOwnedCalls ?? [])];
 		const byFile = new Map<string, Set<string>>();
 		for (const selector of functionSelectors) {
 			let set = byFile.get(selector.file);
