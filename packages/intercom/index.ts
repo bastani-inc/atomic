@@ -558,6 +558,46 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	 * here instead put raw extension text into the root session's transcript and
 	 * still left the stage waiting on `pendingStageDelivery.ready()` forever.
 	 */
+	/**
+	 * An admitted child registers on Intercom before its first turn, so its supervisor and peers can list and steer it
+	 * and what they send it is in hand when that turn starts. A host that runs the child's start (`startup`) keeps
+	 * the start waiting through a broker that is briefly unreachable, retrying until the child registers or its start
+	 * is given up. Without one, a recoverable disconnect does not end the launch: the child connects on its next
+	 * Intercom use, as before. Everything else escapes.
+	 */
+	async function registerAdmittedChild(ctx: ExtensionContext, lease: IntercomLease, generation: number): Promise<void> {
+		const startup = ctx.subagentPolicy?.startup;
+		const current = () => activeLease === lease && !lease.retired && sessionSnapshot?.generation === generation;
+		// A start given up while another extension held it never registers: its session is disposed unused, and must not
+		// take the sends held for the child's retry.
+		const givenUp = (): boolean => startup?.signal.aborted === true;
+		if (givenUp()) return;
+		startup?.enterStep("registering-intercom");
+		for (let attempt = 0; ; attempt += 1) {
+			try {
+				await loadHeavy(ctx);
+				break;
+			} catch (error) {
+				if (!isRecoverableIntercomDisconnect(error)) throw error;
+				const delayMs = startup === undefined ? undefined : reconnectDelayMs(attempt);
+				if (delayMs === undefined || !current() || givenUp()) return;
+				const waited = await new Promise<boolean>((resolve) => {
+					const onAbort = () => {
+						clearTimeout(timer);
+						resolve(false);
+					};
+					const timer = setTimeout(() => {
+						startup?.signal.removeEventListener("abort", onAbort);
+						resolve(true);
+					}, delayMs);
+					timer.unref?.();
+					startup?.signal.addEventListener("abort", onAbort, { once: true });
+				});
+				if (!waited || !current()) return;
+			}
+		}
+		if (current()) startup?.enterStep("creating-session");
+	}
 	function scheduleWarmUpRetry(
 		ctx: ExtensionContext,
 		lease: IntercomLease,
@@ -692,15 +732,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
         scheduleWarmUpRetry(ctx, lease, generation, pendingStageDelivery, error);
       }
     } else if (typedIdentity) {
-      try {
-        await loadHeavy(ctx);
-      } catch (error) {
-        // An admitted child registers at start so its supervisor and peers can
-        // list and steer it before it ever calls Intercom itself. A recoverable
-        // broker disconnect must not abort the child's launch; the child still
-        // connects lazily on its next Intercom use. Everything else escapes.
-        if (!isRecoverableIntercomDisconnect(error)) throw error;
-      }
+      await registerAdmittedChild(ctx, lease, generation);
     } else if (loadedHeavy) {
       await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
     }
@@ -858,6 +890,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			aliases: [...payload.aliases],
 			...(payload.group === undefined ? {} : { group: payload.group }),
 			...(payload.dormant === true ? { dormant: true } : {}),
+			...(payload.holdMs === undefined ? {} : { holdMs: payload.holdMs }),
 		};
 		payload.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
 			handle.assertCurrent();

@@ -143,10 +143,13 @@ async function realWorker(scenario: WorkerScenario, workerEntry: string, directo
 			if (!worker.connected) return;
 			const reply =
 				answer === undefined ? { id: message.id, value: plainAnswer(message) } : { id: message.id, ...answer };
-			// The worker can exit between the check and the write (EPIPE on Windows); a reply it never reads is moot.
 			try {
-				worker.send(reply, () => {});
-			} catch {}
+				worker.send(reply, (error) => {
+					if (error && worker.connected) throw error;
+				});
+			} catch (error) {
+				if (worker.connected) throw error;
+			}
 		});
 	});
 	const plainAnswer = (message: WorkerRequest): unknown => {

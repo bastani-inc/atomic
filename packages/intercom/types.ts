@@ -340,7 +340,17 @@ export type ClientMessage =
    * with the capability. A `dormant` hold only keeps the child addressable until the supervisor that restores it
    * reserves the same child and group, which takes the hold over together with the sends held so far.
    */
-  | { type: "reserve_restoring_recipient"; requestId: string; capability: string; group?: string; aliases?: string[]; dormant?: boolean; wake?: boolean }
+  | {
+      type: "reserve_restoring_recipient";
+      requestId: string;
+      capability: string;
+      group?: string;
+      aliases?: string[];
+      dormant?: boolean;
+      wake?: boolean;
+      /** The child is starting: hold each send this long for it (bounded by the broker). */
+      holdMs?: number;
+    }
   /**
    * #3760: end that hold. With `gone` (the reason), held and later senders are told the child is gone. With `refusal`,
    * the senders held now are told that reason instead and later ones are routed normally. Otherwise held sends are
@@ -489,7 +499,12 @@ export type BrokerMessage =
 			enforcesReach?: true;
 	  }
 	| { type: "workflow_invocation_claimed"; requestId: string; claimed: boolean }
-  | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode | "reach_policy_refused"; requestId?: string }
+  | {
+      type: "registration_failed";
+      reason: string;
+      code?: LiveWorkflowStageRouteRefusalCode | "reach_policy_refused" | "supervisor_authorization_refused";
+      requestId?: string;
+    }
   | { type: "question_target"; messageId: string; attemptId: string; sessionId: string }
  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[]; workflowFutureStages?: WorkflowFutureStageRosterEntry[]; restricted?: true }
 	| { type: "groups"; requestId: string; groups: GroupSummary[] }

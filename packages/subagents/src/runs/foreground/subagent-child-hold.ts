@@ -1,4 +1,5 @@
 import type { ExtensionContext, SessionStore } from "@bastani/atomic";
+import { INTERCOM_CONNECTED_EVENT } from "../../intercom/own-intercom-session.js";
 import {
 	requestSupervisorAuthorization,
 	type SupervisorAuthorization,
@@ -34,6 +35,8 @@ export interface SubagentReserveRestoringChildRequest {
 	readonly aliases: readonly string[];
 	/** Only keeps the child addressable until the supervisor that restores it reserves it and takes the hold over. */
 	readonly dormant?: boolean;
+	/** The child is starting: each send waits this long for it to register. */
+	readonly holdMs?: number;
 	completion?: Promise<void>;
 }
 
@@ -74,6 +77,8 @@ export interface ChildTargetHold {
 	add(alias: string): Promise<void>;
 	/** Reserve everything again under the same capability, as a restoration taking an earlier hold over does. */
 	refresh(): Promise<void>;
+	/** The child is starting again: hold each send up to `holdMs` for it, from now until it registers or the hold ends. */
+	holdWhileStarting(holdMs: number): Promise<void>;
 	/** End the hold; held sends go through ordinary routing, or are told `refusal` when it is given. */
 	release(refusal?: string): Promise<void>;
 	/** End the hold as gone; held and later senders are told the child did not survive the restart. */
@@ -99,13 +104,23 @@ export async function holdChildTargets(
 	events: IntercomEventBus,
 	record: Pick<SubagentChildRecord, "intercomTarget" | "childSessionId">,
 	group: string | undefined,
-	options: { readonly dormant?: boolean } = {},
+	options: {
+		readonly dormant?: boolean;
+		/**
+		 * The child is starting: each send waits up to this long for it to register, instead of the broker's short hold,
+		 * and the hold is made again whenever this session reconnects to Intercom, until it ends.
+		 */
+		readonly holdMs?: number;
+		/** The capability the child's launch was already issued; otherwise one is asked for. */
+		readonly authorization?: SupervisorAuthorization;
+	} = {},
 ): Promise<ChildTargetHold | undefined> {
 	if (!record.intercomTarget) return undefined;
-	const authorization = await requestSupervisorAuthorization(events, record.intercomTarget);
+	const authorization = options.authorization ?? (await requestSupervisorAuthorization(events, record.intercomTarget));
 	if (!authorization) return undefined;
 	const { capability } = authorization;
 	const known = new Set<string>();
+	let holdMs = options.holdMs;
 	const reserve = (aliases: readonly string[], all = false) => {
 		for (const alias of aliases) known.add(alias);
 		const request: SubagentReserveRestoringChildRequest = {
@@ -113,13 +128,23 @@ export async function holdChildTargets(
 			aliases: all ? [...known] : aliases,
 			...(group ? { group } : {}),
 			...(options.dormant === true ? { dormant: true } : {}),
+			...(holdMs === undefined ? {} : { holdMs }),
 		};
 		return emitIntercomRequest(events, SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, request);
 	};
 	let ended = false;
+	// The broker forgets this session's holds when its connection ends; a starting child's hold is made again.
+	let stopRefreshing: (() => void) | undefined;
+	const refreshOnReconnect = () => {
+		stopRefreshing ??= events.on(INTERCOM_CONNECTED_EVENT, () => {
+			if (!ended) void reserve([], true);
+		});
+	};
+	if (holdMs !== undefined) refreshOnReconnect();
 	const end = (outcome: { gone?: string; refusal?: string } = {}) => {
 		if (ended) return Promise.resolve();
 		ended = true;
+		stopRefreshing?.();
 		const request: SubagentReleaseRestoringChildRequest = { capability, ...outcome };
 		return emitIntercomRequest(events, SUBAGENT_RELEASE_RESTORING_CHILD_EVENT, request);
 	};
@@ -128,6 +153,12 @@ export async function holdChildTargets(
 		authorization,
 		add: (alias) => (ended ? Promise.resolve() : reserve([alias])),
 		refresh: () => (ended ? Promise.resolve() : reserve([], true)),
+		holdWhileStarting: (ms) => {
+			if (ended) return Promise.resolve();
+			holdMs = ms;
+			refreshOnReconnect();
+			return reserve([], true);
+		},
 		release: (refusal) => end(refusal === undefined ? {} : { refusal }),
 		gone: (reason) => end({ gone: reason }),
 	};
@@ -348,4 +379,48 @@ export function holdDormantRunSubagentChildren(
 /** Holds made before a child's restoration took them over; counted by tests and the benchmark. */
 export function earlyChildHoldCount(): number {
 	return earlyHolds.size;
+}
+
+/** The hold on a launching child's Intercom target, until it registers or its start ends. */
+export interface StartingChildHold {
+	/** The child's start is retried: its stalled start registered and took the sends held so far; hold new ones. */
+	renew(): Promise<void>;
+	/** The child ended: a child that never registered tells the senders still held why. */
+	settle(child?: { readonly status: string; readonly error?: string }): void;
+}
+
+/**
+ * Have the broker hold every send to a child that is launching, from any sender in its group, until the child
+ * registers on Intercom and receives them before its first turn, instead of answering `Session not found`. The hold
+ * lasts through both of its start attempts; the child's registration ends it. Best effort: without Intercom the
+ * launch goes on as before.
+ */
+export async function holdStartingChild(input: {
+	readonly events: IntercomEventBus | undefined;
+	readonly intercomTarget: string | undefined;
+	readonly authorization: SupervisorAuthorization | undefined;
+	readonly group: string | undefined;
+	readonly holdMs: number;
+}): Promise<StartingChildHold> {
+	const { events, intercomTarget, authorization } = input;
+	if (events === undefined || intercomTarget === undefined || authorization === undefined)
+		return { renew: () => Promise.resolve(), settle() {} };
+	const hold = await holdChildTargets(events, { intercomTarget }, input.group, {
+		authorization,
+		holdMs: input.holdMs,
+	}).catch(() => undefined);
+	let settled = false;
+	return {
+		renew: () => (hold === undefined || settled ? Promise.resolve() : hold.holdWhileStarting(input.holdMs)),
+		settle(child) {
+			if (hold === undefined || settled) return;
+			settled = true;
+			const reason = child?.status === "error" ? child.error?.trim() : undefined;
+			void hold
+				.release(
+					reason ? `Subagent \`${intercomTarget}\` did not start: ${reason} The message was not sent.` : undefined,
+				)
+				.catch(() => undefined);
+		},
+	};
 }

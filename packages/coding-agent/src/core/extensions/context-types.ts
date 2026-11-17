@@ -161,6 +161,19 @@ export interface SubagentIntercomIdentity {
 	};
 }
 
+/**
+ * Host-owned hooks of an in-process child's start (its first turn not started yet). Intercom registers the child
+ * before that turn and names its step while it does; a start that runs out of its budget aborts `signal`.
+ */
+export interface SubagentStartupHooks {
+	/** Aborts when the start is given up, as when its start budget runs out. */
+	readonly signal: AbortSignal;
+	/** The start moves on to `step`. */
+	enterStep(step: "registering-intercom" | "creating-session"): void;
+	/** Whether the child has yet to start its first turn: a message arriving now is context for that turn. */
+	firstTurnPending(): boolean;
+}
+
 /** Typed child capability policy supplied by an in-process subagent admission. */
 export interface SubagentChildPolicy {
 	readonly managementActions: "full" | "restricted";
@@ -181,6 +194,8 @@ export interface SubagentChildPolicy {
 		/** Reserve the full producer operation, including retries, before child settlement. */
 		run(deliver: () => void | Promise<void>): Promise<void>;
 	};
+	/** Host-owned: the child's start, until its first turn starts. */
+	readonly startup?: SubagentStartupHooks;
 	/** Current admitted in-process nesting depth; absent for top-level sessions. */
 	readonly depth?: number;
 	/** SDK-resolved exact child tool allowlist; undefined leaves ordinary tools unrestricted. */

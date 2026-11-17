@@ -10,6 +10,12 @@ import { isReleasedReservationKey, normalizeReservationTarget, releasedReservati
 export const RESTORING_RECIPIENT_HOLD_MS = 20_000;
 /** The most a send can be held in total once its owner confirms it is waking the subagent, counted from the send's admission (#4326). */
 export const RESTORING_RECIPIENT_HOLD_MAX_MS = 120_000;
+/**
+ * The longest an owner may have a send held for a subagent that is starting: launching, resuming or relaunching. Its
+ * start, a retry of a stalled start included, may take that long on a busy host; the owner ends the hold sooner when
+ * the start fails, telling the held senders why.
+ */
+export const STARTING_RECIPIENT_HOLD_MAX_MS = 60 * 60_000;
 /** A reservation covers the child's name plus its Atomic session id and its pre-restart Intercom id. */
 const MAX_RESERVED_TARGETS = 8;
 const MAX_HELD_SENDS = 256;
@@ -87,6 +93,10 @@ interface Reservation {
 	wake: boolean;
 	/** The owner already confirmed the wake of the sends held now, so their hold was extended once (#4326). */
 	extended: boolean;
+	/** How long a send waits for the child: an owner starting the child holds sends until its start can end. */
+	holdMs: number;
+	/** The child is starting (launching, resuming or relaunching), not being restored after a restart. */
+	starting: boolean;
 	readonly targets: Set<string>;
 	/** Set once the owner reports the child gone; held and later senders get this refusal. */
 	gone?: string;
@@ -109,6 +119,18 @@ export interface ReserveOptions {
 	readonly wake?: boolean;
 	/** The aliases given are all the child has, not additions to those reserved before. */
 	readonly replaceAliases?: boolean;
+	/**
+	 * The child is starting, and a send waits for it up to this long (at most {@link STARTING_RECIPIENT_HOLD_MAX_MS})
+	 * instead of {@link RESTORING_RECIPIENT_HOLD_MS}.
+	 */
+	readonly holdMs?: number;
+}
+
+/** The hold a reservation gives each send: the owner's, for a starting child, within the broker's bounds. */
+function reservationHoldMs(options: ReserveOptions): number {
+	const requested = options.holdMs;
+	if (requested === undefined || !Number.isFinite(requested)) return RESTORING_RECIPIENT_HOLD_MS;
+	return Math.min(Math.max(Math.trunc(requested), RESTORING_RECIPIENT_HOLD_MS), STARTING_RECIPIENT_HOLD_MAX_MS);
 }
 
 /** The owner-suspended refusal of a send to a released child whose owner is away (#4639). */
@@ -121,8 +143,10 @@ function ownerSuspended(reservation: Reservation, held: Pick<HeldSend, "clientMe
 
 const normalizeTarget = normalizeReservationTarget;
 
-export function restoringRecipientRetryReason(childName: string): string {
-	return `Subagent \`${childName}\` is still being restored after the restart. The message was not sent; try again shortly.`;
+export function restoringRecipientRetryReason(childName: string, starting = false): string {
+	return starting
+		? `Subagent \`${childName}\` is still starting and has not registered on Intercom yet. The message was not sent; try again shortly.`
+		: `Subagent \`${childName}\` is still being restored after the restart. The message was not sent; try again shortly.`;
 }
 
 export function goneRecipientReason(childName: string, reason: string): string {
@@ -300,6 +324,8 @@ export class RestoringRecipients {
 				dormant,
 				wake,
 				extended: false,
+				holdMs: reservationHoldMs(options),
+				starting: options.holdMs !== undefined,
 				targets: new Set([childTarget]),
 				held: new Map(),
 			};
@@ -327,6 +353,8 @@ export class RestoringRecipients {
 		reservation.group = group;
 		reservation.dormant = dormant;
 		reservation.wake = wake;
+		reservation.holdMs = reservationHoldMs(options);
+		reservation.starting = options.holdMs !== undefined;
 		if (options.replaceAliases === true && kept !== undefined) this.dropAliases(reservation, childTarget);
 		for (const alias of aliases) {
 			const target = normalizeTarget(alias);
@@ -368,7 +396,7 @@ export class RestoringRecipients {
 		if (!canHold || reservation.held.size >= MAX_HELD_SENDS) {
 			return {
 				kind: "refused",
-				reason: restoringRecipientRetryReason(reservation.childName),
+				reason: restoringRecipientRetryReason(reservation.childName, reservation.starting),
 				reasonCode: unrestoredReasonCode(reservation.key, reservation.wake),
 			};
 		}
@@ -378,11 +406,11 @@ export class RestoringRecipients {
 				: undefined;
 		if (reservation.held.size === 0) reservation.extended = false;
 		const entry: HeldEntry = { timer: undefined, admittedAt: Date.now(), reservation };
-		this.arm(held, entry, RESTORING_RECIPIENT_HOLD_MS);
+		this.arm(held, entry, reservation.holdMs);
 		reservation.held.set(held, entry);
 		this.withHeld.add(reservation);
 		this.heldTotal += 1;
-		return { kind: "held", timeoutMs: RESTORING_RECIPIENT_HOLD_MS, ...(wake === undefined ? {} : { wake }) };
+		return { kind: "held", timeoutMs: reservation.holdMs, ...(wake === undefined ? {} : { wake }) };
 	}
 
 	/**
@@ -581,7 +609,7 @@ export class RestoringRecipients {
 		}
 		this.onExpired(
 			held,
-			restoringRecipientRetryReason(reservation.childName),
+			restoringRecipientRetryReason(reservation.childName, reservation.starting),
 			unrestoredReasonCode(reservation.key, reservation.wake),
 		);
 	}
