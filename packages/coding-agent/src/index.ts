@@ -578,6 +578,15 @@ export {
 } from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
 export { modelCallUsage } from "./core/model-call-usage.ts";
+export {
+	type CredentialPartition,
+	formatNoUsableModelMessage,
+	NoUsableModelError,
+	partitionByCredentials,
+	providerOfModelReference,
+	type SkippedModel,
+	type SkippedModelReason,
+} from "./core/model-credential-filter.ts";
 export type {
 	ModelFallbackFailureKind,
 	ModelFallbackFailureOptions,

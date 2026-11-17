@@ -108,6 +108,14 @@ export function workflowModelCatalogFromContext(
 					},
 					autoAdvanceAfterSteer: () => autoAdvanceAfterSteerSetting(readSettings?.()),
 				}),
+		hasCredentials: (provider: string): boolean => {
+			const registry = live().modelRegistry;
+			if (registry === undefined) return true;
+			// The registry's own check, which also picks up a login or logout another process saved since the
+			// catalog was last read; the catalog is the fallback for a host without it.
+			if (registry.hasConfiguredAuth) return registry.hasConfiguredAuth({ provider });
+			return registry.getAvailable().some((model) => String(model.provider) === provider);
+		},
 		listModels: async (): Promise<readonly WorkflowModelInfo[]> => {
 			const current = live();
 			const available =

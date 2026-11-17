@@ -151,6 +151,11 @@ export interface WorkflowModelCatalogPort {
 	readonly currentModel?: WorkflowModelValue;
 	readonly preferredProvider?: string;
 	recordWarning?: (warning: string) => void;
+	/**
+	 * Whether `provider` has usable credentials, from the same local check `listModels` uses; no request is made. A
+	 * stage skips the candidates of a provider without them before it tries its model chain.
+	 */
+	hasCredentials?(provider: string): boolean;
 }
 
 /** A decision a workflow asks of the host's decision model; the host supplies settings, registry and current model. */

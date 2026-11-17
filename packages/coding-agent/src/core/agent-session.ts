@@ -109,6 +109,8 @@ class AgentSessionBase {
 	protected _fallbackAttemptedKeys: Set<string> = new Set();
 	/** Models condemned for this turn by a failure retrying them cannot repair. */
 	protected _fallbackBlockedModels: Array<Model<Api>> = [];
+	/** Providers that rejected their credentials this turn; no model of theirs is asked again until the turn ends. */
+	protected _fallbackBlockedProviders: Set<string> = new Set();
 	protected _fallbackOriginModel: Model<Api> | undefined;
 	protected _fallbackOriginThinkingLevel: ThinkingLevel | undefined;
 	protected _fallbackScopeGeneration = 0;

@@ -14,9 +14,11 @@ import {
 	type ModelConstraints,
 	type ModelRoute,
 	modelCallUsage,
+	NoUsableModelError,
 	type PromptOptions,
 	parkWorkflowStageForRelease,
 	parseModelConstraints,
+	partitionByCredentials,
 	reportDebug,
 	type SessionManager,
 	type SessionStore,
@@ -60,6 +62,7 @@ import {
 	isRetryableSameModelFailure,
 	isUnrecognizedModelFailure,
 	type ModelFallbackFailureOptions,
+	normalizeModelFailureSignal,
 	resolveScopedModelsFromCatalog,
 	type WorkflowResolvedModelCandidate,
 	type WorkflowResolvedScopedModel,
@@ -2331,6 +2334,21 @@ export class StageSessionController {
 			walk.rateLimited.add(index);
 		}
 		walk.remaining.delete(index);
+		// A provider that rejected its credentials rejects them for every model it serves: the walk drops the rest of
+		// that provider's candidates instead of asking it again with the same credentials.
+		const provider = workflowProviderId(candidates[index]?.value);
+		if (provider !== undefined && normalizeModelFailureSignal(error).kind === "auth_on_candidate_provider") {
+			for (const other of [...walk.remaining]) {
+				const candidate = candidates[other];
+				if (candidate === undefined || workflowProviderId(candidate.value) !== provider) continue;
+				walk.remaining.delete(other);
+				this.modelAttempts.push({
+					model: candidate.id,
+					success: false,
+					error: `Skipped ${candidate.id}: provider '${provider}' rejected its credentials.`,
+				});
+			}
+		}
 		// #3984: when every candidate left is throttled, the chain is not exhausted but cooling. Give each
 		// throttled candidate a fresh budget and wait for the earliest cooldown (none when one is already
 		// ready), if it fits the retry-hint cap, at most `retry.maxRetries` times per walk.
@@ -2704,7 +2722,7 @@ export class StageSessionController {
 				],
 				catalog: this.modelCatalog,
 				includeCurrentModel: this.modelRoute !== undefined,
-			});
+			}).then((candidates) => this.withCredentials(candidates));
 			this.candidatesPromise = this.modelRoute
 				? resolved.then((candidates) => {
 						if (!this.modelRoute) return candidates;
@@ -2736,6 +2754,36 @@ export class StageSessionController {
 				: resolved;
 		}
 		return this.candidatesPromise;
+	}
+
+	/**
+	 * The candidates whose provider has usable credentials, in order. The others are skipped before any session or
+	 * request and listed in the stage's model attempts; a chain with none fails at once naming each model and the
+	 * provider it lacks.
+	 */
+	private withCredentials(candidates: WorkflowResolvedModelCandidate[]): WorkflowResolvedModelCandidate[] {
+		const catalog = this.modelCatalog;
+		if (catalog?.hasCredentials === undefined) return candidates;
+		const { usable, skipped } = partitionByCredentials(
+			candidates,
+			(candidate) => workflowProviderId(candidate.value),
+			(provider) => catalog.hasCredentials!(provider),
+		);
+		if (skipped.length === 0) return candidates;
+		const skippedModels = skipped.map(({ candidate, provider }) => ({
+			model: candidate.id,
+			provider,
+			reason: "no-credentials" as const,
+		}));
+		for (const entry of skippedModels)
+			this.modelAttempts.push({
+				model: entry.model,
+				success: false,
+				error: `Skipped ${entry.model}: provider '${entry.provider}' has no credentials.`,
+			});
+		this.notifyModelFallbackMetaChange();
+		if (usable.length === 0) throw new NoUsableModelError(skippedModels);
+		return usable;
 	}
 
 	private async createInitialSession(consumer: AgentSessionConsumer): Promise<StageSessionRuntime> {
