@@ -1,4 +1,4 @@
-import { stripTerminalSequences } from "@bastani/atomic-tui";
+import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 import { USER_PROMPT_ZONE_START } from "./user-message.ts";
 
@@ -62,6 +62,12 @@ export class NewMessageCounter {
 export function jumpToLatestLabel(newCount: number, keyLabel: string): string {
 	const what = newCount > 0 ? `↓ ${newCount} new ${newCount === 1 ? "message" : "messages"}` : "↓ jump to bottom";
 	return keyLabel.length > 0 ? `${what} · ${keyLabel}` : what;
+}
+
+export function jumpToLatestPill(newCount: number, keyLabel: string, maxWidth = Number.POSITIVE_INFINITY): string {
+	const label = jumpToLatestLabel(newCount, keyLabel);
+	if (visibleWidth(label) + 6 > maxWidth) return theme.fg("text", truncateToWidth(label, Math.max(0, maxWidth)));
+	return `${theme.fg("borderAccent", "╭─ ")}${theme.fg("text", label)}${theme.fg("borderAccent", " ─╮")}`;
 }
 
 export function pinnedPromptLine(promptRow: string): string {
