@@ -9,7 +9,12 @@ import { renameWithRetry } from "../src/core/rename-retry.js";
 import { prebuildRepository } from "../src/core/resume/blueprint/prebuild.js";
 import { prepareSessionResume } from "../src/core/resume/session-resume.js";
 import { SessionManager } from "../src/core/session-manager.js";
-import { releaseSessionWorktrees, resumeSessionWorktree } from "../src/core/session-worktree-snapshots.js";
+import {
+	openSessionInWorktree,
+	pooledWorktreeOwnedElsewhere,
+	releaseSessionWorktrees,
+	resumeSessionWorktree,
+} from "../src/core/session-worktree-snapshots.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
@@ -143,6 +148,29 @@ test("cancelling a resume interrupts its initial slot hold without forfeiting it
 		}),
 	);
 
+	assert.equal(await pooledWorktreeOwnedElsewhere(storeDir, path, session.getSessionId()), false);
+	assert.deepEqual(await pooledWorktreeHolder(storeDir, path), before);
+	assert.equal((await resumeSessionWorktree(session, pool)).status, "verified");
+});
+
+test.each([
+	{ name: "resumeSessionWorktree", resume: resumeSessionWorktree },
+	{ name: "openSessionInWorktree", resume: openSessionInWorktree },
+])("cancelling $name interrupts its slot hold while the lock stays held (#5320)", async ({ resume }) => {
+	const { session, snapshot } = await recordedSession();
+	const storeDir = sandbox.path("host");
+	const pool = { settings, storeDir, pool: { maxIdlePerRepository: 2 } };
+	assert.equal((await resumeSessionWorktree(session, pool)).status, "restored");
+	await releaseSessionWorktrees(session);
+	const repository = repositoryIdOf(snapshot.remotes);
+	const path = pooledWorktreePath(storeDir, repository, 0 as SlotNumber);
+	const before = await pooledWorktreeHolder(storeDir, path);
+
+	await cancelWhileWaiting(join(storeDir, "pool", repository, "0.json"), (signal) =>
+		resume(session, { ...pool, signal }),
+	);
+
+	assert.equal(await pooledWorktreeOwnedElsewhere(storeDir, path, session.getSessionId()), false);
 	assert.deepEqual(await pooledWorktreeHolder(storeDir, path), before);
 	assert.equal((await resumeSessionWorktree(session, pool)).status, "verified");
 });
