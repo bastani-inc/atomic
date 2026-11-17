@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
-import { stripTerminalSequences, Text, type TUI, visibleWidth } from "@bastani/atomic-tui";
+import {
+	getKeybindings,
+	setKeybindings,
+	stripTerminalSequences,
+	Text,
+	type TUI,
+	visibleWidth,
+} from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { beforeAll, test, vi } from "vitest";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
 import { createToolDefinition } from "../src/core/tools/index.ts";
 import { createPowerShellToolDefinition } from "../src/core/tools/powershell.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
@@ -236,6 +244,38 @@ test("closed tool rows release every renderer and ignore late updates even if a 
 	} finally {
 		component.dispose();
 		vi.useRealTimers();
+	}
+});
+
+test("grouped call summaries keep the bound expand hint at narrow and wide widths (#5350)", () => {
+	const previous = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	const component = new ToolExecutionComponent("read", "group-summary", {}, {}, undefined, ui, "/workspace");
+	try {
+		component.updateResult({ content: [], isError: false });
+		component.setGroupRole({
+			kind: "head",
+			clauses: [
+				{ family: "read", count: 3 },
+				{ family: "search", count: 2 },
+				{ family: "find", count: 1 },
+				{ family: "list", count: 2 },
+				{ family: "bash", count: 4 },
+			],
+		});
+		for (const width of [80, 160]) {
+			const rows = component.render(width).map(stripTerminalSequences);
+			assert.equal(rows.length, 2);
+			assert.ok(visibleWidth(rows[1]!) <= width);
+			assert.match(rows[1]!, /Read 3 files/);
+			assert.match(rows[1]!, /\(ctrl\+o to expand\)$/);
+			assert.doesNotMatch(rows[1]!, /…\)$/u);
+		}
+		setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
+		assert.doesNotMatch(component.render(80).map(stripTerminalSequences).join("\n"), /ctrl\+o|to expand/);
+	} finally {
+		component.dispose();
+		setKeybindings(previous);
 	}
 });
 

@@ -22,7 +22,7 @@ import { ensurePngTranscoder } from "../../../utils/image-convert.ts";
 import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { CodeHighlighter, theme } from "../theme/theme.js";
 import { watchAtomicWorkingClock } from "./atomic-working-status.ts";
-import { keyHint, keyHintIfBound, keyText } from "./keybinding-hints.js";
+import { keyHint, keyText } from "./keybinding-hints.js";
 import { disposeRenderer, runRendererCleanup } from "./renderer-disposal.js";
 import {
 	collapseToolBlockLines,
@@ -371,12 +371,19 @@ export class ToolExecutionComponent extends Container {
 			const start = index === 0 ? `${verb.charAt(0).toUpperCase()}${verb.slice(1)}` : verb;
 			return `${start} ${theme.bold(String(count))} ${count === 1 ? singular : plural}`;
 		});
-		const hint = keyHintIfBound("app.tools.expand", "to expand");
-		const title = `${clauses.join(", ")}${hint ? `  (${hint})` : ""}`;
-		return [
-			"",
-			...new ToolBlock({ status: "success", title: new Text(title, 0, 0), outputPad: this.outputPad }).render(width),
-		];
+		const keys = keyText("app.tools.expand");
+		const summary = clauses.join(", ");
+		const title: Component = {
+			invalidate() {},
+			render(available) {
+				if (available < 1) return [];
+				const full = keys ? theme.fg("dim", `  (${keys} to expand)`) : "";
+				const compact = keys ? theme.fg("dim", ` (${keys})`) : "";
+				const suffix = visibleWidth(full) < available ? full : visibleWidth(compact) < available ? compact : "";
+				return [`${truncateToWidth(summary, available - visibleWidth(suffix), "…")}${suffix}`];
+			},
+		};
+		return ["", ...new ToolBlock({ status: "success", title, outputPad: this.outputPad }).render(width)];
 	}
 
 	private blockStatus(): ToolBlockStatus {
@@ -434,7 +441,7 @@ export class ToolExecutionComponent extends Container {
 		return {
 			invalidate: () => call.invalidate(),
 			render: (width) => {
-				const line = call.render(width + 4).find((row) => stripTerminalSequences(row).trim().length > 0);
+				const line = call.render(width).find((row) => stripTerminalSequences(row).trim().length > 0);
 				if (line === undefined) return [terminalDisplayText(this.toolDefinition?.label ?? this.toolName)];
 				const prefix = /^ *[∀●✗◼!⏸›] /u.exec(stripTerminalSequences(line))?.[0];
 				return prefix

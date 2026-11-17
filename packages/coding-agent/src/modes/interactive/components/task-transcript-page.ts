@@ -393,7 +393,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.followed = session;
 			this.chat.resetFollowedSession();
 		}
-		this.chat.replaceMessages(page.value.messages);
+		this.chat.replaceMessages(page.value.messages, { preserveUnread: !sessionChanged });
 		this.chat.hydrateToolExecutionStarts(page.value.activeToolStarts ?? []);
 		this.chat.hydrateCompactionStatus(
 			page.value.compactionReason,
