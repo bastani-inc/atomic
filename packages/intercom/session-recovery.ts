@@ -156,6 +156,8 @@ export interface ReserveRestoringChildRequest {
 	readonly aliases: readonly string[];
 	/** Only keeps the child addressable until the supervisor that restores it reserves it and takes the hold over. */
 	readonly dormant?: boolean;
+	/** The child is starting: each send waits this long for it to register. */
+	readonly holdMs?: number;
 	completion?: Promise<void>;
 }
 
@@ -175,6 +177,7 @@ export function isReserveRestoringChildRequest(value: unknown): value is Reserve
 		request.capability.length > 0 &&
 		(request.group === undefined || typeof request.group === "string") &&
 		(request.dormant === undefined || typeof request.dormant === "boolean") &&
+		(request.holdMs === undefined || (typeof request.holdMs === "number" && Number.isInteger(request.holdMs))) &&
 		Array.isArray(request.aliases) &&
 		request.aliases.every((alias) => typeof alias === "string")
 	);

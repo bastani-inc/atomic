@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { visibleWidth } from "@bastani/atomic-tui";
+import { setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { cancelReasonText } from "../../packages/coding-agent/src/core/tasks/cancel-reason.js";
 import {
 	formatTaskCompletion,
@@ -21,8 +22,9 @@ import {
 	TaskCompletionMessage,
 } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { assertBackgroundFill } from "../helpers/background-fill.js";
 import { taskRecord } from "../helpers/task-record.js";
+
+setKeybindings(new KeybindingsManager());
 
 const task = taskRecord("completion");
 const envelope: TaskCompletionEnvelope = {
@@ -259,64 +261,87 @@ test("a completion envelope names its task's kind only when it is known", () => 
 	});
 });
 
-test("completion cards shade their full width with chat-card padding in both themes", () => {
+test("a finished task's notice is one unshaded notice line at 80 and 160 columns, in both themes", () => {
 	for (const mode of ["dark", "light"] as const) {
 		initTheme(mode);
-		for (const status of ["completed", "failed", "cancelled"] as const) {
-			const notice = { title: `Reviewer ${status}`, preview: "A useful result", status, taskId: "task-card" };
-			for (const expanded of [false, true]) {
-				const card = new TaskCompletionMessage(notice, expanded);
-				for (const width of [1, 2, 24, 48, 100]) {
-					const rows = card.render(width);
-					assert.ok(rows.every((line) => visibleWidth(line) === width));
-					assert.equal(rows[0], theme.bg("customMessageBg", " ".repeat(width)));
-					assert.equal(rows.at(-1), rows[0]);
-					const background = rows[0].match(/\x1b\[[0-9;]+m/)?.[0];
-					assert.ok(background);
-					assert.ok(
-						rows.every((line) => line.includes(background)),
-						"all card rows carry the background",
-					);
-					if (width >= 48) {
-						assert.match(stripVTControlCharacters(rows[1]), /^ [✓✗] Reviewer/);
-						assert.match(rows.map(stripVTControlCharacters).join("\n"), /A useful result/);
-					}
-				}
-			}
+		const shell = taskCompletionNotice(
+			{ ...envelope, result: { kind: "completed", output: task.output, exitCode: 0 } },
+			{
+				kind: "command",
+				title: "Print six ticks spaced 30 seconds apart",
+				agentName: undefined,
+				model: undefined,
+				thinking: undefined,
+				metrics: { elapsedMs: 182_000 },
+			},
+			"tick 1\ntick 2\ntick 3\ntick 4",
+		);
+		for (const [width, text] of [
+			[160, '● Background command "Print six ticks spaced 30 seconds apart" completed (exit code 0) · 3m 2s'],
+			[80, '● Background command "Print six ticks spaced 3…" completed (exit code 0) · 3m 2s'],
+		] as const) {
+			const rows = new TaskCompletionMessage(shell, false).render(width);
+			assert.deepEqual(
+				rows.map((row) => stripVTControlCharacters(row)),
+				[text],
+			);
+			assert.ok(rows.every((row) => visibleWidth(row) <= width));
+			assert.ok(!rows[0]!.includes(theme.getBgAnsi("customMessageBg")), "no card shading");
+			assert.ok(rows[0]!.startsWith(theme.fg("success", "●")));
 		}
+		const expanded = new TaskCompletionMessage(shell, true).render(80).map((row) => stripVTControlCharacters(row));
+		assert.deepEqual(expanded.slice(1), ["  ⎿  tick 1", "     tick 2", "     tick 3", "     tick 4"]);
 	}
 });
 
 test.each([
 	{
-		label: "subagent",
-		title: `Subagent codebase-analyzer completed: <keepContext>Read-only, no edits/workflows. ${"界".repeat(80)}`,
+		result: { kind: "failed", code: "exit", message: "exit 1", exitCode: 1 },
+		line: /^✗ Background command "npm test" failed \(exit code 1\)/,
+	},
+	{ result: { kind: "cancelled", cause: "user" }, line: /^◼ Task "npm test" was stopped by the user$/ },
+	{
+		result: { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 300_000 },
+		line: /^! Background command "npm test" timed out after 300 seconds$/,
 	},
 	{
-		label: "shell",
-		title: "Background shell completed: git status --short; git diff --check && git add packages/coding-agent/CHANGELOG.md packages/workflows/CHANGELOG.md packages/coding-agent/docs/background-tasks.md",
+		result: { kind: "cancelled", cause: "owner-close", ownerClose: "stage-close" },
+		line: /^◼ Background command "npm test" was stopped \(workflow stage closed\)$/,
 	},
-])("$label completion titles, wrapped Markdown and expand hints keep every card cell shaded", async ({ title }) => {
-	for (const mode of ["dark", "light"] as const) {
-		initTheme(mode);
-		const notice = {
-			title,
-			preview:
-				"## Analysis: Task UI retention\n\n**Current behavior is persistent retention, not stale-task expiry.** " +
-				"Long result text. ".repeat(50),
-			status: "completed" as const,
-			taskId: "long-task-identity".repeat(12),
-		};
-		for (const expanded of [false, true]) {
-			for (const width of [12, 48, 80, 120]) {
-				await assertBackgroundFill(
-					new TaskCompletionMessage(notice, expanded).render(width),
-					width,
-					theme.getBgAnsi("customMessageBg"),
-				);
-			}
-		}
-	}
+] as const)("a shell notice reads how it ended: $line", ({ result, line }) => {
+	initTheme("dark");
+	const notice = taskCompletionNotice(
+		{ ...envelope, result: result as TaskCompletionEnvelope["result"] },
+		{
+			kind: "command",
+			title: "npm test",
+			agentName: undefined,
+			model: undefined,
+			thinking: undefined,
+		},
+	);
+	const [row] = new TaskCompletionMessage(notice, false).render(120);
+	assert.match(stripVTControlCharacters(row!), line);
+});
+
+test("notices joined in one message show one line each", () => {
+	initTheme("dark");
+	const first = taskCompletionNotice(
+		{ ...envelope, result: { kind: "completed", output: task.output, exitCode: 0 } },
+		{ kind: "command", title: "build", agentName: undefined, model: undefined, thinking: undefined },
+	);
+	const second = taskCompletionNotice(
+		{ ...envelope, result: { kind: "cancelled", cause: "user" } },
+		{ kind: "command", title: "sleep 300", agentName: undefined, model: undefined, thinking: undefined },
+	);
+	const rows = new TaskCompletionMessage([first, second], false)
+		.render(100)
+		.map((row) => stripVTControlCharacters(row));
+	assert.deepEqual(rows, [
+		'● Background command "build" completed (exit code 0)',
+		"",
+		'◼ Task "sleep 300" was stopped by the user',
+	]);
 });
 
 test("a subagent's completion notice shows its result's headline and keeps the rest behind expand (#5224)", () => {
@@ -329,16 +354,18 @@ test("a subagent's completion notice shows its result's headline and keeps the r
 		model: "anthropic/claude-haiku-4-5",
 	};
 	const collapsed = stripVTControlCharacters(new TaskCompletionMessage(notice, false).render(100).join("\n"));
-	assert.match(collapsed, /⎿ PR #5221 open: atomic lock creation/);
+	assert.match(collapsed, /⎿ {2}PR #5221 open: atomic lock creation/);
 	assert.doesNotMatch(collapsed, /second line/);
-	assert.match(collapsed, /\/tasks to inspect/);
+	assert.match(collapsed, /\(ctrl\+o for the full result\)/);
+	assert.doesNotMatch(collapsed, /\/tasks to inspect|claude-haiku/, "no model line or /tasks hint (#5224 mockup)");
 	const expanded = stripVTControlCharacters(new TaskCompletionMessage(notice, true).render(100).join("\n"));
 	assert.match(expanded, /fourth line/);
 	const { model: _model, ...withoutModel } = notice;
 	const shell = { ...withoutModel, title: "Background shell completed", taskKind: "command" as const };
 	const shellText = stripVTControlCharacters(new TaskCompletionMessage(shell, false).render(100).join("\n"));
-	assert.match(shellText, /fourth line/);
-	assert.doesNotMatch(shellText, /PR #5221/);
+	assert.doesNotMatch(shellText, /fourth line|PR #5221/, "a shell's notice is one line until expanded");
+	const shellExpanded = stripVTControlCharacters(new TaskCompletionMessage(shell, true).render(100).join("\n"));
+	assert.match(shellExpanded, /fourth line/);
 });
 
 test("completion notices distinguish agents without model metadata from shell output tails (#5243)", () => {
@@ -346,7 +373,7 @@ test("completion notices distinguish agents without model metadata from shell ou
 	const preview = Array.from({ length: 10 }, (_, index) => `line${index + 1}`).join("\n");
 	const agent = taskCompletionNotice(envelope, { kind: "agent", title: "worker" }, preview);
 	const agentText = stripVTControlCharacters(new TaskCompletionMessage(agent, false).render(100).join("\n"));
-	assert.match(agentText, /⎿ line1\s/);
+	assert.match(agentText, /⎿ {2}line1\s/);
 	assert.doesNotMatch(agentText, /line2/);
 	const restored = completionNoticeFromDetails({ notification: agent });
 	assert.ok(restored);
@@ -357,14 +384,14 @@ test("completion notices distinguish agents without model metadata from shell ou
 	);
 	const shell = taskCompletionNotice({ ...envelope, taskKind: "command" }, undefined, preview);
 	const shellText = stripVTControlCharacters(new TaskCompletionMessage(shell, false).render(100).join("\n"));
-	assert.match(shellText, /⎿ line8\s/);
-	assert.match(shellText, /line10/);
-	assert.doesNotMatch(shellText, /line1\s/);
+	assert.doesNotMatch(shellText, /line/, "a shell's notice is one line until expanded");
+	const shellExpanded = stripVTControlCharacters(new TaskCompletionMessage(shell, true).render(100).join("\n"));
+	assert.match(shellExpanded, /line10/);
 	const longShell = taskCompletionNotice(
 		{ ...envelope, taskKind: "command" },
 		undefined,
 		`${"earlier output\n".repeat(1_000)}${preview}`,
 	);
 	assert.ok(longShell.preview.length <= 8_000);
-	assert.match(stripVTControlCharacters(new TaskCompletionMessage(longShell, false).render(100).join("\n")), /line10/);
+	assert.match(stripVTControlCharacters(new TaskCompletionMessage(longShell, true).render(100).join("\n")), /line10/);
 });
