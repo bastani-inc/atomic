@@ -21,6 +21,7 @@ export interface WorkerFleetScaling {
 	readonly minHosts: number;
 	readonly maxHosts: number;
 	readonly workersPerHost: number;
+	readonly rateCapHosts?: number;
 }
 
 /** What the metrics read of a fleet: the store's state, and the scaling signal once the store was read. */
@@ -70,6 +71,12 @@ export function prometheusText(fleet: WorkerMetricsFleet): string {
 			`atomic_fleet_slots{state="busy"} ${scaling.busySlots}`,
 			`atomic_fleet_slots{state="idle"} ${scaling.idleSlots}`,
 		);
+		if (scaling.rateCapHosts !== undefined)
+			lines.push(
+				"# HELP atomic_fleet_rate_cap_hosts Most hosts the fleet-wide rate limits keep busy, by the last 10 minutes of tokens.",
+				"# TYPE atomic_fleet_rate_cap_hosts gauge",
+				`atomic_fleet_rate_cap_hosts ${scaling.rateCapHosts}`,
+			);
 	}
 	return `${lines.join("\n")}\n`;
 }

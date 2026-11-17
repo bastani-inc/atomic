@@ -1,6 +1,8 @@
 import { ensureStorageSchema, type SqliteExecutor, type SqliteRow, type StorageDialect } from "@bastani/atomic/storage";
 import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { poolSchemaPresent } from "./pool-schema-probe.js";
+import type { SharedPoolFleetController, SharedPoolScaleEvent } from "./shared-pool-types.js";
+import { withoutUrlCredentials } from "./shared-store-health.js";
 import type { RunJournal } from "./types.js";
 
 /**
@@ -57,6 +59,7 @@ export interface FleetRootRow {
 	readonly sessionLimit?: number;
 	/** Budget-blocked, paused, or its root process stopped renewing its lease: it starts no child now. */
 	readonly blocked: boolean;
+	readonly rateScopes?: readonly string[];
 }
 
 /** A registered worker host as the controller reads it. */
@@ -109,6 +112,65 @@ async function tableExists(executor: SqliteExecutor, dialect: StorageDialect, na
 	return (await executor.get(probe.sql, ...probe.params)) !== undefined;
 }
 
+export const FLEET_STATUS_EVENTS = 5;
+
+function eventError(text: string): { readonly name: string; readonly message: string } {
+	const colon = text.indexOf(": ");
+	return colon > 0
+		? { name: text.slice(0, colon), message: withoutUrlCredentials(text.slice(colon + 2)) }
+		: { name: "Error", message: withoutUrlCredentials(text) };
+}
+
+export async function readFleetControl(
+	executor: SqliteExecutor,
+	storage: Pick<SqlPoolStorage, "tables" | "dialect">,
+): Promise<{
+	readonly controller?: SharedPoolFleetController;
+	readonly scaleEvents?: readonly SharedPoolScaleEvent[];
+}> {
+	const runs = storage.tables.runs;
+	const lease = `${runs}_fleet_controller`;
+	if (!(await tableExists(executor, storage.dialect, lease))) return {};
+	const holder = await executor.get<SqliteRow & { holder: string; epoch: number; ago: number; lease_ms: number }>(
+		`WITH clock AS (SELECT ${storage.dialect.nowMs} AS now)
+		SELECT holder, epoch, (SELECT now FROM clock) - renewed_at AS ago, lease_ms FROM ${lease} WHERE id = 1`,
+	);
+	const events = await executor.all<
+		SqliteRow & {
+			seq: number;
+			ago: number;
+			kind: string;
+			target: number | null;
+			live: number | null;
+			reason: string;
+			error: string | null;
+		}
+	>(
+		`SELECT seq, ${storage.dialect.nowMs} - at AS ago, kind, target, live, reason, error FROM ${runs}_fleet_events
+		ORDER BY seq DESC LIMIT ?`,
+		FLEET_STATUS_EVENTS,
+	);
+	const running = holder !== undefined && Number(holder.ago) < Number(holder.lease_ms);
+	return {
+		...(running
+			? { controller: { holder: holder.holder, epoch: Number(holder.epoch), renewedAgoMs: Number(holder.ago) } }
+			: {}),
+		...(events.length === 0
+			? {}
+			: {
+					scaleEvents: events.map((row) => ({
+						seq: Number(row.seq),
+						agoMs: Math.max(0, Number(row.ago)),
+						kind: row.kind,
+						...(row.target === null ? {} : { target: Number(row.target) }),
+						...(row.live === null ? {} : { live: Number(row.live) }),
+						reason: withoutUrlCredentials(row.reason),
+						...(row.error === null ? {} : { error: eventError(row.error) }),
+					})),
+				}),
+	};
+}
+
 /** The queue of each running or paused shared root, as the fleet's policy counts it. */
 async function rootDemand(executor: SqliteExecutor, storage: SqlPoolStorage): Promise<FleetRootRow[]> {
 	const runs = storage.tables.runs;
@@ -128,14 +190,19 @@ async function rootDemand(executor: SqliteExecutor, storage: SqlPoolStorage): Pr
 		WHERE r.status IN ('running', 'paused') ORDER BY ${storage.dialect.rowOrder("s")}`,
 	);
 	return rows.map((row) => {
-		const session = (JSON.parse(row.config) as { admission?: { limits?: { session?: number } } }).admission?.limits
-			?.session;
+		const config = JSON.parse(row.config) as {
+			admission?: { limits?: { session?: number } };
+			rateLimits?: Readonly<Record<string, unknown>>;
+		};
+		const session = config.admission?.limits?.session;
+		const rateScopes = Object.keys(config.rateLimits ?? {}).sort();
 		return {
 			root: row.root,
 			ready: Number(row.ready),
 			leased: Number(row.leased),
 			...(session === undefined ? {} : { sessionLimit: session }),
 			blocked: Number(row.blocked) === 1,
+			...(rateScopes.length === 0 ? {} : { rateScopes }),
 		};
 	});
 }

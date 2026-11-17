@@ -107,6 +107,11 @@ export interface WorkflowFleetStatus {
 	readonly target?: number;
 	readonly live?: number;
 	readonly pending?: number;
+	/**
+	 * While active, the most hosts the fleet-wide rate limits keep busy, by the tokens hosts drew over the last 10
+	 * minutes, once a limited scope has a minute of history: `target` exceeds it only when `minHosts` asks for more.
+	 */
+	readonly rateCapHosts?: number;
 	/** Set while its provisioner or journal calls fail. */
 	readonly degraded?: { readonly failures: number; readonly since: number; readonly error: WorkflowFleetFailure };
 }

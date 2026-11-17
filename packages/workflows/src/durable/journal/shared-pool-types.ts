@@ -36,6 +36,31 @@ export interface SharedPoolHostReport {
 	readonly degraded?: { readonly failures: number; readonly error: SharedPoolFailure };
 	/** The id its provisioner knows it by, for a host a fleet controller started (`ATOMIC_PROVIDER_ID`). */
 	readonly providerId?: string;
+	/** How far its checkpoint shipping lags behind its children, while a root it serves ships checkpoints (#4768). */
+	readonly shipping?: SharedPoolHostShipping;
+	/** Progress of each child it runs, as of this report (#4768). */
+	readonly progress?: readonly SharedPoolChildProgress[];
+}
+
+/** A host's checkpoint shipping as it reports it (#4768). */
+export interface SharedPoolHostShipping {
+	/** Age of the oldest checkpoint the host accepted and has not shipped, 0 when it holds none. */
+	readonly lagMs: number;
+	/** Checkpoints accepted and not shipped yet, across its children. */
+	readonly pending: number;
+	/** Its oldest unshipped checkpoint reached its catch-up point: it claims no new children until it catches up. */
+	readonly lagging?: boolean;
+	/** The last failure of a delivery, while deliveries fail. */
+	readonly error?: SharedPoolFailure;
+}
+
+/** One running child's progress, as the host running it reports it (#4768). */
+export interface SharedPoolChildProgress {
+	readonly work: string;
+	/** How long before the report its attempt last recorded a checkpoint or a session entry. */
+	readonly agoMs: number;
+	/** Checkpoints its attempt recorded on this host. */
+	readonly checkpoints: number;
 }
 
 /**
@@ -45,12 +70,6 @@ export interface SharedPoolHostReport {
 export interface SharedPoolHost extends SharedPoolHostReport {
 	readonly heartbeatAgoMs: number;
 	readonly state: SharedPoolHostState;
-	/** How far the host's checkpoint shipping lags behind its children, once hosts ship checkpoints in the background. */
-	readonly shipping?: {
-		readonly lagMs: number;
-		readonly pending: number;
-		readonly error?: SharedPoolFailure;
-	};
 }
 
 /**
@@ -76,8 +95,9 @@ export interface SharedPoolScaleEvent {
 	readonly seq: number;
 	readonly agoMs: number;
 	readonly kind: string;
-	readonly target: number;
-	readonly live: number;
+	/** The serving hosts the controller wanted, and those it had, for an event a plan made. */
+	readonly target?: number;
+	readonly live?: number;
 	readonly reason: string;
 	readonly error?: SharedPoolFailure;
 }
@@ -87,6 +107,8 @@ export interface SharedPoolRateLimit {
 	readonly scope: string;
 	/** How long every host still waits after a 429 of this scope; 0 when it does not. */
 	readonly cooldownInMs: number;
+	/** The scope's limit across every host, for a scope a root limits rather than one only a 429 cooled down. */
+	readonly requestsPerMinute?: number;
 }
 
 /**
@@ -121,6 +143,12 @@ export interface SharedPoolStats {
 		readonly generation: number;
 		readonly renewedAgoMs: number;
 		readonly expiresInMs: number;
+		/**
+		 * How long ago the child last recorded a checkpoint or a session entry, and how many checkpoints its attempt
+		 * recorded, as its host last reported (#4768); absent until a host of this version reports it.
+		 */
+		readonly lastProgressAgoMs?: number;
+		readonly checkpoints?: number;
 	}[];
 	readonly fleet: SharedPoolFleetStatus;
 }
@@ -130,7 +158,9 @@ export interface SharedPoolStats {
  * any autoscaler to act on (KEDA, a cloud's own scaling group, a script). Counts only; it names no host or root.
  */
 export interface SharedPoolFleetScaling {
-	/** Serving hosts the policy wants: `clamp(minHosts, maxHosts, ceil(demand / workersPerHost))`. */
+	/**
+	 * Serving hosts the policy wants: `clamp(minHosts, maxHosts, min(ceil(demand / workersPerHost), rateCapHosts))`.
+	 */
 	readonly desiredHosts: number;
 	/** `desiredHosts × workersPerHost`. */
 	readonly desiredWorkers: number;
@@ -149,6 +179,11 @@ export interface SharedPoolFleetScaling {
 	readonly minHosts: number;
 	readonly maxHosts: number;
 	readonly workersPerHost: number;
+	/**
+	 * The most hosts the fleet-wide rate limits keep busy, from the tokens hosts drew over the last 10 minutes, once a
+	 * reader that keeps that history has it: a fleet controller, or `atomic worker metrics`. Absent otherwise.
+	 */
+	readonly rateCapHosts?: number;
 }
 
 /**

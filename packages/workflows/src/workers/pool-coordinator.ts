@@ -724,6 +724,7 @@ export class PoolCoordinator {
 	private usageChanged = false;
 	private budgetBlocked = false;
 	private shipping: CheckpointShipping | undefined;
+	private readonly progress = new Map<string, { readonly generation: number; at: number; checkpoints: number }>();
 	private openingShipping?: Promise<CheckpointShipping | undefined>;
 	private desiredControl?: PoolControl["state"];
 	private root?: string;
@@ -1512,6 +1513,39 @@ export class PoolCoordinator {
 	/** The work this coordinator's workers hold now. */
 	heldWork(): readonly PoolWork[] {
 		return [...this.slots].flatMap((slot) => (slot.work === undefined ? [] : [slot.work]));
+	}
+
+	shippingStatus():
+		| { readonly lagMs: number; readonly pending: number; readonly lagging: boolean; readonly error?: Error }
+		| undefined {
+		const shipping = this.shipping;
+		if (shipping === undefined) return undefined;
+		return { ...shipping.status(), lagging: shipping.lagging() };
+	}
+
+	childProgress(
+		now = performance.now(),
+	): { readonly work: string; readonly agoMs: number; readonly checkpoints: number }[] {
+		const held = new Map(this.heldWork().map((work) => [work.id, work.generation]));
+		const progress: { readonly work: string; readonly agoMs: number; readonly checkpoints: number }[] = [];
+		for (const [work, entry] of this.progress) {
+			if (held.get(work) !== entry.generation) {
+				this.progress.delete(work);
+				continue;
+			}
+			progress.push({ work, agoMs: Math.max(0, Math.round(now - entry.at)), checkpoints: entry.checkpoints });
+		}
+		return progress;
+	}
+
+	private noteProgress(work: PoolWork, checkpoint: boolean): void {
+		const entry = this.progress.get(work.id);
+		const current = entry?.generation === work.generation ? entry : undefined;
+		this.progress.set(work.id, {
+			generation: work.generation,
+			at: performance.now(),
+			checkpoints: (current?.checkpoints ?? 0) + (checkpoint ? 1 : 0),
+		});
 	}
 
 	/** The work a worker host's workers claimed since the last call, however briefly they held it (#4768). */
@@ -2992,6 +3026,7 @@ export class PoolCoordinator {
 										this.whileRootLate(queue, renewAttempt),
 									),
 						);
+						this.noteProgress(work, message.mutation.kind !== "session-append");
 						if (message.mutation.kind !== "session-append" && receipt.local !== true)
 							this.noteUsage(await this.usageLedger!.total(root));
 						return receipt;

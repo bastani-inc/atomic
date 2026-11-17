@@ -1,7 +1,14 @@
-import { ensureStorageSchema, fencedPath, type SqliteRow, type SqliteStatement } from "@bastani/atomic/storage";
+import {
+	ensureStorageSchema,
+	fencedPath,
+	type SqliteExecutor,
+	type SqliteRow,
+	type SqliteStatement,
+} from "@bastani/atomic/storage";
 import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { poolWriteBatch } from "./pool-guarded-write.js";
 import { poolSchemaPresent } from "./pool-schema-probe.js";
+import type { SharedPoolRateLimit } from "./shared-pool-types.js";
 import { FLEET_HOST_LIVE_MS } from "./sql-fleet.js";
 import type { RunJournal } from "./types.js";
 
@@ -31,6 +38,36 @@ export interface RateBucketPoll {
 
 const RATE_BUCKET = { audit: fencedPath("rate-bucket") } as const;
 
+export const RATE_BUCKET_ACQUIRED = "acquired";
+
+export interface RateBucketUsage {
+	readonly scope: string;
+	readonly acquired: number;
+	readonly intervalMs: number;
+	readonly now: number;
+}
+
+export async function readRateBucketUsage(
+	executor: SqliteExecutor,
+	storage: Pick<SqlPoolStorage, "tables" | "dialect">,
+): Promise<RateBucketUsage[]> {
+	const table = `${storage.tables.runs}_rate_buckets`;
+	const probe = storage.dialect.tableExists(table);
+	if ((await executor.get(probe.sql, ...probe.params)) === undefined) return [];
+	const column = storage.dialect.columnExists(table, RATE_BUCKET_ACQUIRED);
+	if ((await executor.get(column.sql, ...column.params)) === undefined) return [];
+	const rows = await executor.all<SqliteRow & { scope: string; acquired: number; interval_ms: number; now: number }>(
+		`SELECT scope, ${RATE_BUCKET_ACQUIRED} AS acquired, interval_ms, ${storage.dialect.nowMs} AS now FROM ${table}
+		WHERE interval_ms > 0 ORDER BY scope`,
+	);
+	return rows.map((row) => ({
+		scope: row.scope,
+		acquired: Number(row.acquired),
+		intervalMs: Number(row.interval_ms),
+		now: Number(row.now),
+	}));
+}
+
 export class SqlRateBuckets {
 	private readonly table: string;
 	private readonly hosts: string;
@@ -50,14 +87,23 @@ export class SqlRateBuckets {
 		const store = new SqlRateBuckets(storage);
 		const { int, real } = storage.dialect.types;
 		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
-		const schema = { ledger: poolSchemaLedger(storage), domain: "rate-buckets", revision: 1 };
+		const schema = { ledger: poolSchemaLedger(storage), domain: "rate-buckets", revision: 2 };
 		const table = `CREATE TABLE IF NOT EXISTS ${store.table}(
 				scope TEXT PRIMARY KEY, tat ${int} NOT NULL, interval_ms ${real} NOT NULL, burst ${int} NOT NULL,
 				cooldown_until ${int} NOT NULL DEFAULT 0, kind TEXT, updated_at ${int}
 			)`;
 		// A schema that is current opens with reads alone, without a shared server's write lock (#4768).
-		if (await poolSchemaPresent(storage, [table])) return store;
-		await storage.transaction((tx) => ensureStorageSchema(tx, storage.dialect, schema, () => tx.exec(table)));
+		if (await poolSchemaPresent(storage, [table], [[store.table, RATE_BUCKET_ACQUIRED]])) return store;
+		await storage.transaction((tx) =>
+			ensureStorageSchema(tx, storage.dialect, schema, async () => {
+				await tx.exec(table);
+				const present = storage.dialect.columnExists(store.table, RATE_BUCKET_ACQUIRED);
+				if (!(await tx.get(present.sql, ...present.params)))
+					await tx.exec(
+						`ALTER TABLE ${store.table} ADD COLUMN ${RATE_BUCKET_ACQUIRED} ${real} NOT NULL DEFAULT 0`,
+					);
+			}),
+		);
 		return store;
 	}
 
@@ -97,10 +143,10 @@ export class SqlRateBuckets {
 			...(shape === undefined ? [] : [this.shape(scope, shape)]),
 			{
 				sql: `WITH clock AS (SELECT ${this.now} AS now)
-					UPDATE ${this.table} SET tat = CAST(${next} AS ${d.types.int}), updated_at = ${now}
+					UPDATE ${this.table} SET tat = CAST(${next} AS ${d.types.int}), ${RATE_BUCKET_ACQUIRED} = ${RATE_BUCKET_ACQUIRED} + ?, updated_at = ${now}
 					WHERE scope = ? AND ${next} - ${now} <= burst * interval_ms AND cooldown_until <= ${now}
 					RETURNING tat`,
-				params: [count, scope, count],
+				params: [count, count, scope, count],
 			},
 			{
 				sql: `SELECT tat, interval_ms, burst, cooldown_until, ${this.now} AS now FROM ${this.table} WHERE scope = ?`,
@@ -160,6 +206,37 @@ export class SqlRateBuckets {
 			};
 		});
 	}
+}
+
+export async function readFleetRateUsage(journal: RunJournal): Promise<RateBucketUsage[]> {
+	const storage = sqlPoolStorage(journal);
+	if (storage === undefined) return [];
+	return storage.read((executor) => readRateBucketUsage(executor, storage));
+}
+
+export async function readRateLimitStatus(
+	executor: SqliteExecutor,
+	storage: Pick<SqlPoolStorage, "tables" | "dialect">,
+): Promise<SharedPoolRateLimit[]> {
+	const table = `${storage.tables.runs}_rate_buckets`;
+	const probe = storage.dialect.tableExists(table);
+	if ((await executor.get(probe.sql, ...probe.params)) === undefined) return [];
+	const rows = await executor.all<SqliteRow & { scope: string; interval_ms: number; remaining: number }>(
+		`WITH clock AS (SELECT ${storage.dialect.nowMs} AS now)
+		SELECT scope, interval_ms, cooldown_until - (SELECT now FROM clock) AS remaining FROM ${table} ORDER BY scope`,
+	);
+	return rows.flatMap((row) => {
+		const intervalMs = Number(row.interval_ms);
+		const cooldownInMs = Math.max(0, Math.ceil(Number(row.remaining)));
+		if (intervalMs <= 0 && cooldownInMs === 0) return [];
+		return [
+			{
+				scope: row.scope,
+				cooldownInMs,
+				...(intervalMs > 0 ? { requestsPerMinute: Math.round((60_000 / intervalMs) * 1000) / 1000 } : {}),
+			},
+		];
+	});
 }
 
 /** A bucket as GCRA keeps it, on one clock. */

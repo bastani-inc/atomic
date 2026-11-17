@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { SessionEntry } from "@bastani/atomic";
 import { dialectOf, type SqliteDatabase, type SqliteRow, type SqliteValue } from "@bastani/atomic/storage";
 import { describe } from "vitest";
@@ -8,9 +10,13 @@ import { poolStageUsageKey } from "../../packages/workflows/src/durable/journal/
 import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
-import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
+import { readFleetRateUsage, SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
+import {
+	readSharedPoolFleet,
+	readSharedPoolStats,
+	SqlSharedPool,
+} from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import { isStaleLeaseError, type Lease, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
@@ -470,6 +476,206 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			assert.equal((await store.snapshot()).roots[0]?.blocked, true);
 		});
 
+		test("fleet status reads the controller that holds the fleet's lease, its latest decisions and every rate limit, from any connection (#4768)", async (f) => {
+			const shared = await SqlSharedPool.open(f.journal, f.pool);
+			await shared.publishConfig(f.lease, sharedConfig);
+			const controller = await SqlFleetStore.open(f.journal);
+			assert.deepEqual(await controller.acquire("controller-a", undefined, 60_000), { held: true, epoch: 1 });
+			const fence = { holder: "controller-a", epoch: 1 };
+			for (let step = 1; step <= 7; step++)
+				await controller.record(fence, { kind: "scale-up", target: step + 1, live: step, reason: `step ${step}` });
+			await controller.record(fence, {
+				kind: "error",
+				reason: "scaleTo failed",
+				error: "WorkerProvisionerError: az: https://me:secret@vault.example/x denied",
+			});
+			const buckets = await SqlRateBuckets.open(f.journal);
+			await buckets.acquire("anthropic", 1, { intervalMs: 1_000, burst: 2 });
+			await buckets.cooldown("openai/gpt", 30_000);
+			const peer = await f.peer();
+			const fleet = (await readSharedPoolStats(peer, "root"))!.fleet;
+			assert.deepEqual(
+				{ holder: fleet.controller?.holder, epoch: fleet.controller?.epoch },
+				{ holder: "controller-a", epoch: 1 },
+			);
+			assert.ok(
+				fleet.controller !== undefined &&
+					fleet.controller.renewedAgoMs >= 0 &&
+					fleet.controller.renewedAgoMs < 60_000,
+				JSON.stringify(fleet.controller),
+			);
+			assert.deepEqual(
+				fleet.scaleEvents?.map((event) => [
+					event.seq,
+					event.kind,
+					event.target,
+					event.live,
+					event.reason,
+					event.error,
+				]),
+				[
+					[
+						8,
+						"error",
+						undefined,
+						undefined,
+						"scaleTo failed",
+						{ name: "WorkerProvisionerError", message: "az: https://vault.example/x denied" },
+					],
+					[7, "scale-up", 8, 7, "step 7", undefined],
+					[6, "scale-up", 7, 6, "step 6", undefined],
+					[5, "scale-up", 6, 5, "step 5", undefined],
+					[4, "scale-up", 5, 4, "step 4", undefined],
+				],
+			);
+			assert.deepEqual(
+				fleet.rateLimits?.map((limit) => [limit.scope, limit.requestsPerMinute, limit.cooldownInMs > 0]),
+				[
+					["anthropic", 60, false],
+					["openai/gpt", undefined, true],
+				],
+			);
+			const cooling = fleet.rateLimits![1]!.cooldownInMs;
+			assert.ok(cooling > 0 && cooling <= 30_000, String(cooling));
+			const fromFleet = (await readSharedPoolFleet(peer))!.fleet;
+			assert.deepEqual(
+				[
+					fromFleet.controller?.holder,
+					fromFleet.scaleEvents?.map((event) => event.seq),
+					fromFleet.rateLimits?.length,
+				],
+				["controller-a", [8, 7, 6, 5, 4], 2],
+			);
+			await controller.release(fence);
+			const after = (await readSharedPoolStats(peer, "root"))!.fleet;
+			assert.equal(after.controller, undefined, "a controller that gave its lease up holds no fleet");
+			assert.equal(after.scaleEvents?.length, 5);
+		});
+
+		test("a host's checkpoint shipping and its children's progress reach fleet status from any connection, until a host of 0.9.88 reports in its place (#4768)", async (f) => {
+			const shared = await SqlSharedPool.open(f.journal, f.pool);
+			await shared.publishConfig(f.lease, sharedConfig);
+			const item = poolWorkFixture("progress");
+			await f.pool.enqueue(f.lease, item.work, item.boundary);
+			const claimed = await f.pool.claim(f.lease, "h1/worker-1", [definition], 60_000);
+			assert.ok(claimed);
+			const report = {
+				host: "h1",
+				labels: {},
+				git: "unavailable" as const,
+				restore: false,
+				workers: 1,
+				maxWorkers: 1,
+				roots: ["root"],
+				busy: 1,
+			};
+			await shared.reportHost({
+				...report,
+				shipping: {
+					lagMs: 1_500,
+					pending: 4,
+					lagging: true,
+					error: { name: "StorageError", message: "fetch libsql://me:pw@db.example/x failed" },
+				},
+				progress: [{ work: claimed.id, agoMs: 250, checkpoints: 3 }],
+			});
+			const peer = await f.peer();
+			const stats = (await readSharedPoolStats(peer, "root"))!;
+			assert.deepEqual(stats.hosts.find((host) => host.host === "h1")?.shipping, {
+				lagMs: 1_500,
+				pending: 4,
+				lagging: true,
+				error: { name: "StorageError", message: "fetch libsql://db.example/x failed" },
+			});
+			const [lease] = stats.leases;
+			assert.equal(lease?.checkpoints, 3);
+			assert.ok(
+				lease?.lastProgressAgoMs !== undefined &&
+					lease.lastProgressAgoMs >= 250 &&
+					lease.lastProgressAgoMs < 60_250,
+				JSON.stringify(lease),
+			);
+			const older = await release0988();
+			const olderJournal = await f.peer();
+			older.adopt(olderJournal);
+			const olderPool = await older.SqlSharedPool.open(olderJournal, await openSqlPoolQueue(olderJournal));
+			const reported = await databaseNow(f.database);
+			while ((await databaseNow(f.database)) <= reported) await delay(1);
+			await olderPool.reportHost(report);
+			const replaced = (await readSharedPoolStats(peer, "root"))!;
+			assert.equal(replaced.hosts.find((host) => host.host === "h1")?.shipping, undefined);
+			assert.deepEqual(
+				replaced.leases.map((entry) => [entry.lastProgressAgoMs, entry.checkpoints]),
+				[[undefined, undefined]],
+				"a report of a version that sends no progress hides what an earlier report of the host sent",
+			);
+		});
+
+		for (const first of ["0.9.88", "this version"] as const)
+			test(`a 0.9.88 host and this version share one pool's registry and rate buckets when ${first} opens them first (#4768)`, async (f) => {
+				const older = await release0988();
+				const olderJournal = await f.peer();
+				older.adopt(olderJournal);
+				const newerJournal = await f.peer();
+				const openOlder = async () => ({
+					pool: await older.SqlSharedPool.open(olderJournal, await openSqlPoolQueue(olderJournal)),
+					buckets: await older.SqlRateBuckets.open(olderJournal),
+				});
+				const openNewer = async () => ({
+					pool: await SqlSharedPool.open(newerJournal, await openSqlPoolQueue(newerJournal)),
+					buckets: await SqlRateBuckets.open(newerJournal),
+				});
+				const [olderStores, newerStores] =
+					first === "0.9.88"
+						? [await openOlder(), await openNewer()]
+						: await (async () => {
+								const newer = await openNewer();
+								return [await openOlder(), newer] as const;
+							})();
+				await newerStores.pool.publishConfig(f.lease, sharedConfig);
+				const host = (name: string) => ({
+					host: name,
+					labels: {},
+					git: "unavailable" as const,
+					restore: false,
+					workers: 1,
+					maxWorkers: 2,
+					roots: ["root"],
+					busy: 0,
+				});
+				await olderStores.pool.reportHost(host("h-0.9.88"));
+				await newerStores.pool.reportHost({ ...host("h-new"), shipping: { lagMs: 0, pending: 0 } });
+				const shape = { intervalMs: 1_000, burst: 10 };
+				assert.deepEqual(await olderStores.buckets.acquire("anthropic", 2, shape), { granted: 2 });
+				assert.deepEqual(await newerStores.buckets.acquire("anthropic", 3, shape), { granted: 3 });
+				const reopened = await openOlder();
+				await reopened.pool.reportHost(host("h-0.9.88"));
+				assert.deepEqual(await reopened.buckets.acquire("anthropic", 1, shape), { granted: 1 });
+				assert.deepEqual(
+					(await reopened.pool.registeredHosts()).map((entry: { host: string; maxWorkers: number }) => [
+						entry.host,
+						entry.maxWorkers,
+					]),
+					[
+						["h-0.9.88", 2],
+						["h-new", 2],
+					],
+				);
+				const stats = (await readSharedPoolStats(newerJournal, "root"))!;
+				assert.deepEqual(
+					stats.hosts.map((entry) => [entry.host, entry.shipping]),
+					[
+						["h-0.9.88", undefined],
+						["h-new", { lagMs: 0, pending: 0 }],
+					],
+				);
+				assert.deepEqual(
+					(await readFleetRateUsage(newerJournal)).map((usage) => [usage.scope, usage.acquired]),
+					[["anthropic", 3]],
+					"this version counts the tokens it takes; a 0.9.88 host takes its own without counting them",
+				);
+			});
+
 		test("one fleet controller holds the lease and records under it until another takes it over", async (f) => {
 			const store = await SqlFleetStore.open(f.journal);
 			const other = await SqlFleetStore.open(await f.peer());
@@ -767,6 +973,37 @@ async function assertDenseEvents(f: { database: SqliteDatabase; table: (name: st
 			count,
 			"every checkpoint was recorded",
 		);
+}
+
+interface Release0988Stores {
+	readonly SqlSharedPool: {
+		open(
+			journal: SqlRunJournal,
+			queue: Awaited<ReturnType<typeof openSqlPoolQueue>>,
+		): Promise<{
+			reportHost(host: Parameters<SqlSharedPool["reportHost"]>[0]): Promise<void>;
+			registeredHosts(): Promise<readonly { readonly host: string; readonly maxWorkers: number }[]>;
+		}>;
+	};
+	readonly SqlRateBuckets: {
+		open(journal: SqlRunJournal): Promise<Pick<SqlRateBuckets, "acquire">>;
+	};
+	adopt(journal: SqlRunJournal): void;
+}
+
+async function release0988(): Promise<Release0988Stores> {
+	const fixture = (name: string) =>
+		pathToFileURL(join(import.meta.dirname, "../fixtures/shared-pool-0.9.88/durable/journal", name)).href;
+	const [internal, pool, buckets] = await Promise.all([
+		import(fixture("internal.ts")),
+		import(fixture("sql-shared-pool.ts")),
+		import(fixture("sql-rate-buckets.ts")),
+	]);
+	return {
+		SqlSharedPool: pool.SqlSharedPool,
+		SqlRateBuckets: buckets.SqlRateBuckets,
+		adopt: (journal) => internal.registerSqlPoolStorage(journal, sqlPoolStorage(journal)!),
+	};
 }
 
 function delay(ms: number): Promise<void> {

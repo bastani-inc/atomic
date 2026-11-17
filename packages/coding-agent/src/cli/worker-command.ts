@@ -495,6 +495,7 @@ export interface WorkerHostModule {
 		readonly agentDir: string;
 		readonly policy?: WorkerFleetPolicy;
 		readonly probeWrites?: boolean;
+		readonly rateHistory?: boolean;
 	}): Promise<WorkerFleet>;
 	/** The fleet as status lines, the same lines `/workflow status` shows of it. */
 	workflowWorkerFleetLines(fleet: WorkerFleet): string[];
@@ -778,7 +779,7 @@ async function controller(
 
 /** The scaling signal as one status line. */
 function scalingLine(scaling: WorkerFleetScaling): string {
-	return `Scaling: wants ${scaling.desiredHosts} hosts (${scaling.desiredWorkers} workers) for ${scaling.demand} children, ${scaling.queueDepth} queued; ${scaling.hosts} hosts live, ${scaling.busySlots} busy and ${scaling.idleSlots} idle slots`;
+	return `Scaling: wants ${scaling.desiredHosts} hosts (${scaling.desiredWorkers} workers) for ${scaling.demand} children, ${scaling.queueDepth} queued${scaling.rateCapHosts === undefined ? "" : `, rate limits keep at most ${scaling.rateCapHosts} hosts busy`}; ${scaling.hosts} hosts live, ${scaling.busySlots} busy and ${scaling.idleSlots} idle slots`;
 }
 
 async function metrics(
@@ -798,6 +799,7 @@ async function metrics(
 			policy: command.policy,
 			// A scrape only reads: it never takes the store's write lock.
 			probeWrites: false,
+			rateHistory: true,
 		});
 	let server: WorkerMetricsServer;
 	try {

@@ -14,10 +14,12 @@ import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage, sqlPoolWrites } 
 import { guardedPoolWrite } from "./pool-guarded-write.js";
 import { poolSchemaPresent } from "./pool-schema-probe.js";
 import type {
+	SharedPoolChildProgress,
 	SharedPoolFleet,
 	SharedPoolFleetStatus,
 	SharedPoolHost,
 	SharedPoolHostReport,
+	SharedPoolHostShipping,
 	SharedPoolHostState,
 	SharedPoolStats,
 	WorkerHostGitSource,
@@ -29,8 +31,9 @@ import {
 	sharedStoreHealth,
 	withoutUrlCredentials,
 } from "./shared-store-health.js";
-import { fleetDrainsSchema } from "./sql-fleet.js";
+import { fleetDrainsSchema, readFleetControl } from "./sql-fleet.js";
 import type { PoolWork, SqlPoolQueue } from "./sql-pool-queue.js";
+import { readRateLimitStatus } from "./sql-rate-buckets.js";
 import { type PooledStageInputKind, validateStageInput } from "./stage-input-kinds.js";
 import { JOURNAL_SCHEMA_VERSION, type Lease, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
 import { validateText } from "./values.js";
@@ -50,6 +53,9 @@ const hostStatusColumns = (dialect: StorageDialect) =>
 		provider_id: "TEXT",
 		// The journal schema version the host's build reads, so a later build can tell a live host of an older one (#4965).
 		journal_schema: dialect.types.int,
+		shipping: "TEXT",
+		progress: "TEXT",
+		status_at: dialect.types.int,
 	}) as const;
 
 /** A stage input that answers a prompt the stage raised; its payload is the answer. */
@@ -198,7 +204,7 @@ export class SqlSharedPool {
 		const { dialect } = storage;
 		const { int } = dialect.types;
 		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
-		const schema = { ledger: poolSchemaLedger(storage), domain: "shared-pool", revision: 1 };
+		const schema = { ledger: poolSchemaLedger(storage), domain: "shared-pool", revision: 2 };
 		const tables = `
 				CREATE TABLE IF NOT EXISTS ${pool.shared}(
 					root TEXT PRIMARY KEY REFERENCES ${runs}_pool(root) ON DELETE CASCADE, config TEXT NOT NULL,
@@ -339,12 +345,13 @@ export class SqlSharedPool {
 		await this.plainWrite(
 			[
 				{
-					sql: `INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, slots_busy, draining, degraded, provider_id, journal_schema)
-				VALUES (?, ?, ?, ?, ?, ?, ${this.now}, ?, ?, ?, ?, ?, ?)
+					sql: `INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, slots_busy, draining, degraded, provider_id, journal_schema, shipping, progress, status_at)
+				VALUES (?, ?, ?, ?, ?, ?, ${this.now}, ?, ?, ?, ?, ?, ?, ?, ?, ${this.now})
 				ON CONFLICT(host) DO UPDATE SET labels = excluded.labels, git = excluded.git, restore = excluded.restore,
 				workers = excluded.workers, max_workers = excluded.max_workers, heartbeat_at = excluded.heartbeat_at, roots = excluded.roots,
 				slots_busy = excluded.slots_busy, draining = excluded.draining, degraded = excluded.degraded,
-				provider_id = excluded.provider_id, journal_schema = excluded.journal_schema`,
+				provider_id = excluded.provider_id, journal_schema = excluded.journal_schema, shipping = excluded.shipping,
+				progress = excluded.progress, status_at = excluded.heartbeat_at`,
 					params: [
 						host.host,
 						JSON.stringify(host.labels),
@@ -358,6 +365,8 @@ export class SqlSharedPool {
 						host.degraded === undefined ? null : JSON.stringify(host.degraded),
 						host.providerId ?? null,
 						JOURNAL_SCHEMA_VERSION,
+						host.shipping === undefined ? null : JSON.stringify(host.shipping),
+						host.progress === undefined || host.progress.length === 0 ? null : JSON.stringify(host.progress),
 					],
 				},
 			],
@@ -973,6 +982,10 @@ async function registeredHosts(storage: SqlPoolStorage): Promise<readonly Shared
 				slots_busy?: number | null;
 				draining?: number;
 				degraded?: string | null;
+				shipping?: string | null;
+				progress?: string | null;
+				heartbeat_at: number;
+				status_at?: number | null;
 			}
 		>(
 			`SELECT *, ${storage.dialect.nowMs} - heartbeat_at AS ago FROM ${storage.tables.runs}_pool_hosts ORDER BY host`,
@@ -996,6 +1009,10 @@ async function registeredHosts(storage: SqlPoolStorage): Promise<readonly Shared
 						},
 					}),
 		};
+		const current =
+			row.status_at !== undefined && row.status_at !== null && Number(row.status_at) === Number(row.heartbeat_at);
+		const shipping = current ? reportedShipping(row.shipping) : undefined;
+		const progress = current ? reportedProgress(row.progress) : undefined;
 		return {
 			host: row.host,
 			labels: JSON.parse(row.labels) as Record<string, string>,
@@ -1005,9 +1022,56 @@ async function registeredHosts(storage: SqlPoolStorage): Promise<readonly Shared
 			maxWorkers: Number(row.max_workers),
 			roots: JSON.parse(row.roots) as string[],
 			...(row.provider_id === undefined || row.provider_id === null ? {} : { providerId: row.provider_id }),
+			...(shipping === undefined ? {} : { shipping }),
+			...(progress === undefined ? {} : { progress }),
 			...reported,
 			state: hostState(reported),
 		};
+	});
+}
+
+function reportedJson(text: string | null | undefined): unknown {
+	if (text === undefined || text === null) return undefined;
+	try {
+		return JSON.parse(text) as unknown;
+	} catch {
+		return undefined;
+	}
+}
+
+function finiteAtLeastZero(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function reportedShipping(text: string | null | undefined): SharedPoolHostShipping | undefined {
+	const value = reportedJson(text) as Record<string, unknown> | undefined;
+	if (typeof value !== "object" || value === null) return undefined;
+	const lagMs = finiteAtLeastZero(value.lagMs);
+	const pending = finiteAtLeastZero(value.pending);
+	if (lagMs === undefined || pending === undefined) return undefined;
+	const error = value.error as Record<string, unknown> | undefined;
+	return {
+		lagMs,
+		pending,
+		...(value.lagging === true ? { lagging: true } : {}),
+		...(typeof error === "object" &&
+		error !== null &&
+		typeof error.name === "string" &&
+		typeof error.message === "string"
+			? { error: { name: error.name, message: withoutUrlCredentials(error.message) } }
+			: {}),
+	};
+}
+
+function reportedProgress(text: string | null | undefined): SharedPoolChildProgress[] | undefined {
+	const value = reportedJson(text);
+	if (!Array.isArray(value)) return undefined;
+	return value.flatMap((entry: Record<string, unknown>) => {
+		const agoMs = finiteAtLeastZero(entry?.agoMs);
+		const checkpoints = finiteAtLeastZero(entry?.checkpoints);
+		return typeof entry?.work === "string" && agoMs !== undefined && checkpoints !== undefined
+			? [{ work: entry.work, agoMs, checkpoints }]
+			: [];
 	});
 }
 
@@ -1021,15 +1085,20 @@ async function fleetStatus(
 ): Promise<SharedPoolFleetStatus> {
 	const runs = storage.tables.runs;
 	// An aggregate without GROUP BY gives one row, also when no root matches.
-	const row = (await storage.read((executor) =>
-		executor.get<SqliteRow & { roots: number; ready: number; leased: number; hosts: number }>(
-			`SELECT COUNT(DISTINCT s.root) AS roots,
+	const [row, control, rateLimits] = await storage.read(
+		async (executor) =>
+			[
+				(await executor.get<SqliteRow & { roots: number; ready: number; leased: number; hosts: number }>(
+					`SELECT COUNT(DISTINCT s.root) AS roots,
 			COALESCE(SUM(${storage.dialect.flag("w.state = 'ready'")}), 0) AS ready, COALESCE(SUM(${storage.dialect.flag("w.state = 'leased'")}), 0) AS leased,
 			(SELECT COUNT(*) FROM ${runs}_pool_hosts) AS hosts
 			FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root LEFT JOIN ${runs}_work w ON w.root = s.root
 			WHERE r.status IN ('running', 'paused')`,
-		),
-	))!;
+				))!,
+				await readFleetControl(executor, storage),
+				await readRateLimitStatus(executor, storage),
+			] as const,
+	);
 	return {
 		store: classifySharedStoreHealth({
 			...(writes === undefined ? {} : { writes }),
@@ -1037,6 +1106,8 @@ async function fleetStatus(
 			adapter: storage.adapter,
 		}),
 		queue: { roots: Number(row.roots), ready: Number(row.ready), leased: Number(row.leased) },
+		...control,
+		...(rateLimits.length === 0 ? {} : { rateLimits }),
 	};
 }
 
@@ -1082,15 +1153,23 @@ async function poolStats(
 		fleet(),
 	]);
 	const count = (state: string) => Number(counts.find((row) => row.state === state)?.count ?? 0);
-	const leaseList = leases.map((row) => ({
-		work: row.id,
-		childRunId: String(row.child),
-		worker: row.worker,
-		host: workerHost(row.worker),
-		generation: Number(row.generation),
-		renewedAgoMs: Number(row.renewed),
-		expiresInMs: Number(row.expires),
-	}));
+	const leaseList = leases.map((row) => {
+		const host = workerHost(row.worker);
+		const reporter = hosts.find((entry) => entry.host === host);
+		const progress = reporter?.progress?.find((entry) => entry.work === row.id);
+		return {
+			work: row.id,
+			childRunId: String(row.child),
+			worker: row.worker,
+			host,
+			generation: Number(row.generation),
+			renewedAgoMs: Number(row.renewed),
+			expiresInMs: Number(row.expires),
+			...(progress === undefined || reporter === undefined
+				? {}
+				: { lastProgressAgoMs: reporter.heartbeatAgoMs + progress.agoMs, checkpoints: progress.checkpoints }),
+		};
+	});
 	return {
 		root,
 		ready: count("ready"),

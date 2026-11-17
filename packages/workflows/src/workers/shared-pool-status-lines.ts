@@ -50,7 +50,7 @@ function hostLine(host: SharedPoolHost & { readonly leased?: number }): string {
 		parts.push(`${plural(host.degraded.failures, "poll")} failed: ${host.degraded.error.message}`);
 	if (host.shipping !== undefined)
 		parts.push(
-			`shipping ${seconds(host.shipping.lagMs)} behind, ${host.shipping.pending} pending${host.shipping.error === undefined ? "" : `, ${host.shipping.error.message}`}`,
+			`shipping ${seconds(host.shipping.lagMs)} behind, ${host.shipping.pending} pending${host.shipping.lagging === true ? ", catching up before it claims more children" : ""}${host.shipping.error === undefined ? "" : `, ${host.shipping.error.message}`}`,
 		);
 	parts.push(`seen ${seconds(host.heartbeatAgoMs)} ago`);
 	return `host ${host.host}: ${parts.join(", ")}`;
@@ -76,13 +76,18 @@ export function sharedFleetLines(fleet: SharedPoolFleetStatus): string[] {
 		lines.push(
 			`controller ${fleet.controller.holder} (epoch ${fleet.controller.epoch}), renewed ${seconds(fleet.controller.renewedAgoMs)} ago`,
 		);
-	for (const event of fleet.scaleEvents ?? [])
+	for (const event of fleet.scaleEvents ?? []) {
+		const counts = [
+			...(event.target === undefined ? [] : [`target ${event.target}`]),
+			...(event.live === undefined ? [] : [`live ${event.live}`]),
+		];
 		lines.push(
-			`scale ${event.kind}: target ${event.target}, live ${event.live}, ${event.reason}${event.error === undefined ? "" : `, ${event.error.message}`}, ${seconds(event.agoMs)} ago`,
+			`scale ${event.kind}: ${[...counts, event.reason].join(", ")}${event.error === undefined ? "" : `, ${event.error.message}`}, ${seconds(event.agoMs)} ago`,
 		);
+	}
 	for (const limit of fleet.rateLimits ?? [])
 		lines.push(
-			`rate limit ${limit.scope}: ${limit.cooldownInMs > 0 ? `cooling down for ${seconds(limit.cooldownInMs)}` : "open"}`,
+			`rate limit ${limit.scope}: ${limit.requestsPerMinute === undefined ? "" : `${limit.requestsPerMinute}/min, `}${limit.cooldownInMs > 0 ? `cooling down for ${seconds(limit.cooldownInMs)}` : "open"}`,
 		);
 	return lines;
 }
@@ -103,7 +108,7 @@ export function sharedPoolStatusLines(status: SharedPoolStatus): string[] {
 		...stats.hosts.map(hostLine),
 		...stats.leases.map(
 			(lease) =>
-				`child ${lease.childRunId} on ${lease.host === "" ? "the root's host" : `host ${lease.host}`}: renewed ${seconds(lease.renewedAgoMs)} ago, expires in ${seconds(lease.expiresInMs)}`,
+				`child ${lease.childRunId} on ${lease.host === "" ? "the root's host" : `host ${lease.host}`}: ${lease.lastProgressAgoMs === undefined ? "" : `last step ${seconds(lease.lastProgressAgoMs)} ago, ${plural(lease.checkpoints ?? 0, "checkpoint")}, `}renewed ${seconds(lease.renewedAgoMs)} ago, expires in ${seconds(lease.expiresInMs)}`,
 		),
 	];
 }

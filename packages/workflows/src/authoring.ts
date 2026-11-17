@@ -636,6 +636,7 @@ export {
 export declare function loadWorkerWorkflow(path: string, exportName?: string): Promise<AnyWorkflowDefinition>;
 export * from "./durable/fork-errors.js";
 export type {
+	SharedPoolChildProgress,
 	SharedPoolFailure,
 	SharedPoolFleet,
 	SharedPoolFleetController,
@@ -643,6 +644,7 @@ export type {
 	SharedPoolFleetStatus,
 	SharedPoolHost,
 	SharedPoolHostReport,
+	SharedPoolHostShipping,
 	SharedPoolHostState,
 	SharedPoolRateLimit,
 	SharedPoolScaleEvent,
@@ -755,13 +757,17 @@ export declare function migrateWorkflowStorage(options?: {
  * fleet's queue and the shared store's state (#4768). Default journal: the one this machine selects for workflow runs.
  * Setup problems reject; a store that cannot be read, or does not answer within 5 s, resolves with `fleet.store.state`
  * `"unknown"` instead. `scaling` is the fleet's scaling signal under `policy` (the fleet controller's defaults): the hosts
- * its policy wants, and the queue and slots behind it. `probeWrites: false` only reads.
+ * its policy wants, and the queue and slots behind it. `probeWrites: false` only reads. `rateHistory: true` keeps the
+ * tokens the fleet's rate-limited scopes granted across this process's reads of the same journal, so once a minute of
+ * history is kept, `scaling` caps the hosts it wants at what the rate limits keep busy and reports `rateCapHosts`, as a
+ * fleet controller does; a single read has no such history.
  */
 export declare function readWorkflowWorkerFleet(options?: {
 	readonly journal?: import("./workers/worker-host-types.js").SharedJournalSelection;
 	readonly agentDir?: string;
 	readonly policy?: import("./workers/fleet-types.js").WorkerFleetPolicyOptions;
 	readonly probeWrites?: boolean;
+	readonly rateHistory?: boolean;
 }): Promise<import("./durable/journal/shared-pool-types.js").SharedPoolFleet>;
 /**
  * A fleet that {@link readWorkflowWorkerFleet} read, as `atomic worker status` prints it (#4768): the shared store when
