@@ -343,6 +343,14 @@ export function getBundledInteractiveAssetPath(name: string): string {
 	return join(getInteractiveAssetsDir(), name);
 }
 
+/** {@link getBundledInteractiveAssetPath} without blocking the event loop. */
+export async function getBundledInteractiveAssetPathAsync(name: string): Promise<string> {
+	const assetsDir = isBunBinary
+		? join(getPackageDir(), "assets")
+		: join(await getModuleAssetRootAsync(), "modes", "interactive", "assets");
+	return join(assetsDir, name);
+}
+
 // =============================================================================
 // App Config (from package.json <appName>Config, with piConfig as a legacy shim)
 // =============================================================================
