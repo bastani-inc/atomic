@@ -48,6 +48,11 @@ function normalizeCwd(cwd: string): string {
 	return canonicalizePath(resolvePath(cwd));
 }
 
+/** {@link normalizeCwd} without blocking the event loop on the symlinks of `cwd`. */
+function normalizeCwdAsync(cwd: string): Promise<string> {
+	return canonicalizePathAsync(resolvePath(cwd));
+}
+
 /** Trust file keys naming `path`. Usually one; several on Windows when saved with different casing. */
 function findTrustFileKeys(data: TrustFile, path: string): string[] {
 	return Object.keys(data).filter((key) => pathsEqual(key, path));
@@ -59,7 +64,7 @@ function findNearestTrustEntry(data: TrustFile, cwd: string): ProjectTrustStoreE
 
 /** {@link findNearestTrustEntry} without blocking the event loop on the symlinks of `cwd`. */
 async function findNearestTrustEntryAsync(data: TrustFile, cwd: string): Promise<ProjectTrustStoreEntry | null> {
-	return findNearestTrustEntryFrom(data, await canonicalizePathAsync(resolvePath(cwd)));
+	return findNearestTrustEntryFrom(data, await normalizeCwdAsync(cwd));
 }
 
 function findNearestTrustEntryFrom(data: TrustFile, normalizedCwd: string): ProjectTrustStoreEntry | null {
@@ -84,8 +89,16 @@ export function getProjectTrustPath(cwd: string): string {
 	return normalizeCwd(cwd);
 }
 
+/** {@link getProjectTrustPath} without blocking the event loop on the symlinks of `cwd`. */
+export function getProjectTrustPathAsync(cwd: string): Promise<string> {
+	return normalizeCwdAsync(cwd);
+}
+
 export function getProjectTrustParentPath(cwd: string): string | undefined {
-	const trustPath = getProjectTrustPath(cwd);
+	return trustParentPath(getProjectTrustPath(cwd));
+}
+
+function trustParentPath(trustPath: string): string | undefined {
 	const parentDir = dirname(trustPath);
 	return parentDir === trustPath ? undefined : parentDir;
 }
@@ -94,11 +107,26 @@ export const PROJECT_TRUST_SESSION_DISTRUST_LABEL = "Do not trust (this session 
 export const PROJECT_TRUST_DISTRUST_LABEL = "Do not trust";
 
 export function getProjectTrustOptions(cwd: string, options?: { includeSessionOnly?: boolean }): ProjectTrustOption[] {
-	const trustPath = getProjectTrustPath(cwd);
+	return projectTrustOptionsFor(getProjectTrustPath(cwd), options);
+}
+
+/** {@link getProjectTrustOptions} without blocking the event loop on the symlinks of `cwd`. */
+export async function getProjectTrustOptionsAsync(
+	cwd: string,
+	options?: { includeSessionOnly?: boolean },
+): Promise<ProjectTrustOption[]> {
+	return projectTrustOptionsFor(await getProjectTrustPathAsync(cwd), options);
+}
+
+/** The trust choices for the project whose {@link getProjectTrustPath} is `trustPath`. */
+export function projectTrustOptionsFor(
+	trustPath: string,
+	options?: { includeSessionOnly?: boolean },
+): ProjectTrustOption[] {
 	const trustOptions: ProjectTrustOption[] = [
 		{ label: "Trust", trusted: true, updates: [{ path: trustPath, decision: true }], savedPath: trustPath },
 	];
-	const parentPath = getProjectTrustParentPath(cwd);
+	const parentPath = trustParentPath(trustPath);
 	if (parentPath !== undefined) {
 		trustOptions.push({
 			label: `Trust parent folder (${parentPath})`,
@@ -617,23 +645,27 @@ export class ProjectTrustStore {
 	}
 
 	setMany(decisions: ProjectTrustUpdate[]): void {
+		const normalized = decisions.map(({ path, decision }) => ({ path: normalizeCwd(path), decision }));
 		withTrustFileLock(this.trustPath, () => {
-			writeTrustFile(this.trustPath, applyTrustUpdates(readTrustFileForWrite(this.trustPath), decisions));
+			writeTrustFile(this.trustPath, applyTrustUpdates(readTrustFileForWrite(this.trustPath), normalized));
 		});
 	}
 
 	/** {@link ProjectTrustStore.setMany} without blocking the event loop. */
 	async setManyAsync(decisions: ProjectTrustUpdate[]): Promise<void> {
+		const normalized = await Promise.all(
+			decisions.map(async ({ path, decision }) => ({ path: await normalizeCwdAsync(path), decision })),
+		);
 		await withTrustFileLockAsync(this.trustPath, async () => {
 			const data = await readTrustFileForWriteAsync(this.trustPath);
-			await writeTrustFileAsync(this.trustPath, applyTrustUpdates(data, decisions));
+			await writeTrustFileAsync(this.trustPath, applyTrustUpdates(data, normalized));
 		});
 	}
 }
 
+/** Apply `decisions`, whose paths are already normalized, to `data`. */
 function applyTrustUpdates(data: TrustFile, decisions: ProjectTrustUpdate[]): TrustFile {
-	for (const { path, decision } of decisions) {
-		const key = normalizeCwd(path);
+	for (const { path: key, decision } of decisions) {
 		for (const existingKey of findTrustFileKeys(data, key)) {
 			delete data[existingKey];
 		}

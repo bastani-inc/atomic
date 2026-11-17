@@ -1,4 +1,4 @@
-import { formatProjectTrustPrompt, getAgentDir, getProjectTrustOptions, ProjectTrustStore } from "@bastani/atomic";
+import { formatProjectTrustPrompt, getAgentDir, getProjectTrustOptionsAsync, ProjectTrustStore } from "@bastani/atomic";
 
 /** How to trust the project folder `projectDir`, for a refusal to load its workflows. */
 export function projectTrustInstruction(projectDir: string): string {
@@ -31,7 +31,7 @@ export function projectTrustPrompt(
 	select: (title: string, options: string[]) => Promise<string | undefined>,
 ): (projectDir: string) => Promise<boolean> {
 	return async (projectDir) => {
-		const options = getProjectTrustOptions(projectDir, { includeSessionOnly: true });
+		const options = await getProjectTrustOptionsAsync(projectDir, { includeSessionOnly: true });
 		const answer = await select(
 			formatProjectTrustPrompt(projectDir),
 			options.map((option) => option.label),

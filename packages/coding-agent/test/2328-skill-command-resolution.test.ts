@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,7 +6,7 @@ import { parseSkillBlock } from "../src/core/agent-session.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
 import type { AgentSessionServices } from "../src/core/agent-session-services.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
-import { buildSkillCatalog } from "../src/core/skill-catalog.ts";
+import { buildSkillCatalog, buildSkillCatalogAsync, type SkillCatalog } from "../src/core/skill-catalog.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
@@ -84,6 +84,30 @@ describe("issue #2328 exact skill command resolution", () => {
 			candidate: { skill: { filePath: configured.filePath, description: "user TDD" } },
 		});
 		expect(catalog.commands.find((command) => command.name === "tdd")?.skill.filePath).toBe(configured.filePath);
+	});
+
+	it("builds the same catalog asynchronously, comparing skill files and their directories by real path", async () => {
+		const tempDir = join(tmpdir(), `atomic-2328-async-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		mkdirSync(tempDir, { recursive: true });
+		cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+		const first = skill(join(tempDir, "pkg-a", "skills", "tdd", "SKILL.md"), "builtin", "First body");
+		const second = skill(join(tempDir, "pkg-b", "skills", "tdd", "SKILL.md"), "builtin", "Second body");
+		symlinkSync(join(tempDir, "pkg-b"), join(tempDir, "alias"), "junction");
+		const throughLink = { ...second, filePath: join(tempDir, "alias", "skills", "tdd", "SKILL.md") };
+		const shape = (catalog: SkillCatalog) => ({
+			candidates: catalog.candidates.map(({ id, selector, skill }) => ({ id, selector, filePath: skill.filePath })),
+			commands: catalog.commands.map(({ name, candidateId }) => ({ name, candidateId })),
+		});
+
+		const sync = buildSkillCatalog([first, throughLink, second], [first]);
+		const async = await buildSkillCatalogAsync([first, throughLink, second], [first]);
+
+		expect(shape(async)).toEqual(shape(sync));
+		expect(sync.candidates.map((candidate) => candidate.skill.filePath)).toEqual([
+			first.filePath,
+			throughLink.filePath,
+		]);
+		expect(sync.candidates[1]?.selector).toContain(realpathSync(join(tempDir, "pkg-b")).split(/[\\/]/).at(-1));
 	});
 
 	it("reports every qualified lookup failure without falling back to the bare winner", async () => {

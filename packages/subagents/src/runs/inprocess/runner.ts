@@ -7,12 +7,13 @@ import {
 	type AgentSessionEventListener,
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
-	buildSkillCatalog,
+	buildSkillCatalogAsync,
 	type CreateAgentSessionOptions,
 	createAgentSession,
 	DefaultResourceLoader,
 	type DetachedToolCall,
 	type DetachedToolResult,
+	emptySkillCatalog,
 	findSessionStartError,
 	getAgentDir,
 	getBuiltinPackagePaths,
@@ -907,7 +908,7 @@ function sessionCommands(session: AgentSession, cwd: string): TranscriptCommands
 	const loader = session.resourceLoader as AgentSession["resourceLoader"] | undefined;
 	return {
 		cwd,
-		skills: loader === undefined ? buildSkillCatalog([]) : getSkillCatalog(loader),
+		skills: loader === undefined ? emptySkillCatalog() : getSkillCatalog(loader),
 		skillCommandsEnabled: session.settingsManager?.getEnableSkillCommands() ?? false,
 	};
 }
@@ -1059,13 +1060,13 @@ function settledSkill(skill: Skill): Skill {
  * skill's name is a slice of its whole SKILL.md text, so keeping the catalog itself would keep every skill file the
  * child loaded (#5186).
  */
-function settledCommands(commands: TranscriptCommands): TranscriptCommands {
+async function settledCommands(commands: TranscriptCommands): Promise<TranscriptCommands> {
 	const winners = commands.skills.commands.flatMap((command) =>
 		command.name === command.skill.name ? [settledSkill(command.skill)] : [],
 	);
 	return {
 		cwd: commands.cwd,
-		skills: buildSkillCatalog(
+		skills: await buildSkillCatalogAsync(
 			commands.skills.candidates.map((candidate) => settledSkill(candidate.skill)),
 			winners,
 		),
@@ -2529,14 +2530,15 @@ export class SubagentControlRuntime {
 				session === undefined || transcriptManager === undefined
 					? undefined
 					: settledCommands(sessionCommands(session, transcriptManager.getCwd()));
-			const settleTranscript = (): void => {
+			const settleTranscript = async (): Promise<void> => {
 				statusesOpen = false;
 				taskHooks?.clearExtensionStatuses?.();
 				if (transcriptManager === undefined) return;
+				const commands = await keptCommands;
 				taskHooks?.bindTranscript?.(
 					releasedAttempt
-						? releasedTranscript(transcriptManager.getSessionId(), keptCommands)
-						: settledTranscript(transcriptManager, keptCommands, openedThroughId, unsavedAnswer),
+						? releasedTranscript(transcriptManager.getSessionId(), commands)
+						: settledTranscript(transcriptManager, commands, openedThroughId, unsavedAnswer),
 				);
 			};
 			const disposal = (async (): Promise<SessionDisposal> => {
@@ -2560,7 +2562,7 @@ export class SubagentControlRuntime {
 						error,
 					};
 				} finally {
-					settleTranscript();
+					await settleTranscript();
 				}
 			})();
 			onDisposal(disposal);

@@ -8,6 +8,7 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	APP_NAME,
 	type ExtensionCommandContext,
+	getProjectTrustPathAsync,
 	hasTrustRequiringProjectResourcesAsync,
 	keyText,
 	Loader,
@@ -79,7 +80,7 @@ InteractiveModeBase.prototype.maybeSaveImplicitProjectTrustAfterReload = async f
 InteractiveModeBase.prototype.showTrustSelector = async function (this: InteractiveModeBase): Promise<void> {
 	const cwd = this.sessionManager.getCwd();
 	const trustStore = new ProjectTrustStore(this.runtimeHost.services.agentDir);
-	const savedDecision = await trustStore.getEntryAsync(cwd);
+	const [savedDecision, trustPath] = await Promise.all([trustStore.getEntryAsync(cwd), getProjectTrustPathAsync(cwd)]);
 	await withHostProjectTrustPrompt(
 		this.runtimeHost,
 		"select",
@@ -89,6 +90,7 @@ InteractiveModeBase.prototype.showTrustSelector = async function (this: Interact
 				this.showSelector((done) => {
 					const selector = new TrustSelectorComponent({
 						cwd,
+						trustPath,
 						savedDecision,
 						projectTrusted: this.settingsManager.isProjectTrusted(),
 						onSelect: (selection) => {

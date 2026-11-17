@@ -12,7 +12,7 @@ import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import { getLoaderAgentDirs, resolveResourcePath } from "./resource-loader-paths.ts";
 import { findSourceInfoForPath, getDefaultSourceInfoForPath } from "./resource-loader-source-info.ts";
-import { buildSkillCatalog, decorateSkillDiagnostics } from "./skill-catalog.ts";
+import { buildSkillCatalogWith, decorateSkillDiagnostics, resolveSkillCatalogPaths } from "./skill-catalog.ts";
 import type { LoadSkillsResult, Skill } from "./skills.ts";
 import { loadSkillsAsync } from "./skills-async.ts";
 
@@ -50,9 +50,10 @@ async function applySkillsResult(
 	const candidates = (await Promise.all(skillsResult.candidates.map(withSourceInfo))).filter((skill) =>
 		retainedNames.has(skill.name),
 	);
+	const realPathOf = await resolveSkillCatalogPaths([...candidates, ...skills], resolvedSkills.diagnostics);
 	state.skills = skills;
-	state.skillCatalog = buildSkillCatalog(candidates, state.skills);
-	state.skillDiagnostics = decorateSkillDiagnostics(resolvedSkills.diagnostics, state.skillCatalog);
+	state.skillCatalog = buildSkillCatalogWith(candidates, state.skills, realPathOf);
+	state.skillDiagnostics = decorateSkillDiagnostics(resolvedSkills.diagnostics, state.skillCatalog, realPathOf);
 }
 
 export async function updateSkillsFromPathsAsync(

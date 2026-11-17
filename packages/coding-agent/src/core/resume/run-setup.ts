@@ -36,8 +36,8 @@ export interface RunResumeSetupOptions {
  * The blueprint build configuration of an agent directory. `resume.setupCommand` and the default project trust are
  * global settings, so no project's settings are read.
  */
-function runBlueprintConfig(agentDir = getAgentDir()): BlueprintBuildConfig {
-	const settings = SettingsManager.create(agentDir, agentDir, { projectTrusted: false });
+async function runBlueprintConfig(agentDir = getAgentDir()): Promise<BlueprintBuildConfig> {
+	const settings = await SettingsManager.createAsync(agentDir, agentDir, { projectTrusted: false });
 	return {
 		agentDir,
 		storeDir: resumeStoreDir(agentDir),
@@ -147,7 +147,7 @@ async function buildRunWorktrees(
 	removableOnCancel: readonly RunWorktreeTarget[],
 	options: RunResumeSetupOptions,
 ): Promise<ResumedBlueprints> {
-	const config = runBlueprintConfig(options.agentDir);
+	const config = await runBlueprintConfig(options.agentDir);
 	try {
 		const blueprints = await setUpResumedBlueprints({ restored: targets, config, signal: options.signal });
 		if (blueprints.notices.length > 0) options.onNotices?.(blueprints.notices);

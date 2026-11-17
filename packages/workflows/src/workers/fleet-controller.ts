@@ -556,7 +556,7 @@ export async function startWorkflowFleetController(
 ): Promise<WorkflowFleetController> {
 	checkFleetOptions(options);
 	const agentDir = options.agentDir ?? getAgentDir();
-	const selection = sharedJournalSelection(options.journal, { agentDir });
+	const selection = await sharedJournalSelection(options.journal, { agentDir });
 	const [first, ...rest] = await sharedSelectionProblems(selection, agentDir);
 	if (first !== undefined) throw new SharedPoolSetupError("worker-host", [first, ...rest]);
 	const journal = await openSelectedRunJournal(selection as Extract<StorageSelection, { kind: "adapter" }>, agentDir);

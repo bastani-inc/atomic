@@ -123,7 +123,7 @@ export async function resolvePackages(
 			projectEnabled ?? isEnabledByOverrides(path, globalSettings.extensions ?? [], globalBaseDir),
 		);
 	}
-	return { ...toResolvedPaths(accumulator), installFailures };
+	return { ...(await toResolvedPaths(accumulator)), installFailures };
 }
 
 async function resolveConfiguredLocalEntries(
@@ -182,7 +182,7 @@ export async function resolveExtensionSources(
 	const installFailures = await resolvePackageSources(context, packageSources, accumulator, undefined, {
 		includeProjectLocalResources: options?.includeProjectLocalResources === true,
 	});
-	return { ...toResolvedPaths(accumulator), installFailures };
+	return { ...(await toResolvedPaths(accumulator)), installFailures };
 }
 
 async function resolvePackageSources(
