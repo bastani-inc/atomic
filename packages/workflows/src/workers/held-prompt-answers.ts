@@ -32,7 +32,13 @@ type HeldAnswer =
 
 /** What the user was asked by a `ctx.ui` prompt, whatever attempt asked it. */
 export function promptIdentity(prompt: PendingPrompt): string {
-	return JSON.stringify([prompt.kind, prompt.message, prompt.choices ?? null, prompt.initial ?? null]);
+	return JSON.stringify([
+		prompt.kind,
+		prompt.message,
+		prompt.choices ?? null,
+		prompt.initial ?? null,
+		...(prompt.source === "stage-dialog" ? [prompt.id] : []),
+	]);
 }
 
 /** What the user was asked by a brokered question: its tool call and its exact parameters. */
