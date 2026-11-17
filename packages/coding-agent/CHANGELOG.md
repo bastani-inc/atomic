@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
 - Fixed a failing extension's agent panel source crashing the host during updates, navigation or cleanup, including rejected row values, thrown promises, throwing iterators or getters, and errors whose messages cannot be read safely. Source reads now limit rows and choices so oversized arrays or endless iterables cannot freeze the chat. Other sources remain usable, and failed stop and answer actions report their errors ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
 - Fixed long runs of cursor-control prefixes or spaces stalling the attached chat composer's placeholder formatting ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
 - The agent panel now hides malformed extension rows without losing their valid neighbours, rejects reserved task ids and malformed action results, and keeps token and queue fields from sending terminal controls. A source that notifies while listing its rows no longer freezes the chat. Startup warnings remain visible, repeated ↓ presses open only one panel, and the panel can reopen after `/reload` while focused ([#5239](https://github.com/bastani-inc/atomic/pull/5239))
