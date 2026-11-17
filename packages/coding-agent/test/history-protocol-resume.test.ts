@@ -22,6 +22,7 @@ const LATER_RUN_TIME_MS = 100;
 const LATE_DETAILS_MS = 175;
 const CUT_ONLY_BYTES = 910;
 const LONG_WAIT_MS = 1_500;
+const SETTLE_TURNS = 20;
 const PARKED_LISTING_TTL_MS = 60_000;
 
 function message(id: string, text: string, at: number): SessionEntry {
@@ -464,6 +465,56 @@ describe("history:// continuations keep whole records and positions (#5250)", ()
 			assert.match(first, /the time budget ran out waiting for the store/, first);
 			gate.open();
 			const next = (await router.read!(continuation(first)!)) ?? "";
+			assert.match(next, url.includes("workflows") ? /^# workflow run run-b$/m : /stage work/, next);
+		}
+	});
+
+	it("a call that takes over a parked run listing lacking its run lists runs afresh rather than taking over another parked listing (#5250)", async () => {
+		const before = [summary("run-a", BASE)];
+		const after = [summary("run-b", BASE + 1000), ...before];
+		for (const url of ["history://workflows/run-b", "history://sessions/stage-b"]) {
+			const store = new MemorySessionStore();
+			await store.create(
+				{
+					id: "stage-b",
+					version: SESSION_FORMAT_VERSION,
+					createdAt: new Date(BASE + 1000).toISOString(),
+					cwd: resolve("/projects/history-resume-worktree"),
+					internal: true,
+					workflow: { runId: "run-b", stageId: "s1", stageName: "build" },
+				},
+				[message("stage-b-e1", "stage work", BASE + 1001)],
+			);
+			const listings: ((listed: readonly WorkflowRunSummary[]) => void)[] = [];
+			let calls = 0;
+			const workflows: WorkflowRunHistory = {
+				listRuns: async () => after,
+				listProjectRuns: () => {
+					calls++;
+					if (calls > 2) return Promise.resolve(after);
+					return new Promise((resolve) => {
+						listings.push(resolve);
+					});
+				},
+				getRun: async (runId) => detail(runId, BASE, "run summary"),
+			};
+			const routerWith = (timeMs: number) =>
+				createHistoryRouter({
+					cwd: PROJECT,
+					sessionStore: () => store,
+					workflows: () => workflows,
+					budget: { timeMs },
+				});
+			const first = (await routerWith(SLOW_TIME_MS).read!(url)) ?? "";
+			assert.match(first, /the time budget ran out waiting for the store/, first);
+			const adopting = routerWith(LONG_WAIT_MS).read!(url);
+			for (let turn = 0; turn < SETTLE_TURNS; turn++) await new Promise((resolve) => setImmediate(resolve));
+			const overlapping = (await routerWith(SLOW_TIME_MS).read!("history://workflows")) ?? "";
+			assert.match(overlapping, /the time budget ran out waiting for the store/, overlapping);
+			assert.equal(listings.length, 2);
+			for (const resolveListing of listings) resolveListing(before);
+			const next = (await adopting) ?? "";
+			assert.equal(calls, 3, `${url}: ${next}`);
 			assert.match(next, url.includes("workflows") ? /^# workflow run run-b$/m : /stage work/, next);
 		}
 	});

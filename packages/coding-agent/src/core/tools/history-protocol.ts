@@ -1332,9 +1332,9 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		return { sessions: parked.items.map((item) => item.summary), keys: parked.items.map((item) => item.key) };
 	}
 
-	async function recentRuns(budget: HistoryCallBudget, wanted?: string): Promise<WorkflowRunSummary[]> {
+	async function recentRuns(budget: HistoryCallBudget, wanted?: string, fresh = false): Promise<WorkflowRunSummary[]> {
 		const control = requireWorkflows();
-		const parked = parkedRunListings.get(control);
+		const parked = fresh ? undefined : parkedRunListings.get(control);
 		if (parked) {
 			clearTimeout(parked.timer);
 			parkedRunListings.delete(control);
@@ -1359,7 +1359,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			throw error;
 		}
 		if (adopted && wanted !== undefined && !runs.some((run) => run.runId.startsWith(wanted)))
-			return recentRuns(budget);
+			return recentRuns(budget, undefined, true);
 		return [...runs].sort((a, b) => b.startedAt - a.startedAt);
 	}
 
