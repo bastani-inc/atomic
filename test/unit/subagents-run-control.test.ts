@@ -2118,6 +2118,302 @@ test("restoring a compacted forked child keeps launch-relative model changes wit
 	}
 });
 
+const PARTIAL_HISTORY_METHODS = [
+	"getEntrySeq",
+	"findEntrySeq",
+	"getLastSeq",
+	"getHeldTail",
+	"getOmittedHistoryTotals",
+] as const;
+
+function withoutPartialHistoryMethods<T>(run: () => Promise<T>): Promise<T> {
+	const saved = new Map<string, PropertyDescriptor | undefined>();
+	for (const name of PARTIAL_HISTORY_METHODS) {
+		saved.set(name, Object.getOwnPropertyDescriptor(SessionManager.prototype, name));
+		Reflect.deleteProperty(SessionManager.prototype, name);
+	}
+	return run().finally(() => {
+		for (const [name, descriptor] of saved) {
+			if (descriptor) Object.defineProperty(SessionManager.prototype, name, descriptor);
+		}
+	});
+}
+
+test("launching and restoring subagent children tolerate a SessionManager without getEntrySeq or findEntrySeq (#5316)", async () => {
+	const h = harness();
+	usableModels(h, [sonnet, haiku]);
+	await withoutPartialHistoryMethods(async () => {
+		assert.equal("getEntrySeq" in h.sessionManager, false);
+		assert.equal("findEntrySeq" in h.sessionManager, false);
+
+		await h.sessionManager.appendModelChange(sonnet.provider, sonnet.id);
+		await h.sessionManager.appendThinkingLevelChange("high");
+		const forked = await forkFromParentConversation(h);
+		const forkedRestarted = await restoreStartedChild(
+			h,
+			"no-entry-seq-forked",
+			{ ...admittedOnSonnetHigh, sessionManager: forked },
+			undefined,
+			async () => {
+				const record = h.latest("no-entry-seq-forked:0");
+				assert.ok(record?.childSessionId);
+				assert.equal(record.launchLeafId, forked.getLeafId());
+				assert.equal(record.launchLeafSeq, forked.getEntries().length);
+				const source = record.childSessionFile
+					? await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+					: await SessionManager.open(h.sessionManager.getSessionStore(), record.childSessionId, record.cwd);
+				await source.appendModelChange(haiku.provider, haiku.id);
+				await source.appendThinkingLevelChange("low");
+			},
+		);
+		assert.deepEqual(startedOn(h, "no-entry-seq-forked:0", forkedRestarted.taskId), {
+			model: `${haiku.provider}/${haiku.id}`,
+			thinking: "low",
+		});
+
+		const freshRestarted = await restoreStartedChild(
+			h,
+			"no-entry-seq-fresh",
+			admittedOnSonnetHigh,
+			undefined,
+			async () => {
+				const record = h.latest("no-entry-seq-fresh:0");
+				assert.ok(record?.childSessionId);
+				assert.equal(record.launchLeafId, null);
+				assert.equal(record.launchLeafSeq, 0);
+				const source = record.childSessionFile
+					? await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+					: await SessionManager.open(h.sessionManager.getSessionStore(), record.childSessionId, record.cwd);
+				await source.appendModelChange(haiku.provider, haiku.id);
+				await source.appendThinkingLevelChange("low");
+			},
+		);
+		assert.deepEqual(startedOn(h, "no-entry-seq-fresh:0", freshRestarted.taskId), {
+			model: `${haiku.provider}/${haiku.id}`,
+			thinking: "low",
+		});
+
+		await h.sessionManager.appendModelChange(haiku.provider, haiku.id);
+		await h.sessionManager.appendThinkingLevelChange("low");
+		const legacyInheritedFork = await forkFromParentConversation(h);
+		const legacyInheritedRestarted = await restoreStartedChild(
+			h,
+			"no-entry-seq-legacy-inherited",
+			{ ...admittedOnSonnetHigh, sessionManager: legacyInheritedFork },
+			undefined,
+			async () => {
+				const record = h.latest("no-entry-seq-legacy-inherited:0");
+				assert.ok(record?.childSessionId);
+				const { launchLeafSeq: _seq, ...legacyRecord } = record;
+				await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+					...legacyRecord,
+					launchModel: `${sonnet.provider}/${sonnet.id}`,
+					launchThinkingLevel: "high",
+				});
+			},
+		);
+		assert.deepEqual(startedOn(h, "no-entry-seq-legacy-inherited:0", legacyInheritedRestarted.taskId), {
+			model: `${sonnet.provider}/${sonnet.id}`,
+			thinking: "high",
+		});
+
+		await h.sessionManager.appendModelChange(sonnet.provider, sonnet.id);
+		await h.sessionManager.appendThinkingLevelChange("high");
+		const legacyChangedFork = await forkFromParentConversation(h);
+		const legacyChangedRestarted = await restoreStartedChild(
+			h,
+			"no-entry-seq-legacy-changed",
+			{ ...admittedOnSonnetHigh, sessionManager: legacyChangedFork },
+			undefined,
+			async () => {
+				const record = h.latest("no-entry-seq-legacy-changed:0");
+				assert.ok(record?.childSessionId);
+				const { launchLeafSeq: _seq, ...legacyRecord } = record;
+				await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+					...legacyRecord,
+					launchModel: `${sonnet.provider}/${sonnet.id}`,
+					launchThinkingLevel: "high",
+				});
+				const source = record.childSessionFile
+					? await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+					: await SessionManager.open(h.sessionManager.getSessionStore(), record.childSessionId, record.cwd);
+				await source.appendModelChange(haiku.provider, haiku.id);
+				await source.appendThinkingLevelChange("low");
+			},
+		);
+		assert.deepEqual(startedOn(h, "no-entry-seq-legacy-changed:0", legacyChangedRestarted.taskId), {
+			model: `${haiku.provider}/${haiku.id}`,
+			thinking: "low",
+		});
+
+		await h.sessionManager.appendModelChange(sonnet.provider, sonnet.id);
+		await h.sessionManager.appendThinkingLevelChange("high");
+		const siblingBranchFork = await forkFromParentConversation(h);
+		const siblingBranchRestarted = await restoreStartedChild(
+			h,
+			"no-entry-seq-sibling-branch",
+			{ ...admittedOnSonnetHigh, sessionManager: siblingBranchFork },
+			undefined,
+			async () => {
+				const record = h.latest("no-entry-seq-sibling-branch:0");
+				assert.ok(record?.childSessionId);
+				const { launchLeafSeq: _seq, ...legacyRecord } = record;
+				await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+					...legacyRecord,
+					launchModel: `${sonnet.provider}/${sonnet.id}`,
+					launchThinkingLevel: "high",
+				});
+				const source = record.childSessionFile
+					? await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+					: await SessionManager.open(h.sessionManager.getSessionStore(), record.childSessionId, record.cwd);
+				const firstEntry = source.getEntries()[0];
+				assert.ok(firstEntry);
+				await source.recordBranch(firstEntry.id);
+				await source.appendModelChange(haiku.provider, haiku.id);
+				await source.appendThinkingLevelChange("low");
+			},
+		);
+		assert.deepEqual(startedOn(h, "no-entry-seq-sibling-branch:0", siblingBranchRestarted.taskId), {
+			model: `${haiku.provider}/${haiku.id}`,
+			thinking: "low",
+		});
+	});
+
+	const compactedParent = await SessionManager.create(h.sessionManager.getSessionStore(), h.cwd);
+	for (let index = 0; index < 13; index += 1) {
+		await compactedParent.appendMessage({ role: "user", content: `pre-${index}`, timestamp: index + 1 });
+	}
+	await compactedParent.appendModelChange(sonnet.provider, sonnet.id);
+	await compactedParent.appendThinkingLevelChange("high");
+	await compactedParent.appendCompaction("summary", null, 100, {
+		strategy: "verbatim-lines",
+		promptVersion: 6,
+		parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+		stats: {
+			linesBefore: 13,
+			linesDeleted: 13,
+			linesKept: 0,
+			rangeCount: 1,
+			tokensBefore: 100,
+			tokensAfter: 10,
+			percentReduction: 90,
+		},
+		rung: "planned",
+	});
+	await compactedParent.appendMessage({ role: "user", content: "after compaction", timestamp: 20 });
+	const tailFork = await SessionManager.open(
+		h.sessionManager.getSessionStore(),
+		compactedParent.getSessionId(),
+		h.cwd,
+		{ history: "tail" },
+	);
+	assert.equal(tailFork.hasFullHistory(), false);
+	const tailForkWithoutGetEntrySeq = new Proxy(tailFork, {
+		getPrototypeOf: () => Object.prototype,
+		has: (target, prop) => (prop === "getEntrySeq" ? false : Reflect.has(target, prop)),
+		get: (target, prop: keyof SessionManager) => {
+			if (prop === "getEntrySeq") return undefined;
+			const value = target[prop];
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	const tailForkRestarted = await restoreStartedChild(
+		h,
+		"no-entry-seq-partial-tail-fork",
+		{
+			currentModel: `${haiku.provider}/${haiku.id}`,
+			currentThinkingLevel: "high",
+			preferredModelProvider: haiku.provider,
+			sessionManager: tailForkWithoutGetEntrySeq,
+		},
+		{ ...agent, model: `${haiku.provider}/${haiku.id}:high` },
+		async () => {
+			const record = h.latest("no-entry-seq-partial-tail-fork:0");
+			assert.ok(record?.childSessionId);
+			assert.equal(record.launchLeafSeq, 17);
+			const source = await SessionManager.open(
+				h.sessionManager.getSessionStore(),
+				record.childSessionId,
+				record.cwd,
+			);
+			await source.appendCompaction("child summary", null, 100, {
+				strategy: "verbatim-lines",
+				promptVersion: 6,
+				parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+				stats: {
+					linesBefore: 1,
+					linesDeleted: 1,
+					linesKept: 0,
+					rangeCount: 1,
+					tokensBefore: 100,
+					tokensAfter: 10,
+					percentReduction: 90,
+				},
+				rung: "planned",
+			});
+		},
+	);
+	assert.deepEqual(startedOn(h, "no-entry-seq-partial-tail-fork:0", tailForkRestarted.taskId), {
+		model: `${haiku.provider}/${haiku.id}`,
+		thinking: "high",
+	});
+
+	const getEntrySeqDescriptor = Object.getOwnPropertyDescriptor(SessionManager.prototype, "getEntrySeq");
+	Reflect.deleteProperty(SessionManager.prototype, "getEntrySeq");
+	try {
+		const tailForkNoGetEntrySeqOnHost = await SessionManager.open(
+			h.sessionManager.getSessionStore(),
+			compactedParent.getSessionId(),
+			h.cwd,
+			{ history: "tail" },
+		);
+		assert.equal(tailForkNoGetEntrySeqOnHost.hasFullHistory(), false);
+		assert.equal(tailForkNoGetEntrySeqOnHost.getEntries().length, 5);
+		const tailRestoreNoGetEntrySeq = await restoreStartedChild(
+			h,
+			"no-entry-seq-partial-tail-restore",
+			{
+				currentModel: `${haiku.provider}/${haiku.id}`,
+				currentThinkingLevel: "high",
+				preferredModelProvider: haiku.provider,
+				sessionManager: tailForkNoGetEntrySeqOnHost,
+			},
+			{ ...agent, model: `${haiku.provider}/${haiku.id}:high` },
+			async () => {
+				const record = h.latest("no-entry-seq-partial-tail-restore:0");
+				assert.ok(record?.childSessionId);
+				assert.equal(record.launchLeafSeq, 21);
+				const source = await SessionManager.open(
+					h.sessionManager.getSessionStore(),
+					record.childSessionId,
+					record.cwd,
+				);
+				await source.appendCompaction("child summary", null, 100, {
+					strategy: "verbatim-lines",
+					promptVersion: 6,
+					parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+					stats: {
+						linesBefore: 1,
+						linesDeleted: 1,
+						linesKept: 0,
+						rangeCount: 1,
+						tokensBefore: 100,
+						tokensAfter: 10,
+						percentReduction: 90,
+					},
+					rung: "planned",
+				});
+			},
+		);
+		assert.deepEqual(startedOn(h, "no-entry-seq-partial-tail-restore:0", tailRestoreNoGetEntrySeq.taskId), {
+			model: `${haiku.provider}/${haiku.id}`,
+			thinking: "high",
+		});
+	} finally {
+		if (getEntrySeqDescriptor) Object.defineProperty(SessionManager.prototype, "getEntrySeq", getEntrySeqDescriptor);
+	}
+});
+
 test("a never-started queued child admitted outside any Intercom group stays out of the group its parent joined later (#3784)", async () => {
 	const h = harness();
 	usableModels(h, [sonnet]);

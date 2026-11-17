@@ -56,7 +56,7 @@ import {
 	savedToolResultIds,
 } from "./released-children.js";
 import { resumeRunWorktree } from "./run-worktrees.js";
-import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
+import { indexSubagentChildOwner, readableSubagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
 import {
@@ -232,30 +232,91 @@ async function awaitIntercomPeer(
  * latest change the child's own session recorded after launch wins, then what the launch record says it started
  * on, and only then whatever the session's entries say.
  */
+function hasPartialHistory(sessionManager: SessionManager): boolean {
+	if (typeof sessionManager.hasFullHistory === "function" && !sessionManager.hasFullHistory()) return true;
+	if (typeof sessionManager.getHeldTail === "function" && sessionManager.getHeldTail().fromSeq > 1) return true;
+	return false;
+}
+
+async function entriesAfterLaunch(
+	sessionManager: SessionManager,
+	branch: ReturnType<SessionManager["getBranch"]>,
+	record: SubagentChildRecord,
+): Promise<ReturnType<SessionManager["getBranch"]>> {
+	const branchLaunchIndex =
+		typeof record.launchLeafId === "string" ? branch.findIndex((entry) => entry.id === record.launchLeafId) : -1;
+	const launchIndex =
+		record.launchLeafId === undefined
+			? branch.length
+			: record.launchLeafId === null
+				? 0
+				: branchLaunchIndex === -1
+					? branch.length
+					: branchLaunchIndex + 1;
+	if (typeof sessionManager.getEntrySeq === "function") {
+		const launchSeq =
+			record.launchLeafSeq ??
+			(record.launchLeafId === null
+				? 0
+				: typeof record.launchLeafId === "string"
+					? typeof sessionManager.findEntrySeq === "function"
+						? await sessionManager.findEntrySeq(record.launchLeafId)
+						: sessionManager.getEntrySeq(record.launchLeafId)
+					: undefined);
+		return launchSeq === undefined
+			? branch.slice(launchIndex)
+			: branch.filter((entry) => (sessionManager.getEntrySeq(entry.id) ?? 0) > launchSeq);
+	}
+	if (
+		(record.launchLeafId === null && (record.launchLeafSeq === undefined || record.launchLeafSeq <= 0)) ||
+		branchLaunchIndex !== -1
+	) {
+		return branch.slice(launchIndex);
+	}
+	if (typeof sessionManager.findEntrySeq === "function") {
+		const launchSeq =
+			record.launchLeafSeq ??
+			(record.launchLeafId === null
+				? 0
+				: typeof record.launchLeafId === "string"
+					? await sessionManager.findEntrySeq(record.launchLeafId)
+					: undefined);
+		if (launchSeq === undefined) return branch.slice(launchIndex);
+		const branchSeqs = await Promise.all(branch.map((entry) => sessionManager.findEntrySeq(entry.id)));
+		if (branchSeqs.every((seq) => seq !== undefined)) {
+			return branch.filter((_entry, index) => (branchSeqs[index] ?? 0) > launchSeq);
+		}
+	}
+	if (hasPartialHistory(sessionManager)) {
+		if (typeof sessionManager.loadFullHistory === "function") await sessionManager.loadFullHistory();
+		if (hasPartialHistory(sessionManager)) return branch.slice(launchIndex);
+	}
+	const entries = typeof sessionManager.getEntries === "function" ? sessionManager.getEntries() : [];
+	const seqById = new Map<string, number>();
+	for (let index = 0; index < entries.length; index += 1) {
+		const entry = entries[index];
+		if (entry !== undefined) seqById.set(entry.id, index + 1);
+	}
+	const launchSeq =
+		record.launchLeafSeq ?? (typeof record.launchLeafId === "string" ? seqById.get(record.launchLeafId) : undefined);
+	if (launchSeq !== undefined && branch.every((entry) => seqById.has(entry.id))) {
+		return branch.filter((entry) => (seqById.get(entry.id) ?? 0) > launchSeq);
+	}
+	if (entries.length === 0 && record.launchLeafId === undefined && record.launchLeafSeq !== undefined) {
+		return branch.filter((_entry, index) => index + 1 > record.launchLeafSeq!);
+	}
+	return branch.slice(launchIndex);
+}
+
 async function ownSessionModelCandidate(
 	sessionManager: SessionManager,
 	record: SubagentChildRecord,
 	resolveCandidateModel: ReturnType<typeof createCandidateModelResolver>,
 ): Promise<string | undefined> {
 	const branch = sessionManager.getBranch();
-	const launchSeq =
-		record.launchLeafSeq ??
-		(record.launchLeafId === null
-			? 0
-			: typeof record.launchLeafId === "string"
-				? await sessionManager.findEntrySeq(record.launchLeafId)
-				: undefined);
-	const launchIndex =
-		record.launchLeafId === undefined
-			? branch.length
-			: record.launchLeafId === null
-				? 0
-				: branch.findIndex((entry) => entry.id === record.launchLeafId) + 1 || branch.length;
 	let changedModel: string | undefined;
 	let changedThinking: string | undefined;
-	for (const entry of launchSeq === undefined
-		? branch.slice(launchIndex)
-		: branch.filter((entry) => (sessionManager.getEntrySeq(entry.id) ?? 0) > launchSeq)) {
+	for (const entry of await entriesAfterLaunch(sessionManager, branch, record)) {
 		if (entry.type === "model_change") changedModel = `${entry.provider}/${entry.modelId}`;
 		else if (entry.type === "thinking_level_change") changedThinking = entry.thinkingLevel;
 	}
@@ -576,8 +637,8 @@ async function relaunchChild(
 			SUBAGENT_OWNER_GENERATION,
 			interruptedStillRunningResult,
 		);
-	// Read again: the owner's wakes may have held them first, after `record` was read.
-	const latest = subagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
+	// Read again: the owner's wakes may have held them first, after `record` was read. `record` when it cannot be read.
+	const latest = readableSubagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
 	// What its transcript already holds was delivered: a run that saved it stopped before it reported it (#5012).
 	const saved =
 		sessionManager && !fresh
@@ -920,8 +981,9 @@ export async function restoreSubagentChild(
 ): Promise<SubagentChildRestoreOutcome> {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	indexSubagentChildOwner(ctx);
+	// The owner's own session when the index's latest record is in a copy of it that is no longer open.
 	const record =
-		subagentChildRecordOf(ownerSessionId, id) ??
+		readableSubagentChildRecordOf(ownerSessionId, id) ??
 		findSubagentChildRecord(readSubagentChildRecords(ctx.sessionManager.getEntries(), ownerSessionId), id);
 	if (!record) return { kind: "unrestorable", childId: id, reason: "this session has no record of that subagent" };
 	if (!isRestorableSubagentChild(record) && !resume) return { kind: "terminal", record };

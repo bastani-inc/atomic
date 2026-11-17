@@ -14,6 +14,157 @@ import { poolSessionPrefix, type SqlPoolStorage } from "./internal.js";
 import { type IndexedStage, inKeyOrder, type PoolCheckpointSource } from "./pool-checkpoint-index.js";
 import type { PoolWork } from "./sql-pool-queue.js";
 
+/**
+ * The owner row of a pooled stage session: the work it belongs to and the stage it is bound to (`<prefix>session_owners`).
+ */
+export interface PoolSessionOwner {
+	readonly work: string;
+	readonly replay_key: string;
+}
+
+/** One session's writes of a batch so far, folded into one write. */
+interface FoldedSession {
+	kind: "session-create" | "session-replace" | "session-append";
+	readonly sessionId: string;
+	checkpoint?: DurableStageCheckpoint;
+	header?: Parameters<SessionStore["create"]>[0];
+	entries: Parameters<SessionStore["append"]>[1][number][];
+	/** The sequence the first write expects the session at, for a session the batch does not create. */
+	readonly expectSeq?: number;
+	/** The session's last sequence after the writes folded so far. */
+	lastSeq: number;
+}
+
+function sessionError(name: "SessionExistsError" | "SessionConflictError", message: string, fields: object): Error {
+	return Object.assign(new Error(message), { name, ...fields });
+}
+
+/**
+ * The writes of an attempt's pooled stage sessions in one shipped batch (#4768), each session's folded into the one
+ * write that leaves it as the writes in turn would: a create followed by appends is one create of every entry, a replace
+ * starts the session's entries over, and appends after a write add to its entries. A session's sequence numbers count
+ * its entries from a create or replace, so the folded write numbers them as the writes in turn do. Each write is checked
+ * as the shared store checks it: its owner (the work; for a replace, also the stage), the sequence it expects after the
+ * writes before it, and a create of a session that does not exist. The batch is planned from one read, before any of
+ * its writes, so a later write of a session could not be planned on its own.
+ */
+export class PoolSessionFold {
+	private readonly folded = new Map<string, FoldedSession>();
+	private readonly owners = new Map<string, PoolSessionOwner | undefined>();
+
+	constructor(
+		private readonly workId: string,
+		/** The session's owner row as the shared store holds it before the batch. */
+		private readonly storedOwner: (sessionId: string) => Promise<PoolSessionOwner | undefined>,
+	) {}
+
+	/** The owner of `sessionId` after the writes folded so far: one the batch creates, or the stored one. */
+	async owner(sessionId: string): Promise<PoolSessionOwner | undefined> {
+		if (!this.owners.has(sessionId)) this.owners.set(sessionId, await this.storedOwner(sessionId));
+		return this.owners.get(sessionId);
+	}
+
+	async add(mutation: PoolSessionMutation | PoolSessionAppend): Promise<void> {
+		if (mutation.kind === "session-append") {
+			const { sessionId } = mutation;
+			if (typeof sessionId !== "string" || sessionId === "")
+				throw new Error("Pool sessions require database identity");
+			if ((await this.owner(sessionId))?.work !== this.workId) throw new Error("Pool session scope mismatch");
+			const folded = this.folded.get(sessionId);
+			if (folded === undefined) {
+				this.folded.set(sessionId, {
+					kind: "session-append",
+					sessionId,
+					entries: [...mutation.entries],
+					expectSeq: mutation.expectSeq,
+					lastSeq: mutation.expectSeq + mutation.entries.length,
+				});
+				return;
+			}
+			this.expect(folded, mutation.expectSeq);
+			folded.entries.push(...mutation.entries);
+			folded.lastSeq += mutation.entries.length;
+			return;
+		}
+		const { checkpoint, header, entries } = mutation;
+		const { sessionId, replayKey } = checkpoint;
+		if (!sessionId || checkpoint.sessionFile !== undefined)
+			throw new Error("Pool sessions require database identity");
+		if (header.id !== sessionId) throw new Error("Pool session identity mismatch");
+		const folded = this.folded.get(sessionId);
+		if (mutation.kind === "session-create") {
+			if ((await this.owner(sessionId)) !== undefined || folded !== undefined)
+				throw sessionError("SessionExistsError", `Session already exists: ${sessionId}`, { sessionId });
+			this.owners.set(sessionId, { work: this.workId, replay_key: replayKey });
+			this.folded.set(sessionId, {
+				kind: "session-create",
+				sessionId,
+				checkpoint,
+				header,
+				entries: [...entries],
+				lastSeq: entries.length,
+			});
+			return;
+		}
+		const owner = await this.owner(sessionId);
+		if (owner?.work !== this.workId || owner.replay_key !== replayKey) throw new Error("Pool session scope mismatch");
+		if (folded === undefined) {
+			this.folded.set(sessionId, {
+				kind: "session-replace",
+				sessionId,
+				checkpoint,
+				header,
+				entries: [...entries],
+				expectSeq: mutation.expectSeq,
+				lastSeq: entries.length,
+			});
+			return;
+		}
+		this.expect(folded, mutation.expectSeq);
+		// A session the batch creates is still created, with the replace's header and entries; any other is replaced from
+		// the sequence its first write in the batch expects.
+		if (folded.kind === "session-append") folded.kind = "session-replace";
+		if (folded.checkpoint === undefined) folded.checkpoint = checkpoint;
+		folded.header = header;
+		folded.entries = [...entries];
+		folded.lastSeq = entries.length;
+	}
+
+	private expect(folded: FoldedSession, expectSeq: number): void {
+		if (expectSeq !== folded.lastSeq)
+			throw sessionError(
+				"SessionConflictError",
+				`Session conflict: ${folded.sessionId}, expected ${expectSeq}, actual ${folded.lastSeq}`,
+				{ sessionId: folded.sessionId, expectedSeq: expectSeq, actualSeq: folded.lastSeq },
+			);
+	}
+
+	/** The owners the batch creates, which the checkpoints after their creates are checked against. */
+	plannedOwners(): ReadonlyMap<string, PoolSessionOwner> {
+		const planned = new Map<string, PoolSessionOwner>();
+		for (const [sessionId, fold] of this.folded)
+			if (fold.kind === "session-create") planned.set(sessionId, this.owners.get(sessionId)!);
+		return planned;
+	}
+
+	/** One write per session, in the order the batch first wrote each. */
+	writes(): (PoolSessionMutation | PoolSessionAppend)[] {
+		return [...this.folded.values()].map((fold): PoolSessionMutation | PoolSessionAppend => {
+			if (fold.kind === "session-append")
+				return { kind: fold.kind, sessionId: fold.sessionId, entries: fold.entries, expectSeq: fold.expectSeq! };
+			if (fold.kind === "session-create")
+				return { kind: fold.kind, checkpoint: fold.checkpoint!, header: fold.header!, entries: fold.entries };
+			return {
+				kind: fold.kind,
+				checkpoint: fold.checkpoint!,
+				header: fold.header!,
+				entries: fold.entries,
+				expectSeq: fold.expectSeq!,
+			};
+		});
+	}
+}
+
 /** Creating or replacing a pool session binds it to its stage with one checkpoint. */
 export type PoolSessionMutation = {
 	readonly checkpoint: DurableStageCheckpoint;
@@ -53,6 +204,11 @@ export async function validatePoolMutation(
 	work: PoolWork,
 	mutation: PoolCheckpointMutation,
 	checkpoints: PoolCheckpointSource,
+	/**
+	 * The owner of a session as the write sees it, when it is planned with others: a batch that creates a session binds the
+	 * checkpoints after the create to it. Without it, the owner is read from `tx`.
+	 */
+	sessionOwner?: (sessionId: string) => Promise<PoolSessionOwner | undefined>,
 ): Promise<void> {
 	if (!["checkpoint", "session-create", "session-replace"].includes(mutation.kind))
 		throw new Error("Invalid pool mutation");
@@ -73,10 +229,13 @@ export async function validatePoolMutation(
 		throw new Error("Pool sessions require database identity");
 	if (mutation.kind !== "checkpoint" && checkpoint.kind !== "stage") throw new Error("Invalid pool session mutation");
 	if (mutation.kind === "checkpoint" && checkpoint.kind === "stage" && checkpoint.sessionId) {
-		const owner = await tx.get(
-			`SELECT work, replay_key FROM ${poolSessionPrefix(storage)}session_owners WHERE session = ?`,
-			checkpoint.sessionId,
-		);
+		const owner =
+			sessionOwner === undefined
+				? await tx.get(
+						`SELECT work, replay_key FROM ${poolSessionPrefix(storage)}session_owners WHERE session = ?`,
+						checkpoint.sessionId,
+					)
+				: await sessionOwner(checkpoint.sessionId);
 		if (owner?.work !== work.id || owner.replay_key !== checkpoint.replayKey)
 			throw new Error("Pool session scope mismatch");
 	}

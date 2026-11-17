@@ -241,7 +241,7 @@ Use [run control](#run-control) to stop, hold, or continue a child.
 
 Cancelling the parent turn stops a running foreground child. This is terminal cancellation, not completion or a retryable failure. Atomic returns labelled partial findings from the run's modified `progress.md`, the last assistant text, or a cancellation notice with available artifact paths. Parallel siblings do not each receive duplicate copies of shared progress.
 
-Use the returned task or run ID for status and run control. Expand status cards to see every child, full paths, task, parent, and any recorded termination cause; status inspection does not start work.
+Use the returned task or run ID for status and run control. Expand status cards to see every child, full paths, task, parent, and any recorded termination cause; status inspection does not start work. Atomic keeps the in-process status of the 256 most recently finished subagent runs, as `/tasks` keeps the 256 most recently finished tasks; a run with a child still pending, running or continued is always kept. A child of an older run is no longer listed under its run's path, and still resumes with `subagent({ action: "resume", id })` from its saved session.
 
 When a workflow stage closes for good (the stage finished, or its run ended or was cancelled), it cancels its remaining children and suppresses their late findings. Every subagent it launched then becomes terminal, whether it was running, paused, quit, completed, or failed: `resume` on one returns an error that says why. Already-submitted Intercom sends are not retracted, so a transport acknowledgement is not proof that a finding appeared in parent chat. Deliberate post-mortem stage chat remains separate.
 
