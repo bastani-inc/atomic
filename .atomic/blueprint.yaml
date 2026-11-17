@@ -38,6 +38,8 @@ knowledge:
       Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
       require installed locales or a Git build with gettext support. Finish `npm run check` before running
       suites that import built packages: typechecking rebuilds dist in place and cleans provider data.
+      Bare Node type stripping does not resolve source .js import paths to .ts. Node child probes that
+      import source modules use the resolution hook shown in packages/coding-agent/test/read-streaming.test.ts.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

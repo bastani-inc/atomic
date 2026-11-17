@@ -1,96 +1,155 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, test, vi } from "vitest";
 
-const spawnSync = vi.hoisted(() => vi.fn());
+const { spawn, nativeReader } = vi.hoisted(() => ({ spawn: vi.fn(), nativeReader: vi.fn() }));
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
-	return { ...actual, spawnSync };
+	return { ...actual, spawn };
 });
 
+vi.mock("../src/utils/module-require.js", () => ({
+	createModuleRequire: () => () => ({ windowsDirectorySecurity: nativeReader }),
+}));
+
 const {
-	evaluateWindowsDirectorySecurity,
 	powershellCandidates,
-	readWindowsDirectorySecurity,
-	readWindowsDirectorySecurityWithPowerShell,
+	readWindowsDirectorySecurityAsync,
+	resetWindowsDirectorySecurityStateForTesting,
+	verifyWindowsDirectorySecurity,
+	waitForWindowsDirectorySecurityReadsForTesting,
 } = await import("../src/core/tools/windows-directory-security.js");
 
-const QUERY_PATH = "C:\\Users\\alice\\AppData\\Local\\Temp\\atomic-alice";
+const EXPECTED_SECURITY = {
+	currentSid: "S-1-5-21-1",
+	ownerSid: "S-1-5-21-1",
+	dacl: "D:(A;;FA;;;S-1-5-21-1)",
+	accessRules: [{ allow: true, sid: "S-1-5-21-1" }],
+};
+const SECURITY_OUTPUT = "S-1-5-21-1\nS-1-5-21-1\nD:(A;;FA;;;S-1-5-21-1)\nAllow;S-1-5-21-1";
 
-function failedRead(code: string) {
-	return {
-		status: null,
-		signal: code === "ETIMEDOUT" ? "SIGTERM" : null,
-		stdout: "",
-		stderr: "",
-		error: Object.assign(new Error(`spawnSync powershell.exe ${code}`), { code }),
-	};
+function childProcess() {
+	return Object.assign(new EventEmitter(), {
+		stdout: new PassThrough(),
+		stderr: new PassThrough(),
+		kill: vi.fn(),
+		ref: vi.fn(),
+		unref: vi.fn(),
+	});
 }
 
 function triedExecutables(): string[] {
-	return spawnSync.mock.calls.map(([executable]) => String(executable));
+	return spawn.mock.calls.map(([executable]) => String(executable));
 }
 
+let dir: string;
+
 beforeEach(() => {
-	spawnSync.mockReset();
+	spawn.mockReset().mockImplementation(() => {
+		throw new Error("unexpected PowerShell launch");
+	});
+	nativeReader.mockReset().mockReturnValue(null);
+	resetWindowsDirectorySecurityStateForTesting();
+	dir = mkdtempSync(join(tmpdir(), "atomic-native-descriptor-"));
 });
 
 afterEach(() => {
+	resetWindowsDirectorySecurityStateForTesting();
+	vi.useRealTimers();
 	vi.restoreAllMocks();
+	rmSync(dir, { recursive: true, force: true });
 });
 
-test("a descriptor read shares one timeout across its PowerShell candidates (#5324)", () => {
-	let now = 0;
-	vi.spyOn(Date, "now").mockImplementation(() => now);
-	spawnSync.mockImplementation(() => {
-		now += 30_000;
-		return failedRead("ETIMEDOUT");
+test("a descriptor read uses the native reader without starting PowerShell (#5324)", async () => {
+	nativeReader.mockReturnValue(EXPECTED_SECURITY);
+
+	assert.deepEqual(await readWindowsDirectorySecurityAsync(dir), EXPECTED_SECURITY);
+	assert.deepEqual(nativeReader.mock.calls, [[dir]]);
+	assert.deepEqual(triedExecutables(), []);
+});
+
+test("a synchronous directory check defers its native read until after returning (#5324)", async () => {
+	nativeReader.mockReturnValue(EXPECTED_SECURITY);
+
+	assert.equal(verifyWindowsDirectorySecurity(dir), "its ownership is still being verified");
+	assert.equal(nativeReader.mock.calls.length, 0);
+	await waitForWindowsDirectorySecurityReadsForTesting();
+	assert.equal(verifyWindowsDirectorySecurity(dir), undefined);
+	assert.deepEqual(nativeReader.mock.calls, [[dir]]);
+	assert.deepEqual(triedExecutables(), []);
+});
+
+test("a read abandoned before its deferred start never calls the native reader (#5324)", async () => {
+	nativeReader.mockReturnValue(EXPECTED_SECURITY);
+	const controller = new AbortController();
+	const read = readWindowsDirectorySecurityAsync(dir, { signal: controller.signal });
+	controller.abort();
+
+	assert.equal(await read, undefined);
+	assert.deepEqual(nativeReader.mock.calls, []);
+	assert.deepEqual(triedExecutables(), []);
+	assert.deepEqual(await readWindowsDirectorySecurityAsync(dir), EXPECTED_SECURITY);
+	assert.deepEqual(nativeReader.mock.calls, [[dir]]);
+});
+
+test("a descriptor read shares one timeout across its PowerShell candidates (#5324)", async () => {
+	const child = childProcess();
+	spawn.mockReturnValue(child);
+
+	assert.equal(await readWindowsDirectorySecurityAsync(dir, { timeoutMs: 50 }), undefined);
+	assert.deepEqual(triedExecutables(), [powershellCandidates()[0]]);
+	assert.equal(child.kill.mock.calls.length, 1);
+});
+
+test("a descriptor read still tries another PowerShell with the same name when its budget remains (#5324)", async () => {
+	let attempts = 0;
+	spawn.mockImplementation(() => {
+		const child = childProcess();
+		queueMicrotask(() => {
+			if (attempts++ === 0) {
+				child.emit("error", Object.assign(new Error("early host timeout"), { code: "ETIMEDOUT" }));
+			} else {
+				child.stdout.write(SECURITY_OUTPUT);
+				child.emit("close", 0, null);
+			}
+		});
+		return child;
 	});
 
-	assert.equal(readWindowsDirectorySecurityWithPowerShell(QUERY_PATH), undefined);
-	assert.deepEqual(triedExecutables(), [powershellCandidates()[0]]);
-});
-
-test("a descriptor read still tries another PowerShell with the same name when its budget remains (#5324)", () => {
-	const expected = {
-		currentSid: "S-1-5-21-1",
-		ownerSid: "S-1-5-21-1",
-		dacl: "D:(A;;FA;;;S-1-5-21-1)",
-		accessRules: [{ allow: true, sid: "S-1-5-21-1" }],
-	};
-	spawnSync
-		.mockReturnValueOnce(failedRead("ETIMEDOUT"))
-		.mockReturnValueOnce({ status: 0, stdout: "S-1-5-21-1\nS-1-5-21-1\nD:(A;;FA;;;S-1-5-21-1)\nAllow;S-1-5-21-1" })
-		.mockReturnValue(failedRead("ENOENT"));
-
-	assert.deepEqual(readWindowsDirectorySecurityWithPowerShell(QUERY_PATH), expected);
+	assert.deepEqual(await readWindowsDirectorySecurityAsync(dir), EXPECTED_SECURITY);
 	assert.deepEqual(triedExecutables(), powershellCandidates().slice(0, 2));
 });
 
-test("a descriptor read that cannot start a PowerShell program still tries the next one of the same name (#5324)", () => {
-	spawnSync.mockImplementation(() => failedRead("ENOENT"));
+test("a descriptor read that cannot start a PowerShell program still tries the next one of the same name (#5324)", async () => {
+	spawn.mockImplementation(() => {
+		const child = childProcess();
+		queueMicrotask(() => child.emit("error", Object.assign(new Error("missing host"), { code: "ENOENT" })));
+		return child;
+	});
 
-	assert.equal(readWindowsDirectorySecurityWithPowerShell(QUERY_PATH), undefined);
+	assert.equal(await readWindowsDirectorySecurityAsync(dir), undefined);
 	assert.deepEqual(triedExecutables(), powershellCandidates());
 });
 
-test.skipIf(process.platform !== "win32")(
-	"a directory's descriptor is read without starting PowerShell, so a loaded host cannot hold the main thread on it (#5324)",
-	() => {
-		const dir = mkdtempSync(join(tmpdir(), "atomic-native-descriptor-"));
-		try {
-			const security = readWindowsDirectorySecurity(dir);
+test("a native reader failure falls back to asynchronous PowerShell (#5324)", async () => {
+	nativeReader.mockImplementation(() => {
+		throw new Error("native read unavailable");
+	});
+	spawn.mockImplementation(() => {
+		const child = childProcess();
+		queueMicrotask(() => {
+			child.stdout.write(SECURITY_OUTPUT);
+			child.emit("close", 0, null);
+		});
+		return child;
+	});
 
-			assert.ok(security, "the descriptor of an owned directory is readable");
-			assert.match(security.currentSid, /^S-1-/);
-			assert.match(security.ownerSid, /^S-1-/);
-			assert.equal(evaluateWindowsDirectorySecurity(security), undefined);
-			assert.deepEqual(triedExecutables(), [], "no PowerShell process was started");
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	},
-);
+	assert.deepEqual(await readWindowsDirectorySecurityAsync(dir), EXPECTED_SECURITY);
+	assert.deepEqual(nativeReader.mock.calls, [[dir]]);
+	assert.deepEqual(triedExecutables(), [powershellCandidates()[0]]);
+});

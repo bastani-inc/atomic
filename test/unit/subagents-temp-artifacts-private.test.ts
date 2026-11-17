@@ -50,8 +50,8 @@ function isInside(root: string, path: string): boolean {
 
 test.skipIf(process.platform === "win32")(
 	"session-less subagent artifacts use a directory only the current user owns",
-	() => {
-		const dir = getArtifactsDir(null);
+	async () => {
+		const dir = await getArtifactsDir(null);
 
 		assert.ok(isInside(agentDir, dir), `${dir} is inside the account's agent directory`);
 		for (let current = dir; isInside(join(agentDir, "cache"), current); current = dirname(current)) {
@@ -65,13 +65,13 @@ test.skipIf(process.platform === "win32")(
 
 test.skipIf(process.platform === "win32")(
 	"a symbolic link planted at the session-less artifact directory is not followed",
-	() => {
+	async () => {
 		const elsewhere = join(sandbox, `planted-${Date.now()}`);
 		mkdirSync(elsewhere, { mode: 0o700 });
 		mkdirSync(join(agentDir, "cache", "tmp", "subagents"), { recursive: true, mode: 0o700 });
 		symlinkSync(elsewhere, join(agentDir, "cache", "tmp", "subagents", "artifacts"), "dir");
 
-		const dir = getArtifactsDir(null);
+		const dir = await getArtifactsDir(null);
 
 		assert.ok(!isInside(join(agentDir, "cache"), dir), `${dir} avoids the planted link`);
 		assert.ok(lstatSync(dir).isDirectory());
