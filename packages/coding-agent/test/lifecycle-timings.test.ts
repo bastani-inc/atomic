@@ -12,6 +12,9 @@ import {
 	markLifecycleTiming,
 } from "../src/core/lifecycle-timings.ts";
 
+/** Microtask turns a mark's handoff gets; acknowledging a write takes a message from the writer's thread. */
+const MICROTASK_TURNS = 20;
+
 describe("lifecycle timing seams", () => {
 	it("does not read the monotonic clock when no diagnostic sink is installed", () => {
 		const clock = vi.spyOn(process.hrtime, "bigint");
@@ -83,9 +86,15 @@ describe("lifecycle timing seams", () => {
 		const restore = installLifecycleTraceFromEnv({ ATOMIC_STARTUP_TRACE: file });
 		try {
 			await lifecycleTraceWritten();
-			const written = readFileSync(file, "utf8");
+			// The line is appended on the writer's own thread, which may land it before this thread reads the file; what
+			// shows the mark did not wait for it is that the mark returned with its write still unacknowledged.
+			let acknowledged = false;
 			markLifecycleTiming("engine-ready");
-			expect(readFileSync(file, "utf8")).toBe(written);
+			void lifecycleTraceWritten().then(() => {
+				acknowledged = true;
+			});
+			for (let turn = 0; turn < MICROTASK_TURNS; turn++) await Promise.resolve();
+			expect(acknowledged).toBe(false);
 			await lifecycleTraceWritten();
 			const labels = readFileSync(file, "utf8")
 				.trim()
