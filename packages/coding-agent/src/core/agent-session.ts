@@ -545,7 +545,9 @@ function stageMessageAdmission(boundary: WorkflowStageAdmissionBoundary): StageM
 	return { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() };
 }
 
-export interface AgentSession extends AgentSessionBase, AgentSessionPublicSurface {}
+export interface AgentSession extends AgentSessionBase, AgentSessionPublicSurface {
+	_sealMessageAdmissionIfDrained(): boolean;
+}
 
 export const AgentSession = AgentSessionBase as unknown as {
 	new (config: AgentSessionConfig): AgentSession;

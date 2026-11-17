@@ -32,10 +32,7 @@ import {
 	writeJournalPayloadChunks,
 } from "./run-journal.js";
 
-/** The journal store's directory under an agent directory: `<agent dir's parent>/workflows/journal`. */
-export function defaultJournalStoreDirectory(agentDir: string): string {
-	return join(dirname(agentDir), "workflows", "journal");
-}
+export { defaultJournalStoreDirectory } from "./file-identity.js";
 
 /**
  * The single-file journal every workflow run used by default before the journal store, beside the store's directory.

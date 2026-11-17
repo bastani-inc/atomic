@@ -39,12 +39,47 @@ const SQLD_RECOVERY_BOUND_MS = SQLD_LOCK_RELEASE_MS - MARGIN_MS;
 
 /** A request body, as the client sends it, that only closes a stream. */
 const CLOSE_ONLY = /"requests":\[\{"type":"close"\}\]\}/g;
+/** How long the test keeps sending the write after the outage while sqld answers it busy. */
+const BUSY_RETRY_MS = 30_000;
+/** The wait between two sends of a write sqld answered busy. */
+const BUSY_RETRY_WAIT_MS = 50;
+
+/** Whether `error`, read along its cause chain, is sqld answering a request busy (`SQLITE_BUSY`): it ran nothing of it. */
+function answeredBusy(error: unknown): boolean {
+	let current = error;
+	for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth++) {
+		const { code, cause } = current as { readonly code?: unknown; readonly cause?: unknown };
+		if (code === "SQLITE_BUSY") return true;
+		current = cause;
+	}
+	return false;
+}
+
+/**
+ * Runs `sql` until it commits, sending it again while sqld answers it busy, as a writer on a shared server does. sqld
+ * grants its write lock in turn, and other clients of a shared sqld queue their writes behind the cut stream's lock
+ * too; once sqld frees it, their writes and sqld's own checkpoint can answer this one busy. The write has used up the
+ * adapter's own wait for a busy server by then, since it spent it waiting on sqld for the lock, so that answer
+ * reaches the test. A busy answer means sqld ran nothing of the write, so sending it again cannot apply it twice.
+ */
+async function runUntilCommitted(database: Awaited<ReturnType<typeof openLibsqlDatabase>>, sql: string) {
+	const deadline = Date.now() + BUSY_RETRY_MS;
+	for (;;) {
+		try {
+			return await database.run(sql);
+		} catch (error) {
+			if (!answeredBusy(error) || Date.now() > deadline) throw error;
+			await sleep(BUSY_RETRY_WAIT_MS);
+		}
+	}
+}
 
 /**
  * Runs a transaction whose stream an outage cuts after its first statement took the write lock, and the write that
- * follows once the server is reachable again. Reports how long after the first statement was sent the write committed,
- * and in which order the client's closes and the write reached sqld between the outage and the commit. With `withholdCloses`, the proxy
- * resets every connection that carries a close instead, so none reaches sqld.
+ * follows once the server is reachable again, sent until it commits. Reports how long after the first statement was
+ * sent the write committed, and in which order the client's closes and the write reached sqld between the outage and
+ * the commit. With `withholdCloses`, the proxy resets every connection that carries a close instead, so none reaches
+ * sqld.
  */
 async function cutAndWrite(withholdCloses: boolean) {
 	const table = `abandoned_${randomBytes(6).toString("hex")}`;
@@ -84,7 +119,7 @@ async function cutAndWrite(withholdCloses: boolean) {
 		restored = true;
 		proxy.restore();
 		const restoredAt = Date.now();
-		await database.run(write);
+		await runUntilCommitted(database, write);
 		const committedAt = Date.now();
 		const reachedByCommit = [...reached];
 		const rows = await database.all<{ n: number }>(`SELECT n FROM ${table} ORDER BY n`);

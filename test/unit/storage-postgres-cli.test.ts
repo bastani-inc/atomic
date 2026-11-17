@@ -330,7 +330,7 @@ describe("atomic storage join postgres:// with the adapter (#4793)", () => {
 		assert.deepEqual(settings().storage, {
 			adapter: POSTGRES_ADAPTER_PACKAGE,
 			options: { url: URL_ },
-			secrets: { password: { file: `agent/${tokenName}` } },
+			secrets: { password: { file: `${tokenName}` } },
 			prefix: "team_",
 		});
 		const [open] = fake.opens();

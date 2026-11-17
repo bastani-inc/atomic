@@ -31,6 +31,9 @@ knowledge:
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
       suites load the built packages. For focused root tests use `npm run test:unit -- test/unit/<file>.test.ts`;
       the test-suite-runner fixtures need npm's node_modules/.bin on PATH for their nested Vitest commands.
+      For concurrent-session coverage, use
+      `npm run test --workspace=@bastani/atomic -- agent-session-concurrent-` to select the five
+      `.suite.ts` files; the `agent-session-concurrent.test.ts` wrapper is excluded.
       Finish `npm run check` and `npm run build` before running suites that import built packages:
       typechecking rebuilds dist in place and cleans provider data. `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions
       in child processes with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.

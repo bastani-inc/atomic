@@ -8,8 +8,10 @@ import {
 	FLEET_DRAIN_TIMEOUT_MS,
 	type FleetFence,
 	type FleetSnapshot,
+	readFleetDemand,
 	SqlFleetStore,
 } from "../durable/journal/sql-fleet.js";
+import { readFleetRateUsage } from "../durable/journal/sql-rate-buckets.js";
 import type { RunJournal } from "../durable/journal/types.js";
 import {
 	type FleetAction,
@@ -17,11 +19,13 @@ import {
 	type FleetPlan,
 	type FleetPolicy,
 	type FleetPolicyState,
+	fleetTarget,
 	INITIAL_FLEET_STATE,
 	planFleet,
 	resolveFleetPolicy,
 } from "./autoscaler.js";
 import { elapsedSince, type Instant, instant } from "./elapsed.js";
+import { FleetRateCap, type FleetRateCapEstimate, RATE_CAP_MAX_GAP_MS, rateCapReason } from "./fleet-rate-cap.js";
 import type {
 	ProvisionedHost,
 	WorkerHostProvisioner,
@@ -142,6 +146,9 @@ export class FleetController implements WorkflowFleetController {
 	private renewedAt: Instant = { monotonic: 0, wall: 0 };
 	/** Listings in a row that omitted each drained instance, by the drained host id (#4828). */
 	private missed = new Map<string, number>();
+	private readonly rateCap: FleetRateCap;
+	private rateCapHosts?: number;
+	private rateCapRecorded?: string;
 	private stopping?: Promise<void>;
 	private settleClosed!: () => void;
 	readonly closed = new Promise<void>((resolve) => {
@@ -166,6 +173,7 @@ export class FleetController implements WorkflowFleetController {
 		const checked = checkFleetOptions(options);
 		this.policy = checked.policy;
 		this.tickMs = checked.tickMs;
+		this.rateCap = new FleetRateCap(Math.max(RATE_CAP_MAX_GAP_MS, 3 * this.tickMs));
 		this.leaseMs = 3 * this.tickMs;
 		this.backoff = new HostPollBackoff(() => performance.now(), Math.random, {
 			firstMs: this.tickMs,
@@ -202,6 +210,7 @@ export class FleetController implements WorkflowFleetController {
 			...(this.role === "active" && this.plan !== undefined
 				? { target: this.plan.target, live: this.plan.live, pending: this.plan.pending }
 				: {}),
+			...(this.role === "active" && this.rateCapHosts !== undefined ? { rateCapHosts: this.rateCapHosts } : {}),
 			...(this.degraded === undefined ? {} : { degraded: this.degraded }),
 		};
 	}
@@ -260,6 +269,7 @@ export class FleetController implements WorkflowFleetController {
 			// A controller that takes over plans afresh: the last holder's idle and boot timers were its own.
 			this.state = INITIAL_FLEET_STATE;
 			this.missed = new Map();
+			this.rateCapRecorded = undefined;
 			this.epoch = lease.epoch;
 			this.role = "active";
 			this.emit({ kind: "active", epoch: lease.epoch });
@@ -272,29 +282,44 @@ export class FleetController implements WorkflowFleetController {
 		let fence: FleetFence | undefined;
 		try {
 			fence = await this.lead();
+			if (this.stopping !== undefined) return;
+			if (fence === undefined || !this.backoff.due()) {
+				const roots = await readFleetDemand(this.journal);
+				this.rateCap.observe(await readFleetRateUsage(this.journal), roots);
+				return;
+			}
 		} catch (error) {
 			// The journal is unreachable: nothing to act on; the lease is retried next tick.
 			this.fail(error);
 			return;
 		}
-		if (fence === undefined || !this.backoff.due() || this.stopping !== undefined) return;
 		const store = this.store!;
 		this.tickAbort = new AbortController();
 		const renewal = this.keepLeading(fence, this.tickAbort);
 		try {
 			const listed = await this.call((signal) => this.options.provisioner.list(signal));
 			const snapshot = await store.snapshot();
+			this.rateCap.observe(await readFleetRateUsage(this.journal), snapshot.roots);
+			const rate = this.rateCap.estimate(this.policy.workersPerHost);
 			await this.followDrains(fence, listed, snapshot);
 			const hosts = joinHosts(listed, snapshot);
+			const capHosts = this.rateCap.limit(this.policy.workersPerHost, servingHostCount(hosts));
+			this.rateCapHosts = capHosts;
 			const known = new Set(snapshot.hosts.map((host) => host.host));
 			const now = performance.now();
 			const plan = planFleet(
 				this.policy,
-				{ now, roots: snapshot.roots, hosts: hosts.map((entry) => entry.view) },
+				{
+					now,
+					roots: snapshot.roots,
+					hosts: hosts.map((entry) => entry.view),
+					...(capHosts === undefined ? {} : { rateCapHosts: capHosts }),
+				},
 				this.state,
 			);
 			this.state = plan.state;
 			this.plan = plan;
+			await this.recordRateCap(fence, plan, rate, fleetTarget(this.policy, snapshot.roots), capHosts);
 			const ready = snapshot.roots.reduce((total, root) => total + (root.blocked ? 0 : root.ready), 0);
 			for (const action of plan.actions) {
 				this.tickAbort.signal.throwIfAborted();
@@ -317,6 +342,36 @@ export class FleetController implements WorkflowFleetController {
 		} finally {
 			clearInterval(renewal);
 		}
+	}
+
+	private async recordRateCap(
+		fence: FleetFence,
+		plan: FleetPlan,
+		rate: FleetRateCapEstimate | undefined,
+		wanted: number,
+		capHosts: number | undefined,
+	): Promise<void> {
+		const binding = capHosts !== undefined && wanted > plan.target;
+		const warming = rate === undefined || rate.hosts !== capHosts;
+		const key = binding ? `${warming ? "warming" : rate.scope.scope}:${capHosts}` : undefined;
+		if (key === this.rateCapRecorded) return;
+		if (binding)
+			await this.store!.record(fence, {
+				kind: "rate-cap",
+				target: plan.target,
+				live: plan.live,
+				reason: warming
+					? `waiting for a minute of recent rate usage before adding hosts: keeping at most ${capHosts} hosts while the queue wants ${wanted}`
+					: rateCapReason(rate, wanted),
+			});
+		else if (this.rateCapRecorded !== undefined)
+			await this.store!.record(fence, {
+				kind: "rate-cap",
+				target: plan.target,
+				live: plan.live,
+				reason: "the rate limits no longer hold the fleet below what its queue wants",
+			});
+		this.rateCapRecorded = key;
 	}
 
 	/**
@@ -385,9 +440,16 @@ export class FleetController implements WorkflowFleetController {
 		);
 		const snapshot = await store.snapshot();
 		const hosts = joinHosts(listed, snapshot);
+		this.rateCap.observe(await readFleetRateUsage(this.journal), snapshot.roots);
+		const capHosts = this.rateCap.limit(this.policy.workersPerHost, servingHostCount(hosts));
 		const plan = planFleet(
 			{ ...this.policy, idleDrainMs: 0 },
-			{ now: performance.now(), roots: snapshot.roots, hosts: hosts.map((entry) => entry.view) },
+			{
+				now: performance.now(),
+				roots: snapshot.roots,
+				hosts: hosts.map((entry) => entry.view),
+				...(capHosts === undefined ? {} : { rateCapHosts: capHosts }),
+			},
 			this.state,
 		);
 		for (const action of plan.actions)
@@ -479,6 +541,12 @@ export class FleetController implements WorkflowFleetController {
 		})();
 		return this.stopping;
 	}
+}
+
+function servingHostCount(hosts: readonly JoinedHost[]): number {
+	return hosts.filter(
+		({ view }) => !view.draining && view.state !== "draining" && view.state !== "failed" && view.state !== "stopped",
+	).length;
 }
 
 export interface JoinedHost {
