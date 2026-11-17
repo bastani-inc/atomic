@@ -68,10 +68,10 @@ const PROBED_SHAPES: Array<{ label: string; yaml: string; expected: FrontmatterV
 
 describe("extra-field YAML round-trip safety", () => {
 	for (const { label, yaml, expected } of PROBED_SHAPES) {
-		test(`${label} survives load → serializeAgent → load with identical values`, () => {
+		test(`${label} survives load → serializeAgent → load with identical values`, async () => {
 			const dir = writeAgents({ "probe.md": agentFile(yaml) });
 
-			const [loaded] = loadAgentsFromDir(dir, "user");
+			const [loaded] = await loadAgentsFromDir(dir, "user");
 			assert.ok(loaded, "agent must load before the round-trip");
 			assert.deepEqual(loaded.extraFields?.custom, expected);
 
@@ -82,16 +82,16 @@ describe("extra-field YAML round-trip safety", () => {
 			assert.equal(parseFrontmatter(rewritten).parseError, undefined);
 
 			const roundTripDir = writeAgents({ "probe.md": rewritten });
-			const [reloaded] = loadAgentsFromDir(roundTripDir, "user");
+			const [reloaded] = await loadAgentsFromDir(roundTripDir, "user");
 			assert.ok(reloaded, "agent must still be discoverable after the rewrite");
 			assert.equal(reloaded.name, "probe");
 			assert.deepEqual(reloaded.extraFields?.custom, expected);
 		});
 	}
 
-	test("the comment-character shape rewrites to quoted YAML, not an unterminated flow sequence", () => {
+	test("the comment-character shape rewrites to quoted YAML, not an unterminated flow sequence", async () => {
 		const dir = writeAgents({ "probe.md": agentFile('custom: ["a #b", c]\n') });
-		const [loaded] = loadAgentsFromDir(dir, "user");
+		const [loaded] = await loadAgentsFromDir(dir, "user");
 
 		const rewritten = serializeAgent(loaded!);
 		// The old emitter produced `custom: [a #b, c]` here. Every item the

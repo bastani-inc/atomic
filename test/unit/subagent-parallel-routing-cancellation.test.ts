@@ -31,8 +31,8 @@ function fixture() {
 	} as unknown as ExecutionContextData;
 	const deps = { config: {}, state: { foregroundControls: new Map() } } as unknown as ResolvedExecutorDeps;
 	const sentinel = { content: [], details: { mode: "parallel", results: [] } };
-	vi.mocked(createParallelWorktreeSetup).mockReturnValue({ errorResult: sentinel } as ReturnType<
-		typeof createParallelWorktreeSetup
+	vi.mocked(createParallelWorktreeSetup).mockResolvedValue({ errorResult: sentinel } as Awaited<
+		ReturnType<typeof createParallelWorktreeSetup>
 	>);
 	return { parent, run: () => runParallelPath(data, deps), sentinel };
 }

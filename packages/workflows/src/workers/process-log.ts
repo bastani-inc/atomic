@@ -1,5 +1,5 @@
-import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
-import { rm, rmdir } from "node:fs/promises";
+import { createWriteStream, type WriteStream } from "node:fs";
+import { mkdir, rm, rmdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Readable } from "node:stream";
 
@@ -15,13 +15,16 @@ function asError(value: unknown): Error {
 
 /** A child process's stderr log. */
 export interface ProcessLog {
+	/** Settles once the log is open, or its failure has been reported. */
+	readonly opened: Promise<void>;
 	/** Stops writing the log, drains the process's stderr from then on, and resolves once the log's file is closed. */
 	close(): Promise<void>;
 }
 
 /**
- * Appends a child process's stderr to `logPath`, creating its directory. A log that cannot be written never blocks the
- * process: its stderr is drained instead, and `onFailure` hears why, once.
+ * Appends a child process's stderr to `logPath`, creating its directory first; the process's stderr waits in its
+ * stream meanwhile. A log that cannot be written never blocks the process: its stderr is drained instead, and
+ * `onFailure` hears why, once.
  */
 export function appendProcessLog(
 	stderr: Readable | null | undefined,
@@ -41,27 +44,29 @@ export function appendProcessLog(
 		log?.end();
 		onFailure(logFailureOf(error));
 	};
-	const close = (): Promise<void> => {
+	let opening: Promise<void> = Promise.resolve();
+	const close = async (): Promise<void> => {
+		await opening;
 		drain();
 		const open = log;
-		if (open === undefined || open.closed) return Promise.resolve();
-		return new Promise((resolve) => {
+		if (open === undefined || open.closed) return;
+		await new Promise<void>((resolve) => {
 			open.once("close", () => resolve());
 			open.end();
 		});
 	};
-	if (stderr === null || stderr === undefined) return { close };
+	if (stderr === null || stderr === undefined) return { opened: opening, close };
 	stderr.on("error", fail);
-	try {
-		mkdirSync(dirname(logPath), { recursive: true });
-	} catch (error) {
-		fail(asError(error));
-		return { close };
-	}
-	log = createWriteStream(logPath, { flags: "a" });
-	log.on("error", fail);
-	stderr.pipe(log);
-	return { close };
+	opening = mkdir(dirname(logPath), { recursive: true }).then(
+		() => {
+			if (failed) return;
+			log = createWriteStream(logPath, { flags: "a" });
+			log.on("error", fail);
+			stderr.pipe(log);
+		},
+		(error: unknown) => fail(asError(error)),
+	);
+	return { opened: opening, close };
 }
 
 /** Removes a process log and, when nothing else is left in it, its directory. */

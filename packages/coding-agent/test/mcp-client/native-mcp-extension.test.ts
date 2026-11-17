@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -53,7 +53,7 @@ describe("MCP config", () => {
 		return { agentDir, cwd };
 	}
 
-	it("merges global and trusted project servers and validates entries", () => {
+	it("merges global and trusted project servers and validates entries", async () => {
 		const paths = setup(
 			{
 				mcpServers: {
@@ -69,7 +69,7 @@ describe("MCP config", () => {
 			{ mcpServers: { shared: { command: "project-cmd", exposure: "direct" } } },
 		);
 
-		const trusted = loadMcpConfig({ ...paths, projectTrusted: true });
+		const trusted = await loadMcpConfig({ ...paths, projectTrusted: true });
 		// Disabled servers are kept so /mcp can enable them again.
 		assert.deepEqual(
 			trusted.servers.map((server) => [server.name, server.scope, server.config]),
@@ -86,18 +86,18 @@ describe("MCP config", () => {
 		assert.ok(trusted.errors[3].includes('invalid server name "bad name"'));
 
 		// Untrusted projects cannot add or override servers, since stdio servers run commands.
-		const untrusted = loadMcpConfig({ ...paths, projectTrusted: false });
+		const untrusted = await loadMcpConfig({ ...paths, projectTrusted: false });
 		assert.deepEqual(untrusted.servers.find((server) => server.name === "shared")?.config, { command: "global-cmd" });
 	});
 
-	it("lets project entries override enabled and exposure of global servers (#10277)", () => {
+	it("lets project entries override enabled and exposure of global servers (#10277)", async () => {
 		const paths = setup(
 			{ mcpServers: { tools: { command: "x", env: { TOKEN: "secret" } } } },
 			// An override cannot change the command, which would run with the global env.
 			{ mcpServers: { tools: { enabled: false, args: ["y"] }, missing: { enabled: false } } },
 		);
 		const project = join(paths.cwd, ".atomic", "mcp.json");
-		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: true });
+		const { servers, errors } = await loadMcpConfig({ ...paths, projectTrusted: true });
 		assert.deepEqual(
 			servers.map((server) => [server.name, server.override, server.config]),
 			[["tools", undefined, { command: "x", env: { TOKEN: "secret" } }]],
@@ -107,21 +107,21 @@ describe("MCP config", () => {
 		assert.ok(errors[1].includes('server "missing" needs "command" or "url", or a global server to override'));
 
 		writeFileSync(project, JSON.stringify({ mcpServers: { tools: { enabled: false } } }));
-		const [tools] = loadMcpConfig({ ...paths, projectTrusted: true }).servers;
+		const [tools] = (await loadMcpConfig({ ...paths, projectTrusted: true })).servers;
 		assert.deepEqual(
 			[tools.override, tools.config],
 			[project, { command: "x", env: { TOKEN: "secret" }, enabled: false }],
 		);
 
 		// Overrides keep `enabled: true`, since it replaces the global value.
-		updateMcpServerConfig(project, "tools", { enabled: true });
+		await updateMcpServerConfig(project, "tools", { enabled: true });
 		assert.deepEqual(JSON.parse(readFileSync(project, "utf8")).mcpServers.tools, { enabled: true });
 	});
 
-	it("refuses reserved server names when writing a project override instead of touching Object.prototype", () => {
+	it("refuses reserved server names when writing a project override instead of touching Object.prototype", async () => {
 		const project = join(setup({}, { mcpServers: {} }).cwd, ".atomic", "mcp.json");
 		for (const name of ["__proto__", "constructor", "prototype"]) {
-			assert.throws(
+			await assert.rejects(
 				() => updateMcpServerConfig(project, name, { enabled: false }, { override: true }),
 				/Invalid MCP server name/,
 			);
@@ -129,18 +129,18 @@ describe("MCP config", () => {
 		assert.equal(Object.hasOwn(Object.prototype, "enabled"), false);
 		assert.equal(({} as Record<string, unknown>).enabled, undefined);
 
-		updateMcpServerConfig(project, "toString", { enabled: false }, { override: true });
+		await updateMcpServerConfig(project, "toString", { enabled: false }, { override: true });
 		assert.deepEqual(JSON.parse(readFileSync(project, "utf8")).mcpServers, { toString: { enabled: false } });
 	});
 
-	it("reads and edits mcp.json files that start with a UTF-8 BOM (earendil-works/pi#11191)", () => {
+	it("reads and edits mcp.json files that start with a UTF-8 BOM (earendil-works/pi#11191)", async () => {
 		const paths = setup({}, {});
 		const global = join(paths.agentDir, "mcp.json");
 		const project = join(paths.cwd, ".atomic", "mcp.json");
 		writeFileSync(global, '\uFEFF{"mcpServers":{"demo":{"command":"echo","enabled":false}}}\n');
 		writeFileSync(project, '\uFEFF{"mcpServers":{"local":{"command":"local-cmd"}}}\n');
 
-		const loaded = loadMcpConfig({ ...paths, projectTrusted: true });
+		const loaded = await loadMcpConfig({ ...paths, projectTrusted: true });
 		assert.deepEqual(loaded.errors, []);
 		assert.deepEqual(
 			loaded.servers.map((server) => [server.name, server.scope]),
@@ -150,7 +150,7 @@ describe("MCP config", () => {
 			],
 		);
 
-		assert.equal(addMcpServerConfig(global, "other", { command: "other-cmd" }), false);
+		assert.equal(await addMcpServerConfig(global, "other", { command: "other-cmd" }), false);
 		assert.deepEqual(JSON.parse(readFileSync(global, "utf8")).mcpServers, {
 			demo: { command: "echo", enabled: false },
 			other: { command: "other-cmd" },
@@ -158,9 +158,9 @@ describe("MCP config", () => {
 	});
 
 	// Regression: #10239.
-	it("rejects server names that differ only in - and _", () => {
+	it("rejects server names that differ only in - and _", async () => {
 		const paths = setup({ mcpServers: { "work-files": { command: "a" }, work_files: { command: "b" } } }, {});
-		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: false });
+		const { servers, errors } = await loadMcpConfig({ ...paths, projectTrusted: false });
 		assert.deepEqual(
 			servers.map((server) => server.name),
 			["work-files"],
@@ -168,7 +168,7 @@ describe("MCP config", () => {
 		assert.match(errors[0], /server "work_files" conflicts with "work-files"/);
 	});
 
-	it("validates exposure and reads autoEnableCodemode with project precedence", () => {
+	it("validates exposure and reads autoEnableCodemode with project precedence", async () => {
 		const paths = setup(
 			{
 				autoEnableCodemode: false,
@@ -185,7 +185,7 @@ describe("MCP config", () => {
 			{ autoEnableCodemode: "yes", mcpServers: {} },
 		);
 
-		const untrusted = loadMcpConfig({ ...paths, projectTrusted: false });
+		const untrusted = await loadMcpConfig({ ...paths, projectTrusted: false });
 		assert.equal(untrusted.autoEnableCodemode, false);
 		assert.deepEqual(
 			untrusted.servers.map((server) => [server.name, server.config.exposure]),
@@ -201,12 +201,12 @@ describe("MCP config", () => {
 		assert.match(untrusted.errors[0], /server "wrong": exposure must be one of/);
 		assert.match(untrusted.errors[1], /server "badDescription": description must be a string/);
 
-		const trusted = loadMcpConfig({ ...paths, projectTrusted: true });
+		const trusted = await loadMcpConfig({ ...paths, projectTrusted: true });
 		assert.equal(trusted.autoEnableCodemode, false);
 		assert.ok(trusted.errors.some((error) => error.includes("autoEnableCodemode must be a boolean")));
 	});
 
-	it("validates the OAuth callback URL, scope, and client name", () => {
+	it("validates the OAuth callback URL, scope, and client name", async () => {
 		const paths = setup(
 			{
 				mcpServers: {
@@ -230,7 +230,7 @@ describe("MCP config", () => {
 			},
 			{},
 		);
-		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: false });
+		const { servers, errors } = await loadMcpConfig({ ...paths, projectTrusted: false });
 		assert.deepEqual(
 			servers.map((server) => server.name),
 			["ok", "ipv6", "same", "named", "metadata"],
@@ -242,7 +242,7 @@ describe("MCP config", () => {
 		assert.match(errors[4], /server "plainMetadata": oauth\.authServerMetadataUrl must be an https URL/);
 	});
 
-	it("resolves per-tool exposure from exact names, then patterns in order", () => {
+	it("resolves per-tool exposure from exact names, then patterns in order", async () => {
 		const paths = setup(
 			{
 				mcpServers: {
@@ -256,7 +256,7 @@ describe("MCP config", () => {
 			},
 			{},
 		);
-		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: false });
+		const { servers, errors } = await loadMcpConfig({ ...paths, projectTrusted: false });
 		assert.match(errors[0], /server "bad": toolExposure "a" must be one of/);
 		const config = servers[0].config;
 		assert.equal(getMcpToolExposure(config, "get_me"), "direct");
@@ -271,7 +271,7 @@ describe("MCP config", () => {
 		);
 	});
 
-	it("validates provider auth and accepts it only in the global mcp.json", () => {
+	it("validates provider auth and accepts it only in the global mcp.json", async () => {
 		const paths = setup(
 			{
 				mcpServers: {
@@ -283,7 +283,7 @@ describe("MCP config", () => {
 			},
 			{ mcpServers: { radius: { url: "https://evil.example/mcp", auth: { provider: "radius" } } } },
 		);
-		const { servers, errors } = loadMcpConfig({ ...paths, projectTrusted: true });
+		const { servers, errors } = await loadMcpConfig({ ...paths, projectTrusted: true });
 		// The project entry cannot replace the global one: it would send the credential to its own URL.
 		assert.deepEqual(
 			servers.map((server) => [server.name, server.scope, "url" in server.config && server.config.url]),
@@ -926,9 +926,10 @@ for await (const line of createInterface({ input: process.stdin })) {
 				method: "notifications/message",
 				params: { level: "error", data: { code: 7 } },
 			});
-			await new Promise((resolve) => setTimeout(resolve, 0));
-			const lines = readFileSync(path, "utf8").replace(/^\S+ /gm, "");
-			assert.equal(lines, '[fake] warning db: slow\n    query\n[fake] error {"code":7}\n');
+			const expected = '[fake] warning db: slow\n    query\n[fake] error {"code":7}\n';
+			const logged = () => (existsSync(path) ? readFileSync(path, "utf8").replace(/^\S+ /gm, "") : "");
+			await vi.waitFor(() => assert.equal(logged().length >= expected.length, true));
+			assert.equal(logged(), expected);
 			await connection.close();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });

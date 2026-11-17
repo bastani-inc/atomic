@@ -42,7 +42,7 @@ class SelectorTerminal implements Terminal {
 	setProgramStatus(): void {}
 }
 
-function openSettingsSelector() {
+async function openSettingsSelector() {
 	const settingsManager = SettingsManager.inMemory({});
 	const chatModel = getModel("openai", "gpt-4o");
 	const compactionModel = getModel("openai", "gpt-4.1-mini");
@@ -99,7 +99,7 @@ function openSettingsSelector() {
 	}) as unknown as InteractiveMode;
 	mode.ui = createInteractiveTuiReference(() => Reflect.get(mode, "renderer") as TUI);
 
-	mode.showSettingsSelector();
+	await mode.showSettingsSelector();
 	if (!selector) throw new Error("settings selector was not created");
 	return { mode, selector, session, settingsManager };
 }
@@ -113,8 +113,8 @@ afterEach(() => {
 	setKeybindings(previousKeybindings);
 });
 
-test("settings selector has no TUI mode row", () => {
-	const { mode, selector } = openSettingsSelector();
+test("settings selector has no TUI mode row", async () => {
+	const { mode, selector } = await openSettingsSelector();
 	const rendered = stripTerminalSequences(selector.getSettingsList().render(120).join("\n"));
 
 	expect(rendered).not.toMatch(/TUI mode/);
@@ -122,16 +122,16 @@ test("settings selector has no TUI mode row", () => {
 	mode.ui.stop();
 });
 
-test("settings selector keeps fullscreen scrollbar available", () => {
-	const { mode, selector } = openSettingsSelector();
+test("settings selector keeps fullscreen scrollbar available", async () => {
+	const { mode, selector } = await openSettingsSelector();
 	const rendered = stripTerminalSequences(selector.getSettingsList().render(120).join("\n"));
 
 	expect(rendered).toMatch(/Fullscreen scrollbar\s+auto/);
 	mode.ui.stop();
 });
 
-test("settings selector searches and saves the compaction model without changing the chat model (#3470)", () => {
-	const { mode, selector, session, settingsManager } = openSettingsSelector();
+test("settings selector searches and saves the compaction model without changing the chat model (#3470)", async () => {
+	const { mode, selector, session, settingsManager } = await openSettingsSelector();
 	const chatModel = session.model;
 	try {
 		const list = selector.getSettingsList();
@@ -151,8 +151,8 @@ test("settings selector searches and saves the compaction model without changing
 	}
 });
 
-test("the background compaction rows reach the session (#4330)", () => {
-	const { mode, selector, session } = openSettingsSelector();
+test("the background compaction rows reach the session (#4330)", async () => {
+	const { mode, selector, session } = await openSettingsSelector();
 	try {
 		const list = selector.getSettingsList();
 		const rendered = stripTerminalSequences(list.render(120).join("\n"));
@@ -170,8 +170,8 @@ test("the background compaction rows reach the session (#4330)", () => {
 	}
 });
 
-test("toggling Debug mode saves it and turns debug mode on for this process at once (#4360)", () => {
-	const { mode, selector, settingsManager } = openSettingsSelector();
+test("toggling Debug mode saves it and turns debug mode on for this process at once (#4360)", async () => {
+	const { mode, selector, settingsManager } = await openSettingsSelector();
 	try {
 		const list = selector.getSettingsList();
 		const requestRender = vi.spyOn(Reflect.get(mode, "renderer") as TUI, "requestRender");
@@ -192,8 +192,8 @@ test("toggling Debug mode saves it and turns debug mode on for this process at o
 	}
 });
 
-test("settings selector saves the decision model without changing the chat model (#4358)", () => {
-	const { mode, selector, session, settingsManager } = openSettingsSelector();
+test("settings selector saves the decision model without changing the chat model (#4358)", async () => {
+	const { mode, selector, session, settingsManager } = await openSettingsSelector();
 	const chatModel = session.model;
 	try {
 		const list = selector.getSettingsList();

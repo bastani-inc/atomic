@@ -3,11 +3,12 @@
  * repositories sharing one database cannot address each other unless they choose a common group.
  * Host-free: callers pass the Git environment and the storage environment the broker would receive.
  */
-import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { ProjectGroupError } from "@bastani/atomic";
-import { readSharedStorageSetting } from "./broker/shared-storage-setting.js";
+import { readSharedStorageSetting, readSharedStorageSettingAsync } from "./broker/shared-storage-setting.js";
 
 export const PROJECT_GROUP_PREFIX = "project:";
 /** The warning for joining `default` explicitly while multi-node routing is on, without a label: the UI adds its own. */
@@ -89,12 +90,67 @@ function git(cwd: string, args: readonly string[], env: NodeJS.ProcessEnv): Spaw
   return result;
 }
 
-function gitFailed(cwd: string, args: readonly string[], result: SpawnSyncReturns<string>): ProjectGroupError {
+function gitFailed(
+  cwd: string,
+  args: readonly string[],
+  result: { readonly status: number | null; readonly stderr: string },
+): ProjectGroupError {
   const detail = result.stderr.trim().split("\n", 1)[0] || `git exited with status ${result.status}`;
   return new ProjectGroupError("git-failed", {
     cwd,
     detail,
     hint: `Run git -C ${cwd} ${args.join(" ")} to see why and fix the repository, ${EXPLICIT_GROUP_HINT}.`,
+  });
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function repositoryMarkerAsync(directory: string): Promise<string | undefined> {
+  for (let current = directory; ; current = dirname(current)) {
+    if (await pathExists(join(current, ".git"))) return current;
+    if (dirname(current) === current) return undefined;
+  }
+}
+
+async function gitAsync(
+  cwd: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn("git", ["-C", cwd, ...args], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    child.stdout?.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    child.once("error", (error) => {
+      rejectPromise(
+        new ProjectGroupError("git-unavailable", {
+          cwd,
+          detail: error.message,
+          hint: `Install Git (${gitInstallCommand()}), ${EXPLICIT_GROUP_HINT}.`,
+          cause: error,
+        }),
+      );
+    });
+    child.once("close", (status) => {
+      resolvePromise({
+        status,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+      });
+    });
   });
 }
 
@@ -126,9 +182,40 @@ export function projectName(cwd: string, gitEnv: NodeJS.ProcessEnv): string {
   return name;
 }
 
+export async function projectNameAsync(cwd: string, gitEnv: NodeJS.ProcessEnv): Promise<string> {
+  const directory = resolve(cwd);
+  const known = projects.get(directory);
+  if (known !== undefined) return known;
+  let name: string;
+  if ((await repositoryMarkerAsync(directory)) === undefined) {
+    name = basename(directory) || directory;
+  } else {
+    const topLevelArgs = ["rev-parse", "--show-toplevel"];
+    const topLevel = await gitAsync(directory, topLevelArgs, gitEnv);
+    if (topLevel.status !== 0) throw gitFailed(directory, topLevelArgs, topLevel);
+    const root = topLevel.stdout.trim();
+    const originArgs = ["remote", "get-url", "origin"];
+    const origin = await gitAsync(directory, originArgs, gitEnv);
+    if (origin.status !== 0 && origin.status !== NO_SUCH_REMOTE) throw gitFailed(directory, originArgs, origin);
+    const fromOrigin = origin.status === 0 ? remoteRepositoryPath(origin.stdout) : undefined;
+    name = fromOrigin ?? (basename(root) || root);
+  }
+  projects.set(directory, name);
+  return name;
+}
+
 /** The group name for a project, `project:<owner>/<repo>`. */
 export function projectGroup(cwd: string, gitEnv: NodeJS.ProcessEnv): string {
   return `${PROJECT_GROUP_PREFIX}${projectName(cwd, gitEnv)}`;
+}
+
+export async function projectGroupAsync(cwd: string, gitEnv: NodeJS.ProcessEnv): Promise<string> {
+  return `${PROJECT_GROUP_PREFIX}${await projectNameAsync(cwd, gitEnv)}`;
+}
+
+export function cachedProjectGroup(cwd: string): string | undefined {
+  const known = projects.get(resolve(cwd));
+  return known === undefined ? undefined : `${PROJECT_GROUP_PREFIX}${known}`;
 }
 
 /**
@@ -139,6 +226,10 @@ export function multiNodeSelected(agentDir: string, storageEnv: NodeJS.ProcessEn
   return readSharedStorageSetting(agentDir, storageEnv) !== undefined;
 }
 
+export async function multiNodeSelectedAsync(agentDir: string, storageEnv: NodeJS.ProcessEnv): Promise<boolean> {
+  return (await readSharedStorageSettingAsync(agentDir, storageEnv)) !== undefined;
+}
+
 /** The project group a session in `cwd` joins by default, or `undefined` while multi-node routing is off. */
 export function projectHomeGroup(
   cwd: string,
@@ -147,4 +238,13 @@ export function projectHomeGroup(
   gitEnv: NodeJS.ProcessEnv,
 ): string | undefined {
   return multiNodeSelected(agentDir, storageEnv) ? projectGroup(cwd, gitEnv) : undefined;
+}
+
+export async function projectHomeGroupAsync(
+  cwd: string,
+  agentDir: string,
+  storageEnv: NodeJS.ProcessEnv,
+  gitEnv: NodeJS.ProcessEnv,
+): Promise<string | undefined> {
+  return (await multiNodeSelectedAsync(agentDir, storageEnv)) ? projectGroupAsync(cwd, gitEnv) : undefined;
 }

@@ -1,6 +1,6 @@
 /** Durable workflow contract and private journal projection. */
 
-import { closeSync, openSync, readSync } from "node:fs";
+import { type FileHandle, open } from "node:fs/promises";
 import type { JournalShardUnavailableError, RunJournal } from "@bastani/atomic/storage";
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
@@ -24,16 +24,16 @@ import { parseWorkflowChildResult } from "./workflow-child-result.js";
 
 const SESSION_HEADER_READ_LIMIT_BYTES = 64 * 1024;
 
-function readSessionHeaderId(sessionFile: string): string | undefined {
-	let fd: number;
+async function readSessionHeaderId(sessionFile: string): Promise<string | undefined> {
+	let handle: FileHandle;
 	try {
-		fd = openSync(sessionFile, "r");
+		handle = await open(sessionFile, "r");
 	} catch {
 		return undefined;
 	}
 	try {
 		const buffer = Buffer.alloc(SESSION_HEADER_READ_LIMIT_BYTES);
-		const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
 		const firstLine = buffer
 			.subarray(0, bytesRead)
 			.toString("utf8")
@@ -44,7 +44,7 @@ function readSessionHeaderId(sessionFile: string): string | undefined {
 	} catch {
 		return undefined;
 	} finally {
-		closeSync(fd);
+		await handle.close();
 	}
 }
 
@@ -54,13 +54,14 @@ function readSessionHeaderId(sessionFile: string): string | undefined {
  * Before #3700 a stage checkpoint could identify its session only by transcript
  * path. The session ID is the header `id` of that transcript, which is also the
  * ID the session keeps after it is imported into the default session store. The
- * transcript file name is not used: its UUID can differ from the header ID.
+ * transcript file name is not used: its UUID can differ from the header ID. A journal backend migrates each checkpoint
+ * it reads before folding it.
  */
-export function migrateStageSessionCheckpoint<T extends { readonly sessionId?: string; readonly sessionFile?: string }>(
-	checkpoint: T,
-): T {
+export async function migrateStageSessionCheckpoint<
+	T extends { readonly sessionId?: string; readonly sessionFile?: string },
+>(checkpoint: T): Promise<T> {
 	if (checkpoint.sessionId !== undefined || checkpoint.sessionFile === undefined) return checkpoint;
-	const sessionId = readSessionHeaderId(checkpoint.sessionFile);
+	const sessionId = await readSessionHeaderId(checkpoint.sessionFile);
 	return sessionId === undefined ? checkpoint : { ...checkpoint, sessionId };
 }
 
@@ -705,11 +706,12 @@ function sharingOutputAsResult(checkpoint: DurableCheckpoint): DurableCheckpoint
 		: checkpoint;
 }
 
-/** A recorded checkpoint as a run's indexes keep it: a session read from its file, and a stage's implied topology. */
+/**
+ * A recorded checkpoint as a run's indexes keep it, with a stage's implied topology. A stage checkpoint recorded before
+ * #3700 has its session already read from its file (see {@link migrateStageSessionCheckpoint}).
+ */
 export function normalizedCheckpoint(recorded: DurableCheckpoint): DurableCheckpoint {
-	const checkpoint = sharingOutputAsResult(
-		recorded.kind === "stage" ? migrateStageSessionCheckpoint(recorded) : recorded,
-	);
+	const checkpoint = sharingOutputAsResult(recorded);
 	return checkpoint.kind === "stage" && checkpoint.topology === undefined
 		? {
 				...checkpoint,

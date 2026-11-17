@@ -27,17 +27,17 @@ import type { WorkflowRegistry } from "../../packages/workflows/src/workflows/re
 import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 import { testRunId } from "../helpers/run-id.js";
 
-function createGitRepo(name: string): { readonly root: string; readonly repo: string } {
+async function createGitRepo(name: string): Promise<{ readonly root: string; readonly repo: string }> {
 	const root = realpathSync.native(mkdtempSync(join(tmpdir(), name)));
 	const repo = join(root, "repo");
 	mkdirSync(repo);
-	runGitChecked(repo, ["init", "-b", "main"]);
-	runGitChecked(repo, ["config", "user.email", "test@example.com"]);
-	runGitChecked(repo, ["config", "user.name", "Test User"]);
-	runGitChecked(repo, ["config", "commit.gpgsign", "false"]);
+	await runGitChecked(repo, ["init", "-b", "main"]);
+	await runGitChecked(repo, ["config", "user.email", "test@example.com"]);
+	await runGitChecked(repo, ["config", "user.name", "Test User"]);
+	await runGitChecked(repo, ["config", "commit.gpgsign", "false"]);
 	writeFileSync(join(repo, "README.md"), "main\n");
-	runGitChecked(repo, ["add", "README.md"]);
-	runGitChecked(repo, ["commit", "-m", "initial"]);
+	await runGitChecked(repo, ["add", "README.md"]);
+	await runGitChecked(repo, ["commit", "-m", "initial"]);
 	mkdirSync(join(repo, "packages", "api"), { recursive: true });
 	return { root, repo };
 }
@@ -81,8 +81,8 @@ describe("durable resume with reusable git worktrees", () => {
 	}
 
 	test("resumes input-bound reusable git worktrees from the original invocation cwd", async () => {
-		const primary = createGitRepo("durable-worktree-primary-");
-		const other = createGitRepo("durable-worktree-other-");
+		const primary = await createGitRepo("durable-worktree-primary-");
+		const other = await createGitRepo("durable-worktree-other-");
 		try {
 			const sourceCwd = join(primary.repo, "packages", "api");
 			const expectedWorktree = join(primary.root, "resume-reused-wt");
@@ -137,8 +137,8 @@ describe("durable resume with reusable git worktrees", () => {
 	});
 
 	test("returns resumed reusable worktree setup failures before claiming admission and restores resumability", async () => {
-		const primary = createGitRepo("durable-worktree-partial-");
-		const other = createGitRepo("durable-worktree-partial-other-");
+		const primary = await createGitRepo("durable-worktree-partial-");
+		const other = await createGitRepo("durable-worktree-partial-other-");
 		try {
 			const sourceCwd = join(primary.repo, "packages", "api");
 			writeFileSync(join(primary.root, "partial-wt"), "not a directory\n");
@@ -210,11 +210,11 @@ describe("durable resume with reusable git worktrees", () => {
 	});
 
 	test("runs stages in another repository's existing worktree when launched from a different repository", async () => {
-		const invoking = createGitRepo("durable-worktree-invoking-");
-		const other = createGitRepo("durable-worktree-foreign-");
+		const invoking = await createGitRepo("durable-worktree-invoking-");
+		const other = await createGitRepo("durable-worktree-foreign-");
 		try {
 			const otherWorktree = join(other.root, "other-wt");
-			runGitChecked(other.repo, ["worktree", "add", "--detach", otherWorktree]);
+			await runGitChecked(other.repo, ["worktree", "add", "--detach", otherWorktree]);
 			const def = workflow({
 				name: "worktree-foreign-repository",
 				description: "",
@@ -251,7 +251,7 @@ describe("durable resume with reusable git worktrees", () => {
 	});
 
 	test("resume reuses the checkout a run allocated under a non-empty directory while new runs get their own", async () => {
-		const primary = createGitRepo("durable-worktree-allocated-");
+		const primary = await createGitRepo("durable-worktree-allocated-");
 		try {
 			const pool = join(primary.root, "pool");
 			mkdirSync(pool);

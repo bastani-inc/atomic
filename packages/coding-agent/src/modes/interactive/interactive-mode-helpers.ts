@@ -1,12 +1,12 @@
 import { builtinProviders } from "@bastani/atomic-ai/providers/all";
 import { sqliteSessionResumeArgs } from "../../core/session-resume-args.js";
+import { pathExists } from "../../core/tools/path-utils.ts";
 import { quoteForShell } from "./chat-input-actions.ts";
 import {
 	APP_NAME,
 	type Api,
 	BUILTIN_SLASH_COMMANDS,
 	defaultModelPerProvider,
-	fs,
 	type Model,
 	type SessionManager,
 	Text,
@@ -103,15 +103,15 @@ export function isUnknownModel(model: Model<Api> | undefined): boolean {
 }
 
 /** The command that resumes this session, quoted for the shell people use on `platform`. */
-export function formatResumeCommand(
+export async function formatResumeCommand(
 	sessionManager: SessionManager,
 	platform: NodeJS.Platform = process.platform,
-): string | undefined {
+): Promise<string | undefined> {
 	if (!process.stdout.isTTY) return undefined;
 	if (!sessionManager.isPersisted()) return undefined;
 
 	const sessionFile = sessionManager.getSessionFile();
-	if (sessionFile && !fs.existsSync(sessionFile)) return undefined;
+	if (sessionFile && !(await pathExists(sessionFile))) return undefined;
 
 	const quote = (value: string) => quoteForShell(value, platform);
 	const args = [APP_NAME];

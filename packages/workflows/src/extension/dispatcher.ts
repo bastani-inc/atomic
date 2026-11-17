@@ -87,7 +87,7 @@ export interface DispatcherOpts {
 	 * scan (discovery filePath, else the builtin source probe). When absent,
 	 * launch skips the scan and the run simply has no known set.
 	 */
-	resolvePossibleStageEntry?: (normalizedName: string) => string | undefined;
+	resolvePossibleStageEntry?: (normalizedName: string) => Promise<string | undefined>;
 	/**
 	 * The decision service that predicts stage names the scan could not resolve. Defaults to the host's `decide()` from
 	 * `models`; when neither exists, nothing is predicted and the scan alone decides the known set.
@@ -218,14 +218,14 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 			// D1/D10: derive the possible-stage set from the definition source at
 			// admission; a missing entry or scan failure is fine (undefined),
 			// the scan itself never blocks launch.
-			const entryPath = opts.resolvePossibleStageEntry?.(def.normalizedName);
+			const entryPath = await opts.resolvePossibleStageEntry?.(def.normalizedName);
 			let possibleStages: readonly string[] | undefined;
 			let scan: PossibleStagesScanResult | undefined;
 			if (entryPath !== undefined) {
 				// Belt-and-braces around the scanner's never-throw discipline:
 				// a discovery failure must never block launch (D1).
 				try {
-					scan = scanPossibleStagesFromSource(entryPath, { maxDepth: opts.config?.maxDepth });
+					scan = await scanPossibleStagesFromSource(entryPath, { maxDepth: opts.config?.maxDepth });
 					possibleStages = scan.stages;
 					// D1: scan warnings surface at launch as one aggregate line,
 					// bounded so builtin-internal partials do not spam stderr.

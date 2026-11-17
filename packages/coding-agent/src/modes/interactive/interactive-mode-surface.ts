@@ -342,7 +342,7 @@ declare module "./interactive-mode-base.ts" {
 		showSelector(
 			create: (done: () => void) => { component: Component; focus: Component; dispose?: () => void },
 		): void;
-		showSettingsSelector(): void;
+		showSettingsSelector(): Promise<void>;
 		handleModelCommand(searchTerm?: string): Promise<void>;
 		handleThinkingCommand(searchTerm?: string): Promise<void>;
 		selectThinkingLevel(level: ThinkingLevel): Promise<void>;
@@ -400,16 +400,16 @@ declare module "./interactive-mode-base.ts" {
 		handleSessionCommand(): void | Promise<void>;
 		handleSessionSnapshotCommand(): Promise<void>;
 		handleToolsCommand(): Promise<void>;
-		handleChangelogCommand(): void;
+		handleChangelogCommand(): Promise<void>;
 		getAppKeyDisplay(action: AppKeybinding): string;
 		getEditorKeyDisplay(action: Keybinding): string;
 		jumpToTranscriptEnd(): void;
 		setFullscreenCopyOnSelect(enabled: boolean): void;
 		handleHotkeysCommand(): void;
 		handleClearCommand(): Promise<void>;
-		handleDebugCommand(): void;
+		handleDebugCommand(): Promise<void>;
 		handleArminSaysHi(): void;
-		handleDementedDelves(): void;
+		handleDementedDelves(): Promise<void>;
 		handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
 		handleCompactCommand(): Promise<void>;
 		stop(fullscreenExitOutput?: FullscreenExitOutput): void;

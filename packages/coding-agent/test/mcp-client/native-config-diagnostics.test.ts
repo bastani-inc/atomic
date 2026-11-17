@@ -5,11 +5,11 @@ import { join } from "node:path";
 import { test } from "vitest";
 import { loadMcpConfig } from "../../src/extensions/mcp/config.js";
 
-test("malformed MCP configuration diagnostics never quote credential contents", () => {
+test("malformed MCP configuration diagnostics never quote credential contents", async () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "native-mcp-diagnostic-"));
 	try {
 		writeFileSync(join(agentDir, "mcp.json"), "private-supervisor-credential");
-		const config = loadMcpConfig({ agentDir, cwd: agentDir, projectTrusted: false });
+		const config = await loadMcpConfig({ agentDir, cwd: agentDir, projectTrusted: false });
 		assert.deepEqual(config.servers, []);
 		assert.deepEqual(config.errors, [`${join(agentDir, "mcp.json")}: failed to read or parse MCP configuration`]);
 		assert.doesNotMatch(JSON.stringify(config.errors), /private-supervisor-credential/);

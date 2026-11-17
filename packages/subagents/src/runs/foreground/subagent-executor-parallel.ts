@@ -115,7 +115,7 @@ export async function runParallelPath(
 	const workflowStageSubagentGuard = isWorkflowStageOrchestrationContext(ctx);
 
 	if (params.worktree === true) {
-		const worktreeTaskCwdError = buildParallelWorktreeTaskCwdError(tasks, effectiveCwd);
+		const worktreeTaskCwdError = await buildParallelWorktreeTaskCwdError(tasks, effectiveCwd);
 		if (worktreeTaskCwdError) return buildParallelModeError(worktreeTaskCwdError);
 	}
 
@@ -187,7 +187,7 @@ export async function runParallelPath(
 	const liveResults: (SingleResult | undefined)[] = new Array(tasks.length).fill(undefined);
 	const liveProgress: (AgentProgress | undefined)[] = new Array(tasks.length).fill(undefined);
 	const foregroundControl = deps.state.foregroundControls.get(runId);
-	const { setup: worktreeSetup, errorResult } = createParallelWorktreeSetup(
+	const { setup: worktreeSetup, errorResult } = await createParallelWorktreeSetup(
 		params.worktree === true,
 		effectiveCwd,
 		runId,
@@ -228,7 +228,7 @@ export async function runParallelPath(
 		// #4976: the run's shared progress.md lives in run-scoped artifact storage, never in the project directory,
 		// where it would overwrite a project's own progress.md.
 		const progressDir = firstProgressIndex === -1 ? undefined : join(artifactsDir, "progress", runId);
-		if (progressDir) writeInitialProgressFile(progressDir);
+		if (progressDir) await writeInitialProgressFile(progressDir);
 
 		if (params.context === "fork") {
 			for (let i = 0; i < taskTexts.length; i++) {
@@ -380,7 +380,12 @@ export async function runParallelPath(
 			};
 		}
 
-		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, runId, tasks as TaskParam[]);
+		const worktreeSuffix = await buildParallelWorktreeSuffix(
+			worktreeSetup,
+			artifactsDir,
+			runId,
+			tasks as TaskParam[],
+		);
 		const childContent = formatParallelResultContent(
 			results.map((result) => ({
 				agent: result.agent,
@@ -404,6 +409,6 @@ export async function runParallelPath(
 			...(results.every((result) => result.taskResponse?.kind === "unstarted") ? { isError: true } : {}),
 		};
 	} finally {
-		runWorktrees?.release();
+		await runWorktrees?.release();
 	}
 }

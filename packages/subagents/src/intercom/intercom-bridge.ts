@@ -1,13 +1,15 @@
-import { execSync } from "node:child_process";
-import * as fs from "node:fs";
+import { exec } from "node:child_process";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { APP_NAME, createChildProcessEnvironment, getEnvValue, getProjectConfigDirs } from "@bastani/atomic";
 import type { AgentConfig } from "../agents/agents.js";
 import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "../shared/types.js";
 import { getAgentDir } from "../shared/utils.js";
 
+const execAsync = promisify(exec);
 const PI_INTERCOM_PACKAGE_NAME = "pi-intercom";
 
 function defaultAgentDir(): string {
@@ -104,9 +106,18 @@ function resolveIntercomBridgeConfig(value: ExtensionConfig["intercomBridge"]): 
 	};
 }
 
-function readJsonBestEffort(filePath: string): unknown {
+async function pathExists(filePath: string): Promise<boolean> {
 	try {
-		return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+		await fs.access(filePath);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function readJsonBestEffort(filePath: string): Promise<unknown> {
+	try {
+		return JSON.parse(await fs.readFile(filePath, "utf-8"));
 	} catch (error) {
 		const code =
 			error && typeof error === "object" && "code" in error ? (error as NodeJS.ErrnoException).code : undefined;
@@ -115,9 +126,9 @@ function readJsonBestEffort(filePath: string): unknown {
 	}
 }
 
-function packageHasPiExtension(packageRoot: string): boolean {
-	if (!fs.existsSync(packageRoot)) return false;
-	const pkg = readJsonBestEffort(path.join(packageRoot, "package.json"));
+async function packageHasPiExtension(packageRoot: string): Promise<boolean> {
+	if (!(await pathExists(packageRoot))) return false;
+	const pkg = await readJsonBestEffort(path.join(packageRoot, "package.json"));
 	if (pkg && typeof pkg === "object" && !Array.isArray(pkg)) {
 		const pi = (pkg as { pi?: unknown }).pi;
 		if (pi && typeof pi === "object" && !Array.isArray(pi)) {
@@ -127,7 +138,7 @@ function packageHasPiExtension(packageRoot: string): boolean {
 			);
 		}
 	}
-	return fs.existsSync(path.join(packageRoot, "extensions"));
+	return pathExists(path.join(packageRoot, "extensions"));
 }
 
 function isSafePackagePath(value: string): boolean {
@@ -165,11 +176,11 @@ function packageEntryAllowsExtensions(entry: unknown): boolean {
 	return !Array.isArray(extensions) || extensions.length > 0;
 }
 
-function findNearestProjectConfigDir(cwd: string): string | undefined {
+async function findNearestProjectConfigDir(cwd: string): Promise<string | undefined> {
 	let current = path.resolve(cwd);
 	while (true) {
 		for (const configDir of getProjectConfigDirs(current)) {
-			if (fs.existsSync(path.join(configDir, "settings.json"))) return configDir;
+			if (await pathExists(path.join(configDir, "settings.json"))) return configDir;
 		}
 		const parent = path.dirname(current);
 		if (parent === current) return undefined;
@@ -179,14 +190,16 @@ function findNearestProjectConfigDir(cwd: string): string | undefined {
 
 let cachedGlobalNpmRoot: string | null | undefined;
 
-function getGlobalNpmRoot(): string | null {
+async function getGlobalNpmRoot(): Promise<string | null> {
 	if (cachedGlobalNpmRoot !== undefined) return cachedGlobalNpmRoot;
 	try {
-		cachedGlobalNpmRoot = execSync("npm root -g", {
+		const { stdout } = await execAsync("npm root -g", {
 			encoding: "utf-8",
 			timeout: 5000,
 			env: createChildProcessEnvironment(),
-		}).trim();
+			windowsHide: true,
+		});
+		cachedGlobalNpmRoot = stdout.trim();
 		return cachedGlobalNpmRoot;
 	} catch {
 		cachedGlobalNpmRoot = null;
@@ -194,8 +207,11 @@ function getGlobalNpmRoot(): string | null {
 	}
 }
 
-function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agentDir: string): string | undefined {
-	const projectConfigDir = input.cwd ? findNearestProjectConfigDir(path.resolve(input.cwd)) : undefined;
+async function configuredPiIntercomPackageDir(
+	input: ResolveIntercomBridgeInput,
+	agentDir: string,
+): Promise<string | undefined> {
+	const projectConfigDir = input.cwd ? await findNearestProjectConfigDir(path.resolve(input.cwd)) : undefined;
 	const settingsFiles = [
 		...(projectConfigDir
 			? [
@@ -209,14 +225,14 @@ function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agent
 		{ file: path.join(agentDir, "settings.json"), configDir: agentDir, scope: "user" as const },
 	];
 	let resolvedGlobalNpmRoot = input.globalNpmRoot;
-	const resolveGlobalNpmRoot = (): string | null => {
+	const resolveGlobalNpmRoot = async (): Promise<string | null> => {
 		if (resolvedGlobalNpmRoot !== undefined) return resolvedGlobalNpmRoot;
-		resolvedGlobalNpmRoot = getGlobalNpmRoot();
+		resolvedGlobalNpmRoot = await getGlobalNpmRoot();
 		return resolvedGlobalNpmRoot;
 	};
 
 	for (const { file, configDir, scope } of settingsFiles) {
-		const settings = readJsonBestEffort(file);
+		const settings = await readJsonBestEffort(file);
 		if (!settings || typeof settings !== "object" || Array.isArray(settings)) continue;
 		const packages = (settings as { packages?: unknown }).packages;
 		if (!Array.isArray(packages)) continue;
@@ -227,7 +243,7 @@ function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agent
 			if (!source?.startsWith("npm:")) continue;
 			const packageName = parseNpmPackageName(source);
 			if (packageName !== PI_INTERCOM_PACKAGE_NAME) continue;
-			const globalNpmRoot = scope === "user" ? resolveGlobalNpmRoot() : null;
+			const globalNpmRoot = scope === "user" ? await resolveGlobalNpmRoot() : null;
 			const candidates =
 				scope === "project"
 					? [path.join(configDir, "npm", "node_modules", packageName)]
@@ -235,32 +251,33 @@ function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agent
 							...(globalNpmRoot ? [path.join(globalNpmRoot, packageName)] : []),
 							path.join(agentDir, "npm", "node_modules", packageName),
 						];
-			const packageRoot = candidates.find(packageHasPiExtension);
-			if (packageRoot) return path.resolve(packageRoot);
+			for (const candidate of candidates) {
+				if (await packageHasPiExtension(candidate)) return path.resolve(candidate);
+			}
 		}
 	}
 	return undefined;
 }
 
-function resolveIntercomExtensionDir(input: ResolveIntercomBridgeInput, agentDir: string): string {
+async function resolveIntercomExtensionDir(input: ResolveIntercomBridgeInput, agentDir: string): Promise<string> {
 	if (input.extensionDir) return path.resolve(input.extensionDir);
 	const bundledDir = bundledIntercomExtensionDir();
-	if (packageHasPiExtension(bundledDir)) return bundledDir;
+	if (await packageHasPiExtension(bundledDir)) return bundledDir;
 	const legacyDir = path.resolve(defaultIntercomExtensionDir(agentDir));
-	if (fs.existsSync(legacyDir)) return legacyDir;
-	return configuredPiIntercomPackageDir(input, agentDir) ?? legacyDir;
+	if (await pathExists(legacyDir)) return legacyDir;
+	return (await configuredPiIntercomPackageDir(input, agentDir)) ?? legacyDir;
 }
 
 function expandTilde(filePath: string): string {
 	return filePath.startsWith("~/") ? path.join(os.homedir(), filePath.slice(2)) : filePath;
 }
 
-function resolveInstructionTemplate(instructionFile: string, settingsDir: string): string {
+async function resolveInstructionTemplate(instructionFile: string, settingsDir: string): Promise<string> {
 	if (!instructionFile) return DEFAULT_INTERCOM_BRIDGE_TEMPLATE;
 	const expandedPath = expandTilde(instructionFile);
 	const resolvedPath = path.isAbsolute(expandedPath) ? expandedPath : path.resolve(settingsDir, expandedPath);
 	try {
-		return fs.readFileSync(resolvedPath, "utf-8");
+		return await fs.readFile(resolvedPath, "utf-8");
 	} catch (error) {
 		console.warn(
 			`Failed to read intercom bridge instructionFile at '${resolvedPath}'. Using default instructions.`,
@@ -277,11 +294,11 @@ function buildIntercomBridgeInstruction(orchestratorTarget: string, template: st
 ${instruction}`;
 }
 
-export function resolveIntercomBridge(input: ResolveIntercomBridgeInput): IntercomBridgeState {
+export async function resolveIntercomBridge(input: ResolveIntercomBridgeInput): Promise<IntercomBridgeState> {
 	const config = resolveIntercomBridgeConfig(input.config);
 	const mode = config.mode;
 	const agentDir = path.resolve(input.agentDir ?? defaultAgentDir());
-	const extensionDir = resolveIntercomExtensionDir(input, agentDir);
+	const extensionDir = await resolveIntercomExtensionDir(input, agentDir);
 	const orchestratorTarget = input.orchestratorTarget?.trim();
 	const settingsDir = path.resolve(input.settingsDir ?? defaultSubagentConfigDir(agentDir));
 	const defaultInstruction = buildIntercomBridgeInstruction(
@@ -298,13 +315,13 @@ export function resolveIntercomBridge(input: ResolveIntercomBridgeInput): Interc
 	if (!orchestratorTarget) {
 		return { active: false, mode, extensionDir, instruction: defaultInstruction };
 	}
-	if (!fs.existsSync(extensionDir)) {
+	if (!(await pathExists(extensionDir))) {
 		return { active: false, mode, extensionDir, instruction: defaultInstruction };
 	}
 
 	const instruction = buildIntercomBridgeInstruction(
 		orchestratorTarget,
-		resolveInstructionTemplate(config.instructionFile, settingsDir),
+		await resolveInstructionTemplate(config.instructionFile, settingsDir),
 	);
 
 	return {

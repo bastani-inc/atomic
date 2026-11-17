@@ -311,7 +311,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			const allMappings = [...mappings, ...restored];
 			const recordedCwd = previous.invocationCwd ?? opts.cwd;
 			const continuing = recordedCwd === undefined ? undefined : mapWorkflowWorktreePath(recordedCwd, allMappings);
-			const outcomes = runWorktreeRestoreOutcomes({
+			const outcomes = await runWorktreeRestoreOutcomes({
 				restored,
 				unrestored,
 				snapshots: restoreSnapshots,
@@ -699,10 +699,27 @@ async function executeRun(
 		gitWorktreeSetupCacheOwner = createGitWorktreeSetupCacheOwner(opts.gitWorktreeSetupCache, runId);
 	const gitWorktreeSetupCache = gitWorktreeSetupCacheOwner.cache;
 	const workflowInvocationCwd = opts.cwd ?? process.cwd();
-	let workflowCwd: string | undefined;
+	let workflowCwd: { readonly cwd: string } | { readonly failure: Error } | undefined;
+	/**
+	 * Sets up the run's input worktree before anything reads the run's directory, which is read synchronously
+	 * (`ctx.cwd`). A setup that fails is thrown where the directory is read, as when the setup ran at that read.
+	 */
+	const prepareWorkflowCwd = async (): Promise<void> => {
+		try {
+			workflowCwd = {
+				cwd: await workflowCwdWithInputWorktree(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache),
+			};
+		} catch (error) {
+			workflowCwd = { failure: error instanceof Error ? error : new Error(String(error)) };
+		}
+	};
 	const resolveWorkflowCwd = (): string => {
-		workflowCwd ??= workflowCwdWithInputWorktree(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache);
-		return workflowCwd;
+		if (workflowCwd === undefined) {
+			if (!inputsSelectGitWorktree(inputRuntimeDefaults)) return workflowInvocationCwd;
+			throw new Error(`atomic-workflows: run ${runId} read its directory before its input worktree was set up`);
+		}
+		if ("failure" in workflowCwd) throw workflowCwd.failure;
+		return workflowCwd.cwd;
 	};
 	const recordLiveCheckpoint = createWorkflowSnapshotRecorder({
 		backend: durableBackend,
@@ -1653,6 +1670,7 @@ async function executeRun(
 					}
 				: undefined,
 		);
+		await prepareWorkflowCwd();
 		if (opts.parentRun === undefined) {
 			const claim = opts[resumeClaim];
 			let taken = true;
@@ -1660,12 +1678,12 @@ async function executeRun(
 				const registration = {
 					...durableRootRegistration,
 					modelOwner: runSnapshot.modelOwner,
-					...workflowInvocationMetadata(
+					...(await workflowInvocationMetadata(
 						inputRuntimeDefaults,
 						workflowInvocationCwd,
 						gitWorktreeSetupCache,
 						runSnapshot.origin,
-					),
+					)),
 					...(opts[recordedInvocationCwd] === undefined ? {} : { invocationCwd: opts[recordedInvocationCwd] }),
 				};
 				if (claim === undefined || durableBackend.commitClaimedWorkflowRegistration === undefined)
@@ -1956,7 +1974,7 @@ async function executeRun(
 			}
 		} finally {
 			try {
-				gitWorktreeSetupCacheOwner.release(() => {
+				await gitWorktreeSetupCacheOwner.release(() => {
 					if (ownsCancellationRegistration) opts.cancellation?.unregister(runId, ownController);
 				});
 			} finally {

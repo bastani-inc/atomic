@@ -14,6 +14,7 @@ vi.mock("../src/config.js", async (importOriginal) => ({
 
 const { SettingsManager } = await import("../src/core/settings-manager.js");
 const { InteractiveMode } = await import("../src/modes/interactive/interactive-mode.js");
+const { parseChangelog } = await import("../src/utils/changelog.js");
 
 const workDir = mkdtempSync(join(tmpdir(), "atomic-changelog-banner-"));
 afterAll(() => rmSync(workDir, { recursive: true, force: true }));
@@ -21,6 +22,7 @@ afterAll(() => rmSync(workDir, { recursive: true, force: true }));
 function bannerFor(changelog: string): string | undefined {
 	fixture.path = join(workDir, "CHANGELOG.md");
 	writeFileSync(fixture.path, changelog);
+	parseChangelog(fixture.path);
 	const settingsManager = SettingsManager.inMemory();
 	settingsManager.setLastChangelogVersion("0.9.0");
 	const host = {

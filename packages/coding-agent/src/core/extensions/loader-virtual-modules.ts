@@ -3,10 +3,11 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import type { createJiti } from "jiti";
 import { getAgentDir, getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.js";
 import { resolutionBaseUrl } from "../../utils/module-require.ts";
-import { canonicalizePath, pathsEqual, resolvePath } from "../../utils/paths.ts";
+import { pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import {
 	FORKED_PACKAGE_WORKSPACE_DIRS,
@@ -29,7 +30,7 @@ import type { ExtensionFactory } from "./types.ts";
 export { getVirtualModules } from "./loader-host-modules.js";
 
 const require = createRequire(import.meta.url);
-let _aliases: Record<string, string> | null = null;
+let _aliases: Promise<Record<string, string>> | null = null;
 let createJitiPromise: Promise<typeof createJiti> | undefined;
 type SourceSpecifierTransform = ReturnType<typeof createTypeScriptSourceSpecifierTransform>;
 // Keyed by transpile cache directory; "" is the uncached transform for a load whose agent directory is gone.
@@ -62,12 +63,12 @@ function getTypeScriptSourceSpecifierTransform(
 }
 
 /** Creates `dir` one level at a time below `root`, never `root` itself, so a removed agent directory stays removed. */
-function mkdirBelowExisting(root: string, dir: string): boolean {
+async function mkdirBelowExisting(root: string, dir: string): Promise<boolean> {
 	let current = root;
 	for (const segment of path.relative(root, dir).split(path.sep)) {
 		current = path.join(current, segment);
 		try {
-			fs.mkdirSync(current);
+			await fs.promises.mkdir(current);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
 		}
@@ -84,10 +85,10 @@ function mkdirBelowExisting(root: string, dir: string): boolean {
  * creates it as before. After that, a missing agent directory was removed: the
  * load runs uncached and the directory is not recreated (#4728).
  */
-function resolveTranspileCacheDir(agentDir: string = getAgentDir()): string | undefined {
+async function resolveTranspileCacheDir(agentDir: string = getAgentDir()): Promise<string | undefined> {
 	const root = path.resolve(agentDir);
 	const cacheDir = getExtensionTranspileCacheDir(root);
-	if (!mkdirBelowExisting(root, cacheDir)) return undefined;
+	if (!(await mkdirBelowExisting(root, cacheDir))) return undefined;
 	if (!prunedTranspileCacheDirs.has(cacheDir)) {
 		prunedTranspileCacheDirs.add(cacheDir);
 		pruneStaleTranspileCaches(cacheDir);
@@ -191,15 +192,13 @@ function uninstallReadFileSyncObserver(): void {
 	observedReadFileSync = null;
 }
 
-function writeGraphManifest(manifest: ExtensionGraphManifest, cacheDir: string | undefined): void {
-	if (cacheDir === undefined) return;
-	const manifestFile = graphManifestPath(manifest.extensionPath, cacheDir);
+async function persistGraphManifest(contents: string, manifestFile: string, cacheDir: string): Promise<void> {
 	let tempFile: string | undefined;
 	try {
-		if (!mkdirBelowExisting(cacheDir, path.dirname(manifestFile))) throw new Error("transpile cache is gone");
+		if (!(await mkdirBelowExisting(cacheDir, path.dirname(manifestFile)))) throw new Error("transpile cache is gone");
 		tempFile = `${manifestFile}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-		fs.writeFileSync(tempFile, JSON.stringify(manifest));
-		fs.renameSync(tempFile, manifestFile);
+		await fs.promises.writeFile(tempFile, contents);
+		await fs.promises.rename(tempFile, manifestFile);
 	} catch {
 		// Manifest persistence is best-effort: a missing manifest only means the
 		// next reload cannot prove the graph unchanged and re-evaluates. A failed
@@ -207,18 +206,36 @@ function writeGraphManifest(manifest: ExtensionGraphManifest, cacheDir: string |
 		// that no longer matches this evaluation, so invalidate the destination
 		// first, independently of removing the temporary file.
 		try {
-			fs.rmSync(manifestFile, { force: true });
+			await fs.promises.rm(manifestFile, { force: true });
 		} catch {
 			// A leftover stale manifest cannot be reused without also matching
 			// the in-memory manifest of the same evaluation, and readers
 			// tolerate missing or corrupt files.
 		}
 		try {
-			if (tempFile) fs.rmSync(tempFile, { force: true });
+			if (tempFile) await fs.promises.rm(tempFile, { force: true });
 		} catch {
 			// Temporary files carry a unique suffix and are never read back.
 		}
 	}
+}
+
+/** The last write queued for each manifest file; writes land in the order they were made, and reads wait for them. */
+const graphManifestWrites = new Map<string, Promise<void>>();
+
+function writeGraphManifest(manifest: ExtensionGraphManifest, cacheDir: string | undefined): Promise<void> {
+	if (cacheDir === undefined) return Promise.resolve();
+	const manifestFile = graphManifestPath(manifest.extensionPath, cacheDir);
+	// Serialized now: a deferred merge keeps changing the retained manifest after this write is queued.
+	const contents = JSON.stringify(manifest);
+	const write = (graphManifestWrites.get(manifestFile) ?? Promise.resolve()).then(() =>
+		persistGraphManifest(contents, manifestFile, cacheDir),
+	);
+	graphManifestWrites.set(manifestFile, write);
+	void write.finally(() => {
+		if (graphManifestWrites.get(manifestFile) === write) graphManifestWrites.delete(manifestFile);
+	});
+	return write;
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {
@@ -230,16 +247,19 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 export function readExtensionGraphManifest(
 	extensionPath: string,
 	agentDir: string = getAgentDir(),
-): ExtensionGraphManifest | undefined {
+): Promise<ExtensionGraphManifest | undefined> {
 	return readGraphManifestIn(extensionPath, getExtensionTranspileCacheDir(path.resolve(agentDir)));
 }
 
-function readGraphManifestIn(extensionPath: string, cacheDir: string | undefined): ExtensionGraphManifest | undefined {
+async function readGraphManifestIn(
+	extensionPath: string,
+	cacheDir: string | undefined,
+): Promise<ExtensionGraphManifest | undefined> {
 	if (cacheDir === undefined) return undefined;
+	const manifestFile = graphManifestPath(extensionPath, cacheDir);
+	await graphManifestWrites.get(manifestFile);
 	try {
-		const parsed = JSON.parse(
-			fs.readFileSync(graphManifestPath(extensionPath, cacheDir), "utf-8"),
-		) as Partial<ExtensionGraphManifest>;
+		const parsed = JSON.parse(await fs.promises.readFile(manifestFile, "utf-8")) as Partial<ExtensionGraphManifest>;
 		if (parsed.version !== GRAPH_MANIFEST_VERSION) return undefined;
 		if (parsed.extensionPath !== extensionPath) return undefined;
 		if (!isStringRecord(parsed.files)) return undefined;
@@ -269,7 +289,7 @@ async function recordExtensionGraph<T>(
 		extensionPath,
 		files: Object.fromEntries([...recorder.files.entries()].sort(([a], [b]) => a.localeCompare(b))),
 	};
-	writeGraphManifest(manifest, cacheDir);
+	await writeGraphManifest(manifest, cacheDir);
 	return { result, manifest };
 }
 
@@ -298,14 +318,14 @@ function manifestFilesEqual(a: Record<string, string>, b: Record<string, string>
 	return aEntries.every(([filePath, hash]) => b[filePath] === hash);
 }
 
-function graphUnchangedSince(manifest: ExtensionGraphManifest, cacheDir: string): boolean {
-	const stored = readGraphManifestIn(manifest.extensionPath, cacheDir);
+async function graphUnchangedSince(manifest: ExtensionGraphManifest, cacheDir: string): Promise<boolean> {
+	const stored = await readGraphManifestIn(manifest.extensionPath, cacheDir);
 	if (!stored || !manifestFilesEqual(stored.files, manifest.files)) return false;
 	const entries = Object.entries(manifest.files);
 	if (entries.length === 0) return false;
 	for (const [filePath, hash] of entries) {
 		try {
-			if (sha256Hex(fs.readFileSync(filePath)) !== hash) return false;
+			if (sha256Hex(await fs.promises.readFile(filePath)) !== hash) return false;
 		} catch {
 			return false;
 		}
@@ -363,7 +383,7 @@ function mergeDeferredGraphReads(extensionPath: string, cacheDir: string, files:
 			changed = true;
 		}
 	}
-	if (changed) writeGraphManifest(retained.manifest, retained.cacheDir);
+	if (changed) void writeGraphManifest(retained.manifest, retained.cacheDir);
 }
 
 let extensionCacheCwd: string | undefined;
@@ -464,14 +484,24 @@ function extensionImportSpecifier(extensionPath: string, cacheToken: ExtensionCa
  * the compiled binary (CJS bundle). Scanning require.resolve.paths() walks
  * the same node_modules chain Node would, without exports-map encapsulation.
  */
-function findPackageRoot(packageName: string, searchPaths?: string[]): string {
+async function findPackageRoot(packageName: string, searchPaths?: string[]): Promise<string> {
 	for (const base of searchPaths ?? require.resolve.paths(packageName) ?? []) {
 		const candidate = path.join(base, packageName);
-		if (fs.existsSync(path.join(candidate, "package.json"))) {
+		if (await pathExists(path.join(candidate, "package.json"))) {
 			return candidate;
 		}
 	}
 	throw new Error(`Cannot locate package directory for "${packageName}"`);
+}
+
+/** The `fs.realpath` that `realpathSync` is, without blocking. */
+const realpathJs = promisify(fs.realpath);
+
+function pathExists(target: string): Promise<boolean> {
+	return fs.promises.access(target).then(
+		() => true,
+		() => false,
+	);
 }
 function currentModuleDir(): string {
 	return moduleDirFromMetaUrl(import.meta.url, "dist", "core", "extensions");
@@ -481,9 +511,15 @@ function currentModuleDir(): string {
  * Get aliases for jiti (used in Node.js/development mode).
  * In Bun binary mode, virtualModules is used instead.
  */
-function getAliases(): Record<string, string> {
-	if (_aliases) return _aliases;
+function getAliases(): Promise<Record<string, string>> {
+	_aliases ??= computeAliases().catch((error: Error) => {
+		_aliases = null;
+		throw error;
+	});
+	return _aliases;
+}
 
+async function computeAliases(): Promise<Record<string, string>> {
 	const __dirname = currentModuleDir();
 	const packageIndex = path.resolve(__dirname, "../..", "index.js");
 
@@ -492,66 +528,72 @@ function getAliases(): Record<string, string> {
 	const typeboxValueEntry = require.resolve("typebox/value");
 
 	const packagesRoot = path.resolve(__dirname, "../../../../");
-	const resolveWorkspaceOrImport = (workspaceRelativePath: string, packageName: string): string => {
+	const resolveWorkspaceOrImport = async (workspaceRelativePath: string, packageName: string): Promise<string> => {
 		const workspacePath = path.join(packagesRoot, workspaceRelativePath);
-		if (fs.existsSync(workspacePath)) {
+		if (await pathExists(workspacePath)) {
 			return workspacePath;
 		}
-		const packageRoot = findPackageRoot(packageName);
+		const packageRoot = await findPackageRoot(packageName);
 		const entryRelativePath = workspaceRelativePath.split("/").slice(1).join("/");
 		return path.join(packageRoot, entryRelativePath);
 	};
 
 	const piCodingAgentEntry = packageIndex;
-	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@bastani/atomic-agent-core");
-	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@bastani/atomic-tui");
-	const piTuiLayoutEntry = resolveWorkspaceOrImport("tui/dist/layout.js", "@bastani/atomic-tui");
-	const piTuiLayoutNodeEntry = resolveWorkspaceOrImport("tui/dist/layout-node.js", "@bastani/atomic-tui");
+	const piAgentCoreEntry = await resolveWorkspaceOrImport("agent/dist/index.js", "@bastani/atomic-agent-core");
+	const piTuiEntry = await resolveWorkspaceOrImport("tui/dist/index.js", "@bastani/atomic-tui");
+	const piTuiLayoutEntry = await resolveWorkspaceOrImport("tui/dist/layout.js", "@bastani/atomic-tui");
+	const piTuiLayoutNodeEntry = await resolveWorkspaceOrImport("tui/dist/layout-node.js", "@bastani/atomic-tui");
 	// The workspace path mirrors pi-ai 0.80.x's built dist layout. If an
 	// upstream layout change moves these files, this join needs updating to
 	// match the package's real dist paths.
-	const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@bastani/atomic-ai");
-	const piAiCodexResponsesEntry = resolveWorkspaceOrImport(
+	const piAiEntry = await resolveWorkspaceOrImport("ai/dist/compat.js", "@bastani/atomic-ai");
+	const piAiCodexResponsesEntry = await resolveWorkspaceOrImport(
 		"ai/dist/api/openai-codex-responses.js",
 		"@bastani/atomic-ai",
 	);
-	const piAiLlamaCppClassifyEntry = resolveWorkspaceOrImport(
+	const piAiLlamaCppClassifyEntry = await resolveWorkspaceOrImport(
 		"ai/dist/api/llama-cpp-classify.lazy.js",
 		"@bastani/atomic-ai",
 	);
-	const piAiTypesafeSystemOneEntry = resolveWorkspaceOrImport(
+	const piAiTypesafeSystemOneEntry = await resolveWorkspaceOrImport(
 		"ai/dist/api/typesafe-system-one.lazy.js",
 		"@bastani/atomic-ai",
 	);
-	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@bastani/atomic-ai");
-	const piAiModelsEntry = resolveWorkspaceOrImport("ai/dist/models.js", "@bastani/atomic-ai");
-	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@bastani/atomic-ai");
-	const piAiCopilotEnvEntry = resolveWorkspaceOrImport(
+	const piAiOauthEntry = await resolveWorkspaceOrImport("ai/dist/oauth.js", "@bastani/atomic-ai");
+	const piAiModelsEntry = await resolveWorkspaceOrImport("ai/dist/models.js", "@bastani/atomic-ai");
+	const piAiProvidersEntry = await resolveWorkspaceOrImport("ai/dist/providers/all.js", "@bastani/atomic-ai");
+	const piAiCopilotEnvEntry = await resolveWorkspaceOrImport(
 		"ai/dist/providers/github-copilot-env.js",
 		"@bastani/atomic-ai",
 	);
-	const piAiCopilotEntry = resolveWorkspaceOrImport("ai/dist/providers/github-copilot.js", "@bastani/atomic-ai");
-	const piAiOpenRouterEntry = resolveWorkspaceOrImport("ai/dist/providers/openrouter.js", "@bastani/atomic-ai");
-	const piAiProviderEnvEntry = resolveWorkspaceOrImport("ai/dist/utils/provider-env.js", "@bastani/atomic-ai");
-	const piAiRetryEntry = resolveWorkspaceOrImport("ai/dist/utils/retry.js", "@bastani/atomic-ai");
-	const piAiRequestAdmissionEntry = resolveWorkspaceOrImport(
+	const piAiCopilotEntry = await resolveWorkspaceOrImport("ai/dist/providers/github-copilot.js", "@bastani/atomic-ai");
+	const piAiOpenRouterEntry = await resolveWorkspaceOrImport("ai/dist/providers/openrouter.js", "@bastani/atomic-ai");
+	const piAiProviderEnvEntry = await resolveWorkspaceOrImport("ai/dist/utils/provider-env.js", "@bastani/atomic-ai");
+	const piAiRetryEntry = await resolveWorkspaceOrImport("ai/dist/utils/retry.js", "@bastani/atomic-ai");
+	const piAiRequestAdmissionEntry = await resolveWorkspaceOrImport(
 		"ai/dist/utils/request-admission.js",
 		"@bastani/atomic-ai",
 	);
-	const piAiRetryHintsEntry = resolveWorkspaceOrImport("ai/dist/utils/retry-hints.js", "@bastani/atomic-ai");
-	const piAiCompatSchemaEntry = resolveWorkspaceOrImport("ai/dist/providers/compat-schema.js", "@bastani/atomic-ai");
-	const piAiModelSchemaEntry = resolveWorkspaceOrImport("ai/dist/providers/model-schema.js", "@bastani/atomic-ai");
-	const piAiOauthPageEntry = resolveWorkspaceOrImport("ai/dist/utils/oauth-page.js", "@bastani/atomic-ai");
-	const piAiGatewayBindingEntry = resolveWorkspaceOrImport(
+	const piAiRetryHintsEntry = await resolveWorkspaceOrImport("ai/dist/utils/retry-hints.js", "@bastani/atomic-ai");
+	const piAiCompatSchemaEntry = await resolveWorkspaceOrImport(
+		"ai/dist/providers/compat-schema.js",
+		"@bastani/atomic-ai",
+	);
+	const piAiModelSchemaEntry = await resolveWorkspaceOrImport(
+		"ai/dist/providers/model-schema.js",
+		"@bastani/atomic-ai",
+	);
+	const piAiOauthPageEntry = await resolveWorkspaceOrImport("ai/dist/utils/oauth-page.js", "@bastani/atomic-ai");
+	const piAiGatewayBindingEntry = await resolveWorkspaceOrImport(
 		"ai/dist/api/cloudflare-gateway-binding.js",
 		"@bastani/atomic-ai",
 	);
 	// The Anthropic thinking guard replays assistant turns with pi-ai's own conversion (#4185).
-	const piAiAnthropicAssistantContentEntry = resolveWorkspaceOrImport(
+	const piAiAnthropicAssistantContentEntry = await resolveWorkspaceOrImport(
 		"ai/dist/api/anthropic-assistant-content.js",
 		"@bastani/atomic-ai",
 	);
-	const piAiTransformMessagesEntry = resolveWorkspaceOrImport(
+	const piAiTransformMessagesEntry = await resolveWorkspaceOrImport(
 		"ai/dist/api/transform-messages.js",
 		"@bastani/atomic-ai",
 	);
@@ -561,18 +603,18 @@ function getAliases(): Record<string, string> {
 		const workspaceRoot = path.join(packagesRoot, dir);
 		const workspaceManifest = path.join(workspaceRoot, "package.json");
 		const packageRoot =
-			fs.existsSync(workspaceManifest) &&
-			(JSON.parse(fs.readFileSync(workspaceManifest, "utf8")) as { name?: string }).name === name
+			(await pathExists(workspaceManifest)) &&
+			(JSON.parse(await fs.promises.readFile(workspaceManifest, "utf8")) as { name?: string }).name === name
 				? workspaceRoot
-				: findPackageRoot(name);
+				: await findPackageRoot(name);
 		const manifest = JSON.parse(
-			fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+			await fs.promises.readFile(path.join(packageRoot, "package.json"), "utf8"),
 		) as ForkedPackageManifest;
 		Object.assign(forkedPackageAliases, forkedPackageExportAliases(name, packageRoot, manifest, path.join));
 	}
 
 	// Each forked package also answers to its legacy pi names (@earendil-works/pi-*, @mariozechner/pi-*).
-	_aliases = withLegacyPackageNames({
+	return withLegacyPackageNames({
 		...forkedPackageAliases,
 		"@bastani/atomic/storage": path.resolve(__dirname, "../storage/index.js"),
 		"@bastani/atomic": piCodingAgentEntry,
@@ -610,8 +652,6 @@ function getAliases(): Record<string, string> {
 		"@sinclair/typebox/compile": typeboxCompileEntry,
 		"@sinclair/typebox/value": typeboxValueEntry,
 	});
-
-	return _aliases;
 }
 
 /**
@@ -628,7 +668,7 @@ export async function createHostModuleJiti(
 	return createJitiImpl(id, {
 		...options,
 		// Single-file builds have no host files to alias, so every import must reach the virtual modules.
-		...(isSingleFileBuild ? { tryNative: false } : { alias: getAliases() }),
+		...(isSingleFileBuild ? { tryNative: false } : { alias: await getAliases() }),
 		virtualModules,
 	});
 }
@@ -637,14 +677,14 @@ export const extensionLoaderTestHooks = {
 	loadVirtualModules,
 	getAliases,
 	findPackageRoot,
-	getTranspileCacheDir: (agentDir?: string): string | undefined => resolveTranspileCacheDir(agentDir),
+	getTranspileCacheDir: (agentDir?: string): Promise<string | undefined> => resolveTranspileCacheDir(agentDir),
 	graphManifestPath: (extensionPath: string, agentDir: string = getAgentDir()): string =>
 		graphManifestPath(extensionPath, getExtensionTranspileCacheDir(path.resolve(agentDir))),
 	readExtensionGraphManifest,
-	loadExtensionModuleTransformed: (extensionPath: string, cacheToken?: ExtensionCacheToken, agentDir?: string) =>
-		importExtensionModule(extensionPath, cacheToken, true, resolveTranspileCacheDir(agentDir)),
-	loadTransformedExtensionModule: (extensionPath: string, cacheToken?: ExtensionCacheToken, agentDir?: string) =>
-		loadTransformedExtensionModule(extensionPath, cacheToken, resolveTranspileCacheDir(agentDir)),
+	loadExtensionModuleTransformed: async (extensionPath: string, cacheToken?: ExtensionCacheToken, agentDir?: string) =>
+		importExtensionModule(extensionPath, cacheToken, true, await resolveTranspileCacheDir(agentDir)),
+	loadTransformedExtensionModule: async (extensionPath: string, cacheToken?: ExtensionCacheToken, agentDir?: string) =>
+		loadTransformedExtensionModule(extensionPath, cacheToken, await resolveTranspileCacheDir(agentDir)),
 	loadNativeBuiltinExtensionModule,
 	hasNativeBuiltinFactory: (extensionPath: string): boolean => nativeBuiltinFactories.has(extensionPath),
 };
@@ -671,7 +711,7 @@ async function importExtensionModule(
 	const createJitiImpl = await getCreateJiti();
 	// Import the real path so a symlinked entry (a pnpm store package) resolves its dependencies next to the real
 	// file; extensionPath stays the cache and graph key.
-	const importPath = canonicalizePath(extensionPath);
+	const importPath = await realpathJs(extensionPath).catch(() => extensionPath);
 	const transformSource = getTypeScriptSourceSpecifierTransform(createJitiImpl, cacheDir);
 	installReloadableScripts((id) => createJitiImpl(id, { moduleCache: false, fsCache: false }));
 	const jiti = createJitiImpl(resolutionBaseUrl(import.meta.url), {
@@ -685,16 +725,15 @@ async function importExtensionModule(
 		// A first native import can fall back to transformation too. Always share
 		// the live host instead of re-evaluating its graph through source aliases.
 		virtualModules: await getVirtualModules(),
-		...(!isSingleFileBuild ? { alias: getAliases() } : {}),
+		...(!isSingleFileBuild ? { alias: await getAliases() } : {}),
 	});
 	const specifier = extensionImportSpecifier(importPath, cacheToken);
 	// The runtime would keep a JavaScript entry it loads itself until the process exits, so jiti's transform
 	// evaluates it instead, as on every reload (#4988). Installed builtin bundles cannot change while Atomic runs,
 	// so they keep loading natively, with nothing to transpile.
+	const reloadableEntry = isReloadableScriptPath(importPath) && !(await isNativeBuiltinExtensionPath(extensionPath));
 	const importEntry = () =>
-		isReloadableScriptPath(importPath) && !isNativeBuiltinExtensionPath(extensionPath)
-			? evaluateReloadableScript(jiti, importPath)
-			: jiti.import(specifier, { default: true });
+		reloadableEntry ? evaluateReloadableScript(jiti, importPath) : jiti.import(specifier, { default: true });
 	// Transformed evaluations are the loads whose repeat cost is the Windows
 	// /reload regression, so they are also the loads whose file graph is
 	// recorded into a content-hash manifest. Without a transpile cache there is
@@ -747,7 +786,7 @@ async function loadTransformedExtensionModule(
 		retained &&
 		cacheDir !== undefined &&
 		retained.cacheDir === cacheDir &&
-		graphUnchangedSince(retained.manifest, cacheDir)
+		(await graphUnchangedSince(retained.manifest, cacheDir))
 	) {
 		if (isCurrentCacheToken(cacheToken)) {
 			extensionCache.set(extensionPath, retained.factory);
@@ -768,7 +807,7 @@ export async function loadExtensionModule(
 	agentDir?: string,
 ): Promise<ExtensionFactory | undefined> {
 	const isSingleFileBuild = isBunBinary || isBundledBuild;
-	if (isSingleFileBuild && isNativeBuiltinExtensionPath(extensionPath)) {
+	if (isSingleFileBuild && (await isNativeBuiltinExtensionPath(extensionPath))) {
 		return loadNativeBuiltinExtensionModule(extensionPath, cacheToken);
 	}
 
@@ -794,7 +833,7 @@ export async function loadExtensionModule(
 	// `/reload`; removing it needs a content-hash-keyed evaluation cache or a
 	// narrower trigger, not a larger timeout.
 	const forceTransformedImports = isSingleFileBuild || nativelyImportedPaths.has(extensionPath);
-	const cacheDir = resolveTranspileCacheDir(agentDir ?? cacheToken?.agentDir);
+	const cacheDir = await resolveTranspileCacheDir(agentDir ?? cacheToken?.agentDir);
 	if (forceTransformedImports) {
 		return loadTransformedExtensionModule(extensionPath, cacheToken, cacheDir);
 	}

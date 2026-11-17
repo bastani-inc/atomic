@@ -343,8 +343,9 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				return;
 			}
 			if (bare("settings")) {
-				this.showSettingsSelector();
+				const shown = this.showSettingsSelector();
 				this.editor.setText("");
+				await shown;
 				return;
 			}
 			if (bare("scoped-models")) {
@@ -406,8 +407,8 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				return;
 			}
 			if (bare("changelog")) {
-				this.handleChangelogCommand();
 				this.editor.setText("");
+				await this.handleChangelogCommand();
 				return;
 			}
 			if (bare("hotkeys")) {
@@ -474,8 +475,9 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				return;
 			}
 			if (bare("debug")) {
-				this.handleDebugCommand();
+				const written = this.handleDebugCommand();
 				this.editor.setText("");
+				await written;
 				return;
 			}
 			if (bare("arminsayshi")) {
@@ -484,8 +486,9 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				return;
 			}
 			if (bare("dementedelves")) {
-				this.handleDementedDelves();
+				const shown = this.handleDementedDelves();
 				this.editor.setText("");
+				await shown;
 				return;
 			}
 			if (bare("resume")) {

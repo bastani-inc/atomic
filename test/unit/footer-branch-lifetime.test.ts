@@ -70,6 +70,11 @@ const liveAt = (path: string) => {
 };
 const live = (cwd: string) => liveAt(join(cwd, ".git"));
 
+/** Branch reads and watcher installation finish on their own, after the call that starts them. */
+const eventually = (assertion: () => void) => vi.waitFor(assertion);
+const renderedUntil = async (render: () => string[], pattern: RegExp) =>
+	eventually(() => assert.match(stripAnsi(render().join("\n")), pattern));
+
 // PR #2926: keep simultaneous viewers live, but release the final viewer's cwd.
 test("footer disposal and cwd replacement release only unused branch watchers", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "footer-lifetime-"));
@@ -91,15 +96,16 @@ test("footer disposal and cwd replacement release only unused branch watchers", 
 	const second = new FooterComponent(session, provider);
 	provider.startGitWatcher();
 	try {
-		assert.match(stripAnsi(first.render(160).join("\n")), /\(stage\)/);
+		await renderedUntil(() => first.render(160), /\(stage\)/);
 		second.render(160);
-		assert.equal(live(stage).length, 1, "viewers of the same cwd share a watcher");
+		await eventually(() => assert.equal(live(stage).length, 1, "viewers of the same cwd share a watcher"));
 		first.dispose();
 		assert.equal(live(stage).length, 1, "one viewer cannot evict its sibling");
 		cwd = next;
-		assert.match(stripAnsi(second.render(160).join("\n")), /\(next\)/);
+		second.render(160);
 		assert.equal(live(stage).length, 0, "replacement releases the last viewer of the old cwd");
-		assert.equal(live(next).length, 1);
+		await renderedUntil(() => second.render(160), /\(next\)/);
+		await eventually(() => assert.equal(live(next).length, 1));
 		second.dispose();
 		second.dispose();
 		assert.equal(live(next).length, 0, "viewer disposal closes its alternate watcher");
@@ -144,19 +150,21 @@ test("stage host repaint, session replacement and disposal release branch resour
 		onClose() {},
 	});
 	try {
+		await renderedUntil(() => view.render(160), /\(stage\)/);
 		for (let i = 0; i < 10; i++) assert.match(stripAnsi(view.render(160).join("\n")), /\(stage\)/);
-		assert.equal(live(cwd).length, 1);
+		await eventually(() => assert.equal(live(cwd).length, 1));
 		activeSession = fakeFooterAgentSession();
 		activeSession.sessionManager.getCwd = () => replacementCwd;
-		assert.match(stripAnsi(view.render(160).join("\n")), /\(replacement\)/);
+		view.render(160);
 		assert.equal(live(cwd).length, 0, "replacing the session releases the previous cwd");
-		assert.equal(live(replacementCwd).length, 1);
+		await renderedUntil(() => view.render(160), /\(replacement\)/);
+		await eventually(() => assert.equal(live(replacementCwd).length, 1));
 		activeSession = undefined;
 		view.render(160);
 		assert.equal(live(replacementCwd).length, 0, "a detached session releases its footer");
 		activeSession = session;
 		view.render(160);
-		assert.equal(live(cwd).length, 1);
+		await eventually(() => assert.equal(live(cwd).length, 1));
 		view.dispose();
 		assert.equal(live(cwd).length, 0, "stage disposal releases every render's branch lease");
 		view.render(160);
@@ -177,8 +185,10 @@ test("released branch subscriptions reject late watcher errors and pending refre
 	const provider = new FooterDataProvider(directory);
 	const callback = vi.fn();
 	const release = provider.onBranchChange(callback, cwd);
-	assert.equal(provider.getGitBranch(cwd), "stage");
+	await eventually(() => assert.equal(provider.getGitBranch(cwd), "stage"));
 	provider.startGitWatcher();
+	await eventually(() => assert.equal(live(cwd).length, 1));
+	callback.mockClear();
 	vi.useFakeTimers();
 	try {
 		const watcher = live(cwd)[0].watcher;
@@ -223,10 +233,11 @@ test("parent cwd replacement preserves leased branches and rejects old in-flight
 	const releaseMain = provider.onBranchChange(callback, main);
 	const releaseStage = provider.onBranchChange(callback, stage);
 	const releaseStageSibling = provider.onBranchChange(callback, stage);
-	assert.equal(provider.getGitBranch(), "main");
-	assert.equal(provider.getGitBranch(stage), "stage");
+	await eventually(() => assert.equal(provider.getGitBranch(), "main"));
+	await eventually(() => assert.equal(provider.getGitBranch(stage), "stage"));
 	assert.equal(observed.length, 0, "leases respect lazy watcher startup");
 	provider.startGitWatcher();
+	await eventually(() => assert.equal(live(main).length + live(stage).length, 2));
 	vi.useFakeTimers();
 	try {
 		const oldWatcher = live(main)[0].watcher;
@@ -234,12 +245,14 @@ test("parent cwd replacement preserves leased branches and rejects old in-flight
 		oldWatcher.emit("change", "rename", "HEAD");
 		vi.advanceTimersByTime(500);
 		provider.setCwd(stage);
-		assert.equal(provider.getGitBranch(), "stage");
+		await eventually(() => assert.equal(provider.getGitBranch(), "stage"));
 		await Promise.resolve();
 		assert.equal(provider.getGitBranch(), "stage", "an old refresh cannot overwrite the replacement cwd");
-		assert.equal(provider.getGitBranch(main), "old-update");
-		assert.equal(live(main).length, 1);
-		assert.equal(live(stage).length, 1, "promoting a leased cwd must not duplicate its watcher");
+		await eventually(() => assert.equal(provider.getGitBranch(main), "old-update"));
+		await eventually(() => assert.equal(live(main).length, 1));
+		await eventually(() =>
+			assert.equal(live(stage).length, 1, "promoting a leased cwd must not duplicate its watcher"),
+		);
 		oldWatcher.emit("error", new Error("late EMFILE from replaced watcher"));
 		assert.equal(live(stage).length, 1, "stale watcher errors cannot tear down the replacement watcher");
 		releaseStage();
@@ -248,7 +261,7 @@ test("parent cwd replacement preserves leased branches and rejects old in-flight
 		await writeFileEnsuringDir(join(stage, ".git/HEAD"), "ref: refs/heads/live-stage\n");
 		live(stage)[0].watcher.emit("change", "rename", "HEAD");
 		await vi.advanceTimersByTimeAsync(500);
-		assert.equal(provider.getGitBranch(), "live-stage");
+		await eventually(() => assert.equal(provider.getGitBranch(), "live-stage"));
 		assert.equal(callback.mock.calls.length, 2, "identical callbacks have independent scoped subscriptions");
 		releaseMain();
 		assert.equal(live(main).length, 0);
@@ -269,15 +282,19 @@ test("parent cwd replacement preserves leased branches and rejects old in-flight
 test("unleased alternate reads remain fresh without retaining watchers", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "unleased-footer-"));
 	const provider = new FooterDataProvider(directory);
+	const changed = vi.fn();
+	provider.onBranchChange(changed);
 	provider.startGitWatcher();
 	try {
 		for (let i = 0; i < 20; i++) {
 			const cwd = join(directory, String(i));
 			const head = join(cwd, ".git/HEAD");
 			await writeFileEnsuringDir(head, "ref: refs/heads/first\n");
-			assert.equal(provider.getGitBranch(cwd), "first");
+			changed.mockClear();
+			await eventually(() => assert.equal(provider.getGitBranch(cwd), "first"));
+			assert.ok(changed.mock.calls.length > 0, "listeners hear that the read finished, so the viewer repaints");
 			await writeFileEnsuringDir(head, "ref: refs/heads/second\n");
-			assert.equal(provider.getGitBranch(cwd), "second");
+			await eventually(() => assert.equal(provider.getGitBranch(cwd), "second"));
 		}
 		assert.equal(observed.length, 0);
 		assert.equal(provider.getGitBranch(join(directory, "missing")), null);
@@ -297,12 +314,13 @@ test("last release tears down reftable polling and watcher retries", async () =>
 	const provider = new FooterDataProvider(directory);
 	const callback = vi.fn();
 	let release = provider.onBranchChange(callback, cwd);
-	provider.getGitBranch(cwd);
+	await eventually(() => assert.equal(provider.getGitBranch(cwd), "stage"));
 	provider.startGitWatcher();
+	await eventually(() => assert.equal(observed.filter((record) => !record.closed).length, 3));
+	callback.mockClear();
 	vi.useFakeTimers();
 	try {
 		assert.equal(polling.has(tables), true);
-		assert.equal(observed.filter((record) => !record.closed).length, 3);
 		const lateError = liveAt(tables)[0].watcher.listeners("error")[0];
 		release();
 		assert.equal(polling.size, 0);
@@ -315,6 +333,7 @@ test("last release tears down reftable polling and watcher retries", async () =>
 		);
 		assert.equal(polling.size, 0);
 		release = provider.onBranchChange(callback, cwd);
+		await eventually(() => assert.equal(live(cwd).length, 1));
 		live(cwd)[0].watcher.emit("error", new Error("EMFILE"));
 		assert.ok(vi.getTimerCount() > 0, "a live watcher schedules recovery");
 		release();
@@ -341,11 +360,14 @@ test("last release removes polling after synchronous tables.list watch failure",
 	const callback = vi.fn();
 	const release = provider.onBranchChange(callback, cwd);
 	watchFailure.path = realpathSync.native(tables);
+	await eventually(() => assert.equal(provider.getGitBranch(cwd), "stage"));
+	callback.mockClear();
 	vi.useFakeTimers();
 	try {
-		assert.equal(provider.getGitBranch(cwd), "stage");
 		provider.startGitWatcher();
-		assert.equal(watchFailure.attempts, 1, "the OS-boundary watch installation fails synchronously");
+		await eventually(() =>
+			assert.equal(watchFailure.attempts, 1, "the OS-boundary watch installation fails synchronously"),
+		);
 		assert.equal(vi.getTimerCount(), 1, "the live lease retains its recovery timer");
 		release();
 		assert.equal(polling.size, 0, "final release removes all polling after synchronous watch failure");
@@ -384,8 +406,10 @@ test("canonical native watch paths retain alias-cwd leases until the last releas
 	const second = provider.onBranchChange(() => {}, cwd);
 	try {
 		provider.startGitWatcher();
-		assert.equal(provider.getGitBranch(cwd), "stage");
-		assert.equal(observed.length, 3, "real native watchers cover HEAD, reftable and tables.list");
+		await eventually(() => assert.equal(provider.getGitBranch(cwd), "stage"));
+		await eventually(() =>
+			assert.equal(observed.length, 3, "real native watchers cover HEAD, reftable and tables.list"),
+		);
 		assert.notEqual(observed[0].path, join(cwd, ".git"), "the OS receives the canonical target, not the alias");
 		assert.equal(live(cwd).length, 1, "canonical watcher lookup finds the aliased viewer's resource");
 		assert.equal(liveAt(join(cwd, ".git/reftable/tables.list")).length, 1);

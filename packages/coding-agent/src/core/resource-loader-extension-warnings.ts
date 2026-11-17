@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { APP_NAME } from "../config.js";
 import { stripBom } from "../utils/text.ts";
@@ -17,10 +17,16 @@ const HOST_PROVIDED_EXTENSION_PACKAGES = new Set([
 	"typebox",
 ]);
 
-export function collectExtensionPackageWarnings(
+const exists = (path: string): Promise<boolean> =>
+	access(path).then(
+		() => true,
+		() => false,
+	);
+
+export async function collectExtensionPackageWarnings(
 	extensionPaths: string[],
 	metadataByPath: Map<string, PathMetadata>,
-): ExtensionPackageWarning[] {
+): Promise<ExtensionPackageWarning[]> {
 	const warnings: ExtensionPackageWarning[] = [];
 	const packageRoots = new Set(
 		extensionPaths
@@ -29,8 +35,8 @@ export function collectExtensionPackageWarnings(
 	);
 	for (const packageRoot of packageRoots) {
 		const packageJsonPath = join(packageRoot, "package.json");
-		if (!existsSync(packageJsonPath)) continue;
-		const dependencies = readManifestDependencies(packageJsonPath);
+		if (!(await exists(packageJsonPath))) continue;
+		const dependencies = await readManifestDependencies(packageJsonPath);
 		if (!dependencies) continue;
 		const hostDependencies = Object.keys(dependencies)
 			.filter((name) => HOST_PROVIDED_EXTENSION_PACKAGES.has(name))
@@ -44,8 +50,8 @@ export function collectExtensionPackageWarnings(
 	return warnings;
 }
 
-function readManifestDependencies(packageJsonPath: string): Record<string, string> | undefined {
-	const manifest: { dependencies?: object | null } = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8")));
+async function readManifestDependencies(packageJsonPath: string): Promise<Record<string, string> | undefined> {
+	const manifest: { dependencies?: object | null } = JSON.parse(stripBom(await readFile(packageJsonPath, "utf-8")));
 	const dependencies = manifest.dependencies;
 	if (typeof dependencies !== "object" || dependencies === null || Array.isArray(dependencies)) return undefined;
 	return dependencies as Record<string, string>;

@@ -5,6 +5,8 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	canonicalizePath,
+	canonicalizePathAsync,
+	createSessionCwdMatcherAsync,
 	getCwdRelativePath,
 	getPathComparisonKey,
 	isLocalPath,
@@ -70,6 +72,23 @@ describe("canonicalizePath", () => {
 		symlinkSync(target, link);
 		// realpathSync would throw, so canonicalizePath returns the link path.
 		expect(canonicalizePath(link)).toBe(link);
+	});
+
+	it("canonicalizes paths and matches session cwds asynchronously", async () => {
+		const dir = createTempDir();
+		const targetDir = join(dir, "target-dir");
+		const linkDir = join(dir, "link-dir");
+		mkdirSync(targetDir);
+		symlinkSync(targetDir, linkDir, "dir");
+		const missing = join(dir, "no-such-file");
+
+		expect(await canonicalizePathAsync(linkDir)).toBe(realpathSync(targetDir));
+		expect(await canonicalizePathAsync(missing)).toBe(missing);
+
+		const matches = createSessionCwdMatcherAsync(targetDir);
+		expect(await matches(linkDir)).toBe(true);
+		expect(await matches(missing)).toBe(false);
+		expect(await matches(undefined)).toBe(false);
 	});
 });
 

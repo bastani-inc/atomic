@@ -7,7 +7,7 @@ import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader
 import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
 import type { McpServerContribution } from "./mcp-servers.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
-import { registerHostStoragePackages } from "./package-manager-storage-adapters.js";
+import { registerHostStoragePackagesAsync } from "./package-manager-storage-adapters.js";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import {
 	updatePromptsFromPathsAsync,
@@ -116,7 +116,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			inheritanceSnapshot?.additionalExtensionPaths,
 			options.additionalExtensionPaths,
 		);
-		registerHostStoragePackages(this.additionalExtensionPaths, this.cwd);
+		void registerHostStoragePackagesAsync(this.additionalExtensionPaths, this.cwd);
 		this.additionalSkillPaths = mergeInheritedStrings(
 			inheritanceSnapshot?.additionalSkillPaths,
 			options.additionalSkillPaths,

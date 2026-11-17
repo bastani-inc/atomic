@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "vitest";
-import { resolvePhysicalPath } from "../src/utils/physical-path.js";
+import { resolvePhysicalPath, resolvePhysicalPathAsync } from "../src/utils/physical-path.js";
 
 let root: string;
 beforeEach(() => {
@@ -63,6 +63,27 @@ describe.skipIf(process.platform === "win32")(
 			for (let link = 1; link <= 41; link++) symlinkSync(`l${link - 1}`, join(root, `l${link}`));
 			assert.equal(resolvePhysicalPath(join(root, "l40")), join(root, "l0"));
 			assert.throws(() => resolvePhysicalPath(join(root, "l41")), { code: "ELOOP" });
+		});
+
+		it("resolves physical paths asynchronously with identical results and errors", async () => {
+			mkdirSync(join(root, "ws"));
+			mkdirSync(join(root, "elsewhere"));
+			symlinkSync("second", join(root, "ws", "first"));
+			symlinkSync(join("..", "elsewhere", "new"), join(root, "ws", "second"));
+			assert.equal(
+				await resolvePhysicalPathAsync(join(root, "ws", "first", "below")),
+				join(root, "elsewhere", "new", "below"),
+			);
+
+			symlinkSync(join(root, "loop"), join(root, "loop"));
+			const absolute = join(root, "loop", "x");
+			await assert.rejects(() => resolvePhysicalPathAsync(absolute), {
+				code: "ELOOP",
+				errno: -constants.errno.ELOOP,
+				syscall: "lstat",
+				path: absolute,
+				message: `ELOOP: too many symbolic links encountered, lstat '${absolute}'`,
+			});
 		});
 	},
 );

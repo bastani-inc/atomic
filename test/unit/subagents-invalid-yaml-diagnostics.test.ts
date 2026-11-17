@@ -33,7 +33,7 @@ afterAll(() => {
 const GOOD_AGENT = "---\nname: probe\ndescription: probe agent\ntools: read\n---\n\nDo the thing.\n";
 
 describe("invalid-YAML agent files produce load diagnostics", () => {
-	test("a file the YAML parser rejects is reported, not silently skipped", () => {
+	test("a file the YAML parser rejects is reported, not silently skipped", async () => {
 		const dir = writeAgents({
 			// A colon-space inside a plain scalar parsed fine under the old
 			// line reader and is a nested-mapping error under the real one.
@@ -41,7 +41,7 @@ describe("invalid-YAML agent files produce load diagnostics", () => {
 			"good.md": GOOD_AGENT,
 		});
 
-		const { agents, diagnostics } = loadAgentsFromDirWithDiagnostics(dir, "user");
+		const { agents, diagnostics } = await loadAgentsFromDirWithDiagnostics(dir, "user");
 		assert.deepEqual(
 			agents.map((agent) => agent.name),
 			["probe"],
@@ -53,14 +53,14 @@ describe("invalid-YAML agent files produce load diagnostics", () => {
 		assert.ok(diagnostic.message.length > 0, "diagnostic carries the parser's message");
 	});
 
-	test("files without frontmatter or with valid YAML produce no diagnostics", () => {
+	test("files without frontmatter or with valid YAML produce no diagnostics", async () => {
 		const dir = writeAgents({
 			"note.md": "Just a markdown note that lives next to agents.\n",
 			"good.md": GOOD_AGENT,
 			"sequence.md": "---\nname: seq\ndescription: seq agent\ntools:\n  - read\n  - bash\n---\n\nbody\n",
 		});
 
-		const { agents, diagnostics } = loadAgentsFromDirWithDiagnostics(dir, "user");
+		const { agents, diagnostics } = await loadAgentsFromDirWithDiagnostics(dir, "user");
 		assert.equal(agents.length, 2);
 		assert.deepEqual(diagnostics, []);
 	});

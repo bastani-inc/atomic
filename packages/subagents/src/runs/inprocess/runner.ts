@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	type AgentSession,
@@ -59,6 +58,7 @@ import {
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
 import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.js";
 import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.js";
+import { type CwdVerdict, checkLaunchCwd } from "../../shared/launch-cwd.js";
 import {
 	resolveEffectiveThinking,
 	splitKnownThinkingSuffix,
@@ -68,6 +68,7 @@ import {
 	taskRecordModel,
 } from "../../shared/model-info.js";
 import type { CandidateModelResolver } from "../../shared/model-resolution.js";
+import { pathExists } from "../../shared/path-exists.js";
 import {
 	type AgentProgress,
 	type ArtifactPaths,
@@ -810,7 +811,8 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		},
 		prompt: (text: string) =>
 			runTurn(async () => {
-				if (testOptions.promptLogPath) appendFileSync(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
+				if (testOptions.promptLogPath)
+					await appendFile(testOptions.promptLogPath, `${text}\n---PROMPT---\n`, "utf8");
 				await sessionManager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
 				userMessages += 1;
 			}),
@@ -931,8 +933,8 @@ function promptAndAnswer(manager: SessionManager, inheritedThroughId: string | n
 }
 
 /** Why a finished child's saved history could not be read, as a task view shows it. */
-function historyUnavailable(sessionFile: string | undefined, cause?: unknown): string {
-	if (sessionFile !== undefined && !existsSync(sessionFile))
+async function historyUnavailable(sessionFile: string | undefined, cause?: unknown): Promise<string> {
+	if (sessionFile !== undefined && !(await pathExists(sessionFile)))
 		return `History unavailable: the session file was moved or deleted (${sessionFile}).`;
 	return `History unavailable: ${cause instanceof Error ? cause.message : String(cause ?? "its session could not be read")}`;
 }
@@ -947,7 +949,7 @@ async function readSessionFileEntries(file: string, sessionId: string): Promise<
 	try {
 		text = await readFile(file, "utf8");
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(historyUnavailable(file));
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(await historyUnavailable(file));
 		throw error;
 	}
 	const lines = text.split("\n");
@@ -1027,7 +1029,7 @@ function settledTranscript(
 					entries: kept,
 					unavailable: message.startsWith("History unavailable:")
 						? message
-						: historyUnavailable(sessionFile, error),
+						: await historyUnavailable(sessionFile, error),
 				};
 			}
 		},
@@ -1264,20 +1266,22 @@ function assertStartModelAllowed(input: {
 	);
 }
 
-function cancelledEnvelope(
+async function cancelledEnvelope(
 	session: AgentSession | undefined,
 	spec: ChildSpec,
 	stats: AttemptStats,
 	ownMessages: readonly TranscriptMessage[],
-): string {
-	return recoverCancelledChildOutput({
-		progressPath: spec.progressPath,
-		assistantText: outputFor(ownMessages),
-		toolCount: stats.toolCalls,
-		sessionPath: session?.sessionFile ?? spec.sessionManager?.getSessionFile(),
-		...(spec.progressArtifactPath ? { progressArtifactPath: spec.progressArtifactPath } : {}),
-		...(spec.outputArtifactPath ? { outputArtifactPath: spec.outputArtifactPath } : {}),
-	}).text;
+): Promise<string> {
+	return (
+		await recoverCancelledChildOutput({
+			progressPath: spec.progressPath,
+			assistantText: outputFor(ownMessages),
+			toolCount: stats.toolCalls,
+			sessionPath: session?.sessionFile ?? spec.sessionManager?.getSessionFile(),
+			...(spec.progressArtifactPath ? { progressArtifactPath: spec.progressArtifactPath } : {}),
+			...(spec.outputArtifactPath ? { outputArtifactPath: spec.outputArtifactPath } : {}),
+		})
+	).text;
 }
 
 /** Text a resumed child receives as written: never expanded as a prompt template or run as a command. */
@@ -1429,18 +1433,79 @@ export function progressEmissionFor(eventType: AgentSessionEvent["type"]): Progr
 	}
 }
 
-function writeEvent(pathValue: string | undefined, event: AgentSessionEvent): void {
-	if (!pathValue) return;
-	const line = `${JSON.stringify(event)}\n`;
-	let existingBytes = 0;
-	try {
-		existingBytes = statSync(pathValue).size;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-	}
-	if (existingBytes + Buffer.byteLength(line, "utf8") > DEFAULT_MAX_JSONL_BYTES) return;
-	mkdirSync(dirname(pathValue), { recursive: true });
-	appendFileSync(pathValue, line, "utf8");
+interface EventLog {
+	append(event: AgentSessionEvent): void;
+	/** Settles once every event appended so far is written, or the log has stopped. */
+	flush(): Promise<void>;
+}
+
+/**
+ * A child session's events, appended to `pathValue` as JSON lines in the order they happened while the file stays
+ * within the JSONL cap. Each event is serialized when it happens and written behind the ones before it, in batches; a
+ * write that fails stops the log.
+ */
+function createEventLog(pathValue: string): EventLog {
+	let pending: string[] = [];
+	let stopped = false;
+	let draining: Promise<void> | undefined;
+	const write = async (lines: readonly string[]): Promise<void> => {
+		let size = 0;
+		try {
+			size = (await stat(pathValue)).size;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+		let chunk = "";
+		for (const line of lines) {
+			const bytes = Buffer.byteLength(line, "utf8");
+			if (size + bytes > DEFAULT_MAX_JSONL_BYTES) continue;
+			size += bytes;
+			chunk += line;
+		}
+		if (!chunk) return;
+		await mkdir(dirname(pathValue), { recursive: true });
+		await appendFile(pathValue, chunk, "utf8");
+	};
+	const drain = async (): Promise<void> => {
+		while (pending.length > 0 && !stopped) {
+			const lines = pending;
+			pending = [];
+			try {
+				await write(lines);
+			} catch {
+				stopped = true;
+				pending = [];
+			}
+		}
+		draining = undefined;
+	};
+	return {
+		append(event) {
+			if (stopped) return;
+			try {
+				pending.push(`${JSON.stringify(event)}\n`);
+			} catch {
+				stopped = true;
+				return;
+			}
+			draining ??= drain();
+		},
+		flush: () => draining ?? Promise.resolve(),
+	};
+}
+
+/** Appends to each run history file, keyed by path, in the order they were asked for. */
+const runHistoryAppends = new Map<string, Promise<void>>();
+
+/** Appends `line` to the run history `file` after every append asked for before it. */
+function appendRunHistory(file: string, line: string): Promise<void> {
+	const appended = (runHistoryAppends.get(file) ?? Promise.resolve()).then(() => appendFile(file, line, "utf8"));
+	const settled = appended.catch(() => undefined);
+	runHistoryAppends.set(file, settled);
+	void settled.then(() => {
+		if (runHistoryAppends.get(file) === settled) runHistoryAppends.delete(file);
+	});
+	return appended;
 }
 
 /**
@@ -1568,8 +1633,13 @@ export class SubagentControlRuntime {
 		for (const agent of agents) this.native.registerAgent(agent.name);
 	}
 
-	admitChildSession(spec: ChildSpec, parent: ParentContext = this.parent): AdmittedResult {
-		if (!existsSync(spec.cwd) || !statSync(spec.cwd).isDirectory()) {
+	async admitChildSession(spec: ChildSpec, parent: ParentContext = this.parent): Promise<AdmittedResult> {
+		return this.admitCheckedChildSession(spec, await checkLaunchCwd(spec.cwd), parent);
+	}
+
+	/** Admits a child within the call, given its launch's check of `spec.cwd`. */
+	admitCheckedChildSession(spec: ChildSpec, cwd: CwdVerdict, parent: ParentContext = this.parent): AdmittedResult {
+		if (cwd.state !== "directory") {
 			return {
 				refusal: {
 					kind: "invalidCwd",
@@ -1586,7 +1656,6 @@ export class SubagentControlRuntime {
 		if (spec.childId !== undefined) this.childIds.set(identity.path, spec.childId);
 		const childModePolicy = resolveChildModePolicy(spec);
 		const sessionDir = spec.sessionManager?.getSessionDir() || sessionDirectory(this.sessionRoot, identity.path);
-		mkdirSync(sessionDir, { recursive: true });
 		return {
 			admitted: AdmittedChild.create({
 				identity,
@@ -1726,7 +1795,7 @@ export class SubagentControlRuntime {
 						envelope: killed
 							? "Killed. This child cannot be resumed."
 							: waitResult === PARENT_CANCEL_CAUSE
-								? cancelledEnvelope(undefined, admitted.spec, stats, [])
+								? await cancelledEnvelope(undefined, admitted.spec, stats, [])
 								: INTERRUPTED_ENVELOPE,
 						...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
 						...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
@@ -1777,6 +1846,7 @@ export class SubagentControlRuntime {
 		let terminating: Promise<void> | undefined;
 		let terminationWasKill = false;
 		let unsubscribe: (() => void) | undefined;
+		let eventLog: EventLog | undefined;
 		let skillReport: AttemptSkillReport = {};
 		const terminate = async (cause: TerminationCauseName): Promise<void> => {
 			if (terminating) {
@@ -1840,18 +1910,21 @@ export class SubagentControlRuntime {
 			});
 		try {
 			const workflow = workflowMetadataFromContext(admitted.spec.parent?.orchestrationContext);
-			const opening = admitted.sessionManager
-				? SessionManager.open(
-						admitted.sessionManager.getSessionStore(),
-						admitted.sessionManager.getSessionId(),
-						admitted.policy.cwd,
-						{ history: "tail" },
-					)
-				: SessionManager.create(
-						admitted.policy.cwd,
-						admitted.sessionDir,
-						workflow ? { internal: true, workflow } : { internal: true },
-					);
+			// The session opens once its directory exists.
+			const opening = mkdir(admitted.sessionDir, { recursive: true }).then(() =>
+				admitted.sessionManager
+					? SessionManager.open(
+							admitted.sessionManager.getSessionStore(),
+							admitted.sessionManager.getSessionId(),
+							admitted.policy.cwd,
+							{ history: "tail" },
+						)
+					: SessionManager.create(
+							admitted.policy.cwd,
+							admitted.sessionDir,
+							workflow ? { internal: true, workflow } : { internal: true },
+						),
+			);
 			// The fallback gate the child session gets, its own with its parent's, to check the model it starts on.
 			let startGate: CreateAgentSessionOptions["isFallbackModelAllowed"];
 			const prepareChildSession = () => {
@@ -1965,7 +2038,7 @@ export class SubagentControlRuntime {
 				startBudget.enter("loading-resources");
 				const reloadFailure = await beforeStartDeadline(prepared.reloaded);
 				if (reloadFailure) throw reloadFailure.error;
-				const selectedSkills = resolveSkillsFromCatalog(
+				const selectedSkills = await resolveSkillsFromCatalog(
 					[...admitted.policy.skills],
 					resourceLoader.getSkillCatalog(),
 					admitted.policy.cwd,
@@ -2135,13 +2208,9 @@ export class SubagentControlRuntime {
 			const taskDispatched = new Promise<void>((resolve) => {
 				markTaskDispatched = () => resolve();
 			});
-			let artifactJsonlPath = admitted.spec.artifactJsonlPath;
+			eventLog = admitted.spec.artifactJsonlPath ? createEventLog(admitted.spec.artifactJsonlPath) : undefined;
 			unsubscribe = session.subscribe((event) => {
-				try {
-					writeEvent(artifactJsonlPath, event);
-				} catch {
-					artifactJsonlPath = undefined;
-				}
+				eventLog?.append(event);
 				if (event.type === "message_start" && event.message.role === "assistant")
 					observedStreamingMessage = beginStreamingAssistantMessage(event.message);
 				else if (event.type === "message_update" && observedStreamingMessage)
@@ -2348,7 +2417,7 @@ export class SubagentControlRuntime {
 			this.native.finishChildAttempt(token, nativeStatus(status));
 			const envelope =
 				termination === PARENT_CANCEL_CAUSE
-					? cancelledEnvelope(session, admitted.spec, stats, producedMessages)
+					? await cancelledEnvelope(session, admitted.spec, stats, producedMessages)
 					: status === "interrupted"
 						? INTERRUPTED_ENVELOPE
 						: boundedEnvelope(output || noOutput || termination || "(no output)", undefined);
@@ -2420,7 +2489,7 @@ export class SubagentControlRuntime {
 					path: admitted.identity.path,
 					envelope:
 						termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
-							? cancelledEnvelope(session, admitted.spec, stats, ownMessages())
+							? await cancelledEnvelope(session, admitted.spec, stats, ownMessages())
 							: this.killedChildren.has(admitted.identity.path)
 								? "Killed. This child cannot be resumed."
 								: INTERRUPTED_ENVELOPE,
@@ -2500,6 +2569,8 @@ export class SubagentControlRuntime {
 				this.attemptTokens.delete(admitted.identity.path);
 			if (this.attemptTerminators.get(admitted.identity.path) === terminate)
 				this.attemptTerminators.delete(admitted.identity.path);
+			// The attempt's events are all in its artifact once it returns.
+			if (eventLog) await eventLog.flush();
 		}
 	}
 
@@ -2618,7 +2689,7 @@ export class SubagentControlRuntime {
 			...deliveredEnvelope,
 			outputPath: paths.outputPath,
 		});
-		appendFileSync(join(artifactDir, "run-history.jsonl"), `${JSON.stringify(deliveredEnvelope)}\n`, "utf8");
+		await appendRunHistory(join(artifactDir, "run-history.jsonl"), `${JSON.stringify(deliveredEnvelope)}\n`);
 		return bounded;
 	}
 
@@ -2673,7 +2744,7 @@ export function admit_child_session(
 	control: SubagentControlRuntime,
 	spec: ChildSpec,
 	parent: ParentContext,
-): AdmittedResult {
+): Promise<AdmittedResult> {
 	return control.admitChildSession(spec, parent);
 }
 

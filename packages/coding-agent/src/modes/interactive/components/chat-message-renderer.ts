@@ -9,7 +9,7 @@ import {
 	type CustomMessage,
 	isVerbatimCompactionMessage,
 } from "../../../core/messages.ts";
-import type { TaskRecord } from "../../../core/tasks/contracts.js";
+import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import type { OwnerTaskStore, TaskActivity } from "../../../core/tasks/owner-store.js";
 import {
 	applyAssistantMessageDelta,
@@ -24,7 +24,7 @@ import { extractMessageText } from "./chat-session-host-utils.ts";
 import { compactionBoundaryFromMessage } from "./compaction-boundary-message.ts";
 import { CustomMessageComponent } from "./custom-message.ts";
 import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
-import { TaskRow } from "./task-row.js";
+import { countTasksBy, TaskRow, taskNameAndTitle, taskSiblings } from "./task-row.js";
 import { ToolExecutionComponent } from "./tool-execution.ts";
 import { UserMessageComponent } from "./user-message.ts";
 export interface PersistedMessageMeta {
@@ -56,6 +56,7 @@ export type ChatMessageEntry =
 	| { role: "custom"; kind: "custom"; message: CustomMessage<unknown>; messageId?: string; timestamp?: string }
 	| { role: "summary"; kind: "branchSummary"; message: BranchSummaryMessage; messageId?: string; timestamp?: string }
 	| { role: "system"; kind: "system"; text: string };
+type TaskChatEntry = Extract<ChatMessageEntry, { kind: "task" }>;
 export interface ChatMessageRenderOptions {
 	ui: Pick<TUI, "requestRender">;
 	cwd: string;
@@ -222,30 +223,37 @@ export class LiveChatEntriesController {
 		this.reindexPendingTools();
 	}
 	upsertTasks(tasks: readonly TaskRecord[], store?: OwnerTaskStore): void {
-		for (const task of tasks) {
+		const siblings = taskSiblings(tasks);
+		const copies = countTasksBy(siblings, taskNameAndTitle);
+		const taskEntries = new Map<TaskId, TaskChatEntry>();
+		for (const entry of this.entries) {
+			if ("kind" in entry && entry.kind === "task" && !taskEntries.has(entry.task.ref.taskId))
+				taskEntries.set(entry.task.ref.taskId, entry);
+		}
+		for (const task of siblings) {
 			const activity = store?.recentActivity(task.ref.taskId) ?? [];
 			const activityOmitted = store?.activityOmitted(task.ref.taskId) ?? false;
-			const duplicate =
-				tasks.filter((other) => other.agentName === task.agentName && other.title === task.title).length > 1;
-			const entry = this.entries.find(
-				(entry) => "kind" in entry && entry.kind === "task" && entry.task.ref.taskId === task.ref.taskId,
-			);
-			if (entry && "kind" in entry && entry.kind === "task") {
+			const duplicate = (copies.get(taskNameAndTitle(task)) ?? 0) > 1;
+			const entry = taskEntries.get(task.ref.taskId);
+			if (entry) {
 				entry.task = task;
 				entry.duplicate = duplicate;
-				entry.siblings = tasks;
+				entry.siblings = siblings;
 				entry.activity = activity;
 				entry.activityOmitted = activityOmitted;
-			} else
-				this.entries.push({
+			} else {
+				const added: TaskChatEntry = {
 					role: "tool",
 					kind: "task",
 					task,
 					duplicate,
-					siblings: tasks,
+					siblings,
 					activity,
 					activityOmitted,
-				});
+				};
+				this.entries.push(added);
+				taskEntries.set(task.ref.taskId, added);
+			}
 		}
 	}
 	appendMessages(messages: readonly AgentMessage[]): void {

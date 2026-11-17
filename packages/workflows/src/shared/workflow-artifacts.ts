@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir, getEnvValue } from "@bastani/atomic";
@@ -7,6 +6,7 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { type WorkflowRunResumeCandidate, workflowRunHasPausedState } from "../durable/resume-eligibility.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
+import { pathExists } from "./path-exists.js";
 import { store } from "./store.js";
 import type { RunSnapshot } from "./store-types.js";
 import { ENV_WORKFLOW_ARTIFACT_DIR, WORKFLOW_ARTIFACT_RETENTION_MS } from "./workflow-artifact-env.js";
@@ -98,14 +98,55 @@ export function workflowRunHasArtifactReference(
 	return workflowRunReferencedArtifactOwnerIds(run, sessionRuns).length > 0;
 }
 
-/** Return integrity only for identity-scoped owners whose artifacts the snapshot names. */
+/**
+ * Whether each artifact run directory existed when it was last read, by path. Reads happen off the event loop: when a
+ * run directory is made or removed here, and in {@link refreshWorkflowArtifactPresence}.
+ */
+const artifactRunPresence = new Map<string, boolean>();
+const pendingPresenceReads = new Map<string, Promise<void>>();
+
+function readArtifactRunPresence(path: string): Promise<void> {
+	let pending = pendingPresenceReads.get(path);
+	if (pending === undefined) {
+		pending = pathExists(path)
+			.then((present) => {
+				artifactRunPresence.set(path, present);
+			})
+			.finally(() => pendingPresenceReads.delete(path));
+		pendingPresenceReads.set(path, pending);
+	}
+	return pending;
+}
+
+function referencedArtifactRunPaths(
+	run: ArtifactReferenceSnapshot,
+	sessionRuns: readonly RunSnapshot[],
+): readonly string[] {
+	return workflowRunReferencedArtifactOwnerIds(run, sessionRuns).map(workflowArtifactRunPath);
+}
+
+/** Reads whether the artifact directories `runs` name exist, for {@link workflowRunArtifactsIntact} to answer from. */
+export async function refreshWorkflowArtifactPresence(
+	runs: readonly ArtifactReferenceSnapshot[],
+	sessionRuns: readonly RunSnapshot[] = store.runs(),
+): Promise<void> {
+	const paths = new Set(runs.flatMap((run) => referencedArtifactRunPaths(run, sessionRuns)));
+	await Promise.all([...paths].map((path) => readArtifactRunPresence(path)));
+}
+
+/**
+ * Return integrity only for identity-scoped owners whose artifacts the snapshot names, as their directories were last
+ * read (see {@link refreshWorkflowArtifactPresence}); a directory not read yet counts as intact. Each call reads the
+ * directories again in the background, so the next answer is current.
+ */
 export function workflowRunArtifactsIntact(
 	run: ArtifactReferenceSnapshot,
 	sessionRuns: readonly RunSnapshot[] = store.runs(),
 ): boolean | undefined {
-	const ownerIds = workflowRunReferencedArtifactOwnerIds(run, sessionRuns);
-	if (ownerIds.length === 0) return undefined;
-	return ownerIds.every((ownerId) => existsSync(workflowArtifactRunPath(ownerId)));
+	const paths = referencedArtifactRunPaths(run, sessionRuns);
+	if (paths.length === 0) return undefined;
+	for (const path of paths) void readArtifactRunPresence(path);
+	return paths.every((path) => artifactRunPresence.get(path) !== false);
 }
 
 /** Build the one resume candidate shape used by all live-run resume surfaces. */
@@ -279,6 +320,7 @@ export async function pruneWorkflowArtifactRuns(
 			// durable entry pointing at missing artifacts.
 			if (state === "terminal" && !(await deleteTerminalDurableEntry(entry.name))) continue;
 			await rm(entryPath, { recursive: true, force: true });
+			artifactRunPresence.set(entryPath, false);
 		}
 	} catch (error) {
 		if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
@@ -316,6 +358,7 @@ export async function ensureWorkflowArtifactRunDirectory(runId: string): Promise
 	await pruneArtifactRootIfDue(root, Date.now());
 	const directory = workflowArtifactRunPath(runId);
 	await mkdir(directory, { recursive: true });
+	artifactRunPresence.set(directory, true);
 	return directory;
 }
 
@@ -329,6 +372,7 @@ export function workflowArtifactDirectoryPath(runId?: string): string {
 export async function ensureWorkflowArtifactDirectory(directory: string): Promise<string> {
 	await pruneArtifactRootIfDue(workflowArtifactRunsRoot(), Date.now());
 	await mkdir(directory, { recursive: true });
+	artifactRunPresence.set(dirname(directory), true);
 	return directory;
 }
 

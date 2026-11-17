@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import fsModule from "node:fs";
+import fsPromisesModule from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { afterAll, test } from "vitest";
-import { renameWithRetry } from "../../packages/intercom/broker/rename-retry.js";
+import { renameWithRetry, renameWithRetryAsync } from "../../packages/intercom/broker/rename-retry.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const tempDir = makeTempDirectory("ic5220-rename-");
@@ -142,4 +143,39 @@ test("a Windows rename that keeps failing is not retried longer when the clock s
 	}
 	assert.equal(code, "EPERM");
 	assert.ok(renames <= 26, `${renames} renames`);
+});
+
+test("async renameWithRetryAsync retries transient Windows errors and respects abort signals (#5220)", async () => {
+	const original = fsPromisesModule.rename;
+	let attempts = 0;
+	fsPromisesModule.rename = (async () => {
+		if (++attempts === 1) throw Object.assign(new Error("scan in progress"), { code: "EBUSY" });
+	}) as typeof fsPromisesModule.rename;
+	syncBuiltinESMExports();
+	try {
+		await renameWithRetryAsync(join(tempDir, "async-from"), join(tempDir, "async-to"), { platform: "win32" });
+		assert.equal(attempts, 2);
+
+		const controller = new AbortController();
+		const reason = new Error("cancelled async lock rename");
+		let abortAttempts = 0;
+		fsPromisesModule.rename = (async () => {
+			abortAttempts++;
+			controller.abort(reason);
+			throw Object.assign(new Error("scan in progress"), { code: "EBUSY" });
+		}) as typeof fsPromisesModule.rename;
+		syncBuiltinESMExports();
+		await assert.rejects(
+			() =>
+				renameWithRetryAsync(join(tempDir, "async-from"), join(tempDir, "async-to"), {
+					platform: "win32",
+					signal: controller.signal,
+				}),
+			(error) => error === reason,
+		);
+		assert.equal(abortAttempts, 1);
+	} finally {
+		fsPromisesModule.rename = original;
+		syncBuiltinESMExports();
+	}
 });

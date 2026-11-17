@@ -4,7 +4,14 @@ import { getCustomThemesDir } from "../../../config.js";
 import { closeWatcher, isSafeFsWatchPathError, watchWithErrorHandler } from "../../../utils/fs-watch.ts";
 import { getDefaultTheme } from "./terminal-detection.ts";
 import type { Theme } from "./theme-class.ts";
-import { getBuiltinThemes, loadTheme, loadThemeFromPath, setRegisteredTheme } from "./theme-loading.ts";
+import {
+	getBuiltinThemes,
+	hasCustomThemeFile,
+	loadTheme,
+	loadThemeFromContent,
+	readThemeFiles,
+	setRegisteredTheme,
+} from "./theme-loading.ts";
 
 // Use globalThis to share theme across module loaders (node + jiti in dev mode)
 const THEME_KEY = Symbol.for("@bastani/atomic:theme");
@@ -34,6 +41,8 @@ let themeWatcher: fs.FSWatcher | undefined;
 let themeReloadTimer: NodeJS.Timeout | undefined;
 let themeWatchFilePath: string | undefined;
 let themeWatchFileListener: ((current: fs.Stats, previous: fs.Stats) => void) | undefined;
+/** Bumped whenever the watcher stops, so a watcher whose setup is still checking the file does not start. */
+let themeWatcherGeneration = 0;
 let onThemeChangeCallback: (() => void) | undefined;
 
 export function getCurrentThemeName(): string | undefined {
@@ -44,6 +53,7 @@ export function initTheme(themeName?: string, enableWatcher: boolean = false): v
 	const name = themeName ?? getDefaultTheme();
 	currentThemeName = name;
 	try {
+		readThemeFiles();
 		setGlobalTheme(loadTheme(name));
 		if (enableWatcher) {
 			startThemeWatcher();
@@ -104,11 +114,39 @@ function startThemeWatcher(): void {
 	const watchedThemeName = currentThemeName;
 	const watchedFileName = `${watchedThemeName}.json`;
 	const themeFile = path.join(customThemesDir, watchedFileName);
+	const generation = themeWatcherGeneration;
 
 	// Only watch if the file exists
-	if (!fs.existsSync(themeFile)) {
+	if (!hasCustomThemeFile(watchedThemeName)) {
 		return;
 	}
+
+	const reload = async () => {
+		let content: string;
+		try {
+			content = await fs.promises.readFile(themeFile, "utf-8");
+		} catch {
+			// Keep the last successfully loaded theme active if the file is temporarily missing
+			return;
+		}
+		// Ignore reads that finish after switching themes or stopping the watcher
+		if (currentThemeName !== watchedThemeName || generation !== themeWatcherGeneration) {
+			return;
+		}
+		try {
+			// Reload the theme from disk and refresh the registry cache
+			const activeColorMode = (globalThis as Record<symbol, Theme | undefined>)[THEME_KEY]?.getColorMode();
+			const reloadedTheme = loadThemeFromContent(themeFile, content, activeColorMode);
+			setRegisteredTheme(watchedThemeName, reloadedTheme);
+			setGlobalTheme(reloadedTheme);
+			// Notify callback (to invalidate UI)
+			if (onThemeChangeCallback) {
+				onThemeChangeCallback();
+			}
+		} catch (_error) {
+			// Ignore errors (file might be in invalid state while being edited)
+		}
+	};
 
 	const scheduleReload = () => {
 		if (themeReloadTimer) {
@@ -122,24 +160,7 @@ function startThemeWatcher(): void {
 				return;
 			}
 
-			// Keep the last successfully loaded theme active if the file is temporarily missing
-			if (!fs.existsSync(themeFile)) {
-				return;
-			}
-
-			try {
-				// Reload the theme from disk and refresh the registry cache
-				const activeColorMode = (globalThis as Record<symbol, Theme | undefined>)[THEME_KEY]?.getColorMode();
-				const reloadedTheme = loadThemeFromPath(themeFile, activeColorMode);
-				setRegisteredTheme(watchedThemeName, reloadedTheme);
-				setGlobalTheme(reloadedTheme);
-				// Notify callback (to invalidate UI)
-				if (onThemeChangeCallback) {
-					onThemeChangeCallback();
-				}
-			} catch (_error) {
-				// Ignore errors (file might be in invalid state while being edited)
-			}
+			void reload();
 		}, 100);
 	};
 
@@ -187,6 +208,7 @@ function startThemeWatcher(): void {
 }
 
 export function stopThemeWatcher(): void {
+	themeWatcherGeneration++;
 	if (themeReloadTimer) {
 		clearTimeout(themeReloadTimer);
 		themeReloadTimer = undefined;

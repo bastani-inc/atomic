@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
 	type BestWorktreeRestore,
@@ -20,6 +19,7 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotSettingsInput,
 } from "@bastani/atomic";
+import { pathExists } from "../shared/path-exists.js";
 import type { StageWorktreeSnapshot, WorkflowWorktreeRestoreOutcome } from "../shared/store-types.js";
 import type { WorkflowSnapshotBoundary } from "../shared/worktree-snapshot-contract.js";
 
@@ -280,7 +280,7 @@ function within(root: string, path: string): boolean {
  * checkout the run's directory `continuing` is in was not restored and that directory is not on this node; otherwise
  * the run continues in `continuing` and `continuedIn` is undefined.
  */
-export function runWorktreeRestoreOutcomes(input: {
+export async function runWorktreeRestoreOutcomes(input: {
 	readonly restored: readonly WorktreeRootMapping[];
 	readonly unrestored: readonly WorkflowUnrestoredCheckout[];
 	readonly snapshots: ReadonlyMap<string, WorktreeSnapshot>;
@@ -290,12 +290,12 @@ export function runWorktreeRestoreOutcomes(input: {
 	readonly previous: readonly WorkflowWorktreeRestoreOutcome[];
 	/** Every restore of the run, this resume's included, oldest first. */
 	readonly mappings: readonly WorktreeRootMapping[];
-}): {
+}): Promise<{
 	readonly list: WorkflowWorktreeRestoreOutcome[];
 	/** The outcomes of this resume, each to be announced once. */
 	readonly fresh: readonly WorkflowWorktreeRestoreOutcome[];
 	readonly continuedIn?: string;
-} {
+}> {
 	const list: WorkflowWorktreeRestoreOutcome[] = [];
 	for (const mapping of input.restored) {
 		if (mapping.degraded === undefined) continue;
@@ -314,7 +314,7 @@ export function runWorktreeRestoreOutcomes(input: {
 			// Roots are Git's physical top levels: a directory reached through a link compares as the one it points at.
 			within(canonicalizeWorktreePath(checkout.here), canonicalizeWorktreePath(continuing)),
 		);
-	const launch = leftHere && launchCwd !== undefined && !existsSync(continuing);
+	const launch = leftHere && launchCwd !== undefined && !(await pathExists(continuing));
 	const continuedIn = launch ? resolve(launchCwd) : undefined;
 	for (const checkout of input.unrestored) {
 		const record = unrestoredRecord(

@@ -1,4 +1,5 @@
 import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { lstat, readlink, realpath } from "node:fs/promises";
 import { constants } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 
@@ -19,6 +20,15 @@ function components(path: string): string[] {
 function lstatIsLink(path: string): boolean | undefined {
 	try {
 		return lstatSync(path).isSymbolicLink();
+	} catch (error) {
+		if (isMissing(error)) return undefined;
+		throw error;
+	}
+}
+
+async function lstatIsLinkAsync(path: string): Promise<boolean | undefined> {
+	try {
+		return (await lstat(path)).isSymbolicLink();
 	} catch (error) {
 		if (isMissing(error)) return undefined;
 		throw error;
@@ -68,4 +78,41 @@ function normalizeExisting(path: string): string {
 		existing = dirname(existing);
 	}
 	return join(realpathSync.native(existing), ...missing);
+}
+
+/** Asynchronous variant of {@link resolvePhysicalPath} with identical resolution and error semantics. */
+export async function resolvePhysicalPathAsync(path: string): Promise<string> {
+	const absolute = resolve(path);
+	let resolved = parse(absolute).root;
+	const pending = components(absolute.slice(resolved.length));
+	let hops = 0;
+	while (pending.length > 0) {
+		const next = join(resolved, pending.shift() as string);
+		if ((await lstatIsLinkAsync(next)) !== true) {
+			resolved = next;
+			continue;
+		}
+		if (++hops > MAX_SYMLINK_HOPS)
+			throw Object.assign(new Error(`ELOOP: too many symbolic links encountered, lstat '${absolute}'`), {
+				code: "ELOOP",
+				errno: -constants.errno.ELOOP,
+				syscall: "lstat",
+				path: absolute,
+			});
+		const target = await readlink(next);
+		const targetRoot = parse(target).root;
+		if (targetRoot !== "") resolved = resolve(targetRoot);
+		pending.unshift(...components(target.slice(targetRoot.length)));
+	}
+	return normalizeExistingAsync(resolved);
+}
+
+async function normalizeExistingAsync(path: string): Promise<string> {
+	const missing: string[] = [];
+	let existing = path;
+	while ((await lstatIsLinkAsync(existing)) === undefined) {
+		missing.unshift(basename(existing));
+		existing = dirname(existing);
+	}
+	return join(await realpath(existing), ...missing);
 }

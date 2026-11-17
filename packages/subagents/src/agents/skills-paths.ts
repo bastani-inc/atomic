@@ -1,7 +1,9 @@
-import { execSync } from "node:child_process";
-import * as fs from "node:fs";
+import { exec } from "node:child_process";
+import type { Dirent } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import {
 	createChildProcessEnvironment,
 	getAgentConfigPaths,
@@ -10,6 +12,7 @@ import {
 	getProjectConfigDirs,
 	isPathInside,
 } from "@bastani/atomic";
+import { pathExists } from "../shared/path-exists.js";
 import type { SkillSource } from "./skills.js";
 
 export interface SkillSearchPath {
@@ -21,9 +24,9 @@ function isWithinPath(filePath: string, dir: string): boolean {
 	return isPathInside(dir, filePath);
 }
 
-function readOptionalJsonFile(filePath: string, label: string): unknown {
+async function readOptionalJsonFile(filePath: string, label: string): Promise<unknown> {
 	try {
-		return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+		return JSON.parse(await readFile(filePath, "utf-8"));
 	} catch (error) {
 		const code =
 			typeof error === "object" && error !== null && "code" in error
@@ -37,24 +40,24 @@ function readOptionalJsonFile(filePath: string, label: string): unknown {
 	}
 }
 
-function readJsonFileBestEffort(filePath: string): unknown {
+async function readJsonFileBestEffort(filePath: string): Promise<unknown> {
 	try {
-		return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+		return JSON.parse(await readFile(filePath, "utf-8"));
 	} catch {
 		// Package scans over installed dependencies are opportunistic.
 		return null;
 	}
 }
 
-function extractSkillPathsFromPackageRoot(
+async function extractSkillPathsFromPackageRoot(
 	packageRoot: string,
 	source: SkillSource,
 	bestEffort = false,
-): SkillSearchPath[] {
+): Promise<SkillSearchPath[]> {
 	const packageJsonPath = path.join(packageRoot, "package.json");
 	const pkg = bestEffort
-		? readJsonFileBestEffort(packageJsonPath)
-		: readOptionalJsonFile(packageJsonPath, "package manifest");
+		? await readJsonFileBestEffort(packageJsonPath)
+		: await readOptionalJsonFile(packageJsonPath, "package manifest");
 	if (!pkg || typeof pkg !== "object" || Array.isArray(pkg)) return [];
 	const pi = (pkg as { pi?: unknown }).pi;
 	if (!pi || typeof pi !== "object" || Array.isArray(pi)) return [];
@@ -65,31 +68,44 @@ function extractSkillPathsFromPackageRoot(
 		.map((entry) => ({ path: path.resolve(packageRoot, entry), source }));
 }
 
-let cachedGlobalNpmRoot: string | null = null;
-let execSyncGlobalNpmRoot = execSync;
+export interface GlobalNpmRootExecOptions {
+	readonly encoding: "utf-8";
+	readonly timeout: number;
+	readonly windowsHide: boolean;
+	readonly env: NodeJS.ProcessEnv;
+}
+
+export type GlobalNpmRootExec = (command: string, options: GlobalNpmRootExecOptions) => Promise<{ stdout: string }>;
+
+const execAsync: GlobalNpmRootExec = promisify(exec);
+let execGlobalNpmRoot = execAsync;
+/** The probe of the global npm root, shared by every caller until the cache is cleared; null when it failed. */
+let globalNpmRoot: Promise<string | null> | undefined;
 const GLOBAL_NPM_ROOT_TIMEOUT_MS = 2500;
 
-function getGlobalNpmRoot(): string | null {
-	if (cachedGlobalNpmRoot !== null) return cachedGlobalNpmRoot;
+async function probeGlobalNpmRoot(): Promise<string | null> {
 	try {
 		// Keep global package probing bounded during startup while still allowing
 		// slower Windows/corporate npm wrappers enough time to launch.
-		cachedGlobalNpmRoot = execSyncGlobalNpmRoot("npm root -g", {
+		const { stdout } = await execGlobalNpmRoot("npm root -g", {
 			encoding: "utf-8",
-			stdio: ["ignore", "pipe", "ignore"],
 			timeout: GLOBAL_NPM_ROOT_TIMEOUT_MS,
 			windowsHide: true,
 			env: createChildProcessEnvironment(),
-		}).trim();
-		return cachedGlobalNpmRoot;
+		});
+		return stdout.trim();
 	} catch {
 		// Global npm root is optional in constrained environments.
-		cachedGlobalNpmRoot = ""; // Empty string means "tried but failed"
 		return null;
 	}
 }
 
-function collectInstalledPackageSkillPaths(cwd: string): SkillSearchPath[] {
+function getGlobalNpmRoot(): Promise<string | null> {
+	globalNpmRoot ??= probeGlobalNpmRoot();
+	return globalNpmRoot;
+}
+
+async function collectInstalledPackageSkillPaths(cwd: string): Promise<SkillSearchPath[]> {
 	const dirs: SkillSearchPath[] = [
 		...getProjectConfigDirs(cwd).map((configDir) => ({
 			path: path.join(configDir, "npm", "node_modules"),
@@ -98,7 +114,7 @@ function collectInstalledPackageSkillPaths(cwd: string): SkillSearchPath[] {
 		...getAgentConfigPaths("npm", "node_modules").map((dir) => ({ path: dir, source: "user-package" as const })),
 	];
 
-	const globalRoot = getGlobalNpmRoot();
+	const globalRoot = await getGlobalNpmRoot();
 	if (globalRoot) {
 		dirs.push({ path: globalRoot, source: "user-package" });
 	}
@@ -106,10 +122,10 @@ function collectInstalledPackageSkillPaths(cwd: string): SkillSearchPath[] {
 	const results: SkillSearchPath[] = [];
 
 	for (const dir of dirs) {
-		if (!fs.existsSync(dir.path)) continue;
-		let entries: fs.Dirent[];
+		if (!(await pathExists(dir.path))) continue;
+		let entries: Dirent[];
 		try {
-			entries = fs.readdirSync(dir.path, { withFileTypes: true });
+			entries = await readdir(dir.path, { withFileTypes: true });
 		} catch {
 			continue;
 		}
@@ -120,9 +136,9 @@ function collectInstalledPackageSkillPaths(cwd: string): SkillSearchPath[] {
 
 			if (entry.name.startsWith("@")) {
 				const scopeDir = path.join(dir.path, entry.name);
-				let scopeEntries: fs.Dirent[];
+				let scopeEntries: Dirent[];
 				try {
-					scopeEntries = fs.readdirSync(scopeDir, { withFileTypes: true });
+					scopeEntries = await readdir(scopeDir, { withFileTypes: true });
 				} catch {
 					continue;
 				}
@@ -130,20 +146,20 @@ function collectInstalledPackageSkillPaths(cwd: string): SkillSearchPath[] {
 					if (scopeEntry.name.startsWith(".")) continue;
 					if (!scopeEntry.isDirectory() && !scopeEntry.isSymbolicLink()) continue;
 					const pkgRoot = path.join(scopeDir, scopeEntry.name);
-					results.push(...extractSkillPathsFromPackageRoot(pkgRoot, dir.source, true));
+					results.push(...(await extractSkillPathsFromPackageRoot(pkgRoot, dir.source, true)));
 				}
 				continue;
 			}
 
 			const pkgRoot = path.join(dir.path, entry.name);
-			results.push(...extractSkillPathsFromPackageRoot(pkgRoot, dir.source, true));
+			results.push(...(await extractSkillPathsFromPackageRoot(pkgRoot, dir.source, true)));
 		}
 	}
 
 	return results;
 }
 
-function collectSettingsSkillPaths(cwd: string): SkillSearchPath[] {
+async function collectSettingsSkillPaths(cwd: string): Promise<SkillSearchPath[]> {
 	const results: SkillSearchPath[] = [];
 	const settingsFiles = [
 		...getProjectConfigDirs(cwd).map((configDir) => ({
@@ -159,7 +175,7 @@ function collectSettingsSkillPaths(cwd: string): SkillSearchPath[] {
 	];
 
 	for (const { file, base, source } of settingsFiles) {
-		const settings = readOptionalJsonFile(file, "skills settings file");
+		const settings = await readOptionalJsonFile(file, "skills settings file");
 		if (!settings || typeof settings !== "object" || Array.isArray(settings)) continue;
 		const skills = (settings as { skills?: unknown }).skills;
 		if (!Array.isArray(skills)) continue;
@@ -261,7 +277,7 @@ function resolveSettingsPackageRoot(source: string, baseDir: string): string | u
 	return undefined;
 }
 
-function collectSettingsPackageSkillPaths(cwd: string): SkillSearchPath[] {
+async function collectSettingsPackageSkillPaths(cwd: string): Promise<SkillSearchPath[]> {
 	const settingsFiles = [
 		...getProjectConfigDirs(cwd).map((configDir) => ({
 			file: path.join(configDir, "settings.json"),
@@ -277,7 +293,7 @@ function collectSettingsPackageSkillPaths(cwd: string): SkillSearchPath[] {
 	const results: SkillSearchPath[] = [];
 
 	for (const { file, base, source } of settingsFiles) {
-		const settings = readOptionalJsonFile(file, "skills settings file");
+		const settings = await readOptionalJsonFile(file, "skills settings file");
 		if (!settings || typeof settings !== "object" || Array.isArray(settings)) continue;
 		const packages = (settings as { packages?: unknown }).packages;
 		if (!Array.isArray(packages)) continue;
@@ -295,25 +311,26 @@ function collectSettingsPackageSkillPaths(cwd: string): SkillSearchPath[] {
 
 			const packageRoot = resolveSettingsPackageRoot(packageSource, base);
 			if (!packageRoot) continue;
-			results.push(...extractSkillPathsFromPackageRoot(packageRoot, source));
+			results.push(...(await extractSkillPathsFromPackageRoot(packageRoot, source)));
 		}
 	}
 
 	return results;
 }
 
-function collectBuiltinPackageSkillPaths(): SkillSearchPath[] {
+async function collectBuiltinPackageSkillPaths(): Promise<SkillSearchPath[]> {
 	try {
-		return getBuiltinPackagePaths().flatMap((packageRoot) =>
-			extractSkillPathsFromPackageRoot(packageRoot, "builtin", true),
-		);
+		const results: SkillSearchPath[] = [];
+		for (const packageRoot of getBuiltinPackagePaths())
+			results.push(...(await extractSkillPathsFromPackageRoot(packageRoot, "builtin", true)));
+		return results;
 	} catch {
 		// Builtin package discovery is additive; keep project/user/settings skill resolution working if unavailable.
 		return [];
 	}
 }
 
-export function buildSkillPaths(cwd: string): SkillSearchPath[] {
+export async function buildSkillPaths(cwd: string): Promise<SkillSearchPath[]> {
 	const skillPaths: SkillSearchPath[] = [
 		...getProjectConfigDirs(cwd).map((configDir) => ({
 			path: path.join(configDir, "skills"),
@@ -322,11 +339,11 @@ export function buildSkillPaths(cwd: string): SkillSearchPath[] {
 		{ path: path.join(cwd, ".agents", "skills"), source: "project" },
 		...getAgentConfigPaths("skills").map((dir) => ({ path: dir, source: "user" as const })),
 		{ path: path.join(os.homedir(), ".agents", "skills"), source: "user" },
-		...collectInstalledPackageSkillPaths(cwd),
-		...collectSettingsPackageSkillPaths(cwd),
-		...extractSkillPathsFromPackageRoot(cwd, "project-package"),
-		...collectSettingsSkillPaths(cwd),
-		...collectBuiltinPackageSkillPaths(),
+		...(await collectInstalledPackageSkillPaths(cwd)),
+		...(await collectSettingsPackageSkillPaths(cwd)),
+		...(await extractSkillPathsFromPackageRoot(cwd, "project-package")),
+		...(await collectSettingsSkillPaths(cwd)),
+		...(await collectBuiltinPackageSkillPaths()),
 	];
 
 	const deduped = new Map<string, SkillSearchPath>();
@@ -339,7 +356,7 @@ export function buildSkillPaths(cwd: string): SkillSearchPath[] {
 	return [...deduped.values()];
 }
 
-export function inferSkillSource(filePath: string, cwd: string, sourceHint?: SkillSource): SkillSource {
+export async function inferSkillSource(filePath: string, cwd: string, sourceHint?: SkillSource): Promise<SkillSource> {
 	if (sourceHint) return sourceHint;
 
 	const projectConfigRoots = getProjectConfigDirs(cwd).map((dir) => path.resolve(dir));
@@ -361,20 +378,20 @@ export function inferSkillSource(filePath: string, cwd: string, sourceHint?: Ski
 		return "user";
 	if (userAgentRoots.some((root) => isWithinPath(filePath, root))) return "user-settings";
 
-	const globalRoot = getGlobalNpmRoot();
+	const globalRoot = await getGlobalNpmRoot();
 	if (globalRoot && isWithinPath(filePath, globalRoot)) return "user-package";
 
 	return "unknown";
 }
 
 export function clearSkillPathDiscoveryCache(): void {
-	cachedGlobalNpmRoot = null;
+	globalNpmRoot = undefined;
 }
 
 /**
  * @internal Test seam for unit tests that need to mock `npm root -g`.
  */
-export function __setGlobalNpmRootExecSyncForTest(execSyncImpl?: typeof execSync): void {
-	execSyncGlobalNpmRoot = execSyncImpl ?? execSync;
-	cachedGlobalNpmRoot = null;
+export function __setGlobalNpmRootExecForTest(execImpl?: GlobalNpmRootExec): void {
+	execGlobalNpmRoot = execImpl ?? execAsync;
+	globalNpmRoot = undefined;
 }

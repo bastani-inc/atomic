@@ -321,10 +321,10 @@ describe("sidecar location (#4543)", () => {
 		return { directory: join(temporaryDirectory("compaction-sidecar-"), "nested", "diagnostics"), stem: "session-7" };
 	}
 
-	test("a sidecar directory is created and holds the sidecar named after its stem (#4543)", () => {
+	test("a sidecar directory is created and holds the sidecar named after its stem (#4543)", async () => {
 		const sidecarDirectory = directoryTarget();
 
-		const path = writeDiagnosticSidecar(failureContext({ sidecarDirectory }));
+		const path = await writeDiagnosticSidecar(failureContext({ sidecarDirectory }));
 
 		assert.ok(path);
 		assert.equal(dirname(path), sidecarDirectory.directory);
@@ -332,11 +332,11 @@ describe("sidecar location (#4543)", () => {
 		assert.equal(readSidecar(path).rawResponse, "2:1,3");
 	});
 
-	test("the session file wins over a sidecar directory and is never created (#4543)", () => {
+	test("the session file wins over a sidecar directory and is never created (#4543)", async () => {
 		const sidecarDirectory = directoryTarget();
 		const sessionDir = temporaryDirectory("compaction-session-");
 
-		const path = writeDiagnosticSidecar(
+		const path = await writeDiagnosticSidecar(
 			failureContext({ sessionFilePath: join(sessionDir, "2026-07-15_abc.jsonl"), sidecarDirectory }),
 		);
 
@@ -346,21 +346,24 @@ describe("sidecar location (#4543)", () => {
 		assert.equal(existsSync(sidecarDirectory.directory), false);
 	});
 
-	test("a session file in a missing directory writes nothing and creates nothing (#4543)", () => {
+	test("a session file in a missing directory writes nothing and creates nothing (#4543)", async () => {
 		const sessionDir = join(temporaryDirectory("compaction-session-"), "missing");
 
-		assert.equal(writeDiagnosticSidecar(failureContext({ sessionFilePath: join(sessionDir, "s.jsonl") })), undefined);
+		assert.equal(
+			await writeDiagnosticSidecar(failureContext({ sessionFilePath: join(sessionDir, "s.jsonl") })),
+			undefined,
+		);
 		assert.equal(existsSync(sessionDir), false);
 	});
 
-	test("without a session file or a sidecar directory nothing is written (#4543)", () => {
-		assert.equal(writeDiagnosticSidecar(failureContext()), undefined);
+	test("without a session file or a sidecar directory nothing is written (#4543)", async () => {
+		assert.equal(await writeDiagnosticSidecar(failureContext()), undefined);
 	});
 
-	test("every kind of sidecar can be written to a sidecar directory (#4543)", () => {
+	test("every kind of sidecar can be written to a sidecar directory (#4543)", async () => {
 		const sidecarDirectory = directoryTarget();
 		const paths = [
-			writeRecoveryDiagnosticSidecar({
+			await writeRecoveryDiagnosticSidecar({
 				sidecarDirectory,
 				model,
 				requestMaxTokens: undefined,
@@ -369,8 +372,11 @@ describe("sidecar location (#4543)", () => {
 				recoveryCategory: "partial_length_recovery",
 				recoveredRangeCount: 1,
 			}),
-			writeSuccessDiagnosticSidecar({ sidecarDirectory, model, successCategory: "borrowed_planner" }),
-			writeMorphDiagnosticSidecar({ sidecarDirectory }, {} as Parameters<typeof writeMorphDiagnosticSidecar>[1]),
+			await writeSuccessDiagnosticSidecar({ sidecarDirectory, model, successCategory: "borrowed_planner" }),
+			await writeMorphDiagnosticSidecar(
+				{ sidecarDirectory },
+				{} as Parameters<typeof writeMorphDiagnosticSidecar>[1],
+			),
 		];
 
 		for (const [index, kind] of ["recovery", "success", "morph"].entries()) {
@@ -379,9 +385,9 @@ describe("sidecar location (#4543)", () => {
 		}
 	});
 
-	test("a cut recovery answer records its full length (#4543)", () => {
+	test("a cut recovery answer records its full length (#4543)", async () => {
 		const sidecarDirectory = directoryTarget();
-		const path = writeRecoveryDiagnosticSidecar({
+		const path = await writeRecoveryDiagnosticSidecar({
 			sidecarDirectory,
 			model,
 			requestMaxTokens: undefined,
@@ -411,7 +417,7 @@ describe("sidecar location (#4543)", () => {
 		const blocker = join(agentDir, "blocker");
 		writeFileSync(blocker, "not a directory");
 
-		const path = writeDiagnosticSidecar(
+		const path = await writeDiagnosticSidecar(
 			failureContext({ sidecarDirectory: { directory: join(blocker, "d"), stem: "s" } }),
 		);
 
@@ -429,7 +435,7 @@ describe("sidecar location (#4543)", () => {
 		vi.stubEnv("ATOMIC_DEBUG", "1");
 		const missing = join(agentDir, "missing");
 
-		const path = writeDiagnosticSidecar(failureContext({ sessionFilePath: join(missing, "s.jsonl") }));
+		const path = await writeDiagnosticSidecar(failureContext({ sessionFilePath: join(missing, "s.jsonl") }));
 
 		assert.equal(path, undefined);
 		const records = await debugRecords();

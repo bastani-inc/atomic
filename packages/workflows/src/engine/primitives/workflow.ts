@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import {
 	acquireWorkspaceWriterLease,
 	type BoundWorkspace,
@@ -27,6 +26,7 @@ import { recordedFailureClassification } from "../../runs/foreground/executor-li
 import { selectWorkflowOutputs } from "../../runs/foreground/executor-outputs.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../../runs/foreground/executor-types.js";
 import { readSerializedError } from "../../shared/error-codec.js";
+import { pathExists } from "../../shared/path-exists.js";
 import type { WorkflowChildRunRef } from "../../shared/store-types.js";
 import type {
 	WorkflowChildResult,
@@ -331,7 +331,7 @@ async function bindChildWorkspace(
 			binding = recorded;
 		} catch (error) {
 			const worktree = mapWorkflowWorktreePath(recorded.worktree, restored);
-			if (!isWorkspaceRestoreError(error) || worktree === recorded.worktree || existsSync(recorded.worktree))
+			if (!isWorkspaceRestoreError(error) || worktree === recorded.worktree || (await pathExists(recorded.worktree)))
 				throw error;
 			binding = { ...recorded, worktree };
 		}

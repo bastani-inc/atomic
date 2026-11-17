@@ -52,9 +52,10 @@ InteractiveModeBase.prototype.maybeShowInstallChangeWarning = async function (
 		change.kind === "updated"
 			? `${APP_NAME} was updated to ${change.version} while this session was running (${VERSION})`
 			: `The ${APP_NAME} installation this session runs from was removed or replaced`;
-	const resume = formatResumeCommand(this.sessionManager);
-	this.showWarning(
-		`${cause}. Features that load code on demand can fail until restart. ${resume ? `Restart with \`${resume}\` to continue this session.` : `Restart ${APP_NAME}.`}`,
+	void formatResumeCommand(this.sessionManager).then((resume) =>
+		this.showWarning(
+			`${cause}. Features that load code on demand can fail until restart. ${resume ? `Restart with \`${resume}\` to continue this session.` : `Restart ${APP_NAME}.`}`,
+		),
 	);
 	return true;
 };

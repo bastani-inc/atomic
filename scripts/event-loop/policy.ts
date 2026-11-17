@@ -79,7 +79,25 @@ export const STARTUP_MODULES: readonly string[] = [
 ];
 
 /** Functions that only run in another command or mode of the CLI, never in an interactive session's process. */
-export const OTHER_MODES: readonly ReviewedSelector[] = [];
+export const OTHER_MODES: readonly ReviewedSelector[] = [
+	{
+		file: "packages/intercom/broker/broker.ts",
+		name: "IntercomBroker.handleConnection/createMessageReader()",
+		reason:
+			"IntercomBroker runs only in the detached broker process. The host reaches this message callback only because the host's client and the broker share createMessageReader, whose returned reader calls whichever callback its caller passed",
+	},
+	{
+		file: "packages/intercom/broker/broker.ts",
+		name: "IntercomBroker.handleConnection/createMessageReader()#2",
+		reason: "the broker's error callback for the same shared reader; it only runs in the detached broker process",
+	},
+	{
+		file: "packages/coding-agent/src/cli/project-trust.ts",
+		name: "untrustedProjectSettingsWarning",
+		reason:
+			"only print, JSON and RPC modes outside the interactive engine call it; the interactive host and engine return before it",
+	},
+];
 
 /**
  * Interactive entry points the registration sinks do not already reach: every component's render and input handlers,
@@ -136,9 +154,13 @@ export const SINKS: readonly SinkSpec[] = [
 	{ file: ".ts", names: OUR_REGISTRATION_NAMES },
 ];
 
-/** Callbacks that only run as the process exits, when blocking delays nothing the user waits for. */
+/**
+ * Calls whose callback arguments never run while the user interacts: exit handlers, which run as the process exits,
+ * and listener removals, which never call the listener they are given.
+ */
 export const DETACHED_CALLBACKS: readonly SinkSpec[] = [
 	{ file: "", owner: "process", names: ["on", "once", "addListener", "prependListener"], events: ["exit"] },
+	{ file: "", names: ["off", "removeListener", "removeEventListener"] },
 ];
 
 export interface OwnedArea {
@@ -203,7 +225,58 @@ export const OWNED_ELSEWHERE: readonly OwnedArea[] = [
  * Reviewed exceptions: functions the walk reaches from an interactive entry point that run only before the first
  * frame. The walk does not enter them. Each needs the reason it cannot run after the first frame.
  */
-export const STARTUP_ONLY: readonly ReviewedSelector[] = [];
+export const STARTUP_ONLY: readonly ReviewedSelector[] = [
+	{
+		file: "packages/coding-agent/src/core/builtin-packages.ts",
+		name: "discoverBuiltinPackages",
+		reason:
+			"the synchronous fallback when the builtin package cache is empty; the cache is filled before the first frame by the discovery the module starts when it loads and by createAgentSessionServices",
+	},
+	{
+		file: "packages/coding-agent/src/modes/interactive/theme/theme-loading.ts",
+		name: "readBuiltinThemes",
+		reason:
+			"runs on the first theme lookup, which initTheme makes before the first frame; later lookups are served from memory",
+	},
+	{
+		file: "packages/coding-agent/src/modes/interactive/theme/theme-loading.ts",
+		name: "readCustomThemeFiles",
+		reason:
+			"runs on the first theme lookup, which initTheme makes before the first frame; /settings and the theme watcher refresh custom themes asynchronously after that",
+	},
+	{
+		file: "packages/coding-agent/src/main-session.ts",
+		name: "createResumeProgress/createStartupProgress()",
+		reason:
+			"writes the resume progress of a command-line resume to the terminal before the TUI paints; startup ends it before interactive mode starts",
+	},
+];
+
+/**
+ * Reviewed exceptions: functions that only run as the process exits or after an error that ends the session, when a
+ * blocking write is the only way the record lands. The walk does not enter them.
+ */
+export const EXIT_ONLY: readonly ReviewedSelector[] = [
+	{
+		file: "packages/tui/src/tui-main-screen.ts",
+		name: "writeRenderCrashLog",
+		reason:
+			"writes the dump of a frame wider than the terminal just before the render throws, ending the session; the error names the file, so the write must land first",
+	},
+];
+
+export interface ReviewedRegex {
+	readonly file: string;
+	/** The pattern's source, exactly as the check prints it. */
+	readonly pattern: string;
+	readonly reason: string;
+}
+
+/**
+ * Regular expressions on interactive paths that can backtrack super-linearly but only ever see input that is short or
+ * the user's own, so they cannot stall the host. Each needs the reason its input stays small.
+ */
+export const REVIEWED_REGEXES: readonly ReviewedRegex[] = [];
 
 /** Everything the check needs to know about the program it walks. */
 export interface EventLoopPolicy {
@@ -216,6 +289,8 @@ export interface EventLoopPolicy {
 	readonly detachedCallbacks: readonly SinkSpec[];
 	readonly ownedElsewhere: readonly OwnedArea[];
 	readonly startupOnly: readonly ReviewedSelector[];
+	readonly exitOnly: readonly ReviewedSelector[];
+	readonly reviewedRegexes: readonly ReviewedRegex[];
 }
 
 export const INTERACTIVE_HOST_POLICY: EventLoopPolicy = {
@@ -228,4 +303,6 @@ export const INTERACTIVE_HOST_POLICY: EventLoopPolicy = {
 	detachedCallbacks: DETACHED_CALLBACKS,
 	ownedElsewhere: OWNED_ELSEWHERE,
 	startupOnly: STARTUP_ONLY,
+	exitOnly: EXIT_ONLY,
+	reviewedRegexes: REVIEWED_REGEXES,
 };

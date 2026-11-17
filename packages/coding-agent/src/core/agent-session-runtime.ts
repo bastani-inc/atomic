@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import { type AuthInteraction, drainPendingOAuthRotations, OAUTH_SHUTDOWN_DRAIN_MS } from "@bastani/atomic-ai";
@@ -46,6 +45,7 @@ import { SessionEntryError, SessionManager } from "./session-manager.ts";
 import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
+import { pathExists } from "./tools/path-utils.ts";
 
 /**
  * Result returned by runtime creation.
@@ -810,7 +810,7 @@ export class AgentSessionRuntime {
 	async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
 		return this.replace(async () => {
 			const resolvedPath = resolvePath(inputPath);
-			if (!existsSync(resolvedPath)) throw new SessionImportFileNotFoundError(resolvedPath);
+			if (!(await pathExists(resolvedPath))) throw new SessionImportFileNotFoundError(resolvedPath);
 			const source = await JsonlSessionStore.open(dirname(resolvedPath), { scanExisting: false });
 			let targetSessionId: string;
 			try {

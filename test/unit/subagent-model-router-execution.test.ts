@@ -142,7 +142,10 @@ for (const mode of ["single-explicit", "single-default", "parallel-explicit", "p
 	});
 }
 test("discovered builtin defaults route on single and parallel execution without a model argument", async () => {
-	const { agents } = loadAgentsFromDirWithDiagnostics(join(process.cwd(), "packages/subagents/agents"), "builtin");
+	const { agents } = await loadAgentsFromDirWithDiagnostics(
+		join(process.cwd(), "packages/subagents/agents"),
+		"builtin",
+	);
 	const worker = agents.find((candidate) => candidate.name === "worker");
 	assert.ok(worker);
 	for (const parallel of [false, true]) {

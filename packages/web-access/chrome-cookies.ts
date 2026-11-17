@@ -1,9 +1,13 @@
 import { execFile } from "node:child_process";
-import { pbkdf2Sync, createDecipheriv } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir, homedir, platform } from "node:os";
+import { createDecipheriv, pbkdf2 } from "node:crypto";
+import { access, copyFile, mkdtemp, rm } from "node:fs/promises";
+import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
+import { Worker } from "node:worker_threads";
 import { createChildProcessEnvironment } from "@bastani/atomic";
+
+const pbkdf2Async = promisify(pbkdf2);
 
 export type CookieMap = Record<string, string>;
 
@@ -85,7 +89,7 @@ export async function getGoogleCookies(
 
 	for (const config of configs) {
 		const cookiesPath = join(homedir(), config.baseDir, profile, "Cookies");
-		if (!existsSync(cookiesPath)) continue;
+		if (!(await pathExists(cookiesPath))) continue;
 
 		const password = await readBrowserPassword(config, currentPlatform);
 		if (!password) {
@@ -93,18 +97,17 @@ export async function getGoogleCookies(
 			continue;
 		}
 
-		const key = pbkdf2Sync(password, "saltysalt", currentPlatform === "darwin" ? 1003 : 1, 16, "sha1");
-		const tempDir = mkdtempSync(join(tmpdir(), "pi-chrome-cookies-"));
+		const key = await pbkdf2Async(password, "saltysalt", currentPlatform === "darwin" ? 1003 : 1, 16, "sha1");
+		const tempDir = await mkdtemp(join(tmpdir(), "pi-chrome-cookies-"));
 
 		try {
 			const tempDb = join(tempDir, "Cookies");
-			copyFileSync(cookiesPath, tempDb);
-			copySidecar(cookiesPath, tempDb, "-wal");
-			copySidecar(cookiesPath, tempDb, "-shm");
+			await copyFile(cookiesPath, tempDb);
+			await copySidecar(cookiesPath, tempDb, "-wal");
+			await copySidecar(cookiesPath, tempDb, "-shm");
 
-			const metaVersion = await readMetaVersion(tempDb);
+			const { metaVersion, rows } = await readCookieDatabase(tempDb, hosts);
 			const stripHash = metaVersion >= 24;
-			const rows = await queryCookieRows(tempDb, hosts);
 			if (!rows) {
 				warnings.push(`Failed to query ${config.name} cookie database`);
 				continue;
@@ -132,7 +135,7 @@ export async function getGoogleCookies(
 
 			return { cookies, warnings };
 		} finally {
-			rmSync(tempDir, { recursive: true, force: true });
+			await rm(tempDir, { recursive: true, force: true });
 		}
 	}
 
@@ -220,45 +223,36 @@ function readLinuxPassword(secretToolApp: string | undefined): Promise<string> {
 	});
 }
 
-let sqliteModule: typeof import("node:sqlite") | null = null;
-
-async function importSqlite(): Promise<typeof import("node:sqlite") | null> {
-	if (sqliteModule) return sqliteModule;
-	const orig = process.emitWarning.bind(process);
-	process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
-		const msg = typeof warning === "string" ? warning : warning?.message ?? "";
-		if (msg.includes("SQLite is an experimental feature")) return;
-		return (orig as Function)(warning, ...args);
-	}) as typeof process.emitWarning;
-	try {
-		sqliteModule = await import("node:sqlite");
-		return sqliteModule;
-	} catch {
-		return null;
-	} finally {
-		process.emitWarning = orig;
-	}
+interface CookieDatabaseResult {
+	metaVersion: number;
+	rows: Array<Record<string, unknown>> | null;
 }
 
-function supportsReadBigInts(): boolean {
+const COOKIE_SQLITE_WORKER_SOURCE = `
+const { parentPort, workerData } = require("node:worker_threads");
+
+const origEmitWarning = process.emitWarning.bind(process);
+process.emitWarning = (warning, ...args) => {
+	const msg = typeof warning === "string" ? warning : warning?.message ?? "";
+	if (msg.includes("SQLite is an experimental feature")) return;
+	return origEmitWarning(warning, ...args);
+};
+
+function supportsReadBigInts() {
 	const [major, minor] = process.versions.node.split(".").map(Number);
 	if (major > 24) return true;
 	if (major < 24) return false;
 	return minor >= 4;
 }
 
-async function readMetaVersion(dbPath: string): Promise<number> {
-	const sqlite = await importSqlite();
-	if (!sqlite) return 0;
-	const opts: Record<string, unknown> = { readOnly: true };
-	if (supportsReadBigInts()) opts.readBigInts = true;
+function readMetaVersion(sqlite, dbPath, opts) {
 	const db = new sqlite.DatabaseSync(dbPath, opts);
 	try {
-		const rows = db.prepare("SELECT value FROM meta WHERE key = 'version'").all() as Array<Record<string, unknown>>;
+		const rows = db.prepare("SELECT value FROM meta WHERE key = 'version'").all();
 		const val = rows[0]?.value;
 		if (typeof val === "number") return Math.floor(val);
 		if (typeof val === "bigint") return Number(val);
-		if (typeof val === "string") return parseInt(val, 10) || 0;
+		if (typeof val === "string") return Number.parseInt(val, 10) || 0;
 		return 0;
 	} catch {
 		return 0;
@@ -267,13 +261,52 @@ async function readMetaVersion(dbPath: string): Promise<number> {
 	}
 }
 
-async function queryCookieRows(
-	dbPath: string,
-	hosts: string[],
-): Promise<Array<Record<string, unknown>> | null> {
-	const sqlite = await importSqlite();
-	if (!sqlite) return null;
+function queryCookieRows(sqlite, dbPath, where, opts) {
+	const db = new sqlite.DatabaseSync(dbPath, opts);
+	try {
+		return db
+			.prepare(
+				"SELECT name, value, host_key, encrypted_value FROM cookies WHERE (" +
+					where +
+					") ORDER BY expires_utc DESC",
+			)
+			.all();
+	} catch {
+		return null;
+	} finally {
+		db.close();
+	}
+}
 
+let sqlite = null;
+try {
+	sqlite = require("node:sqlite");
+} catch {
+	sqlite = null;
+}
+
+if (!sqlite) {
+	parentPort?.postMessage({ metaVersion: 0, rows: null });
+} else {
+	const opts = { readOnly: true };
+	if (supportsReadBigInts()) opts.readBigInts = true;
+	let metaVersion = 0;
+	try {
+		metaVersion = readMetaVersion(sqlite, workerData.dbPath, opts);
+	} catch {
+		metaVersion = 0;
+	}
+	let rows = null;
+	try {
+		rows = queryCookieRows(sqlite, workerData.dbPath, workerData.where, opts);
+	} catch {
+		rows = null;
+	}
+	parentPort?.postMessage({ metaVersion, rows });
+}
+`;
+
+function buildHostWhereClause(hosts: string[]): string {
 	const clauses: string[] = [];
 	for (const host of hosts) {
 		for (const candidate of expandHosts(host)) {
@@ -283,22 +316,40 @@ async function queryCookieRows(
 			clauses.push(`host_key LIKE '%.${esc}'`);
 		}
 	}
-	const where = clauses.join(" OR ");
+	return clauses.join(" OR ");
+}
 
-	const opts: Record<string, unknown> = { readOnly: true };
-	if (supportsReadBigInts()) opts.readBigInts = true;
-	const db = new sqlite.DatabaseSync(dbPath, opts);
-	try {
-		return db
-			.prepare(
-				`SELECT name, value, host_key, encrypted_value FROM cookies WHERE (${where}) ORDER BY expires_utc DESC`,
-			)
-			.all() as Array<Record<string, unknown>>;
-	} catch {
-		return null;
-	} finally {
-		db.close();
-	}
+function readCookieDatabase(dbPath: string, hosts: string[]): Promise<CookieDatabaseResult> {
+	const where = buildHostWhereClause(hosts);
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (result: CookieDatabaseResult): void => {
+			if (settled) return;
+			settled = true;
+			resolve(result);
+		};
+		try {
+			const worker = new Worker(COOKIE_SQLITE_WORKER_SOURCE, {
+				eval: true,
+				workerData: { dbPath, where },
+			});
+			worker.once("message", (msg: unknown) => {
+				if (msg && typeof msg === "object") {
+					const data = msg as { metaVersion?: unknown; rows?: unknown };
+					finish({
+						metaVersion: typeof data.metaVersion === "number" ? data.metaVersion : 0,
+						rows: Array.isArray(data.rows) ? (data.rows as Array<Record<string, unknown>>) : null,
+					});
+					return;
+				}
+				finish({ metaVersion: 0, rows: null });
+			});
+			worker.once("error", () => finish({ metaVersion: 0, rows: null }));
+			worker.once("exit", () => finish({ metaVersion: 0, rows: null }));
+		} catch {
+			finish({ metaVersion: 0, rows: null });
+		}
+	});
 }
 
 function expandHosts(host: string): string[] {
@@ -313,11 +364,18 @@ function expandHosts(host: string): string[] {
 	return Array.from(candidates);
 }
 
-function copySidecar(srcDb: string, targetDb: string, suffix: string): void {
-	const sidecar = `${srcDb}${suffix}`;
-	if (!existsSync(sidecar)) return;
+async function pathExists(filePath: string): Promise<boolean> {
 	try {
-		copyFileSync(sidecar, `${targetDb}${suffix}`);
+		await access(filePath);
+		return true;
 	} catch {
+		return false;
 	}
+}
+
+async function copySidecar(srcDb: string, targetDb: string, suffix: string): Promise<void> {
+	const sidecar = `${srcDb}${suffix}`;
+	try {
+		await copyFile(sidecar, `${targetDb}${suffix}`);
+	} catch {}
 }

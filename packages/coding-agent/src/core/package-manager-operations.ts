@@ -1,10 +1,10 @@
-import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { gt } from "semver";
 import { runWithConcurrency } from "./package-manager-command.ts";
 import { GIT_UPDATE_CONCURRENCY, UPDATE_CHECK_CONCURRENCY } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import {
-	getExistingGitInstallPath,
+	getExistingGitInstallPathAsync,
 	getInstalledGitHead,
 	gitHasAvailableUpdate,
 	installGit,
@@ -15,7 +15,7 @@ import {
 	getInstalledNpmVersion,
 	getLatestNpmVersion,
 	getManagedNpmInstallPath,
-	getNpmInstallPath,
+	getNpmInstallPathAsync,
 	installNpm,
 	installNpmBatch,
 	npmHasAvailableUpdate,
@@ -43,6 +43,12 @@ import type {
 	SourceScope,
 } from "./package-manager-types.ts";
 
+const exists = (path: string): Promise<boolean> =>
+	access(path).then(
+		() => true,
+		() => false,
+	);
+
 export async function install(
 	context: PackageManagerContext,
 	source: string,
@@ -62,7 +68,7 @@ export async function install(
 		}
 		if (parsed.type === "local") {
 			const resolved = resolveManagerPath(context, parsed.path);
-			if (!existsSync(resolved)) {
+			if (!(await exists(resolved))) {
 				throw new Error(`Path does not exist: ${resolved}`);
 			}
 			return;
@@ -194,7 +200,7 @@ async function updateConfiguredSources(
 	const updated: UpdatedPackage[] = [];
 	for (const { entry } of npmUpdates) {
 		const installedPath = getManagedNpmInstallPath(context, entry.parsed, entry.scope);
-		const to = existsSync(installedPath) ? getInstalledNpmVersion(installedPath) : undefined;
+		const to = (await exists(installedPath)) ? await getInstalledNpmVersion(installedPath) : undefined;
 		if (to !== entry.installedVersion) {
 			updated.push({ source: entry.source, type: "npm", scope: entry.scope, from: entry.installedVersion, to });
 		}
@@ -234,7 +240,7 @@ async function shouldUpdateNpmSource(
 	scope: InstalledSourceScope,
 ): Promise<{ shouldUpdate: boolean; installedVersion?: string; targetVersion?: string }> {
 	const installedPath = getManagedNpmInstallPath(context, source, scope);
-	const installedVersion = existsSync(installedPath) ? getInstalledNpmVersion(installedPath) : undefined;
+	const installedVersion = (await exists(installedPath)) ? await getInstalledNpmVersion(installedPath) : undefined;
 	if (!installedVersion) return { shouldUpdate: true };
 	try {
 		const targetVersion = await getLatestNpmVersion(
@@ -263,22 +269,22 @@ async function updateNpmBatch(
 		await installNpmBatch(context, specs, scope);
 	});
 
-	reportUnchangedNpmUpdates(context, sources, scope);
+	await reportUnchangedNpmUpdates(context, sources, scope);
 }
 
 /**
  * npm can resolve stale registry metadata shortly after a publish and install the old
  * version without an error. Warn when an announced update did not change the installed version.
  */
-function reportUnchangedNpmUpdates(
+async function reportUnchangedNpmUpdates(
 	context: PackageManagerContext,
 	sources: NpmUpdateTarget[],
 	scope: InstalledSourceScope,
-): void {
+): Promise<void> {
 	for (const entry of sources) {
 		if (!entry.installedVersion || !entry.targetVersion) continue;
 		const installedPath = getManagedNpmInstallPath(context, entry.parsed, scope);
-		const versionAfter = getInstalledNpmVersion(installedPath);
+		const versionAfter = await getInstalledNpmVersion(installedPath);
 		if (versionAfter !== entry.installedVersion) continue;
 		emitProgress(context, {
 			type: "progress",
@@ -307,14 +313,14 @@ export async function checkForAvailableUpdates(context: PackageManagerContext): 
 			if (parsed.type === "local" || parsed.pinned) return undefined;
 
 			if (parsed.type === "npm") {
-				const installedPath = getNpmInstallPath(context, parsed, entry.scope);
-				if (!existsSync(installedPath)) return undefined;
+				const installedPath = await getNpmInstallPathAsync(context, parsed, entry.scope);
+				if (!(await exists(installedPath))) return undefined;
 				const hasUpdate = await npmHasAvailableUpdate(context, parsed, installedPath);
 				if (!hasUpdate) return undefined;
 				return { source, displayName: parsed.name, type: "npm", scope: entry.scope };
 			}
 
-			const installedPath = getExistingGitInstallPath(context, parsed, entry.scope);
+			const installedPath = await getExistingGitInstallPathAsync(context, parsed, entry.scope);
 			if (!installedPath) return undefined;
 			const hasUpdate = context.driver
 				? await context.driver.gitHasAvailableUpdate(installedPath)

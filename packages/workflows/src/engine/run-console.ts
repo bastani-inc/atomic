@@ -1,4 +1,5 @@
-import { closeSync, mkdirSync, openSync, readdirSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, fstatSync, mkdirSync, openSync, writeSync } from "node:fs";
+import { type FileHandle, mkdir, open, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { format } from "node:util";
 import { currentRunConsole, type RunConsole } from "./run-rejection-boundary.js";
@@ -14,16 +15,18 @@ import { currentRunConsole, type RunConsole } from "./run-rejection-boundary.js"
  * code outside any run, runs of other owners (an RPC or SDK host in the same process, or a run resumed by one), and
  * every run in print, JSON, RPC and SDK modes or on pooled worker processes.
  *
- * Each process writes its own file, `<pid>-<start ms>.log`, created exclusively and written synchronously and in full,
- * so no other process appends to it, nothing queued can be lost at exit, and its size is known without reopening it.
- * A run's share and announcement live with its scope, so they last exactly as long as its code can still log.
+ * Each process writes its own file, `<pid>-<start ms>.log`, created exclusively, so no other process appends to it.
+ * A console call never waits for the disk: its line is counted against the limits when it is made, so the log's size is
+ * known without reopening it, and queued for one writer that appends lines in call order. Whatever is still queued when
+ * the process exits is written then, so nothing accepted is lost. A run's share and announcement live with its scope,
+ * so they last exactly as long as its code can still log.
  */
 
 const METHODS = ["log", "info", "debug", "warn", "error"] as const;
 type ConsoleMethod = (typeof METHODS)[number];
 type ConsoleWriter = (...args: unknown[]) => void;
 
-const ROUTER_KEY = Symbol.for("atomic-workflows/run-console@4");
+const ROUTER_KEY = Symbol.for("atomic-workflows/run-console@5");
 /** Per run tree, within this process's log. */
 export const MAX_RUN_CONSOLE_BYTES = 8 * 1024 * 1024;
 /** Per process log, markers included. */
@@ -34,16 +37,42 @@ export const MAX_CONSOLE_LOG_DIRECTORY_BYTES = 1024 * 1024 * 1024;
 const MAX_CAUSE_DEPTH = 8;
 const LOG_NAME = /^(\d+)-\d+\.log$/;
 
+/** Text accepted into a log, with the announcement to print once it is on disk. */
+interface QueuedText {
+	readonly text: string;
+	readonly announcement?: string;
+}
+
+/** Text the writer is writing, until it knows the write completed. */
+interface InFlight {
+	readonly buffer: Buffer;
+	readonly announcements: readonly string[];
+}
+
 interface ProcessLog {
+	readonly directory: string;
 	readonly path: string;
-	readonly fd: number;
+	/** Creating and pruning `directory`; the log is opened after it. */
+	readonly directoryReady: Promise<void>;
+	/** Bytes accepted, written or still queued. */
 	bytes: number;
+	/** Bytes known to be in the file. */
+	written: number;
 	capped: boolean;
+	handle: FileHandle | undefined;
+	readonly queue: QueuedText[];
+	inFlight: InFlight | undefined;
+	/** The writer appending `queue`, while one runs. */
+	writing: Promise<void> | undefined;
 }
 
 interface RouterState {
 	logDirectory: string | undefined;
+	/** Creating and pruning the log directory routing last started with. */
+	directoryReady: Promise<void>;
 	log: ProcessLog | undefined;
+	/** Logs not closed yet: the current one, and stopped ones still writing their queue. */
+	readonly open: Set<ProcessLog>;
 	/** Set once a write failed; routed output is dropped from then on. */
 	failed: boolean;
 	readonly originals: Record<ConsoleMethod, ConsoleWriter>;
@@ -65,31 +94,140 @@ function isAbortCancellation(value: unknown, depth = 0): boolean {
 	}
 }
 
-/** Writes every byte of `text`, or throws. Returns the bytes written. */
-function writeAll(fd: number, text: string): number {
-	const buffer = Buffer.from(text);
+/** Writes every byte of `buffer`, or throws. */
+async function writeAll(handle: FileHandle, buffer: Buffer): Promise<void> {
 	let offset = 0;
 	while (offset < buffer.length) {
-		const written = writeSync(fd, buffer, offset, buffer.length - offset);
-		if (written <= 0) throw new Error(`wrote ${offset} of ${buffer.length} bytes`);
-		offset += written;
+		const { bytesWritten } = await handle.write(buffer, offset, buffer.length - offset);
+		if (bytesWritten <= 0) throw new Error(`wrote ${offset} of ${buffer.length} bytes`);
+		offset += bytesWritten;
 	}
-	return buffer.length;
 }
 
 function processLog(state: RouterState, directory: string): ProcessLog {
 	if (state.log !== undefined) return state.log;
-	const path = join(directory, `${process.pid}-${Date.now()}.log`);
-	const fd = openSync(path, "wx");
-	state.log = { path, fd, bytes: 0, capped: false };
+	state.log = {
+		directory,
+		path: join(directory, `${process.pid}-${Date.now()}.log`),
+		directoryReady: state.directoryReady,
+		bytes: 0,
+		written: 0,
+		capped: false,
+		handle: undefined,
+		queue: [],
+		inFlight: undefined,
+		writing: undefined,
+	};
+	state.open.add(state.log);
 	return state.log;
 }
 
+async function closeLog(state: RouterState, log: ProcessLog): Promise<void> {
+	state.open.delete(log);
+	const handle = log.handle;
+	log.handle = undefined;
+	await handle?.close().catch(() => undefined);
+}
+
+/** A write failed: report it once, and drop the queue and every later routed call. */
+async function failLog(state: RouterState, log: ProcessLog, error: unknown): Promise<void> {
+	const path = log.handle === undefined ? log.directory : log.path;
+	log.queue.length = 0;
+	log.inFlight = undefined;
+	if (state.log === log) {
+		state.log = undefined;
+		state.failed = true;
+	}
+	const cause = error instanceof Error ? error.message : String(error);
+	state.originals.warn(
+		`atomic-workflows: workflow console output could not be written to ${path} (${cause}); later workflow console output is dropped`,
+	);
+	await closeLog(state, log);
+}
+
+/** Appends the queue in call order: one writer per log, started by queued text and ending once the queue is empty. */
+function startWriting(state: RouterState, log: ProcessLog): void {
+	if (log.writing !== undefined) return;
+	log.writing = (async () => {
+		try {
+			await log.directoryReady;
+			log.handle ??= await open(log.path, "wx");
+			while (log.queue.length > 0) {
+				const batch = log.queue.splice(0);
+				const inFlight: InFlight = {
+					buffer: Buffer.from(batch.map(({ text }) => text).join("")),
+					announcements: batch.flatMap(({ announcement }) => (announcement === undefined ? [] : [announcement])),
+				};
+				log.inFlight = inFlight;
+				await writeAll(log.handle, inFlight.buffer);
+				log.written += inFlight.buffer.length;
+				log.inFlight = undefined;
+				for (const announcement of inFlight.announcements) state.originals.warn(announcement);
+			}
+		} catch (error) {
+			await failLog(state, log, error);
+		} finally {
+			log.writing = undefined;
+		}
+	})();
+}
+
+/** Accepts `text` into the log; returns its size in bytes. */
+function enqueue(state: RouterState, log: ProcessLog, text: string, announcement?: string): number {
+	log.queue.push(announcement === undefined ? { text } : { text, announcement });
+	startWriting(state, log);
+	return Buffer.byteLength(text);
+}
+
+/** Writes every byte of `buffer` at `position`, or throws. */
+function writeAllSync(fd: number, buffer: Buffer, position: number): void {
+	let offset = 0;
+	while (offset < buffer.length) {
+		const written = writeSync(fd, buffer, offset, buffer.length - offset, position + offset);
+		if (written <= 0) throw new Error(`wrote ${offset} of ${buffer.length} bytes`);
+		offset += written;
+	}
+}
+
 /**
- * Appends one routed call; returns whether its text is in the log. Every write leaves room for the process-limit
- * marker, so the log never exceeds its limit, markers included.
+ * Writes what the writer has not, as the process exits and no writer can run any more. The writer's last write may
+ * have reached the file, wholly or in part, without its completion being seen: the file's size says how much did.
  */
-function append(log: ProcessLog, run: RunConsole, method: ConsoleMethod, args: unknown[]): boolean {
+function writeQueuedAtExit(state: RouterState): void {
+	for (const log of state.open) {
+		const inFlight = log.inFlight;
+		const queued = log.queue.splice(0);
+		if (inFlight === undefined && queued.length === 0) continue;
+		try {
+			let fd = log.handle?.fd;
+			if (fd === undefined) {
+				// The writer may have created the file without getting its handle back, so it need not be new.
+				mkdirSync(log.directory, { recursive: true });
+				fd = openSync(log.path, "a");
+			}
+			const onDisk = fstatSync(fd).size;
+			const unwritten = inFlight?.buffer.subarray(Math.max(0, onDisk - log.written)) ?? Buffer.alloc(0);
+			writeAllSync(fd, Buffer.concat([unwritten, Buffer.from(queued.map(({ text }) => text).join(""))]), onDisk);
+			if (log.handle === undefined) closeSync(fd);
+			for (const announcement of inFlight?.announcements ?? []) state.originals.warn(announcement);
+			for (const { announcement } of queued) if (announcement !== undefined) state.originals.warn(announcement);
+		} catch {}
+	}
+}
+
+/**
+ * Accepts one routed call; returns whether its text goes to the log. Every write leaves room for the process-limit
+ * marker, so the log never exceeds its limit, markers included. `announcement` is printed once the call's line is in
+ * the file.
+ */
+function append(
+	state: RouterState,
+	log: ProcessLog,
+	run: RunConsole,
+	method: ConsoleMethod,
+	args: unknown[],
+	announcement: string | undefined,
+): boolean {
 	if (log.capped || run.capped) return false;
 	const stamp = new Date().toISOString();
 	const processMarker = `${stamp} log limit reached; later workflow console output is dropped\n`;
@@ -97,7 +235,7 @@ function append(log: ProcessLog, run: RunConsole, method: ConsoleMethod, args: u
 		log.bytes + Buffer.byteLength(text) + Buffer.byteLength(processMarker) <= MAX_PROCESS_CONSOLE_LOG_BYTES;
 	const capProcess = () => {
 		log.capped = true;
-		log.bytes += writeAll(log.fd, processMarker);
+		log.bytes += enqueue(state, log, processMarker);
 		return false;
 	};
 	const line = `${stamp} ${run.rootRunId} ${method} ${format(...args)}\n`;
@@ -107,41 +245,24 @@ function append(log: ProcessLog, run: RunConsole, method: ConsoleMethod, args: u
 		run.capped = true;
 		const runMarker = `${stamp} ${run.rootRunId} run log limit reached; its later output is dropped\n`;
 		if (!fits(runMarker)) return capProcess();
-		log.bytes += writeAll(log.fd, runMarker);
+		log.bytes += enqueue(state, log, runMarker);
 		return false;
 	}
 	if (!fits(line)) return capProcess();
-	log.bytes += writeAll(log.fd, line);
+	log.bytes += enqueue(state, log, line, announcement);
 	run.bytes += size;
 	return true;
 }
 
 function write(state: RouterState, method: ConsoleMethod, args: unknown[], run: RunConsole, directory: string): void {
 	if (state.failed) return;
-	let log: ProcessLog;
-	let written: boolean;
-	try {
-		log = processLog(state, directory);
-		written = append(log, run, method, args);
-	} catch (error) {
-		state.failed = true;
-		const path = state.log?.path ?? directory;
-		if (state.log !== undefined) {
-			try {
-				closeSync(state.log.fd);
-			} catch {}
-			state.log = undefined;
-		}
-		const cause = error instanceof Error ? error.message : String(error);
-		state.originals.warn(
-			`atomic-workflows: workflow console output could not be written to ${path} (${cause}); later workflow console output is dropped`,
-		);
-		return;
-	}
-	if (written && !run.announced && !args.some((arg) => isAbortCancellation(arg))) {
-		run.announced = true;
-		state.originals.warn(`atomic-workflows: run ${run.rootRunId} console output is in ${log.path}`);
-	}
+	const log = processLog(state, directory);
+	// A cancellation never names the log; any other first line of a run does, once it is on disk.
+	const announcement =
+		run.announced || args.some((arg) => isAbortCancellation(arg))
+			? undefined
+			: `atomic-workflows: run ${run.rootRunId} console output is in ${log.path}`;
+	if (append(state, log, run, method, args, announcement) && announcement !== undefined) run.announced = true;
 }
 
 function routed(state: RouterState, method: ConsoleMethod): ConsoleWriter {
@@ -161,8 +282,16 @@ function installedRouter(): RouterState {
 		ConsoleMethod,
 		ConsoleWriter
 	>;
-	const state: RouterState = { logDirectory: undefined, log: undefined, failed: false, originals };
+	const state: RouterState = {
+		logDirectory: undefined,
+		directoryReady: Promise.resolve(),
+		log: undefined,
+		open: new Set(),
+		failed: false,
+		originals,
+	};
 	for (const method of METHODS) console[method] = routed(state, method);
+	process.on("exit", () => writeQueuedAtExit(state));
 	bag[ROUTER_KEY] = state;
 	return state;
 }
@@ -178,23 +307,27 @@ function processAlive(pid: number): boolean {
 }
 
 /** Deletes logs of exited processes not written within the retention, then the oldest until the directory fits. */
-function pruneLogs(directory: string, now: number): void {
-	const logs = readdirSync(directory).flatMap((name) => {
+async function pruneLogs(directory: string, now: number): Promise<void> {
+	const logs: Array<{
+		readonly path: string;
+		readonly mtimeMs: number;
+		readonly size: number;
+		readonly live: boolean;
+	}> = [];
+	for (const name of await readdir(directory)) {
 		const pid = LOG_NAME.exec(name)?.[1];
-		if (pid === undefined) return [];
+		if (pid === undefined) continue;
 		const path = join(directory, name);
 		try {
-			const { mtimeMs, size } = statSync(path);
-			return [{ path, mtimeMs, size, live: processAlive(Number(pid)) }];
-		} catch {
-			return [];
-		}
-	});
+			const { mtimeMs, size } = await stat(path);
+			logs.push({ path, mtimeMs, size, live: processAlive(Number(pid)) });
+		} catch {}
+	}
 	let total = logs.reduce((sum, log) => sum + log.size, 0);
 	for (const log of logs.filter(({ live }) => !live).sort((left, right) => left.mtimeMs - right.mtimeMs)) {
 		if (now - log.mtimeMs < CONSOLE_LOG_RETENTION_MS && total <= MAX_CONSOLE_LOG_DIRECTORY_BYTES) break;
 		try {
-			rmSync(log.path, { force: true });
+			await rm(log.path, { force: true });
 			total -= log.size;
 		} catch {}
 	}
@@ -202,35 +335,49 @@ function pruneLogs(directory: string, now: number): void {
 
 /**
  * Sends the console output of runs started with `consoleLog` to this process's workflow log under `logDirectory`,
- * after deleting logs there that are past their retention. Idempotent.
+ * after deleting logs there that are past their retention. Idempotent. Routing starts at once; the directory is made
+ * and pruned in the background, before the log is first written.
  */
 export function routeWorkflowConsoleOutput(logDirectory: string, now = Date.now()): void {
 	const state = installedRouter();
 	if (state.logDirectory === logDirectory) return;
 	// Routing starts even when the directory cannot be made: the first routed write then fails and is reported once,
 	// rather than every routed call going to stderr.
-	try {
-		mkdirSync(logDirectory, { recursive: true });
-		pruneLogs(logDirectory, now);
-	} catch {}
+	state.directoryReady = (async () => {
+		try {
+			await mkdir(logDirectory, { recursive: true });
+			await pruneLogs(logDirectory, now);
+		} catch {}
+	})();
 	state.logDirectory = logDirectory;
 }
 
-/** Restores stderr for every later console call and closes the log; output already routed stays in its file. */
-export function stopRoutingWorkflowConsoleOutput(): void {
+/** Resolves once every console call routed so far is in its log, or dropped after a failed write. */
+export async function flushWorkflowConsoleOutput(): Promise<void> {
+	const state = routerBag()[ROUTER_KEY];
+	if (state === undefined) return;
+	await state.directoryReady;
+	for (const log of [...state.open]) while (log.writing !== undefined) await log.writing;
+}
+
+/**
+ * Restores stderr for every later console call and closes the log once its directory is ready and its queued output is
+ * written; output already routed stays in its file.
+ */
+export async function stopRoutingWorkflowConsoleOutput(): Promise<void> {
 	const state = routerBag()[ROUTER_KEY];
 	if (state === undefined) return;
 	state.logDirectory = undefined;
 	state.failed = false;
-	if (state.log !== undefined) {
-		try {
-			closeSync(state.log.fd);
-		} catch {}
-		state.log = undefined;
-	}
+	const log = state.log;
+	state.log = undefined;
+	await state.directoryReady;
+	if (log === undefined) return;
+	while (log.writing !== undefined) await log.writing;
+	await closeLog(state, log);
 }
 
-/** This process's workflow log, once something was written to it. */
+/** This process's workflow log, once something was routed to it. */
 export function workflowConsoleLogPath(): string | undefined {
 	return routerBag()[ROUTER_KEY]?.log?.path;
 }

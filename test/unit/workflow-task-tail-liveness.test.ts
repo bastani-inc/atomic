@@ -1218,12 +1218,12 @@ describe("ctx.task tail liveness", () => {
 
 	test("live worktree artifacts survive after the task-result persist is dropped", async () => {
 		const repo = mkdtempSync(join(tmpdir(), "atomic-task-artifacts-"));
-		runGitChecked(repo, ["init", "-b", "main"]);
-		runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
-		runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
+		await runGitChecked(repo, ["init", "-b", "main"]);
+		await runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
+		await runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
 		writeFileSync(join(repo, "tracked.txt"), "base\n");
-		runGitChecked(repo, ["add", "."]);
-		runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
+		await runGitChecked(repo, ["add", "."]);
+		await runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
 		const { firstFailed, replayed, prompts } = await replayAfterDroppedTaskPersist(
 			"live-worktree-artifacts",
 			{ prompt: "review", worktree: true },

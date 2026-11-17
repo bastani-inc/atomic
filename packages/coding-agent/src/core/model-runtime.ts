@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -177,7 +177,13 @@ export class ModelRuntime implements Models {
 	private snapshot: ModelRuntimeSnapshot = createEmptyModelRuntimeSnapshot();
 	private snapshotGeneration = 0;
 	private catalogInputsGeneration = 0;
+	/** {@link catalogInputsGeneration} without the models.json changes, which catalog-input keys carry as a hash. */
+	private ownCatalogInputsGeneration = 0;
 	private observedModelsFileToken: string | undefined;
+	/** The models.json reads in the order they were asked for, so the last read is the one observed last. */
+	private modelsFileObservations: Promise<void> = Promise.resolve();
+	/** The read asked for in the current tick, which other requests in that tick share. */
+	private sameTickModelsFileObservation: Promise<string> | undefined;
 	private readonly externalProviderAuthStatuses = new Map<string, AuthStatus>();
 	private readonly externalStatusCredentials = new Map<string, Credential | undefined>();
 	private readonly availabilityCredentials = new Map<string, Credential | undefined>();
@@ -832,8 +838,7 @@ export class ModelRuntime implements Models {
 	 * already replaced, and the pass's late publish overwrites the newer state
 	 * with them.
 	 *
-	 * Every mutation source bumps this counter, which is why callers need only
-	 * this one number rather than a growing tuple of per-input keys:
+	 * Every mutation source bumps this counter:
 	 *
 	 * - credential writes — `login`, `logout`, `saveCredential`,
 	 *   `setRuntimeApiKey`, `removeRuntimeApiKey`, an external
@@ -845,16 +850,27 @@ export class ModelRuntime implements Models {
 	 *
 	 * The first two are this runtime's own writes and bump where they happen.
 	 * The third is an external edit nothing here observes, so reading the
-	 * generation samples the file and bumps when its content moved since the
-	 * last sample. That read is synchronous so the answer belongs to the same
-	 * tick as the decision that depends on it, and it hashes content rather
-	 * than trusting an mtime: a same-size rewrite inside one filesystem
-	 * timestamp tick — an edited key, a renamed model — is exactly the change a
-	 * shared pass must not hide.
+	 * generation reads the file and bumps when its content moved since the
+	 * last read. It hashes content rather than trusting an mtime: a same-size
+	 * rewrite inside one filesystem timestamp tick — an edited key, a renamed
+	 * model — is exactly the change a shared pass must not hide.
 	 */
-	getCatalogInputsGeneration(): number {
-		this.observeModelsFile();
+	async getCatalogInputsGeneration(): Promise<number> {
+		await this.observeModelsFile();
 		return this.catalogInputsGeneration;
+	}
+
+	/**
+	 * What decides whether a catalog request may join a pass already running: two requests with the same key ask
+	 * for the same inputs. The key is the generation of this runtime's own writes (credentials and provider
+	 * registrations, as for {@link getCatalogInputsGeneration}) captured when this is called, plus the hash of
+	 * models.json read after the call. So a request issued after any of those changes, including an external
+	 * models.json edit, never gets the key of a pass started before it. Requests in the same tick share one read of
+	 * the file, and so one key.
+	 */
+	readCatalogInputsKey(): Promise<string> {
+		const generation = this.ownCatalogInputsGeneration;
+		return this.observeModelsFile().then((modelsFile) => `${generation}:${modelsFile}`);
 	}
 
 	/**
@@ -863,23 +879,35 @@ export class ModelRuntime implements Models {
 	 */
 	private markCatalogInputsChanged(): void {
 		this.catalogInputsGeneration += 1;
+		this.ownCatalogInputsGeneration += 1;
 	}
 
-	/** Bump the generation when models.json changed since the last observation. */
-	private observeModelsFile(): void {
-		const token = this.readModelsFileToken();
-		if (this.observedModelsFileToken === token) return;
-		const first = this.observedModelsFileToken === undefined;
-		this.observedModelsFileToken = token;
-		// The first observation is a baseline, not a change: no pass can predate it.
-		if (!first) this.markCatalogInputsChanged();
+	/** Read models.json and bump the generation when it changed since the last read; resolves to its hash. */
+	private observeModelsFile(): Promise<string> {
+		if (this.sameTickModelsFileObservation) return this.sameTickModelsFileObservation;
+		const observation = this.modelsFileObservations.then(async () => {
+			const token = await this.readModelsFileToken();
+			if (this.observedModelsFileToken !== token) {
+				const first = this.observedModelsFileToken === undefined;
+				this.observedModelsFileToken = token;
+				// The first observation is a baseline, not a change: no pass can predate it.
+				if (!first) this.catalogInputsGeneration += 1;
+			}
+			return token;
+		});
+		this.modelsFileObservations = observation.then(() => undefined);
+		this.sameTickModelsFileObservation = observation;
+		queueMicrotask(() => {
+			if (this.sameTickModelsFileObservation === observation) this.sameTickModelsFileObservation = undefined;
+		});
+		return observation;
 	}
 
-	private readModelsFileToken(): string {
+	private async readModelsFileToken(): Promise<string> {
 		if (!this.modelsPath) return "none";
 		try {
 			return createHash("sha1")
-				.update(readFileSync(normalizePath(this.modelsPath)))
+				.update(await readFile(normalizePath(this.modelsPath)))
 				.digest("hex");
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;

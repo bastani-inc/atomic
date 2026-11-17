@@ -13,7 +13,10 @@ import { join } from "node:path";
 import { describe, test } from "vitest";
 import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { ENV_WORKFLOW_ARTIFACT_DIR } from "../../packages/workflows/src/shared/workflow-artifacts.js";
+import {
+	ENV_WORKFLOW_ARTIFACT_DIR,
+	refreshWorkflowArtifactPresence,
+} from "../../packages/workflows/src/shared/workflow-artifacts.js";
 import { workflowResumeSelectorItems } from "../../packages/workflows/src/tui/workflow-resume-selector.js";
 
 function entry(
@@ -69,6 +72,7 @@ describe("workflow resume selector rows", () => {
 				...pausedLiveRun(runId),
 				result: { transcript_path: join(root, "runs", runId, "transcripts", "stage.md") },
 			};
+			await refreshWorkflowArtifactPresence([run], [run]);
 			const items = workflowResumeSelectorItems([run], [entry(runId, "paused")], [entry(runId, "completed")]);
 			assert.deepEqual(
 				items.map((item) => item.result.kind),

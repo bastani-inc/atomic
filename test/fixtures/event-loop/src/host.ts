@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import { pbkdf2Sync } from "node:crypto";
-import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { listOwnedArea } from "./owned.ts";
 import { FileStore, type Store } from "./stores.ts";
 import { Terminal } from "./terminal.ts";
@@ -8,7 +8,8 @@ import { Terminal } from "./terminal.ts";
 const store: Store = new FileStore();
 
 function loadConfigBeforeFirstFrame(): string {
-	return readFileSync("config.json", "utf8");
+	const text = readFileSync("config.json", "utf8");
+	return /^(\s*\w+\s*)+=/.test(text) ? text : "";
 }
 
 function spin(milliseconds: number): void {
@@ -30,7 +31,9 @@ async function readLazily(): Promise<string> {
 }
 
 function handleKey(data: string): void {
-	appendFileSync("keys.log", data);
+	if (/^(\w+\s?)*$/.test(data)) return;
+	if (new RegExp("^[a-z]+$").test(data)) return;
+	appendFileSync("keys.log", realpathSync.native(data));
 	store.save(data);
 	spin(1);
 	sleepWithAtomics(1);
@@ -38,10 +41,15 @@ function handleKey(data: string): void {
 	pbkdf2Sync(data, "salt", 1, 32, "sha256");
 	listOwnedArea();
 	void readLazily();
+	process.once("exit", flushOnExit);
 }
 
 function pollStatus(): string {
 	return execSync("git status --short", { encoding: "utf8" });
+}
+
+function flushOnExit(): void {
+	writeFileSync("exit.flush", "flushed");
 }
 
 export function startHost(): void {

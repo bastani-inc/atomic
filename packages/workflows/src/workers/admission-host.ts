@@ -1,7 +1,9 @@
-import { execFile, execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { readdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export const admissionHost = hostname();
 
@@ -37,11 +39,11 @@ export function admissionProcessStopped(pid: number): boolean {
  * holds nothing and waits for this process to reap it. Linux reads the state from `/proc` on every call. Elsewhere the
  * zombie check spawns `ps`, so it runs only when `final` asks for it.
  */
-export function workerProcessExited(pid: number, final = false): boolean {
+export async function workerProcessExited(pid: number, final = false): Promise<boolean> {
 	if (admissionProcessStopped(pid)) return true;
 	if (process.platform === "linux") {
 		try {
-			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+			const stat = await readFile(`/proc/${pid}/stat`, "utf8");
 			return stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z");
 		} catch {
 			return admissionProcessStopped(pid);
@@ -49,9 +51,11 @@ export function workerProcessExited(pid: number, final = false): boolean {
 	}
 	if (!final) return false;
 	try {
-		return execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", timeout: 5_000 })
-			.trim()
-			.startsWith("Z");
+		const { stdout } = await execFileAsync("ps", ["-o", "stat=", "-p", String(pid)], {
+			encoding: "utf8",
+			timeout: 5_000,
+		});
+		return stdout.trim().startsWith("Z");
 	} catch {
 		return admissionProcessStopped(pid);
 	}
@@ -69,25 +73,32 @@ export interface ProcessGroupScan {
 	readonly complete: boolean;
 }
 
-export type ProcessGroupScanner = (group: number) => ProcessGroupScan;
+export type ProcessGroupScanner = (group: number) => Promise<ProcessGroupScan>;
 
 /** Scans the process table for the members of `group`: `/proc` on Linux, `ps` elsewhere. */
-export function scanProcessGroup(group: number): ProcessGroupScan {
+export async function scanProcessGroup(group: number): Promise<ProcessGroupScan> {
 	const members = new Map<number, string>();
 	if (process.platform === "linux") {
 		let complete = true;
 		let entries: string[];
 		try {
-			entries = readdirSync("/proc");
+			entries = await readdir("/proc");
 		} catch {
 			return { members, complete: false };
 		}
-		for (const entry of entries) {
-			if (!/^\d+$/.test(entry)) continue;
-			let stat: string;
-			try {
-				stat = readFileSync(`/proc/${entry}/stat`, "utf8");
-			} catch {
+		const stats = await Promise.all(
+			entries
+				.filter((entry) => /^\d+$/.test(entry))
+				.map(async (entry) => {
+					try {
+						return { entry, stat: await readFile(`/proc/${entry}/stat`, "utf8") };
+					} catch {
+						return { entry, stat: undefined };
+					}
+				}),
+		);
+		for (const { entry, stat } of stats) {
+			if (stat === undefined) {
 				// The process may have been a member that exited, or forked one, after the listing: unconfirmed.
 				complete = false;
 				continue;
@@ -104,7 +115,10 @@ export function scanProcessGroup(group: number): ProcessGroupScan {
 	}
 	let output: string;
 	try {
-		output = execFileSync("ps", ["-A", "-o", "pid=,pgid=,stat="], { encoding: "utf8", timeout: 5_000 });
+		({ stdout: output } = await execFileAsync("ps", ["-A", "-o", "pid=,pgid=,stat="], {
+			encoding: "utf8",
+			timeout: 5_000,
+		}));
 	} catch {
 		return { members, complete: false };
 	}
@@ -131,11 +145,14 @@ function zombieOnly(scan: ProcessGroupScan): boolean {
  * member forked during the first scan by a member that then exited shows up in the second. Anything else (an empty,
  * partial, failed or changing scan) counts as alive.
  */
-export function processGroupState(group: number, scan: ProcessGroupScanner = scanProcessGroup): ProcessGroupState {
+export async function processGroupState(
+	group: number,
+	scan: ProcessGroupScanner = scanProcessGroup,
+): Promise<ProcessGroupState> {
 	if (admissionProcessStopped(-group)) return "gone";
-	const first = scan(group);
+	const first = await scan(group);
 	if (!zombieOnly(first)) return "alive";
-	const second = scan(group);
+	const second = await scan(group);
 	if (!zombieOnly(second) || second.members.size !== first.members.size) return "alive";
 	return [...second.members.keys()].every((pid) => first.members.has(pid)) ? "zombie" : "alive";
 }

@@ -28,6 +28,8 @@ const fixturePolicy: EventLoopPolicy = {
 			reason: "the fixture's stand-in for a reviewed helper that only runs before the first frame",
 		},
 	],
+	exitOnly: [],
+	reviewedRegexes: [],
 };
 
 let graph: CallGraph;
@@ -50,6 +52,7 @@ describe("event-loop check", () => {
 			"src/components.ts sizeBanner.render fs.statSync",
 			"src/host.ts handleKey crypto.pbkdf2Sync",
 			"src/host.ts handleKey fs.appendFileSync",
+			"src/host.ts handleKey fs.realpathSync.native",
 			"src/host.ts pollStatus child_process.execSync",
 			"src/host.ts readLazily fs.readFileSync",
 			"src/host.ts sleepWithAtomics Atomics.wait",
@@ -61,7 +64,13 @@ describe("event-loop check", () => {
 
 	test("does not report startup code, exit handlers, or classes that are never rendered", () => {
 		const functions = new Set(report.violations.map((v) => v.function));
-		for (const quiet of ["loadConfigBeforeFirstFrame", "startHost", "UnusedLine.render", "MemoryStore.save"]) {
+		for (const quiet of [
+			"loadConfigBeforeFirstFrame",
+			"startHost",
+			"flushOnExit",
+			"UnusedLine.render",
+			"MemoryStore.save",
+		]) {
 			assert.equal(functions.has(quiet), false, quiet);
 		}
 		assert.equal(
@@ -79,15 +88,34 @@ describe("event-loop check", () => {
 		assert.match(key.path[0], /process\.stdin\.on\("data"\).*registered with/);
 	});
 
-	test("defers findings in areas another change owns, and keeps reviewed startup helpers out of the walk", () => {
+	test("defers findings in areas another change owns, or reached only through them, and keeps reviewed startup helpers out of the walk", () => {
 		assert.deepEqual(
 			report.deferred.map((v) => `${v.function} ${v.api} ${v.ownedBy}`),
-			["listOwnedArea fs.readdirSync another change"],
+			["readHelperOnlyOwnedCodeCalls fs.readFileSync another change", "listOwnedArea fs.readdirSync another change"],
 		);
 		assert.equal(
 			report.violations.some((v) => v.function === "reviewedStartupHelper"),
 			false,
 		);
+	});
+
+	test("rejects a backtracking regular expression on an interactive path, not one that only runs at startup", () => {
+		assert.deepEqual(
+			report.regexFindings.map((finding) => `${finding.function} /${finding.pattern}/ ${finding.kind}`),
+			["handleKey /^(\\w+\\s?)*$/ exponential"],
+		);
+		const reviewed = analyzeEventLoop(graph, {
+			...fixturePolicy,
+			reviewedRegexes: [
+				{
+					file: "src/host.ts",
+					pattern: "^(\\w+\\s?)*$",
+					reason: "the fixture's stand-in for a regex that only sees short input",
+				},
+			],
+		});
+		assert.deepEqual(reviewed.regexFindings, []);
+		assert.deepEqual(reviewed.policyErrors, []);
 	});
 
 	test("fails the policy when a reviewed entry no longer names a reachable function", () => {

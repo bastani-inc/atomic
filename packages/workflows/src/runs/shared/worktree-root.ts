@@ -1,5 +1,6 @@
-import * as fs from "node:fs";
+import type { Stats } from "node:fs";
 import * as path from "node:path";
+import { io, runWorktreeSteps, type WorktreeSteps } from "./worktree-io.js";
 
 function pathFromPointer(contents: string, prefix: string, base: string): string | undefined {
 	if (!contents.startsWith(prefix)) return undefined;
@@ -8,18 +9,18 @@ function pathFromPointer(contents: string, prefix: string, base: string): string
 	return path.resolve(base, value);
 }
 
-function readText(file: string): string | undefined {
+function* readText(file: string): WorktreeSteps<string | undefined> {
 	try {
-		return fs.readFileSync(file, "utf8");
+		return yield* io("readFile", file);
 	} catch {
 		return undefined;
 	}
 }
 
-function samePath(left: string, right: string): boolean {
+function* samePath(left: string, right: string): WorktreeSteps<boolean> {
 	try {
-		const a = fs.realpathSync.native(left);
-		const b = fs.realpathSync.native(right);
+		const a = yield* io("realpath", left);
+		const b = yield* io("realpath", right);
 		return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 	} catch {
 		return false;
@@ -27,16 +28,16 @@ function samePath(left: string, right: string): boolean {
 }
 
 /** Find the nearest checkout root without invoking Git. */
-export function findGitRoot(cwd: string): string | undefined {
+export function* findGitRootSteps(cwd: string): WorktreeSteps<string | undefined> {
 	let current = path.resolve(cwd);
 	try {
-		if (!fs.statSync(current).isDirectory()) current = path.dirname(current);
+		if (!(yield* io("stat", current)).isDirectory()) current = path.dirname(current);
 	} catch {
 		return undefined;
 	}
 	while (true) {
 		try {
-			const entry = fs.statSync(path.join(current, ".git"));
+			const entry = yield* io("stat", path.join(current, ".git"));
 			if (entry.isDirectory() || entry.isFile()) return current;
 		} catch {
 			// Continue walking.
@@ -48,18 +49,18 @@ export function findGitRoot(cwd: string): string | undefined {
 }
 
 /** Resolve only standard `git worktree add` layouts to their main checkout. */
-export function resolveMainRepoRoot(repoRoot: string): string | undefined {
+export function* resolveMainRepoRootSteps(repoRoot: string): WorktreeSteps<string | undefined> {
 	const gitEntry = path.join(repoRoot, ".git");
-	let stats: fs.Stats;
+	let stats: Stats;
 	try {
-		stats = fs.statSync(gitEntry);
+		stats = yield* io("stat", gitEntry);
 	} catch {
 		return undefined;
 	}
 	if (stats.isDirectory()) return path.resolve(repoRoot);
 	if (!stats.isFile()) return undefined;
 
-	const pointer = readText(gitEntry);
+	const pointer = yield* readText(gitEntry);
 	if (pointer === undefined) return undefined;
 	const gitDir = pathFromPointer(pointer, "gitdir:", repoRoot);
 	if (gitDir === undefined || path.basename(path.dirname(gitDir)) !== "worktrees") return undefined;
@@ -68,17 +69,33 @@ export function resolveMainRepoRoot(repoRoot: string): string | undefined {
 
 	// A real linked-worktree admin directory points back to this checkout and
 	// declares the common directory. These checks reject crafted foreign pointers.
-	const backPointer = readText(path.join(gitDir, "gitdir"));
-	const commonPointer = readText(path.join(gitDir, "commondir"));
+	const backPointer = yield* readText(path.join(gitDir, "gitdir"));
+	const commonPointer = yield* readText(path.join(gitDir, "commondir"));
 	if (backPointer === undefined || commonPointer === undefined) return undefined;
 	const linkedGitEntry = path.resolve(gitDir, backPointer.trim());
 	const declaredCommonDir = path.resolve(gitDir, commonPointer.trim());
 	if (!backPointer.trim() || !commonPointer.trim()) return undefined;
-	if (!samePath(linkedGitEntry, gitEntry) || !samePath(declaredCommonDir, commonGitDir)) return undefined;
+	if (!(yield* samePath(linkedGitEntry, gitEntry)) || !(yield* samePath(declaredCommonDir, commonGitDir))) {
+		return undefined;
+	}
 	return path.dirname(commonGitDir);
 }
 
-export function findCanonicalGitRoot(cwd: string): string | undefined {
-	const repoRoot = findGitRoot(cwd);
-	return repoRoot === undefined ? undefined : resolveMainRepoRoot(repoRoot);
+export function* findCanonicalGitRootSteps(cwd: string): WorktreeSteps<string | undefined> {
+	const repoRoot = yield* findGitRootSteps(cwd);
+	return repoRoot === undefined ? undefined : yield* resolveMainRepoRootSteps(repoRoot);
+}
+
+/** Find the nearest checkout root without invoking Git. */
+export function findGitRoot(cwd: string): Promise<string | undefined> {
+	return runWorktreeSteps(findGitRootSteps(cwd));
+}
+
+/** Resolve only standard `git worktree add` layouts to their main checkout. */
+export function resolveMainRepoRoot(repoRoot: string): Promise<string | undefined> {
+	return runWorktreeSteps(resolveMainRepoRootSteps(repoRoot));
+}
+
+export function findCanonicalGitRoot(cwd: string): Promise<string | undefined> {
+	return runWorktreeSteps(findCanonicalGitRootSteps(cwd));
 }

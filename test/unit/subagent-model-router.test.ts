@@ -288,7 +288,10 @@ test("explicit legacy effort constrains automatic selection and intersects hard 
 	const f = await fixture();
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
 	f.infer.mockImplementation(chatRouter(() => "second-provider/reasoner"));
-	const { agents } = loadAgentsFromDirWithDiagnostics(join(process.cwd(), "packages/subagents/agents"), "builtin");
+	const { agents } = await loadAgentsFromDirWithDiagnostics(
+		join(process.cwd(), "packages/subagents/agents"),
+		"builtin",
+	);
 	const overridden = applyBuiltinOverrides(
 		agents,
 		{ overrides: { worker: { thinking: "low" } } },
@@ -324,8 +327,8 @@ test.each(["", false])(
 				settingsPath,
 				JSON.stringify({ subagents: { agentOverrides: { worker: { model: "auto", thinking } } } }),
 			);
-			const { settings } = readMergedSubagentSettings([settingsPath]);
-			const { agents } = loadAgentsFromDirWithDiagnostics(
+			const { settings } = await readMergedSubagentSettings([settingsPath]);
+			const { agents } = await loadAgentsFromDirWithDiagnostics(
 				join(process.cwd(), "packages/subagents/agents"),
 				"builtin",
 			);
@@ -438,7 +441,7 @@ test("pricing tiers cannot evade a maximum token rate", async () => {
 	assert.equal(f.infer.mock.calls.length, 0);
 });
 
-test("authored and management-created constraints round trip without widening", () => {
+test("authored and management-created constraints round trip without widening", async () => {
 	const updated = { ...agent };
 	const constraints = {
 		allowedModels: ["second-provider/reasoner"],
@@ -458,7 +461,7 @@ test("authored and management-created constraints round trip without widening", 
 	const dir = mkdtempSync(join(tmpdir(), "atomic-auto-constraints-"));
 	try {
 		writeFileSync(join(dir, "worker.md"), serializeAgent(updated));
-		const loaded = loadAgentsFromDirWithDiagnostics(dir, "project");
+		const loaded = await loadAgentsFromDirWithDiagnostics(dir, "project");
 		assert.deepEqual(loaded.diagnostics, []);
 		assert.equal(loaded.agents[0]?.model, "auto");
 		assert.deepEqual(loaded.agents[0]?.modelConstraints, constraints);

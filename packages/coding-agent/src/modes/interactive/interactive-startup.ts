@@ -36,6 +36,7 @@ import {
 	ENV_OFFLINE,
 	ensureTool,
 	getAgentDir,
+	getCachedChangelog,
 	getChangelogHighlights,
 	getChangelogPath,
 	getCwdRelativePath,
@@ -48,8 +49,8 @@ import {
 	type MarkdownTheme,
 	normalizeChangelogLinks,
 	onThemeChange,
-	parseChangelog,
 	path,
+	preloadChangelog,
 	recordTimeSinceReset,
 	Spacer,
 	spawn,
@@ -349,6 +350,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
 	} else {
+		await preloadChangelog(getChangelogPath());
 		await bindInitialEagerSession(this);
 		void reportUnavailableTools(this);
 	}
@@ -552,15 +554,15 @@ InteractiveModeBase.prototype.getChangelogForDisplay = function (this: Interacti
 	}
 
 	const lastVersion = this.settingsManager.getLastChangelogVersion();
-	const changelogPath = getChangelogPath();
-	const entries = parseChangelog(changelogPath);
-
 	if (!lastVersion) {
 		// Fresh install - record the version, send telemetry, don't show changelog
 		this.settingsManager.setLastChangelogVersion(VERSION);
 		this.reportInstallTelemetry(VERSION);
 		return undefined;
 	}
+
+	const changelogPath = getChangelogPath();
+	const entries = getCachedChangelog(changelogPath);
 
 	const newEntries = getNewEntries(entries, lastVersion, VERSION);
 	const currentEntries = getEntriesForVersion(newEntries, VERSION);

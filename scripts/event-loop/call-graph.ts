@@ -410,6 +410,11 @@ export class CallGraphBuilder {
 	/** Assignments resolved to the declarations they write. */
 	private readonly assignmentFlows: Array<{ readonly into: readonly string[] } & ValueSources> = [];
 	private readonly detachedFunctions = new Set<number>();
+	/** References passed to a call whose callbacks only run as the process exits. */
+	private readonly detachedReferences = new Set<number>();
+	private readonly pendingNameChecks: number[] = [];
+	/** References whose type names a declaration, so a name alone says nothing about them. */
+	private readonly typedReferences = new Set<number>();
 	private readonly objectValueFlows: Array<{ readonly into: readonly string[] } & ValueSources> = [];
 	private readonly assignedFunctions = new Map<string, number[]>();
 	private readonly pendingObjectMembers: Array<{
@@ -1089,6 +1094,9 @@ export class CallGraphBuilder {
 		const sources = (node.arguments ?? []).map((argument) =>
 			this.captureCreated(context, () => this.visit(argument, context)),
 		);
+		const detached = this.isDetachedCall(node);
+		if (detached)
+			for (const source of sources) for (const index of source.references) this.detachedReferences.add(index);
 		if (callee === undefined) return;
 		this.calls.push({
 			container: context.container,
@@ -1098,7 +1106,7 @@ export class CallGraphBuilder {
 			argumentReferences: sources.flatMap((source) => source.references),
 			arguments: sources,
 			firstArgument: stringArgument(node.arguments?.[0]),
-			detached: this.isDetachedCall(node),
+			detached,
 		});
 	}
 
@@ -1528,6 +1536,7 @@ export class CallGraphBuilder {
 		}
 		this.resolveThroughTypes(resolved);
 		this.propagateValues(resolved);
+		this.applyNameChecks(resolved);
 		for (const call of this.calls) this.applySinks(call, resolved, symbolsByReference);
 		for (const assignment of this.assignedHandlers) this.applyAssignedHandler(assignment, resolved);
 	}
@@ -1650,6 +1659,7 @@ export class CallGraphBuilder {
 					symbol = undefined;
 				}
 				if (symbol === undefined) return;
+				if (symbol.declarations.length > 0) this.typedReferences.add(referenceIndex);
 				const reference = this.references[referenceIndex];
 				const isFunction = (symbol.flags & (SymbolFlags.Function | SymbolFlags.Method)) !== 0;
 				if (reference.role === "value" && !isFunction) return;
@@ -1668,6 +1678,7 @@ export class CallGraphBuilder {
 	}
 
 	private applyReference(reference: PendingReference, symbol: TsSymbol | undefined, index: number): readonly number[] {
+		if (this.detachedReferences.has(index)) return [];
 		if (symbol === undefined) {
 			this.stats.unresolved++;
 			if (reference.role === "call") this.recordUnresolvedBlocking(reference);
@@ -1686,7 +1697,7 @@ export class CallGraphBuilder {
 		}
 		if (functions.length > 0) this.stats.resolvedToFunction++;
 		else if (blocking !== undefined) this.stats.resolvedExternal++;
-		else if (reference.role === "call") this.recordUnresolvedBlocking(reference, symbol);
+		else if (reference.role === "call") this.recordUnresolvedBlocking(reference, symbol, index);
 		for (const id of functions) {
 			const kind = this.functions[id].kind;
 			const dispatched =
@@ -1696,16 +1707,31 @@ export class CallGraphBuilder {
 		return functions;
 	}
 
-	private recordUnresolvedBlocking(reference: PendingReference, symbol?: TsSymbol): void {
+	/**
+	 * A call through a variable, parameter or property nothing resolves: its name is the last evidence. Decided after
+	 * the type and value-flow passes, which may still find the function or declaration it calls.
+	 */
+	private recordUnresolvedBlocking(reference: PendingReference, symbol?: TsSymbol, index?: number): void {
 		if (symbol !== undefined) {
 			const flags = this.aliased(symbol).flags;
 			const isVariableLike =
 				(flags & (SymbolFlags.Variable | SymbolFlags.Property)) !== 0 &&
 				(flags & (SymbolFlags.Function | SymbolFlags.Method)) === 0;
 			if (!isVariableLike) return;
+			if (index !== undefined) {
+				this.pendingNameChecks.push(index);
+				return;
+			}
 		}
 		const api = classifyUnresolvedCallName(reference.name);
 		if (api !== undefined) this.functions[reference.container].blocking.push({ line: reference.line, api });
+	}
+
+	private applyNameChecks(resolved: Array<readonly number[]>): void {
+		for (const index of this.pendingNameChecks) {
+			if ((resolved[index]?.length ?? 0) > 0 || this.typedReferences.has(index)) continue;
+			this.recordUnresolvedBlocking(this.references[index]);
+		}
 	}
 
 	private applySinks(

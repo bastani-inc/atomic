@@ -97,21 +97,23 @@ test("overflow stays distinct from every other failure category", async () => {
 	assert.equal(new Set(observed).size, 5, `expected five distinct categories, saw ${observed.join(", ")}`);
 });
 
-test("two failure sidecars written in the same millisecond both survive", () => {
+test("two failure sidecars written in the same millisecond both survive", async () => {
 	const fixed = Date.now();
 	const realNow = Date.now;
 	Date.now = () => fixed;
 	try {
-		const paths = [1, 2].map((attempt) =>
-			writeDiagnosticSidecar({
-				sessionFilePath,
-				model: testModel(),
-				requestMaxTokens: undefined,
-				response: undefined,
-				rawResponseText: `attempt ${attempt}`,
-				failureCategory: "context_overflow",
-				failureMessage: `attempt ${attempt}`,
-			}),
+		const paths = await Promise.all(
+			[1, 2].map((attempt) =>
+				writeDiagnosticSidecar({
+					sessionFilePath,
+					model: testModel(),
+					requestMaxTokens: undefined,
+					response: undefined,
+					rawResponseText: `attempt ${attempt}`,
+					failureCategory: "context_overflow",
+					failureMessage: `attempt ${attempt}`,
+				}),
+			),
 		);
 		assert.ok(paths[0] && paths[1]);
 		assert.notEqual(paths[0], paths[1]);
@@ -138,32 +140,36 @@ test("repeated overflow trims against one model leave one record each", async ()
 	for (const file of written) assert.equal(payload(file).failureCategory, "context_overflow");
 });
 
-test("recovery and success sidecars are collision-safe too", () => {
+test("recovery and success sidecars are collision-safe too", async () => {
 	const fixed = Date.now();
 	const realNow = Date.now;
 	Date.now = () => fixed;
 	try {
-		const recovery = [1, 2].map((attempt) =>
-			writeRecoveryDiagnosticSidecar({
-				sessionFilePath,
-				model: testModel(),
-				requestMaxTokens: undefined,
-				response: { stopReason: "length", usage: undefined } as never,
-				rawResponseText: `recovery ${attempt}`,
-				recoveryCategory: "partial_length_recovery",
-				recoveredRangeCount: attempt,
-			}),
+		const recovery = await Promise.all(
+			[1, 2].map((attempt) =>
+				writeRecoveryDiagnosticSidecar({
+					sessionFilePath,
+					model: testModel(),
+					requestMaxTokens: undefined,
+					response: { stopReason: "length", usage: undefined } as never,
+					rawResponseText: `recovery ${attempt}`,
+					recoveryCategory: "partial_length_recovery",
+					recoveredRangeCount: attempt,
+				}),
+			),
 		);
 		assert.notEqual(recovery[0], recovery[1]);
 		assert.equal(sidecars("compaction-recovery").length, 2);
 
-		const success = [1, 2].map(() =>
-			writeSuccessDiagnosticSidecar({
-				sessionFilePath,
-				model: testModel(),
-				successCategory: "borrowed_planner",
-				thinkingLevel: "high",
-			}),
+		const success = await Promise.all(
+			[1, 2].map(() =>
+				writeSuccessDiagnosticSidecar({
+					sessionFilePath,
+					model: testModel(),
+					successCategory: "borrowed_planner",
+					thinkingLevel: "high",
+				}),
+			),
 		);
 		assert.notEqual(success[0], success[1]);
 		assert.equal(sidecars("compaction-success").length, 2);

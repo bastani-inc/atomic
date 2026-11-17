@@ -1,5 +1,6 @@
 import path from "node:path";
 import { existsSync, readFileSync } from "fs";
+import { readFile } from "fs/promises";
 
 export interface VersionParts {
 	major: number;
@@ -25,7 +26,8 @@ const GITHUB_REPO = "bastani-inc/atomic";
 const CHANGELOG_LINK_BASE_PATH = "packages/coding-agent";
 const LEGACY_REPO_RE = /^https:\/\/github\.com\/(?:badlogic|earendil-works)\/pi-mono(?=\/|$)/;
 const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
-const INLINE_MARKDOWN_LINK_RE = /(!?\[[^\]\n]+\]\()([^\s)]+)((?:\s+[^)]*)?\))/g;
+// `[^)]*` takes whitespace too, so one `\s` starts a link title: a long unclosed run is not split two ways.
+const INLINE_MARKDOWN_LINK_RE = /(!?\[[^\]\n]+\]\()([^\s)]+)((?:\s[^)]*)?\))/g;
 
 interface ParsedVersion extends VersionParts {
 	version: string;
@@ -153,57 +155,104 @@ export function getChangelogHighlights(entry: ChangelogEntry): string | undefine
 	return highlights.length > 0 ? highlights : undefined;
 }
 
+const cachedChangelogByPath = new Map<string, ChangelogEntry[]>();
+
+function parseChangelogContent(content: string): ChangelogEntry[] {
+	const lines = content.split("\n");
+	const entries: ChangelogEntry[] = [];
+
+	let currentLines: string[] = [];
+	let currentVersion: ParsedVersion | null = null;
+
+	for (const line of lines) {
+		// Check if this is a version header (## [x.y.z] ...)
+		if (line.startsWith("## ")) {
+			// Save previous entry if exists
+			if (currentVersion && currentLines.length > 0) {
+				entries.push(createChangelogEntry(currentVersion, currentLines));
+			}
+
+			// Try to parse version from this line
+			const versionParts = parseVersionHeader(line);
+			if (versionParts) {
+				currentVersion = versionParts;
+				currentLines = [line];
+			} else {
+				// Reset if we can't parse version
+				currentVersion = null;
+				currentLines = [];
+			}
+		} else if (currentVersion) {
+			// Collect lines for current version
+			currentLines.push(line);
+		}
+	}
+
+	// Save last entry
+	if (currentVersion && currentLines.length > 0) {
+		entries.push(createChangelogEntry(currentVersion, currentLines));
+	}
+
+	return entries;
+}
+
 /**
  * Parse changelog entries from CHANGELOG.md
  * Scans for ## lines and collects content until next ## or EOF
  */
 export function parseChangelog(changelogPath: string): ChangelogEntry[] {
 	if (!existsSync(changelogPath)) {
+		cachedChangelogByPath.set(changelogPath, []);
 		return [];
 	}
 
 	try {
 		const content = readFileSync(changelogPath, "utf-8");
-		const lines = content.split("\n");
-		const entries: ChangelogEntry[] = [];
-
-		let currentLines: string[] = [];
-		let currentVersion: ParsedVersion | null = null;
-
-		for (const line of lines) {
-			// Check if this is a version header (## [x.y.z] ...)
-			if (line.startsWith("## ")) {
-				// Save previous entry if exists
-				if (currentVersion && currentLines.length > 0) {
-					entries.push(createChangelogEntry(currentVersion, currentLines));
-				}
-
-				// Try to parse version from this line
-				const versionParts = parseVersionHeader(line);
-				if (versionParts) {
-					currentVersion = versionParts;
-					currentLines = [line];
-				} else {
-					// Reset if we can't parse version
-					currentVersion = null;
-					currentLines = [];
-				}
-			} else if (currentVersion) {
-				// Collect lines for current version
-				currentLines.push(line);
-			}
-		}
-
-		// Save last entry
-		if (currentVersion && currentLines.length > 0) {
-			entries.push(createChangelogEntry(currentVersion, currentLines));
-		}
-
-		return entries;
+		const entries = parseChangelogContent(content);
+		cachedChangelogByPath.set(changelogPath, entries);
+		return [...entries];
 	} catch (error) {
 		console.error(`Warning: Could not parse changelog: ${error}`);
+		cachedChangelogByPath.set(changelogPath, []);
 		return [];
 	}
+}
+
+/**
+ * Parse changelog entries asynchronously from CHANGELOG.md.
+ */
+export async function parseChangelogAsync(changelogPath: string): Promise<ChangelogEntry[]> {
+	try {
+		const content = await readFile(changelogPath, "utf-8");
+		const entries = parseChangelogContent(content);
+		cachedChangelogByPath.set(changelogPath, entries);
+		return [...entries];
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			console.error(`Warning: Could not parse changelog: ${error}`);
+		}
+		cachedChangelogByPath.set(changelogPath, []);
+		return [];
+	}
+}
+
+/**
+ * Preload changelog entries asynchronously into memory for synchronous startup readers.
+ */
+export async function preloadChangelog(changelogPath: string): Promise<ChangelogEntry[]> {
+	const existing = cachedChangelogByPath.get(changelogPath);
+	if (existing !== undefined) {
+		return [...existing];
+	}
+	return parseChangelogAsync(changelogPath);
+}
+
+/**
+ * Return previously preloaded changelog entries without touching the filesystem.
+ */
+export function getCachedChangelog(changelogPath: string): ChangelogEntry[] {
+	const cached = cachedChangelogByPath.get(changelogPath);
+	return cached ? [...cached] : [];
 }
 
 /**

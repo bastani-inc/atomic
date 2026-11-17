@@ -91,7 +91,11 @@ export interface ExecutorDeps {
 	tempArtifactsDir: string;
 	getSubagentSessionRoot: (parentSessionFile: string | null, parentSessionId: string) => string;
 	expandTilde: (p: string) => string;
-	discoverAgents: (cwd: string, scope: AgentScope, options: AgentDiscoveryOptions) => { agents: AgentConfig[] };
+	discoverAgents: (
+		cwd: string,
+		scope: AgentScope,
+		options: AgentDiscoveryOptions,
+	) => { agents: AgentConfig[] } | Promise<{ agents: AgentConfig[] }>;
 	allowMutatingManagementActions?: boolean;
 	/** Typed admission policy; when present it is authoritative over the legacy boolean. */
 	childPolicy?: ChildModePolicy;

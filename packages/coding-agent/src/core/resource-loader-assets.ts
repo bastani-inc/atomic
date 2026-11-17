@@ -27,27 +27,30 @@ async function existsAsync(path: string): Promise<boolean> {
 	}
 }
 
-function applySkillsResult(
+async function applySkillsResult(
 	loader: DefaultResourceLoader,
 	skillsResult: LoadSkillsResult,
 	metadataByPath?: Map<string, PathMetadata>,
-): void {
+): Promise<void> {
 	const state = resourceInternals(loader);
-	const withSourceInfo = (skill: Skill): Skill => ({
+	const withSourceInfo = async (skill: Skill): Promise<Skill> => ({
 		...skill,
 		sourceInfo:
-			findSourceInfoForPath(loader, skill.filePath, state.extensionSkillSourceInfos, metadataByPath) ??
+			(await findSourceInfoForPath(loader, skill.filePath, state.extensionSkillSourceInfos, metadataByPath)) ??
 			skill.sourceInfo ??
-			getDefaultSourceInfoForPath(loader, skill.filePath),
+			(await getDefaultSourceInfoForPath(loader, skill.filePath)),
 	});
 	const sourcedResult = {
-		skills: skillsResult.skills.map(withSourceInfo),
+		skills: await Promise.all(skillsResult.skills.map(withSourceInfo)),
 		diagnostics: skillsResult.diagnostics,
 	};
 	const resolvedSkills = state.skillsOverride ? state.skillsOverride(sourcedResult) : sourcedResult;
-	state.skills = resolvedSkills.skills.map(withSourceInfo);
-	const retainedNames = new Set(state.skills.map((skill) => skill.name));
-	const candidates = skillsResult.candidates.map(withSourceInfo).filter((skill) => retainedNames.has(skill.name));
+	const skills = await Promise.all(resolvedSkills.skills.map(withSourceInfo));
+	const retainedNames = new Set(skills.map((skill) => skill.name));
+	const candidates = (await Promise.all(skillsResult.candidates.map(withSourceInfo))).filter((skill) =>
+		retainedNames.has(skill.name),
+	);
+	state.skills = skills;
 	state.skillCatalog = buildSkillCatalog(candidates, state.skills);
 	state.skillDiagnostics = decorateSkillDiagnostics(resolvedSkills.diagnostics, state.skillCatalog);
 }
@@ -62,23 +65,25 @@ export async function updateSkillsFromPathsAsync(
 		state.noSkills && skillPaths.length === 0
 			? { skills: [], candidates: [], diagnostics: [] }
 			: await loadSkillsAsync({ cwd: state.cwd, agentDir: state.agentDir, skillPaths, includeDefaults: false });
-	applySkillsResult(loader, skillsResult, metadataByPath);
+	await applySkillsResult(loader, skillsResult, metadataByPath);
 }
 
-function applyPromptsResult(
+async function applyPromptsResult(
 	loader: DefaultResourceLoader,
 	promptsResult: { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] },
 	metadataByPath?: Map<string, PathMetadata>,
-): void {
+): Promise<void> {
 	const state = resourceInternals(loader);
 	const resolvedPrompts = state.promptsOverride ? state.promptsOverride(promptsResult) : promptsResult;
-	state.prompts = resolvedPrompts.prompts.map((prompt) => ({
-		...prompt,
-		sourceInfo:
-			findSourceInfoForPath(loader, prompt.filePath, state.extensionPromptSourceInfos, metadataByPath) ??
-			prompt.sourceInfo ??
-			getDefaultSourceInfoForPath(loader, prompt.filePath),
-	}));
+	state.prompts = await Promise.all(
+		resolvedPrompts.prompts.map(async (prompt) => ({
+			...prompt,
+			sourceInfo:
+				(await findSourceInfoForPath(loader, prompt.filePath, state.extensionPromptSourceInfos, metadataByPath)) ??
+				prompt.sourceInfo ??
+				(await getDefaultSourceInfoForPath(loader, prompt.filePath)),
+		})),
+	);
 	state.promptDiagnostics = resolvedPrompts.diagnostics;
 }
 
@@ -97,13 +102,15 @@ export async function updatePromptsFromPathsAsync(
 					promptPaths,
 					includeDefaults: false,
 				});
-	const sourcedPrompts = loaded.templates.map((prompt) => ({
-		...prompt,
-		sourceInfo:
-			findSourceInfoForPath(loader, prompt.filePath, state.extensionPromptSourceInfos, metadataByPath) ??
-			prompt.sourceInfo ??
-			getDefaultSourceInfoForPath(loader, prompt.filePath),
-	}));
+	const sourcedPrompts = await Promise.all(
+		loaded.templates.map(async (prompt) => ({
+			...prompt,
+			sourceInfo:
+				(await findSourceInfoForPath(loader, prompt.filePath, state.extensionPromptSourceInfos, metadataByPath)) ??
+				prompt.sourceInfo ??
+				(await getDefaultSourceInfoForPath(loader, prompt.filePath)),
+		})),
+	);
 	for (const prompt of sourcedPrompts) {
 		if (prompt.sourceInfo) state.extensionPromptSourceInfos.set(prompt.filePath, prompt.sourceInfo);
 	}
@@ -112,29 +119,29 @@ export async function updatePromptsFromPathsAsync(
 	const overlaps = state.extensionsResult.overlaps;
 	const extensionOverlaps = overlaps.filter((overlap) => overlap.resourceType !== "prompt");
 	overlaps.splice(0, overlaps.length, ...extensionOverlaps, ...deduped.overlaps);
-	applyPromptsResult(
+	await applyPromptsResult(
 		loader,
 		{ prompts: deduped.prompts, diagnostics: [...loaded.diagnostics, ...deduped.diagnostics] },
 		metadataByPath,
 	);
 }
 
-function applyThemesResult(
+async function applyThemesResult(
 	loader: DefaultResourceLoader,
 	themesResult: { themes: Theme[]; diagnostics: ResourceDiagnostic[] },
 	metadataByPath?: Map<string, PathMetadata>,
-): void {
+): Promise<void> {
 	const state = resourceInternals(loader);
 	const resolvedThemes = state.themesOverride ? state.themesOverride(themesResult) : themesResult;
-	state.themes = resolvedThemes.themes.map((theme) => {
+	for (const theme of resolvedThemes.themes) {
 		const sourcePath = theme.sourcePath;
 		theme.sourceInfo = sourcePath
-			? (findSourceInfoForPath(loader, sourcePath, state.extensionThemeSourceInfos, metadataByPath) ??
+			? ((await findSourceInfoForPath(loader, sourcePath, state.extensionThemeSourceInfos, metadataByPath)) ??
 				theme.sourceInfo ??
-				getDefaultSourceInfoForPath(loader, sourcePath))
+				(await getDefaultSourceInfoForPath(loader, sourcePath)))
 			: theme.sourceInfo;
-		return theme;
-	});
+	}
+	state.themes = [...resolvedThemes.themes];
 	state.themeDiagnostics = resolvedThemes.diagnostics;
 }
 
@@ -148,7 +155,7 @@ export async function updateThemesFromPathsAsync(
 		state.noThemes && themePaths.length === 0
 			? { themes: [], diagnostics: [] }
 			: loadAndDedupeThemes(await loadThemesAsync(loader, themePaths, false));
-	applyThemesResult(loader, themesResult, metadataByPath);
+	await applyThemesResult(loader, themesResult, metadataByPath);
 }
 
 function loadAndDedupeThemes(loaded: { themes: Theme[]; diagnostics: ResourceDiagnostic[] }): {

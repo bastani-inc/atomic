@@ -55,7 +55,7 @@ async function openSelector(initialModels: readonly Model<Api>[], options: OpenS
 					return snapshot;
 				},
 				refresh,
-				getCatalogInputsGeneration: () => 0,
+				readCatalogInputsKey: async () => "0",
 			},
 			setScopedModels,
 		},

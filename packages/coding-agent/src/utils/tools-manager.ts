@@ -1,20 +1,20 @@
-import { execFile, type SpawnSyncReturns, spawnSync } from "child_process";
+import { execFile, spawnSync } from "child_process";
 import { createHash, randomUUID } from "crypto";
+import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import {
-	chmodSync,
-	existsSync,
-	lstatSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	readlinkSync,
-	renameSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from "fs";
-import { writeFile } from "fs/promises";
+	access,
+	chmod,
+	lstat,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	readlink,
+	rename,
+	rm,
+	stat,
+	writeFile,
+} from "fs/promises";
 import { arch, hostname, platform } from "os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import lockfile from "proper-lockfile";
@@ -36,7 +36,7 @@ import {
 	isGitProvisionError,
 	type SerializedGitProvisionError,
 } from "./git-errors.ts";
-import { gitInstallCommand, type OsRelease, readOsRelease } from "./git-install-command.ts";
+import { gitInstallCommand, type OsRelease, readOsRelease, readOsReleaseAsync } from "./git-install-command.ts";
 import {
 	isManagedToolError,
 	ManagedToolDownloadError,
@@ -97,35 +97,42 @@ const TOOLS: Record<string, ToolConfig> = {
 	},
 };
 
-// Check if a command exists in PATH by trying to run it
-function commandExists(cmd: string): boolean {
+async function pathExists(targetPath: string): Promise<boolean> {
 	try {
-		const result = spawnSync(cmd, ["--version"], { stdio: "pipe", env: createChildProcessEnvironment() });
-		// Check for ENOENT error (command not found)
-		return result.error === undefined || result.error === null;
+		await access(targetPath);
+		return true;
 	} catch {
 		return false;
 	}
 }
 
+// Check if a command exists in PATH by trying to run it
+function commandExists(cmd: string): Promise<boolean> {
+	return new Promise((resolvePromise) => {
+		execFile(cmd, ["--version"], { env: createChildProcessEnvironment() }, (error) => {
+			resolvePromise(error === null || error === undefined);
+		});
+	});
+}
+
 // Get the path to a tool (system-wide or in our tools dir)
-export function getToolPath(tool: "fd" | "rg"): string | null;
+export function getToolPath(tool: "fd" | "rg"): Promise<string | null>;
 export function getToolPath(tool: "git", options?: ResolveGitOptions): Promise<string>;
-export function getToolPath(tool: "fd" | "rg" | "git", options?: ResolveGitOptions): string | null | Promise<string> {
-	if (tool === "git") return resolveGit(options).then((git) => git.path);
+export async function getToolPath(tool: "fd" | "rg" | "git", options?: ResolveGitOptions): Promise<string | null> {
+	if (tool === "git") return (await resolveGit(options)).path;
 	const config = TOOLS[tool];
 	if (!config) return null;
 
 	// Check our tools directory first
 	const localPath = join(TOOLS_DIR, config.binaryName + (platform() === "win32" ? ".exe" : ""));
-	if (existsSync(localPath)) {
+	if (await pathExists(localPath)) {
 		return localPath;
 	}
 
 	// Check system PATH - if found, just return the command name (it's in PATH)
 	const systemBinaryNames = config.systemBinaryNames ?? [config.binaryName];
 	for (const systemBinaryName of systemBinaryNames) {
-		if (commandExists(systemBinaryName)) {
+		if (await commandExists(systemBinaryName)) {
 			return systemBinaryName;
 		}
 	}
@@ -219,14 +226,14 @@ async function downloadFile(tool: ManagedToolName, url: string, dest: string): P
 	await writeFile(dest, archive);
 }
 
-function findBinaryRecursively(rootDir: string, binaryFileName: string): string | null {
+async function findBinaryRecursively(rootDir: string, binaryFileName: string): Promise<string | null> {
 	const stack: string[] = [rootDir];
 
 	while (stack.length > 0) {
 		const currentDir = stack.pop();
 		if (!currentDir) continue;
 
-		const entries = readdirSync(currentDir, { withFileTypes: true });
+		const entries = await readdir(currentDir, { withFileTypes: true });
 		for (const entry of entries) {
 			const fullPath = join(currentDir, entry.name);
 			if (entry.isFile() && entry.name === binaryFileName) {
@@ -241,60 +248,76 @@ function findBinaryRecursively(rootDir: string, binaryFileName: string): string 
 	return null;
 }
 
-function formatSpawnFailure(result: SpawnSyncReturns<Buffer>): string {
-	if (result.error?.message) {
-		return result.error.message;
+function formatExecFileFailure(
+	error: Error & { code?: number | string | null },
+	stdout: string,
+	stderr: string,
+): string {
+	const trimmedStderr = stderr.trim();
+	if (trimmedStderr) {
+		return trimmedStderr;
 	}
-	const stderr = result.stderr?.toString().trim();
-	if (stderr) {
-		return stderr;
+	const trimmedStdout = stdout.trim();
+	if (trimmedStdout) {
+		return trimmedStdout;
 	}
-	const stdout = result.stdout?.toString().trim();
-	if (stdout) {
-		return stdout;
+	if (typeof error.code === "number") {
+		return `exit status ${error.code}`;
 	}
-	return `exit status ${result.status ?? "unknown"}`;
+	if (error.message) {
+		return error.message;
+	}
+	return "exit status unknown";
 }
 
-function runExtractionCommand(command: string, args: string[]): string | null {
-	const result = spawnSync(command, args, { stdio: "pipe", env: createChildProcessEnvironment() });
-	if (!result.error && result.status === 0) {
-		return null;
-	}
-	return `${command}: ${formatSpawnFailure(result)}`;
+function runExtractionCommand(command: string, args: string[]): Promise<string | null> {
+	return new Promise((resolvePromise) => {
+		execFile(command, args, { env: createChildProcessEnvironment() }, (error, stdout, stderr) => {
+			if (!error) {
+				resolvePromise(null);
+				return;
+			}
+			resolvePromise(`${command}: ${formatExecFileFailure(error, String(stdout ?? ""), String(stderr ?? ""))}`);
+		});
+	});
 }
 
-function extractTarGzArchive(archivePath: string, extractDir: string, assetName: string): void {
-	const failure = runExtractionCommand("tar", ["xzf", archivePath, "-C", extractDir]);
+async function extractTarGzArchive(archivePath: string, extractDir: string, assetName: string): Promise<void> {
+	const failure = await runExtractionCommand("tar", ["xzf", archivePath, "-C", extractDir]);
 	if (failure) {
 		throw new Error(`Failed to extract ${assetName}: ${failure}`);
 	}
 }
 
-function getWindowsTarCommand(): string {
+async function getWindowsTarCommand(): Promise<string> {
 	const systemRoot = process.env.SystemRoot;
 	if (systemRoot) {
 		const systemTar = join(systemRoot, "System32", "tar.exe");
-		if (existsSync(systemTar)) {
+		if (await pathExists(systemTar)) {
 			return systemTar;
 		}
 	}
 	return "tar.exe";
 }
 
-function extractZipArchive(archivePath: string, extractDir: string, assetName: string): void {
+async function extractZipArchive(archivePath: string, extractDir: string, assetName: string): Promise<void> {
 	const failures: string[] = [];
 
 	if (platform() === "win32") {
 		// Windows ships bsdtar as tar.exe, which supports zip files. Prefer the
 		// System32 binary over Git Bash's GNU tar, which does not handle zip archives.
-		const tarFailure = runExtractionCommand(getWindowsTarCommand(), ["xf", archivePath, "-C", extractDir]);
+		const tarFailure = await runExtractionCommand(await getWindowsTarCommand(), [
+			"xf",
+			archivePath,
+			"-C",
+			extractDir,
+		]);
 		if (!tarFailure) return;
 		failures.push(tarFailure);
 
 		const script =
 			"& { param($archive, $destination) $ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force }";
-		const powershellFailure = runExtractionCommand("powershell.exe", [
+		const powershellFailure = await runExtractionCommand("powershell.exe", [
 			"-NoLogo",
 			"-NoProfile",
 			"-NonInteractive",
@@ -308,11 +331,11 @@ function extractZipArchive(archivePath: string, extractDir: string, assetName: s
 		if (!powershellFailure) return;
 		failures.push(powershellFailure);
 	} else {
-		const unzipFailure = runExtractionCommand("unzip", ["-q", archivePath, "-d", extractDir]);
+		const unzipFailure = await runExtractionCommand("unzip", ["-q", archivePath, "-d", extractDir]);
 		if (!unzipFailure) return;
 		failures.push(unzipFailure);
 
-		const tarFailure = runExtractionCommand("tar", ["xf", archivePath, "-C", extractDir]);
+		const tarFailure = await runExtractionCommand("tar", ["xf", archivePath, "-C", extractDir]);
 		if (!tarFailure) return;
 		failures.push(tarFailure);
 	}
@@ -338,7 +361,7 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	const assetName = config.getAssetName(version, target);
 
 	// Create tools directory
-	mkdirSync(TOOLS_DIR, { recursive: true });
+	await mkdir(TOOLS_DIR, { recursive: true });
 
 	const downloadUrl = `https://github.com/${config.repo}/releases/download/${config.tagPrefix}${version}/${assetName}`;
 	const archivePath = join(TOOLS_DIR, assetName);
@@ -354,13 +377,13 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 		TOOLS_DIR,
 		`extract_tmp_${config.binaryName}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
 	);
-	mkdirSync(extractDir, { recursive: true });
+	await mkdir(extractDir, { recursive: true });
 
 	try {
 		if (assetName.endsWith(".tar.gz")) {
-			extractTarGzArchive(archivePath, extractDir, assetName);
+			await extractTarGzArchive(archivePath, extractDir, assetName);
 		} else if (assetName.endsWith(".zip")) {
-			extractZipArchive(archivePath, extractDir, assetName);
+			await extractZipArchive(archivePath, extractDir, assetName);
 		} else {
 			throw new Error(`Unsupported archive format: ${assetName}`);
 		}
@@ -370,26 +393,32 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 		const binaryFileName = config.binaryName + binaryExt;
 		const extractedDir = join(extractDir, assetName.replace(/\.(tar\.gz|zip)$/, ""));
 		const extractedBinaryCandidates = [join(extractedDir, binaryFileName), join(extractDir, binaryFileName)];
-		let extractedBinary = extractedBinaryCandidates.find((candidate) => existsSync(candidate));
+		let extractedBinary: string | undefined;
+		for (const candidate of extractedBinaryCandidates) {
+			if (await pathExists(candidate)) {
+				extractedBinary = candidate;
+				break;
+			}
+		}
 
 		if (!extractedBinary) {
-			extractedBinary = findBinaryRecursively(extractDir, binaryFileName) ?? undefined;
+			extractedBinary = (await findBinaryRecursively(extractDir, binaryFileName)) ?? undefined;
 		}
 
 		if (extractedBinary) {
-			renameSync(extractedBinary, binaryPath);
+			await rename(extractedBinary, binaryPath);
 		} else {
 			throw new Error(`Binary not found in archive: expected ${binaryFileName} under ${extractDir}`);
 		}
 
 		// Make executable (Unix only)
 		if (plat !== "win32") {
-			chmodSync(binaryPath, 0o755);
+			await chmod(binaryPath, 0o755);
 		}
 	} finally {
 		// Cleanup
-		rmSync(archivePath, { force: true });
-		rmSync(extractDir, { recursive: true, force: true });
+		await rm(archivePath, { force: true });
+		await rm(extractDir, { recursive: true, force: true });
 	}
 
 	return binaryPath;
@@ -426,7 +455,7 @@ export async function ensureTool(
 ): Promise<string | undefined> {
 	if (tool === "git") return ensureGit(onStatus);
 
-	const existingPath = getToolPath(tool);
+	const existingPath = await getToolPath(tool);
 	if (existingPath) {
 		return existingPath;
 	}
@@ -673,6 +702,15 @@ function muslLoaderPresent(): boolean {
 	);
 }
 
+async function muslLoaderPresentAsync(): Promise<boolean> {
+	for (const directory of ["/lib", "/usr/lib"]) {
+		if (!(await pathExists(directory))) continue;
+		const entries = await readdir(directory);
+		if (entries.some((name) => name.startsWith("ld-musl-"))) return true;
+	}
+	return false;
+}
+
 /** glibc from the runtime report; otherwise musl when its loader exists. */
 export function detectLinuxLibc(): GitLibc {
 	if (detectedLibc !== undefined) return detectedLibc;
@@ -687,6 +725,19 @@ export function detectLinuxLibc(): GitLibc {
 	return detectedLibc;
 }
 
+async function detectLinuxLibcAsync(): Promise<GitLibc> {
+	if (detectedLibc !== undefined) return detectedLibc;
+	const report = process.report?.getReport() as { readonly header?: { readonly glibcVersionRuntime?: string } };
+	const glibcVersion = report?.header?.glibcVersionRuntime;
+	detectedLibc =
+		typeof glibcVersion === "string"
+			? { family: "glibc", version: glibcVersion }
+			: (await muslLoaderPresentAsync())
+				? { family: "musl" }
+				: { family: "glibc" };
+	return detectedLibc;
+}
+
 /** The command that installs git on this machine, as an error field (os-release is read once per process). */
 function installCommandField(): { readonly installCommand?: string } {
 	const plat = platform();
@@ -694,9 +745,23 @@ function installCommandField(): { readonly installCommand?: string } {
 	return installCommand === undefined ? {} : { installCommand };
 }
 
+async function installCommandFieldAsync(): Promise<{ readonly installCommand?: string }> {
+	const plat = platform();
+	const installCommand = gitInstallCommand(plat, plat === "linux" ? await readOsReleaseAsync() : undefined);
+	return installCommand === undefined ? {} : { installCommand };
+}
+
 /** Where this error happened, and the command that installs git here. */
 function hostPlatform(): { readonly platform: string; readonly arch: string; readonly installCommand?: string } {
 	return { platform: platform(), arch: arch(), ...installCommandField() };
+}
+
+async function hostPlatformAsync(): Promise<{
+	readonly platform: string;
+	readonly arch: string;
+	readonly installCommand?: string;
+}> {
+	return { platform: platform(), arch: arch(), ...(await installCommandFieldAsync()) };
 }
 
 function currentGitTarget(): GitTargetResolution {
@@ -707,6 +772,17 @@ function currentGitTarget(): GitTargetResolution {
 		plat === "linux" ? detectLinuxLibc() : undefined,
 		gitProvisionSettings.release,
 		plat === "linux" ? readOsRelease() : undefined,
+	);
+}
+
+async function currentGitTargetAsync(): Promise<GitTargetResolution> {
+	const plat = platform();
+	return getGitDistributionTarget(
+		plat,
+		arch(),
+		plat === "linux" ? await detectLinuxLibcAsync() : undefined,
+		gitProvisionSettings.release,
+		plat === "linux" ? await readOsReleaseAsync() : undefined,
 	);
 }
 
@@ -811,6 +887,34 @@ function inspectSystemGitCandidate(candidate: string, plat: string): SystemGitCa
 	}
 }
 
+async function inspectSystemGitCandidateAsync(
+	candidate: string,
+	plat: string,
+): Promise<SystemGitCandidate | undefined> {
+	try {
+		const stats = await stat(candidate).catch((error: unknown) => {
+			if (errnoCode(error) === "ENOENT" || errnoCode(error) === "ENOTDIR") return undefined;
+			throw error;
+		});
+		if (stats?.isFile() !== true || (plat !== "win32" && (stats.mode & 0o111) === 0)) return undefined;
+		return {
+			path: candidate,
+			signature: JSON.stringify([
+				candidate,
+				stats.dev,
+				stats.ino,
+				stats.size,
+				stats.mtimeMs,
+				stats.ctimeMs,
+				stats.mode,
+			]),
+		};
+	} catch (error) {
+		if (errnoCode(error) === "EACCES" || errnoCode(error) === "EPERM") return undefined;
+		throw error;
+	}
+}
+
 /**
  * The first git in an absolute PATH directory, ignoring Atomic's own portable copy. Empty and relative entries name
  * the working directory, which may be an untrusted repository, so they are never searched.
@@ -827,12 +931,51 @@ function findSystemGit(pathValue: string, portableRoot: string, plat: string): S
 	return undefined;
 }
 
+async function findSystemGitAsync(
+	pathValue: string,
+	portableRoot: string,
+	plat: string,
+): Promise<SystemGitCandidate | undefined> {
+	const executable = plat === "win32" ? "git.exe" : "git";
+	for (const entry of pathValue.split(delimiter)) {
+		if (!isAbsolute(entry)) continue;
+		const directory = resolve(entry);
+		if (isWithin(directory, portableRoot)) continue;
+		const candidate = await inspectSystemGitCandidateAsync(join(directory, executable), plat);
+		if (candidate !== undefined) return candidate;
+	}
+	return undefined;
+}
+
 function probeGitVersion(executable: string, overrides: Record<string, string> | undefined): string | undefined {
 	const result = spawnSync(executable, ["--version"], {
 		timeout: GIT_PROBE_TIMEOUT_MS,
 		env: createGitEnvironment(overrides, createChildProcessEnvironment()),
 	});
 	return result.status === 0 ? parseGitVersion(String(result.stdout)) : undefined;
+}
+
+function probeGitVersionAsync(
+	executable: string,
+	overrides: Record<string, string> | undefined,
+): Promise<string | undefined> {
+	return new Promise((resolvePromise) => {
+		execFile(
+			executable,
+			["--version"],
+			{
+				timeout: GIT_PROBE_TIMEOUT_MS,
+				env: createGitEnvironment(overrides, createChildProcessEnvironment()),
+			},
+			(error, stdout) => {
+				if (error !== null) {
+					resolvePromise(undefined);
+					return;
+				}
+				resolvePromise(parseGitVersion(String(stdout)));
+			},
+		);
+	});
 }
 
 /** Undefined when no git is on PATH. */
@@ -879,6 +1022,26 @@ function probeSystemGit(): SystemGitProbe {
 	return probe;
 }
 
+async function probeSystemGitAsync(): Promise<SystemGitProbe> {
+	const pathValue = pathValueOf(process.env);
+	const root = getGitInstallDir();
+	const key = `${root}\0${pathValue}`;
+	const cached = systemGitProbes.get(key);
+	const candidate = await findSystemGitAsync(pathValue, root, platform());
+	if (candidate === undefined) return undefined;
+	if (cached?.signature === candidate.signature) return cached.probe;
+	const { path, signature } = candidate;
+	const version = await probeGitVersionAsync(path, undefined);
+	const probe: Exclude<SystemGitProbe, undefined> =
+		version === undefined
+			? { kind: "rejected", rejected: { path, problem: "probe-failed" } }
+			: compareVersions(version, GIT_MINIMUM_VERSION) < 0
+				? { kind: "rejected", rejected: { path, problem: "below-minimum", version } }
+				: { kind: "usable", path, version };
+	systemGitProbes.set(key, { probe, signature });
+	return probe;
+}
+
 const GIT_RELEASE_MARKER = ".atomic-git-release.json";
 
 /** What an installed distribution records about the pinned release it came from. */
@@ -910,9 +1073,23 @@ function readReleaseMarker(layout: GitDistributionLayout): GitReleaseMarker | un
 	}
 }
 
+async function readReleaseMarkerAsync(layout: GitDistributionLayout): Promise<GitReleaseMarker | undefined> {
+	try {
+		return JSON.parse(await readFile(join(layout.root, GIT_RELEASE_MARKER), "utf-8")) as GitReleaseMarker;
+	} catch {
+		return undefined;
+	}
+}
+
 function isCurrentRelease(layout: GitDistributionLayout, target: GitDistributionTarget): boolean {
 	const expected = markerOf(target);
 	const recorded = readReleaseMarker(layout);
+	return recorded?.tag === expected.tag && recorded.asset === expected.asset && recorded.sha256 === expected.sha256;
+}
+
+async function isCurrentReleaseAsync(layout: GitDistributionLayout, target: GitDistributionTarget): Promise<boolean> {
+	const expected = markerOf(target);
+	const recorded = await readReleaseMarkerAsync(layout);
 	return recorded?.tag === expected.tag && recorded.asset === expected.asset && recorded.sha256 === expected.sha256;
 }
 
@@ -924,6 +1101,18 @@ function probeProvisionedGit(layout: GitDistributionLayout): string | undefined 
 	const cached = provisionedGitVersions.get(layout.executable);
 	if (cached !== undefined) return cached;
 	const version = probeGitVersion(layout.executable, portableGitEnv(layout, process.env));
+	if (version !== undefined) provisionedGitVersions.set(layout.executable, version);
+	return version;
+}
+
+async function probeProvisionedGitAsync(layout: GitDistributionLayout): Promise<string | undefined> {
+	if (!(await pathExists(layout.executable))) {
+		provisionedGitVersions.delete(layout.executable);
+		return undefined;
+	}
+	const cached = provisionedGitVersions.get(layout.executable);
+	if (cached !== undefined) return cached;
+	const version = await probeGitVersionAsync(layout.executable, portableGitEnv(layout, process.env));
 	if (version !== undefined) provisionedGitVersions.set(layout.executable, version);
 	return version;
 }
@@ -954,9 +1143,35 @@ function selectedReleaseLayout(): GitDistributionLayout | undefined {
 	return GIT_RELEASE_NAME.test(name) ? currentGitLayout(join(gitReleasesDir(), name)) : undefined;
 }
 
+async function selectedReleaseLayoutAsync(): Promise<GitDistributionLayout | undefined> {
+	let name: string;
+	try {
+		name = (await readFile(join(gitReleasesDir(), GIT_SELECTED_RELEASE), "utf-8")).trim();
+	} catch (error) {
+		if (errnoCode(error) === "ENOENT" || errnoCode(error) === "ENOTDIR") return undefined;
+		throw new GitUnavailableError(
+			{
+				code: "install-failed",
+				phase: "verify",
+				asset: join(GIT_RELEASES_DIR, GIT_SELECTED_RELEASE),
+				installDir: getGitInstallDir(),
+				detail: "the selected Git release marker must be a readable file",
+				...(await hostPlatformAsync()),
+			},
+			{ cause: error },
+		);
+	}
+	return GIT_RELEASE_NAME.test(name) ? currentGitLayout(join(gitReleasesDir(), name)) : undefined;
+}
+
 /** Provisioned releases, newest publication first. Published releases are never moved or removed. */
 function provisionedGitLayouts(): readonly GitDistributionLayout[] {
 	const selected = selectedReleaseLayout();
+	return selected === undefined ? [currentGitLayout()] : [selected, currentGitLayout()];
+}
+
+async function provisionedGitLayoutsAsync(): Promise<readonly GitDistributionLayout[]> {
+	const selected = await selectedReleaseLayoutAsync();
 	return selected === undefined ? [currentGitLayout()] : [selected, currentGitLayout()];
 }
 
@@ -966,22 +1181,22 @@ interface ProvisionedGit {
 }
 
 /** A working install of the pinned release; an install of another release does not count. */
-function findCurrentGit(target: GitDistributionTarget): ProvisionedGit | undefined {
-	for (const layout of provisionedGitLayouts()) {
-		if (!isCurrentRelease(layout, target)) continue;
-		const version = probeProvisionedGit(layout);
+async function findCurrentGitAsync(target: GitDistributionTarget): Promise<ProvisionedGit | undefined> {
+	for (const layout of await provisionedGitLayoutsAsync()) {
+		if (!(await isCurrentReleaseAsync(layout, target))) continue;
+		const version = await probeProvisionedGitAsync(layout);
 		if (version !== undefined) return { layout, version };
 	}
 	return undefined;
 }
 
-function findRetainedGit(target: GitDistributionTarget): ProvisionedGit | undefined {
+async function findRetainedGitAsync(target: GitDistributionTarget): Promise<ProvisionedGit | undefined> {
 	let names: string[];
 	try {
-		names = readdirSync(gitReleasesDir());
+		names = await readdir(gitReleasesDir());
 	} catch (error) {
 		if (errnoCode(error) === "ENOENT" || errnoCode(error) === "ENOTDIR") return undefined;
-		throw installFailed(
+		throw await installFailedAsync(
 			"verify",
 			target,
 			currentGitLayout(),
@@ -992,8 +1207,8 @@ function findRetainedGit(target: GitDistributionTarget): ProvisionedGit | undefi
 	for (const name of names) {
 		if (!GIT_RELEASE_NAME.test(name)) continue;
 		const layout = currentGitLayout(join(gitReleasesDir(), name));
-		if (!isCurrentRelease(layout, target)) continue;
-		const version = probeProvisionedGit(layout);
+		if (!(await isCurrentReleaseAsync(layout, target))) continue;
+		const version = await probeProvisionedGitAsync(layout);
 		if (version !== undefined) return { layout, version };
 	}
 	return undefined;
@@ -1002,10 +1217,24 @@ function findRetainedGit(target: GitDistributionTarget): ProvisionedGit | undefi
 /** The working install of the pinned release, else the newest working install of another release. */
 function findProvisionedGit(target: GitTargetResolution): ProvisionedGit | undefined {
 	if (!target.supported) return undefined;
-	const current = findCurrentGit(target.target);
-	if (current !== undefined) return current;
+	for (const layout of provisionedGitLayouts()) {
+		if (!isCurrentRelease(layout, target.target)) continue;
+		const version = probeProvisionedGit(layout);
+		if (version !== undefined) return { layout, version };
+	}
 	for (const layout of provisionedGitLayouts()) {
 		const version = probeProvisionedGit(layout);
+		if (version !== undefined) return { layout, version };
+	}
+	return undefined;
+}
+
+async function findProvisionedGitAsync(target: GitTargetResolution): Promise<ProvisionedGit | undefined> {
+	if (!target.supported) return undefined;
+	const current = await findCurrentGitAsync(target.target);
+	if (current !== undefined) return current;
+	for (const layout of await provisionedGitLayoutsAsync()) {
+		const version = await probeProvisionedGitAsync(layout);
 		if (version !== undefined) return { layout, version };
 	}
 	return undefined;
@@ -1056,6 +1285,16 @@ function locateGit(): GitLocation {
 	return { found: false, system, target };
 }
 
+async function locateGitAsync(): Promise<GitLocation> {
+	const system = await probeSystemGitAsync();
+	if (system?.kind === "usable")
+		return { found: true, selection: { path: system.path, source: "system", version: system.version } };
+	const target = await currentGitTargetAsync();
+	const provisioned = await findProvisionedGitAsync(target);
+	if (provisioned !== undefined) return { found: true, selection: provisionedSelection(provisioned) };
+	return { found: false, system, target };
+}
+
 function withRejectedSystemGit(fields: GitUnavailableFields, system: SystemGitProbe): GitUnavailableFields {
 	return system?.kind === "rejected" ? { ...fields, systemGit: system.rejected } : fields;
 }
@@ -1066,6 +1305,18 @@ function blockedProvisionFields(location: Extract<GitLocation, { found: false }>
 	if (isOfflineModeEnabled())
 		return withRejectedSystemGit(
 			{ code: "offline", offlineVariable: ENV_OFFLINE, ...hostPlatform() },
+			location.system,
+		);
+	return undefined;
+}
+
+async function blockedProvisionFieldsAsync(
+	location: Extract<GitLocation, { found: false }>,
+): Promise<GitUnavailableFields | undefined> {
+	if (!location.target.supported) return withRejectedSystemGit(location.target.fields, location.system);
+	if (isOfflineModeEnabled())
+		return withRejectedSystemGit(
+			{ code: "offline", offlineVariable: ENV_OFFLINE, ...(await hostPlatformAsync()) },
 			location.system,
 		);
 	return undefined;
@@ -1093,6 +1344,22 @@ function selectGitSync(): GitSelection {
 	);
 }
 
+async function selectInstalledGitAsync(): Promise<GitSelection> {
+	const location = await locateGitAsync();
+	if (location.found) return location.selection;
+	const blocked = await blockedProvisionFieldsAsync(location);
+	if (blocked !== undefined) throw new GitUnavailableError(blocked);
+	throw (
+		lastProvisionFailure ??
+		new GitUnavailableError(
+			withRejectedSystemGit(
+				{ code: "not-installed", installDir: getGitInstallDir(), ...(await hostPlatformAsync()) },
+				location.system,
+			),
+		)
+	);
+}
+
 /**
  * Resolve git without downloading: a system git at or above {@link GIT_MINIMUM_VERSION}, else the provisioned copy.
  * When neither exists it throws, in this order: the {@link GitUnavailableError} for a platform or offline mode that
@@ -1103,6 +1370,13 @@ function selectGitSync(): GitSelection {
  */
 export function resolveGitSync(): ResolvedGit {
 	return toResolvedGit(selectGitSync());
+}
+
+/**
+ * Asynchronous equivalent of {@link resolveGitSync}: resolves an installed system or provisioned git without downloading.
+ */
+export async function resolveInstalledGit(): Promise<ResolvedGit> {
+	return toResolvedGit(await selectInstalledGitAsync());
 }
 
 function validateResolveGitOptions(options: ResolveGitOptions): void {
@@ -1117,13 +1391,13 @@ function validateResolveGitOptions(options: ResolveGitOptions): void {
 let sweptAbandonedInstalls = false;
 
 /** Once per process, remove the staging directories that exited installers left behind. */
-function sweepAbandonedInstallsOnce(options: ResolveGitOptions): void {
+async function sweepAbandonedInstallsOnce(options: ResolveGitOptions): Promise<void> {
 	if (sweptAbandonedInstalls) return;
 	sweptAbandonedInstalls = true;
 	const binDir = dirname(getGitInstallDir());
-	if (!existsSync(binDir)) return;
+	if (!(await pathExists(binDir))) return;
 	try {
-		removeAbandonedStagingDirectories(binDir);
+		await removeAbandonedStagingDirectories(binDir);
 	} catch (error) {
 		options.onStatus?.({
 			type: "warning",
@@ -1135,13 +1409,19 @@ function sweepAbandonedInstallsOnce(options: ResolveGitOptions): void {
 async function selectGit(options: ResolveGitOptions): Promise<GitSelection> {
 	validateResolveGitOptions(options);
 	options.signal?.throwIfAborted();
-	sweepAbandonedInstallsOnce(options);
-	const location = locateGit();
+	if (sharedGitProvision !== undefined && !sharedGitProvision.controller.signal.aborted) {
+		return provisionedSelection(await joinExistingGitProvision(sharedGitProvision, options));
+	}
+	await sweepAbandonedInstallsOnce(options);
+	options.signal?.throwIfAborted();
+	const location = await locateGitAsync();
+	options.signal?.throwIfAborted();
 	if (location.found)
 		return location.selection.layout === undefined
 			? location.selection
 			: refreshStaleInstall(location.selection, options);
-	const blocked = blockedProvisionFields(location);
+	const blocked = await blockedProvisionFieldsAsync(location);
+	options.signal?.throwIfAborted();
 	if (blocked !== undefined) throw new GitUnavailableError(blocked);
 	const target = (location.target as Extract<GitTargetResolution, { supported: true }>).target;
 	return provisionedSelection(await joinGitProvision(target, location.system, options));
@@ -1167,20 +1447,20 @@ function keepStaleInstall(selection: GitSelection, error: GitProvisionError, opt
  */
 async function refreshStaleInstall(selection: GitSelection, options: ResolveGitOptions): Promise<GitSelection> {
 	const layout = selection.layout!;
-	const target = currentGitTarget();
-	if (!target.supported || isCurrentRelease(layout, target.target)) return selection;
+	const target = await currentGitTargetAsync();
+	if (!target.supported || (await isCurrentReleaseAsync(layout, target.target))) return selection;
 	const tag = gitProvisionSettings.release.tag;
 	if (isOfflineModeEnabled()) {
 		if (staleRefresh?.tag === tag && staleRefresh.error.code === "offline") return selection;
 		return keepStaleInstall(
 			selection,
-			new GitUnavailableError({ code: "offline", offlineVariable: ENV_OFFLINE, ...hostPlatform() }),
+			new GitUnavailableError({ code: "offline", offlineVariable: ENV_OFFLINE, ...(await hostPlatformAsync()) }),
 			options,
 		);
 	}
 	if (staleRefresh?.tag === tag && staleRefresh.error.code !== "offline") return selection;
 	try {
-		const provisioned = await joinGitProvision(target.target, probeSystemGit(), options);
+		const provisioned = await joinGitProvision(target.target, await probeSystemGitAsync(), options);
 		staleRefresh = undefined;
 		return provisionedSelection(provisioned);
 	} catch (error) {
@@ -1288,6 +1568,22 @@ export function getGitShellEnvironment(
 	}
 }
 
+export async function getGitShellEnvironmentAsync(
+	baseEnv: NodeJS.ProcessEnv,
+): Promise<{ readonly pathEntry: string; readonly env: Record<string, string> } | undefined> {
+	if ((await findSystemGitAsync(pathValueOf(baseEnv), getGitInstallDir(), platform())) !== undefined) return undefined;
+	try {
+		const provisioned = await findProvisionedGitAsync(await currentGitTargetAsync());
+		if (provisioned === undefined) return undefined;
+		const { layout } = provisioned;
+		return { pathEntry: layout.shellPathEntry, env: portableGitEnv(layout, baseEnv) };
+	} catch (error) {
+		if (!isGitProvisionError(error)) throw error;
+		lastProvisionFailure = error;
+		return undefined;
+	}
+}
+
 interface SharedGitProvision {
 	readonly promise: Promise<ProvisionedGit>;
 	readonly controller: AbortController;
@@ -1329,16 +1625,9 @@ function clearSharedGitProvision(shared: SharedGitProvision): void {
 	if (sharedGitProvision === shared) sharedGitProvision = undefined;
 }
 
-/** Join the in-process download, or start it. The download stops only when every waiter has cancelled. */
-function joinGitProvision(
-	target: GitDistributionTarget,
-	system: SystemGitProbe,
-	options: ResolveGitOptions,
-): Promise<ProvisionedGit> {
-	if (sharedGitProvision === undefined || sharedGitProvision.controller.signal.aborted)
-		sharedGitProvision = startGitProvision(target, system);
-	const shared = sharedGitProvision;
+function joinExistingGitProvision(shared: SharedGitProvision, options: ResolveGitOptions): Promise<ProvisionedGit> {
 	const { signal, onStatus } = options;
+	if (signal?.aborted) return Promise.reject(signal.reason);
 	if (onStatus !== undefined) shared.listeners.set(onStatus, (shared.listeners.get(onStatus) ?? 0) + 1);
 	shared.waiters += 1;
 	return new Promise<ProvisionedGit>((resolvePromise, rejectPromise) => {
@@ -1373,20 +1662,32 @@ function joinGitProvision(
 	});
 }
 
-function installFailed(
+/** Join the in-process download, or start it. The download stops only when every waiter has cancelled. */
+function joinGitProvision(
+	target: GitDistributionTarget,
+	system: SystemGitProbe,
+	options: ResolveGitOptions,
+): Promise<ProvisionedGit> {
+	options.signal?.throwIfAborted();
+	if (sharedGitProvision === undefined || sharedGitProvision.controller.signal.aborted)
+		sharedGitProvision = startGitProvision(target, system);
+	return joinExistingGitProvision(sharedGitProvision, options);
+}
+
+async function installFailedAsync(
 	phase: GitInstallPhase,
 	target: GitDistributionTarget,
 	layout: GitDistributionLayout,
 	cause: unknown,
 	detail?: string,
-): GitUnavailableError {
+): Promise<GitUnavailableError> {
 	return new GitUnavailableError(
 		{
 			code: "install-failed",
 			phase,
 			asset: target.asset,
 			installDir: layout.root,
-			...hostPlatform(),
+			...(await hostPlatformAsync()),
 			...(detail === undefined ? {} : { detail }),
 		},
 		cause === undefined ? undefined : { cause },
@@ -1439,17 +1740,19 @@ async function acquireGitInstallLock(
 			});
 			return { kind: "held", release, compromised: () => compromised };
 		} catch (error) {
-			if (errnoCode(error) !== "ELOCKED") throw installFailed("stage", target, layout, error, "install lock");
+			if (errnoCode(error) !== "ELOCKED")
+				throw await installFailedAsync("stage", target, layout, error, "install lock");
 		}
-		const provisioned = findCurrentGit(target);
+		const provisioned = await findCurrentGitAsync(target);
 		if (provisioned !== undefined) return { kind: "installed", provisioned };
 		const now = performance.now();
-		const mtimeMs = statSync(lockPath, { throwIfNoEntry: false })?.mtimeMs;
+		const lockStats = await stat(lockPath).catch(() => undefined);
+		const mtimeMs = lockStats?.mtimeMs;
 		if (mtimeMs !== observedMtimeMs) {
 			observedMtimeMs = mtimeMs;
 			observedSince = now;
 		} else if (mtimeMs !== undefined && now - observedSince >= gitProvisionSettings.lockStaleMs) {
-			rmSync(lockPath, { recursive: true, force: true });
+			await rm(lockPath, { recursive: true, force: true });
 		}
 		const elapsedMs = Math.round(now - startedAt);
 		if (elapsedMs >= gitProvisionSettings.lockWaitTimeoutMs)
@@ -1457,7 +1760,7 @@ async function acquireGitInstallLock(
 				phase: "lock",
 				timeoutMs: gitProvisionSettings.lockWaitTimeoutMs,
 				elapsedMs,
-				...installCommandField(),
+				...(await installCommandFieldAsync()),
 			});
 		if (!announced) {
 			announced = true;
@@ -1486,17 +1789,19 @@ const PID_NAMESPACE_LINK = "/proc/self/ns/pid";
  * Staging names carry a tag of the host and PID namespace plus the pid, so a sweep never judges an installer whose
  * pid it cannot see, such as one in another container sharing the directory.
  */
-function stagingOwnerTag(): string {
-	const pidNamespace = existsSync(PID_NAMESPACE_LINK) ? readlinkSync(PID_NAMESPACE_LINK) : "";
+async function stagingOwnerTag(): Promise<string> {
+	const pidNamespace = (await pathExists(PID_NAMESPACE_LINK))
+		? await readlink(PID_NAMESPACE_LINK).catch(() => "")
+		: "";
 	return createHash("sha256").update(`${hostname()}\0${pidNamespace}`).digest("hex").slice(0, 8);
 }
 
-function removeAbandonedStagingDirectories(binDir: string): void {
-	const host = stagingOwnerTag();
-	for (const entry of readdirSync(binDir)) {
+async function removeAbandonedStagingDirectories(binDir: string): Promise<void> {
+	const host = await stagingOwnerTag();
+	for (const entry of await readdir(binDir)) {
 		const owner = /^\.git-staging-([0-9a-f]{8})-(\d+)-/.exec(entry);
 		if (owner === null || owner[1] !== host || isProcessAlive(Number(owner[2]))) continue;
-		rmSync(join(binDir, entry), { recursive: true, force: true });
+		await rm(join(binDir, entry), { recursive: true, force: true });
 	}
 }
 
@@ -1514,7 +1819,7 @@ async function downloadGitArchive(target: GitDistributionTarget, signal: AbortSi
 				asset: target.asset,
 				url: target.url,
 				httpStatus: response.status,
-				...hostPlatform(),
+				...(await hostPlatformAsync()),
 			});
 		return Buffer.from(await response.arrayBuffer());
 	} catch (error) {
@@ -1525,13 +1830,13 @@ async function downloadGitArchive(target: GitDistributionTarget, signal: AbortSi
 					phase: "download",
 					timeoutMs: gitProvisionSettings.downloadTimeoutMs,
 					elapsedMs: Date.now() - startedAt,
-					...installCommandField(),
+					...(await installCommandFieldAsync()),
 				},
 				{ cause: error },
 			);
 		if (isGitProvisionError(error)) throw error;
 		throw new GitUnavailableError(
-			{ code: "download-failed", asset: target.asset, url: target.url, ...hostPlatform() },
+			{ code: "download-failed", asset: target.asset, url: target.url, ...(await hostPlatformAsync()) },
 			{ cause: error },
 		);
 	}
@@ -1569,15 +1874,17 @@ function runProvisionStep(
 					return;
 				}
 				if (timeout.aborted) {
-					rejectPromise(
-						new GitProvisionTimeoutError(
-							{
-								phase: options.phase,
-								timeoutMs: options.timeoutMs,
-								elapsedMs: Date.now() - startedAt,
-								...installCommandField(),
-							},
-							{ cause: error },
+					void installCommandFieldAsync().then((installField) =>
+						rejectPromise(
+							new GitProvisionTimeoutError(
+								{
+									phase: options.phase,
+									timeoutMs: options.timeoutMs,
+									elapsedMs: Date.now() - startedAt,
+									...installField,
+								},
+								{ cause: error },
+							),
 						),
 					);
 					return;
@@ -1594,8 +1901,8 @@ function runProvisionStep(
 	});
 }
 
-function gitTarCommand(): string {
-	return platform() === "win32" ? getWindowsTarCommand() : "tar";
+async function gitTarCommand(): Promise<string> {
+	return platform() === "win32" ? await getWindowsTarCommand() : "tar";
 }
 
 async function extractGitArchive(
@@ -1605,13 +1912,13 @@ async function extractGitArchive(
 	layout: GitDistributionLayout,
 	signal: AbortSignal,
 ): Promise<void> {
-	const result = await runProvisionStep(gitTarCommand(), ["xzf", archivePath, "-C", destination], {
+	const result = await runProvisionStep(await gitTarCommand(), ["xzf", archivePath, "-C", destination], {
 		signal,
 		timeoutMs: gitProvisionSettings.extractTimeoutMs,
 		phase: "extract",
 		env: createChildProcessEnvironment(),
 	});
-	if (!result.ok) throw installFailed("extract", target, layout, undefined, result.detail);
+	if (!result.ok) throw await installFailedAsync("extract", target, layout, undefined, result.detail);
 }
 
 /** Fail unless every path the archive lists exists in the staged tree, so an extraction that was interfered with is never published. */
@@ -1622,18 +1929,21 @@ async function verifyStagedEntries(
 	layout: GitDistributionLayout,
 	signal: AbortSignal,
 ): Promise<void> {
-	const listing = await runProvisionStep(gitTarCommand(), ["tzf", archivePath], {
+	const listing = await runProvisionStep(await gitTarCommand(), ["tzf", archivePath], {
 		signal,
 		timeoutMs: gitProvisionSettings.verifyTimeoutMs,
 		phase: "verify",
 		env: createChildProcessEnvironment(),
 	});
-	if (!listing.ok) throw installFailed("verify", target, layout, undefined, listing.detail);
-	const missing = listing.stdout
-		.split(/\r?\n/)
-		.filter((entry) => lstatSync(join(stagedRoot, entry), { throwIfNoEntry: false }) === undefined);
+	if (!listing.ok) throw await installFailedAsync("verify", target, layout, undefined, listing.detail);
+	const entries = listing.stdout.split(/\r?\n/);
+	const missing: string[] = [];
+	for (const entry of entries) {
+		const entryStats = await lstat(join(stagedRoot, entry)).catch(() => undefined);
+		if (entryStats === undefined) missing.push(entry);
+	}
 	if (missing.length > 0)
-		throw installFailed(
+		throw await installFailedAsync(
 			"verify",
 			target,
 			layout,
@@ -1648,8 +1958,8 @@ async function verifyGitDistribution(
 	layout: GitDistributionLayout,
 	signal: AbortSignal,
 ): Promise<string> {
-	if (!existsSync(staged.executable))
-		throw installFailed(
+	if (!(await pathExists(staged.executable)))
+		throw await installFailedAsync(
 			"verify",
 			target,
 			layout,
@@ -1662,25 +1972,29 @@ async function verifyGitDistribution(
 		phase: "verify",
 		env: createGitEnvironment(portableGitEnv(staged, process.env), createChildProcessEnvironment()),
 	});
-	if (!result.ok) throw installFailed("verify", target, layout, undefined, result.detail);
+	if (!result.ok) throw await installFailedAsync("verify", target, layout, undefined, result.detail);
 	const version = parseGitVersion(result.stdout);
 	if (version === undefined)
-		throw installFailed("verify", target, layout, undefined, "git --version printed no version");
+		throw await installFailedAsync("verify", target, layout, undefined, "git --version printed no version");
 	return version;
 }
 
 type Publication = { readonly winner: ProvisionedGit } | { readonly published: GitDistributionLayout };
 
-function selectGitRelease(name: string, target: GitDistributionTarget, layout: GitDistributionLayout): void {
+async function selectGitRelease(
+	name: string,
+	target: GitDistributionTarget,
+	layout: GitDistributionLayout,
+): Promise<void> {
 	const selected = join(gitReleasesDir(), GIT_SELECTED_RELEASE);
 	const pendingSelection = `${selected}.${name}`;
 	try {
-		writeFileSync(pendingSelection, name);
-		renameSync(pendingSelection, selected);
+		await writeFile(pendingSelection, name);
+		await rename(pendingSelection, selected);
 	} catch (error) {
-		const failure = installFailed("promote", target, layout, error);
+		const failure = await installFailedAsync("promote", target, layout, error);
 		try {
-			rmSync(pendingSelection, { force: true });
+			await rm(pendingSelection, { force: true });
 		} catch (cleanupError) {
 			attachGitCleanupFailure(failure, cleanupError);
 		}
@@ -1694,28 +2008,28 @@ function selectGitRelease(name: string, target: GitDistributionTarget, layout: G
  * published first by another process wins. Any other release goes into a directory of its own under `releases`, and
  * an atomic rename of the `selected` file makes it the release later resolutions find.
  */
-function publishGitDistribution(
+async function publishGitDistribution(
 	stagedRoot: string,
 	target: GitDistributionTarget,
 	layout: GitDistributionLayout,
-): Publication {
+): Promise<Publication> {
 	try {
-		renameSync(stagedRoot, layout.root);
+		await rename(stagedRoot, layout.root);
 		return { published: layout };
 	} catch (error) {
-		if (!existsSync(layout.root)) throw installFailed("promote", target, layout, error);
+		if (!(await pathExists(layout.root))) throw await installFailedAsync("promote", target, layout, error);
 	}
-	const winner = findCurrentGit(target);
+	const winner = await findCurrentGitAsync(target);
 	if (winner !== undefined) return { winner };
 	const name = randomUUID();
 	const release = currentGitLayout(join(gitReleasesDir(), name));
 	try {
-		mkdirSync(gitReleasesDir(), { recursive: true });
-		renameSync(stagedRoot, release.root);
+		await mkdir(gitReleasesDir(), { recursive: true });
+		await rename(stagedRoot, release.root);
 	} catch (error) {
-		throw installFailed("promote", target, layout, error);
+		throw await installFailedAsync("promote", target, layout, error);
 	}
-	selectGitRelease(name, target, layout);
+	await selectGitRelease(name, target, layout);
 	return { published: release };
 }
 
@@ -1735,20 +2049,20 @@ async function installGitDistribution(
 	const layout = currentGitLayout();
 	const binDir = dirname(layout.root);
 	try {
-		mkdirSync(binDir, { recursive: true });
+		await mkdir(binDir, { recursive: true });
 	} catch (error) {
-		throw installFailed("stage", target, layout, error);
+		throw await installFailedAsync("stage", target, layout, error);
 	}
 	const lock = await acquireGitInstallLock(target, layout, signal, emit);
 	if (lock.kind === "installed") return lock.provisioned;
 	let primary: unknown;
 	try {
-		const existing = findCurrentGit(target);
+		const existing = await findCurrentGitAsync(target);
 		if (existing !== undefined) return existing;
-		const retained = findRetainedGit(target);
+		const retained = await findRetainedGitAsync(target);
 		if (retained !== undefined) {
 			signal.throwIfAborted();
-			selectGitRelease(basename(retained.layout.root), target, layout);
+			await selectGitRelease(basename(retained.layout.root), target, layout);
 			return retained;
 		}
 		return await installUnderLock(target, layout, system, signal, emit);
@@ -1780,10 +2094,11 @@ async function installUnderLock(
 	const binDir = dirname(layout.root);
 	let staging: string;
 	try {
-		removeAbandonedStagingDirectories(binDir);
-		staging = mkdtempSync(join(binDir, `${GIT_STAGING_PREFIX}${stagingOwnerTag()}-${process.pid}-`));
+		await removeAbandonedStagingDirectories(binDir);
+		const ownerTag = await stagingOwnerTag();
+		staging = await mkdtemp(join(binDir, `${GIT_STAGING_PREFIX}${ownerTag}-${process.pid}-`));
 	} catch (error) {
-		throw installFailed("stage", target, layout, error);
+		throw await installFailedAsync("stage", target, layout, error);
 	}
 	let primary: unknown;
 	try {
@@ -1800,27 +2115,27 @@ async function installUnderLock(
 				url: target.url,
 				expectedSha256: target.sha256,
 				actualSha256,
-				...hostPlatform(),
+				...(await hostPlatformAsync()),
 			});
 		const archivePath = join(staging, target.asset);
 		const stagedRoot = join(staging, "git");
 		try {
 			await writeFile(archivePath, archive);
-			mkdirSync(stagedRoot);
+			await mkdir(stagedRoot);
 		} catch (error) {
-			throw installFailed("stage", target, layout, error);
+			throw await installFailedAsync("stage", target, layout, error);
 		}
 		await extractGitArchive(archivePath, stagedRoot, target, layout, signal);
 		const stagedLayout = gitLayout(stagedRoot, platform(), arch());
 		const version = await verifyGitDistribution(stagedLayout, target, layout, signal);
 		await verifyStagedEntries(archivePath, stagedRoot, target, layout, signal);
 		try {
-			writeFileSync(join(stagedRoot, GIT_RELEASE_MARKER), JSON.stringify(markerOf(target)));
+			await writeFile(join(stagedRoot, GIT_RELEASE_MARKER), JSON.stringify(markerOf(target)));
 		} catch (error) {
-			throw installFailed("stage", target, layout, error);
+			throw await installFailedAsync("stage", target, layout, error);
 		}
 		signal.throwIfAborted();
-		const publication = publishGitDistribution(stagedRoot, target, layout);
+		const publication = await publishGitDistribution(stagedRoot, target, layout);
 		if ("winner" in publication) return publication.winner;
 		const { published } = publication;
 		provisionedGitVersions.set(published.executable, version);
@@ -1831,7 +2146,7 @@ async function installUnderLock(
 		throw error;
 	} finally {
 		try {
-			rmSync(staging, { recursive: true, force: true });
+			await rm(staging, { recursive: true, force: true });
 		} catch (cleanupError) {
 			if (primary === undefined)
 				emit({

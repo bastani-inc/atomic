@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { chmod, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { isLegacyEnvVarNameConfigValue } from "./core/resolve-config-value.ts";
 import { stripJsonComments } from "./utils/json.ts";
@@ -44,26 +45,49 @@ function migrateHeadersConfig(headers: unknown, location: string, migrations: Co
 	return migrated;
 }
 
+function transformAuthJsonContent(content: string): {
+	migrations: ConfigValueMigration[];
+	nextContent?: string;
+} {
+	const parsed = JSON.parse(stripBom(content)) as unknown;
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { migrations: [] };
+	const authData = parsed as Record<string, unknown>;
+
+	const migrations: ConfigValueMigration[] = [];
+	for (const [provider, credential] of Object.entries(authData)) {
+		if (typeof credential !== "object" || credential === null || Array.isArray(credential)) continue;
+		const credentialRecord = credential as Record<string, unknown>;
+		if (credentialRecord.type !== "api_key") continue;
+		migrateStringProperty(credentialRecord, "key", `auth.json[${JSON.stringify(provider)}].key`, migrations);
+	}
+
+	if (migrations.length === 0) return { migrations: [] };
+	return { migrations, nextContent: `${JSON.stringify(parsed, null, 2)}\n` };
+}
+
 export function migrateAuthJsonConfigValues(agentDir: string): ConfigValueMigration[] {
 	const authPath = join(agentDir, "auth.json");
 	if (!existsSync(authPath)) return [];
 
 	try {
-		const parsed = JSON.parse(stripBom(readFileSync(authPath, "utf-8"))) as unknown;
-		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
-		const authData = parsed as Record<string, unknown>;
-
-		const migrations: ConfigValueMigration[] = [];
-		for (const [provider, credential] of Object.entries(authData)) {
-			if (typeof credential !== "object" || credential === null || Array.isArray(credential)) continue;
-			const credentialRecord = credential as Record<string, unknown>;
-			if (credentialRecord.type !== "api_key") continue;
-			migrateStringProperty(credentialRecord, "key", `auth.json[${JSON.stringify(provider)}].key`, migrations);
-		}
-
-		if (migrations.length === 0) return [];
-		writeFileSync(authPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8");
+		const { migrations, nextContent } = transformAuthJsonContent(readFileSync(authPath, "utf-8"));
+		if (nextContent === undefined) return [];
+		writeFileSync(authPath, nextContent, "utf-8");
 		chmodSync(authPath, 0o600);
+		return migrations;
+	} catch {
+		return [];
+	}
+}
+
+export async function migrateAuthJsonConfigValuesAsync(agentDir: string): Promise<ConfigValueMigration[]> {
+	const authPath = join(agentDir, "auth.json");
+	try {
+		const content = await readFile(authPath, "utf-8");
+		const { migrations, nextContent } = transformAuthJsonContent(content);
+		if (nextContent === undefined) return [];
+		await writeFile(authPath, nextContent, "utf-8");
+		await chmod(authPath, 0o600);
 		return migrations;
 	} catch {
 		return [];
@@ -273,53 +297,74 @@ function replaceMigratedJsonStringValues(content: string, migrations: ConfigValu
 	return result;
 }
 
+function transformModelsJsonContent(content: string): {
+	migrations: ConfigValueMigration[];
+	nextContent?: string;
+} {
+	const parsed = JSON.parse(stripJsonComments(content)) as unknown;
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { migrations: [] };
+	const modelsData = parsed as Record<string, unknown>;
+	const providers = modelsData.providers;
+	if (typeof providers !== "object" || providers === null || Array.isArray(providers)) return { migrations: [] };
+
+	const migrations: ConfigValueMigration[] = [];
+	for (const [provider, providerConfig] of Object.entries(providers)) {
+		if (typeof providerConfig !== "object" || providerConfig === null || Array.isArray(providerConfig)) continue;
+		const providerRecord = providerConfig as Record<string, unknown>;
+		const providerLocation = `models.json.providers[${JSON.stringify(provider)}]`;
+		migrateStringProperty(providerRecord, "apiKey", `${providerLocation}.apiKey`, migrations);
+		migrateHeadersConfig(providerRecord.headers, `${providerLocation}.headers`, migrations);
+
+		if (Array.isArray(providerRecord.models)) {
+			for (let index = 0; index < providerRecord.models.length; index++) {
+				const modelConfig = providerRecord.models[index];
+				if (typeof modelConfig !== "object" || modelConfig === null || Array.isArray(modelConfig)) continue;
+				const modelRecord = modelConfig as Record<string, unknown>;
+				const modelKey = typeof modelRecord.id === "string" ? JSON.stringify(modelRecord.id) : String(index);
+				migrateHeadersConfig(modelRecord.headers, `${providerLocation}.models[${modelKey}].headers`, migrations);
+			}
+		}
+
+		const modelOverrides = providerRecord.modelOverrides;
+		if (typeof modelOverrides === "object" && modelOverrides !== null && !Array.isArray(modelOverrides)) {
+			for (const [modelId, modelOverride] of Object.entries(modelOverrides)) {
+				if (typeof modelOverride !== "object" || modelOverride === null || Array.isArray(modelOverride)) continue;
+				const modelOverrideRecord = modelOverride as Record<string, unknown>;
+				migrateHeadersConfig(
+					modelOverrideRecord.headers,
+					`${providerLocation}.modelOverrides[${JSON.stringify(modelId)}].headers`,
+					migrations,
+				);
+			}
+		}
+	}
+
+	if (migrations.length === 0) return { migrations: [] };
+	return { migrations, nextContent: replaceMigratedJsonStringValues(content, migrations) };
+}
+
 export function migrateModelsJsonConfigValues(agentDir: string): ConfigValueMigration[] {
 	const modelsPath = join(agentDir, "models.json");
 	if (!existsSync(modelsPath)) return [];
 
 	try {
 		const content = readFileSync(modelsPath, "utf-8");
-		const parsed = JSON.parse(stripJsonComments(content)) as unknown;
-		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
-		const modelsData = parsed as Record<string, unknown>;
-		const providers = modelsData.providers;
-		if (typeof providers !== "object" || providers === null || Array.isArray(providers)) return [];
+		const { migrations, nextContent } = transformModelsJsonContent(content);
+		if (nextContent === undefined) return [];
+		writeFileSync(modelsPath, nextContent, "utf-8");
+		return migrations;
+	} catch {
+		return [];
+	}
+}
 
-		const migrations: ConfigValueMigration[] = [];
-		for (const [provider, providerConfig] of Object.entries(providers)) {
-			if (typeof providerConfig !== "object" || providerConfig === null || Array.isArray(providerConfig)) continue;
-			const providerRecord = providerConfig as Record<string, unknown>;
-			const providerLocation = `models.json.providers[${JSON.stringify(provider)}]`;
-			migrateStringProperty(providerRecord, "apiKey", `${providerLocation}.apiKey`, migrations);
-			migrateHeadersConfig(providerRecord.headers, `${providerLocation}.headers`, migrations);
-
-			if (Array.isArray(providerRecord.models)) {
-				for (let index = 0; index < providerRecord.models.length; index++) {
-					const modelConfig = providerRecord.models[index];
-					if (typeof modelConfig !== "object" || modelConfig === null || Array.isArray(modelConfig)) continue;
-					const modelRecord = modelConfig as Record<string, unknown>;
-					const modelKey = typeof modelRecord.id === "string" ? JSON.stringify(modelRecord.id) : String(index);
-					migrateHeadersConfig(modelRecord.headers, `${providerLocation}.models[${modelKey}].headers`, migrations);
-				}
-			}
-
-			const modelOverrides = providerRecord.modelOverrides;
-			if (typeof modelOverrides === "object" && modelOverrides !== null && !Array.isArray(modelOverrides)) {
-				for (const [modelId, modelOverride] of Object.entries(modelOverrides)) {
-					if (typeof modelOverride !== "object" || modelOverride === null || Array.isArray(modelOverride))
-						continue;
-					const modelOverrideRecord = modelOverride as Record<string, unknown>;
-					migrateHeadersConfig(
-						modelOverrideRecord.headers,
-						`${providerLocation}.modelOverrides[${JSON.stringify(modelId)}].headers`,
-						migrations,
-					);
-				}
-			}
-		}
-
-		if (migrations.length === 0) return [];
-		writeFileSync(modelsPath, replaceMigratedJsonStringValues(content, migrations), "utf-8");
+export async function migrateModelsJsonConfigValuesAsync(agentDir: string): Promise<ConfigValueMigration[]> {
+	const modelsPath = join(agentDir, "models.json");
+	try {
+		const content = await readFile(modelsPath, "utf-8");
+		const { migrations, nextContent } = transformModelsJsonContent(content);
+		if (nextContent === undefined) return [];
+		await writeFile(modelsPath, nextContent, "utf-8");
 		return migrations;
 	} catch {
 		return [];

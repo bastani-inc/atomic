@@ -10,7 +10,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { oauthErrorHtml, oauthSuccessHtml } from "@bastani/atomic-ai/utils/oauth-page";
 import lockfile from "proper-lockfile";
@@ -217,7 +217,7 @@ export class McpOAuthCredentialStore {
 
 	private async withFileRefreshLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
 		if (!this.lockDir) return fn();
-		mkdirSync(this.lockDir, { recursive: true, mode: 0o700 });
+		await mkdir(this.lockDir, { recursive: true, mode: 0o700 });
 		const hash = createHash("sha256").update(key).digest("hex").slice(0, 16);
 		const lockPath = join(this.lockDir, `mcp-auth-refresh-${hash}`);
 		const release = await waitForLock(

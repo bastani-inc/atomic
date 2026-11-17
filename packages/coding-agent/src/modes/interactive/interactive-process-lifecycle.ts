@@ -123,7 +123,7 @@ InteractiveModeBase.prototype.shutdown = async function (
 
 	this.stop();
 	await this.runtimeHost.dispose();
-	const resumeCommand = formatResumeCommand(this.sessionManager);
+	const resumeCommand = await formatResumeCommand(this.sessionManager);
 	if (resumeCommand) {
 		process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
 	}

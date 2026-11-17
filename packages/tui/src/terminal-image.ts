@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -34,6 +34,8 @@ export interface ImageRenderOptions {
 }
 
 let cachedCapabilities: TerminalCapabilities | null = null;
+/** Whether the cached capabilities were detected, not set by {@link setCapabilities}. */
+let cachedCapabilitiesDetected = false;
 let capabilityOverrides: Partial<TerminalCapabilities> = {};
 
 // Default cell dimensions - updated by TUI when terminal responds to query
@@ -47,25 +49,37 @@ export function setCellDimensions(dims: CellDimensions): void {
 	cellDimensions = dims;
 }
 
+/** What tmux answered about forwarding hyperlinks; undefined until it answered. */
+let tmuxForwardsHyperlinks: boolean | undefined;
+let tmuxHyperlinksAsked = false;
+
 /**
  * Checks whether the attached tmux client forwards OSC 8 hyperlinks to the
  * outer terminal. tmux only re-emits them when its `client_termfeatures` lists
  * `hyperlinks`, and strips them otherwise. On any error fallbacks `false`.
+ * tmux is asked in the background: until it answers this is `false`, and
+ * detected capabilities are worked out again once it answered `true`.
  */
 function probeTmuxHyperlinks(): boolean {
-	try {
-		const termfeatures = execSync("tmux display-message -p '#{client_termfeatures}'", {
-			encoding: "utf8",
-			timeout: 250,
-			stdio: ["ignore", "pipe", "ignore"],
-		});
-		return termfeatures
-			.split(",")
-			.map((feature) => feature.trim())
-			.includes("hyperlinks");
-	} catch {
-		return false;
+	if (tmuxForwardsHyperlinks !== undefined) return tmuxForwardsHyperlinks;
+	if (!tmuxHyperlinksAsked) {
+		tmuxHyperlinksAsked = true;
+		execFile(
+			"tmux",
+			["display-message", "-p", "#{client_termfeatures}"],
+			{ encoding: "utf8", timeout: 250 },
+			(error, termfeatures) => {
+				tmuxForwardsHyperlinks =
+					!error &&
+					termfeatures
+						.split(",")
+						.map((feature) => feature.trim())
+						.includes("hyperlinks");
+				if (tmuxForwardsHyperlinks && cachedCapabilitiesDetected) cachedCapabilities = null;
+			},
+		);
 	}
+	return false;
 }
 
 function detectCapabilitiesFromEnvironment(tmuxForwardsHyperlink: () => boolean): TerminalCapabilities {
@@ -186,6 +200,7 @@ export function getCapabilities(): TerminalCapabilities {
 			...detectCapabilities(hyperlinks === undefined ? undefined : () => hyperlinks),
 			...capabilityOverrides,
 		};
+		cachedCapabilitiesDetected = true;
 	}
 	return cachedCapabilities;
 }
@@ -214,6 +229,7 @@ export function setCapabilityOverrides(overrides: Partial<TerminalCapabilities>)
 /** Override the cached capabilities. Useful in tests to exercise both code paths. */
 export function setCapabilities(caps: TerminalCapabilities): void {
 	cachedCapabilities = caps;
+	cachedCapabilitiesDetected = false;
 }
 
 const KITTY_PREFIX = "\x1b_G";

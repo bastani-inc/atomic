@@ -288,16 +288,16 @@ describe("workflow runs without git (#4322)", () => {
 		assert.equal(fetchMock.mock.calls.length, 3);
 	});
 
-	function gitRepo(): string {
+	async function gitRepo(): Promise<string> {
 		const repo = join(root, "repo");
 		mkdirSync(repo);
 		vi.stubEnv("PATH", hostPath);
-		runGitChecked(repo, ["init", "-b", "main"]);
-		runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
-		runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
+		await runGitChecked(repo, ["init", "-b", "main"]);
+		await runGitChecked(repo, ["config", "user.name", "Atomic Test"]);
+		await runGitChecked(repo, ["config", "user.email", "atomic@example.com"]);
 		writeFileSync(join(repo, "tracked.txt"), "base\n");
-		runGitChecked(repo, ["add", "."]);
-		runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
+		await runGitChecked(repo, ["add", "."]);
+		await runGitChecked(repo, ["commit", "--no-gpg-sign", "-m", "initial"]);
 		return repo;
 	}
 
@@ -369,7 +369,7 @@ describe("workflow runs without git (#4322)", () => {
 	}
 
 	test("a resumed run replays saved worktree tasks without resolving git, then provisions for the task it runs (#4322)", async () => {
-		const repo = gitRepo();
+		const repo = await gitRepo();
 		let shipError: unknown;
 		const def = workflow({
 			name: "saved-worktree-tasks",
@@ -417,7 +417,7 @@ describe("workflow runs without git (#4322)", () => {
 	});
 
 	test("a resumed run provisions git for a worktree task whose saved attempt failed (#4322)", async () => {
-		const repo = gitRepo();
+		const repo = await gitRepo();
 		let editError: unknown;
 		const def = workflow({
 			name: "failed-worktree-task",
@@ -545,9 +545,9 @@ describe("workflow runs without git (#4322)", () => {
 		},
 	);
 
-	test("worktree git commands fail with the typed reason instead of a spawn error", () => {
-		assert.throws(
-			() => runGit(root, ["rev-parse", "--show-toplevel"]),
+	test("worktree git commands fail with the typed reason instead of a spawn error", async () => {
+		await assert.rejects(
+			async () => await runGit(root, ["rev-parse", "--show-toplevel"]),
 			(error: Error) => isGitUnavailableError(error) && error.code === "offline",
 		);
 	});

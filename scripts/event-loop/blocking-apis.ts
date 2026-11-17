@@ -72,6 +72,7 @@ export function classifyExternalDeclaration(declaration: ExternalDeclaration): B
 		if ((module === "fs" || module === "fs/promises") && name.endsWith("Sync")) {
 			return { category: "fs-sync", label: `fs.${name}` };
 		}
+		if (module === "fs" && owner?.endsWith("Sync")) return { category: "fs-sync", label: `fs.${owner}.${name}` };
 		if (module === "child_process" && (name === "execSync" || name === "execFileSync" || name === "spawnSync")) {
 			return { category: "child-process-sync", label: `child_process.${name}` };
 		}

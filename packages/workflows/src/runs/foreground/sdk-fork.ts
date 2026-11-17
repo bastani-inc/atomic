@@ -8,7 +8,12 @@ import type { DurableWorkflowBackend } from "../../durable/backend.js";
 import { initializeDurableBackend } from "../../durable/factory.js";
 import { ForkConfigError, type ForkConfigField, type ForkConfigIssue } from "../../durable/fork-errors.js";
 import type { ForkCarryMessages, ForkPoint } from "../../durable/fork-run.js";
-import { durableForkPoints, forkDurableRun, validateForkOptions } from "../../durable/fork-run.js";
+import {
+	durableForkPoints,
+	forkDurableRun,
+	validateForkOptions,
+	validateForkOptionsWithoutCwd,
+} from "../../durable/fork-run.js";
 import { JournalDurableBackend } from "../../durable/journal/journal-backend.js";
 import type { RunJournalOption } from "../../durable/journal/resolution.js";
 import { hasActiveLiveRun } from "../../durable/run-claims.js";
@@ -186,7 +191,7 @@ export async function forkRun<
 	const hostBinds = options[hostWorkerBindings] === true;
 	const processBound = PROCESS_BOUND_RUN_OPTIONS.filter((key) => options[key] !== undefined);
 	let pooled = options.localWorkers !== undefined && !hostBinds;
-	validateForkOptions("sdk", runId, { ...options, processBound: pooled ? processBound : [] });
+	await validateForkOptions("sdk", runId, { ...options, processBound: pooled ? processBound : [] });
 	if (options.localWorkers !== undefined) resolveWorkerTiming(options.localWorkers, "sdk");
 	const {
 		fromStage,
@@ -229,7 +234,7 @@ export async function forkRun<
 				resolveWorkerTiming(handle.resources.localWorkers, "sdk");
 			if (hostBinds || handle.resources?.localWorkers === undefined) return;
 			pooled = true;
-			validateForkOptions("sdk", runId, { processBound });
+			validateForkOptionsWithoutCwd("sdk", runId, { processBound });
 		},
 		isLiveRun: (id) => hasActiveLiveRun(store, id),
 		rootRunOf: (id) => store.run(id)?.rootRunId,
@@ -285,7 +290,7 @@ export async function* listForkPoints(
 	runId: string,
 	options: ListForkPointsOptions = {},
 ): AsyncGenerator<ForkPoint, void, undefined> {
-	validateForkOptions("sdk", runId, {});
+	validateForkOptionsWithoutCwd("sdk", runId, {});
 	const { store, backend } = await sdkDurableBackend(runId, options);
 	yield* durableForkPoints(backend, runId, {
 		cwd: options.cwd,

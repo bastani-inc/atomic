@@ -1,5 +1,7 @@
-import * as fs from "node:fs";
+import type { Dirent } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
+import { pathExists } from "../shared/path-exists.js";
 import { splitToolList } from "./agent-overrides.js";
 import { shouldPreserveAgentExtraField } from "./agent-serializer.js";
 import {
@@ -12,13 +14,13 @@ import {
 import { type FrontmatterValue, parseFrontmatter } from "./frontmatter.js";
 import { buildRuntimeName, parsePackageName } from "./identity.js";
 
-function listFilesRecursive(dir: string, predicate: (fileName: string) => boolean): string[] {
+async function listFilesRecursive(dir: string, predicate: (fileName: string) => boolean): Promise<string[]> {
 	const files: string[] = [];
-	if (!fs.existsSync(dir)) return files;
+	if (!(await pathExists(dir))) return files;
 
-	let entries: fs.Dirent[];
+	let entries: Dirent[];
 	try {
-		entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+		entries = (await readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
 	} catch {
 		return files;
 	}
@@ -26,7 +28,7 @@ function listFilesRecursive(dir: string, predicate: (fileName: string) => boolea
 	for (const entry of entries) {
 		const filePath = path.join(dir, entry.name);
 		if (entry.isDirectory()) {
-			files.push(...listFilesRecursive(filePath, predicate));
+			files.push(...(await listFilesRecursive(filePath, predicate)));
 			continue;
 		}
 		if (!entry.isFile() && !entry.isSymbolicLink()) continue;
@@ -109,14 +111,14 @@ export interface AgentDirLoadResult {
  * nested-mapping error, not a description), so without this record those
  * files would vanish from discovery with no signal.
  */
-export function loadAgentsFromDirWithDiagnostics(dir: string, source: AgentSource): AgentDirLoadResult {
+export async function loadAgentsFromDirWithDiagnostics(dir: string, source: AgentSource): Promise<AgentDirLoadResult> {
 	const agents: AgentConfig[] = [];
 	const diagnostics: AgentLoadDiagnostic[] = [];
 
-	for (const filePath of listFilesRecursive(dir, (fileName) => fileName.endsWith(".md"))) {
+	for (const filePath of await listFilesRecursive(dir, (fileName) => fileName.endsWith(".md"))) {
 		let content: string;
 		try {
-			content = fs.readFileSync(filePath, "utf-8");
+			content = await readFile(filePath, "utf-8");
 		} catch {
 			continue;
 		}
@@ -212,6 +214,6 @@ export function loadAgentsFromDirWithDiagnostics(dir: string, source: AgentSourc
 	return { agents, diagnostics };
 }
 
-export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
-	return loadAgentsFromDirWithDiagnostics(dir, source).agents;
+export async function loadAgentsFromDir(dir: string, source: AgentSource): Promise<AgentConfig[]> {
+	return (await loadAgentsFromDirWithDiagnostics(dir, source)).agents;
 }

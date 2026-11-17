@@ -713,7 +713,7 @@ test("a child runs with task hooks that bind neither its transcript nor its sess
 	};
 	const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, root);
 	control.registerAgents([agent]);
-	const { admitted } = control.admitChildSession(
+	const { admitted } = await control.admitChildSession(
 		{ taskName: "worker", task: "reply done", agent, cwd: root, testSession: { output: "done" } },
 		{ path: "parent", depth: 0 },
 	);
@@ -758,7 +758,7 @@ async function testSessionAttempt(
 	};
 	const control = new SubagentControlRuntime({ path: "parent", depth: 0 }, root);
 	control.registerAgents([agent]);
-	const { admitted } = control.admitChildSession(
+	const { admitted } = await control.admitChildSession(
 		{
 			taskName: "worker",
 			task: "reply done",

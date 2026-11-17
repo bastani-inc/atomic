@@ -1,32 +1,32 @@
-import * as fs from "node:fs";
+import type { Stats } from "node:fs";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-function readText(file: string): string | undefined {
+async function readText(file: string): Promise<string | undefined> {
 	try {
-		return fs.readFileSync(file, "utf8");
+		return await fs.readFile(file, "utf8");
 	} catch {
 		return undefined;
 	}
 }
-function samePath(left: string, right: string): boolean {
+async function samePath(left: string, right: string): Promise<boolean> {
 	try {
-		const a = fs.realpathSync.native(left);
-		const b = fs.realpathSync.native(right);
+		const [a, b] = await Promise.all([fs.realpath(left), fs.realpath(right)]);
 		return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 	} catch {
 		return false;
 	}
 }
-export function findGitRoot(cwd: string): string | undefined {
+export async function findGitRoot(cwd: string): Promise<string | undefined> {
 	let current = path.resolve(cwd);
 	try {
-		if (!fs.statSync(current).isDirectory()) current = path.dirname(current);
+		if (!(await fs.stat(current)).isDirectory()) current = path.dirname(current);
 	} catch {
 		return undefined;
 	}
 	while (true) {
 		try {
-			const entry = fs.statSync(path.join(current, ".git"));
+			const entry = await fs.stat(path.join(current, ".git"));
 			if (entry.isDirectory() || entry.isFile()) return current;
 		} catch {
 			/* walk */
@@ -36,17 +36,17 @@ export function findGitRoot(cwd: string): string | undefined {
 		current = parent;
 	}
 }
-export function resolveMainRepoRoot(repoRoot: string): string | undefined {
+export async function resolveMainRepoRoot(repoRoot: string): Promise<string | undefined> {
 	const gitEntry = path.join(repoRoot, ".git");
-	let stats: fs.Stats;
+	let stats: Stats;
 	try {
-		stats = fs.statSync(gitEntry);
+		stats = await fs.stat(gitEntry);
 	} catch {
 		return undefined;
 	}
 	if (stats.isDirectory()) return path.resolve(repoRoot);
 	if (!stats.isFile()) return undefined;
-	const contents = readText(gitEntry);
+	const contents = await readText(gitEntry);
 	if (contents === undefined || !contents.startsWith("gitdir:")) return undefined;
 	const pointer = contents.slice("gitdir:".length).trim();
 	if (!pointer) return undefined;
@@ -54,14 +54,14 @@ export function resolveMainRepoRoot(repoRoot: string): string | undefined {
 	if (path.basename(path.dirname(gitDir)) !== "worktrees") return undefined;
 	const commonGitDir = path.dirname(path.dirname(gitDir));
 	if (path.basename(commonGitDir) !== ".git") return undefined;
-	const back = readText(path.join(gitDir, "gitdir"))?.trim();
-	const common = readText(path.join(gitDir, "commondir"))?.trim();
+	const back = (await readText(path.join(gitDir, "gitdir")))?.trim();
+	const common = (await readText(path.join(gitDir, "commondir")))?.trim();
 	if (!back || !common) return undefined;
-	if (!samePath(path.resolve(gitDir, back), gitEntry)) return undefined;
-	if (!samePath(path.resolve(gitDir, common), commonGitDir)) return undefined;
+	if (!(await samePath(path.resolve(gitDir, back), gitEntry))) return undefined;
+	if (!(await samePath(path.resolve(gitDir, common), commonGitDir))) return undefined;
 	return path.dirname(commonGitDir);
 }
-export function findCanonicalGitRoot(cwd: string): string | undefined {
-	const repoRoot = findGitRoot(cwd);
+export async function findCanonicalGitRoot(cwd: string): Promise<string | undefined> {
+	const repoRoot = await findGitRoot(cwd);
 	return repoRoot === undefined ? undefined : resolveMainRepoRoot(repoRoot);
 }
