@@ -19,6 +19,12 @@ import type { Extension, ExtensionError } from "../../packages/coding-agent/src/
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { spawnBrokerIfNeeded } from "../../packages/intercom/broker/spawn.js";
 import intercom from "../../packages/intercom/index.js";
+// Loaded up front, as a running host has it: the child's Intercom loads it on its start, under the fake clock here.
+import "../../packages/intercom/index-heavy.js";
+import {
+	IntercomSupervisorAuthorizationRefusedError,
+	SUPERVISOR_REFUSAL_RETRY_MS,
+} from "../../packages/intercom/supervisor-refusal.js";
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
 vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
@@ -58,7 +64,7 @@ function childContext(): ExtensionContext {
 	} as never as ExtensionContext;
 }
 
-function startChild(refusal: Error) {
+function startChild(refusal: Error, refusals = Number.POSITIVE_INFINITY) {
 	const handlers = new Map<string, LifecycleHandler[]>();
 	const tools = new Map<string, ToolDefinition>();
 	let sessionName: string | undefined;
@@ -83,13 +89,17 @@ function startChild(refusal: Error) {
 	} as never as ExtensionAPI;
 	const registrations: Array<{ readonly supervisor: Parameters<Connect>[1] }> = [];
 	vi.mocked(spawnBrokerIfNeeded).mockResolvedValue(undefined);
+	let refused = 0;
+	let connected = false;
 	vi.spyOn(IntercomClient.prototype, "connect").mockImplementation(async (_registration, supervisor) => {
 		registrations.push({ supervisor });
-		if (supervisor !== undefined) throw refusal;
+		if (supervisor !== undefined && refused < refusals) {
+			refused++;
+			throw refusal;
+		}
+		connected = true;
 	});
-	vi.spyOn(IntercomClient.prototype, "isConnected").mockImplementation(
-		() => registrations.length > 0 && registrations.at(-1)?.supervisor === undefined,
-	);
+	vi.spyOn(IntercomClient.prototype, "isConnected").mockImplementation(() => connected);
 	vi.spyOn(IntercomClient.prototype, "disconnect").mockResolvedValue();
 	intercom(pi);
 	const extension = {
@@ -120,23 +130,47 @@ function startChild(refusal: Error) {
 	return { emit, registrations };
 }
 
+afterEach(() => vi.useRealTimers());
+
 for (const [label, refusal] of [
 	["a broker that names the refusal", undefined],
 	["an older broker that gives only the reason", new Error("Invalid supervisor authorization")],
 ] as const) {
-	test(`a refused supervisor capability never fails the child's start, from ${label}`, async () => {
-		const { IntercomSupervisorAuthorizationRefusedError } = await import(
-			"../../packages/intercom/supervisor-refusal.js"
-		);
+	test(`a supervisor capability the broker keeps refusing never fails the child's start, from ${label}`, async () => {
+		vi.useFakeTimers();
 		const child = startChild(refusal ?? new IntercomSupervisorAuthorizationRefusedError());
 		try {
-			const reported = await child.emit({ type: "session_start", reason: "startup" });
+			let settled = false;
+			const starting = child.emit({ type: "session_start", reason: "startup" }).finally(() => {
+				settled = true;
+			});
+			for (let waited = 0; !settled && waited < SUPERVISOR_REFUSAL_RETRY_MS + 10_000; waited += 1_000)
+				await vi.advanceTimersByTimeAsync(1_000);
+			const reported = await starting;
 			assert.deepEqual(reported, [], "the child's extensions start");
-			assert.equal(child.registrations.length, 2, "it registers again at once");
-			assert.ok(child.registrations[0]?.supervisor, "the first registration offered the capability");
-			assert.equal(child.registrations[1]?.supervisor, undefined, "the second registers without it");
+			const offered = child.registrations.filter((registration) => registration.supervisor !== undefined);
+			assert.ok(offered.length > 1, "it kept offering the capability before giving it up");
+			assert.equal(child.registrations.at(-1)?.supervisor, undefined, "then it registered without it");
 		} finally {
 			await child.emit({ type: "session_shutdown", reason: "quit" });
 		}
 	});
 }
+
+test("a supervisor capability refused only until its supervisor is back, as after a broker restart, is kept", async () => {
+	vi.useFakeTimers();
+	// The broker refuses the capability twice, until the supervisor reconnects and restores it.
+	const child = startChild(new IntercomSupervisorAuthorizationRefusedError(), 2);
+	try {
+		const starting = child.emit({ type: "session_start", reason: "startup" });
+		await vi.advanceTimersByTimeAsync(5_000);
+		assert.deepEqual(await starting, []);
+		assert.equal(child.registrations.length, 3);
+		assert.ok(
+			child.registrations.every((registration) => registration.supervisor !== undefined),
+			"it registered with its capability, never without it",
+		);
+	} finally {
+		await child.emit({ type: "session_shutdown", reason: "quit" });
+	}
+});

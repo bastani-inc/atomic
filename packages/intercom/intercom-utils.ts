@@ -40,6 +40,11 @@ export interface InboundMessageEntry {
    * reply, and nothing else delivers it again.
    */
   stageQueued?: true;
+  /**
+   * A message a subagent received before its first turn, written as context for that turn. A retry of a stalled start
+   * carries it to the session that runs.
+   */
+  receivedBeforeStart?: true;
   /** #4751: the card's opening line in place of the sender line, such as "Reply to your ask <id> from <name>". */
   heading?: string;
 }

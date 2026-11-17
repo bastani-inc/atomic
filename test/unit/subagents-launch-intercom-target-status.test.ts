@@ -8,7 +8,13 @@ import { EventEmitter } from "node:events";
 import { afterEach, test } from "vitest";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
+import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
+import {
+	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
+	type SubagentReserveRestoringChildRequest,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-hold.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
+import { subagentStartHoldMs } from "../../packages/subagents/src/runs/shared/start-progress.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -33,12 +39,30 @@ function launcher() {
 	cleanups.push(() => removeTempDirectory(cwd));
 	const sessionId = "019f0000-aaaa-7bbb-8ccc-000000000002";
 	const emitter = new EventEmitter();
+	// The launching session's Intercom: it issues each child's capability and holds sends for it while it starts.
+	const holds: Array<{ readonly capability: string; readonly holdMs?: number }> = [];
 	const events = {
 		on(channel: string, handler: (payload: unknown) => void) {
 			emitter.on(channel, handler);
 			return () => emitter.off(channel, handler);
 		},
 		emit(channel: string, payload: unknown) {
+			if (channel === SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT) {
+				const request = payload as { childName: string; completion?: Promise<object> };
+				request.completion = Promise.resolve({
+					capability: `capability-for-${request.childName}`,
+					supervisorSessionId: "parent-intercom-id",
+					childName: request.childName,
+				});
+			}
+			if (channel === SUBAGENT_RESERVE_RESTORING_CHILD_EVENT) {
+				const request = payload as SubagentReserveRestoringChildRequest;
+				holds.push({
+					capability: request.capability,
+					...(request.holdMs === undefined ? {} : { holdMs: request.holdMs }),
+				});
+				request.completion = Promise.resolve();
+			}
 			emitter.emit(channel, payload);
 		},
 	};
@@ -118,7 +142,7 @@ function launcher() {
 	});
 	const call = (params: object) =>
 		executor.execute("call", params as never, new AbortController().signal, undefined, ctx as never);
-	return { call, launched: launched.promise, firstTurn, finish };
+	return { call, launched: launched.promise, firstTurn, finish, holds };
 }
 
 function text(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -159,4 +183,25 @@ test("a child that has not started its first turn is shown starting, with its st
 	assert.doesNotMatch(running, /is starting/);
 	const [started] = JSON.parse(running.split("\n").at(-1)!) as Array<{ start?: object }>;
 	assert.equal(started?.start, undefined, "once its first turn starts it is running");
+});
+
+test("every child of a parallel launch has its sends held while it starts, for the length of its start", async () => {
+	const parent = launcher();
+	const launch = await parent.call({
+		tasks: [
+			{ agent: "worker", task: "first" },
+			{ agent: "worker", task: "second" },
+		],
+		wait: { kind: "background" },
+		artifacts: false,
+	});
+	const response = JSON.parse(text(launch)) as {
+		slots: Array<{ outcome: { intercomTarget?: string } }>;
+	};
+	const targets = response.slots.map((slot) => slot.outcome.intercomTarget);
+	assert.equal(targets.length, 2);
+	assert.deepEqual(
+		parent.holds,
+		targets.map((target) => ({ capability: `capability-for-${target}`, holdMs: subagentStartHoldMs(undefined) })),
+	);
 });

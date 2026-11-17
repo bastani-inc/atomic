@@ -37,7 +37,7 @@ import {
 import { subagentStartHoldMs } from "../shared/start-progress.js";
 import { runOwnerlessChild } from "./ownerless-children.js";
 import { formatParentAskHandoffOutput } from "./parent-ask-output.js";
-import { holdStartingChild } from "./subagent-child-hold.js";
+import { holdStartingChild, type StartingChildHold } from "./subagent-child-hold.js";
 import { createSubagentChildRecordSink } from "./subagent-child-records.js";
 import {
 	createForegroundControlNotifier,
@@ -212,6 +212,8 @@ export async function runSinglePath(
 	// context then throws on every read. Its stage admission outlives that session, so read it now.
 	const detachedNotificationScope = { orchestrationContext: ctx.orchestrationContext };
 	let r: SingleResult;
+	// Ended by the child's terminal result, or here when the launch fails before it starts.
+	let startHold: StartingChildHold | undefined;
 	try {
 		const supervisorAuthorization = await requestSupervisorAuthorization(
 			deps.pi.events,
@@ -220,7 +222,7 @@ export async function runSinglePath(
 		);
 		const childIntercomGroup = resolveChildIntercomGroup(params.group, inheritedIntercomGroup(ctx), undefined);
 		// Sends to the child wait for it to register, before its first turn, instead of finding no session.
-		const startHold = await holdStartingChild({
+		startHold = await holdStartingChild({
 			events: deps.pi.events,
 			intercomTarget: childIntercomTarget,
 			authorization: supervisorAuthorization,
@@ -230,6 +232,7 @@ export async function runSinglePath(
 		const runOptions: RunSyncOptions = {
 			runningCapacity: deps.config.parallel?.runningCapacity,
 			sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
+			onStartRetry: () => startHold?.renew(),
 			getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 			resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 			cwd: effectiveCwd,
@@ -299,7 +302,7 @@ export async function runSinglePath(
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 				onTerminal: (child) => {
 					settledChild = child;
-					startHold.settle(child);
+					startHold?.settle(child);
 					cleanupTransientProgress(progressDir, artifactConfig.enabled);
 				},
 				outputText: (child) =>
@@ -312,7 +315,7 @@ export async function runSinglePath(
 							})
 						: getSingleResultOutput(child),
 			});
-			if (response.kind === "unstarted") startHold.settle();
+			if (response.kind === "unstarted") startHold?.settle();
 			if (!parentAsk || !settledChild?.interrupted)
 				return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
 			r = settledChild;
@@ -330,9 +333,10 @@ export async function runSinglePath(
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 				...(params[BURST_EXECUTION_SCHEDULE] ? { schedule: params[BURST_EXECUTION_SCHEDULE] } : {}),
 				runSync: (childTask, options) => deps.runtime.runSync(launchCwd, agents, params.agent!, childTask, options),
-			}).result.finally(() => startHold.settle());
+			}).result.finally(() => startHold?.settle());
 		}
 	} catch (error) {
+		startHold?.settle();
 		cleanupTransientProgress(progressDir, artifactConfig.enabled);
 		throw error;
 	}

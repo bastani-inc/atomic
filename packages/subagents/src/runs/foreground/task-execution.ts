@@ -665,13 +665,17 @@ export async function runAgentTask(input: {
 			// From here until its first turn starts the child is starting, and says where (never merely "running").
 			const dispatchedAt = Date.now();
 			let startText: string | undefined;
+			let lastStartStep: SubagentStartProgress["step"] | undefined;
 			const reportStart = (progress: SubagentStartProgress | undefined) => {
 				recordSubagentStartProgress(context.ref.taskId, progress);
+				// A start ends started only once its task was dispatched; one that failed earlier keeps its last step.
+				if (progress === undefined && lastStartStep !== "dispatching-task") return;
+				lastStartStep = progress?.step;
 				const text =
 					progress === undefined
 						? "started its first turn"
 						: `${sessionStartStepText(progress.step)} (attempt ${progress.attempt} of ${SUBAGENT_START_ATTEMPTS}${progress.stalled ? `, after a start that stalled ${sessionStartStepText(progress.stalled.step)}` : ""})`;
-				if (text === startText || (progress === undefined && startText === undefined)) return;
+				if (text === startText) return;
 				startText = text;
 				context.reportActivity({
 					reportId: `${context.ref.taskId}:start-${randomUUID()}`,

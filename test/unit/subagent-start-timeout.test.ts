@@ -18,6 +18,7 @@ import {
 } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
+import type { SubagentStartupHooks } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import type { ResourceAdmission } from "../../packages/coding-agent/src/core/sdk-types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -88,7 +89,9 @@ const STARVED_TURN_MS = 300;
 type StallPoint = "session_start" | "input" | "before_agent_start" | "session_recovery_restore" | "session_shutdown";
 type StallHook = (point: StallPoint) => Promise<void> | undefined;
 const STALL_HOOK = "__atomicIssue4319Stall";
-const globals = globalThis as typeof globalThis & { [STALL_HOOK]?: StallHook };
+const STARTUP_HOOK = "__atomicSubagentStartupHooks";
+type StartupHook = (at: string, startup: SubagentStartupHooks | undefined) => void;
+const globals = globalThis as typeof globalThis & { [STALL_HOOK]?: StallHook; [STARTUP_HOOK]?: StartupHook };
 
 const cleanups: (() => Promise<void> | void)[] = [];
 
@@ -330,6 +333,30 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		);
 		return { reached: () => reached, held: holding.promise, release, shutdown };
 	};
+	/** A child-only extension that records, at its session_start and its first turn, the start the host gave it. */
+	const recordStartupHooks = (): Array<{
+		readonly at: string;
+		readonly startup: boolean;
+		readonly pending?: boolean;
+	}> => {
+		const seen: Array<{ readonly at: string; readonly startup: boolean; readonly pending?: boolean }> = [];
+		globals[STARTUP_HOOK] = (at, startup) =>
+			seen.push({ at, startup: startup !== undefined, ...(startup ? { pending: startup.firstTurnPending() } : {}) });
+		cleanups.push(() => {
+			delete globals[STARTUP_HOOK];
+		});
+		mkdirSync(join(agentDir, "extensions"), { recursive: true });
+		writeFileSync(
+			join(agentDir, "extensions", "startup.ts"),
+			[
+				"export default function (pi) {",
+				`\tpi.on("session_start", (_event, ctx) => globalThis.${STARTUP_HOOK}?.("session_start", ctx.subagentPolicy?.startup));`,
+				`\tpi.on("before_agent_start", (_event, ctx) => { globalThis.${STARTUP_HOOK}?.("before_agent_start", ctx.subagentPolicy?.startup); });`,
+				"}",
+			].join("\n"),
+		);
+		return seen;
+	};
 	/** A child-only extension that holds every start of the child in `session_start` for `ms`, then lets it go. */
 	const stallEveryStartFor = (ms: number): { readonly starts: () => number } => {
 		let starts = 0;
@@ -358,6 +385,7 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		requests,
 		stallChildAt,
 		stallEveryStartFor,
+		recordStartupHooks,
 		onFirstRequest: (listener: () => void) => {
 			onRequest = () => {
 				onRequest = undefined;
@@ -1056,3 +1084,19 @@ test(
 function sessionStartStepTextOf(step: SessionStartTimeoutError["step"]): string {
 	return describeSubagentStart({ step, attempt: 1, launchedAt: 0, startedAt: 0, stepStartedAt: 0 }).stepText;
 }
+
+test(
+	"a child's extensions start inside its start: their messages are context for its first turn until its task is dispatched",
+	async () => {
+		const fixture = await startFixture();
+		const seen = fixture.recordStartupHooks();
+		const result = await fixture.launch("start-hooks");
+
+		assert.equal(result.status, "ok", JSON.stringify(result));
+		assert.deepEqual(seen, [
+			{ at: "session_start", startup: true, pending: true },
+			{ at: "before_agent_start", startup: true, pending: false },
+		]);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);

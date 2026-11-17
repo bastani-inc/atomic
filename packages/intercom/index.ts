@@ -567,6 +567,10 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	async function registerAdmittedChild(ctx: ExtensionContext, lease: IntercomLease, generation: number): Promise<void> {
 		const startup = ctx.subagentPolicy?.startup;
 		const current = () => activeLease === lease && !lease.retired && sessionSnapshot?.generation === generation;
+		// A start given up while another extension held it never registers: its session is disposed unused, and must not
+		// take the sends held for the child's retry.
+		const givenUp = (): boolean => startup?.signal.aborted === true;
+		if (givenUp()) return;
 		startup?.enterStep("registering-intercom");
 		for (let attempt = 0; ; attempt += 1) {
 			try {
@@ -575,7 +579,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			} catch (error) {
 				if (!isRecoverableIntercomDisconnect(error)) throw error;
 				const delayMs = startup === undefined ? undefined : reconnectDelayMs(attempt);
-				if (delayMs === undefined || !current() || startup?.signal.aborted === true) return;
+				if (delayMs === undefined || !current() || givenUp()) return;
 				const waited = await new Promise<boolean>((resolve) => {
 					const onAbort = () => {
 						clearTimeout(timer);

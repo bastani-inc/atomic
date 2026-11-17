@@ -7,6 +7,7 @@ import {
 	serializeSessionStartError,
 	sessionStartStepText,
 } from "@bastani/atomic";
+import type { Cleanup } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
 import { splitKnownThinkingSuffix, splitUnknownThinkingSuffix, THINKING_LEVELS } from "../../shared/model-info.js";
@@ -18,6 +19,7 @@ import type {
 	RunSyncOptions,
 	SingleResult,
 	SubagentToolResult,
+	TaskExecutionHooks,
 	Usage,
 } from "../../shared/types.js";
 import { resolveTopLevelParallelRunningCapacity } from "../../shared/types.js";
@@ -516,7 +518,18 @@ export async function runSingleInProcess(
 		abort: options.taskExecution?.signal ?? options.signal ?? neverAbort,
 		interrupt: options.interruptSignal ?? neverAbort,
 	};
-	let running = control.startAttempt(admission.admitted, attemptCandidate, attemptSignals, options.taskExecution);
+	// The task's execution is the child's start and run, a retried start included: its cleanup is the last attempt's.
+	let attemptCleanup: Promise<Cleanup> | undefined;
+	const attemptHooks: TaskExecutionHooks | undefined =
+		options.taskExecution === undefined
+			? undefined
+			: {
+					...options.taskExecution,
+					onExecution: (execution) => {
+						attemptCleanup = execution.cleanup;
+					},
+				};
+	let running = control.startAttempt(admission.admitted, attemptCandidate, attemptSignals, attemptHooks);
 	// A start that runs out of its budget is retried once, as soon as it has let go of its session; a retry that runs
 	// out of its budget too fails, naming the step each attempt stalled in.
 	const settled = (async (): Promise<AttemptOutcome> => {
@@ -531,15 +544,26 @@ export async function runSingleInProcess(
 			Math.min((sessionStartTimeoutMs ?? SUBAGENT_START_RELEASE_WAIT_MS) / 2, SUBAGENT_START_RELEASE_WAIT_MS),
 		);
 		const stopped = attemptSignals.abort.aborted || attemptSignals.interrupt.aborted;
-		const again = releasedInTime && !stopped ? control.admitChildSession(spec, parent) : undefined;
+		// A launch's retry starts in a fresh session: what the stalled start received as context for its first turn
+		// goes with it. A retry that reopens the child's own session finds it there already.
+		const carried = releasedInTime && spec.sessionManager === undefined ? await (first.startContext ?? []) : [];
+		// Sends to the child wait for the retry, now that the stalled start registered and took the earlier ones.
+		if (releasedInTime && !stopped) await options.onStartRetry?.();
+		const again =
+			releasedInTime && !stopped
+				? control.admitChildSession(
+						carried.length === 0 ? spec : { ...spec, startContext: [...(spec.startContext ?? []), ...carried] },
+						parent,
+					)
+				: undefined;
 		if (again?.admitted === undefined) {
 			reportStart(undefined);
 			if (stopped) return first;
 			const cause = `${first.cause} It was not retried: ${releasedInTime ? (again?.refusal?.reason ?? "its retry was refused") : "the stalled start did not let go of its session in time"}.`;
 			return { ...first, cause, envelope: cause };
 		}
-		control.forgetReleasedChild(first.path);
-		running = control.startAttempt(again.admitted, attemptCandidate, attemptSignals, options.taskExecution);
+		control.supersedeStalledStart(first.path);
+		running = control.startAttempt(again.admitted, attemptCandidate, attemptSignals, attemptHooks);
 		const second = await running.promise;
 		const retryStall = startStall(second);
 		if (retryStall === undefined || second.status !== "error") return second;
@@ -582,6 +606,11 @@ export async function runSingleInProcess(
 	const parentAskCleanup = registerExecutionParentAskHandoff(options, {
 		agent: agent.name,
 		isUnavailable: () => running.status !== "running" || detached,
+	});
+	const lastCleanup = (): Promise<Cleanup> => attemptCleanup ?? Promise.resolve({ kind: "reaped" });
+	options.taskExecution?.onExecution({
+		result: settled,
+		cleanup: settled.then(lastCleanup, lastCleanup),
 	});
 	const terminal = settled.then((value) => ({ kind: "terminal" as const, value }));
 	const winner = await Promise.race([terminal, continuation.then(() => ({ kind: "continued" as const }))]);

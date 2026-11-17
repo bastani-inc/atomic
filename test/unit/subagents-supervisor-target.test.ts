@@ -7,6 +7,10 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { afterEach, test } from "vitest";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
+import {
+	INTERCOM_CONNECTED_EVENT,
+	trackOwnIntercomSession,
+} from "../../packages/subagents/src/intercom/own-intercom-session.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -31,7 +35,7 @@ const worker: AgentConfig = {
 	inheritSkills: false,
 };
 
-function launcher(entries: readonly object[], connectedAs?: string) {
+function launcher(entries: readonly object[], connected?: { readonly as: string; readonly forSession?: string }) {
 	const cwd = makeTempDirectory("subagent-supervisor-target-");
 	cleanups.push(() => removeTempDirectory(cwd));
 	const ownerSessionId = "019f0000-aaaa-7bbb-8ccc-000000000001";
@@ -46,6 +50,18 @@ function launcher(entries: readonly object[], connectedAs?: string) {
 		},
 	};
 	const launched: Array<{ readonly options: RunSyncOptions; readonly agents: readonly AgentConfig[] }> = [];
+	const state = {
+		baseCwd: cwd,
+		currentSessionId: connected?.forSession ?? ownerSessionId,
+		foregroundControls: new Map(),
+		lastForegroundControlId: null,
+		pendingForegroundControlNotices: new Map(),
+		lastUiContext: null,
+	};
+	// The session's own Intercom client reports the id it registered under on the session's own event bus.
+	trackOwnIntercomSession(events, state);
+	if (connected !== undefined) events.emit(INTERCOM_CONNECTED_EVENT, { sessionId: connected.as });
+	state.currentSessionId = ownerSessionId;
 	const ctx = {
 		cwd,
 		hasUI: false,
@@ -76,17 +92,7 @@ function launcher(entries: readonly object[], connectedAs?: string) {
 	};
 	const executor = createSubagentExecutor({
 		pi: pi as never,
-		state: {
-			baseCwd: cwd,
-			currentSessionId: ownerSessionId,
-			foregroundControls: new Map(),
-			lastForegroundControlId: null,
-			pendingForegroundControlNotices: new Map(),
-			lastUiContext: null,
-			...(connectedAs === undefined
-				? {}
-				: { ownIntercomSession: { sessionId: ownerSessionId, intercomSessionId: connectedAs } }),
-		},
+		state,
 		config: {},
 		tempArtifactsDir: cwd,
 		getSubagentSessionRoot: () => cwd,
@@ -146,9 +152,19 @@ test("a launched child's supervisor is the launching session, not the in-process
 
 test("the launching session's own live Intercom connection names the supervisor once it has connected", async () => {
 	process.env[SESSION_ID_ENV] = "sibling-intercom-id";
-	const { launch, launched } = launcher([], "owner-live-intercom-id");
+	const { launch, launched } = launcher([], { as: "owner-live-intercom-id" });
 	await launch();
 	assert.equal(supervisorNamedIn(launched[0]!).target, "owner-live-intercom-id");
+});
+
+test("an Intercom id reported while the extension served another session never names this session's supervisor", async () => {
+	process.env[SESSION_ID_ENV] = "sibling-intercom-id";
+	const { launch, launched, ownerSessionId } = launcher([], {
+		as: "previous-session-intercom-id",
+		forSession: "019f0000-aaaa-7bbb-8ccc-0000000000ff",
+	});
+	await launch();
+	assert.equal(supervisorNamedIn(launched[0]!).target, `subagent-chat-${ownerSessionId}`);
 });
 
 test("a session with no Intercom identity yet names itself by its own Intercom name", async () => {

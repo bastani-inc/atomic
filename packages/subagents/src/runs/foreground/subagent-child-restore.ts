@@ -637,6 +637,8 @@ async function relaunchChild(
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
+		// A retried start of the relaunched child holds sends to it again, until the retry registers.
+		onStartRetry: () => hold?.holdWhileStarting(subagentStartHoldMs(deps.config.sessionStartTimeoutMs)),
 		getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 		resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 		cwd: cwd,
@@ -744,10 +746,11 @@ async function relaunchChild(
 		forked: record.forked === true,
 		...(record.heartbeatMs === undefined ? {} : { heartbeatMs: record.heartbeatMs }),
 		...(schedule ? { schedule } : {}),
-		onTerminal: () => {
+		onTerminal: (child) => {
 			release();
-			// Normally the child consumed the hold when it registered; one that never did must not keep it.
-			void hold?.release();
+			// Normally the child consumed the hold when it registered; one that never did must not keep it, and tells the
+			// senders still held why when its start failed.
+			void hold?.release(startFailureRefusal(record.intercomTarget, child));
 		},
 	});
 	const outcome = await relaunched(
@@ -775,6 +778,17 @@ function wakePrompts(base: ResumePrompts, lateMessages: readonly string[], promp
 /** A restored child that had no session started fresh on its launch rather than resuming one. */
 function startedFresh(outcome: SubagentChildRestoreOutcome): SubagentChildRestoreOutcome {
 	return outcome.kind === "restored" ? { ...outcome, fresh: true } : outcome;
+}
+
+/** What senders still held for a relaunched child are told when its start failed; undefined routes them normally. */
+function startFailureRefusal(
+	intercomTarget: string | undefined,
+	child: { readonly status: string; readonly error?: string },
+): string | undefined {
+	const reason = child.status === "error" ? child.error?.trim() : undefined;
+	return reason && intercomTarget
+		? `Subagent \`${intercomTarget}\` did not start: ${reason} The message was not sent.`
+		: undefined;
 }
 
 /** Start a child that pause or quit stopped while it was still queued, on its original launch (#3760). */

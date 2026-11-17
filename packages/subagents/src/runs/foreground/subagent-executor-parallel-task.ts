@@ -26,7 +26,7 @@ import { injectSingleOutputInstruction, resolveSingleOutputPath } from "../share
 import { subagentStartHoldMs } from "../shared/start-progress.js";
 import type { WorktreeSetup } from "../shared/worktree.js";
 import { runOwnerlessChild } from "./ownerless-children.js";
-import { holdStartingChild } from "./subagent-child-hold.js";
+import { holdStartingChild, type StartingChildHold } from "./subagent-child-hold.js";
 import type { SubagentChildRecordSink } from "./subagent-child-records.js";
 import { markLiveResultIndices } from "./subagent-executor-live-update.js";
 import type { SubagentExecutorRuntimeDeps, TaskParam } from "./subagent-executor-types.js";
@@ -156,6 +156,8 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 	const host = input.ctx.getAgentTaskHost?.();
 	// Admit observations independently; only actual execution holds a concurrency slot.
 	const schedule = input.schedule ?? createExecutionScheduler(input.concurrencyLimit);
+	// Each child's hold on its Intercom target, until it registers or its start ends.
+	const startHolds = new Map<number, StartingChildHold>();
 	const runChild = async (task: TaskParam, index: number): Promise<SingleResult> => {
 		const behavior = input.behaviors[index];
 		const effectiveSkills = behavior?.skills;
@@ -193,6 +195,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			group: childIntercomGroup,
 			holdMs: subagentStartHoldMs(input.sessionStartTimeoutMs),
 		});
+		startHolds.set(index, startHold);
 		const interruptController = new AbortController();
 		if (input.foregroundControl) {
 			input.foregroundControl.currentAgent = task.agent;
@@ -217,6 +220,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		const runOptions: RunSyncOptions = {
 			runningCapacity: input.runningCapacity,
 			sessionStartTimeoutMs: input.sessionStartTimeoutMs,
+			onStartRetry: () => startHold.renew(),
 			getChildSessionOptions: input.ctx.getChildSessionOptionsResolver?.() ?? input.ctx.getChildSessionOptions,
 			resourceLoaderInheritanceSnapshot: input.resourceLoaderInheritanceSnapshot,
 			cwd: taskCwd,
@@ -379,6 +383,8 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		try {
 			return await runChild(task, index);
 		} catch (error) {
+			// A launch that fails before its child starts ends its hold.
+			startHolds.get(index)?.settle();
 			// Cancelling the parent cancels the call; any other failure ends only this child.
 			if (input.signal.aborted) throw error;
 			return unstartedChildResult(task, error);

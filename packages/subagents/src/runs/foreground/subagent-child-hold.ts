@@ -383,6 +383,8 @@ export function earlyChildHoldCount(): number {
 
 /** The hold on a launching child's Intercom target, until it registers or its start ends. */
 export interface StartingChildHold {
+	/** The child's start is retried: its stalled start registered and took the sends held so far; hold new ones. */
+	renew(): Promise<void>;
 	/** The child ended: a child that never registered tells the senders still held why. */
 	settle(child?: { readonly status: string; readonly error?: string }): void;
 }
@@ -401,13 +403,15 @@ export async function holdStartingChild(input: {
 	readonly holdMs: number;
 }): Promise<StartingChildHold> {
 	const { events, intercomTarget, authorization } = input;
-	if (events === undefined || intercomTarget === undefined || authorization === undefined) return { settle() {} };
+	if (events === undefined || intercomTarget === undefined || authorization === undefined)
+		return { renew: () => Promise.resolve(), settle() {} };
 	const hold = await holdChildTargets(events, { intercomTarget }, input.group, {
 		authorization,
 		holdMs: input.holdMs,
 	}).catch(() => undefined);
 	let settled = false;
 	return {
+		renew: () => (hold === undefined || settled ? Promise.resolve() : hold.holdWhileStarting(input.holdMs)),
 		settle(child) {
 			if (hold === undefined || settled) return;
 			settled = true;
