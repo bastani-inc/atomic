@@ -142,21 +142,29 @@ export async function bootSession(sources: HostIdentitySources): Promise<string 
  */
 export function brokerHostIdentity(sources?: HostIdentitySources): Promise<string | undefined> {
 	if (sources !== undefined) return readHostIdentity(sources);
-	const system = systemSources();
-	const known = systemHostIdentities.get(system.configDir);
-	if (known !== undefined) return known;
-	const reading = readHostIdentity(system);
-	systemHostIdentities.set(system.configDir, reading);
-	void reading.then((identity) => {
-		if (identity === undefined && systemHostIdentities.get(system.configDir) === reading) {
-			systemHostIdentities.delete(system.configDir);
-		}
-	});
-	return reading;
+	return readSystemHostIdentity();
 }
 
-/** #5252: this host's identity per config directory, read once per process: neither its machine id nor its boot changes. */
-const systemHostIdentities = new Map<string, Promise<string | undefined>>();
+const readSystemHostIdentity = createBrokerHostIdentityReader(systemSources);
+
+export function createBrokerHostIdentityReader(
+	sourcesForRead: () => HostIdentitySources,
+): () => Promise<string | undefined> {
+	const identities = new Map<string, Promise<string | undefined>>();
+	return () => {
+		const sources = sourcesForRead();
+		const known = identities.get(sources.configDir);
+		if (known !== undefined) return known;
+		const reading = readHostIdentity(sources);
+		identities.set(sources.configDir, reading);
+		void reading.then((identity) => {
+			if (identity === undefined && identities.get(sources.configDir) === reading) {
+				identities.delete(sources.configDir);
+			}
+		});
+		return reading;
+	};
+}
 
 async function readHostIdentity(sources: HostIdentitySources): Promise<string | undefined> {
 	const bootId = orUndefined(() => sources.readFile("/proc/sys/kernel/random/boot_id"));

@@ -107,7 +107,7 @@ export async function prebuildRepository(root: string, options: PrebuildReposito
 	// The checkout has the commit, and the credentials to fetch it; the store takes it from there.
 	await storeCheckoutHead(storeDir, remotes, snapshot.root, snapshot.head, signal);
 	const lease = await admitPooledWorktree(
-		{ storeDir, remotes, root: snapshot.root, lastState: state, envHash: snapshot.envHash },
+		{ storeDir, remotes, root: snapshot.root, lastState: state, envHash: snapshot.envHash, signal },
 		PREBUILD_OWNER,
 	);
 	return recorder.run(async () => {
@@ -198,31 +198,31 @@ async function parkBuildOutput(
 	const parked: string[] = [];
 	await mkdir(staging, { recursive: true });
 	try {
-		try {
-			for (const path of outermost) {
-				const segments = seedPathSegments(path)!;
-				const from = join(worktree, ...segments);
-				const entry = await lstat(from).catch(() => undefined);
-				if (entry === undefined || entry.isSymbolicLink()) continue;
-				if (!(await insideThroughDirectories(worktree, segments))) continue;
-				for (const untracked of await untrackedUnder(worktree, path)) {
-					// A name a seed manifest cannot hold stays in the worktree.
-					const parts = seedPathSegments(untracked);
-					if (parts === undefined) continue;
-					const to = join(staging, ...parts);
-					await mkdir(dirname(to), { recursive: true });
-					await renameWithRetry(join(worktree, ...parts), to, { signal });
-					parked.push(untracked);
-				}
-			}
-		} catch (error) {
-			for (const path of [...parked].reverse()) {
-				const segments = seedPathSegments(path)!;
-				await renameWithRetry(join(staging, ...segments), join(worktree, ...segments)).catch(() => {});
-			}
-			throw error;
-		}
 		await withSeedLock(storeDir, repository, true, async () => {
+			try {
+				for (const path of outermost) {
+					const segments = seedPathSegments(path)!;
+					const from = join(worktree, ...segments);
+					const entry = await lstat(from).catch(() => undefined);
+					if (entry === undefined || entry.isSymbolicLink()) continue;
+					if (!(await insideThroughDirectories(worktree, segments))) continue;
+					for (const untracked of await untrackedUnder(worktree, path)) {
+						// A name a seed manifest cannot hold stays in the worktree.
+						const parts = seedPathSegments(untracked);
+						if (parts === undefined) continue;
+						const to = join(staging, ...parts);
+						await mkdir(dirname(to), { recursive: true });
+						await renameWithRetry(join(worktree, ...parts), to, { signal });
+						parked.push(untracked);
+					}
+				}
+			} catch (error) {
+				for (const path of [...parked].reverse()) {
+					const segments = seedPathSegments(path)!;
+					await renameWithRetry(join(staging, ...segments), join(worktree, ...segments)).catch(() => {});
+				}
+				throw error;
+			}
 			await rm(seedManifestPath(storeDir, repository), { force: true });
 			await rm(target, { recursive: true, force: true });
 			if (parked.length === 0) return;
