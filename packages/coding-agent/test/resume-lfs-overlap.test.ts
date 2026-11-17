@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { exitedProcess } from "../../../test/helpers/exited-process.js";
+import { startHostProcessesThroughChildProcess } from "../../../test/helpers/host-spawn.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import type { SpawnFault } from "../../../test/helpers/worktree-snapshot-faults.js";
@@ -37,6 +38,8 @@ import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.t
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 import { type PreparedSessionResume, type PrepareSessionResumeOptions, prepareSessionResume } from "../src/index.ts";
 import { forThisHost } from "./helpers/blueprint-fixtures.ts";
+
+startHostProcessesThroughChildProcess();
 
 useTemporaryAgentDir();
 

@@ -9,7 +9,10 @@ import {
 	restoreWorktree,
 	type WorktreeSnapshot,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
+import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 import { GitSandbox, lfsPointer } from "../helpers/worktree-snapshot.js";
+
+startHostProcessesThroughChildProcess();
 
 const files = vi.hoisted(() => ({ refuse: undefined as string | undefined, opened: 0, closed: 0 }));
 

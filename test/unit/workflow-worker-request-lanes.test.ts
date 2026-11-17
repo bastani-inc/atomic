@@ -137,7 +137,8 @@ test("requests that take or end an attempt are barriers, and commits and heartbe
 			(kind) => WORKER_REQUEST_LANES[kind] === lane,
 		);
 	assert.deepEqual(lanes("barrier"), ["ready", "claim", "fenced", "recycle", "complete"]);
-	assert.deepEqual(lanes("commits"), ["commit", "stage-workspace"]);
+	// A read of what the attempt wrote ships its earlier commits first, so it runs after them (#4768).
+	assert.deepEqual(lanes("commits"), ["commit", "session-sync", "stage-workspace"]);
 	assert.deepEqual(lanes("heartbeats"), ["heartbeat", "control"]);
 	assert.deepEqual(lanes("acknowledgements"), ["controlled"]);
 	assert.deepEqual(lanes("free"), ["budget", "route"]);
