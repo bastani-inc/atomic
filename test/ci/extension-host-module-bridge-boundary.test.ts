@@ -74,7 +74,7 @@ test(
 					`import { getVirtualModules } from ${JSON.stringify(join(root, "packages/coding-agent/src/core/extensions/loader-host-modules.ts"))};\n` +
 					"void (async () => {\n" +
 					'  const extensionPath = process.argv[2];\n  if (!extensionPath) throw new Error("missing extension path");\n' +
-					'  if (!isNativeBuiltinExtensionPath(extensionPath)) throw new Error("installed builtin entry was not trusted");\n' +
+					'  if (!(await isNativeBuiltinExtensionPath(extensionPath))) throw new Error("installed builtin entry was not trusted");\n' +
 					'  const fs = createRequire(import.meta.url)("node:fs") as { readFileSync: (...args: any[]) => any };\n' +
 					"  const originalReadFileSync = fs.readFileSync;\n" +
 					'  fs.readFileSync = (target, ...args) => { if (String(target) === extensionPath) throw new Error("jiti read builtin source"); return originalReadFileSync(target, ...args); };\n' +

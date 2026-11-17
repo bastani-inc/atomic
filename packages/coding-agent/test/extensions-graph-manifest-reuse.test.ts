@@ -108,7 +108,7 @@ export default function () {
 		const chainD = path.join(path.dirname(chainC), "chain-d.ts");
 
 		await loadGated(entry);
-		const before = extensionLoaderTestHooks.readExtensionGraphManifest(entry);
+		const before = await extensionLoaderTestHooks.readExtensionGraphManifest(entry);
 		expect(Object.keys(before?.files ?? {}).some((filePath) => filePath.endsWith("chain-d.ts"))).toBe(false);
 
 		fs.writeFileSync(chainD, `export const valueD = "d";\n`);
@@ -117,7 +117,7 @@ export default function () {
 
 		expect(state().evaluations).toBe(2);
 		expect(reloaded()).toBe("c-d:b:a");
-		const after = extensionLoaderTestHooks.readExtensionGraphManifest(entry);
+		const after = await extensionLoaderTestHooks.readExtensionGraphManifest(entry);
 		expect(Object.keys(after?.files ?? {}).some((filePath) => filePath.endsWith("chain-d.ts"))).toBe(true);
 	});
 
@@ -139,7 +139,7 @@ export default function () {
 
 		const first = await loadGated(entry);
 		expect(first()).toBe("before");
-		const manifest = extensionLoaderTestHooks.readExtensionGraphManifest(entry);
+		const manifest = await extensionLoaderTestHooks.readExtensionGraphManifest(entry);
 		expect(Object.keys(manifest?.files ?? {}).some((filePath) => filePath.endsWith("deferred.ts"))).toBe(true);
 
 		fs.writeFileSync(deferred, `export const value = "after";\n`);
@@ -172,7 +172,7 @@ export default function () {
 
 		const first = await loadGated(entry);
 		await expect(Promise.resolve(first() as unknown as PromiseLike<string>)).resolves.toBe("before");
-		const manifest = extensionLoaderTestHooks.readExtensionGraphManifest(entry);
+		const manifest = await extensionLoaderTestHooks.readExtensionGraphManifest(entry);
 		expect(Object.keys(manifest?.files ?? {}).some((filePath) => filePath.endsWith("deferred.ts"))).toBe(true);
 
 		fs.writeFileSync(deferred, `export const value = "after";\n`);
@@ -205,7 +205,7 @@ export default function () {
 
 		const first = await loadGated(entry);
 		await expect(Promise.resolve(first() as unknown as PromiseLike<string>)).resolves.toBe("before");
-		const manifest = extensionLoaderTestHooks.readExtensionGraphManifest(entry);
+		const manifest = await extensionLoaderTestHooks.readExtensionGraphManifest(entry);
 		expect(Object.keys(manifest?.files ?? {}).some((filePath) => filePath.endsWith("deferred.ts"))).toBe(true);
 
 		fs.writeFileSync(deferred, `export const value = "after";\n`);
