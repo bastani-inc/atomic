@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setKeybindings } from "@bastani/atomic-tui";
-import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, onTestFinished, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -675,6 +675,10 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 	});
 
 	test("the changed-definition prompt answers only the keys its line names, in the themed line and the confirm fallback (#5256)", async () => {
+		vi.stubEnv("NO_COLOR", undefined);
+		onTestFinished(() => {
+			vi.unstubAllEnvs();
+		});
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		const workDir = makeTempDir("resume-entry-keys-");
@@ -807,7 +811,7 @@ describe("workflow resume provider for unified /resume (#5256)", () => {
 			await provider.resumeFromPicker(editedRunId, noColorCtx);
 			assert.deepEqual(plainLines, [`  ${WORKFLOW_DEFINITION_CHANGED_INLINE_PROMPT}`], "NO_COLOR prompt");
 		} finally {
-			vi.unstubAllEnvs();
+			vi.stubEnv("NO_COLOR", undefined);
 		}
 
 		const confirmCalls: string[][] = [];
