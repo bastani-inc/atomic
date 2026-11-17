@@ -50,7 +50,7 @@ async function exercise(source: Partial<AgentPanelSource>) {
 	hub.register({ items: () => [row("ok")], subscribe: () => () => {}, ...source } as AgentPanelSource);
 	const warnings: string[] = [];
 	const dispose = bindAgentPanel(session, {
-		setWidget(_key, factory) {
+		setWidget(_key: string, factory: unknown) {
 			if (typeof factory === "function") {
 				const component = factory({ requestRender() {} } as never, {} as never) as {
 					render(width: number): string[];
