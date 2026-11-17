@@ -821,7 +821,15 @@ test("a started host ships on its interval without a flush, and stops when close
 test("filling maxBatch ships the attempt's checkpoints at once, without waiting for the interval (#4768)", async () => {
 	const { shard: local } = await shard();
 	const shared = fakeShared();
-	const shipping = shippingOf(local, shared.deliver);
+	// A lag bound no pause of a loaded runner reaches: half of SHIPPING's 1 s, between the two steps, made the second
+	// step's catch-up ship the first checkpoint alone, and the second then waited for the interval.
+	const shipping = new CheckpointShipping(local, {
+		...SHIPPING,
+		maxLagMs: 600_000,
+		host: "host",
+		deliver: shared.deliver,
+	});
+	opened.push(shipping);
 	await shipping.hold(LEASE, LEASE_MS);
 	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
 	await sleep(50);
