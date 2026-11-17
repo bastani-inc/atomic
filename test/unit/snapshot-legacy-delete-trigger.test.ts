@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.ts";
+import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { sqliteDialect } from "../../packages/coding-agent/src/core/storage/dialect.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
@@ -220,6 +220,54 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				assert.ok(otherChunked.data.equals((await store.getBlob(otherChunked.hash))!));
 			},
 		);
+
+		test("an abort during collection's schema read commits no setup transaction and leaves the previous trigger and missing indexes unchanged (#5327)", async () => {
+			const database = await openDatabase("before-setup-abort.sqlite");
+			await SqlSnapshotBlobStore.open(database);
+			await installLegacyConditionalTrigger(database);
+			await database.exec("DROP INDEX snapshot_blobs_age; DROP INDEX snapshot_blobs_inline_size");
+			await database.run("UPDATE snapshot_collection SET holder = 'owner', claimed_at = unixepoch() - 100");
+			const claimBefore = await database.get("SELECT holder, claimed_at FROM snapshot_collection");
+			const schemaState = () =>
+				database.all(
+					"SELECT type, name, sql FROM sqlite_schema WHERE name IN (?, ?, ?, ?) ORDER BY name",
+					"snapshot_blobs_chunks_delete",
+					"snapshot_blobs_chunks_delete_all",
+					"snapshot_blobs_age",
+					"snapshot_blobs_inline_size",
+				);
+			const schemaBefore = await schemaState();
+			assert.equal(schemaBefore.length, 1);
+			assert.equal(schemaBefore[0]?.name, "snapshot_blobs_chunks_delete");
+			const controller = new AbortController();
+			const stopped = new Error("stop during legacy collection schema read");
+			let commits = 0;
+			let schemaReads = 0;
+			let armed = false;
+			const store = await SqlSnapshotBlobStore.open({
+				...afterEachTransaction(database, async () => {
+					commits++;
+				}),
+				async all<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> {
+					const rows = await database.all<T>(sql, ...params);
+					if (armed && params.includes("snapshot_blobs_inline_size")) {
+						schemaReads++;
+						controller.abort(stopped);
+					}
+					return rows;
+				},
+			});
+			assert.equal(commits, 0, "opening with the previous trigger does not write");
+			armed = true;
+			await assert.rejects(
+				store.collectGarbage({ graceSeconds: 3600, holder: "owner", signal: controller.signal }),
+				(error) => error === stopped,
+			);
+			assert.equal(schemaReads, 1, "the signal aborts while reading the collection setup's schema rows");
+			assert.equal(commits, 0, "no setup transaction commits after the schema read aborts");
+			assert.deepEqual(await schemaState(), schemaBefore);
+			assert.deepEqual(await database.get("SELECT holder, claimed_at FROM snapshot_collection"), claimBefore);
+		});
 
 		test("legacy collection setup renews its claim and yields before an abort stops at that batch boundary (#5327)", async () => {
 			const database = await openDatabase("setup-abort.sqlite");
