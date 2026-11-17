@@ -19,12 +19,13 @@ import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { type ReceiptSender, type RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { buildMessageSendSignature } from "./send-signature.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
-import { isVerticalBypass, sameGroup } from "./group-isolation.js";
-import { sessionGroups, sessionsShareGroup } from "./group-membership.js";
+import { isVerticalBypass } from "./group-isolation.js";
+import { reachesSession, sessionGroups } from "./group-membership.js";
+import { type IntercomReachPolicy, notFoundInReachReason, outsideReachReason } from "../reach-policy.js";
 import { HELD_FOR_AWAY_ASKER_TARGET } from "./held-reply-targets.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
 import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
-import { type ReturnPathParty, returnPathClosedReason } from "./return-paths.js";
+import { type ReturnPathParty, type ReturnPaths, returnPathClosedReason } from "./return-paths.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL } from "../recipient-purpose.js";
 
 export interface BrokerConnectedSession {
@@ -50,6 +51,7 @@ export interface BrokerConnectedSession {
   readonly acknowledgesReceipt?: true;
   /** #4642: the session id of the connection hosting this session, whose `socket` it shares. */
   readonly hostedBy?: string;
+  reach?: IntercomReachPolicy;
 }
 
 /** A message frame for `recipient`; the connection hosting a hosted recipient learns which of its sessions it is for. */
@@ -123,6 +125,7 @@ export type RestoringRecipientHold = (send: {
   readonly target: string;
   readonly messageId: string;
   readonly attemptId?: string;
+  readonly answersAsk?: true;
 }) => boolean;
 
 export interface SendClientMessage extends Record<string, unknown> {
@@ -158,6 +161,28 @@ export interface ReturnPathAuthority {
 	delivered(recipient: BrokerConnectedSession, from: ReturnPathParty, fromInfo: SessionInfo, operationId: string): void;
 }
 
+/** The broker's return paths, over the sessions it serves. */
+export function createReturnPathAuthority(
+	paths: ReturnPaths,
+	sessions: ReadonlyMap<string, BrokerConnectedSession>,
+): ReturnPathAuthority {
+	return {
+		holds: (sender, target) => paths.holds(returnPathParty(sender), target),
+		answerable: (sender) =>
+			paths.sendersOf(returnPathParty(sender)).flatMap((held) => {
+				const live = sessions.get(held.sessionId);
+				return live !== undefined && returnPathParty(live).identity === held.identity ? [live] : [];
+			}),
+		use: (sender, target, messageId) => paths.use(returnPathParty(sender), target, messageId),
+		closed: (sender, target) => paths.closed(returnPathParty(sender), target),
+		delivered: (recipient, from, fromInfo, operationId) => {
+			// A recipient that can already reach the sender needs no path; one with a reach policy never uses one.
+			if (recipient.reach === undefined && !reachesSession(recipient, fromInfo))
+				paths.open(returnPathParty(recipient), from, operationId);
+		},
+	};
+}
+
 /**
  * The stable identity of a registration, which a return path binds: its return address and registration group. A
  * session registered without a return address has none, so another session given its id later is never mistaken for it.
@@ -170,11 +195,16 @@ export function returnPathParty(session: BrokerConnectedSession): ReturnPathPart
 }
 
 /**
- * Whether a send may travel on a return path at all: an explicit direct send or ask. A copy of a pattern send (it
- * carries a `broadcastId`) never does, so `subagents:` and glob sends reach only what they reached before.
+ * Whether a send may travel on a return path at all: an explicit direct send or ask from a session without a reach
+ * policy. A copy of a pattern send (it carries a `broadcastId`) never does, so `subagents:` and glob sends reach only
+ * what they reached before; a session whose host gave it a reach policy sends only within that policy.
  */
-export function mayUseReturnPath(message: Message, supervisorSend: boolean): boolean {
-	return !supervisorSend && message.broadcastId === undefined;
+export function mayUseReturnPath(
+	message: Message,
+	supervisorSend: boolean,
+	sender: Pick<BrokerConnectedSession, "reach">,
+): boolean {
+	return !supervisorSend && message.broadcastId === undefined && sender.reach === undefined;
 }
 
 /**
@@ -208,6 +238,7 @@ export interface RemoteSendRequest {
 
 /** Local sends the multi-node router has already checked against the shared outbox. */
 const checkedAgainstSharedOutbox = new WeakSet<SendClientMessage>();
+const sendersAtReceipt = new WeakMap<SendClientMessage, BrokerConnectedSession>();
 
 export type RemoteSendRouter = (request: RemoteSendRequest) => void;
 function wireMessageId(value: unknown): string {
@@ -312,10 +343,19 @@ export function handleBrokerSend(
   }
 
 
-  const fromSession = currentId ? sessions.get(currentId) : undefined;
-  if (!fromSession) {
+  const liveSender = currentId ? sessions.get(currentId) : undefined;
+  if (!liveSender) {
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Sender session not found" });
     return;
+  }
+  let fromSession = sendersAtReceipt.get(clientMessage);
+  if (fromSession === undefined) {
+    fromSession = liveSender.reach === undefined ? liveSender : {
+      ...liveSender,
+      info: { ...liveSender.info, groups: liveSender.info.groups?.slice() },
+      reach: { home: liveSender.reach.home, reachable: [...liveSender.reach.reachable] },
+    };
+    sendersAtReceipt.set(clientMessage, fromSession);
   }
 	const senderIdentity = fromSession.registrationReturnAddress ?? fromSession.info.id;
 	const logicalTarget = typeof clientMessage.logicalTarget === "string" ? clientMessage.logicalTarget : clientMessage.to;
@@ -399,7 +439,7 @@ export function handleBrokerSend(
 	const liveWorkflowTarget = sessions.has(trimmedTo) ? undefined : resolveLiveWorkflowStage?.(trimmedTo);
 	const exactIdTarget = sessions.get(trimmedTo) ?? liveWorkflowTarget;
   const visibleCandidates = Array.from(sessions.values(), (session) => session.info).filter(
-	(info) => sessionsShareGroup(info, fromSession.info) ||
+	(info) => reachesSession(fromSession, info) ||
       (supervisorSend && info.id === fromSession.supervisorId) ||
       (message.replyTo !== undefined && (
         pendingQuestions.matchesReply(fromSession.info.id, info.id, message.replyTo) ||
@@ -411,7 +451,7 @@ export function handleBrokerSend(
   // considered only when nothing the sender can already see answers to that name, so no name resolves differently.
   const visibleIds = new Set(candidates.map((visible) => visible.id));
   const returnPathCandidates =
-    returnPaths !== undefined && mayUseReturnPath(message, supervisorSend)
+    returnPaths !== undefined && mayUseReturnPath(message, supervisorSend, fromSession)
       ? returnPaths
           .answerable(fromSession)
           .map((session) => session.info)
@@ -504,9 +544,11 @@ export function handleBrokerSend(
       : undefined;
   if (stageTarget !== undefined) {
     const { requirePendingReply: _pending, expectedRecipientId: _expected, ...plainSend } = clientMessage;
+    const stageSend = { ...(awayStageAsker ? plainSend : clientMessage), type: "send", to: stageTarget, logicalTarget: stageTarget };
+    sendersAtReceipt.set(stageSend, fromSession);
     handleBrokerSend(
       socket,
-      { ...(awayStageAsker ? plainSend : clientMessage), type: "send", to: stageTarget, logicalTarget: stageTarget },
+      stageSend,
       currentId,
       sessions,
       deliveredMessages,
@@ -809,9 +851,9 @@ export function handleBrokerSend(
 		}) ||
 		correlatedReply ||
 		(liveWorkflowTarget !== undefined && canControlLiveWorkflowStage?.(fromSession, target, trimmedTo) === true);
-	const crossesGroups = !bypass && !sameGroup(target.info, fromSession.info);
-	// A recipient answers a sender outside its groups that wrote to it, within the return path's bounds.
-	const returnPath = crossesGroups && mayUseReturnPath(message, supervisorSend) ? returnPathParty(target) : undefined;
+	const crossesGroups = !bypass && !reachesSession(fromSession, target.info);
+	// A recipient answers a sender outside its reach that wrote to it, within the return path's bounds.
+	const returnPath = crossesGroups && mayUseReturnPath(message, supervisorSend, fromSession) ? returnPathParty(target) : undefined;
 	if (crossesGroups && (returnPath === undefined || returnPaths?.use(fromSession, returnPath, message.id) !== true)) {
       write(socket, {
         type: "delivery_failed",
@@ -823,7 +865,9 @@ export function handleBrokerSend(
           ? workflowInvocationRefusalFor(fromSession.registrationGroup, `workflow:${workflowTarget.rootRunId}`)
           : returnPath !== undefined && returnPaths?.closed(fromSession, returnPath) === true
             ? returnPathClosedReason(target.info.name ?? target.info.id)
-            : "Target session is in a different intercom group",
+            : fromSession.reach !== undefined
+              ? outsideReachReason(fromSession.reach)
+              : "Target session is in a different intercom group",
       });
       return;
     }
@@ -1116,11 +1160,14 @@ export function handleBrokerSend(
     message.replyTo === undefined && workflowTarget === undefined && canPeekGroup !== undefined
       ? liveInPeekableGroupReason(sessions, fromSession, trimmedTo, canPeekGroup)
       : undefined;
+  const targetFailure = sessionTargetFailureReason(clientMessage.to, resolution);
   write(socket, {
     type: "delivery_failed",
     messageId: message.id,
     attemptId,
-    reason: peekHint ?? sessionTargetFailureReason(clientMessage.to, resolution),
+    reason: peekHint ?? (fromSession.reach !== undefined && resolution.kind === "not_found"
+      ? `${targetFailure}. ${notFoundInReachReason(fromSession.reach)}`
+      : targetFailure),
 		...(requirePendingReply && resolution.kind === "not_found"
 			? { reasonCode: "session_not_found" as const }
 			: {}),
@@ -1143,7 +1190,7 @@ function liveInPeekableGroupReason(
   if (normalizeGroup(sender.registrationGroup ?? sender.info.group).startsWith("workflow:")) return undefined;
   const peekable = new Map<string, string>();
   for (const { info } of sessions.values()) {
-    if (info.id === sender.info.id || !isAgentRecipient(info) || sessionsShareGroup(info, sender.info)) continue;
+    if (info.id === sender.info.id || !isAgentRecipient(info) || reachesSession(sender, info)) continue;
     const group = [...sessionGroups(info)].find(
       (candidate) => !candidate.startsWith("workflow:") && canPeekGroup(sender, candidate),
     );

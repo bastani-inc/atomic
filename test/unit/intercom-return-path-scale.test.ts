@@ -6,6 +6,7 @@ import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-que
 import { ReturnPaths } from "../../packages/intercom/broker/return-paths.js";
 import {
 	type BrokerConnectedSession,
+	createReturnPathAuthority,
 	handleBrokerSend,
 	type ReturnPathAuthority,
 	returnPathParty,
@@ -64,21 +65,17 @@ test("a direct send stays linear in the sessions the broker serves and asks abou
 	const paths = new ReturnPaths();
 	paths.open(returnPathParty(stage), returnPathParty(launcher), "launcher-note");
 	const lookups = { holds: 0, answerable: 0 };
+	const real = createReturnPathAuthority(paths, sessions);
 	const authority: ReturnPathAuthority = {
+		...real,
 		holds: (sender, target) => {
 			lookups.holds += 1;
-			return paths.holds(returnPathParty(sender), target);
+			return real.holds(sender, target);
 		},
 		answerable: (sender) => {
 			lookups.answerable += 1;
-			return paths.sendersOf(returnPathParty(sender)).flatMap((held) => {
-				const live = sessions.get(held.sessionId);
-				return live !== undefined && returnPathParty(live).identity === held.identity ? [live] : [];
-			});
+			return real.answerable(sender);
 		},
-		use: (sender, target, messageId) => paths.use(returnPathParty(sender), target, messageId),
-		closed: (sender, target) => paths.closed(returnPathParty(sender), target),
-		delivered: () => {},
 	};
 	const written: Array<{ to: string | undefined; frame: BrokerMessage }> = [];
 	reads.id = 0;

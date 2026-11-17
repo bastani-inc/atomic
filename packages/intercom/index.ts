@@ -55,6 +55,7 @@ import {
 	type ToolRenderResultArgs,
 } from "./lazy-heavy-proxy.js";
 
+export { IntercomReachUnsupportedError, isIntercomReachUnsupportedError } from "./reach-errors.js";
 export {
 	IntercomReleasedChildError,
 	type IntercomReleasedChildErrorCode,

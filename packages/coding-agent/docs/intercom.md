@@ -15,6 +15,7 @@ The extension registers commands and tools at startup. Connections are lazy: a s
 - **Session messaging** - `send`, `ask` (never blocks; the reply arrives as a message), `reply`, `pending`, `cancel`, `list`, `groups`, and `status` via the `intercom` tool
 - **Runtime groups** - Add or remove named memberships without restarting; joined sessions keep their broker IDs and later subagents inherit the most recently joined membership
 - **Session and group discovery** - List connected sessions or every available group, including session counts and membership markers
+- **Host-set reach** - An SDK host can give a session its own group and the other groups it may reach, enforced by the broker (see [Reach policies](/intercom/reference#reach-policies))
 - **Keyboard overlay** - ALT+M or `/intercom` opens a session picker and compose overlay
 - **Attachments** - Share `file`, `snippet`, and `context` payloads between sessions
 - **Subagent escalation** - Delegated children get a `contact_supervisor` tool for decisions, structured interviews, and progress updates
