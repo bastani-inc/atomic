@@ -55,8 +55,6 @@ let tmuxHyperlinksAsked = false;
  * Checks whether the attached tmux client forwards OSC 8 hyperlinks to the
  * outer terminal. tmux only re-emits them when its `client_termfeatures` lists
  * `hyperlinks`, and strips them otherwise. On any error fallbacks `false`.
- * tmux is asked in the background: until it answers this is `false`, and
- * detected capabilities are worked out again once it answered `true`.
  */
 function probeTmuxHyperlinks(): boolean {
 	if (tmuxForwardsHyperlinks !== undefined) return tmuxForwardsHyperlinks;

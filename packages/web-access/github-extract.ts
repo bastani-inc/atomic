@@ -159,7 +159,6 @@ function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?
 			env: createChildProcessEnvironment(),
 		});
 		const tree = child.pid === undefined || child.pid === process.pid ? undefined : containProcessTree(child.pid);
-		// A child in its own process group misses the terminal's hangup: Atomic stops it on exit instead.
 		const detachedPid =
 			process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid ? child.pid : undefined;
 		if (detachedPid !== undefined) trackDetachedChildPid(detachedPid);

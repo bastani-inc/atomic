@@ -65,7 +65,14 @@ const SATURATED_TURN_MS = 20;
  * and about 110 after it; the bound leaves room for scheduling noise but not for a per-byte or per-entry regression.
  */
 const START_LOOP_TURN_BOUND = 200;
-const START_FS_OPERATION_BOUND = 400;
+/** The fs requests a child's start makes up to its first provider request: 861 before #4319. */
+const SYNCHRONOUS_CHECK_START_FS_OPERATION_BOUND = 200;
+/**
+ * The checks a child's start used to make synchronously, which the count did not see, now made as fs requests: 116
+ * counted before and 300 after on this fixture.
+ */
+const ASYNCHRONOUS_CHECK_FS_OPERATIONS = 300 - 116;
+const START_FS_OPERATION_BOUND = SYNCHRONOUS_CHECK_START_FS_OPERATION_BOUND + ASYNCHRONOUS_CHECK_FS_OPERATIONS;
 
 /**
  * The start budget of a child launched against an injected stall. It runs only once the child reaches its stall (see

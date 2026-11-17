@@ -110,7 +110,6 @@ export function spawnCollect(
 				stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 			});
 			tree = child.pid === undefined || child.pid === process.pid ? undefined : containProcessTree(child.pid);
-			// A child in its own process group misses the terminal's hangup: Atomic stops it on exit instead.
 			if (process.platform !== "win32" && child.pid !== undefined && child.pid !== process.pid) {
 				detachedPid = child.pid;
 				trackDetachedChildPid(detachedPid);

@@ -199,7 +199,6 @@ class SqliteWriteQueue {
 		return existsSync(this.directory);
 	}
 
-	/** `contended`, checked off the event loop. */
 	contendedOffLoop(): Promise<boolean> {
 		return pathExists(this.directory);
 	}
@@ -272,7 +271,6 @@ class SqliteWriteQueue {
 	 * meanwhile passes the turn to the next one.
 	 */
 	async wakeNext(): Promise<void> {
-		// An uncontended release finds no queue directory and lists nothing.
 		if (!(await this.contendedOffLoop())) return;
 		for (const ticket of await this.liveTicketsOffLoop()) {
 			try {
@@ -572,7 +570,6 @@ export function sqliteOpenLockPath(databasePath: string): string {
 	return `${databasePath}-open.lock`;
 }
 
-/** The native advisory locks, typed by their own declarations so the event-loop check sees each call. */
 type NativeOpenLocks = Pick<typeof native, "tryAdvisoryLock" | "trySharedAdvisoryLock"> &
 	Partial<Pick<typeof native, "tryAdvisoryLockAsync">>;
 
@@ -738,8 +735,6 @@ async function releaseOpenLock(openLock: HeldOpenLock | undefined): Promise<void
 	if (openLock === undefined) return;
 	openLock.lock.release();
 	try {
-		// Whether any connection still holds the file open, asked on a worker thread; a binding without the
-		// asynchronous form leaves the lock file in place, which only makes the next opener take its shared lock.
 		const exclusive = (await openLocks()?.tryAdvisoryLockAsync?.(openLock.path, 0)) ?? null;
 		if (exclusive !== null) {
 			try {

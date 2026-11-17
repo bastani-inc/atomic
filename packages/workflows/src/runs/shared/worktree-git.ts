@@ -20,7 +20,6 @@ import {
 import { findCanonicalGitRootSteps, resolveGitHeadBranchSteps } from "./worktree-root.js";
 import type { GitResult, GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./worktree-types.js";
 
-/** The branch a run launched at `cwd` records, read without blocking the event loop. */
 export function resolveInvocationGitBranch(cwd: string): Promise<string | undefined> {
 	return runWorktreeSteps(
 		resolveGitHeadBranchSteps(cwd, function* (repoRoot) {

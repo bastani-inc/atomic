@@ -143,7 +143,6 @@ export function createRpcCommandHandler({
 		pending: pendingExtensionRequests ?? new Map(),
 	});
 	const bashOwners = new RpcBashRequestOwners(output);
-	/** The shortcut bindings in effect; without the host's, the agent directory's keybindings.json, read each time. */
 	const getShortcutBindings = async () => {
 		if (keybindings) return keybindings.getEffectiveConfig();
 		fallbackShortcutKeybindings ??= new KeybindingsManager(

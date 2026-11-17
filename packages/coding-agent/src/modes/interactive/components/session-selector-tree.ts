@@ -22,8 +22,6 @@ function sessionPathKey(session: SessionInfo): string {
 	const cached = pathKeys.get(session);
 	if (cached?.path === session.path) return cached.key;
 	const key = getSessionPathKey(session.path);
-	// A path whose symlinks are still being resolved off the event loop keys by its spelling until then; keep only
-	// the resolved key, so the rebuild that follows the resolution threads the session under its parent.
 	if (isSessionPathKeyResolved(session.path)) pathKeys.set(session, { path: session.path, key });
 	return key;
 }

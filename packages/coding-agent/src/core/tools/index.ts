@@ -244,14 +244,12 @@ function createBuiltinWriteToolDefinition(cwd: string, options?: WriteToolOption
 	);
 }
 
-/** One built-in tool definition for SDK callers; its ask_user_question reads the guidance config the first time. */
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
 	return toolName === "ask_user_question"
 		? createAskUserQuestionToolDefinition()
 		: createLoadedToolDefinition(toolName, cwd, options);
 }
 
-/** `createToolDefinition` with the guidance config already read, for Atomic's own interface. */
 export function createLoadedToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
 	switch (toolName) {
 		case "read":
@@ -331,10 +329,6 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 	];
 }
 
-/**
- * Every built-in tool definition for SDK callers. Its ask_user_question reads the guidance config itself the first time,
- * as `createAskUserQuestionToolDefinition` does; a session's registry uses the config `createAgentSession` already read.
- */
 export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): BuiltinToolMap<ToolDef> {
 	return {
 		...createToolDefinitionsFor(cwd, options, isPowerShellAvailable()),

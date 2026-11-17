@@ -294,7 +294,6 @@ function formatReadArgs(
 	args: Record<string, unknown> | undefined,
 	cwd: string,
 ): { display: string; startLine: number; basePath: string } {
-	// An @-mentioned path reads the file it names, so it shows like any other read of that file.
 	const rawPath = (asString(args?.path) ?? asString(args?.file_path) ?? "").replace(/^@/, "");
 	if (!rawPath) return { display: "", startLine: 1, basePath: "" };
 	try {
@@ -811,7 +810,6 @@ function presentWait(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation
 			fullOutputPath,
 		});
 		const untailed = rawText.endsWith(tail) ? rawText.slice(0, -tail.length) : rawText;
-		// Matched on the text without its trailing whitespace, so the status line's own end needs no whitespace run.
 		const trimmed = untailed.trimEnd();
 		const statusFooter =
 			/\n\nTask \S+ (?:completed with exit code \d+|is still running[^\n]*|exited with code \d+|ended without an exit code|failed[^\n]*|was cancelled[^\n]*)\.?$/.exec(

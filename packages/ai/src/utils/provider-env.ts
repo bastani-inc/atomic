@@ -9,8 +9,6 @@ import type { ProviderEnv } from "../types.ts";
  * packages/coding-agent/src/bun/restore-sandbox-env.ts. The ai package can be
  * used directly, without going through that entrypoint, so provider env lookup
  * must not depend on process.env having been patched.
- *
- * Read once as the module loads, where the process starts with that empty environment, so a lookup never reads it.
  */
 const procEnv: ReadonlyMap<string, string> | undefined = readBunSandboxEnv();
 

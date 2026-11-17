@@ -98,7 +98,6 @@ export function findCanonicalGitRoot(cwd: string): Promise<string | undefined> {
 	return runWorktreeSteps(findCanonicalGitRootSteps(cwd));
 }
 
-/** The checkout at `cwd` and what its HEAD names: a branch, the reftable placeholder `.invalid`, or nothing. */
 function* readGitHeadSteps(cwd: string): WorktreeSteps<{ repoRoot: string; branch: string } | undefined> {
 	const repoRoot = yield* findGitRootSteps(cwd);
 	if (repoRoot === undefined) return undefined;
@@ -122,7 +121,6 @@ function* readGitHeadSteps(cwd: string): WorktreeSteps<{ repoRoot: string; branc
 	return branch ? { repoRoot, branch } : undefined;
 }
 
-/** The branch checked out at `cwd`, from HEAD; `probeSymbolicRef` asks Git when HEAD names the reftable placeholder. */
 export function* resolveGitHeadBranchSteps(
 	cwd: string,
 	probeSymbolicRef?: (repoRoot: string) => WorktreeSteps<string | undefined>,
@@ -134,7 +132,6 @@ export function* resolveGitHeadBranchSteps(
 	return (yield* probeSymbolicRef(head.repoRoot))?.trim() || undefined;
 }
 
-/** `resolveGitHeadBranchSteps` off the event loop, with a probe that may answer asynchronously. */
 export async function resolveGitHeadBranch(
 	cwd: string,
 	probeSymbolicRef?: (repoRoot: string) => string | undefined | Promise<string | undefined>,

@@ -357,9 +357,6 @@ function registerProtectedAdmission(
 		return true;
 	});
 	const cards = unread.map((entry) => entry.card);
-	// A session whose disposal began while the cards were being saved runs no further turn, and nothing it queues now
-	// reaches a model. Each card keeps its pending marker instead, so the session that next opens the transcript
-	// delivers it, as it does for a card whose process ended before its turn.
 	if (owner._disposed && resolveWorkflowStageDeliveryTarget(owner) === owner)
 		return { owner, cards, reconciliations: [] };
 	const reconciliations = unread.map((entry) => entry.reconciliation);

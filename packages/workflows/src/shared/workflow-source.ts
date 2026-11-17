@@ -20,10 +20,6 @@ export function isWorkflowRuntimeModule(path: string): boolean {
 
 const PENDING_SOURCE_DIGESTS = new WeakMap<object, Promise<void>>();
 
-/**
- * Records the module `definition` was loaded from, and the digest of that module as it loaded, read off the event
- * loop; `recordedWorkflowDefinitionSource` waits for it.
- */
 export function recordWorkflowSource(definition: object, path: string): void {
 	const normalizedPath = normalizeWorkflowSourcePath(path);
 	WORKFLOW_SOURCES.set(definition, normalizedPath);
@@ -41,7 +37,6 @@ export function recordWorkflowSource(definition: object, path: string): void {
 	PENDING_SOURCE_DIGESTS.set(definition, pending);
 }
 
-/** The recorded module and its digest, once the digest read `recordWorkflowSource` started has finished. */
 export async function recordedWorkflowDefinitionSource(
 	definition: object,
 ): Promise<DurableWorkflowDefinitionSource | undefined> {

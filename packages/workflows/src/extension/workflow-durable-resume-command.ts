@@ -86,7 +86,6 @@ export function isEditedEntryModuleRefusal(message: string | undefined): boolean
 	}
 	const cleaned = cleanEntryChangeReason(message);
 	if (!cleaned || /Invalid worker placement configuration/i.test(cleaned)) return false;
-	// `cleaned` has its whitespace collapsed to single spaces.
 	const sinceRoot = /^Since root [^ ]+ started, ?(.+?)\.?$/i.exec(cleaned);
 	const clauseList = sinceRoot ? sinceRoot[1]! : cleaned.replace(/\.$/, "");
 	const parts = clauseList

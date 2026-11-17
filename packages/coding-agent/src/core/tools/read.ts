@@ -394,7 +394,6 @@ export function createReadToolDefinition(
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const fallbackResizeOptions = options?.resizeOptions;
 	const ops = options?.operations ?? defaultReadOperations;
-	// Its renderers keep a resolved path between renders; the public type stays the one SDK callers already use.
 	const definition: ToolDefinition<typeof readSchema, ReadToolDetails | undefined, ReadRenderState> = {
 		name: "read",
 		label: "read",

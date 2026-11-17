@@ -192,7 +192,6 @@ function formatListRecord(
 	for (const line of lines) {
 		const match = line.match(/^- `([^`]+)`(?:\s+\[([^\]]+)\])?/);
 		if (!match) continue;
-		// The name ends the line when the record has one; matched apart so no free text sits between two whitespace runs.
 		const named = /\sname:\s+(\S+)$/.exec(line.slice(match[0].length));
 		const id = match[1] ?? "";
 		const tags = (match[2] ?? "")

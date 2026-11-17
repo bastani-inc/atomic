@@ -112,7 +112,6 @@ async function openDurableBackend(
 	const agentDir = options.agentDir ?? getAgentDir();
 	const abandonedBefore = options.abandonSignal?.aborted === true;
 	const holder = options.holder;
-	// Reading settings and selecting the journal yield; the holder can be released meanwhile (`PendingDurableBackendOpen`).
 	let settle = (): void => {};
 	let fail = (_error: unknown): void => {};
 	const pending: PendingDurableBackendOpen | undefined =
@@ -184,8 +183,6 @@ async function openDurableBackend(
 	} else if (existing !== undefined) {
 		settle();
 	} else {
-		// Released before it was registered: its holder holds nothing, so a backend opened for it alone is closed once
-		// ready, as releasing a registered holder closes it, and the release waits for that.
 		entry.ready
 			.then(
 				() => entry.close?.(),

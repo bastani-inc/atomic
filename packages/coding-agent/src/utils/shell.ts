@@ -530,7 +530,6 @@ export function killChildProcessTree(child: ChildProcess, exited: boolean): void
 	child.kill("SIGKILL");
 }
 
-/** Runs `taskkill /F /T` on `pid`'s tree, then `settled` once taskkill has exited or could not start. */
 function taskkillTree(pid: number, settled?: () => void): void {
 	// Use the trusted System32 executable so cleanup does not depend on PATH.
 	try {
@@ -557,7 +556,6 @@ function taskkillTree(pid: number, settled?: () => void): void {
 		child.once("error", finish);
 		child.once("exit", finish);
 	} catch {
-		// taskkill could not start.
 		settled?.();
 	}
 }

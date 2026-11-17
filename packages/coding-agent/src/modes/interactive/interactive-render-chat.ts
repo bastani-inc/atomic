@@ -771,7 +771,6 @@ function planTranscript(
 	options: { populateHistory?: boolean; suppressCompactionBoundary?: VerbatimCompactionResult },
 ): TranscriptStep[] {
 	const steps: TranscriptStep[] = [];
-	// Tool groups follow the transcript's order, so they are decided here, before any part of it is rendered.
 	const grouping = mainToolGrouping(mode);
 	resetMainToolGroup(mode);
 	let messageBuffer: AgentMessage[] = [];
@@ -829,7 +828,6 @@ function planTranscript(
 	return steps;
 }
 
-/** Adds one planned step to the chat; `latest` says it is the newest part, rendered in transcript order. */
 function addTranscriptStep(mode: InteractiveModeBase, step: TranscriptStep, latest = true): void {
 	if (step.kind === "custom") {
 		mode.addCustomEntryToChat(step.entry);

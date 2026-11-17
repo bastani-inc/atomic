@@ -39,7 +39,6 @@ const MAX_HIGHLIGHTED_WORD_EDITS = 64;
  * Compute word-level diff and render with inverse on changed parts.
  * Uses diffWords which groups whitespace with adjacent words for cleaner highlighting.
  * Strips leading whitespace from inverse to avoid highlighting indentation.
- * Returns undefined when the lines differ by more than MAX_HIGHLIGHTED_WORD_EDITS word edits.
  */
 function renderIntraLineDiff(
 	oldContent: string,

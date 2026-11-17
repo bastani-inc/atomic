@@ -613,7 +613,6 @@ async function executeRun(
 	const existingRootHandle = opts.parentRun === undefined ? durableBackend.getWorkflow(runId) : undefined;
 	const isFreshLaunch = existingRootHandle === undefined && opts.continuation === undefined;
 	const initialBranch = opts.workspace?.branch ?? opts.continuation?.source.branch ?? existingRootHandle?.branch;
-	// A fresh launch reads its checkout's branch off the event loop; the run is in the store, and quittable, meanwhile.
 	const freshLaunchBranch =
 		initialBranch === undefined && isFreshLaunch ? resolveInvocationGitBranch(opts.cwd ?? process.cwd()) : undefined;
 	const keepsCopiedParent = (parentId: string): boolean => keepsForkCopiedParent(copiedByFork, runSnapshot, parentId);
