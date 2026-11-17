@@ -13,7 +13,6 @@ import { isDetachedToolCall } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
-import { waitForPendingProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import {
 	awaitBlueprintReady,
@@ -319,7 +318,6 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 	};
 
 	const prepareTurn = async (turn: PrepareNextTurnContext, signal?: AbortSignal): Promise<AgentLoopTurnUpdate> => {
-		await waitForPendingProtectedStreamingCustomMessages(this);
 		const compactedMessages =
 			turn.toolResults.length > 0
 				? await this._preflightPostToolContext(turn.context.messages, signal)
@@ -328,7 +326,6 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 			compactedMessages === turn.context.messages ? turn.context : { ...turn.context, messages: compactedMessages };
 		const preparedTurn = compactedContext === turn.context ? turn : { ...turn, context: compactedContext };
 		const previousSnapshot = await previousPrepareNextTurnWithContext?.(preparedTurn, signal);
-		await waitForPendingProtectedStreamingCustomMessages(this);
 		// A caller-supplied replacement is the complete context for the next request; the
 		// canonical projection must not overwrite it at the request boundary.
 		this._callerReplacedNextRequestContext = previousSnapshot?.context !== undefined;

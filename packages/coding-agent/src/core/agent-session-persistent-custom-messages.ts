@@ -40,41 +40,6 @@ const displayedExcludedCards = new WeakMap<AgentSession, Set<string>>();
 const failedCardWrites = new WeakMap<AgentSession["sessionManager"], () => Promise<void>>();
 const uncertainCardKeys = new WeakMap<AgentSession["sessionManager"], Set<string>>();
 const pendingCardWrites = new WeakMap<AgentSession["sessionManager"], Map<string, Promise<DurableDisplayCard>>>();
-const pendingProtectedQueueings = new WeakMap<AgentSession, Set<Promise<void>>>();
-
-function trackProtectedQueueing<T>(session: AgentSession, operation: () => Promise<T>): Promise<T> {
-	const owner = resolveWorkflowStageDeliveryTarget(session);
-	const pending = pendingProtectedQueueings.get(owner) ?? new Set<Promise<void>>();
-	pendingProtectedQueueings.set(owner, pending);
-	const promise = operation();
-	const settled = promise.then(
-		() => {},
-		() => {},
-	);
-	pending.add(settled);
-	void settled.finally(() => {
-		for (const candidate of [owner, resolveWorkflowStageDeliveryTarget(owner)]) {
-			const set = pendingProtectedQueueings.get(candidate);
-			if (!set) continue;
-			set.delete(settled);
-			if (set.size === 0) pendingProtectedQueueings.delete(candidate);
-		}
-	});
-	return promise;
-}
-
-/**
- * Wait for any protected streaming custom message admission already in flight to finish saving its display card and
- * queueing its hidden turn before the loop polls steering for the next provider request.
- */
-export async function waitForPendingProtectedStreamingCustomMessages(session: AgentSession): Promise<void> {
-	while (true) {
-		const owner = resolveWorkflowStageDeliveryTarget(session);
-		const pending = pendingProtectedQueueings.get(owner);
-		if (!pending || pending.size === 0) return;
-		await Promise.all([...pending]);
-	}
-}
 
 function displayedCards(session: AgentSession): Set<string> {
 	let displayed = displayedExcludedCards.get(session);
@@ -385,34 +350,30 @@ export async function admitProtectedStreamingCustomMessage(
 }
 
 /** Queue one hidden turn before public listeners can transfer its ownership. */
-export function queueProtectedStreamingCustomMessage(
+export async function queueProtectedStreamingCustomMessage(
 	session: AgentSession,
 	message: CustomMessage,
 	delivery: ProtectedDelivery,
 	priority = false,
 ): Promise<void> {
-	return trackProtectedQueueing(session, async () => {
-		const admission = await prepareProtectedAdmission(session, [message], delivery);
-		for (const reconciliation of admission.reconciliations)
-			admission.owner._queueAgentMessage(reconciliation, priority ? "interrupt" : delivery);
-		emitProtectedAdmission(admission);
-	});
+	const admission = await prepareProtectedAdmission(session, [message], delivery);
+	for (const reconciliation of admission.reconciliations)
+		admission.owner._queueAgentMessage(reconciliation, priority ? "interrupt" : delivery);
+	emitProtectedAdmission(admission);
 }
 
 /** Queue a whole hidden batch before public listeners can transfer ownership. */
-export function queueProtectedStreamingCustomMessages(
+export async function queueProtectedStreamingCustomMessages(
 	session: AgentSession,
 	messages: CustomMessage[],
 	delivery: ProtectedDelivery,
 ): Promise<number> {
-	return trackProtectedQueueing(session, async () => {
-		const admission = await prepareProtectedAdmission(session, messages, delivery);
-		for (const reconciliation of admission.reconciliations) {
-			admission.owner._queueAgentMessage(reconciliation, delivery);
-		}
-		emitProtectedAdmission(admission);
-		return admission.reconciliations.length;
-	});
+	const admission = await prepareProtectedAdmission(session, messages, delivery);
+	for (const reconciliation of admission.reconciliations) {
+		admission.owner._queueAgentMessage(reconciliation, delivery);
+	}
+	emitProtectedAdmission(admission);
+	return admission.reconciliations.length;
 }
 
 export async function queueHeldCustomMessages(
@@ -638,13 +599,6 @@ export function transferProtectedStreamingCustomMessages(
 	target: AgentSession,
 	transferred: DrainedAgentQueues,
 ): void {
-	const inFlight = pendingProtectedQueueings.get(source);
-	if (inFlight && inFlight.size > 0) {
-		const targetPending = pendingProtectedQueueings.get(target) ?? new Set<Promise<void>>();
-		for (const item of inFlight) targetPending.add(item);
-		pendingProtectedQueueings.set(target, targetPending);
-		pendingProtectedQueueings.delete(source);
-	}
 	const transferredReferences = new Set([...transferred.steering, ...transferred.followUp]);
 	const retained: ProtectedStreamingCustomMessage[] = [];
 	const moved: ProtectedStreamingCustomMessage[] = [];
