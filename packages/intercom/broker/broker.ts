@@ -1012,8 +1012,9 @@ class IntercomBroker {
 		// the stage's acknowledgment behind it); the host hands the message to that live stage, so it reaches it now.
 		const parsed = parseWorkflowStageTarget(pending.target);
 		const liveRoutes: { stage: ReturnPathParty; target: string }[] = [];
+		const runPrefix = parsed === undefined ? undefined : `workflow:${parsed.rootRunId}/`;
 		for (const [target, route] of this.liveWorkflowStageRoutes) {
-			if (parsed === undefined || parseWorkflowStageTarget(target)?.rootRunId !== parsed.rootRunId) continue;
+			if (runPrefix === undefined || !target.startsWith(runPrefix)) continue;
 			const stage = this.sessions.get(route.sessionId);
 			if (stage !== undefined) liveRoutes.push({ stage: returnPathParty(stage), target });
 		}
