@@ -35,6 +35,12 @@ const CLOSE_MAX_AGE_MS = 5 * 60_000;
 const MAX_ABANDONED_STREAM_CLOSES = 16;
 /** How soon a process that only has a close waiting to be sent again exits. */
 const PROCESS_EXIT_BOUND_MS = 10_000;
+/** How long, in all, writes wait for a kept close that the server takes but leaves unanswered. */
+const CLOSE_WRITE_WAIT_MS = 2_000;
+/** How long the adapter waits for the answer to one resend of a kept close. */
+const CLOSE_TIMEOUT_MS = 5_000;
+/** How long a close-only request takes to reach the server when the transport is slow, well under CLOSE_WRITE_WAIT_MS. */
+const SLOW_CLOSE_MS = 200;
 
 async function within<T>(promise: Promise<T>, what: string, boundMs = RECOVERY_BOUND_MS): Promise<T> {
 	let timer: NodeJS.Timeout | undefined;
@@ -88,7 +94,7 @@ async function abandonCloses(count: number) {
 	/** The batons of the close-only requests sent, in order. */
 	const sent: string[] = [];
 	const control = {
-		mode: "fail" as "fail" | "pass" | "hold",
+		mode: "fail" as "fail" | "pass" | "hold" | "slow",
 		answer: undefined as ((response: Response) => void) | undefined,
 	};
 	vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -99,8 +105,14 @@ async function abandonCloses(count: number) {
 		if (control.mode === "pass") return real(request);
 		if (control.mode === "fail")
 			throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
-		return new Promise<Response>((resolve) => {
+		if (control.mode === "slow") {
+			await sleep(SLOW_CLOSE_MS);
+			return real(request);
+		}
+		// A held close is answered when a test says so, or goes unanswered until the request gives up.
+		return new Promise<Response>((resolve, reject) => {
 			control.answer = resolve;
+			init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
 		});
 	});
 	const streams = () => new Set(sent).size;
@@ -139,6 +151,31 @@ test("a stream cut while it holds the write lock is closed once the server is re
 	const answered = closes(fake).length;
 	await sleep(4 * CLOSE_FIRST_WAIT_MS);
 	assert.equal(closes(fake).length, answered, "an answered close is not sent again");
+});
+
+test("after an outage that outlasts the first resend of an abandoned stream's close, the client's next write sends that close first, so it never waits behind the stream's lock (#5114)", async () => {
+	const { fake, proxy } = await outage(LONG_STREAM_TTL_MS);
+	const database = await open(proxy.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	await cutInTransaction(database, () => proxy.cut());
+	// The first resend, CLOSE_FIRST_WAIT_MS after the close failed, meets the outage too; the next one is due after the
+	// server is back.
+	await sleep(2 * CLOSE_FIRST_WAIT_MS);
+	proxy.restore();
+	const before = fake.pipelines.length;
+	await within(database.run("INSERT INTO events VALUES (3)"), "a write after the outage");
+	const received = fake.pipelines.slice(before);
+	const close = received.findIndex((pipeline) => pipeline.continuesStream && pipeline.sql.length === 0);
+	const write = received.findIndex((pipeline) => pipeline.sql.includes("INSERT INTO events VALUES (3)"));
+	assert.ok(close !== -1 && close < write, "the abandoned stream's close reached the server before the write");
+	assert.deepEqual(
+		[
+			countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n < 3"),
+			countRows(fake, "SELECT COUNT(*) AS count FROM events"),
+		],
+		[0, 1],
+		"the cut transaction rolled back and the write committed",
+	);
 });
 
 test("when the cut loses the answer to a request the server ran, the refused close is not sent again and writes resume once the server expires the stream (#5114)", async () => {
@@ -181,11 +218,7 @@ test("closes the server cannot be reached for are sent again with doubling waits
 	// 250 ms wait would send.
 	await sleep(16 * CLOSE_FIRST_WAIT_MS);
 	assert.ok(resent() >= 3 && resent() <= 4, `${resent()} resends in 4 s`);
-	assert.deepEqual(
-		new Set(sent.slice(abandoned.length)),
-		new Set([abandoned[0]]),
-		"a round stops at the first close that fails",
-	);
+	assert.deepEqual(new Set(sent.slice(start)), new Set([abandoned[0]]), "a round stops at the first close that fails");
 	vi.setSystemTime(Date.now() + CLOSE_MAX_AGE_MS);
 	await sleep(8_000 + CLOSE_FIRST_WAIT_MS);
 	const afterMaxAge = sent.length;
@@ -202,6 +235,50 @@ test("once the server is reachable, each kept close is sent once, the newest MAX
 	assert.deepEqual(new Set(resent), new Set(abandoned.slice(1)), "the oldest close was dropped, the rest all sent");
 	assert.equal(resent.length, MAX_ABANDONED_STREAM_CLOSES, "each was sent once");
 }, 30_000);
+
+test("a kept close the server takes but leaves unanswered never holds up reads, and holds up writes once, for at most CLOSE_WRITE_WAIT_MS (#5114)", async () => {
+	const { database, control } = await abandonCloses(1);
+	// The server stops answering closes; the stream it kept expired meanwhile, so nothing waits for a lock.
+	control.mode = "hold";
+	for (let read = 0; read < 3; read++)
+		await within(database.all("SELECT n FROM events"), "a read", CLOSE_WRITE_WAIT_MS / 2);
+	await within(
+		database.run("INSERT INTO events VALUES (3)"),
+		"the first write",
+		CLOSE_WRITE_WAIT_MS + RECOVERY_BOUND_MS,
+	);
+	for (let write = 4; write < 6; write++)
+		await within(database.run(`INSERT INTO events VALUES (${write})`), "a later write", CLOSE_WRITE_WAIT_MS / 2);
+	await within(
+		database.batch!([{ sql: "INSERT INTO events VALUES (6)", params: [] }], { priority: true }),
+		"a later priority batch",
+		CLOSE_WRITE_WAIT_MS / 2,
+	);
+}, 30_000);
+
+test("a stall of closes the adapter has since given up on does not carry over to a stream abandoned later: the next write waits for its close (#5114)", async () => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	const { fake, database, sent, control } = await abandonCloses(1);
+	// The server takes the kept close and never answers it: the write gives up waiting for it, and the closes stall.
+	control.mode = "hold";
+	await database.run("INSERT INTO events VALUES (10)");
+	// The unanswered resend times out, and the next round gives the kept close up, CLOSE_MAX_AGE_MS old.
+	control.mode = "fail";
+	vi.setSystemTime(Date.now() + CLOSE_MAX_AGE_MS);
+	await sleep(CLOSE_TIMEOUT_MS + 4 * CLOSE_FIRST_WAIT_MS);
+	// Another transaction loses its connection while it holds the lock; its close fails, so the adapter keeps it.
+	const streams = new Set(sent).size;
+	await cutInTransaction(database, () => fake.fail({ kind: "reset-before" }));
+	while (new Set(sent).size === streams) await sleep(5);
+	// The server is reachable again, and closes take a moment to reach it.
+	control.mode = "slow";
+	const before = fake.pipelines.length;
+	await within(database.run("INSERT INTO events VALUES (11)"), "a write after the outage");
+	const received = fake.pipelines.slice(before);
+	const close = received.findIndex((pipeline) => pipeline.continuesStream && pipeline.sql.length === 0);
+	const write = received.findIndex((pipeline) => pipeline.sql.includes("INSERT INTO events VALUES (11)"));
+	assert.ok(close !== -1 && close < write, "the new stream's close reached the server before the write");
+}, 60_000);
 
 test("closing the database stops resending its abandoned closes (#5114)", async () => {
 	// The stream's own close has been sent and failed: the close is kept for resending.
