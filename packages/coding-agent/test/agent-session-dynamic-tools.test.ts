@@ -63,9 +63,6 @@ describe("AgentSession dynamic tool registration", () => {
 			settingsManager.applyOverrides({ decisionModel: "auto" });
 			expect(context.getDecisionModel()).toBe("auto");
 			expect(context.model).toBe(model);
-			expect(context.getModelRouting?.()).toEqual({});
-			settingsManager.applyOverrides({ modelRouting: { excludedProviders: ["openrouter"] } });
-			expect(context.getModelRouting?.()).toEqual({ excludedProviders: ["openrouter"] });
 		} finally {
 			session.dispose();
 		}

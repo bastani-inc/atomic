@@ -44,4 +44,4 @@ Cite each actionable issue with file:line evidence and the observed failure or r
 Return only issues worth fixing now. Stop when the relevant diff and affected call paths have been inspected, or name the evidence you could not access.
 ```
 
-To choose an execution model separately for each task, set `model: auto` instead of a concrete model. Atomic uses the current available catalog and its shipped evaluation guidance before launching the child. A concrete per-call override bypasses this automatic choice. Optional `modelConstraints` restricts eligible choices and fallbacks; see [Automatic model selection](/subagents/reference#automatic-model-selection) for the settings, supported fields, and failure behavior.
+To run the agent on your default model, set `model: auto` instead of a concrete model. The child runs the model you last chose with `/model` at the agent's `thinking` level or the default thinking level, or the launching session's model when no default model is configured. A concrete per-call override wins. See [Automatic model selection](/subagents/reference#automatic-model-selection).

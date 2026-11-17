@@ -2,6 +2,7 @@ import type { AgentTool, AgentToolResult } from "@bastani/atomic-agent-core";
 import {
 	type AnyModel,
 	type ClassifierContext,
+	getServiceTierCost,
 	type ImageContent,
 	type ImagesContext,
 	isModelType,
@@ -24,7 +25,6 @@ import {
 import { ENV_CODEMODE_MAX_WORKERS, getCodemodeWorkerUrl, getEnvValue, getQuickJSWasmPath } from "../../config.js";
 import type { ExtensionToolContext } from "../../core/extensions/context-types.ts";
 import type { ToolNamespace } from "../../core/extensions/tool-types.ts";
-import { billedModelCost } from "../../core/model-routing-constraints.js";
 import type { SessionEntry } from "../../core/session-manager.ts";
 import { formatSize, sliceHead, sliceTail } from "../../core/tools/truncate.ts";
 import { combineUsage } from "../../core/usage-totals.ts";
@@ -205,7 +205,9 @@ export function toCodemodeModelInfo(model: AnyModel): Record<string, unknown> {
 		...("contextWindow" in model ? { contextWindow: model.contextWindow } : {}),
 		...("maxTokens" in model ? { maxTokens: model.maxTokens } : {}),
 		// A fast route is billed at its service tier's rates (#5156).
-		cost: isModelType(model, "chat") ? billedModelCost(model) : model.cost,
+		cost: isModelType(model, "chat")
+			? (model.fastRoute?.serviceTier && getServiceTierCost(model, model.fastRoute.serviceTier)) || model.cost
+			: model.cost,
 	};
 }
 /** Separate text items and collect console calls after the script's other output. */

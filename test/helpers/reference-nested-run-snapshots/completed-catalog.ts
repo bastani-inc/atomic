@@ -670,7 +670,6 @@ function stageSnapshotFromDraft(draft: StageDraft, id: string, parentIds: readon
 		...(draft.attemptedModels !== undefined ? { attemptedModels: draft.attemptedModels } : {}),
 		...(draft.modelAttempts !== undefined ? { modelAttempts: draft.modelAttempts } : {}),
 		...(draft.rateLimits !== undefined ? { rateLimits: draft.rateLimits } : {}),
-		...(draft.routerSelection !== undefined ? { routerSelection: draft.routerSelection } : {}),
 	};
 }
 

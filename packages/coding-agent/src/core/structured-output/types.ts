@@ -96,7 +96,7 @@ export interface InternalStructuredOutputRequest<T extends TSchema>
 	};
 }
 
-/** A schema-shaped decision on the configured decision model. Neither routing consumer is activated by this API alone. */
+/** A schema-shaped decision on the configured decision model. */
 export interface DecisionModelRequest<T extends TSchema>
 	extends Omit<InternalStructuredOutputRequest<T>, "model" | "modelRegistry" | "currentModel" | "fallbackModels">,
 		DecisionModelSelectionOptions {

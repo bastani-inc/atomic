@@ -424,10 +424,9 @@ describe("a durable resume of a stage that waited between turns (#4309)", () => 
 		assert.equal(fresh.started[0]?.options?.model, "some-model");
 		assert.equal(fresh.started[0]?.options?.durableReplayKey, "stage:fresh:1");
 
-		const routerSelection = { model: "routed", reason: "cheapest" } as unknown as StageSnapshot["routerSelection"];
 		await recordStageSessionCheckpoint(
 			deps(3_000),
-			stageSnapshot("filed", { status: "running", sessionFile: "/sessions/filed.jsonl", routerSelection }),
+			stageSnapshot("filed", { status: "running", sessionFile: "/sessions/filed.jsonl" }),
 			{ force: true },
 		);
 		await recordStageSessionCheckpoint(
@@ -443,7 +442,6 @@ describe("a durable resume of a stage that waited between turns (#4309)", () => 
 		const recorded = backend.getStageSession(WORKFLOW_ID, "stage:filed:1");
 		assert.equal(resumed.started[0]?.options?.resumeFromSessionId, "session-filed");
 		assert.equal(resumed.started[0]?.options?.resumeFromLegacySessionFile, "/sessions/filed.jsonl");
-		assert.deepEqual(resumed.started[0]?.options?.routerSelection, routerSelection);
 		assert.equal(resumed.started[0]?.options?.durableAccumulatedDurationMs, recorded?.durationMs);
 		assert.equal(Object.hasOwn(resumed.started[1]?.options ?? {}, "resumeFromLegacySessionFile"), false);
 		assert.equal(

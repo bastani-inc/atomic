@@ -43,7 +43,8 @@ export async function buildStageSessionOptions(input: StageSessionOptionsInput):
 	if (input.ownsFallbackChain) {
 		options.fallbackModels = [];
 	}
-	if (input.restoreSavedModel === true) delete options.model;
+	// `auto` without a resolved model leaves the choice to the session factory, which starts on the default model.
+	if (input.restoreSavedModel === true || options.model === "auto") delete options.model;
 
 	if (input.reattachSessionId !== undefined) {
 		options.resumeFromSessionId = input.reattachSessionId;
