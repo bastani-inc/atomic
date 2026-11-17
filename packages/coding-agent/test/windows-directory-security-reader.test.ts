@@ -11,9 +11,12 @@ vi.mock("node:child_process", async (importOriginal) => {
 	return { ...actual, spawnSync };
 });
 
-const { evaluateWindowsDirectorySecurity, powershellCandidates, readWindowsDirectorySecurity } = await import(
-	"../src/core/tools/windows-directory-security.ts"
-);
+const {
+	evaluateWindowsDirectorySecurity,
+	powershellCandidates,
+	readWindowsDirectorySecurity,
+	readWindowsDirectorySecurityWithPowerShell,
+} = await import("../src/core/tools/windows-directory-security.ts");
 
 const QUERY_PATH = "C:\\Users\\alice\\AppData\\Local\\Temp\\atomic-alice";
 
@@ -47,7 +50,7 @@ test("a descriptor read shares one timeout across its PowerShell candidates (#53
 		return failedRead("ETIMEDOUT");
 	});
 
-	assert.equal(readWindowsDirectorySecurity(QUERY_PATH), undefined);
+	assert.equal(readWindowsDirectorySecurityWithPowerShell(QUERY_PATH), undefined);
 	assert.deepEqual(triedExecutables(), [powershellCandidates()[0]]);
 });
 
@@ -63,14 +66,14 @@ test("a descriptor read still tries another PowerShell with the same name when i
 		.mockReturnValueOnce({ status: 0, stdout: "S-1-5-21-1\nS-1-5-21-1\nD:(A;;FA;;;S-1-5-21-1)\nAllow;S-1-5-21-1" })
 		.mockReturnValue(failedRead("ENOENT"));
 
-	assert.deepEqual(readWindowsDirectorySecurity(QUERY_PATH), expected);
+	assert.deepEqual(readWindowsDirectorySecurityWithPowerShell(QUERY_PATH), expected);
 	assert.deepEqual(triedExecutables(), powershellCandidates().slice(0, 2));
 });
 
 test("a descriptor read that cannot start a PowerShell program still tries the next one of the same name (#5324)", () => {
 	spawnSync.mockImplementation(() => failedRead("ENOENT"));
 
-	assert.equal(readWindowsDirectorySecurity(QUERY_PATH), undefined);
+	assert.equal(readWindowsDirectorySecurityWithPowerShell(QUERY_PATH), undefined);
 	assert.deepEqual(triedExecutables(), powershellCandidates());
 });
 
