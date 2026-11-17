@@ -85,7 +85,7 @@ describe("the LFS files a restore inspects (#4245)", () => {
 		assert.equal(files.closed, files.opened);
 	});
 
-	test("a staged LFS file that cannot be read fails the restore as an unreadable path and leaves nothing behind", async () => {
+	test("a staged LFS file that cannot be read fails the restore as an unreadable path, and its worktree is kept aside", async () => {
 		const { blobs, snapshot } = await unfetchableLfsSnapshot();
 		files.refuse = "more.bin";
 		const storeDir = sandbox.path("host");
@@ -96,7 +96,11 @@ describe("the LFS files a restore inspects (#4245)", () => {
 			assert.equal((error.cause as NodeJS.ErrnoException).code, "EACCES");
 			return true;
 		});
+		// A file the cleanup cannot read cannot be shown to be the snapshot's, so the worktree is kept, set aside.
 		const worktrees = join(storeDir, "worktrees");
-		assert.deepEqual(existsSync(worktrees) ? readdirSync(worktrees) : [], []);
+		const left = existsSync(worktrees) ? readdirSync(worktrees) : [];
+		assert.equal(left.length, 1, left.join(", "));
+		assert.match(left[0]!, /^\.d-[0-9a-f]{12}$/);
+		assert.equal(existsSync(join(worktrees, left[0]!, "more.bin")), true);
 	});
 });

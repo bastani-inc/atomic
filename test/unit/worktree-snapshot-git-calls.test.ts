@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
@@ -307,21 +307,23 @@ describe("cleanup failures never replace the primary error", () => {
 			`${(await import("node:fs")).readFileSync(sandbox.globalConfig, "utf8")}[filter "mangle"]\n\tsmudge = sed s/alpha/omega/\n`,
 		);
 		const into = sandbox.path("restored-target");
-		recorded.failRemovalOf = "restored-target";
+		let kept = "";
 		await assert.rejects(
 			restoreWorktreeSnapshot(snapshot, { blobs, into, storeDir: sandbox.path("host") }),
 			(error: unknown) => {
 				assert.ok(isWorkspaceRestoreError(error));
 				assert.equal(error.code, "tree-mismatch");
+				// Its file differs from the snapshot through a filter Git cannot reverse, so it is set aside, not deleted.
 				const cleanup = error.cleanupCause;
 				assert.ok(isWorkspaceRestoreError(cleanup));
-				assert.equal(cleanup.code, "unwritable-path");
-				assert.ok(cleanup.target?.startsWith(join(sandbox.root, ".restored-target.s-")), cleanup.target);
+				assert.equal(cleanup.code, "unsafe-target");
+				assert.ok(cleanup.target?.startsWith(join(sandbox.root, ".restored-target.d-")), cleanup.target);
 				assert.equal(cleanup.snapshotId, null);
-				assert.equal((cleanup.cause as NodeJS.ErrnoException).code, "EBUSY");
+				kept = cleanup.target ?? "";
 				return true;
 			},
 		);
+		assert.equal(readFileSync(join(kept, "note.txt"), "utf8"), "omega\n");
 	});
 
 	test("removing a restored worktree that resists removal is an unwritable path", async () => {

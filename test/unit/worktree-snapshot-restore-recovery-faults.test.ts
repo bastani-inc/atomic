@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+	copyFileSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -195,6 +197,8 @@ const retainedWarnings = (warnings: readonly WorktreeRestoreWarning[]) =>
 /** The staging worktree beside `target` of the restore `id`: `.s-` and 12 hex digits of the id (#5139). */
 const siblingStaging = (target: string, id: string) =>
 	join(dirname(target), `.${basename(target)}.s-${id.replaceAll("-", "").slice(0, 12)}`);
+/** Where a restore sets the worktree it cleans up aside: its staging path with `.d-` in place of `.s-` (#4748). */
+const asideOf = (staging: string) => staging.replace(/\.s-([0-9a-f]{12})$/, ".d-$1");
 
 function uuid(): string {
 	const hex = createHash("sha256").update(String(Math.random())).digest("hex");
@@ -412,37 +416,118 @@ describe("the record a restore writes", () => {
 });
 
 describe("sweeping a record left by a stopped restore", () => {
-	test("a worktree registered at its staging path after the restore's own was removed is kept with its files (#4748)", async () => {
+	/**
+	 * A restore stopped at its checkout whose cleanup could not finish: its staging worktree, Git's entry for it and its
+	 * crash record stay behind for the next sweep.
+	 */
+	async function leftBehind() {
 		const { snapshot, blobs } = await dirtyClone();
 		const storeDir = sandbox.path("host");
-		const store = storeOf(storeDir, snapshot);
 		const into = sandbox.path("final");
 		const id = uuid();
 		faults.uuids.push(id);
 		const staging = siblingStaging(into, id);
 		const controller = new AbortController();
-		failAtCheckout(controller, new Error("stop"), () => {
-			faults.spawnHook = (args) =>
-				is(args, "worktree", "remove", "--force", "--force", staging)
-					? { command: process.execPath, args: ["-e", "process.exit(128)"] }
-					: undefined;
-		});
-		const stopped = await restoreInto(snapshot, blobs, storeDir, into, controller.signal);
-		assert.ok(stopped.error instanceof Error);
-		assert.equal(readdirSync(join(storeDir, "restores")).length, 1, "the record is left behind");
+		let stopped = false;
+		// Stopped once the checkout is complete, as the restore records its index.
+		faults.spawnHook = (args) => {
+			if (!stopped && is(args, "update-index")) {
+				stopped = true;
+				queueMicrotask(() => controller.abort(new Error("stop")));
+			}
+			return undefined;
+		};
+		faults.realpath = (path) => {
+			if (stopped && path === staging) {
+				throw Object.assign(new Error(`EIO: i/o error, realpath '${path}'`), {
+					code: "EIO",
+					syscall: "realpath",
+					path,
+				});
+			}
+		};
+		const outcome = await restoreInto(snapshot, blobs, storeDir, into, controller.signal);
+		assert.ok(outcome.error instanceof Error);
+		assert.equal(readdirSync(join(storeDir, "restores")).filter((name) => name.endsWith(".json")).length, 1);
+		assert.equal(existsSync(join(staging, "dirty.txt")), true);
+		faults.realpath = undefined;
 		faults.spawnHook = undefined;
-		const env = { ...process.env, ...sandbox.executable.env };
-		rmSync(staging, { recursive: true, force: true });
-		execFileSync("git", ["--git-dir", store, "worktree", "prune"], { env });
-		execFileSync("git", ["--git-dir", store, "worktree", "add", "-q", "--detach", staging, snapshot.head], { env });
+		return { snapshot, blobs, storeDir, store: storeOf(storeDir, snapshot), staging };
+	}
+
+	/** The user moves the restore's staging directory away and puts a directory of their own at its path. */
+	function replaceStaging(staging: string, copies: readonly string[]): void {
+		const moved = sandbox.path("moved-away");
+		renameSync(staging, moved);
+		mkdirSync(staging);
+		for (const name of copies) copyFileSync(join(moved, name), join(staging, name));
+		writeFileSync(join(staging, "keep.txt"), "user data\n");
+	}
+
+	test("a directory of the user's at the staging path, holding a copy of the old .git file, is kept with its files (#4748)", async () => {
+		const { snapshot, blobs, storeDir, staging } = await leftBehind();
+		replaceStaging(staging, [".git"]);
+
+		const next = await restoreInto(snapshot, blobs, storeDir, sandbox.path("other"));
+
+		assert.equal(next.error, undefined);
+		assert.equal(readFileSync(join(staging, "keep.txt"), "utf8"), "user data\n");
+		assert.equal(existsSync(join(staging, ".git")), true);
+		assert.deepEqual(retainedWarnings(next.warnings), [warning(staging)]);
+	});
+
+	test("one that also holds copies of every file the restore put there is kept with its files too (#4748)", async () => {
+		const { snapshot, blobs, storeDir, staging } = await leftBehind();
+		replaceStaging(staging, [".git", "dirty.txt", "README.md"]);
+
+		const next = await restoreInto(snapshot, blobs, storeDir, sandbox.path("other"));
+
+		assert.equal(next.error, undefined);
+		assert.equal(readFileSync(join(staging, "keep.txt"), "utf8"), "user data\n");
+		assert.equal(readFileSync(join(staging, "dirty.txt"), "utf8"), "recorded\n");
+		assert.deepEqual(retainedWarnings(next.warnings), [warning(staging)]);
+	});
+
+	test("even with no file of the user's in it, a directory of copies is not the restore's and is kept (#4748)", async () => {
+		const { snapshot, blobs, storeDir, staging } = await leftBehind();
+		replaceStaging(staging, [".git", "dirty.txt", "README.md"]);
+		rmSync(join(staging, "keep.txt"));
+
+		const next = await restoreInto(snapshot, blobs, storeDir, sandbox.path("other"));
+
+		assert.equal(next.error, undefined);
+		assert.deepEqual(readdirSync(staging).sort(), [".git", "README.md", "dirty.txt"]);
+		assert.deepEqual(retainedWarnings(next.warnings), [warning(staging)]);
+	});
+
+	test("the restore's own staging worktree is still swept, also once moved away and back (#4748)", async () => {
+		const { snapshot, blobs, storeDir, store, staging } = await leftBehind();
+		const away = sandbox.path("away-and-back");
+		renameSync(staging, away);
+		renameSync(away, staging);
+
+		const next = await restoreInto(snapshot, blobs, storeDir, sandbox.path("other"));
+
+		assert.equal(next.error, undefined);
+		assert.deepEqual(retainedWarnings(next.warnings), []);
+		assert.equal(existsSync(staging), false);
+		assert.equal(existsSync(asideOf(staging)), false);
+		assert.equal(lists(await registered(store), staging), false);
+		assert.deepEqual(
+			readdirSync(join(storeDir, "restores")).filter((name) => name.endsWith(".json")),
+			[],
+		);
+	});
+
+	test("a file the user put into the restore's own staging worktree is kept, moved aside with the worktree (#4748)", async () => {
+		const { snapshot, blobs, storeDir, staging } = await leftBehind();
 		writeFileSync(join(staging, "keep.txt"), "user data\n");
 
 		const next = await restoreInto(snapshot, blobs, storeDir, sandbox.path("other"));
 
 		assert.equal(next.error, undefined);
-		assert.deepEqual(retainedWarnings(next.warnings), [warning(staging)]);
-		assert.equal(readFileSync(join(staging, "keep.txt"), "utf8"), "user data\n");
-		assert.ok(lists(await registered(store), staging), "the other worktree is still registered");
+		assert.equal(readFileSync(join(asideOf(staging), "keep.txt"), "utf8"), "user data\n");
+		assert.deepEqual(retainedWarnings(next.warnings), [warning(asideOf(staging))]);
 	});
 });
 
@@ -662,7 +747,7 @@ describe("publishing the verified worktree", () => {
 		assert.deepEqual(readdirSync(join(storeDir, "restores")), []);
 	});
 
-	test("when the moved worktree's files cannot be deleted after the stop, the warning names the staging path that keeps them", async () => {
+	test("when the moved worktree's files cannot be deleted after the stop, the warning names where they are kept", async () => {
 		const { snapshot, blobs, storeDir } = await warmHost();
 		const into = sandbox.path("final");
 		const id = uuid();
@@ -677,7 +762,7 @@ describe("publishing the verified worktree", () => {
 			return undefined;
 		};
 		faults.rm = (path) => {
-			if (path === join(staging, "dirty.txt")) {
+			if (path === join(asideOf(staging), "dirty.txt")) {
 				throw Object.assign(new Error(`EBUSY: resource busy, rm '${path}'`), {
 					code: "EBUSY",
 					syscall: "rm",
@@ -691,8 +776,8 @@ describe("publishing the verified worktree", () => {
 		assert.equal(error, reason);
 		assert.equal((error as { cleanupCause?: { code?: string } }).cleanupCause?.code, "unwritable-path");
 		assert.equal(existsSync(into), false);
-		assert.equal(readFileSync(join(staging, "dirty.txt"), "utf8"), "recorded\n");
-		assert.deepEqual(retainedWarnings(warnings), [warning(staging)]);
+		assert.equal(readFileSync(join(asideOf(staging), "dirty.txt"), "utf8"), "recorded\n");
+		assert.deepEqual(retainedWarnings(warnings), [warning(asideOf(staging))]);
 	});
 
 	test("a restore stopped after the move deletes its worktree's files only once it no longer holds the store's lock (#4748)", async () => {
@@ -955,12 +1040,11 @@ describe("cleaning up after a failed restore", () => {
 		assert.deepEqual(retainedWarnings(warnings), [warning(staging)]);
 	});
 
-	test("a staging worktree whose .git no longer names this restore's administrative directory is kept with its files (#4748)", async () => {
+	test("a staging worktree whose .git no longer names an administrative directory of the store is moved aside and kept with its files (#4748)", async () => {
 		const reason = new Error("stop");
 		const { error, warnings, staging } = await failedRestore(reason, (path) => {
 			rmSync(join(path, ".git"));
 			writeFileSync(join(path, ".git"), "gitdir: /nonexistent\n");
-			writeFileSync(join(path, "work.txt"), "unsaved work\n");
 		});
 
 		assert.equal(error, reason);
@@ -968,29 +1052,46 @@ describe("cleaning up after a failed restore", () => {
 		assert.ok(isWorkspaceRestoreError(cleanup), String(cleanup));
 		assert.equal(cleanup.code, "unsafe-target");
 		assert.equal(cleanup.reason, "not-restored");
-		assert.deepEqual(retainedWarnings(warnings), [warning(staging)]);
-		assert.equal(readFileSync(join(staging, "work.txt"), "utf8"), "unsaved work\n");
+		assert.equal(existsSync(staging), false);
+		assert.equal(readFileSync(join(asideOf(staging), ".git"), "utf8"), "gitdir: /nonexistent\n");
+		assert.deepEqual(retainedWarnings(warnings), [warning(asideOf(staging))]);
 	});
 
-	test("a worktree Git refuses to remove is kept with its files, and the failure names the command and its exit code", async () => {
+	test("a file someone writes into the restore's worktree is kept with it, aside, and the warning names where (#4748)", async () => {
 		const reason = new Error("stop");
-		const { error, warnings, staging, store } = await failedRestore(reason, (path) => {
+		const { error, warnings, staging } = await failedRestore(reason, (path) => {
 			writeFileSync(join(path, "work.txt"), "unsaved work\n");
-			faults.spawnHook = (args) =>
-				is(args, "worktree", "remove", "--force", "--force", path)
-					? { command: process.execPath, args: ["-e", "process.exit(128)"] }
-					: undefined;
 		});
 
 		assert.equal(error, reason);
 		const cleanup = (error as Error & { cleanupCause?: unknown }).cleanupCause;
-		assert.ok(isWorkspaceGitError(cleanup), String(cleanup));
-		assert.equal(cleanup.operation, "worktree remove");
-		assert.equal(cleanup.exitCode, 128);
-		assert.equal(cleanup.detail, "could not remove the staging worktree");
-		assert.equal(cleanup.cwd, dirname(store));
-		assert.deepEqual(retainedWarnings(warnings), [warning(staging)]);
-		assert.equal(readFileSync(join(staging, "work.txt"), "utf8"), "unsaved work\n");
+		assert.ok(isWorkspaceRestoreError(cleanup), String(cleanup));
+		assert.equal(cleanup.target, asideOf(staging));
+		assert.deepEqual(retainedWarnings(warnings), [warning(asideOf(staging))]);
+		assert.equal(readFileSync(join(asideOf(staging), "work.txt"), "utf8"), "unsaved work\n");
+	});
+
+	test("a file changed after the worktree was set aside is kept, and so is the directory holding it (#4748)", async () => {
+		const reason = new Error("stop");
+		let changed = false;
+		const { error, warnings, staging } = await failedRestore(reason, (path) => {
+			faults.lock = async (file, options, real) => {
+				const release = await real(file, options);
+				return async () => {
+					await release();
+					const aside = asideOf(path);
+					if (!changed && existsSync(join(aside, ".git"))) {
+						changed = true;
+						writeFileSync(join(aside, ".git"), "gitdir: changed after the check\n");
+					}
+				};
+			};
+		});
+
+		assert.equal(error, reason);
+		assert.equal(changed, true);
+		assert.equal(readFileSync(join(asideOf(staging), ".git"), "utf8"), "gitdir: changed after the check\n");
+		assert.deepEqual(retainedWarnings(warnings), [warning(asideOf(staging))]);
 	});
 
 	test("a worktree that Git still lists after removal and pruning is reported as still registered", async () => {

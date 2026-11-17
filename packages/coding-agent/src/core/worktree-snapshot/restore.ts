@@ -1,6 +1,19 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import {
+	lstat,
+	mkdir,
+	open,
+	readdir,
+	readFile,
+	readlink,
+	realpath,
+	rm,
+	rmdir,
+	stat,
+	writeFile,
+} from "node:fs/promises";
+import { devNull } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -11,6 +24,7 @@ import { renameWithRetry } from "../rename-retry.ts";
 import { deferRestorePhase, noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
+	RESTORED_TREE_FILE,
 	readRepositoryConfig,
 	recordRestoredTree,
 	withScratchDirectory,
@@ -295,12 +309,29 @@ interface RestoreRecord {
 	readonly target: string;
 	readonly store: string;
 	readonly createdTarget: boolean;
+	/** The tree this restore checks out into its staging worktree. Records of earlier versions have none. */
+	readonly tree?: string;
 	/**
-	 * The random token this restore writes into its worktree's administrative directory as Git adds it. Cleanup deletes a
-	 * worktree only when the directory's `.git` names an administrative directory holding this token, never by its path,
-	 * Git's registration, the links between them or its file identity alone. Records of earlier versions have none.
+	 * The identity of the staging directory as `git worktree add` created it, recorded right after, under the store lock.
+	 * A directory is set aside or deleted as this restore's only while it is that same directory: copying or moving
+	 * other files to its path never makes another directory look like it. Missing until it was recorded.
 	 */
-	readonly token?: string;
+	readonly identity?: DirectoryIdentity;
+}
+
+/** A directory's device, inode (a Windows file ID) and birth time, as decimal strings: what no other directory shares. */
+interface DirectoryIdentity {
+	readonly dev: string;
+	readonly ino: string;
+	readonly birthtime: string;
+}
+
+function isDirectoryIdentity(value: unknown): value is DirectoryIdentity {
+	if (typeof value !== "object" || value === null) return false;
+	const identity = value as Partial<DirectoryIdentity>;
+	return [identity.dev, identity.ino, identity.birthtime].every(
+		(field) => typeof field === "string" && /^\d+$/.test(field),
+	);
 }
 
 /** Validate crash records before using their paths. Only Atomic's staging name and per-repository store are valid. */
@@ -312,7 +343,9 @@ function isRestoreRecord(value: unknown, storeDir: string, id: string): value is
 		typeof record.target !== "string" ||
 		typeof record.store !== "string" ||
 		typeof record.createdTarget !== "boolean" ||
-		(record.token !== undefined && (typeof record.token !== "string" || !/^[0-9a-f]{32}$/.test(record.token))) ||
+		(record.tree !== undefined &&
+			(typeof record.tree !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(record.tree))) ||
+		(record.identity !== undefined && !isDirectoryIdentity(record.identity)) ||
 		resolve(record.target) !== record.target ||
 		resolve(record.staging) !== record.staging ||
 		resolve(record.store) !== record.store ||
@@ -357,9 +390,6 @@ async function physicalPath(path: string): Promise<string> {
 	}
 }
 
-/** The file in a restore's worktree administrative directory that holds the restore's token. */
-const RESTORE_TOKEN_FILE = "atomic-restore-token";
-
 /** The administrative directory the `.git` file of the directory at `path` names, or undefined when there is none. */
 async function worktreeAdminDir(path: string): Promise<string | undefined> {
 	try {
@@ -382,74 +412,315 @@ async function storeAdminDirs(store: string): Promise<string | undefined> {
 	}
 }
 
+/** The identity of the directory at `path` itself, never what a link there points to; undefined for anything else. */
+async function directoryIdentity(path: string): Promise<DirectoryIdentity | undefined> {
+	const entry = await lstat(path, { bigint: true }).catch(() => undefined);
+	if (!entry?.isDirectory()) return undefined;
+	return { dev: String(entry.dev), ino: String(entry.ino), birthtime: String(entry.birthtimeNs) };
+}
+
+function sameIdentity(a: DirectoryIdentity, b: DirectoryIdentity): boolean {
+	return a.dev === b.dev && a.ino === b.ino && a.birthtime === b.birthtime;
+}
+
+/** What a file a restore checked out holds, checked again right before the file is deleted. */
+type RestoredEntry =
+	| { readonly kind: "file"; readonly algorithm: "sha1" | "sha256"; readonly digest: string; readonly blob: boolean }
+	| { readonly kind: "link"; readonly target: string }
+	| { readonly kind: "text"; readonly content: string };
+
+/** The digest of the file at `path` under `algorithm`, as a Git blob of `size` bytes when `blob`, else of its bytes. */
+async function digestOf(
+	path: string,
+	algorithm: "sha1" | "sha256",
+	blob: boolean,
+	size: bigint | number,
+): Promise<string> {
+	const hash = createHash(algorithm);
+	if (blob) hash.update(`blob ${size}\0`);
+	const handle = await open(path, "r");
+	try {
+		for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk as Buffer);
+	} finally {
+		await handle.close();
+	}
+	return hash.digest("hex");
+}
+
+/** The blobs `oids` of `store`, by id; an id the store does not hold as a blob is left out. */
+async function storeBlobs(store: string, oids: readonly string[]): Promise<Map<string, Buffer>> {
+	const blobs = new Map<string, Buffer>();
+	if (oids.length === 0) return blobs;
+	const output = (
+		await runGit(["cat-file", "--batch"], {
+			cwd: dirname(store),
+			env: { GIT_DIR: store },
+			input: `${oids.join("\n")}\n`,
+		})
+	).stdout;
+	let at = 0;
+	while (at < output.length) {
+		const end = output.indexOf(10, at);
+		if (end < 0) break;
+		const [oid, type, size] = output.subarray(at, end).toString("utf8").split(" ");
+		at = end + 1;
+		if (type !== "blob" || oid === undefined) continue;
+		const length = Number(size);
+		blobs.set(oid, output.subarray(at, at + length));
+		at += length + 1;
+	}
+	return blobs;
+}
+
+/** The Git LFS object a pointer blob names, or undefined when the blob is not a pointer. */
+function lfsObject(pointer: Buffer): { readonly oid: string; readonly size: number } | undefined {
+	if (pointer.length > 1024) return undefined;
+	const text = pointer.toString("utf8");
+	if (!text.startsWith("version https://git-lfs.github.com/spec/v1\n")) return undefined;
+	const oid = /^oid sha256:([0-9a-f]{64})$/m.exec(text)?.[1];
+	const size = /^size (\d+)$/m.exec(text)?.[1];
+	return oid === undefined || size === undefined ? undefined : { oid, size: Number(size) };
+}
+
 /**
- * Marks the worktree a restore just added at `staging` as its own: its administrative directory, in `store`, gets the
- * restore's token, which no other worktree can hold. Runs under the store lock that added it.
+ * The files of every tree a restore may have checked out into the worktree whose administrative directory is `admin`:
+ * the record's `tree`, the tree the restore recorded there and the tree of its `HEAD`. All are in `store`, so a file
+ * with one of their contents at its path is never lost when it is deleted.
  */
-async function markRestoreWorktree(
-	staging: string,
+async function restoredTreeEntries(
 	store: string,
-	token: string,
-	snapshotId: string | null,
-): Promise<void> {
-	const [admin, admins] = await Promise.all([worktreeAdminDir(staging), storeAdminDirs(store)]);
-	if (admin === undefined || admins === undefined || !isWithin(admins, admin)) {
-		throw new WorkspaceGitError({
-			operation: "worktree add",
-			cwd: staging,
-			exitCode: null,
-			detail: "the staging worktree has no administrative directory in its store",
+	tree: string | undefined,
+	admin: string | undefined,
+): Promise<Map<string, { readonly mode: string; readonly oid: string }[]>> {
+	const git: GitRunOptions = { cwd: dirname(store), env: { GIT_DIR: store } };
+	const trees = new Set<string>(tree === undefined ? [] : [tree]);
+	if (admin !== undefined) {
+		const recorded = (await readFile(join(admin, RESTORED_TREE_FILE), "utf8").catch(() => "")).trim();
+		if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(recorded)) trees.add(recorded);
+		const head = await runGit(["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], {
+			...git,
+			env: { GIT_DIR: admin },
+			allowExitCodes: [1, 128],
+		});
+		const headTree = head.exitCode === 0 ? head.stdout.toString("utf8").trim() : "";
+		if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(headTree)) trees.add(headTree);
+	}
+	const entries = new Map<string, { readonly mode: string; readonly oid: string }[]>();
+	for (const listed of trees) {
+		const listing = await runGit(["ls-tree", "-r", "-z", "--full-tree", listed], { ...git, allowExitCodes: [128] });
+		if (listing.exitCode !== 0) continue;
+		for (const field of nulFields(listing.stdout)) {
+			const tab = field.indexOf("\t");
+			const [mode, , oid] = field.slice(0, tab).split(" ");
+			if (mode === undefined || oid === undefined) continue;
+			const path = field.slice(tab + 1);
+			entries.set(path, [...(entries.get(path) ?? []), { mode, oid }]);
+		}
+	}
+	return entries;
+}
+
+/**
+ * What deleting the directory at `path` would delete, when that is only what a restore put there (#4748): each file has,
+ * at its path, the content of a tree the restore may have checked out, as a Git blob or as the Git LFS object its
+ * pointer names; each symlink that tree's target; and a root `.git` file names an administrative directory of `store`.
+ * Undefined when anything else is there, or when `path` is not a directory itself.
+ */
+async function inspectRestoredContent(
+	path: string,
+	store: string,
+	tree: string | undefined,
+): Promise<Map<string, RestoredEntry> | undefined> {
+	try {
+		if (!(await lstat(path)).isDirectory()) return undefined;
+		const admin = await worktreeAdminDir(path);
+		const admins = await storeAdminDirs(store);
+		const inStore = admin !== undefined && admins !== undefined && isWithin(admins, admin);
+		const entries = await restoredTreeEntries(store, tree, inStore ? admin : undefined);
+		const found = new Map<string, RestoredEntry>();
+		const unmatched: {
+			readonly path: string;
+			readonly name: string;
+			readonly size: bigint;
+			readonly link: boolean;
+		}[] = [];
+		const visit = async (dir: string, prefix: string): Promise<boolean> => {
+			for (const name of await readdir(dir)) {
+				const absolute = join(dir, name);
+				const relativeName = prefix === "" ? name : `${prefix}/${name}`;
+				const entry = await lstat(absolute, { bigint: true });
+				if (entry.isDirectory()) {
+					if (!(await visit(absolute, relativeName))) return false;
+				} else if (relativeName === ".git" && entry.isFile()) {
+					if (!inStore) return false;
+					found.set(relativeName, { kind: "text", content: await readFile(absolute, "utf8") });
+				} else if (entry.isSymbolicLink()) {
+					unmatched.push({ path: absolute, name: relativeName, size: entry.size, link: true });
+				} else if (entry.isFile()) {
+					const candidates = entries.get(relativeName) ?? [];
+					const algorithm = candidates[0]?.oid.length === 64 ? "sha256" : "sha1";
+					const digest = candidates.length === 0 ? "" : await digestOf(absolute, algorithm, true, entry.size);
+					if (candidates.some((candidate) => candidate.oid === digest && candidate.mode !== "160000"))
+						found.set(relativeName, { kind: "file", algorithm, digest, blob: true });
+					else if (candidates.length === 0) return false;
+					else unmatched.push({ path: absolute, name: relativeName, size: entry.size, link: false });
+				} else return false;
+			}
+			return true;
+		};
+		if (!(await visit(path, ""))) return undefined;
+		const converted: { readonly name: string; readonly digest: string }[] = [];
+		const blobs = await storeBlobs(
+			store,
+			unmatched.flatMap((file) => (entries.get(file.name) ?? []).map((candidate) => candidate.oid)),
+		);
+		for (const file of unmatched) {
+			const candidates = (entries.get(file.name) ?? []).flatMap((candidate) => {
+				const blob = blobs.get(candidate.oid);
+				return blob === undefined ? [] : [{ mode: candidate.mode, blob }];
+			});
+			if (file.link) {
+				const target = await readlink(file.path);
+				if (
+					!candidates.some(
+						(candidate) => candidate.mode === "120000" && candidate.blob.toString("utf8") === target,
+					)
+				)
+					return undefined;
+				found.set(file.name, { kind: "link", target });
+				continue;
+			}
+			const object = candidates
+				.map((candidate) => lfsObject(candidate.blob))
+				.find((pointer) => pointer !== undefined && BigInt(pointer.size) === file.size);
+			const digest = await digestOf(file.path, "sha256", false, file.size);
+			if (object !== undefined && digest === object.oid) {
+				found.set(file.name, { kind: "file", algorithm: "sha256", digest, blob: false });
+				continue;
+			}
+			converted.push({ name: file.name, digest });
+		}
+		// A file the checkout converted, as for an end-of-line rule, is the snapshot's when Git converts it back to a blob.
+		if (converted.length > 0) {
+			if (!inStore) return undefined;
+			const hashed = await runGit(["-c", `core.attributesFile=${devNull}`, "hash-object", "--stdin-paths"], {
+				cwd: path,
+				env: { GIT_DIR: admin, GIT_WORK_TREE: path },
+				neutral: true,
+				input: `${converted.map((file) => file.name).join("\n")}\n`,
+			});
+			const oids = hashed.stdout.toString("utf8").trim().split("\n");
+			for (const [index, file] of converted.entries()) {
+				if (!(entries.get(file.name) ?? []).some((candidate) => candidate.oid === oids[index])) return undefined;
+				found.set(file.name, { kind: "file", algorithm: "sha256", digest: file.digest, blob: false });
+			}
+		}
+		return found;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Whether the entry at `path` still holds what an inspection found there. */
+async function stillRestored(path: string, expected: RestoredEntry): Promise<boolean> {
+	const entry = await lstat(path, { bigint: true });
+	if (expected.kind === "link") return entry.isSymbolicLink() && (await readlink(path)) === expected.target;
+	if (!entry.isFile()) return false;
+	if (expected.kind === "text") return (await readFile(path, "utf8")) === expected.content;
+	return (await digestOf(path, expected.algorithm, expected.blob, entry.size)) === expected.digest;
+}
+
+/**
+ * Deletes, bottom up, what an inspection found in the directory at `path` that this process set aside: each file or link
+ * only while it still holds what was found, each directory only once empty, never following a link. Anything else is
+ * kept, and so is every directory above it. Resolves to whether nothing is left.
+ */
+async function deleteRestoredContent(path: string, found: ReadonlyMap<string, RestoredEntry>): Promise<boolean> {
+	const visit = async (dir: string, prefix: string): Promise<boolean> => {
+		let emptied = true;
+		for (const name of await readdir(dir)) {
+			const absolute = join(dir, name);
+			const relativeName = prefix === "" ? name : `${prefix}/${name}`;
+			const entry = await lstat(absolute);
+			if (entry.isDirectory()) {
+				if (!(await visit(absolute, relativeName))) emptied = false;
+				continue;
+			}
+			const expected = found.get(relativeName);
+			if (expected === undefined || !(await stillRestored(absolute, expected))) {
+				emptied = false;
+				continue;
+			}
+			await writing(absolute, null, () => rm(absolute));
+		}
+		if (!emptied) return false;
+		await writing(dir, null, () => rmdir(dir));
+		return true;
+	};
+	return visit(path, "");
+}
+
+/** Where a restore sets its worktree aside to delete it: beside its staging path, `.d-` in place of `.s-`. */
+function asidePath(record: RestoreRecord): string {
+	const name = basename(record.staging);
+	const aside = name.replace(/\.s-([0-9a-f]{12})$/, ".d-$1");
+	return join(dirname(record.staging), aside === name ? `${name}.d` : aside);
+}
+
+/** A directory a restore moved aside under the store lock, with what an inspection found in it. */
+interface SetAside {
+	readonly path: string;
+	readonly found: ReadonlyMap<string, RestoredEntry> | undefined;
+}
+
+/**
+ * Under the store lock, moves this restore's worktree at `path` to its aside path (#4748). Only the directory the
+ * restore created moves: one with the identity recorded when Git added it, or, for a record without one, one that holds
+ * only what the restore put there. What it holds is inspected first; `found` is undefined when anything else is there,
+ * so the directory is kept, aside, for the user. Resolves to undefined, moving nothing, when `path` holds no such
+ * directory or something already is at the aside path.
+ */
+async function setRestoredAside(path: string, record: RestoreRecord): Promise<SetAside | undefined> {
+	const identity = await directoryIdentity(path);
+	if (identity === undefined) return undefined;
+	const found = await inspectRestoredContent(path, record.store, record.tree);
+	const created = record.identity !== undefined && sameIdentity(identity, record.identity);
+	if (!created && (record.identity !== undefined || found === undefined)) return undefined;
+	const aside = asidePath(record);
+	if ((await lstatIfPresent(aside)) !== undefined) return undefined;
+	await writing(path, null, () => renameWithRetry(path, aside));
+	return { path: aside, found };
+}
+
+/**
+ * Deletes what this restore set aside, outside the store lock: the directory must still be the one set aside, and each
+ * file still what was found in it. Throws, keeping it all, when it holds anything else.
+ */
+async function deleteSetAside(record: RestoreRecord, aside: SetAside): Promise<void> {
+	const identity = await directoryIdentity(aside.path);
+	const same = identity !== undefined && (record.identity === undefined || sameIdentity(identity, record.identity));
+	if (!same || aside.found === undefined || !(await deleteRestoredContent(aside.path, aside.found))) {
+		throw new WorkspaceRestoreError("unsafe-target", {
+			snapshotId: null,
+			target: aside.path,
+			reason: "not-restored",
 		});
 	}
-	const file = join(admin, RESTORE_TOKEN_FILE);
-	await writing(file, snapshotId, () => writeFile(file, token, { flag: "wx", mode: 0o600 }));
 }
 
 /**
- * Whether the directory at `path` is the worktree the restore of `record` created: its `.git` file names an
- * administrative directory of the record's store that holds the record's token. A directory that replaced it, also one
- * Git registered under a reused administrative name or one with a recycled file identity, never holds that token.
+ * Under the store lock: sets the restore's staging directory aside (see {@link setRestoredAside}), restores a previously
+ * empty target if needed, and has Git forget the worktree. Resolves to what to delete once the lock is released: the
+ * staging directory just set aside, or one an earlier cleanup set aside and did not finish deleting. A staging
+ * directory this restore did not create is kept where it is and reported.
  */
-async function ownsWorktree(path: string, record: RestoreRecord): Promise<boolean> {
-	if (record.token === undefined) return false;
-	const [admin, admins] = await Promise.all([worktreeAdminDir(path), storeAdminDirs(record.store)]);
-	if (admin === undefined || admins === undefined || !isWithin(admins, admin)) return false;
-	try {
-		return (await readFile(join(admin, RESTORE_TOKEN_FILE), "utf8")) === record.token;
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Whether the directory at `path` is a worktree of `store` that holds nothing but its `.git` file and whose
- * administrative directory holds no restore token: what a restore stopped between `git worktree add` and writing its
- * token leaves. Removing one loses no files and never touches another restore's worktree.
- */
-async function unmarkedEmptyWorktree(path: string, store: string): Promise<boolean> {
-	const [admin, admins] = await Promise.all([worktreeAdminDir(path), storeAdminDirs(store)]);
-	if (admin === undefined || admins === undefined || !isWithin(admins, admin)) return false;
-	const names = await readdir(path).catch(() => undefined);
-	if (names?.length !== 1 || names[0] !== ".git") return false;
-	return lstat(join(admin, RESTORE_TOKEN_FILE)).then(
-		() => false,
-		(error: NodeJS.ErrnoException) => error.code === "ENOENT",
-	);
-}
-
-/** Removes the directory at `path` only when it is empty, which loses nothing whoever made it. */
-async function removeIfEmpty(path: string): Promise<boolean> {
-	try {
-		await rmdir(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/** Remove a registered or partially initialized staging worktree, then restore a previously empty target if needed. */
-async function cleanRestoreRecord(record: RestoreRecord, signal?: AbortSignal): Promise<void> {
+async function cleanRestoreRecord(record: RestoreRecord, signal?: AbortSignal): Promise<SetAside[]> {
 	const git: GitRunOptions = { cwd: dirname(record.store), env: { GIT_DIR: record.store }, signal };
+	const pending: SetAside[] = [];
+	const aside = asidePath(record);
+	if ((await lstatIfPresent(aside)) !== undefined) {
+		pending.push({ path: aside, found: await inspectRestoredContent(aside, record.store, record.tree) });
+	}
 	let entry: Stats | undefined;
 	let registeredPath = record.staging;
 	try {
@@ -459,38 +730,21 @@ async function cleanRestoreRecord(record: RestoreRecord, signal?: AbortSignal): 
 	}
 	if (entry) {
 		if (entry.isDirectory()) registeredPath = await physicalPath(record.staging);
-		const owned =
-			entry.isDirectory() &&
-			(record.token === undefined || (await unmarkedEmptyWorktree(record.staging, record.store))
-				? includesPath(await registeredWorktrees(git), registeredPath)
-				: await ownsWorktree(record.staging, record));
-		// An empty directory is what a deletion of the worktree stopped right before its last step leaves.
-		if (!owned && entry.isDirectory() && record.token !== undefined && (await removeIfEmpty(record.staging)))
-			entry = undefined;
-		else if (!owned) {
+		const setAside = pending.length === 0 ? await setRestoredAside(record.staging, record) : undefined;
+		if (setAside === undefined) {
 			throw new WorkspaceRestoreError("unsafe-target", {
 				snapshotId: null,
 				target: record.staging,
 				reason: "not-restored",
 			});
 		}
+		pending.push(setAside);
 	}
-	const removed = await runGit(["worktree", "remove", "--force", "--force", record.staging], {
-		...git,
-		allowExitCodes: [128],
-	});
-	if (entry && removed.exitCode !== 0) {
-		throw new WorkspaceGitError({
-			operation: "worktree remove",
-			cwd: git.cwd,
-			exitCode: removed.exitCode,
-			detail: "could not remove the staging worktree",
-		});
-	}
-	await writing(record.staging, null, () => rm(record.staging, { recursive: true, force: true }));
 	if (!record.createdTarget && (await statIfPresent(record.target)) === undefined) {
 		await writing(record.target, null, () => mkdir(record.target, { recursive: true }));
 	}
+	// Git never prunes a locked worktree, as a killed `git worktree add` leaves one; unlocking touches no files.
+	await runGit(["worktree", "unlock", record.staging], { ...git, allowExitCodes: [128] });
 	await runGit(["worktree", "prune"], git);
 	if (includesPath(await registeredWorktrees(git), registeredPath)) {
 		throw new WorkspaceGitError({
@@ -500,6 +754,35 @@ async function cleanRestoreRecord(record: RestoreRecord, signal?: AbortSignal): 
 			detail: "the staging worktree is still registered",
 		});
 	}
+	return pending;
+}
+
+/**
+ * Cleans up after the restore of `record`: {@link cleanRestoreRecord} under the store lock, then the deletion of what it
+ * set aside outside the lock. Throws, naming where the files are kept, when anything is kept.
+ */
+async function cleanUpRestore(
+	record: RestoreRecord,
+	snapshotId: string | null,
+	signal: AbortSignal | undefined,
+	underLock: () => Promise<SetAside[]> = () => cleanRestoreRecord(record, signal),
+): Promise<void> {
+	const pending = await withRepositoryLock(record.store, snapshotId, signal, underLock);
+	for (const aside of pending) {
+		await deleteSetAside(record, aside).catch((error: unknown) => {
+			if (error instanceof Error) Object.defineProperty(error, "keptAt", { value: aside.path, configurable: true });
+			throw error;
+		});
+	}
+}
+
+/** Where a failed cleanup kept the restore's files: the directory its refusal names, else where they were. */
+function keptPath(cause: unknown, record: RestoreRecord, moved: boolean): string {
+	const keptAt = (cause as { keptAt?: unknown } | undefined)?.keptAt;
+	if (typeof keptAt === "string") return keptAt;
+	if (isWorkspaceRestoreError(cause) && cause.code === "unsafe-target" && cause.target !== undefined)
+		return cause.target;
+	return moved ? record.target : record.staging;
 }
 
 function leftoverKind(path: string, recordPath: string): "worktree" | "record" {
@@ -544,7 +827,10 @@ async function sweepRestoreRecords(
 			const record: unknown = JSON.parse(await readFile(recordPath, "utf8"));
 			if (!isRestoreRecord(record, storeDir, match[1]!)) throw new Error("Invalid restore crash record");
 			warningPath = record.staging;
-			await withRepositoryLock(record.store, null, signal, () => cleanRestoreRecord(record, signal));
+			await cleanUpRestore(record, null, signal).catch((cause: unknown) => {
+				warningPath = keptPath(cause, record, false);
+				throw cause;
+			});
 			if (compromised) throw compromised;
 			await rm(recordPath);
 		} catch (error) {
@@ -578,53 +864,23 @@ async function sweepRestoreRecords(
 type MoveState = "none" | "unchecked" | "published" | "checked";
 
 /**
- * Under the store lock, takes the worktree this restore moved toward its target back out of the way before the restore
- * fails or stops (#4748): one at the target goes back to its staging path, so its files are deleted after the lock is
- * released; one Git nested in a directory that appeared at the target is removed there. Only a directory holding this
- * restore's token is touched. Resolves to whether the worktree is at its staging path again. Only the restore that
- * moved it calls this; the crash sweep never does, so a record that a successful restore could not remove never costs
- * the worktree it published.
+ * Under the store lock, cleanup after a restore that failed or was stopped once it asked Git to move its worktree toward
+ * the target (#4748): the worktree, at the target or nested in a directory that appeared there, is set aside like its
+ * staging directory (see {@link setRestoredAside}), then {@link cleanRestoreRecord} runs. Only the restore that moved it
+ * does this; the crash sweep never does, so a record that a successful restore could not remove never costs the
+ * worktree it published.
  */
-async function discardMovedWorktree(record: RestoreRecord, state: MoveState): Promise<boolean> {
-	const git: GitRunOptions = { cwd: dirname(record.store), env: { GIT_DIR: record.store } };
-	if (state === "unchecked") {
-		const nested = join(record.target, basename(record.staging));
-		if (await ownsWorktree(nested, record)) await runGit(["worktree", "remove", "--force", "--force", nested], git);
+async function cleanMovedRestore(record: RestoreRecord, state: MoveState): Promise<SetAside[]> {
+	const pending: SetAside[] = [];
+	const candidates =
+		state === "unchecked" ? [record.target, join(record.target, basename(record.staging))] : [record.target];
+	for (const candidate of candidates) {
+		if (pending.length > 0) break;
+		const setAside = await setRestoredAside(candidate, record);
+		if (setAside !== undefined) pending.push(setAside);
 	}
-	if (!(await ownsWorktree(record.target, record))) return false;
-	if ((await lstatIfPresent(record.staging)) === undefined) {
-		const moved = await runGit(["worktree", "move", record.target, record.staging], {
-			...git,
-			allowExitCodes: [128],
-		});
-		if (moved.exitCode === 0) return true;
-	}
-	// Git cannot move it aside, as with initialized submodules: it is removed in place under the lock.
-	await runGit(["worktree", "remove", "--force", "--force", record.target], git);
-	await writing(record.target, null, () => rm(record.target, { recursive: true, force: true }));
-	return false;
-}
-
-/**
- * Deletes the files of the worktree this restore moved back to its staging path, outside the store lock: its `.git`
- * file last, so the worktree can be told apart as this restore's until nothing else of it is left.
- */
-async function deleteDiscardedWorktree(record: RestoreRecord): Promise<void> {
-	if (!(await ownsWorktree(record.staging, record))) {
-		throw new WorkspaceRestoreError("unsafe-target", {
-			snapshotId: null,
-			target: record.staging,
-			reason: "not-restored",
-		});
-	}
-	for (const name of await readdir(record.staging)) {
-		if (name === ".git") continue;
-		const path = join(record.staging, name);
-		await writing(path, null, () => rm(path, { recursive: true, force: true }));
-	}
-	const link = join(record.staging, ".git");
-	await writing(link, null, () => rm(link, { force: true }));
-	await writing(record.staging, null, () => rmdir(record.staging));
+	const staged = await cleanRestoreRecord(record);
+	return [...pending, ...staged.filter((aside) => !pending.some((moved) => moved.path === aside.path))];
 }
 
 /**
@@ -638,7 +894,11 @@ async function withRestoreRecord(
 	snapshotId: string | null,
 	warn: (warning: WorktreeRestoreWarning) => void,
 	signal: AbortSignal | undefined,
-	action: (assertActive: () => void, moving: (state: MoveState) => void) => Promise<void>,
+	action: (
+		assertActive: () => void,
+		moving: (state: MoveState) => void,
+		created: (identity: DirectoryIdentity) => Promise<void>,
+	) => Promise<void>,
 ): Promise<void> {
 	const recordsDir = join(storeDir, "restores");
 	const recordPath = join(recordsDir, `${id}.json`);
@@ -678,9 +938,20 @@ async function withRestoreRecord(
 		);
 		recorded = true;
 		assertActive();
-		await action(assertActive, (state) => {
-			moveState = state;
-		});
+		await action(
+			assertActive,
+			(state) => {
+				moveState = state;
+			},
+			async (identity) => {
+				record = { ...record, identity };
+				const written = `${recordPath}.${process.pid}.tmp`;
+				await writing(recordPath, snapshotId, async () => {
+					await writeFile(written, JSON.stringify(record), { mode: 0o600 });
+					await renameWithRetry(written, recordPath);
+				});
+			},
+		);
 		assertActive();
 		try {
 			await rm(recordPath);
@@ -691,24 +962,15 @@ async function withRestoreRecord(
 		primary = error;
 		if (recorded) {
 			const moved = moveState === "unchecked" || moveState === "published";
-			let keptAt = moved ? record.target : record.staging;
 			try {
-				let discarded = false;
-				await withRepositoryLock(record.store, snapshotId, undefined, async () => {
-					if (moved) discarded = await discardMovedWorktree(record, moveState);
-					if (!discarded) await cleanRestoreRecord(record);
-				});
-				if (discarded) {
-					keptAt = record.staging;
-					// The files go outside the store lock, so other restores of the repository need not wait for them.
-					await deleteDiscardedWorktree(record);
-					await withRepositoryLock(record.store, snapshotId, undefined, () => cleanRestoreRecord(record));
-				}
+				await cleanUpRestore(record, snapshotId, undefined, () =>
+					moved ? cleanMovedRestore(record, moveState) : cleanRestoreRecord(record),
+				);
 				await rm(recordPath);
 			} catch (cleanupCause) {
 				if (error instanceof Error)
 					Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
-				warn({ code: "stale-restore-retained", path: keptAt, kind: "worktree" });
+				warn({ code: "stale-restore-retained", path: keptPath(cleanupCause, record, moved), kind: "worktree" });
 			}
 		}
 		throw error;
@@ -1506,12 +1768,17 @@ async function materialize(
 	tree: string,
 	scratch: string,
 	snapshotId: string | null,
-	token: string,
+	created: (identity: DirectoryIdentity) => Promise<void>,
 	signal?: AbortSignal,
 ): Promise<void> {
 	await withRepositoryLock(store, snapshotId, signal, async () => {
+		// Git adds a worktree into an empty directory too: only one it creates itself is the restore's.
+		if ((await lstatIfPresent(target)) !== undefined) {
+			throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target, reason: "not-empty" });
+		}
 		await runGit(["worktree", "add", "-q", "--detach", "--no-checkout", target, head], git);
-		await markRestoreWorktree(target, store, token, snapshotId);
+		const identity = await directoryIdentity(target);
+		if (identity !== undefined) await created(identity);
 	});
 	const attributes = join(scratch, "empty-attributes");
 	await writing(attributes, snapshotId, () => writeFile(attributes, ""));
@@ -2262,11 +2529,10 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 	const createdTarget = (await statIfPresent(path)) === undefined;
 	const id = randomUUID();
 	const staging = stagingPath(storeDir, path, publish.into, id);
-	const token = randomBytes(16).toString("hex");
-	const record: RestoreRecord = { staging, target: path, store, createdTarget, token };
-	await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive, moving) => {
+	const record: RestoreRecord = { staging, target: path, store, createdTarget, tree };
+	await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive, moving, created) => {
 		await timeRestorePhase("materialize", () =>
-			materialize(git, store, staging, head, tree, scratch, snapshotId, token, signal),
+			materialize(git, store, staging, head, tree, scratch, snapshotId, created, signal),
 		);
 		assertActive();
 		const lfs = snapshot?.filters?.drivers.includes("lfs") ? snapshot.remotes : undefined;
@@ -2374,7 +2640,10 @@ async function moveIntoPlace(
 	} else {
 		moving("checked");
 		const error = new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
-		if (includesPath(registered, nested) && (await ownsWorktree(nested, record))) {
+		if (
+			includesPath(registered, nested) &&
+			(await inspectRestoredContent(nested, record.store, record.tree)) !== undefined
+		) {
 			try {
 				await runGit(["worktree", "remove", "--force", "--force", nested], { ...git, signal: undefined });
 			} catch (cleanupCause) {
