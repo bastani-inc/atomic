@@ -14,6 +14,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -280,6 +281,26 @@ describe("temporary extension install directories", () => {
 			for (let call = 0; call < 5; call++) assert.equal(await ensurePrivateTempDirAsync("extensions"), dir);
 			assert.equal(ensurePrivateTempDir("extensions"), dir, "a synchronous caller finds it verified");
 			assert.equal(reads, firstReads, "repeat calls cost no PowerShell security reads");
+		},
+	);
+
+	it.each(["synchronous", "asynchronous"] as const)(
+		"%s callers refuse a remembered private directory below a replaced ancestor (#5285)",
+		async (caller) => {
+			const dir = await ensurePrivateTempDirAsync("nested", "extensions");
+			const root = dirname(dirname(dir));
+			const movedRoot = `${root}-original`;
+			renameSync(root, movedRoot);
+			symlinkSync(movedRoot, root, isPosix ? "dir" : "junction");
+
+			const reopened =
+				caller === "synchronous"
+					? ensurePrivateTempDir("nested", "extensions")
+					: await ensurePrivateTempDirAsync("nested", "extensions");
+
+			assert.notEqual(reopened, dir, "the cached leaf does not make a linked ancestor trustworthy");
+			assert.ok(!isPathInside(root, reopened), "the replacement link is not followed");
+			assertPrivateChain(reopened, sandbox);
 		},
 	);
 
