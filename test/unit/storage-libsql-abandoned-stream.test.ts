@@ -141,6 +141,31 @@ test("a stream cut while it holds the write lock is closed once the server is re
 	assert.equal(closes(fake).length, answered, "an answered close is not sent again");
 });
 
+test("after an outage that outlasts the first resend of an abandoned stream's close, the client's next write sends that close first, so it never waits behind the stream's lock (#5114)", async () => {
+	const { fake, proxy } = await outage(LONG_STREAM_TTL_MS);
+	const database = await open(proxy.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	await cutInTransaction(database, () => proxy.cut());
+	// The first resend, CLOSE_FIRST_WAIT_MS after the close failed, meets the outage too; the next one is due after the
+	// server is back.
+	await sleep(2 * CLOSE_FIRST_WAIT_MS);
+	proxy.restore();
+	const before = fake.pipelines.length;
+	await within(database.run("INSERT INTO events VALUES (3)"), "a write after the outage");
+	const received = fake.pipelines.slice(before);
+	const close = received.findIndex((pipeline) => pipeline.continuesStream && pipeline.sql.length === 0);
+	const write = received.findIndex((pipeline) => pipeline.sql.includes("INSERT INTO events VALUES (3)"));
+	assert.ok(close !== -1 && close < write, "the abandoned stream's close reached the server before the write");
+	assert.deepEqual(
+		[
+			countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n < 3"),
+			countRows(fake, "SELECT COUNT(*) AS count FROM events"),
+		],
+		[0, 1],
+		"the cut transaction rolled back and the write committed",
+	);
+});
+
 test("when the cut loses the answer to a request the server ran, the refused close is not sent again and writes resume once the server expires the stream (#5114)", async () => {
 	const { fake, proxy } = await outage(SQLD_STREAM_TTL_MS);
 	const database = await open(proxy.url);
@@ -181,11 +206,7 @@ test("closes the server cannot be reached for are sent again with doubling waits
 	// 250 ms wait would send.
 	await sleep(16 * CLOSE_FIRST_WAIT_MS);
 	assert.ok(resent() >= 3 && resent() <= 4, `${resent()} resends in 4 s`);
-	assert.deepEqual(
-		new Set(sent.slice(abandoned.length)),
-		new Set([abandoned[0]]),
-		"a round stops at the first close that fails",
-	);
+	assert.deepEqual(new Set(sent.slice(start)), new Set([abandoned[0]]), "a round stops at the first close that fails");
 	vi.setSystemTime(Date.now() + CLOSE_MAX_AGE_MS);
 	await sleep(8_000 + CLOSE_FIRST_WAIT_MS);
 	const afterMaxAge = sent.length;

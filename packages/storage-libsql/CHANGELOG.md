@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A write that follows an outage on a libSQL server (sqld) or Turso database no longer waits behind the write lock of a stream the outage cut on the same database. The adapter sent such a stream's close again only on its backoff timer, 250 ms and then twice as long each time; an outage longer than a wait left the close for the next one, up to seconds after the server was back, while the next write waited for the lock the stream still held. Every request the database sends now sends the kept closes first and waits for them, for at most 5 seconds, so the close reaches the server before the request does. The timer still sends them while the database sends nothing else, with the same growing waits while the server stays down. Against sqld after a 300 ms outage, the next write committed 5–13 ms after the server was back instead of 455–465 ms ([#5114](https://github.com/bastani-inc/atomic/issues/5114)).
+
 ## [0.9.88] - 2026-11-16
 
 ### Changed
