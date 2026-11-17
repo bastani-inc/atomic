@@ -623,7 +623,7 @@ async function launchSingleInProcess(
 					recovered.finalOutput = deliveredOutput;
 				}
 				forgetIfReleased(control, continuedOutcome);
-				persistRequestedOutput(recovered, options, outputSnapshot);
+				await persistRequestedOutput(recovered, options, outputSnapshot);
 				options.onDetachedExit?.(recovered);
 			})
 			.catch((error: unknown) => {
@@ -724,6 +724,7 @@ async function persistRequestedOutput(
 	options: RunSyncOptions,
 	outputSnapshot: SingleOutputSnapshot | undefined,
 ): Promise<void> {
+	result.outputMode = options.outputMode ?? "inline";
 	if (!options.outputPath || result.status !== "ok") return;
 	const resolved = await resolveSingleOutput(options.outputPath, result.finalOutput ?? "", outputSnapshot);
 	result.savedOutputPath = resolved.savedPath;

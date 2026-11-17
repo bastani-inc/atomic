@@ -30,7 +30,7 @@ import { dirname, join, resolve } from "node:path";
 import { type IntervalHistogram, monitorEventLoopDelay } from "node:perf_hooks";
 import { Worker } from "node:worker_threads";
 import { getAgentDir, isBunRuntime } from "../config.js";
-import { createModuleRequire } from "../utils/module-require.js";
+import { createModuleRequire } from "../utils/module-require.ts";
 
 export const EVENT_LOOP_BLOCK_MS_ENV = "ATOMIC_EVENT_LOOP_BLOCK_MS";
 export const EVENT_LOOP_BLOCK_LOG_ENV = "ATOMIC_EVENT_LOOP_BLOCK_LOG";
