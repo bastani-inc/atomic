@@ -2124,9 +2124,6 @@ class IntercomBroker {
           ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
           ...(clientMessage.reachPolicy === undefined ? {} : { reach: clientMessage.reachPolicy }),
         });
-        // A registration that connects again under a new id stays the sender its return paths lead back to.
-        const registeredIdentity = returnPathParty(this.sessions.get(id)!).identity;
-        if (registeredIdentity !== undefined) this.returnPaths.senderReconnected(registeredIdentity, id);
 
         if (this.shutdownTimer) {
           clearTimeout(this.shutdownTimer);

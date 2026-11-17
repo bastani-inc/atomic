@@ -570,3 +570,107 @@ test("a stage that goes live while its host is still answering for the launcher'
 	const other = await startStage(run, "elsewhere");
 	assert.equal((await other.sendTo(run.launcherName, "going-live-other", "not mine")).type, "delivery_failed");
 });
+
+/** The launcher steps away (a resumable unregister) and comes back as the same registration under a fresh broker id. */
+async function reconnectLauncher(run: Run): Promise<{ back: WireClient; backId: string }> {
+	run.launcher.send({ type: "unregister", resumable: true });
+	await new Promise<void>((done) => {
+		run.launcher.socket.once("close", () => done());
+		run.launcher.socket.end();
+	});
+	const back = new WireClient();
+	const backId = await register(back, run.launcherName, "default");
+	assert.notEqual(backId, run.launcherId);
+	return { back, backId };
+}
+
+test("a stage answers by name a launcher that came back under a new id after queuing its message", async () => {
+	const run = await launchedRun("queued-reconnect", "5a1e0013-0000-4000-8000-000000000013", ["later"]);
+	const queued = ownerAnswers(run, "queued");
+	assert.equal(
+		(await run.launcher.sendTo(`${run.group}/later`, "queued-reconnect-note", "read this later")).type,
+		"queued",
+	);
+	await queued;
+	const { back, backId } = await reconnectLauncher(run);
+	const stage = await startStage(run, "later");
+	assert.equal((await stage.sendTo(backId, "queued-reconnect-by-id", "by id")).type, "delivered");
+	const byName = await stage.sendTo(run.launcherName, "queued-reconnect-by-name", "by name");
+	assert.equal(byName.type, "delivered", JSON.stringify(byName));
+	assert.equal(
+		(await back.next("message", (frame) => frame.message.id === "queued-reconnect-by-name")).message.content.text,
+		"by name",
+	);
+});
+
+test("a stage whose receipt arrives after the launcher came back under a new id answers it by name", async () => {
+	const run = await launchedRun("receipt-reconnect", "5a1e0014-0000-4000-8000-000000000014", ["later"]);
+	const stage = new WireClient();
+	await stage.connected();
+	stage.send({
+		type: "register",
+		returnAddress: "host:receipt-stage",
+		acknowledgesReceipt: true,
+		session: {
+			name: "receipt-stage",
+			group: run.group,
+			cwd: "/repo",
+			model: "test",
+			pid: 1,
+			startedAt: 1,
+			lastActivity: 1,
+		},
+	});
+	await stage.next("registered");
+	stage.send({
+		type: "register_live_workflow_stage_route",
+		requestId: "receipt-live",
+		runId: run.runId,
+		stageKeys: ["later"],
+		capability: run.routeCapability,
+	});
+	await stage.next("live_workflow_stage_route_registered");
+	const forwarded = ownerAnswers(run, "forward");
+	run.launcher.send({
+		type: "send",
+		to: `${run.group}/later`,
+		message: { id: "receipt-note", timestamp: Date.now(), content: { text: "read me" } },
+	});
+	await forwarded;
+	await stage.next("message", (frame) => frame.message.id === "receipt-note");
+	const { backId } = await reconnectLauncher(run);
+	// The stage confirms it saved the message only now, after the launcher came back.
+	stage.send({ type: "received", messageId: "receipt-note" });
+	await listed(stage, "receipt-processed");
+	assert.equal((await stage.sendTo(backId, "receipt-by-id", "by id")).type, "delivered");
+	const byName = await stage.sendTo(run.launcherName, "receipt-by-name", "by name");
+	assert.equal(byName.type, "delivered", JSON.stringify(byName));
+});
+
+test("a name two live registrations of the launcher's identity share stays ambiguous", async () => {
+	const run = await launchedRun("live-duplicate", "5a1e0015-0000-4000-8000-000000000015", ["stage"]);
+	const stage = await startStage(run, "stage");
+	const forwarded = ownerAnswers(run, "forward");
+	run.launcher.send({
+		type: "send",
+		to: `${run.group}/stage`,
+		message: { id: "live-duplicate-note", timestamp: Date.now(), content: { text: "hi" } },
+	});
+	await forwarded;
+	await stage.next("message", (frame) => frame.message.id === "live-duplicate-note");
+	// Another registration copies the launcher's return address, group and name while the launcher is still live.
+	const duplicate = new WireClient();
+	const duplicateId = await register(duplicate, run.launcherName, "default");
+	assert.notEqual(duplicateId, run.launcherId);
+	const refused = await stage.sendTo(run.launcherName, "live-duplicate-answer", "for the launcher");
+	assert.equal(refused.type, "delivery_failed", JSON.stringify(refused));
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+	assert.equal(
+		duplicate.received.some((frame) => frame.type === "message"),
+		false,
+	);
+	assert.equal(
+		run.launcher.received.some((frame) => frame.type === "message" && frame.message.id === "live-duplicate-answer"),
+		false,
+	);
+});

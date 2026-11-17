@@ -26,6 +26,7 @@ import { HELD_FOR_AWAY_ASKER_TARGET } from "./held-reply-targets.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
 import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
 import { type ReturnPathParty, type ReturnPaths, returnPathClosedReason } from "./return-paths.js";
+import { returnAddressOf } from "./multinode-state-store.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL } from "../recipient-purpose.js";
 
 export interface BrokerConnectedSession {
@@ -149,8 +150,8 @@ export interface ReturnPathAuthority {
 	/** Whether `sender` holds a return path to `target`, open or closed: such a target resolves by name. */
 	holds(sender: BrokerConnectedSession, target: ReturnPathParty): boolean;
 	/**
-	 * The live sessions `sender` holds return paths to, open or closed, found from its own paths: the cost is the paths
-	 * it holds, never the sessions the broker serves.
+	 * The live sessions `sender` holds return paths to, open or closed: every live registration of each held identity.
+	 * A sender that holds none costs nothing; one that does costs one pass over the sessions, never one per session.
 	 */
 	answerable(sender: BrokerConnectedSession): BrokerConnectedSession[];
 	/** Counts `messageId` as an answer to `target`; false when no open return path allows it. */
@@ -168,11 +169,21 @@ export function createReturnPathAuthority(
 ): ReturnPathAuthority {
 	return {
 		holds: (sender, target) => paths.holds(returnPathParty(sender), target),
-		answerable: (sender) =>
-			paths.sendersOf(returnPathParty(sender)).flatMap((held) => {
-				const live = sessions.get(held.sessionId);
-				return live !== undefined && returnPathParty(live).identity === held.identity ? [live] : [];
-			}),
+		answerable: (sender) => {
+			// Paths name their senders by registration identity, never by a broker id that a reconnect replaces: every
+			// live session of a held identity is a candidate, so a name two of them share stays ambiguous.
+			const held = new Set(paths.sendersOf(returnPathParty(sender)).map((path) => path.identity));
+			if (held.size === 0) return [];
+			// Compare return addresses first: a session whose address no held identity names is not a candidate.
+			const addresses = new Set([...held].map(returnAddressOf));
+			const live: BrokerConnectedSession[] = [];
+			for (const session of sessions.values()) {
+				if (session.registrationReturnAddress === undefined || !addresses.has(session.registrationReturnAddress)) continue;
+				const identity = returnPathParty(session).identity;
+				if (identity !== undefined && held.has(identity)) live.push(session);
+			}
+			return live;
+		},
 		use: (sender, target, messageId) => paths.use(returnPathParty(sender), target, messageId),
 		closed: (sender, target) => paths.closed(returnPathParty(sender), target),
 		delivered: (recipient, from, fromInfo, operationId) => {

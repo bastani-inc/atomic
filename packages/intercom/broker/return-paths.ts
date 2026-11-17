@@ -25,7 +25,10 @@ export interface ReturnPathParty {
 /** A sender `responder` holds a return path to, open or closed. */
 export interface ReturnPathSender {
 	readonly identity: string;
-	/** The broker session id that sender last wrote from. */
+	/**
+	 * The broker session id the sender wrote from. A reconnect can replace it: find the sender's live sessions by
+	 * `identity`; this id only short-cuts a check that the sender is still that session.
+	 */
 	readonly sessionId: string;
 }
 
@@ -191,14 +194,6 @@ export class ReturnPaths {
 			if (path !== undefined) senders.push({ identity: path.senderIdentity, sessionId: path.senderId });
 		}
 		return senders;
-	}
-
-	/** The registration `identity` connected again as session `sessionId`: paths back to it now resolve to that session. */
-	senderReconnected(identity: string, sessionId: string): void {
-		for (const key of this.bySender.get(identity) ?? []) {
-			const path = this.paths.get(key);
-			if (path !== undefined) path.senderId = sessionId;
-		}
 	}
 
 	/** A registration ended for good: every return path it opened or holds goes with it. */
