@@ -325,18 +325,17 @@ function freshPrompts(
  * The agent definition the child was launched with, looked up again by name. With the source its launch resolved,
  * the definition from that source, wherever the default scope would shadow it with another of the same name.
  */
-function rediscoverAgent(
+async function rediscoverAgent(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 	cwd: string,
 	name: string,
 	source: AgentSource | undefined,
-): AgentConfig | undefined {
+): Promise<AgentConfig | undefined> {
 	const scopes: readonly AgentScope[] = source ? ["both", "user", "project"] : [resolveExecutionAgentScope(undefined)];
 	for (const scope of scopes) {
-		const agent = deps
-			.discoverAgents(cwd, scope, contextAgentDiscoveryOptions(ctx))
-			.agents.find((candidate) => candidate.name === name && (!source || candidate.source === source));
+		const { agents } = await deps.discoverAgents(cwd, scope, contextAgentDiscoveryOptions(ctx));
+		const agent = agents.find((candidate) => candidate.name === name && (!source || candidate.source === source));
 		if (agent) return agent;
 	}
 	return undefined;
@@ -513,7 +512,7 @@ async function relaunchChild(
 		onReopened(previousIntercomId);
 		if (previousIntercomId) await hold?.add(previousIntercomId);
 	}
-	const discovered = rediscoverAgent(deps, ctx, cwd, record.agent, record.agentSource);
+	const discovered = await rediscoverAgent(deps, ctx, cwd, record.agent, record.agentSource);
 	if (!discovered)
 		return unrestorable(
 			`agent "${record.agent}"${record.agentSource ? ` (${record.agentSource})` : ""} is no longer defined`,

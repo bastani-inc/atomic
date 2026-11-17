@@ -131,7 +131,10 @@ test("a dispatch that names its model retains agent effort and falls back only t
 });
 
 test("builtin legacy effort selects ranked alternatives without widening hard constraints", async () => {
-	const { agents } = loadAgentsFromDirWithDiagnostics(join(process.cwd(), "packages/subagents/agents"), "builtin");
+	const { agents } = await loadAgentsFromDirWithDiagnostics(
+		join(process.cwd(), "packages/subagents/agents"),
+		"builtin",
+	);
 	const overridden = applyBuiltinOverrides(
 		agents,
 		{ overrides: { worker: { thinking: "high" } } },

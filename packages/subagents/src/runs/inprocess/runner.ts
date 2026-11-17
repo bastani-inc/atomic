@@ -1965,7 +1965,7 @@ export class SubagentControlRuntime {
 				startBudget.enter("loading-resources");
 				const reloadFailure = await beforeStartDeadline(prepared.reloaded);
 				if (reloadFailure) throw reloadFailure.error;
-				const selectedSkills = resolveSkillsFromCatalog(
+				const selectedSkills = await resolveSkillsFromCatalog(
 					[...admitted.policy.skills],
 					resourceLoader.getSkillCatalog(),
 					admitted.policy.cwd,
