@@ -140,7 +140,7 @@ function addCliMetadata(cliExtensionPaths: ResolvedPaths, metadataByPath: Map<st
 
 export async function loadProjectTrustExtensions(loader: DefaultResourceLoader): Promise<LoadExtensionsResult> {
 	const state = resourceInternals(loader);
-	state.settingsManager.setProjectTrusted(false);
+	await state.settingsManager.setProjectTrustedAsync(false);
 	await state.settingsManager.reload();
 	const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await resolvePackageResourcePaths(loader, {
 		includeCliProjectLocalResources: false,
@@ -224,9 +224,9 @@ export async function prepareDefaultResourceLoaderReload(
 	const resolveTrust = async () => {
 		if (options?.resolveProjectTrust && preTrustExtensions) {
 			const projectTrusted = await options.resolveProjectTrust({ extensionsResult: preTrustExtensions });
-			state.settingsManager.setProjectTrusted(projectTrusted);
+			await state.settingsManager.setProjectTrustedAsync(projectTrusted);
 		} else if (preTrustExtensions) {
-			state.settingsManager.setProjectTrusted(initialProjectTrusted);
+			await state.settingsManager.setProjectTrustedAsync(initialProjectTrusted);
 		}
 		if (options?.resolveBorrowedProjectTrust) {
 			state.trustedBorrowedProjectLocalSources = await resolveTrustedBorrowedProjectLocalSources(

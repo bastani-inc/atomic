@@ -6,8 +6,9 @@ import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import { backgroundCompactionSettingErrors } from "./compaction/background-compaction.ts";
 import { isDecisionConfigError } from "./decision/errors.js";
 import { deepMergeSettings, isPrototypeKey } from "./settings-merge.js";
-import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
+import { asyncSettingsStorage, FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
 import type {
+	AsyncSettingsStorage,
 	PackageSource,
 	Settings,
 	SettingsError,
@@ -46,6 +47,8 @@ export class SettingsManager {
 	}
 
 	private storage: SettingsStorage;
+	/** What this manager loads and saves through once it is created, without blocking the event loop. */
+	private asyncStorage: AsyncSettingsStorage;
 	private globalSettings: Settings;
 	private projectSettings: Settings;
 	private settings: Settings;
@@ -73,6 +76,7 @@ export class SettingsManager {
 		projectTrusted = true,
 	) {
 		this.storage = storage;
+		this.asyncStorage = asyncSettingsStorage(storage);
 		this.globalSettings = initialGlobal;
 		this.projectSettings = initialProject;
 		this.projectTrusted = projectTrusted;
@@ -98,12 +102,28 @@ export class SettingsManager {
 		agentDir: string = getAgentDir(),
 		options: SettingsManagerCreateOptions = {},
 	): SettingsManager {
-		const storage = new FileSettingsStorage(cwd, agentDir, {
+		return SettingsManager.fromStorage(SettingsManager.fileStorage(cwd, agentDir), options);
+	}
+
+	/** {@link SettingsManager.create} without blocking the event loop: the settings files are read asynchronously. */
+	static async createAsync(
+		cwd: string,
+		agentDir: string = getAgentDir(),
+		options: SettingsManagerCreateOptions = {},
+	): Promise<SettingsManager> {
+		const storage = SettingsManager.fileStorage(cwd, agentDir);
+		const projectTrusted = options.projectTrusted ?? true;
+		const globalLoad = await SettingsManager.tryLoadFromStorageAsync(storage, storage, "global");
+		const projectLoad = await SettingsManager.tryLoadFromStorageAsync(storage, storage, "project", projectTrusted);
+		return SettingsManager.fromLoads(storage, globalLoad, projectLoad, projectTrusted);
+	}
+
+	private static fileStorage(cwd: string, agentDir: string): FileSettingsStorage {
+		return new FileSettingsStorage(cwd, agentDir, {
 			globalReadPaths:
 				agentDir === getAgentDir() ? getAgentConfigPaths("settings.json") : [join(agentDir, "settings.json")],
 			projectReadPaths: getProjectConfigPaths(cwd, "settings.json"),
 		});
-		return SettingsManager.fromStorage(storage, options);
 	}
 
 	/** Create a SettingsManager from an arbitrary storage backend */
@@ -111,6 +131,15 @@ export class SettingsManager {
 		const projectTrusted = options.projectTrusted ?? true;
 		const globalLoad = SettingsManager.tryLoadFromStorage(storage, "global");
 		const projectLoad = SettingsManager.tryLoadFromStorage(storage, "project", projectTrusted);
+		return SettingsManager.fromLoads(storage, globalLoad, projectLoad, projectTrusted);
+	}
+
+	private static fromLoads(
+		storage: SettingsStorage,
+		globalLoad: SettingsLoad,
+		projectLoad: SettingsLoad,
+		projectTrusted: boolean,
+	): SettingsManager {
 		const initialErrors: SettingsError[] = [];
 		if (globalLoad.error) {
 			initialErrors.push({
@@ -146,8 +175,12 @@ export class SettingsManager {
 	static inMemory(settings: Partial<Settings> = {}): SettingsManager {
 		const storage = new InMemorySettingsStorage();
 		const initialSettings = SettingsManager.migrateSettings(structuredClone(settings) as Record<string, unknown>);
-		storage.withLock("global", () => JSON.stringify(initialSettings, null, 2));
-		return SettingsManager.fromStorage(storage);
+		const content = JSON.stringify(initialSettings, null, 2);
+		storage.withLock("global", () => content);
+		// What `fromStorage` would read back: the settings just stored, and no project settings.
+		const globalLoad = SettingsManager.tryLoad(() => SettingsManager.parseLayers(storage, "global", [{ content }]));
+		const projectLoad: SettingsLoad = { settings: {}, invalid: [], error: null };
+		return SettingsManager.fromLoads(storage, globalLoad, projectLoad, true);
 	}
 
 	private static loadFromStorage(
@@ -158,10 +191,29 @@ export class SettingsManager {
 		if (scope === "project" && !projectTrusted) {
 			return { settings: {}, invalid: [] };
 		}
+		return SettingsManager.parseLayers(storage, scope, SettingsManager.readLayers(storage, scope));
+	}
 
+	private static async loadFromStorageAsync(
+		storage: SettingsStorage,
+		asyncStorage: AsyncSettingsStorage,
+		scope: SettingsScope,
+		projectTrusted = true,
+	): Promise<{ settings: Settings; invalid: InvalidLayerValue[] }> {
+		if (scope === "project" && !projectTrusted) {
+			return { settings: {}, invalid: [] };
+		}
+		return SettingsManager.parseLayers(storage, scope, await SettingsManager.readLayersAsync(asyncStorage, scope));
+	}
+
+	private static parseLayers(
+		storage: SettingsStorage,
+		scope: SettingsScope,
+		files: { path?: string; content: string }[],
+	): { settings: Settings; invalid: InvalidLayerValue[] } {
 		// Each file is validated and migrated on its own, highest precedence first, then merged from the lowest up.
 		const invalid: InvalidLayerValue[] = [];
-		const layers = SettingsManager.readLayers(storage, scope).map(({ path, content }) => {
+		const layers = files.map(({ path, content }) => {
 			let settings: Parameters<typeof dropWrongTypedSettings>[0];
 			try {
 				settings = parseJsonFileContent(content) as Parameters<typeof dropWrongTypedSettings>[0];
@@ -188,13 +240,47 @@ export class SettingsManager {
 		return content ? [{ content }] : [];
 	}
 
+	private static async readLayersAsync(
+		storage: AsyncSettingsStorage,
+		scope: SettingsScope,
+	): Promise<{ path?: string; content: string }[]> {
+		if (storage.readLayersAsync) return storage.readLayersAsync(scope);
+		let content: string | undefined;
+		await storage.withLockAsync(scope, (current) => {
+			content = current;
+			return undefined;
+		});
+		return content ? [{ content }] : [];
+	}
+
 	private static tryLoadFromStorage(
 		storage: SettingsStorage,
 		scope: SettingsScope,
 		projectTrusted = true,
 	): SettingsLoad {
+		return SettingsManager.tryLoad(() => SettingsManager.loadFromStorage(storage, scope, projectTrusted));
+	}
+
+	private static tryLoad(load: () => { settings: Settings; invalid: InvalidLayerValue[] }): SettingsLoad {
 		try {
-			return { ...SettingsManager.loadFromStorage(storage, scope, projectTrusted), error: null };
+			return { ...load(), error: null };
+		} catch (error) {
+			if (isDecisionConfigError(error)) throw error;
+			return { settings: {}, invalid: [], error: error as Error };
+		}
+	}
+
+	private static async tryLoadFromStorageAsync(
+		storage: SettingsStorage,
+		asyncStorage: AsyncSettingsStorage,
+		scope: SettingsScope,
+		projectTrusted = true,
+	): Promise<SettingsLoad> {
+		try {
+			return {
+				...(await SettingsManager.loadFromStorageAsync(storage, asyncStorage, scope, projectTrusted)),
+				error: null,
+			};
 		} catch (error) {
 			if (isDecisionConfigError(error)) throw error;
 			return { settings: {}, invalid: [], error: error as Error };
@@ -334,8 +420,28 @@ export class SettingsManager {
 		if (this.projectTrusted === trusted) {
 			return;
 		}
-		const projectLoad = trusted ? SettingsManager.tryLoadFromStorage(this.storage, "project", true) : undefined;
+		this.applyProjectTrust(
+			trusted,
+			trusted ? SettingsManager.tryLoadFromStorage(this.storage, "project", true) : undefined,
+		);
+	}
 
+	/** {@link SettingsManager.setProjectTrusted} without blocking the event loop: project settings are read asynchronously. */
+	async setProjectTrustedAsync(trusted: boolean): Promise<void> {
+		if (this.projectTrusted === trusted) {
+			return;
+		}
+		const projectLoad = trusted
+			? await SettingsManager.tryLoadFromStorageAsync(this.storage, this.asyncStorage, "project", true)
+			: undefined;
+		// Another change of trust may have landed while the project settings were read.
+		if (this.projectTrusted === trusted) {
+			return;
+		}
+		this.applyProjectTrust(trusted, projectLoad);
+	}
+
+	private applyProjectTrust(trusted: boolean, projectLoad: SettingsLoad | undefined): void {
 		this.projectTrusted = trusted;
 		this.modifiedProjectFields.clear();
 		this.modifiedProjectNestedFields.clear();
@@ -358,8 +464,21 @@ export class SettingsManager {
 	}
 
 	async reload(): Promise<void> {
-		await this.writeQueue;
-		const globalLoad = SettingsManager.tryLoadFromStorage(this.storage, "global");
+		let globalLoad: SettingsLoad;
+		let projectLoad: SettingsLoad;
+		for (;;) {
+			const writes = this.writeQueue;
+			await writes;
+			globalLoad = await SettingsManager.tryLoadFromStorageAsync(this.storage, this.asyncStorage, "global");
+			projectLoad = await SettingsManager.tryLoadFromStorageAsync(
+				this.storage,
+				this.asyncStorage,
+				"project",
+				this.projectTrusted,
+			);
+			// A setting changed while the files were read is in a save queued meanwhile: read again once it is saved.
+			if (this.writeQueue === writes) break;
+		}
 		if (!globalLoad.error) {
 			this.globalSettings = globalLoad.settings;
 			this.globalSettingsLoadError = null;
@@ -374,7 +493,6 @@ export class SettingsManager {
 		this.modifiedProjectFields.clear();
 		this.modifiedProjectNestedFields.clear();
 
-		const projectLoad = SettingsManager.tryLoadFromStorage(this.storage, "project", this.projectTrusted);
 		if (!projectLoad.error) {
 			this.projectSettings = projectLoad.settings;
 			this.projectSettingsLoadError = null;
@@ -496,14 +614,14 @@ export class SettingsManager {
 		this.modifiedProjectNestedFields.clear();
 	}
 
-	private enqueueWrite(scope: SettingsScope, task: () => void): void {
+	private enqueueWrite(scope: SettingsScope, task: () => Promise<void>): void {
 		const owner = settingsWriteOwner.getStore() ?? ownedSettingsManagers.get(this);
 		this.writeQueue = this.writeQueue
-			.then(() => {
+			.then(async () => {
 				if (scope === "project") {
 					this.assertProjectTrustedForWrite();
 				}
-				task();
+				await task();
 				this.clearModifiedScope(scope);
 				recordSettingsWrite(owner, scope);
 			})
@@ -521,12 +639,12 @@ export class SettingsManager {
 		return snapshot;
 	}
 
-	private persistScopedSettings(
+	private async persistScopedSettings(
 		scope: SettingsScope,
 		snapshotSettings: Settings,
 		modifiedFields: Set<keyof Settings>,
 		modifiedNestedFields: Map<keyof Settings, Set<string>>,
-	): void {
+	): Promise<void> {
 		const persist = (currentPrimary: string | undefined): string => {
 			const currentFileSettings = currentPrimary
 				? SettingsManager.migrateSettings(parseJsonFileContent(currentPrimary) as Record<string, unknown>)
@@ -561,11 +679,17 @@ export class SettingsManager {
 			return JSON.stringify(mergedSettings, null, 2);
 		};
 
-		if (this.storage.withPrimaryWriteLock) {
-			this.storage.withPrimaryWriteLock(scope, persist);
-		} else {
-			this.storage.withLock(scope, persist);
-		}
+		await SettingsManager.writePrimary(this.asyncStorage, scope, persist);
+	}
+
+	/** Saves `persist` to the primary file of `scope`, under its lock. */
+	private static async writePrimary(
+		storage: AsyncSettingsStorage,
+		scope: SettingsScope,
+		persist: (currentPrimary: string | undefined) => string | undefined,
+	): Promise<void> {
+		if (storage.withPrimaryWriteLockAsync) await storage.withPrimaryWriteLockAsync(scope, persist);
+		else await storage.withLockAsync(scope, persist);
 	}
 
 	private save(): void {
@@ -579,9 +703,9 @@ export class SettingsManager {
 		const modifiedFields = new Set(this.modifiedFields);
 		const modifiedNestedFields = this.cloneModifiedNestedFields(this.modifiedNestedFields);
 
-		this.enqueueWrite("global", () => {
-			this.persistScopedSettings("global", snapshotGlobalSettings, modifiedFields, modifiedNestedFields);
-		});
+		this.enqueueWrite("global", () =>
+			this.persistScopedSettings("global", snapshotGlobalSettings, modifiedFields, modifiedNestedFields),
+		);
 	}
 
 	private saveProjectSettings(settings: Settings): void {
@@ -596,9 +720,9 @@ export class SettingsManager {
 		const snapshotProjectSettings = structuredClone(this.projectSettings);
 		const modifiedFields = new Set(this.modifiedProjectFields);
 		const modifiedNestedFields = this.cloneModifiedNestedFields(this.modifiedProjectNestedFields);
-		this.enqueueWrite("project", () => {
-			this.persistScopedSettings("project", snapshotProjectSettings, modifiedFields, modifiedNestedFields);
-		});
+		this.enqueueWrite("project", () =>
+			this.persistScopedSettings("project", snapshotProjectSettings, modifiedFields, modifiedNestedFields),
+		);
 	}
 
 	/**
@@ -625,10 +749,7 @@ export class SettingsManager {
 				? undefined
 				: JSON.stringify({ ...fileSettings, packages: filePackages }, null, 2);
 		};
-		this.enqueueWrite(scope, () => {
-			if (this.storage.withPrimaryWriteLock) this.storage.withPrimaryWriteLock(scope, persist);
-			else this.storage.withLock(scope, persist);
-		});
+		this.enqueueWrite(scope, () => SettingsManager.writePrimary(this.asyncStorage, scope, persist));
 		return true;
 	}
 

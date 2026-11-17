@@ -319,7 +319,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				session.settingsManager.isProjectTrusted() !== state.projectTrusted
 			) {
 				// The child owns trust hooks/decisions. The host only mirrors their result.
-				session.settingsManager.setProjectTrusted(state.projectTrusted);
+				await session.settingsManager.setProjectTrustedAsync(state.projectTrusted);
 				await session.settingsManager.reload();
 				await session.resourceLoader.reload();
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
