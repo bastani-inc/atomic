@@ -13,11 +13,12 @@ import {
 } from "../shared/workflow-run-ownership.js";
 import { inertDisplayLine } from "./display-text.js";
 
-function firstLineOf(text: string): string {
-	const nl = text.indexOf("\n");
-	const cr = text.indexOf("\r");
+export function firstPromptLine(text: string): string {
+	const bounded = sliceHead(text, TOOL_PAYLOAD_VALUE_LIMIT).trimStart();
+	const nl = bounded.indexOf("\n");
+	const cr = bounded.indexOf("\r");
 	const end = nl < 0 ? cr : cr < 0 ? nl : Math.min(nl, cr);
-	return end < 0 ? text : text.slice(0, end);
+	return end < 0 ? bounded : bounded.slice(0, end);
 }
 
 export function isTerminalOrBlockedRun(run: RunSnapshot): boolean {
@@ -72,7 +73,7 @@ export function findWaitingInTree(
 	if (visited.has(run.id) || isTerminalOrBlockedRun(run)) return undefined;
 	visited.add(run.id);
 	if (run.pendingPrompt !== undefined) {
-		const question = inertDisplayLine(firstLineOf(sliceHead(run.pendingPrompt.message, TOOL_PAYLOAD_VALUE_LIMIT)));
+		const question = inertDisplayLine(firstPromptLine(run.pendingPrompt.message));
 		return question.length > 0 ? { question } : {};
 	}
 	for (const stage of run.stages) {
@@ -85,10 +86,7 @@ export function findWaitingInTree(
 		}
 		if (isWaitingStage(stage)) {
 			const rawQuestion = stage.pendingPrompt?.message ?? stage.inputRequest?.questions[0]?.question;
-			const question =
-				rawQuestion === undefined
-					? undefined
-					: inertDisplayLine(firstLineOf(sliceHead(rawQuestion, TOOL_PAYLOAD_VALUE_LIMIT)));
+			const question = rawQuestion === undefined ? undefined : inertDisplayLine(firstPromptLine(rawQuestion));
 			return {
 				stageName: inertDisplayLine(stage.name),
 				...(question !== undefined && question.length > 0 ? { question } : {}),

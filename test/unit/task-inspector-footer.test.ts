@@ -126,7 +126,7 @@ test("shell transcript retains the note and exact footer at the bottom of its vi
 		const lines = h.lines(110, 30);
 		assert.equal(lines.length, 30);
 		assert.equal(lines.at(-2), "Earlier output omitted · showing retained 8 KiB tail");
-		assert.equal(lines.at(-1), "  ← task · pgup/pgdn scroll · ctrl+o expand · ? keys");
+		assert.equal(lines.at(-1), "  ← task · pgup/pgdn scroll · ? keys");
 		assert.ok(lines.slice(3, -2).some((line) => line === ""));
 	} finally {
 		await h.dispose();
@@ -147,7 +147,7 @@ test("agent transcript footer offers messaging only when the source supports it 
 			await enter(h.inspector);
 			assert.equal(h.lines(110, 30).at(-2), "━".repeat(110), "an attached composer has heavy rules (#5224)");
 			const footer = h.lines(110, 30).at(-1) ?? "";
-			assert.equal(footer, "  ← task · pgup/pgdn scroll · ctrl+o expand · ? keys");
+			assert.equal(footer, "  ← task · pgup/pgdn scroll · ? keys");
 			assert.doesNotMatch(footer, / · {2}· /);
 		} finally {
 			await h.dispose();
@@ -260,7 +260,7 @@ test("an open agent transcript remains renderable after its task disappears (#45
 		await flush();
 		const lines = h.lines();
 		assert.match(lines[0] ?? "", /^Transcript · Task$/);
-		assert.equal(lines.at(-1), "  ← task · pgup/pgdn scroll · ctrl+o expand · ? keys");
+		assert.equal(lines.at(-1), "  ← task · pgup/pgdn scroll · ? keys");
 	} finally {
 		await h.dispose();
 	}

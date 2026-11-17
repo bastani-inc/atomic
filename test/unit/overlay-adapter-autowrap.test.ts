@@ -65,9 +65,13 @@ async function registerIsolatedTests(): Promise<void> {
 	const { sliceHead } = await import("../../packages/coding-agent/src/core/tools/truncate.js");
 
 	const navKeys = await import("../../packages/coding-agent/src/modes/interactive/components/nav-keys.js");
+	const { terminalDisplayText } = await import("../../packages/coding-agent/src/utils/terminal-text.ts");
 	mock.module("@bastani/atomic", () => ({
 		...navKeys,
 		sliceHead,
+		terminalDisplayText,
+		TASK_CHAT_OVERLAY_KEYS: [],
+		taskChatKeys: () => assert.fail("graph checks must not render stage-chat hints"),
 		ChatSessionHost: TestComponent,
 		formatModelLabel,
 		MODEL_LABEL_SEPARATOR,

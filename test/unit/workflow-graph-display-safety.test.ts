@@ -854,7 +854,9 @@ test.each([
 		assertSafeRows(renderNodeCard(pendingStage, { theme: defaultTheme, width: 80 }));
 		const panelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap, 2_000), 200, panelStyle);
 		assertSafeRows(panelRows);
-		assert.ok(panelRows.join("\n").includes("active-"), "panel current stage name is rendered");
+		const narrowPanelRows = renderAgentPanelRows(panelItemsFromSnapshot(snap, 2_000), 52, panelStyle);
+		assertSafeRows(narrowPanelRows);
+		assert.ok(narrowPanelRows.join("\n").includes("active-"), "the narrow panel renders the current stage name");
 		for (const item of workflowsListingItems(snap.runs, [], 2_000)) {
 			assertSafeRows([item.label, item.description ?? ""]);
 		}

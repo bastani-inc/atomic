@@ -179,6 +179,51 @@ test("peek-card digit shortcuts resolve exact raw choices when display labels sa
 	}
 });
 
+test("a digit carries its exact choice index but a refused prompt retarget keeps only the reply text (#5224)", async () => {
+	const fixture = taskFixture();
+	let current = waitingItem("run:choice", "p1", "Choose the action", ["Keep", "Drop"]);
+	let changed = () => {};
+	const calls: { text: string; promptId: string | undefined; choiceIndex: number | undefined }[] = [];
+	const inspector = new TaskInspector(
+		viewOf(fixture.store),
+		() => {},
+		() => {},
+	);
+	inspector.setBoardSource({
+		items: () => [current],
+		subscribe(listener) {
+			changed = listener;
+			return () => {};
+		},
+		answer: async (_id, text, options) => {
+			calls.push({ text, promptId: options?.promptId, choiceIndex: options?.choiceIndex });
+			return options?.promptId === current.promptId
+				? { ok: true }
+				: { ok: false, reason: "The pending prompt changed before the answer was sent." };
+		},
+	});
+	const paint = () => plain(inspector.renderViewport(120, 24));
+	try {
+		paint();
+		inspector.handleInput(SPACE);
+		paint();
+		inspector.handleInput("1");
+		current = waitingItem("run:choice", "p2", "Choose the new action", ["Drop", "Keep"]);
+		changed();
+		paint();
+		inspector.handleInput(ENTER);
+		await flush();
+		assert.deepEqual(calls, [{ text: "Keep", promptId: "p1", choiceIndex: 0 }]);
+		assert.match(paint(), /enter to send or clear/);
+		inspector.handleInput(ENTER);
+		await flush();
+		assert.deepEqual(calls[1], { text: "Keep", promptId: "p2", choiceIndex: undefined });
+	} finally {
+		inspector.dispose();
+		await fixture.dispose();
+	}
+});
+
 test("peek card draws up to 9 choices in a tall viewport and accepts digits 8 and 9 (#5224)", async () => {
 	const fixture = taskFixture();
 	const choices = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota"];

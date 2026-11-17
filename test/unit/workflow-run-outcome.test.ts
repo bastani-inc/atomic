@@ -238,7 +238,7 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 					pendingPrompt: {
 						id: "p1",
 						kind: "select",
-						message: "Approve this plan?",
+						message: "\r\n  Approve this plan?",
 						choices: ["Yes", "No"],
 						createdAt: 1,
 					},
@@ -458,7 +458,7 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 		assert.ok(outcome.log.some((line) => line.includes("child tool failed")));
 		const rootPromptOutcome = buildRunOutcome(
 			run("running", [stage("work", "completed", { startedAt: 1_000, endedAt: 2_000 })], {
-				pendingPrompt: { id: "approval", kind: "confirm", message: "Deploy this release?", createdAt: 2_000 },
+				pendingPrompt: { id: "approval", kind: "confirm", message: "\n  Deploy this release?", createdAt: 2_000 },
 			}),
 			3_000,
 		);

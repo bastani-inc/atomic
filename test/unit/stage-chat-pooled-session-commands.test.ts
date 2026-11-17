@@ -110,7 +110,7 @@ test("/tasks in the chat of a stage on a local worker lists that stage's tasks f
 	try {
 		assert.match(
 			stripAnsi(view.render(120).join("\n")),
-			/∀ shell {2}npm run build/,
+			/⧗ shell {2}npm run build/,
 			"the footer lists the worker's tasks",
 		);
 		submitStageChatText(view, "/tasks");

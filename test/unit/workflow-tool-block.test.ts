@@ -300,7 +300,7 @@ describe("the workflow tool's result line (#5224)", () => {
 			run.pendingPrompt = {
 				id: "prompt-root",
 				kind: "confirm",
-				message: "Approve deployment window?",
+				message: " \n\tApprove deployment window?",
 				createdAt: START + 1500,
 			};
 			return { run: true };
@@ -499,10 +499,18 @@ describe("the workflow tool's result line (#5224)", () => {
 		try {
 			assert.match(plain(row.render(160))[0]!, /Waiting for input at deep-ask/);
 			const removedId = runIds.at(-1)!;
+			const removedRun = snapshots.get(removedId)!;
 			snapshots.delete(removedId);
 			for (const listener of listeners) listener([{ runId: removedId }]);
 			assert.equal(repaints, 1);
 			assert.doesNotMatch(plain(row.render(160))[0]!, /Waiting for input/);
+			snapshots.set(removedId, {
+				...removedRun,
+				stages: [stage("deep-work", "running", { modelAttempts: usage(0, 37) })],
+			});
+			for (const listener of listeners) listener([{ runId: removedId }]);
+			assert.equal(repaints, 2);
+			assert.match(plain(row.render(160))[0]!, /Running.*↓\s*37 tokens/);
 		} finally {
 			row.dispose();
 		}

@@ -15,6 +15,7 @@ import { inertDisplayLine, inertDisplayText, NO_FAILURE_REASON, summarizeFailure
 import type { GraphTheme } from "./graph-theme.js";
 import {
 	findWaitingInTree,
+	firstPromptLine,
 	isTerminalOrBlockedRun,
 	isWaitingStage,
 	runFailureText,
@@ -80,6 +81,11 @@ function firstLineOf(text: string): string {
 	const cr = text.indexOf("\r");
 	const end = nl < 0 ? cr : cr < 0 ? nl : Math.min(nl, cr);
 	return end < 0 ? text : text.slice(0, end);
+}
+
+function questionReason(question: string | undefined): string {
+	const line = question === undefined ? "" : firstPromptLine(question);
+	return line.length > 0 ? inertDisplayLine(line) : "Waiting for your answer.";
 }
 
 function padVisible(text: string, width: number): string {
@@ -195,7 +201,7 @@ function stageBlockerOf(stage: StageSnapshot, id: string): RunOutcomeBlocker | u
 			node: "stage",
 			id,
 			name: inertDisplayLine(stage.name),
-			reason: question === undefined ? "Waiting for your answer." : inertDisplayLine(firstLineOf(question)),
+			reason: questionReason(question),
 			action: "enter answer in the stage chat",
 		};
 	}
@@ -341,7 +347,7 @@ export function buildRunOutcome(run: RunSnapshot, now = Date.now(), runs: readon
 				? summarizeFailureText(failureText).reason
 				: (failedBlockerReason ?? NO_FAILURE_REASON)
 			: pendingRunQuestion !== undefined
-				? inertDisplayLine(firstLineOf(pendingRunQuestion))
+				? questionReason(pendingRunQuestion)
 				: undefined;
 	return {
 		runId: run.id,

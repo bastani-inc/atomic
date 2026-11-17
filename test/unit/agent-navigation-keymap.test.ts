@@ -317,7 +317,7 @@ test("an empty task list offers only the keys that do something (#5224)", () => 
 	try {
 		for (const width of [160, 80]) {
 			const lines = inspector.renderViewport(width, 12).map((line) => stripVTControlCharacters(line));
-			assert.equal(lines.at(-1), "  esc/← back · ? keys");
+			assert.equal(lines.at(-1), "  / filter · esc/← close · ? keys");
 		}
 	} finally {
 		inspector.dispose();

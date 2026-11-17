@@ -31,6 +31,9 @@ knowledge:
       scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). Build first: several
       suites load the built packages. Do not overlap tests with build, check or typecheck: those
       commands replace compiled package assets, so concurrent tests can see missing model JSON files.
+      After changing SDK imports used by workflow graph views, run
+      `npx vitest run --project unit test/unit/overlay-adapter-autowrap.test.ts test/unit/overlay-adapter-hidden-render.test.ts`:
+      these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

@@ -143,7 +143,7 @@ test("every /tasks hint names exactly its live keys, ← included (#5224)", asyn
 		h.inspector.handleInput(ESC);
 		h.inspector.handleInput(ENTER);
 		await flush();
-		assert.equal(last(), "  ← tasks · pgup/pgdn scroll · ctrl+o expand · ? keys");
+		assert.equal(last(), "  ← tasks · pgup/pgdn scroll · ? keys");
 	} finally {
 		await h.dispose();
 	}
@@ -326,7 +326,7 @@ test("an attached chat goes back only with ← while ↓ stays local to its own 
 			const id = h.fixture.store.tasks[0]!.ref.taskId;
 			h.inspector.openChat(id, "agents");
 			await flush();
-			assert.equal(h.text().split("\n").at(-1), "  ← agents · pgup/pgdn scroll · ctrl+o expand · ? keys");
+			assert.equal(h.text().split("\n").at(-1), "  ← agents · pgup/pgdn scroll · ? keys");
 			h.inspector.handleInput(key);
 			assert.equal(h.closed(), key === LEFT ? 1 : 0);
 			assert.equal(h.inspector.closedByBack, key === LEFT);

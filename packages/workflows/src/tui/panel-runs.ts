@@ -34,6 +34,7 @@ import {
 import {
 	type PendingInputAffordance,
 	pendingInputAffordance,
+	sanitizePromptDisplay,
 	stripTerminalControls,
 } from "./pending-input-affordance.js";
 import {
@@ -74,13 +75,12 @@ function inertLine(text: string): string {
 }
 
 function oneLine(text: string | undefined): string | undefined {
-	const raw = text
-		?.split("\n")
-		.map((part) => part.trim())
+	if (text === undefined) return undefined;
+	const line = text
+		.split("\n")
+		.map((part) => sanitizePromptDisplay(part))
 		.find((part) => part.length > 0);
-	if (raw === undefined) return undefined;
-	const line = inertLine(raw);
-	if (line.length === 0) return undefined;
+	if (line === undefined) return undefined;
 	return line.length > REASON_WIDTH ? `${sliceHead(line, REASON_WIDTH - 1)}…` : line;
 }
 
@@ -100,22 +100,22 @@ function panelState(status: RunStatus, awaiting: boolean, live: boolean): AgentP
 	if (status === "completed" || status === "skipped") return "done";
 	if (status === "failed" || status === "killed") return "failed";
 	if (status === "cancelled") return "stopped";
-	if (status === "paused" || status === "blocked") return "paused";
+	if (live && (status === "paused" || status === "blocked")) return "paused";
 	return live ? "running" : "stopped";
 }
 
-function choicesOf(
+function rawChoicesOf(
 	runs: readonly RunSnapshot[],
 	[ownerRunId, stageId, promptId]: readonly [string, string | null, string],
-): string[] | undefined {
+): readonly string[] | undefined {
 	const owner = findSnapshotRun(runs, ownerRunId);
 	if (owner === undefined) return undefined;
 	if (stageId === null) {
 		const prompt = owner.pendingPrompt;
-		return prompt?.id === promptId && prompt.choices?.length ? [...prompt.choices] : undefined;
+		return prompt?.id === promptId && prompt.kind !== "custom" && prompt.choices?.length ? prompt.choices : undefined;
 	}
 	const stage = findSnapshotStage(owner.stages, stageId);
-	if (stage === undefined) return undefined;
+	if (stage === undefined || stage.promptFootprint?.kind === "custom") return undefined;
 	const request = stage.inputRequest?.id === promptId ? stage.inputRequest : undefined;
 	if (request !== undefined) {
 		if (request.questions.length !== 1) return undefined;
@@ -124,7 +124,16 @@ function choicesOf(
 		if (single.options.length > 0) return single.options.map((option) => option.label);
 	}
 	const prompt = stage.pendingPrompt?.id === promptId ? stage.pendingPrompt : undefined;
-	return prompt?.choices?.length ? [...prompt.choices] : undefined;
+	return prompt !== undefined && prompt.kind !== "custom" && prompt.choices?.length ? prompt.choices : undefined;
+}
+
+function choicesOf(
+	runs: readonly RunSnapshot[],
+	identity: readonly [string, string | null, string],
+): string[] | undefined {
+	const raw = rawChoicesOf(runs, identity);
+	if (raw === undefined) return undefined;
+	return raw.map((choice, index) => sanitizePromptDisplay(choice) || `Option ${index + 1}`);
 }
 
 type PromptIdentity = PendingInputAffordance["identity"];
@@ -352,9 +361,8 @@ export function panelItemsFromSnapshot(
 		const tools = graph?.tools ?? run.toolNodes;
 		const runningTool = tools.find((candidate) => candidate.status === "running");
 		const quit = run.exitReason === "quit" || run.quitAt !== undefined;
-		const state = quit
-			? "stopped"
-			: panelState(status, indicator(run) === "awaiting_input", run.endedAt === undefined);
+		const live = !quit && (run.endedAt === undefined || run.resumable === true || run.blockedAt !== undefined);
+		const state = quit ? "stopped" : panelState(status, indicator(run) === "awaiting_input", live);
 		const tool =
 			runningTool ??
 			(stage === undefined && (quit || state === "stopped" || state === "paused")
@@ -405,7 +413,7 @@ export function panelItemsFromSnapshot(
 			id: `${PANEL_RUN_PREFIX}${run.id}`,
 			kind: "workflow",
 			state,
-			name: inertLine(run.name),
+			name: sanitizePromptDisplay(run.name) ? inertLine(run.name) : "workflow",
 			task,
 			elapsedMs: elapsedRunMs(run, run.endedAt ?? now),
 			...(tokens > 0 ? { tokens } : {}),
@@ -431,6 +439,20 @@ function sameChoices(expected: readonly string[] | undefined, actual: readonly s
 	return expected.length === current.length && expected.every((choice, index) => choice === current[index]);
 }
 
+function resolveRawChoiceText(
+	text: string,
+	rawChoices: readonly string[] | undefined,
+	displayChoices: readonly string[] | undefined,
+): string {
+	if (rawChoices === undefined || displayChoices === undefined || rawChoices.length !== displayChoices.length) {
+		return text;
+	}
+	const normalized = text.trim().toLowerCase();
+	if (rawChoices.some((choice) => choice.trim().toLowerCase() === normalized)) return text;
+	const index = displayChoices.findIndex((choice) => choice.trim().toLowerCase() === normalized);
+	return index >= 0 ? rawChoices[index]! : text;
+}
+
 export async function answerPanelRun(
 	id: string,
 	text: string,
@@ -453,11 +475,12 @@ export async function answerPanelRun(
 		};
 	}
 	const currentChoices = affordance === undefined ? undefined : choicesOf(runs, affordance.identity);
+	const rawChoices = affordance === undefined ? undefined : rawChoicesOf(runs, affordance.identity);
 	if (
 		affordance === undefined ||
 		options.promptId !== serializePromptIdentity(affordance.identity) ||
 		(options.question !== undefined && options.question !== affordance.message) ||
-		!sameChoices(options.choices, currentChoices)
+		(!sameChoices(options.choices, currentChoices) && !sameChoices(options.choices, rawChoices))
 	) {
 		return {
 			ok: false,
@@ -467,6 +490,18 @@ export async function answerPanelRun(
 					: "The pending prompt changed before the answer was sent.",
 		};
 	}
+	const choiceIndex = options.choiceIndex;
+	if (
+		choiceIndex !== undefined &&
+		(!Number.isSafeInteger(choiceIndex) ||
+			rawChoices === undefined ||
+			choiceIndex < 0 ||
+			choiceIndex >= rawChoices.length)
+	) {
+		return { ok: false, reason: "The selected choice is no longer available." };
+	}
+	const resolvedText =
+		choiceIndex === undefined ? resolveRawChoiceText(text, rawChoices, currentChoices) : rawChoices![choiceIndex]!;
 	const [ownerRunId, stageId, promptId] = affordance.identity;
 	if (stageId === null) {
 		const pending = owner.store.run(ownerRunId)?.pendingPrompt;
@@ -474,15 +509,18 @@ export async function answerPanelRun(
 			return { ok: false, reason: `No matching pending prompt ${promptId}.` };
 		}
 		if (isPrimitivePrompt(pending)) {
-			const coerced = coercePrimitivePromptAnswer(pending, text);
+			const coerced = coercePrimitivePromptAnswer(pending, resolvedText);
 			if (!coerced.ok) return { ok: false, reason: primitivePromptAnswerRejection(promptId, pending) };
 			const ok = owner.store.resolvePendingPrompt(ownerRunId, promptId, coerced.value);
 			return ok ? { ok: true } : { ok: false, reason: `No matching pending prompt ${promptId}.` };
 		}
-		const ok = owner.store.resolvePendingPrompt(ownerRunId, promptId, text);
+		const ok = owner.store.resolvePendingPrompt(ownerRunId, promptId, resolvedText);
 		return ok ? { ok: true } : { ok: false, reason: `No matching pending prompt ${promptId}.` };
 	}
 	const stageTarget = ownerRunId === runId ? stageId : `${ownerRunId}:${stageId}`;
-	const result = await workflowAnswerAction({ action: "answer", runId, stageId: stageTarget, promptId, text }, owner);
+	const result = await workflowAnswerAction(
+		{ action: "answer", runId, stageId: stageTarget, promptId, text: resolvedText },
+		owner,
+	);
 	return result.status === "ok" ? { ok: true } : { ok: false, reason: result.message ?? result.status };
 }

@@ -157,9 +157,14 @@ function join(...parts: readonly (string | undefined)[]): string {
 	return parts.filter((part): part is string => part !== undefined && part.length > 0).join(" · ");
 }
 
-function usageTree(source: WorkflowRunSource | undefined, run: RunSnapshot, depth = 0): RunUsageTree {
-	const children = source === undefined || depth >= 8 ? [] : source.childRuns(run.id);
-	return { run, children: children.map((child) => usageTree(source, child, depth + 1)) };
+function usageTree(source: WorkflowRunSource | undefined, run: RunSnapshot, visited = new Set<string>()): RunUsageTree {
+	visited.add(run.id);
+	const children: RunUsageTree[] = [];
+	for (const child of source?.childRuns(run.id) ?? []) {
+		if (visited.has(child.id)) continue;
+		children.push(usageTree(source, child, visited));
+	}
+	return { run, children };
 }
 
 function runTokens(source: WorkflowRunSource | undefined, run: RunSnapshot, now: number): number {

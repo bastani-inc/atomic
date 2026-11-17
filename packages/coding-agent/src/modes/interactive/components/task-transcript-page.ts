@@ -63,6 +63,8 @@ export interface TaskTranscriptPage {
 	/** Whether the reader is typing, so a key such as Left edits instead of leaving. */
 	hasDraft(): boolean;
 	hasTasks?(): boolean;
+	expandable?(): boolean;
+	canSend?(): boolean;
 	/** Whether the prompt's cursor is at its start, where ← leaves and keeps any draft for the return. */
 	cursorAtStart(): boolean;
 	/** Whether the page takes Escape and Left itself, as while its own task list is open. */
@@ -385,7 +387,15 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	}
 
 	hasTasks(): boolean {
-		return this.source.backgroundTasks.some((task) => task.parentTaskId === this.taskId);
+		return this.chat.hasBackgroundTasks();
+	}
+
+	expandable(): boolean {
+		return this.env.setToolsExpanded !== undefined;
+	}
+
+	canSend(): boolean {
+		return this.source.sendTaskMessage !== undefined && this.readOnlyReason() === undefined;
 	}
 
 	cursorAtStart(): boolean {
