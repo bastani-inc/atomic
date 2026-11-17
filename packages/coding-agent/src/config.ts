@@ -300,6 +300,13 @@ export function getExportTemplateDir(): string {
 	return join(getModuleAssetRoot(), "core", "export-html");
 }
 
+export async function getExportTemplateDirAsync(): Promise<string> {
+	if (isBunBinary) {
+		return join(getPackageDir(), "export-html");
+	}
+	return join(await getModuleAssetRootAsync(), "core", "export-html");
+}
+
 /** Get path to package.json */
 export function getPackageJsonPath(): string {
 	return join(getPackageDir(), "package.json");

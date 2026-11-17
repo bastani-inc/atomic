@@ -28,6 +28,7 @@ import {
 	type FileOperations,
 	formatFileOperations,
 	normalizeFileOpPath,
+	normalizeFileOpsAsync,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversation,
 	truncateForSummary,
@@ -378,11 +379,12 @@ export async function generateBranchSummary(
 	const contextWindow = model.contextWindow || 128000;
 	const tokenBudget = contextWindow - reserveTokens;
 
-	const { messages, fileOps } = prepareBranchEntries(entries, tokenBudget, options.cwd);
+	const { messages, fileOps: writtenFileOps } = prepareBranchEntriesAsWritten(entries, tokenBudget);
 
 	if (messages.length === 0) {
 		return { summary: "No content to summarize" };
 	}
+	const fileOps = await normalizeFileOpsAsync(writtenFileOps, options.cwd);
 
 	// Transform to LLM-compatible messages, then serialize to text
 	// Serialization prevents the model from treating it as a conversation to continue

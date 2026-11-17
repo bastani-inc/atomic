@@ -1,17 +1,8 @@
 import { randomUUID } from "node:crypto";
-import {
-	closeSync,
-	existsSync,
-	fchmodSync,
-	mkdirSync,
-	openSync,
-	realpathSync,
-	renameSync,
-	rmSync,
-	statSync,
-	writeSync,
-} from "node:fs";
+import { realpath } from "node:fs";
+import { type FileHandle, mkdir, open, rename, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
+import { promisify } from "node:util";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.js";
 import { resolvePath } from "../utils/paths.ts";
@@ -189,10 +180,7 @@ export async function exportToJsonl(
 		outputPath ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`,
 		process.cwd(),
 	);
-	const dir = dirname(filePath);
-	if (!existsSync(dir)) {
-		mkdirSync(dir, { recursive: true });
-	}
+	await mkdir(dirname(filePath), { recursive: true });
 
 	await this.sessionManager.loadFullHistory();
 	const sessionId = this.sessionManager.getSessionId();
@@ -236,28 +224,31 @@ export async function exportToJsonl(
 	// large enough that the whole file would not fit in one string, and a failed export leaves the target as it was.
 	// The partial file is owner-only while it is written, and takes the mode of the file it replaces, so a private
 	// export never becomes readable by others; a new file stays owner-only.
-	const target = existsSync(filePath) ? realpathSync(filePath) : filePath;
-	const mode = existsSync(target) ? statSync(target).mode & 0o7777 : 0o600;
+	const target = await realpathJs(filePath).catch(() => filePath);
+	const mode = await stat(target).then(
+		(stats) => stats.mode & 0o7777,
+		() => 0o600,
+	);
 	const partialPath = `${target}.${randomUUID()}.partial`;
 	try {
-		const file = openSync(partialPath, "w", 0o600);
+		const file = await open(partialPath, "w", 0o600);
 		try {
-			writeLine(file, JSON.stringify(header));
+			await writeLine(file, JSON.stringify(header));
 			// Re-chain parentIds to form a linear sequence
 			let prevId: string | null = null;
 			for await (const entry of branchEntries) {
-				writeLine(file, JSON.stringify({ ...entry, parentId: prevId }));
+				await writeLine(file, JSON.stringify({ ...entry, parentId: prevId }));
 				prevId = entry.id;
 			}
-			if (options.includeShareContext) writeLine(file, JSON.stringify(shareEntry(prevId)));
-			fchmodSync(file, mode);
+			if (options.includeShareContext) await writeLine(file, JSON.stringify(shareEntry(prevId)));
+			await file.chmod(mode);
 		} finally {
-			closeSync(file);
+			await file.close();
 		}
-		renameSync(partialPath, target);
+		await rename(partialPath, target);
 	} catch (error) {
 		try {
-			rmSync(partialPath, { force: true });
+			await rm(partialPath, { force: true });
 		} catch (cleanupCause) {
 			attachCleanupCause(error, cleanupCause);
 		}
@@ -266,10 +257,12 @@ export async function exportToJsonl(
 	return filePath;
 }
 
+const realpathJs = promisify(realpath);
+
 /** Writes `text` and a line break to `file`, all of it: one write may take only part of a large string. */
-function writeLine(file: number, text: string): void {
+async function writeLine(file: FileHandle, text: string): Promise<void> {
 	const bytes = Buffer.from(`${text}\n`);
-	for (let written = 0; written < bytes.length; ) written += writeSync(file, bytes, written);
+	for (let written = 0; written < bytes.length; ) written += (await file.write(bytes, written)).bytesWritten;
 }
 
 // =========================================================================

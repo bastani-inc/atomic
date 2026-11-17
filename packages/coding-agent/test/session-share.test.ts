@@ -43,6 +43,7 @@ describe("InteractiveMode /share", () => {
 				return auth;
 			}
 			uploadPaths.push(args.at(-1)!);
+			releaseA();
 			const child = Object.assign(new EventEmitter(), {
 				stdout: new PassThrough(),
 				stderr: new PassThrough(),
@@ -54,11 +55,16 @@ describe("InteractiveMode /share", () => {
 
 		const errors: string[] = [];
 		const exportOptions: Array<object | undefined> = [];
+		let releaseA!: () => void;
+		const bUploaded = new Promise<void>((resolve) => {
+			releaseA = resolve;
+		});
 		const context = (name: "A" | "B"): ShareContext => ({
 			session: {
 				exportToJsonl: async (path, options) => {
 					exportOptions.push(options);
 					writeFileSync(path, name);
+					if (name === "A") await bUploaded;
 					return path;
 				},
 			},
@@ -77,8 +83,7 @@ describe("InteractiveMode /share", () => {
 
 		await vi.waitFor(() => assert.equal(uploadPaths.length, 2));
 		assert.notEqual(uploadPaths[0], uploadPaths[1]);
-		assert.equal(readFileSync(uploadPaths[0]!, "utf8"), "A");
-		assert.equal(readFileSync(uploadPaths[1]!, "utf8"), "B");
+		assert.deepEqual(uploadPaths.map((path) => readFileSync(path, "utf8")).sort(), ["A", "B"]);
 		for (const [index, child] of processes.entries()) {
 			child.stdout.end(`https://gist.github.com/test/${index + 1}\n`);
 			child.stderr.end();
