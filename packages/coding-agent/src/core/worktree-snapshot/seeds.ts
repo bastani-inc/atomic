@@ -116,7 +116,7 @@ function seedHeldAndWaiting(error: unknown, wait: boolean, startedAt: number): b
 	return wait && (error as NodeJS.ErrnoException).code === "ELOCKED" && Date.now() - startedAt < SEED_LOCK_WAIT_MS;
 }
 
-async function lockSeed(file: string, wait: boolean): Promise<() => Promise<void>> {
+async function lockSeed(file: string, wait: boolean, onLost: (error: Error) => void): Promise<() => Promise<void>> {
 	await mkdir(dirname(file), { recursive: true });
 	const startedAt = Date.now();
 	let refusedSince: number | undefined;
@@ -127,8 +127,10 @@ async function lockSeed(file: string, wait: boolean): Promise<() => Promise<void
 				stale: SEED_LOCK_STALE_MS,
 				update: SEED_LOCK_UPDATE_MS,
 				retries: 0,
-				onCompromised: (error) =>
-					reportDebug("storage", "worktree-seed-lock-lost", { file, ...failureDebugFields(error) }),
+				onCompromised: (error) => {
+					reportDebug("storage", "worktree-seed-lock-lost", { file, ...failureDebugFields(error) });
+					onLost(error);
+				},
 			});
 		} catch (error) {
 			const since = refusedSince ?? Date.now();
@@ -151,10 +153,27 @@ export async function withSeedLock<T>(
 	wait: boolean,
 	action: () => Promise<T>,
 ): Promise<T> {
+	return withSeedLockHeld(storeDir, repository, wait, () => action());
+}
+
+async function withSeedLockHeld<T>(
+	storeDir: string,
+	repository: RepositoryId,
+	wait: boolean,
+	action: (assertHeld: () => void) => Promise<T>,
+): Promise<T> {
 	const file = seedManifestPath(storeDir, repository);
-	const unlock = await lockSeed(file, wait);
+	let lost: Error | undefined;
+	const unlock = await lockSeed(file, wait, (error) => {
+		lost ??= error;
+	});
+	const assertHeld = () => {
+		if (lost !== undefined) throw lost;
+	};
 	try {
-		return await action();
+		const result = await action(assertHeld);
+		assertHeld();
+		return result;
 	} finally {
 		await releaseLock(unlock, file);
 	}
@@ -194,8 +213,8 @@ export async function adoptPrebuiltSeed(
 		return { adopted: false, reason: "missing" };
 	}
 	try {
-		return await withSeedLock(storeDir, repository, false, () =>
-			adoptLocked(snapshot, storeDir, repository, options),
+		return await withSeedLockHeld(storeDir, repository, false, (assertHeld) =>
+			adoptLocked(snapshot, storeDir, repository, options, assertHeld),
 		);
 	} catch (error) {
 		options.signal?.throwIfAborted();
@@ -211,8 +230,10 @@ async function adoptLocked(
 	storeDir: string,
 	repository: RepositoryId,
 	options: AdoptPrebuiltSeedOptions,
+	assertHeld: () => void,
 ): Promise<SeedAdoption> {
 	const manifest = await readSeedManifest(storeDir, repository);
+	assertHeld();
 	if (manifest === undefined) return { adopted: false, reason: "missing" };
 	const state = { snapshotId: null, head: manifest.head, tree: manifest.tree };
 	let lease: Awaited<ReturnType<typeof admitPooledWorktree>> | undefined;
@@ -239,13 +260,19 @@ async function adoptLocked(
 		return { adopted: false, reason: "restore-failed" };
 	}
 	const slot = lease.path;
-	const { moved, skipped } = await timeRestorePhase("seed", () =>
-		moveSeeds(seedDirectory(storeDir, repository), slot, manifest.paths),
-	);
-	await rm(seedManifestPath(storeDir, repository), { force: true }).catch(() => {});
-	await rm(seedDirectory(storeDir, repository), { recursive: true, force: true }).catch(() => {});
-	await releaseRestoredWorktree(lease, state);
-	return { adopted: true, path: slot, moved, skipped };
+	try {
+		assertHeld();
+		const { moved, skipped } = await timeRestorePhase("seed", () =>
+			moveSeeds(seedDirectory(storeDir, repository), slot, manifest.paths, assertHeld),
+		);
+		assertHeld();
+		await rm(seedManifestPath(storeDir, repository), { force: true }).catch(() => {});
+		assertHeld();
+		await rm(seedDirectory(storeDir, repository), { recursive: true, force: true }).catch(() => {});
+		return { adopted: true, path: slot, moved, skipped };
+	} finally {
+		await releaseRestoredWorktree(lease, state);
+	}
 }
 
 async function entryAt(path: string): Promise<Stats | undefined> {
@@ -268,10 +295,11 @@ export async function insideThroughDirectories(root: string, segments: readonly 
 }
 
 /** Moves each parked path from `seeds` to its place in `worktree`, where nothing may be yet. */
-async function moveSeeds(seeds: string, worktree: string, paths: readonly string[]) {
+async function moveSeeds(seeds: string, worktree: string, paths: readonly string[], assertHeld: () => void) {
 	const moved: string[] = [];
 	const skipped: string[] = [];
 	for (const path of paths) {
+		assertHeld();
 		const segments = seedPathSegments(path)!;
 		const from = join(seeds, ...segments);
 		const to = join(worktree, ...segments);
@@ -281,13 +309,16 @@ async function moveSeeds(seeds: string, worktree: string, paths: readonly string
 				skipped.push(path);
 				continue;
 			}
+			assertHeld();
 			await mkdir(dirname(to), { recursive: true });
+			assertHeld();
 			await renameWithRetry(from, to);
 			moved.push(path);
 		} catch (error) {
 			reportDebug("storage", "worktree-seed-move-failed", { path, ...failureDebugFields(error) });
 			skipped.push(path);
 		}
+		assertHeld();
 	}
 	return { moved, skipped };
 }

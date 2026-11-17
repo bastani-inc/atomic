@@ -5,9 +5,9 @@
 ### Fixed
 
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
-- On Windows, concurrent resumes and `atomic blueprint prebuild` runs no longer fail or treat an idle pooled worktree or parked prebuild seed as dirty or unavailable when a pool or seed lock directory was just removed while another process was still checking it. Windows refuses to create that lock directory again with `EPERM` for a moment; the pool and seed locks now retry that refusal for up to 10 seconds of continuous refusals, as the shared object store's repository lock does, while a lock another process holds still reports as busy and a directory that refuses writes for 10 seconds continuously is still reported ([#5320](https://github.com/bastani-inc/atomic/issues/5320))
-
-- A resume paused while admitting a pooled worktree no longer replaces another process's slot record if its locks are taken over before the record is published ([#5320](https://github.com/bastani-inc/atomic/issues/5320))
+- On Windows, concurrent resumes and `atomic blueprint prebuild` runs retry temporary `EPERM` refusals when creating pool or seed lock directories, instead of failing or treating reusable worktrees and seeds as dirty or unavailable. Refusals that persist for 10 seconds still report a failure, and locks another process holds still count as busy ([#5320](https://github.com/bastani-inc/atomic/issues/5320))
+- A resume paused while admitting a pooled worktree no longer replaces another process's slot record after losing its locks. Temporary-file cleanup failures no longer orphan an admitted worktree or let a later write corrupt its record, and discarding an old lease cannot delete a newer admission in the same process ([#5320](https://github.com/bastani-inc/atomic/issues/5320))
+- A resume that detects it lost its parked-seed lock stops adoption instead of moving or deleting a replacement seed. It releases the restored worktree's lease before falling back to a fresh restore ([#5320](https://github.com/bastani-inc/atomic/issues/5320))
 
 ## [0.9.88] - 2026-11-16
 

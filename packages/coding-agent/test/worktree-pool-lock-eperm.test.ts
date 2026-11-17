@@ -14,6 +14,7 @@ import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.j
 import {
 	admitPooledWorktree,
 	claimIdleWorktree,
+	confirmPooledWorktreeLease,
 	discardPooledWorktree,
 	evictIdleWorktrees,
 	holdRestoredWorktree,
@@ -50,6 +51,7 @@ const lockRefusals = vi.hoisted(() => ({
 	onRefusal: undefined as ((refused: number, path: string) => void) | undefined,
 	onCompromised: undefined as ((path: string) => void) | undefined,
 	onRecordWrite: undefined as ((path: string, data: string) => Promise<void>) | undefined,
+	onRemove: undefined as ((path: string) => Promise<void>) | undefined,
 }));
 
 vi.mock("../src/core/worktree-snapshot/shared-clock.ts", async (importOriginal) => {
@@ -71,7 +73,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 		if (typeof data === "string") await lockRefusals.onRecordWrite?.(String(path), data);
 		return actual.writeFile(path, data, options);
 	};
-	return { ...actual, writeFile };
+	const rm: typeof actual.rm = async (path, options) => {
+		await lockRefusals.onRemove?.(String(path));
+		return actual.rm(path, options);
+	};
+	return { ...actual, writeFile, rm };
 });
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -149,6 +155,7 @@ afterEach(() => {
 	lockRefusals.onRefusal = undefined;
 	lockRefusals.onCompromised = undefined;
 	lockRefusals.onRecordWrite = undefined;
+	lockRefusals.onRemove = undefined;
 	sandbox.dispose();
 });
 
@@ -575,6 +582,123 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 			timeoutSpy.mockRestore();
 			await childComp?.close();
 		}
+	});
+
+	test("temporary-file cleanup refusal does not orphan a published pool admission (#5320)", async () => {
+		const storeDir = sandbox.path("store-cleanup-refused");
+		const remotes = ["https://example.com/acme/repo.git"];
+		const repository = repositoryIdOf(remotes);
+		const file = join(storeDir, "pool", repository, "0.json");
+		const state = { snapshotId: null, head: "a".repeat(40), tree: "b".repeat(40) };
+		const admission = { storeDir, remotes, lastState: state, envHash: "env" };
+		const ownerA = { kind: "session" as const, id: "owner-a" };
+		let recordTemporary: string | undefined;
+		let cleanupRefusals = 0;
+		lockRefusals.onRecordWrite = async (path, data) => {
+			if (path.startsWith(`${file}.`) && path.endsWith(".tmp") && data.includes('"holder"')) {
+				recordTemporary = path;
+			}
+		};
+		lockRefusals.onRemove = async (path) => {
+			if (path === recordTemporary) {
+				cleanupRefusals++;
+				throw Object.assign(new Error("temporary record cleanup refused"), { code: "EPERM" });
+			}
+		};
+		const lease = await admitPooledWorktree(admission, ownerA);
+		assert.equal(cleanupRefusals, 1);
+		assert.equal(lease.slot, 0);
+		assert.equal(await confirmPooledWorktreeLease(lease), true);
+		lockRefusals.onRecordWrite = undefined;
+		lockRefusals.onRemove = undefined;
+		assert.equal(await releaseRestoredWorktree(lease, state), true);
+		const other = await admitPooledWorktree(admission, { kind: "session", id: "owner-b" });
+		assert.equal(other.slot, 1);
+		assert.deepEqual((JSON.parse(readFileSync(file, "utf8")) as PoolSlotRecord).holder, ownerA);
+		await discardPooledWorktree(other);
+		await discardPooledWorktree(lease);
+	});
+
+	test("a retained admission temporary file cannot corrupt its slot during a later failed write (#5320)", async () => {
+		const storeDir = sandbox.path("store-retained-temporary");
+		const remotes = ["https://example.com/acme/repo.git"];
+		const file = join(storeDir, "pool", repositoryIdOf(remotes), "0.json");
+		const state = { snapshotId: null, head: "a".repeat(40), tree: "b".repeat(40) };
+		let recordTemporary: string | undefined;
+		lockRefusals.onRecordWrite = async (path, data) => {
+			if (data.includes('"holder"')) recordTemporary = path;
+		};
+		lockRefusals.onRemove = async (path) => {
+			if (path === recordTemporary) {
+				throw Object.assign(new Error("temporary record cleanup refused"), { code: "EPERM" });
+			}
+		};
+		const lease = await admitPooledWorktree(
+			{ storeDir, remotes, lastState: state, envHash: "env" },
+			{ kind: "session", id: "owner-a" },
+		);
+		const published = readFileSync(file, "utf8");
+		lockRefusals.onRecordWrite = async (path, data) => {
+			if (data.includes('"holder"')) {
+				writeFileSync(path, "");
+				throw Object.assign(new Error("record write failed after truncation"), { code: "EIO" });
+			}
+		};
+		assert.equal(await releaseRestoredWorktree(lease, state), true);
+		assert.equal(readFileSync(file, "utf8"), published);
+		lockRefusals.onRecordWrite = undefined;
+		lockRefusals.onRemove = undefined;
+	});
+
+	test.each(["temporary", "taken"])(
+		"cleanup of a %s record cannot turn a published pool hold into a failure (#5320)",
+		async (cleanupTarget) => {
+			const storeDir = sandbox.path("store-hold-cleanup");
+			const remotes = ["https://example.com/acme/repo.git"];
+			const file = join(storeDir, "pool", repositoryIdOf(remotes), "0.json");
+			const state = { snapshotId: null, head: "a".repeat(40), tree: "b".repeat(40) };
+			const owner = { kind: "session" as const, id: "owner-a" };
+			const first = await admitPooledWorktree({ storeDir, remotes, lastState: state, envHash: "env" }, owner);
+			await releaseRestoredWorktree(first, state);
+			let recordTemporary: string | undefined;
+			let cleanupRefusals = 0;
+			lockRefusals.onRecordWrite = async (path, data) => {
+				if (data.includes('"holder"')) recordTemporary = path;
+			};
+			lockRefusals.onRemove = async (path) => {
+				if (
+					cleanupTarget === "temporary"
+						? path === recordTemporary
+						: path.startsWith(`${file}.`) && path.endsWith(".taken")
+				) {
+					cleanupRefusals++;
+					throw Object.assign(new Error("record cleanup refused"), { code: "EPERM" });
+				}
+			};
+			const held = await holdRestoredWorktree(storeDir, first.path, owner);
+			assert.ok(held);
+			assert.ok(cleanupRefusals > 0);
+			assert.equal(await confirmPooledWorktreeLease(held), true);
+			lockRefusals.onRecordWrite = undefined;
+			lockRefusals.onRemove = undefined;
+			await discardPooledWorktree(held);
+		},
+	);
+
+	test("discarding an old lease cannot delete a new admission in the same process (#5320)", async () => {
+		const storeDir = sandbox.path("store-stale-discard");
+		const remotes = ["https://example.com/acme/repo.git"];
+		const state = { snapshotId: null, head: "a".repeat(40), tree: "b".repeat(40) };
+		const admission = { storeDir, remotes, lastState: state, envHash: "env" };
+		const first = await admitPooledWorktree(admission, { kind: "session", id: "owner-a" });
+		await discardPooledWorktree(first);
+		const next = await admitPooledWorktree(admission, { kind: "session", id: "owner-b" });
+		assert.equal(next.slot, first.slot);
+		await discardPooledWorktree(first);
+		assert.equal(await confirmPooledWorktreeLease(next), true);
+		const file = join(storeDir, "pool", next.repository, `${next.slot}.json`);
+		assert.deepEqual((JSON.parse(readFileSync(file, "utf8")) as PoolSlotRecord).holder, next.owner);
+		await discardPooledWorktree(next);
 	});
 
 	test.each(["lease acquisition", "record publication"])(

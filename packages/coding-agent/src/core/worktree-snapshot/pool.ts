@@ -344,21 +344,15 @@ async function giveBackRecord(file: string, taken: string): Promise<void> {
  * wrote one meanwhile; resolves to false, writing nothing, when one did, whose record stands (#4991).
  */
 async function putRecord(file: string, taken: string, record: PoolSlotRecord): Promise<boolean> {
-	const temporary = `${file}.${ownLease()}.tmp`;
-	await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
 	try {
-		await link(temporary, file);
-		await rm(taken, { force: true });
-		return true;
+		const published = await createRecord(file, record);
+		await rm(taken, { force: true }).catch((error) => {
+			reportDebug("storage", "worktree-pool-taken-cleanup-failed", { file, ...failureDebugFields(error) });
+		});
+		return published;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-			await giveBackRecord(file, taken).catch(() => {});
-			throw error;
-		}
-		await rm(taken, { force: true });
-		return false;
-	} finally {
-		await rm(temporary, { force: true });
+		await giveBackRecord(file, taken).catch(() => {});
+		throw error;
 	}
 }
 
@@ -457,7 +451,7 @@ async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> 
 }
 
 async function createRecord(file: string, record: PoolSlotRecord): Promise<boolean> {
-	const temporary = `${file}.${ownLease()}.tmp`;
+	const temporary = `${file}.${randomUUID()}.tmp`;
 	try {
 		await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
 		try {
@@ -468,7 +462,9 @@ async function createRecord(file: string, record: PoolSlotRecord): Promise<boole
 			throw error;
 		}
 	} finally {
-		await rm(temporary, { force: true });
+		await rm(temporary, { force: true }).catch((error) => {
+			reportDebug("storage", "worktree-pool-temporary-cleanup-failed", { file, ...failureDebugFields(error) });
+		});
 	}
 }
 
@@ -777,18 +773,20 @@ export async function releaseRestoredWorktree(lease: WorktreeLease, last?: PoolL
  */
 export async function discardPooledWorktree(lease: WorktreeLease): Promise<void> {
 	released.add(lease);
+	const held = leaseHolds.get(lease);
+	if (held === undefined || held.lost) return;
 	const file = recordFile(lease.storeDir, lease.repository, lease.slot);
 	const end = async () => {
-		const held = heldSlots.get(file);
+		held.lost = true;
+		if (heldSlots.get(file) !== held) return;
 		heldSlots.delete(file);
-		await held?.unlease().catch(() => {});
+		await held.unlease().catch(() => {});
 	};
 	try {
 		await withSlotLock(file, true, async (lock) => {
 			try {
 				// A slot another holder took meanwhile keeps its record (#4830).
-				const held = heldSlots.get(file);
-				if (held !== undefined && (await stillHolds(file, lease.storeDir, held)) && (await lock.held())) {
+				if (heldSlots.get(file) === held && (await stillHolds(file, lease.storeDir, held)) && (await lock.held())) {
 					await rm(file, { force: true });
 				}
 			} finally {
