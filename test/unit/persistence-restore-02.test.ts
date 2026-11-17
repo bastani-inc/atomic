@@ -6,7 +6,6 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { isRouterSelection } from "../../packages/workflows/src/shared/model-checkpoint-validation.js";
 import type { InFlightRun, SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { restoreOnSessionStart } from "../../packages/workflows/src/shared/persistence-restore.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -149,7 +148,7 @@ describe("restoreOnSessionStart", () => {
 		assert.equal(stage?.sessionId, "session-1");
 		assert.equal(stage?.sessionFile, "/tmp/session-1.jsonl");
 	});
-	test("restores stage routerSelection with requiredInputs and rejects malformed requiredInputs", () => {
+	test("restores stages whose end entries still carry a legacy routerSelection, ignoring it", () => {
 		const validSelection = {
 			model: "decision-test/vision",
 			effort: "high",
@@ -193,16 +192,15 @@ describe("restoreOnSessionStart", () => {
 		];
 		restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
 		const stages = st.runs()[0]?.stages ?? [];
-		assert.deepEqual(stages[0]?.routerSelection, validSelection);
-		assert.equal(stages[1]?.routerSelection, undefined);
-		assert.equal(isRouterSelection(validSelection), true);
-		assert.equal(
-			isRouterSelection({ model: "decision-test/vision", effort: null, requiredInputs: ["text", "image"] }),
-			true,
+		// Automatic routing was removed: a recorded selection, valid or not, restores nothing and breaks nothing.
+		assert.deepEqual(
+			stages.map((stage) => [stage.name, stage.status]),
+			[
+				["vision", "completed"],
+				["invalid-vision", "failed"],
+			],
 		);
-		for (const requiredInputs of ["image", ["audio"], [1], [null]]) {
-			assert.equal(isRouterSelection({ ...validSelection, requiredInputs }), false);
-		}
+		for (const stage of stages) assert.equal(Object.hasOwn(stage, "routerSelection"), false);
 	});
 	test("stage snapshots are rebuilt from session entries", () => {
 		const st = createStore();

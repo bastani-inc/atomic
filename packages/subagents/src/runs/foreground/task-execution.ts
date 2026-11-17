@@ -620,14 +620,12 @@ export async function runAgentTask(input: {
 				operation: `${input.options.runId}:${input.options.index ?? 0}:resume:${randomUUID()}`,
 			}),
 	});
-	input.options.modelRoute?.assertCurrent();
 	const started = await input.host.startAgentTask(
 		{
 			kind: "agent",
 			agent: input.agent,
 			task: input.intentTask ?? input.task,
 			cwd: input.options.cwd ?? input.cwd,
-			...(input.options.modelRoute ? { routerSelection: input.options.modelRoute.routerSelection } : {}),
 			...(requestedModel ? { requestedModel } : {}),
 			...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
 		},
@@ -696,7 +694,6 @@ export async function runAgentTask(input: {
 			});
 			const result = registered.promise.then(async (): Promise<TaskResult> => {
 				try {
-					input.options.modelRoute?.assertCurrent();
 					const ownerSessionId = input.recordChild?.ownerSessionId;
 					const child = await input.runtime.runSync(input.cwd, input.agents, input.agent, input.task, {
 						...input.options,

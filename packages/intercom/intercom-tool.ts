@@ -34,7 +34,7 @@ import type { ReplyTracker } from "./reply-tracker.js";
 import { awaitSubagentChildRestoration } from "./session-recovery.js";
 import { resolveSessionTarget, resolveSessionTargetId, resolveSessionTargetIdIn, sessionTargetFailureReason } from "./session-target.js";
 import { createConcurrencyGate } from "./route-connect-gate.js";
-import { DEFAULT_GROUP, normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
+import { DEFAULT_GROUP, normalizeGroup, normalizeGroups, RETURN_PATH_TOOL_NOTE, validateRuntimeGroup } from "./group.js";
 import { DEFAULT_GROUP_WARNING } from "./project-group.js";
 import { canJoin, canLeave, canPeek, type IntercomReachPolicy } from "./reach-policy.js";
 import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from "./workflow-stage-target.js";
@@ -507,7 +507,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
 Use this to communicate findings, request help, or coordinate work with other sessions.
 
 Sessions belong to an intercom group and can ONLY message sessions in the same group;
-cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
+cross-group sends are rejected by the broker, ${RETURN_PATH_TOOL_NOTE}. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
 
 For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes
 remain supported. \`send\` also takes a name glob (\`subagent-worker-*\`, or \`*\` for every session

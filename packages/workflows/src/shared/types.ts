@@ -43,9 +43,15 @@ export interface WorkflowModelInfo extends Omit<AuthoringContract.WorkflowModelI
 	readonly model?: NonNullable<CreateAgentSessionOptions["model"]>;
 }
 
+/** What `model: "auto"` stands for: a model and, when known, its thinking level. */
+export interface WorkflowAutoModel extends Omit<AuthoringContract.WorkflowAutoModel, "model"> {
+	readonly model: WorkflowModelValue;
+}
+
 export interface WorkflowModelCatalogPort
-	extends Omit<AuthoringContract.WorkflowModelCatalogPort, "listModels" | "currentModel"> {
+	extends Omit<AuthoringContract.WorkflowModelCatalogPort, "listModels" | "currentModel" | "autoModel"> {
 	listModels(): Promise<readonly WorkflowModelInfo[]>;
+	autoModel?(): WorkflowAutoModel | undefined;
 	/** Current user-selected model used as the implicit final fallback. */
 	readonly currentModel?: WorkflowModelValue;
 }
@@ -227,10 +233,6 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	 * transcript that already ends on the model's final answer to that call finishes it without another model call.
 	 */
 	resumeInsideCall?: boolean;
-	/** Persisted automatic selection; revalidated without another decision on resume. */
-	routerSelection?: import("@bastani/atomic").ModelRouterOutput;
-	/** Restrictions inherited from task/default declarations; all must hold. */
-	inheritedModelConstraints?: readonly import("@bastani/atomic").ModelConstraints[];
 	/** Internal durable replay key used to map a live LM session to durable resume state. */
 	durableReplayKey?: string;
 	/** Internal durable timing baseline accumulated before a process-boundary resume. */
@@ -241,6 +243,11 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	durableIntercomGroup?: string;
 	/** Internal durable source parents reused with `durableStageId`. */
 	durableParentIds?: readonly string[];
+	/**
+	 * Internal: the task reads image files, so `model: "auto"` must stand for a model that accepts image input: the
+	 * default model when it does, else the session's model when it does; otherwise the stage fails before a session opens.
+	 */
+	autoNeedsImageInput?: boolean;
 }
 
 // ---------------------------------------------------------------------------
