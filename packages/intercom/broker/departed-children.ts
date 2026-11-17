@@ -1,7 +1,7 @@
 import { hasGroup, normalizeGroup } from "../group.js";
-import type { ReleasedChildRefusal, SessionInfo } from "../types.js";
+import type { ReleasedChildRefusal } from "../types.js";
 import type { JsonWireValue } from "./framing.js";
-import { sessionGroups } from "./group-membership.js";
+import { type HoldSender, holdAdmitsSender } from "./group-membership.js";
 import {
 	type IntercomRecipientGoneError,
 	SUBAGENT_ENDED_OUTCOMES,
@@ -262,14 +262,14 @@ export class DepartedChildren {
 	}
 
 	/** Whether `target`, to a sender that may reach it, names a released stage whose hosted peer is gone (#4642). */
-	isReleasedStage(target: string, sender: { readonly id: string; readonly info: SessionInfo }): boolean {
+	isReleasedStage(target: string, sender: HoldSender): boolean {
 		return this.visible(target, sender)?.verdict?.kind === "stage_released";
 	}
 
 	/** Decide a send that found no live recipient. `canHold` is false for a client that cannot wait for a verdict. */
 	admit(
 		target: string,
-		sender: { readonly id: string; readonly info: SessionInfo },
+		sender: HoldSender,
 		held: HeldSend,
 		canHold: boolean,
 	): DepartedChildAdmission {
@@ -414,14 +414,11 @@ export class DepartedChildren {
 		else members.add(departure);
 	}
 
-	private visible(target: string, sender: { readonly id: string; readonly info: SessionInfo }): Departure | undefined {
+	private visible(target: string, sender: HoldSender): Departure | undefined {
 		const candidates = this.byTarget.get(normalizeReservationTarget(target));
 		if (candidates === undefined) return undefined;
-		let senderGroups: ReadonlySet<string> | undefined;
 		for (const candidate of candidates) {
-			if (candidate.ownerSessionId === sender.id) return candidate;
-			senderGroups ??= sessionGroups(sender.info);
-			if (hasGroup(senderGroups, candidate.group)) return candidate;
+			if (candidate.ownerSessionId === sender.id || holdAdmitsSender(sender, candidate.group)) return candidate;
 		}
 		return undefined;
 	}

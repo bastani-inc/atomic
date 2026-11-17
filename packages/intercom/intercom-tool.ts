@@ -10,7 +10,7 @@ import {
 } from "@bastani/atomic";
 import { Type } from "typebox";
 import { Text } from "@bastani/atomic-tui";
-import type { IntercomClient, SendResult } from "./broker/client.js";
+import { type IntercomClient, type SendResult, sameReachPolicy } from "./broker/client.js";
 import type { Attachment, BrokerMultiNodeStatus, Message, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { OutboundAsks } from "./outbound-asks.js";
 import { HELD_FOR_AWAY_ASKER_TARGET, OFFLINE_SESSION_TARGET } from "./broker/held-reply-targets.js";
@@ -36,6 +36,7 @@ import { resolveSessionTarget, resolveSessionTargetId, resolveSessionTargetIdIn,
 import { createConcurrencyGate } from "./route-connect-gate.js";
 import { DEFAULT_GROUP, normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
 import { DEFAULT_GROUP_WARNING } from "./project-group.js";
+import { canJoin, canLeave, canPeek, type IntercomReachPolicy } from "./reach-policy.js";
 import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from "./workflow-stage-target.js";
 import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { RetryIdentityReservations, type RetryIdentityAttempt, RetryTokenError } from "./retry-identity.js";
@@ -313,6 +314,7 @@ interface IntercomToolDeps {
   syncPresenceIdentity(sessionId: string): void;
   resolveSessionTarget?(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   homeGroup(): string;
+  reachPolicy?(): IntercomReachPolicy | undefined;
   /** Whether the broker routes across machines, so `default` is shared with every teammate's sessions. */
   multiNodeRouting?(): boolean;
   /** Record the memberships after a `join`/`leave`; settles once they are saved with the session (#4079). */
@@ -332,6 +334,34 @@ interface IntercomToolDeps {
   cancelReplyWait?(askId: string): void;
   /** Internal test seam for exercising retry pressure before public tool side effects. */
   retryIdentityMaxEntries?: number;
+}
+
+class ReachChangedRetryError extends Error {
+  constructor() {
+    super("This session's Intercom reach changed while this message's outcome was unknown, so it was not sent again. Check whether it arrived before sending it again.");
+    this.name = "ReachChangedRetryError";
+  }
+}
+
+function reachChangedRetryResult(error: ReachChangedRetryError): IntercomAttemptResult {
+  return {
+    content: [{ type: "text", text: error.message }],
+    isError: true,
+    details: { error: true, outcome: "unknown" },
+  };
+}
+
+function toolReachRefusal(reach: IntercomReachPolicy, action: string, group: string | undefined): string | undefined {
+	const requested = typeof group === "string" && group.trim().length > 0 ? group.trim() : undefined;
+	if (requested === undefined) return undefined;
+	const scope = `home group ${reach.home}; reachable groups: ${reach.reachable.join(", ") || "none"}`;
+	if (action === "join" && !canJoin(reach, requested))
+		return `Group "${requested}" is outside this session's Intercom reach (${scope}). It can join only those groups.`;
+	if (action === "leave" && !canLeave(reach, requested))
+		return `This session's home group "${reach.home}" can't be left.`;
+	if ((action === "list" || action === "status") && !canPeek(reach, requested))
+		return `Group "${requested}" is outside this session's Intercom reach (${scope}), so it cannot be listed.`;
+	return undefined;
 }
 
 export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
@@ -575,6 +605,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           return { content: [{ type: "text", text: sizeError }], isError: true, details: { error: true } };
         }
       }
+      const writtenReach = new Map<string, IntercomReachPolicy | undefined>();
+      const guardWrite = (messageId: string) => (reach: IntercomReachPolicy | undefined): void => {
+        if (writtenReach.has(messageId) && !sameReachPolicy(writtenReach.get(messageId), reach)) {
+          throw new ReachChangedRetryError();
+        }
+        writtenReach.set(messageId, reach === undefined ? undefined : { home: reach.home, reachable: [...reach.reachable] });
+      };
       // A pattern send (#4752) runs this once per recipient, as a direct send to `fanOut.recipient`, which its lookup
       // already resolved to `fanOut.sendTo`.
       const executeAttempt = async (
@@ -646,6 +683,12 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             details: { error: true },
           };
         }
+      }
+
+      const reach = deps.reachPolicy?.();
+      const reachRefusal = reach === undefined ? undefined : toolReachRefusal(reach, action, group);
+      if (reachRefusal !== undefined) {
+        return { content: [{ type: "text", text: reachRefusal }], isError: true, details: { error: true } };
       }
 
       switch (action) {
@@ -792,7 +835,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             }
 
 			const otherSessions = ownSessions.filter((session) => session.id !== mySessionId);
-			const currentSection = `**Current session** (groups: ${ownGroups.join(", ")}):\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
+			const reachSection = reach === undefined ? "" : `; reachable: ${reach.reachable.join(", ") || "none"}`;
+			const currentSection = `**Current session** (groups: ${ownGroups.join(", ")}${reachSection}):\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
 			const visibleRows = [
 				...otherSessions.map((session) => formatSessionListRow(session, currentSession.cwd, false)),
 				...ownDirectory.workflowStages.map(formatWorkflowStageRow),
@@ -926,6 +970,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             // disconnect retry identity; the owning receiver suppresses late ingress.
             const result = await connectedClient.send(sendTo, {
               messageId: retryIdentity.messageId,
+              beforeWrite: guardWrite(retryIdentity.messageId),
               logicalTarget: to,
               text: message,
               attachments,
@@ -1008,6 +1053,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 retryIdentities.release(retryIdentity);
               }
             }
+            if (failure instanceof ReachChangedRetryError) return reachChangedRetryResult(failure);
             if (failure === error && sendOutcomeUnknown(error)) {
               return {
                 content: [{
@@ -1215,6 +1261,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 			}
             const sendResult = await connectedClient.send(sendTo, {
               messageId: questionId,
+              beforeWrite: guardWrite(questionId),
               logicalTarget: to,
               text: question,
               attachments,
@@ -1376,6 +1423,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 retryIdentities.release(retryIdentity);
               }
             }
+            if (failure instanceof ReachChangedRetryError) return reachChangedRetryResult(failure);
             return {
               content: [{
                 type: "text",
@@ -1669,7 +1717,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             return {
               content: [{
                 type: "text",
-                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroups: ${ownGroups.join(", ")}\nActive visible sessions: ${sessions.length}${selectedSection}${multiNodeSection}\nYour asks awaiting a reply: ${outboundAsks().pending().length}`,
+                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroups: ${ownGroups.join(", ")}${reach === undefined ? "" : `\nReachable groups: ${reach.reachable.join(", ") || "none"}`}\nActive visible sessions: ${sessions.length}${selectedSection}${multiNodeSection}\nYour asks awaiting a reply: ${outboundAsks().pending().length}`,
               }],
               isError: false,
               structuredContent: {

@@ -1,6 +1,7 @@
 import type { Stats } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { failureDebugFields, reportDebug } from "../debug.ts";
 import { releaseLock } from "../lock-release.ts";
 import { renameWithRetry } from "../rename-retry.ts";
@@ -92,18 +93,67 @@ export async function writeSeedManifest(storeDir: string, manifest: SeedManifest
 /** Why no seed was adopted. */
 /**
  * `missing`: no seed of the repository. `busy`: a prebuild is replacing it. `path-taken`: the worktree path it was
- * built at is in use. `restore-failed`: its commit could not be restored. `unavailable`: its lock could not be taken.
+ * built at is in use. `restore-failed`: its commit could not be restored. `unavailable`: its lock could not be taken
+ * or was observed lost before adoption committed by removing the manifest.
  */
 export type NoSeedReason = "missing" | "busy" | "path-taken" | "restore-failed" | "unavailable";
 
 /** The seed lock's constants: a stopped process loses it after 30 seconds. */
 const SEED_LOCK_STALE_MS = 30_000;
 const SEED_LOCK_UPDATE_MS = 10_000;
+const SEED_LOCK_POLL_MS = 50;
+const SEED_LOCK_WAIT_MS = 120_000;
+export const SEED_LOCK_REFUSED_MS = 10_000;
+
+function refusedForAMoment(error: unknown, since: number): boolean {
+	return (
+		(error as NodeJS.ErrnoException).code === "EPERM" &&
+		process.platform === "win32" &&
+		Date.now() - since < SEED_LOCK_REFUSED_MS
+	);
+}
+
+function seedHeldAndWaiting(error: unknown, wait: boolean, startedAt: number): boolean {
+	return wait && (error as NodeJS.ErrnoException).code === "ELOCKED" && Date.now() - startedAt < SEED_LOCK_WAIT_MS;
+}
+
+async function lockSeed(
+	file: string,
+	wait: boolean,
+	onLost: (error: Error) => void,
+	signal?: AbortSignal,
+): Promise<() => Promise<void>> {
+	await mkdir(dirname(file), { recursive: true });
+	const startedAt = Date.now();
+	let refusedSince: number | undefined;
+	for (;;) {
+		signal?.throwIfAborted();
+		try {
+			return await lockShared(file, {
+				realpath: false,
+				stale: SEED_LOCK_STALE_MS,
+				update: SEED_LOCK_UPDATE_MS,
+				retries: 0,
+				onCompromised: (error) => {
+					reportDebug("storage", "worktree-seed-lock-lost", { file, ...failureDebugFields(error) });
+					onLost(error);
+				},
+			});
+		} catch (error) {
+			const since = refusedSince ?? Date.now();
+			if (refusedForAMoment(error, since)) refusedSince = since;
+			else if (seedHeldAndWaiting(error, wait, startedAt)) refusedSince = undefined;
+			else throw error;
+		}
+		await sleep(SEED_LOCK_POLL_MS, undefined, { signal });
+	}
+}
 
 /**
  * Runs `action` holding the seed lock of `repository`, which serializes parking a seed and adopting it, so an adoption
  * never moves the output of another generation than its manifest names. With `wait`, a held lock is waited for, for
- * up to about two minutes; without, it rejects with `ELOCKED`.
+ * up to two minutes, polling every 50 ms; without, it rejects with `ELOCKED`. Rejects if lock loss is observed before
+ * the action completes. Adoption checks ownership itself and keeps its completed result after removing the manifest.
  */
 export async function withSeedLock<T>(
 	storeDir: string,
@@ -111,18 +161,35 @@ export async function withSeedLock<T>(
 	wait: boolean,
 	action: () => Promise<T>,
 ): Promise<T> {
-	const file = seedManifestPath(storeDir, repository);
-	await mkdir(dirname(file), { recursive: true });
-	const unlock = await lockShared(file, {
-		realpath: false,
-		stale: SEED_LOCK_STALE_MS,
-		update: SEED_LOCK_UPDATE_MS,
-		retries: wait ? { retries: 120, minTimeout: 100, maxTimeout: 1_000 } : 0,
-		onCompromised: (error) =>
-			reportDebug("storage", "worktree-seed-lock-lost", { file, ...failureDebugFields(error) }),
+	return withSeedLockHeld(storeDir, repository, wait, async (assertHeld) => {
+		const result = await action();
+		assertHeld();
+		return result;
 	});
+}
+
+async function withSeedLockHeld<T>(
+	storeDir: string,
+	repository: RepositoryId,
+	wait: boolean,
+	action: (assertHeld: () => void) => Promise<T>,
+	signal?: AbortSignal,
+): Promise<T> {
+	const file = seedManifestPath(storeDir, repository);
+	let lost: Error | undefined;
+	const unlock = await lockSeed(
+		file,
+		wait,
+		(error) => {
+			lost ??= error;
+		},
+		signal,
+	);
+	const assertHeld = () => {
+		if (lost !== undefined) throw lost;
+	};
 	try {
-		return await action();
+		return await action(assertHeld);
 	} finally {
 		await releaseLock(unlock, file);
 	}
@@ -162,8 +229,12 @@ export async function adoptPrebuiltSeed(
 		return { adopted: false, reason: "missing" };
 	}
 	try {
-		return await withSeedLock(storeDir, repository, false, () =>
-			adoptLocked(snapshot, storeDir, repository, options),
+		return await withSeedLockHeld(
+			storeDir,
+			repository,
+			false,
+			(assertHeld) => adoptLocked(snapshot, storeDir, repository, options, assertHeld),
+			options.signal,
 		);
 	} catch (error) {
 		options.signal?.throwIfAborted();
@@ -179,14 +250,23 @@ async function adoptLocked(
 	storeDir: string,
 	repository: RepositoryId,
 	options: AdoptPrebuiltSeedOptions,
+	assertHeld: () => void,
 ): Promise<SeedAdoption> {
 	const manifest = await readSeedManifest(storeDir, repository);
+	assertHeld();
 	if (manifest === undefined) return { adopted: false, reason: "missing" };
 	const state = { snapshotId: null, head: manifest.head, tree: manifest.tree };
 	let lease: Awaited<ReturnType<typeof admitPooledWorktree>> | undefined;
 	try {
 		lease = await admitPooledWorktree(
-			{ storeDir, remotes: snapshot.remotes, root: snapshot.root, lastState: state, envHash: manifest.envHash },
+			{
+				storeDir,
+				remotes: snapshot.remotes,
+				root: snapshot.root,
+				lastState: state,
+				envHash: manifest.envHash,
+				signal: options.signal,
+			},
 			SEED_OWNER,
 		);
 		if (lease.path !== resolve(manifest.worktree)) {
@@ -207,13 +287,24 @@ async function adoptLocked(
 		return { adopted: false, reason: "restore-failed" };
 	}
 	const slot = lease.path;
-	const { moved, skipped } = await timeRestorePhase("seed", () =>
-		moveSeeds(seedDirectory(storeDir, repository), slot, manifest.paths),
-	);
-	await rm(seedManifestPath(storeDir, repository), { force: true }).catch(() => {});
-	await rm(seedDirectory(storeDir, repository), { recursive: true, force: true }).catch(() => {});
-	await releaseRestoredWorktree(lease, state);
-	return { adopted: true, path: slot, moved, skipped };
+	try {
+		assertHeld();
+		const { moved, skipped } = await timeRestorePhase("seed", () =>
+			moveSeeds(seedDirectory(storeDir, repository), slot, manifest.paths, assertHeld),
+		);
+		assertHeld();
+		await rm(seedManifestPath(storeDir, repository), { force: true }).catch(() => {});
+		const removeSeeds = async () => {
+			assertHeld();
+			await rm(seedDirectory(storeDir, repository), { recursive: true, force: true });
+		};
+		await removeSeeds().catch((error) => {
+			reportDebug("storage", "worktree-seed-cleanup-skipped", { repository, ...failureDebugFields(error) });
+		});
+		return { adopted: true, path: slot, moved, skipped };
+	} finally {
+		await releaseRestoredWorktree(lease, state);
+	}
 }
 
 async function entryAt(path: string): Promise<Stats | undefined> {
@@ -236,10 +327,11 @@ export async function insideThroughDirectories(root: string, segments: readonly 
 }
 
 /** Moves each parked path from `seeds` to its place in `worktree`, where nothing may be yet. */
-async function moveSeeds(seeds: string, worktree: string, paths: readonly string[]) {
+async function moveSeeds(seeds: string, worktree: string, paths: readonly string[], assertHeld: () => void) {
 	const moved: string[] = [];
 	const skipped: string[] = [];
 	for (const path of paths) {
+		assertHeld();
 		const segments = seedPathSegments(path)!;
 		const from = join(seeds, ...segments);
 		const to = join(worktree, ...segments);
@@ -249,13 +341,16 @@ async function moveSeeds(seeds: string, worktree: string, paths: readonly string
 				skipped.push(path);
 				continue;
 			}
+			assertHeld();
 			await mkdir(dirname(to), { recursive: true });
+			assertHeld();
 			await renameWithRetry(from, to);
 			moved.push(path);
 		} catch (error) {
 			reportDebug("storage", "worktree-seed-move-failed", { path, ...failureDebugFields(error) });
 			skipped.push(path);
 		}
+		assertHeld();
 	}
 	return { moved, skipped };
 }

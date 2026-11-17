@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `trySharedAdvisoryLock(path, waitMs)`: takes a shared operating-system advisory lock on `path` (`flock` on Unix, `LockFileEx` on Windows), waiting up to `waitMs` while an exclusive holder keeps it, and returns an `AdvisoryLock` or `null`. Both `tryAdvisoryLock` and `trySharedAdvisoryLock` reopen `path` when the file was unlinked while acquiring the lock, and treat a delete-pending file on Windows as contention until `waitMs` expires. Permanent access errors still throw, and repeated path replacement does not extend the wait ([#5317](https://github.com/bastani-inc/atomic/issues/5317)).
 ### Fixed
 
 - On Windows, `TaskSupervisor` no longer reports a command that ran to completion as failed with `Windows stdin worker stop was not confirmed` when its input thread, on a loaded or briefly stalled machine, closed the command's stdin just after the cleanup grace or ended later than it. A stop the thread reported counts as confirmed; one it never reports still fails the cleanup ([#5340](https://github.com/bastani-inc/atomic/pull/5340))
