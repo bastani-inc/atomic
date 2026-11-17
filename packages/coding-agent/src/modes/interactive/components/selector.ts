@@ -4,6 +4,7 @@ import {
 	fuzzyFilter,
 	getKeybindings,
 	Input,
+	matchesKey,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 	truncateToWidth,
@@ -251,14 +252,25 @@ export class SelectorState<T> {
 		this.scrollToSelected();
 	}
 
-	/** Move one enabled row in the direction of `delta`, wrapping at the ends and skipping disabled rows. */
-	move(delta: number): void {
+	/** Move by `delta` rows, wrapping at the ends unless `wrap` is false, and skipping disabled rows. */
+	move(delta: number, wrap = true): void {
 		const count = this.visible.length;
-		if (count === 0) return;
+		if (count === 0 || delta === 0) return;
 		this.revision++;
+		const step = Math.sign(delta) as -1 | 1;
+		if (!wrap) {
+			for (let index = this.selected + step; index >= 0 && index < count; index += step) {
+				if (!this.visible[index]?.disabled) {
+					this.selected = index;
+					this.scrollToSelected();
+					return;
+				}
+			}
+			return;
+		}
 		let index = this.selected;
-		for (let step = 0; step < count; step++) {
-			index = (index + Math.sign(delta) + count) % count;
+		for (let stepIndex = 0; stepIndex < count; stepIndex++) {
+			index = (index + step + count) % count;
 			if (!this.visible[index]?.disabled) break;
 		}
 		this.selected = index;
@@ -519,8 +531,8 @@ export class Selector<T> implements Component, Focusable {
 		else if (kb.matches(data, "tui.select.down") || (!this.input && data === "j")) this.state.move(1);
 		else if (kb.matches(data, "tui.select.pageUp")) this.state.page(-1);
 		else if (kb.matches(data, "tui.select.pageDown")) this.state.page(1);
-		else if (!this.input && data === "\x1b[H") this.state.edge("first");
-		else if (!this.input && data === "\x1b[F") this.state.edge("last");
+		else if (!this.input && matchesKey(data, "home")) this.state.edge("first");
+		else if (!this.input && matchesKey(data, "end")) this.state.edge("last");
 		else if (kb.matches(data, "tui.select.cancel")) {
 			if (this.state.getQuery() && !isCtrlC(data)) this.clearSearch();
 			else this.options.onCancel?.();
@@ -557,7 +569,7 @@ export class Selector<T> implements Component, Focusable {
 		if (this.showingHelp) return { handled: true };
 		if (event.type === "wheel" && event.wheelDelta) {
 			const before = this.state.getSelectedIndex();
-			this.state.move(event.wheelDelta < 0 ? -1 : 1);
+			this.state.move(event.wheelDelta < 0 ? -1 : 1, false);
 			const changed = this.state.getSelectedIndex() !== before;
 			if (changed) this.options.onSelectionChange?.(this.state.getSelected());
 			return { handled: true, render: changed };
@@ -565,20 +577,25 @@ export class Selector<T> implements Component, Focusable {
 		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
 		const index = [...this.rowLines.entries()].find(([, line]) => line === event.y)?.[0];
 		if (index === undefined) return undefined;
-		const item = this.state.getVisible()[index];
+		const visible = this.state.getVisible();
+		const item = visible[index];
 		if (!item || item.disabled) {
 			this.mousePressed = undefined;
 			return { handled: true };
 		}
 		if (event.type === "press") {
 			this.mousePressed = index;
+			const before = this.state.getSelectedIndex();
 			this.state.select(index);
-			this.options.onSelectionChange?.(this.state.getSelected());
+			if (this.state.getSelectedIndex() !== before) this.options.onSelectionChange?.(this.state.getSelected());
 			return { handled: true, focus: true };
 		}
 		const clicked = this.mousePressed ?? index;
 		this.mousePressed = undefined;
+		if (visible[clicked]?.disabled) return { handled: true };
+		const before = this.state.getSelectedIndex();
 		this.state.select(clicked);
+		if (this.state.getSelectedIndex() !== before) this.options.onSelectionChange?.(this.state.getSelected());
 		if (this.state.mode === "multi") {
 			const item = this.state.getSelected();
 			if (item) this.state.toggle(item.id);

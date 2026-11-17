@@ -4,6 +4,7 @@ import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import type { SessionStore } from "../../../core/storage/session/types.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
+import { taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import {
@@ -266,6 +267,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.transcriptComponent.invalidate();
 		this.state.requestRender?.();
 		if (!source) return;
+		taskClocksFor(source);
 		const update = () => {
 			// Without task rows the transcript shows nothing of the tasks; only the footer repaints.
 			if (this.taskRowsInChat) {
@@ -386,11 +388,12 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	renderTaskFooter(width: number): string[] {
-		return renderTaskFooter(this.taskSource?.backgroundTasks ?? [], width);
+		if (this.taskSource === undefined) return [];
+		return renderTaskFooter(this.taskSource.backgroundTasks, width, taskClocksFor(this.taskSource));
 	}
 	renderFooter(width: number): string[] {
 		const footer = renderChatSessionFooter(this.state, width, this.hasTaskInspector && !this.taskInspectorFullscreen);
-		return footer.length ? footer : renderTaskFooter(this.taskSource?.backgroundTasks ?? [], width);
+		return footer.length ? footer : this.renderTaskFooter(width);
 	}
 
 	handleScrollInput(data: string): boolean {

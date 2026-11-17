@@ -150,7 +150,7 @@ function subagentPage(
 
 function select(component: { handleInput(data: string): boolean }, render: () => string[], pattern: RegExp): void {
 	for (let attempt = 0; attempt < 10; attempt++) {
-		const selected = plain(render()).find((row) => row.includes("│ › "));
+		const selected = plain(render()).find((row) => row.includes(" ❯ "));
 		if (selected !== undefined && pattern.test(selected)) return;
 		component.handleInput("\x1b[B");
 	}
@@ -590,7 +590,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 			page.handleInput(ENTER);
 			await flush();
 			const list = plain(page.render(80, 24));
-			assert.match(list.find((row) => row.includes("│ › ")) ?? "", new RegExp(`│ › ${selected} `));
+			assert.match(list.find((row) => row.includes(" ❯ ")) ?? "", new RegExp(` ❯ . \\S+ +${selected}\\b`));
 			page.handleInput(SPACE);
 			await flush();
 			const detail = plain(page.render(80, 24));
@@ -609,16 +609,16 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		page.handleInput(SPACE);
 		await flush();
 		assert.match(text(page.render(80, 24)), /title-child-shell|title-grandchild/);
-		assert.doesNotMatch(text(page.render(80, 24)), /Background tasks/, "a task's detail page replaced the list");
+		assert.doesNotMatch(text(page.render(80, 24)), /^ Tasks\b/m, "a task's detail page replaced the list");
 		page.handleInput(LEFT);
-		assert.match(text(page.render(80, 24)), /Background tasks/);
+		assert.match(text(page.render(80, 24)), /^ Tasks\b/m);
 		page.handleInput(SPACE);
 		page.handleInput(ESCAPE);
-		assert.match(text(page.render(80, 24)), /Background tasks/);
+		assert.match(text(page.render(80, 24)), /^ Tasks\b/m);
 		page.handleInput(ESCAPE);
 		assert.equal(page.handlesBack(), false);
 		const chat = text(page.render(80, 24));
-		assert.doesNotMatch(chat, /Background tasks/);
+		assert.doesNotMatch(chat, /^ Tasks\b/m);
 		assert.match(chat, /agent-child · title-child/);
 		page.dispose();
 	});
@@ -710,12 +710,12 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 			await type(inspector, "/tasks");
 			inspector.handleInput(ENTER);
 			await flush();
-			assert.match(text(inspector.renderViewport(80, 24)), /Background tasks/);
+			assert.match(text(inspector.renderViewport(80, 24)), /^ Tasks\b/m);
 			inspector.handleInput(back);
 			const chat = text(inspector.renderViewport(80, 24));
 			assert.match(chat, /Transcript · agent-child(?!-)/, "the key closed the subagent's list, not its chat");
 			assert.match(chat, /agent-child · title-child/);
-			assert.doesNotMatch(chat, /Background tasks/);
+			assert.doesNotMatch(chat, /^ Tasks\b/m);
 		}
 		inspector.handleInput(ESCAPE);
 		assert.match(text(inspector.renderViewport(80, 24)), /Transcript ·/, "Esc never leaves the chat (#5224)");

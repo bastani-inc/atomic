@@ -13,6 +13,7 @@ import {
 	type AgentPanelStyle,
 	renderAgentPanelRows,
 } from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
 import { MAX_CAUSE_DEPTH } from "../../packages/workflows/src/shared/error-cause-chain.js";
 import { type SerializedError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
@@ -176,6 +177,7 @@ test.each(["card", "detail", "panel"])(
 			for (const theme of [undefined, defaultTheme])
 				assertSafeRows(renderRunDetail(detail.detail, { theme, width: 200, now: 2 }).split("\n"));
 		} else {
+			initTheme("dark");
 			assertSafeRows(
 				renderAgentPanelRows(
 					panelItemsFromSnapshot({
