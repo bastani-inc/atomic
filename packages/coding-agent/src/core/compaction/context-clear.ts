@@ -28,7 +28,7 @@ function howToRecover(input: BoundaryTextInput): string[] {
 					`- Search first: use \`search\` with paths "${url}" (a plain "history://sessions" search skips this session). Then read narrow ranges with \`read ${url}:N-M\`, about 200 entries at a time. Follow any continuation URL to finish the selected range or search.`,
 				]
 			: [
-					`- Use the \`${SESSION_HISTORY_TOOL_NAME}\` tool, which reaches only ${url}: search first with {"pattern": "<regex>"}, then read narrow ranges with {"lines": "N-M"}, about 200 entries at a time. To continue a read, pass {"lines": "<continuation URL>"}; to continue a search, pass {"pattern": "<same regex>", "lines": "<continuation URL>"}.`,
+					`- Use the \`${SESSION_HISTORY_TOOL_NAME}\` tool, which reaches only ${url}: search first with {"pattern": "<regex>"}, then read narrow ranges with {"lines": "N-M"}, about 200 entries at a time.`,
 				];
 	return [
 		"How to recover:",

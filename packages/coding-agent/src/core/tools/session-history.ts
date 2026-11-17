@@ -12,13 +12,13 @@ const sessionHistorySchema = Type.Object({
 	pattern: Type.Optional(
 		Type.String({
 			description:
-				"Regular expression to search this session's history for. Search first; to continue a stopped search, pass the same pattern with `lines` set to the `?cursor=` continuation URL.",
+				"Regular expression to search this session's history for. Search first; keep it and set `lines` to a `?cursor=` URL to continue.",
 		}),
 	),
 	lines: Type.Optional(
 		Type.String({
 			description:
-				'An entry range of this session\'s history to read, such as "120-260", or a `?cursor=` continuation URL from an earlier read or search.',
+				'An entry range of this session\'s history to read, such as "120-260", or a `?cursor=` URL to continue.',
 		}),
 	),
 });
@@ -123,7 +123,7 @@ export function createSessionHistoryToolDefinition(
 		name,
 		label: "Session history",
 		description:
-			'Search or read this session\'s own history after its context was cleared. When the context-cleared message tells you to `search` or `read` `history://sessions/<id>` and those tools are not available, use this tool instead: pass {"pattern": "<regex>"} to search (each match names its entry), then {"lines": "N-M"} to read a narrow entry range verbatim. To continue a stopped search or read, pass the `?cursor=` continuation URL in `lines` (with the original `pattern` when continuing a search). Only this session\'s history is reachable.',
+			'Search or read this session\'s own history after its context was cleared. When the context-cleared message tells you to `search` or `read` `history://sessions/<id>` and those tools are not available, use this tool instead: pass {"pattern": "<regex>"} to search (each match names its entry), then {"lines": "N-M"} to read a narrow entry range verbatim. Only this session\'s history is reachable.',
 		parameters: sessionHistorySchema,
 		promptSnippet:
 			"Search and read this session's own history after a context clear (use in place of search/read on history://sessions/<id>)",
