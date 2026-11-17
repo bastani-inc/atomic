@@ -52,71 +52,47 @@ function contentLines(content: unknown): string[] {
 }
 
 export function entryLines(entry: SessionEntry): string[] {
-	const heading = (label: string): string => `## ${timestamp(entry.timestamp)} ${label}`;
+	const heading = (label: string): string[] => textLines(`## ${timestamp(entry.timestamp)} ${label}`);
 	switch (entry.type) {
 		case "message": {
 			const message = entry.message;
 			switch (message.role) {
 				case "user":
-					return [heading("user"), ...contentLines(message.content)];
+					return [...heading("user"), ...contentLines(message.content)];
 				case "assistant":
-					return [heading("assistant"), ...contentLines(message.content)];
+					return [...heading("assistant"), ...contentLines(message.content)];
 				case "toolResult":
-					return [heading(`tool result ${message.toolName}`), ...contentLines(message.content)];
+					return [...heading(`tool result ${message.toolName}`), ...contentLines(message.content)];
 				case "bashExecution":
-					return [heading("bash"), ...textLines(`$ ${message.command}`), ...textLines(message.output)];
+					return [...heading("bash"), ...textLines(`$ ${message.command}`), ...textLines(message.output)];
 				case "custom":
-					return [heading(`custom ${message.customType}`), ...contentLines(message.content)];
+					return [...heading(`custom ${message.customType}`), ...contentLines(message.content)];
 				case "branchSummary":
-					return [heading("branch summary"), ...textLines(message.summary)];
+					return [...heading("branch summary"), ...textLines(message.summary)];
 				default:
 					return [];
 			}
 		}
 		case "custom_message":
-			return [heading(`custom ${entry.customType}`), ...contentLines(entry.content)];
+			return [...heading(`custom ${entry.customType}`), ...contentLines(entry.content)];
 		case "compaction":
 		case "branch_summary":
 		case "session_summary":
-			return [heading(entry.type.replace("_", " ")), ...textLines(entry.summary)];
+			return [...heading(entry.type.replace("_", " ")), ...textLines(entry.summary)];
 		case "session_info":
-			return entry.name ? [heading(`session name: ${entry.name}`)] : [];
+			return entry.name ? heading(`session name: ${entry.name}`) : [];
 		default:
 			return [];
 	}
 }
 
-/** The lines of one entry in a rendered transcript, counted from 1 and inclusive at both ends. */
-export interface HistoryLineRange {
+export interface HistoryEntryRange {
 	readonly start: number;
 	readonly end: number;
 }
 
-export interface HistoryTranscript {
-	readonly lines: string[];
-	/** Where each entry that renders at least one line sits in `lines`, by entry id. */
-	readonly entryRanges: ReadonlyMap<string, HistoryLineRange>;
-}
-
-function physicalLineCount(line: string): number {
-	return line.split("\n").length;
-}
-
-export function historyEntryLineCount(entry: SessionEntry): number {
-	return entryLines(entry).reduce((sum, line) => sum + physicalLineCount(line), 0);
-}
-
-/**
- * The transcript `history://sessions/<id>` reads: a header, then each entry's lines. This is the only place the line
- * layout is defined, so a range computed from `entryRanges` addresses exactly the lines a `read` slices.
- * `linkRun` is false for a cross-project view, whose workflow history is not reachable from here.
- */
-export function renderHistoryTranscript(
-	header: SessionRecordHeader,
-	entries: readonly SessionEntry[],
-	linkRun: boolean,
-): HistoryTranscript {
-	const lines = [
+export function transcriptHeaderLines(header: SessionRecordHeader, linkRun: boolean): string[] {
+	return [
 		`# session ${header.id}`,
 		`created: ${timestamp(header.createdAt)}`,
 		...(header.workflow
@@ -125,15 +101,18 @@ export function renderHistoryTranscript(
 				]
 			: []),
 	];
-	const entryRanges = new Map<string, HistoryLineRange>();
-	let next = lines.reduce((count, line) => count + physicalLineCount(line), 1);
-	for (const entry of entries) {
-		const rendered = entryLines(entry);
-		if (rendered.length === 0) continue;
-		const count = rendered.reduce((sum, line) => sum + physicalLineCount(line), 0);
-		entryRanges.set(entry.id, { start: next, end: next + count - 1 });
-		next += count;
-		lines.push(...rendered);
+}
+
+export interface HistoryEntrySeqs {
+	getEntries(): readonly SessionEntry[];
+	getEntrySeq(id: string): number | undefined;
+}
+
+export function historyEntryRanges(session: HistoryEntrySeqs): ReadonlyMap<string, HistoryEntryRange> {
+	const ranges = new Map<string, HistoryEntryRange>();
+	for (const entry of session.getEntries()) {
+		const seq = session.getEntrySeq(entry.id);
+		if (seq !== undefined) ranges.set(entry.id, { start: seq, end: seq });
 	}
-	return { lines, entryRanges };
+	return ranges;
 }

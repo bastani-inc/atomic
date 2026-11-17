@@ -20,6 +20,7 @@ import {
 	WorkflowRunOwnershipError,
 	type WorkflowRunSummary,
 } from "../src/index.js";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.js";
 
 const REAL_SDK_WORKFLOW_RUN_CONTROL_TIMEOUT_MS = 180_000;
 const UNKNOWN_RUN_PREFIX_SETTLE_TIMEOUT_MS = 15_000;
@@ -75,6 +76,7 @@ beforeAll(async () => {
 	root = mkdtempSync(join(tmpdir(), "atomic-sdk-run-control-"));
 	const cwd = join(root, "project");
 	const agentDir = join(root, "agent");
+	linkSharedTranspileCache(agentDir);
 	const packageDir = join(root, "package");
 	const workflowsDir = join(packageDir, "workflows");
 	mkdirSync(join(cwd, ".atomic"), { recursive: true });

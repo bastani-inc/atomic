@@ -2,8 +2,6 @@ import {
 	type Component,
 	Container,
 	type Focusable,
-	type SelectItem,
-	SelectList,
 	Spacer,
 	Text,
 	type TUI,
@@ -14,12 +12,14 @@ import type { ExtensionCommandContext } from "../../core/extensions/types.ts";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import { DynamicBorder } from "../../modes/interactive/components/dynamic-border.ts";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
+import { FramedSelector, type SelectorItem } from "../../modes/interactive/components/selector.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { LlamaModelInfo, LlamaProgress } from "./client.js";
 import type { HuggingFaceModel } from "./huggingface.js";
 import { HuggingFaceSearch } from "./huggingface-ui.js";
 
 const DOWNLOAD_VALUE = "\0download";
+const MAX_VISIBLE_ITEMS = 12;
 
 type InputHandler = Pick<Component, "handleInput" | "capturesViewportInput">;
 
@@ -50,16 +50,6 @@ function modelDescription(model: LlamaModelInfo): string {
 	const context = loaded ? contextLabel(model) : undefined;
 	if (context) details.push(`${context} context`);
 	return details.join(" · ");
-}
-
-function selectTheme(theme: Theme) {
-	return {
-		selectedPrefix: (text: string) => theme.fg("accent", text),
-		selectedText: (text: string) => theme.fg("accent", text),
-		description: (text: string) => theme.fg("muted", text),
-		scrollInfo: (text: string) => theme.fg("dim", text),
-		noMatch: (text: string) => theme.fg("warning", text),
-	};
 }
 
 function frame(theme: Theme, title: string, body: Component[], footer?: string): Container {
@@ -93,7 +83,7 @@ class LlamaView implements LlamaUi, Focusable {
 	private readonly theme: Theme;
 	private readonly keybindings: KeybindingsManager;
 	private readonly searchCache = new Map<string, HuggingFaceModel[]>();
-	private content: Container;
+	private content: Component;
 	private inputHandler: InputHandler | undefined;
 	private inputTarget: Focusable | undefined;
 	private progressPromise: Promise<void> | undefined;
@@ -121,7 +111,7 @@ class LlamaView implements LlamaUi, Focusable {
 		return this.inputHandler?.capturesViewportInput === true;
 	}
 
-	private setContent(content: Container, inputHandler?: InputHandler, inputTarget?: Focusable): void {
+	private setContent(content: Component, inputHandler?: InputHandler, inputTarget?: Focusable): void {
 		if (this.inputTarget) this.inputTarget.focused = false;
 		this.progressPromise = undefined;
 		this.progressResolver = undefined;
@@ -139,57 +129,56 @@ class LlamaView implements LlamaUi, Focusable {
 			return loaded || left.id.localeCompare(right.id);
 		});
 		const byId = new Map(sorted.map((model) => [model.id, model]));
-		const items: SelectItem[] = [
+		const items: SelectorItem<string>[] = [
 			...sorted.map((model) => ({
+				id: model.id,
 				value: model.id,
 				label: model.id,
 				description: modelDescription(model),
 			})),
-			{ value: DOWNLOAD_VALUE, label: "Download model…", description: "Hugging Face owner/repository[:quant]" },
+			{
+				id: DOWNLOAD_VALUE,
+				value: DOWNLOAD_VALUE,
+				label: "Download model…",
+				description: "Hugging Face owner/repository[:quant]",
+			},
 		];
 		return new Promise((resolve) => {
-			const list = new SelectList(items, Math.min(items.length, 12), selectTheme(this.theme), {
-				minPrimaryColumnWidth: 36,
-				maxPrimaryColumnWidth: 56,
+			const picker = new FramedSelector<string>({
+				title: "llama.cpp models",
+				subtitle: serverUrl,
+				items,
+				search: items.length > MAX_VISIBLE_ITEMS,
+				maxVisible: MAX_VISIBLE_ITEMS,
+				confirmLabel: "load/unload/download",
+				cancelLabel: "close",
+				keybindings: this.keybindings,
+				onSelect: (item) => {
+					if (item.value === DOWNLOAD_VALUE) resolve({ type: "download" });
+					else {
+						const model = byId.get(item.value);
+						if (model) resolve({ type: "model", model });
+					}
+				},
+				onCancel: () => resolve({ type: "close" }),
 			});
-			list.onSelect = (item) => {
-				if (item.value === DOWNLOAD_VALUE) resolve({ type: "download" });
-				else {
-					const model = byId.get(item.value);
-					if (model) resolve({ type: "model", model });
-				}
-			};
-			list.onCancel = () => resolve({ type: "close" });
-			this.setContent(
-				frame(
-					this.theme,
-					"llama.cpp models",
-					[new Text(this.theme.fg("dim", serverUrl), 1, 0), new Spacer(1), list],
-					`${keyHint("tui.select.confirm", "load/unload/download")} • ${keyHint("tui.select.cancel", "close")}`,
-				),
-				list,
-			);
+			this.setContent(picker, picker, picker);
 		});
 	}
 
 	select(title: string, options: string[]): Promise<string | undefined> {
+		const [heading = "", ...details] = title.split("\n");
 		return new Promise((resolve) => {
-			const list = new SelectList(
-				options.map((option) => ({ value: option, label: option })),
-				Math.min(options.length, 12),
-				selectTheme(this.theme),
-			);
-			list.onSelect = (item) => resolve(item.value);
-			list.onCancel = () => resolve(undefined);
-			this.setContent(
-				frame(
-					this.theme,
-					title,
-					[new Spacer(1), list],
-					`${keyHint("tui.select.confirm", "select")} • ${keyHint("tui.select.cancel", "cancel")}`,
-				),
-				list,
-			);
+			const picker = new FramedSelector<string>({
+				title: heading,
+				subtitle: details.length > 0 ? details.join("\n") : undefined,
+				items: options.map((option, index) => ({ id: String(index), value: option, label: option })),
+				maxVisible: MAX_VISIBLE_ITEMS,
+				keybindings: this.keybindings,
+				onSelect: (item) => resolve(item.value),
+				onCancel: () => resolve(undefined),
+			});
+			this.setContent(picker, picker, picker);
 		});
 	}
 
@@ -214,16 +203,7 @@ class LlamaView implements LlamaUi, Focusable {
 				this.searchCache,
 				resolve,
 			);
-			this.setContent(
-				frame(
-					this.theme,
-					"Download model",
-					[new Spacer(1), component],
-					`${keyHint("tui.select.confirm", "select")} • ${keyHint("tui.select.cancel", "back")}`,
-				),
-				component,
-				component,
-			);
+			this.setContent(frame(this.theme, "Download model", [new Spacer(1), component]), component, component);
 		});
 	}
 

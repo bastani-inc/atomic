@@ -119,6 +119,14 @@ export function workerSessionStore(input: {
 				}
 			: {}),
 		load: synced((id) => input.reader.load(id)),
+		...(input.reader.readEntryRange !== undefined
+			? {
+					readEntryRange: synced((id: string, query: Parameters<NonNullable<SessionStore["readEntryRange"]>>[1]) =>
+						input.reader.readEntryRange!(id, query),
+					),
+				}
+			: {}),
+		...(input.reader.searchIndex !== undefined ? { searchIndex: input.reader.searchIndex } : {}),
 		...(input.reader.readResume
 			? { readResume: synced((id: string, leafId?: string) => input.reader.readResume!(id, leafId)) }
 			: {}),

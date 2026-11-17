@@ -126,7 +126,8 @@ export function renderNavHintLine(
 		}
 		items.splice(dropIndex, 1);
 	}
-	const line = truncateToWidth(joined(), room);
+	const joinedText = joined();
+	const line = visibleWidth(joinedText) <= room ? joinedText : truncateToWidth(joinedText, room);
 	const lead = options.compact && visibleWidth(line) <= width - indent ? indent : padding;
 	return style.dim(" ".repeat(Math.min(lead, Math.max(0, width - visibleWidth(line)))) + line);
 }

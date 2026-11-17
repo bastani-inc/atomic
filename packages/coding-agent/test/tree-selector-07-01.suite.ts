@@ -60,20 +60,23 @@ function searchLine(query: string): SearchLine {
 }
 
 describe("SearchLine", () => {
-	test("renders the typed query after its prompt", () => {
-		assert.deepEqual(searchLine("abc").render(80).map(stripVTControlCharacters), ["  Type to search: abc"]);
+	const middle = (lines: string[]) => stripVTControlCharacters(lines[1] ?? "");
+
+	test("renders the typed query in the shared search box (#5224)", () => {
+		const lines = searchLine("abc").render(80);
+		assert.equal(lines.length, 3);
+		assert.match(middle(lines), /^ │ ⌕ abc\s+│$/);
 	});
 
-	test("renders the bare prompt while the query is empty", () => {
-		assert.deepEqual(searchLine("").render(80).map(stripVTControlCharacters), ["  Type to search: "]);
+	test("shows the placeholder while the query is empty", () => {
+		assert.match(middle(searchLine("").render(80)), /^ │ ⌕ Search…\s+│$/);
 	});
 
-	test("truncates the line to the available width", () => {
+	test("fits the box to the available width", () => {
 		const lines = searchLine("a long search query").render(12);
-
-		assert.equal(lines.length, 1);
-		assert.ok(visibleWidth(lines[0]!) <= 12);
-		assert.ok(stripVTControlCharacters(lines[0]!).startsWith("  Type to"));
+		assert.equal(lines.length, 3);
+		for (const line of lines) assert.ok(visibleWidth(line) <= 12);
+		assert.match(middle(lines), /^ │ ⌕ …\S*y │$/, "the end of a long query stays in view");
 	});
 
 	test("renders one empty line, without a cursor, when there is no width", () => {
@@ -103,7 +106,7 @@ describe("TreeSelectorComponent", () => {
 			const focusedLines = selector.render(80);
 			const cursorLines = focusedLines.filter((line) => line.includes(CURSOR_MARKER));
 			assert.equal(cursorLines.length, 1);
-			assert.equal(stripVTControlCharacters(cursorLines[0]!.replace(CURSOR_MARKER, "")), "  Type to search:  ");
+			assert.match(stripVTControlCharacters(cursorLines[0]!.replace(CURSOR_MARKER, "")), /^ │ ⌕ {2}Search…\s+│$/);
 			assert.ok(cursorLines[0]!.includes(`${CURSOR_MARKER}\x1b[7m \x1b[27m`));
 
 			selector.focused = false;
@@ -131,7 +134,7 @@ describe("TreeSelectorComponent", () => {
 			selector.handleInput("\x1b");
 			rendered = selector.render(80);
 			cursorLineIndex = rendered.findIndex((line) => line.includes(CURSOR_MARKER));
-			assert.ok(stripVTControlCharacters(rendered[cursorLineIndex]!).includes("Type to search:"));
+			assert.ok(stripVTControlCharacters(rendered[cursorLineIndex]!).includes("⌕"));
 			assert.equal(rendered.filter((line) => line.includes(CURSOR_MARKER)).length, 1);
 		});
 

@@ -58,7 +58,10 @@ function tierScore(tier: number, score = 0): number {
 function matchLiteralToken(session: SessionInfo, value: string): number | undefined {
 	const name = session.name?.toLowerCase() ?? "";
 	if (name.includes(value)) return tierScore(TIER_NAME, fuzzyMatch(value, name).score);
+	const title = session.title?.toLowerCase() ?? "";
+	if (title.includes(value)) return tierScore(TIER_NAME, fuzzyMatch(value, title).score);
 	if (session.id.toLowerCase().includes(value)) return tierScore(TIER_TEXT);
+	if (session.detail?.toLowerCase().includes(value)) return tierScore(TIER_TEXT);
 	if (session.summary?.toLowerCase().includes(value)) return tierScore(TIER_TEXT);
 	if (getMessageText(session).lower.includes(value)) return tierScore(TIER_TEXT);
 	if (session.cwd.toLowerCase().includes(value)) return tierScore(TIER_TEXT);
@@ -70,7 +73,13 @@ function matchFuzzyToken(session: SessionInfo, value: string): number | undefine
 	if (literal !== undefined) return literal;
 
 	let best: number | undefined;
-	for (const field of [session.name ?? "", session.summary ?? "", session.cwd]) {
+	for (const field of [
+		session.name ?? "",
+		session.title ?? "",
+		session.detail ?? "",
+		session.summary ?? "",
+		session.cwd,
+	]) {
 		const match = fuzzyMatch(value, field);
 		if (match.matches && (best === undefined || match.score < best)) best = match.score;
 	}
@@ -80,7 +89,10 @@ function matchFuzzyToken(session: SessionInfo, value: string): number | undefine
 function matchPhraseToken(session: SessionInfo, phrase: string): number | undefined {
 	const name = normalizeWhitespaceLower(session.name ?? "");
 	if (name.includes(phrase)) return tierScore(TIER_NAME, fuzzyMatch(phrase, name).score);
+	const title = normalizeWhitespaceLower(session.title ?? "");
+	if (title.includes(phrase)) return tierScore(TIER_NAME, fuzzyMatch(phrase, title).score);
 	if (session.id.toLowerCase().includes(phrase)) return tierScore(TIER_TEXT);
+	if (normalizeWhitespaceLower(session.detail ?? "").includes(phrase)) return tierScore(TIER_TEXT);
 	if (normalizeWhitespaceLower(session.summary ?? "").includes(phrase)) return tierScore(TIER_TEXT);
 	if (getNormalizedMessageText(session).includes(phrase)) return tierScore(TIER_TEXT);
 	if (normalizeWhitespaceLower(session.cwd).includes(phrase)) return tierScore(TIER_TEXT);
@@ -89,8 +101,10 @@ function matchPhraseToken(session: SessionInfo, phrase: string): number | undefi
 
 function matchRegex(session: SessionInfo, regex: RegExp): number | undefined {
 	if (session.name && regex.test(session.name)) return tierScore(TIER_NAME);
+	if (session.title && regex.test(session.title)) return tierScore(TIER_NAME);
 	if (
 		regex.test(session.id) ||
+		(session.detail !== undefined && regex.test(session.detail)) ||
 		(session.summary !== undefined && regex.test(session.summary)) ||
 		regex.test(session.allMessagesText) ||
 		regex.test(session.cwd)
