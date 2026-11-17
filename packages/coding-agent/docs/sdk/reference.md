@@ -1091,6 +1091,12 @@ Both extend `DebugError`, whose `code` is a `DebugErrorCode` and whose `fields()
 
 To pass one between processes, `serializeDebugError(error)` turns it into a `SerializedDebugError` (`name`, `code`, `message`, `hint`, `retryable`, `fields`, and a cause chain of at most eight errors), and `rehydrateDebugError(serialized)` rebuilds the same class with the same fields. An unknown `name` comes back as a `DebugError` that keeps its `name`, `code`, `fields` and `retryable`. The RPC client does this for you: when the engine refuses `set_debug`, `setDebug()` rejects with the `DebugConfigError`.
 
+## Private temp directories
+
+`ensurePrivateTempDirAsync(...segments)` creates or reuses a directory that only the current account can use, and returns its path. `assertPrivateDirectoryAsync(path)` checks that an existing `path` is a real directory owned by the current account that no other account can open. It rejects with `TempDirRefusedError` for a security refusal. File system errors while inspecting the path, such as `ENOENT` for a missing path, propagate unchanged. Relative paths are resolved against the working directory when the call starts. Neither blocks the main thread.
+
+On Windows, the check reads the directory's owner and access list with PowerShell, which can take seconds on a busy machine, so prefer the asynchronous forms. The synchronous `ensurePrivateTempDir()` and `assertPrivateDirectory()` never wait for that read. They accept a directory already checked in this process. Otherwise they start the check in the background: `assertPrivateDirectory()` throws `TempDirRefusedError` with the reason `its ownership is still being verified`, and `ensurePrivateTempDir()` returns another private directory. A later call accepts the directory once the check passes.
+
 ## Exports
 
 The main entry point exports:
@@ -1248,6 +1254,9 @@ GitProvisionError, GitUnavailableError, GitProvisionTimeoutError, GitProvisionCo
 isGitProvisionError, isGitUnavailableError, isGitProvisionTimeoutError, isGitProvisionConfigError
 findGitProvisionError, isRetryableGitProvisionError, rehydrateGitProvisionError
 type ResolvedGit, type ResolveGitOptions, type GitToolStatus, type GitUnavailableCode, type GitUnavailableFields
+
+// Private temp directories (see "Private temp directories")
+ensurePrivateTempDirAsync, assertPrivateDirectoryAsync, ensurePrivateTempDir, assertPrivateDirectory, TempDirRefusedError
 
 // fd and ripgrep download errors (see "fd and ripgrep download errors")
 ManagedToolError, ManagedToolDownloadError, ManagedToolTimeoutError
