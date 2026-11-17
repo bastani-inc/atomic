@@ -1,8 +1,11 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelsStore, ModelsStoreEntry } from "@bastani/atomic-ai";
 import { getAgentDir } from "../config.js";
+import { normalizePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { type AuthStorageBackend, FileAuthStorageBackend } from "./auth-storage-backends.ts";
+import { normalizeProviderKeys } from "./azure-provider-compat.js";
 
 type StoredModels = Record<string, ModelsStoreEntry>;
 
@@ -24,11 +27,17 @@ export class InMemoryCodingAgentModelsStore implements ModelsStore {
 
 /** Locked JSON-backed storage for dynamically refreshed provider catalogs. */
 export class FileModelsStore implements ModelsStore {
+	private readonly path: string;
 	private readonly storage: AuthStorageBackend;
-	/** The file as last parsed, and the version (device, inode, size, mtime and ctime) it was parsed at. */
-	private parsed: { readonly version: string; readonly models: StoredModels } | undefined;
+	/**
+	 * The file's text as last read, and its parse. The parse is reused only for the same text: a save can leave the
+	 * file's size, inode number and times as they were (two saves within one coarse timestamp tick can give the second
+	 * file the inode number the first freed), but never its text.
+	 */
+	private parsed: { readonly text: string | undefined; readonly models: StoredModels } | undefined;
 
 	constructor(path: string = join(getAgentDir(), "models-store.json")) {
+		this.path = normalizePath(path);
 		this.storage = new FileAuthStorageBackend(path);
 	}
 
@@ -38,18 +47,14 @@ export class FileModelsStore implements ModelsStore {
 
 	/**
 	 * Reads take no lock: writers replace the file atomically, so a read sees a complete previous or next file. A
-	 * refresh reads every provider's entry in turn; the file is parsed again only once its version changed, as any
-	 * write does (a replacement is a new inode, an edit in place moves its ctime).
+	 * refresh reads every provider's entry in turn; each read reads the file, and parses it again only when its text
+	 * changed. Provider ids are canonicalized as a locked read of the file canonicalizes them.
 	 */
 	async read(providerId: string): Promise<ModelsStoreEntry | undefined> {
-		const read = this.storage.read;
-		const version = this.storage.version;
-		if (!read || !version) {
-			return this.storage.withLock((content) => ({ result: structuredClone(this.parse(content)[providerId]) }));
+		const text = readTextIfPresent(this.path);
+		if (!this.parsed || this.parsed.text !== text) {
+			this.parsed = { text, models: text ? normalizeProviderKeys(this.parse(text)) : {} };
 		}
-		const current = version.call(this.storage);
-		if (this.parsed?.version !== current)
-			this.parsed = { version: current, models: this.parse(read.call(this.storage)) };
 		return structuredClone(this.parsed.models[providerId]);
 	}
 
@@ -67,5 +72,14 @@ export class FileModelsStore implements ModelsStore {
 			delete current[providerId];
 			return { result: undefined, next: JSON.stringify(current, null, 2) };
 		});
+	}
+}
+
+function readTextIfPresent(path: string): string | undefined {
+	try {
+		return readFileSync(path, "utf-8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
 	}
 }
