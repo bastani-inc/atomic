@@ -85,6 +85,8 @@ export type FakeLibsqlFault =
 	| { readonly kind: "busy" }
 	| { readonly kind: "stream-busy" }
 	| { readonly kind: "result-error"; readonly code: string }
+	| { readonly kind: "timed-out-mid-batch" }
+	| { readonly kind: "rolled-back-before-commit" }
 	| { readonly kind: "reset-before" }
 	| { readonly kind: "reset-after" }
 	| { readonly kind: "closed-before" }
@@ -376,6 +378,24 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		if (timedOut !== undefined) rollBack(stream);
 		busy = fault?.kind === "busy";
 		const results = body.requests.map((each) => {
+			if (fault?.kind === "timed-out-mid-batch" && each.type === "batch") {
+				const began: StmtResult = { cols: [], rows: [], affected_row_count: 0, last_insert_rowid: null };
+				const rolledBack = { message: "Transaction timed out", code: "TRANSACTION_TIMEOUT" };
+				const result = {
+					step_results: each.batch.steps.map((_step, index) => (index === 0 ? began : null)),
+					step_errors: each.batch.steps.map((_step, index) => (index === 0 ? null : rolledBack)),
+				};
+				return { type: "ok", response: { type: "batch", result } };
+			}
+			if (fault?.kind === "rolled-back-before-commit" && each.type === "batch") {
+				const ran: StmtResult = { cols: [], rows: [], affected_row_count: 1, last_insert_rowid: null };
+				const commit = each.batch.steps.findIndex((step) => step.stmt.sql === "COMMIT");
+				const result = {
+					step_results: each.batch.steps.map((_step, index) => (index < commit ? ran : null)),
+					step_errors: each.batch.steps.map(() => null),
+				};
+				return { type: "ok", response: { type: "batch", result } };
+			}
 			if (timedOut !== undefined && each.type === "batch") {
 				// As sqld answers a batch whose first step failed: the steps conditioned on it never ran.
 				const steps = each.batch.steps.map(() => null);

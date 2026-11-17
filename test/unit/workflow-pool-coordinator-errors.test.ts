@@ -129,9 +129,12 @@ for (const ending of ["active", "recycle", "retire"] as const) {
 			assert.equal(reply.error, undefined);
 			if (ending === "retire") assert.equal(reply.retire, true);
 			assert.ok(completed);
+			if (ending !== "active") worker.disconnect();
 			completed(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
 			assert.equal(worker.killedWith, ending === "active" ? "SIGKILL" : undefined);
 			if (ending !== "active") worker.exit(0);
+			assert.equal(worker.exitCode, ending === "active" ? null : 0);
+			assert.equal(worker.signalCode, ending === "active" ? "SIGKILL" : null);
 		} finally {
 			await f.close();
 		}
@@ -158,9 +161,12 @@ test("a late control-push failure does not kill a worker that began recycling af
 		await worker.request({ kind: "recycle", attempts: 2, rssBytes: 1 });
 		await worker.request({ kind: "controlled", revision });
 		await changing;
+		worker.disconnect();
 		completed(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
 		assert.equal(worker.killedWith, undefined);
 		worker.exit(0);
+		assert.equal(worker.exitCode, 0);
+		assert.equal(worker.signalCode, null);
 	} finally {
 		await f.close();
 	}
@@ -196,6 +202,8 @@ test("control pushes skip a recycling worker but still reach an active worker (#
 		assert.equal(attempts, 0);
 		assert.equal(ending.killedWith, undefined);
 		ending.exit(0);
+		assert.equal(ending.exitCode, 0);
+		assert.equal(ending.signalCode, null);
 	} finally {
 		await f.close();
 	}
@@ -213,6 +221,7 @@ test("a reply that settles after a recycling worker disconnects is not sent to i
 			return send(message, callback);
 		});
 		worker.ask({ kind: "control" });
+		worker.ask({ kind: "heartbeat", reports: [] });
 		worker.disconnect();
 		await f.stop();
 		assert.equal(replies, 0);

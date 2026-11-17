@@ -352,7 +352,7 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 			);
 			assert.deepEqual(
 				ledger.map((row) => Number(row.version)),
-				[1, 2, 3, 4],
+				[1, 2, 3, 4, 5],
 			);
 			await write(database, EARLY_WRITES);
 			await write(database, LATE_WRITES);
