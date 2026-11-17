@@ -49,6 +49,7 @@
 
 ### Fixed
 
+- Read results keep image-capability warnings visible and use the chat's theme, including custom renderer hosts ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed a failing extension's agent panel source crashing the host during updates, navigation or cleanup, including rejected row values, thrown or frozen promises, promise subclasses with throwing species or constructors, throwing iterators or getters, and errors whose messages cannot be read safely. Well-behaved Promise subclasses keep their constructors, and rejection guards are scoped to the panel's own promises. Source reads limit rows and choices so oversized arrays or endless iterables cannot freeze the chat. Other sources remain usable, and failed stop and answer actions report their errors ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - An idle agent panel stops repainting after retained workflow rows have faded, including when additional finished runs are folded into `+N more`, and does not tick while only paused or queued rows are shown. Finished or quit workflow runs opened from F2, `/workflows` or auto-attach start their retention timer, and a dismissed run reappears when resumed ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed long runs of cursor-control prefixes or spaces stalling the attached chat composer's placeholder formatting, and removed the extra space after the cursor cell in attached placeholders ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
