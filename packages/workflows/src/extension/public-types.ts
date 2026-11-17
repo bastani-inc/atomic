@@ -91,6 +91,7 @@ export interface PiRuntimeModelRegistry
 		>
 	> {
 	getAvailable(): PiRuntimeModel[];
+	hasConfiguredAuth?(model: { readonly provider: string }): boolean;
 }
 
 export interface PiModelContext {

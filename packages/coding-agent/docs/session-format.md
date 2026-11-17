@@ -232,10 +232,11 @@ Emitted when the user switches models mid-session.
 {"type":"model_change","id":"d4e5f6g7","parentId":"c3d4e5f6","timestamp":"2024-12-03T14:05:00.000Z","provider":"openai","modelId":"gpt-4o"}
 ```
 
-A model change that a [model fallback](/settings#fallbackmodels) made also has `fallback`. It names the model the turn asked for (`requested`), the model that failed (`from`), and the failure (`reason`):
+A model change that a [model fallback](/settings#fallbackmodels) made also has `fallback`. It names the model the turn asked for (`requested`), the model that failed or lacked credentials before any request (`from`), and the failure (`reason`). When the walk passes over candidates without sending a request, `fallback.skipped` lists each `{ model, provider, reason }` with `reason` set to `"no-credentials"` when that provider has no configured credentials or `"auth-failed"` when that provider already rejected credentials earlier in the turn:
 
 ```json
 {"type":"model_change","id":"e5f6g7h8","parentId":"d4e5f6g7","timestamp":"2024-12-03T14:06:00.000Z","provider":"anthropic","modelId":"claude-opus-4-8","fallback":{"requested":"openai/gpt-4o","from":"openai/gpt-4o","reason":"503 Service Unavailable"}}
+{"type":"model_change","id":"f6g7h8i9","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:07:00.000Z","provider":"github-copilot","modelId":"gpt-5.5","fallback":{"requested":"openai/gpt-5","from":"openai/gpt-5","reason":"No API key found for openai","skipped":[{"model":"openai/gpt-5","provider":"openai","reason":"no-credentials"},{"model":"anthropic/claude-opus-4-8","provider":"anthropic","reason":"no-credentials"}]}}
 ```
 
 ### ThinkingLevelChangeEntry

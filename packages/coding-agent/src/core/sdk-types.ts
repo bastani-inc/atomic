@@ -63,7 +63,7 @@ export interface CreateAgentSessionOptions {
 	 * Used by main-chat turns. Default: settings.fallbackModels
 	 */
 	fallbackModels?: string[];
-	/** Hard eligibility gate applied before fallback inference, including compaction borrowing. */
+	/** Hard eligibility gate applied before fallback inference. */
 	isFallbackModelAllowed?: (model: Model<Api>, effort: string | undefined) => boolean;
 	/** Models available for cycling (Ctrl+P in interactive mode) */
 	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;

@@ -45,6 +45,24 @@ export function resolveFallbackModel(
 	lookup: FallbackModelLookup,
 	preferredProvider: string | undefined,
 ): FallbackModelCandidate | undefined {
+	const candidate = resolveFallbackEntry(value, lookup, preferredProvider);
+	return candidate && lookup.hasConfiguredAuth(candidate.model.provider) ? candidate : undefined;
+}
+
+export function resolveFallbackModelWithoutCredentials(
+	value: string,
+	lookup: FallbackModelLookup,
+	preferredProvider: string | undefined,
+): FallbackModelCandidate | undefined {
+	const candidate = resolveFallbackEntry(value, lookup, preferredProvider);
+	return candidate && !lookup.hasConfiguredAuth(candidate.model.provider) ? candidate : undefined;
+}
+
+function resolveFallbackEntry(
+	value: string,
+	lookup: FallbackModelLookup,
+	preferredProvider: string | undefined,
+): FallbackModelCandidate | undefined {
 	const usable = (provider: string) => lookup.hasConfiguredAuth(provider);
 	const result = resolveModelReference(
 		{ text: value, thinkingSuffix: "strict", fuzzy: true },
@@ -56,8 +74,7 @@ export function resolveFallbackModel(
 		result.status === "resolved"
 			? result.model
 			: result.candidates.find((candidate) => candidate.provider === preferredProvider);
-	if (!model || !usable(model.provider)) return undefined;
-	return { model, thinkingLevel: result.thinkingLevel };
+	return model ? { model, thinkingLevel: result.thinkingLevel } : undefined;
 }
 
 /** Stable `provider/model:level` identity for one attempted fallback candidate. */
