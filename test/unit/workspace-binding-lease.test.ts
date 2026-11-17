@@ -15,7 +15,7 @@ import {
 	workspace,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
 import { closeAfter, withRepositoryLock } from "../../packages/coding-agent/src/core/workspace/lease.ts";
-import { keptExitedPid } from "../helpers/exited-process.ts";
+import { keptExitedPid } from "../helpers/exited-process.js";
 import {
 	createRepository,
 	git,
