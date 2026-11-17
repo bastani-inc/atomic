@@ -130,6 +130,38 @@ test("a busy-lock answer of TRANSACTION_TIMEOUT alone is sent again, and any oth
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
 });
 
+test("a write batch the server rolls back after its BEGIN, failing every later step, is sent again without leaving a rejection unhandled (#4768)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => unhandled.push(reason);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		fake.fail({ kind: "timed-out-mid-batch" });
+		await database.batch!([...insert(1), ...insert(2)], { lockWaitMs: 30_000 });
+		await new Promise((resolve) => setImmediate(resolve));
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+	assert.deepEqual(unhandled, []);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 2);
+});
+
+test("a write batch whose COMMIT the server skipped fails, once, instead of reporting its writes as committed (#4768)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	const before = fake.pipelines.length;
+	fake.fail({ kind: "rolled-back-before-commit" });
+	await assert.rejects(
+		database.batch!([...insert(1), ...insert(2)], { lockWaitMs: 30_000 }),
+		(error: Error & { cause?: { code?: unknown } }) => error.cause?.code === "TRANSACTION_CLOSED",
+	);
+	assert.equal(fake.pipelines.length - before, 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
+});
+
 test("only the third unanswered write in a row warns of a stall, any answer starts the count again, and no recovery is reported without a stall (#4768)", async () => {
 	const fake = await server();
 	const real = globalThis.fetch;

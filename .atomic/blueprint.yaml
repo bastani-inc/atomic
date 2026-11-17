@@ -52,6 +52,8 @@ knowledge:
       After changing SDK imports used by workflow graph views, run
       `npx vitest run --project unit test/unit/overlay-adapter-autowrap.test.ts test/unit/overlay-adapter-hidden-render.test.ts`:
       these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
+      Verify both localized recovery fixtures without system locales with:
+      `(umask 022; LOCPATH=/nonexistent npx vitest run --project unit test/unit/subagents-named-worktree-locks.test.ts test/unit/subagents-named-worktree-recovery.test.ts)`.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run
