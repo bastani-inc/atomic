@@ -2,6 +2,8 @@ import { sliceHead } from "@bastani/atomic";
 import {
 	actionableReturnedStatusText,
 	effectiveRunStatus,
+	isReturnedBlockedWorkflowStatus,
+	normalizeReturnedWorkflowStatus,
 	structuredRecoverableWorkflowFailure,
 } from "../shared/returned-run-status.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
@@ -96,17 +98,24 @@ export function findWaitingInTree(
 	return undefined;
 }
 
-export function runFailureText(run: RunSnapshot): string | undefined {
+export type RunFailureSource = Partial<RunSnapshot>;
+
+export function runFailureText(run: RunFailureSource): string | undefined {
+	const stages = run.stages ?? [];
 	const failedStage =
-		(run.failedStageId === undefined ? undefined : run.stages.find((stage) => stage.id === run.failedStageId)) ??
-		run.stages.find((stage) => stage.status === "failed") ??
-		run.stages.find((stage) => stage.status === "blocked");
+		(run.failedStageId === undefined ? undefined : stages.find((stage) => stage.id === run.failedStageId)) ??
+		stages.find((stage) => stage.status === "failed") ??
+		stages.find((stage) => stage.status === "blocked");
+	const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.status);
+	const returnedFailure =
+		returnedStatus === "failed" || (returnedStatus !== undefined && isReturnedBlockedWorkflowStatus(returnedStatus));
 	return (
-		actionableReturnedStatusText(run.result) ??
+		(returnedFailure ? actionableReturnedStatusText(run.result) : undefined) ??
 		run.error ??
 		run.failureMessage ??
 		failedStage?.error ??
 		failedStage?.failureMessage ??
-		structuredRecoverableWorkflowFailure(run)?.error
+		structuredRecoverableWorkflowFailure({ ...run, stages })?.error ??
+		actionableReturnedStatusText(run.result)
 	);
 }

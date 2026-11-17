@@ -529,6 +529,19 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 		assert.equal(outcome.reason, "Tests failed in 2 packages");
 	});
 
+	it("keeps recorded failures ahead of a successful returned summary (#5224)", () => {
+		for (const error of ["Error: admitted tool failure", undefined]) {
+			const outcome = buildRunOutcome(
+				run("failed", [stage("verify", "failed", { error: "Error: stage failed" })], {
+					error,
+					result: { status: "completed", summary: "all clear" },
+				}),
+			);
+			assert.equal(outcome.reason, error === undefined ? "stage failed" : "admitted tool failure");
+			assert.notEqual(outcome.reason, "all clear");
+		}
+	});
+
 	it("preserves stage, cause and stack-frame indentation and normalizes CRLF in the run details log (#5224)", () => {
 		const failedStage = stage("deploy", "failed", {
 			error: "Deploy failed",
