@@ -159,6 +159,7 @@ test.skipIf(process.platform === "win32")(
 			settingsManager,
 			sessionManager: SessionManager.inMemory(directory),
 			resourceLoader,
+			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 			tools: ["bash"],
 		});
 		const completionCommandOutput = Promise.withResolvers<string>();
