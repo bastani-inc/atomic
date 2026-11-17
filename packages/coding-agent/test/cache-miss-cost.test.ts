@@ -4,11 +4,9 @@ import { describe, test } from "vitest";
 import {
 	collectCacheMisses,
 	computeCacheWaste,
-	estimateCompactionCacheMiss,
 	formatCacheCost,
 	formatCacheMissNotice,
 	formatCacheWaste,
-	formatCompactionCacheMissNotice,
 	type ModelPriceSource,
 } from "../src/core/cache-stats.js";
 import type { SessionEntry } from "../src/core/session-manager.js";
@@ -144,29 +142,6 @@ describe("cache-miss cost display (#4688)", () => {
 		assert.equal(
 			formatCacheWaste(computeCacheWaste(mixed, models({ input: 3, cacheRead: 0.3 }))),
 			"$0.1080 (2 misses, 1 without pricing)",
-		);
-	});
-
-	test("background compaction expectation shows the re-billed cost and keeps the extra over a hit (#4688)", () => {
-		const rates = { input: 0.042, cacheRead: 0.041 };
-		const cached = [assistantEntry("cached", 0, priced(100, ISSUE_TOKENS, rates))];
-		const miss = estimateCompactionCacheMiss(cached, ISSUE_TOKENS, models(rates));
-		assert.ok(miss);
-		assert.ok(Math.abs(miss.expectedMissedCost - (ISSUE_TOKENS * 0.001) / PER_MILLION) < 1e-12);
-		assert.equal(
-			formatCompactionCacheMissNotice(miss),
-			"Prompt cache miss expected after background compaction: 257,225 tokens re-billed ($0.011, <$0.001 more than a cache hit)",
-		);
-		const zero = { input: 0, cacheRead: 0 };
-		const unpriced = estimateCompactionCacheMiss(
-			[assistantEntry("cached", 0, priced(100, ISSUE_TOKENS, zero))],
-			ISSUE_TOKENS,
-			models(zero),
-		);
-		assert.ok(unpriced);
-		assert.equal(
-			formatCompactionCacheMissNotice(unpriced),
-			"Prompt cache miss expected after background compaction: 257,225 tokens re-billed (cost unknown)",
 		);
 	});
 });

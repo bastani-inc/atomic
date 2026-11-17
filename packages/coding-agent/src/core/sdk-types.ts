@@ -60,13 +60,10 @@ export interface CreateAgentSessionOptions {
 	thinkingLevel?: ThinkingLevel;
 	/**
 	 * Ordered fallback models as provider/model strings with optional :thinkingLevel suffix.
-	 * Used by main-chat turns and borrowed, planner-only, for compaction range planning when
-	 * the current model cannot produce a usable plan — so a configured candidate may receive
-	 * the compaction transcript. Borrowing never changes the session model or thinking level.
-	 * Default: settings.fallbackModels
+	 * Used by main-chat turns. Default: settings.fallbackModels
 	 */
 	fallbackModels?: string[];
-	/** Hard eligibility gate applied before fallback inference, including compaction borrowing. */
+	/** Hard eligibility gate applied before fallback inference. */
 	isFallbackModelAllowed?: (model: Model<Api>, effort: string | undefined) => boolean;
 	/** Models available for cycling (Ctrl+P in interactive mode) */
 	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
@@ -154,11 +151,6 @@ export interface CreateAgentSessionOptions {
 	 * options from `getChildSessionOptions()` carry the parent's admission, or `null` when the parent holds none.
 	 */
 	resourceAdmission?: ResourceAdmission | null;
-	/**
-	 * Receives "compaction ready" wakes when a background compaction result is stored (#4330). Omitted,
-	 * the session notifies its own `onCompactionReady` listeners and applies the result at its next turn.
-	 */
-	compactionWake?: import("./compaction/background-compaction.ts").CompactionWakeDispatcher;
 	resourceAdmissionSignal?: AbortSignal;
 	resourceAdmissionDelegated?: boolean;
 	/**

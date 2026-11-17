@@ -50,12 +50,5 @@ export function normalizeAzureSettings(settings: Settings): Settings {
 		...(isRecord(settings.modelThinkingLevels) && {
 			modelThinkingLevels: normalizeProviderKeys(settings.modelThinkingLevels),
 		}),
-		...(isRecord(settings.compaction) &&
-			isRecord(settings.compaction.modelOverrides) && {
-				compaction: {
-					...settings.compaction,
-					modelOverrides: normalizeProviderKeys(settings.compaction.modelOverrides),
-				},
-			}),
 	};
 }

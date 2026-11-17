@@ -128,11 +128,13 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
-	test("stage chat handles no-args /compact through the live AgentSession", async () => {
+	test("stage chat handles /compact [instructions] through the live AgentSession", async () => {
 		let compactCalls = 0;
+		const queries: Array<string | undefined> = [];
 		const agentSession = {
-			compact: async () => {
+			compact: async (options?: { query?: string }) => {
 				compactCalls += 1;
+				queries.push(options?.query);
 				return {};
 			},
 		} as unknown as AgentSession;
@@ -154,14 +156,15 @@ describe("StageChatView", () => {
 		view.handleInput("\r");
 		await flush();
 		await flush();
-		assert.equal(compactCalls, 0);
+		assert.equal(compactCalls, 1);
 		assert.deepEqual(state.promptCalls, []);
 
 		for (const ch of "/compact") view.handleInput(ch);
 		view.handleInput("\r");
 		await flush();
 		await flush();
-		assert.equal(compactCalls, 1);
+		assert.equal(compactCalls, 2);
+		assert.deepEqual(queries, ["keep recent context", undefined]);
 		assert.deepEqual(state.promptCalls, []);
 		view.dispose();
 	});

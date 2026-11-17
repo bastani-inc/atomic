@@ -22,8 +22,8 @@ type ModelRef = { api: AssistantMessage["api"]; provider: string; id: string };
 /** What the fake provider answers for one request, and what that request cost. */
 type Reply = { text: string; cost: number; input?: number; stopReason?: "stop" | "error"; errorMessage?: string };
 
-/** Everything the fake provider knows about a request. */
-type Request = { kind: "turn" | "planner" | "compaction"; turn: number };
+/** Everything the fake provider knows about a request. Compaction makes none, so every request is a turn. */
+type Request = { kind: "turn" | "compaction"; turn: number; roles: string[]; lastText: string };
 
 const spec = {
 	id: "m",
@@ -65,22 +65,13 @@ function stream(model: ModelRef, reply: Reply) {
 	return events;
 }
 
-/** Keep every numbered line but the last two messages, so the planner deletes most of the region. */
-function plannerRanges(lastText: string): string {
-	const body = lastText.slice("<compaction_request>\n".length, lastText.indexOf("\n</compaction_request>"));
-	const request = JSON.parse(body) as { messages: Array<{ id: number; lines: string[] }> };
-	return request.messages
-		.slice(0, -2)
-		.map((message) => `${message.id}:1,${message.lines.length}`)
-		.join("\n");
-}
-
 interface Harness {
 	readonly ctx: InternalStageContext;
 	/** Cost of every request the fake provider answered, in order. */
 	readonly spent: number[];
 	readonly sessions: StageSessionRuntime[];
-	readonly compactions: Array<{ reason: string; backend?: string; errorMessage?: string }>;
+	readonly compactions: Array<{ reason: string; form?: string; errorMessage?: string }>;
+	readonly requests: Request[];
 	attempts(): readonly WorkflowModelAttempt[];
 	charged(): number;
 }
@@ -95,18 +86,17 @@ afterEach(async () => {
 });
 
 /**
- * A stage over a real AgentSession whose provider is scripted per request. A
- * request is a planner request when its last message is a compaction request,
- * a compaction request of another kind (summary fallback) while compaction runs,
- * and a main turn otherwise.
+ * A stage over a real AgentSession whose provider is scripted per request. A request made while compaction runs is a
+ * compaction request; there must be none.
  */
 function stageHarness(
-	answer: (request: Request, lastText: string) => Reply,
+	answer: (request: Request) => Reply,
 	options: { retry?: boolean; history?: FileEntry[] } = {},
 ): Harness {
 	const spent: number[] = [];
 	const sessions: StageSessionRuntime[] = [];
 	const compactions: Harness["compactions"] = [];
+	const requests: Request[] = [];
 	let compacting = false;
 	let turn = 0;
 	const agentSession: AgentSessionAdapter = {
@@ -129,13 +119,16 @@ function stageHarness(
 							: typeof last?.content === "string"
 								? last.content
 								: "";
-					const kind: Request["kind"] = lastText.startsWith("<compaction_request>")
-						? "planner"
-						: compacting
-							? "compaction"
-							: "turn";
+					const kind: Request["kind"] = compacting ? "compaction" : "turn";
 					if (kind === "turn") turn += 1;
-					const reply = answer({ kind, turn }, lastText);
+					const request: Request = {
+						kind,
+						turn,
+						roles: context.messages.map((message) => message.role),
+						lastText,
+					};
+					requests.push(request);
+					const reply = answer(request);
 					spent.push(reply.cost);
 					return stream(model, reply);
 				},
@@ -149,7 +142,7 @@ function stageHarness(
 				fallbackModels: createOptions.fallbackModels,
 				settingsManager: SettingsManager.inMemory({
 					retry: options.retry ? { enabled: true, maxRetries: 2, baseDelayMs: 1 } : { enabled: false },
-					compaction: { enabled: true, reserveTokens: 2000, background: false },
+					compaction: { enabled: true, reserveTokens: 2000 },
 				}),
 				sessionManager: SessionManager.inMemory(process.cwd(), undefined, options.history),
 				resourceLoader: createTestResourceLoader(),
@@ -161,7 +154,7 @@ function stageHarness(
 				if (event.result === undefined && event.errorMessage === undefined) return;
 				compactions.push({
 					reason: event.reason,
-					...(event.result?.backend === undefined ? {} : { backend: event.result.backend }),
+					...(event.result?.form === undefined ? {} : { form: event.result.form }),
 					...(event.errorMessage === undefined ? {} : { errorMessage: event.errorMessage }),
 				});
 			});
@@ -178,6 +171,7 @@ function stageHarness(
 		spent,
 		sessions,
 		compactions,
+		requests,
 		attempts,
 		charged: () => attempts().reduce((sum, attempt) => sum + (attempt.usage?.cost ?? 0), 0),
 	};
@@ -188,39 +182,39 @@ function stageHarness(
 const sum = (values: readonly number[]) => values.reduce((total, value) => total + value, 0);
 
 /** Each main turn reports 19k input tokens, past the 18k threshold, so compaction runs inside a later prompt. */
-const thresholdAnswer = (request: Request, lastText: string): Reply =>
-	request.kind === "planner"
-		? { text: plannerRanges(lastText), cost: 0.5, input: 5000 }
-		: { text: longText, cost: 1, input: 19_000 };
+const thresholdAnswer = (): Reply => ({ text: longText, cost: 1, input: 19_000 });
 
 describe("stage usage through compaction (#5053)", () => {
-	test("a threshold compaction inside a stage prompt charges every main turn and the planner once (#5053)", async () => {
+	test("a threshold compaction inside a stage prompt clears the context with no model call and charges every turn (#5053)", async () => {
 		const harness = stageHarness(thresholdAnswer);
 
 		for (let index = 0; index < 8; index += 1) await harness.ctx.prompt(`prompt ${index}`);
 
 		assert.ok(
-			harness.compactions.some((compaction) => compaction.reason === "threshold"),
-			"a threshold compaction ran inside a stage prompt",
+			harness.compactions.some((compaction) => compaction.reason === "threshold" && compaction.form === "cleared"),
+			"a threshold compaction cleared the stage context",
 		);
-		assert.deepEqual(harness.spent.filter((cost) => cost === 0.5).length, 1, "the planner ran once");
-		assert.equal(harness.attempts().length, 8);
 		assert.ok(
-			harness.attempts().every((attempt) => attempt.usage !== undefined),
-			"every prompt made a priced call, so every attempt carries usage",
+			harness.requests.every((request) => request.kind === "turn"),
+			"compaction made no request of its own",
 		);
-		assert.equal(harness.charged(), 8.5);
+		assert.equal(harness.attempts().length, 8);
+		assert.equal(harness.charged(), 8);
 		assert.equal(harness.charged(), sum(harness.spent));
 		assert.deepEqual(
 			harness.attempts().map((attempt) => attempt.usage?.turns),
 			[1, 1, 1, 1, 1, 1, 1, 1],
-			"a compaction request is charged but is not a turn",
 		);
+		const afterClear = harness.requests.find((request) => request.lastText.startsWith("Context cleared."));
+		assert.equal(afterClear, undefined, "the next prompt follows the Context cleared message");
+		const cleared = harness.requests.find(
+			(request) => request.roles.filter((role) => role !== "system").length === 2,
+		);
+		assert.ok(cleared, "a turn after the clear saw only the Context cleared message and its own prompt");
 	});
 
-	test("overflow recovery charges the overflowed request, the planner and the retried turn (#5053)", async () => {
-		const harness = stageHarness((request, lastText) => {
-			if (request.kind === "planner") return { text: plannerRanges(lastText), cost: 0.5, input: 5000 };
+	test("overflow recovery inside a stage clears the context and retries with exactly system + Context cleared (#5053)", async () => {
+		const harness = stageHarness((request) => {
 			if (request.turn === 5)
 				return {
 					text: "",
@@ -234,38 +228,19 @@ describe("stage usage through compaction (#5053)", () => {
 		for (let index = 0; index < 5; index += 1) await harness.ctx.prompt(`prompt ${index}`);
 
 		assert.ok(
-			harness.compactions.some((compaction) => compaction.reason === "overflow" && !compaction.errorMessage),
-			"overflow recovery compacted the transcript",
+			harness.compactions.some(
+				(compaction) =>
+					compaction.reason === "overflow" && compaction.form === "cleared" && !compaction.errorMessage,
+			),
+			"overflow recovery cleared the stage context",
 		);
 		assert.equal(harness.attempts().length, 5);
-		assert.equal(harness.attempts()[4]?.success, true, "the turn retried after compaction succeeded");
-		assert.equal(harness.attempts()[4]?.usage?.cost, 0.25 + 0.5 + 1);
+		assert.equal(harness.attempts()[4]?.success, true, "the turn retried after the clear");
+		assert.equal(harness.attempts()[4]?.usage?.cost, 0.25 + 1);
 		assert.equal(harness.charged(), sum(harness.spent));
-	});
-
-	test("a planner refusal that falls back to a summary charges the refusal and the summary (#5053)", async () => {
-		const harness = stageHarness((request, lastText) => {
-			if (request.kind === "planner")
-				return {
-					text: "",
-					cost: 0.5,
-					input: 5000,
-					stopReason: "error",
-					errorMessage: "The model refused to complete the request.",
-				};
-			if (request.kind === "compaction") return { text: "## Goal\nSummarized.", cost: 0.25, input: 5000 };
-			return thresholdAnswer(request, lastText);
-		});
-
-		for (let index = 0; index < 8; index += 1) await harness.ctx.prompt(`prompt ${index}`);
-
-		assert.ok(
-			harness.compactions.some((compaction) => compaction.backend === "summary"),
-			"the compaction fell back to a summary",
-		);
-		assert.ok(harness.spent.includes(0.25), "the summary request ran");
-		assert.equal(harness.attempts().length, 8);
-		assert.equal(harness.charged(), sum(harness.spent));
+		const retry = harness.requests.at(-1);
+		assert.deepEqual(retry?.roles, ["system", "user"]);
+		assert.ok(retry?.lastText.startsWith("Context cleared."), retry?.lastText);
 	});
 
 	test("a stage resumed on a compacted session charges only its new requests, once (#5053)", async () => {
@@ -281,7 +256,7 @@ describe("stage usage through compaction (#5053)", () => {
 		const resumed = stageHarness(thresholdAnswer, { history });
 		for (let index = 0; index < 2; index += 1) await resumed.ctx.prompt(`resumed ${index}`);
 
-		assert.equal(first.charged(), 8.5);
+		assert.equal(first.charged(), 8);
 		assert.equal(resumed.charged(), sum(resumed.spent), "history is never charged again");
 		assert.equal(first.charged() + resumed.charged(), sum([...first.spent, ...resumed.spent]));
 	});

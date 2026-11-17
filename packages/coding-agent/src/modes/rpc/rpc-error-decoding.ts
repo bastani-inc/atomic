@@ -1,7 +1,3 @@
-import {
-	isSerializedBackgroundCompactionError,
-	rehydrateBackgroundCompactionError,
-} from "../../core/compaction/background-compaction-errors.ts";
 import { rehydrateDebugError } from "../../core/debug-errors.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import { isSerializedMissingSessionCwdError, rehydrateMissingSessionCwdError } from "../../core/session-cwd.ts";
@@ -21,9 +17,6 @@ export function assertRpcSuccess(response: RpcResponse): void {
 			undefined,
 			{ cause: new Error(response.error) },
 		);
-	}
-	if (response.errorCode === "background_compaction" && isSerializedBackgroundCompactionError(response.errorDetails)) {
-		throw rehydrateBackgroundCompactionError(response.errorDetails);
 	}
 	if (response.errorCode === "missing_session_cwd" && isSerializedMissingSessionCwdError(response.errorDetails)) {
 		throw rehydrateMissingSessionCwdError(response.errorDetails);

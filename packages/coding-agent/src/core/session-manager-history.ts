@@ -48,7 +48,7 @@ function contextMessageFromEntry(entry: SessionEntry): AgentMessage | undefined 
  * tool call was compacted away, or a trailing unanswered tool call) would otherwise
  * emit ill-ordered provider blocks and fail the request. Payloads are kept whole:
  * tool results keep their full text and images stay as image blocks, because the tail
- * is exactly the span `preserve_recent` promised to keep. Thinking is omitted, as in
+ * is exactly the span an older boundary promised to keep. Thinking is omitted, as in
  * the compacted region; the durable entries keep it, and messages after the boundary
  * replay with their thinking blocks.
  */
@@ -254,7 +254,9 @@ export function buildSessionProjection(
 	const edits = collectContextEdits(contextEntries);
 
 	const boundary = getLatestCompactionBoundaryEntry(path);
-	if (!boundary || boundary.details?.backend === "summary") {
+	// A summary boundary from an older release replays with its kept messages as structured messages.
+	const legacySummary = (boundary?.details as { backend?: string } | undefined)?.backend === "summary";
+	if (!boundary || legacySummary) {
 		const projected = contextEntries.map(
 			(sourceEntry): ProjectedSessionEntry => ({
 				sourceEntry,

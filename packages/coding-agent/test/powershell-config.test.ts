@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import type * as ChildProcess from "node:child_process";
 import type * as Fs from "node:fs";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 
@@ -16,7 +15,7 @@ vi.mock("node:fs", async (importOriginal) => ({
 }));
 
 vi.mock("child_process", async (importOriginal) => ({
-	...(await importOriginal<typeof ChildProcess>()),
+	...(await importOriginal<typeof import("node:child_process")>()),
 	spawnSync: spawnSyncMock,
 }));
 
@@ -33,8 +32,9 @@ beforeEach(async () => {
 	Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
 	vi.stubEnv("ProgramFiles", "D:\\Applications");
 	vi.stubEnv("SystemRoot", "E:\\WinNT");
+	vi.stubEnv("PATH", "");
 	accessSyncMock.mockReset().mockImplementation(notFound);
-	spawnSyncMock.mockReset().mockReturnValue({ status: 1, stdout: "" });
+	spawnSyncMock.mockReset();
 	// Atomic memoizes PATH lookups per module instance; start each test without them.
 	vi.resetModules();
 	shellModule = await import("../src/utils/shell.js");

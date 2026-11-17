@@ -57,17 +57,17 @@ A resumed session whose blueprint build runs behind its first turn (see [Start t
 
 While a resume waits for another Atomic process's build of the same worktree, a `{"type": "blueprint_build_waiting", "root": "…", "message": "Waiting for …"}` line says so once; it can come before the session header. `notices` holds the warnings a resume that waits for the build prints, and is empty when the build finished cleanly. In text mode (`-p`) the same warnings go to stderr as `Warning: …` lines.
 
-`queue_update` emits the full pending steering and follow-up queues whenever they change. `session_info_changed`, `model_changed`, and `thinking_level_changed` report interactive session metadata changes. `compaction_start` and `compaction_end` cover manual and automatic verbatim line compaction: the model emits deleted ranges and Atomic mechanically reconstructs retained text. `compaction_usage` reports the usage of each compaction model request (planner, classifier, summary fallback, and retries) as it returns, including requests of a run that later fails, so summing it charges every compaction request once. `child_session_usage` reports one model call of a child session the session created, such as a subagent, or of that child's own children.
+`queue_update` emits the full pending steering and follow-up queues whenever they change. `session_info_changed`, `model_changed`, and `thinking_level_changed` report interactive session metadata changes. `compaction_start` and `compaction_end` cover manual and automatic compaction: `compaction_end.result.form` is `cleared` when the context window was cleared and `compacted` when a compactor model or an extension replaced it. `compaction_usage` reports the usage of the compactor model's request when it returns, including for a run that later fails; a clear makes no model call. `child_session_usage` reports one model call of a child session the session created, such as a subagent, or of that child's own children.
 
 `agent_end` closes one low-level agent run; retries, compaction recovery, or queued work may still continue. `agent_settled` means no automatic work remains for the session-level run. Its `aborted` field is `true` when the run was cancelled.
 
 For automatic compaction, `compaction_end.willRetry === true` means the interrupted turn will retry; `AgentSession.prompt()` waits for that continuation. This includes overflow and retry-worthy threshold recovery, such as output-token truncation or OpenAI Responses output-budget underflow. Generic `invalid_request_body` failures still use `willRetry: false` when threshold compaction is warranted.
 
-If same-model compact-and-retry recovery is exhausted, `unresolvedOverflow: true` and `errorMessage` let integrations choose another model rather than treating the prompt as successful.
+If the one compact-and-retry for an overflow is exhausted, `unresolvedOverflow: true` and `errorMessage` let integrations choose another model rather than treating the prompt as successful.
 
 Check `result` and `errorMessage` independently. Both can be present when the boundary was saved but the follow-up request exceeded the provider's hard input limit.
 
-Compaction planning and branch summaries reuse the configured retry policy for transient provider failures. Their `summarization_retry_*` events expose scheduling, each restarted request (including whether it belongs to branch summarization or a compaction reason), and retry-loop completion to JSON, RPC, SDK, and interactive consumers.
+Branch summaries reuse the configured retry policy for transient provider failures. Their `summarization_retry_*` events expose scheduling, each restarted request, and retry-loop completion to JSON, RPC, SDK, and interactive consumers. Compaction does not retry its compactor request: a failure clears the context instead.
 
 Base events come from `AgentEvent` in `@bastani/atomic-agent-core` (installed as an Atomic dependency):
 

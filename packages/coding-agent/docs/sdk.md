@@ -618,16 +618,9 @@ interface AgentSession {
   // In-place tree navigation within the current session file
   navigateTree(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }>;
 
-  // Verbatim line compaction
-  compact(options?: SessionCompactOptions): Promise<VerbatimCompactionResult>; // Partial<VerbatimCompactionParameters> & { compactionModel?: string }
+  // Compaction: clear the context window, or replace it with a configured compactor's output
+  compact(options?: SessionCompactOptions): Promise<VerbatimCompactionResult>; // { query?: string; compactionModel?: string }
   abortCompaction(): void;
-
-  // Background compaction
-  readonly compaction: BackgroundCompactionState; // { state: "idle" | "running" | "ready" | "failed", upToEntryId?, startedAt?, error? }
-  onCompactionReady(listener: (state: BackgroundCompactionState) => void): () => void;
-  awaitBackgroundCompaction(): Promise<BackgroundCompactionState>;
-  setBackgroundCompactionEnabled(enabled: boolean): void;
-  setBackgroundCompactionThresholdPercent(percent: number): void;
 
   // Abort current operation; pauseQueuedMessages holds queued messages first
   abort(options?: { pauseQueuedMessages?: boolean }): Promise<void>;
@@ -732,22 +725,13 @@ Caller-supplied `executeBash()` IDs remain correlation IDs, not unique operation
 
 #### Compaction and tree navigation
 
-`compact()` removes selected older transcript lines without asking the model to rewrite retained text. It appends a durable `compaction` entry with `details.strategy: "verbatim-lines"` and respects the configured recent-message count. See [Compaction](/compaction) for controls and [Session format](/session-format#compactionentry) for persisted fields.
+`compact()` stops the active run, then clears the context window: after the boundary the model sees the system prompt and one `Context cleared` message that tells the agent where its earlier conversation is in session history and what to recover first. With a compactor model configured, the compactor's output replaces the context instead. It appends a durable `compaction` entry with `details.strategy: "verbatim-lines"` and resolves with a `VerbatimCompactionResult` whose `form` is `cleared` or `compacted`. It rejects with `Nothing to compact` when nothing has entered the context since the last boundary. See [Compaction](/compaction) for behavior and [Session format](/session-format#compactionentry) for persisted fields.
 
-Pass `compactionModel` to choose the compaction model for one call without changing settings. It accepts the same exact `provider/model` IDs as the [`compactionModel` setting](/compaction#compaction-model): a chat model, a registered classifier, or `morph/morph-compactor`. An unknown ID rejects before the active run is interrupted. A call made while another manual compaction is running joins that run and uses its model.
-
-```typescript
-await session.compact({ compactionModel: "typesafe/jev-latest", query: "keep the auth decisions" });
-```
-
-[Background compaction](/compaction#background-compaction) runs automatically once context passes `compaction.backgroundThresholdPercent`. `session.compaction` reports its state, `onCompactionReady()` runs when a result is saved, and `awaitBackgroundCompaction()` waits until no background task is running. `abortCompaction()` also cancels a running background task. Pass `compactionWake` to `createAgentSession` to receive the "compaction ready" notice outside the session:
+Pass `query` to give compaction instructions: they are added to the boundary message and become a compactor's query. Pass `compactionModel` to choose the compaction model for one call without changing settings. It accepts `auto` or an exact compactor ID, such as `morph/morph-compactor`, like the [`compactionModel` setting](/compaction#compaction-model). A chat, classifier or unknown ID clears the context with a notice instead of failing. A call made while another manual compaction is running joins that run and uses its options. `compression_ratio` and `preserve_recent` are no longer options; they are ignored if passed.
 
 ```typescript
-const { session } = await createAgentSession({
-  compactionWake: { compactionReady: ({ sessionId, resultEntryId, upToEntryId }) => scheduleWake(sessionId) },
-});
-const state = await session.awaitBackgroundCompaction();
-if (state.state === "failed" && isBackgroundCompactionError(state.error)) console.warn(state.error.code, state.error.hint);
+const result = await session.compact({ query: "keep the auth decisions" });
+console.log(result.form, result.history?.boundaryLine);
 ```
 
 `session.navigateTree()` rejects during streaming, compaction, or branch summarization rather than queueing the navigation. The active branch stays unchanged. Wait for the operation to finish before retrying.

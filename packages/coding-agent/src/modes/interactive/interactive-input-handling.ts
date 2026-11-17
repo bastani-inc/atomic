@@ -469,10 +469,6 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			}
 			if (command === "compact") {
 				this.editor.setText("");
-				if (args !== "") {
-					this.showWarning("Usage: /compact");
-					return;
-				}
 				// A manual request can take over automatic compaction, but a second manual
 				// compaction or branch summary still has no safe independent owner.
 				const automaticCompaction =
@@ -481,7 +477,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					this.showWarning(COMPACTION_ALREADY_IN_PROGRESS_WARNING);
 					return;
 				}
-				await this.handleCompactCommand();
+				await this.handleCompactCommand(args);
 				return;
 			}
 			if (bare("reload")) {

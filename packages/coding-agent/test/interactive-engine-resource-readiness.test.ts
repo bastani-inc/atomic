@@ -677,12 +677,16 @@ describe("interactive engine resource readiness", () => {
 
 	it("rejects a prompt waiting on resources when disposal begins", async () => {
 		const probe = await createGenerationRuntime();
+		vi.spyOn(probe.harness.settingsManager, "flush").mockImplementation(
+			() => new Promise((resolve) => setImmediate(resolve)),
+		);
 		const submitted = probe.runtime.session.prompt("hello");
+		const rejected = expect(submitted).rejects.toThrow("Interactive engine runtime is disposed");
 		await Promise.resolve();
 		await probe.runtime.dispose();
-		await expect(submitted).rejects.toThrow("Interactive engine runtime is disposed");
+		await rejected;
 		expect(probe.prompt).not.toHaveBeenCalled();
-		probe.harness.cleanup();
+		await probe.harness.cleanup();
 	});
 
 	it("rejects malformed resource lifecycle messages", () => {

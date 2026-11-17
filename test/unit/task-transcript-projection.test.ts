@@ -226,7 +226,7 @@ test("persisted transcript references agree with live source and expose recorded
 const verbatimDetails: VerbatimCompactionDetails = {
 	strategy: "verbatim-lines",
 	promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
-	parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+	parameters: { query: "test" },
 	stats: {
 		linesBefore: 2,
 		linesDeleted: 1,
@@ -236,7 +236,7 @@ const verbatimDetails: VerbatimCompactionDetails = {
 		tokensAfter: 50,
 		percentReduction: 50,
 	},
-	rung: "planned",
+	form: "cleared",
 };
 
 test("compaction boundaries, branch summaries and displayed custom messages enter the transcript index (#4521)", async () => {
