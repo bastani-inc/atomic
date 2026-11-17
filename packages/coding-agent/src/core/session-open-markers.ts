@@ -14,7 +14,7 @@ import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/pr
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "../config.js";
-import { processStartToken, processStartTokenAsync } from "./process-start-token.ts";
+import { ownProcessStartToken, readProcessStartToken } from "./process-start-token.ts";
 import { attachSessionClaim } from "./session-claims.ts";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
 import type {
@@ -34,12 +34,25 @@ const STALE_MS = 4 * HEARTBEAT_MS;
  * later process may have been given the pid (#5058).
  */
 const UNSTARTED_MARKER_LIMIT_MS = 24 * 60 * 60_000;
-const PROCESS_START = processStartToken(process.pid);
+const PROCESS_NONCE = randomBytes(8).toString("hex");
+let processToken: string | undefined;
+
 /**
  * This process's markers: its pid, a nonce that tells it from an earlier process given the same pid, and when it
- * started, where that can be read, which tells it from a later one (#5058).
+ * started, where that can be read, which tells it from a later one (#5058). Fixed once first used.
  */
-const PROCESS_TOKEN = `${process.pid}-${randomBytes(8).toString("hex")}${PROCESS_START === undefined ? "" : `-${PROCESS_START}`}`;
+function ownToken(): string {
+	if (processToken === undefined) {
+		const started = ownProcessStartToken();
+		processToken = `${process.pid}-${PROCESS_NONCE}${started === undefined ? "" : `-${started}`}`;
+	}
+	return processToken;
+}
+
+export async function prepareSessionOpenMarkers(): Promise<void> {
+	await readProcessStartToken(process.pid);
+}
+
 /** A marker token that names when its holder started. */
 const STARTED_TOKEN = /^\d+-[0-9a-f]{16}-([0-9a-f]{12})$/;
 /** The session ids a marker directory can be named after, as `assertValidSessionId` accepts them. */
@@ -162,7 +175,7 @@ let heldCount = 0;
 let heartbeat: ReturnType<typeof setInterval> | undefined;
 
 function ownMarker(): SessionOpenMarker {
-	return { token: PROCESS_TOKEN, pid: process.pid, host: hostname() };
+	return { token: ownToken(), pid: process.pid, host: hostname() };
 }
 
 function refreshMarkers(): void {
@@ -179,7 +192,7 @@ function refreshMarkers(): void {
 process.on("exit", () => {
 	for (const sessions of held.values()) {
 		for (const marker of sessions.values()) {
-			if (marker.markers instanceof FileOpenMarkers) marker.markers.removeSync(marker.sessionId, PROCESS_TOKEN);
+			if (marker.markers instanceof FileOpenMarkers) marker.markers.removeSync(marker.sessionId, ownToken());
 		}
 	}
 });
@@ -228,7 +241,7 @@ export function holdSessionOpenMarker(
 		}
 		await releasingClaim;
 		if (held.get(markers)?.has(sessionId)) return;
-		await markers.remove(sessionId, PROCESS_TOKEN).catch(() => {});
+		await markers.remove(sessionId, ownToken()).catch(() => {});
 	};
 }
 
@@ -248,9 +261,12 @@ function processAlive(pid: number): boolean {
  * marker whose start cannot be read right now is its holder's while a process with its pid runs (#5141).
  */
 async function holderRuns(marker: SessionOpenMarkerAge): Promise<boolean> {
-	if (marker.pid === process.pid) return marker.token === PROCESS_TOKEN;
+	if (marker.pid === process.pid) {
+		await prepareSessionOpenMarkers();
+		return marker.token === ownToken();
+	}
 	const started = STARTED_TOKEN.exec(marker.token)?.[1];
-	const current = started === undefined ? undefined : await processStartTokenAsync(marker.pid);
+	const current = started === undefined ? undefined : await readProcessStartToken(marker.pid);
 	if (current !== undefined) return current === started;
 	// A start recorded yet unreadable right now, as when a read timed out, never makes a running process another one
 	// (#5141); only a marker naming no start is judged by its age.

@@ -73,7 +73,7 @@ vi.mock("node:fs", async (importOriginal) => {
 
 const { lockHolderPath, takeOverDeadHolder } = await import("../src/core/lock-holder.ts");
 const { setNativeLocksForTesting, takeoverMutexPath, takeTakeoverMutex, TAKEOVER_MUTEX_STALE_MS } = await import(
-	"../src/core/lock-takeover.ts"
+	"../src/core/lock-takeover.js"
 );
 const { lockHolder } = await import("../src/core/lock-wait.ts");
 

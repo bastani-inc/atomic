@@ -8,13 +8,13 @@ import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
 import { canonicalizeWorktreePathAsync } from "./paths.ts";
 import { isDeniedSnapshotPath } from "./policy.ts";
-import { HOST, holderRuns as processHolderRuns, thisProcess } from "./process-holder.ts";
+import { HOST, holderRuns as processHolderRuns, thisProcess } from "./process-holder.js";
 import { type RepositoryId, sharedRepositoryIdOf, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import { pooledWorktreeStore, resetPooledWorktree, verifyWorktree } from "./restore.ts";
 import { lockShared, sharedClockNow } from "./shared-clock.ts";
 import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
 
-export { processStartToken } from "../process-start-token.ts";
+export { processStartToken } from "../process-start-token.js";
 
 /**
  * The per-machine pool of restored worktrees (#4748). A session resume restores into a slot at a stable path,

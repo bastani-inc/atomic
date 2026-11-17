@@ -6,6 +6,7 @@ import {
 	HOLDER_TEMP_STALE_MS,
 	lockHolderAsync,
 	lockHolderPath,
+	prepareTakeoverMutex,
 	processMayRun,
 	processMayRunAsync,
 	putBack,
@@ -18,7 +19,7 @@ import {
 	takeTakeoverMutexAsync,
 } from "./lock-takeover.ts";
 
-export { HOLDER_TEMP_STALE_MS, lockHolderPath };
+export { HOLDER_TEMP_STALE_MS, lockHolderPath, prepareTakeoverMutex };
 
 import { lockHolder } from "./lock-wait.ts";
 import { processStartToken, processStartTokenAsync } from "./process-start-token.ts";
@@ -114,6 +115,10 @@ function parseHolderRecord(content: string): LockHolderRecord | undefined {
 	if (!Number.isSafeInteger(record.pid)) return undefined;
 	if (record.started !== undefined && typeof record.started !== "string") return undefined;
 	return record as LockHolderRecord;
+}
+
+export async function prepareLockTakeover(lockPath: string): Promise<void> {
+	await prepareTakeoverMutex(lockPath, await readHolderRecordAsync(lockPath));
 }
 
 /**

@@ -130,12 +130,14 @@ function writeBuildLocksDurably(
 	}
 }
 
+type Identity = "same" | "gone" | "unknown";
+
 /**
  * Whether `recorded` is the process that runs under its id now: proven only by the start it recorded matching the
  * running process's. `"unknown"` when either start cannot be read: a process of that id runs, but it may be a later
  * one given the same id.
  */
-async function identity(recorded: LockedProcess): Promise<"same" | "gone" | "unknown"> {
+async function identity(recorded: LockedProcess): Promise<Identity> {
 	const start = await processStartTokenAsync(recorded.pid);
 	if (recorded.start !== undefined && start !== undefined) return start === recorded.start ? "same" : "gone";
 	try {
@@ -158,21 +160,7 @@ async function orphanedChildren(steps: readonly LockedProcess[]): Promise<Locked
 	if (!steps.some((step) => step.start !== undefined && step.at !== undefined)) return [];
 	const script =
 		"Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }";
-	const shell = join(
-		process.env.SystemRoot || "C:\\Windows",
-		"System32",
-		"WindowsPowerShell",
-		"v1.0",
-		"powershell.exe",
-	);
-	const listed = await new Promise<string | undefined>((resolve) => {
-		execFile(
-			shell,
-			["-NoProfile", "-NonInteractive", "-Command", script],
-			{ encoding: "utf8", timeout: 30_000, windowsHide: true },
-			(error, stdout) => resolve(error === null ? stdout : undefined),
-		);
-	});
+	const listed = await powershellOutput(script);
 	if (listed === undefined) return [];
 	const processes = listed
 		.split(/\r?\n/)
@@ -197,6 +185,19 @@ async function orphanedChildren(steps: readonly LockedProcess[]): Promise<Locked
 	return found;
 }
 
+function powershellOutput(script: string): Promise<string | undefined> {
+	const systemRoot = process.env.SystemRoot || "C:\\Windows";
+	const shell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+	return new Promise((resolve) => {
+		execFile(
+			shell,
+			["-NoProfile", "-NonInteractive", "-Command", script],
+			{ cwd: systemRoot, encoding: "utf8", timeout: 30_000, windowsHide: true },
+			(error, stdout) => resolve(error === null ? stdout : undefined),
+		);
+	});
+}
+
 function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
 	return new Promise((resolve, reject) => {
 		signal?.throwIfAborted();
@@ -212,24 +213,23 @@ function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
 	});
 }
 
+async function stepsWhose(steps: readonly LockedProcess[], wanted: Identity): Promise<LockedProcess[]> {
+	const identities = await Promise.all(steps.map((step) => identity(step)));
+	return steps.filter((_, index) => identities[index] === wanted);
+}
+
 /** Stops each of `steps` proven to be the step its lock recorded, and `extra`, and waits briefly until they ended. */
 async function stopProven(
 	steps: readonly LockedProcess[],
 	signal: AbortSignal | undefined,
 	extra: readonly LockedProcess[] = [],
 ): Promise<void> {
-	const proven = [...(await stepsThatAre(steps, "same")), ...extra];
+	const proven = [...(await stepsWhose(steps, "same")), ...extra];
 	for (const step of proven) killProcessTree(step.pid);
 	// Stopping is asynchronous on Windows: the next build starts only once they have ended, or after a bounded wait.
-	for (let waited = 0; waited < 50 && (await stepsThatAre(proven, "same")).length > 0; waited++) {
+	for (let waited = 0; waited < 50 && (await stepsWhose(proven, "same")).length > 0; waited++) {
 		await delay(BUILD_LOCK_POLL_MS / 2, signal);
 	}
-}
-
-async function stepsThatAre(steps: readonly LockedProcess[], wanted: "same" | "unknown"): Promise<LockedProcess[]> {
-	const found: LockedProcess[] = [];
-	for (const step of steps) if ((await identity(step)) === wanted) found.push(step);
-	return found;
 }
 
 /** How long a build waits for another process's build of the same worktree before it builds anyway, with a warning. */
@@ -314,7 +314,7 @@ async function settleLock(
 			// Stopped once: the Windows scan lists every process, and a later look only waits on what could not be proven.
 			await stopProven(steps, options.signal, process.platform === "win32" ? await orphanedChildren(steps) : []);
 		}
-		const unproven = await stepsThatAre(steps, "unknown");
+		const unproven = await stepsWhose(steps, "unknown");
 		if (unproven.length > 0) {
 			if (await wait("an earlier blueprint build")) continue;
 			await removeLock(file);

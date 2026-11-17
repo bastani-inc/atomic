@@ -22,7 +22,7 @@ import { stripBom } from "../utils/text.ts";
 import type { AuthStorageData } from "./auth-storage.ts";
 import { normalizeProviderKeys } from "./azure-provider-compat.js";
 import { releaseLock, releaseLockSync } from "./lock-release.ts";
-import { guardLockRemoval } from "./lock-takeover.ts";
+import { guardLockRemoval } from "./lock-takeover.js";
 import { type LockWait, waitForLock, waitForLockSync } from "./lock-wait.ts";
 import { renameReplacing, renameReplacingAsync } from "./rename-retry.ts";
 

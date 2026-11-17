@@ -45,6 +45,7 @@ export interface SettingsLayer {
 }
 
 export interface SettingsStorage {
+	prepareWriteLock?(scope: SettingsScope): Promise<void>;
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
 	/**
 	 * Optional write-specific lock whose callback receives the current primary

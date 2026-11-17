@@ -127,6 +127,7 @@ export interface StageChatViewContext {
 	requestRender: (() => void) | undefined;
 	requestFocus: (() => void) | undefined;
 	focusHoldTimer: ReturnType<typeof setInterval> | undefined;
+	promptCountdownTimer: ReturnType<typeof setInterval> | undefined;
 	piTui: TUI | undefined;
 	piTheme: unknown;
 	piKeybindings: unknown;

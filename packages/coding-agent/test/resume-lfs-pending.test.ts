@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { exitedProcess } from "../../../test/helpers/exited-process.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
-import { thisProcess } from "../src/core/worktree-snapshot/process-holder.ts";
+import { thisProcess } from "../src/core/worktree-snapshot/process-holder.js";
 import { pendingLfsDownload } from "../src/core/worktree-snapshot/restore.ts";
 
 const statHook = vi.hoisted(() => ({

@@ -640,6 +640,10 @@ export class SettingsManager {
 				if (scope === "project") {
 					this.assertProjectTrustedForWrite();
 				}
+				await this.storage.prepareWriteLock?.(scope);
+				if (scope === "project") {
+					this.assertProjectTrustedForWrite();
+				}
 				await SettingsManager.writePrimary(this.asyncStorage, scope, persist);
 				this.clearModifiedScope(scope);
 				recordSettingsWrite(owner, scope);

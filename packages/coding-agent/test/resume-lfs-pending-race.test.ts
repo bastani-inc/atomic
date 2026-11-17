@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
-import { thisProcess } from "../src/core/worktree-snapshot/process-holder.ts";
+import { thisProcess } from "../src/core/worktree-snapshot/process-holder.js";
 
 const RESTORE = fileURLToPath(new URL("../src/core/worktree-snapshot/restore.ts", import.meta.url));
 /** How long another process may take to start, pause or report. */

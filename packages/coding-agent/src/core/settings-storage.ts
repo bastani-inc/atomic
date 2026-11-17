@@ -28,6 +28,7 @@ import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import {
 	clearLockHolder,
 	clearLockHolderAsync,
+	prepareLockTakeover,
 	recordLockHolder,
 	recordLockHolderAsync,
 	takeOverDeadHolder,
@@ -433,6 +434,11 @@ export class FileSettingsStorage implements SettingsStorage, AsyncSettingsStorag
 		});
 	}
 
+	async prepareWriteLock(scope: SettingsScope): Promise<void> {
+		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
+		await prepareLockTakeover(`${path}.lock`);
+	}
+
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
 		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
 		const readPaths = scope === "global" ? this.globalReadPaths : this.projectReadPaths;
@@ -625,5 +631,13 @@ export function asyncSettingsStorage(storage: SettingsStorage): AsyncSettingsSto
 }
 
 function hasAsyncMembers(storage: SettingsStorage): storage is SettingsStorage & AsyncSettingsStorage {
-	return typeof storage.withLockAsync === "function";
+	if (typeof storage.withLockAsync !== "function") return false;
+	if (
+		storage instanceof FileSettingsStorage &&
+		storage.withPrimaryWriteLock !== FileSettingsStorage.prototype.withPrimaryWriteLock &&
+		storage.withPrimaryWriteLockAsync === FileSettingsStorage.prototype.withPrimaryWriteLockAsync
+	) {
+		return false;
+	}
+	return true;
 }

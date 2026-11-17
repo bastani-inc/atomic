@@ -20,7 +20,7 @@ import {
 	type ResumeNotice,
 	sessionResumeOptions,
 } from "./core/resume/session-resume.ts";
-import { claimSession } from "./core/session-claims.ts";
+import { claimSession, prepareSessionClaim } from "./core/session-claims.js";
 import {
 	formatMissingSessionCwdPrompt,
 	getMissingSessionCwdOptions,
@@ -683,6 +683,7 @@ export async function openCliSession(
 	};
 	if (resuming && options.claim !== false && sessionManager.isPersisted()) {
 		try {
+			await prepareSessionClaim(sessionManager.getSessionId(), { agentDir: options.agentDir });
 			releaseClaim = claimSession(sessionManager.getSessionId(), { agentDir: options.agentDir });
 		} catch (error) {
 			options.progress?.done();

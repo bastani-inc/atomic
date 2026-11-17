@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
-import { processStartTokenAsync } from "../process-start-token.ts";
+import { readProcessStartToken } from "../process-start-token.ts";
 
 /** Names this host, so a process on the same host can tell whether a process another one named still runs. */
 export const HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
@@ -12,12 +12,12 @@ export interface ProcessHolder {
 	readonly start?: string | undefined;
 }
 
-let ownStart: Promise<string | undefined> | undefined;
+let ownHolder: Promise<ProcessHolder> | undefined;
 
 /** This process, as a {@link ProcessHolder}; its start is read once, on first use, as reading it may start a process. */
-export async function thisProcess(): Promise<ProcessHolder> {
-	ownStart ??= processStartTokenAsync(process.pid);
-	return { host: HOST, pid: process.pid, start: await ownStart };
+export function thisProcess(): Promise<ProcessHolder> {
+	ownHolder ??= readProcessStartToken(process.pid).then((start) => ({ host: HOST, pid: process.pid, start }));
+	return ownHolder;
 }
 
 /**
@@ -28,7 +28,7 @@ export async function thisProcess(): Promise<ProcessHolder> {
  */
 export async function holderRuns(holder: ProcessHolder, ageMs: number, unstartedLimitMs: number): Promise<boolean> {
 	if (holder.host !== HOST) return false;
-	const started = holder.start === undefined ? undefined : await processStartTokenAsync(holder.pid);
+	const started = holder.start === undefined ? undefined : await readProcessStartToken(holder.pid);
 	if (started !== undefined) return started === holder.start;
 	// A hold naming a start that cannot be read right now, as when a read timed out, is its holder's while a process of
 	// that id runs (#5141); only one naming no start is judged by its age.
