@@ -76,7 +76,7 @@ let sandbox = "";
 let clonePath = "";
 let victim = "";
 
-beforeEach(() => {
+beforeEach(async () => {
 	sandbox = makeTempDirectory("web-gh-confine-");
 	clonePath = join(sandbox, "clones");
 	victim = join(sandbox, "victim");
@@ -92,7 +92,7 @@ beforeEach(() => {
 	writeFileSync(boundary.configPath, JSON.stringify({ githubClone: { clonePath } }));
 	clearCloneCache();
 	// Never run against the default clone directory.
-	assert.equal(loadGitHubConfig().clonePath, clonePath);
+	assert.equal((await loadGitHubConfig()).clonePath, clonePath);
 });
 
 afterEach(() => {
