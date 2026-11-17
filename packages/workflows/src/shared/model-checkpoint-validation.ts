@@ -13,7 +13,9 @@ export function isRouterSelection<T>(value: T): boolean {
 		);
 	};
 	return (
-		Object.keys(record).every((key) => ["model", "effort", "fallbacks", "candidates"].includes(key)) &&
+		Object.keys(record).every((key) =>
+			["model", "effort", "fallbacks", "candidates", "requiredInputs"].includes(key),
+		) &&
 		typeof record.model === "string" &&
 		(record.effort === null || isReasoningLevel(record.effort)) &&
 		(record.fallbacks === undefined ||
@@ -26,7 +28,10 @@ export function isRouterSelection<T>(value: T): boolean {
 				]).size ===
 					record.fallbacks.length + 1)) &&
 		(record.candidates === undefined ||
-			(Array.isArray(record.candidates) && record.candidates.every((id) => typeof id === "string")))
+			(Array.isArray(record.candidates) && record.candidates.every((id) => typeof id === "string"))) &&
+		(record.requiredInputs === undefined ||
+			(Array.isArray(record.requiredInputs) &&
+				record.requiredInputs.every((input) => input === "text" || input === "image")))
 	);
 }
 
