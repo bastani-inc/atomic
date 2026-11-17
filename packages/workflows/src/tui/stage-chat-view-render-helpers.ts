@@ -1,4 +1,4 @@
-import { renderAutocompleteHint } from "@bastani/atomic";
+import { renderAutocompleteHintLine } from "@bastani/atomic";
 import {
 	type Component,
 	type EditorComponent,
@@ -66,7 +66,7 @@ export function editorThemeFromGraphTheme(t: GraphTheme): EditorTheme {
 			normal,
 		},
 		autocompleteHint: (entries, width) =>
-			renderAutocompleteHint(entries, width, getKeybindings(), {
+			renderAutocompleteHintLine(entries, width, getKeybindings(), {
 				dim: (text: string) => hexToAnsi(t.dim) + text + RESET,
 				text: normal,
 				muted: (text: string) => hexToAnsi(t.dim) + text + RESET,

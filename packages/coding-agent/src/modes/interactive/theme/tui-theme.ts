@@ -4,17 +4,10 @@ import {
 	getKeybindings,
 	type MarkdownTheme,
 	type SelectListTheme,
-	visibleWidth,
 } from "@bastani/atomic-tui";
 import chalk from "chalk";
 import { getHighlightLanguageCount, highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
-import {
-	type NavKey,
-	type NavKeybindings,
-	type NavKeyStyle,
-	navKeyText,
-	renderNavHintLine,
-} from "../components/nav-keys.ts";
+import { type NavKeybindings, type NavKeyStyle, renderAutocompleteHintLine } from "../components/nav-keys.ts";
 import { getGlobalTheme, theme } from "./global-theme.ts";
 import type { Theme } from "./theme-class.ts";
 
@@ -212,8 +205,7 @@ export function getSelectListTheme(): SelectListTheme {
 }
 
 /**
- * The one hint line under the editor's @ and / menus: the keys that work for the open menu, named as the user's
- * keybindings name them. A narrow line gives up the select keys before complete, run and close.
+ * The one hint line under the editor's @ and / menus, in Atomic's theme; see {@link renderAutocompleteHintLine}.
  */
 export function renderAutocompleteHint(
 	entries: readonly EditorAutocompleteHintEntry[],
@@ -221,33 +213,7 @@ export function renderAutocompleteHint(
 	keybindings: NavKeybindings = getKeybindings(),
 	style: NavKeyStyle = themeNavKeyStyle(),
 ): string {
-	const texts = (entry: EditorAutocompleteHintEntry): NavKey | undefined => {
-		const keys = entry.actions
-			.map((action) => keybindings.getKeys?.(action)?.[0])
-			.filter((key): key is string => key !== undefined)
-			.map(navKeyText);
-		if (keys.length === 0) return undefined;
-		return {
-			keys: keys.every((key) => key === "↑" || key === "↓") ? keys.join("") : keys.join("/"),
-			label: entry.label,
-		};
-	};
-	const kept = entries.flatMap((entry) => {
-		const key = texts(entry);
-		return key ? [{ key, essential: entry.essential === true }] : [];
-	});
-	const room = Math.max(1, width - 2);
-	const lineWidth = () => visibleWidth(kept.map(({ key }) => `${key.keys} ${key.label}`).join(" · "));
-	while (kept.length > 1 && lineWidth() > room) {
-		const optional = kept.findIndex((entry) => !entry.essential);
-		kept.splice(optional >= 0 ? optional : 0, 1);
-	}
-	return renderNavHintLine(
-		kept.map(({ key }) => key),
-		width,
-		style,
-		keybindings,
-	);
+	return renderAutocompleteHintLine(entries, width, keybindings, style);
 }
 
 function themeNavKeyStyle(): NavKeyStyle {

@@ -164,6 +164,7 @@ export {
 	type NavKeybindings,
 	type NavKeyStyle,
 	navEntryKeys,
+	renderAutocompleteHintLine,
 	renderNavHintLine,
 	renderNavKeyOverlay,
 	TwoPressConfirm,
@@ -1244,7 +1245,6 @@ export {
 	getSettingsListTheme,
 	highlightCode,
 	initTheme,
-	renderAutocompleteHint,
 	Theme,
 	type ThemeColor,
 } from "./modes/interactive/theme/theme.js";
