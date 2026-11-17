@@ -490,6 +490,11 @@ export interface TUI extends Component {
 	whenStopped(): Promise<void>;
 	renderNow(force?: boolean): void;
 	requestRender(force?: boolean): void;
+	/**
+	 * Render on the next tick, ahead of the frame pacing `requestRender` applies: for a frame that answers the user's own
+	 * keystroke, as the renderer does after it routes a key.
+	 */
+	requestImmediateRender(): void;
 	addInputListener(listener: TuiInputListener): () => void;
 	removeInputListener(listener: TuiInputListener): void;
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
@@ -1048,7 +1053,7 @@ export abstract class TuiBase extends Container implements TUI {
 		process.nextTick(() => this.scheduleRender());
 	}
 
-	private requestImmediateRender(): void {
+	requestImmediateRender(): void {
 		this.cancelRenderTimer();
 		this.renderRequested = true;
 		if (this.immediateRenderScheduled) return;
@@ -1162,9 +1167,16 @@ export abstract class TuiBase extends Container implements TUI {
 			if (isKeyRelease(data) && !this.focusedComponent.wantsKeyRelease) {
 				return;
 			}
-			this.focusedComponent.handleInput(data);
+			const answer: unknown = this.focusedComponent.handleInput(data);
 			// Keyboard input is latency-sensitive. Avoid the throttled timer path,
 			// where even setTimeout(0) can take a full 16 ms tick on Windows.
+			// A component that answers asynchronously, such as a view another process draws, shows the key only once
+			// its answer arrives: painting before then would repaint the frame the key has not reached yet.
+			if (answer instanceof Promise) {
+				const repaint = (): void => this.requestImmediateRender();
+				void answer.then(repaint, repaint);
+				return;
+			}
 			this.requestImmediateRender();
 		}
 	}
@@ -1386,6 +1398,22 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	/** Composite all overlays into content lines (sorted by focusOrder, higher = on top). */
+	/**
+	 * Whether the overlays composited in the last frame covered every cell of a `termWidth` x `termHeight` screen
+	 * and are still shown: content under them cannot show through until one of them changes.
+	 */
+	protected overlaysCoverScreen(termWidth: number, termHeight: number): boolean {
+		return this.renderedOverlayLayouts.some(
+			(layout) =>
+				layout.row === 0 &&
+				layout.col === 0 &&
+				layout.width >= termWidth &&
+				layout.height >= termHeight &&
+				this.overlayStack.includes(layout.entry) &&
+				this.isOverlayVisible(layout.entry),
+		);
+	}
+
 	protected compositeOverlays(lines: string[], termWidth: number, termHeight: number): string[] {
 		if (this.overlayStack.length === 0) {
 			this.renderedOverlayLayouts = [];

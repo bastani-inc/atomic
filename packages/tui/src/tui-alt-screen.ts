@@ -217,6 +217,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private exitWrites = 0;
 	private previousScreenWidth = 0;
 	private previousScreenHeight = 0;
+	/** The last layout drawn had image lines, which an overlay does not cover. */
+	private coveredLayoutHasImages = false;
 	private layoutRoot: Component | undefined;
 	private currentLayout: LayoutFrame | undefined;
 	private readonly implicitDocument: Component;
@@ -1777,6 +1779,51 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return result;
 	}
 
+	/**
+	 * The layout and the overlays composited over it. An overlay that covered the whole screen last frame and still
+	 * shows hides the layout under it, so the layout is not drawn again until the overlay stops covering it: a
+	 * full-screen view's frames cost only the view. A layout with images is always drawn, because an image line
+	 * shows through an overlay.
+	 */
+	private renderScreen(width: number, height: number): { layout: LayoutFrame; screen: string[] } {
+		const covered = this.currentLayout;
+		if (
+			covered !== undefined &&
+			!this.coveredLayoutHasImages &&
+			this.previousScreenWidth === width &&
+			this.previousScreenHeight === height &&
+			this.overlaysCoverScreen(width, height)
+		) {
+			const screen = this.compositeOverlays(
+				Array.from({ length: height }, () => ""),
+				width,
+				height,
+			);
+			// An overlay that shrank or hid in this frame shows the layout after all.
+			if (this.overlaysCoverScreen(width, height)) return { layout: covered, screen };
+		}
+		const layout = this.renderLayout(width, height);
+		return { layout, screen: this.compositeOverlays(this.composeLayout(layout, width), width, height) };
+	}
+
+	private renderLayout(width: number, height: number): LayoutFrame {
+		if (this.activeSearch?.query.trim()) this.settleScrollContent(this.getPrimaryScrollView());
+		const root = this.layoutRoot ?? this.implicitScrollView;
+		let layout = renderLayoutFrame(root, width, height, () => this.requestRender());
+		if (this.refreshSearch(layout)) layout = renderLayoutFrame(root, width, height, () => this.requestRender());
+		this.coveredLayoutHasImages = layout.lines.some(isImageLine);
+		return layout;
+	}
+
+	/** The layout's rows with its search highlights and scroll decorations, ready for the overlays. */
+	private composeLayout(layout: LayoutFrame, width: number): string[] {
+		// Resolve fake cursors before highlighting and compositing, which only track SGR codes
+		let screen = this.resolveFakeCursors(layout.lines.map((line) => line.replace(OSC133_ZONE_PREFIX, "")));
+		screen = this.applySearchHighlights(screen, layout);
+		screen = this.compositeScrollToEndIndicator(screen, layout, width);
+		return this.compositeScrollPinnedPrompt(screen, layout, width);
+	}
+
 	private compositeScrollPinnedPrompt(screen: string[], layout: LayoutFrame, width: number): string[] {
 		if (!this.scrollPinnedPrompt) return screen;
 		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
@@ -1821,15 +1868,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (this.stopped || !this.altScreenActive) return;
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
-		if (this.activeSearch?.query.trim()) this.settleScrollContent(this.getPrimaryScrollView());
-		let nextLayout = this.layoutFrame();
-		if (this.refreshSearch(nextLayout)) nextLayout = this.layoutFrame();
-		// Resolve fake cursors before highlighting and compositing, which only track SGR codes
-		let screen = this.resolveFakeCursors(nextLayout.lines.map((line) => line.replace(OSC133_ZONE_PREFIX, "")));
-		screen = this.applySearchHighlights(screen, nextLayout);
-		screen = this.compositeScrollToEndIndicator(screen, nextLayout, width);
-		screen = this.compositeScrollPinnedPrompt(screen, nextLayout, width);
-		screen = this.compositeOverlays(screen, width, height);
+		const rendered = this.renderScreen(width, height);
+		const nextLayout = rendered.layout;
+		let screen = rendered.screen;
 		if (screen.length > height) screen = screen.slice(screen.length - height);
 		screen = this.applySelection(screen, nextLayout);
 		screen = this.compositeFlashes(screen, width, height);

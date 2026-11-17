@@ -375,7 +375,10 @@ for (const isolated of [false, true]) {
 			await host.input("\r");
 			await host.input("\x05");
 			assert.match(await assertFrame(), /^Transcript/);
-			assert.match(await assertFrame(), /CHILD-MESSAGE-49/, "the transcript opens at its latest message (#4521)");
+			// The page reads the transcript asynchronously and paints it on its next frame.
+			await vi.waitFor(async () =>
+				assert.match(await assertFrame(), /CHILD-MESSAGE-49/, "the transcript opens at its latest message (#4521)"),
+			);
 			await assertTranscriptKeysOwned();
 			await host.input("\x1b[1;5F");
 			assert.match(await assertFrame(), /CHILD-MESSAGE-49/);

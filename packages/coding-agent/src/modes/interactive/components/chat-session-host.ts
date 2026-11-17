@@ -106,7 +106,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		});
 		this.state = new ChatSessionHostState(opts, {
 			renderEntry: (state, entry) => renderChatSessionEntry(state, entry),
-			transcriptCacheKey: (state, entry, index) => transcriptCacheKey(state, entry, index),
+			transcriptCacheKey: (state, entry) => transcriptCacheKey(state, entry),
 		});
 		this.state.editor = createChatSessionEditor(
 			this.state,
@@ -234,7 +234,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.unconfirmedQueuedMessages = [];
 		this.state.liveChat.clearPendingTools();
 		this.state.newMessages.reset();
-		stopChatSessionWorkingLifecycle(this.state, false);
+		stopChatSessionWorkingLifecycle(this.state);
 		syncChatSessionAnimationTick(this.state);
 	}
 	/**
