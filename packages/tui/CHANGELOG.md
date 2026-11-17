@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+### Added
+
+- `TUI.requestImmediateRender()` renders on the next tick, ahead of the frame pacing `requestRender()` applies, for a frame that answers the user's own keystroke.
+
 ## [0.9.88] - 2026-11-16
 
 ### Added

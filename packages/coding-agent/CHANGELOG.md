@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ChatTranscriptComponent` accepts a cache key made of parts, compared one by one, as well as a string, so a host can name what an entry renders from without building a string for every entry on every frame.
+
 ### Changed
 
 - Clarified in `codemode`'s description, system-prompt guidance, and `searchTools()`/`describeTool()` hints that `subagent`, `workflow`, and other model-only tools (plus `intercom`'s model-only actions) cannot be called from inside a `codemode` script, and should be called directly as separate top-level tools when available in the session
@@ -9,6 +13,8 @@
 ### Fixed
 
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
+- Attached workflow stage chats, subagent chats and `/tasks` now keep up with typing and streamed output while workflows, subagents and background shells run, as the main chat does. A key there paints as soon as Atomic's engine answers it, instead of after a paced render on each side of the engine; streamed text paints on the next frame instead of the working animation's next tick; and a chat over a long transcript renders only the entries that changed, instead of every entry on each frame and whenever a turn started or ended.
+- A model request in a long session no longer holds the interactive engine, and every stage chat, subagent chat and `/tasks` keystroke with it, to copy the whole conversation when no extension handles `context` events.
 
 ## [0.9.88] - 2026-11-16
 

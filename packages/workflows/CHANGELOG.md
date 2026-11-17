@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- An attached stage chat no longer renders its whole transcript again each time any stage of a running workflow changes the workflow's state.
+
 ## [0.9.88] - 2026-11-16
 
 ### Breaking Changes
