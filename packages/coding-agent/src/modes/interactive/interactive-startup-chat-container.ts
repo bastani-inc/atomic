@@ -42,7 +42,9 @@ export class StartupChatContainer extends Container {
 
 	private current(): { children: Component[]; length: number; count: number } | undefined {
 		const counted = this.counted;
-		return counted?.children === this.children && counted.length === this.children.length ? counted : undefined;
+		if (counted?.children === this.children && counted.length === this.children.length) return counted;
+		this.counted = undefined;
+		return undefined;
 	}
 
 	private recount(counted: { count: number }, change: number): void {

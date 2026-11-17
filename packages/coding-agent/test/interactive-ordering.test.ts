@@ -1,8 +1,9 @@
-import { Container, Text } from "@bastani/atomic-tui";
+import { type Component, Container, Text } from "@bastani/atomic-tui";
 import { describe, expect, it, vi } from "vitest";
 import type { UserMessageSelectorComponent } from "../src/modes/interactive/components/user-message-selector.ts";
 import { appendNewChildrenBeforeAttachedChild } from "../src/modes/interactive/interactive-child-ordering.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 interface InteractiveOrderingAccess {
@@ -159,6 +160,30 @@ describe("interactive ordering", () => {
 		expect(readsAt10000With2).toBeLessThanOrEqual(12);
 		expect(readsAt10000With4 - readsAt10000With2).toBe(readsAt10000With2 - readsAt10000With0);
 	});
+
+	it.each(["add", "remove"] as const)(
+		"keeps message counts accurate when an untracked edit and %s restore the cached length (#5323)",
+		(mutation) => {
+			const original = new Text("original", 0, 0);
+			const custom = new Text("custom", 0, 0);
+			const spacer = new Text("spacer", 0, 0);
+			const messages = new Set<Component>([original, custom]);
+			const container = new StartupChatContainer((child) => messages.has(child));
+			container.addChild(spacer);
+			container.addChild(original);
+			expect(container.countedChildren()).toBe(1);
+
+			if (mutation === "remove") {
+				container.children.splice(1, 0, custom);
+				container.removeChild(spacer);
+				expect(container.countedChildren()).toBe(2);
+			} else {
+				container.children.splice(1, 1);
+				container.addChild(new Text("next spacer", 0, 0));
+				expect(container.countedChildren()).toBe(0);
+			}
+		},
+	);
 
 	it("handles large append batches and sibling or anchor removals during append (#5323)", () => {
 		const largeContainer = new Container();
