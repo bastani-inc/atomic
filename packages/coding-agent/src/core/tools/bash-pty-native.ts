@@ -87,6 +87,11 @@ export interface SupervisedCommandOwner {
 	parentTaskId?: TaskId;
 	/** Who launches through this binding; omitted, the owner's own session. */
 	launchOrigin?: CommandLaunchOrigin;
+	/**
+	 * The session launching through this binding into an owner it shares: an in-process subagent's session id. Its
+	 * commands' notices go to that session only, and only that session lists them. Omitted, the owner's own session.
+	 */
+	launchedBy?: string;
 }
 
 export function lookupOwnedTask(context: SupervisedCommandOwner, id: string): TaskLease {
@@ -257,6 +262,7 @@ export async function executeSupervisedCommand(
 			...(options.timeout === undefined ? {} : { executionTimeoutMs: options.timeout * 1000 }),
 			...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
 			...(context.parentTaskId === undefined ? {} : { parentTaskId: context.parentTaskId }),
+			...(context.launchedBy === undefined ? {} : { launchedBy: context.launchedBy }),
 		},
 		crypto.randomUUID() as OperationId,
 		options.signal,

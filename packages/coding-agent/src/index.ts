@@ -122,6 +122,7 @@ export {
 	type TaskActivity,
 	watchOwnerTaskStoreBinding,
 } from "./core/tasks/owner-store.js";
+export { belongsToSession, sessionTasks, taskSessionKey } from "./core/tasks/session-scope.js";
 export { automaticWaitBudgetMs } from "./core/tasks/supervisor.js";
 export { bindTaskResumer, type TaskResumer } from "./core/tasks/task-resumer.ts";
 export {
@@ -168,6 +169,12 @@ export {
 	renderNavKeyOverlay,
 	TwoPressConfirm,
 } from "./modes/interactive/components/nav-keys.ts";
+export {
+	NoticeLine,
+	type NoticeLineSpec,
+	type NoticeStatus,
+	noticeLineText,
+} from "./modes/interactive/components/notice-line.ts";
 export { renderTaskFooter, TaskList, taskListSections } from "./modes/interactive/components/task-list.js";
 export { TaskRow } from "./modes/interactive/components/task-row.js";
 export {
@@ -817,6 +824,7 @@ export {
 	type SessionStartTimeoutDetails,
 	SessionStartTimeoutError,
 	serializeSessionStartError,
+	sessionStartStepText,
 } from "./core/session-start-errors.ts";
 export {
 	DEGRADED_RESTORE_RETENTION_DAYS,
@@ -1179,6 +1187,8 @@ export {
 	ExtensionInputComponent,
 	ExtensionSelectorComponent,
 	FooterComponent,
+	formatTokenCount,
+	formatTokenSegment,
 	INPUT_LABEL_MIN_COLUMNS,
 	type InputLabel,
 	type InputLabelKind,
@@ -1216,6 +1226,7 @@ export {
 	selectorHintEntries,
 	ThemeSelectorComponent,
 	ThinkingSelectorComponent,
+	type TokenSegmentMode,
 	ToolExecutionComponent,
 	type ToolExecutionOptions,
 	TRANSCRIPT_JUMP_TO_END_URL,

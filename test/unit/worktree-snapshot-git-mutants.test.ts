@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import { existsSync, writeFileSync } from "node:fs";
 import { afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
+import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
@@ -39,6 +40,8 @@ import {
 } from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
 import { gitText, runGit, setWorktreeSnapshotGit } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
+
+startHostProcessesThroughChildProcess();
 
 let sandbox: GitSandbox;
 beforeEach(() => {

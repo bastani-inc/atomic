@@ -47,7 +47,7 @@ for (const chat of ["main", "workflow"]) {
 				assert.match(await readText(join(directory, "live.txt")), /Tasks.*1 local agent/);
 				assert.match(await readText(join(directory, "live-inspector.txt")), /t17 Inspect deterministic fixture/);
 				assert.match(await readText(join(directory, "settled-inspector.txt")), /t17 Inspect deterministic fixture/);
-				assert.match(await readText(join(directory, "settled.txt")), /completed/);
+				assert.match(await readText(join(directory, "settled.txt")), /● Agent ".*" finished/);
 				const lines = (await readText(join(directory, "barriers.jsonl"))).trim().split("\n");
 				const barriers = lines.map(
 					(line) =>

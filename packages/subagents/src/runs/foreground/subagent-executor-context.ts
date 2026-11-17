@@ -9,6 +9,7 @@ import {
 	resolveIntercomBridge,
 	resolveIntercomSessionTarget,
 } from "../../intercom/intercom-bridge.js";
+import { ownIntercomSessionId } from "../../intercom/own-intercom-session.js";
 import { getArtifactsDir } from "../../shared/artifacts.js";
 import { createForkContextResolver } from "../../shared/fork-context.js";
 import { resolveCurrentSessionId } from "../../shared/session-identity.js";
@@ -111,7 +112,11 @@ export async function prepareExecutionContext(input: {
 	} else {
 		effectiveParams = applyAgentDefaultContext(effectiveParams, discoveredAgents);
 	}
-	const sessionName = resolveIntercomSessionTarget(deps.pi.getSessionName(), ctx.sessionManager.getSessionId());
+	const sessionName = resolveIntercomSessionTarget(
+		deps.pi.getSessionName(),
+		ctx.sessionManager.getSessionId(),
+		ownIntercomSessionId(deps.state, ctx.sessionManager),
+	);
 	const intercomBridge = resolveIntercomBridge({
 		config: deps.config.intercomBridge,
 		context: effectiveParams.context,

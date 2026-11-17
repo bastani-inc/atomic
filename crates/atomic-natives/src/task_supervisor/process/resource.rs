@@ -1,9 +1,15 @@
 #[cfg(unix)]
 use super::*;
 
+/// A pipe command's leader: started without fork on Linux (see `crate::spawn`), by the standard library elsewhere.
+#[cfg(target_os = "linux")]
+pub(super) type PipeChild = crate::spawn::SpawnedChild;
+#[cfg(all(unix, not(target_os = "linux")))]
+pub(super) type PipeChild = std::process::Child;
+
 #[cfg(unix)]
 pub(super) enum ProcessResource {
-	Pipe(std::process::Child),
+	Pipe(PipeChild),
 	Pty(crate::pty::SupervisedPty),
 }
 #[cfg(unix)]
