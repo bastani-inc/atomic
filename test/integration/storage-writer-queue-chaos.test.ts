@@ -31,6 +31,8 @@ const WRITER = fileURLToPath(new URL("../fixtures/sqlite-queue-writer.mjs", impo
 const HOLDER = fileURLToPath(new URL("../fixtures/sqlite-stalling-holder.mjs", import.meta.url));
 /** Child processes, jiti-loaded adapters, and waits of a few ticket lifetimes (2 s each). */
 const CHAOS_TEST_TIMEOUT_MS = 120_000;
+const STALL_PAST_TICKET_MS = 3_000;
+const RESUME_GAP_MS = 50;
 
 interface WriterOptions {
 	readonly label: string;
@@ -323,6 +325,39 @@ test.skipIf(process.platform === "win32")(
 		assert.deepEqual(
 			rows(path).map((row) => row.writer),
 			["behind", "stopped"],
+		);
+		assertIntact(path);
+	},
+	CHAOS_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"writers stalled together past a ticket's lifetime keep their order when they continue",
+	async () => {
+		const { path, writers } = database("queue-chaos-stalled-together-");
+		const holder = await startHolder(path);
+		const first = await startWriter(path, { label: "first" });
+		const second = await startWriter(path, { label: "second" });
+		first.go();
+		await untilQueued(writers, first.pid);
+		second.go();
+		await untilQueued(writers, second.pid);
+		first.child.kill("SIGSTOP");
+		second.child.kill("SIGSTOP");
+		await sleep(STALL_PAST_TICKET_MS);
+		holder.child.kill("SIGKILL");
+		await holder.child.exited;
+		second.child.kill("SIGCONT");
+		await sleep(RESUME_GAP_MS);
+		first.child.kill("SIGCONT");
+		const reports = await Promise.all([first.report(), second.report()]);
+		assert.deepEqual(
+			reports.map((report) => report.committed),
+			[1, 1],
+		);
+		assert.deepEqual(
+			rows(path).map((row) => row.writer),
+			["first", "second"],
 		);
 		assertIntact(path);
 	},

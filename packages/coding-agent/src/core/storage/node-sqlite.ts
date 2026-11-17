@@ -142,15 +142,20 @@ interface QueueEntry {
 
 /**
  * Judges a queue's entries, sorted by name, on the database clock: the live ones, oldest first, and the ones
- * abandoned long enough to remove.
+ * abandoned long enough to remove. `unobservedMs` is time the judging writer itself did not run, which a stall of the
+ * whole host takes from every owner alike, so it is not held against their tickets.
  */
-function judgeEntries(entries: readonly QueueEntry[], now: number): { live: QueueEntry[]; abandoned: string[] } {
+function judgeEntries(
+	entries: readonly QueueEntry[],
+	now: number,
+	unobservedMs = 0,
+): { live: QueueEntry[]; abandoned: string[] } {
 	const live: QueueEntry[] = [];
 	const abandoned: string[] = [];
 	for (const entry of entries) {
 		const age = Math.abs(now - entry.mtimeMs);
-		if (age < TICKET_STALE_MS) live.push(entry);
-		else if (age > TICKET_REMOVE_AFTER_MS) abandoned.push(entry.name);
+		if (age < TICKET_STALE_MS + unobservedMs) live.push(entry);
+		else if (age > TICKET_REMOVE_AFTER_MS + unobservedMs) abandoned.push(entry.name);
 	}
 	return { live, abandoned };
 }
@@ -183,6 +188,7 @@ class SqliteWriteQueue {
 	private readonly degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void;
 	/** Now on the database's clock, in milliseconds. */
 	readonly now: () => number;
+	private judgedOffLoopAt: number | undefined;
 
 	/** `degraded` records what the queue had to give up on without failing the transaction that met it. */
 	constructor(
@@ -321,8 +327,9 @@ class SqliteWriteQueue {
 
 	/**
 	 * Live tickets other than `except`, for a writer waiting in the queue: read off the event loop and judged like
-	 * `liveTicketEntries`, in no particular order. Entries are read together; the first failure in listing order that
-	 * is not a vanished entry is thrown.
+	 * `liveTicketEntries`, in no particular order, except that time this process went without a look for longer than
+	 * a waiting writer's refresh is not counted against the tickets. Entries are read together; the first failure in
+	 * listing order that is not a vanished entry is thrown.
 	 */
 	async liveTicketsOffLoop(except?: string): Promise<string[]> {
 		let names: string[];
@@ -346,7 +353,11 @@ class SqliteWriteQueue {
 			if (!("error" in entry)) entries.push(entry);
 			else if (!isVanishedTicket(entry.error)) throw entry.error;
 		}
-		const { live, abandoned } = judgeEntries(entries, this.now());
+		const judgedAt = performance.now();
+		const unobservedMs =
+			this.judgedOffLoopAt === undefined ? 0 : Math.max(0, judgedAt - this.judgedOffLoopAt - TICKET_REFRESH_MS);
+		this.judgedOffLoopAt = judgedAt;
+		const { live, abandoned } = judgeEntries(entries, this.now(), unobservedMs);
 		for (const name of abandoned) await this.removeEntryOffLoop(name);
 		return live.map((entry) => entry.name);
 	}
