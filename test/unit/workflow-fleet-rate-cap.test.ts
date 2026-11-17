@@ -233,6 +233,26 @@ test("new hosts for unrelated work do not expand the warming quota allowance aga
 	assert.equal(serving, 3);
 });
 
+test("fractional capacity for unrelated scopes cannot round warming hosts upward on each read (#4768)", () => {
+	const cap = new FleetRateCap();
+	const roots = [
+		...[
+			[10, 497],
+			[2, 35],
+			[2, 957],
+			[6, 999],
+			[4, 897],
+		].map(([leased, ready]) => ({ leased: leased!, ready: ready!, blocked: false, rateScopes: ["p"] })),
+		{ leased: 2, ready: 10_000, blocked: false, rateScopes: ["q"] },
+	];
+	for (let at = 0; at <= MINUTE; at += 10_000) cap.observe([bucket("q", 414, (at / 10_000) * 21, at)], roots);
+	let serving = 30;
+	for (let tick = 0; tick < 5; tick++) {
+		serving = cap.limit(8, serving)!;
+		assert.equal(serving, 30, "rounding worker allocations must not create another host");
+	}
+});
+
 test("a scope limits only its own roots, leaving capacity for unlimited and disjoint-scope demand (#4768)", () => {
 	const cap = new FleetRateCap();
 	for (let at = 0; at <= MINUTE; at += 10_000)

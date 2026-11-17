@@ -97,9 +97,7 @@ export class FleetRateCap {
 	private constrainedDemand(
 		capacities: readonly ScopeCapacity[],
 		warming: ReadonlySet<string> = new Set(),
-		warmingWorkers = 0,
-		bootstrapWorkers = 1,
-	): number {
+	): { readonly workers: number; readonly warmingWorkers: number; readonly unrelatedWorkers: number } {
 		const demand = this.roots.map((root) => fleetDemand([root]));
 		const constrain = (matches: (root: FleetRateRoot) => boolean, capacity: number) => {
 			const selected = this.roots.flatMap((root, index) => (matches(root) ? [index] : []));
@@ -108,32 +106,32 @@ export class FleetRateCap {
 		};
 		for (const capacity of capacities)
 			constrain((root) => root.rateScopes?.includes(capacity.status.scope) === true, capacity.workers);
-		if (warming.size > 0) {
-			const isWarming = (root: FleetRateRoot) => root.rateScopes?.some((scope) => warming.has(scope)) === true;
-			const unrelated = this.roots.reduce((sum, root, index) => sum + (isWarming(root) ? 0 : demand[index]!), 0);
-			constrain(isWarming, Math.max(bootstrapWorkers, warmingWorkers - unrelated));
+		let warmingWorkers = 0;
+		let unrelatedWorkers = 0;
+		for (const [index, root] of this.roots.entries()) {
+			if (root.rateScopes?.some((scope) => warming.has(scope))) warmingWorkers += demand[index]!;
+			else unrelatedWorkers += demand[index]!;
 		}
-		return demand.reduce((sum, value) => sum + value, 0);
+		return { workers: warmingWorkers + unrelatedWorkers, warmingWorkers, unrelatedWorkers };
 	}
 
 	limit(workersPerHost: number, servingHosts: number): number | undefined {
 		const capacities = this.capacities(workersPerHost);
 		const warming = this.warmingScopes();
 		if (capacities.length === 0 && warming.size === 0) return undefined;
-		return Math.max(
-			1,
-			Math.ceil(
-				this.constrainedDemand(capacities, warming, Math.max(1, servingHosts) * workersPerHost, workersPerHost) /
-					workersPerHost,
-			),
-		);
+		const demand = this.constrainedDemand(capacities, warming);
+		const hosts = Math.ceil(demand.workers / workersPerHost);
+		if (warming.size === 0) return Math.max(1, hosts);
+		const bootstrap = Math.min(workersPerHost, demand.warmingWorkers);
+		const warmBound = Math.max(servingHosts, Math.ceil((demand.unrelatedWorkers + bootstrap) / workersPerHost));
+		return Math.max(1, Math.min(hosts, warmBound));
 	}
 
 	estimate(workersPerHost: number): FleetRateCapEstimate | undefined {
 		const capacities = this.capacities(workersPerHost);
 		const tightest = [...capacities].sort((a, b) => a.workers - b.workers)[0];
 		if (tightest === undefined) return undefined;
-		const hosts = Math.max(1, Math.ceil(this.constrainedDemand(capacities) / workersPerHost));
+		const hosts = Math.max(1, Math.ceil(this.constrainedDemand(capacities).workers / workersPerHost));
 		return { hosts, scope: { ...tightest.status, capHosts: hosts } };
 	}
 
