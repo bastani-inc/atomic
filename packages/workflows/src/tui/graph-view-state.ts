@@ -56,18 +56,13 @@ export interface GraphStageDetail {
 	logs: boolean;
 }
 
-/** The run's details: its outcome, outputs, artifacts, blockers and events, or its full log. */
 export interface GraphRunDetail {
-	/** Whether the full log is shown instead of the summary. */
 	logs: boolean;
-	/** The selected blocker's row, which Enter opens. */
 	selected: number;
-	/** The selected blocker itself, so the selection stays on it while the run's blockers change under it. */
 	selectedKey?: string;
 }
 
-/** A blocker's identity across snapshots. */
-function blockerKey(blocker: RunOutcomeBlocker): string {
+export function blockerKey(blocker: RunOutcomeBlocker): string {
 	return `${blocker.node}:${blocker.id}`;
 }
 
@@ -160,15 +155,16 @@ export abstract class GraphViewState {
 	protected toolDetailExpanded = false;
 
 	protected stageDetail: GraphStageDetail | null = null;
-	/** The run's details view, opened with `o`. */
 	protected runDetail: GraphRunDetail | null = null;
-	/** The run details a stage or tool detail was opened from, so Esc there goes back to them. */
 	protected runDetailReturn: GraphRunDetail | null = null;
-	/** Scroll the selected blocker into view on the next frame. */
 	protected runDetailRevealSelected = false;
-	/** The run details' outcome, built once per run snapshot rather than once per frame or key. */
-	private runOutcomeCache: { readonly run: RunSnapshot; readonly outcome: RunOutcome } | null = null;
-	/** The `f` status filter. */
+	protected paintedView: "tool" | "stage" | "run" | "graph" = "graph";
+	protected paintedBlockerKey: string | null = null;
+	private runOutcomeCache: {
+		readonly run: RunSnapshot;
+		readonly snapshot: StoreSnapshot | null;
+		readonly outcome: RunOutcome;
+	} | null = null;
 	protected statusFilter: GraphStatusFilter = "all";
 
 	protected keysHelpOpen = false;
@@ -307,11 +303,18 @@ export abstract class GraphViewState {
 			this.cachedRenderGeometry = { canvasWidth: 0, totalRows: 0, bands: [], edges: [], edgeIndex: { bands: [] } };
 			this.expandedGraph = { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
 			this.focusedIndex = 0;
+			this.switcherOpen = false;
+			this.switcherState = { query: "", selectedIndex: 0 };
+			this.keysHelpOpen = false;
 			this.graphScrollColOffset = 0;
 			this.graphNodeHitRects = [];
 			this.lastGraphViewport = null;
 			this.pendingEnsureFocusedVisible = true;
+			this.runDetail = null;
+			this.runDetailReturn = null;
+			this.runDetailRevealSelected = false;
 			this.toolDetail = null;
+			this.toolDetailExpanded = false;
 			this._closeStageDetail();
 			this.hasAnimatingStages = false;
 			this.lastBuiltSnapshotVersion = version;
@@ -590,7 +593,12 @@ export abstract class GraphViewState {
 		if (this.stageDetail !== null && this._stageDetailStage()?.status !== "failed") this._closeStageDetail();
 		this._syncRetryWatch();
 		if (this.toolDetail === null) return;
-		this.toolDetail = this.expandedGraph.tools.find((tool) => tool.id === this.toolDetail?.id) ?? null;
+		const nextTool = this.expandedGraph.tools.find((tool) => tool.id === this.toolDetail?.id) ?? null;
+		if (nextTool === null) {
+			this._closeToolDetail();
+			return;
+		}
+		this.toolDetail = nextTool;
 	}
 
 	protected _openFocusedStageDetail(): boolean {
@@ -603,29 +611,23 @@ export abstract class GraphViewState {
 		return true;
 	}
 
-	/**
-	 * The run details' outcome for `run`, built once per snapshot. The graph snapshot keeps only a compact result, so the
-	 * declared outputs come from the store's own run, a lookup rather than a snapshot.
-	 */
 	protected _runOutcomeFor(run: RunSnapshot): RunOutcome {
+		const snapshot = this.currentSnapshot;
 		const cached = this.runOutcomeCache;
-		if (cached !== null && cached.run === run) return cached.outcome;
+		if (cached !== null && cached.run === run && cached.snapshot === snapshot) return cached.outcome;
 		const fullResult = this.store.run(run.id)?.result;
 		const outcomeRun = fullResult === undefined || fullResult === run.result ? run : { ...run, result: fullResult };
-		const outcome = buildRunOutcome(outcomeRun);
-		this.runOutcomeCache = { run, outcome };
+		const buildOutcome: (target: RunSnapshot, now?: number, runs?: readonly RunSnapshot[]) => RunOutcome =
+			buildRunOutcome;
+		const outcome = buildOutcome(outcomeRun, Date.now(), snapshot?.runs);
+		this.runOutcomeCache = { run, snapshot, outcome };
 		return outcome;
 	}
 
-	/** The blockers the run details list, in their order, from the latest snapshot. */
 	protected _runDetailBlockers(run: RunSnapshot | null = this._getCurrentRun()): readonly RunOutcomeBlocker[] {
 		return run === null ? [] : this._runOutcomeFor(run).blockers;
 	}
 
-	/**
-	 * The selected blocker's row in `blockers`: the blocker the selection was on, wherever it moved; otherwise the same
-	 * row, kept in range. The selection then follows that blocker.
-	 */
 	protected _resolveRunDetailSelection(blockers: readonly RunOutcomeBlocker[]): number {
 		const detail = this.runDetail;
 		if (detail === null || blockers.length === 0) return 0;
@@ -638,7 +640,6 @@ export abstract class GraphViewState {
 		return detail.selected;
 	}
 
-	/** Move the run details' selection by `delta` rows, and keep it on the blocker it lands on. */
 	protected _moveRunDetailSelection(blockers: readonly RunOutcomeBlocker[], delta: number): void {
 		const detail = this.runDetail;
 		if (detail === null || blockers.length === 0) return;
@@ -647,7 +648,6 @@ export abstract class GraphViewState {
 		detail.selectedKey = blockerKey(blockers[detail.selected]!);
 	}
 
-	/** Back to the run details a detail was opened from, if it was. */
 	private _returnToRunDetail(): void {
 		if (this.runDetailReturn === null) return;
 		this.runDetail = this.runDetailReturn;
@@ -655,7 +655,6 @@ export abstract class GraphViewState {
 		this.runDetailRevealSelected = true;
 	}
 
-	/** Open the run's details over the graph. */
 	protected _openRunDetail(): boolean {
 		if (this._getCurrentRun() === null) return false;
 		this.runDetail = { logs: false, selected: 0 };
@@ -670,14 +669,9 @@ export abstract class GraphViewState {
 		return true;
 	}
 
-	/**
-	 * Leave the run details for one blocker: focus its node, then open what Enter opens there (a failed stage's
-	 * detail, a tool's detail, or the stage's chat). False when the node is no longer in the graph.
-	 */
 	protected _focusBlockerNode(node: "stage" | "tool", id: string): boolean {
 		const index = this.cachedLayout.findIndex((layoutNode) => {
-			if (node === "tool") return layoutNode.stage.nodeKind === "tool" && layoutNode.stage.id === id;
-			if (layoutNode.stage.nodeKind === "tool") return false;
+			if ((layoutNode.stage.nodeKind === "tool") !== (node === "tool")) return false;
 			return (
 				layoutNode.stage.id === id || expandedStageTarget(this.expandedGraph, layoutNode.stage.id)?.stageId === id
 			);
@@ -689,6 +683,26 @@ export abstract class GraphViewState {
 		this.pendingEnsureFocusedVisible = true;
 		this.graphLayoutInvalidateForDetail();
 		return true;
+	}
+
+	protected _currentViewKind(): "tool" | "stage" | "run" | "graph" {
+		if (this.toolDetail !== null) return "tool";
+		if (this.stageDetail !== null) return "stage";
+		if (this.runDetail !== null) return "run";
+		return "graph";
+	}
+
+	protected _recordPaintedState(): void {
+		this.paintedView = this._currentViewKind();
+		if (this.runDetail !== null && !this.runDetail.logs) {
+			const blockers = this._runDetailBlockers();
+			if (blockers.length > 0) {
+				const selected = this._resolveRunDetailSelection(blockers);
+				this.paintedBlockerKey = blockerKey(blockers[selected]!);
+				return;
+			}
+		}
+		this.paintedBlockerKey = null;
 	}
 
 	protected _closeStageDetail(): boolean {

@@ -84,7 +84,7 @@ function mount(initial: readonly WorkflowsListingInvalidDefinition[]) {
 	};
 }
 
-test("broken definitions stay visible across compact listing clock ticks without rediscovery (#5255)", async () => {
+test("broken definitions stay visible across compact listing clock ticks without rediscovery (#5224)", async () => {
 	const fixture = mount([invalid("greet")]);
 	try {
 		assert.match(fixture.text(), /failed to load · greet failed/);
@@ -104,7 +104,7 @@ test("broken definitions stay visible across compact listing clock ticks without
 	}
 });
 
-test("a diagnostic refresh keeps the searched broken definition selected and uses its latest reason (#5255)", async () => {
+test("a diagnostic refresh keeps the searched broken definition selected and uses its latest reason (#5224)", async () => {
 	const fixture = mount([invalid("greet")]);
 	try {
 		fixture.component.handleInput?.("g");
@@ -122,7 +122,7 @@ test("a diagnostic refresh keeps the searched broken definition selected and use
 	}
 });
 
-test("removing a broken definition cannot confirm its unpainted replacement (#5255)", async () => {
+test("removing a broken definition cannot confirm its unpainted replacement (#5224)", async () => {
 	const fixture = mount([invalid("deploy"), invalid("greet")]);
 	try {
 		fixture.component.handleInput?.("\x1b[B");
@@ -146,7 +146,7 @@ test("removing a broken definition cannot confirm its unpainted replacement (#52
 	}
 });
 
-test("compact run and definition rows keep bidirectional controls inert without changing targets (#5255)", () => {
+test("compact run and definition rows keep bidirectional controls inert without changing targets (#5224)", () => {
 	const name = "review\u202eevil";
 	const rows = workflowsListingItems(
 		[{ ...run, name, label: "label\u2066evil" }],

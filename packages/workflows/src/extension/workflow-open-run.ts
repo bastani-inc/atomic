@@ -27,28 +27,25 @@ export interface WorkflowsCommandDeps {
 	readonly store: Store;
 	readonly definitions?: () => readonly WorkflowsListingDefinition[];
 	readonly startDefinition?: (name: string) => Promise<void>;
-	/** Definitions discovery could not load; the sheet lists them as `✗`, and Enter explains what failed. */
 	readonly invalidDefinitions?: () => readonly WorkflowsListingInvalidDefinition[];
 }
 
-/**
- * What a definition that could not load shows when chosen: what failed in one line, the file, the error's message lines
- * without stack frames, and how to fix it.
- */
 export function formatInvalidDefinitionDetails(definition: WorkflowsListingInvalidDefinition): string {
-	const { kept, frames } = withoutStackFrames(inertDisplayText(definition.message));
-	// The first message line is the reason, already shown (without the file the row names).
+	const { kept, frames } = withoutStackFrames(inertDisplayText(definition.message.replace(/\r\n?/g, "\n")));
 	const first = kept.findIndex((line) => line.trim() !== "");
-	const detail = kept.filter((line, index) => index !== first && line.trim() !== "").slice(0, 8);
+	const allDetail = kept.filter((line, index) => index !== first && line.trim() !== "");
+	const detail = allDetail.slice(0, 8);
+	const omitted = allDetail.length - detail.length;
 	const lines = [
 		`✗ Workflow "${inertDisplayLine(definition.name)}" could not be loaded (${inertDisplayLine(definition.code)})`,
 		"",
 	];
 	if (definition.source !== undefined) lines.push(`file    ${inertDisplayLine(definition.source)}`);
-	lines.push(`reason  ${definition.reason}`);
+	lines.push(`reason  ${inertDisplayLine(definition.reason)}`);
 	for (const line of detail) lines.push(`        ${line}`);
+	if (omitted > 0) lines.push(`        +${omitted} more`);
 	if (frames > 0) lines.push(`        (${frames} stack ${frames === 1 ? "frame" : "frames"} hidden)`);
-	lines.push("", "Fix the file, then run /workflow reload to load it again.");
+	lines.push("", "Fix the file, then run /reload to load it again.");
 	return lines.join("\n");
 }
 

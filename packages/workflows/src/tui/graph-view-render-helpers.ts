@@ -35,7 +35,7 @@ function displayedBinding(key: string): string {
 
 function noticeDisplayText(value: string, width: number): string {
 	const head = sliceHead(value, Math.max(0, width + 1));
-	return inertDisplayLine(sanitizeToolTitleText(head)) + (head.length < value.length ? "…" : "");
+	return sanitizeToolTitleText(inertDisplayLine(head)) + (head.length < value.length ? "…" : "");
 }
 
 export function toolExpandKey(piKeybindings: unknown): string {
@@ -90,6 +90,10 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		return this._navKeybindings()?.getKeys ? { action, label } : { keys: fallback, label };
 	}
 
+	private _helpShadows(key: string): boolean {
+		return this._navKeybindings()?.matches(key, APP_ACTION.keysHelp) === true;
+	}
+
 	private _stopNavKey(label: string): NavKey {
 		const keybindings = this._navKeybindings();
 		const keys = keybindings?.getKeys?.(APP_ACTION.listStop);
@@ -113,9 +117,9 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		if (this.toolDetail !== null) {
 			const expandKey = toolExpandKey(this.piKeybindings);
 			return [
-				{ keys: "esc", label: "back to graph" },
+				{ keys: "esc", label: compact ? "back" : "back to graph" },
 				{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" },
-				...(expandKey.length > 0
+				...(expandKey.length > 0 && !this._helpShadows(expandKey)
 					? [{ keys: expandKey, label: this.toolDetailExpanded ? "collapse" : "expand" }]
 					: []),
 				help,
@@ -130,27 +134,33 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		if (this.stageDetail !== null) {
 			const actions = this.stageActions;
 			const canFork = actions?.fork !== undefined && actions.forkTarget !== undefined && this.runId !== null;
+			const inLogs = this.stageDetail.logs;
 			return [
-				{ keys: "esc", label: "back to graph" },
-				...(actions?.retry ? [{ keys: "r", label: compact ? "retry" : "retry in place" }] : []),
-				...(canFork ? [{ keys: "f", label: compact ? "fork from here" : "fork from this stage (reruns it)" }] : []),
-				...(this.onStageAttach ? [{ keys: "t", label: "transcript" }] : []),
-				{ keys: "l", label: this.stageDetail.logs ? "summary" : "logs" },
-				...(this.stageDetail.logs ? [{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" }] : []),
+				...(actions?.retry && !this._helpShadows("r")
+					? [{ keys: "r", label: compact ? "retry" : "retry from stage" }]
+					: []),
+				...(canFork && !this._helpShadows("f") ? [{ keys: "f", label: compact ? "fork" : "fork from stage" }] : []),
+				...(this.onStageAttach && !this._helpShadows("t")
+					? [{ keys: "t", label: compact && inLogs ? "chat" : "transcript" }]
+					: []),
+				...(!this._helpShadows("l") ? [{ keys: "l", label: inLogs ? "summary" : "logs" }] : []),
+				{ keys: "esc", label: "back" },
+				...(inLogs ? [{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" }] : []),
 				help,
 			];
 		}
 		if (this.runDetail !== null) {
 			const blockers = this.runDetail.logs ? 0 : this._runDetailBlockers().length;
 			return [
-				{ keys: "esc", label: "back to graph" },
+				{ keys: "esc", label: compact ? "back" : "back to graph" },
 				...(blockers > 1 ? [{ keys: "\u2191\u2193", label: "select" }] : []),
-				...(blockers > 0 ? [{ keys: "\u21b5", label: "open" }] : []),
-				{ keys: "l", label: this.runDetail.logs ? "summary" : "logs" },
-				{ keys: "pgup/pgdn", label: "scroll" },
+				...(blockers > 0 ? [{ keys: "\u2192/\u21b5", label: "open" }] : []),
+				...(!this._helpShadows("l") ? [{ keys: "l", label: this.runDetail.logs ? "summary" : "logs" }] : []),
+				{ keys: blockers > 1 ? "pgup/pgdn" : "\u2191\u2193 pgup/pgdn", label: "scroll" },
 				help,
 			];
 		}
+		const hasRun = this._getCurrentRun() !== null;
 		const focused = this.cachedLayout[this.focusedIndex]?.stage;
 		const moveKeys = this._movableArrows();
 		const filter: NavKey = { keys: "f", label: `filter: ${this.statusFilter}` };
@@ -168,19 +178,21 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const move: NavKey[] = moveKeys ? [{ keys: moveKeys, label: "move" }] : [];
 
 		const stop = this._focusedStageStoppable() ? [this._stopNavKey(compact ? "stop" : "stop stage")] : [];
-		const stateful = [...stop, ...(filtered ? [filter] : [])];
+		const stateful = [...stop, ...(filtered && !this._helpShadows("f") ? [filter] : [])];
 		const keybindings = this._navKeybindings();
 		const hideShadowed =
-			keybindings?.matches("h", APP_ACTION.listStop) === true ||
-			keybindings?.matches("h", APP_ACTION.keysHelp) === true;
+			(hasRun && keybindings?.matches("h", APP_ACTION.listStop) === true) || this._helpShadows("h");
+		if (!hasRun) {
+			return [back, help, ...(this.onHide && !hideShadowed ? [{ keys: "h", label: "hide" }] : [])];
+		}
 		return [
 			back,
 			...(compact ? [...stateful, ...open, ...move] : [...open, ...move, ...stateful]),
-			{ keys: "/", label: "stages" },
-			...(filtered ? [] : [filter]),
-			{ keys: "o", label: "run details" },
+			...(!this._helpShadows("/") ? [{ keys: "/", label: "stages" }] : []),
+			...(filtered || this._helpShadows("f") ? [] : [filter]),
 			help,
 			...(this.onHide && !hideShadowed ? [{ keys: "h", label: "hide" }] : []),
+			...(!this._helpShadows("o") ? [{ keys: "o", label: "run details" }] : []),
 		];
 	}
 
@@ -204,10 +216,11 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 
 		const { top, mid, bot, visibleWidth: pillW } = renderOutlinePill(MODE_PILL_LABEL, t.accent, chromeBg);
 
-		const sep = `${chromeBg}  ${dim}\u00b7${RESET}${chromeBg}  `;
+		const wideSep = `${chromeBg}  ${dim}\u00b7${RESET}${chromeBg}  `;
+		const compactSep = `${chromeBg} ${dim}\u00b7${RESET}${chromeBg} `;
 		const leftEdgePad = 1;
-		const rightEdgePad = 2;
-		const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
+		let rightEdgePad = 2;
+		let hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
 		const keybindings = this._navKeybindings();
 		const taken = new Set<string>();
 
@@ -217,6 +230,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				(entry) =>
 					entry.keys !== "/" &&
 					!(entry.keys === "h" && entry.label === "hide") &&
+					!(entry.keys === "o" && entry.label === "run details") &&
 					!(entry.keys === "f" && entry.label === "filter: all"),
 			);
 			const texts = kept.flatMap((entry) => {
@@ -239,6 +253,13 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			return [segment];
 		});
 		const withHelp = (): string[] => (helpSegment ? [...segments, helpSegment] : segments);
+		const compactDetailChrome = this._detailOpen() && visibleWidth(withHelp().join(compactSep)) > hintsBudget;
+		const visiblePillWidth = compactDetailChrome ? 0 : pillW;
+		if (compactDetailChrome) {
+			rightEdgePad = 0;
+			hintsBudget = Math.max(0, width - leftEdgePad);
+		}
+		const sep = this._detailOpen() && visibleWidth(withHelp().join(wideSep)) > hintsBudget ? compactSep : wideSep;
 		const notice = this._activeGraphNotice();
 		const statusText = this._externalStatusText();
 
@@ -249,7 +270,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const hintsVisibleLen = visibleWidth(hintsStyled);
 		const fillerVisible = Math.max(0, hintsBudget - hintsVisibleLen);
 		const filler = " ".repeat(fillerVisible);
-		const acrossWidth = Math.max(0, width - leftEdgePad - pillW);
+		const acrossWidth = Math.max(0, width - leftEdgePad - visiblePillWidth);
 		const blankAcross = " ".repeat(acrossWidth);
 		const toastBudget = Math.max(0, acrossWidth - rightEdgePad);
 		const toast = toastText ? truncateToWidth(noticeDisplayText(toastText, toastBudget), toastBudget, "\u2026") : "";
@@ -258,9 +279,9 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			: blankAcross;
 
 		return [
-			`${chromeBg} ${RESET}${top}${chromeBg}${toastRow}${RESET}`,
-			`${chromeBg} ${RESET}${mid}${chromeBg}${filler}${hintsStyled}${chromeBg}${" ".repeat(rightEdgePad)}${RESET}`,
-			`${chromeBg} ${RESET}${bot}${chromeBg}${blankAcross}${RESET}`,
+			`${chromeBg} ${RESET}${compactDetailChrome ? "" : top}${chromeBg}${toastRow}${RESET}`,
+			`${chromeBg} ${RESET}${compactDetailChrome ? "" : mid}${chromeBg}${filler}${hintsStyled}${chromeBg}${" ".repeat(rightEdgePad)}${RESET}`,
+			`${chromeBg} ${RESET}${compactDetailChrome ? "" : bot}${chromeBg}${blankAcross}${RESET}`,
 		].map((line) => fillBackground(line, width, chromeBg));
 	}
 

@@ -1,5 +1,5 @@
 import { renderNavKeyOverlay } from "@bastani/atomic";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { GraphViewGraphRenderer } from "./graph-view-graph-render.js";
@@ -9,7 +9,7 @@ import type { GraphViewOpts } from "./graph-view-types.js";
 import { renderHeader, renderOutlinePill } from "./header.js";
 import { isKeybindingsLike } from "./keybindings-adapter.js";
 import { NODE_H } from "./layout.js";
-import { renderRunOutcome } from "./run-outcome.js";
+import { type RunOutcome, renderRunOutcome } from "./run-outcome.js";
 import { runStateColor, runStateIndicator } from "./run-state-indicator.js";
 import { renderStageFailureDetailLines } from "./stage-failure-detail.js";
 import { renderSwitcher } from "./switcher.js";
@@ -43,7 +43,6 @@ interface ToolDetailFrame {
 	readonly blockWidth: number;
 	readonly leftPad: number;
 	readonly lines: readonly string[];
-	/** The run details' selected blocker row, kept in view as the selection moves. */
 	readonly selectedRow?: number;
 }
 
@@ -55,11 +54,16 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	private renderRun: RunSnapshot | null | undefined;
 	private detailFrame: ToolDetailFrame | null = null;
 
-	private stageDetailFrame: { frame: ToolDetailFrame; stage: object; logs: boolean } | null = null;
-	/** The run details, rebuilt when the run snapshot, the log toggle, the selection or the width changes. */
+	private stageDetailFrame: {
+		frame: ToolDetailFrame;
+		stage: object;
+		modelAttempts: StageSnapshot["modelAttempts"];
+		logs: boolean;
+	} | null = null;
 	private runDetailFrame: {
 		frame: ToolDetailFrame;
 		run: object;
+		outcome: RunOutcome;
 		logs: boolean;
 		selected: number;
 		elapsedSecond: number;
@@ -144,12 +148,13 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 					this._recordGraphNodeHitRects(bodyStart + this.lastGraphTopPad, this.lastGraphVisibleRows);
 					this._renderSwitcherOverlay(lines, run, frameWidth, bodyStart, bodyRows);
 				}
-				this._renderKeysHelpOverlay(lines, frameWidth, bodyStart, bodyRows);
 			} else {
 				this.graphNodeHitRects = [];
 				this.lastGraphViewport = null;
 			}
+			this._renderKeysHelpOverlay(lines, frameWidth, bodyStart, bodyRows);
 			this.graphLayout.paintScrollbar(lines, frameWidth);
+			this._recordPaintedState();
 
 			return lines;
 		} finally {
@@ -213,25 +218,34 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const stage = this._stageDetailStage();
 		if (this.stageDetail === null || stage === undefined) return null;
 		const safeWidth = Math.max(1, Math.floor(width));
+		const fullAttempts =
+			stage.modelAttempts ??
+			this.store.run(this.stageDetail.runId)?.stages.find((candidate) => candidate.id === this.stageDetail?.stageId)
+				?.modelAttempts;
 		const cached = this.stageDetailFrame;
 		if (
 			cached !== null &&
 			cached.frame.width === safeWidth &&
 			cached.stage === stage &&
+			cached.modelAttempts === fullAttempts &&
 			cached.logs === this.stageDetail.logs
 		)
 			return cached.frame;
+		const detailStage =
+			fullAttempts === undefined || fullAttempts === stage.modelAttempts
+				? stage
+				: { ...stage, modelAttempts: fullAttempts };
 		const frame: ToolDetailFrame = {
 			width: safeWidth,
 			blockWidth: safeWidth,
 			leftPad: 0,
-			lines: renderStageFailureDetailLines(stage, {
+			lines: renderStageFailureDetailLines(detailStage, {
 				theme: this.graphTheme,
 				width: safeWidth,
 				logs: this.stageDetail.logs,
 			}),
 		};
-		this.stageDetailFrame = { frame, stage, logs: this.stageDetail.logs };
+		this.stageDetailFrame = { frame, stage, modelAttempts: fullAttempts, logs: this.stageDetail.logs };
 		return frame;
 	}
 
@@ -242,7 +256,6 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const safeWidth = Math.max(1, Math.floor(width));
 		const outcome = this._runOutcomeFor(run);
 		const selected = this._resolveRunDetailSelection(outcome.blockers);
-		// The headline's elapsed time keeps counting while the run goes on, between snapshots.
 		const elapsedMs = elapsedRunMs(run, Date.now());
 		const elapsedSecond = Math.floor(elapsedMs / 1000);
 		const cached = this.runDetailFrame;
@@ -250,6 +263,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			cached !== null &&
 			cached.frame.width === safeWidth &&
 			cached.run === run &&
+			cached.outcome === outcome &&
 			cached.logs === detail.logs &&
 			cached.selected === selected &&
 			cached.elapsedSecond === elapsedSecond
@@ -266,7 +280,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			lines: rendered.lines,
 			...(rendered.selectedRow === undefined ? {} : { selectedRow: rendered.selectedRow }),
 		};
-		this.runDetailFrame = { frame, run, logs: detail.logs, selected, elapsedSecond };
+		this.runDetailFrame = { frame, run, outcome, logs: detail.logs, selected, elapsedSecond };
 		return frame;
 	}
 
@@ -294,14 +308,13 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			this.pendingEnsureFocusedVisible = false;
 			if (this.runDetailRevealSelected) {
 				this.runDetailRevealSelected = false;
-				const selectedRow = this._openDetailFrame(width)?.selectedRow;
+				const selectedRow = this.runDetailFrame?.frame.selectedRow;
 				if (selectedRow !== undefined) {
-					// The selected blocker and the action line under it.
-					const top = toolDetailViewportPad(viewportRows) + selectedRow;
-					const bottom = top + 2;
+					const innerRows = Math.max(0, viewportRows - toolDetailViewportPad(viewportRows) * 2);
+					const bottom = selectedRow + Math.min(2, innerRows);
 					let next = scrollView.scrollTop;
-					if (top < next) next = top;
-					else if (bottom > next + viewportRows) next = bottom - viewportRows;
+					if (selectedRow < next) next = selectedRow;
+					else if (bottom > next + innerRows) next = bottom - innerRows;
 					scrollView.scrollTo(next);
 				}
 			}

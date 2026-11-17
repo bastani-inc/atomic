@@ -245,7 +245,7 @@ test("failure summary and logs render control-bearing fields as printable data w
 		const summary = graph.render(160);
 		assertSafeRows(summary);
 		assert.ok(summary.join("\n").includes("verify\\x1b[2JNAME second"));
-		assert.ok(summary.join("\n").includes("gate  denied"));
+		assert.match(summary.join("\n"), /gate +denied/);
 		graph.handleInput("l");
 		const logs = graph.render(160);
 		assertSafeRows(logs);

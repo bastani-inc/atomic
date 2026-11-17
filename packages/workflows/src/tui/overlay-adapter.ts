@@ -163,7 +163,6 @@ export function buildGraphOverlayAdapter(
 	// the chat scrollback, producing visible duplicates.
 	let currentHandle: PiOverlayHandle | null = null;
 	let mounted = false;
-
 	let returnTo: (() => void) | undefined;
 	const goBack = (): void => {
 		const back = returnTo;

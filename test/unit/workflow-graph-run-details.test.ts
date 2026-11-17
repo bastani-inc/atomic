@@ -129,6 +129,7 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 			{ stageActions: { retry: async () => ({ ok: true, message: "ok" }) } },
 		);
 		graph.handleInput("o");
+		graph.render(160);
 		assert.equal(graph.handleInput(ENTER), true);
 		const shown = screen(graph);
 		assert.match(shown, /✗ verify · failed/);
@@ -150,6 +151,7 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 			error: STACK,
 		});
 		graph.handleInput("o");
+		graph.render(160);
 		graph.handleInput(ENTER);
 		assert.match(screen(graph), /✗ verify · failed/);
 		graph.handleInput(ESC);
@@ -179,14 +181,14 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 		assert.deepEqual(attached, ["approve"]);
 	});
 
-	it("the run details fit 80 and 160 columns, and ? lists exactly the keys the hint offers", () => {
+	it("the run details fit 40, 80 and 160 columns, and ? lists the keys the hint offers", () => {
 		const graph = view([stage("verify", "failed", { error: "x".repeat(300) })], {
 			status: "failed",
 			error: "x".repeat(300),
 			result: { long: "y".repeat(400) },
 		});
 		graph.handleInput("o");
-		for (const width of [80, 160])
+		for (const width of [40, 80, 160])
 			for (const line of graph.render(width)) assert.ok(visibleWidth(line) <= width, stripAnsi(line));
 		graph.handleInput("?");
 		const help = screen(graph);

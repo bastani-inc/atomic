@@ -1,4 +1,5 @@
 import { reportDebug, sliceHead } from "@bastani/atomic";
+import type { WorkflowArtifact } from "../shared/authoring-contract-stage.js";
 import type { BudgetDimension, BudgetReport } from "../shared/budget.js";
 import {
 	actionableReturnedStatusText,
@@ -22,8 +23,9 @@ import type {
 	WorkflowActor,
 } from "../shared/store-types.js";
 import type { WorkflowOutputValues } from "../shared/types.js";
+import { inertDisplayLine } from "../tui/display-text.js";
 import { deriveGraphThemeFromPiTheme, type GraphTheme } from "../tui/graph-theme.js";
-import { buildRunOutcome, outputValueLine, summarizeFailureText } from "../tui/run-outcome.js";
+import { outputValueLine, summarizeFailureText } from "../tui/run-outcome.js";
 import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "../tui/workflow-notice-card.js";
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
 import { createLifecycleNoticeDelivery } from "./lifecycle-notification-delivery.js";
@@ -80,11 +82,8 @@ export interface WorkflowLifecycleNoticeDetails {
 	readonly error?: string;
 	/** Partial declared outputs carried by an author-initiated terminal exit. */
 	readonly outputs?: WorkflowOutputValues;
-	/** A completed run's declared outputs on one line, for the card; the model reads them from the run's status. */
 	readonly outputsPreview?: string;
-	/** The failure's first message line, for the card; `error` keeps the text the model reads. */
 	readonly reason?: string;
-	/** The first few artifacts the run's stages collected, and how many there were in all. */
 	readonly artifacts?: { readonly shown: readonly WorkflowLifecycleNoticeArtifact[]; readonly total: number };
 	readonly failedStageId?: string;
 	readonly toolNodeId?: string;
@@ -110,6 +109,7 @@ export interface WorkflowLifecycleNoticeArtifact {
 }
 
 const NOTICE_ARTIFACTS_SHOWN = 1;
+const SNIPPET_SCAN_WINDOW = 4096;
 
 export interface WorkflowLifecycleNotificationState {
 	readonly deliveredTerminalRuns: Set<string>;
@@ -283,7 +283,6 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 			state.retryableTerminalNotices.delete(key);
 			return;
 		}
-		// The graph snapshot keeps only a compact result; the card shows every declared output.
 		delivery.deliver(key, makeTerminalNotice(run, kind, options.store.run(run.id)?.result ?? run.result));
 	};
 
@@ -386,7 +385,7 @@ export function registerLifecycleNoticeRenderer(
 }
 
 export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoticeDetails): string {
-	const workflowName = escapeQuotedText(details.workflowName);
+	const workflowName = escapeQuotedText(singleLineNoticeText(details.workflowName));
 	// "which you started" / "which the user started". Omitted entirely when the
 	// run carries no recorded origin, rather than guessing one.
 	const origin =
@@ -476,30 +475,18 @@ function makeTerminalNotice(
 		: (run.error ??
 			returnedNoticeError(run, kind) ??
 			(kind === "blocked" || kind === "failed" ? run.exitReason : undefined));
-	const outcome = kind === "completed" ? buildRunOutcome(run) : undefined;
-	const artifacts = outcome?.artifacts ?? [];
+	const outputsPreview = kind === "completed" ? formatCardOutputs(fullResult) : undefined;
+	const reason = error && (kind === "failed" || kind === "blocked") ? summarizeNoticeFailureReason(error) : undefined;
+	const artifacts = kind === "completed" ? collectNoticeArtifacts(run) : undefined;
 	return {
 		kind,
 		scope: "run",
 		runId: run.id,
 		workflowName: run.name,
 		status: effectiveRunStatus(run),
-		...(kind === "completed" && formatCardOutputs(fullResult) !== undefined
-			? { outputsPreview: formatCardOutputs(fullResult) }
-			: {}),
-		...(error && (kind === "failed" || kind === "blocked") ? { reason: summarizeFailureText(error).reason } : {}),
-		...(artifacts.length > 0
-			? {
-					artifacts: {
-						total: artifacts.length,
-						shown: artifacts.slice(0, NOTICE_ARTIFACTS_SHOWN).map((artifact) => ({
-							kind: artifact.kind,
-							path: artifact.path,
-							...(artifact.detail === undefined ? {} : { detail: artifact.detail }),
-						})),
-					},
-				}
-			: {}),
+		...(outputsPreview !== undefined ? { outputsPreview } : {}),
+		...(reason !== undefined ? { reason } : {}),
+		...(artifacts !== undefined ? { artifacts } : {}),
 		...(activeBlocked ? { active: true } : {}),
 		...(run.exited === true && run.status === "failed" && run.resumable !== undefined
 			? { resumable: run.resumable }
@@ -710,9 +697,68 @@ function lifecycleToolOrigin(details: WorkflowLifecycleNoticeDetails): string | 
 	return details.toolName !== undefined && details.toolName.length > 0 ? details.toolName : details.toolNodeId;
 }
 function truncateSnippet(value: string): string {
+	if (value.length > SNIPPET_SCAN_WINDOW) {
+		const head = value.slice(0, SNIPPET_SCAN_WINDOW).replace(/\s+/g, " ").trimStart();
+		if (head.length > LIFECYCLE_NOTICE_SNIPPET_LIMIT + 2) {
+			return `${sliceHead(head, LIFECYCLE_NOTICE_SNIPPET_LIMIT - 1)}…`;
+		}
+	}
 	const normalized = value.replace(/\s+/g, " ").trim();
 	if (normalized.length <= LIFECYCLE_NOTICE_SNIPPET_LIMIT) return normalized;
 	return `${sliceHead(normalized, LIFECYCLE_NOTICE_SNIPPET_LIMIT - 1)}…`;
+}
+
+function summarizeNoticeFailureReason(error: string): string {
+	if (error.length > SNIPPET_SCAN_WINDOW) {
+		const head = error.slice(0, SNIPPET_SCAN_WINDOW);
+		const firstBreak = head.search(/[\r\n]/);
+		const candidate = firstBreak === -1 ? head : head.slice(0, firstBreak);
+		const summary = summarizeFailureText(candidate).reason;
+		if (firstBreak !== -1 && summary !== "No reason was recorded.") {
+			return truncateSnippet(summary);
+		}
+		if (summary.replace(/\s+/g, " ").trim().length > LIFECYCLE_NOTICE_SNIPPET_LIMIT + 2) {
+			return truncateSnippet(summary);
+		}
+	}
+	return truncateSnippet(summarizeFailureText(error).reason);
+}
+
+function noticeArtifactDetail(artifact: WorkflowArtifact): string | undefined {
+	if (artifact.captureError !== undefined)
+		return `not captured: ${summarizeFailureText(artifact.captureError).reason}`;
+	const size: string[] = [];
+	if (artifact.filesChanged !== undefined)
+		size.push(`${artifact.filesChanged} ${artifact.filesChanged === 1 ? "file" : "files"}`);
+	if (artifact.insertions !== undefined || artifact.deletions !== undefined)
+		size.push(`+${artifact.insertions ?? 0} \u2212${artifact.deletions ?? 0}`);
+	if (size.length > 0) return size.join(" \u00b7 ");
+	return artifact.diffStat?.split(/\r?\n/)[0];
+}
+
+function collectNoticeArtifacts(run: RunSnapshot): WorkflowLifecycleNoticeDetails["artifacts"] {
+	let total = 0;
+	const shown: WorkflowLifecycleNoticeArtifact[] = [];
+	for (const stage of run.stages) {
+		const stageArtifacts = stage.artifacts;
+		if (stageArtifacts === undefined || stageArtifacts.length === 0) continue;
+		total += stageArtifacts.length;
+		for (let i = 0; i < stageArtifacts.length && shown.length < NOTICE_ARTIFACTS_SHOWN; i++) {
+			const artifact = stageArtifacts[i];
+			if (artifact === undefined) continue;
+			const detail = noticeArtifactDetail(artifact);
+			shown.push({
+				kind: artifact.kind,
+				path: inertDisplayLine(artifact.path),
+				...(detail === undefined ? {} : { detail: inertDisplayLine(detail) }),
+			});
+		}
+	}
+	return total > 0 ? { total, shown } : undefined;
+}
+
+function singleLineNoticeText(value: string): string {
+	return inertDisplayLine(value.replace(/\r\n?/g, "\n"));
 }
 
 function formatLifecycleOutputs(outputs: WorkflowOutputValues | undefined): string | undefined {
@@ -730,14 +776,24 @@ function makeNoticeComponent(
 	theme: GraphTheme | undefined,
 ): PiMessageRenderComponent {
 	const text = formatWorkflowLifecycleNoticeText(details);
+	let cachedWidth: number | undefined;
+	let cachedLines: string[] | undefined;
 	return {
 		render(width: number): string[] {
 			// Width < 32 cannot carry rounded card chrome without exceeding the
 			// terminal, so the card helper falls back to wrapped plain text there.
-			return renderLifecycleNoticeCard(details, { width, theme, fallbackText: text });
+			const normalizedWidth = Math.max(1, Math.floor(width));
+			if (cachedWidth === normalizedWidth && cachedLines !== undefined) {
+				return cachedLines;
+			}
+			cachedWidth = normalizedWidth;
+			cachedLines = renderLifecycleNoticeCard(details, { width: normalizedWidth, theme, fallbackText: text });
+			return cachedLines;
 		},
 		invalidate() {
 			/* stored lifecycle notices are immutable */
+			cachedWidth = undefined;
+			cachedLines = undefined;
 		},
 	};
 }
@@ -749,16 +805,24 @@ function renderLifecycleNoticeCard(
 	const tone: WorkflowNoticeTone = lifecycleNoticeTone(details.kind);
 	const title = lifecycleNoticeTitle(details.kind);
 	const glyph = lifecycleNoticeGlyph(details.kind);
-	const stage = details.stageName ?? details.failedStageId ?? details.stageId;
-	const tool = stage === undefined ? lifecycleToolOrigin(details) : undefined;
+	const rawStage = details.stageName ?? details.failedStageId ?? details.stageId;
+	const stage = rawStage === undefined ? undefined : singleLineNoticeText(rawStage);
+	const rawTool = stage === undefined ? lifecycleToolOrigin(details) : undefined;
+	const tool = rawTool === undefined ? undefined : singleLineNoticeText(rawTool);
 	const headline = lifecycleNoticeHeadline(details);
+	const errorValue =
+		details.reason !== undefined
+			? truncateSnippet(details.reason)
+			: details.error === undefined
+				? undefined
+				: summarizeNoticeFailureReason(details.error);
 	return renderWorkflowNoticeCard({
 		title,
 		glyph,
 		headline,
 		tone,
 		fields: [
-			{ label: "workflow", value: details.workflowName },
+			{ label: "workflow", value: singleLineNoticeText(details.workflowName) },
 			{ label: "run", value: details.runId },
 			{ label: "stage", value: stage },
 			{ label: "tool", value: tool },
@@ -767,8 +831,7 @@ function renderLifecycleNoticeCard(
 			{ label: "prompt", value: details.promptMessage, tone: "muted" },
 			{
 				label: "error",
-				value:
-					details.reason ?? (details.error === undefined ? undefined : summarizeFailureText(details.error).reason),
+				value: errorValue,
 				tone: "error",
 			},
 			{ label: "outputs", value: details.outputsPreview },
@@ -848,7 +911,7 @@ function lifecycleNoticeGlyph(kind: WorkflowLifecycleNoticeKind): string {
 }
 
 function lifecycleNoticeHeadline(details: WorkflowLifecycleNoticeDetails): string {
-	const name = details.workflowName;
+	const name = singleLineNoticeText(details.workflowName);
 	const scope = details.scope === "stage" ? "Stage of workflow" : "Workflow";
 	switch (details.kind) {
 		case "started":
@@ -880,7 +943,6 @@ function lifecycleNoticeHint(details: WorkflowLifecycleNoticeDetails): string {
 	return `/workflow status ${details.runId}`;
 }
 
-/** Where the run's details and full log live, for the notices that have an outcome to look at. */
 function lifecycleOutcomeHints(details: WorkflowLifecycleNoticeDetails): string[] {
 	if (details.scope !== "run") return [];
 	if (details.kind === "completed") return [`/workflows ${details.runId}, then o: run details`];
@@ -889,12 +951,37 @@ function lifecycleOutcomeHints(details: WorkflowLifecycleNoticeDetails): string[
 	return [];
 }
 
+function cardOutputValueSlice(value: WorkflowOutputValues[string]): string {
+	if (typeof value === "string" && value.length > SNIPPET_SCAN_WINDOW) {
+		const head = value.slice(0, SNIPPET_SCAN_WINDOW);
+		const firstBreak = head.search(/[\r\n]/);
+		if (firstBreak !== -1) return inertDisplayLine(head.slice(0, firstBreak));
+		const preview = inertDisplayLine(head);
+		if (preview.replace(/\s+/g, " ").trim().length > LIFECYCLE_NOTICE_SNIPPET_LIMIT + 2) {
+			return preview;
+		}
+	}
+	return outputValueLine(value);
+}
+
 function formatCardOutputs(result: WorkflowOutputValues | undefined): string | undefined {
 	if (result === undefined) return undefined;
 	const entries = Object.entries(result);
 	if (entries.length === 0) return undefined;
-	const text = entries.map(([key, value]) => `${key}: ${outputValueLine(value)}`).join(" \u00b7 ");
-	return truncateSnippet(text);
+	const parts: string[] = [];
+	let length = 0;
+	for (const [key, value] of entries) {
+		const part = `${key}: ${cardOutputValueSlice(value)}`;
+		parts.push(part);
+		length += part.trim().length;
+		if (
+			length > LIFECYCLE_NOTICE_SNIPPET_LIMIT * 2 &&
+			parts.join(" \u00b7 ").replace(/\s+/g, " ").trim().length > LIFECYCLE_NOTICE_SNIPPET_LIMIT + 2
+		) {
+			break;
+		}
+	}
+	return truncateSnippet(parts.join(" \u00b7 "));
 }
 
 function formatCardArtifacts(artifacts: WorkflowLifecycleNoticeDetails["artifacts"]): string | undefined {

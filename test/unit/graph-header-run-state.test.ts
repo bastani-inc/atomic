@@ -281,7 +281,8 @@ test("renderHeader shows a multi-line exit reason on one line without terminal c
 	const target = run({ ...blockedExit, exitReason: "line one\nline two\x1b[31m" });
 	const lines = renderHeader(target, { width: WIDE, theme });
 	assertVisibleWidths(lines, WIDE);
-	assert.ok(lines[1]!.includes("↑ blocked: line one line two\\x1b[31m"));
+	assert.ok(lines[1]!.includes("↑ blocked: line one line two"));
+	assert.doesNotMatch(lines.join(""), /\\x1b/);
 	assert.equal(lines.join("").includes("\n"), false);
 });
 

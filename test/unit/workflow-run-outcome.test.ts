@@ -1,16 +1,19 @@
-// @ts-nocheck
-
 import assert from "node:assert/strict";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
+import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { TOOL_PAYLOAD_VALUE_LIMIT } from "../../packages/workflows/src/shared/tool-payload-bounds.js";
 import {
 	buildRunOutcome,
 	renderRunOutcomeLines,
 	runOutcomeLogLines,
 	summarizeFailureText,
+	withoutStackFrames,
 } from "../../packages/workflows/src/tui/run-outcome.js";
-import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
+import * as textHelpers from "../../packages/workflows/src/tui/text-helpers.js";
 import { defaultTheme, makeStage } from "./overlay-graph-helpers.js";
+
+const { visibleWidth } = textHelpers;
 
 const STACK = [
 	"Error: verify gate failed: 2 jobs",
@@ -18,11 +21,30 @@ const STACK = [
 	"    at async runStage (/repo/node_modules/x/run.js:10:3)",
 ].join("\n");
 
-function stage(id, status, extra = {}) {
+function stage(id: string, status: StageSnapshot["status"], extra: Partial<StageSnapshot> = {}): StageSnapshot {
 	return { ...makeStage(id), status, ...extra };
 }
 
-function run(status, stages, extra = {}) {
+function tool(
+	id: string,
+	name: string,
+	status: ToolNodeSnapshot["status"],
+	extra: Partial<ToolNodeSnapshot> = {},
+): ToolNodeSnapshot {
+	return {
+		kind: "tool",
+		id,
+		name,
+		argsHash: "h",
+		ordinal: 1,
+		parentIds: [],
+		status,
+		attachable: false,
+		...extra,
+	};
+}
+
+function run(status: RunSnapshot["status"], stages: StageSnapshot[], extra: Partial<RunSnapshot> = {}): RunSnapshot {
 	return {
 		id: "run-1",
 		name: "ralph",
@@ -35,7 +57,7 @@ function run(status, stages, extra = {}) {
 	};
 }
 
-function text(lines) {
+function text(lines: readonly string[]): string {
 	return lines.map((line) => stripAnsi(line)).join("\n");
 }
 
@@ -46,6 +68,51 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 		assert.equal(summary.frames, 2);
 		assert.equal(summarizeFailureText(undefined).reason, "No reason was recorded.");
 		assert.equal(summarizeFailureText("\n\n  boom  \n").reason, "boom");
+		assert.deepEqual(summarizeFailureText("   at foo (/x.ts:1:1)\nreal reason"), {
+			reason: "real reason",
+			frames: 1,
+		});
+		assert.deepEqual(summarizeFailureText("\x1b[31m    at handler (/code/main.ts:10:2)\x1b[0m\nError: refused"), {
+			reason: "refused",
+			frames: 1,
+		});
+		assert.deepEqual(summarizeFailureText("at least one approval is required"), {
+			reason: "at least one approval is required",
+			frames: 0,
+		});
+		assert.equal(summarizeFailureText(`at ${" ".repeat(10_000)}(native)x`).frames, 0);
+		assert.equal(
+			summarizeFailureText(`Error: ${"x".repeat(100_000)}`).reason.length,
+			TOOL_PAYLOAD_VALUE_LIMIT - "Error: ".length,
+		);
+		assert.deepEqual(
+			withoutStackFrames(
+				[
+					"Deploy failed",
+					"at stage 3 the health check timed out",
+					"at startup: service unavailable",
+					"at midnight (UTC) try again",
+					"    at verifyStage (/repo/.atomic/workflows/ralph.ts:41:11)",
+					"    at Object.named [as alias] (/repo/a.ts:1:2)",
+					"    at file:\x2f\x2f/repo/a b.ts:1:2",
+					"    at Object.fn (/repo/a b.ts:1:2)",
+					"    at async Promise.all (index 0)",
+					"    at eval (eval at run (/repo/a.ts:1:2), <anonymous>:1:2)",
+					"    at fn (native)",
+					"    at <anonymous>",
+					"\x1b[31m    at handler (/code/main.ts:10:2)\x1b[0m",
+				].join("\n"),
+			),
+			{
+				kept: [
+					"Deploy failed",
+					"at stage 3 the health check timed out",
+					"at startup: service unavailable",
+					"at midnight (UTC) try again",
+				],
+				frames: 9,
+			},
+		);
 	});
 
 	it("a completed run shows its declared outputs and the artifacts its stages collected", () => {
@@ -81,9 +148,9 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 			outcome.outputs.map((output) => output.key),
 			["summary", "prNumber", "files"],
 		);
-		assert.equal(outcome.outputs[0].value, "Fixed the shipping benchmark");
-		assert.equal(outcome.outputs[1].value, "5236");
-		assert.equal(outcome.outputs[2].value, '["a.ts","b.ts"]');
+		assert.equal(outcome.outputs[0]?.value, "Fixed the shipping benchmark");
+		assert.equal(outcome.outputs[1]?.value, "5236");
+		assert.equal(outcome.outputs[2]?.value, '["a.ts","b.ts"]');
 		assert.deepEqual(
 			outcome.artifacts.map((artifact) => [artifact.kind, artifact.path, artifact.stage]),
 			[
@@ -91,7 +158,7 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 				["output", "/repo/out/report.md", "implement"],
 			],
 		);
-		assert.match(outcome.artifacts[0].detail, /3 files · \+40 −2/);
+		assert.match(outcome.artifacts[0]?.detail ?? "", /3 files · \+40 −2/);
 		assert.deepEqual(outcome.blockers, []);
 
 		const lines = text(renderRunOutcomeLines(outcome, { theme: defaultTheme, width: 100, logs: false, selected: 0 }));
@@ -102,13 +169,13 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 		assert.match(lines, /diff\s+\/repo\/\.atomic\/artifacts\/impl\.patch · 3 files · \+40 −2/);
 	});
 
-	it("uses a stage's recorded failure message when the run has no error text (#5255)", () => {
+	it("uses a stage's recorded failure message when the run has no error text (#5224)", () => {
 		for (const failedStageId of [undefined, "verify"]) {
 			const outcome = buildRunOutcome(
 				run("failed", [stage("verify", "failed", { failureMessage: STACK })], { failedStageId }),
 			);
 			assert.equal(outcome.reason, "verify gate failed: 2 jobs");
-			assert.equal(outcome.reason, outcome.blockers[0].reason);
+			assert.equal(outcome.reason, outcome.blockers[0]?.reason);
 		}
 	});
 
@@ -157,10 +224,10 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 			selected: 0,
 		});
 		const quit = buildRunOutcome(run("paused", [], { quitAt: 2_000 }), 2_000);
-		assert.match(stripAnsi(failed[0]), /✗ ralph · failed/);
-		assert.match(stripAnsi(stopped[0]), /◼ ralph · stopped/);
+		assert.match(stripAnsi(failed[0] ?? ""), /✗ ralph · failed/);
+		assert.match(stripAnsi(stopped[0] ?? ""), /◼ ralph · stopped/);
 		assert.equal(quit.state, "stopped");
-		assert.notEqual(failed[0].match(/\x1b\[[0-9;]*m/)?.[0], stopped[0].match(/\x1b\[[0-9;]*m/)?.[0]);
+		assert.notEqual(failed[0]?.match(/\x1b\[[0-9;]*m/)?.[0], stopped[0]?.match(/\x1b\[[0-9;]*m/)?.[0]);
 	});
 
 	it("lists every blocker: a question waiting, a blocked stage and a failed tool, each with its next action", () => {
@@ -168,11 +235,17 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 			"running",
 			[
 				stage("approve", "awaiting_input", {
-					pendingPrompt: { id: "p1", kind: "select", message: "Approve this plan?", choices: ["Yes", "No"] },
+					pendingPrompt: {
+						id: "p1",
+						kind: "select",
+						message: "Approve this plan?",
+						choices: ["Yes", "No"],
+						createdAt: 1,
+					},
 				}),
 				stage("deploy", "blocked", { error: "Provider rate limit: retry after 60s\n    at x (y:1:1)" }),
 			],
-			{ toolNodes: [{ id: "t1", name: "lint", status: "failed", error: "eslint exited 1", parentIds: [] }] },
+			{ toolNodes: [tool("t1", "lint", "failed", { error: "eslint exited 1" })] },
 		);
 		const outcome = buildRunOutcome(r, 3_000);
 		assert.equal(outcome.state, "waiting");
@@ -219,16 +292,12 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 			endedAt: 3_000,
 			error: "verify gate failed",
 			toolNodes: [
-				{ id: "t1", name: "prepare", status: "completed", startedAt: 600, endedAt: 900, parentIds: [] },
-				{
-					id: "t2",
-					name: "verify",
-					status: "failed",
+				tool("t1", "prepare", "completed", { startedAt: 600, endedAt: 900 }),
+				tool("t2", "verify", "failed", {
 					startedAt: 1_000,
 					endedAt: 2_000,
 					error: "verify gate failed",
-					parentIds: [],
-				},
+				}),
 			],
 		});
 		assert.deepEqual(
@@ -247,7 +316,7 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 	it("the log shows a failure once when a stage or tool repeats the run's own message", () => {
 		const r = run("failed", [], {
 			error: "verify gate failed",
-			toolNodes: [{ id: "t2", name: "verify", status: "failed", error: "verify gate failed", parentIds: [] }],
+			toolNodes: [tool("t2", "verify", "failed", { error: "verify gate failed" })],
 		});
 		assert.deepEqual(runOutcomeLogLines(r), ["verify gate failed"]);
 	});
@@ -292,7 +361,6 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 				},
 			),
 		);
-		// Every shown string; node ids only look nodes up and are never shown.
 		const strings = JSON.stringify(outcome, (key, value) => (key === "id" || key === "runId" ? undefined : value));
 		assert.doesNotMatch(strings, /\\u001b/, "no escape character survives anywhere the outcome shows");
 		assert.doesNotMatch(strings, /\u202e/, "no bidi override survives");
@@ -304,6 +372,241 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 		const lines = renderRunOutcomeLines(outcome, { width: 60, logs: false, selected: 0 });
 		const notes = lines.filter((line) => /notes|word/.test(line));
 		assert.equal(notes.length, 3);
-		assert.match(notes.at(-1), /…$/);
+		assert.match(notes.at(-1) ?? "", /…$/);
+	});
+
+	it("aligns blocker reasons and output values by display width for wide and combining names (#5224)", () => {
+		const outcome = buildRunOutcome(
+			run(
+				"running",
+				[
+					stage("a", "failed", { name: "部署チェック", error: "boom" }),
+					stage("b", "failed", { name: "deploy-check", error: "boom" }),
+					stage("c", "failed", { name: "cafe\u0301-check", error: "boom" }),
+				],
+				{
+					result: {
+						部署キー: "val-marker",
+						"ascii-key": "val-marker",
+						"cafe\u0301-key": "val-marker",
+					},
+				},
+			),
+		);
+		const rendered = renderRunOutcomeLines(outcome, {
+			theme: defaultTheme,
+			width: 120,
+			logs: false,
+			selected: 0,
+		}).map((line) => stripAnsi(line));
+		const blockerCols = rendered
+			.filter((line) => line.includes("boom") && line.includes("✗"))
+			.map((line) => visibleWidth(line.slice(0, line.indexOf("boom"))));
+		assert.deepEqual(blockerCols, [blockerCols[0], blockerCols[0], blockerCols[0]]);
+		const outputCols = rendered
+			.filter((line) => line.includes("val-marker"))
+			.map((line) => visibleWidth(line.slice(0, line.indexOf("val-marker"))));
+		assert.deepEqual(outputCols, [outputCols[0], outputCols[0], outputCols[0]]);
+	});
+
+	it("recurses into nested child workflows for waiting questions and failed tools (#5224)", () => {
+		const rootRun = run("running", [
+			stage("plan", "completed", { startedAt: 1_000, endedAt: 2_000 }),
+			stage("deploy", "running", {
+				startedAt: 2_000,
+				workflowChildRun: { alias: "child", workflow: "child-wf", runId: "child-1" },
+			}),
+		]);
+		const childRun: RunSnapshot = {
+			id: "child-1",
+			name: "child-wf",
+			inputs: {},
+			status: "running",
+			startedAt: 2_000,
+			parentRunId: "run-1",
+			parentStageId: "deploy",
+			rootRunId: "run-1",
+			stages: [
+				stage("ask", "awaiting_input", {
+					pendingPrompt: { id: "p1", kind: "confirm", message: "Ship it?", createdAt: 2_500 },
+				}),
+			],
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "t-child",
+					name: "child-lint",
+					argsHash: "h1",
+					ordinal: 1,
+					parentIds: [],
+					status: "failed",
+					error: "child tool failed",
+					attachable: false,
+				},
+			],
+		};
+		const outcome = buildRunOutcome(rootRun, 3_000, [rootRun, childRun]);
+		assert.equal(outcome.state, "waiting");
+		assert.deepEqual(
+			outcome.blockers.map((blocker) => [blocker.kind, blocker.node, blocker.id, blocker.name, blocker.reason]),
+			[
+				["awaiting_input", "stage", "child-1:ask", "ask", "Ship it?"],
+				["failed", "tool", "child-1:t-child", "child-lint", "child tool failed"],
+			],
+		);
+		assert.ok(outcome.log.some((line) => line.includes("child-lint:")));
+		assert.ok(outcome.log.some((line) => line.includes("child tool failed")));
+		const rootPromptOutcome = buildRunOutcome(
+			run("running", [stage("work", "completed", { startedAt: 1_000, endedAt: 2_000 })], {
+				pendingPrompt: { id: "approval", kind: "confirm", message: "Deploy this release?", createdAt: 2_000 },
+			}),
+			3_000,
+		);
+		assert.equal(rootPromptOutcome.state, "waiting");
+		assert.equal(rootPromptOutcome.reason, "Deploy this release?");
+		assert.deepEqual(rootPromptOutcome.blockers, []);
+
+		const completedParent = run("running", [
+			stage("compose", "completed", {
+				startedAt: 1_000,
+				endedAt: 2_000,
+				workflowChild: {
+					alias: "child",
+					workflow: "child-wf",
+					runId: "child-current",
+					status: "completed",
+					outputs: {},
+				},
+				workflowChildRun: { alias: "child", workflow: "child-wf", runId: "child-old" },
+			}),
+		]);
+		const staleChild: RunSnapshot = {
+			id: "child-old",
+			name: "old child",
+			inputs: {},
+			status: "running",
+			startedAt: 1_000,
+			parentRunId: "run-1",
+			parentStageId: "compose",
+			rootRunId: "run-1",
+			stages: [
+				stage("ask", "awaiting_input", {
+					pendingPrompt: { id: "old-q", kind: "confirm", message: "STALE prompt", createdAt: 1_100 },
+				}),
+			],
+			toolNodes: [tool("t-stale", "stale-lint", "failed", { error: "stale tool failure" })],
+		};
+		const currentChild: RunSnapshot = {
+			id: "child-current",
+			name: "current child",
+			inputs: {},
+			status: "completed",
+			startedAt: 1_200,
+			endedAt: 2_000,
+			parentRunId: "run-1",
+			parentStageId: "compose",
+			rootRunId: "run-1",
+			stages: [stage("done", "completed", { startedAt: 1_200, endedAt: 2_000 })],
+			toolNodes: [],
+		};
+		const supersededOutcome = buildRunOutcome(completedParent, 3_000, [completedParent, currentChild, staleChild]);
+		assert.equal(supersededOutcome.state, "running");
+		assert.deepEqual(supersededOutcome.blockers, []);
+		assert.deepEqual(supersededOutcome.log, ["No log was recorded for this run."]);
+	});
+
+	it("prefers a run's returned failed status summary over a caught stage's error (#5224)", () => {
+		const caught = run(
+			"completed",
+			[stage("tests", "failed", { error: "Error: process exited with code 1", endedAt: 2_000 })],
+			{
+				endedAt: 3_000,
+				result: { status: "failed", summary: "Tests failed in 2 packages" },
+			},
+		);
+		const outcome = buildRunOutcome(caught, 3_000);
+		assert.equal(outcome.state, "failed");
+		assert.equal(outcome.reason, "Tests failed in 2 packages");
+	});
+
+	it("preserves stage, cause and stack-frame indentation and normalizes CRLF in the run details log (#5224)", () => {
+		const failedStage = stage("deploy", "failed", {
+			error: "Deploy failed",
+			failureMessage: "Deploy failed: 2 checks\r\n    at deploy (/repo/wf.ts:12:3)",
+			failureDetail: {
+				name: "Error",
+				message: "Deploy failed: 2 checks",
+				code: "E_DEPLOY",
+				fields: {},
+				cause: { name: "TypeError", message: "fetch failed", fields: {} },
+			},
+		});
+		const failedRun = run("failed", [failedStage], {
+			error: "ship failed\r\nsecond line",
+			toolNodes: [
+				{
+					kind: "tool",
+					id: "t1",
+					name: "verify",
+					argsHash: "h1",
+					ordinal: 1,
+					parentIds: [],
+					status: "failed",
+					error: "refused\r\nby server",
+					attachable: false,
+				},
+			],
+		});
+		const outcome = buildRunOutcome(failedRun, 5_000);
+		assert.equal(
+			outcome.log.some((line) => line.includes("\\x0d")),
+			false,
+		);
+		const rendered = renderRunOutcomeLines(outcome, { theme: defaultTheme, width: 100, logs: true, selected: 0 }).map(
+			(line) => stripAnsi(line),
+		);
+		assert.ok(rendered.some((line) => /^ {2}deploy:$/.test(line)));
+		assert.ok(rendered.some((line) => /^ {4}Deploy failed: 2 checks$/.test(line)));
+		assert.ok(rendered.some((line) => /^ {8}at deploy \(\/repo\/wf\.ts:12:3\)$/.test(line)));
+		assert.ok(rendered.some((line) => /^ {6}TypeError: fetch failed$/.test(line)));
+	});
+
+	it("renders large output and reason values without wrapping the whole payload (#5224)", () => {
+		const huge = "x".repeat(1_000_000);
+		const outcome = buildRunOutcome(
+			run("failed", [stage("verify", "failed", { error: "boom" })], {
+				error: `Error: ${huge}`,
+				result: { blob: huge },
+			}),
+			2_000,
+		);
+		assert.equal(outcome.reason?.length, TOOL_PAYLOAD_VALUE_LIMIT - "Error: ".length);
+		assert.equal(outcome.outputs[0]?.value.length, TOOL_PAYLOAD_VALUE_LIMIT);
+		const wrapped = vi.spyOn(textHelpers, "wrapPlainText");
+		try {
+			const summaryRows = renderRunOutcomeLines(outcome, {
+				theme: defaultTheme,
+				width: 120,
+				logs: false,
+				selected: 0,
+			});
+			assert.ok(summaryRows.length < 30);
+			assert.ok(wrapped.mock.calls.length > 0);
+			assert.ok(
+				wrapped.mock.calls.every(([input]) => input.length <= 600),
+				"summary slices each value before wrapping",
+			);
+
+			wrapped.mockClear();
+			const logRows = renderRunOutcomeLines(outcome, { theme: defaultTheme, width: 120, logs: true, selected: 0 });
+			assert.ok(logRows.length <= 260);
+			assert.ok(wrapped.mock.calls.length > 0);
+			assert.ok(
+				wrapped.mock.calls.every(([input]) => input.length <= TOOL_PAYLOAD_VALUE_LIMIT),
+				"log view bounds each line before wrapping",
+			);
+		} finally {
+			wrapped.mockRestore();
+		}
 	});
 });

@@ -29,10 +29,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed whitespace-only optional workflow inputs overriding defaults instead of being left out, and JSON-looking text inputs being submitted as objects or arrays instead of literal strings ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed workflow input forms interpreting terminal commands embedded in field names, descriptions, choices or prefilled values instead of displaying them as text ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed workflow notices, error cards, run details and the `/workflows` sheet interpreting run and stage names, outputs, failure messages, artifact paths and discovery errors as terminal commands. Escape sequences are removed and bidirectional controls are shown as text ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Fixed failed-stage details omitting their back key in narrow terminals and their recorded token usage. Retry and fork hints now name the stage consistently ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Removed
 
-- The below-editor `BACKGROUND` workflow list and its Alt+K/J scrolling. Each run now has a row in the main chat's agent panel with its stage progress, current stage and any waiting input; Enter on it opens the graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - The below-editor `BACKGROUND` workflow list and its Alt+K/J scrolling. Each run now has a row in the main chat's agent panel with its stage progress, current stage and any waiting question; Enter on it opens the graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ## [0.9.88] - 2026-11-16

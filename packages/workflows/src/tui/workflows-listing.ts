@@ -19,27 +19,28 @@ import { inertDisplayLine } from "./display-text.js";
 import { panelItemsFromSnapshot } from "./panel-runs.js";
 import { summarizeFailureText } from "./run-outcome.js";
 
-/** A workflow definition that discovery could not load, and why. */
 export interface WorkflowsListingInvalidDefinition {
-	/** The workflow's name: its file's base name, or the export or workflow name discovery reported. */
 	readonly name: string;
-	/** The file or export discovery reported, when it named one. */
 	readonly source?: string;
 	readonly code: string;
-	/** The error's first message line. */
 	readonly reason: string;
-	/** The full diagnostic message, stack frames included, for the details. */
 	readonly message: string;
 }
 
-/** What a chosen row is: a run to open, a definition to start, or a broken definition to explain. */
 export type WorkflowsListingTarget =
 	| { kind: "run"; runId: string }
 	| { kind: "definition"; name: string }
 	| { kind: "invalid-definition"; definition: WorkflowsListingInvalidDefinition };
 
-/** The discovery diagnostics a definition did not load because of; warnings, such as a skipped duplicate, are not. */
 const FAILED_TO_LOAD_CODES: ReadonlySet<string> = new Set(["INVALID_DEFINITION", "IMPORT_FAILED", "PATH_NOT_FOUND"]);
+const NON_WORKFLOW_NAMED_EXPORT =
+	/\bexport "(?!default")[^"]+" rejected: (?:export is not an object|missing or incorrect __piWorkflow sentinel\b|workflow definition is not produced by workflow\b)/;
+const NAMED_EXPORT_REJECTION = /\bexport "(?!default").+?" rejected:/;
+const RAW_SOURCE = Symbol("workflow.invalidDefinition.rawSource");
+
+type InvalidDefinitionWithRawSource = WorkflowsListingInvalidDefinition & {
+	readonly [RAW_SOURCE]?: string;
+};
 
 function definitionNameFromSource(source: string | undefined, code: string): string {
 	if (source === undefined || source.trim() === "") return code.toLowerCase();
@@ -47,22 +48,43 @@ function definitionNameFromSource(source: string | undefined, code: string): str
 	return base.replace(/\.(?:[cm]?[jt]s|tsx)$/, "") || source;
 }
 
-/** `Failed to import "<file>": ParseError: …` reads as `ParseError: …` beside a row that already names the file. */
 function withoutSourcePrefix(reason: string, source: string | undefined): string {
 	if (source === undefined) return reason;
 	const prefix = `Failed to import "${source}": `;
 	return reason.startsWith(prefix) && reason.length > prefix.length ? reason.slice(prefix.length) : reason;
 }
 
-/** A stable row id from the definition's file and code; repeats of one pair are numbered in their order. */
+function invalidDefinitionDiscriminator(definition: WorkflowsListingInvalidDefinition): string {
+	const exported = /\bexport\s+(?:"(.+?)"\s+rejected:|"([^"]+)"|([^\s:]+)\s*:)/.exec(definition.message);
+	const exportKey = exported?.[1] ?? exported?.[2] ?? exported?.[3];
+	if (exportKey !== undefined) return exportKey;
+	if (definition.code === "INVALID_DEFINITION" || definition.source === undefined) return definition.reason;
+	return "";
+}
+
+function rawDefinitionSource(definition: WorkflowsListingInvalidDefinition): string {
+	return (definition as InvalidDefinitionWithRawSource)[RAW_SOURCE] ?? definition.source ?? definition.name;
+}
+
+function invalidDefinitionKey(definition: WorkflowsListingInvalidDefinition): string {
+	const encoded = JSON.stringify([
+		definition.code,
+		rawDefinitionSource(definition),
+		invalidDefinitionDiscriminator(definition),
+	]).replace(
+		/[\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,
+		(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
+	return `invalid-definition:${encoded}`;
+}
+
 function invalidDefinitionId(definition: WorkflowsListingInvalidDefinition, seen: Map<string, number>): string {
-	const key = `invalid-definition:${definition.code}:${definition.source ?? definition.name}`;
+	const key = invalidDefinitionKey(definition);
 	const count = seen.get(key) ?? 0;
 	seen.set(key, count + 1);
 	return count === 0 ? key : `${key}#${count}`;
 }
 
-/** The definitions discovery could not load, from its diagnostics. */
 export function invalidDefinitionsFromDiagnostics(
 	diagnostics: readonly {
 		readonly level: string;
@@ -71,15 +93,38 @@ export function invalidDefinitionsFromDiagnostics(
 		readonly source?: string;
 	}[],
 ): WorkflowsListingInvalidDefinition[] {
-	return diagnostics
-		.filter((diagnostic) => diagnostic.level === "error" && FAILED_TO_LOAD_CODES.has(diagnostic.code))
-		.map((diagnostic) => ({
+	const entries: WorkflowsListingInvalidDefinition[] = [];
+	const indexByKey = new Map<string, number>();
+	for (const diagnostic of diagnostics) {
+		if (
+			diagnostic.level !== "error" ||
+			!FAILED_TO_LOAD_CODES.has(diagnostic.code) ||
+			(diagnostic.code === "INVALID_DEFINITION" && NON_WORKFLOW_NAMED_EXPORT.test(diagnostic.message))
+		) {
+			continue;
+		}
+		const source = diagnostic.source === undefined ? undefined : inertDisplayLine(diagnostic.source);
+		const rawMessage = withoutSourcePrefix(diagnostic.message, diagnostic.source);
+		const entry: WorkflowsListingInvalidDefinition = {
 			name: inertDisplayLine(definitionNameFromSource(diagnostic.source, diagnostic.code)),
-			...(diagnostic.source === undefined ? {} : { source: inertDisplayLine(diagnostic.source) }),
+			...(source === undefined ? {} : { source }),
 			code: diagnostic.code,
-			reason: withoutSourcePrefix(summarizeFailureText(diagnostic.message).reason, diagnostic.source),
+			reason: withoutSourcePrefix(summarizeFailureText(rawMessage).reason, source),
 			message: diagnostic.message,
-		}));
+		};
+		if (diagnostic.source !== undefined) {
+			Object.defineProperty(entry, RAW_SOURCE, { value: diagnostic.source });
+		}
+		const key = invalidDefinitionKey(entry);
+		const existing = indexByKey.get(key);
+		if (existing !== undefined) {
+			entries[existing] = entry;
+		} else {
+			indexByKey.set(key, entries.length);
+			entries.push(entry);
+		}
+	}
+	return entries;
 }
 
 export interface WorkflowsListingDefinition {
@@ -205,6 +250,26 @@ const RUN_TONE: Partial<Record<RunSnapshot["status"], "accent" | "success" | "wa
 	killed: "muted",
 };
 
+function normalizeRunsForPanel(runs: readonly RunSnapshot[]): readonly RunSnapshot[] {
+	if (
+		runs.every(
+			(run) =>
+				Array.isArray(run.toolNodes) &&
+				Array.isArray(run.stages) &&
+				run.stages.every((stage) => Array.isArray(stage.parentIds)),
+		)
+	) {
+		return runs;
+	}
+	return runs.map((run) => ({
+		...run,
+		toolNodes: Array.isArray(run.toolNodes) ? run.toolNodes : [],
+		stages: Array.isArray(run.stages)
+			? run.stages.map((stage) => (Array.isArray(stage.parentIds) ? stage : { ...stage, parentIds: [] }))
+			: [],
+	}));
+}
+
 export function workflowsListingItems(
 	runs: readonly RunSnapshot[],
 	definitions: readonly WorkflowsListingDefinition[],
@@ -212,7 +277,7 @@ export function workflowsListingItems(
 	invalidDefinitions: readonly WorkflowsListingInvalidDefinition[] = [],
 ): SelectorItem<WorkflowsListingTarget>[] {
 	const waiting = new Map(
-		panelItemsFromSnapshot(runs, now)
+		panelItemsFromSnapshot(normalizeRunsForPanel(runs), now)
 			.filter((item) => item.state === "input")
 			.map((item) => [item.id, item.question ?? item.task] as const),
 	);
@@ -242,6 +307,15 @@ export function workflowsListingItems(
 			};
 		});
 	const seenInvalidIds = new Map<string, number>();
+	const loadedNames = new Set(definitions.map((definition) => definition.normalizedName));
+	const visibleInvalidDefinitions = invalidDefinitions.filter(
+		(definition) =>
+			!(
+				definition.code === "INVALID_DEFINITION" &&
+				loadedNames.has(definition.name) &&
+				NAMED_EXPORT_REJECTION.test(definition.message)
+			),
+	);
 	const definitionItems = [
 		...definitions.map((definition): SelectorItem<WorkflowsListingTarget> => {
 			const label = inertDisplayLine(sanitizeToolTitleText(definition.normalizedName));
@@ -255,7 +329,7 @@ export function workflowsListingItems(
 				searchText: `${label} ${sanitizeToolTitleText(definition.description)}`,
 			};
 		}),
-		...invalidDefinitions.map(
+		...visibleInvalidDefinitions.map(
 			(definition): SelectorItem<WorkflowsListingTarget> => ({
 				id: invalidDefinitionId(definition, seenInvalidIds),
 				value: { kind: "invalid-definition", definition },
@@ -361,7 +435,6 @@ export function openWorkflowsListing(
 	source: {
 		readonly runs: () => readonly RunSnapshot[];
 		readonly definitions: () => readonly WorkflowsListingDefinition[];
-		/** Definitions discovery could not load, listed with the others as `✗`. */
 		readonly invalidDefinitions?: () => readonly WorkflowsListingInvalidDefinition[];
 		readonly subscribe?: (listener: () => void) => () => void;
 		readonly selectRunId?: string;

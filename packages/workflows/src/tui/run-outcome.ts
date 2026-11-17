@@ -1,11 +1,6 @@
-/**
- * A workflow run's outcome and diagnostics: what it returned, what its stages left behind, what stops it from finishing
- * and what happened in order. Failures read as one-line reasons; the full error, stack frames included, is kept for
- * the log view so the summary never becomes a stack trace.
- */
-
 import { stripVTControlCharacters } from "node:util";
-import type { WorkflowArtifact } from "../shared/authoring-contract-stage.js";
+import { sliceHead } from "@bastani/atomic";
+import type { WorkflowArtifact, WorkflowSerializableValue } from "../shared/authoring-contract-stage.js";
 import {
 	actionableReturnedStatusText,
 	effectiveRunStatus,
@@ -13,6 +8,12 @@ import {
 } from "../shared/returned-run-status.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
+import {
+	boundedToolText,
+	TOOL_PAYLOAD_TRUNCATION_MARKER,
+	TOOL_PAYLOAD_VALUE_LIMIT,
+} from "../shared/tool-payload-bounds.js";
+import { authoritativeWorkflowChildRunId, reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import { inertDisplayLine, inertDisplayText } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -20,12 +21,10 @@ import { stageFailureLogLines } from "./stage-failure-detail.js";
 import { fmtDuration } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
 
-/** How a run reads at a glance. Failed and stopped never share a glyph or a colour. */
 export type RunOutcomeState = "completed" | "failed" | "stopped" | "paused" | "waiting" | "blocked" | "running";
 
 export interface RunOutcomeOutput {
 	readonly key: string;
-	/** One line: a string's first line, otherwise compact JSON. */
 	readonly value: string;
 }
 
@@ -33,19 +32,15 @@ export interface RunOutcomeArtifact {
 	readonly kind: WorkflowArtifact["kind"];
 	readonly path: string;
 	readonly stage: string;
-	/** A diff's size, or why it could not be captured. */
 	readonly detail?: string;
 }
 
-/** One stage or tool that stops the run from finishing. */
 export interface RunOutcomeBlocker {
 	readonly kind: "awaiting_input" | "failed" | "blocked";
 	readonly node: "stage" | "tool";
 	readonly id: string;
 	readonly name: string;
-	/** The question for a waiting stage, otherwise the failure's first line. */
 	readonly reason: string;
-	/** What Enter on this blocker does, in the user's words. */
 	readonly action: string;
 }
 
@@ -60,42 +55,140 @@ export interface RunOutcome {
 	readonly name: string;
 	readonly state: RunOutcomeState;
 	readonly elapsedMs: number;
-	/** The run's failure in one line, when it failed or is blocked. */
 	readonly reason?: string;
 	readonly exitReason?: string;
 	readonly outputs: readonly RunOutcomeOutput[];
 	readonly artifacts: readonly RunOutcomeArtifact[];
 	readonly blockers: readonly RunOutcomeBlocker[];
 	readonly events: readonly RunOutcomeEvent[];
-	/** The full failure text, stack frames included, for the log view. */
 	readonly log: readonly string[];
 }
 
 const NO_REASON = "No reason was recorded.";
-const STACK_FRAME = /^\s*at\s+\S/;
+const STACK_FRAME_TAIL = /(?::\d+:\d+\)?|\s\((?:native|<anonymous>|index\s+\d+)\))$/;
+const BARE_COLON_LOC = /^:\d+:\d+\)?$/;
 const MAX_EVENTS = 12;
-/** The most wrapped lines one output, reason or exit value takes in the run details. */
 const MAX_VALUE_LINES = 3;
+const MAX_LOG_ROWS = 256;
 
-/** A failure's first message line, without a generic `Error:` prefix, and how many stack frames it hid. */
-export function summarizeFailureText(text: string | undefined): { reason: string; frames: number } {
-	const lines = (text ?? "").split(/\r?\n/);
-	const frames = lines.filter((line) => STACK_FRAME.test(line)).length;
-	const first = lines.map((line) => line.trim()).find((line) => line.length > 0 && !STACK_FRAME.test(line));
-	if (first === undefined) return { reason: NO_REASON, frames };
-	const reason = first.replace(/^(?:Uncaught\s+)?Error:\s*/, "").trim();
-	return { reason: inertDisplayLine(reason.length > 0 ? reason : first), frames };
+function firstLineOf(text: string): string {
+	const nl = text.indexOf("\n");
+	const cr = text.indexOf("\r");
+	const end = nl < 0 ? cr : cr < 0 ? nl : Math.min(nl, cr);
+	return end < 0 ? text : text.slice(0, end);
 }
 
-/** A failure's lines without its stack frames, and how many frames were dropped. */
+function padVisible(text: string, width: number): string {
+	const pad = width - visibleWidth(text);
+	return pad > 0 ? `${text}${" ".repeat(pad)}` : text;
+}
+
+function stripControlsIfPresent(line: string): string {
+	return line.includes("\x1b") || line.includes("\x9b") ? stripVTControlCharacters(line) : line;
+}
+
+function isStackFrame(line: string): boolean {
+	const plain = stripControlsIfPresent(line).trim();
+	if (!plain.startsWith("at ") && !plain.startsWith("at\t")) return false;
+	const rest = plain.slice(2).trimStart();
+	if (rest.length === 0) return false;
+	if (rest === "<anonymous>" || rest === "async <anonymous>") return true;
+	if (BARE_COLON_LOC.test(rest)) return false;
+	return STACK_FRAME_TAIL.test(rest);
+}
+
+export function summarizeFailureText(text: string | undefined): { reason: string; frames: number } {
+	const raw = text ?? "";
+	const bounded = raw.length > TOOL_PAYLOAD_VALUE_LIMIT * 4 ? sliceHead(raw, TOOL_PAYLOAD_VALUE_LIMIT * 4) : raw;
+	const lines = bounded.split(/\r?\n/);
+	const frames = lines.filter(isStackFrame).length;
+	const first = lines
+		.map((line) => stripControlsIfPresent(line).trim())
+		.find((line) => line.length > 0 && !isStackFrame(line));
+	if (first === undefined) return { reason: NO_REASON, frames };
+	const boundedFirst = first.length > TOOL_PAYLOAD_VALUE_LIMIT ? sliceHead(first, TOOL_PAYLOAD_VALUE_LIMIT) : first;
+	const reason = boundedFirst.replace(/^(?:Uncaught\s+)?Error:\s*/, "").trim();
+	return { reason: inertDisplayLine(reason.length > 0 ? reason : boundedFirst), frames };
+}
+
 export function withoutStackFrames(text: string): { kept: string[]; frames: number } {
 	const lines = text.split(/\r?\n/);
-	const kept = lines.filter((line) => !STACK_FRAME.test(line));
+	const kept = lines.filter((line) => !isStackFrame(line));
 	return { kept, frames: lines.length - kept.length };
 }
 
-/** The state every other surface shows: a returned blocked or failed status and a recoverable block count. */
-function outcomeState(run: RunSnapshot): RunOutcomeState {
+function isTerminalOrBlockedRun(run: RunSnapshot): boolean {
+	const status = effectiveRunStatus(run);
+	return (
+		status === "completed" ||
+		status === "skipped" ||
+		status === "failed" ||
+		status === "cancelled" ||
+		status === "killed" ||
+		status === "blocked" ||
+		run.quitAt !== undefined
+	);
+}
+
+function validChildRunForStage(
+	stage: StageSnapshot,
+	parentRun: RunSnapshot,
+	rootRunId: string,
+	runsById: ReadonlyMap<string, RunSnapshot>,
+	visited: Set<string>,
+): RunSnapshot | undefined {
+	const childId = authoritativeWorkflowChildRunId(stage);
+	if (childId === undefined || visited.has(childId)) return undefined;
+	const child = runsById.get(childId);
+	if (
+		child === undefined ||
+		child.parentRunId !== parentRun.id ||
+		child.parentStageId !== stage.id ||
+		reciprocalWorkflowRootRunId(runsById, child.id) !== rootRunId
+	) {
+		return undefined;
+	}
+	return child;
+}
+
+function pendingRunPromptInTree(
+	run: RunSnapshot,
+	rootRunId: string,
+	runsById: ReadonlyMap<string, RunSnapshot>,
+	visited = new Set<string>(),
+): string | undefined {
+	if (visited.has(run.id) || isTerminalOrBlockedRun(run)) return undefined;
+	visited.add(run.id);
+	if (run.pendingPrompt !== undefined) return run.pendingPrompt.message;
+	for (const stage of run.stages) {
+		const child = validChildRunForStage(stage, run, rootRunId, runsById, visited);
+		if (child !== undefined) {
+			const found = pendingRunPromptInTree(child, rootRunId, runsById, visited);
+			if (found !== undefined) return found;
+		}
+	}
+	return undefined;
+}
+
+function hasWaitingInTree(
+	run: RunSnapshot,
+	rootRunId: string,
+	runsById: ReadonlyMap<string, RunSnapshot>,
+	visited = new Set<string>(),
+): boolean {
+	if (visited.has(run.id) || isTerminalOrBlockedRun(run)) return false;
+	visited.add(run.id);
+	if (run.pendingPrompt !== undefined || run.stages.some(isWaiting)) return true;
+	for (const stage of run.stages) {
+		const child = validChildRunForStage(stage, run, rootRunId, runsById, visited);
+		if (child !== undefined && hasWaitingInTree(child, rootRunId, runsById, visited)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function outcomeState(run: RunSnapshot, runsById: ReadonlyMap<string, RunSnapshot>): RunOutcomeState {
 	switch (effectiveRunStatus(run)) {
 		case "completed":
 		case "skipped":
@@ -110,7 +203,7 @@ function outcomeState(run: RunSnapshot): RunOutcomeState {
 		case "paused":
 			return run.quitAt !== undefined ? "stopped" : "paused";
 		default:
-			return run.stages.some(isWaiting) ? "waiting" : "running";
+			return hasWaitingInTree(run, run.id, runsById) ? "waiting" : "running";
 	}
 }
 
@@ -118,11 +211,18 @@ function isWaiting(stage: StageSnapshot): boolean {
 	return stage.status === "awaiting_input" || stage.pendingPrompt !== undefined || stage.inputRequest !== undefined;
 }
 
-/** A declared output's value on one line: a string's first line, otherwise compact JSON. */
-export function outputValueLine(value: unknown): string {
-	if (typeof value === "string") return inertDisplayLine(value.split(/\r?\n/)[0] ?? "");
+export function outputValueLine(value: WorkflowSerializableValue | undefined): string {
+	if (typeof value === "string") {
+		const line = firstLineOf(value);
+		return inertDisplayLine(
+			line.length > TOOL_PAYLOAD_VALUE_LIMIT ? sliceHead(line, TOOL_PAYLOAD_VALUE_LIMIT) : line,
+		);
+	}
 	try {
-		return inertDisplayLine(JSON.stringify(value) ?? String(value));
+		const json = JSON.stringify(value) ?? String(value);
+		return inertDisplayLine(
+			json.length > TOOL_PAYLOAD_VALUE_LIMIT ? sliceHead(json, TOOL_PAYLOAD_VALUE_LIMIT) : json,
+		);
 	} catch {
 		return inertDisplayLine(String(value));
 	}
@@ -143,7 +243,7 @@ function artifactDetail(artifact: WorkflowArtifact): string | undefined {
 	if (artifact.insertions !== undefined || artifact.deletions !== undefined)
 		size.push(`+${artifact.insertions ?? 0} \u2212${artifact.deletions ?? 0}`);
 	if (size.length > 0) return size.join(" \u00b7 ");
-	return artifact.diffStat?.split(/\r?\n/)[0];
+	return artifact.diffStat === undefined ? undefined : firstLineOf(artifact.diffStat);
 }
 
 function artifactsOf(run: RunSnapshot): RunOutcomeArtifact[] {
@@ -164,52 +264,84 @@ function stageReason(stage: Pick<StageSnapshot, "error" | "failureMessage">): st
 	return summarizeFailureText(stage.error ?? stage.failureMessage).reason;
 }
 
-function blockersOf(run: RunSnapshot, state: RunOutcomeState): RunOutcomeBlocker[] {
+function stageBlockerOf(stage: StageSnapshot, id: string): RunOutcomeBlocker | undefined {
+	if (isWaiting(stage)) {
+		const question = stage.pendingPrompt?.message ?? stage.inputRequest?.questions[0]?.question;
+		return {
+			kind: "awaiting_input",
+			node: "stage",
+			id,
+			name: inertDisplayLine(stage.name),
+			reason: question === undefined ? "Waiting for your answer." : inertDisplayLine(firstLineOf(question)),
+			action: "enter answer in the stage chat",
+		};
+	}
+	if (stage.status === "failed") {
+		return {
+			kind: "failed",
+			node: "stage",
+			id,
+			name: inertDisplayLine(stage.name),
+			reason: stageReason(stage),
+			action: "enter retry, fork, transcript or logs",
+		};
+	}
+	if (stage.status === "blocked") {
+		return {
+			kind: "blocked",
+			node: "stage",
+			id,
+			name: inertDisplayLine(stage.name),
+			reason: stageReason(stage),
+			action: "enter open the stage chat to resume it",
+		};
+	}
+	return undefined;
+}
+
+function blockersOf(
+	run: RunSnapshot,
+	state: RunOutcomeState,
+	runsById: ReadonlyMap<string, RunSnapshot>,
+): RunOutcomeBlocker[] {
 	if (state === "completed" || state === "stopped") return [];
 	const blockers: RunOutcomeBlocker[] = [];
-	for (const stage of run.stages) {
-		if (isWaiting(stage)) {
-			const question = stage.pendingPrompt?.message ?? stage.inputRequest?.questions[0]?.question;
-			blockers.push({
-				kind: "awaiting_input",
-				node: "stage",
-				id: stage.id,
-				name: inertDisplayLine(stage.name),
-				reason:
-					question === undefined ? "Waiting for your answer." : inertDisplayLine(question.split(/\r?\n/)[0] ?? ""),
-				action: "enter answer in the stage chat",
-			});
-		} else if (stage.status === "failed") {
+	const visited = new Set<string>();
+
+	const visitRun = (cur: RunSnapshot, isRoot: boolean): void => {
+		if (visited.has(cur.id)) return;
+		visited.add(cur.id);
+
+		for (const stage of cur.stages) {
+			const id = isRoot ? stage.id : `${cur.id}:${stage.id}`;
+			const child = validChildRunForStage(stage, cur, run.id, runsById, visited);
+			if (child !== undefined && child.stages.length + child.toolNodes.length > 0) {
+				const before = blockers.length;
+				visitRun(child, false);
+				if (blockers.length === before) {
+					const fallback = stageBlockerOf(stage, id);
+					if (fallback !== undefined) blockers.push(fallback);
+				}
+				continue;
+			}
+			const blocker = stageBlockerOf(stage, id);
+			if (blocker !== undefined) blockers.push(blocker);
+		}
+
+		for (const tool of cur.toolNodes as readonly ToolNodeSnapshot[]) {
+			if (tool.status !== "failed") continue;
 			blockers.push({
 				kind: "failed",
-				node: "stage",
-				id: stage.id,
-				name: inertDisplayLine(stage.name),
-				reason: stageReason(stage),
-				action: "enter retry, fork, transcript or logs",
-			});
-		} else if (stage.status === "blocked") {
-			blockers.push({
-				kind: "blocked",
-				node: "stage",
-				id: stage.id,
-				name: inertDisplayLine(stage.name),
-				reason: stageReason(stage),
-				action: "enter open the stage chat to resume it",
+				node: "tool",
+				id: isRoot ? tool.id : `${cur.id}:${tool.id}`,
+				name: inertDisplayLine(tool.name),
+				reason: summarizeFailureText(tool.error).reason,
+				action: "enter open the tool's detail",
 			});
 		}
-	}
-	for (const tool of run.toolNodes as readonly ToolNodeSnapshot[]) {
-		if (tool.status !== "failed") continue;
-		blockers.push({
-			kind: "failed",
-			node: "tool",
-			id: tool.id,
-			name: inertDisplayLine(tool.name),
-			reason: summarizeFailureText(tool.error).reason,
-			action: "enter open the tool's detail",
-		});
-	}
+	};
+
+	visitRun(run, true);
 	return blockers;
 }
 
@@ -229,7 +361,6 @@ function stageEndEvent(stage: StageSnapshot): Omit<RunOutcomeEvent, "at"> | unde
 	}
 }
 
-/** The run's own end; a failure's reason is on the Reason line above, so it is not repeated here. */
 function runEndText(name: string, state: RunOutcomeState): string {
 	if (state === "failed") return `${name} failed`;
 	if (state === "stopped") return `${name} stopped`;
@@ -271,20 +402,33 @@ function eventsOf(run: RunSnapshot, state: RunOutcomeState): RunOutcomeEvent[] {
 	return events.map(({ order: _order, ...event }) => event);
 }
 
-/** Everything the run detail shows, from the run's snapshot alone. */
-export function buildRunOutcome(run: RunSnapshot, now = Date.now()): RunOutcome {
-	const state = outcomeState(run);
+export function buildRunOutcome(run: RunSnapshot, now = Date.now(), runs: readonly RunSnapshot[] = [run]): RunOutcome {
+	const runsById = new Map(runs.map((candidate) => [candidate.id, candidate]));
+	if (!runsById.has(run.id)) runsById.set(run.id, run);
+	const state = outcomeState(run, runsById);
+	const blockers = blockersOf(run, state, runsById);
 	const failedStage =
 		run.stages.find((stage) => stage.id === run.failedStageId) ??
 		run.stages.find((stage) => stage.status === "failed");
+	const failedBlockerReason = blockers.find(
+		(blocker) => blocker.kind === "failed" || blocker.kind === "blocked",
+	)?.reason;
 	const failureText =
+		actionableReturnedStatusText(run.result) ??
 		run.error ??
 		run.failureMessage ??
 		failedStage?.error ??
 		failedStage?.failureMessage ??
-		structuredRecoverableWorkflowFailure(run)?.error ??
-		actionableReturnedStatusText(run.result);
-	const reason = state === "failed" || state === "blocked" ? summarizeFailureText(failureText).reason : undefined;
+		structuredRecoverableWorkflowFailure(run)?.error;
+	const pendingRunQuestion = state === "waiting" ? pendingRunPromptInTree(run, run.id, runsById) : undefined;
+	const reason =
+		state === "failed" || state === "blocked"
+			? failureText !== undefined
+				? summarizeFailureText(failureText).reason
+				: (failedBlockerReason ?? NO_REASON)
+			: pendingRunQuestion !== undefined
+				? inertDisplayLine(firstLineOf(pendingRunQuestion))
+				: undefined;
 	return {
 		runId: run.id,
 		name: inertDisplayLine(run.name),
@@ -294,49 +438,65 @@ export function buildRunOutcome(run: RunSnapshot, now = Date.now()): RunOutcome 
 		...(run.exitReason === undefined ? {} : { exitReason: inertDisplayLine(run.exitReason) }),
 		outputs: outputsOf(run),
 		artifacts: artifactsOf(run),
-		blockers: blockersOf(run, state),
+		blockers,
 		events: eventsOf(run, state),
-		log: runOutcomeLogLines(run),
+		log: runOutcomeLogLines(run, runs),
 	};
 }
 
-/** Every recorded line of the run's failure, then each failed stage's, for the log view. */
-export function runOutcomeLogLines(run: RunSnapshot): string[] {
+export function runOutcomeLogLines(run: RunSnapshot, runs: readonly RunSnapshot[] = [run]): string[] {
 	const lines: string[] = [];
 	const message = run.failureMessage ?? run.error;
-	if (message) lines.push(...inertDisplayText(message).split(/\r?\n/));
-	// A node that failed with the run's own message adds nothing the run's lines don't already show.
-	const repeatsRun = (text: string | undefined): boolean => message !== undefined && text?.trim() === message.trim();
-	for (const stage of run.stages) {
-		if (stage.status !== "failed" && stage.status !== "blocked") continue;
-		if (repeatsRun(stage.failureMessage ?? stage.error) && stage.failureDetail === undefined) continue;
-		if (lines.length > 0) lines.push("");
-		lines.push(
-			`${inertDisplayLine(stage.name)}:`,
-			...stageFailureLogLines(stage).map((line) => (line ? `  ${inertDisplayLine(line)}` : line)),
-		);
+	const boundedMessage = message === undefined ? undefined : boundedToolText(message, TOOL_PAYLOAD_VALUE_LIMIT);
+	if (boundedMessage !== undefined && boundedMessage.length > 0) {
+		lines.push(...inertDisplayText(boundedMessage.replace(/\r\n/g, "\n")).split("\n"));
 	}
-	for (const tool of run.toolNodes) {
-		if (tool.status !== "failed" || tool.error === undefined || repeatsRun(tool.error)) continue;
-		if (lines.length > 0) lines.push("");
-		lines.push(
-			`${inertDisplayLine(tool.name)}:`,
-			...inertDisplayText(tool.error)
-				.split(/\r?\n/)
-				.map((line) => `  ${line}`),
-		);
-	}
+	const trimmedMessage = boundedMessage?.trim();
+	const repeatsRun = (text: string | undefined): boolean =>
+		trimmedMessage !== undefined &&
+		text !== undefined &&
+		boundedToolText(text, TOOL_PAYLOAD_VALUE_LIMIT).trim() === trimmedMessage;
+	const runsById = new Map(runs.map((candidate) => [candidate.id, candidate]));
+	if (!runsById.has(run.id)) runsById.set(run.id, run);
+	const visited = new Set<string>();
+	const visitRun = (cur: RunSnapshot): void => {
+		if (visited.has(cur.id)) return;
+		visited.add(cur.id);
+		for (const stage of cur.stages) {
+			const child = validChildRunForStage(stage, cur, run.id, runsById, visited);
+			if (
+				(stage.status === "failed" || stage.status === "blocked") &&
+				(!repeatsRun(stage.failureMessage ?? stage.error) || stage.failureDetail !== undefined)
+			) {
+				if (lines.length > 0) lines.push("");
+				lines.push(
+					`${inertDisplayLine(stage.name)}:`,
+					...stageFailureLogLines(stage).map((line) => (line ? `  ${inertDisplayLine(line)}` : line)),
+				);
+			}
+			if (child !== undefined) visitRun(child);
+		}
+		for (const tool of cur.toolNodes) {
+			if (tool.status !== "failed" || tool.error === undefined || repeatsRun(tool.error)) continue;
+			if (lines.length > 0) lines.push("");
+			const boundedTool = boundedToolText(tool.error, TOOL_PAYLOAD_VALUE_LIMIT).replace(/\r\n/g, "\n");
+			lines.push(
+				`${inertDisplayLine(tool.name)}:`,
+				...inertDisplayText(boundedTool)
+					.split("\n")
+					.map((line) => `  ${line}`),
+			);
+		}
+	};
+	visitRun(run);
 	if (lines.length === 0) lines.push("No log was recorded for this run.");
 	return lines;
 }
 
 export interface RunOutcomeRenderOpts {
-	/** Omit for plain text. */
 	readonly theme?: GraphTheme;
 	readonly width: number;
-	/** Show the full log instead of the summary. */
 	readonly logs: boolean;
-	/** The selected blocker, which Enter acts on. */
 	readonly selected: number;
 }
 
@@ -376,12 +536,26 @@ function headline(outcome: RunOutcome): string {
 	}
 }
 
-/** The run detail's rows, already styled (when themed) and cut to `width`. */
+function wrapOutcomeLogLine(line: string, room: number): string[] {
+	if (line.length === 0) return [""];
+	const limit = Math.min(TOOL_PAYLOAD_VALUE_LIMIT, room * MAX_LOG_ROWS);
+	const bounded = line.length > limit ? boundedToolText(line, limit) : line;
+	const trimmed = bounded.trimStart();
+	if (trimmed.length === 0) return [""];
+	let leadingSpaces = 0;
+	while (leadingSpaces < bounded.length && bounded.charCodeAt(leadingSpaces) === 0x20) {
+		leadingSpaces += 1;
+	}
+	const indentCols = Math.min(leadingSpaces, Math.max(0, room - 1));
+	if (indentCols === 0) return wrapPlainText(trimmed, room);
+	const lineIndent = " ".repeat(indentCols);
+	return wrapPlainText(trimmed, room - indentCols).map((part) => `${lineIndent}${part}`);
+}
+
 export function renderRunOutcomeLines(outcome: RunOutcome, opts: RunOutcomeRenderOpts): string[] {
 	return renderRunOutcome(outcome, opts).lines;
 }
 
-/** The run detail's rows, and the row of the selected blocker so a scrolled view can keep it in sight. */
 export function renderRunOutcome(
 	outcome: RunOutcome,
 	opts: RunOutcomeRenderOpts,
@@ -418,15 +592,23 @@ export function renderRunOutcome(
 	const section = (title: string): string => fit(`${indent}${paint(t?.textMuted, title, true)}`);
 	const keyed = (key: string, keyWidth: number, value: string, valueColor?: string): string[] => {
 		const valueRoom = Math.max(1, room - keyWidth - 2);
-		const wrapped = wrapPlainText(value, valueRoom);
+		const charLimit = Math.max(512, valueRoom * (MAX_VALUE_LINES + 2));
+		const sliced = value.length > charLimit ? sliceHead(value, charLimit) : value;
+		let wrapped = wrapPlainText(sliced, valueRoom);
+		if (sliced.length < value.length && wrapped.length <= MAX_VALUE_LINES) {
+			const trimmed = value.trimStart();
+			const head = trimmed.length > charLimit * 4 ? sliceHead(trimmed, charLimit * 4) : trimmed;
+			const compact = head.trimEnd().replace(/\s+/g, " ");
+			const resliced = compact.length > charLimit ? sliceHead(compact, charLimit) : compact;
+			wrapped = wrapPlainText(resliced, valueRoom);
+		}
 		const parts = wrapped.slice(0, MAX_VALUE_LINES);
-		// A value cut at its last shown line says so instead of ending mid-thought.
 		if (wrapped.length > MAX_VALUE_LINES)
 			parts[MAX_VALUE_LINES - 1] =
 				`${truncateToWidth(parts[MAX_VALUE_LINES - 1] ?? "", Math.max(1, valueRoom - 1), "")}\u2026`;
 		return parts.map((part, index) =>
 			fit(
-				`${indent}${paint(t?.textMuted, (index === 0 ? key : "").padEnd(keyWidth))}  ${paint(valueColor ?? t?.text, part)}`,
+				`${indent}${paint(t?.textMuted, padVisible(index === 0 ? key : "", keyWidth))}  ${paint(valueColor ?? t?.text, part)}`,
 			),
 		);
 	};
@@ -439,10 +621,32 @@ export function renderRunOutcome(
 
 	if (opts.logs) {
 		lines.push("", section("Log"));
+		const wrappedLog: string[] = [];
+		let truncatedLog = false;
 		for (const line of outcome.log) {
-			if (line.length === 0) lines.push("");
-			else for (const part of wrapPlainText(line, room)) lines.push(fit(`${indent}${paint(t?.text, part)}`));
+			if (line.length === 0) {
+				if (wrappedLog.length >= MAX_LOG_ROWS) {
+					truncatedLog = true;
+					break;
+				}
+				wrappedLog.push("");
+				continue;
+			}
+			for (const part of wrapOutcomeLogLine(line, room)) {
+				if (wrappedLog.length >= MAX_LOG_ROWS) {
+					truncatedLog = true;
+					break;
+				}
+				wrappedLog.push(fit(`${indent}${paint(t?.text, part)}`));
+			}
+			if (truncatedLog) break;
 		}
+		if (truncatedLog && wrappedLog.length > 0) {
+			wrappedLog[wrappedLog.length - 1] = fit(
+				`${indent}${paint(t?.text, truncateToWidth(TOOL_PAYLOAD_TRUNCATION_MARKER, room, "\u2026"))}`,
+			);
+		}
+		lines.push(...wrappedLog);
 		return { lines };
 	}
 	let selectedRow: number | undefined;
@@ -457,7 +661,7 @@ export function renderRunOutcome(
 		outcome.blockers.forEach((blocker, index) => {
 			const marker = index === selected ? paint(t?.accent, "\u276f") : " ";
 			const color = blocker.kind === "failed" ? t?.error : blocker.kind === "awaiting_input" ? t?.info : t?.warning;
-			const name = truncateToWidth(blocker.name, nameWidth, "\u2026").padEnd(nameWidth);
+			const name = padVisible(truncateToWidth(blocker.name, nameWidth, "\u2026"), nameWidth);
 			lines.push(
 				fit(
 					`${indent}${marker} ${paint(color, BLOCKER_GLYPH[blocker.kind])} ${paint(t?.text, name)}  ${paint(t?.textMuted, blocker.reason)}`,

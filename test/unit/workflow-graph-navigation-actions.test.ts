@@ -190,13 +190,7 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		assert.match(text, /Reason\s+gate failed: unit-tests \(windows-x64, 2\/5\)/);
 		assert.doesNotMatch(text, /at runGate/, "the summary keeps the stack under logs");
 		const detailHint = hint(graph);
-		for (const key of [
-			/esc back to graph/,
-			/r retry in place/,
-			/f fork from this stage \(reruns it\)/,
-			/t transcript/,
-			/l logs/,
-		]) {
+		for (const key of [/r retry from stage/, /f fork from stage/, /t transcript/, /l logs/, /esc back/]) {
 			assert.match(detailHint, key);
 		}
 		graph.handleInput("l");
@@ -249,7 +243,7 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		assert.match(hint(graph), /enter fork/, "Left does not cancel the confirmation (#5234)");
 		graph.handleInput(ESC);
 		assert.doesNotMatch(hint(graph), /Fork from verify/, "Esc cancels the confirmation");
-		assert.match(hint(graph), /f fork from this stage/, "and stays in the detail");
+		assert.match(hint(graph), /f fork from stage/, "and stays in the detail");
 		graph.handleInput("f");
 		await settle();
 		graph.handleInput(ENTER);
@@ -391,6 +385,7 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		});
 		graph.handleInput(ENTER);
 		graph.handleInput("f");
+		graph.render(160);
 		graph.handleInput(ESC);
 		graph.handleInput(ENTER);
 		target.resolve({ ok: true, stagePath: "verify", rerunToolSteps: 0, live: false });
@@ -632,6 +627,7 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		const onDetach = vi.fn();
 		const graph = view([stage("verify", "failed", { error: "boom" })], { onDetach, onStageAttach: () => {} });
 		graph.handleInput(ENTER);
+		graph.render(160);
 		graph.handleInput(ESC);
 		assert.equal(onDetach.mock.calls.length, 0, "Esc first closes the detail");
 		assert.match(hint(graph), /f filter/);

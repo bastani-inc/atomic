@@ -3,7 +3,7 @@ import type { KeyId } from "@bastani/atomic-tui";
 import { unknownErrorMessage } from "../runs/foreground/executor-abort.js";
 import { GRAPH_SCROLL_STEP_COLS } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
-import { GRAPH_STATUS_FILTERS } from "./graph-view-state.js";
+import { blockerKey, GRAPH_STATUS_FILTERS } from "./graph-view-state.js";
 import type { GraphStageActionResult } from "./graph-view-types.js";
 import {
 	APP_ACTION,
@@ -29,16 +29,21 @@ const GRAPH_NOTICE_MS = 4000;
 export abstract class GraphViewInputController extends GraphViewRenderer {
 	/** Returns true if consumed. */
 	handleInput(data: string): boolean {
+		const paintedView = this.paintedView;
+		const paintedBlockerKey = this.paintedBlockerKey;
 		this._syncLayout();
 		if (this.keysHelpOpen) return this._handleKeysHelpInput(data);
 		if (this.switcherOpen) return this._handleSwitcherInput(data);
-		if (this._matchesNavAction(data, APP_ACTION.keysHelp)) {
+		if (this.forkConfirm === null && this._matchesNavAction(data, APP_ACTION.keysHelp)) {
 			this.keysHelpOpen = true;
+			return true;
+		}
+		if (matchesKey(data, Key.escape) && paintedView !== this._currentViewKind()) {
 			return true;
 		}
 		if (this.toolDetail !== null) return this._handleToolDetailInput(data);
 		if (this.stageDetail !== null) return this._handleStageDetailInput(data);
-		if (this.runDetail !== null) return this._handleRunDetailInput(data);
+		if (this.runDetail !== null) return this._handleRunDetailInput(data, paintedView, paintedBlockerKey);
 		if (matchesKey(data, Key.escape)) {
 			this._leaveGraph();
 			return true;
@@ -191,18 +196,20 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this.graphLayoutInvalidateForDetail();
 			return true;
 		}
-		if (matchesKey(data, Key.down)) this._scrollGraphVertically(1);
-		else if (matchesKey(data, Key.up)) this._scrollGraphVertically(-1);
-		else if (matchesKey(data, Key.pageDown)) this._scrollGraphVertically(this._toolDetailPageRows());
-		else if (matchesKey(data, Key.pageUp)) this._scrollGraphVertically(-this._toolDetailPageRows());
+		if (detail.logs) {
+			if (matchesKey(data, Key.down)) this._scrollGraphVertically(1);
+			else if (matchesKey(data, Key.up)) this._scrollGraphVertically(-1);
+			else if (matchesKey(data, Key.pageDown)) this._scrollGraphVertically(this._toolDetailPageRows());
+			else if (matchesKey(data, Key.pageUp)) this._scrollGraphVertically(-this._toolDetailPageRows());
+		}
 		return true;
 	}
 
-	/**
-	 * The run details: ↑↓ pick a blocker, Enter or → opens it, `l` toggles the full log, and Esc goes back to the graph.
-	 * ← is not a back key here: it does nothing, so it never leaves the view by surprise.
-	 */
-	private _handleRunDetailInput(data: string): boolean {
+	private _handleRunDetailInput(
+		data: string,
+		paintedView: "tool" | "stage" | "run" | "graph",
+		paintedBlockerKey: string | null,
+	): boolean {
 		const detail = this.runDetail;
 		if (detail === null) return false;
 		if (this.graphLayout.handleScrollbarInput(data)) {
@@ -228,7 +235,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			return true;
 		}
 		const blockers = detail.logs ? [] : this._runDetailBlockers();
-		if (blockers.length > 0) {
+		if (blockers.length > 1) {
 			if (matchesKey(data, Key.down)) {
 				this._moveRunDetailSelection(blockers, 1);
 				this.runDetailRevealSelected = true;
@@ -239,15 +246,18 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 				this.runDetailRevealSelected = true;
 				return true;
 			}
-			if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) {
-				const blocker = blockers[this._resolveRunDetailSelection(blockers)]!;
-				if (this._focusBlockerNode(blocker.node, blocker.id)) {
-					this._activateFocusedNode();
-					// A stage chat leaves the graph; only a detail over it comes back to the run details.
-					if (!this._detailOpen()) this.runDetailReturn = null;
-				}
-				return true;
+		}
+		if (blockers.length > 0 && (matchesKey(data, Key.enter) || matchesKey(data, Key.right))) {
+			const blocker = blockers[this._resolveRunDetailSelection(blockers)]!;
+			if (
+				paintedView === "run" &&
+				paintedBlockerKey === blockerKey(blocker) &&
+				this._focusBlockerNode(blocker.node, blocker.id)
+			) {
+				this._activateFocusedNode();
+				if (!this._detailOpen()) this.runDetailReturn = null;
 			}
+			return true;
 		}
 		if (matchesKey(data, Key.down)) this._scrollGraphVertically(1);
 		else if (matchesKey(data, Key.up)) this._scrollGraphVertically(-1);
@@ -419,6 +429,17 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	}
 
 	private _handleGraphInput(data: string): boolean {
+		if (this._getCurrentRun() === null) {
+			if (matchesKey(data, "h") && this.onHide) {
+				this.onHide();
+				return true;
+			}
+			if (matchesKey(data, Key.ctrl("c"))) {
+				this.onClose?.();
+				return true;
+			}
+			return false;
+		}
 		const stageCount = this.cachedLayout.length;
 		if (this.graphLayout.handleScrollbarInput(data)) {
 			this.pendingEnsureFocusedVisible = false;
