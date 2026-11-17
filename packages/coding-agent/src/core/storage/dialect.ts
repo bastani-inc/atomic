@@ -110,8 +110,8 @@ export interface StorageDialect {
 	 * (Postgres: a plpgsql function `<name>_fn` and a `FOR EACH ROW` trigger that runs it). Run them with `exec`.
 	 */
 	renderTrigger(trigger: StorageTrigger): string;
-	/** Drops the trigger `name` on `table` when it exists. */
-	dropTrigger(name: string, table: string): string;
+	/** Drops the trigger `name` on `table`, optionally removing its PostgreSQL function when it is retired. */
+	dropTrigger(name: string, table: string, dropFunction?: boolean): string;
 	/**
 	 * A query that returns a row `{ name }` for each of `names` that is a table, index or trigger in the database, named
 	 * as in `names`.
@@ -478,8 +478,8 @@ export const postgresDialect: StorageDialect = Object.freeze({
 		params: [postgresIdentifier(table), column],
 	}),
 	renderTrigger: postgresTrigger,
-	dropTrigger: (name: string, table: string) =>
-		`DROP TRIGGER IF EXISTS ${postgresIdentifier(name)} ON ${table}${dropLegacyTrigger(name, table)}`,
+	dropTrigger: (name: string, table: string, dropFunction = false) =>
+		`DROP TRIGGER IF EXISTS ${postgresIdentifier(name)} ON ${table}${dropLegacyTrigger(name, table)}${dropFunction ? `;\nDROP FUNCTION IF EXISTS ${postgresIdentifier(`${name}_fn`)}()` : ""}`,
 	schemaObjects: postgresSchemaObjects,
 	jsonType: (column: string, ...path: readonly string[]) =>
 		postgresSqliteJsonType(postgresJson(postgresJsonb(column), path, false)),
