@@ -133,6 +133,12 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 		"DROP TRIGGER IF EXISTS t_refs ON t",
 	],
 	[
+		"dropTrigger and its retired function (#5327)",
+		(d) => d.dropTrigger("t_refs", "t", true),
+		"DROP TRIGGER IF EXISTS t_refs",
+		"DROP TRIGGER IF EXISTS t_refs ON t;\nDROP FUNCTION IF EXISTS t_refs_fn()",
+	],
+	[
 		"schemaObjects",
 		(d) => {
 			const { sql, params } = d.schemaObjects(["a", "b"]);
