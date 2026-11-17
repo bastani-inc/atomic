@@ -253,6 +253,77 @@ test("a run recorded without a working directory resumes with its mappings and n
 	await fixture.close();
 });
 
+test("after a restore, stages and tasks created back to back keep their order and ids, and each starts in the restored directory", async () => {
+	const { clone } = await sandbox.remoteWithClone("repo", { "sub/a.txt": "a\n" });
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	let attempt = 0;
+	const started: Array<{ readonly name: string; readonly cwd: string | undefined }> = [];
+	const definition = workflow({
+		name: "created-back-to-back",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("write", {}, async () => {
+				sandbox.write(join(ctx.cwd!, "result.txt"), "correct\n");
+				return "done";
+			});
+			if (attempt++ === 0) throw new Error("interrupted");
+			const sub = join(clone, "sub");
+			// Created on one turn: mapping their directories, which reads the disk, must not reorder them.
+			const first = ctx.stage("first", { cwd: sub });
+			const second = ctx.stage("second", { cwd: sub });
+			const tasks = [ctx.task("task-a", { prompt: "a", cwd: sub }), ctx.task("task-b", { prompt: "b", cwd: sub })];
+			await Promise.all([second.prompt("p"), first.prompt("p"), ...tasks]);
+			return {};
+		},
+	});
+	const adapters = {
+		prompt: {
+			prompt: async (_text: string, meta?: { stageName?: string; stageOptions?: { cwd?: string } }) => {
+				started.push({ name: meta!.stageName!, cwd: meta?.stageOptions?.cwd });
+				return "done";
+			},
+		},
+	};
+	const first = await run(
+		definition,
+		{},
+		{ cwd: clone, durableBackend: fixture.backend, store: createStore(), adapters },
+	);
+	assert.equal(first.status, "failed");
+	sandbox.write(join(clone, "result.txt"), "drift\n");
+	const rerunStore = createStore();
+	const second = await run(
+		definition,
+		{},
+		{ runId: first.runId, cwd: clone, durableBackend: fixture.backend, store: rerunStore, adapters },
+	);
+	assert.equal(second.status, "completed", second.error);
+	const restored = fixture.backend.getWorkflow(first.runId)!.worktreeRootMappings!.at(-1)!.to;
+	const names = ["first", "second", "task-a", "task-b"];
+	assert.deepEqual(
+		started
+			.filter((stage) => names.includes(stage.name))
+			.map((stage) => [stage.name, stage.cwd])
+			.sort(),
+		names.map((name) => [name, join(restored, "sub")]),
+	);
+	const stages = rerunStore.run(first.runId)!.stages.filter((stage) => names.includes(stage.name));
+	assert.deepEqual(
+		stages.map((stage) => stage.name),
+		names,
+		"stages are listed in the order they were created",
+	);
+	assert.equal(new Set(stages.map((stage) => stage.id)).size, names.length);
+	assert.deepEqual(
+		stages.map((stage) => stage.replayKey),
+		["stage:first:1", "stage:second:1", "stage:task:task-a:1", "stage:task:task-b:1"],
+		"each stage keeps the replay key it was created with",
+	);
+	await fixture.close();
+});
+
 test("after a restore, stages, tasks, chains and parallel steps authored against the old root run in the restored one (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone("repo", { "sub/a.txt": "a\n" });
 	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));

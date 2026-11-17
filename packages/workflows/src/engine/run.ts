@@ -103,6 +103,7 @@ import {
 import { buildPromptNodeUiAdapter } from "../runs/foreground/executor-prompt-nodes.js";
 import { createRunFinalizers } from "../runs/foreground/executor-run-finalizers.js";
 import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
+import type { StageOptionsMapper } from "../runs/foreground/executor-stage-factory.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import {
 	admitEvictedRun,
@@ -310,7 +311,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			}
 			const allMappings = [...mappings, ...restored];
 			const recordedCwd = previous.invocationCwd ?? opts.cwd;
-			const continuing = recordedCwd === undefined ? undefined : mapWorkflowWorktreePath(recordedCwd, allMappings);
+			const continuing =
+				recordedCwd === undefined ? undefined : await mapWorkflowWorktreePath(recordedCwd, allMappings);
 			const outcomes = await runWorktreeRestoreOutcomes({
 				restored,
 				unrestored,
@@ -463,13 +465,29 @@ async function executeUntilSettled(
 }
 
 /** The input-bound worktree of a run resumed on this node, at the worktree its restore mapped it to. */
-function mapInputWorktree(
+async function mapInputWorktree(
 	defaults: Partial<StageOptions>,
 	mappings: readonly WorktreeRootMapping[],
-): Partial<StageOptions> {
+): Promise<Partial<StageOptions>> {
 	return defaults.gitWorktreeDir === undefined
 		? defaults
-		: { ...defaults, gitWorktreeDir: mapWorkflowWorktreePath(defaults.gitWorktreeDir, mappings) };
+		: { ...defaults, gitWorktreeDir: await mapWorkflowWorktreePath(defaults.gitWorktreeDir, mappings) };
+}
+
+/**
+ * Maps the working directory and worktree of a stage or task of a run resumed on this node to the worktrees its
+ * restores put them in; undefined without restores. Mapping reads symbolic links from the disk, so stages and tasks are
+ * created with the paths as given, in call order, and map them as they start.
+ */
+function restoredStageOptionsMapper(mappings: readonly WorktreeRootMapping[]): StageOptionsMapper | undefined {
+	if (mappings.length === 0) return undefined;
+	return async (options) => ({
+		...options,
+		...(options.cwd === undefined ? {} : { cwd: await mapWorkflowWorktreePath(options.cwd, mappings) }),
+		...(options.gitWorktreeDir === undefined
+			? {}
+			: { gitWorktreeDir: await mapWorkflowWorktreePath(options.gitWorktreeDir, mappings) }),
+	});
 }
 
 async function executeRun(
@@ -692,11 +710,11 @@ async function executeRun(
 	const ownsCancellationRegistration = opts.signal === undefined && opts.cancellation !== undefined;
 	const tracker = new GraphFrontierTracker();
 	const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
-	const inputRuntimeDefaults = mapInputWorktree(
-			resolveInputRuntimeDefaults(def, resolvedInputs, opts.workspace),
-			opts.worktreeRootMappings ?? [],
-		),
-		gitWorktreeSetupCacheOwner = createGitWorktreeSetupCacheOwner(opts.gitWorktreeSetupCache, runId);
+	const inputRuntimeDefaults = await mapInputWorktree(
+		resolveInputRuntimeDefaults(def, resolvedInputs, opts.workspace),
+		opts.worktreeRootMappings ?? [],
+	);
+	const gitWorktreeSetupCacheOwner = createGitWorktreeSetupCacheOwner(opts.gitWorktreeSetupCache, runId);
 	const gitWorktreeSetupCache = gitWorktreeSetupCacheOwner.cache;
 	const workflowInvocationCwd = opts.cwd ?? process.cwd();
 	let workflowCwd: { readonly cwd: string } | { readonly failure: Error } | undefined;
@@ -729,15 +747,7 @@ async function executeRun(
 		settings: opts.snapshots,
 		run: runSnapshot,
 	});
-	const mapStageOptions = <T extends StageOptions>(options: T): T => ({
-		...options,
-		...(options.cwd === undefined
-			? {}
-			: { cwd: mapWorkflowWorktreePath(options.cwd, opts.worktreeRootMappings ?? []) }),
-		...(options.gitWorktreeDir === undefined
-			? {}
-			: { gitWorktreeDir: mapWorkflowWorktreePath(options.gitWorktreeDir, opts.worktreeRootMappings ?? []) }),
-	});
+	const mapRestoredOptions = restoredStageOptionsMapper(opts.worktreeRootMappings ?? []);
 	const limiter = createRunLimiter(inputConcurrency ?? opts.config?.defaultConcurrency);
 	const stageRegistry = opts.stageControlRegistry ?? defaultStageControlRegistry;
 	const stageUiBroker = opts.stageUiBroker ?? currentStageUiBroker();
@@ -1025,6 +1035,7 @@ async function executeRun(
 		stageUiBroker,
 		gitWorktreeSetupCache,
 		worktreeSymlinkDirectories: opts.config?.worktree?.symlinkDirectories,
+		mapRestoredOptions,
 		exit,
 		classifyExecutorFailure,
 		assertLiveWorkAllowed: () => assertFrontierConsumed(),
@@ -1252,7 +1263,20 @@ async function executeRun(
 		task: taskRunners.task,
 		recordCachedTask: recordCachedStage,
 		beforeCheckpoint: drainBeforeCheckpoint,
-		recordLiveCheckpoint,
+		// A task records the snapshot of the directory it ran in, where its restore put it.
+		recordLiveCheckpoint:
+			mapRestoredOptions === undefined
+				? recordLiveCheckpoint
+				: async (checkpoint, signal, directories = []) =>
+						recordLiveCheckpoint(
+							checkpoint,
+							signal,
+							await Promise.all(
+								directories.map((directory) =>
+									mapWorkflowWorktreePath(directory, opts.worktreeRootMappings ?? []),
+								),
+							),
+						),
 		signal: ownController.signal,
 		registerTailControl: (registration) => {
 			registration.controller.signal.addEventListener(
@@ -1295,9 +1319,9 @@ async function executeRun(
 		beforeCall: beforeLiveCall,
 		beforeCheckpoint: drainBeforeCheckpoint,
 		recordCachedStage,
-		readStoredMessages: (options, sessionId) =>
+		readStoredMessages: async (options, sessionId) =>
 			readReplayedStageMessages(
-				mapStageOptions(options),
+				(await mapRestoredOptions?.(options)) ?? options,
 				{
 					adapters: opts.adapters,
 					defaultSessionDir: opts.defaultSessionDir,
@@ -1306,16 +1330,13 @@ async function executeRun(
 				sessionId,
 			),
 		stage: (name, options, replayKey) => {
-			const stage = runtime.stage(name, mapStageOptions(options));
+			const stage = runtime.stage(name, options);
 			const stageId = activeStore.run(runId)?.stages.at(-1)?.id;
 			if (stageId !== undefined) completedStageReplayKeys.set(stageId, replayKey);
 			return stage;
 		},
 	});
-	const gatedTask: typeof durableTask = (...args) => {
-		args[1] = mapStageOptions(args[1]);
-		return whenRunning(() => durableTask(...args));
-	};
+	const gatedTask: typeof durableTask = (...args) => whenRunning(() => durableTask(...args));
 	const chain = createChainPrimitive({ runtime, task: gatedTask });
 	const parallel = createParallelPrimitive({ runtime, task: gatedTask });
 	const ui = buildExitGatedUiContext({

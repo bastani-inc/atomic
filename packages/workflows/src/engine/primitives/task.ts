@@ -8,6 +8,7 @@ import {
 	stageOptionsWithGitWorktree,
 	stageOptionsWithInputDefaults,
 } from "../../runs/foreground/executor-direct-helpers.js";
+import { restoresStagePaths } from "../../runs/foreground/executor-stage-factory.js";
 import {
 	applyTaskContext,
 	structuredTaskOutputText,
@@ -78,11 +79,15 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 				!runtime.agentStageReplaysSavedResult(name, stageOptions)
 			)
 				await prepareTaskGit(runtime.signal);
+			// A task of a run resumed with restores maps its directory and worktree as it starts, after its stage spawned.
+			const mapRestored = runtime.mapRestoredOptions;
+			const mapsPaths = restoresStagePaths(mapRestored, taskOptions);
 			// A live task's worktree is set up once its stage spawned, as its stage starts; its prompt names files there.
 			let livePreparation: Promise<StageOptions | undefined> | undefined;
 			const prepareLive = async (): Promise<StageOptions | undefined> => {
 				try {
-					const preparedOptions = (await prepareLiveOptions?.()) ?? taskOptions;
+					const unmapped = (await prepareLiveOptions?.()) ?? taskOptions;
+					const preparedOptions = mapRestored === undefined ? unmapped : await mapRestored(unmapped);
 					resolvedTaskOptions =
 						(await stageOptionsWithGitWorktree(
 							stageOptionsWithInputDefaults(preparedOptions, runtime.inputRuntimeDefaults),
@@ -91,15 +96,17 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 						)) ?? preparedOptions;
 					return taskStageOptions(resolvedTaskOptions);
 				} catch (error) {
-					// The task's stage fails with this error, which says the task needs git when that is why.
-					throw gitRequired(error, name, options);
+					// The task's stage fails with this error, which says the task needs git when that is why, naming its
+					// worktree where the run's restores put it.
+					const named = mapRestored === undefined ? options : await mapRestored(options).catch(() => options);
+					throw gitRequired(error, name, named);
 				}
 			};
 			const stageHandle = runtime.spawnStage(name, {
 				kind: "agent",
 				...(stageOptions !== undefined ? { options: stageOptions } : {}),
 				...(stageFailFastScope !== undefined ? { failFastScope: stageFailFastScope } : {}),
-				...(prepareLiveOptions !== undefined || typeof resolvedTaskOptions.gitWorktreeDir === "string"
+				...(prepareLiveOptions !== undefined || typeof resolvedTaskOptions.gitWorktreeDir === "string" || mapsPaths
 					? {
 							prepareLiveOptions: () => {
 								livePreparation = prepareLive();
@@ -109,6 +116,8 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 					: {}),
 			});
 			const stage = stageHandle.context;
+			// A replayed task never prepares: its prompt names the paths it ran in, where the restores put them.
+			if (mapsPaths && livePreparation === undefined) resolvedTaskOptions = await mapRestored(resolvedTaskOptions);
 			// A setup that failed fails the stage's prompt with its error, so the prompt is not built from it.
 			const setupFailed =
 				livePreparation !== undefined &&
@@ -173,9 +182,11 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 		};
 		try {
 			const result = await runTaskOnce(options, async () => {
+				// The task's worktree is made from its directory where the run's restores put it.
+				const mapped = (await runtime.mapRestoredOptions?.(options)) ?? options;
 				prepared = await prepareTaskWorktrees(
-					[{ ...options, name }],
-					{ ...options, worktree: true },
+					[{ ...mapped, name }],
+					{ ...mapped, worktree: true },
 					`${runtime.runId}-${name}-${crypto.randomUUID()}`,
 					name,
 					runtime.workflowInvocationCwd,
