@@ -126,15 +126,18 @@ function readCached(file: string): string | undefined {
 	}
 }
 
-/** Writes only into an existing cache directory, so a removed agent directory is never recreated (#4728). */
+/**
+ * Writes only into an existing cache directory, so a removed agent directory is never recreated (#4728). The write
+ * runs in the background: jiti evaluates the module from `code` now, and a later load that finds no entry yet only
+ * transforms the source again.
+ */
 function writeCached(file: string, code: string): void {
 	const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
-	try {
-		fs.writeFileSync(temporary, code, "utf8");
-		fs.renameSync(temporary, file);
-	} catch {
-		fs.rmSync(temporary, { force: true });
-	}
+	void fs.promises
+		.writeFile(temporary, code, "utf8")
+		.then(() => fs.promises.rename(temporary, file))
+		.catch(() => fs.promises.rm(temporary, { force: true }))
+		.catch(() => {});
 }
 
 type BabelHost = ReturnType<CreateJiti>;

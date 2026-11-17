@@ -3,9 +3,9 @@ import { dirname, isAbsolute, join } from "node:path";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { addAutoDiscoveredResources, collectProjectLocalResources } from "./package-manager-auto-resources.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
-import { getExistingGitInstallPath, refreshTemporaryGitSource } from "./package-manager-git.ts";
+import { getExistingGitInstallPathAsync, refreshTemporaryGitSource } from "./package-manager-git.ts";
 import {
-	getExistingNpmInstallPath,
+	getExistingNpmInstallPathAsync,
 	installedNpmMatchesConfiguredVersion,
 	npmHasAvailableUpdate,
 } from "./package-manager-npm.ts";
@@ -253,13 +253,13 @@ async function resolvePackageSources(
 		};
 
 		if (parsed.type === "npm") {
-			let installedPath = getExistingNpmInstallPath(context, parsed, resolvedScope);
+			let installedPath = await getExistingNpmInstallPathAsync(context, parsed, resolvedScope);
 			const needsInstall =
 				!installedPath || !(await installedNpmMatchesConfiguredVersion(context, parsed, installedPath));
 			if (needsInstall) {
 				const installed = await installMissing();
 				if (!installed) continue;
-				installedPath = getExistingNpmInstallPath(context, parsed, resolvedScope);
+				installedPath = await getExistingNpmInstallPathAsync(context, parsed, resolvedScope);
 				if (!installedPath || !(await installedNpmMatchesConfiguredVersion(context, parsed, installedPath))) {
 					continue;
 				}
@@ -289,7 +289,8 @@ async function resolvePackageSources(
 		}
 
 		const installedPath =
-			getExistingGitInstallPath(context, parsed, resolvedScope) ?? getGitInstallPath(context, parsed, resolvedScope);
+			(await getExistingGitInstallPathAsync(context, parsed, resolvedScope)) ??
+			getGitInstallPath(context, parsed, resolvedScope);
 		if (!(await exists(installedPath))) {
 			const installed = await installMissing();
 			if (!installed) continue;

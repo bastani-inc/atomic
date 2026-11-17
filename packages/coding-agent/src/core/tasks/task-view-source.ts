@@ -357,7 +357,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const skills = session.commands?.().skills;
 			let delivery: TaskMessageDelivery;
 			try {
-				delivery = await session.sendMessage(skills === undefined ? text : expandSkillCommand(skills, text));
+				delivery = await session.sendMessage(skills === undefined ? text : await expandSkillCommand(skills, text));
 			} catch (cause) {
 				throw new TaskMessageError("delivery-unconfirmed", { taskId: id, target }, { cause });
 			}

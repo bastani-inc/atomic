@@ -53,7 +53,7 @@ describe("issue #2328 exact skill command resolution", () => {
 		const harness: Harness = await createHarness({ resourceLoader });
 		cleanup.push(harness.cleanup);
 
-		const expanded = harness.session._expandSkillCommand("/skill:tdd@builtin use exact source");
+		const expanded = await harness.session._expandSkillCommand("/skill:tdd@builtin use exact source");
 		const parsed = parseSkillBlock(expanded);
 
 		expect(parsed).toMatchObject({
@@ -108,12 +108,12 @@ describe("issue #2328 exact skill command resolution", () => {
 
 		for (const selector of illegal) {
 			const command = `/skill:${selector}`;
-			expect(harness.session._expandSkillCommand(command)).toBe(command);
+			expect(await harness.session._expandSkillCommand(command)).toBe(command);
 		}
 
 		expect(errors).toHaveLength(illegal.length);
 		expect(errors.every((error) => /skill selector/i.test(error))).toBe(true);
-		expect(harness.session._expandSkillCommand("/skill:tdd")).toContain("User body");
+		expect(await harness.session._expandSkillCommand("/skill:tdd")).toContain("User body");
 	});
 
 	it("keeps bare skill commands working for custom loaders without a catalog method", async () => {
@@ -128,7 +128,7 @@ describe("issue #2328 exact skill command resolution", () => {
 		const harness: Harness = await createHarness({ resourceLoader });
 		cleanup.push(harness.cleanup);
 
-		expect(harness.session._expandSkillCommand("/skill:tdd")).toContain("Custom loader body");
+		expect(await harness.session._expandSkillCommand("/skill:tdd")).toContain("Custom loader body");
 		expect(harness.session.extensionRunner.createContext().getSkillCatalog?.()?.resolve("tdd")).toMatchObject({
 			ok: true,
 			candidate: { skill: { filePath: custom.filePath } },

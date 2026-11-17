@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { access, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { APP_NAME, getProjectConfigDirs } from "../config.js";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
@@ -19,7 +20,7 @@ import type {
 	PackageManagerContext,
 	SourceScope,
 } from "./package-manager-types.ts";
-import { renameReplacing } from "./rename-retry.ts";
+import { renameReplacingAsync } from "./rename-retry.ts";
 
 /** A failure to provide git is never a best-effort miss: callers see it, with its code and install command. */
 function rethrowGitProvisionError(error: unknown): void {
@@ -56,6 +57,12 @@ async function captureGitProcess(
 		: runCommandCapture(git.path, args, gitOptions);
 }
 
+const exists = (path: string): Promise<boolean> =>
+	access(path).then(
+		() => true,
+		() => false,
+	);
+
 function getSafeGitRef(ref: string): string {
 	if (!isSafeGitRef(ref)) {
 		throw new Error(`Invalid git ref: ${JSON.stringify(ref)}`);
@@ -78,11 +85,8 @@ function isSafeGitRef(ref: string): boolean {
 		.every((part) => part && part !== "." && part !== ".." && !part.startsWith(".") && !part.endsWith(".lock"));
 }
 
-export function getExistingGitInstallPath(
-	context: PackageLocationContext,
-	source: GitSource,
-	scope: SourceScope,
-): string | undefined {
+/** Where a git package may be installed, in the order it is looked for. */
+function gitInstallCandidates(context: PackageLocationContext, source: GitSource, scope: SourceScope): string[] {
 	const candidates = [getGitInstallPath(context, source, scope)];
 	if (scope === "project") {
 		for (const configDir of getProjectConfigDirs(context.cwd)) {
@@ -93,8 +97,25 @@ export function getExistingGitInstallPath(
 			candidates.push(join(agentDir, "git", source.host, source.path));
 		}
 	}
-	for (const candidate of Array.from(new Set(candidates))) {
-		if (existsSync(candidate)) return candidate;
+	return Array.from(new Set(candidates));
+}
+
+export function getExistingGitInstallPath(
+	context: PackageLocationContext,
+	source: GitSource,
+	scope: SourceScope,
+): string | undefined {
+	return gitInstallCandidates(context, source, scope).find((candidate) => existsSync(candidate));
+}
+
+/** {@link getExistingGitInstallPath} without blocking. */
+export async function getExistingGitInstallPathAsync(
+	context: PackageLocationContext,
+	source: GitSource,
+	scope: SourceScope,
+): Promise<string | undefined> {
+	for (const candidate of gitInstallCandidates(context, source, scope)) {
+		if (await exists(candidate)) return candidate;
 	}
 	return undefined;
 }
@@ -106,27 +127,28 @@ function getGitUpdateMarkerPath(targetDir: string): string {
 	return join(dirname(targetDir), `.${basename(targetDir)}.${APP_NAME}-update-incomplete`);
 }
 
-function hasMissingGitDependencies(targetDir: string): boolean {
+async function hasMissingGitDependencies(targetDir: string): Promise<boolean> {
 	const packageJsonPath = join(targetDir, "package.json");
-	if (!existsSync(packageJsonPath)) return false;
+	if (!(await exists(packageJsonPath))) return false;
 	try {
-		const manifest = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8"))) as { dependencies?: unknown };
+		const manifest = JSON.parse(stripBom(await readFile(packageJsonPath, "utf-8"))) as { dependencies?: unknown };
 		if (!manifest.dependencies || typeof manifest.dependencies !== "object" || Array.isArray(manifest.dependencies)) {
 			return false;
 		}
 		const nodeModulesDir = resolve(targetDir, "node_modules");
-		return Object.keys(manifest.dependencies).some((name) => {
+		for (const name of Object.keys(manifest.dependencies)) {
 			const dependencyPath = resolve(nodeModulesDir, name);
-			if (!dependencyPath.startsWith(`${nodeModulesDir}${sep}`)) return false;
-			return !existsSync(dependencyPath);
-		});
+			if (!dependencyPath.startsWith(`${nodeModulesDir}${sep}`)) continue;
+			if (!(await exists(dependencyPath))) return true;
+		}
+		return false;
 	} catch {
 		return false;
 	}
 }
 
 async function repairMissingGitDependencies(context: PackageManagerContext, targetDir: string): Promise<void> {
-	if (!hasMissingGitDependencies(targetDir)) return;
+	if (!(await hasMissingGitDependencies(targetDir))) return;
 	await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: targetDir });
 }
 
@@ -153,18 +175,18 @@ async function cleanAndInstallGitDependencies(
 			message: `Could not remove all untracked files in ${targetDir} (${reason}). Files may be in use by another ${APP_NAME} session; close it and run the update again.`,
 		});
 	}
-	if (existsSync(join(targetDir, "package.json"))) {
+	if (await exists(join(targetDir, "package.json"))) {
 		await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: targetDir });
 	}
-	if (cleaned) rmSync(markerPath, { force: true });
+	if (cleaned) await rm(markerPath, { force: true });
 }
 
 export async function installGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const safeRef = source.ref ? getSafeGitRef(source.ref) : undefined;
 	const targetDir = getGitInstallPath(context, source, scope);
-	const installedBefore = existsSync(targetDir);
+	const installedBefore = await exists(targetDir);
 	await withGitInstallLock(context, scope, targetDir, async () => {
-		if (!existsSync(targetDir)) {
+		if (!(await exists(targetDir))) {
 			await cloneGit(context, source, scope, targetDir, safeRef);
 			return;
 		}
@@ -185,7 +207,7 @@ async function withGitInstallLock(
 	try {
 		await withInstallLock(targetDir, operation);
 	} finally {
-		pruneEmptyGitParents(targetDir, getGitInstallRoot(context, scope));
+		await pruneEmptyGitParents(targetDir, getGitInstallRoot(context, scope));
 	}
 }
 
@@ -201,7 +223,7 @@ async function updateGitCheckout(
 	safeRef: string | undefined,
 	action: "install" | "update",
 ): Promise<void> {
-	if (existsSync(join(targetDir, ".git"))) {
+	if (await exists(join(targetDir, ".git"))) {
 		try {
 			await updateCompleteGitCheckout(context, targetDir, safeRef);
 			return;
@@ -215,8 +237,8 @@ async function updateGitCheckout(
 		source: targetDir,
 		message: `${targetDir} is not a complete git checkout (an earlier install may have been interrupted); cloning it again.`,
 	});
-	assertOwnGitInstallDir(source, targetDir);
-	rmSync(targetDir, { recursive: true, force: true });
+	await assertOwnGitInstallDir(source, targetDir);
+	await rm(targetDir, { recursive: true, force: true });
 	await cloneGit(context, source, scope, targetDir, safeRef);
 }
 
@@ -240,7 +262,7 @@ async function updateCompleteGitCheckout(
  * upstream branch or a remote default branch. A clone killed before it fetched leaves none of these.
  */
 async function isCompleteGitCheckout(context: PackageManagerContext, dir: string): Promise<boolean> {
-	if (!existsSync(join(dir, ".git"))) return false;
+	if (!(await exists(join(dir, ".git")))) return false;
 	const resolves = (revision: string) =>
 		captureGitProcess(context, ["rev-parse", "--verify", "--quiet", `${revision}^{commit}`], {
 			cwd: dir,
@@ -261,7 +283,7 @@ async function isCompleteGitCheckout(context: PackageManagerContext, dir: string
  * host/owner/repo directory, and that directory, unless it is a checkout itself, must hold no other package's
  * checkout (#5055).
  */
-function assertOwnGitInstallDir(source: GitSource, targetDir: string): void {
+async function assertOwnGitInstallDir(source: GitSource, targetDir: string): Promise<void> {
 	const pathSegments = source.path.split("/");
 	const namesOwnDir =
 		pathSegments.length >= 2 &&
@@ -269,8 +291,8 @@ function assertOwnGitInstallDir(source: GitSource, targetDir: string): void {
 	if (!namesOwnDir) {
 		throw new Error(`Refusing to remove ${targetDir}: it is not the install directory of ${source.repo}`);
 	}
-	if (!existsSync(targetDir) || existsSync(join(targetDir, ".git"))) return;
-	const nestedCheckout = readdirSync(targetDir, { recursive: true }).some(
+	if (!(await exists(targetDir)) || (await exists(join(targetDir, ".git")))) return;
+	const nestedCheckout = (await readdir(targetDir, { recursive: true })).some(
 		(entry) => basename(String(entry)) === ".git",
 	);
 	if (nestedCheckout) {
@@ -289,7 +311,7 @@ async function assertCheckoutOfSource(
 	source: GitSource,
 	targetDir: string,
 ): Promise<void> {
-	if (!existsSync(join(targetDir, ".git"))) return;
+	if (!(await exists(join(targetDir, ".git")))) return;
 	let origin: string;
 	try {
 		origin = (
@@ -318,14 +340,16 @@ function getGitStagingPrefix(targetDir: string): string {
 }
 
 /** Removes staging directories that interrupted installs of `targetDir` left behind. */
-function sweepStaleGitStagingDirs(targetDir: string): void {
+async function sweepStaleGitStagingDirs(targetDir: string): Promise<void> {
 	const parent = dirname(targetDir);
 	const prefix = getGitStagingPrefix(targetDir);
-	for (const entry of readdirSync(parent)) {
+	for (const entry of await readdir(parent)) {
 		if (!entry.startsWith(prefix)) continue;
 		const path = join(parent, entry);
 		try {
-			if (Date.now() - statSync(path).mtimeMs > STALE_GIT_STAGING_MS) rmSync(path, { recursive: true, force: true });
+			if (Date.now() - (await stat(path)).mtimeMs > STALE_GIT_STAGING_MS) {
+				await rm(path, { recursive: true, force: true });
+			}
 		} catch {
 			// Another process removed it first, or it is still in use; the next install tries again.
 		}
@@ -345,12 +369,12 @@ async function cloneGit(
 ): Promise<void> {
 	const gitRoot = getGitInstallRoot(context, scope);
 	if (gitRoot) {
-		ensureGitIgnore(gitRoot);
+		await ensureGitIgnore(gitRoot);
 	}
 	const parent = dirname(targetDir);
-	mkdirSync(parent, { recursive: true });
-	rmSync(getGitUpdateMarkerPath(targetDir), { force: true });
-	sweepStaleGitStagingDirs(targetDir);
+	await mkdir(parent, { recursive: true });
+	await rm(getGitUpdateMarkerPath(targetDir), { force: true });
+	await sweepStaleGitStagingDirs(targetDir);
 
 	// Defense-in-depth: the clone URL is already parsed/validated upstream, but
 	// assert it contains only shell-safe characters immediately before it reaches
@@ -367,17 +391,17 @@ async function cloneGit(
 		if (safeRef) {
 			await runGitProcess(context, ["checkout", safeRef], { cwd: stagingDir });
 		}
-		if (existsSync(join(stagingDir, "package.json"))) {
+		if (await exists(join(stagingDir, "package.json"))) {
 			await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: stagingDir });
 		}
 		try {
-			renameReplacing(stagingDir, targetDir);
+			await renameReplacingAsync(stagingDir, targetDir);
 		} catch (error) {
 			// An install that does not take the lock (an older version) can finish first; use its checkout.
-			if (!existsSync(targetDir) || !(await isCompleteGitCheckout(context, targetDir))) throw error;
+			if (!(await exists(targetDir)) || !(await isCompleteGitCheckout(context, targetDir))) throw error;
 		}
 	} finally {
-		rmSync(stagingDir, { recursive: true, force: true });
+		await rm(stagingDir, { recursive: true, force: true });
 	}
 }
 
@@ -387,8 +411,9 @@ export async function getInstalledGitHead(
 	source: GitSource,
 	scope: SourceScope,
 ): Promise<string | undefined> {
-	const targetDir = getExistingGitInstallPath(context, source, scope) ?? getGitInstallPath(context, source, scope);
-	if (!existsSync(targetDir)) return undefined;
+	const targetDir =
+		(await getExistingGitInstallPathAsync(context, source, scope)) ?? getGitInstallPath(context, source, scope);
+	if (!(await exists(targetDir))) return undefined;
 	try {
 		const head = await captureGitProcess(context, ["rev-parse", "HEAD"], {
 			cwd: targetDir,
@@ -403,9 +428,10 @@ export async function getInstalledGitHead(
 
 export async function updateGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const safeRef = source.ref ? getSafeGitRef(source.ref) : undefined;
-	const targetDir = getExistingGitInstallPath(context, source, scope) ?? getGitInstallPath(context, source, scope);
+	const targetDir =
+		(await getExistingGitInstallPathAsync(context, source, scope)) ?? getGitInstallPath(context, source, scope);
 	await withGitInstallLock(context, scope, targetDir, async () => {
-		if (!existsSync(targetDir)) {
+		if (!(await exists(targetDir))) {
 			await cloneGit(context, source, scope, targetDir, safeRef);
 			return;
 		}
@@ -433,7 +459,7 @@ async function ensureGitRef(
 	});
 	const markerPath = getGitUpdateMarkerPath(targetDir);
 	if (localHead.trim() === targetHead.trim()) {
-		if (existsSync(markerPath)) {
+		if (await exists(markerPath)) {
 			await cleanAndInstallGitDependencies(context, targetDir, markerPath);
 		} else {
 			await repairMissingGitDependencies(context, targetDir);
@@ -441,7 +467,7 @@ async function ensureGitRef(
 		return;
 	}
 
-	writeFileSync(markerPath, "", "utf-8");
+	await writeFile(markerPath, "", "utf-8");
 	await runGitProcess(context, ["reset", "--hard", commitRef], { cwd: targetDir });
 	await cleanAndInstallGitDependencies(context, targetDir, markerPath);
 }
@@ -477,28 +503,28 @@ export async function refreshTemporaryGitSource(
 
 export async function removeGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const targetDir = getGitInstallPath(context, source, scope);
-	if (!existsSync(dirname(targetDir))) return;
+	if (!(await exists(dirname(targetDir)))) return;
 	await withGitInstallLock(context, scope, targetDir, async () => {
-		assertOwnGitInstallDir(source, targetDir);
+		await assertOwnGitInstallDir(source, targetDir);
 		await assertCheckoutOfSource(context, source, targetDir);
-		rmSync(targetDir, { recursive: true, force: true });
-		rmSync(getGitUpdateMarkerPath(targetDir), { force: true });
+		await rm(targetDir, { recursive: true, force: true });
+		await rm(getGitUpdateMarkerPath(targetDir), { force: true });
 	});
 }
 
-function pruneEmptyGitParents(targetDir: string, installRoot: string | undefined): void {
+async function pruneEmptyGitParents(targetDir: string, installRoot: string | undefined): Promise<void> {
 	if (!installRoot) return;
 	const resolvedRoot = resolve(installRoot);
 	let current = dirname(targetDir);
 	while (current.startsWith(resolvedRoot) && current !== resolvedRoot) {
-		if (!existsSync(current)) {
+		if (!(await exists(current))) {
 			current = dirname(current);
 			continue;
 		}
-		const entries = readdirSync(current);
+		const entries = await readdir(current);
 		if (entries.length > 0) break;
 		try {
-			rmSync(current, { recursive: true, force: true });
+			await rm(current, { recursive: true, force: true });
 		} catch {
 			break;
 		}

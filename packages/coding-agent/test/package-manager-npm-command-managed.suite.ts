@@ -144,6 +144,7 @@ describe("DefaultPackageManager", () => {
 			vi.spyOn(packageManager as any, "runCommandSync").mockImplementation(() => {
 				throw new Error("legacy lookup unavailable");
 			});
+			vi.spyOn(packageManager as any, "runCommandCapture").mockRejectedValue(new Error("legacy lookup unavailable"));
 			const runCommandSpy = vi
 				.spyOn(packageManager as any, "runCommand")
 				.mockImplementation(async (...callArgs: unknown[]) => {
@@ -205,7 +206,7 @@ describe("DefaultPackageManager", () => {
 			writeFileSync(legacyExtensionPath, "export default function legacy() {};");
 
 			const managerWithInternals = packageManager as object as PackageManagerInternals;
-			vi.spyOn(managerWithInternals, "runCommandSync").mockImplementation((command, args) => {
+			vi.spyOn(managerWithInternals, "runCommandCapture").mockImplementation(async (command, args) => {
 				expect(command).toBe("npm");
 				expect(args).toEqual(["root", "-g"]);
 				return legacyRoot;
@@ -272,12 +273,12 @@ describe("DefaultPackageManager", () => {
 			writeFileSync(legacyExtensionPath, "export default function legacy() {};");
 
 			const managerWithInternals = packageManager as object as PackageManagerInternals;
-			vi.spyOn(managerWithInternals, "runCommandSync").mockImplementation((command, args) => {
-				expect(command).toBe("npm");
-				expect(args).toEqual(["root", "-g"]);
-				return legacyRoot;
-			});
-			const runCommandCaptureSpy = vi.spyOn(managerWithInternals, "runCommandCapture").mockResolvedValue('"2.0.0"');
+			const runCommandCaptureSpy = vi
+				.spyOn(managerWithInternals, "runCommandCapture")
+				.mockImplementation(async (command, args) => {
+					expect(command).toBe("npm");
+					return args[0] === "root" ? legacyRoot : '"2.0.0"';
+				});
 			const runCommandSpy = vi
 				.spyOn(managerWithInternals, "runCommand")
 				.mockImplementation(async (command, args) => {
@@ -308,12 +309,14 @@ describe("DefaultPackageManager", () => {
 			expect(result.extensions.some((r) => r.path === managedExtensionPath && r.enabled)).toBe(true);
 			expect(result.extensions.some((r) => r.path === legacyExtensionPath)).toBe(false);
 			expect(result.extensions.find((r) => r.path === managedExtensionPath)?.metadata.baseDir).toBe(managedPath);
-			expect(runCommandCaptureSpy).toHaveBeenCalledTimes(2);
+			const views = runCommandCaptureSpy.mock.calls.filter(([, args]) => args[0] === "view");
+			expect(views).toHaveLength(2);
 			expect(runCommandCaptureSpy).toHaveBeenCalledWith(
 				"npm",
 				["view", "example@beta", "version", "--json"],
 				expect.objectContaining({ cwd: tempDir, timeoutMs: expect.any(Number) }),
 			);
+			expect(runCommandCaptureSpy).toHaveBeenCalledWith("npm", ["root", "-g"], expect.anything());
 			expect(runCommandSpy).toHaveBeenCalledTimes(1);
 		});
 
@@ -334,7 +337,7 @@ describe("DefaultPackageManager", () => {
 			writeFileSync(join(packagePath, "package.json"), JSON.stringify({ name: "pnpm-pkg", version: "1.0.0" }));
 			writeFileSync(join(packagePath, "extensions", "index.ts"), "export default function() {};");
 
-			vi.spyOn(packageManager as any, "runCommandSync").mockImplementation((...callArgs: unknown[]) => {
+			const pnpmList = (...callArgs: unknown[]): string => {
 				const [command, args] = callArgs as [string, string[]];
 				if (command !== "pnpm") {
 					throw new Error(`unexpected command ${command}`);
@@ -348,7 +351,11 @@ describe("DefaultPackageManager", () => {
 					]);
 				}
 				throw new Error(`unexpected args ${args.join(" ")}`);
-			});
+			};
+			vi.spyOn(packageManager as any, "runCommandSync").mockImplementation(pnpmList);
+			vi.spyOn(packageManager as any, "runCommandCapture").mockImplementation(async (...callArgs: unknown[]) =>
+				pnpmList(...callArgs),
+			);
 			const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
 
 			const result = await packageManager.resolve();
