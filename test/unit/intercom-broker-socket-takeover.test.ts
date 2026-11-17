@@ -4,11 +4,12 @@ import { statSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, test } from "vitest";
 import { isSocketAnswering } from "../../packages/intercom/broker/socket-liveness.js";
 import { acquireSocketReplacementLock } from "../../packages/intercom/broker/socket-replacement-lock.js";
 import * as staleLockFile from "../../packages/intercom/broker/stale-lock-file.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { type BrokerProcessControl, createBrokerProcessControl } from "../helpers/broker-process-control.js";
 import {
 	type ByteStream,
 	decodeStream,
@@ -20,6 +21,7 @@ import {
 	readTextSync,
 	removePathSync,
 	removeTempDirectory,
+	type SpawnedProcess,
 	sleep,
 	spawnProcess,
 	spawnSyncCollect,
@@ -105,12 +107,17 @@ const socketPath = pathsModule.getBrokerSocketPath();
 const intercomDir = pathsModule.getIntercomDirPath();
 const pidPath = pathsModule.getBrokerPidPath();
 
-const directBrokerPids: number[] = [];
+const directBrokers = new Map<number, SpawnedProcess>();
 const liveClients: InstanceType<typeof IntercomClient>[] = [];
+let brokerControl: BrokerProcessControl;
 
 beforeAll(() => {
 	makeDirectorySync(gateDir, { recursive: true });
 	writeTextSync(preloadFile, holdFirstBrokerPreload());
+});
+
+beforeEach(async () => {
+	brokerControl = await createBrokerProcessControl(gateDir, BROKER_BUDGET_MS);
 });
 
 function isAlive(pid: number): boolean {
@@ -154,20 +161,27 @@ async function waitUntilAnswering(budgetMs: number): Promise<boolean> {
 	return true;
 }
 
-async function terminate(pid: number): Promise<void> {
-	if (!isAlive(pid)) return;
+async function terminateDirectBroker(broker: SpawnedProcess): Promise<void> {
+	const hasExited = () => broker.exitCode !== null || broker.signalCode !== null;
+	if (hasExited()) {
+		await broker.exited;
+		return;
+	}
 	try {
-		process.kill(pid, "SIGTERM");
+		broker.kill("SIGTERM");
 	} catch {
 		return;
 	}
-	if (await waitUntil(() => !isAlive(pid), BROKER_BUDGET_MS)) return;
-	try {
-		process.kill(pid, "SIGKILL");
-	} catch {
-		// Exited between the last check and the kill.
+	if (await waitUntil(hasExited, BROKER_BUDGET_MS)) {
+		await broker.exited;
+		return;
 	}
-	await waitUntil(() => !isAlive(pid), BROKER_BUDGET_MS);
+	try {
+		broker.kill("SIGKILL");
+	} catch {}
+	if (await waitUntil(hasExited, BROKER_BUDGET_MS)) {
+		await broker.exited;
+	}
 }
 
 // Terminating each broker left running waits for it within BROKER_BUDGET_MS.
@@ -179,10 +193,9 @@ afterEach(async () => {
 			// The broker may already be gone.
 		}
 	}
-	const pids = new Set([...startedBrokerPids(), ...directBrokerPids.splice(0)]);
-	const recorded = recordedBrokerPid();
-	if (recorded !== undefined) pids.add(recorded);
-	for (const pid of pids) await terminate(pid);
+	await brokerControl?.close();
+	for (const broker of directBrokers.values()) await terminateDirectBroker(broker);
+	directBrokers.clear();
 	removePathSync(intercomDir, { recursive: true, force: true, ...CLEANUP_RETRIES });
 	for (const file of [startsFile, firstStartMarker, gateFile]) removePathSync(file, { force: true });
 }, BROKER_TEST_TIMEOUT_MS);
@@ -225,7 +238,7 @@ function spawnBrokerDirectly() {
 		[process.execPath, spawnModule.getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")],
 		{ env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir }, stdout: "ignore", stderr: "pipe" },
 	);
-	if (broker.pid !== undefined) directBrokerPids.push(broker.pid);
+	if (broker.pid !== undefined) directBrokers.set(broker.pid, broker);
 	return broker;
 }
 
@@ -233,7 +246,13 @@ describe("a slow-starting broker beside a live one", { timeout: BROKER_TEST_TIME
 	const unixOnly = process.platform === "win32" ? test.skip : test;
 
 	test("(#3505) a session stays listed and reachable when a later spawn attempt runs while the first broker is still starting", async () => {
-		const brokerArgs = ["--import", pathToFileURL(preloadFile).href, spawnModule.getJitiCliPath(extensionDir)];
+		const brokerArgs = [
+			"--import",
+			brokerControl.preloadUrl,
+			"--import",
+			pathToFileURL(preloadFile).href,
+			spawnModule.getJitiCliPath(extensionDir),
+		];
 
 		await assert.rejects(
 			() => spawnModule.spawnBrokerIfNeeded(process.execPath, brokerArgs, FIRST_SPAWN_READY_TIMEOUT_MS),
@@ -284,7 +303,13 @@ describe("a slow-starting broker beside a live one", { timeout: BROKER_TEST_TIME
 	});
 
 	unixOnly("(#3505) a first broker that dies while starting does not block the next spawn", async () => {
-		const brokerArgs = ["--import", pathToFileURL(preloadFile).href, spawnModule.getJitiCliPath(extensionDir)];
+		const brokerArgs = [
+			"--import",
+			brokerControl.preloadUrl,
+			"--import",
+			pathToFileURL(preloadFile).href,
+			spawnModule.getJitiCliPath(extensionDir),
+		];
 		await assert.rejects(
 			() => spawnModule.spawnBrokerIfNeeded(process.execPath, brokerArgs, FIRST_SPAWN_READY_TIMEOUT_MS),
 			/Broker failed to start within timeout/u,
@@ -295,7 +320,7 @@ describe("a slow-starting broker beside a live one", { timeout: BROKER_TEST_TIME
 		);
 		const [firstBroker] = startedBrokerPids();
 		assert.ok(firstBroker !== undefined);
-		process.kill(firstBroker, "SIGKILL");
+		await brokerControl.stop(firstBroker);
 		assert.ok(await waitUntil(() => !isAlive(firstBroker), BROKER_BUDGET_MS), "the first broker did not die");
 
 		await spawnModule.spawnBrokerIfNeeded(process.execPath, brokerArgs, LATER_SPAWN_READY_TIMEOUT_MS);
@@ -332,13 +357,13 @@ describe("a slow-starting broker beside a live one", { timeout: BROKER_TEST_TIME
 	unixOnly("(#3505) a spawn succeeds when its broker exits cleanly because a live broker answers", async () => {
 		const handoffGate = join(gateDir, "handoff");
 		const childRunning = join(gateDir, "running");
-		const exitsOnGate = `const fs = require("fs"); fs.appendFileSync(process.argv[3], process.pid + "\\n"); fs.writeFileSync(process.argv[1], ""); setInterval(() => { if (fs.existsSync(process.argv[2])) process.exit(0); }, 2);`;
+		const exitsOnGate = `const fs = require("fs"); fs.writeFileSync(process.argv[1], String(process.pid)); setInterval(() => { if (fs.existsSync(process.argv[2])) process.exit(0); }, 2);`;
 		for (let attempt = 0; attempt < YIELD_ATTEMPTS; attempt++) {
 			removePathSync(handoffGate, { force: true });
 			removePathSync(childRunning, { force: true });
 			const spawned = spawnModule.spawnBrokerIfNeeded(
 				process.execPath,
-				["-e", exitsOnGate, childRunning, handoffGate, startsFile],
+				["--import", brokerControl.preloadUrl, "-e", exitsOnGate, childRunning, handoffGate],
 				LATER_SPAWN_READY_TIMEOUT_MS,
 			);
 			spawned.catch(() => {});
@@ -357,9 +382,10 @@ describe("a slow-starting broker beside a live one", { timeout: BROKER_TEST_TIME
 					try {
 						writeTextSync(handoffGate, "");
 					} catch {
-						for (const pid of startedBrokerPids()) await terminate(pid);
+						await brokerControl.close();
 					}
 					await spawned.catch(() => {});
+					if (fileExistsSync(childRunning)) await brokerControl.exited(Number(readTextSync(childRunning, "utf8")));
 				} finally {
 					if (liveBroker !== undefined) await closeServer(liveBroker);
 				}
