@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
-import { test, vi } from "vitest";
+import { onTestFinished, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { buildItemsForQuestion } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
 import { QuestionnaireSession } from "../../packages/coding-agent/src/core/tools/ask-user-question/state/questionnaire-session.ts";
@@ -219,6 +219,14 @@ test("Left and Backspace leave a mounted ask_user_question pending with ← grap
 });
 
 test("Esc in a running stage prints the shared past-tense end row in dim color and re-entering suppresses the stale PAUSED banner (#5224)", async () => {
+	vi.stubEnv("COLORTERM", "truecolor");
+	vi.stubEnv("ATOMIC_TRUE_COLOR", "1");
+	vi.stubEnv("FORCE_COLOR", "3");
+	vi.stubEnv("NO_COLOR", undefined);
+	onTestFinished(() => {
+		vi.unstubAllEnvs();
+		initTheme("dark");
+	});
 	initTheme("dark");
 	const previous = getKeybindings();
 	const keys = new KeybindingsManager();

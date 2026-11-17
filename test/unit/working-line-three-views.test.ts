@@ -182,10 +182,19 @@ function rawStatusLine(rows: readonly string[]): string {
 describe("one working line in the main chat, a stage chat and a subagent view (#5224)", () => {
 	beforeAll(() => initTheme("dark", false));
 	beforeEach(() => {
+		vi.stubEnv("COLORTERM", "truecolor");
+		vi.stubEnv("ATOMIC_TRUE_COLOR", "1");
+		vi.stubEnv("FORCE_COLOR", "3");
+		vi.stubEnv("NO_COLOR", undefined);
+		initTheme("dark", false);
 		vi.useFakeTimers({ toFake: ["Date"] });
 		vi.setSystemTime(1_000_000);
 	});
-	afterEach(() => vi.useRealTimers());
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.unstubAllEnvs();
+		initTheme("dark", false);
+	});
 
 	test("the same events paint the same working line and end row in all three views; a stage chat and a subagent view count the agent's total (#5224)", async () => {
 		const views = [mainChat(), stageChat(), subagentView()];

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme, deriveGraphThemeFromPiTheme } from "../../packages/workflows/src/tui/graph-theme.js";
@@ -257,9 +257,18 @@ test("StageChatView and deriveGraphThemeFromPiTheme resolve dark and light host 
 		}
 	};
 
-	const dark = renderForTheme("dark");
-	const light = renderForTheme("light");
-	initTheme("dark");
+	vi.stubEnv("COLORTERM", "truecolor");
+	vi.stubEnv("ATOMIC_TRUE_COLOR", "1");
+	vi.stubEnv("FORCE_COLOR", "3");
+	vi.stubEnv("NO_COLOR", undefined);
+	const { dark, light } = (() => {
+		try {
+			return { dark: renderForTheme("dark"), light: renderForTheme("light") };
+		} finally {
+			vi.unstubAllEnvs();
+			initTheme("dark");
+		}
+	})();
 
 	assert.equal(dark.graphTheme.accent, "#8abeb7", "dark GraphTheme resolves host accent instead of Mocha #89b4fa");
 	assert.equal(light.graphTheme.accent, "#5a8080", "light GraphTheme resolves host accent instead of Mocha #89b4fa");
