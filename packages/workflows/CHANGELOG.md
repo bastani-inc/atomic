@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The `/resume` prompt for a changed workflow definition accepts only Enter and cancels with Esc or Ctrl+C, whatever keys are bound to confirm and cancel. → no longer accepts the new definition. Its title and keys now use theme colors, except when `NO_COLOR` is set ([#5396](https://github.com/bastani-inc/atomic/pull/5396))
 - In a stage chat, Esc closes prompt search or completion before interrupting the stage, and search cursor keys no longer leave the chat. Ctrl+R also finds prompts in stage transcripts without a local session ([#5347](https://github.com/bastani-inc/atomic/pull/5347))
 - Opening stored workflow runs reads compact stage overviews instead of loading large stage results. Full history and resumed work still retain the original results ([#5256](https://github.com/bastani-inc/atomic/pull/5256))
 - Workflow rows in the agent panel count expanded nested, dynamic and fan-out stages, include in-flight attempt tokens once, omit full stage bars while tool work continues, and retain the last step when stopped. Numbered replies preserve the original option even when display labels look alike. Run and stage names display terminal controls as inert text, and unchanged progress is reused between refreshes ([#5224](https://github.com/bastani-inc/atomic/issues/5224))

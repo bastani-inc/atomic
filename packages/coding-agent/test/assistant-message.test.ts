@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { Container, type TUI, visibleWidth } from "@bastani/atomic-tui";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import type { MarkdownTransformContext } from "../src/core/extensions/types.ts";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import {
@@ -280,6 +280,10 @@ describe("AssistantMessageComponent", () => {
 	});
 
 	test("an interrupted response ends with a stopped notice independent of provider wording (#5350)", () => {
+		vi.stubEnv("NO_COLOR", undefined);
+		onTestFinished(() => {
+			vi.unstubAllEnvs();
+		});
 		initTheme("dark");
 		for (const errorMessage of [
 			undefined,

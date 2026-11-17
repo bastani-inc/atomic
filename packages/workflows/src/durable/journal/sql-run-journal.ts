@@ -114,15 +114,6 @@ function entryFromRow(row: EventRow): JournalEntry {
 	};
 }
 
-/**
- * One page of events: the rows of `pageRows`, a query of the events table that ends in `ORDER BY <order> LIMIT ?`
- * and fetches the next `limit` of them, cut after the row whose payload takes the page past
- * {@link JOURNAL_READ_PAGE_CHARS}, so a page of large checkpoints stays under a libSQL server's 10 MB response limit
- * (#4954). One statement, as before; the first row always comes back. `more` says whether rows may follow the page,
- * and `limit` how many rows the next page's statement fetches ({@link nextReadBatch}): the statement measures every
- * row it fetches, and a fixed batch of {@link JOURNAL_READ_PAGE_SIZE} large events made each page of a few of them
- * measure the payloads of up to 256.
- */
 function overviewEventColumns(dialect: StorageDialect): string {
 	const overviewPayload =
 		dialect.name === "postgres"
