@@ -19,7 +19,11 @@ import type {
 	WorkflowProvidedInputsFromSchemas,
 } from "../shared/workflow-authoring-types.js";
 import { DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES } from "../shared/workflow-heartbeat-contract.js";
-import { isWorkflowRuntimeModule, recordWorkflowSource } from "../shared/workflow-source.js";
+import {
+	isWorkflowRuntimeModule,
+	normalizeWorkflowSourcePath,
+	recordWorkflowSource,
+} from "../shared/workflow-source.js";
 import { normalizeWorkflowName } from "../workflows/identity.js";
 
 export type {
@@ -84,7 +88,7 @@ function stackFilePath(line: string): string | undefined {
 	const fileUrlMatch = line.match(/\(?((?:file:\/\/)[^\s)]+?\.[cm]?[jt]sx?):\d+:\d+\)?/);
 	const rawPath = fileUrlMatch?.[1] ?? line.match(/\(?((?:\/|[A-Za-z]:[\\/])[^():]+?\.[cm]?[jt]sx?):\d+:\d+\)?/)?.[1];
 	if (rawPath === undefined) return undefined;
-	if (!rawPath.startsWith("file://")) return rawPath;
+	if (!rawPath.startsWith("file://")) return normalizeWorkflowSourcePath(rawPath);
 	try {
 		return fileURLToPath(rawPath);
 	} catch {
