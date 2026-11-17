@@ -1597,9 +1597,11 @@ function createEventLog(pathValue: string): EventLog {
 /** Appends to each run history file, keyed by path, in the order they were asked for. */
 const runHistoryAppends = new Map<string, Promise<void>>();
 
-/** Appends `line` to the run history `file` after every append asked for before it. */
-function appendRunHistory(file: string, line: string): Promise<void> {
-	const appended = (runHistoryAppends.get(file) ?? Promise.resolve()).then(() => appendFile(file, line, "utf8"));
+/** Appends `line` to the run history `file` once `ready` settles, after every append asked for before it. */
+function appendRunHistory(file: string, line: string, ready: Promise<void>): Promise<void> {
+	const appended = (runHistoryAppends.get(file) ?? Promise.resolve())
+		.then(() => ready)
+		.then(() => appendFile(file, line, "utf8"));
 	const settled = appended.catch(() => undefined);
 	runHistoryAppends.set(file, settled);
 	void settled.then(() => {
@@ -2859,13 +2861,20 @@ export class SubagentControlRuntime {
 		if (options?.artifactsDisabled) return bounded;
 		if (!artifactDir || !paths)
 			throw new Error(`Artifact persistence paths are unresolved for child ${envelope.path}`);
-		await ensureArtifactsDir(artifactDir);
-		await writeArtifact(paths.outputPath, envelope.envelope);
-		await writeMetadata(paths.metadataPath, {
-			...deliveredEnvelope,
-			outputPath: paths.outputPath,
-		});
-		await appendRunHistory(join(artifactDir, "run-history.jsonl"), `${JSON.stringify(deliveredEnvelope)}\n`);
+		const persisted = (async () => {
+			await ensureArtifactsDir(artifactDir);
+			await writeArtifact(paths.outputPath, envelope.envelope);
+			await writeMetadata(paths.metadataPath, {
+				...deliveredEnvelope,
+				outputPath: paths.outputPath,
+			});
+		})();
+		// The result's place in the run's history is taken as it is delivered, before its files are written.
+		await appendRunHistory(
+			join(artifactDir, "run-history.jsonl"),
+			`${JSON.stringify(deliveredEnvelope)}\n`,
+			persisted,
+		);
 		return bounded;
 	}
 
