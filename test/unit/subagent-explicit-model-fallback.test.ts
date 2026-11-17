@@ -27,7 +27,6 @@ import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { inspectInProcessChildStatus } from "../../packages/subagents/src/runs/inprocess/control-status.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
-import type { ModelConstraints } from "../../packages/subagents/src/shared/model-constraints.js";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.js";
 
 /** Each case builds a real parent AgentSession and a real child AgentSession with its resource loader. */
@@ -37,10 +36,9 @@ const ACCOUNT_A = "account-a";
 const ACCOUNT_B = "account-b";
 /** The requested model, offered by both accounts. */
 const REQUESTED = `${ACCOUNT_A}/argon`;
-const REQUESTED_ON_B = `${ACCOUNT_B}/argon`;
 /** Another family on the second account: the parent's model and the settings fallback. */
 const OTHER_FAMILY = `${ACCOUNT_B}/opus`;
-/** A model on the first account that a constraint may allow. */
+/** A model of another family on the first account: the worker agent's own fallback. */
 const ALLOWED_OTHER = `${ACCOUNT_A}/sol`;
 
 const UNAVAILABLE = "503 Service Unavailable: the model is overloaded";
@@ -85,7 +83,7 @@ const CHILD_TASK = "Read notes.txt in your working directory, then reply done.";
 const PARENT_SENTINEL = "PARENT SENTINEL";
 const CHILD_SENTINEL = "CHILD SENTINEL";
 
-function worker(cwd: string, fallbackModels?: string[], modelConstraints?: ModelConstraints): AgentConfig {
+function worker(cwd: string, fallbackModels?: string[]): AgentConfig {
 	return {
 		name: "worker",
 		description: "fallback fixture",
@@ -97,7 +95,6 @@ function worker(cwd: string, fallbackModels?: string[], modelConstraints?: Model
 		filePath: join(cwd, "worker.md"),
 		tools: ["read"],
 		...(fallbackModels ? { fallbackModels } : {}),
-		...(modelConstraints ? { modelConstraints } : {}),
 	};
 }
 
@@ -111,16 +108,12 @@ interface FixtureOptions {
 	readonly launchModel?: string | null;
 	/** The worker agent's own `fallbackModels`, the launch's opt-in to other models. */
 	readonly agentFallbackModels?: string[];
-	/** The launch's `modelConstraints`. */
-	readonly modelConstraints?: ModelConstraints;
 	/** Launch with `context: "fork"` from a parent that already ran a turn of its own. */
 	readonly forkFromParent?: boolean;
 	/** The models the parent session's own fallback gate allows, which its children inherit. */
 	readonly parentAllowsOnly?: readonly string[];
 	/** The model the original launch asked for, when this launch continues it on another one, as a restore does. */
 	readonly requestedModel?: string;
-	/** The worker agent's own `modelConstraints`. */
-	readonly agentModelConstraints?: ModelConstraints;
 	/** Launch without a candidate resolver, as a host on the lower-level API may. */
 	readonly noResolver?: boolean;
 	/** Run the child in a directory of its own, and give the parent a tool the child does not have. */
@@ -281,7 +274,7 @@ async function fixture(options: FixtureOptions) {
 		options.preferredProvider,
 	);
 	const launch = (runId: string) =>
-		runSingleInProcess(cwd, worker(cwd, options.agentFallbackModels, options.agentModelConstraints), CHILD_TASK, {
+		runSingleInProcess(cwd, worker(cwd, options.agentFallbackModels), CHILD_TASK, {
 			cwd: childCwd,
 			...(options.requestedModel ? { requestedModel: options.requestedModel } : {}),
 			...(options.preferredProvider ? { preferredModelProvider: options.preferredProvider } : {}),
@@ -291,7 +284,6 @@ async function fixture(options: FixtureOptions) {
 			testSession: false,
 			...(forked ? { sessionManager: forked } : {}),
 			...(options.launchModel === null ? {} : { modelOverride: options.launchModel ?? `${REQUESTED}:high` }),
-			...(options.modelConstraints ? { modelConstraints: options.modelConstraints } : {}),
 			knownModelProviders: [ACCOUNT_A, ACCOUNT_B, LOCKED_ACCOUNT],
 			...(options.parentModelOffered === false ? {} : { currentModel: `${parentModel.provider}/${parentModel.id}` }),
 			currentThinkingLevel: "medium",
@@ -343,19 +335,18 @@ test(
 );
 
 test(
-	"an explicit model moves only to its agent's fallbacks that modelConstraints allow, and reports and tells the child the model it ran on",
+	"an explicit model moves only to its agent's fallbacks, and reports and tells the child the model it ran on",
 	async () => {
 		const { launch, requests } = await fixture({
 			trigger: "startup-error",
-			agentFallbackModels: [OTHER_FAMILY, ALLOWED_OTHER],
-			modelConstraints: { allowedModels: [REQUESTED, REQUESTED_ON_B, ALLOWED_OTHER] },
+			agentFallbackModels: [ALLOWED_OTHER],
 		});
-		const result = await launch("explicit-constrained-chain");
+		const result = await launch("explicit-agent-chain");
 
 		assert.deepEqual(
 			requests.map((request) => request.model),
 			[REQUESTED, ALLOWED_OTHER],
-			"the disallowed fallback is skipped",
+			"the agent's fallback, never the parent's model or the settings chain",
 		);
 		assert.equal(result.status, "ok", JSON.stringify(result));
 		assert.equal(result.model, ALLOWED_OTHER);
@@ -366,33 +357,15 @@ test(
 		assert.doesNotMatch(fallbackPrompt, /Argon 4/);
 		// Run status, by the run and by the child, says it too.
 		const ranOn = "ran on account-a/sol  high, not the requested account-a/argon  high";
-		const runStatus = inspectInProcessChildStatus("explicit-constrained-chain");
+		const runStatus = inspectInProcessChildStatus("explicit-agent-chain");
 		assert.ok(JSON.stringify(runStatus?.content).includes(ranOn), JSON.stringify(runStatus?.content));
-		const childStatus = inspectInProcessChildStatus("explicit-constrained-chain:0");
+		const childStatus = inspectInProcessChildStatus("explicit-agent-chain:0");
 		assert.ok(JSON.stringify(childStatus?.content).includes(ranOn), JSON.stringify(childStatus?.content));
 		assert.equal(
 			runStatus?.details?.statusGroups?.[0]?.children[0]?.requestedModel,
 			`${REQUESTED}:high`,
 			JSON.stringify(runStatus?.details?.statusGroups),
 		);
-	},
-	REAL_CHILD_SESSION_TIMEOUT_MS,
-);
-
-test(
-	"a launch that names no model keeps the settings fallbackModels chain only within its modelConstraints",
-	async () => {
-		const { launch, requests } = await fixture({
-			trigger: "startup-error",
-			parentModel: REQUESTED,
-			launchModel: null,
-			modelConstraints: { allowedModels: [REQUESTED, REQUESTED_ON_B] },
-		});
-		const result = await launch("inherited-constrained-settings-chain");
-
-		assert.deepEqual([...new Set(requests.map((request) => request.model))], [REQUESTED]);
-		assert.equal(result.status, "error", JSON.stringify(result));
-		assert.ok(result.error?.includes(UNAVAILABLE), result.error);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
@@ -414,50 +387,13 @@ test(
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
 
-test(
-	"a launch that names no model never starts on an agent fallback its modelConstraints exclude",
-	async () => {
-		const { launch, requests } = await fixture({
-			trigger: "startup-error",
-			parentModel: REQUESTED,
-			launchModel: null,
-			agentFallbackModels: [OTHER_FAMILY],
-			modelConstraints: { allowedModels: [REQUESTED, REQUESTED_ON_B] },
-		});
-		const result = await launch("inherited-excluded-first-fallback");
-
-		assert.deepEqual([...new Set(requests.map((request) => request.model))], [REQUESTED]);
-		assert.equal(result.status, "error", JSON.stringify(result));
-	},
-	REAL_CHILD_SESSION_TIMEOUT_MS,
-);
-
-test(
-	"a fallback that starts in place of an unavailable named model must meet modelConstraints at the effort it would run at",
-	async () => {
-		const { launch, requests } = await fixture({
-			trigger: "startup-error",
-			launchModel: `${LOCKED_ACCOUNT}/argon:low`,
-			agentFallbackModels: [ALLOWED_OTHER],
-			modelConstraints: { allowedEfforts: ["high"] },
-		});
-		const result = await launch("promoted-fallback-effort");
-
-		assert.deepEqual(requests, [], "the promoted fallback would run at low, which the constraints forbid");
-		assert.equal(result.status, "error", JSON.stringify(result));
-		assert.match(result.error ?? "", /modelConstraints/);
-	},
-	REAL_CHILD_SESSION_TIMEOUT_MS,
-);
-
 for (const forkFromParent of [false, true]) {
 	test(
-		`a ${forkFromParent ? "forked" : "fresh"} child that falls back partway through its task to an allowed model keeps its own prompt, role and tools, with the new model's name`,
+		`a ${forkFromParent ? "forked" : "fresh"} child that falls back partway through its task to its fallback model keeps its own prompt, role and tools, with the new model's name`,
 		async () => {
 			const { launch, requests } = await fixture({
 				trigger: "mid-session-error",
 				agentFallbackModels: [ALLOWED_OTHER],
-				modelConstraints: { allowedModels: [REQUESTED, ALLOWED_OTHER] },
 				forkFromParent,
 			});
 			const result = await launch(`mid-session-allowed-fallback-${forkFromParent ? "fork" : "fresh"}`);
@@ -466,7 +402,7 @@ for (const forkFromParent of [false, true]) {
 			assert.deepEqual(
 				requests.map((request) => request.model),
 				[REQUESTED, REQUESTED, ALLOWED_OTHER],
-				"a tool turn on the requested model, its failure, then the allowed fallback",
+				"a tool turn on the requested model, its failure, then the fallback",
 			);
 			const [before, , after] = requests as [ProviderRequest, ProviderRequest, ProviderRequest];
 			assert.ok(before.systemPrompt.includes(CHILD_ROLE), before.systemPrompt);
@@ -497,7 +433,6 @@ test(
 			trigger: "none",
 			launchModel: `${LOCKED_ACCOUNT}/argon:high`,
 			agentFallbackModels: [OTHER_FAMILY],
-			modelConstraints: { allowedModels: [REQUESTED, OTHER_FAMILY] },
 			parentAllowsOnly: [REQUESTED],
 		});
 		const result = await launch("promoted-fallback-parent-gate");
@@ -505,29 +440,6 @@ test(
 		assert.deepEqual(requests, [], "the parent's gate forbids the promoted fallback");
 		assert.equal(result.status, "error", JSON.stringify(result));
 		assert.match(result.error ?? "", /No other model was used/);
-	},
-	REAL_CHILD_SESSION_TIMEOUT_MS,
-);
-
-test(
-	"a child continued on a fallback that its agent's constraints no longer allow resumes on the model its launch named",
-	async () => {
-		const { launch, requests } = await fixture({
-			trigger: "none",
-			// As a restored child that had moved from argon to sol before its agent was narrowed to argon.
-			launchModel: `${ALLOWED_OTHER}:medium`,
-			requestedModel: `${REQUESTED}:high`,
-			agentModelConstraints: { allowedModels: [REQUESTED] },
-		});
-		const result = await launch("resumed-fallback-narrowed");
-
-		assert.deepEqual(
-			requests.map((request) => request.model),
-			[REQUESTED],
-		);
-		assert.equal(result.status, "ok", JSON.stringify(result));
-		assert.equal(result.model, REQUESTED);
-		assert.equal(result.requestedModel, `${REQUESTED}:high`);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
@@ -552,7 +464,6 @@ test(
 		const { launch, requests } = await fixture({
 			trigger: "mid-session-error-tools",
 			agentFallbackModels: [ALLOWED_OTHER],
-			modelConstraints: { allowedModels: [REQUESTED, ALLOWED_OTHER] },
 			childWorkspace: true,
 		});
 		const result = await launch("mid-session-fallback-own-directory");

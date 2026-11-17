@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
-import { type Api, getServiceTierCost, type Model } from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai";
 import { getModel, getModels, getProviders } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
-import { routingCandidate } from "../../packages/coding-agent/src/core/execution-model-router.js";
 import { resolveFallbackModel } from "../../packages/coding-agent/src/core/fallback-models.js";
 import { deriveFastModelVariants } from "../../packages/coding-agent/src/core/fast-model-variants.js";
-import { billedModelCost, eligiblePair } from "../../packages/coding-agent/src/core/model-routing-constraints.js";
 import { toCodemodeModelInfo } from "../../packages/coding-agent/src/extensions/codemode/execute.js";
-import { modelConstraintsFallbackGate } from "../../packages/subagents/src/runs/shared/model-fallback.js";
 import { resolveCandidateModel } from "../../packages/subagents/src/shared/model-resolution.js";
 
 function derived(id: string, variantId: string): Model<Api> {
@@ -16,31 +13,6 @@ function derived(id: string, variantId: string): Model<Api> {
 	assert.ok(variant, `${variantId} is derived from ${id}`);
 	return variant;
 }
-
-test("cost limits compare a fast route at the service-tier rate it is billed at (#5046)", () => {
-	const miniFast = derived("gpt-5.4-mini", "gpt-5.4-mini-fast");
-	const tier = miniFast.fastRoute?.serviceTier;
-	assert.ok(tier);
-	const billed = getServiceTierCost(miniFast, tier);
-	assert.ok(billed && billed.input > miniFast.cost.input, "the tier rate is above the listed Standard rate");
-	const pair = { model: `openai/${miniFast.id}`, effort: null };
-	const between = (miniFast.cost.input + billed.input) / 2;
-	assert.equal(eligiblePair(miniFast, pair, [{ maxInputCost: between }]), false);
-	assert.equal(eligiblePair(miniFast, pair, [{ maxInputCost: billed.input }]), true);
-	const betweenOutput = (miniFast.cost.output + billed.output) / 2;
-	assert.equal(eligiblePair(miniFast, pair, [{ maxOutputCost: betweenOutput }]), false);
-	assert.equal(modelConstraintsFallbackGate([{ maxInputCost: between }])!(miniFast), false);
-	const tiered: Model<Api> = {
-		...miniFast,
-		serviceTiers: [
-			{
-				...miniFast.serviceTiers![0]!,
-				cost: { ...billed, tiers: [{ ...billed, inputTokensAbove: 1, output: 99 }] },
-			},
-		],
-	};
-	assert.equal(eligiblePair(tiered, pair, [{ maxOutputCost: billed.output }]), false, "every billed tier counts");
-});
 
 test("a subagent model name resolves exactly as the same settings fallbackModels entry does (#5046)", () => {
 	const catalog = getProviders().flatMap((provider) => getModels(provider) as Model<Api>[]);
@@ -79,13 +51,7 @@ test("a subagent model name keeps the launch rules for whitespace, credentials a
 	assert.equal(resolveCandidateModel("openai/no-such-model", registry), undefined);
 });
 
-test("constraints without a cost limit never read a model's price, so unpriced models stay eligible (#5046)", () => {
-	const unpriced = { provider: "anthropic", id: "claude-haiku-5", reasoning: true } as Model<Api>;
-	const pair = { model: "anthropic/claude-haiku-5", effort: "low" };
-	assert.equal(eligiblePair(unpriced, pair, [{ allowedModels: ["anthropic/claude-haiku-5"] }]), true);
-});
-
-test("a fast route billed above a cost cap is not eligible while its base model is, and is listed at that price (#5156)", () => {
+test("a fast route is listed at the service-tier price it is billed at, and its base model at its own (#5156)", () => {
 	const fast = derived("gpt-5.4-mini", "gpt-5.4-mini-fast");
 	const tier = fast.fastRoute!.serviceTier!;
 	const priced: Model<Api> = {
@@ -96,10 +62,6 @@ test("a fast route billed above a cost cap is not eligible while its base model 
 		],
 	};
 	const { fastRoute: _, ...base } = priced;
-	const cap = [{ maxOutputCost: 15 }];
-	assert.equal(eligiblePair(priced, { model: `openai/${priced.id}`, effort: null }, cap), false);
-	assert.equal(eligiblePair(base, { model: `openai/${base.id}`, effort: null }, cap), true);
-	assert.deepEqual(routingCandidate(priced, [null]).cost, billedModelCost(priced));
 	assert.deepEqual(toCodemodeModelInfo(priced).cost, { input: 2, output: 20, cacheRead: 0, cacheWrite: 0 });
 	assert.deepEqual(toCodemodeModelInfo(base).cost, base.cost);
 });

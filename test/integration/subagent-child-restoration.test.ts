@@ -1298,10 +1298,9 @@ test("a restored child that fell back keeps the model its launch asked for besid
 		const parent = parentSession(cwd);
 		const original = await launchInterruptedChild(cwd, parent, "named2", "lane-group", undefined, {
 			modelOverride: "anthropic/claude-sonnet-5-5:high",
-			modelConstraints: { allowedModels: ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5"] },
 		});
 		assert.equal(original.namedModel, "anthropic/claude-sonnet-5-5:high");
-		// The child had moved to an allowed fallback of its own before the restart.
+		// The child had moved to a fallback of its own before the restart.
 		const childSession = await SessionManager.open(original.childSessionFile!, undefined, cwd);
 		await childSession.appendModelChange("anthropic", "claude-haiku-5");
 
@@ -1316,9 +1315,6 @@ test("a restored child that fell back keeps the model its launch asked for besid
 		);
 		assert.equal(restoredRecord.namedModel, "anthropic/claude-sonnet-5-5:high");
 		assert.equal(restoredRecord.requestedModel, "anthropic/claude-sonnet-5-5:high");
-		assert.deepEqual(restoredRecord.modelConstraints, {
-			allowedModels: ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5"],
-		});
 	} finally {
 		await resumedHost.close("session-close");
 		removeTempDirectory(cwd);

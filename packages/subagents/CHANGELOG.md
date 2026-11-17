@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `model: "auto"`, which every builtin agent declares, now runs your default model at its default thinking level, or at the agent's own `thinking` when it sets one, and runs the launching session's model and thinking level when no default model is configured. No routing model is asked, so an `auto` launch starts without a routing request. An `auto` launch still falls back to the agent's `fallbackModels` and then to the session's model.
+- Removed `taskNeeds` and `modelConstraints` from the `subagent` tool, agent frontmatter, agent configs and builtin agent overrides, and `routerSelection` from subagent results. Tool calls, agent files and overrides that still set them keep working with the fields ignored and a one-time warning, and an agent file that agent management rewrites drops them. Provider and model restrictions set through `modelConstraints` no longer limit `auto` or any fallback model.
+
 ### Added
 
 - A subagent of a session created with the SDK's `intercom` option gets its own Intercom policy: its group is its home and it reaches nothing else. It starts in the session's home group, and a requested `group` (including `true`) is placed under it, as `<home>/<group>` ([#5352](https://github.com/bastani-inc/atomic/issues/5352))

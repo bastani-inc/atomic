@@ -21,8 +21,6 @@ For editor completion and validation of providers, models, and `compat` fields, 
 
 This page shows minimal and full `models.json` examples you can copy. [Models Configuration](/models-configuration) lists every provider, model, override, and compatibility field directly from the schema. For extended examples, derived variants, and API behavior, see the [Model configuration guide](/models/reference).
 
-For choosing which model to use rather than how to declare one, see [Model selection](/models/model-selection).
-
 ## Use classifier models
 
 Classifier models answer typed questions about JSON state instead of chatting. They do not appear in `/model`. Enable [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")`, and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.
@@ -36,6 +34,16 @@ GPT-6 Luna accepts up to 128 image blocks through `images`, alongside the JSON s
 TypeSafe Jev and Cloudflare Clef classifiers are also available through their providers. The direct TypeSafe classifiers, `typesafe/jev-latest` and `typesafe/jev-1.14.0`, accept up to 262K tokens and PNG or JPEG images through `images`; see [TypeSafe Jev](/providers#typesafe-jev). On Workers AI, Jev (`typesafe/jev`, `typesafe/jev-1.14.0`) takes PNG and JPEG images, and Clef, Clef Flash, and Clef Omni take PNG, JPEG, and WebP images, at most four per request. OpenRouter's Jev and Clef models accept images when their catalog entry lists image input. Jev from `vercel-ai-gateway` and `opencode` takes text only. [Local llama.cpp models](/llama-cpp#classification) support native decision models and a next-token-probability fallback for chat models.
 
 Each System One service takes images in its own request format, which the model's `compat.imageInput` selects. Built-in models set it, so overriding a provider's `baseUrl` keeps it. A custom provider that proxies another service's classifiers sets `imageInput` and `sendImageOptInHeader` in its provider-level `compat` in `models.json`; see [System One compatibility](/models-configuration#typesafe-system-one). OpenRouter in particular answers requests in TypeSafe's format without an error but drops the images, so a proxy that reaches OpenRouter needs `"imageInput": "state-image-urls"` and `"sendImageOptInHeader": false`.
+
+## Fallbacks and credentials
+
+A model chain is a pinned model followed by `fallbackModels` in a session, subagent, or workflow stage; `model: "auto"` starts the chain with your default model:
+
+- Candidates whose providers lack usable credentials are skipped before any request (`fallback.skipped` on session `model_change` entries; `modelAttempts` on subagents and stages). `auto` never stands for a default model whose provider has no credentials.
+- A provider that rejects credentials (HTTP 401, an invalid, expired, leaked, disabled, or restricted API key, an invalid request signature, an expired or invalid security token, an invalidated token, or a suspended API consumer) is skipped for the rest of that walk. A model-scoped HTTP 403 (such as missing model access or moderation) blocks only that model, leaving other models on that provider eligible.
+- A chain with no usable model fails at once naming each model and missing provider, or blocks for resume in a workflow stage. A single pinned model with no fallbacks is never replaced.
+
+A workflow task with `model: "auto"` that reads images runs only on models that accept image input, and its fallbacks skip models that do not.
 
 ## Table of Contents
 
