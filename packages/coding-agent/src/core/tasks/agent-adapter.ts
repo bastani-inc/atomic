@@ -75,7 +75,7 @@ export class AgentTaskHost {
 				this.authorizeTaskLaunch();
 				this.binding.authorizeCommandLaunch?.(intent, origin);
 			},
-			onTaskSettled: (ref, receipt) => this.binding.onTaskSettled?.(ref, receipt),
+			onTaskSettled: (ref, receipt, timing) => this.binding.onTaskSettled?.(ref, receipt, timing),
 			onTaskCleanupQuarantined: (ref, resources) => this.binding.onTaskCleanupQuarantined?.(ref, resources),
 			defaultHeartbeatMs: () =>
 				this.binding.heartbeat ? defaultTaskHeartbeatMs(this.binding.heartbeat) : undefined,

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createReadStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import {
 	appendFile,
@@ -33,8 +34,14 @@ import {
 } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { upgradeLegacySessionEntry } from "../../packages/coding-agent/src/core/storage/session/legacy-format.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { createHistoryRouter } from "../../packages/coding-agent/src/core/tools/history-protocol.js";
 import { renderRawEntryInWorker } from "../../packages/coding-agent/src/core/tools/history-regex-worker.js";
 import { renderedLines } from "../../packages/coding-agent/src/core/tools/history-session.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+	const fs = await importOriginal<typeof import("node:fs")>();
+	return { ...fs, createReadStream: vi.fn(fs.createReadStream) };
+});
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs/promises")>();
@@ -210,6 +217,89 @@ it("bounds alternating writers to header, a 64-byte witness and newly appended b
 	}
 	assert.equal(overheads.length, 6);
 	assert.ok(overheads.every((overhead) => overhead === overheads[0]));
+});
+
+it("reads a tiny cold JSONL session as a transcript, not an unknown-size outline (#5250)", async () => {
+	await withStore(async (writer, directory) => {
+		await writer.create(header, [
+			entry,
+			{
+				type: "message",
+				id: "message",
+				parentId: entry.id,
+				timestamp: header.createdAt,
+				message: { role: "user", content: "tiny cold message", timestamp: Date.parse(header.createdAt) },
+			},
+		]);
+		const reader = await JsonlSessionStore.open(directory, { scanExisting: false });
+		try {
+			const router = createHistoryRouter({
+				cwd: header.cwd,
+				sessionStore: () => reader,
+				workflows: () => undefined,
+			});
+			const text = (await router.readSelected!("history://sessions/session", {})) ?? "";
+			assert.match(text, /tiny cold message/);
+			assert.doesNotMatch(text, /too long to read whole|Infinity/);
+		} finally {
+			await reader.close();
+		}
+	});
+});
+
+it("reads a cold JSONL range without counting the unused tail and learns its total at EOF (#5250)", async () => {
+	await withStore(async (writer, directory) => {
+		const count = 512;
+		await writer.create(
+			header,
+			Array.from({ length: count }, (_, index) => ({ ...entry, id: `e${index + 1}`, name: "x".repeat(1024) })),
+		);
+		const reader = await JsonlSessionStore.open(directory, { scanExisting: false });
+		try {
+			vi.mocked(createReadStream).mockClear();
+			const first = await reader.readEntryRange(header.id, { fromSeq: 1, toSeq: 1, maxChars: 1024 });
+			const bytes = vi.mocked(createReadStream).mock.results.reduce((sum, result) => {
+				assert.equal(result.type, "return");
+				return sum + (result.type === "return" ? result.value.bytesRead : 0);
+			}, 0);
+			assert.ok(bytes <= 4 * 64 * 1024, `a one-entry range streamed ${bytes} bytes`);
+			assert.deepEqual(
+				first.entries.map((item) => item.seq),
+				[1],
+			);
+			assert.equal(first.lastSeq, Number.POSITIVE_INFINITY, "a cold partial range does not invent an exact total");
+
+			const seqs = [1];
+			let page = first;
+			while (page.throughSeq < page.lastSeq) {
+				const fromSeq = page.throughSeq + 1;
+				page = await reader.readEntryRange(header.id, { fromSeq, toSeq: fromSeq + 63, maxChars: 16 * 1024 });
+				seqs.push(...page.entries.map((item) => item.seq));
+			}
+			assert.equal(page.lastSeq, count);
+			assert.deepEqual(
+				seqs,
+				Array.from({ length: count }, (_, index) => index + 1),
+			);
+			assert.equal((await reader.readEntryRange(header.id, { fromSeq: 1, toSeq: 1 })).lastSeq, count);
+			assert.equal((await writer.readEntryRange(header.id, { fromSeq: 1, toSeq: 1 })).lastSeq, count);
+
+			await writer.append(header.id, [{ ...entry, id: "appended" }], { expectSeq: count });
+			assert.equal(
+				(await reader.readEntryRange(header.id, { fromSeq: 1, toSeq: 1 })).lastSeq,
+				Number.POSITIVE_INFINITY,
+				"an append invalidates the previously counted total",
+			);
+			const appended = await reader.readEntryRange(header.id, { fromSeq: count + 1, toSeq: count + 1 });
+			assert.equal(appended.lastSeq, count + 1);
+			assert.deepEqual(
+				appended.entries.map((item) => item.entry.id),
+				["appended"],
+			);
+		} finally {
+			await reader.close();
+		}
+	});
 });
 
 it("rejects an already aborted listing before attempting to acquire the directory lock", async () => {

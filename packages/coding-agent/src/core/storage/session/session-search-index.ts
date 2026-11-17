@@ -180,6 +180,7 @@ interface TrigramEngine {
 		fromSeq: number,
 		toSeq: number,
 		limit: number,
+		signal?: AbortSignal,
 	): Promise<readonly number[]>;
 }
 
@@ -293,13 +294,15 @@ const sqliteFts: TrigramEngine = {
 			sessionId,
 		);
 	},
-	async candidates(database, tables, sid, anyOf, fromSeq, toSeq, limit) {
+	async candidates(database, tables, sid, anyOf, fromSeq, toSeq, limit, signal) {
+		signal?.throwIfAborted();
 		const sets = normalizeSets(anyOf);
 		if (sets.length === 0) return [];
 		const seqs: number[] = [];
 		if (sets.every((all) => all.length === 1)) {
 			const query = sets.map((all) => `(${ftsLiteral(all[0]!)})`).join(" OR ");
 			for (let from = fromSeq; from <= toSeq && seqs.length < limit; ) {
+				signal?.throwIfAborted();
 				const rows = await database.all<SqliteRow & { seq: number | bigint }>(
 					`SELECT (rowid >> ${PART_BITS}) & ${SEQ_MASK} AS seq FROM ${tables.fts} WHERE ${tables.fts} MATCH ? AND rowid BETWEEN (? << 40) + (? << ${PART_BITS}) AND (? << 40) + (? << ${PART_BITS}) + ${PART_MASK} ORDER BY rowid LIMIT ?`,
 					query,
@@ -320,6 +323,7 @@ const sqliteFts: TrigramEngine = {
 			return seqs;
 		}
 		for (let from = fromSeq; from <= toSeq && seqs.length < limit; from += SEQ_WINDOW) {
+			signal?.throwIfAborted();
 			const winTo = Math.min(toSeq, from + SEQ_WINDOW - 1);
 			const arms: string[] = [];
 			const params: SqliteValue[] = [];
@@ -432,7 +436,8 @@ const postgresTrigrams: TrigramEngine = {
 			await tx.run(`DELETE FROM ${tables.entries} WHERE sid = ?`, Number(row.sid));
 		}
 	},
-	async candidates(database, tables, sid, anyOf, fromSeq, toSeq, limit) {
+	async candidates(database, tables, sid, anyOf, fromSeq, toSeq, limit, signal) {
+		signal?.throwIfAborted();
 		const sets = normalizeSets(anyOf);
 		if (sets.length === 0) return [];
 		const seqs: number[] = [];
@@ -446,6 +451,7 @@ const postgresTrigrams: TrigramEngine = {
 				})
 				.join(" OR ");
 			for (let from = fromSeq; from <= toSeq && seqs.length < limit; from += SEQ_WINDOW) {
+				signal?.throwIfAborted();
 				const winTo = Math.min(toSeq, from + SEQ_WINDOW - 1);
 				const rows = await database.all<SqliteRow & { seq: number | bigint }>(
 					`SELECT DISTINCT seq FROM ${tables.entries} WHERE sid = ? AND seq >= ? AND seq <= ? AND (${where}) ORDER BY seq LIMIT ?`,
@@ -461,6 +467,7 @@ const postgresTrigrams: TrigramEngine = {
 			return seqs;
 		}
 		for (let from = fromSeq; from <= toSeq && seqs.length < limit; from += SEQ_WINDOW) {
+			signal?.throwIfAborted();
 			const winTo = Math.min(toSeq, from + SEQ_WINDOW - 1);
 			const arms: string[] = [];
 			const params: SqliteValue[] = [];
@@ -781,7 +788,9 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		toSeq: number,
 		limit: number,
 		generation?: string,
+		signal?: AbortSignal,
 	): Promise<readonly number[] | undefined> {
+		signal?.throwIfAborted();
 		if (anyOf.length === 0 || fromSeq > toSeq) return [];
 		const state = await this.database.get<
 			SqliteRow & {
@@ -794,6 +803,7 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 			`SELECT sid, indexed_seq, revision AS generation, entry_id AS whole_seqs FROM ${this.tables.state} WHERE session_id = ?`,
 			sessionId,
 		);
+		signal?.throwIfAborted();
 		if (!state) return generation !== undefined ? undefined : [];
 		const indexedSeq = Number(state.indexed_seq);
 		if (generation !== undefined && (state.generation !== generation || indexedSeq < toSeq)) {
@@ -809,7 +819,9 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 			fromSeq,
 			through,
 			limit,
+			signal,
 		);
+		signal?.throwIfAborted();
 		const wholeSeqs = parseWholeSeqs(state.whole_seqs).filter((seq) => seq >= fromSeq && seq <= through);
 		return mergeCandidateSeqs(engineSeqs, wholeSeqs, limit);
 	}

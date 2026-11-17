@@ -345,6 +345,40 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		}
 	});
 
+	it("keeps the last outlined turn when the next page times out (#5250)", async () => {
+		const store = new MemorySessionStore();
+		try {
+			await store.create(
+				header("big"),
+				numbered(2100, (seq) => `task ${seq}`),
+			);
+			let stalled = true;
+			const paged = new Proxy(store, {
+				get(target, key) {
+					if (key === "readEntryRange")
+						return (id: string, query: Parameters<NonNullable<SessionStore["readEntryRange"]>>[1]) => {
+							if (stalled && query.fromSeq > 1) return new Promise<never>(() => {});
+							return target.readEntryRange(id, { ...query, toSeq: Math.min(query.toSeq, query.fromSeq) });
+						};
+					const value = Reflect.get(target, key, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const { router } = historyOver(paged, { timeMs: 100 });
+			const first = await router.read!("history://sessions/big");
+			assert.match(first, /history:\/\/sessions\/big:1-1 \| [^|]+ \| user: task 1/);
+			assert.match(first, /time budget ran out/);
+			const next = continuation(first);
+			assert.ok(next, first);
+			stalled = false;
+			const rest = await router.read!(next);
+			assert.doesNotMatch(rest, /user: task 1(?:\n|$)/);
+			assert.match(rest, /user: task 3(?:\n|$)/);
+		} finally {
+			await store.close();
+		}
+	});
+
 	describe.each([
 		{ name: "SqlSessionStore", open: openSql },
 		{ name: "JsonlSessionStore", open: openJsonl },
@@ -1575,6 +1609,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		try {
 			const { read } = historyOver(legacyStore);
 			const out = await read("history://sessions/legacy-v1:10-12");
+			assert.doesNotMatch(out, /Infinity/);
 			assert.ok(out.includes("legacy-line-10"), out);
 			assert.ok(out.includes("legacy-line-12"), out);
 			assert.ok(!out.includes("legacy-line-13"), out);
@@ -1586,6 +1621,59 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		} finally {
 			await legacyStore.close();
 			await sqlDb.close();
+		}
+	});
+
+	it("does not repeat matches when a later batch of the same entry times out (#5250)", async () => {
+		await matchLinesInWorker(["warm"], "warm", "", false, false, 5_000, undefined);
+		const store = new MemorySessionStore();
+		try {
+			await store.create(header("slow-entry"), [
+				message("slow", "user", `EARLY_MATCH\n${"padding\n".repeat(10_000)}${"a".repeat(30)}!`, BASE),
+			]);
+			const { router, request } = historyOver(store, { timeMs: 200 });
+			const first = await router.search!("history://sessions/slow-entry", request("EARLY_MATCH|(?=a)(a+)+b"));
+			assert.match(first, /^history:\/\/sessions\/slow-entry:1: EARLY_MATCH$/m);
+			const next = continuation(first);
+			assert.ok(next, first);
+			const rest = await router.search!(next, request("EARLY_MATCH|(?=a)(a+)+b"));
+			assert.doesNotMatch(rest, /^history:\/\/sessions\/slow-entry:1: EARLY_MATCH$/m);
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("counts oversized legacy hook messages as custom messages in an outline (#5250)", async () => {
+		const jsonlDir = join(dir, "legacy-outline");
+		mkdirSync(jsonlDir, { recursive: true });
+		writeFileSync(
+			join(jsonlDir, "2026-11-01T00-00-00-000Z_legacy-hooks.jsonl"),
+			[
+				JSON.stringify({
+					type: "session",
+					version: 2,
+					id: "legacy-hooks",
+					timestamp: new Date(BASE).toISOString(),
+					cwd: PROJECT,
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "hook",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					message: { role: "hookMessage", customType: "notice", content: "x".repeat(300_000), timestamp: BASE },
+				}),
+				"",
+			].join("\n"),
+		);
+		const store = await JsonlSessionStore.open(jsonlDir);
+		try {
+			const { router } = historyOver(store);
+			const outline = await router.read!("history://sessions/legacy-hooks");
+			assert.match(outline, /1 custom message/);
+			assert.doesNotMatch(outline, /1 other entry/);
+		} finally {
+			await store.close();
 		}
 	});
 

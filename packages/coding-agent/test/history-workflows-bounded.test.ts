@@ -336,4 +336,120 @@ describe("history:// workflow runs stay bounded (#5250)", () => {
 			assert.equal(pieces.join("\n"), expected.join("\n"));
 		}
 	});
+
+	it("preserves disjoint line ranges across workflow read continuations without reading omitted gaps (#5250)", async () => {
+		const detail: WorkflowRunDetail = {
+			...runDetail("run-disjoint", BASE),
+			error: Array.from(
+				{ length: 30 },
+				(_, index) => `error-line-${String(index + 1).padStart(2, "0")}-${"x".repeat(40)}`,
+			).join("\n"),
+		};
+		const expected = referenceLines(detail);
+		assert.ok(expected.length >= 35, `expected at least 35 lines, got ${expected.length}`);
+		const { read } = historyOf([detail], { bytes: 240 });
+		const pieces: string[] = [];
+		let url: string | undefined = "history://workflows/run-disjoint:10-13,25-28:raw";
+		let calls = 0;
+		for (; url !== undefined && calls < 20; calls++) {
+			const output = await read(url);
+			const lines = output.split("\n");
+			url = continuation(output);
+			if (url !== undefined) lines.pop();
+			pieces.push(...lines);
+		}
+		assert.equal(url, undefined, "the disjoint read reached the end");
+		assert.ok(calls >= 2, `expected multiple continuation calls, got ${calls}`);
+		assert.deepEqual(pieces, [...expected.slice(9, 13), ...expected.slice(24, 28)]);
+	});
+
+	it("stops a workflow run search on the time budget without rendering the whole run and resumes with context intact (#5250)", async () => {
+		const hugeRun = runDetail("run-huge-time", BASE, { text: hugeText(HUGE_TEXT_CHARS) });
+		const timed = historyOf([hugeRun], { timeMs: 15 });
+		const startedAt = performance.now();
+		const partial =
+			(await timed.router.search?.("history://workflows/run-huge-time", timed.request("needle-token"))) ?? "";
+		const elapsedMs = performance.now() - startedAt;
+		assert.match(partial, /^history:\/\/workflows\/run-huge-time:6: summary: needle-token run-huge-time$/m);
+		assert.match(
+			partial,
+			/^history:\/\/workflows\/run-huge-time:0: \[the time budget ran out; continue with history:\/\/workflows\/run-huge-time\?cursor=0\.\d+/m,
+		);
+		assert.ok(elapsedMs < 250, `expected bounded stop under 250 ms, took ${Math.round(elapsedMs)} ms`);
+
+		const nextTimedUrl = continuation(partial);
+		assert.ok(nextTimedUrl !== undefined);
+		const firstCursorLine = Number(/\?cursor=0\.(\d+)/.exec(nextTimedUrl)?.[1] ?? "0");
+		const resumedStart = performance.now();
+		const resumedPartial = (await timed.router.search?.(nextTimedUrl, timed.request("needle-token"))) ?? "";
+		const resumedElapsedMs = performance.now() - resumedStart;
+		const secondCursorLine = Number(/\?cursor=0\.(\d+)/.exec(continuation(resumedPartial) ?? "")?.[1] ?? "0");
+		assert.ok(resumedElapsedMs < 250, `expected resumed stop under 250 ms, took ${Math.round(resumedElapsedMs)} ms`);
+		assert.ok(
+			secondCursorLine > firstCursorLine,
+			`expected cursor to advance past ${firstCursorLine}, got ${secondCursorLine}`,
+		);
+
+		const lateRangeStart = performance.now();
+		const lateRangeOut =
+			(await timed.router.search?.("history://workflows/run-huge-time:7000-7010", timed.request("needle-token"))) ??
+			"";
+		const lateRangeElapsedMs = performance.now() - lateRangeStart;
+		assert.ok(
+			lateRangeElapsedMs < 250,
+			`expected late range skip under 250 ms, took ${Math.round(lateRangeElapsedMs)} ms`,
+		);
+		assert.match(
+			lateRangeOut,
+			/^history:\/\/workflows\/run-huge-time:0: \[the time budget ran out; continue with history:\/\/workflows\/run-huge-time\?cursor=0\.\d+:7000-7010\]$/m,
+		);
+
+		const coldCursorStart = performance.now();
+		const coldCursorOut =
+			(await timed.router.search?.(
+				"history://workflows/run-huge-time?cursor=0.7000",
+				timed.request("needle-token"),
+			)) ?? "";
+		const coldCursorElapsedMs = performance.now() - coldCursorStart;
+		assert.ok(
+			coldCursorElapsedMs < 250,
+			`expected cold late cursor skip under 250 ms, took ${Math.round(coldCursorElapsedMs)} ms`,
+		);
+		assert.match(
+			coldCursorOut,
+			/^history:\/\/workflows\/run-huge-time:0: \[the time budget ran out; continue with history:\/\/workflows\/run-huge-time\?cursor=0\.7000\]$/m,
+		);
+
+		const contextRun: WorkflowRunDetail = {
+			...runDetail("run-context", BASE),
+			error: Array.from({ length: 40 }, (_, index) =>
+				index % 3 === 1 ? `hit-line-${index} needle-ctx` : `filler-line-${index}-${"y".repeat(36)}`,
+			).join("\n"),
+		};
+		const full = historyOf([contextRun]);
+		const req: InternalSearchRequest = {
+			pattern: "needle-ctx",
+			ignoreCase: false,
+			literal: false,
+			contextBefore: 1,
+			contextAfter: 1,
+		};
+		const expectedRows = ((await full.router.search?.("history://workflows/run-context", req)) ?? "")
+			.split("\n")
+			.filter((line) => line !== "");
+		const paged = historyOf([contextRun], { bytes: 900 });
+		const actualRows: string[] = [];
+		let url: string | undefined = "history://workflows/run-context";
+		let calls = 0;
+		for (; url !== undefined && calls < 30; calls++) {
+			const out = (await paged.router.search?.(url, req)) ?? "";
+			url = continuation(out);
+			actualRows.push(
+				...out.split("\n").filter((line) => line !== "" && !line.startsWith("history://workflows/run-context:0:")),
+			);
+		}
+		assert.equal(url, undefined, "paged context search reached the end");
+		assert.ok(calls >= 3, `expected at least 3 continuation calls, got ${calls}`);
+		assert.deepEqual(actualRows, expectedRows);
+	});
 });

@@ -64,7 +64,7 @@ import {
 	type InternalSearchRequest,
 	normalizeSearchPattern,
 } from "./resource-selectors.ts";
-import { filterSearchOutputByLineRange, splitLineRangeSelector } from "./search-line-ranges.ts";
+import { splitLineRangeSelector } from "./search-line-ranges.ts";
 import { loadNativeSearchBinding } from "./search-native.ts";
 
 export type { HistoryBudget } from "./history-session.ts";
@@ -306,6 +306,7 @@ async function selectLines(
 	let counted = true;
 	let firstNumber: number | undefined;
 	let lastNumber: number | undefined;
+	let lastEmittedNumber: number | undefined;
 	let stop: LineStop | undefined;
 	for await (const fullLine of lines) {
 		total++;
@@ -335,6 +336,7 @@ async function selectLines(
 		const size = lineBytes(text);
 		if (budget.fits(size)) {
 			out.push(text);
+			lastEmittedNumber = total;
 			budget.spend(size);
 			continue;
 		}
@@ -344,6 +346,7 @@ async function selectLines(
 		}
 		const piece = cutTextToUtf8Bytes(text, Math.max(1, budget.bytesAvailable()));
 		out.push(piece);
+		lastEmittedNumber = total;
 		budget.spend(lineBytes(piece));
 		const nextChar = charOffset + piece.length;
 		stop =
@@ -361,19 +364,30 @@ async function selectLines(
 	const first = firstNumber ?? stop.line;
 	const of = counted ? ` of ${total}` : "";
 	const lastKnown = counted || total >= selectionEnd ? (lastNumber ?? total) : undefined;
-	const last = lastKnown === undefined ? "" : String(lastKnown);
 	const reason = stopText(stop.reason);
+	const resumeFrom = stop.kind === "after" ? stop.line + 1 : stop.line;
+	const activeRanges = (ranges ?? [{ start, end: selectionEnd }])
+		.filter((range) => range.end >= resumeFrom)
+		.map((range) => ({
+			start: Math.max(range.start, resumeFrom),
+			end: lastKnown === undefined ? range.end : Math.min(range.end, lastKnown),
+		}))
+		.filter((range) => range.start <= range.end);
+	const rangeSuffix = activeRanges
+		.map((range) => `${range.start}-${Number.isFinite(range.end) ? range.end : ""}`)
+		.join(",");
+	const nextLine = activeRanges[0]?.start ?? resumeFrom;
 	if (stop.kind === "before")
 		out.push(
-			`[read lines ${first}-${Math.max(first, stop.line - 1)}${of}; ${reason}; continue with ${urlWithCursor(url, String(stop.line))}:${stop.line}-${last}]`,
+			`[read lines ${first}-${lastEmittedNumber ?? Math.max(first, stop.line - 1)}${of}; ${reason}; continue with ${urlWithCursor(url, String(nextLine))}:${rangeSuffix}]`,
 		);
 	else if (stop.kind === "inside")
 		out.push(
-			`[read line ${stop.line}${of}; ${reason}; continue with ${urlWithCursor(url, `${stop.line}.${stop.char}`)}:${stop.line}-${last}]`,
+			`[read line ${stop.line}${of}; ${reason}; continue with ${urlWithCursor(url, `${stop.line}.${stop.char}`)}:${rangeSuffix}]`,
 		);
-	else if (lastKnown === undefined || stop.line < lastKnown)
+	else if (rangeSuffix !== "" && (lastKnown === undefined || stop.line < lastKnown))
 		out.push(
-			`[read lines ${first}-${stop.line}${of}; ${reason}; continue with ${urlWithCursor(url, String(stop.line + 1))}:${stop.line + 1}-${last}]`,
+			`[read lines ${first}-${stop.line}${of}; ${reason}; continue with ${urlWithCursor(url, String(nextLine))}:${rangeSuffix}]`,
 		);
 	return out.join("\n");
 }
@@ -381,6 +395,21 @@ async function selectLines(
 const RUN_TEXT_WINDOW = 64 * 1024;
 const RUN_NATIVE_NODES = 256;
 const TEXT_PACE_EVERY = 256;
+const MAX_PARKED_RUN_STREAMS = 16;
+
+interface PaceBox {
+	budget: HistoryCallBudget;
+}
+
+interface ParkedRunStream {
+	readonly pacer: PaceBox;
+	readonly iterator: AsyncIterator<string>;
+	readonly buffer: string[];
+	readonly baseLine: number;
+	readonly totalRead: number;
+	readonly eof: boolean;
+	readonly timer: ReturnType<typeof setTimeout>;
+}
 
 type RunJsonValue = WorkflowRunJsonValue | undefined;
 
@@ -506,7 +535,7 @@ function* jsonPieces(root: RunJsonValue): Generator<string> {
 	if (buffer !== "") yield buffer;
 }
 
-async function* wrappedPieces(pieces: Iterable<string>, budget: HistoryCallBudget): AsyncGenerator<string> {
+async function* wrappedPieces(pieces: Iterable<string>, pacer: PaceBox): AsyncGenerator<string> {
 	let pending = "";
 	for (const piece of pieces) {
 		pending += piece;
@@ -519,7 +548,7 @@ async function* wrappedPieces(pieces: Iterable<string>, budget: HistoryCallBudge
 				yield part;
 			}
 			pending = pending.slice(used);
-			await budget.pace();
+			await pacer.budget.pace();
 		}
 	}
 	yield* wrapLine(pending);
@@ -539,13 +568,13 @@ function* segmentPieces(text: string, from: number, end: { at: number }): Genera
 	end.at = -1;
 }
 
-async function* textLineStream(text: string, budget: HistoryCallBudget): AsyncGenerator<string> {
+async function* textLineStream(text: string, pacer: PaceBox): AsyncGenerator<string> {
 	const end = { at: -1 };
 	for (let from = 0, segments = 1; ; segments++) {
-		yield* wrappedPieces(segmentPieces(text, from, end), budget);
+		yield* wrappedPieces(segmentPieces(text, from, end), pacer);
 		if (end.at === -1) return;
 		from = end.at + 1;
-		if (segments % TEXT_PACE_EVERY === 0) await budget.pace();
+		if (segments % TEXT_PACE_EVERY === 0) await pacer.budget.pace();
 	}
 }
 
@@ -584,197 +613,451 @@ function normalizeInlineSearchRequest(
 }
 
 const NATIVE_BATCH_CHARS = 64 * 1024;
-const WORKER_BATCH_CHARS = 1024 * 1024;
 
-function* lineBatches(
-	lines: readonly string[],
-	maxChars: number,
-): Generator<{ readonly from: number; readonly to: number }> {
-	for (let from = 0; from < lines.length; ) {
-		let to = from + 1;
-		for (let chars = lines[from]!.length; to < lines.length && chars + lines[to]!.length + 1 <= maxChars; to++)
-			chars += lines[to]!.length + 1;
-		yield { from, to };
-		from = to;
-	}
+interface RunSearchStart {
+	readonly fromLine: number;
+	readonly emittedThrough: number;
 }
 
-async function nativeMatchedLines(
+function formatStageZeroCursor(fromLine: number, emittedThrough: number): string {
+	return emittedThrough > 0 ? `0.${fromLine}.${emittedThrough}` : `0.${fromLine}`;
+}
+
+async function evaluateRunLineBatch(
 	lines: readonly string[],
-	normalized: { readonly pattern: string },
+	normalized: { readonly pattern: string; readonly flags: string },
 	ignoreCase: boolean,
-	nativeOnly: boolean,
+	literal: boolean,
+	engine: "literal" | "native-only" | "both",
 	budget: HistoryCallBudget,
-): Promise<number[] | undefined> {
-	const native = loadNativeSearchBinding();
-	if (native?.search === undefined) return undefined;
-	const matched: number[] = [];
-	for (const { from, to } of lineBatches(lines, NATIVE_BATCH_CHARS)) {
-		const text = lines.slice(from, to).join("\n");
-		const safeText = nativeOnly ? text.replaceAll("\0", "\ufffd") : text;
-		if (safeText.includes("\0")) return undefined;
-		try {
-			const found = native.search(safeText, {
-				pattern: normalized.pattern,
-				ignoreCase,
-				multiline: false,
-				contextBefore: 0,
-				contextAfter: 0,
-			});
-			if (found.error) return undefined;
-			for (const match of found.matches) matched.push(from + match.lineNumber);
-		} catch {
-			return undefined;
+): Promise<readonly number[] | "timedOut"> {
+	if (!literal) {
+		const joined = lines.join("\n");
+		const safeText = engine === "native-only" ? joined.replaceAll("\0", "\ufffd") : joined;
+		if (!safeText.includes("\0")) {
+			try {
+				const native = loadNativeSearchBinding()?.search?.(safeText, {
+					pattern: normalized.pattern,
+					ignoreCase,
+					multiline: false,
+					contextBefore: 0,
+					contextAfter: 0,
+				});
+				if (native && !native.error) {
+					return native.matches.map((match) => match.lineNumber - 1);
+				}
+			} catch {}
 		}
-		await budget.pace();
+		if (engine === "native-only") return [];
 	}
-	return matched;
-}
-
-function linesWithContext(
-	label: string,
-	lines: readonly string[],
-	spans: readonly { readonly start: number; readonly end: number }[],
-	request: InternalSearchRequest,
-	shown: (line: string) => string,
-): string[] {
-	const matchLines = new Set<number>();
-	const contextLines = new Set<number>();
-	for (const span of spans) {
-		matchLines.add(span.start);
-		for (
-			let n = Math.max(1, span.start - request.contextBefore);
-			n <= Math.min(lines.length, span.end + request.contextAfter);
-			n++
-		)
-			contextLines.add(n);
-	}
-	const rows = [...contextLines]
-		.sort((a, b) => a - b)
-		.map((line) => formatSearchTextLine(label, line, shown(lines[line - 1] ?? ""), matchLines.has(line)));
-	if (request.ranges === undefined) return rows;
-	const filtered = filterSearchOutputByLineRange(
-		rows.join("\n"),
-		request.ranges,
-		request.contextBefore,
-		request.contextAfter,
+	const workerResult = await matchLinesInWorker(
+		lines,
+		normalized.pattern,
+		normalized.flags,
+		ignoreCase,
+		literal,
+		budget.remainingMs(),
+		budget.signal,
 	);
-	return filtered === "No matches found" ? [] : filtered.split("\n").filter((line) => line !== "");
+	if (workerResult.timedOut) return "timedOut";
+	return workerResult.matchedIndices;
 }
 
-async function searchLinesBounded(
+async function searchRunLinesBounded(
+	runId: string,
 	label: string,
-	lines: readonly string[],
+	createSource: (pacer: PaceBox) => AsyncIterable<string>,
+	parkedStreams: Map<string, ParkedRunStream>,
 	request: InternalSearchRequest,
+	start: RunSearchStart,
+	hasMoreStages: boolean,
+	alreadyEmitted: boolean,
+	onWindowCut: () => void,
 	budget: HistoryCallBudget,
-): Promise<{ readonly rows: string[]; readonly timedOut: boolean; readonly windowCut?: boolean }> {
+): Promise<{
+	readonly lines: string[];
+	readonly stopped?: { readonly reason: BudgetStop; readonly cursor: string };
+}> {
 	const normalized = normalizeSearchPattern(request.pattern, request.ignoreCase);
 	const ignoreCase = normalized.flags.includes("i");
 	const multiline = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal);
 	const engine = selectRegexEngine(normalized, request.literal, multiline);
-	const unchanged = (line: string) => line;
+	const shown =
+		engine === "native-only" && !request.literal && !multiline
+			? (line: string) => line.replaceAll("\0", "\ufffd")
+			: (line: string) => line;
 
-	if (!request.literal && !multiline) {
-		const nativeOnly = engine === "native-only";
-		const matched = await nativeMatchedLines(lines, normalized, ignoreCase, nativeOnly, budget);
-		if (matched !== undefined)
-			return {
-				rows: linesWithContext(
-					label,
-					lines,
-					matched.map((line) => ({ start: line, end: line })),
-					request,
-					nativeOnly ? (line) => line.replaceAll("\0", "\ufffd") : unchanged,
-				),
-				timedOut: false,
-			};
-		if (nativeOnly) return { rows: [], timedOut: false };
+	const ranges = request.ranges && request.ranges.length > 0 ? mergeSeqRanges(request.ranges) : undefined;
+	const maxRangeEnd = ranges?.at(-1)?.end;
+	const inRange = (line: number): boolean =>
+		ranges === undefined || ranges.some((range) => line >= range.start && line <= range.end);
+	const nextSelectedLine = (from: number): number | undefined => {
+		if (ranges === undefined) return from;
+		for (const range of ranges) if (range.end >= from) return Math.max(from, range.start);
+		return undefined;
+	};
+
+	const parkKey = (cursor: string): string =>
+		JSON.stringify([
+			runId,
+			cursor,
+			request.pattern,
+			request.ignoreCase,
+			request.literal,
+			request.contextBefore,
+			request.contextAfter,
+			ranges ?? null,
+		]);
+	const startKey = parkKey(formatStageZeroCursor(start.fromLine, start.emittedThrough));
+	const resumed = start.fromLine > 1 || start.emittedThrough > 0 ? parkedStreams.get(startKey) : undefined;
+	if (resumed) {
+		clearTimeout(resumed.timer);
+		parkedStreams.delete(startKey);
 	}
 
-	if (multiline) {
-		const found: { start: number; end: number }[] = [];
-		let windowCut = false;
-		for (let sliceStart = 0; sliceStart < lines.length; ) {
-			let sliceEnd = sliceStart;
-			let ownedChars = lines[sliceStart]!.length + 1;
-			while (sliceEnd + 1 < lines.length && ownedChars + lines[sliceEnd + 1]!.length + 1 <= NATIVE_BATCH_CHARS) {
-				sliceEnd++;
-				ownedChars += lines[sliceEnd]!.length + 1;
+	const pacer: PaceBox = resumed ? resumed.pacer : { budget };
+	pacer.budget = budget;
+	const iterator = resumed ? resumed.iterator : createSource(pacer)[Symbol.asyncIterator]();
+	const buffer = resumed ? resumed.buffer : [];
+	let baseLine = resumed ? resumed.baseLine : 1;
+	let totalRead = resumed ? resumed.totalRead : 0;
+	let eof = resumed ? resumed.eof : false;
+	const initialTotalRead = totalRead;
+	let parked = false;
+
+	const dropParked = (key: string, closeIterator: boolean): void => {
+		const existing = parkedStreams.get(key);
+		if (!existing) return;
+		clearTimeout(existing.timer);
+		parkedStreams.delete(key);
+		if (closeIterator && existing.iterator !== iterator) void existing.iterator.return?.();
+	};
+
+	const parkAt = (cursor: string): void => {
+		if (eof || !cursor.startsWith("0.")) return;
+		const key = parkKey(cursor);
+		dropParked(key, true);
+		while (parkedStreams.size >= MAX_PARKED_RUN_STREAMS) {
+			const oldestKey = parkedStreams.keys().next().value;
+			if (oldestKey === undefined) break;
+			dropParked(oldestKey, true);
+		}
+		const timer = setTimeout(() => {
+			const expired = parkedStreams.get(key);
+			if (!expired) return;
+			parkedStreams.delete(key);
+			void expired.iterator.return?.();
+		}, DISCOVERY_TTL_MS);
+		timer.unref?.();
+		parkedStreams.set(key, {
+			pacer,
+			iterator,
+			buffer,
+			baseLine,
+			totalRead,
+			eof,
+			timer,
+		});
+		parked = true;
+	};
+
+	const stopWith = (
+		reason: BudgetStop,
+		cursor: string,
+	): { readonly lines: string[]; readonly stopped: { readonly reason: BudgetStop; readonly cursor: string } } => {
+		parkAt(cursor);
+		return { lines, stopped: { reason, cursor } };
+	};
+
+	const lineAt = (line: number): string => buffer[line - baseLine] ?? "";
+	const sliceLines = (from: number, to: number): string[] =>
+		buffer.slice(Math.max(0, from - baseLine), Math.max(0, to - baseLine + 1));
+
+	const pullOne = async (): Promise<boolean> => {
+		if (eof) return false;
+		const next = await iterator.next();
+		if (next.done) {
+			eof = true;
+			return false;
+		}
+		totalRead++;
+		buffer.push(next.value);
+		if (totalRead % LINE_PACE_EVERY === 0) await budget.pace();
+		return true;
+	};
+
+	const ensureLine = async (targetLine: number): Promise<boolean> => {
+		while (!eof && totalRead < targetLine) {
+			await pullOne();
+		}
+		return totalRead >= targetLine;
+	};
+
+	const pendingSpans: { start: number; end: number }[] = [];
+	const pushSpan = (startLine: number, endLine: number): void => {
+		const prev = pendingSpans.at(-1);
+		if (prev && prev.start === startLine) {
+			prev.end = Math.max(prev.end, endLine);
+		} else if (!prev || startLine > prev.start) {
+			pendingSpans.push({ start: startLine, end: endLine });
+		}
+	};
+
+	const trimBefore = (currentSliceStart: number): void => {
+		const earliestMatch = pendingSpans[0]?.start ?? currentSliceStart;
+		let keepFrom = Math.max(1, earliestMatch - request.contextBefore);
+		if (multiline) {
+			let lookbehindLine = currentSliceStart;
+			let chars = 0;
+			while (lookbehindLine > baseLine && chars < MATCH_SPAN_CHARS) {
+				lookbehindLine--;
+				chars += lineAt(lookbehindLine).length + 1;
 			}
-			let first = sliceStart;
-			let leftChars = 0;
-			while (first > 0 && leftChars < MATCH_SPAN_CHARS) {
-				first--;
-				leftChars += lines[first]!.length + 1;
+			keepFrom = Math.min(keepFrom, lookbehindLine);
+		}
+		if (keepFrom > baseLine) {
+			const drop = Math.min(buffer.length, keepFrom - baseLine);
+			if (drop >= 64) {
+				buffer.splice(0, drop);
+				baseLine += drop;
 			}
-			let last = sliceEnd;
-			let aheadChars = 0;
-			while (last + 1 < lines.length && aheadChars < MATCH_SPAN_CHARS) {
-				last++;
-				aheadChars += lines[last]!.length + 1;
+		}
+	};
+
+	const lines: string[] = [];
+	let emittedThrough = start.emittedThrough;
+	let hasEmitted = alreadyEmitted;
+	let scannedThrough = start.fromLine - 1;
+
+	const advanceToLineBounded = async (targetLine: number): Promise<BudgetStop | undefined> => {
+		while (!eof && totalRead < targetLine) {
+			if (totalRead - initialTotalRead >= LINE_PACE_EVERY && budget.remainingMs() <= 0) {
+				return "time";
 			}
-			if (last + 1 < lines.length) windowCut = true;
-			const windowLines = lines.slice(first, last + 1);
-			const text = windowLines.join("\n");
-			const ownedTo = leftChars + ownedChars;
-			let spans: readonly MultilineSpan[];
-			if (engine === "native-only") {
-				spans = matchMultilineNative(text, ownedTo, normalized, ignoreCase, windowLines.length + 1);
+			await pullOne();
+			trimBefore(Math.min(targetLine, totalRead + 1));
+		}
+		return undefined;
+	};
+
+	const flushReadySpans = async (
+		flushAll: boolean,
+	): Promise<{ readonly reason: BudgetStop; readonly cursor: string } | undefined> => {
+		while (pendingSpans.length > 0) {
+			const span = pendingSpans[0]!;
+			const neededThrough = span.end + request.contextAfter;
+			if (!flushAll && !eof && scannedThrough < neededThrough) break;
+			await ensureLine(neededThrough);
+			const nextSpan = pendingSpans[1];
+			if (nextSpan !== undefined && nextSpan.start <= neededThrough) {
+				nextSpan.end = Math.max(nextSpan.end, span.end);
+			}
+			const beforeStart = Math.max(1, span.start - request.contextBefore, emittedThrough + 1);
+			const afterEnd =
+				nextSpan !== undefined
+					? Math.min(totalRead, neededThrough, nextSpan.start - 1)
+					: Math.min(totalRead, neededThrough);
+			const unitRows: { readonly line: number; readonly text: string; readonly isMatch: boolean }[] = [];
+			for (let line = beforeStart; line < span.start; line++) {
+				unitRows.push({
+					line,
+					text: formatSearchTextLine(label, line, shown(lineAt(line)), false),
+					isMatch: false,
+				});
+			}
+			if (span.start > emittedThrough) {
+				unitRows.push({
+					line: span.start,
+					text: formatSearchTextLine(label, span.start, shown(lineAt(span.start)), true),
+					isMatch: true,
+				});
+			}
+			for (let line = Math.max(span.start + 1, emittedThrough + 1); line <= afterEnd; line++) {
+				unitRows.push({
+					line,
+					text: formatSearchTextLine(label, line, shown(lineAt(line)), false),
+					isMatch: false,
+				});
+			}
+			const unitBytes = unitRows.reduce((sum, row) => sum + lineBytes(row.text), 0);
+			if (budget.fits(unitBytes)) {
+				for (const row of unitRows) {
+					lines.push(row.text);
+					budget.spend(lineBytes(row.text));
+					emittedThrough = Math.max(emittedThrough, row.line);
+					hasEmitted = true;
+				}
+				pendingSpans.shift();
+				continue;
+			}
+			if (hasEmitted) {
+				return { reason: "byte", cursor: formatStageZeroCursor(span.start, emittedThrough) };
+			}
+			const matchRow =
+				unitRows.find((row) => row.isMatch)?.text ??
+				formatSearchTextLine(label, span.start, shown(lineAt(span.start)), true);
+			const matchBytes = lineBytes(matchRow);
+			if (budget.fits(matchBytes)) {
+				lines.push(matchRow);
+				budget.spend(matchBytes);
+				emittedThrough = Math.max(emittedThrough, span.start);
+				hasEmitted = true;
+				for (const row of unitRows) {
+					if (row.line <= span.start) continue;
+					if (!budget.fits(lineBytes(row.text))) break;
+					lines.push(row.text);
+					budget.spend(lineBytes(row.text));
+					emittedThrough = Math.max(emittedThrough, row.line);
+				}
+				pendingSpans.shift();
 			} else {
-				const res = await matchMultilineInWorker(
-					text,
-					leftChars,
-					ownedTo,
-					normalized.pattern,
-					normalized.flags,
+				const cut = cutTextToUtf8Bytes(matchRow, Math.max(32, budget.bytesAvailable()));
+				lines.push(cut);
+				budget.spend(lineBytes(cut));
+				emittedThrough = Math.max(emittedThrough, span.start);
+				hasEmitted = true;
+				pendingSpans.shift();
+			}
+			if (pendingSpans.length > 0) {
+				return { reason: "byte", cursor: formatStageZeroCursor(pendingSpans[0]!.start, emittedThrough) };
+			}
+			const moreLinesInRange = nextSelectedLine(span.start + 1) !== undefined && (await ensureLine(span.start + 1));
+			if (moreLinesInRange) {
+				return { reason: "byte", cursor: formatStageZeroCursor(span.start + 1, emittedThrough) };
+			}
+			if (hasMoreStages) {
+				return { reason: "byte", cursor: "1.1" };
+			}
+			return undefined;
+		}
+		return undefined;
+	};
+
+	try {
+		let sliceStart = Math.max(1, start.fromLine);
+		const skipStop = await advanceToLineBounded(sliceStart);
+		if (skipStop !== undefined) {
+			return stopWith(skipStop, formatStageZeroCursor(sliceStart, emittedThrough));
+		}
+		let progressed = false;
+		for (;;) {
+			const nextStart = nextSelectedLine(sliceStart);
+			if (nextStart === undefined) {
+				scannedThrough = Number.POSITIVE_INFINITY;
+				break;
+			}
+			if (nextStart > sliceStart) {
+				sliceStart = nextStart;
+				const gapStop = await advanceToLineBounded(sliceStart);
+				if (gapStop !== undefined) {
+					const resumeLine = pendingSpans[0]?.start ?? Math.max(start.fromLine, totalRead + 1);
+					return stopWith(gapStop, formatStageZeroCursor(resumeLine, emittedThrough));
+				}
+			}
+			if (!(await ensureLine(sliceStart))) {
+				scannedThrough = totalRead;
+				break;
+			}
+			if (budget.remainingMs() <= 0 && (progressed || totalRead - initialTotalRead >= LINE_PACE_EVERY)) {
+				const resumeLine = pendingSpans[0]?.start ?? sliceStart;
+				return stopWith("time", formatStageZeroCursor(resumeLine, emittedThrough));
+			}
+
+			let sliceEnd = sliceStart;
+			let ownedChars = lineAt(sliceStart).length + 1;
+			const batchLimitLine = maxRangeEnd ?? Number.POSITIVE_INFINITY;
+			while (sliceEnd < batchLimitLine && budget.remainingMs() > 0 && (await ensureLine(sliceEnd + 1))) {
+				const nextLen = lineAt(sliceEnd + 1).length + 1;
+				if (ownedChars + nextLen > NATIVE_BATCH_CHARS) break;
+				sliceEnd++;
+				ownedChars += nextLen;
+			}
+
+			if (multiline) {
+				let first = sliceStart;
+				let leftChars = 0;
+				while (first > baseLine && leftChars < MATCH_SPAN_CHARS) {
+					first--;
+					leftChars += lineAt(first).length + 1;
+				}
+				let last = sliceEnd;
+				let aheadChars = 0;
+				while (aheadChars < MATCH_SPAN_CHARS && (await ensureLine(last + 1))) {
+					last++;
+					aheadChars += lineAt(last).length + 1;
+				}
+				if (await ensureLine(last + 1)) onWindowCut();
+				const windowLines = sliceLines(first, last);
+				const text = windowLines.join("\n");
+				const ownedTo = leftChars + ownedChars;
+				let spans: readonly MultilineSpan[];
+				if (engine === "native-only") {
+					spans = matchMultilineNative(text, ownedTo, normalized, ignoreCase, windowLines.length + 1);
+				} else {
+					const res = await matchMultilineInWorker(
+						text,
+						leftChars,
+						ownedTo,
+						normalized.pattern,
+						normalized.flags,
+						ignoreCase,
+						request.literal,
+						budget.remainingMs(),
+						budget.signal,
+					);
+					if (res.timedOut) {
+						const resumeLine = pendingSpans[0]?.start ?? sliceStart;
+						return stopWith("time", formatStageZeroCursor(resumeLine, emittedThrough));
+					}
+					spans = res.matches;
+				}
+				for (const span of spans) {
+					const startLine = first + span.startLine;
+					if (startLine < sliceStart || startLine > sliceEnd || !inRange(startLine)) continue;
+					pushSpan(startLine, first + span.endLine);
+				}
+			} else {
+				const batchLines = sliceLines(sliceStart, sliceEnd);
+				const hits = await evaluateRunLineBatch(
+					batchLines,
+					normalized,
 					ignoreCase,
 					request.literal,
-					budget.remainingMs(),
-					budget.signal,
+					engine,
+					budget,
 				);
-				if (res.timedOut) return { rows: [], timedOut: true };
-				spans = res.matches;
+				if (hits === "timedOut") {
+					const resumeLine = pendingSpans[0]?.start ?? sliceStart;
+					return stopWith("time", formatStageZeroCursor(resumeLine, emittedThrough));
+				}
+				for (const index of hits) {
+					const startLine = sliceStart + index;
+					if (!inRange(startLine)) continue;
+					pushSpan(startLine, startLine);
+				}
 			}
-			for (const span of spans) {
-				const startLine = first + span.startLine;
-				if (startLine < sliceStart || startLine > sliceEnd) continue;
-				found.push({ start: startLine + 1, end: first + span.endLine + 1 });
-			}
+
+			scannedThrough = sliceEnd;
+			progressed = true;
 			sliceStart = sliceEnd + 1;
+			const stopped = await flushReadySpans(false);
+			if (stopped !== undefined) return stopWith(stopped.reason, stopped.cursor);
+			trimBefore(sliceStart);
 			await budget.pace();
 		}
-		return { rows: linesWithContext(label, lines, found, request, unchanged), timedOut: false, windowCut };
+
+		const stopped = await flushReadySpans(true);
+		if (stopped !== undefined) return stopWith(stopped.reason, stopped.cursor);
+		return { lines };
+	} finally {
+		if (!parked) await iterator.return?.();
 	}
-	const matched: number[] = [];
-	for (const { from, to } of lineBatches(lines, WORKER_BATCH_CHARS)) {
-		const res = await matchLinesInWorker(
-			lines.slice(from, to),
-			normalized.pattern,
-			normalized.flags,
-			ignoreCase,
-			request.literal,
-			budget.remainingMs(),
-			budget.signal,
-		);
-		if (res.timedOut) return { rows: [], timedOut: true };
-		for (const index of res.matchedIndices) matched.push(from + index + 1);
-		await budget.pace();
-	}
-	return {
-		rows: linesWithContext(
-			label,
-			lines,
-			matched.map((line) => ({ start: line, end: line })),
-			request,
-			unchanged,
-		),
-		timedOut: false,
-	};
 }
 
 export function createHistoryRouter(sources: HistorySources): InternalResourceRouter {
 	const limits: HistoryBudget = { ...DEFAULT_HISTORY_BUDGET, ...sources.budget };
 	const newBudget = (signal: AbortSignal | undefined) => new HistoryCallBudget(limits, signal);
+	const parkedRunStreams = new Map<string, ParkedRunStream>();
 
 	const projectScope = (target: HistoryTarget): { cwd?: string } =>
 		target.project === "all"
@@ -964,33 +1247,27 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		].join("\n");
 	}
 
-	async function* runLines(detail: WorkflowRunDetail, budget: HistoryCallBudget): AsyncGenerator<string> {
+	async function* runLines(detail: WorkflowRunDetail, pacer: PaceBox): AsyncGenerator<string> {
 		yield `# workflow run ${detail.runId}`;
 		yield `name: ${detail.name}`;
 		yield `status: ${detail.status}`;
 		yield `started: ${timestamp(detail.startedAt)}`;
 		if (detail.endedAt !== undefined) yield `ended: ${timestamp(detail.endedAt)}`;
-		if (detail.identity) yield* textLineStream(`label: ${detail.identity}`, budget);
-		if (detail.summary) yield* textLineStream(`summary: ${detail.summary}`, budget);
-		yield* wrappedPieces(prefixedPieces("inputs: ", jsonPieces(detail.inputs)), budget);
+		if (detail.identity) yield* textLineStream(`label: ${detail.identity}`, pacer);
+		if (detail.summary) yield* textLineStream(`summary: ${detail.summary}`, pacer);
+		yield* wrappedPieces(prefixedPieces("inputs: ", jsonPieces(detail.inputs)), pacer);
 		yield "stages:";
 		for (const [index, stage] of detail.stages.entries()) {
 			yield [
 				`- ${stage.name} [${stage.status}]`,
 				...(stage.sessionId ? [`transcript history://sessions/${stage.sessionId}`] : []),
 			].join(" ");
-			if (stage.error) yield* textLineStream(`  error: ${stage.error}`, budget);
-			if ((index + 1) % TEXT_PACE_EVERY === 0) await budget.pace();
+			if (stage.error) yield* textLineStream(`  error: ${stage.error}`, pacer);
+			if ((index + 1) % TEXT_PACE_EVERY === 0) await pacer.budget.pace();
 		}
 		if (detail.result !== undefined)
-			yield* wrappedPieces(prefixedPieces("result: ", jsonPieces(detail.result)), budget);
-		if (detail.error) yield* textLineStream(`error: ${detail.error}`, budget);
-	}
-
-	async function collectRunLines(detail: WorkflowRunDetail, budget: HistoryCallBudget): Promise<string[]> {
-		const lines: string[] = [];
-		for await (const line of runLines(detail, budget)) lines.push(line);
-		return lines;
+			yield* wrappedPieces(prefixedPieces("result: ", jsonPieces(detail.result)), pacer);
+		if (detail.error) yield* textLineStream(`error: ${detail.error}`, pacer);
 	}
 
 	async function authorizedRunId(id: string, budget: HistoryCallBudget): Promise<string> {
@@ -1010,7 +1287,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const runId = await authorizedRunId(id, budget);
 		const detail = await budget.race(requireWorkflows().getRun(runId));
 		budget.takeRows(1);
-		return runLines(detail, budget);
+		return runLines(detail, { budget });
 	}
 
 	async function readSession(
@@ -1176,11 +1453,14 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 							.filter((range) => range.end >= resume.seq)
 							.map((range) => ({
 								start: Math.max(range.start, resume.seq),
-								end: result.lastSeq > 0 ? Math.min(range.end, result.lastSeq) : range.end,
+								end:
+									Number.isFinite(result.lastSeq) && result.lastSeq > 0
+										? Math.min(range.end, result.lastSeq)
+										: range.end,
 							}))
 							.filter((range) => range.start <= range.end);
 			const cursor = formatSearchCursor(resume);
-			const totalText = result.lastSeq > 0 ? ` of ${result.lastSeq}` : "";
+			const totalText = Number.isFinite(result.lastSeq) && result.lastSeq > 0 ? ` of ${result.lastSeq}` : "";
 			return [
 				charged(
 					budget,
@@ -1275,7 +1555,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				windowCut ||= result.windowCut;
 				if (result.stopped) {
 					const cursor = formatSearchCursor(result.stopped.resume);
-					const totalText = result.lastSeq > 0 ? ` of ${result.lastSeq}` : "";
+					const totalText = Number.isFinite(result.lastSeq) && result.lastSeq > 0 ? ` of ${result.lastSeq}` : "";
 					return finished([
 						charged(
 							budget,
@@ -1340,6 +1620,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			| { readonly stage: number; readonly seq: number; readonly matchIndex: number; readonly lineOffset: number }
 			| undefined,
 		budget: HistoryCallBudget,
+		alreadyEmitted = false,
 	): Promise<{
 		readonly lines: string[];
 		readonly unreadable: number;
@@ -1354,45 +1635,24 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			windowNote ??= charged(budget, `history://workflows/${runId}:0: [${MULTILINE_WINDOW_NOTE}]`);
 		};
 		if (start === undefined || start.stage === 0) {
-			const skipped = start?.seq ?? 0;
-			const evaluated = await searchLinesBounded(
+			const own = await searchRunLinesBounded(
+				runId,
 				`history://workflows/${runId}`,
-				await collectRunLines(detail, budget),
+				(pacer) => runLines(detail, pacer),
+				parkedRunStreams,
 				request,
+				{
+					fromLine: Math.max(1, start?.seq ?? 1),
+					emittedThrough: start?.matchIndex ?? 0,
+				},
+				detail.stages.length > 0,
+				alreadyEmitted,
+				noteWindowCut,
 				budget,
 			);
-			if (evaluated.timedOut) {
-				return { lines, unreadable: 0, stopped: { reason: "time", cursor: `0.${skipped}` } };
-			}
-			if (evaluated.windowCut === true) noteWindowCut();
-			const own = evaluated.rows.slice(skipped);
-			for (const [index, line] of own.entries()) {
-				const size = lineBytes(line);
-				if (!budget.fits(size)) {
-					if (lines.length === 0) {
-						const cut = cutTextToUtf8Bytes(line, Math.max(32, budget.bytesAvailable()));
-						lines.push(cut);
-						budget.spend(lineBytes(cut));
-						if (index + 1 < own.length || detail.stages.length > 0) {
-							return {
-								lines: withNote(lines),
-								unreadable: 0,
-								stopped: {
-									reason: "byte",
-									cursor: index + 1 < own.length ? `0.${skipped + index + 1}` : "1.1",
-								},
-							};
-						}
-						break;
-					}
-					return {
-						lines: withNote(lines),
-						unreadable: 0,
-						stopped: { reason: "byte", cursor: `0.${skipped + index}` },
-					};
-				}
-				lines.push(line);
-				budget.spend(size);
+			lines.push(...own.lines);
+			if (own.stopped !== undefined) {
+				return { lines: withNote(lines), unreadable: 0, stopped: own.stopped };
 			}
 		}
 		const store = projectStore();
@@ -1402,7 +1662,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			if (start !== undefined && stageNumber < start.stage) continue;
 			if (!store || !stage.sessionId) continue;
 			const spent = budget.spent();
-			if (spent && (lines.length > 0 || stageNumber > (start?.stage ?? 1)))
+			if (spent && (alreadyEmitted || lines.length > 0 || stageNumber > (start?.stage ?? 1)))
 				return { lines: withNote(lines), unreadable, stopped: { reason: spent, cursor: `${stageNumber}.1` } };
 			try {
 				if (!(await budget.race(store.readHeader(stage.sessionId)))) continue;
@@ -1498,7 +1758,14 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					...out,
 				];
 			try {
-				const found = await searchRun(run.runId, request, prefilter, index === 0 ? start : undefined, budget);
+				const found = await searchRun(
+					run.runId,
+					request,
+					prefilter,
+					index === 0 ? start : undefined,
+					budget,
+					out.length > 0,
+				);
 				out.push(...found.lines);
 				unreadable += found.unreadable;
 				if (found.stopped)

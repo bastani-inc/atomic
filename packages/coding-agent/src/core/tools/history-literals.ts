@@ -50,7 +50,7 @@ function strongest(set: readonly string[]): string[] {
 class PatternReader {
 	private readonly chars: string[];
 	private index = 0;
-	private readonly ignoreCase: boolean;
+	private ignoreCase: boolean;
 
 	constructor(pattern: string, ignoreCase: boolean) {
 		this.chars = Array.from(pattern);
@@ -195,6 +195,7 @@ class PatternReader {
 	}
 
 	private group(): { kind: "group"; requirement: Requirement } | { kind: "any" } {
+		const outerIgnoreCase = this.ignoreCase;
 		let lookaround = false;
 		if (this.peek() === "?") {
 			this.index++;
@@ -209,11 +210,15 @@ class PatternReader {
 				let flags = marker;
 				while (this.peek() !== ")" && this.peek() !== ":") flags += this.consume();
 				if (/[^imsU-]/.test(flags)) throw new UnsupportedPattern();
+				const [enabled, disabled] = flags.split("-");
+				if (enabled?.includes("i")) this.ignoreCase = true;
+				if (disabled?.includes("i")) this.ignoreCase = false;
 				if (this.consume() === ")") return { kind: "any" };
 			}
 		}
 		const requirement = this.alternation();
 		if (this.consume() !== ")") throw new UnsupportedPattern();
+		this.ignoreCase = outerIgnoreCase;
 		return lookaround ? { kind: "any" } : { kind: "group", requirement };
 	}
 }

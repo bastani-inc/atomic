@@ -148,6 +148,7 @@ function parseUnterminated(line: string): SessionEntry | undefined {
 }
 
 const RANGE_MARK_EVERY = 256;
+const RANGE_PROBE_BYTES = 64 * 1024;
 const STUB_ENTRY: SessionEntry = {
 	type: "custom",
 	id: "",
@@ -161,6 +162,7 @@ interface RangeIndex {
 	readonly marks: { readonly seq: number; readonly offset: number }[];
 	completeEnd: number;
 	completeCount: number;
+	total: { readonly size: number; readonly lastSeq: number } | undefined;
 	witness: Buffer;
 	witnessEnd: number;
 }
@@ -540,17 +542,25 @@ export class JsonlSessionStore implements SessionStore {
 			index.completeEnd > size ||
 			!(await rangeWitnessHolds(path, index))
 		) {
-			index = { identity, marks: [], completeEnd: 0, completeCount: 0, witness: Buffer.alloc(0), witnessEnd: 0 };
+			index = {
+				identity,
+				marks: [],
+				completeEnd: 0,
+				completeCount: 0,
+				total: undefined,
+				witness: Buffer.alloc(0),
+				witnessEnd: 0,
+			};
 			this.rangeIndexes.set(path, index);
 		}
+		if (index.total?.size !== size) index.total = undefined;
 		const matchedState = state ?? this.fileStates.get(path);
-		if (
-			matchedState !== undefined &&
-			matchedState.stamp === this.stamp(stats) &&
-			index.completeCount < matchedState.lastSeq
-		) {
-			index.completeEnd = matchedState.size;
-			index.completeCount = matchedState.lastSeq;
+		if (matchedState !== undefined && matchedState.stamp === this.stamp(stats)) {
+			index.total = { size, lastSeq: matchedState.lastSeq };
+			if (index.completeCount < matchedState.lastSeq) {
+				index.completeEnd = matchedState.size;
+				index.completeCount = matchedState.lastSeq;
+			}
 		}
 		const legacyHeader = stored !== undefined && !isCurrentSessionHeader(stored) ? stored : undefined;
 		const fromSeq = Math.max(1, query.fromSeq);
@@ -610,23 +620,24 @@ export class JsonlSessionStore implements SessionStore {
 					return !terminated || seq >= query.toSeq;
 				},
 			);
-		const counted =
-			cursor.offset >= index.completeEnd
-				? cursor
-				: { offset: index.completeEnd, seq: index.completeCount, header: index.completeEnd === 0 };
-		const scanned = await scanSessionLines(
-			path,
-			size,
-			counted,
-			index,
-			query.signal,
-			(_seq, parts, _len, terminated) => (!terminated ? acceptUnterminated(parts) !== undefined : false),
-		);
+		else if (fromSeq === 1 && query.toSeq === 0 && index.total === undefined) {
+			const end = Math.min(size, query.maxChars ?? RANGE_PROBE_BYTES, RANGE_PROBE_BYTES);
+			const probe = await scanSessionLines(
+				path,
+				end,
+				cursor,
+				index,
+				query.signal,
+				(_seq, parts, _len, terminated) => !terminated && end === size && acceptUnterminated(parts) !== undefined,
+			);
+			if (end === size) index.total = { size, lastSeq: probe.seq };
+		}
+		if (fromSeq <= query.toSeq && cursor.offset >= size) index.total = { size, lastSeq: cursor.seq };
 		if (index.witnessEnd !== index.completeEnd) {
 			index.witness = await readWitness(path, index.completeEnd);
 			index.witnessEnd = index.completeEnd;
 		}
-		const lastSeq = scanned.seq;
+		const lastSeq = index.total?.lastSeq ?? Number.POSITIVE_INFINITY;
 		const throughSeq = stopped ?? Math.min(query.toSeq, lastSeq);
 		return { lastSeq, entries, throughSeq: Math.max(throughSeq, fromSeq - 1) };
 	}

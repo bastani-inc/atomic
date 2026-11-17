@@ -458,9 +458,10 @@ class RangeReader {
 			this.lastSeq = page.lastSeq;
 			if (pos > this.lastSeq) return undefined;
 			if (!this.raw && !headed) {
-				this.write(
-					`# session ${this.place.sessionId} entries ${range.start}-${Math.min(range.end, this.lastSeq)} of ${this.lastSeq}`,
-				);
+				const end = Math.min(range.end, this.lastSeq);
+				const selected = end < Number.MAX_SAFE_INTEGER ? `${range.start}-${end}` : `${range.start} onward`;
+				const total = Number.isFinite(this.lastSeq) ? ` of ${this.lastSeq}` : "";
+				this.write(`# session ${this.place.sessionId} entries ${selected}${total}`);
 				headed = true;
 			}
 			for (const item of page.entries) {
@@ -625,7 +626,13 @@ async function classifyEntryAt(
 	budget: HistoryCallBudget,
 ): Promise<WorkerOutlineInfo | { readonly timedOut: true }> {
 	if (item.rawChunks === undefined) return classify(item.entry);
-	const res = await renderRawEntryInWorker(item.rawChunks, PREVIEW_CHARS, budget.remainingMs(), budget.signal);
+	const res = await renderRawEntryInWorker(
+		item.rawChunks,
+		PREVIEW_CHARS,
+		budget.remainingMs(),
+		budget.signal,
+		item.rawFormatVersion,
+	);
 	if ("timedOut" in res) return res;
 	return res.outline;
 }
@@ -743,8 +750,8 @@ export async function outlineSession(
 		await budget.pace();
 	}
 	if (fromSeq > lastSeq) return `Requested entry ${fromSeq} is beyond end of session (${lastSeq} entries total).`;
-	if (stopped === undefined && pending !== undefined) {
-		const line = formatItem(pending, pos - 1);
+	if (pending !== undefined) {
+		const line = formatItem(pending, stopped?.coveredSeq ?? pos - 1);
 		if (!budget.fits(headingReserve + itemBytes + lineBytes(line)) && itemLines.length > 0) {
 			stopped = {
 				reason: "byte",
@@ -1171,6 +1178,7 @@ class SessionSearcher {
 					through,
 					CANDIDATE_PAGE,
 					this.coverage!.generation,
+					budget.storeSignal,
 				),
 			);
 		} catch (error) {
@@ -1219,7 +1227,7 @@ class SessionSearcher {
 		return { next: seqs.at(-1)! + 1 };
 	}
 
-	private timeoutOnEntry(seq: number): SearchStep {
+	private timeoutOnEntry(seq: number, completedMatches = 0): SearchStep {
 		if (!this.emittedAny && seq === this.coveredFromSeq) {
 			this.lines.push(
 				`${this.search.label}-0- [entry ${seq} not searched: the pattern ran past the time budget on it]`,
@@ -1228,7 +1236,11 @@ class SessionSearcher {
 			this.coveredThroughSeq = seq;
 			return { stop: { reason: "time", resume: { seq: seq + 1, matchIndex: 0 } } };
 		}
-		return { stop: { reason: "time", resume: { seq, matchIndex: 0 } } };
+		const matchIndex = Math.max(
+			completedMatches,
+			seq === this.search.fromSeq ? (this.search.fromMatchIndex ?? 0) : 0,
+		);
+		return { stop: { reason: "time", resume: { seq, matchIndex } } };
 	}
 
 	private async scanPage(pos: number, end: number): Promise<SearchStep> {
@@ -1290,7 +1302,7 @@ class SessionSearcher {
 					if (stop !== undefined) return { stop };
 				}
 				if (pageMatches.timedOutAtSeq === entry.seq) {
-					return this.timeoutOnEntry(entry.seq);
+					return this.timeoutOnEntry(entry.seq, matched?.length ?? 0);
 				}
 				this.coveredThroughSeq = entry.seq;
 				this.countedThrough = entry.seq;

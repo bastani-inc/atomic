@@ -257,6 +257,7 @@ export interface SessionSearchIndex {
 		toSeq: number,
 		limit: number,
 		generation?: string,
+		signal?: AbortSignal,
 	): Promise<readonly number[] | undefined>;
 }
 

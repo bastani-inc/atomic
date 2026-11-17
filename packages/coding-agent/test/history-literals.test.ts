@@ -40,6 +40,13 @@ describe("index literals of a search pattern (#5250)", () => {
 		assert.deepEqual(sets("(?i)FooBar"), [["FooBar"]]);
 	});
 
+	it("respects inline case-folding scopes when choosing Unicode literals (#5250)", () => {
+		assert.equal(sets("(?i:aꟋb)"), undefined);
+		assert.deepEqual(sets("prefix(?i:aꟋb)"), [["prefix"]]);
+		assert.equal(sets("(?:(?i)aꟋb)|other"), undefined);
+		assert.deepEqual(sets("(?i:alpha)(?-i:aꟋb)"), [["alpha", "aꟋb"].sort()]);
+	});
+
 	it("gives up on syntax whose meaning differs between engines", () => {
 		assert.equal(sets("foo[]bar"), undefined);
 		assert.equal(sets("foo[a[b]]bar"), undefined);

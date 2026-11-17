@@ -77,6 +77,90 @@ describe("history:// search index (#5250)", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
+	it("stops issuing candidate windows when its signal aborts (#5250)", async () => {
+		const raw = await openNodeSqliteDatabase(join(dir, "cancel-candidates.sqlite"));
+		let windows = 0;
+		let started!: () => void;
+		let release!: () => void;
+		const firstWindow = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const database = new Proxy(raw, {
+			get(target, key) {
+				if (key === "all")
+					return async (sql: string, ...params: readonly SqliteValue[]) => {
+						if (sql.includes("GROUP BY seq, set_id")) {
+							windows++;
+							if (windows === 1) {
+								started();
+								await gate;
+							}
+						}
+						return target.all(sql, ...params);
+					};
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const store = await SqlSessionStore.open(database);
+		try {
+			const count = 8193;
+			await store.create(
+				header("cancel-candidates"),
+				Array.from({ length: count }, (_, index) => ({
+					type: "custom" as const,
+					customType: "filler",
+					id: `e${index + 1}`,
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+				})),
+			);
+			assert.ok(await store.searchIndex?.extend("cancel-candidates", HISTORY_TEXT_FORMAT, 0, count, []));
+			const controller = new AbortController();
+			const candidates = store.searchIndex!.candidates(
+				"cancel-candidates",
+				[["alpha", "omega"]],
+				1,
+				count,
+				64,
+				undefined,
+				controller.signal,
+			);
+			await firstWindow;
+			controller.abort(new Error("stop candidates"));
+			release();
+			await assert.rejects(candidates, /stop candidates/);
+			assert.equal(windows, 1, "cancellation stops before querying the next sequence window");
+		} finally {
+			release();
+			await store.close();
+			await raw.close();
+		}
+	});
+
+	it("keeps Unicode matches of inline case-insensitive patterns after indexing (#5250)", async () => {
+		const database = await openNodeSqliteDatabase(join(dir, "inline-case.sqlite"));
+		const store = await SqlSessionStore.open(database);
+		try {
+			await store.create(header("inline-case"), [
+				message("e1", "aɤb", BASE),
+				message("e2", "another entry", BASE + 1000),
+			]);
+			const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, workflows: () => undefined });
+			const pattern = "(?i:aꟋb)";
+			const first = (await router.search?.("history://sessions/inline-case", request(pattern))) ?? "";
+			assert.match(first, /^history:\/\/sessions\/inline-case:1: aɤb$/m);
+			assert.equal((await store.searchIndex?.coverage("inline-case", HISTORY_TEXT_FORMAT))?.indexedSeq, 2);
+			assert.equal(await router.search?.("history://sessions/inline-case", request(pattern)), first);
+		} finally {
+			await store.close();
+			await database.close();
+		}
+	});
+
 	it("indexes a session with a NUL character in an entry, so later searches read only candidates (#5250)", async () => {
 		const raw = await openNodeSqliteDatabase(join(dir, "sessions.sqlite"));
 		const { database, entryRows } = countingDatabase(raw);
