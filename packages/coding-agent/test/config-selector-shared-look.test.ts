@@ -279,7 +279,7 @@ describe("package and resource picker on the shared look (#5224)", () => {
 						const tag = `${width}x${rows} n=${count} ${mode}`;
 						assert.ok(lines.length <= rows, `${tag}: ${lines.length} lines`);
 						assert.ok(
-							lines.some((line) => line.includes("Global Resources")),
+							lines.some((line) => line.includes("Global resources")),
 							`${tag}: title`,
 						);
 					}
