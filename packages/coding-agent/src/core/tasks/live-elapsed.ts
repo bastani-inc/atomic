@@ -5,7 +5,7 @@ export function taskClockRunning(state: Execution["kind"] | AgentPanelState): bo
 	return state === "running" || state === "cancelling" || state === "stopping" || state === "input";
 }
 
-type ElapsedClock = { since: number; displayed: number; frozen?: number; settled?: boolean };
+type ElapsedClock = { since: number; displayed: number; frozen?: number; settled?: boolean; ended?: boolean };
 type ClockReference = {
 	readonly table: Map<string, WeakRef<ElapsedClock>>;
 	readonly taskId: string;
@@ -24,15 +24,17 @@ function readClock(
 	reportedMs: number | undefined,
 	running: boolean,
 	now: number,
+	ended = false,
 ): { readonly elapsedMs: number | undefined; readonly clock: ElapsedClock | undefined } {
 	let entry = table.get(taskId)?.deref();
 	if (!running || entry?.settled) {
 		if (entry === undefined) return { elapsedMs: reportedMs, clock: undefined };
 		entry.frozen = Math.max(entry.frozen ?? 0, reportedMs ?? 0, entry.displayed);
+		if (ended) entry.ended = true;
 		return { elapsedMs: entry.frozen, clock: entry };
 	}
 	if (entry === undefined || entry.frozen !== undefined) {
-		const resumedMs = Math.max(reportedMs ?? 0, entry?.frozen ?? 0);
+		const resumedMs = entry?.ended ? (reportedMs ?? 0) : Math.max(reportedMs ?? 0, entry?.frozen ?? 0);
 		entry = { since: now - resumedMs, displayed: resumedMs };
 		const reference = new WeakRef(entry);
 		table.set(taskId, reference);
@@ -43,13 +45,18 @@ function readClock(
 	return { elapsedMs: entry.displayed, clock: entry };
 }
 
+/**
+ * A task's elapsed time on the clock shared by every view without a source of its own. A clock stopped while paused
+ * continues from the time it showed when the task runs again; one stopped because the task `ended` starts afresh.
+ */
 export function liveElapsedMs(
 	taskId: string,
 	reportedMs: number | undefined,
 	running: boolean,
 	now = Date.now(),
+	ended = false,
 ): number | undefined {
-	return readClock(defaultTable, taskId, reportedMs, running, now).elapsedMs;
+	return readClock(defaultTable, taskId, reportedMs, running, now, ended).elapsedMs;
 }
 
 export class TaskElapsedClocks {
@@ -69,8 +76,15 @@ export class TaskElapsedClocks {
 		return this.retained.size > 0 || this.table.size > 0;
 	}
 
-	elapsedMs(taskId: string, reportedMs: number | undefined, running: boolean, now = Date.now()): number | undefined {
-		const { elapsedMs, clock } = readClock(this.table, taskId, reportedMs, running, now);
+	/** As {@link liveElapsedMs}, on this owner's clocks. */
+	elapsedMs(
+		taskId: string,
+		reportedMs: number | undefined,
+		running: boolean,
+		now = Date.now(),
+		ended = false,
+	): number | undefined {
+		const { elapsedMs, clock } = readClock(this.table, taskId, reportedMs, running, now, ended);
 		if (clock !== undefined) this.retained.set(taskId, clock);
 		return elapsedMs;
 	}

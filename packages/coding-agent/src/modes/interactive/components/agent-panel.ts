@@ -163,6 +163,7 @@ export class AgentPanelModel {
 	private readonly finishedAt = new Map<string, { since: number; pass: number }>();
 	private readonly finishedTaskAt = new Map<string, { since: number; pass: number }>();
 	private readonly readAt = new WeakMap<AgentPanelRow, number>();
+	private readonly bases = new WeakMap<AgentPanelRow, AgentPanelRow>();
 	private pass = 0;
 	private finishedGeneration = 0;
 	private passMatchedFinished = 0;
@@ -216,8 +217,7 @@ export class AgentPanelModel {
 	 * own clock for a row read from none), so every view of it agrees; a workflow run's row advances from when it was
 	 * read while it runs.
 	 */
-	withElapsed(row: AgentPanelRow, now = this.now()): AgentPanelRow {
-		const state = row.state;
+	withElapsed(row: AgentPanelRow, now = this.now(), state: AgentPanelState = row.state): AgentPanelRow {
 		if (state === "queued") return row;
 		const running = taskClockRunning(state);
 		if (row.kind === "workflow") {
@@ -228,15 +228,29 @@ export class AgentPanelModel {
 				this.readAt.set(row, since);
 			}
 			const elapsedMs = row.elapsedMs + Math.max(0, now - since);
-			return elapsedMs === row.elapsedMs ? row : { ...row, elapsedMs };
+			return elapsedMs === row.elapsedMs ? row : this.copyOf(row, { ...row, elapsedMs });
 		}
 		const taskId = agentPanelTaskId(row.id) ?? row.id;
 		const sourceClocks = taskClockOf(row);
 		if (sourceClocks === undefined) this.hasLocalClocks = true;
-		const elapsedMs = (sourceClocks ?? this.elapsedClocks).elapsedMs(taskId, row.elapsedMs, running, now);
+		const elapsedMs = (sourceClocks ?? this.elapsedClocks).elapsedMs(
+			taskId,
+			row.elapsedMs,
+			running,
+			now,
+			FINISHED.has(state),
+		);
 		if (elapsedMs === undefined || elapsedMs === row.elapsedMs) return row;
 		const copy = { ...row, elapsedMs };
-		return sourceClocks === undefined ? copy : bindTaskClock(copy, sourceClocks);
+		return this.copyOf(row, sourceClocks === undefined ? copy : bindTaskClock(copy, sourceClocks));
+	}
+	/** The row a {@link withElapsed} copy was made from; any other row itself. */
+	baseOf(row: AgentPanelRow): AgentPanelRow {
+		return this.bases.get(row) ?? row;
+	}
+	private copyOf(base: AgentPanelRow, copy: AgentPanelRow): AgentPanelRow {
+		this.bases.set(copy, base);
+		return copy;
 	}
 	/**
 	 * `rows` in panel order (waiting for input, running, others, finished), without finished rows that aged out unless
@@ -252,12 +266,15 @@ export class AgentPanelModel {
 		const runningRows: AgentPanelRow[] = [];
 		const otherRows: AgentPanelRow[] = [];
 		const finishedRows: AgentPanelRow[] = [];
+		const states = new Map<AgentPanelRow, AgentPanelState>();
 		for (const row of rows) {
-			if (FINISHED.has(row.state)) {
+			const state = row.state;
+			states.set(row, state);
+			if (FINISHED.has(state)) {
 				if (!this.keepFinished(row.id, keep(row), now, pass)) continue;
 				finishedRows.push(row);
-			} else if (row.state === "input") inputRows.push(row);
-			else if (row.state === "running") runningRows.push(row);
+			} else if (state === "input") inputRows.push(row);
+			else if (state === "running") runningRows.push(row);
 			else otherRows.push(row);
 		}
 		this.endPass(pass);
@@ -268,13 +285,16 @@ export class AgentPanelModel {
 		const start = Math.max(0, window?.start ?? 0);
 		const limit = Math.max(0, window?.limit ?? Number.POSITIVE_INFINITY);
 		const end = Math.min(ordered.length, start + limit);
-		for (let index = start; index < end; index++) ordered[index] = this.withElapsed(ordered[index]!, now);
-		if (this.hasLocalClocks) {
-			const localClockIds = new Set<string>();
-			for (const row of ordered) {
-				if (row.kind === "workflow" || row.state === "queued") continue;
-				if (taskClockOf(row) === undefined) localClockIds.add(agentPanelTaskId(row.id) ?? row.id);
+		const localClockIds = new Set<string>();
+		for (let index = start; index < end; index++) {
+			const row = ordered[index]!;
+			const state = states.get(row)!;
+			ordered[index] = this.withElapsed(row, now, state);
+			if (row.kind !== "workflow" && state !== "queued" && taskClockOf(row) === undefined) {
+				localClockIds.add(agentPanelTaskId(row.id) ?? row.id);
 			}
+		}
+		if (this.hasLocalClocks && start === 0 && end === ordered.length) {
 			this.elapsedClocks.prune(localClockIds);
 			if (localClockIds.size === 0) this.hasLocalClocks = false;
 		}
@@ -511,6 +531,13 @@ export class AgentPanelFocus {
 	 */
 	finishedWhileArmed?: AgentPanelRow;
 	private finishedAcknowledged = false;
+	/** Whether each row was last drawn finished, so `x` acts on what the reader saw, not on a change not yet drawn. */
+	private readonly paintedFinished = new Map<string, boolean>();
+	/** Records the rows as drawn; the renderer calls it with the rows it painted. */
+	notePainted(rows: readonly AgentPanelRow[]): void {
+		this.paintedFinished.clear();
+		for (const row of rows) this.paintedFinished.set(row.id, isFinishedPanelRow(row));
+	}
 	update(rows: readonly AgentPanelRow[]): void {
 		const ids = new Set([AGENT_PANEL_MAIN_ID]);
 		this.rows = rows.filter((row) => {
@@ -524,6 +551,11 @@ export class AgentPanelFocus {
 			this.stopConfirm.reset();
 			this.finishedWhileArmed = settled;
 			this.finishedAcknowledged = false;
+		} else if (
+			this.finishedWhileArmed !== undefined &&
+			!rows.some((row) => row.id === this.finishedWhileArmed?.id && isFinishedPanelRow(row))
+		) {
+			this.finishedWhileArmed = undefined;
 		}
 		if (this.selectedId !== AGENT_PANEL_MAIN_ID && !rows.some((row) => row.id === this.selectedId))
 			this.selectedId = rows[0]?.id ?? AGENT_PANEL_MAIN_ID;
@@ -610,6 +642,17 @@ export class AgentPanelFocus {
 		}
 		if (stopKey) {
 			if (row === undefined) return true;
+			const armed = this.stopConfirm.pending();
+			if (armed !== undefined && armed !== row.id) {
+				this.stopConfirm.reset();
+				return true;
+			}
+			if (isFinishedPanelRow(row) && this.paintedFinished.get(row.id) === false) {
+				this.stopConfirm.reset();
+				this.finishedWhileArmed = row;
+				this.finishedAcknowledged = true;
+				return true;
+			}
 			if (isFinishedPanelRow(row)) {
 				if (this.finishedWhileArmed?.id === row.id && !this.finishedAcknowledged) {
 					this.finishedAcknowledged = true;

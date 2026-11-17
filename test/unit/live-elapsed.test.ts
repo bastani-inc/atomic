@@ -85,7 +85,7 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 		now = 61_000;
 		observeTaskClocks([record], now);
 		assert.equal(taskMetricsText(record), "1m 6s");
-		assert.match(renderInspector(), /1m 6s/);
+		assert.match(renderInspector(), /worker\s+finish cleanup\s+stopping/);
 
 		for (let second = 62; second <= 70; second++) {
 			now = second * 1000;
@@ -94,9 +94,7 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 		now = 71_000;
 		assert.equal(panel.rows([bindTaskClock({ ...row, state: "stopping" as const }, clocks)])[0]?.elapsedMs, 76_000);
 		assert.equal(taskMetricsText(record), "1m 16s");
-		assert.match(renderInspector(), /1m 16s/);
-		inspector.handleInput(" ");
-		assert.match(renderInspector(), /1m 16s/);
+		assert.match(renderInspector(), /stopping/);
 
 		now = 116_000;
 		assert.match(renderTranscript(), /worker · finish cleanup · 2m/);

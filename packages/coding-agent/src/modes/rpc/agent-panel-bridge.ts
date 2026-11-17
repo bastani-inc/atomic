@@ -195,9 +195,22 @@ function rankPanelSession(
 		[...state.viewed].every((id) => cached.viewed.has(id)) &&
 		[...sharedViewed].every((id) => cached.viewed.has(id))
 	) {
-		const rows = cached.rows.slice();
-		const end = Math.min(rows.length, start + limit);
-		for (let index = start; index < end; index++) rows[index] = state.model.withElapsed(materialize(rows[index]!));
+		const end = Math.min(cached.rows.length, start + limit);
+		let rows: AgentPanelRow[] | undefined;
+		for (let index = start; index < end; index++) {
+			const current = cached.rows[index]!;
+			const base = materialize(current);
+			const next = state.model.withElapsed(base);
+			if (
+				next === current ||
+				(base === state.model.baseOf(current) && elapsedSecond(next.elapsedMs) === elapsedSecond(current.elapsedMs))
+			)
+				continue;
+			rows ??= cached.rows.slice();
+			rows[index] = next;
+		}
+		if (rows === undefined) return { rows: cached.rows, total: cached.total };
+		state.rankCaches?.set(cap, { ...cached, rows });
 		return { rows, total: cached.total };
 	}
 	const extItems = agentPanelExtensionItems(session, state.onSourceError);
@@ -273,7 +286,9 @@ function rankPanelSession(
 
 	state.model.endPass(pass);
 	const ordered = inputRows.concat(runningRows, otherRows, finishedRows);
-	const ranked = Number.isFinite(cap) ? ordered.slice(0, cap) : ordered;
+	const rows = Number.isFinite(cap) ? ordered.slice(0, cap) : ordered;
+	const end = Math.min(rows.length, start + limit);
+	for (let index = start; index < end; index++) rows[index] = state.model.withElapsed(materialize(rows[index]!), now);
 	state.rankCaches ??= new Map();
 	state.rankCaches.set(cap, {
 		store,
@@ -284,12 +299,9 @@ function rankPanelSession(
 		dismissed: new Set(dismissed),
 		viewed: new Set([...state.viewed, ...sharedViewed]),
 		expiresAt,
-		rows: ranked,
+		rows,
 		total,
 	});
-	const rows = ranked.slice();
-	const end = Math.min(rows.length, start + limit);
-	for (let index = start; index < end; index++) rows[index] = state.model.withElapsed(materialize(rows[index]!), now);
 	return { rows, total };
 }
 
@@ -310,6 +322,15 @@ const TICK_MS = 1000;
 export const AGENT_PANEL_REFRESH_WINDOW_MS = 50;
 export const AGENT_PANEL_REFRESH_BUDGET_MS = 8;
 const REFRESH_BURST = 4;
+
+/**
+ * Whether one more refresh fits this window: always while under {@link AGENT_PANEL_REFRESH_BUDGET_MS}, and up to
+ * {@link REFRESH_BURST} cheap refreshes beyond it, so a burst of cheap changes is not delayed but an expensive refresh is.
+ */
+function withinRefreshBudget(refreshes: number, spent: number): boolean {
+	if (spent < AGENT_PANEL_REFRESH_BUDGET_MS) return true;
+	return refreshes < REFRESH_BURST && spent <= (refreshes + 1) * (AGENT_PANEL_REFRESH_BUDGET_MS / REFRESH_BURST);
+}
 
 function elapsedSecond(ms: number | undefined): number {
 	return ms === undefined ? -1 : Math.max(0, Math.floor(ms / 1000));
@@ -476,7 +497,7 @@ export function bindAgentPanel(
 									spent = 0;
 									refreshes = 0;
 								}
-								if (refreshes < REFRESH_BURST || spent < AGENT_PANEL_REFRESH_BUDGET_MS) {
+								if (withinRefreshBudget(refreshes, spent)) {
 									dirty = false;
 									refreshes++;
 									try {
@@ -547,7 +568,7 @@ export function bindAgentPanel(
 				spent = 0;
 				refreshes = 0;
 			}
-			if (refreshes < REFRESH_BURST || spent < AGENT_PANEL_REFRESH_BUDGET_MS) {
+			if (withinRefreshBudget(refreshes, spent)) {
 				refreshes++;
 				update();
 				return;
@@ -656,7 +677,8 @@ export async function showAgentPanel(
 						if (taskId !== undefined && store !== undefined)
 							next = async () => {
 								if (
-									(await showTaskInspector(ui, store, taskId, { chat: true, backLabel: "agents" })) === "back"
+									(await showTaskInspector(ui, store, taskId, { chat: true, backLabel: "main chat" })) ===
+									"back"
 								)
 									await back();
 							};
@@ -799,6 +821,7 @@ export async function showAgentPanel(
 									cachedRowLines = rowLines;
 								}
 							}
+							focus.notePainted(currentRows.slice(focus.scroll, focus.scroll + AGENT_PANEL_FOCUSED_ROWS));
 							return [...rowLines, truncateToWidth(renderAgentPanelHint(focus, w, style, keys), w)];
 						} catch (error) {
 							report(error);

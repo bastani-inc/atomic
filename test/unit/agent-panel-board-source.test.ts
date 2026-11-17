@@ -105,9 +105,11 @@ test("agentPanelBoardSource subscribes to the extension hub only and reads exten
 			);
 			assert.equal(taskStoreReads, 0, "board.items() must not read the task store");
 
+			for (const listener of extListeners) listener();
 			assert.deepEqual(
 				agentPanelItems(session).map((item) => item.id),
-				["run:r1", "task:ext-shadow", ...fixture.store.backgroundTasks.map((task) => `task:${task.ref.taskId}`)],
+				["run:r1", ...fixture.store.backgroundTasks.map((task) => `task:${task.ref.taskId}`)],
+				"an extension item cannot take a reserved task id",
 			);
 			assert.ok(taskStoreReads > 0, "agentPanelItems still reads the task store");
 			items.pop();
@@ -126,7 +128,7 @@ test("agentPanelBoardSource subscribes to the extension hub only and reads exten
 			unsubscribePanel();
 		}
 		for (const listener of extListeners) listener();
-		assert.equal(boardNotifications, 1, "unsubscribed board listener is not invoked");
+		assert.equal(boardNotifications, 2, "unsubscribed board listener is not invoked");
 	} finally {
 		await fixture.dispose();
 	}
@@ -232,33 +234,19 @@ test("bindAgentPanel skips row projection while hidden and budgets burst refresh
 			for (let i = 0; i < 20; i++) {
 				for (const listener of extListeners) listener();
 			}
-			assert.equal(sourceReads - beforeCheap, 20, "cheap refreshes follow every change immediately");
+			assert.equal(sourceReads, beforeCheap, "a burst of changes in one turn is not projected synchronously");
+			await Promise.resolve();
+			assert.equal(sourceReads - beforeCheap, 1, "a burst of changes in one turn refreshes once");
 
 			now += AGENT_PANEL_REFRESH_WINDOW_MS;
-			costMs = 3;
+			costMs = AGENT_PANEL_REFRESH_BUDGET_MS + 5;
 			const before = sourceReads;
-			for (let i = 0; i < 50; i++) {
+			for (let turn = 0; turn < 6; turn++) {
 				for (const listener of extListeners) listener();
+				await Promise.resolve();
 			}
 			const immediate = sourceReads - before;
-			assert.ok(
-				immediate <= Math.ceil(AGENT_PANEL_REFRESH_BUDGET_MS / costMs),
-				`expected bounded immediate refreshes in burst, got ${immediate}`,
-			);
-			assert.equal(vi.getTimerCount(), 2, "one panel tick and one coalesced trailing refresh");
-			now += AGENT_PANEL_REFRESH_WINDOW_MS;
-			vi.advanceTimersByTime(AGENT_PANEL_REFRESH_WINDOW_MS);
-			assert.equal(sourceReads - before, immediate + 1, "trailing refresh runs once at window end");
-
-			now += AGENT_PANEL_REFRESH_WINDOW_MS;
-			for (const listener of extListeners) listener();
-			assert.equal(sourceReads - before, immediate + 2, "next quiet window refreshes immediately again");
-
-			now += AGENT_PANEL_REFRESH_WINDOW_MS;
-			for (let i = 0; i < 50; i++) {
-				for (const listener of extListeners) listener();
-			}
-			assert.equal(vi.getTimerCount(), 2);
+			assert.ok(immediate < 6, `an expensive burst across turns defers once its budget is spent, got ${immediate}`);
 			ui.requestRender = () => {
 				throw new Error("Host closed during deferred refresh");
 			};
@@ -267,6 +255,7 @@ test("bindAgentPanel skips row projection while hidden and budgets burst refresh
 				() => vi.advanceTimersByTime(AGENT_PANEL_REFRESH_WINDOW_MS),
 				"deferred refresh contains host errors",
 			);
+			assert.equal(sourceReads - before, immediate + 1, "the deferred refresh runs once at window end");
 		} finally {
 			dispose();
 		}
@@ -439,6 +428,7 @@ test("extension agent and shell items share one session clock across the agent p
 		const hub = new AgentPanelSourceHub();
 		let state: "running" | "stopped" = "running";
 		let reportedMs = 1_000;
+		let notify = () => {};
 		hub.register({
 			items: () => [
 				{
@@ -457,7 +447,10 @@ test("extension agent and shell items share one session clock across the agent p
 					elapsedMs: reportedMs,
 				},
 			],
-			subscribe: () => () => {},
+			subscribe: (listener) => {
+				notify = listener;
+				return () => {};
+			},
 		});
 		const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
 		bindOwnerTaskStore(session, fixture.store);
@@ -484,10 +477,12 @@ test("extension agent and shell items share one session clock across the agent p
 			assert.equal(agentPanelRows(session)[2]?.elapsedMs, 61_000);
 
 			state = "stopped";
+			notify();
 			assert.equal(agentPanelRows(session)[2]?.elapsedMs, 61_000);
 			now += 30_000;
 			state = "running";
 			reportedMs = 2_000;
+			notify();
 			assert.equal(agentPanelRows(session)[2]?.elapsedMs, 2_000, "restarted extension item starts a fresh clock");
 		} finally {
 			inspector.dispose();
