@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
@@ -22,6 +22,7 @@ import {
 	removeTempDirectory,
 	sleep,
 	spawnProcess,
+	spawnSyncCollect,
 } from "../helpers/runtime.js";
 import { holdSqliteWriteLock } from "../helpers/sqlite-lock-holder.js";
 
@@ -374,17 +375,84 @@ test("wrapping a read-only connection still reads when its open-lock file is not
 	}
 });
 
+test.skipIf(process.platform !== "win32" && process.getuid?.() === 0).each(["open", "wrap"] as const)(
+	"read-only %s connection still reads beside an existing lock marker when the directory refuses new files (#5317)",
+	async (mode) => {
+		const directory = makeTempDirectory("atomic-open-lock-denied-dir-");
+		directories.push(directory);
+		const roDir = join(directory, "create-denied");
+		mkdirSync(roDir, { recursive: true });
+		const roDbPath = join(roDir, "x.sqlite");
+		const setup = new DatabaseSync(roDbPath);
+		setup.exec("PRAGMA journal_mode=WAL; CREATE TABLE items(v INTEGER); INSERT INTO items(v) VALUES (42);");
+		writeFileSync(`${roDbPath}.lock`, "");
+		if (process.platform === "win32") {
+			const denied = spawnSyncCollect(["icacls", roDir, "/deny", "*S-1-1-0:(WD,AD)"]);
+			assert.equal(denied.exitCode, 0, denied.stderr.toString());
+		} else {
+			chmodSync(roDir, 0o555);
+		}
+		try {
+			assert.equal(existsSync(sqliteOpenLockPath(roDbPath)), false);
+			if (mode === "open") {
+				const opened = await openNodeSqliteDatabase(roDbPath, { readOnly: true, busyTimeoutMs: 200 });
+				try {
+					assert.deepEqual(await opened.all("SELECT v FROM items"), [{ v: 42 }]);
+				} finally {
+					await opened.close();
+				}
+			} else {
+				const rawReadOnly = new DatabaseSync(roDbPath, { readOnly: true });
+				try {
+					const wrapped = wrapNodeSqliteDatabase(rawReadOnly);
+					try {
+						assert.deepEqual(await wrapped.all("SELECT v FROM items"), [{ v: 42 }]);
+					} finally {
+						await wrapped.close();
+					}
+				} finally {
+					rawReadOnly.close();
+				}
+			}
+			assert.equal(existsSync(sqliteOpenLockPath(roDbPath)), false);
+		} finally {
+			if (process.platform === "win32") {
+				spawnSyncCollect(["icacls", roDir, "/remove:d", "*S-1-1-0"]);
+			} else {
+				chmodSync(roDir, 0o755);
+			}
+			setup.close();
+		}
+	},
+);
+
 test("connections hold a shared open lock while open, release it on close or kill, and create none for untouched read-only files (#5317)", async () => {
 	const directory = makeTempDirectory("atomic-open-lock-");
 	directories.push(directory);
 	const untouchedPath = join(directory, "untouched.sqlite");
 	const raw = new DatabaseSync(untouchedPath);
-	raw.exec("CREATE TABLE items(v INTEGER)");
+	raw.exec("PRAGMA journal_mode=WAL; CREATE TABLE items(v INTEGER); INSERT INTO items(v) VALUES (42);");
 	raw.close();
 	const untouchedReader = await openNodeSqliteDatabase(untouchedPath, { readOnly: true });
+	assert.deepEqual(await untouchedReader.all("SELECT v FROM items"), [{ v: 42 }]);
 	assert.equal(existsSync(sqliteOpenLockPath(untouchedPath)), false);
 	assert.equal(existsSync(`${untouchedPath}-holders`), false);
 	await untouchedReader.close();
+
+	const rawUntouchedWrapped = new DatabaseSync(untouchedPath, { readOnly: true });
+	try {
+		const untouchedWrapped = wrapNodeSqliteDatabase(rawUntouchedWrapped);
+		try {
+			assert.equal(existsSync(sqliteOpenLockPath(untouchedPath)), true);
+			assert.equal(tryAdvisoryLock(sqliteOpenLockPath(untouchedPath), 0), null);
+			assert.deepEqual(await untouchedWrapped.all("SELECT v FROM items"), [{ v: 42 }]);
+		} finally {
+			await untouchedWrapped.close();
+		}
+	} finally {
+		rawUntouchedWrapped.close();
+	}
+	assert.equal(existsSync(sqliteOpenLockPath(untouchedPath)), false);
 
 	const path = join(directory, "managed.sqlite");
 	const first = await openNodeSqliteDatabase(path);

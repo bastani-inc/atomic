@@ -57,8 +57,21 @@ fn lock_matches_path(_file: &File, path: &Path) -> bool {
 	std::fs::metadata(path).is_ok()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenFailure {
+	Permanent,
+	#[cfg(windows)]
+	WaitDeletePending,
+	#[cfg(windows)]
+	RetryMissingName,
+}
+
 #[cfg(windows)]
-fn is_transient_delete_race(path: &Path, error: &io::Error) -> bool {
+fn classify_delete_race(
+	path: &Path,
+	error: &io::Error,
+	retried_missing_name: &mut bool,
+) -> OpenFailure {
 	use std::os::windows::ffi::OsStrExt;
 	use windows_sys::{
 		Wdk::{
@@ -68,7 +81,7 @@ fn is_transient_delete_race(path: &Path, error: &io::Error) -> bool {
 		Win32::{
 			Foundation::{
 				NTSTATUS, OBJ_CASE_INSENSITIVE, STATUS_DELETE_PENDING, STATUS_OBJECT_NAME_NOT_FOUND,
-				STATUS_OBJECT_PATH_NOT_FOUND, UNICODE_STRING,
+				UNICODE_STRING,
 			},
 			System::WindowsProgramming::RtlFreeUnicodeString,
 		},
@@ -96,7 +109,7 @@ fn is_transient_delete_race(path: &Path, error: &io::Error) -> bool {
 	}
 
 	if error.kind() != io::ErrorKind::PermissionDenied {
-		return false;
+		return OpenFailure::Permanent;
 	}
 	let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
 	let mut name = UNICODE_STRING::default();
@@ -109,7 +122,7 @@ fn is_transient_delete_race(path: &Path, error: &io::Error) -> bool {
 		)
 	};
 	if converted < 0 {
-		return false;
+		return OpenFailure::Permanent;
 	}
 	let attributes = OBJECT_ATTRIBUTES {
 		Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
@@ -120,15 +133,26 @@ fn is_transient_delete_race(path: &Path, error: &io::Error) -> bool {
 	let mut information = FILE_BASIC_INFORMATION::default();
 	let status = unsafe { nt_query_attributes_file(&attributes, &mut information) };
 	unsafe { RtlFreeUnicodeString(&mut name) };
-	matches!(
-		status,
-		STATUS_DELETE_PENDING | STATUS_OBJECT_NAME_NOT_FOUND | STATUS_OBJECT_PATH_NOT_FOUND
-	)
+	match status {
+		STATUS_DELETE_PENDING => {
+			*retried_missing_name = false;
+			OpenFailure::WaitDeletePending
+		},
+		STATUS_OBJECT_NAME_NOT_FOUND if !*retried_missing_name => {
+			*retried_missing_name = true;
+			OpenFailure::RetryMissingName
+		},
+		_ => OpenFailure::Permanent,
+	}
 }
 
 #[cfg(not(windows))]
-fn is_transient_delete_race(_path: &Path, _error: &io::Error) -> bool {
-	false
+fn classify_delete_race(
+	_path: &Path,
+	_error: &io::Error,
+	_retried_missing_name: &mut bool,
+) -> OpenFailure {
+	OpenFailure::Permanent
 }
 
 fn try_lock_with(
@@ -145,13 +169,19 @@ fn try_lock_with(
 	}
 	let deadline = Instant::now() + wait;
 	let mut file: Option<File> = None;
+	let mut retried_missing_name = false;
 	let mut retried_replaced_path = false;
 	loop {
 		if file.is_none() {
 			match options.open(path) {
 				Ok(opened) => file = Some(opened),
-				Err(error) if is_transient_delete_race(path, &error) => {},
-				Err(error) => return Err(error),
+				Err(error) => match classify_delete_race(path, &error, &mut retried_missing_name) {
+					#[cfg(windows)]
+					OpenFailure::WaitDeletePending => {},
+					#[cfg(windows)]
+					OpenFailure::RetryMissingName => continue,
+					OpenFailure::Permanent => return Err(error),
+				},
 			}
 		}
 		if let Some(current) = &file {
@@ -177,13 +207,18 @@ fn try_lock_with(
 	}
 }
 
-/// Takes the exclusive advisory lock of the file at `path`, created when missing and never truncated: tried at once,
-/// then again until `wait` has passed. `None` while another open file holds it. The lock lasts as long as the returned
-/// file is open, and the kernel releases it when its holder dies.
+/// Takes the exclusive advisory lock of the file at `path`, created when missing, reopened if unlinked while
+/// acquiring the lock, and never truncated: tried at once, then again until `wait` has passed. `None` while another
+/// open file holds it, a delete-pending file remains at `path` on Windows, or repeated path replacement exhausts
+/// `wait`. The lock lasts as long as the returned file is open, and the kernel releases it when its holder dies.
 pub fn try_lock_file(path: &Path, wait: Duration) -> io::Result<Option<File>> {
 	try_lock_with(path, wait, File::try_lock)
 }
 
+/// Takes a shared advisory lock on the file at `path`, created when missing, reopened if unlinked while acquiring the
+/// lock, and never truncated: tried at once, then again until `wait` has passed. `None` while an exclusive holder
+/// keeps it, a delete-pending file remains at `path` on Windows, or repeated path replacement exhausts `wait`. The
+/// lock lasts as long as the returned file is open, and the kernel releases it when its holder dies.
 pub fn try_lock_file_shared(path: &Path, wait: Duration) -> io::Result<Option<File>> {
 	try_lock_with(path, wait, File::try_lock_shared)
 }
@@ -270,8 +305,8 @@ fn napi_error(error: io::Error) -> napi::Error {
 	napi::Error::new(napi::Status::GenericFailure, error.to_string())
 }
 
-/// An exclusive advisory lock this process holds on an open file (#5193), released by {@link AdvisoryLock.release},
-/// when the object is collected, or by the kernel when this process dies.
+/// An exclusive or shared advisory lock this process holds on an open file (#5193, #5317), released by
+/// {@link AdvisoryLock.release}, when the object is collected, or by the kernel when this process dies.
 #[napi(js_name = "AdvisoryLock")]
 pub struct AdvisoryLock {
 	file: Option<File>,
@@ -289,9 +324,11 @@ impl AdvisoryLock {
 	}
 }
 
-/// Takes the exclusive advisory lock of the file at `path` (#5193): `flock` on Unix, `LockFileEx` on Windows. The
-/// file is created when missing and never truncated or removed. Tried at once, then again until `waitMs` has passed;
-/// `null` while another holder keeps it. Throws when the file cannot be opened or locked.
+/// Takes the exclusive advisory lock of the file at `path` (#5193, #5317): `flock` on Unix, `LockFileEx` on Windows.
+/// The file is created when missing, reopened if unlinked while acquiring the lock, and never truncated or removed.
+/// Tried at once, then again until `waitMs` has passed; `null` while another holder keeps it, a delete-pending file
+/// remains at `path` on Windows, or repeated path replacement exhausts `waitMs`. Throws when the file cannot be opened
+/// or locked.
 #[napi(js_name = "tryAdvisoryLock")]
 pub fn try_advisory_lock(path: String, wait_ms: u32) -> napi::Result<Option<AdvisoryLock>> {
 	let file = try_lock_file(Path::new(&path), Duration::from_millis(u64::from(wait_ms)))
@@ -300,8 +337,9 @@ pub fn try_advisory_lock(path: String, wait_ms: u32) -> napi::Result<Option<Advi
 }
 
 /// Takes a shared advisory lock on the file at `path` (#5317): `flock` on Unix, `LockFileEx` on Windows. The file is
-/// created when missing and reopened if unlinked while acquiring the lock. Tried at once, then again until `waitMs`
-/// has passed; `null` while an exclusive holder keeps it.
+/// created when missing, reopened if unlinked while acquiring the lock, and never truncated or removed. Tried at once,
+/// then again until `waitMs` has passed; `null` while an exclusive holder keeps it, a delete-pending file remains at
+/// `path` on Windows, or repeated path replacement exhausts `waitMs`. Throws when the file cannot be opened or locked.
 #[napi(js_name = "trySharedAdvisoryLock")]
 pub fn try_shared_advisory_lock(path: String, wait_ms: u32) -> napi::Result<Option<AdvisoryLock>> {
 	let file = try_lock_file_shared(Path::new(&path), Duration::from_millis(u64::from(wait_ms)))

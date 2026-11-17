@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { openNodeSqliteDatabase } from "@bastani/atomic";
-import type { SqliteDatabase, SqliteRow } from "@bastani/atomic/storage";
+import { type SqliteDatabase, type SqliteRow, sqliteFilePath } from "@bastani/atomic/storage";
 import type { AdvisoryLock } from "@bastani/atomic-natives";
 import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
@@ -765,7 +765,7 @@ async function shardOwner(database: SqliteDatabase): Promise<ShardOwner> {
 		? await database.get<SqliteRow & { root: string; opens: number }>(`SELECT root, opens FROM ship_root LIMIT 1`)
 		: undefined;
 	if (owner !== undefined) return { root: owner.root, opens: Number(owner.opens), work: undefined };
-	const held = ["ship_lease", "ship_events"].filter((table) => tables.has(table));
+	const held = ["ship_lease", "ship_rows", "ship_events"].filter((table) => tables.has(table));
 	const attempt =
 		held.length === 0
 			? undefined
@@ -787,7 +787,7 @@ function shardOwnerSync(connection: DatabaseSync): ShardOwner {
 				| undefined)
 		: undefined;
 	if (owner !== undefined) return { root: owner.root, opens: Number(owner.opens), work: undefined };
-	const held = ["ship_lease", "ship_events"].filter((table) => tables.has(table));
+	const held = ["ship_lease", "ship_rows", "ship_events"].filter((table) => tables.has(table));
 	const attempt =
 		held.length === 0
 			? undefined
@@ -884,6 +884,7 @@ async function inspectShard(path: string): Promise<IdleShard> {
 }
 
 async function idleShard(path: string): Promise<IdleShard | undefined> {
+	if ((await fileIdentity(path).catch(() => undefined)) === undefined) return undefined;
 	const lock = await tryRootLock(path).catch(() => null);
 	if (lock === null) return undefined;
 	try {
@@ -910,7 +911,7 @@ async function removeConfirmedShard(
 		if (await selfHasOpenFile(location)) return;
 		if (await openInOtherProcesses?.(location)) return;
 		const { DatabaseSync } = await import("node:sqlite");
-		const connection = new DatabaseSync(location);
+		const connection = new DatabaseSync(sqliteFilePath(location));
 		let confirmed = false;
 		try {
 			confirmed = Boolean(await confirm(connection)) && onlyConnectionSync(connection);
@@ -932,6 +933,7 @@ async function removeUnchanged(
 	shard: IdleShard,
 	openInOtherProcesses: (location: string) => Promise<boolean>,
 ): Promise<void> {
+	if ((await fileIdentity(shard.path).catch(() => undefined)) !== shard.file) return;
 	const lock = await tryRootLock(shard.path).catch(() => null);
 	if (lock === null) return;
 	if ((await fileIdentity(shard.path).catch(() => undefined)) !== shard.file) {
@@ -996,7 +998,7 @@ async function removeShardFiles(location: string, path: string): Promise<boolean
 	for (const suffix of ["-journal", "-wal", "-shm"]) await rm(`${location}${suffix}`, { force: true }).catch(() => {});
 	for (const suffix of ["-holders", "-writers", "-wakes"])
 		await rm(`${location}${suffix}`, { recursive: true, force: true }).catch(() => {});
-	for (const lock of new Set([`${location}-open.lock`, `${path}-open.lock`, `${location}.lock`, `${path}.lock`]))
+	for (const lock of new Set([`${location}-open.lock`, `${location}.lock`, `${path}.lock`]))
 		await rm(lock, { force: true }).catch(() => {});
 	return true;
 }

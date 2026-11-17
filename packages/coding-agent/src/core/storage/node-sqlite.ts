@@ -14,12 +14,12 @@ import {
 	writeSync,
 } from "node:fs";
 import { mkdir, readdir, realpath, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { platform } from "node:os";
 import { basename, dirname, join, resolve, win32 } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { createModuleRequire } from "../../utils/module-require.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -573,7 +573,14 @@ let nativeOpenLocks: NativeOpenLocks | null | undefined;
 function openLocks(): NativeOpenLocks | null {
 	if (nativeOpenLocks === undefined) {
 		try {
-			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as Partial<NativeOpenLocks>;
+			let binding: Partial<NativeOpenLocks>;
+			try {
+				binding = createRequire(import.meta.url)("@bastani/atomic-natives") as Partial<NativeOpenLocks>;
+			} catch {
+				binding = createRequire(pathToFileURL(process.execPath).href)(
+					"@bastani/atomic-natives",
+				) as Partial<NativeOpenLocks>;
+			}
 			nativeOpenLocks =
 				typeof binding.tryAdvisoryLock === "function" && typeof binding.trySharedAdvisoryLock === "function"
 					? (binding as NativeOpenLocks)

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import {
 	retireEndedShipShards,
 	ShipShard,
@@ -10,7 +10,27 @@ import {
 } from "../../packages/workflows/src/workers/ship-shard.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
-for (const race of ["another sweep", "the root retiring"] as const) {
+const listings = vi.hoisted(() => ({
+	before: undefined as undefined | { directory: string; run: () => Promise<void> },
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	return {
+		...actual,
+		readdir: (async (...args: Parameters<typeof actual.readdir>) => {
+			const names = await actual.readdir(...args);
+			const hook = listings.before;
+			if (hook !== undefined && String(args[0]) === hook.directory) {
+				listings.before = undefined;
+				await hook.run();
+			}
+			return names;
+		}) as typeof actual.readdir,
+	};
+});
+
+for (const race of ["another sweep", "the root retiring", "retirement after listing"] as const) {
 	test(`crash cleanup racing ${race} leaves no lock for the removed journal (#5317)`, async () => {
 		const directory = makeTempDirectory("ship-cleanup-race-");
 		const journalDir = shipJournalDirectory(directory, "journal");
@@ -35,6 +55,15 @@ for (const race of ["another sweep", "the root retiring"] as const) {
 					retireEndedShipShards(journalDir, findEnded),
 					retireEndedShipShards(journalDir, findEnded),
 				]);
+			} else if (race === "retirement after listing") {
+				listings.before = {
+					directory: journalDir,
+					run: async () => {
+						const reopened = await ShipShard.open(path, "ended");
+						await reopened.close({ retire: true });
+					},
+				};
+				await retireEndedShipShards(journalDir, async () => ended);
 			} else {
 				await retireEndedShipShards(journalDir, async () => {
 					const reopened = await ShipShard.open(path, "ended");
@@ -48,6 +77,7 @@ for (const race of ["another sweep", "the root retiring"] as const) {
 			await live.close({ retire: true });
 			assert.equal(existsSync(journalDir), false, "no leftover lock keeps the journal directory");
 		} finally {
+			listings.before = undefined;
 			await live.close();
 			removeTempDirectory(directory);
 		}

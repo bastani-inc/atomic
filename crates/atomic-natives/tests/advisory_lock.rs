@@ -205,6 +205,38 @@ fn acl_denied_lock_path_is_an_error_not_contention_5317() {
 
 #[cfg(windows)]
 #[test]
+fn acl_denied_lock_directory_creation_is_an_error_not_contention_5317() {
+	struct RestoreDacl(PathBuf);
+	impl Drop for RestoreDacl {
+		fn drop(&mut self) {
+			let _ = set_test_dacl(&self.0, "D:P(A;;FA;;;WD)");
+		}
+	}
+	let dir = scratch();
+	let path = dir.join("denied-create.lock");
+	let restore = RestoreDacl(dir.clone());
+	set_test_dacl(&dir, "D:P(D;;0x6;;;WD)(A;;FA;;;WD)").unwrap();
+	let exclusive = try_advisory_lock(path.to_string_lossy().into_owned(), 0);
+	let shared = try_shared_advisory_lock(path.to_string_lossy().into_owned(), 0);
+	let waited = try_shared_advisory_lock(path.to_string_lossy().into_owned(), 50);
+	drop(restore);
+	fs::remove_dir_all(dir).unwrap();
+	assert!(
+		exclusive.is_err(),
+		"a directory ACL denying file creation must remain an exclusive-lock error"
+	);
+	assert!(
+		shared.is_err(),
+		"a directory ACL denying file creation must remain a shared-lock error"
+	);
+	assert!(
+		waited.is_err(),
+		"a directory ACL denying file creation must fail even with a wait budget"
+	);
+}
+
+#[cfg(windows)]
+#[test]
 fn delete_pending_is_contention_until_its_last_handle_closes_5317() {
 	use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
 	use windows_sys::Win32::Storage::FileSystem::{
