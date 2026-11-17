@@ -13,14 +13,9 @@ import {
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { openSqlSnapshotJournal, type SqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { GIT_PROCESS_BUDGET_MS, GitSandbox, startedGitProcesses } from "../helpers/worktree-snapshot.js";
 
 const BASE_SIZE = 128 * 1024;
-/**
- * The most one real git process may take on a loaded CI host. Windows starts one in about 90 ms when idle, several times
- * that beside other suites.
- */
-const GIT_PROCESS_BUDGET_MS = 300;
 /** The git processes one restore may start, counting those git starts for it: they are about 26 with git 2.5x. */
 const GIT_PROCESSES_PER_RESTORE = 30;
 const RESTORES = 8;
@@ -135,11 +130,7 @@ describe("eight workflow boundaries on one base (#4245)", () => {
 						});
 						assert.equal(readFileSync(join(restored, "small.txt"), "utf8"), `change ${index}\n`);
 					}
-					const started = readFileSync(trace, "utf8")
-						.split("\n")
-						.filter(Boolean)
-						.map((line) => JSON.parse(line) as { event: string; argv?: string[] })
-						.filter((event) => event.event === "start");
+					const started = startedGitProcesses(trace);
 					assert.equal(started.filter((event) => event.argv?.includes("fetch")).length, 1);
 					assert.equal(
 						started.filter((event) => event.argv?.includes("apply")).length,

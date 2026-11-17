@@ -68,46 +68,12 @@
     },
     "decisionModel": {
       "type": "string",
-      "description": "The model every decision uses: workflow-stage and subagent model: \"auto\" selection, structured_output calls without their own model, readiness after a steer, and decide(). An exact provider/model selects a registered chat or classifier model; \"auto\" and an empty string use the current chat model.",
+      "description": "The model every decision uses: structured_output calls without their own model, workflow stage predictions, readiness after a steer, and decide(). An exact provider/model selects a registered chat or classifier model; \"auto\" and an empty string use the current chat model.",
       "default": ""
     },
     "compactionModel": {
       "type": "string",
       "description": "Compaction model: \"auto\" or an empty string uses the session model, and an exact provider/model selects a registered chat model, classifier, or compactor."
-    },
-    "modelRouting": {
-      "type": "object",
-      "properties": {
-        "allowedProviders": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "When nonempty, only models from these provider IDs are routing candidates."
-        },
-        "excludedProviders": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Provider IDs that are never routing candidates. Applied after allowedProviders."
-        },
-        "allowedModels": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "When nonempty, only models matching these full-ID or glob patterns, as in enabledModels, are routing candidates."
-        },
-        "excludedModels": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Models matching these full-ID or glob patterns are never routing candidates. Applied after allowedModels."
-        }
-      },
-      "description": "Provider and model filters for the candidates model \"auto\" may route to. Does not affect decisionModel."
     },
     "defaultThinkingLevel": {
       "$ref": "#/$defs/ModelThinkingLevel"

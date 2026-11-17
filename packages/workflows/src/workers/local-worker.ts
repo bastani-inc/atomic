@@ -334,7 +334,11 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	// #4768: a model call to a scope of the root's fleet-wide rate limits takes a token from the coordinator first.
 	if (start.rateScopes !== undefined && start.rateScopes.length > 0)
 		setProviderRequestGate(
-			fleetRateGate(start.rateScopes, (provider, model) => request({ kind: "rate-acquire", provider, model })),
+			fleetRateGate(
+				start.rateScopes,
+				(provider, model, rateRequest) => request({ kind: "rate-acquire", provider, model, request: rateRequest }),
+				(rateRequest) => request({ kind: "rate-release", request: rateRequest }),
+			),
 		);
 	const definitions = await Promise.all(start.definitions.map(loadWorkerDefinition));
 	const durableSelection = process.env[POOL_DURABLE_JOURNAL_ENV];

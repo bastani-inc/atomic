@@ -107,6 +107,11 @@ export interface WorkflowFleetStatus {
 	readonly target?: number;
 	readonly live?: number;
 	readonly pending?: number;
+	/**
+	 * While active, estimated host capacity from recent grants and nonwaiting worker time, or the current host count
+	 * while history warms. `target` exceeds it only when `minHosts` asks for more.
+	 */
+	readonly rateCapHosts?: number;
 	/** Set while its provisioner or journal calls fail. */
 	readonly degraded?: { readonly failures: number; readonly since: number; readonly error: WorkflowFleetFailure };
 }

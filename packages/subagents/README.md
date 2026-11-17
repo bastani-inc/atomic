@@ -125,7 +125,7 @@ There is no generic `reviewer` or `planner` agent; pick the specialist whose ang
 
 ## Changing a builtin agent's model
 
-Every builtin agent defaults to `model: "auto"`, with no pinned fallback chain. The router chooses from your available model/effort pairs before launch. To pin a role, set an override instead of copying the bundled file. See [automatic model selection](../coding-agent/docs/subagents/reference.md#automatic-model-selection) for router settings, effort constraints and troubleshooting.
+Every builtin agent defaults to `model: "auto"`, with no pinned fallback chain. `auto` runs your configured default model (the one you last chose with `/model`) at its default thinking level, or the launching session's model when no default model is configured. To pin a role, set an override instead of copying the bundled file. See [automatic model selection](../coding-agent/docs/subagents/reference.md#automatic-model-selection).
 
 For one run, pass `model` on the `subagent` call:
 
@@ -156,7 +156,7 @@ Use `~/.atomic/agent/settings.json` for a user override or `.atomic/settings.jso
 
 Any parent chat or workflow stage that orchestrates subagents should omit the explicit `model` argument when the named agent already declares a model or fallback policy. Override it only for the user's exact model request or a documented task-specific need, and record the reason before launch; diversity alone does not justify an ad hoc model.
 
-When an agent declares no model or fallback policy, consult `packages/coding-agent/docs/models/model-selection.md` for general role and effort guidance and `packages/coding-agent/docs/models/evals.md` for factual per-evaluation benchmark records, then call `workflow({ action: "models" })` when available. Use only a catalog-returned `fullId` and only a thinking level listed for that entry. If the catalog tool is unavailable, returns no models, or no catalog model matches the documented evidence and role constraints, leave the child unpinned and report the limitation instead of inventing a model or inspecting credentials.
+When a task needs a specific model, call `workflow({ action: "models" })` when available. Use only a catalog-returned `fullId` and only a thinking level listed for that entry. If the catalog tool is unavailable, returns no models, or no catalog model fits, leave the child unpinned and report the limitation instead of inventing a model or inspecting credentials.
 
 Workflow invocations receive a stable, non-`default` Intercom group automatically. Their stages and delegated children inherit it across single, parallel, and follow-up calls, so omit `group` unless you intend to create a different coordination subgroup. Outside a workflow, children inherit the launching session's group. `contact_supervisor` remains available across group boundaries.
 
@@ -355,7 +355,7 @@ Important fields:
 | `tools` | Builtin tool allowlist, comma-separated (`tools: read, bash`) or YAML array-form (`tools: [read, bash]`, or a `tools:` block list) — both spellings produce the same tool set. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. |
 | `extensions` | Omitted means normal extensions; empty means no optional extensions; comma-separated values allowlist specific optional extensions. Atomic still loads mandatory ordinary Intercom. |
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. When omitted — with no `fallbackModels` and no per-call model override — the subagent inherits the dispatching session's active model and thinking level; a declared `thinking` still takes precedence over the inherited level. |
-| `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. A child that runs a concrete model, this agent's `model` or a call's `model`, falls back only to these entries that its `modelConstraints` allow. Otherwise the current user-selected model is appended as the last fallback and de-duplicated. Ordinary task failures do not trigger fallback. |
+| `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. A child that runs a concrete model, this agent's `model` or a call's `model`, falls back only to these entries. Otherwise the current user-selected model is appended as the last fallback and de-duplicated. Ordinary task failures do not trigger fallback. |
 | `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present. |
 | `systemPromptMode` | `replace` by default; `append` keeps Pi’s base prompt. |
 | `inheritProjectContext` | Keeps or strips inherited project instruction blocks. |

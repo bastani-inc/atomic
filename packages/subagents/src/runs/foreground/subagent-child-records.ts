@@ -11,7 +11,6 @@ import {
 	type WorktreeRootMapping,
 } from "@bastani/atomic";
 import type { AgentSource } from "../../agents/agent-types.js";
-import type { ModelConstraints } from "../../shared/model-constraints.js";
 import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
 import { isReleasedChildError, ReleasedChildError, type ReleasedChildErrorCode } from "./released-child-errors.js";
@@ -174,8 +173,6 @@ export interface SubagentChildRecord {
 	readonly namedModel?: string;
 	/** The model the launch asked for, reported beside the one the child ran on; see `launchRequestedModel` (#4188). */
 	readonly requestedModel?: string;
-	/** The launch's own `modelConstraints`, which every model its child falls back to must satisfy (#4188). */
-	readonly modelConstraints?: ModelConstraints;
 	/**
 	 * The concurrency limit of the run that dispatched the child, as plain data: a woken or resumed child waits for a slot
 	 * under it when no sibling in this process still holds the run's scheduler (#4856). Absent for a launch outside a run
@@ -248,14 +245,13 @@ export interface SubagentChildInheritance {
 export function subagentChildModelChoice(
 	options: RunSyncOptions,
 	agent?: { readonly model?: string },
-): Pick<SubagentChildRecord, "namedModel" | "requestedModel" | "modelConstraints"> {
+): Pick<SubagentChildRecord, "namedModel" | "requestedModel"> {
 	const named = options.requestedModel ?? options.modelOverride ?? agent?.model;
-	const namedModel = options.modelRoute || options.runsNamedModel === false || named === "auto" ? undefined : named;
+	const namedModel = options.runsNamedModel === false || named === "auto" ? undefined : named;
 	const requestedModel = launchRequestedModel(agent, options);
 	return {
 		...(namedModel ? { namedModel } : {}),
 		...(requestedModel ? { requestedModel } : {}),
-		...(options.modelConstraints ? { modelConstraints: options.modelConstraints } : {}),
 	};
 }
 
