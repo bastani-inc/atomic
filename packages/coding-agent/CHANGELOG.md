@@ -68,6 +68,9 @@
 - Model searches initially select the best match, and effort arrows work with SS3 terminal key sequences. Provider searches no longer match sign-in status or method text. Long dialog titles and options wrap instead of losing text, and selector hints show only available actions ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 - Isolated `/scoped-models` changes update both model searches and Ctrl+P cycling. Scope saves run in order and report failures, and engine reconnection no longer overwrites a newer model or reasoning choice. RPC model responses report saved defaults only for `persist: true` ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 
+- Replacing a submission echo with a prompt rewritten by an `input` hook, or inserting a custom message ahead of a streaming reply, now touches only the tail of the chat container instead of scanning the whole transcript, keeping prompt swaps fast in long sessions ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
+- Corrected new-message counts when a transcript insertion or removal is followed by another change that restores its earlier child count ([#5323](https://github.com/bastani-inc/atomic/issues/5323))
+
 ### Removed
 
 - The `app.workflows.scrollUp` and `app.workflows.scrollDown` keybindings (Alt+K/J, Alt+PageUp/PageDown), with the workflow list they scrolled; the agent panel replaces it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
