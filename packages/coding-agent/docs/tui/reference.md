@@ -332,7 +332,7 @@ picker.update(await loadMoreRows()); // merge late rows into the open picker
 const path = await picker.result;    // selected row's path, or undefined on cancel
 ```
 
-`/workflow resume` uses this picker.
+Rows can set `canDelete: false` to hide and disable deletion, even when `onDelete` is present. Leave the field unset to use the request's deletion behavior. Keep the row until deletion finishes, then remove it with `update()`, or report failure with `error()` from that `onDelete` callback. The row cannot be selected while deletion is pending.
 
 ### Host-native input form
 

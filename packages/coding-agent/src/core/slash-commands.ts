@@ -368,7 +368,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "logout", description: "Remove provider authentication", argumentHint: "<provider>" },
 	{ name: "new", description: "Start a new session" },
 	{ name: "compact", description: "Compact older context with verbatim line ranges" },
-	{ name: "resume", description: "Resume another session" },
+	{ name: "resume", description: "Resume a session or workflow run" },
 	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, and themes" },
 	{ name: "exit", description: `Exit ${APP_NAME}` },
 	{ name: "quit", description: `Quit ${APP_NAME}` },

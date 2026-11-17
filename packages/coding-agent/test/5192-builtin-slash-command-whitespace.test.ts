@@ -129,6 +129,11 @@ const BARE_COMMANDS: ReadonlyArray<{ name: string; expected: Call; withText?: Ca
 ];
 
 describe("built-in slash commands split their name at the first whitespace (#5192)", () => {
+	test("resume advertises sessions and workflow runs in the command menu (#5224)", () => {
+		const description = BUILTIN_SLASH_COMMANDS.find((command) => command.name === "resume")?.description ?? "";
+		assert.match(description, /session.*workflow run/i);
+	});
+
 	test("the tables cover every built-in in the command menu (#5192)", () => {
 		const covered = new Set([...ARGUMENT_COMMANDS, ...BARE_COMMANDS].map((entry) => entry.name));
 		const missing = BUILTIN_SLASH_COMMANDS.map((command) => command.name).filter((name) => !covered.has(name));
