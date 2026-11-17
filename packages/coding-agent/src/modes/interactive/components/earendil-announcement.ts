@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { Container, Image, Spacer, Text } from "@bastani/atomic-tui";
-import { getBundledInteractiveAssetPath } from "../../../config.js";
+import { getBundledInteractiveAssetPathAsync } from "../../../config.js";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
 
@@ -11,10 +11,12 @@ let announcementImage: Promise<string | undefined> | undefined;
 
 /** The announcement image, read once; undefined when the bundled asset cannot be read. */
 export function loadEarendilAnnouncementImage(): Promise<string | undefined> {
-	announcementImage ??= readFile(getBundledInteractiveAssetPath(IMAGE_FILENAME)).then(
-		(bytes) => bytes.toString("base64"),
-		() => undefined,
-	);
+	announcementImage ??= getBundledInteractiveAssetPathAsync(IMAGE_FILENAME)
+		.then((path) => readFile(path))
+		.then(
+			(bytes) => bytes.toString("base64"),
+			() => undefined,
+		);
 	return announcementImage;
 }
 

@@ -433,6 +433,7 @@ export {
 	type DebugArea,
 	type DebugFields,
 	type DebugValue,
+	flushDebugLog,
 	getDebugLogFailure,
 	isDebugEnabled,
 	reportDebug,
@@ -1024,7 +1025,9 @@ export {
 export {
 	getProjectTrustOptions,
 	hasProjectTrustInputs,
+	hasProjectTrustInputsAsync,
 	hasTrustRequiringProjectResources,
+	hasTrustRequiringProjectResourcesAsync,
 	type ProjectTrustDecision,
 	type ProjectTrustOption,
 	ProjectTrustStore,

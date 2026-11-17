@@ -343,7 +343,7 @@ test.each(DEBUG_MODE_SOURCES)(
 				[],
 			);
 			assert.deepEqual(
-				areaRecords(log, "model-routing").filter((record) => record.event === "stage-routing-fallback"),
+				(await areaRecords(log, "model-routing")).filter((record) => record.event === "stage-routing-fallback"),
 				[
 					{
 						event: "stage-routing-fallback",

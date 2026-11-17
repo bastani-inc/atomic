@@ -1,4 +1,5 @@
 import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { ENV_DEBUG, getDebugLogPath, getEnvNames } from "../config.js";
 import { redactCredentialShapes } from "../utils/credential-redaction.js";
@@ -65,20 +66,81 @@ function safeFields(fields: DebugFields): Record<string, DebugValue> {
 	return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, safeValue(value)]));
 }
 
+interface PendingLine {
+	readonly path: string;
+	readonly line: string;
+}
+
+/** Lines reported and not yet appended, each with its file, in the order they were reported. */
+const pendingLines: PendingLine[] = [];
+/** The line being appended, until its append has finished. */
+let appending: PendingLine | undefined;
+/** The appends in progress, while there are any. */
+let draining: Promise<void> | undefined;
+let exitFlushRegistered = false;
+
+/**
+ * Appends `line` to the file at `path` without blocking the event loop: lines are appended in the order they were
+ * reported, and those still waiting when the process exits are written then.
+ */
 function appendLine(path: string, line: string): void {
+	pendingLines.push({ path, line });
+	if (!exitFlushRegistered) {
+		exitFlushRegistered = true;
+		process.once("exit", () => writePendingLinesSync());
+	}
+	draining ??= drainPendingLines();
+}
+
+async function drainPendingLines(): Promise<void> {
 	try {
-		mkdirSync(dirname(path), { recursive: true });
-		appendFileSync(path, `${line}\n`);
-	} catch (error) {
-		if (debugLogFailure !== undefined) return;
-		debugLogFailure = new DebugLogUnwritableError(path, { cause: error });
-		console.warn(debugLogFailure.message);
+		for (appending = pendingLines.shift(); appending !== undefined; appending = pendingLines.shift()) {
+			const { path, line } = appending;
+			try {
+				await mkdir(dirname(path), { recursive: true });
+				await appendFile(path, `${line}\n`);
+			} catch (error) {
+				recordFailure(path, error);
+			}
+		}
+	} finally {
+		appending = undefined;
+		draining = undefined;
 	}
 }
 
 /**
- * Appends `record` to the debug output file `path` as one JSON line, with credentials redacted. A failure is recorded
- * once (see {@link getDebugLogFailure}), never thrown.
+ * Writes the lines still waiting as the process exits, when nothing can wait for them any longer: the one being
+ * appended first, since its append cannot finish once the process exits.
+ */
+function writePendingLinesSync(): void {
+	if (appending !== undefined) pendingLines.unshift(appending);
+	appending = undefined;
+	for (let next = pendingLines.shift(); next !== undefined; next = pendingLines.shift()) {
+		try {
+			mkdirSync(dirname(next.path), { recursive: true });
+			appendFileSync(next.path, `${next.line}\n`);
+		} catch (error) {
+			recordFailure(next.path, error);
+		}
+	}
+}
+
+function recordFailure(path: string, error: unknown): void {
+	if (debugLogFailure !== undefined) return;
+	debugLogFailure = new DebugLogUnwritableError(path, { cause: error });
+	console.warn(debugLogFailure.message);
+}
+
+/** Resolves once every debug record reported so far is in its file, or its failure is recorded. */
+export async function flushDebugLog(): Promise<void> {
+	while (draining !== undefined) await draining;
+}
+
+/**
+ * Appends `record` to the debug output file `path` as one JSON line, with credentials redacted, without blocking: it is
+ * in the file once {@link flushDebugLog} resolves. A failure is recorded once (see {@link getDebugLogFailure}), never
+ * thrown.
  */
 export function appendDebugRecord(path: string, record: DebugFields): void {
 	appendLine(path, JSON.stringify(safeFields(record)));

@@ -20,7 +20,7 @@ import type { HerdrDiagnostic } from "./transport.js";
 
 export interface HerdrExtensionOptions extends PaneReportingOptions {
 	env?: NodeJS.ProcessEnv;
-	enabled?: (ctx: ExtensionContext) => boolean;
+	enabled?: (ctx: ExtensionContext) => boolean | Promise<boolean>;
 }
 
 function resumeArgv(sessionManager: ExtensionContext["sessionManager"]): string[] | undefined {
@@ -33,8 +33,8 @@ function resumeArgv(sessionManager: ExtensionContext["sessionManager"]): string[
 	return [APP_NAME, ...sessionDir, "--session", sessionId];
 }
 
-function enabled(ctx: ExtensionContext): boolean {
-	const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
+async function enabled(ctx: ExtensionContext): Promise<boolean> {
+	const settings = await SettingsManager.createAsync(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
 	return (
 		(settings.getProjectSettings().herdr?.enabled ??
 			settings.getGlobalSettings().herdr?.enabled ??
@@ -98,7 +98,9 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			if (boundSessionManager && ctx.sessionManager !== boundSessionManager) return;
 			const environment = captureHerdrEnvironment(options.env ?? process.env);
 			if (!environment || ctx.mode !== "tui" || !ctx.hasUI || ctx.subagentPolicy || ctx.orchestrationContext) return;
-			if (!(options.enabled ?? enabled)(ctx)) return;
+			// The settings are read without blocking; an answer already at hand is used on this turn, as before.
+			const isEnabled = (options.enabled ?? enabled)(ctx);
+			if (!(typeof isEnabled === "boolean" ? isEnabled : await isEnabled)) return;
 			if (boundRunner && boundRunner !== runner) retiredRunners.add(boundRunner);
 			boundRunner = runner;
 			boundSessionManager = ctx.sessionManager;

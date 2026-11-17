@@ -703,13 +703,13 @@ describe("workflow heartbeat cadence", () => {
 						data: { message: "send failed" },
 					}));
 					if (source === "ATOMIC_WORKFLOW_DEBUG") {
-						assert.equal(log.exists(), false);
+						assert.equal(await log.exists(), false);
 						assert.deepEqual(
 							warn.mock.calls,
 							expected.map(() => ["[workflows] workflow heartbeat send failed", "send failed"]),
 						);
 					} else {
-						assert.deepEqual(areaRecords(log, "workflow"), expected);
+						assert.deepEqual(await areaRecords(log, "workflow"), expected);
 						assert.equal(warn.mock.calls.length, 0);
 					}
 				});

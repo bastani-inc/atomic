@@ -3,12 +3,14 @@
  * Used by auth-storage.ts and model-registry.ts.
  */
 
-import { execSync, spawnSync } from "child_process";
+import { execSync, spawn, spawnSync } from "child_process";
 import { createChildProcessEnvironment } from "../utils/child-process.ts";
 import { getShellConfig } from "../utils/shell.ts";
 
 // Cache for shell command results (persists for process lifetime)
 const commandResultCache = new Map<string, string | undefined>();
+/** The asynchronous runs of commands not cached yet, so concurrent resolutions run each command once. */
+const commandRuns = new Map<string, Promise<string | undefined>>();
 // Last observed uncached result, used only for privacy screening, never auth resolution.
 const observedCommandResults = new Map<string, string>();
 const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -158,6 +160,18 @@ export function resolveConfigValue(config: string, env?: Record<string, string>)
 	return resolveTemplate(reference.parts, env);
 }
 
+/** {@link resolveConfigValue} without blocking the event loop: a command runs asynchronously, with the same cache. */
+export async function resolveConfigValueAsync(
+	config: string,
+	env?: Record<string, string>,
+): Promise<string | undefined> {
+	const reference = parseConfigValueReference(config);
+	if (reference.type === "command") {
+		return executeCommandAsync(reference.config);
+	}
+	return resolveTemplate(reference.parts, env);
+}
+
 /** Inspect only known values: never execute a command just to screen routing context. */
 export function containsConfiguredValue(serialized: string, config: string, env?: Record<string, string>): boolean {
 	const reference = parseConfigValueReference(config);
@@ -247,6 +261,124 @@ function executeCommand(commandConfig: string): string | undefined {
 	return result;
 }
 
+/** How long a configured command may run, as for the synchronous resolution. */
+const COMMAND_TIMEOUT_MS = 10_000;
+/** The output a command may print before it is stopped: the `maxBuffer` the synchronous resolution has. */
+const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
+
+interface CommandOutcome {
+	/** Why the command could not run, or was stopped. */
+	readonly error?: NodeJS.ErrnoException;
+	/** Its exit status; null when a signal ended it. */
+	readonly status: number | null;
+	readonly stdout: string;
+}
+
+/** Runs `file` as `spawnSync` runs it here, with stderr ignored, without blocking the event loop. */
+function runCommand(
+	file: string,
+	args: readonly string[],
+	options: { readonly shell: boolean; readonly windowsHide: boolean; readonly input?: string },
+): Promise<CommandOutcome> {
+	return new Promise((resolve) => {
+		const chunks: Buffer[] = [];
+		let size = 0;
+		let error: NodeJS.ErrnoException | undefined;
+		const child = spawn(file, args, {
+			stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "ignore"],
+			timeout: COMMAND_TIMEOUT_MS,
+			shell: options.shell,
+			windowsHide: options.windowsHide,
+			env: createChildProcessEnvironment(),
+		});
+		child.on("error", (failure: NodeJS.ErrnoException) => {
+			error ??= failure;
+		});
+		child.stdout?.on("data", (chunk: Buffer) => {
+			size += chunk.length;
+			if (size <= MAX_COMMAND_OUTPUT_BYTES) {
+				chunks.push(chunk);
+				return;
+			}
+			error ??= Object.assign(new Error("stdout maxBuffer length exceeded"), { code: "ENOBUFS" });
+			child.kill();
+		});
+		child.on("close", (status) => resolve({ error, status, stdout: Buffer.concat(chunks).toString("utf-8") }));
+		if (options.input !== undefined) {
+			// A command that exits without reading its input closes the pipe; that is its own outcome.
+			child.stdin?.on("error", () => {});
+			child.stdin?.end(options.input);
+		}
+	});
+}
+
+async function executeWithConfiguredShellAsync(
+	command: string,
+): Promise<{ executed: boolean; value: string | undefined }> {
+	try {
+		const { shell, args, commandTransport } = getShellConfig();
+		const commandFromStdin = commandTransport === "stdin";
+		const result = await runCommand(shell, commandFromStdin ? args : [...args, command], {
+			shell: false,
+			windowsHide: true,
+			input: commandFromStdin ? command : undefined,
+		});
+		if (result.error) {
+			return { executed: result.error.code !== "ENOENT", value: undefined };
+		}
+		if (result.status !== 0) {
+			return { executed: true, value: undefined };
+		}
+		const value = result.stdout.trim();
+		return { executed: true, value: value || undefined };
+	} catch {
+		return { executed: false, value: undefined };
+	}
+}
+
+async function executeWithDefaultShellAsync(command: string): Promise<string | undefined> {
+	try {
+		// `execSync` runs the command through the default shell with stdin ignored, and fails unless it exits with 0.
+		const result = await runCommand(command, [], { shell: true, windowsHide: false });
+		if (result.error || result.status !== 0) return undefined;
+		return result.stdout.trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function executeCommandUncachedAsync(commandConfig: string): Promise<string | undefined> {
+	const command = commandConfig.slice(1);
+	let result: string | undefined;
+	if (process.platform === "win32") {
+		const configuredResult = await executeWithConfiguredShellAsync(command);
+		result = configuredResult.executed ? configuredResult.value : await executeWithDefaultShellAsync(command);
+	} else {
+		result = await executeWithDefaultShellAsync(command);
+	}
+	if (result) observedCommandResults.set(commandConfig, result);
+	return result;
+}
+
+/** {@link executeCommand} without blocking the event loop. */
+async function executeCommandAsync(commandConfig: string): Promise<string | undefined> {
+	if (commandResultCache.has(commandConfig)) {
+		return commandResultCache.get(commandConfig);
+	}
+	let run = commandRuns.get(commandConfig);
+	if (run === undefined) {
+		run = executeCommandUncachedAsync(commandConfig).then((result) => {
+			if (commandRuns.get(commandConfig) === run) {
+				commandResultCache.set(commandConfig, result);
+				commandRuns.delete(commandConfig);
+			}
+			return result;
+		});
+		commandRuns.set(commandConfig, run);
+	}
+	return run;
+}
+
 /**
  * Resolve all header values using the same resolution logic as API keys.
  */
@@ -258,28 +390,56 @@ export function resolveConfigValueUncached(config: string, env?: Record<string, 
 	return resolveTemplate(reference.parts, env);
 }
 
+/** {@link resolveConfigValueUncached} without blocking the event loop. */
+export async function resolveConfigValueUncachedAsync(
+	config: string,
+	env?: Record<string, string>,
+): Promise<string | undefined> {
+	const reference = parseConfigValueReference(config);
+	if (reference.type === "command") {
+		return executeCommandUncachedAsync(reference.config);
+	}
+	return resolveTemplate(reference.parts, env);
+}
+
 export function resolveConfigValueOrThrow(config: string, description: string, env?: Record<string, string>): string {
 	const resolvedValue = resolveConfigValueUncached(config, env);
 	if (resolvedValue !== undefined) {
 		return resolvedValue;
 	}
+	throw unresolvedConfigValueError(config, description, env);
+}
 
+/** {@link resolveConfigValueOrThrow} without blocking the event loop. */
+export async function resolveConfigValueOrThrowAsync(
+	config: string,
+	description: string,
+	env?: Record<string, string>,
+): Promise<string> {
+	const resolvedValue = await resolveConfigValueUncachedAsync(config, env);
+	if (resolvedValue !== undefined) {
+		return resolvedValue;
+	}
+	throw unresolvedConfigValueError(config, description, env);
+}
+
+function unresolvedConfigValueError(config: string, description: string, env?: Record<string, string>): Error {
 	const reference = parseConfigValueReference(config);
 	if (reference.type === "command") {
-		throw new Error(`Failed to resolve ${description} from shell command: ${reference.config.slice(1)}`);
+		return new Error(`Failed to resolve ${description} from shell command: ${reference.config.slice(1)}`);
 	}
 
 	if (reference.type === "template") {
 		const missingEnvVars = getMissingConfigValueEnvVarNames(config, env);
 		if (missingEnvVars.length === 1) {
-			throw new Error(`Failed to resolve ${description} from environment variable: ${missingEnvVars[0]}`);
+			return new Error(`Failed to resolve ${description} from environment variable: ${missingEnvVars[0]}`);
 		}
 		if (missingEnvVars.length > 1) {
-			throw new Error(`Failed to resolve ${description} from environment variables: ${missingEnvVars.join(", ")}`);
+			return new Error(`Failed to resolve ${description} from environment variables: ${missingEnvVars.join(", ")}`);
 		}
 	}
 
-	throw new Error(`Failed to resolve ${description}`);
+	return new Error(`Failed to resolve ${description}`);
 }
 
 /**
@@ -313,8 +473,23 @@ export function resolveHeadersOrThrow(
 	return Object.keys(resolved).length > 0 ? resolved : undefined;
 }
 
+/** {@link resolveHeadersOrThrow} without blocking the event loop. */
+export async function resolveHeadersOrThrowAsync(
+	headers: Record<string, string> | undefined,
+	description: string,
+	env?: Record<string, string>,
+): Promise<Record<string, string> | undefined> {
+	if (!headers) return undefined;
+	const resolved: Record<string, string> = {};
+	for (const [key, value] of Object.entries(headers)) {
+		resolved[key] = await resolveConfigValueOrThrowAsync(value, `${description} header "${key}"`, env);
+	}
+	return Object.keys(resolved).length > 0 ? resolved : undefined;
+}
+
 /** Clear the config value command cache. Exported for testing. */
 export function clearConfigValueCache(): void {
 	commandResultCache.clear();
 	observedCommandResults.clear();
+	commandRuns.clear();
 }

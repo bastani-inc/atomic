@@ -82,8 +82,8 @@ export class KeybindingsReloadCoordinator<TSession extends ReloadableSession = R
 		let keybindingsApplied = false;
 		try {
 			await session.reload({
-				beforeSessionStart: () => {
-					this.keybindings!.reload();
+				beforeSessionStart: async () => {
+					await this.keybindings!.reloadAsync();
 					keybindingsApplied = true;
 				},
 			});

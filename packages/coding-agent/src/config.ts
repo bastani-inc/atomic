@@ -1,3 +1,4 @@
+import { access, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
@@ -37,6 +38,12 @@ export const isBundledBuild = process.env.ATOMIC_BUNDLED_BUILD === "1";
 
 /** Detect if Bun is the runtime (compiled binary or bun run) */
 export const isBunRuntime = !!process.versions.bun;
+
+/**
+ * The Atomic app package above this module, found once as the module loads: walking up to it reads each directory's
+ * package.json, and where the module lives does not change while the process runs.
+ */
+const modulePackageDir = isBunBinary ? undefined : resolvePackageDirFrom(__dirname);
 
 // =============================================================================
 // Install Method Detection
@@ -132,14 +139,14 @@ export function getPackageDir(): string {
 		return normalizePath(envDir);
 	}
 
-	if (isBunBinary) {
+	if (isBunBinary || modulePackageDir === undefined) {
 		// Bun binary: process.execPath points to the compiled executable
 		return dirname(process.execPath);
 	}
 	// Node.js: walk up from __dirname to the Atomic app package. Prebundled
 	// companion extensions ship under dist/builtin/<name>/ with their own
 	// package.json; stopping at the first one made APP_NAME "workflows".
-	return resolvePackageDirFrom(__dirname);
+	return modulePackageDir;
 }
 
 /**
@@ -154,7 +161,45 @@ function getModuleAssetRoot(): string {
 		return __dirname;
 	}
 	const packageDir = getPackageDir();
-	return join(packageDir, existsSync(join(packageDir, "src")) ? "src" : "dist");
+	return packageAssetRoots.get(packageDir) ?? findPackageAssetRoot(packageDir);
+}
+
+/** {@link getModuleAssetRoot} without blocking the event loop. */
+async function getModuleAssetRootAsync(): Promise<string> {
+	const hasPackageDirOverride = !!(process.env.ATOMIC_PACKAGE_DIR || process.env.PI_PACKAGE_DIR);
+	if (!isBundledBuild && !hasPackageDirOverride) {
+		return __dirname;
+	}
+	const packageDir = getPackageDir();
+	const known = packageAssetRoots.get(packageDir);
+	if (known !== undefined) return known;
+	const root = join(packageDir, (await pathExists(join(packageDir, "src"))) ? "src" : "dist");
+	packageAssetRoots.set(packageDir, root);
+	return root;
+}
+
+/** The source-layout asset root of each package directory, found once for it: a package's layout does not change. */
+const packageAssetRoots = new Map<string, string>();
+
+/** Where `packageDir` keeps its source-layout assets: its `src` when it has one, else its `dist`. */
+function findPackageAssetRoot(packageDir: string): string {
+	const root = join(packageDir, existsSync(join(packageDir, "src")) ? "src" : "dist");
+	packageAssetRoots.set(packageDir, root);
+	return root;
+}
+
+// Found as the module loads for the package directory in effect, so later asset lookups never touch the disk.
+if (isBundledBuild || process.env.ATOMIC_PACKAGE_DIR || process.env.PI_PACKAGE_DIR) {
+	findPackageAssetRoot(getPackageDir());
+}
+
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /** Codemode workers and wasm live beside Atomic's split/development bundle. */
@@ -171,6 +216,20 @@ export function getCodemodeWorkerUrl(): URL | undefined {
 	if (!isBunBinary && !isBundledBuild && !existsSync(worker)) return undefined;
 	// A self-contained worker survives replacement or removal of the running install.
 	codemodeWorkerDataUrl ??= new URL(`data:text/javascript;base64,${readFileSync(worker).toString("base64")}`);
+	return codemodeWorkerDataUrl;
+}
+
+/** {@link getCodemodeWorkerUrl} without blocking the event loop: the worker is read asynchronously. */
+export async function getCodemodeWorkerUrlAsync(): Promise<URL | undefined> {
+	if (codemodeWorkerDataUrl) return codemodeWorkerDataUrl;
+	const worker = isBunBinary
+		? join(getPackageDir(), "codemode-worker.js")
+		: isBundledBuild
+			? join(dirname(resolve(process.argv[1])), "codemode-worker.js")
+			: join(await getModuleAssetRootAsync(), "codemode-worker.js");
+	if (!isBunBinary && !isBundledBuild && !(await pathExists(worker))) return undefined;
+	const content = await readFile(worker);
+	codemodeWorkerDataUrl ??= new URL(`data:text/javascript;base64,${content.toString("base64")}`);
 	return codemodeWorkerDataUrl;
 }
 
@@ -193,6 +252,24 @@ export function detectInstallChange(packageJsonPath = startupPackageJsonPath): I
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "removed" } : undefined;
 	}
+	return installChangeOf(installed);
+}
+
+/** {@link detectInstallChange} without blocking the event loop. */
+export async function detectInstallChangeAsync(
+	packageJsonPath = startupPackageJsonPath,
+): Promise<InstallChange | undefined> {
+	if (isBunBinary || !packageJsonPath) return undefined;
+	let installed: PackageJson;
+	try {
+		installed = JSON.parse(stripBom(await readFile(packageJsonPath, "utf-8"))) as PackageJson;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "removed" } : undefined;
+	}
+	return installChangeOf(installed);
+}
+
+function installChangeOf(installed: PackageJson): InstallChange | undefined {
 	return installed.version && installed.version !== VERSION
 		? { kind: "updated", version: installed.version }
 		: undefined;
@@ -264,6 +341,14 @@ export function getInteractiveAssetsDir(): string {
 /** Get path to a bundled interactive asset */
 export function getBundledInteractiveAssetPath(name: string): string {
 	return join(getInteractiveAssetsDir(), name);
+}
+
+/** {@link getBundledInteractiveAssetPath} without blocking the event loop. */
+export async function getBundledInteractiveAssetPathAsync(name: string): Promise<string> {
+	const assetsDir = isBunBinary
+		? join(getPackageDir(), "assets")
+		: join(await getModuleAssetRootAsync(), "modes", "interactive", "assets");
+	return join(assetsDir, name);
 }
 
 // =============================================================================

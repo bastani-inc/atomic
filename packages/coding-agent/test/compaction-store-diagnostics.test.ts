@@ -17,6 +17,7 @@ import {
 	writeRecoveryDiagnosticSidecar,
 	writeSuccessDiagnosticSidecar,
 } from "../src/core/compaction/range-planner-diagnostics.js";
+import { flushDebugLog } from "../src/core/debug.js";
 import { convertToLlm } from "../src/core/messages.js";
 import type { SessionEntry } from "../src/core/session-manager.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -402,7 +403,8 @@ describe("sidecar location (#4543)", () => {
 		assert.equal(stored.rawResponseChars, MAX_DIAGNOSTIC_TEXT_CHARS + 10);
 	});
 
-	function debugRecords() {
+	async function debugRecords() {
+		await flushDebugLog();
 		return readFileSync(getDebugLogPath(), "utf-8")
 			.trim()
 			.split("\n")
@@ -420,7 +422,7 @@ describe("sidecar location (#4543)", () => {
 		);
 
 		assert.equal(path, undefined);
-		const records = debugRecords();
+		const records = await debugRecords();
 		assert.equal(records.length, 1);
 		assert.equal(records[0].area, "storage");
 		assert.equal(records[0].event, "compaction-diagnostic-unwritable");
@@ -436,7 +438,7 @@ describe("sidecar location (#4543)", () => {
 		const path = await writeDiagnosticSidecar(failureContext({ sessionFilePath: join(missing, "s.jsonl") }));
 
 		assert.equal(path, undefined);
-		const records = debugRecords();
+		const records = await debugRecords();
 		assert.equal(records.length, 1);
 		assert.equal(records[0].event, "compaction-diagnostic-unwritable");
 		assert.equal(records[0].data.code, "ENOENT");

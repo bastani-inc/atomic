@@ -379,7 +379,7 @@ async function continueChildWhereItWorked(
 ): Promise<SessionManager> {
 	const inherited = ctx.getChildSessionOptions?.({});
 	const agentDir = inherited?.agentDir ?? getAgentDir();
-	const settingsManager = inherited?.settingsManager ?? SettingsManager.create(launchCwd, agentDir);
+	const settingsManager = inherited?.settingsManager ?? (await SettingsManager.createAsync(launchCwd, agentDir));
 	return continueSessionWhereItWorked(opened, {
 		...sessionResumeOptions(
 			"rehydrate",

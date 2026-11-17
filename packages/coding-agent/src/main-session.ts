@@ -31,7 +31,7 @@ import { ownedSessionManagerStores } from "./core/session-lifecycle-work.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
 import { assertSessionNotOpenElsewhere } from "./core/session-open-markers.ts";
-import { resolveSessionStore, selectSessionStorage } from "./core/session-storage.js";
+import { resolveSessionStore, selectSessionStorageWithSettings } from "./core/session-storage.js";
 import {
 	deleteSessionWithSnapshotRefs,
 	sessionManagerContinuesIn,
@@ -323,7 +323,7 @@ export async function refreshSessionStorage(
 		sessionStorePath: parsed.sessionStorePath,
 		sessionPrefix: parsed.sessionPrefix,
 	};
-	const selection = selectSessionStorage(manager.getCwd(), options);
+	const selection = selectSessionStorageWithSettings(manager.getCwd(), options);
 	if ("load" in selection) return undefined;
 	const key = storageSelectionKey(selection, getAgentDir());
 	const initialKey = initialStorageKeys.get(manager);
@@ -361,7 +361,7 @@ export async function createSessionManager(
 	try {
 		const manager = await createSessionManagerWithStore(parsed, cwd, settingsManager, store);
 		if (store !== sessionStore) ownedSessionManagerStores.set(manager, store);
-		const selection = selectSessionStorage(cwd, {
+		const selection = selectSessionStorageWithSettings(cwd, {
 			sessionStore,
 			settings: settingsManager.getSettings(),
 			noSession: parsed.noSession,
@@ -564,7 +564,7 @@ export function cliSessionStorageSelection(
 	settingsManager: SettingsManager,
 	sessionStore?: SessionStore | StorageSelection,
 ): StorageSelection | undefined {
-	const selection = selectSessionStorage(cwd, {
+	const selection = selectSessionStorageWithSettings(cwd, {
 		sessionStore,
 		settings: settingsManager.getSettings(),
 		noSession: parsed.noSession,

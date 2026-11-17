@@ -946,7 +946,7 @@ for await (const line of createInterface({ input: process.stdin })) {
 			[() => createTransport()],
 		);
 		assert.deepEqual(await connection.callTool("echo", {}, {}), { content: [{ type: "text", text: "ok" }] });
-		assert.throws(() => connection.oauthSettings(), /oauth\.clientSecret/);
+		await assert.rejects(() => connection.oauthSettings(), /oauth\.clientSecret/);
 		await connection.close();
 	});
 });

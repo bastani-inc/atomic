@@ -20,7 +20,7 @@ import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../../c
 import { parseJsonFileContent } from "../../utils/json.ts";
 import type { IntercomBrokerControl, RestartOutcome } from "../intercom-broker-control.js";
 import { resolvePackageStorageAdapter } from "../package-manager-storage-adapters.js";
-import { selectSessionSetting, selectSessionStorage } from "../session-storage.js";
+import { selectSessionSetting, selectSessionStorageWithSettings } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
 import { deepMergeSettings } from "../settings-merge.js";
 import type { Settings } from "../settings-schema.ts";
@@ -897,7 +897,7 @@ export function selectTeamProfile(options: TeamProfileOptions = {}): TeamProfile
 		});
 	}
 	const merged = manager.getSettings();
-	const sessions = selectSessionStorage(cwd, { agentDir, settings: merged }) as StorageSelection;
+	const sessions = selectSessionStorageWithSettings(cwd, { agentDir, settings: merged }) as StorageSelection;
 	const journal = selectJournal(agentDir, merged);
 	const intercom = selectIntercomStorage(agentDir, manager.getGlobalSettings().storage);
 	const shared = intercom?.kind === "adapter" ? storageSelectionKey(intercom, agentDir) : undefined;

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { vi } from "vitest";
+import { flushDebugLog } from "../../packages/coding-agent/src/core/debug.js";
 import { setDebugSetting } from "../../packages/coding-agent/src/core/debug-setting.js";
 import { DEBUG_ENV_VARS } from "./debug-env.js";
 import { makeTempDirectory, removeTempDirectory } from "./runtime.js";
@@ -21,10 +22,10 @@ export interface DebugLogRecord {
 export interface DebugLogFixture {
 	readonly agentDir: string;
 	readonly path: string;
-	/** Every record written so far; empty when the log was never created. */
-	records(): DebugLogRecord[];
-	/** Whether anything created the debug log file. */
-	exists(): boolean;
+	/** Every record reported so far, once written; empty when the log was never created. */
+	records(): Promise<DebugLogRecord[]>;
+	/** Whether anything created the debug log file, once the records reported so far are written. */
+	exists(): Promise<boolean>;
 }
 
 /**
@@ -44,14 +45,19 @@ export async function withDebugLog<T>(
 	const log: DebugLogFixture = {
 		agentDir,
 		path,
-		exists: () => existsSync(path),
-		records: () =>
-			existsSync(path)
+		exists: async () => {
+			await flushDebugLog();
+			return existsSync(path);
+		},
+		records: async () => {
+			await flushDebugLog();
+			return existsSync(path)
 				? readFileSync(path, "utf8")
 						.split("\n")
 						.filter((line) => line.startsWith("{"))
 						.map((line) => JSON.parse(line) as DebugLogRecord)
-				: [],
+				: [];
+		},
 	};
 	try {
 		return await body(log);
@@ -63,9 +69,9 @@ export async function withDebugLog<T>(
 }
 
 /** The records of one area, without the per-write timestamp and pid. */
-export function areaRecords(log: DebugLogFixture, area: string): { event: string; data: Record<string, unknown> }[] {
-	return log
-		.records()
-		.filter((record) => record.area === area)
-		.map(({ event, data }) => ({ event, data }));
+export async function areaRecords(
+	log: DebugLogFixture,
+	area: string,
+): Promise<{ event: string; data: Record<string, unknown> }[]> {
+	return (await log.records()).filter((record) => record.area === area).map(({ event, data }) => ({ event, data }));
 }

@@ -31,8 +31,8 @@ import {
 	getConfigValueEnvVarNames,
 	isCommandConfigValue,
 	isConfigValueConfigured,
-	resolveConfigValueOrThrow,
-	resolveHeadersOrThrow,
+	resolveConfigValueOrThrowAsync,
+	resolveHeadersOrThrowAsync,
 } from "./resolve-config-value.ts";
 
 export interface ExtensionOAuthConfig {
@@ -463,7 +463,7 @@ export function composeApiKeyAuth(
 				const env = await configContextEnv([rawKey], input.ctx);
 				// Like a built-in whose key variable is unset, an unset `$VAR` key means no credential, not an error.
 				if (!isCommandConfigValue(rawKey) && !isConfigValueConfigured(rawKey, env)) return undefined;
-				const key = resolveConfigValueOrThrow(rawKey, `API key for provider "${providerId}"`, env);
+				const key = await resolveConfigValueOrThrowAsync(rawKey, `API key for provider "${providerId}"`, env);
 				result = inherited
 					? await inherited.resolve({ ...input, credential: { type: "api_key", key } })
 					: { auth: { apiKey: key }, source: "configured API key" };
@@ -473,7 +473,7 @@ export function composeApiKeyAuth(
 			if (!result) return undefined;
 			const explicitEnv = { ...(input.credential?.env ?? {}), ...(result.env ?? {}) };
 			const headerEnv = await configContextEnv(Object.values(rawHeaders ?? {}), input.ctx, explicitEnv);
-			const headers = resolveHeadersOrThrow(rawHeaders, `provider "${providerId}"`, headerEnv);
+			const headers = await resolveHeadersOrThrowAsync(rawHeaders, `provider "${providerId}"`, headerEnv);
 			return { ...result, auth: withConfiguredAuth(result.auth, headers, authHeader) };
 		},
 	};
@@ -494,7 +494,7 @@ export function composeOAuthAuth(
 		toAuth: async (credential) => {
 			const auth = await oauth.toAuth(credential);
 			const env = credential.env;
-			const headers = resolveHeadersOrThrow(
+			const headers = await resolveHeadersOrThrowAsync(
 				rawHeaders,
 				`provider "${providerId}"`,
 				typeof env === "object" && env !== null ? (env as Record<string, string>) : undefined,

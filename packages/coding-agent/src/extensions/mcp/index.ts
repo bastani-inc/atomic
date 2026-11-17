@@ -598,22 +598,38 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		 * Stored tokens of servers waiting for a sign-in, as they were when the sign-in was needed.
 		 * `pi mcp login` in another process (for example run by the agent) changes them.
 		 */
-		const tokensAtSignIn = new Map<McpServerConnection, string>();
-		const storedTokens = (connection: McpServerConnection): string => {
+		const tokensAtSignIn = new Map<McpServerConnection, Promise<string>>();
+		const storedTokens = async (connection: McpServerConnection): Promise<string> => {
 			const url = connection.oauthUrl;
-			return url && credentials ? JSON.stringify(credentials.tokens(connection.name, url) ?? null) : "null";
+			return url && credentials
+				? JSON.stringify((await credentials.tokensAsync(connection.name, url)) ?? null)
+				: "null";
 		};
 		const onConnectionChange = (connection: McpServerConnection) => {
 			if (connection.state !== "needs-auth") tokensAtSignIn.delete(connection);
-			else if (!tokensAtSignIn.has(connection)) tokensAtSignIn.set(connection, storedTokens(connection));
+			else if (!tokensAtSignIn.has(connection)) {
+				// Read as the sign-in becomes needed; a failed read surfaces when the tokens are compared.
+				const tokens = storedTokens(connection);
+				tokens.catch(() => {});
+				tokensAtSignIn.set(connection, tokens);
+			}
 			emitChange();
 		};
 		/** Reconnect servers that need a sign-in when their credentials were stored since. */
 		const reconnectSignedIn = async (ctx: ExtensionContext) => {
-			const signedIn = [...tokensAtSignIn].filter(([connection, tokens]) => storedTokens(connection) !== tokens);
+			const compared = await Promise.all(
+				[...tokensAtSignIn].map(async ([connection, tokens]) => ({
+					connection,
+					tokens,
+					changed: (await storedTokens(connection)) !== (await tokens),
+				})),
+			);
+			const signedIn = compared.filter(({ changed }) => changed);
 			if (signedIn.length === 0) return;
-			for (const [connection] of signedIn) tokensAtSignIn.delete(connection);
-			await Promise.allSettled(signedIn.map(([connection]) => connection.reconnect()));
+			for (const { connection, tokens } of signedIn) {
+				if (tokensAtSignIn.get(connection) === tokens) tokensAtSignIn.delete(connection);
+			}
+			await Promise.allSettled(signedIn.map(({ connection }) => connection.reconnect()));
 			ensureDiscoveryActive(ctx);
 		};
 
@@ -746,7 +762,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					runtime.signInMcpServer({
 						serverUrl: url,
 						store: getCredentials(runtime).forServer(server.entry.name, url),
-						settings: connection.oauthSettings(),
+						settings: await connection.oauthSettings(),
 						challenge: connection.challenge,
 						prompt,
 						signal,

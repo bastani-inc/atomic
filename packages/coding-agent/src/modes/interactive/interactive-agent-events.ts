@@ -1,4 +1,4 @@
-import { APP_NAME, detectInstallChange, VERSION } from "../../config.js";
+import { APP_NAME, detectInstallChangeAsync, VERSION } from "../../config.js";
 import {
 	createCacheMissModelSource,
 	detectCacheMiss,
@@ -39,10 +39,14 @@ import { applyAssistantMessageDelta, beginStreamingAssistantMessage } from "./st
 /** Reasons that mean there is nothing to snapshot, which keep the session exactly as it behaves without snapshots. */
 const WORKSPACE_ABSENCE_CODES: ReadonlySet<string> = new Set(["not-installed", "not-a-repository", "unborn-head"]);
 
-InteractiveModeBase.prototype.maybeShowInstallChangeWarning = function (this: InteractiveModeBase): boolean {
+InteractiveModeBase.prototype.maybeShowInstallChangeWarning = async function (
+	this: InteractiveModeBase,
+): Promise<boolean> {
 	if (this.installChangeWarningShown) return true;
-	const change = detectInstallChange();
+	const change = await detectInstallChangeAsync();
 	if (!change) return false;
+	// Another failure may have shown it while the installed package was read.
+	if (this.installChangeWarningShown) return true;
 	this.installChangeWarningShown = true;
 	const cause =
 		change.kind === "updated"
@@ -305,7 +309,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 						this.streamingMessage.stopReason === "error" &&
 						!/\b(?:abort(?:ed)?|cancel(?:l?ed)?)\b/i.test(this.streamingMessage.errorMessage ?? "")
 					)
-						this.maybeShowInstallChangeWarning();
+						void this.maybeShowInstallChangeWarning();
 					if (!errorMessage) {
 						errorMessage = this.streamingMessage.errorMessage || "Error";
 					}
@@ -361,7 +365,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "tool_execution_end": {
-			if (event.isError) this.maybeShowInstallChangeWarning();
+			if (event.isError) void this.maybeShowInstallChangeWarning();
 			const component = this.pendingTools.get(event.toolCallId);
 			if (component) {
 				component.updateResult({ ...event.result, isError: event.isError, durationMs: event.durationMs });

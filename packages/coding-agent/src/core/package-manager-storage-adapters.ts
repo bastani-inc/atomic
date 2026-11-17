@@ -69,7 +69,9 @@ export async function resolvePackageStorageAdapter(specifier: string, agentDir: 
 	await hostStoragePackagesRegistered();
 	const hosted = hostStorageAdapter(specifier);
 	if (hosted !== undefined) return hosted;
-	const settings = SettingsManager.create(agentDir, agentDir, { projectTrusted: false }).getGlobalSettings();
+	const settings = (
+		await SettingsManager.createAsync(agentDir, agentDir, { projectTrusted: false })
+	).getGlobalSettings();
 	if (!Array.isArray(settings?.packages)) return undefined;
 	const context: PackageLocationContext = { cwd: agentDir, agentDir };
 	for (const entry of settings.packages) {

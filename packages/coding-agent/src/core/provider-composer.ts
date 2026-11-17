@@ -33,6 +33,7 @@ import {
 	isCommandConfigValue,
 	isConfigValueConfigured,
 	resolveHeadersOrThrow,
+	resolveHeadersOrThrowAsync,
 } from "./resolve-config-value.ts";
 
 export type { AuthStatus, ExtensionOAuthConfig, ProviderConfigInput } from "./provider-composer-internal.ts";
@@ -244,6 +245,20 @@ export function resolveConfiguredModelHeaders(
 	);
 }
 
+/** {@link resolveConfiguredModelHeaders} without blocking the event loop: a `!` command header runs asynchronously. */
+export function resolveConfiguredModelHeadersAsync(
+	model: AnyModel,
+	config: ModelsJsonProvider | undefined,
+	extension: ProviderConfigInput | undefined,
+	env?: Record<string, string>,
+): Promise<Record<string, string> | undefined> {
+	return resolveHeadersOrThrowAsync(
+		rawModelHeaders(model, config, extension),
+		`model "${model.provider}/${model.id}"`,
+		env,
+	);
+}
+
 export interface CompatibilityRequestConfig {
 	headers?: ProviderHeaders;
 	authHeader: boolean;
@@ -258,6 +273,28 @@ export function resolveCompatibilityRequestConfig(
 		{ ...configuredHeaders(config, extension), ...rawModelHeaders(model, config, extension) },
 		`model "${model.provider}/${model.id}"`,
 	);
+	return compatibilityRequestConfig(model, config, extension, configured);
+}
+
+/** {@link resolveCompatibilityRequestConfig} without blocking the event loop. */
+export async function resolveCompatibilityRequestConfigAsync(
+	model: AnyModel,
+	config: ModelsJsonProvider | undefined,
+	extension: ProviderConfigInput | undefined,
+): Promise<CompatibilityRequestConfig> {
+	const configured = await resolveHeadersOrThrowAsync(
+		{ ...configuredHeaders(config, extension), ...rawModelHeaders(model, config, extension) },
+		`model "${model.provider}/${model.id}"`,
+	);
+	return compatibilityRequestConfig(model, config, extension, configured);
+}
+
+function compatibilityRequestConfig(
+	model: AnyModel,
+	config: ModelsJsonProvider | undefined,
+	extension: ProviderConfigInput | undefined,
+	configured: Record<string, string> | undefined,
+): CompatibilityRequestConfig {
 	return {
 		headers: model.headers || configured ? { ...model.headers, ...configured } : undefined,
 		authHeader: extension?.authHeader ?? config?.authHeader ?? false,
