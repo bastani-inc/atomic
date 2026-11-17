@@ -523,6 +523,7 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
 			const store = await SqlSessionStore.open(database);
 			const sessions = 600;
+			await database.exec("PRAGMA synchronous = OFF");
 			for (let index = 0; index < sessions; index++) {
 				const id = `s-${index}`;
 				await store.create(header(id), [message(`${id}-1`, null, "x".repeat(SESSION_SUMMARY_TEXT_CHARS))]);
@@ -557,7 +558,7 @@ async function countLongValuesMeasured<T>(
 				if (value === null) return null;
 				if (typeof value === "string") {
 					if (value.length >= LONG_VALUE_CHARS) calls++;
-					return [...value].length;
+					return value.length - (value.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g)?.length ?? 0);
 				}
 				return value instanceof Uint8Array ? value.byteLength : String(value).length;
 			});
