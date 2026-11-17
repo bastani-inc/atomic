@@ -14,6 +14,7 @@ import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import type { ChatMessageEntry, ChatMessageRenderOptions } from "./chat-message-renderer.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
+import type { sessionPromptsFromEntries } from "./prompt-history-selector.ts";
 import type { WorkingRunSnapshot } from "./working-run-meter.ts";
 
 export interface ChatSessionInterruptedTurnSnapshot {
@@ -103,6 +104,7 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	 * stage on a local worker: a compaction redraws the transcript from them.
 	 */
 	getSessionMessages?: () => AgentSession["messages"] | undefined;
+	getPromptEntries?: () => Parameters<typeof sessionPromptsFromEntries>[0] | undefined;
 	/**
 	 * Tasks to show when `getAgentSession` has no task store in this process: the tasks of a session
 	 * that runs elsewhere, such as a workflow stage on a local worker.

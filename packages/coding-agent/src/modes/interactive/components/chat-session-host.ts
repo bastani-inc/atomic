@@ -19,6 +19,7 @@ import {
 	chatSessionEditorAccess,
 	createChatSessionEditor,
 	handleChatSessionInput,
+	hasChatSessionTransientModal,
 	setChatSessionEditorText,
 } from "./chat-session-host-editor.ts";
 import { applyChatSessionAgentEvent, compactionStatusMessage } from "./chat-session-host-events.ts";
@@ -128,6 +129,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			this.showWarning("Launched agents and shells will appear here.");
 			return true;
 		}
+		this.state.promptSearch = undefined;
 		this.taskInspector?.dispose();
 		this.taskInspector = new TaskInspector(
 			this.taskSource,
@@ -142,6 +144,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 	get hasTaskInspector(): boolean {
 		return this.taskInspector !== undefined;
+	}
+	get hasTransientModal(): boolean {
+		return hasChatSessionTransientModal(this.state);
 	}
 	get taskInspectorFullscreen(): boolean {
 		return this.taskInspector?.fullscreen === true;

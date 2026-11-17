@@ -842,6 +842,8 @@ pi.on("input", async (event, ctx) => {
 - `transform` - modify text/images, then continue to expansion
 - `handled` - skip agent entirely (first handler to return this wins)
 
+Transforms change the input sent to the agent and the prompt the session saves, including input queued while a turn runs or while queued messages are paused, and Ctrl+R prompt search lists the transformed text. ↑ and ↓ in the editor still walk through what was typed during the current run.
+
 Transforms chain across handlers. See [input-transform.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform.ts) and [input-transform-streaming.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/input-transform-streaming.ts) for `streamingBehavior`-aware routing.
 
 ## Workflow activity and lifecycle hooks

@@ -205,6 +205,32 @@ describe("compactor endpoint", () => {
 		assert.equal(request.body.model, "morph-compactor");
 	});
 
+	it("trims trailing slashes from the base URL in linear time", async () => {
+		const post = async (baseUrl: string) => {
+			const fake = endpoint(() => json({ output: "x" }));
+			const started = performance.now();
+			await requestCompactorOutput({
+				apiKey: API_KEY,
+				modelId: "morph-compactor",
+				baseUrl,
+				messages: [],
+				query: "q",
+				signal: new AbortController().signal,
+				fetchFn: fake.fetch,
+			});
+			return { url: fake.requests[0].url, elapsedMs: performance.now() - started };
+		};
+		assert.equal((await post("https://api.morphllm.com/v1")).url, "https://api.morphllm.com/v1/compact");
+		assert.equal((await post("https://api.morphllm.com/v1/")).url, "https://api.morphllm.com/v1/compact");
+		const trailing = await post(`https://api.morphllm.com/v1${"/".repeat(100_000)}`);
+		assert.equal(trailing.url, "https://api.morphllm.com/v1/compact");
+		assert.ok(trailing.elapsedMs < 1_000, `took ${trailing.elapsedMs} ms`);
+		const interior = `https://api.morphllm.com${"/".repeat(100_000)}v1`;
+		const inner = await post(interior);
+		assert.equal(inner.url, `${interior}/compact`);
+		assert.ok(inner.elapsedMs < 1_000, `took ${inner.elapsedMs} ms`);
+	});
+
 	it("joins message outputs when the endpoint returns messages", async () => {
 		const fake = endpoint(() => json({ messages: [{ content: "one" }, { content: "  " }, { content: "two" }] }));
 		const result = await requestCompactorOutput({

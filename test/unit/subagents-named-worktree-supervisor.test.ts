@@ -238,13 +238,13 @@ test(
 		const beforeSpools = new Set(readdirSync(tmpdir()).filter((entry) => entry.startsWith(spoolPrefix)));
 		for (let index = 0; index < 300; index += 1) {
 			const result = await addNamedWorktree(repo, ["worktree", "list", "--porcelain"], {});
-			assert.equal(result.status, 0);
+			assert.equal(result.status, 0, result.stderr);
 		}
 		const burst = Array.from({ length: 320 }, () => addNamedWorktree(repo, ["worktree", "list", "--porcelain"], {}));
 		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3_000);
 		const burstResults = await Promise.all(burst);
 		for (const result of burstResults) {
-			assert.equal(result.status, 0);
+			assert.equal(result.status, 0, result.stderr);
 			assert.match(result.stdout, /worktree /);
 		}
 		const countAddedSpools = (): number =>

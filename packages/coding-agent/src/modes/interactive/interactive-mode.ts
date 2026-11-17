@@ -25,6 +25,7 @@ import "./interactive-editor-actions.ts";
 import "./interactive-queueing.ts";
 import "./interactive-selectors.ts";
 import "./interactive-model-routing.ts";
+import "./interactive-prompt-history.ts";
 import "./interactive-session-routing.ts";
 import "./interactive-auth-routing.ts";
 import "./interactive-auth-login.ts";

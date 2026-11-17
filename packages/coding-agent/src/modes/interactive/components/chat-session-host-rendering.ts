@@ -15,7 +15,13 @@ import {
 	type ChatMessageRenderOptions,
 	renderChatMessageEntry,
 } from "./chat-message-renderer.ts";
-import { setEditorBorderColor, setEditorFocused, setEditorPlaceholder } from "./chat-session-host-editor.ts";
+import {
+	hasChatSessionTransientModal,
+	setEditorBorderColor,
+	setEditorFocused,
+	setEditorPlaceholder,
+	syncChatSessionPromptSearch,
+} from "./chat-session-host-editor.ts";
 import { isChatSessionStreaming } from "./chat-session-host-runtime.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
 import type { ChatSessionHostEntry } from "./chat-session-host-types.ts";
@@ -220,6 +226,7 @@ export function renderChatSessionEditor<TExtraEntry extends ChatTranscriptEntryL
 	focused: boolean,
 ): string[] {
 	const disabled = state.isDisabled?.() === true;
+	if (syncChatSessionPromptSearch(state)) return state.promptSearch!.render(width);
 	const agentSession = state.getAgentSession?.();
 	const ruleHex = state.style.editorRuleColor(disabled, agentSession, {
 		isBashMode: state.isBashMode,
@@ -252,7 +259,7 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 	if (state.disposed) return [];
 	const agentSession = state.getAgentSession?.();
 	const session = agentSession ?? state.getChatBoxSession?.();
-	state.footerNavigationActive = navigationActive || agentSession === undefined;
+	state.footerNavigationActive = navigationActive || agentSession === undefined || hasChatSessionTransientModal(state);
 	if (session && state.footerData) {
 		const taskSource = () => {
 			const currentAgent = state.getAgentSession?.();

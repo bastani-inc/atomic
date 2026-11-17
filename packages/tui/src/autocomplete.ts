@@ -833,7 +833,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				suggestions.push({
 					value,
 					label: entryName + (isDirectory ? "/" : ""),
-					description: displayPath,
+					...(displayPath === entryName ? {} : { description: displayPath }),
 				});
 			}
 

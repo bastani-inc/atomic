@@ -598,7 +598,10 @@ async function executeBuild(
 			roots: {
 				...current.roots,
 				...Object.fromEntries(
-					trusted.map((repository) => [rootKey(repository.root), { state: "running" as const, at: startedAt }]),
+					trusted.map((repository) => [
+						rootKey(repository.root),
+						{ state: "running" as const, at: startedAt, build: buildId },
+					]),
 				),
 			},
 		})),

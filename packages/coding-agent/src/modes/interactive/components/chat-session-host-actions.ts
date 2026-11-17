@@ -76,6 +76,7 @@ async function submitAfterInterruptSettlement<TExtraEntry extends ChatTranscript
 	mode: ChatSessionSubmitMode,
 ): Promise<void> {
 	const editorText = state.inputBuffer;
+	state.editor?.addToHistory?.(text);
 	try {
 		state.sdkBusy = true;
 		state.statusMessage = "resuming…";
@@ -146,6 +147,7 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			return;
 		}
 	}
+	state.editor?.addToHistory?.(text);
 	if (state.compacting) {
 		setChatSessionEditorText(state, "");
 		state.compactionQueuedMessages = [...state.compactionQueuedMessages, { text, mode }];
@@ -604,6 +606,7 @@ async function sendChatSessionText<TExtraEntry extends ChatTranscriptEntryLike>(
 	text: string,
 	mode: ChatSessionSubmitMode,
 ): Promise<void> {
+	state.editor?.addToHistory?.(text);
 	setChatSessionEditorText(state, "");
 	state.requestRender?.();
 	try {
