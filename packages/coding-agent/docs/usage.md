@@ -51,6 +51,8 @@ The `@` and `/` menus end with one hint line naming the keys that work there. Ta
 
 Ctrl+R searches the current chat's prompts, including prompts sent through templates or skills as you typed them. In writable subagent and workflow stage chats, the search uses that chat's transcript and sent messages. Esc clears the search, then closes it without changing your draft or interrupting the agent. While search or completion is open, its own hint line replaces the chat's normal keys. Read-only chats keep their transcript scrolling keys and do not open prompt search.
 
+Prompt history keeps what you typed, including input rewritten by an extension before it reaches the model. An `input` hook does not erase the original from saved session history. Avoid typing secrets directly into prompts.
+
 See [Keybindings](/keybindings) for all shortcuts and customization.
 
 On native Windows, `!` and `!!` execute PowerShell (preferring PowerShell 7 `pwsh.exe`, then Windows PowerShell `powershell.exe`; see [Windows](/windows) for the locations checked). Linux, macOS, and WSL use Bash. Extension-provided execution operations still take precedence. `shellCommandPrefix` is still prepended, so use syntax matching the selected shell; `shellPath` configures Bash, not Windows interactive PowerShell. Escape or Ctrl+C cancels a running command. `!!` output remains excluded from model context.
