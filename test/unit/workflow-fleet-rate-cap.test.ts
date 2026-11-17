@@ -272,6 +272,31 @@ test("a scope limits only its own roots, leaving capacity for unlimited and disj
 	assert.equal(cap.limit(4, 3), 103);
 });
 
+test("a rate-cap explanation names a scope that actually constrains the current roots (#4768)", () => {
+	const cap = new FleetRateCap();
+	for (let at = 0; at <= MINUTE; at += 10_000)
+		cap.observe(
+			[bucket("p", 60, at / 1000, at), bucket("q", 120, at / 1000, at)],
+			[limited(1, "p"), limited(8, "q")],
+		);
+	cap.observe(
+		[bucket("p", 60, 70, 70_000), bucket("q", 120, 70, 70_000)],
+		[{ leased: 0, ready: 0, blocked: false, rateScopes: ["p"] }, limited(8, "q")],
+	);
+	const estimate = cap.estimate(4)!;
+	assert.equal(estimate.hosts, 4);
+	assert.equal(estimate.scope.scope, "q", "the smaller quota with no current work is not the reason for the cap");
+	assert.match(rateCapReason(estimate, 20), /^rate limit q /);
+	const earlierBinding = new FleetRateCap();
+	for (let at = 0; at <= MINUTE; at += 10_000)
+		earlierBinding.observe([bucket("a", 60, at / 1000, at), bucket("z", 600, at / 1000, at)], [limited(4, "a", "z")]);
+	assert.equal(
+		earlierBinding.estimate(4)?.scope.scope,
+		"a",
+		"a later looser scope cannot replace an actual binding scope",
+	);
+});
+
 test("the scaling signal never wants more hosts than the rate limits keep busy, and reports that cap (#4768)", () => {
 	const roots = [{ ready: 40, leased: 8, blocked: false }];
 	const capped = fleetScaling(roots, [], { workersPerHost: 4, maxHosts: 20 }, 3);

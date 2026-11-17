@@ -97,22 +97,39 @@ export class FleetRateCap {
 	private constrainedDemand(
 		capacities: readonly ScopeCapacity[],
 		warming: ReadonlySet<string> = new Set(),
-	): { readonly workers: number; readonly warmingWorkers: number; readonly unrelatedWorkers: number } {
+	): {
+		readonly workers: number;
+		readonly warmingWorkers: number;
+		readonly unrelatedWorkers: number;
+		readonly binding?: FleetRateCapScope;
+	} {
 		const demand = this.roots.map((root) => fleetDemand([root]));
+		let binding: FleetRateCapScope | undefined;
 		const constrain = (matches: (root: FleetRateRoot) => boolean, capacity: number) => {
 			const selected = this.roots.flatMap((root, index) => (matches(root) ? [index] : []));
 			const wanted = selected.reduce((sum, index) => sum + demand[index]!, 0);
 			if (wanted > capacity) for (const index of selected) demand[index] = (demand[index]! * capacity) / wanted;
+			return Math.max(0, wanted - capacity);
 		};
-		for (const capacity of capacities)
-			constrain((root) => root.rateScopes?.includes(capacity.status.scope) === true, capacity.workers);
+		for (const capacity of capacities) {
+			const reduction = constrain(
+				(root) => root.rateScopes?.includes(capacity.status.scope) === true,
+				capacity.workers,
+			);
+			if (reduction > 0) binding = capacity.status;
+		}
 		let warmingWorkers = 0;
 		let unrelatedWorkers = 0;
 		for (const [index, root] of this.roots.entries()) {
 			if (root.rateScopes?.some((scope) => warming.has(scope))) warmingWorkers += demand[index]!;
 			else unrelatedWorkers += demand[index]!;
 		}
-		return { workers: warmingWorkers + unrelatedWorkers, warmingWorkers, unrelatedWorkers };
+		return {
+			workers: warmingWorkers + unrelatedWorkers,
+			warmingWorkers,
+			unrelatedWorkers,
+			...(binding === undefined ? {} : { binding }),
+		};
 	}
 
 	limit(workersPerHost: number, servingHosts: number): number | undefined {
@@ -131,8 +148,9 @@ export class FleetRateCap {
 		const capacities = this.capacities(workersPerHost);
 		const tightest = [...capacities].sort((a, b) => a.workers - b.workers)[0];
 		if (tightest === undefined) return undefined;
-		const hosts = Math.max(1, Math.ceil(this.constrainedDemand(capacities).workers / workersPerHost));
-		return { hosts, scope: { ...tightest.status, capHosts: hosts } };
+		const demand = this.constrainedDemand(capacities);
+		const hosts = Math.max(1, Math.ceil(demand.workers / workersPerHost));
+		return { hosts, scope: { ...(demand.binding ?? tightest.status), capHosts: hosts } };
 	}
 
 	private capacities(workersPerHost: number): ScopeCapacity[] {
