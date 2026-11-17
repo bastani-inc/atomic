@@ -66,7 +66,6 @@ export type YieldReason = "explicit" | "default-background" | "elapsed" | "inter
 export type WaitOutcome =
 	| { kind: "settled"; taskId: TaskId; result: TaskResult }
 	| { kind: "yielded"; taskId: TaskId; waitId: WaitId; reason: YieldReason };
-export type RouterSelection = { readonly model: string; readonly effort: string | null };
 export type AgentIntent = {
 	kind: "agent";
 	agent: string;
@@ -74,7 +73,6 @@ export type AgentIntent = {
 	description?: string;
 	cwd?: string;
 	parentTaskId?: TaskId;
-	readonly routerSelection?: RouterSelection;
 	/**
 	 * The model the launch asked for (`provider/model[:effort]`), kept beside the model the task reports it ran on so
 	 * a fallback to another model is visible.
@@ -196,7 +194,6 @@ export type TaskRecord = {
 	/** Resolved execution settings, retained after completion: the model it ran on last. */
 	model?: string;
 	thinking?: string;
-	readonly routerSelection?: RouterSelection;
 	/** The model the launch asked for; `model` differs from it after a fallback to another model. */
 	readonly requestedModel?: string;
 	/** Heartbeat cadence the task was launched with; `0` disables. Omitted uses the owner default. */

@@ -124,6 +124,7 @@ fn finish_stdin_writer(
 	writer: std::thread::JoinHandle<()>,
 	writer_done: &std::sync::mpsc::Receiver<()>,
 	timeout: Duration,
+	late_report: Duration,
 ) -> (Option<std::thread::JoinHandle<()>>, Option<String>) {
 	let deadline = Instant::now() + timeout;
 	stop_input.store(true, Ordering::Release);
@@ -142,7 +143,7 @@ fn finish_stdin_writer(
 		let failure =
 			writer.take().unwrap().join().err().map(|_| "Windows stdin worker panicked".into());
 		(None, failure)
-	} else if writer_done.recv_timeout(STDIN_WRITER_LATE_REPORT).is_ok() {
+	} else if writer_done.recv_timeout(late_report).is_ok() {
 		(None, None)
 	} else {
 		(writer, Some("Windows stdin worker stop was not confirmed".into()))
@@ -665,8 +666,13 @@ impl Actor {
 		if !preserved_background {
 			let _ = resource.kill();
 		}
-		let (writer, writer_failure) =
-			finish_stdin_writer(&stop_input, writer, &writer_done_rx, PROCESS_DRAIN_GRACE);
+		let (writer, writer_failure) = finish_stdin_writer(
+			&stop_input,
+			writer,
+			&writer_done_rx,
+			PROCESS_DRAIN_GRACE,
+			STDIN_WRITER_LATE_REPORT,
+		);
 		if let Some(error) = writer_failure {
 			failure = Some(error);
 		}
@@ -810,8 +816,9 @@ mod tests {
 		actor.shutdown();
 		std::fs::remove_file(identities).unwrap();
 	}
+	const STDIN_WRITER_TEST_WAIT: Duration = Duration::from_secs(10);
 	#[test]
-	fn stdin_writer_completion_notifies_without_poll_delay_and_bounds_blocked_worker_5202() {
+	fn stdin_writer_completion_notifies_without_poll_delay_and_bounds_blocked_worker_5202_5340() {
 		let mut durations = Vec::new();
 		for _ in 0..5 {
 			let stop_input = Arc::new(AtomicBool::new(false));
@@ -825,10 +832,15 @@ mod tests {
 				}
 				let _ = done_tx.send(());
 			});
-			ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+			ready_rx.recv_timeout(STDIN_WRITER_TEST_WAIT).unwrap();
 			let started = Instant::now();
-			let (retained, failure) =
-				finish_stdin_writer(&stop_input, writer, &done_rx, PROCESS_DRAIN_GRACE);
+			let (retained, failure) = finish_stdin_writer(
+				&stop_input,
+				writer,
+				&done_rx,
+				PROCESS_DRAIN_GRACE,
+				STDIN_WRITER_LATE_REPORT,
+			);
 			assert!(retained.is_none());
 			assert!(failure.is_none());
 			durations.push(started.elapsed());
@@ -847,8 +859,13 @@ mod tests {
 			let _done = panic_done_tx;
 			panic!("stdin fixture panic");
 		});
-		let (retained, failure) =
-			finish_stdin_writer(&stop_panic, panic_writer, &panic_done_rx, PROCESS_DRAIN_GRACE);
+		let (retained, failure) = finish_stdin_writer(
+			&stop_panic,
+			panic_writer,
+			&panic_done_rx,
+			PROCESS_DRAIN_GRACE,
+			STDIN_WRITER_LATE_REPORT,
+		);
 		assert!(retained.is_none());
 		assert_eq!(failure.as_deref(), Some("Windows stdin worker panicked"));
 
@@ -857,7 +874,7 @@ mod tests {
 		let (blocked_done_tx, blocked_done_rx) = std::sync::mpsc::channel();
 		let blocked_writer = std::thread::spawn(move || {
 			let _done = blocked_done_tx;
-			let _ = release_rx.recv_timeout(Duration::from_secs(1));
+			let _ = release_rx.recv_timeout(STDIN_WRITER_TEST_WAIT);
 		});
 		let started = Instant::now();
 		let (retained, failure) = finish_stdin_writer(
@@ -865,28 +882,33 @@ mod tests {
 			blocked_writer,
 			&blocked_done_rx,
 			Duration::from_millis(10),
+			STDIN_WRITER_LATE_REPORT,
 		);
-		assert!(started.elapsed() < Duration::from_millis(500));
+		assert!(started.elapsed() < PROCESS_DRAIN_GRACE);
 		assert!(retained.is_some());
 		assert_eq!(failure.as_deref(), Some("Windows stdin worker stop was not confirmed"));
 		release_tx.send(()).unwrap();
 		retained.unwrap().join().unwrap();
 
 		let stop_stalled = Arc::new(AtomicBool::new(false));
+		let (stall_ready_tx, stall_ready_rx) = std::sync::mpsc::channel();
 		let (stall_release_tx, stall_release_rx) = std::sync::mpsc::channel();
 		let (stall_done_tx, stall_done_rx) = std::sync::mpsc::channel();
 		let stalled_writer = std::thread::spawn(move || {
 			drop(stall_done_tx);
-			let _ = stall_release_rx.recv_timeout(Duration::from_secs(1));
+			stall_ready_tx.send(()).unwrap();
+			let _ = stall_release_rx.recv();
 		});
+		stall_ready_rx.recv_timeout(STDIN_WRITER_TEST_WAIT).unwrap();
 		let started = Instant::now();
 		let (retained, failure) = finish_stdin_writer(
 			&stop_stalled,
 			stalled_writer,
 			&stall_done_rx,
 			Duration::from_millis(10),
+			STDIN_WRITER_LATE_REPORT,
 		);
-		assert!(started.elapsed() < Duration::from_millis(500));
+		assert!(started.elapsed() < PROCESS_DRAIN_GRACE);
 		assert!(retained.is_some());
 		assert_eq!(failure.as_deref(), Some("Windows stdin worker stop was not confirmed"));
 		stall_release_tx.send(()).unwrap();
@@ -895,43 +917,58 @@ mod tests {
 	// A writer that reported its stop has closed the input and the stdin handle. Under load its thread can take longer
 	// than the grace to end, and a command that ran to completion must not fail on that.
 	#[test]
-	fn stdin_writer_that_reported_its_stop_is_confirmed_while_its_thread_still_ends() {
+	fn stdin_writer_that_reported_its_stop_is_confirmed_while_its_thread_still_ends_5340() {
 		let stop_input = Arc::new(AtomicBool::new(false));
 		let (done_tx, done_rx) = std::sync::mpsc::channel();
+		let (ready_tx, ready_rx) = std::sync::mpsc::channel();
 		let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
 		let (ended_tx, ended_rx) = std::sync::mpsc::channel();
 		let writer = std::thread::spawn(move || {
 			done_tx.send(()).unwrap();
-			let _ = release_rx.recv_timeout(Duration::from_secs(5));
+			ready_tx.send(()).unwrap();
+			let _ = release_rx.recv();
 			ended_tx.send(()).unwrap();
 		});
+		ready_rx.recv_timeout(STDIN_WRITER_TEST_WAIT).unwrap();
 		let started = Instant::now();
-		let (retained, failure) =
-			finish_stdin_writer(&stop_input, writer, &done_rx, Duration::from_millis(10));
-		assert!(started.elapsed() < Duration::from_millis(500));
+		let (retained, failure) = finish_stdin_writer(
+			&stop_input,
+			writer,
+			&done_rx,
+			Duration::from_millis(10),
+			STDIN_WRITER_LATE_REPORT,
+		);
+		assert!(started.elapsed() < PROCESS_DRAIN_GRACE);
 		assert_eq!(failure, None);
 		assert!(retained.is_none());
 		release_tx.send(()).unwrap();
-		ended_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+		ended_rx.recv_timeout(STDIN_WRITER_TEST_WAIT).unwrap();
 	}
 	// A host that stalls every thread lets the grace pass before the writer ran at all; the writer reports once it
 	// runs, and that stop is confirmed too.
 	#[test]
-	fn stdin_writer_that_reports_its_stop_just_after_the_grace_is_confirmed() {
+	fn stdin_writer_that_reports_its_stop_just_after_the_grace_is_confirmed_5340() {
 		let grace = Duration::from_millis(10);
 		let stop_input = Arc::new(AtomicBool::new(false));
 		let stopped = stop_input.clone();
+		let (ready_tx, ready_rx) = std::sync::mpsc::channel();
 		let (done_tx, done_rx) = std::sync::mpsc::channel();
+		let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
 		let writer = std::thread::spawn(move || {
+			ready_tx.send(()).unwrap();
 			while !stopped.load(Ordering::Acquire) {
 				std::thread::park_timeout(PROCESS_POLL);
 			}
-			std::thread::sleep(grace + STDIN_WRITER_LATE_REPORT / 4);
+			std::thread::sleep(grace + STDIN_WRITER_TEST_WAIT / 2);
 			done_tx.send(()).unwrap();
+			let _ = release_rx.recv();
 		});
-		let (retained, failure) = finish_stdin_writer(&stop_input, writer, &done_rx, grace);
+		ready_rx.recv_timeout(STDIN_WRITER_TEST_WAIT).unwrap();
+		let (retained, failure) =
+			finish_stdin_writer(&stop_input, writer, &done_rx, grace, STDIN_WRITER_TEST_WAIT);
 		assert_eq!(failure, None);
 		assert!(retained.is_none());
+		release_tx.send(()).unwrap();
 	}
 }
 

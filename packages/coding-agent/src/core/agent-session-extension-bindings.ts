@@ -733,7 +733,6 @@ export function _bindExtensionCore(
 			},
 			getSystemPrompt: () => this.systemPrompt,
 			getDecisionModel: () => this.settingsManager.getDecisionModel(),
-			getModelRouting: () => this.settingsManager.getModelRouting(),
 			getHttpIdleTimeoutMs: () => this.settingsManager.getHttpIdleTimeoutMs(),
 			getSkillCatalog: () => getSkillCatalog(publication?.resourceLoader ?? this._resourceLoader),
 			getSystemPromptOptions: () => this._baseSystemPromptOptions,
@@ -952,6 +951,7 @@ async function reloadOwnedGeneration(
 		new ModelRegistry(this._modelRuntime),
 		this._orchestrationContext,
 		this._subagentPolicy,
+		this._intercomPolicy,
 	);
 	const publication = new ExtensionPublicationGate(
 		resourceTransaction.loader,

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { getAgentDir, getEnvValue } from "@bastani/atomic";
+import { join } from "node:path";
+import { getAgentDir, getEnvValue, workflowsStorageDir } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { type WorkflowRunResumeCandidate, workflowRunHasPausedState } from "../durable/resume-eligibility.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
@@ -23,7 +23,7 @@ const pendingArtifactPrunes = new Map<string, Promise<void>>();
 function workflowArtifactRoot(): string {
 	const override = getEnvValue(ENV_WORKFLOW_ARTIFACT_DIR);
 	if (override !== undefined && override.length > 0) return override;
-	return join(dirname(getAgentDir()), "workflows");
+	return workflowsStorageDir(getAgentDir());
 }
 
 export function workflowArtifactRunsRoot(): string {

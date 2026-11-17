@@ -108,6 +108,7 @@ type StopInteractiveTuiThis = {
 	ui: TuiAltScreen;
 	documentContainer: Container;
 	disposeMarkitDiagnosticSink: ReturnType<typeof vi.fn>;
+	disposeDeprecationWarningSink: ReturnType<typeof vi.fn>;
 };
 type StopMode = {
 	stopInteractiveTui(this: StopInteractiveTuiThis, fullscreenExitOutput: FullscreenExitOutput): void;
@@ -137,7 +138,13 @@ function createExitFixture(): { fixture: StopInteractiveTuiThis; exitWrites: () 
 	renderer.renderNow();
 	const writesBeforeExit = terminal.writes.length;
 	return {
-		fixture: { renderer, ui: renderer, documentContainer, disposeMarkitDiagnosticSink: vi.fn() },
+		fixture: {
+			renderer,
+			ui: renderer,
+			documentContainer,
+			disposeMarkitDiagnosticSink: vi.fn(),
+			disposeDeprecationWarningSink: vi.fn(),
+		},
 		exitWrites: () => terminal.writes.slice(writesBeforeExit).join(""),
 	};
 }
@@ -147,6 +154,7 @@ test('exiting with "transcript" paints the whole transcript onto the main screen
 
 	stopInteractiveTui.call(fixture, "transcript");
 	expect(fixture.disposeMarkitDiagnosticSink).toHaveBeenCalledOnce();
+	expect(fixture.disposeDeprecationWarningSink).toHaveBeenCalledOnce();
 
 	const writes = exitWrites();
 	expect(writes).toContain(EXIT_ALT_SCREEN);
@@ -163,6 +171,7 @@ test('exiting with "resume-hint" preserves the prior screen instead of painting'
 
 	stopInteractiveTui.call(fixture, "resume-hint");
 	expect(fixture.disposeMarkitDiagnosticSink).toHaveBeenCalledOnce();
+	expect(fixture.disposeDeprecationWarningSink).toHaveBeenCalledOnce();
 
 	const writes = exitWrites();
 	expect(writes).toContain(EXIT_ALT_SCREEN);

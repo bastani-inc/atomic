@@ -108,7 +108,8 @@ export class WorkflowStageAdmissionBoundary {
 	private readonly stageAttemptId = randomUUID();
 	private taskScope: Extract<OwnerScope, { kind: "workflow-stage" }> | undefined;
 	private taskHost: AgentTaskHost | undefined;
-	private readonly messageDeliveryContext = new AsyncLocalStorage<boolean>();
+	private readonly messageDeliveryContext = new AsyncLocalStorage<{ active: boolean }>();
+	private readonly awaitedTurnContext = new AsyncLocalStorage<{ active: boolean }>();
 	private readonly messageAdmissionContext = new AsyncLocalStorage<{ active: boolean }>();
 	private readonly messageDeliveries = new Set<Promise<void>>();
 	private messageDeliveryTail: Promise<void> | undefined;
@@ -245,16 +246,32 @@ export class WorkflowStageAdmissionBoundary {
 	/** Reentrant SDK commits stay inside their producer's FIFO position. */
 	serializeMessageDelivery(deliver: () => void | Promise<void>): Promise<void> {
 		if (this.messageDeliveryContext.getStore()) return this.invoke(deliver);
-		const invoke = () => this.messageDeliveryContext.run(true, () => this.invoke(deliver));
+		const scope = { active: true };
+		const invoke = () => this.messageDeliveryContext.run(scope, () => this.invoke(deliver));
 		const delivery = this.messageDeliveryTail ? this.messageDeliveryTail.then(invoke) : invoke();
 		const settled = delivery.catch(() => undefined);
 		this.messageDeliveryTail = settled;
 		this.messageDeliveries.add(settled);
 		void settled.then(() => {
+			scope.active = false;
 			this.messageDeliveries.delete(settled);
 			if (this.messageDeliveryTail === settled) this.messageDeliveryTail = undefined;
 		});
 		return delivery;
+	}
+
+	/**
+	 * Starts a turn that the current message delivery awaits before it settles. That turn must not wait for the
+	 * registered deliveries: its own delivery is among them, and every other one is queued behind it.
+	 */
+	runAwaitedTurn<T>(start: () => T): T {
+		const delivery = this.messageDeliveryContext.getStore();
+		return delivery ? this.awaitedTurnContext.run(delivery, start) : start();
+	}
+
+	/** True inside a turn started by {@link runAwaitedTurn} while its delivery is still in flight. */
+	startsAwaitedTurn(): boolean {
+		return this.awaitedTurnContext.getStore()?.active === true;
 	}
 
 	/** Excludes tracked model turns: joining those from a native poll would deadlock. */

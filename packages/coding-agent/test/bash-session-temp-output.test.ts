@@ -142,8 +142,9 @@ describe("bash overflow logs live in the session temp directory", () => {
 		const accumulator = new OutputAccumulator({ tempFilePrefix: "atomic-test" });
 		accumulator.append(Buffer.from(OVERSIZED_OUTPUT, "utf8"));
 		accumulator.finish();
-		const snapshot = accumulator.snapshot({ persistIfTruncated: true });
+		accumulator.snapshot({ persistIfTruncated: true });
 		await accumulator.closeTempFile();
+		const snapshot = accumulator.snapshot();
 
 		assert.ok(snapshot.fullOutputPath);
 		assert.ok(isInside(resolveSessionTempDirPath(), snapshot.fullOutputPath));

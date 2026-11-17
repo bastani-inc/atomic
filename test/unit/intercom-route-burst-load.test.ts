@@ -38,7 +38,7 @@ import { sleep } from "../helpers/runtime.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
-	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 3 } }),
+	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 4 } }),
 }));
 vi.mock("../../packages/intercom/broker/spawn.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../packages/intercom/broker/spawn.js")>()),

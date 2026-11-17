@@ -21,6 +21,17 @@ export type {
 export * from "./dialect.js";
 export * from "./errors.js";
 export * from "./fenced-paths.js";
+export {
+	claimFileAtomically,
+	defaultSessionDatabasePath,
+	defaultSharedStoragePath,
+	readClaimFile,
+	type StorageHomeSettings,
+	sameDirectory,
+	storageHomeDir,
+	storagePathBaseDir,
+	workflowsStorageDir,
+} from "./file-identity.js";
 export * from "./journal-adoption.js";
 export * from "./journal-catalog.js";
 export * from "./migrations.js";
@@ -29,6 +40,7 @@ export {
 	getWriterQueueDegradation,
 	getWriterQueueStats,
 	openNodeSqliteDatabase,
+	sqliteFilePath,
 	type WriterQueueStats,
 	wrapNodeSqliteDatabase,
 } from "./node-sqlite.js";

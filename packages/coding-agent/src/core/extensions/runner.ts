@@ -213,6 +213,7 @@ export class ExtensionRunner {
 	private modelRegistry: ModelRegistry;
 	private orchestrationContext: OrchestrationContext | undefined;
 	private subagentPolicy: SubagentChildPolicy | undefined;
+	private intercomPolicy: import("../intercom-policy.ts").IntercomPolicyView | undefined;
 	private taskHostBinding: (() => import("../tasks/agent-adapter.js").AgentTaskHost) | undefined;
 	private inheritedHistory: ProjectHistory | undefined;
 	/** @internal Attach dispatch receipts to the owning session before startup. */
@@ -284,7 +285,6 @@ export class ExtensionRunner {
 		normalizeBuildSystemPromptOptions({ cwd: this.cwd });
 	private getSkillCatalogFn: ExtensionContextActions["getSkillCatalog"] = undefined;
 	private getDecisionModelFn: ExtensionContextActions["getDecisionModel"] = undefined;
-	private getModelRoutingFn: ExtensionContextActions["getModelRouting"] = undefined;
 	private getHttpIdleTimeoutMsFn: ExtensionContextActions["getHttpIdleTimeoutMs"] = undefined;
 	private executeToolFn: ExtensionContextActions["executeTool"];
 	private getCallableToolsFn: NonNullable<ExtensionContextActions["getCallableTools"]> = () => [];
@@ -312,6 +312,7 @@ export class ExtensionRunner {
 		modelRegistry: ModelRegistry,
 		orchestrationContext?: OrchestrationContext,
 		subagentPolicy?: SubagentChildPolicy,
+		intercomPolicy?: import("../intercom-policy.ts").IntercomPolicyView,
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
@@ -323,6 +324,7 @@ export class ExtensionRunner {
 		this.modelRegistry = modelRegistry;
 		this.orchestrationContext = orchestrationContext;
 		this.subagentPolicy = subagentPolicy;
+		this.intercomPolicy = intercomPolicy;
 	}
 
 	bindCore(
@@ -370,7 +372,6 @@ export class ExtensionRunner {
 			contextActions.getSystemPromptOptions ?? (() => normalizeBuildSystemPromptOptions({ cwd: this.cwd }));
 		this.getSkillCatalogFn = contextActions.getSkillCatalog;
 		this.getDecisionModelFn = contextActions.getDecisionModel;
-		this.getModelRoutingFn = contextActions.getModelRouting;
 		this.getHttpIdleTimeoutMsFn = contextActions.getHttpIdleTimeoutMs;
 		this.executeToolFn = contextActions.executeTool;
 		this.getCallableToolsFn = contextActions.getCallableTools ?? (() => []);
@@ -932,6 +933,7 @@ export class ExtensionRunner {
 			getModelRegistry: () => this.modelRegistry,
 			getModel: () => this.getModel(),
 			getSubagentPolicy: () => this.subagentPolicy,
+			getIntercomPolicy: () => this.intercomPolicy,
 			getScopedModels: () => this.getScopedModels(),
 			getThinkingLevel: () => this.runtime.getThinkingLevel(),
 			getOrchestrationContext: () => this.orchestrationContext,
@@ -950,7 +952,6 @@ export class ExtensionRunner {
 			getSystemPrompt: () => this.getSystemPromptFn(),
 			...(this.getSkillCatalogFn ? { getSkillCatalog: () => this.getSkillCatalogFn!() } : {}),
 			...(this.getDecisionModelFn ? { getDecisionModel: () => this.getDecisionModelFn!() } : {}),
-			...(this.getModelRoutingFn ? { getModelRouting: () => this.getModelRoutingFn!() } : {}),
 			...(this.getHttpIdleTimeoutMsFn ? { getHttpIdleTimeoutMs: () => this.getHttpIdleTimeoutMsFn!() } : {}),
 			getSystemPromptOptions: () => this.getSystemPromptOptionsFn(),
 			waitForIdle: () => this.waitForIdleFn(),

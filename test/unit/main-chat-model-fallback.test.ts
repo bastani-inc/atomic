@@ -128,6 +128,7 @@ test("main-chat fallback switches models after same-model retry exhaustion", asy
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		settingsManager: {
 			getRetrySettings: () => ({ enabled: true, maxRetries: 0, baseDelayMs: 1 }),
@@ -199,6 +200,7 @@ test("main-chat fallback remains the session model after its lifecycle settles",
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		settingsManager: {
 			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
@@ -256,6 +258,7 @@ test("a transient failure can still change reasoning on the same provider/model"
 		_fallbackModels: ["openai/gpt-5-mini:low"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		settingsManager: {
 			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
@@ -318,6 +321,7 @@ test("main-chat retry-disabled fallback keeps prompt waiting for fallback comple
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		_retryPromise: undefined as Promise<void> | undefined,
 		_retryResolve: undefined as (() => void) | undefined,
@@ -394,6 +398,7 @@ test("main-chat fallback rejection settles the retry wait", async () => {
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 1,
 		_retryPromise: retryPromise as Promise<void> | undefined,
 		_retryResolve: resolveRetry as (() => void) | undefined,
@@ -464,6 +469,7 @@ test("main-chat fallback continuation resolution does not mark assistant errors 
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		settingsManager: {
 			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
@@ -518,6 +524,7 @@ test("a rejected codex credential advances to the next candidate without re-requ
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		settingsManager: {
 			// Same-model retry is enabled and generously budgeted; a dead credential
@@ -581,6 +588,7 @@ test("an explicit /model choice during a fallback remains selected after settlem
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		settingsManager: {
 			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
@@ -652,6 +660,7 @@ function overflowTurnSession(checkCompaction: (session: Record<string, unknown>)
 		_protectedStreamingCustomMessages: [],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_postToolCompactionPreflightError: undefined,
 		_pendingPostCompactionContinuation: undefined,
 		_contextOverflowUnresolved: false,
@@ -766,6 +775,7 @@ test("a failed overflow compaction advances the real fallback chain end to end",
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		settingsManager: {
 			getCompactionSettings: () => ({ enabled: true }),
@@ -848,6 +858,7 @@ function thinkingLevelFallbackSession(
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		settingsManager: {
 			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
@@ -972,6 +983,7 @@ test("a Copilot model unavailable to the client integration names the model and 
 		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		settingsManager: {
 			getRetrySettings: () => ({ enabled: true, maxRetries: 3, baseDelayMs: 1000 }),
@@ -1044,6 +1056,7 @@ test("a terminal provider failure skips reasoning-only variants of the failed mo
 		_fallbackModels: ["openai-codex/gpt-5.5:low", "anthropic/claude-opus-4-8:high"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		settingsManager: {
 			getRetrySettings: () => ({ enabled: true, maxRetries: 3, baseDelayMs: 1000 }),
@@ -1112,6 +1125,7 @@ test("a blocked model stays blocked for the rest of the turn", async () => {
 		_fallbackModels: ["anthropic/claude-opus-4-8:high", "openai-codex/gpt-5.5:low"],
 		_fallbackAttemptedKeys: new Set<string>(),
 		_fallbackBlockedModels: [] as Model<Api>[],
+		_fallbackBlockedProviders: new Set<string>(),
 		_retryAttempt: 0,
 		settingsManager: {
 			getDefaultThinkingLevel: () => "high" as ThinkingLevel,

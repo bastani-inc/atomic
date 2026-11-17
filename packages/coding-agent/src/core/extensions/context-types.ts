@@ -235,6 +235,11 @@ export interface ExtensionContext {
 	readonly orchestrationContext?: OrchestrationContext;
 	/** Typed capability policy for an in-process subagent child, when this session is one. */
 	readonly subagentPolicy?: SubagentChildPolicy;
+	/**
+	 * the session's Intercom home group and reach, when its host set one with `createAgentSession({ intercom })`
+	 * or it is a workflow stage or subagent of such a session.
+	 */
+	readonly intercomPolicy?: import("../intercom-policy.ts").IntercomPolicyView;
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
 	/** Current run mode. Use "tui" to guard terminal-only UI such as custom components. */
@@ -297,13 +302,10 @@ export interface ExtensionContext {
 	/** Current loader-owned skill candidates and exact selector resolver. */
 	getSkillCatalog?(): SkillCatalog;
 	/**
-	 * The owning session's `decisionModel`: an exact `provider/model`, `"auto"` or `""`. Every decision uses it:
-	 * `model: "auto"` selection, the `structured_output` tool without a `model`, readiness after a steer, and `decide()`.
-	 * Does not change the chat model.
+	 * The owning session's `decisionModel`: an exact `provider/model`, `"auto"` or `""`. Every decision uses it: the
+	 * `structured_output` tool without a `model`, readiness after a steer, and `decide()`. Does not change the chat model.
 	 */
 	getDecisionModel(): string;
-	/** Provider filters for `model: "auto"` candidates from the owning session's settings. */
-	getModelRouting?(): import("../settings-types.ts").ModelRoutingSettings;
 	/** The owning session's `httpIdleTimeoutMs` setting in milliseconds; 0 means the idle timeout is disabled. */
 	getHttpIdleTimeoutMs?(): number;
 }

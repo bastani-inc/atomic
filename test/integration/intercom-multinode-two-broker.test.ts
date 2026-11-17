@@ -115,6 +115,138 @@ function anonymousSender(frame: ReceivedFrame) {
 	};
 }
 
+test("a supervisor on the other broker answers its child in another group with a plain send, and reaches no one else", async ({
+	annotate,
+}) => {
+	const supervisorGroup = unique("supervisor-group");
+	const childGroup = unique("child-group");
+	const supervisor = await harness.connect("a", unique("answering-supervisor"), {
+		group: supervisorGroup,
+		supervisorOwnerToken: randomUUID(),
+	});
+	const childName = unique("answered-child");
+	const authorization = await supervisor.client.authorizeSupervisorChild(childName);
+	const child = await harness.connect("a", childName, { group: childGroup, supervisor: authorization });
+	const bystander = await harness.connect("a", unique("bystander"), { group: childGroup });
+	const supervisorId = supervisor.sessionId;
+	await harness.disconnect(supervisor);
+	const moved = await harness.connect("b", supervisor.name, {
+		group: supervisorGroup,
+		returnAddress: supervisor.returnAddress,
+		preferredSessionId: supervisorId,
+	});
+	if (!harness.multiNodeRouting) {
+		await annotate("multi-node routing not advertised: nothing crosses brokers");
+		return;
+	}
+	const update = await child.client.sendToSupervisor(supervisorId, { text: "Halfway through" });
+	assert.equal(update.delivered, true, JSON.stringify(update));
+	await waitForMessage(moved, update.id);
+
+	// The child's message reached the supervisor: the supervisor answers it across groups and brokers.
+	const answer = await moved.client.send(child.name, { text: "Keep going" });
+	assert.equal(answer.delivered, true, JSON.stringify(answer));
+	assert.equal((await waitForMessage(child, answer.id)).message.content.text, "Keep going");
+	// Nobody else in the child's group became reachable.
+	const stray = await moved.client.send(bystander.sessionId, { text: "not for you" });
+	assert.equal(stray.delivered, false);
+	assert.equal(stray.queued, undefined);
+	assert.deepEqual(bystander.received, []);
+});
+
+/** A supervisor on broker b whose child, in another group on broker a, has written to it across nodes. */
+async function crossGroupPair(): Promise<{ child: TwoBrokerClient; supervisor: TwoBrokerClient }> {
+	const supervisorGroup = unique("pair-supervisor-group");
+	const first = await harness.connect("a", unique("pair-supervisor"), {
+		group: supervisorGroup,
+		supervisorOwnerToken: randomUUID(),
+	});
+	const childName = unique("pair-child");
+	const authorization = await first.client.authorizeSupervisorChild(childName);
+	const child = await harness.connect("a", childName, {
+		group: unique("pair-child-group"),
+		supervisor: authorization,
+	});
+	const supervisorId = first.sessionId;
+	await harness.disconnect(first);
+	const supervisor = await harness.connect("b", first.name, {
+		group: supervisorGroup,
+		returnAddress: first.returnAddress,
+		preferredSessionId: supervisorId,
+	});
+	const report = await child.client.sendToSupervisor(supervisorId, { text: "progress" });
+	assert.equal(report.delivered, true, JSON.stringify(report));
+	await waitForMessage(supervisor, report.id);
+	return { child, supervisor };
+}
+
+test("across brokers, a closed return path is refused by name with the reason it closed", async ({ annotate }) => {
+	if (!harness.multiNodeRouting) {
+		await annotate("multi-node routing not advertised: nothing crosses brokers");
+		return;
+	}
+	const { child, supervisor } = await crossGroupPair();
+	for (let index = 0; index < 3; index++) {
+		const answer = await supervisor.client.send(child.name, { text: `answer-${index}` });
+		assert.equal(answer.delivered, true, JSON.stringify(answer));
+	}
+	const closed = await supervisor.client.send(child.name, { text: "one too many" });
+	assert.equal(closed.delivered, false);
+	assert.match(closed.reason ?? "", /return path has closed/, JSON.stringify(closed));
+});
+
+test("across brokers, a child that went offline is still answered by the name its message showed", async ({
+	annotate,
+}) => {
+	if (!harness.multiNodeRouting) {
+		await annotate("multi-node routing not advertised: nothing crosses brokers");
+		return;
+	}
+	const { child, supervisor } = await crossGroupPair();
+	const childId = child.sessionId;
+	await harness.disconnect(child);
+	const byName = await supervisor.client.send(child.name, { text: "answer by name while offline" });
+	assert.equal(byName.queued, true, JSON.stringify(byName));
+	const byId = await supervisor.client.send(childId, { text: "answer by id while offline" });
+	assert.equal(byId.queued, true, JSON.stringify(byId));
+});
+
+/**
+ * How long a broker may take to decide, after a session of an identity ends for good, whether a registration of it is
+ * still live on another broker: one read of the shared database.
+ */
+const DEPARTURE_DECISION_SETTLE_MS = 1_000;
+
+test("across brokers, a duplicate of a live sender that ends for good leaves the sender's return path open", async ({
+	annotate,
+}) => {
+	if (!harness.multiNodeRouting) {
+		await annotate("multi-node routing not advertised: nothing crosses brokers");
+		return;
+	}
+	const senderGroup = unique("duplicated-sender-group");
+	const responderGroup = unique("duplicate-responder-group");
+	const sender = await harness.connect("a", unique("duplicated-sender"), {
+		group: senderGroup,
+		reachable: [responderGroup],
+	});
+	const responder = await harness.connect("b", unique("duplicate-responder"), { group: responderGroup });
+	const opening = await sender.client.send(responder.sessionId, { text: "opening" });
+	assert.equal(opening.delivered, true, JSON.stringify(opening));
+	await waitForMessage(responder, opening.id);
+	// A second registration of the sender's identity, on the responder's broker, ends for good; the sender stays live.
+	const duplicate = await harness.connect("b", sender.name, {
+		group: senderGroup,
+		reachable: [responderGroup],
+		returnAddress: sender.returnAddress,
+	});
+	await harness.disconnect(duplicate);
+	await sleep(DEPARTURE_DECISION_SETTLE_MS);
+	const answer = await responder.client.send(sender.name, { text: "for the live sender" });
+	assert.equal(answer.delivered, true, JSON.stringify(answer));
+	assert.equal((await waitForMessage(sender, answer.id)).message.content.text, "for the live sender");
+});
+
 test(
 	"harness self-test: two brokers on separate sockets each serve only their own clients and share one storage file",
 	async () => {

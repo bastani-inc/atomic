@@ -107,7 +107,7 @@ test(
 		const project = join(root, "project");
 		const settingsPath = join(agentDir, "settings.json");
 		const selectedStore = join(root, "selected", "process-store.sqlite");
-		const settingsStore = join(atomicHome, "settings-store.sqlite");
+		const settingsStore = join(agentDir, "settings-store.sqlite");
 		await writeFileEnsuringDir(
 			settingsPath,
 			`${JSON.stringify({ onboardedVersion: "0.0.0", storage: { path: "settings-store.sqlite" } }, null, 2)}\n`,
@@ -163,8 +163,8 @@ test(
 			} finally {
 				await database.close();
 			}
-			assert.equal(fileExistsSync(join(atomicHome, "workflows", "journal.sqlite")), false);
-			assert.equal(fileExistsSync(join(atomicHome, "storage.sqlite")), false);
+			assert.equal(fileExistsSync(join(agentDir, "workflows", "journal.sqlite")), false);
+			assert.equal(fileExistsSync(join(agentDir, "storage.sqlite")), false);
 			assert.equal(await readText(settingsPath), settingsBefore);
 		} finally {
 			await Promise.all([selected.stop(), unselected.stop()]);
@@ -212,6 +212,7 @@ test(
 				assert.ok(stderr.includes(`Invalid storage configuration: ${field}`), `${label}: ${stderr}`);
 				assert.equal(stderr.includes(SECRET), false, `${label} leaked the selection value`);
 			}
+			assert.equal(fileExistsSync(join(agentDir, "workflows", "journal.sqlite")), false);
 			assert.equal(fileExistsSync(join(root, "workflows", "journal.sqlite")), false);
 		} finally {
 			await removeTempRootReleasingBroker(root, agentDir);

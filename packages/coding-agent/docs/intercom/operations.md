@@ -177,7 +177,7 @@ For live peer coordination, call `intercom({ action: "status" })` in the parent 
 
 Parallel communication does not cancel the batch. An `intercom` ask returns at delivery and its reply arrives as a message in the same child; a `contact_supervisor` decision waits only in its requesting child and the correlated reply continues that same execution. Sends and progress updates remain nonblocking. Claimed single-child parent asks retain their terminal fresh-start handoff.
 
-Queued messages from a child arrive before its completion notice. Delivery retries do not rerun work or change its outcome.
+Queued messages from a child arrive before its completion notice. Delivery retries do not rerun work or change its outcome. Messages from one sender reach a session in the order they arrived, whether they are admitted at once or wait until the session is idle.
 
 ## Running Intercom across machines
 
@@ -248,7 +248,7 @@ The guards are `isIntercomRoutingError()`, `isIntercomRoutingMismatchError()`, `
 A session connected to a broker on another machine appears in `intercom list` and is messaged exactly like a local one:
 
 - `send`, `ask`, and `reply` keep the same sender identity, reply threads, and `delivered` meaning: `delivered` still means the recipient saved the message.
-- Group isolation is the same. A session sees and reaches only sessions that share a group with it, and by default that is its [project group](#project-groups).
+- Group isolation is the same. A session sees and reaches only sessions that share a group with it, and by default that is its [project group](#project-groups). A session can still answer a sender outside its groups whose message reached it, within the same [return path](/intercom/reference#answering-a-sender-outside-your-groups) limits, whichever machine either is on.
 - Supervisor messages from `contact_supervisor` keep their supervisor routing.
 - A send to a subagent that its owner is restoring on another machine is held, and reports the same errors, exactly as on one machine. See the [connection states](#connection-states-and-recovery) table.
 - Duplicate protection still holds: Intercom's own retries reuse the message ID, and a recipient never shows a message twice.

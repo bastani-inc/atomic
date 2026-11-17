@@ -452,9 +452,15 @@ describe("OAuthSelectorComponent", () => {
 			onCancel,
 		);
 		const hint = () => stripAnsi(selector.render(120).at(-2) ?? "").trim();
-		const output = stripAnsi(selector.render(120).join("\n"));
+		const rendered = selector.render(120).map(stripAnsi);
+		const output = rendered.join("\n");
+		const openRouterRow = rendered.find((line) => line.includes("OpenRouter")) ?? "";
+		const anthropicRow = rendered.find((line) => line.includes("Anthropic")) ?? "";
 		expect(output).toContain("│ ⌕ ");
-		expect(output).toMatch(/^ ❯ OpenRouter ✦ {2,}not configured$/m);
+		expect(openRouterRow).toMatch(/^ ❯ OpenRouter ✦ {2,}not configured$/);
+		expect(anthropicRow).toMatch(/^ {3}Anthropic {2,}not configured$/);
+		expect(visibleWidth(openRouterRow)).toBe(119);
+		expect(visibleWidth(anthropicRow)).toBe(119);
 		expect(hint()).toBe("↑↓ select · enter choose · type to search · esc cancel");
 
 		selector.handleInput("zzz");

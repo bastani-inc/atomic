@@ -12,6 +12,7 @@ import { PoolRemoteJournal } from "../../packages/workflows/src/durable/journal/
 import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
+import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import { openPoolSessions } from "../../packages/workflows/src/workers/pool-session-store.js";
@@ -56,6 +57,7 @@ async function openEveryPoolStore(db: SqliteDatabase): Promise<void> {
 		await openSqlPoolUsage(journal);
 		await SqlSharedPool.open(journal, queue);
 		await SqlFleetStore.open(journal);
+		await SqlRateBuckets.open(journal);
 		await SqlResourceAdmission.open(journal, { root: "root", holder: "holder" });
 		await (await openPoolSessions(storage)).close();
 	}

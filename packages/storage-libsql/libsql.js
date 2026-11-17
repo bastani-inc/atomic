@@ -50,7 +50,8 @@ const REQUEST_TIMEOUT_MS = 30_000;
  * The wait before the first resend of the close of a stream abandoned in an outage (#5114); each later wait doubles, up
  * to `ABANDONED_STREAM_CLOSE_LAST_WAIT_MS`. A stream the server keeps holds its open transaction, and with it the
  * database's write lock, until the server expires it: every writer waits for the lock meanwhile, this process's and
- * every other's. A close the server answers, whatever the answer, is done.
+ * every other's. A close the server answers, whatever the answer, is done. Each request of the same client also sends
+ * the closes ahead of itself, whatever the wait (`AbandonedStreams.start` and `AbandonedStreams.beforeWrite`).
  */
 const ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS = 250;
 /** The longest wait between two resends of abandoned stream closes. */
@@ -62,6 +63,13 @@ const ABANDONED_STREAM_CLOSE_LAST_WAIT_MS = 8_000;
 const ABANDONED_STREAM_CLOSE_MAX_AGE_MS = 5 * 60_000;
 /** How long one resend of an abandoned stream's close may go unanswered; a later resend tries again. */
 const ABANDONED_STREAM_CLOSE_TIMEOUT_MS = 5_000;
+/**
+ * How long writes wait, in all, for a round of abandoned stream closes the server takes but does not answer. A server
+ * that is reachable answers a close at once, without waiting for any lock; one that has not answered by then may never
+ * answer, and a write that goes ahead waits on the server for the lock as it would have anyway. Writes wait no more
+ * until the server answers a close again.
+ */
+const ABANDONED_STREAM_CLOSE_WRITE_WAIT_MS = 2_000;
 /** The most abandoned stream closes kept for resending; the oldest is dropped past it, its stream long expired. */
 const MAX_ABANDONED_STREAM_CLOSES = 16;
 
@@ -124,6 +132,53 @@ async function closesNoStream(request) {
 	return closesStream(body, true);
 }
 
+/**
+ * Whether `request`, a Hrana pipeline or cursor request, may take the database's write lock, so it would wait on the
+ * server behind a lock an abandoned stream holds: it runs a statement that is not one `SELECT`, a sequence of
+ * statements, or SQL it stored earlier. A request without a body, such as a version check, takes no lock; one whose body
+ * is not JSON counts as a write.
+ * @param {Request} request an unread copy
+ */
+async function mayWrite(request) {
+	const text = await request.text();
+	if (text === "") return false;
+	/** @type {{ requests?: unknown, batch?: { steps?: unknown } }} */
+	let body;
+	try {
+		body = JSON.parse(text);
+	} catch {
+		return true;
+	}
+	/** @type {unknown[]} */
+	const statements = [];
+	const steps = (/** @type {unknown} */ batch) =>
+		Array.isArray(batch) ? batch.map((step) => /** @type {{ stmt?: unknown }} */ (step)?.stmt) : [];
+	for (const each of Array.isArray(body?.requests) ? body.requests : []) {
+		const { type, stmt, batch } = /** @type {{ type?: unknown, stmt?: unknown, batch?: { steps?: unknown } }} */ (each ?? {});
+		if (type === "sequence") return true;
+		if (type === "execute") statements.push(stmt);
+		else if (type === "batch") statements.push(...steps(batch?.steps));
+	}
+	statements.push(...steps(body?.batch?.steps));
+	return statements.some((stmt) => !readsOnly(/** @type {{ sql?: unknown }} */ (stmt)?.sql));
+}
+
+/** The keyword of a statement that only reads. */
+const READ_KEYWORD = /SELECT\b/iy;
+
+/**
+ * Whether `sql` is one `SELECT`, which never takes the write lock. SQL that is not text, as a statement stored earlier
+ * leaves it, may write.
+ * @param {unknown} sql
+ */
+function readsOnly(sql) {
+	if (typeof sql !== "string") return false;
+	const start = firstTokenStart(sql);
+	if (start === -1) return false;
+	READ_KEYWORD.lastIndex = start;
+	return READ_KEYWORD.test(sql) && isOneStatement(sql);
+}
+
 /** The answer a server gives a request that only closes a stream. */
 function closedResponse() {
 	return new Response(JSON.stringify({ baton: null, base_url: null, results: [{ type: "ok", response: { type: "close" } }] }), {
@@ -136,15 +191,27 @@ function closedResponse() {
  * The closes of streams this client abandoned that never reached the server, sent again until the server answers one.
  * The HTTP client sends a stream's close once, when a request of the stream fails; in an outage that close fails too,
  * and the server keeps the stream, with its open transaction and the write lock it holds, for the stream's whole
- * lifetime. Sending the close again as soon as the server is reachable ends the transaction there and frees the lock.
+ * lifetime. Sending the close again as soon as the server is reachable ends the transaction there and frees the lock:
+ * a timer sends the closes with growing waits while the client sends nothing else, and each request the client sends
+ * sends them ahead of itself. A write waits for them (`beforeWrite`), so it does not queue on the server behind a lock
+ * its own client's abandoned stream holds; any other request goes at once.
  */
 class AbandonedStreams {
 	/** @type {{ url: string, headers: [string, string][], body: ArrayBuffer, since: number }[]} */
 	pending = [];
 	/** @type {ReturnType<typeof setTimeout> | undefined} */
 	timer;
-	/** @type {Promise<void> | undefined} */
+	/** Whether a round the timer started, or joined, is under way: the timer plans the next one when it ends. */
+	timerRound = false;
+	/** @type {Promise<boolean> | undefined} */
 	sending;
+	/** When the writes waiting for the round under way stop waiting for it. @type {number | undefined} */
+	waitUntil;
+	/**
+	 * Whether a round left the writes waiting for it unanswered: writes wait no more for the closes kept then, until one is
+	 * answered, given up or joined by a newly kept close.
+	 */
+	stalled = false;
 	wait = ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS;
 	closed = false;
 
@@ -156,30 +223,83 @@ class AbandonedStreams {
 		const body = await request.arrayBuffer();
 		if (this.closed || !closesStream(new Uint8Array(body))) return;
 		this.pending.push({ url: request.url, headers: [...request.headers], body, since: Date.now() });
+		// A stall belongs to the closes it was found for: a newly kept close, whose stream may hold the lock now, is waited for.
+		this.stalled = false;
 		if (this.pending.length > MAX_ABANDONED_STREAM_CLOSES) this.pending.shift();
 		this.schedule();
 	}
 
-	/** Sends the kept closes again after the current wait, unless a resend is already planned. */
+	/**
+	 * Sends the kept closes again after the current wait, unless a resend is already planned or the timer's round is under
+	 * way. A round the timer started that leaves a close unanswered doubles the wait before the next one, once; a round a
+	 * request started, which the timer joined, leaves it as it is.
+	 */
 	schedule() {
-		if (this.timer !== undefined || this.pending.length === 0) return;
+		if (this.timer !== undefined || this.timerRound || this.pending.length === 0) return;
 		this.timer = setTimeout(() => {
 			this.timer = undefined;
-			void this.send().then(() => this.schedule());
+			this.timerRound = true;
+			const joined = this.sending !== undefined;
+			void this.send().then((answered) => {
+				this.timerRound = false;
+				if (!answered && !joined) this.wait = Math.min(this.wait * 2, ABANDONED_STREAM_CLOSE_LAST_WAIT_MS);
+				this.schedule();
+			});
 		}, this.wait);
 		// A close waiting to be sent again never keeps the process alive.
 		this.timer.unref();
 	}
 
+	/** Sends the kept closes ahead of a request that does not wait for them, unless a round is under way. */
+	start() {
+		if (this.pending.length > 0) void this.send();
+	}
+
 	/**
-	 * Sends each kept close again, in order, until one goes unanswered, which doubles the wait before the next round; an
-	 * answered close is done, whatever it says, and resets the wait. A close older than
-	 * `ABANDONED_STREAM_CLOSE_MAX_AGE_MS` is given up.
+	 * Sends the kept closes ahead of a write, unless a round is under way, and waits for the round. A server reachable
+	 * again would otherwise take the write while an abandoned stream still holds the write lock, and the write would wait
+	 * for that lock until the next timed resend. The writes waiting for one round wait for it at most
+	 * `ABANDONED_STREAM_CLOSE_WRITE_WAIT_MS` in all; a round still unanswered then stalls the closes, and no write waits
+	 * for them again until the server answers one, they are given up, or another close is kept. A round that fails at once costs nothing: the write finds the server
+	 * unreachable on its own. Rejects with the reason of `signal` when it aborts first; the round goes on.
+	 * @param {AbortSignal} signal
+	 */
+	async beforeWrite(signal) {
+		if (this.pending.length === 0) return;
+		signal.throwIfAborted();
+		const round = this.send();
+		if (this.stalled) return;
+		this.waitUntil ??= performance.now() + ABANDONED_STREAM_CLOSE_WRITE_WAIT_MS;
+		const left = this.waitUntil - performance.now();
+		/** @type {ReturnType<typeof setTimeout> | undefined} */
+		let timer;
+		/** @type {(() => void) | undefined} */
+		let abort;
+		try {
+			const late = await new Promise((resolve, reject) => {
+				abort = () => reject(signal.reason);
+				signal.addEventListener("abort", abort, { once: true });
+				timer = setTimeout(() => resolve(true), Math.max(left, 0));
+				void round.then(() => resolve(false));
+			});
+			if (late && this.sending === round) this.stalled = true;
+		} finally {
+			clearTimeout(timer);
+			if (abort !== undefined) signal.removeEventListener("abort", abort);
+		}
+	}
+
+	/**
+	 * Sends each kept close again, in order, until one goes unanswered; an answered close is done, whatever it says, and
+	 * resets the wait and any stall. A close older than `ABANDONED_STREAM_CLOSE_MAX_AGE_MS` is given up. Joins the round
+	 * under way, if any. Resolves whether every kept close was answered.
+	 * @returns {Promise<boolean>}
 	 */
 	send() {
 		this.sending ??= (async () => {
 			const oldest = Date.now() - ABANDONED_STREAM_CLOSE_MAX_AGE_MS;
 			this.pending = this.pending.filter((close) => close.since > oldest);
+			if (this.pending.length === 0) this.stalled = false;
 			while (this.pending.length > 0) {
 				const [close] = this.pending;
 				try {
@@ -191,14 +311,16 @@ class AbandonedStreams {
 					});
 					await response.arrayBuffer().catch(() => {});
 				} catch {
-					this.wait = Math.min(this.wait * 2, ABANDONED_STREAM_CLOSE_LAST_WAIT_MS);
-					return;
+					return false;
 				}
 				this.wait = ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS;
+				this.stalled = false;
 				this.pending = this.pending.filter((kept) => kept !== close);
 			}
+			return true;
 		})().finally(() => {
 			this.sending = undefined;
+			this.waitUntil = undefined;
 		});
 		return this.sending;
 	}
@@ -213,8 +335,9 @@ class AbandonedStreams {
 }
 
 /**
- * `fetch` that adds `headers` to every request the libSQL HTTP client sends, abandons a request after
- * `REQUEST_TIMEOUT_MS`, and hands a stream's close that failed to `abandoned` for resending.
+ * `fetch` that adds `headers` to every request the libSQL HTTP client sends, sends the closes `abandoned` keeps ahead of
+ * it (a write waits for them), abandons a request after `REQUEST_TIMEOUT_MS`, wait included, and hands a stream's close
+ * that failed to `abandoned` for resending.
  * @param {[string, string][]} headers
  * @param {AbandonedStreams} abandoned
  * @returns {(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>}
@@ -226,8 +349,14 @@ function fetchWith(headers, abandoned) {
 		const copy = request.clone();
 		if (await closesNoStream(request.clone())) return closedResponse();
 		const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+		// The caller's signal: the one `init` passes, or else the one `input`, a request, carries.
+		const signal = AbortSignal.any([request.signal, timeout]);
+		if (abandoned.pending.length > 0) {
+			if (await mayWrite(request.clone())) await abandoned.beforeWrite(signal);
+			else abandoned.start();
+		}
 		try {
-			return await fetch(request, { signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
+			return await fetch(request, { signal });
 		} catch (error) {
 			await abandoned.failed(copy).catch(() => {});
 			throw error;
@@ -363,7 +492,7 @@ function hranaCode(hrana, error) {
  * answer was lost may have run, so its failure is the caller's, as it is for a statement on a stream of its own.
  */
 class ReusedStream {
-	/** @type {import("@libsql/hrana-client").HttpStream | undefined} */
+	/** @type {import("@libsql/hrana-client").Stream | undefined} */
 	stream;
 	openedAt = 0;
 	usedAt = 0;
@@ -373,7 +502,7 @@ class ReusedStream {
 	/**
 	 * @param {typeof import("@libsql/hrana-client")} hrana
 	 * @param {typeof import("@libsql/core/api").LibsqlError} LibsqlError
-	 * @param {() => import("@libsql/hrana-client").HttpClient} client
+	 * @param {() => import("@libsql/hrana-client").Client} client
 	 */
 	constructor(hrana, LibsqlError, client) {
 		this.hrana = hrana;
@@ -460,6 +589,101 @@ class ReusedStream {
 		this.stream?.close();
 		this.stream = undefined;
 	}
+}
+
+/**
+ * @template T
+ * @param {Promise<T>} promise
+ * @returns {Promise<{ ok: true, value: T } | { ok: false, error: unknown }>}
+ */
+function settle(promise) {
+	return promise.then(
+		(value) => ({ ok: true, value }),
+		(error) => ({ ok: false, error }),
+	);
+}
+
+/**
+ * @param {typeof import("@libsql/hrana-client")} hrana
+ * @param {typeof import("@libsql/core/api")} api
+ * @param {import("@libsql/hrana-client").Client} client
+ * @param {readonly import("@bastani/atomic/storage").SqliteStatement[]} batched
+ * @returns {Promise<import("@bastani/atomic/storage").SqliteDriverResult[]>}
+ */
+async function writeBatch(hrana, api, client, batched) {
+	/** @param {unknown} error */
+	const mapped = (error) =>
+		error instanceof hrana.ClientError
+			? new api.LibsqlError(error.message, hranaCode(hrana, error), undefined, undefined, error)
+			: error;
+	const version = await client.getVersion();
+	const stream = client.openStream();
+	const { began, ran, committed, executed } = (() => {
+		try {
+			const batch = stream.batch(false);
+			const inTransaction = () => hrana.BatchCond.not(hrana.BatchCond.isAutocommit(batch));
+			const begin = batch.step();
+			const began = settle(begin.run("BEGIN IMMEDIATE"));
+			let last = begin;
+			const ran = batched.map(({ sql, params }) => {
+				const step = batch.step().condition(hrana.BatchCond.ok(last));
+				if (version >= 3) step.condition(inTransaction());
+				const statement = new hrana.Stmt(sql);
+				statement.bindIndexes(/** @type {import("@libsql/hrana-client").InValue[]} */ ([...params]));
+				last = step;
+				return settle(step.query(statement));
+			});
+			const commit = batch.step().condition(hrana.BatchCond.ok(last));
+			if (version >= 3) commit.condition(inTransaction());
+			const committed = settle(commit.run("COMMIT"));
+			void settle(batch.step().condition(hrana.BatchCond.not(hrana.BatchCond.ok(commit))).run("ROLLBACK"));
+			return { began, ran, committed, executed: batch.execute() };
+		} finally {
+			stream.closeGracefully();
+		}
+	})();
+	try {
+		await executed;
+	} catch (error) {
+		throw mapped(error);
+	}
+	const beginning = await began;
+	if (!beginning.ok) throw mapped(beginning.error);
+	/** @type {import("@bastani/atomic/storage").SqliteDriverResult[]} */
+	const results = [];
+	for (const [index, outcome] of (await Promise.all(ran)).entries()) {
+		if (!outcome.ok) {
+			const failure = mapped(outcome.error);
+			if (!(failure instanceof api.LibsqlError)) throw failure;
+			throw new api.LibsqlBatchError(
+				failure.message,
+				index,
+				failure.code,
+				failure.extendedCode,
+				failure.rawCode,
+				outcome.error instanceof Error ? outcome.error : undefined,
+			);
+		}
+		if (outcome.value === undefined)
+			throw new api.LibsqlBatchError(
+				"Statement in a batch was not executed, probably because the transaction has been rolled back",
+				index,
+				"TRANSACTION_CLOSED",
+			);
+		results.push({
+			columns: outcome.value.columnNames.map((name) => name ?? ""),
+			rows: /** @type {import("@bastani/atomic/storage").SqliteDriverResult["rows"]} */ (outcome.value.rows),
+			changes: outcome.value.affectedRowCount,
+		});
+	}
+	const commitment = await committed;
+	if (!commitment.ok) throw mapped(commitment.error);
+	if (commitment.value === undefined)
+		throw new api.LibsqlError(
+			"The batch did not execute its COMMIT; its transaction ended before completion could be confirmed",
+			"TRANSACTION_CLOSED",
+		);
+	return results;
 }
 
 /**
@@ -890,18 +1114,19 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		});
 	// The Hrana client whose stream statements outside a transaction reuse, made on first use inside a driver call, as the
 	// client is, so the facade redacts credentials from a failure to read the URL.
-	/** @type {import("@libsql/hrana-client").HttpClient | undefined} */
+	/** @type {import("@libsql/hrana-client").Client | undefined} */
 	let hranaClient;
 	/** @type {ReusedStream | undefined} */
 	let reused;
 	/** The requests of the reused stream's client not yet answered, which a close waits for. @type {Set<Promise<Response>>} */
 	const streamRequests = new Set();
-	const shared = async () => {
-		if (protocol === undefined) return undefined;
-		const [hrana, { expandConfig }, { encodeBaseUrl }, { LibsqlError }] = protocol;
-		return (reused ??= new ReusedStream(hrana, LibsqlError, () => {
-			if (hranaClient === undefined) {
-				const config = expandConfig({ url, authToken }, true);
+	const remote = () => {
+		const [hrana, { expandConfig }, { encodeBaseUrl }] = /** @type {NonNullable<typeof protocol>} */ (protocol);
+		if (hranaClient === undefined || hranaClient.closed) {
+			const config = expandConfig({ url, authToken }, true);
+			const base = encodeBaseUrl(config.scheme, config.authority, config.path);
+			if (config.scheme === "ws" || config.scheme === "wss") hranaClient = hrana.openWs(base, config.authToken);
+			else {
 				const send = fetchWith(added, abandoned);
 				/** @type {(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>} */
 				const tracked = (input, init) => {
@@ -910,11 +1135,16 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 					void sent.finally(() => streamRequests.delete(sent)).catch(() => {});
 					return sent;
 				};
-				hranaClient = hrana.openHttp(encodeBaseUrl(config.scheme, config.authority, config.path), config.authToken, tracked);
-				hranaClient.intMode = "bigint";
+				hranaClient = hrana.openHttp(base, config.authToken, tracked);
 			}
-			return hranaClient;
-		}));
+			hranaClient.intMode = "bigint";
+		}
+		return hranaClient;
+	};
+	const shared = async () => {
+		if (protocol === undefined) return undefined;
+		const [hrana, , , { LibsqlError }] = protocol;
+		return (reused ??= new ReusedStream(hrana, LibsqlError, remote));
 	};
 	// A local statement that fails part way, as a write does when another process holds the lock past the busy timeout,
 	// stays active on its connection: the driver resets and finalizes a statement only when it is garbage collected.
@@ -992,6 +1222,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		// server's batch counts against this process's writes in flight to that server, unless it has priority.
 		batch: (batched, options) => {
 			const send = async () => {
+				if (protocol !== undefined) return writeBatch(protocol[0], protocol[3], remote(), batched);
 				const results = await (await connection()).batch(
 					batched.map(({ sql, params }) => ({ sql, args: [...params] })),
 					"write",

@@ -59,6 +59,7 @@ import type {
 	SubagentChildPolicy,
 	ToolDefinition,
 } from "./extensions/index.js";
+import { sessionIntercomFacade } from "./intercom-policy.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { ResourceLoader } from "./resource-loader.ts";
@@ -109,6 +110,7 @@ class AgentSessionBase {
 	protected _fallbackAttemptedKeys: Set<string> = new Set();
 	/** Models condemned for this turn by a failure retrying them cannot repair. */
 	protected _fallbackBlockedModels: Array<Model<Api>> = [];
+	protected _fallbackBlockedProviders: Set<string> = new Set();
 	protected _fallbackOriginModel: Model<Api> | undefined;
 	protected _fallbackOriginThinkingLevel: ThinkingLevel | undefined;
 	protected _fallbackScopeGeneration = 0;
@@ -248,6 +250,12 @@ class AgentSessionBase {
 	/** Resolved defaults last applied here, independent of shared settings publication. */
 	protected _appliedDefaultTools: Set<string>;
 	protected _subagentPolicy?: SubagentChildPolicy;
+	protected _intercomPolicy?: import("./intercom-policy.ts").SessionIntercomPolicy;
+	/**
+	 * the session's Intercom home group and reach. A host that created the session with the `intercom` option
+	 * changes the reachable groups with `setReachable`, effective from the session's next Intercom call.
+	 */
+	readonly intercom: import("./intercom-policy.ts").SessionIntercom;
 	protected _allowedToolNames?: Set<string>;
 	protected _excludedToolNames?: Set<string>;
 	protected _allowedTools?: (name: string) => boolean;
@@ -379,6 +387,8 @@ class AgentSessionBase {
 		this._orchestrationContext = config.orchestrationContext;
 		this._workspace = config.workspace;
 		this._subagentPolicy = config.subagentPolicy;
+		this._intercomPolicy = config.intercomPolicy;
+		this.intercom = sessionIntercomFacade(config.intercomPolicy);
 		this._parentCommandTaskOwner = config.parentCommandTaskOwner;
 		this._inheritedHistory = config.inheritedHistory;
 		this._resourceAdmission = config.resourceAdmission;
@@ -531,7 +541,9 @@ function stageMessageAdmission(boundary: WorkflowStageAdmissionBoundary): StageM
 	return { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() };
 }
 
-export interface AgentSession extends AgentSessionBase, AgentSessionPublicSurface {}
+export interface AgentSession extends AgentSessionBase, AgentSessionPublicSurface {
+	_sealMessageAdmissionIfDrained(): boolean;
+}
 
 export const AgentSession = AgentSessionBase as unknown as {
 	new (config: AgentSessionConfig): AgentSession;
