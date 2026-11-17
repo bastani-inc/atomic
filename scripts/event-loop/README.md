@@ -31,6 +31,9 @@ accessors installed with `Object.assign(X.prototype, …)` or `Object.defineProp
 the target's type and of their own `this` type), the exports of a `require()` call whatever its result is cast to,
 element access with a literal key, and dynamic `import()` of modules not already loaded at startup.
 
+A constant that renames a class or function through a cast constructs or calls what it names, and a constant holding
+a factory's result holds the functions the factory returns.
+
 `check-event-loop.ts` then walks it in two steps (`policy.ts` holds the lists):
 
 1. From the process entries (`PROCESS_ENTRIES`: the CLI and the bundled extensions), everything the process can run.
@@ -38,8 +41,9 @@ element access with a literal key, and dynamic `import()` of modules not already
    emitters, timers and `setImmediate`, `fs.watch`, and Atomic's own `on`/`subscribe`/`register*` APIs and `onX` handler
    properties), every continuation nothing waits for (a promise chain or an async call that is neither awaited nor
    kept, other than the process entry's own startup chain), and
-   every component's `render`/`handleInput`/`handleMouse`/`invalidate` (`INTERFACE_ROOTS`). Whatever this walk reaches
-   can run while the user is interacting, and a blocking call there is a finding.
+   every component's `render`/`handleInput`/`handleMouse`/`invalidate` (`INTERFACE_ROOTS`), and the functions
+   `INTERACTIVE_ROOTS` names, such as the engine's handler for each request the interactive host sends. Whatever this
+   walk reaches can run while the user is interacting, and a blocking call there is a finding.
 
 Callbacks registered with `process.on("exit")` are not entry points: they run as the process exits. Listener
 removals (`off`, `removeListener`) never call what they are given.

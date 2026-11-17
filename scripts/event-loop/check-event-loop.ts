@@ -128,6 +128,7 @@ export function analyzeEventLoop(graph: CallGraph, policy: EventLoopPolicy = INT
 			for (const id of implementations) roots.set(id, `${root.type}.${member}`);
 		}
 	}
+	for (const [id, reason] of reviewed(policy.interactiveRoots, "INTERACTIVE_ROOTS")) roots.set(id, reason);
 	for (const registration of graph.sinkRegistrations) {
 		if (!process.arrivals.has(registration.registrar)) continue;
 		if (registration.continuation && entries.has(registration.registrar)) continue;

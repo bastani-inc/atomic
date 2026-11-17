@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { normalizeProviderId } from "@bastani/atomic-ai";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { KeyId } from "@bastani/atomic-tui";
@@ -134,10 +135,14 @@ export function createRpcCommandHandler({
 		pending: pendingExtensionRequests ?? new Map(),
 	});
 	const bashOwners = new RpcBashRequestOwners(output);
-	const getShortcutBindings = () => {
+	/** The shortcut bindings in effect; without the host's, the agent directory's keybindings.json, read each time. */
+	const getShortcutBindings = async () => {
 		if (keybindings) return keybindings.getEffectiveConfig();
-		if (fallbackShortcutKeybindings) fallbackShortcutKeybindings.reload();
-		else fallbackShortcutKeybindings = KeybindingsManager.create(runtimeHost.services.agentDir);
+		fallbackShortcutKeybindings ??= new KeybindingsManager(
+			{},
+			join(runtimeHost.services.agentDir, "keybindings.json"),
+		);
+		await fallbackShortcutKeybindings.reloadAsync();
 		return fallbackShortcutKeybindings.getEffectiveConfig();
 	};
 	const handleCommand = (async (command: RpcCommand): Promise<RpcResponse | undefined> => {
@@ -729,7 +734,7 @@ export function createRpcCommandHandler({
 			}
 
 			case "get_shortcuts": {
-				const effectiveBindings = getShortcutBindings();
+				const effectiveBindings = await getShortcutBindings();
 				const shortcuts = session.extensionRunner.getShortcuts(effectiveBindings);
 				return createRpcSuccessResponse(id, "get_shortcuts", {
 					shortcuts: [...shortcuts].map(([key, shortcut]) => ({ key, description: shortcut.description })),
@@ -737,7 +742,9 @@ export function createRpcCommandHandler({
 			}
 
 			case "invoke_shortcut": {
-				const shortcut = session.extensionRunner.getShortcuts(getShortcutBindings()).get(command.key as KeyId);
+				const shortcut = session.extensionRunner
+					.getShortcuts(await getShortcutBindings())
+					.get(command.key as KeyId);
 				if (!shortcut) return createRpcErrorResponse(id, "invoke_shortcut", `Shortcut not found: ${command.key}`);
 				await runCallback(
 					{ kind: "extension.hook", name: `shortcut:${command.key}`, sourcePath: shortcut.extensionPath },

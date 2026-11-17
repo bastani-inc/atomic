@@ -427,6 +427,8 @@ export class CallGraphBuilder {
 	private readonly initializerFunctions = new Map<string, number[]>();
 	/** Alias declarations being followed, so a cycle of renames ends. */
 	private readonly followingAliases = new Set<string>();
+	/** What each function returns, so a constant holding a factory's result reaches the functions it returned. */
+	private readonly returnedValues = new Map<number, Array<{ readonly path: string; readonly node: Node }>>();
 	private readonly classes = new Map<string, ClassInfo>();
 	private readonly classByFieldsFunction = new Map<number, string>();
 	private readonly interfaces = new Map<string, InterfaceInfo>();
@@ -681,6 +683,15 @@ export class CallGraphBuilder {
 			case SyntaxKind.RegularExpressionLiteral:
 				this.recordRegexLiteral(node, context);
 				break;
+			case SyntaxKind.ReturnStatement: {
+				const returned = (node as Node & { readonly expression?: Node }).expression;
+				if (returned !== undefined) {
+					const list = this.returnedValues.get(context.container) ?? [];
+					list.push({ path: context.file.path, node: returned });
+					this.returnedValues.set(context.container, list);
+				}
+				break;
+			}
 			case SyntaxKind.WhileStatement:
 			case SyntaxKind.DoStatement:
 			case SyntaxKind.ForStatement:
@@ -1466,6 +1477,8 @@ export class CallGraphBuilder {
 		}
 		if ((role === "new" || role === "call") && declaration.kind === SyntaxKind.VariableDeclaration)
 			this.collectAliasedTargets(key, declaration, role, into);
+		if ((role === "call" || role === "value") && declaration.kind === SyntaxKind.VariableDeclaration)
+			this.collectReturnedTargets(key, declaration, into);
 		const parent = declaration.parent as Node | undefined;
 		const member = memberName(declaration);
 		if (declaration.kind === SyntaxKind.ClassDeclaration || declaration.kind === SyntaxKind.ClassExpression) {
@@ -1505,6 +1518,37 @@ export class CallGraphBuilder {
 		this.followingAliases.add(key);
 		try {
 			for (const id of this.resolveSymbol(symbol, role).functions) into.add(id);
+		} finally {
+			this.followingAliases.delete(key);
+		}
+	}
+
+	/**
+	 * A constant initialized with a factory's result (`const handle = createHandler(...)`) holds the functions the
+	 * factory returns, so calling it, or passing it on, reaches them.
+	 */
+	private collectReturnedTargets(key: string, declaration: Node, into: Set<number>): void {
+		const initializer = (declaration as Node & { readonly initializer?: Node }).initializer;
+		if (initializer === undefined || this.followingAliases.has(key)) return;
+		const call = unwrapExpression(initializer);
+		if (!isCallExpression(call)) return;
+		const callee = unwrapExpression(call.expression);
+		if (!isIdentifier(callee) && !isPropertyAccessExpression(callee)) return;
+		const symbol = this.symbolAt(isPropertyAccessExpression(callee) ? callee.name : callee);
+		if (symbol === undefined) return;
+		this.followingAliases.add(key);
+		try {
+			for (const factory of this.resolveSymbol(symbol, "call").functions) {
+				for (const returned of this.returnedValues.get(factory) ?? []) {
+					const value = unwrapExpression(returned.node);
+					if (isFunctionLike(value)) {
+						const id = this.functionByDeclaration.get(declarationKey(returned.path, value));
+						if (id !== undefined) into.add(id);
+					} else if (isIdentifier(value)) {
+						for (const id of this.functionsOfSymbol(this.symbolAt(value))) into.add(id);
+					}
+				}
+			}
 		} finally {
 			this.followingAliases.delete(key);
 		}

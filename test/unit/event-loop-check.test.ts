@@ -17,6 +17,13 @@ const fixturePolicy: EventLoopPolicy = {
 	interfaceRoots: [
 		{ file: "src/terminal.ts", type: "Component", members: ["render"], reason: "rendered every frame" },
 	],
+	interactiveRoots: [
+		{
+			file: "src/values.ts",
+			name: "handleEngineRequest",
+			reason: "the fixture's stand-in for a request handler reached through a path the graph does not follow",
+		},
+	],
 	sinks: SINKS,
 	detachedCallbacks: DETACHED_CALLBACKS,
 	ownedElsewhere: [
@@ -84,7 +91,9 @@ describe("event-loop check", () => {
 			"src/statements.ts readStartToken fs.readFileSync",
 			"src/stores.ts FileStore.save fs.writeFileSync",
 			"src/values.ts countEntries fs.readdirSync",
+			"src/values.ts createCommandHandler/handleCommand fs.readFileSync",
 			"src/values.ts existsByElement fs.existsSync",
+			"src/values.ts handleEngineRequest fs.statSync",
 			"src/values.ts nativeProcessQueries natives.tryAdvisoryLock",
 			"src/values.ts openDatabase new DatabaseSync",
 			"src/values.ts readThroughCast fs.readFileSync",
@@ -218,7 +227,7 @@ describe("event-loop check", () => {
 		);
 	});
 
-	test("reports blocking APIs passed as values, behind a cast require and through element access", () => {
+	test("reports blocking APIs passed as values, returned by a factory, behind a cast require and through element access", () => {
 		assert.deepEqual(
 			report.violations
 				.filter((v) => v.file === "src/values.ts")
@@ -226,7 +235,9 @@ describe("event-loop check", () => {
 				.sort(),
 			[
 				"countEntries fs.readdirSync",
+				"createCommandHandler/handleCommand fs.readFileSync",
 				"existsByElement fs.existsSync",
+				"handleEngineRequest fs.statSync",
 				"nativeProcessQueries natives.tryAdvisoryLock",
 				"openDatabase new DatabaseSync",
 				"readThroughCast fs.readFileSync",
@@ -291,10 +302,19 @@ describe("event-loop check", () => {
 					reason: "the fixture's stand-in for a guarded call no interactive path makes",
 				},
 			],
+			interactiveRoots: [
+				...fixturePolicy.interactiveRoots,
+				{
+					file: "src/values.ts",
+					name: "handleRemovedRequest",
+					reason: "the fixture's stand-in for a request handler that no longer exists",
+				},
+			],
 		});
 		assert.deepEqual(stale.policyErrors.map((error) => error.replace(/:\d+ /, " ")).sort(), [
 			"DURABLE_RECORDS: src/host.ts loadConfigBeforeFirstFrame is no longer reached from an interactive root",
 			"GUARDED_CALLS: src/host.ts startHost is no longer reached from an interactive root",
+			"INTERACTIVE_ROOTS: no function src/values.ts#handleRemovedRequest",
 			"OTHER_MODES: src/host.ts flushOnExit is no longer reached from the process entries",
 			"OWNED_ELSEWHERE: nothing left for a landed change in src/loader.ts; remove the entry",
 			"OWNED_ELSEWHERE: nothing left for a landed statement in src/stores.ts#MemoryStore.save; remove the entry",

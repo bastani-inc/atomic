@@ -9,7 +9,14 @@ import { scheduleStartupWork } from "./startup.ts";
 import { queryStatement, recordDurably } from "./statements.ts";
 import { FileStore, type Store } from "./stores.ts";
 import { Terminal } from "./terminal.ts";
-import { countEntries, existsByElement, nativeProcessQueries, openDatabase, readThroughCast } from "./values.ts";
+import {
+	countEntries,
+	createCommandHandler,
+	existsByElement,
+	nativeProcessQueries,
+	openDatabase,
+	readThroughCast,
+} from "./values.ts";
 
 const store: Store = new FileStore();
 
@@ -75,6 +82,8 @@ export function startHost(): void {
 	loadConfigBeforeFirstFrame();
 	scheduleStartupWork();
 	new Terminal().start((data) => handleKey(data));
+	const handleCommand = createCommandHandler();
+	new Terminal().start((data) => void handleCommand(data));
 	setInterval(pollStatus, 1_000);
 	process.on("exit", () => writeFileSync("exit.marker", "bye"));
 }

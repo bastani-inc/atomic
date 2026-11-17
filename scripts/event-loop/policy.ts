@@ -91,6 +91,18 @@ export const INTERFACE_ROOTS: readonly InterfaceRoot[] = [
 	},
 ];
 
+/**
+ * Functions that run on every request the interactive host sends its engine. The engine reaches them through a
+ * handler the RPC mode builds once and hands to its input reader, a path the call graph does not follow.
+ */
+export const INTERACTIVE_ROOTS: readonly ReviewedSelector[] = [
+	{
+		file: "packages/coding-agent/src/modes/rpc/rpc-command-handler.ts",
+		name: "createRpcCommandHandler/handleCommand",
+		reason: "the interactive engine runs every command the host sends, such as a prompt or a model change, here",
+	},
+];
+
 const OUR_REGISTRATION_NAMES = [
 	"on",
 	"once",
@@ -317,6 +329,7 @@ export interface EventLoopPolicy {
 	readonly startupModules: readonly string[];
 	readonly otherModes: readonly ReviewedSelector[];
 	readonly interfaceRoots: readonly InterfaceRoot[];
+	readonly interactiveRoots: readonly ReviewedSelector[];
 	readonly sinks: readonly SinkSpec[];
 	readonly detachedCallbacks: readonly SinkSpec[];
 	readonly ownedElsewhere: readonly OwnedArea[];
@@ -334,6 +347,7 @@ export const INTERACTIVE_HOST_POLICY: EventLoopPolicy = {
 	startupModules: STARTUP_MODULES,
 	otherModes: OTHER_MODES,
 	interfaceRoots: INTERFACE_ROOTS,
+	interactiveRoots: INTERACTIVE_ROOTS,
 	sinks: SINKS,
 	detachedCallbacks: DETACHED_CALLBACKS,
 	ownedElsewhere: OWNED_ELSEWHERE,

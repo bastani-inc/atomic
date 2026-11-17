@@ -34,3 +34,14 @@ export function nativeProcessQueries(pid: number): unknown[] {
 	};
 	return [natives.processCreationTime(pid), natives.containProcessTree(pid), natives.tryAdvisoryLock("held.lock")];
 }
+
+/** A factory whose result the host keeps and calls for every key: the handler it returns runs on input. */
+export function createCommandHandler(): (command: string) => string {
+	const handleCommand = (command: string): string => fs.readFileSync(command, "utf8");
+	return handleCommand;
+}
+
+/** Reached only through a handler the call graph cannot follow; the fixture's policy roots it. */
+export function handleEngineRequest(path: string): boolean {
+	return fs.statSync(path).isFile();
+}
