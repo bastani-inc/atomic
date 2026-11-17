@@ -35,6 +35,7 @@ import {
 	SUBAGENT_OWNER_GENERATION,
 	subagentReleasePolicy,
 	subagentWakeKey,
+	wakeFailureOf,
 	wakeReleasedChildWithHeldResults,
 } from "./released-children.js";
 import {
@@ -44,8 +45,9 @@ import {
 	runWorktreeRecord,
 	unparkRunWorktree,
 } from "./run-worktrees.js";
-import { subagentChildRecordOf } from "./subagent-child-card-state.js";
+import { readableSubagentChildRecordOf } from "./subagent-child-card-state.js";
 import {
+	observeChildRecordFailure,
 	pendingMessagesOfResult,
 	SUBAGENT_CHILD_RELEASED_STATUS,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
@@ -422,13 +424,16 @@ function wakeForResultsHeldDuringRun(
 	taskId: string,
 	delivered: readonly string[],
 ): void {
-	void subagentChildRecordsAppended(ownerSessionId).then(() => {
-		const arrived = (subagentChildRecordOf(ownerSessionId, childId)?.heldToolResults ?? []).filter(
-			(held) => !delivered.includes(held.toolCallId),
-		);
-		if (arrived.length > 0)
-			wakeReleasedChildWithHeldResults(dispatcher, subagentWakeKey(ownerSessionId, childId), taskId);
-	});
+	// Nothing awaits this: a record it cannot read wakes nothing, and a failure is reported, never left unhandled.
+	void subagentChildRecordsAppended(ownerSessionId)
+		.then(() => {
+			const arrived = (readableSubagentChildRecordOf(ownerSessionId, childId)?.heldToolResults ?? []).filter(
+				(held) => !delivered.includes(held.toolCallId),
+			);
+			if (arrived.length > 0)
+				wakeReleasedChildWithHeldResults(dispatcher, subagentWakeKey(ownerSessionId, childId), taskId);
+		})
+		.catch((error: Error) => observeChildRecordFailure(ownerSessionId, wakeFailureOf(error, childId)));
 }
 
 /** Bind the real foreground runner once; only its registered observation may yield. */
