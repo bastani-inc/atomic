@@ -21,7 +21,7 @@ import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-h
 import { ScrollableComponentViewport } from "./chat-transcript.js";
 import { applyAttachedComposer } from "./input-label.ts";
 import { taskDisplayText, taskState } from "./task-row.js";
-import { retainedToolRenderer } from "./tool-renderer-scope.js";
+import { retainedToolRenderer, unavailableToolRenderer } from "./tool-renderer-scope.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
 
 /** Where a task's transcript view is mounted: the chat host it builds on and the render settings it inherits. */
@@ -237,7 +237,9 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 							return (
 								session.extensionRunner?.resolveToolRenderers?.(toolName, () =>
 									session.getToolDefinition?.(toolName),
-								) ?? session.getToolDefinition?.(toolName)
+								) ??
+								session.getToolDefinition?.(toolName) ??
+								unavailableToolRenderer(toolName)
 							);
 						}
 						const owner = getOwnerTaskSession(this.source) as ChatBoxSession | undefined;
