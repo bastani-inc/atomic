@@ -874,4 +874,5 @@ module.exports.startHostProcess = nativeBinding.startHostProcess
 module.exports.TerminationCause = nativeBinding.TerminationCause
 module.exports.tryAdvisoryLock = nativeBinding.tryAdvisoryLock
 module.exports.windowsDirectorySecurity = nativeBinding.windowsDirectorySecurity
+module.exports.windowsDirectorySecurityAsync = nativeBinding.windowsDirectorySecurityAsync
 module.exports.YieldReason = nativeBinding.YieldReason

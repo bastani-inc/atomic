@@ -1238,6 +1238,25 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 		},
 	);
 
+	it("each asynchronous Windows temp-directory creation gives other queued work a turn (#5324)", async () => {
+		if (!isWindows) simulateWindows();
+		setWindowsDirectorySecurityReaderForTesting(() => security());
+		await getSessionTempDirAsync("prewarmed-root");
+		for (let session = 0; session < SESSION_BURST; session++) {
+			let yielded = false;
+			const turn = new Promise<void>((resolve) =>
+				setImmediate(() => {
+					yielded = true;
+					resolve();
+				}),
+			);
+			await getSessionTempDirAsync(`yielding-${session}`);
+			const yieldedBeforeCompletion = yielded;
+			await turn;
+			assert.equal(yieldedBeforeCompletion, true);
+		}
+	});
+
 	it("session start verifies the private roots in the background, so a later synchronous caller finds them verified (#5285)", async () => {
 		const reads: string[] = [];
 		setWindowsDirectorySecurityReaderForTesting(async (path) => {

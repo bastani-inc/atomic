@@ -22,6 +22,15 @@ pub fn windows_directory_security(path: String) -> Option<WindowsDirectorySecuri
 	read_directory_security(&path)
 }
 
+#[napi(js_name = "windowsDirectorySecurityAsync")]
+pub fn windows_directory_security_async(
+	path: String,
+) -> crate::task::Promise<Option<WindowsDirectorySecurity>> {
+	crate::task::blocking("windowsDirectorySecurity", (), move |_| {
+		Ok(read_directory_security(&path))
+	})
+}
+
 #[cfg(windows)]
 fn read_directory_security(path: &str) -> Option<WindowsDirectorySecurity> {
 	use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};

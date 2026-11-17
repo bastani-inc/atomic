@@ -19,6 +19,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, type Stats } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { APP_NAME, getAgentDir } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
@@ -225,6 +226,7 @@ function attemptWithoutBackgroundVerification<T>(attempt: () => T): T {
 }
 
 async function afterVerification<T>(attempt: () => T): Promise<T> {
+	if (process.platform === "win32") await yieldToEventLoop();
 	const verified = new Set<string>();
 	for (;;) {
 		try {

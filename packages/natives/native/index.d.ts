@@ -926,4 +926,6 @@ export interface WindowsDirectorySecurity {
   accessRules: Array<WindowsAccessRule>
 }
 
+export declare function windowsDirectorySecurityAsync(path: string): Promise<WindowsDirectorySecurity | undefined | null>
+
 export type YieldReason = 'explicit' | 'default-background' | 'elapsed' | 'intercom-coordination' | 'input-needed'

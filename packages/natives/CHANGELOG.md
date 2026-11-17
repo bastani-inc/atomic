@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `windowsDirectorySecurityAsync(path)` to read a directory's security descriptor on a native worker without blocking the caller ([#5324](https://github.com/bastani-inc/atomic/issues/5324)).
 - Added `windowsDirectorySecurity(path)`: on Windows, reads a file or directory's owner SID, its DACL in SDDL form and the SID of each allow and deny entry, along with the current user's SID, without starting a process. It returns `null` where the descriptor cannot be read, and on other platforms ([#5324](https://github.com/bastani-inc/atomic/issues/5324)).
 ### Fixed
 

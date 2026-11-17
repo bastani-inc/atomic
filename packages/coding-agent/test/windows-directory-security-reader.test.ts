@@ -14,7 +14,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 vi.mock("../src/utils/module-require.js", () => ({
-	createModuleRequire: () => () => ({ windowsDirectorySecurity: nativeReader }),
+	createModuleRequire: () => () => ({ windowsDirectorySecurityAsync: nativeReader }),
 }));
 
 const {
@@ -34,13 +34,15 @@ const EXPECTED_SECURITY = {
 const SECURITY_OUTPUT = "S-1-5-21-1\nS-1-5-21-1\nD:(A;;FA;;;S-1-5-21-1)\nAllow;S-1-5-21-1";
 
 function childProcess() {
-	return Object.assign(new EventEmitter(), {
+	const child = Object.assign(new EventEmitter(), {
 		stdout: new PassThrough(),
 		stderr: new PassThrough(),
 		kill: vi.fn(),
 		ref: vi.fn(),
 		unref: vi.fn(),
 	});
+	child.kill.mockImplementation(() => queueMicrotask(() => child.emit("close", null, "SIGTERM")));
+	return child;
 }
 
 function triedExecutables(): string[] {
@@ -106,6 +108,17 @@ test("a descriptor read shares one timeout across its PowerShell candidates (#53
 	assert.equal(child.kill.mock.calls.length, 1);
 });
 
+test("a cancelled ACL fallback does not retry killing a child that reports a kill error (#5324)", async () => {
+	const child = childProcess();
+	child.kill.mockImplementation(() => {
+		if (child.kill.mock.calls.length === 1) child.emit("error", new Error("kill failed"));
+		queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+	});
+	spawn.mockReturnValue(child);
+	assert.equal(await readWindowsDirectorySecurityAsync(dir, { timeoutMs: 20 }), undefined);
+	assert.equal(child.kill.mock.calls.length, 1);
+});
+
 test("a descriptor read still tries another PowerShell with the same name when its budget remains (#5324)", async () => {
 	let attempts = 0;
 	spawn.mockImplementation(() => {
@@ -113,6 +126,7 @@ test("a descriptor read still tries another PowerShell with the same name when i
 		queueMicrotask(() => {
 			if (attempts++ === 0) {
 				child.emit("error", Object.assign(new Error("early host timeout"), { code: "ETIMEDOUT" }));
+				child.emit("close", null, null);
 			} else {
 				child.stdout.write(SECURITY_OUTPUT);
 				child.emit("close", 0, null);
@@ -128,12 +142,29 @@ test("a descriptor read still tries another PowerShell with the same name when i
 test("a descriptor read that cannot start a PowerShell program still tries the next one of the same name (#5324)", async () => {
 	spawn.mockImplementation(() => {
 		const child = childProcess();
-		queueMicrotask(() => child.emit("error", Object.assign(new Error("missing host"), { code: "ENOENT" })));
+		queueMicrotask(() => {
+			child.emit("error", Object.assign(new Error("missing host"), { code: "ENOENT" }));
+			child.emit("close", null, null);
+		});
 		return child;
 	});
 
 	assert.equal(await readWindowsDirectorySecurityAsync(dir), undefined);
 	assert.deepEqual(triedExecutables(), powershellCandidates());
+});
+
+test("an unavailable asynchronous native descriptor falls back to PowerShell (#5324)", async () => {
+	nativeReader.mockResolvedValue(undefined);
+	spawn.mockImplementation(() => {
+		const child = childProcess();
+		queueMicrotask(() => {
+			child.stdout.write(SECURITY_OUTPUT);
+			child.emit("close", 0, null);
+		});
+		return child;
+	});
+	assert.deepEqual(await readWindowsDirectorySecurityAsync(dir), EXPECTED_SECURITY);
+	assert.deepEqual(triedExecutables(), [powershellCandidates()[0]]);
 });
 
 test("a native reader failure falls back to asynchronous PowerShell (#5324)", async () => {

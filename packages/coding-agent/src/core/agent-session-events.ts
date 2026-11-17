@@ -57,8 +57,10 @@ import {
 	hasCallingSessionWork,
 	ownedSessionPermits,
 	ownedSessionStores,
+	sessionLifetime,
 } from "./session-lifecycle-work.ts";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
+import { drainWindowsDirectorySecurityReads } from "./tools/windows-directory-security.ts";
 import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
@@ -742,6 +744,7 @@ export function closeAgentSession(
 			}
 		};
 		await attempt("lifetime", () => abortSessionWork(session, event.reason === "quit"));
+		await attempt("directory checks", () => drainWindowsDirectorySecurityReads(sessionLifetime(session)));
 		await attempt("event subscriptions", () => cancelSessionSubscriptions(session));
 		await attempt("shell abort", () => abortBash.call(session));
 		await attempt("abort", () => abortCurrentGeneration.call(session));

@@ -190,7 +190,7 @@ export function getLastWindowsSecurityReadFailureForTesting(): string | undefine
 	return lastReadFailure;
 }
 
-type NativeSecurityReader = (path: string) => WindowsDirectorySecurity | null;
+type NativeSecurityReader = (path: string) => Promise<WindowsDirectorySecurity | null | undefined>;
 
 let nativeReader: NativeSecurityReader | null | undefined;
 
@@ -198,9 +198,9 @@ function nativeSecurityReader(): NativeSecurityReader | null {
 	if (nativeReader === undefined) {
 		try {
 			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
-				windowsDirectorySecurity?: NativeSecurityReader;
+				windowsDirectorySecurityAsync?: NativeSecurityReader;
 			};
-			nativeReader = binding.windowsDirectorySecurity ?? null;
+			nativeReader = binding.windowsDirectorySecurityAsync ?? null;
 		} catch {
 			nativeReader = null;
 		}
@@ -208,13 +208,13 @@ function nativeSecurityReader(): NativeSecurityReader | null {
 	return nativeReader;
 }
 
-function readNatively(path: string): WindowsDirectorySecurity | null {
+async function readNatively(path: string): Promise<WindowsDirectorySecurity | null> {
 	const native = nativeSecurityReader();
 	if (native === null) {
 		return null;
 	}
 	try {
-		return native(path);
+		return (await native(path)) ?? null;
 	} catch {
 		return null;
 	}
@@ -234,6 +234,18 @@ type ChildStream = (Readable & Partial<Pick<Socket, "ref" | "unref">>) | null;
 const outsideAnyCaller = AsyncLocalStorage.snapshot();
 
 const sharedReads = new Map<string, SharedSecurityRead>();
+const currentReadOwner = new AsyncLocalStorage<AbortSignal>();
+const ownedReads = new WeakMap<AbortSignal, Set<Promise<WindowsDirectorySecurity | undefined>>>();
+const closingReads = new Set<SharedSecurityRead>();
+
+export function withWindowsDirectorySecurityOwner<T>(signal: AbortSignal, operation: () => T): T {
+	return currentReadOwner.run(signal, operation);
+}
+
+export async function drainWindowsDirectorySecurityReads(signal: AbortSignal): Promise<void> {
+	const pending = ownedReads.get(signal);
+	while (pending?.size) await Promise.all(pending);
+}
 
 class SharedSecurityRead {
 	readonly result: Promise<WindowsDirectorySecurity | undefined>;
@@ -241,6 +253,7 @@ class SharedSecurityRead {
 	private waiters = 0;
 	private foregroundWaiters = 0;
 	private child: ChildProcess | undefined;
+	private finished = false;
 	private readonly path: string;
 	private readonly key: string;
 
@@ -249,6 +262,8 @@ class SharedSecurityRead {
 		this.key = key;
 		this.result = outsideAnyCaller(() => Promise.resolve().then(() => this.readCandidates())).finally(() => {
 			if (sharedReads.get(key) === this) sharedReads.delete(key);
+			this.finished = true;
+			closingReads.delete(this);
 		});
 	}
 
@@ -269,9 +284,16 @@ class SharedSecurityRead {
 				signal?.removeEventListener("abort", stopWaiting);
 				this.waiters -= 1;
 				if (!background) this.foregroundWaiters -= 1;
-				if (this.waiters === 0) this.cancel();
-				else this.applyKeepAlive();
-				resolve(security);
+				if (this.waiters === 0) {
+					this.cancel();
+					void this.result.then(
+						() => resolve(security),
+						() => resolve(undefined),
+					);
+				} else {
+					this.applyKeepAlive();
+					resolve(security);
+				}
 			};
 			const stopWaiting = () => leave(undefined);
 			const deadline = setTimeout(stopWaiting, timeoutMs);
@@ -283,13 +305,15 @@ class SharedSecurityRead {
 
 	cancel(): void {
 		if (sharedReads.get(this.key) === this) sharedReads.delete(this.key);
+		if (!this.finished) closingReads.add(this);
 		this.controller.abort();
 	}
 
 	private async readCandidates(): Promise<WindowsDirectorySecurity | undefined> {
 		if (this.controller.signal.aborted) return undefined;
 		lastReadFailure = undefined;
-		const security = readNatively(this.path);
+		const security = await readNatively(this.path);
+		if (this.controller.signal.aborted) return undefined;
 		if (security !== null) return security;
 		const failures: string[] = [];
 		for (const executable of powershellCandidates()) {
@@ -330,22 +354,30 @@ class SharedSecurityRead {
 				this.controller.signal.removeEventListener("abort", stop);
 				resolve(attempt);
 			};
+			let failure: string | undefined;
+			let stopping = false;
 			const stop = () => {
+				failure ??= `${executable}: aborted`;
+				if (stopping) return;
+				stopping = true;
+				child.ref();
 				child.kill();
 				child.stdout?.destroy();
 				child.stderr?.destroy();
-				settle({ failure: `${executable}: aborted` });
 			};
 			this.controller.signal.addEventListener("abort", stop, { once: true });
 			const fail = (error: Error) => {
-				child.stdout?.destroy();
-				child.stderr?.destroy();
-				settle({ failure: `${executable}: error=${error.message}` });
+				failure ??= `${executable}: error=${error.message}`;
+				stop();
 			};
 			child.on("error", fail);
 			child.stdout?.on("error", fail);
 			child.stderr?.on("error", fail);
 			child.once("close", (status, signal) => {
+				if (failure !== undefined) {
+					settle({ failure });
+					return;
+				}
 				const output = Buffer.concat(stdout).toString("utf8");
 				if (status !== 0) {
 					const detail = Buffer.concat(stderr).toString("utf8").trim().slice(0, 500);
@@ -386,7 +418,9 @@ export function readWindowsDirectorySecurityAsync(
 	path: string,
 	options: ReadWindowsDirectorySecurityOptions = {},
 ): Promise<WindowsDirectorySecurity | undefined> {
-	if (options.signal?.aborted) return Promise.resolve(undefined);
+	const owner = currentReadOwner.getStore();
+	const signal = owner && options.signal ? AbortSignal.any([owner, options.signal]) : (owner ?? options.signal);
+	if (signal?.aborted) return Promise.resolve(undefined);
 	const resolvedPath = resolve(path);
 	const identity = options.identity ?? identityOf(resolvedPath);
 	if (identity === undefined) return Promise.resolve(undefined);
@@ -396,7 +430,14 @@ export function readWindowsDirectorySecurityAsync(
 		read = new SharedSecurityRead(resolvedPath, key);
 		sharedReads.set(key, read);
 	}
-	return read.join(options.timeoutMs ?? READ_SECURITY_TIMEOUT_MS, options.signal, options.background ?? false);
+	const result = read.join(options.timeoutMs ?? READ_SECURITY_TIMEOUT_MS, signal, options.background ?? false);
+	if (owner) {
+		const pending = ownedReads.get(owner) ?? new Set<Promise<WindowsDirectorySecurity | undefined>>();
+		ownedReads.set(owner, pending);
+		pending.add(result);
+		void result.then(() => pending.delete(result));
+	}
+	return result;
 }
 
 function parseSecurityOutput(stdout: string): WindowsDirectorySecurity | undefined {
@@ -525,15 +566,13 @@ export function verifyWindowsDirectorySecurity(
 		return undefined;
 	}
 	if (options.startVerification !== false) {
-		outsideAnyCaller(() => {
-			verifyWindowsDirectorySecurityAsync(resolvedPath, undefined, { background: true }).catch(() => undefined);
-		});
+		verifyWindowsDirectorySecurityAsync(resolvedPath, undefined, { background: true }).catch(() => undefined);
 	}
 	return VERIFICATION_PENDING_REASON;
 }
 
 export async function waitForWindowsDirectorySecurityReadsForTesting(): Promise<void> {
-	await Promise.all([...sharedReads.values()].map((read) => read.result));
+	await Promise.all([...sharedReads.values(), ...closingReads].map((read) => read.result));
 }
 
 /** Test seam: substitute the descriptor reader; pass `undefined` to restore. */
