@@ -4,9 +4,14 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { durableWorkflowRunSnapshots } from "../durable/completed-catalog.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { DurableWorkflowDeleteOutcome } from "../durable/retention-policy.js";
-import { priorRunAccounting, priorRunElapsedMs } from "../durable/run-timing.js";
+import { priorRunAccounting, priorRunElapsedMs, recordedRunTotals } from "../durable/run-timing.js";
 import { availableStoreDurableBackend } from "../durable/store-backend.js";
-import type { DurableStageCheckpoint, DurableWorkflowHandle, ResumableWorkflowEntry } from "../durable/types.js";
+import type {
+	DurableCheckpoint,
+	DurableStageCheckpoint,
+	DurableWorkflowHandle,
+	ResumableWorkflowEntry,
+} from "../durable/types.js";
 import type { PiHostSessionPickerFunction, PiHostSessionPickerRow } from "../extension/wiring.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { store as defaultStore } from "../shared/store.js";
@@ -50,6 +55,7 @@ export interface WorkflowResumeSelectorItem {
 export interface WorkflowResumeSelectorItemsOptions {
 	readonly includeCompletedWithoutResumable?: boolean;
 	readonly resolveDescription?: (name: string, cwd?: string) => string | undefined;
+	readonly overviewCheckpoints?: ReadonlyMap<string, readonly DurableCheckpoint[]>;
 }
 
 function latestStageTimestamp(stage: StageSnapshot): number {
@@ -191,14 +197,18 @@ function stageAttemptsCost(stages: readonly StageSnapshot[]): number {
 	return total;
 }
 
+type RecordedRunTotals = ReturnType<typeof recordedRunTotals>;
+
 function runCost(
 	run: RunSnapshot | undefined,
 	backend: DurableWorkflowBackend | undefined,
 	workflowId: string,
+	recorded?: RecordedRunTotals,
 ): number | undefined {
 	const accountingCost = run?.budgetState?.accounting?.cost;
 	if (accountingCost !== undefined && accountingCost > 0) return accountingCost;
-	const durableCost = backend !== undefined ? priorRunAccounting(backend, workflowId)?.cost : undefined;
+	const durableCost =
+		(backend !== undefined ? priorRunAccounting(backend, workflowId)?.cost : undefined) ?? recorded?.accounting?.cost;
 	if (durableCost !== undefined && durableCost > 0) return durableCost;
 	const attemptsCost = run !== undefined ? stageAttemptsCost(run.stages) : 0;
 	return attemptsCost > 0 ? attemptsCost : undefined;
@@ -247,12 +257,22 @@ function resolveWorkflowDescription(
 
 const durableSnapshotCache = new WeakMap<
 	DurableWorkflowBackend,
-	Map<string, { readonly key: string; readonly snapshot: RunSnapshot | undefined }>
+	Map<
+		string,
+		{
+			readonly key: string;
+			readonly overview: readonly DurableCheckpoint[] | undefined;
+			readonly snapshot: RunSnapshot | undefined;
+		}
+	>
 >();
 
-function fallbackStagesFromCheckpoints(backend: DurableWorkflowBackend, workflowId: string): readonly StageSnapshot[] {
+function fallbackStagesFromCheckpoints(
+	checkpoints: readonly DurableCheckpoint[],
+	workflowId: string,
+): readonly StageSnapshot[] {
 	const groups = new Map<string, StageSnapshot>();
-	for (const checkpoint of backend.listCheckpoints(workflowId)) {
+	for (const checkpoint of checkpoints) {
 		if (checkpoint.kind !== "stage") continue;
 		const stageCheckpoint = checkpoint as DurableStageCheckpoint;
 		if (stageCheckpoint.topology?.boundary !== undefined) continue;
@@ -305,6 +325,8 @@ function cachedDurableRunSnapshot(
 	backend: DurableWorkflowBackend | undefined,
 	handle: DurableWorkflowHandle | undefined,
 	entry: ResumableWorkflowEntry,
+	overview?: readonly DurableCheckpoint[],
+	recorded?: RecordedRunTotals,
 ): RunSnapshot | undefined {
 	if (backend === undefined || handle === undefined) return undefined;
 	const key = `${handle.status}:${handle.updatedAt}:${handle.completedCheckpoints}`;
@@ -314,13 +336,16 @@ function cachedDurableRunSnapshot(
 		durableSnapshotCache.set(backend, byWorkflow);
 	}
 	const cached = byWorkflow.get(entry.workflowId);
-	if (cached !== undefined && cached.key === key) return cached.snapshot;
+	if (cached !== undefined && cached.key === key && cached.overview === overview) return cached.snapshot;
 
 	let snapshot = durableWorkflowRunSnapshots(backend, handle)[0];
 	if (snapshot === undefined || snapshot.stages.length === 0) {
-		const stages = fallbackStagesFromCheckpoints(backend, entry.workflowId);
+		const stages = fallbackStagesFromCheckpoints(
+			overview ?? backend.listCheckpoints(entry.workflowId),
+			entry.workflowId,
+		);
 		if (stages.length > 0) {
-			const priorDurationMs = priorRunElapsedMs(backend, entry.workflowId);
+			const priorDurationMs = priorRunElapsedMs(backend, entry.workflowId) ?? recorded?.elapsedMs;
 			const terminal = handle.status === "completed" || handle.status === "failed" || handle.status === "cancelled";
 			snapshot = {
 				id: handle.workflowId,
@@ -342,7 +367,7 @@ function cachedDurableRunSnapshot(
 			};
 		}
 	}
-	byWorkflow.set(entry.workflowId, { key, snapshot });
+	byWorkflow.set(entry.workflowId, { key, overview, snapshot });
 	return snapshot;
 }
 
@@ -352,11 +377,12 @@ function durableRunElapsedMs(
 	sessionRun: RunSnapshot | undefined,
 	backend: DurableWorkflowBackend | undefined,
 	handle: DurableWorkflowHandle | undefined,
+	overview?: readonly DurableCheckpoint[],
+	recordedTotals?: RecordedRunTotals,
 ): number | undefined {
-	if (backend !== undefined) {
-		const recorded = priorRunElapsedMs(backend, entry.workflowId);
-		if (recorded !== undefined && recorded > 0) return recorded;
-	}
+	const recorded =
+		(backend !== undefined ? priorRunElapsedMs(backend, entry.workflowId) : undefined) ?? recordedTotals?.elapsedMs;
+	if (recorded !== undefined && recorded > 0) return recorded;
 	if (sessionRun !== undefined && sessionRun.stages.length > 0) {
 		const liveElapsed = elapsedRunMs(sessionRun, sessionRun.endedAt ?? entry.updatedAt);
 		if (liveElapsed > 0) return liveElapsed;
@@ -371,7 +397,7 @@ function durableRunElapsedMs(
 	if (
 		handle !== undefined &&
 		backend !== undefined &&
-		backend.listCheckpoints(entry.workflowId).length > 0 &&
+		(backend.listCheckpoints(entry.workflowId).length > 0 || (overview?.length ?? 0) > 0) &&
 		entry.updatedAt > entry.createdAt
 	) {
 		return entry.updatedAt - entry.createdAt;
@@ -486,10 +512,12 @@ function durableWorkflowSession(
 	options?: WorkflowResumeSelectorItemsOptions,
 ): WorkflowResumeSelectorItem {
 	const handle = backend?.getWorkflow(entry.workflowId);
+	const overview = options?.overviewCheckpoints?.get(entry.workflowId);
+	const recorded = overview === undefined ? undefined : recordedRunTotals(overview);
 	const reconstructed =
 		sessionRun !== undefined && sessionRun.stages.length > 0
 			? sessionRun
-			: cachedDurableRunSnapshot(backend, handle, entry);
+			: cachedDurableRunSnapshot(backend, handle, entry, overview, recorded);
 	const presentation = workflowStatusPresentation(entry.status, kind, entry.exitReason);
 	const identity = workflowIdentity(
 		entry.workflowId,
@@ -505,8 +533,8 @@ function durableWorkflowSession(
 		handle?.invocationCwd;
 	const possibleStages = sessionRun?.possibleStages ?? handle?.possibleStages;
 	const stageDetail = reconstructed !== undefined ? runStageText(reconstructed, possibleStages) : undefined;
-	const elapsedMs = durableRunElapsedMs(entry, reconstructed, sessionRun, backend, handle);
-	const cost = formatRunCost(runCost(reconstructed ?? sessionRun, backend, entry.workflowId));
+	const elapsedMs = durableRunElapsedMs(entry, reconstructed, sessionRun, backend, handle, overview, recorded);
+	const cost = formatRunCost(runCost(reconstructed ?? sessionRun, backend, entry.workflowId, recorded));
 	const branch = resolveRunBranch(reconstructed ?? sessionRun, entry, handle);
 	const reason =
 		entry.status === "failed" || entry.status === "blocked"

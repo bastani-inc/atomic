@@ -410,13 +410,55 @@ function checkpointEventKey(kind: DurableCheckpoint["kind"], checkpointId: strin
  */
 function checkpointKeyRanges(selection: CheckpointSelection): (readonly [string, string])[] | undefined {
 	if (selection.prefixes.some((prefix) => prefix.length === 0 || !/^[\x20-\x7e]+$/.test(prefix))) return undefined;
-	return selection.prefixes.flatMap((prefix) =>
-		CHECKPOINT_KINDS.map((kind) => {
-			const from = checkpointEventKey(kind, prefix).slice(0, -2);
-			const to = from.slice(0, -1) + String.fromCharCode(from.charCodeAt(from.length - 1) + 1);
-			return [from, to] as const;
-		}),
+	return selection.prefixes.flatMap((prefix) => CHECKPOINT_KINDS.map((kind) => checkpointKeyRange(kind, prefix)));
+}
+
+function checkpointKeyRange(kind: DurableCheckpoint["kind"], prefix: string): readonly [string, string] {
+	const from = checkpointEventKey(kind, prefix).slice(0, -2);
+	const to = from.slice(0, -1) + String.fromCharCode(from.charCodeAt(from.length - 1) + 1);
+	return [from, to];
+}
+
+const OVERVIEW_TOOL_PREFIXES = ["run-timing:", "run-usage:"] as const;
+const OVERVIEW_KEY_RANGES = [
+	checkpointKeyRange("stage", ""),
+	...OVERVIEW_TOOL_PREFIXES.map((prefix) => checkpointKeyRange("tool", prefix)),
+];
+
+function isOverviewCheckpoint(checkpoint: DurableCheckpoint): boolean {
+	return (
+		checkpoint.kind === "stage" ||
+		(checkpoint.kind === "tool" &&
+			OVERVIEW_TOOL_PREFIXES.some((prefix) => checkpoint.checkpointId.startsWith(prefix)))
 	);
+}
+
+function overviewCheckpoint(checkpoint: DurableCheckpoint): DurableCheckpoint {
+	if (checkpoint.kind !== "stage") return checkpoint;
+	const { kind, workflowId, checkpointId, name, replayKey, topology, completedAt, startedAt, endedAt, durationMs } =
+		checkpoint;
+	return {
+		kind,
+		workflowId,
+		checkpointId,
+		name,
+		replayKey,
+		completedAt,
+		...(topology === undefined ? {} : { topology }),
+		...(checkpoint.output === undefined ? {} : { output: null }),
+		...(startedAt === undefined ? {} : { startedAt }),
+		...(endedAt === undefined ? {} : { endedAt }),
+		...(durationMs === undefined ? {} : { durationMs }),
+		...(checkpoint.modelAttempts === undefined
+			? {}
+			: {
+					modelAttempts: checkpoint.modelAttempts.map(({ model, success, usage }) => ({
+						model,
+						success,
+						...(usage === undefined ? {} : { usage }),
+					})),
+				}),
+	};
 }
 
 function keyRangeJournal(journal: RunJournal): KeyRangeJournal | undefined {
@@ -471,6 +513,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	 * version that snapshot was read at. Their checkpoints are read when the run is hydrated.
 	 */
 	private readonly summarized = new Map<string, RunVersion>();
+	private readonly overviews = new Map<string, RunVersion & { readonly checkpoints: readonly DurableCheckpoint[] }>();
 	/** Journal change token at the last complete catalog hydration. */
 	private catalogToken: string | undefined;
 	private readonly leases = new Map<string, Lease>();
@@ -797,6 +840,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		this.sequences.delete(runId);
 		this.foldedAt.delete(runId);
 		this.summarized.delete(runId);
+		this.overviews.delete(runId);
 		this.prompts.delete(runId);
 		this.partialRuns.delete(runId);
 		// The folds below find each retained scope's checkpoints again.
@@ -1614,6 +1658,52 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			);
 		return [...listed.values()].sort(byCompletedAt);
 	}
+	async readRunOverviewCheckpoints(runId: string): Promise<readonly DurableCheckpoint[]> {
+		return this.serialize(runId, () => this.overviewCheckpoints(runId), false);
+	}
+	peekRunOverviewCheckpoints(runId: string): readonly DurableCheckpoint[] | undefined {
+		const summarized = this.summarized.get(runId);
+		if (summarized === undefined) return this.projection.listCheckpoints(runId).filter(isOverviewCheckpoint);
+		const cached = this.overviews.get(runId);
+		return cached?.seq === summarized.seq && cached.at === summarized.at ? cached.checkpoints : undefined;
+	}
+	private *overviewCheckpoints(runId: string): Operation<readonly DurableCheckpoint[]> {
+		const known = this.peekRunOverviewCheckpoints(runId);
+		const summarized = this.summarized.get(runId);
+		if (known !== undefined || summarized === undefined) return known ?? [];
+		const entries = yield* invoke(async () => {
+			const selected = new Map<number, JournalEntry>();
+			const keep = (entry: JournalEntry) => {
+				const event = entry.event as BackendEvent;
+				if (
+					entry.seq <= summarized.seq &&
+					event.type === E.checkpointRecorded &&
+					isOverviewCheckpoint(event.payload)
+				)
+					selected.set(entry.seq, entry);
+			};
+			const ranged = keyRangeJournal(this.journal);
+			if (ranged === undefined) {
+				for await (const entry of this.journal.read(runId)) {
+					if (entry.seq > summarized.seq) break;
+					keep(entry);
+				}
+			} else {
+				for (const [from, to] of OVERVIEW_KEY_RANGES)
+					for await (const entry of ranged.readKeyRange(runId, from, to)) keep(entry);
+			}
+			return [...selected.values()].sort((left, right) => left.seq - right.seq);
+		});
+		const checkpoints = entries.map((entry) =>
+			overviewCheckpoint(
+				normalizedCheckpoint(
+					(entry.event as BackendEventOf<typeof E.checkpointRecorded, DurableCheckpoint>).payload,
+				),
+			),
+		);
+		if (this.summarized.get(runId) === summarized) this.overviews.set(runId, { ...summarized, checkpoints });
+		return checkpoints;
+	}
 	/** Every checkpoint event of the run up to `throughSeq`, in journal order. */
 	private *foldedCheckpoints(runId: string, throughSeq: number): Operation<JournalEntry[]> {
 		return yield* invoke(async () => {
@@ -1736,6 +1826,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		this.sequences.delete(runId);
 		this.foldedAt.delete(runId);
 		this.summarized.delete(runId);
+		this.overviews.delete(runId);
 		this.prompts.delete(runId);
 		this.reconciledPendingStages.delete(runId);
 		this.ownCheckpoints.delete(runId);

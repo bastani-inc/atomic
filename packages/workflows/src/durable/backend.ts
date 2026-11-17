@@ -440,6 +440,8 @@ export interface DurableWorkflowBackend {
 	 * pooled root, #4318); call it through `readDurableCheckpoints`, which falls back to `listCheckpoints`.
 	 */
 	readCheckpoints?(workflowId: string, scope?: string): Promise<readonly DurableCheckpoint[]>;
+	readRunOverviewCheckpoints?(workflowId: string): Promise<readonly DurableCheckpoint[]>;
+	peekRunOverviewCheckpoints?(workflowId: string): readonly DurableCheckpoint[] | undefined;
 	/**
 	 * Lets go of the checkpoints of the child boundary scope `scope` the run still keeps in memory, once the run read
 	 * them for that boundary's replay or checks; a backend that keeps every checkpoint ignores it.
