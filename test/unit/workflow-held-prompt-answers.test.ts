@@ -106,6 +106,18 @@ test("#4022: a form host failure refused before the replacement asked goes once 
 	const ended = holdingFailure();
 	ended.settle("run", stage(2, { status: "completed" }), 2);
 	assert.equal(ended.takeQuestion("run", "stage", question, 2), undefined, "an ended stage drops it");
+
+	const dialogFirst = holdingFailure();
+	const dialog: PendingPrompt = { ...asked, id: "dialog-replacement", source: "stage-dialog" };
+	dialogFirst.settle("run", stage(2, { pendingPrompt: dialog }), 2);
+	dialogFirst.settle(
+		"run",
+		stage(2, { pendingPrompt: dialog, inputRequest: { id: question.promptId } as StageSnapshot["inputRequest"] }),
+		2,
+	);
+	const afterDialog = dialogFirst.takeQuestion("run", "stage", question, 2);
+	assert.ok(afterDialog !== undefined && "error" in afterDialog, "a dialog-first replacement keeps the held question");
+	assert.equal(afterDialog.error, formHostFailure);
 });
 
 function holdingDelivered(): HeldPromptAnswers {

@@ -85,9 +85,7 @@ export class HeldPromptAnswers {
 					? stage.pendingPrompt !== undefined
 						? promptIdentity(stage.pendingPrompt) !== held.identity
 						: stage.inputRequest !== undefined
-					: stage.inputRequest !== undefined
-						? stage.inputRequest.id !== held.promptId
-						: stage.pendingPrompt !== undefined;
+					: stage.inputRequest !== undefined && stage.inputRequest.id !== held.promptId;
 			if (asksOther) this.held.delete(key);
 		}
 	}

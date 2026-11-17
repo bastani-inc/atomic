@@ -770,6 +770,10 @@ test.each(["question-first", "dialog-first", "same-publication"] as const)(
 test.each([
 	["question-then-dialog", "question-only"],
 	["dialog-then-question", "question-only"],
+	["question-then-dialog", "question-first"],
+	["dialog-then-question", "question-first"],
+	["question-then-dialog", "dialog-first"],
+	["dialog-then-question", "dialog-first"],
 	["question-then-dialog", "stacked"],
 	["dialog-then-question", "stacked"],
 ] as const)(
@@ -844,6 +848,12 @@ test.each([
 		try {
 			pool.known();
 			assert.deepEqual(
+				await pool.publish([childRun([stage("ask", { status: "awaiting_input", pendingPrompt: prompt })])]),
+				[],
+			);
+			await settled();
+			assert.equal(dialogPresentations, 1);
+			assert.deepEqual(
 				await pool.publish([
 					childRun([stage("ask", { status: "awaiting_input", inputRequest, pendingPrompt: prompt })]),
 				]),
@@ -868,17 +878,36 @@ test.each([
 
 			replacementLive = true;
 			const replacement = pool.tokenOf({ generation: 2 });
+			const replacementDialog: PendingPrompt = { ...prompt, id: "dialog-replacement" };
+			if (replacementRequests === "question-first") {
+				assert.deepEqual(
+					await pool.publish([childRun([stage("ask", { status: "awaiting_input", inputRequest })])], replacement),
+					[],
+				);
+				await settled();
+			} else if (replacementRequests === "dialog-first") {
+				assert.deepEqual(
+					await pool.publish(
+						[childRun([stage("ask", { status: "awaiting_input", pendingPrompt: replacementDialog })])],
+						replacement,
+					),
+					[],
+				);
+				await settled();
+				assert.equal(dialogPresentations, 2);
+				assert.equal(questionPresentations, 1);
+			}
 			const publication = childRun([
 				stage("ask", {
 					status: "awaiting_input",
 					inputRequest,
-					...(replacementRequests === "stacked" ? { pendingPrompt: { ...prompt, id: "dialog-replacement" } } : {}),
+					...(replacementRequests === "question-only" ? {} : { pendingPrompt: replacementDialog }),
 				}),
 			]);
 			assert.deepEqual(await pool.publish([publication], replacement), []);
 			await settled();
 			assert.equal(questionPresentations, 1, "the replacement must reuse the held answer without asking again");
-			assert.equal(dialogPresentations, replacementRequests === "stacked" ? 2 : 1);
+			assert.equal(dialogPresentations, replacementRequests === "question-only" ? 1 : 2);
 			assert.deepEqual(
 				pool
 					.commands("stage-answer")
