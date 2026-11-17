@@ -13,10 +13,16 @@ function runtimeIntercomGroup(sessionId: string | undefined): string | undefined
 	return readRuntimeIntercomGroup(sessionId);
 }
 
+interface ChildGroupPolicy {
+	readonly home: string;
+	childGroup(requested: string | undefined): string;
+}
+
 interface OrchestrationCarrier {
 	orchestrationContext?: { intercomGroup?: string } | undefined;
 	subagentPolicy?: { intercomGroup?: string } | undefined;
 	sessionManager?: { getSessionId(): string } | undefined;
+	intercomPolicy?: ChildGroupPolicy | undefined;
 }
 
 /**
@@ -25,6 +31,8 @@ interface OrchestrationCarrier {
  * carries only the current group so children launched after `join` follow their parent.
  */
 export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): string | undefined {
+	const policy = ctx?.intercomPolicy;
+	if (policy !== undefined) return policy.home;
 	const runtimeGroup = runtimeIntercomGroup(ctx?.sessionManager?.getSessionId());
 	if (runtimeGroup !== undefined) return runtimeGroup;
 	const policyGroup = ctx?.subagentPolicy?.intercomGroup;
@@ -33,14 +41,17 @@ export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): s
 	return typeof group === "string" && group.trim().length > 0 ? group.trim() : undefined;
 }
 
-/**
- * Resolve the intercom group for a spawned subagent child. Explicit task group
- * takes precedence over the inherited current-session group.
- * `true` resolves to `sharedAutoGroup` (a single UUID minted once per parallel
- * set) so every child in the set shares one isolated group. Returns undefined
- * when nothing applies, so the child inherits env/config/default itself.
- */
 export function resolveChildIntercomGroup(
+	explicit: string | true | undefined,
+	inherited: string | undefined,
+	sharedAutoGroup: string | undefined,
+	policy?: ChildGroupPolicy,
+): string | undefined {
+	const resolved = requestedChildIntercomGroup(explicit, inherited, sharedAutoGroup);
+	return policy === undefined ? resolved : policy.childGroup(resolved);
+}
+
+function requestedChildIntercomGroup(
 	explicit: string | true | undefined,
 	inherited: string | undefined,
 	sharedAutoGroup: string | undefined,

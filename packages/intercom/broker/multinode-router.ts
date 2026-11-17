@@ -18,7 +18,14 @@ import type { DeliveryFailureReasonCode, Message, SessionInfo } from "../types.j
 import { ASK_FAILURE_QUEUED, crashPoint } from "./crash-points.js";
 import type { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { sameGroup } from "./group-isolation.js";
-import { sessionGroups } from "./group-membership.js";
+import {
+	reachesGroups,
+	reachesSession,
+	type ReservationSender,
+	reservationSender,
+	sessionGroups,
+} from "./group-membership.js";
+import { outsideReachReason, reachesAnyGroup } from "../reach-policy.js";
 import {
 	BROKER_LEASE_RENEW_INTERVAL_MS,
 	BROKER_LEASE_STALE_AFTER_MS,
@@ -266,7 +273,7 @@ interface Waiter {
 	readonly attemptId?: string;
 	readonly senderSessionId: string;
 	/** The sender's groups: the released child's reservation it may read when its send is queued (#4512). */
-	readonly senderGroups: readonly string[];
+	readonly sender: ReservationSender;
 	readonly expectsReply: boolean;
 	readonly resolveReplyTarget: boolean;
 	readonly targetSessionId: string;
@@ -400,11 +407,6 @@ function forgottenSessionIdentities(id: string, group: string): readonly string[
 /** #4997: one ask's route, as a set key. */
 function askKey(question: PendingQuestion): string {
 	return JSON.stringify([question.senderSessionId, question.targetSessionId, question.messageId]);
-}
-
-function sharesGroup(groups: ReadonlySet<string>, sender: SessionInfo): boolean {
-	const senderGroups = sessionGroups(sender);
-	return [...groups].some((group) => senderGroups.has(group));
 }
 
 export class MultiNodeRouter {
@@ -1491,7 +1493,7 @@ export class MultiNodeRouter {
 			const visible = live.filter((lease) => {
 				const info = presenceOf(lease).session;
 				return (
-					sameGroup(info, from.info) ||
+					reachesSession(from, info) ||
 					(request.supervisorSend && info.id === from.supervisorId) ||
 					replyAuthorized.has(info.id)
 				);
@@ -1935,7 +1937,7 @@ export class MultiNodeRouter {
 		);
 		const visible = sessions.filter(
 			(session) =>
-				sharesGroup(new Set(session.groups), request.from.info) ||
+				reachesGroups(request.from, session.groups) ||
 				(request.supervisorSend && session.intercomSessionId === request.from.supervisorId) ||
 				replyAuthorized.has(session.intercomSessionId),
 		);
@@ -1994,8 +1996,8 @@ export class MultiNodeRouter {
 		const verticalReply =
 			message.replyTo !== undefined &&
 			this.host.supervisorCache.matchReply(message.replyTo, from.info.id, target.sessionId);
-		if (!request.supervisorSend && !verticalReply && !correlatedReply && !sharesGroup(target.groups, from.info)) {
-			this.fail(request, TARGET_GROUP_REFUSAL);
+		if (!request.supervisorSend && !verticalReply && !correlatedReply && !reachesGroups(from, target.groups)) {
+			this.fail(request, from.reach === undefined ? TARGET_GROUP_REFUSAL : outsideReachReason(from.reach));
 			return;
 		}
 		if (message.expectsReply === true && target.gates.replyCapability === "terminal") {
@@ -2004,7 +2006,14 @@ export class MultiNodeRouter {
 		}
 		const frame: IntercomDeliveryFrame = request.supervisorSend
 			? { type: "message", from: from.info, message, channel: "supervisor" }
-			: { type: "message", from: from.info, message };
+			: {
+					type: "message",
+					from: from.info,
+					message,
+					...(from.reach === undefined
+						? {}
+						: { senderReach: { home: from.reach.home, reachable: [...from.reach.reachable] } }),
+				};
 		const enqueued = await this.reserveAndEnqueue(
 			{
 				messageId: message.id,
@@ -2136,7 +2145,7 @@ export class MultiNodeRouter {
 			socket: request.socket,
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			senderSessionId: request.from.info.id,
-			senderGroups: [...sessionGroups(request.from.info)],
+			sender: reservationSender(request.from),
 			expectsReply: message.expectsReply === true,
 			resolveReplyTarget: request.resolveReplyTarget,
 			targetSessionId: target.sessionId,
@@ -2210,10 +2219,13 @@ export class MultiNodeRouter {
 	 * the two checks never wake the child twice for one send.
 	 */
 	private async wakeReleasedRecipient(waiter: Waiter): Promise<void> {
-		const sender = { sessionId: waiter.senderSessionId, groups: waiter.senderGroups };
 		for (const id of [waiter.targetSessionId, returnAddressOf(waiter.targetIdentity)]) {
 			if (id === undefined) continue;
-			const lookup = await this.state.reservations.lookup(normalizeTarget(id), sender, BROKER_LEASE_STALE_AFTER_MS);
+			const lookup = await this.state.reservations.lookup(
+				normalizeTarget(id),
+				waiter.sender,
+				BROKER_LEASE_STALE_AFTER_MS,
+			);
 			if (lookup.status !== "reserved") continue;
 			const { reservation } = lookup;
 			if (!reservation.wake) return;
@@ -2258,7 +2270,7 @@ export class MultiNodeRouter {
 		const { from, message } = request;
 		const lookup = await this.state.reservations.lookup(
 			normalizeTarget(request.target),
-			{ sessionId: from.info.id, groups: [...sessionGroups(from.info)] },
+			reservationSender(from),
 			BROKER_LEASE_STALE_AFTER_MS,
 		);
 		if (lookup.status === "none" || lookup.status === "invalid") return false;
@@ -2499,7 +2511,13 @@ export class MultiNodeRouter {
 		if (frame.message.expectsReply === true && recipient.info.replyCapability === "terminal") {
 			return TERMINAL_CHILD_ASK_REFUSAL;
 		}
-		if (frame.channel === "supervisor" || sameGroup(recipient.info, frame.from)) return undefined;
+		if (frame.channel === "supervisor") return undefined;
+		if (
+			frame.senderReach === undefined
+				? sameGroup(recipient.info, frame.from)
+				: reachesAnyGroup(frame.senderReach, sessionGroups(recipient.info))
+		)
+			return undefined;
 		const replyTo = frame.message.replyTo;
 		if (replyTo === undefined) return TARGET_GROUP_REFUSAL;
 		if (recipient.supervisorId === frame.from.id) return undefined;
