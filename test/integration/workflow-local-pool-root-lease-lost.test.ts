@@ -104,7 +104,7 @@ test.skipIf(process.platform === "win32")(
 								lateSendErrors.add(pid);
 								callback(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
 							});
-							return send(message);
+							return send(message, () => {});
 						}
 					}
 					return send(message, ...rest);
@@ -250,7 +250,7 @@ test.skipIf(process.platform === "win32")(
 								controlSendErrors.add(pid);
 								callback(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
 							});
-							return send(message);
+							return send(message, () => {});
 						}
 						const replyId = (message as { readonly id?: number }).id;
 						if (replyId !== undefined && recycleRequestIds.get(pid)?.has(replyId)) {
@@ -258,14 +258,14 @@ test.skipIf(process.platform === "win32")(
 								recycleSendErrors.add(pid);
 								callback(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
 							});
-							return send(message);
+							return send(message, () => {});
 						}
 						if ((message as { readonly retire?: boolean }).retire === true) {
 							this.once("disconnect", () => {
 								retireSendErrors.add(pid);
 								callback(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
 							});
-							return send(message);
+							return send(message, () => {});
 						}
 					}
 					return send(message, ...rest);
