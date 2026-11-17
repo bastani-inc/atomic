@@ -245,6 +245,35 @@ describe("workflow resume definition confirmation and refusal handling (#5256)",
 		);
 	});
 
+	test("detects edited sources in relocated folders whose names start with two dots (#5256)", async () => {
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		const originalCwd = makeTempDir("workflow-source-original-");
+		const restoredCwd = makeTempDir("workflow-source-restored-");
+		const originalPath = join(originalCwd, "..cache", "workflow.ts");
+		const restoredPath = join(restoredCwd, "..cache", "workflow.ts");
+		mkdirSync(join(originalCwd, "..cache"), { recursive: true });
+		mkdirSync(join(restoredCwd, "..cache"), { recursive: true });
+		writeFileSync(originalPath, "export const version = 1;\n");
+		writeFileSync(restoredPath, "export const version = 2;\n");
+		const runId = testRunId("relocated-two-dot-source");
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "relocated-workflow",
+			inputs: {},
+			createdAt: 1,
+			updatedAt: 2,
+			status: "paused",
+			completedCheckpoints: 0,
+			invocationCwd: originalCwd,
+			definitionSource: { path: originalPath, digest: await definitionDigest(originalPath) },
+		});
+		assert.match(
+			(await findEditedWorkerEntryModuleReason(backend, runId, restoredCwd)) ?? "",
+			/the entry module of workflow definition relocated-workflow .* was edited/,
+		);
+	});
+
 	test("isEditedEntryModuleRefusal matches real engine refusals with dotted module paths and rejects mixed placement or added definitions (#5256)", () => {
 		const buildEngineMessage = (
 			saved: Parameters<typeof refusedResourceChanges>[0],
