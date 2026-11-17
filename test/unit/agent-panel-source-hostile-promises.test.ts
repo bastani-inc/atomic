@@ -43,8 +43,6 @@ let recursiveDepth = 0;
 function recursiveThen(): object {
 	recursiveDepth++;
 	return Object.defineProperty({}, THEN_METHOD, {
-		configurable: true,
-		enumerable: true,
 		get() {
 			throw recursiveThen();
 		},

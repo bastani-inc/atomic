@@ -63,6 +63,16 @@ async function sendTurn(current: EngineHostPair, text: string): Promise<void> {
 		timeout: ENGINE_TURN_SETTLE_TIMEOUT_MS,
 	});
 	await current.drain();
+	// The host rereads the session from its store after the turn's `agent_end`. That read is not traffic `drain()`
+	// waits for, and on a loaded machine it lands after `drain()` resolves, so wait until the host shows the turn.
+	await vi.waitFor(
+		() =>
+			assert.equal(
+				current.runtime.session.sessionManager.getLeafId(),
+				current.engine.session.sessionManager.getLeafId(),
+			),
+		{ timeout: ENGINE_TURN_SETTLE_TIMEOUT_MS },
+	);
 }
 
 async function startFourTurnSession(current: EngineHostPair): Promise<void> {
@@ -238,7 +248,6 @@ test("Escape while /tree summarizes cancels the summary in the engine and keeps 
 	const targetId = betaReplyId(engineManager);
 	current.engine.appendResponses([fauxAssistantMessage("A summary nobody asked for.")]);
 	const leafBefore = engineManager.getLeafId();
-	const hostLeafBefore = current.runtime.session.sessionManager.getLeafId();
 
 	const navigation = current.runtime.session.navigateTree(targetId, { summarize: true });
 	await started;
@@ -252,5 +261,5 @@ test("Escape while /tree summarizes cancels the summary in the engine and keeps 
 		"the tree reopens with the same selection, as in pi",
 	);
 	assert.equal(engineManager.getLeafId(), leafBefore);
-	assert.equal(current.runtime.session.sessionManager.getLeafId(), hostLeafBefore);
+	assert.equal(current.runtime.session.sessionManager.getLeafId(), leafBefore, "the host keeps showing the branch");
 });
