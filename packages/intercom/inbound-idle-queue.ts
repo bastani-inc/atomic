@@ -74,6 +74,17 @@ export class InboundIdleQueue {
     return !this.consumedIds().has(entry.message.id);
   }
 
+  /**
+   * Takes the queued messages from `senderId`, in arrival order. A later message from that sender admitted at once
+   * writes these first, so one sender's messages reach the session in the order they arrived.
+   */
+  takeFromSender(senderId: string): InboundMessageEntry[] {
+    this.dropConsumed();
+    const taken = this.entries.filter((entry) => entry.from.id === senderId);
+    if (taken.length > 0) this.entries = this.entries.filter((entry) => entry.from.id !== senderId);
+    return taken;
+  }
+
   drain(): InboundMessageEntry[] {
     this.dropConsumed();
     const entries = this.entries;

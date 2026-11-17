@@ -724,6 +724,20 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       isCurrent: () => Boolean(getLiveContext(ctx, generation)),
     }).catch(() => {});
   }
+  /**
+   * One sender's messages reach the session in the order they arrived: before a message from `from` is admitted at
+   * once, its earlier messages still waiting for this session to go idle are written first, without a turn of their own.
+   */
+  async function admitEarlierFromSender(from: SessionInfo, generation: number): Promise<void> {
+    const earlier = pendingIdleMessages.takeFromSender(from.id);
+    if (pendingIdleMessages.size === 0) clearInboundFlushTimer();
+    for (const entry of earlier) {
+      await retryStableDelivery({
+        deliver: () => sendIncomingMessage(entry, "prelude", generation, false),
+        isCurrent: () => Boolean(getLiveContext(runtimeContext, generation)),
+      });
+    }
+  }
   testOverrides.captureInboundHandler?.(handleIncomingMessage);
   function buildInboundEntry(from: SessionInfo, message: Message, channel?: "supervisor"): InboundMessageEntry {
     const attachmentText = message.content.attachments?.length
@@ -1023,6 +1037,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         }
         // #4751: the reply to an ask starts a turn when idle and otherwise arrives after the current tool call.
         if (askReply !== undefined) {
+          await admitEarlierFromSender(from, messageGeneration);
           await retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
           commit();
           return;
@@ -1063,8 +1078,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
             generation: messageGeneration,
             surface: () => {
               if (pendingIdleMessages.remove(entry)) {
-                replyTracker.queueTurnContext(replyContext);
-                void retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) }).catch(() => {});
+                void admitEarlierFromSender(from, messageGeneration)
+                  .then(() => {
+                    replyTracker.queueTurnContext(replyContext);
+                    return retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
+                  })
+                  .catch(() => {});
               }
             },
             isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
@@ -1087,6 +1106,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
             return;
           }
         }
+        await admitEarlierFromSender(from, messageGeneration);
         replyTracker.queueTurnContext(replyContext);
         await retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
         commit();
