@@ -117,7 +117,8 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 	);
 	let agentPanelRequested = false;
 	this.addTuiInputListener((data) => {
-		if (isKeyRelease(data) || !this.keybindings.matches(data, "app.agents.focus")) return undefined;
+		if (isKeyRelease(data) || isPhysicalEscape(data) || !this.keybindings.matches(data, "app.agents.focus"))
+			return undefined;
 		if (this.ui.hasOverlay() || !this.editorContainer.children.includes(this.editor)) return undefined;
 		if (this.editor !== this.defaultEditor || this.editor.getText() !== "" || this.isBashMode) return undefined;
 		if (agentPanelRequested || this.blockingInlineCustomUiDepth > 0) return { consume: true };

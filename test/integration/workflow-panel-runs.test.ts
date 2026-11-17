@@ -21,7 +21,7 @@ import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-brok
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-import { buildGraphOverlayAdapter } from "../../packages/workflows/src/tui/overlay-adapter.js";
+import { buildGraphOverlayAdapter, type OverlayPiSurface } from "../../packages/workflows/src/tui/overlay-adapter.js";
 import {
 	markWorkflowRunViewed,
 	panelItemsFromSnapshot,
@@ -30,10 +30,14 @@ import {
 import { injectStageLabelIntoEditorTopRule } from "../../packages/workflows/src/tui/stage-chat-view-footer-status.js";
 import type { StageChatViewContext } from "../../packages/workflows/src/tui/stage-chat-view-types.js";
 import { testRunId } from "../helpers/run-id.js";
+import { buildMockUi } from "./overlay-entrypoints-helpers.js";
 
 const runIds = new Set<string>();
+const graphCleanups = new Set<() => void>();
 
 afterEach(() => {
+	for (const close of graphCleanups) close();
+	graphCleanups.clear();
 	for (const runId of runIds) store.removeRun(runId);
 	runIds.clear();
 });
@@ -275,10 +279,11 @@ test("a hidden nested child's wait marks its top-level run as needing input (#52
 	assert.equal(items[0]?.state, "input");
 });
 
-function registeredWorkflowPanelSource() {
+function registeredWorkflowPanelSource(ui?: OverlayPiSurface["ui"]) {
 	let registered: Parameters<NonNullable<ExtensionAPI["registerAgentPanelSource"]>>[0] | undefined;
 	let f2Handler: (() => void) | undefined;
 	const pi = {
+		ui,
 		events: { on() {}, emit() {} },
 		on() {},
 		registerTool() {},
@@ -521,24 +526,32 @@ test("panel progress counts nested child workflow stages, and ended blocked runs
 });
 
 test("opening a finished run via source.open, overlay.open or F2 marks it viewed, and stage composer clock excludes paused time (#5224)", () => {
-	const { source, pressF2 } = registeredWorkflowPanelSource();
+	const { ui, calls } = buildMockUi();
+	graphCleanups.add(() => {
+		for (const call of calls) call.component.dispose?.();
+	});
+	const { source, pressF2 } = registeredWorkflowPanelSource(ui);
 	const doneA = makeRun("panel-viewed-a", "done-a", [stage("s1", "completed")]);
 	store.recordRunEnd(doneA, "completed");
 	const doneB = makeRun("panel-viewed-b", "done-b", [stage("s1", "completed")]);
 	store.recordRunEnd(doneB, "completed");
 
 	assert.equal(source.items().find((item) => item.id === `run:${doneA}`)?.viewed, undefined);
-	source.open!(`run:${doneA}`);
+	assert.equal(source.open!(`run:${doneA}`), true);
 	assert.equal(source.items().find((item) => item.id === `run:${doneA}`)?.viewed, true);
+	assert.equal(calls.length, 1);
+	calls[0]!.component.handleInput?.("\x03");
 
 	assert.equal(source.items().find((item) => item.id === `run:${doneB}`)?.viewed, undefined);
 	pressF2();
+	assert.equal(calls.length, 2, "F2 mounted a new graph after the first graph closed");
 	assert.equal(source.items().find((item) => item.id === `run:${doneB}`)?.viewed, true);
 
 	const doneC = makeRun("panel-viewed-c", "done-c", [stage("s1", "completed")]);
 	store.recordRunEnd(doneC, "completed");
-	const overlay = buildGraphOverlayAdapter({}, store);
-	overlay.open(doneC);
+	const overlay = buildGraphOverlayAdapter({ ui }, store);
+	graphCleanups.add(() => overlay.close());
+	assert.equal(overlay.open(doneC), true);
 	assert.equal(row(doneC)?.viewed, true);
 	assert.equal(viewedWorkflowRuns(store).has(doneC), true);
 	store.removeRun(doneC);

@@ -31,6 +31,7 @@ import {
 	NAV_CONFIRM_WINDOW_MS,
 	type NavKey,
 	navActionText,
+	navKeyText,
 	renderNavHintLine,
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
@@ -877,8 +878,12 @@ export class TaskInspector implements Component {
 	 */
 	private handleTranscriptInput(data: string, transcript: TaskTranscriptPage): boolean {
 		if (transcript.handlesBack()) return transcript.handleInput(data);
+		if (matchesKey(data, "escape")) {
+			if (transcript.interruptible()) void this.interruptTranscript(transcript);
+			this.requestRender();
+			return true;
+		}
 		const keys = getKeybindings();
-		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
 		if (keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
 			if (this.chatFrom === "caller") {
 				this.closedByBack = true;
@@ -895,11 +900,6 @@ export class TaskInspector implements Component {
 		}
 		if (isNavHelpKey(keys, data) && !transcript.hasDraft()) {
 			this.helpOpen = true;
-			this.requestRender();
-			return true;
-		}
-		if (matchesKey(data, "escape")) {
-			if (transcript.interruptible()) void this.interruptTranscript(transcript);
 			this.requestRender();
 			return true;
 		}
@@ -1369,6 +1369,15 @@ export class TaskInspector implements Component {
 		const interruptible = transcript.interruptible();
 		const hasTasks = transcript.hasTasks?.() === true;
 		const expandable = transcript.expandable?.() === true;
+		const baseKeys = getKeybindings();
+		const chatKeybindings = {
+			matches: (data: string, action: string) =>
+				baseKeys.matches(data, action as Parameters<typeof baseKeys.matches>[1]),
+			getKeys: (action: string) => {
+				const resolved = baseKeys.getKeys(action as Parameters<typeof baseKeys.getKeys>[0]);
+				return action === "app.interrupt" ? resolved : resolved.filter((key) => key !== "esc" && key !== "escape");
+			},
+		};
 		if (this.helpOpen)
 			return [
 				...(attachedAgentChat ? [] : header),
@@ -1385,12 +1394,12 @@ export class TaskInspector implements Component {
 					}),
 					width,
 					style,
-					getKeybindings(),
+					chatKeybindings,
 				),
 			].slice(0, Math.max(1, budget));
 		const back = this.chatFrom === "caller" ? this.callerLabel : this.chatFrom === "list" ? "tasks" : "task";
 		const chatKeys = taskChatKeys(back, interruptible, hasTasks, expandable);
-		const hint = renderNavHintLine(chatKeys, width, style, getKeybindings());
+		const hint = renderNavHintLine(chatKeys, width, style, chatKeybindings);
 		const footer = [...(notes ? [fitWidth(theme.fg("dim", notes))] : []), hint];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
 		const statusRows = this.taskStatusRows(width);
@@ -1595,31 +1604,42 @@ export class TaskInspector implements Component {
 				? cardChoices.slice(0, Math.max(0, start + room - firstChoiceLine))
 				: [];
 		this.drawnChoices = replying ? visibleChoices : undefined;
-		const keys: NavKey[] = this.filtering
-			? [
-					{ keys: "type", label: "filter" },
-					{ keys: "enter", label: "done" },
-					{ keys: "esc", label: "clear" },
-				]
-			: replying
+		const replyValue = this.reply.getValue();
+		const openNativeDetail = replying && selected?.kind === "task" && replyValue.trim() === "";
+		const openNativeKeys = [
+			...new Set(["enter", ...(getKeybindings().getKeys?.("app.list.open") ?? []).map(navKeyText)]),
+		].join("/");
+		const keys: NavKey[] = this.sending
+			? []
+			: this.filtering
 				? [
-						...(visibleChoices.length ? [{ keys: `1-${visibleChoices.length}`, label: "choose" }] : []),
-						{ keys: "enter", label: "send" },
-						{ keys: "esc", label: "close" },
+						{ keys: "↑↓", label: "select" },
+						{ keys: "type", label: "filter" },
+						{ keys: "enter", label: "done" },
+						{ keys: "esc", label: "clear" },
 					]
-				: listKeys()
-						.filter(
-							(key) =>
-								selected !== undefined ||
-								key.keys?.startsWith("esc") === true ||
-								key.action === "app.keys.help" ||
-								key.action === "app.list.filter",
-						)
-						.map((key) =>
-							key.action === "app.list.stop"
-								? { ...key, label: selected && rowFinished(selected) ? "dismiss" : "stop" }
-								: key,
-						);
+				: replying
+					? [
+							{ keys: "↑↓", label: "select" },
+							...(replyValue === "" && visibleChoices.length
+								? [{ keys: `1-${visibleChoices.length}`, label: "choose" }]
+								: []),
+							{ keys: openNativeDetail ? openNativeKeys : "enter", label: openNativeDetail ? "open" : "send" },
+							{ keys: this.reply.getCursor() === 0 ? escAndBack() : "esc", label: "close" },
+						]
+					: listKeys()
+							.filter(
+								(key) =>
+									selected !== undefined ||
+									key.keys?.startsWith("esc") === true ||
+									key.action === "app.keys.help" ||
+									key.action === "app.list.filter",
+							)
+							.map((key) =>
+								key.action === "app.list.stop"
+									? { ...key, label: selected && rowFinished(selected) ? "dismiss" : "stop" }
+									: key,
+							);
 		const hint = renderNavHintLine(keys, width, style, getKeybindings(), 2, { compact: true });
 		const footer = [...(notice ? [theme.fg("warning", clip(taskDisplayText(notice)))] : []), hint];
 		const recordPaintedRow = (row: TaskBoardRow, drawnTasks: TaskRecord[]) => {

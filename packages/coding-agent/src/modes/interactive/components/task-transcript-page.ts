@@ -188,6 +188,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			getChatBoxSession: () => this.followed?.chatSession,
 			requestRender,
 			taskRowsInChat: false,
+			echoedInitialPrompt: () => (this.cursor === undefined ? this.echoedPrompt : undefined),
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
 			workingTokenCount: () => source.tasks.find((task) => task.ref.taskId === taskId)?.metrics?.tokenCount,
 			// A finished subagent's chat stays live, and a message resumes it; one stopped for good is read-only.
@@ -417,21 +418,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return interrupt.call(this.source, this.taskId);
 	}
 
-	private displayMessages(page: TaskTranscriptView): TaskTranscriptView["messages"] {
-		const first = page.messages[0];
-		if (this.echoedPrompt === undefined || page.nextCursor !== undefined || first?.role !== "user") {
-			return page.messages;
-		}
-		const content = first.content;
-		const text =
-			typeof content === "string"
-				? content
-				: content.every((part) => part.type === "text")
-					? content.map((part) => (part.type === "text" ? part.text : "")).join("\n")
-					: undefined;
-		return text === this.echoedPrompt ? page.messages.slice(1) : page.messages;
-	}
-
 	private adoptLatestPage(page: TaskViewResult<TaskTranscriptView>): void {
 		if (!page.ok) {
 			this.status = page.error.message;
@@ -451,12 +437,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.followed = session;
 			this.chat.resetFollowedSession();
 		}
-		this.chat.replaceMessages(this.displayMessages(page.value));
+		this.cursor = page.value.nextCursor;
+		this.chat.replaceMessages(page.value.messages);
 		this.chat.hydrateCompactionStatus(
 			page.value.compactionReason,
 			page.value.compactionStartedAt ?? session?.chatSession?.compactionStartedAt,
 		);
-		this.cursor = page.value.nextCursor;
 		this.status = "";
 		if (!sessionChanged || session === undefined) return;
 		this.chat.hydrateStreamingAssistantMessage(session.getStreamingMessage?.());
@@ -492,7 +478,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 					return;
 				}
 				this.cursor = page.value.nextCursor;
-				this.chat.prependMessages(this.displayMessages(page.value));
+				this.chat.prependMessages(page.value.messages);
 			} catch (error) {
 				if (this.disposed) return;
 				this.cursor = undefined;

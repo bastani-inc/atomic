@@ -8,7 +8,7 @@ import {
 import type { WorkflowOwnerResources } from "../extension/workflow-owner-resources.js";
 import { workflowAnswerAction } from "../extension/workflow-tool-answer.js";
 import { createWorkflowGraphExpander, settledStageCount } from "../shared/expanded-workflow-graph.js";
-import { graphSnapshotLineage } from "../shared/graph-store-snapshot.js";
+import { graphSnapshotLineage, settledPrefixEpochOf } from "../shared/graph-store-snapshot.js";
 import {
 	coercePrimitivePromptAnswer,
 	isPrimitivePrompt,
@@ -21,9 +21,17 @@ import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { store as defaultStore } from "../shared/store.js";
 import { currentWorkflowStore } from "../shared/store-factory.js";
 import type { Store } from "../shared/store-public-types.js";
-import type { RunSnapshot, RunStatus, StageSnapshot, StoreSnapshot, WorkflowNotice } from "../shared/store-types.js";
+import type {
+	RunSnapshot,
+	RunStatus,
+	StageSnapshot,
+	StoreSnapshot,
+	ToolNodeSnapshot,
+	WorkflowNotice,
+} from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { sanitizeToolDisplayText } from "../shared/tool-payload-bounds.js";
+import type { WorkflowModelUsage } from "../shared/types.js";
 import {
 	authoritativeWorkflowChildRunId,
 	findSnapshotRun,
@@ -55,10 +63,12 @@ export function viewedWorkflowRuns(store: object = defaultStore): Set<string> {
 }
 
 function resolveStore(scope?: Set<string> | object): Store | undefined {
-	if (scope instanceof Set) return storesByViewed.get(scope) ?? currentWorkflowStore();
+	if (scope instanceof Set) return storesByViewed.get(scope);
 	if (scope !== undefined && typeof (scope as Store).run === "function") return scope as Store;
 	return currentWorkflowStore();
 }
+
+export type PendingStageTokenReader = (runId: string, stageId: string) => number;
 
 const REASON_WIDTH = 120;
 export const PANEL_RUN_PREFIX = "run:";
@@ -93,6 +103,14 @@ function currentStage(stages: readonly StageSnapshot[]): StageSnapshot | undefin
 		else if (paused === undefined && (stage.status === "paused" || stage.status === "blocked")) paused = stage;
 	}
 	return running ?? paused;
+}
+
+function latestRunningTool(tools: readonly ToolNodeSnapshot[]): ToolNodeSnapshot | undefined {
+	for (let index = tools.length - 1; index >= 0; index--) {
+		const candidate = tools[index]!;
+		if (candidate.status === "running") return candidate;
+	}
+	return undefined;
 }
 
 function panelState(status: RunStatus, awaiting: boolean, live: boolean): AgentPanelState {
@@ -150,17 +168,19 @@ function isSettledStage(stage: StageSnapshot): boolean {
 	return stage.status === "completed" || stage.status === "failed" || stage.status === "skipped";
 }
 
-function stageTokens(stage: StageSnapshot): number {
+export function usageTokens(usage: WorkflowModelUsage | undefined): number {
+	if (usage === undefined) return 0;
+	const input = typeof usage.input === "number" && Number.isFinite(usage.input) && usage.input > 0 ? usage.input : 0;
+	const output =
+		typeof usage.output === "number" && Number.isFinite(usage.output) && usage.output > 0 ? usage.output : 0;
+	return Math.round(input + output);
+}
+
+export function stageTokens(stage: StageSnapshot): number {
 	if (stage.replayed === true || stage.modelAttempts === undefined) return 0;
 	let total = 0;
 	for (const attempt of stage.modelAttempts) {
-		const usage = attempt.usage;
-		if (usage === undefined) continue;
-		const input =
-			typeof usage.input === "number" && Number.isFinite(usage.input) && usage.input > 0 ? usage.input : 0;
-		const output =
-			typeof usage.output === "number" && Number.isFinite(usage.output) && usage.output > 0 ? usage.output : 0;
-		total += Math.round(input + output);
+		total += usageTokens(attempt.usage);
 	}
 	return total;
 }
@@ -170,53 +190,55 @@ interface SettledTokenPrefix {
 	settledTokens: number;
 }
 
-const settledTokenPrefixes = new WeakMap<RunSnapshot, SettledTokenPrefix>();
+const settledTokenPrefixes = new WeakMap<object, SettledTokenPrefix>();
 
 function runDirectTokens(
 	run: RunSnapshot,
 	rawRun: RunSnapshot | undefined,
-	delegatedStageIds?: ReadonlySet<string>,
+	delegatedStageIds: ReadonlySet<string> | undefined,
+	pendingStageTokens: PendingStageTokenReader | undefined,
 ): number {
 	let total = 0;
-	const source = rawRun !== undefined && !isPublishedSnapshotArray(rawRun.stages) ? rawRun : undefined;
-	if (source !== undefined && (delegatedStageIds === undefined || delegatedStageIds.size === 0)) {
-		let prefix = settledTokenPrefixes.get(source);
-		if (prefix === undefined || prefix.scannedCount > source.stages.length) {
+	const target = rawRun !== undefined && !isPublishedSnapshotArray(rawRun.stages) ? rawRun : run;
+	const epochKey =
+		settledPrefixEpochOf(run) ??
+		(rawRun !== undefined ? settledPrefixEpochOf(rawRun) : undefined) ??
+		(Object.isFrozen(target) && Object.isFrozen(target.stages) ? target : undefined);
+	if ((delegatedStageIds === undefined || delegatedStageIds.size === 0) && epochKey !== undefined) {
+		let prefix = settledTokenPrefixes.get(epochKey);
+		if (prefix === undefined || prefix.scannedCount > target.stages.length) {
 			prefix = { scannedCount: 0, settledTokens: 0 };
-			settledTokenPrefixes.set(source, prefix);
+			settledTokenPrefixes.set(epochKey, prefix);
 		}
-		while (prefix.scannedCount < source.stages.length) {
-			const candidate = source.stages[prefix.scannedCount]!;
+		while (prefix.scannedCount < target.stages.length) {
+			const candidate = target.stages[prefix.scannedCount]!;
 			if (!isSettledStage(candidate) || authoritativeWorkflowChildRunId(candidate) !== undefined) break;
 			prefix.settledTokens += stageTokens(candidate);
 			prefix.scannedCount++;
 		}
 		total = prefix.settledTokens;
-		for (let index = prefix.scannedCount; index < source.stages.length; index++) {
-			const candidate = source.stages[index]!;
+		for (let index = prefix.scannedCount; index < target.stages.length; index++) {
+			const candidate = target.stages[index]!;
 			if (authoritativeWorkflowChildRunId(candidate) !== undefined) continue;
 			total += stageTokens(candidate);
+			if (!isSettledStage(candidate) && pendingStageTokens !== undefined) {
+				total += pendingStageTokens(run.id, candidate.id);
+			}
 		}
 	} else {
-		const target = source ?? run;
-		const stages = isPublishedSnapshotArray(target.stages) ? runStageIndex(target).unfinished : target.stages;
+		const stages =
+			delegatedStageIds !== undefined && isPublishedSnapshotArray(target.stages)
+				? runStageIndex(target).unfinished
+				: target.stages;
 		for (const stage of stages) {
 			if (delegatedStageIds?.has(stage.id)) continue;
 			total += stageTokens(stage);
+			if (!isSettledStage(stage) && pendingStageTokens !== undefined) {
+				total += pendingStageTokens(run.id, stage.id);
+			}
 		}
 	}
-	const wrapUp = (source ?? run).budgetState?.wrapUpUsage;
-	if (wrapUp !== undefined) {
-		const input =
-			typeof wrapUp.input === "number" && Number.isFinite(wrapUp.input) && wrapUp.input > 0 ? wrapUp.input : 0;
-		const output =
-			typeof wrapUp.output === "number" && Number.isFinite(wrapUp.output) && wrapUp.output > 0 ? wrapUp.output : 0;
-		total += Math.round(input + output);
-	}
-	const accounted = (source ?? run).budgetState?.accounting?.tokens ?? (source ?? run).budgetState?.tokens?.reading;
-	if (typeof accounted === "number" && Number.isFinite(accounted) && accounted > total) {
-		total = Math.round(accounted);
-	}
+	total += usageTokens(target.budgetState?.wrapUpUsage);
 	return total;
 }
 
@@ -225,49 +247,58 @@ function runTreeTokens(
 	childrenByParent: ReadonlyMap<string, readonly RunSnapshot[]> | undefined,
 	runById: ReadonlyMap<string, RunSnapshot> | undefined,
 	store: Store | undefined,
+	pendingStageTokens: PendingStageTokenReader | undefined,
 ): number {
 	const lookupRaw = (candidate: RunSnapshot): RunSnapshot | undefined =>
 		isPublishedSnapshotArray(candidate.stages) ? store?.run(candidate.id) : candidate;
+	let total = 0;
 	if (childrenByParent === undefined || !childrenByParent.has(root.id) || runById === undefined) {
-		return runDirectTokens(root, lookupRaw(root));
-	}
-	const visiting = new Set<string>();
-	const expandedChildren = new Set<string>();
-	const rootOwnerByRunId = new Map<string, string | undefined>();
-	const rootOwnerFor = (runId: string): string | undefined => {
-		if (rootOwnerByRunId.has(runId)) return rootOwnerByRunId.get(runId);
-		const owner = reciprocalWorkflowRootRunId(runById, runId);
-		rootOwnerByRunId.set(runId, owner);
-		return owner;
-	};
-	const visit = (run: RunSnapshot): number => {
-		if (visiting.has(run.id)) return 0;
-		visiting.add(run.id);
-		const children = childrenByParent.get(run.id);
-		let delegatedStageIds: Set<string> | undefined;
-		let childTokens = 0;
-		if (children !== undefined) {
-			const runRoot = rootOwnerFor(run.id);
-			const index = runStageIndex(run);
-			for (const childRun of children) {
-				if (expandedChildren.has(childRun.id) || childRun.parentStageId === undefined) continue;
-				if (childRun.stages.length + childRun.toolNodes.length === 0) continue;
-				if (runRoot === undefined || rootOwnerFor(childRun.id) !== runRoot) continue;
-				const parentStage =
-					index.unfinished.find((stage) => stage.id === childRun.parentStageId) ??
-					findSnapshotStage(run.stages, childRun.parentStageId);
-				if (parentStage === undefined || authoritativeWorkflowChildRunId(parentStage) !== childRun.id) continue;
-				expandedChildren.add(childRun.id);
-				delegatedStageIds ??= new Set();
-				delegatedStageIds.add(parentStage.id);
-				childTokens += visit(childRun);
+		total = runDirectTokens(root, lookupRaw(root), undefined, pendingStageTokens);
+	} else {
+		const visiting = new Set<string>();
+		const expandedChildren = new Set<string>();
+		const rootOwnerByRunId = new Map<string, string | undefined>();
+		const rootOwnerFor = (runId: string): string | undefined => {
+			if (rootOwnerByRunId.has(runId)) return rootOwnerByRunId.get(runId);
+			const owner = reciprocalWorkflowRootRunId(runById, runId);
+			rootOwnerByRunId.set(runId, owner);
+			return owner;
+		};
+		const visit = (run: RunSnapshot): number => {
+			if (visiting.has(run.id)) return 0;
+			visiting.add(run.id);
+			const children = childrenByParent.get(run.id);
+			let delegatedStageIds: Set<string> | undefined;
+			let childTokens = 0;
+			if (children !== undefined) {
+				const runRoot = rootOwnerFor(run.id);
+				const index = runStageIndex(run);
+				for (const childRun of children) {
+					if (expandedChildren.has(childRun.id) || childRun.parentStageId === undefined) continue;
+					if (childRun.stages.length + childRun.toolNodes.length === 0) continue;
+					if (runRoot === undefined || rootOwnerFor(childRun.id) !== runRoot) continue;
+					const parentStage =
+						index.unfinished.find((stage) => stage.id === childRun.parentStageId) ??
+						findSnapshotStage(run.stages, childRun.parentStageId);
+					if (parentStage === undefined || authoritativeWorkflowChildRunId(parentStage) !== childRun.id) continue;
+					expandedChildren.add(childRun.id);
+					delegatedStageIds ??= new Set();
+					delegatedStageIds.add(parentStage.id);
+					childTokens += visit(childRun);
+				}
 			}
-		}
-		const ownTokens = runDirectTokens(run, lookupRaw(run), delegatedStageIds);
-		visiting.delete(run.id);
-		return ownTokens + childTokens;
-	};
-	return visit(root);
+			const ownTokens = runDirectTokens(run, lookupRaw(run), delegatedStageIds, pendingStageTokens);
+			visiting.delete(run.id);
+			return ownTokens + childTokens;
+		};
+		total = visit(root);
+	}
+	const rootSource = lookupRaw(root) ?? root;
+	const accounted = rootSource.budgetState?.accounting?.tokens ?? rootSource.budgetState?.tokens?.reading;
+	if (typeof accounted === "number" && Number.isFinite(accounted) && accounted > total) {
+		return Math.round(accounted);
+	}
+	return total;
 }
 
 interface CachedPanelRun {
@@ -313,6 +344,7 @@ export function panelItemsFromSnapshot(
 	runsOrSnapshot: readonly RunSnapshot[] | StoreSnapshot,
 	now = Date.now(),
 	scope?: Set<string> | object,
+	pendingStageTokens?: PendingStageTokenReader,
 ): AgentPanelItem[] {
 	const { snapshot, cacheKey } = toStoreSnapshot(runsOrSnapshot);
 	const viewed = resolveViewedWorkflowRuns(scope);
@@ -321,18 +353,6 @@ export function panelItemsFromSnapshot(
 		const liveRunIds = new Set(snapshot.runs.map((run) => run.id));
 		for (const id of viewed) if (!liveRunIds.has(id)) viewed.delete(id);
 	}
-	const withViewed = (run: RunSnapshot, item: AgentPanelItem): AgentPanelItem =>
-		viewed.has(run.id) === (item.viewed === true) ? item : { ...item, viewed: viewed.has(run.id) };
-	if (cacheKey !== undefined) {
-		const cached = snapshotItems.get(cacheKey);
-		if (cached !== undefined) {
-			return cached.map(({ run, item }) => {
-				const elapsedMs = elapsedRunMs(run, run.endedAt ?? now);
-				return withViewed(run, elapsedMs === item.elapsedMs ? item : { ...item, elapsedMs });
-			});
-		}
-	}
-
 	const runs = snapshot.runs;
 	let childrenByParent: Map<string, RunSnapshot[]> | undefined;
 	for (const candidate of runs) {
@@ -343,32 +363,52 @@ export function panelItemsFromSnapshot(
 		else list.push(candidate);
 	}
 	const runById = childrenByParent === undefined ? undefined : new Map(runs.map((run) => [run.id, run]));
+
+	const withViewed = (run: RunSnapshot, item: AgentPanelItem): AgentPanelItem =>
+		viewed.has(run.id) === (item.viewed === true) ? item : { ...item, viewed: viewed.has(run.id) };
+	if (cacheKey !== undefined) {
+		const cached = snapshotItems.get(cacheKey);
+		if (cached !== undefined) {
+			return cached.map(({ run, item }) => {
+				const elapsedMs = elapsedRunMs(run, run.endedAt ?? now);
+				const tokens =
+					pendingStageTokens === undefined
+						? item.tokens
+						: runTreeTokens(run, childrenByParent, runById, store, pendingStageTokens) || undefined;
+				const updated =
+					elapsedMs === item.elapsedMs && tokens === item.tokens
+						? item
+						: {
+								...item,
+								elapsedMs,
+								...(tokens === undefined ? {} : { tokens }),
+							};
+				return withViewed(run, updated);
+			});
+		}
+	}
+
 	const indicator = createRunIndicatorStatusResolver(runs);
 	const expand = createWorkflowGraphExpander(snapshot);
 
 	const built: CachedPanelRun[] = topLevelWorkflowRuns(runs).map((run): CachedPanelRun => {
-		const index =
-			cacheKey !== undefined && run.toolNodes.length === 0 && !childrenByParent?.has(run.id)
-				? runStageIndex(run)
-				: undefined;
-		const graph = index === undefined ? expand(run.id) : undefined;
+		const isLeaf = !childrenByParent?.has(run.id);
+		const index = isLeaf ? runStageIndex(run) : undefined;
+		const graph = isLeaf ? undefined : expand(run.id);
 		const stages = graph?.stages ?? run.stages;
 		const settled = index?.settled ?? settledStageCount(stages);
 		const status = effectiveRunStatus(run);
+		const quit = run.exitReason === "quit" || run.quitAt !== undefined;
+		const live = !quit && (run.endedAt === undefined || run.resumable === true || run.blockedAt !== undefined);
+		const state = quit ? "stopped" : panelState(status, indicator(run) === "awaiting_input", live);
 		const stage =
 			currentStage(index?.unfinished ?? stages) ??
 			(status === "blocked" ? stages.find((candidate) => candidate.status === "failed") : undefined);
 		const tools = graph?.tools ?? run.toolNodes;
-		const runningTool = tools.find((candidate) => candidate.status === "running");
-		const quit = run.exitReason === "quit" || run.quitAt !== undefined;
-		const live = !quit && (run.endedAt === undefined || run.resumable === true || run.blockedAt !== undefined);
-		const state = quit ? "stopped" : panelState(status, indicator(run) === "awaiting_input", live);
+		const runningTool = state === "running" || state === "input" ? latestRunningTool(tools) : undefined;
 		const tool =
 			runningTool ??
-			(stage === undefined && (quit || state === "stopped" || state === "paused")
-				? (tools.find((candidate) => candidate.status === "cancelled" || candidate.status === "failed") ??
-					tools.at(-1))
-				: undefined);
+			(stage === undefined && (quit || state === "stopped" || state === "paused") ? tools.at(-1) : undefined);
 		const endedAt = run.endedAt ?? (quit ? (run.quitAt ?? run.pausedAt) : undefined);
 		const affordance = state === "input" ? pendingInputAffordance(run, runs) : undefined;
 		const question = affordance?.message;
@@ -408,7 +448,7 @@ export function panelItemsFromSnapshot(
 			(state === "running" || state === "paused" || state === "done") &&
 			total > 0 &&
 			!(runningTool !== undefined && done >= total);
-		const tokens = runTreeTokens(run, childrenByParent, runById, store);
+		const tokens = runTreeTokens(run, childrenByParent, runById, store, pendingStageTokens);
 		const item: AgentPanelItem = {
 			id: `${PANEL_RUN_PREFIX}${run.id}`,
 			kind: "workflow",
@@ -447,7 +487,13 @@ function resolveRawChoiceText(
 	if (rawChoices === undefined || displayChoices === undefined || rawChoices.length !== displayChoices.length) {
 		return text;
 	}
-	const normalized = text.trim().toLowerCase();
+	if (rawChoices.includes(text)) return text;
+	const trimmed = text.trim();
+	const exactRaw = rawChoices.find((choice) => choice.trim() === trimmed);
+	if (exactRaw !== undefined) return exactRaw;
+	const exactDisplay = displayChoices.findIndex((choice) => choice.trim() === trimmed);
+	if (exactDisplay >= 0) return rawChoices[exactDisplay]!;
+	const normalized = trimmed.toLowerCase();
 	if (rawChoices.some((choice) => choice.trim().toLowerCase() === normalized)) return text;
 	const index = displayChoices.findIndex((choice) => choice.trim().toLowerCase() === normalized);
 	return index >= 0 ? rawChoices[index]! : text;
