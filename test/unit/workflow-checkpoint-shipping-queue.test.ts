@@ -726,30 +726,22 @@ function billedStage(
 	};
 }
 
-test("a direct commit refused after work lease expiry succeeds after extension and keeps shipping plain checkpoints (#4768)", async () => {
+test("a checkpoint that bills usage, whose shipment is refused after work lease expiry, ships after extension and the attempt keeps shipping (#4768)", async () => {
 	const { journal, queue, lease, attempt, work, tool, recorded, database } = await claimedAttempt();
 	const { shipping, shard } = await hostShipping(queue, lease);
 	await shipping.hold(attempt, LEASE_MS);
 	await database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", attempt.id);
 	const billed = billedStage(work.scope, tool);
-	let refusedCommit: StaleWorkLeaseError | undefined;
 	await assert.rejects(
-		shipping.commit(attempt, billed, async () => {
-			try {
-				return await queue.commit(lease, attempt, "billed", billed);
-			} catch (error) {
-				assert.ok(error instanceof StaleWorkLeaseError);
-				refusedCommit = error;
-				throw error;
-			}
-		}),
-		(error: Error) => error === refusedCommit && refusedCommit.reason === "expired",
+		shipping.commit(attempt, billed, noShared),
+		(error: Error) => error instanceof StaleWorkLeaseError && error.reason === "expired",
 	);
+	assert.equal(await shard.pendingCount(attempt), 1, "an expired lease is not a lost one: the checkpoint stays");
 	const renewed = await queue.extend(lease, attempt, LEASE_MS);
 	assert.equal(renewed.generation, attempt.generation);
 	await shipping.hold(renewed, LEASE_MS);
-	const direct = await shipping.commit(renewed, billed, () => queue.commit(lease, renewed, "billed", billed));
-	assert.equal(direct.local, undefined);
+	// The worker sends the same commit again.
+	assert.equal((await shipping.commit(renewed, billed, noShared)).local, true);
 	assert.ok(await journal.readKey("root", checkpointKey(billed.checkpoint)));
 	const plain = await shipping.commit(renewed, { kind: "checkpoint", checkpoint: tool(1) }, noShared);
 	assert.equal(plain.local, true);
@@ -758,29 +750,20 @@ test("a direct commit refused after work lease expiry succeeds after extension a
 	assert.equal(await shard.pendingCount(renewed), 0);
 });
 
-test("a direct commit refused while the root renews late in the same epoch succeeds after root renewal (#4768)", async () => {
+test("a checkpoint that bills usage, whose shipment is refused while the root renews late in the same epoch, ships after root renewal (#4768)", async () => {
 	const { journal, queue, lease, attempt, work, tool, recorded, database } = await claimedAttempt();
 	const { shipping, shard } = await hostShipping(queue, lease);
 	await shipping.hold(attempt, LEASE_MS);
 	await database.run("UPDATE wf_leases SET renewed_at = renewed_at - 3600000 WHERE run_id = ?", lease.runId);
 	const billed = billedStage(work.scope, tool);
-	let refusedRoot: StaleLeaseError | undefined;
 	await assert.rejects(
-		shipping.commit(attempt, billed, async () => {
-			try {
-				return await queue.commit(lease, attempt, "billed", billed);
-			} catch (error) {
-				assert.ok(error instanceof StaleLeaseError);
-				refusedRoot = error;
-				throw error;
-			}
-		}),
+		shipping.commit(attempt, billed, noShared),
 		(error: Error) =>
-			error === refusedRoot && refusedRoot.heldEpoch === lease.epoch && refusedRoot.currentEpoch === lease.epoch,
+			error instanceof StaleLeaseError && error.heldEpoch === lease.epoch && error.currentEpoch === lease.epoch,
 	);
+	assert.equal(await shard.pendingCount(attempt), 1, "a late root keeps what the attempt holds");
 	await journal.renew(lease);
-	const direct = await shipping.commit(attempt, billed, () => queue.commit(lease, attempt, "billed", billed));
-	assert.equal(direct.local, undefined);
+	assert.equal((await shipping.commit(attempt, billed, noShared)).local, true);
 	assert.ok(await journal.readKey("root", checkpointKey(billed.checkpoint)));
 	const plain = await shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(1) }, noShared);
 	assert.equal(plain.local, true);

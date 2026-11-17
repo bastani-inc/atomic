@@ -1,6 +1,4 @@
-import { basename } from "node:path";
 import type { Args } from "../../cli/args.ts";
-import { ENV_AGENT_DIR, getEnvValue } from "../../config.js";
 import {
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
@@ -8,11 +6,10 @@ import {
 } from "../../core/agent-session-runtime.ts";
 import type { SessionManager } from "../../core/session-manager.ts";
 import { canIsolateSessionStore } from "../../core/session-storage.js";
-import { startupBenchmarkEngineEnv } from "../../main-startup-benchmark.js";
 import { RpcClient } from "../rpc/rpc-client.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import { buildInteractiveEngineArgs, type InteractiveEngineResourcePaths } from "./engine-args.ts";
-import { engineHeapRuntimeArgsForHost } from "./engine-heap.ts";
+import { discardPrewarmedEngine, interactiveEngineClientOptions } from "./engine-prewarm.ts";
 import { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 
 export async function createIsolatedInteractiveRuntime(options: {
@@ -22,25 +19,12 @@ export async function createIsolatedInteractiveRuntime(options: {
 	sessionManager: SessionManager;
 	resources: InteractiveEngineResourcePaths;
 }): Promise<IsolatedInteractiveRuntime> {
-	const executableName = basename(process.execPath).toLowerCase();
-	const launchedByRuntime = ["bun", "bun.exe", "node", "node.exe"].includes(executableName);
-	const cliPath = launchedByRuntime ? process.argv[1] : "";
-	if (launchedByRuntime && !cliPath)
-		throw new Error("Cannot start isolated interactive engine: Atomic entrypoint is unavailable");
 	let isolatedRuntime: IsolatedInteractiveRuntime | undefined;
 	const pendingDiagnostics: ActivityWatchdogDiagnostic[] = [];
 	let callbackActive = false;
-	const explicitAgentDir = getEnvValue(ENV_AGENT_DIR);
 	const client = new RpcClient({
-		cliPath,
-		cwd: options.sessionManager.getCwd(),
-		runtimeExecutable: process.execPath,
-		runtimeArgs: engineHeapRuntimeArgsForHost(["node", "node.exe"].includes(executableName)),
+		...interactiveEngineClientOptions(options.sessionManager.getCwd()),
 		args: buildInteractiveEngineArgs(options.parsed, options.sessionManager, options.resources),
-		env: {
-			...(explicitAgentDir !== undefined ? { [ENV_AGENT_DIR]: explicitAgentDir } : {}),
-			...startupBenchmarkEngineEnv(),
-		},
 		interactiveEngine: {
 			onDiagnostic: (diagnostic) =>
 				isolatedRuntime ? isolatedRuntime.emitDiagnostic(diagnostic) : pendingDiagnostics.push(diagnostic),
@@ -54,17 +38,13 @@ export async function createIsolatedInteractiveRuntime(options: {
 			...(options.parsed.apiKey ? { apiKey: options.parsed.apiKey } : {}),
 		},
 	});
-	try {
-		await client.start();
-	} catch (error) {
-		try {
-			await client.stop();
-		} finally {
-			await options.localRuntime.dispose();
-		}
-		throw error;
-	}
-	isolatedRuntime = new IsolatedInteractiveRuntime(options.localRuntime, options.createRuntime, client);
+	// The host paints and takes input while the engine child loads: its readiness gates only what needs the engine.
+	isolatedRuntime = new IsolatedInteractiveRuntime(
+		options.localRuntime,
+		options.createRuntime,
+		client,
+		client.start(),
+	);
 	isolatedRuntime.setEngineCallbackActive(callbackActive);
 	for (const diagnostic of pendingDiagnostics) isolatedRuntime.emitDiagnostic(diagnostic);
 	return isolatedRuntime;
@@ -87,6 +67,8 @@ export async function createRuntimeForMode(
 			"Interactive engine isolation cannot serialize inline extension factories; load the extension from a module path instead.",
 		);
 	}
+	// A host that starts no engine has no use for one started while it loaded.
+	if (!isolateInteractiveHost) discardPrewarmedEngine();
 	const localRuntime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager, interactive });
 	if (!isolateInteractiveHost) return localRuntime;
 	return createIsolatedInteractiveRuntime({ localRuntime, createRuntime, parsed, sessionManager, resources });

@@ -17,8 +17,10 @@ import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/
 import { RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import type { WorkflowSerializableObject } from "../../packages/workflows/src/shared/types.js";
+import { CheckpointShipping } from "../../packages/workflows/src/workers/checkpoint-shipping.js";
 import { DispatchSnapshots } from "../../packages/workflows/src/workers/dispatch-snapshot.js";
 import { claimedWithStoredSnapshot } from "../../packages/workflows/src/workers/pool-coordinator.js";
+import { ShipShard } from "../../packages/workflows/src/workers/ship-shard.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { ageBlobs, startRun, syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
@@ -286,7 +288,26 @@ async function claimedAttempt(subject: (typeof commitSubjects)[number]) {
 				found.push(String(entry.event.payload.checkpointId).split(":").at(-1)!);
 		return found;
 	};
-	return { blobs, kept, commit, keys, stored: syntheticSnapshot("stored", [kept.hash]) };
+	/** The tool checkpoints the root's journal holds, whole, in journal order. */
+	const recorded = async () => {
+		const found: DurableToolCheckpoint[] = [];
+		for await (const entry of journal.read("root"))
+			if (entry.event.type === RUN_EVENT_TYPES.checkpointRecorded && entry.event.payload.kind === "tool")
+				found.push(entry.event.payload as unknown as DurableToolCheckpoint);
+		return found;
+	};
+	return {
+		blobs,
+		kept,
+		commit,
+		keys,
+		recorded,
+		queue,
+		lease,
+		attempt,
+		tool,
+		stored: syntheticSnapshot("stored", [kept.hash]),
+	};
 }
 
 for (const subject of commitSubjects) {
@@ -350,6 +371,55 @@ for (const subject of commitSubjects) {
 		assert.deepEqual(await keys(), ["2"]);
 	});
 }
+
+for (const subject of commitSubjects)
+	test(`a host that ships its checkpoints on ${subject.name} keeps one with snapshots only while their blobs are stored, and ships it after them (#4768)`, async () => {
+		const { blobs, queue, lease, attempt, tool, recorded, stored } = await claimedAttempt(subject);
+		const shard = await ShipShard.open(":memory:", "root");
+		const shipping = new CheckpointShipping(shard, {
+			intervalMs: 60_000,
+			maxBatch: 64,
+			maxLagMs: 600_000,
+			host: "host-A",
+			deliver: (held, batch) => queue.shipBatch(lease, held, batch),
+			snapshotsStored: (checkpoint) => queue.assertSnapshotsStored(checkpoint),
+		});
+		closers.push(() => shipping.close());
+		await shipping.hold(attempt, 60_000);
+		const direct = async () => assert.fail("a checkpoint the host keeps is not committed directly");
+		const keep = (index: number, snapshots: readonly WorktreeSnapshot[]) =>
+			shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(index, snapshots) }, direct);
+		// A blob the store does not hold refuses the checkpoint as a direct commit would, and nothing is kept.
+		const gone = syntheticSnapshot("gone", [textBlob("never stored").hash]);
+		await assert.rejects(keep(1, [stored, gone]), { name: "WorkspaceSnapshotError", code: "blobs-collected" });
+		assert.equal(await shard.pendingCount(attempt), 0);
+		assert.equal((await keep(2, [stored])).local, true);
+		await shipping.flush(attempt);
+		// A blob collected while its checkpoint waits to ship, as a collection with no grace window can: the checkpoint is
+		// recorded without its snapshot, and the collection is reported, so no recorded snapshot names a blob the store lacks.
+		const late = textBlob("collected while unshipped");
+		await blobs.putBlobs([late]);
+		assert.equal((await keep(3, [syntheticSnapshot("late", [late.hash])])).local, true);
+		await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
+		const warnings: unknown[] = [];
+		const warn = vi.spyOn(process, "emitWarning").mockImplementation((warning) => {
+			warnings.push(warning);
+		});
+		await shipping.flush(attempt);
+		warn.mockRestore();
+		const shipped = await recorded();
+		assert.deepEqual(
+			shipped.map((checkpoint) => [checkpoint.checkpointId.split(":").at(-1), checkpoint.worktreeSnapshots?.length]),
+			[
+				["2", 1],
+				["3", undefined],
+			],
+		);
+		assert.ok(
+			warnings.some((warning) => (warning as { code?: string }).code === "blobs-collected"),
+			"the collected snapshot is reported",
+		);
+	});
 
 /** A root on `subject` whose pool is in another database, as a local pool over a remote journal keeps it. */
 async function rootWithSeparatePool(subject: (typeof commitSubjects)[number]) {

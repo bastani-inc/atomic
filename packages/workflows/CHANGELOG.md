@@ -6,8 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- The `workflow` tool's row in the chat now looks like every other tool's, instead of drawing its own rounded panels. A run reads `Workflow(<name> · <what it was asked>)` and the other actions `workflow <action> <target>`, each with one result line. A run's line follows the run until it ends (`∀ Running · 1/3 stages · ↓ 22.4k tokens`, `! Waiting for input at review`, `✓ Completed in 4s · 3 stages · 32.4k tokens`, `✗ Failed at review · <reason>`), and Ctrl+O expands the row to the run's inputs, stages and outputs ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Workflow lifecycle notices are one line, like the notices for finished background tasks and agents (`● Workflow "<name>" completed · 4.0s`, `✗ Workflow "<name>" failed · at review`). Ctrl+O shows the notice's card with the run id, stage, error and outputs ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Starting Atomic no longer reads and scans every bundled workflow's source twice before the first request; bundled workflows are registered without the zero-stage check, which can never fire for them
+- With `workers.checkpointShipping`, a worker host now also keeps its children's agent-stage session transcripts, the checkpoints that bill model usage, and those that carry worktree snapshots in its local journal and ships them with the children's checkpoints, so an agent-stage child no longer commits each step to the shared journal: about 0.4 shared-journal commits per step for checkpoints and transcripts, down from 3.4. A step that ends a stage returns once it is shipped, so the root's budget sees the stage's usage and the shared journal holds its transcript when the stage ends. If a host dies, the session writes it had not shipped are dropped with its unshipped steps, and the replay continues each session from what was shipped ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+
 ### Fixed
 
+- Fixed a session that ended for good, such as an SDK session that ran workflows and was disposed, staying in memory through the workflow hand-off kept for a session that might replace it.
+- Fixed each `/reload` keeping the previous copy of the workflows extension, and the extensions and session it reaches, in memory for as long as the session ran.
+- Workflow discovery checks the bundled workflows once per process. Startup checked them twice, and `/workflow reload` and every `/workflow resume` of a durable run checked them again, each time reading and scanning their sources: about 180 ms on Windows and 120 ms on Linux ([#5319](https://github.com/bastani-inc/atomic/issues/5319))
+- When another process on Windows holds `.atomic/workflows/status.json` open for a long read, the status writer now waits out the reader across its retry backoff instead of recording a `status file write failed` warning notice on each attempt, and writes the latest status as soon as the workflow changes after the reader closes the file. A hold that lasts beyond the retry backoff (about 21 seconds) still records one warning. At shutdown, Atomic retries a held status file for about one second and records a warning if it still cannot replace it ([#5322](https://github.com/bastani-inc/atomic/issues/5322))
 - Workflow stages skip model-chain candidates without credentials before creating sessions and block with an error naming the missing providers when none can run. A provider that rejects credentials stays out of that fallback walk, including after a resumed prompt or a cooldown. Quitting with an already blocked, resumable run no longer fails shutdown ([#5353](https://github.com/bastani-inc/atomic/pull/5353)).
 
 ## [0.9.88] - 2026-11-16
