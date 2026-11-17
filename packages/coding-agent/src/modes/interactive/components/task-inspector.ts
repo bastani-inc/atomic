@@ -20,6 +20,7 @@ import {
 	NAV_CONFIRM_WINDOW_MS,
 	type NavKey,
 	navActionText,
+	navKeyText,
 	renderNavHintLine,
 	renderNavKeyOverlay,
 } from "./nav-keys.ts";
@@ -455,7 +456,7 @@ export class TaskInspector implements Component {
 		if (transcript.handlesBack()) return transcript.handleInput(data);
 		const keys = getKeybindings();
 		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
-		if (keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
+		if (!matchesKey(data, "escape") && keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
 			if (this.chatFrom === "caller") {
 				this.close();
 				return true;
@@ -536,13 +537,34 @@ export class TaskInspector implements Component {
 		].map(fitWidth);
 		const notes = [transcript.status, this.status].filter(Boolean).join(" · ");
 		const style = themedNavKeyStyle();
+		const backKeys = getKeybindings()
+			.getKeys("app.nav.back")
+			.filter((key) => !matchesKey("\x1b", key))
+			.map(navKeyText)
+			.join("/");
 		if (this.helpOpen)
 			return [
 				...header,
-				...renderNavKeyOverlay("keys · task chat", TASK_CHAT_OVERLAY_KEYS, width, style, getKeybindings()),
+				...renderNavKeyOverlay(
+					"keys · task chat",
+					TASK_CHAT_OVERLAY_KEYS.map((entry) =>
+						entry.action === "app.nav.back" ? { keys: backKeys, label: entry.label } : entry,
+					),
+					width,
+					style,
+					getKeybindings(),
+				),
 			].slice(0, Math.max(1, budget));
 		const back = this.chatFrom === "caller" ? this.callerLabel : this.chatFrom === "list" ? "tasks" : "task";
-		const hint = renderNavHintLine(taskChatKeys(back, transcript.interruptible()), width, style, getKeybindings());
+		const questionActive = transcript.takesEscape?.() === true;
+		const activeKeys = taskChatKeys(back, !questionActive && transcript.interruptible()).flatMap((entry) => {
+			if (entry.action === "app.nav.back") {
+				return !questionActive || transcript.cursorAtStart() ? [{ keys: backKeys, label: back }] : [];
+			}
+			if (questionActive && entry.action === "app.keys.help") return [];
+			return [entry];
+		});
+		const hint = renderNavHintLine(activeKeys, width, style, getKeybindings());
 		const footer = [...(notes ? [fitWidth(theme.fg("dim", notes))] : []), hint];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
 		const statusRows = this.taskStatusRows(width);

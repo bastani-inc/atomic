@@ -426,6 +426,7 @@ test("task detail Open question opens the subagent transcript, and ← preserves
 		},
 		foregroundTask: async () => ({ ok: false, error: { message: "unsupported" } }),
 		cancelTask: async () => ({ ok: true, value: undefined }),
+		interruptTask: async () => ({ ok: true, value: undefined }),
 		stdinAvailable: () => false,
 		writeTaskInput: async () => ({ ok: false, error: { message: "unsupported" } }),
 		readTaskOutput: async () => ({ ok: true, value: { text: "", omitted: false } }),
@@ -443,6 +444,7 @@ test("task detail Open question opens the subagent transcript, and ← preserves
 				getSessionId: () => sessionId,
 				getEntries: () => childTranscript.getEntries(),
 				subscribe: () => () => {},
+				isRunning: () => true,
 			},
 			historyOnly: false,
 		}),
@@ -484,10 +486,14 @@ test("task detail Open question opens the subagent transcript, and ← preserves
 	inspector.handleInput("\r"); // Activate Open question -> opens transcript
 	assert.match(plain(), /^Transcript/);
 	assert.match(plain(), /Enter branch name/);
+	assert.doesNotMatch(plain(), /esc interrupt/);
+	assert.doesNotMatch(plain(), /\? keys/);
+	assert.match(plain(), /← task/);
 
 	// Type "ab" (caret at 2). Left moves caret to 1, then 0, staying in transcript; Left at 0 leaves to detail.
 	inspector.handleInput("a");
 	inspector.handleInput("b");
+	assert.doesNotMatch(plain().split("\n").at(-1) ?? "", /← task/);
 	inspector.handleInput("\x1b[D"); // caret 2 -> 1
 	assert.match(plain(), /^Transcript/, "← with caret at 1 moves caret, does not leave");
 	inspector.handleInput("\x1b[D"); // caret 1 -> 0
@@ -506,6 +512,7 @@ test("task detail Open question opens the subagent transcript, and ← preserves
 	inspector.handleInput("X");
 	inspector.handleInput("\r");
 	assert.equal(await inputPromise, "Xab");
+	assert.match(plain(), /esc interrupt/);
 
 	// 2. Hold an editor prompt with prefill "hi" (caret at col 2).
 	const editorPromise = heldPromptInput.editor("Edit commit message", "hi", {
@@ -560,4 +567,19 @@ test("task detail Open question opens the subagent transcript, and ← preserves
 	const firstStale = heldPromptForm(stalePrompt, { requestRender: () => {} });
 	const secondStale = heldPromptForm(stalePrompt, { requestRender: () => {} });
 	assert.notEqual(firstStale, secondStale, "settled prompts are not cached in the live forms map");
+	keys.setUserBindings({ "app.nav.back": ["escape", "left"] });
+	const cancelled = heldPromptInput.confirm("Cancel this question?", "Do not approve", {
+		signal: controller.signal,
+		requestId: "escape-remap",
+		sessionId,
+	});
+	void cancelled.catch(() => {});
+	assert.doesNotMatch(plain(), /esc\/← task/);
+	inspector.handleInput("\x1b");
+	assert.equal(heldPrompts().current(sessionId), undefined);
+	assert.equal(await cancelled, false);
+	assert.match(plain(), /^Transcript/);
+	inspector.handleInput("?");
+	assert.doesNotMatch(plain(), /esc\/←\s+back/);
+	assert.match(plain(), /←\s+back, on an empty prompt/);
 });
