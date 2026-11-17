@@ -413,6 +413,62 @@ test("SQL light listing bounds its key scan by size and fetches wide columns per
 	});
 });
 
+test("SQL light listing advances past oversized rows with bounded statements and key work (#5250)", async () => {
+	await withNodeSqliteDatabase(async ({ database }) => {
+		const store = await SqlSessionStore.open(database);
+		const expected = ["first", ...Array.from({ length: 24 }, (_, index) => `wide-${index}`), "last"];
+		for (const id of expected) {
+			await store.create({ ...header, id }, [
+				{
+					type: "session_info",
+					id: `${id}-name`,
+					parentId: null,
+					timestamp: header.createdAt,
+					name: id.startsWith("wide-") ? "w".repeat(1_100_000) : id,
+				},
+			]);
+		}
+		let statements = 0;
+		let wideLengths = 0;
+		let oneRowPages = 0;
+		const configured = new WeakSet<DatabaseSync>();
+		const prepare = DatabaseSync.prototype.prepare;
+		DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+			if (!configured.has(this)) {
+				configured.add(this);
+				this.function("length", { deterministic: true }, (value) => {
+					if (typeof value === "string" && value.length > 1_000_000) wideLengths++;
+					return value === null ? null : typeof value === "string" ? value.length : String(value).length;
+				});
+			}
+			return prepare.call(this, sql);
+		} as typeof prepare;
+		const all = database.all.bind(database);
+		database.all = async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]): Promise<T[]> => {
+			const rows = await all<T>(sql, ...params);
+			statements++;
+			assert.ok(statements <= expected.length + 1, "listing must not stall on an oversized row");
+			if (rows.some((row) => typeof row.id === "string")) {
+				if (rows.length === 1) oneRowPages++;
+				assert.equal(rows.length, 1, "each oversized listing row needs its own page");
+			}
+			return rows;
+		};
+		const actual: string[] = [];
+		try {
+			for await (const summary of store.list({ includeInternal: true, withoutSearchText: true }))
+				actual.push(summary.id);
+		} finally {
+			database.all = all;
+			DatabaseSync.prototype.prepare = prepare;
+		}
+		assert.deepEqual(actual, expected);
+		assert.equal(oneRowPages, expected.length);
+		assert.ok(wideLengths <= expected.length * 6, `listing measured ${wideLengths} oversized values`);
+		await store.close();
+	});
+});
+
 for (let seed = 1; seed <= 16; seed++) {
 	test(`SQL incremental summaries match full history after reopen for random sequence ${seed} (#3645)`, async () => {
 		const directory = makeTempDirectory("atomic-summary-property-");

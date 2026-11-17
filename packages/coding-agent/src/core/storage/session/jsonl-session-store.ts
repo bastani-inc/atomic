@@ -237,6 +237,7 @@ interface RangeCursor {
 	readonly offset: number;
 	readonly seq: number;
 	readonly header: boolean;
+	readonly changed?: boolean;
 }
 
 type LineAction = "read" | "pass";
@@ -332,10 +333,18 @@ async function scanSessionLines(
 		}
 		return mode !== "blank" || !hasVisibleAscii(segment) || classify();
 	};
-	const rereadLine = async (): Promise<void> => {
-		parts = [await readFrom(file, lineOffset, lineBytes)];
+	const rereadLine = async (): Promise<boolean> => {
+		const bytes = Buffer.alloc(Math.max(0, lineBytes));
+		for (let read = 0; read < bytes.length; ) {
+			signal?.throwIfAborted();
+			const { bytesRead } = await file.read(bytes, read, bytes.length - read, lineOffset + read);
+			if (bytesRead === 0) return false;
+			read += bytesRead;
+		}
+		parts = [bytes];
 		partsBytes = lineBytes;
 		completeLineRetained = true;
+		return true;
 	};
 	const finishLine = (lineEnd: number): "next" | "stop-before" | "stop-after" | "reread" => {
 		if (mode === "header") {
@@ -390,7 +399,7 @@ async function scanSessionLines(
 			const completeEnd = index.completeEnd;
 			let outcome = finishLine(position + start);
 			if (outcome === "reread") {
-				await rereadLine();
+				if (!(await rereadLine())) return { offset: lineOffset, seq: seq - 1, header: false, changed: true };
 				outcome = finishLine(position + start);
 			}
 			if (index.completeEnd !== completeEnd) advancedAt = start;
@@ -424,7 +433,7 @@ async function scanSessionLines(
 		for (let at = 0; at < lineBytes; ) {
 			signal?.throwIfAborted();
 			const { bytesRead } = await file.read(buffer, 0, Math.min(buffer.length, lineBytes - at), lineOffset + at);
-			if (bytesRead === 0) throw new Error(`Session file ended before byte ${lineOffset + lineBytes}`);
+			if (bytesRead === 0) return { offset: lineOffset, seq: counted ? seq - 1 : seq, header: false, changed: true };
 			checker.feed(buffer.subarray(0, bytesRead));
 			at += bytesRead;
 		}
@@ -432,7 +441,8 @@ async function scanSessionLines(
 	if (!checker.finish()) return { offset: position, seq: counted ? seq - 1 : seq, header: false };
 	if (!counted && !classify()) return { offset: lineOffset, seq, header: false };
 	if (reader !== undefined) settle(visitor.typed(seq, reader.finish()));
-	if (mode === "read" && !completeLineRetained) await rereadLine();
+	if (mode === "read" && !completeLineRetained && !(await rereadLine()))
+		return { offset: lineOffset, seq: counted ? seq - 1 : seq, header: false, changed: true };
 	visitor.end(seq, mode === "read" ? parts : undefined, lineBytes, false);
 	return { offset: position, seq, header: false };
 }
@@ -727,19 +737,21 @@ export class JsonlSessionStore implements SessionStore {
 				const stored = await readFirstLineFrom(file, HEADER_READ_CHUNK_BYTES, 0);
 				await this.readHeaderAt(path, stored);
 				if (sessionId !== undefined && stored.id !== sessionId) throw new SessionNotFoundError(sessionId);
-				const { page, boundary } = await this.readRangeFrom(file, path, query, stored, stats, state);
-				const after = await file.stat({ bigint: true });
-				if (this.stamp(after) === this.stamp(stats)) return page;
-				const index = this.rangeIndexes.get(path);
-				if (
-					index !== undefined &&
-					after.size > stats.size &&
-					(await boundaryHolds(file, boundary)) &&
-					(await rangeIndexHolds(file, index, true, query.signal))
-				) {
-					index.seenStamp = this.stamp(after);
-					index.seenSize = Number(after.size);
-					return page;
+				const { page, boundary, changed } = await this.readRangeFrom(file, path, query, stored, stats, state);
+				if (!changed) {
+					const after = await file.stat({ bigint: true });
+					if (this.stamp(after) === this.stamp(stats)) return page;
+					const index = this.rangeIndexes.get(path);
+					if (
+						index !== undefined &&
+						after.size > stats.size &&
+						(await boundaryHolds(file, boundary)) &&
+						(await rangeIndexHolds(file, index, true, query.signal))
+					) {
+						index.seenStamp = this.stamp(after);
+						index.seenSize = Number(after.size);
+						return page;
+					}
 				}
 				this.rangeIndexes.delete(path);
 				if (attempt === RANGE_READ_ATTEMPTS) throw new Error(`${path} changed while it was being read`);
@@ -757,7 +769,11 @@ export class JsonlSessionStore implements SessionStore {
 		stored: StoredSessionHeader,
 		stats: BigIntStats,
 		state: SessionFileState | undefined,
-	): Promise<{ readonly page: SessionEntriesPage; readonly boundary: { witness: Buffer; witnessEnd: number } }> {
+	): Promise<{
+		readonly page: SessionEntriesPage;
+		readonly boundary: { witness: Buffer; witnessEnd: number };
+		readonly changed: boolean;
+	}> {
 		const identity = `${stats.dev}:${stats.ino}:${stats.birthtimeNs}:${JSON.stringify(stored)}`;
 		const size = Number(stats.size);
 		const stamp = this.stamp(stats);
@@ -801,6 +817,7 @@ export class JsonlSessionStore implements SessionStore {
 		const reads = fromSeq <= query.toSeq && (query.maxChars === undefined || query.maxChars > 0);
 		const entries: SessionEntryAt[] = [];
 		let stopped: number | undefined;
+		let changed = false;
 		if (reads) {
 			let cursor: RangeCursor = { offset: 0, seq: 0, header: true };
 			if (fromSeq > index.completeCount && index.completeEnd > 0)
@@ -849,7 +866,8 @@ export class JsonlSessionStore implements SessionStore {
 					return seq >= query.toSeq;
 				},
 			});
-			if (cursor.offset >= size) index.total = { size, lastSeq: cursor.seq };
+			changed = cursor.changed === true;
+			if (!changed && cursor.offset >= size) index.total = { size, lastSeq: cursor.seq };
 		} else if (index.total === undefined) {
 			const start: RangeCursor =
 				index.completeEnd > 0
@@ -865,17 +883,19 @@ export class JsonlSessionStore implements SessionStore {
 				typed: () => "pass",
 				end: () => false,
 			});
-			if (end === size) index.total = { size, lastSeq: probe.seq };
+			changed = probe.changed === true;
+			if (!changed && end === size) index.total = { size, lastSeq: probe.seq };
 		}
-		if (index.witnessEnd !== index.completeEnd) {
+		if (!changed && index.witnessEnd !== index.completeEnd) {
 			index.witness = await witnessAt(file, index.completeEnd);
 			index.witnessEnd = index.completeEnd;
 		}
 		const lastSeq = index.total?.lastSeq ?? Number.POSITIVE_INFINITY;
-		if (!reads) return { page: { lastSeq, entries, throughSeq: fromSeq - 1 }, boundary };
+		if (!reads) return { page: { lastSeq, entries, throughSeq: fromSeq - 1 }, boundary, changed };
 		return {
 			page: { lastSeq, entries, throughSeq: Math.max(stopped ?? Math.min(query.toSeq, lastSeq), fromSeq - 1) },
 			boundary,
+			changed,
 		};
 	}
 

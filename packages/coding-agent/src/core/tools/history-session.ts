@@ -57,6 +57,7 @@ const SKIPPED_TYPES: readonly string[] = ["custom", "worktree_snapshot"];
 const PREVIEW_CHARS = 72;
 
 export const MULTILINE_WINDOW_NOTE = `multi-line matches are searched up to ${MATCH_SPAN_CHARS / 1024} KB of text or ${WINDOW_MAX_SEQS} entries past where they start, so a longer match is not shown`;
+const WINDOW_CUT_LINE = "\u0001";
 
 const utf8Decoder = new TextDecoder();
 
@@ -970,262 +971,18 @@ export function selectRegexEngine(
 	}
 }
 
-interface MultilineGroupFrame {
-	m: boolean;
-	x: boolean;
-	readonly isOuterNegativeLookaround: boolean;
-	readonly outStartIndex: number;
-	hasEndOfText: boolean;
-}
-
-function applyInlineFlag(current: boolean, flagsText: string, flag: string): boolean {
-	let state = current;
-	let enabling = true;
-	for (let i = 0; i < flagsText.length; i++) {
-		const ch = flagsText[i]!;
-		if (ch === "-") enabling = false;
-		else if (ch === flag) state = enabling;
-	}
-	return state;
-}
-
-function scanCharacterClass(pattern: string, start: number, nativeOnly: boolean): number {
-	if (!nativeOnly) {
-		let j = start + 1;
-		while (j < pattern.length) {
-			const c = pattern[j]!;
-			if (c === "\\") {
-				j += 2;
-				continue;
-			}
-			if (c === "]") return j + 1;
-			j++;
-		}
-		return j;
-	}
-	let j = start;
-	let depth = 0;
+function scanCharacterClass(pattern: string, start: number): number {
+	let j = start + 1;
 	while (j < pattern.length) {
 		const c = pattern[j]!;
 		if (c === "\\") {
 			j += 2;
 			continue;
 		}
-		if (c === "[") {
-			if (depth > 0 && pattern[j + 1] === ":") {
-				const closePosix = pattern.indexOf(":]", j + 2);
-				if (closePosix !== -1) {
-					j = closePosix + 2;
-					continue;
-				}
-			}
-			depth++;
-			j++;
-			if (pattern[j] === "^") j++;
-			if (pattern[j] === "]") j++;
-			continue;
-		}
-		if (c === "]") {
-			depth--;
-			j++;
-			if (depth <= 0) break;
-			continue;
-		}
+		if (c === "]") return j + 1;
 		j++;
 	}
 	return j;
-}
-
-function rewriteMultilineWindowPattern(
-	pattern: string,
-	initialMultiline: boolean,
-	windowCut: boolean,
-	nativeOnly: boolean,
-): string {
-	const stack: MultilineGroupFrame[] = [
-		{
-			m: initialMultiline,
-			x: false,
-			isOuterNegativeLookaround: false,
-			outStartIndex: 0,
-			hasEndOfText: false,
-		},
-	];
-	const inNegativeLookaround = (): boolean => stack.some((frame) => frame.isOuterNegativeLookaround);
-	const markNegativeLookaroundEndOfText = (): void => {
-		for (const frame of stack) {
-			if (frame.isOuterNegativeLookaround) frame.hasEndOfText = true;
-		}
-	};
-	let out = "";
-	for (let i = 0; i < pattern.length; ) {
-		const top = stack[stack.length - 1]!;
-		const ch = pattern[i]!;
-		if (top.x && ch === "#") {
-			const nl = pattern.indexOf("\n", i + 1);
-			if (nl === -1) {
-				out += pattern.slice(i);
-				break;
-			}
-			out += pattern.slice(i, nl + 1);
-			i = nl + 1;
-			continue;
-		}
-		if (ch === "\\") {
-			if (i + 1 >= pattern.length) {
-				out += ch;
-				break;
-			}
-			const next = pattern[i + 1]!;
-			if (next === "Q") {
-				const endQuote = pattern.indexOf("\\E", i + 2);
-				if (endQuote === -1) {
-					out += pattern.slice(i);
-					break;
-				}
-				out += pattern.slice(i, endQuote + 2);
-				i = endQuote + 2;
-				continue;
-			}
-			if (next === "k" && pattern[i + 2] === "<") {
-				const endName = pattern.indexOf(">", i + 3);
-				if (endName !== -1) {
-					out += pattern.slice(i, endName + 1);
-					i = endName + 1;
-					continue;
-				}
-			}
-			if (next === "z") {
-				if (windowCut) {
-					if (inNegativeLookaround()) {
-						markNegativeLookaroundEndOfText();
-						out += nativeOnly ? "\\z" : "(?![\\s\\S])";
-					} else {
-						out += "(?:\\b\\B)";
-					}
-				} else {
-					out += nativeOnly ? "\\z" : "(?![\\s\\S])";
-				}
-				i += 2;
-				continue;
-			}
-			if (next === "A" && !nativeOnly) {
-				out += "(?<![\\s\\S])";
-				i += 2;
-				continue;
-			}
-			out += ch + next;
-			i += 2;
-			continue;
-		}
-		if (ch === "[") {
-			const end = scanCharacterClass(pattern, i, nativeOnly);
-			out += pattern.slice(i, end);
-			i = end;
-			continue;
-		}
-		if (ch === "(") {
-			if (pattern.slice(i, i + 3) === "(?!" || pattern.slice(i, i + 4) === "(?<!") {
-				const prefix = pattern[i + 2] === "<" ? "(?<!" : "(?!";
-				stack.push({
-					m: top.m,
-					x: top.x,
-					isOuterNegativeLookaround: !inNegativeLookaround(),
-					outStartIndex: out.length,
-					hasEndOfText: false,
-				});
-				out += prefix;
-				i += prefix.length;
-				continue;
-			}
-			if (pattern.slice(i, i + 3) === "(?=" || pattern.slice(i, i + 4) === "(?<=") {
-				const prefix = pattern[i + 2] === "<" ? "(?<=" : "(?=";
-				stack.push({
-					m: top.m,
-					x: top.x,
-					isOuterNegativeLookaround: false,
-					outStartIndex: out.length,
-					hasEndOfText: false,
-				});
-				out += prefix;
-				i += prefix.length;
-				continue;
-			}
-			if (pattern[i + 1] === "?") {
-				const namedMatch = /^\(\?(?:P?<[^>]*>|'[^']*')/.exec(pattern.slice(i));
-				if (namedMatch) {
-					stack.push({
-						m: top.m,
-						x: top.x,
-						isOuterNegativeLookaround: false,
-						outStartIndex: out.length,
-						hasEndOfText: false,
-					});
-					out += namedMatch[0];
-					i += namedMatch[0].length;
-					continue;
-				}
-				const flagMatch = /^\(\?([imsUx-]+)([:)])/.exec(pattern.slice(i));
-				if (flagMatch) {
-					const nextM = applyInlineFlag(top.m, flagMatch[1]!, "m");
-					const nextX = applyInlineFlag(top.x, flagMatch[1]!, "x");
-					if (flagMatch[2] === ":") {
-						stack.push({
-							m: nextM,
-							x: nextX,
-							isOuterNegativeLookaround: false,
-							outStartIndex: out.length,
-							hasEndOfText: false,
-						});
-					} else {
-						top.m = nextM;
-						top.x = nextX;
-					}
-					out += flagMatch[0];
-					i += flagMatch[0].length;
-					continue;
-				}
-			}
-			stack.push({
-				m: top.m,
-				x: top.x,
-				isOuterNegativeLookaround: false,
-				outStartIndex: out.length,
-				hasEndOfText: false,
-			});
-			out += ch;
-			i++;
-			continue;
-		}
-		if (ch === ")") {
-			out += ch;
-			i++;
-			if (stack.length > 1) {
-				const popped = stack.pop()!;
-				if (windowCut && popped.isOuterNegativeLookaround && popped.hasEndOfText) {
-					out = `${out.slice(0, popped.outStartIndex)}(?:\\b\\B${out.slice(popped.outStartIndex)})`;
-				}
-			}
-			continue;
-		}
-		if (ch === "$") {
-			if (windowCut && !top.m) {
-				if (inNegativeLookaround()) {
-					markNegativeLookaroundEndOfText();
-					out += "$";
-				} else {
-					out += "(?:\\b\\B)";
-				}
-			} else {
-				out += "$";
-			}
-			i++;
-			continue;
-		}
-		out += ch;
-		i++;
-	}
-	return out;
 }
 
 function lineNumberAt(newlines: readonly number[], index: number): number {
@@ -1239,22 +996,49 @@ function lineNumberAt(newlines: readonly number[], index: number): number {
 	return low;
 }
 
-export function matchMultilineNative(
+function workerWindowPattern(pattern: string): string {
+	let out = "";
+	for (let i = 0; i < pattern.length; ) {
+		const ch = pattern[i]!;
+		if (ch === "\\" && i + 1 < pattern.length) {
+			const next = pattern[i + 1]!;
+			if (next === "Q") {
+				const endQuote = pattern.indexOf("\\E", i + 2);
+				const end = endQuote === -1 ? pattern.length : endQuote + 2;
+				out += pattern.slice(i, end);
+				i = end;
+				continue;
+			}
+			out += next === "A" ? "(?<![\\s\\S])" : next === "z" ? "(?![\\s\\S])" : ch + next;
+			i += 2;
+			continue;
+		}
+		if (ch === "[") {
+			const end = scanCharacterClass(pattern, i);
+			out += pattern.slice(i, end);
+			i = end;
+			continue;
+		}
+		out += ch;
+		i++;
+	}
+	return out;
+}
+
+function matchMultilineNative(
 	text: string,
 	firstEntryChars: number,
 	normalized: { readonly pattern: string; readonly flags: string },
 	ignoreCase: boolean,
 	maxCount: number,
-	windowCut = false,
 ): MultilineSpan[] {
 	const newlines: number[] = [];
 	for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) newlines.push(i);
 	const maxStartLine = lineNumberAt(newlines, Math.max(0, firstEntryChars - 1));
 	const multiline = normalized.flags.includes("m");
-	const pattern = rewriteMultilineWindowPattern(normalized.pattern, multiline, windowCut, true);
 	const flagPrefix = `(?${normalized.flags.includes("s") ? "s" : ""}${multiline ? "m" : "-m"})`;
 	const native = loadNativeSearchBinding()?.search?.(text.replaceAll("\0", "\ufffd"), {
-		pattern: `${flagPrefix}${pattern}`,
+		pattern: `${flagPrefix}${normalized.pattern}`,
 		ignoreCase,
 		multiline: true,
 		contextBefore: 0,
@@ -1271,6 +1055,44 @@ export function matchMultilineNative(
 		spans.push({ startLine, endLine: startLine + lineSpan });
 	}
 	return spans;
+}
+
+export interface MultilineWindow {
+	readonly text: string;
+	readonly lineCount: number;
+	readonly ownedFrom: number;
+	readonly ownedTo: number;
+	readonly cut: boolean;
+}
+
+export async function matchMultilineWindow(
+	window: MultilineWindow,
+	normalized: { readonly pattern: string; readonly flags: string },
+	ignoreCase: boolean,
+	literal: boolean,
+	engine: RegexEngine,
+	budget: HistoryCallBudget,
+): Promise<readonly MultilineSpan[] | "timedOut"> {
+	const text = window.cut ? `${window.text}\n${WINDOW_CUT_LINE}` : window.text;
+	let spans: readonly MultilineSpan[];
+	if (engine === "native-only") {
+		spans = matchMultilineNative(text, window.ownedTo, normalized, ignoreCase, window.lineCount + 1);
+	} else {
+		const res = await matchMultilineInWorker(
+			text,
+			window.ownedFrom,
+			window.ownedTo,
+			literal ? normalized.pattern : workerWindowPattern(normalized.pattern),
+			normalized.flags,
+			ignoreCase,
+			literal,
+			budget.remainingMs(),
+			budget.signal,
+		);
+		if (res.timedOut) return "timedOut";
+		spans = res.matches;
+	}
+	return spans.filter((span) => span.endLine < window.lineCount);
 }
 
 export interface SearchCheckpoint {
@@ -1887,44 +1709,20 @@ class SessionSearcher {
 			);
 			const ownedTo = ownedFrom + ownedLines.join("\n").length + 1;
 			const windowText = windowParts.flatMap((part) => part.lines).join("\n");
-			let matchedSpans: readonly MultilineSpan[];
-			if (this.engine === "native-only") {
-				matchedSpans = matchMultilineNative(
-					windowText,
-					ownedTo,
-					this.normalized,
-					this.ignoreCase,
-					totalLines + 1,
-					ahead.cut,
-				);
-			} else {
-				const windowPattern = request.literal
-					? this.normalized.pattern
-					: rewriteMultilineWindowPattern(
-							this.normalized.pattern,
-							this.normalized.flags.includes("m"),
-							ahead.cut,
-							false,
-						);
-				const res = await matchMultilineInWorker(
-					windowText,
-					ownedFrom,
-					ownedTo,
-					windowPattern,
-					this.normalized.flags,
-					this.ignoreCase,
-					request.literal,
-					budget.remainingMs(),
-					budget.signal,
-				);
-				if (res.timedOut) {
-					if (!this.emittedAny && sliceStart === startSlice && entry.seq === this.coveredFromSeq) {
-						const skipped = this.timeoutOnEntry(entry.seq);
-						if ("stop" in skipped) return skipped.stop;
-					}
-					return sliceStop("time");
+			const matchedSpans = await matchMultilineWindow(
+				{ text: windowText, lineCount: totalLines, ownedFrom, ownedTo, cut: ahead.cut },
+				this.normalized,
+				this.ignoreCase,
+				request.literal,
+				this.engine,
+				budget,
+			);
+			if (matchedSpans === "timedOut") {
+				if (!this.emittedAny && sliceStart === startSlice && entry.seq === this.coveredFromSeq) {
+					const skipped = this.timeoutOnEntry(entry.seq);
+					if ("stop" in skipped) return skipped.stop;
 				}
-				matchedSpans = res.matches;
+				return sliceStop("time");
 			}
 
 			const resolveGlobalLine = (globalLine: number): { seq: number; line: number } => {

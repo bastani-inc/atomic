@@ -336,6 +336,55 @@ describe("history:// continuations resume where a call stopped (#5250)", () => {
 		);
 	});
 
+	it("a session search resumed in one session does not take over the unfinished listing of a search resumed in another session at the same position (#5250)", async () => {
+		const store = await storeWith(3, (n) =>
+			Array.from({ length: 4 }, (_, index) => message(`e${n}-${index}`, `needle s${n} e${index + 1}`, BASE + n)),
+		);
+		const gates = new Gates();
+		let holding = true;
+		const listed = new Proxy(store, {
+			get(target, key) {
+				if (key === "list")
+					return (query: SessionListQuery) =>
+						(async function* () {
+							const snapshot: SessionSummary[] = [];
+							for await (const summary of target.list(query)) snapshot.push(summary);
+							for (const [index, summary] of snapshot.entries()) {
+								if (index === 1 && holding) await gates.next();
+								yield summary;
+							}
+						})();
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => listed,
+			workflows: () => undefined,
+			budget: { timeMs: STORE_WAIT_BUDGET_MS },
+		});
+		const stopped = (await router.search!("history://sessions?session=s2&cursor=3", request("needle"))) ?? "";
+		assert.match(
+			stopped,
+			/after scanning 1 sessions; continue with history:\/\/sessions\?session=s2&cursor=3\]$/m,
+			stopped,
+		);
+		await store.create(
+			{ id: "s9", version: SESSION_FORMAT_VERSION, createdAt: new Date(BASE + 600_000).toISOString(), cwd: PROJECT },
+			Array.from({ length: 4 }, (_, index) => message(`e9-${index}`, `needle s9 e${index + 1}`, BASE + 600_000)),
+		);
+		holding = false;
+		gates.openAll();
+		const other = (await router.search!("history://sessions?session=s9&cursor=3", request("needle"))) ?? "";
+		assert.doesNotMatch(other, /no longer listed/, other);
+		assert.deepEqual(
+			[...other.matchAll(/: (needle s9 e\d)$/gm)].map((match) => match[1]),
+			["needle s9 e3", "needle s9 e4"],
+			other,
+		);
+	});
+
 	it("a workflow search resumes a run whose details took longer than the time budget instead of skipping it (#5250)", async () => {
 		const gates = new Gates();
 		let waited = false;

@@ -29,7 +29,7 @@ import type {
 import type { SessionEntry } from "../session-manager-types.ts";
 import type { SessionRecordHeader, SessionStore, SessionSummary } from "../storage/session/types.js";
 import { indexLiterals, isMultilineSearchPattern, type LiteralQuery } from "./history-literals.js";
-import { type MultilineSpan, matchLinesInWorker, matchMultilineInWorker } from "./history-regex-worker.js";
+import { matchLinesInWorker } from "./history-regex-worker.js";
 import {
 	type BudgetStop,
 	cutTextToUtf8Bytes,
@@ -41,7 +41,7 @@ import {
 	lineBytes,
 	MATCH_SPAN_CHARS,
 	MULTILINE_WINDOW_NOTE,
-	matchMultilineNative,
+	matchMultilineWindow,
 	mergeSeqRanges,
 	oneLine,
 	outlineSession,
@@ -185,6 +185,14 @@ function closeDiscovery(discovery: ParkedDiscovery): void {
 }
 
 const parkedDiscoveries = new WeakMap<SessionStore, Map<string, ParkedDiscovery>>();
+
+interface ParkedRunListing {
+	readonly runs: Promise<readonly WorkflowRunSummary[]>;
+	readonly startedAt: number;
+	readonly timer: ReturnType<typeof setTimeout>;
+}
+
+const parkedRunListings = new WeakMap<WorkflowRunHistory, ParkedRunListing>();
 
 const HISTORY_URL = /^history:\/\/([^/?#]*)(?:\/([^?#]*))?(?:\?([^#]*))?$/;
 
@@ -1113,30 +1121,26 @@ async function searchRunLinesBounded(
 					last++;
 					aheadChars += lineAt(last).length + 1;
 				}
-				if (await ensureLine(last + 1)) onWindowCut();
+				const cut = await ensureLine(last + 1);
+				if (cut) onWindowCut();
 				const windowLines = sliceLines(first, last);
-				const text = windowLines.join("\n");
-				const ownedTo = leftChars + ownedChars;
-				let spans: readonly MultilineSpan[];
-				if (engine === "native-only") {
-					spans = matchMultilineNative(text, ownedTo, normalized, ignoreCase, windowLines.length + 1);
-				} else {
-					const res = await matchMultilineInWorker(
-						text,
-						leftChars,
-						ownedTo,
-						normalized.pattern,
-						normalized.flags,
-						ignoreCase,
-						request.literal,
-						budget.remainingMs(),
-						budget.signal,
-					);
-					if (res.timedOut) {
-						const resumeLine = pendingSpans[0]?.start ?? sliceStart;
-						return stopWith("time", formatStageZeroCursor(resumeLine, emittedThrough));
-					}
-					spans = res.matches;
+				const spans = await matchMultilineWindow(
+					{
+						text: windowLines.join("\n"),
+						lineCount: windowLines.length,
+						ownedFrom: leftChars,
+						ownedTo: leftChars + ownedChars,
+						cut,
+					},
+					normalized,
+					ignoreCase,
+					request.literal,
+					engine,
+					budget,
+				);
+				if (spans === "timedOut") {
+					const resumeLine = pendingSpans[0]?.start ?? sliceStart;
+					return stopWith("time", formatStageZeroCursor(resumeLine, emittedThrough));
 				}
 				for (const span of spans) {
 					const startLine = first + span.startLine;
@@ -1329,7 +1333,28 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 
 	async function recentRuns(budget: HistoryCallBudget): Promise<WorkflowRunSummary[]> {
 		const control = requireWorkflows();
-		const runs = await budget.race(control.listProjectRuns?.() ?? control.listRuns({ includeDurable: true }));
+		const parked = parkedRunListings.get(control);
+		if (parked) {
+			clearTimeout(parked.timer);
+			parkedRunListings.delete(control);
+		}
+		const listing = parked?.runs ?? control.listProjectRuns?.() ?? control.listRuns({ includeDurable: true });
+		const startedAt = parked?.startedAt ?? performance.now();
+		let runs: readonly WorkflowRunSummary[];
+		try {
+			runs = await budget.race(listing);
+		} catch (error) {
+			const current = parkedRunListings.get(control);
+			if (isHistoryDeadlineError(error) && (current === undefined || current.startedAt > startedAt)) {
+				clearTimeout(current?.timer);
+				const timer = setTimeout(() => {
+					if (parkedRunListings.get(control)?.runs === listing) parkedRunListings.delete(control);
+				}, DISCOVERY_TTL_MS);
+				timer.unref?.();
+				parkedRunListings.set(control, { runs: listing, startedAt, timer });
+			}
+			throw error;
+		}
 		return [...runs].sort((a, b) => b.startedAt - a.startedAt);
 	}
 
@@ -1757,6 +1782,26 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				),
 				` at entry ${next.seq}${totalText(lastSeq)} in ${sessionUrl(id, target)}${clause}`,
 			);
+		const nextSessionFooter = (index: number, reason: BudgetStop, unreadableAfter: number): string =>
+			stoppedCoverage(
+				"sessions",
+				"sessions",
+				scope,
+				candidates.length,
+				index + 1,
+				unreadableAfter,
+				reason,
+				pageUrl(
+					"sessions",
+					scope,
+					scope.offset + index + 1,
+					undefined,
+					request.ranges,
+					undefined,
+					positionOf(index),
+				),
+				"",
+			);
 		const afterFooter = (index: number, reason: BudgetStop, unreadableAfter: number): string[] =>
 			index + 1 >= window.length
 				? coverage(
@@ -1769,27 +1814,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 						undefined,
 						window.length === 0 ? after : positionOf(window.length - 1),
 					)
-				: [
-						stoppedCoverage(
-							"sessions",
-							"sessions",
-							scope,
-							candidates.length,
-							index + 1,
-							unreadableAfter,
-							reason,
-							pageUrl(
-								"sessions",
-								scope,
-								scope.offset + index + 1,
-								undefined,
-								request.ranges,
-								undefined,
-								positionOf(index),
-							),
-							"",
-						),
-					];
+				: [nextSessionFooter(index, reason, unreadableAfter)];
 		const pastEnd = (next: SearchResume, lastSeq: number) =>
 			(next.lineOffset ?? 0) === 0 &&
 			next.matchIndex === 0 &&
@@ -1891,6 +1916,14 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			return [...notes, ...(windowCut ? [windowNoteLine] : [])];
 		}
 		const windowNoteLine = `${pageUrl("sessions", scope, scope.offset)}:0: [${MULTILINE_WINDOW_NOTE}]`;
+		const checkpointFooter = (session: (typeof searched)[number], next: SearchResume, cut = false): string[] => {
+			const lastSeq = session.result?.lastSeq ?? 0;
+			if (!pastEnd(next, lastSeq))
+				return [stopFooter(session.index, session.summary.id, next, lastSeq, "byte", session.unreadable)];
+			return cut
+				? [nextSessionFooter(session.index, "byte", session.unreadable)]
+				: afterFooter(session.index, "byte", session.unreadable);
+		};
 		return (room: number): string[] => {
 			const page = (footer: readonly string[], rows: readonly string[]) => [...footer, ...fixedLines(), ...rows];
 			const fits = (lines: readonly string[]) => linesBytes(lines) - 1 <= room;
@@ -1908,16 +1941,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				}
 				for (const checkpoint of [...(result?.checkpoints ?? [])].reverse()) {
 					const trimmed = page(
-						[
-							stopFooter(
-								session.index,
-								session.summary.id,
-								checkpoint.next,
-								result!.lastSeq,
-								"byte",
-								session.unreadable,
-							),
-						],
+						checkpointFooter(session, checkpoint.next),
 						out.slice(0, session.start + checkpoint.lines),
 					);
 					if (fits(trimmed)) return trimmed;
@@ -1926,9 +1950,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			const first = searched.find((session) => (session.result?.checkpoints.length ?? 0) > 0);
 			const checkpoint = first?.result?.checkpoints[0];
 			if (first === undefined || checkpoint === undefined) return natural;
-			const footer = [
-				stopFooter(first.index, first.summary.id, checkpoint.next, first.result!.lastSeq, "byte", first.unreadable),
-			];
+			const footer = checkpointFooter(first, checkpoint.next, true);
 			const row = out[first.start + checkpoint.match]!;
 			const textStart = row.indexOf(": ", sessionUrl(first.summary.id, target).length) + 2;
 			const roomForRow = room - linesBytes([...footer, ...fixedLines()]);
@@ -2289,7 +2311,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			)
 				throw sessions.reason;
 			// Line 0 carries notes about the search itself, so a source that failed is named even beside matches.
-			const results = (domain: Domain, label: string, settled: PromiseSettledResult<unknown>): string[] => {
+			const results = (
+				domain: Domain,
+				label: string,
+				settled: PromiseSettledResult<string[] | ((room: number) => string[])>,
+			): string[] => {
 				if (isHistoryDeadlineError(settled.status === "rejected" ? settled.reason : undefined)) {
 					const cursor = target.cursor === undefined ? undefined : cursorText(target.cursor);
 					return [

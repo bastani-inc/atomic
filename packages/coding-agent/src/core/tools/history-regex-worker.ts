@@ -470,10 +470,6 @@ export async function matchMultilineInWorker(
 	return { matches: result.value.matches, timedOut: false };
 }
 
-/**
- * Parse and render a raw JSON entry in the worker thread.
- * Whole-buffer `ArrayBuffer`s backing `rawChunks` are transferred to the worker and detached in the caller.
- */
 export async function renderRawEntryInWorker(
 	rawChunks: readonly Uint8Array[],
 	previewChars: number,

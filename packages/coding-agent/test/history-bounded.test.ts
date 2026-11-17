@@ -2624,11 +2624,17 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 					return typeof value === "function" ? value.bind(target) : value;
 				},
 			});
-			const halfBudgetOut =
-				(await historyOver(halfBudgetStore, { timeMs: 100 }).router.read!(
+			for (const timeMs of [100, 1_000]) {
+				const halfBudgetOut =
+					(await historyOver(halfBudgetStore, { timeMs }).router.read!(
+						"history://sessions/long-turn?cursor=33.0.0.1",
+					)) ?? "";
+				assert.notEqual(
+					continuation(halfBudgetOut),
 					"history://sessions/long-turn?cursor=33.0.0.1",
-				)) ?? "";
-			assert.notEqual(continuation(halfBudgetOut), "history://sessions/long-turn?cursor=33.0.0.1", halfBudgetOut);
+					`${timeMs} ms: ${halfBudgetOut}`,
+				);
+			}
 		} finally {
 			await store.close();
 		}

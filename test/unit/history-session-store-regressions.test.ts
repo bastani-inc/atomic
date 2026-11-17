@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { appendFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
-import { appendFile, mkdtemp, open, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { appendFile, type FileHandle, mkdtemp, open, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setFlagsFromString } from "node:v8";
@@ -52,16 +52,34 @@ function liveArrayBuffers(): number {
 	return process.memoryUsage().arrayBuffers;
 }
 
+type FileHandleRead = (
+	this: FileHandle,
+	buffer: Buffer,
+	offset: number,
+	length: number,
+	position: number | null,
+) => Promise<{ bytesRead: number; buffer: Buffer }>;
+
+interface FileHandlePrototype {
+	read: FileHandleRead;
+}
+
 async function arrayBufferGrowth<T>(path: string, body: () => Promise<T>): Promise<{ result: T; growth: number }> {
 	const handle = await open(path, "r");
-	const prototype = Object.getPrototypeOf(handle) as { read: (...args: unknown[]) => Promise<unknown> };
+	const prototype = Object.getPrototypeOf(handle) as FileHandlePrototype;
 	await handle.close();
 	const read = prototype.read;
 	const baseline = liveArrayBuffers();
 	let peak = baseline;
-	prototype.read = function (this: unknown, ...args: unknown[]) {
+	prototype.read = function (
+		this: FileHandle,
+		buffer: Buffer,
+		offset: number,
+		length: number,
+		position: number | null,
+	) {
 		peak = Math.max(peak, process.memoryUsage().arrayBuffers);
-		return read.apply(this, args);
+		return read.call(this, buffer, offset, length, position);
 	};
 	try {
 		const result = await body();
@@ -77,14 +95,20 @@ async function fileReads<T>(
 	body: () => Promise<T>,
 ): Promise<{ result: T; calls: number; bytes: number }> {
 	const handle = await open(path, "r");
-	const prototype = Object.getPrototypeOf(handle) as { read: (...args: unknown[]) => Promise<{ bytesRead: number }> };
+	const prototype = Object.getPrototypeOf(handle) as FileHandlePrototype;
 	await handle.close();
 	const read = prototype.read;
 	let calls = 0;
 	let bytes = 0;
-	prototype.read = async function (this: unknown, ...args: unknown[]) {
+	prototype.read = async function (
+		this: FileHandle,
+		buffer: Buffer,
+		offset: number,
+		length: number,
+		position: number | null,
+	) {
 		calls++;
-		const done = await read.apply(this, args);
+		const done = await read.call(this, buffer, offset, length, position);
 		bytes += done.bytesRead;
 		return done;
 	};
@@ -127,21 +151,27 @@ function countedHistoryFiles(): { readonly files: SessionHistoryFiles; readonly 
 
 async function trackedReads<T>(
 	path: string,
-	observe: (length: number) => void,
+	observe: (length: number, position: number | null) => void,
 	body: () => Promise<T>,
 ): Promise<{ result: T; maxInFlight: number }> {
 	const handle = await open(path, "r");
-	const prototype = Object.getPrototypeOf(handle) as { read: (...args: unknown[]) => Promise<{ bytesRead: number }> };
+	const prototype = Object.getPrototypeOf(handle) as FileHandlePrototype;
 	await handle.close();
 	const read = prototype.read;
 	let inFlight = 0;
 	let maxInFlight = 0;
-	prototype.read = async function (this: unknown, ...args: unknown[]) {
+	prototype.read = async function (
+		this: FileHandle,
+		buffer: Buffer,
+		offset: number,
+		length: number,
+		position: number | null,
+	) {
 		inFlight++;
 		maxInFlight = Math.max(maxInFlight, inFlight);
-		observe(Number(args[2]));
+		observe(length, position);
 		try {
-			return await read.apply(this, args);
+			return await read.call(this, buffer, offset, length, position);
 		} finally {
 			inFlight--;
 		}
@@ -336,6 +366,27 @@ describe("bounded session reads (#5250)", () => {
 					"e000550",
 				);
 				const rewritten = [...entries.slice(0, 255), ...mergedFirstTwo(entries.slice(255), (id) => id)];
+				await writeFile(path, fileText([...rewritten, info("grown")]));
+				const page = await store.readEntryRange("s", { fromSeq: 551, toSeq: 551 });
+				assert.deepEqual(
+					page.entries.map((item) => [item.seq, item.entry.id]),
+					[[551, "e000552"]],
+				);
+			});
+		});
+	});
+
+	it("does not serve a JSONL range from a stale index after an in-place edit of an unmarked line plus an append (#5250)", async () => {
+		await withDirectory(async (directory) => {
+			const path = join(directory, "s.jsonl");
+			const entries = numbered("e", 600);
+			await writeFile(path, fileText(entries));
+			await withJsonl(directory, async (store) => {
+				assert.equal(
+					(await store.readEntryRange("s", { fromSeq: 550, toSeq: 550 })).entries[0]?.entry.id,
+					"e000550",
+				);
+				const rewritten = [...entries.slice(0, 548), ...mergedFirstTwo(entries.slice(548), (id) => id)];
 				await writeFile(path, fileText([...rewritten, info("grown")]));
 				const page = await store.readEntryRange("s", { fromSeq: 551, toSeq: 551 });
 				assert.deepEqual(
@@ -987,6 +1038,72 @@ describe("bounded session reads (#5250)", () => {
 		});
 	});
 
+	it("adopts cached session end state and post-read growth stamps so reading newest entries right after an append stays bounded (#5250)", async () => {
+		await withDirectory(async (directory) => {
+			const path = join(directory, "s.jsonl");
+			const base = numbered("e", 20_000);
+			await writeFile(path, fileText(base));
+			await withJsonl(directory, async (store) => {
+				await store.append("s", [info("own")], { expectSeq: 20_000 });
+				const seeded = await fileReads(path, () => store.readEntryRange("s", { fromSeq: 1, toSeq: 1 }));
+				assert.equal(seeded.result.lastSeq, 20_001);
+				assert.equal(seeded.calls, 3);
+				appendFileSync(path, `${JSON.stringify(info("after-own"))}\n`);
+				let appendedDuringRead = false;
+				const newest = await fileReads(path, () =>
+					store.readEntryRange("s", {
+						toSeq: 20_002,
+						get fromSeq(): number {
+							if (!appendedDuringRead) {
+								appendedDuringRead = true;
+								appendFileSync(path, `${JSON.stringify(info("during-read"))}\n`);
+							}
+							return 20_002;
+						},
+					}),
+				);
+				assert.deepEqual(
+					newest.result.entries.map((item) => [item.seq, item.entry.id]),
+					[[20_002, "after-own"]],
+				);
+				assert.ok(newest.bytes < 128 * 1024, `read ${newest.bytes} bytes`);
+				const afterConcurrentAppend = await fileReads(path, () =>
+					store.readEntryRange("s", { fromSeq: 20_003, toSeq: 20_003 }),
+				);
+				assert.deepEqual(
+					afterConcurrentAppend.result.entries.map((item) => [item.seq, item.entry.id]),
+					[[20_003, "during-read"]],
+				);
+				assert.equal(afterConcurrentAppend.calls, 5);
+				assert.ok(afterConcurrentAppend.bytes < 128 * 1024, `read ${afterConcurrentAppend.bytes} bytes`);
+			});
+			await writeFile(path, fileText(base));
+			await withJsonl(directory, async (store) => {
+				let appended = false;
+				await store.readEntryRange("s", {
+					toSeq: 552,
+					get fromSeq(): number {
+						if (!appended) {
+							appended = true;
+							appendFileSync(path, `${JSON.stringify(info("during"))}\n`);
+						}
+						return 551;
+					},
+				});
+				const before = await stat(path);
+				const rewritten = [...base.slice(0, 2), ...mergedFirstTwo(base.slice(2), (id) => id), info("during")];
+				await writeFile(path, fileText(rewritten));
+				assert.equal((await stat(path)).size, before.size);
+				await utimes(path, before.atime, new Date(before.mtimeMs + 5000));
+				const page = await store.readEntryRange("s", { fromSeq: 551, toSeq: 551 });
+				assert.deepEqual(
+					page.entries.map((item) => [item.seq, item.entry.id]),
+					[[551, "e000552"]],
+				);
+			});
+		});
+	});
+
 	it("skips an oversized released memory-store entry by its type without reading it whole (#5250)", async () => {
 		const { files, bytesRead } = countedHistoryFiles();
 		const store = new MemorySessionStore(undefined, files);
@@ -1095,6 +1212,74 @@ describe("bounded session reads (#5250)", () => {
 				);
 				assert.ok(bytes < 512 * 1024, `read ${bytes} bytes after the aborted read`);
 			});
+		});
+	});
+
+	it("retries a JSONL range read when the file is truncated while re-reading or validating a >1 MiB line (#5250)", async () => {
+		const data = "y".repeat(2 * 1024 * 1024);
+		const typeLast = `{"id":"type-last","parentId":null,"timestamp":"${createdAt}","customType":"snap","data":"${data}","type":"custom"}`;
+		const longer = `{"id":"replaced","parentId":null,"timestamp":"${createdAt}","customType":"snap","data":"${"z".repeat(2 * 1024 * 1024 + 1024)}","type":"custom"}`;
+		const prefix = [...numbered("e", 300), info("keep")];
+		const truncatedText = fileText(prefix);
+		const regrownText = `${truncatedText}${longer}\n`;
+		await withDirectory(async (directory) => {
+			const path = join(directory, "s.jsonl");
+			for (const mode of ["terminated-reread", "unterminated-validator", "unterminated-reread"] as const) {
+				const initial = `${truncatedText}${typeLast}${mode === "terminated-reread" ? "\n" : ""}`;
+				await writeFile(path, initial);
+				const lineOffset = Buffer.byteLength(truncatedText);
+				await withJsonl(directory, async (store) => {
+					await store.readEntryRange("s", { fromSeq: 1, toSeq: 301 });
+					let truncated = false;
+					let readsAtLine = 0;
+					const handle = await open(path, "r");
+					const prototype = Object.getPrototypeOf(handle) as FileHandlePrototype;
+					await handle.close();
+					const read = prototype.read;
+					prototype.read = async function (
+						this: FileHandle,
+						buffer: Buffer,
+						offset: number,
+						length: number,
+						position: number | null,
+					) {
+						const trigger =
+							!truncated &&
+							(mode !== "unterminated-validator"
+								? length > 64 * 1024
+								: position === lineOffset && ++readsAtLine === 2);
+						if (trigger) {
+							truncated = true;
+							writeFileSync(path, truncatedText);
+						}
+						try {
+							return await read.call(this, buffer, offset, length, position);
+						} finally {
+							if (trigger) writeFileSync(path, regrownText);
+						}
+					};
+					try {
+						const page = await store.readEntryRange("s", {
+							fromSeq: 302,
+							toSeq: 302,
+							skipTypes: ["session_info"],
+							largeEntryBytes: 1024,
+						});
+						assert.ok(truncated, mode);
+						assert.equal(page.lastSeq, 302, mode);
+						assert.deepEqual(
+							page.entries.map((item) => [
+								item.seq,
+								item.rawChunks === undefined ? item.entry.id : Buffer.concat(item.rawChunks).toString("utf8"),
+							]),
+							[[302, longer]],
+							mode,
+						);
+					} finally {
+						prototype.read = read;
+					}
+				});
+			}
 		});
 	});
 });

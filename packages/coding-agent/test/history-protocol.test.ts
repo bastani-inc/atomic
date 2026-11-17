@@ -836,3 +836,188 @@ describe("history:// in a session whose own transcript is kept apart from the pr
 		assertIncludes(await read("history://workflows/run-new"), "transcript history://sessions/stage-session");
 	});
 });
+
+describe("history:// outlines of long sessions keep every turn across continuations (#5250)", () => {
+	const OUTLINE_ENTRIES = 2_100;
+	const TURN_SEQS = [1, 400, 800, 1_200, 1_600, 2_000, OUTLINE_ENTRIES];
+
+	async function outlineStore(id: string): Promise<MemorySessionStore> {
+		const store = new MemorySessionStore();
+		const turns = new Set(TURN_SEQS);
+		await store.create(
+			header(id, PROJECT, BASE),
+			Array.from({ length: OUTLINE_ENTRIES }, (_, index) => {
+				const seq = index + 1;
+				const role = turns.has(seq) ? "user" : "assistant";
+				return entry(
+					`e${seq}`,
+					`${role === "user" ? `turn ${seq}` : `reply ${seq}`} ${"w".repeat(60)}`,
+					BASE + seq,
+					role,
+				);
+			}),
+		);
+		return store;
+	}
+
+	function outlineRouter(store: SessionStore, bytes?: number, timeMs?: number) {
+		return createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => store,
+			workflows: () => undefined,
+			budget: { ...(bytes === undefined ? {} : { bytes }), ...(timeMs === undefined ? {} : { timeMs }) },
+		});
+	}
+
+	function nextUrl(page: string): string | undefined {
+		return /continue with (history:\/\/\S+?)\]$/m.exec(page)?.[1];
+	}
+
+	it("lists a turn that does not fit at the end of the session on the next page, with its entries counted once (#5250)", async () => {
+		const id = "outline-end";
+		const store = await outlineStore(id);
+		try {
+			const failures: string[] = [];
+			let endStops = 0;
+			for (let bytes = 500; bytes <= 1_400; bytes += 20) {
+				const router = outlineRouter(store, bytes);
+				const listed: number[] = [];
+				let counted = 0;
+				let url: string | undefined = `history://sessions/${id}`;
+				let pages = 0;
+				for (; url !== undefined && pages < 40; pages++) {
+					const page: string = String((await router.read?.(url)) ?? "");
+					for (const match of page.matchAll(new RegExp(`^history://sessions/${id}:(\\d+)-\\d+ \\| `, "gm")))
+						listed.push(Number(match[1]));
+					for (const match of page.matchAll(/^entries (\d+)-(\d+): (.*)$/gm)) {
+						const kinds = [...match[3]!.matchAll(/(\d+) [a-z]/g)].reduce((sum, kind) => sum + Number(kind[1]), 0);
+						if (kinds !== Number(match[2]) - Number(match[1]) + 1) failures.push(`${bytes}: ${match[0]}`);
+						counted += kinds;
+					}
+					const next = nextUrl(page);
+					if (
+						next !== undefined &&
+						page.includes(`; the byte budget ran out`) &&
+						!page.includes(`:${OUTLINE_ENTRIES}-`)
+					) {
+						if (next.endsWith(`?cursor=${OUTLINE_ENTRIES}`)) endStops++;
+					}
+					url = next;
+				}
+				if (url !== undefined) failures.push(`${bytes}: no end after ${pages} pages`);
+				if (listed.join(",") !== TURN_SEQS.join(","))
+					failures.push(`${bytes}: listed ${listed.join(",")} instead of ${TURN_SEQS.join(",")}`);
+				if (counted !== OUTLINE_ENTRIES) failures.push(`${bytes}: counted ${counted} entries`);
+			}
+			assert.deepEqual(failures, []);
+			assert.ok(endStops > 0, "no byte budget stopped at the last turn of the session");
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("keeps the open turn of an outline continuation when its first page read runs out of time (#5250)", async () => {
+		const id = "outline-stall";
+		const store = await outlineStore(id);
+		try {
+			let stalled = 0;
+			const stalling: SessionStore = new Proxy(store, {
+				get(target, key) {
+					if (key === "readEntryRange")
+						return (sessionId: string, query: SessionEntriesQuery) => {
+							if (query.fromSeq === 900) {
+								stalled++;
+								return new Promise<never>(() => {});
+							}
+							return target.readEntryRange(sessionId, query);
+						};
+					const value = Reflect.get(target, key, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const page = String(
+				(await outlineRouter(stalling, undefined, 25).read?.(`history://sessions/${id}?cursor=900.0.0.800`)) ?? "",
+			);
+			assert.equal(stalled, 1, page);
+			assert.equal(nextUrl(page), `history://sessions/${id}?cursor=900.0.0.800`, page);
+			const resumed = String((await outlineRouter(store).read?.(nextUrl(page)!)) ?? "");
+			assert.match(resumed, new RegExp(`^history://sessions/${id}:800-1199 \\| [^|]+ \\| user: turn 800 `, "m"));
+		} finally {
+			await store.close();
+		}
+	});
+});
+
+describe("history:// session searches cut to fit their byte budget lose no match (#5250)", () => {
+	const SWEEP_PAD = "p".repeat(90);
+
+	function hitLines(seq: number, hits: readonly number[], lineCount: number): string {
+		const wanted = new Set(hits);
+		return Array.from({ length: lineCount }, (_, line) =>
+			wanted.has(line) ? `hit ${seq}.${line} ${SWEEP_PAD}` : `${"f".repeat(96)} ${line}`,
+		).join("\n");
+	}
+
+	async function sweepStore(): Promise<MemorySessionStore> {
+		const store = new MemorySessionStore();
+		const entries: SessionEntry[] = [];
+		for (let seq = 1; seq <= 5; seq++) entries.push(entry(`m${seq}`, hitLines(seq, [0, 2, 3], 5), BASE + seq));
+		entries.push(entry("m6", hitLines(6, [1, 2, 640, 641, 1290, 1291], 1_300), BASE + 6));
+		entries.push(entry("m7", hitLines(7, [0, 1], 2), BASE + 7));
+		await store.create(header("sweep", PROJECT, BASE), entries);
+		await store.create(header("sweep-other", PROJECT, BASE - DAY), [entry("o1", "nothing here", BASE - DAY)]);
+		return store;
+	}
+
+	async function shownHits(store: SessionStore, pattern: string, bytes?: number): Promise<string[]> {
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => store,
+			workflows: () => undefined,
+			...(bytes === undefined ? {} : { budget: { bytes } }),
+		});
+		const hits = new Set<string>();
+		const queue = ["history://sessions"];
+		const seen = new Set<string>();
+		for (let calls = 0; queue.length > 0; calls++) {
+			if (calls > 300) throw new Error(`${bytes} bytes: no end after ${calls} calls`);
+			const url = queue.shift()!;
+			if (seen.has(url)) continue;
+			seen.add(url);
+			const out =
+				(await router.search?.(url, {
+					pattern,
+					ignoreCase: false,
+					literal: false,
+					contextBefore: 0,
+					contextAfter: 0,
+				})) ?? "";
+			for (const match of out.matchAll(/^history:\/\/sessions\/sweep:(\d+): hit (\d+\.\d+) /gm)) {
+				assert.equal(match[1], match[2]!.split(".")[0], `${bytes} bytes: ${match[0]}`);
+				hits.add(match[2]!);
+			}
+			for (const match of out.matchAll(/(?:continue with|; search) (history:\/\/\S+?)(?:\]| for them\])/g))
+				queue.push(match[1]!);
+		}
+		return [...hits].sort();
+	}
+
+	it("resumes a trimmed page at the next match of the same entry or entry slice (#5250)", async () => {
+		const store = await sweepStore();
+		try {
+			for (const pattern of ["hit \\d+\\.\\d+", "(?s)hit \\d+\\.\\d+"]) {
+				const expected = await shownHits(store, pattern);
+				assert.equal(expected.length, 23, `${pattern}: ${expected.join(",")}`);
+				const failures: string[] = [];
+				for (let bytes = 700; bytes <= 1_700; bytes += 9) {
+					const shown = await shownHits(store, pattern, bytes);
+					const lost = expected.filter((hit) => !shown.includes(hit));
+					if (lost.length > 0) failures.push(`${pattern} at ${bytes} bytes lost ${lost.join(",")}`);
+				}
+				assert.deepEqual(failures, []);
+			}
+		} finally {
+			await store.close();
+		}
+	});
+});
