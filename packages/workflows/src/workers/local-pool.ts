@@ -1925,7 +1925,7 @@ export class LocalWorkerPool {
 	close(): Promise<void> {
 		const closing = this.shutdown();
 		this.releaseBinding();
-		return closing.then(() => this.coordinator?.closed?.());
+		return closing.finally(() => this.coordinator?.closed?.());
 	}
 	/**
 	 * Stops the pool but keeps it bound to its root. A child the root starts afterwards then fails with the pool's
