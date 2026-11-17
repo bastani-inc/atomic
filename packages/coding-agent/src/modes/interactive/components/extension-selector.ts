@@ -37,6 +37,7 @@ export class ExtensionSelectorComponent extends FramedSelector<string> {
 			items: options.map((option, index) => ({ id: String(index), value: option, label: option })),
 			extraKeys,
 			numbered: opts?.numbered,
+			wrap: true,
 			initialId: initialIndex === undefined ? undefined : String(initialIndex),
 			onSelect: (item) => onSelect(item.value),
 			onCancel,
