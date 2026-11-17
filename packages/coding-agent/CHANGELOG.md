@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- A subagent's or workflow stage's question no longer opens in the main chat as if the main chat had asked it. Every child session was handed its parent chat's own dialogs as its input, so a subagent's `ask_user_question` and confirmations, a stage's permission and other extension prompts, and the questions of a stage's subagents opened in the parent's chat, blocked its prompt and were answered there. A child now keeps only an SDK host's `humanInput`, which is told which session asks, and never its parent's chat
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
 
 ## [0.9.88] - 2026-11-16

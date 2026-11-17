@@ -260,9 +260,14 @@ export class ExtensionRunner {
 	getWorkflowActivitySnapshot(): WorkflowActivitySnapshotFrame {
 		return this.runtime.workflowActivityHub.getSnapshotFrame();
 	}
+	/**
+	 * The host bindings a child session (a subagent, a workflow stage) or a replacement session inherits: the host's own
+	 * `humanInput` adapter, which is told the asking session's id with each request, and never this session's
+	 * presentation. This session's chat answers only its own prompts; a child's prompts stay with the child.
+	 */
 	getChildHostBindings(): import("../agent-session-types.js").ExtensionBindings {
 		return {
-			humanInput: this.humanInput === undefined ? this.presentationInput : this.humanInput,
+			humanInput: this.humanInput,
 			onDiagnostic: this.onDiagnostic,
 		};
 	}
