@@ -3,7 +3,8 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { processCreationTime } from "@bastani/atomic-natives";
 import { afterEach, onTestFinished, test, vi } from "vitest";
-import { keepProcessPid, keepProcessPidByStartTime } from "../helpers/exited-process.js";
+import { exitedProcess, keepProcessPid, keepProcessPidByStartTime } from "../helpers/exited-process.js";
+import { bunExecutable } from "../helpers/runtime.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const original = await importOriginal<typeof import("node:child_process")>();
@@ -150,5 +151,17 @@ test("refuses a child killed before the holder answers and closes that holder (#
 			(release) => release(),
 			() => {},
 		);
+	}
+});
+
+test("exited holders use the configured Bun executable without a PATH entry (#5331)", () => {
+	const executable = bunExecutable();
+	vi.stubEnv("ATOMIC_BUN_EXECUTABLE", executable);
+	vi.stubEnv("PATH", "");
+	try {
+		const holder = exitedProcess();
+		assert.ok(Number.isInteger(holder.pid) && holder.pid > 0);
+	} finally {
+		vi.unstubAllEnvs();
 	}
 });

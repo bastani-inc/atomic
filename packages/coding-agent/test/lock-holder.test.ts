@@ -118,7 +118,6 @@ describe("taking over the lock of a dead holder (#5161)", () => {
 
 	it("takes over a lock whose exited holder recorded no start (#5161)", async () => {
 		mkdirSync(lockPath);
-		// Without a start, a later process given the holder's pid could not be told from it, so none is given it meanwhile.
 		const exited = await keptExitedPid();
 		try {
 			writeRecord({ host: hostname(), pid: exited.pid, lock: lockHolder(lockPath) });

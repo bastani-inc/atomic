@@ -119,9 +119,25 @@ test.each([true, false])(
 test(
 	"suspending a process that does not exist rejects (#4313)",
 	async () => {
+		const unassignedPid = process.platform === "win32" ? 0xffff_fffc : 0x7fff_ffff;
 		const suspender = await createProcessSuspender();
 		try {
-			// A later process given the pid would be suspended, whatever it is, so none is given it.
+			await assert.rejects(
+				suspender.suspend(unassignedPid),
+				process.platform === "win32" ? /OpenProcess failed/ : { code: "ESRCH" },
+			);
+		} finally {
+			await suspender.close();
+		}
+	},
+	CONTROLLER_AND_CHILD_TIMEOUT_MS,
+);
+
+test(
+	"suspending an exited process whose pid cannot be reused rejects (#4313)",
+	async () => {
+		const suspender = await createProcessSuspender();
+		try {
 			const exited = await keptExitedPid();
 			try {
 				await assert.rejects(suspender.suspend(exited.pid));
