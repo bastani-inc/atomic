@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as nodeResolvePath, posix, relative, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnProcessSync } from "./child-process.ts";
+import { spawnProcess, waitForChildProcess } from "./child-process.ts";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
@@ -28,7 +28,12 @@ export function getHomeDir(): string {
 	return process.env.HOME || process.env.USERPROFILE || homedir();
 }
 
-export { canonicalizePath, createSessionCwdMatcher } from "./canonical-path.ts";
+export {
+	canonicalizePath,
+	canonicalizePathAsync,
+	createSessionCwdMatcher,
+	createSessionCwdMatcherAsync,
+} from "./canonical-path.ts";
 
 /**
  * Returns true if the value is NOT a package source (npm:, git:, etc.)
@@ -152,7 +157,7 @@ export function shortenHomePath(path: string, homeDir: string = homedir()): stri
 	return relativePath ? `~${pathApi.sep}${relativePath}` : "~";
 }
 
-export function markPathIgnoredByCloudSync(path: string): void {
+export async function markPathIgnoredByCloudSync(path: string): Promise<void> {
 	const attrs =
 		process.platform === "darwin"
 			? ["com.dropbox.ignored", "com.apple.fileprovider.ignore#P"]
@@ -161,10 +166,15 @@ export function markPathIgnoredByCloudSync(path: string): void {
 				: [];
 
 	for (const attr of attrs) {
-		if (process.platform === "darwin") {
-			spawnProcessSync("xattr", ["-w", attr, "1", path], { encoding: "utf-8", stdio: "ignore" });
-		} else {
-			spawnProcessSync("setfattr", ["-n", attr, "-v", "1", path], { encoding: "utf-8", stdio: "ignore" });
+		const [command, args] =
+			process.platform === "darwin"
+				? ["xattr", ["-w", attr, "1", path]]
+				: ["setfattr", ["-n", attr, "-v", "1", path]];
+		try {
+			const child = spawnProcess(command, args, { stdio: "ignore" });
+			await waitForChildProcess(child);
+		} catch {
+			// Best-effort attribute setting when xattr/setfattr is unavailable.
 		}
 	}
 }
