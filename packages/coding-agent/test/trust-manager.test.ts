@@ -1,9 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	getProjectTrustOptions,
+	getProjectTrustOptionsAsync,
 	getProjectTrustPath,
+	getProjectTrustPathAsync,
 	hasProjectConfigDir,
 	hasProjectTrustInputs,
 	hasTrustRequiringProjectResources,
@@ -149,6 +152,25 @@ describe("ProjectTrustStore", () => {
 		writeFileSync(trustPath, `\uFEFF${JSON.stringify({ [getProjectTrustPath(cwd)]: true })}`);
 
 		expect(new ProjectTrustStore(agentDir).get(cwd)).toBe(true);
+	});
+
+	it("offers and saves a project reached through a link under its real path, asynchronously as synchronously", async () => {
+		const root = createTempProject();
+		const agentDir = join(root, "agent");
+		const project = join(root, "project");
+		const link = join(root, "link");
+		mkdirSync(agentDir);
+		mkdirSync(project);
+		symlinkSync(project, link, "junction");
+		const realProject = realpathSync(project);
+
+		expect(await getProjectTrustPathAsync(link)).toBe(realProject);
+		expect(getProjectTrustPath(link)).toBe(realProject);
+		expect(await getProjectTrustOptionsAsync(link, { includeSessionOnly: true })).toEqual(
+			getProjectTrustOptions(link, { includeSessionOnly: true }),
+		);
+		await new ProjectTrustStore(agentDir).setManyAsync([{ path: link, decision: true }]);
+		expect(JSON.parse(readFileSync(join(agentDir, "trust.json"), "utf-8"))).toEqual({ [realProject]: true });
 	});
 });
 

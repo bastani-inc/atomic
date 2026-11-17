@@ -46,7 +46,7 @@ import {
 import { mergeResourcePaths, resolveResourcePath } from "./resource-loader-paths.ts";
 import { applyExtensionSourceInfo } from "./resource-loader-source-info.ts";
 import type { ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
-import { buildSkillCatalog } from "./skill-catalog.ts";
+import { buildSkillCatalogAsync } from "./skill-catalog.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 import { endTimingSpan, resetTimings, startTimingSpan } from "./timings.ts";
 
@@ -180,7 +180,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	// Herdr pane; see extensions/herdr-file-integration.ts.
 	const extensionPaths = await filterDisabledBuiltinExtensionPaths(
 		filterSupersededHerdrIntegrationPaths(
-			mergeResourcePaths(
+			await mergeResourcePaths(
 				state.cwd,
 				cliEnabledExtensions,
 				state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
@@ -266,9 +266,14 @@ export async function prepareDefaultResourceLoaderReload(
 				errors: [],
 				runtime: createExtensionRuntime(),
 			};
-			state.extensionsResult = state.extensionsOverride
+			const extensionsResult = state.extensionsOverride
 				? state.extensionsOverride(deferredExtensions)
 				: deferredExtensions;
+			const emptySkills = state.skillsOverride ? state.skillsOverride({ skills: [], diagnostics: [] }) : undefined;
+			const skills = emptySkills?.skills ?? [];
+			// Built before the resources are replaced, so they are replaced together.
+			const skillCatalog = await buildSkillCatalogAsync(skills);
+			state.extensionsResult = extensionsResult;
 			state.extensionSkillSourceInfos = new Map();
 			state.extensionPromptSourceInfos = new Map();
 			state.extensionThemeSourceInfos = new Map();
@@ -276,10 +281,9 @@ export async function prepareDefaultResourceLoaderReload(
 			state.mcpServerContributions = [];
 			state.resourceMetadataByPath = new Map();
 			state.lastSkillPaths = [];
-			const emptySkills = state.skillsOverride ? state.skillsOverride({ skills: [], diagnostics: [] }) : undefined;
-			state.skills = emptySkills?.skills ?? [];
+			state.skills = skills;
 			state.skillDiagnostics = emptySkills?.diagnostics ?? [];
-			state.skillCatalog = buildSkillCatalog(state.skills);
+			state.skillCatalog = skillCatalog;
 			state.lastPromptPaths = [];
 			const emptyPrompts = state.promptsOverride
 				? state.promptsOverride({ prompts: [], diagnostics: [] })
@@ -370,7 +374,7 @@ export async function prepareDefaultResourceLoaderReload(
 		// Herdr pane; see extensions/herdr-file-integration.ts.
 		const extensionPaths = await filterDisabledBuiltinExtensionPaths(
 			filterSupersededHerdrIntegrationPaths(
-				mergeResourcePaths(
+				await mergeResourcePaths(
 					state.cwd,
 					cliEnabledExtensions,
 					state.noExtensions ? builtinEnabledExtensions : [...enabledExtensions, ...builtinEnabledExtensions],
@@ -436,8 +440,8 @@ export async function prepareDefaultResourceLoaderReload(
 		resolveInheritedExtensionOverlaps(state.extensionsResult);
 
 		const skillPaths = state.noSkills
-			? mergeResourcePaths(state.cwd, cliEnabledSkills, state.additionalSkillPaths)
-			: mergeResourcePaths(
+			? await mergeResourcePaths(state.cwd, cliEnabledSkills, state.additionalSkillPaths)
+			: await mergeResourcePaths(
 					state.cwd,
 					[...cliEnabledSkills, ...enabledSkills, ...builtinEnabledSkills],
 					state.additionalSkillPaths,
@@ -459,8 +463,8 @@ export async function prepareDefaultResourceLoaderReload(
 		}
 
 		const promptPaths = state.noPromptTemplates
-			? mergeResourcePaths(state.cwd, cliEnabledPrompts, state.additionalPromptTemplatePaths)
-			: mergeResourcePaths(
+			? await mergeResourcePaths(state.cwd, cliEnabledPrompts, state.additionalPromptTemplatePaths)
+			: await mergeResourcePaths(
 					state.cwd,
 					[...cliEnabledPrompts, ...enabledPrompts, ...builtinEnabledPrompts],
 					state.additionalPromptTemplatePaths,
@@ -486,8 +490,8 @@ export async function prepareDefaultResourceLoaderReload(
 		}
 
 		const themePaths = state.noThemes
-			? mergeResourcePaths(state.cwd, cliEnabledThemes, state.additionalThemePaths)
-			: mergeResourcePaths(
+			? await mergeResourcePaths(state.cwd, cliEnabledThemes, state.additionalThemePaths)
+			: await mergeResourcePaths(
 					state.cwd,
 					[...cliEnabledThemes, ...enabledThemes, ...builtinEnabledThemes],
 					state.additionalThemePaths,

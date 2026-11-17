@@ -195,7 +195,7 @@ async function checkHostSetup(
 	readonly git: WorkerHostGitSource;
 	readonly gitCommand: WorkerHostGit | undefined;
 }> {
-	const selection = sharedJournalSelection(options.journal, { agentDir });
+	const selection = await sharedJournalSelection(options.journal, { agentDir });
 	const problems = await sharedSelectionProblems(selection, agentDir);
 	const git = await hostGit(options);
 	if (typeof options.restore === "function" && git.problem !== undefined) problems.push(git.problem);
@@ -796,7 +796,7 @@ export async function migrateWorkflowStorage(
 	options: { readonly journal?: SharedJournalSelection; readonly agentDir?: string } = {},
 ): Promise<void> {
 	const agentDir = options.agentDir ?? getAgentDir();
-	const selection = sharedJournalSelection(options.journal, { agentDir });
+	const selection = await sharedJournalSelection(options.journal, { agentDir });
 	const [first, ...rest] = await sharedSelectionProblems(selection, agentDir);
 	if (first !== undefined) throw new SharedPoolSetupError("worker-host", [first, ...rest]);
 	const adapterSelection = selection as Extract<StorageSelection, { kind: "adapter" }>;
@@ -836,7 +836,7 @@ export async function readWorkflowWorkerFleet(
 ): Promise<SharedPoolFleet> {
 	resolveFleetPolicy(options.policy ?? {});
 	const agentDir = options.agentDir ?? getAgentDir();
-	const selection = sharedJournalSelection(options.journal, { agentDir });
+	const selection = await sharedJournalSelection(options.journal, { agentDir });
 	const [first, ...rest] = await sharedSelectionProblems(selection, agentDir);
 	if (first !== undefined) throw new SharedPoolSetupError("worker-host", [first, ...rest]);
 	const adapterSelection = selection as Extract<StorageSelection, { kind: "adapter" }>;

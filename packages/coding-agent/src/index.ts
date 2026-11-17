@@ -679,7 +679,9 @@ export type {
 } from "./core/resource-loader.ts";
 export {
 	buildSkillCatalog,
+	buildSkillCatalogAsync,
 	DefaultResourceLoader,
+	emptySkillCatalog,
 	getSkillCatalog,
 	loadProjectContextFiles,
 } from "./core/resource-loader.ts";
@@ -1024,6 +1026,7 @@ export {
 } from "./core/tools/shell-task-status.ts";
 export {
 	getProjectTrustOptions,
+	getProjectTrustOptionsAsync,
 	hasProjectTrustInputs,
 	hasProjectTrustInputsAsync,
 	hasTrustRequiringProjectResources,

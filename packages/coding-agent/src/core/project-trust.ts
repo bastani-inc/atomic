@@ -4,7 +4,7 @@ import type { LoadExtensionsResult, ProjectTrustContext } from "./extensions/typ
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import type { DefaultProjectTrust } from "./settings-manager.ts";
 import {
-	getProjectTrustOptions,
+	getProjectTrustOptionsAsync,
 	hasProjectTrustInputsAsync,
 	type ProjectTrustOption,
 	type ProjectTrustStore,
@@ -46,7 +46,7 @@ async function selectProjectTrustOption(
 	ctx: ProjectTrustContext,
 	promptMessage?: string,
 ): Promise<ProjectTrustOption | undefined> {
-	const options = getProjectTrustOptions(cwd, { includeSessionOnly: true });
+	const options = await getProjectTrustOptionsAsync(cwd, { includeSessionOnly: true });
 	const selected = await ctx.ui.select(
 		promptMessage ?? formatProjectTrustPrompt(cwd),
 		options.map((option) => option.label),

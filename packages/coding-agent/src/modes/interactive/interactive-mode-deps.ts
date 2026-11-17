@@ -108,6 +108,7 @@ export { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 export { recordTimeSinceReset } from "../../core/timings.ts";
 export type { TruncationResult } from "../../core/tools/truncate.ts";
 export {
+	getProjectTrustPathAsync,
 	hasProjectConfigDir,
 	hasProjectTrustInputs,
 	hasTrustRequiringProjectResources,

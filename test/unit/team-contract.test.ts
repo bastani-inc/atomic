@@ -708,12 +708,27 @@ describe("the team adapter check at startup (#4320)", () => {
 				`The storage selection opens the team database through it. Install it, then run again: atomic install npm:${LIBSQL_ADAPTER_PACKAGE}`,
 			);
 			writeSettings({ packages: [packageRoot] });
-			const installed = assertTeamAdapterInstalled(agentDir, { adapter: LIBSQL_ADAPTER_PACKAGE });
-			assert.equal(assertTeamAdapterInstalled(join(agentDir, "."), { adapter: LIBSQL_ADAPTER_PACKAGE }), installed);
-			await installed;
+			await assertTeamAdapterInstalled(agentDir, { adapter: LIBSQL_ADAPTER_PACKAGE });
+			// Loaded once per agent directory, however it is spelled: without the package it is not loaded again.
+			writeSettings({});
+			await assertTeamAdapterInstalled(join(agentDir, "."), { adapter: LIBSQL_ADAPTER_PACKAGE });
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
 	);
+
+	test("the adapter check still refuses the CI profile's unreadable token file (#4320)", async () => {
+		vi.stubEnv("ATOMIC_PROFILE", "ci");
+		vi.stubEnv("ATOMIC_TEAM_URL", "libsql://team.example.turso.io");
+		vi.stubEnv("ATOMIC_TEAM_TOKEN_FILE", join(agentDir, "missing-token"));
+		const refused = await Promise.resolve()
+			.then(() => assertTeamAdapterInstalled(agentDir))
+			.then(
+				() => assert.fail("passed with an unreadable token file"),
+				(error: Error) => error,
+			);
+		assert.ok(isTeamProfileConfigError(refused));
+		assert.deepEqual([refused.code, refused.field], ["unreadable-token-file", "ATOMIC_TEAM_TOKEN_FILE"]);
+	});
 
 	test("the CI profile needs the adapter only while it selects a store: a memory override for everything starts without it (#4320)", async () => {
 		vi.stubEnv("ATOMIC_PROFILE", "ci");

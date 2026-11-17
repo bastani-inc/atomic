@@ -1,5 +1,5 @@
 import { realpath } from "node:fs";
-import { isAbsolute, relative, sep } from "node:path";
+import { dirname, isAbsolute, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import { getAllBuiltinPackageLocations, getBuiltinPackageLocations } from "./builtin-packages.ts";
 import { getExtensionRuntimeEventBus, instantiateExtensions, loadExtensions } from "./extensions/loader.ts";
@@ -16,7 +16,7 @@ import type {
 import type { AtomicBuiltin } from "./sdk-types.ts";
 import { lifecycleScopeForOwner, sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import { SettingsManager } from "./settings-manager.ts";
-import { buildSkillCatalog } from "./skill-catalog.ts";
+import { buildSkillCatalogWith } from "./skill-catalog.ts";
 import { BUILTIN_PATH_PREFIX } from "./source-info.ts";
 
 /** `realpathSync` without blocking; a path it cannot resolve stays as it is. */
@@ -61,8 +61,9 @@ class BuiltinResourceLoader implements ResourceLoader {
 	private async resolveResourceRealPaths(): Promise<void> {
 		await this.resolveRealPaths([
 			...(this.delegate.getWorkflowResources?.() ?? []).map((resource) => resource.path),
+			// A skill catalog also compares the real paths of the skills' directories.
 			...[this.delegate.getSkills(), this.assets.getSkills()].flatMap(({ skills }) =>
-				skills.map((skill) => skill.filePath),
+				skills.flatMap((skill) => [skill.filePath, dirname(skill.filePath)]),
 			),
 			...[this.delegate.getPrompts(), this.assets.getPrompts()].flatMap(({ prompts }) =>
 				prompts.map((prompt) => prompt.filePath),
@@ -231,7 +232,7 @@ class BuiltinResourceLoader implements ResourceLoader {
 		};
 	}
 	getSkillCatalog() {
-		return buildSkillCatalog(this.getSkills().skills);
+		return buildSkillCatalogWith(this.getSkills().skills, undefined, (path) => this.canonical(path));
 	}
 	getPrompts(): ReturnType<ResourceLoader["getPrompts"]> {
 		const caller = this.delegate.getPrompts();

@@ -33,7 +33,7 @@ import type {
 } from "./resource-loader-types.ts";
 import { lifecycleScopeForOwner, sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import { type PackageSource, SettingsManager } from "./settings-manager.ts";
-import { buildSkillCatalog, type SkillCatalog } from "./skill-catalog.ts";
+import { emptySkillCatalog, type SkillCatalog } from "./skill-catalog.ts";
 import type { Skill } from "./skills.ts";
 import type { SourceInfo } from "./source-info.ts";
 
@@ -170,7 +170,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.extensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
 		this.skills = [];
 		this.skillDiagnostics = [];
-		this.skillCatalog = buildSkillCatalog([]);
+		this.skillCatalog = emptySkillCatalog();
 		this.prompts = [];
 		this.promptDiagnostics = [];
 		this.themes = [];
@@ -291,7 +291,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		recordExtensionSourceInfo(this, themePaths, "theme");
 
 		if (skillPaths.length > 0) {
-			this.lastSkillPaths = mergeResourcePaths(
+			this.lastSkillPaths = await mergeResourcePaths(
 				this.cwd,
 				this.lastSkillPaths,
 				skillPaths.map((entry) => entry.path),
@@ -299,7 +299,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			await updateSkillsFromPathsAsync(this, this.lastSkillPaths, this.resourceMetadataByPath);
 		}
 		if (promptPaths.length > 0) {
-			this.lastPromptPaths = mergeResourcePaths(
+			this.lastPromptPaths = await mergeResourcePaths(
 				this.cwd,
 				this.lastPromptPaths,
 				promptPaths.map((entry) => entry.path),
@@ -307,7 +307,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			await updatePromptsFromPathsAsync(this, this.lastPromptPaths, this.resourceMetadataByPath);
 		}
 		if (themePaths.length > 0) {
-			this.lastThemePaths = mergeResourcePaths(
+			this.lastThemePaths = await mergeResourcePaths(
 				this.cwd,
 				this.lastThemePaths,
 				themePaths.map((entry) => entry.path),
