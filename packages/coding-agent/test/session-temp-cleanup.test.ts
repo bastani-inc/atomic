@@ -13,6 +13,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -40,6 +41,7 @@ import {
 	sweepSessionDirToolResults,
 	sweepSessionTempRoot,
 	sweepToolResultsRoot,
+	waitForSessionTempCleanupForTesting,
 } from "../src/core/tools/session-temp-cleanup.ts";
 import { acquireProtectedPaths, SESSION_TEMP_FILE_MODE } from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.ts";
@@ -88,7 +90,7 @@ function stampAge(path: string, ageDays: number): void {
 }
 
 describe("session temp cleanup constants", () => {
-	it("uses a 30-day retention, a 24-hour throttle, and a deferred sweep", () => {
+	it("uses a 30-day retention, a 24-hour throttle, and a deferred sweep", async () => {
 		assert.equal(SESSION_TEMP_RETENTION_DAYS, 30);
 		assert.equal(SESSION_TEMP_RETENTION_MS, 30 * MS_PER_DAY);
 		assert.equal(SESSION_TEMP_CLEANUP_INTERVAL_MS, MS_PER_DAY);
@@ -96,26 +98,26 @@ describe("session temp cleanup constants", () => {
 		assert.ok(SESSION_TEMP_CLEANUP_DELAY_MS > 0);
 	});
 
-	it("uses the required marker and lock names for every root", () => {
+	it("uses the required marker and lock names for every root", async () => {
 		assert.equal(CLEANUP_MARKER_FILE, ".last-cleanup");
 		assert.equal(CLEANUP_LOCK_FILE, ".cleanup.lock");
 	});
 });
 
 describe("sweepSessionTempRoot", () => {
-	it("removes trees past the retention cutoff and keeps fresh ones", () => {
+	it("removes trees past the retention cutoff and keeps fresh ones", async () => {
 		const stale = makeAgedDir(sandbox, "stale-session", 45);
 		const fresh = makeAgedDir(sandbox, "fresh-session", 2);
 		const justInside = makeAgedDir(sandbox, "just-inside-session", 29);
 
-		assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
+		assert.equal(await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
 
 		assert.equal(existsSync(stale), false);
 		assert.equal(existsSync(fresh), true);
 		assert.equal(existsSync(justInside), true);
 	});
 
-	it("reaps only stale session directories and preserves every loose root file", () => {
+	it("reaps only stale session directories and preserves every loose root file", async () => {
 		const transcript = join(sandbox, "session.jsonl");
 		const loose = join(sandbox, "loose-output.log");
 		const transcriptContent = '{"type":"session"}\n';
@@ -126,13 +128,13 @@ describe("sweepSessionTempRoot", () => {
 		stampAge(loose, 60);
 		const staleSession = makeAgedDir(sandbox, "stale-real-session", 60);
 
-		assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
+		assert.equal(await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
 		assert.equal(readFileSync(transcript, "utf8"), transcriptContent);
 		assert.equal(readFileSync(loose, "utf8"), looseContent);
 		assert.equal(existsSync(staleSession), false);
 	});
 
-	it.skipIf(skipSymlinks)("keeps a linked directory entry and its outside contents", () => {
+	it.skipIf(skipSymlinks)("keeps a linked directory entry and its outside contents", async () => {
 		const outside = mkdtempSync(join(tmpdir(), "atomic-session-temp-outside-"));
 		try {
 			const outsideFile = join(outside, "keep.txt");
@@ -142,7 +144,7 @@ describe("sweepSessionTempRoot", () => {
 			const link = join(sandbox, "linked-session-entry");
 			symlinkSync(outside, link, "dir");
 
-			assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
+			assert.equal(await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
 			assert.equal(lstatSync(link).isSymbolicLink(), true);
 			assert.equal(readFileSync(outsideFile, "utf8"), "outside");
 		} finally {
@@ -150,28 +152,28 @@ describe("sweepSessionTempRoot", () => {
 		}
 	});
 
-	it("keeps an old tree that still holds one fresh file", () => {
+	it("keeps an old tree that still holds one fresh file", async () => {
 		const dir = makeAgedDir(sandbox, "mixed-session", 60);
 		const fresh = join(dir, "recent.log");
 		writeFileSync(fresh, "recent");
 		stampAge(fresh, 1);
 		stampAge(dir, 60);
 
-		sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] });
+		await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] });
 
 		assert.equal(existsSync(dir), true);
 		assert.equal(existsSync(fresh), true);
 	});
 
-	it("never reaps a session this process registered as live", () => {
+	it("never reaps a session this process registered as live", async () => {
 		const live = makeAgedDir(sandbox, "live-session", 90);
 
-		assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [live] }), "swept");
+		assert.equal(await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [live] }), "swept");
 
 		assert.equal(existsSync(live), true);
 	});
 
-	it("leaves its own control directory alone", () => {
+	it("leaves its own control directory alone", async () => {
 		const control = join(sandbox, CLEANUP_CONTROL_SUBDIR);
 		mkdirSync(control, { recursive: true });
 		const staleMarker = join(control, "aaaa");
@@ -179,23 +181,23 @@ describe("sweepSessionTempRoot", () => {
 		stampAge(staleMarker, 90);
 		stampAge(control, 90);
 
-		sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] });
+		await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] });
 
 		assert.equal(existsSync(staleMarker), true, "the control root holds live throttle state");
 	});
 
-	it("writes the marker into the root and throttles the next sweep for 24 hours", () => {
+	it("writes the marker into the root and throttles the next sweep for 24 hours", async () => {
 		makeAgedDir(sandbox, "stale-a", 45);
-		assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
+		assert.equal(await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
 		assert.equal(existsSync(join(sandbox, CLEANUP_MARKER_FILE)), true);
 
 		const laterStale = makeAgedDir(sandbox, "stale-b", 45);
 		const throttledAt = NOW + SESSION_TEMP_CLEANUP_INTERVAL_MS - 1;
-		assert.equal(sweepSessionTempRoot(sandbox, { now: throttledAt, protectedPaths: [] }), "throttled");
+		assert.equal(await sweepSessionTempRoot(sandbox, { now: throttledAt, protectedPaths: [] }), "throttled");
 		assert.equal(existsSync(laterStale), true);
 	});
 
-	it.skipIf(skipSymlinks)("replaces a marker symlink without touching its transcript target", () => {
+	it.skipIf(skipSymlinks)("replaces a marker symlink without touching its transcript target", async () => {
 		const transcript = join(sandbox, "2026-01-01-session.jsonl");
 		const transcriptContent = '{"type":"session"}\n';
 		writeFileSync(transcript, transcriptContent);
@@ -206,7 +208,7 @@ describe("sweepSessionTempRoot", () => {
 		symlinkSync(transcript, marker);
 		const staleSession = makeAgedDir(sandbox, "stale-with-hostile-marker", 60);
 
-		assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
+		assert.equal(await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
 		assert.equal(readFileSync(transcript, "utf8"), transcriptContent);
 		assert.equal(statSync(transcript).mode & 0o777, transcriptMode);
 		assert.equal(existsSync(staleSession), false);
@@ -216,7 +218,7 @@ describe("sweepSessionTempRoot", () => {
 		assert.equal(markerStat.mode & 0o777, SESSION_TEMP_FILE_MODE);
 	});
 
-	it.skipIf(skipSymlinks)("does not let a fresh marker symlink target throttle cleanup", () => {
+	it.skipIf(skipSymlinks)("does not let a fresh marker symlink target throttle cleanup", async () => {
 		const transcript = join(sandbox, "fresh-session-target.jsonl");
 		const transcriptContent = '{"type":"session"}\n';
 		writeFileSync(transcript, transcriptContent);
@@ -224,15 +226,15 @@ describe("sweepSessionTempRoot", () => {
 		symlinkSync(transcript, marker);
 		const staleSession = makeAgedDir(sandbox, "stale-beside-fresh-marker-target", 60);
 
-		assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
+		assert.equal(await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
 		assert.equal(readFileSync(transcript, "utf8"), transcriptContent);
 		assert.equal(existsSync(staleSession), false);
 		assert.equal(lstatSync(marker).isFile(), true);
 		assert.equal(lstatSync(marker).isSymbolicLink(), false);
 	});
-	it("sweeps again once the marker is older than the throttle window", () => {
+	it("sweeps again once the marker is older than the throttle window", async () => {
 		makeAgedDir(sandbox, "stale-a", 45);
-		sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] });
+		await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] });
 
 		// Push the marker just past the throttle window instead of moving the clock,
 		// so the boundary is exact rather than racing the real mtime.
@@ -240,47 +242,47 @@ describe("sweepSessionTempRoot", () => {
 		utimesSync(join(sandbox, CLEANUP_MARKER_FILE), markerSeconds, markerSeconds);
 		const laterStale = makeAgedDir(sandbox, "stale-b", 45);
 
-		assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
+		assert.equal(await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
 		assert.equal(existsSync(laterStale), false);
 	});
 
-	it("stands down when another session holds the lock", () => {
+	it("stands down when another session holds the lock", async () => {
 		const stale = makeAgedDir(sandbox, "stale-session", 45);
 		writeFileSync(join(sandbox, CLEANUP_LOCK_FILE), "other-process-token");
 
-		assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "locked");
+		assert.equal(await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "locked");
 
 		assert.equal(existsSync(stale), true);
 		assert.equal(existsSync(join(sandbox, CLEANUP_MARKER_FILE)), false);
 	});
 
-	it("breaks a lock left behind by a dead process and releases its own", () => {
+	it("breaks a lock left behind by a dead process and releases its own", async () => {
 		const stale = makeAgedDir(sandbox, "stale-session", 45);
 		const lockPath = join(sandbox, CLEANUP_LOCK_FILE);
 		writeFileSync(lockPath, "crashed-process-token");
 		const staleLockSeconds = (NOW - 2 * SESSION_TEMP_CLEANUP_LOCK_STALE_MS) / 1000;
 		utimesSync(lockPath, staleLockSeconds, staleLockSeconds);
 
-		assert.equal(sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
+		assert.equal(await sweepSessionTempRoot(sandbox, { now: NOW, protectedPaths: [] }), "swept");
 
 		assert.equal(existsSync(stale), false);
 		assert.equal(existsSync(lockPath), false, "the sweeper must release the lock it took");
 	});
 
-	it("reports a missing root instead of creating one", () => {
+	it("reports a missing root instead of creating one", async () => {
 		const missing = join(sandbox, "absent");
-		assert.equal(sweepSessionTempRoot(missing, { now: NOW, protectedPaths: [] }), "missing");
+		assert.equal(await sweepSessionTempRoot(missing, { now: NOW, protectedPaths: [] }), "missing");
 		assert.equal(existsSync(missing), false);
 	});
 
-	it.skipIf(skipSymlinks)("refuses a symlinked cleanup root and never reads through it", () => {
+	it.skipIf(skipSymlinks)("refuses a symlinked cleanup root and never reads through it", async () => {
 		const outside = join(sandbox, "outside");
 		mkdirSync(outside, { recursive: true });
 		const outsideStale = makeAgedDir(outside, "not-ours", 90);
 		const link = join(sandbox, "linked-root");
 		symlinkSync(outside, link, "dir");
 
-		assert.equal(sweepSessionTempRoot(link, { now: NOW, protectedPaths: [] }), "missing");
+		assert.equal(await sweepSessionTempRoot(link, { now: NOW, protectedPaths: [] }), "missing");
 
 		assert.equal(existsSync(outsideStale), true, "an outside tree must survive a symlinked root");
 		assert.equal(existsSync(link), true, "the link itself is left in place");
@@ -288,7 +290,7 @@ describe("sweepSessionTempRoot", () => {
 	});
 });
 
-it.skipIf(process.platform === "win32")("repairs cleanup lock and marker modes under umask 0o777", () => {
+it.skipIf(process.platform === "win32")("repairs cleanup lock and marker modes under umask 0o777", async () => {
 	const packageRoot = dirname(moduleDir(import.meta.url));
 	const scriptPath = join(sandbox, "cleanup-lock-umask.ts");
 	writeFileSync(
@@ -329,7 +331,7 @@ try {
 		hooks.releaseCleanupLock(lockPath, lock);
 		released = !fs.existsSync(lockPath);
 	}
-	const outcome = cleanup.sweepSessionTempRoot(sweepRoot, { now, protectedPaths: [] });
+	const outcome = await cleanup.sweepSessionTempRoot(sweepRoot, { now, protectedPaths: [] });
 	const markerPath = path.join(sweepRoot, cleanup.CLEANUP_MARKER_FILE);
 	result = {
 		lockMode,
@@ -379,32 +381,32 @@ describe("sweepToolResultsRoot", () => {
 		return { project, transcript };
 	}
 
-	it("removes a stale tool-results directory and never touches the transcript", () => {
+	it("removes a stale tool-results directory and never touches the transcript", async () => {
 		const { project, transcript } = makeProject(sandbox, "--project-a--", 60);
 
-		assert.equal(sweepToolResultsRoot(sandbox, { now: NOW, controlRoot }), "swept");
+		assert.equal(await sweepToolResultsRoot(sandbox, { now: NOW, controlRoot }), "swept");
 
 		assert.equal(existsSync(join(project, TOOL_RESULTS_SUBDIR)), false);
 		assert.equal(existsSync(transcript), true, "transcripts are out of scope");
 		assert.equal(existsSync(project), true);
 	});
 
-	it("keeps a fresh tool-results directory", () => {
+	it("keeps a fresh tool-results directory", async () => {
 		const { project } = makeProject(sandbox, "--project-b--", 1);
 
-		sweepToolResultsRoot(sandbox, { now: NOW, controlRoot });
+		await sweepToolResultsRoot(sandbox, { now: NOW, controlRoot });
 
 		assert.equal(existsSync(join(project, TOOL_RESULTS_SUBDIR, "call-1.txt")), true);
 	});
 
-	it("keeps a tool-results tree intact when any entry is newer than the cutoff", () => {
+	it("keeps a tool-results tree intact when any entry is newer than the cutoff", async () => {
 		const { project } = makeProject(sandbox, "--project-c--", 60);
 		const toolResults = join(project, TOOL_RESULTS_SUBDIR);
 		const fresh = join(toolResults, "call-2.txt");
 		writeFileSync(fresh, "recent");
 		stampAge(fresh, 1);
 
-		sweepToolResultsRoot(sandbox, { now: NOW, controlRoot });
+		await sweepToolResultsRoot(sandbox, { now: NOW, controlRoot });
 
 		assert.equal(existsSync(fresh), true);
 		// The directory's newest entry decides its fate, so a stale sibling survives
@@ -412,43 +414,43 @@ describe("sweepToolResultsRoot", () => {
 		assert.equal(existsSync(join(toolResults, "call-1.txt")), true);
 	});
 
-	it("keeps its marker and lock in the control root, outside the scanned sessions root", () => {
+	it("keeps its marker and lock in the control root, outside the scanned sessions root", async () => {
 		makeProject(sandbox, "--project-d--", 60);
 		// The subagents sweep owns `.last-cleanup` inside the sessions root; ours
 		// must neither read it nor be throttled by it.
 		writeFileSync(join(sandbox, CLEANUP_MARKER_FILE), String(NOW));
 
-		assert.equal(sweepToolResultsRoot(sandbox, { now: NOW, controlRoot }), "swept");
+		assert.equal(await sweepToolResultsRoot(sandbox, { now: NOW, controlRoot }), "swept");
 
 		const controlDir = getCleanupControlDir(sandbox, controlRoot);
 		assert.equal(existsSync(join(controlDir, CLEANUP_MARKER_FILE)), true);
 		assert.equal(existsSync(join(sandbox, CLEANUP_LOCK_FILE)), false, "no lock inside the sessions root");
-		assert.equal(sweepToolResultsRoot(sandbox, { now: NOW, controlRoot }), "throttled");
+		assert.equal(await sweepToolResultsRoot(sandbox, { now: NOW, controlRoot }), "throttled");
 	});
 
-	it("keys throttle state per sessions root", () => {
+	it("keys throttle state per sessions root", async () => {
 		const otherRoot = join(sandbox, "other-sessions");
 		mkdirSync(otherRoot, { recursive: true });
 		makeProject(sandbox, "--project-e--", 60);
 		const other = makeProject(otherRoot, "--project-f--", 60);
 
-		sweepToolResultsRoot(sandbox, { now: NOW, controlRoot });
+		await sweepToolResultsRoot(sandbox, { now: NOW, controlRoot });
 
-		assert.equal(sweepToolResultsRoot(otherRoot, { now: NOW, controlRoot }), "swept");
+		assert.equal(await sweepToolResultsRoot(otherRoot, { now: NOW, controlRoot }), "swept");
 		assert.equal(existsSync(join(other.project, TOOL_RESULTS_SUBDIR)), false);
 	});
 
-	it("stands down when another session holds the control lock", () => {
+	it("stands down when another session holds the control lock", async () => {
 		const { project } = makeProject(sandbox, "--project-g--", 60);
 		const controlDir = getCleanupControlDir(sandbox, controlRoot);
 		mkdirSync(controlDir, { recursive: true });
 		writeFileSync(join(controlDir, CLEANUP_LOCK_FILE), "other-token");
 
-		assert.equal(sweepToolResultsRoot(sandbox, { now: NOW, controlRoot }), "locked");
+		assert.equal(await sweepToolResultsRoot(sandbox, { now: NOW, controlRoot }), "locked");
 		assert.equal(existsSync(join(project, TOOL_RESULTS_SUBDIR)), true);
 	});
 
-	it.skipIf(skipSymlinks)("never follows a symlinked tool-results directory", () => {
+	it.skipIf(skipSymlinks)("never follows a symlinked tool-results directory", async () => {
 		const outside = join(sandbox, "outside");
 		mkdirSync(outside, { recursive: true });
 		const outsideStale = join(outside, "old.txt");
@@ -466,7 +468,7 @@ describe("sweepToolResultsRoot", () => {
 		symlinkSync(outside, link, "dir");
 		stampAge(project, 90);
 
-		assert.equal(sweepToolResultsRoot(sandbox, { now: NOW, controlRoot }), "swept");
+		assert.equal(await sweepToolResultsRoot(sandbox, { now: NOW, controlRoot }), "swept");
 
 		assert.equal(existsSync(outsideStale), true, "an outside file must not be reaped through a link");
 		assert.equal(existsSync(outsideFresh), true);
@@ -490,24 +492,24 @@ describe("sweepSessionDirToolResults", () => {
 		return { dir, transcript };
 	}
 
-	it("removes a stale result under a directly chosen session directory", () => {
+	it("removes a stale result under a directly chosen session directory", async () => {
 		const { dir, transcript } = makeCustomSessionDir("custom-sessions", 60);
 
-		assert.equal(sweepSessionDirToolResults(dir, { now: NOW, controlRoot }), "swept");
+		assert.equal(await sweepSessionDirToolResults(dir, { now: NOW, controlRoot }), "swept");
 
 		assert.equal(existsSync(join(dir, TOOL_RESULTS_SUBDIR)), false);
 		assert.equal(existsSync(transcript), true, "sibling transcripts are never touched");
 	});
 
-	it("keeps fresh results under a directly chosen session directory", () => {
+	it("keeps fresh results under a directly chosen session directory", async () => {
 		const { dir } = makeCustomSessionDir("custom-fresh", 1);
 
-		sweepSessionDirToolResults(dir, { now: NOW, controlRoot });
+		await sweepSessionDirToolResults(dir, { now: NOW, controlRoot });
 
 		assert.equal(existsSync(join(dir, TOOL_RESULTS_SUBDIR, "call-1.txt")), true);
 	});
 
-	it("keeps a tree when the depth bound leaves a fresh descendant unscanned", () => {
+	it("keeps a tree when the depth bound leaves a fresh descendant unscanned", async () => {
 		const { dir } = makeCustomSessionDir("custom-deep-fresh", 60);
 		const toolResults = join(dir, TOOL_RESULTS_SUBDIR);
 		const ancestors = [toolResults];
@@ -521,12 +523,12 @@ describe("sweepSessionDirToolResults", () => {
 		writeFileSync(fresh, "recent");
 		for (const ancestor of ancestors) stampAge(ancestor, 60);
 
-		assert.equal(sweepSessionDirToolResults(dir, { now: NOW, controlRoot }), "swept");
+		assert.equal(await sweepSessionDirToolResults(dir, { now: NOW, controlRoot }), "swept");
 		assert.equal(existsSync(toolResults), true, "an incomplete scan cannot authorize deletion");
 		assert.equal(existsSync(fresh), true);
 	});
 
-	it.skipIf(process.platform === "win32")("keeps a stale tree whose scan encounters a nested symlink", () => {
+	it.skipIf(process.platform === "win32")("keeps a stale tree whose scan encounters a nested symlink", async () => {
 		const { dir } = makeCustomSessionDir("custom-nested-symlink", 60);
 		const toolResults = join(dir, TOOL_RESULTS_SUBDIR);
 		const outside = join(sandbox, "nested-symlink-target.txt");
@@ -538,23 +540,23 @@ describe("sweepSessionDirToolResults", () => {
 		lutimesSync(link, oldSeconds, oldSeconds);
 		stampAge(toolResults, 60);
 
-		assert.equal(sweepSessionDirToolResults(dir, { now: NOW, controlRoot }), "swept");
+		assert.equal(await sweepSessionDirToolResults(dir, { now: NOW, controlRoot }), "swept");
 		assert.equal(existsSync(toolResults), true);
 		assert.equal(lstatSync(link).isSymbolicLink(), true);
 		assert.equal(readFileSync(outside, "utf8"), "outside");
 	});
 
-	it("throttles on its own control marker", () => {
+	it("throttles on its own control marker", async () => {
 		const { dir } = makeCustomSessionDir("custom-throttled", 60);
 
-		assert.equal(sweepSessionDirToolResults(dir, { now: NOW, controlRoot }), "swept");
+		assert.equal(await sweepSessionDirToolResults(dir, { now: NOW, controlRoot }), "swept");
 		assert.equal(existsSync(join(getCleanupControlDir(dir, controlRoot), CLEANUP_MARKER_FILE)), true);
-		assert.equal(sweepSessionDirToolResults(dir, { now: NOW, controlRoot }), "throttled");
+		assert.equal(await sweepSessionDirToolResults(dir, { now: NOW, controlRoot }), "throttled");
 	});
 });
 
 describe("runSessionTempCleanup", () => {
-	it("sweeps the temp root, the sessions roots, and custom session directories in one pass", () => {
+	it("sweeps the temp root, the sessions roots, and custom session directories in one pass", async () => {
 		const tempRoot = join(sandbox, "temp-root");
 		const sessionsRoot = join(sandbox, "sessions");
 		const customDir = join(sandbox, "custom");
@@ -579,7 +581,7 @@ describe("runSessionTempCleanup", () => {
 		stampAge(join(customDir, TOOL_RESULTS_SUBDIR), 60);
 		stampAge(customTranscript, 60);
 
-		runSessionTempCleanup({
+		await runSessionTempCleanup({
 			now: NOW,
 			tempRoot,
 			sessionsRoots: [sessionsRoot],
@@ -623,7 +625,7 @@ describe("runSessionTempCleanup", () => {
 			const advertised = replacement?.content[0]?.text.match(/Full output saved to: (.+)\n/)?.[1];
 			assert.equal(advertised, replayed, "the replayed file is what the model was handed");
 
-			runSessionTempCleanup({
+			await runSessionTempCleanup({
 				now: NOW,
 				tempRoot: join(sandbox, "absent"),
 				sessionsRoots: [sessionsRoot],
@@ -637,7 +639,7 @@ describe("runSessionTempCleanup", () => {
 		}
 	});
 
-	it("reaps the same storage once the session's lease is released", () => {
+	it("reaps the same storage once the session's lease is released", async () => {
 		const customDir = join(sandbox, "released-custom");
 		const toolResults = join(customDir, TOOL_RESULTS_SUBDIR);
 		mkdirSync(toolResults, { recursive: true });
@@ -646,14 +648,19 @@ describe("runSessionTempCleanup", () => {
 		for (const path of [stale, toolResults]) stampAge(path, 60);
 
 		const lease = acquireProtectedPaths([toolResults]);
-		runSessionTempCleanup({ now: NOW, tempRoot: join(sandbox, "absent"), sessionDirs: [customDir], controlRoot });
+		await runSessionTempCleanup({
+			now: NOW,
+			tempRoot: join(sandbox, "absent"),
+			sessionDirs: [customDir],
+			controlRoot,
+		});
 		assert.equal(existsSync(toolResults), true, "protected while the session holds its lease");
 
 		lease.release();
 		// A fresh control root rather than a future clock: the marker's freshness is
 		// read from its real mtime, so an arithmetic "past the window" is only true
 		// while the test is fast, and this suite must not depend on machine load.
-		runSessionTempCleanup({
+		await runSessionTempCleanup({
 			now: NOW,
 			tempRoot: join(sandbox, "absent"),
 			sessionDirs: [customDir],
@@ -697,6 +704,74 @@ describe("oversized result replay safety", () => {
 	});
 });
 
+describe("asynchronous cleanup gate races (#5285)", () => {
+	it("keeps paths protected while the sweep awaits control-directory verification (#5285)", async () => {
+		for (const kind of ["session", "project", "custom"] as const) {
+			const root = join(sandbox, `live-${kind}`);
+			mkdirSync(root, { mode: 0o700 });
+			const target =
+				kind === "session"
+					? join(root, "active")
+					: kind === "project"
+						? join(root, "--project--", TOOL_RESULTS_SUBDIR)
+						: join(root, TOOL_RESULTS_SUBDIR);
+			mkdirSync(target, { recursive: true, mode: 0o700 });
+			const file = join(target, "old-but-in-use.txt");
+			writeFileSync(file, "still advertised");
+			stampAge(file, 60);
+			stampAge(target, 60);
+			const options = { now: NOW, controlRoot: join(controlRoot, `live-${kind}`) };
+			const sweep =
+				kind === "session"
+					? sweepSessionTempRoot(root, options)
+					: kind === "project"
+						? sweepToolResultsRoot(root, options)
+						: sweepSessionDirToolResults(root, options);
+			const lease = acquireProtectedPaths([target]);
+			try {
+				assert.equal(await sweep, "swept", kind);
+				assert.equal(existsSync(target), true, `${kind} target must survive`);
+				assert.equal(existsSync(file), true, `${kind} file must survive`);
+			} finally {
+				lease.release();
+			}
+		}
+	});
+
+	it("refuses a scanned root replaced with a link while the sweep awaits control-directory verification (#5285)", async () => {
+		const linkType = process.platform === "win32" ? "junction" : "dir";
+		for (const kind of ["session", "project", "custom"] as const) {
+			const root = join(sandbox, `swap-${kind}`);
+			const outside = join(sandbox, `swap-${kind}-outside`);
+			mkdirSync(root, { mode: 0o700 });
+			mkdirSync(outside, { mode: 0o700 });
+			const target =
+				kind === "session"
+					? join(outside, "active")
+					: kind === "project"
+						? join(outside, "--project--", TOOL_RESULTS_SUBDIR)
+						: join(outside, TOOL_RESULTS_SUBDIR);
+			mkdirSync(target, { recursive: true, mode: 0o700 });
+			const file = join(target, "must-survive.txt");
+			writeFileSync(file, "not beneath selected root");
+			stampAge(file, 60);
+			stampAge(target, 60);
+			const options = { now: NOW, controlRoot: join(controlRoot, `swap-${kind}`), protectedPaths: [] };
+			const sweep =
+				kind === "session"
+					? sweepSessionTempRoot(root, options)
+					: kind === "project"
+						? sweepToolResultsRoot(root, options)
+						: sweepSessionDirToolResults(root, options);
+			renameSync(root, `${root}-original`);
+			symlinkSync(outside, root, linkType);
+			assert.equal(await sweep, "missing", kind);
+			assert.equal(existsSync(file), true, `${kind} outside file must survive`);
+			assert.equal(lstatSync(root).isSymbolicLink(), true, `${kind} link is left in place`);
+		}
+	});
+});
+
 describe("scheduleSessionTempCleanup", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
@@ -735,6 +810,7 @@ describe("scheduleSessionTempCleanup", () => {
 		assert.equal(vi.getTimerCount(), 1);
 
 		await vi.advanceTimersByTimeAsync(SESSION_TEMP_CLEANUP_DELAY_MS);
+		await waitForSessionTempCleanupForTesting();
 		assert.equal(existsSync(first.toolResults), false);
 
 		const second = makeStaleCustomSession("second-late-root");
@@ -742,6 +818,7 @@ describe("scheduleSessionTempCleanup", () => {
 		assert.equal(vi.getTimerCount(), 1, "a later root gets a new deferred sweep");
 
 		await vi.advanceTimersByTimeAsync(SESSION_TEMP_CLEANUP_DELAY_MS);
+		await waitForSessionTempCleanupForTesting();
 		assert.equal(existsSync(second.toolResults), false);
 	});
 
@@ -754,6 +831,7 @@ describe("scheduleSessionTempCleanup", () => {
 		assert.equal(vi.getTimerCount(), 1);
 
 		await vi.advanceTimersByTimeAsync(SESSION_TEMP_CLEANUP_DELAY_MS);
+		await waitForSessionTempCleanupForTesting();
 		assert.equal(existsSync(first.toolResults), false);
 		assert.equal(existsSync(second.toolResults), false);
 	});
@@ -766,6 +844,7 @@ describe("scheduleSessionTempCleanup", () => {
 		resetSessionTempCleanupScheduleForTesting();
 		assert.equal(vi.getTimerCount(), 0);
 		await vi.advanceTimersByTimeAsync(SESSION_TEMP_CLEANUP_DELAY_MS);
+		await waitForSessionTempCleanupForTesting();
 		assert.equal(existsSync(pending.toolResults), true);
 	});
 });
