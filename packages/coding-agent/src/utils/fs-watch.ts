@@ -155,13 +155,17 @@ export function watchWithErrorHandler(
 }
 
 /** {@link watchWithErrorHandler} without blocking the event loop while the path is canonicalized. */
-export async function watchWithErrorHandlerAsync(
+export function watchWithErrorHandlerAsync(
 	path: string,
 	listener: WatchListener<string>,
 	onError: (error: Error) => void,
 	options: SafeFsWatchOptions = {},
 ): Promise<FSWatcher | null> {
-	return watchResolvedPath(await resolveNativeWatchPathAsync(path, options), listener, onError, options);
+	if ((options.platform ?? process.platform) !== "win32")
+		return Promise.resolve(watchResolvedPath({ path }, listener, onError, options));
+	return resolveNativeWatchPathAsync(path, options).then((resolved) =>
+		watchResolvedPath(resolved, listener, onError, options),
+	);
 }
 
 function watchResolvedPath(

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getCustomThemesDir } from "../../../config.js";
-import { closeWatcher, isSafeFsWatchPathError, watchWithErrorHandler } from "../../../utils/fs-watch.ts";
+import { closeWatcher, isSafeFsWatchPathError, watchWithErrorHandlerAsync } from "../../../utils/fs-watch.ts";
 import { getDefaultTheme } from "./terminal-detection.ts";
 import type { Theme } from "./theme-class.ts";
 import {
@@ -181,30 +181,40 @@ function startThemeWatcher(): void {
 		fs.watchFile(themeFile, { interval: 1000 }, themeWatchFileListener);
 	};
 
-	themeWatcher =
-		watchWithErrorHandler(
-			customThemesDir,
-			(_eventType, filename) => {
-				if (currentThemeName !== watchedThemeName) {
-					return;
-				}
-				if (!filename) {
-					scheduleReload();
-					return;
-				}
-				if (filename !== watchedFileName) {
-					return;
-				}
+	let failed = false;
+	void watchWithErrorHandlerAsync(
+		customThemesDir,
+		(_eventType, filename) => {
+			if (currentThemeName !== watchedThemeName) {
+				return;
+			}
+			if (!filename) {
 				scheduleReload();
-			},
-			(error) => {
-				closeWatcher(themeWatcher);
-				themeWatcher = undefined;
-				if (isSafeFsWatchPathError(error)) {
-					startPollingFallback();
-				}
-			},
-		) ?? undefined;
+				return;
+			}
+			if (filename !== watchedFileName) {
+				return;
+			}
+			scheduleReload();
+		},
+		(error) => {
+			if (generation !== themeWatcherGeneration) {
+				return;
+			}
+			failed = true;
+			closeWatcher(themeWatcher);
+			themeWatcher = undefined;
+			if (isSafeFsWatchPathError(error)) {
+				startPollingFallback();
+			}
+		},
+	).then((watcher) => {
+		if (failed || generation !== themeWatcherGeneration) {
+			closeWatcher(watcher);
+			return;
+		}
+		themeWatcher = watcher ?? undefined;
+	});
 }
 
 export function stopThemeWatcher(): void {
