@@ -42,6 +42,7 @@ import {
 	hasTaskPromptHost,
 	heldPromptInput,
 	isHeldPromptInput,
+	isPresentationHostInput,
 	presentationHostInput,
 } from "./held-prompts.ts";
 import {
@@ -269,7 +270,10 @@ export class ExtensionRunner {
 		return this.runtime.workflowActivityHub.getSnapshotFrame();
 	}
 	getChildHostBindings(): import("../agent-session-types.js").ExtensionBindings {
-		const inherited = isHeldPromptInput(this.humanInput) && this.hadPresentation ? undefined : this.humanInput;
+		const inherited =
+			(isHeldPromptInput(this.humanInput) || isPresentationHostInput(this.humanInput)) && this.hadPresentation
+				? undefined
+				: this.humanInput;
 		return {
 			humanInput:
 				inherited !== undefined
@@ -520,7 +524,9 @@ export class ExtensionRunner {
 		const bound = this.humanInput;
 		if (bound === null) return undefined;
 		if (bound === undefined) return this.presentationInput;
-		return isHeldPromptInput(bound) ? (this.hadPresentation ? this.presentationInput : bound) : bound;
+		if ((isHeldPromptInput(bound) || isPresentationHostInput(bound)) && this.hadPresentation)
+			return this.presentationInput;
+		return bound;
 	}
 
 	private refreshHostInput(): void {

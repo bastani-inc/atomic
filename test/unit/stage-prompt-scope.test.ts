@@ -550,3 +550,35 @@ for (const mode of [undefined, "rpc"] as const) {
 		assert.equal(heldPrompts().current(child.sessionId), undefined);
 	});
 }
+
+test("a replacement stage uses its own presentation and drops inherited fallback input when detached (#5354)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "stage-replacement-presentation-"));
+	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	const shown: string[] = [];
+	const { session: main } = await createAgentSession(sessionOptions(root));
+	cleanups.push(() => main.dispose());
+	await main.bindExtensions({ uiContext: mainChat(shown), mode: "tui" });
+	const { stage, store } = await workflowStage(root, main);
+	const { session: replacement } = await createAgentSession({
+		...sessionOptions(root),
+		extensionBindings: {
+			...stage.extensionRunner.getChildHostBindings(),
+			uiContext: stage.extensionRunner.getUIContext(),
+			mode: "tui",
+		},
+	});
+	cleanups.push(() => replacement.dispose());
+	const controller = new AbortController();
+	const pending = replacement.extensionRunner
+		.createContext()
+		.ui.confirm("Replacement asks", "Stage", { signal: controller.signal });
+	void pending.catch(() => {});
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(shown, []);
+	assert.equal(store.runs()[0]!.stages[0]!.pendingPrompt?.kind, "confirm");
+	controller.abort();
+	assert.equal(await pending, false);
+	replacement.extensionRunner.detachPresentation();
+	assert.equal(replacement.extensionRunner.createContext().hasHumanInput, false);
+	assert.equal(replacement.extensionRunner.getChildHostBindings().humanInput, undefined);
+});
