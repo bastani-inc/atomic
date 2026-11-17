@@ -41,23 +41,28 @@ import { RemoteComponentController } from "../../packages/coding-agent/src/modes
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.ts";
 import { sleep } from "../helpers/runtime.js";
 
-/** Keys per view: enough for a p99 that is not just the slowest key, few enough to run in about two seconds. */
-const KEYS_PER_VIEW = 60;
+/** Keys per view: enough that the p99 is not the slowest key alone, few enough to type in about three seconds. */
+const KEYS_PER_VIEW = 200;
 const KEY_INTERVAL_MS = 15;
+/** Keys per word: a word stays on one row of the 100-column composer, so its prefix is found whole. */
+const WORD_LENGTH = 40;
+const CLEAR_LINE = "\x15";
 /** The agents' stand-in blocks the event loop this long, this often: a model turn's request preparation in bursts. */
 const LOAD_BLOCK_MS = 2;
 const LOAD_PERIOD_MS = 10;
 const STREAM_PERIOD_MS = 30;
 const TRANSCRIPT_LINES = 300;
+/** The renderer's frame pacing: a repaint already paced when a key arrives finishes within one interval. */
+const FRAME_INTERVAL_MS = 16;
 /**
  * A key in an engine-drawn view crosses the pipe twice, and each crossing is a turn of the event loop that may wait
- * behind one burst of the load; the engine also renders the view, and either side may be mid-way through a streamed
- * repaint when the key arrives. Its budget is the main chat's latency doubled, plus a burst for each crossing and half
- * a frame interval for the repaints. A path that waits for a paced frame on either side of the bridge, as it used to,
- * waits a whole 16 ms frame interval on top of that; the timer-free test above pins that path down exactly.
+ * behind one burst of the load; the engine also renders the view, and either side may be painting streamed text when
+ * the key arrives. Its budget is the main chat's latency doubled, plus a burst for each crossing and one frame
+ * interval for that paint. A path that waits for a paced frame on both sides of the bridge, as it used to, takes two
+ * frame intervals more than the main chat; the timer-free test above pins that path down exactly.
  */
 const KEY_LATENCY_FACTOR = 2;
-const KEY_LATENCY_SLACK_MS = 2 * LOAD_BLOCK_MS + 8;
+const KEY_LATENCY_SLACK_MS = 2 * LOAD_BLOCK_MS + FRAME_INTERVAL_MS;
 /** Long enough for every key's paint to land under a loaded CI host; a missing paint fails the test outright. */
 const PAINT_TIMEOUT_MS = 5_000;
 
@@ -137,25 +142,31 @@ afterEach(() => {
 	for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
 
-async function typeAndTime(terminal: TimedTerminal, word: string): Promise<number[]> {
+/** Types `keys` keys in words short enough for one composer row, clearing the composer between words. */
+async function typeAndTime(terminal: TimedTerminal, keys: number): Promise<number[]> {
 	const latencies: number[] = [];
-	for (let index = 1; index <= word.length; index++) {
-		const prefix = word.slice(0, index);
-		const sent = performance.now();
-		const painted = new Promise<number>((resolve, reject) => {
-			const timer = setTimeout(() => {
-				stop();
-				reject(new Error(`the key that typed "${prefix}" never painted`));
-			}, PAINT_TIMEOUT_MS);
-			const stop = terminal.onWrite((text, at) => {
-				if (!text.includes(prefix)) return;
-				clearTimeout(timer);
-				stop();
-				resolve(at - sent);
+	while (latencies.length < keys) {
+		const word = randomWord(Math.min(WORD_LENGTH, keys - latencies.length));
+		for (let index = 1; index <= word.length; index++) {
+			const prefix = word.slice(0, index);
+			const sent = performance.now();
+			const painted = new Promise<number>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					stop();
+					reject(new Error(`the key that typed "${prefix}" never painted`));
+				}, PAINT_TIMEOUT_MS);
+				const stop = terminal.onWrite((text, at) => {
+					if (!text.includes(prefix)) return;
+					clearTimeout(timer);
+					stop();
+					resolve(at - sent);
+				});
 			});
-		});
-		terminal.input(word[index - 1] ?? "");
-		latencies.push(await painted);
+			terminal.input(word[index - 1] ?? "");
+			latencies.push(await painted);
+			await sleep(KEY_INTERVAL_MS);
+		}
+		terminal.input(CLEAR_LINE);
 		await sleep(KEY_INTERVAL_MS);
 	}
 	return latencies;
@@ -344,11 +355,11 @@ test("a key in an engine-drawn view paints within a small factor of a key in the
 	// The overlay covers the main chat, so the main chat is timed with it hidden, under the same load.
 	overlay.setHidden(true);
 	views.tui.setFocus(views.main);
-	const mainLatencies = await typeAndTime(views.terminal, randomWord(KEYS_PER_VIEW));
+	const mainLatencies = await typeAndTime(views.terminal, KEYS_PER_VIEW);
 	overlay.setHidden(false);
 	overlay.focus();
 	await sleep(100);
-	const remoteLatencies = await typeAndTime(views.terminal, randomWord(KEYS_PER_VIEW));
+	const remoteLatencies = await typeAndTime(views.terminal, KEYS_PER_VIEW);
 
 	for (const [label, percentile] of [
 		["p50", 0.5],
