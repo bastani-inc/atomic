@@ -351,6 +351,7 @@ describe("ToolExecutionComponent parity", () => {
 		const longTemp = realpathSync(mkdtempSync(join(tmpdir(), "long temp directory with spaces ".repeat(2))));
 		// os.tmpdir() reads TMPDIR on POSIX and TEMP/TMP on Windows.
 		for (const key of ["TMPDIR", "TEMP", "TMP"]) vi.stubEnv(key, longTemp);
+		vi.stubEnv("NO_COLOR", undefined);
 		try {
 			const operations: BashOperations = {
 				exec: async (_command, _cwd, { onData }) => {

@@ -40,11 +40,18 @@ Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening
 |---------|-----|
 | File reference | Type `@` to fuzzy-search project files |
 | Path completion | Press Tab to complete paths |
+| Prompt history | ↑ and ↓ walk through past prompts; Ctrl+R searches them and puts the chosen one in the editor without sending it |
 | Multi-line input | SHIFT+Enter, or CTRL+Enter on Windows Terminal |
 | Images | Paste with CTRL+V, ALT+V on Windows, or drag into the terminal |
 | Shell command | `!command` runs and sends output to the model |
 | Hidden shell command | `!!command` runs without sending output to the model |
 | External editor | CTRL+G opens `$VISUAL` or `$EDITOR` |
+
+The `@` and `/` menus end with one hint line naming the keys that work there. Tab completes without sending. Enter inserts an `@` path; for a `/`-prefixed completion, including an absolute path, Enter submits the completed prompt. Remapped menu keys appear only when an app shortcut or earlier menu action does not take them first.
+
+Ctrl+R searches the prompts the current chat has recorded, newest first: prompts sent through templates or skills as you typed them, and a prompt an `input` hook rewrote as the hook left it. ↑ and ↓ still walk through what you typed. In writable subagent and workflow stage chats, the search uses that chat's transcript. Esc clears the search, then closes it without changing your draft or interrupting the agent. While search or completion is open, its own hint line replaces the chat's normal keys. Read-only chats keep their transcript scrolling keys and do not open prompt search.
+
+Prompt history keeps what you typed, including input rewritten by an extension before it reaches the model. An `input` hook does not erase the original from saved session history. Avoid typing secrets directly into prompts.
 
 See [Keybindings](/keybindings) for all shortcuts and customization.
 
@@ -70,6 +77,8 @@ Startup typing does not apply to non-TTY input, print or RPC mode, or metadata c
 ## Slash Commands
 
 Type `/` in the editor to open command completion. Extensions can register custom commands, skills are available as `/skill:name`, and prompt templates expand via `/templatename`.
+
+`/settings` lists each setting with its value, shortening long labels first on narrow terminals. Type to search; Enter or Space changes the selected setting, stepping a value in place or opening its picker (a value followed by `›`). Right does not change or save a setting, including inside a value picker. The selected setting's description shows under the list, and Esc clears a search before it closes.
 
 | Command | Description |
 |---------|-------------|

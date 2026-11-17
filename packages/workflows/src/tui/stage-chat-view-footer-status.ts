@@ -266,6 +266,7 @@ export function renderFooterWithOrchestratorReturnHint(
 	if (stackedStageDialogOpen(ctx) || closableQuestionCardOpen(ctx)) {
 		return [mergeOrchestratorReturnHintIntoLine(ctx, footerLines[0] ?? "", width)];
 	}
+	if (ctx.chatHost?.hasTransientModal) return [...footerLines];
 	return [...footerLines, renderStageChatHintLine(ctx, width)];
 }
 export function renderReadOnlyArchiveFooter(ctx: StageChatViewContext, width: number): string[] {

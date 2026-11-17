@@ -1478,7 +1478,10 @@ export class TaskInspector implements Component {
 			return [entry];
 		});
 		const hint = renderNavHintLine(chatKeys, width, style, chatKeybindings);
-		const footer = [...(notes ? [fitWidth(theme.fg("dim", notes))] : []), hint];
+		const footer = [
+			...(notes ? [fitWidth(theme.fg("dim", notes))] : []),
+			...(transcript.handlesBack() ? [] : [hint]),
+		];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
 		const statusRows = this.taskStatusRows(width);
 		const room = Math.max(1, budget - header.length - footer.length - failure.length - statusRows.length);

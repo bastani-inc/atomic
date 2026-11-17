@@ -70,6 +70,8 @@ describe("main composer keys (#5224)", () => {
 			const lines = overlay.render(width).map(stripTerminalSequences);
 			assert.ok(lines[0]?.startsWith("╭─ keys "), lines[0]);
 			assert.ok(lines.some((line) => line.includes("interrupt the agent's turn")));
+			assert.ok(lines.some((line) => /ctrl\+r\s+search past prompts/.test(line)));
+			assert.ok(lines.some((line) => /@\s+insert a file path/.test(line)));
 			assert.ok(lines.some((line) => line.includes("close this help")));
 			overlay.handleInput("x");
 			assert.equal(closed, 0);

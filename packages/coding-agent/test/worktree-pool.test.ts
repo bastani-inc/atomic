@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
+import { hostname } from "node:os";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -9,6 +21,8 @@ import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
 import { renameWithRetry } from "../src/core/rename-retry.ts";
+import { buildLockPath } from "../src/core/resume/blueprint/build-lock.ts";
+import { rootKey, updateLedger } from "../src/core/resume/blueprint/ledger.ts";
 import {
 	continueSessionWhereItWorked,
 	type PreparedSessionResume,
@@ -18,6 +32,7 @@ import {
 } from "../src/core/resume/session-resume.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import {
+	mapRestoredPath,
 	pooledWorktreeOwnedElsewhere,
 	releaseSessionWorktrees,
 	resumeSessionWorktree,
@@ -27,6 +42,7 @@ import { SettingsManager } from "../src/core/settings-manager.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
+import { processesWorkIn } from "../src/core/worktree-snapshot/in-use.ts";
 import {
 	admitPooledWorktree,
 	discardPooledWorktree,
@@ -35,10 +51,13 @@ import {
 	type PoolSlotRecord,
 	pooledWorktreeHolder,
 	pooledWorktreePath,
+	processStartToken,
 	recordPooledWorktreeState,
 	releaseRestoredWorktree,
 	repositoryIdOf,
 	type SlotNumber,
+	setAsideWorktree,
+	worktreeSetAside,
 } from "../src/core/worktree-snapshot/pool.js";
 import { removeRestoredWorktree } from "../src/core/worktree-snapshot/restore.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
@@ -846,4 +865,280 @@ describe("worktree pool lease edges (#4748)", () => {
 			}
 		},
 	);
+});
+
+/** On Linux, the command lines of the processes whose working directory is inside `path`, to explain a failure. */
+function processesIn(path: string): string[] {
+	if (process.platform !== "linux") return [];
+	const found: string[] = [];
+	for (const pid of readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))) {
+		try {
+			if (!readlinkSync(`/proc/${pid}/cwd`).startsWith(path)) continue;
+			found.push(`${pid} ${readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ")}`);
+		} catch {}
+	}
+	return found;
+}
+
+const LOCK_HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
+
+/** The ledger says the build of `root` never finished, and its lock names the process `holder`, which may be gone. */
+async function unfinishedBuild(root: string, holder: { pid: number; start?: string }, startedAt = new Date()) {
+	await updateLedger(storeDir(), (ledger) => ({
+		...ledger,
+		roots: { ...ledger.roots, [rootKey(root)]: { state: "running", at: startedAt.toISOString() } },
+	}));
+	const lock = buildLockPath(storeDir(), root);
+	mkdirSync(dirname(lock), { recursive: true });
+	writeFileSync(lock, JSON.stringify({ host: LOCK_HOST, ...holder, steps: [] }));
+	return lock;
+}
+
+/** A process that has ended, named by its id. */
+async function endedProcess(): Promise<{ pid: number }> {
+	const ended = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+	await new Promise((resolve) => ended.once("exit", resolve));
+	return { pid: ended.pid! };
+}
+
+/** How long a set-aside worktree whose own processes ended may wait for the eviction that removes it. */
+const EVICTION_SETTLE_MS = 20_000;
+
+describe("a worktree whose blueprint build was cancelled (#5379)", () => {
+	// On Windows a build's steps end with the process that started them, and the worktree is built again in place.
+	test.skipIf(process.platform === "win32")(
+		"is restored fresh, never claimed by another session while a process works in it, and removed once none does (#5379)",
+		async () => {
+			const { snapshot, clone } = await recordedSnapshot();
+			const owner = await sessionOf(clone, snapshot);
+			const cancelled = await restoredRoot(owner);
+			assert.equal(cancelled, slot(snapshot, 0));
+			// The build of the worktree never finished, and its lock names a process that is gone; a step it started, which
+			// the lock does not name, still works there.
+			const startedAt = new Date().toISOString();
+			await updateLedger(storeDir(), (ledger) => ({
+				...ledger,
+				roots: { ...ledger.roots, [rootKey(cancelled)]: { state: "running", at: startedAt } },
+			}));
+			const builder = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+			await new Promise((resolve) => builder.once("exit", resolve));
+			const lock = buildLockPath(storeDir(), cancelled);
+			mkdirSync(dirname(lock), { recursive: true });
+			const host = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
+			writeFileSync(lock, JSON.stringify({ host, pid: builder.pid, steps: [] }));
+			const step = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+				cwd: cancelled,
+				stdio: "ignore",
+			});
+			try {
+				const prepared = await prepareSessionResume(owner, prepareOptions({ blueprints: "build" }));
+				assert.equal(prepared.status, "ready");
+				if (prepared.status !== "ready") return;
+				opened.push(prepared.sessionManager);
+				const fresh = mapRestoredPath(clone, prepared.sessionManager.getWorktreeRootMappings());
+				assert.equal(fresh, slot(snapshot, 1), "the session continues in a fresh worktree");
+				assert.ok(
+					prepared.notices.some(
+						(notice) => notice.message.includes(cancelled) && notice.message.includes("may still be running"),
+					),
+					JSON.stringify(prepared.notices),
+				);
+				assert.equal(await pooledWorktreeOwnedElsewhere(storeDir(), cancelled, owner.getSessionId()), true);
+
+				const other = await restoredRoot(await sessionOf(clone, snapshot));
+				assert.equal(other, slot(snapshot, 2), "no session claims the cancelled worktree");
+				const repository = repositoryIdOf(snapshot.remotes);
+				assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), []);
+				assert.equal(existsSync(cancelled), true, "kept while a process works in it");
+			} finally {
+				step.kill("SIGKILL");
+			}
+			await new Promise((resolve) => step.once("exit", resolve));
+			// Any other process of this user in it keeps it as well, such as Git maintenance a command there left running in
+			// the background for a moment, and so does any process of this user that cannot be read, as some daemons are.
+			const deadline = Date.now() + EVICTION_SETTLE_MS;
+			let removed: string[] = [];
+			let inUse = true;
+			while (removed.length === 0 && Date.now() < deadline) {
+				inUse = await processesWorkIn(cancelled);
+				removed = await evictIdleWorktrees(storeDir(), repositoryIdOf(snapshot.remotes), { maxIdle: 2, settings });
+				if (removed.length === 0) await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+			if (inUse && removed.length === 0) {
+				assert.equal(existsSync(cancelled), true, "kept while a process of this user may work in it");
+				return;
+			}
+			assert.deepEqual(removed, [cancelled], `processes still in it: ${processesIn(cancelled).join("; ")}`);
+			assert.equal(existsSync(cancelled), false);
+		},
+	);
+
+	for (const replacement of ["is restored", "cannot be restored"] as const) {
+		test(`a resume whose worktree another session took over, with a live build there, neither waits on nor touches that build, and its own checkout ${replacement} elsewhere (#5379)`, async () => {
+			const { snapshot, clone } = await recordedSnapshot();
+			const first = await sessionOf(clone, snapshot);
+			const old = await restoredRoot(first);
+			await releaseSessionWorktrees(first);
+			const second = await sessionOf(clone, snapshot);
+			assert.equal(await restoredRoot(second), old, "the other session took the idle worktree");
+			if (replacement === "cannot be restored") {
+				await renameWithRetry(sandbox.path("repo.git"), sandbox.path("repo-gone.git"));
+				rmSync(join(storeDir(), "repositories"), { recursive: true, force: true });
+			}
+			const builder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+			const step = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: old, stdio: "ignore" });
+			try {
+				const lock = await unfinishedBuild(old, { pid: builder.pid!, start: processStartToken(builder.pid!) });
+				writeFileSync(
+					lock,
+					JSON.stringify({
+						...JSON.parse(readFileSync(lock, "utf8")),
+						steps: [{ pid: step.pid, start: processStartToken(step.pid!), at: Date.now() }],
+					}),
+				);
+				const written = readFileSync(lock, "utf8");
+				const progress: string[] = [];
+				const stop = new AbortController();
+				const timer = setTimeout(() => stop.abort(new Error("the resume waited")), 20_000);
+				const prepared = await prepareSessionResume(
+					first,
+					prepareOptions({ blueprints: "build", signal: stop.signal, onProgress: (line) => progress.push(line) }),
+				).finally(() => clearTimeout(timer));
+				assert.equal(prepared.status, "ready");
+				if (prepared.status !== "ready") return;
+				opened.push(prepared.sessionManager);
+				const cwd = resolve(prepared.sessionManager.getCwd());
+				assert.equal(cwd === old || cwd.startsWith(`${old}${sep}`), false, `continues in ${cwd}`);
+				if (replacement === "is restored") {
+					assert.equal(
+						mapRestoredPath(clone, prepared.sessionManager.getWorktreeRootMappings()),
+						slot(snapshot, 1),
+					);
+				} else {
+					assert.equal(cwd, resolve(sandbox.root), "it continues where the resume started");
+				}
+				assert.deepEqual(
+					progress.filter((line) => line.startsWith("Waiting")),
+					[],
+				);
+				assert.equal(readFileSync(lock, "utf8"), written, "the other build's lock is untouched");
+				assert.equal(builder.exitCode === null && builder.signalCode === null, true, "its builder still runs");
+				assert.equal(step.exitCode === null && step.signalCode === null, true, "its step still runs");
+				assert.equal(await worktreeSetAside(storeDir(), old), false, "its worktree is not set aside");
+				assert.deepEqual(
+					prepared.notices.filter((notice) => notice.message.includes("cancelled")),
+					[],
+				);
+			} finally {
+				builder.kill("SIGKILL");
+				step.kill("SIGKILL");
+			}
+		});
+	}
+
+	test.skipIf(process.platform === "win32")(
+		"a cancelled build whose fresh restore fails leaves the session outside the set-aside worktree, building nothing there (#5379)",
+		async () => {
+			const { remote, clone } = await sandbox.remoteWithClone();
+			const marker = sandbox.path("step-ran-in.txt");
+			sandbox.write(join(clone, "file.txt"), "recorded\n");
+			sandbox.write(
+				join(clone, ".atomic", "blueprint.yaml"),
+				`maintenance:\n  - name: Mark\n    run: echo "$PWD" >> "${marker}"\n`,
+			);
+			const capture = await captureWorktreeSnapshot(clone, { settings, blobs: store.snapshotBlobs });
+			assert.equal(capture.status, "captured");
+			if (capture.status !== "captured") return;
+			await renameWithRetry(clone, sandbox.path("clone-away"));
+			const owner = await sessionOf(clone, capture.snapshot);
+			const cancelled = await restoredRoot(owner);
+			await releaseSessionWorktrees(owner);
+			await unfinishedBuild(cancelled, await endedProcess());
+			// Nothing can restore the snapshot again: its remote and the host's copy of the repository are gone.
+			await renameWithRetry(remote, `${remote}-gone`);
+			rmSync(join(storeDir(), "repositories"), { recursive: true, force: true });
+
+			const prepared = await prepareSessionResume(
+				owner,
+				prepareOptions({
+					blueprints: "build",
+					blueprint: { agentDir: sandbox.path("agent"), trusted: () => true },
+				}),
+			);
+			assert.equal(prepared.status, "ready");
+			if (prepared.status !== "ready") return;
+			opened.push(prepared.sessionManager);
+			const cwd = resolve(prepared.sessionManager.getCwd());
+			assert.equal(cwd === cancelled || cwd.startsWith(`${cancelled}${sep}`), false, `continues in ${cwd}`);
+			assert.equal(cwd, resolve(sandbox.root), "it continues where the resume started");
+			assert.equal(
+				existsSync(marker),
+				false,
+				`no step ran: ${existsSync(marker) ? readFileSync(marker, "utf8") : ""}`,
+			);
+			assert.ok(
+				prepared.notices.some(
+					(notice) => notice.message.includes("cancelled") && notice.message.includes(cancelled),
+				),
+				JSON.stringify(prepared.notices),
+			);
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"a cancelled build's lock stays until its worktree is marked as set aside, so a mark that cannot be written loses nothing (#5379)",
+		async () => {
+			const { snapshot, clone } = await recordedSnapshot();
+			const owner = await sessionOf(clone, snapshot);
+			const cancelled = await restoredRoot(owner);
+			const lock = await unfinishedBuild(cancelled, await endedProcess());
+			mkdirSync(join(storeDir(), "pool"), { recursive: true });
+			writeFileSync(join(storeDir(), "pool", "set-aside"), "");
+
+			const prepared = await prepareSessionResume(owner, prepareOptions({ blueprints: "build" }));
+			assert.equal(prepared.status, "ready");
+			if (prepared.status !== "ready") return;
+			opened.push(prepared.sessionManager);
+			assert.equal(mapRestoredPath(clone, prepared.sessionManager.getWorktreeRootMappings()), slot(snapshot, 1));
+			assert.ok(
+				prepared.notices.some(
+					(notice) => notice.message.includes(cancelled) && notice.message.includes("could not be set aside"),
+				),
+				JSON.stringify(prepared.notices),
+			);
+			assert.equal(existsSync(lock), true, "the next resume still finds the cancelled build");
+		},
+	);
+
+	test("a set-aside mark does not follow its path to a worktree restored there after the set-aside one was removed (#5379)", async () => {
+		const { snapshot, clone } = await recordedSnapshot();
+		const first = await sessionOf(clone, snapshot);
+		const removedRoot = await restoredRoot(first);
+		await setAsideWorktree(storeDir(), removedRoot, { startedAt: new Date().toISOString(), logs: "logs" });
+		await releaseSessionWorktrees(first);
+		await removeRestoredWorktree(removedRoot, { storeDir: storeDir() });
+		rmSync(join(storeDir(), "pool", repositoryIdOf(snapshot.remotes), "0.json"));
+
+		const second = await sessionOf(clone, snapshot);
+		assert.equal(await restoredRoot(second), removedRoot, "the new worktree is restored at the same path");
+		assert.equal(await worktreeSetAside(storeDir(), removedRoot), false);
+		assert.equal(await pooledWorktreeOwnedElsewhere(storeDir(), removedRoot, second.getSessionId()), false);
+	});
+
+	test("a worktree whose last build finished is built again in place, with no fresh restore (#5379)", async () => {
+		const { snapshot, clone } = await recordedSnapshot();
+		const owner = await sessionOf(clone, snapshot);
+		const root = await restoredRoot(owner);
+		await updateLedger(storeDir(), (ledger) => ({
+			...ledger,
+			roots: { ...ledger.roots, [rootKey(root)]: { state: "failed", at: new Date().toISOString() } },
+		}));
+		const prepared = await prepareSessionResume(owner, prepareOptions({ blueprints: "build" }));
+		assert.equal(prepared.status, "ready");
+		if (prepared.status !== "ready") return;
+		opened.push(prepared.sessionManager);
+		assert.equal(mapRestoredPath(clone, prepared.sessionManager.getWorktreeRootMappings()), root);
+		assert.equal(existsSync(slot(snapshot, 1)), false);
+		assert.deepEqual(prepared.notices, []);
+	});
 });

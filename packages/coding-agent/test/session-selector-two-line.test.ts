@@ -509,11 +509,13 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 	});
 
 	it("mixed hints order core keys then live extras at 160 cols, collapse to core + ? keys at 80 cols, and open the ? help overlay (#5256)", () => {
-		const sessionRow = makeSession({ id: "s1", path: "/work/project/s1.jsonl" });
+		const modified = new Date(Date.now() - 2 * HOUR);
+		const sessionRow = makeSession({ id: "s1", path: "/work/project/s1.jsonl", modified });
 		const activeWorkflow = makeSession({
 			id: "s1",
 			path: "workflow-live:s1",
 			cwd: "Live",
+			modified,
 			resumeKind: "workflow",
 			canDelete: false,
 			title: "demo · active workflow",
@@ -523,6 +525,7 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 			id: "wf-del",
 			path: "workflow-durable:wf-del",
 			cwd: "Durable",
+			modified,
 			resumeKind: "workflow",
 			canDelete: true,
 			title: "demo · durable workflow",
@@ -947,6 +950,64 @@ describe("mixed resume shortcut priority (#5256)", () => {
 			picker.updateWorkflowSessions([]);
 			assert.doesNotMatch(frame(picker).join("\n"), /first-workflow/);
 			assert.match(frame(picker).join("\n"), /first-session/);
+		} finally {
+			picker.dispose();
+		}
+	});
+
+	it("acts on the painted row after a refresh moves the selection, and keeps a surviving row selected (#5256)", () => {
+		const session = makeSession({ id: "session" });
+		const runA = makeSession({ id: "run-a", resumeKind: "workflow", title: "Run A" });
+		const runB = makeSession({ id: "run-b", resumeKind: "workflow", title: "Run B" });
+		const runC = makeSession({ id: "run-c", resumeKind: "workflow", title: "Run C" });
+		const runD = makeSession({ id: "run-d", resumeKind: "workflow", title: "Run D" });
+		const selected: string[] = [];
+		const picker = mount([session, runA, runB, runC], {
+			variant: "mixed",
+			onSelect: (row) => selected.push(row.id),
+		});
+		try {
+			while (!/❯ Run B/.test(frame(picker).join("\n"))) picker.handleInput("\x1b[B");
+			picker.updateWorkflowSessions([runD, runA, runB, runC]);
+			assert.match(frame(picker).join("\n"), /❯ Run B/);
+			picker.updateWorkflowSessions([runD, runA, runC]);
+			for (const key of ["\r", "\x1b[C"]) picker.handleInput(key);
+			assert.deepEqual(selected, [], "Enter and → wait for the moved selection to be painted");
+			const painted = frame(picker)
+				.join("\n")
+				.match(/❯ (Run [A-D])/)?.[1];
+			assert.ok(painted, "a row is selected");
+			picker.handleInput("\r");
+			assert.deepEqual(selected, [`run-${painted.at(-1)!.toLowerCase()}`]);
+		} finally {
+			picker.dispose();
+		}
+	});
+
+	it("cancels a delete confirmation whose run vanishes in a refresh instead of resuming another run (#5256)", async () => {
+		const session = makeSession({ id: "session" });
+		const runA = makeSession({ id: "run-a", resumeKind: "workflow", title: "Run A" });
+		const runB = makeSession({ id: "run-b", resumeKind: "workflow", title: "Run B" });
+		const runC = makeSession({ id: "run-c", resumeKind: "workflow", title: "Run C" });
+		const selected: string[] = [];
+		const deleted: string[] = [];
+		const picker = mount([session, runA, runB, runC], {
+			variant: "mixed",
+			onSelect: (row) => selected.push(row.id),
+			deleteWorkflow: async (runId) => {
+				deleted.push(runId);
+			},
+		});
+		try {
+			while (!/❯ Run B/.test(frame(picker).join("\n"))) picker.handleInput("\x1b[B");
+			picker.handleInput("\x04");
+			assert.match(frame(picker).join("\n"), /Delete this workflow run\?/);
+			picker.updateWorkflowSessions([runA, runC]);
+			picker.handleInput("\r");
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.deepEqual(selected, [], "no other run resumes");
+			assert.deepEqual(deleted, [], "no other run is deleted");
+			assert.doesNotMatch(frame(picker).join("\n"), /Delete this workflow run\?/);
 		} finally {
 			picker.dispose();
 		}
