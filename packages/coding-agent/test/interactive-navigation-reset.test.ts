@@ -2,6 +2,7 @@ import { stripVTControlCharacters } from "node:util";
 import { type Component, Text, type TuiAltScreen } from "@bastani/atomic-tui";
 import { afterEach, expect, test } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.ts";
 import type { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import {
 	createProductionFullscreenContext,
@@ -12,8 +13,13 @@ import {
 type NavigationHost = InteractiveMode & {
 	navigationInlineCustomUiDepth: number;
 	blockingInlineCustomUiDepth: number;
+	workingRunMeter: WorkingRunMeter;
+	session: { isStreaming: boolean };
 	extensionWidgetsBelow: Map<string, Component>;
 	pendingMessagesContainer: { addChild(component: Component): void };
+	showWorkingLoaderNow(): void;
+	stopWorkingLoader(): void;
+	setWorkingVisible(visible: boolean): void;
 	showExtensionCustom<T>(
 		factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: T) => void) => Component,
 		options?: { overlay?: boolean; purpose?: "prompt" | "navigation" },
@@ -56,13 +62,17 @@ function navigationHost(followUp: string[]): { context: NavigationHost; tui: Tui
 		setCustomEditorComponent: noop,
 		setWorkingIndicator: noop,
 		setHiddenThinkingLabel: noop,
-		defaultWorkingMessage: "Working",
+		defaultWorkingMessage: "Working...",
+		workingVisible: true,
+		workingRunMeter: new WorkingRunMeter(),
 		keybindings: new KeybindingsManager(),
 		pendingBashComponents: [],
 		getAllQueuedMessages: () => ({ steering: [], followUp }),
 	});
+	Object.assign(host.context.session, { isStreaming: false });
+	Object.assign(host.context.session.settingsManager, { getClearOnShrink: () => false });
 	Object.assign(host.context.footer, { invalidate: noop });
-	Object.assign(host.context.editor, { getText: () => "", setText: noop });
+	Object.assign(host.context.editor, { getText: () => "", setText: noop, setWorkingStatusIndicator: noop });
 	return { context: host.context as NavigationHost, tui: host.tui };
 }
 
@@ -155,4 +165,53 @@ test("a dialog opened while a reset tears down the old views stays on screen (#5
 	const after = frame(tui);
 	expect(after).not.toContain("CLOSING VIEW");
 	expect(after).toContain("Keep changes?");
+});
+
+test("mounting pure navigation clears a pre-turn command loader when idle and keeps a real streaming working line across close and reset (#5224)", async () => {
+	const { context, tui } = navigationHost([]);
+	try {
+		context.showWorkingLoaderNow();
+		expect(frame(tui)).toContain("∀ Working...");
+
+		let closeIdleNav: (() => void) | undefined;
+		void context.showExtensionCustom(
+			(_tui, _theme, _kb, done) => {
+				closeIdleNav = () => done(undefined);
+				return new Text("WORKFLOWS SHEET", 0, 0);
+			},
+			{ overlay: false, purpose: "navigation" },
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+		const idleNavFrame = frame(tui);
+		expect(idleNavFrame).toContain("WORKFLOWS SHEET");
+		expect(idleNavFrame).not.toContain("∀ Working...");
+
+		closeIdleNav?.();
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(frame(tui)).not.toContain("∀ Working...");
+
+		context.session.isStreaming = true;
+		context.workingRunMeter.start();
+		context.showWorkingLoaderNow();
+		expect(frame(tui)).toContain("∀ Working...");
+
+		void context.showExtensionCustom(() => new Text("BUSY NAV SHEET", 0, 0), {
+			overlay: false,
+			purpose: "navigation",
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+		const busyNavFrame = frame(tui);
+		expect(busyNavFrame).toContain("BUSY NAV SHEET");
+		expect(busyNavFrame).toContain("∀ Working...");
+
+		context.setWorkingVisible(false);
+		expect(frame(tui)).not.toContain("∀ Working...");
+		context.resetExtensionUI();
+		const restoredAfterReset = frame(tui);
+		expect(restoredAfterReset).not.toContain("BUSY NAV SHEET");
+		expect(restoredAfterReset).toContain("∀ Working");
+	} finally {
+		context.workingRunMeter.stop();
+		context.stopWorkingLoader();
+	}
 });

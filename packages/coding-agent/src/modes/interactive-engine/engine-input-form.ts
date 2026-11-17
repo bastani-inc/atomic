@@ -27,7 +27,7 @@ export class EngineInputFormService {
 			type: "engine_input_form_open",
 			componentId,
 			title: request.title,
-			fields: request.fields.map((field) => ({ ...field, choices: field.choices ? [...field.choices] : undefined })),
+			fields: request.fields,
 			...(request.heading !== undefined ? { heading: request.heading } : {}),
 			...(request.submitLabel !== undefined ? { submitLabel: request.submitLabel } : {}),
 		});

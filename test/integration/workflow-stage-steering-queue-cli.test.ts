@@ -388,7 +388,7 @@ async function runScenario(): Promise<Evidence> {
 		// 1. Launch the run. It dispatches to the background, as a named
 		//    workflow launch does in interactive chat.
 		const beforeLaunch = (await cli.output()).length;
-		await cli.submitCommand(`/workflow ${WORKFLOW_NAME}`, CLI_STARTUP_TIMEOUT_MS);
+		await cli.submitCommand(`launch ${WORKFLOW_NAME}`, CLI_STARTUP_TIMEOUT_MS);
 		await cli.waitForOutput(
 			(output) => output.slice(beforeLaunch).includes("started in background"),
 			"the run to be dispatched",

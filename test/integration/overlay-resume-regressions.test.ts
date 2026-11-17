@@ -17,6 +17,7 @@ import {
 	delay,
 	factory,
 	initTheme,
+	invokeRunControl,
 	type PiCustomOverlayFunction,
 	singletonStore,
 	visibleText,
@@ -24,7 +25,7 @@ import {
 
 useTemporaryAgentDir();
 
-describe("/workflow resume — durable regression coverage", () => {
+describe("workflow resume — durable regression coverage", () => {
 	beforeEach(async () => {
 		singletonStore.clear();
 		setDurableBackend(await createMemoryTestBackend());
@@ -130,7 +131,7 @@ describe("/workflow resume — durable regression coverage", () => {
 		assert.equal(customCalls, 0);
 		assert.match(joined, /Resumable workflows/);
 		assert.match(joined, /headless-wf/);
-		assert.match(joined, /Resume with: \/workflow resume <id>/);
+		assert.match(joined, /Resume with: \/resume <id>/);
 	});
 
 	test("targeted stale running durable resume does not print stale catalog", async () => {
@@ -179,11 +180,11 @@ describe("/workflow resume — durable regression coverage", () => {
 	});
 
 	test("no-arg resume with no resumable workflows opens empty /resume-style selector", async () => {
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls, messages } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
+		const handlerPromise = invokeRunControl(pi, "resume", [], ctx);
 		await delay(5);
 
 		assert.equal(messages.length, 0);
@@ -207,11 +208,11 @@ describe("/workflow resume — durable regression coverage", () => {
 			completedCheckpoints: 1,
 		});
 		setDurableBackend(backend);
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
+		const handlerPromise = invokeRunControl(pi, "resume", [], ctx);
 		await delay(5);
 
 		assert.ok(customCalls.length >= 1);
@@ -250,11 +251,11 @@ describe("/workflow resume — durable regression coverage", () => {
 			completedCheckpoints: 1,
 		});
 		setDurableBackend(backend);
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
+		const handlerPromise = invokeRunControl(pi, "resume", [], ctx);
 		await delay(5);
 
 		assert.ok(customCalls.length >= 1);
@@ -278,11 +279,11 @@ describe("/workflow resume — durable regression coverage", () => {
 			completedCheckpoints: 1,
 		});
 		setDurableBackend(backend);
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls, messages } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
+		const handlerPromise = invokeRunControl(pi, "resume", [], ctx);
 		await delay(5);
 		assert.ok(customCalls.length >= 1);
 		customCalls[0]!.component.handleInput?.("\r");
@@ -290,7 +291,7 @@ describe("/workflow resume — durable regression coverage", () => {
 
 		const joined = messages.join("\n");
 		assert.match(joined, /Workflow definition not found: missing-selection-def/);
-		assert.doesNotMatch(joined, /Resume with: \/workflow resume <id>/);
+		assert.doesNotMatch(joined, /Resume with: \/resume <id>/);
 	});
 
 	test("combined picker resolves live selection before dispose", async () => {
@@ -340,11 +341,11 @@ describe("/workflow resume — durable regression coverage", () => {
 			completedCheckpoints: 1,
 		});
 		setDurableBackend(backend);
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
+		const handlerPromise = invokeRunControl(pi, "resume", [], ctx);
 		await delay(5);
 		assert.ok(customCalls.length >= 1);
 		customCalls[0]!.component.handleInput?.("\r");
@@ -391,11 +392,11 @@ describe("/workflow resume — durable regression coverage", () => {
 			completedCheckpoints: 1,
 		});
 		setDurableBackend(backend);
-		const { pi, commands } = buildMockPi();
+		const { pi } = buildMockPi();
 		factory(pi);
 		const { ctx, customCalls, messages } = buildPrintCtxWithRealCustom();
 
-		const handlerPromise = commands.workflow!.options.handler("resume", ctx);
+		const handlerPromise = invokeRunControl(pi, "resume", [], ctx);
 		await delay(5);
 		assert.ok(customCalls.length >= 1);
 		customCalls[0]!.component.handleInput?.("\r");

@@ -1,14 +1,21 @@
 import assert from "node:assert/strict";
 import { stripTerminalSequences } from "@bastani/atomic-tui";
-import { test } from "vitest";
+import { beforeAll, test } from "vitest";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import {
 	formatWorkflowLifecycleNoticeText,
+	installWorkflowLifecycleNotifications,
 	registerLifecycleNoticeRenderer,
 	type WorkflowLifecycleNoticeDetails,
 	type WorkflowLifecycleNoticeKind,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 
 import type { PiMessageRenderer } from "../../packages/workflows/src/extension/public-types.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type { WorkflowArtifact } from "../../packages/workflows/src/shared/types.js";
+
+beforeAll(() => initTheme("dark"));
 
 const kinds: readonly WorkflowLifecycleNoticeKind[] = [
 	"started",
@@ -100,4 +107,57 @@ test("workflow completion notices share the compact notice line in both expansio
 		}
 	}
 	assert.equal(formatWorkflowLifecycleNoticeText(details), original);
+});
+
+test("workflow completion artifact previews inspect only their bounded prefix (#5224)", () => {
+	let inspected = 0;
+	const artifacts = new Proxy(new Array<WorkflowArtifact>(1000), {
+		get(target, property, receiver) {
+			if (typeof property === "string" && /^\d+$/.test(property)) {
+				inspected++;
+				assert.ok(inspected <= 3, "a sparse artifact list must not extend preview inspection");
+			}
+			return Reflect.get(target, property, receiver);
+		},
+	});
+	artifacts[0] = { kind: "diff", path: "unavailable.diff", captureError: "offline\n    at capture (git.ts:1:2)" };
+	artifacts[1] = { kind: "output", path: "report.md" };
+	const run: RunSnapshot = {
+		id: "artifact-run",
+		name: "artifact-run",
+		inputs: {},
+		status: "completed",
+		startedAt: 1,
+		endedAt: 1001,
+		durationMs: 1000,
+		toolNodes: [],
+		stages: [{ id: "stage", name: "stage", status: "completed", parentIds: [], toolEvents: [], artifacts }],
+	};
+	const store = {
+		...createStore(),
+		graphSnapshot: () => ({ runs: [run], notices: [], version: 1 }),
+	};
+	const delivered: WorkflowLifecycleNoticeDetails[] = [];
+	let dispose: (() => void) | undefined;
+	assert.doesNotThrow(() => {
+		dispose = installWorkflowLifecycleNotifications({
+			store,
+			seedExisting: false,
+			config: { enabled: true, notifyOn: ["completed"] },
+			sendMessage(message) {
+				delivered.push(message.details as WorkflowLifecycleNoticeDetails);
+			},
+		});
+	});
+	try {
+		assert.equal(inspected, 3);
+		assert.equal(delivered.length, 1);
+		assert.equal(delivered[0]?.artifacts?.total, artifacts.length);
+		assert.deepEqual(delivered[0]?.artifacts?.shown, [
+			{ kind: "diff", path: "unavailable.diff", detail: "not captured: offline" },
+			{ kind: "output", path: "report.md" },
+		]);
+	} finally {
+		dispose?.();
+	}
 });

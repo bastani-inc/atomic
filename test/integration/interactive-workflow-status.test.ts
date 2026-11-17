@@ -61,7 +61,7 @@ async function waitForGroupsToExit(groups: readonly number[], budgetMs: number):
 }
 
 test.skipIf(!TMUX_AVAILABLE)(
-	"idle workflow status renders live through the isolated engine after reload (#3468)",
+	"idle /workflows renders live through the isolated engine after reload (#3468, #5224)",
 	async () => {
 		const temp = mkdtempSync(join(tmpdir(), "atomic-workflow-status-"));
 		const socket = join(temp, "tmux.sock");
@@ -135,12 +135,12 @@ export default pi => pi.on("session_start", (_event, ctx) => {
 			const reloadDeadline = Date.now() + COMMAND_RENDER_BUDGET_MS;
 			while (!pane().includes("Reloaded keybindings") && Date.now() < reloadDeadline) await sleep(POLL_INTERVAL_MS);
 			assert.ok(pane().includes("Reloaded keybindings"), pane());
-			submit("/workflow status");
+			submit("/workflows");
 			const renderDeadline = Date.now() + COMMAND_RENDER_BUDGET_MS;
-			while (!pane().includes("no workflow runs in current session") && Date.now() < renderDeadline) {
+			while (!pane().includes("No workflows in this session.") && Date.now() < renderDeadline) {
 				await sleep(POLL_INTERVAL_MS);
 			}
-			assert.ok(pane().includes("no workflow runs in current session"), pane());
+			assert.ok(pane().includes("No workflows in this session."), pane());
 		} finally {
 			const groups = panePid === undefined ? [] : processGroupsUnder(panePid);
 			spawnSyncCollect(["tmux", "-S", socket, "kill-server"]);

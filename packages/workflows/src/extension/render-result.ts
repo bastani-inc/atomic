@@ -1,16 +1,4 @@
-/**
- * Render the workflow tool result for chat / LLM-tool surfaces.
- *
- * Workflow surfaces delegate to the canonical rounded renderers in `src/tui/`.
- * Compact status/error/control responses are wrapped in the same rounded
- * notice panel vocabulary so tool output stays visually consistent.
- *
- * cross-ref:
- *  - src/tui/status-list.ts  band-header status list
- *  - src/tui/run-detail.ts   per-run detail block
- *  - pi-subagents src/extension/index.ts renderResult slot
- */
-
+import { sliceHead } from "@bastani/atomic";
 import type { SerializedJournalStoreError } from "@bastani/atomic/storage";
 import { wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { ForkErrorCode } from "../durable/fork-errors.js";
@@ -18,8 +6,7 @@ import type { SharedPoolStats } from "../durable/journal/sql-shared-pool.js";
 import type { WorkflowForkedFrom } from "../durable/types.js";
 import type { RunDetail } from "../runs/background/status.js";
 import { describeReadinessDecision } from "../runs/foreground/readiness-decision.js";
-import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
-import { renderInputsSchema } from "../shared/render-inputs-schema.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type {
 	PendingPrompt,
 	RunSnapshot,
@@ -28,28 +15,18 @@ import type {
 	StageSnapshot,
 	StageStatus,
 } from "../shared/store-types.js";
+import { elapsedRunMs } from "../shared/timing.js";
+import { boundedToolText, TOOL_PAYLOAD_VALUE_LIMIT } from "../shared/tool-payload-bounds.js";
 import type { WorkflowDetails, WorkflowInputValues, WorkflowOutputValues } from "../shared/types.js";
-import { renderRoundedBox } from "../tui/chat-surface.js";
-import { renderDispatchConfirm } from "../tui/dispatch-confirm.js";
-import { deriveGraphTheme } from "../tui/graph-theme.js";
-import { renderRunDetail } from "../tui/run-detail.js";
-import { renderStatusList } from "../tui/status-list.js";
-import { truncateToWidth } from "../tui/text-helpers.js";
-import { renderWorkflowList } from "../tui/workflow-list.js";
+import { inertDisplayLine, inertDisplayText, withoutStackFrames } from "../tui/display-text.js";
+import { fmtDuration, statusIcon } from "../tui/status-helpers.js";
+import { truncateToWidth, visibleWidth } from "../tui/text-helpers.js";
 import { type SharedPoolStatusUnavailable, sharedPoolStatusLines } from "../workers/shared-pool-status-lines.js";
 import type { WorkflowControlFailedRun, WorkflowControlFailureCode } from "./workflow-control-failure.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import type { WorkflowRunStatusDigest } from "./workflow-status-digest.js";
 import type { WorkflowRunStatusFilter, WorkflowRunStatusSummary } from "./workflow-status-summary.js";
 import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
-
-// ---------------------------------------------------------------------------
-// Result variants
-// ---------------------------------------------------------------------------
-
-/* WorkflowRunEntry — removed. The status surface now consumes the
- * canonical `RunSnapshot` shape directly; the intermediate `runs` projection
- * is gone. */
 
 export interface WorkflowInputEntry {
 	name: string;
@@ -71,10 +48,6 @@ export interface WorkflowInputEntry {
 	format?: string;
 }
 
-/**
- * One entry per registered workflow, sourced from the live registry.
- * Carries the metadata the catalogue surface needs.
- */
 export interface WorkflowListItem {
 	name: string;
 	description: string;
@@ -86,11 +59,8 @@ type ListResult = {
 };
 type StatusResult = {
 	action: "status";
-	/** Applied run-status filter; "all" when unfiltered. */
 	filter: WorkflowRunStatusFilter;
-	/** Concise per-run summaries (in-flight runs first) for agent consumption. */
 	runs: WorkflowRunStatusSummary[];
-	/** Live snapshots from the in-process store, filtered like `runs`. */
 	snapshots: RunSnapshot[];
 };
 type StatusDetailResult =
@@ -98,9 +68,7 @@ type StatusDetailResult =
 			action: "statusDetail";
 			runId: string;
 			detail: RunDetail;
-			/** A root whose pool runs on a shared journal (#4310): its queue depth, hosts and leases. */
 			sharedPool?: SharedPoolStats;
-			/** Why a shared root's pool stats could not be read, and how to recover a store that stopped taking writes. */
 			sharedPoolUnavailable?: SharedPoolStatusUnavailable;
 	  }
 	| {
@@ -131,11 +99,6 @@ type RunResult = {
 	exited?: boolean;
 	exitReason?: string;
 	stages?: StageSnapshot[];
-	/**
-	 * Free-form message carried by the result. Carries the "started in
-	 * background" copy emitted by `runDetached()`; foreground-completion
-	 * results don't set this since `error`/`stages` cover them.
-	 */
 	message?: string;
 };
 type StageListItem = {
@@ -209,16 +172,12 @@ type ResumeResult = {
 	status: string;
 	message: string;
 	code?: WorkflowControlFailureCode;
-	/** `run_not_found`: the typed storage error behind it, serialized for the SDK to rehydrate. */
 	failure?: SerializedJournalStoreError;
 };
-/** Outcome of the `fork` action: the new run, or the typed fork failure's code, message and hint. */
 export type ForkResult = {
 	action: "fork";
-	/** The fork's run id; empty when no fork was created. */
 	runId: string;
 	sourceRunId: string;
-	/** `forked` when the fork was created but did not start; `startFailure` says why. */
 	status: "running" | "forked" | "failed";
 	message: string;
 	forkedFrom?: WorkflowForkedFrom;
@@ -227,14 +186,6 @@ export type ForkResult = {
 	hint?: string;
 };
 
-/**
- * Outcome of aborting one in-flight `ctx.tool` node with `quit`/`pause`.
- *
- * The node status and the workflow status are reported separately: the action
- * cancels exactly one node and never pauses the run, while what happens to the
- * run afterwards is ordinary author control flow. `workflowStatus` is the
- * status observed when the action returned, not a prediction.
- */
 export type ToolNodeControlResult<TAction extends "quit" | "pause" = "quit" | "pause"> = {
 	readonly action: TAction;
 	readonly runId: string;
@@ -289,58 +240,43 @@ export interface RenderResultOpts {
 	errorText?: string;
 	width?: number;
 	runInputs?: Readonly<WorkflowInputValues>;
-	/**
-	 * Suppress ANSI colour output (CLI flag paths / non-TTY consumers).
-	 * When false/undefined the canonical Catppuccin chrome is rendered.
-	 */
 	plain?: boolean;
-	/**
-	 * Stable wall-clock used for elapsed-time labels in scrollback. Capture
-	 * once when the chat entry is created so subsequent host re-renders do
-	 * not silently tick `elapsed` / `running` durations — every off-viewport
-	 * tick forces pi-tui's full-redraw path (CSI 2J + CSI H + CSI 3J) and
-	 * is visible as whole-screen flicker under terminal emulators that do
-	 * not implement synchronized output (e.g. mosh).
-	 */
 	now?: number;
-	/** Point-in-time full run collection used only to resolve hidden nested indicators. */
 	allRuns?: readonly RunSnapshot[];
 }
 
-/**
- * Returns a human-readable string describing the tool result. Multi-line
- * rich blocks for `status` / `statusDetail`; compact one-liners for the
- * remaining variants.
- *
- * Note: type assertions inside each `case` arm are required because the
- * fallback default below (`{ action: string }`) prevents TypeScript from
- * narrowing the union via `switch (result.action)`.
- */
 function fitLine(line: string, width?: number): string {
 	if (width === undefined || width <= 0) return line;
 	return truncateToWidth(line, width, "…");
 }
 
-function noticeBodyLines(message: string, width?: number): string[] {
-	return message
-		.split(/\r?\n/)
+function fitLines(lines: readonly string[], width?: number): string {
+	if (width === undefined || width <= 0) return lines.join("\n");
+	const budget = Math.max(1, Math.floor(width));
+	return lines
 		.flatMap((line) => {
-			if (line.length === 0 || width === undefined || width <= 0) return [line];
-			return wrapTextWithAnsi(line, width);
+			if (line.length === 0) return [""];
+			return wrapTextWithAnsi(line, budget).map((part) =>
+				visibleWidth(part) <= budget ? part : truncateToWidth(part, budget, "…"),
+			);
 		})
-		.map((line) => ` ${line} `);
+		.join("\n");
 }
 
-function renderNotice(title: string, message: string, opts: RenderResultOpts | undefined, themed: boolean): string {
-	const theme = themed ? deriveGraphTheme({}) : undefined;
-	const width = opts?.width;
-	const contentWidth = width && width > 0 ? Math.max(1, width - 4) : undefined;
-	return renderRoundedBox({
-		title,
-		bodyLines: noticeBodyLines(message, contentWidth),
-		theme,
-		width,
-	});
+function renderNotice(title: string, message: string, opts: RenderResultOpts | undefined): string {
+	const clean = inertDisplayText(boundedToolText(message, TOOL_PAYLOAD_VALUE_LIMIT));
+	const rawLines = clean.split(/\r?\n/);
+	if (rawLines.length <= 1) {
+		return fitLines([`${title}: ${rawLines[0] ?? ""}`], opts?.width);
+	}
+	return fitLines([title, ...rawLines], opts?.width);
+}
+
+function errorNoticeText(errorText: string): string {
+	const bounded = boundedToolText(inertDisplayText(errorText), TOOL_PAYLOAD_VALUE_LIMIT);
+	const { kept, frames } = withoutStackFrames(bounded);
+	const body = kept.join("\n").trimEnd();
+	return frames > 0 ? `${body}\n(${frames} stack ${frames === 1 ? "frame" : "frames"} hidden)` : body;
 }
 
 function statusDigestNoticeText(digest: WorkflowRunStatusDigest): string {
@@ -383,190 +319,215 @@ function transcriptNoticeText(result: TranscriptResult): string {
 	return entriesText;
 }
 
+function renderListLines(items: readonly WorkflowListItem[], width?: number): string {
+	const lines: string[] = [`WORKFLOWS · ${items.length} registered`];
+	if (items.length === 0) {
+		lines.push("no workflows registered");
+		return fitLines(lines, width);
+	}
+	for (const item of items) {
+		const inputs =
+			item.inputs.length === 0
+				? "inputs: (none)"
+				: `inputs: ${item.inputs.map((inp) => (inp.required ? inp.name : `${inp.name}?`)).join(", ")}`;
+		lines.push(`${inertDisplayLine(item.name)} — ${inertDisplayLine(item.description)}`);
+		lines.push(`  ${inertDisplayLine(inputs)}`);
+	}
+	return fitLines(lines, width);
+}
+
+function renderStatusLines(snapshots: readonly RunSnapshot[], opts?: RenderResultOpts): string {
+	const now = opts?.now ?? Date.now();
+	const lines: string[] = [`BACKGROUND · ${snapshots.length} ${snapshots.length === 1 ? "run" : "runs"}`];
+	if (snapshots.length === 0) {
+		lines.push("no workflow runs in current session");
+		return fitLines(lines, opts?.width);
+	}
+	for (const run of snapshots) {
+		const status = effectiveRunStatus(run);
+		const icon = statusIcon(status);
+		const dur = fmtDuration(elapsedRunMs(run, now));
+		lines.push(`${icon} ${inertDisplayLine(run.id)}  ${inertDisplayLine(run.name)}  ${status}  ${dur}`);
+	}
+	return fitLines(lines, opts?.width);
+}
+
+function renderStatusDetailLines(
+	r: Extract<StatusDetailResult, { detail: RunDetail }>,
+	opts?: RenderResultOpts,
+): string {
+	const now = opts?.now ?? Date.now();
+	const { detail } = r;
+	const lines: string[] = [
+		`RUN ${inertDisplayLine(detail.name)} · ${detail.status}`,
+		`run id ${inertDisplayLine(detail.runId)}`,
+		`duration ${fmtDuration(elapsedRunMs(detail, now))}`,
+	];
+	if (detail.error) {
+		const first = withoutStackFrames(sliceHead(detail.error, 4096)).kept[0] ?? detail.error;
+		lines.push(`error ${inertDisplayLine(first)}`);
+	}
+	for (const stage of detail.stages) {
+		lines.push(`  ${statusIcon(stage.status)} ${inertDisplayLine(stage.name)} (${stage.id}) ${stage.status}`);
+	}
+	for (const tool of detail.tools) {
+		lines.push(`  ${inertDisplayLine(tool.name)} (${tool.id}) ${tool.status}`);
+	}
+	const pool =
+		r.sharedPool !== undefined
+			? { sharedPool: r.sharedPool }
+			: r.sharedPoolUnavailable !== undefined
+				? { sharedPoolUnavailable: r.sharedPoolUnavailable }
+				: undefined;
+	if (pool !== undefined) {
+		lines.push(...sharedPoolStatusLines(pool).map((line) => inertDisplayLine(line)));
+	}
+	return fitLines(lines, opts?.width);
+}
+
+function renderInputsLines(name: string, inputs: readonly WorkflowInputEntry[], width?: number): string {
+	const safeName = inertDisplayLine(name);
+	if (inputs.length === 0) {
+		return fitLines([`INPUTS FOR ${safeName}`, `Workflow has no declared inputs. Workflow: "${safeName}".`], width);
+	}
+	const lines: string[] = [`INPUTS FOR ${safeName}`];
+	for (const field of inputs) {
+		const tag = field.required ? "required" : "optional";
+		lines.push(`${inertDisplayLine(field.name)}  ${inertDisplayLine(field.type)} · ${tag}`);
+		if (field.description) lines.push(`  ${inertDisplayLine(field.description)}`);
+		if (field.choices && field.choices.length > 0) {
+			lines.push(`  values: ${field.choices.map((c) => inertDisplayLine(c)).join(" · ")}`);
+		}
+		if (field.default !== undefined) {
+			lines.push(`  default: ${inertDisplayLine(JSON.stringify(field.default))}`);
+		}
+	}
+	return fitLines(lines, width);
+}
+
+function renderRunLines(r: RunResult, opts?: RenderResultOpts): string {
+	const partial = opts?.isPartial === true;
+	if (partial) return renderNotice("WORKFLOW RUN", `${r.runId}: ${r.status} (in progress…)`, opts);
+	if (r.status === "failed" && !r.runId) {
+		const label = r.name ? ` (${r.name})` : "";
+		return renderNotice("WORKFLOW RUN", `${label || "workflow"}: ${r.error ?? "workflow not found"}`, opts);
+	}
+	if (r.error) {
+		const label = r.name ? ` (${r.name})` : "";
+		return renderNotice("WORKFLOW RUN", `${r.runId}${label}: ${r.status} — ${r.error}`, opts);
+	}
+	if (r.details && r.details.status !== "accepted") {
+		const label = r.name ? ` (${r.name})` : "";
+		const guidance = r.details.message === undefined ? "" : ` — ${r.details.message}`;
+		return renderNotice("WORKFLOW RUN", `${r.runId}${label}: ${r.details.mode} ${r.details.status}${guidance}`, opts);
+	}
+	if (
+		r.status === "completed" ||
+		r.status === "failed" ||
+		r.status === "skipped" ||
+		r.status === "cancelled" ||
+		r.status === "blocked" ||
+		r.status === "killed"
+	) {
+		const label = r.name ? ` (${r.name})` : "";
+		return renderNotice("WORKFLOW RUN", `${r.runId}${label}: ${r.status}`, opts);
+	}
+	if (r.name && r.runId) {
+		const inputs = opts?.runInputs ?? {};
+		const inputSummary = Object.entries(inputs)
+			.map(([k, v]) => `${inertDisplayLine(k)}=${inertDisplayLine(typeof v === "string" ? v : JSON.stringify(v))}`)
+			.join(" · ");
+		const lines = [
+			`${inertDisplayLine(r.name)} · ${statusIcon("running")} running${inputSummary ? ` · ${inputSummary}` : ""}`,
+			`run ${inertDisplayLine(r.runId)} · /workflows ${inertDisplayLine(r.runId)}`,
+		];
+		return fitLines(lines, opts?.width);
+	}
+	const label = r.name ? ` (${r.name})` : "";
+	return renderNotice("WORKFLOW RUN", `${r.runId}${label}: started in background — ${r.message ?? r.status}`, opts);
+}
+
 export function renderResult(result: WorkflowRegisteredToolResult | null | undefined, opts?: RenderResultOpts): string {
 	return renderResultBody(result, opts);
 }
 
 function renderResultBody(result: WorkflowRegisteredToolResult | null | undefined, opts?: RenderResultOpts): string {
 	const partial = opts?.isPartial === true;
-	const themed = opts?.plain !== true;
 
-	// Runtime guard. The tool-result renderer passes `result.details`, which can
-	// be absent or not yet shaped during streaming/partial renders or on error
-	// paths that return content without a structured payload. Dereferencing a
-	// missing `action` here previously threw and crashed the TUI render loop, so
-	// degrade gracefully instead.
 	if (result === null || result === undefined || typeof result.action !== "string") {
-		if (opts?.errorText !== undefined) return renderNotice("WORKFLOW ERROR", opts.errorText, opts, themed);
-		return partial ? "" : renderNotice("WORKFLOW", "no result", opts, themed);
+		if (opts?.errorText !== undefined) return renderNotice("WORKFLOW ERROR", errorNoticeText(opts.errorText), opts);
+		return partial ? "" : renderNotice("WORKFLOW", "no result", opts);
 	}
 	if ("code" in result && result.code === "WORKFLOW_TIMEOUT") {
-		return renderNotice("WORKFLOW TIMEOUT", result.error, opts, themed);
+		return renderNotice("WORKFLOW TIMEOUT", result.error, opts);
 	}
 
 	switch (result.action) {
 		case "list": {
 			const r = result as ListResult;
-			return renderWorkflowList(r.items, {
-				theme: themed ? deriveGraphTheme({}) : undefined,
-				width: opts?.width,
-			});
+			return renderListLines(r.items, opts?.width);
 		}
 
 		case "status": {
 			const r = result as StatusResult;
 			const allRuns = opts?.allRuns ?? getWorkflowStatusRenderRuns(r) ?? r.snapshots;
-			const statusByRunId = new Map(allRuns.map((run) => [run.id, run.status]));
-			return renderStatusList(r.snapshots, {
-				theme: themed ? deriveGraphTheme({}) : undefined,
-				width: opts?.width,
-				now: opts?.now,
-				allRuns,
-				owningRunStatus: (runId) => statusByRunId.get(runId),
-				resolveBoundarySegments: (runId) => workflowBoundarySegments(allRuns, runId),
-			});
+			return renderStatusLines(r.snapshots, { ...opts, allRuns });
 		}
 
 		case "statusSummary": {
 			const { summary } = result as StatusSummaryResult;
-			return renderNotice("WORKFLOW STATUS", statusDigestNoticeText(summary), opts, themed);
+			return renderNotice("WORKFLOW STATUS", statusDigestNoticeText(summary), opts);
 		}
 
 		case "statusDetail": {
 			if ("error" in result) {
 				const r = result as Extract<StatusDetailResult, { error: string }>;
-				return renderNotice("WORKFLOW STATUS", `id=${r.runId}: ${r.error}`, opts, themed);
+				return renderNotice("WORKFLOW STATUS", `id=${r.runId}: ${r.error}`, opts);
 			}
 			const r = result as Extract<StatusDetailResult, { detail: RunDetail }>;
-			const allRuns = opts?.allRuns ?? getWorkflowStatusRenderRuns(r);
-			const statusByRunId = new Map(allRuns?.map((run) => [run.id, run.status]) ?? []);
-			const pool =
-				r.sharedPool !== undefined
-					? { sharedPool: r.sharedPool }
-					: r.sharedPoolUnavailable !== undefined
-						? { sharedPoolUnavailable: r.sharedPoolUnavailable }
-						: undefined;
-			const detail = renderRunDetail(r.detail, {
-				theme: themed ? deriveGraphTheme({}) : undefined,
-				width: opts?.width,
-				now: opts?.now,
-				owningRunStatus: (runId) => statusByRunId.get(runId),
-				...(allRuns === undefined
-					? {}
-					: { resolveBoundarySegments: (runId) => workflowBoundarySegments(allRuns, runId) }),
-			});
-			if (pool === undefined) return detail;
-			return `${detail}\n${renderNotice("SHARED POOL", sharedPoolStatusLines(pool).join("\n"), opts, themed)}`;
+			return renderStatusDetailLines(r, opts);
 		}
 
 		case "inputs": {
 			const r = result as InputsResult;
-			return renderInputsSchema(r.name, r.inputs, {
-				theme: themed ? deriveGraphTheme({}) : undefined,
-				width: opts?.width,
-			});
+			if (r.error) return renderNotice("WORKFLOW INPUTS", `${r.name}: ${r.error}`, opts);
+			return renderInputsLines(r.name, r.inputs, opts?.width);
 		}
 
 		case "get": {
 			const r = result as GetResult;
-			if (r.error) return renderNotice("WORKFLOW GET", `${r.workflow}: ${r.error}`, opts, themed);
+			if (r.error) return renderNotice("WORKFLOW GET", `${r.workflow}: ${r.error}`, opts);
 			const output = r.details?.output;
 			const description = typeof output?.description === "string" ? ` — ${output.description}` : "";
-			return renderNotice(
-				"WORKFLOW GET",
-				`${r.workflow}: ${r.details?.status ?? "completed"}${description}`,
-				opts,
-				themed,
-			);
+			return renderNotice("WORKFLOW GET", `${r.workflow}: ${r.details?.status ?? "completed"}${description}`, opts);
 		}
 
 		case "run": {
 			const r = result as RunResult;
-			if (partial) return renderNotice("WORKFLOW RUN", `${r.runId}: ${r.status} (in progress…)`, opts, themed);
-			if (r.status === "failed" && !r.runId) {
-				// Not-found path — render the error verbatim, no fake runId banner.
-				const label = r.name ? ` (${r.name})` : "";
-				return renderNotice(
-					"WORKFLOW RUN",
-					`${label || "workflow"}: ${r.error ?? "workflow not found"}`,
-					opts,
-					themed,
-				);
-			}
-			if (r.error) {
-				const label = r.name ? ` (${r.name})` : "";
-				return renderNotice("WORKFLOW RUN", `${r.runId}${label}: ${r.status} — ${r.error}`, opts, themed);
-			}
-			if (r.details) {
-				if (r.details.status === "accepted" && r.name && r.runId) {
-					return renderDispatchConfirm({
-						workflowName: r.name,
-						runId: r.runId,
-						inputs: opts?.runInputs ?? {},
-						theme: themed ? deriveGraphTheme({}) : undefined,
-						width: opts?.width,
-					});
-				}
-				const label = r.name ? ` (${r.name})` : "";
-				const guidance = r.details.message === undefined ? "" : ` — ${r.details.message}`;
-				return renderNotice(
-					"WORKFLOW RUN",
-					`${r.runId}${label}: ${r.details.mode} ${r.details.status}${guidance}`,
-					opts,
-					themed,
-				);
-			}
-			if (
-				r.status === "completed" ||
-				r.status === "failed" ||
-				r.status === "skipped" ||
-				r.status === "cancelled" ||
-				r.status === "blocked" ||
-				r.status === "killed"
-			) {
-				const label = r.name ? ` (${r.name})` : "";
-				return renderNotice("WORKFLOW RUN", `${r.runId}${label}: ${r.status}`, opts, themed);
-			}
-			if (r.name && r.runId) {
-				return renderDispatchConfirm({
-					workflowName: r.name,
-					runId: r.runId,
-					inputs: opts?.runInputs ?? {},
-					theme: themed ? deriveGraphTheme({}) : undefined,
-					width: opts?.width,
-				});
-			}
-			const label = r.name ? ` (${r.name})` : "";
-			return renderNotice(
-				"WORKFLOW RUN",
-				`${r.runId}${label}: started in background — ${r.message ?? r.status}`,
-				opts,
-				themed,
-			);
+			return renderRunLines(r, opts);
 		}
 
 		case "stages": {
 			const r = result as StageListResult;
-			if (r.error) return renderNotice("WORKFLOW STAGES", `${r.runId || "(none)"}: ${r.error}`, opts, themed);
+			if (r.error) return renderNotice("WORKFLOW STAGES", `${r.runId || "(none)"}: ${r.error}`, opts);
 			const counts = r.stages
 				.map(
 					(s) =>
 						`${s.name} (${s.id}): ${s.status}${s.skippedReason ? ` — ${s.skippedReason}` : ""}${s.readinessDecision ? ` — ${describeReadinessDecision(s.readinessDecision)}` : ""}`,
 				)
 				.join("; ");
-			return renderNotice("WORKFLOW STAGES", `${r.runId}: ${r.filter} — ${counts || "no stages"}`, opts, themed);
+			return renderNotice("WORKFLOW STAGES", `${r.runId}: ${r.filter} — ${counts || "no stages"}`, opts);
 		}
 
 		case "stage": {
 			const r = result as StageDetailResult;
 			if (r.error || !r.stage)
-				return renderNotice("WORKFLOW STAGE", `${r.runId}: ${r.error ?? "stage not found"}`, opts, themed);
+				return renderNotice("WORKFLOW STAGE", `${r.runId}: ${r.error ?? "stage not found"}`, opts);
 			const extra = r.stage.error ? ` — ${r.stage.error}` : r.stage.result ? ` — ${r.stage.result}` : "";
 			return renderNotice(
 				"WORKFLOW STAGE",
 				`${r.runId}: ${r.stage.name} (${r.stage.id}) ${r.stage.status}${extra}`,
 				opts,
-				themed,
 			);
 		}
 
@@ -574,47 +535,37 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 			const r = result as TranscriptResult;
 			const text = transcriptNoticeText(r);
 			const suffix = r.truncated ? " (truncated)" : "";
-			return renderNotice(
-				"WORKFLOW TRANSCRIPT",
-				`${r.runId}/${r.stageId} ${r.source}: ${text}${suffix}`,
-				opts,
-				themed,
-			);
+			return renderNotice("WORKFLOW TRANSCRIPT", `${r.runId}/${r.stageId} ${r.source}: ${text}${suffix}`, opts);
 		}
 
 		case "answer": {
 			const r = result as AnswerResult;
-			return renderNotice("WORKFLOW ANSWER", `${r.runId}/${r.stageId}: ${r.message}`, opts, themed);
+			return renderNotice("WORKFLOW ANSWER", `${r.runId}/${r.stageId}: ${r.message}`, opts);
 		}
 
 		case "pause": {
 			const r = result as PauseResult;
-			return renderNotice("WORKFLOW PAUSE", `${r.runId}: ${r.message}`, opts, themed);
+			return renderNotice("WORKFLOW PAUSE", `${r.runId}: ${r.message}`, opts);
 		}
 
 		case "reload": {
 			const r = result as ReloadResult;
-			return renderNotice("WORKFLOW RELOAD", r.message, opts, themed);
+			return renderNotice("WORKFLOW RELOAD", r.message, opts);
 		}
 
 		case "quit": {
 			const r = result as QuitResult;
-			return renderNotice("WORKFLOW QUIT", `${r.runId}: ${r.message}`, opts, themed);
+			return renderNotice("WORKFLOW QUIT", `${r.runId}: ${r.message}`, opts);
 		}
 
 		case "resume": {
 			const r = result as ResumeResult;
-			return renderNotice("WORKFLOW RESUME", `${r.runId}: ${r.message}`, opts, themed);
+			return renderNotice("WORKFLOW RESUME", `${r.runId}: ${r.message}`, opts);
 		}
 
 		case "fork": {
 			const r = result as ForkResult;
-			return renderNotice(
-				"WORKFLOW FORK",
-				`${r.runId.length > 0 ? r.runId : r.sourceRunId}: ${r.message}`,
-				opts,
-				themed,
-			);
+			return renderNotice("WORKFLOW FORK", `${r.runId.length > 0 ? r.runId : r.sourceRunId}: ${r.message}`, opts);
 		}
 
 		case "models": {
@@ -624,7 +575,6 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 					"WORKFLOW MODELS",
 					"no models in configured catalog — configured-auth snapshot, not proof of credentials, entitlements, OAuth freshness, or live provider access.",
 					opts,
-					themed,
 				);
 			}
 			const currentLine = r.models.find((model) => model.isCurrent);
@@ -641,14 +591,12 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 				"WORKFLOW MODELS",
 				`${lines}${suffix} — configured-auth catalog snapshot, not proof of credentials, entitlements, OAuth freshness, or live provider access.`,
 				opts,
-				themed,
 			);
 		}
 
 		default: {
-			// Runtime guard — handles values coerced from external sources.
 			const fallback = result as { action: string; message?: string };
-			return renderNotice("WORKFLOW", fallback.message ?? JSON.stringify(result), opts, themed);
+			return renderNotice("WORKFLOW", fallback.message ?? JSON.stringify(result), opts);
 		}
 	}
 }

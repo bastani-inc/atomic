@@ -38,6 +38,7 @@ export interface PiRenderContext {
 	args?: unknown;
 	/** What this renderer returned for the same row last time, so it can update it in place. */
 	lastComponent?: unknown;
+	outputPad?: number;
 }
 
 export interface PiRenderResultOpts extends RenderResultOpts {
@@ -48,6 +49,7 @@ export interface PiRenderComponent {
 	render(width: number): string[];
 	invalidate?: () => void;
 	includes(searchString: string): boolean;
+	isWorking?: () => boolean;
 }
 
 export interface PiMessageRenderComponent {
@@ -57,8 +59,6 @@ export interface PiMessageRenderComponent {
 
 export interface PiMessageRenderOptions {
 	expanded: boolean;
-	outputPad?: number;
-	keyText?: (keybinding: string) => string;
 }
 
 export type PiMessageRendererResult = string | PiMessageRenderComponent | null | undefined;
@@ -108,6 +108,7 @@ export interface PiModelContext {
 	generateWorkflowSummary?(text: string, signal: AbortSignal): Promise<string | undefined>;
 	isSessionSummaryEnabled?(): boolean;
 	isProjectTrusted?(): boolean;
+	isIdle?(): boolean;
 	readonly model?: PiRuntimeModel;
 	readonly modelRegistry?: PiRuntimeModelRegistry;
 }

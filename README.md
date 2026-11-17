@@ -411,7 +411,7 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <a href="https://github.com/bastani-inc/atomic-crash-course#a10-autonomous-implementation-loops">
 <picture>
 <source srcset="assets/feature-wall/40-autonomous-implementation-loops.gif" type="image/gif">
-<img src="assets/feature-wall/40-autonomous-implementation-loops.jpg" alt="Atomic inspecting the ralph contract, launching a one-loop validation task, and opening its live research-first workflow graph" width="100%">
+<img src="assets/feature-wall/40-autonomous-implementation-loops.jpg" alt="An earlier Atomic session inspecting the ralph contract, launching a one-loop validation task, and opening its live research-first workflow graph" width="100%">
 </picture>
 </a>
 </td>
@@ -539,7 +539,7 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins">
 <picture>
 <source srcset="assets/feature-wall/22-touring-the-builtins.gif" type="image/gif">
-<img src="assets/feature-wall/22-touring-the-builtins.jpg" alt="The Atomic workflow picker listing the bundled workflows and their stages" width="100%">
+<img src="assets/feature-wall/22-touring-the-builtins.jpg" alt="An earlier Atomic session's workflow picker listing the bundled workflows and their stages" width="100%">
 </picture>
 </a>
 </td>

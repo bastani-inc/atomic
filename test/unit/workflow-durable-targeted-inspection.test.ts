@@ -18,7 +18,7 @@ import { testRunId } from "../helpers/run-id.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { mockSession } from "./executor-shared.js";
-import { buildCtx, registerWorkflowCommand } from "./slash-dispatch-utils.js";
+import { makeRegisteredWorkflowTool } from "./slash-dispatch-utils.js";
 
 const ROOT_ID = "2603abcd-1111-4222-8333-123456789abc";
 const CHILD_ID = "2603abcd-2222-4222-8333-123456789abc";
@@ -879,7 +879,7 @@ describe("targeted durable workflow inspection", () => {
 		assert.equal(await recoverer.workflowOwnership(workflowId), "available");
 	});
 
-	test("routes /workflow status with an exact missing-local id through durable inspection", async () => {
+	test("routes workflow tool status with an exact missing-local id through durable inspection (#5224)", async () => {
 		const workflowId = testRunId("targeted-slash-status");
 		const staleAt = Date.now() - FOREIGN_LIVE_WORKFLOW_WINDOW_MS - 1;
 		const writer = await JournalTestBackend.create();
@@ -908,20 +908,22 @@ describe("targeted durable workflow inspection", () => {
 			},
 		});
 		setDurableBackend(await writer.reopen());
-		const { workflowCmd, sent } = await registerWorkflowCommand();
-		const { ctx } = buildCtx();
+		const tool = await makeRegisteredWorkflowTool();
 
-		await workflowCmd.options.handler(`status ${workflowId}`, ctx);
-
-		const detail = sent.find(
-			(message) =>
-				typeof message.details === "object" &&
-				message.details !== null &&
-				"kind" in message.details &&
-				message.details.kind === "detail",
-		)?.details as { readonly detail?: { readonly status?: string; readonly runId?: string } } | undefined;
-		assert.equal(detail?.detail?.runId, workflowId);
-		assert.equal(detail?.detail?.status, "crashed");
+		const inspected = await tool.execute(
+			"durable-status-call",
+			{ action: "status", runId: workflowId },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		const detail = inspected.details as {
+			readonly action?: string;
+			readonly detail?: { readonly status?: string; readonly runId?: string };
+		};
+		assert.equal(detail.action, "statusDetail");
+		assert.equal(detail.detail?.runId, workflowId);
+		assert.equal(detail.detail?.status, "crashed");
 		assert.deepEqual(store.runs(), []);
 	});
 });

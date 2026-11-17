@@ -19,6 +19,7 @@ import { inspectTargetedDurableWorkflow } from "../../packages/workflows/src/dur
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { sessionSwitchQuitConfirmation } from "../../packages/workflows/src/extension/extension-lifecycle.js";
 import type { PiCommandContext, PiMessageRenderer } from "../../packages/workflows/src/extension/public-types.js";
+import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { handleDurableResume } from "../../packages/workflows/src/extension/workflow-durable-resume-command.js";
 import {
@@ -31,6 +32,7 @@ import {
 } from "../../packages/workflows/src/extension/workflow-prompts.js";
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { workflowQuitAction } from "../../packages/workflows/src/extension/workflow-tool-control.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
 import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import {
@@ -38,10 +40,8 @@ import {
 	type StageControlHandle,
 	stageControlRegistry,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import { renderInputsSchema } from "../../packages/workflows/src/shared/render-inputs-schema.js";
 import { StageRehydrationError, StageWaitError } from "../../packages/workflows/src/shared/stage-wait-errors.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { renderWorkflowList } from "../../packages/workflows/src/tui/workflow-list.js";
 import { sharedPoolProblems } from "../../packages/workflows/src/workers/placement-errors.js";
@@ -214,10 +214,12 @@ describe("workflow slash source-copy migration (#5224)", () => {
 		assert.match(statusText, /\/workflows/);
 		assert.match(statusText, /resumable via \/resume/);
 
-		const inputsPretty = renderInputsSchema("demo", [{ name: "prompt", type: "text", required: true }], {
-			theme: deriveGraphTheme({}),
+		const inputsText = renderResult({
+			action: "inputs",
+			name: "demo",
+			inputs: [{ name: "prompt", type: "text", required: true }],
 		});
-		assertNoLegacyWorkflowSlash(inputsPretty);
+		assertNoLegacyWorkflowSlash(inputsText);
 	});
 
 	test("session switch confirmation, targeted inspection, and cross-project resume messages guide to /resume and /workflows (#5224)", async () => {
@@ -389,7 +391,7 @@ describe("workflow slash source-copy migration (#5224)", () => {
 					stageControlRegistry,
 					toolControlRegistry,
 					stageUiBroker: {} as never,
-					jobs: {} as never,
+					jobs: createJobTracker(),
 				},
 			);
 			const quitMessage = "message" in toolQuit && typeof toolQuit.message === "string" ? toolQuit.message : "";

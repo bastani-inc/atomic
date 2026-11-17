@@ -35,6 +35,7 @@
 
 ### Fixed
 
+- Fixed navigation views such as `/workflows` showing a working indicator when no agent turn was active. A genuine turn's working line remains visible while navigation is open ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed the host input form (`ctx.ui.hostInputForm`) writing terminal control sequences from field names, descriptions, choices, placeholders and prefilled values to the terminal, and drawing lines wider than a narrow terminal. Control characters now show escaped, and every line fits the width ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed host input forms accepting integers outside JavaScript's safe integer range and silently rounding their value. They now show a validation error ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Fixed `ctx.ui.hostInputForm` never settling under the isolated interactive engine when the host could not read the form's fields, such as a non-string `description`. The call now rejects, and requests that cannot be sent release their pending form and abort listener ([#5224](https://github.com/bastani-inc/atomic/issues/5224))

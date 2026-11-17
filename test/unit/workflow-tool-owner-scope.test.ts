@@ -6,6 +6,7 @@ import { createExtensionRuntime } from "../../packages/workflows/src/extension/r
 import { registerWorkflowSlashCommand } from "../../packages/workflows/src/extension/workflow-command-registration.js";
 import type { WorkflowCommandHandler } from "../../packages/workflows/src/extension/workflow-command-utils.js";
 import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
+import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { currentWorkflowStore } from "../../packages/workflows/src/shared/store-factory.js";
 import { testRunId } from "../helpers/run-id.js";
@@ -95,13 +96,7 @@ test("registered slash pause keeps its controls and store across a sibling adopt
 		typeof registerWorkflowSlashCommand
 	>[2]["overlay"];
 	registerWorkflowSlashCommand(pi, commands, {
-		runtimeProxy: runtime,
-		runtimeForContext: () => runtime,
 		overlay,
-		reloadWorkflowResources: () => undefined,
-		ensureWorkflowResourcesLoaded() {},
-		runWithLifecycleSuppressedForPolicy: (_policy, fn) => fn(),
-		runControl: { pi, overlay, runtimeForContext: () => runtime, ensureWorkflowResourcesLoaded() {} },
 	});
 	const runId = testRunId("slash-owner");
 	owner.store.recordRunStart({
@@ -126,7 +121,17 @@ test("registered slash pause keeps its controls and store across a sibling adopt
 	});
 	adoptWorkflowSessionRunState({}, true);
 	try {
-		await commands.get("workflow")!(`pause ${runId}`, { hasUI: false } as PiCommandContext);
+		await commands.get("workflows")!(runId, {
+			hasUI: false,
+			ui: { notify: (message: string) => messages.push(message) },
+		} as PiCommandContext);
+		await handleRunControlCommand(
+			"pause",
+			["--yes", runId],
+			{ hasUI: false, ui: { notify: (message: string) => messages.push(message) } } as PiCommandContext,
+			{ info: (message) => messages.push(message), error: (message) => messages.push(message) },
+			{ pi, overlay, runtimeForContext: () => runtime, ensureWorkflowResourcesLoaded() {}, owner },
+		);
 		assert.equal(pauseCount, 1);
 		assert.equal(owner.store.runs()[0]?.status, "paused");
 		assert.equal(currentWorkflowStore().runs().length, 0);

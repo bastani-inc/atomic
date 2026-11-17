@@ -132,8 +132,9 @@ test("workflow sheet uses every fitting row at 80x24 and 80x25 in the production
 					Math.floor((rows - externalRows - chrome) / 2),
 					`rows=${rows}, step ${step}: unused row space`,
 				);
-				assert.ok(
-					unusedRows <= (rows % 2 === 0 ? 1 : 0),
+				assert.equal(
+					unusedRows,
+					(rows - externalRows - chrome) % 2,
 					`rows=${rows}, step ${step}: ${unusedRows} unused transcript rows`,
 				);
 				const screenText = frame.lines

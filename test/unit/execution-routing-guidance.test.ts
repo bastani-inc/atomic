@@ -880,7 +880,7 @@ describe("agent-decided workflow execution guidance", () => {
 		const documentation = await readRepositoryFile("packages/coding-agent/docs/workflows/operations.md");
 		for (const current of [
 			"`answer` responds only to a pending primitive or structured human-input prompt",
-			"Use `workflow resume` only for paused workflow control",
+			"Use the workflow tool's `resume` action only for paused workflow control",
 			"ordinary Intercom to",
 			"delivers immediately to live stages",
 			"delivering them before their first model turn",

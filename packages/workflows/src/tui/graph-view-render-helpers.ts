@@ -36,6 +36,14 @@ function noticeDisplayText(value: string, width: number): string {
 	return sanitizeToolTitleText(head) + (head.length < value.length ? "…" : "");
 }
 
+function ellipsizeQuitName(name: string, budget: number): string {
+	if (budget <= 0) return "";
+	if (visibleWidth(name) <= budget) return name;
+	return truncateToWidth(name, budget, "\u2026");
+}
+
+export type GraphKeyTier = "full" | "compact" | "tight" | "minimal" | "keys";
+
 export function toolExpandKey(piKeybindings: unknown): string {
 	const keybindings = isKeybindingsLike(piKeybindings) ? piKeybindings : undefined;
 	const keys = keybindings?.getKeys?.(APP_ACTION.toolsExpand);
@@ -106,41 +114,99 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		return stage.status === "running";
 	}
 
-	protected _graphKeys(compact = false): NavKey[] {
-		const help = this._actionKey(APP_ACTION.keysHelp, "?", "keys");
+	protected _keyShadowed(key: string): boolean {
+		const keybindings = this._navKeybindings();
+		return (
+			keybindings?.matches(key, APP_ACTION.listStop) === true ||
+			keybindings?.matches(key, APP_ACTION.keysHelp) === true
+		);
+	}
+
+	protected _toolDetailKeyShadowed(key: string): boolean {
+		const keybindings = this._navKeybindings();
+		return (
+			keybindings?.matches(key, APP_ACTION.toolsExpand) === true ||
+			keybindings?.matches(key, APP_ACTION.keysHelp) === true
+		);
+	}
+
+	protected _graphKeys(compact: boolean | GraphKeyTier = "full"): NavKey[] {
+		const mode: GraphKeyTier = typeof compact === "boolean" ? (compact ? "compact" : "full") : compact;
+		const keyOnly = mode === "keys";
+		const help: NavKey = this._actionKey(APP_ACTION.keysHelp, "?", keyOnly && !this._isQuitArmed() ? "" : "keys");
 		if (this.toolDetail !== null) {
 			const expandKey = toolExpandKey(this.piKeybindings);
+			const homeEndKeys = ["home", "end"].filter((key) => !this._toolDetailKeyShadowed(key)).join("/");
 			return [
-				{ keys: "esc", label: "back to graph" },
-				{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" },
+				{
+					keys: "esc",
+					label: keyOnly ? "" : mode === "full" ? "back to graph" : "back",
+				},
+				{ keys: "\u2191\u2193 pgup/pgdn", label: keyOnly ? "" : "scroll" },
+				...(homeEndKeys.length > 0
+					? [
+							{
+								keys: homeEndKeys,
+								label: mode === "full" ? "top/bottom" : mode === "compact" ? "ends" : "",
+							},
+						]
+					: []),
 				...(expandKey.length > 0
-					? [{ keys: expandKey, label: this.toolDetailExpanded ? "collapse" : "expand" }]
+					? [
+							{
+								keys: expandKey,
+								label: keyOnly ? "" : this.toolDetailExpanded ? "collapse" : "expand",
+							},
+						]
 					: []),
 				help,
 			];
 		}
 		if (this.stageDetail !== null && this.forkConfirm !== null) {
 			return [
-				{ keys: "enter", label: "fork" },
+				{ keys: "enter", label: "confirm" },
 				{ keys: "esc", label: "cancel" },
 			];
 		}
 		if (this.stageDetail !== null) {
 			const actions = this.stageActions;
 			const canFork = actions?.fork !== undefined && actions.forkTarget !== undefined && this.runId !== null;
+			const canRetry = this.stageDetail.status === "failed" && actions?.retry !== undefined;
+			const short = mode !== "full";
 			return [
-				{ keys: "esc", label: "back to graph" },
-				...(actions?.retry ? [{ keys: "r", label: compact ? "retry" : "retry in place" }] : []),
-				...(canFork ? [{ keys: "f", label: compact ? "fork from here" : "fork from this stage (reruns it)" }] : []),
-				...(this.onStageAttach ? [{ keys: "t", label: "transcript" }] : []),
-				{ keys: "l", label: this.stageDetail.logs ? "summary" : "logs" },
-				...(this.stageDetail.logs ? [{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" }] : []),
+				...(canRetry ? [{ keys: "r", label: keyOnly ? "" : short ? "retry" : "retry from stage" }] : []),
+				...(canFork ? [{ keys: "f", label: keyOnly ? "" : short ? "fork" : "fork from stage" }] : []),
+				...(this.onStageAttach
+					? [
+							{
+								keys: "t",
+								label: keyOnly ? "" : mode === "tight" || mode === "minimal" ? "chat" : "transcript",
+							},
+						]
+					: []),
+				{ keys: "l", label: keyOnly ? "" : this.stageDetail.logs ? "summary" : "logs" },
+				{ keys: "esc", label: keyOnly ? "" : "back" },
+				...(this.stageDetail.logs
+					? [
+							{
+								keys: mode === "minimal" || keyOnly ? "\u2191\u2193" : "\u2191\u2193 pgup/pgdn",
+								label: mode === "tight" || mode === "minimal" || keyOnly ? "" : "scroll",
+							},
+						]
+					: []),
 				help,
+			];
+		}
+		const run = this._getCurrentRun();
+		if (run === null) {
+			return [
+				{ keys: "esc", label: keyOnly ? "" : "back" },
+				help,
+				...(this.onHide && !this._keyShadowed("h") ? [{ keys: "h", label: keyOnly ? "" : "hide" }] : []),
 			];
 		}
 		const focused = this.cachedLayout[this.focusedIndex]?.stage;
 		const moveKeys = this._movableArrows();
-		const filter: NavKey = { keys: "f", label: `filter: ${this.statusFilter}` };
 		const filtered = this.statusFilter !== "all";
 		const openLabel =
 			focused?.nodeKind === "tool"
@@ -150,23 +216,70 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 					: this._focusedStageChatTarget() !== undefined
 						? "open stage chat"
 						: undefined;
-		const back: NavKey = { keys: "esc", label: "back" };
-		const open: NavKey[] = openLabel ? [{ keys: "\u21b5", label: compact ? "open" : openLabel }] : [];
-		const move: NavKey[] = moveKeys ? [{ keys: moveKeys, label: "move" }] : [];
+		const quitArmed = this._isQuitArmed(run);
+		const backLabel = mode === "minimal" || (keyOnly && quitArmed) ? "" : "back";
+		const back: NavKey = { keys: "esc", label: backLabel };
+		const openText = mode === "full" ? openLabel! : mode === "compact" ? "open" : "";
+		const open: NavKey[] = openLabel ? [{ keys: "\u21b5", label: openText }] : [];
+		const detailsText = mode === "full" || mode === "compact" ? "details" : "";
+		const details: NavKey[] =
+			this._focusedStageDetailsAvailable() && !this._keyShadowed("d") ? [{ keys: "d", label: detailsText }] : [];
+		const moveText = mode === "full" || mode === "compact" ? "move" : "";
+		const move: NavKey[] = moveKeys ? [{ keys: moveKeys, label: moveText }] : [];
 
-		const stop = this._focusedStageStoppable() ? [this._stopNavKey(compact ? "stop" : "stop stage")] : [];
-		const stateful = [...stop, ...(filtered ? [filter] : [])];
-		const keybindings = this._navKeybindings();
-		const hideShadowed =
-			keybindings?.matches("h", APP_ACTION.listStop) === true ||
-			keybindings?.matches("h", APP_ACTION.keysHelp) === true;
+		const stopText = mode === "full" ? "stop stage" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "stop";
+		const stop = this._focusedStageStoppable() ? [this._stopNavKey(stopText)] : [];
+		const pauseText = mode === "full" ? "pause run" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "pause";
+		const resumeText = mode === "full" ? "resume run" : keyOnly || (mode === "minimal" && quitArmed) ? "" : "resume";
+		const pauseOrResume: NavKey[] =
+			this._runPausable(run) && !this._keyShadowed("p")
+				? [{ keys: "p", label: pauseText }]
+				: this._runResumable(run) && !this._keyShadowed("r")
+					? [{ keys: "r", label: resumeText }]
+					: [];
+		const quitRunName = sanitizeToolTitleText(sliceHead(run.name, 24)).trim() || run.id;
+		const quitNameBudget =
+			mode === "full" ? 12 : mode === "compact" ? 10 : mode === "tight" ? 7 : mode === "minimal" ? 6 : 0;
+		const armedQuitName = ellipsizeQuitName(quitRunName, quitNameBudget);
+		const quitText = quitArmed
+			? armedQuitName.length > 0
+				? `again to quit ${armedQuitName}`
+				: "again to quit"
+			: mode === "full"
+				? "quit run"
+				: keyOnly
+					? ""
+					: "quit";
+		const quit: NavKey[] = this._runQuittable(run) && !this._keyShadowed("q") ? [{ keys: "q", label: quitText }] : [];
+		const stagesText = mode === "full" || mode === "compact" ? "stages" : "";
+		const stages: NavKey[] = this._keyShadowed("/") ? [] : [{ keys: "/", label: stagesText }];
+		const filterText =
+			mode === "full"
+				? `filter: ${this.statusFilter}`
+				: mode === "compact"
+					? filtered
+						? `filter: ${this.statusFilter}`
+						: "filter"
+					: mode === "tight"
+						? filtered
+							? `filter: ${this.statusFilter}`
+							: ""
+						: "";
+		const filter: NavKey[] = this._keyShadowed("f") ? [] : [{ keys: "f", label: filterText }];
+		const hideText = mode === "full" || mode === "compact" ? "hide" : "";
+		const hide: NavKey[] = this.onHide && !this._keyShadowed("h") ? [{ keys: "h", label: hideText }] : [];
 		return [
 			back,
-			...(compact ? [...stateful, ...open, ...move] : [...open, ...move, ...stateful]),
-			{ keys: "/", label: "stages" },
-			...(filtered ? [] : [filter]),
+			...open,
+			...details,
+			...move,
+			...stop,
+			...pauseOrResume,
+			...quit,
+			...stages,
+			...filter,
 			help,
-			...(this.onHide && !hideShadowed ? [{ keys: "h", label: "hide" }] : []),
+			...hide,
 		];
 	}
 
@@ -190,48 +303,55 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 
 		const { top, mid, bot, visibleWidth: pillW } = renderOutlinePill(MODE_PILL_LABEL, t.accent, chromeBg);
 
-		const sep = `${chromeBg}  ${dim}\u00b7${RESET}${chromeBg}  `;
+		const wideSep = `${chromeBg}  ${dim}\u00b7${RESET}${chromeBg}  `;
+		const tightSep = `${chromeBg} ${dim}\u00b7${RESET}${chromeBg} `;
 		const leftEdgePad = 1;
 		const rightEdgePad = 2;
 		const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
 		const keybindings = this._navKeybindings();
-		const taken = new Set<string>();
 
-		const fits = (entries: readonly NavKey[]): boolean => {
+		const buildRendered = (mode: GraphKeyTier, sepText: string, sepStyled: string) => {
 			const taken = new Set<string>();
-			const kept = entries.filter(
-				(entry) =>
-					entry.keys !== "/" &&
-					!(entry.keys === "h" && entry.label === "hide") &&
-					!(entry.keys === "f" && entry.label === "filter: all"),
-			);
-			const texts = kept.flatMap((entry) => {
+			const plainParts: string[] = [];
+			const styledParts: string[] = [];
+			for (const entry of this._graphKeys(mode)) {
 				const keys = navEntryKeys(keybindings, entry, taken);
-				return keys ? [`${keys} ${entry.label}`] : [];
-			});
-			return visibleWidth(texts.join("  \u00b7  ")) <= hintsBudget;
-		};
-		const full = this._graphKeys();
-		const entries = fits(full) ? full : this._graphKeys(true);
-		let helpSegment: string | undefined;
-		const segments = entries.flatMap((entry) => {
-			const keys = navEntryKeys(keybindings, entry, taken);
-			if (!keys) return [];
-			const segment = `${text}${BOLD}${keys}${RESET}${chromeBg} ${muted}${entry.label}${RESET}${chromeBg}`;
-			if (entry.action === APP_ACTION.keysHelp || (entry.keys === "?" && entry.label === "keys")) {
-				helpSegment = segment;
-				return [];
+				if (!keys) continue;
+				plainParts.push(entry.label.length > 0 ? `${keys} ${entry.label}` : keys);
+				styledParts.push(
+					entry.label.length > 0
+						? `${text}${BOLD}${keys}${RESET}${chromeBg} ${muted}${entry.label}${RESET}${chromeBg}`
+						: `${text}${BOLD}${keys}${RESET}${chromeBg}`,
+				);
 			}
-			return [segment];
-		});
-		const withHelp = (): string[] => (helpSegment ? [...segments, helpSegment] : segments);
+			return {
+				width: visibleWidth(plainParts.join(sepText)),
+				styled: styledParts.join(sepStyled),
+			};
+		};
+		const candidates: ReadonlyArray<readonly [GraphKeyTier, string, string]> = [
+			["full", "  \u00b7  ", wideSep],
+			["full", " \u00b7 ", tightSep],
+			["compact", "  \u00b7  ", wideSep],
+			["compact", " \u00b7 ", tightSep],
+			["tight", " \u00b7 ", tightSep],
+			["minimal", " \u00b7 ", tightSep],
+			["keys", " \u00b7 ", tightSep],
+		];
+		let chosen = buildRendered("keys", " \u00b7 ", tightSep);
+		for (const [mode, sepText, sepStyled] of candidates) {
+			const candidate = buildRendered(mode, sepText, sepStyled);
+			if (candidate.width <= hintsBudget) {
+				chosen = candidate;
+				break;
+			}
+		}
 		const notice = this._activeGraphNotice();
 		const statusText = this._externalStatusText();
 
 		const toastText = notice?.text ?? statusText;
 		const toastColor = notice ? hexToAnsi(notice.tone === "error" ? t.error : t.accent) : accent;
-		while (segments.length > 1 && visibleWidth(withHelp().join(sep)) > hintsBudget) segments.pop();
-		const hintsStyled = truncateToWidth(withHelp().join(sep), hintsBudget, "");
+		const hintsStyled = truncateToWidth(chosen.styled, hintsBudget, "");
 		const hintsVisibleLen = visibleWidth(hintsStyled);
 		const fillerVisible = Math.max(0, hintsBudget - hintsVisibleLen);
 		const filler = " ".repeat(fillerVisible);

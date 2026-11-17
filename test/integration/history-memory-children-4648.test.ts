@@ -210,7 +210,8 @@ test(
 		const earlier = await SessionManager.create(store, cwd);
 		await earlier.appendMessage({ role: "user", content: `Earlier: ${EARLIER_WORK}.`, timestamp: Date.now() });
 
-		await session.prompt("/workflow recall-4648 --no-picker");
+		const tool = session.agent.state.tools.find((entry) => entry.name === "workflow")!;
+		await tool.execute("run", { action: "run", workflow: "recall-4648", inputs: {} }, new AbortController().signal);
 		const runId = await vi.waitFor(
 			async () => {
 				const [run] = await session.workflows.listRuns();

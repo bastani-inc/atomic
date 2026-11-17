@@ -41,16 +41,31 @@ function isStringLiteralUnion(schema: TSchema): boolean {
 	return members.length > 0 && members.every((m) => IsLiteralString(m));
 }
 
+function hasCustomToJson(value: object): boolean {
+	const desc = Object.getOwnPropertyDescriptor(value, "toJSON");
+	return desc !== undefined && (desc.get !== undefined || desc.set !== undefined || typeof desc.value === "function");
+}
+
 function canRoundTripJson(value: unknown, seen = new Set<object>()): boolean {
 	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
 	if (typeof value === "number") return Number.isFinite(value);
 	if (typeof value !== "object") return false;
-	if (seen.has(value)) return false;
+	if (seen.has(value) || hasCustomToJson(value)) return false;
 	if (Array.isArray(value)) {
+		const prototype: object | null = Object.getPrototypeOf(value);
+		if (prototype !== Array.prototype && prototype !== null) return false;
 		seen.add(value);
 		try {
 			for (let i = 0; i < value.length; i++) {
-				if (!(i in value) || !canRoundTripJson(value[i], seen)) return false;
+				const desc = Object.getOwnPropertyDescriptor(value, i);
+				if (
+					desc === undefined ||
+					desc.get !== undefined ||
+					desc.set !== undefined ||
+					!canRoundTripJson(desc.value, seen)
+				) {
+					return false;
+				}
 			}
 			return true;
 		} finally {
@@ -59,11 +74,18 @@ function canRoundTripJson(value: unknown, seen = new Set<object>()): boolean {
 	}
 	const proto = Object.getPrototypeOf(value);
 	if (proto !== Object.prototype && proto !== null) return false;
-	if (typeof (value as { toJSON?: unknown }).toJSON === "function") return false;
 	seen.add(value);
 	try {
 		for (const key of Object.keys(value)) {
-			if (!canRoundTripJson((value as Record<string, unknown>)[key], seen)) return false;
+			const desc = Object.getOwnPropertyDescriptor(value, key);
+			if (
+				desc === undefined ||
+				desc.get !== undefined ||
+				desc.set !== undefined ||
+				!canRoundTripJson(desc.value, seen)
+			) {
+				return false;
+			}
 		}
 		return true;
 	} finally {

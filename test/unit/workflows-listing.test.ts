@@ -36,6 +36,18 @@ function run(over: Partial<RunSnapshot> & Pick<RunSnapshot, "id" | "status">): R
 	} as RunSnapshot;
 }
 
+test("workflow failure summaries keep English at-prefixes and omit actual stack frames (#5224)", () => {
+	for (const [error, expected] of [
+		["at capacity", "at capacity"],
+		["TypeError: at most five jobs are allowed", "at most five jobs are allowed"],
+		["    at run (task.ts:1:2)\nat capacity", "at capacity"],
+		["\x1b[31mat capacity\x1b[0m\n    at run (task.ts:1:2)", "at capacity"],
+		["    at run (task.ts:1:2)", "No reason was recorded."],
+	]) {
+		assert.equal(shortFailureReason({ error }), expected);
+	}
+});
+
 const STAGE_NAMES = ["plan", "build", "implement", "review", "verify"];
 function stages(statuses: readonly StageSnapshot["status"][]): StageSnapshot[] {
 	return statuses.map(
@@ -214,6 +226,7 @@ test("/workflows offers Space preview on the selected run and matches the live h
 	try {
 		assert.ok(component);
 		const initial = stripVTControlCharacters(component.render(120).join("\n"));
+		assert.equal(stripVTControlCharacters(component.render(120)[0] ?? ""), "▔".repeat(120));
 		assert.match(initial, /↑↓ select · space preview · enter open · type to search · esc close/);
 		assert.doesNotMatch(initial, /id aaaa1111-2222/);
 		component.handleInput?.(" ");
@@ -543,7 +556,7 @@ test("/workflows excludes active pauses and clamps recorded elapsed time (#5224)
 	assert.equal(runRowDescription({ ...paused, durationMs: -1 }, NOW), "paused · stage 1/1 · 0s");
 });
 
-async function liveListing(initialRuns: RunSnapshot[]) {
+async function liveListing(initialRuns: RunSnapshot[], terminal?: { rows: number }) {
 	initTheme("dark");
 	let runs = initialRuns;
 	let notify = () => {};
@@ -556,7 +569,7 @@ async function liveListing(initialRuns: RunSnapshot[]) {
 			custom: (factory) =>
 				new Promise<undefined>((resolve) => {
 					mounted = Promise.resolve(
-						factory({ requestRender: () => rendersRequested++ }, undefined, undefined, () => {
+						factory({ terminal, requestRender: () => rendersRequested++ }, undefined, undefined, () => {
 							closeCalls++;
 							resolve(undefined);
 						}),
@@ -590,6 +603,33 @@ async function liveListing(initialRuns: RunSnapshot[]) {
 		},
 	};
 }
+
+test("workflow previews are disabled rather than advertised when their card cannot fit (#5224)", async () => {
+	const terminal = { rows: 14 };
+	const fixture = await liveListing(
+		[run({ id: "preview", status: "running", stages: stages(["running"]) })],
+		terminal,
+	);
+	try {
+		assert.doesNotMatch(stripVTControlCharacters(fixture.component.render(80).join("\n")), /space.*preview/);
+		fixture.component.handleInput?.(" ");
+		assert.doesNotMatch(stripVTControlCharacters(fixture.component.render(80).join("\n")), /╭|id preview/);
+		terminal.rows = 24;
+		assert.match(stripVTControlCharacters(fixture.component.render(80).join("\n")), /space preview/);
+		fixture.component.handleInput?.(" ");
+		assert.match(stripVTControlCharacters(fixture.component.render(80).join("\n")), /id preview/);
+		terminal.rows = 14;
+		assert.doesNotMatch(
+			stripVTControlCharacters(fixture.component.render(80).join("\n")),
+			/space.*preview|╭|id preview/,
+		);
+		terminal.rows = 24;
+		assert.match(stripVTControlCharacters(fixture.component.render(80).join("\n")), /space preview/);
+	} finally {
+		fixture.component.dispose?.();
+		await fixture.result;
+	}
+});
 
 for (const confirm of ["\r", "\x1b[C"]) {
 	test(`/workflows honors Down followed by ${JSON.stringify(confirm)} before another frame (#5224)`, async () => {

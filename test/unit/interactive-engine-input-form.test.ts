@@ -180,6 +180,8 @@ test("the in-process host refuses the same unreadable forms as the isolated engi
 		description: { name: "prompt", type: "string", initialValue: "", description: 7 as unknown as string },
 		type: { name: "when", type: "date" as HostInputFormField["type"], initialValue: "" },
 		initialValue: { name: "prompt", type: "string" } as HostInputFormField,
+		choicesText: { name: "mode", type: "select", initialValue: "", choices: "fast" as unknown as string[] },
+		choicesEmpty: { name: "mode", type: "select", initialValue: "", choices: "" as unknown as string[] },
 	};
 	const outcome = (result: Promise<unknown>) =>
 		Promise.race([

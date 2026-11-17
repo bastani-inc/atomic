@@ -760,7 +760,7 @@ describe("renderStatusList — populated", () => {
 		const lines = renderStatusList([run], { width: 44, theme }).split("\n");
 		const hintLines = lines.filter((line) => {
 			const plain = stripAnsi(line);
-			return plain.includes("/workflows") || plain.includes("76-d1a348f582ae");
+			return plain.includes("/workflows") || plain.includes("348f582ae");
 		});
 
 		assert.equal(hintLines.length, 2, "the full hint id wraps across two rows");

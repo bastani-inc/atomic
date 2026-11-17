@@ -84,6 +84,7 @@ describe("canonical registerCommand — opts.handler shape", () => {
 		assert.notEqual(authoringCmd, undefined);
 		const msgs: string[] = [];
 		const ctx: PiCommandContext = {
+			hasUI: false,
 			ui: {
 				notify(message: string) {
 					msgs.push(message);
@@ -91,8 +92,8 @@ describe("canonical registerCommand — opts.handler shape", () => {
 			},
 		};
 		await workflowsCmd!.options.handler("", ctx);
-		assert.deepEqual(msgs, ["No workflows in this session."]);
-		await authoringCmd!.options.handler("", ctx);
 		assert.equal(sent.length, 1);
+		await authoringCmd!.options.handler("", ctx);
+		assert.equal(sent.length, 2);
 	});
 });

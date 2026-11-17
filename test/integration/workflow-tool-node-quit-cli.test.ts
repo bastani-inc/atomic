@@ -111,8 +111,11 @@ interface RunDetailView {
 }
 
 interface WorkflowSurfaceDetails {
-	readonly kind: string;
+	readonly kind?: string;
+	readonly action?: string;
 	readonly runId?: string;
+	readonly status?: string;
+	readonly message?: string;
 	readonly detail?: RunDetailView;
 }
 
@@ -127,7 +130,18 @@ type RpcLine =
 	| { readonly type: "extension_ui_request"; readonly method: string; readonly message?: string }
 	| {
 			readonly type: "message_end";
-			readonly message: { readonly content: string; readonly details?: WorkflowSurfaceDetails };
+			readonly message: {
+				readonly content: string | ReadonlyArray<{ readonly type: string; readonly text?: string }>;
+				readonly details?: WorkflowSurfaceDetails;
+			};
+	  }
+	| {
+			readonly type: "tool_execution_end";
+			readonly toolName?: string;
+			readonly result?: {
+				readonly content?: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
+				readonly details?: WorkflowSurfaceDetails;
+			};
 	  }
 	| {
 			readonly type: "entry_appended";
@@ -166,7 +180,15 @@ class RpcCli {
 						"--model",
 						"fixture",
 					]
-				: [bunExecutable(), join(repositoryRoot, "packages/coding-agent/src/cli.ts"), ...CLI_ARGS],
+				: [
+						bunExecutable(),
+						join(repositoryRoot, "packages/coding-agent/src/cli.ts"),
+						...CLI_ARGS,
+						"--provider",
+						"tool-abort-fixture",
+						"--model",
+						"fixture",
+					],
 			cwd: projectDir,
 			env: {
 				...environment,
@@ -213,22 +235,41 @@ class RpcCli {
 		}
 	}
 
-	/** Every `ctx.ui.notify` the CLI emitted, in order. */
+	/** Every `ctx.ui.notify` or tool control message the CLI emitted, in order. */
 	notifications(): readonly string[] {
-		return this.lines.flatMap((line) =>
-			line.type === "extension_ui_request" && line.method === "notify" && line.message !== undefined
-				? [line.message]
-				: [],
-		);
+		return this.lines.flatMap((line) => {
+			if (line.type === "extension_ui_request" && line.method === "notify" && line.message !== undefined) {
+				return [line.message];
+			}
+			if (
+				line.type === "tool_execution_end" &&
+				line.toolName === "workflow" &&
+				typeof line.result?.details?.message === "string"
+			) {
+				return [line.result.details.message];
+			}
+			return [];
+		});
 	}
 
-	/** Every rendered workflow surface, in order. */
+	/** Every rendered workflow surface or tool result, in order. */
 	surfaces(): readonly Surface[] {
-		return this.lines.flatMap((line) =>
-			line.type === "message_end" && line.message.details !== undefined
-				? [{ content: line.message.content, details: line.message.details }]
-				: [],
-		);
+		return this.lines.flatMap((line) => {
+			if (line.type === "tool_execution_end" && line.toolName === "workflow" && line.result?.details !== undefined) {
+				const content = (line.result.content ?? [])
+					.map((part) => (part.type === "text" ? (part.text ?? "") : ""))
+					.join("\n");
+				return [{ content, details: line.result.details }];
+			}
+			if (line.type === "message_end" && line.message.details !== undefined) {
+				const content =
+					typeof line.message.content === "string"
+						? line.message.content
+						: line.message.content.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("\n");
+				return [{ content, details: line.message.details }];
+			}
+			return [];
+		});
 	}
 
 	/** Every terminal `workflow.run.end` the CLI recorded, in order. */
@@ -303,12 +344,16 @@ interface Evidence {
  */
 async function statusSurface(cli: RpcCli, id: string, runId: string): Promise<Surface> {
 	const mark = cli.surfaces().length;
-	await cli.prompt(id, `/workflow status ${runId}`);
+	await cli.prompt(id, `status-workflow ${runId}`);
 	const rendered = (): Surface | undefined =>
 		cli
 			.surfaces()
 			.slice(mark)
-			.findLast((candidate) => candidate.details.kind === "detail" && candidate.details.detail?.runId === runId);
+			.findLast(
+				(candidate) =>
+					(candidate.details.kind === "detail" || candidate.details.action === "statusDetail") &&
+					candidate.details.detail?.runId === runId,
+			);
 	await cli.waitUntil(() => rendered() !== undefined, `the status surface for run ${runId}`);
 	const surface = rendered();
 	if (surface === undefined) throw new Error(`the CLI rendered no status surface for run ${runId}`);
@@ -336,13 +381,11 @@ async function runScenario(control: "quit" | "pause" = "quit", omission?: "retur
 	mkdirSync(stateDir, { recursive: true });
 	mkdirSync(agentDir, { recursive: true });
 	copyFileSync(fixturePath, join(projectDir, ".atomic/workflows", FIXTURE));
-	if (control === "pause") {
-		mkdirSync(join(projectDir, ".atomic/extensions"), { recursive: true });
-		copyFileSync(
-			join(moduleDir(import.meta.url), "fixtures/tool-abort-provider.ts"),
-			join(projectDir, ".atomic/extensions/tool-abort-provider.ts"),
-		);
-	}
+	mkdirSync(join(projectDir, ".atomic/extensions"), { recursive: true });
+	copyFileSync(
+		join(moduleDir(import.meta.url), "fixtures/tool-abort-provider.ts"),
+		join(projectDir, ".atomic/extensions/tool-abort-provider.ts"),
+	);
 
 	const readState = (): FixtureState => {
 		const path = join(stateDir, STATE_FILE);
@@ -357,7 +400,7 @@ async function runScenario(control: "quit" | "pause" = "quit", omission?: "retur
 		// 1. Launch. The launch returns at startup admission, so the callback is
 		//    only proven in flight once it says so itself. A run that ends first
 		//    never reached the state under test, and says so instead of waiting.
-		await cli.prompt("launch", `/workflow ${WORKFLOW_NAME}`, CLI_STARTUP_TIMEOUT_MS);
+		await cli.prompt("launch", `launch-workflow ${WORKFLOW_NAME}`, CLI_STARTUP_TIMEOUT_MS);
 		await cli.waitUntil(
 			() => readState().hangRunning || cli.runEndings().length > 0,
 			"hang-tool's callback to start",
@@ -374,10 +417,16 @@ async function runScenario(control: "quit" | "pause" = "quit", omission?: "retur
 			() =>
 				cli
 					.surfaces()
-					.some((surface) => surface.details.kind === "dispatch" && surface.details.runId !== undefined),
+					.some(
+						(surface) =>
+							(surface.details.kind === "dispatch" || surface.details.action === "run") &&
+							surface.details.runId !== undefined,
+					),
 			"the workflow dispatch surface",
 		);
-		const dispatched = cli.surfaces().find((surface) => surface.details.kind === "dispatch");
+		const dispatched = cli
+			.surfaces()
+			.find((surface) => surface.details.kind === "dispatch" || surface.details.action === "run");
 		const runId = dispatched?.details.runId;
 		if (runId === undefined) throw new Error("the CLI did not render a dispatched run id");
 
@@ -393,7 +442,7 @@ async function runScenario(control: "quit" | "pause" = "quit", omission?: "retur
 		// 3. Quit. The state is read the instant the CLI answers, which is what
 		//    makes the durability-boundary ordering observable from outside.
 		const notificationsBeforeQuit = cli.notifications().length;
-		await cli.prompt("quit", control === "pause" ? `pause-tool ${runId}` : `/workflow quit ${runId}`);
+		await cli.prompt("quit", control === "pause" ? `pause-tool ${runId}` : `quit-workflow ${runId}`);
 		const stateWhenQuitReturned = readState();
 		const quitNotifications = cli.notifications().slice(notificationsBeforeQuit);
 		if (control === "pause")
@@ -419,7 +468,7 @@ async function runScenario(control: "quit" | "pause" = "quit", omission?: "retur
 				join(projectDir, ".atomic/workflows", FIXTURE),
 				source.replace(targetCall, `${earlyReturn}\n\t\t${targetCall}`),
 			);
-			await cli.prompt("change-flow", "/workflow reload");
+			await cli.prompt("change-flow", "reload-workflow");
 		}
 
 		// 5. Resume: the aborted call must run again while the settled sibling
@@ -428,7 +477,7 @@ async function runScenario(control: "quit" | "pause" = "quit", omission?: "retur
 		//    a run that quit did not pause simply never re-executes anything,
 		//    and the assertions below say so with the CLI's own words.
 		const endingsBeforeResume = cli.runEndings().length;
-		await cli.prompt("resume", `/workflow resume ${runId}`);
+		await cli.prompt("resume", `resume-workflow ${runId}`);
 		const reexecuted =
 			omission === undefined && (await cli.settle(() => readState().hangExecutions > 1, RESUME_SETTLE_TIMEOUT_MS));
 		if (reexecuted) await cli.waitUntil(() => !readState().hangRunning, "the re-executed callback to settle");
@@ -494,7 +543,7 @@ describe("issue #2078 — quitting an in-flight ctx.tool through the real CLI", 
 		);
 		assert.equal(
 			evidence.quitNotifications.some((message) =>
-				message.includes(`Run ${evidence.runId} quit and can be resumed with /workflow resume.`),
+				message.includes(`Run ${evidence.runId} quit and can be resumed with /resume.`),
 			),
 			true,
 			`quit notifications were: ${JSON.stringify(evidence.quitNotifications)}`,
@@ -522,8 +571,8 @@ describe("issue #2078 — quitting an in-flight ctx.tool through the real CLI", 
 	});
 
 	test("the cancelled tool node is rendered distinctly from a failed one", () => {
-		assert.match(evidence.renderedAfterQuit, /hang-tool\s+cancelled/);
-		assert.doesNotMatch(evidence.renderedAfterQuit, /hang-tool\s+failed/);
+		assert.match(evidence.renderedAfterQuit, /hang-tool.*cancelled/);
+		assert.doesNotMatch(evidence.renderedAfterQuit, /hang-tool.*failed/);
 		// A settled sibling is untouched by the abort.
 		assert.equal(toolNode(evidence.afterQuit, "sibling-tool").status, "completed");
 	});

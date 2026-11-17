@@ -254,20 +254,7 @@ function factory(pi: ExtensionAPI): void {
 	});
 	registerWorkflowSlashCommand(pi, workflowCommands, {
 		owner,
-		runtimeProxy: runtimeState.runtimeProxy,
-		runtimeForContext: runtimeState.runtimeForContext,
 		overlay,
-		reloadWorkflowResources: runtimeState.reloadWorkflowResources,
-		ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
-		runWithLifecycleSuppressedForPolicy: runtimeState.runWithLifecycleSuppressedForPolicy,
-		runControl: {
-			owner,
-			pi,
-			overlay,
-			runtimeForContext: runtimeState.runtimeForContext,
-			ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
-			beforeRestoreCompleted: runtimeState.beforeRestoreCompleted,
-		},
 	});
 	registerWorkflowMessageRenderers(pi);
 	registerWorkflowLifecycleHandlers(pi, {

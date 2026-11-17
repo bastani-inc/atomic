@@ -145,7 +145,7 @@ try {
 		const status = async () => (await call(session, "workflow", { action: "status" })).details;
 		try {
 			if (mode === "persist-start") {
-				await session.prompt("/workflow sdk-host-durable --no-picker");
+				await call(session, "workflow", { action: "run", workflow: "sdk-host-durable", inputs: {} });
 				await until(() => assert.equal(identities.length, 1));
 				const details = await status();
 				const runId = details.runs[0].runId;
@@ -272,7 +272,7 @@ try {
 		});
 		try {
 			phases.push({ phase: "admission", startedAt: Date.now() });
-			await session.prompt("/workflow sdk-host-durable --no-picker");
+			await call(session, "workflow", { action: "run", workflow: "sdk-host-durable", inputs: {} });
 			phases[0].endedAt = Date.now();
 			const status = async () => {
 				details = (await call(session, "workflow", { action: "status" })).details;
@@ -485,7 +485,7 @@ export default workflow({ name: "children", description: "children", inputs: {},
 			assert.ok(childCalls > 0, `subagent did not use the in-process provider: ${JSON.stringify(result)}`);
 			assert.equal(result.details.taskResponse.observation.result.kind, "completed", JSON.stringify(result));
 			assert.equal(Number(result.details.taskRecords[0].output.byteCount), Buffer.byteLength("child complete"));
-			await session.prompt("/workflow children --no-picker");
+			await call(session, "workflow", { action: "run", workflow: "children", inputs: {} });
 			const details = await until(async () => {
 				const status = (await call(session, "workflow", { action: "status" })).details;
 				assert.ok(

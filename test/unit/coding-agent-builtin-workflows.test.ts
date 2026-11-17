@@ -189,18 +189,28 @@ describe("coding-agent builtin resources", () => {
 			const workflowExtension = extensions.extensions.find((extension) =>
 				extension.path.replace(/\\/g, "/").endsWith("packages/workflows/src/extension/index.ts"),
 			);
-			const workflowCommand = workflowExtension?.commands.get("workflow");
-			assert.notEqual(workflowCommand, undefined);
+			assert.equal(workflowExtension?.commands.has("workflow"), false);
+			assert.equal(workflowExtension?.commands.has("workflows"), true);
+			assert.equal(workflowExtension?.commands.has("workflow-authoring"), true);
+			const workflowTool = workflowExtension?.tools.get("workflow")?.definition;
+			assert.notEqual(workflowTool, undefined);
 
 			let labels: string[] = [];
 			for (let attempt = 0; attempt < 20; attempt++) {
-				const completions = (await workflowCommand!.getArgumentCompletions?.("")) ?? [];
-				labels = completions.map((completion) => completion.label);
+				const listed = await workflowTool!.execute(`list-${attempt}`, { action: "list" }, undefined, undefined, {
+					cwd,
+					hasUI: false,
+					ui: { notify: () => {} },
+				} as never);
+				const items = ((listed.details as { items?: Array<{ name: string }> } | undefined)?.items ?? []).map(
+					(item) => item.name,
+				);
+				labels = items;
 				if (labels.includes("package-command")) break;
 				await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
 			}
 
-			assert.ok(labels.includes("package-command"), `expected package workflow completion in ${labels.join(", ")}`);
+			assert.ok(labels.includes("package-command"), `expected package workflow in ${labels.join(", ")}`);
 		},
 		REAL_BUILTIN_RESOURCE_LOADER_TIMEOUT_MS,
 	);

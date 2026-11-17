@@ -8,6 +8,7 @@ import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, beforeEach } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
 import type {
 	ExtensionAPI,
 	PiArgumentCompletion,
@@ -34,21 +35,46 @@ import type {
 	PiCustomOverlayOptions,
 	PiOverlayHandle,
 } from "../../packages/workflows/src/extension/wiring.js";
+import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
+import {
+	formatWorkflowReloadReport,
+	formatWorkflowResourceLoadWarning,
+} from "../../packages/workflows/src/extension/workflow-command-surfaces.js";
+import {
+	createWorkflowCommandReporter,
+	emitWorkflowCommandOutput,
+	formatAvailableWorkflowNames,
+} from "../../packages/workflows/src/extension/workflow-command-utils.js";
+import { captureWorkflowOwnerResources } from "../../packages/workflows/src/extension/workflow-owner-resources.js";
+import { normalizeWorkflowReloadReport } from "../../packages/workflows/src/extension/workflow-reload-report.js";
+import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
+import {
+	isRunStatus,
+	overlaySurfaceFromContext,
+	reloadFailureMessage,
+	resolveRunId,
+} from "../../packages/workflows/src/extension/workflow-targets.js";
 import { cancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
-import { killAllRuns } from "../../packages/workflows/src/runs/background/status.js";
+import { inspectRun, killAllRuns, type RunDetail } from "../../packages/workflows/src/runs/background/status.js";
 import {
 	type StageControlHandle,
 	stageControlRegistry,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import { workflowBoundarySegments } from "../../packages/workflows/src/shared/pending-stage-status.js";
 import { restoreOnSessionStart, type SessionEntry } from "../../packages/workflows/src/shared/persistence-restore.js";
+import { resolveRunIndicatorStatuses } from "../../packages/workflows/src/shared/run-indicator-status.js";
+import { schemaIsRequired } from "../../packages/workflows/src/shared/schema-introspection.js";
 import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/stage-prompt.js";
 import { stageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition, WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
 import { WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE } from "../../packages/workflows/src/shared/workflow-failures.js";
-import type { ChatSurfacePayload } from "../../packages/workflows/src/tui/chat-surface-message.js";
+import { type ChatSurfacePayload, emitChatSurface } from "../../packages/workflows/src/tui/chat-surface-message.js";
+import { buildGraphOverlayAdapter } from "../../packages/workflows/src/tui/overlay-adapter.js";
+import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
+import { selectRunsForPicker } from "../../packages/workflows/src/tui/session-picker.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -260,14 +286,217 @@ export function makeInflightRun(id: string) {
 	};
 }
 
+export function createLegacyWorkflowControlHarness(pi: ExtensionAPI): RegisteredCommand {
+	const owner = captureWorkflowOwnerResources();
+	const adapters = buildRuntimeAdapters(pi);
+	const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters);
+	const overlay = buildGraphOverlayAdapter(pi, owner.store, {
+		resolvePostMortemHandle: () => ({ ok: false, reason: "not_found", message: "" }),
+		stageControlRegistry: owner.stageControlRegistry,
+		stageUiBroker: owner.stageUiBroker,
+	});
+	const runControl = {
+		owner,
+		pi,
+		overlay,
+		runtimeForContext: runtimeState.runtimeForContext,
+		ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
+		beforeRestoreCompleted: runtimeState.beforeRestoreCompleted,
+	};
+	const ensureVisible = async (ctx: PiCommandContext): Promise<void> => {
+		try {
+			await runtimeState.ensureWorkflowResourcesLoaded();
+		} catch (error) {
+			ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
+		}
+	};
+	return {
+		name: "workflow",
+		options: {
+			description: "Legacy test harness for workflow dispatch and run-control",
+			handler: async (args: string, ctx: PiCommandContext) => {
+				const policy = workflowPolicyFromContext(ctx);
+				const reporter = createWorkflowCommandReporter(ctx, policy, pi);
+				const print = (msg: string): void => reporter.info(msg);
+				const fail = (msg: string): void => reporter.error(msg);
+				const parts = tokenizeWorkflowArgs(args);
+				const subcommand = parts[0] ?? "";
+				if (subcommand === "connect" || subcommand === "attach") {
+					print("! /workflow was removed · use /workflows, /resume or ask the agent to run a workflow");
+					return;
+				}
+				if (subcommand === "resume") {
+					await handleRunControlCommand(subcommand, parts.slice(1), ctx, reporter, runControl);
+					return;
+				}
+				if (subcommand === "pause") {
+					const tokens = parts.slice(1);
+					const withYes = tokens.some((t) => t === "--yes" || t === "-y") ? tokens : [...tokens, "-y"];
+					await handleRunControlCommand(subcommand, withYes, ctx, reporter, runControl);
+					return;
+				}
+				if (subcommand === "quit") {
+					await handleRunControlCommand(subcommand, parts.slice(1), ctx, reporter, runControl);
+					return;
+				}
+				if (!subcommand || subcommand === "list") {
+					await ensureVisible(ctx);
+					const items = runtimeState.runtimeProxy.registry.all().map((def) => ({
+						name: def.normalizedName,
+						description: def.description,
+						inputs: Object.entries(def.inputs).map(([iname, schema]) => ({
+							name: iname,
+							required: schemaIsRequired(schema),
+						})),
+					}));
+					emitChatSurface(pi, { kind: "list", entries: items });
+					return;
+				}
+				if (subcommand === "status") {
+					const target = parts[1];
+					if (target && !target.startsWith("--")) {
+						const resolved = resolveRunId(target, owner.store);
+						if (resolved.kind === "malformed" || resolved.kind === "ambiguous") return fail(resolved.message);
+						if (resolved.kind === "not_found") {
+							const durable = await runtimeState.runtimeForContext(ctx).inspectDurableWorkflow(target);
+							if (durable.kind !== "found") return fail(durable.message);
+							emitChatSurface(pi, { kind: "detail", detail: durable.detail });
+							return;
+						}
+						const inspected = inspectRun(resolved.runId, owner);
+						if (!inspected.ok) return fail(`Run not found: ${target}`);
+						const owningRunStatuses = Object.fromEntries(
+							owner.store.graphSnapshot().runs.map((run) => [run.id, run.status] as const),
+						);
+						emitChatSurface(pi, { kind: "detail", detail: inspected.detail, owningRunStatuses });
+						return;
+					}
+					const capturedRuns = owner.store.graphSnapshot().runs;
+					const rows = selectRunsForPicker(capturedRuns, "", true, Date.now());
+					const visibleRuns = rows.map((r) => r.run);
+					emitChatSurface(pi, {
+						kind: "status",
+						runs: visibleRuns,
+						indicatorStatuses: resolveRunIndicatorStatuses(visibleRuns, capturedRuns),
+					});
+					return;
+				}
+				if (subcommand === "reload") {
+					try {
+						const report = normalizeWorkflowReloadReport(await runtimeState.reloadWorkflowResources());
+						const message = formatWorkflowReloadReport(report);
+						if (report.outcome === "applied") print(message);
+						else fail(message);
+					} catch (error) {
+						fail(reloadFailureMessage(error));
+					}
+					return;
+				}
+				const showInputs = async (workflowName: string, command: "inputs" | "help") => {
+					await ensureVisible(ctx);
+					const result = await runtimeState
+						.runtimeForContext(ctx)
+						.dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
+					if (result.action !== "inputs" || !("inputs" in result)) return;
+					const inputResult = result as Extract<WorkflowToolResult, { action: "inputs" }>;
+					if (inputResult.error) {
+						fail(
+							`${inputResult.error}\nAvailable: ${formatAvailableWorkflowNames(runtimeState.runtimeProxy.registry.names())}`,
+						);
+						return;
+					}
+					const schemaText = renderResult(inputResult);
+					if (ctx.hasUI === false || policy.mode === "non_interactive")
+						emitWorkflowCommandOutput(pi, schemaText, { command, workflowName });
+					else print(schemaText);
+				};
+				if (subcommand === "inputs") {
+					const workflowName = parts[1] ?? "";
+					if (!workflowName) return fail("Usage: /workflow inputs <name>");
+					await showInputs(workflowName, "inputs");
+					return;
+				}
+				const inputTokens = parts.slice(1);
+				if (inputTokens.includes("--help")) {
+					await showInputs(subcommand, "help");
+					return;
+				}
+				const inputs = parseWorkflowArgs(inputTokens);
+				await ensureVisible(ctx);
+				const result = await runtimeState.runWithLifecycleSuppressedForPolicy(policy, () =>
+					runtimeState
+						.runtimeForContext(ctx)
+						.dispatch({ workflow: subcommand, inputs, action: "run" }, { policy, origin: "user" }),
+				);
+				if (result.action !== "run" || !("runId" in result)) return;
+				const runResult = result as Extract<WorkflowToolResult, { action: "run"; runId: string }>;
+				if (runResult.status === "failed" && runResult.runId === "") {
+					if (runResult.error?.toLowerCase().includes("not found")) {
+						fail(
+							`Workflow not found: ${subcommand}\nAvailable: ${formatAvailableWorkflowNames(runtimeState.runtimeProxy.registry.names())}`,
+						);
+					} else {
+						fail(`Workflow "${subcommand}" failed: ${runResult.error ?? "unknown error"}`);
+					}
+					return;
+				}
+				if (runResult.status === "failed") {
+					fail(`Workflow "${subcommand}" failed: ${runResult.error ?? "unknown error"}`);
+					return;
+				}
+				if (ctx.hasUI === false || policy.mode === "non_interactive") {
+					const inspected = inspectRun(runResult.runId, owner);
+					const now = Date.now();
+					const stages = runResult.stages?.map((s) => structuredClone(s)) ?? [];
+					const detail: RunDetail = inspected.ok
+						? inspected.detail
+						: {
+								runId: runResult.runId,
+								name: runResult.name ?? subcommand,
+								status: isRunStatus(runResult.status) ? runResult.status : "failed",
+								mode: stages.length > 1 ? "chain" : "single",
+								startedAt: now,
+								endedAt: now,
+								durationMs: 0,
+								inputs,
+								stages,
+								tools: [],
+								result: runResult.result,
+								error: runResult.error,
+								exited: runResult.exited,
+								exitReason: runResult.exitReason,
+							};
+					const graphRuns = owner.store.graphSnapshot().runs;
+					const owningRunStatuses = Object.fromEntries(graphRuns.map((r) => [r.id, r.status] as const));
+					emitChatSurface(
+						pi,
+						{ kind: "detail", detail, owningRunStatuses },
+						{
+							content: renderRunDetail(detail, {
+								width: 100,
+								owningRunStatus: (id) => owningRunStatuses[id],
+								resolveBoundarySegments: (id) => workflowBoundarySegments(graphRuns, id),
+							}),
+						},
+					);
+					return;
+				}
+				emitChatSurface(pi, { kind: "dispatch", workflowName: subcommand, runId: runResult.runId, inputs });
+				if (runtimeState.runtimeProxy.registry.get(subcommand)?.autoAttach === true) {
+					overlay.open(runResult.runId, overlaySurfaceFromContext(ctx));
+				}
+			},
+		},
+	};
+}
+
 export async function registerWorkflowCommand() {
 	const { pi, commands, sent } = buildMockPi();
 	addFactoryStubs(pi);
 	const factoryModule = await import("../../packages/workflows/src/extension/index.js");
 	factoryModule.default(pi);
-	const workflowCmd = commands.find((c) => c.name === "workflow");
-	assert.notEqual(workflowCmd, undefined);
-	return { pi, commands, sent, workflowCmd: workflowCmd! };
+	const workflowCmd = createLegacyWorkflowControlHarness(pi);
+	return { pi, commands, sent, workflowCmd };
 }
 
 export function recordTerminalRun(

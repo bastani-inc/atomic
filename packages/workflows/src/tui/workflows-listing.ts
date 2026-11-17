@@ -10,12 +10,14 @@ import {
 } from "@bastani/atomic";
 import { getKeybindings, Input, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "../extension/wiring.js";
-import { actionableReturnedStatusText, effectiveRunStatus } from "../shared/returned-run-status.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
+import { summarizeFailureText } from "./display-text.js";
 import { panelItemsFromSnapshot } from "./panel-runs.js";
+import { type RunFailureSource, runFailureText } from "./run-display-state.js";
 import { runStateIndicator } from "./run-state-indicator.js";
 
 export type WorkflowsListingTarget = { kind: "run"; runId: string };
@@ -54,17 +56,11 @@ export function listingAgo(ms: number): string {
 	return days === 1 ? "yesterday" : `${days}d ago`;
 }
 
-export function shortFailureReason(
-	run: Pick<RunSnapshot, "error" | "exitReason" | "failureMessage" | "result">,
-): string | undefined {
-	const text = run.error ?? run.exitReason ?? run.failureMessage ?? actionableReturnedStatusText(run.result);
+export function shortFailureReason(run: RunFailureSource & Pick<RunSnapshot, "exitReason">): string | undefined {
+	const text = runFailureText(run) ?? run.exitReason;
 	if (!text) return undefined;
-	const first =
-		text
-			.split(/\r?\n/)
-			.map((line) => sanitizeToolTitleText(line).trim())
-			.find((line) => line.length > 0 && !/^at\s/.test(line)) ?? "";
-	const clean = first.replace(/^(Error|[A-Z][A-Za-z]*Error):\s*/, "");
+	const summary = summarizeFailureText(text).reason;
+	const clean = summary.replace(/^(Error|[A-Z][A-Za-z]*Error):\s*/, "");
 	return clean.length > 60 ? `${sliceHead(clean, 59)}…` : clean || undefined;
 }
 
@@ -191,6 +187,9 @@ export interface WorkflowsListingUi {
 }
 
 const LISTING_CLOCK_TICK_MS = 1_000;
+const LISTING_CHROME_ROWS = 3;
+const RUN_PREVIEW_ROWS = 5;
+const MIN_ROWS_FOR_PREVIEW = LISTING_CHROME_ROWS + 2 + RUN_PREVIEW_ROWS;
 const TRANSCRIPT_MIN_ROWS = 1;
 const USAGE_METER_ROWS = 1;
 const FOOTER_CHROME_ROWS = 2;
@@ -281,6 +280,7 @@ function renderCompactListing(
 	style: SelectorStyle,
 	width: number,
 	previewOpen: boolean,
+	previewAvailable: boolean,
 ): string[] {
 	const visible = state.getVisible();
 	const top = state.getTop();
@@ -289,7 +289,11 @@ function renderCompactListing(
 	const title = `  ${style.bold(style.text("Workflows"))}  `;
 	const range = visible.length > 0 ? style.dim(`  ${top + 1}-${end}/${visible.length}`) : "";
 	const searchWidth = Math.max(1, width - visibleWidth(title) - visibleWidth(range));
-	const lines = [title + renderListingSearch(search, style, searchWidth) + range];
+	const hasSearch = state.items.length > 0 || state.getQuery().length > 0;
+	const lines = [
+		style.accent("▔".repeat(Math.max(0, Math.floor(width)))),
+		hasSearch ? title + renderListingSearch(search, style, searchWidth) + range : title.trimEnd(),
+	];
 	if (page.length === 0) {
 		const empty = state.getQuery()
 			? `No matches for "${sanitizeToolTitleText(state.getQuery())}"`
@@ -322,7 +326,7 @@ function renderCompactListing(
 			search: true,
 			confirmLabel: "open",
 			cancelLabel: "close",
-			onPreview: !state.getQuery() ? () => {} : undefined,
+			onPreview: !state.getQuery() && previewAvailable ? () => {} : undefined,
 			previewLabel: previewOpen ? "close preview" : "preview",
 			keybindings,
 		});
@@ -373,18 +377,26 @@ export function openWorkflowsListing(
 			const selector = new SelectorState<WorkflowsListingTarget>({
 				items,
 				initialId,
-				maxVisible: Math.max(1, Math.floor((listingAvailableRows(tui) - 2) / 2)),
+				maxVisible: Math.max(1, Math.floor((listingAvailableRows(tui) - LISTING_CHROME_ROWS) / 2)),
 			});
 			let baseTop = selector.getTop();
 			let previewOpen = false;
+			const canShowPreview = (): boolean =>
+				!selector.getQuery() &&
+				selector.getSelected() !== undefined &&
+				listingAvailableRows(tui) >= MIN_ROWS_FOR_PREVIEW;
 			const handleSelectionInput = (data: string): boolean => {
 				const keys = getKeybindings();
+				if (selector.items.length === 0 && !selector.getQuery()) {
+					if (keys.matches(data, "tui.select.cancel")) finish(undefined);
+					return false;
+				}
 				if (keys.matches(data, "tui.select.up")) selector.move(-1);
 				else if (keys.matches(data, "tui.select.down")) selector.move(1);
 				else if (keys.matches(data, "tui.select.pageUp")) selector.page(-1);
 				else if (keys.matches(data, "tui.select.pageDown")) selector.page(1);
 				else if (data === " " && !selector.getQuery()) {
-					if (selector.getSelected()) previewOpen = !previewOpen;
+					if (canShowPreview()) previewOpen = !previewOpen;
 					return false;
 				} else if (keys.matches(data, "tui.select.cancel")) {
 					if (previewOpen && data !== "\x03") {
@@ -475,18 +487,36 @@ export function openWorkflowsListing(
 				render: (width: number) => {
 					refreshItems();
 					const availableRows = listingAvailableRows(tui);
-					let maxVisible = Math.max(1, Math.floor((availableRows - 2) / 2));
+					const previewAvailable = canShowPreview();
+					if (!previewAvailable) previewOpen = false;
+					let maxVisible = Math.max(1, Math.floor((availableRows - LISTING_CHROME_ROWS) / 2));
 					Reflect.set(selector, "top", baseTop);
 					Reflect.set(selector, "_maxVisible", 0);
 					selector.setMaxVisible(maxVisible);
 					baseTop = selector.getTop();
-					let lines = renderCompactListing(selector, cachedRuns, search, style, width, previewOpen);
+					let lines = renderCompactListing(
+						selector,
+						cachedRuns,
+						search,
+						style,
+						width,
+						previewOpen,
+						previewAvailable,
+					);
 					while (lines.length > availableRows && maxVisible > 1) {
 						selector.setMaxVisible(--maxVisible);
-						lines = renderCompactListing(selector, cachedRuns, search, style, width, previewOpen);
+						lines = renderCompactListing(
+							selector,
+							cachedRuns,
+							search,
+							style,
+							width,
+							previewOpen,
+							previewAvailable,
+						);
 					}
 					if (previewOpen && lines.length > availableRows) {
-						lines = renderCompactListing(selector, cachedRuns, search, style, width, false);
+						lines = renderCompactListing(selector, cachedRuns, search, style, width, false, previewAvailable);
 					}
 					paintedSelectionId = selector.getSelected()?.id;
 					refreshedSincePaint = false;

@@ -30,8 +30,8 @@ await resourceLoader.reload();
 const { session } = await createAgentSession({ cwd, agentDir, settingsManager, sessionManager, modelRuntime, resourceLoader, builtins: { subagents: false, mcp: false, intercom: false, "web-access": false } });
 let creations = 0;
 const runtime = new AgentSessionRuntime(session, { cwd, agentDir, settingsManager, modelRuntime, resourceLoader, diagnostics: [] }, async () => { creations++; throw new Error("must not create successor"); });
-await session.prompt("/workflow sdk-host-durable --no-picker");
 const tool = session.agent.state.tools.find(t => t.name === "workflow");
+await tool.execute("run", { action: "run", workflow: "sdk-host-durable", inputs: {} }, new AbortController().signal);
 let before;
 for (let i = 0; i < 250; i++) {
  before = (await tool.execute("status", { action: "status" }, new AbortController().signal)).details;

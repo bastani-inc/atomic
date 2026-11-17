@@ -46,7 +46,7 @@ function harness() {
 }
 
 describe("/workflows (#5224)", () => {
-	it("with no runs shows a searchable empty sheet and closes after clearing search (#5224)", async () => {
+	it("with no runs shows a top-edged empty sheet without inactive search and closes on Esc (#5224)", async () => {
 		const t = harness();
 		const pending = handleWorkflowsCommand("", t.ctx, t.reporter, { overlay: t.overlay, store: storeWith([]) });
 		await Promise.resolve();
@@ -55,14 +55,16 @@ describe("/workflows (#5224)", () => {
 		const sheet = t.pickers[0]({ requestRender() {} }, undefined, undefined, () => {
 			closed += 1;
 		});
-		const text = stripAnsi(sheet.render(80).join("\n"));
-		assert.match(text, /Workflows/);
-		assert.match(text, /No workflows in this session\./);
-		assert.match(text, /Esc to close/);
+		for (const width of [80, 160]) {
+			assert.deepEqual(
+				sheet.render(width).map((line) => stripAnsi(line).trimEnd()),
+				["▔".repeat(width), "  Workflows", "  No workflows in this session.", "  Esc to close"],
+			);
+		}
 		sheet.handleInput("x");
-		assert.equal(closed, 0, "typing searches and keeps the sheet open");
-		sheet.handleInput("\x1b");
-		assert.equal(closed, 0, "the first Esc clears the search");
+		sheet.handleInput("\r");
+		assert.equal(closed, 0, "inactive search and Enter do not act on an empty sheet");
+		assert.doesNotMatch(stripAnsi(sheet.render(80).join("\n")), /Search|matches|clear/);
 		sheet.handleInput("\x1b");
 		assert.equal(closed, 1);
 		await pending;

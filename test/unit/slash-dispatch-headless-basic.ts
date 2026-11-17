@@ -6,6 +6,7 @@ import {
 	addFactoryStubs,
 	assert,
 	buildMockPi,
+	createLegacyWorkflowControlHarness,
 	installSlashDispatchTestHooks,
 	join,
 	makeInflightRun,
@@ -28,10 +29,9 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 		handler: NonNullable<PiCommandOptions["handler"]>;
 		sent: SentMessage[];
 	}> {
-		const { pi, commands, sent } = buildMockPi();
+		const { pi, sent } = buildMockPi();
 		await runFactory(pi);
-		const cmd = commands.find((c) => c.name === "workflow");
-		assert.ok(cmd, "expected /workflow command registration");
+		const cmd = createLegacyWorkflowControlHarness(pi);
 		return { handler: cmd.options.handler, sent };
 	}
 
@@ -118,7 +118,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 		const filePath = join(dir, fileName);
 		await writeFile(filePath, source, "utf8");
 
-		const { pi, commands, sent } = buildMockPi();
+		const { pi, sent } = buildMockPi();
 		addFactoryStubs(pi);
 		pi.disableAsyncDiscovery = false;
 		pi.refreshWorkflowResources = async () => [{ path: filePath, enabled: true }];
@@ -137,8 +137,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
 			await startHandler({}, { ui: { notify: () => undefined } });
 		}
 
-		const cmd = commands.find((c) => c.name === "workflow");
-		assert.ok(cmd, "expected /workflow command registration");
+		const cmd = createLegacyWorkflowControlHarness(pi);
 		return {
 			handler: cmd.options.handler,
 			sent,
@@ -242,7 +241,7 @@ export default workflow({
 		const output = outputs[0]!;
 		assert.equal(output.display, true);
 		assert.equal(typeof output.content, "string");
-		assert.match(output.content ?? "", /INPUTS FOR TOURNAMENT|Inputs for "tournament":/);
+		assert.match(output.content ?? "", /INPUTS FOR tournament|Inputs for "tournament":/i);
 		assert.deepEqual(output.details, {
 			command: "inputs",
 			workflowName: "tournament",
@@ -267,7 +266,7 @@ export default workflow({
 		const output = outputs[0]!;
 		assert.equal(output.display, true);
 		assert.equal(typeof output.content, "string");
-		assert.match(output.content ?? "", /INPUTS FOR FAN-OUT-AND-SYNTHESIZE|Inputs for "fan-out-and-synthesize":/);
+		assert.match(output.content ?? "", /INPUTS FOR fan-out-and-synthesize|Inputs for "fan-out-and-synthesize":/i);
 		assert.deepEqual(output.details, {
 			command: "help",
 			workflowName: "fan-out-and-synthesize",
@@ -307,7 +306,7 @@ export default workflow({
 		);
 	});
 
-	test.sequential("removed /workflow connect and /workflow attach print a pointer to /workflows and open nothing (#5224)", async () => {
+	test.sequential("removed /workflow connect and /workflow attach print the removal notice and open nothing (#5224)", async () => {
 		const { handler, sent } = await registerWorkflowCommand();
 		const runId = testRunId(`headless-removed-${Date.now()}`);
 		store.recordRunStart(makeInflightRun(runId));
@@ -318,8 +317,11 @@ export default workflow({
 				.slice(before)
 				.map((message) => JSON.stringify(message))
 				.join("\n");
-			const subcommand = args.split(" ")[0];
-			assert.match(output, new RegExp(`\`/workflow ${subcommand}\` was removed: use \`/workflows\``), args);
+			assert.match(
+				output,
+				/! \/workflow was removed · use \/workflows, \/resume or ask the agent to run a workflow/,
+				args,
+			);
 		}
 	});
 });

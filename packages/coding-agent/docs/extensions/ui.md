@@ -204,6 +204,8 @@ These APIs customize presentation only; they do not start work or emit an extens
 
 Use `ctx.ui.addAutocompleteProvider()` to stack custom autocomplete logic on top of the built-in slash-command and path provider.
 
+Return the complete result from a provider you wrap, including its metadata. Slash-command suggestions can set `completeOnConfirm: false` so Enter submits the typed command literally until the user navigates the suggestion list; Tab still accepts the highlighted completion.
+
 Typical pattern:
 
 - inspect the text before the cursor

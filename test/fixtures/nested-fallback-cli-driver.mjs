@@ -76,7 +76,7 @@ try {
 	await waitFor(() => frames.some((frame) => frame.type === "response" && frame.id === "ready"), "root session ready");
 	if (cold) console.log("COLD_ROOT: no Intercom call before workflow launch");
 	else await call("intercom", { action: "status" });
-	await prompt("/workflow nested-fallback-fixture");
+	await workflowCall({ action: "run", workflow: "nested-fallback-fixture", inputs: {} });
 	let topRoute;
 	if (probeTop) {
 		await waitFor(() => existsSync(join(evidence, "top-hold")), "first stage model reached after session_start");

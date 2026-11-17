@@ -156,9 +156,12 @@ interface StageFailureLogSections {
 }
 
 function stageFailureLogSections(
-	stage: Pick<StageSnapshot, "error" | "failureMessage" | "failureDetail" | "failureCode">,
+	stage: Pick<StageSnapshot, "error" | "failureMessage" | "failureDetail" | "failureCode"> &
+		Partial<Pick<StageSnapshot, "status" | "result">>,
 ): StageFailureLogSections {
-	const message = trimLeadingWhitespace(stage.failureMessage ?? stage.error ?? "");
+	const rawMessage =
+		stage.failureMessage ?? stage.error ?? (stage.status === "completed" ? stage.result : undefined) ?? "";
+	const message = trimLeadingWhitespace(rawMessage);
 	const detailLines = stage.failureDetail
 		? capLogLines(
 				serializedErrorLines(
@@ -221,17 +224,57 @@ function capWrappedRows(rows: string[], maxRows: number, markerRow: string): str
 	return [...rows.slice(0, maxRows - 1), markerRow];
 }
 
+function formatStageTokens(tokens: number): string {
+	const count = Math.max(0, Math.round(tokens));
+	if (count < 1000) return `${count} ${count === 1 ? "token" : "tokens"}`;
+	if (count < 999_500) return `${(count / 1000).toFixed(count < 99_950 ? 1 : 0)}k tokens`;
+	if (count < 999_500_000) return `${(count / 1_000_000).toFixed(count < 99_950_000 ? 1 : 0)}M tokens`;
+	return `${(count / 1_000_000_000).toFixed(count < 99_950_000_000 ? 1 : 0)}B tokens`;
+}
+
+function stageTokensText(stage: Pick<StageSnapshot, "modelAttempts">): string {
+	let inputAndOutput = 0;
+	let cached = 0;
+	for (const attempt of stage.modelAttempts ?? []) {
+		const usage = attempt.usage;
+		if (usage === undefined) continue;
+		const input = usage.input ?? 0;
+		const output = usage.output ?? 0;
+		const cacheRead = usage.cacheRead ?? 0;
+		const cacheWrite = usage.cacheWrite ?? 0;
+		if (Number.isFinite(input) && input > 0) inputAndOutput += input;
+		if (Number.isFinite(output) && output > 0) inputAndOutput += output;
+		if (Number.isFinite(cacheRead) && cacheRead > 0) cached += cacheRead;
+		if (Number.isFinite(cacheWrite) && cacheWrite > 0) cached += cacheWrite;
+	}
+	const total = inputAndOutput > 0 ? inputAndOutput : cached;
+	return total > 0 ? ` · ${formatStageTokens(total)}` : "";
+}
+
+function stageCompletedSummary(stage: Pick<StageSnapshot, "result">): string | undefined {
+	const text = boundedToolText(trimLeadingWhitespace(stage.result ?? ""), TOOL_PAYLOAD_VALUE_LIMIT);
+	return text
+		.split(/\r?\n/)
+		.map((part) => part.trim())
+		.find((part) => part.length > 0);
+}
+
 export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageFailureDetailOpts): string[] {
 	const { theme } = opts;
 	const width = Math.max(1, Math.floor(opts.width));
-	const error = hexToAnsi(theme.error);
+	const isCompleted = stage.status === "completed";
+	const statusTone = hexToAnsi(isCompleted ? theme.success : theme.error);
+	const statusGlyph = isCompleted ? "✓" : "✗";
+	const statusWord = isCompleted ? "completed" : "failed";
+	const elapsedPrefix = isCompleted ? "in" : "after";
 	const text = hexToAnsi(theme.text);
 	const muted = hexToAnsi(theme.textMuted);
 	const elapsed = elapsedStageMs(stage);
-	const after = elapsed === undefined ? "" : ` after ${fmtDuration(elapsed)}`;
+	const after = elapsed === undefined ? "" : ` ${elapsedPrefix} ${fmtDuration(elapsed)}`;
+	const tokens = stageTokensText(stage);
 	const indent = "  ";
 	const room = Math.max(1, width - indent.length);
-	const title = `${indent}${error}${BOLD}✗ ${boundedToolTitleText(stage.name, width * 4)}${RESET}${muted} · failed${after}${RESET}`;
+	const title = `${indent}${statusTone}${BOLD}${statusGlyph} ${boundedToolTitleText(stage.name, width * 4)}${RESET}${muted} · ${statusWord}${after}${tokens}${RESET}`;
 	if (opts.logs) {
 		const partLimit = Math.min(TOOL_PAYLOAD_VALUE_LIMIT, room * MAX_FAILURE_LOG_ROWS);
 		const markerRow = truncateToWidth(TOOL_PAYLOAD_TRUNCATION_MARKER, room, "…");
@@ -271,9 +314,10 @@ export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageF
 			}),
 		];
 	}
-	const label = "Reason";
+	const label = isCompleted ? "Result" : "Reason";
 	const reasonRoom = Math.max(1, room - label.length - 3);
-	const firstLine = stageFailureReason(stage);
+	const firstLine = isCompleted ? stageCompletedSummary(stage) : stageFailureReason(stage);
+	if (firstLine === undefined) return [truncateToWidth(title, width)];
 	const slicedReason = sliceHead(firstLine, room * 3);
 	const wrappedReason = wrapPlainText(sanitizeToolTitleText(slicedReason), reasonRoom);
 	const truncatedReason = slicedReason.length < firstLine.length || wrappedReason.length > MAX_FAILURE_REASON_ROWS;

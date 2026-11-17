@@ -129,7 +129,8 @@ async function startHostedSession(hosted: HostedSession, originMs: number): Prom
 	});
 	hosted.session = session;
 	hosted.readyAtMs = Date.now() - originMs;
-	await session.prompt("/workflow ask-first --no-picker");
+	const tool = session.agent.state.tools.find((entry) => entry.name === "workflow")!;
+	await tool.execute("run", { action: "run", workflow: "ask-first", inputs: {} }, new AbortController().signal);
 	hosted.workflowStartedAtMs = Date.now() - originMs;
 }
 

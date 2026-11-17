@@ -1,13 +1,12 @@
-/**
- * The workflow tool call's header, as every tool shows its call: `Workflow(<name> · <what it was asked>)` for a run,
- * like `Agent(<agent> · <task>)`, and `workflow <action> <target>` for the other actions, like `subagent <action>`.
- */
-
 import { stripVTControlCharacters } from "node:util";
 import type { WorkflowInputValues } from "../shared/types.js";
-import { truncateToWidth } from "../tui/text-helpers.js";
+import { inertDisplayLine } from "../tui/display-text.js";
+import { truncateToWidth, visibleWidth } from "../tui/text-helpers.js";
 
-/** Renderer-only subset of the canonical WorkflowToolArgs from index.ts. */
+function plainTruncate(text: string, width: number, suffix = "…"): string {
+	return stripVTControlCharacters(truncateToWidth(text, width, suffix));
+}
+
 export interface WorkflowToolArgs {
 	workflow?: string;
 	inputs?: WorkflowInputValues;
@@ -31,7 +30,6 @@ export interface WorkflowToolArgs {
 	stageId?: string;
 }
 
-/** The header's parts: `title`, then `target` and `detail` inside parentheses for a run, after a space otherwise. */
 export interface WorkflowCallLabel {
 	readonly title: string;
 	readonly target?: string;
@@ -39,13 +37,11 @@ export interface WorkflowCallLabel {
 	readonly run: boolean;
 }
 
-/** The input keys that usually say what a run was asked to do, in the order they are preferred. */
 const ASK_INPUT_KEYS = ["prompt", "objective", "task", "goal", "request", "question", "description"] as const;
-const ASK_DETAIL_LIMIT = 100;
+const ASK_DETAIL_LIMIT = 160;
 
-/** One line of display text: no terminal controls, no line breaks. */
 export function displayLine(value: string): string {
-	return stripVTControlCharacters(value)
+	return inertDisplayLine(value)
 		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
 		.replace(/ {2,}/g, " ")
 		.trim();
@@ -65,7 +61,6 @@ function firstLine(text: string): string | undefined {
 	return undefined;
 }
 
-/** The first line of the input that says what the run was asked to do: a preferred key, else the first text input. */
 export function runAskLine(inputs: WorkflowInputValues | undefined): string | undefined {
 	if (inputs === undefined || inputs === null || typeof inputs !== "object") return undefined;
 	const values = inputs as Readonly<Record<string, unknown>>;
@@ -79,7 +74,7 @@ export function runAskLine(inputs: WorkflowInputValues | undefined): string | un
 		);
 	if (text === undefined) return undefined;
 	const line = firstLine(text);
-	return line === undefined ? undefined : truncateToWidth(line, ASK_DETAIL_LIMIT, "…");
+	return line === undefined ? undefined : plainTruncate(line, ASK_DETAIL_LIMIT, "…");
 }
 
 function actionTarget(args: WorkflowToolArgs): string | undefined {
@@ -89,7 +84,6 @@ function actionTarget(args: WorkflowToolArgs): string | undefined {
 	return target ?? stage;
 }
 
-/** What the header says for these arguments. */
 export function workflowCallLabel(args: WorkflowToolArgs): WorkflowCallLabel {
 	const action = args.action ?? "run";
 	if (action === "run") {
@@ -101,16 +95,37 @@ export function workflowCallLabel(args: WorkflowToolArgs): WorkflowCallLabel {
 	return { title: `workflow ${action}`, ...(target === undefined ? {} : { target }), run: false };
 }
 
+export function fitWorkflowCallLabel(label: WorkflowCallLabel, width?: number): WorkflowCallLabel {
+	if (width === undefined || width <= 0 || !label.run) return label;
+	const target = label.target ?? "?";
+	const detail = label.detail;
+	const innerBudget = width - visibleWidth(label.title) - 2;
+	if (innerBudget < 1) return label;
+	const fullInnerWidth = visibleWidth(target) + (detail === undefined ? 0 : 3 + visibleWidth(detail));
+	if (fullInnerWidth <= innerBudget) return label;
+	if (detail !== undefined && visibleWidth(target) + 4 <= innerBudget) {
+		return {
+			...label,
+			target,
+			detail: plainTruncate(detail, innerBudget - visibleWidth(target) - 3, "…"),
+		};
+	}
+	return {
+		title: label.title,
+		target: plainTruncate(target, innerBudget, "…"),
+		run: true,
+	};
+}
+
 export interface RenderCallOpts {
-	/** Optional host render width in terminal cells. */
 	width?: number;
 }
 
-/** The header as plain text, as a log or a screen reader reads it. */
 export function renderCall(args: WorkflowToolArgs, opts: RenderCallOpts = {}): string {
-	const label = workflowCallLabel(args);
+	const rawLabel = workflowCallLabel(args);
+	const label = fitWorkflowCallLabel(rawLabel, opts.width);
 	const line = label.run
 		? `${label.title}(${label.target ?? "?"}${label.detail === undefined ? "" : ` · ${label.detail}`})`
 		: `${label.title}${label.target === undefined ? "" : ` ${label.target}`}`;
-	return opts.width === undefined || opts.width <= 0 ? line : truncateToWidth(line, opts.width, "…");
+	return opts.width === undefined || opts.width <= 0 ? line : plainTruncate(line, opts.width, "…");
 }

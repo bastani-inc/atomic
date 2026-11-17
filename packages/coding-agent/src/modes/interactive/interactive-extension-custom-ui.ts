@@ -211,6 +211,15 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 			return;
 		}
 		releaseHostInlineCustomUi = isOverlay ? undefined : this.beginHostInlineCustomUi(options?.purpose);
+		if (
+			isOverlay &&
+			options?.purpose === "navigation" &&
+			!this.session?.isStreaming &&
+			this.workingRunMeter?.snapshot() === undefined
+		) {
+			this.promptTurnWorkingLoaderActive = false;
+			if (this.loadingAnimation) this.stopWorkingLoader?.();
+		}
 		if (options?.signal?.aborted) {
 			abortCustomUi();
 			return;

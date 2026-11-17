@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { type TSchema, Type } from "typebox";
 import { test } from "vitest";
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.ts";
+import { renderResult } from "../../packages/workflows/src/extension/render-result.ts";
 import {
 	parseWorkflowArgs,
 	tokenizeWorkflowArgs,
@@ -11,12 +12,8 @@ import {
 	renderWorkflowToolContent,
 	workflowGetResult,
 } from "../../packages/workflows/src/extension/workflow-tool-content.ts";
-import { renderInputsSchema } from "../../packages/workflows/src/shared/render-inputs-schema.ts";
 import { deriveInputField, deriveInputFields } from "../../packages/workflows/src/shared/schema-introspection.ts";
-import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.ts";
-
-const graphTheme = deriveGraphTheme({});
 
 test("workflow inputs and get tool outputs include declared constraints and JSON defaults without UI-only fields (#5224)", async () => {
 	const wf = {
@@ -131,11 +128,9 @@ test.each([
 	assert.equal(result.action, "inputs");
 	if (result.action !== "inputs") return;
 	assert.doesNotThrow(() => renderWorkflowToolContent(result, { action: "inputs", workflow: "default-wf" }));
-	for (const options of [{}, { theme: graphTheme }]) {
-		const rendered = renderInputsSchema("default-wf", result.inputs, options);
-		assert.match(rendered, /value/);
-		assert.doesNotMatch(rendered, /default:/);
-	}
+	const rendered = renderResult(result);
+	assert.match(rendered, /value/);
+	assert.doesNotMatch(rendered, /default:/);
 	const field = result.inputs[0]!;
 	assert.equal(Object.hasOwn(field, "default"), false);
 	assert.equal(field.required, false);
@@ -153,6 +148,50 @@ test("cyclic schemas and cyclic defaults do not crash deriveInputField (#5224)",
 	const field = deriveInputField("cyclic", cyclic);
 	assert.equal(Object.hasOwn(field, "default"), false);
 	assert.equal(field.required, false);
+});
+
+test("accessor-backed object and array index defaults are omitted without invoking their getters (#5224)", async () => {
+	let objectReads = 0;
+	const objectDefault = Object.defineProperty({}, "n", {
+		enumerable: true,
+		get() {
+			objectReads += 1;
+			return objectReads;
+		},
+	});
+	let arrayReads = 0;
+	const arrayDefault: unknown[] = [];
+	Object.defineProperty(arrayDefault, 0, {
+		enumerable: true,
+		get() {
+			arrayReads += 1;
+			return arrayReads;
+		},
+	});
+	const registry = createRegistry([
+		{
+			normalizedName: "accessor-wf",
+			name: "accessor-wf",
+			description: "demo",
+			inputs: {
+				obj: Type.Unknown({ default: objectDefault }),
+				arr: Type.Unknown({ default: arrayDefault }),
+			},
+			run: async () => ({}),
+		} as never,
+	]);
+	const result = await dispatch({ action: "inputs", workflow: "accessor-wf" }, { registry });
+	assert.equal(result.action, "inputs");
+	if (result.action !== "inputs") return;
+	for (const field of result.inputs) {
+		assert.equal(Object.hasOwn(field, "default"), false);
+		assert.equal(field.required, false);
+	}
+	assert.doesNotMatch(renderResult(result), /default:/);
+	const get = workflowGetResult({ registry } as never, { action: "get", workflow: "accessor-wf" });
+	assert.doesNotThrow(() => renderWorkflowToolContent(get, { action: "get", workflow: "accessor-wf" }));
+	assert.equal(objectReads, 0);
+	assert.equal(arrayReads, 0);
 });
 
 test("a trailing backslash inside double quotes does not swallow following arguments (#5224)", () => {
@@ -187,4 +226,17 @@ test("inputs and argument parsing preserve __proto__ and constructor keys as own
 	assert.equal(Object.getPrototypeOf(parsed), Object.prototype);
 	assert.equal(Object.getOwnPropertyDescriptor(parsed, "__proto__")?.value, "alpha");
 	assert.equal(Object.getOwnPropertyDescriptor(parsed, "constructor")?.value, 42);
+});
+
+test("array subclasses cannot transform workflow default metadata through inherited toJSON (#5224)", () => {
+	let calls = 0;
+	class ChangingArray extends Array<number> {
+		toJSON(): string {
+			calls++;
+			return "changed";
+		}
+	}
+	const field = deriveInputField("value", Type.Unknown({ default: new ChangingArray(1, 2) }));
+	assert.equal(Object.hasOwn(field, "default"), false);
+	assert.equal(calls, 0);
 });
