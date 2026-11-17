@@ -15,10 +15,11 @@ import {
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
+import { queryIntercomBroker } from "../../packages/intercom/broker/control.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath, spawnBrokerIfNeeded } from "../../packages/intercom/broker/spawn.js";
-import type { BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
+import type { BrokerMessage, Message, SessionInfo, SupervisorRegistration } from "../../packages/intercom/types.js";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -97,7 +98,7 @@ interface Peer {
 	readonly senders: SessionInfo[];
 }
 
-async function peer(home: string, reach?: { reachable: string[] }): Promise<Peer> {
+async function peer(home: string, reach?: { reachable: string[] }, ownerToken?: string): Promise<Peer> {
 	await spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], BROKER_START_TIMEOUT_MS);
 	const client = new IntercomClient(undefined, reach === undefined ? {} : { reach: () => ({ home, ...reach }) });
 	const received: Message[] = [];
@@ -119,7 +120,7 @@ async function peer(home: string, reach?: { reachable: string[] }): Promise<Peer
 			group: home,
 		},
 		undefined,
-		undefined,
+		ownerToken,
 		undefined,
 		home,
 	);
@@ -243,6 +244,57 @@ test(
 	REAL_BROKER_SESSION_TIMEOUT_MS,
 );
 
+for (const narrowAfterHeld of [true, false])
+	test(
+		`a send held by a single broker keeps its receipt-time reach when narrowed ${narrowAfterHeld ? "after send_held" : "in the send's tick"} (#5352)`,
+		async () => {
+			const [home, other] = [group("held-home"), group("held-other")];
+			const owner = await peer(other, undefined, randomUUID());
+			const status = await queryIntercomBroker(agentDir);
+			assert.equal(status.state, "running");
+			assert.ok(status.state === "running");
+			assert.equal(status.report.multiNode.status, "off", "held sends replay on the single broker");
+			const childName = `subagent-worker-${randomUUID()}-1`;
+			const supervisor = await owner.client.authorizeSupervisorChild(childName);
+			await owner.client.reserveRestoringRecipient(supervisor.capability, { group: other, holdMs: 60_000 });
+			const sender = await rawRegistration(home, { reachable: [other] });
+			const messageId = randomUUID();
+			const requestId = randomUUID();
+			const narrow = () => writeMessage(sender.socket, { type: "set_reach", requestId, reachable: [] });
+			sender.socket.cork();
+			writeMessage(sender.socket, {
+				type: "send",
+				to: childName,
+				message: { id: messageId, timestamp: Date.now(), content: { text: "held before narrowing" } },
+				awaitRestoringRecipient: true,
+			});
+			if (!narrowAfterHeld) narrow();
+			sender.socket.uncork();
+			const held = await sender.next(
+				(frame) =>
+					(frame.type === "send_held" || frame.type === "delivery_failed") && frame.messageId === messageId,
+			);
+			assert.equal(held.type, "send_held", JSON.stringify(held));
+			if (narrowAfterHeld) narrow();
+			await sender.next((frame) => frame.type === "reach_ack" && frame.requestId === requestId);
+
+			const child = await rawRegistration(other, { name: childName, supervisor, reachable: [] });
+			const outcome = await sender.next(
+				(frame) =>
+					(frame.type === "delivered" || frame.type === "delivery_failed") && frame.messageId === messageId,
+			);
+			assert.equal(outcome.type, "delivered", JSON.stringify(outcome));
+			await child.next((frame) => frame.type === "message" && frame.message.id === messageId);
+			await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
+			assert.deepEqual(
+				child.frames.flatMap((frame) => (frame.type === "message" ? [frame.message.id] : [])),
+				[messageId],
+				"the restoring child receives the held send exactly once",
+			);
+		},
+		REAL_BROKER_SESSION_TIMEOUT_MS,
+	);
+
 test(
 	"the broker refuses a forged join, peek, presence or reach change from a client (#5352)",
 	async () => {
@@ -290,9 +342,6 @@ test(
 		assert.match(asHosted.reason ?? "", /can only reply to an ask it received/);
 
 		const legacy = await rawRegistration(group("legacy"));
-		cleanups.push(() => {
-			legacy.socket.destroy();
-		});
 		writeMessage(legacy.socket, { type: "set_reach", requestId: "widen", reachable: [homeA] });
 		const answer = await legacy.next((frame) => frame.type === "reach_failed" || frame.type === "reach_ack");
 		assert.equal(answer.type, "reach_failed");
@@ -435,11 +484,18 @@ async function killBroker(): Promise<void> {
 
 interface RawRegistration {
 	readonly socket: net.Socket;
+	readonly frames: readonly BrokerMessage[];
 	next(matches: (frame: BrokerMessage) => boolean): Promise<BrokerMessage>;
 }
 
-async function rawRegistration(home: string): Promise<RawRegistration> {
+async function rawRegistration(
+	home: string,
+	options: { name?: string; reachable?: string[]; supervisor?: SupervisorRegistration } = {},
+): Promise<RawRegistration> {
 	const socket = net.connect(getBrokerSocketPath());
+	cleanups.push(() => {
+		socket.destroy();
+	});
 	const frames: BrokerMessage[] = [];
 	const waiters = new Set<() => void>();
 	socket.on(
@@ -468,7 +524,7 @@ async function rawRegistration(home: string): Promise<RawRegistration> {
 	writeMessage(socket, {
 		type: "register",
 		session: {
-			name: "raw",
+			name: options.name ?? "raw",
 			cwd,
 			model: "raw",
 			pid: process.pid,
@@ -478,9 +534,11 @@ async function rawRegistration(home: string): Promise<RawRegistration> {
 			group: home,
 		},
 		protocol: { min: 1, max: 4 },
+		...(options.reachable === undefined ? {} : { reach: { home, reachable: options.reachable } }),
+		...(options.supervisor === undefined ? {} : { supervisor: options.supervisor }),
 	});
 	await next((frame) => frame.type === "registered");
-	return { socket, next };
+	return { socket, frames, next };
 }
 
 function lines(child: ChildProcess): { next(type: string): Promise<Record<string, unknown>> } {
