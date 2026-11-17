@@ -50,6 +50,9 @@ export function attachInteractiveEngineHost(
 	const disposeDiagnostic = runtime.onDiagnostic(onDiagnostic);
 	const disposeUIPrompts = runtime.onEngineMessage((message) => {
 		if (message.type === "engine_ui_prompt") onUIPrompt?.(message.event);
+		// The footer paints the engine's panel counts, which the runtime has already mirrored. They can change
+		// with no panel widget mounted (only shells running), so a widget's repaint cannot be relied on.
+		else if (message.type === "engine_agent_panel_state") ui.requestRender();
 	});
 	const disposePromptGeneration = runtime.onGenerationEnded(() => onUIPrompt?.(undefined));
 	const disposeWorkflowActivity = onWorkflowActivity

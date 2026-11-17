@@ -360,6 +360,13 @@ export interface AgentPanelRenderOptions {
 	readonly scroll?: number;
 	readonly hiddenAbove?: number;
 	readonly hiddenBelow?: number;
+	/** The main-chat row above the list. Defaults to shown only while focused. */
+	readonly showMain?: boolean;
+}
+
+/** The main-chat row leads the panel whenever it lists a subagent; a panel of workflow runs has none. */
+export function panelShowsMain(rows: readonly Pick<AgentPanelRow, "kind">[]): boolean {
+	return rows.some((row) => row.kind === "agent");
 }
 
 export function renderAgentPanelRows(
@@ -432,7 +439,7 @@ export function renderAgentPanelRows(
 		const full = `${cursor}${glyphText} ${nameText}  ${paint(fittedTask.text)}${" ".repeat(pad)}${rightText}`;
 		lines.push(clampLine(full, width));
 	};
-	if (focused) {
+	if (options.showMain ?? focused) {
 		const selected = options.selectedId === AGENT_PANEL_MAIN_ID;
 		line(AGENT_PANEL_MAIN_ID, selected ? style.accent("●") : style.text("●"), "main", 4, "", "", false);
 	}
@@ -531,6 +538,10 @@ export class AgentPanelFocus {
 	private finishedAcknowledged = false;
 	private readonly paintedFinished = new Map<string, boolean>();
 	private selectionMovedUnseen = false;
+	/** Whether the main-chat row leads the list; without it, ↑ on the first row returns to the prompt. */
+	get showMain(): boolean {
+		return panelShowsMain(this.rows);
+	}
 	notePainted(rows: readonly AgentPanelRow[]): void {
 		this.paintedFinished.clear();
 		for (const row of rows) this.paintedFinished.set(row.id, isFinishedPanelRow(row));
@@ -538,6 +549,7 @@ export class AgentPanelFocus {
 	}
 	update(rows: readonly AgentPanelRow[]): void {
 		const selectedIndex = this.rows.findIndex((row) => row.id === this.selectedId);
+		const mainWasShown = this.showMain;
 		const ids = new Set([AGENT_PANEL_MAIN_ID]);
 		this.rows = rows.filter((row) => {
 			if (ids.has(row.id)) return false;
@@ -560,6 +572,10 @@ export class AgentPanelFocus {
 			this.selectedId =
 				this.rows[Math.max(0, Math.min(selectedIndex, this.rows.length - 1))]?.id ?? AGENT_PANEL_MAIN_ID;
 			this.selectionMovedUnseen = true;
+		} else if (this.selectedId === AGENT_PANEL_MAIN_ID && !this.showMain && this.rows.length > 0) {
+			// The main row left with the last subagent: the selection moves to the first row.
+			this.selectedId = this.rows[0]!.id;
+			if (mainWasShown) this.selectionMovedUnseen = true;
 		}
 		this.keepInView();
 	}
@@ -580,7 +596,11 @@ export class AgentPanelFocus {
 		return id === undefined ? undefined : this.rows.find((row) => row.id === id);
 	}
 	private ids(): string[] {
-		return [AGENT_PANEL_MAIN_ID, ...this.rows.map((row) => row.id)];
+		const ids = this.rows.map((row) => row.id);
+		return this.showMain ? [AGENT_PANEL_MAIN_ID, ...ids] : ids;
+	}
+	private firstId(): string {
+		return this.showMain ? AGENT_PANEL_MAIN_ID : (this.rows[0]?.id ?? AGENT_PANEL_MAIN_ID);
 	}
 	private keepInView(): void {
 		const index = this.rows.findIndex((row) => row.id === this.selectedId);
@@ -625,7 +645,7 @@ export class AgentPanelFocus {
 		}
 		if (is(data, "up")) {
 			this.selectionMovedUnseen = false;
-			if (this.selectedId === AGENT_PANEL_MAIN_ID) this.actions.close();
+			if (this.selectedId === this.firstId()) this.actions.close();
 			else this.move(-1);
 			return true;
 		}
@@ -636,7 +656,7 @@ export class AgentPanelFocus {
 		}
 		if (is(data, "home")) {
 			this.selectionMovedUnseen = false;
-			this.selectedId = AGENT_PANEL_MAIN_ID;
+			this.selectedId = this.firstId();
 			this.scroll = 0;
 			return true;
 		}
