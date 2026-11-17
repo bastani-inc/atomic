@@ -953,9 +953,10 @@ describe("history:// session searches cut to fit their byte budget lose no match
 
 	function hitLines(seq: number, hits: readonly number[], lineCount: number): string {
 		const wanted = new Set(hits);
-		return Array.from({ length: lineCount }, (_, line) =>
-			wanted.has(line) ? `hit ${seq}.${line} ${SWEEP_PAD}` : `${"f".repeat(96)} ${line}`,
-		).join("\n");
+		return Array.from({ length: lineCount }, (_, line) => {
+			const fillerChars = line === 4 ? 800 : seq === 2 && line === 1 ? 500 : 96;
+			return wanted.has(line) ? `hit ${seq}.${line} ${SWEEP_PAD}` : `${"f".repeat(fillerChars)} ${line}`;
+		}).join("\n");
 	}
 
 	async function sweepStore(): Promise<MemorySessionStore> {
@@ -990,7 +991,7 @@ describe("history:// session searches cut to fit their byte budget lose no match
 					ignoreCase: false,
 					literal: false,
 					contextBefore: 0,
-					contextAfter: 0,
+					contextAfter: 1,
 				})) ?? "";
 			for (const match of out.matchAll(/^history:\/\/sessions\/sweep:(\d+): hit (\d+\.\d+) /gm)) {
 				assert.equal(match[1], match[2]!.split(".")[0], `${bytes} bytes: ${match[0]}`);
@@ -1009,7 +1010,7 @@ describe("history:// session searches cut to fit their byte budget lose no match
 				const expected = await shownHits(store, pattern);
 				assert.equal(expected.length, 23, `${pattern}: ${expected.join(",")}`);
 				const failures: string[] = [];
-				for (let bytes = 700; bytes <= 1_700; bytes += 9) {
+				for (let bytes = 400; bytes <= 1_700; bytes += 9) {
 					const shown = await shownHits(store, pattern, bytes);
 					const lost = expected.filter((hit) => !shown.includes(hit));
 					if (lost.length > 0) failures.push(`${pattern} at ${bytes} bytes lost ${lost.join(",")}`);

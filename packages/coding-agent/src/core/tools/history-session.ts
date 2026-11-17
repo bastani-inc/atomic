@@ -996,7 +996,10 @@ function lineNumberAt(newlines: readonly number[], index: number): number {
 	return low;
 }
 
-function workerWindowPattern(pattern: string): string {
+function workerWindowPattern(pattern: string, multiline = false, entryStart = 0): string {
+	const caretAnchor =
+		entryStart === 0 ? "^" : entryStart > 0 ? `(?<=(?<![\\s\\S])[\\s\\S]{${entryStart}})` : "(?:\\b\\B)";
+	const mStack = [multiline];
 	let out = "";
 	for (let i = 0; i < pattern.length; ) {
 		const ch = pattern[i]!;
@@ -1017,6 +1020,34 @@ function workerWindowPattern(pattern: string): string {
 			const end = scanCharacterClass(pattern, i);
 			out += pattern.slice(i, end);
 			i = end;
+			continue;
+		}
+		if (ch === "(") {
+			const flagMatch = /^\(\?([imsUx]+)?(?:-([imsUx]+))?([:)])/.exec(pattern.slice(i));
+			if (flagMatch) {
+				const enabled = flagMatch[1] ?? "";
+				const disabled = flagMatch[2] ?? "";
+				const nextM = enabled.includes("m") ? true : disabled.includes("m") ? false : mStack[mStack.length - 1]!;
+				if (flagMatch[3] === ":") mStack.push(nextM);
+				else mStack[mStack.length - 1] = nextM;
+				out += flagMatch[0];
+				i += flagMatch[0].length;
+				continue;
+			}
+			mStack.push(mStack[mStack.length - 1]!);
+			out += ch;
+			i++;
+			continue;
+		}
+		if (ch === ")") {
+			if (mStack.length > 1) mStack.pop();
+			out += ch;
+			i++;
+			continue;
+		}
+		if (ch === "^" && !mStack[mStack.length - 1]) {
+			out += caretAnchor;
+			i++;
 			continue;
 		}
 		out += ch;
@@ -1063,6 +1094,7 @@ export interface MultilineWindow {
 	readonly ownedFrom: number;
 	readonly ownedTo: number;
 	readonly cut: boolean;
+	readonly entryStart?: number;
 }
 
 export async function matchMultilineWindow(
@@ -1082,7 +1114,9 @@ export async function matchMultilineWindow(
 			text,
 			window.ownedFrom,
 			window.ownedTo,
-			literal ? normalized.pattern : workerWindowPattern(normalized.pattern),
+			literal
+				? normalized.pattern
+				: workerWindowPattern(normalized.pattern, normalized.flags.includes("m"), window.entryStart ?? 0),
 			normalized.flags,
 			ignoreCase,
 			literal,
@@ -1708,9 +1742,18 @@ class SessionSearcher {
 				0,
 			);
 			const ownedTo = ownedFrom + ownedLines.join("\n").length + 1;
+			let entryStart = -1;
+			let offsetChars = 0;
+			for (const part of windowParts) {
+				if (part.seq === entry.seq && part.lineOffset === 0) {
+					entryStart = offsetChars;
+					break;
+				}
+				for (const line of part.lines) offsetChars += line.length + 1;
+			}
 			const windowText = windowParts.flatMap((part) => part.lines).join("\n");
 			const matchedSpans = await matchMultilineWindow(
-				{ text: windowText, lineCount: totalLines, ownedFrom, ownedTo, cut: ahead.cut },
+				{ text: windowText, lineCount: totalLines, ownedFrom, ownedTo, cut: ahead.cut, entryStart },
 				this.normalized,
 				this.ignoreCase,
 				request.literal,

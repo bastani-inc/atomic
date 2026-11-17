@@ -68,6 +68,47 @@ function failOnSessions(store: MemorySessionStore, failingIds: ReadonlySet<strin
 }
 
 describe("history:// stop and skipped-entry notes under tight budgets (#5250)", () => {
+	it("a cut match in the final session reports the byte stop without an empty continuation (#5250)", async () => {
+		for (const count of [1, 2]) {
+			const store = new MemorySessionStore();
+			try {
+				if (count === 2) await addSession(store, "s0", BASE + 1_000, ["nothing here"]);
+				await addSession(store, "s1", BASE, [`needle ${"x".repeat(1_000)}`]);
+				const completeRouter = createHistoryRouter({
+					cwd: PROJECT,
+					sessionStore: () => store,
+					workflows: () => undefined,
+				});
+				const url = count === 1 ? "history://sessions" : "history://sessions?offset=1";
+				const complete = (await completeRouter.search!(url, request("needle"))) ?? "";
+				let cutPages = 0;
+				for (let bytes = 220; bytes <= 700; bytes += 9) {
+					const router = createHistoryRouter({
+						cwd: PROJECT,
+						sessionStore: () => store,
+						workflows: () => undefined,
+						budget: { bytes },
+					});
+					const output = (await router.search!(url, request("needle"))) ?? "";
+					if (output === complete) continue;
+					assert.match(output, /history:\/\/sessions\/s1:1: needle/);
+					cutPages++;
+					assert.ok(Buffer.byteLength(output) <= bytes, `${bytes}: ${output}`);
+					assert.ok(
+						output
+							.split("\n")
+							.includes(`${url}:0: [searched sessions ${count}-${count} of ${count}; the byte budget ran out]`),
+						`${bytes}: ${output}`,
+					);
+					assert.equal(continuation(output), undefined, output);
+				}
+				assert.ok(cutPages > 0);
+			} finally {
+				await store.close();
+			}
+		}
+	});
+
 	it("workflow searches fall back to the short skipped-entry clause when only the short clause fits (#5250)", async () => {
 		const id = "x.dot.";
 		const store = new MemorySessionStore();

@@ -1362,7 +1362,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		try {
 			return (await recentRuns(budget)).some((run) => run.runId === runId);
 		} catch (error) {
-			if (budget.signal?.aborted) throw error;
+			if (budget.signal?.aborted || isHistoryDeadlineError(error)) throw error;
 			return false;
 		}
 	}
@@ -1568,10 +1568,10 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		searched: number,
 		unreadable: number,
 		reason: BudgetStop,
-		continuation: string,
+		continuation: string | undefined,
 		where: string,
 	): string {
-		return `${pageUrl(domain, target, target.offset)}:0: [searched ${label} ${windowText(total, target.offset, searched)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}; ${stopText(reason)}${where}; continue with ${continuation}]`;
+		return `${pageUrl(domain, target, target.offset)}:0: [searched ${label} ${windowText(total, target.offset, searched)}${unreadable > 0 ? `, ${unreadable} unreadable` : ""}; ${stopText(reason)}${where}${continuation === undefined ? "" : `; continue with ${continuation}`}]`;
 	}
 
 	async function searchOneSession(
@@ -1791,15 +1791,17 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				index + 1,
 				unreadableAfter,
 				reason,
-				pageUrl(
-					"sessions",
-					scope,
-					scope.offset + index + 1,
-					undefined,
-					request.ranges,
-					undefined,
-					positionOf(index),
-				),
+				scope.offset + index + 1 < candidates.length
+					? pageUrl(
+							"sessions",
+							scope,
+							scope.offset + index + 1,
+							undefined,
+							request.ranges,
+							undefined,
+							positionOf(index),
+						)
+					: undefined,
 				"",
 			);
 		const afterFooter = (index: number, reason: BudgetStop, unreadableAfter: number): string[] =>

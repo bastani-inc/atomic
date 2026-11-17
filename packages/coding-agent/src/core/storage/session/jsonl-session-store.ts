@@ -386,7 +386,7 @@ async function scanSessionLines(
 			retained = false;
 		}
 		const { bytesRead } = await file.read(chunk, 0, Math.min(chunk.length, size - position), position);
-		if (bytesRead === 0) break;
+		if (bytesRead === 0) return { offset: position, seq, header: false, changed: true };
 		const bytes = chunk.subarray(0, bytesRead);
 		let start = 0;
 		let advancedAt: number | undefined;

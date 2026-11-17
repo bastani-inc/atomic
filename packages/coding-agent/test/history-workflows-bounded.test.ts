@@ -179,6 +179,18 @@ function largeObject(items: number): WorkflowRunJsonObject {
 }
 
 describe("history:// workflow runs stay bounded (#5250)", () => {
+	it("labels a cut multi-line search window in the run log itself (#5250)", async () => {
+		const detail = runDetail("run-window", BASE, { text: "x".repeat(150_000) });
+		const { router, request } = historyOf([detail]);
+		const output =
+			(await router.search!("history://workflows/run-window", request("needle-token run-window\\n"))) ?? "";
+		assert.match(output, /^history:\/\/workflows\/run-window:6: summary: needle-token run-window$/m);
+		assert.match(
+			output,
+			/^history:\/\/workflows\/run-window:0: \[multi-line matches are searched up to 16 KB of text or 256 entries past where they start, so a longer match is not shown\]$/m,
+		);
+	});
+
 	it("charges workflow runs listed, searched and read to the row budget and continues from the next run (#5250)", async () => {
 		const details = Array.from({ length: RUN_COUNT }, (_, index) =>
 			runDetail(`run-${String(index).padStart(2, "0")}`, BASE + index * 1_000),

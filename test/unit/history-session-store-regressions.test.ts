@@ -1282,4 +1282,60 @@ describe("bounded session reads (#5250)", () => {
 			}
 		});
 	});
+
+	it("retries a JSONL range read when the file is truncated and regrown during a main scan chunk read (#5250)", async () => {
+		const entries = numbered("e", 1000);
+		const initialText = fileText(entries);
+		const truncatedText = fileText(entries.slice(0, 300));
+		const regrownEntries = [...entries, info("grown")];
+		const regrownText = fileText(regrownEntries);
+		const seededOffset = Buffer.byteLength(truncatedText);
+		await withDirectory(async (directory) => {
+			const path = join(directory, "s.jsonl");
+			for (const mode of ["first-chunk", "second-chunk"] as const) {
+				await writeFile(path, initialText);
+				await withJsonl(directory, async (store) => {
+					if (mode === "first-chunk") await store.readEntryRange("s", { fromSeq: 1, toSeq: 300 });
+					let truncated = false;
+					const handle = await open(path, "r");
+					const prototype = Object.getPrototypeOf(handle) as FileHandlePrototype;
+					await handle.close();
+					const read = prototype.read;
+					prototype.read = async function (
+						this: FileHandle,
+						buffer: Buffer,
+						offset: number,
+						length: number,
+						position: number | null,
+					) {
+						const trigger =
+							!truncated && length > 64 && position === (mode === "first-chunk" ? seededOffset : 64 * 1024);
+						if (trigger) {
+							truncated = true;
+							writeFileSync(path, truncatedText);
+						}
+						try {
+							return await read.call(this, buffer, offset, length, position);
+						} finally {
+							if (trigger) writeFileSync(path, regrownText);
+						}
+					};
+					try {
+						const fromSeq = mode === "first-chunk" ? 301 : 1;
+						const page = await store.readEntryRange("s", { fromSeq, toSeq: 1001 });
+						assert.ok(truncated, mode);
+						assert.deepEqual(
+							page.entries.map((item) => item.entry.id),
+							regrownEntries.slice(fromSeq - 1).map((entry) => entry.id),
+							mode,
+						);
+						assert.equal(page.lastSeq, 1001, mode);
+						assert.equal(page.throughSeq, 1001, mode);
+					} finally {
+						prototype.read = read;
+					}
+				});
+			}
+		});
+	});
 });

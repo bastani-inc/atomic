@@ -18,10 +18,8 @@ const BASE = Date.parse("2026-11-01T00:00:00.000Z");
 const CALL_LIMIT = 200;
 const SLOW_TIME_MS = 40;
 const SLOW_LISTING_MS = 400;
-// A later run's details arrive after the call's time budget but before the floor that a call's first record gets.
 const LATER_RUN_TIME_MS = 100;
 const LATE_DETAILS_MS = 175;
-// Fits the stop line and a cut first match row, but not the whole row: a cut row or a diagnostic are the only answers.
 const CUT_ONLY_BYTES = 910;
 
 function message(id: string, text: string, at: number): SessionEntry {
@@ -1331,5 +1329,51 @@ describe("history:// continuations keep whole records and positions (#5250)", ()
 				failures.push(`${url} ${JSON.stringify(selection)} -> ${next}:\n${output}\nexpected:\n${expected}`);
 		}
 		assert.deepEqual(failures, []);
+	});
+
+	it("reading or searching a workflow stage session in its own worktree continues when listing runs exceeds the time budget (#5250)", async () => {
+		const runs = [summary("run-a", BASE)];
+		for (const mode of ["read", "search"] as const) {
+			const store = new MemorySessionStore();
+			await store.create(
+				{
+					id: "stage-s",
+					version: SESSION_FORMAT_VERSION,
+					createdAt: new Date(BASE).toISOString(),
+					cwd: resolve("/projects/history-resume-worktree"),
+					internal: true,
+					workflow: { runId: "run-a", stageId: "s1", stageName: "build" },
+				},
+				[message("stage-s-e1", "needle in stage worktree", BASE + 1)],
+			);
+			const gate = gated();
+			const workflows: WorkflowRunHistory = {
+				listRuns: async () => runs,
+				listProjectRuns: async () => {
+					await gate.opened;
+					return runs;
+				},
+				getRun: async (runId) => detail(runId, BASE, "run summary"),
+			};
+			const router = createHistoryRouter({
+				cwd: PROJECT,
+				sessionStore: () => store,
+				workflows: () => workflows,
+				budget: { timeMs: SLOW_TIME_MS },
+			});
+			const call = (url: string) =>
+				mode === "read" ? router.read!(url) : router.search!(url, request("needle in stage worktree"));
+			const first = (await call("history://sessions/stage-s")) ?? "";
+			assert.match(
+				first,
+				/the time budget ran out waiting for the store; continue with history:\/\/sessions\/stage-s/,
+				first,
+			);
+			gate.open();
+			const next = continuation(first);
+			assert.equal(next, "history://sessions/stage-s");
+			const second = (await call(next!)) ?? "";
+			assert.match(second, /needle in stage worktree/, second);
+		}
 	});
 });
