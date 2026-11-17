@@ -1319,6 +1319,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	/** What the screen shows at `x`, `y`: the painted row, the layout boxes and overlay drawn there. */
 	private pointerFrame(x: number, y: number): PointerFrame {
 		const decoration = this.decoratedRows.get(y);
+		const overlay = this.overlayAt(x, y);
 		return {
 			line: this.previousScreen[y],
 			boxes: this.currentLayout
@@ -1328,8 +1329,13 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 						y: box.rect.y,
 					}))
 				: [],
-			overlay: this.overlayAt(x, y),
-			decorated: decoration !== undefined && x >= decoration.x && x < decoration.x + decoration.width,
+			overlay,
+			// An overlay drawn over the row takes its clicks; the decoration under it is hidden.
+			decorated:
+				overlay === undefined &&
+				decoration !== undefined &&
+				x >= decoration.x &&
+				x < decoration.x + decoration.width,
 		};
 	}
 
