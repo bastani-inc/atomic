@@ -7,6 +7,7 @@ import {
 	agentPanelTaskId,
 	answerAgentPanelItem,
 	dismissedAgentPanelItems,
+	notifyAgentPanelChanged,
 	openAgentPanelItem,
 	stopAgentPanelItem,
 	subscribeAgentPanelExtensions,
@@ -70,6 +71,7 @@ export function agentPanelBoardSource(session: AgentPanelSession & object): Task
 		answer: (id, text, options) => answerAgentPanelItem(session, id, text, options),
 		dismiss: (id) => {
 			dismissedAgentPanelItems(session).add(id);
+			notifyAgentPanelChanged(session);
 		},
 	};
 	boardSessions.set(board, session);

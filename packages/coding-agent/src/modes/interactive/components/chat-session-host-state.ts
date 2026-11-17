@@ -11,6 +11,7 @@ import type {
 	ChatSessionHostEntry,
 	ChatSessionHostOpts,
 	ChatSessionHostStyle,
+	ChatSessionInterruptedTurnSnapshot,
 	ChatSessionSubmitMode,
 } from "./chat-session-host-types.ts";
 import {
@@ -39,6 +40,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly requestRender: (() => void) | undefined;
 	readonly getAgentSession: (() => AgentSession | undefined) | undefined;
 	readonly getChatBoxSession: (() => ChatBoxSession | undefined) | undefined;
+	lastRendererSession: WeakRef<ChatBoxSession> | undefined;
 	readonly getSessionMessages: (() => AgentSession["messages"] | undefined) | undefined;
 	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
 	readonly echoedInitialPrompt: string | (() => string | undefined) | undefined;
@@ -77,6 +79,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	workingMessage: string | undefined;
 	lastWorkingMessage: string | undefined = undefined;
 	workedRun: { readonly message: string | undefined; readonly snapshot: WorkingRunSnapshot } | undefined = undefined;
+	interruptedTurnSnapshot: ChatSessionInterruptedTurnSnapshot | undefined = undefined;
 	seenFirstRawUser = false;
 	firstUserEntryExactText: string | undefined = undefined;
 	firstUserEntry: Extract<ChatMessageEntry, { kind: "user" }> | undefined = undefined;

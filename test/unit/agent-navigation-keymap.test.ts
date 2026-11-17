@@ -77,7 +77,7 @@ test("one dim hint line names exactly the screen's keys and fits 80 and 160 colu
 	}
 	// Narrow terminals drop whole entries from the end instead of cutting one mid-word.
 	const narrow = renderNavHintLine(KEYS, 37, plainStyle, keys);
-	assert.equal(narrow, "  ↑↓ select · enter/→ open · x stop");
+	assert.equal(narrow, "  esc back to prompt · ? keys");
 	assert.ok(visibleWidth(renderNavHintLine(KEYS, 8, plainStyle, keys)) <= 8);
 });
 
@@ -156,9 +156,7 @@ test("Ctrl+X Ctrl+K stops all background work only after a second press within t
 	assert.equal(listener(CTRL_X), undefined, "Ctrl+X starts the chord and still reaches whatever has the keyboard");
 	assert.deepEqual(listener(CTRL_K), { consume: true }, "Ctrl+K right after it belongs to the chord");
 	assert.equal(h.stops(), 0);
-	assert.deepEqual(h.statuses, [
-		"Press ctrl+x ctrl+k again within 3s to stop all background subagents, shells and workflow runs",
-	]);
+	assert.deepEqual(h.statuses, ["Press ctrl+x ctrl+k again within 3s to stop all"]);
 	now += 2000;
 	listener(CTRL_X);
 	listener(CTRL_K);

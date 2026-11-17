@@ -58,9 +58,7 @@ export function createStopAllChord(
 				return undefined;
 			}
 			if (!confirm.press("stop-all")) {
-				host.showStatus(
-					`Press ${chordText()} again within 3s to stop all background subagents, shells and workflow runs`,
-				);
+				host.showStatus(`Press ${chordText()} again within 3s to stop all`);
 				return { consume: true };
 			}
 			void host.stopAll().then(

@@ -124,11 +124,12 @@ test("a dismissed stopped run returns when the same id resumes (#5224)", async (
 test("the 80- and 160-column list and peek hints retain every live command in order (#5224)", async () => {
 	const h = harness([item("release", "running")]);
 	const hint = "↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← close · ? keys";
+	const peekHint = "↑↓ select · enter/→ open · x stop · / filter · space/esc/← close · ? keys";
 	try {
 		for (const width of [80, 160]) {
 			assert.equal(stripVTControlCharacters(h.inspector.renderViewport(width, 24).at(-1)!).trim(), hint);
 			h.inspector.handleInput(" ");
-			assert.equal(stripVTControlCharacters(h.inspector.renderViewport(width, 24).at(-1)!).trim(), hint);
+			assert.equal(stripVTControlCharacters(h.inspector.renderViewport(width, 24).at(-1)!).trim(), peekHint);
 			h.inspector.handleInput("\x1b");
 		}
 	} finally {
@@ -140,7 +141,7 @@ test("a finished row keeps its dismissal and help keys at 80 columns (#5224)", a
 	const h = harness([item("release", "done")]);
 	try {
 		const line = stripVTControlCharacters(h.inspector.renderViewport(80, 24).at(-1)!).trim();
-		assert.equal(line, "↑↓ select·space peek·enter/→ open·x dismiss·/ filter·esc/← close·? keys");
+		assert.equal(line, "↑↓ select · space peek · enter/→ open · x dismiss · esc/← close · ? keys");
 	} finally {
 		await h.dispose();
 	}

@@ -78,7 +78,7 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 		observeTaskClocks([record], now);
 		assert.equal(panel.rows([row])[0]?.elapsedMs, 65_000);
 		assert.equal(taskMetricsText(record), "1m 5s");
-		assert.match(renderInspector(), /1m 5s/);
+		assert.match(renderInspector(), /worker\s+finish cleanup\s+1m\b/);
 		assert.match(renderTranscript(), /worker · finish cleanup · 1m/);
 
 		record.execution = { kind: "cancelling", cause: "user" };

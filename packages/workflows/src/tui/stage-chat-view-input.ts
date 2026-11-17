@@ -1,5 +1,6 @@
 import { isNavHelpKey, TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
 import { getKeybindings } from "@bastani/atomic-tui";
+import { coercePrimitivePromptAnswer, isPrimitivePrompt } from "../shared/prompt-answer.js";
 
 import { APP_ACTION, isKeybindingsLike, matchesAction, matchesNavAction, TUI_ACTION } from "./keybindings-adapter.js";
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
@@ -16,6 +17,7 @@ import {
 	promptCardShown,
 	promptPageSize,
 	recordCurrentPromptDraft,
+	recordStageEscapeInterrupt,
 	resolvePromptResponse,
 	syncPromptState,
 } from "./stage-chat-view-state.js";
@@ -69,8 +71,7 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 			return ctx.chatHost.handleInput(data);
 		}
 		if (isAbortableStreamingSession(ctx)) {
-			ctx.interruptedByEscape = true;
-			void ctx.chatHost.interrupt({ restoreQueuedMessages: true });
+			recordStageEscapeInterrupt(ctx);
 		}
 		return true;
 	}
@@ -80,8 +81,23 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	}
 	if (handleStageChatJumpToBottom(ctx, data)) return true;
 	if (ctx.chatHost.handleScrollInput(data)) return true;
-	if (ctx.promptState && !promptCardShown(ctx) && matchesKey(data, Key.enter) && !ctx.chatHost.hasInputText()) {
+	if (ctx.promptState && !promptCardShown(ctx) && matchesKey(data, Key.enter)) {
+		if (!ctx.chatHost.hasInputText()) {
+			ctx.dismissedPromptId = null;
+			return true;
+		}
+		const trimmed = ctx.chatHost.inputText().trim();
+		if (trimmed.length === 0) {
+			ctx.chatHost.setInputText("");
+			ctx.dismissedPromptId = null;
+			return true;
+		}
+		const prompt = ctx.promptState.prompt;
+		const coerced = isPrimitivePrompt(prompt) ? coercePrimitivePromptAnswer(prompt, trimmed) : { ok: false as const };
+		const response = coerced.ok ? coerced.value : trimmed;
+		ctx.chatHost.setInputText("");
 		ctx.dismissedPromptId = null;
+		resolvePromptResponse(ctx, prompt.id, response, { suppressNextGraphSubmit: true });
 		return true;
 	}
 	if (isBackToGraphInput(ctx, data)) {
@@ -137,14 +153,29 @@ function isPromptBackInput(ctx: StageChatViewContext, data: string): boolean {
 	const state = ctx.promptState;
 	if (!state || matchesKey(data, Key.escape)) return false;
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	if (!matchesNavAction(keybindings, data, APP_ACTION.navBack)) return false;
+	const isNavBack = matchesNavAction(keybindings, data, APP_ACTION.navBack) || matchesKey(data, Key.left);
+	const isBackspace = matchesKey(data, Key.backspace);
+	if (!isNavBack && !isBackspace) return false;
 	if (isClosableQuestion(state.prompt.kind)) return true;
-	// At the start of a typed answer, ← leaves too; the answer stays for the return.
 	if (ctx.promptEditor && ctx.promptEditorPromptId === state.prompt.id) {
+		const text = ctx.promptEditor.getText();
+		if (text.length === 0) return true;
+		if (isBackspace) return false;
 		const cursor = (ctx.promptEditor as { getCursor?(): { line: number; col: number } }).getCursor?.();
-		return ctx.promptEditor.getText().length === 0 || (cursor?.line === 0 && cursor.col === 0);
+		return cursor?.line === 0 && cursor.col === 0;
 	}
-	return state.rawText.length === 0 || state.caret === 0;
+	if (state.rawText.length === 0) return true;
+	return !isBackspace && state.caret === 0;
+}
+
+function isCustomUiBackInput(ctx: StageChatViewContext, data: string): boolean {
+	if (matchesKey(data, Key.escape)) return false;
+	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+	return (
+		matchesNavAction(keybindings, data, APP_ACTION.navBack) ||
+		matchesKey(data, Key.left) ||
+		matchesKey(data, Key.backspace)
+	);
 }
 
 /** Only the default physical Ctrl+T belongs to the host thinking action; a remap may reuse an editor key. */
@@ -200,6 +231,11 @@ function handleMountedCustomUiInput(ctx: StageChatViewContext, data: string): bo
 	const component = mounted.component;
 	setComponentFocused(component, ctx.focused);
 	const handled = component.handleInput?.(data) === true;
+	if (!handled && isCustomUiBackInput(ctx, data)) {
+		recordCurrentPromptDraft(ctx);
+		ctx.onDetach();
+		return true;
+	}
 	ctx.requestRender?.();
 	return handled;
 }

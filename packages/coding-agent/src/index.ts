@@ -135,7 +135,9 @@ export {
 } from "./core/tasks/message-error.js";
 export {
 	bindOwnerTaskStore,
+	getOwnerTaskSession,
 	getOwnerTaskStore,
+	isTaskTurnInterrupted,
 	OwnerTaskStore,
 	type TaskActivity,
 	watchOwnerTaskStoreBinding,
@@ -1232,6 +1234,7 @@ export {
 	type ChatSessionHostEntry,
 	type ChatSessionHostOpts,
 	type ChatSessionHostStyle,
+	type ChatSessionInterruptedTurnSnapshot,
 	type ChatSessionSubmitMode,
 	type ChatSessionViewportSettings,
 	ChatTranscriptComponent,

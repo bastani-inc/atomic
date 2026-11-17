@@ -98,10 +98,11 @@ test("focused panel disarms a pending stop when the row finishes, sanitizes stop
 	focus.update([{ ...runningRow, state: "done" }]);
 	const finishedHint = stripVTControlCharacters(renderAgentPanelHint(focus, 120, plain, keys));
 	assert.equal(finishedHint.includes("\x1b"), false);
-	assert.match(finishedHint, /deploy.*finished · x to dismiss/);
+	assert.match(finishedHint, /deploy.*finished · x to acknowledge/);
 
 	press("x");
 	assert.deepEqual(calls, [], "second x press only acknowledges that the row finished while armed");
+	focus.notePainted([{ ...runningRow, state: "done" }]);
 
 	press("x");
 	assert.deepEqual(calls, ["dismiss run:1"], "third x press dismisses the finished row");

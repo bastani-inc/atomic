@@ -18,6 +18,7 @@ export {
 	type ChatSessionHostEntry,
 	type ChatSessionHostOpts,
 	type ChatSessionHostStyle,
+	type ChatSessionInterruptedTurnSnapshot,
 	type ChatSessionSubmitMode,
 	type ChatSessionViewportSettings,
 } from "./chat-session-host.ts";
@@ -83,7 +84,7 @@ export { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 export {
 	TASK_CHAT_OVERLAY_KEYS,
 	taskChatKeys,
-} from "./task-inspector.ts";
+} from "./task-inspector.js";
 export { ThemeSelectorComponent } from "./theme-selector.ts";
 export { ThinkingSelectorComponent } from "./thinking-selector.ts";
 export { formatTokenCount, formatTokenSegment, type TokenSegmentMode } from "./token-segment.ts";

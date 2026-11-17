@@ -6,7 +6,7 @@ import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interacti
 import "../../packages/coding-agent/src/modes/interactive/interactive-agent-events.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.js";
-import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
 	type AgentSessionEvent,
 	assert,
@@ -85,6 +85,7 @@ function mainChat() {
 	return {
 		apply: (event: AgentSessionEvent) => InteractiveModeBase.prototype.handleEvent.call(mode, event as never),
 		line: () => statusLine(statusContainer.render(WIDTH)),
+		rawLine: () => rawStatusLine(statusContainer.render(WIDTH)),
 		dispose: () => mode.stopWorkingLoader(),
 	};
 }
@@ -92,7 +93,26 @@ function mainChat() {
 function stageChat() {
 	const store = createStore();
 	setupRun(store, "run-1", "stage-a", "running");
-	const { handle, emit } = makeHandle();
+	let streaming = false;
+	const { handle: baseHandle, emit } = makeHandle({
+		promptCalls: [],
+		steerCalls: [],
+		followUpCalls: [],
+		pauseCalls: 0,
+		resumeCalls: [],
+		get isStreaming() {
+			return streaming;
+		},
+	});
+	const originalPause = baseHandle.pause.bind(baseHandle);
+	const handle = {
+		...baseHandle,
+		async pause() {
+			streaming = false;
+			await originalPause();
+			store.recordStagePaused("run-1", "stage-a");
+		},
+	};
 	const view = new StageChatView({
 		store,
 		graphTheme: deriveGraphTheme({}),
@@ -104,8 +124,14 @@ function stageChat() {
 		onClose: () => {},
 	});
 	return {
-		apply: async (event: AgentSessionEvent) => emit(event),
+		view,
+		apply: async (event: AgentSessionEvent) => {
+			if (event.type === "agent_start") streaming = true;
+			else if (event.type === "agent_end") streaming = false;
+			await emit(event);
+		},
 		line: () => statusLine(view.render(WIDTH)),
+		rawLine: () => rawStatusLine(view.render(WIDTH)),
 		dispose: () => view.dispose(),
 	};
 }
@@ -123,12 +149,17 @@ function subagentView(workingTokenCount?: () => number | undefined) {
 			host.applyAgentEvent(event);
 		},
 		line: () => statusLine(host.renderWorkingStatus(WIDTH)),
+		rawLine: () => rawStatusLine(host.renderWorkingStatus(WIDTH)),
 		dispose: () => host.dispose(),
 	};
 }
 
 function statusLine(rows: readonly string[]): string {
 	return rows.map((row) => stripTerminalSequences(row).trim()).find((row) => row.startsWith("∀ ")) ?? "";
+}
+
+function rawStatusLine(rows: readonly string[]): string {
+	return rows.find((row) => stripTerminalSequences(row).trim().startsWith("∀ ")) ?? "";
 }
 
 describe("one working line in the main chat, a stage chat and a subagent view (#5224)", () => {
@@ -164,6 +195,17 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 			await all({ type: "turn_end", message, toolResults: [] });
 			await all({ type: "agent_end", messages: [message] });
 			assert.deepEqual(lines(), Array(3).fill("∀ Brewed for 9s · ↓ 120 tokens"));
+			const expectedDimLine = `${theme.fg("dim", "∀")} ${theme.fg("dim", "Brewed for 9s · ↓ 120 tokens")}`;
+			assert.ok(views[0]!.rawLine().includes(expectedDimLine), "main chat end row is painted with theme dim token");
+			assert.ok(
+				views[2]!.rawLine().includes(expectedDimLine),
+				"subagent view end row is painted with theme dim token",
+			);
+			assert.match(
+				views[1]!.rawLine(),
+				/\x1b\[38;2;\d+;\d+;\d+m∀\x1b\[0m \x1b\[38;2;\d+;\d+;\d+mBrewed for 9s · ↓ 120 tokens\x1b\[0m/,
+				"stage chat end row is painted with dim ANSI foreground",
+			);
 
 			await all({ type: "agent_start" });
 			assert.deepEqual(lines(), ["∀ Working…", "∀ Working… (0s · ↓ 120 tokens)", "∀ Working… (0s · ↓ 120 tokens)"]);
@@ -263,6 +305,41 @@ describe("one working line in the main chat, a stage chat and a subagent view (#
 			assert.equal(sub.line(), "∀ Brewing... (3s · ↓ 509 tokens)");
 		} finally {
 			sub.dispose();
+		}
+	});
+
+	test("interrupting a running turn with Esc in a stage chat prints the same past-tense end row as main chat and a subagent view (#5239)", async () => {
+		const main = mainChat();
+		const stage = stageChat();
+		const sub = subagentView();
+		const views = [main, stage, sub];
+		const all = async (event: unknown) => {
+			for (const view of views) await view.apply(event as AgentSessionEvent);
+		};
+		try {
+			await all({ type: "agent_start" });
+			await all({ type: "turn_start" });
+			vi.setSystemTime(1_014_000);
+			const message = assistant("inspecting locks", 800);
+			await all({ type: "message_end", message });
+			assert.deepEqual(
+				views.map((view) => view.line()),
+				Array(3).fill("∀ Brewing... (14s · ↓ 800 tokens)"),
+			);
+
+			assert.equal(stage.view.handleInput("\x1b"), true);
+			await Promise.resolve();
+			await Promise.resolve();
+
+			await all({ type: "turn_end", message, toolResults: [] });
+			await all({ type: "agent_end", messages: [message] });
+
+			assert.deepEqual(
+				views.map((view) => view.line()),
+				Array(3).fill("∀ Brewed for 14s · ↓ 800 tokens"),
+			);
+		} finally {
+			for (const view of views) view.dispose();
 		}
 	});
 });

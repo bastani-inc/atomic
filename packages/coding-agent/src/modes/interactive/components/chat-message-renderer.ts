@@ -24,7 +24,7 @@ import { extractMessageText } from "./chat-session-host-utils.ts";
 import { compactionBoundaryFromMessage } from "./compaction-boundary-message.ts";
 import { CustomMessageComponent } from "./custom-message.ts";
 import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
-import type { TaskCompletionMessageOptions } from "./task-completion-message.ts";
+import type { TaskCompletionMessageOptions } from "./task-completion-message.js";
 import { TaskRow } from "./task-row.js";
 import type { ToolGroupRole } from "./tool-block.ts";
 import { ToolExecutionComponent } from "./tool-execution.ts";

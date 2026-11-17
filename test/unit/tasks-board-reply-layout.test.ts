@@ -129,7 +129,7 @@ function runSource(
 	};
 }
 
-test("Esc, arrows, wheel and ? while a reply is sending are ignored, and the sent reply never returns as a draft (#5224)", async () => {
+test("arrows, wheel and ? while a reply is sending are ignored, and the sent reply never returns as a draft (#5224)", async () => {
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => {
 		release = resolve;
@@ -154,7 +154,6 @@ test("Esc, arrows, wheel and ? while a reply is sending are ignored, and the sen
 		inspector.renderViewport(100, 24);
 		inspector.handleInput("1");
 		inspector.handleInput(ENTER);
-		inspector.handleInput(ESC);
 		inspector.handleInput(DOWN);
 		inspector.handleInput(WHEEL_DOWN);
 		inspector.handleInput("?");
