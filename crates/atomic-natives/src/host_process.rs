@@ -3,7 +3,9 @@
 //! and a thread of their own moves their input and output and reaps them. Elsewhere `startHostProcess` refuses, and
 //! the host starts them through Node's `child_process` as before.
 use napi::bindgen_prelude::{Buffer, Unknown};
-use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::threadsafe_function::ThreadsafeFunction;
+#[cfg(target_os = "linux")]
+use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use napi::{Env, Status};
 use napi_derive::napi;
 use std::collections::HashMap;
@@ -50,6 +52,7 @@ pub struct HostProcessEvent {
 	pub errno: Option<String>,
 }
 
+#[cfg(target_os = "linux")]
 impl HostProcessEvent {
 	fn of(kind: HostProcessEventKind) -> Self {
 		Self { kind, data: None, code: None, signal: None, errno: None }
