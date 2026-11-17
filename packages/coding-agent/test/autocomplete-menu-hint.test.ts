@@ -141,6 +141,16 @@ describe("the @ and / menus' hint line in Atomic's theme (#5224)", () => {
 			{ "tui.select.up": ["escape", "up"] },
 			"↑↓ select · tab complete · enter run · esc close",
 		],
+		[
+			"up falls back after the escape alias",
+			{ "tui.select.up": ["esc", "up"] },
+			"↑↓ select · tab complete · enter run · esc close",
+		],
+		[
+			"confirm falls back after the return alias",
+			{ "tui.input.tab": ["return", "tab"], "tui.select.confirm": ["enter", "ctrl+q"] },
+			"↑↓ select · enter complete · ctrl+q run · esc close",
+		],
 	] satisfies Array<[string, KeybindingsConfig, string]>) {
 		it(`names only keys that reach their menu action when ${name} (#5347)`, async () => {
 			const keybindings = new KeybindingsManager(overrides);

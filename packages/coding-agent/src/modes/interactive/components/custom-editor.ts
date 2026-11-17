@@ -11,6 +11,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@bastani/atomic-tui";
+import { keybindingIdentity } from "../../../core/keybinding-identity.ts";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
 import { isPhysicalEscape } from "../interactive-key-identity.ts";
 import { theme } from "../theme/theme.js";
@@ -103,10 +104,6 @@ const BORDER_LINE_PATTERN = /^[─ ↑↓0-9more]+$/;
 /** Exact Empty Bracketed Paste sequence from the terminal (image-only macOS Cmd+V). */
 const EMPTY_BRACKETED_PASTE = "\x1b[200~\x1b[201~";
 
-function autocompleteKeyIdentity(key: string): string {
-	return key.toLowerCase().split("+").sort().join("+");
-}
-
 function isMacosNativeImagePasteSignal(data: string): boolean {
 	if (process.platform !== "darwin") {
 		return false;
@@ -153,18 +150,18 @@ export class CustomEditor extends Editor {
 		const taken = new Set<string>();
 		for (const action of this.actionHandlers.keys()) {
 			if (action === "app.interrupt" || action === "app.exit" || action === "app.keys.help") continue;
-			for (const key of this.keybindings.getKeys(action)) taken.add(autocompleteKeyIdentity(key));
+			for (const key of this.keybindings.getKeys(action)) taken.add(keybindingIdentity(key));
 		}
 		for (const action of ["app.interrupt", "tui.editor.historyPrevious", "tui.editor.historyNext"] as const) {
-			for (const key of this.keybindings.getKeys(action)) taken.delete(autocompleteKeyIdentity(key));
+			for (const key of this.keybindings.getKeys(action)) taken.delete(keybindingIdentity(key));
 		}
 		taken.delete("escape");
-		for (const key of this.keybindings.getKeys("app.clipboard.pasteImage")) taken.add(autocompleteKeyIdentity(key));
+		for (const key of this.keybindings.getKeys("app.clipboard.pasteImage")) taken.add(keybindingIdentity(key));
 		for (const action of ["tui.select.pageUp", "tui.select.pageDown"] as const) {
-			for (const key of this.keybindings.getKeys(action)) taken.delete(autocompleteKeyIdentity(key));
+			for (const key of this.keybindings.getKeys(action)) taken.delete(keybindingIdentity(key));
 		}
 		for (const action of ["tui.input.copy", "tui.editor.undo"] as const) {
-			for (const key of this.keybindings.getKeys(action)) taken.add(autocompleteKeyIdentity(key));
+			for (const key of this.keybindings.getKeys(action)) taken.add(keybindingIdentity(key));
 		}
 		const available = new Map<string, readonly string[]>();
 		for (const action of [
@@ -179,9 +176,9 @@ export class CustomEditor extends Editor {
 			const keys = this.keybindings.getKeys(action);
 			available.set(
 				action,
-				keys.filter((key) => !taken.has(autocompleteKeyIdentity(key))),
+				keys.filter((key) => !taken.has(keybindingIdentity(key))),
 			);
-			for (const key of keys) taken.add(autocompleteKeyIdentity(key));
+			for (const key of keys) taken.add(keybindingIdentity(key));
 		}
 		return entries.map((entry) => ({
 			...entry,
