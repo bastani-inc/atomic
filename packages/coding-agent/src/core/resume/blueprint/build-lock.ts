@@ -240,13 +240,14 @@ async function settleOtherBuild(file: string, root: string, options: SettleOther
 	while (mutex === undefined && (await wait("another Atomic process's blueprint build")))
 		mutex = await takeBuildMutex(file);
 	try {
-		const warnings = await settleLock(file, root, options, wait);
+		const { warnings, cancelled } = await settleLock(file, root, options, wait);
 		// Without the mutex, the process that holds it builds, though it may not have written its lock yet.
-		if (mutex !== undefined || warnings.length > 0) return { warnings, mutex };
+		if (mutex !== undefined || warnings.length > 0) return { warnings, mutex, cancelled };
 		const waited = Math.round((options.waitMs ?? BUILD_LOCK_WAIT_MS) / 1000);
 		return {
 			warnings: [`Another process still seemed to build ${root} after ${waited} s; building it anyway.`],
 			mutex,
+			cancelled: true,
 		};
 	} catch (error) {
 		mutex?.release();
@@ -254,34 +255,38 @@ async function settleOtherBuild(file: string, root: string, options: SettleOther
 	}
 }
 
-/** {@link settleOtherBuild} of the lock at `file`, waiting with `wait`: the warnings for the user. */
+/**
+ * {@link settleOtherBuild} of the lock at `file`, waiting with `wait`: the warnings for the user, and whether the lock
+ * was of a build that was cancelled (#5379): its process is gone, it could not be read, or this process builds anyway.
+ */
 async function settleLock(
 	file: string,
 	root: string,
 	options: SettleOtherBuildsOptions,
 	wait: (why: string) => Promise<boolean>,
-): Promise<string[]> {
+): Promise<{ warnings: string[]; cancelled: boolean }> {
+	const settled = (warnings: string[]) => ({ warnings, cancelled: true });
 	let stopped = false;
 	for (;;) {
 		const read = readLockFile(file);
-		if (read.kind === "none") return [];
+		if (read.kind === "none") return { warnings: [], cancelled: false };
 		if (read.kind === "corrupt") {
 			removeLock(file);
-			return [
+			return settled([
 				`The build lock of ${root} could not be read; building it anyway. An earlier build may still be running there.`,
-			];
+			]);
 		}
 		const { lock } = read;
-		if (lock.host !== HOST || lock.pid === process.pid) return [];
+		if (lock.host !== HOST || lock.pid === process.pid) return { warnings: [], cancelled: false };
 		const steps = lock.steps ?? [];
 		const holder = await identity(lock);
 		if (holder !== "gone") {
 			if (await wait("another Atomic process's blueprint build")) continue;
 			// Building anyway: the steps proven to be that build's stop first, so two builds never run in the worktree.
 			await stopProven(steps, options.signal);
-			return [
+			return settled([
 				`Another process (pid ${lock.pid}) still seemed to build ${root} after ${Math.round((options.waitMs ?? BUILD_LOCK_WAIT_MS) / 1000)} s; building it anyway.`,
-			];
+			]);
 		}
 		if (!stopped) {
 			stopped = true;
@@ -293,26 +298,28 @@ async function settleLock(
 			if (await wait("an earlier blueprint build")) continue;
 			removeLock(file);
 			const pids = unproven.map((step) => step.pid).join(", ");
-			return [
+			return settled([
 				`An earlier blueprint build of ${root} may still be running (process ${pids}), but it could not be confirmed as that build, so it was not stopped; building the worktree anyway.`,
-			];
+			]);
 		}
 		removeLock(file);
 		// A step recorded without its start cannot be told from what it left running (on Windows, Git's bash.exe ends
 		// before the shell it started), so the user hears that the earlier build may still run.
 		const unidentified = steps.filter((step) => step.start === undefined);
 		if (unidentified.length > 0) {
-			return [
+			return settled([
 				`An earlier blueprint build of ${root} was interrupted, and processes it started could not be identified to stop them; they may still be running while the worktree is built again.`,
-			];
+			]);
 		}
-		return [];
+		return settled([]);
 	}
 }
 
 /** What settling another process's build of one worktree left: the warnings, and the mutex held for this build. */
 interface SettledBuild {
 	readonly warnings: string[];
+	/** Whether the lock named a build that was cancelled: its process died, or this process builds anyway (#5379). */
+	readonly cancelled: boolean;
 	/** Undefined when another process kept it past the wait, and this one builds anyway. */
 	readonly mutex: TakeoverMutex | undefined;
 }
@@ -341,6 +348,11 @@ async function takeBuildMutex(file: string): Promise<TakeoverMutex | undefined> 
 export interface SettledBuilds {
 	/** The warnings for the user: a wait timed out, a step may still run, or a lock could not be read. */
 	readonly warnings: string[];
+	/**
+	 * The worktrees whose lock named a build that was cancelled (#5379): its process is gone, its lock could not be read,
+	 * or another process still seemed to build it when the wait ended.
+	 */
+	readonly cancelled: ReadonlySet<string>;
 	/** Lets other processes build the worktrees again: called once this process's build of them settled. */
 	release(): void;
 }
@@ -358,6 +370,7 @@ export async function settleOtherBuilds(
 	options: SettleOtherBuildsOptions = {},
 ): Promise<SettledBuilds> {
 	const warnings: string[] = [];
+	const cancelled = new Set<string>();
 	const held: TakeoverMutex[] = [];
 	const release = () => {
 		for (const mutex of held.splice(0)) mutex.release();
@@ -372,13 +385,14 @@ export async function settleOtherBuilds(
 		for (const file of [...files.keys()].sort()) {
 			const settled = await settleOtherBuild(file, files.get(file)!, options);
 			if (settled.mutex !== undefined) held.push(settled.mutex);
+			if (settled.cancelled) cancelled.add(files.get(file)!);
 			warnings.push(...settled.warnings);
 		}
 	} catch (error) {
 		release();
 		throw error;
 	}
-	return { warnings, release };
+	return { warnings, cancelled, release };
 }
 
 /** A build of a restored worktree that never finished and that no process builds any more (#5379). */
@@ -392,10 +406,11 @@ export interface CancelledBuild {
 
 /**
  * The builds of the restored worktrees at `roots` that were cancelled (#5379): the ledger says their last build never
- * finished, and no process builds them any more, as when the process that built one was killed. Other processes'
- * builds of them are settled first ({@link settleOtherBuilds}): a live one is waited for, and the step processes the
- * build lock of a dead one names are stopped where they are proven to be that build's. A step the lock did not name
- * cannot be told apart, so it may still run in the worktree: the caller never builds there again. Resolves the cancelled
+ * finished, and its build lock names a process that is gone, as when the process that built it was killed. Other
+ * processes' builds of them are settled first ({@link settleOtherBuilds}): a live one is waited for, and the step
+ * processes the build lock of a dead one names are stopped where they are proven to be that build's. A step the lock
+ * did not name cannot be told apart, so it may still run in the worktree: the caller never builds there again. A build
+ * that its own process stopped, which removed its lock once its steps ended, is not cancelled. Resolves the cancelled
  * builds and the warnings of settling; a ledger that cannot be read cancels nothing, and the build that follows reports
  * it. Only `options.signal` aborting rejects.
  */
@@ -424,9 +439,9 @@ export async function cancelledBuilds(
 		options,
 	);
 	try {
-		// Read again once settled: a build another process was running meanwhile may have finished.
-		const settledRoots = new Set(candidates.map((candidate) => candidate.root));
-		const cancelled = (await unfinished()).filter((build) => settledRoots.has(build.root));
+		// Read again once settled: a build another process was running meanwhile may have finished. A build whose own
+		// process stopped it removed its lock once its steps ended, and is built again in place.
+		const cancelled = (await unfinished()).filter((build) => settled.cancelled.has(build.root));
 		return { cancelled, warnings: settled.warnings };
 	} finally {
 		settled.release();
@@ -445,39 +460,50 @@ function recordStep(steps: Map<number, LockedProcess>, pid: number, write: () =>
 }
 
 /**
- * Runs `build` of the worktrees at `roots` under their build locks: from the first step process `build` starts until it
- * settles, records this process and the step processes that run. Callers settle other processes' builds of them first
- * ({@link settleOtherBuilds}), and release them once this resolves.
- * A lock that cannot be written never stops the build.
+ * Runs `build` of the worktrees at `roots` under their build locks: from before `build` starts until it settles, records
+ * this process and the step processes that run, so a later process that finds the lock of a process that is gone knows
+ * that its build was cancelled, even when it died between starting a step and recording it (#5379). Callers settle
+ * other processes' builds of them first ({@link settleOtherBuilds}), and release them once this resolves.
+ * A lock that cannot be written never stops the build: `onUnwritable` is told once, with the warning for the user.
  */
 export async function withBuildLocks<T>(
 	storeDir: string,
 	roots: readonly string[],
 	build: () => Promise<T>,
+	onUnwritable?: (message: string) => void,
 ): Promise<T> {
-	const files = [...new Set(roots.map((root) => buildLockPath(storeDir, root)))];
+	const files = new Map(roots.map((root) => [buildLockPath(storeDir, root), root]));
 	const steps = new Map<number, LockedProcess>();
 	const own = await readLocked(process.pid);
 	let settled = false;
+	let told = false;
 	const write = () => {
 		if (settled) return;
 		const lock: BuildLock = { host: HOST, ...own, steps: [...steps.values()] };
-		for (const file of files) {
+		for (const [file, root] of files) {
 			try {
 				writeLock(file, lock);
-			} catch {}
+			} catch (error) {
+				if (told) continue;
+				told = true;
+				const reason = error instanceof Error ? error.message : String(error);
+				onUnwritable?.(
+					`The blueprint build lock of ${root} could not be written (${reason.slice(0, 200)}); if Atomic is killed during this build, the next resume cannot tell, and may build the worktree again while a step of this build still runs there.`,
+				);
+			}
 		}
 	};
-	// Written once a step starts a process, so a build that runs nothing, as for an untrusted worktree, writes nothing.
 	const watch = (pid: number, running: boolean) => {
 		if (running) recordStep(steps, pid, write);
 		else steps.delete(pid);
 		write();
 	};
+	// Written before anything of the build runs, so a lock is there whenever one of its steps may run.
+	write();
 	try {
 		return await stepProcessWatcher.run(watch, build);
 	} finally {
 		settled = true;
-		for (const file of files) if (readLock(file)?.pid === process.pid) removeLock(file);
+		for (const file of files.keys()) if (readLock(file)?.pid === process.pid) removeLock(file);
 	}
 }

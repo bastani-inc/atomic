@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { hostname } from "node:os";
@@ -446,9 +446,11 @@ describe("a resume without a UI whose blueprint build runs behind the first turn
 				}
 				killed.child.kill("SIGKILL");
 				await killed.exited;
-				// A kill that lands between the step's start and its record leaves no lock that names it.
+				// A kill that lands between the step's start and its record leaves the lock the build wrote before it started
+				// anything, which names no step.
 				if (window === "before the build lock named the step") {
-					rmSync(buildLockPath(storeDir(), join(worktreesDir(), cancelled!)), { force: true });
+					const file = buildLockPath(storeDir(), join(worktreesDir(), cancelled!));
+					writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), steps: [] }));
 				}
 				// The killed host may have held the settings lock, so the trust this run needs comes from --approve.
 				const again = resume(recorded, "--approve", "-p", "hello");
@@ -561,6 +563,8 @@ describe("a resume without a UI whose blueprint build runs behind the first turn
 				again.child.stdin.end();
 				assert.equal(await again.exited, 0);
 				assert.deepEqual(ran(), ["started", "started", "built"], "the next resume built the worktree again");
+				const [first, second] = startedIn();
+				assert.equal(second, first, "a build its own process stopped is built again in place (#5379)");
 			},
 			CLI_RESUME_TIMEOUT_MS,
 		);

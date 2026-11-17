@@ -1102,11 +1102,14 @@ async function setUpCheckoutBlueprints(
 				warnings: [
 					`Could not check for an earlier blueprint build of these worktrees (${error instanceof Error ? describeFailure(error) : String(error)}); building them anyway.`,
 				],
+				cancelled: new Set<string>(),
 				release: () => {},
 			};
 		});
 		// No other process builds them until this build settled, and then the ledger says whether they still need it.
 		let built: ResumedBlueprints;
+		// A lock that cannot be written leaves a build killed during it unrecognisable to the next resume (#5379).
+		const unlocked: string[] = [];
 		try {
 			const retried = await checkoutsNeedingRebuild(candidates, storeDir);
 			const restored = [...toBuild, ...retried];
@@ -1121,13 +1124,14 @@ async function setUpCheckoutBlueprints(
 						config: { ...options.blueprint, storeDir },
 						signal: options.signal,
 					}),
+				(message) => unlocked.push(message),
 			);
 		} finally {
 			settled.release();
 		}
 		// The warnings of LFS downloads that end after their restores were recorded come with the build's (#5099).
 		const downloads = await lfs.notices([...restoredHere, ...earlier].map((checkout) => checkout.root));
-		const warnings = settled.warnings.map((message) => ({ type: "warning" as const, message }));
+		const warnings = [...settled.warnings, ...unlocked].map((message) => ({ type: "warning" as const, message }));
 		return { ...built, notices: [...warnings, ...downloads, ...built.notices] };
 	} finally {
 		for (const root of claimed) if (buildsInProgress.get(root) === settled) buildsInProgress.delete(root);
@@ -1139,9 +1143,10 @@ async function setUpCheckoutBlueprints(
 const buildsInProgress = new Map<string, Promise<undefined>>();
 
 /**
- * Cancels the blueprint build of each restored worktree of the session that never finished and that no process builds
- * any more, as when the process that built it was killed (#5379), and sets that worktree aside: the resume restores a
- * fresh worktree in its place, as for a worktree that is gone, and builds that one. The build lock's step processes are
+ * Cancels the blueprint build of each restored worktree of the session that never finished and whose build lock names a
+ * process that is gone, as when the process that built it was killed (#5379), and sets that worktree aside: the resume
+ * restores a fresh worktree in its place, as for a worktree that is gone, and builds that one. A build its own process
+ * stopped removed its lock once its steps ended, and is built again in place. The build lock's step processes are
  * stopped where they are proven to be that build's, but a step the lock did not name cannot be identified, so the
  * worktree is never built or handed to a session again, and the user is warned that a step may still run there.
  * Resolves the warnings. On Windows each step ends with the process that started it, so nothing is set aside and the

@@ -97,13 +97,37 @@ function writeLock(lock: object): void {
 }
 
 describe("blueprint build locks (#4748)", () => {
+	test("a build whose lock cannot be written goes on, and the user is told once that a kill could go unnoticed (#5379)", async () => {
+		// A file where the locks' directory belongs: no lock can be written, also as root.
+		mkdirSync(join(dir, "blueprint-builds"), { recursive: true });
+		writeFileSync(join(dir, "blueprint-builds", "locks"), "");
+		const told: string[] = [];
+		const log = join(dir, "step.log");
+		const fd = openSync(log, "a");
+		const quick = { command: process.execPath, args: ["-e", ""], cwd: dir, env: process.env };
+		const built = await withBuildLocks(
+			dir,
+			[root()],
+			async () => {
+				await runLoggedProcess(quick, { fd, path: log }, { timeoutMs: 30_000 });
+				return "built";
+			},
+			(message) => told.push(message),
+		);
+		closeSync(fd);
+		assert.equal(built, "built");
+		assert.equal(told.length, 1, told.join("\n"));
+		assert.match(told[0]!, /build lock of .* could not be written/);
+		assert.ok(told[0]!.includes(root()));
+	});
+
 	test("a build records each step process while it runs, and removes its lock once it settled", async () => {
 		const log = join(dir, "step.log");
 		const fd = openSync(log, "a");
 		const gate = join(dir, "gate");
 		const seen: { pid: number; steps: number[] }[] = [];
 		await withBuildLocks(dir, [root()], async () => {
-			assert.equal(existsSync(buildLockPath(dir, root())), false, "nothing is written before a step starts");
+			assert.deepEqual(lockOf().steps, [], "the lock names this process before anything of the build runs (#5379)");
 			const quick = { command: process.execPath, args: ["-e", ""], cwd: dir, env: process.env };
 			await runLoggedProcess(quick, { fd, path: log }, { timeoutMs: 30_000 });
 			const waiting = {

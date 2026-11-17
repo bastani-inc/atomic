@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { hostname } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -9,6 +11,7 @@ import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
 import { renameWithRetry } from "../src/core/rename-retry.ts";
+import { buildLockPath } from "../src/core/resume/blueprint/build-lock.ts";
 import { rootKey, updateLedger } from "../src/core/resume/blueprint/ledger.ts";
 import {
 	continueSessionWhereItWorked,
@@ -859,11 +862,18 @@ describe("a worktree whose blueprint build was cancelled (#5379)", () => {
 			const owner = await sessionOf(clone, snapshot);
 			const cancelled = await restoredRoot(owner);
 			assert.equal(cancelled, slot(snapshot, 0));
-			// The build of the worktree never finished, and its process is gone; a step it started still works there.
+			// The build of the worktree never finished, and its lock names a process that is gone; a step it started, which
+			// the lock does not name, still works there.
 			await updateLedger(storeDir(), (ledger) => ({
 				...ledger,
 				roots: { ...ledger.roots, [rootKey(cancelled)]: { state: "running", at: new Date().toISOString() } },
 			}));
+			const builder = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+			await new Promise((resolve) => builder.once("exit", resolve));
+			const lock = buildLockPath(storeDir(), cancelled);
+			mkdirSync(dirname(lock), { recursive: true });
+			const host = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
+			writeFileSync(lock, JSON.stringify({ host, pid: builder.pid, steps: [] }));
 			const step = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
 				cwd: cancelled,
 				stdio: "ignore",
