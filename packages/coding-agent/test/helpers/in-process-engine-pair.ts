@@ -1,6 +1,7 @@
 import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.ts";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
 import type { SessionManager } from "../../src/core/session-manager.js";
+import { serializeSessionMutation } from "../../src/core/session-mutation-queue.ts";
 import { IsolatedInteractiveRuntime } from "../../src/modes/interactive-engine/isolated-runtime.ts";
 import type { JsonAgentSessionEvent } from "../../src/modes/json-event.ts";
 import { toJsonEvent } from "../../src/modes/json-event.ts";
@@ -218,25 +219,39 @@ export async function createEngineHostPair(
 		engineRuntimeHost?: Partial<Pick<AgentSessionRuntime, "switchSession" | "importFromJsonl">>;
 		/** The host's own view of the session. Default: a private in-memory session, as with `--no-session`. */
 		hostSessionManager?: SessionManager;
+		hostSettingsManager?: HarnessOptions["settingsManager"];
+		serializeEngineCommands?: boolean;
 	},
 ): Promise<EngineHostPair> {
 	const lag = { toEngineMs: 0, toHostMs: 0 };
 	const engine = await createHarness({ ...options, extensionFactories: options.engineExtensions });
-	const hostHarness = await createHarness({ sessionManager: options.hostSessionManager });
+	const hostHarness = await createHarness({
+		sessionManager: options.hostSessionManager,
+		settingsManager: options.hostSettingsManager,
+	});
 	const client = new InProcessEngineClient({ toEngineMs: () => lag.toEngineMs, toHostMs: () => lag.toHostMs });
+	const engineRuntimeHost = new AgentSessionRuntime(
+		engine.session,
+		{ cwd: engine.tempDir, agentDir: engine.tempDir } as never,
+		async () => {
+			throw new Error("unused runtime factory");
+		},
+	);
+	if (options.engineRuntimeHost) {
+		Object.assign(engineRuntimeHost, options.engineRuntimeHost);
+	}
 	const handle = createRpcCommandHandler({
-		runtimeHost: {
-			session: engine.session,
-			services: { agentDir: engine.tempDir },
-			takeResumeNotices: () => [],
-			...options.engineRuntimeHost,
-		} as unknown as AgentSessionRuntime,
+		runtimeHost: engineRuntimeHost,
 		getSession: () => engine.session,
 		rebindSession: async () => {},
 		output: (record) => client.engineOutput(record as RpcResponse),
 		detachCompaction: true,
 	});
-	client.attachEngine(handle);
+	client.attachEngine(
+		options.serializeEngineCommands
+			? (command) => serializeSessionMutation(engineRuntimeHost, () => handle(command))
+			: handle,
+	);
 	const unsubscribe = engine.session.subscribe((event) => client.engineOutput(toJsonEvent(event)));
 	const local = new AgentSessionRuntime(
 		hostHarness.session,
