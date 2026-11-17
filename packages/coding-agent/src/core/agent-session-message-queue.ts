@@ -8,7 +8,10 @@ import { cancelHeldInput, heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
+	confirmCustomMessageWrite,
+	hasUncertainCustomMessageWrite,
 	isProtectedStreamingCustomMessage,
+	markCustomMessageDisplayed,
 	recordFailedCustomMessageWrite,
 	refreshFailedCustomMessageWrites,
 	restoreProtectedStreamingCustomMessages,
@@ -300,10 +303,9 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 	const stageAdmissionMessage = message as StageAdmittedCustomMessage;
 	const manager = this.sessionManager;
 	const key = stageAdmissionMessage.stageAdmissionKey;
-	const recovery = key === undefined ? undefined : refreshFailedCustomMessageWrites(manager);
-	if (recovery !== undefined) await recovery;
+	await refreshFailedCustomMessageWrites(this);
 	let entryId =
-		recovery === undefined
+		key === undefined || !hasUncertainCustomMessageWrite(manager, key)
 			? undefined
 			: manager
 					.getBranch()
@@ -325,13 +327,15 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 				key,
 			);
 		} catch (error) {
-			if (key !== undefined) recordFailedCustomMessageWrite(manager, error);
+			if (key !== undefined) recordFailedCustomMessageWrite(manager, error, key);
 			throw error;
 		}
 	}
+	confirmCustomMessageWrite(manager, key);
 	this._entryIdsByMessage.set(message, entryId);
 	pendingCustomMessageSaves.get(message)?.resolve();
 	this._refreshFinalizedContext();
+	markCustomMessageDisplayed(this, entryId);
 	this._emit({ type: "message_start", message });
 	this._emit({ type: "message_end", message });
 }

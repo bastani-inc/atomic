@@ -4,7 +4,11 @@ import { afterEach, test, vi } from "vitest";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../src/core/agent-session-persistent-custom-messages.js";
 import type { SendMessagesOptions, SubagentChildPolicy } from "../src/core/extensions/index.js";
 import { SessionManager } from "../src/core/session-manager.js";
-import { StorageTransientError } from "../src/core/storage/errors.js";
+import {
+	StorageTransientError,
+	StorageWriteLockTimeoutError,
+	StorageWriterQueueUnusableError,
+} from "../src/core/storage/errors.js";
 import { SessionConflictError } from "../src/core/storage/session/errors.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import type { SessionStore } from "../src/core/storage/session/types.js";
@@ -656,3 +660,237 @@ test("a stage-startup batch reuses a saved card after losing its acknowledgement
 	await harness.session.prompt("perform the stage task");
 	for (const content of CONTENTS) assert.equal(contexts[0]!.split(content).length - 1, 1);
 });
+
+test("reopening a partial excluded batch displays only its missing card on retry (#5318)", async () => {
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const first = await childHarness(manager);
+	const failure = failThirdCardOnce(manager);
+	const options = { ...sharedOptions, excludeFromContext: true };
+	await assert.rejects(first.session.sendCustomMessages(messages, options), (error) => error === failure);
+	const reopened = await childHarness(await SessionManager.open(store, manager.getSessionId()));
+	assert.deepEqual(
+		reopened.sessionManager
+			.getBranch()
+			.flatMap((entry) =>
+				entry.type === "custom_message" && entry.customType === CARD_TYPE ? [entry.content] : [],
+			),
+		CONTENTS.slice(0, 2),
+	);
+	await reopened.session.sendCustomMessages(messages, options);
+	assertCardsSavedOnce(reopened.sessionManager);
+	for (const type of ["message_start", "message_end"] as const) {
+		assert.deepEqual(
+			reopened
+				.eventsOfType(type)
+				.flatMap((event) =>
+					event.message.role === "custom" && event.message.customType === CARD_TYPE ? [event.message.content] : [],
+				),
+			CONTENTS.slice(2),
+			"cards already present in the reopened transcript are not added again",
+		);
+	}
+	assert.equal(reopened.session.pendingMessageCount, 0);
+	assert.equal(reopened.eventsOfType("agent_start").length, 0);
+});
+
+for (const form of ["single", "batch"] as const) {
+	for (const state of ["stage startup", "idle excluded input"] as const) {
+		test.each(["keyed single", "keyed batch", "unkeyed single"] as const)(
+			`an uncertain ${state} ${form} survives intervening %s input without duplicate storage or context (#5318)`,
+			async (intervening) => {
+				const store = new MemorySessionStore();
+				const failure = new StorageTransientError(store.descriptor, {
+					code: "connection-lost",
+					outcome: "unknown",
+					attempts: 1,
+				});
+				let lostAcknowledgement = false;
+				let failReadBack = false;
+				const faulty: SessionStore = Object.assign(Object.create(store) as SessionStore, {
+					async append(...args: Parameters<SessionStore["append"]>) {
+						const result = await store.append(...args);
+						if (
+							!lostAcknowledgement &&
+							args[1].some((entry) => entry.type === "custom_message" && entry.content === CONTENTS[0])
+						) {
+							lostAcknowledgement = true;
+							failReadBack = true;
+							throw failure;
+						}
+						return result;
+					},
+					async readRange(...args: Parameters<SessionStore["readRange"]>) {
+						if (failReadBack) {
+							failReadBack = false;
+							throw failure;
+						}
+						return store.readRange(...args);
+					},
+				});
+				const manager = await SessionManager.create(faulty, process.cwd());
+				const harness = await createHarness({
+					sessionManager: manager,
+					...(state === "stage startup"
+						? {
+								orchestrationContext: {
+									kind: "workflow-stage" as const,
+									workflowRunId: crypto.randomUUID(),
+									workflowStageId: "intervening-startup",
+									workflowStageName: "Intervening startup",
+									constraints: { disableWorkflowTool: true },
+								},
+							}
+						: {}),
+				});
+				harnesses.push(harness);
+				const options =
+					state === "stage startup"
+						? sharedOptions
+						: { stageAdmissionKey: sharedOptions.stageAdmissionKey, excludeFromContext: true };
+				const intended = form === "batch" ? messages : [messages[0]!];
+				const send = () =>
+					form === "batch"
+						? harness.session.sendCustomMessages(intended, options)
+						: harness.session.sendCustomMessage(intended[0]!, options);
+				await assert.rejects(send(), (error) => error === failure);
+				const other = { customType: "intervening-card", content: "other keyed input", display: true };
+				const otherOptions = intervening === "unkeyed single" ? {} : { stageAdmissionKey: "intervening-card-key" };
+				if (intervening === "keyed batch") await harness.session.sendCustomMessages([other], otherOptions);
+				else await harness.session.sendCustomMessage(other, otherOptions);
+				await send();
+				const reopened = await SessionManager.open(store, manager.getSessionId());
+				for (const current of [manager, reopened]) {
+					for (const entries of [current.getEntries(), current.getBranch()]) {
+						assert.equal(
+							entries.filter((entry) => entry.type === "custom_message" && entry.customType === CARD_TYPE)
+								.length,
+							intended.length,
+						);
+					}
+				}
+				const contexts: string[] = [];
+				harness.setResponses([
+					(context) => {
+						contexts.push(JSON.stringify(context.messages));
+						return fauxAssistantMessage("completed after recovery");
+					},
+				]);
+				await harness.session.prompt("perform the task after the retried input");
+				assert.equal(contexts.length, 1);
+				for (const message of intended)
+					assert.equal(contexts[0]!.split(message.content).length - 1, state === "stage startup" ? 1 : 0);
+				for (const type of ["message_start", "message_end"] as const) {
+					assert.equal(
+						harness
+							.eventsOfType(type)
+							.filter((event) => event.message.role === "custom" && event.message.customType === CARD_TYPE)
+							.length,
+						intended.length,
+					);
+				}
+			},
+		);
+	}
+}
+
+test.each(["ordinary", "protected", "excluded"] as const)(
+	"later keyed %s cards succeed after conflicts with another writer (#5318, #4970)",
+	async (mode) => {
+		const store = new MemorySessionStore();
+		const manager = await SessionManager.create(store, process.cwd());
+		const harness =
+			mode === "ordinary" ? await createHarness({ sessionManager: manager }) : await childHarness(manager);
+		if (mode === "ordinary") harnesses.push(harness);
+		const writer = await SessionManager.open(store, manager.getSessionId());
+		const send = (key?: string) =>
+			harness.session.sendCustomMessage(
+				{ customType: CARD_TYPE, content: key ?? "unkeyed input", display: true },
+				{
+					...(mode === "ordinary" ? {} : { ...sharedOptions, excludeFromContext: mode === "excluded" }),
+					stageAdmissionKey: key,
+				},
+			);
+		await writer.appendCustomEntry("other-writer", { value: "before a" });
+		await assert.rejects(send("a"), SessionConflictError);
+		await writer.appendCustomEntry("other-writer", { value: "before b" });
+		await assert.rejects(send("b"), SessionConflictError);
+		await send("c");
+		await send("d");
+		await send();
+		await send("e");
+		assert.deepEqual(
+			manager
+				.getBranch()
+				.flatMap((entry) =>
+					entry.type === "custom_message" && entry.customType === CARD_TYPE ? [entry.content] : [],
+				),
+			["c", "d", "unkeyed input", "e"],
+		);
+	},
+);
+
+test("an uncertain card refresh that cannot follow another writer falls through to normal append reconciliation (#5318, #4970)", async () => {
+	const store = new MemorySessionStore();
+	const manager = await SessionManager.create(store, process.cwd());
+	const harness = await childHarness(manager);
+	const writer = await SessionManager.open(store, manager.getSessionId());
+	await writer.appendCustomEntry("other-writer", { value: "foreign branch" });
+	await assert.rejects(manager.appendCustomEntry("rejected", {}), SessionConflictError);
+	const failure = new StorageTransientError(store.descriptor, {
+		code: "connection-lost",
+		outcome: "unknown",
+		attempts: 1,
+	});
+	vi.spyOn(manager, "appendCustomMessageEntry").mockRejectedValueOnce(failure);
+	await assert.rejects(harness.session.sendCustomMessage(messages[0]!, sharedOptions), (error) => error === failure);
+	await writer.appendCustomEntry("other-writer", { value: "another foreign entry" });
+	await assert.rejects(harness.session.sendCustomMessage(messages[0]!, sharedOptions), SessionConflictError);
+	await harness.session.sendCustomMessage(messages[0]!, sharedOptions);
+	assert.deepEqual(
+		manager
+			.getBranch()
+			.flatMap((entry) =>
+				entry.type === "custom_message" && entry.customType === CARD_TYPE ? [entry.content] : [],
+			),
+		CONTENTS.slice(0, 1),
+	);
+});
+
+test.each(["not-applied", "write-lock-timeout", "writer-queue-unusable"] as const)(
+	"a known %s failure does not require a recovery read before a later keyed card (#5318)",
+	async (kind) => {
+		const store = new MemorySessionStore();
+		const manager = await SessionManager.create(store, process.cwd());
+		const harness = await childHarness(manager);
+		const failure =
+			kind === "not-applied"
+				? new StorageTransientError(store.descriptor, {
+						code: "lock-conflict",
+						outcome: "not-applied",
+						attempts: 1,
+					})
+				: kind === "write-lock-timeout"
+					? new StorageWriteLockTimeoutError(store.descriptor, { timeoutMs: 1, elapsedMs: 1, phase: "queued" })
+					: new StorageWriterQueueUnusableError(store.descriptor, new Error("queue directory was unavailable"));
+		vi.spyOn(store, "append").mockRejectedValueOnce(failure);
+		const reads = vi.spyOn(store, "readRange").mockRejectedValue(new Error("recovery read is unavailable"));
+		await assert.rejects(
+			harness.session.sendCustomMessage(messages[0]!, sharedOptions),
+			(error) => error === failure,
+		);
+		await harness.session.sendCustomMessage(messages[1]!, {
+			...sharedOptions,
+			stageAdmissionKey: "after-known-rejection",
+		});
+		assert.equal(reads.mock.calls.length, 0, "a definite non-write needs no recovery read");
+		assert.deepEqual(
+			manager
+				.getBranch()
+				.flatMap((entry) =>
+					entry.type === "custom_message" && entry.customType === CARD_TYPE ? [entry.content] : [],
+				),
+			CONTENTS.slice(1, 2),
+		);
+	},
+);

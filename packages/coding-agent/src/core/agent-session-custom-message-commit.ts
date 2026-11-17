@@ -4,6 +4,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import {
 	admitProtectedStreamingCustomMessage,
 	customMessageOccurrences,
+	hasUncertainCustomMessageWrite,
 	queueHeldCustomMessages,
 	queueProtectedStreamingCustomMessage,
 	queueProtectedStreamingCustomMessages,
@@ -265,7 +266,7 @@ export async function commitAdmittedCustomMessages<T>(
 		);
 		appMessages = appMessages.filter((message) => {
 			const key = (message as StageAdmittedCustomMessage).stageAdmissionKey;
-			return key === undefined || !stored.has(key);
+			return key === undefined || !stored.has(key) || hasUncertainCustomMessageWrite(self.sessionManager, key);
 		});
 	}
 	if (appMessages.length === 0) return;

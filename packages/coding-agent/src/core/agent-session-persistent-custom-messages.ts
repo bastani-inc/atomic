@@ -5,8 +5,9 @@ import type { DrainedAgentQueues } from "./agent-session-types.js";
 import { customMessageExcludesContext } from "./agent-session-types.js";
 import type { PendingRecoveryDelivery } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
+import { appendFailureWroteNothing } from "./session-manager-append-errors.ts";
 import { SessionDeletedError } from "./session-manager-errors.js";
-import { SessionNotFoundError } from "./storage/session/errors.js";
+import { SessionConflictError, SessionNotFoundError } from "./storage/session/errors.js";
 
 type ProtectedDelivery = "steer" | "followUp";
 type ProtectedPhase = "queued" | "consumed-unpersisted" | "persistence-failed";
@@ -37,17 +38,54 @@ interface DurableDisplayCard {
 
 const displayedExcludedCards = new WeakMap<AgentSession, Set<string>>();
 const failedCardWrites = new WeakMap<AgentSession["sessionManager"], () => Promise<void>>();
+const uncertainCardKeys = new WeakMap<AgentSession["sessionManager"], Set<string>>();
 const pendingCardWrites = new WeakMap<AgentSession["sessionManager"], Map<string, Promise<DurableDisplayCard>>>();
 
-export function refreshFailedCustomMessageWrites(manager: AgentSession["sessionManager"]): Promise<void> | undefined {
-	return failedCardWrites.get(manager)?.();
+function displayedCards(session: AgentSession): Set<string> {
+	let displayed = displayedExcludedCards.get(session);
+	if (displayed === undefined) {
+		displayed = new Set(session.sessionManager.getBranch().map((entry) => entry.id));
+		displayedExcludedCards.set(session, displayed);
+	}
+	return displayed;
 }
 
-export function recordFailedCustomMessageWrite(manager: AgentSession["sessionManager"], error: unknown): void {
-	if (error instanceof SessionDeletedError) return;
+export function markCustomMessageDisplayed(session: AgentSession, entryId: string): void {
+	displayedCards(session).add(entryId);
+}
+
+export function refreshFailedCustomMessageWrites(session: AgentSession): Promise<void> | undefined {
+	displayedCards(session);
+	return failedCardWrites.get(session.sessionManager)?.();
+}
+
+export function hasUncertainCustomMessageWrite(manager: AgentSession["sessionManager"], key: string): boolean {
+	return uncertainCardKeys.get(manager)?.has(key) === true;
+}
+
+export function confirmCustomMessageWrite(manager: AgentSession["sessionManager"], key: string | undefined): void {
+	if (key !== undefined) uncertainCardKeys.get(manager)?.delete(key);
+}
+
+export function recordFailedCustomMessageWrite(
+	manager: AgentSession["sessionManager"],
+	error: unknown,
+	key?: string,
+): void {
+	if (
+		error instanceof SessionDeletedError ||
+		error instanceof SessionConflictError ||
+		appendFailureWroteNothing(error)
+	)
+		return;
+	if (key !== undefined) {
+		const uncertain = uncertainCardKeys.get(manager) ?? new Set<string>();
+		uncertain.add(key);
+		uncertainCardKeys.set(manager, uncertain);
+	}
 	failedCardWrites.set(manager, async () => {
 		try {
-			if (!(await manager.refreshFromStore())) throw error;
+			await manager.refreshFromStore();
 		} catch (refreshError) {
 			if (!(refreshError instanceof SessionNotFoundError)) throw refreshError;
 		}
@@ -103,7 +141,7 @@ async function appendDisplayCardOccurrence(
 	message: CustomMessage,
 	delivery: ProtectedDelivery | undefined,
 ): Promise<DurableDisplayCard> {
-	await refreshFailedCustomMessageWrites(session.sessionManager);
+	await refreshFailedCustomMessageWrites(session);
 	const card = { ...message, excludeFromContext: true } satisfies CustomMessage & { excludeFromContext: true };
 	const admitted = message as StageAdmittedCustomMessage;
 	// A retry after a failed flush must complete the already-appended occurrence
@@ -137,10 +175,11 @@ async function appendDisplayCardOccurrence(
 				admitted.stageAdmissionKey,
 			);
 		} catch (error) {
-			recordFailedCustomMessageWrite(manager, error);
+			recordFailedCustomMessageWrite(manager, error, admitted.stageAdmissionKey);
 			throw error;
 		}
 	}
+	confirmCustomMessageWrite(session.sessionManager, admitted.stageAdmissionKey);
 	session._entryIdsByMessage.set(card, intentEntryId);
 	session._refreshFinalizedContext();
 	return { card, intentEntryId };
@@ -352,8 +391,7 @@ export async function queueHeldCustomMessages(
 		contextual = [];
 		const owner = resolveWorkflowStageDeliveryTarget(session);
 		const { card, intentEntryId } = await appendDurableDisplayCard(owner, message, undefined);
-		const displayed = displayedExcludedCards.get(owner) ?? new Set<string>();
-		displayedExcludedCards.set(owner, displayed);
+		const displayed = displayedCards(owner);
 		if (!displayed.has(intentEntryId)) {
 			displayed.add(intentEntryId);
 			emitDurableDisplayCard(owner, card);
