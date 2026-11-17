@@ -407,7 +407,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 	const announceReleasedRuns = async (
 		reason: string | undefined,
 		ctx: PiEventContext | undefined,
-		cwd: string | undefined,
+		resolveCwd: () => string | undefined,
 		isNewest: () => boolean,
 	): Promise<void> => {
 		if (!isNewest()) return;
@@ -419,6 +419,11 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			return;
 		}
 		const pending = lifetime.releasedRunIds ?? [];
+		if (pending.length === 0) {
+			lifetime.releasedRunNoticeOwed = undefined;
+			return;
+		}
+		const cwd = resolveCwd();
 		const backend = availableStoreDurableBackend(store);
 		const checked = await Promise.all(
 			pending.map(async (runId) => {
@@ -442,7 +447,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 		lifetime.sessionStarts = sessionStart;
 		if (isSessionSwitch(eventReason(event))) lifetime.releasedRunNoticeOwed = true;
 		let retired = false;
-		const startCwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? runtimeState.resolveInvocationCwd();
+		const contextCwd = ctx?.cwd ?? ctx?.sessionManager?.getCwd?.();
 		const isNewest = () => !retired && lifetime.sessionStarts === sessionStart;
 		const departingHandoff = lifetime.pendingSwitchHandoff;
 		lifetime.pendingSwitchHandoff = handOffRunsToSuccessor;
@@ -490,7 +495,7 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			const backend = availableStoreDurableBackend(store);
 			if (backend !== undefined) await reclaimReleasedRunsOwnedBy(backend, sessionCaller).catch(() => undefined);
 		}
-		await announceReleasedRuns(reason, ctx, startCwd, isNewest);
+		await announceReleasedRuns(reason, ctx, () => contextCwd ?? runtimeState.resolveInvocationCwd(), isNewest);
 		runtimeState.updateHostStageSessionDir(ctx?.sessionManager ?? pi.sessionManager);
 		const generation = ++recoveryGeneration;
 		if (stopsWorkflows) trackStartupRecovery(resumeInFlight(ctx, generation));
