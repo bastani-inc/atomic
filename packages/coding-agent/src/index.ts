@@ -1327,5 +1327,6 @@ export {
 	type ResolveGitOptions,
 	resolveGit,
 	resolveGitSync,
+	resolveInstalledGit,
 	type ToolStatus as ManagedToolStatus,
 } from "./utils/tools-manager.ts";
