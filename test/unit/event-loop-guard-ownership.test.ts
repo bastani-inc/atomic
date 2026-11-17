@@ -20,6 +20,9 @@ const sqliteArea: readonly OwnedArea[] = [
 			"NodeSqliteDatabase.createExecutor/statement",
 			"NodeSqliteDatabase.createExecutor/<returned>.all/execute()",
 		].map((name) => ({ file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name })),
+		sampledCallersOfOwnedCalls: ["NodeSqliteDatabase.commitAlone", "NodeSqliteDatabase.commitMembers"].map(
+			(name) => ({ file: "packages/coding-agent/src/core/storage/node-sqlite.ts", name }),
+		),
 	},
 ];
 
@@ -84,6 +87,18 @@ test("a block whose every stack runs in another change's area belongs to that ch
 		),
 		SQLITE_OWNER,
 	);
+});
+
+test("a sampled caller of an owned call belongs to the area that owns the call, in sources and in the build", () => {
+	for (const frame of [
+		"commitAlone (file:///C:/w/0/atomic/packages/coding-agent/dist/core/storage/node-sqlite.js:1334:33)",
+		"commitMembers (file:///repo/packages/coding-agent/src/core/storage/node-sqlite.ts:1539:20)",
+	]) {
+		assert.equal(
+			blockOwner(block(["promiseInitHook (node:internal/async_hooks:329:3)", frame]), sqliteArea),
+			SQLITE_OWNER,
+		);
+	}
 });
 
 test("a block with any stack in this code's own modules, or in two areas, is not deferred", () => {

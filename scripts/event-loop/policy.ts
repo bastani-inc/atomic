@@ -150,6 +150,7 @@ export const DETACHED_CALLBACKS: readonly SinkSpec[] = [
 export interface OwnedArea {
 	readonly paths?: readonly string[];
 	readonly functions?: readonly FunctionSelector[];
+	readonly sampledCallersOfOwnedCalls?: readonly FunctionSelector[];
 	readonly owner: string;
 }
 
