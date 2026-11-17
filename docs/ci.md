@@ -301,7 +301,7 @@ by file across five, five and three jobs on Linux and seven, five and five on Wi
 ### Draft pull requests
 
 A draft pull request runs none of the work jobs. Each work job has `if: ${{ !github.event.pull_request.draft }}`, so a
-push to a draft finishes at once and holds no runner. The Windows legs are the scarce ones: each full run needs thirteen
+push to a draft finishes at once and holds no runner. The Windows legs are the scarce ones: each full run needs eighteen
 Windows jobs, and on a busy day hundreds of them queued behind work-in-progress pushes that nobody was going to merge.
 
 The draft never satisfies the required check. GitHub counts a skipped job as a successful check, so skipping the result
