@@ -29,6 +29,12 @@ function startsProcessWideService(pi: ExtensionAPI): void {
 	});
 }
 
+/**
+ * How long a parent waits for both children to answer: each is a real session with the bundled extensions, and on a
+ * loaded Windows runner a parent's two children took about 30 s.
+ */
+const CHILDREN_ANSWER_TIMEOUT_MS = 120_000;
+
 let fixture: RetentionFixture | undefined;
 const parents = trackCollection();
 
@@ -58,7 +64,7 @@ async function runParentAndEnd(current: RetentionFixture): Promise<void> {
 			assert.equal(current.childrenAnswered() - answeredBefore, CHILDREN_PER_PARENT, "both children answered");
 			assert.equal(session.isStreaming, false);
 		},
-		{ timeout: 60_000, interval: 20 },
+		{ timeout: CHILDREN_ANSWER_TIMEOUT_MS, interval: 20 },
 	);
 	await session.dispose();
 }

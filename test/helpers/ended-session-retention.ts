@@ -18,8 +18,11 @@ import { clearSubagentControls } from "../../packages/subagents/src/runs/inproce
 import { type CollectionCount, collectEverythingTracked } from "./collect-garbage.js";
 import { makeTempDirectory, removeTempDirectory } from "./runtime.js";
 
-/** Structural cost: real parent and child sessions with the bundled extensions loaded for each. */
-export const ENDED_SESSIONS_TIMEOUT_MS = 300_000;
+/**
+ * Structural cost: real parent and child sessions with the bundled extensions loaded for each. A file took up to about
+ * 100 s on a loaded Windows runner, and a slow parent may take up to four times its usual time.
+ */
+export const ENDED_SESSIONS_TIMEOUT_MS = 400_000;
 /** Parents that launch children and end, as the stages of one workflow run do one after another. */
 export const PARENTS = 3;
 export const CHILDREN_PER_PARENT = 2;
