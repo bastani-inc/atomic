@@ -189,7 +189,7 @@ export function unwrapSubagentPrompt(task: string): string {
 		/\n\n---\n(?:Create and maintain progress at:|Update progress at:|Write your findings to:)(?:[^\S\n]*\n)*[^\n]+$/g,
 		"",
 	);
-	text = text.replace(/\n\n\[Write to:\s*[^\]\n]+\]\s*$/i, "");
+	text = text.replace(/\n\n\[Write to:(?:[^\S\n]*\n)*[^\]\n]+\]\s*$/i, "");
 	return text.trim();
 }
 
