@@ -4,7 +4,7 @@ import { setThemeInstance, theme } from "../../packages/coding-agent/src/modes/i
 import { loadTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme-loading.ts";
 import { hexToAnsi } from "../../packages/workflows/src/tui/color-utils.js";
 import { useAnsiColorEnvironment } from "../helpers/ansi-color-env.ts";
-import { BARE_WORKING_LINE, WORKING_LINE, WORKING_MESSAGE } from "../helpers/working-line.ts";
+import { WHOLE_WORKING_LINE, WORKING_LINE, WORKING_MESSAGE } from "../helpers/working-line.ts";
 import {
 	assert,
 	assistantTextMessage,
@@ -157,7 +157,7 @@ describe("StageChatView", () => {
 			const previousContent = lines.slice(0, workingIndex - 1).findLast((line) => line.trim() !== "");
 			assert.match(previousContent ?? "", /msg-\d+/);
 			assert.equal(lines[workingIndex - 1]?.trim(), "");
-			assert.match(lines[workingIndex]?.trimEnd() ?? "", BARE_WORKING_LINE);
+			assert.match(lines[workingIndex]?.trimEnd() ?? "", WHOLE_WORKING_LINE);
 			assert.deepEqual(lines[workingIndex]?.match(/∀/g), ["∀"]);
 			assert.equal(lines.filter((line) => WORKING_LINE.test(line)).length, 1);
 		} finally {
@@ -197,7 +197,7 @@ describe("StageChatView", () => {
 				true,
 			);
 			const working = lines.find((line) => WORKING_LINE.test(line));
-			assert.match(working?.trimEnd() ?? "", BARE_WORKING_LINE);
+			assert.match(working?.trimEnd() ?? "", WHOLE_WORKING_LINE);
 			assert.deepEqual(working?.match(/∀/g), ["∀"]);
 			assert.equal(
 				lines.some((line) => line.includes("❯")),

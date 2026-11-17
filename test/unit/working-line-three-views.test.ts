@@ -18,7 +18,9 @@ import {
 } from "./stage-chat-view-helpers.js";
 
 vi.mock("../../packages/coding-agent/src/modes/interactive/whimsical-messages.ts", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../../packages/coding-agent/src/modes/interactive/whimsical-messages.ts")>()),
+	...(await importOriginal<
+		typeof import("../../packages/coding-agent/src/modes/interactive/whimsical-messages.ts")
+	>()),
 	pickWhimsicalWorkingMessage: () => "Brewing...",
 }));
 
@@ -124,11 +126,7 @@ function subagentView() {
 }
 
 function statusLine(rows: readonly string[]): string {
-	return (
-		rows
-			.map((row) => stripTerminalSequences(row).trim())
-			.find((row) => row.startsWith("∀ ")) ?? ""
-	);
+	return rows.map((row) => stripTerminalSequences(row).trim()).find((row) => row.startsWith("∀ ")) ?? "";
 }
 
 describe("one working line in the main chat, a stage chat and a subagent view (#5224)", () => {

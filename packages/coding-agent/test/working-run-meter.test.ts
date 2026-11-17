@@ -51,11 +51,7 @@ describe("working line time and tokens (#5224)", () => {
 
 	test("the meta shows only the time until a token arrives", () => {
 		assert.equal(formatWorkingMeta({ elapsedMs: 3000, tokens: 0 }), "3s");
-		assert.equal(
-			formatWorkingMeta({ elapsedMs: 400, tokens: 0 }),
-			"",
-			"a run that just started reports nothing",
-		);
+		assert.equal(formatWorkingMeta({ elapsedMs: 400, tokens: 0 }), "", "a run that just started reports nothing");
 		assert.equal(formatWorkingMeta({ elapsedMs: 0, tokens: 0, note: "esc to cancel" }), "0s · esc to cancel");
 		assert.equal(formatWorkingMeta({ elapsedMs: 134_000, tokens: 18_400 }), "2m 14s · ↓ 18.4k tokens");
 	});

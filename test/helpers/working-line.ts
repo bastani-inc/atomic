@@ -7,5 +7,5 @@ const alternatives = [DEFAULT_WORKING_MESSAGE, ...WHIMSICAL_WORKING_MESSAGES]
 
 export const WORKING_MESSAGE = new RegExp(`(?<![\\p{L}-])(?:${alternatives})`, "u");
 export const WORKING_LINE = new RegExp(`∀ (?:${alternatives})`, "u");
-export const BARE_WORKING_LINE = new RegExp(`^ ∀ (?:${alternatives})$`, "u");
+export const WHOLE_WORKING_LINE = new RegExp(`^ ∀ (?:${alternatives})(?: \\([^)]*\\))?$`, "u");
 export const WORKED_LINE = /∀ \S+ for \d+(?:h|m|s)/u;
