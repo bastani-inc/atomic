@@ -42,7 +42,7 @@ const READ_TOOL_LIMIT_CHARS = 50_000;
 const EVENT_LOOP_CPU_LIMIT_MS = 120;
 const LARGE_SESSION_TIMEOUT_MS = 120_000;
 const INDEX_BUILD_ENTRIES = 6_000;
-const INDEX_BUILD_BLOCK_LIMIT_MS = 10;
+const TURN_LIMIT_MS = 10;
 const STALLS_ALLOWED = 3;
 const STALL_CEILING_MS = 100;
 const PACED_SESSIONS = 40;
@@ -235,8 +235,9 @@ interface Opened {
 	close(): Promise<void>;
 }
 
-async function openSql(dir: string): Promise<Opened> {
+async function openSql(dir: string, options: { readonly unsynced?: boolean } = {}): Promise<Opened> {
 	const raw = await openNodeSqliteDatabase(join(dir, "sessions.sqlite"));
+	if (options.unsynced === true) await raw.exec("PRAGMA synchronous=OFF");
 	const { database, entryRows } = countingDatabase(raw);
 	const store = await SqlSessionStore.open(database);
 	return {
@@ -638,6 +639,128 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		}
 	});
 
+	it("stops optional context loading when the row allowance is spent (#5250)", async () => {
+		const base = new MemorySessionStore();
+		await base.create(
+			header("ctx"),
+			numbered(100, (seq) => (seq === 50 ? "context target line" : `context filler ${seq}`)),
+		);
+		let rowsRead = 0;
+		const store: SessionStore = new Proxy(base, {
+			get(target, key) {
+				if (key === "readEntryRange")
+					return async (...args: Parameters<MemorySessionStore["readEntryRange"]>) => {
+						const page = await target.readEntryRange(...args);
+						rowsRead += page.entries.length;
+						return page;
+					};
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const { router } = historyOver(store, { rows: 1 });
+		const found =
+			(await router.search?.("history://sessions/ctx:50-50", {
+				pattern: "context target",
+				ignoreCase: false,
+				literal: false,
+				contextBefore: 40,
+				contextAfter: 40,
+			})) ?? "";
+		assert.match(found, /^history:\/\/sessions\/ctx:50: context target line$/m);
+		assert.ok(rowsRead <= 2, `a one-row search read ${rowsRead} entries for its context`);
+	});
+
+	it("charges per-session cap notes to the byte budget (#5250)", async () => {
+		const store = new MemorySessionStore();
+		for (let index = 1; index <= 25; index++)
+			await store.create(
+				header(`cap-${String(index).padStart(2, "0")}`),
+				numbered(12, (seq) => `cap needle ${index}.${seq} ${"x".repeat(120)}`),
+			);
+		for (const bytes of [40_000, 4_000]) {
+			const { router, request } = historyOver(store, { bytes });
+			const pages: string[] = [];
+			let url: string | undefined = "history://sessions";
+			for (let calls = 0; url !== undefined && calls < 40; calls++) {
+				const out: string = (await router.search?.(url, request("cap needle"))) ?? "";
+				pages.push(out);
+				url = /^history:\/\/sessions[^\n]*:0: \[[^\n]*continue with (history:\/\/\S+?)\]$/m.exec(out)?.[1];
+			}
+			for (const page of pages)
+				assert.ok(Buffer.byteLength(page) <= bytes, `a page of ${Buffer.byteLength(page)} bytes against ${bytes}`);
+			assert.equal(url, undefined, "the continuation chain ended");
+			const searched = new Set(
+				[...pages.join("\n").matchAll(/^history:\/\/sessions\/(cap-\d+):\d+: cap needle/gm)].map(
+					(match) => match[1],
+				),
+			);
+			assert.equal(searched.size, 25, `${searched.size} sessions searched with a ${bytes}-byte budget`);
+			assert.match(pages.join("\n"), /\+\d+ more in this session/);
+		}
+	});
+
+	it("pins a multi-session search continuation to the session it stopped in (#5250)", async () => {
+		const store = new MemorySessionStore();
+		const entries = (name: string, at: number) =>
+			Array.from({ length: 8 }, (_, index) =>
+				message(`${name}-${index + 1}`, "user", `pin needle ${name} ${index + 1}`, at + index * 1000),
+			);
+		await store.create(header("s-old"), entries("s-old", BASE));
+		await store.create(header("s-mid"), entries("s-mid", BASE + 100_000));
+		await store.create(header("s-new"), entries("s-new", BASE + 200_000));
+		const first = historyOver(store, { rows: 15 });
+		const stopped = (await first.router.search?.("history://sessions", first.request("pin needle"))) ?? "";
+		const url = /continue with (history:\/\/sessions\?\S+?)\]$/m.exec(stopped)?.[1];
+		assert.ok(url, stopped);
+		assert.match(stopped, /^history:\/\/sessions\/s-mid:4: pin needle s-mid 4$/m);
+		await store.append("s-mid", [message("s-mid-9", "user", "pin needle s-mid 9", BASE + 900_000)], {
+			expectSeq: 8,
+		});
+		const rest = (await historyOver(store).router.search?.(url, first.request("pin needle"))) ?? "";
+		const matchesOf = (text: string) =>
+			[...text.matchAll(/^history:\/\/sessions\/(s-\w+):(\d+): /gm)].map((match) => `${match[1]}:${match[2]}`);
+		const seen = [...matchesOf(stopped), ...matchesOf(rest)];
+		const expected = ["s-new", "s-mid", "s-old"].flatMap((name) =>
+			Array.from({ length: name === "s-mid" ? 9 : 8 }, (_, index) => `${name}:${index + 1}`),
+		);
+		assert.deepEqual([...seen].sort(), [...expected].sort(), rest);
+	});
+
+	it("says when a multi-line pattern may match past the window it searched (#5250)", async () => {
+		const pattern = "(?s)START[\\s\\S]*END";
+		const cases: { readonly name: string; readonly middle: SessionEntry[] }[] = [
+			{
+				name: "long-entry",
+				middle: [
+					message("m1", "assistant", Array.from({ length: 400 }, () => "y".repeat(49)).join("\n"), BASE + 1),
+				],
+			},
+			{ name: "many-entries", middle: numbered(300, (seq) => `middle ${seq}`) },
+		];
+		for (const { name, middle } of cases) {
+			const store = new MemorySessionStore();
+			await store.create(header(name), [
+				message("s", "user", "START", BASE),
+				...middle,
+				message("e", "user", "END", BASE + 2),
+			]);
+			const { router, request } = historyOver(store);
+			const found = (await router.search?.(`history://sessions/${name}`, request(pattern))) ?? "";
+			const matched = new RegExp(`^history://sessions/${name}:\\d+: START$`, "m").test(found);
+			assert.ok(
+				matched || /multi-line matches are searched up to 16 KB of text or 256 entries/.test(found),
+				`${name}: the search neither found the match nor said where it stopped looking: ${found}`,
+			);
+		}
+		const small = new MemorySessionStore();
+		await small.create(header("small"), [message("s", "user", "START", BASE), message("e", "user", "END", BASE + 2)]);
+		const { router, request } = historyOver(small);
+		const found = (await router.search?.("history://sessions/small", request(pattern))) ?? "";
+		assert.match(found, /^history:\/\/sessions\/small:1: START$/m);
+		assert.doesNotMatch(found, /multi-line matches are searched up to/);
+	});
+
 	it("searches a store that has no index by scanning it (#5250)", async () => {
 		const store = new MemorySessionStore();
 		await store.create(
@@ -880,7 +1003,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 	it(
 		"reads, outlines and searches a 25 MB entry without blocking the event loop (#5250)",
 		async () => {
-			const { store, close } = await openSql(dir);
+			const { store, close } = await openSql(dir, { unsynced: true });
 			try {
 				const hugeText = `${Array.from({ length: 400_000 }, (_, i) => `row-${i} ${"x".repeat(52)}`).join("\n")}\n25mb-tail-needle`;
 				await store.create(header("big"), [
@@ -900,17 +1023,8 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 					} as unknown as SessionEntry,
 				]);
 				const { router, read, request } = historyOver(store);
-				let longest = 0;
-				let last = performance.now();
-				let lastCpu = process.cpuUsage();
-				const gap = () => {
-					const now = performance.now();
-					const used = process.cpuUsage(lastCpu);
-					longest = Math.max(longest, Math.min(now - last, (used.user + used.system) / 1000));
-					last = now;
-					lastCpu = process.cpuUsage();
-				};
-				const ticker = setInterval(gap, 1);
+				const stopWatching = watchEventLoopTurns();
+				let turns: number[];
 				try {
 					const page = await read("history://sessions/big:1-1");
 					assert.ok(page.includes("row-0 "));
@@ -920,13 +1034,9 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 					const found = (await router.search?.("history://sessions/big", request("25mb-tail-needle"))) ?? "";
 					assert.match(found, /^history:\/\/sessions\/big:1: 25mb-tail-needle$/m);
 				} finally {
-					clearInterval(ticker);
-					gap();
+					turns = await stopWatching();
 				}
-				assert.ok(
-					longest < EVENT_LOOP_CPU_LIMIT_MS,
-					`the event loop was busy for ${Math.round(longest)} ms at once on a 25 MB entry`,
-				);
+				assertFewStalls(turns, TURN_LIMIT_MS, "reading and searching a 25 MB entry");
 			} finally {
 				await close();
 			}
@@ -1186,6 +1296,30 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		assert.ok(performance.now() - t1 < 1_000, "stalled search stopped at the deadline");
 		assert.match(searchOut, /time budget/);
 		assert.match(searchOut, /continue with history:\/\/sessions\/stalled\?cursor=2:2-5/);
+	});
+
+	it("keeps the incoming mid-entry cursor when a ranged read times out waiting for the store (#5250)", async () => {
+		const base = new MemorySessionStore();
+		await base.create(header("midway"), [
+			message("e1", "user", "first entry", BASE),
+			message(
+				"e2",
+				"assistant",
+				Array.from({ length: 20 }, (_, line) => `midway-line-${line}`).join("\n"),
+				BASE + 1000,
+			),
+		]);
+		const store: SessionStore = new Proxy(base, {
+			get(target, key) {
+				if (key === "readEntryRange") return () => new Promise<never>(() => {});
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const { read } = historyOver(store, { timeMs: 20 });
+		const stopped = await read("history://sessions/midway?cursor=2.9:2-2");
+		assert.match(stopped, /time budget/);
+		assert.equal(continuation(stopped), "history://sessions/midway?cursor=2.9:2-2");
 	});
 
 	it("fences stale search index extensions across concurrent rewrites and sid reuse (#5250)", async () => {
@@ -2069,7 +2203,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 				assert.doesNotMatch(found, /budget ran out/);
 				const coverage = await store.searchIndex?.coverage("long", HISTORY_TEXT_FORMAT);
 				assert.equal(coverage?.indexedSeq, INDEX_BUILD_ENTRIES, "the search indexed the whole session");
-				assertFewStalls(turns, INDEX_BUILD_BLOCK_LIMIT_MS, "indexing");
+				assertFewStalls(turns, TURN_LIMIT_MS, "indexing");
 			} finally {
 				await store.close();
 				await database.close();
@@ -2110,34 +2244,21 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 	it(
 		"never blocks the event loop for long while searching a large session (#5250)",
 		async () => {
-			const { store, close } = await openSql(dir);
+			const { store, close } = await openSql(dir, { unsynced: true });
 			try {
 				const entries = numbered(6000, (seq) => `${seq} ${"lorem ipsum dolor sit amet ".repeat(150)}`);
 				await store.create(header("big"), entries);
 				const { router, request } = historyOver(store, { timeMs: 60_000, rows: 10_000_000 });
-				let longest = 0;
-				let last = performance.now();
-				let lastCpu = process.cpuUsage();
-				const gap = () => {
-					const now = performance.now();
-					const used = process.cpuUsage(lastCpu);
-					longest = Math.max(longest, Math.min(now - last, (used.user + used.system) / 1000));
-					last = now;
-					lastCpu = process.cpuUsage();
-				};
-				const ticker = setInterval(gap, 1);
+				const stopWatching = watchEventLoopTurns();
+				let turns: number[];
 				try {
 					for (const pattern of ["no such text anywhere", "(?:x|y)z+ no"])
 						await router.search?.("history://sessions/big", request(pattern));
 					await router.read?.("history://sessions/big");
 				} finally {
-					clearInterval(ticker);
-					gap();
+					turns = await stopWatching();
 				}
-				assert.ok(
-					longest < EVENT_LOOP_CPU_LIMIT_MS,
-					`the event loop was busy for ${Math.round(longest)} ms at once`,
-				);
+				assertFewStalls(turns, TURN_LIMIT_MS, "searching and reading a large session");
 			} finally {
 				await close();
 			}

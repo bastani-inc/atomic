@@ -47,7 +47,7 @@ const PAGE_CHARS = 64 * 1024;
 const LARGE_ENTRY_BYTES = 256 * 1024;
 const UTF8_SCAN_SLICE_BYTES = 256 * 1024;
 const REGEX_BATCH_CHARS = 64 * 1024;
-const MATCH_SPAN_CHARS = 16 * 1024;
+export const MATCH_SPAN_CHARS = 16 * 1024;
 const CONTEXT_SPAN_SEQS = 64;
 const ENTRY_CACHE_SEQS = 2 * WINDOW_MAX_SEQS + 2 * CONTEXT_SPAN_SEQS;
 const LOOKBEHIND_SYNTAX = /\(\?<[=!]/;
@@ -55,6 +55,8 @@ const CANDIDATE_PAGE = 64;
 const EXTRA_COUNT_SEQS = 500;
 const SKIPPED_TYPES: readonly string[] = ["custom", "worktree_snapshot"];
 const PREVIEW_CHARS = 72;
+
+export const MULTILINE_WINDOW_NOTE = `multi-line matches are searched up to ${MATCH_SPAN_CHARS / 1024} KB of text or ${WINDOW_MAX_SEQS} entries past where they start, so a longer match is not shown`;
 
 const utf8Decoder = new TextDecoder();
 
@@ -437,7 +439,7 @@ class RangeReader {
 		let headed = false;
 		for (let pos = range.start; pos <= Math.min(range.end, this.lastSeq); ) {
 			const reason = this.budget.spent();
-			if (reason && this.progressed) return this.stopAt({ seq: pos, line: 0, char: 0, reason }, index, range.end);
+			if (reason && this.progressed) return this.stopAt({ ...this.resumeAt(pos), reason }, index, range.end);
 			let page: SessionEntriesPage;
 			try {
 				page = await this.pager.page(
@@ -447,7 +449,7 @@ class RangeReader {
 				);
 			} catch (error) {
 				if (isHistoryDeadlineError(error)) {
-					return this.stopAt({ seq: pos, line: 0, char: 0, reason: "time" }, index, range.end);
+					return this.stopAt({ ...this.resumeAt(pos), reason: "time" }, index, range.end);
 				}
 				throw error;
 			}
@@ -502,6 +504,12 @@ class RangeReader {
 		}
 		await this.budget.pace();
 		return undefined;
+	}
+
+	private resumeAt(seq: number): SeqCursor {
+		if (this.cursor !== undefined && seq === this.cursor.seq)
+			return { seq, line: this.cursor.line, char: this.cursor.char };
+		return { seq, line: 0, char: 0 };
 	}
 
 	private write(line: string): void {
@@ -923,6 +931,7 @@ export interface SessionSearchResult {
 	readonly lastSeq: number;
 	readonly coveredFromSeq: number;
 	readonly coveredThroughSeq: number;
+	readonly windowCut: boolean;
 	readonly stopped?: { readonly reason: BudgetStop; readonly resume: SearchResume };
 }
 
@@ -978,6 +987,7 @@ class SessionSearcher {
 	private coveredThroughSeq = 0;
 	private lastEmitted = { seq: 0, line: -1 };
 	private emittedAny = false;
+	private windowCut = false;
 
 	constructor(search: SessionSearchRequest) {
 		this.search = search;
@@ -1122,9 +1132,10 @@ class SessionSearcher {
 
 	private async cacheEntryPage(fromSeq: number, toSeq: number): Promise<"ok" | "timedOut"> {
 		const from = Math.max(1, fromSeq);
-		const to = Math.min(this.lastSeq, toSeq);
-		if (from > to) return "ok";
 		const { budget } = this.search;
+		const rowsLeft = budget.spent() === undefined ? budget.rowAllowance(PAGE_SEQS) : PAGE_SEQS;
+		const to = Math.min(this.lastSeq, toSeq, from + rowsLeft - 1);
+		if (from > to) return "ok";
 		let page: SessionEntriesPage;
 		try {
 			page = await this.pager.page(from, to, budget);
@@ -1464,11 +1475,12 @@ class SessionSearcher {
 			if (typeof left === "string") return sliceStop(left);
 			const ahead = await this.lookahead(entry, sliceEnd);
 			if (typeof ahead === "string") return sliceStop(ahead);
+			if (ahead.cut) this.windowCut = true;
 			const ownedLines = entry.sliceLines(sliceStart, sliceEnd);
 			const windowParts: WindowPart[] = [
 				...left,
 				{ seq: entry.seq, lines: ownedLines, lineOffset: sliceStart },
-				...ahead,
+				...ahead.parts,
 			];
 			const partStarts: number[] = [];
 			let totalLines = 0;
@@ -1581,9 +1593,13 @@ class SessionSearcher {
 		return parts;
 	}
 
-	private async lookahead(entry: RenderedEntry, sliceEnd: number): Promise<WindowPart[] | BudgetStop> {
+	private async lookahead(
+		entry: RenderedEntry,
+		sliceEnd: number,
+	): Promise<{ readonly parts: WindowPart[]; readonly cut: boolean } | BudgetStop> {
 		const parts: WindowPart[] = [];
 		let chars = 0;
+		let cut = false;
 		if (sliceEnd + 1 < entry.lineCount) {
 			let end = sliceEnd;
 			while (end + 1 < entry.lineCount && chars < MATCH_SPAN_CHARS) {
@@ -1591,9 +1607,11 @@ class SessionSearcher {
 				chars += entry.lineAt(end).length + 1;
 			}
 			parts.push({ seq: entry.seq, lines: entry.sliceLines(sliceEnd + 1, end), lineOffset: sliceEnd + 1 });
+			if (end + 1 < entry.lineCount) cut = true;
 		}
 		const windowEnd = Math.min(this.lastSeq, entry.seq + WINDOW_MAX_SEQS);
-		for (let nextSeq = entry.seq + 1; nextSeq <= windowEnd && chars < MATCH_SPAN_CHARS; nextSeq++) {
+		let nextSeq = entry.seq + 1;
+		for (; nextSeq <= windowEnd && chars < MATCH_SPAN_CHARS; nextSeq++) {
 			const next = await this.getRenderedEntry(
 				nextSeq,
 				nextSeq,
@@ -1609,8 +1627,9 @@ class SessionSearcher {
 				chars += next.lineAt(end).length + 1;
 			}
 			parts.push({ seq: nextSeq, lines: next.sliceLines(0, end), lineOffset: 0 });
+			if (end + 1 < next.lineCount) cut = true;
 		}
-		return parts;
+		return { parts, cut: cut || nextSeq <= this.lastSeq };
 	}
 
 	private async emitUnits(
@@ -1648,6 +1667,7 @@ class SessionSearcher {
 				this.more++;
 				continue;
 			}
+			const noteReserve = this.shown === MAX_MATCHES_PER_SESSION - 1 ? this.moreNoteReserveBytes() : 0;
 			const beforeRows = await this.collectContextBefore(entry, unit.startLine, matchStartLinesInEntry);
 			if (beforeRows === "timedOut") return { reason: "time", resume: resumeAtUnit(unitIdx) };
 			const matchRow = formatSearchTextLine(label, seq, entry.lineAt(unit.startLine), true);
@@ -1657,7 +1677,7 @@ class SessionSearcher {
 			const allRows = [...beforeRows, { seq, line: unit.startLine, text: matchRow }, ...spanRows];
 			const totalBytes = allRows.reduce((sum, r) => sum + lineBytes(r.text), 0);
 
-			if (budget.fits(totalBytes)) {
+			if (budget.fits(totalBytes + noteReserve)) {
 				for (const r of allRows) {
 					this.lines.push(r.text);
 					budget.spend(lineBytes(r.text));
@@ -1669,12 +1689,12 @@ class SessionSearcher {
 			}
 
 			const matchBytes = lineBytes(matchRow);
-			if (budget.fits(matchBytes)) {
+			if (budget.fits(matchBytes + noteReserve)) {
 				this.lines.push(matchRow);
 				budget.spend(matchBytes);
 				this.advanceWatermark(seq, unit.startLine);
 				for (const r of spanRows) {
-					if (!budget.fits(lineBytes(r.text))) break;
+					if (!budget.fits(lineBytes(r.text) + noteReserve)) break;
 					this.lines.push(r.text);
 					budget.spend(lineBytes(r.text));
 					this.advanceWatermark(r.seq, r.line);
@@ -1734,7 +1754,7 @@ class SessionSearcher {
 		const contextStart = Math.max(1, entry.seq - CONTEXT_SPAN_SEQS);
 		let span = 1;
 		for (let prevSeq = entry.seq - 1; needed > 0 && prevSeq >= contextStart; prevSeq--) {
-			if (prevSeq < this.lastEmitted.seq) break;
+			if (prevSeq < this.lastEmitted.seq || this.search.budget.spent() !== undefined) break;
 			const prevEntry = await this.getRenderedEntry(
 				prevSeq,
 				Math.max(contextStart, this.lastEmitted.seq, prevSeq - span + 1),
@@ -1810,6 +1830,7 @@ class SessionSearcher {
 		const contextEnd = Math.min(this.lastSeq, endEntry.seq + CONTEXT_SPAN_SEQS);
 		let span = 1;
 		for (let nextSeq = endEntry.seq + 1; needed > 0 && nextSeq <= contextEnd; nextSeq++) {
+			if (this.search.budget.spent() !== undefined) break;
 			const nextEntry = await this.getRenderedEntry(nextSeq, nextSeq, Math.min(contextEnd, nextSeq + span - 1));
 			if (nextEntry === "timedOut") return "timedOut";
 			if (nextEntry === null) {
@@ -1834,20 +1855,41 @@ class SessionSearcher {
 	): SessionSearchResult {
 		if (this.more > 0 && this.firstMore !== undefined) {
 			const isComplete = stopped === undefined && complete;
-			const where = isComplete ? "" : ` in entries ${this.firstMore.seq}-${this.countedThrough}, maybe more after`;
-			const cursor = formatSearchCursor(this.firstMore);
-			const remainingRanges = this.remainingRangesFrom(this.firstMore.seq);
-			this.lines.push(
-				`${this.search.label}-0- [+${this.more} more in this session${where}; search ${this.search.place.urlWith({ cursor }, remainingRanges)} for them]`,
+			const note = this.moreNote(
+				this.more,
+				this.firstMore,
+				isComplete ? undefined : this.countedThrough,
+				this.remainingRangesFrom(this.firstMore.seq),
 			);
+			this.lines.push(note);
+			this.search.budget.spend(lineBytes(note));
 		}
 		return {
 			lines: this.lines,
 			lastSeq: this.lastSeq,
 			coveredFromSeq: this.coveredFromSeq,
 			coveredThroughSeq: Math.max(this.coveredFromSeq, this.coveredThroughSeq),
+			windowCut: this.windowCut,
 			...(stopped ? { stopped } : {}),
 		};
+	}
+
+	private moreNote(
+		more: number,
+		firstMore: SearchResume,
+		countedThrough: number | undefined,
+		remainingRanges: readonly SeqRange[] | undefined,
+	): string {
+		const where =
+			countedThrough === undefined ? "" : ` in entries ${firstMore.seq}-${countedThrough}, maybe more after`;
+		const cursor = formatSearchCursor(firstMore);
+		return `${this.search.label}-0- [+${more} more in this session${where}; search ${this.search.place.urlWith({ cursor }, remainingRanges)} for them]`;
+	}
+
+	private moreNoteReserveBytes(): number {
+		const widest = Number.MAX_SAFE_INTEGER;
+		const ranges = this.search.ranges === undefined ? undefined : mergeSeqRanges(this.search.ranges);
+		return lineBytes(this.moreNote(widest, { seq: widest, matchIndex: widest, lineOffset: widest }, widest, ranges));
 	}
 }
 

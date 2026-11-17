@@ -19,11 +19,17 @@
 
 import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
 import { resolvePath } from "../../utils/paths.ts";
-import type { WorkflowRunControl, WorkflowRunDetail, WorkflowRunSummary } from "../extensions/workflow-run-control.js";
+import type {
+	WorkflowRunControl,
+	WorkflowRunDetail,
+	WorkflowRunJsonObject,
+	WorkflowRunJsonValue,
+	WorkflowRunSummary,
+} from "../extensions/workflow-run-control.js";
 import type { SessionEntry } from "../session-manager-types.ts";
 import type { SessionRecordHeader, SessionStore, SessionSummary } from "../storage/session/types.js";
 import { indexLiterals, isMultilineSearchPattern, type LiteralQuery } from "./history-literals.ts";
-import { matchLinesInWorker, matchMultilineInWorker } from "./history-regex-worker.ts";
+import { type MultilineSpan, matchLinesInWorker, matchMultilineInWorker } from "./history-regex-worker.ts";
 import {
 	type BudgetStop,
 	cutTextToUtf8Bytes,
@@ -33,6 +39,8 @@ import {
 	HistoryCallBudget,
 	isHistoryDeadlineError,
 	lineBytes,
+	MATCH_SPAN_CHARS,
+	MULTILINE_WINDOW_NOTE,
 	matchMultilineNative,
 	mergeSeqRanges,
 	oneLine,
@@ -47,8 +55,8 @@ import {
 	selectRegexEngine,
 	stopText,
 } from "./history-session.ts";
-import { entryLines, textLines, timestamp, transcriptHeaderLines, wrapLine } from "./history-transcript.ts";
-import { selectExactReadRanges, selectReadRanges, splitReadLineSelector } from "./read-selectors.ts";
+import { entryLines, timestamp, transcriptHeaderLines, wrapLine } from "./history-transcript.ts";
+import { mergeReadRanges, splitReadLineSelector } from "./read-selectors.ts";
 import {
 	formatSearchTextLine,
 	type InternalReadSelection,
@@ -60,6 +68,11 @@ import { filterSearchOutputByLineRange, splitLineRangeSelector } from "./search-
 import { loadNativeSearchBinding } from "./search-native.ts";
 
 export type { HistoryBudget } from "./history-session.ts";
+
+function charged(budget: HistoryCallBudget, line: string): string {
+	budget.spend(lineBytes(line));
+	return line;
+}
 
 /** The part of a workflow run control that history:// reads; it can list and read runs, never manage them. */
 export type WorkflowRunHistory = Pick<WorkflowRunControl, "listRuns" | "listProjectRuns" | "getRun">;
@@ -92,7 +105,7 @@ const LABEL_LIMIT = 120;
 const WHOLE_SESSION_ENTRY_LIMIT = 2_000;
 const DISCOVERY_TTL_MS = 60_000;
 const QUERY_KEYS: Readonly<Record<"sessions" | "workflows" | "root", readonly string[]>> = {
-	sessions: ["limit", "offset", "project", "cursor"],
+	sessions: ["limit", "offset", "project", "cursor", "session"],
 	workflows: ["limit", "offset", "cursor"],
 	root: ["limit", "offset", "project", "cursor"],
 };
@@ -106,6 +119,7 @@ interface HistoryTarget {
 	readonly offset: number;
 	/** `undefined` selects the current project, `"all"` every project, anything else is a project directory. */
 	readonly project?: string;
+	readonly session?: string;
 	readonly cursor?: {
 		readonly first: number;
 		readonly second: number;
@@ -162,6 +176,8 @@ function parseTarget(url: string): HistoryTarget {
 	if (!Number.isInteger(offset) || offset < 0) throw new Error(`history offset must be 0 or more: ${offsetText}`);
 	const project = params.get("project") ?? undefined;
 	if (project === "") throw new Error("history project must be 'all' or a directory");
+	const session = params.get("session") ?? undefined;
+	if (session === "") throw new Error("history session must be a session id");
 	const cursorText = params.get("cursor");
 	const cursorMatch = cursorText === null ? undefined : CURSOR.exec(cursorText);
 	if (cursorText !== null && !cursorMatch)
@@ -174,6 +190,7 @@ function parseTarget(url: string): HistoryTarget {
 		limit,
 		offset,
 		...(project === undefined ? {} : { project }),
+		...(session === undefined ? {} : { session }),
 		...(cursorMatch
 			? {
 					cursor: {
@@ -219,11 +236,13 @@ function pageUrl(
 	offset: number,
 	cursor?: string,
 	ranges?: readonly SeqRange[],
+	session?: string,
 ): string {
 	const params = new URLSearchParams();
 	if (offset > 0) params.set("offset", String(offset));
 	if (target.limit !== DEFAULT_LIMIT) params.set("limit", String(target.limit));
 	if (domain === "sessions" && target.project !== undefined) params.set("project", target.project);
+	if (session !== undefined) params.set("session", session);
 	if (cursor !== undefined) params.set("cursor", cursor);
 	const query = params.toString();
 	return `history://${domain}${query ? `?${query}` : ""}${ranges && ranges.length > 0 ? `:${rangeText(ranges)}` : ""}`;
@@ -244,71 +263,295 @@ function urlWithCursor(url: string, cursor: string | undefined): string {
 	return `history://${domainText}${idText ? `/${idText}` : ""}${query ? `?${query}` : ""}`;
 }
 
-function selectLines(
+type LineSource = Iterable<string> | AsyncIterable<string>;
+
+interface LineStop {
+	readonly reason: BudgetStop;
+	readonly kind: "before" | "inside" | "after";
+	readonly line: number;
+	readonly char: number;
+}
+
+const LINE_PACE_EVERY = 256;
+
+async function selectLines(
 	url: string,
-	lines: readonly string[],
+	lines: LineSource,
 	selection: InternalReadSelection,
 	cursor: { readonly line: number; readonly char: number } | undefined,
 	budget: HistoryCallBudget,
-): string {
-	const all = [...lines];
-	let picked: { lines: string[]; numbers: number[] };
-	if (selection.ranges !== undefined && selection.ranges.length > 0) {
-		const ranges = selection.ranges.map((range) => ({ ...range }));
-		const chosen = (selection.raw ? selectExactReadRanges : selectReadRanges)(all, ranges);
-		picked = { lines: chosen?.selectedLines ?? [], numbers: chosen?.lineNumbers ?? [] };
-		if (picked.lines.length === 0)
-			return `Requested line ${ranges[0]!.start} is beyond end of resource (${all.length} lines total).`;
-	} else {
-		const start = Math.max(1, cursor?.line ?? selection.offset ?? 1);
-		if (start > all.length && (selection.offset !== undefined || cursor !== undefined))
-			return `Requested line ${start} is beyond end of resource (${all.length} lines total).`;
-		const end = selection.limit === undefined ? all.length : Math.min(all.length, start + selection.limit - 1);
-		picked = {
-			lines: all.slice(start - 1, end),
-			numbers: Array.from({ length: Math.max(0, end - start + 1) }, (_, index) => start + index),
-		};
-	}
+): Promise<string> {
+	const exact = selection.raw === true || cursor !== undefined;
+	const ranges =
+		selection.ranges !== undefined && selection.ranges.length > 0
+			? mergeReadRanges(selection.ranges, Number.POSITIVE_INFINITY, !exact)
+			: undefined;
+	const start = Math.max(1, cursor?.line ?? selection.offset ?? 1);
+	const selectionEnd =
+		ranges !== undefined
+			? (ranges.at(-1)?.end ?? 0)
+			: selection.limit === undefined
+				? Number.POSITIVE_INFINITY
+				: start + selection.limit - 1;
+	let rangeIndex = 0;
+	const picks = (lineNum: number): boolean => {
+		if (ranges === undefined) return lineNum >= start && lineNum <= selectionEnd;
+		while (rangeIndex < ranges.length && ranges[rangeIndex]!.end < lineNum) rangeIndex++;
+		const range = ranges[rangeIndex];
+		return range !== undefined && lineNum >= range.start;
+	};
+	const timeUp = () => budget.remainingMs() <= 0;
 	const out: string[] = [];
-	const firstNumber = picked.numbers[0] ?? 1;
-	const lastNumber = picked.numbers.at(-1) ?? all.length;
-	for (const [index, fullLine] of picked.lines.entries()) {
-		const lineNum = picked.numbers[index]!;
-		if (cursor !== undefined && lineNum < cursor.line) continue;
-		const charOffset = cursor !== undefined && lineNum === cursor.line ? cursor.char : 0;
-		const text = charOffset > 0 ? fullLine.slice(charOffset) : fullLine;
-		const size = lineBytes(text);
-		if (!budget.fits(size)) {
-			if (out.length > 0) {
-				const contUrl = urlWithCursor(url, charOffset > 0 ? `${lineNum}.${charOffset}` : undefined);
-				out.push(
-					`[read lines ${firstNumber}-${Math.max(firstNumber, lineNum - 1)} of ${all.length}; ${stopText("byte")}; continue with ${contUrl}:${lineNum}-${lastNumber}]`,
-				);
-				break;
-			}
-			const piece = cutTextToUtf8Bytes(text, Math.max(1, budget.bytesAvailable()));
-			out.push(piece);
-			budget.spend(lineBytes(piece));
-			const nextChar = charOffset + piece.length;
-			if (nextChar < fullLine.length) {
-				const contUrl = urlWithCursor(url, `${lineNum}.${nextChar}`);
-				out.push(
-					`[read line ${lineNum} of ${all.length}; ${stopText("byte")}; continue with ${contUrl}:${lineNum}-${lastNumber}]`,
-				);
-				break;
-			}
-			if (lineNum < lastNumber) {
-				const contUrl = urlWithCursor(url, undefined);
-				out.push(
-					`[read lines ${firstNumber}-${lineNum} of ${all.length}; ${stopText("byte")}; continue with ${contUrl}:${lineNum + 1}-${lastNumber}]`,
-				);
-			}
+	let total = 0;
+	let counted = true;
+	let firstNumber: number | undefined;
+	let lastNumber: number | undefined;
+	let stop: LineStop | undefined;
+	for await (const fullLine of lines) {
+		total++;
+		if (total % LINE_PACE_EVERY === 0) await budget.pace();
+		if (stop !== undefined && stop.reason === "time") {
+			counted = false;
 			break;
 		}
-		out.push(text);
-		budget.spend(size);
+		if (stop !== undefined && timeUp()) {
+			counted = false;
+			break;
+		}
+		if (!picks(total)) {
+			if (stop === undefined && lastNumber !== undefined && total > selectionEnd) break;
+			continue;
+		}
+		lastNumber = total;
+		if (stop !== undefined) continue;
+		if (cursor !== undefined && total < cursor.line) continue;
+		if (out.length > 0 && timeUp()) {
+			stop = { reason: "time", kind: "before", line: total, char: 0 };
+			continue;
+		}
+		firstNumber ??= total;
+		const charOffset = cursor !== undefined && total === cursor.line ? cursor.char : 0;
+		const text = charOffset > 0 ? fullLine.slice(charOffset) : fullLine;
+		const size = lineBytes(text);
+		if (budget.fits(size)) {
+			out.push(text);
+			budget.spend(size);
+			continue;
+		}
+		if (out.length > 0) {
+			stop = { reason: "byte", kind: "before", line: total, char: 0 };
+			continue;
+		}
+		const piece = cutTextToUtf8Bytes(text, Math.max(1, budget.bytesAvailable()));
+		out.push(piece);
+		budget.spend(lineBytes(piece));
+		const nextChar = charOffset + piece.length;
+		stop =
+			nextChar < fullLine.length
+				? { reason: "byte", kind: "inside", line: total, char: nextChar }
+				: { reason: "byte", kind: "after", line: total, char: 0 };
 	}
+	if (lastNumber === undefined) {
+		if (ranges !== undefined)
+			return `Requested line ${selection.ranges![0]!.start} is beyond end of resource (${total} lines total).`;
+		if (start > total && (selection.offset !== undefined || cursor !== undefined))
+			return `Requested line ${start} is beyond end of resource (${total} lines total).`;
+	}
+	if (stop === undefined) return out.join("\n");
+	const first = firstNumber ?? stop.line;
+	const of = counted ? ` of ${total}` : "";
+	const lastKnown = counted || total >= selectionEnd ? (lastNumber ?? total) : undefined;
+	const last = lastKnown === undefined ? "" : String(lastKnown);
+	const reason = stopText(stop.reason);
+	if (stop.kind === "before")
+		out.push(
+			`[read lines ${first}-${Math.max(first, stop.line - 1)}${of}; ${reason}; continue with ${urlWithCursor(url, String(stop.line))}:${stop.line}-${last}]`,
+		);
+	else if (stop.kind === "inside")
+		out.push(
+			`[read line ${stop.line}${of}; ${reason}; continue with ${urlWithCursor(url, `${stop.line}.${stop.char}`)}:${stop.line}-${last}]`,
+		);
+	else if (lastKnown === undefined || stop.line < lastKnown)
+		out.push(
+			`[read lines ${first}-${stop.line}${of}; ${reason}; continue with ${urlWithCursor(url, String(stop.line + 1))}:${stop.line + 1}-${last}]`,
+		);
 	return out.join("\n");
+}
+
+const RUN_TEXT_WINDOW = 64 * 1024;
+const RUN_NATIVE_NODES = 256;
+const TEXT_PACE_EVERY = 256;
+
+type RunJsonValue = WorkflowRunJsonValue | undefined;
+
+function isHighSurrogate(code: number): boolean {
+	return code >= 0xd800 && code <= 0xdbff;
+}
+
+function* jsonStringPieces(text: string): Generator<string> {
+	if (text.length <= RUN_TEXT_WINDOW) {
+		yield JSON.stringify(text);
+		return;
+	}
+	yield '"';
+	for (let from = 0; from < text.length; ) {
+		let to = Math.min(text.length, from + RUN_TEXT_WINDOW);
+		if (to < text.length && isHighSurrogate(text.charCodeAt(to - 1))) to--;
+		yield JSON.stringify(text.slice(from, to)).slice(1, -1);
+		from = to;
+	}
+	yield '"';
+}
+
+function isJsonArray(value: object): value is readonly RunJsonValue[] {
+	return Array.isArray(value);
+}
+
+function isPlainJson(value: object): boolean {
+	if (isJsonArray(value)) return true;
+	const prototype: object | null = Object.getPrototypeOf(value);
+	return (
+		(prototype === Object.prototype || prototype === null) &&
+		typeof (value as { readonly toJSON?: (key: string) => RunJsonValue }).toJSON !== "function"
+	);
+}
+
+function smallJson(value: RunJsonValue): boolean {
+	const pending: RunJsonValue[] = [value];
+	let nodes = 0;
+	let chars = 0;
+	while (pending.length > 0) {
+		const next = pending.pop();
+		if (++nodes > RUN_NATIVE_NODES) return false;
+		if (typeof next === "string") {
+			chars += next.length;
+			if (chars > RUN_TEXT_WINDOW) return false;
+		} else if (next !== null && typeof next === "object") {
+			if (!isPlainJson(next)) return false;
+			const children: readonly RunJsonValue[] = isJsonArray(next) ? next : Object.values(next);
+			if (children.length > RUN_NATIVE_NODES) return false;
+			for (const child of children) pending.push(child);
+		}
+	}
+	return true;
+}
+
+type JsonFrame =
+	| { readonly kind: "array"; readonly value: readonly RunJsonValue[]; index: number }
+	| {
+			readonly kind: "object";
+			readonly value: WorkflowRunJsonObject;
+			readonly keys: readonly string[];
+			index: number;
+			wrote: boolean;
+	  };
+
+function* jsonPieces(root: RunJsonValue): Generator<string> {
+	const stack: JsonFrame[] = [];
+	const ancestors = new Set<object>();
+	let buffer = "";
+	let next: { readonly value: RunJsonValue; readonly item: boolean } | undefined = { value: root, item: false };
+	for (;;) {
+		if (next !== undefined) {
+			const { value, item } = next;
+			next = undefined;
+			if (typeof value === "string" && value.length > RUN_TEXT_WINDOW) {
+				if (buffer !== "") yield buffer;
+				buffer = "";
+				yield* jsonStringPieces(value);
+			} else if (value === null || typeof value !== "object" || smallJson(value) || !isPlainJson(value)) {
+				buffer += JSON.stringify(value) ?? (item ? "null" : "undefined");
+			} else {
+				if (ancestors.has(value)) throw new TypeError("Converting circular structure to JSON");
+				ancestors.add(value);
+				if (isJsonArray(value)) {
+					buffer += "[";
+					stack.push({ kind: "array", value, index: 0 });
+				} else {
+					buffer += "{";
+					stack.push({ kind: "object", value, keys: Object.keys(value), index: 0, wrote: false });
+				}
+			}
+		}
+		if (buffer.length >= RUN_TEXT_WINDOW) {
+			yield buffer;
+			buffer = "";
+		}
+		const frame = stack.at(-1);
+		if (frame === undefined) break;
+		if (frame.kind === "array") {
+			if (frame.index < frame.value.length) {
+				if (frame.index > 0) buffer += ",";
+				next = { value: frame.value[frame.index], item: true };
+				frame.index++;
+				continue;
+			}
+			buffer += "]";
+		} else {
+			while (frame.index < frame.keys.length && next === undefined) {
+				const key = frame.keys[frame.index]!;
+				frame.index++;
+				const value = frame.value[key];
+				if (value === undefined || typeof value === "function" || typeof value === "symbol") continue;
+				buffer += `${frame.wrote ? "," : ""}${JSON.stringify(key)}:`;
+				frame.wrote = true;
+				next = { value, item: true };
+			}
+			if (next !== undefined) continue;
+			buffer += "}";
+		}
+		ancestors.delete(frame.value);
+		stack.pop();
+	}
+	if (buffer !== "") yield buffer;
+}
+
+async function* wrappedPieces(pieces: Iterable<string>, budget: HistoryCallBudget): AsyncGenerator<string> {
+	let pending = "";
+	for (const piece of pieces) {
+		pending += piece;
+		while (pending.length > RUN_TEXT_WINDOW) {
+			const parts = wrapLine(pending.slice(0, RUN_TEXT_WINDOW));
+			parts.pop();
+			let used = 0;
+			for (const part of parts) {
+				used += part.length;
+				yield part;
+			}
+			pending = pending.slice(used);
+			await budget.pace();
+		}
+	}
+	yield* wrapLine(pending);
+}
+
+function* segmentPieces(text: string, from: number, end: { at: number }): Generator<string> {
+	for (let scan = from; scan < text.length; scan += RUN_TEXT_WINDOW) {
+		const window = text.slice(scan, Math.min(text.length, scan + RUN_TEXT_WINDOW));
+		const newline = window.indexOf("\n");
+		if (newline !== -1) {
+			end.at = scan + newline;
+			yield window.slice(0, newline);
+			return;
+		}
+		yield window;
+	}
+	end.at = -1;
+}
+
+async function* textLineStream(text: string, budget: HistoryCallBudget): AsyncGenerator<string> {
+	const end = { at: -1 };
+	for (let from = 0, segments = 1; ; segments++) {
+		yield* wrappedPieces(segmentPieces(text, from, end), budget);
+		if (end.at === -1) return;
+		from = end.at + 1;
+		if (segments % TEXT_PACE_EVERY === 0) await budget.pace();
+	}
+}
+
+function* prefixedPieces(prefix: string, pieces: Iterable<string>): Generator<string> {
+	yield prefix;
+	yield* pieces;
 }
 
 function normalizeInlineReadSelection(
@@ -340,93 +583,172 @@ function normalizeInlineSearchRequest(
 	return { url: split.path, request: { ...request, ranges: split.lineRanges } };
 }
 
+const NATIVE_BATCH_CHARS = 64 * 1024;
+const WORKER_BATCH_CHARS = 1024 * 1024;
+
+function* lineBatches(
+	lines: readonly string[],
+	maxChars: number,
+): Generator<{ readonly from: number; readonly to: number }> {
+	for (let from = 0; from < lines.length; ) {
+		let to = from + 1;
+		for (let chars = lines[from]!.length; to < lines.length && chars + lines[to]!.length + 1 <= maxChars; to++)
+			chars += lines[to]!.length + 1;
+		yield { from, to };
+		from = to;
+	}
+}
+
+async function nativeMatchedLines(
+	lines: readonly string[],
+	normalized: { readonly pattern: string },
+	ignoreCase: boolean,
+	nativeOnly: boolean,
+	budget: HistoryCallBudget,
+): Promise<number[] | undefined> {
+	const native = loadNativeSearchBinding();
+	if (native?.search === undefined) return undefined;
+	const matched: number[] = [];
+	for (const { from, to } of lineBatches(lines, NATIVE_BATCH_CHARS)) {
+		const text = lines.slice(from, to).join("\n");
+		const safeText = nativeOnly ? text.replaceAll("\0", "\ufffd") : text;
+		if (safeText.includes("\0")) return undefined;
+		try {
+			const found = native.search(safeText, {
+				pattern: normalized.pattern,
+				ignoreCase,
+				multiline: false,
+				contextBefore: 0,
+				contextAfter: 0,
+			});
+			if (found.error) return undefined;
+			for (const match of found.matches) matched.push(from + match.lineNumber);
+		} catch {
+			return undefined;
+		}
+		await budget.pace();
+	}
+	return matched;
+}
+
+function linesWithContext(
+	label: string,
+	lines: readonly string[],
+	spans: readonly { readonly start: number; readonly end: number }[],
+	request: InternalSearchRequest,
+	shown: (line: string) => string,
+): string[] {
+	const matchLines = new Set<number>();
+	const contextLines = new Set<number>();
+	for (const span of spans) {
+		matchLines.add(span.start);
+		for (
+			let n = Math.max(1, span.start - request.contextBefore);
+			n <= Math.min(lines.length, span.end + request.contextAfter);
+			n++
+		)
+			contextLines.add(n);
+	}
+	const rows = [...contextLines]
+		.sort((a, b) => a - b)
+		.map((line) => formatSearchTextLine(label, line, shown(lines[line - 1] ?? ""), matchLines.has(line)));
+	if (request.ranges === undefined) return rows;
+	const filtered = filterSearchOutputByLineRange(
+		rows.join("\n"),
+		request.ranges,
+		request.contextBefore,
+		request.contextAfter,
+	);
+	return filtered === "No matches found" ? [] : filtered.split("\n").filter((line) => line !== "");
+}
+
 async function searchLinesBounded(
 	label: string,
 	lines: readonly string[],
 	request: InternalSearchRequest,
 	budget: HistoryCallBudget,
-): Promise<{ readonly rows: string[]; readonly timedOut: boolean }> {
+): Promise<{ readonly rows: string[]; readonly timedOut: boolean; readonly windowCut?: boolean }> {
 	const normalized = normalizeSearchPattern(request.pattern, request.ignoreCase);
 	const ignoreCase = normalized.flags.includes("i");
 	const multiline = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal);
 	const engine = selectRegexEngine(normalized, request.literal, multiline);
-	const text = lines.join("\n");
+	const unchanged = (line: string) => line;
 
 	if (!request.literal && !multiline) {
-		const safeText = engine === "native-only" ? text.replaceAll("\0", "\ufffd") : text;
-		if (!safeText.includes("\0")) {
-			try {
-				const native = loadNativeSearchBinding()?.search?.(safeText, {
-					pattern: normalized.pattern,
-					ignoreCase,
-					multiline: false,
-					contextBefore: request.contextBefore,
-					contextAfter: request.contextAfter,
-				});
-				if (native && !native.error) {
-					const rows = native.matches.flatMap((match) => [
-						...(match.contextBefore ?? []).map((line) =>
-							formatSearchTextLine(label, line.lineNumber, line.line, false),
-						),
-						formatSearchTextLine(label, match.lineNumber, match.line, true),
-						...(match.contextAfter ?? []).map((line) =>
-							formatSearchTextLine(label, line.lineNumber, line.line, false),
-						),
-					]);
-					return {
-						rows:
-							request.ranges !== undefined
-								? filterSearchOutputByLineRange(
-										rows.join("\n"),
-										request.ranges,
-										request.contextBefore,
-										request.contextAfter,
-									)
-										.split("\n")
-										.filter((line) => line !== "" && line !== "No matches found")
-								: rows,
-						timedOut: false,
-					};
-				}
-			} catch {}
-		}
-		if (engine === "native-only") return { rows: [], timedOut: false };
+		const nativeOnly = engine === "native-only";
+		const matched = await nativeMatchedLines(lines, normalized, ignoreCase, nativeOnly, budget);
+		if (matched !== undefined)
+			return {
+				rows: linesWithContext(
+					label,
+					lines,
+					matched.map((line) => ({ start: line, end: line })),
+					request,
+					nativeOnly ? (line) => line.replaceAll("\0", "\ufffd") : unchanged,
+				),
+				timedOut: false,
+			};
+		if (nativeOnly) return { rows: [], timedOut: false };
 	}
 
-	const matchLines = new Set<number>();
-	const contextLines = new Set<number>();
 	if (multiline) {
-		const spans =
-			engine === "native-only"
-				? matchMultilineNative(text, text.length + 1, normalized, ignoreCase, lines.length + 1)
-				: await (async () => {
-						const res = await matchMultilineInWorker(
-							text,
-							0,
-							text.length + 1,
-							normalized.pattern,
-							normalized.flags,
-							ignoreCase,
-							request.literal,
-							budget.remainingMs(),
-							budget.signal,
-						);
-						return res.timedOut ? ("timedOut" as const) : res.matches;
-					})();
-		if (spans === "timedOut") return { rows: [], timedOut: true };
-		for (const span of spans) {
-			matchLines.add(span.startLine + 1);
-			for (
-				let n = Math.max(1, span.startLine + 1 - request.contextBefore);
-				n <= Math.min(lines.length, span.endLine + 1 + request.contextAfter);
-				n++
-			) {
-				contextLines.add(n);
+		const found: { start: number; end: number }[] = [];
+		let windowCut = false;
+		for (let sliceStart = 0; sliceStart < lines.length; ) {
+			let sliceEnd = sliceStart;
+			let ownedChars = lines[sliceStart]!.length + 1;
+			while (sliceEnd + 1 < lines.length && ownedChars + lines[sliceEnd + 1]!.length + 1 <= NATIVE_BATCH_CHARS) {
+				sliceEnd++;
+				ownedChars += lines[sliceEnd]!.length + 1;
 			}
+			let first = sliceStart;
+			let leftChars = 0;
+			while (first > 0 && leftChars < MATCH_SPAN_CHARS) {
+				first--;
+				leftChars += lines[first]!.length + 1;
+			}
+			let last = sliceEnd;
+			let aheadChars = 0;
+			while (last + 1 < lines.length && aheadChars < MATCH_SPAN_CHARS) {
+				last++;
+				aheadChars += lines[last]!.length + 1;
+			}
+			if (last + 1 < lines.length) windowCut = true;
+			const windowLines = lines.slice(first, last + 1);
+			const text = windowLines.join("\n");
+			const ownedTo = leftChars + ownedChars;
+			let spans: readonly MultilineSpan[];
+			if (engine === "native-only") {
+				spans = matchMultilineNative(text, ownedTo, normalized, ignoreCase, windowLines.length + 1);
+			} else {
+				const res = await matchMultilineInWorker(
+					text,
+					leftChars,
+					ownedTo,
+					normalized.pattern,
+					normalized.flags,
+					ignoreCase,
+					request.literal,
+					budget.remainingMs(),
+					budget.signal,
+				);
+				if (res.timedOut) return { rows: [], timedOut: true };
+				spans = res.matches;
+			}
+			for (const span of spans) {
+				const startLine = first + span.startLine;
+				if (startLine < sliceStart || startLine > sliceEnd) continue;
+				found.push({ start: startLine + 1, end: first + span.endLine + 1 });
+			}
+			sliceStart = sliceEnd + 1;
+			await budget.pace();
 		}
-	} else {
+		return { rows: linesWithContext(label, lines, found, request, unchanged), timedOut: false, windowCut };
+	}
+	const matched: number[] = [];
+	for (const { from, to } of lineBatches(lines, WORKER_BATCH_CHARS)) {
 		const res = await matchLinesInWorker(
-			lines,
+			lines.slice(from, to),
 			normalized.pattern,
 			normalized.flags,
 			ignoreCase,
@@ -435,30 +757,17 @@ async function searchLinesBounded(
 			budget.signal,
 		);
 		if (res.timedOut) return { rows: [], timedOut: true };
-		for (const idx of res.matchedIndices) {
-			const lineNum = idx + 1;
-			matchLines.add(lineNum);
-			for (
-				let n = Math.max(1, lineNum - request.contextBefore);
-				n <= Math.min(lines.length, lineNum + request.contextAfter);
-				n++
-			) {
-				contextLines.add(n);
-			}
-		}
+		for (const index of res.matchedIndices) matched.push(from + index + 1);
+		await budget.pace();
 	}
-	const rows = [...contextLines]
-		.sort((a, b) => a - b)
-		.map((line) => formatSearchTextLine(label, line, lines[line - 1] ?? "", matchLines.has(line)));
-	if (request.ranges === undefined) return { rows, timedOut: false };
-	const filtered = filterSearchOutputByLineRange(
-		rows.join("\n"),
-		request.ranges,
-		request.contextBefore,
-		request.contextAfter,
-	);
 	return {
-		rows: filtered === "No matches found" ? [] : filtered.split("\n").filter((line) => line !== ""),
+		rows: linesWithContext(
+			label,
+			lines,
+			matched.map((line) => ({ start: line, end: line })),
+			request,
+			unchanged,
+		),
 		timedOut: false,
 	};
 }
@@ -637,7 +946,8 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 
 	async function listWorkflows(target: HistoryTarget, budget: HistoryCallBudget): Promise<string> {
 		const runs = await recentRuns(budget);
-		const shown = runs.slice(target.offset, target.offset + target.limit);
+		const shown = runs.slice(target.offset, target.offset + budget.rowAllowance(target.limit));
+		budget.takeRows(shown.length);
 		const next = target.offset + shown.length;
 		return [
 			`# workflow runs ${windowText(runs.length, target.offset, shown.length)} in this project, newest first${next < runs.length ? `; next page: ${pageUrl("workflows", target, next)}` : ""}`,
@@ -654,27 +964,33 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		].join("\n");
 	}
 
-	function runLines(detail: WorkflowRunDetail): string[] {
-		return [
-			`# workflow run ${detail.runId}`,
-			`name: ${detail.name}`,
-			`status: ${detail.status}`,
-			`started: ${timestamp(detail.startedAt)}`,
-			...(detail.endedAt === undefined ? [] : [`ended: ${timestamp(detail.endedAt)}`]),
-			...(detail.identity ? textLines(`label: ${detail.identity}`) : []),
-			...(detail.summary ? textLines(`summary: ${detail.summary}`) : []),
-			...wrapLine(`inputs: ${JSON.stringify(detail.inputs)}`),
-			"stages:",
-			...detail.stages.flatMap((stage) => [
-				[
-					`- ${stage.name} [${stage.status}]`,
-					...(stage.sessionId ? [`transcript history://sessions/${stage.sessionId}`] : []),
-				].join(" "),
-				...(stage.error ? textLines(`  error: ${stage.error}`) : []),
-			]),
-			...(detail.result === undefined ? [] : wrapLine(`result: ${JSON.stringify(detail.result)}`)),
-			...(detail.error ? textLines(`error: ${detail.error}`) : []),
-		];
+	async function* runLines(detail: WorkflowRunDetail, budget: HistoryCallBudget): AsyncGenerator<string> {
+		yield `# workflow run ${detail.runId}`;
+		yield `name: ${detail.name}`;
+		yield `status: ${detail.status}`;
+		yield `started: ${timestamp(detail.startedAt)}`;
+		if (detail.endedAt !== undefined) yield `ended: ${timestamp(detail.endedAt)}`;
+		if (detail.identity) yield* textLineStream(`label: ${detail.identity}`, budget);
+		if (detail.summary) yield* textLineStream(`summary: ${detail.summary}`, budget);
+		yield* wrappedPieces(prefixedPieces("inputs: ", jsonPieces(detail.inputs)), budget);
+		yield "stages:";
+		for (const [index, stage] of detail.stages.entries()) {
+			yield [
+				`- ${stage.name} [${stage.status}]`,
+				...(stage.sessionId ? [`transcript history://sessions/${stage.sessionId}`] : []),
+			].join(" ");
+			if (stage.error) yield* textLineStream(`  error: ${stage.error}`, budget);
+			if ((index + 1) % TEXT_PACE_EVERY === 0) await budget.pace();
+		}
+		if (detail.result !== undefined)
+			yield* wrappedPieces(prefixedPieces("result: ", jsonPieces(detail.result)), budget);
+		if (detail.error) yield* textLineStream(`error: ${detail.error}`, budget);
+	}
+
+	async function collectRunLines(detail: WorkflowRunDetail, budget: HistoryCallBudget): Promise<string[]> {
+		const lines: string[] = [];
+		for await (const line of runLines(detail, budget)) lines.push(line);
+		return lines;
 	}
 
 	async function authorizedRunId(id: string, budget: HistoryCallBudget): Promise<string> {
@@ -690,9 +1006,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		);
 	}
 
-	async function readRun(id: string, budget: HistoryCallBudget): Promise<string[]> {
+	async function readRun(id: string, budget: HistoryCallBudget): Promise<AsyncIterable<string>> {
 		const runId = await authorizedRunId(id, budget);
-		return runLines(await budget.race(requireWorkflows().getRun(runId)));
+		const detail = await budget.race(requireWorkflows().getRun(runId));
+		budget.takeRows(1);
+		return runLines(detail, budget);
 	}
 
 	async function readSession(
@@ -823,7 +1141,10 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					});
 					const label = sessionUrl(rawId, target);
 					return [
-						`${label}:0: [the time budget ran out waiting for the store; continue with ${sessionUrl(rawId, target, target.cursor ? cursor : undefined, request.ranges)}]`,
+						charged(
+							budget,
+							`${label}:0: [the time budget ran out waiting for the store; continue with ${sessionUrl(rawId, target, target.cursor ? cursor : undefined, request.ranges)}]`,
+						),
 					];
 				}
 				throw error;
@@ -838,8 +1159,9 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				fromLineOffset,
 				budget,
 			);
-			if (!result.stopped) return result.lines;
 			const label = sessionUrl(id, target);
+			const windowNote = result.windowCut ? [charged(budget, `${label}:0: [${MULTILINE_WINDOW_NOTE}]`)] : [];
+			if (!result.stopped) return [...windowNote, ...result.lines];
 			const resume = result.stopped.resume;
 			const coveredEnd = Math.max(
 				result.coveredFromSeq,
@@ -860,7 +1182,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			const cursor = formatSearchCursor(resume);
 			const totalText = result.lastSeq > 0 ? ` of ${result.lastSeq}` : "";
 			return [
-				`${label}:0: [searched entries ${result.coveredFromSeq}-${coveredEnd}${totalText}; ${stopText(result.stopped.reason)}; continue with ${sessionUrl(id, target, cursor, remainingRanges)}]`,
+				charged(
+					budget,
+					`${label}:0: [searched entries ${result.coveredFromSeq}-${coveredEnd}${totalText}; ${stopText(result.stopped.reason)}; continue with ${sessionUrl(id, target, cursor, remainingRanges)}]`,
+				),
+				...windowNote,
 				...result.lines,
 			];
 		}
@@ -868,34 +1194,71 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		if (discovered.stopped !== undefined) {
 			const contUrl = pageUrl("sessions", target, target.offset, `0.${discovered.stopped.scanned}`, request.ranges);
 			return [
-				`${pageUrl("sessions", target, target.offset)}:0: [searched sessions 0 of ${discovered.stopped.scanned}+; ${stopText(discovered.stopped.reason)} after scanning ${discovered.stopped.scanned} sessions; continue with ${contUrl}]`,
+				charged(
+					budget,
+					`${pageUrl("sessions", target, target.offset)}:0: [searched sessions 0 of ${discovered.stopped.scanned}+; ${stopText(discovered.stopped.reason)} after scanning ${discovered.stopped.scanned} sessions; continue with ${contUrl}]`,
+				),
 			];
 		}
 		const store = requireStore();
 		const candidates = discovered.sessions.filter((summary) => summary.id !== sources.currentSessionId);
-		const window = candidates.slice(target.offset, target.offset + target.limit);
+		const resuming = target.cursor !== undefined && target.cursor.first > 0;
+		const pinned =
+			resuming && target.session !== undefined
+				? candidates.find((summary) => summary.id === target.session)
+				: undefined;
+		const pinnedGone = resuming && target.session !== undefined && pinned === undefined;
+		const window =
+			pinned === undefined
+				? candidates.slice(target.offset, target.offset + target.limit)
+				: [
+						pinned,
+						...candidates
+							.slice(target.offset + 1, target.offset + target.limit)
+							.filter((summary) => summary.id !== pinned.id),
+					];
 		const out: string[] = [];
+		const notes: string[] = pinnedGone
+			? [
+					charged(
+						budget,
+						`${pageUrl("sessions", target, target.offset)}:0: [session ${target.session} is no longer listed, so the search could not resume in it; it continued with the sessions after it]`,
+					),
+				]
+			: [];
+		let windowCut = false;
 		let unreadable = 0;
+		const finished = (lines: readonly string[]) => [
+			...lines,
+			...notes,
+			...(windowCut
+				? [charged(budget, `${pageUrl("sessions", target, target.offset)}:0: [${MULTILINE_WINDOW_NOTE}]`)]
+				: []),
+			...out,
+		];
 		for (const [index, summary] of window.entries()) {
 			const spent = budget.spent();
 			if (spent && index > 0)
-				return [
-					stoppedCoverage(
-						"sessions",
-						"sessions",
-						target,
-						candidates.length,
-						index,
-						unreadable,
-						spent,
-						pageUrl("sessions", target, target.offset + index, undefined, request.ranges),
-						"",
+				return finished([
+					charged(
+						budget,
+						stoppedCoverage(
+							"sessions",
+							"sessions",
+							target,
+							candidates.length,
+							index,
+							unreadable,
+							spent,
+							pageUrl("sessions", target, target.offset + index, undefined, request.ranges),
+							"",
+						),
 					),
-					...out,
-				];
-			const fromSeq = index === 0 && target.cursor && target.cursor.first > 0 ? target.cursor.first : 1;
-			const fromMatchIndex = index === 0 && target.cursor && target.cursor.first > 0 ? target.cursor.second : 0;
-			const fromLineOffset = index === 0 && target.cursor && target.cursor.first > 0 ? target.cursor.third : 0;
+				]);
+			const resumesHere = index === 0 && resuming && !pinnedGone;
+			const fromSeq = resumesHere ? target.cursor!.first : 1;
+			const fromMatchIndex = resumesHere ? target.cursor!.second : 0;
+			const fromLineOffset = resumesHere ? target.cursor!.third : 0;
 			try {
 				const result = await searchOneSession(
 					summary.id,
@@ -909,46 +1272,60 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					store,
 				);
 				out.push(...result.lines);
+				windowCut ||= result.windowCut;
 				if (result.stopped) {
 					const cursor = formatSearchCursor(result.stopped.resume);
 					const totalText = result.lastSeq > 0 ? ` of ${result.lastSeq}` : "";
-					return [
-						stoppedCoverage(
-							"sessions",
-							"sessions",
-							target,
-							candidates.length,
-							index + 1,
-							unreadable,
-							result.stopped.reason,
-							pageUrl("sessions", target, target.offset + index, cursor, request.ranges),
-							` at entry ${result.stopped.resume.seq}${totalText} in ${sessionUrl(summary.id, target)}`,
+					return finished([
+						charged(
+							budget,
+							stoppedCoverage(
+								"sessions",
+								"sessions",
+								target,
+								candidates.length,
+								index + 1,
+								unreadable,
+								result.stopped.reason,
+								pageUrl("sessions", target, target.offset + index, cursor, request.ranges, summary.id),
+								` at entry ${result.stopped.resume.seq}${totalText} in ${sessionUrl(summary.id, target)}`,
+							),
 						),
-						...out,
-					];
+					]);
 				}
 			} catch (error) {
 				if (isHistoryDeadlineError(error)) {
-					return [
-						stoppedCoverage(
-							"sessions",
-							"sessions",
-							target,
-							candidates.length,
-							index + 1,
-							unreadable,
-							"time",
-							pageUrl("sessions", target, target.offset + index, String(fromSeq), request.ranges),
-							` in ${sessionUrl(summary.id, target)}`,
+					const cursor = formatSearchCursor({
+						seq: fromSeq,
+						matchIndex: fromMatchIndex,
+						...(fromLineOffset > 0 ? { lineOffset: fromLineOffset } : {}),
+					});
+					return finished([
+						charged(
+							budget,
+							stoppedCoverage(
+								"sessions",
+								"sessions",
+								target,
+								candidates.length,
+								index + 1,
+								unreadable,
+								"time",
+								pageUrl("sessions", target, target.offset + index, cursor, request.ranges, summary.id),
+								` in ${sessionUrl(summary.id, target)}`,
+							),
 						),
-						...out,
-					];
+					]);
 				}
 				rethrowAbort(budget, error);
 				unreadable++;
 			}
 		}
-		return [...coverage("sessions", target, candidates.length, window.length, unreadable, request.ranges), ...out];
+		return finished(
+			coverage("sessions", target, candidates.length, window.length, unreadable, request.ranges).map((line) =>
+				charged(budget, line),
+			),
+		);
 	}
 
 	/**
@@ -969,13 +1346,25 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		readonly stopped?: { readonly reason: BudgetStop; readonly cursor: string };
 	}> {
 		const detail = await budget.race(requireWorkflows().getRun(runId));
+		budget.takeRows(1);
 		const lines: string[] = [];
+		let windowNote: string | undefined;
+		const withNote = (found: readonly string[]) => (windowNote === undefined ? [...found] : [windowNote, ...found]);
+		const noteWindowCut = () => {
+			windowNote ??= charged(budget, `history://workflows/${runId}:0: [${MULTILINE_WINDOW_NOTE}]`);
+		};
 		if (start === undefined || start.stage === 0) {
 			const skipped = start?.seq ?? 0;
-			const evaluated = await searchLinesBounded(`history://workflows/${runId}`, runLines(detail), request, budget);
+			const evaluated = await searchLinesBounded(
+				`history://workflows/${runId}`,
+				await collectRunLines(detail, budget),
+				request,
+				budget,
+			);
 			if (evaluated.timedOut) {
 				return { lines, unreadable: 0, stopped: { reason: "time", cursor: `0.${skipped}` } };
 			}
+			if (evaluated.windowCut === true) noteWindowCut();
 			const own = evaluated.rows.slice(skipped);
 			for (const [index, line] of own.entries()) {
 				const size = lineBytes(line);
@@ -986,7 +1375,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 						budget.spend(lineBytes(cut));
 						if (index + 1 < own.length || detail.stages.length > 0) {
 							return {
-								lines,
+								lines: withNote(lines),
 								unreadable: 0,
 								stopped: {
 									reason: "byte",
@@ -996,7 +1385,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 						}
 						break;
 					}
-					return { lines, unreadable: 0, stopped: { reason: "byte", cursor: `0.${skipped + index}` } };
+					return {
+						lines: withNote(lines),
+						unreadable: 0,
+						stopped: { reason: "byte", cursor: `0.${skipped + index}` },
+					};
 				}
 				lines.push(line);
 				budget.spend(size);
@@ -1010,9 +1403,10 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			if (!store || !stage.sessionId) continue;
 			const spent = budget.spent();
 			if (spent && (lines.length > 0 || stageNumber > (start?.stage ?? 1)))
-				return { lines, unreadable, stopped: { reason: spent, cursor: `${stageNumber}.1` } };
+				return { lines: withNote(lines), unreadable, stopped: { reason: spent, cursor: `${stageNumber}.1` } };
 			try {
 				if (!(await budget.race(store.readHeader(stage.sessionId)))) continue;
+				budget.takeRows(1);
 				const fromSeq = start !== undefined && stageNumber === start.stage ? Math.max(1, start.seq) : 1;
 				const fromMatchIndex = start !== undefined && stageNumber === start.stage ? start.matchIndex : 0;
 				const fromLineOffset = start !== undefined && stageNumber === start.stage ? start.lineOffset : 0;
@@ -1028,10 +1422,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					budget,
 				});
 				lines.push(...result.lines);
+				if (result.windowCut) noteWindowCut();
 				if (result.stopped) {
 					const cursor = `${stageNumber}.${formatSearchCursor(result.stopped.resume)}`;
 					return {
-						lines,
+						lines: withNote(lines),
 						unreadable,
 						stopped: { reason: result.stopped.reason, cursor },
 					};
@@ -1041,7 +1436,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				unreadable++;
 			}
 		}
-		return { lines, unreadable };
+		return { lines: withNote(lines), unreadable };
 	}
 
 	async function searchWorkflows(
@@ -1064,10 +1459,15 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			const runId = await authorizedRunId(target.id, budget);
 			const { lines, unreadable, stopped } = await searchRun(runId, request, prefilter, start, budget);
 			return [
-				...(unreadable > 0 ? [`history://workflows/${runId}:0: [${unreadable} stage transcripts unreadable]`] : []),
+				...(unreadable > 0
+					? [charged(budget, `history://workflows/${runId}:0: [${unreadable} stage transcripts unreadable]`)]
+					: []),
 				...(stopped
 					? [
-							`history://workflows/${runId}:0: [${stopText(stopped.reason)}; continue with history://workflows/${runId}?cursor=${stopped.cursor}${request.ranges ? `:${rangeText(request.ranges)}` : ""}]`,
+							charged(
+								budget,
+								`history://workflows/${runId}:0: [${stopText(stopped.reason)}; continue with history://workflows/${runId}?cursor=${stopped.cursor}${request.ranges ? `:${rangeText(request.ranges)}` : ""}]`,
+							),
 						]
 					: []),
 				...lines,
@@ -1081,16 +1481,19 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			const spent = budget.spent();
 			if (spent && index > 0)
 				return [
-					stoppedCoverage(
-						"workflows",
-						"workflow runs",
-						target,
-						runs.length,
-						index,
-						unreadable,
-						spent,
-						pageUrl("workflows", target, target.offset + index, undefined, request.ranges),
-						"",
+					charged(
+						budget,
+						stoppedCoverage(
+							"workflows",
+							"workflow runs",
+							target,
+							runs.length,
+							index,
+							unreadable,
+							spent,
+							pageUrl("workflows", target, target.offset + index, undefined, request.ranges),
+							"",
+						),
 					),
 					...out,
 				];
@@ -1100,16 +1503,19 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				unreadable += found.unreadable;
 				if (found.stopped)
 					return [
-						stoppedCoverage(
-							"workflows",
-							"workflow runs",
-							target,
-							runs.length,
-							index + 1,
-							unreadable,
-							found.stopped.reason,
-							pageUrl("workflows", target, target.offset + index, found.stopped.cursor, request.ranges),
-							` in history://workflows/${run.runId}`,
+						charged(
+							budget,
+							stoppedCoverage(
+								"workflows",
+								"workflow runs",
+								target,
+								runs.length,
+								index + 1,
+								unreadable,
+								found.stopped.reason,
+								pageUrl("workflows", target, target.offset + index, found.stopped.cursor, request.ranges),
+								` in history://workflows/${run.runId}`,
+							),
 						),
 						...out,
 					];
@@ -1118,7 +1524,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				unreadable++;
 			}
 		}
-		return [...coverage("workflows", target, runs.length, window.length, unreadable, request.ranges), ...out];
+		return [
+			...coverage("workflows", target, runs.length, window.length, unreadable, request.ranges).map((line) =>
+				charged(budget, line),
+			),
+			...out,
+		];
 	}
 
 	async function readSelected(rawUrl: string, rawSelection: InternalReadSelection): Promise<string | undefined> {
@@ -1137,17 +1548,17 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					target.cursor && target.cursor.first > 0
 						? { line: target.cursor.first, char: target.cursor.second }
 						: undefined;
-				return selectLines(url, listed.text.split("\n"), selection, lineCursor, budget);
+				return await selectLines(url, listed.text.split("\n"), selection, lineCursor, budget);
 			}
-			const text =
+			const lines =
 				target.id === undefined
-					? await listWorkflows(target, budget)
-					: (await readRun(target.id, budget)).join("\n");
+					? (await listWorkflows(target, budget)).split("\n")
+					: await readRun(target.id, budget);
 			const lineCursor =
 				target.cursor && target.cursor.first > 0
 					? { line: target.cursor.first, char: target.cursor.second }
 					: undefined;
-			return selectLines(url, text.split("\n"), selection, lineCursor, budget);
+			return await selectLines(url, lines, selection, lineCursor, budget);
 		} catch (error) {
 			if (isHistoryDeadlineError(error)) {
 				return `[the time budget ran out waiting for the store; continue with ${rawUrl}]`;
