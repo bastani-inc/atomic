@@ -24,7 +24,7 @@ import {
 	takeOverDeadHolder,
 } from "../src/core/lock-holder.ts";
 import { lockHolder } from "../src/core/lock-wait.ts";
-import { processStartToken } from "../src/core/process-start-token.ts";
+import { processStartToken } from "../src/core/process-start-token.js";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { unreadableTrustSettingsDiagnostics } from "../src/main-stdio.ts";
 
