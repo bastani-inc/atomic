@@ -21,7 +21,7 @@ subagent({
 
 No model is asked to choose, and the task does not affect which model runs. A concrete model on the call wins over an agent's `auto` default, and omitting `model` keeps normal inheritance. Workflow stages follow the same rule; see [stage `model: "auto"`](/workflows/authoring#automatic-stage-model-selection).
 
-To run a role on another model, name it as `provider/model[:effort]` on the call, in the agent definition, or in a builtin override. The `taskNeeds` and `modelConstraints` fields of earlier releases are ignored when they are still passed.
+To run a role on another model, name it as `provider/model[:effort]` on the call, in the agent definition, or in a builtin override. The `taskNeeds` and `modelConstraints` fields of earlier releases are ignored when they are still passed. When Atomic starts, it deletes them from the builtin agent overrides saved in your global settings and in a trusted project's `.atomic/settings.json`, keeps every other setting, and tells you once.
 
 A child on `auto` keeps a fallback chain: the agent's `fallbackModels`, then the launching session's model. See [Fallback models](#fallback-models).
 
