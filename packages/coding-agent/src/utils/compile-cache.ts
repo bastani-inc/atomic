@@ -1,9 +1,10 @@
 /**
- * Best-effort wrappers around Node's on-disk V8 compile cache. On Node >= 22.8
+ * Best-effort wrappers around the runtime's on-disk compile cache. On Node >= 22.8
  * the cache persists compiled module bytecode across runs, which substantially
  * reduces module-graph load time on platforms with slow cold starts (Windows).
- * Bun and older Node versions do not expose these APIs, so both wrappers are
- * silent no-ops there.
+ * Bun implements the same calls and keeps its own bytecode for the modules it
+ * loads afterwards. Older Node versions do not expose these APIs, so both
+ * wrappers are silent no-ops there.
  */
 import nodeModule from "node:module";
 

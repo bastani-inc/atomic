@@ -69,26 +69,27 @@ function findExecutableOnPath(executable: string): string | null {
 	return path;
 }
 
-function lookupExecutableOnPath(executable: string): string | null {
-	if (process.platform === "win32") {
-		// Windows: use 'where' and check the returned path.
-		try {
-			const result = spawnSync("where", [executable], {
-				encoding: "utf-8",
-				timeout: 5000,
-				env: createChildProcessEnvironment(),
-			});
-			if (result.status === 0 && result.stdout) {
-				const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
-				if (firstMatch && shellPathExists(firstMatch)) {
-					return firstMatch;
-				}
-			}
-		} catch {
-			// Ignore errors
+/**
+ * What `where <executable>` prints first, without starting `where`, which cost about 40 ms of every Windows start:
+ * the current directory, then each PATH directory in order, trying each PATHEXT extension when the name has none.
+ */
+function scanWindowsPath(executable: string): string | null {
+	const extensions = win32.extname(executable)
+		? [""]
+		: (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+	for (const entry of [process.cwd(), ...(process.env.PATH ?? "").split(";")]) {
+		const directory = entry.trim().replace(/^"(.*)"$/, "$1");
+		if (!directory) continue;
+		for (const extension of extensions) {
+			const candidate = win32.join(directory, `${executable}${extension}`);
+			if (shellPathExists(candidate)) return candidate;
 		}
-		return null;
 	}
+	return null;
+}
+
+function lookupExecutableOnPath(executable: string): string | null {
+	if (process.platform === "win32") return scanWindowsPath(executable);
 
 	// Unix: Use 'which' and trust its output (handles Termux and special filesystems)
 	try {

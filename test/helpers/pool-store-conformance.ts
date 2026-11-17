@@ -6,6 +6,7 @@ import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/int
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { poolStageUsageKey } from "../../packages/workflows/src/durable/journal/pool-stage-usage.js";
 import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
+import type { PoolMutation, PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
@@ -14,8 +15,10 @@ import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-
 import { isStaleLeaseError, type Lease, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
+import { CheckpointShipping } from "../../packages/workflows/src/workers/checkpoint-shipping.js";
 import { openPoolSessions } from "../../packages/workflows/src/workers/pool-session-store.js";
 import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
+import { ShipShard } from "../../packages/workflows/src/workers/ship-shard.js";
 import { interceptingDatabase } from "./intercepting-database.js";
 import { staleWorkLease } from "./pool-errors.js";
 import { poolWorkFixture } from "./pool-journal.js";
@@ -366,6 +369,137 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 				);
 				await assertDenseEvents(f, size + 1);
 			});
+		for (const maxBatch of [1_000, 2])
+			test(`a host's shipped session writes, checkpoints and billed usage, ${maxBatch === 2 ? "in batches of two" : "in one batch"}, leave what committing them one by one leaves (#4768)`, async (f) => {
+				const direct = poolWorkFixture("direct");
+				const shipped = poolWorkFixture("shipped");
+				for (const item of [direct, shipped]) await f.pool.enqueue(f.lease, item.work, item.boundary);
+				const claimed = async (item: ReturnType<typeof poolWorkFixture>) => {
+					const attempt = await f.pool.claim(
+						f.lease,
+						`worker-${item.work.boundaryId}`,
+						[{ definition: item.work.definition, digest: item.work.digest }],
+						60_000,
+						{
+							kind: "work",
+							id: (await f.pool.inspect("root")).find((queued) => queued.boundaryId === item.work.boundaryId)!
+								.id,
+							generation: 0,
+						},
+					);
+					assert.ok(attempt);
+					return attempt;
+				};
+				const directAttempt = await claimed(direct);
+				const shippedAttempt = await claimed(shipped);
+				const journal = await f.peer();
+				const host = await openSqlPoolQueue(journal);
+				const ledger = await openSqlPoolUsage(journal);
+				for (const [index, mutation] of sessionWrites(direct, "direct-session").entries())
+					await f.pool.commit(f.lease, directAttempt, `op-${index}`, mutation);
+				const { shipping, receipts } = await shippingHost(host, f.lease, shippedAttempt, maxBatch);
+				for (const [index, mutation] of sessionWrites(shipped, "shipped-session").entries())
+					receipts.push(await shipping.commit(shippedAttempt, mutation, unshipped, { operation: `op-${index}` }));
+				assert.ok(
+					receipts.every((receipt) => receipt.local === true),
+					"the host acknowledged every write locally",
+				);
+				assert.deepEqual(
+					receipts.flatMap((receipt) => (receipt.lastSeq === undefined ? [] : [receipt.lastSeq])),
+					[1, 2, 4, 2, 3],
+					"each session write's receipt carries the sequence the session store gives it",
+				);
+				const usage = { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.5 };
+				assert.deepEqual(
+					await ledger.total("root"),
+					{ ...usage, input: 14, output: 6, cost: 1 },
+					"billed as accepted",
+				);
+				await shipping.flush(shippedAttempt);
+				await shipping.close();
+				assert.deepEqual(await ledger.total("root"), { ...usage, input: 14, output: 6, cost: 1 }, "never twice");
+				const sessions = await openPoolSessions(sqlPoolStorage(journal)!);
+				try {
+					const [one, other] = [await sessions.load("direct-session"), await sessions.load("shipped-session")];
+					assert.equal(other.lastSeq, one.lastSeq);
+					assert.deepEqual(other.entries, one.entries);
+					assert.deepEqual({ ...other.header, id: "" }, { ...one.header, id: "" });
+					const listed = new Map<string, unknown>();
+					for await (const summary of sessions.list({ cwd: "/gone/scratch", includeInternal: true }))
+						listed.set(summary.id, { messageCount: summary.messageCount, firstMessage: summary.firstMessage });
+					assert.deepEqual(listed.get("shipped-session"), listed.get("direct-session"));
+					if (sessions.readResume !== undefined) {
+						const [a, b] = [
+							await sessions.readResume("direct-session"),
+							await sessions.readResume("shipped-session"),
+						];
+						assert.deepEqual(
+							b.branch.map((stored) => [stored.seq, stored.entry.id]),
+							a.branch.map((stored) => [stored.seq, stored.entry.id]),
+						);
+					}
+				} finally {
+					await sessions.close();
+				}
+				// The same checkpoints, each the same value, in the same order: a session write's event records only the
+				// checkpoint it binds with.
+				const recorded = async (scope: string, name: string) =>
+					(
+						await f.database.all<{ key: string; payload: string }>(
+							`SELECT key, payload FROM ${f.table("wf_events")} WHERE run_id = ? AND key LIKE ? ORDER BY seq`,
+							"root",
+							`%${scope}:%`,
+						)
+					).map((row) => JSON.parse(`[${row.key},${row.payload}]`.replaceAll(name, "child")));
+				const shippedEvents = await recorded(shipped.work.scope, "shipped");
+				assert.equal(shippedEvents.length, 4, "two session bindings, a tool checkpoint and the stage's end");
+				assert.deepEqual(shippedEvents, await recorded(direct.work.scope, "direct"));
+				await assertDenseEvents(f);
+			});
+
+		test("a replaced attempt's unshipped session writes never reach its session, and the replacement continues it from what was shipped (#4768)", async (f) => {
+			const item = poolWorkFixture("takeover");
+			await f.pool.enqueue(f.lease, item.work, item.boundary);
+			const definitionOf = [{ definition: item.work.definition, digest: item.work.digest }];
+			const first = (await f.pool.claim(f.lease, "worker-1", definitionOf, 60_000)) as PoolWork;
+			assert.ok(first);
+			const writes = sessionWrites(item, "taken-over");
+			const hostA = await openSqlPoolQueue(await f.peer());
+			const a = await shippingHost(hostA, f.lease, first, 1_000);
+			// Host A ships the create and the first append, then keeps the next append and dies before it ships it.
+			await a.shipping.commit(first, writes[0]!, unshipped);
+			await a.shipping.commit(first, writes[1]!, unshipped, { operation: "a-1" });
+			await a.shipping.flush(first);
+			await a.shipping.commit(first, writes[3]!, unshipped, { operation: "a-3" });
+			await f.database.run(`UPDATE ${f.table("wf_runs_work")} SET expires_at = 0`);
+			assert.equal(await f.pool.expire(f.lease, first), true);
+			const second = (await f.pool.claim(f.lease, "worker-2", definitionOf, 60_000)) as PoolWork;
+			assert.equal(second.generation, first.generation + 1);
+			// Host A's late batch is refused as a whole, and what it held is dropped.
+			await assert.rejects(a.shipping.flush(first), isStaleWorkLeaseError);
+			await a.shipping.close();
+			const hostB = await openSqlPoolQueue(await f.peer());
+			const b = await shippingHost(hostB, f.lease, second, 1_000);
+			const resumed = {
+				kind: "session-append",
+				sessionId: "taken-over",
+				entries: [{ ...messages[0]!, id: "replayed", parentId: "m-2" }],
+				expectSeq: 2,
+			} as PoolMutation;
+			assert.equal((await b.shipping.commit(second, resumed, unshipped, { operation: "b-1" })).lastSeq, 3);
+			await b.shipping.flush(second);
+			await b.shipping.close();
+			const sessions = await openPoolSessions(sqlPoolStorage(f.journal)!);
+			try {
+				assert.deepEqual(
+					(await sessions.load("taken-over")).entries.map((entry) => entry.id),
+					["m-1", "m-2", "replayed"],
+				);
+			} finally {
+				await sessions.close();
+			}
+		});
+
 		test("1000 commits of 256 KiB checkpoints, one after another, all commit and read back intact", async (f) => {
 			await f.pool.enqueue(f.lease, work, boundary);
 			const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);
@@ -740,6 +874,96 @@ function toolCheckpointOf(item: ReturnType<typeof poolWorkFixture>, step: number
 			run: { ...item.boundary.topology!.boundary!.child },
 		},
 	};
+}
+
+const unshipped = async (): Promise<never> => assert.fail("a write the host keeps is not committed directly");
+
+/** A host's shipping of `attempt` into `queue`, through a local journal of its own. */
+async function shippingHost(
+	queue: Awaited<ReturnType<typeof openSqlPoolQueue>>,
+	lease: Lease,
+	attempt: PoolWork,
+	maxBatch: number,
+) {
+	const shard = await ShipShard.open(":memory:", "root");
+	const shipping = new CheckpointShipping(shard, {
+		intervalMs: 60_000,
+		maxBatch,
+		maxLagMs: 600_000,
+		host: `host-${attempt.worker}`,
+		deliver: (held, batch) => queue.shipBatch(lease, held, batch),
+		sessionState: (held, session) => queue.poolSessionState(held.id, session),
+		snapshotsStored: (checkpoint) => queue.assertSnapshotsStored(checkpoint),
+	});
+	await shipping.hold(attempt, 60_000);
+	return { shipping, receipts: [] as { readonly local?: true; readonly lastSeq?: number }[] };
+}
+
+/**
+ * A stage's session writes and checkpoints, as an agent stage of `item`'s child makes them: a create, appends, a tool
+ * checkpoint between them, a replace, and the checkpoint that ends the stage and bills its usage.
+ */
+function sessionWrites(item: ReturnType<typeof poolWorkFixture>, sessionId: string): PoolMutation[] {
+	const { scope } = item.work;
+	const childRun = { ...item.boundary.topology!.boundary!.child };
+	const stage = {
+		kind: "stage" as const,
+		workflowId: "root",
+		name: "stage",
+		replayKey: `${scope}:stage`,
+		sessionId,
+		completedAt: 1,
+		topology: { version: 1 as const, stageId: "stage", parentIds: [], sourceOrder: 0, run: childRun },
+	};
+	const header = { id: sessionId, version: 4 as const, createdAt: "2026-01-01T00:00:00Z", cwd: "/gone/scratch" };
+	const entry = (id: string, parentId: string | null, text: string): SessionEntry => ({
+		type: "message",
+		id,
+		parentId,
+		timestamp: "2026-01-01T00:00:00Z",
+		message: { role: "user", content: text, timestamp: 1 },
+	});
+	return [
+		{
+			kind: "session-create",
+			checkpoint: { ...stage, checkpointId: `${scope}:session:0` },
+			header,
+			entries: [entry("m-1", null, "first \u0000 prompt")],
+		},
+		{ kind: "session-append", sessionId, entries: [entry("m-2", "m-1", "second")], expectSeq: 1 },
+		{ kind: "checkpoint", checkpoint: toolCheckpointOf(item, 1) },
+		{
+			kind: "session-append",
+			sessionId,
+			entries: [entry("m-3", "m-2", "third"), entry("m-4", "m-3", "fourth")],
+			expectSeq: 2,
+		},
+		{
+			kind: "session-replace",
+			checkpoint: { ...stage, checkpointId: `${scope}:session:1`, completedAt: 2 },
+			header,
+			entries: [entry("m-1", null, "first \u0000 prompt"), entry("c-1", "m-1", "compacted")],
+			expectSeq: 4,
+		},
+		{ kind: "session-append", sessionId, entries: [entry("m-5", "c-1", "after")], expectSeq: 2 },
+		{
+			kind: "checkpoint",
+			checkpoint: {
+				...stage,
+				checkpointId: `${scope}:stage:complete`,
+				completedAt: 3,
+				output: "done",
+				topology: { ...stage.topology, status: "completed" },
+				modelAttempts: [
+					{
+						model: "fixture",
+						success: true,
+						usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.5 },
+					},
+				],
+			} as unknown as DurableToolCheckpoint,
+		},
+	] as PoolMutation[];
 }
 
 /** A tool output of about 256 KiB, its text distinct for each `step`. */

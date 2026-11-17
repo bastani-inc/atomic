@@ -1004,6 +1004,7 @@ describe("docs references and assets (#2847)", () => {
 				"Broker accepts connections but stops answering",
 				"Broker does not start",
 				"Half-closed peer or undeliverable send",
+				"Subagent that is starting",
 				"Subagent being restored after a restart",
 				"Subagent that ended or dropped off",
 				"Workflow stage whose session was replaced or released",

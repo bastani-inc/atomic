@@ -82,6 +82,8 @@ export function engineHeapRuntimeArgs(inputs: EngineHeapInputs): string[] {
 }
 
 export function engineHeapRuntimeArgsForHost(runsOnNode: boolean): string[] {
+	// Other runtimes get no flags; Bun's heap statistics alone take about 14 ms to read.
+	if (!runsOnNode) return [];
 	return engineHeapRuntimeArgs({
 		runsOnNode,
 		totalMemoryBytes: totalmem(),
