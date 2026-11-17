@@ -29,6 +29,7 @@ const fixturePolicy: EventLoopPolicy = {
 		},
 	],
 	exitOnly: [],
+	synchronousLoaderHooks: [],
 	reviewedRegexes: [],
 };
 
