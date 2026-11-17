@@ -11,6 +11,8 @@
 ### Fixed
 
 - A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
+- Fixed a session that ended staying in memory for as long as a timer, connection or other long-lived resource that an extension started while the session was in use, as a service started once and shared by later sessions does.
+- Fixed each `/reload` keeping the extensions it replaced in memory for as long as the session ran: every new generation of the session's extensions kept the one before it, so each reload added about 10 MB that was never released.
 
 ## [0.9.88] - 2026-11-16
 
