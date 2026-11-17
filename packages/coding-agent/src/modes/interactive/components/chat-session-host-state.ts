@@ -21,7 +21,7 @@ import type { FooterComponent } from "./footer.ts";
 import { NewMessageCounter, pinnedPromptLine } from "./jump-to-latest.ts";
 import { keyText } from "./keybinding-hints.js";
 import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
-import { WorkingRunMeter } from "./working-run-meter.ts";
+import { WorkingRunMeter, type WorkingRunSnapshot } from "./working-run-meter.ts";
 
 export interface ChatSessionHostStateCallbacks<TExtraEntry extends ChatTranscriptEntryLike> {
 	renderEntry: (state: ChatSessionHostState<TExtraEntry>, entry: ChatSessionHostEntry<TExtraEntry>) => Component;
@@ -42,6 +42,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly getPromptEntries: ChatSessionHostOpts<TExtraEntry>["getPromptEntries"];
 	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
+	readonly workingTokenCount: (() => number | undefined) | undefined;
 	readonly isPaused: (() => boolean) | undefined;
 	readonly isDisabled: (() => boolean) | undefined;
 	readonly isBashRunningOverride: (() => boolean) | undefined;
@@ -75,6 +76,9 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	/** Recorded pause failure consumed by the first submit after settlement. */
 	interruptFailureMessage: string | undefined;
 	workingMessage: string | undefined;
+	lastWorkingMessage: string | undefined = undefined;
+	workedRun: { readonly message: string | undefined; readonly snapshot: WorkingRunSnapshot } | undefined = undefined;
+	hydratedOutputOnly = false;
 	workingFrame = 0;
 	readonly newMessages = new NewMessageCounter();
 	compactionStartedAt: number | undefined;
@@ -141,6 +145,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.getPromptEntries = opts.getPromptEntries;
 		this.getTaskSource = opts.getTaskSource;
 		this.isStreamingOverride = opts.isStreaming;
+		this.workingTokenCount = opts.workingTokenCount;
 		this.workingLifecycleActive = opts.isStreaming?.() === true;
 		this.isPaused = opts.isPaused;
 		this.isDisabled = opts.isDisabled;

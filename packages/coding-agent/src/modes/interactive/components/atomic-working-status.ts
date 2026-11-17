@@ -9,12 +9,49 @@ import {
 } from "@bastani/atomic-tui";
 import { ansi256ToHex, fgAnsi, hexToRgb } from "../theme/color-utils.ts";
 import { theme } from "../theme/theme.js";
-import { formatWorkingMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
+import { formatTokenSegment } from "./token-segment.ts";
+import { formatWorkingElapsed, formatWorkingMeta, type WorkingRunSnapshot } from "./working-run-meter.ts";
 
 /** Atomic's literal one-cell identity follows the approved ten-step luminance ramp. */
 export const ATOMIC_WORKING_FRAMES = ["∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀", "∀"] as const;
 export const ATOMIC_WORKING_BOLD_PHASES = [false, false, false, false, true, true, true, false, false, false] as const;
 export const ATOMIC_WORKING_FRAME_MS = 88;
+export const DEFAULT_WORKING_MESSAGE = "Working...";
+
+const IRREGULAR_WORKED_VERBS: Readonly<Record<string, string>> = {
+	building: "built",
+	doing: "did",
+	feeding: "fed",
+	finding: "found",
+	forgiving: "forgave",
+	freeing: "freed",
+	getting: "got",
+	giving: "gave",
+	having: "had",
+	letting: "let",
+	making: "made",
+	reading: "read",
+	running: "ran",
+	sending: "sent",
+	shaking: "shook",
+	spellbinding: "spellbound",
+	spinning: "spun",
+	taking: "took",
+	teaching: "taught",
+	thinking: "thought",
+	unbinding: "unbound",
+	winding: "wound",
+	writing: "wrote",
+};
+
+export function workedVerb(message: string | undefined): string {
+	const word = /[\p{L}'-]*\p{L}ing(?!\p{L})/u.exec(message ?? "")?.[0];
+	if (word === undefined || word.toLowerCase() === "working") return "Worked";
+	const lower = word.toLowerCase();
+	const base = lower.slice(0, -3);
+	const past = IRREGULAR_WORKED_VERBS[lower] ?? (/[^aeiou]y$/.test(base) ? `${base.slice(0, -1)}ied` : `${base}ed`);
+	return `${past.charAt(0).toUpperCase()}${past.slice(1)}`;
+}
 
 export interface AtomicWorkingPalette {
 	dark: string;
@@ -154,7 +191,7 @@ export class AtomicWorkingStatusComponent implements Component {
 		const reducedMotion = process.env.ATOMIC_REDUCED_MOTION === "1";
 		const frameIndex = reducedMotion ? 3 : normalizedFrameIndex(this.options.frame ?? 0);
 		const frame = ATOMIC_WORKING_FRAMES[frameIndex];
-		const message = this.options.message ?? "Working...";
+		const message = this.options.message ?? DEFAULT_WORKING_MESSAGE;
 		const bold = !reducedMotion && ATOMIC_WORKING_BOLD_PHASES[frameIndex];
 		const icon = this.options.logo
 			? (styleLegacyFrame("∀", true, this.options) ?? atomicLogoMark(this.options.palette))
@@ -171,6 +208,33 @@ export class AtomicWorkingStatusComponent implements Component {
 		const styledMeta = meta && !noColorRequested() ? metaColor(meta) : meta;
 		return ["", ...new Text(`${icon} ${styledMessage}${styledMeta}`, 1, 0).render(width)];
 	}
+	invalidate(): void {}
+}
+
+export interface AtomicWorkedStatusOptions {
+	message?: string;
+	snapshot: WorkingRunSnapshot;
+	color?: (text: string) => string;
+}
+
+export class AtomicWorkedStatusComponent implements Component {
+	private readonly options: AtomicWorkedStatusOptions;
+
+	constructor(options: AtomicWorkedStatusOptions) {
+		this.options = options;
+	}
+
+	render(width: number): string[] {
+		const { snapshot } = this.options;
+		const segment = formatTokenSegment({ mode: "receiving", count: snapshot.tokens });
+		const tokens = segment ? ` · ${segment}` : "";
+		const text = `${workedVerb(this.options.message)} for ${formatWorkingElapsed(snapshot.elapsedMs)}${tokens}`;
+		const color = noColorRequested()
+			? (value: string) => value
+			: (this.options.color ?? ((value: string) => theme.fg("dim", value)));
+		return ["", ...new Text(`${color("∀")} ${color(text)}`, 1, 0).render(width)];
+	}
+
 	invalidate(): void {}
 }
 
@@ -193,7 +257,7 @@ export class AtomicWorkingLoader implements Component {
 		ui: TUI,
 		spinnerColor: ((text: string) => string) | undefined,
 		messageColor: (text: string) => string,
-		message = "Working...",
+		message = DEFAULT_WORKING_MESSAGE,
 		indicator?: LoaderIndicatorOptions,
 	) {
 		this.ui = ui;

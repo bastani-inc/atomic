@@ -13,6 +13,7 @@ import { runCallback, runSynchronousCallback } from "../../core/callback-activit
 import type { HostCustomUiState, HostCustomUiStateListener } from "../../core/extensions/index.js";
 import type { ScrollableWidgetComponent } from "../../core/extensions/ui-types.js";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
+import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import type { Theme } from "../interactive/theme/theme.js";
 import { theme } from "../interactive/theme/theme.js";
@@ -149,12 +150,11 @@ function jsonResult(value: object | boolean | null | number | string | undefined
 	return decoded;
 }
 
+const GENERIC_SOURCE_FAILURE = sourceError(Object.create(null)).message;
+
 function renderError(error: unknown): Error {
-	try {
-		return new Error(error instanceof Error ? String(error.message) : String(error));
-	} catch {
-		return new Error("Remote component render failed.");
-	}
+	const message = sourceError(error).message;
+	return new Error(message === GENERIC_SOURCE_FAILURE ? "Remote component render failed." : message);
 }
 
 class RemoteCustomTui extends TuiMainScreen {

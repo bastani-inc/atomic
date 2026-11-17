@@ -38,7 +38,12 @@ for (const page of ["detail", "chat"] as const) {
 		});
 		const text = () => stripVTControlCharacters(inspector.renderViewport(100, 24).join("\n"));
 		try {
-			inspector.handleInput(page === "detail" ? " " : "\r");
+			if (page === "detail") {
+				inspector.handleInput(" ");
+				inspector.handleInput("\r");
+			} else {
+				inspector.handleInput("\r");
+			}
 			assert.equal(inspector.navigation.focus.kind, "detail");
 			itemReads = 0;
 			for (let index = 0; index < 20; index++) {
@@ -78,6 +83,7 @@ test("a task that finishes while its detail stop is armed is acknowledged, not d
 	);
 	try {
 		inspector.handleInput(" ");
+		inspector.handleInput("\r");
 		inspector.handleInput("x");
 		await fixture.settle();
 		inspector.handleInput("x");

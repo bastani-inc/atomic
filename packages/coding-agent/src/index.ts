@@ -1173,6 +1173,7 @@ export {
 export {
 	ArminComponent,
 	AssistantMessageComponent,
+	agentTokenTotal,
 	applyAttachedComposer,
 	applyInputLabelToEditorTopRule,
 	BashExecutionComponent,
@@ -1241,6 +1242,7 @@ export {
 	ShowImagesSelectorComponent,
 	SkillInvocationMessageComponent,
 	selectorHintEntries,
+	TASK_CHAT_OVERLAY_KEYS,
 	ThemeSelectorComponent,
 	ThinkingSelectorComponent,
 	type TokenSegmentMode,
@@ -1249,6 +1251,7 @@ export {
 	TRANSCRIPT_JUMP_TO_END_URL,
 	TranscriptFollowIndicator,
 	TreeSelectorComponent,
+	taskChatKeys,
 	themeSelectorStyle,
 	truncateToVisualLines,
 	UsageMeterComponent,

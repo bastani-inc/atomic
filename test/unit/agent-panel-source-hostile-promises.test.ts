@@ -47,6 +47,29 @@ function recursiveThen(): object {
 	});
 }
 
+let syncResolveDepth = 0;
+function syncInfiniteResolve(): object {
+	syncResolveDepth++;
+	return Object.defineProperty({}, THEN_METHOD, {
+		value(resolve: (value: unknown) => void) {
+			resolve(syncInfiniteResolve());
+		},
+	});
+}
+
+function deepThrowChainEndingInRejectedPromise(depth: number, label: string): object {
+	let current: unknown = Promise.reject(new Error(`rejected:${label}`));
+	for (let index = 0; index < depth; index++) {
+		const next = current;
+		current = Object.defineProperty({}, THEN_METHOD, {
+			get() {
+				throw next;
+			},
+		});
+	}
+	return current as object;
+}
+
 async function exercise(source: Partial<AgentPanelSource>) {
 	const hub = new AgentPanelSourceHub();
 	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
@@ -118,5 +141,44 @@ test("a thenable whose then getter throws another such thenable without end is d
 	assert.notEqual(answered, "pending", "answer settles");
 	assert.equal(opened, false);
 	assert.ok(recursiveDepth < 10_000, `drained to a bound, read ${recursiveDepth} thenables`);
+	assert.deepEqual(unhandled, []);
+});
+
+test("stop and answer settle as failures when a source returns a thenable that synchronously resolves with a fresh thenable without end (#5239)", async () => {
+	syncResolveDepth = 0;
+	const { stopped, answered } = await exercise({
+		stop: () => syncInfiniteResolve() as never,
+		answer: () => syncInfiniteResolve() as never,
+	});
+	assert.notEqual(stopped, "pending", "stop settles instead of hanging after synchronous thenable overflow");
+	assert.notEqual(answered, "pending", "answer settles instead of hanging after synchronous thenable overflow");
+	assert.equal((stopped as { ok: boolean }).ok, false);
+	assert.equal((answered as { ok: boolean }).ok, false);
+	assert.ok(syncResolveDepth < 10_000, `unwrapped to a bound, read ${syncResolveDepth} thenables`);
+	assert.deepEqual(unhandled, []);
+});
+
+test("draining 35 nested throwing then-getters ending in a rejected native promise attaches a handler and leaks no unhandled rejection (#5239)", async () => {
+	const { items, stopped, answered, opened } = await exercise({
+		items: () => {
+			throw deepThrowChainEndingInRejectedPromise(35, "items-deep-promise");
+		},
+		stop: () => {
+			throw deepThrowChainEndingInRejectedPromise(35, "stop-deep-promise");
+		},
+		answer: () => {
+			throw deepThrowChainEndingInRejectedPromise(35, "answer-deep-promise");
+		},
+		open: () => {
+			throw deepThrowChainEndingInRejectedPromise(35, "open-deep-promise");
+		},
+		subscribe: () => () => {
+			throw deepThrowChainEndingInRejectedPromise(35, "unsubscribe-deep-promise");
+		},
+	});
+	assert.deepEqual(items, []);
+	assert.equal((stopped as { ok: boolean }).ok, false);
+	assert.equal((answered as { ok: boolean }).ok, false);
+	assert.equal(opened, false);
 	assert.deepEqual(unhandled, []);
 });

@@ -1,9 +1,11 @@
-import { TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
+import { isNavHelpKey, TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
+import { getKeybindings } from "@bastani/atomic-tui";
 
 import { APP_ACTION, isKeybindingsLike, matchesAction, matchesNavAction, TUI_ACTION } from "./keybindings-adapter.js";
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
 import { defaultResponseFor, handlePromptCardInput, isPromptEscapeInput } from "./prompt-card.js";
 import { releaseMountedCustomUi } from "./stage-chat-view-custom-ui.js";
+import { hasStageChatTasks } from "./stage-chat-view-footer-status.js";
 import { setComponentFocused, setEditorFocused } from "./stage-chat-view-render-helpers.js";
 import {
 	canSubmitPrompt,
@@ -31,6 +33,14 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		return true;
 	}
 	if (data === TRANSCRIPT_JUMP_TO_END_URL) return handleStageChatJumpToBottom(ctx, data);
+	if (ctx.helpOpen) {
+		const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : getKeybindings();
+		if (matchesKey(data, Key.escape) || isNavHelpKey(keybindings, data)) {
+			ctx.helpOpen = false;
+			ctx.requestRender?.();
+		}
+		return true;
+	}
 	if (isHostThinkingToggle(ctx, data)) return false;
 	if (ctx.mountedCustomUi) {
 		return handleMountedCustomUiInput(ctx, data);
@@ -75,12 +85,31 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 		ctx.onDetach();
 		return true;
 	}
+	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : getKeybindings();
+	if (
+		!readOnlyArchive &&
+		!isBlocked(ctx) &&
+		!ctx.chatHost.hasInputText() &&
+		hasStageChatTasks(ctx) &&
+		matchesAction(keybindings, data, "app.agents.focus")
+	) {
+		ctx.chatHost.openTasks();
+		return true;
+	}
+	if (!readOnlyArchive && !isBlocked(ctx) && isNavHelpKey(keybindings, data) && !ctx.chatHost.hasInputText()) {
+		ctx.helpOpen = true;
+		ctx.requestRender?.();
+		return true;
+	}
 	// Esc interrupts or cancels; it never leaves the stage chat.
 	if (matchesKey(data, Key.escape)) {
 		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
 			return ctx.chatHost.handleInput(data);
 		}
-		if (isAbortableStreamingSession(ctx)) void ctx.chatHost.interrupt({ restoreQueuedMessages: true });
+		if (isAbortableStreamingSession(ctx)) {
+			ctx.interruptedByEscape = true;
+			void ctx.chatHost.interrupt({ restoreQueuedMessages: true });
+		}
 		return true;
 	}
 	if (matchesKey(data, Key.ctrl("c"))) {
@@ -142,10 +171,11 @@ function handleStageChatJumpToBottom(ctx: StageChatViewContext, data: string): b
 	return true;
 }
 function handleToolsExpandInput(ctx: StageChatViewContext, data: string): boolean {
-	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+	if (!ctx.setToolsExpanded) return false;
+	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : getKeybindings();
 	if (!matchesAction(keybindings, data, APP_ACTION.toolsExpand)) return false;
 	const expanded = ctx.getToolsExpanded?.() === true;
-	ctx.setToolsExpanded?.(!expanded);
+	ctx.setToolsExpanded(!expanded);
 	ctx.chatHost.invalidate();
 	ctx.requestRender?.();
 	return true;

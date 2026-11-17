@@ -42,7 +42,7 @@ export interface AgentPanelStyle extends NavKeyStyle {
 const FINISHED: ReadonlySet<AgentPanelState> = new Set(["done", "failed", "stopped"]);
 const NON_PRINTABLE_ASCII = /[^\x20-\x7e]/;
 const NON_SINGLE_CELL = /[^\x20-\x7e\u00b7\u25b0\u25b1\u2193]/;
-const NON_SINGLE_CELL_LINE = /[^\x20-\x7e·▰▱↓∀◆‖○◼✓✗●❯]/;
+const NON_SINGLE_CELL_LINE = /[^\x20-\x7e·▰▱↓∀⧗◆‖○◼✓✗●❯]/;
 const SGR_SEQUENCE = /\x1b\[[\d;:]*m/g;
 const MAX_CACHED_LINE_WIDTHS = 512;
 const singleCellLineWidths = new Map<string, number>();
@@ -313,6 +313,7 @@ export class AgentPanelModel {
 function glyph(row: AgentPanelRow, style: AgentPanelStyle, frame: number | undefined): string {
 	switch (row.state) {
 		case "running":
+			if (row.kind === "shell") return style.accent("⧗");
 			return frame === undefined ? style.accent("∀") : cachedWorkingGlyph(frame);
 		case "input":
 			return style.warning("◆");
@@ -367,9 +368,7 @@ function rightColumn(row: AgentPanelRow, width: number): string {
 /** The middle column: the task, or a workflow run's stage bar and `n/m stages`. */
 function taskColumn(row: AgentPanelRow, cleanTask: string, width: number): string {
 	if (row.kind === "workflow" && row.progress !== undefined && width >= 60) {
-		const counts = `${row.progress.done}/${row.progress.total} stages`;
-		const stage = cleanTask.startsWith("stage ") ? ` · ${cleanTask.slice(6)}` : "";
-		return `${panelProgressBar(row.progress.done, row.progress.total)}  ${counts}${stage}`;
+		return `${panelProgressBar(row.progress.done, row.progress.total)}  ${row.progress.done}/${row.progress.total} stages`;
 	}
 	return cleanTask;
 }
@@ -445,13 +444,19 @@ export function renderAgentPanelRows(
 				: fittedName.text;
 		const headWidth = fittedName.width < nameWidth ? nameWidth : fittedName.width;
 		const fixed = 6 + headWidth;
-		const rightPlain = queued === undefined ? right : right + queued;
-		const rightWidth = cellWidth(rightPlain);
+		let shownRight = right;
+		let shownQueued = queued;
+		if (fixed + cellWidth(queued === undefined ? right : right + queued) + 1 > width) {
+			shownQueued = undefined;
+			const word = right.split(" · ")[0] ?? "";
+			shownRight = fixed + cellWidth(word) + 1 <= width ? word : "";
+		}
+		const rightWidth = cellWidth(shownQueued === undefined ? shownRight : shownRight + shownQueued);
 		const taskRoom = Math.max(0, width - fixed - rightWidth - 2);
 		const fittedTask = taskRoom >= 4 && task.length > 0 ? fitToWidth(task, taskRoom) : { text: "", width: 0 };
 		const pad = Math.max(1, width - fixed - fittedTask.width - rightWidth);
 		const nameText = selected ? style.bold(style.text(head)) : paint(head);
-		const rightText = paint(right) + (queued === undefined ? "" : style.warning(queued));
+		const rightText = paint(shownRight) + (shownQueued === undefined ? "" : style.warning(shownQueued));
 		const full = `${cursor}${glyphText} ${nameText}  ${paint(fittedTask.text)}${" ".repeat(pad)}${rightText}`;
 		lines.push(clampLine(full, width));
 	};
@@ -503,7 +508,7 @@ export function agentPanelKeys(selected: AgentPanelRow | undefined): NavKey[] {
 		...(selected === undefined
 			? []
 			: [
-					{ action: "app.list.open", label: "open" },
+					{ action: "app.list.open", label: "to open" },
 					{ action: "app.list.stop", label: isFinishedPanelRow(selected) ? "dismiss" : "stop" },
 				]),
 		{ keys: "esc/←", label: "back to prompt" },

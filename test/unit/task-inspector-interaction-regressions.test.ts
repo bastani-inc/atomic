@@ -79,6 +79,7 @@ test("initial selection stays on the first arrived task before first paint and H
 		inspector.handleInput(WHEEL_UP);
 		assert.equal(inspector.navigation.selectedTaskId, secondId);
 		inspector.handleInput(SPACE);
+		inspector.handleInput(ENTER);
 		await flush();
 		assert.equal(inspector.navigation.focus.kind, "detail");
 
@@ -448,7 +449,9 @@ test("store events on the /tasks list page mark the board stale and call refresh
 
 		const frame = plain(inspector.renderViewport(100, 24));
 		assert.equal(refreshCalls, 1, "next paint refreshes the stale board once");
-		assert.match(frame, /bash step 19/);
+		assert.match(frame, /Task two/);
+		inspector.handleInput(SPACE);
+		assert.match(plain(inspector.renderViewport(100, 24)), /bash step 19/);
 		inspector.dispose();
 	} finally {
 		await fixture.dispose();

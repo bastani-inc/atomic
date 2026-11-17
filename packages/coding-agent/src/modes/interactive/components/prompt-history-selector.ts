@@ -119,6 +119,7 @@ export class PromptHistorySelectorComponent extends FramedSelector<string> {
 			maxVisible: 8,
 			emptyText: "No prompts yet",
 			confirmLabel: "use",
+			rightConfirms: false,
 			onSelect: (item) => options.onSelect(item.value),
 			onCancel: options.onCancel,
 		});

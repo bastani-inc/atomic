@@ -271,7 +271,10 @@ describe("ctrl+r in a subagent or stage chat behaves as in the main chat (#5224)
 		const sentAt = Date.now() - 4 * 60_000;
 		const subagent = openSubagentInspector({
 			running: true,
-			entries: [userSessionEntry("u1", "fix the picker", sentAt)],
+			entries: [
+				userSessionEntry("u1", "fix the picker", sentAt),
+				userSessionEntry("u2", "inspect the older prompt", sentAt - 60_000),
+			],
 			onInterrupt: () => {
 				interrupts++;
 			},
@@ -283,6 +286,8 @@ describe("ctrl+r in a subagent or stage chat behaves as in the main chat (#5224)
 			assert.match(subagent.screen(), /Search prompts/);
 			assert.doesNotMatch(subagent.screen(), /esc interrupt|← main chat/);
 			subagent.inspector.handleInput("\x1b[B");
+			await flush();
+			assert.match(subagent.screen(), /❯ inspect the older prompt/);
 			subagent.inspector.handleInput("?");
 			subagent.inspector.handleInput("\x1b[D");
 			await flush();

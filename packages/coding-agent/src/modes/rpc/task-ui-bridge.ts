@@ -115,7 +115,7 @@ export async function showTaskInspector(
 	);
 	if (options.board) {
 		inspector.setBoardSource(options.board);
-		// Back from a view a row opened, such as a run's graph, comes to /tasks again on that row.
+
 		const reopenOptions = { board: options.board };
 		inspector.setReopen((id) => {
 			void showTaskInspector(ui, store, id, reopenOptions).catch((error: unknown) => {
@@ -126,7 +126,6 @@ export async function showTaskInspector(
 		});
 	}
 	if (options.chat && taskId !== undefined) {
-		// The chat needs its environment, which the first mount below creates; open it once the mount exists.
 		pendingChat = taskId as TaskId;
 	} else inspector.open(taskId as TaskId | undefined);
 	const panelTarget = (options.board ? boardSessions.get(options.board) : undefined) ?? store;
@@ -156,7 +155,7 @@ export async function showTaskInspector(
 						const chat = pendingChat;
 						pendingChat = undefined;
 						inspector.openChat(chat, options.backLabel);
-						// A task that is gone opens nothing: close instead of showing the list.
+
 						if (!inspector.fullscreen) {
 							closed = true;
 							queueMicrotask(() => done());

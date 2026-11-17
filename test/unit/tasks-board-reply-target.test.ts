@@ -73,7 +73,7 @@ async function replyBoard(initialQuestion: string | null = "Deploy to staging?")
 	};
 }
 
-test("reply punctuation stays in the reply rather than opening list help (#5233)", async () => {
+test("reply punctuation stays in the reply rather than opening list help (#5224)", async () => {
 	const board = await replyBoard();
 	try {
 		board.paint();
@@ -87,7 +87,7 @@ test("reply punctuation stays in the reply rather than opening list help (#5233)
 });
 
 test.each([false, true])(
-	"a hidden reply leaves stop keys on the list and never sends them after the question returns, paced=%s (#5233)",
+	"a hidden reply leaves stop keys on the list and never sends them after the question returns, paced=%s (#5224)",
 	async (paced) => {
 		const board = await replyBoard();
 		try {
@@ -108,7 +108,7 @@ test.each([false, true])(
 	},
 );
 
-test("a hidden reply preserves its draft without appending list keys (#5233)", async () => {
+test("a hidden reply preserves its draft without appending list keys (#5224)", async () => {
 	const board = await replyBoard();
 	try {
 		board.paint();
@@ -128,7 +128,7 @@ test("a hidden reply preserves its draft without appending list keys (#5233)", a
 	}
 });
 
-test("a hidden reply lets Space close its card and x x stop the run (#5233)", async () => {
+test("a hidden reply lets Space close its card and x x stop the run (#5224)", async () => {
 	const board = await replyBoard();
 	try {
 		board.paint();
@@ -148,7 +148,7 @@ test("a hidden reply lets Space close its card and x x stop the run (#5233)", as
 });
 
 test.each(["before first paint", "between paints"])(
-	"typeahead cannot answer a question never painted %s (#5233)",
+	"typeahead cannot answer a question never painted %s (#5224)",
 	async (timing) => {
 		const board = await replyBoard(timing === "before first paint" ? "Delete the production database?" : null);
 		try {
@@ -167,7 +167,7 @@ test.each(["before first paint", "between paints"])(
 	},
 );
 
-test("clearing a draft releases its target while closing and restoring a nonempty draft preserves it (#5233)", async () => {
+test("clearing a draft releases its target while closing and restoring a nonempty draft preserves it (#5224)", async () => {
 	const board = await replyBoard();
 	try {
 		board.paint();
@@ -199,7 +199,7 @@ test("clearing a draft releases its target while closing and restoring a nonempt
 });
 
 test.each(["Delete the production database?", "Deploy to staging?"])(
-	"an empty reply starts against the newly painted question %s (#5233)",
+	"an empty reply starts against the newly painted question %s (#5224)",
 	async (question) => {
 		const board = await replyBoard();
 		try {

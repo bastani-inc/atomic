@@ -93,6 +93,7 @@ test("Enter on a /tasks row opens its chat, Space opens its detail, and ← unwi
 		h.inspector.handleInput(LEFT);
 		assert.match(h.text(), /^ Tasks\b/m, "← from a chat opened from the list returns to the list");
 		h.inspector.handleInput(SPACE);
+		h.inspector.handleInput(ENTER);
 		await flush();
 		assert.match(h.text(), /› Inspect transcript/, "Space peeks at the task's detail page");
 		h.inspector.handleInput(ENTER);
@@ -134,8 +135,9 @@ test("every /tasks hint names exactly its live keys, ← included (#5224)", asyn
 	try {
 		await withTranscript(h, "Hinted");
 		const last = () => h.text().split("\n").at(-1);
-		assert.equal(last(), "  ↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← back · ? keys");
+		assert.equal(last(), "  ↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← close · ? keys");
 		h.inspector.handleInput(SPACE);
+		h.inspector.handleInput(ENTER);
 		await flush();
 		assert.equal(last(), "  ↑↓ actions · enter/→ select · x stop · pgup/pgdn scroll · esc/← back to list · ? keys");
 		h.inspector.handleInput(ESC);
@@ -197,6 +199,7 @@ test("shell input: Esc keeps it and its text, ← on empty input returns to the 
 	}));
 	try {
 		h.inspector.handleInput(SPACE);
+		h.inspector.handleInput(ENTER);
 		await flush();
 		h.inspector.handleInput("\x1b[B");
 		h.inspector.handleInput("\x1b[B");
@@ -211,6 +214,7 @@ test("shell input: Esc keeps it and its text, ← on empty input returns to the 
 		h.inspector.handleInput(LEFT);
 		assert.match(h.text(), /^ Tasks\b/m, "← on an empty input returns to the list");
 		h.inspector.handleInput(SPACE);
+		h.inspector.handleInput(ENTER);
 		await flush();
 		h.inspector.handleInput("\x1b[B");
 		h.inspector.handleInput("\x1b[B");
@@ -222,6 +226,7 @@ test("shell input: Esc keeps it and its text, ← on empty input returns to the 
 		h.inspector.handleInput(LEFT);
 		assert.match(h.text(), /^ Tasks\b/m, "← at the start of a draft leaves, as in a chat");
 		h.inspector.handleInput(SPACE);
+		h.inspector.handleInput(ENTER);
 		await flush();
 		h.inspector.handleInput("\x1b[B");
 		h.inspector.handleInput("\x1b[B");
@@ -313,7 +318,7 @@ test("x x stops a subagent resumably: its chat says 'Stopped · send to resume' 
 	}
 });
 
-test("a chat opened from the agent panel goes back there with ← or ↓, and its hint names it (#5224)", async () => {
+test("an attached chat goes back only with ← while ↓ stays local to its own tasks (#5224)", async () => {
 	for (const key of [LEFT, "\x1b[B"]) {
 		const h = await harness();
 		try {
@@ -321,10 +326,10 @@ test("a chat opened from the agent panel goes back there with ← or ↓, and it
 			const id = h.fixture.store.tasks[0]!.ref.taskId;
 			h.inspector.openChat(id, "agents");
 			await flush();
-			assert.equal(h.text().split("\n").at(-1), "  ← agents · ↓ agents · pgup/pgdn scroll · ctrl+o expand · ? keys");
+			assert.equal(h.text().split("\n").at(-1), "  ← agents · pgup/pgdn scroll · ctrl+o expand · ? keys");
 			h.inspector.handleInput(key);
-			assert.equal(h.closed(), 1, `${JSON.stringify(key)} goes back to the panel`);
-			assert.equal(h.inspector.closedByBack, true);
+			assert.equal(h.closed(), key === LEFT ? 1 : 0);
+			assert.equal(h.inspector.closedByBack, key === LEFT);
 		} finally {
 			await h.dispose();
 		}

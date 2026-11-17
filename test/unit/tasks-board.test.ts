@@ -146,7 +146,7 @@ test("/tasks groups subagents, shells and workflow runs as Needs input, Working 
 		assert.match(text, /✗ review-pr +stage verify · gate failed: 2 jobs +failed · 4m 0s/);
 		assert.match(
 			lines.at(-1) ?? "",
-			/^ {2}↑↓ select · space peek · enter\/→ open · x stop · \/ filter · esc\/← back · \? keys$/,
+			/^ {2}↑↓ select · space peek · enter\/→ open · x stop · \/ filter · esc\/← close · \? keys$/,
 		);
 	} finally {
 		await h.dispose();

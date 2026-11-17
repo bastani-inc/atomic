@@ -380,7 +380,9 @@ export class FooterComponent implements Component {
 			if (isDebugEnabled()) {
 				statusText += `${statusText ? " " : ""}${this.renderStyle.warning("debug")}`;
 			}
-			const hintItems = (this.hintSegments?.() ?? []).map((segment) => this.renderStyle.muted(segment));
+			const hintItems = (this.navigationActive() ? [] : (this.hintSegments?.() ?? [])).map((segment) =>
+				this.renderStyle.muted(segment),
+			);
 			const hintSeparator = this.renderStyle.dim(" · ");
 			const hints = hintItems.length > 0 ? `${statusText ? hintSeparator : ""}${hintItems.join(hintSeparator)}` : "";
 			if (statusText && hints) {

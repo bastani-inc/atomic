@@ -14,6 +14,8 @@ function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionI
 		id: overrides.id,
 		cwd: overrides.cwd ?? "/work/project",
 		name: overrides.name,
+		...(overrides.hasName !== undefined ? { hasName: overrides.hasName } : {}),
+		...(overrides.parentSessionPath !== undefined ? { parentSessionPath: overrides.parentSessionPath } : {}),
 		created: overrides.created ?? new Date(Date.now() - 3 * HOUR),
 		modified: overrides.modified ?? new Date(Date.now() - 2 * HOUR),
 		messageCount: overrides.messageCount ?? 4,
@@ -23,6 +25,8 @@ function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionI
 		...(overrides.title !== undefined ? { title: overrides.title } : {}),
 		...(overrides.detail !== undefined ? { detail: overrides.detail } : {}),
 		...(overrides.messageColor !== undefined ? { messageColor: overrides.messageColor } : {}),
+		...(overrides.resumeKind !== undefined ? { resumeKind: overrides.resumeKind } : {}),
+		...(overrides.canDelete !== undefined ? { canDelete: overrides.canDelete } : {}),
 	};
 }
 
@@ -34,17 +38,23 @@ function mount(
 	sessions: SessionInfo[],
 	options: {
 		rename?: boolean;
-		variant?: "sessions" | "runs";
+		variant?: "sessions" | "runs" | "mixed";
 		title?: string;
 		canDelete?: boolean;
+		keybindings?: KeybindingsManager;
+		deleteSession?: (id: string) => Promise<void>;
+		deleteWorkflow?: (runId: string) => Promise<void>;
+		currentSession?: { id: string; directory: string };
+		loader?: () => Promise<SessionInfo[]>;
 		onCancel?: () => void;
 		onSelect?: (session: SessionInfo) => void;
 	} = {},
 ): SessionSelectorComponent {
-	const keybindings = new KeybindingsManager();
+	const keybindings = options.keybindings ?? new KeybindingsManager();
+	const load = options.loader ?? (async () => sessions);
 	return new SessionSelectorComponent(
-		async () => sessions,
-		async () => sessions,
+		load,
+		load,
 		options.onSelect ?? (() => {}),
 		options.onCancel ?? (() => {}),
 		() => {},
@@ -53,10 +63,13 @@ function mount(
 			keybindings,
 			initialSessions: sessions,
 			...(options.rename ? { renameSession: async () => {} } : {}),
+			...(options.deleteSession ? { deleteSession: options.deleteSession } : {}),
+			...(options.deleteWorkflow ? { deleteWorkflow: options.deleteWorkflow } : {}),
 			...(options.variant ? { variant: options.variant } : {}),
 			...(options.title ? { title: options.title } : {}),
 			...(options.canDelete !== undefined ? { canDelete: options.canDelete } : {}),
 		},
+		options.currentSession,
 	);
 }
 
@@ -136,6 +149,13 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		const hint = frame(mount([makeSession({ id: "a" }), makeSession({ id: "b" })], { canDelete: false })).at(-2)!;
 		assert.ok(!hint.includes("rename"), hint);
 		assert.ok(!hint.includes("delete"), hint);
+		for (const variant of ["sessions", "runs"] as const) {
+			const rowNonDeletable = mount([makeSession({ id: "a", canDelete: false })], { variant });
+			assert.ok(!frame(rowNonDeletable).at(-2)!.includes("delete"));
+			rowNonDeletable.handleInput("\x04");
+			assert.ok(!frame(rowNonDeletable).some((line) => line.includes("Delete this")));
+			rowNonDeletable.dispose();
+		}
 	});
 
 	it("drops scope, name-filter and path keys from a workflow-run picker", () => {
@@ -227,9 +247,19 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 			selector.dispose();
 		}
 
-		// Ordinary sessions keep path identity when IDs repeat across project folders
-		const firstFolder = makeSession({ id: "shared-id", cwd: "/work/a", path: "/work/a/shared-id.jsonl" });
-		const secondFolder = makeSession({ id: "shared-id", cwd: "/work/b", path: "/work/b/shared-id.jsonl" });
+		const sharedModified = new Date(Date.now() - 2 * HOUR);
+		const firstFolder = makeSession({
+			id: "shared-id",
+			cwd: "/work/a",
+			path: "/work/a/shared-id.jsonl",
+			modified: sharedModified,
+		});
+		const secondFolder = makeSession({
+			id: "shared-id",
+			cwd: "/work/b",
+			path: "/work/b/shared-id.jsonl",
+			modified: sharedModified,
+		});
 		const resumedPaths: string[] = [];
 		let releaseSession!: () => void;
 		const sessionDeletion = new Promise<void>((resolve) => {
@@ -333,4 +363,405 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 				assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}`);
 		});
 	}
+
+	it("mixed picker titles Resume, groups Sessions first then Workflow runs with counts, sorts each group newest-first, and crosses groups with arrows (#5256)", () => {
+		const now = Date.now();
+		const olderSession = makeSession({
+			id: "s-old",
+			path: "/tmp/s-old.jsonl",
+			firstMessage: "older session prompt",
+			modified: new Date(now - 3 * HOUR),
+		});
+		const newerSession = makeSession({
+			id: "s-new",
+			path: "/tmp/s-new.jsonl",
+			parentSessionPath: "/tmp/s-old.jsonl",
+			firstMessage: "newer session prompt",
+			modified: new Date(now - HOUR),
+		});
+		const olderWorkflow = makeSession({
+			id: "wf-old",
+			path: "workflow-durable:wf-old",
+			resumeKind: "workflow",
+			title: "goal · older workflow",
+			detail: "paused · stage 1/3 · 4h ago",
+			modified: new Date(now - 4 * HOUR),
+			messageCount: 0,
+		});
+		const newerWorkflow = makeSession({
+			id: "wf-new",
+			path: "workflow-durable:wf-new",
+			resumeKind: "workflow",
+			title: "ralph · newer workflow",
+			detail: "paused · stage 2/5 · 30m ago",
+			modified: new Date(now - 30 * 60_000),
+			messageCount: 0,
+		});
+		const chosen: string[] = [];
+		const selector = mount([olderWorkflow, olderSession, newerWorkflow, newerSession], {
+			variant: "mixed",
+			onSelect: (row) => chosen.push(row.id),
+		});
+		const lines = frame(selector, 160);
+		assert.ok(
+			lines.some((line) => line.trim() === "Resume"),
+			lines.join("\n"),
+		);
+		const sessionsGroupIndex = lines.findIndex((line) => line.trim() === "Sessions (2)");
+		const newSessionIndex = lines.findIndex((line) => line.includes("newer session prompt"));
+		const oldSessionIndex = lines.findIndex((line) => line.includes("older session prompt"));
+		const workflowsGroupIndex = lines.findIndex((line) => line.trim() === "Workflow runs (2)");
+		const newWorkflowIndex = lines.findIndex((line) => line.includes("ralph · newer workflow"));
+		const oldWorkflowIndex = lines.findIndex((line) => line.includes("goal · older workflow"));
+		assert.ok(sessionsGroupIndex >= 0, lines.join("\n"));
+		assert.ok(sessionsGroupIndex < newSessionIndex && newSessionIndex < oldSessionIndex, lines.join("\n"));
+		assert.ok(oldSessionIndex < workflowsGroupIndex && workflowsGroupIndex < newWorkflowIndex, lines.join("\n"));
+		assert.ok(newWorkflowIndex < oldWorkflowIndex, lines.join("\n"));
+		assert.ok(
+			!lines[newSessionIndex]!.includes("└─") && !lines[newSessionIndex]!.includes("├─"),
+			lines[newSessionIndex],
+		);
+
+		// Arrows cross directly from the last session to the first workflow run and back, never landing on a group header
+		selector.handleInput("\x1b[B");
+		assert.equal(selector.getSessionList().getSelectedSessionId(), "s-old");
+		selector.handleInput("\x1b[B");
+		assert.equal(selector.getSessionList().getSelectedSessionId(), "wf-new");
+		selector.handleInput("\x1b[A");
+		assert.equal(selector.getSessionList().getSelectedSessionId(), "s-old");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\r");
+		assert.deepEqual(chosen, ["wf-new"]);
+		selector.dispose();
+
+		// Omitted Workflow runs group when no workflow rows exist; Sessions (0) shown when only workflow rows exist
+		const sessionsOnly = frame(mount([newerSession], { variant: "mixed" }), 160);
+		assert.ok(
+			sessionsOnly.some((line) => line.trim() === "Sessions (1)"),
+			sessionsOnly.join("\n"),
+		);
+		assert.ok(!sessionsOnly.some((line) => line.includes("Workflow runs")), sessionsOnly.join("\n"));
+
+		const workflowsOnly = frame(mount([newerWorkflow], { variant: "mixed" }), 160);
+		const zeroSessionsIndex = workflowsOnly.findIndex((line) => line.trim() === "Sessions (0)");
+		const oneWorkflowIndex = workflowsOnly.findIndex((line) => line.trim() === "Workflow runs (1)");
+		assert.ok(zeroSessionsIndex >= 0 && zeroSessionsIndex < oneWorkflowIndex, workflowsOnly.join("\n"));
+	});
+
+	it("mixed search filters both groups newest-first, and named filter keeps workflow rows (#5256)", () => {
+		const now = Date.now();
+		const s1 = makeSession({
+			id: "s1",
+			name: "alpha",
+			hasName: true,
+			firstMessage: "deploy pipeline alpha",
+			allMessagesText: "deploy pipeline alpha",
+			modified: new Date(now - 2 * HOUR),
+		});
+		const s2 = makeSession({
+			id: "s2",
+			firstMessage: "deploy pipeline beta",
+			allMessagesText: "deploy pipeline beta",
+			modified: new Date(now - HOUR),
+		});
+		const wf1 = makeSession({
+			id: "wf1",
+			path: "workflow-durable:wf1",
+			resumeKind: "workflow",
+			title: "deploy · release check",
+			detail: "paused · stage 1/2",
+			modified: new Date(now - 30 * 60_000),
+		});
+		const selector = mount([s1, s2, wf1], { variant: "mixed" });
+		for (const ch of "deploy") selector.handleInput(ch);
+		const searched = frame(selector, 160);
+		const s2At = searched.findIndex((line) => line.includes("deploy pipeline beta"));
+		const s1At = searched.findIndex((line) => line.includes("alpha"));
+		const wfAt = searched.findIndex((line) => line.includes("deploy · release check"));
+		assert.ok(s2At >= 0 && s2At < s1At && s1At < wfAt, searched.join("\n"));
+
+		selector.handleInput("\x1b");
+		// Ctrl+N toggles named filter on session rows without dropping workflow runs
+		selector.handleInput("\x0e");
+		const namedLines = frame(selector, 160);
+		assert.ok(
+			namedLines.some((line) => line.trim() === "Sessions (1)"),
+			namedLines.join("\n"),
+		);
+		assert.ok(
+			namedLines.some((line) => line.trim() === "Workflow runs (1)"),
+			namedLines.join("\n"),
+		);
+		assert.ok(!namedLines.some((line) => line.includes("deploy pipeline beta")), namedLines.join("\n"));
+		selector.dispose();
+	});
+
+	it("mixed hints order core keys then live extras at 160 cols, collapse to core + ? keys at 80 cols, and open the ? help overlay (#5256)", () => {
+		const sessionRow = makeSession({ id: "s1", path: "/work/project/s1.jsonl" });
+		const activeWorkflow = makeSession({
+			id: "s1",
+			path: "workflow-live:s1",
+			cwd: "Live",
+			resumeKind: "workflow",
+			canDelete: false,
+			title: "demo · active workflow",
+			detail: "paused · stage 1/2",
+		});
+		const inactiveWorkflow = makeSession({
+			id: "wf-del",
+			path: "workflow-durable:wf-del",
+			cwd: "Durable",
+			resumeKind: "workflow",
+			canDelete: true,
+			title: "demo · durable workflow",
+			detail: "failed · stage 2/2",
+		});
+		let cancelled = 0;
+		const remapped = new KeybindingsManager({ "app.session.rename": "ctrl+e" });
+		const selector = mount([sessionRow, activeWorkflow, inactiveWorkflow], {
+			variant: "mixed",
+			rename: true,
+			keybindings: remapped,
+			onCancel: () => cancelled++,
+		});
+
+		const wideHint = frame(selector, 160).at(-2)!.trim();
+		assert.equal(
+			wideHint,
+			"space preview · enter resume · type to search · esc cancel · tab scope · ctrl+e rename · ctrl+d delete · ctrl+s sort · ctrl+n named · ctrl+p path · ? keys",
+		);
+		const col80Hint = frame(selector, 80).at(-2)!.trim();
+		assert.equal(col80Hint, "space preview · enter resume · type to search · esc cancel · ? keys");
+
+		// Selecting the non-deletable workflow row hides session-only extras and delete
+		selector.handleInput("\x1b[B");
+		const activeWfHint = frame(selector, 160).at(-2)!.trim();
+		assert.ok(!activeWfHint.includes("rename"), activeWfHint);
+		assert.ok(!activeWfHint.includes("delete"), activeWfHint);
+		assert.ok(!activeWfHint.includes("tab scope"), activeWfHint);
+		assert.ok(!activeWfHint.includes("named"), activeWfHint);
+		assert.ok(!activeWfHint.includes("path"), activeWfHint);
+		assert.ok(activeWfHint.includes("ctrl+s sort"), activeWfHint);
+		assert.ok(activeWfHint.includes("? keys"), activeWfHint);
+
+		// Workflow preview shows run id and omits synthetic path/cwd
+		selector.handleInput(" ");
+		const wfPreview = frame(selector, 160).join("\n");
+		assert.ok(wfPreview.includes("s1"), wfPreview);
+		assert.ok(!wfPreview.includes("workflow-live:s1"), wfPreview);
+		assert.ok(!wfPreview.includes("Live"), wfPreview);
+		selector.handleInput(" ");
+
+		// Selecting the deletable workflow row offers ctrl+d delete
+		selector.handleInput("\x1b[B");
+		const durableWfHint = frame(selector, 160).at(-2)!.trim();
+		assert.ok(durableWfHint.includes("ctrl+d delete"), durableWfHint);
+		assert.ok(!durableWfHint.includes("rename"), durableWfHint);
+
+		// ? opens the key overlay; Esc closes only the overlay without cancelling the picker
+		selector.handleInput("\x1b[A");
+		selector.handleInput("\x1b[A");
+		selector.handleInput("?");
+		const helpLines = frame(selector, 80);
+		assert.ok(
+			helpLines.some((line) => line.includes("keys · resume")),
+			helpLines.join("\n"),
+		);
+		assert.ok(
+			helpLines.some((line) => line.includes("ctrl+e") && line.includes("rename")),
+			helpLines.join("\n"),
+		);
+		assert.ok(
+			helpLines.some((line) => line.includes("close this help")),
+			helpLines.join("\n"),
+		);
+		selector.handleInput("\x1b");
+		assert.equal(cancelled, 0);
+		assert.ok(!frame(selector, 80).some((line) => line.includes("close this help")));
+
+		// Narrow widths never overflow in list or help mode
+		for (const helpOpen of [false, true]) {
+			if (helpOpen) selector.handleInput("?");
+			for (const width of [1, 2, 8, 10, 20, 40, 80, 160]) {
+				for (const line of selector.render(width)) {
+					assert.ok(visibleWidth(line) <= width, `${width}: ${JSON.stringify(line)}`);
+				}
+			}
+			if (helpOpen) selector.handleInput("\x1b");
+		}
+		selector.dispose();
+	});
+
+	it("mixed picker types ? into non-empty regex, token, and quoted-phrase queries without opening help or advertising dead ? keys (#5256)", () => {
+		const now = Date.now();
+		const usSession = makeSession({
+			id: "s-color",
+			path: "/work/project/s-color.jsonl",
+			firstMessage: "fix color tone",
+			allMessagesText: "fix color tone",
+			modified: new Date(now - HOUR),
+		});
+		const questionSession = makeSession({
+			id: "s-question",
+			path: "/work/project/s-question.jsonl",
+			firstMessage: "ship why now? check",
+			allMessagesText: "ship why now? check in a?b mode",
+			modified: new Date(now - 2 * HOUR),
+		});
+		const plainSession = makeSession({
+			id: "s-plain",
+			path: "/work/project/s-plain.jsonl",
+			firstMessage: "ship why now check",
+			allMessagesText: "ship why now check",
+			modified: new Date(now - 3 * HOUR),
+		});
+		const ukWorkflow = makeSession({
+			id: "wf-colour",
+			path: "workflow-durable:wf-colour",
+			resumeKind: "workflow",
+			title: "audit · colour tokens",
+			detail: "paused · stage 1/2",
+			modified: new Date(now - 30 * 60_000),
+		});
+		let cancelled = 0;
+		const selectedIds: string[] = [];
+		const selector = mount([usSession, questionSession, plainSession, ukWorkflow], {
+			variant: "mixed",
+			onCancel: () => cancelled++,
+			onSelect: (row) => selectedIds.push(row.id),
+		});
+
+		selector.handleInput("\x1b[B");
+		assert.equal(selector.getSessionList().getSelectedSessionId(), "s-question");
+
+		selector.handleInput("?");
+		assert.ok(frame(selector, 80).some((line) => line.includes("keys · resume")));
+		selector.handleInput("\x1b");
+		assert.equal(cancelled, 0);
+		assert.ok(!frame(selector, 80).some((line) => line.includes("keys · resume")));
+		assert.equal(selector.getSessionList().getSelectedSessionId(), "s-question");
+
+		for (const ch of "re:colou?r") selector.handleInput(ch);
+		const regexLines = frame(selector, 160);
+		assert.ok(
+			regexLines.some((line) => line.includes("⌕ re:colou?r")),
+			regexLines.join("\n"),
+		);
+		assert.ok(!regexLines.some((line) => line.includes("keys · resume")), regexLines.join("\n"));
+		assert.ok(
+			regexLines.some((line) => line.includes("fix color tone")),
+			regexLines.join("\n"),
+		);
+		assert.ok(
+			regexLines.some((line) => line.includes("audit · colour tokens")),
+			regexLines.join("\n"),
+		);
+		assert.ok(!regexLines.some((line) => line.includes("ship why now")), regexLines.join("\n"));
+		assert.ok(!regexLines.at(-2)!.includes("? keys"), regexLines.at(-2));
+		assert.ok(!frame(selector, 80).at(-2)!.includes("? keys"), frame(selector, 80).at(-2));
+
+		selector.handleInput("\x1b");
+		assert.equal(selector.getSessionList().getSelectedSessionId(), "s-color");
+		assert.ok(frame(selector, 160).at(-2)!.includes("? keys"));
+		assert.ok(frame(selector, 80).at(-2)!.includes("? keys"));
+
+		for (const ch of "a?b") selector.handleInput(ch);
+		const tokenLines = frame(selector, 160);
+		assert.ok(
+			tokenLines.some((line) => line.includes("⌕ a?b")),
+			tokenLines.join("\n"),
+		);
+		assert.ok(!tokenLines.some((line) => line.includes("keys · resume")), tokenLines.join("\n"));
+		assert.ok(!tokenLines.at(-2)!.includes("? keys"), tokenLines.at(-2));
+		assert.ok(!frame(selector, 80).at(-2)!.includes("? keys"), frame(selector, 80).at(-2));
+		for (let i = 0; i < 3; i++) selector.handleInput("\x7f");
+		const restoredLines = frame(selector, 160);
+		assert.ok(
+			restoredLines.some((line) => line.includes("Search…")),
+			restoredLines.join("\n"),
+		);
+		assert.equal(selector.getSessionList().getSelectedSessionId(), "s-question");
+		assert.ok(restoredLines.at(-2)!.includes("? keys"), restoredLines.at(-2));
+
+		for (const ch of '"why now?"') selector.handleInput(ch);
+		const phraseLines = frame(selector, 160);
+		assert.ok(
+			phraseLines.some((line) => line.includes('⌕ "why now?"')),
+			phraseLines.join("\n"),
+		);
+		assert.ok(!phraseLines.some((line) => line.includes("keys · resume")), phraseLines.join("\n"));
+		assert.ok(
+			phraseLines.some((line) => line.includes("ship why now? check")),
+			phraseLines.join("\n"),
+		);
+		assert.ok(!phraseLines.some((line) => line.includes("ship why now check")), phraseLines.join("\n"));
+		assert.ok(!phraseLines.at(-2)!.includes("? keys"), phraseLines.at(-2));
+		selector.handleInput("\r");
+		assert.deepEqual(selectedIds, ["s-question"]);
+		selector.dispose();
+	});
+
+	it("mixed workflow deletion routes to deleteWorkflow, isolates pending/deleted ids from sessions, and refreshSessions preserves state (#5256)", async () => {
+		let rows: SessionInfo[] = [
+			makeSession({ id: "shared-id", path: "/work/project/shared-id.jsonl", firstMessage: "session row" }),
+			makeSession({
+				id: "shared-id",
+				path: "workflow-durable:shared-id",
+				resumeKind: "workflow",
+				canDelete: true,
+				title: "ralph · workflow row",
+				detail: "paused · stage 1/2",
+			}),
+		];
+		const deletedWorkflows: string[] = [];
+		const deletedSessions: string[] = [];
+		const resumed: string[] = [];
+		let releaseWfDelete!: () => void;
+		const wfDeletion = new Promise<void>((resolve) => {
+			releaseWfDelete = resolve;
+		});
+		const selector = mount(rows, {
+			variant: "mixed",
+			currentSession: { id: "shared-id", directory: "/work/project" },
+			loader: async () => rows,
+			deleteSession: async (id) => {
+				deletedSessions.push(id);
+			},
+			deleteWorkflow: async (runId) => {
+				deletedWorkflows.push(runId);
+				await wfDeletion;
+			},
+			onSelect: (row) => resumed.push(`${row.resumeKind ?? "session"}:${row.id}`),
+		});
+
+		// Move to workflow row with the same ID as currentSession; it must NOT be treated as the active session
+		selector.handleInput("\x1b[B");
+		assert.ok(frame(selector, 160).at(-2)!.includes("ctrl+d delete"));
+		selector.handleInput("\x04");
+		assert.ok(
+			frame(selector, 160).some((line) => line.includes("Delete this workflow run?")),
+			frame(selector, 160).join("\n"),
+		);
+		selector.handleInput("\r");
+		assert.deepEqual(deletedWorkflows, ["shared-id"]);
+		assert.deepEqual(deletedSessions, []);
+
+		// While workflow deletion is pending, the session row with the same id is not marked Deleting… and can still be resumed
+		selector.handleInput("\x1b[A");
+		selector.handleInput("\r");
+		assert.deepEqual(resumed, ["session:shared-id"]);
+
+		// Complete workflow deletion; a subsequent refreshSessions() keeps the deleted workflow filtered out while preserving the session row with the same id
+		releaseWfDelete();
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		rows = [rows[0]!, { ...rows[1]!, path: "workflow-completed:shared-id", detail: "completed · 1m ago" }];
+		await selector.refreshSessions();
+		const afterRefresh = frame(selector, 160);
+		assert.ok(
+			afterRefresh.some((line) => line.includes("session row")),
+			afterRefresh.join("\n"),
+		);
+		assert.ok(!afterRefresh.some((line) => line.includes("ralph · workflow row")), afterRefresh.join("\n"));
+		selector.dispose();
+	});
 });

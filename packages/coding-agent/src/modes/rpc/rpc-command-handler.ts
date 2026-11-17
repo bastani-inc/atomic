@@ -13,6 +13,11 @@ import { settingsWriteOwner } from "../../core/settings-write-ownership.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
 import { sourceError } from "../../core/tasks/agent-panel-source.ts";
 import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
+import {
+	deleteWorkflowFromPicker,
+	listWorkflowResumeEntries,
+	resumeWorkflowFromPicker,
+} from "../../core/workflow-resume.ts";
 import { STOP_ALL_STATUS_KEY } from "../interactive/interactive-stop-all.ts";
 import { showAgentPanel } from "./agent-panel-bridge.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
@@ -269,6 +274,32 @@ export function createRpcCommandHandler({
 				});
 			case "get_workflow_run_summary":
 				return createRpcSuccessResponse(id, command.type, await session.workflows.getRun(command.runId));
+			case "get_workflow_resume_entries": {
+				try {
+					return createRpcSuccessResponse(id, command.type, {
+						entries: await listWorkflowResumeEntries(session, command.target),
+					});
+				} catch (error: unknown) {
+					return createRpcErrorResponse(id, command.type, formatRpcErrorMessage(error), error);
+				}
+			}
+			case "resume_workflow_from_picker": {
+				try {
+					return createRpcSuccessResponse(id, command.type, {
+						handled: await resumeWorkflowFromPicker(session, command.target),
+					});
+				} catch (error: unknown) {
+					return createRpcErrorResponse(id, command.type, formatRpcErrorMessage(error), error);
+				}
+			}
+			case "delete_workflow_from_picker": {
+				try {
+					await deleteWorkflowFromPicker(session, command.runId);
+					return createRpcSuccessResponse(id, command.type);
+				} catch (error: unknown) {
+					return createRpcErrorResponse(id, command.type, formatRpcErrorMessage(error), error);
+				}
+			}
 
 			case "get_state": {
 				const extensionResult = session.resourceLoader.getExtensions();

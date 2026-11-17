@@ -141,6 +141,18 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 		assert.deepEqual(chosen, ["fix the login bug\nand the redirect"]);
 	});
 
+	it("requires the advertised confirm key before choosing a prompt (#5347)", () => {
+		const chosen: string[] = [];
+		const selector = new PromptHistorySelectorComponent([{ text: "inspect the menu" }], {
+			onSelect: (text) => chosen.push(text),
+			onCancel: () => {},
+		});
+		selector.handleInput("\x1b[C");
+		assert.deepEqual(chosen, []);
+		selector.handleInput("\r");
+		assert.deepEqual(chosen, ["inspect the menu"]);
+	});
+
 	it("says there are no prompts yet when there are none", () => {
 		const selector = new PromptHistorySelectorComponent([], { onSelect: () => {}, onCancel: () => {} });
 		assert.ok(lines(selector, 80).some((line) => line.trim() === "No prompts yet"));

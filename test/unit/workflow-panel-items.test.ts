@@ -78,7 +78,7 @@ test("run states map to panel states: running, paused for blocked and quit, done
 	assert.deepEqual(state, {
 		live: "running",
 		blocked: "paused",
-		quit: "paused",
+		quit: "stopped",
 		done: "done",
 		failed: "failed",
 		cancelled: "stopped",

@@ -3,6 +3,7 @@ import { test } from "vitest";
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import type { InteractiveEngineGenerationEnded } from "../../packages/coding-agent/src/modes/interactive-engine/engine-generation.ts";
 import { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
+import type { InteractiveEngineMessage } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import type { RpcEvent, RpcResourceExtension } from "../../packages/coding-agent/src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.ts";
 
@@ -20,10 +21,17 @@ function servicesFor(harness: Harness) {
 function createClearQueueClient() {
 	let generation = 1;
 	let eventListener: ((event: RpcEvent) => void) | undefined;
+	let engineMessageListener: ((message: InteractiveEngineMessage) => void) | undefined;
 	let generationEndedListener: ((event: InteractiveEngineGenerationEnded) => void) | undefined;
 	let resourceExtensions: RpcResourceExtension[] = [];
 	const clearRequests: PromiseWithResolvers<void>[] = [];
 	const client = {
+		onInteractiveEngineMessage(listener: (message: InteractiveEngineMessage) => void) {
+			engineMessageListener = listener;
+			return () => {
+				if (engineMessageListener === listener) engineMessageListener = undefined;
+			};
+		},
 		onEvent(listener: (event: RpcEvent) => void) {
 			eventListener = listener;
 			return () => {
@@ -53,6 +61,9 @@ function createClearQueueClient() {
 	};
 	return {
 		client,
+		emitEngineMessage(message: InteractiveEngineMessage): void {
+			engineMessageListener?.(message);
+		},
 		emit(event: RpcEvent): void {
 			eventListener?.(event);
 		},
@@ -96,6 +107,30 @@ async function settleRejectedClear(): Promise<void> {
 	await Promise.resolve();
 	await Promise.resolve();
 }
+
+test("panel counts mirror engine updates and clear on session reset or current generation exit (#5224)", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createClearQueueClient();
+		const runtime = await createRuntime(harness, probe.client);
+		assert.deepEqual(runtime.agentPanelCounts, { total: 0, needsInput: 0 });
+		probe.emitEngineMessage({ type: "engine_agent_panel_state", total: 17, needsInput: 2 });
+		assert.deepEqual(runtime.agentPanelCounts, { total: 17, needsInput: 2 });
+		probe.emitEngineMessage({ type: "engine_extension_ui_reset" });
+		assert.deepEqual(runtime.agentPanelCounts, { total: 0, needsInput: 0 });
+		probe.emitEngineMessage({ type: "engine_agent_panel_state", total: 3, needsInput: 1 });
+		probe.emitGenerationEnded({
+			generation: 1,
+			error: new Error("engine stopped"),
+			kind: "explicit-stop",
+			expected: true,
+		});
+		assert.deepEqual(runtime.agentPanelCounts, { total: 0, needsInput: 0 });
+		await runtime.dispose();
+	} finally {
+		await harness.cleanup();
+	}
+});
 
 test("ending the current generation clears its cached resource extensions", async () => {
 	const harness = await createHarness();

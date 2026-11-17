@@ -17,6 +17,7 @@ const CONCURRENT_COMMANDS: ReadonlySet<string> = new Set([
 	"user_bash",
 	"refresh_models",
 	"start_pending_recovery",
+	"stop_all_background",
 ]);
 
 export function isRpcInterruptCommand(type: string): boolean {
