@@ -30,7 +30,7 @@ import {
 import { ownedSessionManagerStores } from "./core/session-lifecycle-work.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
-import { assertSessionNotOpenElsewhere } from "./core/session-open-markers.ts";
+import { assertSessionNotOpenElsewhere } from "./core/session-open-markers.js";
 import { resolveSessionStore, selectSessionStorage } from "./core/session-storage.js";
 import {
 	deleteSessionWithSnapshotRefs,

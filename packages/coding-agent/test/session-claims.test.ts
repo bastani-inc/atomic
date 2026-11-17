@@ -21,11 +21,11 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { exitedProcess } from "../../../test/helpers/exited-process.js";
-import { setNativeLocksForTesting, TAKEOVER_MUTEX_STALE_MS, takeTakeoverMutex } from "../src/core/lock-takeover.ts";
-import { processStartToken } from "../src/core/process-start-token.ts";
+import { setNativeLocksForTesting, TAKEOVER_MUTEX_STALE_MS, takeTakeoverMutex } from "../src/core/lock-takeover.js";
+import { processStartToken } from "../src/core/process-start-token.js";
 import { attachSessionClaim, claimSession, prepareSessionClaim } from "../src/core/session-claims.js";
 import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "../src/core/session-manager-errors.ts";
-import { holdSessionOpenMarker } from "../src/core/session-open-markers.ts";
+import { holdSessionOpenMarker } from "../src/core/session-open-markers.js";
 
 let agentDir: string;
 const releases: (() => void)[] = [];

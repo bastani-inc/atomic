@@ -10,12 +10,12 @@ import {
 	removeAside,
 	removeLeftoverHolderFiles,
 	takeTakeoverMutex,
-} from "./lock-takeover.ts";
+} from "./lock-takeover.js";
 
 export { HOLDER_TEMP_STALE_MS, lockHolderPath, prepareTakeoverMutex };
 
 import { lockHolder } from "./lock-wait.ts";
-import { processStartToken } from "./process-start-token.ts";
+import { processStartToken } from "./process-start-token.js";
 import { renameReplacing } from "./rename-retry.ts";
 
 /**

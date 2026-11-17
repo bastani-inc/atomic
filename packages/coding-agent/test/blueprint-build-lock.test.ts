@@ -15,7 +15,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { takeTakeoverMutex } from "../src/core/lock-takeover.ts";
+import { takeTakeoverMutex } from "../src/core/lock-takeover.js";
 import {
 	setNativeProcessCreationTimeForTesting,
 	setProcessCreationTimeQueryForTesting,

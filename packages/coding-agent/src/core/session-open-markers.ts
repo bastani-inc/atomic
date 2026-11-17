@@ -14,7 +14,7 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "../config.js";
 import { processStartToken, readProcessStartToken } from "./process-start-token.js";
-import { attachSessionClaim } from "./session-claims.ts";
+import { attachSessionClaim } from "./session-claims.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
 import type {
 	SessionOpenMarker,

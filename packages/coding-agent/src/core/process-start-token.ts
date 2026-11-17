@@ -1,4 +1,4 @@
-import { type ChildProcess, execFile } from "node:child_process";
+import { type ChildProcess, execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createModuleRequire } from "../utils/module-require.ts";
@@ -27,6 +27,31 @@ export async function readProcessStartToken(pid: number): Promise<string | undef
 	const native = nativeCreationTime();
 	if (native !== null) return windowsStartToken(nativeCreation(native, pid));
 	return windowsStartToken(await readFallbackCreation(pid));
+}
+
+export function processStartTokenForSynchronousTakeover(pid: number): string | undefined {
+	if (process.platform !== "win32") return procStartToken(pid);
+	const native = nativeCreationTime();
+	if (native !== null) return windowsStartToken(nativeCreation(native, pid));
+	const known = knownFallbackCreation(pid);
+	if (known !== undefined) return windowsStartToken(known.created);
+	let answer = UNREAD;
+	try {
+		const output = execFileSync(fallbackQuery.file, fallbackQuery.args(pid), {
+			cwd: process.env.SystemRoot || process.env.windir || "C:\\Windows",
+			encoding: "utf8",
+			windowsHide: true,
+			timeout: FALLBACK_TIMEOUT_MS,
+			killSignal: "SIGKILL",
+			maxBuffer: 1024,
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+		answer = { created: CREATION_TIME.test(output) ? output : undefined, unstartable: false };
+	} catch (error) {
+		answer = { created: undefined, unstartable: (error as NodeJS.ErrnoException).code === "ENOENT" };
+	}
+	rememberFallbackCreation(pid, answer);
+	return windowsStartToken(answer.created);
 }
 
 function procStartToken(pid: number): string | undefined {
@@ -129,18 +154,24 @@ function readFallbackCreation(pid: number): Promise<string | undefined> {
 	const pending = pendingReads.get(pid);
 	if (pending !== undefined) return pending;
 	const generation = fallbackGeneration;
-	const reading = queryCreationTime(pid).then(({ created, unstartable }) => {
+	const previous = fallbackReads.get(pid);
+	const reading = queryCreationTime(pid).then((answer) => {
 		if (generation !== fallbackGeneration) return undefined;
 		pendingReads.delete(pid);
-		fallbackBroken ||= unstartable;
-		const now = Date.now();
-		for (const [read, { at }] of fallbackReads) if (now - at >= FALLBACK_CACHE_MS) fallbackReads.delete(read);
-		fallbackReads.set(pid, { at: now, created });
-		if (pid === process.pid && created !== undefined) ownCreation = created;
-		return created;
+		if (fallbackReads.get(pid) !== previous) return knownFallbackCreation(pid)?.created;
+		rememberFallbackCreation(pid, answer);
+		return answer.created;
 	});
 	pendingReads.set(pid, reading);
 	return reading;
+}
+
+function rememberFallbackCreation(pid: number, { created, unstartable }: FallbackAnswer): void {
+	fallbackBroken ||= unstartable;
+	const now = Date.now();
+	for (const [read, { at }] of fallbackReads) if (now - at >= FALLBACK_CACHE_MS) fallbackReads.delete(read);
+	fallbackReads.set(pid, { at: now, created });
+	if (pid === process.pid && created !== undefined) ownCreation = created;
 }
 
 function queryCreationTime(pid: number): Promise<FallbackAnswer> {

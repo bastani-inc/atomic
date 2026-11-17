@@ -7,6 +7,7 @@ import { test } from "vitest";
 import { bunExecutable, spawnProcess } from "../../../test/helpers/runtime.js";
 
 const CONFIG_CHILD_TIMEOUT_MS = 60_000;
+const CONFIG_PROCESS_TIMEOUT_MS = 45_000;
 
 for (const closeKey of ["close", "exit"]) {
 	for (const queryMode of ["unanswered", ...(process.platform === "win32" ? ["powershell"] : [])]) {
@@ -23,7 +24,12 @@ for (const closeKey of ["close", "exit"]) {
 							closeKey,
 							queryMode,
 						],
-						{ env: { ...process.env, HOME: directory, USERPROFILE: directory }, stdout: "pipe", stderr: "pipe" },
+						{
+							env: { ...process.env, HOME: directory, USERPROFILE: directory },
+							stdout: "pipe",
+							stderr: "pipe",
+							timeout: CONFIG_PROCESS_TIMEOUT_MS,
+						},
 					);
 					const output = new Response(child.stdout).text();
 					const errors = new Response(child.stderr).text();

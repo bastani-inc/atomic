@@ -16,6 +16,7 @@ import {
 import { waitForLock } from "../src/core/lock-wait.js";
 import {
 	processStartToken,
+	processStartTokenForSynchronousTakeover,
 	readProcessStartToken,
 	setNativeProcessCreationTimeForTesting,
 	setProcessCreationTimeQueryForTesting,
@@ -73,6 +74,21 @@ async function reusedPidMutex(lockPath: string): Promise<number> {
 	);
 	return child.pid!;
 }
+
+test("an older background answer cannot replace a synchronous takeover's newer start read (#5315)", async () => {
+	let queries = 0;
+	setProcessCreationTimeQueryForTesting({
+		file: process.execPath,
+		args: () => ["-e", `console.log("${queries++ === 0 ? "132000000000000001" : CREATION_TIME}")`],
+	});
+	const pid = 2 ** 22 + 8;
+	const background = readProcessStartToken(pid);
+	const latest = processStartTokenForSynchronousTakeover(pid);
+	assert.match(latest ?? "", /^[0-9a-f]{12}$/);
+	assert.equal(await background, latest);
+	assert.equal(processStartToken(pid), latest);
+	assert.equal(queries, 2);
+});
 
 test("a timed-out start read is remembered before another query is allowed (#5315)", async () => {
 	let queries = 0;
