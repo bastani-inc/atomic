@@ -317,6 +317,7 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 		"admission-repository",
 		"admission-slot",
 		"admission-lease",
+		"hold-lease",
 		"eviction",
 	] as const)("cancelling %s acquisition interrupts persistent Windows EPERM polling (#5320)", async (target) => {
 		const storeDir = sandbox.path("store");
@@ -359,7 +360,14 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 		} else {
 			const action = adopting
 				? adoptPrebuiltSeed(snapshot, { storeDir, signal: controller.signal })
-				: claimIdleWorktree(snapshot, { storeDir, owner, settings, signal: controller.signal });
+				: target === "hold-lease"
+					? holdRestoredWorktree(
+							storeDir,
+							pooledWorktreePath(storeDir, repository, 0 as SlotNumber),
+							owner,
+							controller.signal,
+						)
+					: claimIdleWorktree(snapshot, { storeDir, owner, settings, signal: controller.signal });
 			await assert.rejects(action, { name: "AbortError" });
 		}
 		assert.equal(pollClock.elapsedMs, 200);
@@ -533,6 +541,42 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 		const evicted = await evictIdleWorktrees(storeDir, repositoryIdOf(second.remotes), { maxIdle: 0, settings });
 		assert.equal(lockRefusals.refused, 3);
 		assert.deepEqual(evicted, [claimed.lease.path]);
+	});
+
+	test("a claim cancelled while committing its reset finishes the record update and keeps its lease (#5320)", async () => {
+		const { first, second, blobs } = await capturedPair();
+		const storeDir = sandbox.path("store-claim-commit");
+		const before = { snapshotId: first.id, head: first.head, tree: first.tree };
+		const admitted = await admitPooledWorktree(
+			{ storeDir, remotes: first.remotes, root: first.root, lastState: before, envHash: first.envHash },
+			{ kind: "session", id: "owner-a" },
+		);
+		await restoreWorktreeAt(first, admitted.path, { storeDir, blobs });
+		await releaseRestoredWorktree(admitted, before);
+		const file = join(storeDir, "pool", admitted.repository, "0.json");
+		const controller = new AbortController();
+		lockRefusals.targets.add(`${file}.lock`);
+		lockRefusals.code = "ELOCKED";
+		lockRefusals.attempts = 0;
+		lockRefusals.onAttempt = (attempt) => attempt === 2;
+		lockRefusals.onRefusal = () => controller.abort(new Error("cancelled while committing the claim"));
+		const owner = { kind: "session" as const, id: "owner-b" };
+
+		const claimed = await claimIdleWorktree(second, { storeDir, owner, settings, blobs, signal: controller.signal });
+
+		assert.equal(controller.signal.aborted, true);
+		assert.equal(claimed.claimed, true);
+		if (!claimed.claimed) throw new Error(claimed.reason);
+		try {
+			const record = JSON.parse(readFileSync(file, "utf8")) as PoolSlotRecord;
+			assert.deepEqual(record.holder, owner);
+			assert.deepEqual(record.lastState, { snapshotId: second.id, head: second.head, tree: second.tree });
+			assert.equal(record.resetting, undefined);
+			assert.equal(readFileSync(join(claimed.lease.path, "state.txt"), "utf8"), "second\n");
+			assert.equal(await confirmPooledWorktreeLease(claimed.lease), true);
+		} finally {
+			await releaseRestoredWorktree(claimed.lease);
+		}
 	});
 
 	test("adoptPrebuiltSeed and withSeedLock wait out transient Windows EPERM and adopt the seed (#5320)", async () => {
