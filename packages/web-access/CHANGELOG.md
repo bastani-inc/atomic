@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Web search, fetch and video tools read their configuration, browser cookies and media files without blocking the session's event loop
+
 ## [0.9.88] - 2026-11-16
 
 ### Fixed

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `tryAdvisoryLockAsync` and `renameNoReplaceAsync`: the advisory lock and the non-replacing rename on a worker thread, without blocking the JavaScript event loop
+
 ## [0.9.88] - 2026-11-16
 
 ### Added
