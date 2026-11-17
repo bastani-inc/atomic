@@ -1090,7 +1090,8 @@ These helpers let extensions and SDK code follow [debug mode](/development#debug
 
 - `isDebugEnabled(area?, env?)` returns whether debug output is on: in debug mode for every area, and for `area` also while its own variable is set. Without `area`, only debug mode counts. `env` defaults to `process.env`.
 - `reportDebug(area, event, fields, ownOutput?, env?)` records one event. In debug mode it appends a JSON line to the debug log, with credentials redacted and long text cut to 2,000 characters. `fields` holds strings, numbers, booleans, `null` or lists of strings and numbers, never objects. While the area's own variable is set, `ownOutput` is called with the variable's value to write the event where that variable always has.
-- `appendDebugRecord(path, record)` appends one redacted JSON line to another debug file, such as a trace file.
+- `appendDebugRecord(path, record)` appends one redacted JSON line to another debug file, such as a trace file. It and `reportDebug()` retain their synchronous write and immediate failure-reporting behavior.
+- `appendDebugRecordAsync(path, record)` and `reportDebugAsync(area, event, fields, ownOutput?, env?)` provide the same redaction and reporting without blocking the host. Await their promises to observe the completed write, or call `flushDebugLog()` to wait for all queued debug records.
 - `DEBUG_AREA_VARIABLES` maps each area (`workflow`, `decision`, `pooled-watch`, `pool`, `storage`) to its own environment variable, or `undefined`. `decision`, `pool` and `storage` have none; they write only in debug mode.
 - `getDebugLogFailure()` returns the first `DebugLogUnwritableError` of this process, if writing a debug log ever failed.
 - `setDebugSetting(enabled)` turns debug mode on or off for this process and for child processes it starts afterwards. It does not save the `debug` setting.
@@ -1106,6 +1107,22 @@ These helpers let extensions and SDK code follow [debug mode](/development#debug
 Both extend `DebugError`, whose `code` is a `DebugErrorCode` and whose `fields()` returns the fields above. Branch on the class or `code`, not the message. `isDebugError`, `isDebugLogUnwritableError` and `isDebugConfigError` recognize them, including an error that crossed a process boundary as a plain object with the same `name` and `code`.
 
 To pass one between processes, `serializeDebugError(error)` turns it into a `SerializedDebugError` (`name`, `code`, `message`, `hint`, `retryable`, `fields`, and a cause chain of at most eight errors), and `rehydrateDebugError(serialized)` rebuilds the same class with the same fields. An unknown `name` comes back as a `DebugError` that keeps its `name`, `code`, `fields` and `retryable`. The RPC client does this for you: when the engine refuses `set_debug`, `setDebug()` rejects with the `DebugConfigError`.
+
+## Nonblocking helpers
+
+Use the asynchronous helpers in a host that must keep accepting input while it reads files, checks trust or resolves tools. Existing synchronous SDK forms remain available.
+
+| Helpers | Purpose |
+| --- | --- |
+| `getProjectTrustOptionsAsync`, `hasProjectTrustInputsAsync`, `hasTrustRequiringProjectResourcesAsync` | Read project trust inputs without synchronous file access |
+| `buildSkillCatalogAsync`, `emptySkillCatalog` | Load a skill catalog asynchronously, or create an empty catalog without reading files |
+| `mapRestoredPathAsync`, `workspaceSessionCwdAsync` | Resolve restored paths and workspace working directories asynchronously |
+| `processSharedStorageSelectionAsync`, `processStorageEnvironmentAsync` | Read a team token file asynchronously when building storage selections or child environments |
+| `takeTakeoverMutexAsync` | Acquire a takeover mutex asynchronously; await the returned mutex's `release()` |
+| `resolveInstalledGit` | Resolve an installed Git executable asynchronously without provisioning a missing one |
+| `appendDebugRecordAsync`, `reportDebugAsync`, `flushDebugLog` | Append debug records off the host thread, or wait for queued records before inspecting their files |
+
+Await each operation before starting work that depends on its result. `emptySkillCatalog()` is synchronous because it does no I/O.
 
 ## Private temp directories
 
