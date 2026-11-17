@@ -101,9 +101,6 @@
 
 - The `app.workflows.scrollUp` and `app.workflows.scrollDown` keybindings (Alt+K/J, Alt+PageUp/PageDown), with the workflow list they scrolled; the agent panel replaces it ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
-### Removed
-
-
 ## [0.9.88] - 2026-11-16
 
 Atomic runs on its own libraries, workflows scale out to worker fleets on libSQL or PostgreSQL, and every screen shares one set of keys.
