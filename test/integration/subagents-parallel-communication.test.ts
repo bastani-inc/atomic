@@ -721,10 +721,15 @@ for (const wait of [undefined, { kind: "background" }, { kind: "foreground", bud
 						),
 					STATE_POLL,
 				);
-				assert.equal(
-					current.git("branch", "--format=%(refname)"),
-					originalBranches,
-					"child branches must be removed too",
+				// Each worktree's branch is deleted once its checkout is gone, so the branches follow the worktrees.
+				await vi.waitFor(
+					() =>
+						assert.equal(
+							current.git("branch", "--format=%(refname)"),
+							originalBranches,
+							"child branches must be removed too",
+						),
+					STATE_POLL,
 				);
 			} finally {
 				await current.close();
