@@ -855,6 +855,15 @@ async function reloadGeneration(this: AgentSession, options?: AgentSessionReload
 	});
 }
 
+/**
+ * Whether the session is closed, for a publication gate the new generation keeps for its whole life. Made outside the
+ * reload so it does not close over the reload's scope, which holds the retiring runner: each generation would otherwise
+ * keep the one before it, and every reload would stay in memory for as long as the session runs.
+ */
+function sessionClosedProbe(session: AgentSession): () => boolean {
+	return () => session._disposed;
+}
+
 async function reloadOwnedGeneration(
 	this: AgentSession,
 	retainedRuntimes: Set<ExtensionRuntime>,
@@ -948,7 +957,7 @@ async function reloadOwnedGeneration(
 		resourceTransaction.loader,
 		candidateRunner,
 		this._modelRuntime,
-		() => this._disposed,
+		sessionClosedProbe(this),
 		this._extensionProviderIds,
 	);
 	let commitPreparedResources: (() => void) | undefined;

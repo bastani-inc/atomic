@@ -1,5 +1,6 @@
 import {
 	rehydrateTaskMessageError,
+	sessionTasks,
 	type TaskActivity,
 	type TaskCommandCatalog,
 	type TaskDetailText,
@@ -59,10 +60,17 @@ export class PooledStageTaskSource implements TaskViewSource {
 		return this.state.tasks.length === 0;
 	}
 
+	/** The stage's own tasks; its workers' shells are listed in their own views. */
 	get tasks(): readonly TaskRecord[] {
-		return this.records;
+		return sessionTasks(this.records, undefined);
 	}
 	get backgroundTasks(): readonly TaskRecord[] {
+		return sessionTasks(this.backgroundRecords, undefined);
+	}
+	get ownerTasks(): readonly TaskRecord[] {
+		return this.records;
+	}
+	get ownerBackgroundTasks(): readonly TaskRecord[] {
 		return this.backgroundRecords;
 	}
 	get settlementOrder(): ReadonlyMap<TaskId, bigint> {

@@ -3,8 +3,11 @@ import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { ChildProcess, spawn } from "child_process";
 import { beforeEach, describe, it, vi } from "vitest";
+import { startHostProcessesThroughChildProcess } from "../../../test/helpers/host-spawn.js";
 import { createGrepTool, type GrepToolInput } from "../src/core/tools/grep.js";
 import { DEFAULT_MAX_BYTES, truncateHead } from "../src/core/tools/truncate.js";
+
+startHostProcessesThroughChildProcess();
 
 vi.mock("child_process", async (importOriginal) => ({
 	...(await importOriginal<typeof import("child_process")>()),
