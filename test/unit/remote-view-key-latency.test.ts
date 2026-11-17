@@ -78,6 +78,7 @@ class TimedTerminal extends RecordingTerminal {
 /** A composer under a transcript that grows while the agent streams: the shape of the main chat and a stage chat. */
 class ChatPane implements Component {
 	readonly editor: CustomEditor;
+	renders = 0;
 	private readonly transcript: Text;
 	private readonly rows: () => number;
 	private streamed = 0;
@@ -94,14 +95,17 @@ class ChatPane implements Component {
 	}
 
 	render(width: number): string[] {
+		this.renders += 1;
 		const editor = this.editor.render(width);
 		const body = this.transcript.render(width);
 		const visible = Math.max(0, this.rows() - editor.length);
 		return [...body.slice(Math.max(0, body.length - visible)), ...editor];
 	}
 
-	handleInput(data: string): void {
+	/** Consumes every key, as the stage chat, the subagent chat and the task pages report a key they took. */
+	handleInput(data: string): boolean {
 		this.editor.handleInput(data);
+		return true;
 	}
 
 	invalidate(): void {
@@ -170,14 +174,20 @@ interface MountedViews {
 	readonly main: ChatPane;
 	readonly remote: ChatPane;
 	readonly remoteTui: TUI;
-	readonly overlay: OverlayHandle;
+	readonly overlay: OverlayHandle | undefined;
 }
+
+/** A full-screen overlay, as a stage or subagent chat opens; or inline under the main chat, as the task list opens. */
+type Placement = "overlay" | "inline";
+
+/** Rows of an inline engine-drawn view, so the main chat above it stays on screen. */
+const INLINE_ROWS = 4;
 
 /**
  * The main chat in the host's layout, and an engine-drawn chat in a full-screen overlay over it, joined through the
  * real bridge. Every message crosses the pump on a later turn of the event loop, as the child's pipes deliver them.
  */
-async function mountViews(): Promise<MountedViews> {
+async function mountViews(placement: Placement = "overlay"): Promise<MountedViews> {
 	initTheme("dark", false);
 	const keybindings = new KeybindingsManager();
 	const terminal = new TimedTerminal();
@@ -196,7 +206,13 @@ async function mountViews(): Promise<MountedViews> {
 	mainEditor = main.editor;
 	const document = new Container();
 	document.addChild(main);
-	tui.setLayoutRoot(new VStack([{ component: new ScrollView(document, { follow: "end", primary: true }), grow: 1 }]));
+	const inlineSlot = new Container();
+	tui.setLayoutRoot(
+		new VStack([
+			{ component: new ScrollView(document, { follow: "end", primary: true }), grow: 1 },
+			{ component: inlineSlot, shrink: 0 },
+		]),
+	);
 	tui.setFocus(main);
 	tui.start();
 	cleanups.push(() => tui.stop());
@@ -230,7 +246,12 @@ async function mountViews(): Promise<MountedViews> {
 			custom: ((factory, options) =>
 				new Promise((resolve) => {
 					const component = factory(tui, {} as never, keybindings, resolve) as Component;
-					overlay = tui.showOverlay(component, options?.overlayOptions as never);
+					if (options?.overlay === true) {
+						overlay = tui.showOverlay(component, options.overlayOptions as never);
+						return;
+					}
+					inlineSlot.addChild(component);
+					tui.setFocus(component);
 				})) as ExtensionUIContext["custom"],
 		},
 		{ isFullscreen: () => true, onRendererReplaced: () => () => {} },
@@ -242,15 +263,19 @@ async function mountViews(): Promise<MountedViews> {
 	void service.custom(
 		(engineTui) => {
 			remoteTui = engineTui;
-			remote = new ChatPane(engineTui, keybindings, () => engineTui.terminal.rows);
+			remote = new ChatPane(engineTui, keybindings, () =>
+				placement === "overlay" ? engineTui.terminal.rows : INLINE_ROWS,
+			);
 			return remote;
 		},
-		{ overlay: true, overlayOptions: { anchor: "center", width: "100%", maxHeight: "100%", margin: 0 } },
+		placement === "overlay"
+			? { overlay: true, overlayOptions: { anchor: "center", width: "100%", maxHeight: "100%", margin: 0 } }
+			: {},
 	);
-	for (let turn = 0; turn < 20 && (overlay === undefined || remote === undefined); turn++) await settleTurn();
-	assert.ok(remote && remoteTui && overlay, "the engine-drawn view did not mount");
-	const mounted = overlay;
-	cleanups.push(() => mounted.hide());
+	const mounted = () => remote !== undefined && (placement === "inline" || overlay !== undefined);
+	for (let turn = 0; turn < 20 && !mounted(); turn++) await settleTurn();
+	assert.ok(remote && remoteTui && mounted(), "the engine-drawn view did not mount");
+	cleanups.push(() => overlay?.hide());
 	// The renderer enters the alternate screen asynchronously; nothing is timed before it painted a frame.
 	const deadline = performance.now() + PAINT_TIMEOUT_MS;
 	while (!terminal.writes.some((data) => stripTerminalSequences(data).includes("transcript line"))) {
@@ -277,17 +302,19 @@ async function paintsWithoutTimers(terminal: TimedTerminal, prefix: string): Pro
 
 test("a key in an engine-drawn view paints without waiting for a paced frame, as a key in the main chat does", async () => {
 	const views = await mountViews();
+	const overlay = views.overlay;
+	assert.ok(overlay);
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
 	cleanups.push(() => vi.useRealTimers());
 
-	views.overlay.setHidden(true);
+	overlay.setHidden(true);
 	views.tui.setFocus(views.main);
 	views.terminal.input("q");
 	views.terminal.input("w");
 	assert.equal(await paintsWithoutTimers(views.terminal, "qw"), true, "the main chat paints a key at once");
 
-	views.overlay.setHidden(false);
-	views.overlay.focus();
+	overlay.setHidden(false);
+	overlay.focus();
 	await vi.advanceTimersByTimeAsync(100);
 	views.terminal.input("z");
 	views.terminal.input("x");
@@ -300,6 +327,8 @@ test("a key in an engine-drawn view paints without waiting for a paced frame, as
 
 test("a key in an engine-drawn view paints within a small factor of a key in the main chat under the same load", async () => {
 	const views = await mountViews();
+	const overlay = views.overlay;
+	assert.ok(overlay);
 	const load = setInterval(() => busy(LOAD_BLOCK_MS), LOAD_PERIOD_MS);
 	const stream = setInterval(() => {
 		views.main.stream();
@@ -313,11 +342,11 @@ test("a key in an engine-drawn view paints within a small factor of a key in the
 	});
 
 	// The overlay covers the main chat, so the main chat is timed with it hidden, under the same load.
-	views.overlay.setHidden(true);
+	overlay.setHidden(true);
 	views.tui.setFocus(views.main);
 	const mainLatencies = await typeAndTime(views.terminal, randomWord(KEYS_PER_VIEW));
-	views.overlay.setHidden(false);
-	views.overlay.focus();
+	overlay.setHidden(false);
+	overlay.focus();
 	await sleep(100);
 	const remoteLatencies = await typeAndTime(views.terminal, randomWord(KEYS_PER_VIEW));
 
@@ -330,6 +359,36 @@ test("a key in an engine-drawn view paints within a small factor of a key in the
 		assert.ok(
 			remoteLatency <= mainLatency * KEY_LATENCY_FACTOR + KEY_LATENCY_SLACK_MS,
 			`engine-drawn view key ${label} ${remoteLatency.toFixed(1)} ms exceeds ${KEY_LATENCY_FACTOR}x the main chat's ${mainLatency.toFixed(1)} ms + ${KEY_LATENCY_SLACK_MS} ms`,
+		);
+	}
+});
+
+test("a key in an inline engine-drawn view lays out the screen once, when the frame that shows it arrives", async () => {
+	const views = await mountViews("inline");
+	await sleep(100);
+	// The layout measures the main chat and then paints it: an idle frame shows how many renders one frame costs.
+	const idle = views.main.renders;
+	views.tui.requestRender();
+	await sleep(50);
+	const rendersPerFrame = views.main.renders - idle;
+	assert.ok(rendersPerFrame > 0);
+	for (const key of "qwertyuiop") {
+		const before = views.main.renders;
+		const typed = views.remote.editor.getText() + key;
+		const painted = new Promise<void>((resolve) => {
+			const stop = views.terminal.onWrite((text) => {
+				if (!text.includes(typed)) return;
+				stop();
+				resolve();
+			});
+		});
+		views.terminal.input(key);
+		await painted;
+		await sleep(40);
+		assert.equal(
+			(views.main.renders - before) / rendersPerFrame,
+			1,
+			`the key "${key}" laid out the main chat in ${(views.main.renders - before) / rendersPerFrame} frames`,
 		);
 	}
 });
