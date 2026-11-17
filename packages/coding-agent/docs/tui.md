@@ -449,7 +449,7 @@ Keys: ↑↓ select (wrapping), pgup/pgdn page, home/end jump to the ends when t
 | `numbered: true` | Rows are numbered; without a search box, digits 1–9 choose a row directly, or toggle it with `mode: "multi"`. |
 | `onPreview` | Space previews the selected row; the hint shows `space preview`. |
 | `rightConfirms: false` | Disable the `app.list.open` shortcut, Right by default, for a picker where only Enter should choose. The default allows it when search is empty. |
-| `minDescriptionWidth` | Reserve this many columns for a one-line row's description, shortening its label first when there is room. Use this for values that must stay visible on narrow terminals. |
+| `minDescriptionWidth` | Reserve this many columns for a one-line row's description, shortening its label before the value or right-hand tag. Fractions round down; non-finite values use the default. Use this for values that must stay visible on narrow terminals. |
 | `onSelectionChange` | Reports the selected row when navigation or filtering changes its identity, or `undefined` when no enabled row matches. |
 | `extraKeys` | Keys of your own, each with a hint and an `enabled(item)` check, so a key that does nothing for the selected row is not shown. |
 | `group` on items | Rows with the same group are listed under a section label (hidden while searching). |

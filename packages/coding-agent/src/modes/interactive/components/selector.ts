@@ -153,6 +153,7 @@ export const PLAIN_SELECTOR_STYLE: SelectorStyle = {
 
 const DEFAULT_MAX_VISIBLE = 10;
 const MIN_DESCRIPTION_WIDTH = 12;
+const MIN_DESCRIPTION_LABEL_WIDTH = 8;
 const DESCRIPTION_GAP = 2;
 
 /** Filtering, selection and checked state of a picker, without rendering. */
@@ -922,23 +923,28 @@ export class Selector<T> implements Component, Focusable {
 			const isSelected = index === this.state.getSelectedIndex() && !item.disabled;
 			const parts = this.rowParts(item, index, isSelected, numbered, numberWidth, hasMarks, multi);
 			const indent = visibleWidth(parts.lead);
+			const requestedMinDesc = this.options.minDescriptionWidth;
 			const minDesc =
-				!twoLine && item.description && this.options.minDescriptionWidth !== undefined
-					? Math.max(1, this.options.minDescriptionWidth)
+				!twoLine && item.description && requestedMinDesc !== undefined && Number.isFinite(requestedMinDesc)
+					? Math.max(1, Math.floor(requestedMinDesc))
 					: undefined;
 			const reservedDesc =
-				minDesc !== undefined && width - indent - 1 - DESCRIPTION_GAP - minDesc >= 8
+				minDesc !== undefined && width - indent - 1 - DESCRIPTION_GAP - minDesc >= MIN_DESCRIPTION_LABEL_WIDTH
 					? DESCRIPTION_GAP + minDesc
 					: 0;
-			const labelRoom = Math.max(1, width - indent - 1 - reservedDesc);
+			const rawTagWidth = item.tag ? visibleWidth(item.tag) : 0;
+			const reservedTag =
+				reservedDesc > 0 && rawTagWidth > 0
+					? Math.min(rawTagWidth + 2, Math.max(0, width - indent - 1 - reservedDesc - MIN_DESCRIPTION_LABEL_WIDTH))
+					: 0;
+			const labelRoom = Math.max(1, width - indent - 1 - reservedDesc - reservedTag);
 			const wrappedLabels = this.options.wrap ? wrapTextWithAnsi(item.label, labelRoom) : undefined;
 			const label = wrappedLabels
 				? (wrappedLabels[0] ?? "")
 				: visibleWidth(item.label) > labelRoom
 					? truncateToWidth(item.label, labelRoom)
 					: item.label;
-			const tagRoom = Math.max(0, width - indent - visibleWidth(label) - 3);
-			const rawTagWidth = item.tag ? visibleWidth(item.tag) : 0;
+			const tagRoom = Math.max(0, width - indent - visibleWidth(label) - 3 - reservedDesc);
 			const tagText =
 				item.tag && rawTagWidth > 0
 					? rawTagWidth <= tagRoom

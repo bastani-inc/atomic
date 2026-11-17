@@ -3,6 +3,7 @@ import type { SettingItem } from "@bastani/atomic-tui";
 import { setKeybindings, stripTerminalSequences, Text } from "@bastani/atomic-tui";
 import { beforeAll, beforeEach, describe, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { PLAIN_SELECTOR_STYLE, Selector } from "../src/modes/interactive/components/selector.js";
 import { SettingsPicker } from "../src/modes/interactive/components/settings-picker.ts";
 import { SelectSubmenu } from "../src/modes/interactive/components/settings-selector-submenus.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
@@ -52,6 +53,34 @@ describe("/settings on the shared picker (#5224)", () => {
 			assert.ok(!out.some((line) => /\(\d+\/\d+\)/.test(line)));
 		});
 	}
+
+	it("reserves the value column before shortening a label beside a right-hand tag (#5347)", () => {
+		const picker = new Selector({
+			items: [{ id: "value", value: "value", label: "a".repeat(100), description: "false", tag: "current" }],
+			minDescriptionWidth: 6,
+			style: PLAIN_SELECTOR_STYLE,
+		});
+		for (const width of [42, 45, 80, 160]) {
+			const out = plain(picker.render(width));
+			assert.match(out.find((line) => line.includes("❯")) ?? "", /false\s+current$/);
+			assert.ok(out.every((line) => line.length <= width));
+		}
+	});
+
+	it("uses whole finite columns for the value reservation (#5347)", () => {
+		const make = (label: string, minDescriptionWidth?: number) =>
+			new Selector({
+				items: [{ id: "value", value: "value", label, description: "true" }],
+				...(minDescriptionWidth === undefined ? {} : { minDescriptionWidth }),
+				style: PLAIN_SELECTOR_STYLE,
+			});
+		const fallback = make("Auto-compact").render(80);
+		assert.ok(fallback.some((line) => line.includes("true")));
+		for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+			assert.deepEqual(make("Auto-compact", invalid).render(80), fallback);
+		}
+		assert.deepEqual(make("a".repeat(100), 6.9).render(45), make("a".repeat(100), 6).render(45));
+	});
 
 	it("names what enter does for the selected row: change steps a value, open shows its picker", () => {
 		const picker = new SettingsPicker(
