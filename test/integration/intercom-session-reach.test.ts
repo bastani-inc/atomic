@@ -14,6 +14,8 @@ import { afterAll, afterEach, test, vi } from "vitest";
 import {
 	type AgentSession,
 	createAgentSession,
+	createAgentSessionFromServices,
+	createAgentSessionServices,
 	SessionManager,
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
@@ -382,6 +384,31 @@ test(
 			),
 		);
 		assert.deepEqual(c.received, []);
+	},
+	REAL_BROKER_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a runtime factory passes the option through createAgentSessionFromServices (#5352)",
+	async () => {
+		const home = group("services");
+		const services = await createAgentSessionServices({ cwd, agentDir });
+		const { session } = await createAgentSessionFromServices({
+			services,
+			sessionManager: SessionManager.inMemory(cwd),
+			builtins: { subagents: false, mcp: false, "web-access": false },
+			intercom: { group: home },
+		});
+		cleanups.push(() => session.dispose());
+		assert.equal(session.intercom.group, home);
+		const tool = session.agent.state.tools.find((candidate) => candidate.name === "intercom");
+		assert.ok(tool);
+		const status = (await tool.execute(
+			randomUUID(),
+			{ action: "status" } as never,
+			new AbortController().signal,
+		)) as ToolResult;
+		assert.deepEqual(status.structuredContent?.groups, [home]);
 	},
 	REAL_BROKER_SESSION_TIMEOUT_MS,
 );
