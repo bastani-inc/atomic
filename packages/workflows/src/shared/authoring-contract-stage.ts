@@ -7,12 +7,6 @@ import type {
 	DecisionQuestions,
 	DecisionRequest,
 	DecisionResult,
-	ModelConstraints,
-	ModelRoute,
-	ModelRouterOutput,
-	ParallelSlot,
-	RoutingInferenceBounds,
-	TaskNeeds,
 	Workspace,
 	WorkspaceChangeSet,
 } from "@bastani/atomic";
@@ -126,21 +120,20 @@ export interface WorkflowModelInfo {
 	readonly model?: WorkflowModelValue;
 }
 
+/** What `model: "auto"` stands for: a model and, when known, its thinking level. */
+export interface WorkflowAutoModel {
+	readonly model: WorkflowModelValue;
+	readonly thinkingLevel?: WorkflowThinkingLevel;
+}
+
 export interface WorkflowModelCatalogPort {
 	listModels(): Promise<readonly WorkflowModelInfo[]>;
-	routeModel?(input: {
-		task: string;
-		stageName: string;
-		constraints: readonly ModelConstraints[];
-		signal?: AbortSignal;
-		selection?: ModelRouterOutput;
-		taskNeeds?: TaskNeeds;
-		/** The stage's own constraints set a provider list, replacing the user's provider settings. */
-		overrideProviderSettings?: boolean;
-		/** Deadline and concurrency limit the stage owns for routing inference. */
-		inference?: RoutingInferenceBounds;
-		parallelSlot?: ParallelSlot;
-	}): Promise<ModelRoute>;
+	/**
+	 * The model and thinking level `model: "auto"` stages run: the user's default model, else the current session's
+	 * model. Absent, or returning undefined, leaves the model to the stage's session factory, which starts on the
+	 * configured default model.
+	 */
+	autoModel?(): WorkflowAutoModel | undefined;
 	/**
 	 * The host's decision service, bound to the user's `decisionModel`: `decide()` with the host's settings, model
 	 * registry and current chat model. Absent when the host has no decision model.
@@ -281,17 +274,11 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	 * the deadline. Ignored without `schema`.
 	 */
 	readonly schemaTimeoutMs?: number;
-	readonly model?: WorkflowModelValue;
-	/** Hard restrictions for automatic model selection and its execution fallbacks. */
-	readonly modelConstraints?: ModelConstraints;
-	/** What the author already knows about the task, for `model: "auto"`; routing asks only for the rest. */
-	readonly taskNeeds?: TaskNeeds;
 	/**
-	 * For `model: "auto"` stages that run side by side on the same task, such as two reviewers: this stage's
-	 * position among `count` of them, from 0. Each position routes to a different model family when the eligible
-	 * models span enough families.
+	 * A concrete model (`provider/id[:effort]`, a bare id, or a model object), or `"auto"` for the user's default model
+	 * at its default thinking level (the current session's model when no default is configured).
 	 */
-	readonly parallelSlot?: ParallelSlot;
+	readonly model?: WorkflowModelValue;
 	readonly mcp?: StageMcpOptions;
 	readonly tools?: readonly string[];
 	readonly noTools?: "all" | "builtin";
@@ -473,6 +460,21 @@ export interface AgentSessionAdapter {
 		options: StageSessionCreateOptions,
 		meta?: StageExecutionMeta,
 	): Promise<StageSessionRuntime | StageSessionCreateResult>;
+	/**
+	 * What `model: "auto"` stands for in the sessions this adapter creates, for a run whose `models` catalog does not
+	 * resolve it: the user's default model, else the adapter's own model. No model request. With `needs.imageInput`
+	 * (a task that reads images) the adapter's own model stands in when the default model does not accept images.
+	 */
+	autoModel?(
+		options: StageSessionCreateOptions,
+		needs?: WorkflowAutoModelNeeds,
+	): Promise<WorkflowAutoModel | undefined>;
+}
+
+/** What the model `auto` stands for must support. */
+export interface WorkflowAutoModelNeeds {
+	/** The task reads image files, so its model must accept image input. */
+	readonly imageInput?: boolean;
 }
 
 export interface PromptAdapter {
@@ -578,7 +580,6 @@ export interface WorkflowTaskResult extends WorkflowTaskContext {
 	readonly artifacts?: readonly WorkflowArtifact[];
 	readonly model?: string;
 	readonly thinkingLevel?: string;
-	readonly routerSelection?: ModelRouterOutput;
 	readonly attemptedModels?: readonly string[];
 	readonly modelAttempts?: readonly WorkflowModelAttempt[];
 	readonly rateLimits?: readonly WorkflowProviderRateLimit[];

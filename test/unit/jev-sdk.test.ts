@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import type { ClassifierResult } from "@bastani/atomic-ai";
 import { afterEach, test, vi } from "vitest";
-import { routeExecutionModel } from "../../packages/coding-agent/src/core/execution-model-router.js";
 import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";
-import { chatRouter } from "../helpers/model-routing.js";
+import { areaRecords, withDebugLog } from "../helpers/debug-mode.js";
 import {
 	classifierResult,
 	decisionChatModel,
@@ -52,19 +51,22 @@ test("explicit registered classifier routes without invoking chat", async () => 
 
 test("classifier runtime failure falls back to current chat once without leaking provider error", async () => {
 	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
-	const chat = vi.fn(() => messageStream(decisionMessage()));
-	const result = await routeModel(
-		routedClassifier(async () => {
-			throw new Error("private-key-material");
-		}, chat),
-	);
-	assert.equal(result.model, "decision-test/chat");
-	assert.equal(result.fallback?.from, "decision-test/classifier");
-	assert.equal(result.fallback?.reason, "Classifier returned no valid decision.");
-	assert.equal(chat.mock.calls.length, 1);
-	assert.equal(warning.mock.calls.length, 1);
-	assert.doesNotMatch(JSON.stringify(result) + String(warning.mock.calls[0]?.[0]), /private-key-material/);
+	await withDebugLog("setting", async (log) => {
+		const chat = vi.fn(() => messageStream(decisionMessage()));
+		const result = await routeModel(
+			routedClassifier(async () => {
+				throw new Error("private-key-material");
+			}, chat),
+		);
+		assert.equal(result.model, "decision-test/chat");
+		assert.equal(result.fallback?.from, "decision-test/classifier");
+		assert.equal(result.fallback?.reason, "Classifier returned no valid decision.");
+		assert.equal(chat.mock.calls.length, 1);
+		const notes = areaRecords(log, "decision");
+		assert.equal(notes.length, 1);
+		assert.doesNotMatch(JSON.stringify(result) + JSON.stringify(notes), /private-key-material/);
+	});
+	assert.equal(warning.mock.calls.length, 0, "the fallback note never reaches the terminal");
 });
 
 const invalidAnswers: Record<string, string>[] = [{ route: "invented", budget: "exact" }, { route: "review" }];
@@ -97,35 +99,37 @@ test("classifier aborted result prevents chat fallback", async () => {
 });
 
 test("classifier provider refusal falls back to current chat once", async () => {
-	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
-	const chat = vi.fn(() => messageStream(decisionMessage()));
-	const result = await routeModel(
-		routedClassifier(
-			async () => ({ ...classifierResult(), stopReason: "error", errorMessage: "Safety refusal private body" }),
-			chat,
-		),
-	);
-	assert.equal(result.model, "decision-test/chat");
-	assert.equal(result.fallback?.from, "decision-test/classifier");
-	assert.equal(chat.mock.calls.length, 1);
-	assert.equal(warning.mock.calls.length, 1);
-	assert.doesNotMatch(JSON.stringify(result) + String(warning.mock.calls[0]?.[0]), /private body/);
+	await withDebugLog("setting", async (log) => {
+		const chat = vi.fn(() => messageStream(decisionMessage()));
+		const result = await routeModel(
+			routedClassifier(
+				async () => ({ ...classifierResult(), stopReason: "error", errorMessage: "Safety refusal private body" }),
+				chat,
+			),
+		);
+		assert.equal(result.model, "decision-test/chat");
+		assert.equal(result.fallback?.from, "decision-test/classifier");
+		assert.equal(chat.mock.calls.length, 1);
+		const notes = areaRecords(log, "decision");
+		assert.equal(notes.length, 1);
+		assert.doesNotMatch(JSON.stringify(result) + JSON.stringify(notes), /private body/);
+	});
 });
 
-test("classifier overflow warning names the status and error type but not the body", async () => {
-	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-	vi.stubEnv("ATOMIC_MODEL_ROUTING_DEBUG", "1");
-	await routeModel(
-		routedClassifier(async () => ({
-			...classifierResult(),
-			stopReason: "error",
-			errorMessage: 'System One API error (400): {"detail":{"error_type":"max_tokens_exceeded","echo":"private"}}',
-		})),
-	);
-	const message = String(warning.mock.calls[0]?.[0]);
-	assert.match(message, /Classifier routing failed \(HTTP 400 max_tokens_exceeded\); falling back/);
-	assert.doesNotMatch(message, /private/);
+test("classifier overflow note names the status and error type but not the body", async () => {
+	await withDebugLog("setting", async (log) => {
+		await routeModel(
+			routedClassifier(async () => ({
+				...classifierResult(),
+				stopReason: "error",
+				errorMessage:
+					'System One API error (400): {"detail":{"error_type":"max_tokens_exceeded","echo":"private"}}',
+			})),
+		);
+		const message = String(areaRecords(log, "decision")[0]?.data.message);
+		assert.match(message, /Classifier decision failed \(HTTP 400 max_tokens_exceeded\); falling back/);
+		assert.doesNotMatch(message, /private/);
+	});
 });
 
 for (const succeeds of [true, false]) {
@@ -140,34 +144,6 @@ for (const succeeds of [true, false]) {
 		assert.equal(chat.mock.calls.length, 4);
 	});
 }
-
-test("execution auto routing uses selected current chat even with classifier credentials", async () => {
-	vi.stubEnv("TYPESAFE_API_KEY", "synthetic-secret");
-	const selection = { model: "decision-test/chat", effort: null };
-	const dispatch = vi.fn(chatRouter());
-	const available = [decisionChatModel];
-	const result = await routeExecutionModel({
-		ctx: {
-			model: decisionChatModel,
-			getDecisionModel: () => "",
-			modelRegistry: {
-				getAll: () => available,
-				getAvailable: () => available,
-				containsConfiguredCredential: async () => false,
-				streamSimple: dispatch,
-			},
-		},
-		task: "Review a TypeScript change",
-		agent: { name: "reviewer", description: "Review only" },
-		constraints: [{ allowedModels: [selection.model] }],
-	});
-	assert.deepEqual(result.routerSelection, { ...selection, candidates: [selection.model] });
-	assert.equal(result.modelOverride, selection.model);
-	assert.equal(dispatch.mock.calls.length, 1);
-	result.assertCurrent();
-	available.length = 0;
-	assert.throws(result.assertCurrent, /no longer eligible/);
-});
 
 test("structured-output SDK rejects obsolete classifier model IDs before dispatch", async () => {
 	const transport = vi.fn();

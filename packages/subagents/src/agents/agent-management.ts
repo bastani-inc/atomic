@@ -115,7 +115,6 @@ function formatAgentDetail(agent: AgentConfig): string {
 		lines.push(`Package: ${agent.packageName}`);
 	}
 	if (agent.model) lines.push(`Model: ${agent.model}`);
-	if (agent.modelConstraints) lines.push(`Auto model constraints: ${JSON.stringify(agent.modelConstraints)}`);
 	if (agent.fallbackModels?.length) lines.push(`Fallback models: ${agent.fallbackModels.join(", ")}`);
 	if (tools.length) lines.push(`Tools: ${tools.join(", ")}`);
 	if (agent.skills?.length) lines.push(`Skills: ${agent.skills.join(", ")}`);

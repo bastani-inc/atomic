@@ -411,7 +411,6 @@ export interface DurableWorkflowBackend {
 				sessionFile?: string;
 				startedAt?: number;
 				durationMs?: number;
-				routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 				/** The attempt the session record was written in (#4874). */
 				attempt?: number;
 		  }
@@ -1069,7 +1068,6 @@ class JournalProjection {
 				sessionFile?: string;
 				startedAt?: number;
 				durationMs?: number;
-				routerSelection?: import("@bastani/atomic").ModelRouterOutput;
 				/** The attempt the session record was written in (#4874). */
 				attempt?: number;
 		  }
@@ -1081,7 +1079,6 @@ class JournalProjection {
 			...(checkpoint.sessionFile !== undefined ? { sessionFile: checkpoint.sessionFile } : {}),
 			...(checkpoint.startedAt !== undefined ? { startedAt: checkpoint.startedAt } : {}),
 			...(checkpoint.durationMs !== undefined ? { durationMs: checkpoint.durationMs } : {}),
-			...(checkpoint.routerSelection !== undefined ? { routerSelection: checkpoint.routerSelection } : {}),
 			...(checkpoint.attempt !== undefined ? { attempt: checkpoint.attempt } : {}),
 		};
 	}
