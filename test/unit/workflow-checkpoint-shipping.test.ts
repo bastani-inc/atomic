@@ -1076,7 +1076,10 @@ test("closing during a deadline flush stops even when another batch remains pend
 		entered = resolve;
 	});
 	try {
-		const { shard: local, clock } = await shard();
+		// In memory: the test takes 1 001 steps, and on a loaded Windows runner one file commit each outlasted its budget.
+		const clock = { now: 0 };
+		const local = await ShipShard.open(":memory:", ROOT, () => clock.now);
+		opened.push(local);
 		let deliveries = 0;
 		const shipping = new CheckpointShipping(local, {
 			host: "host",

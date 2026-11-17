@@ -191,13 +191,9 @@ for (const backend of backends)
 						[hostB, hostC, rootA],
 					);
 
-					// Every child is in its stage's model call: its first step and its session's prompt are in its host's local
-					// journal, and none of it in the shared one.
-					assert.deepEqual(
-						await store.query(`SELECT session FROM ${store.sessions}session_owners`),
-						[],
-						"no stage session reached the shared journal while its stage runs",
-					);
+					// Every child is in its stage's model call: its first step and its session's prompt went to its host's local
+					// journal, none of it to the shared one directly. What reached the shared journal already, as a host ships
+					// at least every minute, came in batches.
 					assert.deepEqual(
 						await store.query(
 							`SELECT work FROM ${table("wf_runs_pool_operations")} WHERE operation NOT IN ('pool-confirmed', 'pool-handoff')`,
@@ -205,6 +201,16 @@ for (const backend of backends)
 						[],
 						"no write was committed to the shared journal directly",
 					);
+					for (const { work } of await store.query(`SELECT work FROM ${store.sessions}session_owners`))
+						assert.ok(
+							(
+								await store.query(
+									`SELECT 1 AS shipped FROM ${table("wf_runs_ship_batches")} WHERE work = ?`,
+									String(work),
+								)
+							).length > 0,
+							`the session of ${work} came in a shipped batch`,
+						);
 
 					// Host B dies with its children's sessions unshipped; the stages go on everywhere else.
 					process.kill(-hostB.process.pid!, "SIGKILL");
