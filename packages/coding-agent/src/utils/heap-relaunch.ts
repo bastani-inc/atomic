@@ -34,8 +34,10 @@ export function headlessHeapRelaunchArgs(args: readonly string[]): string[] {
 		return [];
 	}
 	if (!isHeadlessInvocation(args, terminal) || process.execArgv.some((arg) => HEAP_FLAG.test(arg))) return [];
+	// Bun gets no heap flags, and reading its heap statistics alone takes about 14 ms.
+	if ("bun" in process.versions) return [];
 	return engineHeapRuntimeArgs({
-		runsOnNode: !("bun" in process.versions),
+		runsOnNode: true,
 		totalMemoryBytes: totalmem(),
 		constrainedMemoryBytes: process.constrainedMemory(),
 		currentHeapLimitBytes: getHeapStatistics().heap_size_limit,

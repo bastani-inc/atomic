@@ -1,5 +1,10 @@
+import { appendFileSync } from "node:fs";
+
 export type LifecycleTimingLabel =
 	| "process-entry"
+	| "main-entry"
+	| "session-opened"
+	| "runtime-created"
 	| "interactive-engine-spawn"
 	| "engine-ready"
 	| "tui-start"
@@ -88,4 +93,36 @@ export function markLifecycleTiming(label: LifecycleTimingLabel): void {
 	} catch {
 		// Diagnostics must never alter the startup path they observe.
 	}
+}
+
+/** Variables naming the startup trace file; `PI_` is the legacy alias, as for every Atomic variable. */
+const STARTUP_TRACE_ENV_NAMES = ["ATOMIC_STARTUP_TRACE", "PI_STARTUP_TRACE"] as const;
+
+/** One line of the startup trace file. */
+export interface LifecycleTraceLine {
+	readonly label: LifecycleTimingLabel | "process-start";
+	/** Wall-clock milliseconds since the Unix epoch, so marks of a host and its engine child line up. */
+	readonly epochMs: number;
+	readonly pid: number;
+	readonly ppid: number;
+}
+
+/**
+ * When `ATOMIC_STARTUP_TRACE` names a file, append this process's start and each lifecycle mark to it, one JSON line
+ * each. A host and the engine child it starts inherit the variable, so one file holds both timelines. Does nothing
+ * when the variable is unset or another diagnostic sink is already installed. Returns the function that uninstalls it.
+ */
+export function installLifecycleTraceFromEnv(env: NodeJS.ProcessEnv = process.env): (() => void) | undefined {
+	const file = STARTUP_TRACE_ENV_NAMES.map((name) => env[name]).find((value) => value !== undefined && value !== "");
+	if (!file || getState().sink) return undefined;
+	const write = (label: LifecycleTraceLine["label"], epochMs: number): void => {
+		const line: LifecycleTraceLine = { label, epochMs, pid: process.pid, ppid: process.ppid };
+		try {
+			appendFileSync(file, `${JSON.stringify(line)}\n`);
+		} catch {
+			// Diagnostics must never alter the startup path they observe.
+		}
+	};
+	write("process-start", performance.timeOrigin);
+	return installLifecycleTimingSink((record) => write(record.label, performance.timeOrigin + performance.now()));
 }
