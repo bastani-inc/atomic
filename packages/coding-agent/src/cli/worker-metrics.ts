@@ -21,6 +21,7 @@ export interface WorkerFleetScaling {
 	readonly minHosts: number;
 	readonly maxHosts: number;
 	readonly workersPerHost: number;
+	readonly rateCapHosts?: number;
 }
 
 /** What the metrics read of a fleet: the store's state, and the scaling signal once the store was read. */
@@ -70,6 +71,12 @@ export function prometheusText(fleet: WorkerMetricsFleet): string {
 			`atomic_fleet_slots{state="busy"} ${scaling.busySlots}`,
 			`atomic_fleet_slots{state="idle"} ${scaling.idleSlots}`,
 		);
+		if (scaling.rateCapHosts !== undefined)
+			lines.push(
+				"# HELP atomic_fleet_rate_cap_hosts Hosts the fleet can keep busy under its rate limits across all roots; current hosts for warming work. Present when a running root sets rate limits and history is retained, even when not binding.",
+				"# TYPE atomic_fleet_rate_cap_hosts gauge",
+				`atomic_fleet_rate_cap_hosts ${scaling.rateCapHosts}`,
+			);
 	}
 	return `${lines.join("\n")}\n`;
 }
